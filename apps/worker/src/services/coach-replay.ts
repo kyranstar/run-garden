@@ -31,8 +31,17 @@
  * answered. Before each, the weekly cap (`llmBudgetStatus`, as the runs: a call's worst case — the prompt written to the
  * cache and its whole output ceiling — must fit under the cutoff) and this request's own cap (REPLAY_REQUEST_CAP_MICROS,
  * on a realistic estimate: the prompt read from the cache, twice the largest output seen). A variant neither covers is
- * skipped, in words; a first call the week can't cover refuses the whole replay. Every call is recorded in `llm_usage`
- * as `coach_replay` — written before it at its worst case, settled after — and nothing else is written anywhere.
+ * skipped, in words; a first call the week can't cover refuses the whole replay. THE REQUEST'S CAP IS SOFT (review,
+ * minor 2): a short first answer can let later ones run much longer than estimated — up to about three times the cap
+ * (the review's probe: $2.57) — and production's output ceiling is kept, for the baseline's sake. The weekly cap is the
+ * hard bound; every answer says so (`capNote`). Every call is recorded in `llm_usage` as `coach_replay` — written before
+ * it at its worst case, marked with its estimate, settled after — and nothing else is written anywhere. A request cut
+ * off partway leaves its rows marked: they count at their worst while a call of theirs may still run, then at their
+ * estimate (llm.ts `weekCostSql`, REPLAY_RESERVATION_STALE_MINUTES; review I1), so an orphaned batch never locks the
+ * coach out for the week.
+ *
+ * A PROSE REPLAY takes at most REPLAY_PROSE_VARIANTS_MAX variants: each answer is a whole streamed document, and its
+ * parse is the request's CPU (review, minor 3; the design CPU bench's shape 12).
  *
  * STATEMENTS: the run (1), the week (1), the first call (its row, the fetch, its settling: 3), the week again (1), the
  * rest (their rows in one insert, a fetch and a settling each). Eight variants: 21 with the route's sign-in beside.
@@ -53,7 +62,7 @@ import { allTools } from "./design-tools/index.js";
 import { designProposalId } from "./design-tools/propose.js";
 import type { DesignTool } from "./design-tools/types.js";
 import { athleteText, clipProse } from "./design-prose.js";
-import { LLM_BUDGET, llmBudgetStatus } from "./llm.js";
+import { LLM_BUDGET, llmBudgetStatus, REPLAY_USAGE_KIND, RESERVATION_MARK } from "./llm.js";
 import {
   designModel,
   messagesCostMicros,
@@ -71,10 +80,12 @@ import { utf8Bytes } from "./utf8.js";
 /** The body's exact confirm: without it the route is a 404. */
 export const REPLAY_CONFIRM = "replay a coach run";
 export const REPLAY_VARIANTS_MAX = 8;
-/** What one replay request may spend, at most (on its estimates). */
+/** A prose replay's variants, at most: each answer a whole document, parsed in this request's CPU. */
+export const REPLAY_PROSE_VARIANTS_MAX = 3;
+/** What one replay request may spend, on its estimates — soft: see MONEY above. */
 export const REPLAY_REQUEST_CAP_MICROS = 1_000_000;
-/** Its calls' kind in `llm_usage`. */
-export const REPLAY_USAGE_KIND = "coach_replay";
+/** Its calls' kind in `llm_usage` (llm.ts, where the week counts it). */
+export { REPLAY_USAGE_KIND };
 export const REPLAY_STEPS = ["finish", "ask", "prose"] as const;
 export type ReplayStep = (typeof REPLAY_STEPS)[number];
 export const REPLAY_LIST_DEFAULT = 20;
@@ -94,6 +105,9 @@ const FINISH_SHOWN_MAX = LINE_MAX * PROSE_CEILING;
 export const REPLAY_WORDS = {
   weeklyCap: "The weekly AI budget can't cover this call.",
   requestCap: "This replay reached its own spending limit.",
+  capNote:
+    "The $1.00 limit per replay is soft: it is checked on an estimate (twice the longest answer seen so far), so a replay can spend up to about three times it. The weekly cap is the hard bound.",
+  proseVariants: `at most ${REPLAY_PROSE_VARIANTS_MAX} for the workout's words: each answer is a whole document`,
   firstFailed: "Not called: the first variant's call failed.",
   notReplayable: {
     finish: "This run made no model call to replay.",
@@ -121,7 +135,8 @@ export const replayBodySchema = z
       .max(REPLAY_VARIANTS_MAX)
       .refine((vs) => new Set(vs.map((v) => v.id)).size === vs.length, "each variant's id once"),
   })
-  .strict();
+  .strict()
+  .refine((b) => b.at !== "prose" || b.variants.length <= REPLAY_PROSE_VARIANTS_MAX, { path: ["variants"], message: REPLAY_WORDS.proseVariants });
 export type ReplayBody = z.infer<typeof replayBodySchema>;
 
 /** The model, at the transport: a body already written (llm-messages.ts `sendMessagesBody`). Tests stub it. */
@@ -182,6 +197,8 @@ export interface ReplayDto {
   baseline: ReplayWords;
   variants: ReplayVariantDto[];
   costUsd: number;
+  /** The per-request cap is soft; the weekly cap is the hard bound (REPLAY_WORDS.capNote). */
+  capNote: string;
 }
 
 export type ReplayOutcome =
@@ -387,6 +404,8 @@ interface Planned {
   body: string;
   promptTokens: number;
   worstMicros: number;
+  /** Its realistic cost, once planned: what its reservation counts at if its request dies (llm.ts `weekCostSql`). */
+  estimateMicros: number;
   usageId: string;
 }
 
@@ -419,7 +438,7 @@ export async function replayRun(db: Db, env: Env, userId: string, input: ReplayB
     const body = replayBody(request, voiceBlock(input.variants[index]!));
     const promptTokens = Math.ceil((request.headBytes + utf8Bytes(body.slice(request.head.length))) / PROMPT_BYTES_PER_TOKEN);
     const worstMicros = messagesCostMicros(model, { inputTokens: 0, cacheReadTokens: 0, cacheWriteTokens: promptTokens, outputTokens: request.maxTokens });
-    return { index, body, promptTokens, worstMicros, usageId: newId() };
+    return { index, body, promptTokens, worstMicros, estimateMicros: 0, usageId: newId() };
   };
   const fingerprint = (p: Planned) => `replay:${input.runId}:${at}:${variants[p.index]!.id}`;
   const at0 = now.toISOString();
@@ -427,7 +446,11 @@ export async function replayRun(db: Db, env: Env, userId: string, input: ReplayB
   const outputs: number[] = [];
   let spent = 0;
 
-  /** Rows first, at each call's worst case (a request killed mid-call is still counted); the calls; each settled. */
+  /**
+   * Rows first, at each call's worst case and marked with its estimate (a request killed mid-call is still counted —
+   * at its worst while a call of it may still run, then at the estimate: llm.ts `weekCostSql`); the calls; each settled,
+   * its mark gone.
+   */
   const call = async (batch: Planned[]): Promise<void> => {
     await db.insert(llmUsage).values(
       batch.map((p) => ({
@@ -439,7 +462,7 @@ export async function replayRun(db: Db, env: Env, userId: string, input: ReplayB
         outputTokens: request.maxTokens,
         costMicros: p.worstMicros,
         cacheHit: false,
-        requestFingerprint: fingerprint(p),
+        requestFingerprint: `${fingerprint(p)}${RESERVATION_MARK}${p.estimateMicros}`,
         createdAt: at0,
       })),
     );
@@ -461,8 +484,9 @@ export async function replayRun(db: Db, env: Env, userId: string, input: ReplayB
                   outputTokens: billed.usage.outputTokens,
                   costMicros: billed.costMicros,
                   cacheHit: billed.usage.cacheReadTokens > 0,
+                  requestFingerprint: fingerprint(p),
                 }
-              : { inputTokens: 0, outputTokens: 0, costMicros: 0, cacheHit: false },
+              : { inputTokens: 0, outputTokens: 0, costMicros: 0, cacheHit: false, requestFingerprint: fingerprint(p) },
           )
           .where(eq(llmUsage.id, p.usageId));
         const v = variants[p.index]!;
@@ -496,7 +520,8 @@ export async function replayRun(db: Db, env: Env, userId: string, input: ReplayB
   if (week + first.worstMicros > LLM_BUDGET.cutoffMicros) {
     return { kind: "weekly_cap", why: REPLAY_WORDS.weeklyCap, spentUsd: usd(week), cutoffUsd: usd(LLM_BUDGET.cutoffMicros) };
   }
-  if (estimate(first, true) > REPLAY_REQUEST_CAP_MICROS) {
+  first.estimateMicros = estimate(first, true);
+  if (first.estimateMicros > REPLAY_REQUEST_CAP_MICROS) {
     for (const v of variants) v.skipped = { reason: "request_cap", why: REPLAY_WORDS.requestCap };
   } else {
     await call([first]);
@@ -519,6 +544,7 @@ export async function replayRun(db: Db, env: Env, userId: string, input: ReplayB
         } else if (worst + p.worstMicros > LLM_BUDGET.cutoffMicros) {
           variants[i]!.skipped = { reason: "weekly_cap", why: REPLAY_WORDS.weeklyCap };
         } else {
+          p.estimateMicros = est;
           batch.push(p);
           estimated += est;
           worst += p.worstMicros;
@@ -538,6 +564,7 @@ export async function replayRun(db: Db, env: Env, userId: string, input: ReplayB
       baseline,
       variants,
       costUsd: usd(spent),
+      capNote: REPLAY_WORDS.capNote,
     },
   };
 }

@@ -1,4 +1,4 @@
-import { and, eq, gte } from "drizzle-orm";
+import { and, eq, gte, sql, type SQL } from "drizzle-orm";
 import { llmUsage, weeklyReviews } from "@rg/database";
 import { fingerprint, newId, nowInstant, type UserPreferences } from "@rg/domain";
 import type { Env } from "../env.js";
@@ -40,13 +40,40 @@ export interface LlmBudgetStatus {
   cutoff: boolean;
 }
 
+/** The voice workshop's replay calls' kind in `llm_usage` (coach-replay.ts). */
+export const REPLAY_USAGE_KIND = "coach_replay";
+/** A reservation's mark in its row's fingerprint, its realistic estimate after it (`…;est=<micros>`): written with the row
+ * at the call's worst case before the call, gone once the call is settled. The coach's runs mark theirs the same way. */
+export const RESERVATION_MARK = ";est=";
+/**
+ * How long a replay's reservation counts at its worst case (review I1). A replay writes each call's row at its worst
+ * case (the prompt written to the cache, the whole output ceiling) before the call and settles it after — so the weekly
+ * cap stays honest while the call runs. A request cut off partway (the tab closed, a deploy, its CPU limit) leaves its
+ * rows marked; once no call of its can still be running (a replay call's own deadline is DESIGN_MODEL_TIMEOUT_MS, ten
+ * minutes: pinned below this), a marked row counts at its estimate — a cut-off call may well have been billed — so an
+ * orphaned batch never locks the live coach out for the week. Read-time: nothing has to run for it to recover. The
+ * coach's own reservations are untouched (their dead steps are its runs' business: coach-runs.ts).
+ */
+export const REPLAY_RESERVATION_STALE_MINUTES = 15;
+
+/** A row's cost as the week counts it (`llm_usage`, in SQL): what it cost — or, for a replay's reservation still marked
+ * REPLAY_RESERVATION_STALE_MINUTES after it was written, its estimate. */
+export function weekCostSql(now: Date): SQL {
+  const stale = new Date(now.getTime() - REPLAY_RESERVATION_STALE_MINUTES * 60_000).toISOString();
+  const mark = sql`instr(${llmUsage.requestFingerprint}, ${RESERVATION_MARK})`;
+  return sql`(CASE WHEN ${llmUsage.kind} = ${REPLAY_USAGE_KIND} AND ${mark} > 0 AND ${llmUsage.createdAt} < ${stale}
+    THEN CAST(substr(${llmUsage.requestFingerprint}, ${mark} + ${RESERVATION_MARK.length}) AS INTEGER)
+    ELSE ${llmUsage.costMicros} END)`;
+}
+
 export async function llmBudgetStatus(db: Db, userId: string): Promise<LlmBudgetStatus> {
-  const since = new Date(Date.now() - 7 * 86_400_000).toISOString();
-  const rows = await db
-    .select({ costMicros: llmUsage.costMicros })
+  const now = new Date(Date.now());
+  const since = new Date(now.getTime() - 7 * 86_400_000).toISOString();
+  const [row] = await db
+    .select({ spent: sql<number | null>`sum(${weekCostSql(now)})` })
     .from(llmUsage)
     .where(and(eq(llmUsage.userId, userId), gte(llmUsage.createdAt, since)));
-  const spentMicros = rows.reduce((sum, r) => sum + r.costMicros, 0);
+  const spentMicros = Math.round(Number(row?.spent ?? 0));
   return {
     spentMicros,
     warn: spentMicros >= LLM_BUDGET.warnMicros,

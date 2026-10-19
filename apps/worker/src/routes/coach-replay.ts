@@ -10,7 +10,12 @@
  *   POST /       { confirm: "replay a coach run", runId, at?: "finish" | "ask" | "prose",
  *                  variants: [{ id, length?, tone?, include?, person? }] (1–8; each variable an enum, coach-voice.ts) }
  *                → { runId, at, request, model, baseline, variants: [{ id, settings, line?, chars?, question?, choices?,
- *                  prose?, said?, called?, costUsd, usage?, stopReason?, error?, skipped? }], costUsd }
+ *                  prose?, said?, called?, costUsd, usage?, stopReason?, error?, skipped? }], costUsd, capNote }
+ *                At most 3 variants for `at: "prose"` (each answer a whole document, parsed in this request's CPU).
+ *                SPEND: the $1 per-request cap is SOFT — checked on an estimate (twice the longest answer seen), so a
+ *                replay can spend up to about three times it (`capNote` says so). The weekly cap is the hard bound:
+ *                each call's worst case must fit under it, and a request cut off partway holds its calls' worst case
+ *                for 15 minutes, then counts them at their estimate (llm.ts `weekCostSql`).
  *                A body without the exact confirm is a 404 (nothing read, nothing called); with it, anything else wrong is
  *                400 { error: "bad_request", why }. Not the athlete's finished main run (another's, a sub-run, live,
  *                stopped, a rehearsal, none): 404. A step the run never took: 409 { error: "not_replayable", why }. The

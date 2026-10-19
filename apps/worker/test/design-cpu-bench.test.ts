@@ -31,7 +31,9 @@
  *     conversation so far read and written, six turns of the longest words and lines, each with a set's seven whole
  *     workouts and three changes (10a) — and `GET /api/coach/conversation` over twenty such turns (10b);
  * 11. Growth's body map (the new shape §7), `GET /api/growth/body`, over a busy season — two strength sessions of 18
- *     working sets and a run every day for 90 days: the month (11a) and the season (11b).
+ *     working sets and a run every day for 90 days: the month (11a) and the season (11b);
+ * 12. the voice workshop's replay of a finished run's workout words (`POST /api/coach/replay`, `at: "prose"`): its state
+ *     parsed and its request written once, and the three answers a prose replay takes at most, each a whole document.
  *
  * THE MODEL'S ANSWER is the Messages API's event stream, fed to the real client (llm-messages.ts `callMessages`) through
  * its fetch seam, one event to a read — how a streamed answer arrives while the model writes it. A tool's input comes in
@@ -87,7 +89,9 @@ import { designProposalId, proposeWorkout } from "../src/services/design-tools/p
 import { isToolErr, type DraftForReview, type OpReview, type SetHooks, type SetRound, type ToolContext } from "../src/services/design-tools/types.js";
 import { utf8Bytes } from "../src/services/utf8.js";
 import { validateWorkout } from "../src/services/design-tools/validate.js";
-import { callMessages } from "../src/services/llm-messages.js";
+import { callMessages, sendMessagesBody } from "../src/services/llm-messages.js";
+import { makeCoachReplayRoutes } from "../src/routes/coach-replay.js";
+import { REPLAY_CONFIRM } from "../src/services/coach-replay.js";
 import type { Db } from "../src/services/db.js";
 import { at, day, NOW, seedRichAthlete, TODAY } from "./design-read-fixture.js";
 import { seedLongHistory, words } from "./long-history-fixture.js";
@@ -213,6 +217,7 @@ interface World {
   board: Hono<AppContext>;
   conversation: Hono<AppContext>;
   growth: Hono<AppContext>;
+  replay: Hono<AppContext>;
   close(): void;
 }
 
@@ -231,6 +236,7 @@ function open(image: Buffer): World {
     board: mountRoutes(db, "/api/objectives/board", objectiveBoardRoutes),
     conversation: mountRoutes(db, "/api/coach/conversation", makeCoachConversationRoutes({ now: () => NOW })),
     growth: mountRoutes(db, "/api/growth", growthRoutes),
+    replay: mountRoutes(db, "/api/coach/replay", replayRoutes),
     close: () => client.close(),
   };
 }
@@ -388,6 +394,8 @@ const deps: RunDeps = {
   review: true,
 };
 const runRoutes = makeCoachRunRoutes(() => deps);
+/** The voice workshop's replay (shape 12), over the same "gateway". */
+const replayRoutes = makeCoachReplayRoutes(() => ({ send: (e, c) => sendMessagesBody(e, c.model, c.body, c.maxTokens, gatewayFetch), tools: allTools() }), { now: () => NOW });
 
 const env = {
   DB: {} as Env["DB"],
@@ -970,6 +978,25 @@ beforeAll(async () => {
   // 4d. The designer resumes with its review.
   (await measure("4d", "4d. designer resumes with the review", images.get("reviewed")!, step, { budget: 3, check: expectStep("active") })).close();
 
+  // 12. The voice workshop's replay of the workout's words (coach-replay.ts): the run finished, its proposing call
+  // replayed for 3 variants — the most a prose replay takes — each answer a whole document streamed. Its state parsed
+  // and its request written once, the 3 answers parsed, the rows written and settled.
+  {
+    const done = open(images.get("reviewed")!);
+    await done.db.update(schema.coachRuns).set({ status: "finished" }).where(eq(schema.coachRuns.id, runId));
+    const [owner] = await done.db.select({ email: schema.users.email }).from(schema.users).where(eq(schema.users.id, userId));
+    images.set("replayable", imageOf(done.db));
+    done.close();
+    answer = streamOf([thinking(3_000), { type: "text", text: words(5, 200) }, use("propose_workout", { doc: docs[1], target: { kind: "new", date: TODAY } })]).chunks;
+    const body = JSON.stringify({ confirm: REPLAY_CONFIRM, runId, at: "prose", variants: [{ id: "a" }, { id: "b", tone: "warm" }, { id: "c", tone: "brisk" }] });
+    const replayEnv = { ...env, ALLOWED_GOOGLE_EMAIL: owner!.email };
+    (await measure("12", "12. POST /api/coach/replay at prose: 3 whole documents streamed", images.get("replayable")!, (x) =>
+      x.replay.request("/api/coach/replay", { method: "POST", headers: { Cookie: cookie, "content-type": "application/json" }, body }, replayEnv), {
+      budget: GO_LIVE_BUDGET_MS,
+      check: (b) => expect((b as { variants: Array<{ prose?: { title: string } }> }).variants.map((v) => v.prose?.title)).toEqual([docs[1]!.title, docs[1]!.title, docs[1]!.title]),
+    })).close();
+  }
+
   // 3. A model step at a state near its cap: two light reads; everything else is the state's own weight.
   {
     const near = open(images.get("read12")!);
@@ -1312,7 +1339,7 @@ function within(id: string, ctx: TestContext): void {
 describe("the coach designer's requests within the Workers free plan's CPU", () => {
   it("every shape was measured", () => {
     const grouped = (k: string) => GROUPS.some((g) => k.startsWith(`${g}.`));
-    expect([...shapes.keys()].filter((k) => shapes.get(k)!.budget !== null && !grouped(k))).toEqual(["1a", "1b", "1d", "2a", "8z.unknown", "8z.away", "2b", "2b.q", "9c", "2e", "2c", "9b", "9a", "4b", "4c", "4d", "3", "10a", "10b", "7", "5a", "6", "11a", "11b"]);
+    expect([...shapes.keys()].filter((k) => shapes.get(k)!.budget !== null && !grouped(k))).toEqual(["1a", "1b", "1d", "2a", "8z.unknown", "8z.away", "2b", "2b.q", "9c", "2e", "2c", "9b", "9a", "4b", "4c", "4d", "12", "3", "10a", "10b", "7", "5a", "6", "11a", "11b"]);
     // The queued reads go in two steps or more; four whole documents' validates in two (three, then one); nine half
     // documents' in three; the approve in five chunks or more.
     expect(inGroup("1c").length).toBeGreaterThanOrEqual(2);
@@ -1333,7 +1360,7 @@ describe("the coach designer's requests within the Workers free plan's CPU", () 
     }
   });
 
-  for (const id of ["1a", "1b", "1c", "1d", "1d.q", "8z.unknown", "8z.away", "2a", "2a.q", "2b", "2b.q", "2c", "2d", "2e", "3", "4b", "4c", "4d", "5a", "5b", "6", "7", "9a", "9b", "9c", "10a", "10b", "11a", "11b"]) {
+  for (const id of ["1a", "1b", "1c", "1d", "1d.q", "8z.unknown", "8z.away", "2a", "2a.q", "2b", "2b.q", "2c", "2d", "2e", "3", "4b", "4c", "4d", "5a", "5b", "6", "7", "9a", "9b", "9c", "10a", "10b", "11a", "11b", "12"]) {
     const over = KNOWN_OVER[id];
     it(
       over

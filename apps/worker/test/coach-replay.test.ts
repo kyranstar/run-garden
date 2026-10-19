@@ -23,6 +23,7 @@ import { answerRun, createRun, endedLine, runStep, type RunDeps } from "../src/s
 import { readConversation } from "../src/services/coach-conversation.js";
 import {
   REPLAY_CONFIRM,
+  REPLAY_PROSE_VARIANTS_MAX,
   REPLAY_REQUEST_CAP_MICROS,
   REPLAY_USAGE_KIND,
   REPLAY_WORDS,
@@ -33,8 +34,8 @@ import { designContextBuilder } from "../src/services/design-context.js";
 import { REVIEW_DIMENSIONS } from "../src/services/design-prompt.js";
 import { allTools } from "../src/services/design-tools/index.js";
 import { designProposalId } from "../src/services/design-tools/propose.js";
-import { LLM_BUDGET } from "../src/services/llm.js";
-import { callMessages, sendMessagesBody, type ContentBlock, type MessagesOk, type MessagesResult } from "../src/services/llm-messages.js";
+import { LLM_BUDGET, llmBudgetStatus, REPLAY_RESERVATION_STALE_MINUTES } from "../src/services/llm.js";
+import { callMessages, DESIGN_MODEL_TIMEOUT_MS, messagesCostMicros, sendMessagesBody, type ContentBlock, type MessagesOk, type MessagesResult } from "../src/services/llm-messages.js";
 import { NOW, seedRichAthlete, TODAY } from "./design-read-fixture.js";
 import { calmDoc } from "./doc-workout-fixture.js";
 import { makeTestDb, makeTestUser, mountRoutes, untilDone } from "./helpers.js";
@@ -675,8 +676,127 @@ describe("spend", () => {
       [REPLAY_USAGE_KIND, 11_000],
       [REPLAY_USAGE_KIND, 0],
     ]);
-    // Never a run's fingerprint: a dead step's spend reads `run:<id>:` rows.
-    for (const r of rows) expect(r.requestFingerprint).toMatch(new RegExp(`^replay:${runId}:finish:`));
+    // Settled: the reservation's mark gone (never a run's fingerprint either: a dead step's spend reads `run:<id>:` rows).
+    expect(rows.map((r) => r.requestFingerprint)).toEqual(["a", "b", "c"].map((id) => `replay:${runId}:finish:${id}`));
+  });
+
+  it("the per-request cap is soft, and the answer says so: the weekly cap is the hard bound", async () => {
+    const runId = await storedRun();
+    const res = await call("POST", "", replay(runId, [{ id: "a" }]));
+    expect(res.status).toBe(200);
+    expect(res.body.capNote).toBe(REPLAY_WORDS.capNote);
+    expect(REPLAY_WORDS.capNote).toMatch(/soft/);
+    expect(REPLAY_WORDS.capNote).toMatch(/weekly cap is the hard bound/);
+  });
+});
+
+// ── A replay cut off partway (review I1) ────────────────────────────────────────────────────────────────────────────
+
+describe("a replay's reservations", () => {
+  const minutesAgo = (m: number) => new Date(Date.now() - m * 60_000).toISOString();
+  const reservation = (o: { kind?: string; costMicros: number; est?: number; at: string }) => ({
+    id: newId(),
+    userId,
+    kind: o.kind ?? REPLAY_USAGE_KIND,
+    model: "anthropic/claude-opus-5.5",
+    inputTokens: 1,
+    outputTokens: 16_000,
+    costMicros: o.costMicros,
+    requestFingerprint: `replay:r:finish:v${o.est === undefined ? "" : `;est=${o.est}`}`,
+    createdAt: o.at,
+  });
+
+  it("are held at their worst case while a call is in flight, marked with their estimate, and settled unmarked", async () => {
+    const runId = await storedRun(); // its calls' outputs: 400 and 600 tokens
+    const gates = [0, 1].map(() => {
+      let release: () => void = () => {};
+      const held = new Promise<void>((r) => (release = r));
+      return { held, release };
+    });
+    replies = gates.map((g, i) => async () => {
+      await g.held;
+      return finishing(`Line ${i + 1}.`, { costMicros: 21_000, output: 300 });
+    });
+    const pending = call("POST", "", replay(runId, [{ id: "a" }, { id: "b", tone: "warm" }]));
+    const rowOf = async (id: string) => {
+      for (let i = 0; i < 50; i++) {
+        const row = (await usageRows()).find((r) => r.requestFingerprint?.startsWith(`replay:${runId}:finish:${id}`));
+        if (row) return row;
+        await new Promise((r) => setTimeout(r, 10));
+      }
+      throw new Error(`no row for ${id} after 50 looks`);
+    };
+    const opus = (u: { write?: number; read?: number; output: number }) =>
+      messagesCostMicros("anthropic/claude-opus-5.5", { inputTokens: 0, cacheReadTokens: u.read ?? 0, cacheWriteTokens: u.write ?? 0, outputTokens: u.output });
+    // The first, in flight: held at its worst (16k output at $20/M, the prompt besides), marked with its estimate — its
+    // prompt written to the cache, twice the run's longest output.
+    const first = await rowOf("a");
+    expect(first.costMicros).toBeGreaterThan(320_000);
+    expect(first.requestFingerprint).toBe(`replay:${runId}:finish:a;est=${opus({ write: first.inputTokens, output: 1_200 })}`);
+    gates[0]!.release();
+    // The second, in flight: its prompt read from the cache.
+    const second = await rowOf("b");
+    expect(second.requestFingerprint).toBe(`replay:${runId}:finish:b;est=${opus({ read: second.inputTokens, output: 1_200 })}`);
+    gates[1]!.release();
+    expect((await pending).status).toBe(200);
+    expect((await usageRows()).map((r) => [r.requestFingerprint, r.costMicros])).toEqual([
+      [`replay:${runId}:finish:a`, 21_000],
+      [`replay:${runId}:finish:b`, 21_000],
+    ]);
+  });
+
+  it(`count at their worst for ${REPLAY_RESERVATION_STALE_MINUTES} minutes — longer than any replay call can run — then at their estimate; the coach's own are unchanged`, async () => {
+    expect(REPLAY_RESERVATION_STALE_MINUTES * 60_000).toBeGreaterThan(DESIGN_MODEL_TIMEOUT_MS);
+    await db.insert(schema.llmUsage).values([
+      reservation({ costMicros: 400_000, est: 20_000, at: minutesAgo(REPLAY_RESERVATION_STALE_MINUTES + 1) }), // orphaned: its estimate
+      reservation({ costMicros: 400_000, est: 20_000, at: minutesAgo(5) }), // may still be running: its worst
+      reservation({ costMicros: 30_000, at: minutesAgo(60) }), // settled: what it cost
+      reservation({ kind: "design_main", costMicros: 400_000, est: 20_000, at: minutesAgo(60) }), // the coach's own: unchanged
+    ]);
+    expect((await llmBudgetStatus(db, userId)).spentMicros).toBe(20_000 + 400_000 + 30_000 + 400_000);
+  });
+
+  it(`an orphaned replay no longer blocks the live coach once ${REPLAY_RESERVATION_STALE_MINUTES} minutes have passed — its step, and a new ask`, async () => {
+    const orphans = (at: string) => Array.from({ length: 7 }, () => reservation({ costMicros: 380_000, est: 20_000, at })); // $2.66 at worst
+    const spent = { id: newId(), userId, kind: "design_main", model: "m", inputTokens: 1, outputTokens: 1, costMicros: LLM_BUDGET.cutoffMicros - 2_150_000, createdAt: minutesAgo(60) };
+    const deps: RunDeps = { callModel: async () => finishing("Done.") as MessagesResult, buildContext: designContextBuilder, tools: allTools(), clock: () => 0 };
+    // On the real clock: the week is the real week (llmBudgetStatus reads it so).
+    const at = (s: number) => new Date(Date.now() + s * 1_000);
+    /** A "now" run asked and its context built: its next step calls the model. */
+    const asked = async (request: string) => {
+      const runId = (await createRun(db, userId, { scope: { kind: "now" }, request }, at(0))).run.id;
+      expect((await runStep(db, env, runId, userId, at(1), deps)).kind).toBe("ok");
+      return runId;
+    };
+    const modelStep = async (runId: string) => {
+      const out = await runStep(db, env, runId, userId, at(2), deps);
+      return out.kind === "ok" ? out.result.status : out.kind;
+    };
+    await db.insert(schema.llmUsage).values(spent);
+    const first = await asked("Something calm.");
+    // A replay cut off just now: its reservations stand, so the coach's step can't be covered, and a new ask is refused.
+    await db.insert(schema.llmUsage).values(orphans(minutesAgo(5)));
+    expect(await modelStep(first)).toBe("stopped_cap");
+    await expect(createRun(db, userId, { scope: { kind: "now" }, request: "Again." }, at(3))).rejects.toThrow("week_budget");
+    // Orphaned past the window: they count at their estimate, and the coach goes on.
+    await db.update(schema.llmUsage).set({ createdAt: minutesAgo(REPLAY_RESERVATION_STALE_MINUTES + 1) }).where(eq(schema.llmUsage.kind, REPLAY_USAGE_KIND));
+    expect(await modelStep(await asked("Again."))).toBe("finished");
+  });
+});
+
+// ── The workout's words: a few at a time (review, minor 3) ─────────────────────────────────────────────────────────
+
+describe("a prose replay", () => {
+  it(`takes at most ${REPLAY_PROSE_VARIANTS_MAX} variants — each answer a whole document — and says so in words`, async () => {
+    const runId = await storedRun();
+    const four = Array.from({ length: REPLAY_PROSE_VARIANTS_MAX + 1 }, (_, i) => ({ id: `v${i}` }));
+    const res = await call("POST", "", replay(runId, four, { at: "prose" }));
+    expect(res.status).toBe(400);
+    expect(res.body).toMatchObject({ error: "bad_request" });
+    expect(res.body.why).toContain(`at most ${REPLAY_PROSE_VARIANTS_MAX}`);
+    expect(calls).toHaveLength(0);
+    // The other steps still take eight.
+    expect((await call("POST", "", replay(runId, four))).status).toBe(200);
   });
 });
 

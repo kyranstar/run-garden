@@ -34,7 +34,7 @@ import {
   type KeyLine,
   type SetEstimate,
 } from "./design-orchestrate.js";
-import { LLM_BUDGET, llmBudgetStatus } from "./llm.js";
+import { LLM_BUDGET, llmBudgetStatus, weekCostSql } from "./llm.js";
 import { utf8Bytes } from "./utf8.js";
 import {
   callMessages,
@@ -1084,7 +1084,7 @@ async function weekCanPay(db: Db, userId: string, scope: RunScope, now: Date): P
     + coalesce((SELECT sum(g.cost_usd) FROM coach_runs g WHERE g.user_id = m.user_id
         AND g.parent_id IN (SELECT k.id FROM coach_runs k WHERE k.user_id = m.user_id AND k.parent_id = m.id)), 0))`;
   const [row] = (await db.all(sql`
-    SELECT (SELECT coalesce(sum(${llmUsage.costMicros}), 0) FROM ${llmUsage} WHERE ${llmUsage.userId} = ${userId} AND ${llmUsage.createdAt} >= ${since}) AS spent,
+    SELECT (SELECT coalesce(sum(${weekCostSql(now)}), 0) FROM ${llmUsage} WHERE ${llmUsage.userId} = ${userId} AND ${llmUsage.createdAt} >= ${since}) AS spent,
       (SELECT json_group_array(c) FROM (
         SELECT ${tree} AS c FROM coach_runs m
         WHERE m.user_id = ${userId} AND m.parent_id IS NULL AND m.created_at >= ${measuredSince}
