@@ -71,6 +71,7 @@ import {
   SESSION_MODES,
   watchAddressOf,
   type CoachSession,
+  type RunWire,
   type SessionMode,
   type UserPreferences,
 } from "@rg/domain";
@@ -139,6 +140,8 @@ export interface BodyCheckCtx {
   today: string;
   now: string;
   prefs: UserPreferences;
+  /** The run wire in force (§8 phase 2): a designed run's Undo is made, and asked to go, by it. v1 when absent. */
+  runWire?: RunWire;
 }
 
 export interface BodyAnswer {
@@ -798,7 +801,7 @@ async function restoreRun(db: Db, userId: string, s: Subject, ease: RunEase, ctx
     // A designed run (§8 §3) goes back as it was designed — its own session, through the builder its create used — never
     // as its stage rows flattened.
     // A designed run goes back as its document's session (§8 §3, `designedRunSession`); a plan run as its stage rows say.
-    const plan = designedRunSession(parseStoredWorkoutDoc(b.doc)) ?? planRunSession(b.columns, b.stages);
+    const plan = designedRunSession(parseStoredWorkoutDoc(b.doc), ctx.runWire) ?? planRunSession(b.columns, b.stages);
     if (plan) {
       const out = await enqueueContentConvergence(db, {
         userId,
@@ -807,6 +810,7 @@ async function restoreRun(db: Db, userId: string, s: Subject, ease: RunEase, ctx
         now: ctx.now,
         corosWritesEnabled: ctx.prefs.corosWritesEnabled ?? false,
         thresholdPaceSecPerKm: await thresholdPace(db, userId),
+        ...(ctx.runWire ? { runWire: ctx.runWire } : {}),
       });
       coachDrain = out.kind === "coach_update_workout";
     }

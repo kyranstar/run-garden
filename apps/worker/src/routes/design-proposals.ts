@@ -38,7 +38,7 @@ import { and, eq } from "drizzle-orm";
 import { coachProposals } from "@rg/database";
 import { isLocalDate, nowInstant, todayInZone } from "@rg/domain";
 import type { AppContext } from "../auth/middleware.js";
-import { coachDesignerEnabled } from "../env.js";
+import { coachDesignerEnabled, runWireOf } from "../env.js";
 import { loadPreferences, syncCalendar } from "../services/calendar-sync.js";
 import { waitUntilSafe } from "../services/wait-until.js";
 import {
@@ -120,7 +120,7 @@ export async function approveDesigned(c: C, p: DesignProposalRow & { expiresAt: 
   }
   try {
     const meter = { left: 0 };
-    const answer = await approveDesignOps(db, userId, p, parsed.data, { today, now: nowInstant(), prefs }, undefined, meter);
+    const answer = await approveDesignOps(db, userId, p, parsed.data, { today, now: nowInstant(), prefs, runWire: runWireOf(c.env) }, undefined, meter);
     // A change another approve is applying is left to it (Task 8b's recovery rule): 409 only when nothing else was named.
     const { inFlight, ...rest } = answer;
     const nothingElse = [rest.applied, rest.changed, rest.refused, rest.settled, rest.remaining, rest.planned ?? []].every((xs) => xs.length === 0);

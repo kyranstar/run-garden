@@ -37,6 +37,7 @@ import {
   watchAddressOf,
   type CoachSession,
   type RunWatchSession,
+  type RunWire,
 } from "@rg/domain";
 import { chunkIds, runAtomically, type Db } from "./db.js";
 import { loadPreferences } from "./calendar-sync.js";
@@ -69,6 +70,8 @@ export interface PushAbsentReport {
 export interface PushAbsentOptions {
   dryRun: boolean;
   workoutIds?: string[];
+  /** The run wire in force (§8 phase 2): what a designed run needs to go. v1 when absent. */
+  runWire?: RunWire;
 }
 
 /**
@@ -162,7 +165,7 @@ export async function pushAbsentSessions(
       title: row.title,
       sport: row.sport,
     };
-    const session = designedRunSession(parseStoredWorkoutDoc(docs.get(row.id) ?? null)) ?? sessionFromRow(row, stagesByWorkout.get(row.id) ?? []);
+    const session = designedRunSession(parseStoredWorkoutDoc(docs.get(row.id) ?? null), opts.runWire) ?? sessionFromRow(row, stagesByWorkout.get(row.id) ?? []);
     if (!session) {
       report.rows.push({
         ...base,
@@ -171,7 +174,7 @@ export async function pushAbsentSessions(
       });
       continue;
     }
-    if (!watchPushable(session, thresholdPaceSecPerKm)) {
+    if (!watchPushable(session, thresholdPaceSecPerKm, opts.runWire)) {
       report.rows.push({
         ...base,
         action: "unpushable",
@@ -233,6 +236,7 @@ export async function pushAbsentSessions(
       // An operator asked for this run explicitly, so a create that failed
       // before is retried rather than silently colliding with its own row.
       true,
+      opts.runWire,
     );
     const base = {
       workoutId: row.id,

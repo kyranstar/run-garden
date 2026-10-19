@@ -1,3 +1,4 @@
+import { runWireOf } from "../env.js";
 import { Hono } from "hono";
 import { z } from "zod";
 import { and, desc, eq, inArray, isNull } from "drizzle-orm";
@@ -549,7 +550,7 @@ syncRoutes.post("/push-absent", async (c) => {
   }
   const parsed = pushAbsentSchema.safeParse(body);
   if (!parsed.success) return c.json({ error: "invalid_request", details: parsed.error.issues }, 400);
-  const report = await pushAbsentSessions(c.get("db"), c.get("userId"), parsed.data);
+  const report = await pushAbsentSessions(c.get("db"), c.get("userId"), { ...parsed.data, runWire: runWireOf(c.env) });
   return c.json({ ok: true, ...report });
 });
 
@@ -580,6 +581,6 @@ syncRoutes.post("/converge-content", async (c) => {
   }
   const parsed = convergeContentSchema.safeParse(body);
   if (!parsed.success) return c.json({ error: "invalid_request", details: parsed.error.issues }, 400);
-  const report = await convergeDivergedContent(c.get("db"), c.get("userId"), parsed.data);
+  const report = await convergeDivergedContent(c.get("db"), c.get("userId"), { ...parsed.data, runWire: runWireOf(c.env) });
   return c.json({ ok: true, ...report });
 });

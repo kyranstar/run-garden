@@ -28,6 +28,7 @@
  *
  * Every user-scoped; a write is refused while a restore is replacing the account (`RestoreInProgressError`).
  */
+import type { RunWire } from "@rg/domain";
 import { and, eq, inArray, isNull, ne, notExists, notInArray, or, sql } from "drizzle-orm";
 import { corosWriteJobs, exercisePrefs, performedSessions, plannedWorkouts, programs, scheduleOverrides, sessionBuilds, userConditions, workoutTemplates } from "@rg/database";
 import {
@@ -229,6 +230,8 @@ export interface DocWorkoutCtx {
   today: string;
   now: string;
   prefs: UserPreferences;
+  /** The run wire in force (§8 phase 2, `RUN_WIRE_V2`): a designed run's approve counts and queues by it. v1 when absent. */
+  runWire?: RunWire;
 }
 
 /**

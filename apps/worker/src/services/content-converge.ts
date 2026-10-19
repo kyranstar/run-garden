@@ -88,6 +88,7 @@ import {
   type CoachSession,
   type PaceIntensity,
   type RunWatchSession,
+  type RunWire,
   type UserPreferences,
 } from "@rg/domain";
 import { RUN_PACE_WIRE } from "@rg/coros";
@@ -272,6 +273,8 @@ export interface ConvergeOptions {
   maxWrites?: number;
   /** The athlete's today, for `pace_encoding_outdated`; read from their preferences when omitted. */
   today?: string;
+  /** The run wire in force (§8 phase 2): a designed run is made, and asked to go, by it. v1 when absent. */
+  runWire?: RunWire;
 }
 
 /** A coach job that has not finished: a rewrite for its row is already on its way, or another write is in flight. */
@@ -468,7 +471,7 @@ export async function convergeDivergedContent(
     const stages = stagesByWorkout.get(row.id) ?? [];
     // A DESIGNED RUN's session is its document's (review-2 M2) — its tempo, its bare recoveries, its repeats — never its
     // stage rows read as a thread-coach run ("tempo" as threshold, the jog as easy work, a repeat unpushable).
-    const designed = designedRunSession(parseStoredWorkoutDoc(row.workoutDoc));
+    const designed = designedRunSession(parseStoredWorkoutDoc(row.workoutDoc), opts.runWire);
     const session: CoachSession | RunWatchSession | null = designed ?? sessionFromRow(row, stages);
     const base: ContentConvergeRowReport = {
       workoutId: row.id,
@@ -575,7 +578,7 @@ export async function convergeDivergedContent(
     // A designed run this run can't time — a distance, and no threshold in hand (`only` read none) — is left as the
     // watch holds it: its distance waits on a threshold, not on a fix, so it is never unpushed, nor rebuilt otherwise.
     const anchorOf = thresholdPaceSecPerKm ?? outdatedPace.get(row.id);
-    if (designed && !watchPushable(designed, anchorOf)) {
+    if (designed && !watchPushable(designed, anchorOf, opts.runWire)) {
       reports.push({
         ...base,
         action: "skipped",
@@ -586,7 +589,7 @@ export async function convergeDivergedContent(
       });
       continue;
     }
-    const action = watchPushable(session, designed ? anchorOf : undefined) ? ("rewrite" as const) : ("unpush" as const);
+    const action = watchPushable(session, designed ? anchorOf : undefined, opts.runWire) ? ("rewrite" as const) : ("unpush" as const);
     const report: ContentConvergeRowReport = {
       ...base,
       action,
@@ -656,6 +659,7 @@ export async function convergeDivergedContent(
       now,
       corosWritesEnabled: true,
       ...(anchor ? { thresholdPaceSecPerKm: anchor } : {}),
+      ...(opts.runWire ? { runWire: opts.runWire } : {}),
       // The heal re-sends unchanged content, so its id needs its own tag (see `idTag`).
       ...(outdatedPace.has(row.id) ? { idTag: `pace${RUN_PACE_WIRE}` } : {}),
     });

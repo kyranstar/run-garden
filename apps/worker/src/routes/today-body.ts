@@ -17,6 +17,7 @@
  * books a new build's (routes/sessions.ts). A sync here — Google calls and their writes — would not fit beside a build
  * in one invocation (the budget is pinned in body-check-engine.test.ts).
  */
+import { runWireOf } from "../env.js";
 import { Hono, type Context } from "hono";
 import { z } from "zod";
 import { nowInstant, todayInZone } from "@rg/domain";
@@ -58,7 +59,7 @@ const answered = (c: Context<AppContext>, out: BodyCheckOutcome): Response =>
 
 async function checkCtx(c: Context<AppContext>): Promise<BodyCheckCtx> {
   const prefs = await loadPreferences(c.get("db"), c.get("userId"));
-  return { today: todayInZone(prefs.timezone), now: nowInstant(), prefs };
+  return { today: todayInZone(prefs.timezone), now: nowInstant(), prefs, runWire: runWireOf(c.env) };
 }
 
 todayBodyRoutes.get("/body", async (c) => {

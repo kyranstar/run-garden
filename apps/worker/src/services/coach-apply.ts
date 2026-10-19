@@ -25,10 +25,13 @@ import {
   todayInZone,
   watchAddressOf,
   isRunWatchSession,
+  RUN_WATCH_MAX_STEPS,
+  runWatchStepCount,
   runWatchSteps,
   type CoachOp,
   type CoachSession,
   type RunWatchSession,
+  type RunWire,
   type UserPreferences,
   type WeightUnit,
   type WorkoutDoc,
@@ -353,11 +356,14 @@ export function coachStageRows(workoutId: string, session: CoachSession, thresho
  * (`sessionSport` → "yoga"); only the watch's own filing is coarse, and
  * `watch-coverage.ts` is where that gets disclosed.
  */
-export function watchPushable(session: CoachSession | RunWatchSession, thresholdPaceSecPerKm?: number | null): boolean {
-  // A DESIGNED RUN (§8 §3): every step written out has its time — a distance timed at its band's middle, which needs a
-  // pace (the threshold's, or one the athlete asked for). The same `runWatchSteps` the wire builds from.
+export function watchPushable(session: CoachSession | RunWatchSession, thresholdPaceSecPerKm?: number | null, runWire: RunWire = "v1"): boolean {
+  // A DESIGNED RUN (§8 §3): the wire in use can hold its steps (§8 phase 2: v1 writes the repeats out, v2 a group), and
+  // every step has what it runs by — on v1 its time, a distance timed at its band's middle, which needs a pace (the
+  // threshold's, or one the athlete asked for); on v2 a distance runs as a distance. The same `runWatchSteps` the wire
+  // builds from.
   if (isRunWatchSession(session)) {
-    const r = runWatchSteps(session, thresholdPaceSecPerKm ?? null);
+    if (runWatchStepCount(session.segments, runWire) > RUN_WATCH_MAX_STEPS) return false;
+    const r = runWatchSteps(session, thresholdPaceSecPerKm ?? null, runWire);
     return r.steps.length > 0 && r.unresolved === 0;
   }
   if (session.run) {
@@ -521,8 +527,10 @@ export async function enqueueWatchCreate(
    *  re-drive a write that already refused. Same reasoning as
    *  `enqueueContentConvergence`'s `reviveFailed`. */
   reviveFailed = false,
+  /** The run wire in force (§8 phase 2): what a designed run needs to go. v1 when absent. */
+  runWire: RunWire = "v1",
 ): Promise<string | null> {
-  if (!watchPushable(session, thresholdPaceSecPerKm)) return null;
+  if (!watchPushable(session, thresholdPaceSecPerKm, runWire)) return null;
   const jobId = `${id}-push`;
   // The stamp is unique per day across both lanes (ruling 3-R12): a second session of this title on this day — a
   // coach add or a sent program session — already holds the base, so this one gets " (2)".
@@ -773,6 +781,8 @@ export async function enqueueContentConvergence(
     now: string;
     corosWritesEnabled: boolean;
     thresholdPaceSecPerKm?: number;
+    /** The run wire in force (§8 phase 2): what a designed run needs to go. v1 when absent. */
+    runWire?: RunWire;
     /**
      * Appended to the rewrite's job id: a rewrite whose CONTENT is unchanged (the pace heal re-sends the same session
      * so the wire gains the new encoding) has the same `from`/`to` as an earlier rewrite of that content, and would
@@ -820,7 +830,7 @@ export async function enqueueContentConvergence(
     updatedAt: v.now,
   };
 
-  if (!watchPushable(v.session, v.thresholdPaceSecPerKm)) {
+  if (!watchPushable(v.session, v.thresholdPaceSecPerKm, v.runWire)) {
     // AN IMPORTED SESSION IS NEVER UNPUSHED, and this is the one place the
     // "leaving the watch prescribing withdrawn work is indefensible" rule loses.
     //

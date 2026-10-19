@@ -354,14 +354,16 @@ export async function createDesignedRun(
     db.all(sql`select ${runCtxSql(userId, input.date)} as r`) as Promise<Array<{ r: unknown }>>,
   ]);
   const running = runCtxOf(ran[0]?.r ?? null);
-  const warnings = accepted(judgeDoc(doc, { ...day, run: running }));
-  const made = runWatchSessionOf(doc);
+  // The run wire in force (§8 phase 2): the validator counts by it, the session is made by it, the watch is asked by it.
+  const wire = ctx.runWire ?? "v1";
+  const warnings = accepted(judgeDoc(doc, { ...day, run: running, runWire: wire }));
+  const made = runWatchSessionOf(doc, wire);
   // The validator refuses what the wire can't hold first (run_mixed, run_open, run_too_long): never reached.
   if (!("session" in made)) throw new DocInvalidError(warnings);
   if (await restoreInProgress(db, userId)) throw new RestoreInProgressError();
 
   const threshold = running.thresholdSecPerKm;
-  const resolved = runWatchSteps(made.session, threshold);
+  const resolved = runWatchSteps(made.session, threshold, wire);
   const derived = deriveDoc(doc, EXERCISES);
   const seconds = resolved.totalSeconds ?? derived.estimatedMinutes * 60;
   const efforts = new Set(doc.parts.flatMap((p) => p.items.flatMap((i) => (i.kind === "run" ? [i.effort] : []))));
@@ -422,7 +424,7 @@ export async function createDesignedRun(
     time = moved.find((m) => m.workoutId === id)?.to ?? time;
   }
   // To the watch when approved (decision 1): the athlete's approval is the consent; the job runs as the client drains.
-  const queued = ctx.prefs.corosWritesEnabled === true && (await enqueueWatchCreate(db, userId, id, date, made.session, ctx.now, threshold ?? undefined)) !== null;
+  const queued = ctx.prefs.corosWritesEnabled === true && (await enqueueWatchCreate(db, userId, id, date, made.session, ctx.now, threshold ?? undefined, false, wire)) !== null;
   return {
     workout: { id, date, time, title: doc.title, intentSummary: doc.intent.summary, category: derived.category, sport: "run", origin: "coach", contentState: "outline", completionState: "scheduled", docRev: 1, minutes: Math.round(seconds / 60) },
     warnings,

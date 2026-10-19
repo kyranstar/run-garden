@@ -170,9 +170,9 @@ export function runWatchStepOf(item: WorkoutItem, purpose: WorkoutDoc["parts"][n
  * session from a row reads this before its stage rows (the body check's Undo; review-2 M2: the operator's content
  * convergence and absent push), so a designed run never goes back as its stage rows read as a thread-coach run.
  */
-export function designedRunSession(doc: WorkoutDoc | null): RunWatchSession | null {
+export function designedRunSession(doc: WorkoutDoc | null, wire: RunWire = "v1"): RunWatchSession | null {
   if (!doc || doc.basedOn?.kind !== "proposal" || !isRunDoc(doc)) return null;
-  const made = runWatchSessionOf(doc);
+  const made = runWatchSessionOf(doc, wire);
   return "session" in made ? made.session : null;
 }
 
