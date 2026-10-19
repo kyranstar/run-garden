@@ -1050,6 +1050,18 @@ export function settling(
 }
 
 /**
+ * `settling`, but a read that has failed before counts as answered: it has said all it will for now. TanStack puts a
+ * failed read with no data back to pending when it is read again — as it is whenever something that needs it mounts —
+ * so to `settling` it is on its first load once more, and a screen that waits on it would go back to its spinner,
+ * unmount what reads it, draw it again and read again, round and round.
+ */
+export function unanswered(
+  ...queries: ReadonlyArray<{ isLoading: boolean; errorUpdateCount: number } | null | undefined>
+): boolean {
+  return queries.some((q) => q?.isLoading === true && q.errorUpdateCount === 0);
+}
+
+/**
  * The scroll owner a node actually lives in — the nearest ancestor that both
  * clips and has something to clip. Falls back to the document scroller.
  *

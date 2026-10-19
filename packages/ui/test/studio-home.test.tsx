@@ -8,9 +8,9 @@ import { describe, expect, it } from "vitest";
 import { EXERCISES, TAGS, label } from "@rg/exercise-library";
 import { StudioScreen } from "../src/screens/studio/screen.js";
 import { emptyStudioCtx, studioResults } from "../src/screens/studio/model.js";
-import { libraryDto, placesDto, renderAt, text, todayDto } from "./studio-fixtures.js";
+import { libraryDto, placesDto, readsGivenUp, renderAt, text, todayDto } from "./studio-fixtures.js";
 
-const home = (p: Parameters<typeof renderAt>[2] = {}) => renderAt("/studio", createElement(StudioScreen), p);
+const home = (p: Parameters<typeof renderAt>[2] = {}) => readsGivenUp(() => renderAt("/studio", createElement(StudioScreen), p));
 
 /** The text of the section headed `title`, up to the next section. */
 function section(html: string, title: string): string {

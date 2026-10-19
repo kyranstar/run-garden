@@ -197,6 +197,19 @@ function mount(path: string, p: Primed = {}, before: string[] = []) {
   });
 }
 
+/**
+ * Mounted at the home, once it is drawn: the home waits for its reads to answer (a care tile or a pinned template that
+ * came late would move it under a tap, 2026-10-19), and here they fail at once (nothing is served).
+ */
+async function mountHome(p: Primed = {}, before: string[] = []) {
+  mount("/studio", p, before);
+  for (let i = 0; i < 200 && !host!.querySelector(".stu-home .stu-section"); i += 1) {
+    await act(async () => {
+      await new Promise((r) => setTimeout(r, 5));
+    });
+  }
+}
+
 const input = () => host!.querySelector<HTMLInputElement>('input[type="search"]')!;
 const body = () => (host!.textContent ?? "").replace(/\s+/g, " ");
 
@@ -326,7 +339,7 @@ describe("results, rendered", () => {
 
 describe("typing filters, live", () => {
   it("typing replaces the home with matching moves, and emptying the field brings the home back", async () => {
-    mount("/studio");
+    await mountHome();
     expect(body()).toContain("Quick starts");
     await type("gobl");
     expect(where).toBe("/studio?q=gobl");
@@ -343,7 +356,7 @@ describe("typing filters, live", () => {
   });
 
   it("a browse chip opens the list with that filter, and removing the chip removes the filter", async () => {
-    mount("/studio");
+    await mountHome();
     await press("Strength");
     expect(where).toBe("/studio?part=strength");
     const strength = host!.querySelectorAll(".stu-move").length;
@@ -400,7 +413,7 @@ describe("typing filters, live", () => {
 
   it("removing the last chip with nothing typed closes the list: focus goes to the field, never to the page", async () => {
     // A browsed part: its chip was the list's only one.
-    mount("/studio");
+    await mountHome();
     await press("Strength");
     await press("Remove Strength");
     expect(where).toBe("/studio");
@@ -409,7 +422,7 @@ describe("typing filters, live", () => {
   });
 
   it("…the same with the place's gear known, whose default chip the closing list still drew for a frame", async () => {
-    mount("/studio", { places: placesDto(["mat", "kettlebell"]) });
+    await mountHome({ places: placesDto(["mat", "kettlebell"]) });
     await press("Strength");
     expect(host!.querySelector('[aria-label="Remove At Home"]')).not.toBeNull();
     await press("Remove Strength");
@@ -443,7 +456,7 @@ describe("typing filters, live", () => {
   });
 
   it("the query reaches the URL after a pause, not on every keystroke", async () => {
-    mount("/studio");
+    await mountHome();
     // The pause on a clock the test moves: however slow the machine, keystrokes are as far apart as the test says —
     // here each just inside the pause, so every one restarts it.
     vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
@@ -472,7 +485,7 @@ describe("typing filters, live", () => {
   });
 
   it("emptying the field after a search goes back to the home entry, so Back does not show the home twice", async () => {
-    mount("/studio", {}, ["/plan"]);
+    await mountHome({}, ["/plan"]);
     await type("gob");
     expect(where).toBe("/studio?q=gob");
     await type("");
@@ -483,7 +496,7 @@ describe("typing filters, live", () => {
   });
 
   it("Back leaves the results for the home: the first step into a list is an entry, every refinement after it is not", async () => {
-    mount("/studio", {}, ["/plan"]);
+    await mountHome({}, ["/plan"]);
     await type("gob");
     await type("goblet");
     // The filter column's chip (the rows have a "Strength" term too, and the list comes first).
@@ -507,7 +520,7 @@ describe("typing filters, live", () => {
   });
 
   it("Back from a list to the home brings the field back to empty", async () => {
-    mount("/studio", {}, ["/plan"]);
+    await mountHome({}, ["/plan"]);
     await type("goblet");
     await act(async () => back());
     expect(where).toBe("/studio");
@@ -515,7 +528,7 @@ describe("typing filters, live", () => {
   });
 
   it("a browse tap hands focus to the list it opened, not to where the tapped chip was", async () => {
-    mount("/studio");
+    await mountHome();
     await press("Strength");
     const heading = host!.querySelector("h2.visually-hidden")!;
     expect(heading.textContent).toBe("Moves");

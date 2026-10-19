@@ -34,7 +34,7 @@ import { FiltersSheet } from "../src/screens/studio/filters-sheet.js";
 import { emptyStudioCtx } from "../src/screens/studio/model.js";
 import { AddSheet } from "../src/screens/studio/add-sheet.js";
 import { EXERCISES } from "@rg/exercise-library";
-import { staticRouter } from "./studio-fixtures.js";
+import { readsGivenUp, staticRouter } from "./studio-fixtures.js";
 import { BuilderRoute } from "../src/screens/studio/builder.js";
 import { ItemSheet } from "../src/screens/studio/item-sheet.js";
 import { buildCtxOf } from "../src/screens/studio/build-model.js";
@@ -357,8 +357,10 @@ describe("the Studio is honest about its bounds", () => {
     expect(html).toContain('class="stu-list"');
     expect((html.match(/scroller/g) ?? []).length).toBe(1);
     expect(html).toMatch(/<aside class="stu-facets scroller"/);
-    // …and the home has none at all.
-    expect(renderAt("/studio", createElement(StudioScreen))).not.toContain("scroller");
+    // …and the home has none at all (drawn: its reads given up, as it is drawn once they have answered).
+    const home = readsGivenUp(() => renderAt("/studio", createElement(StudioScreen)));
+    expect(home).toContain("stu-build-row");
+    expect(home).not.toContain("scroller");
   });
 
   it("the filters sheet is one scroll owner, with its actions pinned below it", () => {

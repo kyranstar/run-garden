@@ -11,7 +11,7 @@ import { afterEach, describe, expect, it } from "vitest";
 import { coachFlag, coachOn, features } from "../src/features.js";
 import { StudioScreen } from "../src/screens/studio/screen.js";
 import { COACH_CURRENT_QUERY } from "../src/screens/studio/run-keeper.js";
-import { primedClient, staticRouter, text } from "./studio-fixtures.js";
+import { primedClient, readsGivenUp, staticRouter, text } from "./studio-fixtures.js";
 
 const was = { coach: features.coach, studio: features.studio };
 afterEach(() => {
@@ -23,7 +23,7 @@ afterEach(() => {
 function studioHome(): string {
   const qc = primedClient();
   qc.setQueryData(COACH_CURRENT_QUERY, { run: null });
-  return renderToStaticMarkup(createElement(QueryClientProvider, { client: qc }, staticRouter("/studio", createElement(StudioScreen))));
+  return readsGivenUp(() => renderToStaticMarkup(createElement(QueryClientProvider, { client: qc }, staticRouter("/studio", createElement(StudioScreen)))));
 }
 
 describe("the coach switch", () => {

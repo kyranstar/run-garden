@@ -22,7 +22,7 @@ import { StudioRoute } from "../src/app.js";
 import { draftStore } from "../src/studio-drafts.js";
 import { quickStartFor } from "../src/screens/studio/templates-model.js";
 import { emptyStudioCtx } from "../src/screens/studio/model.js";
-import { libraryDto, placesDto, primedClient, todayDto, TODAY, type Primed } from "./studio-fixtures.js";
+import { libraryDto, placesDto, primedClient, profileDto, todayDto, TODAY, type Primed } from "./studio-fixtures.js";
 import { DEVICE_PREFS } from "./studio-fixtures.js";
 
 (globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
@@ -187,7 +187,9 @@ function mount(path: string, primed: Primed & { templates?: TemplateDto[]; stric
   host = document.createElement("div");
   document.body.appendChild(host);
   root = createRoot(host);
-  const qc = primedClient({ places: placesDto(HOME_GEAR), today: todayDto(null, false), library: libraryDto(), ...primed });
+  // The reads a session has once the app is open (the profile among them: the home is drawn once they have answered,
+  // and a read that failed is asked again by the next screen that needs it).
+  const qc = primedClient({ places: placesDto(HOME_GEAR), today: todayDto(null, false), library: libraryDto(), profile: profileDto(), ...primed });
   qc.setQueryData(["settings"], { prefs: DEVICE_PREFS });
   if (primed.templates) qc.setQueryData(["templates"], { templates: primed.templates });
   const app = createElement(

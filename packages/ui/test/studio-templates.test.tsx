@@ -21,7 +21,7 @@ import { StudioScreen } from "../src/screens/studio/screen.js";
 import { TemplatesScreen } from "../src/screens/studio/templates.js";
 import { emptyStudioCtx } from "../src/screens/studio/model.js";
 import { quickStartFor } from "../src/screens/studio/templates-model.js";
-import { libraryDto, placesDto, primedClient, profileDto, staticRouter, text, todayDto, TODAY, type Primed } from "./studio-fixtures.js";
+import { libraryDto, placesDto, primedClient, profileDto, readsGivenUp, staticRouter, text, todayDto, TODAY, type Primed } from "./studio-fixtures.js";
 
 const goblet = () =>
   toProposable(
@@ -125,7 +125,7 @@ describe("the templates list", () => {
 describe("the home's quick starts", () => {
   /** The quick starts' section, up to its end. */
   const quick = (p: Parameters<typeof renderAt>[2] = {}) => {
-    const html = renderAt("/studio", createElement(StudioScreen), p);
+    const html = renderAt("/studio", createElement(StudioScreen), { templates: [], ...p });
     const at = html.indexOf(">Quick starts</h2>");
     return html.slice(at, html.indexOf("</section>", at));
   };
@@ -169,8 +169,10 @@ describe("the home's quick starts", () => {
     expect(row.indexOf("/studio/build/new")).toBeLessThan(row.indexOf('href="/studio/templates"'));
     // Objectives sits before Templates in the row, with the coach on (fix wave 3B, M10).
     expect(text(row)).toMatch(/New workout (Objectives )?Templates \(4\)$/);
-    // Before the list is read: no count yet, the link the same.
-    expect(text(rowOf(renderAt("/studio", createElement(StudioScreen))))).toMatch(/New workout (Objectives )?Templates$/);
+    // Before the list is read, nothing under the field is drawn: a pinned template's tile would come late and move
+    // this row (2026-10-19). Offline, with no list to read: the link with no count.
+    expect(renderAt("/studio", createElement(StudioScreen))).not.toContain("stu-build-row");
+    expect(text(rowOf(readsGivenUp(() => renderAt("/studio", createElement(StudioScreen)))))).toMatch(/New workout (Objectives )?Templates$/);
   });
 });
 

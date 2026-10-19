@@ -38,7 +38,7 @@ import { Navigate, useLocation, useMatch, useNavigate, useNavigationType, useSea
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { api } from "@rg/api-client";
 import { EXERCISES, type ExerciseRecord } from "@rg/exercise-library";
-import { accountTodayGuess } from "../../components.js";
+import { accountTodayGuess, unanswered } from "../../components.js";
 import { SearchField } from "../../components/search-field.js";
 import { WatchPreviewSheet } from "../../components/watch-preview-sheet.js";
 import { IconFilters } from "../../icons.js";
@@ -103,9 +103,11 @@ export function useStudioCtx(): StudioCtx {
  * The context, and whether its reads have all answered — or, offline, given up for now (`paused`): what is built from
  * them once and kept (a quick start) waits for that, rather than being built twice, the first time knowing less.
  * `profilesKnown`: the library read (the switched-on profiles' one full list) has answered at some point — false while
- * it is paused or failed with nothing kept, when "no profile is on" would be a guess.
+ * it is paused or failed with nothing kept, when "no profile is on" would be a guess. `loading`: one of them has not
+ * answered yet, nor failed (`unanswered`) — what a page draws from them, and whatever sits under that, waits (the
+ * Studio home).
  */
-export function useStudioReads(): { ctx: StudioCtx; settled: boolean; profilesKnown: boolean } {
+export function useStudioReads(): { ctx: StudioCtx; settled: boolean; profilesKnown: boolean; loading: boolean } {
   const library = useQuery({ queryKey: ["library", "studio"], queryFn: () => api.listLibrary({ limit: 200 }), staleTime: 60_000 });
   const today = useQuery({ queryKey: ["today"], queryFn: api.today });
   const places = useQuery({ queryKey: ["places"], queryFn: api.listPlaces, staleTime: 60_000 });
@@ -113,7 +115,7 @@ export function useStudioReads(): { ctx: StudioCtx; settled: boolean; profilesKn
   const profile = useQuery({ queryKey: ["profile"], queryFn: api.getProfile, staleTime: 60_000 });
   const ctx = useMemo(() => studioCtxFrom(library.data, today.data, places.data, profile.data), [library.data, today.data, places.data, profile.data]);
   const settled = [library, today, places, profile].every((q) => !q.isPending || q.fetchStatus === "paused");
-  return { ctx, settled, profilesKnown: library.data !== undefined };
+  return { ctx, settled, profilesKnown: library.data !== undefined, loading: unanswered(library, today, places, profile) };
 }
 
 /** What a history entry under the Studio carries: whether it came from the home, and how deep into moves it is. */
@@ -145,7 +147,7 @@ export function StudioScreen() {
   const navigate = useNavigate();
   const search = params.toString();
   const url = useMemo(() => readStudio(new URLSearchParams(search)), [search]);
-  const ctx = useStudioCtx();
+  const { ctx, loading } = useStudioReads();
   const qc = useQueryClient();
   const wide = useMinWidth(DETAIL_PANE_MIN_PX);
   const [sheetOpen, setSheetOpen] = useState(false);
@@ -458,7 +460,7 @@ export function StudioScreen() {
             </aside>
           </div>
         ) : (
-          <StudioHome ctx={ctx} onBrowse={browse} />
+          <StudioHome ctx={ctx} loading={loading} onBrowse={browse} />
         )}
         {wide ? detail : null}
       </div>

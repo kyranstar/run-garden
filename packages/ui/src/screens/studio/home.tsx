@@ -21,6 +21,7 @@ import { Link } from "react-router-dom";
 import { useQuery } from "@tanstack/react-query";
 import { api } from "@rg/api-client";
 import { EXERCISES, label } from "@rg/exercise-library";
+import { Spinner, unanswered } from "../../components.js";
 import { IconChevron } from "../../icons.js";
 import { TEMPLATES_QUERY } from "./add-sheet.js";
 import { BuildEntry } from "./build-entry.js";
@@ -43,17 +44,31 @@ function Section({ title, children }: { title: string; children: ReactNode }) {
 
 export function StudioHome({
   ctx,
+  loading = false,
   onBrowse,
 }: {
   ctx: StudioCtx;
+  /** The context's reads have not answered yet, nor failed (`useStudioReads().loading`). */
+  loading?: boolean;
   /** Open the list with these filters (`all`: every move). */
   onBrowse: (filters: StudioFilters | "all") => void;
 }) {
   const themes = visibleThemes(ctx).map((t) => ({ t, word: themeCountWord(EXERCISES, t.id, ctx) }));
   // The athlete's templates: the count is the templates link's (the quick starts read them too, for the pinned ones).
-  // Offline or before they are read, the link has no count.
+  // Offline, the link has no count.
   const templates = useQuery({ queryKey: TEMPLATES_QUERY, queryFn: api.templates, staleTime: 30_000 });
   const count = templates.data?.templates.length;
+  // Which quick starts there are is the reads' to say — a switched-on profile's care tile, a pinned template — and a
+  // tile that came late would wrap the row and push all of this down under a tap aimed at it (CI's WebKit tapped
+  // "Templates" where it had been, 2026-10-19; UX System 4). So nothing is drawn until they have answered — or failed:
+  // then it is drawn from what there is, and a read of them again never takes it back (`unanswered`).
+  if (loading || unanswered(templates)) {
+    return (
+      <div className="stu-home">
+        <Spinner label="Loading the Studio" />
+      </div>
+    );
+  }
   // The coach is no longer here (the new shape §5): it is one conversation, opened from the nav.
   return (
     <div className="stu-home">

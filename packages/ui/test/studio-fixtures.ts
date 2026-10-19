@@ -5,7 +5,7 @@
 import { createElement, type ReactElement } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
 import { createPath, Router, type To } from "react-router-dom";
-import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
+import { onlineManager, QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import type { LibraryListDto, LibraryRowDto, PlacesResponse, TodayResponse } from "@rg/api-client";
 import { DEFAULT_SCHEDULING_PREFERENCES, type ProfileDto } from "@rg/domain";
 import { EXERCISES } from "@rg/exercise-library";
@@ -141,6 +141,20 @@ export function staticRouter(path: string, el: ReactElement): ReactElement {
     },
     el,
   );
+}
+
+/**
+ * A static render with every read not primed given up (offline) rather than on its way: in a static render a read
+ * that is not primed is always on its first load, and the Studio home draws nothing until its reads have answered or
+ * given up (`StudioHome`). For a test of what the home draws from the reads it is given.
+ */
+export function readsGivenUp<T>(render: () => T): T {
+  onlineManager.setOnline(false);
+  try {
+    return render();
+  } finally {
+    onlineManager.setOnline(true);
+  }
 }
 
 export function renderAt(path: string, el: ReactElement, p: Primed = {}): string {
