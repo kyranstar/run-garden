@@ -3,20 +3,21 @@
  * checks beside the thread coach's guardrails. Pure — no statement: the athlete's active profiles and today's reading
  * come with the athlete propose_plan already reads.
  *
- *  - `planConditionFindings`: every lift and mobility session's moves, resolved to the library as the apply stores them
- *    (`docFromCoachSession` with `resolveLibraryName`; a name the library doesn't know stays free text, unjudged, as a
- *    document's free-text move is), judged by `validateWorkoutDoc` against every active condition profile for the
- *    session's effort and day — a profile's never, its pattern and record gates, today's reading for a session today;
- *    on a later day a move a check could close needs an alternate that passes in recovery, and a session spec carries
- *    none — the way a document is judged (§2.7: a condition's "never" holds at every write path). Each hit is fatal.
- *    Judged a group at a time — one document per day (today or later) and effort, each move once — since none of these
- *    rules reads the moves beside it: a validator call or two, not one a session (CPU: a plan of forty sessions).
+ *  - `planConditionFindings`: every lift and mobility session's moves, resolved to the library as the apply resolves
+ *    them (`resolveLibraryName`, then the move's current id — `docFromCoachSession`'s rule; a name the library doesn't
+ *    know stays free text, unjudged, as a document's free-text move is), judged by `validateWorkoutDoc` against every
+ *    active condition profile at the session's effort (`coachSessionEffort`) and day — a profile's never, its pattern
+ *    and record gates, today's reading for a session today; on a later day a move a check could close needs an
+ *    alternate that passes in recovery, and a session spec carries none — the way a document is judged (§2.7: a
+ *    condition's "never" holds at every write path). Each hit is fatal. Judged a group at a time — one document per day
+ *    (today or later) and effort, each name resolved once and each move judged once — since none of these rules reads
+ *    the moves beside it: a validator call or two, not one a session (CPU: a plan of forty sessions).
  *  - `planOffWatchNote`: the runs the watch won't take (`watchPushable`: a run of duration blocks only), as one note
  *    for the card — a distance block keeps its session in the app.
  */
 import { dayLabel, type CoachSession, type WorkoutDoc, type WorkoutItem } from "@rg/domain";
 import { EXERCISES, type CheckReading, type ConditionProfile } from "@rg/exercise-library";
-import { docFromCoachSession, makeLibraryIndex, validateWorkoutDoc, type DocIssueCode } from "@rg/workout";
+import { coachSessionEffort, makeLibraryIndex, validateWorkoutDoc, type DocIssueCode } from "@rg/workout";
 import { watchPushable } from "../coach-apply.js";
 import { resolveLibraryName } from "../workout-doc-store.js";
 
@@ -46,18 +47,29 @@ export function planConditionFindings(
 ): string[] {
   if (o.profiles.length === 0) return [];
   const library = makeLibraryIndex(EXERCISES);
+  /** A name → the library move's current id, or null (free text): each name resolved once. */
+  const resolved = new Map<string, string | null>();
+  const idOf = (name: string): string | null => {
+    if (!resolved.has(name)) {
+      const id = resolveLibraryName(name);
+      resolved.set(name, id ? (library(id)?.id ?? null) : null);
+    }
+    return resolved.get(name)!;
+  };
   /** A group: its day (today, or the first later one), its effort, and each move once with the first session holding it. */
   const groups = new Map<string, { date: string; effort: WorkoutDoc["intent"]["effort"]; moves: Map<string, string> }>();
   for (const { date, session } of sessions) {
-    if (!session.lift && !session.mobility) continue;
-    const doc = docFromCoachSession(session, { resolveName: resolveLibraryName, library })?.doc;
-    if (!doc) continue;
+    const body = session.lift ?? session.mobility;
+    // A rest day holds no workout (`docFromCoachSession`).
+    if (!body || session.category === "rest") continue;
     const later = date > o.today;
-    const key = `${later ? "later" : "today"}:${doc.intent.effort}`;
-    const g = groups.get(key) ?? { date: later ? date : o.today, effort: doc.intent.effort, moves: new Map<string, string>() };
+    const effort = coachSessionEffort(session.category);
+    const key = `${later ? "later" : "today"}:${effort}`;
+    const g = groups.get(key) ?? { date: later ? date : o.today, effort, moves: new Map<string, string>() };
     groups.set(key, g);
-    for (const item of doc.parts.flatMap((p) => p.items)) {
-      if (item.kind === "exercise" && !g.moves.has(item.libraryId)) g.moves.set(item.libraryId, `${dayLabel(date)} · ${session.title}`);
+    for (const e of body.exercises) {
+      const id = idOf(e.name);
+      if (id && !g.moves.has(id)) g.moves.set(id, `${dayLabel(date)} · ${session.title}`);
     }
   }
   const out: string[] = [];
@@ -73,7 +85,9 @@ export function planConditionFindings(
     const readings = g.date === o.today ? o.readings : {};
     for (const issue of validateWorkoutDoc(doc, { library: EXERCISES, activeProfiles: o.profiles, day: { date: g.date, today: o.today, readings } })) {
       const at = ITEM_ID.exec(issue.path);
-      if (issue.severity !== "error" || !CONDITION_CODES.has(issue.code) || !at) continue;
+      // Every one of these is an error here: the document carries no alternates, the one thing that softens a later
+      // day's gate to a note.
+      if (!CONDITION_CODES.has(issue.code) || !at) continue;
       const id = ids[Number(at[1]) * PART_ITEMS + Number(at[2])];
       out.push(`${g.moves.get(id!)}: ${issue.message.replace(ADD_ALTERNATE, ", and a plan session can't carry an alternate").replace(/\.$/, "")}`);
     }

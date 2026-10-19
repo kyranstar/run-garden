@@ -254,6 +254,11 @@ describe("propose_plan: what the card says of the watch, and what the condition 
     ok((await propose(block("lift", [{ date: "2026-05-19", session: lift("Legs", ["Goblet squat"]) }]))).res);
   });
 
+  it("a session is judged at its own effort: a move a calm check allows on a strength day is refused in a recovery session", async () => {
+    const recovery = refused((await propose(block("lift", [{ date: TODAY, session: lift("Easy legs", ["Pogo hops"], "recovery") }], TODAY))).res);
+    expect(recovery.why).toMatch(/^The condition rules refuse it: Wed 13 May · Easy legs: Pogo hops isn't allowed on a .+ day with .+\.$/);
+  });
+
   it("a mobility session is judged too, and a name the library doesn't know stays the coach's, unjudged", async () => {
     const mobility = { category: "yoga", title: "Loosen up", durationMinutes: 20, mobility: { exercises: [{ name: "Pogo hops", sets: 1, holdSeconds: 30 }] } };
     expect(refused((await propose(block("lift", [{ date: "2026-05-19", session: mobility }]))).res).why).toContain("Tue 19 May · Loosen up: Pogo hops");

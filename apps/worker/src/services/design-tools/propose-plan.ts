@@ -258,7 +258,9 @@ export const proposePlan: DesignTool = {
     additionalProperties: false,
   },
   statementCost: 1 + GUARDRAIL_READS + GUARDRAIL_MATCH_CHUNKS + 1 + 1,
-  cpuWeight: 3,
+  // 3 until the condition rules' check (2026-10-18, decision guidance: ~0.2 ms on forty lift sessions; the bench's
+  // heaviest shape measured 2.8–3.9 scaled without it on a loaded machine, 3.3 with it).
+  cpuWeight: 3.5,
   roles: ["main"],
   async run(ctx, raw) {
     const parsed = parseAct(input, raw, `change ({ kind: ${KINDS_WORDS}, … }) and why`);

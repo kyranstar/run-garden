@@ -85,7 +85,7 @@ export function docFromCoachSession(session: CoachSession, meta: CoachMeta): Con
       summary: bounded(session.title, 200, kept, "session", "title") || "Session",
       goals: [],
       focus: [],
-      effort: session.category === "recovery" ? "recover" : session.category === "quality" ? "develop" : session.category === "race" ? "peak" : "maintain",
+      effort: coachSessionEffort(session.category),
     },
     ...(session.durationMinutes > 0 ? { setting: { targetMinutes: Math.min(600, session.durationMinutes) } } : {}),
     parts,
@@ -93,6 +93,12 @@ export function docFromCoachSession(session: CoachSession, meta: CoachMeta): Con
   };
   if (session.durationMinutes > 600) kept.push({ at: "session", field: "durationMinutes", value: session.durationMinutes, why: "past the document's 600-minute setting" });
   return { doc, kept };
+}
+
+/** A coach session's effort, from its category (the rules above): what its document's moves are judged at — the
+ * document's own, and propose_plan's condition check (2026-10-18, decision guidance). */
+export function coachSessionEffort(category: CoachSession["category"]): WorkoutDoc["intent"]["effort"] {
+  return category === "recovery" ? "recover" : category === "quality" ? "develop" : category === "race" ? "peak" : "maintain";
 }
 
 function effortOfCategory(category: CoachSession["category"]): RunEffort {
