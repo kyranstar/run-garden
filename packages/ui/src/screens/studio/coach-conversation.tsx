@@ -299,7 +299,8 @@ export function CoachConversation({ ctx, loopDeps, request = null, seeing: seenA
 
   // ── The scroll: the newest at the bottom, kept there as turns arrive (never while the athlete reads up) ──
   const signature = `${turns.map((t) => `${t.runId}:${t.status}:${t.line?.length ?? 0}:${t.cards.length}`).join(",")}|${snapshot?.events.length ?? 0}`;
-  const anchor = useBottomAnchor(signature);
+  // The opening screen reads from its first line down (the coach's line above its chips); a conversation from its newest.
+  const anchor = useBottomAnchor(signature, settled && turns.length === 0);
   const setScroller = (el: HTMLDivElement | null) => {
     scroller.current = el;
     anchor.ref.current = el;

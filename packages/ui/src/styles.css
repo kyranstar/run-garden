@@ -11152,11 +11152,17 @@ a.stu-tpl-open:focus-visible::before {
   min-height: var(--tap);
 }
 /* A "needs you" chip (§8 §6): something in the week asks for the athlete — the coach's own green, first in the row.
-   Its words say what; the colour only groups. */
-.coach-chip--needs {
+   Its words say what; the colour only groups. What the coach noticed (stream H: "Plan this week", "Log how it felt")
+   comes first in the same green. */
+.coach-chip--needs,
+.coach-chip--opening {
   border-color: var(--green);
   background: var(--green-soft);
   color: var(--green-ink);
+}
+/* "Read it all" under last week's review's sentence: a link the size of its words, its tap area padded. */
+.coach-opening-more {
+  align-self: flex-start;
 }
 .coach-start {
   display: flex;

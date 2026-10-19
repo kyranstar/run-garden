@@ -24,8 +24,11 @@ import {
   closedCardLine,
   conversationToSend,
   GENERAL_CHIPS,
+  HOW_IT_FELT,
+  openingChips,
   openingLine,
   starterChips,
+  startersBeside,
   turnsShown,
   turnStopLine,
   type ProvisionalTurn,
@@ -305,5 +308,47 @@ describe("the server's new words (stream A: plan powers, answers, the auto scope
   it("an auto run is never named by its scope: the coach at work is designing", () => {
     expect(statusWord({ status: "active", error: null, scope: { kind: "auto" } })).toBe("designing");
     expect(isSetScope({ scope: { kind: "auto" } })).toBe(false);
+  });
+});
+
+// ── The coach notices (stream H): the chips before the starters ───────────────
+
+describe("the chips before the starters: how it felt, the coach's own line's, then the needs-you ones — two at most", () => {
+  const session = {
+    source: "session" as const,
+    workoutId: "w7",
+    chips: [{ id: "session:a1", label: "Plan tomorrow around it", request: "Plan tomorrow around today's run." }],
+  };
+  const review = { source: "review" as const, chips: [{ id: "review:w", label: "Plan this week", request: "Plan my week around how last week went." }] };
+  const missed = { id: "missed:w9", label: "Rework my week", request: "Rework my week." };
+  const race = { id: "race:x", label: "Get me ready for race day", request: "Get me ready." };
+  const labels = (chips: ReturnType<typeof openingChips>) => chips.map((c) => c.label);
+
+  it("a session the app offers a quick review for: Log how it felt first (it opens the review), then its own", () => {
+    expect(openingChips(session, [missed], [{ workoutId: "w7" }])).toEqual([
+      { kind: "review", id: "felt:w7", label: HOW_IT_FELT, workoutId: "w7" },
+      { kind: "ask", id: "session:a1", label: "Plan tomorrow around it", request: "Plan tomorrow around today's run.", needs: false },
+    ]);
+    expect(HOW_IT_FELT).toBe("Log how it felt");
+  });
+
+  it("no review offered for it (another session's, or none): its own, then a needs-you chip", () => {
+    expect(labels(openingChips(session, [missed, race], [{ workoutId: "w8" }]))).toEqual(["Plan tomorrow around it", missed.label]);
+    expect(openingChips(session, [missed], [])[1]).toMatchObject({ kind: "ask", needs: true });
+  });
+
+  it("the review's: never a quick review beside it", () => {
+    expect(labels(openingChips({ ...review, workoutId: "w7" }, [missed], [{ workoutId: "w7" }]))).toEqual(["Plan this week", missed.label]);
+  });
+
+  it("no line of the coach's own: the needs-you chips, as before", () => {
+    expect(labels(openingChips(null, [missed, race], [{ workoutId: "w7" }]))).toEqual([missed.label, race.label]);
+    expect(openingChips(undefined, [], [])).toEqual([]);
+  });
+
+  it("beside last week's review, Plan this week says what Plan my week would: it isn't said twice", () => {
+    expect(startersBeside([...GENERAL_CHIPS], review)).toEqual(["Something for right now", "I'm sore"]);
+    expect(startersBeside([...GENERAL_CHIPS], session)).toEqual([...GENERAL_CHIPS]);
+    expect(startersBeside([...GENERAL_CHIPS], null)).toEqual([...GENERAL_CHIPS]);
   });
 });

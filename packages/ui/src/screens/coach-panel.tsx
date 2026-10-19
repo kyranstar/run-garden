@@ -612,11 +612,17 @@ export function ProposalCard({
  * Scrolling ONE container's own `scrollTop` never touches an ancestor's, the
  * bug `endRef.scrollIntoView` shipped (audit C3): the coach panel sits at the
  * top of the document, so that call yanked the whole page up with it.
+ *
+ * `top`: nothing to follow yet — the coach's opening screen, read from its
+ * first line down (stream H, 2026-10-19: pinned to the bottom, a phone's sheet
+ * opened with the coach's line scrolled out of sight above the chips). It is
+ * held at the top, and the first turn after it pins to the bottom again.
  */
-export function useBottomAnchor(signature: string) {
+export function useBottomAnchor(signature: string, top = false) {
   const ref = useRef<HTMLDivElement | null>(null);
-  const stuck = useRef(true);
+  const stuck = useRef(!top);
   const settleUntil = useRef(0);
+  const wasTop = useRef(top);
 
   const onScroll = useCallback(() => {
     const el = ref.current;
@@ -638,9 +644,19 @@ export function useBottomAnchor(signature: string) {
   useIsomorphicLayoutEffect(() => {
     const el = ref.current;
     if (!el) return;
+    if (top) {
+      wasTop.current = true;
+      stuck.current = false;
+      el.scrollTop = 0;
+      return;
+    }
+    if (wasTop.current) {
+      wasTop.current = false;
+      stuck.current = true;
+    }
     settleUntil.current = Date.now() + SETTLE_MS;
     if (stuck.current) el.scrollTop = el.scrollHeight;
-  }, [signature]);
+  }, [signature, top]);
 
   useEffect(() => {
     const el = ref.current;

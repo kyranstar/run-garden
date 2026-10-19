@@ -3,6 +3,8 @@
  * server (`GET /api/coach/conversation`), each turn one run. What the sheet decides that needs no React and no network:
  *
  *   openingLine        the opening screen's one coach line, from the day's own data (no model call)
+ *   openingChips       the chips before the starters: what the coach noticed, then the "needs you" ones, at most two
+ *   readOpeningSeen …  the openings this device has shown (they give way to the next)
  *   starterChips       two to four starter chips: general ones, or ones for what the coach sees
  *   turnsShown         the read's turns (none for a conversation the athlete left), and the turns a send started that
  *                      the read hasn't caught up with
@@ -12,7 +14,15 @@
  *
  * Every text the athlete or the coach wrote is data: the view renders it as text.
  */
-import type { CoachConversationCardDto, CoachConversationDto, CoachConversationTurnDto, CoachRunStatus, TodayResponse } from "@rg/api-client";
+import type {
+  CoachConversationCardDto,
+  CoachConversationDto,
+  CoachConversationTurnDto,
+  CoachNudgeDto,
+  CoachOpeningDto,
+  CoachRunStatus,
+  TodayResponse,
+} from "@rg/api-client";
 import type { CoachFocus } from "./coach-focus.js";
 import { failureOf, isLive } from "./run-model.js";
 
@@ -62,6 +72,62 @@ export function openingLine(today: Pick<TodayResponse, "readiness" | "focus" | "
   const session = (today?.todaySessions ?? []).find((s) => s.workout.category !== "rest" && s.workout.completionState === "scheduled");
   if (session) return `Today: ${session.workout.title}.`;
   return OPENING_FALLBACK;
+}
+
+/** The chip that opens a session's quick review: the app's own place to say how it went (no model). */
+export const HOW_IT_FELT = "Log how it felt";
+/** The most chips before the starters: what the coach noticed, then the "needs you" ones. */
+export const OPENING_CHIPS_MAX = 2;
+
+/** A chip before the starters: the session's quick review, opened; or words a tap sends (`needs`: a "needs you" one). */
+export type OpeningChip =
+  | { kind: "review"; id: string; label: string; workoutId: string }
+  | { kind: "ask"; id: string; label: string; request: string; needs: boolean };
+
+/**
+ * The chips before the starters, in this order and at most two (stream H): how it felt — when the coach's line is about
+ * a session the app offers a quick review for (free: it opens the review) — then the line's own (what a tap sends:
+ * "Plan this week", "Plan tomorrow around it"), then the "needs you" ones (§8 §6).
+ */
+export function openingChips(
+  opening: Pick<CoachOpeningDto, "source" | "chips" | "workoutId"> | null | undefined,
+  nudges: readonly CoachNudgeDto[],
+  offers: ReadonlyArray<{ workoutId: string }>,
+): OpeningChip[] {
+  const out: OpeningChip[] = [];
+  const workoutId = opening && opening.source !== "review" ? opening.workoutId : undefined;
+  if (workoutId && offers.some((o) => o.workoutId === workoutId)) out.push({ kind: "review", id: `felt:${workoutId}`, label: HOW_IT_FELT, workoutId });
+  for (const c of opening?.chips ?? []) out.push({ kind: "ask", id: c.id, label: c.label, request: c.request, needs: false });
+  for (const n of nudges) out.push({ kind: "ask", id: n.id, label: n.label, request: n.request, needs: true });
+  return out.slice(0, OPENING_CHIPS_MAX);
+}
+
+/** The starters beside the coach's line: with last week's review, its "Plan this week" says what "Plan my week" would. */
+export function startersBeside(starters: readonly string[], opening: Pick<CoachOpeningDto, "source"> | null | undefined): string[] {
+  return opening?.source === "review" ? starters.filter((s) => s !== GENERAL_CHIPS[1]) : [...starters];
+}
+
+/** The openings this device has shown, newest last (the server lets each give way to the next: `?seen=`). */
+export const OPENING_SEEN_KEY = "rg.coach.openingSeen";
+/** At most this many kept (the server reads as many). */
+export const OPENING_SEEN_MAX = 8;
+
+export function readOpeningSeen(): string[] {
+  try {
+    const v: unknown = JSON.parse(globalThis.localStorage?.getItem(OPENING_SEEN_KEY) ?? "[]");
+    return Array.isArray(v) ? v.filter((s): s is string => typeof s === "string").slice(-OPENING_SEEN_MAX) : [];
+  } catch {
+    return [];
+  }
+}
+
+export function markOpeningSeen(id: string): void {
+  try {
+    const kept = readOpeningSeen().filter((s) => s !== id);
+    globalThis.localStorage?.setItem(OPENING_SEEN_KEY, JSON.stringify([...kept, id].slice(-OPENING_SEEN_MAX)));
+  } catch {
+    // Storage unavailable: the line may show once more, until the athlete asks the coach anything.
+  }
 }
 
 /** The general starter chips (nothing seen). */
