@@ -91,6 +91,8 @@ describe("validateWorkoutDoc — a clean workout", () => {
         "mode_above_day", "mode_limits", "progression_jump", "too_large", "too_long_for_watch", "unknown_equipment", "unknown_exercise", "unknown_focus",
         // Designed runs (§8 §3): validate-run.test.ts.
         "run_mixed", "run_open", "run_too_long", "run_step_short", "run_pace_far", "run_pace_owed", "run_hard_close", "run_long_share", "run_volume_jump",
+        // A step's target, as the watch runs it (2026-10-18, decision guidance): validate-run-targets.test.ts.
+        "run_race_by_time", "run_time_and_distance",
       ].sort(),
     );
   });

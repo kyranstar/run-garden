@@ -24,8 +24,14 @@ const BEFORE = { tools: 34_935, shared: 20_450, main: 4_586 };
  * 5,078; W's read_plans and propose_plan with their lines 4,149, R's runs 1,596) — about 1.6k tokens at the loop's 3.5
  * bytes a token. Held there with about 400 characters of margin (review-3: the first rebase's 10,500 left ~4.7k
  * unpinned); a stream that needs more says so here.
+ *
+ * REBASED 2026-10-18 for the decision guidance (stream D: criteria for every decision the coach makes — time or
+ * distance, heart rate, race pace, a run's length, plan_set or propose_plan, what reaches the watch, a programme's
+ * settings, when to remember): measured 1,865 more (tools 38,001 → 38,002 — the run target's heart rate, zone and typed
+ * text out, a plan session's intensities in; the shared prompt 22,637 → 23,629; the main block 5,078 → 5,950), so
+ * 7,610 since §8's start — about 2.2k tokens. Held there with about 290 characters of margin.
  */
-const GROWTH_MAX_CHARS = 6_150;
+const GROWTH_MAX_CHARS = 7_900;
 
 const toolsSent = () => JSON.stringify(allTools().map((t) => ({ name: t.name, description: t.description, input_schema: t.inputSchema })));
 
@@ -44,7 +50,7 @@ function profileWords(): string[] {
 }
 
 describe("the coach's cached prefix after the new shape", () => {
-  it(`grew by §8's measured 5,745 characters and a small margin at most (${GROWTH_MAX_CHARS}; ~${Math.round(GROWTH_MAX_CHARS / PROMPT_BYTES_PER_TOKEN)} tokens)`, () => {
+  it(`grew by §8's measured 7,610 characters and a small margin at most (${GROWTH_MAX_CHARS}; ~${Math.round(GROWTH_MAX_CHARS / PROMPT_BYTES_PER_TOKEN)} tokens)`, () => {
     const now = { tools: toolsSent().length, shared: SHARED_PROMPT.length, main: roleBlock("main", RUN_LIMITS.main.maxCalls).length };
     const grown = now.tools + now.shared + now.main - (BEFORE.tools + BEFORE.shared + BEFORE.main);
     expect(grown).toBeGreaterThan(0);

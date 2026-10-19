@@ -169,17 +169,18 @@ const DOSE = {
   },
   additionalProperties: false,
 } as const;
+// What the watch honours, and only that (2026-10-18, decision guidance): a heart-rate range, a zone and the typed text
+// the domain's run target also holds are not offered — the watch's step takes a time or a distance and a pace band, and
+// nothing read them (`runWatchStepOf`). A stored document holding them still validates and plays: the domain's schema is
+// unchanged.
 const RUN_TARGET = {
   type: "object",
   description: "A duration, a distance, or open.",
   properties: {
     durationSec: num(1, 86400),
     distanceM: num(1, 500000),
-    typed: { type: "string", maxLength: 20 },
     open: { const: true },
     pace: { type: "object", properties: { fastSecPerKm: num(120, 1800), slowSecPerKm: num(120, 1800) }, required: ["fastSecPerKm", "slowSecPerKm"], additionalProperties: false },
-    hr: { type: "object", properties: { low: num(30, 230, true), high: num(30, 230, true) }, required: ["low", "high"], additionalProperties: false },
-    zone: { type: "object", properties: { kind: { enum: ["pace", "hr"] }, index: num(1, 6, true) }, required: ["kind", "index"], additionalProperties: false },
   },
   additionalProperties: false,
 } as const;

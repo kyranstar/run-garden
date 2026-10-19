@@ -263,7 +263,7 @@ describe("the opening message: today", () => {
     const runningOf = (header: string) => header.split("\n").find((l) => l.startsWith("Running:"));
     // No threshold yet; one 30-minute watch run with no distance, two days ago.
     expect(runningOf((await build()).header)).toBe(
-      "Running: no threshold pace known yet, so a run's steps carry no pace targets (the watch shows time only). Last 4 weeks, newest first: 30, 0, 0, 0 min; 8 min a week on average.",
+      "Running: no threshold pace known yet, so a run's steps carry no pace targets. Last 4 weeks, newest first: 30, 0, 0, 0 min; 8 min a week on average.",
     );
     await db.insert(schema.dailyHealth).values({ id: `${userId}:t`, userId, date: "2026-03-09", thresholdPaceSecPerKm: 289, contentFingerprint: "f", updatedAt: at("2026-03-09") });
     for (const role of ["main", "designer", "reviewer"] as const) {

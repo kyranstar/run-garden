@@ -22,7 +22,12 @@
  *  - a plan that isn't a block of the coach's still running (`not_your_block`, `not_running`: read_plans says which);
  *  - any fatal finding of the thread coach's guardrails (`plan_refused`, each in its own words) — a past date, a
  *    session that isn't there, a watch plan's structure;
+ *  - a lift or mobility session's move an active condition's rules keep out, judged as a document's moves are
+ *    (`plan_refused`, in the rules' words; plan-checks.ts `planConditionFindings`, 2026-10-18 decision guidance);
  *  - a proposal already with the athlete (`proposal_pending`) or closed, a restore under way.
+ *
+ * A RUN THE WATCH WON'T TAKE — a distance block (`watchPushable`) — is an advisory too (`plan_off_watch`, plan-checks.ts
+ * `planOffWatchNote`): "Sun 24 May · Long run stays in the app — the watch takes timed sessions".
  *
  * A NEW BLOCK OVER A RUNNING ONE of the same discipline is an advisory (`plan_overlap`, review-1: two approved blocks
  * over one span stack): "Overlaps your 10K build (19 Oct – 15 Nov)", shown on the card as the guardrails' are.
@@ -55,6 +60,7 @@ import {
 } from "../proposal-kinds.js";
 import { capInWords, isErr, mainRunIdOf, parseAct, prose } from "./act-common.js";
 import { designProposalId, upsertProposal } from "./propose.js";
+import { planConditionFindings, planOffWatchNote, type PlanSession } from "./plan-checks.js";
 import { parsedArray, parsedJson, readAthlete, refuse, untrusted } from "./read-common.js";
 import { LOOSE_PLAN_ID_PREFIX } from "../coach-plans.js";
 import type { DesignTool, ToolOk } from "./types.js";
@@ -64,6 +70,8 @@ const WHY_MAX = 300;
 export const MAX_PLAN_SESSIONS = 40;
 /** The most weeks one plan change fills in: the rest are shape weeks, firmed up as they come (§8 §2.4). */
 export const MAX_FIRM_WEEKS = 2;
+/** The condition findings a refusal names before "and N more". */
+const CONDITION_FINDINGS_SHOWN = 4;
 /** The guardrail context's match reads counted (`guardrailCtx` reads one per IN_ARRAY_CHUNK planned rows of its window). */
 export const GUARDRAIL_MATCH_CHUNKS = 5;
 /** `guardrailCtx` beside its match reads: the planned rows, the activities, the coach's plans, the memory. */
@@ -82,7 +90,7 @@ const DATED = {
       session: {
         type: "object",
         description:
-          "{ category: easy|long|quality|recovery|race|rest|strength|yoga (mobility), title, durationMinutes, and one body at most: run { blocks: [{ kind: duration|distance, value: minutes|metres, intensity?: easy|steady|threshold|interval|rest }] }, or lift / mobility { rounds?, exercises: [{ name, sets, reps? or holdSeconds?, perSide?, note? }] } }",
+          "{ category: easy|long|quality|recovery|race|rest|strength|yoga (mobility), title, durationMinutes, and one body at most: run { blocks: [{ kind: duration|distance, value: minutes|metres, intensity?: easy|steady|threshold|interval|rest }] }, or lift / mobility { rounds?, exercises: [{ name, sets, reps? or holdSeconds?, perSide?, note? }] } }. A block's intensity is one of those five: tempo is threshold, recovery is easy; strides, hills and race pace have none (a block without one runs by feel). Only a session of duration blocks goes to the watch.",
       },
     },
     required: ["date", "session"],
@@ -338,6 +346,21 @@ export const proposePlan: DesignTool = {
         "Fix what they name — a date still to come, a session on the plan, a block of yours — and call it again.",
       );
     }
+    // A condition's rules hold at every write path (§2.7; 2026-10-18, decision guidance): a lift or mobility session's
+    // moves are judged as a document's are, and a hit is fatal.
+    const conditions = planConditionFindings(sessions as PlanSession[], {
+      profiles: athlete.profiles,
+      readings: Object.fromEntries(Object.entries(athlete.readings).map(([id, r]) => [id, { pre: r.pre, post: null, feelingOff: r.feelingOff }])),
+      today: athlete.today,
+    });
+    if (conditions.length > 0) {
+      const shown = conditions.slice(0, CONDITION_FINDINGS_SHOWN).join("; ");
+      return refuse(
+        "plan_refused",
+        `The condition rules refuse it: ${shown}${conditions.length > CONDITION_FINDINGS_SHOWN ? `; and ${conditions.length - CONDITION_FINDINGS_SHOWN} more` : ""}.`,
+        "Use moves the athlete's conditions allow on any day — or design that strength or mobility as reviewed workouts with plan_set, where a move can carry an alternate.",
+      );
+    }
     // A lift's exercises get their watch identity, as the wake gives them (one read, only when a session names one).
     if (sessions.some((s) => "session" in s && ((s as { session: { lift?: unknown; mobility?: unknown } }).session.lift || (s as { session: { mobility?: unknown } }).session.mobility))) {
       resolveOpsExercises([op as CoachOp], await loadExerciseIndex(ctx.db));
@@ -355,7 +378,12 @@ export const proposePlan: DesignTool = {
       id: PLAN_STRUCTURE_ID,
       op,
       why,
-      issues: [...overlaps, ...[...verdict.advisory, ...verdict.soft].map((v) => ({ code: v.rule, message: v.detail }))],
+      issues: [
+        ...overlaps,
+        // A run the watch won't take (a distance block) stays in the app: said on the card (2026-10-18, decision guidance).
+        ...[planOffWatchNote(sessions as PlanSession[])].filter((n) => n !== null),
+        ...[...verdict.advisory, ...verdict.soft].map((v) => ({ code: v.rule, message: v.detail })),
+      ],
       title: words.title,
       summary: words.summary,
       lines: planLines(op),

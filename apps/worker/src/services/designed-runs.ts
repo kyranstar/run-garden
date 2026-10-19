@@ -29,6 +29,7 @@ import {
   runWatchStepOf,
   runWatchSteps,
   type RunEffort,
+  type RunWire,
   type WorkoutDoc,
 } from "@rg/domain";
 import { EXERCISES } from "@rg/exercise-library";
@@ -150,7 +151,8 @@ export function runningLine(f: RunningFacts, units: "km" | "mi"): string {
         });
         return `Running: threshold ${paceIn(t, units)} /${units} (${shortDate(f.threshold.date)}). Effort paces /${units} — ${bands.join(", ")}.`;
       })()
-    : "Running: no threshold pace known yet, so a run's steps carry no pace targets (the watch shows time only).";
+    : // How a step without one reaches the watch is `watchLine`'s, by the wire in force (2026-10-18, decision guidance).
+      "Running: no threshold pace known yet, so a run's steps carry no pace targets.";
   const total = f.weeks.reduce((s, w) => s + w.seconds, 0);
   if (total === 0) return `${head} No running logged in the last four weeks.`;
   // By distance when every week that ran has one (a watch run without a distance is said in minutes, never as 0 km).
@@ -160,6 +162,19 @@ export function runningLine(f: RunningFacts, units: "km" | "mi"): string {
     ? `${f.weeks.map((w) => (w.meters / per).toFixed(1)).join(", ")} ${units}`
     : `${f.weeks.map((w) => Math.round(w.seconds / 60)).join(", ")} min`;
   return `${head} Last 4 weeks, newest first: ${each}; ${durationWords(total / 4)} a week on average.`;
+}
+
+/**
+ * The opening context's watch line, after the running line (2026-10-18, decision guidance): how what the athlete
+ * approves reaches the watch — nothing while their COROS writes are off (`prefs.corosWritesEnabled`); else, by the run
+ * wire in force (`runWireOf`: v1 a distance as its time at its band's middle — so, with no threshold, not at all — v2 as
+ * a distance). Said per run, so the cached prefix stays the same on either wire.
+ */
+export function watchLine(o: { writesOn: boolean; wire: RunWire; thresholdKnown: boolean }): string {
+  if (!o.writesOn) return "On the watch: nothing for now — the athlete's COROS writes are off, so what they approve stays in the app.";
+  if (o.wire === "v2") return "On the watch: a distance step goes as a distance, and a part's rounds as one repeat group.";
+  const untimed = o.thresholdKnown ? "" : " — with no threshold known it can't be timed, and keeps its run off the watch";
+  return `On the watch: a run's repeats go written out, and a distance step as its time at its band's middle${untimed}.`;
 }
 
 // ── The validator's running (`RunCtx`) ──────────────────────────────────────────────────────────────────────────────

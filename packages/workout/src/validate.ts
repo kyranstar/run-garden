@@ -103,6 +103,10 @@
  * - run_volume_jump (warning, at "parts"): the week's running with this run more than VOLUME_JUMP over the last four
  *   weeks' weekly average (`ctx.run.fourWeekAvgMinutes`, when above zero).
  *   A run's minutes are its steps' on the watch (`runWatchSteps`, a distance at its band's middle), else derived.
+ * - run_time_and_distance (warning, at the segment's target): a time and a distance both set — the watch runs it by its
+ *   time (`runWatchStepOf`). Without the athlete's running too (2026-10-18, decision guidance).
+ * - run_race_by_time (warning, at the segment's target): a race effort set by time with no pace written — race pace is
+ *   the band for a distance (`paceBandFor`), so the step carries none. Without the athlete's running too.
  * Not checked here: `test.keyResultId` and `intent.objectiveIds` (opaque without the database).
  *
  * FIXES for the condition, mode, athlete and place codes: the item's alternates first, then its easier variants (three
@@ -188,6 +192,8 @@ export const DOC_ISSUE_CODES = [
   "run_hard_close",
   "run_long_share",
   "run_volume_jump",
+  "run_race_by_time",
+  "run_time_and_distance",
 ] as const;
 export type DocIssueCode = (typeof DOC_ISSUE_CODES)[number];
 
@@ -617,9 +623,21 @@ export function validateWorkoutDoc(input: unknown, ctx: ValidateCtx): DocIssue[]
       return;
     }
     for (const x of runs) {
-      const t = (x.item as RunItem).target;
+      const it = x.item as RunItem;
+      const t = it.target;
       if (t.durationSec === undefined && t.distanceM === undefined) {
         add({ path: `${x.at}.target`, code: "run_open", message: "An open segment can't go to the watch: give it a time or a distance.", severity: "error" });
+      }
+      // What the step's own target would silently lose (2026-10-18, decision guidance): with both, time wins
+      // (`runWatchStepOf`); race pace is a distance's (`paceBandFor`), so a race step by time has none unless one is written.
+      if (t.durationSec !== undefined && t.distanceM !== undefined) {
+        add({ path: `${x.at}.target`, code: "run_time_and_distance", message: "This step has both a time and a distance; the watch runs it by its time.", severity: "warning" });
+      }
+      if (it.effort === "race" && t.durationSec !== undefined && !t.pace) {
+        add({
+          path: `${x.at}.target`, code: "run_race_by_time", severity: "warning",
+          message: "Race pace is worked out for a distance, so this race step, set by time, has no pace on the watch: give it its distance, or a pace.",
+        });
       }
     }
     // The watch's shortest step (review-2 (e)): each segment and rest as the watch takes it (`runWatchStepOf`), and the

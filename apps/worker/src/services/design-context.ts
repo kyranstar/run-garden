@@ -44,7 +44,7 @@ import {
   providerConnections,
   sleepRecords,
 } from "@rg/database";
-import { EFFORT_LEVELS, addDays, coachSettings, dayLabel, isoWeekday, todayInZone, type ProfileDto, type UserPreferences } from "@rg/domain";
+import { EFFORT_LEVELS, addDays, coachSettings, dayLabel, isoWeekday, todayInZone, type ProfileDto, type RunWire, type UserPreferences } from "@rg/domain";
 import {
   EQUIPMENT,
   EXERCISES,
@@ -58,7 +58,7 @@ import {
   type FormatId,
 } from "@rg/exercise-library";
 import { FORMAT_OF_PART, modeOfEffort } from "@rg/workout";
-import type { Env } from "../env.js";
+import { runWireOf, type Env } from "../env.js";
 import { latestReading, readingsOfDay } from "./condition-views.js";
 import type { Db } from "./db.js";
 // The role caps from the module with no imports (the step loop imports this one: it never imports the loop back).
@@ -67,7 +67,7 @@ import { LATER_LEAD_MIN } from "./design-time.js";
 import { memoryCore } from "./memory-core.js";
 import { focusMove, focusReadInContext, type RunFocus } from "./design-focus.js";
 import { CONTEXT_TURNS, conversationBlock, conversationRows, type TurnRow } from "./coach-conversation.js";
-import { runningFactsOf, runningLine, runWeeksSql, thresholdSql, type RunningFacts } from "./designed-runs.js";
+import { runningFactsOf, runningLine, runWeeksSql, thresholdSql, watchLine, type RunningFacts } from "./designed-runs.js";
 import { FOCUS_LINES, SHARED_PROMPT, markUntrusted, roleBlock, type UntrustedSource } from "./design-prompt.js";
 import { dayWords, distanceWords, minutesOf, paceWords, parsedArray, parsedJson, plural, readTagged, relativeDay } from "./design-tools/read-common.js";
 import { planTerm } from "./design-tools/read-plan.js";
@@ -1080,7 +1080,7 @@ const BRIEF_SOURCES: Record<DesignRun["role"], { from: UntrustedSource; label: s
 
 type Role = DesignRun["role"];
 
-function header(r: Reads, run: DesignRun, role: Role, scope: { kind: ScopeKind; n: number }, now: Date): string {
+function header(r: Reads, run: DesignRun, role: Role, scope: { kind: ScopeKind; n: number }, now: Date, wire: RunWire): string {
   const { kind, n } = scope;
   const end = addDays(r.today, horizonDays(kind, n) - 1);
   const time = localTime(r.tz, now);
@@ -1100,6 +1100,8 @@ function header(r: Reads, run: DesignRun, role: Role, scope: { kind: ScopeKind; 
       `Today's plan: ${todays.length ? `${todays.map((w) => planItem(w, { today: r.today, time })).join("; ")}.` : "nothing planned."}`,
       // Designed runs (§8 §3): every run carries it — at most RUNNING_LINE_MAX characters, whatever was asked.
       runningLine(r.running, r.prefs.units === "mi" ? "mi" : "km"),
+      // How the watch takes what is approved (2026-10-18, decision guidance): per run, so the cached prefix is wire-neutral.
+      watchLine({ writesOn: r.prefs.corosWritesEnabled === true, wire, thresholdKnown: r.running.threshold !== null }),
       events.line,
       scopeLine(role, kind, n, r, time, end),
     ].join("\n"),
@@ -1124,7 +1126,7 @@ function header(r: Reads, run: DesignRun, role: Role, scope: { kind: ScopeKind; 
  * The opening context for a run (see the module comment): `system` for the system blocks, `header` for the first user
  * message. Reads only the signed-in athlete's rows (`userId` scopes every statement) and only `now` for the clock.
  */
-export async function buildDesignContext(db: Db, _env: Env, userId: string, run: DesignRun, now: Date): Promise<DesignContext> {
+export async function buildDesignContext(db: Db, env: Env, userId: string, run: DesignRun, now: Date): Promise<DesignContext> {
   // Parsed before any read: a scope it doesn't know costs no statements.
   const scope = scopeOf(run.scope);
   const role: Role = run.role === "designer" || run.role === "reviewer" ? run.role : "main";
@@ -1140,6 +1142,6 @@ export async function buildDesignContext(db: Db, _env: Env, userId: string, run:
       { type: "text", text: profileBlock(r), cache_control: EPHEMERAL },
       { type: "text", text: memoryBlock(r) },
     ],
-    header: header(r, run, role, scope, now),
+    header: header(r, run, role, scope, now, runWireOf(env)),
   };
 }

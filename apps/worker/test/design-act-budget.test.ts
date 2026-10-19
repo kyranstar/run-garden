@@ -340,7 +340,7 @@ describe("the document's JSON schema the model is given is the domain's", () => 
 
   /**
    * A document holding every field the schema names (each union by every branch it has), at values well inside every
-   * bound — and where two fields must keep an order (a pace's fast ≤ slow, a heart-rate range, a range of reps), each
+   * bound — and where two fields must keep an order (a pace's fast ≤ slow, a range of reps), each
    * at the far end of its own, so that moving one to its own bound never crosses the other.
    */
   function fullDoc(): any {
@@ -361,7 +361,8 @@ describe("the document's JSON schema the model is given is the domain's", () => 
             { kind: "exercise", libraryId: "deadBug", dose: { reps: 8, load: "bodyweight" } },
             {
               kind: "run", effort: "easy", why: "Easy.", cue: "Relax.",
-              target: { durationSec: 600, distanceM: 2000, typed: "2 km", open: true, pace: { fastSecPerKm: 120, slowSecPerKm: 1800 }, hr: { low: 30, high: 230 }, zone: { kind: "hr", index: 2 } },
+              // No heart rate, zone or typed text: not offered to the model (2026-10-18, decision guidance).
+              target: { durationSec: 600, distanceM: 2000, open: true, pace: { fastSecPerKm: 120, slowSecPerKm: 1800 } },
             },
             { kind: "rest", seconds: 60 },
           ],

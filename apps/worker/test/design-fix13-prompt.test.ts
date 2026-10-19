@@ -91,8 +91,9 @@ describe("the main coach's block", () => {
     expect(main).toContain('Read the open suggestions first: the index\'s "open suggestions" line, read_proposals for more. One that already answers the request is the answer');
   });
 
-  it("13c R7: a request bigger than the scope gets what the scope allows, and Plan ahead named", () => {
-    expect(main).toContain("A request bigger than the scope — a week asked for from Now — gets what the scope allows, and your last line says Plan ahead plans the week.");
+  it("13c R7: a request bigger than the scope gets what the scope allows, and the rest is theirs to ask for", () => {
+    // 2026-10-18, decision guidance: "Plan ahead" was a button the new shape retired — the athlete asks in the conversation.
+    expect(main).toContain("A request bigger than the scope — a week asked for from Now — gets what the scope allows, and your last line says they can ask for the rest.");
   });
 
   it("13c R1: Now leaves the time out unless the athlete named one", () => {
@@ -135,9 +136,13 @@ describe("the reviewer's block (13a A4, 13b I5, I8, 13c R5, R15)", () => {
 describe("compact (the cached prefix grew 3k tokens since the pre-live audit)", () => {
   it("the shared prefix stays near 5k tokens and each role block well under its limit", () => {
     // §8 (2026-10-18): 5,200 until §8's prompt streams — R's run lines, W's two plan-tool lines — measured 5,656; the whole
-    // prefix's growth is coach-shape-pins.test.ts's to hold.
-    expect(SHARED_PROMPT.length / 4).toBeLessThanOrEqual(5660);
-    for (const role of ["main", "designer", "reviewer"] as const) expect(roleBlock(role, RUN_LIMITS[role].maxCalls).length / 4, role).toBeLessThanOrEqual(1300);
+    // prefix's growth is coach-shape-pins.test.ts's to hold. REBASED 2026-10-18 for the decision guidance (stream D: a
+    // run's time or distance, heart rate, race pace and what reaches the watch, and when to remember) — measured 5,907.
+    expect(SHARED_PROMPT.length / 4).toBeLessThanOrEqual(5960);
+    // The main coach's block, REBASED 2026-10-18 for the decision guidance (a run's length on the watch, plan_set or
+    // propose_plan, a plan's timed sessions, a programme's settings) — measured 1,488; the others hold at 1,300.
+    const caps = { main: 1540, designer: 1300, reviewer: 1300 } as const;
+    for (const role of ["main", "designer", "reviewer"] as const) expect(roleBlock(role, RUN_LIMITS[role].maxCalls).length / 4, role).toBeLessThanOrEqual(caps[role]);
     // A run's reviewer (§8 §3): the block with the run rubric in place of the workout one — its own cached prefix.
     expect(roleBlock("reviewer", RUN_LIMITS.reviewer.maxCalls, "run").length / 4).toBeLessThanOrEqual(1300);
   });

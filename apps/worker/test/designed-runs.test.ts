@@ -39,7 +39,7 @@ describe("runningLine — the opening context's running", () => {
 
   it("says what it lacks: no threshold, no running", () => {
     expect(runningLine({ threshold: null, weeks: WEEKS.map(() => ({ seconds: 0, meters: 0 })) }, "km")).toBe(
-      "Running: no threshold pace known yet, so a run's steps carry no pace targets (the watch shows time only). No running logged in the last four weeks.",
+      "Running: no threshold pace known yet, so a run's steps carry no pace targets. No running logged in the last four weeks.",
     );
   });
 
