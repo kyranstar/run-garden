@@ -111,7 +111,10 @@ async function renderCard(today: Record<string, unknown>): Promise<{ card: HTMLE
           ? today
           : path === "/api/garden"
             ? garden
-            : path === "/api/settings"
+            : path === "/api/today/body"
+              ? // The body check as the server sends it before the session: open, nothing answered.
+                { workoutId: run.id, answer: null, change: null, open: true, areas: [] }
+              : path === "/api/settings"
               ? { prefs: { units: "km", timezone: "America/Los_Angeles" } }
               : path === "/api/plan/workouts"
                 ? { today: TODAY, workouts: [run], plan: null }
@@ -128,11 +131,25 @@ async function renderCard(today: Record<string, unknown>): Promise<{ card: HTMLE
   act(() => {
     root!.render(createElement(QueryClientProvider, { client: qc }, createElement(MemoryRouter, null, createElement(GardenScreen))));
   });
-  for (let i = 0; i < 300 && !host.querySelector("#dock-panel"); i += 1) {
+  // The card, settled: the body check's chips stand open until its own read answers, then follow it — and the check can
+  // mount after every other read has landed, so a card read the moment it appears, or the moment nothing is fetching,
+  // can catch them either side of that read (CI, 2026-10-19, once in a slow run). Settled = the card there, nothing
+  // fetching, and the body check's read answered (when the card holds one).
+  const settled = (): boolean => {
+    const panel = host!.querySelector("#dock-panel");
+    if (!panel || qc.isFetching() > 0) return false;
+    if (!panel.querySelector(".body-check")) return true;
+    return qc.getQueryState(["body-check", run.id])?.status === "success";
+  };
+  for (let i = 0; i < 300 && !settled(); i += 1) {
     await act(async () => {
       await new Promise((r) => setTimeout(r, 10));
     });
   }
+  // The read can answer after the last pass's render: one more pass draws what it answered.
+  await act(async () => {
+    await new Promise((r) => setTimeout(r, 10));
+  });
   const card = host.querySelector<HTMLElement>("#dock-panel");
   if (!card) throw new Error(`the Today card never rendered\n${host.textContent}`);
   return { card, markup: card.outerHTML.replace(/:r[0-9a-z]+:/g, ":id:") };
