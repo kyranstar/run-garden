@@ -92,7 +92,7 @@
  * brand-new `idInPlan`. `not_found` is terminal here, always.
  */
 
-import { isRunWatchSession, type CoachSession, type RunWatchSession, type StudioSession } from "@rg/domain";
+import { isRunWatchSession, type CoachSession, type RunWatchSession, type RunWire, type StudioSession } from "@rg/domain";
 import {
   corosDayToLocalDate,
   corosProgramFingerprint,
@@ -210,6 +210,8 @@ export interface UpdateWorkoutContentSpec {
   name?: string;
   /** Threshold pace (sec/km) anchoring the new session's pace targets. */
   thresholdPaceSecPerKm?: number;
+  /** A designed run's wire (§8 phase 2, `RUN_WIRE_V2`): v1 when absent. The rewrite builds with it, as the create does. */
+  runWire?: RunWire;
 }
 
 /**
@@ -533,6 +535,7 @@ export async function updateWorkoutContent(
         name: newName,
         session: spec.session,
         thresholdPaceSecPerKm: spec.thresholdPaceSecPerKm,
+        ...(spec.runWire ? { runWire: spec.runWire } : {}),
       },
       opts.catalog,
     );
@@ -1120,6 +1123,7 @@ async function deleteThenCreate(
       name: newName,
       session: spec.session,
       thresholdPaceSecPerKm: spec.thresholdPaceSecPerKm,
+      ...(spec.runWire ? { runWire: spec.runWire } : {}),
     },
     { catalog: opts.catalog, today, log, verbose },
   );

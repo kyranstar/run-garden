@@ -40,9 +40,12 @@ import {
   isProgramWatchSession,
   isRunWatchSession,
   RUN_WATCH_MAX_STEPS,
+  runSegmentGroups,
   runWatchSessionSchema,
   runWatchStepCount,
   runWatchSteps,
+  type RunWatchStepResolved,
+  type RunWire,
   studioSessionSchema,
   type CoachSession,
   type ProgramWatchSession,
@@ -87,6 +90,8 @@ export interface CreateWorkoutSpec {
    * present, run blocks carry pace targets derived from it; when absent the
    * workout pushes with no intensity target, exactly as before. */
   thresholdPaceSecPerKm?: number;
+  /** A designed run's wire (§8 phase 2, `RUN_WIRE_V2`): v1 when absent. Read by `buildRunWatchProgram` only. */
+  runWire?: RunWire;
 }
 
 /**
@@ -648,12 +653,15 @@ export function buildRunWatchProgram(spec: {
   name: string;
   session: RunWatchSession;
   thresholdPaceSecPerKm?: number;
+  /** §8 phase 2: v2 writes a distance as a distance and a part's rounds as one group (`buildRunWatchProgramV2`). */
+  runWire?: RunWire;
 }): RawCorosProgram {
   const parsed = runWatchSessionSchema.safeParse(spec.session);
   if (!parsed.success) {
     const detail = parsed.error.issues.map((issue) => `${issue.path.join(".") || "session"}: ${issue.message}`).join("; ");
     throw new Error(`cannot build "${spec.name}": invalid session — ${detail}`);
   }
+  if (spec.runWire === "v2") return buildRunWatchProgramV2(spec.name, parsed.data, spec.thresholdPaceSecPerKm);
   // The job's schema takes a session either wire can hold (§8 phase 2); v1 writes every round out and holds 60.
   const written = runWatchStepCount(parsed.data.segments, "v1");
   if (written > RUN_WATCH_MAX_STEPS) {
@@ -667,6 +675,85 @@ export function buildRunWatchProgram(spec: {
     spec.name,
     resolved.steps.map((s, index) => runStepExercise(index + 1, s.role, s.seconds!, s.pace)),
   );
+}
+
+/**
+ * A DESIGNED RUN ON THE v2 WIRE (§8 phase 2, `RUN_WIRE_V2`), encoded as COROS's own captured run programs carry it
+ * (docs/reports/coros-inspect-2026-08-02.json; golden-tested in run-watch-v2-program.test.ts):
+ * - a distance is a distance step: `targetType 5`, `targetValue` its metres × 100 (an integer), `targetDisplayUnit 3`
+ *   as every captured distance step carries it — on the owner's account, which shows miles; what a kilometre account's
+ *   watch makes of 3 is for the live check to read;
+ * - a part of more than one round with no rest between them (`runSegmentGroups`) is one repeat group: a container
+ *   (`exerciseType 0`, `isGroup`, `sets` its rounds, named "Group", `originId "0"`, rests skipped — the captured
+ *   "Group" shape, as the app's live-verified strength container) at the next top-level sort slot, its target the
+ *   seconds of one round when every child has them (COROS computes its own: the comparison sets it aside), else none;
+ *   its children after it, linked by `groupId` to its id, sorted `groupSort + 2^16 · (j+1)`;
+ * - anything else is written out, each step at its own top-level slot, as v1 writes it;
+ * - roles, names and pace bands as v1's (`runStepExercise`: a recovery bare, whole seconds × 1000). The steps are
+ *   `runWatchSteps`' on v2, part by part — the card's own, so the preview is the wire.
+ * The program counts its real steps (`exerciseNum`, no container) and every step a round runs (`totalSets`), as the
+ * captures do. No pace is needed: a distance runs as a distance.
+ */
+function buildRunWatchProgramV2(name: string, session: RunWatchSession, thresholdPaceSecPerKm: number | undefined): RawCorosProgram {
+  const exercises: RawCorosExercise[] = [];
+  let id = 0;
+  let top = 0;
+  const stepOf = (s: RunWatchStepResolved, sortNo: number, groupId: string): RawCorosExercise => {
+    id += 1;
+    const exercise = runStepExercise(id, s.role, s.seconds ?? 0, s.pace);
+    return {
+      ...exercise,
+      ...(s.asDistance && s.meters !== undefined ? { targetType: 5, targetValue: Math.round(s.meters * 100), targetDisplayUnit: RUN_DISTANCE_DISPLAY_UNIT } : {}),
+      sortNo,
+      groupId,
+    };
+  };
+  for (const segment of session.segments) {
+    if (runSegmentGroups(segment, "v2")) {
+      const children = runWatchSteps({ segments: [{ rounds: 1, steps: segment.steps }] }, thresholdPaceSecPerKm, "v2").steps;
+      top += 1;
+      id += 1;
+      const groupId = id;
+      const groupSort = TOP_SORT * top;
+      const perRound = children.every((c) => c.seconds !== null) ? children.reduce((n, c) => n + c.seconds!, 0) : null;
+      exercises.push(runGroupContainer(groupId, segment.rounds, groupSort, perRound));
+      children.forEach((c, j) => exercises.push(stepOf(c, groupSort + SUB_SORT * (j + 1), String(groupId))));
+      continue;
+    }
+    for (const s of runWatchSteps({ segments: [segment] }, thresholdPaceSecPerKm, "v2").steps) {
+      top += 1;
+      exercises.push(stepOf(s, TOP_SORT * top, "0"));
+    }
+  }
+  return {
+    ...runProgramOf(name, exercises),
+    exerciseNum: exercises.filter((e) => !e.isGroup).length,
+    totalSets: runWatchStepCount(session.segments, "v1"),
+  };
+}
+
+/** A distance step's display unit as every captured COROS distance step carries it (§8 phase 2; see the builder). */
+const RUN_DISTANCE_DISPLAY_UNIT = 3;
+
+/** The v2 run repeat group's container, as COROS's captured "Group" carries it (§8 phase 2). */
+function runGroupContainer(id: number, rounds: number, sortNo: number, perRoundSeconds: number | null): RawCorosExercise {
+  return {
+    ...EXERCISE_METADATA,
+    id,
+    name: "Group",
+    exerciseType: 0, // repeat-group container
+    sportType: 1,
+    intensityType: 0,
+    intensityValue: 0,
+    ...(perRoundSeconds !== null ? { targetType: 2, targetValue: perRoundSeconds } : { targetType: 0, targetValue: 0 }),
+    sets: rounds,
+    sortNo,
+    restType: REST_TYPE_SKIP,
+    restValue: 0,
+    groupId: "0",
+    isGroup: true,
+    originId: "0",
+  };
 }
 
 /** The load encoding is identical in both vocabularies; the types are not. */
@@ -1136,7 +1223,13 @@ export function buildProgramFor(
   }
   // A designed run (§8 §3): its own builder, the same envelope.
   if (isRunWatchSession(spec.session)) {
-    return buildRunWatchProgram({ happenDay: spec.happenDay, name: spec.name, session: spec.session, thresholdPaceSecPerKm: spec.thresholdPaceSecPerKm });
+    return buildRunWatchProgram({
+      happenDay: spec.happenDay,
+      name: spec.name,
+      session: spec.session,
+      thresholdPaceSecPerKm: spec.thresholdPaceSecPerKm,
+      ...(spec.runWire ? { runWire: spec.runWire } : {}),
+    });
   }
   if (isRunSession(spec.session)) {
     return buildRunProgram({
