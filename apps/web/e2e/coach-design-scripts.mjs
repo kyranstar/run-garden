@@ -30,6 +30,8 @@
  *                holds the plan it suggested — two more shape weeks for that block; then the finish
  *   designed_run a designed run (§8 §3): proposes a tempo run for tomorrow (efforts named, no pace written), reviewed on
  *                the run rubric, then the finish
+ *   race_plan    a block with its race (stream G): reads the plans, then one week from next Monday whose Sunday is the
+ *                plan's race day and holds the race, then the finish
  *
  * `ctx.opening` is the run's opening message (its first user message's text): a script may read what the run was
  * asked from in it.
@@ -256,6 +258,41 @@ function wholePlan(turn, ctx) {
   return uses(["finish", { summary: extend ? EXTEND_LINE : PLAN_LINE }]);
 }
 
+/** The finish's words for the block with a race. */
+export const RACE_PLAN_LINE = "One week to sharpen for the 10K on Sunday.";
+
+/**
+ * A block with its race (stream G, a coach plan's race day can change): read the plans, then one week from next Monday
+ * — an easy run, a tempo, and the 10K itself on its Sunday, the plan's race day (within the "needs you" chips' race
+ * window, and no outline week to fill in, so the race chip is one of the two shown) — then the finish.
+ */
+function racePlan(turn, ctx) {
+  const monday = nextMonday(ctx.today);
+  if (turn === 0) return uses(["read_plans", {}]);
+  if (turn > 1) return uses(["finish", { summary: RACE_PLAN_LINE }]);
+  const race = { category: "race", title: "10K race", durationMinutes: 50, run: { blocks: [{ kind: "duration", value: 50 }] } };
+  return uses([
+    "propose_plan",
+    {
+      change: {
+        kind: "createPlan",
+        discipline: "run",
+        name: "Autumn 10K",
+        startDate: monday,
+        endDate: dayAfter(monday, 6),
+        raceDate: dayAfter(monday, 6),
+        firmSessions: [
+          { date: monday, session: run("Easy run", "easy", 35) },
+          { date: dayAfter(monday, 2), session: run("Tempo run", "quality", 40, "threshold") },
+          { date: dayAfter(monday, 6), session: race },
+        ],
+        shapeWeeks: [],
+      },
+      why: "A short sharpening week: one tempo, then the race.",
+    },
+  ]);
+}
+
 /**
  * A designed run (§8 §3): 10 min easy, 3 × (8 min tempo, 2 min jog), 2 km easy — each segment its effort and a why,
  * no pace written (the app computes the bands from the athlete's threshold).
@@ -298,6 +335,8 @@ export const SCRIPTS = {
   designed_run: { main: designedRun, reviewer },
   // §8 §5: whole plans in the conversation.
   whole_plan: { main: wholePlan, reviewer },
+  // Stream G: a block with its race, whose race day the plan's sheet then changes.
+  race_plan: { main: racePlan, reviewer },
   now: { main: designAfter(0), reviewer },
   // The conversation (the new shape §5): a reply that changes the suggestion before it; a change to the plan.
   reply: { main: designReply, reviewer },

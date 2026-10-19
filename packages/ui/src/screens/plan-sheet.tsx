@@ -1,11 +1,12 @@
 import { useUnits, useWeightUnit } from "../use-units.js";
-import { useRef, useState } from "react";
-import { useQuery } from "@tanstack/react-query";
-import { api, type CoachPlanDto, type PlanDetailResponse } from "@rg/api-client";
-import { ConfirmDialog, formatShortDate, Sheet, Spinner } from "../components.js";
-import { startOfIsoWeek } from "@rg/domain";
+import { useEffect, useRef, useState } from "react";
+import { useQuery, useQueryClient } from "@tanstack/react-query";
+import { api, ApiError, type CoachPlanDto, type PlanDetailResponse } from "@rg/api-client";
+import { ConfirmDialog, formatShortDate, Sheet, Spinner, useEscapeKey } from "../components.js";
+import { dayLabel, startOfIsoWeek } from "@rg/domain";
 import { PlannedVsActualBars, progressionInUnits, ProgressionStepChart } from "./plan-charts.js";
 import { useCoach } from "./studio/coach-ask.js";
+import { NUDGES_QUERY } from "./studio/coach-conversation-model.js";
 
 /** How a plan is named in a request: "my Fall Half Block plan" — never "my Base plan plan". */
 const planPhrase = (title: string): string => (/\bplan$/i.test(title.trim()) ? `my ${title.trim()}` : `my ${title.trim()} plan`);
@@ -17,6 +18,109 @@ const planPhrase = (title: string): string => (/\bplan$/i.test(title.trim()) ? `
 export function planRequests(title: string): { ask: string; extend: string; windDown: string } {
   const plan = planPhrase(title);
   return { ask: `How is ${plan} going?`, extend: `Extend ${plan} by two weeks`, windDown: `Wind down ${plan}` };
+}
+
+/** Why a race day didn't change, in words: the server's own when it gave them. */
+export function raceRefusal(e: unknown): string {
+  const body = e instanceof ApiError ? (e.body as { why?: unknown } | null) : null;
+  if (typeof body?.why === "string" && body.why) return body.why;
+  if (e instanceof ApiError && e.status === 404) return "This plan isn't here any more.";
+  return "Couldn't change the race day. Try again.";
+}
+
+/**
+ * THE PLAN'S RACE (stream G, 2026-10-19: a race was cancelled, and the plan still named it). "Race · Fri 23 Oct" and,
+ * for a block the coach wrote, a Change: a day field from the plan's first day, Save, No race and Cancel. Saving asks
+ * `POST /api/coach/plans/:id/race`, then reads again what says the race: the plan, the week, the race strip and the
+ * coach's chips. A refusal is said in its words and the field stays open. Only the plan's own race — Settings' race day
+ * is changed in Settings.
+ */
+function PlanRace({ planId, race, firstDay, canChange }: { planId: string; race: string; firstDay: string; canChange: boolean }) {
+  const qc = useQueryClient();
+  const [editing, setEditing] = useState(false);
+  const [day, setDay] = useState(race);
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const changeBtn = useRef<HTMLButtonElement>(null);
+  const editor = useRef<HTMLDivElement>(null);
+  const close = () => {
+    setEditing(false);
+    setError(null);
+    changeBtn.current?.focus();
+  };
+  // Escape closes the field, not the sheet: while it is open, it is the top thing.
+  useEscapeKey(editing, close);
+  // Opened near the sheet's fold, the field and its answers scroll into view.
+  useEffect(() => {
+    if (editing) editor.current?.scrollIntoView?.({ block: "nearest" });
+  }, [editing]);
+  const save = async (raceDate: string | null) => {
+    setBusy(true);
+    setError(null);
+    try {
+      await api.coachPlanRace(planId, raceDate);
+      for (const queryKey of [["plan-detail", planId], ["coach-plans"], ["plan-week"], ["plan"], ["race-hub"], [...NUDGES_QUERY]]) {
+        void qc.invalidateQueries({ queryKey });
+      }
+      setEditing(false);
+    } catch (e) {
+      setError(raceRefusal(e));
+    } finally {
+      setBusy(false);
+    }
+  };
+  return (
+    <div className="stack plan-race">
+      <div className="row plan-race-line">
+        <span className="num">Race · {dayLabel(race)}</span>
+        {canChange ? (
+          <button
+            type="button"
+            className="btn btn-small"
+            ref={changeBtn}
+            aria-expanded={editing}
+            aria-controls="plan-race-edit"
+            onClick={() => {
+              if (editing) return close();
+              setDay(race);
+              setError(null);
+              setEditing(true);
+            }}
+          >
+            Change
+          </button>
+        ) : null}
+      </div>
+      <div id="plan-race-edit" className="disclosure-body">
+        {editing ? (
+          <div className="row plan-race-edit" ref={editor}>
+            <input
+              type="date"
+              aria-label="Race day"
+              value={day}
+              min={firstDay}
+              autoFocus
+              onChange={(e) => setDay(e.target.value)}
+            />
+            <button type="button" className="btn btn-primary" disabled={busy || !day || day === race} onClick={() => void save(day)}>
+              Save
+            </button>
+            <button type="button" className="btn" disabled={busy} onClick={() => void save(null)}>
+              No race
+            </button>
+            <button type="button" className="btn" onClick={close}>
+              Cancel
+            </button>
+          </div>
+        ) : null}
+        {editing && error ? (
+          <p className="confirm-error" role="alert" style={{ margin: 0 }}>
+            {error}
+          </p>
+        ) : null}
+      </div>
+    </div>
+  );
 }
 
 /**
@@ -246,14 +350,21 @@ export function PlanSheet({
                   {formatShortDate(d.plan.startDate)} → {formatShortDate(d.plan.endDate)}
                 </span>
               )}
-              {d.plan.raceDate ? (
-                <span className="pill pill-neutral num">race {formatShortDate(d.plan.raceDate)}</span>
-              ) : null}
             </div>
             <p className="faint studio-modal-sub num">
               {d.sessions.done} of {d.sessions.planned} sessions done
               {d.adherencePct !== null ? ` · adherence ${d.adherencePct}%` : ""}
             </p>
+            {/* The plan's own race (stream G): a watch plan's or the Studio's race day is Settings', said there. */}
+            {d.plan.planRaceDate ? (
+              <PlanRace
+                key={d.plan.planRaceDate}
+                planId={d.plan.id}
+                race={d.plan.planRaceDate}
+                firstDay={d.plan.startDate}
+                canChange={(d.plan.source ?? "coach") === "coach" && d.plan.kind !== "loose"}
+              />
+            ) : null}
 
             {d.progressions.length > 0 ? (
               <div className="prog-chips">

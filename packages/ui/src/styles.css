@@ -7731,6 +7731,31 @@ button.session-chip {
   flex: 1 1 10rem;
   min-width: 0;
 }
+/* A plan's race (stream G): its line, then the day field Change opens. On a phone the field is a line of its own and
+   Save, No race and Cancel the next, whole; from 640 the field takes the slack beside them, as the rename's does. */
+.plan-race {
+  gap: var(--space-4);
+}
+.plan-race-line,
+.plan-race-edit {
+  flex-wrap: wrap;
+}
+.plan-race-edit > input {
+  flex: 1 1 100%;
+  min-width: 0;
+  min-height: var(--tap);
+  font: inherit;
+  padding: var(--space-4) var(--space-5);
+  border-radius: var(--radius-sm);
+  border: 1px solid var(--border-strong);
+  background: var(--bg-raised);
+  color: var(--ink);
+}
+@media (min-width: 640px) {
+  .plan-race-edit > input {
+    flex-basis: 10rem;
+  }
+}
 
 /* Mobile compaction ("no unnecessary wrapping"): prose shrinks, numbers stay,
    the brief chips and week header each hold one row. Phone-first, so the
