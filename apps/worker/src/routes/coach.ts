@@ -47,6 +47,7 @@ import { applyOps, isStructuralOp } from "../services/coach-apply.js";
 import { approveStructural, retireInChunks, structuralStarted } from "./thread-structural.js";
 import { evaluateTriggers, pendingTriggers } from "../services/coach-triggers.js";
 import { coachBlockAdherence, isLoosePlan, plansEndedOn } from "../services/coach-plans.js";
+import { setCoachPlanRace } from "../services/coach-plan-race.js";
 import {
   openWakeIsFresh,
   recordAthleteMessage,
@@ -918,6 +919,8 @@ coachRoutes.get("/plans", async (c) => {
         return {
           ...r,
           raceDate: r.raceDate ?? prefs.raceDate,
+          // The plan's own race, which its sheet changes (`POST /plans/:id/race`); `raceDate` falls back to Settings'.
+          planRaceDate: r.raceDate,
           source: "coach" as const,
           kind: (loose ? "loose" : "block") as "loose" | "block",
           // A bucket reports what it HOLDS. Its row dates only say where its
@@ -1104,6 +1107,7 @@ coachRoutes.get("/plans/:id/detail", async (c) => {
       plan: {
         ...cp,
         raceDate: cp.raceDate ?? prefs.raceDate,
+        planRaceDate: cp.raceDate,
         source: "coach" as const,
         kind: (loose ? "loose" : "block") as "loose" | "block",
       },
@@ -1341,6 +1345,20 @@ coachRoutes.post("/plans/:id/rename", async (c) => {
     .set({ name, updatedAt: nowInstant() })
     .where(and(eq(coachPlans.id, c.req.param("id")), eq(coachPlans.userId, userId)));
   return c.json({ ok: true });
+});
+
+/**
+ * A coach plan's race day (stream G; services/coach-plan-race.ts): `{ raceDate: "YYYY-MM-DD" | null }`, null for no race.
+ * 200 `{ ok, raceDate, demoted }`; 404 for a plan not the athlete's, a loose bucket or none; 400 `{ error: "bad_date",
+ * why }` in words. Never Settings' race day. The sign-in's two statements and three at most.
+ */
+coachRoutes.post("/plans/:id/race", async (c) => {
+  const body = await c.req.json<unknown>().catch(() => null);
+  const raceDate = body !== null && typeof body === "object" && "raceDate" in body ? body.raceDate : undefined;
+  const out = await setCoachPlanRace(c.get("db"), c.get("userId"), c.req.param("id"), raceDate);
+  if (out.kind === "not_found") return c.json({ error: "not_found" }, 404);
+  if (out.kind === "bad_date") return c.json({ error: "bad_date", why: out.why }, 400);
+  return c.json({ ok: true, raceDate: out.raceDate, demoted: out.demoted });
 });
 
 coachRoutes.post("/plans/:id/retire", async (c) => {

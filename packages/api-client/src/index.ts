@@ -591,7 +591,11 @@ export interface CoachPlanDto {
   status: "draft" | "active" | "completed" | "retired";
   startDate: string;
   endDate: string;
+  /** Race day as the plan's surfaces draw it: the plan's own, else Settings' race day. */
   raceDate: string | null;
+  /** A coach plan's OWN race (null: it names none), the one its sheet changes (`coachPlanRace`). Absent for a watch
+   * plan or the Studio's, and in older payloads. */
+  planRaceDate?: string | null;
   /** Who authored it: the coach, the Studio (lifting plans written to
    * COROS), or COROS itself (imported plans — read-only cards). Absent in
    * older payloads — treat as "coach". */
@@ -2454,6 +2458,12 @@ export const api = {
     get<PlanDetailResponse>(`/api/coach/plans/${encodeURIComponent(id)}/detail`),
   coachPlanRename: (id: string, name: string) =>
     post<{ ok: boolean }>(`/api/coach/plans/${id}/rename`, { name }),
+  /**
+   * A coach plan's race day: a day, or null for no race (stream G). Its race session still to come on the old day stops
+   * being the race (`demoted`); Settings' race day is never touched. 400 `{ error: "bad_date", why }` says why in words.
+   */
+  coachPlanRace: (id: string, raceDate: string | null) =>
+    post<{ ok: boolean; raceDate: string | null; demoted: number }>(`/api/coach/plans/${encodeURIComponent(id)}/race`, { raceDate }),
   /** Retire a coach plan: its sessions ahead are taken off a slice a request (§8 §4), asked again while `remaining`. */
   coachPlanRetire: async (id: string) => {
     for (let i = 0; i < STRUCTURAL_ROUNDS_MAX; i++) {
