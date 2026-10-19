@@ -36,7 +36,7 @@ import {
   programSessionPushJobSchema,
   type RunWatchSession,
 } from "@rg/domain";
-import { watchPushEnabled, type Env } from "../env.js";
+import { runWireOf, watchPushEnabled, type Env } from "../env.js";
 import type { Db } from "./db.js";
 import { restoreInProgress } from "./account-state.js";
 import { corosClient } from "./coros-connection.js";
@@ -406,6 +406,8 @@ export async function executeCloudJobs(
             name: spec.name,
             session: spec.session,
             thresholdPaceSecPerKm: threshold,
+            // A designed run's wire (§8 phase 2): the switch in force when the lane writes.
+            runWire: runWireOf(env),
           },
           { catalog, log: () => undefined },
         );
@@ -790,6 +792,8 @@ export async function executeCloudJobs(
             // authorship and needs no uniqueness.
             name: spec.name,
             ...(threshold ? { thresholdPaceSecPerKm: threshold } : {}),
+            // A designed run's wire (§8 phase 2): its Undo writes what its create would now.
+            runWire: runWireOf(env),
           },
           {
             catalog,

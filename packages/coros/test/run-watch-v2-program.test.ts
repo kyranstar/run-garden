@@ -12,9 +12,9 @@ import { runWatchSteps, type RunWatchSession } from "@rg/domain";
 import type { RawCorosExercise } from "@rg/providers";
 import { CorosClient } from "../src/client.js";
 import { updateWorkoutContent } from "../src/content-executor.js";
-import { buildProgramFor, buildRunWatchProgram, createWorkout, type CreateWorkoutSpec } from "../src/create-executor.js";
+import { buildProgramFor, buildRunWatchProgram, createWorkout, storedContentDelta, type CreateWorkoutSpec } from "../src/create-executor.js";
 import { mockCorosServer, nextMonday } from "./mock-coros-server.js";
-import { reencodeProgram } from "./renormalizing-coros.js";
+import { reencodeProgram, renormalizingCoros } from "./renormalizing-coros.js";
 
 const THRESHOLD = 289;
 const spec = (session: RunWatchSession, wire?: "v1" | "v2", threshold: number | null = THRESHOLD) => ({
@@ -172,5 +172,48 @@ describe("the renormalizing mock learns distance and groups (§8 phase 2)", () =
   it("a run of time steps keeps the distance it was sent, as live rewrites of the thread coach's runs verified it", () => {
     const sent = { ...buildRunWatchProgram(spec(GROUPED, "v2")), distance: 777700, estimatedDistance: 777700 };
     expect(reencodeProgram(sent)).toMatchObject({ distance: 777700, estimatedDistance: 777700 });
+  });
+});
+
+describe("a v2 create read back by value (§8 phase 2): groups and distances compared, the server's own figures set aside", () => {
+  const HALVES: RunWatchSession = {
+    kind: "run_watch",
+    title: "Half miles",
+    segments: [
+      { rounds: 1, steps: [{ role: "warmup", effort: "easy", target: { kind: "time", seconds: 600 } }] },
+      { rounds: 6, steps: [{ role: "work", effort: "threshold", target: { kind: "distance", meters: 804.67 } }, { role: "recovery", effort: "recovery", target: { kind: "time", seconds: 90 } }] },
+      { rounds: 1, steps: [{ role: "cooldown", effort: "easy", target: { kind: "distance", meters: 2000 } }] },
+    ],
+  };
+  async function created(session: RunWatchSession, threshold: number | null) {
+    const server = renormalizingCoros({ baseMonday: nextMonday() });
+    const client = new CorosClient({ region: "us", fetchImpl: server.fetchImpl, logger: () => undefined });
+    await client.loginWithHash(server.email, createHash("md5").update(server.password, "utf8").digest("hex"));
+    const today = new Date().toISOString().slice(0, 10);
+    const day = new Date(`${today}T00:00:00Z`);
+    day.setUTCDate(day.getUTCDate() + 10);
+    return createWorkout(client, { ...spec(session, "v2", threshold), happenDay: day.toISOString().slice(0, 10).replaceAll("-", "") } as CreateWorkoutSpec, { today, catalog: new Map(), log: () => undefined });
+  }
+
+  it("against the renormalizing COROS — its ids, links, container targets, duration and distance — nothing to say, with or without a threshold", async () => {
+    for (const threshold of [THRESHOLD, null]) {
+      const result = await created(HALVES, threshold);
+      expect(result.ok, result.error).toBe(true);
+      expect(result.contentDelta, String(threshold)).toBeUndefined();
+    }
+  });
+
+  it("a group's rounds, a child's distance, a child moved out of its group: each named", () => {
+    const sent = buildRunWatchProgram(spec(HALVES, "v2"));
+    const changed = (f: (e: Array<Record<string, unknown>>) => void) => {
+      const stored = structuredClone(sent);
+      f(stored.exercises as unknown as Array<Record<string, unknown>>);
+      return storedContentDelta(sent, stored);
+    };
+    expect(changed((e) => void (e[1]!.sets = 5))).toBe("ex[1].sets 6→5");
+    expect(changed((e) => void (e[2]!.targetValue = 80500))).toBe("ex[2].targetValue 80467→80500");
+    expect(changed((e) => void (e[3]!.groupId = "0"))).toMatch(/^ex\[3\]\.groupId/);
+    // The container's own target — its type and its seconds — is the server's.
+    expect(changed((e) => { e[1]!.targetType = 0; e[1]!.targetValue = 0; })).toBeUndefined();
   });
 });

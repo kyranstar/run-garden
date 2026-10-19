@@ -1821,12 +1821,24 @@ const WRITE_WINDOW_PAD_DAYS = 3;
  * band.
  */
 export function storedContentDelta(sent: RawCorosProgram, stored: RawCorosProgram): string | undefined {
+  const sentSteps = sent.exercises ?? [];
   const asSent: RawCorosProgram = {
     ...stored,
     duration: sent.duration,
     estimatedTime: sent.estimatedTime,
     distance: sent.distance,
     estimatedDistance: sent.estimatedDistance,
+    // A repeat group's own target — its type and its seconds a round — is the server's to compute (§8 phase 2: the
+    // captures hold 0/0 and 2/540 for the same shape): set aside where both sides hold a container. Its rounds, its
+    // children's links and everything of theirs are compared.
+    ...(stored.exercises
+      ? {
+          exercises: stored.exercises.map((e, i) => {
+            const x = sentSteps[i];
+            return e.isGroup === true && x?.isGroup === true ? { ...e, targetType: x.targetType, targetValue: x.targetValue } : e;
+          }),
+        }
+      : {}),
   };
   return sameProgramContent(sent, asSent) ? undefined : describeProgramDelta(sent, asSent, 20);
 }
