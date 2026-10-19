@@ -237,14 +237,20 @@ describe("program settings", () => {
     vi.unstubAllGlobals();
   });
 
-  function mount(p: ProgramDto = program()) {
+  /** `patches`: what the server says to each PATCH in turn (then plain answers), each after `held` resolves when given. */
+  function mount(p: ProgramDto = program(), patches: Array<{ placing?: boolean; held?: Promise<void> }> = []) {
     const calls: Array<{ method: string; path: string; body: unknown }> = [];
     vi.stubGlobal(
       "fetch",
       vi.fn(async (url: string, init?: RequestInit) => {
         const body = init?.body ? JSON.parse(String(init.body)) : null;
         calls.push({ method: init?.method ?? "GET", path: url, body });
-        return new Response(JSON.stringify({ program: p }), { status: 200, headers: { "Content-Type": "application/json" } });
+        const answer = init?.method === "PATCH" ? patches.shift() : undefined;
+        if (answer?.held) await answer.held;
+        return new Response(JSON.stringify({ program: p, ...(answer?.placing ? { placing: true } : {}) }), {
+          status: 200,
+          headers: { "Content-Type": "application/json" },
+        });
       }),
     );
     host = document.createElement("div");
@@ -360,6 +366,40 @@ describe("program settings", () => {
     mount(program({ config: { ...program().config, modes: ["consistent"] } }));
     await openSettings();
     expect((byName("Consistent") as HTMLButtonElement).disabled).toBe(true);
+  });
+
+  it("a save the server is still placing (`placing`, every request within its budget) asks again until it isn't, saying so meanwhile", async () => {
+    let release!: () => void;
+    const held = new Promise<void>((r) => (release = r));
+    const { calls } = mount(program(), [{ placing: true }, { placing: true, held }, {}]);
+    await openSettings();
+    await press("F");
+    await press("Save");
+    await until(() => calls.filter((c) => c.method === "PATCH").length === 2, "the second request");
+    // While the server moves them, the sheet says so, and Save can't be pressed twice.
+    const footer = () => document.querySelector("[role=dialog] .btn-primary") as HTMLButtonElement;
+    expect(footer().textContent).toBe("Moving your sessions…");
+    expect(footer().disabled).toBe(true);
+    expect(document.querySelector("[role=dialog]")).not.toBeNull();
+    release();
+    await until(() => document.querySelector("[role=dialog]") === null, "the sheet closed once placed");
+    const patches = calls.filter((c) => c.method === "PATCH");
+    // The save once; then the rest asked for with nothing to change.
+    expect(patches.map((c) => c.body)).toEqual([
+      expect.objectContaining({ config: expect.objectContaining({ preferredDays: [0, 2, 4] }) }),
+      {},
+      {},
+    ]);
+    expect(new Set(patches.map((c) => c.path))).toEqual(new Set(["/api/programs/p1"]));
+  });
+
+  it("Retire, when the server is still taking sessions back, asks again until it isn't", async () => {
+    const { calls } = mount(program(), [{ placing: true }, {}]);
+    await openSettings();
+    await press("Retire…");
+    await press("Retire program");
+    await until(() => document.querySelector("[role=dialog]") === null, "the sheet closed once retired");
+    expect(calls.filter((c) => c.method === "PATCH").map((c) => c.body)).toEqual([{ status: "retired" }, {}]);
   });
 
   it("Retire asks first, then retires", async () => {

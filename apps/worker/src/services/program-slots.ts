@@ -30,13 +30,20 @@
  *     live slots from today on (`refreshSlotContent`); history keeps what it said.
  *
  * Every writer here is a no-op while a restore is replacing the account (ruling B2).
+ *
+ * A REQUEST PLACES WITHIN ITS BUDGET (`placeSlotsWithin`, 2026-10-19): a change of days retracts every flexible slot
+ * the new pattern drops, about eight statements each, so one settings save at four weeks ahead measured 123 against the
+ * free plan's 50 an invocation. A request's pass declares what each step costs, does what fits — the retractions first,
+ * then the new slots, the revived ones and the refreshed ones, each with its day's collision pass — and says `more`
+ * when something is left; the next request (or the hourly pass, which has no budget) carries on from the rows, since
+ * placement re-derives everything each time.
  */
-import { and, eq, gt, gte, inArray, isNull, lte, max, ne, or, sql } from "drizzle-orm";
+import { and, count, eq, gt, gte, inArray, isNull, lte, max, ne, or, sql } from "drizzle-orm";
 import { calendarEventSuppressions, plannedWorkouts, programs, sessionBuilds } from "@rg/database";
 import { adaptiveConfigSchema, addDays, nowInstant, startOfIsoWeek, todayInZone, type UserPreferences } from "@rg/domain";
 import { restoreInProgress } from "./account-state.js";
 import { loadPreferences } from "./calendar-sync.js";
-import { chunkedInsert, chunkIds, type Db } from "./db.js";
+import { chunkedInsert, chunkIds, insertBatches, type Db } from "./db.js";
 import { plannedRowColumns, type PlannedRow } from "./planned-columns.js";
 import { separateDayCollisions, windowTimeFor } from "./day-placement.js";
 import { removeFromPlan } from "./plan-mutations.js";
@@ -51,6 +58,26 @@ export interface PlacementResult {
   /** Slots retracted (`program_replaced`). */
   archived: string[];
 }
+
+/** A pass within a budget (`placeSlotsWithin`). */
+export interface BudgetedPlacement extends PlacementResult {
+  /** Something is left for the next pass: a retraction, or a slot to place or refresh. */
+  more: boolean;
+  /** The statements this pass declared — an upper bound on what it ran. */
+  spent: number;
+}
+
+/**
+ * One retraction (`retractSlot` → `removeFromPlan`) at its most, for a slot that is an outline — the only kind it
+ * archives: the row read and archived (2), its queued watch writes settled (1), its calendar suppression (1), its intent
+ * (2), an open move intent read and closed (2), and its sent build looked for (2; an outline was never sent, so no unpush
+ * follows — a slot's own id is never a watch address). Measured 8 (programs-budget.test.ts).
+ */
+export const RETRACT_COST = 2 + 1 + 1 + 2 + 2 + 2;
+/** A retracted slot brought back: its row and its suppression. */
+export const REVIVE_COST = 2;
+/** The ids one touched lookup, and one build lookup, bind (`TOUCHED_ID_CHUNK`, `BUILD_ID_CHUNK`). */
+const ID_CHUNK = 80;
 
 /** A slot's id: one per program per planned date, so placement can never duplicate one. */
 export function slotId(programId: string, date: string): string {
@@ -96,7 +123,7 @@ const TOUCHED = sql.raw(
 );
 
 /** Bound per statement for the touched lookup: the ids, nothing else. */
-const TOUCHED_ID_CHUNK = 80;
+const TOUCHED_ID_CHUNK = ID_CHUNK;
 
 /** Which of these slots the athlete touched (`TOUCHED`). */
 async function touchedSlots(db: Db, ids: readonly string[]): Promise<Set<string>> {
@@ -172,7 +199,8 @@ function windowGone(today: string, windowTime: string, now: string, timezone: st
 /**
  * Place (and re-place) one program's slots. Idempotent: a second run with the same inputs writes nothing.
  * Not this user's program, not adaptive, or a restore in progress → nothing. A program that is not active wants
- * no slots, so its flexible ones are retracted and none are placed.
+ * no slots, so its flexible ones are retracted and none are placed. Everything in one pass, however long: the
+ * hourly pass's way (a request places within its budget, `placeSlotsWithin`).
  */
 export async function placeSlots(
   db: Db,
@@ -182,8 +210,44 @@ export async function placeSlots(
   prefs: UserPreferences,
   now: string,
 ): Promise<PlacementResult> {
-  const result: PlacementResult = { placed: [], archived: [] };
+  const { placed, archived } = await place(db, userId, programId, today, prefs, now, null);
+  return { placed, archived };
+}
+
+/**
+ * `placeSlots` within `budget` statements (a request's room): the same rule, a step at a time — the retractions first,
+ * then the slots to place, bring back or refresh, each with its day's collision pass — as many as their declared costs
+ * fit, and `more` when something is left. The pass's first step always runs, so every pass gets somewhere; the next
+ * pass carries on from the rows (nothing is stored between them), and the hourly pass finishes whatever no request
+ * came back for.
+ */
+export async function placeSlotsWithin(
+  db: Db,
+  userId: string,
+  programId: string,
+  today: string,
+  prefs: UserPreferences,
+  now: string,
+  budget: number,
+): Promise<BudgetedPlacement> {
+  return place(db, userId, programId, today, prefs, now, budget);
+}
+
+async function place(
+  db: Db,
+  userId: string,
+  programId: string,
+  today: string,
+  prefs: UserPreferences,
+  now: string,
+  budget: number | null,
+): Promise<BudgetedPlacement> {
+  const result: BudgetedPlacement = { placed: [], archived: [], more: false, spent: 0 };
+  // The pass's declared statements, as it goes (read only when it has a budget).
+  const spend = (n: number) => void (result.spent += n);
+  spend(1);
   if (await restoreInProgress(db, userId)) return result;
+  spend(1);
   const [program] = await db
     .select()
     .from(programs)
@@ -198,6 +262,7 @@ export async function placeSlots(
   // Planned in the window (rule 1's count, and every id a new slot could take), or sitting in it now (a slot
   // moved in from outside still holds its date). A program that wants no slots also reads every live slot past
   // the window: retiring retracts its flexible future slots wherever an earlier, wider window put them (M2).
+  spend(1);
   const rows = await db
     .select(plannedRowColumns())
     .from(plannedWorkouts)
@@ -274,6 +339,7 @@ export async function placeSlots(
   const byRow = rows.filter((r) => flexible(r, today)).map((r) => r.id);
   let planned = plan(new Set(byRow));
   if (planned.toArchive.length > 0) {
+    spend(Math.ceil(byRow.length / TOUCHED_ID_CHUNK));
     const touched = await touchedSlots(db, byRow);
     if (touched.size > 0) planned = plan(new Set(byRow.filter((id) => !touched.has(id))));
   }
@@ -283,10 +349,19 @@ export async function placeSlots(
   // the file's ids too, so not one write may land. Looked at again right before each kind of write.
   const restoreBegan = () => restoreInProgress(db, userId);
 
-  // Retract first, then fill (spec: archive, then place the new pattern).
+  // Retract first, then fill (spec: archive, then place the new pattern). Within a budget, as many as fit — the
+  // first always — and the fill waits for the next pass while any is left.
+  if (toArchive.length > 0) spend(1);
   if (toArchive.length > 0 && (await restoreBegan())) return result;
-  for (const r of toArchive) {
+  const retracting =
+    budget === null ? toArchive : toArchive.slice(0, Math.max(1, Math.floor((budget - result.spent) / RETRACT_COST)));
+  for (const r of retracting) {
+    spend(RETRACT_COST);
     if (await retractSlot(db, userId, r, today, prefs, now)) result.archived.push(r.id);
+  }
+  if (retracting.length < toArchive.length) {
+    result.more = true;
+    return result;
   }
 
   const seconds = config.defaultMinutes * 60;
@@ -301,7 +376,7 @@ export async function placeSlots(
 
   // Every column, defaulted ones included: `chunkedInsert` sizes batches by the row's own keys, and Drizzle binds
   // a default for any key a row omits (P1-R12).
-  const fresh = toInsert.map((date) => {
+  const freshRow = (date: string) => {
     const id = slotId(programId, date);
     return {
       id,
@@ -337,44 +412,139 @@ export async function placeSlots(
       updatedAt: now,
       ...content(date),
     };
-  });
-  if (fresh.length > 0 && (await restoreBegan())) return result;
-  await chunkedInsert(fresh, (batch) => db.insert(plannedWorkouts).values(batch).onConflictDoNothing());
-  result.placed.push(...fresh.map((r) => r.id));
-
+  };
+  const insert = async (dates: readonly string[]): Promise<boolean> => {
+    const fresh = dates.map(freshRow);
+    if (fresh.length > 0 && (await restoreBegan())) return false;
+    await chunkedInsert(fresh, (batch) => db.insert(plannedWorkouts).values(batch).onConflictDoNothing());
+    result.placed.push(...fresh.map((r) => r.id));
+    return true;
+  };
   // A retracted slot whose day is wanted again: the same row comes back, as a fresh outline on its own day.
-  if (toRevive.length > 0 && (await restoreBegan())) return result;
-  for (const r of toRevive) {
-    await db
-      .update(plannedWorkouts)
-      .set({
-        ...content(r.originalPlanDate),
-        effectiveDate: r.originalPlanDate,
-        completionState: "scheduled",
-        contentState: "outline",
-        sessionParams: null,
-        resolutionDate: null,
-        snoozedUntil: null,
-        missingReads: 0,
-        archivedAt: null,
-        archiveReason: null,
-        ...(r.calendarSyncState === "synced" ? { calendarSyncState: "pending" } : {}),
-        updatedAt: now,
-      })
-      .where(and(eq(plannedWorkouts.id, r.id), eq(plannedWorkouts.userId, userId)));
-    // Its suppression goes with the archive it explained, or the calendar would never book it again.
-    await db.delete(calendarEventSuppressions).where(eq(calendarEventSuppressions.workoutId, r.id));
-    result.placed.push(r.id);
+  const revive = async (revived: readonly WorkoutRow[]): Promise<boolean> => {
+    if (revived.length > 0 && (await restoreBegan())) return false;
+    for (const r of revived) {
+      await db
+        .update(plannedWorkouts)
+        .set({
+          ...content(r.originalPlanDate),
+          effectiveDate: r.originalPlanDate,
+          completionState: "scheduled",
+          contentState: "outline",
+          sessionParams: null,
+          resolutionDate: null,
+          snoozedUntil: null,
+          missingReads: 0,
+          archivedAt: null,
+          archiveReason: null,
+          ...(r.calendarSyncState === "synced" ? { calendarSyncState: "pending" } : {}),
+          updatedAt: now,
+        })
+        .where(and(eq(plannedWorkouts.id, r.id), eq(plannedWorkouts.userId, userId)));
+      // Its suppression goes with the archive it explained, or the calendar would never book it again.
+      await db.delete(calendarEventSuppressions).where(eq(calendarEventSuppressions.workoutId, r.id));
+      result.placed.push(r.id);
+    }
+    return true;
+  };
+
+  if (budget === null) {
+    if (!(await insert(toInsert))) return result;
+    if (!(await revive(toRevive))) return result;
+    const refreshedDates = await refreshSlotContent(db, userId, program, { discipline, seconds }, today, now, restoreBegan);
+    if (refreshedDates === null) return result;
+
+    const placedDates = [...toInsert, ...toRevive.map((r) => r.originalPlanDate), ...refreshedDates];
+    if (placedDates.length > 0) {
+      await separateDayCollisions(db, userId, placedDates, prefs, { from: today, now });
+    }
+    return result;
   }
 
-  const refreshedDates = await refreshSlotContent(db, userId, program, { discipline, seconds }, today, now, restoreBegan);
-  if (refreshedDates === null) return result;
-
-  const placedDates = [...toInsert, ...toRevive.map((r) => r.originalPlanDate), ...refreshedDates];
-  if (placedDates.length > 0) {
-    await separateDayCollisions(db, userId, placedDates, prefs, { from: today, now });
+  // ── Within the budget: what the fill would do, and as much of it as fits ──────────────────────────────────────────
+  // Rule 5's changes are read first here (the rows a fill brings in already say what the program says, so the set is
+  // the same as read after it): the live read, and the build lookup for the built ones.
+  const ran = retracting.length > 0;
+  if (ran && result.spent + 2 > budget) {
+    result.more = true;
+    return result;
   }
+  const live = await refreshReads(db, userId, program, today);
+  spend(1 + Math.ceil(live.builtCount / BUILD_ID_CHUNK));
+  const changes = refreshChanges(live, program, { discipline, seconds });
+
+  type Unit = { kind: "insert"; date: string } | { kind: "revive"; r: WorkoutRow } | { kind: "refresh"; change: RefreshChange };
+  const units: Unit[] = [
+    ...toInsert.map((date) => ({ kind: "insert" as const, date })),
+    ...toRevive.map((r) => ({ kind: "revive" as const, r })),
+    ...changes.map((change) => ({ kind: "refresh" as const, change })),
+  ];
+  if (units.length === 0) return result;
+  const dateOf = (u: Unit) => (u.kind === "insert" ? u.date : u.kind === "revive" ? u.r.originalPlanDate : u.change.r.effectiveDate);
+
+  // The collision pass's bound: the live, scheduled sessions each day already holds (one read).
+  const days = [...new Set(units.map(dateOf))].filter((d) => d >= today);
+  spend(Math.ceil(days.length / ID_CHUNK));
+  const dayRows = await liveSessionsByDay(db, userId, days);
+
+  // The fill's cost for its first `n` units: a restore check before each kind of write, the insert statements, two
+  // statements a revive, one a refresh — then the collision pass's two reads and, for each day touched, every session
+  // it holds (a new slot among them) re-timed at most once.
+  const costOf = (n: number): number => {
+    const chosen = units.slice(0, n);
+    const inserts = chosen.flatMap((u) => (u.kind === "insert" ? [u.date] : []));
+    const revives = chosen.filter((u) => u.kind === "revive").length;
+    const refreshes = chosen.filter((u) => u.kind === "refresh").length;
+    const kinds = (inserts.length > 0 ? 1 : 0) + (revives > 0 ? 1 : 0) + (refreshes > 0 ? 1 : 0);
+    const added = new Map<string, number>();
+    for (const u of chosen) if (u.kind !== "refresh") added.set(dateOf(u), (added.get(dateOf(u)) ?? 0) + 1);
+    const touchedDays = new Set(chosen.map(dateOf).filter((d) => d >= today));
+    let collisions = touchedDays.size > 0 ? 2 : 0;
+    for (const d of touchedDays) collisions += (dayRows.get(d) ?? 0) + (added.get(d) ?? 0);
+    return kinds + insertBatches(inserts.map(freshRow)).length + REVIVE_COST * revives + refreshes + collisions;
+  };
+  let take = 0;
+  while (take < units.length && result.spent + costOf(take + 1) <= budget) take += 1;
+  // A pass always gets somewhere: the first step runs even past the budget when nothing else has.
+  if (take === 0 && !ran) take = 1;
+  if (take === 0) {
+    result.more = true;
+    return result;
+  }
+  spend(costOf(take));
+  const chosen = units.slice(0, take);
+  const inserts = chosen.flatMap((u) => (u.kind === "insert" ? [u.date] : []));
+  const revives = chosen.flatMap((u) => (u.kind === "revive" ? [u.r] : []));
+  const refreshes = chosen.flatMap((u) => (u.kind === "refresh" ? [u.change] : []));
+  if (!(await insert(inserts))) return result;
+  if (!(await revive(revives))) return result;
+  if (refreshes.length > 0 && (await restoreBegan())) return result;
+  await writeRefresh(db, userId, refreshes, now);
+  await separateDayCollisions(db, userId, chosen.map(dateOf), prefs, { from: today, now });
+  result.more = take < units.length;
   return result;
+}
+
+/** The live, scheduled, non-rest sessions each of `days` holds — what the collision pass may re-time there. */
+async function liveSessionsByDay(db: Db, userId: string, days: readonly string[]): Promise<Map<string, number>> {
+  const out = new Map<string, number>();
+  for (const batch of chunkIds([...days], ID_CHUNK)) {
+    const rows = await db
+      .select({ date: plannedWorkouts.effectiveDate, n: count() })
+      .from(plannedWorkouts)
+      .where(
+        and(
+          eq(plannedWorkouts.userId, userId),
+          inArray(plannedWorkouts.effectiveDate, batch),
+          isNull(plannedWorkouts.archivedAt),
+          eq(plannedWorkouts.completionState, "scheduled"),
+          ne(plannedWorkouts.category, "rest"),
+        ),
+      )
+      .groupBy(plannedWorkouts.effectiveDate);
+    for (const r of rows) out.set(r.date, r.n);
+  }
+  return out;
 }
 
 /** A built session's title: the program's name, then the build's theme (Phase 2 spec §2a "Build rules"). */
@@ -405,6 +575,13 @@ async function refreshSlotContent(
   now: string,
   restoreBegan: () => Promise<boolean>,
 ): Promise<string[] | null> {
+  const changes = refreshChanges(await refreshReads(db, userId, program, today), program, content);
+  if (changes.length > 0 && (await restoreBegan())) return null;
+  return writeRefresh(db, userId, changes, now);
+}
+
+/** Rule 5's reads: the program's live, scheduled slots from today on, and each built one's theme. */
+async function refreshReads(db: Db, userId: string, program: ProgramRow, today: string) {
   const live = await db
     .select({
       id: plannedWorkouts.id,
@@ -447,8 +624,23 @@ async function refreshSlotContent(
       if (!seen || b.version > seen.version) themeOf.set(b.workoutId, { version: b.version, theme: b.theme });
     }
   }
+  return { live, themeOf, builtCount: builtIds.length };
+}
 
-  const changes: Array<{ r: (typeof live)[number]; want: Partial<typeof plannedWorkouts.$inferInsert> }> = [];
+type RefreshReads = Awaited<ReturnType<typeof refreshReads>>;
+/** One slot rule 5 rewrites, and what it writes. */
+interface RefreshChange {
+  r: RefreshReads["live"][number];
+  want: Partial<typeof plannedWorkouts.$inferInsert>;
+}
+
+/** Rule 5's writes, worked out from its reads: only the rows that differ. */
+function refreshChanges(
+  { live, themeOf }: RefreshReads,
+  program: ProgramRow,
+  content: { discipline: "strength" | "yoga"; seconds: number },
+): RefreshChange[] {
+  const changes: RefreshChange[] = [];
   for (const r of live) {
     let want: Partial<typeof plannedWorkouts.$inferInsert>;
     if (r.contentState === "outline") {
@@ -469,8 +661,11 @@ async function refreshSlotContent(
     );
     if (differs) changes.push({ r, want });
   }
-  if (changes.length > 0 && (await restoreBegan())) return null;
+  return changes;
+}
 
+/** Rule 5's writes, one a row; the dates whose rows changed, for the collision pass. */
+async function writeRefresh(db: Db, userId: string, changes: readonly RefreshChange[], now: string): Promise<string[]> {
   const changedDates: string[] = [];
   for (const { r, want } of changes) {
     await db

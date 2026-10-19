@@ -3,12 +3,15 @@
  * goal, preferred days, minutes, place, block length, modes, care on/off and name — Save patches the program, and
  * the server re-places its slots. Retire asks first.
  *
+ * The server places a request's budget at a time (2026-10-19): while its answer says `placing`, the sheet asks again
+ * with nothing to change, saying "Moving your sessions…", and closes once it is done.
+ *
  * With no program it is the "New program…" form, which stays hidden until the player ships (ruling 2a-R5).
  * Labels are plain; the care switch is named by the profile's own care label.
  */
 import { useState } from "react";
 import { useMutation, useQueryClient } from "@tanstack/react-query";
-import { api, type ConditionViewDto, type ProgramDto, type ProgramsResponse } from "@rg/api-client";
+import { api, type ConditionViewDto, type ProgramDto, type ProgramSaveResponse, type ProgramsResponse } from "@rg/api-client";
 import type { AdaptiveConfig } from "@rg/domain";
 import { Banner, ConfirmDialog, Sheet } from "../components.js";
 import { MODE_LABEL } from "./today-program.js";
@@ -19,6 +22,24 @@ const DAY_LETTERS = ["M", "T", "W", "T", "F", "S", "S"];
 const DAY_NAMES = ["Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday", "Sunday"];
 const MINUTES = [15, 20, 25, 30, 35, 40, 45, 50, 60, 75, 90];
 const BLOCK_WEEKS = [4, 5, 6];
+/** Most requests one save asks for its placing (a days change at four weeks ahead took six); the hourly pass places the rest. */
+export const PLACING_ROUNDS_MAX = 20;
+
+/**
+ * A save, then — while the server says `placing` — the same program asked again with nothing to change, until its
+ * sessions are placed (or PLACING_ROUNDS_MAX). `onPlacing` is told once the first answer says so.
+ */
+export async function saveUntilPlaced(
+  first: () => Promise<ProgramSaveResponse>,
+  onPlacing: () => void,
+): Promise<ProgramSaveResponse> {
+  let res = await first();
+  for (let i = 0; res.placing && i < PLACING_ROUNDS_MAX; i++) {
+    onPlacing();
+    res = await api.updateProgram(res.program.id, {});
+  }
+  return res;
+}
 
 /** A new program's starting point (the server fills anything left out the same way). */
 const NEW_CONFIG: Pick<
@@ -57,6 +78,8 @@ export function ProgramSettingsSheet({
   const [modes, setModes] = useState<Mode[]>([...base.modes]);
   const [care, setCare] = useState<string[]>(base.careProfiles.filter((id) => caring.some((p) => p.profileId === id)));
   const [confirmRetire, setConfirmRetire] = useState(false);
+  // The server is still placing the sessions of a save (or taking a retired program's back).
+  const [placing, setPlacing] = useState(false);
 
   const refresh = () => {
     for (const k of ["programs", "plan", "plan-week", "today"]) void qc.invalidateQueries({ queryKey: [k] });
@@ -76,20 +99,26 @@ export function ProgramSettingsSheet({
   });
   const save = useMutation({
     mutationFn: () =>
-      program
-        ? api.updateProgram(program.id, { name: name.trim(), config: config() })
-        : api.createProgram({ name: name.trim(), config: config() }),
+      saveUntilPlaced(
+        () =>
+          program
+            ? api.updateProgram(program.id, { name: name.trim(), config: config() })
+            : api.createProgram({ name: name.trim(), config: config() }),
+        () => setPlacing(true),
+      ),
     onSuccess: () => {
       refresh();
       onClose();
     },
+    onSettled: () => setPlacing(false),
   });
   const retire = useMutation({
-    mutationFn: () => api.updateProgram(program!.id, { status: "retired" }),
+    mutationFn: () => saveUntilPlaced(() => api.updateProgram(program!.id, { status: "retired" }), () => setPlacing(true)),
     onSuccess: () => {
       refresh();
       onClose();
     },
+    onSettled: () => setPlacing(false),
   });
   const toggleDay = (d: number) => setDays((cur) => (cur.includes(d) ? cur.filter((x) => x !== d) : [...cur, d]));
   const toggleMode = (m: Mode) => setModes((cur) => (cur.includes(m) ? cur.filter((x) => x !== m) : [...cur, m]));
@@ -107,7 +136,7 @@ export function ProgramSettingsSheet({
             disabled={save.isPending || name.trim().length === 0}
             onClick={() => save.mutate()}
           >
-            Save
+            {placing && save.isPending ? "Moving your sessions…" : "Save"}
           </button>
           {program ? (
             <button type="button" className="btn" aria-haspopup="dialog" onClick={() => setConfirmRetire(true)}>

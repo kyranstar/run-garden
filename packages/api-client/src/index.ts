@@ -1667,6 +1667,16 @@ export interface ProgramPatch {
   status?: "active" | "retired";
 }
 
+/**
+ * A program saved (`POST /api/programs`, `PATCH /api/programs/:id`). `placing`: the save landed, and its sessions are
+ * still being placed a request's budget at a time — ask again (an empty patch) until it is gone; the hourly pass
+ * finishes what nobody asks for.
+ */
+export interface ProgramSaveResponse {
+  program: ProgramDto;
+  placing?: boolean;
+}
+
 // ── Sessions (worker routes: apps/worker/src/routes/sessions.ts; service: services/session-build.ts) ──────────
 
 /**
@@ -2578,9 +2588,9 @@ export const api = {
   listPrograms: () => get<ProgramsResponse>("/api/programs"),
   /** Missing config keys take their defaults. 422 `{error, issues}` for an invalid body. */
   createProgram: (body: { name: string; config: Partial<AdaptiveConfig> }) =>
-    post<{ program: ProgramDto }>("/api/programs", body),
+    post<ProgramSaveResponse>("/api/programs", body),
   updateProgram: (id: string, patch: ProgramPatch) =>
-    request<{ program: ProgramDto }>(`/api/programs/${encodeURIComponent(id)}`, {
+    request<ProgramSaveResponse>(`/api/programs/${encodeURIComponent(id)}`, {
       method: "PATCH",
       body: JSON.stringify(patch),
     }),
