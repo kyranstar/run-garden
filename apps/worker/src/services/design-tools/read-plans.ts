@@ -4,8 +4,9 @@
  * day, firm and shape weeks (a block's), the next three sessions still to come, and whether the coach may change its
  * STRUCTURE (`coachMayChange`): only a block it wrote that is still running — propose_plan extends it, firms up a week,
  * winds it down or retires it; a watch plan's sessions are moved, skipped or eased with adjust_plan, a programme is the
- * athlete's own, changed in its settings. A block that ended in the last ENDED_DAYS days is listed too (what comes after
- * it is a plan worth making), never changeable.
+ * athlete's own: its `settings` — days, weekly goal, minutes, block length, modes, care (each switched-on condition's
+ * with care, on or off) — change with change_programme. A block that ended in the last ENDED_DAYS days is listed too
+ * (what comes after it is a plan worth making), never changeable.
  *
  * Names are the athlete's, the coach's or an import's words, and a shape week's volume and key sessions the coach's:
  * marked. One statement: the athlete with the plans, their weeks and next sessions, read beside the preferences. The
@@ -14,12 +15,13 @@
 import { sql, type SQL } from "drizzle-orm";
 import { z } from "zod";
 import { coachPlans, coachPlanWeeks, plannedWorkouts, programs, trainingPlans } from "@rg/database";
-import { addDays } from "@rg/domain";
+import { adaptiveConfigSchema, addDays } from "@rg/domain";
 import { LOOSE_PLAN_ID_PREFIX } from "../coach-plans.js";
 import { utf8Bytes } from "../utf8.js";
 import type { DesignTool } from "./types.js";
 import { answer, dayWords, isErr, parseInput, parsedArray, parsedJson, plural, READ_ROLES, readAthlete, RESULT_BUDGET_BYTES, untrusted } from "./read-common.js";
 import { ORIGIN_WORDS } from "./read-plan.js";
+import { DAY_SHORT } from "./change-programme.js";
 
 /** A block that ended this many days ago or less is still listed. */
 export const ENDED_DAYS = 30;
@@ -74,7 +76,7 @@ const KIND_WORDS = { block: "coach block", programme: "programme", watch: "watch
 /** Why the coach may not change a plan's structure, in its words. */
 function whyNot(r: Row, today: string): string | null {
   if (r.kind === "watch") return "a watch plan: move, skip or ease its sessions with adjust_plan; its structure is the watch's";
-  if (r.kind === "programme") return "the athlete's own programme: its days and goal are changed in its settings; skip or move a session with adjust_plan";
+  if (r.kind === "programme") return "the athlete's own programme: its settings change with change_programme; skip or move one session with adjust_plan";
   if (r.status !== "active" || (r.end !== null && r.end < today)) return `it has ended (${r.status}): plan what comes after it as a new plan`;
   return null;
 }
@@ -85,8 +87,14 @@ interface Room {
   next: number;
 }
 
+/** A switched-on condition with care, as a programme's care setting names it. */
+interface Caring {
+  profileId: string;
+  care: string;
+}
+
 /** One plan as the model reads it, within `room`. */
-function planOf(r: Row, today: string, room: Room): Record<string, unknown> {
+function planOf(r: Row, today: string, room: Room, caring: readonly Caring[]): Record<string, unknown> {
   const out: Record<string, unknown> = { id: r.id, kind: KIND_WORDS[r.kind], name: untrusted(r.name) };
   if (r.discipline) out.discipline = r.discipline;
   out.status = r.status;
@@ -94,8 +102,19 @@ function planOf(r: Row, today: string, room: Room): Record<string, unknown> {
   out.end = r.end;
   if (r.race) out.raceDate = r.race;
   if (r.kind === "programme") {
-    const c = parsedJson(r.config) as { weeklyGoal?: unknown } | null;
-    out.weeklyGoal = typeof c?.weeklyGoal === "number" ? c.weeklyGoal : null;
+    const c = adaptiveConfigSchema.safeParse(parsedJson(r.config) ?? {});
+    out.weeklyGoal = c.success ? c.data.weeklyGoal : null;
+    // What change_programme changes, as the athlete's settings sheet shows it: [] days is any day.
+    if (c.success) {
+      out.settings = {
+        days: c.data.preferredDays.map((d) => DAY_SHORT[d]),
+        weeklyGoal: c.data.weeklyGoal,
+        minutes: c.data.defaultMinutes,
+        blockWeeks: c.data.blockWeeks,
+        modes: c.data.modes,
+        care: caring.map((p) => ({ ...p, on: c.data.careProfiles.includes(p.profileId) })),
+      };
+    }
   }
   if (r.kind === "block") {
     const weeks = (parsedArray(r.weeks) as Array<{ weekStart?: unknown; state?: unknown; shape?: unknown }>)
@@ -177,6 +196,7 @@ export const readPlans: DesignTool = {
           order by ${trainingPlans.startDate} desc, ${trainingPlans.id} limit ${PLANS_MAX}) t)`,
     });
     const today = athlete.today;
+    const caring = athlete.profiles.flatMap((p) => (p.care ? [{ profileId: p.id, care: p.care.block.label }] : []));
     const rows = [...parsedArray(extra.blocks), ...parsedArray(extra.programmes), ...parsedArray(extra.watch)] as Row[];
     // The coach's own running blocks first (the ones it may work on), then the others as read.
     const ordered = [...rows].sort((a, b) => Number(whyNot(a, today) !== null) - Number(whyNot(b, today) !== null));
@@ -188,7 +208,7 @@ export const readPlans: DesignTool = {
     rooms.push({ shapes: 1, next: 1 }, { shapes: 0, next: 1 });
     let plans: Array<Record<string, unknown>> = [];
     for (const room of rooms) {
-      plans = ordered.map((r) => planOf(r, today, room));
+      plans = ordered.map((r) => planOf(r, today, room, caring));
       if (size(plans) <= RESULT_BUDGET_BYTES) break;
     }
     let left = 0;

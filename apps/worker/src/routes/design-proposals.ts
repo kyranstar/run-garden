@@ -54,7 +54,7 @@ import {
   UnknownOpError,
   type DesignProposalRow,
 } from "../services/design-approve.js";
-import { docWorkoutLines, manifestReads, planChangeLines, planStructureLines, setContextSql } from "../services/design-manifest.js";
+import { docWorkoutLines, manifestReads, planChangeLines, planStructureLines, programmeChangeLines, setContextSql } from "../services/design-manifest.js";
 import { designProposalId } from "../services/design-tools/propose.js";
 import { dayRowsSql, placedTimes } from "../services/design-placement.js";
 import { clockIn, PastTimeError } from "../services/design-time.js";
@@ -191,7 +191,9 @@ export async function designedManifest(db: Db, userId: string, proposalId: strin
   const workouts = designedOps(ops);
   // A whole plan change's lines are its own (§8 §5): computed when it was proposed, no read.
   const plans = planStructureLines(all);
-  const withPlans = plans.length > 0 ? { plans } : {};
+  // A programme change's too (§8 §5).
+  const programmes = programmeChangeLines(all);
+  const withPlans = { ...(plans.length > 0 ? { plans } : {}), ...(programmes.length > 0 ? { programmes } : {}) };
   if (workouts.length === 0) return { lines: [], changes: planChangeLines(all), ...withPlans };
   const prefix = designProposalId("");
   const runId = proposalId.startsWith(prefix) ? proposalId.slice(prefix.length) : null;

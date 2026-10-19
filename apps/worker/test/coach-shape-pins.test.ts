@@ -35,8 +35,14 @@ const BEFORE = { tools: 34_935, shared: 20_450, main: 4_586 };
  * show, no apologies, not the card — chosen from production replays): the main block 5,950 → 6,535 and the shared
  * finish line pointing to it 23,641 → 23,564 (the decision guidance's fix round had added 12), so 8,130 since §8's
  * start — the round's own growth 508 characters, about 145 tokens. Held there with about 220 characters of margin.
+ *
+ * REBASED 2026-10-19 for the coach's programme edits (stream W, §8 §5: change_programme — a programme's days, goal,
+ * minutes, block length, modes and care, approved as one card): measured 1,214 more (tools 38,002 → 38,978, the tool's
+ * compact schema; the shared prompt 23,564 → 23,729, its Acting line; the main block 6,535 → 6,608, its criteria in
+ * place of "change in its settings"), so 9,344 since §8's start — the round's own about 347 tokens. Held there with
+ * about 220 characters of margin.
  */
-const GROWTH_MAX_CHARS = 8_350;
+const GROWTH_MAX_CHARS = 9_560;
 
 const toolsSent = () => JSON.stringify(allTools().map((t) => ({ name: t.name, description: t.description, input_schema: t.inputSchema })));
 
@@ -55,7 +61,7 @@ function profileWords(): string[] {
 }
 
 describe("the coach's cached prefix after the new shape", () => {
-  it(`grew by §8's measured 8,130 characters and a small margin at most (${GROWTH_MAX_CHARS}; ~${Math.round(GROWTH_MAX_CHARS / PROMPT_BYTES_PER_TOKEN)} tokens)`, () => {
+  it(`grew by §8's measured 9,344 characters and a small margin at most (${GROWTH_MAX_CHARS}; ~${Math.round(GROWTH_MAX_CHARS / PROMPT_BYTES_PER_TOKEN)} tokens)`, () => {
     const now = { tools: toolsSent().length, shared: SHARED_PROMPT.length, main: roleBlock("main", RUN_LIMITS.main.maxCalls).length };
     const grown = now.tools + now.shared + now.main - (BEFORE.tools + BEFORE.shared + BEFORE.main);
     expect(grown).toBeGreaterThan(0);

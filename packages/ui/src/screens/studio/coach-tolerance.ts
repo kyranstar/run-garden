@@ -27,6 +27,7 @@ import {
   type DesignContextRowDto,
   type DesignLineDto,
   type DesignPlanLineDto,
+  type DesignProgrammeLineDto,
 } from "@rg/api-client";
 
 const record = (v: unknown): Record<string, unknown> | null => (v && typeof v === "object" && !Array.isArray(v) ? (v as Record<string, unknown>) : null);
@@ -290,9 +291,43 @@ function toPlanLine(v: unknown): DesignPlanLineDto | null {
   };
 }
 
+/** A programme change's line (§8 §5): its id or nothing; its texts texts; its outcome by its status, its own fields read. */
+function toProgrammeLine(v: unknown): DesignProgrammeLineDto | null {
+  const p = record(v);
+  if (!p || typeof p.opId !== "string" || !p.opId) return null;
+  const o = record(p.outcome);
+  const progress = record(o?.progress);
+  const outcome: DesignProgrammeLineDto["outcome"] =
+    o?.status === "applied"
+      ? { status: "applied", at: text(o.at), placed: num(o.placed) ?? 0, archived: num(o.archived) ?? 0 }
+      : o?.status === "applying"
+        ? { status: "applying", at: text(o.at), progress: { written: progress?.written === true, placed: num(progress?.placed) ?? 0, archived: num(progress?.archived) ?? 0 } }
+        : o?.status === "refused"
+          ? { status: "refused", at: text(o.at), error: text(o.error), why: text(o.why) }
+          : o?.status === "declined"
+            ? { status: "declined", at: text(o.at), ...(typeof o.reason === "string" ? { reason: o.reason } : {}) }
+            : o?.status === "superseded"
+              ? { status: "superseded", at: text(o.at), reason: text(o.reason), by: text(o.by) }
+              : null;
+  return {
+    opId: p.opId,
+    programmeId: text(p.programmeId),
+    title: words(p.title) ?? "A programme",
+    summary: text(p.summary),
+    lines: texts(p.lines),
+    why: text(p.why),
+    issues: list(p.issues).flatMap((x) => {
+      const i = record(x);
+      return i && typeof i.message === "string" ? [{ code: text(i.code), message: i.message }] : [];
+    }),
+    outcome,
+  };
+}
+
 export function toProposal(v: unknown): ProposalRead {
   const r = record(v) ?? {};
   const plans = list(r.plans).map(toPlanLine).filter((p): p is DesignPlanLineDto => p !== null);
+  const programmes = list(r.programmes).map(toProgrammeLine).filter((p): p is DesignProgrammeLineDto => p !== null);
   const lines = list(r.lines).map(toLine).filter((l): l is DesignLineDto => l !== null);
   const changes = list(r.changes).map(toChange).filter((c): c is DesignChangeLineDto => c !== null);
   const context = list(r.context).map(toContextRow).filter((c): c is DesignContextRowDto => c !== null);
@@ -303,6 +338,7 @@ export function toProposal(v: unknown): ProposalRead {
     ...(r.lines !== undefined ? { lines } : {}),
     ...(r.changes !== undefined ? { changes } : {}),
     ...(r.plans !== undefined ? { plans } : {}),
+    ...(r.programmes !== undefined ? { programmes } : {}),
     ...(r.context !== undefined ? { context } : {}),
   };
 }
@@ -351,6 +387,8 @@ function toCard(v: unknown): CoachConversationCardDto | null {
     status: text(c.status),
     // A plan's lines (§8 §5): texts only.
     ...(Array.isArray(c.lines) ? { lines: texts(c.lines) } : {}),
+    // A programme change's op (§8 §5): a text, or nothing.
+    ...(typeof c.opId === "string" && c.opId ? { opId: c.opId } : {}),
   };
 }
 

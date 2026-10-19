@@ -445,11 +445,12 @@ function TurnCards({ cards, latest, today }: { cards: readonly CoachConversation
   return (
     <>
       {cards.map((card) => {
-        const key = `${card.kind}:${card.proposalId}`;
+        // A programme change's card is one a programme (§8 §5): its op tells two apart.
+        const key = `${card.kind}:${card.proposalId}${card.opId ? `:${card.opId}` : ""}`;
         const part = card.kind === "plan_changes" ? "changes" : card.kind === "workout" && changesOf.has(card.proposalId) ? "workouts" : undefined;
         let body;
         // A whole plan (§8 §5): its own card, closed as one line of what came of it when an older turn's is done.
-        if (card.kind === "plan") body = <PlanCard card={card} closed={!latest && !cardIsOpen(card)} />;
+        if (card.kind === "plan" || card.kind === "programme") body = <PlanCard card={card} closed={!latest && !cardIsOpen(card)} />;
         else if (!latest && !cardIsOpen(card)) body = <ClosedCard card={card} today={today} part={part} />;
         else if (card.kind === "plan_changes") body = <PlanChangesCard card={card} today={today} />;
         // A designed run (§8 §3): the workout card, its body the run's steps and its watch line (the line's `run`).

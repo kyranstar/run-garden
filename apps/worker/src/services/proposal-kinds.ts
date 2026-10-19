@@ -6,7 +6,7 @@
  * each reads a designed op through these, so it ignores or describes it and never throws on it. A designed proposal is
  * approved on its own surface (Task 8); until then the thread's approve and decline answer it 409 `not_yet`.
  */
-import { dayLabel, describeOps, type CoachOp } from "@rg/domain";
+import { dayLabel, describeOps, type AdaptiveConfig, type CoachOp } from "@rg/domain";
 
 /** The thread coach's ops a designed proposal may carry as a change to the plan (Task 8b; ruling I6), and since the new
  * shape §5 its proven single-session ones too: ease (a swap for an easier kind is an ease, its `verb` "swap"), remove
@@ -106,6 +106,47 @@ export interface PlanStructureOp {
 /** A plan change's manifest lines shown, at most; the rest are counted. */
 export const PLAN_LINES_MAX = 8;
 
+/** The settings a programme change sets (§8 §5): the settings sheet's own, but the programme's name and place. */
+export const PROGRAMME_SETTINGS = ["weeklyGoal", "preferredDays", "defaultMinutes", "blockWeeks", "modes", "careProfiles"] as const;
+export type ProgrammeSettings = Pick<AdaptiveConfig, (typeof PROGRAMME_SETTINGS)[number]>;
+
+/**
+ * A change to an adaptive programme's settings inside a designed proposal (§8 §5; design-tools/change-programme.ts): its
+ * days, weekly goal, session minutes, block length, modes or care — checked as the settings sheet's save is, applied at
+ * approval as that save is (`updateProgram`, then its sessions placed a request's room at a time: program-slots.ts
+ * `placeSlotsWithin`). `base` is what those settings were when it was proposed: an approve refuses `stale` when one of
+ * them has moved since (the athlete changed it in the sheet). What the card shows is computed when it is proposed
+ * (`title`, `summary`, `lines`: "Days Mon · Wed · Fri → Tue · Thu", "Next sessions move to …"). `why` and the title carry
+ * the model's and the athlete's words: data, marked wherever they are shown back to a model.
+ */
+export interface ProgrammeChangeOp {
+  kind: "programme_change";
+  /** `programmeChangeId(programId)`: one change per programme per proposal — a second replaces the first. */
+  id: string;
+  programId: string;
+  /** Only the settings it changes, as the sheet saves them (days in week order, modes in the engine's order). */
+  change: Partial<ProgrammeSettings>;
+  /** Those settings as they were when it was proposed. */
+  base: Partial<ProgrammeSettings>;
+  why: string;
+  /** Advisories, as a workout's validator warnings are ("2 days for 3 sessions a week: …"). */
+  issues: Array<{ code: string; message: string }>;
+  /** "Mobility". */
+  title: string;
+  /** One line: "Tue · Thu · 2 a week". */
+  summary: string;
+  /** What changes, a line each, then where its next sessions go. */
+  lines: string[];
+  /** The day it was proposed for: today. */
+  date: string;
+  toolUseId: string;
+  replaces?: string[];
+  at: string;
+}
+
+/** A programme change's op id. */
+export const programmeChangeId = (programId: string): string => `prog-${programId}`;
+
 /** A change's op id: one per session per proposal. */
 export const planAdjustId = (workoutId: string): string => `adj-${workoutId}`;
 
@@ -164,17 +205,20 @@ export const isPlanAdjustOp = (op: unknown): op is PlanAdjustOp => kindOf(op) ==
 /** Whether an op is a whole plan change (§8 §5). */
 export const isPlanStructureOp = (op: unknown): op is PlanStructureOp => kindOf(op) === "plan_structure";
 
-/** Whether an op is the coach designer's — a designed workout, a change or a plan change — never one of the thread
- * coach's. */
-export const isDesignedOp = (op: unknown): boolean => isDocWorkoutOp(op) || isPlanAdjustOp(op) || isPlanStructureOp(op);
+/** Whether an op is a change to a programme's settings (§8 §5). */
+export const isProgrammeChangeOp = (op: unknown): op is ProgrammeChangeOp => kindOf(op) === "programme_change";
+
+/** Whether an op is the coach designer's — a designed workout, a change, a plan change or a programme change — never one
+ * of the thread coach's. */
+export const isDesignedOp = (op: unknown): boolean => isDocWorkoutOp(op) || isPlanAdjustOp(op) || isPlanStructureOp(op) || isProgrammeChangeOp(op);
 
 /**
  * An op's id: a designed workout's is the run that designed it — each run holds ONE op of its main run's proposal,
  * whatever its target (design-tools/propose.ts), so the run names the op through every revision round; a change's is
  * its own (`planAdjustId`). Approve and decline (Task 8) and a main run's lever over its set (Task 7) name an op by it.
  */
-export function opIdOf(op: { by: { runId: string } } | PlanAdjustOp | PlanStructureOp): string {
-  return isPlanAdjustOp(op) || isPlanStructureOp(op) ? op.id : (op as { by: { runId: string } }).by.runId;
+export function opIdOf(op: { by: { runId: string } } | PlanAdjustOp | PlanStructureOp | ProgrammeChangeOp): string {
+  return isPlanAdjustOp(op) || isPlanStructureOp(op) || isProgrammeChangeOp(op) ? op.id : (op as { by: { runId: string } }).by.runId;
 }
 
 /** Whether a proposal's ops hold a designed workout. */

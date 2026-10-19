@@ -24,7 +24,7 @@ import { calmDoc, landingsDoc } from "./doc-workout-fixture.js";
 import { makeTestDb, makeTestUser } from "./helpers.js";
 
 const ENV = {} as Env;
-const ACT_NAMES = ["validate_workout", "ask_athlete", "record_answer", "remember", "propose_workout", "adjust_plan", "propose_plan", "plan_set", "read_set", "drop_workout", "submit_review", "finish"];
+const ACT_NAMES = ["validate_workout", "ask_athlete", "record_answer", "remember", "propose_workout", "adjust_plan", "propose_plan", "change_programme", "plan_set", "read_set", "drop_workout", "submit_review", "finish"];
 
 let db: Db;
 let counting = false;
@@ -89,6 +89,7 @@ describe("the registry", () => {
       propose_workout: ["main", "designer"],
       adjust_plan: ["main"],
       propose_plan: ["main"],
+      change_programme: ["main"],
       plan_set: ["main"],
       read_set: ["main", "designer", "reviewer"],
       drop_workout: ["main"],
@@ -291,6 +292,25 @@ describe("each act tool's declared statement cost is the most it runs", () => {
     expect(n).toBe(2);
     expect(tool("adjust_plan").statementCost).toBe(2);
     const refused = await measured("adjust_plan", { ...change, workoutId: "nope" }, rich.userId, await runRow(rich.userId));
+    expect(refused.count).toBe(1);
+  });
+
+  it("change_programme: the athlete with the programme, the proposal and the restore marker in one read, the preview's two, then one write — refusals read only", async () => {
+    const main = await runRow(rich.userId);
+    const change = { programmeId: rich.programId, days: ["Tue", "Thu"], why: "Your Mondays are full." };
+    const n = await most("change_programme", [
+      { input: change, run: main, toolUseId: "toolu_prog_budget_1" },
+      // A second change of the programme replaces the first; a replay writes nothing.
+      { input: { ...change, weeklyGoal: 2 }, run: main, toolUseId: "toolu_prog_budget_2" },
+      { input: change, run: main, toolUseId: "toolu_prog_budget_1" },
+      // Refused: settings it has, a programme that isn't there, an empty account, a day that isn't one.
+      { input: { ...change, programmeId: "nope" } },
+      { input: change, userId: empty, run: await runRow(empty) },
+      { input: { ...change, days: ["Funday"] } },
+    ]);
+    expect(n).toBe(4);
+    expect(tool("change_programme").statementCost).toBe(4);
+    const refused = await measured("change_programme", { ...change, programmeId: "nope" }, rich.userId, await runRow(rich.userId));
     expect(refused.count).toBe(1);
   });
 

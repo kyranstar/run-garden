@@ -104,6 +104,17 @@
  * started is never declined (a half plan isn't the athlete's choice: it is finished by Approve) and never expired under
  * the athlete: its claim is answered in flight, its proposal left for the next approve.
  *
+ * A PROGRAMME CHANGE (§8 §5). A `programme_change` op — change_programme's new days, goal, minutes, block length, modes
+ * or care for an adaptive programme — is applied after the plan changes and before the workouts, as its own class, the
+ * way the settings sheet's save is: claimed (`applying`, its `progress`), its settings checked against what they were
+ * when it was proposed (`base`: one moved since, by the athlete's own save, refuses it `stale`) and written once
+ * (`updateProgram`), then its sessions placed in what the request has left (program-slots.ts `placeSlotsWithin`:
+ * PROGRAMME_CHANGE_FIXED for its claim and its release, PROGRAMME_WRITE_COST for the check and the write the first time,
+ * then at least PROGRAMME_MIN_BUDGET — else it waits in `remaining`). A pass that leaves more keeps its progress on a
+ * claim released at once and answers `remaining` until it is done; done, it is applied with what it placed and took
+ * back. One that has started is finished by Approve, never declined or expired half made, as a plan change is. A
+ * client that stops asking leaves the hourly pass to place the rest by the settings already written.
+ *
  * THE THREAD. Approving writes one plain receipt in the thread once nothing of the request remains — the workouts
  * approved, each as written (design-manifest.ts), how many were declined, and any not approved with why — and a decline
  * that declines the whole proposal says "Left as planned", as the thread's own does. A receipt that fails never fails
@@ -140,6 +151,8 @@ import { approvalKey } from "./design-placement.js";
 import { approveTimeOf, clockIn, PastTimeError, pastTime, todayLeadRefusal } from "./design-time.js";
 import type { DocWorkoutOp, DocWorkoutTarget } from "./design-tools/propose.js";
 import { RestoreInProgressError } from "./programs.js";
+import { programs } from "@rg/database";
+import { adaptiveConfigSchema } from "@rg/domain";
 import {
   changeVerb,
   describeChange,
@@ -149,10 +162,15 @@ import {
   isPlanStructureOp,
   opIdOf,
   type ChangeVerb,
+  isProgrammeChangeOp,
   type PlanAdjustOp,
   type PlanChange,
   type PlanStructureOp,
+  type ProgrammeChangeOp,
+  type ProgrammeSettings,
 } from "./proposal-kinds.js";
+import { placeSlotsWithin, RETRACT_COST } from "./program-slots.js";
+import { updateProgram } from "./programs.js";
 import { FROZEN_STATES } from "./workout-doc-store.js";
 
 // ── Shapes ──────────────────────────────────────────────────────────────────────────────────────────────────────────
@@ -170,7 +188,10 @@ export type RefusalCode =
   | "restore_in_progress"
   | "race"
   /** A whole plan change the thread coach's applier refused (§8 §5): its plan isn't there any more. */
-  | "plan_refused";
+  | "plan_refused"
+  /** A programme change (§8 §5) whose settings the athlete changed since it was proposed — or whose programme is gone or
+   * retired. */
+  | "stale";
 
 /** Why a planned workout can't change (`not_editable`), as the Studio's own rules say it — and, for a change's length,
  * that a Studio workout's is its document's (`studio`). */
@@ -234,8 +255,27 @@ export type PlanStructureOutcome =
 /** A whole plan change, as a proposal holds it once the athlete has seen it. */
 export type DesignedStructureOp = PlanStructureOp & { outcome?: PlanStructureOutcome };
 
+/** Where a programme change's approves got to: its settings written, and the sessions its passes placed and took back. */
+export interface ProgrammeProgress {
+  written: boolean;
+  placed: number;
+  archived: number;
+}
+
+/**
+ * How a programme change ended (§8 §5): applied, with the sessions its passes placed and took back; while approves apply
+ * it, `applying` — claimed, with its progress — open, as a plan change's claim is.
+ */
+export type ProgrammeChangeOutcome =
+  | { status: "applied"; at: string; placed: number; archived: number }
+  | { status: "applying"; at: string; progress: ProgrammeProgress }
+  | Exclude<OpOutcome, { status: "applied" }>;
+
+/** A programme change, as a proposal holds it once the athlete has seen it. */
+export type DesignedProgrammeOp = ProgrammeChangeOp & { outcome?: ProgrammeChangeOutcome };
+
 /** Any kind of a designed proposal's ops. */
-export type AnyDesignedOp = DesignedOp | DesignedPlanOp | DesignedStructureOp;
+export type AnyDesignedOp = DesignedOp | DesignedPlanOp | DesignedStructureOp | DesignedProgrammeOp;
 
 export type DesignProposalStatus = "pending" | "partially_approved" | "approved" | "declined" | "superseded";
 
@@ -286,8 +326,15 @@ export function structureOpsOf(ops: unknown): DesignedStructureOp[] {
   return Array.isArray(ops) ? (ops.filter(isPlanStructureOp) as DesignedStructureOp[]) : [];
 }
 
-/** A whole plan change that has started (a chunk applied, or claimed): never declined, never expired under the athlete. */
-export const planStarted = (op: unknown): boolean => isPlanStructureOp(op) && (op as DesignedStructureOp).outcome?.status === "applying";
+/** A designed proposal's programme changes (§8 §5). */
+export function programmeOpsOf(ops: unknown): DesignedProgrammeOp[] {
+  return Array.isArray(ops) ? (ops.filter(isProgrammeChangeOp) as DesignedProgrammeOp[]) : [];
+}
+
+/** A whole plan change or a programme change that has started (claimed, a part applied): never declined, never expired
+ * under the athlete — Approve finishes it. */
+export const planStarted = (op: unknown): boolean =>
+  (isPlanStructureOp(op) || isProgrammeChangeOp(op)) && (op as DesignedStructureOp | DesignedProgrammeOp).outcome?.status === "applying";
 
 /** Every op of a designed proposal the athlete decides: its workouts, its changes and its plan changes, in the proposal's
  * order. */
@@ -406,6 +453,14 @@ export const RESTORE_COST = 1 + 3;
  * is given (at least STRUCTURAL_MIN_BUDGET) and says what it spent.
  */
 export const PLAN_STRUCTURE_FIXED = 1 + 1 + 1;
+
+/** A programme change's own part of every request it runs in (§8 §5): its claim's write and its release should a pass
+ * throw (reserved). */
+export const PROGRAMME_CHANGE_FIXED = 1 + 1;
+/** The first time: its programme read (the stale check) and `updateProgram` (the restore check, the row, the write). */
+export const PROGRAMME_WRITE_COST = 1 + 3;
+/** The least room a pass is given: its fixed reads and one retraction (program-slots.ts `placeSlotsWithin`). */
+export const PROGRAMME_MIN_BUDGET = 3 + 1 + 1 + RETRACT_COST;
 
 /**
  * THE CALENDAR'S STEP AFTER AN APPROVE (Task 9). A Studio save and the thread coach's approve hand the calendar one
@@ -896,7 +951,7 @@ export async function approveDesignOps(
   const applied: Applied[] = [];
   const changed: Changed[] = [];
   const refused: Refused[] = [];
-  const outcomes = new Map<string, OpOutcome | PlanOpOutcome | PlanStructureOutcome>();
+  const outcomes = new Map<string, OpOutcome | PlanOpOutcome | PlanStructureOutcome | ProgrammeChangeOutcome>();
   if (inPlan.length === 0 && declined.length === 0) {
     if (p.status === "superseded") throw new NotOpenError(p.status);
     return { status: p.status as DesignProposalStatus, applied, changed, refused, settled, remaining: overflow };
@@ -920,8 +975,9 @@ export async function approveDesignOps(
   const todo: AnyDesignedOp[] = [];
   for (const op of inHand) {
     const was = op.outcome?.status;
-    // A whole plan change (§8 §5): its chunks are the applier's own to find done (each retried does nothing twice).
-    if (isPlanStructureOp(op)) {
+    // A whole plan change or a programme change (§8 §5): its chunks are its applier's own to find done (each retried does
+    // nothing twice).
+    if (isPlanStructureOp(op) || isProgrammeChangeOp(op)) {
       if (was === "declined" || was === "superseded") settled.push({ opId: op.id, outcome: was });
       else todo.push(op);
       continue;
@@ -1104,6 +1160,56 @@ export async function approveDesignOps(
     if (full) break;
   }
 
+  // THE PROGRAMME CHANGES (§8 §5), after the plan changes and before the workouts: each its settings written once, then its
+  // sessions placed in the room left, its progress kept on its claim.
+  const programmes = todo.filter(isProgrammeChangeOp) as DesignedProgrammeOp[];
+  if (full) remaining.push(...programmes.map((g) => g.id));
+  for (const [i, g] of (full ? [] : programmes).entries()) {
+    const claim = g.outcome?.status === "applying" ? g.outcome : null;
+    // Another approve is placing it (its claim fresh): never twice at once.
+    if (claim && claimFresh(claim, ctx.now)) {
+      inFlight.push(g.id);
+      continue;
+    }
+    const progress: ProgrammeProgress = claim ? claim.progress : { written: false, placed: 0, archived: 0 };
+    const fixed = PROGRAMME_CHANGE_FIXED + (progress.written ? 0 : PROGRAMME_WRITE_COST);
+    if (!first && left < fixed + PROGRAMME_MIN_BUDGET) {
+      remaining.push(...programmes.slice(i).map((x) => x.id));
+      full = true;
+      break;
+    }
+    first = false;
+    // THE CLAIM, under the same guard as every write, before anything of it is written.
+    const claimOps = withOutcomes(current.ops, new Map([[g.id, { status: "applying" as const, at: ctx.now, progress }]]));
+    const claimStatus = statusOfOps(allDesignedOps(claimOps));
+    const claimedAt = await writeOps(db, userId, current, claimOps, claimStatus, ctx.now);
+    current = { ...current, ops: claimOps, status: claimStatus, resolvedAt: claimedAt };
+    let res: Awaited<ReturnType<typeof applyProgrammeChunk>>;
+    try {
+      res = await applyProgrammeChunk(db, userId, g, progress, Math.max(0, left - fixed), ctx);
+    } catch (e) {
+      // THE RELEASE: stale at once, its progress kept, for the next approve to take over.
+      const released = withOutcomes(current.ops, new Map([[g.id, { status: "applying" as const, at: staleAt(ctx.now), progress }]]));
+      await writeOps(db, userId, current, released, current.status as DesignProposalStatus, ctx.now).catch(() => undefined);
+      throw e;
+    }
+    left -= fixed + res.spent;
+    if (res.status === "more") {
+      // Released at once: the next approve — the client's, straight after — takes it over where it got to.
+      outcomes.set(g.id, { status: "applying", at: staleAt(ctx.now), progress: res.progress });
+      remaining.push(...programmes.slice(i).map((x) => x.id));
+      full = true;
+    } else if (res.status === "done") {
+      outcomes.set(g.id, { status: "applied", at: ctx.now, placed: res.progress.placed, archived: res.progress.archived });
+      planned.push({ opId: g.id, summary: programmeDoneLine(g, res.progress) });
+    } else {
+      const refusal: Omit<Refused, "opId"> = { error: "stale", why: res.reason };
+      refused.push({ opId: g.id, ...refusal });
+      outcomes.set(g.id, { status: "refused", at: ctx.now, ...refusal });
+    }
+    if (full) break;
+  }
+
   for (const [i, op] of (full ? [] : workouts).entries()) {
     const opId = opIdOf(op);
     const day = dayOf(op, input.edit) ?? (op.target.kind === "revise" ? plan.rows.get(op.target.workoutId)?.dto.date : undefined);
@@ -1168,6 +1274,51 @@ export async function approveDesignOps(
     );
   }
   return { status, applied, changed, refused, settled, remaining, ...drain };
+}
+
+/** "Tue · Thu · 2 a week · 30 min — 6 sessions placed again": a programme change done, for the answer and the receipt. */
+export function programmeDoneLine(g: Pick<ProgrammeChangeOp, "summary">, p: Pick<ProgrammeProgress, "placed" | "archived">): string {
+  const moved = Math.max(p.placed, p.archived);
+  return moved > 0 ? `${g.summary} — ${moved} session${moved === 1 ? "" : "s"} placed again` : g.summary;
+}
+
+const sameSetting = (a: unknown, b: unknown): boolean => JSON.stringify(a) === JSON.stringify(b);
+
+/**
+ * One request's part of a programme change (§8 §5): the first time, its settings checked against what they were when it
+ * was proposed — any moved since (to neither that nor the change: the athlete's own save) refuses it, as does its
+ * programme gone or retired — and written (`updateProgram`, as the sheet's save); then a pass of its placing within
+ * `budget` (`placeSlotsWithin`: the first step always runs). A write found made (its request died before its outcome
+ * was) is written again, the same. What it spent is declared, an upper bound.
+ */
+async function applyProgrammeChunk(
+  db: Db,
+  userId: string,
+  g: ProgrammeChangeOp,
+  progress: ProgrammeProgress,
+  budget: number,
+  ctx: DocWorkoutCtx,
+): Promise<{ status: "more"; progress: ProgrammeProgress; spent: number } | { status: "done"; progress: ProgrammeProgress; spent: number } | { status: "refused"; reason: string; spent: number }> {
+  let spent = 0;
+  if (!progress.written) {
+    spent += PROGRAMME_WRITE_COST;
+    const [row] = await db
+      .select({ kind: programs.kind, status: programs.status, config: programs.config, name: programs.name })
+      .from(programs)
+      .where(and(eq(programs.id, g.programId), eq(programs.userId, userId)))
+      .limit(1);
+    if (!row || row.kind !== "adaptive") return { status: "refused", reason: "That programme isn't there any more.", spent };
+    if (row.status !== "active") return { status: "refused", reason: `${row.name} is retired.`, spent };
+    const now = adaptiveConfigSchema.parse(row.config);
+    const keys = Object.keys(g.change) as (keyof ProgrammeSettings)[];
+    const moved = keys.filter((k) => !sameSetting(now[k], g.base[k]) && !sameSetting(now[k], g.change[k]));
+    if (moved.length > 0) return { status: "refused", reason: "Its settings changed since this was suggested: ask the coach again.", spent };
+    await updateProgram(db, userId, g.programId, { config: g.change }, ctx.now);
+  }
+  const placed = await placeSlotsWithin(db, userId, g.programId, ctx.today, ctx.prefs, ctx.now, Math.max(0, budget - spent));
+  spent += placed.spent;
+  const next: ProgrammeProgress = { written: true, placed: progress.placed + placed.placed.length, archived: progress.archived + placed.archived.length };
+  return placed.more ? { status: "more", progress: next, spent } : { status: "done", progress: next, spent };
 }
 
 /** An op found applied (made already) as the answer says it. */
@@ -1303,7 +1454,7 @@ function newestSupersededBy(ops: readonly AnyDesignedOp[]): string | null {
 const staleAt = (now: string): string => new Date(Date.parse(now) - APPLYING_STALE_MS).toISOString();
 
 /** The proposal's ops with these outcomes on the designed ones they name; every other op as it was. */
-function withOutcomes(ops: unknown, outcomes: ReadonlyMap<string, OpOutcome | PlanOpOutcome | PlanStructureOutcome>): unknown[] {
+function withOutcomes(ops: unknown, outcomes: ReadonlyMap<string, OpOutcome | PlanOpOutcome | PlanStructureOutcome | ProgrammeChangeOutcome>): unknown[] {
   return (Array.isArray(ops) ? ops : []).map((o) => {
     if (!isDesignedOp(o)) return o;
     const outcome = outcomes.get(opIdOf(o as AnyDesignedOp));
@@ -1371,6 +1522,15 @@ function approvedReceipt(title: string, ops: readonly AnyDesignedOp[]): string {
   let superseded = 0;
   for (const any of ops) {
     if (any.outcome?.status === "superseded") superseded += 1;
+    // A programme change (§8 §5): its title and what it set.
+    if (isProgrammeChangeOp(any)) {
+      const g = (any as DesignedProgrammeOp).outcome;
+      // Named once: a change whose title is the proposal's says only what it set.
+      if (g?.status === "applied") done.push(any.title === title ? programmeDoneLine(any, g) : `${any.title}: ${programmeDoneLine(any, g)}`);
+      else if (g?.status === "refused") not.push(`${any.title} (${g.why})`);
+      else if (g?.status === "declined") declined += 1;
+      continue;
+    }
     // A whole plan change (§8 §5): its title and the applier's own line.
     if (isPlanStructureOp(any)) {
       const s = (any as DesignedStructureOp).outcome;
@@ -1502,8 +1662,9 @@ export async function expiryOfClaims(
   now: string,
   room: { rejudges: number },
 ): Promise<{ ops?: unknown[]; replayFrom: string | null } | null> {
-  // A whole plan change that has started waits for the athlete's next approve, never expired half-made (§8 §5).
-  if (structureOpsOf(p.ops).some(planStarted)) return null;
+  // A whole plan change or a programme change that has started waits for the athlete's next approve, never expired
+  // half-made (§8 §5).
+  if (allDesignedOps(p.ops).some(planStarted)) return null;
   const claimed = planOpsOf(p.ops).filter((o) => claimOf(o) !== null);
   if (claimed.length === 0) return { replayFrom: null };
   if (claimed.some((o) => claimFresh(claimOf(o)!, now))) return null;

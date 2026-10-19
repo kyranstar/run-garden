@@ -41,14 +41,14 @@ import { EXERCISES, label, LOCATION_PRESETS, noEquipmentPlace } from "@rg/exerci
 import { deriveDoc, makeLibraryIndex } from "@rg/workout";
 import type { Db } from "./db.js";
 import { defaultFromRow, defaultPlaceSql } from "./default-place.js";
-import type { DesignedOp, DesignedPlanOp, DesignedStructureOp, OpOutcome, PlanOpOutcome, PlanStructureOutcome, Written } from "./design-approve.js";
+import type { DesignedOp, DesignedPlanOp, DesignedProgrammeOp, DesignedStructureOp, OpOutcome, PlanOpOutcome, PlanStructureOutcome, ProgrammeChangeOutcome, Written } from "./design-approve.js";
 import { reviewMeanOf } from "./design-orchestrate.js";
 import { runningFactsOf, thresholdSql } from "./designed-runs.js";
 import { REVIEW_DIMENSIONS, RUN_REVIEW_DIMENSIONS } from "./design-prompt.js";
 import { athleteText, clipProse } from "./design-prose.js";
 import { acceptedLine, idInWords, REVIEW_ITEM_MAX, REVIEW_NOTE_MAX, type AcceptedCost } from "./design-review.js";
 import { approveTimeOf } from "./design-time.js";
-import { changeVerb, describeChange, isDocWorkoutOp, isPlanAdjustOp, isPlanStructureOp, opIdOf, type ChangeVerb } from "./proposal-kinds.js";
+import { changeVerb, describeChange, isDocWorkoutOp, isPlanAdjustOp, isPlanStructureOp, isProgrammeChangeOp, opIdOf, type ChangeVerb } from "./proposal-kinds.js";
 
 /** One designed workout, as the athlete reads it before (and after) deciding. */
 export interface DocWorkoutLine {
@@ -424,6 +424,34 @@ export function planStructureLines(ops: readonly unknown[]): PlanStructureLine[]
     why: s.why,
     issues: (s.issues ?? []).map((i) => ({ code: String(i.code), message: i.message })),
     outcome: s.outcome ?? null,
+  }));
+}
+
+/** A programme change as the manifest gives it (§8 §5): its programme, its card's words and lines, the coach's why, its
+ * advisories, and how it stands — `applying` with what its passes have placed while approves apply it, `applied` with
+ * what they placed and took back. */
+export interface ProgrammeChangeLine {
+  opId: string;
+  programmeId: string;
+  title: string;
+  summary: string;
+  lines: string[];
+  why: string;
+  issues: Array<{ code: string; message: string }>;
+  outcome: ProgrammeChangeOutcome | null;
+}
+
+/** Each programme change's line, in the proposal's order (§8 §5). */
+export function programmeChangeLines(ops: readonly unknown[]): ProgrammeChangeLine[] {
+  return (ops.filter(isProgrammeChangeOp) as DesignedProgrammeOp[]).map((g) => ({
+    opId: g.id,
+    programmeId: g.programId,
+    title: g.title,
+    summary: g.summary,
+    lines: g.lines,
+    why: g.why,
+    issues: (g.issues ?? []).map((i) => ({ code: String(i.code), message: i.message })),
+    outcome: g.outcome ?? null,
   }));
 }
 

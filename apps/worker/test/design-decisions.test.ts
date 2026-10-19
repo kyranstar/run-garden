@@ -101,9 +101,12 @@ describe("the prompt's criteria, each in its role's block", () => {
     );
   });
 
-  it("10. a programme's days, weekly goal and length: its settings — no tool of the coach's", () => {
-    expect(main).toContain("A programme's days, weekly goal and length change in its settings: say so — no tool of yours changes them.");
-    expect(others).not.toContain("change in its settings");
+  it("10. a programme's pattern from now on is change_programme's; one week's exception adjust_plan's; unclear days or goal asked (§8 §5, stream W)", () => {
+    expect(main).toContain(
+      "A programme's days, goal or minutes from now on are change_programme's (\"Tuesdays and Thursdays from now on\"); one week's exception, adjust_plan's. Days or goal unclear: ask once.",
+    );
+    expect(main).not.toContain("change in its settings");
+    expect(others).not.toContain("change_programme's");
   });
 
   it("11. no stale 'Plan ahead'; when to remember, with a stated preference among the examples", () => {

@@ -17,11 +17,24 @@
  *
  * Its state is the suggestion's own read (`GET /api/coach/proposals/:id`, the `plans` part), shared with the other
  * cards under one query key. Every text the coach wrote is data: rendered as text.
+ *
+ * A PROGRAMME CHANGE (§8 §5) is the same card in its own words (`PROGRAMME_WORDS`): "Mobility: new days", its new
+ * pattern, a line a setting and where its next sessions go; Approve and Not now, each its own op (`card.opId`: a
+ * suggestion may change two programmes); "Moving your sessions…" while its sessions are placed a request at a time;
+ * "Programme updated" when done. Its state is the read's `programmes` part, its own line by its op.
  */
 import { useEffect, useId, useRef, useState } from "react";
 import { Link } from "react-router-dom";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { api, ApiError, type CoachConversationCardDto, type DesignApproveRequest, type DesignApproveResponse, type DesignPlanLineDto } from "@rg/api-client";
+import {
+  api,
+  ApiError,
+  type CoachConversationCardDto,
+  type DesignApproveRequest,
+  type DesignApproveResponse,
+  type DesignPlanLineDto,
+  type DesignProgrammeLineDto,
+} from "@rg/api-client";
 import { CONVERSATION_QUERY } from "./coach-conversation-model.js";
 import { readProposal } from "./coach-tolerance.js";
 import { decisionError, designProposalQuery } from "./proposal-card.js";
@@ -40,6 +53,58 @@ export const PLAN_IN_FLIGHT = "It's being added right now — Finish adding take
 export const noteWords = (message: string): string => message.charAt(0).toUpperCase() + message.slice(1);
 /** A plan change's op id (the worker's `PLAN_STRUCTURE_ID`): the card's own when its read hasn't said yet. */
 export const PLAN_OP_ID = "plan";
+
+/** What a card of this shape says, for a whole plan or a programme change. */
+export interface PlanCardWords {
+  /** Done: "✓ <done>" and a link to Plan. */
+  done: string;
+  /** While its approves run. */
+  doing: string;
+  /** Part of it applied (the app closed half way), offered to finish. */
+  part: string;
+  /** Another request is applying it. */
+  inFlight: string;
+  approve: string;
+  finish: string;
+  /** Asked past the most rounds one tap asks. */
+  unfinished: string;
+  declined: string;
+  superseded: string;
+  /** Refused, the server's words missing. */
+  refused: string;
+}
+
+export const PLAN_WORDS: PlanCardWords = {
+  done: PLAN_ADDED,
+  doing: PLAN_ADDING,
+  part: PLAN_PART_ADDED,
+  inFlight: PLAN_IN_FLIGHT,
+  approve: "Approve plan",
+  finish: "Finish adding",
+  unfinished: "Not all of it was added yet — tap again to finish.",
+  declined: "Not added",
+  superseded: "Replaced by a newer plan",
+  refused: "It couldn't be added.",
+};
+
+/** A programme change's words (§8 §5): its sessions are moved, as the settings sheet's own save says. */
+export const PROGRAMME_WORDS: PlanCardWords = {
+  done: "Programme updated",
+  doing: "Moving your sessions…",
+  part: "Its settings are saved; some sessions are still to move.",
+  inFlight: "It's being applied right now — Finish takes it on from there.",
+  approve: "Approve",
+  finish: "Finish",
+  unfinished: "Not all of its sessions moved yet — tap again to finish.",
+  declined: "Not changed",
+  superseded: "Replaced by a newer change",
+  refused: "It couldn't be changed.",
+};
+
+/** What the card reads of its op's line: a plan's or a programme change's. */
+type CardLine = Pick<DesignPlanLineDto | DesignProgrammeLineDto, "opId" | "lines" | "issues"> & {
+  outcome: { status: string; why?: string } | null;
+};
 
 /** Approve the plan's own ops (`opIds`, never `{}`: the suggestion may hold other cards' workouts and changes) until
  * nothing remains: every answer, in order. A write that met another (409 `proposal_changed`) is read again and asked once
@@ -79,19 +144,20 @@ export async function approvePlanUntilDone(
   throw new Error("approve_unfinished");
 }
 
-/** What came of a plan, in one line — or null while it is the athlete's to decide. */
-export function planOutcomeLine(status: string, plan: DesignPlanLineDto | null): string | null {
+/** What came of a plan (or a programme change, in its words), in one line — or null while it is the athlete's to decide. */
+export function planOutcomeLine(status: string, plan: CardLine | null, w: PlanCardWords = PLAN_WORDS): string | null {
   const o = plan?.outcome ?? null;
-  if (o?.status === "applied" || status === "approved") return PLAN_ADDED;
-  if (o?.status === "refused") return o.why || "It couldn't be added.";
-  if (o?.status === "declined" || status === "declined") return "Not added";
-  if (o?.status === "superseded" || status === "superseded") return "Replaced by a newer plan";
+  if (o?.status === "applied" || status === "approved") return w.done;
+  if (o?.status === "refused") return o.why || w.refused;
+  if (o?.status === "declined" || status === "declined") return w.declined;
+  if (o?.status === "superseded" || status === "superseded") return w.superseded;
   if (status === "expired") return "Its day passed";
   if (status === "pending" || status === "partially_approved") return null;
   return status.replace(/[_-]+/g, " ").trim() || null;
 }
 
-type PlanCardInput = Pick<CoachConversationCardDto, "proposalId" | "title" | "summary" | "status" | "lines">;
+type PlanCardInput = Pick<CoachConversationCardDto, "proposalId" | "title" | "summary" | "status" | "lines"> &
+  Partial<Pick<CoachConversationCardDto, "kind" | "opId">>;
 
 export function PlanCard({ card, closed = false }: { card: PlanCardInput; closed?: boolean }) {
   const qc = useQueryClient();
@@ -99,9 +165,14 @@ export function PlanCard({ card, closed = false }: { card: PlanCardInput; closed
   const linesId = useId();
   const oneTap = useOneTap();
   const read = useQuery({ queryKey: designProposalQuery(card.proposalId), queryFn: () => readProposal(card.proposalId), retry: false });
-  const plan = read.data?.plans?.[0] ?? null;
+  const programme = card.kind === "programme";
+  const w = programme ? PROGRAMME_WORDS : PLAN_WORDS;
+  // A programme change's line is its own op's (a suggestion may change two programmes); a plan's, the suggestion's one.
+  const plan: CardLine | null = programme
+    ? (read.data?.programmes?.find((g) => g.opId === card.opId) ?? (card.opId ? null : (read.data?.programmes?.[0] ?? null)))
+    : (read.data?.plans?.[0] ?? null);
   /** The card's own op: what its buttons approve and decline, nothing else of the suggestion. */
-  const own = [plan?.opId ?? PLAN_OP_ID];
+  const own = [plan?.opId ?? card.opId ?? PLAN_OP_ID];
   const status = read.data?.status ?? card.status;
   const reread = () => qc.invalidateQueries({ queryKey: designProposalQuery(card.proposalId) });
   const after = async () => {
@@ -114,7 +185,7 @@ export function PlanCard({ card, closed = false }: { card: PlanCardInput; closed
   const approve = useMutation({
     networkMode: "always",
     mutationFn: () => approvePlanUntilDone((body) => api.coachDesignApprove(card.proposalId, body), reread, own),
-    onSuccess: (answers) => setBusyLine(answers.some((a) => (a.inFlight ?? []).length > 0) ? PLAN_IN_FLIGHT : null),
+    onSuccess: (answers) => setBusyLine(answers.some((a) => (a.inFlight ?? []).length > 0) ? w.inFlight : null),
     onSettled: after,
   });
   const decline = useMutation({
@@ -134,7 +205,7 @@ export function PlanCard({ card, closed = false }: { card: PlanCardInput; closed
   });
   const [open, setOpen] = useState(false);
 
-  const outcome = planOutcomeLine(status, plan);
+  const outcome = planOutcomeLine(status, plan, w);
   const started = plan?.outcome?.status === "applying";
   const decidable = outcome === null && (status === "pending" || status === "partially_approved");
   const lines = card.lines && card.lines.length > 0 ? card.lines : (plan?.lines ?? []);
@@ -144,7 +215,7 @@ export function PlanCard({ card, closed = false }: { card: PlanCardInput; closed
     return (
       <div className="coach-card-closed">
         <p className="coach-card-closed-line">
-          {[card.title, card.summary.trim() || null].filter(Boolean).join(" · ")} — {outcome ?? (started ? "Part added" : "Open")}{" "}
+          {[card.title, card.summary.trim() || null].filter(Boolean).join(" · ")} — {outcome ?? (started ? (programme ? "Part applied" : "Part added") : "Open")}{" "}
           <button type="button" className="linklike tap-pad" aria-expanded={open} aria-controls={linesId} onClick={() => setOpen((v) => !v)}>
             {open ? "Hide" : "Show"}
           </button>
@@ -180,12 +251,12 @@ export function PlanCard({ card, closed = false }: { card: PlanCardInput; closed
       ) : null}
       {working ? (
         <p className="coach-changes-outcome" role="status">
-          {PLAN_ADDING}
+          {w.doing}
         </p>
       ) : outcome !== null ? (
         <p ref={outcomeRef} className="coach-changes-outcome" role="status" tabIndex={-1}>
-          {outcome === PLAN_ADDED ? `✓ ${PLAN_ADDED}` : outcome}
-          {outcome === PLAN_ADDED ? (
+          {outcome === w.done ? `✓ ${w.done}` : outcome}
+          {outcome === w.done ? (
             <>
               {" "}
               <Link className="linklike tap-pad" to="/plan">
@@ -196,7 +267,7 @@ export function PlanCard({ card, closed = false }: { card: PlanCardInput; closed
         </p>
       ) : started ? (
         <p className="coach-changes-outcome" role="status">
-          {PLAN_PART_ADDED}
+          {w.part}
         </p>
       ) : null}
       {busyLine && !working ? (
@@ -207,7 +278,7 @@ export function PlanCard({ card, closed = false }: { card: PlanCardInput; closed
       {/* What went wrong, in the cards' shared words — none beside what came of it (a suggestion gone says its outcome). */}
       {(approve.isError || decline.isError) && outcome === null ? (
         <p className="coach-pc-error" role="status">
-          {decisionError(approve.error ?? decline.error, { inFlight: PLAN_IN_FLIGHT, unfinished: "Not all of it was added yet — tap again to finish." })}
+          {decisionError(approve.error ?? decline.error, { inFlight: w.inFlight, unfinished: w.unfinished })}
         </p>
       ) : null}
       {decidable ? (
@@ -218,7 +289,7 @@ export function PlanCard({ card, closed = false }: { card: PlanCardInput; closed
             disabled={working || decline.isPending || !read.data}
             onClick={() => oneTap(() => approve.mutateAsync().then(() => setToOutcome(true)))}
           >
-            {started ? "Finish adding" : "Approve plan"}
+            {started ? w.finish : w.approve}
           </button>
           {started ? null : (
             <button type="button" className="btn" disabled={working || decline.isPending || !read.data} onClick={() => oneTap(() => decline.mutateAsync().then(() => setToOutcome(true)))}>

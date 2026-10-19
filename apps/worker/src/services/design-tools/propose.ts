@@ -558,7 +558,7 @@ function replacedSql(userId: string, id: string) {
   const kindIs = (k: string) => sql.raw(`json_extract(o.value, '$.kind') = '${k}'`);
   return sql`(select json_object('status', p.status,
       'workouts', (select count(*) from json_each(p.ops) o where ${kindIs("doc_workout")}),
-      'changes', (select count(*) from json_each(p.ops) o where ${kindIs("plan_adjust")} or ${kindIs("plan_structure")}),
+      'changes', (select count(*) from json_each(p.ops) o where ${kindIs("plan_adjust")} or ${kindIs("plan_structure")} or ${kindIs("programme_change")}),
       'conversation', (select coalesce(case when json_valid(r.state) then json_extract(r.state, '$.settings.conversationId') end, r.id)
         from coach_runs r where r.id = substr(p.id, 4) and r.user_id = p.user_id),
       'set', (select count(*) from coach_runs r where r.id = substr(p.id, 4) and r.user_id = p.user_id and json_valid(r.scope)

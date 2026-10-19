@@ -1437,14 +1437,14 @@ export interface OpenProposalDto {
  * the athlete decides in. Never errs on ops that aren't JSON. */
 const OPEN_OP = sql.raw(
   `(p.status IN ('pending', 'partially_approved') AND EXISTS (SELECT 1 FROM json_each(CASE WHEN json_valid(p.ops) THEN p.ops ELSE '[]' END) o ` +
-    `WHERE json_extract(o.value, '$.kind') IN ('doc_workout', 'plan_adjust', 'plan_structure') ` +
+    `WHERE json_extract(o.value, '$.kind') IN ('doc_workout', 'plan_adjust', 'plan_structure', 'programme_change') ` +
     `AND (json_extract(o.value, '$.outcome') IS NULL OR json_extract(o.value, '$.outcome.status') IN ('refused', 'applying'))))`,
 );
 const LIVE_ROOT = sql.raw(`r.status IN (${LIVE_STATUSES.map((s) => `'${s}'`).join(", ")})`);
 /** The days of the joined proposal's ops still open (`OPEN_OP`'s), as a JSON array: the pick keeps those from today on. */
 const OPEN_DAYS = sql.raw(
   `(SELECT json_group_array(json_extract(o.value, '$.date')) FROM json_each(CASE WHEN p.status IN ('pending', 'partially_approved') AND json_valid(p.ops) THEN p.ops ELSE '[]' END) o ` +
-    `WHERE json_extract(o.value, '$.kind') IN ('doc_workout', 'plan_adjust', 'plan_structure') ` +
+    `WHERE json_extract(o.value, '$.kind') IN ('doc_workout', 'plan_adjust', 'plan_structure', 'programme_change') ` +
     `AND (json_extract(o.value, '$.outcome') IS NULL OR json_extract(o.value, '$.outcome.status') IN ('refused', 'applying')))`,
 );
 
@@ -1460,7 +1460,7 @@ const decidedSince = (since: string) => sql`(p.status IN ('approved', 'partially
 
 /** An op of the joined proposal `p` still the athlete's to decide (`OPEN_OP`'s rule for one op `o`). */
 const OPEN_ONE = sql.raw(
-  `json_extract(o.value, '$.kind') IN ('doc_workout', 'plan_adjust', 'plan_structure') ` +
+  `json_extract(o.value, '$.kind') IN ('doc_workout', 'plan_adjust', 'plan_structure', 'programme_change') ` +
     `AND (json_extract(o.value, '$.outcome') IS NULL OR json_extract(o.value, '$.outcome.status') IN ('refused', 'applying'))`,
 );
 

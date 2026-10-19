@@ -12,9 +12,10 @@
  * SAME_SESSION_MINUTES of each other. (A newer
  * revision of a different workout, already planned, is its own session: it never supersedes a new one near it; nor
  * does a change ever supersede a new workout, or a new workout a change.) A whole plan change (§8 §5) is covered by a newer
- * one for the same plan (`planKey`: the block, or a new one of the same discipline), never by anything else. Only an op
- * still OPEN is covered: a designed workout, a change or a plan change with no outcome yet, or refused (a refused op
- * stays open: design-approve.ts).
+ * one for the same plan (`planKey`: the block, or a new one of the same discipline), never by anything else; a programme
+ * change by a newer one for the same programme (`programId`). Only an op still OPEN is covered: a designed workout, a
+ * change, a plan change or a programme change with no outcome yet, or refused (a refused op stays open:
+ * design-approve.ts).
  */
 import { sql, type SQL } from "drizzle-orm";
 
@@ -31,9 +32,9 @@ const workoutOf = (value: SQL) => sql`(CASE json_extract(${value}, '$.kind')
     WHEN 'plan_adjust' THEN json_extract(${value}, '$.op.workoutId')
     WHEN 'doc_workout' THEN CASE WHEN json_extract(${value}, '$.target.kind') = 'revise' THEN json_extract(${value}, '$.target.workoutId') END END)`;
 
-/** `value` (an op's JSON) is a designed workout, a change or a whole plan change still open: no outcome yet, or refused
- * (a plan change being applied — `applying` — is never covered). */
-export const openOp = (value: SQL): SQL => sql`(json_extract(${value}, '$.kind') IN ('doc_workout', 'plan_adjust', 'plan_structure')
+/** `value` (an op's JSON) is a designed workout, a change, a whole plan change or a programme change still open: no
+ * outcome yet, or refused (one being applied — `applying` — is never covered). */
+export const openOp = (value: SQL): SQL => sql`(json_extract(${value}, '$.kind') IN ('doc_workout', 'plan_adjust', 'plan_structure', 'programme_change')
     AND coalesce(json_extract(${value}, '$.outcome.status'), 'open') IN ('open', 'refused'))`;
 
 /**
@@ -48,6 +49,8 @@ const startOf = (value: SQL) => sql`coalesce(json_extract(${value}, '$.time'), j
 export const covers = (newer: SQL, older: SQL): SQL => sql`((${workoutOf(older)} IS NOT NULL AND ${workoutOf(older)} = ${workoutOf(newer)})
     OR (json_extract(${older}, '$.kind') = 'plan_structure' AND json_extract(${newer}, '$.kind') = 'plan_structure'
         AND json_extract(${older}, '$.planKey') = json_extract(${newer}, '$.planKey'))
+    OR (json_extract(${older}, '$.kind') = 'programme_change' AND json_extract(${newer}, '$.kind') = 'programme_change'
+        AND json_extract(${older}, '$.programId') = json_extract(${newer}, '$.programId'))
     OR (json_extract(${older}, '$.kind') = 'doc_workout' AND json_extract(${newer}, '$.kind') = 'doc_workout'
         AND json_extract(${older}, '$.target.kind') = 'new' AND json_extract(${newer}, '$.target.kind') = 'new'
         AND json_extract(${newer}, '$.date') = json_extract(${older}, '$.date')

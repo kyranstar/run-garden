@@ -19,7 +19,9 @@
  *  3. a model step at a state near its cap (~190 KB): its parse, the request body, the answer, the write;
  *  4. the reviewer: its packet (cut near 24 KB, evidence first), its opening context, its submit_review turn, and the
  *     designer's resume;
- *  5. the manifest of a 7-workout set with 3 changes (`placedTimes`, `relaidDay`), and its approve, chunk by chunk;
+ *  5. the manifest of a 7-workout set with 3 changes (`placedTimes`, `relaidDay`), and its approve, chunk by chunk; and
+ *     (5p, §8 §5) a programme change's approve — six a week at four weeks ahead onto other days, its settings written
+ *     and its sessions placed a request's room at a time (`placeSlotsWithin`) — request by request;
  *  6. `GET /api/objectives/board` over two years of runs, sessions and sets (best ever reads all of it);
  *  7. `GET /api/coach/runs/current` with 50 events;
  *  8. every tool's own call, alone, as a step runs it (`measureTool`): its scaled p50 must stay at or under the tool's
@@ -88,6 +90,9 @@ import { adjustPlan } from "../src/services/design-tools/adjust-plan.js";
 import { allTools } from "../src/services/design-tools/index.js";
 import { designProposalId, proposeWorkout } from "../src/services/design-tools/propose.js";
 import { MAX_PLAN_SESSIONS } from "../src/services/design-tools/propose-plan.js";
+import { changeProgramme } from "../src/services/design-tools/change-programme.js";
+import { loadPreferences } from "../src/services/calendar-sync.js";
+import { placeSlots } from "../src/services/program-slots.js";
 import { isToolErr, type DraftForReview, type OpReview, type SetHooks, type SetRound, type ToolContext } from "../src/services/design-tools/types.js";
 import { utf8Bytes } from "../src/services/utf8.js";
 import { validateWorkout } from "../src/services/design-tools/validate.js";
@@ -860,6 +865,9 @@ beforeAll(async () => {
     await measureTool("record_answer", images.get("read12")!, ctx, { answers: [{ question: "tightness", area: "calves", quote: "My calves are tight from Sunday's hills" }] });
     await measureTool("remember", images.get("read12")!, ctx, { kind: "fact", body: words(1, 200), confidence: "stated" });
     await measureTool("adjust_plan", images.get("read12")!, ctx, { workoutId: rich.outlineToday, change: { kind: "skip", reason: "Rest the legs today." }, why: words(2, 150) });
+    // change_programme (§8 §5): the rich athlete's programme onto other days, a goal and minutes — its preview of where
+    // the sessions go, its lines.
+    await measureTool("change_programme", images.get("read12")!, ctx, { programmeId: rich.programId, days: ["Tue", "Thu", "Sat"], weeklyGoal: 3, minutes: 45, why: words(2, 150) });
     await measureTool("finish", images.get("read12")!, ctx, { summary: words(3, 200) });
 
     // A search that finds nothing (fix wave 13, round 3, R2-M1) says why from the library's word index — no move says a
@@ -1209,6 +1217,63 @@ beforeAll(async () => {
     });
   }
 
+  // ── 5p: a programme change's approve (§8 §5), request by request — six a week at four weeks ahead onto other days ──
+  {
+    const dbp = makeTestDb();
+    const { userId: uid } = await makeTestUser(dbp, { timezone: TZ });
+    const cookiep = `${SESSION_COOKIE}=${await createSession(dbp, uid)}`;
+    const stamp = new Date().toISOString();
+    const programId = newId();
+    await dbp.insert(schema.programs).values({
+      id: programId, userId: uid, kind: "adaptive", name: "Mobility", status: "active", disciplines: ["yoga", "strength"], startDate: null, endDate: null,
+      raceDate: null, source: null, config: { weeklyGoal: 6, preferredDays: [0, 1, 2, 3, 4, 5], placementWeeksAhead: 4 }, createdAt: stamp, updatedAt: stamp, archivedAt: null,
+    });
+    await placeSlots(dbp, uid, programId, today, await loadPreferences(dbp, uid), stamp);
+    const runId = `run-${newId()}`;
+    await dbp.insert(schema.coachRuns).values({ id: runId, userId: uid, parentId: null, role: "main", scope: { kind: "auto" }, request: null, status: "active", state: null, steps: 0, costUsd: 0, createdAt: stamp, updatedAt: stamp });
+    const made = await changeProgramme.run(
+      { db: dbp, env, userId: uid, run: { id: runId, role: "main", scope: { kind: "auto" }, parentId: null, rehearsal: false }, now: new Date(), toolUseId: `toolu_${newId()}` },
+      { programmeId: programId, days: ["Tue", "Wed", "Thu", "Fri", "Sat", "Sun"], why: words(2, 150) },
+    );
+    if (isToolErr(made)) throw new Error(`change_programme refused: ${made.error} — ${made.why}`);
+    const proposalId = designProposalId(runId);
+    await dbp.update(schema.coachProposals).set({ status: "pending" }).where(and(eq(schema.coachProposals.id, proposalId), eq(schema.coachProposals.userId, uid)));
+    images.set("programme-change", imageOf(dbp));
+    clientOf(dbp).close();
+    vi.stubGlobal("fetch", (async () => new Response("{}", { status: 404 })) as typeof fetch);
+    const chunkSamples: Sample[][] = [];
+    const chunkFirst: number[] = [];
+    for (let i = 0; i < WARMUP + RUNS; i++) {
+      const x = open(images.get("programme-change")!);
+      let remaining: string[] | null = null;
+      for (let k = 0; remaining === null || remaining.length > 0; k++) {
+        if (k >= MAX_LOOP_ITERATIONS) throw new Error("the programme change's approve never finished");
+        const pending: Array<Promise<unknown>> = [];
+        const executionCtx = { waitUntil: (pr: Promise<unknown>) => void pending.push(pr), passThroughOnException: () => undefined, props: {} };
+        x.clock.reset();
+        const t = performance.now();
+        const res = await x.coach.request(
+          `/api/coach/proposals/${proposalId}/approve`,
+          { method: "POST", headers: { Cookie: cookiep, "Content-Type": "application/json" }, body: JSON.stringify(remaining ? { opIds: remaining } : {}) },
+          env,
+          executionCtx as never,
+        );
+        await Promise.all(pending);
+        const total = performance.now() - t;
+        const s: Sample = { js: total - x.clock.sqlite(), wire: x.clock.wire(), sqlite: x.clock.sqlite(), statements: x.clock.statements() };
+        if (res.status !== 200) throw new Error(`approve answered ${res.status}: ${await res.text()}`);
+        remaining = ((await res.json()) as { remaining: string[] }).remaining;
+        if (i === 0) chunkFirst[k] = s.js;
+        if (i >= WARMUP) (chunkSamples[k] ??= []).push(s);
+      }
+      x.close();
+    }
+    vi.unstubAllGlobals();
+    chunkSamples.forEach((samples, k) => {
+      shapes.set(`5p.${k + 1}`, { label: `5p. programme change approve request ${k + 1} of ${chunkSamples.length}`, samples, first: chunkFirst[k]!, budget: 4 });
+    });
+  }
+
   // ── 6: the objectives board over two years ──
   {
     const db6 = makeTestDb();
@@ -1349,7 +1414,7 @@ function unscalable(): string | null {
 const KNOWN_OVER: Readonly<Record<string, { measured: number; ceiling: number; waitsOn: string }>> = {};
 
 /** Shapes measured as a run of requests — the queued calls' steps, the approve's chunks — each `${id}.${k}`. */
-const GROUPS = ["1c", "1d.q", "2a.q", "2d", "5b"] as const;
+const GROUPS = ["1c", "1d.q", "2a.q", "2d", "5b", "5p"] as const;
 const inGroup = (id: string) => [...shapes.keys()].filter((k) => k.startsWith(`${id}.`));
 
 /** The shape `id` — or, for a group, every request of it — under its budget at p50 and the limit at p95 (scaled); a
@@ -1381,6 +1446,8 @@ describe("the coach designer's requests within the Workers free plan's CPU", () 
     expect(inGroup("2a.q").map((k) => shapes.get(k)!.label)).toEqual([expect.stringContaining(": 3 ×"), expect.stringContaining(": 1 ×")]);
     expect(inGroup("2d").map((k) => shapes.get(k)!.label)).toEqual([1, 2, 3].map(() => expect.stringContaining(": 3 ×")));
     expect(inGroup("5b").length).toBeGreaterThanOrEqual(5);
+    // A programme's six a week at four weeks ahead onto other days: its retractions and placings over several requests.
+    expect(inGroup("5p").length).toBeGreaterThanOrEqual(3);
     expect(inGroup("8").map((k) => k.slice(2)).sort()).toEqual(allTools().map((t) => t.name).sort());
   });
 
@@ -1393,7 +1460,7 @@ describe("the coach designer's requests within the Workers free plan's CPU", () 
     }
   });
 
-  for (const id of ["1a", "1b", "1c", "1d", "1d.q", "8z.unknown", "8z.away", "2a", "2a.q", "2b", "2b.q", "2c", "2d", "2e", "3", "4b", "4c", "4d", "5a", "5b", "6", "7", "9a", "9b", "9c", "10a", "10b", "11a", "11b", "12"]) {
+  for (const id of ["1a", "1b", "1c", "1d", "1d.q", "8z.unknown", "8z.away", "2a", "2a.q", "2b", "2b.q", "2c", "2d", "2e", "3", "4b", "4c", "4d", "5a", "5b", "5p", "6", "7", "9a", "9b", "9c", "10a", "10b", "11a", "11b", "12"]) {
     const over = KNOWN_OVER[id];
     it(
       over

@@ -125,7 +125,7 @@ const server = createServer((req, res) => {
     }
     const role = roleOf(request.system);
     const turn = (request.messages ?? []).filter((m) => m.role === "assistant").length;
-    const answer = (script[role] ?? script.main)(turn, { today: todayOf(request.messages), dimensions: dimensionsOf(request.tools), role, opening: openingOf(request.messages) });
+    const answer = (script[role] ?? script.main)(turn, { today: todayOf(request.messages), dimensions: dimensionsOf(request.tools), role, opening: openingOf(request.messages), messages: request.messages });
     calls.begun += 1;
     let done = false;
     const begunAt = Date.now();

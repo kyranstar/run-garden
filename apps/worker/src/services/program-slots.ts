@@ -40,7 +40,7 @@
  */
 import { and, count, eq, gt, gte, inArray, isNull, lte, max, ne, or, sql } from "drizzle-orm";
 import { calendarEventSuppressions, plannedWorkouts, programs, sessionBuilds } from "@rg/database";
-import { adaptiveConfigSchema, addDays, nowInstant, startOfIsoWeek, todayInZone, type UserPreferences } from "@rg/domain";
+import { adaptiveConfigSchema, addDays, nowInstant, startOfIsoWeek, todayInZone, type AdaptiveConfig, type UserPreferences } from "@rg/domain";
 import { restoreInProgress } from "./account-state.js";
 import { loadPreferences } from "./calendar-sync.js";
 import { chunkedInsert, chunkIds, insertBatches, type Db } from "./db.js";
@@ -196,6 +196,148 @@ function windowGone(today: string, windowTime: string, now: string, timezone: st
   return clock.date > today || (clock.date === today && clock.time >= windowTime);
 }
 
+/** The window placement works over: this ISO week to `placementWeeksAhead` weeks ahead. */
+function windowOf(today: string, config: AdaptiveConfig): { firstMonday: string; lastSunday: string } {
+  const firstMonday = startOfIsoWeek(today);
+  return { firstMonday, lastSunday: addDays(firstMonday, 7 * (config.placementWeeksAhead + 1) - 1) };
+}
+
+/**
+ * The program's slots placement reads (one statement): planned in the window (rule 1's count, and every id a new slot
+ * could take), or sitting in it now (a slot moved in from outside still holds its date). A program that wants no slots
+ * (`goal` 0) also reads every live slot past the window: retiring retracts its flexible future slots wherever an
+ * earlier, wider window put them (M2).
+ */
+async function readSlotRows(db: Db, userId: string, programId: string, today: string, config: AdaptiveConfig, goal: number): Promise<WorkoutRow[]> {
+  const { firstMonday, lastSunday } = windowOf(today, config);
+  return db
+    .select(plannedRowColumns())
+    .from(plannedWorkouts)
+    .where(
+      and(
+        eq(plannedWorkouts.userId, userId),
+        eq(plannedWorkouts.planId, programId),
+        eq(plannedWorkouts.origin, "program"),
+        or(
+          and(gte(plannedWorkouts.originalPlanDate, firstMonday), lte(plannedWorkouts.originalPlanDate, lastSunday)),
+          and(gte(plannedWorkouts.effectiveDate, firstMonday), lte(plannedWorkouts.effectiveDate, lastSunday)),
+          goal === 0 ? and(isNull(plannedWorkouts.archivedAt), gt(plannedWorkouts.effectiveDate, lastSunday)) : undefined,
+        ),
+      ),
+    );
+}
+
+/** What placement weighs beside the rows: the program, its config and goal (0 when it wants no slots), and the clock. */
+interface PlanInputs {
+  programId: string;
+  config: AdaptiveConfig;
+  goal: number;
+  today: string;
+  prefs: UserPreferences;
+  now: string;
+  discipline: "strength" | "yoga";
+}
+
+/** Rules 1–4 over the rows as read: the slots to retract, to bring back and to place — `flexibleIds` the ones that may go. */
+function planSlots(rows: readonly WorkoutRow[], o: PlanInputs, flexibleIds: ReadonlySet<string>) {
+  const { programId, config, goal, today, prefs, now, discipline } = o;
+  const { firstMonday, lastSunday } = windowOf(today, config);
+  const byId = new Map(rows.map((r) => [r.id, r]));
+  // Rule 2's two limits on a NEW slot (ruling 2a-R11): never on today once today's window has passed (it would
+  // only become a "Did this happen?" and a miss), and in this week only on the days a full week would hold one —
+  // a program started (or a goal raised) mid-week does not cram the week's goal into what is left of it.
+  const todayGone = windowGone(today, windowTimeFor({ category: discipline, date: today }, prefs), now, prefs.timezone);
+  // One slot of this program per date: the days a live, fixed slot already sits on.
+  const occupied = new Set(rows.filter((r) => r.archivedAt === null && !flexibleIds.has(r.id)).map((r) => r.effectiveDate));
+  const toArchive: WorkoutRow[] = [];
+  const toRevive: WorkoutRow[] = [];
+  const toInsert: string[] = [];
+  for (let week = 0; week <= config.placementWeeksAhead; week++) {
+    const monday = addDays(firstMonday, 7 * week);
+    const sunday = addDays(monday, 6);
+    const counted = rows.filter((r) => r.originalPlanDate >= monday && r.originalPlanDate <= sunday && !retracted(r));
+    const movable = new Map(counted.filter((r) => flexibleIds.has(r.id)).map((r) => [r.effectiveDate, r]));
+    const need = Math.max(0, goal - (counted.length - movable.size));
+    const ranked = rankedDays(monday, config.preferredDays);
+    const weekDays = week === 0 ? new Set(ranked.slice(0, goal)) : null;
+
+    const want = new Set<string>();
+    for (const date of ranked) {
+      if (want.size >= need) break;
+      // Race day is the race's: no session there, and a flexible one placed before the race was set moves off it.
+      if (date === prefs.raceDate) continue;
+      if (movable.has(date)) {
+        want.add(date);
+        continue;
+      }
+      if (date < today || occupied.has(date)) continue;
+      if (weekDays && !weekDays.has(date)) continue;
+      if (date === today && todayGone) continue;
+      // The date's id belongs to a slot the athlete moved away, skipped or removed: that day is spoken for.
+      const holder = byId.get(slotId(programId, date));
+      if (holder && !retracted(holder)) continue;
+      want.add(date);
+    }
+
+    for (const [date, r] of movable) if (!want.has(date)) toArchive.push(r);
+    for (const date of want) {
+      if (movable.has(date)) continue;
+      const holder = byId.get(slotId(programId, date));
+      if (holder) toRevive.push(holder);
+      else toInsert.push(date);
+    }
+  }
+  // Past the window only a program that wants no slots reads anything: every flexible one there goes.
+  for (const r of rows) if (r.effectiveDate > lastSunday && flexibleIds.has(r.id)) toArchive.push(r);
+  return { toArchive, toRevive, toInsert };
+}
+
+/**
+ * Rule 3 by the row first; the touched check (one lookup per TOUCHED_ID_CHUNK ids: `touchedReads`) only when the plan
+ * would retract something — when it retracts nothing, a touched slot and an untouched one are kept alike and the plan
+ * is the same.
+ */
+async function planWithTouched(db: Db, rows: readonly WorkoutRow[], o: PlanInputs) {
+  const byRow = rows.filter((r) => flexible(r, o.today)).map((r) => r.id);
+  let planned = planSlots(rows, o, new Set(byRow));
+  let touchedReads = 0;
+  if (planned.toArchive.length > 0) {
+    touchedReads = Math.ceil(byRow.length / TOUCHED_ID_CHUNK);
+    const touched = await touchedSlots(db, byRow);
+    if (touched.size > 0) planned = planSlots(rows, o, new Set(byRow.filter((id) => !touched.has(id))));
+  }
+  return { ...planned, touchedReads };
+}
+
+/** The most statements `previewPlacement` runs: the rows, and one touched lookup (a window holds far under 80 slots). */
+export const PREVIEW_STATEMENTS = 2;
+
+/**
+ * What a pass would leave with `config` in place of the program's own, written nowhere (change_programme's card: "Next
+ * sessions move to …"): the dates of its live, scheduled sessions from today on, before and after. Rules 1–4 exactly
+ * as a pass runs them; the content refresh (rule 5) moves no session.
+ */
+export async function previewPlacement(
+  db: Db,
+  userId: string,
+  program: Pick<ProgramRow, "id" | "status" | "disciplines">,
+  config: AdaptiveConfig,
+  today: string,
+  prefs: UserPreferences,
+  now: string,
+): Promise<{ before: string[]; after: string[] }> {
+  const goal = program.status === "active" ? config.weeklyGoal : 0;
+  const rows = await readSlotRows(db, userId, program.id, today, config, goal);
+  const plan = await planWithTouched(db, rows, { programId: program.id, config, goal, today, prefs, now, discipline: defaultDiscipline(program) });
+  const live = rows.filter((r) => r.archivedAt === null && r.completionState === "scheduled" && r.effectiveDate >= today);
+  const gone = new Set(plan.toArchive.map((r) => r.id));
+  const before = live.map((r) => r.effectiveDate).sort();
+  const after = [...live.filter((r) => !gone.has(r.id)).map((r) => r.effectiveDate), ...plan.toInsert, ...plan.toRevive.map((r) => r.originalPlanDate)]
+    .filter((d) => d >= today)
+    .sort();
+  return { before, after };
+}
+
 /**
  * Place (and re-place) one program's slots. Idempotent: a second run with the same inputs writes nothing.
  * Not this user's program, not adaptive, or a restore in progress → nothing. A program that is not active wants
@@ -257,93 +399,11 @@ async function place(
   const config = adaptiveConfigSchema.parse(program.config);
   const goal = program.status === "active" ? config.weeklyGoal : 0;
 
-  const firstMonday = startOfIsoWeek(today);
-  const lastSunday = addDays(firstMonday, 7 * (config.placementWeeksAhead + 1) - 1);
-  // Planned in the window (rule 1's count, and every id a new slot could take), or sitting in it now (a slot
-  // moved in from outside still holds its date). A program that wants no slots also reads every live slot past
-  // the window: retiring retracts its flexible future slots wherever an earlier, wider window put them (M2).
-  spend(1);
-  const rows = await db
-    .select(plannedRowColumns())
-    .from(plannedWorkouts)
-    .where(
-      and(
-        eq(plannedWorkouts.userId, userId),
-        eq(plannedWorkouts.planId, programId),
-        eq(plannedWorkouts.origin, "program"),
-        or(
-          and(gte(plannedWorkouts.originalPlanDate, firstMonday), lte(plannedWorkouts.originalPlanDate, lastSunday)),
-          and(gte(plannedWorkouts.effectiveDate, firstMonday), lte(plannedWorkouts.effectiveDate, lastSunday)),
-          goal === 0 ? and(isNull(plannedWorkouts.archivedAt), gt(plannedWorkouts.effectiveDate, lastSunday)) : undefined,
-        ),
-      ),
-    );
-  const byId = new Map(rows.map((r) => [r.id, r]));
-
   const discipline = defaultDiscipline(program);
-  // Rule 2's two limits on a NEW slot (ruling 2a-R11): never on today once today's window has passed (it would
-  // only become a "Did this happen?" and a miss), and in this week only on the days a full week would hold one —
-  // a program started (or a goal raised) mid-week does not cram the week's goal into what is left of it.
-  const todayGone = windowGone(today, windowTimeFor({ category: discipline, date: today }, prefs), now, prefs.timezone);
-
-  const plan = (flexibleIds: ReadonlySet<string>) => {
-    // One slot of this program per date: the days a live, fixed slot already sits on.
-    const occupied = new Set(
-      rows.filter((r) => r.archivedAt === null && !flexibleIds.has(r.id)).map((r) => r.effectiveDate),
-    );
-    const toArchive: WorkoutRow[] = [];
-    const toRevive: WorkoutRow[] = [];
-    const toInsert: string[] = [];
-    for (let week = 0; week <= config.placementWeeksAhead; week++) {
-      const monday = addDays(firstMonday, 7 * week);
-      const sunday = addDays(monday, 6);
-      const counted = rows.filter((r) => r.originalPlanDate >= monday && r.originalPlanDate <= sunday && !retracted(r));
-      const movable = new Map(counted.filter((r) => flexibleIds.has(r.id)).map((r) => [r.effectiveDate, r]));
-      const need = Math.max(0, goal - (counted.length - movable.size));
-      const ranked = rankedDays(monday, config.preferredDays);
-      const weekDays = week === 0 ? new Set(ranked.slice(0, goal)) : null;
-
-      const want = new Set<string>();
-      for (const date of ranked) {
-        if (want.size >= need) break;
-        // Race day is the race's: no session there, and a flexible one placed before the race was set moves off it.
-        if (date === prefs.raceDate) continue;
-        if (movable.has(date)) {
-          want.add(date);
-          continue;
-        }
-        if (date < today || occupied.has(date)) continue;
-        if (weekDays && !weekDays.has(date)) continue;
-        if (date === today && todayGone) continue;
-        // The date's id belongs to a slot the athlete moved away, skipped or removed: that day is spoken for.
-        const holder = byId.get(slotId(programId, date));
-        if (holder && !retracted(holder)) continue;
-        want.add(date);
-      }
-
-      for (const [date, r] of movable) if (!want.has(date)) toArchive.push(r);
-      for (const date of want) {
-        if (movable.has(date)) continue;
-        const holder = byId.get(slotId(programId, date));
-        if (holder) toRevive.push(holder);
-        else toInsert.push(date);
-      }
-    }
-    // Past the window only a program that wants no slots reads anything: every flexible one there goes.
-    for (const r of rows) if (r.effectiveDate > lastSunday && flexibleIds.has(r.id)) toArchive.push(r);
-    return { toArchive, toRevive, toInsert };
-  };
-
-  // Rule 3 by the row first; the touched check (two lookups) only when the plan would retract something — when
-  // it retracts nothing, a touched slot and an untouched one are kept alike and the plan is the same.
-  const byRow = rows.filter((r) => flexible(r, today)).map((r) => r.id);
-  let planned = plan(new Set(byRow));
-  if (planned.toArchive.length > 0) {
-    spend(Math.ceil(byRow.length / TOUCHED_ID_CHUNK));
-    const touched = await touchedSlots(db, byRow);
-    if (touched.size > 0) planned = plan(new Set(byRow.filter((id) => !touched.has(id))));
-  }
-  const { toArchive, toRevive, toInsert } = planned;
+  spend(1);
+  const rows = await readSlotRows(db, userId, programId, today, config, goal);
+  const { toArchive, toRevive, toInsert, touchedReads } = await planWithTouched(db, rows, { programId, config, goal, today, prefs, now, discipline });
+  spend(touchedReads);
 
   // A restore that began since this pass's first look owns the account now (audit 2a-model M5): slot ids are
   // the file's ids too, so not one write may land. Looked at again right before each kind of write.

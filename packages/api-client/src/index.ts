@@ -789,6 +789,8 @@ export interface DesignProposalReadDto {
   changes?: DesignChangeLineDto[];
   /** Its whole plan changes (§8 §5); absent when it holds none, or from an older server. */
   plans?: DesignPlanLineDto[];
+  /** Its programme changes (§8 §5); absent when it holds none, or from an older server. */
+  programmes?: DesignProgrammeLineDto[];
   /** A set's: the plan's other rows in its date span; absent otherwise. */
   context?: DesignContextRowDto[];
 }
@@ -809,6 +811,29 @@ export interface DesignPlanLineDto {
   outcome:
     | { status: "applied"; at: string; summary: string }
     | { status: "applying"; at: string; progress: { step: string; done: number } | null }
+    | { status: "refused"; at: string; error: string; why: string }
+    | { status: "declined"; at: string; reason?: string }
+    | { status: "superseded"; at: string; reason: string; by: string }
+    | null;
+}
+
+/**
+ * A change to a programme's settings in a suggestion (§8 §5): its programme, the card's title and line, its lines (a
+ * setting each, then where its next sessions go), the coach's why and its notes, and how it stands — `applying` while
+ * approves place its sessions a request at a time (`progress`: its settings written, sessions placed and taken back so
+ * far), `applied` with how many it placed and took back, `refused` with why (`stale`: its settings changed since).
+ */
+export interface DesignProgrammeLineDto {
+  opId: string;
+  programmeId: string;
+  title: string;
+  summary: string;
+  lines: string[];
+  why: string;
+  issues: Array<{ code: string; message: string }>;
+  outcome:
+    | { status: "applied"; at: string; placed: number; archived: number }
+    | { status: "applying"; at: string; progress: { written: boolean; placed: number; archived: number } }
     | { status: "refused"; at: string; error: string; why: string }
     | { status: "declined"; at: string; reason?: string }
     | { status: "superseded"; at: string; reason: string; by: string }
@@ -1348,14 +1373,17 @@ export type CoachRunCreateResult = (
  * the suggestion's status. Its own read (`coachProposal`) holds the rest.
  */
 export interface CoachConversationCardDto {
-  /** `plan` (§8 §5): a whole plan — a new block, its extension, a week, a wind-down — approved with one tap. */
-  kind: "workout" | "plan_changes" | "set" | "plan";
+  /** `plan` (§8 §5): a whole plan — a new block, its extension, a week, a wind-down — approved with one tap; `programme`,
+   * a change to a programme's settings, one card a programme. */
+  kind: "workout" | "plan_changes" | "set" | "plan" | "programme";
   proposalId: string;
   title: string;
   summary: string;
   status: CoachProposalDto["status"] | (string & {});
-  /** A plan's (§8 §5): what it holds, line by line — at most 8, then "and N more". */
+  /** A plan's (§8 §5): what it holds, line by line — at most 8, then "and N more"; a programme change's, a setting each. */
   lines?: string[];
+  /** A programme change's op (§8 §5): what the card approves and declines. */
+  opId?: string;
   /** A designed run's (§8 §3): a workout card whose body is a run — its steps, paces and the watch line (its line's `run`). */
   sport?: "run";
 }

@@ -16,6 +16,7 @@
 import { submitReview } from "../design-review.js";
 import { adjustPlan } from "./adjust-plan.js";
 import { askAthlete } from "./ask.js";
+import { changeProgramme } from "./change-programme.js";
 import { dropWorkout } from "./drop-workout.js";
 import { finish } from "./finish.js";
 import { planSet } from "./plan-set.js";
@@ -70,6 +71,7 @@ export const ACT_TOOLS: DesignTool[] = [
   proposeWorkout,
   adjustPlan,
   proposePlan,
+  changeProgramme,
   planSet,
   readSet,
   dropWorkout,

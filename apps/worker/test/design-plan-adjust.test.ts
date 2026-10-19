@@ -405,7 +405,7 @@ describe("adjust_plan: a change to a session already on the plan, into the run's
     ok(await proposeWorkout.run(ctxOf(r), { doc: calmDoc({ title: "Relief, softer" }), target: { kind: "new", date: TODAY } }));
     ok((await adjust(r, shorten(await watchRun()))).res);
     const ops = (await proposalOf(designProposalId(r.id)))!.ops;
-    expect(ops.map((o) => (o.kind === "doc_workout" ? o.doc.title : o.op.kind))).toEqual(["skip", "Relief, softer", "adjust"]);
+    expect(ops.map((o) => (o.kind === "doc_workout" ? o.doc.title : "op" in o ? o.op.kind : o.kind))).toEqual(["skip", "Relief, softer", "adjust"]);
     const p = (await proposalOf(designProposalId(r.id)))!;
     expect(p.title).toBe("Relief, softer · 2 plan changes");
     expect(p.expiresAt).toBe(day(-3));

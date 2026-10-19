@@ -56,6 +56,7 @@ const TOOL_WORDS: Record<PromptToolName, string> = {
   propose_workout: "the suggestion",
   adjust_plan: "a plan change",
   propose_plan: "the plan",
+  change_programme: "the programme's settings",
   plan_set: "the plan",
   read_set: "the plan",
   drop_workout: "dropping a workout",

@@ -32,9 +32,11 @@
  *                the run rubric, then the finish
  *   race_plan    a block with its race (stream G): reads the plans, then one week from next Monday whose Sunday is the
  *                plan's race day and holds the race, then the finish
+ *   programme_change  a programme's settings (§8 §5): reads the plans, then moves the first programme read_plans lists
+ *                to Tuesdays and Thursdays (change_programme), then the finish
  *
  * `ctx.opening` is the run's opening message (its first user message's text): a script may read what the run was
- * asked from in it.
+ * asked from in it. `ctx.messages` is the request's whole history: a script may read a tool's result from it.
  */
 
 /** A turn calling tools, the way the model answers. */
@@ -330,7 +332,36 @@ function designedRun(turn, ctx) {
   return uses(["finish", { summary: RUN_LINE }]);
 }
 
+/** The finish's words for a programme moved to other days. */
+export const PROGRAMME_LINE = "Tuesdays and Thursdays from next week; this week stays as it is.";
+
+/** The first programme read_plans answered with: its id, from the tool's result in the history. */
+function programmeIdOf(messages) {
+  for (const m of messages ?? []) {
+    for (const b of Array.isArray(m.content) ? m.content : []) {
+      if (b.type !== "tool_result") continue;
+      const text = typeof b.content === "string" ? b.content : (b.content ?? []).map((c) => c.text ?? "").join("");
+      const found = /"id":"([^"]+)","kind":"programme"/.exec(text);
+      if (found) return found[1];
+    }
+  }
+  return null;
+}
+
+/** A programme's settings (§8 §5): read the plans, move the first programme to Tuesdays and Thursdays, finish. */
+function programmeChange(turn, ctx) {
+  if (turn === 0) return uses(["read_plans", {}]);
+  if (turn === 1) {
+    const programmeId = programmeIdOf(ctx.messages);
+    if (!programmeId) return uses(["finish", { summary: "There's no programme to move." }]);
+    return uses(["change_programme", { programmeId, days: ["Tue", "Thu"], why: "Your Mondays and Wednesdays are full now." }]);
+  }
+  return uses(["finish", { summary: PROGRAMME_LINE }]);
+}
+
 export const SCRIPTS = {
+  // §8 §5: a programme's settings, changed by the coach.
+  programme_change: { main: programmeChange, reviewer },
   // §8 §3: a designed run.
   designed_run: { main: designedRun, reviewer },
   // §8 §5: whole plans in the conversation.
