@@ -86,10 +86,14 @@ test("the watch's earlier version: the line names what is still to run, and each
   await tall(keep);
   await shot(page, "sheet-send", project);
   // What is below the block, measured from the block's own sentence: a click may scroll the sheet to reach its button,
-  // and that is no move.
-  const below = easy.locator(".hero-durations");
-  const says = easy.locator(".watch-version-says");
-  const gap = async () => (await below.boundingBox())!.y - (await says.boundingBox())!.y;
+  // and that is no move. Both boxes are read in one go, in the same frame: two separate reads can straddle the sheet's
+  // scroll and see a move that isn't one (3 px, about 1 run in 10).
+  const gap = () =>
+    easy.evaluate(
+      (d) =>
+        d.querySelector(".hero-durations")!.getBoundingClientRect().y -
+        d.querySelector(".watch-version-says")!.getBoundingClientRect().y,
+    );
   const gapBefore = await gap();
   await send.click();
   // On its way: said where the buttons were, the focus there, the row's pill "Syncing", and nothing below moved.
