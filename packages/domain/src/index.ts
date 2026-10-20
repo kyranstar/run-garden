@@ -23,6 +23,7 @@ export * from "./watch-coverage.js";
 export * from "./watch-address.js";
 export * from "./watch-push.js";
 export * from "./run-watch.js";
+export * from "./run-retime.js";
 export * from "./sync-action.js";
 export * from "./coach-describe.js";
 export * from "./coach-guardrails.js";

@@ -102,6 +102,13 @@ export interface PlannedRef {
    * writes on), so removing it takes it back off (Ruling A1). An imported
    * session never has this: its watch copy is never touched. */
   appPushed?: boolean;
+  /**
+   * An `adjust` of a structured run re-times its steps by the rule (run-retime.ts `retimeRun`, the owner's decision of
+   * 2026-10-20): its new length — the rule's, which the counts may leave off the coach's — and what its structure became
+   * ("3 × 5 min (was 5 × 5)"; "" for a run of one block). Computed by the same function the applier runs, so the line
+   * and what is applied cannot disagree. Absent: the length alone changes.
+   */
+  retime?: { minutes: number; summary: string };
 }
 
 /** Does COROS provably hold this row? The SAME predicate the worker's writes
@@ -451,6 +458,20 @@ export function describeOps(ops: CoachOp[], planned?: ReadonlyMap<string, Planne
       case "adjust": {
         const was = planned?.get(op.workoutId);
         const before = was?.durationMinutes;
+        if (was?.retime) {
+          // Re-timed by the rule: the length and the structure on one line — "Tempo 35 → 25 min · 3 × 5 min (was 5 × 5)".
+          // The watch gets the new version, so there is nothing "unchanged" to say.
+          const length = before != null && before !== was.retime.minutes ? ` ${before} → ${was.retime.minutes} min` : ` — ${was.retime.minutes} min`;
+          lines.push({
+            date: was.date ?? null,
+            summary: `${was.summary ?? "A planned session"}${length}${was.retime.summary ? ` · ${was.retime.summary}` : ""}`,
+            was: null,
+            change: null,
+            detail: [],
+            kind: op.kind,
+          });
+          break;
+        }
         lines.push({
           date: was?.date ?? null,
           summary:

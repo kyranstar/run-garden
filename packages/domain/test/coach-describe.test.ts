@@ -319,6 +319,22 @@ describe("describeOps — every op kind is described", () => {
     expect(unpushed[0]!.summary).not.toContain("watch unchanged");
   });
 
+  it("an adjust re-timed by the rule (2026-10-20) says the new structure on one line — never 'watch unchanged', no 'was'", () => {
+    const op = [coachOpSchema.parse({ kind: "adjust", workoutId: "w1", durationMinutes: 25 })];
+    const ref: PlannedRef = { date: "2026-08-20", summary: "Tempo", durationMinutes: 35, onWatch: true, retime: { minutes: 25, summary: "3 × 5 min (was 5 × 5)" } };
+    const [line] = describeOps(op, new Map([["w1", ref]]));
+    expect(line).toMatchObject({ date: "2026-08-20", summary: "Tempo 35 → 25 min · 3 × 5 min (was 5 × 5)", was: null, change: null });
+    // The rule's minutes, not the coach's: the count closest to 27 makes 25.
+    const asked27 = describeOps([coachOpSchema.parse({ kind: "adjust", workoutId: "w1", durationMinutes: 27 })], new Map([["w1", ref]]));
+    expect(asked27[0]!.summary).toBe("Tempo 35 → 25 min · 3 × 5 min (was 5 × 5)");
+    // One block: its length says it all.
+    const block = describeOps(op, new Map([["w1", { ...ref, summary: "Easy run", retime: { minutes: 25, summary: "" } }]]));
+    expect(block[0]!.summary).toBe("Easy run 35 → 25 min");
+    // A length unknown before: just the new one.
+    const unknown = describeOps(op, new Map([["w1", { summary: "Tempo", retime: { minutes: 25, summary: "3 × 5 min (was 5 × 5)" } }]]));
+    expect(unknown[0]!.summary).toBe("Tempo — 25 min · 3 × 5 min (was 5 × 5)");
+  });
+
   it("the manifest and the worker read ONE watch-address predicate", () => {
     const rows = [
       { sourceWorkoutId: "4738:12", sourceIdInPlan: "3", sourceProgramId: "9", lastVerifiedCorosDate: "2026-08-20" },
