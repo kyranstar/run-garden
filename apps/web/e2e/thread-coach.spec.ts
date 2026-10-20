@@ -98,6 +98,9 @@ test("a plan's Extend and Wind down, and Plan with the coach, open the coach wit
   await page.getByRole("button", { name: "Plan with the coach" }).click();
   await expect(coachSheet(page).locator("textarea")).toHaveValue("Help me plan my next few weeks");
   expect(sent.filter((s) => s.startsWith("POST"))).toEqual([]);
+  // A plans read still in flight as the test ends (a refetch) must not fail it: its response is disposed with the page
+  // (CI 39397613305: "apiResponse.json: Response has been disposed").
+  await page.unrouteAll({ behavior: "ignoreErrors" });
 });
 
 test("a race close: a needs-you chip first on the coach's opening screen, and the race strip says where it stands", async ({ page, context, baseURL }, testInfo) => {

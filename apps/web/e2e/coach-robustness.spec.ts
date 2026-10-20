@@ -535,5 +535,6 @@ bare("12. a render error inside the coach stays in the coach: said in place, the
   await leaveFor(page, /^Plan/);
   await expect(page).toHaveURL(/\/plan/);
   await expect(page.locator("#root")).not.toBeEmpty();
-  await page.unroute("**/api/coach/proposals/*");
+  // A proposals read still in flight as the test ends must not fail it (its response is disposed with the page).
+  await page.unrouteAll({ behavior: "ignoreErrors" });
 });
