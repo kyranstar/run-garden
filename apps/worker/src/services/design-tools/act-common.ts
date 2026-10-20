@@ -289,6 +289,8 @@ export const WORKOUT_DOC_JSON_SCHEMA = {
       additionalProperties: false,
     },
     notes: { type: "string", maxLength: 500 },
+    // The athlete's playlists and when to name one are in the profile block (design-context.ts `playlistLines`).
+    music: { type: "object", properties: { playlist: { type: ["string", "null"], maxLength: 40 } }, required: ["playlist"], additionalProperties: false },
   },
   required: ["title", "intent", "parts"],
   additionalProperties: false,

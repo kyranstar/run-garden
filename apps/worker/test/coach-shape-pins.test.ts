@@ -41,6 +41,10 @@ const BEFORE = { tools: 34_935, shared: 20_450, main: 4_586 };
  * compact schema; the shared prompt 23,564 → 23,729, its Acting line; the main block 6,535 → 6,608, its criteria in
  * place of "change in its settings"), so 9,344 since §8's start — the round's own about 347 tokens. Held there with
  * about 220 characters of margin.
+ *
+ * NOT REBASED 2026-10-19 for a workout's music (stream M): the document's `music` field in the tools' schema, under 150
+ * characters (design-music.test.ts pins it) and inside the margin; the criteria for naming a playlist go with the
+ * playlists in the athlete's profile block (`playlistLines`), not in the shared prompt — nothing for an athlete without.
  */
 const GROWTH_MAX_CHARS = 9_560;
 

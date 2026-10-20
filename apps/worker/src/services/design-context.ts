@@ -44,7 +44,7 @@ import {
   providerConnections,
   sleepRecords,
 } from "@rg/database";
-import { EFFORT_LEVELS, addDays, coachSettings, dayLabel, isoWeekday, todayInZone, type ProfileDto, type RunWire, type UserPreferences } from "@rg/domain";
+import { EFFORT_LEVELS, addDays, clipWords, coachSettings, dayLabel, isoWeekday, todayInZone, type MusicShortcut, type ProfileDto, type RunWire, type UserPreferences } from "@rg/domain";
 import {
   EQUIPMENT,
   EXERCISES,
@@ -582,6 +582,8 @@ function profileBlock(r: Reads): string {
       days?.length ? `Training days: ${days.map((d) => WEEKDAYS[d]).join(", ")}.` : "Training days: not set.",
     ].join(" "),
   );
+  // The athlete's playlists (2026-10-19), only when there are some: no line, and no growth, without them.
+  lines.push(...playlistLines(r.prefs.music?.shortcuts ?? []));
   const on = r.activeProfiles.map((id) => profileById(id).label);
   lines.push(on.length ? `Condition profiles on: ${on.join(", ")} — their rules and today's readings are in the opening message.` : "Condition profiles on: none.");
   // Each profile's care moves, generated from the library by the care part's roles (fix wave 13, M4): every design for
@@ -595,6 +597,24 @@ function profileBlock(r: Reads): string {
     }
   }
   return lines.join("\n");
+}
+
+/** A playlist's description, as the profile block carries it: a short clip (the name says most). */
+export const PLAYLIST_DESCRIPTION_SHOWN = 80;
+
+/**
+ * The athlete's playlists in the profile block, with when a workout names one: its id, its name and a clip of its
+ * description (the athlete's — or Spotify's — words: marked as data), and what it suits. None: nothing at all.
+ */
+export function playlistLines(shortcuts: readonly MusicShortcut[]): string[] {
+  if (shortcuts.length === 0) return [];
+  return [
+    "Playlists — the athlete's. A workout may name one in its document's music: { playlist: id }, only when one plainly fits this session's intent by its name or description, or { playlist: null } when quiet serves it; otherwise leave music out and the app plays one good for the workout's kind:",
+    ...shortcuts.map((s) => {
+      const words = s.description ? `${s.label} — ${clipWords(s.description, PLAYLIST_DESCRIPTION_SHOWN)}` : s.label;
+      return `- ${s.id}: ${athlete(words)}${s.goodFor?.length ? ` (good for ${s.goodFor.join(", ")})` : ""}`;
+    }),
+  ];
 }
 
 const CONFIDENCE_WORDS: Record<string, string> = {
