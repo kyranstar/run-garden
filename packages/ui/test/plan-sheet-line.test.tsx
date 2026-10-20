@@ -7,13 +7,18 @@
  * that counts the sessions leaving the calendar. A one-phase line keeps the per-plan sheet, Retire become Stop; an
  * ended line is read-only. An old `?plan=<coach block id>` link opens the block's line, scrolled to that phase.
  */
+import { readFileSync } from "node:fs";
+import { dirname, resolve } from "node:path";
+import { fileURLToPath } from "node:url";
 import { act, createElement, type ReactElement } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { MemoryRouter, useLocation } from "react-router-dom";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { api, type CoachPlanDto, type PlanDetailResponse, type TrainingLineDto } from "@rg/api-client";
+import { api, ApiError, type CoachPlanDto, type PlanDetailResponse, type TrainingLineDto } from "@rg/api-client";
+import { linesOf } from "@rg/domain";
 import { CoachOpenContext } from "../src/screens/studio/coach-ask.js";
+import { NUDGES_QUERY } from "../src/screens/studio/coach-conversation-model.js";
 import { LineSheet, linePhaseState, stopCount, stopLine } from "../src/screens/plan-sheet.js";
 import { PlanScreen } from "../src/screens/plan.js";
 
@@ -90,6 +95,8 @@ function mountSheet(
   line: TrainingLineDto,
   opts: {
     today?: string;
+    /** The account's today is known (false: the page only has a week's start to draw with). */
+    todayKnown?: boolean;
     focusPhaseId?: string | null;
     details?: Record<string, PlanDetailResponse>;
     onRename?: (id: string, name: string) => void;
@@ -118,6 +125,7 @@ function mountSheet(
             lines,
             plans: line.phases.map(asPlan),
             today: opts.today ?? TODAY,
+            todayKnown: opts.todayKnown ?? true,
             focusPhaseId: opts.focusPhaseId ?? null,
             onClose: () => undefined,
             onRename: opts.onRename ?? (() => undefined),
@@ -142,6 +150,8 @@ const phaseEl = (id: string): HTMLElement => {
   if (!el) throw new Error(`no phase ${id}`);
   return el;
 };
+/** What a phase's heading says: its name, its dates and where it stands. */
+const heading = (id: string) => text(phaseEl(id).querySelector("h3"));
 /** The phase's heading, when it is a disclosure (an ended phase's): the button inside its `<h3>`. */
 const toggle = (id: string) => phaseEl(id).querySelector<HTMLButtonElement>("h3 button[aria-expanded]");
 const dialog = (name: string) =>
@@ -206,19 +216,19 @@ describe("stopCount and stopLine", () => {
     expect(none).toEqual([]);
   });
 
-  it("only the current phase and those after it: an earlier phase still running beside it (they overlap) is left", async () => {
-    // The spec's rule as written (§3.3, §7: "retires only the current and later phases"); `linesOf` makes the
-    // later-starting of two phases covering today the current one.
+  it("an earlier phase still running beside the current one (they overlap) is stopped too: stopping a plan ends it", async () => {
+    // The lead's ruling (fix round 1): every phase that has not ended — past means ended (§3.5). `linesOf` makes the
+    // later-starting of two phases covering today the current one, so the earlier one comes before it in the line.
     const long = phase("v1", "Long block", "2026-10-01", "2026-11-30", { futureSessions: 7 });
     const sharpen = phase("v2", "Sharpening", "2026-10-15", "2026-11-15", { futureSessions: 3 });
     const line = mkLine([long, sharpen], { currentPhaseId: "v2" });
-    expect(stopCount(line, TODAY)).toBe(3);
+    expect(stopCount(line, TODAY)).toBe(10);
     const asked: string[] = [];
     await stopLine(line, TODAY, async (id) => (asked.push(id), { ok: true }));
-    expect(asked).toEqual(["v2"]);
+    expect(asked).toEqual(["v1", "v2"]);
   });
 
-  it("a line naming no phase of its own as current stops every phase that has not ended — never only its last", async () => {
+  it("a line naming no phase of its own as current still stops every phase that has not ended — never only its last", async () => {
     const odd = { ...running, currentPhaseId: "gone" };
     expect(stopCount(odd, TODAY)).toBe(14);
     const asked: string[] = [];
@@ -251,6 +261,17 @@ describe("linePhaseState", () => {
     expect(linePhaseState(running, base, "2026-11-08")).toBe("current");
     expect(linePhaseState(running, base, "2026-11-09")).toBe("ended");
   });
+
+  it("an earlier phase still running beside the current one is in progress too, never a heading ahead", () => {
+    const long = phase("v1", "Long block", "2026-10-01", "2026-11-30");
+    const sharpen = phase("v2", "Sharpening", "2026-10-15", "2026-11-15");
+    const ahead = phase("v3", "Race block", "2026-12-01", "2026-12-20");
+    const line = mkLine([long, sharpen, ahead], { currentPhaseId: "v2" });
+    expect(line.phases.map((p) => linePhaseState(line, p, TODAY))).toEqual(["current", "current", "later"]);
+    // A line not yet started: its current phase is its first, ahead of today, and the rest are ahead of it.
+    const notYet = mkLine([phase("n1", "First", "2026-11-02", "2026-11-29"), phase("n2", "Second", "2026-11-30", "2026-12-27")]);
+    expect(notYet.phases.map((p) => linePhaseState(notYet, p, TODAY))).toEqual(["current", "later"]);
+  });
 });
 
 // ── The sheet ──────────────────────────────────────────────────────────────
@@ -276,6 +297,28 @@ describe("a line's sheet lists its phases", () => {
     expect(text(phaseEl("r3"))).toContain("Nov 9 → Dec 6");
     expect(text(phaseEl("r3"))).not.toContain("sessions done");
     expect(toggle("r3")).toBeNull();
+  });
+
+  it("an earlier phase still running beside the current one is drawn in progress, open with its detail", () => {
+    const long = phase("v1", "Long block", "2026-10-01", "2026-11-30");
+    const sharpen = phase("v2", "Sharpening", "2026-10-15", "2026-11-15");
+    mountSheet(mkLine([long, sharpen], { currentPhaseId: "v2" }));
+    for (const id of ["v1", "v2"]) {
+      expect(phaseEl(id).classList.contains("is-current"), id).toBe(true);
+      expect(heading(id), id).toContain("· now");
+      expect(text(phaseEl(id)), id).toContain("4 of 12 sessions done");
+    }
+  });
+
+  it("a phase not yet started says when it starts, never \"now\"", () => {
+    const notYet = mkLine([phase("n1", "First block", "2026-11-02", "2026-11-29"), phase("n2", "Second block", "2026-11-30", "2026-12-27")]);
+    mountSheet(notYet);
+    // Its current phase is open with its detail, and its heading says when it starts.
+    expect(phaseEl("n1").classList.contains("is-current")).toBe(true);
+    expect(text(phaseEl("n1"))).toContain("4 of 12 sessions done");
+    expect(heading("n1")).toContain("Starts Nov 2");
+    expect(heading("n1")).not.toContain("now");
+    expect(heading("n2")).not.toContain("now");
   });
 
   it("an ended phase opens to its own detail", () => {
@@ -321,7 +364,7 @@ describe("a line's sheet lists its phases", () => {
 });
 
 describe("Stop this plan", () => {
-  it("its confirm counts the sessions leaving the calendar; confirming retires the current and later phases only", async () => {
+  it("its confirm counts the sessions leaving the calendar; confirming retires every phase not ended, never an ended one", async () => {
     const retire = vi.spyOn(api, "coachPlanRetire").mockResolvedValue({ ok: true });
     mountSheet(running);
     expect(findButton("Retire…")).toBeUndefined();
@@ -375,6 +418,70 @@ describe("Stop this plan", () => {
     expect(document.activeElement).toBe(document.querySelector(".line-stopped"));
   });
 
+  it("…and when the plans read splits the line between the two taps, the second still retires what was left (review round 1)", async () => {
+    const retire = vi
+      .spyOn(api, "coachPlanRetire")
+      .mockResolvedValueOnce({ ok: true })
+      .mockRejectedValueOnce(new TypeError("Failed to fetch"))
+      .mockResolvedValueOnce({ ok: true });
+    const sheet = mountSheet(running);
+    act(() => button("Stop this plan…").click());
+    await act(async () => button("Stop the plan", dialog("Stop this plan?")!).click());
+    await flush();
+    expect(retire.mock.calls).toEqual([["r2"], ["r3"]]);
+    // What `GET /api/coach/plans` answers once the base block is retired: the bridge ended on Oct 11 and the race build
+    // starts on Nov 9, more than a week on, so `linesOf` makes them two lines — `run:r1` (ended) and `run:r3`.
+    const sessions = new Map(running.phases.map((p) => [p.id, p.futureSessions]));
+    const split: TrainingLineDto[] = linesOf([bridge, { ...base, status: "retired" as const }, build], TODAY).map((l) => ({
+      ...l,
+      phases: l.phases.map((p) => ({ ...p, futureSessions: sessions.get(p.id)! })),
+    }));
+    expect(split.map((l) => [l.key, l.ended, l.phases.map((p) => p.id)])).toEqual([
+      ["run:r1", true, ["r1"]],
+      ["run:r3", false, ["r3"]],
+    ]);
+    sheet.rerender(split);
+    // The sheet keeps the line it is stopping: it neither shrinks to the bridge nor moves to another line.
+    expect(document.querySelectorAll(".line-phase")).toHaveLength(3);
+    await act(async () => button("Stop the plan", dialog("Stop this plan?")!).click());
+    await flush();
+    expect(retire.mock.calls.slice(2)).toEqual([["r3"]]);
+    expect(text(document.querySelector(".line-stopped"))).toBe("Stopped. 14 sessions left your calendar.");
+  });
+
+  it("a refusal the server gives words to is said in them, and a plan gone is said so; a failure with no reason asks to try again", async () => {
+    const retire = vi
+      .spyOn(api, "coachPlanRetire")
+      .mockRejectedValueOnce(new ApiError(409, { error: "busy", why: "The coach is changing this plan right now." }))
+      .mockRejectedValueOnce(new ApiError(404, { error: "not_found" }))
+      .mockRejectedValueOnce(new ApiError(500, { error: "internal" }));
+    mountSheet(running);
+    act(() => button("Stop this plan…").click());
+    const confirm = dialog("Stop this plan?")!;
+    const said = () => text(confirm.querySelector('[role="alert"]'));
+    await act(async () => button("Stop the plan", confirm).click());
+    await flush();
+    expect(said()).toBe("The coach is changing this plan right now.");
+    await act(async () => button("Stop the plan", confirm).click());
+    await flush();
+    expect(said()).toBe("This plan isn't here any more.");
+    await act(async () => button("Stop the plan", confirm).click());
+    await flush();
+    expect(said()).toBe("That didn't go through — try again.");
+    expect(retire).toHaveBeenCalledTimes(3);
+  });
+
+  it("is not offered while the account's today is unknown: it would pick and count the phases by the wrong day", () => {
+    mountSheet(running, { todayKnown: false });
+    expect(findButton("Extend")).toBeDefined();
+    expect(findButton("Stop this plan…")).toBeUndefined();
+    act(() => root?.unmount());
+    host?.remove();
+    mountSheet(mkLine([phase("s1", "Autumn 10K", "2026-10-05", "2026-11-01", { futureSessions: 6 })]), { todayKnown: false });
+    expect(findButton("Rename")).toBeDefined();
+    expect(findButton("Stop this plan…")).toBeUndefined();
+  });
+
   it("the plan's reads are asked again once it stops", async () => {
     vi.spyOn(api, "coachPlanRetire").mockResolvedValue({ ok: true });
     const { qc } = mountSheet(running);
@@ -383,7 +490,9 @@ describe("Stop this plan", () => {
     await act(async () => button("Stop the plan", dialog("Stop this plan?")!).click());
     await flush();
     const keys = reread.mock.calls.map(([f]) => JSON.stringify(f?.queryKey));
-    for (const key of [["coach-plans"], ["plan-detail"], ["plan"], ["plan-week"], ["coach-state"]]) expect(keys, JSON.stringify(key)).toContain(JSON.stringify(key));
+    for (const key of [["coach-plans"], ["plan-detail"], ["plan"], ["plan-week"], ["coach-state"], [...NUDGES_QUERY]]) {
+      expect(keys, JSON.stringify(key)).toContain(JSON.stringify(key));
+    }
   });
 
   it("the sheet stays, saying so, when the stopped line leaves the plans read", async () => {
@@ -449,6 +558,31 @@ describe("a one-phase line", () => {
     for (const gone of ["Stop this plan…", "Extend", "Wind down", "Rename", "Change"]) expect(findButton(gone), gone).toBeUndefined();
   });
 
+  it("its Rename is the one rename editor: Save renames, Escape leaves the field and never the sheet (review round 1)", () => {
+    const onRename = vi.fn();
+    mountSheet(solo, { onRename });
+    act(() => button("Rename").click());
+    const field = document.querySelector<HTMLInputElement>('input[aria-label="Plan name"]')!;
+    expect(field.value).toBe("Autumn 10K");
+    expect(document.activeElement).toBe(field);
+    act(() => void document.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true })));
+    expect(document.querySelector('input[aria-label="Plan name"]')).toBeNull();
+    expect(dialog("Autumn 10K")).not.toBeNull();
+    expect(document.activeElement).toBe(button("Rename"));
+    act(() => button("Rename").click());
+    type(document.querySelector<HTMLInputElement>('input[aria-label="Plan name"]')!, "Autumn 10K, again");
+    act(() => button("Save").click());
+    expect(onRename).toHaveBeenCalledWith("s1", "Autumn 10K, again");
+    expect(document.activeElement).toBe(button("Rename"));
+    // One editor in the module: the plan sheet's foot and each phase's heading draw the same component.
+    // A path, not `new URL(…, import.meta.url)`: under jsdom Vite rewrites that form into a served URL.
+    const source = readFileSync(resolve(dirname(fileURLToPath(import.meta.url)), "../src/screens/plan-sheet.tsx"), "utf8")
+      .replace(/\/\*[\s\S]*?\*\//g, "")
+      .replace(/^\s*\/\/.*$/gm, "");
+    expect(source.match(/<input\b/g)).toHaveLength(2); // the race day's field, and the rename editor's
+    expect(source.match(/<RenameEditor\b/g)).toHaveLength(2); // the plan sheet's foot, a phase's heading
+  });
+
   it("one session says so in the singular", () => {
     mountSheet(mkLine([{ ...only, futureSessions: 1 }]));
     act(() => button("Stop this plan…").click());
@@ -497,14 +631,15 @@ describe("the Plan routes a line's sheet", () => {
     return null;
   }
 
-  function mountPlan(entry: string) {
+  /** The Plan at `entry`; `withToday: false` — the workouts read names no today, so the page has only the week's start. */
+  function mountPlan(entry: string, { withToday = true }: { withToday?: boolean } = {}) {
     const json = (b: unknown, status = 200) => new Response(JSON.stringify(b), { status, headers: { "Content-Type": "application/json" } });
     vi.stubGlobal(
       "fetch",
       vi.fn(async (url: string) => {
         const path = url.replace(/\?.*$/, "");
         if (path === "/api/plan/week") return json(WEEK);
-        if (path === "/api/plan/workouts") return json({ today: TODAY, workouts: [], plan: null });
+        if (path === "/api/plan/workouts") return json(withToday ? { today: TODAY, workouts: [], plan: null } : { workouts: [], plan: null });
         if (path === "/api/coach/plans") return json({ plans: [...running.phases.map(asPlan), studio], lines: [running] });
         if (path === "/api/programs") return json({ programs: [], places: [], profiles: [] });
         if (path === "/api/coach/state") return json({ messages: [], pendingProposals: [], settledProposals: [], openQuestion: null, memoryCount: 0, lastCoachAt: null, wakeAdvised: false });
@@ -564,6 +699,18 @@ describe("the Plan routes a line's sheet", () => {
     expect(dialog("Studio strength")).not.toBeNull();
     expect(document.querySelector(".line-phase")).toBeNull();
     expect(findButton("Retire…")).toBeDefined();
+  });
+
+  it("a line's sheet offers Stop this plan only once the account's today is read (review round 1)", async () => {
+    mountPlan("/plan?line=run:r1");
+    await settle();
+    expect(findButton("Stop this plan…")).toBeDefined();
+    act(() => root?.unmount());
+    host?.remove();
+    mountPlan("/plan?line=run:r1", { withToday: false });
+    await settle();
+    expect(dialog("Running")).not.toBeNull();
+    expect(findButton("Stop this plan…")).toBeUndefined();
   });
 
   it("a line's row in Your plans opens the line's sheet", async () => {

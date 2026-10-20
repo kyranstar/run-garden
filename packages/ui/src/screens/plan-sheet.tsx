@@ -28,12 +28,17 @@ function requestsFor(plan: string): { ask: string; extend: string; windDown: str
   return { ask: `How is ${plan} going?`, extend: `Extend ${plan} by two weeks`, windDown: `Wind down ${plan}` };
 }
 
-/** Why a race day didn't change, in words: the server's own when it gave them. */
-export function raceRefusal(e: unknown): string {
+/** Why a change to a plan didn't happen, in words: the server's own when it gave them, a plan gone, else `otherwise`. */
+function refusalWords(e: unknown, otherwise: string): string {
   const body = e instanceof ApiError ? (e.body as { why?: unknown } | null) : null;
   if (typeof body?.why === "string" && body.why) return body.why;
   if (e instanceof ApiError && e.status === 404) return "This plan isn't here any more.";
-  return "Couldn't change the race day. Try again.";
+  return otherwise;
+}
+
+/** Why a race day didn't change, in words: the server's own when it gave them. */
+export function raceRefusal(e: unknown): string {
+  return refusalWords(e, "Couldn't change the race day. Try again.");
 }
 
 /**
@@ -148,7 +153,7 @@ export function PlanSheet({
   onRetire,
   onRename,
   line,
-  today = "",
+  stop,
 }: {
   planId: string;
   plans: CoachPlanDto[];
@@ -161,8 +166,8 @@ export function PlanSheet({
   onRename: (id: string, name: string) => void;
   /** The one-phase training line this block is: Retire becomes "Stop this plan". */
   line?: TrainingLineDto;
-  /** The account's today: which of the line's phases have ended. */
-  today?: string;
+  /** The line's Stop, held by its `LineSheet`. */
+  stop?: LineStop;
 }) {
   const coach = useCoach();
   const plan = plans.find((p) => p.id === planId);
@@ -179,14 +184,16 @@ export function PlanSheet({
     setConfirmingRetireState(open);
   };
   const [renaming, setRenaming] = useState(false);
-  const [name, setName] = useState(plan?.name ?? "");
   /** So closing the rename editor hands focus back to what opened it. */
   const renameBtn = useRef<HTMLButtonElement>(null);
+  const closeRename = () => {
+    setRenaming(false);
+    renameBtn.current?.focus();
+  };
   /** Who made it: the coach, the retired generator ("studio"), or COROS. */
   const source = (detail.data?.plan ?? plan)?.source ?? "coach";
-  const stop = useStopLine(line ?? null, today);
   /** A line that has ended, or that was just stopped, is read: nothing in it changes from here. */
-  const readOnly = !!line && (line.ended || stop.stopped);
+  const readOnly = !!line && (line.ended || !!stop?.stopped);
 
   const d = detail.data;
   const title = d?.plan.name ?? plan?.name ?? "Plan";
@@ -234,7 +241,6 @@ export function PlanSheet({
                     setRenaming(false);
                     return;
                   }
-                  setName(title);
                   setConfirmingRetire(false);
                   setRenaming(true);
                 }}
@@ -255,15 +261,15 @@ export function PlanSheet({
                 Retire…
               </button>
             )}
-            {/* A line's block is stopped, not retired: the line's current phase and every one after it. */}
-            {line && !readOnly ? (
+            {/* A line's block is stopped, not retired — once the account's today is known to say what has ended. */}
+            {line && stop?.canStop && !readOnly ? (
               <button
                 type="button"
                 className="btn"
                 aria-haspopup="dialog"
                 onClick={() => {
                   setRenaming(false);
-                  stop.ask();
+                  stop.ask(line);
                 }}
               >
                 Stop this plan…
@@ -306,49 +312,18 @@ export function PlanSheet({
       <>
         {actions}
         <div id="studio-rename" className="disclosure-body">
+          {/* Escape worked and nothing said so: the editor has Save and Cancel. A rename is not a thing a reader
+              should have to guess their way out of. */}
           {renaming && !readOnly ? (
-            <div className="row studio-modal-rename">
-              <input
-                value={name}
-                autoFocus
-                onChange={(e) => setName(e.target.value)}
-                aria-label="Plan name"
-                onKeyDown={(e) => {
-                  if (e.key === "Enter" && name.trim()) {
-                    onRename(planId, name.trim());
-                    setRenaming(false);
-                  }
-                  if (e.key === "Escape") {
-                    setRenaming(false);
-                    renameBtn.current?.focus();
-                  }
-                }}
-              />
-              <button
-                type="button"
-                className="btn btn-primary"
-                disabled={!name.trim()}
-                onClick={() => {
-                  onRename(planId, name.trim());
-                  setRenaming(false);
-                  renameBtn.current?.focus();
-                }}
-              >
-                Save
-              </button>
-              {/* Escape worked and nothing said so. A rename is not a thing a
-                  reader should have to guess their way out of. */}
-              <button
-                type="button"
-                className="btn"
-                onClick={() => {
-                  setRenaming(false);
-                  renameBtn.current?.focus();
-                }}
-              >
-                Cancel
-              </button>
-            </div>
+            <RenameEditor
+              initial={title}
+              label="Plan name"
+              onSave={(name) => {
+                onRename(planId, name);
+                closeRename();
+              }}
+              onCancel={closeRename}
+            />
           ) : null}
         </div>
       </>
@@ -357,11 +332,11 @@ export function PlanSheet({
   return (
     <Sheet open onClose={onClose} title={title} footer={footer}>
       <div className="stack studio-modal">
-        {stop.said}
+        {stop?.said}
         <PlanDetailBody planId={planId} race={readOnly ? "read" : "own"} />
       </div>
       {line ? (
-        stop.dialog
+        stop?.dialog
       ) : (
         <ConfirmDialog
           open={confirmingRetire}
@@ -508,19 +483,23 @@ function PlanDetailBody({ planId, race }: { planId: string; race: "own" | "read"
 
 // ── Training lines (2026-10-20, the spec §3.3) ──────────────────────────────
 
-/** Where a phase stands in its line: ended (its last day has passed), the line's current phase, or ahead of it. */
+/**
+ * Where a phase stands in its line: ended (its last day has passed); current — under way today (an earlier phase still
+ * running beside the line's current one is too), or the line's current phase while it is still ahead (before the line
+ * starts, or between phases); or later, ahead of that.
+ */
 export function linePhaseState(line: TrainingLineDto, phase: TrainingLineDto["phases"][number], today: string): "ended" | "current" | "later" {
   if (planEnded(phase.endDate, today)) return "ended";
-  return phase.id === line.currentPhaseId ? "current" : "later";
+  return phase.id === line.currentPhaseId || phase.startDate <= today ? "current" : "later";
 }
 
 /**
- * What "Stop this plan" retires: the current phase and every phase after it, in order, never one that has ended. A
- * line that names no phase of its own as current (an older or odd payload) stops every phase that has not ended.
+ * What "Stop this plan" retires: every phase that has not ended, in order — the current one, those after it, and an
+ * earlier one still running beside it (the lead's ruling, review round 1: stopping a plan ends it; past means ended,
+ * §3.5). A phase that has ended is never touched.
  */
 function phasesToStop(line: TrainingLineDto, today: string): TrainingLineDto["phases"] {
-  const at = Math.max(0, line.phases.findIndex((p) => p.id === line.currentPhaseId));
-  return line.phases.slice(at).filter((p) => !planEnded(p.endDate, today));
+  return line.phases.filter((p) => !planEnded(p.endDate, today));
 }
 
 /** The sessions "Stop this plan" takes off the calendar: those still ahead in the phases it retires. */
@@ -529,8 +508,8 @@ export function stopCount(line: TrainingLineDto, today: string): number {
 }
 
 /**
- * Stop a line: retire its current phase, then each later one, in order — never a phase that has ended. A retire that
- * fails (or answers not ok) stops the walk there and fails the stop; the phases retired before it stay retired.
+ * Stop a line: retire each phase that has not ended, in order — never one that has ended. A retire that fails (or
+ * answers not ok) stops the walk there and fails the stop; the phases retired before it stay retired.
  */
 export async function stopLine(
   line: TrainingLineDto,
@@ -558,37 +537,49 @@ function stoppedWords(n: number): string {
   return `Stopped. ${n === 1 ? "1 session" : `${n} sessions`} left your calendar.`;
 }
 
-/** What a stop that failed part-way says, in its confirm, which stays open to try again. */
+/** What a stop that failed for no reason it was given says, in its confirm, which stays open to try again. */
 const STOP_FAILED = "That didn't go through — try again.";
 
 /** What a stop reads again: the plans and lines, the phases' details, the week, the coach's view and its chips. */
 const STOP_READS = [["coach-plans"], ["plan-detail"], ["plan"], ["plan-week"], ["coach-state"], [...NUDGES_QUERY]];
 
+/** A line sheet's "Stop this plan" (`useStopLine`), held by `LineSheet` and drawn by the sheet it shows. */
+export type LineStop = ReturnType<typeof useStopLine>;
+
 /**
- * "Stop this plan" for a line's sheet: `ask` opens its confirm (`dialog`), which counts the sessions leaving the
- * calendar; confirming retires the phases (`stopLine`, each through `api.coachPlanRetire`, which asks again while the
- * server answers `remaining`). A phase retired by an earlier press is never asked again, so after a press that failed
- * part-way a second press retires only what is left. Stopped, the sheet says so in `said` and the focus goes there —
- * the button pressed has gone, and the focus must not fall to the page.
+ * "Stop this plan" for a line's sheet. `ask(line)` opens its confirm (`dialog`) and takes what it will stop as it is
+ * then: the line and the day, so the phases and the count the confirm says. Confirming retires those phases
+ * (`stopLine`, each through `api.coachPlanRetire`, which asks again while the server answers `remaining`) — never the
+ * line as read since, which a failed press can have split (a retired phase leaves a gap `linesOf` breaks the line at).
+ * A phase retired by an earlier press is never asked again, so a second press retires only what is left. A refusal the
+ * server gives words to (or a plan gone) is said in them; any other failure asks to try again. Stopped, the sheet says
+ * so in `said` and the focus goes there — the button pressed has gone, and the focus must not fall to the page.
+ *
+ * `today` is the account's, or null while it is not known: then there is no Stop (`canStop`), since a stand-in day can
+ * make a phase that has ended look live.
  */
-function useStopLine(line: TrainingLineDto | null, today: string) {
+function useStopLine(today: string | null) {
   const qc = useQueryClient();
   const [asking, setAsking] = useState(false);
   const [count, setCount] = useState(0);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [begun, setBegun] = useState(false);
   const [stoppedCount, setStoppedCount] = useState<number | null>(null);
+  const asked = useRef<{ line: TrainingLineDto; today: string } | null>(null);
   const retired = useRef(new Set<string>());
   const saidRef = useRef<HTMLParagraphElement>(null);
   useEffect(() => {
     if (stoppedCount !== null) saidRef.current?.focus({ preventScroll: true });
   }, [stoppedCount]);
   const confirm = async () => {
-    if (!line || busy) return;
+    const what = asked.current;
+    if (!what || busy) return;
+    setBegun(true);
     setBusy(true);
     setError(null);
     try {
-      await stopLine(line, today, async (id) => {
+      await stopLine(what.line, what.today, async (id) => {
         if (retired.current.has(id)) return { ok: true };
         const res = await api.coachPlanRetire(id);
         if (res.ok) retired.current.add(id);
@@ -596,17 +587,22 @@ function useStopLine(line: TrainingLineDto | null, today: string) {
       });
       setAsking(false);
       setStoppedCount(count);
-    } catch {
-      setError(STOP_FAILED);
+    } catch (e) {
+      setError(refusalWords(e, STOP_FAILED));
     } finally {
       setBusy(false);
       for (const queryKey of STOP_READS) void qc.invalidateQueries({ queryKey });
     }
   };
   return {
+    /** The account's today is known, so there is a Stop to offer. */
+    canStop: today !== null,
+    /** A press has been made: the sheet keeps the line it is stopping from here on. */
+    begun,
     stopped: stoppedCount !== null,
-    ask: () => {
-      if (!line) return;
+    ask: (line: TrainingLineDto) => {
+      if (today === null) return;
+      asked.current = { line, today };
       setError(null);
       setCount(stopCount(line, today));
       setAsking(true);
@@ -639,15 +635,18 @@ function useStopLine(line: TrainingLineDto | null, today: string) {
 /**
  * A TRAINING LINE'S SHEET (training lines §3.3): the page routes it by `?line=<key>`; an old `?plan=<coach block>`
  * link opens the block's line, scrolled to that phase (`focusPhaseId`). A line of one phase is the plan sheet, Retire
- * become "Stop this plan"; a line of several lists its phases (`LinePhases`). Which of the two is decided as it opens,
- * and the line last read is kept: a Stop that takes the line out of the plans read leaves the sheet where it is, saying
- * so, rather than taking it away from under the focus.
+ * become "Stop this plan"; a line of several lists its phases (`LinePhases`). Which of the two is decided as it opens.
+ *
+ * The line drawn is the one last read — and, once a Stop has been pressed, the one being stopped, whatever the plans
+ * read says after: a retired phase can split the line (`linesOf` breaks it at the gap) or take it out of the read, and
+ * the sheet neither shrinks nor moves to another line under the confirm, nor goes from under the focus once stopped.
  */
 export function LineSheet({
   lineKey,
   lines,
   plans,
   today,
+  todayKnown,
   focusPhaseId = null,
   onClose,
   onRename,
@@ -656,15 +655,19 @@ export function LineSheet({
   /** `GET /api/coach/plans` `lines`. */
   lines: readonly TrainingLineDto[] | undefined;
   plans: CoachPlanDto[];
+  /** The day the phases are drawn against: the account's today, else the page's stand-in for it. */
   today: string;
+  /** `today` is the account's own. Without it there is no Stop: a stand-in day can make an ended phase look live. */
+  todayKnown: boolean;
   focusPhaseId?: string | null;
   onClose: () => void;
   onRename: (id: string, name: string) => void;
 }) {
+  const stop = useStopLine(todayKnown ? today : null);
   const found = lines?.find((l) => l.key === lineKey) ?? null;
   const [held, setHeld] = useState(found);
-  if (found && found !== held) setHeld(found);
-  const line = found ?? held;
+  if (!stop.begun && found && found !== held) setHeld(found);
+  const line = stop.begun ? held : (found ?? held);
   const [many] = useState(() => (line?.phases.length ?? 0) > 1);
   if (!line || line.phases.length === 0) {
     return (
@@ -674,33 +677,36 @@ export function LineSheet({
     );
   }
   return many ? (
-    <LinePhases line={line} today={today} focusPhaseId={focusPhaseId} onClose={onClose} onRename={onRename} />
+    <LinePhases line={line} today={today} stop={stop} focusPhaseId={focusPhaseId} onClose={onClose} onRename={onRename} />
   ) : (
-    <PlanSheet planId={line.phases[0]!.id} plans={plans} line={line} today={today} onClose={onClose} onRename={onRename} />
+    <PlanSheet planId={line.phases[0]!.id} plans={plans} line={line} stop={stop} onClose={onClose} onRename={onRename} />
   );
 }
 
 /**
  * A line of several phases, in order: one that has ended is a heading that opens to its detail (its adherence is its
- * own), the current one is open with its detail as the plan sheet draws it, and those ahead are a heading and dates.
- * Rename is on each phase's heading; the line's race is its last phase's, said once and changed there; Extend and Wind
- * down write the line's end in the coach's box. An ended line, or one just stopped, is read-only.
+ * own); one under way — the current one, and an earlier one still running beside it — is open with its detail as the
+ * plan sheet draws it, as is the current one while it is still ahead (its heading says when it starts); those after it
+ * are a heading and dates. Rename is on each phase's heading; the line's race is its last phase's, said once and
+ * changed there; Extend and Wind down write the line's end in the coach's box. An ended line, or one just stopped, is
+ * read-only.
  */
 function LinePhases({
   line,
   today,
+  stop,
   focusPhaseId,
   onClose,
   onRename,
 }: {
   line: TrainingLineDto;
   today: string;
+  stop: LineStop;
   focusPhaseId: string | null;
   onClose: () => void;
   onRename: (id: string, name: string) => void;
 }) {
   const coach = useCoach();
-  const stop = useStopLine(line, today);
   const readOnly = line.ended || stop.stopped;
   const requests = lineRequests(line.discipline);
   const last = line.phases[line.phases.length - 1]!;
@@ -730,14 +736,14 @@ function LinePhases({
           </button>
         </>
       )}
-      {readOnly ? null : (
+      {readOnly || !stop.canStop ? null : (
         <button
           type="button"
           className="btn"
           aria-haspopup="dialog"
           onClick={() => {
             setRenaming(null);
-            stop.ask();
+            stop.ask(line);
           }}
         >
           Stop this plan…
@@ -774,14 +780,17 @@ function LinePhases({
           {line.phases.map((p, i) => {
             const state = linePhaseState(line, p, today);
             const opened = state === "current" || (state === "ended" && open.has(p.id));
+            // The current phase while it is still ahead is not "now": it says when it starts.
+            const ahead = state === "current" && today < p.startDate;
             const heading = (
               <>
                 <span className="line-phase-name">
                   Phase {i + 1} · {p.name}
                 </span>
                 <span className="line-phase-dates faint num">
-                  {formatShortDate(p.startDate)} → {formatShortDate(p.endDate)}
-                  {state === "ended" ? " · ended" : state === "current" ? " · now" : ""}
+                  {ahead
+                    ? `Starts ${formatShortDate(p.startDate)} · ends ${formatShortDate(p.endDate)}`
+                    : `${formatShortDate(p.startDate)} → ${formatShortDate(p.endDate)}${state === "ended" ? " · ended" : state === "current" ? " · now" : ""}`}
                 </span>
               </>
             );
@@ -836,8 +845,9 @@ function LinePhases({
                 </div>
                 <div id={`line-phase-rename-${p.id}`} className="disclosure-body">
                   {renaming === p.id && !readOnly ? (
-                    <PhaseRename
+                    <RenameEditor
                       initial={p.name}
+                      label="Phase name"
                       onSave={(name) => {
                         onRename(p.id, name);
                         closeRename(p.id);
@@ -863,10 +873,24 @@ function LinePhases({
   );
 }
 
-/** A phase's name, edited under its heading: Enter or Save keeps it, Escape or Cancel leaves it as it was. */
-function PhaseRename({ initial, onSave, onCancel }: { initial: string; onSave: (name: string) => void; onCancel: () => void }) {
+/**
+ * THE RENAME EDITOR — one for the plan sheet's foot and each phase's heading: the name in a field, Enter or Save keeps
+ * it (trimmed; an empty name is never saved), Escape or Cancel leaves it as it was. Escape closes the field, not the
+ * sheet: while it is open, it is the top thing. Whoever opened it hands the focus back as it closes.
+ */
+function RenameEditor({
+  initial,
+  label,
+  onSave,
+  onCancel,
+}: {
+  initial: string;
+  /** The field's name for a screen reader: "Plan name", "Phase name". */
+  label: string;
+  onSave: (name: string) => void;
+  onCancel: () => void;
+}) {
   const [name, setName] = useState(initial);
-  // Escape closes the field, not the sheet: while it is open, it is the top thing.
   useEscapeKey(true, onCancel);
   const save = () => {
     if (name.trim()) onSave(name.trim());
@@ -876,7 +900,7 @@ function PhaseRename({ initial, onSave, onCancel }: { initial: string; onSave: (
       <input
         value={name}
         autoFocus
-        aria-label="Phase name"
+        aria-label={label}
         onChange={(e) => setName(e.target.value)}
         onKeyDown={(e) => {
           if (e.key === "Enter") save();

@@ -938,18 +938,27 @@ describe("WorkoutDetail branches on origin", () => {
 describe("a one-off's sheet says One-off where a programme session names its programme", () => {
   const run = (planId: string) =>
     slot({ id: "run-1", title: "Easy 40", category: "easy", sport: "run", origin: null, contentState: null, programId: null, planId });
+  /** The workout sheet's kind line: the word beside the category dot. */
+  const kindLine = () => (document.querySelector("[role=dialog] .category-dot")?.nextElementSibling?.textContent ?? "").replace(/\s+/g, " ").trim();
 
   it("a coach one-off (its plan is a one-off bucket) opens the workout sheet, which says One-off", async () => {
     mount(session(), { detail: true, w: run("adhoc-run-u1") });
     await until(() => body().includes("Easy 40"), "the workout sheet");
-    expect(body()).toContain("One-off");
+    expect(kindLine()).toBe("Easy · One-off");
   });
 
-  it("a session of a plan says neither One-off nor a programme", async () => {
+  it("a session of a plan says its kind and nothing more: no One-off", async () => {
     mount(session(), { detail: true, w: run("cp-base-1") });
     await until(() => body().includes("Easy 40"), "the workout sheet");
+    expect(kindLine()).toBe("Easy");
     expect(body()).not.toContain("One-off");
-    expect(body()).not.toContain("Garden program");
+  });
+
+  it("an app session in a plan (a Studio workout in the Studio's) says no One-off", async () => {
+    mount(session(), { w: slot({ origin: "studio", programId: "studio-u1", planId: "studio-u1" }) });
+    await until(() => body().includes("Supported row"), "the session sheet");
+    expect(document.querySelector(".session-when")?.textContent).not.toContain("One-off");
+    expect(body()).not.toContain("One-off");
   });
 
   it("a programme session still names its programme, and is no one-off", async () => {

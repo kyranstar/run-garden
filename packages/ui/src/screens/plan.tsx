@@ -1031,6 +1031,8 @@ export function PlanScreen() {
           lines={lines}
           plans={coachPlans.data?.plans ?? []}
           today={today ?? week.data.weekStart}
+          // The week's start stands in for a today the workouts read did not give: no Stop by it.
+          todayKnown={!!plan.data?.today}
           focusPhaseId={lineOfPlan ? planParam : null}
           onClose={closePlan}
           onRename={(id, name) => rename.mutate({ id, name })}
