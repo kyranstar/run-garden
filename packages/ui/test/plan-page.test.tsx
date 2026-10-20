@@ -17,6 +17,7 @@ import {
   centerScrollTop,
   jumplistDropsUp,
   WeekView,
+  weekPlan,
   weekRangeLabel,
   WorkoutCell,
 } from "../src/screens/week-view.js";
@@ -373,12 +374,32 @@ describe("Your plans", () => {
     expect(lineRowState(l, "2026-09-02").state).toBe(planRowState({ kind: "plan", plan: asPlan(l.phases[0]!) }, "2026-09-02").state);
   });
 
+  it("one week counter: a phase that starts on a Saturday is in its second week the Monday after — on its row and on the week's line alike", () => {
+    // Saturday 17 Oct to Friday 13 Nov: ISO weeks 12–18 Oct … 9–15 Nov, five of them (as the week brief counts).
+    const sat = phase("d2", "Saturday block", "2026-10-17", "2026-11-13");
+    const monday = "2026-10-19";
+    const week = { weekStart: monday, days: [{ date: monday, workouts: [{ id: "w1", planId: "d2", category: "easy" } as unknown as WorkoutDto] }] };
+    // A one-phase line reads as a block does.
+    expect(lineRowState(mkLine([sat]), monday).state).toBe("Week 2 of 5 · ends Nov 13");
+    expect(planRowState({ kind: "plan", plan: asPlan(sat) }, monday).state).toBe("Week 2 of 5 · ends Nov 13");
+    expect(weekPlan([asPlan(sat)], monday, week).planWeekOf).toBe("week 2 of 5");
+    // The second phase of a line, the same.
+    const two = mkLine([phase("d1", "First block", "2026-09-21", "2026-10-16"), sat], { currentPhaseId: "d2" });
+    expect(lineRowState(two, monday).state).toBe("Phase 2 of 2 · Saturday block · week 2 of 5");
+    expect(weekPlan(two.phases.map(asPlan), monday, week, [two]).planWeekOf).toBe("week 2 of 5");
+    // On its first day, its first week, on both.
+    const saturdayWeek = { ...week, weekStart: "2026-10-12" };
+    expect(lineRowState(two, "2026-10-17").state).toBe("Phase 2 of 2 · Saturday block · week 1 of 5");
+    expect(weekPlan(two.phases.map(asPlan), "2026-10-12", { ...saturdayWeek, days: [{ date: "2026-10-17", workouts: week.days[0]!.workouts }] }, [two]).planWeekOf).toBe("week 1 of 5");
+  });
+
   it("on a boundary day the row names the phase the line says is current", () => {
     const l = mkLine(
       [phase("c1", "First block", "2026-08-03", "2026-08-30"), phase("c2", "Second block", "2026-08-30", "2026-09-27")],
       { currentPhaseId: "c2" },
     );
-    expect(lineRowState(l, "2026-08-30").state).toBe("Phase 2 of 2 · Second block · week 1 of 4");
+    // A phase from a Sunday to a Sunday spans five ISO weeks, as the week brief counts them (one week counter).
+    expect(lineRowState(l, "2026-08-30").state).toBe("Phase 2 of 2 · Second block · week 1 of 5");
   });
 
   it("lists lines, not the blocks inside them; programmes first, then lines and Studio/COROS plans by start", () => {

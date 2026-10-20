@@ -56,6 +56,7 @@ import {
   type WeekPlan,
   appAuthoredRow,
   linesOf,
+  phaseWeekOf,
   weekNaming,
 } from "@rg/domain";
 import { conditionWord, DEFAULT_GARDEN_CONFIG, type GardenSnapshot } from "@rg/garden-engine";
@@ -1090,10 +1091,13 @@ planRoutes.get("/week", async (c) => {
   const weekStart = startParam ?? startOfIsoWeek(today);
   const weekEnd = addDays(weekStart, 6);
 
-  // Independent reads (only prefs/today gate them) — one D1 round-trip wave,
-  // same batching as /today. `findRaceConflict` needs only prefs;
-  // `latestCoachMsg`/`acts`/`historyRows` need only userId/today. No writes
-  // happen in this handler, so read ordering is free.
+  // Independent reads (only prefs/today gate them), asked side by side, as
+  // /today batches: each is one statement but `loadNonCoachPlanEntries`, two
+  // round trips deep (the Studio's statement beside the COROS plans' read,
+  // then those plans' sessions), so this wave is two round trips.
+  // `findRaceConflict` needs only prefs; `latestCoachMsg`/`acts`/`historyRows`
+  // need only userId/today. No writes happen in this handler, so read ordering
+  // is free.
   const [rows, catalog, presence, coachPlanRows, historyRows, acts, latestCoachMsg, raceMismatch, nonCoach] =
     await Promise.all([
       db
@@ -1222,9 +1226,8 @@ planRoutes.get("/week", async (c) => {
   let deloadWeek = false;
   let raceInDays: number | null = null;
   if (covering) {
-    const planW1 = startOfIsoWeek(covering.startDate);
-    weekIndex = Math.floor((Date.parse(weekStart) - Date.parse(planW1)) / (7 * 86_400_000)) + 1;
-    weekTotal = Math.floor((Date.parse(startOfIsoWeek(covering.endDate)) - Date.parse(planW1)) / (7 * 86_400_000)) + 1;
+    // The one week counter (`phaseWeekOf`): the plan list's row and the Plan screen's week line count the same.
+    ({ week: weekIndex, of: weekTotal } = phaseWeekOf(covering, weekStart));
     if (covering.raceDate) {
       raceInDays = Math.round((Date.parse(covering.raceDate) - Date.parse(today)) / 86_400_000);
       if (raceInDays < 0) raceInDays = null;

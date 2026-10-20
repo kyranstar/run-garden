@@ -1,8 +1,8 @@
-import { and, desc, eq, gte, inArray, isNull, lte } from "drizzle-orm";
-import { coachPlans, plannedWorkouts, studioPlanPushes, studioPlans, trainingPlans } from "@rg/database";
-import { looksLikeCodeTitle, todayInZone, type LineBlock, type TrainingLine, type UserPreferences } from "@rg/domain";
+import { and, desc, eq, gte, inArray, isNull, lte, sql } from "drizzle-orm";
+import { auditEvents, coachPlans, plannedWorkouts, studioPlanPushes, studioPlans, trainingPlans } from "@rg/database";
+import { looksLikeCodeTitle, todayInZone, type LineBlock, type LocalDate, type TrainingLine, type UserPreferences } from "@rg/domain";
 import type { Db } from "./db.js";
-import { studioPlanEnd, studioPlanRetired } from "./studio-push.js";
+import { STUDIO_PLAN_RETIRED, studioPlanEnd } from "./studio-push.js";
 
 /**
  * Block adherence (fairness spec §4): completed ÷ (completed + skipped +
@@ -140,7 +140,7 @@ export function lastPhaseOf(line: TrainingLine): LineBlock {
 }
 
 /** Whether the newest Studio plan is listed, by its pushes' statuses: something of it is (or was) on the watch. A plan
- * the athlete retired is not listed either (`studioPlanRetired`, read only when this holds). */
+ * the athlete retired is not listed either (`STUDIO_PLAN_RETIRED`, read with it). */
 export function studioPlanOnWatch(pushStatuses: readonly string[]): boolean {
   return pushStatuses.some((s) => s !== "deleted");
 }
@@ -181,46 +181,62 @@ export function studioPlanEntryOf(
  * The plans that are no coach rows — the Studio's newest lifting plan and the imported COROS running plan — as the
  * plan list shows them (`GET /api/coach/plans`) and the week brief names weeks from them (`GET /api/plan/week`): ONE
  * reader, so the two sides' candidate sets are the same, with the same real dates.
+ *
+ * Two round trips deep, three statements at most: the Studio's one statement and the COROS plans' read go together,
+ * then the COROS plans' sessions (pinned in coach-routes.test.ts).
  */
 export async function loadNonCoachPlanEntries(db: Db, userId: string, prefs: Pick<UserPreferences, "raceDate" | "timezone">) {
-  // Studio-authored lifting plans are real plans this app created and wrote
-  // to COROS — "Manage plans" claiming "no plans" while one is live on the
-  // watch reads as a lie. They carry source:"studio" so the UI renders them
-  // with Studio affordances instead of coach ones.
-  // Newest studio plan only: generate keeps full history and each replace
-  // retires the previous plan's COROS sessions — listing superseded rows as
-  // live would be the same lie pointed the other way.
-  //
-  // And only while something of it is (or was) on the watch: the generator's
-  // screens are retired (Stage 2), so a draft it never pushed is nothing the
-  // athlete can act on, and listing it hid the lifting intake card. One that
-  // was retired leaves the list; one past its last day reads as completed.
   const today = todayInZone(prefs.timezone);
-  const studio = (
-    await db
-      .select()
-      .from(studioPlans)
-      .where(eq(studioPlans.userId, userId))
-      .orderBy(desc(studioPlans.createdAt), desc(studioPlans.id))
-      .limit(1)
-  )[0];
-  const studioEntries = [];
-  // Its pushes' statuses: one row each (a plan's sessions, not more).
-  const pushStatuses = studio
-    ? (
-        await db
-          .select({ status: studioPlanPushes.status })
-          .from(studioPlanPushes)
-          .where(eq(studioPlanPushes.planId, studio.id))
-      ).map((p) => p.status)
-    : [];
-  if (studio && studioPlanOnWatch(pushStatuses) && !(await studioPlanRetired(db, userId, studio.id))) {
-    studioEntries.push(studioPlanEntryOf(studio, pushStatuses, today, prefs.raceDate));
-  }
+  const [studioEntries, corosEntries] = await Promise.all([
+    studioEntriesOf(db, userId, prefs.raceDate, today),
+    corosEntriesOf(db, userId, prefs.raceDate, today),
+  ]);
+  return { studioEntries, corosEntries };
+}
 
-  // The imported COROS plan IS the user's running plan — a page that shows
-  // its 35 workouts while the run slot claims "no plan" denies reality
-  // (audit finding 6). Read-only card: the app doesn't author these.
+/**
+ * Studio-authored lifting plans are real plans this app created and wrote to COROS — "Manage plans" claiming "no plans"
+ * while one is live on the watch reads as a lie. They carry source:"studio" so the UI renders them with Studio
+ * affordances instead of coach ones.
+ *
+ * Newest studio plan only: generate keeps full history and each replace retires the previous plan's COROS sessions —
+ * listing superseded rows as live would be the same lie pointed the other way. And only while something of it is (or
+ * was) on the watch: the generator's screens are retired (Stage 2), so a draft it never pushed is nothing the athlete
+ * can act on, and listing it hid the lifting intake card. One that was retired leaves the list; one past its last day
+ * reads as completed.
+ *
+ * One statement: the newest plan, its pushes' statuses (one row each: a plan's sessions, not more) and whether the
+ * athlete retired it (as `studioPlanRetired` reads it).
+ */
+async function studioEntriesOf(db: Db, userId: string, raceDate: string | null, today: LocalDate) {
+  const [studio] = await db
+    .select({
+      id: studioPlans.id,
+      plan: studioPlans.plan,
+      brief: studioPlans.brief,
+      createdAt: studioPlans.createdAt,
+      // Spelled with aliases: in a select's fields drizzle names a column without its table, which a subquery would
+      // read as its own table's.
+      pushes: sql<string>`(select json_group_array(p.status) from ${studioPlanPushes} p where p.plan_id = ${studioPlans}.id)`,
+      retired: sql<number>`exists (select 1 from ${auditEvents} a where a.user_id = ${userId} and a.kind = ${STUDIO_PLAN_RETIRED}
+        and json_extract(a.detail, '$.studioPlanId') = ${studioPlans}.id)`,
+    })
+    .from(studioPlans)
+    .where(eq(studioPlans.userId, userId))
+    .orderBy(desc(studioPlans.createdAt), desc(studioPlans.id))
+    .limit(1);
+  if (!studio) return [];
+  const pushStatuses = (JSON.parse(studio.pushes ?? "[]") as unknown[]).filter((s): s is string => typeof s === "string");
+  if (!studioPlanOnWatch(pushStatuses) || Number(studio.retired) === 1) return [];
+  return [studioPlanEntryOf(studio, pushStatuses, today, raceDate)];
+}
+
+/**
+ * The imported COROS plan IS the user's running plan — a page that shows its 35 workouts while the run slot claims "no
+ * plan" denies reality (audit finding 6). Read-only card: the app doesn't author these. Two statements: the plans,
+ * then their sessions.
+ */
+async function corosEntriesOf(db: Db, userId: string, raceDate: string | null, today: LocalDate) {
   const corosPlans = await db
     .select()
     .from(trainingPlans)
@@ -272,10 +288,10 @@ export async function loadNonCoachPlanEntries(db: Db, userId: string, prefs: Pic
         status: "active" as const,
         startDate: p.startDate ?? dates[0]!,
         endDate: p.endDate ?? dates[dates.length - 1]!,
-        raceDate: prefs.raceDate,
+        raceDate,
         source: "coros" as const,
       });
     }
   }
-  return { studioEntries, corosEntries };
+  return corosEntries;
 }

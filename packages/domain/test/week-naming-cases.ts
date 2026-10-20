@@ -160,6 +160,13 @@ export const WEEK_NAMING_CASES: NamingCase[] = [
     expect: { planId: "studio-1", others: 1, weekOf: null },
   },
   {
+    // One week counter (`phaseWeekOf`): ISO weeks from the week its first day falls in — the plan list's row says the same.
+    name: "a phase that started on Saturday: the Monday after is its second week, of five",
+    weekOffset: 0,
+    plans: [P("sat", { start: -2, end: 25, sessions: 2 })],
+    expect: { planId: "sat", others: 0, weekOf: [2, 5] },
+  },
+  {
     name: "no plan holds the week: no name, no counter",
     weekOffset: 10,
     plans: [P("a", { start: -7, end: 20, sessions: 0 })],

@@ -68,6 +68,94 @@ export async function seedRichAthlete(db: Db, prefs: Partial<UserPreferences> = 
   return { userId, ...ids };
 }
 
+/**
+ * The plans of an owner-shaped account (training lines, final review I3), added to an athlete's rows:
+ *  - a running line of four abutting phases — the bridge done, the base under way, the build and the taper ahead to the
+ *    race — each week a row (firm while its sessions are placed, shape after, with its volume and key sessions), and
+ *    the sessions of its firm weeks (four or five a week; those behind today done, one skipped);
+ *  - the coach's three buckets of one-offs, three sessions each;
+ *  - a 24-week Studio plan of three sessions a week (the athlete's Studio sessions, filed under `studio-<user>`, are
+ *    its), with a push for each session: verified behind today, pending ahead.
+ * Synthetic names; every date on the fixed clock.
+ */
+export async function seedOwnerPlans(db: Db, userId: string): Promise<{ phases: string[]; studioPlanId: string }> {
+  const key = userId.slice(0, 8);
+  const monday = "2026-05-11"; // this week's
+  const stamp = at(day(60));
+  const shape = (n: number) => ({ volumeTarget: `about ${36 + 2 * n} km, one long run`, keySessions: [`long run ${14 + n} km`, "tempo 25 min", "strides 6×20 s"] });
+  const phases = [
+    { id: `cp-${key}-bridge`, name: "Bridge block", status: "completed", start: addDays(monday, -28), weeks: 3, firm: 3, race: null },
+    { id: `cp-${key}-base`, name: "Base block", status: "active", start: addDays(monday, -7), weeks: 4, firm: 3, race: null },
+    { id: `cp-${key}-build`, name: "Race build", status: "active", start: addDays(monday, 21), weeks: 4, firm: 0, race: null },
+    { id: `cp-${key}-taper`, name: "Taper to the half", status: "active", start: addDays(monday, 49), weeks: 2, firm: 0, race: addDays(monday, 62) },
+  ];
+  let n = 0;
+  for (const p of phases) {
+    await db.insert(schema.coachPlans).values({
+      id: p.id, userId, discipline: "run", name: p.name, status: p.status, startDate: p.start, endDate: addDays(p.start, 7 * p.weeks - 1),
+      raceDate: p.race, stampPrefix: p.name, createdAt: stamp, updatedAt: stamp,
+    });
+    for (let w = 0; w < p.weeks; w++) {
+      const weekStart = addDays(p.start, 7 * w);
+      const firm = w < p.firm;
+      await db.insert(schema.coachPlanWeeks).values({ id: `${p.id}-${weekStart}`, planId: p.id, weekStart, state: firm ? "firm" : "shape", shape: firm ? null : shape(n + w) });
+      if (!firm) continue;
+      for (const [d, category, minutes] of [[1, "easy", 45], [2, "quality", 55], [4, "easy", 40], [6, "long", 95], [5, "recovery", 30]] as const) {
+        if (d === 5 && w % 2 === 1) continue;
+        const date = addDays(weekStart, d);
+        const id = `${p.id}-${date}`;
+        await db.insert(schema.plannedWorkouts).values({
+          id, userId, planId: p.id, sourceWorkoutId: id, title: `${category === "long" ? "Long run" : category === "quality" ? "Tempo" : "Easy run"} ${minutes} min`,
+          category, sport: "run", originalPlanDate: date, lastVerifiedCorosDate: date, effectiveDate: date, effectiveTime: "07:00", sourceContentFingerprint: "fp",
+          sourceEstimatedDurationSeconds: minutes * 60, calendarBlockDurationSeconds: minutes * 60 + 900, origin: "coach",
+          completionState: date >= TODAY ? "scheduled" : date === addDays(monday, -6) ? "skipped" : "completed", createdAt: stamp, updatedAt: stamp,
+        });
+      }
+    }
+    n += p.weeks;
+  }
+
+  // The coach's one-offs, a bucket a discipline.
+  for (const [discipline, sport, category] of [["run", "run", "easy"], ["lift", "strength", "strength"], ["mobility", "mobility", "yoga"]] as const) {
+    const id = `adhoc-${discipline}-${key}`;
+    const dates = [day(12), day(3), day(-4)];
+    await db.insert(schema.coachPlans).values({
+      id, userId, discipline, name: "Coach one-offs", status: "active", startDate: dates[0]!, endDate: dates[2]!, raceDate: null, stampPrefix: "Coach", createdAt: stamp, updatedAt: stamp,
+    });
+    for (const date of dates) {
+      const sid = `${id}-${date}`;
+      await db.insert(schema.plannedWorkouts).values({
+        id: sid, userId, planId: id, sourceWorkoutId: sid, title: `One-off ${sport}`, category, sport, originalPlanDate: date, lastVerifiedCorosDate: date,
+        effectiveDate: date, effectiveTime: "12:00", sourceContentFingerprint: "fp", sourceEstimatedDurationSeconds: 1800, calendarBlockDurationSeconds: 2700,
+        origin: "coach", completionState: date >= TODAY ? "scheduled" : "completed", createdAt: stamp, updatedAt: stamp,
+      });
+    }
+  }
+
+  // The Studio plan: 24 weeks from 2 March, three sessions a week, each pushed.
+  const studioPlanId = `studio-${userId}`;
+  const start = "2026-03-02";
+  const brief = { goal: "general", durationWeeks: 24, sessionsPerWeek: 3, sessionMinutes: 45, startDate: start };
+  const moves = ["gobletSquat", "suitcaseDeadlift", "bandRow", "deadBug", "splitSquat", "pushUp"];
+  const weeks = Array.from({ length: 24 }, (_, w) => ({
+    week: w + 1,
+    sessions: [0, 2, 4].map((d, s) => ({
+      day: addDays(start, 7 * w + d),
+      title: `W${w + 1} — ${["Lower", "Upper", "Full body"][s]}`,
+      exercises: moves.slice(s, s + 4).map((exerciseId, k) => ({ exerciseId, sets: 3, reps: 8 + 2 * (w % 3), restSeconds: 90, order: k + 1 })),
+    })),
+  }));
+  await db.insert(schema.studioPlans).values({ id: studioPlanId, userId, brief, plan: { name: "Full Body Strength", brief, weeks }, version: 3, createdAt: at("2026-02-27"), updatedAt: at(day(20)) });
+  for (const w of weeks) {
+    for (const s of w.sessions) {
+      await db.insert(schema.studioPlanPushes).values({
+        id: `${studioPlanId}-${s.day}`, planId: studioPlanId, planVersion: 3, happenDay: s.day, sessionTitle: s.title, status: s.day < TODAY ? "verified" : "pending", updatedAt: at(day(20)),
+      });
+    }
+  }
+  return { phases: phases.map((p) => p.id), studioPlanId };
+}
+
 /** Another account: the same shape of rows, every text a sentinel — none of it may ever reach the first athlete. */
 export async function seedOtherAthlete(db: Db): Promise<{ userId: string } & SeedIds> {
   const { userId } = await makeTestUser(db, { timezone: TZ });

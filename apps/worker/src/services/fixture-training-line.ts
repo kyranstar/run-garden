@@ -4,8 +4,14 @@
  * each with a few sessions — and a one-off the coach put on the calendar last Wednesday, outside both. Written by the
  * coach's own appliers (`applyStructuralChunk`'s createPlan, `applyOps`' add), so each row is what the app writes, and
  * the one-off lands in the loose `adhoc-run-…` bucket by the app's own rule. No watch writes, no model call, nothing
- * sent anywhere. Synthetic titles. Applied again it does nothing twice: every id is the proposal's.
+ * sent anywhere. Synthetic titles. Applied again it does nothing twice, and answers the same: every id is the
+ * proposal's, and the one-off is read back by its own (`cw-<proposal>-<op>-<n>`, the applier's).
+ *
+ * It answers what a "Stop this plan" would take off the calendar (`stopCount`): the phases' sessions still scheduled,
+ * dated today or later — the count the journey's confirm must say.
  */
+import { and, eq, gte, inArray, isNull, ne, sql } from "drizzle-orm";
+import { plannedWorkouts } from "@rg/database";
 import { addDays, startOfIsoWeek, todayInZone, type CoachOp, type CoachSession, type LocalDate, type UserPreferences } from "@rg/domain";
 import { applyOps, applyStructuralChunk, type StructuralProgress } from "./coach-apply.js";
 import type { Db } from "./db.js";
@@ -18,6 +24,8 @@ export interface TrainingLineSeeded {
   /** The one-off's title and day. */
   oneOffTitle: string;
   oneOffDate: LocalDate;
+  /** The sessions "Stop this plan" takes off: the phases' still scheduled, today or later (not a rest day). */
+  stopCount: number;
 }
 
 const run = (title: string, minutes: number, category: "easy" | "long"): CoachSession =>
@@ -26,7 +34,8 @@ const run = (title: string, minutes: number, category: "easy" | "long"): CoachSe
 export async function seedTrainingLine(db: Db, userId: string, prefs: UserPreferences, now: Date): Promise<TrainingLineSeeded> {
   // Quiet: the watch is never written to, whatever the account has on.
   const quiet: UserPreferences = { ...prefs, corosWritesEnabled: false };
-  const monday = startOfIsoWeek(todayInZone(prefs.timezone, now));
+  const today = todayInZone(prefs.timezone, now);
+  const monday = startOfIsoWeek(today);
   const key = userId.slice(0, 8);
   const phases: string[] = [];
   const phase = async (tag: string, name: string, from: LocalDate) => {
@@ -55,6 +64,27 @@ export async function seedTrainingLine(db: Db, userId: string, prefs: UserPrefer
   const oneOffDate = addDays(monday, -5);
   const oneOffTitle = "Shake-out jog";
   const proposalId = `fxline-${key}-one`;
-  const applied = await applyOps(db, userId, quiet, proposalId, [{ kind: "add", date: oneOffDate, session: run(oneOffTitle, 25, "easy") } as CoachOp]);
-  return { phases, oneOff: applied.created[0]!, oneOffTitle, oneOffDate };
+  await applyOps(db, userId, quiet, proposalId, [{ kind: "add", date: oneOffDate, session: run(oneOffTitle, 25, "easy") } as CoachOp]);
+  // Read back by its own id (op 0, its first date), so a second call answers it too.
+  const [oneOff] = await db
+    .select({ id: plannedWorkouts.id })
+    .from(plannedWorkouts)
+    .where(and(eq(plannedWorkouts.userId, userId), eq(plannedWorkouts.id, `cw-${proposalId}-0-0`)))
+    .limit(1);
+  if (!oneOff) throw new Error("the fixture's one-off was not written");
+
+  const [ahead] = await db
+    .select({ n: sql<number>`count(*)` })
+    .from(plannedWorkouts)
+    .where(
+      and(
+        eq(plannedWorkouts.userId, userId),
+        inArray(plannedWorkouts.planId, phases),
+        gte(plannedWorkouts.effectiveDate, today),
+        isNull(plannedWorkouts.archivedAt),
+        eq(plannedWorkouts.completionState, "scheduled"),
+        ne(plannedWorkouts.category, "rest"),
+      ),
+    );
+  return { phases, oneOff: oneOff.id, oneOffTitle, oneOffDate, stopCount: Number(ahead?.n ?? 0) };
 }

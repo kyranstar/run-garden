@@ -91,7 +91,8 @@ test("a block the coach built, retired from Plan a slice a request: off the plan
     // Stop it from Your plans (a coach block is a training line now): the app asks until nothing remains.
     const retires: { status: number; body: unknown }[] = [];
     page.on("response", async (r) => {
-      if (r.url().endsWith(`/api/coach/plans/${block!.id}/retire`)) retires.push({ status: r.status(), body: await r.json().catch(() => null) });
+      // By its path: a line's Stop says which phase each retire is in its query (`?stop=last`, one receipt a Stop).
+      if (new URL(r.url()).pathname.endsWith(`/api/coach/plans/${block!.id}/retire`)) retires.push({ status: r.status(), body: await r.json().catch(() => null) });
     });
     await page.locator(".your-plans .plan-row", { hasText: "10K build" }).first().click();
     await page.getByRole("button", { name: "Stop this plan…" }).first().click();

@@ -79,4 +79,15 @@ describe("the Plan's Retire asks again while the answer says `remaining`", () =>
     await expect(api.coachPlanRetire("cp1")).rejects.toThrow("retire_unfinished");
     expect(calls).toHaveLength(STRUCTURAL_ROUNDS_MAX);
   });
+
+  it("a line's Stop says which phase each retire is, on every request until it is done (one receipt a Stop, final review M3)", async () => {
+    const more = `${RETIRE}?stop=more`;
+    const last = `${RETIRE}?stop=last`;
+    let calls = stubWorker({ [more]: [json({ ok: true, remaining: true }), json({ ok: true })] });
+    await expect(api.coachPlanRetire("cp1", "more")).resolves.toEqual({ ok: true });
+    expect(calls).toEqual([more, more]);
+    calls = stubWorker({ [last]: [json({ ok: true })] });
+    await expect(api.coachPlanRetire("cp1", "last")).resolves.toEqual({ ok: true });
+    expect(calls).toEqual([last]);
+  });
 });

@@ -25,7 +25,9 @@
  *  6. `GET /api/objectives/board` over two years of runs, sessions and sets (best ever reads all of it);
  *  7. `GET /api/coach/runs/current` with 50 events;
  *  8. every tool's own call, alone, as a step runs it (`measureTool`): its scaled p50 must stay at or under the tool's
- *     declared `cpuWeight`, which the step loop spends its CPU room by;
+ *     declared `cpuWeight`, which the step loop spends its CPU room by — the rich athlete holding an owner-shaped
+ *     account's plans (`seedOwnerPlans`: a four-phase running line, three buckets of one-offs, a 24-week Studio plan
+ *     with its pushes), what read_plans reads;
  *  9. the step alarm (COACH_STEP_ALARM, coach-run-stepper.ts): the armed `POST /step` (the run read, its object armed),
  *     and the run's object's alarm running the tightest model step (2c) and the heaviest step of queued calls (2b.q) —
  *     an alarm invocation is a Worker invocation, under the same budgets, and its work is the step's;
@@ -100,7 +102,7 @@ import { callMessages, sendMessagesBody } from "../src/services/llm-messages.js"
 import { makeCoachReplayRoutes } from "../src/routes/coach-replay.js";
 import { REPLAY_CONFIRM } from "../src/services/coach-replay.js";
 import type { Db } from "../src/services/db.js";
-import { at, day, NOW, seedRichAthlete, TODAY } from "./design-read-fixture.js";
+import { at, day, NOW, seedOwnerPlans, seedRichAthlete, TODAY } from "./design-read-fixture.js";
 import { seedLongHistory, words } from "./long-history-fixture.js";
 import { activateTmj, calmDoc } from "./doc-workout-fixture.js";
 import { makeTestDb, makeTestUser, MAX_LOOP_ITERATIONS, mountRoutes } from "./helpers.js";
@@ -659,6 +661,9 @@ beforeAll(async () => {
   const base = makeTestDb();
   rich = await seedRichAthlete(base);
   userId = rich.userId;
+  // An owner-shaped account's plans (training lines, final review I3): a four-phase running line with its weeks and
+  // sessions, three buckets of one-offs, a 24-week Studio plan with its pushes — what read_plans (step 8) reads.
+  await seedOwnerPlans(base, userId);
   cookie = `${SESSION_COOKIE}=${await createSession(base, userId)}`;
   runId = (await createRun(base, userId, { scope: { kind: "now" }, request: REQUEST }, NOW)).run.id;
   const moves = await movesForToday(base);

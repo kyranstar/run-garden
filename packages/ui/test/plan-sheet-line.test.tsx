@@ -174,13 +174,13 @@ describe("stopCount and stopLine", () => {
     expect(stopCount(running, TODAY)).toBe(14);
   });
 
-  it("stopLine retires the current phase, then each later one, in order, and says which", async () => {
-    const asked: string[] = [];
-    const out = await stopLine(running, TODAY, async (id) => {
-      asked.push(id);
+  it("stopLine retires the current phase, then each later one, in order, and says which — only the last as the last", async () => {
+    const asked: Array<[string, string]> = [];
+    const out = await stopLine(running, TODAY, async (id, stop) => {
+      asked.push([id, stop]);
       return { ok: true };
     });
-    expect(asked).toEqual(["r2", "r3"]);
+    expect(asked).toEqual([["r2", "more"], ["r3", "last"]]);
     expect(out).toEqual({ stopped: ["r2", "r3"] });
   });
 
@@ -374,7 +374,8 @@ describe("Stop this plan", () => {
     expect(text(confirm)).toContain("14 sessions leave your calendar.");
     await act(async () => button("Stop the plan", confirm!).click());
     await flush();
-    expect(retire.mock.calls).toEqual([["r2"], ["r3"]]);
+    // One receipt a Stop: every phase but the last retires saying more follow; the last writes "Plan stopped".
+    expect(retire.mock.calls).toEqual([["r2", "more"], ["r3", "last"]]);
     expect(dialog("Stop this plan?")).toBeNull();
   });
 
@@ -406,14 +407,15 @@ describe("Stop this plan", () => {
     act(() => button("Stop this plan…").click());
     await act(async () => button("Stop the plan", dialog("Stop this plan?")!).click());
     await flush();
-    expect(retire.mock.calls).toEqual([["r2"], ["r3"]]);
+    expect(retire.mock.calls).toEqual([["r2", "more"], ["r3", "last"]]);
     const confirm = dialog("Stop this plan?");
     expect(confirm).not.toBeNull();
     expect(text(confirm!.querySelector('[role="alert"]'))).toBe("That didn't go through — try again.");
     expect(button("Stop the plan", confirm!).disabled).toBe(false);
     await act(async () => button("Stop the plan", confirm!).click());
     await flush();
-    expect(retire.mock.calls).toEqual([["r2"], ["r3"], ["r3"]]);
+    // The second press retires only what is left — the last phase, which writes the Stop's one receipt.
+    expect(retire.mock.calls).toEqual([["r2", "more"], ["r3", "last"], ["r3", "last"]]);
     expect(dialog("Stop this plan?")).toBeNull();
     expect(document.activeElement).toBe(document.querySelector(".line-stopped"));
   });
@@ -428,7 +430,7 @@ describe("Stop this plan", () => {
     act(() => button("Stop this plan…").click());
     await act(async () => button("Stop the plan", dialog("Stop this plan?")!).click());
     await flush();
-    expect(retire.mock.calls).toEqual([["r2"], ["r3"]]);
+    expect(retire.mock.calls).toEqual([["r2", "more"], ["r3", "last"]]);
     // What `GET /api/coach/plans` answers once the base block is retired: the bridge ended on Oct 11 and the race build
     // starts on Nov 9, more than a week on, so `linesOf` makes them two lines — `run:r1` (ended) and `run:r3`.
     const sessions = new Map(running.phases.map((p) => [p.id, p.futureSessions]));
@@ -445,7 +447,7 @@ describe("Stop this plan", () => {
     expect(document.querySelectorAll(".line-phase")).toHaveLength(3);
     await act(async () => button("Stop the plan", dialog("Stop this plan?")!).click());
     await flush();
-    expect(retire.mock.calls.slice(2)).toEqual([["r3"]]);
+    expect(retire.mock.calls.slice(2)).toEqual([["r3", "last"]]);
     expect(text(document.querySelector(".line-stopped"))).toBe("Stopped. 14 sessions left your calendar.");
   });
 
@@ -493,6 +495,34 @@ describe("Stop this plan", () => {
     for (const key of [["coach-plans"], ["plan-detail"], ["plan"], ["plan-week"], ["coach-state"], [...NUDGES_QUERY]]) {
       expect(keys, JSON.stringify(key)).toContain(JSON.stringify(key));
     }
+  });
+
+  it("once stopped, each phase it stopped says so — never \"now\", never \"Starts\" — and the race it was building to is not said", async () => {
+    vi.spyOn(api, "coachPlanRetire").mockResolvedValue({ ok: true });
+    mountSheet(running);
+    expect(text(document.body)).toContain("Race · Sun 6 Dec");
+    expect(heading("r2")).toContain("Oct 12 → Nov 8 · now");
+    act(() => button("Stop this plan…").click());
+    await act(async () => button("Stop the plan", dialog("Stop this plan?")!).click());
+    await flush();
+    // The phase that had ended is as it was; the two it stopped say so.
+    expect(heading("r1")).toContain("Sep 28 → Oct 11 · ended");
+    expect(heading("r2")).toContain("Oct 12 → Nov 8 · stopped");
+    expect(heading("r3")).toContain("Nov 9 → Dec 6 · stopped");
+    expect(text(dialog("Running"))).not.toContain("· now");
+    expect(text(dialog("Running"))).not.toContain("Race · ");
+  });
+
+  it("…and a line stopped before it started: its first phase no longer says when it starts", async () => {
+    vi.spyOn(api, "coachPlanRetire").mockResolvedValue({ ok: true });
+    mountSheet(mkLine([phase("n1", "First block", "2026-11-02", "2026-11-29", { futureSessions: 6 }), phase("n2", "Second block", "2026-11-30", "2026-12-27")]));
+    expect(heading("n1")).toContain("Starts Nov 2");
+    act(() => button("Stop this plan…").click());
+    await act(async () => button("Stop the plan", dialog("Stop this plan?")!).click());
+    await flush();
+    expect(heading("n1")).toContain("Nov 2 → Nov 29 · stopped");
+    expect(heading("n2")).toContain("Nov 30 → Dec 27 · stopped");
+    expect(heading("n1")).not.toContain("Starts");
   });
 
   it("the sheet stays, saying so, when the stopped line leaves the plans read", async () => {
@@ -543,6 +573,7 @@ describe("a one-phase line", () => {
     const retire = vi.spyOn(api, "coachPlanRetire").mockResolvedValue({ ok: true });
     mountSheet(solo);
     expect(dialog("Autumn 10K")).not.toBeNull();
+    expect(text(dialog("Autumn 10K"))).toContain("Race · Sat 31 Oct");
     expect(document.querySelector(".line-phase")).toBeNull();
     expect(text(document.body)).toContain("4 of 12 sessions done · adherence 80%");
     for (const kept of ["Extend", "Wind down", "Rename", "Change"]) expect(findButton(kept), kept).toBeDefined();
@@ -551,11 +582,12 @@ describe("a one-phase line", () => {
     expect(text(dialog("Stop this plan?"))).toContain("6 sessions leave your calendar.");
     await act(async () => button("Stop the plan", dialog("Stop this plan?")!).click());
     await flush();
-    expect(retire.mock.calls).toEqual([["s1"]]);
+    expect(retire.mock.calls).toEqual([["s1", "last"]]);
     expect(document.activeElement).toBe(document.querySelector(".line-stopped"));
     expect(text(document.querySelector(".line-stopped"))).toBe("Stopped. 6 sessions left your calendar.");
-    // Stopped, it is read-only.
+    // Stopped, it is read-only, and the race it was building to is not said.
     for (const gone of ["Stop this plan…", "Extend", "Wind down", "Rename", "Change"]) expect(findButton(gone), gone).toBeUndefined();
+    expect(text(dialog("Autumn 10K"))).not.toContain("Race · ");
   });
 
   it("its Rename is the one rename editor: Save renames, Escape leaves the field and never the sheet (review round 1)", () => {

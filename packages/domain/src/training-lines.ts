@@ -15,7 +15,7 @@
  * later start. `others` counts the other groups, so phases of one line never
  * read as "+1".
  */
-import { addDays, startOfIsoWeek } from "./time.js";
+import { addDays, daysBetween, startOfIsoWeek } from "./time.js";
 
 export type LineBlock = {
   id: string;
@@ -55,6 +55,18 @@ const SENTENCE_NAMES = {
 
 export function planEnded(endDate: string, today: string): boolean {
   return endDate < today;
+}
+
+/**
+ * A phase's week of `date`, and its weeks in all — the one week counter (the plan list's row, the week's line and the
+ * week brief all count by it): ISO weeks, Monday to Sunday, from the week the phase's first day falls in. A phase that
+ * starts on a Saturday is in its second week the Monday after. Outside the phase `week` runs on, below 1 before its
+ * first week and past `of` after its last: the caller says "starts" or "ended".
+ */
+export function phaseWeekOf(phase: { startDate: string; endDate: string }, date: string): { week: number; of: number } {
+  const first = startOfIsoWeek(phase.startDate);
+  const weekOf = (d: string) => daysBetween(first, startOfIsoWeek(d)) / 7 + 1;
+  return { week: weekOf(date), of: weekOf(phase.endDate) };
 }
 
 export function lineSentenceName(

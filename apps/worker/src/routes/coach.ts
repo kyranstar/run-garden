@@ -46,9 +46,9 @@ import { exerciseNameMap, resolveExerciseName } from "../services/exercise-catal
 import { liftProgressions, liftWeekSummary, runProgressions } from "../services/plan-progressions.js";
 import { loggedTopKgByWeek } from "../services/logged-sets.js";
 import { applyOps, isStructuralOp } from "../services/coach-apply.js";
-import { approveStructural, retireInChunks, structuralStarted } from "./thread-structural.js";
+import { approveStructural, RETIRED_RECEIPT, retireInChunks, STOPPED_RECEIPT, structuralStarted } from "./thread-structural.js";
 import { evaluateTriggers, pendingTriggers } from "../services/coach-triggers.js";
-import { coachBlockAdherence, isLoosePlan, lineBlockOf, loadNonCoachPlanEntries, plansEndedOn } from "../services/coach-plans.js";
+import { coachBlockAdherence, isLoosePlan, lineBlockOf, loadNonCoachPlanEntries, LOOSE_PLAN_ID_PREFIX, plansEndedOn } from "../services/coach-plans.js";
 import { setCoachPlanRace } from "../services/coach-plan-race.js";
 import {
   openWakeIsFresh,
@@ -775,23 +775,33 @@ coachRoutes.get("/plans", async (c) => {
   // never reach this read (a line is built from coach blocks only).
   const coachRows = rows.filter((r) => !isLoosePlan(r));
   const blocks: LineBlock[] = coachRows.map(lineBlockOf);
-  // One grouped statement: each block's sessions dated today or later that
-  // are still to do.
+  // One grouped statement, its parameters the same however many blocks the account holds (D1 binds 100 at most): each
+  // phase's sessions a "Stop this plan" takes off the calendar — still scheduled (the retire archives only those),
+  // dated today or later, in a coach block not retired whose last day has not passed (`planEnded`: a Stop never
+  // retires a phase that has ended), never a one-off bucket.
   const future = new Map<string, number>();
   if (blocks.length > 0) {
+    const stoppable = db
+      .select({ id: coachPlans.id })
+      .from(coachPlans)
+      .where(
+        and(
+          eq(coachPlans.userId, userId),
+          ne(coachPlans.status, "retired"),
+          gte(coachPlans.endDate, today),
+          sql`substr(${coachPlans.id}, 1, ${LOOSE_PLAN_ID_PREFIX.length}) <> ${LOOSE_PLAN_ID_PREFIX}`,
+        ),
+      );
     const counted = await db
       .select({ planId: plannedWorkouts.planId, n: sql<number>`count(*)` })
       .from(plannedWorkouts)
       .where(
         and(
           eq(plannedWorkouts.userId, userId),
-          inArray(
-            plannedWorkouts.planId,
-            blocks.map((b) => b.id),
-          ),
+          inArray(plannedWorkouts.planId, stoppable),
           gte(plannedWorkouts.effectiveDate, today),
           isNull(plannedWorkouts.archivedAt),
-          ne(plannedWorkouts.completionState, "completed"),
+          eq(plannedWorkouts.completionState, "scheduled"),
           ne(plannedWorkouts.category, "rest"),
         ),
       )
@@ -1239,12 +1249,19 @@ coachRoutes.post("/plans/:id/race", async (c) => {
   return c.json({ ok: true, raceDate: out.raceDate, demoted: out.demoted });
 });
 
+/**
+ * Retire a coach plan, a slice a request, `remaining` until it is retired (§8 §4; thread-structural.ts), then its
+ * receipt. A training line's "Stop this plan" retires its phases one after another and says so once (final review,
+ * M3): `?stop=more` for a phase with more to retire after it (no receipt), `?stop=last` for its last ("Plan stopped").
+ * Without it — any other caller — the plan's own Retire receipt, as ever.
+ */
 coachRoutes.post("/plans/:id/retire", async (c) => {
   const db = c.get("db");
   const userId = c.get("userId");
   const prefs = await loadPreferences(db, userId);
-  // A slice a request, `remaining` until the plan is retired (§8 §4; thread-structural.ts).
-  return retireInChunks(c, c.req.param("id"), prefs, (body) => receipt(db, userId, body));
+  const stop = c.req.query("stop");
+  const words = stop === "more" ? null : stop === "last" ? STOPPED_RECEIPT : RETIRED_RECEIPT;
+  return retireInChunks(c, c.req.param("id"), prefs, (body) => receipt(db, userId, body), words);
 });
 
 /** Expiry sweep for the hourly cron (all users handled by the caller). */

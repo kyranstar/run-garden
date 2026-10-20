@@ -812,7 +812,8 @@ describe("GET /week — brief facts (2026-08-11 rework §4)", () => {
     expect(many.statements.length).toBe(one.statements.length);
     // One active plan, one workout: 13 before the plan list's reader was shared, 15 after (its Studio and COROS reads).
     expect(one.statements.length).toBe(15);
-    // The widest week: a Studio plan and a COROS running plan add their reads (measured: 18).
+    // The widest week: a Studio plan and a COROS running plan add their reads (measured: 18; 16 since the Studio plan,
+    // its pushes and whether it was retired are one statement — training lines' final wave, T5).
     const at = nowInstant();
     await db.insert(schema.studioPlans).values({
       id: "studio-1",
@@ -828,7 +829,7 @@ describe("GET /week — brief facts (2026-08-11 rework §4)", () => {
     await seedWeekWorkout(addDays(monday, 2), { planId: "tp-run" });
     await seedWeekWorkout(addDays(monday, 9), { planId: "tp-run" });
     const widest = await weekWithStatements(monday);
-    expect(widest.statements.length).toBe(18);
+    expect(widest.statements.length).toBe(16);
     expect(widest.statements.length).toBeLessThanOrEqual(45);
   });
 

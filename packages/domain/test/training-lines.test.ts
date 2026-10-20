@@ -6,6 +6,7 @@ import {
   type WeekPlan,
   lineSentenceName,
   linesOf,
+  phaseWeekOf,
   planEnded,
   weekNaming,
 } from "../src/training-lines.js";
@@ -142,6 +143,29 @@ describe("planEnded", () => {
     expect(planEnded("2026-10-19", "2026-10-20")).toBe(true);
     expect(planEnded("2026-10-20", "2026-10-20")).toBe(false);
     expect(planEnded("2026-10-21", "2026-10-20")).toBe(false);
+  });
+});
+
+describe("phaseWeekOf", () => {
+  it("counts ISO weeks, Monday to Sunday, from the week the phase's first day falls in — as the week brief does", () => {
+    // Starts Saturday 17 Oct, ends Friday 13 Nov: its first ISO week is 12–18 Oct, its last 9–15 Nov.
+    const sat = { startDate: "2026-10-17", endDate: "2026-11-13" };
+    expect(phaseWeekOf(sat, "2026-10-17")).toEqual({ week: 1, of: 5 });
+    expect(phaseWeekOf(sat, "2026-10-18")).toEqual({ week: 1, of: 5 });
+    // The Monday after: its second week, though only two days have passed since it started.
+    expect(phaseWeekOf(sat, "2026-10-19")).toEqual({ week: 2, of: 5 });
+    expect(phaseWeekOf(sat, "2026-11-13")).toEqual({ week: 5, of: 5 });
+    // A Monday-to-Sunday block: four weeks, one each Monday.
+    const mon = { startDate: "2026-10-12", endDate: "2026-11-08" };
+    expect(phaseWeekOf(mon, "2026-10-12")).toEqual({ week: 1, of: 4 });
+    expect(phaseWeekOf(mon, "2026-10-18")).toEqual({ week: 1, of: 4 });
+    expect(phaseWeekOf(mon, "2026-10-19")).toEqual({ week: 2, of: 4 });
+    expect(phaseWeekOf(mon, "2026-11-08")).toEqual({ week: 4, of: 4 });
+    // Outside the phase the count runs on, below 1 or past `of`: the caller says "starts" or "ended".
+    expect(phaseWeekOf(mon, "2026-10-05").week).toBe(0);
+    expect(phaseWeekOf(mon, "2026-11-09").week).toBe(5);
+    // Across the autumn clock change (25 Oct in Europe, 1 Nov in the US) a week is still seven days.
+    expect(phaseWeekOf({ startDate: "2026-10-19", endDate: "2026-11-15" }, "2026-11-02")).toEqual({ week: 3, of: 4 });
   });
 });
 

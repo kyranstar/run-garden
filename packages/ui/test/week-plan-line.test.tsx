@@ -10,6 +10,7 @@ import { describe, expect, it } from "vitest";
 import type { CoachPlanDto, PlanWeekResponse, WorkoutDto } from "@rg/api-client";
 import { linesOf, type LineBlock } from "@rg/domain";
 import { jumpWeeksOf, weekLine, weekPlan, weekPlanName } from "../src/screens/week-view.js";
+import { planRowState } from "../src/screens/plan-cards.js";
 import { WEEK_NAMING_CASES, datedPlans } from "../../domain/test/week-naming-cases.js";
 
 const plan = (id: string, name: string, startDate: string, endDate: string, o: Partial<CoachPlanDto> = {}): CoachPlanDto => ({
@@ -159,6 +160,11 @@ describe("the shared week-naming table (training lines §3.6): the week brief is
       expect(got.planMore).toBe(c.expect.others);
       if (c.expect.planId === null) expect(got.planWeekOf).toBeUndefined();
       else expect(got.planWeekOf).toBe(c.expect.weekOf ? `week ${c.expect.weekOf[0]} of ${c.expect.weekOf[1]}` : null);
+      // One week counter: in this week (the anchor Monday is today), the named phase's row on Your plans says the same.
+      const named = blocks.find((b) => b.id === c.expect.planId);
+      if (c.weekOffset === 0 && c.expect.weekOf && named && named.startDate <= monday) {
+        expect(planRowState({ kind: "plan", plan: named }, monday).state).toMatch(new RegExp(`^Week ${c.expect.weekOf[0]} of ${c.expect.weekOf[1]} · `));
+      }
     });
   }
 });

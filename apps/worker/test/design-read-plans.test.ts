@@ -16,11 +16,15 @@ import { READ_TOOLS } from "../src/services/design-tools/index.js";
 import { readPlans } from "../src/services/design-tools/read-plans.js";
 import { RESULT_BUDGET_BYTES } from "../src/services/design-tools/read-common.js";
 import { isToolErr, type ToolErr, type ToolOk } from "../src/services/design-tools/types.js";
-import { at, day, NOW, OTHER_SENTINEL, seedOtherAthlete, seedRichAthlete, TODAY } from "./design-read-fixture.js";
+import { at, day, NOW, OTHER_SENTINEL, seedOtherAthlete, seedOwnerPlans, seedRichAthlete, TODAY } from "./design-read-fixture.js";
 import { isWrite, makeTestDb, makeTestUser } from "./helpers.js";
 
 /** The words read_plans puts where it once said "plan what comes after it as a new plan" (training lines §3.7). */
 const CONTINUE_LINE = "To continue a line, propose its next phase starting the day after the line's last phase ends; it joins the line.";
+/** Beside it: which phase "Extend / Wind down my running plan" means while the line is live (final review, I4). */
+const EXTEND_LINE = "Extend or wind down a line through its last phase.";
+/** A block the athlete stopped, in propose_plan's own words (final review, I2). */
+const STOPPED = "The athlete stopped this plan (retired). Leave it stopped: propose a new plan (createPlan) only if the athlete asks for one.";
 
 const ENV = {} as Env;
 let db: Db;
@@ -201,6 +205,7 @@ describe("read_plans", () => {
     expect(watchOnly.data.plans).toHaveLength(1);
     expect(watchOnly.data.lines).toEqual([]);
     expect(watchOnly.data).not.toHaveProperty("continueLine");
+    expect(watchOnly.data).not.toHaveProperty("extendLine");
   });
 
   it("refuses a field it doesn't take, naming it", async () => {
@@ -256,18 +261,26 @@ describe("read_plans", () => {
         discipline: "run",
         phases: [phase("cp-bridge", "Bridge block", day(27), day(1), true), phase("cp-base", "Base block", TODAY, day(-25), false), phase("cp-build", "Race build", day(-26), day(-53), false)],
         end: day(-53),
+        last: "cp-build",
         goalRace: day(-53),
       },
-      { name: "Lifting", discipline: "lift", phases: [phase("cp-lift", "Strength base", day(10), day(-20), false)], end: day(-20), goalRace: null },
+      { name: "Lifting", discipline: "lift", phases: [phase("cp-lift", "Strength base", day(10), day(-20), false)], end: day(-20), last: "cp-lift", goalRace: null },
     ]);
+    // Which phase "Extend my running plan" means while the line is live: its last, said once beside the lines.
+    expect((ok(res).data as Record<string, unknown>).extendLine).toBe(EXTEND_LINE);
     // The blocks list keeps its ids.
     const byId = new Map(data.plans.map((p) => [p.id, p]));
     for (const id of ["cp-bridge", "cp-base", "cp-build", "cp-lift"]) expect(byId.get(id), id).toMatchObject({ kind: "coach block" });
     expect(byId.get("cp-base")!.coachMayChange).toBe(true);
+    // The bridge ended and its line goes on: its why points at the phase running now, and an extend or a wind-down at
+    // the line's last phase — as propose_plan's refusal does — never at continuing the line past its end.
     const bridge = byId.get("cp-bridge")!;
     expect(bridge.coachMayChange).toBe(false);
-    expect(bridge.why).toContain(CONTINUE_LINE);
+    expect(bridge.why).toBe(`it has ended (on ${day(1)}); its line goes on in cp-base: change that phase instead. To extend or wind down the line, its last phase is cp-build.`);
+    expect(bridge.why).not.toContain(CONTINUE_LINE);
     expect(JSON.stringify(ok(res))).not.toContain("as a new plan");
+    // A block the athlete stopped stays stopped.
+    expect(byId.get("cp-dropped")).toMatchObject({ coachMayChange: false, why: STOPPED });
 
     // The Studio plan: the newest, read-only, with the dates the plan list gives it.
     expect(byId.has("studio-old")).toBe(false);
@@ -276,6 +289,59 @@ describe("read_plans", () => {
     expect(lift.name).toEqual({ untrusted: true, text: "Full Body Strength" });
     expect(lift.why).toMatch(/Studio/);
     expect(lift.why).toMatch(/adjust_plan/);
+  });
+
+  it("each block that may not change says what may: a stopped one stays stopped, an ended one in a live line names the phase it goes on in, an ended line is continued", async () => {
+    // Stopped mid-way by the athlete (retired), its last day still ahead: never "continue it".
+    await block(rich.userId, { id: "cp-stopped", name: "Stopped build", status: "retired", start: day(14), end: day(-14) });
+    // A line of two phases that ended last week: a next phase continues it — whichever phase is asked about.
+    await block(rich.userId, { id: "cp-spring-1", name: "Spring base", status: "completed", start: day(40), end: day(21), discipline: "mobility" });
+    await block(rich.userId, { id: "cp-spring-2", name: "Spring build", status: "completed", start: day(20), end: day(6), discipline: "mobility" });
+    // A two-phase line whose first phase ended yesterday: the phase it goes on in is also its last.
+    await block(rich.userId, { id: "cp-first", name: "First block", start: day(20), end: day(1), discipline: "lift" });
+    await block(rich.userId, { id: "cp-second", name: "Second block", start: TODAY, end: day(-20), discipline: "lift" });
+    // Overlapping phases: the line's last phase is the one its end is, not the one that started last.
+    await block(rich.userId, { id: "cp-long", name: "Long base", start: day(3), end: day(-40), discipline: "run" });
+    await block(rich.userId, { id: "cp-short", name: "Short sharpener", start: day(2), end: day(-12), discipline: "run" });
+    // A draft the coach wrote, still ahead: propose_plan takes a change to it, so it is changeable here too.
+    await block(rich.userId, { id: "cp-draft", name: "Draft block", status: "draft", start: day(-50), end: day(-70), discipline: "run" });
+    const { res, count } = await read();
+    expect(count).toBe(1);
+    const data = ok(res).data as { plans: Array<Record<string, any>>; lines: Array<Record<string, any>>; continueLine: string; extendLine: string };
+    const byId = new Map(data.plans.map((p) => [p.id, p]));
+    expect(byId.get("cp-stopped")).toMatchObject({ coachMayChange: false, why: STOPPED });
+    for (const id of ["cp-spring-1", "cp-spring-2"]) expect(byId.get(id), id).toMatchObject({ coachMayChange: false, why: `it has ended (completed). ${CONTINUE_LINE}` });
+    expect(byId.get("cp-first")).toMatchObject({
+      coachMayChange: false,
+      why: `it has ended (on ${day(1)}); its line goes on in cp-second, its last phase: change, extend or wind down that phase instead.`,
+    });
+    expect(byId.get("cp-second")).toMatchObject({ coachMayChange: true });
+    expect(byId.get("cp-draft")).toMatchObject({ coachMayChange: true });
+    expect(data.lines.map((l) => [l.name, l.phases.map((p: { id: string }) => p.id), l.last])).toEqual([
+      ["Mobility", ["cp-spring-1", "cp-spring-2"], "cp-spring-2"],
+      ["Lifting", ["cp-first", "cp-second"], "cp-second"],
+      ["Running", ["cp-long", "cp-short"], "cp-long"],
+      ["Running", ["cp-draft"], "cp-draft"],
+    ]);
+    // Said once each, beside the lines.
+    expect(data.continueLine).toBe(CONTINUE_LINE);
+    expect(data.extendLine).toBe(EXTEND_LINE);
+    expect(JSON.stringify(data).split(EXTEND_LINE)).toHaveLength(2);
+  });
+
+  it("an owner-shaped account (the CPU bench's, step 8): one running line of four phases, its last the taper; the Studio plan; no bucket — one statement, within the budget", async () => {
+    const owner = await seedOwnerPlans(db, rich.userId);
+    const { res, count } = await read();
+    expect(count).toBe(1);
+    const r = ok(res) as ToolOk & { data: Record<string, any> };
+    expect(r.data.lines.map((l: Record<string, any>) => [l.name, l.phases.map((p: { id: string }) => p.id), l.last, l.goalRace])).toEqual([
+      ["Running", owner.phases, owner.phases[3], "2026-07-12"],
+    ]);
+    const ids = r.data.plans.map((p: { id: string }) => p.id);
+    expect(ids).toEqual(expect.arrayContaining([...owner.phases, owner.studioPlanId]));
+    expect(ids.some((id: string) => id.startsWith("adhoc-"))).toBe(false);
+    expect(r.data.morePlans).toBeUndefined();
+    expect(Buffer.byteLength(JSON.stringify({ provenance: r.provenance, missing: r.missing, data: r.data }))).toBeLessThanOrEqual(RESULT_BUDGET_BYTES);
   });
 
   describe("the Studio plan is the plan list's own (GET /api/coach/plans): the same entry, or none", () => {

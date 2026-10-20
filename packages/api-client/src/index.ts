@@ -2574,10 +2574,15 @@ export const api = {
    */
   coachPlanRace: (id: string, raceDate: string | null) =>
     post<{ ok: boolean; raceDate: string | null; demoted: number }>(`/api/coach/plans/${encodeURIComponent(id)}/race`, { raceDate }),
-  /** Retire a coach plan: its sessions ahead are taken off a slice a request (§8 §4), asked again while `remaining`. */
-  coachPlanRetire: async (id: string) => {
+  /**
+   * Retire a coach plan: its sessions ahead are taken off a slice a request (§8 §4), asked again while `remaining`.
+   * `stop`: a training line's "Stop this plan" retiring its phases — "more" while phases follow (no receipt), "last" for
+   * its last (the Stop's one receipt).
+   */
+  coachPlanRetire: async (id: string, stop?: "more" | "last") => {
+    const path = `/api/coach/plans/${id}/retire${stop ? `?stop=${stop}` : ""}`;
     for (let i = 0; i < STRUCTURAL_ROUNDS_MAX; i++) {
-      const res = await post<{ ok: boolean; remaining?: boolean }>(`/api/coach/plans/${id}/retire`);
+      const res = await post<{ ok: boolean; remaining?: boolean }>(path);
       if (!res.remaining) return { ok: res.ok };
     }
     throw new Error("retire_unfinished");

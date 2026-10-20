@@ -12,6 +12,7 @@ import type { Db } from "../src/services/db.js";
 import { coachRoutes, sweepUserProposals } from "../src/routes/coach.js";
 import { buildDossier } from "../src/services/coach-context.js";
 import { savePreferences } from "../src/services/calendar-sync.js";
+import { loadNonCoachPlanEntries } from "../src/services/coach-plans.js";
 import { createSession, SESSION_COOKIE } from "../src/auth/sessions.js";
 import { makeTestDb, makeTestUser, mountRoutes } from "./helpers.js";
 
@@ -323,6 +324,26 @@ describe("coach routes", () => {
       plans: Array<{ name: string; status: string }>;
     };
     expect(plans.plans[0]).toMatchObject({ name: "Autumn Half", status: "retired" });
+  });
+
+  it("a line's Stop writes one receipt: its phases before the last none (`stop=more`), its last \"Plan stopped\" (`stop=last`); a Retire its own", async () => {
+    for (const id of ["ln1", "ln2", "ln3", "solo"]) {
+      await db.insert(schema.coachPlans).values({
+        id, userId, discipline: "run", name: `Block ${id}`, status: "active", startDate: "2026-11-02", endDate: "2026-11-29", stampPrefix: id,
+        createdAt: nowInstant(), updatedAt: nowInstant(),
+      });
+    }
+    const receipts = async () =>
+      (await db.select().from(schema.coachMessages).where(eq(schema.coachMessages.userId, userId))).filter((m) => m.role === "receipt").map((m) => m.body);
+    expect((await client().post("/api/coach/plans/ln1/retire?stop=more")).status).toBe(200);
+    expect((await client().post("/api/coach/plans/ln2/retire?stop=more")).status).toBe(200);
+    expect(await receipts()).toEqual([]);
+    expect((await client().post("/api/coach/plans/ln3/retire?stop=last")).status).toBe(200);
+    expect(await receipts()).toEqual(["Plan stopped — completed history stays."]);
+    expect((await client().post("/api/coach/plans/solo/retire")).status).toBe(200);
+    expect((await receipts()).sort()).toEqual(["Plan retired — completed history stays.", "Plan stopped — completed history stays."]);
+    const statuses = await db.select({ id: schema.coachPlans.id, status: schema.coachPlans.status }).from(schema.coachPlans).where(eq(schema.coachPlans.userId, userId));
+    expect(statuses.every((p) => p.status === "retired")).toBe(true);
   });
 
   it("retiring a plan that isn't there is a 404, not a receipt saying it was retired", async () => {
@@ -910,6 +931,50 @@ describe("GET /plans answers training lines (2026-10-20)", () => {
     expect((await read()).lines[0]!.ended).toBe(true);
   });
 
+  it("counts only what a Stop takes off: scheduled sessions of a phase not ended — never a skipped or unresolved one, nor one dated past an ended phase", async () => {
+    await seedBlock("ended", "2026-09-28", "2026-10-18", "completed");
+    await seedBlock("live", "2026-10-19", "2026-11-15");
+    // A session of the ended phase moved past its end: the retire of a Stop never reaches that phase.
+    await seedSession("ended", "2026-10-22");
+    await seedSession("live", "2026-10-21");
+    await seedSession("live", "2026-10-22", { state: "skipped" });
+    await seedSession("live", "2026-10-23", { state: "unresolved" });
+    await seedSession("live", "2026-10-24", { state: "missed" });
+    await seedSession("live", "2026-10-25");
+    const line = (await read()).lines[0]!;
+    expect(line.phases.map((p) => [p.id, p.futureSessions])).toEqual([
+      ["ended", 0],
+      ["live", 2],
+    ]);
+  });
+
+  it("an account with 120 coach blocks still answers (D1 binds at most 100 variables a statement), at the same statements as three", async () => {
+    const stmts: string[] = [];
+    db = makeTestDb({ boundVariableCap: 100, onStatement: (sql) => stmts.push(sql) });
+    ({ userId, prefs } = await makeTestUser(db));
+    cookie = `${SESSION_COOKIE}=${await createSession(db, userId)}`;
+    await seedBlock("a1", "2026-09-28", "2026-10-11", "completed");
+    await seedBlock("b2", "2026-10-12", "2026-10-25");
+    await seedBlock("c3", "2026-10-26", "2026-11-08", "draft");
+    await seedSession("b2", "2026-10-22");
+    stmts.length = 0;
+    expect((await client().get("/api/coach/plans")).status).toBe(200);
+    const three = stmts.length;
+    // Years of blocks, retired and completed among them: one a fortnight back from the three above.
+    for (let n = 0; n < 117; n++) {
+      const start = addDays("2026-09-14", -14 * n);
+      await seedBlock(`old-${n}`, start, addDays(start, 13), n % 3 === 0 ? "retired" : "completed");
+    }
+    stmts.length = 0;
+    const res = await client().get("/api/coach/plans");
+    expect(res.status).toBe(200);
+    expect(stmts.length).toBe(three);
+    const body = (await res.json()) as LinesBody;
+    expect(body.plans).toHaveLength(120);
+    const live = body.lines.find((l) => l.phases.some((p) => p.id === "b2"))!;
+    expect(live.phases.find((p) => p.id === "b2")!.futureSessions).toBe(1);
+  });
+
   it("costs at most one statement more than the plans read did before lines", async () => {
     const stmts: string[] = [];
     db = makeTestDb({ onStatement: (sql) => stmts.push(sql) });
@@ -923,6 +988,75 @@ describe("GET /plans answers training lines (2026-10-20)", () => {
     const res = await client().get("/api/coach/plans");
     expect(res.status).toBe(200);
     expect(stmts.length).toBeLessThanOrEqual(BEFORE_STATEMENTS + 1);
+  });
+});
+
+/**
+ * A call's statements in round trips. D1's binding answers each statement asynchronously; the test database answers
+ * at once, inside the call that asks. So a WAVE is the statements asked before any answer is read: those asked in one
+ * turn of the microtask queue (a branch of a `Promise.all` asks its first statement before the other's answer is
+ * read), and a wave ends when the queue moves on.
+ */
+function wavesOf() {
+  const waves: string[][] = [];
+  let open = false;
+  return {
+    waves,
+    onStatement: (sql: string) => {
+      if (!open) {
+        waves.push([]);
+        open = true;
+        queueMicrotask(() => {
+          open = false;
+        });
+      }
+      waves.at(-1)!.push(sql);
+    },
+  };
+}
+
+describe("the plans that are no coach rows (`loadNonCoachPlanEntries`): the plan list's and the week's one reader, two round trips deep", () => {
+  it("the Studio plan on the watch and the COROS plan: three statements, the Studio's one beside the COROS plans' read", async () => {
+    const w = wavesOf();
+    db = makeTestDb({ onStatement: w.onStatement });
+    ({ userId, prefs } = await makeTestUser(db));
+    const today = todayInZone(prefs.timezone);
+    const monday = startOfIsoWeek(today);
+    await db.insert(schema.studioPlans).values({
+      id: "sp-on", userId, brief: { startDate: monday, durationWeeks: 8 }, plan: { name: "Full Body Strength", weeks: [] }, version: 1,
+      createdAt: "2026-08-01T00:00:00.000Z", updatedAt: "2026-08-01T00:00:00.000Z",
+    });
+    await db.insert(schema.studioPlanPushes).values({ id: newId(), planId: "sp-on", planVersion: 1, happenDay: monday, sessionTitle: "W1 — Lift", status: "verified", updatedAt: nowInstant() });
+    await db.insert(schema.trainingPlans).values({
+      id: "tp-run", userId, provider: "coros", sourcePlanId: "4738", name: "10K Training Plan", startDate: addDays(today, -21), endDate: addDays(today, 42),
+      status: "active", createdAt: nowInstant(), updatedAt: nowInstant(),
+    });
+    await db.insert(schema.plannedWorkouts).values({
+      id: "wo-run", userId, planId: "tp-run", sourceWorkoutId: "4738:1", title: "Long Run", category: "long", sport: "run", originalPlanDate: addDays(today, 3),
+      lastVerifiedCorosDate: addDays(today, 3), effectiveDate: addDays(today, 3), effectiveTime: "07:00", sourceContentFingerprint: "fp",
+      calendarBlockDurationSeconds: 3600, completionState: "scheduled", createdAt: nowInstant(), updatedAt: nowInstant(),
+    });
+    await Promise.resolve();
+    w.waves.length = 0;
+    const { studioEntries, corosEntries } = await loadNonCoachPlanEntries(db, userId, prefs);
+    expect(studioEntries.map((e) => [e.id, e.status])).toEqual([["sp-on", "active"]]);
+    expect(corosEntries.map((e) => e.id)).toEqual(["tp-run"]);
+    // The Studio plan with its pushes' statuses and whether it was retired, in one statement; the COROS plans, then
+    // their sessions. The two branches run side by side: two round trips, not five.
+    expect(w.waves.flat()).toHaveLength(3);
+    expect(w.waves).toHaveLength(2);
+    // Each statement's own table: its last `from` (a subquery's comes first, in the select list).
+    expect(w.waves[0]!.map((s) => [...s.matchAll(/from "(\w+)"/g)].at(-1)?.[1])).toEqual(["studio_plans", "training_plans"]);
+
+    // Another plan's retirement is not this one's.
+    await db.insert(schema.auditEvents).values({ id: newId(), userId, kind: "studio_plan_retired", detail: { studioPlanId: "sp-older" }, createdAt: nowInstant() });
+    expect((await loadNonCoachPlanEntries(db, userId, prefs)).studioEntries.map((e) => e.id)).toEqual(["sp-on"]);
+    // A retired Studio plan is not listed, from the same one statement.
+    await db.insert(schema.auditEvents).values({ id: newId(), userId, kind: "studio_plan_retired", detail: { studioPlanId: "sp-on" }, createdAt: nowInstant() });
+    await Promise.resolve();
+    w.waves.length = 0;
+    expect((await loadNonCoachPlanEntries(db, userId, prefs)).studioEntries).toEqual([]);
+    expect(w.waves.flat()).toHaveLength(3);
   });
 });
 

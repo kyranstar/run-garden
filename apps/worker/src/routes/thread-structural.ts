@@ -178,16 +178,28 @@ export async function approveStructural(
   });
 }
 
+/** The receipt a plan's retire writes once it is done: a Retire's own. */
+export const RETIRED_RECEIPT = "Plan retired — completed history stays.";
+/** The one receipt of a training line's "Stop this plan", written by its last phase's retire (`stop=last`). */
+export const STOPPED_RECEIPT = "Plan stopped — completed history stays.";
+
 /**
  * The Plan's Retire, a slice a request (§8 §4): its plan's future sessions archived as many as fit, `remaining`
- * until none is left, then the plan retired and the receipt written. Nothing is stored between requests — each one
- * re-reads what is still scheduled — so a Retire left part way is finished by the next tap.
+ * until none is left, then the plan retired and the receipt written (`words`; none when null — a Stop's phase before its
+ * last). Nothing is stored between requests — each one re-reads what is still scheduled — so a Retire left part way is
+ * finished by the next tap.
  */
 export const RETIRE_FIXED = 2 + 1;
 export const RETIRE_FINISH = 1;
 export const RETIRE_CHUNK_BUDGET = REQUEST_BUDGET - RETIRE_FIXED - RETIRE_FINISH;
 
-export async function retireInChunks(c: C, planId: string, prefs: UserPreferences, receipt: (body: string) => Promise<void>): Promise<Response> {
+export async function retireInChunks(
+  c: C,
+  planId: string,
+  prefs: UserPreferences,
+  receipt: (body: string) => Promise<void>,
+  words: string | null = RETIRED_RECEIPT,
+): Promise<Response> {
   const db = c.get("db");
   const userId = c.get("userId");
   const r = await applyStructuralChunk(db, {
@@ -203,6 +215,6 @@ export async function retireInChunks(c: C, planId: string, prefs: UserPreference
   // A tap on "retire" against a plan that is not there is a 404, not a receipt saying it was retired.
   if (r.status === "refused") return c.json({ error: "not_found" }, 404);
   if (r.status === "more") return c.json({ ok: true, remaining: true });
-  await receipt("Plan retired — completed history stays.");
+  if (words !== null) await receipt(words);
   return c.json({ ok: true });
 }

@@ -828,7 +828,7 @@ export function PlanScreen() {
   // A ghost in the week is a suggestion's mark: its tap goes to the suggestion's card on the page.
   const onGhostTap = (proposalId: string) => focusProposal(proposalId, false);
 
-  // ── Jump menu: the active plans' weeks, longest plan numbering the list ─
+  // ── Jump menu: the active plans' weeks, a training line numbering the list (else the longest plan; `jumpWeeksOf`) ─
   const jumpWeeks = useMemo(() => jumpWeeksOf(activePlans, coachPlans.data?.lines), [activePlans, coachPlans.data?.lines]);
   // The plans that can name a week: every one but a retired plan or a one-off container, so a phase that has ended
   // still names its past weeks (training lines §3.6; the brief reads the same set).

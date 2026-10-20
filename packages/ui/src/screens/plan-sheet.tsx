@@ -333,7 +333,8 @@ export function PlanSheet({
     <Sheet open onClose={onClose} title={title} footer={footer}>
       <div className="stack studio-modal">
         {stop?.said}
-        <PlanDetailBody planId={planId} race={readOnly ? "read" : "own"} />
+        {/* Stopped, the race it was building to is not said: the plan no longer goes there. */}
+        <PlanDetailBody planId={planId} race={stop?.stopped ? "none" : readOnly ? "read" : "own"} />
       </div>
       {line ? (
         stop?.dialog
@@ -509,16 +510,18 @@ export function stopCount(line: TrainingLineDto, today: string): number {
 
 /**
  * Stop a line: retire each phase that has not ended, in order — never one that has ended. A retire that fails (or
- * answers not ok) stops the walk there and fails the stop; the phases retired before it stay retired.
+ * answers not ok) stops the walk there and fails the stop; the phases retired before it stay retired. Each retire says
+ * whether it is the walk's last (`stop`): only the last writes a receipt, so a Stop says so once (final review, M3).
  */
 export async function stopLine(
   line: TrainingLineDto,
   today: string,
-  retire: (id: string) => Promise<{ ok: boolean }>,
+  retire: (id: string, stop: "more" | "last") => Promise<{ ok: boolean }>,
 ): Promise<{ stopped: string[] }> {
   const stopped: string[] = [];
-  for (const p of phasesToStop(line, today)) {
-    const res = await retire(p.id);
+  const phases = phasesToStop(line, today);
+  for (const [i, p] of phases.entries()) {
+    const res = await retire(p.id, i === phases.length - 1 ? "last" : "more");
     if (!res.ok) throw new Error("not_stopped");
     stopped.push(p.id);
   }
@@ -566,6 +569,7 @@ function useStopLine(today: string | null) {
   const [error, setError] = useState<string | null>(null);
   const [begun, setBegun] = useState(false);
   const [stoppedCount, setStoppedCount] = useState<number | null>(null);
+  const [stoppedIds, setStoppedIds] = useState<ReadonlySet<string>>(() => new Set());
   const asked = useRef<{ line: TrainingLineDto; today: string } | null>(null);
   const retired = useRef(new Set<string>());
   const saidRef = useRef<HTMLParagraphElement>(null);
@@ -579,13 +583,14 @@ function useStopLine(today: string | null) {
     setBusy(true);
     setError(null);
     try {
-      await stopLine(what.line, what.today, async (id) => {
+      await stopLine(what.line, what.today, async (id, stop) => {
         if (retired.current.has(id)) return { ok: true };
-        const res = await api.coachPlanRetire(id);
+        const res = await api.coachPlanRetire(id, stop);
         if (res.ok) retired.current.add(id);
         return res;
       });
       setAsking(false);
+      setStoppedIds(new Set(retired.current));
       setStoppedCount(count);
     } catch (e) {
       setError(refusalWords(e, STOP_FAILED));
@@ -600,6 +605,8 @@ function useStopLine(today: string | null) {
     /** A press has been made: the sheet keeps the line it is stopping from here on. */
     begun,
     stopped: stoppedCount !== null,
+    /** The phases this Stop retired, once it is done: each says "stopped" (none before). */
+    stoppedIds,
     ask: (line: TrainingLineDto) => {
       if (today === null) return;
       asked.current = { line, today };
@@ -689,7 +696,8 @@ export function LineSheet({
  * plan sheet draws it, as is the current one while it is still ahead (its heading says when it starts); those after it
  * are a heading and dates. Rename is on each phase's heading; the line's race is its last phase's, said once and
  * changed there; Extend and Wind down write the line's end in the coach's box. An ended line, or one just stopped, is
- * read-only.
+ * read-only; once stopped, each phase the Stop retired says "stopped" (never "now", nor when it starts), and the race the
+ * line was building to is no longer said.
  */
 function LinePhases({
   line,
@@ -766,8 +774,8 @@ function LinePhases({
           {formatShortDate(line.startDate)} → {formatShortDate(line.endDate)} · {line.phases.length}{" "}
           {line.phases.length === 1 ? "phase" : "phases"}
         </p>
-        {/* The line's goal is its last phase's race: said once, and changed there. */}
-        {last.planRaceDate ? (
+        {/* The line's goal is its last phase's race: said once, and changed there — and not at all once it is stopped. */}
+        {last.planRaceDate && !stop.stopped ? (
           <PlanRace
             key={`${last.id}:${last.planRaceDate}`}
             planId={last.id}
@@ -780,8 +788,10 @@ function LinePhases({
           {line.phases.map((p, i) => {
             const state = linePhaseState(line, p, today);
             const opened = state === "current" || (state === "ended" && open.has(p.id));
-            // The current phase while it is still ahead is not "now": it says when it starts.
-            const ahead = state === "current" && today < p.startDate;
+            const stopped = stop.stoppedIds.has(p.id);
+            // The current phase while it is still ahead is not "now": it says when it starts — unless it was stopped.
+            const ahead = state === "current" && today < p.startDate && !stopped;
+            const where = stopped ? " · stopped" : state === "ended" ? " · ended" : state === "current" ? " · now" : "";
             const heading = (
               <>
                 <span className="line-phase-name">
@@ -790,7 +800,7 @@ function LinePhases({
                 <span className="line-phase-dates faint num">
                   {ahead
                     ? `Starts ${formatShortDate(p.startDate)} · ends ${formatShortDate(p.endDate)}`
-                    : `${formatShortDate(p.startDate)} → ${formatShortDate(p.endDate)}${state === "ended" ? " · ended" : state === "current" ? " · now" : ""}`}
+                    : `${formatShortDate(p.startDate)} → ${formatShortDate(p.endDate)}${where}`}
                 </span>
               </>
             );

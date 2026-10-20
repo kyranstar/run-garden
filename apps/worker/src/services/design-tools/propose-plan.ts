@@ -66,7 +66,7 @@ import { capInWords, isErr, mainRunIdOf, parseAct, prose } from "./act-common.js
 import { designProposalId, upsertProposal } from "./propose.js";
 import { planConditionFindings, planOffWatchNote, type PlanSession } from "./plan-checks.js";
 import { parsedArray, parsedJson, readAthlete, refuse, untrusted } from "./read-common.js";
-import { CONTINUE_LINE } from "./read-plans.js";
+import { CONTINUE_LINE, STOPPED } from "./read-plans.js";
 import { lastPhaseOf, lineBlockOf, LOOSE_PLAN_ID_PREFIX } from "../coach-plans.js";
 import type { DesignTool, ToolErr, ToolOk } from "./types.js";
 
@@ -264,7 +264,7 @@ interface PlanRow {
  */
 function endedRefusal(plan: PlanRow, kind: PlanStructureChange["kind"], phases: LineBlock[], today: string): ToolErr {
   if (plan.status === "retired") {
-    return refuse("not_running", "The athlete stopped this plan (retired).", "Leave it stopped: propose a new plan (createPlan) only if the athlete asks for one.");
+    return refuse("not_running", STOPPED.why, STOPPED.fix);
   }
   const when = plan.status === "active" || plan.status === "draft" ? `ended on ${plan.end}` : `has ended (${plan.status})`;
   const line = linesOf(phases, today).find((l) => l.phases.some((p) => p.id === plan.id));

@@ -1,6 +1,6 @@
 import { useRef, useState } from "react";
 import type { CoachPlanDto, PlanWeekResponse, RaceHubResponse, WorkoutDto } from "@rg/api-client";
-import { addDays, humanizeWorkoutTitle, linesOf, startOfIsoWeek, weekNaming, type LineBlock, type TrainingLine } from "@rg/domain";
+import { addDays, humanizeWorkoutTitle, linesOf, phaseWeekOf, startOfIsoWeek, weekNaming, type LineBlock, type TrainingLine } from "@rg/domain";
 import { dayOfMonth, formatMinutes, monthTitle } from "../components.js";
 import { IconAlert, IconCheck, IconClock } from "../icons.js";
 import type { PendingGhost } from "./coach-panel.js";
@@ -108,11 +108,11 @@ export function weekTitle(weekStart: string, today: string): string {
   return weekRangeLabel(weekStart);
 }
 
-/** A coach block's own week of `weekStart`, as the server counts a block's weeks (Monday to Monday from its first). */
+/** A coach block's own week of `weekStart`, by the one week counter (`phaseWeekOf`: the brief and the plan list's row
+ * count the same). */
 function blockWeekOf(p: Pick<CoachPlanDto, "startDate" | "endDate">, weekStart: string): string {
-  const w1 = startOfIsoWeek(p.startDate);
-  const weeks = (to: string) => Math.round((Date.parse(`${to}T12:00:00Z`) - Date.parse(`${w1}T12:00:00Z`)) / (7 * 86_400_000)) + 1;
-  return `week ${weeks(weekStart)} of ${weeks(startOfIsoWeek(p.endDate))}`;
+  const { week, of } = phaseWeekOf(p, weekStart);
+  return `week ${week} of ${of}`;
 }
 
 type WeekPlanBlock = Pick<CoachPlanDto, "id" | "name" | "discipline" | "raceDate" | "startDate" | "endDate" | "source"> &
@@ -139,9 +139,9 @@ function lineBlockOfDto(b: WeekPlanBlock): LineBlock {
  *  - The MAIN group: the one holding the most of the week's sessions (`week`'s rows by their plan); a tie to the run
  *    line with a race, then the earlier start. A group is a training line or a plan of its own (Studio, COROS). Inside
  *    a line the phase holding the most sessions names the week; a tie to the later start.
- *  - Its own count: a coach block's, counted from its own dates as the server counts a block's weeks — never the count
- *    the week's read gives, which is the longest block's. A watch plan's (or the Studio's) week isn't one the read
- *    gives: none.
+ *  - Its own count: a coach phase's own week of it, by the one week counter (`phaseWeekOf`, ISO weeks from the week of
+ *    its first day) — the count the week brief gives for the phase it names, and the plan list's row's. A watch plan's
+ *    (or the Studio's) week isn't one the brief gives: none.
  *  - `planMore`: the other groups holding the week ("+1"); a line's own phases are never one.
  *  - `lines`: as the plans read answers them; absent, worked out from the coach blocks.
  *  - None holding it: no name; the count as the read gives it (`planWeekOf` undefined).
@@ -172,9 +172,10 @@ export function weekPlan(
 }
 
 /**
- * The week-jump menu: the plans' weeks, the longest span numbering the list. A coach phase's span is its whole line's
- * (a line's second phase carries on the count from the line's first phase, never "wk 1" again); a Studio or COROS plan's
- * is its own. With no lines (an older payload) a phase counts from its own start.
+ * The week-jump menu: the plans' weeks, numbered by a training line when one holds any of them (spec §3.6: weeks
+ * within the line, counted from its first phase's week — a second phase carries on the count, never "wk 1" again; the
+ * longest line when there are several), else by the longest plan. A coach phase's span is its whole line's; a Studio or
+ * COROS plan's is its own. With no lines (an older payload) a phase counts from its own start.
  */
 export function jumpWeeksOf(
   plans: ReadonlyArray<Pick<CoachPlanDto, "id" | "startDate" | "endDate" | "source">>,

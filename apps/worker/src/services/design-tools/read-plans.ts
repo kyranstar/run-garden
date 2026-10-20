@@ -7,14 +7,19 @@
  * down or retires it; a watch plan's sessions are moved, skipped or eased with adjust_plan, a programme is the athlete's
  * own: its `settings` — days, weekly goal, minutes, block length, modes, care (each switched-on condition's with care, on
  * or off) — change with change_programme; the Studio plan is the Studio's (the newest, as the plan list shows it:
- * `studioPlanEntryOf`). A block that ended in the last ENDED_DAYS days is listed too, never changeable: its line goes on
- * with a next phase.
+ * `studioPlanEntryOf`). A block whose last day is at most ENDED_DAYS days back is listed whatever its status, never
+ * changeable once it has ended or once the athlete stopped it (retired).
  *
  * TRAINING LINES (training lines §3.1, §3.7): the blocks read are grouped as the plan list groups them (@rg/domain
- * `linesOf`): `lines`, each its sport's name and its phases in order (id, name, dates, ended or not), its end and its
- * goal race. A new block starting within a week of a line's last phase joins it: the answer says so once beside the
- * lines (`continueLine`, CONTINUE_LINE — the chip's "Plan what comes after my running plan" reads it while the line's
- * last phase still runs), and so does an ended block's `why`.
+ * `linesOf`): `lines`, each its sport's name and its phases in order (id, name, dates, ended or not), its end, its
+ * `last` phase (the one its end is: what "Extend / Wind down my running plan" acts on) and its goal race. Said once
+ * beside the lines: a new block starting within a week of a line's last phase joins it (`continueLine`, CONTINUE_LINE —
+ * the chip's "Plan what comes after my running plan" reads it while the line's last phase still runs), and a line is
+ * extended or wound down through its last phase (`extendLine`, EXTEND_LINE).
+ *
+ * A block that may not change says what may, in `why` (as propose_plan's refusal does, `endedRefusal`): one the athlete
+ * stopped stays stopped (STOPPED); one that ended while its line goes on names the phase it goes on in and, for an
+ * extend or a wind-down, the line's last phase; one whose line has ended is continued by a next phase (CONTINUE_LINE).
  *
  * Names are the athlete's, the coach's or an import's words, and a shape week's volume and key sessions the coach's:
  * marked. One statement: the athlete with the plans, their weeks and next sessions, and the newest Studio plan with its
@@ -24,8 +29,8 @@
 import { sql, type SQL } from "drizzle-orm";
 import { z } from "zod";
 import { auditEvents, coachPlans, coachPlanWeeks, plannedWorkouts, programs, studioPlanPushes, studioPlans, trainingPlans } from "@rg/database";
-import { adaptiveConfigSchema, addDays, linesOf, planEnded } from "@rg/domain";
-import { lineBlockOf, LOOSE_PLAN_ID_PREFIX, studioPlanEntryOf, studioPlanOnWatch } from "../coach-plans.js";
+import { adaptiveConfigSchema, addDays, linesOf, planEnded, type TrainingLine } from "@rg/domain";
+import { lastPhaseOf, lineBlockOf, LOOSE_PLAN_ID_PREFIX, studioPlanEntryOf, studioPlanOnWatch } from "../coach-plans.js";
 import { STUDIO_PLAN_RETIRED } from "../studio-push.js";
 import { utf8Bytes } from "../utf8.js";
 import type { DesignTool } from "./types.js";
@@ -85,15 +90,35 @@ const KIND_WORDS = { block: "coach block", programme: "programme", watch: "watch
 
 /** What an ended block says comes next (training lines §3.7): a next phase, which joins its line. */
 export const CONTINUE_LINE = "To continue a line, propose its next phase starting the day after the line's last phase ends; it joins the line.";
+/** Which phase a line's Extend and Wind down act on (training lines §3.3): said once beside the lines, as `last` names it. */
+export const EXTEND_LINE = "Extend or wind down a line through its last phase.";
+/** A block the athlete stopped (retired): read_plans' `why` and propose_plan's refusal, in the same words. */
+export const STOPPED = {
+  why: "The athlete stopped this plan (retired).",
+  fix: "Leave it stopped: propose a new plan (createPlan) only if the athlete asks for one.",
+} as const;
 
-/** Why the coach may not change a plan's structure, in its words. */
-function whyNot(r: Row, today: string): string | null {
+/** Why the coach may not change a plan's structure, in its words. `lineOf`: each block's line, by its id. */
+function whyNot(r: Row, today: string, lineOf: ReadonlyMap<string, TrainingLine>): string | null {
   if (r.kind === "watch") return "a watch plan: move, skip or ease its sessions with adjust_plan; its structure is the watch's";
   if (r.kind === "programme") return "the athlete's own programme: its settings change with change_programme; skip or move one session with adjust_plan";
   if (r.kind === "studio") return "the athlete's Studio plan: its structure is the Studio's; skip or move one of its sessions with adjust_plan, revise one with propose_workout";
+  if (r.status === "retired") return `${STOPPED.why} ${STOPPED.fix}`;
+  // Changeable while it runs: active, or a draft of the coach's (as propose_plan takes them) whose last day is ahead.
+  const running = r.status === "active" || r.status === "draft";
   const ended = r.end !== null && planEnded(r.end, today);
-  if (r.status !== "active" || ended) return `it has ended (${r.status === "active" ? `on ${r.end}` : r.status}). ${CONTINUE_LINE}`;
-  return null;
+  if (running && !ended) return null;
+  const when = `it has ended (${running ? `on ${r.end}` : r.status})`;
+  // Its line goes on: the phase running now (or next) is the one to change, and the line's end is its last phase.
+  const line = lineOf.get(r.id);
+  const goesOn = line && !line.ended ? line.phases.find((p) => p.id === line.currentPhaseId && p.id !== r.id) : undefined;
+  if (line && goesOn) {
+    const last = lastPhaseOf(line);
+    return last.id === goesOn.id
+      ? `${when}; its line goes on in ${goesOn.id}, its last phase: change, extend or wind down that phase instead.`
+      : `${when}; its line goes on in ${goesOn.id}: change that phase instead. To extend or wind down the line, its last phase is ${last.id}.`;
+  }
+  return `${when}. ${CONTINUE_LINE}`;
 }
 
 /** The newest Studio plan as the read gives it (one JSON object, or null), as the plan list shows it — or null when the
@@ -120,7 +145,7 @@ interface Caring {
 }
 
 /** One plan as the model reads it, within `room`. */
-function planOf(r: Row, today: string, room: Room, caring: readonly Caring[]): Record<string, unknown> {
+function planOf(r: Row, today: string, room: Room, caring: readonly Caring[], lineOf: ReadonlyMap<string, TrainingLine>): Record<string, unknown> {
   const out: Record<string, unknown> = { id: r.id, kind: KIND_WORDS[r.kind], name: untrusted(r.name) };
   if (r.discipline) out.discipline = r.discipline;
   out.status = r.status;
@@ -177,7 +202,7 @@ function planOf(r: Row, today: string, room: Room, caring: readonly Caring[]): R
         title: untrusted(typeof n.title === "string" ? n.title : ""),
       };
     });
-  const why = whyNot(r, today);
+  const why = whyNot(r, today, lineOf);
   out.coachMayChange = why === null;
   if (why) out.why = why;
   return out;
@@ -191,7 +216,10 @@ export const readPlans: DesignTool = {
     "The athlete's plans — the coach's blocks, their programmes and Studio plan, the watch's plans — each with its id, dates, race day, firm and shape weeks, next sessions, and whether you may change its structure (propose_plan).",
   inputSchema: { type: "object", properties: {}, additionalProperties: false },
   statementCost: 1,
-  cpuWeight: 0.3,
+  // An owner-shaped account — a four-phase line with its weeks and sessions, three buckets, a 24-week Studio plan with
+  // its pushes — measured 0.55–0.66 ms (the final review) and 0.26 (the CPU bench's step 8, its first call 1.2): 0.8
+  // covers both, with room for the answer's shortening rounds.
+  cpuWeight: 0.8,
   roles: READ_ROLES,
   async run(ctx, raw) {
     const p = parseInput(input, raw, "no fields");
@@ -237,21 +265,26 @@ export const readPlans: DesignTool = {
     const studio = studioRowOf(extra.studio, today);
     const rows = [...blocks, ...parsedArray(extra.programmes), ...(studio ? [studio] : []), ...parsedArray(extra.watch)] as Row[];
     // The blocks as the plan list groups them: lines, each with its phases (a retired block is none).
-    const lines = linesOf(
+    const trainingLines = linesOf(
       blocks.flatMap((b) => (b.start && b.end && b.discipline ? [lineBlockOf({ ...b, discipline: b.discipline, startDate: b.start, endDate: b.end, raceDate: b.race })] : [])),
       today,
-    ).map((l) => ({
+    );
+    const lineOf = new Map(trainingLines.flatMap((l) => l.phases.map((p) => [p.id, l] as const)));
+    const lines = trainingLines.map((l) => ({
       name: l.name,
       discipline: l.discipline,
       phases: l.phases.map((p) => ({ id: p.id, name: untrusted(p.name), start: p.startDate, end: p.endDate, ended: planEnded(p.endDate, today) })),
       end: l.endDate,
+      last: lastPhaseOf(l).id,
       goalRace: l.goalRaceDate,
     }));
-    // How to continue a line, said once beside the lines — the chip's flow ("Plan what comes after my running plan")
-    // reads it while the line's last phase still runs, before anything has ended.
-    const linesData = lines.length > 0 ? { lines, continueLine: CONTINUE_LINE } : { lines };
+    // Said once beside the lines (and weighed with them): how to continue a line — the chip's flow ("Plan what comes
+    // after my running plan") reads it while the line's last phase still runs, before anything has ended — and that a
+    // line is extended or wound down through its last phase ("Extend my running plan", while the line is live).
+    const linesData = lines.length > 0 ? { lines, continueLine: CONTINUE_LINE, extendLine: EXTEND_LINE } : { lines };
     // The coach's own running blocks first (the ones it may work on), then the others as read.
-    const ordered = [...rows].sort((a, b) => Number(whyNot(a, today) !== null) - Number(whyNot(b, today) !== null));
+    const mayNot = (r: Row) => Number(whyNot(r, today, lineOf) !== null);
+    const ordered = [...rows].sort((a, b) => mayNot(a) - mayNot(b));
     // Shortened until the answer fits: shape weeks halved down to one, then one next session each, then no shape weeks
     // listed (all counted) — and only then the last plans left out, counted (`morePlans`).
     const size = (ps: unknown[]) => utf8Bytes(JSON.stringify({ provenance: { source: SOURCE, asOf: ctx.now.toISOString() }, missing: athlete.missing, data: { plans: ps, ...linesData } }));
@@ -260,7 +293,7 @@ export const readPlans: DesignTool = {
     rooms.push({ shapes: 1, next: 1 }, { shapes: 0, next: 1 });
     let plans: Array<Record<string, unknown>> = [];
     for (const room of rooms) {
-      plans = ordered.map((r) => planOf(r, today, room, caring));
+      plans = ordered.map((r) => planOf(r, today, room, caring, lineOf));
       if (size(plans) <= RESULT_BUDGET_BYTES) break;
     }
     let left = 0;

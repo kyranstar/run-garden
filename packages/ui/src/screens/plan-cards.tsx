@@ -1,6 +1,6 @@
 import { useState } from "react";
 import type { CoachPlanDto, PlanProgression, ProgramDto, ProgramsResponse, TrainingLineDto } from "@rg/api-client";
-import { planEnded } from "@rg/domain";
+import { phaseWeekOf, planEnded } from "@rg/domain";
 import { formatShortDate, type Units } from "../components.js";
 import { ProgramSettingsSheet } from "../components/program-settings-sheet.js";
 import { useCoach } from "./studio/coach-ask.js";
@@ -51,14 +51,13 @@ export type PlanEntry =
   | { kind: "line"; line: TrainingLineDto }
   | { kind: "plan"; plan: CoachPlanDto };
 
-const DAY_MS = 86_400_000;
-const daysBetween = (a: string, b: string): number => Math.round((Date.parse(`${b}T12:00:00Z`) - Date.parse(`${a}T12:00:00Z`)) / DAY_MS);
-
-/** A block's week by the calendar: 0 before it starts, else which of its weeks `today` falls in. */
+/** A block's week by the one week counter (`phaseWeekOf`, ISO weeks — the week's line and the brief count the same): 0
+ * before its first day, else which of its weeks `today` falls in. */
 function blockWeek(plan: { startDate: string; endDate: string }, today: string): { into: number; total: number } {
-  const total = Math.max(1, Math.round(daysBetween(plan.startDate, plan.endDate) / 7));
+  const { week, of } = phaseWeekOf(plan, today);
+  const total = Math.max(1, of);
   if (today < plan.startDate) return { into: 0, total };
-  return { into: Math.min(total, Math.floor(daysBetween(plan.startDate, today) / 7) + 1), total };
+  return { into: Math.min(total, week), total };
 }
 
 /** A block's state in a few plain words: a plan's row, and a one-phase line's row. */
