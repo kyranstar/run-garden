@@ -272,6 +272,18 @@
     Arial, sans-serif;
   --font-display: "Iowan Old Style", "Palatino Linotype", Palatino, Georgia, serif;
 
+  /* The body map's fills (Growth's "Your body"; the figure and its swatches both read them): the silhouette, then each
+     level a clear step further from the card. The mixes resolve against each theme's own tokens, and one set of
+     percentages serves both: measured on the card, every adjacent pair — silhouette → not worked → a little →
+     steadily → a lot — is at least 1.27:1 in light (OKLab L steps ≥ 0.079) and 1.36:1 in dark (≥ 0.084). Before,
+     "a little" sat 1.25:1 / 1.32:1 off "not worked", and "not worked" 1.09:1 / 1.12:1 off the silhouette. The
+     silhouette sits only 1.04:1 / 1.05:1 off the card: a ground — its outline draws the body. */
+  --body-sil: color-mix(in srgb, var(--ink-faint) 4%, var(--bg-raised));
+  --body-lvl-0: color-mix(in srgb, var(--ink-faint) 27%, var(--bg-raised));
+  --body-lvl-1: color-mix(in srgb, var(--green) 46%, var(--bg-raised));
+  --body-lvl-2: color-mix(in srgb, var(--green) 72%, var(--bg-raised));
+  --body-lvl-3: var(--green);
+
   color-scheme: light;
 }
 
@@ -6264,7 +6276,7 @@ button.session-chip {
 }
 /* What is no area: a step quieter than an area at rest, with one soft edge round the whole body. */
 .body-sil {
-  fill: color-mix(in srgb, var(--ink-faint) 7%, var(--bg-raised));
+  fill: var(--body-sil);
 }
 .body-sil-edge {
   fill: none;
@@ -6287,18 +6299,19 @@ button.session-chip {
   font-size: 10px;
   text-anchor: middle;
 }
-/* At rest: a quiet grey a step off the card, in either theme (the sunken ground went near-black in the dark). */
+/* At rest: a quiet grey a step off the silhouette, in either theme (the sunken ground went near-black in the dark);
+   then each level a step further (the --body-* tokens, measured in both themes). */
 .body-area.body-lvl-0 {
-  fill: color-mix(in srgb, var(--ink-faint) 16%, var(--bg-raised));
+  fill: var(--body-lvl-0);
 }
 .body-area.body-lvl-1 {
-  fill: color-mix(in srgb, var(--green) 28%, var(--bg-raised));
+  fill: var(--body-lvl-1);
 }
 .body-area.body-lvl-2 {
-  fill: color-mix(in srgb, var(--green) 60%, var(--bg-raised));
+  fill: var(--body-lvl-2);
 }
 .body-area.body-lvl-3 {
-  fill: var(--green);
+  fill: var(--body-lvl-3);
 }
 /* The quiet area: a dashed edge, in ink — a hint, never an alarm. */
 .body-area.is-quiet {
@@ -6356,16 +6369,17 @@ button.session-chip {
   height: 0.75rem;
   border: 1px solid var(--border-strong);
   border-radius: var(--radius-xs);
-  background: color-mix(in srgb, var(--ink-faint) 16%, var(--bg-raised));
+  /* The figure's own fills, so the legend and "By area" say exactly what the figure shows. */
+  background: var(--body-lvl-0);
 }
 .body-swatch.body-lvl-1 {
-  background: color-mix(in srgb, var(--green) 28%, var(--bg-raised));
+  background: var(--body-lvl-1);
 }
 .body-swatch.body-lvl-2 {
-  background: color-mix(in srgb, var(--green) 60%, var(--bg-raised));
+  background: var(--body-lvl-2);
 }
 .body-swatch.body-lvl-3 {
-  background: var(--green);
+  background: var(--body-lvl-3);
 }
 /* A disclosure under a section ("By area", "2 completed") keeps its own width, at the start. */
 .growth-sect > .dash-more {
