@@ -1024,9 +1024,11 @@ export async function writeRetimed(
   // A create not yet run carries the session it was queued with: it goes with the new one — ONLY WHILE IT IS STILL
   // `queued` (review-L minor 1; the guard is in the WHERE, and the rows it changed are counted). A create the lane has
   // claimed already carries the old session and lands it; nothing is rewritten behind the athlete's back for it. The
-  // fallback is the app's open claim recorded above (`coach_adjust`): a create's verify never closes it (only a verified
-  // rewrite does), so once the old session lands the row reads "Older on watch" (`content_stale`) and Send is the
-  // athlete's — safer than a rewrite queued after a verify no request is there to see.
+  // fallback is the app's open claim recorded above (`coach_adjust`, this session's fingerprint): a create's verify
+  // closes a claim only on the session it carried (coros-write-cloud.ts; review-L re-review I1), so the create brought
+  // up to date answers it, and the claimed one, landing the old session, leaves it open — the row reads "Older on
+  // watch" (`content_stale`) and Send is the athlete's: safer than a rewrite queued after a verify no request is there
+  // to see.
   const retargeted = await db
     .update(corosWriteJobs)
     .set({ payload: sql`json_set(${corosWriteJobs.payload}, '$.session', json(${JSON.stringify(watch)}))`, expectedContentFingerprint: fingerprint(watch), updatedAt: v.now })

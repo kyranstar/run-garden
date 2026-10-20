@@ -858,6 +858,9 @@ export function refusalWords(r: { error: string; cause?: string }): string {
       return "A restore is running — try again once it finishes.";
     case "race":
       return "A race day stays as it is.";
+    // A length re-timed by the rule whose session changed since its card was drawn (review-L): the server's why follows.
+    case "changed_since_suggested":
+      return "This session changed since the coach suggested it — ask again.";
     case "not_editable":
       switch (r.cause) {
         case "programme":

@@ -1,6 +1,6 @@
 import { ZodError } from "zod";
 import { and, desc, eq, exists, inArray, isNotNull, isNull, ne, notInArray, or, sql } from "drizzle-orm";
-import { corosWriteJobs, dailyHealth, plannedWorkouts } from "@rg/database";
+import { corosWriteJobs, dailyHealth, plannedWorkouts, syncIntents } from "@rg/database";
 import {
   APP_AUTHORED_ORIGINS,
   appAuthoredRow,
@@ -454,6 +454,26 @@ export async function executeCloudJobs(
               updatedAt: done,
             })
             .where(eq(plannedWorkouts.id, spec.workoutId));
+          // THE CREATE LANDED THE SESSION THE APP CLAIMS (review-L re-review I1). A run re-timed while its create was still
+          // queued brings the create up to the new session and claims its content (`coach_adjust`, the session's
+          // fingerprint as its payload); a create's verify closed no claim, so the row read "Older on watch" while the
+          // watch held the current version. An open content claim on exactly the session this create carried — its
+          // fingerprint the one the job was queued (or brought up to date) with, read with the payload this drain pushed —
+          // is answered here. A claim on another session (the drain read the create before the re-time, and landed the
+          // older one) stays open, and the row still says so. One statement.
+          await db
+            .update(syncIntents)
+            .set({ resolvedAt: done })
+            .where(
+              and(
+                eq(syncIntents.userId, userId),
+                eq(syncIntents.targetId, spec.workoutId),
+                eq(syncIntents.kind, "content"),
+                isNull(syncIntents.resolvedAt),
+                isNull(syncIntents.supersededBy),
+                sql`json_extract(${syncIntents.payload}, '$.fingerprint') = ${job.expectedContentFingerprint}`,
+              ),
+            );
           // COROS STORED A DESIGNED RUN DIFFERENTLY (review-2 I2): the job stays
           // `verified` — the program is ours, on that day, and every later move,
           // ease, Undo and removal proves ownership by a verified create's stamp

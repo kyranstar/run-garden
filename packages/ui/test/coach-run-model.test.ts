@@ -290,6 +290,12 @@ describe("the plan's refusals, in plain words", () => {
     expect(refusalWords({ error: "something_new" })).toBe("The plan couldn't take it.");
   });
 
+  it("a change whose session changed since the coach suggested it: its own words, then the server's why (review-L)", () => {
+    const why = "A session it re-times has changed since it was suggested, so it is as it was.";
+    expect(refusalWords({ error: "changed_since_suggested" })).toBe("This session changed since the coach suggested it — ask again.");
+    expect(refusedLine({ error: "changed_since_suggested", why })).toEqual({ lead: "This session changed since the coach suggested it — ask again.", detail: why });
+  });
+
   it("the server's why joins the words only where it adds to them", () => {
     expect(refusedLine({ error: "past_date", why: "Wed 13 May has passed." })).toEqual({ lead: "Its day has passed.", detail: null });
     // The words say it all: the server's own ("09:45 today has passed.") isn't said again.
