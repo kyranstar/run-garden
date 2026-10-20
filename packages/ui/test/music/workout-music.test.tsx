@@ -24,7 +24,8 @@ import { EQUIPMENT_IDS, EXERCISES, TMJ } from "@rg/exercise-library";
 import { deriveDoc, quickStartDoc, QUICK_START_KINDS } from "@rg/workout";
 import { MUSIC_QUERY, setDockFor, WorkoutMusicLine } from "../../src/music/dock.js";
 import { musicAtStart, sessionMusic, WorkoutMusicRow } from "../../src/music/workout-music.js";
-import { makeDockController } from "../../src/music/controller.js";
+import { makeDockController, SLOW_LINE } from "../../src/music/controller.js";
+import { BACKOFF_FIRST_MS, BACKOFF_KEY, makeBackoff } from "../../src/music/backoff.js";
 import { makeSpotify } from "../../src/music/spotify.js";
 import { AUTOPLAY_KEY } from "../../src/music/autoplay-setting.js";
 import { openOfflineDb, type OfflineDb } from "../../src/offline/idb.js";
@@ -108,9 +109,15 @@ describe("what a session plays", () => {
 
 describe("the mobility workouts, once the playlists are tagged (the backfill)", () => {
   it("every one plays the playlist good for mobility: each quick start, a planned mobility session, a programme's in recovery mode, a calm template", () => {
-    const data = dto({ music: { shortcuts: [gym, { ...spa, goodFor: undefined }] } });
-    // Before the tagging: nothing suits it.
-    expect(sessionMusic(data, { workoutId: "w1", category: "yoga", calm: false })!.shortcut).toBeNull();
+    // Before any tagging — the owner's old spa slot exactly as stored, the dock never opened (review-M I1): its words
+    // say what it suits, as the tagging's would.
+    const old = { id: "spa", label: "Spa", uri: spa.uri, shuffle: true };
+    const untagged = dto({ music: { shortcuts: [gym, old] } });
+    expect(sessionMusic(untagged, { workoutId: "w1", category: "yoga", calm: false })!.shortcut).toEqual(old);
+    expect(sessionMusic(untagged, { workoutId: "w1", category: "yoga", calm: true })!.shortcut).toEqual(old);
+    expect(sessionMusic(untagged, { workoutId: "w1", category: "strength", calm: false })!.shortcut).toBe(gym);
+    expect(sessionMusic(dto({ music: { shortcuts: [old] } }), { workoutId: "w1", category: "strength", calm: false })!.shortcut).toBeNull();
+    expect(musicAtStart(client(untagged), { workoutId: "w1", category: "yoga", calm: false })).toEqual({ id: "spa", label: "Spa", uri: spa.uri });
     const tagged = dto({ music: { shortcuts: [gym, spa] } });
     for (const kind of QUICK_START_KINDS) {
       const made = quickStartDoc(kind, EXERCISES, { activeProfiles: [TMJ], day: null, focusRefs: [], recentIds: [], pinned: [], excluded: [], equipment: EQUIPMENT_IDS, seed: 1 } as never);
@@ -201,11 +208,12 @@ describe("Start keeps the session's music with it", () => {
 describe("the player, as the session begins", () => {
   const target = { id: "spa", label: "Spa", uri: spa.uri };
 
-  function dockWith(devices: Array<{ id: string; name: string; type: string; supports_volume: boolean }>) {
+  function dockWith(devices: Array<{ id: string; name: string; type: string; supports_volume: boolean }>, now: () => number = () => 0) {
     const fake = fakeSpotify({ devices });
     fake.state.playlists.set(SPA, { name: "Spa", owned: false, uris: [] });
     const opened: string[] = [];
-    const spotify = makeSpotify({ token: fakeTokens(fake).token, fetch: fake.fetch, now: () => 0 });
+    const scheduled: Array<{ fn: () => void; ms: number }> = [];
+    const spotify = makeSpotify({ token: fakeTokens(fake, { now }).token, fetch: fake.fetch, now });
     const dock = makeDockController({
       spotify,
       saveMusic: async (m) => m,
@@ -213,15 +221,53 @@ describe("the player, as the session begins", () => {
       prefer: () => "Smartphone",
       random: () => 0,
       openLink: (url) => (opened.push(url), true),
-      now: () => 0,
+      now,
       sleep: async () => undefined,
-      schedule: () => () => undefined,
+      schedule: (fn, ms) => (scheduled.push({ fn, ms }), () => undefined),
       isVisible: () => true,
       newId: () => "x",
     });
     const plays = () => fake.calls.filter((c) => c.path === "/me/player/play");
-    return { dock, fake, opened, plays };
+    return { dock, fake, opened, plays, spotify, scheduled };
   }
+
+  it("its line's room is kept from the first draw, so a line that comes later moves nothing (M8)", async () => {
+    const { dock, fake } = dockWith([]);
+    let release: () => void = () => undefined;
+    fake.script("GET /me/player/devices", { status: 200, body: { devices: [] }, gate: new Promise<void>((r) => (release = r)) });
+    const qc = client(dto());
+    setDockFor(qc, dock);
+    mount(createElement(WorkoutMusicLine, { session: "perf-1", fresh: true, target }), qc);
+    const kept = document.querySelector(".player-music");
+    expect(kept).not.toBeNull();
+    expect(kept!.textContent).toBe("");
+    release();
+    await settle();
+    expect(document.querySelector(".player-music")).toBe(kept);
+    expect(kept!.textContent).toBe("Open Spotify to play SpaPlay");
+  });
+
+  it("asked to slow down at Start: the calm line, then Play once the backoff has run out (M9)", async () => {
+    let clock = 0;
+    const { dock, spotify, scheduled, plays } = dockWith([phone], () => clock);
+    spotify.backoff.hit(null);
+    const qc = client(dto());
+    setDockFor(qc, dock);
+    mount(createElement(WorkoutMusicLine, { session: "perf-1", fresh: true, target }), qc);
+    await settle();
+    expect(document.querySelector(".player-music")!.textContent).toBe(SLOW_LINE);
+    expect(button("Play")).toBeUndefined();
+    // When the backoff runs out (the dock's own timer), Play is offered.
+    const later = scheduled.find((s) => s.ms === BACKOFF_FIRST_MS)!;
+    expect(later).toBeDefined();
+    clock += BACKOFF_FIRST_MS;
+    act(() => later.fn());
+    expect(document.querySelector(".player-music")!.textContent).toBe("Ready to play SpaPlay");
+    await act(async () => button("Play")!.click());
+    await settle();
+    expect(plays()).toHaveLength(1);
+    expect(document.querySelector(".player-music")!.textContent).toBe("");
+  });
   const phone = { id: "phone-1", name: "Phone", type: "Smartphone", supports_volume: false };
 
   it("plays the music once for a session just started here, connected and the setting on — the line says nothing", async () => {
@@ -306,6 +352,23 @@ describe("the player, as the session begins", () => {
     await open();
     // The same session, resumed.
     expect(seen.at(-1)).toEqual({ session: first.session, fresh: false, target });
+  });
+});
+
+describe("two tabs (review-M M6)", () => {
+  it("a backoff another tab begins reaches this one through the storage event, and its end too", () => {
+    let clock = 5_000;
+    const here = makeBackoff({ now: () => clock });
+    expect(here.remaining()).toBe(0);
+    const raw = JSON.stringify({ until: clock + BACKOFF_FIRST_MS, step: 1 });
+    localStorage.setItem(BACKOFF_KEY, raw);
+    window.dispatchEvent(new StorageEvent("storage", { key: BACKOFF_KEY, newValue: raw }));
+    expect(here.remaining()).toBe(BACKOFF_FIRST_MS);
+    window.dispatchEvent(new StorageEvent("storage", { key: "another-key", newValue: null }));
+    expect(here.remaining()).toBe(BACKOFF_FIRST_MS);
+    clock += BACKOFF_FIRST_MS;
+    window.dispatchEvent(new StorageEvent("storage", { key: BACKOFF_KEY, newValue: null }));
+    expect(here.hit(null)).toBe(BACKOFF_FIRST_MS);
   });
 });
 

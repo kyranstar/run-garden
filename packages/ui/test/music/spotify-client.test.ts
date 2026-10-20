@@ -181,6 +181,91 @@ describe("the client", () => {
     expect([a!.retryAfterMs, b!.retryAfterMs]).toEqual([BACKOFF_FIRST_MS, BACKOFF_FIRST_MS]);
   });
 
+  it("a success that was already out when a 429 began the backoff never clears it — the review's parallel probe (I2)", async () => {
+    const { fake, spotify } = setup();
+    let release: () => void = () => undefined;
+    fake.script("GET /me/player/devices", { status: 200, body: { devices: [] }, gate: new Promise<void>((r) => (release = r)) });
+    fake.script("GET /me/player", { status: 429 });
+    // Both go out together (as `playContext` sends devices and the count): the second answers 429 first.
+    const first = spotify.devices();
+    const second = (await spotify.player().catch((e: unknown) => e)) as SpotifyError;
+    expect([second.status, second.retryAfterMs]).toEqual([429, BACKOFF_FIRST_MS]);
+    release();
+    expect(await first).toEqual([]);
+    expect(spotify.backoff.remaining()).toBe(BACKOFF_FIRST_MS);
+    const held = (await spotify.player().catch((e: unknown) => e)) as SpotifyError;
+    expect([held.status, held.reason]).toEqual([429, "BACKOFF"]);
+    expect(fake.calls).toHaveLength(2);
+  });
+
+  it("a deep step survives a straggler too: at 8 min, a late success leaves the wait and the step where they are", async () => {
+    let clock = 0;
+    const backoff = makeBackoff({ now: () => clock, storage: null });
+    for (let i = 0; i < 4; i++) {
+      backoff.hit(null);
+      clock += backoff.remaining();
+    }
+    expect(backoff.hit(null)).toBe(16 * BACKOFF_FIRST_MS);
+    backoff.ok();
+    expect(backoff.remaining()).toBe(16 * BACKOFF_FIRST_MS);
+    clock += backoff.remaining();
+    backoff.ok();
+    expect(backoff.hit(null)).toBe(BACKOFF_FIRST_MS);
+  });
+
+  it("a token the Worker can't refresh (its 502, or no answer) enters the same backoff: the poll stops asking (M5)", async () => {
+    let clock = 1_000_000;
+    let asked = 0;
+    const fake = fakeSpotify();
+    const spotify = makeSpotify({
+      token: async () => {
+        asked += 1;
+        throw new Error("api_502");
+      },
+      fetch: fake.fetch,
+      now: () => clock,
+    });
+    const err = (await spotify.player().catch((e: unknown) => e)) as SpotifyError;
+    expect([err.status, err.reason, err.retryAfterMs]).toEqual([429, "TOKEN", BACKOFF_FIRST_MS]);
+    for (let i = 0; i < 6; i++) {
+      clock += 5000;
+      if (clock - 1_000_000 < BACKOFF_FIRST_MS) expect(((await spotify.player().catch((e: unknown) => e)) as SpotifyError).reason).toBe("BACKOFF");
+    }
+    expect(asked).toBe(1);
+    expect(fake.calls).toEqual([]);
+    clock = 1_000_000 + BACKOFF_FIRST_MS;
+    await spotify.player().catch(() => undefined);
+    expect(asked).toBe(2);
+    // Not connected is not a refusal to back off from: it is said as it was (the reconnect line).
+    const reconnect = makeSpotify({ token: async () => ({ connected: false, reason: "reconnect" }), fetch: fake.fetch, now: () => clock });
+    expect(await reconnect.player().catch((e: unknown) => e)).toBeInstanceOf(NotConnected);
+    expect(reconnect.backoff.remaining()).toBe(0);
+  });
+
+  it("a backoff begun in another tab is this tab's too, as it lands in storage; and its end (M6)", () => {
+    let clock = 0;
+    const store = new Map<string, string>();
+    const storage = { getItem: (k: string) => store.get(k) ?? null, setItem: (k: string, v: string) => void store.set(k, v), removeItem: (k: string) => void store.delete(k) };
+    const heard: Array<(raw: string | null) => void> = [];
+    const here = makeBackoff({ now: () => clock, storage, listen: (fn) => heard.push(fn) });
+    const there = makeBackoff({ now: () => clock, storage, listen: () => undefined });
+    expect(here.remaining()).toBe(0);
+    there.hit(null);
+    for (const fn of heard) fn(store.get(BACKOFF_KEY) ?? null);
+    expect(here.remaining()).toBe(BACKOFF_FIRST_MS);
+    // Its step too: the next 429 here is the second step.
+    clock += BACKOFF_FIRST_MS;
+    expect(here.hit(null)).toBe(2 * BACKOFF_FIRST_MS);
+    // Cleared there (a success after it ended): cleared here.
+    clock += 2 * BACKOFF_FIRST_MS;
+    there.ok();
+    for (const fn of heard) fn(null);
+    expect(here.hit(null)).toBe(BACKOFF_FIRST_MS);
+    // Anything unreadable is ignored.
+    for (const fn of heard) fn("{not json");
+    expect(here.remaining()).toBe(BACKOFF_FIRST_MS);
+  });
+
   it("the backoff is kept on the device: a reload finds it, and a success clears it", () => {
     let clock = 0;
     const store = new Map<string, string>();
@@ -193,6 +278,8 @@ describe("the client", () => {
     expect(again.remaining()).toBe(BACKOFF_FIRST_MS - 10_000);
     clock += BACKOFF_FIRST_MS;
     expect(again.hit(null)).toBe(2 * BACKOFF_FIRST_MS);
+    // A success once it has run out (one while it runs was sent before it: I2).
+    clock += 2 * BACKOFF_FIRST_MS;
     again.ok();
     expect(store.has(BACKOFF_KEY)).toBe(false);
     // Unreadable or no storage at all: none.

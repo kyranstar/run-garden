@@ -45,6 +45,7 @@ import {
   workoutDocSchema,
   keyResultMeasureSchema,
   type KeyResultMeasure,
+  type MusicShortcut,
   type WorkoutDoc,
 } from "@rg/domain";
 import { EQUIPMENT_IDS, EXERCISES, LOCATION_PRESETS, MUSCLES, NO_EQUIPMENT_GEAR, REGIONS, type ExerciseRecord } from "@rg/exercise-library";
@@ -402,6 +403,31 @@ export async function readDocAthlete(ctx: ToolContext, o: { placeId?: string; ex
       }),
     ),
   };
+}
+
+// ── A document's music ──────────────────────────────────────────────────────────────────────────────────────────────
+
+/**
+ * A document's `music` names one of the athlete's playlists by its id (the profile block lists them). One named by its
+ * label instead — case aside, matching exactly one playlist — is taken as that one's id; any other name is refused before
+ * the validator, saying which ids to use (review-M M3: a label failed the whole document as `bounds`, a turn lost). No
+ * music, none (`playlist: null`), or a shape the validator judges: left as it is.
+ */
+export function withMusicIds(doc: Record<string, unknown>, shortcuts: readonly MusicShortcut[]): Record<string, unknown> | ToolErr {
+  const music = doc.music;
+  if (!music || typeof music !== "object" || Array.isArray(music)) return doc;
+  const named = (music as { playlist?: unknown }).playlist;
+  if (typeof named !== "string" || shortcuts.some((s) => s.id === named)) return doc;
+  const key = named.trim().toLowerCase();
+  const byLabel = shortcuts.filter((s) => s.label.trim().toLowerCase() === key);
+  if (byLabel.length === 1) return { ...doc, music: { ...music, playlist: byLabel[0]!.id } };
+  return refuse(
+    "unknown_playlist",
+    `music.playlist ${JSON.stringify(named)} is not one of the athlete's playlists.`,
+    shortcuts.length
+      ? `Use one of the listed playlist ids (${shortcuts.map((s) => s.id).join(", ")}), { playlist: null } for none, or leave music out.`
+      : "The athlete has no playlists: leave music out.",
+  );
 }
 
 // ── What a document names beyond the library ────────────────────────────────────────────────────────────────────────

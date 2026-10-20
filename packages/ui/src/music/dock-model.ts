@@ -2,12 +2,13 @@
  * The music dock's pure reads (2026-10-17): the pill's short title, now playing, whether the volume can be set from
  * here, and a playlist's line in the sheet.
  */
-import { MUSIC_GOOD_FOR_LABELS, type MusicShortcut } from "@rg/domain";
+import { goodForOf, MUSIC_GOOD_FOR_LABELS, type MusicShortcut } from "@rg/domain";
 import type { Device, PlayerState } from "./spotify.js";
 
-/** What a playlist suits, in plain words ("Mobility · Winding down"); "" when it is not tagged or suits nothing. */
-export function goodForWords(s: Pick<MusicShortcut, "goodFor">): string {
-  return (s.goodFor ?? []).map((t) => MUSIC_GOOD_FOR_LABELS[t]).join(" · ");
+/** What a playlist suits, in plain words ("Mobility · Winding down"), as the default reads it — its tags, else its words
+ * until it is tagged (`goodForOf`); "" when it suits nothing. */
+export function goodForWords(s: Pick<MusicShortcut, "label" | "name" | "description" | "goodFor">): string {
+  return goodForOf(s).map((t) => MUSIC_GOOD_FOR_LABELS[t]).join(" · ");
 }
 
 /** A track's name as the resting pill shows it: no " - 2011 Remaster" or "(Remastered)", whole words, ≤ max. */

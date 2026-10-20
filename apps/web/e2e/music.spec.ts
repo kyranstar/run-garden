@@ -23,8 +23,8 @@ const BEARER = { authorization: "Bearer fixture-access-token" };
 const SPA_ID = "fxplSpaEditorial000000";
 /** The athlete's own "Stretch" playlist in the stand-in. */
 const STRETCH_ID = "fxplStretch00000000000";
-/** The stand-in's Volume Beta (an album the athlete can read). */
-const BETA_ID = "fxalbbeta0000000000000";
+/** The stand-in's "Rain Studies" (an album the athlete can read). */
+const ALBUM_ID = "fxalbrain0000000000000";
 
 async function fixtureSpotify(req: APIRequestContext, baseURL: string, method: "GET" | "PUT" | "DELETE", path: string, data?: unknown) {
   return req.fetch(`${baseURL}${FIXTURE_API}${path}`, { method, headers: BEARER, ...(data === undefined ? {} : { data }) });
@@ -174,10 +174,10 @@ test("pasted: an editorial playlist named and described from Spotify, an album, 
   await sheet(page).getByLabel("Or paste a playlist or album link").fill("https://open.spotify.com/track/0123456789abcdefABCDEF");
   await sheet(page).getByRole("button", { name: "Add", exact: true }).click();
   await expect(sheet(page).getByText("That isn't a Spotify playlist or album link.")).toBeVisible();
-  await sheet(page).getByLabel("Or paste a playlist or album link").fill(`spotify:album:${BETA_ID}`);
+  await sheet(page).getByLabel("Or paste a playlist or album link").fill(`spotify:album:${ALBUM_ID}`);
   await sheet(page).getByRole("button", { name: "Add", exact: true }).click();
-  await expect(sheet(page).getByRole("button", { name: /Minecraft - Volume Beta/ })).toBeVisible();
-  expect((await stored(req, baseURL!)).map((s) => s.label)).toEqual(["Spa Sounds", "Minecraft - Volume Beta"]);
+  await expect(sheet(page).getByRole("button", { name: /Rain Studies/ })).toBeVisible();
+  expect((await stored(req, baseURL!)).map((s) => s.label)).toEqual(["Spa Sounds", "Rain Studies"]);
   // Spotify's escaped description, kept plain — its link's markup gone.
   expect((await stored(req, baseURL!))[0]!.description).toBe("Calm music for yoga, massage & rest. More");
 
@@ -261,7 +261,8 @@ test("a spa playlist linked before names and tags is read and tagged on the firs
   await expect(page.locator(".player-count")).toContainText("1 of ");
   // At Start, the workout's music plays on the device Spotify would use; the player says nothing about it.
   await expect.poll(async () => (await nowPlaying(req, baseURL!))?.context.uri, { timeout: 15_000 }).toBe(`spotify:playlist:${SPA_ID}`);
-  await expect(page.locator(".player-music")).toHaveCount(0);
+  // Its line's room is kept from Start (nothing moves when a line comes), and says nothing while the music plays.
+  await expect(page.locator(".player-music")).toHaveText("");
   await expect(page.locator(".player-top .music-dock--player .music-pill")).toHaveClass(/music-pill--playing/, { timeout: 15_000 });
 });
 
@@ -283,7 +284,11 @@ test("no device at Start: one quiet line in the player, whose Play opens Spotify
   await page.getByRole("button", { name: /^Start · \d+ min$/ }).click();
   await expect(page.locator(".player-count")).toContainText("1 of ", { timeout: 15_000 });
   const line = page.locator(".player-music");
+  // The line's room is kept from the first draw: the stage is where it will stay (review-M M8).
+  const stage = page.locator(".player-main");
+  const before = (await stage.boundingBox())!.y;
   await expect(line).toContainText("Open Spotify to play Spa", { timeout: 15_000 });
+  expect((await stage.boundingBox())!.y).toBe(before);
   await shot(page, "player-line", info.project.name);
   await line.getByRole("button", { name: "Play" }).click();
   // The browser wouldn't open Spotify unasked: the link is there to tap.
@@ -296,7 +301,7 @@ test("no device at Start: one quiet line in the player, whose Play opens Spotify
     }
   });
   await expect.poll(async () => (await nowPlaying(req, baseURL!))?.context.uri, { timeout: 15_000 }).toBe(`spotify:playlist:${SPA_ID}`);
-  await expect(line).toHaveCount(0);
+  await expect(line).toHaveText("");
 });
 
 test("Spotify says slow down: one calm line, and a tap says how long — nothing sent", async ({ page, context, baseURL }, info) => {

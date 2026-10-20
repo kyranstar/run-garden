@@ -39,6 +39,10 @@ function setup(
     renewFails?: boolean;
     owned?: number;
     tagFails?: boolean;
+    /** The Worker can't refresh the token (its 502): every token ask throws. */
+    tokenFails?: boolean;
+    /** The tagging waits for this before it answers. */
+    tagGate?: Promise<void>;
   } = {},
 ) {
   const owned = [
@@ -49,12 +53,18 @@ function setup(
   fake.state.playlists.set(SPA, { name: "Spa Sounds", owned: false, uris: [], description: "Calm music for yoga &amp; rest" });
   let clock = 1_000_000;
   const tokens = fakeTokens(fake, { reason: opts.reason, now: () => clock });
-  const token = opts.renewFails
-    ? async (fresh: boolean) =>
-        fresh
-          ? { connected: false as const, reason: "reconnect" as const }
-          : { connected: true as const, accessToken: "a-token-spotify-refuses", expiresAt: new Date(clock + 3600_000).toISOString() }
-    : tokens.token;
+  let tokenAsks = 0;
+  const token = opts.tokenFails
+    ? async (): Promise<never> => {
+        tokenAsks += 1;
+        throw new Error("api_502");
+      }
+    : opts.renewFails
+      ? async (fresh: boolean) =>
+          fresh
+            ? { connected: false as const, reason: "reconnect" as const }
+            : { connected: true as const, accessToken: "a-token-spotify-refuses", expiresAt: new Date(clock + 3600_000).toISOString() }
+      : tokens.token;
   const backoff = makeBackoff({ now: () => clock, storage: null });
   const spotify = makeSpotify({ token, fetch: fake.fetch, now: () => clock, backoff });
   const saved: MusicPreferences[] = [];
@@ -70,6 +80,7 @@ function setup(
     },
     tag: async (playlists) => {
       tagged.push(playlists);
+      if (opts.tagGate) await opts.tagGate;
       if (opts.tagFails) throw new Error("offline");
       return Object.fromEntries(playlists.map((p) => [p.key, keywordGoodFor(p.name, p.description)]));
     },
@@ -109,7 +120,7 @@ function setup(
     }
     clock = until;
   }
-  return { fake, dock, saved, tagged, opened, commands, advance, state: (): DockState => dock.get(), backoff };
+  return { fake, dock, saved, tagged, opened, commands, advance, state: (): DockState => dock.get(), backoff, tokenAsks: () => tokenAsks };
 }
 
 describe("it plays only when asked", () => {
@@ -149,8 +160,11 @@ describe("the playlists", () => {
   });
 
   it("what each suits, in plain words", () => {
-    expect(goodForWords({ goodFor: ["mobility", "wind-down"] })).toBe("Mobility · Winding down");
-    expect(goodForWords({})).toBe("");
+    expect(goodForWords({ label: "Mix", goodFor: ["mobility", "wind-down"] })).toBe("Mobility · Winding down");
+    expect(goodForWords({ label: "Mix" })).toBe("");
+    // Not tagged yet: what its words say, as the default reads it (review-M I1).
+    expect(goodForWords({ label: "Spa" })).toBe("Mobility · Winding down");
+    expect(goodForWords({ label: "Spa", goodFor: [] })).toBe("");
   });
 });
 
@@ -289,6 +303,58 @@ describe("playlists linked before names and tags (the migration)", () => {
       ["Spa", ["mobility", "wind-down"]],
       ["S1", ["run"]],
     ]);
+  });
+});
+
+describe("an edit made while the first open reads and tags (review-M M1)", () => {
+  it("is kept: what Spotify says is merged into the playlists as they are by then, and tags go only where none were set", async () => {
+    let release: () => void = () => undefined;
+    const shortcuts = [
+      { id: "spa", label: "Spa", uri: `spotify:playlist:${SPA}`, shuffle: true },
+      { id: "s1", label: "My runs", uri: `spotify:playlist:${PL}`, shuffle: true },
+    ];
+    const { dock, saved, tagged } = setup({ music: { shortcuts }, tagGate: new Promise<void>((r) => (release = r)) });
+    const opening = dock.open();
+    for (let i = 0; i < 200 && tagged.length === 0; i++) await new Promise((r) => setTimeout(r, 0));
+    expect(tagged).toHaveLength(1);
+    // Meanwhile the athlete renames the spa playlist and sets the second's tags.
+    dock.setEditing(true);
+    expect(await dock.edit("spa", { label: "Evening", goodFor: ["wind-down"] })).toBe(true);
+    expect(await dock.edit("s1", { label: "My runs", goodFor: ["strength"] })).toBe(true);
+    release();
+    await opening;
+    expect(saved.at(-1)!.shortcuts).toEqual([
+      { id: "spa", label: "Evening", uri: `spotify:playlist:${SPA}`, shuffle: true, name: "Spa Sounds", description: "Calm music for yoga & rest", goodFor: ["wind-down"] },
+      { id: "s1", label: "My runs", uri: `spotify:playlist:${PL}`, shuffle: true, name: "Easy run", description: "Steady songs for easy miles", total: 30, goodFor: ["strength"] },
+    ]);
+  });
+
+  it("a playlist removed meanwhile stays removed", async () => {
+    let release: () => void = () => undefined;
+    const { dock, saved, tagged } = setup({
+      music: { shortcuts: [{ id: "spa", label: "Spa", uri: `spotify:playlist:${SPA}`, shuffle: true }, mine("s1")] },
+      tagGate: new Promise<void>((r) => (release = r)),
+    });
+    const opening = dock.open();
+    for (let i = 0; i < 200 && tagged.length === 0; i++) await new Promise((r) => setTimeout(r, 0));
+    await dock.remove("spa");
+    release();
+    await opening;
+    expect(saved.at(-1)!.shortcuts.map((s) => s.id)).toEqual(["s1"]);
+  });
+});
+
+describe("a token the Worker can't refresh (review-M M5)", () => {
+  it("the dock says the calm line and its polling stops asking until the backoff ends", async () => {
+    const { dock, fake, state, advance, tokenAsks } = setup({ tokenFails: true });
+    await dock.open();
+    expect(state().notice).toEqual({ text: SLOW_LINE, tone: "info" });
+    expect(tokenAsks()).toBe(1);
+    await advance(BACKOFF_FIRST_MS - 1000);
+    expect(tokenAsks()).toBe(1);
+    await advance(1000);
+    expect(tokenAsks()).toBe(2);
+    expect(fake.calls).toEqual([]);
   });
 });
 

@@ -118,6 +118,7 @@ import {
   runUnsupported,
   WARNINGS_SHOWN,
   withFocusRefs,
+  withMusicIds,
   type CoachIssue,
   type DocAthlete,
 } from "./act-common.js";
@@ -349,7 +350,8 @@ export const proposeWorkout: DesignTool = {
     });
     if (isErr(a)) return a;
     const today = a.athlete.today;
-    const doc = withFocusRefs(submitted, a.focusAreas);
+    const doc = withMusicIds(withFocusRefs(submitted, a.focusAreas), a.athlete.prefs.music?.shortcuts ?? []);
+    if (isErr(doc)) return doc;
     const opsText = typeof a.extra.propOps === "string" ? a.extra.propOps : null;
     // Every op the proposal holds (a change by adjust_plan among them, Task 8b): this run's work is its designed workouts,
     // and every other op is written back as it was read.

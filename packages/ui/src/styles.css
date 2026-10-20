@@ -2735,7 +2735,6 @@ button.session-chip {
 .today-session-text .today-on-watch {
   font-size: var(--text-xs);
 }
-/* A short picker: one choice per 44px row. */
 /* A session's music on its sheet (music/workout-music.tsx): "Music · Spa (default)" and Change, one quiet row. */
 .session-music {
   display: flex;
@@ -2757,6 +2756,7 @@ button.session-chip {
 .session-music .btn-small {
   min-height: var(--tap);
 }
+/* A short picker: one choice per 44px row. */
 .choice-list {
   display: grid;
   gap: var(--space-3);
@@ -8607,8 +8607,12 @@ button.session-chip::after {
   font-weight: var(--weight-medium);
   cursor: pointer;
 }
-/* A workout's music that couldn't start on its own (music/dock.tsx WorkoutMusicLine): its Play, and the link when the
-   browser wouldn't open Spotify — a fingertip each, as the hint's OK. */
+/* A workout's music at Start (music/dock.tsx WorkoutMusicLine): its room kept from the first draw — a fingertip's
+   height, empty while the music plays — so a line that comes a moment later moves nothing (review-M M8). */
+.player-music {
+  min-height: var(--tap);
+}
+/* Its Play, and the link when the browser wouldn't open Spotify — a fingertip each, as the hint's OK. */
 .player-music a {
   display: inline-flex;
   align-items: center;

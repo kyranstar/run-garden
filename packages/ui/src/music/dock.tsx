@@ -667,36 +667,35 @@ export interface WorkoutMusicStart {
 /**
  * The player's music at Start: once, for a session just started here, the music its Start resolved plays on the
  * athlete's Spotify (connected, and "Play the workout's music when I start" on — this device's setting, on by default).
- * Nothing is said while it plays (the dock's pill shows it). No device open: one quiet line, "Open Spotify to play Spa",
- * with Play; Spotify asking to slow down: the dock's calm line. Dark, or no music: nothing at all, and no controller.
+ * Its line's room is kept from the first draw (review-M M8: the answer comes a moment after Start, and a line that came
+ * then pushed the stage under a tap): empty while it plays (the dock's pill shows it); no device open, "Open Spotify to
+ * play Spa" with Play; Spotify asking to slow down, the dock's calm line — and Play again once that has run out (M9).
+ * Dark, not connected, the setting off, a resumed session, or no music: nothing at all, and no controller.
  */
 export function WorkoutMusicLine(props: WorkoutMusicStart) {
-  return useMusicOn() && props.target ? <WorkoutMusicLineOn {...props} target={props.target} /> : null;
+  const data = useMusicData();
+  return data?.connected && props.fresh && props.target && readAutoPlay() ? <WorkoutMusicLineOn {...props} target={props.target} /> : null;
 }
 
-function WorkoutMusicLineOn({ session, fresh, target }: { session: string; fresh: boolean; target: WorkoutTarget }) {
+function WorkoutMusicLineOn({ session, target }: { session: string; target: WorkoutTarget }) {
   const { dock, state, data } = useMusicDock();
   useEffect(() => {
-    if (!fresh || !data?.connected || !readAutoPlay()) return;
+    if (!data?.connected) return;
     dock.setServer(data);
     void dock.autoPlay(target, session);
-  }, [fresh, target, session, data, dock]);
-  const w = state.workout;
-  if (!w || w.target.uri !== target.uri) return null;
-  if (w.status === "slow") {
-    return (
-      <p className="player-hint player-music" role="status">
-        {SLOW_LINE}
-      </p>
-    );
-  }
+  }, [target, session, data, dock]);
+  const w = state.workout && state.workout.target.uri === target.uri ? state.workout : null;
   return (
     <p className="player-hint player-music" role="status">
-      Open Spotify to play {w.target.label}
-      <button type="button" disabled={state.busy !== null} onClick={() => void dock.playWorkout(w.target)}>
-        Play
-      </button>
-      {state.link ? (
+      {w?.status === "slow" ? SLOW_LINE : null}
+      {w?.status === "no_device" ? <>Open Spotify to play {w.target.label}</> : null}
+      {w?.status === "ready" ? <>Ready to play {w.target.label}</> : null}
+      {w && w.status !== "slow" ? (
+        <button type="button" disabled={state.busy !== null} onClick={() => void dock.playWorkout(w.target)}>
+          Play
+        </button>
+      ) : null}
+      {w?.status === "no_device" && state.link ? (
         <a href={state.link} target="_blank" rel="noopener noreferrer">
           Open Spotify
         </a>

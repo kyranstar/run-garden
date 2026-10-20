@@ -16,7 +16,8 @@
  *                                 its usage row — six at most
  *   PUT    /choices/:workoutId { date, use, playlist? } → { choices }
  *                                 the athlete's music for one planned workout, from its sheet (`musicChoices`, pruned
- *                                 of past workouts): session, restore marker, the preferences, one write — four
+ *                                 of past workouts — by each workout's day now when it moved later): session, restore
+ *                                 marker, the preferences with those days (one read), one write — four
  *   GET    /spotify/login       → 302 Spotify's authorize URL    (the session: one statement)
  *   GET    /spotify/callback    → 302 /?music=connected | error   (the restore marker, one upsert; one fetch)
  *   GET    /spotify/token       → { connected: true, accessToken, expiresAt } | { connected: false, reason }
@@ -31,7 +32,7 @@
  */
 import { Hono } from "hono";
 import { sql } from "drizzle-orm";
-import { userPreferences } from "@rg/database";
+import { plannedWorkouts, userPreferences } from "@rg/database";
 import { z } from "zod";
 import {
   MUSIC_DESCRIPTION_MAX,
@@ -170,8 +171,19 @@ export function makeMusicRoutes(deps: MusicDeps = {}): Hono<AppContext> {
     if (!choice.success || workoutId.length > 120) return c.json({ error: "invalid_choice" }, 400);
     const db = c.get("db");
     const userId = c.get("userId");
-    const prefs = await loadPreferences(db, userId);
-    const choices = pruneMusicChoices({ ...(prefs.musicChoices ?? {}), [workoutId]: choice.data }, todayInZone(prefs.timezone, new Date(now())));
+    // One read: the preferences, and the day now of every workout a choice is kept for (and this one's) — so a session
+    // moved later keeps its choice (review-M M4). The athlete's own rows only.
+    const pw = plannedWorkouts;
+    const stored = sql`(select ${userPreferences.prefs} from ${userPreferences} where ${userPreferences.userId} = ${userId})`;
+    const [row] = (await db.all(sql`
+      select ${stored} as prefs,
+        (select json_group_object(${pw.id}, ${pw.effectiveDate}) from ${pw}
+          where ${pw.userId} = ${userId} and ${pw.archivedAt} is null
+            and (${pw.id} = ${workoutId} or ${pw.id} in (select key from json_each(${stored}, '$.musicChoices')))) as dates
+    `)) as Array<{ prefs: string | null; dates: string | null }>;
+    const prefs = userPreferencesSchema.parse(row?.prefs ? JSON.parse(row.prefs) : {});
+    const dates = row?.dates ? (JSON.parse(row.dates) as Record<string, string>) : {};
+    const choices = pruneMusicChoices({ ...(prefs.musicChoices ?? {}), [workoutId]: choice.data }, todayInZone(prefs.timezone, new Date(now())), dates);
     const text = JSON.stringify(choices);
     const at = new Date(now()).toISOString();
     // One statement: only `musicChoices` changes — never `music`, which the dock saves whole.

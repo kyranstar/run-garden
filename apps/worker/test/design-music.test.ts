@@ -7,10 +7,17 @@
  * Generic: nothing personal. Synthetic data only.
  */
 import { describe, expect, it } from "vitest";
-import { MUSIC_SHORTCUTS_MAX, workoutDocSchema, type MusicShortcut } from "@rg/domain";
+import { eq } from "drizzle-orm";
+import { schema } from "@rg/database";
+import { MUSIC_SHORTCUTS_MAX, newId, workoutDocSchema, type MusicShortcut } from "@rg/domain";
 import type { Env } from "../src/env.js";
 import { buildDesignContext, DESIGN_CONTEXT_STATEMENTS, playlistLines, PLAYLIST_DESCRIPTION_SHOWN, type DesignRun } from "../src/services/design-context.js";
 import { WORKOUT_DOC_JSON_SCHEMA, judge } from "../src/services/design-tools/act-common.js";
+import { ACT_TOOLS } from "../src/services/design-tools/index.js";
+import { designProposalId, type DocWorkoutOp } from "../src/services/design-tools/propose.js";
+import { isToolErr, type ToolContext, type ToolErr } from "../src/services/design-tools/types.js";
+import { NOW as NOW_TOOLS, seedRichAthlete, TODAY as TODAY_TOOLS } from "./design-read-fixture.js";
+import { calmDoc } from "./doc-workout-fixture.js";
 import { makeTestDb, makeTestUser } from "./helpers.js";
 
 const ID = "0123456789abcdefABCDEF";
@@ -45,6 +52,12 @@ describe("the playlists' lines", () => {
     expect(lines[2]).toBe('- s2: <untrusted from="athlete">Gym ‹b›</untrusted> (good for strength)');
     expect(lines[3]).toBe('- s3: <untrusted from="athlete">Mixed</untrusted>');
     expect(PLAYLIST_DESCRIPTION_SHOWN).toBe(80);
+  });
+
+  it("one not tagged yet says what its words say, as the app's default reads it (review-M I1)", () => {
+    expect(playlistLines([{ id: "spa", label: "Spa", uri: `spotify:playlist:${ID}`, shuffle: true }])[1]).toBe(
+      '- spa: <untrusted from="athlete">Spa</untrusted> (good for mobility, wind-down)',
+    );
   });
 
   it("stay small: at most about 3.3k characters for the most playlists the dock keeps, each at its longest", () => {
@@ -91,6 +104,50 @@ describe("a designed workout's music", () => {
     const music = (WORKOUT_DOC_JSON_SCHEMA.properties as Record<string, unknown>).music;
     expect(music).toEqual({ type: "object", properties: { playlist: { type: ["string", "null"], maxLength: 40 } }, required: ["playlist"], additionalProperties: false });
     expect(JSON.stringify({ music }).length).toBeLessThan(150);
+  });
+
+  describe("named by its label, or by nothing the athlete has (review-M M3)", () => {
+    const tool = (name: string) => ACT_TOOLS.find((t) => t.name === name)!;
+    async function harness(shortcuts: MusicShortcut[]) {
+      const db = makeTestDb({ boundVariableCap: 100 });
+      const { userId } = await seedRichAthlete(db, { music: { shortcuts } });
+      const id = `run-${newId().slice(0, 8)}`;
+      await db.insert(schema.coachRuns).values({
+        id, userId, parentId: null, role: "main", scope: { kind: "now" }, request: "something calm tonight",
+        status: "active", state: null, steps: 0, costUsd: 0, createdAt: NOW_TOOLS.toISOString(), updatedAt: NOW_TOOLS.toISOString(),
+      });
+      const ctx: ToolContext = { db, env: {} as Env, userId, run: { id, role: "main", scope: { kind: "now" }, parentId: null, rehearsal: false }, now: NOW_TOOLS, toolUseId: `toolu_${id}` };
+      return { db, ctx, runId: id };
+    }
+    const named = (playlist: string | null) => ({ ...calmDoc({ title: "Evening reset" }), music: { playlist } });
+
+    it("a playlist named by its label (case aside, one match) is its id: the proposal keeps the id", async () => {
+      const { db, ctx, runId } = await harness([spa, gym]);
+      const out = await tool("propose_workout").run(ctx, { doc: named("spa SOUNDS"), target: { kind: "new", date: TODAY_TOOLS } });
+      expect(isToolErr(out), JSON.stringify(out)).toBe(false);
+      const [p] = await db.select().from(schema.coachProposals).where(eq(schema.coachProposals.id, designProposalId(runId)));
+      expect((p!.ops as DocWorkoutOp[])[0]!.doc.music).toEqual({ playlist: "spa" });
+      expect(isToolErr(await tool("validate_workout").run(ctx, { doc: named("Gym <b>"), date: TODAY_TOOLS }))).toBe(false);
+      // An id, and none, as they are.
+      expect(isToolErr(await tool("validate_workout").run(ctx, { doc: named("s2"), date: TODAY_TOOLS }))).toBe(false);
+      expect(isToolErr(await tool("validate_workout").run(ctx, { doc: named(null), date: TODAY_TOOLS }))).toBe(false);
+    });
+
+    it("anything else is refused before the validator, saying to use one of the listed ids", async () => {
+      const { ctx } = await harness([spa, gym, { ...gym, id: "s4", label: "Spa Sounds" }]);
+      for (const name of ["Calm", "spa-sounds", "Spa Sounds"]) {
+        for (const t of ["validate_workout", "propose_workout"]) {
+          const input = t === "validate_workout" ? { doc: named(name), date: TODAY_TOOLS } : { doc: named(name), target: { kind: "new", date: TODAY_TOOLS } };
+          const out = (await tool(t).run(ctx, input)) as ToolErr;
+          expect(isToolErr(out), `${t} ${name}`).toBe(true);
+          expect(out.error).toBe("unknown_playlist");
+          expect(out.fix).toContain("spa, s2, s4");
+        }
+      }
+      const none = await harness([]);
+      const out = (await tool("validate_workout").run(none.ctx, { doc: named("Spa"), date: TODAY_TOOLS })) as ToolErr;
+      expect([out.error, out.fix]).toEqual(["unknown_playlist", "The athlete has no playlists: leave music out."]);
+    });
   });
 
   it("the validator keeps it with the document it judges", () => {

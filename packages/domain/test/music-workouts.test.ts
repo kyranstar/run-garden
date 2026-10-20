@@ -9,8 +9,10 @@ import {
   MUSIC_CHOICES_MAX,
   MUSIC_DESCRIPTION_MAX,
   MUSIC_GOOD_FOR,
+  goodForOf,
   keywordGoodFor,
   musicChoicesSchema,
+  musicWordsOf,
   musicPreferencesSchema,
   plainSpotifyText,
   pruneMusicChoices,
@@ -202,5 +204,37 @@ describe("the workout document's music", () => {
 
   it("is read leniently, as the rest of the document is: a key a later version adds is dropped, never a refusal", () => {
     expect(workoutDocSchema.parse({ ...base, music: { playlist: "spa", later: 1 } }).music).toEqual({ playlist: "spa" });
+  });
+});
+
+describe("a playlist not tagged yet (review-M I1)", () => {
+  // The owner's old spa slot exactly as an earlier version stored it: no name, no description, no tags.
+  const old = { id: "spa", label: "Spa", uri: `spotify:playlist:${ID}`, shuffle: true };
+
+  it("suits what its words say — the words the tagging reads — so it plays for every mobility session before the dock is ever opened, and never for strength", () => {
+    const shortcuts = musicPreferencesSchema.parse({ shortcuts: [old], minecraftPlaylistId: ID }).shortcuts;
+    expect(musicWordsOf(shortcuts[0]!)).toEqual({ name: "Spa", description: "" });
+    expect(goodForOf(shortcuts[0]!)).toEqual(["mobility", "wind-down"]);
+    expect(resolveWorkoutMusic({ shortcuts, kind: workoutMusicKind({ category: "yoga" }) })).toEqual({ shortcut: shortcuts[0], source: "default" });
+    expect(resolveWorkoutMusic({ shortcuts, kind: workoutMusicKind({ category: "yoga", calm: true }) }).shortcut?.id).toBe("spa");
+    expect(resolveWorkoutMusic({ shortcuts, kind: workoutMusicKind({ category: "strength" }) }).shortcut).toBeNull();
+  });
+
+  it("Spotify's name and description, once read, before its label; once tagged, its tags alone — none is none", () => {
+    expect(musicWordsOf({ ...old, label: "Mine", name: "Gym", description: "Heavy" })).toEqual({ name: "Gym", description: "Heavy" });
+    expect(goodForOf({ ...old, label: "Mine", name: "Gym" })).toEqual(["strength"]);
+    expect(goodForOf({ ...old, goodFor: [] })).toEqual([]);
+    expect(goodForOf({ ...old, goodFor: ["run"] })).toEqual(["run"]);
+    expect(resolveWorkoutMusic({ shortcuts: [{ ...old, goodFor: [] }], kind: "mobility" }).shortcut).toBeNull();
+  });
+});
+
+describe("a choice for a workout moved later (review-M M4)", () => {
+  it("is kept by the later of its stored day and the workout's day now, and keeps that day", () => {
+    const choices = { moved: { date: "2026-10-19", use: "none" as const }, gone: { date: "2026-10-16", use: "none" as const } };
+    const kept = pruneMusicChoices(choices, "2026-10-22", { moved: "2026-10-25", gone: "2026-10-15" });
+    expect(kept).toEqual({ moved: { date: "2026-10-25", use: "none" } });
+    // With no day known now (the workout gone from the plan), its stored day decides, as before.
+    expect(pruneMusicChoices(choices, "2026-10-22")).toEqual({});
   });
 });

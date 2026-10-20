@@ -51,11 +51,7 @@ interface Device {
 /** A 22-character fixture id from a word (base-62 alphabet only). */
 const fid = (word: string): string => `${word.replace(/[^A-Za-z0-9]/g, "")}${"0".repeat(22)}`.slice(0, 22);
 
-const ALPHA = ["Key", "Door", "Subwoofer Lullaby", "Death", "Living Mice", "Moog City", "Haggstrom", "Minecraft", "Oxygène", "Équinoxe",
-  "Mice on Venus", "Dry Hands", "Wet Hands", "Clark", "Chris", "Thirteen", "Excuse", "Sweden", "Cat", "Dog", "Danny", "Beginning",
-  "Droopy likes ricochet", "Droopy likes your face"];
-
-function album(key: string, name: string, artists: string[], count: number, names?: string[]): Album {
+function album(key: string, name: string, artists: string[], count: number): Album {
   const id = fid(`fxalb${key}`);
   return {
     id,
@@ -63,25 +59,15 @@ function album(key: string, name: string, artists: string[], count: number, name
     artists,
     tracks: Array.from({ length: count }, (_, i) => ({
       uri: `spotify:track:${fid(`fxt${key}${i}`)}`,
-      name: names?.[i] ?? `${name.replace(/^Minecraft[:\s–-]+/, "").replace(/\s*\(.*\)$/, "")} ${i + 1}`,
+      name: `${name} ${i + 1}`,
       artist: artists[0]!,
       durationMs: 150_000 + ((i * 37_000) % 120_000),
     })),
   };
 }
 
-/** The catalogue: the official albums but one (Chaos Cubed is left out on purpose), and a cover album as a decoy. */
-const CATALOGUE: Album[] = [
-  album("alpha", "Minecraft - Volume Alpha", ["C418"], 24, ALPHA),
-  album("beta", "Minecraft - Volume Beta", ["C418"], 30),
-  album("nether", "Minecraft: Nether Update (Original Game Soundtrack)", ["Lena Raine"], 5),
-  album("caves", "Minecraft: Caves & Cliffs (Original Game Soundtrack)", ["Lena Raine", "Kumi Tanioka"], 9),
-  album("wild", "Minecraft: The Wild Update (Original Game Soundtrack)", ["Lena Raine"], 5),
-  album("trails", "Minecraft: Trails & Tales (Original Game Soundtrack)", ["Aaron Cherof", "Lena Raine"], 7),
-  album("tricky", "Minecraft: Tricky Trials (Original Game Soundtrack)", ["Lena Raine", "Aaron Cherof", "Kumi Tanioka"], 9),
-  album("skies", "Minecraft: Chase the Skies (Original Game Soundtrack)", ["Amos Roddy"], 7),
-  album("covers", "Minecraft - Volume Alpha (Piano Covers)", ["A Piano Player"], 12),
-];
+/** The albums the athlete's playlists play from (and one to paste by link). Synthetic. */
+const CATALOGUE: Album[] = [album("hours", "Quiet Hours", ["A Pianist"], 24), album("rain", "Rain Studies", ["Field Notes"], 30)];
 
 const USER_PLAYLISTS: Playlist[] = [
   { id: fid("fxplEasyRun"), name: "Easy run", description: "Steady songs for easy miles", owned: true, uris: CATALOGUE[1]!.tracks.slice(0, 12).map((t) => t.uri) },
@@ -131,7 +117,6 @@ function initial(): State {
 let state: State = initial();
 
 const allTracks = (): Map<string, Track> => new Map(CATALOGUE.flatMap((a) => a.tracks.map((t) => [t.uri, t] as const)));
-const words = (s: string): string[] => s.toLowerCase().normalize("NFKD").replace(/[^a-z0-9 ]+/g, " ").split(/\s+/).filter((w) => w.length > 1);
 
 function playerError(c: Context<AppContext>, status: 400 | 403 | 404, message: string, reason: string) {
   return c.json({ error: { status, message, reason } }, status);
@@ -308,13 +293,4 @@ spotifyFixtureApi.get("/albums/:id/tracks", (c) => {
   const items = a.tracks.slice(offset, offset + limit).map((t) => ({ uri: t.uri, name: t.name, duration_ms: t.durationMs, artists: [{ name: t.artist }] }));
   const next = offset + limit < a.tracks.length ? `fixture://albums/${a.id}/tracks?offset=${offset + limit}` : null;
   return c.json({ items, total: a.tracks.length, limit, offset, next });
-});
-
-spotifyFixtureApi.get("/search", (c) => {
-  const q = words(c.req.query("q") ?? "");
-  const limit = Math.min(10, Number(c.req.query("limit") ?? 5));
-  const scored = CATALOGUE.map((a) => ({ a, hits: words(`${a.name} ${a.artists.join(" ")}`).filter((w) => q.includes(w)).length }))
-    .filter((s) => s.hits >= 2)
-    .sort((x, y) => y.hits - x.hits);
-  return c.json({ albums: { items: scored.slice(0, limit).map((s) => albumJson(s.a)), total: scored.length, limit, offset: 0, next: null } });
 });

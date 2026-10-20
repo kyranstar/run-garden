@@ -41,6 +41,7 @@ import {
   runUnsupported,
   WARNINGS_SHOWN,
   withFocusRefs,
+  withMusicIds,
   WORKOUT_DOC_JSON_SCHEMA,
 } from "./act-common.js";
 import { dateField, DATE_SCHEMA, refuse } from "./read-common.js";
@@ -84,7 +85,8 @@ export const validateWorkout: DesignTool = {
     if (p.date < today) {
       return refuse("past_date", `${p.date} is before today (${today}) where the athlete is.`, "Check it for today or a later day.");
     }
-    const doc = withFocusRefs(submitted, a.focusAreas);
+    const doc = withMusicIds(withFocusRefs(submitted, a.focusAreas), a.athlete.prefs.music?.shortcuts ?? []);
+    if (isErr(doc)) return doc;
     const free = freeTextRefusal(doc, p.workoutId ? parseStoredWorkoutDoc(a.extra.baseDoc) : null);
     if (free) return free;
     const ids = idsRefusal(doc, a);

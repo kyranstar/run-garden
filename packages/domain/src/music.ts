@@ -149,6 +149,23 @@ export function keywordGoodFor(name: string, description: string): MusicGoodFor[
   return MUSIC_GOOD_FOR.filter((t) => hit.has(t));
 }
 
+/** A saved playlist's words, as the tagging reads them: Spotify's name (its label when Spotify never named it) and its
+ * description. One place, so the tagging and the default before it (`goodForOf`) read the same. */
+export function musicWordsOf(s: Pick<MusicShortcut, "label" | "name" | "description">): { name: string; description: string } {
+  return { name: s.name ?? s.label, description: s.description ?? "" };
+}
+
+/**
+ * What a saved playlist suits: its tags — or, until it is tagged (one linked before tags, the dock not opened since), what
+ * its words say (`keywordGoodFor` of `musicWordsOf`: the tagging's own fallback), with no Spotify call. Tagged and
+ * empty: nothing.
+ */
+export function goodForOf(s: Pick<MusicShortcut, "label" | "name" | "description" | "goodFor">): MusicGoodFor[] {
+  if (s.goodFor) return s.goodFor;
+  const words = musicWordsOf(s);
+  return keywordGoodFor(words.name, words.description);
+}
+
 // ── A workout's music ────────────────────────────────────────────────────────
 
 /** The kinds of workout, for music: the tags a playlist carries. */
@@ -200,12 +217,14 @@ export interface ResolvedMusic {
   source: "athlete" | "workout" | "default";
 }
 
-/** The first saved playlist good for a kind, in the order they are saved; null when none is. */
+/** The first saved playlist good for a kind (`goodForOf`: its tags, else its words), in the order they are saved; null
+ * when none is. */
 export function defaultMusicFor(kind: MusicKind | null, shortcuts: readonly MusicShortcut[]): MusicShortcut | null {
   if (!kind) return null;
+  const suits = shortcuts.map((s) => goodForOf(s));
   for (const tag of KIND_TAGS[kind]) {
-    const hit = shortcuts.find((s) => s.goodFor?.includes(tag));
-    if (hit) return hit;
+    const at = suits.findIndex((g) => g.includes(tag));
+    if (at >= 0) return shortcuts[at]!;
   }
   return null;
 }
@@ -270,10 +289,18 @@ export function pickOf(choice: MusicChoice | null | undefined): MusicPick | null
   return { use: choice.use };
 }
 
-/** The choices kept: none for a workout more than `MUSIC_CHOICE_GRACE_DAYS` gone, and the newest days at most. */
-export function pruneMusicChoices(choices: MusicChoices, today: string): MusicChoices {
+/**
+ * The choices kept: none for a workout more than `MUSIC_CHOICE_GRACE_DAYS` gone, and the newest days at most. A workout's
+ * day is the later of the one stored with its choice and its day now (`current`, by workout id: a session moved later
+ * keeps its choice), and the day kept is that one.
+ */
+export function pruneMusicChoices(choices: MusicChoices, today: string, current: Readonly<Record<string, string>> = {}): MusicChoices {
   const from = addDays(today, -MUSIC_CHOICE_GRACE_DAYS);
-  const live = Object.entries(choices).filter(([, c]) => c.date >= from);
+  const dated = Object.entries(choices).map(([id, c]): [string, MusicChoice] => {
+    const now = current[id];
+    return now && isLocalDate(now) && now > c.date ? [id, { ...c, date: now }] : [id, c];
+  });
+  const live = dated.filter(([, c]) => c.date >= from);
   live.sort((a, b) => (a[1].date === b[1].date ? a[0].localeCompare(b[0]) : b[1].date.localeCompare(a[1].date)));
   return Object.fromEntries(live.slice(0, MUSIC_CHOICES_MAX));
 }

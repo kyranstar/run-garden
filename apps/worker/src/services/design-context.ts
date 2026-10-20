@@ -44,7 +44,7 @@ import {
   providerConnections,
   sleepRecords,
 } from "@rg/database";
-import { EFFORT_LEVELS, addDays, clipWords, coachSettings, dayLabel, isoWeekday, todayInZone, type MusicShortcut, type ProfileDto, type RunWire, type UserPreferences } from "@rg/domain";
+import { EFFORT_LEVELS, addDays, clipWords, coachSettings, dayLabel, goodForOf, isoWeekday, todayInZone, type MusicShortcut, type ProfileDto, type RunWire, type UserPreferences } from "@rg/domain";
 import {
   EQUIPMENT,
   EXERCISES,
@@ -612,7 +612,9 @@ export function playlistLines(shortcuts: readonly MusicShortcut[]): string[] {
     "Playlists — the athlete's. A workout may name one in its document's music: { playlist: id }, only when one plainly fits this session's intent by its name or description, or { playlist: null } when quiet serves it; otherwise leave music out and the app plays one good for the workout's kind:",
     ...shortcuts.map((s) => {
       const words = s.description ? `${s.label} — ${clipWords(s.description, PLAYLIST_DESCRIPTION_SHOWN)}` : s.label;
-      return `- ${s.id}: ${athlete(words)}${s.goodFor?.length ? ` (good for ${s.goodFor.join(", ")})` : ""}`;
+      // What it suits as the app's default reads it: its tags, else its words (one not tagged yet).
+      const suits = goodForOf(s);
+      return `- ${s.id}: ${athlete(words)}${suits.length ? ` (good for ${suits.join(", ")})` : ""}`;
     }),
   ];
 }

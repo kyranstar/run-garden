@@ -21,6 +21,7 @@
 import {
   MUSIC_LABEL_MAX,
   MUSIC_SHORTCUTS_MAX,
+  musicWordsOf,
   type MusicGoodFor,
   type MusicPreferences,
   type MusicShortcut,
@@ -65,8 +66,9 @@ export interface DockState {
   editing: boolean;
   /** The playlist open in the editor (its name and tags), while editing. */
   editingId: string | null;
-  /** A workout's music asked to play at Start that couldn't yet: no device open, or Spotify asked to slow down. */
-  workout: { target: WorkoutTarget; status: "no_device" | "slow" } | null;
+  /** A workout's music asked to play at Start that couldn't yet: no device open, Spotify asking to slow down, or that
+   * backoff run out ("ready": the player offers Play again — review-M M9). */
+  workout: { target: WorkoutTarget; status: "no_device" | "slow" | "ready" } | null;
 }
 
 export interface DockDeps {
@@ -95,22 +97,23 @@ export const SLOW_LINE = "Spotify asked us to slow down — back in a few minute
 /** …and when a tap meets it: the time left. */
 export const slowLine = (ms: number): string => `Spotify asked us to slow down — ${backInWords(ms)}.`;
 
-/** A playlist as the dock keeps it, from what Spotify said of it. */
-function linked(id: string, uri: string, label: string, d: ContextDetails | null): MusicShortcut {
+/** What the dock keeps of what Spotify said of a playlist: its name, and its description, cover and count when known. */
+function linkedDetails(d: ContextDetails): Pick<MusicShortcut, "name" | "description" | "image" | "total"> {
   return {
-    id,
-    label: label.trim().slice(0, MUSIC_LABEL_MAX).trim() || "Playlist",
-    uri,
-    shuffle: true,
-    ...(d ? { name: d.name } : {}),
-    ...(d?.description ? { description: d.description } : {}),
-    ...(d?.image ? { image: d.image } : {}),
-    ...(d && d.total !== null ? { total: d.total } : {}),
+    name: d.name,
+    ...(d.description ? { description: d.description } : {}),
+    ...(d.image ? { image: d.image } : {}),
+    ...(d.total !== null ? { total: d.total } : {}),
   };
 }
 
-/** What the tagging is given of a playlist: Spotify's name (its label when Spotify never named it) and description. */
-const tagInput = (s: MusicShortcut) => ({ key: s.id, name: s.name ?? s.label, description: s.description ?? "" });
+/** A playlist as the dock keeps it, from what Spotify said of it. */
+function linked(id: string, uri: string, label: string, d: ContextDetails | null): MusicShortcut {
+  return { id, label: label.trim().slice(0, MUSIC_LABEL_MAX).trim() || "Playlist", uri, shuffle: true, ...(d ? linkedDetails(d) : {}) };
+}
+
+/** What the tagging is given of a playlist: its words (`musicWordsOf` — the same the default reads before it is tagged). */
+const tagInput = (s: MusicShortcut) => ({ key: s.id, ...musicWordsOf(s) });
 
 export function makeDockController(deps: DockDeps) {
   const { spotify } = deps;
@@ -252,35 +255,49 @@ export function makeDockController(deps: DockDeps) {
     const untagged = state.music.shortcuts.filter((s) => s.goodFor === undefined);
     if (untagged.length === 0) return;
     tidied = true;
-    const read = new Map<string, MusicShortcut>();
+    /** Each asked, with what Spotify said of it: details, null (it wouldn't say), or undefined (named already). */
+    const asked = new Map<string, ContextDetails | null | undefined>();
     for (const s of untagged) {
       if (s.name !== undefined) {
-        read.set(s.id, s);
+        asked.set(s.id, undefined);
         continue;
       }
-      let details: ContextDetails | null;
       try {
-        details = await spotify.details(s.uri);
+        asked.set(s.id, await spotify.details(s.uri));
       } catch (e) {
         fail(e);
         break;
       }
-      const label = s.id === "spa" && s.label === "Spa" && details ? details.name : s.label;
-      read.set(s.id, { ...linked(s.id, s.uri, label, details), shuffle: s.shuffle });
     }
-    if (read.size === 0) return;
-    const tags = await tagsFor([...read.values()]);
-    // Onto the playlists as they are now (one may have been removed meanwhile).
+    if (asked.size === 0) return;
+    const withDetails = (s: MusicShortcut): MusicShortcut => {
+      const d = asked.get(s.id);
+      if (!d || s.name !== undefined) return s;
+      const named = { ...s, ...linkedDetails(d) };
+      // The old spa slot's own label, still as it was, takes Spotify's name; a label the athlete chose is kept.
+      return s.id === "spa" && s.label === "Spa" ? { ...named, label: linked(s.id, s.uri, d.name, d).label } : named;
+    };
+    const tags = await tagsFor(untagged.filter((s) => asked.has(s.id)).map(withDetails));
+    // Merged into the playlists as they are by now (review-M M1): one removed meanwhile stays removed, a rename or tags
+    // set meanwhile are kept — tags only where none were set.
     const shortcuts = state.music.shortcuts.map((s) => {
-      const r = read.get(s.id);
-      if (!r) return s;
+      if (!asked.has(s.id)) return s;
+      const next = withDetails(s);
       const goodFor = tags[s.id];
-      return goodFor ? { ...r, goodFor } : r;
+      return goodFor && next.goodFor === undefined ? { ...next, goodFor } : next;
     });
-    await save({ ...state.music, shortcuts });
+    if (JSON.stringify(shortcuts) !== JSON.stringify(state.music.shortcuts)) await save({ ...state.music, shortcuts });
   }
 
   const deviceId = (): string | undefined => state.player?.device?.id ?? undefined;
+
+  /** A workout's music held back by the backoff: said so, and offered again when it runs out. */
+  function holdWorkout(target: WorkoutTarget): void {
+    set({ workout: { target, status: "slow" } });
+    deps.schedule(() => {
+      if (state.workout?.target === target && state.workout.status === "slow") set({ workout: { target, status: "ready" } });
+    }, slowFor());
+  }
 
   return {
     get: (): DockState => state,
@@ -351,7 +368,8 @@ export function makeDockController(deps: DockDeps) {
         out = await playContext(spotify, { uri: target.uri, shuffle: true }, { prefer: deps.prefer(), random: deps.random });
       } catch (e) {
         fail(e);
-        set({ busy: null, workout: isSlowDown(e) ? { target, status: "slow" } : null });
+        set({ busy: null, workout: null });
+        if (isSlowDown(e)) holdWorkout(target);
         return;
       }
       set({ busy: null });
@@ -366,7 +384,7 @@ export function makeDockController(deps: DockDeps) {
     async playWorkout(target: WorkoutTarget): Promise<void> {
       if (state.connection !== "connected" || state.busy) return;
       if (heldBack()) {
-        set({ workout: { target, status: "slow" } });
+        holdWorkout(target);
         return;
       }
       const noDevice = state.devices !== null && chooseDevice(state.devices, deps.prefer()) === null;

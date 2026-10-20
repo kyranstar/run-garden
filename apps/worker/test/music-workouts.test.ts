@@ -80,9 +80,11 @@ let userId: string;
 let prefs: UserPreferences;
 let cookie: string;
 let statements: string[] = [];
-const clock = Date.parse("2026-10-19T12:00:00Z");
+const START = Date.parse("2026-10-19T12:00:00Z");
+let clock = START;
 
 beforeEach(async () => {
+  clock = START;
   modelCalls = [];
   answer = () => new Response("unset", { status: 500 });
   db = makeTestDb({ boundVariableCap: 100, onStatement: (s) => statements.push(s) });
@@ -244,6 +246,31 @@ describe("the athlete's music for one workout", () => {
     await choose("old", { date: addDays(today(), -5), use: "none" });
     await choose("new", { date: today(), use: "none" });
     expect(Object.keys((await loadPreferences(db, userId)).musicChoices!)).toEqual(["new"]);
+  });
+
+  it("a choice follows its workout when it moves later: kept by the workout's day now, still four statements (review-M M4)", async () => {
+    const client = await clientFor(db, userId);
+    const made = await client("POST", "/api/workouts", { date: todayInZone(prefs.timezone), doc: calmDoc() });
+    expect(made.status, JSON.stringify(made.body)).toBe(201);
+    const w1 = made.body.workout.id as string;
+    expect((await choose(w1, { date: "2026-10-19", use: "none" })).status).toBe(200);
+    // Moved to the 25th; on the 22nd another choice is made.
+    await db.update(schema.plannedWorkouts).set({ effectiveDate: "2026-10-25" }).where(eq(schema.plannedWorkouts.id, w1));
+    clock = Date.parse("2026-10-22T12:00:00Z");
+    const res = await choose("w2", { date: "2026-10-22", use: "none" });
+    expect(res.body.choices).toEqual({ w2: { date: "2026-10-22", use: "none" }, [w1]: { date: "2026-10-25", use: "none" } });
+    expect(res.statements).toHaveLength(4);
+    // The workout being chosen for, moved since the sheet read it: its day now — kept already, or chosen for the first time.
+    await db.update(schema.plannedWorkouts).set({ effectiveDate: "2026-10-28" }).where(eq(schema.plannedWorkouts.id, w1));
+    expect((await choose(w1, { date: "2026-10-25", use: "default" })).body.choices[w1]).toEqual({ date: "2026-10-28", use: "default" });
+    const w3 = ((await client("POST", "/api/workouts", { date: todayInZone(prefs.timezone), doc: calmDoc({ title: "Third" }) })).body.workout.id) as string;
+    await db.update(schema.plannedWorkouts).set({ effectiveDate: "2026-10-30" }).where(eq(schema.plannedWorkouts.id, w3));
+    expect((await choose(w3, { date: "2026-10-19", use: "none" })).body.choices[w3]).toEqual({ date: "2026-10-30", use: "none" });
+    // Another account's workout of the same id is never read for this one's day.
+    const other = await makeTestUser(db);
+    const theirs = await (await clientFor(db, other.userId))("POST", "/api/workouts", { date: todayInZone(prefs.timezone), doc: calmDoc({ title: "Theirs" }) });
+    await db.update(schema.plannedWorkouts).set({ effectiveDate: "2026-12-01" }).where(eq(schema.plannedWorkouts.id, theirs.body.workout.id));
+    expect((await choose(theirs.body.workout.id, { date: "2026-10-22", use: "none" })).body.choices[theirs.body.workout.id]).toEqual({ date: "2026-10-22", use: "none" });
   });
 
   it("never touches the playlists, and the dock's save of its playlists never touches them; the rest of the preferences kept", async () => {

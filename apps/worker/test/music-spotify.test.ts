@@ -707,11 +707,15 @@ describe("the stand-in Spotify (fixture mode)", () => {
     const devices = (await api("GET", "/me/player/devices")).body.devices;
     expect(devices.map((d: any) => [d.id, d.supports_volume])).toEqual([["fixture-phone", false], ["fixture-desktop", true]]);
     expect((await api("GET", "/me/player")).status).toBe(204);
-    const album = (await api("GET", `/search?q=${encodeURIComponent("Minecraft Volume Alpha C418")}&type=album&limit=10`)).body.albums.items[0];
-    expect(album.name).toBe("Minecraft - Volume Alpha");
+    const album = (await api("GET", "/albums/fxalbhours000000000000")).body;
+    expect([album.name, album.total_tracks]).toEqual(["Quiet Hours", 24]);
     expect((await api("PUT", "/me/player/play?device_id=fixture-phone", { context_uri: album.uri, offset: { position: 17 } })).status).toBe(204);
     const now = (await api("GET", "/me/player")).body;
-    expect([now.is_playing, now.item.name, now.device.id]).toEqual([true, "Sweden", "fixture-phone"]);
+    expect([now.is_playing, now.item.name, now.device.id]).toEqual([true, "Quiet Hours 18", "fixture-phone"]);
+    // Nothing of a search, or of an album the app once built a playlist from.
+    // (An unknown path falls through to the routes behind it, which want a session: never a 200.)
+    expect((await api("GET", "/search?q=anything&type=album")).status).not.toBe(200);
+    expect(JSON.stringify((await api("GET", "/me/playlists")).body)).not.toMatch(/minecraft/i);
     expect((await api("PUT", "/me/player/volume?volume_percent=30&device_id=fixture-phone")).body.error.reason).toBe("VOLUME_CONTROL_DISALLOW");
     expect((await api("PUT", "/me/player/volume?volume_percent=30&device_id=fixture-desktop")).status).toBe(204);
     await api("PUT", "/state/devices", { none: true });
