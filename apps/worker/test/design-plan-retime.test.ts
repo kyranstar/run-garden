@@ -30,6 +30,7 @@ import { designProposalId } from "../src/services/design-tools/propose.js";
 import { isToolErr, type ToolContext, type ToolErr, type ToolOk } from "../src/services/design-tools/types.js";
 import { describeChange, planAdjustId, type PlanAdjustOp } from "../src/services/proposal-kinds.js";
 import { makeTestDb, makeTestUser, MAX_LOOP_ITERATIONS, mountRoutes } from "./helpers.js";
+import { IMPORT_PROBES } from "./import-probes.js";
 
 const { coachProposals, plannedWorkouts, plannedWorkoutStages, corosWriteJobs } = schema;
 
@@ -145,9 +146,9 @@ async function pending(r: ToolContext["run"], ops?: PlanAdjustOp[]): Promise<str
 
 describe("adjust_plan: the card says the new structure, and the op keeps it", () => {
   it("a structured run's length: re-timed by the rule — 'Tempo 35 → 25 min · 3 × 5 min (was 5 × 5)', no 'watch unchanged' — still two statements", async () => {
-    await tempoOnTheWatch("t-1", 2);
+    await tempoOnTheWatch("cw-t-1", 2);
     const r = await mainRun();
-    const { res, count } = await adjust(r, "t-1", 25);
+    const { res, count } = await adjust(r, "cw-t-1", 25);
     const data = ok(res).data as { change: { summary: { text: string }; was: string | null }; issues: unknown[] };
     expect(data.change.summary.text).toBe("Tempo 35 → 25 min · 3 × 5 min (was 5 × 5)");
     expect(data.change.was).toBeNull();
@@ -159,17 +160,17 @@ describe("adjust_plan: the card says the new structure, and the op keeps it", ()
   });
 
   it("the rule's minutes, which the counts may leave off the coach's: asked 27, the nearest count makes 25", async () => {
-    await tempoOnTheWatch("t-1", 2);
+    await tempoOnTheWatch("cw-t-1", 2);
     const r = await mainRun();
-    ok((await adjust(r, "t-1", 27)).res);
+    ok((await adjust(r, "cw-t-1", 27)).res);
     const [op] = await opsOf(r);
-    expect([op!.op, op!.retime?.minutes]).toEqual([{ kind: "adjust", workoutId: "t-1", durationMinutes: 27 }, 25]);
+    expect([op!.op, op!.retime?.minutes]).toEqual([{ kind: "adjust", workoutId: "cw-t-1", durationMinutes: 27 }, 25]);
   });
 
   it("too short for a warm-up, a cool-down and one rep: refused in the rule's words, telling the coach to ease — nothing written", async () => {
-    await tempoOnTheWatch("t-1", 2);
+    await tempoOnTheWatch("cw-t-1", 2);
     const r = await mainRun();
-    const err = refused((await adjust(r, "t-1", 9)).res);
+    const err = refused((await adjust(r, "cw-t-1", 9)).res);
     expect(err.error).toBe("too_short");
     expect(err.why).toContain("too short to keep its warm-up, cool-down and one rep");
     expect(err.why).toContain("ease");
@@ -178,24 +179,77 @@ describe("adjust_plan: the card says the new structure, and the op keeps it", ()
 
   it("a length its reps come no nearer: no change, said", async () => {
     // 5 + 2 × 5 + 5 = 20 → 22: a third rep makes 25, further off than 20 — and there is no block to extend.
-    await tempoOnTheWatch("t-1", 2);
-    await db.delete(plannedWorkoutStages).where(inArray(plannedWorkoutStages.id, ["t-1:3", "t-1:4", "t-1:5"]));
-    await db.update(plannedWorkouts).set({ fallbackEstimatedDurationSeconds: 1200 }).where(eq(plannedWorkouts.id, "t-1"));
+    await tempoOnTheWatch("cw-t-1", 2);
+    await db.delete(plannedWorkoutStages).where(inArray(plannedWorkoutStages.id, ["cw-t-1:3", "cw-t-1:4", "cw-t-1:5"]));
+    await db.update(plannedWorkouts).set({ fallbackEstimatedDurationSeconds: 1200 }).where(eq(plannedWorkouts.id, "cw-t-1"));
     const r = await mainRun();
-    const err = refused((await adjust(r, "t-1", 22)).res);
+    const err = refused((await adjust(r, "cw-t-1", 22)).res);
     expect(err.error).toBe("no_change");
     expect(err.why).toContain("stays 20 min");
   });
 
   it("an unstructured run (no stages) keeps the length alone: the card as before, 'watch unchanged' when it is on the watch, no retime", async () => {
-    await tempoOnTheWatch("t-1", 2);
-    await db.delete(plannedWorkoutStages).where(eq(plannedWorkoutStages.workoutId, "t-1"));
+    await tempoOnTheWatch("cw-t-1", 2);
+    await db.delete(plannedWorkoutStages).where(eq(plannedWorkoutStages.workoutId, "cw-t-1"));
     const r = await mainRun();
-    const data = ok((await adjust(r, "t-1", 25)).res).data as { change: { summary: { text: string }; was: string | null }; issues: Array<{ code: string }> };
+    const data = ok((await adjust(r, "cw-t-1", 25)).res).data as { change: { summary: { text: string }; was: string | null }; issues: Array<{ code: string }> };
     expect(data.change.summary.text).toBe("Tempo — 25 min · watch unchanged");
     expect(data.change.was).toBe("35 min");
     expect(data.issues.map((i) => i.code)).toEqual(["watch_unchanged"]);
     expect((await opsOf(r))[0]!.retime).toBeNull();
+  });
+});
+
+describe("COROS-imported runs keep the length alone (review-L C1): the card says the watch is unchanged, and it is", () => {
+  it("the review's six probes on the watch, one proposal: each card a length, each approved as a length — their stages and the watch untouched", async () => {
+    const probes = IMPORT_PROBES((n) => `imp-${n}`);
+    for (const [i, p] of probes.entries()) {
+      const id = `imp-${i + 1}`;
+      const date = addDays(today, i + 1);
+      await db.insert(plannedWorkouts).values({
+        id, userId, planId: "coros-plan", sourceWorkoutId: `700:${i + 1}`, sourceIdInPlan: String(i + 1), sourceProgramId: `55${i}`, title: p.name,
+        category: p.category, qualitySubtype: p.subtype, sport: "run", originalPlanDate: date, lastVerifiedCorosDate: date, effectiveDate: date,
+        effectiveTime: "12:00", sourceContentFingerprint: "0123456789abcdef", sourceEstimatedDurationSeconds: p.seconds, calendarBlockDurationSeconds: p.seconds + 900,
+        corosSyncState: "synced", completionState: "scheduled", createdAt: nowInstant(), updatedAt: nowInstant(),
+      });
+      await db.insert(plannedWorkoutStages).values(p.stages.map((s) => ({ ...s, workoutId: id })) as never);
+    }
+    const stagesBefore = await db.select().from(plannedWorkoutStages).where(inArray(plannedWorkoutStages.workoutId, probes.map((_, i) => `imp-${i + 1}`)));
+    const r = await mainRun();
+    for (const [i, p] of probes.entries()) {
+      const minutes = Math.round(p.seconds / 60) - 10;
+      const data = ok((await adjust(r, `imp-${i + 1}`, minutes)).res).data as { change: { summary: { text: string } }; issues: Array<{ code: string }> };
+      expect(data.change.summary.text, p.name).toBe(`${p.name} — ${minutes} min · watch unchanged`);
+      expect(data.issues.map((x) => x.code), p.name).toEqual(["watch_unchanged"]);
+    }
+    expect((await opsOf(r)).map((o) => o.retime)).toEqual(probes.map(() => null));
+    const id = await pending(r);
+    let remaining: string[] | null = null;
+    for (let n = 0; remaining === null || remaining.length > 0; n++) {
+      if (n >= MAX_LOOP_ITERATIONS) throw new Error("the approve never finished");
+      const res = await invoke(`/api/coach/proposals/${id}/approve`, remaining ? { opIds: remaining } : {});
+      expect(res.total).toBeLessThanOrEqual(REQUEST_BUDGET);
+      remaining = res.json.remaining as string[];
+    }
+    for (const [i, p] of probes.entries()) expect((await rowOf(`imp-${i + 1}`)).fallbackEstimatedDurationSeconds, p.name).toBe((Math.round(p.seconds / 60) - 10) * 60);
+    expect(await db.select().from(plannedWorkoutStages).where(inArray(plannedWorkoutStages.workoutId, probes.map((_, i) => `imp-${i + 1}`)))).toEqual(stagesBefore);
+    expect(await db.select().from(corosWriteJobs)).toEqual([]);
+  });
+});
+
+describe("a row stating another length than its steps (review-L minor 6)", () => {
+  it("asked for its steps' own length: the length alone, stored and approved — never refused as no change", async () => {
+    // It says 40; its steps are 35 (5 + 5 × 5 + 5).
+    await tempoOnTheWatch("cw-t-1", 2);
+    await db.update(plannedWorkouts).set({ fallbackEstimatedDurationSeconds: 2400 }).where(eq(plannedWorkouts.id, "cw-t-1"));
+    const r = await mainRun();
+    ok((await adjust(r, "cw-t-1", 35)).res);
+    expect((await opsOf(r))[0]!.retime).toBeNull();
+    const stages = await db.select().from(plannedWorkoutStages).where(eq(plannedWorkoutStages.workoutId, "cw-t-1"));
+    const id = await pending(r);
+    await invoke(`/api/coach/proposals/${id}/approve`);
+    expect((await rowOf("cw-t-1")).fallbackEstimatedDurationSeconds).toBe(2100);
+    expect(await db.select().from(plannedWorkoutStages).where(eq(plannedWorkoutStages.workoutId, "cw-t-1"))).toEqual(stages);
   });
 });
 
@@ -212,54 +266,55 @@ describe("the approve: declared from the card, applied when the rule finds it ag
   });
 
   it("applies the card's re-time: the stages, the length, the rewrite queued — within what it declared; asked again, made, nothing written", async () => {
-    await tempoOnTheWatch("t-1", 2);
+    await tempoOnTheWatch("cw-t-1", 2);
     const r = await mainRun();
     // Asked 27: the rule's 25 is what is made — and what "made" is judged by when asked again.
-    ok((await adjust(r, "t-1", 27)).res);
+    ok((await adjust(r, "cw-t-1", 27)).res);
     const id = await pending(r);
     const [op] = await opsOf(r);
     const res = await invoke(`/api/coach/proposals/${id}/approve`);
     expect(res.status).toBe(200);
     expect(res.json).toMatchObject({ status: "approved", coachDrain: true });
-    expect(res.json.changed.map((c: { opId: string }) => c.opId)).toEqual([planAdjustId("t-1")]);
+    expect(res.json.changed.map((c: { opId: string }) => c.opId)).toEqual([planAdjustId("cw-t-1")]);
     expect(res.total).toBeLessThanOrEqual(APPROVE_FIXED + PLAN_BATCH_FIXED + opCostOf(op!, 2 + 1));
-    const row = await rowOf("t-1");
+    const row = await rowOf("cw-t-1");
     expect([row.fallbackEstimatedDurationSeconds, row.stageSummary]).toEqual([1500, op!.retime!.stageSummary]);
-    expect((await db.select().from(plannedWorkoutStages).where(eq(plannedWorkoutStages.workoutId, "t-1"))).length).toBe(5);
-    const update = (await db.select().from(corosWriteJobs).where(and(eq(corosWriteJobs.workoutId, "t-1"), eq(corosWriteJobs.kind, "coach_update_workout"))))[0]!;
+    expect((await db.select().from(plannedWorkoutStages).where(eq(plannedWorkoutStages.workoutId, "cw-t-1"))).length).toBe(5);
+    const update = (await db.select().from(corosWriteJobs).where(and(eq(corosWriteJobs.workoutId, "cw-t-1"), eq(corosWriteJobs.kind, "coach_update_workout"))))[0]!;
     expect(update.status).toBe("queued");
     expect((update.payload as { session: { run: { blocks: unknown[] } } }).session.run.blocks).toHaveLength(5);
     // Asked again: made (its length and its steps the card's) — the applier never runs.
     await db.update(coachProposals).set({ status: "pending", ops: (await opsOf(r)).map((o) => ({ ...o, outcome: undefined })) }).where(eq(coachProposals.id, id));
     const again = await invoke(`/api/coach/proposals/${id}/approve`);
-    expect(again.json.changed.map((c: { opId: string }) => c.opId)).toEqual([planAdjustId("t-1")]);
+    expect(again.json.changed.map((c: { opId: string }) => c.opId)).toEqual([planAdjustId("cw-t-1")]);
     expect((await db.select().from(corosWriteJobs).where(eq(corosWriteJobs.kind, "coach_update_workout"))).length).toBe(1);
   });
 
   it("a row already stating the rule's length, its steps not yet re-timed, is not 'made': its steps are", async () => {
     // It says 25 minutes; its steps are 35 (5 + 5 × 5 + 5). Asked 26, the rule makes 25 — the length it already says.
-    await tempoOnTheWatch("t-1", 2);
-    await db.update(plannedWorkouts).set({ fallbackEstimatedDurationSeconds: 1500 }).where(eq(plannedWorkouts.id, "t-1"));
+    await tempoOnTheWatch("cw-t-1", 2);
+    await db.update(plannedWorkouts).set({ fallbackEstimatedDurationSeconds: 1500 }).where(eq(plannedWorkouts.id, "cw-t-1"));
     const r = await mainRun();
-    ok((await adjust(r, "t-1", 26)).res);
+    ok((await adjust(r, "cw-t-1", 26)).res);
     expect((await opsOf(r))[0]!.retime?.minutes).toBe(25);
     const id = await pending(r);
     const res = await invoke(`/api/coach/proposals/${id}/approve`);
-    expect(res.json.changed.map((c: { opId: string }) => c.opId)).toEqual([planAdjustId("t-1")]);
-    expect((await db.select().from(plannedWorkoutStages).where(eq(plannedWorkoutStages.workoutId, "t-1"))).length).toBe(5);
+    expect(res.json.changed.map((c: { opId: string }) => c.opId)).toEqual([planAdjustId("cw-t-1")]);
+    expect((await db.select().from(plannedWorkoutStages).where(eq(plannedWorkoutStages.workoutId, "cw-t-1"))).length).toBe(5);
   });
 
   it("a run changed since the card (its steps rewritten): refused with why — nothing written", async () => {
-    await tempoOnTheWatch("t-1", 2);
+    await tempoOnTheWatch("cw-t-1", 2);
     const r = await mainRun();
-    ok((await adjust(r, "t-1", 25)).res);
+    ok((await adjust(r, "cw-t-1", 25)).res);
     const id = await pending(r);
     // An import replaced its steps meanwhile: 6 × 5 now.
-    await db.insert(plannedWorkoutStages).values({ id: "t-1:9", workoutId: "t-1", parentStageId: null, ord: 3, kind: "work", repeatCount: null, durationType: "time", durationSeconds: 300, distanceMeters: null, label: "threshold" });
-    const before = await rowOf("t-1");
+    await db.insert(plannedWorkoutStages).values({ id: "cw-t-1:9", workoutId: "cw-t-1", parentStageId: null, ord: 3, kind: "work", repeatCount: null, durationType: "time", durationSeconds: 300, distanceMeters: null, label: "threshold" });
+    const before = await rowOf("cw-t-1");
     const res = await invoke(`/api/coach/proposals/${id}/approve`);
-    expect(res.json.refused).toEqual([{ opId: planAdjustId("t-1"), error: "not_editable", cause: "unknown", why: "A session it re-times has changed since it was suggested, so it is as it was." }]);
-    expect(await rowOf("t-1")).toEqual(before);
+    // Its own cause, the words as they were (review-L minor 5).
+    expect(res.json.refused).toEqual([{ opId: planAdjustId("cw-t-1"), error: "changed_since_suggested", why: "A session it re-times has changed since it was suggested, so it is as it was." }]);
+    expect(await rowOf("cw-t-1")).toEqual(before);
     expect(await db.select().from(corosWriteJobs).where(eq(corosWriteJobs.kind, "coach_update_workout"))).toEqual([]);
   });
 
@@ -267,7 +322,7 @@ describe("the approve: declared from the card, applied when the rule finds it ag
     // A proposal holds at most MAX_CHANGES (10) of adjust_plan's; twelve — two more, as a second run's — is past the
     // approve's plan read (10 ops) too: the hardest split there is.
     expect(MAX_CHANGES).toBe(10);
-    const ids = Array.from({ length: 12 }, (_, i) => `t-${i + 1}`);
+    const ids = Array.from({ length: 12 }, (_, i) => `cw-t-${i + 1}`);
     for (const [i, id] of ids.entries()) await tempoOnTheWatch(id, i + 1);
     const a = await mainRun();
     const b = await mainRun();

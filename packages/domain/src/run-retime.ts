@@ -361,6 +361,22 @@ function wasBeside(now: string, before: string): string {
   return unit(now) !== null && unit(now) === unit(before) && num ? num : before;
 }
 
+/** The most steps a rep of several work pieces is said with whole, "(30s + 2 min + 1 min)". */
+const REP_SAID_WHOLE = 3;
+
+/**
+ * A set of repeats as the summary says it (review-L minor 4): by its one work piece — "3 × 5 min (was 5 × 5)"; a rep
+ * of several work pieces whole when it is short — "3 × (30s + 2 min + 1 min) (was 6)" — else by its longest work piece —
+ * "2 × 400 m (was 4 × 400)". Never by its first piece alone.
+ */
+function repLine(was: RetimeSegment, now: RetimeSegment): string {
+  const work = now.steps.filter((s) => s.role === "work");
+  if (work.length > 1 && now.steps.length <= REP_SAID_WHOLE) return `${now.rounds} × (${now.steps.map((s) => said(s.target)).join(" + ")}) (was ${was.rounds})`;
+  const piece = work.length === 0 ? now.steps[0]! : work.reduce((a, b) => (b.target.seconds > a.target.seconds ? b : a));
+  const s = said(piece.target);
+  return `${now.rounds} × ${s} (was ${was.rounds} × ${wasBeside(s, s)})`;
+}
+
 /** A segment's length said as one figure: its one step's target, else its whole minutes. */
 function lengthOf(seg: RetimeSegment): string {
   return seg.steps.length === 1 && seg.rounds === 1 ? said(seg.steps[0]!.target) : formatStageDuration(Math.round(segmentSeconds(seg) / MINUTE) * MINUTE);
@@ -384,9 +400,7 @@ function result(before: RunStructure, segs: RetimeSegment[], a: number, b: numbe
       return;
     }
     if (y.repeat) {
-      const rep = (y.steps.find((s) => s.role === "work") ?? y.steps[0]!).target;
-      const now = said(rep);
-      parts.push(`${y.rounds} × ${now} (was ${x.rounds} × ${wasBeside(now, now)})`);
+      parts.push(repLine(x, y));
       return;
     }
     if (single) return;

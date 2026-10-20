@@ -248,10 +248,21 @@ describe("short reps beside a main set are accessories: kept as they are (the le
     expect(ok(retimeRun(at(201), 30 * 60)).structure.segments[1]!.rounds).toBeLessThan(6);
   });
 
-  it("a rep holding a long piece as well as a short one is an interval: its count changes", () => {
+  it("a rep holding a long piece as well as a short one is an interval: its count changes — and its line says the whole rep", () => {
     // 30 + 6 × (30 s + 2 min + 1 min) = 51 → 41: reps first — three make 40.5, the block as it was.
     const s = run(one(t("work", 30, "easy")), reps(6, [t("work", 0.5, "strides"), t("work", 2, "interval"), t("recovery", 1, "easy")]));
-    expect(ok(retimeRun(s, 41 * 60)).structure.segments[1]!.rounds).toBe(3);
+    const r = ok(retimeRun(s, 41 * 60));
+    expect(r.structure.segments[1]!.rounds).toBe(3);
+    // Never its first step alone ("3 × 30s"): a short rep is said whole.
+    expect(r.summary).toBe("3 × (30s + 2 min + 1 min) (was 6)");
+  });
+
+  it("a longer rep of several pieces is said by its longest work piece", () => {
+    // 10 + 4 × (200 m + 1 min + 400 m + 2 min) + 10, at 4:00 /km = 4 × 5:24 → 41.6 → 31: two reps make 30.8.
+    const s = run(wu(10), reps(4, [d("work", 200, 240, "interval"), t("recovery", 1), d("work", 400, 240, "interval"), t("recovery", 2)]), cd(10));
+    const r = ok(retimeRun(s, 31 * 60));
+    expect(r.structure.segments[1]!.rounds).toBe(2);
+    expect(r.summary).toBe("2 × 400 m (was 4 × 400)");
   });
 
   it("no block, the reps at one and still too long: the strides give way to the count nearest the target", () => {

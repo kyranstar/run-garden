@@ -17,17 +17,20 @@
  *    document re-timed (`setting.targetMinutes` the new length), its stage rows made from it (`designedRunStages`), and
  *    its watch session the designed run's own (`runWatchSessionOf`, the wire in force) — a count of reps the wire
  *    can't hold is refused.
- *  - A PLAN RUN (an imported COROS session, or one the thread coach put there): its stage rows — a repeat stage a set of
- *    repeats, written-out reps folded (`foldRepeats`) — each stage's role by its kind and its intensity by its label
- *    (else, for an imported stage, by its kind and the row's category), a distance its share of the row's stated
- *    length. It becomes a coach session of the re-timed blocks, written as an ease writes one (its stage rows, its
- *    document) but keeping the row's name, category and subtype; the watch's copy is that session with each distance as
- *    its time — the coach session's wire carries no distance (the body check's ruling for a run on the watch).
- * Anything else — not a run, a race, no stages (an unstructured run), a stage the rule can't read (open, lap button,
- * a repeat inside a repeat) — keeps the length alone (`length_only`): today's adjust, unchanged.
+ *  - A THREAD-COACH RUN (`threadCoachRun`: its `cw-` row, its stages still its blocks): its stage rows — written-out
+ *    reps folded (`foldRepeats`) — each block's intensity its label and its role from the intensities
+ *    (`threadCoachRoles`: an easy float between pickups a recovery), a distance its share of the row's stated length. It
+ *    becomes a coach session of the re-timed blocks, written as an ease writes one (its stage rows, its document) but
+ *    keeping the row's name, category and subtype; the watch's copy is that session with each distance as its time —
+ *    the coach session's wire carries no distance (the body check's ruling for a run on the watch).
+ * Anything else keeps the length alone (`length_only`: today's adjust, unchanged — the card says the watch is
+ * unchanged, and it is): not a run, a race, no stages (an unstructured run), a stage the rule can't read (open, lap
+ * button), steps already the length asked of a row stating another (review-L minor 6) — and A COROS-IMPORTED RUN
+ * (review-L C1; re-timing one properly, its distances and its own targets kept, is a later item: see `threadCoachRun`).
  */
 import {
-  coachRunBlockSchema,
+  ACCESSORY_MAX_METERS,
+  ACCESSORY_MAX_SEC,
   coachSessionSchema,
   foldRepeats,
   expandSegment,
@@ -126,6 +129,17 @@ export interface RetimeCtx {
 
 const LENGTH_ONLY = { kind: "length_only" } as const;
 
+const sum = (xs: readonly number[]): number => xs.reduce((a, b) => a + b, 0);
+
+/**
+ * The rule leaves the steps as they are. When they already are the length asked — the row stating another (review-L
+ * minor 6) — that is the length alone: the row takes it, its steps and the watch's copy stay. Otherwise the reps come no
+ * nearer the length asked: no change.
+ */
+function unchangedOrLength(minutes: number, targetMinutes: number): RowRetime {
+  return minutes === targetMinutes ? LENGTH_ONLY : { kind: "unchanged", minutes };
+}
+
 /** The row's length as every reader takes it. */
 const statedSeconds = (row: RetimeRowFields): number =>
   row.sourceEstimatedDurationSeconds ?? row.fallbackEstimatedDurationSeconds ?? row.calendarBlockDurationSeconds;
@@ -167,7 +181,7 @@ function designedRetime(row: RetimeRowFields, doc: WorkoutDoc, targetMinutes: nu
   const r = retimeRun({ segments }, targetMinutes * 60);
   if ("refused" in r) return { kind: "refused", refusal: r.refused, reason: r.reason };
   const minutes = Math.round(r.seconds / 60);
-  if (!r.changed) return { kind: "unchanged", minutes };
+  if (!r.changed) return unchangedOrLength(minutes, targetMinutes);
 
   const parts = doc.parts.map((part, i) => {
     const seg = r.structure.segments[i]!;
@@ -233,91 +247,88 @@ function shareOut(segments: RetimeSegment[], untimed: ReadonlyArray<readonly [nu
   return true;
 }
 
-// ── A plan run: its stage rows ─────────────────────────────────────────────────────────────────────────────────────
+// ── A thread-coach run: its stage rows ─────────────────────────────────────────────────────────────────────────────
 
 /** The coach's categories a run takes; any other is easy (the body check's own mapping). */
 const RUN_CATEGORIES = ["easy", "long", "quality", "recovery", "race"] as const;
 
-/** A stage's label as the coach's intensity, when it is one ("threshold", "tempo", "jog"…). */
-function labelIntensity(label: string | null): RunIntensity | undefined {
-  if (!label) return undefined;
-  const parsed = coachRunBlockSchema.safeParse({ kind: "duration", value: 1, intensity: label });
-  return parsed.success ? parsed.data.intensity : undefined;
-}
+/** The intensities the thread coach writes as its stage rows' labels (`coachStageRows`: each block's own). */
+const COACH_INTENSITIES: ReadonlySet<string> = new Set<RunIntensity>(["easy", "steady", "threshold", "interval", "rest"]);
+/** The wire's hard intensities (`runBlockRoles`): what makes an easy block either side of them a warm-up or cool-down. */
+const HARD: ReadonlySet<string> = new Set<RunIntensity>(["steady", "threshold", "interval"]);
 
 /**
- * An imported stage's intensity, by its kind — COROS's own structure, where its label is only a name ("Recovery" would
- * read as easy, and an easy block between reps goes to the watch as work): a recovery or a rest is a recovery (bare on
- * the watch, as it was), a warm-up or cool-down easy, the work by the row's category.
+ * THE THREAD COACH'S RUN ONLY (review-L C1). Its row is the thread coach's — a `cw-` id, plan.ts `appMadeRow`'s own
+ * test, which a push to the watch leaves alone — and its stage rows are still its blocks: ids `<row>:<ord>`, flat, each
+ * label an intensity or none. Anything else — a COROS-imported run, or a thread-coach run whose stages a COROS read has
+ * since replaced — keeps the length alone, the watch untouched: a coach session made from an import's stages loses
+ * COROS's own targets, reads its distances as times at the session's average pace, and would rewrite the athlete's own
+ * COROS session with that. LATER: re-time an import through a `run_watch` session that keeps its distances (wire v2) and
+ * each stage's own band (`pace`).
  */
-function kindIntensity(kind: string, row: RetimeRowFields): RunIntensity {
-  if (kind === "rest" || kind === "recovery") return "rest";
-  if (kind !== "work" && kind !== "open") return "easy";
-  if (row.category !== "quality") return "easy";
-  return /interval|vo2|speed|hill|rep|sprint/i.test(row.qualitySubtype ?? "") ? "interval" : "threshold";
+function threadCoachRun(row: RetimeRowFields, sorted: readonly RetimeStageFields[]): boolean {
+  return row.id.startsWith("cw-") && sorted.every((s) => s.id === `${row.id}:${s.ord}` && !s.parentStageId && (s.label === null || COACH_INTENSITIES.has(s.label)));
+}
+
+/** A step no longer than an accessory's (`ACCESSORY_MAX_SEC`, `ACCESSORY_MAX_METERS`). */
+const shortStage = (s: RetimeStageFields): boolean =>
+  s.durationType === "time" ? (s.durationSeconds ?? 0) <= ACCESSORY_MAX_SEC : s.durationType === "distance" ? (s.distanceMeters ?? 0) <= ACCESSORY_MAX_METERS : false;
+
+/**
+ * Each block's role, from its intensity — the thread coach's blocks carry no role, and the stored kinds are the wire's
+ * (`runBlockRoles`), which cannot tell a float from work or pickups from a main set:
+ *  - a rest is a recovery;
+ *  - AN EASY FLOAT IS A RECOVERY (review-L minor 3): an easy block between two pickups (blocks neither easy nor rest),
+ *    and one after a pickup as long as such a float (the last of a written-out set);
+ *  - the first block, easy, is a warm-up, and the last, easy, a cool-down — only beside a hard block longer than an
+ *    accessory: an easy run with pickups is its easy block and its pickups;
+ *  - anything else is work.
+ */
+function threadCoachRoles(sorted: readonly RetimeStageFields[]): RetimeStep["role"][] {
+  const n = sorted.length;
+  const easy = (i: number) => sorted[i]?.label === "easy";
+  const pickup = (i: number) => i >= 0 && i < n && sorted[i]!.label !== "easy" && sorted[i]!.label !== "rest";
+  const lengthOf = (s: RetimeStageFields) => `${s.durationType}:${s.durationSeconds ?? s.distanceMeters}`;
+  const float = sorted.map((_, i) => easy(i) && pickup(i - 1) && pickup(i + 1));
+  const floatLengths = new Set(sorted.filter((_, i) => float[i]).map(lengthOf));
+  sorted.forEach((s, i) => {
+    if (easy(i) && pickup(i - 1) && floatLengths.has(lengthOf(s))) float[i] = true;
+  });
+  const longHard = sorted.map((s) => HARD.has(s.label ?? "") && !shortStage(s));
+  return sorted.map((s, i): RetimeStep["role"] => {
+    if (s.label === "rest" || float[i]) return "recovery";
+    if (i === 0 && n > 1 && easy(i) && longHard.slice(1).some(Boolean)) return "warmup";
+    if (i === n - 1 && n > 1 && easy(i) && longHard.slice(0, i).some(Boolean)) return "cooldown";
+    return "work";
+  });
 }
 
 function planRetime(row: RetimeRowFields, stages: readonly RetimeStageFields[], targetMinutes: number, ctx: RetimeCtx): RowRetime {
   if (stages.length === 0) return LENGTH_ONLY;
-  const ids = new Set(stages.map((s) => s.id));
   const sorted = [...stages].sort((a, b) => a.ord - b.ord);
-  const childrenOf = (id: string) => sorted.filter((s) => s.parentStageId === id);
-  const top = sorted.filter((s) => !s.parentStageId || !ids.has(s.parentStageId));
-  // A thread-coach run's stages are its blocks, in order, ids its own: a block it wrote with no intensity stays without.
-  const coachWritten = sorted.every((s) => s.id === `${row.id}:${s.ord}` && !s.parentStageId);
+  if (!threadCoachRun(row, sorted)) return LENGTH_ONLY;
 
-  // The distances' share of the stated length: what the timed stages leave, by distance (the rounds written out).
-  let timed = 0;
-  let meters = 0;
-  for (const s of top) {
-    const kids = childrenOf(s.id);
-    const times = kids.length > 0 ? Math.max(1, s.repeatCount ?? 1) : 1;
-    for (const k of kids.length > 0 ? kids : [s]) {
-      if (k.durationType === "time") timed += times * (k.durationSeconds ?? 0);
-      else if (k.durationType === "distance") meters += times * (k.distanceMeters ?? 0);
-    }
-  }
+  // The distances' share of the stated length: what the timed blocks leave, by distance.
+  const timed = sum(sorted.map((s) => (s.durationType === "time" ? (s.durationSeconds ?? 0) : 0)));
+  const meters = sum(sorted.map((s) => (s.durationType === "distance" ? (s.distanceMeters ?? 0) : 0)));
   const perMeter = meters > 0 ? (statedSeconds(row) - timed) / meters : 0;
   if (meters > 0 && !(perMeter > 0)) return LENGTH_ONLY;
 
-  const stepOf = (s: RetimeStageFields): RetimeStep | null => {
-    const role: RetimeStep["role"] = s.kind === "warmup" ? "warmup" : s.kind === "cooldown" ? "cooldown" : s.kind === "recovery" || s.kind === "rest" ? "recovery" : "work";
-    // The thread coach's label is its intensity; an imported stage's intensity is its kind's.
-    const intensity = coachWritten ? labelIntensity(s.label) : kindIntensity(s.kind, row);
-    const label = intensity ? { label: intensity } : {};
-    if (s.durationType === "time" && (s.durationSeconds ?? 0) > 0) return { role, target: { kind: "time", seconds: Math.round(s.durationSeconds!) }, ...label };
-    if (s.durationType === "distance" && (s.distanceMeters ?? 0) > 0) {
-      return { role, target: { kind: "distance", meters: s.distanceMeters!, seconds: s.distanceMeters! * perMeter }, ...label };
-    }
-    return null;
-  };
-  const segments: RetimeSegment[] = [];
-  let flat: RetimeStep[] = [];
-  const flush = () => {
-    segments.push(...foldRepeats(flat));
-    flat = [];
-  };
-  for (const s of top) {
-    const kids = childrenOf(s.id);
-    if (s.kind === "repeat" || kids.length > 0) {
-      if (kids.length === 0 || kids.some((k) => childrenOf(k.id).length > 0)) return LENGTH_ONLY;
-      const steps = kids.map(stepOf);
-      if (steps.some((x) => x === null)) return LENGTH_ONLY;
-      flush();
-      segments.push({ rounds: Math.max(1, s.repeatCount ?? 1), steps: steps as RetimeStep[], repeat: true });
-      continue;
-    }
-    const step = stepOf(s);
-    if (!step) return LENGTH_ONLY;
-    flat.push(step);
+  const roles = threadCoachRoles(sorted);
+  const steps: RetimeStep[] = [];
+  for (const [i, s] of sorted.entries()) {
+    const label = s.label ? { label: s.label } : {};
+    const role = roles[i]!;
+    if (s.durationType === "time" && (s.durationSeconds ?? 0) > 0) steps.push({ role, target: { kind: "time", seconds: Math.round(s.durationSeconds!) }, ...label });
+    else if (s.durationType === "distance" && (s.distanceMeters ?? 0) > 0) steps.push({ role, target: { kind: "distance", meters: s.distanceMeters!, seconds: s.distanceMeters! * perMeter }, ...label });
+    else return LENGTH_ONLY;
   }
-  flush();
 
-  const structure: RunStructure = { segments };
+  const structure: RunStructure = { segments: foldRepeats(steps) };
   const r = retimeRun(structure, targetMinutes * 60);
   if ("refused" in r) return { kind: "refused", refusal: r.refused, reason: r.reason };
   const minutes = Math.round(r.seconds / 60);
-  if (!r.changed) return { kind: "unchanged", minutes };
+  if (!r.changed) return unchangedOrLength(minutes, targetMinutes);
 
   const written = r.structure.segments.flatMap(expandSegment);
   const block = (s: RetimeStep, asTime: boolean) => ({

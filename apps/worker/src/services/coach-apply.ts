@@ -72,6 +72,10 @@ import {
  * (writes-OFF era default; the push generalization rides Task A10+).
  */
 
+/** The applier's words for a length whose card the session no longer matches (its re-time, run again at the tap, finds
+ * other steps): the designer's approve refuses it as `changed_since_suggested` (review-L minor 5). */
+export const RETIME_CHANGED = "a session it re-times has changed since it was suggested, so it is as it was";
+
 export interface ApplyResult {
   created: string[];
   updated: string[];
@@ -961,9 +965,10 @@ export async function enqueueContentConvergence(
  *  - its watch copy rewritten (`enqueueContentConvergence`, on what the watch holds: the row as it was read) — refused
  *    quietly when it isn't on the watch, or writes are off: the session not on the watch just gets its new stages.
  * Statements (design-approve.ts `RETIME_COST`): the batch (row, revision, delete, the inserts), the claim (2), the
- * create (1), the rewrite (at most 4) — after the applier's row and stage reads.
+ * create (1), the rewrite (at most 4) — after the applier's row and stage reads. Answers how many queued creates it
+ * brought up to date (0 or 1).
  */
-async function writeRetimed(
+export async function writeRetimed(
   db: Db,
   v: {
     userId: string;
@@ -977,7 +982,7 @@ async function writeRetimed(
     prefs: UserPreferences;
     runWire: RunWire;
   },
-): Promise<void> {
+): Promise<{ createsUpdated: number }> {
   const { row, write: w } = v;
   const pw = plannedWorkouts;
   const seconds = v.minutes * 60;
@@ -1016,8 +1021,13 @@ async function writeRetimed(
     payload: { fingerprint: fingerprint(watch) },
     source: "coach_adjust",
   });
-  // A create not yet run carries the session it was queued with: it goes with the new one.
-  await db
+  // A create not yet run carries the session it was queued with: it goes with the new one — ONLY WHILE IT IS STILL
+  // `queued` (review-L minor 1; the guard is in the WHERE, and the rows it changed are counted). A create the lane has
+  // claimed already carries the old session and lands it; nothing is rewritten behind the athlete's back for it. The
+  // fallback is the app's open claim recorded above (`coach_adjust`): a create's verify never closes it (only a verified
+  // rewrite does), so once the old session lands the row reads "Older on watch" (`content_stale`) and Send is the
+  // athlete's — safer than a rewrite queued after a verify no request is there to see.
+  const retargeted = await db
     .update(corosWriteJobs)
     .set({ payload: sql`json_set(${corosWriteJobs.payload}, '$.session', json(${JSON.stringify(watch)}))`, expectedContentFingerprint: fingerprint(watch), updatedAt: v.now })
     .where(
@@ -1027,7 +1037,8 @@ async function writeRetimed(
         eq(corosWriteJobs.kind, "coach_create_workout"),
         eq(corosWriteJobs.status, "queued"),
       ),
-    );
+    )
+    .returning({ id: corosWriteJobs.id });
   await enqueueContentConvergence(db, {
     userId: v.userId,
     workout: row,
@@ -1037,6 +1048,7 @@ async function writeRetimed(
     ...(v.thresholdPaceSecPerKm !== undefined ? { thresholdPaceSecPerKm: v.thresholdPaceSecPerKm } : {}),
     runWire: v.runWire,
   });
+  return { createsUpdated: retargeted.length };
 }
 
 /**
@@ -1595,7 +1607,7 @@ export async function applyOps(
             weightUnit: prefs.weightUnit,
           });
           if (r.kind !== "retimed" || !sameRetime(r.expect, expected)) {
-            out.missed.push("a session it re-times has changed since it was suggested, so it is as it was");
+            out.missed.push(RETIME_CHANGED);
             break;
           }
           await writeRetimed(db, { userId, row, minutes: r.minutes, write: r.write, proposalId, now, thresholdPaceSecPerKm, prefs, runWire: opts.runWire ?? "v1" });

@@ -134,7 +134,7 @@ import { deriveDoc, startEditing, toProposable, type DocDerived, type DocIssue }
 import type { Db } from "./db.js";
 import { TAKE_WATCH_COPY } from "./watch-copy-marker.js";
 import { CALENDAR_OPS_PER_REQUEST } from "./calendar-sync.js";
-import { applyOps, applyStructuralChunk, NOT_ACTIONABLE, STRUCTURAL_MIN_BUDGET, whyNotActionable, type StructuralProgress } from "./coach-apply.js";
+import { applyOps, applyStructuralChunk, NOT_ACTIONABLE, RETIME_CHANGED, STRUCTURAL_MIN_BUDGET, whyNotActionable, type StructuralProgress } from "./coach-apply.js";
 import { coachDrainQueued } from "./coros-write-cloud.js";
 import { recordReplayFrom } from "./garden-sync.js";
 import {
@@ -199,7 +199,10 @@ export type RefusalCode =
   | "plan_refused"
   /** A programme change (§8 §5) whose settings the athlete changed since it was proposed — or whose programme is gone or
    * retired. */
-  | "stale";
+  | "stale"
+  /** A length re-timed by the rule whose session changed since its card was drawn (adjust-retime.ts; review-L minor 5):
+   * the rule, run again, finds other steps — nothing written. */
+  | "changed_since_suggested";
 
 /** Why a planned workout can't change (`not_editable`), as the Studio's own rules say it — and, for a change's length,
  * that a Studio workout's is its document's (`studio`). */
@@ -1121,7 +1124,10 @@ export async function approveDesignOps(
         outcomes.set(c.id, { status: "applied", at: ctx.now, workoutId: c.op.workoutId, before });
         changed.push({ opId: c.id, change: changeVerb(c), workoutId: c.op.workoutId, before });
       } else {
-        const refusal: Omit<Refused, "opId"> = { error: "not_editable", cause: "unknown", why: applierWhy(missed.shift()) };
+        // A re-timed length whose session changed since the card has its own code (review-L minor 5), its words the same.
+        const said = missed.shift();
+        const refusal: Omit<Refused, "opId"> =
+          said === RETIME_CHANGED ? { error: "changed_since_suggested", why: applierWhy(said) } : { error: "not_editable", cause: "unknown", why: applierWhy(said) };
         refused.push({ opId: c.id, ...refusal });
         outcomes.set(c.id, { status: "refused", at: ctx.now, ...refusal });
       }

@@ -1,19 +1,29 @@
 /**
  * A STRUCTURED RUN'S LENGTH, RE-TIMED BY THE RULE (the owner's decision, 2026-10-20): `retimeOfRow` reads a planned row's
- * structure into @rg/domain's `retimeRun` — a designed run by its document, a plan run (imported, or the thread coach's)
- * by its stage rows — and `applyOps`' `adjust`, given the card's expectation, writes it as an ease writes: the row, its
- * stages, its document, the app's claim, a queued create's session and the watch's rewrite. Synthetic data only.
+ * structure into @rg/domain's `retimeRun` — a designed run by its document, a thread-coach run by its stage rows (a
+ * COROS-imported run keeps the length alone: review-L C1) — and `applyOps`' `adjust`, given the card's expectation,
+ * writes it as an ease writes: the row, its stages, its document, the app's claim, a queued create's session and the
+ * watch's rewrite. Synthetic data only.
  */
 import { describe, expect, it } from "vitest";
 import { and, asc, eq } from "drizzle-orm";
 import { schema } from "@rg/database";
 import { addDays, nowInstant, parseStoredWorkoutDoc, todayInZone, type UserPreferences, type WorkoutDoc } from "@rg/domain";
+import type { Env } from "../src/env.js";
 import type { Db } from "../src/services/db.js";
-import { applyOps } from "../src/services/coach-apply.js";
+import { createSession, SESSION_COOKIE } from "../src/auth/sessions.js";
+import { planRoutes } from "../src/routes/plan.js";
+import { applyOps, writeRetimed } from "../src/services/coach-apply.js";
 import { retimeOfRow, type RetimeExpectation } from "../src/services/adjust-retime.js";
 import { createDesignedRun } from "../src/services/designed-runs.js";
 import { openIntentFor } from "../src/services/sync-intents.js";
-import { makeTestDb, makeTestUser } from "./helpers.js";
+import { makeTestDb, makeTestUser, mountRoutes } from "./helpers.js";
+import { IMPORT_PROBES } from "./import-probes.js";
+
+const ENV = {
+  DB: {} as unknown as Env["DB"], ASSETS: {} as unknown as Env["ASSETS"], APP_URL: "https://app.test", FIXTURE_MODE: "0", AI_DEFAULT_ENABLED: "1",
+  SESSION_SECRET: "s", TOKEN_ENCRYPTION_KEY: Buffer.alloc(32, 7).toString("base64"), ALLOWED_GOOGLE_EMAIL: "runner@example.com", GOOGLE_CLIENT_ID: "c", GOOGLE_CLIENT_SECRET: "c",
+} as Env;
 
 const { plannedWorkouts, plannedWorkoutStages, corosWriteJobs } = schema;
 
@@ -114,6 +124,18 @@ describe("a designed run re-timed by its document", () => {
     expect(session.kind).toBe("run_watch");
     expect(session.segments.map((s) => s.rounds)).toEqual([1, 2, 1]);
     expect((await rowOf(db, id)).corosSyncState).toBe("calendar_only");
+  });
+
+  it("on the watch, its watch version the athlete kept: the newer change stands — the mark lifted, the rewrite on what the watch holds (review-S3 A1)", async () => {
+    const { db, userId, prefs, today } = await setup();
+    const id = await designedRun(db, userId, prefs, today);
+    await onTheWatch(db, id, addDays(today, 2));
+    await db.update(plannedWorkouts).set({ sourceContentFingerprint: "take-watch-copy:0123456789abcdef" }).where(eq(plannedWorkouts.id, id));
+    const card = await cardOf(db, id, 40);
+    await applyOps(db, userId, prefs, "dp-2", [{ kind: "adjust", workoutId: id, durationMinutes: 40 }], { retimes: new Map([[id, card]]) });
+    expect((await rowOf(db, id)).sourceContentFingerprint).toBe("0123456789abcdef");
+    expect((await jobsOf(db, id)).find((j) => j.kind === "coach_update_workout")).toMatchObject({ status: "queued", expectedContentFingerprint: "0123456789abcdef" });
+    expect((await openIntentFor(db, userId, id, "content"))?.source).toBe("coach_adjust");
   });
 
   it("a card the session no longer matches: nothing is written, and the applier says why", async () => {
@@ -222,56 +244,67 @@ describe("a plan run re-timed by its stage rows", () => {
     expect((create!.payload as { session: { run: { blocks: unknown[] } } }).session.run.blocks).toHaveLength(5);
   });
 
-  it("an imported run on the watch whose watch version the athlete kept: re-claimed, its distances on the watch as their time (review-S3 A1)", async () => {
+  it("a create already claimed keeps what it carries: the open claim is the fallback — once it lands, the row says 'Older on watch' (review-L minor 1)", async () => {
     const { db, userId, prefs, today } = await setup();
-    const date = addDays(today, 4);
-    await db.insert(plannedWorkouts).values({
-      id: "imp-1", userId, planId: "coros-plan", sourceWorkoutId: "700:5", sourceIdInPlan: "5", sourceProgramId: "55", title: "VO2 6x1k", category: "quality",
-      qualitySubtype: "intervals", sport: "run", originalPlanDate: date, lastVerifiedCorosDate: date, effectiveDate: date, effectiveTime: "07:00",
-      sourceContentFingerprint: "take-watch-copy:0123456789abcdef", sourceEstimatedDurationSeconds: 3600, calendarBlockDurationSeconds: 5100,
-      corosSyncState: "synced", completionState: "scheduled", createdAt: nowInstant(), updatedAt: nowInstant(),
-    });
-    // 2 km warm-up · 6 × (1 km / 400 m jog) · 2 km cool-down, as COROS sends them: a repeat stage holding its two.
-    const stage = (id: string, ord: number, kind: string, meters: number | null, o: Record<string, unknown> = {}) => ({
-      id, workoutId: "imp-1", parentStageId: null, ord, kind, repeatCount: null, durationType: meters ? "distance" : "none", durationSeconds: null, distanceMeters: meters, label: null, ...o,
-    });
-    // Its labels are COROS's names for the steps, never intensities: "Recovery" is a recovery, whatever the word reads as.
-    await db.insert(plannedWorkoutStages).values([
-      stage("s0", 0, "warmup", 2000, { label: "Warm Up" }),
-      stage("s1", 1, "repeat", null, { repeatCount: 6 }),
-      stage("s2", 2, "work", 1000, { parentStageId: "s1", label: "Run" }),
-      stage("s3", 3, "recovery", 400, { parentStageId: "s1", label: "Recovery" }),
-      stage("s4", 4, "cooldown", 2000, { label: "Cool Down" }),
-    ] as never);
-    const card = await cardOf(db, "imp-1", 45);
-    // 3600 s over 12.4 km: 290 s a km. Four reps make 46 min, three 40 — four is nearer 45.
-    expect(card).toMatchObject({ minutes: 46, summary: "4 × 1 km (was 6 × 1)" });
+    const added = await applyOps(db, userId, prefs, "tp-1", [{ kind: "add", date: addDays(today, 3), session: tempo35 }]);
+    const id = added.created[0]!;
+    // The lane has claimed the create (it read the old session) before the adjust lands.
+    await db.update(corosWriteJobs).set({ status: "claimed", claimedAt: nowInstant() }).where(eq(corosWriteJobs.id, `${id}-push`));
+    const [claimed] = await jobsOf(db, id);
+    const card = await cardOf(db, id, 25);
+    await applyOps(db, userId, prefs, "dp-2", [{ kind: "adjust", workoutId: id, durationMinutes: 25 }], { retimes: new Map([[id, card]]) });
+    // Its update is guarded by `queued`: nothing of the claimed create changes.
+    const [after] = await jobsOf(db, id);
+    expect(after).toEqual(claimed);
+    expect((await openIntentFor(db, userId, id, "content"))?.source).toBe("coach_adjust");
+    // The create lands the old session at its address: the claim still open, the row reads "Older on watch" — Send is
+    // the athlete's to take. (No rewrite is queued behind the athlete's back.)
+    const date = addDays(today, 3);
+    await db.update(corosWriteJobs).set({ status: "verified", verifiedAt: nowInstant() }).where(eq(corosWriteJobs.id, `${id}-push`));
+    await db
+      .update(plannedWorkouts)
+      .set({ sourceWorkoutId: "123:9", sourceIdInPlan: "9", sourceProgramId: "456", lastVerifiedCorosDate: date, sourceContentFingerprint: "0123456789abcdef", corosSyncState: "synced" })
+      .where(eq(plannedWorkouts.id, id));
+    const cookie = `${SESSION_COOKIE}=${await createSession(db, userId)}`;
+    const res = await mountRoutes(db, "/api/plan", planRoutes).request(`/api/plan/workouts/${id}`, { headers: { Cookie: cookie } }, ENV);
+    expect(((await res.json()) as { workout: { corosSyncView: string } }).workout.corosSyncView).toBe("content_stale");
+    expect((await jobsOf(db, id)).map((j) => j.kind)).toEqual(["coach_create_workout"]);
+  });
 
-    await applyOps(db, userId, prefs, "dp-3", [{ kind: "adjust", workoutId: "imp-1", durationMinutes: 45 }], { retimes: new Map([["imp-1", card]]) });
-    const row = await rowOf(db, "imp-1");
-    // The mark lifted: the app's claim is live, and its rewrite is on what the watch holds.
-    expect(row.sourceContentFingerprint).toBe("0123456789abcdef");
-    expect([row.title, row.category, row.qualitySubtype, row.sourceEstimatedDurationSeconds, row.fallbackEstimatedDurationSeconds]).toEqual(["VO2 6x1k", "quality", "intervals", null, 46 * 60]);
-    // The app keeps its distances; the watch's copy has each as its time.
-    expect((await stagesOf(db, "imp-1")).map((s) => [s.durationType, s.distanceMeters ?? s.durationSeconds, s.label])).toEqual([
-      ["distance", 2000, "easy"],
-      ...Array.from({ length: 4 }, () => [["distance", 1000, "interval"], ["distance", 400, "rest"]]).flat(),
-      ["distance", 2000, "easy"],
-    ]);
-    const update = (await jobsOf(db, "imp-1")).find((j) => j.kind === "coach_update_workout")!;
-    expect(update).toMatchObject({ status: "queued", expectedContentFingerprint: "0123456789abcdef" });
-    const blocks = (update.payload as { session: { run: { blocks: Array<{ kind: string; value: number }> } } }).session.run.blocks;
-    expect(blocks.every((b) => b.kind === "duration")).toBe(true);
-    expect(blocks.map((b) => Math.round(b.value * 60))).toEqual([581, ...Array.from({ length: 4 }, () => [290, 116]).flat(), 581]);
-    expect((update.payload as { importedProgramId?: string }).importedProgramId).toBe("55");
-    expect((await openIntentFor(db, userId, "imp-1", "content"))?.source).toBe("coach_adjust");
+  it("the create's update says how many rows it changed: one while it is queued, none once it is claimed", async () => {
+    const { db, userId, prefs, today } = await setup();
+    const added = await applyOps(db, userId, prefs, "tp-1", [{ kind: "add", date: addDays(today, 3), session: tempo35 }]);
+    const id = added.created[0]!;
+    const write = async (minutes: number) => {
+      const row = await rowOf(db, id);
+      const r = retimeOfRow(row, await stagesOf(db, id), minutes, { thresholdSecPerKm: null, runWire: "v1" });
+      if (r.kind !== "retimed") throw new Error("not re-timed");
+      return writeRetimed(db, { userId, row, minutes: r.minutes, write: r.write, proposalId: "dp-2", now: nowInstant(), prefs, runWire: "v1" });
+    };
+    expect(await write(25)).toEqual({ createsUpdated: 1 });
+    await db.update(corosWriteJobs).set({ status: "claimed" }).where(eq(corosWriteJobs.id, `${id}-push`));
+    expect(await write(20)).toEqual({ createsUpdated: 0 });
   });
 });
 
+
 describe("what keeps its length alone", () => {
-  const plain = { id: "x", title: "Run", category: "easy", qualitySubtype: null, sourceEstimatedDurationSeconds: null, fallbackEstimatedDurationSeconds: 1800, calendarBlockDurationSeconds: 1800, workoutDoc: null };
-  const block = { id: "x:0", parentStageId: null, ord: 0, kind: "work", repeatCount: null, durationType: "time", durationSeconds: 1800, distanceMeters: null, label: "easy" };
+  const plain = { id: "cw-p-0-0", title: "Run", category: "easy", qualitySubtype: null, sourceEstimatedDurationSeconds: null, fallbackEstimatedDurationSeconds: 1800, calendarBlockDurationSeconds: 1800, workoutDoc: null };
+  const block = { id: "cw-p-0-0:0", parentStageId: null, ord: 0, kind: "work", repeatCount: null, durationType: "time", durationSeconds: 1800, distanceMeters: null, label: "easy" };
   const ctx = { thresholdSecPerKm: null, runWire: "v1" as const };
+
+  it("a COROS-imported run, whatever its steps — the review's probes (review-L C1): re-timing imports is a later item", () => {
+    for (const p of IMPORT_PROBES((n) => `imp-${n}`)) {
+      const id = p.stages[0]!.id.split(":")[0]!;
+      const row = { ...plain, id, category: p.category, qualitySubtype: p.subtype, sourceEstimatedDurationSeconds: p.seconds, sport: "run" };
+      expect(retimeOfRow(row, p.stages, Math.round(p.seconds / 60) - 10, ctx), p.name).toEqual({ kind: "length_only" });
+    }
+  });
+
+  it("a thread-coach row whose stages a COROS read has since replaced (names, not intensities; COROS's own ids): length only", () => {
+    expect(retimeOfRow({ ...plain, sport: "run" }, [{ ...block, label: "Run" }], 20, ctx)).toEqual({ kind: "length_only" });
+    expect(retimeOfRow({ ...plain, sport: "run" }, [{ ...block, id: "cw-p-0-0:7", label: null }], 20, ctx)).toEqual({ kind: "length_only" });
+  });
 
   it("a lift or a mobility session, a race, a run with no stages, a stage it can't read", () => {
     expect(retimeOfRow({ ...plain, sport: "strength" }, [block], 20, ctx)).toEqual({ kind: "length_only" });
@@ -279,17 +312,10 @@ describe("what keeps its length alone", () => {
     expect(retimeOfRow({ ...plain, sport: "run", category: "race" }, [block], 20, ctx)).toEqual({ kind: "length_only" });
     expect(retimeOfRow({ ...plain, sport: "run" }, [], 20, ctx)).toEqual({ kind: "length_only" });
     expect(retimeOfRow({ ...plain, sport: "run" }, [{ ...block, durationType: "lap_button", durationSeconds: null }], 20, ctx)).toEqual({ kind: "length_only" });
-    // A repeat inside a repeat (the inner one even stating a time of its own).
-    const nested = [
-      { ...block, id: "r1", kind: "repeat", durationType: "none", repeatCount: 2 },
-      { ...block, id: "r2", parentStageId: "r1", ord: 1, kind: "repeat", durationType: "time", durationSeconds: 300, repeatCount: 2 },
-      { ...block, id: "w", parentStageId: "r2", ord: 2 },
-    ];
-    expect(retimeOfRow({ ...plain, sport: "run" }, nested, 20, ctx)).toEqual({ kind: "length_only" });
   });
 
   it("a thread-coach run keeps the intensities it was written with — one it wrote without stays without", () => {
-    const own = (i: number, kind: string, minutes: number, label: string | null) => ({ ...block, id: `x:${i}`, ord: i, kind, durationSeconds: minutes * 60, label });
+    const own = (i: number, kind: string, minutes: number, label: string | null) => ({ ...block, id: `cw-p-0-0:${i}`, ord: i, kind, durationSeconds: minutes * 60, label });
     const stages = [own(0, "warmup", 10, "easy"), own(1, "work", 20, "steady"), own(2, "work", 3, "interval"), own(3, "work", 3, "interval"), own(4, "work", 10, null), own(5, "cooldown", 10, "easy")];
     const r = retimeOfRow({ ...plain, sport: "run", category: "quality", fallbackEstimatedDurationSeconds: 3360 }, stages, 46, ctx);
     if (r.kind !== "retimed" || r.write.family !== "plan") throw new Error(`not re-timed: ${JSON.stringify(r)}`);
@@ -297,16 +323,56 @@ describe("what keeps its length alone", () => {
     expect(r.write.session.run!.blocks.map((b) => b.intensity ?? null)).toEqual(["easy", "steady", "interval", null, "easy"]);
   });
 
+  it("a thread-coach easy run with pickups: an easy float between them is a recovery, so the pickups stay beside the block (review-L minor 3)", () => {
+    // 30 easy · 6 × (1 min interval + 90 s easy float), its kinds as the wire's roles made them (the first easy a
+    // "warm-up", the last float a "cool-down"): 45 → 35 takes the block from 30 to 20, the six pickups as they were.
+    const id = "cw-p-0-0";
+    const own = (i: number, kind: string, seconds: number, label: string) => ({ ...block, id: `${id}:${i}`, ord: i, kind, durationSeconds: seconds, label });
+    const stages = [
+      own(0, "warmup", 1800, "easy"),
+      ...Array.from({ length: 6 }, (_, k) => [own(1 + 2 * k, "work", 60, "interval"), own(2 + 2 * k, k === 5 ? "cooldown" : "work", 90, "easy")]).flat(),
+    ];
+    const r = retimeOfRow({ ...plain, sport: "run", fallbackEstimatedDurationSeconds: 2700 }, stages, 35, ctx);
+    if (r.kind !== "retimed" || r.write.family !== "plan") throw new Error(`not re-timed: ${JSON.stringify(r)}`);
+    expect(r.summary).toBe("easy 20 min (was 30)");
+    expect(r.write.session.run!.blocks.map((b) => [Math.round(b.value * 60), b.intensity])).toEqual([
+      [1200, "easy"],
+      ...Array.from({ length: 6 }, () => [[60, "interval"], [90, "easy"]]).flat(),
+    ]);
+  });
+
+  it("a thread-coach run's distance: the app keeps it (to the 100 m); the watch's copy has it as its time", () => {
+    // 10 easy · 8 km steady · 10 easy, stated 60: the 8 km take 40 minutes (300 s a km). → 50: 6 km.
+    const own = (i: number, o: Record<string, unknown>) => ({ ...block, id: `cw-p-0-0:${i}`, ord: i, ...o });
+    const stages = [own(0, { durationSeconds: 600 }), own(1, { durationType: "distance", durationSeconds: null, distanceMeters: 8000, label: "steady" }), own(2, { durationSeconds: 600 })];
+    const r = retimeOfRow({ ...plain, sport: "run", fallbackEstimatedDurationSeconds: 3600 }, stages, 50, ctx);
+    if (r.kind !== "retimed" || r.write.family !== "plan") throw new Error(`not re-timed: ${JSON.stringify(r)}`);
+    expect(r.write.session.run!.blocks.map((b) => [b.kind, b.value])).toEqual([["duration", 10], ["distance", 6000], ["duration", 10]]);
+    expect(r.write.watchSession.run!.blocks.map((b) => [b.kind, Math.round(b.value * 60)])).toEqual([["duration", 600], ["duration", 1800], ["duration", 600]]);
+  });
+
   it("a single block re-times (it is a structured run: one step on the watch)", () => {
     expect(retimeOfRow({ ...plain, sport: "run" }, [block], 20, ctx)).toMatchObject({ kind: "retimed", minutes: 20, summary: "" });
   });
 
-  it("the rule's refusal and its no-change come through as they are", () => {
-    const wu = { ...block, id: "x:0", kind: "warmup", durationSeconds: 600 };
-    const cd = { ...block, id: "x:1", ord: 1, kind: "cooldown", durationSeconds: 600 };
-    expect(retimeOfRow({ ...plain, sport: "run" }, [wu, cd], 30, ctx)).toMatchObject({ kind: "refused", refusal: "nothing_to_scale" });
-    expect(retimeOfRow({ ...plain, sport: "run" }, [block], 30, ctx)).toEqual({ kind: "unchanged", minutes: 30 });
+  it("the rule's refusals come through as they are", () => {
     expect(retimeOfRow({ ...plain, sport: "run" }, [block], 4, ctx)).toMatchObject({ kind: "refused", refusal: "too_short" });
+    // A designed run of a warm-up and a cool-down only: nothing to scale.
+    const doc = tempoDoc({ parts: [tempoDoc().parts[0]!, tempoDoc().parts[2]!] });
+    expect(retimeOfRow({ ...plain, id: "d-1", sport: "run", fallbackEstimatedDurationSeconds: 1200, workoutDoc: JSON.stringify(doc) }, [], 30, ctx)).toMatchObject({
+      kind: "refused",
+      refusal: "nothing_to_scale",
+    });
+  });
+
+  it("a row stating another length than its steps, asked for its steps' own: the length alone — never 'no change' (review-L minor 6)", () => {
+    // It says 40; its steps are 35 (5 + 5 × 5 + 5). Asked 35: the row takes 35, its steps stay as they are.
+    const own = (i: number, kind: string, label: string) => ({ ...block, id: `cw-p-0-0:${i}`, ord: i, kind, durationSeconds: 300, label });
+    const stages = [own(0, "warmup", "easy"), ...[1, 2, 3, 4, 5].map((i) => own(i, "work", "threshold")), own(6, "cooldown", "easy")];
+    const row = { ...plain, sport: "run", category: "quality", fallbackEstimatedDurationSeconds: 2400 };
+    expect(retimeOfRow(row, stages, 35, ctx)).toEqual({ kind: "length_only" });
+    // Asked 36, the reps come no nearer than 35 (a sixth makes 40): that is no change, said so.
+    expect(retimeOfRow(row, stages, 36, ctx)).toEqual({ kind: "unchanged", minutes: 35 });
   });
 });
 
