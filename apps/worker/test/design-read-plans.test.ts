@@ -4,17 +4,22 @@
  * next three sessions, and whether the coach may change its structure (only a block it wrote, still running). One
  * statement. Synthetic data only, on the rich fixture's fixed clock (today Wed 13 May 2026).
  */
-import { beforeEach, describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { schema } from "@rg/database";
-import { newId } from "@rg/domain";
+import { addDays, newId } from "@rg/domain";
 import type { Env } from "../src/env.js";
 import type { Db } from "../src/services/db.js";
+import { loadNonCoachPlanEntries } from "../src/services/coach-plans.js";
+import { STUDIO_PLAN_RETIRED } from "../src/services/studio-push.js";
 import { READ_TOOLS } from "../src/services/design-tools/index.js";
 import { readPlans } from "../src/services/design-tools/read-plans.js";
 import { RESULT_BUDGET_BYTES } from "../src/services/design-tools/read-common.js";
 import { isToolErr, type ToolErr, type ToolOk } from "../src/services/design-tools/types.js";
 import { at, day, NOW, OTHER_SENTINEL, seedOtherAthlete, seedRichAthlete, TODAY } from "./design-read-fixture.js";
 import { isWrite, makeTestDb, makeTestUser } from "./helpers.js";
+
+/** The words read_plans puts where it once said "plan what comes after it as a new plan" (training lines §3.7). */
+const CONTINUE_LINE = "To continue a line, propose its next phase starting the day after the line's last phase ends; it joins the line.";
 
 const ENV = {} as Env;
 let db: Db;
@@ -53,6 +58,16 @@ async function session(userId: string, planId: string, date: string, o: { title?
     completionState: o.state ?? "scheduled", origin: "coach", archivedAt: o.archived ? at(day(1)) : null, createdAt: at(day(10)), updatedAt: at(day(10)),
   });
   return id;
+}
+
+/** A Studio plan of the athlete's: its brief's start and weeks, its pushes' statuses, retired by the athlete or not. */
+async function studio(userId: string, o: { id: string; name: string; start?: string; weeks: number; createdAt: string; pushes: string[]; retired?: boolean }) {
+  const brief = { goal: "general", durationWeeks: o.weeks, ...(o.start ? { startDate: o.start } : {}) };
+  await db.insert(schema.studioPlans).values({ id: o.id, userId, brief, plan: { name: o.name, brief, weeks: [] }, version: 1, createdAt: o.createdAt, updatedAt: o.createdAt });
+  for (const [n, status] of o.pushes.entries()) {
+    await db.insert(schema.studioPlanPushes).values({ id: newId(), planId: o.id, planVersion: 1, happenDay: addDays(o.start ?? o.createdAt.slice(0, 10), 7 * n), sessionTitle: `W${n + 1} — Lift`, status, updatedAt: o.createdAt });
+  }
+  if (o.retired) await db.insert(schema.auditEvents).values({ id: newId(), userId, kind: STUDIO_PLAN_RETIRED, detail: { studioPlanId: o.id }, createdAt: o.createdAt });
 }
 
 async function read(userId = rich.userId, input: unknown = {}) {
@@ -191,6 +206,99 @@ describe("read_plans", () => {
     expect(r.data.plans.length + r.data.morePlans!).toBe(21);
     // The coach's own running blocks come first: the ones left out are the others.
     expect(r.data.plans[0]!.kind).toBe("coach block");
+  });
+
+  it("lists the coach's blocks as training lines with their phases, and the Studio plan read-only — still one statement; an ended phase says how to continue its line", async () => {
+    // Three running blocks in a row: the bridge ended yesterday (the hourly sweep hasn't flipped it), the base runs, the
+    // build follows with the race. A retired block and a bucket of one-offs are no phase; a lifting block is a line of its own.
+    await block(rich.userId, { id: "cp-bridge", name: "Bridge block", start: day(27), end: day(1) });
+    await block(rich.userId, { id: "cp-base", name: "Base block", start: TODAY, end: day(-25) });
+    await block(rich.userId, { id: "cp-build", name: "Race build", start: day(-26), end: day(-53), race: day(-53) });
+    await block(rich.userId, { id: "cp-dropped", name: "Dropped block", status: "retired", start: day(5), end: day(-10) });
+    await block(rich.userId, { id: `adhoc-run-${rich.userId.slice(0, 8)}`, name: "Coach one-offs", start: day(30), end: day(-2) });
+    await block(rich.userId, { id: "cp-lift", name: "Strength base", discipline: "lift", start: day(10), end: day(-20) });
+    // Two Studio plans: only the newest is the athlete's (as the plan list shows it), written to the watch.
+    await studio(rich.userId, { id: "studio-old", name: "Old Lift Block", start: "2026-02-02", weeks: 8, createdAt: at(day(110)), pushes: ["verified"] });
+    await studio(rich.userId, { id: "studio-new", name: "Full Body Strength", start: "2026-05-04", weeks: 8, createdAt: at(day(12)), pushes: ["verified", "pending"] });
+    const { res, count, writes } = await read();
+    expect(writes).toEqual([]);
+    expect(count).toBe(1);
+    const data = ok(res).data as { plans: Array<Record<string, any>>; lines: Array<Record<string, any>> };
+    const phase = (id: string, name: string, start: string, end: string, ended: boolean) => ({ id, name: { untrusted: true, text: name }, start, end, ended });
+    expect(data.lines).toEqual([
+      {
+        name: "Running",
+        discipline: "run",
+        phases: [phase("cp-bridge", "Bridge block", day(27), day(1), true), phase("cp-base", "Base block", TODAY, day(-25), false), phase("cp-build", "Race build", day(-26), day(-53), false)],
+        end: day(-53),
+        goalRace: day(-53),
+      },
+      { name: "Lifting", discipline: "lift", phases: [phase("cp-lift", "Strength base", day(10), day(-20), false)], end: day(-20), goalRace: null },
+    ]);
+    // The blocks list keeps its ids.
+    const byId = new Map(data.plans.map((p) => [p.id, p]));
+    for (const id of ["cp-bridge", "cp-base", "cp-build", "cp-lift"]) expect(byId.get(id), id).toMatchObject({ kind: "coach block" });
+    expect(byId.get("cp-base")!.coachMayChange).toBe(true);
+    const bridge = byId.get("cp-bridge")!;
+    expect(bridge.coachMayChange).toBe(false);
+    expect(bridge.why).toContain(CONTINUE_LINE);
+    expect(JSON.stringify(ok(res))).not.toContain("as a new plan");
+
+    // The Studio plan: the newest, read-only, with the dates the plan list gives it.
+    expect(byId.has("studio-old")).toBe(false);
+    const lift = byId.get("studio-new")!;
+    expect(lift).toMatchObject({ kind: "Studio plan", discipline: "lift", status: "active", start: "2026-05-04", end: "2026-06-28", coachMayChange: false });
+    expect(lift.name).toEqual({ untrusted: true, text: "Full Body Strength" });
+    expect(lift.why).toMatch(/Studio/);
+    expect(lift.why).toMatch(/adjust_plan/);
+  });
+
+  describe("the Studio plan is the plan list's own (GET /api/coach/plans): the same entry, or none", () => {
+    afterEach(() => vi.useRealTimers());
+    const cases: Array<{ name: string; plans: Array<Parameters<typeof studio>[1]>; listed: string | null; status?: string }> = [
+      { name: "written to the watch and running: active", plans: [{ id: "sp-a", name: "Lift A", start: "2026-05-04", weeks: 6, createdAt: at(day(12)), pushes: ["verified"] }], listed: "sp-a", status: "active" },
+      { name: "a push still on its way: draft", plans: [{ id: "sp-b", name: "Lift B", start: "2026-05-18", weeks: 4, createdAt: at(day(3)), pushes: ["pending", "failed"] }], listed: "sp-b", status: "draft" },
+      { name: "past its last day: completed", plans: [{ id: "sp-c", name: "Lift C", start: "2026-03-02", weeks: 4, createdAt: at(day(80)), pushes: ["verified"] }], listed: "sp-c", status: "completed" },
+      { name: "no start in its brief: its creation day's week", plans: [{ id: "sp-d", name: "Lift D", weeks: 3, createdAt: "2026-05-06T10:00:00.000Z", pushes: ["verified"] }], listed: "sp-d", status: "active" },
+      { name: "every push deleted: none", plans: [{ id: "sp-e", name: "Lift E", start: "2026-05-04", weeks: 6, createdAt: at(day(12)), pushes: ["deleted", "deleted"] }], listed: null },
+      { name: "never pushed: none", plans: [{ id: "sp-f", name: "Lift F", start: "2026-05-04", weeks: 6, createdAt: at(day(12)), pushes: [] }], listed: null },
+      { name: "retired by the athlete: none", plans: [{ id: "sp-g", name: "Lift G", start: "2026-05-04", weeks: 6, createdAt: at(day(12)), pushes: ["verified"], retired: true }], listed: null },
+      {
+        name: "the newest never pushed, an older one on the watch: none (the newest is the athlete's)",
+        plans: [
+          { id: "sp-h-old", name: "Lift H old", start: "2026-04-06", weeks: 8, createdAt: at(day(40)), pushes: ["verified"] },
+          { id: "sp-h-new", name: "Lift H new", start: "2026-05-18", weeks: 8, createdAt: at(day(2)), pushes: [] },
+        ],
+        listed: null,
+      },
+      {
+        name: "two made at the same moment: the same one in both lists (the later id)",
+        plans: [
+          { id: "sp-i-a", name: "Lift I a", start: "2026-05-04", weeks: 6, createdAt: at(day(12)), pushes: ["verified"] },
+          { id: "sp-i-b", name: "Lift I b", start: "2026-05-11", weeks: 6, createdAt: at(day(12)), pushes: ["verified"] },
+        ],
+        listed: "sp-i-b",
+        status: "active",
+      },
+    ];
+    for (const c of cases) {
+      it(c.name, async () => {
+        vi.useFakeTimers({ toFake: ["Date"] });
+        vi.setSystemTime(NOW);
+        const { userId, prefs } = await makeTestUser(db, { timezone: "America/Los_Angeles" });
+        for (const p of c.plans) await studio(userId, p);
+        const { res, count } = await read(userId);
+        expect(count).toBe(1);
+        const shown = ok(res).data.plans.filter((p) => p.kind === "Studio plan");
+        const { studioEntries } = await loadNonCoachPlanEntries(db, userId, prefs);
+        expect(studioEntries.map((e) => e.id)).toEqual(c.listed ? [c.listed] : []);
+        expect(shown.map((p) => ({ id: p.id, name: p.name.text, status: p.status, start: p.start, end: p.end }))).toEqual(
+          studioEntries.map((e) => ({ id: e.id, name: e.name, status: e.status, start: e.startDate, end: e.endDate })),
+        );
+        if (c.status) expect(shown[0]!.status).toBe(c.status);
+        for (const p of shown) expect(p.coachMayChange).toBe(false);
+      });
+    }
   });
 
   it("many blocks with many weeks still fit the result budget: every block named, its shape weeks shortened and counted", async () => {

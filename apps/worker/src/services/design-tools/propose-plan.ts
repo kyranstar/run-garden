@@ -19,7 +19,9 @@
  *    (`too_many_weeks`): fill in one or two weeks and leave the rest as shape weeks;
  *  - a week that doesn't start on a Monday, a session outside its week, a plan that ends before it starts
  *    (`bad_dates`);
- *  - a plan that isn't a block of the coach's still running (`not_your_block`, `not_running`: read_plans says which);
+ *  - a plan that isn't a block of the coach's still running (`not_your_block`, `not_running`: read_plans says which) — a
+ *    block has ended by its status, or once its last day is past (training lines §3.5); the refusal names the phase
+ *    its line goes on in, or the day a next phase continues the line from (`endedRefusal`);
  *  - any fatal finding of the thread coach's guardrails (`plan_refused`, each in its own words) — a past date, a
  *    session that isn't there, a watch plan's structure;
  *  - a lift or mobility session's move an active condition's rules keep out, judged as a document's moves are
@@ -35,9 +37,10 @@
  * THE CEILING. The first plan stored in an auto run raises the run's spending ceiling to a set's, once (the loop's
  * `SetHooks.raisePlan`; as plan_set does, without making the run a set's).
  *
- * Statements: the athlete with the proposal, the restore marker and the plan it names (one read); the thread coach's
- * guardrail context (`guardrailCtx`: the plan's rows, four weeks of activities, the rows' matches — one read per
- * IN_ARRAY_CHUNK rows of the window it reads, GUARDRAIL_MATCH_CHUNKS at most counted — the coach's plans and memory);
+ * Statements: the athlete with the proposal, the restore marker, the plan it names and its discipline's blocks (one
+ * read); the thread coach's guardrail context (`guardrailCtx`: the plan's rows, four weeks of activities, the rows'
+ * matches — one read per IN_ARRAY_CHUNK rows of the window it reads, GUARDRAIL_MATCH_CHUNKS at most counted — the
+ * coach's plans and memory);
  * the athlete's COROS catalog when a session names exercises (their watch identity, as the wake resolves them); and the
  * proposal's guarded upsert. A window holding more than GUARDRAIL_MATCH_CHUNKS × IN_ARRAY_CHUNK planned rows breaks the
  * count; a real athlete's is far below it.
@@ -45,7 +48,7 @@
 import { sql } from "drizzle-orm";
 import { z } from "zod";
 import { accountState, coachPlans, coachProposals } from "@rg/database";
-import { addDays, coachOpSchema, dayLabel, daysBetween, describeOps, isoWeekday, validateOps, type CoachOp, type OpLine } from "@rg/domain";
+import { addDays, coachOpSchema, dayLabel, daysBetween, describeOps, isoWeekday, LINE_GAP_DAYS, linesOf, planEnded, validateOps, type CoachOp, type LineBlock, type OpLine } from "@rg/domain";
 import { guardrailCtx } from "../coach-wake.js";
 import { buildExerciseIndex, exerciseNameMap, resolveOpsExercises } from "../exercise-catalog.js";
 import { OPEN_PROPOSAL_STATUSES } from "../design-review.js";
@@ -62,8 +65,9 @@ import { capInWords, isErr, mainRunIdOf, parseAct, prose } from "./act-common.js
 import { designProposalId, upsertProposal } from "./propose.js";
 import { planConditionFindings, planOffWatchNote, type PlanSession } from "./plan-checks.js";
 import { parsedArray, parsedJson, readAthlete, refuse, untrusted } from "./read-common.js";
-import { LOOSE_PLAN_ID_PREFIX } from "../coach-plans.js";
-import type { DesignTool, ToolOk } from "./types.js";
+import { CONTINUE_LINE } from "./read-plans.js";
+import { lineBlockOf, LOOSE_PLAN_ID_PREFIX } from "../coach-plans.js";
+import type { DesignTool, ToolErr, ToolOk } from "./types.js";
 
 const WHY_MAX = 300;
 /** The most sessions one plan change writes (§8 §5): two weeks of up to twelve — 40 until the decision guidance's fix
@@ -243,6 +247,34 @@ interface PlanRow {
   name: string;
   status: string;
   discipline: string;
+  start: string;
+  end: string;
+}
+
+/**
+ * Why a block that has ended can't change, and what to do instead (training lines §3.5, §3.7) — by its status, or by its
+ * last day once that is past (the hourly sweep flips the status later): its line goes on in the phase now running or
+ * next, or a next phase continues it, from the day after the line's last phase ends (today at the earliest), which joins
+ * the line while it starts within LINE_GAP_DAYS of that end. `phases`: the athlete's blocks of its discipline.
+ */
+function endedRefusal(plan: PlanRow, phases: LineBlock[], today: string): ToolErr {
+  const when = plan.status === "active" || plan.status === "draft" ? `ended on ${plan.end}` : `has ended (${plan.status})`;
+  const line = linesOf(phases, today).find((l) => l.phases.some((p) => p.id === plan.id));
+  if (!line) return refuse("not_running", `That block ${when}.`, `${CONTINUE_LINE} read_plans lists the lines.`);
+  const goesOn = line.ended ? undefined : line.phases.find((p) => p.id === line.currentPhaseId && p.id !== plan.id);
+  const after = addDays(line.endDate, 1);
+  const start = after < today ? today : after;
+  if (goesOn) {
+    return refuse(
+      "not_running",
+      `That block ${when}; its line goes on in ${JSON.stringify(goesOn.name)} (${goesOn.id}).`,
+      `Change that phase instead — or, to continue the line past its end, propose its next phase (createPlan) starting ${start}; it joins the line.`,
+    );
+  }
+  if (start > addDays(line.endDate, LINE_GAP_DAYS)) {
+    return refuse("not_running", `That block ${when}, and its line ended on ${line.endDate}, more than a week ago.`, `What comes next is a line of its own: propose it with createPlan, starting ${today} or later.`);
+  }
+  return refuse("not_running", `That block ${when}.`, `To continue its line, propose its next phase (createPlan) starting ${start}; it joins the line.`);
 }
 
 export const proposePlan: DesignTool = {
@@ -303,8 +335,17 @@ export const proposePlan: DesignTool = {
       propStatus: sql`(select ${coachProposals.status} from ${coachProposals} where ${coachProposals.id} = ${proposalId} and ${coachProposals.userId} = ${ctx.userId})`,
       restoring: sql`(select ${accountState.restoreId} from ${accountState} where ${accountState.userId} = ${ctx.userId})`,
       plan: planId
-        ? sql`(select json_object('id', ${coachPlans.id}, 'name', ${coachPlans.name}, 'status', ${coachPlans.status}, 'discipline', ${coachPlans.discipline})
+        ? sql`(select json_object('id', ${coachPlans.id}, 'name', ${coachPlans.name}, 'status', ${coachPlans.status}, 'discipline', ${coachPlans.discipline},
+              'start', ${coachPlans.startDate}, 'end', ${coachPlans.endDate})
             from ${coachPlans} where ${coachPlans.id} = ${planId} and ${coachPlans.userId} = ${ctx.userId})`
+        : sql`null`,
+      // The athlete's blocks of the named plan's discipline (never a bucket of one-offs): its training line, should it
+      // have ended.
+      phases: planId
+        ? sql`(select json_group_array(json_object('id', b.id, 'discipline', b.discipline, 'status', b.status, 'name', b.name,
+              'startDate', b.start_date, 'endDate', b.end_date, 'raceDate', b.race_date))
+            from ${coachPlans} b where b.user_id = ${ctx.userId} and substr(b.id, 1, ${LOOSE_PLAN_ID_PREFIX.length}) <> ${LOOSE_PLAN_ID_PREFIX}
+              and b.discipline = (select c.discipline from ${coachPlans} c where c.id = ${planId} and c.user_id = ${ctx.userId}))`
         : sql`null`,
       // A new block's running blocks of its discipline over its span (never a loose bucket of one-offs).
       overlaps:
@@ -336,8 +377,10 @@ export const proposePlan: DesignTool = {
       if (!plan || plan.id.startsWith("adhoc-")) {
         return refuse("not_your_block", `${JSON.stringify(planId)} isn't a block of yours: only a plan you wrote can change its shape.`, "Use a plan id read_plans marks coachMayChange — or adjust_plan for one of its sessions.");
       }
-      if (plan.status !== "active" && plan.status !== "draft") {
-        return refuse("not_running", `That block has ended (${plan.status}).`, "Plan what comes after it as a new plan (createPlan).");
+      // Ended by its status, or by its last day once that is past (training lines §3.5): a next phase continues its line.
+      if ((plan.status !== "active" && plan.status !== "draft") || planEnded(plan.end, athlete.today)) {
+        const phases = (parsedArray(extra.phases) as Array<Parameters<typeof lineBlockOf>[0]>).map(lineBlockOf);
+        return endedRefusal(plan, phases, athlete.today);
       }
     }
 

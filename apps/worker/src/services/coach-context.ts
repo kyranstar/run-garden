@@ -45,6 +45,7 @@ import {
 } from "@rg/garden-engine";
 import { chunkIds, type Db } from "./db.js";
 import { pendingTriggers } from "./coach-triggers.js";
+import { isLoosePlan } from "./coach-plans.js";
 import { loggedSetsByActivity, type LoggedExerciseDto } from "./logged-sets.js";
 import { resolveCodesInText } from "./exercise-catalog.js";
 import { findRaceConflict } from "./race-conflict.js";
@@ -379,11 +380,15 @@ export async function buildDossier(
     ...memLines("note", "note"),
   ]);
 
-  // 2 · PLANS — coached plans with firm/shape weeks + block adherence.
-  const plans = await db
-    .select()
-    .from(coachPlans)
-    .where(and(eq(coachPlans.userId, userId), inArray(coachPlans.status, ["active", "draft"])));
+  // 2 · PLANS — coached plans with firm/shape weeks + block adherence. A
+  // bucket of one-offs is no plan (training lines §3.4): its sessions are in
+  // UPCOMING as any session is.
+  const plans = (
+    await db
+      .select()
+      .from(coachPlans)
+      .where(and(eq(coachPlans.userId, userId), inArray(coachPlans.status, ["active", "draft"])))
+  ).filter((p) => !isLoosePlan(p));
   const planLines: string[] = [];
   for (const p of plans) {
     const weeks = await db.select().from(coachPlanWeeks).where(eq(coachPlanWeeks.planId, p.id));

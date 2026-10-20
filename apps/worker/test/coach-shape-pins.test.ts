@@ -45,6 +45,10 @@ const BEFORE = { tools: 34_935, shared: 20_450, main: 4_586 };
  * NOT REBASED 2026-10-19 for a workout's music (stream M): the document's `music` field in the tools' schema, under 150
  * characters (design-music.test.ts pins it) and inside the margin; the criteria for naming a playlist go with the
  * playlists in the athlete's profile block (`playlistLines`), not in the shared prompt — nothing for an athlete without.
+ *
+ * NOT REBASED 2026-10-20 for training lines (the coach sees lines and the Studio plan): read_plans' description names the
+ * Studio plan, 16 characters (tools 39,125 → 39,141), inside the margin — 9,531 since §8's start; its lines, the Studio
+ * plan's entry and how to continue a line are in its answer, not in the prefix.
  */
 const GROWTH_MAX_CHARS = 9_560;
 

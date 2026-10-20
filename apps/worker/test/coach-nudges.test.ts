@@ -5,13 +5,14 @@
  *
  *   a missed session in the last 2 days       → "Rework my week around Tuesday's tempo"
  *   back after 7 or more quiet days           → "Ease me back in"
- *   a plan's next week still an outline, 14 d → "Fill in next week of my 10K plan"
+ *   a plan's next week still an outline, 14 d → "Fill in next week of my running plan" (its training line's name)
  *   a race within 21 days                     → "Get me ready for race day"
- *   a plan ending within 21 days              → "Plan what comes after my half marathon plan"
+ *   a line's last phase ending within 21 days → "Plan what comes after my running plan"
  *
  * `GET /api/coach/nudges` → `{ nudges }`, a 404 while the coach designer is off (as its conversation is).
  */
 import { beforeEach, describe, expect, it } from "vitest";
+import { eq } from "drizzle-orm";
 import { schema } from "@rg/database";
 import { addDays, newId, nowInstant, todayInZone, type UserPreferences } from "@rg/domain";
 import type { Env } from "../src/env.js";
@@ -106,14 +107,22 @@ async function seedActivity(id: string, date: string): Promise<void> {
   });
 }
 
-async function seedPlan(o: { id: string; name: string; endDate: string; raceDate?: string | null; status?: string }): Promise<void> {
+async function seedPlan(o: {
+  id: string;
+  name: string;
+  endDate: string;
+  startDate?: string;
+  discipline?: string;
+  raceDate?: string | null;
+  status?: string;
+}): Promise<void> {
   await db.insert(schema.coachPlans).values({
     id: o.id,
     userId,
-    discipline: "run",
+    discipline: o.discipline ?? "run",
     name: o.name,
     status: o.status ?? "active",
-    startDate: addDays(today, -30),
+    startDate: o.startDate ?? addDays(today, -30),
     endDate: o.endDate,
     raceDate: o.raceDate ?? null,
     stampPrefix: o.name,
@@ -219,20 +228,35 @@ describe("back after 7 or more quiet days", () => {
 });
 
 describe("a plan's next week still an outline within 14 days", () => {
-  it("offers to fill it in, by the plan's name", async () => {
+  it("offers to fill it in, by its training line's name — a line of one phase too", async () => {
     await seedPlan({ id: "cp1", name: "10K", endDate: addDays(today, 60) });
     await seedWeek("cp1", addDays(today, -2), "firm");
     await seedWeek("cp1", addDays(today, 12), "shape");
     expect(await nudges()).toEqual([
-      { id: "horizon:cp1", label: "Fill in next week of my 10K plan", request: "Fill in next week of my 10K plan." },
+      { id: "horizon:cp1", label: "Fill in next week of my running plan", request: "Fill in next week of my running plan." },
     ]);
+  });
+
+  it("an outline week of any phase of the line: the line's name, never the phase's", async () => {
+    // A bridge block ending in 3 days, the base block from the day after (one line); the outline week is the base block's.
+    await seedPlan({ id: "cp-bridge", name: "Bridge", startDate: addDays(today, -20), endDate: addDays(today, 3) });
+    await seedPlan({ id: "cp-base", name: "Base", startDate: addDays(today, 4), endDate: addDays(today, 40) });
+    await seedWeek("cp-bridge", addDays(today, -3), "firm");
+    await seedWeek("cp-base", addDays(today, 6), "shape");
+    expect(await nudges()).toEqual([
+      { id: "horizon:cp-base", label: "Fill in next week of my running plan", request: "Fill in next week of my running plan." },
+    ]);
+    // A lifting line's outline week, sooner — starting today, so this week's: the lifting line's name.
+    await seedPlan({ id: "cp-lift", name: "Strength block", discipline: "lift", startDate: addDays(today, -10), endDate: addDays(today, 30) });
+    await seedWeek("cp-lift", today, "shape");
+    expect((await nudges())[0]).toEqual({ id: "horizon:cp-lift", label: "Fill in this week of my lifting plan", request: "Fill in this week of my lifting plan." });
   });
 
   it("an outline week already under way is this week's", async () => {
     await seedPlan({ id: "cp1", name: "Base plan", endDate: addDays(today, 60) });
     await seedWeek("cp1", addDays(today, -3), "shape");
     expect(await nudges()).toEqual([
-      { id: "horizon:cp1", label: "Fill in this week of my Base plan", request: "Fill in this week of my Base plan." },
+      { id: "horizon:cp1", label: "Fill in this week of my running plan", request: "Fill in this week of my running plan." },
     ]);
   });
 
@@ -270,20 +294,44 @@ describe("a race within 21 days", () => {
   });
 });
 
-describe("a plan ending within 21 days", () => {
-  it("offers to plan what comes after it", async () => {
+describe("a line's last phase ending within 21 days", () => {
+  it("offers to plan what comes after it, by the line's name", async () => {
     await seedPlan({ id: "cp1", name: "half marathon", endDate: addDays(today, 21) });
     expect(await nudges()).toEqual([
       {
         id: "ending:cp1",
-        label: "Plan what comes after my half marathon plan",
-        request: "Plan what comes after my half marathon plan — it ends in 21 days.",
+        label: "Plan what comes after my running plan",
+        request: "Plan what comes after my running plan — it ends in 21 days.",
       },
     ]);
   });
 
+  it("three blocks in a row: no chip while a next phase follows on, until the line's last phase ends within 21 days", async () => {
+    // Bridge, base and build abut: the line ends with the build, 59 days out.
+    await seedPlan({ id: "cp-bridge", name: "Bridge", startDate: addDays(today, -20), endDate: addDays(today, 3) });
+    await seedPlan({ id: "cp-base", name: "Base", startDate: addDays(today, 4), endDate: addDays(today, 31) });
+    await seedPlan({ id: "cp-build", name: "Build", startDate: addDays(today, 32), endDate: addDays(today, 59) });
+    expect(await nudges()).toEqual([]);
+    // The build moved up: the line now ends in 21 days — the chip names the line, and is its last phase's.
+    await db.update(schema.coachPlans).set({ endDate: addDays(today, 17) }).where(eq(schema.coachPlans.id, "cp-base"));
+    await db.update(schema.coachPlans).set({ startDate: addDays(today, 18), endDate: addDays(today, 21) }).where(eq(schema.coachPlans.id, "cp-build"));
+    expect(await nudges()).toEqual([
+      { id: "ending:cp-build", label: "Plan what comes after my running plan", request: "Plan what comes after my running plan — it ends in 21 days." },
+    ]);
+  });
+
+  it("a line ending today still asks; the soonest-ending line first", async () => {
+    // The running line started first: the lifting line, ending sooner, still comes first.
+    await seedPlan({ id: "cp-run", name: "10K", startDate: addDays(today, -40), endDate: addDays(today, 15) });
+    await seedPlan({ id: "cp-lift", name: "Strength", discipline: "lift", endDate: today });
+    expect(await nudges()).toEqual([
+      { id: "ending:cp-lift", label: "Plan what comes after my lifting plan", request: "Plan what comes after my lifting plan — it ends today." },
+    ]);
+  });
+
   it("stays quiet for one ending in 22 days, one already ended, and a bucket of one-offs", async () => {
-    await seedPlan({ id: "cp1", name: "Long", endDate: addDays(today, 22) });
+    // Two lines: the one ended yesterday (still active: the hourly sweep hasn't run) is more than a week before the next.
+    await seedPlan({ id: "cp1", name: "Long", startDate: addDays(today, 7), endDate: addDays(today, 22) });
     await seedPlan({ id: "cp2", name: "Done", endDate: addDays(today, -1) });
     await seedPlan({ id: `adhoc-run-${userId.slice(0, 8)}`, name: "Coach one-offs", endDate: today });
     expect(await nudges()).toEqual([]);
@@ -366,7 +414,7 @@ describe("at most two, the most pressing first", () => {
   it("the athlete's own words count too: the request or the label, whatever the case, spacing or punctuation", async () => {
     await seedPlan({ id: "cp1", name: "half marathon", endDate: addDays(today, 20) });
     expect(ids(await nudges())).toEqual(["ending:cp1"]);
-    await seedRun("plan what comes after my half-marathon plan!!", new Date().toISOString());
+    await seedRun("plan what comes after MY running-plan!!", new Date().toISOString());
     expect(await nudges()).toEqual([]);
   });
 
@@ -405,7 +453,7 @@ describe("GET /api/coach/nudges", () => {
     expect(res.status).toBe(200);
     expect(await res.json()).toEqual({
       nudges: [
-        { id: "horizon:cp1", label: "Fill in next week of my 10K plan", request: "Fill in next week of my 10K plan." },
+        { id: "horizon:cp1", label: "Fill in next week of my running plan", request: "Fill in next week of my running plan." },
         { id: `race:${addDays(today, 10)}`, label: "Get me ready for race day", request: "My race is in 10 days. Get me ready for race day." },
       ],
     });

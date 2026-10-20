@@ -154,6 +154,24 @@ describe("buildDossier", () => {
     expect(a.text).toContain("sanctioned rest used 0 of 1 this rolling week");
     expect(a.text).toContain("HRV unknownms · RHR unknownbpm");
   });
+
+  it("PLANS lists no bucket of one-offs: a bucket is no plan (training lines §3.4)", async () => {
+    const db = makeTestDb();
+    const { userId, prefs } = await makeTestUser(db);
+    const today = todayInZone(prefs.timezone);
+    const at = nowInstant();
+    const bucket = `adhoc-run-${userId.slice(0, 8)}`;
+    for (const p of [
+      { id: "cp-base", name: "Base block", startDate: addDays(today, -7), endDate: addDays(today, 21) },
+      { id: bucket, name: "Coach one-offs", startDate: addDays(today, -3), endDate: addDays(today, 2) },
+    ]) {
+      await db.insert(schema.coachPlans).values({ ...p, userId, discipline: "run", status: "active", raceDate: null, stampPrefix: p.name, createdAt: at, updatedAt: at });
+    }
+    const d = await buildDossier(db, userId, prefs, today);
+    expect(d.text).toContain("plan [cp-base] Base block · run · active");
+    expect(d.text).not.toContain("adhoc-");
+    expect(d.text).not.toContain("Coach one-offs");
+  });
 });
 
 describe("RECENT READS (2026-08-11 rework §3)", () => {

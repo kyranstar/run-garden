@@ -308,6 +308,81 @@ describe("propose_plan: refused in words, nothing written", () => {
     expect(refused((await propose(run, { change: { kind: "retirePlan", planId: "cp-old" }, why: "x" })).res).error).toBe("not_running");
   });
 
+  it("a block past its end, its stored status still active (the hourly sweep not yet run): refused by date, naming its line's next phase", async () => {
+    const phase = async (id: string, name: string, start: string, end: string) =>
+      db.insert(schema.coachPlans).values({
+        id, userId: rich.userId, discipline: "run", name, status: "active", startDate: start, endDate: end, raceDate: null,
+        stampPrefix: name, createdAt: at(day(30)), updatedAt: at(day(30)),
+      });
+    // The bridge ended yesterday; the base block follows on from today: one line. A bucket of one-offs is no phase of it.
+    await phase("cp-bridge", "Bridge block", day(27), day(1));
+    await phase("cp-base", "Base block", TODAY, day(-25));
+    await phase(`adhoc-run-${rich.userId.slice(0, 8)}`, "Coach one-offs", day(-1), day(-40));
+    const run = await mainRun();
+    const extend = { kind: "extendPlan", planId: "cp-bridge", shapeWeeks: [{ weekStart: "2026-05-18", volumeTarget: "30 km", keySessions: ["long 12 km"] }] };
+    const r = await propose(run, { change: extend, why: "More base." });
+    const err = refused(r.res);
+    expect(err.error).toBe("not_running");
+    expect(err.why).toContain("ended");
+    expect(err.why).toContain('"Base block" (cp-base)');
+    // Its line ends with the base block: the next phase starts the day after.
+    expect(err.fix).toContain(`propose its next phase (createPlan) starting ${day(-26)}`);
+    expect(err.fix).toContain("it joins the line");
+    expect(err.fix).not.toContain("as a new plan");
+    expect(r.count).toBe(1);
+    expect(r.writes).toBe(0);
+    expect(await opsOf(run.id)).toBeUndefined();
+    // Each change to it is refused alike — a retirement, a wind-down — and the phase still running takes the change.
+    expect(refused((await propose(run, { change: { kind: "retirePlan", planId: "cp-bridge" }, why: "x" })).res).error).toBe("not_running");
+    ok((await propose(run, { change: { ...extend, planId: "cp-base", shapeWeeks: [{ weekStart: "2026-06-08", volumeTarget: "30 km", keySessions: ["long 12 km"] }] }, why: "More base." })).res);
+  });
+
+  describe("the last phase of a line past its end: its next phase from the day after, today at the earliest — joining the line within a week", () => {
+    const cases: Array<{ endedDaysAgo: number; fix: string }> = [
+      { endedDaysAgo: 1, fix: `To continue its line, propose its next phase (createPlan) starting ${TODAY}; it joins the line.` },
+      { endedDaysAgo: 3, fix: `To continue its line, propose its next phase (createPlan) starting ${TODAY}; it joins the line.` },
+      { endedDaysAgo: 7, fix: `To continue its line, propose its next phase (createPlan) starting ${TODAY}; it joins the line.` },
+      { endedDaysAgo: 8, fix: `What comes next is a line of its own: propose it with createPlan, starting ${TODAY} or later.` },
+    ];
+    for (const c of cases) {
+      it(`ended ${c.endedDaysAgo} days ago`, async () => {
+        await db.insert(schema.coachPlans).values({
+          id: "cp-only", userId: rich.userId, discipline: "run", name: "Spring 10K", status: "active", startDate: day(40), endDate: day(c.endedDaysAgo), raceDate: null,
+          stampPrefix: "Spring 10K", createdAt: at(day(40)), updatedAt: at(day(40)),
+        });
+        const run = await mainRun();
+        const err = refused((await propose(run, { change: { kind: "extendPlan", planId: "cp-only", shapeWeeks: [{ weekStart: "2026-05-18", volumeTarget: "30 km", keySessions: [] }] }, why: "x" })).res);
+        expect(err.error).toBe("not_running");
+        expect(err.why).toContain(`ended on ${day(c.endedDaysAgo)}`);
+        expect(err.why).not.toContain("goes on");
+        expect(err.fix).toBe(c.fix);
+      });
+    }
+
+    it("an earlier phase of a line that has ended: no phase goes on — its next phase continues the line", async () => {
+      for (const [id, start, end] of [["cp-bridge", day(40), day(20)], ["cp-base", day(19), day(3)]] as const) {
+        await db.insert(schema.coachPlans).values({
+          id, userId: rich.userId, discipline: "run", name: id, status: "completed", startDate: start, endDate: end, raceDate: null,
+          stampPrefix: id, createdAt: at(day(40)), updatedAt: at(day(40)),
+        });
+      }
+      const run = await mainRun();
+      const err = refused((await propose(run, { change: { kind: "retirePlan", planId: "cp-bridge" }, why: "x" })).res);
+      expect(err.error).toBe("not_running");
+      expect(err.why).toBe("That block has ended (completed).");
+      expect(err.fix).toBe(`To continue its line, propose its next phase (createPlan) starting ${TODAY}; it joins the line.`);
+    });
+
+    it("a block ending today is still running: it takes the change", async () => {
+      await db.insert(schema.coachPlans).values({
+        id: "cp-today", userId: rich.userId, discipline: "run", name: "Spring 10K", status: "active", startDate: day(27), endDate: TODAY, raceDate: null,
+        stampPrefix: "Spring 10K", createdAt: at(day(30)), updatedAt: at(day(30)),
+      });
+      const run = await mainRun();
+      ok((await propose(run, { change: { kind: "extendPlan", planId: "cp-today", shapeWeeks: [{ weekStart: "2026-05-18", volumeTarget: "30 km", keySessions: [] }] }, why: "x" })).res);
+    });
+  });
+
   it("a proposal already with the athlete", async () => {
     const run = await mainRun();
     ok((await propose(run, { change: createPlan(), why: "x" })).res);

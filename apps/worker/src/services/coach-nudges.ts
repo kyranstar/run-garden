@@ -1,8 +1,8 @@
 import { and, desc, eq, gte, inArray, isNull, lte, sql } from "drizzle-orm";
 import { activities, coachPlans, coachPlanWeeks, coachReads, coachRuns, plannedWorkouts, weeklyReviews, workoutCompletionMatches } from "@rg/database";
-import { addDays, QUALITY_SUBTYPE_LABELS, startOfIsoWeek, type LocalDate, type QualitySubtype, type UserPreferences } from "@rg/domain";
+import { addDays, lineSentenceName, linesOf, QUALITY_SUBTYPE_LABELS, startOfIsoWeek, type LocalDate, type QualitySubtype, type UserPreferences } from "@rg/domain";
 import { chunkIds, type Db } from "./db.js";
-import { isLoosePlan } from "./coach-plans.js";
+import { isLoosePlan, lineBlockOf } from "./coach-plans.js";
 import { reviewOpening, sessionDays, sessionOpening, type CoachOpeningLine, type FinishedSession } from "./coach-opening-line.js";
 import { COMEBACK_GAP_DAYS, FIRM_HORIZON_DAYS, PLAN_ENDING_DAYS, REFIRE_WINDOW_MS } from "./coach-triggers.js";
 
@@ -16,11 +16,13 @@ import { COMEBACK_GAP_DAYS, FIRM_HORIZON_DAYS, PLAN_ENDING_DAYS, REFIRE_WINDOW_M
  *   1. a session missed in the last 2 days (missed, skipped by the athlete, or asked about and unanswered) — "Rework my
  *      week around Tuesday's tempo";
  *   2. back after a gap of a week or more (the latest activity in the last 2 days) — "Ease me back in";
- *   3. a running plan's next outline week starting within 14 days — "Fill in next week of my 10K plan" (the outline is
- *      what the coach fills in; nothing else will now);
+ *   3. a plan's next outline week starting within 14 days — "Fill in next week of my running plan" (the outline is what
+ *      the coach fills in; nothing else will now), whichever phase of its training line holds it;
  *   4. a race within 21 days (Settings' race day, else a running plan's) — "Get me ready for race day";
- *   5. a running plan ending within 21 days — "Plan what comes after my half marathon plan".
- * The pressing first: what just happened, then what the plan needs to keep going, then what is coming.
+ *   5. a training line's last phase ending within 21 days, today or later — "Plan what comes after my running plan" (a
+ *      phase another follows on from is no end: training lines §3.7).
+ * The pressing first: what just happened, then what the plan needs to keep going, then what is coming. A plan is named
+ * by its training line (@rg/domain `linesOf` over the active blocks, `lineSentenceName`) — a line of one phase too.
  *
  * A chip the athlete already asked in the last three days stays away, and the next one takes its place: never the same
  * nudge twice while the coach is working on it — each tap is a paid run (review-1 I3). Every request holds its label and
@@ -63,12 +65,6 @@ const RECENT_ASKS_MAX = 50;
 
 /** States a past session is missed in: the athlete said so, skipped it, or was asked and has not answered. */
 const MISSED_STATES = ["missed", "skipped", "unresolved"];
-
-/** How a plan is named in the athlete's words: "my 10K plan" — never "my Base plan plan". */
-export function planPhrase(name: string): string {
-  const n = name.trim();
-  return /\bplan$/i.test(n) ? `my ${n}` : `my ${n} plan`;
-}
 
 /** A local date's weekday, the same in every zone (it is a calendar date, read at its own noon). */
 function weekdayOf(date: LocalDate): string {
@@ -200,7 +196,15 @@ export async function readCoachOpening(
       .orderBy(desc(activities.startTime))
       .limit(2),
     db
-      .select({ id: coachPlans.id, name: coachPlans.name, endDate: coachPlans.endDate, raceDate: coachPlans.raceDate })
+      .select({
+        id: coachPlans.id,
+        name: coachPlans.name,
+        discipline: coachPlans.discipline,
+        status: coachPlans.status,
+        startDate: coachPlans.startDate,
+        endDate: coachPlans.endDate,
+        raceDate: coachPlans.raceDate,
+      })
       .from(coachPlans)
       .where(and(eq(coachPlans.userId, userId), eq(coachPlans.status, "active"))),
     // Last week's review, written by Monday's cron (its narrative already paid for).
@@ -211,7 +215,10 @@ export async function readCoachOpening(
       .limit(1),
   ]);
   // A bucket of one-offs is no plan: it has no weeks, and is forever "ending" on its last one-off.
-  const blocks = plans.filter((p) => !isLoosePlan(p)).sort((a, b) => (a.endDate < b.endDate ? -1 : a.endDate > b.endDate ? 1 : 0));
+  const blocks = plans.filter((p) => !isLoosePlan(p));
+  // The active blocks as training lines: a chip names the line, and a line ends with its last phase.
+  const lines = linesOf(blocks.map(lineBlockOf), today);
+  const lineOf = (planId: string) => lines.find((l) => l.phases.some((p) => p.id === planId));
 
   const found: CoachNudge[] = [];
 
@@ -260,11 +267,11 @@ export async function readCoachOpening(
       );
     }
     const next = weeks[0];
-    const plan = next ? blocks.find((p) => p.id === next.planId) : undefined;
-    if (next && plan) {
+    const line = next ? lineOf(next.planId) : undefined;
+    if (next && line) {
       const which = next.weekStart <= today ? "this week" : "next week";
-      const words = `Fill in ${which} of ${planPhrase(plan.name)}`;
-      found.push({ id: `horizon:${plan.id}`, label: words, request: `${words}.` });
+      const words = `Fill in ${which} of ${lineSentenceName(line.discipline)}`;
+      found.push({ id: `horizon:${next.planId}`, label: words, request: `${words}.` });
     }
   }
 
@@ -284,11 +291,14 @@ export async function readCoachOpening(
     });
   }
 
-  // 5. A plan ending: the soonest.
-  const ending = blocks.find((p) => p.endDate >= today && p.endDate <= addDays(today, PLAN_ENDING_DAYS));
+  // 5. A line ending — its last phase, no next phase following on — the soonest; its chip that last phase's.
+  const ending = lines
+    .filter((l) => l.endDate >= today && l.endDate <= addDays(today, PLAN_ENDING_DAYS))
+    .sort((a, b) => (a.endDate < b.endDate ? -1 : a.endDate > b.endDate ? 1 : 0))[0];
   if (ending) {
-    const label = `Plan what comes after ${planPhrase(ending.name)}`;
-    found.push({ id: `ending:${ending.id}`, label, request: `${label} — it ends ${inDays(daysBetween(today, ending.endDate))}.` });
+    const last = ending.phases.filter((p) => p.endDate === ending.endDate).at(-1)!;
+    const label = `Plan what comes after ${lineSentenceName(ending.discipline)}`;
+    found.push({ id: `ending:${last.id}`, label, request: `${label} — it ends ${inDays(daysBetween(today, ending.endDate))}.` });
   }
 
   // The opening's own line: the review first, then the newest session still news — each with the moment after which an

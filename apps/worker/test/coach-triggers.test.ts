@@ -114,6 +114,48 @@ describe("coach triggers", () => {
     expect(await evaluateTriggers(db, userId, prefs, today)).not.toContain("plan_ending");
   });
 
+  describe("plan_ending is a training line's (training lines §3.7): its last phase, ending today or later", () => {
+    async function block(db: Db, userId: string, id: string, start: string, end: string, discipline = "run"): Promise<void> {
+      await db.insert(schema.coachPlans).values({
+        id, userId, discipline, name: `Block ${id}`, status: "active", startDate: start, endDate: end, raceDate: null,
+        stampPrefix: id, createdAt: nowInstant(), updatedAt: nowInstant(),
+      });
+    }
+
+    it("stays quiet for a phase another follows on from", async () => {
+      const db = makeTestDb();
+      const { userId, prefs } = await makeTestUser(db);
+      const today = todayInZone(prefs.timezone);
+      await block(db, userId, "cp-bridge", addDays(today, -20), addDays(today, 5));
+      await block(db, userId, "cp-base", addDays(today, 6), addDays(today, 40));
+      expect(await evaluateTriggers(db, userId, prefs, today)).not.toContain("plan_ending");
+    });
+
+    it("stays quiet for a phase that has ended (its status not yet flipped by the hourly sweep)", async () => {
+      const db = makeTestDb();
+      const { userId, prefs } = await makeTestUser(db);
+      const today = todayInZone(prefs.timezone);
+      await block(db, userId, "cp-done", addDays(today, -30), addDays(today, -1));
+      expect(await evaluateTriggers(db, userId, prefs, today)).not.toContain("plan_ending");
+    });
+
+    it("fires for the line's last phase, ending within 21 days — today too", async () => {
+      const db = makeTestDb();
+      const { userId, prefs } = await makeTestUser(db);
+      const today = todayInZone(prefs.timezone);
+      await block(db, userId, "cp-bridge", addDays(today, -20), addDays(today, 5));
+      await block(db, userId, "cp-base", addDays(today, 6), addDays(today, 21));
+      expect(await evaluateTriggers(db, userId, prefs, today)).toContain("plan_ending");
+      const [row] = (await pendingTriggers(db, userId)).filter((t) => t.kind === "plan_ending");
+      expect(row!.evidence).toEqual({ planId: "cp-base", name: "Block cp-base", endDate: addDays(today, 21) });
+
+      const db2 = makeTestDb();
+      const u2 = await makeTestUser(db2);
+      await block(db2, u2.userId, "cp-lift", addDays(today, -20), today, "lift");
+      expect(await evaluateTriggers(db2, u2.userId, u2.prefs, today)).toContain("plan_ending");
+    });
+  });
+
   it("plan_horizon fires when firm detail runs short with shape weeks waiting", async () => {
     const db = makeTestDb();
     const { userId, prefs } = await makeTestUser(db);

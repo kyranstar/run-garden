@@ -1,22 +1,31 @@
 /**
  * read_plans() — the athlete's plans (§8 §5, stream W): the coach's own blocks (`coach_plans`, not a loose bucket of
- * one-offs), the athlete's adaptive programmes and the watch's plans, each with its id, kind, name, start and end, race
- * day, firm and shape weeks (a block's), the next three sessions still to come, and whether the coach may change its
- * STRUCTURE (`coachMayChange`): only a block it wrote that is still running — propose_plan extends it, firms up a week,
- * winds it down or retires it; a watch plan's sessions are moved, skipped or eased with adjust_plan, a programme is the
- * athlete's own: its `settings` — days, weekly goal, minutes, block length, modes, care (each switched-on condition's
- * with care, on or off) — change with change_programme. A block that ended in the last ENDED_DAYS days is listed too
- * (what comes after it is a plan worth making), never changeable.
+ * one-offs), the athlete's adaptive programmes, the athlete's Studio plan and the watch's plans, each with its id, kind,
+ * name, start and end, race day, firm and shape weeks (a block's), the next three sessions still to come (not the Studio
+ * plan's: its sessions are the watch's, read_plan lists them), and whether the coach may change its STRUCTURE
+ * (`coachMayChange`): only a block it wrote that is still running — propose_plan extends it, firms up a week, winds it
+ * down or retires it; a watch plan's sessions are moved, skipped or eased with adjust_plan, a programme is the athlete's
+ * own: its `settings` — days, weekly goal, minutes, block length, modes, care (each switched-on condition's with care, on
+ * or off) — change with change_programme; the Studio plan is the Studio's (the newest, as the plan list shows it:
+ * `studioPlanEntryOf`). A block that ended in the last ENDED_DAYS days is listed too, never changeable: its line goes on
+ * with a next phase.
+ *
+ * TRAINING LINES (training lines §3.1, §3.7): the blocks read are grouped as the plan list groups them (@rg/domain
+ * `linesOf`): `lines`, each its sport's name and its phases in order (id, name, dates, ended or not), its end and its
+ * goal race. A new block starting within a week of a line's last phase joins it: an ended block's `why` says so
+ * (CONTINUE_LINE).
  *
  * Names are the athlete's, the coach's or an import's words, and a shape week's volume and key sessions the coach's:
- * marked. One statement: the athlete with the plans, their weeks and next sessions, read beside the preferences. The
- * answer fits RESULT_BUDGET_BYTES: shape weeks past what fits are counted (`moreShapeWeeks`), never cut mid-list.
+ * marked. One statement: the athlete with the plans, their weeks and next sessions, and the newest Studio plan with its
+ * pushes' statuses and whether it was retired, read beside the preferences. The answer fits RESULT_BUDGET_BYTES: shape
+ * weeks past what fits are counted (`moreShapeWeeks`), never cut mid-list.
  */
 import { sql, type SQL } from "drizzle-orm";
 import { z } from "zod";
-import { coachPlans, coachPlanWeeks, plannedWorkouts, programs, trainingPlans } from "@rg/database";
-import { adaptiveConfigSchema, addDays } from "@rg/domain";
-import { LOOSE_PLAN_ID_PREFIX } from "../coach-plans.js";
+import { auditEvents, coachPlans, coachPlanWeeks, plannedWorkouts, programs, studioPlanPushes, studioPlans, trainingPlans } from "@rg/database";
+import { adaptiveConfigSchema, addDays, linesOf, planEnded } from "@rg/domain";
+import { lineBlockOf, LOOSE_PLAN_ID_PREFIX, studioPlanEntryOf, studioPlanOnWatch } from "../coach-plans.js";
+import { STUDIO_PLAN_RETIRED } from "../studio-push.js";
 import { utf8Bytes } from "../utf8.js";
 import type { DesignTool } from "./types.js";
 import { answer, dayWords, isErr, parseInput, parsedArray, parsedJson, plural, READ_ROLES, readAthlete, RESULT_BUDGET_BYTES, untrusted } from "./read-common.js";
@@ -58,7 +67,7 @@ const nextSql = (userId: string, planId: SQL, from: string) => sql`(select json_
       order by ${pw.effectiveDate}, ${pw.effectiveTime}, ${pw.id} limit ${NEXT_SESSIONS + 5}) n)`;
 
 interface Row {
-  kind: "block" | "programme" | "watch";
+  kind: "block" | "programme" | "watch" | "studio";
   id: string;
   name: string;
   status: string;
@@ -71,14 +80,30 @@ interface Row {
   next?: unknown;
 }
 
-const KIND_WORDS = { block: "coach block", programme: "programme", watch: "watch plan" } as const;
+const KIND_WORDS = { block: "coach block", programme: "programme", watch: "watch plan", studio: "Studio plan" } as const;
+
+/** What an ended block says comes next (training lines §3.7): a next phase, which joins its line. */
+export const CONTINUE_LINE = "To continue a line, propose its next phase starting the day after the line's last phase ends; it joins the line.";
 
 /** Why the coach may not change a plan's structure, in its words. */
 function whyNot(r: Row, today: string): string | null {
   if (r.kind === "watch") return "a watch plan: move, skip or ease its sessions with adjust_plan; its structure is the watch's";
   if (r.kind === "programme") return "the athlete's own programme: its settings change with change_programme; skip or move one session with adjust_plan";
-  if (r.status !== "active" || (r.end !== null && r.end < today)) return `it has ended (${r.status}): plan what comes after it as a new plan`;
+  if (r.kind === "studio") return "the athlete's Studio plan: its structure is the Studio's; skip or move one of its sessions with adjust_plan, revise one with propose_workout";
+  const ended = r.end !== null && planEnded(r.end, today);
+  if (r.status !== "active" || ended) return `it has ended (${r.status === "active" ? `on ${r.end}` : r.status}). ${CONTINUE_LINE}`;
   return null;
+}
+
+/** The newest Studio plan as the read gives it (one JSON object, or null), as the plan list shows it — or null when the
+ * list doesn't (nothing of it on the watch, or retired). */
+function studioRowOf(raw: unknown, today: string): Row | null {
+  const s = parsedJson(raw) as { id?: unknown; name?: unknown; brief?: unknown; createdAt?: unknown; pushes?: unknown; retired?: unknown } | null;
+  if (!s || typeof s.id !== "string" || typeof s.createdAt !== "string" || s.retired) return null;
+  const pushes = parsedArray(s.pushes).filter((p): p is string => typeof p === "string");
+  if (!studioPlanOnWatch(pushes)) return null;
+  const e = studioPlanEntryOf({ id: s.id, plan: { name: typeof s.name === "string" ? s.name : undefined }, brief: s.brief ?? null, createdAt: s.createdAt }, pushes, today, null);
+  return { kind: "studio", id: e.id, name: e.name, status: e.status, discipline: e.discipline, start: e.startDate, end: e.endDate, race: null };
 }
 
 /** How much of each plan an answer shows: its shape weeks and its next sessions, at most. */
@@ -134,7 +159,7 @@ function planOf(r: Row, today: string, room: Room, caring: readonly Caring[]): R
     });
     if (shapes.length > room.shapes) out.moreShapeWeeks = shapes.length - room.shapes;
   }
-  out.next = (parsedArray(r.next) as Array<Record<string, unknown>>)
+  if (r.kind !== "studio") out.next = (parsedArray(r.next) as Array<Record<string, unknown>>)
     .filter((n) => typeof n.date === "string" && n.date >= today)
     .sort((a, b) => String(a.date).localeCompare(String(b.date)) || String(a.time).localeCompare(String(b.time)))
     .slice(0, room.next)
@@ -157,12 +182,12 @@ function planOf(r: Row, today: string, room: Room, caring: readonly Caring[]): R
   return out;
 }
 
-const SOURCE = "the athlete's plans: the coach's blocks, their programmes and the watch's plans";
+const SOURCE = "the athlete's plans: the coach's blocks and their lines, their programmes, the Studio plan and the watch's plans";
 
 export const readPlans: DesignTool = {
   name: "read_plans",
   description:
-    "The athlete's plans — the coach's blocks, their programmes, the watch's plans — each with its id, dates, race day, firm and shape weeks, next sessions, and whether you may change its structure (propose_plan).",
+    "The athlete's plans — the coach's blocks, their programmes and Studio plan, the watch's plans — each with its id, dates, race day, firm and shape weeks, next sessions, and whether you may change its structure (propose_plan).",
   inputSchema: { type: "object", properties: {}, additionalProperties: false },
   statementCost: 1,
   cpuWeight: 0.3,
@@ -194,15 +219,38 @@ export const readPlans: DesignTool = {
           'start', t.start_date, 'end', t.end_date, 'next', json(${nextSql(ctx.userId, sql`t.id`, from)}))) from (
           select * from ${trainingPlans} where ${trainingPlans.userId} = ${ctx.userId} and ${trainingPlans.status} = 'active' and ${trainingPlans.archivedAt} is null
           order by ${trainingPlans.startDate} desc, ${trainingPlans.id} limit ${PLANS_MAX}) t)`,
+      // The newest Studio plan (the plan list's, loadNonCoachPlanEntries: newest first, the same tie-break), its pushes'
+      // statuses and whether the athlete retired it.
+      studio: sql`(select json_object('id', s.id, 'name', case when json_valid(s.plan) then json_extract(s.plan, '$.name') end,
+          'brief', case when json_valid(s.brief) then json(s.brief) end, 'createdAt', s.created_at,
+          'pushes', json((select json_group_array(p.status) from ${studioPlanPushes} p where p.plan_id = s.id)),
+          'retired', exists (select 1 from ${auditEvents} a where a.user_id = ${ctx.userId} and a.kind = ${STUDIO_PLAN_RETIRED}
+            and json_extract(a.detail, '$.studioPlanId') = s.id)) from (
+          select ${studioPlans.id} as id, ${studioPlans.plan} as plan, ${studioPlans.brief} as brief, ${studioPlans.createdAt} as created_at
+          from ${studioPlans} where ${studioPlans.userId} = ${ctx.userId}
+          order by ${studioPlans.createdAt} desc, ${studioPlans.id} desc limit 1) s)`,
     });
     const today = athlete.today;
     const caring = athlete.profiles.flatMap((p) => (p.care ? [{ profileId: p.id, care: p.care.block.label }] : []));
-    const rows = [...parsedArray(extra.blocks), ...parsedArray(extra.programmes), ...parsedArray(extra.watch)] as Row[];
+    const blocks = parsedArray(extra.blocks) as Row[];
+    const studio = studioRowOf(extra.studio, today);
+    const rows = [...blocks, ...parsedArray(extra.programmes), ...(studio ? [studio] : []), ...parsedArray(extra.watch)] as Row[];
+    // The blocks as the plan list groups them: lines, each with its phases (a retired block is none).
+    const lines = linesOf(
+      blocks.flatMap((b) => (b.start && b.end && b.discipline ? [lineBlockOf({ ...b, discipline: b.discipline, startDate: b.start, endDate: b.end, raceDate: b.race })] : [])),
+      today,
+    ).map((l) => ({
+      name: l.name,
+      discipline: l.discipline,
+      phases: l.phases.map((p) => ({ id: p.id, name: untrusted(p.name), start: p.startDate, end: p.endDate, ended: planEnded(p.endDate, today) })),
+      end: l.endDate,
+      goalRace: l.goalRaceDate,
+    }));
     // The coach's own running blocks first (the ones it may work on), then the others as read.
     const ordered = [...rows].sort((a, b) => Number(whyNot(a, today) !== null) - Number(whyNot(b, today) !== null));
     // Shortened until the answer fits: shape weeks halved down to one, then one next session each, then no shape weeks
     // listed (all counted) — and only then the last plans left out, counted (`morePlans`).
-    const size = (ps: unknown[]) => utf8Bytes(JSON.stringify({ provenance: { source: SOURCE, asOf: ctx.now.toISOString() }, missing: athlete.missing, data: { plans: ps } }));
+    const size = (ps: unknown[]) => utf8Bytes(JSON.stringify({ provenance: { source: SOURCE, asOf: ctx.now.toISOString() }, missing: athlete.missing, data: { plans: ps, lines } }));
     const rooms: Room[] = [];
     for (let shapes = SHAPE_WEEKS_MAX; shapes >= 1; shapes = Math.floor(shapes / 2)) rooms.push({ shapes, next: NEXT_SESSIONS });
     rooms.push({ shapes: 1, next: 1 }, { shapes: 0, next: 1 });
@@ -221,7 +269,7 @@ export const readPlans: DesignTool = {
       source: SOURCE,
       now: ctx.now,
       missing,
-      data: left > 0 ? { plans, morePlans: left } : { plans },
+      data: left > 0 ? { plans, morePlans: left, lines } : { plans, lines },
       summary: plans.length === 0 ? "No plans yet" : `Read ${plural(plans.length, "plan")}`,
     });
   },

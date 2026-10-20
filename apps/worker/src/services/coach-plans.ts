@@ -133,6 +133,44 @@ export function lineBlockOf(r: {
   };
 }
 
+/** Whether the newest Studio plan is listed, by its pushes' statuses: something of it is (or was) on the watch. A plan
+ * the athlete retired is not listed either (`studioPlanRetired`, read only when this holds). */
+export function studioPlanOnWatch(pushStatuses: readonly string[]): boolean {
+  return pushStatuses.some((s) => s !== "deleted");
+}
+
+/**
+ * The newest Studio plan as the plan list shows it — its name, its real span and its status — from its row and its
+ * pushes' statuses: the one mapping the plan list (`loadNonCoachPlanEntries`) and the coach's `read_plans` both use.
+ */
+export function studioPlanEntryOf(
+  studio: { id: string; plan: unknown; brief: unknown; createdAt: string },
+  pushStatuses: readonly string[],
+  today: string,
+  raceDate: string | null,
+) {
+  // Real span from the brief the plan was generated with — createdAt-based
+  // dates rendered "wk 1/1 · ends <creation day>" for a 16-week plan that
+  // hadn't even started (2026-08-12 audit finding 6).
+  const brief = studio.brief as { startDate?: string } | null;
+  const start = brief?.startDate ?? studio.createdAt.slice(0, 10);
+  const end = studioPlanEnd(studio);
+  // "Written to COROS" only when a push has actually materialized there —
+  // generate and push are separate actions.
+  const status: "active" | "draft" | "completed" =
+    end < today ? "completed" : pushStatuses.includes("verified") ? "active" : "draft";
+  return {
+    id: studio.id,
+    discipline: "lift" as const,
+    name: ((studio.plan as { name?: string } | null)?.name ?? "Lifting plan"),
+    status,
+    startDate: start,
+    endDate: end,
+    raceDate,
+    source: "studio" as const,
+  };
+}
+
 /**
  * The plans that are no coach rows — the Studio's newest lifting plan and the imported COROS running plan — as the
  * plan list shows them (`GET /api/coach/plans`) and the week brief names weeks from them (`GET /api/plan/week`): ONE
@@ -157,7 +195,7 @@ export async function loadNonCoachPlanEntries(db: Db, userId: string, prefs: Pic
       .select()
       .from(studioPlans)
       .where(eq(studioPlans.userId, userId))
-      .orderBy(desc(studioPlans.createdAt))
+      .orderBy(desc(studioPlans.createdAt), desc(studioPlans.id))
       .limit(1)
   )[0];
   const studioEntries = [];
@@ -170,27 +208,8 @@ export async function loadNonCoachPlanEntries(db: Db, userId: string, prefs: Pic
           .where(eq(studioPlanPushes.planId, studio.id))
       ).map((p) => p.status)
     : [];
-  if (studio && pushStatuses.some((s) => s !== "deleted") && !(await studioPlanRetired(db, userId, studio.id))) {
-    // Real span from the brief the plan was generated with — createdAt-based
-    // dates rendered "wk 1/1 · ends <creation day>" for a 16-week plan that
-    // hadn't even started (2026-08-12 audit finding 6).
-    const brief = studio.brief as { startDate?: string } | null;
-    const start = brief?.startDate ?? studio.createdAt.slice(0, 10);
-    const end = studioPlanEnd(studio);
-    // "Written to COROS" only when a push has actually materialized there —
-    // generate and push are separate actions.
-    const status: "active" | "draft" | "completed" =
-      end < today ? "completed" : pushStatuses.includes("verified") ? "active" : "draft";
-    studioEntries.push({
-      id: studio.id,
-      discipline: "lift" as const,
-      name: ((studio.plan as { name?: string })?.name ?? "Lifting plan"),
-      status,
-      startDate: start,
-      endDate: end,
-      raceDate: prefs.raceDate,
-      source: "studio" as const,
-    });
+  if (studio && studioPlanOnWatch(pushStatuses) && !(await studioPlanRetired(db, userId, studio.id))) {
+    studioEntries.push(studioPlanEntryOf(studio, pushStatuses, today, prefs.raceDate));
   }
 
   // The imported COROS plan IS the user's running plan — a page that shows
