@@ -66,6 +66,7 @@ import { purgeExpiredStates } from "./auth/google.js";
 import { ensureFixtureUser, fixtureAccountEmail, seedFixtures } from "./services/fixtures.js";
 import { seedWatchSession } from "./services/fixture-watch-session.js";
 import { parseCoachNoticesSeed, seedCoachNotices } from "./services/fixture-coach-notices.js";
+import { seedWatchVersions } from "./services/fixture-watch-version.js";
 import { accountsRestoring, restoreInProgress } from "./services/account-state.js";
 import { placeSlotsForAllPrograms } from "./services/program-slots.js";
 
@@ -218,6 +219,21 @@ app.post(
     const prefs = await loadPreferences(db, userId);
     const now = new Date();
     return c.json(await seedCoachNotices(db, userId, todayInZone(prefs.timezone, now), now, seed));
+  },
+);
+/**
+ * Fixture mode only (stream S, the watch-version journey): sessions whose watch holds an earlier version — one ahead a
+ * rewrite can reach, one ahead none can, one weeks past and missed (`seedWatchVersions`). 404 outside fixture mode.
+ */
+app.post(
+  "/api/dev/watch-version",
+  async (c, next) => (fixtureModeEnabled(c.env) ? next() : c.json({ error: "not_found" }, 404)),
+  requireUser,
+  async (c) => {
+    const db = c.get("db");
+    const userId = c.get("userId");
+    const prefs = await loadPreferences(db, userId);
+    return c.json(await seedWatchVersions(db, userId, todayInZone(prefs.timezone), nowInstant()));
   },
 );
 app.get(
