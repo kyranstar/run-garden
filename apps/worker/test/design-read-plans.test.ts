@@ -5,6 +5,7 @@
  * statement. Synthetic data only, on the rich fixture's fixed clock (today Wed 13 May 2026).
  */
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { and, eq } from "drizzle-orm";
 import { schema } from "@rg/database";
 import { addDays, newId } from "@rg/domain";
 import type { Env } from "../src/env.js";
@@ -176,6 +177,30 @@ describe("read_plans", () => {
     expect(r.missing).toContain("no plans yet");
     expect(count).toBe(1);
     expect(r.summary).toBe("No plans yet");
+    // No lines: nothing to continue.
+    expect(r.data).not.toHaveProperty("continueLine");
+    expect(JSON.stringify(r)).not.toContain(CONTINUE_LINE);
+  });
+
+  it("a live line says once how to continue it — the chip's flow, its last phase still running (training lines §3.7)", async () => {
+    // One phase, ending in 12 days: "Plan what comes after my running plan" is offered, and nothing has ended.
+    await block(rich.userId, { id: "cp-live", name: "10K build", start: day(30), end: day(-12) });
+    const { res, count } = await read();
+    expect(count).toBe(1);
+    const r = ok(res) as ToolOk & { data: Record<string, any> };
+    expect(r.data.lines).toHaveLength(1);
+    expect(r.data.plans.find((p: Record<string, any>) => p.id === "cp-live")).toMatchObject({ coachMayChange: true });
+    expect(r.data.continueLine).toBe(CONTINUE_LINE);
+    expect(JSON.stringify(r).split(CONTINUE_LINE)).toHaveLength(2);
+    // Only programmes and watch plans: no lines, nothing to continue.
+    const { userId } = await makeTestUser(db, { timezone: "America/Los_Angeles" });
+    await db.insert(schema.trainingPlans).values({
+      id: "tp-only", userId, sourcePlanId: "src-only", name: "Watch plan", startDate: day(10), endDate: day(-20), status: "active", createdAt: at(day(10)), updatedAt: at(day(10)),
+    });
+    const watchOnly = ok((await read(userId)).res) as ToolOk & { data: Record<string, any> };
+    expect(watchOnly.data.plans).toHaveLength(1);
+    expect(watchOnly.data.lines).toEqual([]);
+    expect(watchOnly.data).not.toHaveProperty("continueLine");
   });
 
   it("refuses a field it doesn't take, naming it", async () => {
@@ -299,6 +324,28 @@ describe("read_plans", () => {
         for (const p of shown) expect(p.coachMayChange).toBe(false);
       });
     }
+  });
+
+  it("the answer fits the budget whatever its names' lengths — the lines and how to continue them counted with the plans", async () => {
+    // Ten blocks of one line, sessions with long imported titles: the answer sits at the budget's edge, plans left out
+    // and counted. The first block's next session grows 40 characters a read, so some read lands within the
+    // continuation's hundred-odd bytes of the budget, either side.
+    const long = (s: string) => `${s} ${"with a very long title the watch gave it ".repeat(5)}`.trim();
+    for (let n = 0; n < 10; n++) {
+      await block(rich.userId, { id: `cp-edge-${n}`, name: `Block ${n} — a long name for the size test`, start: day(2), end: "2026-12-31" });
+      for (let d = 1; d <= 3; d++) await session(rich.userId, `cp-edge-${n}`, day(-d), { title: long(`Session ${d}`) });
+    }
+    const [first] = await db.select({ id: schema.plannedWorkouts.id }).from(schema.plannedWorkouts)
+      .where(and(eq(schema.plannedWorkouts.planId, "cp-edge-0"), eq(schema.plannedWorkouts.effectiveDate, day(-1))));
+    let dropped = 0;
+    for (let k = 0; k < 30; k++) {
+      await db.update(schema.plannedWorkouts).set({ title: `${long("Session 1")}${"x".repeat(40 * k)}` }).where(eq(schema.plannedWorkouts.id, first!.id));
+      const r = ok((await read()).res) as ToolOk & { data: Record<string, any> };
+      expect(r.data.continueLine).toBe(CONTINUE_LINE);
+      expect(Buffer.byteLength(JSON.stringify({ provenance: r.provenance, missing: r.missing, data: r.data })), `k=${k}`).toBeLessThanOrEqual(RESULT_BUDGET_BYTES);
+      dropped = Math.max(dropped, r.data.morePlans ?? 0);
+    }
+    expect(dropped).toBeGreaterThan(0);
   });
 
   it("many blocks with many weeks still fit the result budget: every block named, its shape weeks shortened and counted", async () => {

@@ -4,7 +4,7 @@ import { addDays, lineSentenceName, linesOf, QUALITY_SUBTYPE_LABELS, startOfIsoW
 import { chunkIds, type Db } from "./db.js";
 import { isLoosePlan, lineBlockOf } from "./coach-plans.js";
 import { reviewOpening, sessionDays, sessionOpening, type CoachOpeningLine, type FinishedSession } from "./coach-opening-line.js";
-import { COMEBACK_GAP_DAYS, FIRM_HORIZON_DAYS, PLAN_ENDING_DAYS, REFIRE_WINDOW_MS } from "./coach-triggers.js";
+import { COMEBACK_GAP_DAYS, endingLine, FIRM_HORIZON_DAYS, REFIRE_WINDOW_MS } from "./coach-triggers.js";
 
 /**
  * THE COACH'S "NEEDS YOU" CHIPS (§8 §6). The thread coach used to turn its free signals into paid wakes: a trigger row
@@ -26,7 +26,7 @@ import { COMEBACK_GAP_DAYS, FIRM_HORIZON_DAYS, PLAN_ENDING_DAYS, REFIRE_WINDOW_M
  *
  * A chip the athlete already asked in the last three days stays away, and the next one takes its place: never the same
  * nudge twice while the coach is working on it — each tap is a paid run (review-1 I3). Every request holds its label and
- * then says what the coach should know ("Plan what comes after my 10K plan — it ends in 12 days."), so "asked" is the
+ * then says what the coach should know ("Plan what comes after my running plan — it ends in 12 days."), so "asked" is the
  * label in the words of one of the athlete's own runs, read alike whatever the case, spacing or punctuation (`asWords`):
  * the chip's own request sent counts, one sent yesterday with its count a day off counts, and so does the athlete typing
  * the chip's words themselves.
@@ -291,14 +291,12 @@ export async function readCoachOpening(
     });
   }
 
-  // 5. A line ending — its last phase, no next phase following on — the soonest; its chip that last phase's.
-  const ending = lines
-    .filter((l) => l.endDate >= today && l.endDate <= addDays(today, PLAN_ENDING_DAYS))
-    .sort((a, b) => (a.endDate < b.endDate ? -1 : a.endDate > b.endDate ? 1 : 0))[0];
+  // 5. A line ending — its last phase, no next phase following on — the soonest (plan_ending's own rule); its chip
+  // that last phase's.
+  const ending = endingLine(lines, today);
   if (ending) {
-    const last = ending.phases.filter((p) => p.endDate === ending.endDate).at(-1)!;
-    const label = `Plan what comes after ${lineSentenceName(ending.discipline)}`;
-    found.push({ id: `ending:${last.id}`, label, request: `${label} — it ends ${inDays(daysBetween(today, ending.endDate))}.` });
+    const label = `Plan what comes after ${lineSentenceName(ending.line.discipline)}`;
+    found.push({ id: `ending:${ending.last.id}`, label, request: `${label} — it ends ${inDays(daysBetween(today, ending.line.endDate))}.` });
   }
 
   // The opening's own line: the review first, then the newest session still news — each with the moment after which an

@@ -308,6 +308,39 @@ describe("propose_plan: refused in words, nothing written", () => {
     expect(refused((await propose(run, { change: { kind: "retirePlan", planId: "cp-old" }, why: "x" })).res).error).toBe("not_running");
   });
 
+  it("a block the athlete stopped (retired): never told to continue its line — a new plan only if they ask", async () => {
+    // Retired while its last day is still to come: ended by its status, not its date.
+    await block("cp-stopped", "retired");
+    const run = await mainRun();
+    for (const change of [
+      { kind: "extendPlan", planId: "cp-stopped", shapeWeeks: [{ weekStart: "2026-06-01", volumeTarget: "30 km", keySessions: [] }] },
+      { kind: "retirePlan", planId: "cp-stopped" },
+    ]) {
+      const err = refused((await propose(run, { change, why: "x" })).res);
+      expect(err.error).toBe("not_running");
+      expect(err.why).toBe("The athlete stopped this plan (retired).");
+      expect(err.fix).toBe("Leave it stopped: propose a new plan (createPlan) only if the athlete asks for one.");
+    }
+  });
+
+  it("a change on the athlete's own day, not the UTC day: a block ending today in their zone is still running", async () => {
+    // 05:00 UTC on 21 Oct is 22:00 on 20 Oct in Los Angeles: a block ending 20 Oct hasn't ended there.
+    const now = new Date("2026-10-21T05:00:00Z");
+    vi.setSystemTime(now);
+    const { userId } = await makeTestUser(db, { timezone: "America/Los_Angeles" });
+    await db.insert(schema.coachPlans).values({
+      id: "cp-zone", userId, discipline: "run", name: "Autumn base", status: "active", startDate: "2026-09-28", endDate: "2026-10-20", raceDate: null,
+      stampPrefix: "Autumn base", createdAt: now.toISOString(), updatedAt: now.toISOString(),
+    });
+    const id = `run-pp-zone-${newId().slice(0, 6)}`;
+    await db.insert(schema.coachRuns).values({ id, userId, parentId: null, role: "main", scope: { kind: "auto" }, request: "Two more weeks", status: "active", state: null, steps: 0, costUsd: 0, createdAt: now.toISOString(), updatedAt: now.toISOString() });
+    const res = await proposePlan.run(
+      { db, env: ENV, userId, run: { id, role: "main", scope: { kind: "auto" }, parentId: null, rehearsal: false }, now, toolUseId: "toolu_zone", set: hooks() },
+      { change: { kind: "extendPlan", planId: "cp-zone", shapeWeeks: [{ weekStart: "2026-10-26", volumeTarget: "30 km", keySessions: ["long 12 km"] }] }, why: "Two more weeks." },
+    );
+    expect(ok(res).data).toMatchObject({ stored: true, change: "extendPlan" });
+  });
+
   it("a block past its end, its stored status still active (the hourly sweep not yet run): refused by date, naming its line's next phase", async () => {
     const phase = async (id: string, name: string, start: string, end: string) =>
       db.insert(schema.coachPlans).values({
@@ -335,6 +368,34 @@ describe("propose_plan: refused in words, nothing written", () => {
     // Each change to it is refused alike — a retirement, a wind-down — and the phase still running takes the change.
     expect(refused((await propose(run, { change: { kind: "retirePlan", planId: "cp-bridge" }, why: "x" })).res).error).toBe("not_running");
     ok((await propose(run, { change: { ...extend, planId: "cp-base", shapeWeeks: [{ weekStart: "2026-06-08", volumeTarget: "30 km", keySessions: ["long 12 km"] }] }, why: "More base." })).res);
+  });
+
+  it("an ended middle phase: extend and wind down point at the line's last phase (its end), a week's change at the phase now running (training lines §3.3)", async () => {
+    const phase = async (id: string, name: string, start: string, end: string) =>
+      db.insert(schema.coachPlans).values({
+        id, userId: rich.userId, discipline: "run", name, status: "active", startDate: start, endDate: end, raceDate: null,
+        stampPrefix: name, createdAt: at(day(30)), updatedAt: at(day(30)),
+      });
+    // Bridge (ended yesterday) → base (running) → build (the line's end).
+    await phase("cp-bridge", "Bridge block", day(27), day(1));
+    await phase("cp-base", "Base block", TODAY, day(-25));
+    await phase("cp-build", "Race build", day(-26), day(-53));
+    const run = await mainRun();
+    const cases: Array<[unknown, string, string]> = [
+      [{ kind: "extendPlan", planId: "cp-bridge", shapeWeeks: [{ weekStart: "2026-05-18", volumeTarget: "30 km", keySessions: [] }] }, '"Race build" (cp-build)', "Extend or wind down that phase instead"],
+      [{ kind: "windDown", planId: "cp-bridge", sessions: [{ date: "2026-05-18", session: easy(25) }] }, '"Race build" (cp-build)', "Extend or wind down that phase instead"],
+      [{ kind: "firmUp", planId: "cp-bridge", weekStart: "2026-05-18", sessions: [{ date: "2026-05-18", session: easy(30) }] }, '"Base block" (cp-base)', "Change that phase instead"],
+      [{ kind: "reshapeWeek", planId: "cp-bridge", weekStart: "2026-05-18", sessions: [{ date: "2026-05-18", session: easy(30) }] }, '"Base block" (cp-base)', "Change that phase instead"],
+    ];
+    for (const [change, named, fix] of cases) {
+      const err = refused((await propose(run, { change, why: "x" })).res);
+      const kind = (change as { kind: string }).kind;
+      expect(err.error, kind).toBe("not_running");
+      expect(err.why, kind).toContain(`ended on ${day(1)}`);
+      expect(err.why, kind).toContain(named);
+      expect(err.fix, kind).toContain(fix);
+      expect(err.fix, kind).toContain(`propose its next phase (createPlan) starting ${day(-54)}; it joins the line.`);
+    }
   });
 
   describe("the last phase of a line past its end: its next phase from the day after, today at the earliest — joining the line within a week", () => {

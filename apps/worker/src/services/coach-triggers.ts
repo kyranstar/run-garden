@@ -10,9 +10,9 @@ import {
   plannedWorkouts,
   sleepRecords,
 } from "@rg/database";
-import { addDays, linesOf, newId, nowInstant, type LocalDate, type UserPreferences } from "@rg/domain";
+import { addDays, linesOf, newId, nowInstant, type LineBlock, type LocalDate, type TrainingLine, type UserPreferences } from "@rg/domain";
 import { chunkIds, type Db } from "./db.js";
-import { isLoosePlan, lineBlockOf } from "./coach-plans.js";
+import { isLoosePlan, lastPhaseOf, lineBlockOf } from "./coach-plans.js";
 
 /**
  * The coach's free layer (spec §1): six deterministic rules that MARK — a
@@ -38,6 +38,18 @@ export const FIRM_HORIZON_DAYS = 14;
 export const PLAN_ENDING_DAYS = 21;
 const RACE_WINDOW_DAYS = 14;
 export const COMEBACK_GAP_DAYS = 7;
+
+/**
+ * The line "Plan what comes after" is about (training lines §3.7) — ONE rule for the chips (coach-nudges) and the
+ * dormant `plan_ending`: of the lines whose end (their last phase's) is today or later and within PLAN_ENDING_DAYS, the
+ * soonest to end, with its last phase. A phase another follows on from is no end; one already ended is past asking.
+ */
+export function endingLine(lines: readonly TrainingLine[], today: LocalDate): { line: TrainingLine; last: LineBlock } | undefined {
+  const line = lines
+    .filter((l) => l.endDate >= today && l.endDate <= addDays(today, PLAN_ENDING_DAYS))
+    .sort((a, b) => (a.endDate < b.endDate ? -1 : a.endDate > b.endDate ? 1 : 0))[0];
+  return line ? { line, last: lastPhaseOf(line) } : undefined;
+}
 
 export interface PendingTrigger {
   id: string;
@@ -212,19 +224,17 @@ export async function evaluateTriggers(
     }
   }
 
-  // plan_ending — a training LINE's last phase ends within 21 days, today or
-  // later (training lines §3.7): a block another follows on from is no end, and
-  // one already ended (its status not yet flipped) is past asking about. A
-  // loose-session bucket is permanently "ending" (its end date is its last
-  // one-off), and waking the coach to plan what comes after a bucket is nonsense.
+  // plan_ending — the chips' own rule (`endingLine`): a training LINE's last
+  // phase ending within 21 days, today or later, the soonest (training lines
+  // §3.7). A loose-session bucket is permanently "ending" (its end date is its
+  // last one-off), and waking the coach to plan what comes after a bucket is
+  // nonsense.
   if (!blocked.has("plan_ending")) {
-    const lines = linesOf(plans.filter((p) => !isLoosePlan(p)).map(lineBlockOf), today);
-    const line = lines.find((l) => l.endDate >= today && l.endDate <= addDays(today, PLAN_ENDING_DAYS));
-    if (line) {
-      const ending = line.phases.filter((p) => p.endDate === line.endDate).at(-1)!;
+    const ending = endingLine(linesOf(plans.filter((p) => !isLoosePlan(p)).map(lineBlockOf), today), today);
+    if (ending) {
       fired.push({
         kind: "plan_ending",
-        evidence: { planId: ending.id, name: ending.name, endDate: ending.endDate },
+        evidence: { planId: ending.last.id, name: ending.last.name, endDate: ending.last.endDate },
       });
     }
   }

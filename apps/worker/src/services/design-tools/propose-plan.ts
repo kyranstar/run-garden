@@ -21,7 +21,8 @@
  *    (`bad_dates`);
  *  - a plan that isn't a block of the coach's still running (`not_your_block`, `not_running`: read_plans says which) — a
  *    block has ended by its status, or once its last day is past (training lines §3.5); the refusal names the phase
- *    its line goes on in, or the day a next phase continues the line from (`endedRefusal`);
+ *    its line goes on in (for an extend or a wind-down, the line's last phase), or the day a next phase continues the
+ *    line from — never for a block the athlete stopped (`endedRefusal`);
  *  - any fatal finding of the thread coach's guardrails (`plan_refused`, each in its own words) — a past date, a
  *    session that isn't there, a watch plan's structure;
  *  - a lift or mobility session's move an active condition's rules keep out, judged as a document's moves are
@@ -66,7 +67,7 @@ import { designProposalId, upsertProposal } from "./propose.js";
 import { planConditionFindings, planOffWatchNote, type PlanSession } from "./plan-checks.js";
 import { parsedArray, parsedJson, readAthlete, refuse, untrusted } from "./read-common.js";
 import { CONTINUE_LINE } from "./read-plans.js";
-import { lineBlockOf, LOOSE_PLAN_ID_PREFIX } from "../coach-plans.js";
+import { lastPhaseOf, lineBlockOf, LOOSE_PLAN_ID_PREFIX } from "../coach-plans.js";
 import type { DesignTool, ToolErr, ToolOk } from "./types.js";
 
 const WHY_MAX = 300;
@@ -252,24 +253,32 @@ interface PlanRow {
 }
 
 /**
- * Why a block that has ended can't change, and what to do instead (training lines §3.5, §3.7) — by its status, or by its
- * last day once that is past (the hourly sweep flips the status later): its line goes on in the phase now running or
- * next, or a next phase continues it, from the day after the line's last phase ends (today at the earliest), which joins
- * the line while it starts within LINE_GAP_DAYS of that end. `phases`: the athlete's blocks of its discipline.
+ * Why a block that has ended can't change, and what to do instead (training lines §3.3, §3.5, §3.7) — by its status, or
+ * by its last day once that is past (the hourly sweep flips the status later):
+ *  - one the athlete stopped (retired) stays stopped: a new plan only if they ask;
+ *  - else its line goes on: an extend or a wind-down is its END's — the line's last phase — and a week's change (or a
+ *    retirement) the phase now running or next;
+ *  - or a next phase continues it, from the day after the line's last phase ends (today at the earliest), which joins
+ *    the line while it starts within LINE_GAP_DAYS of that end.
+ * `phases`: the athlete's blocks of its discipline.
  */
-function endedRefusal(plan: PlanRow, phases: LineBlock[], today: string): ToolErr {
+function endedRefusal(plan: PlanRow, kind: PlanStructureChange["kind"], phases: LineBlock[], today: string): ToolErr {
+  if (plan.status === "retired") {
+    return refuse("not_running", "The athlete stopped this plan (retired).", "Leave it stopped: propose a new plan (createPlan) only if the athlete asks for one.");
+  }
   const when = plan.status === "active" || plan.status === "draft" ? `ended on ${plan.end}` : `has ended (${plan.status})`;
   const line = linesOf(phases, today).find((l) => l.phases.some((p) => p.id === plan.id));
   if (!line) return refuse("not_running", `That block ${when}.`, `${CONTINUE_LINE} read_plans lists the lines.`);
-  const goesOn = line.ended ? undefined : line.phases.find((p) => p.id === line.currentPhaseId && p.id !== plan.id);
   const after = addDays(line.endDate, 1);
   const start = after < today ? today : after;
+  const continueIt = `to continue the line past its end, propose its next phase (createPlan) starting ${start}; it joins the line.`;
+  if (!line.ended && (kind === "extendPlan" || kind === "windDown")) {
+    const last = lastPhaseOf(line);
+    return refuse("not_running", `That block ${when}; its line ends with ${JSON.stringify(last.name)} (${last.id}).`, `Extend or wind down that phase instead — or, ${continueIt}`);
+  }
+  const goesOn = line.ended ? undefined : line.phases.find((p) => p.id === line.currentPhaseId && p.id !== plan.id);
   if (goesOn) {
-    return refuse(
-      "not_running",
-      `That block ${when}; its line goes on in ${JSON.stringify(goesOn.name)} (${goesOn.id}).`,
-      `Change that phase instead — or, to continue the line past its end, propose its next phase (createPlan) starting ${start}; it joins the line.`,
-    );
+    return refuse("not_running", `That block ${when}; its line goes on in ${JSON.stringify(goesOn.name)} (${goesOn.id}).`, `Change that phase instead — or, ${continueIt}`);
   }
   if (start > addDays(line.endDate, LINE_GAP_DAYS)) {
     return refuse("not_running", `That block ${when}, and its line ended on ${line.endDate}, more than a week ago.`, `What comes next is a line of its own: propose it with createPlan, starting ${today} or later.`);
@@ -380,7 +389,7 @@ export const proposePlan: DesignTool = {
       // Ended by its status, or by its last day once that is past (training lines §3.5): a next phase continues its line.
       if ((plan.status !== "active" && plan.status !== "draft") || planEnded(plan.end, athlete.today)) {
         const phases = (parsedArray(extra.phases) as Array<Parameters<typeof lineBlockOf>[0]>).map(lineBlockOf);
-        return endedRefusal(plan, phases, athlete.today);
+        return endedRefusal(plan, op.kind, phases, athlete.today);
       }
     }
 

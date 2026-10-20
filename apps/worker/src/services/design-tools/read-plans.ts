@@ -12,8 +12,9 @@
  *
  * TRAINING LINES (training lines §3.1, §3.7): the blocks read are grouped as the plan list groups them (@rg/domain
  * `linesOf`): `lines`, each its sport's name and its phases in order (id, name, dates, ended or not), its end and its
- * goal race. A new block starting within a week of a line's last phase joins it: an ended block's `why` says so
- * (CONTINUE_LINE).
+ * goal race. A new block starting within a week of a line's last phase joins it: the answer says so once beside the
+ * lines (`continueLine`, CONTINUE_LINE — the chip's "Plan what comes after my running plan" reads it while the line's
+ * last phase still runs), and so does an ended block's `why`.
  *
  * Names are the athlete's, the coach's or an import's words, and a shape week's volume and key sessions the coach's:
  * marked. One statement: the athlete with the plans, their weeks and next sessions, and the newest Studio plan with its
@@ -246,11 +247,14 @@ export const readPlans: DesignTool = {
       end: l.endDate,
       goalRace: l.goalRaceDate,
     }));
+    // How to continue a line, said once beside the lines — the chip's flow ("Plan what comes after my running plan")
+    // reads it while the line's last phase still runs, before anything has ended.
+    const linesData = lines.length > 0 ? { lines, continueLine: CONTINUE_LINE } : { lines };
     // The coach's own running blocks first (the ones it may work on), then the others as read.
     const ordered = [...rows].sort((a, b) => Number(whyNot(a, today) !== null) - Number(whyNot(b, today) !== null));
     // Shortened until the answer fits: shape weeks halved down to one, then one next session each, then no shape weeks
     // listed (all counted) — and only then the last plans left out, counted (`morePlans`).
-    const size = (ps: unknown[]) => utf8Bytes(JSON.stringify({ provenance: { source: SOURCE, asOf: ctx.now.toISOString() }, missing: athlete.missing, data: { plans: ps, lines } }));
+    const size = (ps: unknown[]) => utf8Bytes(JSON.stringify({ provenance: { source: SOURCE, asOf: ctx.now.toISOString() }, missing: athlete.missing, data: { plans: ps, ...linesData } }));
     const rooms: Room[] = [];
     for (let shapes = SHAPE_WEEKS_MAX; shapes >= 1; shapes = Math.floor(shapes / 2)) rooms.push({ shapes, next: NEXT_SESSIONS });
     rooms.push({ shapes: 1, next: 1 }, { shapes: 0, next: 1 });
@@ -269,7 +273,7 @@ export const readPlans: DesignTool = {
       source: SOURCE,
       now: ctx.now,
       missing,
-      data: left > 0 ? { plans, morePlans: left, lines } : { plans, lines },
+      data: left > 0 ? { plans, morePlans: left, ...linesData } : { plans, ...linesData },
       summary: plans.length === 0 ? "No plans yet" : `Read ${plural(plans.length, "plan")}`,
     });
   },

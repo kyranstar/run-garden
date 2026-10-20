@@ -6,13 +6,15 @@
 import { describe, expect, it } from "vitest";
 import { eq } from "drizzle-orm";
 import { schema } from "@rg/database";
-import { addDays, newId, nowInstant, todayInZone } from "@rg/domain";
+import { addDays, linesOf, newId, nowInstant, todayInZone, type LineBlock } from "@rg/domain";
 import type { Db } from "../src/services/db.js";
 import {
   consumeTriggers,
+  endingLine,
   evaluateTriggers,
   pendingTriggers,
 } from "../src/services/coach-triggers.js";
+import { readNudges } from "../src/services/coach-nudges.js";
 import { makeTestDb, makeTestUser } from "./helpers.js";
 
 async function seedSleep(db: Db, userId: string, today: string, hoursPerNight: number[]) {
@@ -153,6 +155,41 @@ describe("coach triggers", () => {
       const u2 = await makeTestUser(db2);
       await block(db2, u2.userId, "cp-lift", addDays(today, -20), today, "lift");
       expect(await evaluateTriggers(db2, u2.userId, u2.prefs, today)).toContain("plan_ending");
+    });
+
+    it("one rule with the chips (endingLine): two lines ending, both pick the soonest — never the first by start", async () => {
+      const db = makeTestDb();
+      const { userId, prefs } = await makeTestUser(db);
+      const today = todayInZone(prefs.timezone);
+      // The running line started first and ends in 15 days; the lifting line ends in 10.
+      await block(db, userId, "cp-run", addDays(today, -40), addDays(today, 15));
+      await block(db, userId, "cp-lift", addDays(today, -30), addDays(today, 10), "lift");
+      const chip = (await readNudges(db, userId, prefs, today, new Date())).find((n) => n.id.startsWith("ending:"));
+      expect(chip?.id).toBe("ending:cp-lift");
+      expect(await evaluateTriggers(db, userId, prefs, today)).toContain("plan_ending");
+      const [row] = (await pendingTriggers(db, userId)).filter((t) => t.kind === "plan_ending");
+      expect(row!.evidence).toMatchObject({ planId: "cp-lift", endDate: addDays(today, 10) });
+    });
+
+    it("endingLine: the soonest line ending within 21 days, today or later, with its last phase", () => {
+      const today = "2026-10-20";
+      const b = (id: string, discipline: LineBlock["discipline"], startDate: string, endDate: string): LineBlock => ({ id, discipline, status: "active", name: id, startDate, endDate });
+      const lines = linesOf(
+        [
+          b("ended", "mobility", "2026-09-01", "2026-10-19"),
+          b("far", "run", "2026-09-01", "2026-11-11"),
+          // Two overlapping lifting phases ending the same day: the later-starting one is the line's last.
+          b("lift-a", "lift", "2026-09-01", "2026-11-05"),
+          b("lift-b", "lift", "2026-10-01", "2026-11-05"),
+        ],
+        today,
+      );
+      expect(endingLine(lines, today)).toMatchObject({ line: { discipline: "lift", endDate: "2026-11-05" }, last: { id: "lift-b" } });
+      // 22 days out is past the window; 21 is in it; yesterday is ended.
+      expect(endingLine(linesOf([b("far", "run", "2026-09-01", "2026-11-11")], today), today)).toBeUndefined();
+      expect(endingLine(linesOf([b("edge", "run", "2026-09-01", "2026-11-10")], today), today)?.last.id).toBe("edge");
+      expect(endingLine(linesOf([b("ended", "run", "2026-09-01", "2026-10-19")], today), today)).toBeUndefined();
+      expect(endingLine(linesOf([b("today", "run", "2026-09-01", today)], today), today)?.last.id).toBe("today");
     });
   });
 
