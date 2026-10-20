@@ -28,6 +28,7 @@ import { meWithOfflineFallback } from "../../offline/me.js";
 import { cuePlayer } from "../../player/cue-player.js";
 import { localBuild } from "../../player/local-build.js";
 import { forgetStart, saveExtras } from "../../player/stored.js";
+import { musicAtStart } from "../../music/workout-music.js";
 import type { useStudioDraft } from "../../studio-drafts.js";
 import { addTargetHref, freshDoc } from "./add-model.js";
 import { TEMPLATES_QUERY } from "./add-sheet.js";
@@ -345,7 +346,10 @@ export function useBuildFlows({
       const next = await api.startSession(s.workoutId, s.build.buildId);
       refreshPlan();
       const title = live.current?.editor.doc.title ?? "Workout";
-      if (!(await keepStarted(next, title, userId()))) {
+      // Its music goes with it (music/workout-music.tsx): the kind from the category its document derives.
+      const doc = judged?.doc ?? null;
+      const music = musicAtStart(qc, { workoutId: s.workoutId, category: judged?.derived?.category, calm: doc?.intent.effort === "recover", docMusic: s.music ?? doc?.music ?? null });
+      if (!(await keepStarted(next, title, userId(), music))) {
         setFlow({ step: "notKept", workoutId: s.workoutId });
         return;
       }
@@ -530,7 +534,8 @@ export function useBuildFlows({
       const start: LocalStart = { localId, clientId: once.clientId, userId: uid, kind, title: sent.title, doc: sent, date, time: nowHHMM(now, timeZone), createdAt: now.getTime() };
       await rememberLocalStart(db, start);
       await saveBuild(db, { workoutId: localId, build, view }, now.getTime());
-      await saveExtras(db, { workoutId: localId, title: sent.title, profiles: bc.profiles.map(checkViewOf), userId: uid, savedAt: now.getTime() });
+      const music = musicAtStart(qc, { workoutId: null, category: judged?.derived?.category, calm: sent.intent.effort === "recover", docMusic: sent.music ?? null });
+      await saveExtras(db, { workoutId: localId, title: sent.title, profiles: bc.profiles.map(checkViewOf), userId: uid, savedAt: now.getTime(), ...(music ? { music } : {}) });
     } catch {
       // Too large to build, or the device full: nothing half-kept.
       await forgetLocalStart(db, localId).catch(() => undefined);

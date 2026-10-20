@@ -262,10 +262,10 @@ describe("adding a playlist", () => {
 describe("a workout's music in the player", () => {
   const target = { id: "spa", label: "Spa", uri: `spotify:playlist:${ID}` };
   it("dark, or no music for the session: nothing at all", () => {
-    expect(render(createElement(WorkoutMusicLine, { fresh: true, target }), null)).toBe("");
-    expect(render(createElement(WorkoutMusicLine, { fresh: true, target: null }), { connected: true, music: { shortcuts: [] } })).toBe("");
+    expect(render(createElement(WorkoutMusicLine, { session: "p1", fresh: true, target }), null)).toBe("");
+    expect(render(createElement(WorkoutMusicLine, { session: "p1", fresh: true, target: null }), { connected: true, music: { shortcuts: [] } })).toBe("");
     // Nothing to say until the play has been tried.
-    expect(render(createElement(WorkoutMusicLine, { fresh: false, target }), { connected: true, music: { shortcuts: [] } })).toBe("");
+    expect(render(createElement(WorkoutMusicLine, { session: "p1", fresh: false, target }), { connected: true, music: { shortcuts: [] } })).toBe("");
   });
 });
 

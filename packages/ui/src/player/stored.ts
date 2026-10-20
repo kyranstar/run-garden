@@ -8,6 +8,7 @@
  * session's build.
  */
 import type { ConditionViewDto, ReviewBasisDto, SessionDto } from "@rg/api-client";
+import type { WorkoutTarget } from "../music/controller.js";
 import { forgetBuild, saveBuild } from "../offline/builds.js";
 import type { OfflineDb } from "../offline/idb.js";
 
@@ -18,6 +19,8 @@ export interface PlayerExtras {
   profiles: ConditionViewDto[];
   /** The signed-in account at Start: the save goes to its outbox, offline too (ruling 2b-R6). */
   userId?: string | null;
+  /** The playlist that resolved at Start (music/workout-music.tsx): the player plays it as the session begins. */
+  music?: WorkoutTarget | null;
   /** Epoch ms. */
   savedAt: number;
 }
@@ -40,9 +43,10 @@ export async function rememberStart(
   title: string,
   userId: string | null,
   now: number = Date.now(),
+  music: WorkoutTarget | null = null,
 ): Promise<void> {
   await saveBuild(db, session, now);
-  await saveExtras(db, { workoutId: session.workoutId, title, profiles: session.profiles, userId, savedAt: now });
+  await saveExtras(db, { workoutId: session.workoutId, title, profiles: session.profiles, userId, savedAt: now, ...(music ? { music } : {}) });
 }
 
 /** What the review reads of the history (`GET /api/sessions/:id/review-basis`), fetched once while online. */

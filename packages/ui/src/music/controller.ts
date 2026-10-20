@@ -133,6 +133,8 @@ export function makeDockController(deps: DockDeps) {
   let visible = deps.isVisible();
   /** The once-per-load read and tagging of playlists linked before names and tags (`tidy`): started or not. */
   let tidied = false;
+  /** The sessions whose music was asked for (`autoPlay`): once each, however often the player's line is drawn. */
+  const started = new Set<string>();
   const listeners = new Set<() => void>();
   const set = (patch: Partial<DockState>) => {
     state = { ...state, ...patch };
@@ -335,12 +337,13 @@ export function makeDockController(deps: DockDeps) {
       if (state.busy === "playing") set({ busy: null });
     },
     /**
-     * A workout's music, when its session starts (the player's, once): played shuffled on the device Spotify would
+     * A workout's music, when its session starts (the player's; once per session): played shuffled on the device Spotify would
      * use — never the open-link fallback, which needs a tap. No device open, or Spotify asking to slow down: kept as
      * `workout` for the player's quiet line (its Play is `playWorkout`). A failure says nothing in the player.
      */
-    async autoPlay(target: WorkoutTarget): Promise<void> {
-      if (state.connection !== "connected" || state.busy) return;
+    async autoPlay(target: WorkoutTarget, session: string): Promise<void> {
+      if (state.connection !== "connected" || state.busy || started.has(session)) return;
+      started.add(session);
       set({ busy: "playing" });
       let out: Awaited<ReturnType<typeof playContext>>;
       // Backing off, the client refuses before the network: the catch says so (status "slow").

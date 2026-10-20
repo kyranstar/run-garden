@@ -78,6 +78,12 @@ import { ReviewScreen } from "./review.js";
 import { offeredNow } from "../player/swap.js";
 import { clockText, elapsedMs, readyMs } from "../player/timer.js";
 import { holdWakeLock } from "../player/wake.js";
+import type { WorkoutTarget } from "../music/controller.js";
+
+/** What the player hands its music line (app.tsx: the music dock's, mounted only while the dock is on): the session (its
+ * performed id: the music plays once for it), whether it was just started on this device — not resumed — and the
+ * playlist that resolved at its Start, if any. */
+export type PlayerMusicStart = { session: string; fresh: boolean; target: WorkoutTarget | null };
 
 export interface PlayerDeps {
   db: () => Promise<OfflineDb>;
@@ -146,7 +152,16 @@ type Loaded =
   | { kind: "done" }
   /** Saved on this device, waiting for the server (or refused by it: Settings → Data). */
   | { kind: "saved" }
-  | { kind: "ready"; src: PlayerSource; data: EngineData; extras: PlayerExtras | null; basis: ReviewBasisDto | null; initial: PlayerState };
+  | {
+      kind: "ready";
+      src: PlayerSource;
+      data: EngineData;
+      extras: PlayerExtras | null;
+      basis: ReviewBasisDto | null;
+      initial: PlayerState;
+      /** Begun now, not resumed from what this device kept: the session's music plays (once) only then. */
+      fresh: boolean;
+    };
 
 /** What IndexedDB holds for the slot (or, online with nothing stored, a session already started elsewhere). */
 async function load(workoutId: string, deps: PlayerDeps): Promise<{ loaded: Loaded; db: OfflineDb | null }> {
@@ -199,18 +214,21 @@ async function load(workoutId: string, deps: PlayerDeps): Promise<{ loaded: Load
   }
   let basis = db ? ((await loadBasis(db, workoutId).catch(() => undefined)) ?? null) : null;
   if (basis && basis.buildId !== src.build.buildId) basis = null;
-  return { loaded: { kind: "ready", src, data, extras, basis, initial }, db };
+  return { loaded: { kind: "ready", src, data, extras, basis, initial, fresh: resumed === null }, db };
 }
 
 export function PlayerScreen({
   workoutId,
   deps: given,
   tools,
+  musicLine,
 }: {
   workoutId: string;
   deps?: Partial<PlayerDeps>;
   /** More of the top bar's tools, first in its row (the music dock, 2026-10-17; app.tsx). */
   tools?: ReactNode;
+  /** The session's music as it begins (2026-10-19; app.tsx): its quiet line, under the top bar's hints. */
+  musicLine?: (start: PlayerMusicStart) => ReactNode;
 }) {
   // Fixed for the life of the screen (a new object each render would reload it).
   const [deps] = useState<PlayerDeps>(() => ({ ...defaultDeps, ...given }));
@@ -260,12 +278,24 @@ export function PlayerScreen({
       </div>
     );
   }
-  return <Playing key={loaded.initial.performedId} loaded={loaded} db={db} deps={deps} tools={tools} />;
+  return <Playing key={loaded.initial.performedId} loaded={loaded} db={db} deps={deps} tools={tools} musicLine={musicLine} />;
 }
 
 type Panel = "howto" | "swap" | "keys" | "leave" | null;
 
-function Playing({ loaded, db, deps, tools }: { loaded: Extract<Loaded, { kind: "ready" }>; db: OfflineDb | null; deps: PlayerDeps; tools?: ReactNode }) {
+function Playing({
+  loaded,
+  db,
+  deps,
+  tools,
+  musicLine,
+}: {
+  loaded: Extract<Loaded, { kind: "ready" }>;
+  db: OfflineDb | null;
+  deps: PlayerDeps;
+  tools?: ReactNode;
+  musicLine?: (start: PlayerMusicStart) => ReactNode;
+}) {
   const navigate = useNavigate();
   const qc = useQueryClient();
   const { src, data, extras } = loaded;
@@ -790,6 +820,7 @@ function Playing({ loaded, db, deps, tools }: { loaded: Extract<Loaded, { kind: 
           </button>
         </p>
       ) : null}
+      {musicLine?.({ session: loaded.initial.performedId, fresh: loaded.fresh, target: loaded.extras?.music ?? null })}
 
       {/* A tap anywhere on the stage (not on a control) pauses or resumes: the keyboard's Space, by touch. */}
       <main className="player-main" onClick={stageTap}>

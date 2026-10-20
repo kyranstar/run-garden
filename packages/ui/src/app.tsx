@@ -20,7 +20,7 @@ import { CoachSheetProvider } from "./screens/studio/coach-sheet.js";
 import { onOfflineDbReplaced } from "./offline/idb.js";
 import { meWithOfflineFallback } from "./offline/me.js";
 import { OutboxSync } from "./components/outbox-sync.js";
-import { PlayerMusicTools } from "./music/dock.js";
+import { PlayerMusicTools, WorkoutMusicLine } from "./music/dock.js";
 
 const queryClient = new QueryClient({
   defaultOptions: {
@@ -184,8 +184,9 @@ function PlayerRoute() {
     );
   }
   if (me.isError && me.error instanceof ApiError && me.error.status === 401) return <Navigate to="/welcome" replace />;
-  // The music dock, among the top bar's tools: never over the player's own lines (mounted only while the dock is on).
-  return <PlayerScreen workoutId={workoutId} tools={<PlayerMusicTools />} />;
+  // The music dock, among the top bar's tools: never over the player's own lines (mounted only while the dock is on);
+  // and the session's music as it begins — its line only when there is something to say.
+  return <PlayerScreen workoutId={workoutId} tools={<PlayerMusicTools />} musicLine={(m) => <WorkoutMusicLine {...m} />} />;
 }
 
 export function App() {

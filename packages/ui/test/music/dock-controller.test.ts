@@ -367,16 +367,19 @@ describe("a workout's music, at its Start", () => {
 
   it("plays on the device Spotify would use, shuffled, and the dock shows it", async () => {
     const { dock, fake, commands, state } = setup({ devices: [{ ...phone }] });
-    await dock.autoPlay(target);
+    await dock.autoPlay(target, "perf-1");
     expect(commands()).toEqual(["PUT /me/player/shuffle", "PUT /me/player/play"]);
     expect(fake.calls.find((c) => c.path === "/me/player/play")!.body).toMatchObject({ context_uri: target.uri });
     expect(state().player?.is_playing).toBe(true);
     expect(state().workout).toBeNull();
+    // Once per session: asked again for it (its line drawn again), nothing is sent.
+    await dock.autoPlay(target, "perf-1");
+    expect(commands()).toHaveLength(2);
   });
 
   it("no device open: no play and no link opened unasked — the player's line; its Play (a tap) opens Spotify and plays on the return", async () => {
     const { dock, fake, opened, commands, state } = setup({ devices: [] });
-    await dock.autoPlay(target);
+    await dock.autoPlay(target, "perf-1");
     expect(commands()).toEqual([]);
     expect(opened).toEqual([]);
     expect(state().workout).toEqual({ target, status: "no_device" });
@@ -392,14 +395,14 @@ describe("a workout's music, at its Start", () => {
   it("backing off: no call, and the player says so calmly", async () => {
     const { dock, fake, state, backoff } = setup();
     backoff.hit(null);
-    await dock.autoPlay(target);
+    await dock.autoPlay(target, "perf-1");
     expect(fake.calls).toEqual([]);
     expect(state().workout).toEqual({ target, status: "slow" });
   });
 
   it("not connected: nothing at all", async () => {
     const { dock, fake, state } = setup({ reason: "not_connected" });
-    await dock.autoPlay(target);
+    await dock.autoPlay(target, "perf-1");
     expect(fake.calls).toEqual([]);
     expect(state().workout).toBeNull();
   });

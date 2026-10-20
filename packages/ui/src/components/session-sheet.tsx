@@ -60,6 +60,7 @@ import { AskCoach } from "../screens/studio/coach-ask.js";
 import { workoutFocus } from "../screens/studio/coach-focus.js";
 import { continuable, MODE_LABEL } from "./today-program.js";
 import { WatchPreviewSheet } from "./watch-preview-sheet.js";
+import { musicAtStart, WorkoutMusicRow, type SessionMusicInput } from "../music/workout-music.js";
 
 type Mode = keyof typeof MODE_LABEL;
 type Picker = "mode" | "theme" | "minutes" | "place";
@@ -341,6 +342,8 @@ export function SessionSheet({ w, today, onClose }: { w: WorkoutDto; today: stri
   });
   /** The session's name as the player shows it (kept for the Start handler, which runs after this render). */
   const titleRef = useRef("");
+  /** What its music is read from (kept for the Start handler, as the title is). */
+  const musicRef = useRef<SessionMusicInput | null>(null);
   /** Start locked the session, but the device could not keep it (no IndexedDB, storage full): said before it plays. */
   const [notKept, setNotKept] = useState(false);
   const start = useMutation({
@@ -351,7 +354,9 @@ export function SessionSheet({ w, today, onClose }: { w: WorkoutDto; today: stri
       // The player plays what Start leaves on the device, never the network (ruling 2b-R1), the review's basis with it
       // (2b-R10; `keepStarted`). Without IndexedDB it still opens, online, from the started session — but it keeps
       // nothing, so the sheet says so first and Continue goes on (audit 2b-B I-2).
-      if (!(await keepStarted(next, titleRef.current, qc.getQueryData<MeResponse>(["me"])?.userId ?? null))) {
+      // Its music goes with it: the player plays it once, as the session begins (music/workout-music.tsx).
+      const music = musicRef.current ? musicAtStart(qc, musicRef.current) : null;
+      if (!(await keepStarted(next, titleRef.current, qc.getQueryData<MeResponse>(["me"])?.userId ?? null, music))) {
         setNotKept(true);
         return;
       }
@@ -516,6 +521,12 @@ export function SessionSheet({ w, today, onClose }: { w: WorkoutDto; today: stri
   const reading = readings.join(" · ");
 
   const view = s?.view ?? null;
+  // Its music: the athlete's choice for it, its document's own, else the default for its kind — calm (winding down) when
+  // built in recovery mode or its document's effort is "recover".
+  const musicInput: SessionMusicInput | null = s
+    ? { workoutId: w.id, category: w.category, calm: view?.mode === "recovery" || s.build?.fromDoc?.effort === "recover", docMusic: s.music ?? null }
+    : null;
+  musicRef.current = musicInput;
   const params = s?.build?.params ?? { checks: {}, overrides: {}, swaps: {} };
   const rebuild = (patch: SessionOverrides) => build.mutate({ overrides: { ...params.overrides, ...patch } });
   const pickMode = (mode: Mode) => {
@@ -848,6 +859,7 @@ export function SessionSheet({ w, today, onClose }: { w: WorkoutDto; today: stri
           <p className="session-status">Saved on another device. This device still holds a copy of it, which won't be saved.</p>
         ) : null}
         {body}
+        {musicInput && showBuild && !skipped && !past && s?.contentState !== "done" ? <WorkoutMusicRow {...musicInput} date={date} /> : null}
         {startRefused ? (
           <p className="session-refused" role="alert">
             {startRefused}

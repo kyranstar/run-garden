@@ -656,8 +656,10 @@ export function DockFrame({ variant, pill, sheet }: { variant: "shell" | "player
 
 // ── A workout's music, at its Start (the session player) ─────────────────────
 
-/** What the player hands over: the session was just started here (not resumed), and the music resolved at Start. */
+/** What the player hands over: the session (its performed id), whether it was just started here (not resumed), and the
+ * music resolved at its Start. */
 export interface WorkoutMusicStart {
+  session: string;
   fresh: boolean;
   target: WorkoutTarget | null;
 }
@@ -672,15 +674,13 @@ export function WorkoutMusicLine(props: WorkoutMusicStart) {
   return useMusicOn() && props.target ? <WorkoutMusicLineOn {...props} target={props.target} /> : null;
 }
 
-function WorkoutMusicLineOn({ fresh, target }: { fresh: boolean; target: WorkoutTarget }) {
+function WorkoutMusicLineOn({ session, fresh, target }: { session: string; fresh: boolean; target: WorkoutTarget }) {
   const { dock, state, data } = useMusicDock();
-  const asked = useRef(false);
   useEffect(() => {
-    if (!fresh || asked.current || !data?.connected || !readAutoPlay()) return;
-    asked.current = true;
+    if (!fresh || !data?.connected || !readAutoPlay()) return;
     dock.setServer(data);
-    void dock.autoPlay(target);
-  }, [fresh, target, data, dock]);
+    void dock.autoPlay(target, session);
+  }, [fresh, target, session, data, dock]);
   const w = state.workout;
   if (!w || w.target.uri !== target.uri) return null;
   if (w.status === "slow") {
