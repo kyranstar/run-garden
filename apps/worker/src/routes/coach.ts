@@ -1,5 +1,5 @@
 import { Hono } from "hono";
-import { and, desc, eq, gte, inArray, isNull, lt, or, sql } from "drizzle-orm";
+import { and, desc, eq, gte, inArray, isNull, lt, ne, or, sql } from "drizzle-orm";
 import {
   activities,
   coachLocks,
@@ -21,6 +21,7 @@ import {
 import {
   addDays,
   humanizeWorkoutTitle,
+  linesOf,
   looksLikeCodeTitle,
   newId,
   nowInstant,
@@ -28,6 +29,7 @@ import {
   todayInZone,
   type CoachOp,
   type LiftingPlan,
+  type LineBlock,
 } from "@rg/domain";
 import type { AppContext } from "../auth/middleware.js";
 import { requireUser } from "../auth/middleware.js";
@@ -879,66 +881,61 @@ coachRoutes.get("/plans", async (c) => {
     }
   }
 
-  // `kind` is what stops a container of loose sessions from being drawn as a
-  // training block. It is derived, not stored, so the two "Coach one-offs"
-  // rows already in production classify correctly with no data repair.
-  const looseCounts = new Map<string, { sessions: number; done: number; first: string; last: string }>();
-  const looseIds = rows.filter((r) => isLoosePlan(r)).map((r) => r.id);
-  if (looseIds.length > 0) {
-    const held = await db
-      .select({
-        planId: plannedWorkouts.planId,
-        date: plannedWorkouts.effectiveDate,
-        state: plannedWorkouts.completionState,
-        category: plannedWorkouts.category,
-      })
+  // The loose `adhoc-` buckets are containers of one-offs, not plans: they
+  // never reach this read (a line is built from coach blocks only).
+  const coachRows = rows.filter((r) => !isLoosePlan(r));
+  const blocks: LineBlock[] = coachRows.map((r) => ({
+    id: r.id,
+    discipline: r.discipline as LineBlock["discipline"],
+    status: r.status as LineBlock["status"],
+    name: r.name,
+    startDate: r.startDate,
+    endDate: r.endDate,
+    // The block's OWN race (the row), never the Settings fallback.
+    planRaceDate: r.raceDate,
+  }));
+  // One grouped statement: each block's sessions dated today or later that
+  // are still to do.
+  const future = new Map<string, number>();
+  if (blocks.length > 0) {
+    const counted = await db
+      .select({ planId: plannedWorkouts.planId, n: sql<number>`count(*)` })
       .from(plannedWorkouts)
       .where(
         and(
           eq(plannedWorkouts.userId, userId),
-          inArray(plannedWorkouts.planId, looseIds),
+          inArray(
+            plannedWorkouts.planId,
+            blocks.map((b) => b.id),
+          ),
+          gte(plannedWorkouts.effectiveDate, today),
           isNull(plannedWorkouts.archivedAt),
+          ne(plannedWorkouts.completionState, "completed"),
+          ne(plannedWorkouts.category, "rest"),
         ),
-      );
-    for (const w of held) {
-      if (w.category === "rest") continue;
-      const agg = looseCounts.get(w.planId) ?? { sessions: 0, done: 0, first: w.date, last: w.date };
-      agg.sessions += 1;
-      if (w.state === "completed") agg.done += 1;
-      if (w.date < agg.first) agg.first = w.date;
-      if (w.date > agg.last) agg.last = w.date;
-      looseCounts.set(w.planId, agg);
-    }
+      )
+      .groupBy(plannedWorkouts.planId);
+    for (const w of counted) future.set(w.planId, Number(w.n));
   }
+  const lines = linesOf(blocks, today).map((l) => ({
+    ...l,
+    phases: l.phases.map((p) => ({ ...p, futureSessions: future.get(p.id) ?? 0 })),
+  }));
 
   return c.json({
     plans: [
-      ...rows.map((r) => {
-        const loose = isLoosePlan(r);
-        const held = looseCounts.get(r.id);
-        return {
-          ...r,
-          raceDate: r.raceDate ?? prefs.raceDate,
-          // The plan's own race, which its sheet changes (`POST /plans/:id/race`); `raceDate` falls back to Settings'.
-          planRaceDate: r.raceDate,
-          source: "coach" as const,
-          kind: (loose ? "loose" : "block") as "loose" | "block",
-          // A bucket reports what it HOLDS. Its row dates only say where its
-          // one-offs happened to fall, so the contents are the truth and the
-          // card renders from these instead of from a week counter.
-          holds: loose
-            ? {
-                sessions: held?.sessions ?? 0,
-                done: held?.done ?? 0,
-                firstDate: held?.first ?? null,
-                lastDate: held?.last ?? null,
-              }
-            : undefined,
-        };
-      }),
+      ...coachRows.map((r) => ({
+        ...r,
+        raceDate: r.raceDate ?? prefs.raceDate,
+        // The plan's own race, which its sheet changes (`POST /plans/:id/race`); `raceDate` falls back to Settings'.
+        planRaceDate: r.raceDate,
+        source: "coach" as const,
+        kind: "block" as const,
+      })),
       ...studioEntries.map((e) => ({ ...e, kind: "block" as const })),
       ...corosEntries.map((e) => ({ ...e, kind: "block" as const })),
     ],
+    lines,
   });
 });
 

@@ -57,6 +57,9 @@ function client() {
   };
 }
 
+/** `GET /plans` statements before training lines, measured on three blocks and no buckets. */
+const BEFORE_STATEMENTS = 5;
+
 const RESTRAINT = JSON.stringify({ briefing: null, proposals: [], question: null, memoryOps: [] });
 
 beforeEach(async () => {
@@ -676,33 +679,28 @@ describe("a container of loose sessions is not a training block", () => {
     });
   }
 
-  it("marks the bucket `loose` and reports what it HOLDS, not a span", async () => {
+  it("answers no `adhoc-` row: the buckets are not plans of the plans read", async () => {
     await seedProdBuckets();
-    // Contents outside the row's one-day span — which is exactly the state
-    // production is in, because the span was only ever pushed forward by the
-    // branch that a second one-off never reaches.
     await seedHeld("adhoc-lift-deadbeef", "2026-08-18");
-    await seedHeld("adhoc-lift-deadbeef", "2026-08-21", "completed");
-    await seedHeld("adhoc-lift-deadbeef", "2026-08-24");
-    await seedHeld("adhoc-mobility-deadbeef", "2026-08-20");
-
+    await db.insert(schema.coachPlans).values({
+      id: "blk",
+      userId,
+      discipline: "run",
+      name: "Post-10K block",
+      status: "active",
+      startDate: "2026-08-03",
+      endDate: "2026-08-30",
+      stampPrefix: "P10K",
+      createdAt: nowInstant(),
+      updatedAt: nowInstant(),
+    });
     const body = (await (await client().get("/api/coach/plans")).json()) as {
-      plans: Array<{
-        id: string;
-        kind?: string;
-        discipline: string;
-        holds?: { sessions: number; done: number; firstDate: string | null; lastDate: string | null };
-      }>;
+      plans: Array<{ id: string }>;
+      lines: Array<{ phases: Array<{ id: string }> }>;
     };
-    const lift = body.plans.find((p) => p.id === "adhoc-lift-deadbeef")!;
-    const mob = body.plans.find((p) => p.id === "adhoc-mobility-deadbeef")!;
-    expect(lift.kind).toBe("loose");
-    expect(lift.holds).toEqual({ sessions: 3, done: 1, firstDate: "2026-08-18", lastDate: "2026-08-24" });
-    expect(mob.kind).toBe("loose");
-    // The mobility bucket reaches the DTO with its real discipline — it used to
-    // be typed away as run|lift and rendered nowhere.
-    expect(mob.discipline).toBe("mobility");
-    expect(mob.holds).toMatchObject({ sessions: 1, firstDate: "2026-08-20" });
+    expect(body.plans.map((p) => p.id)).toEqual(["blk"]);
+    expect(body.plans.some((p) => p.id.startsWith("adhoc-"))).toBe(false);
+    expect(body.lines.flatMap((l) => l.phases.map((p) => p.id))).toEqual(["blk"]);
   });
 
   it("a real block is still a block", async () => {
@@ -772,6 +770,159 @@ describe("a container of loose sessions is not a training block", () => {
     expect(body.sessions).toEqual({ planned: 2, done: 1 });
     // Both sessions counted, though neither falls inside the row's own dates.
     expect(body.adherencePct).toBe(50);
+  });
+});
+
+describe("GET /plans answers training lines (2026-10-20)", () => {
+  async function seedBlock(
+    id: string,
+    startDate: string,
+    endDate: string,
+    status: "draft" | "active" | "completed" | "retired" = "active",
+    extra: { discipline?: "run" | "lift" | "mobility"; raceDate?: string } = {},
+  ): Promise<void> {
+    await db.insert(schema.coachPlans).values({
+      id,
+      userId,
+      discipline: extra.discipline ?? "run",
+      name: `Block ${id}`,
+      status,
+      startDate,
+      endDate,
+      raceDate: extra.raceDate ?? null,
+      stampPrefix: id,
+      createdAt: nowInstant(),
+      updatedAt: nowInstant(),
+    });
+  }
+
+  async function seedSession(
+    planId: string,
+    date: string,
+    o: { state?: string; archived?: boolean; category?: string } = {},
+  ): Promise<void> {
+    await db.insert(schema.plannedWorkouts).values({
+      id: newId(),
+      userId,
+      planId,
+      sourceWorkoutId: `${planId}:${date}:${o.category ?? "run"}`,
+      title: "Easy",
+      category: (o.category ?? "run") as never,
+      sport: "run",
+      originalPlanDate: date,
+      lastVerifiedCorosDate: "",
+      effectiveDate: date,
+      effectiveTime: "07:00",
+      sourceContentFingerprint: "fp",
+      calendarBlockDurationSeconds: 2700,
+      completionState: (o.state ?? "scheduled") as never,
+      archivedAt: o.archived ? nowInstant() : null,
+      createdAt: nowInstant(),
+      updatedAt: nowInstant(),
+    });
+  }
+
+  type LinesBody = {
+    plans: Array<{ id: string; status: string }>;
+    lines: Array<{
+      key: string;
+      currentPhaseId: string;
+      ended: boolean;
+      goalRaceDate: string | null;
+      phases: Array<{ id: string; futureSessions: number; planRaceDate?: string | null }>;
+    }>;
+  };
+  const read = async () => (await (await client().get("/api/coach/plans")).json()) as LinesBody;
+
+  beforeEach(() => {
+    vi.useFakeTimers({ toFake: ["Date"] });
+    // 22:00 on the 20th in Los Angeles (UTC is already the 21st).
+    vi.setSystemTime(new Date("2026-10-21T05:00:00Z"));
+  });
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+
+  it("three abutting coach blocks are one run line; its key, current phase and future sessions are its own", async () => {
+    await seedBlock("a1", "2026-09-28", "2026-10-11", "completed");
+    await seedBlock("b2", "2026-10-12", "2026-10-25", "active", { raceDate: "2026-12-06" });
+    await seedBlock("c3", "2026-10-26", "2026-11-08", "draft");
+    await seedSession("a1", "2026-10-05");
+    // b2: yesterday (past), today and later (two count), completed, archived and rest (none count).
+    await seedSession("b2", "2026-10-19");
+    await seedSession("b2", "2026-10-20");
+    await seedSession("b2", "2026-10-22");
+    await seedSession("b2", "2026-10-23", { state: "completed" });
+    await seedSession("b2", "2026-10-24", { archived: true });
+    await seedSession("b2", "2026-10-25", { category: "rest" });
+    await seedSession("c3", "2026-10-27");
+    const body = await read();
+    expect(body.lines).toHaveLength(1);
+    const line = body.lines[0]!;
+    expect(line.key).toBe("run:a1");
+    expect(line.currentPhaseId).toBe("b2");
+    expect(line.phases.map((p) => [p.id, p.futureSessions])).toEqual([
+      ["a1", 0],
+      ["b2", 2],
+      ["c3", 1],
+    ]);
+    // The block's own race, not Settings' fallback; the line's goal is its LAST phase's.
+    expect(line.phases.find((p) => p.id === "c3")!.planRaceDate).toBeNull();
+    expect(line.phases.find((p) => p.id === "b2")!.planRaceDate).toBe("2026-12-06");
+    expect(line.goalRaceDate).toBeNull();
+    // The flat list still carries every block.
+    expect(body.plans.map((p) => p.id).sort()).toEqual(["a1", "b2", "c3"]);
+  });
+
+  it("a Settings race day is not a block's own race", async () => {
+    await savePreferences(db, userId, { ...prefs, raceDate: "2026-12-12" });
+    await seedBlock("solo", "2026-10-12", "2026-10-25");
+    const body = await read();
+    expect(body.lines[0]!.phases[0]!.planRaceDate).toBeNull();
+    expect(body.lines[0]!.goalRaceDate).toBeNull();
+  });
+
+  it("a retired block is in no line, though the flat list still has it", async () => {
+    await seedBlock("live", "2026-10-12", "2026-10-25");
+    await seedBlock("gone", "2026-10-26", "2026-11-08", "retired");
+    const body = await read();
+    expect(body.lines.flatMap((l) => l.phases.map((p) => p.id))).toEqual(["live"]);
+    expect(body.plans.map((p) => p.id).sort()).toEqual(["gone", "live"]);
+  });
+
+  it("a completed block stays in its line as a past phase", async () => {
+    await seedBlock("old", "2026-09-14", "2026-10-11", "completed");
+    await seedBlock("now", "2026-10-12", "2026-10-25");
+    const body = await read();
+    expect(body.lines).toHaveLength(1);
+    expect(body.lines[0]!.phases.map((p) => p.id)).toEqual(["old", "now"]);
+    expect(body.lines[0]!.currentPhaseId).toBe("now");
+  });
+
+  it("zone: a block ending today in the athlete's zone is not ended, though UTC is tomorrow", async () => {
+    await seedBlock("last-day", "2026-10-06", "2026-10-20");
+    const body = await read();
+    expect(body.lines[0]!.ended).toBe(false);
+  });
+
+  it("zone: the day after its end, the line is ended", async () => {
+    await seedBlock("done", "2026-10-06", "2026-10-19");
+    expect((await read()).lines[0]!.ended).toBe(true);
+  });
+
+  it("costs at most one statement more than the plans read did before lines", async () => {
+    const stmts: string[] = [];
+    db = makeTestDb({ onStatement: (sql) => stmts.push(sql) });
+    ({ userId, prefs } = await makeTestUser(db));
+    cookie = `${SESSION_COOKIE}=${await createSession(db, userId)}`;
+    await seedBlock("a1", "2026-09-28", "2026-10-11", "completed");
+    await seedBlock("b2", "2026-10-12", "2026-10-25");
+    await seedBlock("c3", "2026-10-26", "2026-11-08", "draft");
+    await seedSession("b2", "2026-10-22");
+    stmts.length = 0;
+    const res = await client().get("/api/coach/plans");
+    expect(res.status).toBe(200);
+    expect(stmts.length).toBeLessThanOrEqual(BEFORE_STATEMENTS + 1);
   });
 });
 

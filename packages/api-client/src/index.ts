@@ -9,6 +9,7 @@ import type {
   GrowthBodyDto,
   GrowthPeriod,
   LiftingPlan,
+  LineBlock,
   ObjectiveBoardDto,
   ObjectiveCreate,
   ObjectiveDto,
@@ -24,6 +25,7 @@ import type {
   SessionLead,
   SessionMode,
   SyncAction,
+  TrainingLine,
   UserPreferences,
   WatchCoverageView,
   Weight,
@@ -618,6 +620,19 @@ export interface CoachPlanDto {
     firstDate: string | null;
     lastDate: string | null;
   };
+}
+
+/** A training line as `GET /api/coach/plans` answers it: each phase also says how many sessions it still has to do
+ * (dated today or later; not archived, completed or rest). */
+export type TrainingLineDto = Omit<TrainingLine, "phases"> & {
+  phases: Array<LineBlock & { futureSessions: number }>;
+};
+
+/** `GET /api/coach/plans`: every block, the Studio's and COROS's entries (no one-off buckets), and the training lines
+ * worked out from the coach's blocks. `lines` is absent in an older payload. */
+export interface CoachPlansResponse {
+  plans: CoachPlanDto[];
+  lines?: TrainingLineDto[];
 }
 
 /** `GET /api/workouts/:id/doc`: a row's document and what is derived from it, or why there is none. */
@@ -2546,7 +2561,7 @@ export const api = {
   /** The official-MCP sleep connection (sleep/recovery phase 2); connect is a
    * full-page redirect to /api/auth/coros-mcp/start, never an XHR. */
   corosMcpDisconnect: () => post<{ ok: boolean }>("/api/auth/coros-mcp/disconnect", {}),
-  coachPlans: () => get<{ plans: CoachPlanDto[] }>("/api/coach/plans"),
+  coachPlans: () => get<CoachPlansResponse>("/api/coach/plans"),
   planWeek: (start?: string) =>
     get<PlanWeekResponse>(`/api/plan/week${start ? `?start=${encodeURIComponent(start)}` : ""}`),
   planDetail: (id: string) =>
