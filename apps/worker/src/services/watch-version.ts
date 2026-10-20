@@ -24,6 +24,7 @@ import { and, asc, eq, gte, inArray, isNull, not, notExists, notInArray } from "
 import { corosWriteJobs, plannedWorkouts, syncIntents } from "@rg/database";
 import { appAuthoredRow, humanizeWorkoutTitle } from "@rg/domain";
 import { leaveContentClaims, leftAsItIs, releaseContentClaims } from "./sync-intents.js";
+import { markedFingerprint } from "./watch-copy-marker.js";
 import type { Db } from "./db.js";
 
 /** A session the athlete has settled: its watch copy is history, not a job. */
@@ -31,14 +32,6 @@ export const SETTLED_COMPLETION_STATES = ["completed", "missed", "skipped"] as c
 
 /** A watch write on its way — the row's view says "sending" (the same four `routes/plan.ts` reads as pending). */
 export const IN_FLIGHT_JOB_STATUSES = ["queued", "claimed", "in_progress", "verifying"] as const;
-
-/**
- * `source_content_fingerprint` when the athlete chose the watch's version: "the app holds no observation of the
- * wire it trusts", so the next COROS read that sees the session finds its content changed and takes the wire's copy
- * (import rule 7, or its sport flip when the change was to another sport), writing the wire's own fingerprint back.
- * Until then the row's view is `taking_watch_copy` — never `synced`, for the two still differ.
- */
-export const TAKE_WATCH_COPY = "take-watch-copy";
 
 /**
  * STILL TO RUN: in the plan, not done, missed or skipped, and its day today or later in the athlete's zone (`today`).
@@ -139,8 +132,9 @@ export type KeepOutcome = { kept: number } | { error: "app_built" };
  * KEEP THE WATCH'S VERSION: the app takes the watch's copy. The row's open content claims are released the ordinary
  * way (as a converged rewrite releases them), a rewrite of it still only queued is superseded so nothing more reaches
  * the watch for it (one already running finishes, and the read then takes what it wrote), and the row is marked
- * `TAKE_WATCH_COPY` — its lift or mobility structure dropped with it, which the wire's copy never has — so the next
- * COROS read rewrites it from the wire: title, stages, sport. Until then it says so (`taking_watch_copy`). Nothing is
+ * (watch-copy-marker.ts: the fingerprint it had is kept inside the mark) so the next COROS read rewrites it from the
+ * wire: title, stages, sport, and its lift or mobility structure dropped then, not before — until the read, nothing of
+ * the app's copy is lost. Until then a row still to run says so (`taking_watch_copy`). Nothing is
  * written to the watch. An app-built session is refused (`app_built`): no read ever takes its content from the wire,
  * so its Keep could not be true — it is left as it is instead (`leaveWatchVersion`). Idempotent: with no open claim,
  * one read and nothing written.
@@ -163,7 +157,7 @@ export async function keepWatchVersion(db: Db, userId: string, row: WorkoutRow, 
   await releaseContentClaims(db, userId, row.id, now);
   await db
     .update(plannedWorkouts)
-    .set({ sourceContentFingerprint: TAKE_WATCH_COPY, structuredJson: null, updatedAt: now })
+    .set({ sourceContentFingerprint: markedFingerprint(plannedWorkouts.sourceContentFingerprint), updatedAt: now })
     .where(and(eq(plannedWorkouts.id, row.id), eq(plannedWorkouts.userId, userId)));
   return { kept: ids.length };
 }

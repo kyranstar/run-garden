@@ -33,6 +33,7 @@ import { insertBatches, runAtomically, type AtomicStatement, type Db } from "./d
 import { separateDayCollisions, windowTimeFor } from "./day-placement.js";
 import { loadOwnProgramNames, unstampTitle } from "./coros-stamp.js";
 import { openMoveIntents, resolveIntent } from "./sync-intents.js";
+import { adoptsWatchCopy } from "./watch-copy-marker.js";
 import { dismissSyncNotesOf, postSyncNote } from "./sync-notes.js";
 import { reconcileWorkout } from "./reconcile.js";
 import { SETTLED_PUSH, sentBuildIdOf } from "./session-build.js";
@@ -838,6 +839,7 @@ export async function importPlanSnapshot(
             missingReads: 0,
             // A skipped or missed row recycled as another workout is that workout now: its document follows.
             ...updateDocColumns(doc, { reopens: true }),
+            ...adoptsWatchCopy(current),
             updatedAt: now,
           })
           .where(eq(plannedWorkouts.id, current.id)),
@@ -1200,6 +1202,7 @@ export async function importPlanSnapshot(
       updates.durationEstimate = estimate as unknown as Record<string, unknown>;
       updates.expectedDistanceMeters = src.estimatedDistanceMeters ?? null;
       updates.stageSummary = stageSummary ?? null;
+      Object.assign(updates, adoptsWatchCopy(current));
       revised = docOfStages(updates.category as string);
       Object.assign(updates, updateDocColumns(revised));
       if (current.calendarSyncState === "synced") updates.calendarSyncState = "pending";

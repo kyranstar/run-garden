@@ -85,6 +85,7 @@ import { separateDayCollisions } from "./day-placement.js";
 import { freshThrough } from "./design-tools/record-answer.js";
 import { buildSessionOutcome, NotTodayError, SessionLockedError, type BuildOverrides } from "./session-build.js";
 import { recordIntent } from "./sync-intents.js";
+import { unmarkedFingerprint, watchCopyBase } from "./watch-copy-marker.js";
 import { revisionInsert } from "./workout-doc-store.js";
 
 /** The three answers, in the card's order. */
@@ -698,7 +699,7 @@ async function applyRunEase(db: Db, userId: string, row: typeof plannedWorkouts.
     .select({ id: corosWriteJobs.id, payload: corosWriteJobs.payload, expected: corosWriteJobs.expectedContentFingerprint })
     .from(corosWriteJobs)
     .where(and(eq(corosWriteJobs.userId, userId), eq(corosWriteJobs.workoutId, row.id), eq(corosWriteJobs.kind, "coach_update_workout"), eq(corosWriteJobs.status, "superseded")));
-  const same = jobs.filter((j) => j.expected === row.sourceContentFingerprint && JSON.stringify((j.payload as { session?: unknown }).session) === JSON.stringify(session));
+  const same = jobs.filter((j) => j.expected === watchCopyBase(row.sourceContentFingerprint) && JSON.stringify((j.payload as { session?: unknown }).session) === JSON.stringify(session));
   if (same.length === 0) return;
   await db
     .update(corosWriteJobs)
@@ -781,6 +782,8 @@ async function restoreRun(db: Db, userId: string, s: Subject, ease: RunEase, ctx
       .update(pw)
       .set({
         ...columns,
+        // Reached: a new claim of the app's below — lifting a "keep the watch's version" mark (watch-copy-marker.ts).
+        ...(reached ? { sourceContentFingerprint: unmarkedFingerprint(pw.sourceContentFingerprint) } : {}),
         workoutDoc: b.doc,
         ...(b.doc !== null ? { workoutDocRev: sql`case when ${pw.workoutDoc} is ${b.doc} then ${pw.workoutDocRev} else coalesce(${pw.workoutDocRev}, 0) + 1 end` } : {}),
         updatedAt: ctx.now,

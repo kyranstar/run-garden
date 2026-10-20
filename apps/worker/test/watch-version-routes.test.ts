@@ -164,8 +164,16 @@ async function easedAndFailed(over: { corosWritesEnabled?: boolean } = {}): Prom
   return { ...a, workoutId: row!.id };
 }
 
-const request = async (a: Account, path: string, method: "GET" | "POST" = "GET"): Promise<Response> =>
-  mountRoutes(a.db, "/api/plan", planRoutes).request(path, { method, headers: { Cookie: a.cookie } }, makeEnv());
+const request = async (a: Account, path: string, method: "GET" | "POST" = "GET", body?: unknown): Promise<Response> =>
+  mountRoutes(a.db, "/api/plan", planRoutes).request(
+    path,
+    {
+      method,
+      headers: { Cookie: a.cookie, ...(body !== undefined ? { "Content-Type": "application/json" } : {}) },
+      ...(body !== undefined ? { body: JSON.stringify(body) } : {}),
+    },
+    makeEnv(),
+  );
 
 async function detail(a: Account, id: string) {
   const res = await request(a, `/api/plan/workouts/${id}`);
@@ -368,10 +376,14 @@ describe("POST /api/plan/workouts/:id/watch-version/keep", () => {
     expect(waiting.watchVersion).toBeUndefined();
     // The failed rewrite stays as it was: nothing is sent.
     expect((await rewrites(a, a.workoutId))[0]!.status).toBe("failed");
+    // Nothing of the app's copy goes before the read brings the watch's in: a structure the app held is still there.
+    const exercises = { exercises: [{ name: "Calf raise", sets: 2, reps: 12 }] };
+    await a.db.update(schema.plannedWorkouts).set({ structuredJson: exercises }).where(eq(schema.plannedWorkouts.id, a.workoutId));
 
     await readAndImport(a);
     const [row] = await a.db.select().from(schema.plannedWorkouts).where(eq(schema.plannedWorkouts.id, a.workoutId));
     expect(row!.title, "the watch's session").toBe("Threshold 5x5");
+    expect(row!.structuredJson, "dropped as the watch's copy is taken").toBeNull();
     expect(row!.sourceContentFingerprint).toMatch(/^[0-9a-f]{16}$/);
     const after = (await detail(a, a.workoutId)) as Awaited<ReturnType<typeof detail>> & { workout: { title: string } };
     expect(after.workout.corosSyncView).toBe("synced");
@@ -390,7 +402,7 @@ describe("POST /api/plan/workouts/:id/watch-version/keep", () => {
     expect(again.writes).toEqual([]);
   });
 
-  it("a new change before the read lands is a new earlier version, said as one", async () => {
+  it("a new claim before the read lands is a new earlier version, said as one", async () => {
     const a = await easedAndFailed();
     expect((await request(a, `/api/plan/workouts/${a.workoutId}/watch-version/keep`, "POST")).status).toBe(200);
     expect((await detail(a, a.workoutId)).workout.corosSyncView).toBe("taking_watch_copy");
@@ -420,6 +432,10 @@ describe("POST /api/plan/workouts/:id/watch-version/keep", () => {
     expect((await detail(ws, row!.id)).workout.corosSyncView).toBe("content_stale");
 
     expect((await request(ws, `/api/plan/workouts/${row!.id}/watch-version/keep`, "POST")).status).toBe(200);
+    // Until the read, the app's own movements are still there to read (review-S2: nothing lost if no read comes).
+    const [kept] = await a.db.select().from(schema.plannedWorkouts).where(eq(schema.plannedWorkouts.id, row!.id));
+    expect(kept!.structuredJson).not.toBeNull();
+    expect(((await detail(ws, row!.id)).workout as { exercises?: unknown[] }).exercises?.length).toBeGreaterThan(0);
     await readAndImport(a);
     await readAndImport(a);
     const [taken] = await a.db.select().from(schema.plannedWorkouts).where(eq(schema.plannedWorkouts.id, row!.id));
@@ -433,6 +449,89 @@ describe("POST /api/plan/workouts/:id/watch-version/keep", () => {
       .where(and(eq(schema.plannedWorkouts.userId, a.userId), eq(schema.plannedWorkouts.effectiveDate, taken!.effectiveDate)));
     expect(sameDay.filter((w) => w.archivedAt === null).map((w) => w.id)).toEqual([row!.id]);
     expect((await detail(ws, row!.id)).workout.corosSyncView).toBe("synced");
+  });
+
+  it("K3b: a move made before the read goes through — on what the watch holds, no note — and the read still takes the watch's copy", async () => {
+    const a = await easedAndFailed();
+    const [before] = await a.db.select().from(schema.plannedWorkouts).where(eq(schema.plannedWorkouts.id, a.workoutId));
+    expect((await request(a, `/api/plan/workouts/${a.workoutId}/watch-version/keep`, "POST")).status).toBe(200);
+    const toDate = addDays(before!.effectiveDate, 1);
+    // The route drains what it queued in the request's background, against COROS: the mock account here.
+    vi.stubGlobal("fetch", a.server.fetchImpl);
+    expect((await request(a, `/api/plan/workouts/${a.workoutId}/move`, "POST", { toDate, toTime: "07:00" })).status).toBe(200);
+    const [move] = await a.db
+      .select()
+      .from(schema.corosWriteJobs)
+      .where(and(eq(schema.corosWriteJobs.workoutId, a.workoutId), eq(schema.corosWriteJobs.kind, "move_scheduled_workout")));
+    expect(move!.expectedContentFingerprint, "what the watch holds, never the mark").toBe(before!.sourceContentFingerprint);
+
+    await executeCloudJobs(a.db, makeEnv(), a.userId, a.prefs, { fetchImpl: a.server.fetchImpl });
+    const moves = await a.db
+      .select()
+      .from(schema.corosWriteJobs)
+      .where(and(eq(schema.corosWriteJobs.workoutId, a.workoutId), eq(schema.corosWriteJobs.kind, "move_scheduled_workout")));
+    expect(moves.map((j) => j.status)).toEqual(["verified"]);
+    expect(await a.db.select().from(schema.syncNotes).where(eq(schema.syncNotes.workoutId, a.workoutId)), "no 'COROS had moved it'").toEqual([]);
+    const [moved] = await a.db.select().from(schema.plannedWorkouts).where(eq(schema.plannedWorkouts.id, a.workoutId));
+    expect(moved!.lastVerifiedCorosDate).toBe(toDate);
+    expect(moved!.sourceContentFingerprint.startsWith("take-watch-copy:"), "the verified move keeps the mark").toBe(true);
+    expect((await detail(a, a.workoutId)).workout.corosSyncView).toBe("taking_watch_copy");
+
+    await readAndImport(a);
+    const [taken] = await a.db.select().from(schema.plannedWorkouts).where(eq(schema.plannedWorkouts.id, a.workoutId));
+    expect(taken!.title, "the watch's session, on its new day").toBe("Threshold 5x5");
+    expect(taken!.effectiveDate).toBe(toDate);
+    expect((await detail(a, a.workoutId)).workout.corosSyncView).toBe("synced");
+  });
+
+  it("the import drops a structure only for a row that chose the watch's version: any other keeps what it had, as always", async () => {
+    const a = await account();
+    await readAndImport(a);
+    const [row] = await a.db
+      .select()
+      .from(schema.plannedWorkouts)
+      .where(and(eq(schema.plannedWorkouts.userId, a.userId), eq(schema.plannedWorkouts.title, "Threshold 5x5")));
+    const exercises = { exercises: [{ name: "Calf raise", sets: 2, reps: 12 }] };
+    await a.db.update(schema.plannedWorkouts).set({ structuredJson: exercises }).where(eq(schema.plannedWorkouts.id, row!.id));
+    // Edited on COROS: rule 7 takes the new content, and leaves the row's structure as the import always has.
+    const program = a.server.programByIdInPlan(row!.sourceIdInPlan!)!;
+    program.exercises = [{ ...program.exercises![0]!, targetValue: 5113 }];
+    await readAndImport(a);
+    const [after] = await a.db.select().from(schema.plannedWorkouts).where(eq(schema.plannedWorkouts.id, row!.id));
+    expect(after!.sourceContentFingerprint).not.toBe(row!.sourceContentFingerprint);
+    expect(after!.structuredJson).toEqual(exercises);
+  });
+
+  it("the row says it is taking the watch's version only while it is still to run: done, or its day gone, it says what it is", async () => {
+    const a = await easedAndFailed();
+    expect((await request(a, `/api/plan/workouts/${a.workoutId}/watch-version/keep`, "POST")).status).toBe(200);
+    expect((await detail(a, a.workoutId)).workout.corosSyncView).toBe("taking_watch_copy");
+    await a.db.update(schema.plannedWorkouts).set({ completionState: "completed" }).where(eq(schema.plannedWorkouts.id, a.workoutId));
+    expect((await detail(a, a.workoutId)).workout.corosSyncView).toBe("synced");
+    const past = addDays(todayInZone(a.prefs.timezone), -3);
+    await a.db
+      .update(schema.plannedWorkouts)
+      .set({ completionState: "scheduled", effectiveDate: past, lastVerifiedCorosDate: past })
+      .where(eq(schema.plannedWorkouts.id, a.workoutId));
+    expect((await detail(a, a.workoutId)).workout.corosSyncView).toBe("synced");
+  });
+
+  it("a new change after Keep is the app's claim again: the mark lifted, its rewrite queued on what the watch holds, and Send offered if it fails (K4)", async () => {
+    const a = await easedAndFailed();
+    const [before] = await a.db.select().from(schema.plannedWorkouts).where(eq(schema.plannedWorkouts.id, a.workoutId));
+    expect((await request(a, `/api/plan/workouts/${a.workoutId}/watch-version/keep`, "POST")).status).toBe(200);
+    const again = { category: "easy", title: "Easy 25", durationMinutes: 25, run: { blocks: [{ kind: "duration", value: 25, intensity: "easy" }] } };
+    const out = await applyOps(a.db, a.userId, a.prefs, "p-ease-again", [coachOpSchema.parse({ kind: "ease", workoutId: a.workoutId, session: again })]);
+    expect(out.missed).toEqual([]);
+    const [row] = await a.db.select().from(schema.plannedWorkouts).where(eq(schema.plannedWorkouts.id, a.workoutId));
+    expect(row!.sourceContentFingerprint, "the mark lifted: what the watch holds").toBe(before!.sourceContentFingerprint);
+    const queued = (await rewrites(a, a.workoutId)).find((j) => j.status === "queued");
+    expect(queued, "the ease's own rewrite, proven on what the watch holds").toBeDefined();
+    expect((queued!.payload as { importedFingerprint?: string }).importedFingerprint).toBe(before!.sourceContentFingerprint);
+    await a.db.update(schema.corosWriteJobs).set({ status: "failed" }).where(eq(schema.corosWriteJobs.id, queued!.id));
+    const d = await detail(a, a.workoutId);
+    expect(d.workout.corosSyncView).toBe("content_stale");
+    expect(d.watchVersion).toEqual({ send: true });
   });
 
   it("a rewrite still only queued is stopped: nothing more reaches the watch for it", async () => {

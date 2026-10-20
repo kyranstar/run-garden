@@ -285,6 +285,32 @@ describe("the watch", () => {
     expect(await rowOf(db, id)).toMatchObject({ stageSummary: "10 min · 6 × (3 min · 90 s) · 10 min", corosSyncState: "calendar_only" });
   });
 
+  it("Undo after the rewrite reached the watch, with the watch's version since chosen: the rewrite back is on what the watch holds, and the mark lifted", async () => {
+    const id = await seedRun(DAY, { shape: "intervals", watch: true });
+    await answerBodyCheck(db, userId, id, { feel: "heavy" }, ctx());
+    const [job] = await rewrites(id);
+    await db.update(corosWriteJobs).set({ status: "verified", verifiedAt: NOON }).where(eq(corosWriteJobs.id, job!.id));
+    await db.update(syncIntents).set({ resolvedAt: NOON }).where(and(eq(syncIntents.targetId, id), eq(syncIntents.kind, "content")));
+    // "Keep the watch's version" since (watch-copy-marker.ts): the mark keeps what the watch holds.
+    await db.update(plannedWorkouts).set({ corosSyncState: "synced", sourceContentFingerprint: "take-watch-copy:fedcba9876543210" }).where(eq(plannedWorkouts.id, id));
+
+    await undoBodyCheck(db, userId, id, ctx());
+    const back = (await rewrites(id)).find((j) => j.status === "queued");
+    expect(back!.expectedContentFingerprint).toBe("fedcba9876543210");
+    expect((await rowOf(db, id)).sourceContentFingerprint, "the app's claim is live again").toBe("fedcba9876543210");
+  });
+
+  it("eased again after an Undo and a keep of the watch's version, the rewrite the Undo superseded is queued again", async () => {
+    const id = await seedRun(DAY, { shape: "intervals", watch: true });
+    await answerBodyCheck(db, userId, id, { feel: "heavy" }, ctx());
+    await undoBodyCheck(db, userId, id, ctx());
+    expect(await rewrites(id)).toEqual([expect.objectContaining({ status: "superseded" })]);
+    await db.update(plannedWorkouts).set({ sourceContentFingerprint: "take-watch-copy:0123456789abcdef" }).where(eq(plannedWorkouts.id, id));
+    await answerBodyCheck(db, userId, id, { feel: "fresh" }, ctx());
+    await answerBodyCheck(db, userId, id, { feel: "heavy" }, ctx());
+    expect(await rewrites(id)).toEqual([expect.objectContaining({ status: "queued" })]);
+  });
+
   it("a claim the app held before the ease (a coach ease not yet on the watch) stays when the ease is undone", async () => {
     const id = await seedRun(DAY, { shape: "intervals" });
     await db.insert(syncIntents).values({ id: newId(), userId, targetKind: "workout", targetId: id, kind: "content", payload: null, source: "coach_ease", createdAt: NOON });

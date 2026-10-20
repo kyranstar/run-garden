@@ -45,6 +45,8 @@ export function watchVersionFailure(err: unknown, appBuilt = false): string {
   const code = err instanceof ApiError ? (err.body as { error?: string } | null)?.error : undefined;
   if (code === "nothing_to_send") return "There's nothing to send for this one any more.";
   if (code === "app_built") return watchVersionWhy("cant_rewrite", true)!;
+  // A sheet older than the session: it isn't one the app built, so its watch's version can be kept instead.
+  if (code === "not_app_built") return "This session can't be left as it is. Keep the watch's version instead.";
   return watchVersionWhy(code as Why, appBuilt) ?? "That didn't go through — try again.";
 }
 

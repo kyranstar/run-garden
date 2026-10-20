@@ -340,6 +340,21 @@ describe("the session's sheet", () => {
     expect(host!.querySelector(".watch-version-done")!.textContent).toBe("Left as it is. It isn't counted any more.");
   });
 
+  it("a sheet older than the session, refused leaving it as it is, says why in words", async () => {
+    stubFetch({
+      "/api/sync/notes": () => json({ notes: [] }),
+      "/api/plan/workouts/slot-4/watch-version/leave": () => json({ error: "not_app_built" }, 409),
+    });
+    const slot = run({ id: "slot-4", title: "Strength D", category: "strength", sport: "strength", origin: "program", contentState: "outline", programId: "p1" });
+    mount(createElement(SessionSheet, { w: slot, today: TODAY, onClose: () => undefined }));
+    await act(async () => undefined);
+    await act(async () => button("Leave the watch as it is").click());
+    await settle(5);
+    expect(host!.querySelector('.watch-version-error[role="alert"]')!.textContent).toBe(
+      "This session can't be left as it is. Keep the watch's version instead.",
+    );
+  });
+
   it("an app-built session left as it is still says so, quietly, with nothing to press", async () => {
     stubFetch({ "/api/sync/notes": () => json({ notes: [] }) });
     const slot = run({ id: "slot-3", title: "Strength C", category: "strength", sport: "strength", origin: "program", contentState: "outline", programId: "p1", watchVersionLeft: true });

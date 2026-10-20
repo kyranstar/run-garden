@@ -96,7 +96,7 @@ import { chunkIds, type Db } from "./db.js";
 import type { PlannedRow } from "./planned-columns.js";
 import { loadPreferences } from "./calendar-sync.js";
 import { enqueueContentConvergence, ownershipProofFor, watchPushable } from "./coach-apply.js";
-import { TAKE_WATCH_COPY } from "./watch-version.js";
+import { takesWatchCopy } from "./watch-copy-marker.js";
 
 /** `audit_events.kind` for the pre-change backup written by a live run. */
 export const CONTENT_CONVERGE_BACKUP_KIND = "coach_content_convergence_backfilled";
@@ -496,9 +496,9 @@ export async function convergeDivergedContent(
       address: null,
     };
 
-    // The athlete chose the watch's version (watch-version.ts `TAKE_WATCH_COPY`): the next read takes it, and nothing
+    // The athlete chose the watch's version (watch-copy-marker.ts): the next read takes it, and nothing
     // of the app's goes to the watch over it — not the pace heal either.
-    if (row.sourceContentFingerprint === TAKE_WATCH_COPY) {
+    if (takesWatchCopy(row.sourceContentFingerprint)) {
       reports.push({ ...base, reason: "the athlete chose the watch's version — the next COROS read takes it" });
       continue;
     }

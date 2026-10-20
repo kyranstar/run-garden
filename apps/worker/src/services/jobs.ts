@@ -22,6 +22,7 @@ import type { Db } from "./db.js";
 import { cloudPresence } from "./sync-status.js";
 import { applyStudioJobResult } from "./studio-push.js";
 import { openIntentFor, openMoveIntents, recordIntent, resolveIntent } from "./sync-intents.js";
+import { keepsMark, watchCopyBase } from "./watch-copy-marker.js";
 import { postSyncNote } from "./sync-notes.js";
 import { enqueueProgramUnpush, runOwedUnpushes } from "./watch-push.js";
 
@@ -93,7 +94,9 @@ async function enqueueMoveJob(
     workoutId: v.workout.id,
     kind: "move_scheduled_workout",
     expectedSourceVersion: v.workout.sourceVersion ?? null,
-    expectedContentFingerprint: v.workout.sourceContentFingerprint,
+    // What the watch holds: under the athlete's "keep the watch's version" mark, the fingerprint the mark kept — never
+    // the mark itself, which no program on the wire could match (review-S2 I1).
+    expectedContentFingerprint: watchCopyBase(v.workout.sourceContentFingerprint),
     originalDate: v.workout.lastVerifiedCorosDate,
     destinationDate: v.toDate,
     requestedAt: v.now,
@@ -536,7 +539,10 @@ export async function applyJobResult(
       workoutUpdates.lastVerifiedCorosDate = result.observedDate ?? job.destinationDate;
       workoutUpdates.corosSyncState = "synced";
       if (result.observedVersion) workoutUpdates.sourceVersion = result.observedVersion;
-      if (result.observedFingerprint) workoutUpdates.sourceContentFingerprint = result.observedFingerprint;
+      // Under the mark when the row carries one: the next read must still take the watch's copy (review-S2 I1).
+      if (result.observedFingerprint) {
+        workoutUpdates.sourceContentFingerprint = keepsMark(plannedWorkouts.sourceContentFingerprint, result.observedFingerprint);
+      }
       const intent = await openIntentFor(db, userId, job.workoutId, "move");
       if (intent) await resolveIntent(db, intent.id, now);
       break;

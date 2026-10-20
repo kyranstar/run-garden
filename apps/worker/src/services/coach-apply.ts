@@ -42,6 +42,7 @@ import { separateDayCollisions, windowTimeFor } from "./day-placement.js";
 import { coachStamp, recordedStampFor, stampName, takenStampsOn, takenStampsOnDays } from "./coros-stamp.js";
 import { applyMove } from "./jobs.js";
 import { openIntentFor, recordIntent } from "./sync-intents.js";
+import { unmarkedFingerprint, watchCopyBase } from "./watch-copy-marker.js";
 import {
   enqueueUnpushIfOurs,
   unpushInsertIfOurs,
@@ -795,6 +796,9 @@ export async function enqueueContentConvergence(
   },
 ): Promise<ConvergeOutcome> {
   if (!v.corosWritesEnabled) return { refused: "writes_disabled" };
+  // The row as the caller read it may still carry the "keep the watch's version" mark that its own write has just
+  // lifted: its proof and its claim are on what the watch holds (watch-copy-marker.ts).
+  v = { ...v, workout: { ...v.workout, sourceContentFingerprint: watchCopyBase(v.workout.sourceContentFingerprint) } };
   // Both directions — the rewrite and the unpush of a body that cannot cross the wire (ruling 3-R13).
   if (appAuthoredRow(v.workout)) return { refused: "app_authored" };
   const address = watchAddressOf(v.workout);
@@ -1224,7 +1228,14 @@ export async function applyOps(
         await runAtomically(db, [
           db
             .update(plannedWorkouts)
-            .set({ ...sessionColumns(op.session), ...updateDocColumns(doc), updatedAt: now })
+            .set({
+              ...sessionColumns(op.session),
+              ...updateDocColumns(doc),
+              // A new change of the app's after "keep the watch's version": the app's claim is live again, and the
+              // fingerprint the mark kept is what the watch holds (watch-copy-marker.ts).
+              sourceContentFingerprint: unmarkedFingerprint(plannedWorkouts.sourceContentFingerprint),
+              updatedAt: now,
+            })
             .where(and(eq(plannedWorkouts.id, op.workoutId), eq(plannedWorkouts.userId, userId))),
           ...(doc ? [revisionInsert(db, { userId, workoutId: op.workoutId, sourceKind: "coach", sourceRef: proposalId, now })] : []),
         ]);
