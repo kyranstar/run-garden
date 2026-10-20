@@ -545,6 +545,63 @@ describe("typing filters, live", () => {
   });
 });
 
+describe("Close, while the field still owes its write (the browser's own history)", () => {
+  const settle = (ms: number) => act(async () => void (await new Promise((r) => setTimeout(r, ms))));
+
+  for (const wide of [false, true]) {
+    it(`${wide ? "beside the list" : "on a phone"}: a move tapped inside the pause and closed keeps the words, even when the write lands before Close's Back`, async () => {
+      vi.stubGlobal(
+        "matchMedia",
+        vi.fn((q: string) => ({ matches: wide && q === "(min-width: 900px)", media: q, addEventListener: () => undefined, removeEventListener: () => undefined })),
+      );
+      window.history.replaceState(null, "", "/plan");
+      window.history.pushState(null, "", "/studio");
+      vi.stubGlobal("fetch", vi.fn(async () => new Response(JSON.stringify({ error: "offline" }), { status: 503 })));
+      host = document.createElement("div");
+      document.body.appendChild(host);
+      root = createRoot(host);
+      act(() => {
+        root!.render(
+          createElement(
+            QueryClientProvider,
+            { client: primedClient({}) },
+            createElement(BrowserRouter, null, createElement(Routes, null, createElement(Route, { path: "/studio/*", element: createElement(StudioScreen) }))),
+          ),
+        );
+      });
+      const go = window.history.go.bind(window.history);
+      const field = () => host!.querySelector<HTMLInputElement>('input[type="search"]')!;
+      try {
+        vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+        const set = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value")!.set!;
+        act(() => {
+          set.call(field(), "goblet");
+          field().dispatchEvent(new Event("input", { bubbles: true }));
+        });
+        // A quick reader: the move tapped inside the pause.
+        act(() => [...host!.querySelectorAll<HTMLAnchorElement>("a.stu-move-open")].find((a) => a.textContent === "Goblet squat")!.click());
+        expect(`${window.location.pathname}${window.location.search}`).toBe("/studio/move/gobletSquat");
+        // A browser's Back is a task of its own; on a busy runner it landed after the field's write (jsdom drops a
+        // traversal queued before a replaceState, so the Back is issued late instead).
+        window.history.go = (n?: number) => void setTimeout(() => go(n), URL_WRITE_MS + 40);
+        const detail = host!.querySelector('[role="dialog"]') ?? host!.querySelector("aside.stu-detail");
+        act(() => detail!.querySelector<HTMLButtonElement>('[aria-label="Close"]')!.click());
+        act(() => vi.advanceTimersByTime(URL_WRITE_MS)); // the field's write, were it still armed
+        act(() => vi.advanceTimersByTime(60)); // the Back, issued
+        vi.useRealTimers();
+        await settle(40); // …and landed
+        expect(window.location.pathname).toBe("/studio");
+        expect(field().value).toBe("goblet");
+        expect(host!.querySelector('button[aria-label="Clear search"]')).not.toBeNull();
+        expect(window.location.search).toBe("?q=goblet");
+      } finally {
+        window.history.go = go;
+        window.history.replaceState(null, "", "/");
+      }
+    });
+  }
+});
+
 describe("Clear, then a tap at once (the browser's own history)", () => {
   // A browser's Back lands later — a task of its own — so this runs on the window's history (jsdom's), not a memory one.
   const settle = (ms: number) => act(async () => void (await new Promise((r) => setTimeout(r, ms))));

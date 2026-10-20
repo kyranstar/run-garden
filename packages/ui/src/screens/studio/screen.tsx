@@ -165,9 +165,12 @@ export function StudioScreen() {
   const [text, setText] = useState(url.q);
   const written = useRef(url.q);
   const timer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  /** The search the field's pending write will make, while it is pending. */
+  const owed = useRef<string | null>(null);
   const cancel = () => {
     if (timer.current) clearTimeout(timer.current);
     timer.current = null;
+    owed.current = null;
   };
   useEffect(() => cancel, []);
   // The URL moved under the field (Back, a link, a write that was not the field's): the field follows it.
@@ -240,6 +243,7 @@ export function StudioScreen() {
     setText(v);
     cancel();
     const { filters, all } = url;
+    owed.current = studioSearch(v, filters, all).replace(/^\?/, "");
     timer.current = setTimeout(() => {
       timer.current = null;
       writeLatest.current(v, filters, all);
@@ -266,7 +270,11 @@ export function StudioScreen() {
   /** A list to land on once a close's Back has landed: the list changed while the pane was open. */
   const relist = useRef<string | null>(null);
   const closeMove = useCallback(() => {
-    const { search, state, openId } = here.current;
+    const { state, openId } = here.current;
+    // The field may still owe the URL its words (a move tapped inside the pause): the list on screen is the field's, so
+    // that is the list to come back to, and the late write is dropped — never landing between the Back and its landing.
+    const search = owed.current ?? here.current.search;
+    cancel();
     if (openId) focusNext.current = { to: "move", id: openId };
     if (state?.moveDepth) {
       // Back out of every move entry; the list as it is now then takes the place of the one they started from.
