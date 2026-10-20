@@ -40,6 +40,8 @@ export const SEEDED: readonly SeededSpec[] = [
   // with nothing asked and the review never shown.
   { file: "coach-notices.spec.ts", runs: () => true, accounts: (p, run) => [`notices-${run}-${p}`, `notices-${run}-${p}-l`, `notices-${run}-${p}-h`] },
   { file: "watch.spec.ts", runs: (env) => env.RG_E2E_WATCH === "1", accounts: (p) => [`watch-${p}`] },
+  // The training-line journey's, new each run: it stops the line its lever wrote, and the lever writes it once an account.
+  { file: "coach-training-line.spec.ts", runs: () => true, accounts: (p, run) => [`line-${run}-${p}`] },
   { file: "coach-plan-retire.spec.ts", runs: scripted, accounts: (p) => [`retire-${p}`] },
   { file: "coach-plan-race.spec.ts", runs: scripted, accounts: (p) => [`race-${p}`] },
 ];

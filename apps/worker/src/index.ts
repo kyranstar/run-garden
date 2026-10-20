@@ -65,6 +65,7 @@ import { purgeExpiredStates } from "./auth/google.js";
 import { ensureFixtureUser, fixtureAccountEmail, seedFixtures } from "./services/fixtures.js";
 import { seedWatchSession } from "./services/fixture-watch-session.js";
 import { parseCoachNoticesSeed, seedCoachNotices } from "./services/fixture-coach-notices.js";
+import { seedTrainingLine } from "./services/fixture-training-line.js";
 import { seedWatchVersions } from "./services/fixture-watch-version.js";
 import { accountsRestoring, restoreInProgress } from "./services/account-state.js";
 import { placeSlotsForAllPrograms } from "./services/program-slots.js";
@@ -218,6 +219,20 @@ app.post(
     const prefs = await loadPreferences(db, userId);
     const now = new Date();
     return c.json(await seedCoachNotices(db, userId, todayInZone(prefs.timezone, now), now, seed));
+  },
+);
+/**
+ * Fixture mode only (training lines, the end-to-end journey): a running plan in two abutting phases ("Base", "Build")
+ * and a coach one-off outside both, as the coach's own appliers write them (`seedTrainingLine`). 404 outside fixture mode.
+ */
+app.post(
+  "/api/dev/training-line",
+  async (c, next) => (fixtureModeEnabled(c.env) ? next() : c.json({ error: "not_found" }, 404)),
+  requireUser,
+  async (c) => {
+    const db = c.get("db");
+    const userId = c.get("userId");
+    return c.json(await seedTrainingLine(db, userId, await loadPreferences(db, userId), new Date()));
   },
 );
 /**

@@ -101,20 +101,21 @@ describe("the e2e suite seeds before the run, or alone", () => {
 describe("the accounts seeded before the run", () => {
   const base = { projects: ["iphone", "desktop"], run: "a1b2c3", env: {}, selected: null, repeatEach: 1, retries: 0 };
 
-  it("the default suite: body-check's two kinds and coach-notices' three tests, each project its own", () => {
+  it("the default suite: body-check's two kinds, coach-notices' three tests and the training line's one, each project its own", () => {
     expect(accountsToSeed(base).map((a) => a.account)).toEqual([
       "body-engine-iphone", "body-run-iphone", "body-engine-desktop", "body-run-desktop",
       "notices-a1b2c3-iphone", "notices-a1b2c3-iphone-l", "notices-a1b2c3-iphone-h",
       "notices-a1b2c3-desktop", "notices-a1b2c3-desktop-l", "notices-a1b2c3-desktop-h",
+      "line-a1b2c3-iphone", "line-a1b2c3-desktop",
     ]);
   });
 
   it("a spec that skips itself in this environment seeds nothing; on its switch, its accounts", () => {
     const files = (env: Record<string, string>) => new Set(accountsToSeed({ ...base, env }).map((a) => a.file));
-    expect(files({})).toEqual(new Set(["body-check.spec.ts", "coach-notices.spec.ts"]));
+    expect(files({})).toEqual(new Set(["body-check.spec.ts", "coach-notices.spec.ts", "coach-training-line.spec.ts"]));
     expect(files({ RG_E2E_WATCH: "1" })).toContain("watch.spec.ts");
     expect(files({ RG_E2E_DESIGN_MODEL: "scripted:now" })).toEqual(
-      new Set(["body-check.spec.ts", "coach-notices.spec.ts", "coach-plan-retire.spec.ts", "coach-plan-race.spec.ts"]),
+      new Set(["body-check.spec.ts", "coach-notices.spec.ts", "coach-training-line.spec.ts", "coach-plan-retire.spec.ts", "coach-plan-race.spec.ts"]),
     );
     expect(accountsToSeed({ ...base, selected: new Set(["smoke.spec.ts"]) })).toEqual([]);
     expect(new Set(accountsToSeed({ ...base, selected: new Set(["body-check.spec.ts"]) }).map((a) => a.file))).toEqual(new Set(["body-check.spec.ts"]));
@@ -122,7 +123,7 @@ describe("the accounts seeded before the run", () => {
 
   it("each repeat and each retry has an account of its own, every name one the fixture sign-in takes", () => {
     const all = accountsToSeed({ ...base, env: { RG_E2E_WATCH: "1", RG_E2E_DESIGN_MODEL: "scripted:now" }, repeatEach: 20, retries: 2 });
-    expect(all).toHaveLength(16 * 20 * 3);
+    expect(all).toHaveLength(18 * 20 * 3);
     expect(new Set(all.map((a) => a.account)).size).toBe(all.length);
     // The worker's FIXTURE_ACCOUNT (services/fixtures.ts).
     for (const { account } of all) expect(account).toMatch(/^[a-z0-9][a-z0-9-]{0,31}$/);
