@@ -1,10 +1,11 @@
 /**
- * THE BODY MAP (the new shape §7): a front figure of eleven calm areas, each tinted by how much it was worked over the
- * period (`GET /api/growth/body`, the coach's own exposure computation), one line naming what carried it and one for
- * the area gone quiet, with a button that opens the coach with the request written ("15 minutes for my hips") — the
- * athlete's to send. The tint is never alone: the legend says each level in words, every area says its level on hover,
- * the figure's name lists them, and "By area" (one tap down) lists every area's sets and runs. The quiet area wears a
- * dashed edge on the figure.
+ * THE BODY MAP (the new shape §7): a figure seen from the front and the back (body-figure.ts), its eleven calm areas each
+ * drawn where it is and tinted by how much it was worked over the period (`GET /api/growth/body`, the coach's own
+ * exposure computation), one line naming what carried it and one for the area gone quiet, with a button that opens the
+ * coach with the request written ("15 minutes for my hips") — the athlete's to send. The tint is never alone: the legend
+ * says each level in words, every area says its level on hover, the figure's name lists them, and "By area" (one tap
+ * down) lists every area's sets and runs. The quiet area wears a dashed edge on the figure. On a phone the figure sits
+ * above the words; from 640 px, beside them.
  */
 import { useId, useState } from "react";
 import type { UseQueryResult } from "@tanstack/react-query";
@@ -12,49 +13,59 @@ import type { BodyArea, BodyAreaExposure, GrowthBodyDto, GrowthPeriod } from "@r
 import { IconCoachSmall } from "../../icons.js";
 import { useCoach } from "../studio/coach-ask.js";
 import { AREA_LABEL, areaFacts, carriedLine, figureLabel, LEVEL_WORD, quietLine, quietRequest } from "./body-words.js";
+import { BODY_VIEWS, FIGURE, FIGURE_BOX, LINES, SILHOUETTE, VIEW_CAPTION_Y, VIEW_MID, VIEW_X, type BodyView } from "./body-figure.js";
 
-type Shape = { kind: "rect"; x: number; y: number; w: number; h: number; r: number } | { kind: "ellipse"; cx: number; cy: number; rx: number; ry: number } | { kind: "path"; d: string };
+export { FIGURE } from "./body-figure.js";
 
-const rect = (x: number, y: number, w: number, h: number, r = Math.min(w, h) / 2): Shape => ({ kind: "rect", x, y, w, h, r });
-const ellipse = (cx: number, cy: number, rx: number, ry: number): Shape => ({ kind: "ellipse", cx, cy, rx, ry });
-/** A shape and its mirror across the figure's middle (x = 60). */
-const pair = (s: Shape): Shape[] =>
-  s.kind === "rect" ? [s, { ...s, x: 120 - s.x - s.w }] : s.kind === "ellipse" ? [s, { ...s, cx: 120 - s.cx }] : [s];
+/** A view's frame placed in the figure: the front where it is, the back moved over beside it. */
+const at = (v: BodyView) => (VIEW_X[v] ? `translate(${VIEW_X[v]} 0)` : undefined);
 
-/** The figure, head to foot, in a 120 × 236 box: simple rounded shapes with a little air between them. */
-export const FIGURE: Record<BodyArea, Shape[]> = {
-  neck: [rect(54, 31, 12, 9, 4)],
-  shoulders: pair(ellipse(39.5, 47, 8.5, 7)),
-  chest: pair(rect(46, 42, 13.5, 18, 6)),
-  arms: [...pair(rect(30, 55, 8.5, 31)), ...pair(rect(27, 89, 8, 29))],
-  // The lats, at the torso's flanks: the back as a front figure can show it.
-  back: pair(rect(43, 61, 3.5, 27)),
-  core: [rect(47, 62, 26, 34, 7)],
-  hips: [{ kind: "path", d: "M47 101 Q47 98 50 98 L70 98 Q73 98 73 101 L69 113 Q60 118 51 113 Z" }],
-  glutes: pair(ellipse(42.5, 106, 4.5, 9)),
-  quads: pair(rect(47, 119, 11, 46, 5.5)),
-  hamstrings: pair(rect(42, 122, 4, 40)),
-  calves: [...pair(rect(48, 170, 9, 44)), ...pair(ellipse(52.5, 220, 6, 3))],
-};
-
-function ShapeEl({ s }: { s: Shape }) {
-  if (s.kind === "rect") return <rect x={s.x} y={s.y} width={s.w} height={s.h} rx={s.r} />;
-  if (s.kind === "ellipse") return <ellipse cx={s.cx} cy={s.cy} rx={s.rx} ry={s.ry} />;
-  return <path d={s.d} />;
+/** The silhouette of one view: its outline under, then its fill over it — one edge round the whole body, none where
+ * its parts meet. */
+function Silhouette({ view }: { view: BodyView }) {
+  const paths = SILHOUETTE[view].map((d, i) => <path key={i} d={d} />);
+  return (
+    <g transform={at(view)}>
+      <g className="body-sil-edge">{paths}</g>
+      <g className="body-sil">{paths}</g>
+    </g>
+  );
 }
 
-/** The figure itself: every area tinted by its level; the quiet one's edge dashed. */
+/** The figure itself (body-figure.ts): the front and the back side by side, every area tinted by its level in each
+ * view it is drawn in, over a quiet silhouette; the quiet area's edge dashed. */
 export function BodyFigure({ areas, quiet }: { areas: readonly BodyAreaExposure[]; quiet: BodyArea | null }) {
   return (
-    <svg className="body-figure" viewBox="0 0 120 236" role="img" aria-label={figureLabel(areas)}>
-      <circle className="body-head" cx={60} cy={17} r={12} />
+    <svg className="body-figure" viewBox={`${FIGURE_BOX.x} ${FIGURE_BOX.y} ${FIGURE_BOX.w} ${FIGURE_BOX.h}`} role="img" aria-label={figureLabel(areas)}>
+      {BODY_VIEWS.map((v) => (
+        <Silhouette key={v} view={v} />
+      ))}
       {areas.map((a) => (
         <g key={a.area} className={`body-area body-lvl-${a.level}${quiet === a.area ? " is-quiet" : ""}`} data-area={a.area}>
           <title>{`${AREA_LABEL[a.area]} · ${LEVEL_WORD[a.level].toLowerCase()}`}</title>
-          {FIGURE[a.area].map((s, i) => (
-            <ShapeEl key={i} s={s} />
+          {BODY_VIEWS.map((v) => {
+            const paths = FIGURE[a.area][v];
+            return paths ? (
+              <g key={v} transform={at(v)}>
+                {paths.map((d, i) => (
+                  <path key={i} d={d} />
+                ))}
+              </g>
+            ) : null;
+          })}
+        </g>
+      ))}
+      {BODY_VIEWS.map((v) => (
+        <g key={v} className="body-lines" transform={at(v)}>
+          {LINES[v].map((d, i) => (
+            <path key={i} d={d} />
           ))}
         </g>
+      ))}
+      {BODY_VIEWS.map((v) => (
+        <text key={v} className="body-cap" x={VIEW_X[v] + VIEW_MID} y={VIEW_CAPTION_Y} aria-hidden="true">
+          {v === "front" ? "Front" : "Back"}
+        </text>
       ))}
     </svg>
   );

@@ -1,8 +1,8 @@
 /**
- * GROWTH (the new shape §7), rendered statically: the Month/Season switch; the body map — a front figure of eleven areas
- * tinted by level, never by colour alone, its two lines and the quiet area's button that opens the coach with the words
- * written; the quests — each objective's bar, its words and one gentle line; the records — runs, strength (the lifts'
- * top sets) and holds; and the order of the place. Synthetic data only.
+ * GROWTH (the new shape §7), rendered statically: the Month/Season switch; the body map — eleven areas on a front and a
+ * back view, tinted by level, never by colour alone, its two lines and the quiet area's button that opens the coach with
+ * the words written; the quests — each objective's bar, its words and one gentle line; the records — runs, strength (the
+ * lifts' top sets) and holds; and the order of the place. Synthetic data only.
  */
 import { createElement, type ReactElement } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
@@ -28,6 +28,7 @@ import { CoachOpenContext, type CoachOpener } from "../src/screens/studio/coach-
 import { OBJECTIVE_BOARD_QUERY, ObjectivesScreen } from "../src/screens/studio/objectives.js";
 import { AREA_LABEL, areaFacts, carriedLine, figureLabel, quietLine, quietRequest } from "../src/screens/growth/body-words.js";
 import { BodyCard, BodyFigure, FIGURE } from "../src/screens/growth/body-map.js";
+import { BODY_VIEWS, LINES, mirrorPath, SILHOUETTE, VIEW_MID, VIEW_X, wholePath } from "../src/screens/growth/body-figure.js";
 import { bestThisWeek, questKr, questLine, questProgressWords, QuestRow } from "../src/screens/growth/quests.js";
 import { GrowthRecords, holdRows, holdWords, strengthRows } from "../src/screens/growth/records.js";
 import { GROWTH_BODY_QUERY, GrowthScreen, periodOf, PeriodSwitch } from "../src/screens/growth/screen.js";
@@ -139,10 +140,63 @@ describe("the figure", () => {
     expect(html).toMatch(/body-lvl-1 is-quiet" data-area="hips"/);
   });
 
-  it("every area has a shape, and pairs mirror across the middle", () => {
-    for (const a of BODY_AREAS) expect(FIGURE[a].length, a).toBeGreaterThan(0);
-    const [left, right] = FIGURE.shoulders as Array<{ cx: number }>;
-    expect(left!.cx + right!.cx).toBe(120);
+  it("each area is drawn where it is: the chest, core and quads in front only; the back, glutes and hamstrings behind only; the rest in both", () => {
+    const frontOnly = ["chest", "core", "quads"];
+    const backOnly = ["back", "glutes", "hamstrings"];
+    for (const a of BODY_AREAS) {
+      const views = BODY_VIEWS.filter((v) => (FIGURE[a][v]?.length ?? 0) > 0);
+      expect(views, a).toEqual(frontOnly.includes(a) ? ["front"] : backOnly.includes(a) ? ["back"] : ["front", "back"]);
+    }
+    // Drawn so: an area's back paths sit in the back view's frame, beside the front; its front paths where they are.
+    const html = render(createElement(BodyFigure, { areas: body().areas, quiet: null }));
+    const group = (a: string) => html.slice(html.indexOf(`data-area="${a}"`)).split("</g></g>")[0]!;
+    for (const a of BODY_AREAS) {
+      expect(group(a).includes('<g transform="translate(100 0)">'), a).toBe(!frontOnly.includes(a));
+      expect(group(a).includes("<g><path"), a).toBe(!backOnly.includes(a));
+    }
+  });
+
+  it("each view is symmetric: every shape mirrors across its own view's middle onto a shape of the same area, and stays in its frame", () => {
+    const pts = (d: string) => {
+      const n = (d.match(/-?\d*\.?\d+/g) ?? []).map(Number);
+      return Array.from({ length: n.length / 2 }, (_, i) => [n[2 * i]!, n[2 * i + 1]!] as const);
+    };
+    const key = (p: ReadonlyArray<readonly [number, number]>) => [...new Set(p.map(([x, y]) => `${x.toFixed(2)},${y.toFixed(2)}`))].sort().join(" ");
+    const sets: Array<[string, readonly string[]]> = [
+      ...BODY_AREAS.flatMap((a) => BODY_VIEWS.map((v) => [`${a} ${v}`, FIGURE[a][v] ?? []] as [string, readonly string[]])),
+      ...BODY_VIEWS.map((v) => [`silhouette ${v}`, SILHOUETTE[v]] as [string, readonly string[]]),
+      ...BODY_VIEWS.map((v) => [`lines ${v}`, LINES[v]] as [string, readonly string[]]),
+    ];
+    for (const [what, paths] of sets) {
+      const shapes = new Set(paths.map((d) => key(pts(d))));
+      for (const d of paths) {
+        expect(shapes.has(key(pts(d).map(([x, y]) => [2 * VIEW_MID - x, y] as const))), `${what}: ${d.slice(0, 24)}… has no mirror`).toBe(true);
+        for (const [x] of pts(d)) expect(x >= 0 && x <= 2 * VIEW_MID, `${what}: x ${x} outside its view`).toBe(true);
+      }
+    }
+    expect(VIEW_X.back - VIEW_X.front).toBe(2 * VIEW_MID);
+  });
+
+  it("a path's mirror: every x reflected across the middle, every y kept; mirrored twice, the path itself", () => {
+    expect(mirrorPath("M60 10L70 20C72 22 74 24 76 30Z")).toBe("M40 10L30 20C28 22 26 24 24 30Z");
+    expect(mirrorPath("M1 2L3.5 4", 0)).toBe("M-1 2L-3.5 4");
+    expect(mirrorPath(mirrorPath("M1 2L3.5 4", 0), 0)).toBe("M1 2L3.5 4");
+    expect(mirrorPath("M50.333 1L60.125 2")).toBe("M49.67 1L39.88 2");
+  });
+
+  it("a shape across the middle from its right half: the half, then its mirror walked back to the start, closed", () => {
+    expect(wholePath("M50 0L60 10C62 14 58 18 50 20")).toBe("M50 0L60 10C62 14 58 18 50 20C42 18 38 14 40 10L50 0Z");
+    expect(wholePath("M50 5C55 5 58 8 60 12L50 15")).toBe("M50 5C55 5 58 8 60 12L50 15L40 12C42 8 45 5 50 5Z");
+  });
+
+  it("the silhouette lies under the areas, its edge under its fill, and the views' captions are for the eye only", () => {
+    const html = render(createElement(BodyFigure, { areas: body().areas, quiet: null }));
+    expect(html.indexOf('class="body-sil-edge"')).toBeLessThan(html.indexOf('class="body-sil"'));
+    expect(html.lastIndexOf('class="body-sil"')).toBeLessThan(html.indexOf("data-area="));
+    expect(html.match(/class="body-sil-edge"/g)).toHaveLength(2);
+    expect(html).toContain('<text class="body-cap" x="50" y="239" aria-hidden="true">Front</text>');
+    expect(html).toContain('<text class="body-cap" x="150" y="239" aria-hidden="true">Back</text>');
+    expect(html).toContain('viewBox="6 0 188 244"');
   });
 
   it("no area is named in the figure's own words but by the athlete's language", () => {

@@ -2,10 +2,11 @@
  * GROWTH'S BODY MAP (the new shape §7): what `GET /api/growth/body?period=month|season` answers — how much each area of
  * the body was worked over the period, the coach's own exposure computation (`read_balance`'s, served to the screen).
  *
- * The map is a front figure of eleven calm areas. Each gathers the library's regions it draws (`BODY_AREA_REGIONS`): the
- * back is the upper back, the lats, the thoracic spine and the low back; the calves are the lower leg (calves, ankles,
- * feet). The jaw is no area of the figure (its care is a condition's, not training exposure). A move counts once per
- * area however many of the area's regions it loads, so an area's sets never count one set twice.
+ * The map is a figure of eleven calm areas, seen from the front and from the back. Each gathers the library's regions it
+ * draws (`BODY_AREA_REGIONS`): the back is the upper back, the lats, the thoracic spine and the low back; the calves are
+ * the lower leg (calves, ankles, feet). The jaw is no area of the figure (its care is a condition's, not training
+ * exposure). A move counts once per area however many of the area's regions it loads, so an area's sets never count one
+ * set twice.
  */
 
 /** The period the map reads: the last 30 days, or the last 90 (today included). */
