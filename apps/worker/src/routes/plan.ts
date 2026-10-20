@@ -71,7 +71,7 @@ import {
   contentClaims,
   openMoveIntents,
 } from "../services/sync-intents.js";
-import { keepWatchVersion, stillToRun } from "../services/watch-version.js";
+import { keepWatchVersion, leaveWatchVersion, stillToRun, TAKE_WATCH_COPY } from "../services/watch-version.js";
 import { sendWatchVersion, watchVersionChoice } from "../services/watch-version-send.js";
 import { findRaceConflict, resolveRaceConflict } from "../services/race-conflict.js";
 import { buildRaceHub, withPhaseLine } from "../services/race-hub.js";
@@ -136,6 +136,9 @@ interface WorkoutView {
    * COROS session, a never-pushed one, or one already unpushed.
    */
   appPushed?: boolean;
+  /** The athlete left the watch's earlier version of this app-built session as it is (watch-version.ts
+   * `leaveWatchVersion`): the row still says so; the account line no longer counts it. */
+  watchVersionLeft?: boolean;
 }
 
 /**
@@ -350,9 +353,9 @@ async function loadWorkoutViews(
   // Second wave, and only for the rows whose coverage answer lives in stage
   // rows — a coach-authored run. Typically a handful per week; an imported
   // COROS plan contributes none, so the common page pays nothing at all.
-  // Which copy of the stages is the app's: every claim it still HOLDS — open, or closed with nothing written (a past
-  // session's, or one the athlete kept the watch's version of). A session done keeps being read from the copy it was.
-  const contentStale = claims.held;
+  // Which copy of the stages is the app's: an open claim, past sessions included — a session done keeps being read
+  // from the copy it was.
+  const contentStale = claims.open;
   const stageIds = workouts.filter((w) => needsRunStages(w, contentStale.has(w.id))).map((w) => w.id);
   const stageChunks =
     stageIds.length > 0
@@ -425,6 +428,8 @@ async function loadWorkoutViews(
       // "Older on watch" only while the athlete can still do something about it: an OPEN claim on a session still to
       // run (the account line's rule, `watchEarlierVersions`). A past or finished session's watch copy is a record.
       hasOpenContentIntent: claims.open.has(w.id) && stillToRun(w, today),
+      // The athlete chose the watch's version; the next COROS read takes it (watch-version.ts).
+      takingWatchCopy: w.sourceContentFingerprint === TAKE_WATCH_COPY,
       hasPendingJob: pendingIds.has(w.id),
       hasFailedJob: failedIds.has(w.id),
       presence,
@@ -453,6 +458,7 @@ async function loadWorkoutViews(
       ...(coverage ? { watchCoverage: coverage } : {}),
       ...(action ? { syncAction: action } : {}),
       ...(appPushed ? { appPushed: true } : {}),
+      ...(claims.left.has(w.id) ? { watchVersionLeft: true } : {}),
     });
   }
   return map;
@@ -537,6 +543,8 @@ function workoutDto(
     // Removing it takes it off the watch — the remove dialog and the coach
     // manifest say so before the athlete confirms (Ruling A1).
     ...(view?.appPushed ? { appPushed: true } : {}),
+    // The athlete left the watch's earlier version of this app-built session as it is (`leaveWatchVersion`).
+    ...(view?.watchVersionLeft ? { watchVersionLeft: true } : {}),
     completionState: w.completionState,
     archived: !!w.archivedAt,
     // Where the row came from and how far its content has got (Phase 2a).
@@ -1785,9 +1793,12 @@ planRoutes.post("/workouts/:id/restore-calendar", async (c) => {
  * goes to the watch — the content rewrite the convergence backfill queues, for this session alone and only when one
  * can reach it (`sendWatchVersion`); 409 `{ error }` with the reason when not (`nothing_to_send`, `writes_off`,
  * `not_connected`, `cant_rewrite`), nothing written. It queues the write and runs none: `coachDrain`, and the client
- * drains it (`POST /api/coach/drain`). `keep`: the watch keeps its version and the app stops calling it a divergence —
- * the session's open content claim closed as kept, its still-queued rewrite superseded, nothing written to the watch
- * or the session (`keepWatchVersion`). Idempotent.
+ * drains it (`POST /api/coach/drain`); a rewrite already on its way is the answer (idempotent). `keep`: the app takes
+ * the watch's version — the claim released, its still-queued rewrite superseded, the row marked for the next COROS read
+ * to rewrite from the wire, nothing written to the watch (`keepWatchVersion`); 409 `app_built` for a session the app
+ * built, whose content no read takes from the wire. `leave`: that app-built session's earlier copy is left as it is —
+ * the row still says so, the account line stops counting it (`leaveWatchVersion`); 409 `not_app_built` for any other.
+ * Both idempotent.
  */
 planRoutes.post("/workouts/:id/watch-version/send", async (c) => {
   const db = c.get("db");
@@ -1813,12 +1824,27 @@ planRoutes.post("/workouts/:id/watch-version/keep", async (c) => {
   const db = c.get("db");
   const userId = c.get("userId");
   const [w] = await db
-    .select({ id: plannedWorkouts.id })
+    .select({ id: plannedWorkouts.id, origin: plannedWorkouts.origin })
     .from(plannedWorkouts)
     .where(and(eq(plannedWorkouts.id, c.req.param("id")), eq(plannedWorkouts.userId, userId)))
     .limit(1);
   if (!w) return c.json({ error: "not_found" }, 404);
-  await keepWatchVersion(db, userId, w.id, nowInstant());
+  const kept = await keepWatchVersion(db, userId, w, nowInstant());
+  if ("error" in kept) return c.json({ error: kept.error }, 409);
+  return c.json({ ok: true });
+});
+
+planRoutes.post("/workouts/:id/watch-version/leave", async (c) => {
+  const db = c.get("db");
+  const userId = c.get("userId");
+  const [w] = await db
+    .select({ id: plannedWorkouts.id, origin: plannedWorkouts.origin })
+    .from(plannedWorkouts)
+    .where(and(eq(plannedWorkouts.id, c.req.param("id")), eq(plannedWorkouts.userId, userId)))
+    .limit(1);
+  if (!w) return c.json({ error: "not_found" }, 404);
+  const left = await leaveWatchVersion(db, userId, w, nowInstant());
+  if ("error" in left) return c.json({ error: left.error }, 409);
   return c.json({ ok: true });
 });
 

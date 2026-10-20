@@ -83,10 +83,3 @@ export const CRON_DOC_BACKFILL_MAX = 5;
  * row failed); a row pushed off the end is tried again once, and set aside again if it still fails.
  */
 export const CRON_DOC_BACKFILL_SKIP_MAX = 50;
-
-/**
- * How many open content claims the hourly closes as moot per account per pass (`closeMootContentClaims`): claims on
- * sessions whose story is over — archived, done, missed, skipped, or their day gone. One read and at most five writes
- * whatever the number (one per reason); the rest wait for the next pass. An account rarely holds more than a handful.
- */
-export const MOOT_CONTENT_CLAIMS_PER_PASS = 40;

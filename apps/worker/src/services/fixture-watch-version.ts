@@ -4,9 +4,9 @@
  * its day. One ahead that a content rewrite can reach (a COROS-authored run on the watch: its address, its upstream
  * copy as imported, its own timed stages), one ahead that none can (no program id to re-prove it by), and one weeks
  * past and missed, which no longer counts. Watch updates on and a COROS connection, as the fixture account has them.
- * Synthetic titles; nothing is sent anywhere. Seeded again: the same rows, each claim open again.
+ * Synthetic titles; nothing is sent anywhere. Seeded again: the same rows as they were, each claim open again.
  */
-import { and, eq } from "drizzle-orm";
+import { and, eq, sql } from "drizzle-orm";
 import { plannedWorkouts, plannedWorkoutStages, providerConnections } from "@rg/database";
 import { addDays, newId, type LocalDate } from "@rg/domain";
 import { loadPreferences, savePreferences } from "./calendar-sync.js";
@@ -77,7 +77,11 @@ export async function seedWatchVersions(db: Db, userId: string, today: LocalDate
       row(ids.keepOnly, { date: addDays(today, 5), title: "Hills 6x1", category: "quality", sport: "run", idInPlan: "42", programId: null }),
       row(ids.past, { date: addDays(today, -10), title: "Mobility flow", category: "mobility", sport: "yoga", idInPlan: "43", programId: null, completionState: "missed" }),
     ])
-    .onConflictDoNothing();
+    // Seeded again: as it was — the wire's copy on record again, even after a keep marked it to be taken.
+    .onConflictDoUpdate({
+      target: plannedWorkouts.id,
+      set: { sourceContentFingerprint: sql`excluded.source_content_fingerprint`, completionState: sql`excluded.completion_state`, structuredJson: null },
+    });
   // The app's own copy of each run ahead: timed blocks, as an ease writes them.
   await db
     .insert(plannedWorkoutStages)

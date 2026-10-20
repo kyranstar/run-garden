@@ -315,6 +315,14 @@ const COROS_PILL: Record<WorkoutSyncView, { label: string; cls: string; icon: Re
     icon: <IconCalendarOnly />,
     title: "Your COROS watch has this session on the right day, in an earlier version than Run Garden's.",
   },
+  /* The athlete chose the watch's version: the next COROS read brings it in. Still not the same on both sides, so
+     neither "Synced" nor "Older on watch" — a receipt, in the in-progress weight. */
+  taking_watch_copy: {
+    label: "Taking watch's version",
+    cls: "pill-progress",
+    icon: <IconSync />,
+    title: "Run Garden takes your watch's version of this session at the next sync.",
+  },
   syncing: { label: "Syncing", cls: "pill-progress", icon: <IconSync />, title: "Sending this change to your COROS watch." },
   waiting_for_device: { label: "Waiting for COROS", cls: "pill-progress", icon: <IconSync />, title: "Queued — this reaches your watch once COROS is connected in Settings." },
   calendar_only: {
@@ -545,6 +553,8 @@ export function syncActionCopy(action: SyncAction): { says: string; todo: string
           " may not match the steps here. Follow the steps here.",
         todo: null,
       };
+    case "taking_watch_copy":
+      return { says: "Run Garden will take the watch's version at the next sync.", todo: null };
   }
 }
 
@@ -755,31 +765,37 @@ export function SyncStatusLine({
         return `${status.issueCount} change${status.issueCount === 1 ? "" : "s"} couldn't sync`;
     }
   })();
+  // The sessions themselves, one tap down — under the line itself, or, when something louder leads (a write that
+  // couldn't sync, COROS unreachable), as a quiet second line of their own, so they are never out of reach.
+  const staleList =
+    staleSessions.length > 0 ? (
+      <details className="sync-stale">
+        <summary className="muted tap-pad">{staleLine}</summary>
+        <ul className="sync-stale-list">
+          {staleSessions.map((s) => {
+            const label = `${formatDayShort(s.date)} · ${s.title}`;
+            return (
+              <li key={s.workoutId}>
+                {SessionLink ? <SessionLink workoutId={s.workoutId}>{label}</SessionLink> : label}
+              </li>
+            );
+          })}
+        </ul>
+      </details>
+    ) : null;
+  if (line === staleLine && staleList) return <div className="row">{staleList}</div>;
   return (
-    <div className="row">
-      {line === staleLine && staleSessions.length > 0 ? (
-        <details className="sync-stale">
-          <summary className="muted tap-pad">{line}</summary>
-          <ul className="sync-stale-list">
-            {staleSessions.map((s) => {
-              const label = `${formatDayShort(s.date)} · ${s.title}`;
-              return (
-                <li key={s.workoutId}>
-                  {SessionLink ? <SessionLink workoutId={s.workoutId}>{label}</SessionLink> : label}
-                </li>
-              );
-            })}
-          </ul>
-        </details>
-      ) : (
+    <>
+      <div className="row">
         <span className="muted">{line}</span>
-      )}
-      {status.state === "sync_issue" && onRetry ? (
-        <button className="btn btn-small" disabled={retrying} onClick={onRetry}>
-          {retrying ? "Retrying…" : "Retry"}
-        </button>
-      ) : null}
-    </div>
+        {status.state === "sync_issue" && onRetry ? (
+          <button className="btn btn-small" disabled={retrying} onClick={onRetry}>
+            {retrying ? "Retrying…" : "Retry"}
+          </button>
+        ) : null}
+      </div>
+      {staleList ? <div className="row">{staleList}</div> : null}
+    </>
   );
 }
 

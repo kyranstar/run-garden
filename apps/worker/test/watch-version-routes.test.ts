@@ -2,7 +2,8 @@
  * WHAT THE ATHLETE CAN DO ABOUT AN EARLIER VERSION ON THE WATCH (the owner, 2026-10-19: "not actionable or
  * removable"). The session's sheet reads what is honestly possible for that row (`GET /api/plan/workouts/:id`'s
  * `watchVersion`): send the app's version — the content rewrite the convergence backfill queues, offered only when
- * one can reach the row — or keep the watch's, which closes the claim and writes nothing to the watch or the session.
+ * one can reach the row, and idempotent — or keep the watch's, which the app then takes at the next COROS read; an
+ * app-built session's earlier copy is left as it is instead.
  * Driven against the mock COROS account, end to end: an imported session, eased, its rewrite failed (as the owner's
  * did), then sent again or kept.
  */
@@ -22,6 +23,8 @@ import { connectCoros } from "../src/services/coros-connection.js";
 import { executeCloudJobs } from "../src/services/coros-write-cloud.js";
 import { importPlanSnapshot } from "../src/services/import-plan.js";
 import { computeSyncStatus } from "../src/services/sync-status.js";
+import { convergeDivergedContent } from "../src/services/content-converge.js";
+import { recordIntent } from "../src/services/sync-intents.js";
 import { isWrite, makeTestDb, makeTestUser, mountRoutes } from "./helpers.js";
 
 const TEST_KEY = Buffer.alloc(32, 7).toString("base64");
@@ -190,6 +193,9 @@ describe("GET /api/plan/workouts/:id — what can be done about the watch's earl
     const bare = await easedAndFailed();
     await bare.db.delete(schema.plannedWorkoutStages).where(eq(schema.plannedWorkoutStages.workoutId, bare.workoutId));
     expect((await detail(bare, bare.workoutId)).watchVersion).toEqual({ send: false, why: "cant_rewrite" });
+    // …and with COROS disconnected too, it says so, never "reconnect, then send it from here", which would not be true.
+    await bare.db.update(schema.providerConnections).set({ status: "disconnected" });
+    expect((await detail(bare, bare.workoutId)).watchVersion).toEqual({ send: false, why: "cant_rewrite" });
   });
 
   it("an app-built session reaches the watch only by its own Send — never a rewrite from here", async () => {
@@ -297,33 +303,136 @@ describe("POST /api/plan/workouts/:id/watch-version/send", () => {
   });
 });
 
-describe("POST /api/plan/workouts/:id/watch-version/keep", () => {
-  it("closes the claim as kept — the line counts down, the row reads synced — and writes nothing to the watch or the session", async () => {
+describe("POST /api/plan/workouts/:id/watch-version/send is idempotent (review-S I1)", () => {
+  const send = (a: Account & { workoutId: string }) => request(a, `/api/plan/workouts/${a.workoutId}/watch-version/send`, "POST");
+  const live = async (a: Account & { workoutId: string }) =>
+    (await rewrites(a, a.workoutId)).filter((j) => ["queued", "claimed", "in_progress", "verifying"].includes(j.status));
+
+  it("P1: a second Send is the first — one live job, and the drain runs it", async () => {
     const a = await easedAndFailed();
-    const [before] = await a.db.select().from(schema.plannedWorkouts).where(eq(schema.plannedWorkouts.id, a.workoutId));
+    expect((await send(a)).status).toBe(200);
+    const first = await live(a);
+    expect(first).toHaveLength(1);
+    const { value: again, writes } = await a.count(() => send(a));
+    expect(again.status).toBe(200);
+    expect(writes, "nothing planned, nothing superseded").toEqual([]);
+    expect((await live(a)).map((j) => [j.id, j.status])).toEqual([[first[0]!.id, "queued"]]);
+    expect((await computeSyncStatus(a.db, a.userId, a.prefs)).contentStaleCount).toBe(0);
+    const ran = await executeCloudJobs(a.db, makeEnv(), a.userId, a.prefs, { fetchImpl: a.server.fetchImpl });
+    expect(ran.executed).toBe(1);
+    expect((await rewrites(a, a.workoutId))[0]!.status).toBe("verified");
+  });
+
+  it("P2: a Send while the rewrite is running leaves it running", async () => {
+    const a = await easedAndFailed();
+    await a.db.update(schema.corosWriteJobs).set({ status: "in_progress" }).where(eq(schema.corosWriteJobs.workoutId, a.workoutId));
+    const res = await send(a);
+    expect(res.status).toBe(200);
+    const jobs = await rewrites(a, a.workoutId);
+    expect(jobs.map((j) => j.status)).toEqual(["in_progress"]);
+  });
+
+  it("a Send after whatever superseded the rewrite revives it — one live job, and the drain runs it", async () => {
+    const a = await easedAndFailed();
+    expect((await send(a)).status).toBe(200);
+    await a.db.update(schema.corosWriteJobs).set({ status: "superseded" }).where(eq(schema.corosWriteJobs.workoutId, a.workoutId));
+    expect((await computeSyncStatus(a.db, a.userId, a.prefs)).contentStaleCount).toBe(1);
+    expect((await send(a)).status).toBe(200);
+    expect((await live(a)).map((j) => j.status)).toEqual(["queued"]);
+    expect(await rewrites(a, a.workoutId)).toHaveLength(1);
+    const ran = await executeCloudJobs(a.db, makeEnv(), a.userId, a.prefs, { fetchImpl: a.server.fetchImpl });
+    expect(ran.executed).toBe(1);
+    expect((await rewrites(a, a.workoutId))[0]!.status).toBe("verified");
+  });
+});
+
+describe("POST /api/plan/workouts/:id/watch-version/keep", () => {
+  it("the app takes the watch's version: the claim released, the row says so until the next read, which brings it in (P7)", async () => {
+    const a = await easedAndFailed();
     const { value: res, statements, writes } = await a.count(() => request(a, `/api/plan/workouts/${a.workoutId}/watch-version/keep`, "POST"));
     expect(res.status).toBe(200);
     expect(statements).toBeLessThanOrEqual(45);
-    for (const sql of writes) expect(sql).toMatch(/^\s*update "(sync_intents|coros_write_jobs)"/i);
-    const [after] = await a.db.select().from(schema.plannedWorkouts).where(eq(schema.plannedWorkouts.id, a.workoutId));
-    expect(after).toEqual(before);
+    for (const sql of writes) expect(sql).toMatch(/^\s*update "(sync_intents|coros_write_jobs|planned_workouts)"/i);
     const intents = await a.db
       .select()
       .from(schema.syncIntents)
       .where(and(eq(schema.syncIntents.targetId, a.workoutId), eq(schema.syncIntents.kind, "content")));
     expect(intents).toHaveLength(1);
-    expect(intents[0]!.resolvedAt).toBeTruthy();
-    expect(intents[0]!.payload?.["closedBecause"]).toBe("kept_watch_version");
+    expect(intents[0]!.resolvedAt, "released the ordinary way").toBeTruthy();
+    expect(intents[0]!.payload).toEqual({ fingerprint: expect.any(String) });
     expect((await computeSyncStatus(a.db, a.userId, a.prefs)).contentStaleCount).toBe(0);
-    expect((await detail(a, a.workoutId)).workout.corosSyncView).toBe("synced");
-    expect((await detail(a, a.workoutId)).watchVersion).toBeUndefined();
+    // Until the read: never "Synced", never "Older on watch" — the app is taking the watch's version.
+    const waiting = (await detail(a, a.workoutId)) as Awaited<ReturnType<typeof detail>> & { workout: { syncAction?: unknown; title: string } };
+    expect(waiting.workout.corosSyncView).toBe("taking_watch_copy");
+    expect(waiting.workout.syncAction).toEqual({ agent: "app", code: "taking_watch_copy" });
+    expect(waiting.watchVersion).toBeUndefined();
     // The failed rewrite stays as it was: nothing is sent.
     expect((await rewrites(a, a.workoutId))[0]!.status).toBe("failed");
 
-    // Idempotent.
+    await readAndImport(a);
+    const [row] = await a.db.select().from(schema.plannedWorkouts).where(eq(schema.plannedWorkouts.id, a.workoutId));
+    expect(row!.title, "the watch's session").toBe("Threshold 5x5");
+    expect(row!.sourceContentFingerprint).toMatch(/^[0-9a-f]{16}$/);
+    const after = (await detail(a, a.workoutId)) as Awaited<ReturnType<typeof detail>> & { workout: { title: string } };
+    expect(after.workout.corosSyncView).toBe("synced");
+    const stages = await a.db.select().from(schema.plannedWorkoutStages).where(eq(schema.plannedWorkoutStages.workoutId, a.workoutId));
+    expect(stages.length, "the watch's own steps, not the eased one block").toBeGreaterThan(1);
+    // One row, the same row.
+    const sameDay = await a.db
+      .select()
+      .from(schema.plannedWorkouts)
+      .where(and(eq(schema.plannedWorkouts.userId, a.userId), eq(schema.plannedWorkouts.effectiveDate, row!.effectiveDate)));
+    expect(sameDay.filter((w) => w.archivedAt === null).map((w) => w.id)).toEqual([a.workoutId]);
+
+    // Idempotent: nothing left to keep, nothing written.
     const again = await a.count(() => request(a, `/api/plan/workouts/${a.workoutId}/watch-version/keep`, "POST"));
     expect(again.value.status).toBe(200);
     expect(again.writes).toEqual([]);
+  });
+
+  it("a new change before the read lands is a new earlier version, said as one", async () => {
+    const a = await easedAndFailed();
+    expect((await request(a, `/api/plan/workouts/${a.workoutId}/watch-version/keep`, "POST")).status).toBe(200);
+    expect((await detail(a, a.workoutId)).workout.corosSyncView).toBe("taking_watch_copy");
+    await recordIntent(a.db, { userId: a.userId, targetKind: "workout", targetId: a.workoutId, kind: "content", source: "coach_ease" });
+    expect((await detail(a, a.workoutId)).workout.corosSyncView).toBe("content_stale");
+  });
+
+  it("a change of sport is taken cleanly too: the watch's title, steps and sport, in the same row, no copy beside it", async () => {
+    const a = await account();
+    await readAndImport(a);
+    const [row] = await a.db
+      .select()
+      .from(schema.plannedWorkouts)
+      .where(and(eq(schema.plannedWorkouts.userId, a.userId), eq(schema.plannedWorkouts.title, "Threshold 5x5")));
+    const mobility = {
+      category: "mobility",
+      title: "Hips and calves",
+      durationMinutes: 20,
+      mobility: { exercises: [{ name: "Calf stretch", sets: 2, holdSeconds: 45 }] },
+    };
+    const eased = await applyOps(a.db, a.userId, a.prefs, "p-ease-sport", [coachOpSchema.parse({ kind: "ease", workoutId: row!.id, session: mobility })]);
+    expect(eased.missed).toEqual([]);
+    await a.db.delete(schema.corosWriteJobs).where(eq(schema.corosWriteJobs.workoutId, row!.id));
+    const [easedRow] = await a.db.select().from(schema.plannedWorkouts).where(eq(schema.plannedWorkouts.id, row!.id));
+    expect(easedRow!.sport).toBe("yoga");
+    const ws = { ...a, workoutId: row!.id };
+    expect((await detail(ws, row!.id)).workout.corosSyncView).toBe("content_stale");
+
+    expect((await request(ws, `/api/plan/workouts/${row!.id}/watch-version/keep`, "POST")).status).toBe(200);
+    await readAndImport(a);
+    await readAndImport(a);
+    const [taken] = await a.db.select().from(schema.plannedWorkouts).where(eq(schema.plannedWorkouts.id, row!.id));
+    expect(taken!.title).toBe("Threshold 5x5");
+    expect(taken!.sport).toBe("run");
+    expect(taken!.structuredJson).toBeNull();
+    expect(taken!.archivedAt).toBeNull();
+    const sameDay = await a.db
+      .select()
+      .from(schema.plannedWorkouts)
+      .where(and(eq(schema.plannedWorkouts.userId, a.userId), eq(schema.plannedWorkouts.effectiveDate, taken!.effectiveDate)));
+    expect(sameDay.filter((w) => w.archivedAt === null).map((w) => w.id)).toEqual([row!.id]);
+    expect((await detail(ws, row!.id)).workout.corosSyncView).toBe("synced");
   });
 
   it("a rewrite still only queued is stopped: nothing more reaches the watch for it", async () => {
@@ -336,17 +445,31 @@ describe("POST /api/plan/workouts/:id/watch-version/keep", () => {
     expect(ran.executed).toBe(0);
   });
 
-  it("the app's copy stays the app's: an edit made on COROS afterwards does not replace it", async () => {
+  it("nothing of the app's goes over the watch's version it chose — not even the hourly pace heal", async () => {
     const a = await easedAndFailed();
     expect((await request(a, `/api/plan/workouts/${a.workoutId}/watch-version/keep`, "POST")).status).toBe(200);
-    const job = (await rewrites(a, a.workoutId))[0]!;
-    const program = a.server.programByIdInPlan((job.payload as { idInPlan: string }).idInPlan)!;
-    program.exercises = [{ ...program.exercises![0]!, targetValue: 7351 }];
-    await readAndImport(a);
-    await readAndImport(a);
-    const [row] = await a.db.select().from(schema.plannedWorkouts).where(eq(schema.plannedWorkouts.id, a.workoutId));
-    expect(row!.title).toBe(EASED.title);
-    expect(row!.archivedAt).toBeNull();
+    const plan = await convergeDivergedContent(a.db, a.userId, { dryRun: true, workoutIds: [a.workoutId] });
+    expect(plan.rows.find((r) => r.workoutId === a.workoutId)?.action ?? "skipped").toBe("skipped");
+    // A pace-encoding heal would reach it by a verified write's evidence; the row is skipped all the same.
+    await a.db.insert(schema.corosWriteJobs).values({
+      id: `${a.workoutId}-old-create`, userId: a.userId, workoutId: a.workoutId, kind: "coach_create_workout", status: "verified",
+      expectedContentFingerprint: "x", originalDate: "2026-01-01", destinationDate: "2026-01-01", requestedAt: "2026-01-01T00:00:00.000Z",
+      updatedAt: "2026-01-01T00:00:00.000Z", verifiedAt: "2026-01-01T00:00:00.000Z",
+      payload: { thresholdPaceSecPerKm: THRESHOLD, session: { run: { blocks: [{ kind: "duration", value: 10, intensity: "threshold" }] } } },
+    });
+    const heal = await convergeDivergedContent(a.db, a.userId, { dryRun: true, only: "pace_encoding_outdated", today: todayInZone(a.prefs.timezone) });
+    const healed = heal.rows.find((r) => r.workoutId === a.workoutId);
+    expect(healed, "the heal sees it").toBeDefined();
+    expect(healed!.action).toBe("skipped");
+  });
+
+  it("an app-built session is not kept — no read takes its content from the wire — and nothing is written", async () => {
+    const a = await easedAndFailed();
+    await a.db.update(schema.plannedWorkouts).set({ origin: "program" }).where(eq(schema.plannedWorkouts.id, a.workoutId));
+    const { value: res, writes } = await a.count(() => request(a, `/api/plan/workouts/${a.workoutId}/watch-version/keep`, "POST"));
+    expect(res.status).toBe(409);
+    expect(await res.json()).toEqual({ error: "app_built" });
+    expect(writes).toEqual([]);
   });
 
   it("is the athlete's own: another account's session is not found", async () => {
@@ -372,5 +495,47 @@ describe("POST /api/plan/workouts/:id/watch-version/keep", () => {
     });
     expect((await request(a, `/api/plan/workouts/${theirs}/watch-version/keep`, "POST")).status).toBe(404);
     expect((await request(a, `/api/plan/workouts/${theirs}/watch-version/send`, "POST")).status).toBe(404);
+    expect((await request(a, `/api/plan/workouts/${theirs}/watch-version/leave`, "POST")).status).toBe(404);
+  });
+});
+
+describe("POST /api/plan/workouts/:id/watch-version/leave — an app-built session's earlier copy, left as it is", () => {
+  it("stops counting it; the row still says the watch has an earlier version, and says it was left", async () => {
+    const a = await easedAndFailed();
+    await a.db.update(schema.plannedWorkouts).set({ origin: "program" }).where(eq(schema.plannedWorkouts.id, a.workoutId));
+    expect((await computeSyncStatus(a.db, a.userId, a.prefs)).contentStaleCount).toBe(1);
+    const [before] = await a.db.select().from(schema.plannedWorkouts).where(eq(schema.plannedWorkouts.id, a.workoutId));
+    const { value: res, statements, writes } = await a.count(() => request(a, `/api/plan/workouts/${a.workoutId}/watch-version/leave`, "POST"));
+    expect(res.status).toBe(200);
+    expect(statements).toBeLessThanOrEqual(45);
+    for (const sql of writes) expect(sql).toMatch(/^\s*update "sync_intents"/i);
+    const [after] = await a.db.select().from(schema.plannedWorkouts).where(eq(schema.plannedWorkouts.id, a.workoutId));
+    expect(after).toEqual(before);
+    const [intent] = await a.db
+      .select()
+      .from(schema.syncIntents)
+      .where(and(eq(schema.syncIntents.targetId, a.workoutId), eq(schema.syncIntents.kind, "content")));
+    expect(intent!.resolvedAt, "still open: the two still differ").toBeNull();
+    expect((await computeSyncStatus(a.db, a.userId, a.prefs)).contentStaleCount).toBe(0);
+    const d = (await detail(a, a.workoutId)) as Awaited<ReturnType<typeof detail>> & { workout: { watchVersionLeft?: boolean } };
+    expect(d.workout.corosSyncView, "the pill stays true").toBe("content_stale");
+    expect(d.workout.watchVersionLeft).toBe(true);
+  });
+
+  it("is for an app-built session only: any other's Keep takes the watch's version", async () => {
+    const a = await easedAndFailed();
+    const res = await request(a, `/api/plan/workouts/${a.workoutId}/watch-version/leave`, "POST");
+    expect(res.status).toBe(409);
+    expect(await res.json()).toEqual({ error: "not_app_built" });
+    expect((await computeSyncStatus(a.db, a.userId, a.prefs)).contentStaleCount).toBe(1);
+  });
+
+  it("a new change to the session counts again", async () => {
+    const a = await easedAndFailed();
+    await a.db.update(schema.plannedWorkouts).set({ origin: "program" }).where(eq(schema.plannedWorkouts.id, a.workoutId));
+    expect((await request(a, `/api/plan/workouts/${a.workoutId}/watch-version/leave`, "POST")).status).toBe(200);
+    expect((await computeSyncStatus(a.db, a.userId, a.prefs)).contentStaleCount).toBe(0);
+    await recordIntent(a.db, { userId: a.userId, targetKind: "workout", targetId: a.workoutId, kind: "content", source: "coach_ease" });
+    expect((await computeSyncStatus(a.db, a.userId, a.prefs)).contentStaleCount).toBe(1);
   });
 });

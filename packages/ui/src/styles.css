@@ -1111,6 +1111,15 @@ a.note {
   font-size: var(--text-xs);
   color: var(--ink-soft);
 }
+/* What a press did, said where its buttons were: the row keeps their height
+   (set inline from the measured buttons), so nothing below moves, and the
+   focus lands here rather than on the page. */
+.watch-version-done {
+  margin: 0;
+  align-self: center;
+  font-size: var(--text-sm);
+  color: var(--ink-soft);
+}
 
 /* THE scroll owner. Every box that can clip its content wears this — and
    only one box per dialog does, so a dialog has exactly one thing to scroll.

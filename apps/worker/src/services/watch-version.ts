@@ -3,39 +3,46 @@
  * It's always there and annoying and not actionable or removable."
  *
  * An open `content` intent says the app rewrote a session the watch already held, and the watch has not been given the
- * new version yet (sync-intents.ts). Three things follow from it, all here:
+ * new version yet (sync-intents.ts). Two things follow from it, here:
  *
- *  1. WHAT COUNTS. Only a session still to run (`stillToRun`): in the plan, not done, missed or skipped, its day today
- *     or later in the athlete's zone. A past or finished session's watch copy is a record, not a plan — the owner's
- *     line counted three sessions weeks past and missed, for ever. And not while a watch write for it is on its way:
- *     that is "sending", which the row already says. The account line's list (`watchEarlierVersions`) and the row's
- *     `content_stale` (`routes/plan.ts`) apply the same rule.
- *  2. THE HOUSEKEEPING. A claim on a session whose story is over is closed as moot by the hourly
- *     (`closeMootContentClaims`), with its reason, so they stop piling up. It writes no session and no watch or
- *     calendar job — only the intents — and a closed claim still holds the session's content (`contentClaimHeld`), so
- *     the import never hands the app's copy back to COROS's snapshot for it.
- *  3. WHAT THE ATHLETE CAN DO. Send the app's version (watch-version-send.ts: the content rewrite the operator's
- *     backfill and an approved ease queue, when one can reach the row), or keep the watch's (`keepWatchVersion`: the
- *     claim closed as kept, nothing written anywhere but the intent).
+ *  1. WHAT COUNTS — one rule for the account line's list (`watchEarlierVersions`) and the row's `content_stale`
+ *     (`routes/plan.ts`, `deriveWorkoutSync`): an open claim on a session still to run (`stillToRun`: in the plan, not
+ *     done, missed or skipped, its day today or later in the athlete's zone), on the watch on the app's day (the date
+ *     the watch was last confirmed on is the session's own), and no watch write for it on its way (that is "sending").
+ *     A past or finished session's watch copy is a record: its claim is left open and simply not counted, so a session
+ *     that comes back (unskipped, moved on, healed back into the plan) says "Older on watch" again. The list also
+ *     leaves out a claim the athlete left as it is (an app-built session, `LEFT_PATH`) — its row still says so.
+ *  2. WHAT THE ATHLETE CAN DO. Send the app's version (watch-version-send.ts: the content rewrite the convergence
+ *     backfill and an approved ease queue, when one can reach the row); keep the watch's (`keepWatchVersion`: the app
+ *     takes the watch's copy — the claim released as a converged rewrite releases it, and the next COROS read rewrites
+ *     the row from the wire); or, for a session the app built — whose content no read ever takes from the wire, and
+ *     whose earlier copy no rewrite from here replaces — leave the watch as it is (`leaveWatchVersion`).
  *
  * The reads here import nothing that writes to the watch: `sync-status.ts` reads the list on every 30 s poll.
  */
-import { and, asc, eq, gte, inArray, isNotNull, isNull, lt, notExists, notInArray, or } from "drizzle-orm";
+import { and, asc, eq, gte, inArray, isNull, not, notExists, notInArray } from "drizzle-orm";
 import { corosWriteJobs, plannedWorkouts, syncIntents } from "@rg/database";
-import { humanizeWorkoutTitle } from "@rg/domain";
-import { closeContentClaims, type ContentClaimClosedBecause } from "./sync-intents.js";
-import { MOOT_CONTENT_CLAIMS_PER_PASS } from "./cron-limits.js";
+import { appAuthoredRow, humanizeWorkoutTitle } from "@rg/domain";
+import { leaveContentClaims, leftAsItIs, releaseContentClaims } from "./sync-intents.js";
 import type { Db } from "./db.js";
 
 /** A session the athlete has settled: its watch copy is history, not a job. */
 export const SETTLED_COMPLETION_STATES = ["completed", "missed", "skipped"] as const;
 
 /** A watch write on its way — the row's view says "sending" (the same four `routes/plan.ts` reads as pending). */
-const IN_FLIGHT_JOB_STATUSES = ["queued", "claimed", "in_progress", "verifying"] as const;
+export const IN_FLIGHT_JOB_STATUSES = ["queued", "claimed", "in_progress", "verifying"] as const;
+
+/**
+ * `source_content_fingerprint` when the athlete chose the watch's version: "the app holds no observation of the
+ * wire it trusts", so the next COROS read that sees the session finds its content changed and takes the wire's copy
+ * (import rule 7, or its sport flip when the change was to another sport), writing the wire's own fingerprint back.
+ * Until then the row's view is `taking_watch_copy` — never `synced`, for the two still differ.
+ */
+export const TAKE_WATCH_COPY = "take-watch-copy";
 
 /**
  * STILL TO RUN: in the plan, not done, missed or skipped, and its day today or later in the athlete's zone (`today`).
- * The one rule for which divergences the athlete can still act on — the same one `openFailedCoachWrites` applies to a
+ * The rule for which divergences the athlete can still act on — the same one `openFailedCoachWrites` applies to a
  * failed watch write.
  */
 export function stillToRun(
@@ -57,8 +64,9 @@ export interface WatchEarlierVersion {
 }
 
 /**
- * THE ACCOUNT LINE'S SESSIONS, soonest first: an open content claim on a session still to run, with no watch write for
- * it on its way. One statement.
+ * THE ACCOUNT LINE'S SESSIONS, soonest first — every row whose view is `content_stale` (`deriveWorkoutSync`: on the
+ * watch on its day, nothing on its way, an open claim on a session still to run), less those the athlete left as they
+ * are. One statement.
  */
 export async function watchEarlierVersions(db: Db, userId: string, today: string): Promise<WatchEarlierVersion[]> {
   const pw = plannedWorkouts;
@@ -79,10 +87,13 @@ export async function watchEarlierVersions(db: Db, userId: string, today: string
         eq(syncIntents.kind, "content"),
         isNull(syncIntents.resolvedAt),
         isNull(syncIntents.supersededBy),
+        not(leftAsItIs()),
         eq(pw.userId, userId),
         isNull(pw.archivedAt),
         notInArray(pw.completionState, [...SETTLED_COMPLETION_STATES]),
         gte(pw.effectiveDate, today),
+        // On the watch on the app's day: `deriveWorkoutSync` says the date story first otherwise.
+        eq(pw.effectiveDate, pw.lastVerifiedCorosDate),
         notExists(
           db
             .select({ id: corosWriteJobs.id })
@@ -102,55 +113,7 @@ export async function watchEarlierVersions(db: Db, userId: string, today: string
   return out;
 }
 
-/** Why a claim on a session that is over is moot: removed, then how it ended, else its day has gone (the read's rule). */
-function mootBecause(w: { archivedAt: string | null; completionState: string }): ContentClaimClosedBecause {
-  if (w.archivedAt !== null) return "archived";
-  if (w.completionState === "completed" || w.completionState === "missed" || w.completionState === "skipped") {
-    return w.completionState;
-  }
-  return "past";
-}
-
-/**
- * THE HOURLY'S HOUSEKEEPING: close, as moot and with the reason, the open content claims on sessions whose story is
- * over — archived, completed, missed or skipped, or their day gone (the athlete's `today`). At most
- * MOOT_CONTENT_CLAIMS_PER_PASS a pass, oldest day first; the rest wait for the next. One read and at most one write per
- * reason (five): statement-bounded whatever the account holds. Writes nothing but the intents — no session, no watch
- * job, no calendar job. Answers how many it closed.
- */
-export async function closeMootContentClaims(db: Db, userId: string, today: string, now: string): Promise<number> {
-  const pw = plannedWorkouts;
-  const rows = await db
-    .select({ id: syncIntents.id, archivedAt: pw.archivedAt, completionState: pw.completionState })
-    .from(syncIntents)
-    .innerJoin(pw, eq(syncIntents.targetId, pw.id))
-    .where(
-      and(
-        eq(syncIntents.userId, userId),
-        eq(syncIntents.targetKind, "workout"),
-        eq(syncIntents.kind, "content"),
-        isNull(syncIntents.resolvedAt),
-        isNull(syncIntents.supersededBy),
-        eq(pw.userId, userId),
-        or(isNotNull(pw.archivedAt), inArray(pw.completionState, [...SETTLED_COMPLETION_STATES]), lt(pw.effectiveDate, today)),
-      ),
-    )
-    .orderBy(asc(pw.effectiveDate), asc(syncIntents.id))
-    .limit(MOOT_CONTENT_CLAIMS_PER_PASS);
-  const byReason = new Map<ContentClaimClosedBecause, string[]>();
-  for (const r of rows) {
-    const because = mootBecause(r);
-    byReason.set(because, [...(byReason.get(because) ?? []), r.id]);
-  }
-  let closed = 0;
-  for (const [because, ids] of byReason) {
-    await closeContentClaims(db, userId, ids, because, now);
-    closed += ids.length;
-  }
-  return closed;
-}
-
-/** An open content claim on this row, still to run: the divergence the sheet's choice is about. */
+/** This row's open content claims: the divergence the sheet's choice is about. */
 export async function openClaimIds(db: Db, userId: string, workoutId: string): Promise<string[]> {
   return (
     await db
@@ -168,14 +131,23 @@ export async function openClaimIds(db: Db, userId: string, workoutId: string): P
   ).map((r) => r.id);
 }
 
+type WorkoutRow = Pick<typeof plannedWorkouts.$inferSelect, "id" | "origin">;
+
+export type KeepOutcome = { kept: number } | { error: "app_built" };
+
 /**
- * KEEP THE WATCH'S VERSION: the app stops calling it a divergence. The row's open content claims close as kept (the
- * claim still holds the content — the app's copy stays the app's, `contentClaimHeld`), and a rewrite of it still only
- * queued is superseded, so nothing more reaches the watch for it; one already running finishes. Nothing else is
- * written: no session, no watch job, no calendar job. Idempotent: with no open claim, one read and nothing written.
+ * KEEP THE WATCH'S VERSION: the app takes the watch's copy. The row's open content claims are released the ordinary
+ * way (as a converged rewrite releases them), a rewrite of it still only queued is superseded so nothing more reaches
+ * the watch for it (one already running finishes, and the read then takes what it wrote), and the row is marked
+ * `TAKE_WATCH_COPY` — its lift or mobility structure dropped with it, which the wire's copy never has — so the next
+ * COROS read rewrites it from the wire: title, stages, sport. Until then it says so (`taking_watch_copy`). Nothing is
+ * written to the watch. An app-built session is refused (`app_built`): no read ever takes its content from the wire,
+ * so its Keep could not be true — it is left as it is instead (`leaveWatchVersion`). Idempotent: with no open claim,
+ * one read and nothing written.
  */
-export async function keepWatchVersion(db: Db, userId: string, workoutId: string, now: string): Promise<{ kept: number }> {
-  const ids = await openClaimIds(db, userId, workoutId);
+export async function keepWatchVersion(db: Db, userId: string, row: WorkoutRow, now: string): Promise<KeepOutcome> {
+  if (appAuthoredRow(row)) return { error: "app_built" };
+  const ids = await openClaimIds(db, userId, row.id);
   if (ids.length === 0) return { kept: 0 };
   await db
     .update(corosWriteJobs)
@@ -183,11 +155,31 @@ export async function keepWatchVersion(db: Db, userId: string, workoutId: string
     .where(
       and(
         eq(corosWriteJobs.userId, userId),
-        eq(corosWriteJobs.workoutId, workoutId),
+        eq(corosWriteJobs.workoutId, row.id),
         eq(corosWriteJobs.kind, "coach_update_workout"),
         eq(corosWriteJobs.status, "queued"),
       ),
     );
-  await closeContentClaims(db, userId, ids, "kept_watch_version", now);
+  await releaseContentClaims(db, userId, row.id, now);
+  await db
+    .update(plannedWorkouts)
+    .set({ sourceContentFingerprint: TAKE_WATCH_COPY, structuredJson: null, updatedAt: now })
+    .where(and(eq(plannedWorkouts.id, row.id), eq(plannedWorkouts.userId, userId)));
   return { kept: ids.length };
+}
+
+export type LeaveOutcome = { left: number } | { error: "not_app_built" };
+
+/**
+ * LEAVE THE WATCH AS IT IS — an app-built session only (a programme's, an on-demand one, a Studio or template
+ * workout), whose earlier copy no rewrite from here replaces and whose content no read takes from the wire. The claim
+ * stays open, so the row keeps saying the watch has an earlier version ("Older on watch" is true); it is marked left
+ * (`LEFT_PATH`) and the account line stops counting it. Nothing else is written. Any other session is refused
+ * (`not_app_built`): its Keep takes the watch's version. Idempotent.
+ */
+export async function leaveWatchVersion(db: Db, userId: string, row: WorkoutRow, now: string): Promise<LeaveOutcome> {
+  if (!appAuthoredRow(row)) return { error: "not_app_built" };
+  const ids = await openClaimIds(db, userId, row.id);
+  if (ids.length > 0) await leaveContentClaims(db, userId, row.id, now);
+  return { left: ids.length };
 }

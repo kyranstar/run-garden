@@ -1,18 +1,22 @@
 /**
- * SEND THIS VERSION TO THE WATCH, and whether it can be (watch-version.ts has the rule for what counts and the keep).
- * Apart from the account line's reads because it plans through the operator's convergence backfill
+ * SEND THIS VERSION TO THE WATCH, and whether it can be (watch-version.ts has the rule for what counts, the keep and
+ * the leave). Apart from the account line's reads because it plans through the convergence backfill
  * (`convergeDivergedContent`), which writes to the watch.
  */
-import type { plannedWorkouts } from "@rg/database";
+import { and, eq, inArray } from "drizzle-orm";
+import { corosWriteJobs, type plannedWorkouts } from "@rg/database";
 import { appAuthoredRow, type RunWire, type UserPreferences } from "@rg/domain";
 import { convergeDivergedContent } from "./content-converge.js";
-import { openClaimIds, stillToRun } from "./watch-version.js";
+import { IN_FLIGHT_JOB_STATUSES, openClaimIds, stillToRun } from "./watch-version.js";
 import type { Db } from "./db.js";
 
-/** Why the app's version can't be sent from here: watch updates off, COROS not connected, or no rewrite can reach it. */
+/**
+ * Why the app's version can't be sent from here: watch updates off, COROS not connected (each then sendable once
+ * changed: the plan for the row is a rewrite), or no rewrite can reach it at all.
+ */
 export type WatchVersionWhy = "writes_off" | "not_connected" | "cant_rewrite";
 
-/** What the athlete can do about a session's earlier version on the watch. Keeping the watch's is always possible. */
+/** What the athlete can do about a session's earlier version on the watch, besides keeping the watch's. */
 export interface WatchVersionChoice {
   send: boolean;
   why?: WatchVersionWhy;
@@ -28,23 +32,22 @@ export interface SendCtx {
   runWire?: RunWire;
 }
 
-/** The reasons known from the row and the account alone, before any plan is read. */
-function sendBlocked(row: WorkoutRow, ctx: SendCtx): WatchVersionWhy | null {
-  if (appAuthoredRow(row)) return "cant_rewrite";
+/** What only the athlete can change — watch updates, the connection — once a rewrite could reach the row. */
+function blockedForNow(ctx: SendCtx): WatchVersionWhy | null {
   if (!ctx.prefs.corosWritesEnabled) return "writes_off";
   if (!ctx.online) return "not_connected";
   return null;
 }
 
 /**
- * CAN THE APP'S VERSION BE SENT? Only when a content rewrite can reach the row: watch updates on, COROS connected, a
- * session the app did not build (an app-built one reaches the watch only by its own Send, ruling 3-R13), and the
- * operator backfill's own plan for it a rewrite — read in dry run (`convergeDivergedContent`), so what is offered and
- * what Send queues cannot disagree. An unpush is not a send, and is never offered.
+ * CAN THE APP'S VERSION BE SENT? Only when a content rewrite can reach the row: a session the app did not build (an
+ * app-built one's earlier copy no rewrite from here replaces, ruling 3-R13), and the convergence backfill's own plan
+ * for it a rewrite — read in dry run, so what is offered and what Send queues cannot disagree; an unpush is not a send
+ * and is never offered. Then watch updates on and COROS connected — said after the plan, so "then send it from here"
+ * is true.
  */
 export async function watchVersionChoice(db: Db, userId: string, row: WorkoutRow, ctx: SendCtx): Promise<WatchVersionChoice> {
-  const blocked = sendBlocked(row, ctx);
-  if (blocked) return { send: false, why: blocked };
+  if (appAuthoredRow(row)) return { send: false, why: "cant_rewrite" };
   const plan = await convergeDivergedContent(db, userId, {
     dryRun: true,
     workoutIds: [row.id],
@@ -52,24 +55,44 @@ export async function watchVersionChoice(db: Db, userId: string, row: WorkoutRow
     rewritesOnly: true,
     ...(ctx.runWire ? { runWire: ctx.runWire } : {}),
   });
-  return plan.rows.some((r) => r.workoutId === row.id && r.action === "rewrite")
-    ? { send: true }
-    : { send: false, why: "cant_rewrite" };
+  if (!plan.rows.some((r) => r.workoutId === row.id && r.action === "rewrite")) return { send: false, why: "cant_rewrite" };
+  const blocked = blockedForNow(ctx);
+  return blocked ? { send: false, why: blocked } : { send: true };
 }
 
 export type SendWatchVersionOutcome = { ok: true; jobId: string } | { ok: false; error: "nothing_to_send" | WatchVersionWhy };
 
 /**
- * SEND THIS VERSION TO THE WATCH: the content rewrite the operator's backfill queues (backup first, a failed rewrite of
- * the same content revived — the athlete is asking again), for this row alone and never an unpush. Refused, with
- * nothing written, when the row holds no open claim or is no longer still to run (`nothing_to_send`), or when it can't
- * be sent (`WatchVersionWhy`, as the choice says). Queues the write and runs none: the client drains it (`coachDrain`).
+ * SEND THIS VERSION TO THE WATCH: the content rewrite the convergence backfill queues (backup first), for this row
+ * alone and never an unpush.
+ *
+ * IDEMPOTENT (review-S I1). A rewrite of the row already queued or running is the send: answered with its id, nothing
+ * planned — a second press, a second device or a retried request must never supersede the athlete's own write in
+ * flight. A rewrite of the same content that failed, was switched off by a restore, or was superseded is revived (the
+ * athlete is asking again), so one live job is left whatever came before.
+ *
+ * Refused, with nothing written, when the row holds no open claim or is no longer still to run (`nothing_to_send`), or
+ * when it can't be sent (`WatchVersionWhy`). Queues the write and runs none: the client drains it (`coachDrain`).
  */
 export async function sendWatchVersion(db: Db, userId: string, row: WorkoutRow, ctx: SendCtx): Promise<SendWatchVersionOutcome> {
+  const [live] = await db
+    .select({ id: corosWriteJobs.id })
+    .from(corosWriteJobs)
+    .where(
+      and(
+        eq(corosWriteJobs.userId, userId),
+        eq(corosWriteJobs.workoutId, row.id),
+        eq(corosWriteJobs.kind, "coach_update_workout"),
+        inArray(corosWriteJobs.status, [...IN_FLIGHT_JOB_STATUSES]),
+      ),
+    )
+    .limit(1);
+  if (live) return { ok: true, jobId: live.id };
   if (!stillToRun(row, ctx.today) || (await openClaimIds(db, userId, row.id)).length === 0) {
     return { ok: false, error: "nothing_to_send" };
   }
-  const blocked = sendBlocked(row, ctx);
+  if (appAuthoredRow(row)) return { ok: false, error: "cant_rewrite" };
+  const blocked = blockedForNow(ctx);
   if (blocked) return { ok: false, error: blocked };
   // The live plan is the dry run's (`watchVersionChoice`) with its writes: a row it would not rewrite queues nothing.
   const done = await convergeDivergedContent(db, userId, {
@@ -77,10 +100,10 @@ export async function sendWatchVersion(db: Db, userId: string, row: WorkoutRow, 
     workoutIds: [row.id],
     today: ctx.today,
     rewritesOnly: true,
+    reviveSuperseded: true,
     maxWrites: 1,
     ...(ctx.runWire ? { runWire: ctx.runWire } : {}),
   });
   const queued = done.rows.find((r) => r.workoutId === row.id && r.action === "rewrite" && r.jobId);
   return queued?.jobId ? { ok: true, jobId: queued.jobId } : { ok: false, error: "cant_rewrite" };
 }
-

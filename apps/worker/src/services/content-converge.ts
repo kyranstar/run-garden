@@ -96,6 +96,7 @@ import { chunkIds, type Db } from "./db.js";
 import type { PlannedRow } from "./planned-columns.js";
 import { loadPreferences } from "./calendar-sync.js";
 import { enqueueContentConvergence, ownershipProofFor, watchPushable } from "./coach-apply.js";
+import { TAKE_WATCH_COPY } from "./watch-version.js";
 
 /** `audit_events.kind` for the pre-change backup written by a live run. */
 export const CONTENT_CONVERGE_BACKUP_KIND = "coach_content_convergence_backfilled";
@@ -281,6 +282,12 @@ export interface ConvergeOptions {
    * off the watch would be the opposite of what was asked.
    */
   rewritesOnly?: boolean;
+  /**
+   * A rewrite of the same content that was SUPERSEDED is revived too, not only a failed one — the athlete's own Send
+   * (watch-version-send.ts), which runs only when no rewrite of the row is in flight: whatever superseded it, the
+   * athlete is asking again, and a Send must never answer ok over a job that will not run (review-S I1).
+   */
+  reviveSuperseded?: boolean;
 }
 
 /** A coach job that has not finished: a rewrite for its row is already on its way, or another write is in flight. */
@@ -489,6 +496,13 @@ export async function convergeDivergedContent(
       address: null,
     };
 
+    // The athlete chose the watch's version (watch-version.ts `TAKE_WATCH_COPY`): the next read takes it, and nothing
+    // of the app's goes to the watch over it — not the pace heal either.
+    if (row.sourceContentFingerprint === TAKE_WATCH_COPY) {
+      reports.push({ ...base, reason: "the athlete chose the watch's version — the next COROS read takes it" });
+      continue;
+    }
+
     if (row.archivedAt !== null || row.completionState !== "scheduled") {
       reports.push({
         ...base,
@@ -663,6 +677,7 @@ export async function convergeDivergedContent(
       // An operator asked for this run explicitly, so a job that failed before
       // is retried rather than silently colliding — see `reviveFailed`.
       reviveFailed: true,
+      ...(opts.reviveSuperseded ? { reviveSuperseded: true } : {}),
       userId,
       workout: row,
       session,

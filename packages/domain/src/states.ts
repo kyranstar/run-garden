@@ -41,7 +41,13 @@ export const COROS_SYNC_LABELS: Record<CorosSyncState, string> = {
  * about the calendar, and it is recomputed from the open content intent on
  * every read.
  */
-export type WorkoutSyncView = CorosSyncState | "content_stale";
+export type WorkoutSyncView = CorosSyncState | "content_stale" | "taking_watch_copy";
+
+/*
+ * `taking_watch_copy`: the athlete chose the watch's version of a session ("Keep the watch's version", the owner's
+ * 2026-10-19 report) and Run Garden takes it at the next COROS read, which rewrites the row from the wire. Until then
+ * the two still differ, so it is neither `synced` nor `content_stale` (the athlete has already answered it).
+ */
 
 /** Relationship between a planned workout and its managed Calendar event. */
 export type CalendarSyncState =

@@ -96,6 +96,9 @@ export function WorkoutDetail(props: {
   );
 }
 
+/** The sync actions `WatchVersion` says for a row whose watch has an earlier version, in its own words. */
+const WATCH_VERSION_SAYS: ReadonlySet<string> = new Set(["watch_keeps_old_copy", "connect_coros", "enable_coros_writes"]);
+
 /** The sheet every workout but an app session opens (exported for its tests). */
 export function RunWorkoutDetail({
   w,
@@ -114,6 +117,8 @@ export function RunWorkoutDetail({
   const [matching, setMatching] = useState(false);
   const [confirmRemove, setConfirmRemove] = useState(false);
   const [readOpen, setReadOpen] = useState(false);
+  /** A press in the watch-version block went through: it tells the sync story until the sheet closes. */
+  const [watchTold, setWatchTold] = useState(false);
   /** The stages list "Full structure" reveals — scrolled to, not jumped to. */
   const structureRef = useRef<HTMLUListElement>(null);
   const detail = useQuery({
@@ -337,8 +342,10 @@ export function RunWorkoutDetail({
             when there is neither — so a synced session is exactly as quiet as
             it was before any of this existed. */}
         <SyncActionNote
-          /* An earlier version on the watch is `WatchVersion`'s to say, with what can be done about it (below). */
-          action={olderOnWatch && w.syncAction?.code === "watch_keeps_old_copy" ? undefined : w.syncAction}
+          /* An earlier version on the watch is `WatchVersion`'s to say, with what can be done about it and what to do
+             first (below) — the connection's "it goes across on its own" is not true of it — and after a press there
+             the block tells the story. */
+          action={watchTold || (olderOnWatch && WATCH_VERSION_SAYS.has(w.syncAction?.code ?? "")) ? undefined : w.syncAction}
           kind={syncView === "needs_attention" || syncView === "sync_issue" ? "warn" : "info"}
           reason={
             corosDisagrees
@@ -356,7 +363,13 @@ export function RunWorkoutDetail({
         />
         {/* The watch holds an earlier version: say so, and offer what the row can honestly do — send this version,
             or keep the watch's (the owner, 2026-10-19). The choice arrives with the sheet's own read. */}
-        {olderOnWatch ? <WatchVersion workoutId={w.id} choice={detail.data?.watchVersion} /> : null}
+        <WatchVersion
+          workoutId={w.id}
+          show={olderOnWatch}
+          choice={detail.data?.watchVersion}
+          settingsLink={<Link to="/settings">Open Settings</Link>}
+          onDone={() => setWatchTold(true)}
+        />
         <div className="hero-durations">
           <div>
             <div className="num">{formatMinutes(w.workoutSeconds)}</div>
@@ -853,7 +866,17 @@ export function PlanScreen() {
 
   // ── Selection params ───────────────────────────────────────────────────
   const selectedId = params.get("workout");
-  const selected = plan.data?.workouts.find((w) => w.id === selectedId);
+  const listed = plan.data?.workouts.find((w) => w.id === selectedId);
+
+  // not-structural: a session beyond the page's window (the sync line names any still to run), read by its id so its
+  // sheet opens all the same — it decides only whether a modal sheet opens, never a block of the page.
+  const byId = useQuery({
+    queryKey: ["workout", selectedId],
+    queryFn: () => api.workout(selectedId!),
+    enabled: !!selectedId && !!plan.data && !listed,
+    retry: false,
+  });
+  const selected = listed ?? (byId.data?.workout.id === selectedId ? byId.data?.workout : undefined);
   // What the coach sees from the Plan: the open workout's sheet (the nav's Coach button picks it up).
   useCoachSeeing(selected ? workoutFocus(selected) : null);
   const openWorkout = (id: string) => {

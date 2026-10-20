@@ -85,10 +85,15 @@ describe("the watch-version journey's fixture lever", () => {
     expect(await detail(seeded.keepOnly)).toMatchObject({ workout: { corosSyncView: "content_stale" }, watchVersion: { send: false, why: "cant_rewrite" } });
     expect((await detail(seeded.past)).watchVersion).toBeUndefined();
 
-    // Seeded again after a keep: the same rows, the claim open again.
+    // Kept: the app takes the watch's version at the next read, and says so. Seeded again: as it was.
     expect((await call(env, "POST", `/api/plan/workouts/${seeded.keepOnly}/watch-version/keep`, cookie)).status).toBe(200);
     expect(((await (await call(env, "GET", "/api/sync/status", cookie)).json()) as { contentStaleCount: number }).contentStaleCount).toBe(1);
+    expect((await detail(seeded.keepOnly)).workout.corosSyncView).toBe("taking_watch_copy");
     await call(env, "POST", "/api/dev/watch-version", cookie);
     expect(((await (await call(env, "GET", "/api/sync/status", cookie)).json()) as { contentStaleCount: number }).contentStaleCount).toBe(2);
+    expect((await detail(seeded.keepOnly)).workout.corosSyncView).toBe("content_stale");
+    await call(env, "POST", `/api/plan/workouts/${seeded.keepOnly}/watch-version/keep`, cookie);
+    await call(env, "POST", "/api/dev/watch-version", cookie);
+    expect((await detail(seeded.keepOnly)).workout.corosSyncView).toBe("content_stale");
   });
 });

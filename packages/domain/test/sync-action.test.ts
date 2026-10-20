@@ -139,6 +139,13 @@ describe("the athlete has to do one thing", () => {
     }
   });
 
+  it("the watch's version being taken is a receipt, whatever the connection — the athlete has answered it", () => {
+    for (const s of [{}, { connected: false }, { writesEnabled: false }, { write: "failed" as const }]) {
+      expect(syncAction({ ...ok, view: "taking_watch_copy", ...s })).toEqual({ agent: "app", code: "taking_watch_copy" });
+    }
+    expect(syncAction({ ...ok, view: "taking_watch_copy", settled: true })).toBeNull();
+  });
+
   it("hands a date disagreement back to the person who knows", () => {
     expect(syncAction({ ...ok, view: "needs_attention" })).toEqual({
       agent: "athlete",
@@ -216,6 +223,7 @@ describe("the agents partition the vocabulary", () => {
       { ...ok, view: "calendar_only", coverage: coverage({ gaps: [{ code: "empty_body" }] }) },
       { ...ok, view: "content_stale" },
       { ...ok, watchCopyDiffers: true },
+      { ...ok, view: "taking_watch_copy" },
     ];
     const seen = new Map<SyncActionCode, string>();
     for (const s of situations) {
@@ -241,6 +249,7 @@ describe("the agents partition the vocabulary", () => {
       "lives_here",
       "watch_keeps_old_copy",
       "watch_copy_differs",
+      "taking_watch_copy",
     ];
     expect([...seen.keys()].sort()).toEqual([...CODES].sort());
   });

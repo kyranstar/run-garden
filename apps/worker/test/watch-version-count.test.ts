@@ -9,12 +9,14 @@
 import { beforeEach, describe, expect, it } from "vitest";
 import { schema } from "@rg/database";
 import { addDays, newId, nowInstant, todayInZone, type UserPreferences } from "@rg/domain";
+import { eq } from "drizzle-orm";
 import type { Env } from "../src/env.js";
 import type { Db } from "../src/services/db.js";
 import { planRoutes } from "../src/routes/plan.js";
 import { syncRoutes } from "../src/routes/sync.js";
 import { createSession, SESSION_COOKIE } from "../src/auth/sessions.js";
-import { recordIntent } from "../src/services/sync-intents.js";
+import { hourly } from "../src/index.js";
+import { leaveContentClaims, recordIntent } from "../src/services/sync-intents.js";
 import { computeSyncStatus } from "../src/services/sync-status.js";
 import { connectTestCoros, makeTestDb, makeTestUser, mountRoutes } from "./helpers.js";
 
@@ -67,6 +69,8 @@ async function session(o: {
   origin?: string;
   archived?: boolean;
   corosSyncState?: string;
+  /** The day COROS last confirmed it on: the session's own unless said ("" — never on the watch). */
+  verified?: string;
 }): Promise<string> {
   const id = newId();
   await db.insert(schema.plannedWorkouts).values({
@@ -79,7 +83,7 @@ async function session(o: {
     category: o.category ?? "easy",
     sport: o.sport ?? "run",
     originalPlanDate: o.date,
-    lastVerifiedCorosDate: o.date,
+    lastVerifiedCorosDate: o.verified ?? o.date,
     effectiveDate: o.date,
     effectiveTime: "07:00",
     sourceContentFingerprint: "0123456789abcdef",
@@ -146,6 +150,69 @@ describe("what the account line counts", () => {
     expect(status.issueCount, "a past session's failed rewrite is not an issue either").toBe(0);
     const v = await views();
     for (const id of ids) expect(v.get(id), "no 'Older on watch' on a session that is over").not.toBe("content_stale");
+    // Invisible, not closed: their claims stay open, and the hourly leaves them so (review-S I2).
+    await hourly(db, makeEnv());
+    const open = await db.select().from(schema.syncIntents);
+    expect(open.filter((i) => i.resolvedAt === null).map((i) => i.targetId).sort()).toEqual([...ids].sort());
+  });
+
+  it("one rule with the row: the line lists exactly the rows whose sheet says \"Older on watch\", less those left as they are", async () => {
+    const cases: Array<{ name: string; id: string; listed: boolean; view: string | undefined; left?: boolean }> = [];
+    const add = async (name: string, o: Parameters<typeof session>[0], then: (id: string) => Promise<void>, expect: { listed: boolean; view: string | undefined; left?: boolean }) => {
+      const id = await session({ title: name, ...o });
+      await then(id);
+      cases.push({ name, id, ...expect });
+    };
+    const claimed = (id: string) => claim(id);
+    await add("ahead", { date: addDays(today, 3) }, claimed, { listed: true, view: "content_stale" });
+    await add("today", { date: today }, claimed, { listed: true, view: "content_stale" });
+    await add("ahead, its rewrite failed", { date: addDays(today, 4) }, async (id) => { await claim(id); await rewrite(id, "failed"); }, { listed: true, view: "content_stale" });
+    await add("past, unanswered", { date: addDays(today, -1) }, claimed, { listed: false, view: "synced" });
+    await add("ahead, done", { date: addDays(today, 2), completionState: "completed" }, claimed, { listed: false, view: "synced" });
+    await add("ahead, skipped", { date: addDays(today, 2), completionState: "skipped" }, claimed, { listed: false, view: "synced" });
+    await add("ahead, removed", { date: addDays(today, 2), archived: true }, claimed, { listed: false, view: undefined });
+    await add("ahead, its rewrite on its way", { date: addDays(today, 5) }, async (id) => { await claim(id); await rewrite(id, "queued"); }, { listed: false, view: "syncing" });
+    // P8: never on the watch — nothing there to be older.
+    await add("ahead, never on the watch", { date: addDays(today, 6), verified: "" }, claimed, { listed: false, view: "calendar_only" });
+    // P9: moved, and the move failed — the date is the story.
+    await add("ahead, moved and its move failed", { date: addDays(today, 7), verified: addDays(today, 6) }, async (id) => {
+      await claim(id);
+      await db.insert(schema.corosWriteJobs).values({
+        id: `${id}-move`, userId, workoutId: id, kind: "move_scheduled_workout", status: "failed", expectedContentFingerprint: "x",
+        originalDate: addDays(today, 6), destinationDate: addDays(today, 7), requestedAt: nowInstant(), updatedAt: nowInstant(),
+      });
+    }, { listed: false, view: "sync_issue" });
+    await add("ahead, app-built, left as it is", { date: addDays(today, 8), origin: "program" }, async (id) => { await claim(id); await leaveContentClaims(db, userId, id, nowInstant()); }, { listed: false, view: "content_stale", left: true });
+    await add("ahead, no claim", { date: addDays(today, 9) }, async () => undefined, { listed: false, view: "synced" });
+
+    const listed = new Set((await computeSyncStatus(db, userId, prefs)).contentStaleSessions.map((s) => s.workoutId));
+    const v = await views();
+    for (const c of cases) {
+      expect(listed.has(c.id), `${c.name}: listed`).toBe(c.listed);
+      expect(v.get(c.id), `${c.name}: its view`).toBe(c.view);
+      // The rule itself, whatever the case: listed ⇔ "Older on watch" and not left.
+      expect(listed.has(c.id), `${c.name}: the line and the row agree`).toBe(v.get(c.id) === "content_stale" && !c.left);
+    }
+  });
+
+  it("a session that comes back says so again — unskipped, or past and moved on — after any number of hourlies (review-S I2)", async () => {
+    const skipped = await session({ date: addDays(today, 3), completionState: "skipped" });
+    const past = await session({ date: addDays(today, -2), completionState: "unresolved" });
+    for (const id of [skipped, past]) await claim(id);
+    await hourly(db, makeEnv());
+    expect((await computeSyncStatus(db, userId, prefs)).contentStaleCount).toBe(0);
+    // Unskipped; and the past one moved to tomorrow, where COROS has it too.
+    await db.update(schema.plannedWorkouts).set({ completionState: "scheduled" }).where(eq(schema.plannedWorkouts.id, skipped));
+    const tomorrow = addDays(today, 1);
+    await db
+      .update(schema.plannedWorkouts)
+      .set({ completionState: "scheduled", effectiveDate: tomorrow, lastVerifiedCorosDate: tomorrow })
+      .where(eq(schema.plannedWorkouts.id, past));
+    const status = await computeSyncStatus(db, userId, prefs);
+    expect(status.contentStaleSessions.map((s) => s.workoutId).sort()).toEqual([skipped, past].sort());
+    const v = await views();
+    expect(v.get(skipped)).toBe("content_stale");
+    expect(v.get(past)).toBe("content_stale");
   });
 
   it("a session ahead, and today's; never one done, skipped or removed — soonest first, as the athlete reads it", async () => {

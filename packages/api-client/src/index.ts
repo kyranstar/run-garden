@@ -182,6 +182,9 @@ export interface WorkoutDto {
    * never-pushed and already-unpushed sessions — whose watch copy a remove
    * leaves alone. */
   appPushed?: boolean;
+  /** The athlete left the watch's earlier version of this app-built session as it is: the row still says so
+   * (`corosSyncView` `content_stale`), the account line no longer counts it. */
+  watchVersionLeft?: true;
   /** Derived per-workout view (sync-transparency Task 10) — `corosSyncState`'s
    * vocabulary plus `content_stale`, the one value only a derivation can
    * produce (see `WorkoutSyncView`). Computed fresh from the open content
@@ -1608,7 +1611,8 @@ export interface SyncStatusDto {
 /**
  * What the athlete can do about a session's earlier version on the watch (`GET /api/plan/workouts/:id`'s
  * `watchVersion`, present only on a row whose view is `content_stale`): send the app's version when a rewrite can
- * reach it, else why not; keeping the watch's version is always possible.
+ * reach it, else why not (`writes_off` and `not_connected` only once a rewrite could: then it is sendable from here).
+ * Keeping the watch's version — the app takes it — is always possible but for an app-built session, left as it is.
  */
 export interface WatchVersionDto {
   send: boolean;
@@ -2396,8 +2400,10 @@ export const api = {
     if (res.coachDrain) void drainCoach().catch(() => undefined);
     return res;
   },
-  /** Keep the watch's version: the app stops calling it a divergence; nothing is written to the watch. */
+  /** Keep the watch's version: the app takes it at the next COROS read; nothing is written to the watch. */
   keepWatchVersion: (id: string) => post<{ ok: true }>(`/api/plan/workouts/${id}/watch-version/keep`),
+  /** An app-built session: leave the watch's earlier copy as it is (the account line stops counting it). */
+  leaveWatchVersion: (id: string) => post<{ ok: true }>(`/api/plan/workouts/${id}/watch-version/leave`),
   candidates: (id: string) => get<CandidateResponse>(`/api/plan/workouts/${id}/candidates`),
   move: async (id: string, toDate: string, toTime: string) =>
     drainedWatch(

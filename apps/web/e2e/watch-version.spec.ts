@@ -7,7 +7,9 @@ import { test, expect } from "./fixtures.js";
  * (`POST /api/dev/watch-version`, fixture mode only) — one ahead a rewrite can reach, one ahead none can, one weeks past
  * and missed. The Plan's sync line counts the two still to run and opens to them, date · title; each opens its sheet,
  * which says it plainly and offers what that row can do. Send queues the rewrite (the fixture's COROS connection holds
- * no credentials, so it stays on its way: "Sending"), Keep closes it; the line counts down with each and is gone.
+ * no credentials, so it stays on its way: "Syncing"); Keep has the app take the watch's version at the next read (the
+ * fixture never reads COROS, so the row keeps saying so: "Taking watch's version"). Each press says what it did in the
+ * block's place, the focus on it, nothing below moving; the line counts down with each and is gone.
  *
  *   bash apps/web/e2e/fixture-stack.sh
  *   RG_BASE=http://localhost:5271 pnpm --filter @rg/web exec playwright test watch-version --workers=1
@@ -44,7 +46,8 @@ async function shot(page: Page, name: string, project: string): Promise<void> {
 }
 
 async function tall(l: Locator): Promise<void> {
-  expect((await l.boundingBox())!.height, await l.textContent() ?? "").toBeGreaterThanOrEqual(44);
+  // Rounded: WebKit lays a 44 px box out at 43.99997.
+  expect(Math.round((await l.boundingBox())!.height), await l.textContent() ?? "").toBeGreaterThanOrEqual(44);
 }
 
 const line = (page: Page) => page.locator(".sync-stale > summary");
@@ -59,6 +62,7 @@ test("the watch's earlier version: the line names what is still to run, and each
   await signIn(context.request, baseURL, project);
   const seeded = await context.request.post(`${baseURL}/api/dev/watch-version`);
   expect(seeded.ok()).toBeTruthy();
+  const ids = (await seeded.json()) as { sendable: string; keepOnly: string };
 
   await page.goto("/plan");
   await expect(line(page)).toHaveText("Your watch has an earlier version of 2 sessions");
@@ -81,10 +85,19 @@ test("the watch's earlier version: the line names what is still to run, and each
   await tall(send);
   await tall(keep);
   await shot(page, "sheet-send", project);
+  // What is below the block, measured from the block's own sentence: a click may scroll the sheet to reach its button,
+  // and that is no move.
+  const below = easy.locator(".hero-durations");
+  const says = easy.locator(".watch-version-says");
+  const gap = async () => (await below.boundingBox())!.y - (await says.boundingBox())!.y;
+  const gapBefore = await gap();
   await send.click();
-  // On its way: the sheet says so, the choice is gone, and the line counts down.
-  await expect(easy.locator(".watch-version")).toHaveCount(0);
+  // On its way: said where the buttons were, the focus there, the row's pill "Syncing", and nothing below moved.
+  const sent = easy.locator(".watch-version-done");
+  await expect(sent).toHaveText("Sending this version to your watch.");
+  await expect(sent).toBeFocused();
   await expect(easy.locator(".pill", { hasText: "Syncing" })).toBeVisible();
+  expect(Math.abs((await gap()) - gapBefore), "what is below the block stays where it was").toBeLessThanOrEqual(2);
   await shot(page, "sheet-sent", project);
   await page.keyboard.press("Escape");
   await expect(easy).toHaveCount(0);
@@ -100,10 +113,22 @@ test("the watch's earlier version: the line names what is still to run, and each
   await expect(hills.getByRole("button", { name: "Send this version to the watch" })).toHaveCount(0);
   await shot(page, "sheet-keep", project);
   await hills.getByRole("button", { name: "Keep the watch's version" }).click();
-  await expect(hills.locator(".watch-version")).toHaveCount(0);
+  const kept = hills.locator(".watch-version-done");
+  await expect(kept).toHaveText("Run Garden will take the watch's version at the next sync.");
+  await expect(kept).toBeFocused();
+  await expect(hills.locator(".pill", { hasText: "Taking watch's version" })).toBeVisible();
   await page.keyboard.press("Escape");
   await expect(hills).toHaveCount(0);
-  // Nothing left to say.
+  // Nothing left to count.
   await expect(page.locator(".sync-stale")).toHaveCount(0);
   await expect(page.getByText(/earlier version of/)).toHaveCount(0);
+  // Opened again: until the read brings it in, the row says the app is taking the watch's version — not "Synced",
+  // not "Older on watch".
+  await page.goto(`/plan?workout=${ids.keepOnly}`);
+  const again = page.getByRole("dialog", { name: "Hills 6x1" });
+  await expect(again.locator(".pill", { hasText: "Taking watch's version" })).toBeVisible();
+  await expect(again.getByText("Run Garden will take the watch's version at the next sync.")).toBeVisible();
+  await expect(again.getByText("Older on watch")).toHaveCount(0);
+  await expect(again.locator(".watch-version")).toHaveCount(0);
+  await shot(page, "sheet-taking", project);
 });

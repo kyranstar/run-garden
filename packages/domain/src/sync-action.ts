@@ -83,7 +83,10 @@ export type SyncActionCode =
    * designed run's create read back by value, review-2 I2): on the watch, on
    * its day, and maybe not as the steps here say. The app's copy is the one to
    * follow; the job holds the differences for a supervised read. */
-  | "watch_copy_differs";
+  | "watch_copy_differs"
+  /** The athlete chose the watch's version of this session; Run Garden takes it
+   * at the next COROS read (`taking_watch_copy`). Nothing for anyone to do. */
+  | "taking_watch_copy";
 
 export interface SyncAction {
   agent: SyncActor;
@@ -202,6 +205,9 @@ function coverageAction(coverage: WatchCoverageView): SyncAction | null {
  */
 export function syncAction(s: SyncSituation): SyncAction | null {
   if (s.settled) return null;
+
+  // The athlete chose the watch's version: the next COROS read brings it in. A receipt, never a warning.
+  if (s.view === "taking_watch_copy") return { agent: "app", code: "taking_watch_copy" };
 
   // On the watch on its day, and COROS stored it differently: said before the
   // silence a synced session keeps. Anything louder (a date, a write in

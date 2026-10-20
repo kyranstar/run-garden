@@ -847,9 +847,16 @@ export function SessionSheet({ w, today, onClose }: { w: WorkoutDto; today: stri
         </p>
         {/* A modal sheet hides the nav, so it keeps its own small Ask, seeing the workout (the integrated review, I3). */}
         <AskCoach focus={workoutFocus(w)} wrap="session-ask-row" />
-        {/* The watch holds an earlier version of this session (the owner, 2026-10-19): said, and the watch's kept if the
-            athlete wants. An app-built session is never rewritten from here, so there is nothing to send. */}
-        {w.corosSyncView === "content_stale" ? <WatchVersion workoutId={w.id} choice={APP_BUILT_CHOICE} /> : null}
+        {/* The watch holds an earlier version of this session (the owner, 2026-10-19): said, and left as it is if the
+            athlete wants. Nothing from here replaces an app-built session's earlier copy, and no read takes its content
+            from the wire, so there is neither a send nor a keep. */}
+        <WatchVersion
+          workoutId={w.id}
+          show={w.corosSyncView === "content_stale"}
+          choice={APP_BUILT_CHOICE}
+          appBuilt
+          left={!!w.watchVersionLeft}
+        />
         {notKept ? (
           <Banner kind="warn">
             This session isn't being kept on this device. It plays while you're online, and a reload starts it again.

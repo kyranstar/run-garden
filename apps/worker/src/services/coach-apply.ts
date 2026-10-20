@@ -778,6 +778,9 @@ export async function enqueueContentConvergence(
      * only there.
      */
     reviveFailed?: boolean;
+    /** With `reviveFailed`: a SUPERSEDED row of this id is revived too — the athlete's own Send, which runs only with no
+     *  rewrite of the row in flight (watch-version-send.ts; review-S I1). */
+    reviveSuperseded?: boolean;
     now: string;
     corosWritesEnabled: boolean;
     thresholdPaceSecPerKm?: number;
@@ -923,8 +926,9 @@ export async function enqueueContentConvergence(
         // ('restored'), which the athlete is now asking for again. A queued job
         // is already going to run and resetting it would drop an in-flight
         // claim; a verified one is done and re-running it would rewrite the
-        // watch with nobody asking.
-        setWhere: inArray(corosWriteJobs.status, ["failed", "restored"]),
+        // watch with nobody asking. A superseded one only when the athlete's
+        // own Send asks (`reviveSuperseded`).
+        setWhere: inArray(corosWriteJobs.status, v.reviveSuperseded ? ["failed", "restored", "superseded"] : ["failed", "restored"]),
         set: {
           status: "queued",
           claimedByDeviceId: null,

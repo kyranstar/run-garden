@@ -60,7 +60,6 @@ import { corosSweepAccount } from "./services/coros-read.js";
 import { corosMcpSleepSweep } from "./services/coros-mcp.js";
 import { executeCloudJobs } from "./services/coros-write-cloud.js";
 import { healOutdatedPaceEncoding } from "./services/content-converge.js";
-import { closeMootContentClaims } from "./services/watch-version.js";
 import { purgeExpiredSessions, createSession, sessionCookie } from "./auth/sessions.js";
 import { purgeExpiredStates } from "./auth/google.js";
 import { ensureFixtureUser, fixtureAccountEmail, seedFixtures } from "./services/fixtures.js";
@@ -388,14 +387,6 @@ export async function hourly(db: Db, env: Env): Promise<void> {
       await stillOurs();
       const rec = await reconcileCompletionStates(db, userId, prefs);
       await stillOurs();
-      // A content claim on a session whose story is over (just missed above, done, skipped, archived, or its day gone)
-      // is closed as moot, with its reason: its watch copy is a record, and nothing can act on it (the owner,
-      // 2026-10-19). Cheap SQL, bounded a pass; writes nothing but the intents.
-      const mootClaims = await closeMootContentClaims(db, userId, todayInZone(prefs.timezone), nowInstant()).catch((e: unknown) => {
-        console.error(`moot content claims failed: ${e instanceof Error ? e.message : "unknown"}`);
-        return 0;
-      });
-      await stillOurs();
       const garden = await advanceGarden(db, userId, prefs, new Date(), {
         maxWalkDays: CRON_GARDEN_MAX_DAYS,
         maxResimDays: CRON_GARDEN_MAX_DAYS,
@@ -462,7 +453,7 @@ export async function hourly(db: Db, env: Env): Promise<void> {
         });
         if (docs && docs.scanned > 0) heavyStep = "doc_backfill";
       }
-      await finishSyncRun(db, runId, "ok", { ...rec, ...garden, heavyStep, ...(mootClaims > 0 ? { mootClaims } : {}) });
+      await finishSyncRun(db, runId, "ok", { ...rec, ...garden, heavyStep });
     } catch (e) {
       if (e instanceof RestoreBegan) await dropSyncRun(db, runId);
       else await finishSyncRun(db, runId, "error");

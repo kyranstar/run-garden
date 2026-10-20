@@ -32,7 +32,7 @@ import { isRuntimeLimit } from "./runtime-limit.js";
 import { insertBatches, runAtomically, type AtomicStatement, type Db } from "./db.js";
 import { separateDayCollisions, windowTimeFor } from "./day-placement.js";
 import { loadOwnProgramNames, unstampTitle } from "./coros-stamp.js";
-import { contentClaimHeld, openMoveIntents, resolveIntent } from "./sync-intents.js";
+import { openMoveIntents, resolveIntent } from "./sync-intents.js";
 import { dismissSyncNotesOf, postSyncNote } from "./sync-notes.js";
 import { reconcileWorkout } from "./reconcile.js";
 import { SETTLED_PUSH, sentBuildIdOf } from "./session-build.js";
@@ -510,24 +510,24 @@ export async function importPlanSnapshot(
   // CONTENT (audit#3 D1): rule 7 and the recycled-slot rewrite must never
   // hand these rows back to the COROS snapshot.
   //
-  // OPEN intents, and that is right for rule 7: an OPEN content intent
+  // OPEN intents only, and that is right for rule 7: an OPEN content intent
   // means the wire has not caught up with the app yet, and the app's copy must
   // win. Once a rewrite converges the session, the intent resolves and rule 7
   // may treat the wire as authoritative again — because by then the wire IS the
   // app's session.
-  //
-  // …and a claim closed with NOTHING WRITTEN (`contentClaimHeld`): the session's
-  // story ended (the hourly's moot close) or the athlete kept the watch's
-  // version. The wire never caught up there either, so the app's copy still
-  // wins — closing a claim must never hand a past session, or a kept one, back
-  // to the snapshot (a sport the ease changed would otherwise read as a
-  // recycled slot and be rewritten as the wire's workout).
   const contentIntentIds = new Set(
     (
       await db
         .select({ targetId: syncIntents.targetId })
         .from(syncIntents)
-        .where(and(eq(syncIntents.userId, input.userId), eq(syncIntents.kind, "content"), contentClaimHeld()))
+        .where(
+          and(
+            eq(syncIntents.userId, input.userId),
+            eq(syncIntents.kind, "content"),
+            isNull(syncIntents.resolvedAt),
+            isNull(syncIntents.supersededBy),
+          ),
+        )
     ).map((r) => r.targetId),
   );
 

@@ -324,13 +324,16 @@ export function deriveWorkoutSync(v: {
    * approved ease rewrote this session after COROS was last given it, and the
    * athlete can still do something about it. A verified rewrite closes it. */
   hasOpenContentIntent: boolean;
+  /** The athlete chose the watch's version and the next COROS read takes it
+   * (watch-version.ts `TAKE_WATCH_COPY`): the two still differ until then. */
+  takingWatchCopy?: boolean;
   hasPendingJob: boolean;
   hasFailedJob: boolean;
   presence: CloudPresence;
   writesEnabled: boolean;
 }): WorkoutSyncView {
   if (v.effectiveDate === v.lastVerifiedCorosDate && !v.hasPendingJob) {
-    return v.hasOpenContentIntent ? "content_stale" : "synced";
+    return v.hasOpenContentIntent ? "content_stale" : v.takingWatchCopy ? "taking_watch_copy" : "synced";
   }
   // "waiting_for_device" survives in the legacy per-workout vocabulary (the
   // CorosPill labels key on it) but now means "no cloud connection to run it".
