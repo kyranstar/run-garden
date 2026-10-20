@@ -332,6 +332,13 @@ describe("the stylesheet", () => {
     expect(rule(".stu > .stu-added--on")).toContain("position: sticky");
   });
 
+  it("the player's music line is one line whatever it says: its words clipped with an ellipsis, Play and the link kept beside them (review-M2 m1)", () => {
+    expect(rule(".player-music")).toContain("flex-wrap: nowrap");
+    const text = rule(".player-music-text");
+    for (const d of ["min-width: 0", "overflow: hidden", "text-overflow: ellipsis", "white-space: nowrap"]) expect(text).toContain(d);
+    expect(rule(".player-music button,\n.player-music a")).toContain("flex: none");
+  });
+
   it("in the player it is one of the top bar's tools: in its row, never floating over the player's lines", () => {
     const player = rule(".music-dock--player");
     expect(player).not.toContain("position: fixed");

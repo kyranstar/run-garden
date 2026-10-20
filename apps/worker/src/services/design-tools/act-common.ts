@@ -417,10 +417,14 @@ export function withMusicIds(doc: Record<string, unknown>, shortcuts: readonly M
   const music = doc.music;
   if (!music || typeof music !== "object" || Array.isArray(music)) return doc;
   const named = (music as { playlist?: unknown }).playlist;
-  if (typeof named !== "string" || shortcuts.some((s) => s.id === named)) return doc;
+  if (typeof named !== "string") return doc;
   const key = named.trim().toLowerCase();
+  const byId = shortcuts.find((s) => s.id === named);
   const byLabel = shortcuts.filter((s) => s.label.trim().toLowerCase() === key);
-  if (byLabel.length === 1) return { ...doc, music: { ...music, playlist: byLabel[0]!.id } };
+  // One playlist's id that is another's label says two things: refused, as any other name is (review-M2 m3).
+  const clash = !!byId && byLabel.some((s) => s.id !== byId.id);
+  if (byId && !clash) return doc;
+  if (!byId && byLabel.length === 1) return { ...doc, music: { ...music, playlist: byLabel[0]!.id } };
   return refuse(
     "unknown_playlist",
     `music.playlist ${JSON.stringify(named)} is not one of the athlete's playlists.`,

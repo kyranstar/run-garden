@@ -6,7 +6,7 @@
  *  - 401: the token is fetched again once, asking the Worker for a fresh one, and the call tried again.
  *  - 429: the shared backoff (music/backoff.ts) — the call is not tried again; while it lasts every call is refused
  *    here, before the network (`SpotifyError` 429, reason "BACKOFF", with the time left). A success once it has run out
- *    resets it. A token the Worker can't hand out (its 502) backs off the same way (reason "TOKEN").
+ *    resets it. A token the Worker can't hand out (its 5xx) backs off the same way (reason "TOKEN").
  *  - 404 `NO_ACTIVE_DEVICE` (or any 404 from a player command): `isNoDevice` — the dock's open-link fallback.
  *
  * It reads and plays; it never creates, changes or deletes anything in the athlete's Spotify account.
@@ -146,10 +146,13 @@ export function makeSpotify(deps: SpotifyDeps) {
       let answer: TokenAnswer;
       try {
         answer = await deps.token(fresh);
-      } catch {
-        // The Worker couldn't hand out a token (its 502: Spotify refused the refresh; or no answer at all): the same
-        // backoff as a 429, so a poll every 5 s doesn't ask again and again (review-M M5).
-        throw new SpotifyError(429, "TOKEN", backoff.hit(null), "/token");
+      } catch (e) {
+        // The Worker couldn't hand out a token — its 5xx: Spotify refused the refresh. The same backoff as a 429, so a
+        // poll every 5 s doesn't ask again and again (review-M M5). Only that: no answer at all (offline) or the app's
+        // own sign-in gone (401) is said as before, never as a slow-down (review-M2 m2).
+        const status = (e as { status?: unknown } | null)?.status;
+        if (typeof status === "number" && status >= 500) throw new SpotifyError(429, "TOKEN", backoff.hit(null), "/token");
+        throw e;
       }
       if (!answer.connected) {
         cached = null;

@@ -144,6 +144,16 @@ describe("a designed workout's music", () => {
           expect(out.fix).toContain("spa, s2, s4");
         }
       }
+      // One playlist's id and another's label (the legacy "spa" slot beside one the athlete called "spa"): refused too
+      // (review-M2 m3) — and a playlist whose label is its own id is no clash.
+      const clash = await harness([spa, { ...gym, id: "s5", label: "SPA" }]);
+      for (const t of ["validate_workout", "propose_workout"]) {
+        const input = t === "validate_workout" ? { doc: named("spa"), date: TODAY_TOOLS } : { doc: named("spa"), target: { kind: "new", date: TODAY_TOOLS } };
+        const out = (await tool(t).run(clash.ctx, input)) as ToolErr;
+        expect([out.error, out.fix], t).toEqual(["unknown_playlist", "Use one of the listed playlist ids (spa, s5), { playlist: null } for none, or leave music out."]);
+      }
+      const own = await harness([{ ...spa, label: "spa" }]);
+      expect(isToolErr(await tool("validate_workout").run(own.ctx, { doc: named("spa"), date: TODAY_TOOLS }))).toBe(false);
       const none = await harness([]);
       const out = (await tool("validate_workout").run(none.ctx, { doc: named("Spa"), date: TODAY_TOOLS })) as ToolErr;
       expect([out.error, out.fix]).toEqual(["unknown_playlist", "The athlete has no playlists: leave music out."]);

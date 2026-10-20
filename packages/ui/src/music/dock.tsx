@@ -669,7 +669,9 @@ export interface WorkoutMusicStart {
  * athlete's Spotify (connected, and "Play the workout's music when I start" on — this device's setting, on by default).
  * Its line's room is kept from the first draw (review-M M8: the answer comes a moment after Start, and a line that came
  * then pushed the stage under a tap): empty while it plays (the dock's pill shows it); no device open, "Open Spotify to
- * play Spa" with Play; Spotify asking to slow down, the dock's calm line — and Play again once that has run out (M9).
+ * play Spa" with Play; Spotify asking to slow down, the dock's calm line — and Play again once that has run out (M9);
+ * a play that failed, why — "Couldn't start Spa" with Play, or the dock's words for Premium or a consent to renew
+ * (review-M2 m4). One line whatever the label: its words clipped, Play beside them (m1).
  * Dark, not connected, the setting off, a resumed session, or no music: nothing at all, and no controller.
  */
 export function WorkoutMusicLine(props: WorkoutMusicStart) {
@@ -685,12 +687,12 @@ function WorkoutMusicLineOn({ session, target }: { session: string; target: Work
     void dock.autoPlay(target, session);
   }, [target, session, data, dock]);
   const w = state.workout && state.workout.target.uri === target.uri ? state.workout : null;
+  const said = w ? lineWords(w) : null;
+  // One line, whatever the label (review-M2 m1): the words clipped with an ellipsis, Play and the link beside them.
   return (
     <p className="player-hint player-music" role="status">
-      {w?.status === "slow" ? SLOW_LINE : null}
-      {w?.status === "no_device" ? <>Open Spotify to play {w.target.label}</> : null}
-      {w?.status === "ready" ? <>Ready to play {w.target.label}</> : null}
-      {w && w.status !== "slow" ? (
+      {said ? <span className="player-music-text">{said.text}</span> : null}
+      {w && said?.play ? (
         <button type="button" disabled={state.busy !== null} onClick={() => void dock.playWorkout(w.target)}>
           Play
         </button>
@@ -702,4 +704,18 @@ function WorkoutMusicLineOn({ session, target }: { session: string; target: Work
       ) : null}
     </p>
   );
+}
+
+/** The line's words for a workout's music that didn't start, and whether Play is offered beside them: a tap can fix no
+ * device, a backoff run out, or no answer; Premium and a consent to renew it can't (the dock's own words for those). */
+function lineWords(w: NonNullable<DockState["workout"]>): { text: string; play: boolean } {
+  const label = w.target.label;
+  if (w.status === "failed") {
+    if (w.why === "premium") return { text: "Playing from here needs Spotify Premium.", play: false };
+    if (w.why === "reconnect") return { text: "Spotify needs you to sign in again.", play: false };
+    return { text: `Couldn't start ${label}`, play: true };
+  }
+  if (w.status === "slow") return { text: SLOW_LINE, play: false };
+  if (w.status === "no_device") return { text: `Open Spotify to play ${label}`, play: true };
+  return { text: `Ready to play ${label}`, play: true };
 }

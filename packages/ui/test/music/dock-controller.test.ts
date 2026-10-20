@@ -41,6 +41,8 @@ function setup(
     tagFails?: boolean;
     /** The Worker can't refresh the token (its 502): every token ask throws. */
     tokenFails?: boolean;
+    /** No answer for the token at all (offline). */
+    tokenOffline?: boolean;
     /** The tagging waits for this before it answers. */
     tagGate?: Promise<void>;
   } = {},
@@ -54,10 +56,14 @@ function setup(
   let clock = 1_000_000;
   const tokens = fakeTokens(fake, { reason: opts.reason, now: () => clock });
   let tokenAsks = 0;
-  const token = opts.tokenFails
+  const token = opts.tokenOffline
+    ? async (): Promise<never> => {
+        throw new TypeError("Failed to fetch");
+      }
+    : opts.tokenFails
     ? async (): Promise<never> => {
         tokenAsks += 1;
-        throw new Error("api_502");
+        throw Object.assign(new Error("api_502"), { status: 502 });
       }
     : opts.renewFails
       ? async (fresh: boolean) =>
@@ -344,6 +350,15 @@ describe("an edit made while the first open reads and tags (review-M M1)", () =>
   });
 });
 
+describe("no answer for a token (review-M2 m2)", () => {
+  it("is said as before — Spotify didn't answer — and never as a slow-down, with no backoff", async () => {
+    const { dock, state, backoff } = setup({ tokenOffline: true });
+    await dock.open();
+    expect(state().notice).toEqual({ text: "Spotify didn't answer. Try again.", tone: "warn" });
+    expect(backoff.remaining()).toBe(0);
+  });
+});
+
 describe("a token the Worker can't refresh (review-M M5)", () => {
   it("the dock says the calm line and its polling stops asking until the backoff ends", async () => {
     const { dock, fake, state, advance, tokenAsks } = setup({ tokenFails: true });
@@ -430,6 +445,31 @@ describe("asked to slow down", () => {
 
 describe("a workout's music, at its Start", () => {
   const target = { id: "spa", label: "Spa", uri: `spotify:playlist:${SPA}` };
+
+  it("a play that fails says why where the player can show it: Premium, a consent to renew, or no answer (review-M2 m4)", async () => {
+    const premium = setup({ devices: [{ ...phone }] });
+    premium.fake.script("PUT /me/player/shuffle", { status: 403, body: { error: { status: 403, reason: "PREMIUM_REQUIRED" } } });
+    premium.fake.script("PUT /me/player/play", { status: 403, body: { error: { status: 403, reason: "PREMIUM_REQUIRED" } } });
+    await premium.dock.autoPlay(target, "perf-1");
+    expect(premium.state().workout).toEqual({ target, status: "failed", why: "premium" });
+    const renew = setup({ renewFails: true });
+    await renew.dock.autoPlay(target, "perf-1");
+    expect(renew.state().workout).toEqual({ target, status: "failed", why: "reconnect" });
+    const silent = setup({ devices: [{ ...phone }] });
+    silent.fake.script("GET /me/player/devices", { status: 500 });
+    await silent.dock.autoPlay(target, "perf-1");
+    expect(silent.state().workout).toEqual({ target, status: "failed", why: "error" });
+  });
+
+  it("the timer that offers Play again is cancelled when the dock is disposed", async () => {
+    const { dock, state, backoff, advance } = setup();
+    backoff.hit(null);
+    await dock.autoPlay(target, "perf-1");
+    expect(state().workout?.status).toBe("slow");
+    dock.dispose();
+    await advance(BACKOFF_FIRST_MS * 2);
+    expect(state().workout?.status).toBe("slow");
+  });
 
   it("plays on the device Spotify would use, shuffled, and the dock shows it", async () => {
     const { dock, fake, commands, state } = setup({ devices: [{ ...phone }] });

@@ -247,6 +247,49 @@ describe("the player, as the session begins", () => {
     expect(kept!.textContent).toBe("Open Spotify to play SpaPlay");
   });
 
+  it("a play that fails says so in the kept line — never a blank band: no answer (with Play), Premium, a consent to renew (review-M2 m4)", async () => {
+    const said: string[] = [];
+    for (const [key, answer] of [
+      ["PUT /me/player/play", { status: 500 }],
+      ["PUT /me/player/play", { status: 403, body: { error: { status: 403, reason: "PREMIUM_REQUIRED" } } }],
+    ] as const) {
+      const { dock, fake } = dockWith([phone]);
+      fake.script(key, answer);
+      const qc = client(dto());
+      setDockFor(qc, dock);
+      mount(createElement(WorkoutMusicLine, { session: "perf-1", fresh: true, target }), qc);
+      await settle();
+      said.push(document.querySelector(".player-music")!.textContent ?? "");
+      act(() => root?.unmount());
+      host?.remove();
+    }
+    expect(said).toEqual(["Couldn't start SpaPlay", "Playing from here needs Spotify Premium."]);
+    // A consent to renew: the dock's own words.
+    const fake = fakeSpotify({ devices: [phone] });
+    const spotify = makeSpotify({ token: async () => ({ connected: false, reason: "reconnect" }), fetch: fake.fetch, now: () => 0 });
+    const dock = makeDockController({
+      spotify, saveMusic: async (m) => m, tag: async () => ({}), prefer: () => "Smartphone", random: () => 0, openLink: () => true, now: () => 0,
+      sleep: async () => undefined, schedule: () => () => undefined, isVisible: () => true, newId: () => "x",
+    });
+    const qc = client(dto());
+    setDockFor(qc, dock);
+    mount(createElement(WorkoutMusicLine, { session: "perf-1", fresh: true, target }), qc);
+    await settle();
+    expect(document.querySelector(".player-music")!.textContent).toBe("Spotify needs you to sign in again.");
+  });
+
+  it("its words sit in one clipped run of text, Play and the link beside it — one line, whatever the label (review-M2 m1)", async () => {
+    const { dock } = dockWith([]);
+    const qc = client(dto());
+    setDockFor(qc, dock);
+    const long = { ...target, label: "Yoga & Meditation: Relaxing Music for Stretching" };
+    mount(createElement(WorkoutMusicLine, { session: "perf-1", fresh: true, target: long }), qc);
+    await settle();
+    const line = document.querySelector(".player-music")!;
+    expect(line.querySelector(".player-music-text")!.textContent).toBe("Open Spotify to play Yoga & Meditation: Relaxing Music for Stretching");
+    expect([...line.children].map((c) => c.tagName.toLowerCase())).toEqual(["span", "button"]);
+  });
+
   it("asked to slow down at Start: the calm line, then Play once the backoff has run out (M9)", async () => {
     let clock = 0;
     const { dock, spotify, scheduled, plays } = dockWith([phone], () => clock);

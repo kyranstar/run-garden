@@ -48,6 +48,10 @@ export interface WorkoutTarget {
   uri: string;
 }
 
+/** Why a workout's music didn't start: Spotify Premium needed, the consent to renew (or Spotify not connected), or no
+ * answer. */
+export type WorkoutFailure = "premium" | "reconnect" | "error";
+
 export interface DockState {
   connection: Connection;
   music: MusicPreferences;
@@ -66,9 +70,12 @@ export interface DockState {
   editing: boolean;
   /** The playlist open in the editor (its name and tags), while editing. */
   editingId: string | null;
-  /** A workout's music asked to play at Start that couldn't yet: no device open, Spotify asking to slow down, or that
-   * backoff run out ("ready": the player offers Play again — review-M M9). */
-  workout: { target: WorkoutTarget; status: "no_device" | "slow" | "ready" } | null;
+  /** A workout's music asked to play at Start that couldn't yet: no device open, Spotify asking to slow down, that backoff
+   * run out ("ready": the player offers Play again — review-M M9), or a play that failed and why (review-M2 m4). */
+  workout:
+    | { target: WorkoutTarget; status: "no_device" | "slow" | "ready" }
+    | { target: WorkoutTarget; status: "failed"; why: WorkoutFailure }
+    | null;
 }
 
 export interface DockDeps {
@@ -92,6 +99,13 @@ export interface DockDeps {
 export type AddResult = { kind: "saved" } | { kind: "needs_label" } | { kind: "invalid" } | { kind: "failed" };
 
 const NOT_A_LINK = "That isn't a Spotify playlist or album link.";
+/** Why a play failed, for the player's line. */
+function failureOf(e: unknown): WorkoutFailure {
+  if (e instanceof NotConnected) return "reconnect";
+  if (e instanceof SpotifyError && e.reason === "PREMIUM_REQUIRED") return "premium";
+  return "error";
+}
+
 /** What the dock says while Spotify asks it to slow down. */
 export const SLOW_LINE = "Spotify asked us to slow down — back in a few minutes";
 /** …and when a tap meets it: the time left. */
@@ -138,6 +152,8 @@ export function makeDockController(deps: DockDeps) {
   let tidied = false;
   /** The sessions whose music was asked for (`autoPlay`): once each, however often the player's line is drawn. */
   const started = new Set<string>();
+  /** The timer that offers a held-back workout's music again (`holdWorkout`): cancelled on dispose. */
+  let readyTimer: (() => void) | null = null;
   const listeners = new Set<() => void>();
   const set = (patch: Partial<DockState>) => {
     state = { ...state, ...patch };
@@ -294,7 +310,9 @@ export function makeDockController(deps: DockDeps) {
   /** A workout's music held back by the backoff: said so, and offered again when it runs out. */
   function holdWorkout(target: WorkoutTarget): void {
     set({ workout: { target, status: "slow" } });
-    deps.schedule(() => {
+    readyTimer?.();
+    readyTimer = deps.schedule(() => {
+      readyTimer = null;
       if (state.workout?.target === target && state.workout.status === "slow") set({ workout: { target, status: "ready" } });
     }, slowFor());
   }
@@ -369,7 +387,9 @@ export function makeDockController(deps: DockDeps) {
       } catch (e) {
         fail(e);
         set({ busy: null, workout: null });
+        // Held back: Play again once it runs out. Else the player says why (review-M2 m4): never a blank band.
         if (isSlowDown(e)) holdWorkout(target);
+        else set({ workout: { target, status: "failed", why: failureOf(e) } });
         return;
       }
       set({ busy: null });
@@ -502,6 +522,8 @@ export function makeDockController(deps: DockDeps) {
     dispose(): void {
       poller.stop();
       remote.cancel();
+      readyTimer?.();
+      readyTimer = null;
     },
   };
 }

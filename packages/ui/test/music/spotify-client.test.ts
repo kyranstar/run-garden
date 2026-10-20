@@ -213,14 +213,14 @@ describe("the client", () => {
     expect(backoff.hit(null)).toBe(BACKOFF_FIRST_MS);
   });
 
-  it("a token the Worker can't refresh (its 502, or no answer) enters the same backoff: the poll stops asking (M5)", async () => {
+  it("a token the Worker can't refresh (its 5xx) enters the same backoff: the poll stops asking (M5)", async () => {
     let clock = 1_000_000;
     let asked = 0;
     const fake = fakeSpotify();
     const spotify = makeSpotify({
       token: async () => {
         asked += 1;
-        throw new Error("api_502");
+        throw Object.assign(new Error("api_502"), { status: 502 });
       },
       fetch: fake.fetch,
       now: () => clock,
@@ -240,6 +240,20 @@ describe("the client", () => {
     const reconnect = makeSpotify({ token: async () => ({ connected: false, reason: "reconnect" }), fetch: fake.fetch, now: () => clock });
     expect(await reconnect.player().catch((e: unknown) => e)).toBeInstanceOf(NotConnected);
     expect(reconnect.backoff.remaining()).toBe(0);
+  });
+
+  it("only a Worker status of 500 or more backs off: no answer at all, or the app's sign-in gone (401), is said as before — never as a slow-down (review-M2 m2)", async () => {
+    const fake = fakeSpotify();
+    for (const thrown of [new TypeError("Failed to fetch"), Object.assign(new Error("api_401"), { status: 401 }), Object.assign(new Error("api_400"), { status: 400 })]) {
+      const spotify = makeSpotify({ token: async () => Promise.reject(thrown), fetch: fake.fetch, now: () => 0 });
+      const err = await spotify.player().catch((e: unknown) => e);
+      expect(err, String(thrown)).toBe(thrown);
+      expect(spotify.backoff.remaining()).toBe(0);
+    }
+    for (const status of [500, 502, 503]) {
+      const spotify = makeSpotify({ token: async () => Promise.reject(Object.assign(new Error("api"), { status })), fetch: fake.fetch, now: () => 0 });
+      expect(((await spotify.player().catch((e: unknown) => e)) as SpotifyError).reason).toBe("TOKEN");
+    }
   });
 
   it("a backoff begun in another tab is this tab's too, as it lands in storage; and its end (M6)", () => {

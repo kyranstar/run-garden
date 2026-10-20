@@ -8610,7 +8610,20 @@ button.session-chip::after {
 /* A workout's music at Start (music/dock.tsx WorkoutMusicLine): its room kept from the first draw — a fingertip's
    height, empty while the music plays — so a line that comes a moment later moves nothing (review-M M8). */
 .player-music {
+  flex-wrap: nowrap;
   min-height: var(--tap);
+}
+/* Its words on that one line, clipped with an ellipsis whatever the label; Play and the link never wrap below them
+   (review-M2 m1). */
+.player-music-text {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.player-music button,
+.player-music a {
+  flex: none;
 }
 /* Its Play, and the link when the browser wouldn't open Spotify — a fingertip each, as the hint's OK. */
 .player-music a {

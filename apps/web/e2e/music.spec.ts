@@ -266,33 +266,46 @@ test("a spa playlist linked before names and tags is read and tagged on the firs
   await expect(page.locator(".player-top .music-dock--player .music-pill")).toHaveClass(/music-pill--playing/, { timeout: 15_000 });
 });
 
-test("no device at Start: one quiet line in the player, whose Play opens Spotify, and the music plays once the app is back", async ({ page, context, baseURL }, info) => {
+test("no device at Start: one quiet line in the player, whose Play opens Spotify, and the music plays once the app is back — one line at 390 px, whatever the label", async ({ page, context, baseURL }, info) => {
   const req = context.request;
   await connect(req, baseURL!);
+  // A long label (review-M2 m1): clipped on its one line, Play and the link beside it — nothing wraps, nothing moves.
+  const LONG = "Yoga & Meditation: Relaxing Music for Stretching";
   expect(
     (await req.put(`${baseURL}/api/music`, {
-      data: { shortcuts: [{ id: "spa", label: "Spa", uri: `spotify:playlist:${SPA_ID}`, shuffle: true, name: "Spa Sounds", goodFor: ["mobility", "wind-down"] }] },
+      data: { shortcuts: [{ id: "spa", label: LONG, uri: `spotify:playlist:${SPA_ID}`, shuffle: true, name: "Spa Sounds", goodFor: ["mobility", "wind-down"] }] },
     })).ok(),
   ).toBeTruthy();
+  await page.setViewportSize({ width: 390, height: 844 });
   expect((await fixtureSpotify(req, baseURL!, "PUT", "/state/devices", { none: true })).status()).toBe(204);
   await page.addInitScript(() => {
     window.open = () => null;
   });
   const id = await mobilityToday(req, baseURL!, "Morning reset");
   await openSheet(page, id);
-  await expect(page.locator(".session-music")).toHaveText("Music Spa (default)Change");
+  await expect(page.locator(".session-music")).toHaveText(`Music ${LONG} (default)Change`);
   await page.getByRole("button", { name: /^Start · \d+ min$/ }).click();
   await expect(page.locator(".player-count")).toContainText("1 of ", { timeout: 15_000 });
   const line = page.locator(".player-music");
   // The line's room is kept from the first draw: the stage is where it will stay (review-M M8).
   const stage = page.locator(".player-main");
   const before = (await stage.boundingBox())!.y;
-  await expect(line).toContainText("Open Spotify to play Spa", { timeout: 15_000 });
+  await expect(line).toContainText(`Open Spotify to play ${LONG}`, { timeout: 15_000 });
   expect((await stage.boundingBox())!.y).toBe(before);
+  const oneLine = async () => {
+    const band = (await line.boundingBox())!;
+    const play = (await line.getByRole("button", { name: "Play" }).boundingBox())!;
+    expect(play.y + play.height).toBeLessThanOrEqual(band.y + band.height + 1);
+    expect(band.x + band.width).toBeLessThanOrEqual(390);
+  };
+  await oneLine();
   await shot(page, "player-line", info.project.name);
   await line.getByRole("button", { name: "Play" }).click();
   // The browser wouldn't open Spotify unasked: the link is there to tap.
   await expect(line.getByRole("link", { name: "Open Spotify" })).toHaveAttribute("href", `https://open.spotify.com/playlist/${SPA_ID}`);
+  // The link joins the same line: still nothing moves.
+  expect((await stage.boundingBox())!.y).toBe(before);
+  await oneLine();
   expect((await fixtureSpotify(req, baseURL!, "PUT", "/state/devices", { none: false })).status()).toBe(204);
   await page.evaluate(() => {
     for (const state of ["hidden", "visible"]) {
