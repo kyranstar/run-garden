@@ -2,8 +2,10 @@
  * The music dock's stand-in Spotify (fixture mode only; routes/music.ts mounts it at `/api/music/fixture/v1` and
  * refuses it outside fixture mode). The fixture stack can't reach Spotify, so the dock's journeys run against this: the
  * Web API endpoints the dock calls, answered from a little state kept in the isolate — two devices (a phone that
- * refuses remote volume and a desktop that takes it), a few playlists, and a catalogue of the Minecraft albums with one
- * left out, so the builder says what it couldn't find. Synthetic ids; nothing here leaves the machine.
+ * refuses remote volume and a desktop that takes it), the athlete's playlists (each with a description, escaped as
+ * Spotify sends it; listed a page at a time), an editorial one, and a catalogue of albums. It makes nothing in the
+ * account: the app builds no playlist. `PUT /state/limit` answers the next calls 429 with no Retry-After (as a browser
+ * sees one: CORS hides it), so the dock's backing off can be seen. Synthetic ids; nothing here leaves the machine.
  */
 import { Hono, type Context } from "hono";
 import type { AppContext } from "../auth/middleware.js";
@@ -15,7 +17,7 @@ export const FIXTURE_SPOTIFY_TOKENS: SpotifyTokens = {
   accessToken: "fixture-access-token",
   refreshToken: "fixture-refresh-token",
   expiresInSec: 365 * 86_400,
-  scope: "user-read-playback-state user-modify-playback-state user-read-currently-playing playlist-read-private playlist-modify-private",
+  scope: "user-read-playback-state user-modify-playback-state user-read-currently-playing playlist-read-private",
 };
 
 interface Track {
@@ -33,6 +35,8 @@ interface Album {
 interface Playlist {
   id: string;
   name: string;
+  /** As Spotify sends it: HTML-escaped. */
+  description: string;
   owned: boolean;
   uris: string[];
 }
@@ -80,11 +84,18 @@ const CATALOGUE: Album[] = [
 ];
 
 const USER_PLAYLISTS: Playlist[] = [
-  { id: fid("fxplEasyRun"), name: "Easy run", owned: true, uris: CATALOGUE[1]!.tracks.slice(0, 12).map((t) => t.uri) },
-  { id: fid("fxplLongRun"), name: "Long run", owned: true, uris: CATALOGUE[1]!.tracks.slice(10, 30).map((t) => t.uri) },
-  { id: fid("fxplStretch"), name: "Stretch", owned: true, uris: CATALOGUE[0]!.tracks.slice(0, 8).map((t) => t.uri) },
-  // An editorial playlist: playable, its name readable, its items not (as Spotify answers a playlist the athlete doesn't own).
-  { id: fid("fxplSpaEditorial"), name: "Spa Sounds", owned: false, uris: CATALOGUE[0]!.tracks.slice(8, 20).map((t) => t.uri) },
+  { id: fid("fxplEasyRun"), name: "Easy run", description: "Steady songs for easy miles", owned: true, uris: CATALOGUE[1]!.tracks.slice(0, 12).map((t) => t.uri) },
+  { id: fid("fxplLongRun"), name: "Long run", description: "", owned: true, uris: CATALOGUE[1]!.tracks.slice(10, 30).map((t) => t.uri) },
+  { id: fid("fxplStretch"), name: "Stretch", description: "Slow stretches &amp; long holds", owned: true, uris: CATALOGUE[0]!.tracks.slice(0, 8).map((t) => t.uri) },
+  // An editorial playlist: playable, its name and description readable, its items not (as Spotify answers a playlist the
+  // athlete doesn't own).
+  {
+    id: fid("fxplSpaEditorial"),
+    name: "Spa Sounds",
+    description: "Calm music for yoga, massage &amp; rest. &lt;a href=&quot;spotify:playlist:fxplmore&quot;&gt;More&lt;/a&gt;",
+    owned: false,
+    uris: CATALOGUE[0]!.tracks.slice(8, 20).map((t) => t.uri),
+  },
 ];
 
 interface State {
@@ -96,6 +107,8 @@ interface State {
   queue: string[];
   index: number;
   playlists: Playlist[];
+  /** The next calls answered 429 (`PUT /state/limit`). */
+  limited: number;
 }
 
 function initial(): State {
@@ -111,6 +124,7 @@ function initial(): State {
     queue: [],
     index: 0,
     playlists: USER_PLAYLISTS.map((p) => ({ ...p, uris: [...p.uris] })),
+    limited: 0,
   };
 }
 
@@ -143,12 +157,22 @@ spotifyFixtureApi.use("*", async (c, next) => {
   if (c.req.header("authorization") !== `Bearer ${FIXTURE_SPOTIFY_TOKENS.accessToken}`) {
     return c.json({ error: { status: 401, message: "Invalid access token" } }, 401);
   }
+  if (state.limited > 0 && !c.req.path.includes("/state")) {
+    state.limited -= 1;
+    return c.json({ error: { status: 429, message: "API rate limit exceeded" } }, 429);
+  }
   await next();
 });
 
 /** Back to the start (the e2e and the screenshots begin from it). */
 spotifyFixtureApi.delete("/state", (c) => {
   state = initial();
+  return c.body(null, 204);
+});
+/** The next `count` calls answered 429, with no Retry-After (the backing off's journey). */
+spotifyFixtureApi.put("/state/limit", async (c) => {
+  const body = (await c.req.json().catch(() => ({}))) as { count?: number };
+  state.limited = Math.max(0, Math.min(1000, Number(body.count ?? 0)));
   return c.body(null, 204);
 });
 /** The phone's Spotify app closed or open (the open-link fallback's journey). */
@@ -233,20 +257,21 @@ spotifyFixtureApi.put("/me/player/volume", (c) => {
 const playlistJson = (p: Playlist) => ({
   id: p.id,
   name: p.name,
+  description: p.description,
+  images: [],
   uri: `spotify:playlist:${p.id}`,
   owner: { id: p.owned ? "fixture-user" : "spotify" },
   ...(p.owned ? { items: { total: p.uris.length } } : {}),
 });
 
-spotifyFixtureApi.get("/me/playlists", (c) =>
-  c.json({ items: state.playlists.filter((p) => p.owned).map(playlistJson), total: state.playlists.filter((p) => p.owned).length, next: null }),
-);
-
-spotifyFixtureApi.post("/me/playlists", async (c) => {
-  const body = (await c.req.json().catch(() => ({}))) as { name?: string };
-  const p: Playlist = { id: fid(`fxplBuilt${state.playlists.length}`), name: body.name ?? "Untitled", owned: true, uris: [] };
-  state.playlists.push(p);
-  return c.json(playlistJson(p), 201);
+/** The athlete's own playlists, a page at a time (`limit`, `offset`; `next` while there are more). */
+spotifyFixtureApi.get("/me/playlists", (c) => {
+  const owned = state.playlists.filter((p) => p.owned);
+  const limit = Math.max(1, Math.min(50, Number(c.req.query("limit") ?? 20)));
+  const offset = Math.max(0, Number(c.req.query("offset") ?? 0));
+  const page = owned.slice(offset, offset + limit);
+  const next = offset + limit < owned.length ? `fixture://me/playlists?offset=${offset + limit}&limit=${limit}` : null;
+  return c.json({ items: page.map(playlistJson), total: owned.length, limit, offset, next });
 });
 
 spotifyFixtureApi.get("/playlists/:id", (c) => {
@@ -259,15 +284,6 @@ spotifyFixtureApi.get("/playlists/:id/items", (c) => {
   if (!p) return c.json({ error: { status: 404, message: "Resource not found" } }, 404);
   if (!p.owned) return c.json({ error: { status: 403, message: "Forbidden" } }, 403);
   return c.json({ items: [], total: p.uris.length, next: null });
-});
-
-spotifyFixtureApi.post("/playlists/:id/items", async (c) => {
-  const p = state.playlists.find((x) => x.id === c.req.param("id"));
-  if (!p || !p.owned) return c.json({ error: { status: 403, message: "Forbidden" } }, 403);
-  const body = (await c.req.json().catch(() => ({}))) as { uris?: string[] };
-  if (!Array.isArray(body.uris) || body.uris.length > 100) return c.json({ error: { status: 400, message: "Too many ids requested" } }, 400);
-  p.uris.push(...body.uris);
-  return c.json({ snapshot_id: `snap-${p.uris.length}` }, 201);
 });
 
 const albumJson = (a: Album) => ({

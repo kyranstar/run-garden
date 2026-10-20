@@ -9,6 +9,7 @@
  * document.
  */
 import { z } from "zod";
+import { workoutMusicSchema } from "./music.js";
 
 export const WORKOUT_DOC_VERSION = 1;
 
@@ -151,6 +152,9 @@ export const workoutDocSchema = z.object({
     .object({ kind: z.enum(BASED_ON_KINDS), id: z.string().min(1).max(80), rev: z.number().int().min(0).optional(), opId: z.string().min(1).max(120).optional() })
     .optional(),
   notes: z.string().max(500).optional(),
+  /** Its music (2026-10-19): one of the athlete's saved playlists by its id, or none (`playlist: null`). Absent: the
+   * default for its kind (music.ts `resolveWorkoutMusic`). An optional key: an older cached client strips it. */
+  music: workoutMusicSchema.optional(),
 });
 
 export type WorkoutDoc = z.infer<typeof workoutDocSchema>;

@@ -1,33 +1,13 @@
 /**
- * The music dock's pure reads (2026-10-17): the shortcuts as the dock lists them, the pill's short title, now playing,
- * and whether the volume can be set from here.
+ * The music dock's pure reads (2026-10-17): the pill's short title, now playing, whether the volume can be set from
+ * here, and a playlist's line in the sheet.
  */
-import { MUSIC_SPA_ID, type MusicPreferences } from "@rg/domain";
+import { MUSIC_GOOD_FOR_LABELS, type MusicShortcut } from "@rg/domain";
 import type { Device, PlayerState } from "./spotify.js";
 
-export const MINECRAFT_SHORTCUT_ID = "minecraft";
-
-export interface DockShortcut {
-  id: string;
-  label: string;
-  /** Null until there is something to play: the Minecraft playlist not built yet, the spa playlist not chosen. */
-  uri: string | null;
-  kind: "minecraft" | "spa" | "custom";
-}
-
-/** "Minecraft, complete" first, then the spa playlist (or the offer to add it), then the athlete's own. */
-export function dockShortcuts(music: MusicPreferences): DockShortcut[] {
-  const spa = music.shortcuts.find((s) => s.id === MUSIC_SPA_ID);
-  return [
-    {
-      id: MINECRAFT_SHORTCUT_ID,
-      label: "Minecraft, complete",
-      uri: music.minecraftPlaylistId ? `spotify:playlist:${music.minecraftPlaylistId}` : null,
-      kind: "minecraft",
-    },
-    spa ? { id: MUSIC_SPA_ID, label: spa.label, uri: spa.uri, kind: "spa" } : { id: MUSIC_SPA_ID, label: "Add your spa playlist", uri: null, kind: "spa" },
-    ...music.shortcuts.filter((s) => s.id !== MUSIC_SPA_ID).map((s) => ({ id: s.id, label: s.label, uri: s.uri, kind: "custom" as const })),
-  ];
+/** What a playlist suits, in plain words ("Mobility · Winding down"); "" when it is not tagged or suits nothing. */
+export function goodForWords(s: Pick<MusicShortcut, "goodFor">): string {
+  return (s.goodFor ?? []).map((t) => MUSIC_GOOD_FOR_LABELS[t]).join(" · ");
 }
 
 /** A track's name as the resting pill shows it: no " - 2011 Remaster" or "(Remastered)", whole words, ≤ max. */

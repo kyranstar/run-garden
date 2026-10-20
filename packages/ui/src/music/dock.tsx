@@ -1,11 +1,16 @@
 /**
- * The music dock (2026-10-17): a Spotify remote that rests as a small pill — a note, or the track's short title while
- * it plays — near the bottom edge (above the tab bar on a phone, in the rail's corner on a desktop, smaller and up out
- * of the way in the session player), and opens into a sheet: now playing, play/pause and next, the shortcuts (one tap
- * plays), the volume where the device takes it, "Add a shortcut", and the Spotify connection.
+ * The music dock (2026-10-17; one abstraction, 2026-10-19): a Spotify remote that rests as a small pill — a note, or
+ * the track's short title while it plays — near the bottom edge (above the tab bar on a phone, in the rail's corner on
+ * a desktop, smaller and up out of the way in the session player), and opens into a sheet: now playing, play/pause and
+ * next, the athlete's playlists (one tap plays; each with what it suits), the volume where the device takes it, "Add a
+ * playlist" (pick one of theirs, or paste a link), and the Spotify connection. In Edit, each playlist's name and tags.
  *
- * It plays only when asked: nothing starts on its own, and opening it reads, never plays (music/controller.ts). Dark
- * until the owner's Client ID arrives: `GET /api/music` answers 404 and the dock draws nothing at all.
+ * It plays only when asked: nothing starts on its own but a workout's music at its Start (the player's), and opening
+ * it reads, never plays (music/controller.ts). Dark until the owner's Client ID arrives: `GET /api/music` answers 404
+ * and the dock draws nothing at all.
+ *
+ * One controller per page (`useMusicDock`), shared by the shell's dock, the player's and the player's music line, so
+ * what plays, the devices and the backoff carry from one screen to the next.
  *
  * The session's own cues are Web Audio in an "ambient" audio session (the sound pass), so they mix over Spotify; the
  * dock adds no audio element and no speech — on an iPhone either would stop Spotify.
@@ -13,10 +18,13 @@
 import { useEffect, useId, useRef, useState, useSyncExternalStore, type ReactNode } from "react";
 import { useQuery, useQueryClient, type QueryClient } from "@tanstack/react-query";
 import { ApiError, musicApi, SPOTIFY_LOGIN_PATH, type MusicDto } from "@rg/api-client";
+import { MUSIC_GOOD_FOR, MUSIC_GOOD_FOR_LABELS, MUSIC_LABEL_MAX, type MusicGoodFor, type MusicShortcut } from "@rg/domain";
 import { Sheet } from "../components.js";
+import { readAutoPlay } from "./autoplay-setting.js";
+import { makeBackoff, type Backoff } from "./backoff.js";
 import { makeSpotify } from "./spotify.js";
-import { makeDockController, type Connection, type DockController, type DockState } from "./controller.js";
-import { dockShortcuts, nowPlaying, pillTitle, volumeOf, type DockShortcut } from "./dock-model.js";
+import { makeDockController, SLOW_LINE, type Connection, type DockController, type DockState, type WorkoutTarget } from "./controller.js";
+import { goodForWords, nowPlaying, pillTitle, volumeOf } from "./dock-model.js";
 
 export const MUSIC_QUERY = ["music"] as const;
 
@@ -30,10 +38,17 @@ async function readMusic(): Promise<MusicDto | null> {
   }
 }
 
+const musicQuery = { queryKey: MUSIC_QUERY, queryFn: readMusic, retry: false, staleTime: 5 * 60_000, networkMode: "online" as const };
+
+/** The dock's read (the playlists, the connection, the athlete's choices per workout): undefined until it answers,
+ * null while the dock is off. */
+export function useMusicData(): MusicDto | null | undefined {
+  return useQuery(musicQuery).data;
+}
+
 /** Is the dock on? The shell keeps room for it only then. */
 export function useMusicOn(): boolean {
-  const q = useQuery({ queryKey: MUSIC_QUERY, queryFn: readMusic, retry: false, staleTime: 5 * 60_000, networkMode: "online" });
-  return !!q.data;
+  return !!useMusicData();
 }
 
 // ── Glyphs (stroke icons, as icons.tsx draws them) ────────────────────────────
@@ -89,14 +104,15 @@ export interface PanelActions {
   resume: () => void;
   next: () => void;
   setVolume: (percent: number) => void;
-  startAdding: (target: "spa" | "custom") => void;
+  startAdding: () => void;
   cancelAdding: () => void;
   addLink: (text: string) => void;
   nameAndSave: (label: string) => void;
-  addPlaylist: (p: NonNullable<DockState["playlists"]>[number]) => void;
-  loadPlaylists: () => void;
+  addPlaylist: (p: NonNullable<DockState["playlists"]>["items"][number]) => void;
+  morePlaylists: () => void;
   remove: (id: string) => void;
-  rebuildMinecraft: () => void;
+  edit: (id: string, patch: { label: string; goodFor: MusicGoodFor[] }) => void;
+  openEditor: (id: string | null) => void;
   setEditing: (editing: boolean) => void;
   disconnect: () => void;
 }
@@ -192,43 +208,79 @@ function VolumeRow({ state, actions }: { state: DockState; actions: PanelActions
   );
 }
 
-function ShortcutRow({ shortcut, state, actions }: { shortcut: DockShortcut; state: DockState; actions: PanelActions }) {
-  const busyHere = state.busy === "building" && shortcut.kind === "minecraft";
-  const adding = shortcut.kind === "spa" && !shortcut.uri;
-  const removable = state.editing && shortcut.kind !== "minecraft" && !!shortcut.uri;
-  const rebuildable = state.editing && shortcut.kind === "minecraft" && !!shortcut.uri;
+/** A playlist's mark: its cover (Spotify's own image host only, kept when it was linked), else a note. */
+function Cover({ image }: { image?: string | null }) {
+  return (
+    <span className="music-shortcut-mark" aria-hidden="true">
+      {image ? <img className="music-cover" src={image} alt="" width={36} height={36} loading="lazy" referrerPolicy="no-referrer" /> : <NoteGlyph />}
+    </span>
+  );
+}
+
+function ShortcutRow({ shortcut, state, actions }: { shortcut: MusicShortcut; state: DockState; actions: PanelActions }) {
+  const suits = goodForWords(shortcut);
   return (
     <li className="music-shortcut-row">
-      <button
-        type="button"
-        className="music-shortcut"
-        disabled={state.busy !== null}
-        aria-busy={busyHere || undefined}
-        onClick={() => actions.tap(shortcut.id)}
-      >
-        <span className="music-shortcut-mark" aria-hidden="true">
-          {adding ? "+" : <NoteGlyph />}
-        </span>
+      <button type="button" className="music-shortcut" disabled={state.busy !== null} onClick={() => actions.tap(shortcut.id)}>
+        <Cover image={shortcut.image} />
         <span className="music-shortcut-text">
-          <span className="music-shortcut-label">{busyHere ? "Building the Minecraft playlist…" : shortcut.label}</span>
-          {shortcut.kind === "minecraft" && state.build && state.build.found > 0 && !busyHere ? (
-            <span className="music-shortcut-sub">
-              {state.build.found} of {state.build.of} albums found
-            </span>
-          ) : null}
+          <span className="music-shortcut-label">{shortcut.label}</span>
+          {suits ? <span className="music-shortcut-sub">{suits}</span> : null}
         </span>
       </button>
-      {removable ? (
-        <button type="button" className="btn btn-small" aria-label={`Remove ${shortcut.label}`} onClick={() => actions.remove(shortcut.id)}>
-          Remove
-        </button>
-      ) : null}
-      {rebuildable ? (
-        <button type="button" className="btn btn-small" disabled={state.busy !== null} onClick={actions.rebuildMinecraft}>
-          Rebuild
+      {state.editing ? (
+        <button type="button" className="btn btn-small" aria-label={`Edit ${shortcut.label}`} onClick={() => actions.openEditor(shortcut.id)}>
+          Edit
         </button>
       ) : null}
     </li>
+  );
+}
+
+/** One playlist's name and what it suits, as the athlete sets them; and Remove. */
+function EditPanel({ shortcut, state, actions }: { shortcut: MusicShortcut; state: DockState; actions: PanelActions }) {
+  const nameId = useId();
+  const [label, setLabel] = useState(shortcut.label);
+  const [goodFor, setGoodFor] = useState<MusicGoodFor[]>(shortcut.goodFor ?? []);
+  const toggle = (t: MusicGoodFor) => setGoodFor((g) => (g.includes(t) ? g.filter((x) => x !== t) : MUSIC_GOOD_FOR.filter((x) => x === t || g.includes(x))));
+  return (
+    <section className="music-add" aria-label={`Edit ${shortcut.label}`}>
+      <h3 className="music-subhead">{shortcut.name && shortcut.name !== shortcut.label ? shortcut.name : "Edit playlist"}</h3>
+      <form
+        className="music-add-form"
+        onSubmit={(e) => {
+          e.preventDefault();
+          actions.edit(shortcut.id, { label, goodFor });
+        }}
+      >
+        <label htmlFor={nameId}>Name</label>
+        <div className="music-add-line">
+          <input id={nameId} type="text" value={label} maxLength={MUSIC_LABEL_MAX} onChange={(e) => setLabel(e.target.value)} />
+        </div>
+        <span className="music-add-label" id={`${nameId}-tags`}>
+          Good for
+        </span>
+        <div className="music-tags" role="group" aria-labelledby={`${nameId}-tags`}>
+          {MUSIC_GOOD_FOR.map((t) => (
+            <button key={t} type="button" className="music-tag" aria-pressed={goodFor.includes(t)} onClick={() => toggle(t)}>
+              {goodFor.includes(t) ? "✓ " : ""}
+              {MUSIC_GOOD_FOR_LABELS[t]}
+            </button>
+          ))}
+        </div>
+        <div className="music-foot">
+          <button type="submit" className="btn btn-primary" disabled={state.busy !== null || !label.trim()}>
+            Save
+          </button>
+          <button type="button" className="btn music-quiet" onClick={() => actions.openEditor(null)}>
+            Cancel
+          </button>
+        </div>
+      </form>
+      <button type="button" className="btn btn-small music-remove" disabled={state.busy !== null} aria-label={`Remove ${shortcut.label}`} onClick={() => actions.remove(shortcut.id)}>
+        Remove
+      </button>
+    </section>
   );
 }
 
@@ -238,9 +290,10 @@ function AddPanel({ state, actions }: { state: DockState; actions: PanelActions 
   const [text, setText] = useState("");
   const [label, setLabel] = useState("");
   const adding = state.adding!;
+  const linkedUris = new Set(state.music.shortcuts.map((s) => s.uri));
   return (
-    <section className="music-add" aria-label={adding.target === "spa" ? "Your spa playlist" : "Add a shortcut"}>
-      <h3 className="music-subhead">{adding.target === "spa" ? "Your spa playlist" : "Add a shortcut"}</h3>
+    <section className="music-add" aria-label="Add a playlist">
+      <h3 className="music-subhead">Add a playlist</h3>
       {adding.needsLabel ? (
         <form
           className="music-add-form"
@@ -251,58 +304,69 @@ function AddPanel({ state, actions }: { state: DockState; actions: PanelActions 
         >
           <label htmlFor={nameId}>Name it</label>
           <div className="music-add-line">
-            <input id={nameId} type="text" value={label} maxLength={60} onChange={(e) => setLabel(e.target.value)} />
+            <input id={nameId} type="text" value={label} maxLength={MUSIC_LABEL_MAX} onChange={(e) => setLabel(e.target.value)} />
             <button type="submit" className="btn btn-primary" disabled={state.busy !== null}>
               Save
             </button>
           </div>
         </form>
       ) : (
-        <form
-          className="music-add-form"
-          onSubmit={(e) => {
-            e.preventDefault();
-            actions.addLink(text);
-          }}
-        >
-          <label htmlFor={linkId}>Paste a playlist or album link</label>
-          <div className="music-add-line">
-            <input id={linkId} type="url" inputMode="url" autoComplete="off" value={text} onChange={(e) => setText(e.target.value)} />
-            <button type="submit" className="btn btn-primary" disabled={state.busy !== null || !text.trim()}>
-              Add
-            </button>
+        <>
+          <div className="music-playlists">
+            <h4 className="music-subhead">Your playlists</h4>
+            {state.playlists === null ? (
+              state.connection === "connected" && !state.notice ? (
+                <p className="music-notice">Loading your playlists…</p>
+              ) : null
+            ) : state.playlists.items.length === 0 ? (
+              <p className="music-notice">No playlists yet</p>
+            ) : (
+              <ul className="music-list">
+                {state.playlists.items.map((p) => (
+                  <li key={p.id} className="music-shortcut-row">
+                    <button
+                      type="button"
+                      className="music-shortcut"
+                      disabled={state.busy !== null || linkedUris.has(p.uri)}
+                      onClick={() => actions.addPlaylist(p)}
+                    >
+                      <Cover image={p.image} />
+                      <span className="music-shortcut-text">
+                        <span className="music-shortcut-label">{p.name}</span>
+                        {linkedUris.has(p.uri) ? <span className="music-shortcut-sub">Added</span> : null}
+                      </span>
+                    </button>
+                  </li>
+                ))}
+              </ul>
+            )}
+            {state.playlists?.next != null ? (
+              <button type="button" className="btn btn-small" disabled={state.busy !== null} onClick={actions.morePlaylists}>
+                More
+              </button>
+            ) : null}
           </div>
-        </form>
+          <form
+            className="music-add-form"
+            onSubmit={(e) => {
+              e.preventDefault();
+              actions.addLink(text);
+            }}
+          >
+            <label htmlFor={linkId}>Or paste a playlist or album link</label>
+            <div className="music-add-line">
+              <input id={linkId} type="url" inputMode="url" autoComplete="off" value={text} onChange={(e) => setText(e.target.value)} />
+              <button type="submit" className="btn btn-primary" disabled={state.busy !== null || !text.trim()}>
+                Add
+              </button>
+            </div>
+          </form>
+        </>
       )}
       {adding.error ? (
         <p className="music-add-error" role="status">
           {adding.error}
         </p>
-      ) : null}
-      {!adding.needsLabel ? (
-        <div className="music-playlists">
-          <h4 className="music-subhead">Your playlists</h4>
-          {state.playlists === null ? (
-            <button type="button" className="btn btn-small" onClick={actions.loadPlaylists}>
-              Show your playlists
-            </button>
-          ) : state.playlists.length === 0 ? (
-            <p className="music-notice">No playlists yet</p>
-          ) : (
-            <ul className="music-list">
-              {state.playlists.map((p) => (
-                <li key={p.id}>
-                  <button type="button" className="music-shortcut" disabled={state.busy !== null} onClick={() => actions.addPlaylist(p)}>
-                    <span className="music-shortcut-mark" aria-hidden="true">
-                      +
-                    </span>
-                    <span className="music-shortcut-label">{p.name}</span>
-                  </button>
-                </li>
-              ))}
-            </ul>
-          )}
-        </div>
       ) : null}
       <button type="button" className="btn music-quiet" onClick={actions.cancelAdding}>
         Cancel
@@ -327,6 +391,7 @@ export function MusicPanel({ state, actions }: { state: DockState; actions: Pane
       </div>
     );
   }
+  const editing = state.editing && state.editingId ? state.music.shortcuts.find((s) => s.id === state.editingId) : undefined;
   return (
     <div className="music-panel">
       <NowPlayingRow state={state} actions={actions} />
@@ -340,20 +405,28 @@ export function MusicPanel({ state, actions }: { state: DockState; actions: Pane
       ) : null}
       {state.adding ? (
         <AddPanel state={state} actions={actions} />
+      ) : editing ? (
+        <EditPanel key={editing.id} shortcut={editing} state={state} actions={actions} />
       ) : (
-        <section className="music-shortcuts" aria-label="Shortcuts">
-          <ul className="music-list">
-            {dockShortcuts(state.music).map((s) => (
-              <ShortcutRow key={s.id} shortcut={s} state={state} actions={actions} />
-            ))}
-          </ul>
+        <section className="music-shortcuts" aria-label="Your playlists">
+          {state.music.shortcuts.length ? (
+            <ul className="music-list">
+              {state.music.shortcuts.map((s) => (
+                <ShortcutRow key={s.id} shortcut={s} state={state} actions={actions} />
+              ))}
+            </ul>
+          ) : (
+            <p className="music-notice">Add a playlist to play it from here — and with your workouts.</p>
+          )}
           <div className="music-foot">
-            <button type="button" className="btn music-quiet" onClick={() => actions.startAdding("custom")}>
-              Add a shortcut
+            <button type="button" className="btn music-quiet" onClick={actions.startAdding}>
+              Add a playlist
             </button>
-            <button type="button" className="btn music-quiet" aria-pressed={state.editing} onClick={() => actions.setEditing(!state.editing)}>
-              {state.editing ? "Done" : "Edit"}
-            </button>
+            {state.music.shortcuts.length ? (
+              <button type="button" className="btn music-quiet" aria-pressed={state.editing} onClick={() => actions.setEditing(!state.editing)}>
+                {state.editing ? "Done" : "Edit"}
+              </button>
+            ) : null}
           </div>
           {state.editing ? (
             <button type="button" className="btn btn-danger music-disconnect" onClick={actions.disconnect}>
@@ -418,62 +491,81 @@ function openLink(url: string): boolean {
   return true;
 }
 
-function useDock(data: MusicDto | null | undefined, qc: QueryClient): DockController {
-  const [dock] = useState(() => {
-    const spotify = makeSpotify({
-      token: async (fresh) => {
-        try {
-          return await musicApi.token(fresh);
-        } catch (e) {
-          if (e instanceof ApiError && e.status === 404) return { connected: false, reason: "not_connected" };
-          throw e;
-        }
-      },
-      fetch: (input, init) => fetch(input, init),
-      now: () => Date.now(),
-      sleep: (ms) => new Promise((r) => setTimeout(r, ms)),
-    });
-    const controller = makeDockController({
-      spotify,
-      // The query keeps the stored shortcuts too: a save writes what the server answered there.
-      saveMusic: async (music) => {
-        const stored = (await musicApi.save(music)).music;
-        qc.setQueryData<MusicDto | null>(MUSIC_QUERY, (d) => (d ? { ...d, music: stored } : d));
-        return stored;
-      },
-      disconnect: async () => {
-        await musicApi.disconnect();
-        qc.setQueryData<MusicDto | null>(MUSIC_QUERY, (d) => (d ? { ...d, connected: false } : d));
-      },
-      prefer: () => (typeof window !== "undefined" && window.matchMedia?.("(pointer: coarse)").matches ? "Smartphone" : "Computer"),
-      random: () => Math.random(),
-      openLink,
-      now: () => Date.now(),
-      sleep: (ms) => new Promise((r) => setTimeout(r, ms)),
-      schedule: (fn, ms) => {
-        const id = setTimeout(fn, ms);
-        return () => clearTimeout(id);
-      },
-      isVisible: visibleNow,
-      newId: () => `s${Date.now().toString(36)}${Math.random().toString(36).slice(2, 6)}`,
-    });
-    if (data) controller.setServer(data);
-    return controller;
+/** The page's one controller (per query client: a test's own client gets its own), and the backoff every call shares. */
+const docks = new WeakMap<QueryClient, DockController>();
+let pageBackoff: Backoff | null = null;
+
+function dockFor(qc: QueryClient): DockController {
+  const known = docks.get(qc);
+  if (known) return known;
+  pageBackoff ??= makeBackoff({ now: () => Date.now() });
+  const spotify = makeSpotify({
+    token: async (fresh) => {
+      try {
+        return await musicApi.token(fresh);
+      } catch (e) {
+        if (e instanceof ApiError && e.status === 404) return { connected: false, reason: "not_connected" };
+        throw e;
+      }
+    },
+    fetch: (input, init) => fetch(input, init),
+    now: () => Date.now(),
+    backoff: pageBackoff,
   });
+  const controller = makeDockController({
+    spotify,
+    // The query keeps the stored playlists too: a save writes what the server answered there.
+    saveMusic: async (music) => {
+      const stored = (await musicApi.save(music)).music;
+      qc.setQueryData<MusicDto | null>(MUSIC_QUERY, (d) => (d ? { ...d, music: stored } : d));
+      return stored;
+    },
+    tag: async (playlists) => (await musicApi.tags(playlists)).tags,
+    disconnect: async () => {
+      await musicApi.disconnect();
+      qc.setQueryData<MusicDto | null>(MUSIC_QUERY, (d) => (d ? { ...d, connected: false } : d));
+    },
+    prefer: () => (typeof window !== "undefined" && window.matchMedia?.("(pointer: coarse)").matches ? "Smartphone" : "Computer"),
+    random: () => Math.random(),
+    openLink,
+    now: () => Date.now(),
+    sleep: (ms) => new Promise((r) => setTimeout(r, ms)),
+    schedule: (fn, ms) => {
+      const id = setTimeout(fn, ms);
+      return () => clearTimeout(id);
+    },
+    isVisible: visibleNow,
+    newId: () => `s${Date.now().toString(36)}${Math.random().toString(36).slice(2, 6)}`,
+  });
+  docks.set(qc, controller);
+  return controller;
+}
+
+/** A controller of the caller's own for a query client (the tests' seam: a fake Spotify behind it). */
+export function setDockFor(qc: QueryClient, dock: DockController): void {
+  docks.set(qc, dock);
+}
+
+/** The page's dock controller and its state, kept in step with the Worker's read. Mount only while the dock is on. */
+export function useMusicDock(): { dock: DockController; state: DockState; data: MusicDto | null | undefined } {
+  const qc = useQueryClient();
+  const data = useMusicData();
+  const dock = dockFor(qc);
   useEffect(() => {
     if (data) dock.setServer(data);
   }, [dock, data]);
-  useEffect(() => () => dock.dispose(), [dock]);
-  return dock;
+  const state = useSyncExternalStore(dock.subscribe, dock.get, dock.get);
+  return { dock, state, data };
 }
 
 export function MusicDock({ variant }: { variant: "shell" | "player" }) {
-  const qc = useQueryClient();
-  const q = useQuery({ queryKey: MUSIC_QUERY, queryFn: readMusic, retry: false, staleTime: 5 * 60_000, networkMode: "online" });
-  const dock = useDock(q.data, qc);
-  const state = useSyncExternalStore(dock.subscribe, dock.get, dock.get);
+  const { dock, state, data } = useMusicDock();
+  const q = useQuery(musicQuery);
   const [clock, setClock] = useState(() => Date.now());
   const refetch = q.refetch;
+
+  // Leaving the page (the shell for the player, or back): the sheet closes and its reading stops; the controller stays.
+  useEffect(() => () => void dock.close(), [dock]);
 
   // Visibility: polling follows it, a play waiting for a device is retried, and — back from a Spotify login that
   // finished in another browser (iOS opens a standalone app's login in Safari) — the connection is read again.
@@ -519,21 +611,22 @@ export function MusicDock({ variant }: { variant: "shell" | "player" }) {
     };
   }, [state, clock]);
 
-  if (!q.data) return null;
+  if (!data) return null;
   const actions: PanelActions = {
     tap: (id) => void dock.tap(id),
     pause: () => void dock.pause(),
     resume: () => void dock.resume(),
     next: () => void dock.next(),
     setVolume: (p) => void dock.setVolume(p),
-    startAdding: (t) => dock.startAdding(t),
+    startAdding: () => void dock.startAdding(),
     cancelAdding: () => dock.cancelAdding(),
     addLink: (text) => void dock.addLink(text),
     nameAndSave: (label) => void dock.nameAndSave(label),
     addPlaylist: (p) => void dock.addPlaylist(p),
-    loadPlaylists: () => void dock.loadPlaylists(),
+    morePlaylists: () => void dock.morePlaylists(),
     remove: (id) => void dock.remove(id),
-    rebuildMinecraft: () => void dock.rebuildMinecraft(),
+    edit: (id, patch) => void dock.edit(id, patch),
+    openEditor: (id) => dock.openEditor(id),
     setEditing: (e) => dock.setEditing(e),
     disconnect: () => void dock.disconnect(),
   };
@@ -558,5 +651,56 @@ export function DockFrame({ variant, pill, sheet }: { variant: "shell" | "player
       <div className={`music-dock music-dock--${variant}`}>{pill}</div>
       {sheet}
     </>
+  );
+}
+
+// ── A workout's music, at its Start (the session player) ─────────────────────
+
+/** What the player hands over: the session was just started here (not resumed), and the music resolved at Start. */
+export interface WorkoutMusicStart {
+  fresh: boolean;
+  target: WorkoutTarget | null;
+}
+
+/**
+ * The player's music at Start: once, for a session just started here, the music its Start resolved plays on the
+ * athlete's Spotify (connected, and "Play the workout's music when I start" on — this device's setting, on by default).
+ * Nothing is said while it plays (the dock's pill shows it). No device open: one quiet line, "Open Spotify to play Spa",
+ * with Play; Spotify asking to slow down: the dock's calm line. Dark, or no music: nothing at all, and no controller.
+ */
+export function WorkoutMusicLine(props: WorkoutMusicStart) {
+  return useMusicOn() && props.target ? <WorkoutMusicLineOn {...props} target={props.target} /> : null;
+}
+
+function WorkoutMusicLineOn({ fresh, target }: { fresh: boolean; target: WorkoutTarget }) {
+  const { dock, state, data } = useMusicDock();
+  const asked = useRef(false);
+  useEffect(() => {
+    if (!fresh || asked.current || !data?.connected || !readAutoPlay()) return;
+    asked.current = true;
+    dock.setServer(data);
+    void dock.autoPlay(target);
+  }, [fresh, target, data, dock]);
+  const w = state.workout;
+  if (!w || w.target.uri !== target.uri) return null;
+  if (w.status === "slow") {
+    return (
+      <p className="player-hint player-music" role="status">
+        {SLOW_LINE}
+      </p>
+    );
+  }
+  return (
+    <p className="player-hint player-music" role="status">
+      Open Spotify to play {w.target.label}
+      <button type="button" disabled={state.busy !== null} onClick={() => void dock.playWorkout(w.target)}>
+        Play
+      </button>
+      {state.link ? (
+        <a href={state.link} target="_blank" rel="noopener noreferrer">
+          Open Spotify
+        </a>
+      ) : null}
+    </p>
   );
 }

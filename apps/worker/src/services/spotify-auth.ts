@@ -26,13 +26,13 @@ import { b64urlDecode, b64urlEncode, decryptSecret, encryptSecret, randomToken }
 export const SPOTIFY_AUTHORIZE_URL = "https://accounts.spotify.com/authorize";
 export const SPOTIFY_TOKEN_URL = "https://accounts.spotify.com/api/token";
 export const SPOTIFY_PROVIDER = "spotify";
-/** Read the player and the devices, control playback, read the athlete's playlists, build the private Minecraft one. */
+/** Read the player and the devices, control playback, read the athlete's playlists — and nothing more: the app builds
+ * nothing in their account (a login before 2026-10-19 also granted `playlist-modify-private`; it is never used). */
 export const SPOTIFY_SCOPES = [
   "user-read-playback-state",
   "user-modify-playback-state",
   "user-read-currently-playing",
   "playlist-read-private",
-  "playlist-modify-private",
 ];
 /** How long a login may take, from the app to Spotify and back. */
 export const SPOTIFY_STATE_TTL_MS = 10 * 60_000;

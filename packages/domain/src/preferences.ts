@@ -1,5 +1,5 @@
 import { z } from "zod";
-import { musicPreferencesSchema } from "./music.js";
+import { musicChoicesSchema, musicPreferencesSchema } from "./music.js";
 
 export const schedulingPreferencesSchema = z.object({
   timezone: z.string().default("America/New_York"),
@@ -145,6 +145,9 @@ export const userPreferencesSchema = schedulingPreferencesSchema.extend({
   /** The music dock's shortcuts (music.ts; absent until the athlete sets one). A stored value that no longer reads is
    * none, as `coach` is. */
   music: musicPreferencesSchema.optional().catch(undefined),
+  /** The athlete's music per planned workout, set from its sheet (music.ts; absent until one is made) — beside `music`,
+   * so the dock's save of its playlists never writes over one. A stored value that no longer reads is none. */
+  musicChoices: musicChoicesSchema.optional().catch(undefined),
 });
 export type UserPreferences = z.infer<typeof userPreferencesSchema>;
 

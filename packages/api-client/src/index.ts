@@ -1868,6 +1868,8 @@ export interface SessionDto {
    * about the watch renders. Optional here only because a session cached on the device before Phase 3 lacks it.
    */
   watch?: WatchStateDto | null;
+  /** A document workout's own music (its document's `music`); absent when it names none, or from an older server. */
+  music?: import("@rg/domain").WorkoutMusic;
 }
 
 /** Why Send to watch is not offered (`watch.reason`), and the 409 `error` of a refused send. */
@@ -3150,6 +3152,14 @@ export interface MusicDto {
   connected: boolean;
   reason?: "reconnect";
   music: import("@rg/domain").MusicPreferences;
+  /** The athlete's music per planned workout (absent from an older server: none). */
+  choices?: import("@rg/domain").MusicChoices;
+}
+
+/** `POST /api/music/playlists/tags`: what each playlist suits, and how that was decided. */
+export interface MusicTagsDto {
+  tags: Record<string, import("@rg/domain").MusicGoodFor[]>;
+  by: "model" | "keywords";
 }
 
 /** `GET /api/music/spotify/token`: a short-lived access token for the page (never cached), or why there is none.
@@ -3163,8 +3173,13 @@ export const SPOTIFY_LOGIN_PATH = "/api/music/spotify/login";
 
 export const musicApi = {
   read: () => get<MusicDto>("/api/music"),
-  /** The shortcuts, whole. */
+  /** The playlists, whole. */
   save: (music: import("@rg/domain").MusicPreferences) => put<{ music: import("@rg/domain").MusicPreferences }>("/api/music", music),
+  /** What each playlist suits, from its name and description. */
+  tags: (playlists: Array<{ key: string; name: string; description: string }>) => post<MusicTagsDto>("/api/music/playlists/tags", { playlists }),
+  /** The athlete's music for one planned workout. */
+  choose: (workoutId: string, choice: import("@rg/domain").MusicChoice) =>
+    put<{ choices: import("@rg/domain").MusicChoices }>(`/api/music/choices/${encodeURIComponent(workoutId)}`, choice),
   /** `fresh`: Spotify refused the last token — refresh whatever the time left. */
   token: (fresh: boolean) => request<SpotifyTokenDto>(`/api/music/spotify/token${fresh ? "?fresh=1" : ""}`, { cache: "no-store" }),
   disconnect: () => request<{ ok: true }>("/api/music/spotify", { method: "DELETE" }),

@@ -1,26 +1,50 @@
 /**
- * The music dock's controller (2026-10-17): everything the dock does, apart from how it looks — a small store the React
- * dock subscribes to (music/dock.tsx), driven by injected deps so the tests run it against a fake Spotify.
+ * The music dock's controller (2026-10-17; one abstraction, 2026-10-19): everything the dock does, apart from how it
+ * looks — a small store the React dock subscribes to (music/dock.tsx), driven by injected deps so the tests run it
+ * against a fake Spotify.
  *
- * It plays only when asked. Opening the dock reads (the devices, now playing) and then polls now playing while it is
- * open and the page visible; a play, a pause, the next track and the volume are sent only from a tap. A play waiting
- * for a device (the open-link fallback) is retried when the page is visible again.
+ * The dock holds the athlete's own playlists (or albums): each linked by picking it from their Spotify playlists (a
+ * page at a time, listed only when the add flow opens) or by pasting a link — named from Spotify (its name, plain
+ * description, cover and count, read once and kept) and tagged with what it suits (`goodFor`, the Worker's
+ * `/api/music/playlists/tags`). The label is Spotify's name unless the athlete renames it; the tags are theirs to edit.
+ * One linked before names and tags is read and tagged once, the first time the dock opens (`tidy`). The app builds,
+ * changes and deletes nothing in their Spotify account.
+ *
+ * It plays only when asked: opening the dock reads (now playing, then the devices) and then polls now playing while it
+ * is open and the page visible; a play, a pause, the next track and the volume are sent only from a tap — and a
+ * workout's music once, when its session starts (`autoPlay`, the player's). A play waiting for a device (the open-link
+ * fallback) is retried when the page is visible again.
+ *
+ * Asked to slow down (a 429), nothing goes out until the shared backoff ends (music/backoff.ts): the dock says so in one
+ * calm line, and a tap on a playlist says it with the time left, making no call.
  */
-import { MUSIC_LABEL_MAX, MUSIC_SHORTCUTS_MAX, MUSIC_SPA_ID, type MusicPreferences, type MusicShortcut } from "@rg/domain";
+import {
+  MUSIC_LABEL_MAX,
+  MUSIC_SHORTCUTS_MAX,
+  type MusicGoodFor,
+  type MusicPreferences,
+  type MusicShortcut,
+} from "@rg/domain";
+import { backInWords } from "./backoff.js";
 import { parseSpotifyLink } from "./links.js";
-import { buildMinecraftPlaylist } from "./minecraft.js";
 import { makePoller, POLL_MS } from "./poller.js";
-import { chooseDevice, makeRemote, type DeviceKind, type RemoteResult } from "./remote.js";
-import { NotConnected, SpotifyError, type Device, type PlayerState, type PlaylistSummary, type Spotify } from "./spotify.js";
-import { dockShortcuts, MINECRAFT_SHORTCUT_ID, volumeOf } from "./dock-model.js";
+import { chooseDevice, makeRemote, playContext, type DeviceKind, type RemoteResult } from "./remote.js";
+import { isSlowDown, NotConnected, SpotifyError, type ContextDetails, type Device, type PlayerState, type PlaylistSummary, type Spotify } from "./spotify.js";
+import { volumeOf } from "./dock-model.js";
 
 export type Connection = "connected" | "not_connected" | "reconnect";
 
 export interface AddingState {
-  target: "spa" | "custom";
   error?: string;
   /** A link Spotify won't name for this athlete: they name it. */
   needsLabel?: { uri: string };
+}
+
+/** A workout's music, as the player asks for it: the playlist resolved at Start. */
+export interface WorkoutTarget {
+  id: string;
+  label: string;
+  uri: string;
 }
 
 export interface DockState {
@@ -31,20 +55,26 @@ export interface DockState {
   /** When `player` was read (the pill names the track until it should have ended). */
   readAt: number | null;
   devices: Device[] | null;
-  busy: null | "building" | "playing" | "saving";
+  busy: null | "playing" | "saving" | "adding";
   notice: { text: string; tone: "info" | "warn" } | null;
-  /** The shortcut's open.spotify.com link while a play waits for a device: shown to tap. */
+  /** The playlist's open.spotify.com link while a play waits for a device: shown to tap. */
   link: string | null;
-  build: { found: number; of: number; missing: string[] } | null;
   adding: AddingState | null;
-  playlists: PlaylistSummary[] | null;
+  /** The athlete's playlists listed in the add flow: the pages read so far, and the next page's offset. */
+  playlists: { items: PlaylistSummary[]; next: number | null } | null;
   editing: boolean;
+  /** The playlist open in the editor (its name and tags), while editing. */
+  editingId: string | null;
+  /** A workout's music asked to play at Start that couldn't yet: no device open, or Spotify asked to slow down. */
+  workout: { target: WorkoutTarget; status: "no_device" | "slow" } | null;
 }
 
 export interface DockDeps {
   spotify: Spotify;
   /** The preferences save (`PUT /api/music`): answers what was stored. */
   saveMusic: (music: MusicPreferences) => Promise<MusicPreferences>;
+  /** What each playlist suits (`POST /api/music/playlists/tags`), by its key. */
+  tag: (playlists: Array<{ key: string; name: string; description: string }>) => Promise<Record<string, MusicGoodFor[]>>;
   disconnect?: () => Promise<void>;
   prefer: () => DeviceKind;
   random: () => number;
@@ -53,13 +83,34 @@ export interface DockDeps {
   sleep: (ms: number) => Promise<void>;
   schedule: (fn: () => void, ms: number) => () => void;
   isVisible: () => boolean;
-  /** A new shortcut id: lower-case letters, digits and hyphens. */
+  /** A new playlist id: lower-case letters, digits and hyphens. */
   newId: () => string;
 }
 
 export type AddResult = { kind: "saved" } | { kind: "needs_label" } | { kind: "invalid" } | { kind: "failed" };
 
 const NOT_A_LINK = "That isn't a Spotify playlist or album link.";
+/** What the dock says while Spotify asks it to slow down. */
+export const SLOW_LINE = "Spotify asked us to slow down — back in a few minutes";
+/** …and when a tap meets it: the time left. */
+export const slowLine = (ms: number): string => `Spotify asked us to slow down — ${backInWords(ms)}.`;
+
+/** A playlist as the dock keeps it, from what Spotify said of it. */
+function linked(id: string, uri: string, label: string, d: ContextDetails | null): MusicShortcut {
+  return {
+    id,
+    label: label.trim().slice(0, MUSIC_LABEL_MAX).trim() || "Playlist",
+    uri,
+    shuffle: true,
+    ...(d ? { name: d.name } : {}),
+    ...(d?.description ? { description: d.description } : {}),
+    ...(d?.image ? { image: d.image } : {}),
+    ...(d && d.total !== null ? { total: d.total } : {}),
+  };
+}
+
+/** What the tagging is given of a playlist: Spotify's name (its label when Spotify never named it) and description. */
+const tagInput = (s: MusicShortcut) => ({ key: s.id, name: s.name ?? s.label, description: s.description ?? "" });
 
 export function makeDockController(deps: DockDeps) {
   const { spotify } = deps;
@@ -73,12 +124,15 @@ export function makeDockController(deps: DockDeps) {
     busy: null,
     notice: null,
     link: null,
-    build: null,
     adding: null,
     playlists: null,
     editing: false,
+    editingId: null,
+    workout: null,
   };
   let visible = deps.isVisible();
+  /** The once-per-load read and tagging of playlists linked before names and tags (`tidy`): started or not. */
+  let tidied = false;
   const listeners = new Set<() => void>();
   const set = (patch: Partial<DockState>) => {
     state = { ...state, ...patch };
@@ -88,33 +142,43 @@ export function makeDockController(deps: DockDeps) {
   const remote = makeRemote({ spotify, prefer: deps.prefer, random: deps.random, openLink: deps.openLink, now: deps.now, sleep: deps.sleep });
   const poller = makePoller({
     read: () => spotify.player(),
-    onState: (player) => set({ player, readAt: deps.now() }),
+    onState: (player) => set({ player, readAt: deps.now(), ...(state.notice?.text === SLOW_LINE ? { notice: null } : {}) }),
     onError: (e) => fail(e),
     schedule: deps.schedule,
   });
 
-  function fail(e: unknown): void {
+  const slowFor = (): number => spotify.backoff.remaining();
+
+  function fail(e: unknown, opts: { tapped?: boolean } = {}): void {
     if (e instanceof NotConnected) {
       poller.stop();
       set({ connection: e.reason, busy: null, notice: e.reason === "reconnect" ? { text: "Spotify needs you to sign in again.", tone: "warn" } : null });
       return;
     }
+    if (isSlowDown(e)) {
+      set({ busy: null, notice: { text: opts.tapped ? slowLine(e.retryAfterMs ?? slowFor()) : SLOW_LINE, tone: "info" } });
+      return;
+    }
     const text =
-      e instanceof SpotifyError && e.status === 429
-        ? "Spotify is busy. Try again in a moment."
-        : e instanceof SpotifyError && e.reason === "PREMIUM_REQUIRED"
-          ? "Playing from here needs Spotify Premium."
-          : "Spotify didn't answer. Try again.";
+      e instanceof SpotifyError && e.reason === "PREMIUM_REQUIRED" ? "Playing from here needs Spotify Premium." : "Spotify didn't answer. Try again.";
     set({ busy: null, notice: { text, tone: "warn" } });
   }
 
-  async function guarded<T>(fn: () => Promise<T>): Promise<T | undefined> {
+  async function guarded<T>(fn: () => Promise<T>, opts: { tapped?: boolean } = {}): Promise<T | undefined> {
     try {
       return await fn();
     } catch (e) {
-      fail(e);
+      fail(e, opts);
       return undefined;
     }
+  }
+
+  /** A tap meeting the backoff: said with the time left, no call. */
+  function heldBack(): boolean {
+    const left = slowFor();
+    if (left <= 0) return false;
+    set({ notice: { text: slowLine(left), tone: "info" } });
+    return true;
   }
 
   const readPlayer = () => guarded(async () => set({ player: await spotify.player(), readAt: deps.now() }));
@@ -122,7 +186,7 @@ export function makeDockController(deps: DockDeps) {
   async function applyRemote(out: RemoteResult | null | undefined): Promise<void> {
     if (!out) return;
     if (out.kind === "playing") {
-      set({ link: null, busy: null, notice: null });
+      set({ link: null, busy: null, notice: null, workout: null });
       await readPlayer();
       return;
     }
@@ -135,65 +199,83 @@ export function makeDockController(deps: DockDeps) {
 
   async function save(next: MusicPreferences): Promise<boolean> {
     set({ busy: "saving" });
-    const stored = await guarded(() => deps.saveMusic(next));
-    if (!stored) return false;
+    let stored: MusicPreferences;
+    try {
+      stored = await deps.saveMusic(next);
+    } catch {
+      set({ busy: null, notice: { text: "Couldn't save. Try again.", tone: "warn" } });
+      return false;
+    }
     set({ music: stored, busy: null });
     return true;
   }
 
-  async function addShortcut(uri: string, label: string): Promise<AddResult> {
-    const target = state.adding?.target ?? "custom";
-    const shortcuts = [...state.music.shortcuts];
-    if (target === "spa") {
-      const spa: MusicShortcut = { id: MUSIC_SPA_ID, label: "Spa", uri, shuffle: true };
-      const at = shortcuts.findIndex((s) => s.id === MUSIC_SPA_ID);
-      if (at >= 0) shortcuts[at] = spa;
-      else shortcuts.unshift(spa);
-    } else if (!shortcuts.some((s) => s.uri === uri && s.id !== MUSIC_SPA_ID)) {
-      if (shortcuts.length >= MUSIC_SHORTCUTS_MAX) {
-        set({ adding: { target, error: "That's as many shortcuts as the dock keeps." } });
-        return { kind: "failed" };
-      }
-      shortcuts.push({ id: deps.newId(), label: label.trim().slice(0, MUSIC_LABEL_MAX), uri, shuffle: true });
+  /** What the playlists suit, by id; {} when the Worker couldn't say (the next open tags them). */
+  async function tagsFor(list: MusicShortcut[]): Promise<Record<string, MusicGoodFor[]>> {
+    if (list.length === 0) return {};
+    try {
+      return await deps.tag(list.map(tagInput));
+    } catch {
+      return {};
     }
-    if (!(await save({ ...state.music, shortcuts }))) return { kind: "failed" };
+  }
+
+  /** Link a playlist: tagged, then saved after the others. Linked already: nothing changes. */
+  async function link(uri: string, label: string, details: ContextDetails | null): Promise<AddResult> {
+    if (state.music.shortcuts.some((s) => s.uri === uri)) {
+      set({ adding: null, playlists: null });
+      return { kind: "saved" };
+    }
+    if (state.music.shortcuts.length >= MUSIC_SHORTCUTS_MAX) {
+      set({ adding: { error: "That's as many playlists as the dock keeps." } });
+      return { kind: "failed" };
+    }
+    set({ busy: "adding" });
+    const fresh = linked(deps.newId(), uri, label, details);
+    const goodFor = (await tagsFor([fresh]))[fresh.id];
+    const next: MusicShortcut = goodFor ? { ...fresh, goodFor } : fresh;
+    if (!(await save({ ...state.music, shortcuts: [...state.music.shortcuts, next] }))) return { kind: "failed" };
     set({ adding: null, playlists: null });
     return { kind: "saved" };
   }
 
-  /** Build (or rebuild) the Minecraft playlist. A new playlist's id is kept the moment it exists, so a failure after
-   * it never makes a second one; the albums found are the shortcut's own line in the sheet (`build`). */
-  async function buildMinecraft(rebuild: boolean): Promise<string | null> {
-    set({ busy: "building", notice: null });
-    const stored = state.music.minecraftPlaylistId;
-    let created: string | null = null;
-    let built: Awaited<ReturnType<typeof buildMinecraftPlaylist>>;
-    try {
-      built = await buildMinecraftPlaylist(spotify, {
-        ...(stored ? { storedId: stored } : {}),
-        rebuild,
-        onCreated: async (id) => {
-          if (await save({ ...state.music, minecraftPlaylistId: id })) created = id;
-          // The save ends "saving"; the tracks are still to add — still building (a tap meanwhile starts nothing).
-          set({ busy: "building" });
-        },
-      });
-    } catch (e) {
-      fail(e);
-      if (created && !(e instanceof NotConnected)) {
-        set({ notice: { text: "The Minecraft playlist didn't finish. Rebuild it from Edit.", tone: "warn" } });
+  /**
+   * Playlists linked before names and tags: each read from Spotify once (its name, description, cover and count — the
+   * old spa slot's "Spa" label becomes Spotify's name), then all tagged in one request, then saved once. Once per load,
+   * only while connected and not backing off; a read Spotify refuses leaves that one as it is (named by its label), a
+   * slow-down stops the reading there. Their tags mark them done.
+   */
+  async function tidy(): Promise<void> {
+    if (tidied || state.connection !== "connected" || slowFor() > 0) return;
+    const untagged = state.music.shortcuts.filter((s) => s.goodFor === undefined);
+    if (untagged.length === 0) return;
+    tidied = true;
+    const read = new Map<string, MusicShortcut>();
+    for (const s of untagged) {
+      if (s.name !== undefined) {
+        read.set(s.id, s);
+        continue;
       }
-      return null;
+      let details: ContextDetails | null;
+      try {
+        details = await spotify.details(s.uri);
+      } catch (e) {
+        fail(e);
+        break;
+      }
+      const label = s.id === "spa" && s.label === "Spa" && details ? details.name : s.label;
+      read.set(s.id, { ...linked(s.id, s.uri, label, details), shuffle: s.shuffle });
     }
-    if ("reused" in built) return built.playlistId;
-    if (!built.playlistId) {
-      set({ busy: null, build: { found: 0, of: built.of, missing: built.missing }, notice: { text: "No Minecraft albums found on Spotify.", tone: "warn" } });
-      return null;
-    }
-    set({ build: { found: built.found, of: built.of, missing: built.missing } });
-    if (built.playlistId !== state.music.minecraftPlaylistId && !(await save({ ...state.music, minecraftPlaylistId: built.playlistId }))) return null;
-    set({ busy: null });
-    return built.playlistId;
+    if (read.size === 0) return;
+    const tags = await tagsFor([...read.values()]);
+    // Onto the playlists as they are now (one may have been removed meanwhile).
+    const shortcuts = state.music.shortcuts.map((s) => {
+      const r = read.get(s.id);
+      if (!r) return s;
+      const goodFor = tags[s.id];
+      return goodFor ? { ...r, goodFor } : r;
+    });
+    await save({ ...state.music, shortcuts });
   }
 
   const deviceId = (): string | undefined => state.player?.device?.id ?? undefined;
@@ -209,21 +291,28 @@ export function makeDockController(deps: DockDeps) {
       set({ connection: dto.connected ? "connected" : dto.reason === "reconnect" ? "reconnect" : "not_connected", music: dto.music });
       if (!dto.connected) poller.stop();
     },
-    /** Expanded: read the devices and now playing, then keep now playing fresh while open and visible. Never plays. */
+    /** Expanded: read now playing, then the devices (one after the other: a slow-down stops at the first), then keep
+     * now playing fresh while open and visible. Never plays. Backing off, it reads nothing and says so. */
     async open(): Promise<void> {
-      set({ expanded: true, editing: false });
+      set({ expanded: true, editing: false, editingId: null });
       if (state.connection !== "connected") return;
-      await guarded(async () => {
-        const [devices, player] = await Promise.all([spotify.devices(), spotify.player()]);
-        set({ devices, player, readAt: deps.now() });
-      });
-      if (state.expanded && state.connection === "connected") poller.set({ expanded: true, visible }, { firstDelayMs: POLL_MS });
+      if (slowFor() > 0) {
+        set({ notice: { text: SLOW_LINE, tone: "info" } });
+      } else {
+        await guarded(async () => {
+          const player = await spotify.player();
+          set({ player, readAt: deps.now() });
+          set({ devices: await spotify.devices() });
+        });
+        await tidy();
+      }
+      if (state.expanded && state.connection === "connected") poller.set({ expanded: true, visible }, { firstDelayMs: Math.max(POLL_MS, slowFor()) });
     },
     /** Closed, the dock forgets a play waiting for a device (review #2): it plays only when asked. */
     async close(): Promise<void> {
       poller.set({ expanded: false, visible });
       remote.cancel();
-      set({ expanded: false, adding: null, playlists: null, editing: false, link: null });
+      set({ expanded: false, adding: null, playlists: null, editing: false, editingId: null, link: null });
     },
     /** The page's visibility: polling follows it, and a play waiting for a device is tried again on the return from
      * Spotify — once (music/remote.ts). */
@@ -233,49 +322,70 @@ export function makeDockController(deps: DockDeps) {
       if (!next) remote.hidden();
       else if (remote.pending()) await applyRemote(await guarded(() => remote.visible()));
     },
-    /** One tap on a shortcut: play it (building the Minecraft playlist first, the first time). The spa slot unset opens
-     * the add panel instead. */
+    /** One tap on a playlist: play it, shuffled. Backing off: said with the time left, nothing sent. */
     async tap(id: string): Promise<void> {
       if (state.connection !== "connected" || state.busy) return;
-      const shortcut = dockShortcuts(state.music).find((s) => s.id === id);
-      if (!shortcut) return;
-      if (shortcut.kind === "spa" && !shortcut.uri) {
-        set({ adding: { target: "spa" }, playlists: null });
+      const shortcut = state.music.shortcuts.find((s) => s.id === id);
+      if (!shortcut || heldBack()) return;
+      // Known to have no device: the link opens now, inside the tap (a browser opens a new context only inside one).
+      const noDevice = state.devices !== null && chooseDevice(state.devices, deps.prefer()) === null;
+      const pending = remote.play({ ...shortcut, shuffle: true }, { noDevice });
+      set({ busy: "playing", notice: null });
+      await applyRemote(await guarded(() => pending, { tapped: true }));
+      if (state.busy === "playing") set({ busy: null });
+    },
+    /**
+     * A workout's music, when its session starts (the player's, once): played shuffled on the device Spotify would
+     * use — never the open-link fallback, which needs a tap. No device open, or Spotify asking to slow down: kept as
+     * `workout` for the player's quiet line (its Play is `playWorkout`). A failure says nothing in the player.
+     */
+    async autoPlay(target: WorkoutTarget): Promise<void> {
+      if (state.connection !== "connected" || state.busy) return;
+      set({ busy: "playing" });
+      let out: Awaited<ReturnType<typeof playContext>>;
+      // Backing off, the client refuses before the network: the catch says so (status "slow").
+      try {
+        out = await playContext(spotify, { uri: target.uri, shuffle: true }, { prefer: deps.prefer(), random: deps.random });
+      } catch (e) {
+        fail(e);
+        set({ busy: null, workout: isSlowDown(e) ? { target, status: "slow" } : null });
         return;
       }
-      let uri = shortcut.uri;
-      let built = false;
-      if (!uri) {
-        // Only Minecraft is built on first use.
-        if (shortcut.id !== MINECRAFT_SHORTCUT_ID) return;
-        const playlistId = await buildMinecraft(false);
-        if (!playlistId) return;
-        uri = `spotify:playlist:${playlistId}`;
-        built = true;
+      set({ busy: null });
+      if (out.kind === "playing") {
+        set({ workout: null, link: null });
+        await readPlayer();
+      } else {
+        set({ workout: { target, status: "no_device" }, devices: [] });
       }
-      const play: MusicShortcut = { id: shortcut.id, label: shortcut.label, uri, shuffle: true };
-      // Known to have no device: the link opens now, inside the tap (a browser opens a new context only inside one).
-      // Not after a build: that tap is long over.
-      const noDevice = !built && state.devices !== null && chooseDevice(state.devices, deps.prefer()) === null;
-      const pending = remote.play(play, { noDevice });
+    },
+    /** The player's Play for a workout's music that couldn't start on its own: a tap, so the link may open. */
+    async playWorkout(target: WorkoutTarget): Promise<void> {
+      if (state.connection !== "connected" || state.busy) return;
+      if (heldBack()) {
+        set({ workout: { target, status: "slow" } });
+        return;
+      }
+      const noDevice = state.devices !== null && chooseDevice(state.devices, deps.prefer()) === null;
+      const pending = remote.play({ id: target.id, label: target.label, uri: target.uri, shuffle: true }, { noDevice });
       set({ busy: "playing", notice: null });
-      await applyRemote(await guarded(() => pending));
+      await applyRemote(await guarded(() => pending, { tapped: true }));
       if (state.busy === "playing") set({ busy: null });
     },
     async pause(): Promise<void> {
       remote.cancel();
-      if ((await guarded(() => spotify.pause(deviceId()))) !== undefined && state.player) set({ player: { ...state.player, is_playing: false } });
+      if ((await guarded(() => spotify.pause(deviceId()), { tapped: true })) !== undefined && state.player) set({ player: { ...state.player, is_playing: false } });
     },
     async resume(): Promise<void> {
-      if ((await guarded(() => spotify.play({ deviceId: deviceId() }))) !== undefined && state.player) set({ player: { ...state.player, is_playing: true } });
+      if ((await guarded(() => spotify.play({ deviceId: deviceId() }), { tapped: true })) !== undefined && state.player) set({ player: { ...state.player, is_playing: true } });
     },
     async next(): Promise<void> {
-      if ((await guarded(() => spotify.next(deviceId()))) !== undefined) await readPlayer();
+      if ((await guarded(() => spotify.next(deviceId()), { tapped: true })) !== undefined) await readPlayer();
     },
     async setVolume(percent: number): Promise<void> {
       const v = volumeOf(state.player, state.devices);
       if (!v?.supported) return;
-      const sent = await guarded(() => spotify.volume(percent, v.deviceId));
+      const sent = await guarded(() => spotify.volume(percent, v.deviceId), { tapped: true });
       if (sent === undefined) return;
       const withVolume = (d: Device | null | undefined) => (d && d.id === v.deviceId ? { ...d, volume_percent: Math.round(percent) } : d);
       set({
@@ -283,25 +393,41 @@ export function makeDockController(deps: DockDeps) {
         devices: state.devices?.map((d) => withVolume(d)!) ?? null,
       });
     },
-    startAdding(target: "spa" | "custom"): void {
-      set({ adding: { target }, playlists: null });
+    /** The add flow: the athlete's first page of playlists is listed as it opens (one read). */
+    async startAdding(): Promise<void> {
+      set({ adding: {}, playlists: null, editingId: null });
+      if (state.connection !== "connected") return;
+      const page = await guarded(() => spotify.myPlaylists(0));
+      if (page && state.adding) set({ playlists: page });
+    },
+    /** The next page of their playlists — only when asked for. */
+    async morePlaylists(): Promise<void> {
+      const listed = state.playlists;
+      if (!listed || listed.next === null || state.busy) return;
+      const page = await guarded(() => spotify.myPlaylists(listed.next!), { tapped: true });
+      if (page && state.adding) set({ playlists: { items: [...listed.items, ...page.items], next: page.next } });
     },
     cancelAdding(): void {
       set({ adding: null, playlists: null });
     },
-    /** A pasted link: saved under Spotify's name for it when the athlete can read it, else they name it. */
+    /** A pasted link: named from Spotify when the athlete can read it (one read), else they name it. */
     async addLink(text: string): Promise<AddResult> {
-      const target = state.adding?.target ?? "custom";
-      const link = parseSpotifyLink(text);
-      if (!link) {
-        set({ adding: { target, error: NOT_A_LINK } });
+      const parsed = parseSpotifyLink(text);
+      if (!parsed) {
+        set({ adding: { error: NOT_A_LINK } });
         return { kind: "invalid" };
       }
-      if (target === "spa") return addShortcut(link.uri, "Spa");
-      const name = await guarded(() => spotify.name(link.uri));
-      if (name) return addShortcut(link.uri, name);
+      if (state.music.shortcuts.some((s) => s.uri === parsed.uri)) return link(parsed.uri, "", null);
+      let details: ContextDetails | null;
+      try {
+        details = await spotify.details(parsed.uri);
+      } catch (e) {
+        fail(e, { tapped: true });
+        return { kind: "failed" };
+      }
+      if (details) return link(parsed.uri, details.name, details);
       if (state.connection !== "connected") return { kind: "failed" };
-      set({ adding: { target, needsLabel: { uri: link.uri } }, notice: null });
+      set({ adding: { needsLabel: { uri: parsed.uri } }, notice: null });
       return { kind: "needs_label" };
     },
     async nameAndSave(label: string): Promise<AddResult> {
@@ -311,29 +437,33 @@ export function makeDockController(deps: DockDeps) {
         set({ adding: { ...adding, error: "Give it a name." } });
         return { kind: "failed" };
       }
-      return addShortcut(adding.needsLabel.uri, label);
+      return link(adding.needsLabel.uri, label, null);
     },
-    async loadPlaylists(): Promise<void> {
-      const playlists = await guarded(() => spotify.myPlaylists(20));
-      if (playlists) set({ playlists });
-    },
+    /** One of their playlists, picked from the list: what the list said of it is kept (no read of its own). */
     async addPlaylist(p: PlaylistSummary): Promise<AddResult> {
-      return addShortcut(p.uri, p.name);
+      return link(p.uri, p.name, p);
     },
     async remove(id: string): Promise<void> {
-      await save({ ...state.music, shortcuts: state.music.shortcuts.filter((s) => s.id !== id) });
+      if (await save({ ...state.music, shortcuts: state.music.shortcuts.filter((s) => s.id !== id) })) set({ editingId: null });
     },
-    async rebuildMinecraft(): Promise<void> {
-      if (state.connection !== "connected" || state.busy) return;
-      await buildMinecraft(true);
-      if (state.busy === "building") set({ busy: null });
+    /** A playlist's label and what it suits, as the athlete set them. */
+    async edit(id: string, patch: { label: string; goodFor: MusicGoodFor[] }): Promise<boolean> {
+      const label = patch.label.trim().slice(0, MUSIC_LABEL_MAX).trim();
+      if (!label) return false;
+      const shortcuts = state.music.shortcuts.map((s) => (s.id === id ? { ...s, label, goodFor: [...new Set(patch.goodFor)] } : s));
+      const ok = await save({ ...state.music, shortcuts });
+      if (ok) set({ editingId: null });
+      return ok;
     },
     /** A line in the sheet (the login's outcome, when it came back here). */
     say(text: string, tone: "info" | "warn"): void {
       set({ notice: { text, tone } });
     },
     setEditing(editing: boolean): void {
-      set({ editing, adding: null });
+      set({ editing, editingId: null, adding: null });
+    },
+    openEditor(id: string | null): void {
+      set({ editingId: id });
     },
     async disconnect(): Promise<void> {
       remote.cancel();
@@ -345,12 +475,12 @@ export function makeDockController(deps: DockDeps) {
         return;
       }
       poller.stop();
-      set({ connection: "not_connected", player: null, devices: null, editing: false, link: null, notice: null });
+      set({ connection: "not_connected", player: null, devices: null, editing: false, editingId: null, link: null, notice: null, workout: null });
     },
     /** The dock leaves the page: no timer survives it. */
     dispose(): void {
       poller.stop();
-      listeners.clear();
+      remote.cancel();
     },
   };
 }

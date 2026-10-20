@@ -1,7 +1,8 @@
 /**
  * A fake Spotify Web API for the music dock's client tests: the endpoints the dock calls, a little state, every call
  * recorded with when it started and finished (so "shuffle, then play" can be checked as an order, not a hope), and
- * scripted failures (a 401, a 429, no device). Synthetic ids only.
+ * scripted failures (a 401, a 429, no device). It has nothing that creates or changes a playlist: the dock never asks.
+ * Synthetic ids only.
  */
 export const API = "https://api.spotify.com/v1";
 
@@ -37,19 +38,30 @@ export const sid = (word: string): string => `${word.replace(/[^A-Za-z0-9]/g, ""
 /** The i-th track of an album (or playlist) in the fake: distinct per container and index. */
 export const trackUri = (containerId: string, i: number): string => `spotify:track:${sid(`${containerId.slice(0, 10)}t${i}x`)}`;
 
-export function fakeSpotify(init: { devices?: FakeDevice[]; albums?: FakeAlbum[]; ownedPlaylists?: Array<{ id: string; name: string; total: number }> } = {}) {
+/** A playlist in the fake: its description as Spotify sends it (HTML-escaped), its covers. */
+export interface FakePlaylist {
+  name: string;
+  owned: boolean;
+  uris: string[];
+  description?: string;
+  images?: Array<{ url: string; width?: number }>;
+}
+
+export function fakeSpotify(init: { devices?: FakeDevice[]; albums?: FakeAlbum[]; ownedPlaylists?: Array<{ id: string; name: string; total: number; description?: string }> } = {}) {
   let tick = 0;
   const state = {
     devices: init.devices ?? [{ id: "phone-1", name: "Phone", type: "Smartphone", supports_volume: false }],
     albums: init.albums ?? [],
-    playlists: new Map<string, { name: string; owned: boolean; uris: string[] }>(
-      (init.ownedPlaylists ?? []).map((p) => [p.id, { name: p.name, owned: true, uris: Array.from({ length: p.total }, (_, i) => trackUri(p.id, i)) }]),
+    playlists: new Map<string, FakePlaylist>(
+      (init.ownedPlaylists ?? []).map((p) => [
+        p.id,
+        { name: p.name, owned: true, uris: Array.from({ length: p.total }, (_, i) => trackUri(p.id, i)), ...(p.description !== undefined ? { description: p.description } : {}) },
+      ]),
     ),
     player: null as null | Record<string, unknown>,
     /** Scripted answers, consumed in order, by "METHOD /path" (the path without the API base or query). */
     script: new Map<string, Array<{ status: number; body?: unknown; headers?: Record<string, string>; gate?: Promise<void> }>>(),
     validToken: "token-1",
-    created: 0,
   };
   const calls: Call[] = [];
 
@@ -99,30 +111,33 @@ export function fakeSpotify(init: { devices?: FakeDevice[]; albums?: FakeAlbum[]
       d.volume_percent = Number(q.get("volume_percent"));
       return reply(204);
     }
+    const json = (id: string, p: FakePlaylist) => ({
+      id,
+      name: p.name,
+      description: p.description ?? "",
+      images: p.images ?? [],
+      uri: `spotify:playlist:${id}`,
+      ...(p.owned ? { items: { total: p.uris.length } } : {}),
+    });
     if (method === "GET" && path === "/me/playlists") {
-      const items = [...state.playlists].filter(([, p]) => p.owned).map(([id, p]) => ({ id, name: p.name, uri: `spotify:playlist:${id}`, items: { total: p.uris.length } }));
-      return reply(200, { items, next: null, total: items.length });
-    }
-    if (method === "POST" && path === "/me/playlists") {
-      const id = sid(`built${++state.created}`);
-      state.playlists.set(id, { name: body.name, owned: true, uris: [] });
-      return reply(201, { id, name: body.name, uri: `spotify:playlist:${id}` });
+      const owned = [...state.playlists].filter(([, p]) => p.owned);
+      const limit = Number(q.get("limit") ?? 20);
+      const offset = Number(q.get("offset") ?? 0);
+      if (limit > 50) return reply(400, { error: { status: 400, message: "Invalid limit" } });
+      const items = owned.slice(offset, offset + limit).map(([id, p]) => json(id, p));
+      return reply(200, { items, next: offset + limit < owned.length ? `${API}/me/playlists?offset=${offset + limit}&limit=${limit}` : null, total: owned.length });
     }
     let m = /^\/playlists\/([^/]+)\/items$/.exec(path);
-    if (m) {
+    if (m && method === "GET") {
       const p = state.playlists.get(m[1]!);
       if (!p) return reply(404, { error: { status: 404, message: "Not found" } });
       if (!p.owned) return reply(403, { error: { status: 403, message: "Forbidden" } });
-      if (method === "GET") return reply(200, { items: [], total: p.uris.length });
-      if (!Array.isArray(body?.uris) || body.uris.length > 100) return reply(400, { error: { status: 400, message: "Too many" } });
-      if (method === "PUT") p.uris = [...body.uris];
-      else p.uris.push(...body.uris);
-      return reply(method === "PUT" ? 200 : 201, { snapshot_id: "s" });
+      return reply(200, { items: [], total: p.uris.length });
     }
     m = /^\/playlists\/([^/]+)$/.exec(path);
     if (m && method === "GET") {
       const p = state.playlists.get(m[1]!);
-      return p ? reply(200, { id: m[1], name: p.name }) : reply(404, { error: { status: 404, message: "Not found" } });
+      return p ? reply(200, json(m[1]!, p)) : reply(404, { error: { status: 404, message: "Not found" } });
     }
     m = /^\/albums\/([^/]+)\/tracks$/.exec(path);
     if (m && method === "GET") {
@@ -137,7 +152,7 @@ export function fakeSpotify(init: { devices?: FakeDevice[]; albums?: FakeAlbum[]
     m = /^\/albums\/([^/]+)$/.exec(path);
     if (m && method === "GET") {
       const a = state.albums.find((x) => x.id === m![1]);
-      return a ? reply(200, { id: a.id, name: a.name, total_tracks: a.tracks }) : reply(404, { error: { status: 404, message: "Not found" } });
+      return a ? reply(200, { id: a.id, name: a.name, total_tracks: a.tracks, artists: a.artists.map((name) => ({ name })) }) : reply(404, { error: { status: 404, message: "Not found" } });
     }
     if (method === "GET" && path === "/search") {
       const limit = Number(q.get("limit") ?? 5);

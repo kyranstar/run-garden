@@ -4,9 +4,13 @@
  *  - Hidden altogether while the server says the dock is off (no Client ID: a 404), or hasn't answered.
  *  - Resting: a small pill — a note, or the track's short title while it plays — in the shell and, smaller, in the
  *    session player.
- *  - Expanded: now playing, play/pause and next, the shortcuts (one tap = play), the volume where the device takes it
- *    ("Use the side buttons" where it doesn't), "Add a shortcut", and Connect / Reconnect.
- *  - Adding: a pasted link, the athlete's playlists, a name when Spotify won't say one.
+ *  - Expanded: now playing, play/pause and next, the athlete's playlists (one tap = play; each with its cover and what
+ *    it suits), the volume where the device takes it ("Use the side buttons" where it doesn't), "Add a playlist", and
+ *    Connect / Reconnect. Nothing the app would build, no spa slot.
+ *  - Adding: the athlete's playlists (a page, then More), a pasted link, a name when Spotify won't say one.
+ *  - Editing: a playlist's name and what it suits (toggles that say ✓ as well as their colour), Remove; Disconnect.
+ *  - Asked to slow down: one calm line.
+ *  - The player's line for a workout's music that couldn't start: "Open Spotify to play …" with Play.
  *  - No <audio> element and no speech anywhere in it (either would stop Spotify on an iPhone).
  */
 import { createElement, type ReactElement } from "react";
@@ -17,9 +21,9 @@ import { MemoryRouter } from "react-router-dom";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { describe, expect, it } from "vitest";
 import type { MusicDto } from "@rg/api-client";
-import { DockFrame, MUSIC_QUERY, MusicDock, MusicPanel, MusicPill, PlayerMusicTools, recheckOnReturn, type PanelActions } from "../../src/music/dock.js";
+import { DockFrame, MUSIC_QUERY, MusicDock, MusicPanel, MusicPill, PlayerMusicTools, recheckOnReturn, WorkoutMusicLine, type PanelActions } from "../../src/music/dock.js";
 import { pillTitle } from "../../src/music/dock-model.js";
-import type { DockState } from "../../src/music/controller.js";
+import { SLOW_LINE, type DockState } from "../../src/music/controller.js";
 import { AppShell } from "../../src/shell.js";
 
 const ID = "0123456789abcdefABCDEF";
@@ -42,10 +46,11 @@ const base: DockState = {
   busy: null,
   notice: null,
   link: null,
-  build: null,
   adding: null,
   playlists: null,
   editing: false,
+  editingId: null,
+  workout: null,
 };
 const phone = { id: "phone-1", name: "Phone", type: "Smartphone", supports_volume: false, is_active: true };
 const desk = { id: "desk-1", name: "Desktop", type: "Computer", supports_volume: true, volume_percent: 40, is_active: true };
@@ -130,8 +135,7 @@ describe("the expanded sheet", () => {
   it("not connected: Connect Spotify, which goes to the Worker's login — and nothing else", () => {
     const html = panel({ connection: "not_connected" });
     expect(html).toMatch(/<a[^>]*href="\/api\/music\/spotify\/login"[^>]*>Connect Spotify<\/a>/);
-    expect(html).not.toContain("Minecraft");
-    expect(html).not.toContain("Add a shortcut");
+    expect(html).not.toContain("Add a playlist");
   });
 
   it("a consent to renew: Reconnect Spotify, saying why in plain words", () => {
@@ -140,22 +144,41 @@ describe("the expanded sheet", () => {
     expect(html).toMatch(/<a[^>]*href="\/api\/music\/spotify\/login"[^>]*>Reconnect Spotify<\/a>/);
   });
 
-  it("connected: now playing (title · artist), pause and next, the shortcuts, and Add a shortcut", () => {
+  it("connected: now playing (title · artist), pause and next, the athlete's playlists — each with what it suits — and Add a playlist; nothing the app builds", () => {
     const html = panel({
       player: playing(phone),
       devices: [phone],
-      music: { shortcuts: [{ id: "s1", label: "Easy run", uri: `spotify:playlist:${ID}`, shuffle: true }] },
+      music: {
+        shortcuts: [
+          { id: "s1", label: "Easy run", uri: `spotify:playlist:${ID}`, shuffle: true, goodFor: ["run"] },
+          { id: "spa", label: "Spa Sounds", uri: `spotify:album:${ID}`, shuffle: true, image: "https://i.scdn.co/image/abc", goodFor: ["mobility", "wind-down"] },
+        ],
+        minecraftPlaylistId: ID,
+      },
     });
     expect(html).toContain("Subwoofer Lullaby");
     expect(html).toContain("C418");
     expect(html).toContain('aria-label="Pause"');
     expect(html).toContain('aria-label="Next"');
-    expect(html).toContain("Minecraft, complete");
-    expect(html).toContain("Add your spa playlist");
-    expect(html).toContain("Easy run");
-    expect(html).toContain("Add a shortcut");
-    // Each shortcut one tap, and a fingertip.
+    expect(html).not.toContain("Minecraft");
+    expect(html).not.toContain("spa playlist");
+    expect(html).toMatch(/Easy run<\/span><span class="music-shortcut-sub">Runs<\/span>/);
+    expect(html).toMatch(/Spa Sounds<\/span><span class="music-shortcut-sub">Mobility · Winding down<\/span>/);
+    // Its cover, from Spotify's own host, decorative (the label names it).
+    expect(html).toMatch(/<img class="music-cover" src="https:\/\/i.scdn.co\/image\/abc" alt=""/);
+    expect(html).toContain("Add a playlist");
+    // Each playlist one tap, and a fingertip.
     expect(html).toMatch(/<button[^>]*class="music-shortcut"[^>]*>/);
+  });
+
+  it("with no playlist yet: one plain line and Add a playlist (no Edit)", () => {
+    const html = panel({});
+    expect(html).toContain("Add a playlist to play it from here — and with your workouts.");
+    expect(html).not.toContain(">Edit<");
+  });
+
+  it("asked to slow down: the one calm line", () => {
+    expect(panel({ notice: { text: SLOW_LINE, tone: "info" } })).toMatch(/role="status">Spotify asked us to slow down — back in a few minutes</);
   });
 
   it("paused, the button says Play", () => {
@@ -187,43 +210,62 @@ describe("the expanded sheet", () => {
     expect(html).toMatch(new RegExp(`<a[^>]*href="https://open.spotify.com/playlist/${ID}"[^>]*target="_blank"[^>]*>Open in Spotify</a>`));
   });
 
-  it("the build's count is the Minecraft shortcut's own line, not a line standing alone", () => {
-    const html = panel({ build: { found: 8, of: 9, missing: ["Minecraft: Chaos Cubed"] }, music: { shortcuts: [], minecraftPlaylistId: ID } });
-    expect(html).toMatch(/<button[^>]*class="music-shortcut"[^>]*>.*Minecraft, complete<\/span><span class="music-shortcut-sub">8 of 9 albums found<\/span>/);
-    expect(html).not.toMatch(/role="status"[^>]*>8 of 9/);
-    expect(panel({ music: { shortcuts: [], minecraftPlaylistId: ID } })).not.toContain("albums found");
-  });
-
-  it("editing: remove a shortcut, rebuild Minecraft, disconnect", () => {
-    const html = panel({
-      editing: true,
-      music: { shortcuts: [{ id: "s1", label: "Easy run", uri: `spotify:playlist:${ID}`, shuffle: true }], minecraftPlaylistId: ID },
-    });
-    expect(html).toContain('aria-label="Remove Easy run"');
-    expect(html).toContain("Rebuild");
+  it("editing: each playlist's Edit, and Disconnect; its editor — the name, what it suits (each toggle says ✓ when on), Save, Remove", () => {
+    const music = { shortcuts: [{ id: "s1", label: "Easy run", uri: `spotify:playlist:${ID}`, shuffle: true, name: "Easy run mix", goodFor: ["run" as const] }] };
+    const html = panel({ editing: true, music });
+    expect(html).toContain('aria-label="Edit Easy run"');
     expect(html).toContain("Disconnect Spotify");
-    expect(panel({}).includes("Disconnect Spotify")).toBe(false);
+    expect(html).not.toContain("Rebuild");
+    expect(panel({ music }).includes("Disconnect Spotify")).toBe(false);
+    const editor = panel({ editing: true, editingId: "s1", music });
+    expect(editor).toMatch(/<label[^>]*>Name<\/label>/);
+    expect(editor).toMatch(/<input[^>]*type="text"[^>]*value="Easy run"/);
+    // Spotify's own name above, when the label differs.
+    expect(editor).toContain("Easy run mix");
+    expect(editor).toMatch(/role="group" aria-labelledby="[^"]+"/);
+    expect(editor).toMatch(/<button[^>]*class="music-tag"[^>]*aria-pressed="true"[^>]*>✓ Runs<\/button>/);
+    expect(editor).toMatch(/<button[^>]*class="music-tag"[^>]*aria-pressed="false"[^>]*>Mobility<\/button>/);
+    expect(editor).toContain("Winding down");
+    expect(editor).toContain("Strength");
+    expect(editor).toContain('aria-label="Remove Easy run"');
+    expect(editor).toMatch(/<button type="submit"[^>]*>Save<\/button>/);
   });
 });
 
-describe("adding a shortcut", () => {
-  it("paste a link, or pick one of your playlists", () => {
-    const html = panel({ adding: { target: "custom" }, playlists: [{ id: ID, name: "Easy run", uri: `spotify:playlist:${ID}`, total: 30 }] });
-    expect(html).toMatch(/<label[^>]*for="[^"]+"[^>]*>Paste a playlist or album link<\/label>/);
+describe("adding a playlist", () => {
+  const item = (n: number, extra = {}) => ({ id: `${ID.slice(0, 20)}${n}x`, name: `List ${n}`, uri: `spotify:playlist:${ID.slice(0, 20)}${n}x`, total: n, description: "", image: null, ...extra });
+
+  it("pick one of your playlists (More for the next page), or paste a link", () => {
+    const html = panel({ adding: {}, playlists: { items: [item(1)], next: 20 } });
     expect(html).toContain("Your playlists");
-    expect(html).toMatch(/<button[^>]*class="music-shortcut"[^>]*>.*?Easy run<\/span><\/button>/);
+    expect(html).toMatch(/<button[^>]*class="music-shortcut"[^>]*>.*?List 1<\/span><\/span><\/button>/);
+    expect(html).toMatch(/<button[^>]*>More<\/button>/);
+    expect(html).toMatch(/<label[^>]*for="[^"]+"[^>]*>Or paste a playlist or album link<\/label>/);
     expect(html).toContain("Cancel");
+    expect(panel({ adding: {}, playlists: { items: [item(1)], next: null } })).not.toMatch(/>More</);
+    // While the first page is read.
+    expect(panel({ adding: {}, playlists: null })).toContain("Loading your playlists…");
+    expect(panel({ adding: {}, playlists: { items: [], next: null } })).toContain("No playlists yet");
   });
 
-  it("the spa slot says so", () => {
-    expect(panel({ adding: { target: "spa" } })).toContain("Your spa playlist");
+  it("one linked already is shown as added, not offered again", () => {
+    const html = panel({ adding: {}, playlists: { items: [item(1)], next: null }, music: { shortcuts: [{ id: "s1", label: "List 1", uri: item(1).uri, shuffle: true }] } });
+    expect(html).toMatch(/<button[^>]*class="music-shortcut"[^>]*disabled=""[^>]*>.*?List 1<\/span><span class="music-shortcut-sub">Added<\/span>/);
   });
 
   it("a link Spotify won't name asks for a name; a refused one says why", () => {
-    expect(panel({ adding: { target: "custom", needsLabel: { uri: `spotify:playlist:${ID}` } } })).toMatch(/<label[^>]*>Name it<\/label>/);
-    expect(panel({ adding: { target: "custom", error: "That isn't a Spotify playlist or album link." } })).toContain(
-      "That isn&#x27;t a Spotify playlist or album link.",
-    );
+    expect(panel({ adding: { needsLabel: { uri: `spotify:playlist:${ID}` } } })).toMatch(/<label[^>]*>Name it<\/label>/);
+    expect(panel({ adding: { error: "That isn't a Spotify playlist or album link." } })).toContain("That isn&#x27;t a Spotify playlist or album link.");
+  });
+});
+
+describe("a workout's music in the player", () => {
+  const target = { id: "spa", label: "Spa", uri: `spotify:playlist:${ID}` };
+  it("dark, or no music for the session: nothing at all", () => {
+    expect(render(createElement(WorkoutMusicLine, { fresh: true, target }), null)).toBe("");
+    expect(render(createElement(WorkoutMusicLine, { fresh: true, target: null }), { connected: true, music: { shortcuts: [] } })).toBe("");
+    // Nothing to say until the play has been tried.
+    expect(render(createElement(WorkoutMusicLine, { fresh: false, target }), { connected: true, music: { shortcuts: [] } })).toBe("");
   });
 });
 

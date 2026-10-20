@@ -16,6 +16,8 @@ import { restoreInProgress } from "./account-state.js";
  */
 
 const DEFAULT_MODEL = "anthropic/claude-haiku-4.5";
+/** The weekly review's model (Haiku-class): the small classifications use it too (music-tags.ts). */
+export const WEEKLY_REVIEW_MODEL = DEFAULT_MODEL;
 const DEFAULT_GATEWAY = "https://ai-gateway.vercel.sh/v1";
 // Haiku-class pricing; the gateway adds a small margin but the $8 rolling
 // cutoff protects regardless. Slight over-estimate is intentionally safe.

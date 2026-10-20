@@ -44,11 +44,13 @@ import {
   parseStoredWorkoutDoc,
   sessionLead,
   todayInZone,
+  workoutMusicSchema,
   type AdaptiveConfig,
   type SessionLead,
   type UserPreferences,
   type Weight,
   type WorkoutDoc,
+  type WorkoutMusic,
   type WorkoutPart,
 } from "@rg/domain";
 import {
@@ -272,6 +274,23 @@ export interface SessionResponse {
    * routes attach it (`withWatch`); a service answer carries null until they do.
    */
   watch: WatchState | null;
+  /** A document workout's own music (its document's `music`: a saved playlist, or none); absent when it names none. */
+  music?: WorkoutMusic;
+}
+
+/** A row's document's `music`, read leniently from its stored column: absent when it names none or doesn't read. */
+export function docMusicOf(stored: unknown): WorkoutMusic | undefined {
+  let value: unknown = stored;
+  if (typeof stored === "string") {
+    try {
+      value = JSON.parse(stored);
+    } catch {
+      return undefined;
+    }
+  }
+  const raw = value && typeof value === "object" ? (value as { music?: unknown }).music : undefined;
+  const parsed = raw === undefined ? null : workoutMusicSchema.safeParse(raw);
+  return parsed?.success ? parsed.data : undefined;
 }
 
 /** The program's modes; the themes a build can take, each with the modes it suits; the account's places. */
@@ -860,8 +879,11 @@ function respond(
     profiles: extras.profiles,
     choices: extras.choices,
     watch: null,
+    ...withMusic(docMusicOf(row.workoutDoc)),
   };
 }
+
+const withMusic = (music: WorkoutMusic | undefined): { music?: WorkoutMusic } => (music ? { music } : {});
 
 async function readResponse(db: Db, userId: string, row: SlotRow, today: string, builds?: readonly BuildRow[]): Promise<SessionResponse> {
   const all = builds ?? (await loadBuilds(db, userId, row.id));

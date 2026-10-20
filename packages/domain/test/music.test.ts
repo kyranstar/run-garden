@@ -1,11 +1,10 @@
 /**
  * The music dock's preferences (2026-10-17): `music` in the user's preferences — the shortcuts (a label and a Spotify
- * playlist or album), and the id of the Minecraft playlist the app built. Synthetic ids only.
+ * playlist or album), and an earlier version's playlist id, still read. Synthetic ids only.
  */
 import { describe, expect, it } from "vitest";
 import {
   MUSIC_SHORTCUTS_MAX,
-  MUSIC_SPA_ID,
   musicPreferencesSchema,
   spotifyContextUri,
   userPreferencesSchema,
@@ -17,7 +16,7 @@ describe("music preferences", () => {
   it("are a list of shortcuts and an optional playlist id; nothing set is no shortcuts", () => {
     expect(musicPreferencesSchema.parse({})).toEqual({ shortcuts: [] });
     const music = {
-      shortcuts: [{ id: MUSIC_SPA_ID, label: "Spa", uri: `spotify:playlist:${ID}`, shuffle: true }],
+      shortcuts: [{ id: "spa", label: "Spa", uri: `spotify:playlist:${ID}`, shuffle: true }],
       minecraftPlaylistId: ID,
     };
     expect(musicPreferencesSchema.parse(music)).toEqual(music);

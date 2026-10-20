@@ -59,10 +59,11 @@ const state: DockState = {
   busy: null,
   notice: null,
   link: null,
-  build: null,
   adding: null,
   playlists: null,
   editing: false,
+  editingId: null,
+  workout: null,
 };
 
 function slide(input: HTMLInputElement, value: string) {

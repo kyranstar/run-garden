@@ -1,9 +1,11 @@
 /**
  * Now playing, read only while it can be seen (the music dock, 2026-10-17): Spotify's development-mode quotas are low,
- * so `GET /me/player` is read only while the dock is expanded AND the page visible — at once, then every 5 s — and a
- * 429 waits its Retry-After before the next read. Collapsed or hidden, nothing is read and no timer is left.
+ * so `GET /me/player` is read only while the dock is expanded AND the page visible — at once, then every 5 s. Asked to
+ * slow down, the next read waits out the shared backoff (music/backoff.ts: the client refuses every call while it
+ * lasts, so a read due meanwhile never reaches the network), and the dock is told. Collapsed or hidden, nothing is read
+ * and no timer is left.
  */
-import { SpotifyError, type PlayerState } from "./spotify.js";
+import { isSlowDown, type PlayerState } from "./spotify.js";
 
 export const POLL_MS = 5_000;
 
@@ -42,8 +44,8 @@ export function makePoller(deps: PollerDeps) {
       deps.onState(state);
     } catch (e) {
       if (gen !== generation) return;
-      if (e instanceof SpotifyError && e.status === 429) wait = Math.max(POLL_MS, e.retryAfterMs ?? POLL_MS);
-      else deps.onError?.(e);
+      if (isSlowDown(e)) wait = Math.max(POLL_MS, e.retryAfterMs ?? POLL_MS);
+      deps.onError?.(e);
     }
     // Still this generation (both paths above return when the dock closed meanwhile), so still active.
     queue(wait, gen);

@@ -6,10 +6,17 @@
  * in or not; the dock then draws nothing. Set, every route signs in first — except the callback, which Spotify sends
  * to whichever browser finished the login, and which is bound to the athlete by its signed state instead.
  *
- *   GET    /                    → { connected, reason?, music }   the dock's read (session, connection, preferences:
- *                                                                  three statements)
- *   PUT    /          { music } → { music }                       the shortcuts, whole (session, restore marker, one
+ *   GET    /                    → { connected, reason?, music, choices }   the dock's read (session, connection,
+ *                                                                  preferences: three statements)
+ *   PUT    /          { music } → { music }                       the playlists, whole (session, restore marker, one
  *                                                                  write: three statements)
+ *   POST   /playlists/tags { playlists: [{ key, name, description }] } → { tags, by }
+ *                                 what each linked playlist suits (services/music-tags.ts): session, restore marker,
+ *                                 the preferences (is AI on); asking the model, the weekly cap's read, one fetch and
+ *                                 its usage row — six at most
+ *   PUT    /choices/:workoutId { date, use, playlist? } → { choices }
+ *                                 the athlete's music for one planned workout, from its sheet (`musicChoices`, pruned
+ *                                 of past workouts): session, restore marker, the preferences, one write — four
  *   GET    /spotify/login       → 302 Spotify's authorize URL    (the session: one statement)
  *   GET    /spotify/callback    → 302 /?music=connected | error   (the restore marker, one upsert; one fetch)
  *   GET    /spotify/token       → { connected: true, accessToken, expiresAt } | { connected: false, reason }
@@ -25,7 +32,18 @@
 import { Hono } from "hono";
 import { sql } from "drizzle-orm";
 import { userPreferences } from "@rg/database";
-import { musicPreferencesSchema, userPreferencesSchema } from "@rg/domain";
+import { z } from "zod";
+import {
+  MUSIC_DESCRIPTION_MAX,
+  MUSIC_ID_PATTERN,
+  MUSIC_NAME_MAX,
+  MUSIC_SHORTCUTS_MAX,
+  musicChoiceSchema,
+  musicPreferencesSchema,
+  pruneMusicChoices,
+  todayInZone,
+  userPreferencesSchema,
+} from "@rg/domain";
 import type { AppContext } from "../auth/middleware.js";
 import { requireUser } from "../auth/middleware.js";
 import { fixtureModeEnabled } from "../env.js";
@@ -44,6 +62,25 @@ import {
   verifySpotifyState,
 } from "../services/spotify-auth.js";
 import { FIXTURE_SPOTIFY_API_BASE, FIXTURE_SPOTIFY_TOKENS, spotifyFixtureApi } from "../services/spotify-fixture.js";
+import { tagPlaylists } from "../services/music-tags.js";
+
+/** What the tagging takes: the dock's playlists, their names and descriptions as the dock read them from Spotify. */
+const tagRequestSchema = z
+  .object({
+    playlists: z
+      .array(
+        z
+          .object({
+            key: z.string().regex(MUSIC_ID_PATTERN),
+            name: z.string().trim().min(1).max(MUSIC_NAME_MAX),
+            description: z.string().max(MUSIC_DESCRIPTION_MAX).default(""),
+          })
+          .strict(),
+      )
+      .min(1)
+      .max(MUSIC_SHORTCUTS_MAX),
+  })
+  .strict();
 
 export interface MusicDeps {
   /** Spotify's token endpoint is reached through this (tests fake it). */
@@ -55,6 +92,8 @@ export interface MusicDeps {
   tokenTimeoutMs?: number;
   /** Where a refresh is kept alive past the response (default: the request's own `executionCtx.waitUntil`). */
   waitUntil?: (work: Promise<unknown>) => void;
+  /** The tagging's model deadline (tests shorten it). */
+  modelTimeoutMs?: number;
 }
 
 export function makeMusicRoutes(deps: MusicDeps = {}): Hono<AppContext> {
@@ -107,7 +146,41 @@ export function makeMusicRoutes(deps: MusicDeps = {}): Hono<AppContext> {
       connected: state === "connected",
       ...(state === "reconnect" ? { reason: "reconnect" } : {}),
       music: prefs.music ?? musicPreferencesSchema.parse({}),
+      choices: prefs.musicChoices ?? {},
     });
+  });
+
+  r.post("/playlists/tags", async (c) => {
+    const parsed = tagRequestSchema.safeParse(await c.req.json().catch(() => undefined));
+    if (!parsed.success) return c.json({ error: "invalid_playlists" }, 400);
+    const db = c.get("db");
+    const userId = c.get("userId");
+    const prefs = await loadPreferences(db, userId);
+    const answer = await tagPlaylists(db, c.env, userId, parsed.data.playlists, {
+      aiEnabled: prefs.aiEnabled && c.env.AI_DEFAULT_ENABLED !== "0",
+      fetch: fetchImpl,
+      ...(deps.modelTimeoutMs !== undefined ? { timeoutMs: deps.modelTimeoutMs } : {}),
+    });
+    return c.json(answer);
+  });
+
+  r.put("/choices/:workoutId", async (c) => {
+    const workoutId = c.req.param("workoutId");
+    const choice = musicChoiceSchema.safeParse(await c.req.json().catch(() => undefined));
+    if (!choice.success || workoutId.length > 120) return c.json({ error: "invalid_choice" }, 400);
+    const db = c.get("db");
+    const userId = c.get("userId");
+    const prefs = await loadPreferences(db, userId);
+    const choices = pruneMusicChoices({ ...(prefs.musicChoices ?? {}), [workoutId]: choice.data }, todayInZone(prefs.timezone, new Date(now())));
+    const text = JSON.stringify(choices);
+    const at = new Date(now()).toISOString();
+    // One statement: only `musicChoices` changes — never `music`, which the dock saves whole.
+    await c.get("db").all(sql`
+      INSERT INTO ${userPreferences} (user_id, prefs, updated_at) VALUES (${userId}, json_object('musicChoices', json(${text})), ${at})
+      ON CONFLICT (user_id) DO UPDATE SET prefs = json_set(prefs, '$.musicChoices', json(${text})), updated_at = ${at}
+      RETURNING user_id
+    `);
+    return c.json({ choices });
   });
 
   r.put("/", async (c) => {

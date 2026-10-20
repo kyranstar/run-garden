@@ -12538,9 +12538,50 @@ a.stu-tpl-open:focus-visible::before {
   color: var(--green-ink);
   font-size: var(--text-lg);
 }
+.music-shortcut-mark:has(.music-cover) {
+  overflow: hidden;
+  background: var(--bg-sunken);
+}
+/* A playlist's cover (Spotify's own image host), filling its mark; decorative — the label names it. */
+.music-cover {
+  display: block;
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+}
 .music-shortcut-label {
   min-width: 0;
   overflow-wrap: anywhere;
+}
+/* What a playlist suits, in its editor: toggles, each a fingertip; on says ✓ as well as its fill (never colour alone). */
+.music-add-label {
+  color: var(--ink-soft);
+  font-size: var(--text-sm);
+  font-weight: var(--weight-medium);
+}
+.music-tags {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-3);
+  min-width: 0;
+}
+.music-tag {
+  min-height: var(--tap);
+  padding: var(--space-2) var(--space-5);
+  border: 1px solid var(--border-strong);
+  border-radius: var(--radius-pill);
+  background: var(--bg-raised);
+  color: var(--ink);
+  font: var(--weight-medium) var(--text-sm) var(--font);
+  cursor: pointer;
+}
+.music-tag[aria-pressed="true"] {
+  border-color: var(--green);
+  background: var(--green-soft);
+  color: var(--green-ink);
+}
+.music-remove {
+  align-self: flex-start;
 }
 .music-shortcut-text {
   display: flex;

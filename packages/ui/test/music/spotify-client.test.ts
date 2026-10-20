@@ -2,25 +2,27 @@
  * The music dock's client (2026-10-17; packages/ui/src/music): a Spotify Connect remote that fetches its token from the
  * Worker and calls Spotify directly — every call injectable. Against a fake Spotify Web API:
  *
- *  - a 401 refetches the token once (asking the Worker for a fresh one); a 429 waits Retry-After (a short one) or says
- *    how long (a long one); NO_ACTIVE_DEVICE is told apart;
+ *  - a 401 refetches the token once (asking the Worker for a fresh one); a 429 backs off — no call tried again, every
+ *    call refused before the network while it lasts, the steps doubling from 30 s with no Retry-After (CORS hides
+ *    it), Spotify's own wait when longer, reset by a success; NO_ACTIVE_DEVICE is told apart;
+ *  - a playlist's or an album's details in one read (its name, its description made plain, its cover, its count), and
+ *    the athlete's playlists a page at a time;
  *  - a shortcut plays with shuffle on: the shuffle's 204 before the play is sent, from a random position inside the
  *    context's count; a device that refuses a shuffle before it plays gets it after;
  *  - no device listed: the open.spotify.com link opens, and when the app is visible again the play is retried against
  *    the device that is now listed;
  *  - the volume only where the device takes it;
  *  - links and URIs parsed;
- *  - the Minecraft playlist built from the official albums (found or missing, batches of 100), and a stored one reused;
- *  - the player read only while the dock is expanded and the page visible, every 5 s, backing off on a 429.
+ *  - the player read only while the dock is expanded and the page visible, every 5 s, waiting out a backoff.
  *
  * Synthetic ids only.
  */
 import { describe, expect, it } from "vitest";
 import { API, fakeSpotify, fakeTokens, sid, trackUri } from "./fake-spotify.js";
 import { isNoDevice, makeSpotify, NotConnected, SpotifyError } from "../../src/music/spotify.js";
+import { BACKOFF_FIRST_MS, BACKOFF_KEY, BACKOFF_MAX_MS, makeBackoff } from "../../src/music/backoff.js";
 import { openUrlOf, parseSpotifyLink } from "../../src/music/links.js";
 import { chooseDevice, makeRemote, playContext } from "../../src/music/remote.js";
-import { buildMinecraftPlaylist, MINECRAFT_ALBUMS, MINECRAFT_PLAYLIST_NAME, matchAlbum } from "../../src/music/minecraft.js";
 import { makePoller, POLL_MS } from "../../src/music/poller.js";
 
 const ID = "0123456789abcdefABCDEF";
@@ -28,18 +30,9 @@ const ID = "0123456789abcdefABCDEF";
 function setup(init: Parameters<typeof fakeSpotify>[0] = {}, opts: { expiresInMs?: number; reason?: "not_connected" | "reconnect" } = {}) {
   const fake = fakeSpotify(init);
   let clock = 1_000_000;
-  const slept: number[] = [];
   const tokens = fakeTokens(fake, { ...opts, now: () => clock });
-  const spotify = makeSpotify({
-    token: tokens.token,
-    fetch: fake.fetch,
-    now: () => clock,
-    sleep: async (ms) => {
-      slept.push(ms);
-      clock += ms;
-    },
-  });
-  return { fake, spotify, tokens, slept, advance: (ms: number) => (clock += ms) };
+  const spotify = makeSpotify({ token: tokens.token, fetch: fake.fetch, now: () => clock });
+  return { fake, spotify, tokens, advance: (ms: number) => (clock += ms) };
 }
 
 // ── The client ───────────────────────────────────────────────────────────────
@@ -100,7 +93,6 @@ describe("the client", () => {
       },
       fetch: fake.fetch,
       now: () => clock,
-      sleep: async () => undefined,
     });
     await spotify.devices(); // token-1, good for two minutes
     let releaseA: () => void = () => undefined;
@@ -141,28 +133,109 @@ describe("the client", () => {
     expect(fake.calls).toEqual([]);
   });
 
-  it("a 429 waits a short Retry-After and tries once more; a long one is reported with its wait", async () => {
-    const { fake, spotify, slept } = setup();
-    fake.script("GET /me/player/devices", { status: 429, headers: { "Retry-After": "2" } });
-    expect(await spotify.devices()).toHaveLength(1);
-    expect(slept).toEqual([2000]);
-    fake.script("GET /me/player/devices", { status: 429, headers: { "Retry-After": "40" } });
+  it("a 429 backs off: the call is not tried again, and while it lasts every call is refused here — before the network — with the time left", async () => {
+    const { fake, spotify, advance } = setup();
+    fake.script("GET /me/player/devices", { status: 429 });
     const err = (await spotify.devices().catch((e: unknown) => e)) as SpotifyError;
-    expect(err).toBeInstanceOf(SpotifyError);
-    expect([err.status, err.retryAfterMs]).toEqual([429, 40_000]);
-    expect(slept).toEqual([2000]);
+    expect([err.status, err.reason, err.retryAfterMs]).toEqual([429, null, BACKOFF_FIRST_MS]);
+    expect(fake.calls).toHaveLength(1);
+    advance(10_000);
+    for (const call of [() => spotify.player(), () => spotify.play({ contextUri: `spotify:playlist:${ID}` }), () => spotify.myPlaylists(0), () => spotify.details(`spotify:playlist:${ID}`)]) {
+      const held = (await call().catch((e: unknown) => e)) as SpotifyError;
+      expect([held.status, held.reason, held.retryAfterMs]).toEqual([429, "BACKOFF", 20_000]);
+    }
+    expect(fake.calls).toHaveLength(1);
+    advance(20_000);
+    expect(await spotify.devices()).toHaveLength(1);
+    expect(fake.calls).toHaveLength(2);
   });
 
-  it("a 429 whose Retry-After can't be read (not exposed to the page, or empty) is the 5 s default — never 0 (review #3)", async () => {
-    const { fake, spotify, slept } = setup();
-    for (const headers of [undefined, { "Retry-After": "" }, { "Retry-After": "soon" }, { "Retry-After": "0" }]) {
+  it("with no Retry-After (a browser hides it): 30 s, 1 min, 2 min … doubling to about 15 min; Spotify's own wait when longer; a success starts over", async () => {
+    const { fake, spotify, advance } = setup();
+    const waits: Array<number | null> = [];
+    const limited = async (headers?: Record<string, string>) => {
       fake.script("GET /me/player/devices", { status: 429, ...(headers ? { headers } : {}) });
       const err = (await spotify.devices().catch((e: unknown) => e)) as SpotifyError;
-      expect([err.status, err.retryAfterMs]).toEqual([429, 5000]);
-    }
-    // Longer than an interactive call waits by itself: nothing was retried at once.
-    expect(slept).toEqual([]);
+      waits.push(err.retryAfterMs);
+      advance(err.retryAfterMs ?? 0);
+    };
+    for (const headers of [undefined, { "Retry-After": "" }, { "Retry-After": "soon" }, { "Retry-After": "0" }, undefined, undefined, undefined]) await limited(headers);
+    expect(waits).toEqual([30_000, 60_000, 120_000, 240_000, 480_000, BACKOFF_MAX_MS, BACKOFF_MAX_MS]);
+    expect(BACKOFF_MAX_MS).toBe(15 * 60_000);
+    // A success: the next 429 is the first step again — or Spotify's wait, when it is longer.
+    expect(await spotify.devices()).toHaveLength(1);
+    await limited({ "Retry-After": "90" });
+    expect(waits.at(-1)).toBe(90_000);
+    expect(await spotify.devices()).toHaveLength(1);
+    await limited({ "Retry-After": "5" });
+    expect(waits.at(-1)).toBe(BACKOFF_FIRST_MS);
+    // Each 429 was one call: none was tried again.
+    expect(fake.calls.filter((c) => c.path === "/me/player/devices")).toHaveLength(waits.length + 2);
+  });
+
+  it("a 429 for a call already out when the backoff began is the same step, never the next", async () => {
+    const { fake, spotify } = setup();
+    fake.script("GET /me/player/devices", { status: 429 });
+    fake.script("GET /me/player", { status: 429 });
+    const [a, b] = (await Promise.all([spotify.devices().catch((e: unknown) => e), spotify.player().catch((e: unknown) => e)])) as SpotifyError[];
+    expect([a!.retryAfterMs, b!.retryAfterMs]).toEqual([BACKOFF_FIRST_MS, BACKOFF_FIRST_MS]);
+  });
+
+  it("the backoff is kept on the device: a reload finds it, and a success clears it", () => {
+    let clock = 0;
+    const store = new Map<string, string>();
+    const storage = { getItem: (k: string) => store.get(k) ?? null, setItem: (k: string, v: string) => void store.set(k, v), removeItem: (k: string) => void store.delete(k) };
+    const first = makeBackoff({ now: () => clock, storage });
+    first.hit(null);
+    first.hit(null);
+    clock += 10_000;
+    const again = makeBackoff({ now: () => clock, storage });
+    expect(again.remaining()).toBe(BACKOFF_FIRST_MS - 10_000);
+    clock += BACKOFF_FIRST_MS;
+    expect(again.hit(null)).toBe(2 * BACKOFF_FIRST_MS);
+    again.ok();
+    expect(store.has(BACKOFF_KEY)).toBe(false);
+    // Unreadable or no storage at all: none.
+    store.set(BACKOFF_KEY, "{not json");
+    expect(makeBackoff({ now: () => clock, storage }).remaining()).toBe(0);
+    expect(makeBackoff({ now: () => clock, storage: null }).remaining()).toBe(0);
+  });
+
+  it("a playlist's details in one read — its name, its description made plain, its cover on Spotify's host; an album's maker; null when not the athlete's to read", async () => {
+    const { fake, spotify } = setup({
+      albums: [{ id: sid("alb"), name: "An Album", artists: ["A Band", "B Band"], tracks: 9 }],
+    });
+    fake.state.playlists.set(sid("calm"), {
+      name: "Calm",
+      owned: false,
+      uris: [],
+      description: "Slow &amp; quiet. &lt;a href=&quot;spotify:playlist:x&quot;&gt;More&lt;/a&gt;",
+      images: [
+        { url: "https://i.scdn.co/image/large", width: 640 },
+        { url: "https://i.scdn.co/image/small", width: 60 },
+        { url: "https://i.scdn.co/image/mid", width: 300 },
+      ],
+    });
+    expect(await spotify.details(`spotify:playlist:${sid("calm")}`)).toEqual({ name: "Calm", description: "Slow & quiet. More", image: "https://i.scdn.co/image/mid", total: null });
+    expect(fake.calls.at(-1)!.query).toEqual({ fields: "name,description,images" });
+    expect(await spotify.details(`spotify:album:${sid("alb")}`)).toEqual({ name: "An Album", description: "Album by A Band, B Band", image: null, total: 9 });
+    expect(await spotify.details(`spotify:playlist:${sid("gone")}`)).toBeNull();
+    fake.state.playlists.set(sid("odd"), { name: "Odd", owned: false, uris: [], images: [{ url: "https://example.com/x.jpg", width: 300 }] });
+    expect((await spotify.details(`spotify:playlist:${sid("odd")}`))!.image).toBeNull();
     expect(fake.calls).toHaveLength(4);
+  });
+
+  it("the athlete's playlists, a page at a time: one read each, the next page's offset while there are more", async () => {
+    const owned = Array.from({ length: 23 }, (_, i) => ({ id: sid(`pl${i}x`), name: `List ${i}`, total: i }));
+    const { fake, spotify } = setup({ ownedPlaylists: owned });
+    const first = await spotify.myPlaylists(0);
+    expect(first.items).toHaveLength(20);
+    expect(first.items[1]).toEqual({ id: sid("pl1x"), uri: `spotify:playlist:${sid("pl1x")}`, name: "List 1", description: "", image: null, total: 1 });
+    expect(first.next).toBe(20);
+    const second = await spotify.myPlaylists(first.next!);
+    expect(second.items.map((p) => p.name)).toEqual(["List 20", "List 21", "List 22"]);
+    expect(second.next).toBeNull();
+    expect(fake.calls.map((c) => c.query)).toEqual([{ limit: "20", offset: "0" }, { limit: "20", offset: "20" }]);
   });
 
   it("NO_ACTIVE_DEVICE is told apart from other refusals", async () => {
@@ -184,7 +257,6 @@ describe("the client", () => {
           return new Response(JSON.stringify({ devices: [] }), { status: 200 });
         }) as typeof fetch,
         now: () => Date.now(),
-        sleep: async () => undefined,
       });
       await spotify.devices();
     }
@@ -434,120 +506,6 @@ describe("the volume", () => {
     await spotify.volume(140.6, "desk-1");
     await spotify.volume(-3, "desk-1");
     expect(fake.calls.map((c) => c.query.volume_percent)).toEqual(["100", "0"]);
-  });
-});
-
-// ── The Minecraft playlist ───────────────────────────────────────────────────
-
-/** The official albums as the fake catalogue holds them, with decoys. */
-function catalogue(opts: { missing?: string[]; bigAlpha?: number } = {}) {
-  const albums = MINECRAFT_ALBUMS.filter((a) => !(opts.missing ?? []).includes(a.title)).map((a, i) => ({
-    id: sid(`mc${i}`),
-    name: `${a.title} (Original Game Soundtrack)`.replace(/^Minecraft – (Volume \w+) \(Original Game Soundtrack\)$/, "Minecraft - $1"),
-    artists: [a.artists[0]!],
-    tracks: i === 0 ? (opts.bigAlpha ?? 24) : 6 + i,
-  }));
-  return [
-    // Decoys: a cover album of the right name, and the trailer score — never the soundtrack.
-    { id: sid("decoy1"), name: "Minecraft - Volume Alpha (Piano Covers)", artists: ["Someone Else"], tracks: 10 },
-    { id: sid("decoy2"), name: "Minecraft: Chase the Skies (Original Trailer Score)", artists: ["Amos Roddy"], tracks: 2 },
-    ...albums,
-  ];
-}
-
-describe("the Minecraft playlist", () => {
-  it("matches an album by its name AND an artist, never a cover or a trailer score", () => {
-    const alpha = MINECRAFT_ALBUMS[0]!;
-    expect(matchAlbum(alpha, [{ id: "a", name: "Minecraft - Volume Alpha", artists: [{ name: "C418" }] }])?.id).toBe("a");
-    expect(matchAlbum(alpha, [{ id: "b", name: "Minecraft - Volume Alpha", artists: [{ name: "Someone Else" }] }])).toBeNull();
-    expect(matchAlbum(alpha, [{ id: "c", name: "Minecraft - Volume Alpha (Piano Covers)", artists: [{ name: "C418" }] }])).toBeNull();
-    expect(matchAlbum(alpha, [{ id: "d", name: "Minecraft - Volume Beta", artists: [{ name: "C418" }] }])).toBeNull();
-    const skies = MINECRAFT_ALBUMS.find((a) => a.title.includes("Skies"))!;
-    expect(matchAlbum(skies, [{ id: "e", name: "Minecraft: Chase the Skies (Original Trailer Score)", artists: [{ name: "Amos Roddy" }] }])).toBeNull();
-    expect(matchAlbum(skies, [{ id: "f", name: "Minecraft: Chase the Skies (Original Game Soundtrack)", artists: [{ name: "amos roddy" }] }])?.id).toBe("f");
-    const caves = MINECRAFT_ALBUMS.find((a) => a.title.includes("Caves"))!;
-    expect(matchAlbum(caves, [{ id: "g", name: "Minecraft: Caves and Cliffs (Original Game Soundtrack)", artists: [{ name: "Kumi Tanioka" }] }])?.id).toBe("g");
-  });
-
-  it("lists every official album the brief names, and the later one confirmed (Chaos Cubed)", () => {
-    expect(MINECRAFT_ALBUMS.map((a) => a.title)).toEqual([
-      "Minecraft – Volume Alpha",
-      "Minecraft – Volume Beta",
-      "Minecraft: Nether Update",
-      "Minecraft: Caves & Cliffs",
-      "Minecraft: The Wild Update",
-      "Minecraft: Trails & Tales",
-      "Minecraft: Tricky Trials",
-      "Minecraft: Chase the Skies",
-      "Minecraft: Chaos Cubed",
-    ]);
-  });
-
-  it("builds a private playlist of every track of every album found, in batches of 100, and says what it couldn't find", async () => {
-    const albums = catalogue({ missing: ["Minecraft: Chaos Cubed"], bigAlpha: 130 });
-    const { fake, spotify } = setup({ albums });
-    const built = await buildMinecraftPlaylist(spotify, {});
-    expect(built.found).toBe(8);
-    expect(built.of).toBe(9);
-    expect(built.missing).toEqual(["Minecraft: Chaos Cubed"]);
-    const create = fake.calls.find((c) => c.method === "POST" && c.path === "/me/playlists")!;
-    expect(create.body).toMatchObject({ name: MINECRAFT_PLAYLIST_NAME, public: false });
-    const expected = albums.filter((a) => !a.name.includes("Covers") && !a.name.includes("Trailer")).reduce((n, a) => n + a.tracks, 0);
-    expect(built.tracks).toBe(expected);
-    const adds = fake.calls.filter((c) => c.method === "POST" && c.path === `/playlists/${built.playlistId}/items`);
-    expect(adds.map((c) => (c.body as { uris: string[] }).uris.length)).toEqual([100, 100, Math.max(0, expected - 200)].filter((n) => n > 0));
-    expect(fake.state.playlists.get(built.playlistId)!.uris).toHaveLength(expected);
-    // Paged album tracks (130 > 50), and no search asks for more than Spotify's ten.
-    expect(fake.calls.filter((c) => c.path === `/albums/${albums[2]!.id}/tracks`).length).toBe(3);
-    expect(fake.calls.filter((c) => c.path === "/search").every((c) => Number(c.query.limit) <= 10 && c.query.type === "album")).toBe(true);
-    // No decoy's tracks.
-    const decoyTrack = trackUri(albums[0]!.id, 0);
-    expect(fake.state.playlists.get(built.playlistId)!.uris).not.toContain(decoyTrack);
-  });
-
-  it("the new playlist's id is handed over the moment it exists, so a failure after it can't make a second one", async () => {
-    const { fake, spotify } = setup({ albums: catalogue() });
-    const created: string[] = [];
-    fake.script(`POST /playlists/${sid("built1")}/items`, { status: 500 });
-    await expect(buildMinecraftPlaylist(spotify, { onCreated: async (id) => void created.push(id) })).rejects.toMatchObject({ status: 500 });
-    expect(created).toEqual([sid("built1")]);
-  });
-
-  it("all albums missing builds nothing", async () => {
-    const { fake, spotify } = setup({ albums: [] });
-    const built = await buildMinecraftPlaylist(spotify, {});
-    expect([built.found, built.of, built.playlistId]).toEqual([0, 9, null]);
-    expect(fake.calls.filter((c) => c.method === "POST")).toEqual([]);
-  });
-
-  it("a stored playlist is reused without building; Rebuild replaces its tracks rather than making another", async () => {
-    const albums = catalogue();
-    const { fake, spotify } = setup({ albums, ownedPlaylists: [{ id: PL, name: MINECRAFT_PLAYLIST_NAME, total: 3 }] });
-    expect(await buildMinecraftPlaylist(spotify, { storedId: PL })).toEqual({ playlistId: PL, reused: true });
-    expect(fake.calls).toEqual([]);
-    const rebuilt = await buildMinecraftPlaylist(spotify, { storedId: PL, rebuild: true });
-    expect(rebuilt).toMatchObject({ playlistId: PL, found: 9, of: 9 });
-    expect(fake.calls.filter((c) => c.method === "POST" && c.path === "/me/playlists")).toEqual([]);
-    const writes = fake.calls.filter((c) => c.path === `/playlists/${PL}/items` && c.method !== "GET");
-    expect(writes[0]!.method).toBe("PUT");
-    expect(writes.slice(1).every((c) => c.method === "POST")).toBe(true);
-    expect(fake.state.playlists.get(PL)!.uris).toHaveLength(albums.filter((a) => !/Covers|Trailer/.test(a.name)).reduce((n, a) => n + a.tracks, 0));
-  });
-
-  it("a stored playlist that is gone is built afresh on Rebuild", async () => {
-    const { fake, spotify } = setup({ albums: catalogue() });
-    const rebuilt = await buildMinecraftPlaylist(spotify, { storedId: sid("gone"), rebuild: true });
-    expect(rebuilt).toMatchObject({ found: 9 });
-    expect("playlistId" in rebuilt && rebuilt.playlistId).not.toBe(sid("gone"));
-    expect(fake.calls.filter((c) => c.method === "POST" && c.path === "/me/playlists")).toHaveLength(1);
-  });
-
-  it("a 429 mid-build waits Retry-After and carries on", async () => {
-    const { fake, spotify, slept } = setup({ albums: catalogue() });
-    fake.script("GET /search", { status: 429, headers: { "Retry-After": "7" } });
-    const built = await buildMinecraftPlaylist(spotify, {});
-    expect(built).toMatchObject({ found: 9 });
-    expect(slept).toContain(7000);
   });
 });
 

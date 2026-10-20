@@ -4,22 +4,23 @@
  * directly. Every call goes through injected deps, so the tests drive it against a fake API.
  *
  *  - 401: the token is fetched again once, asking the Worker for a fresh one, and the call tried again.
- *  - 429: a short `Retry-After` is waited out and the call tried once more; a longer one is handed back with its wait
- *    (the poller backs off by it; a command says "try again shortly").
+ *  - 429: the shared backoff (music/backoff.ts) — the call is not tried again; while it lasts every call is refused
+ *    here, before the network (`SpotifyError` 429, reason "BACKOFF", with the time left). A success resets it.
  *  - 404 `NO_ACTIVE_DEVICE` (or any 404 from a player command): `isNoDevice` — the dock's open-link fallback.
  *
- * Development-mode notes (Spotify, 2026): search answers at most 10; a playlist's items are readable only when the
- * athlete owns or collaborates on it (`/playlists/{id}/items`, renamed from `/tracks`); playlists are created with
- * `POST /me/playlists`.
+ * It reads and plays; it never creates, changes or deletes anything in the athlete's Spotify account.
+ *
+ * Development-mode notes (Spotify, 2026): a playlist's items are readable only when the athlete owns or collaborates on
+ * it (`/playlists/{id}/items`, renamed from `/tracks`); its name and description are readable either way.
  */
+import { isSpotifyCover, MUSIC_DESCRIPTION_MAX, MUSIC_NAME_MAX, plainSpotifyText } from "@rg/domain";
+import { makeBackoff, type Backoff } from "./backoff.js";
 
 export const SPOTIFY_API = "https://api.spotify.com/v1";
 /** A token closer than this to its expiry is fetched again before use. */
 export const TOKEN_EARLY_MS = 60_000;
-/** The longest `Retry-After` an interactive call waits out by itself. */
-export const SHORT_WAIT_MS = 3_000;
-/** When a 429 carries no `Retry-After`. */
-const DEFAULT_RETRY_MS = 5_000;
+/** The athlete's playlists listed at a time, in the add flow. */
+export const PLAYLISTS_PAGE = 20;
 
 export type TokenAnswer =
   | { connected: true; accessToken: string; expiresAt: string; apiBase?: string }
@@ -35,6 +36,9 @@ export class SpotifyError extends Error {
     super(`spotify_${status}${reason ? `_${reason}` : ""}`);
   }
 }
+
+/** Spotify asked the dock to slow down (a 429 just now, or the backoff still running): `retryAfterMs` is the time left. */
+export const isSlowDown = (e: unknown): e is SpotifyError => e instanceof SpotifyError && e.status === 429;
 
 /** Spotify isn't connected for this athlete, or the consent needs renewing ("reconnect"). */
 export class NotConnected extends Error {
@@ -52,7 +56,8 @@ export interface SpotifyDeps {
   token: (fresh: boolean) => Promise<TokenAnswer>;
   fetch: typeof fetch;
   now: () => number;
-  sleep: (ms: number) => Promise<void>;
+  /** The backoff every call shares (default: one of this client's own, kept nowhere). */
+  backoff?: Backoff;
 }
 
 export interface Device {
@@ -73,42 +78,60 @@ export interface PlayerState {
   item?: { name: string; artists?: Array<{ name: string }>; duration_ms?: number; uri?: string } | null;
 }
 
-export interface PlaylistSummary {
-  id: string;
+/** What Spotify says of a playlist or an album, as the dock keeps it: plain words, a cover on Spotify's own hosts. */
+export interface ContextDetails {
   name: string;
-  uri: string;
+  description: string;
+  image: string | null;
   total: number | null;
 }
 
-export interface AlbumHit {
+export interface PlaylistSummary extends ContextDetails {
   id: string;
-  name: string;
-  album_type?: string;
-  total_tracks?: number;
-  artists: Array<{ name: string }>;
+  uri: string;
 }
 
 interface RequestOptions {
   query?: Record<string, string | number | boolean | undefined>;
   body?: unknown;
-  /** The longest Retry-After waited out here (default: a short one), and how many times. */
-  maxWaitMs?: number;
-  waits?: number;
 }
 
 /** A path on this origin (the fixture's stand-in API), never another host. */
 const sameOriginPath = (base: string | undefined): string | null =>
   base && base.startsWith("/") && !base.startsWith("//") ? base.replace(/\/+$/, "") : null;
 
-/** Spotify's Retry-After, in ms. Missing, empty or unreadable — a browser shows the page only the headers CORS
- * exposes, and this one may not be — it is the default, never 0 (review #3: `Number(null)` was 0, a retry at once). */
-function retryAfterMs(res: Response): number {
+/** Spotify's Retry-After, in ms — or null when the page can't read it (a browser shows the page only the headers CORS
+ * exposes, and this one may not be): the backoff's own step decides then. */
+function retryAfterMs(res: Response): number | null {
   const raw = res.headers.get("retry-after")?.trim();
   const secs = raw ? Number(raw) : NaN;
-  return Number.isFinite(secs) && secs > 0 ? Math.ceil(secs * 1000) : DEFAULT_RETRY_MS;
+  return Number.isFinite(secs) && secs > 0 ? Math.ceil(secs * 1000) : null;
+}
+
+/** The smallest cover of at least 64 px (Spotify lists them largest first), on Spotify's own hosts; else null. */
+function coverOf(images: unknown): string | null {
+  if (!Array.isArray(images)) return null;
+  const usable = images.filter((i): i is { url: string; width?: number | null } => !!i && isSpotifyCover((i as { url?: unknown }).url));
+  const fit = usable.filter((i) => (i.width ?? 640) >= 64);
+  return (fit.at(-1) ?? usable[0])?.url ?? null;
+}
+
+const totalOf = (v: unknown): number | null => (typeof v === "number" && Number.isInteger(v) && v >= 0 ? v : null);
+
+/** Spotify's playlist JSON as the dock keeps it; null without a name. */
+function playlistDetails(p: { name?: unknown; description?: unknown; images?: unknown; items?: { total?: unknown }; tracks?: { total?: unknown } }): ContextDetails | null {
+  const name = plainSpotifyText(p.name, MUSIC_NAME_MAX);
+  if (!name) return null;
+  return {
+    name,
+    description: plainSpotifyText(p.description, MUSIC_DESCRIPTION_MAX),
+    image: coverOf(p.images),
+    total: totalOf(p.items?.total) ?? totalOf(p.tracks?.total),
+  };
 }
 
 export function makeSpotify(deps: SpotifyDeps) {
+  const backoff = deps.backoff ?? makeBackoff({ now: deps.now, storage: null });
   let cached: { token: string; expiresAt: number; base: string } | null = null;
   /** The token fetch under way, shared by every call that needs one meanwhile (review #1: the dock reads two
    * endpoints at once, and two fetches after the hour meant two refreshes racing on the server). A fresh one is never
@@ -135,16 +158,22 @@ export function makeSpotify(deps: SpotifyDeps) {
     }
   }
 
+  /** Backing off: refused here, before the token or the network. */
+  const holdIfBackingOff = (path: string) => {
+    const left = backoff.remaining();
+    if (left > 0) throw new SpotifyError(429, "BACKOFF", left, path);
+  };
+
   async function request<T>(method: string, path: string, opts: RequestOptions = {}): Promise<T | null> {
+    holdIfBackingOff(path);
     let t = await token(false);
     let refetched = false;
-    let waits = opts.waits ?? 1;
-    const maxWait = opts.maxWaitMs ?? SHORT_WAIT_MS;
     const qs = Object.entries(opts.query ?? {})
       .filter(([, v]) => v !== undefined)
       .map(([k, v]) => `${encodeURIComponent(k)}=${encodeURIComponent(String(v))}`)
       .join("&");
     for (;;) {
+      holdIfBackingOff(path);
       const res = await deps.fetch(`${t.base}${path}${qs ? `?${qs}` : ""}`, {
         method,
         headers: { Authorization: `Bearer ${t.token}`, ...(opts.body === undefined ? {} : { "Content-Type": "application/json" }) },
@@ -156,37 +185,16 @@ export function makeSpotify(deps: SpotifyDeps) {
         t = cached && cached.token !== t.token ? cached : await token(true);
         continue;
       }
-      if (res.status === 429) {
-        const wait = retryAfterMs(res);
-        if (waits > 0 && wait <= maxWait) {
-          waits -= 1;
-          await deps.sleep(wait);
-          continue;
-        }
-        throw new SpotifyError(429, null, wait, path);
-      }
+      if (res.status === 429) throw new SpotifyError(429, null, backoff.hit(retryAfterMs(res)), path);
       if (!res.ok) {
         const body = (await res.json().catch(() => null)) as { error?: { reason?: unknown } } | null;
         throw new SpotifyError(res.status, typeof body?.error?.reason === "string" ? body.error.reason : null, null, path);
       }
+      backoff.ok();
       if (res.status === 204 || res.status === 202) return null;
       const text = await res.text();
       return text ? (JSON.parse(text) as T) : null;
     }
-  }
-
-  /** A paged list read to its end — bounded, so a cursor that never ends can't loop. */
-  async function pages<T>(path: string, query: Record<string, string | number>, maxPages: number, opts: RequestOptions = {}): Promise<T[]> {
-    const out: T[] = [];
-    let offset = 0;
-    for (let page = 0; page < maxPages; page++) {
-      const res = await request<{ items?: T[]; next?: string | null }>("GET", path, { ...opts, query: { ...query, offset } });
-      const items = res?.items ?? [];
-      out.push(...items);
-      if (!res?.next || items.length === 0) break;
-      offset += items.length;
-    }
-    return out;
   }
 
   const device = (deviceId?: string | null) => (deviceId ? { device_id: deviceId } : {});
@@ -194,12 +202,22 @@ export function makeSpotify(deps: SpotifyDeps) {
     const m = /^spotify:(playlist|album):([A-Za-z0-9]+)$/.exec(uri);
     return m ? { kind: m[1]!, id: m[2]! } : null;
   };
+  /** A read that may fail for this athlete (not theirs, gone): null — but never past a lost connection or a slow-down. */
+  async function soft<T>(read: () => Promise<T>): Promise<T | null> {
+    try {
+      return await read();
+    } catch (e) {
+      if (e instanceof NotConnected || isSlowDown(e)) throw e;
+      return null;
+    }
+  }
 
   return {
     request,
+    backoff,
     devices: async (): Promise<Device[]> => (await request<{ devices?: Device[] }>("GET", "/me/player/devices"))?.devices ?? [],
     /** Now playing; null when nothing is (Spotify's 204). */
-    player: (opts: { waits?: number } = {}) => request<PlayerState>("GET", "/me/player", { waits: opts.waits ?? 0 }),
+    player: () => request<PlayerState>("GET", "/me/player"),
     shuffle: (on: boolean, deviceId?: string | null) => request("PUT", "/me/player/shuffle", { query: { state: on, ...device(deviceId) } }),
     play: (p: { contextUri?: string; position?: number; deviceId?: string | null }) =>
       request("PUT", "/me/player/play", {
@@ -211,53 +229,40 @@ export function makeSpotify(deps: SpotifyDeps) {
     volume: (percent: number, deviceId?: string | null) =>
       request("PUT", "/me/player/volume", { query: { volume_percent: Math.max(0, Math.min(100, Math.round(percent))), ...device(deviceId) } }),
     /** How many tracks a context holds — an album's, or a playlist's the athlete owns; null when Spotify won't say. */
-    count: async (uri: string): Promise<number | null> => {
-      const ctx = contextPath(uri);
-      if (!ctx) return null;
-      const path = ctx.kind === "album" ? `/albums/${ctx.id}/tracks` : `/playlists/${ctx.id}/items`;
-      try {
-        const res = await request<{ total?: unknown }>("GET", path, { query: { limit: 1 } });
-        return typeof res?.total === "number" ? res.total : null;
-      } catch (e) {
-        if (e instanceof NotConnected) throw e;
-        return null;
-      }
+    count: (uri: string): Promise<number | null> =>
+      soft(async () => {
+        const ctx = contextPath(uri);
+        if (!ctx) return null;
+        const path = ctx.kind === "album" ? `/albums/${ctx.id}/tracks` : `/playlists/${ctx.id}/items`;
+        return totalOf((await request<{ total?: unknown }>("GET", path, { query: { limit: 1 } }))?.total);
+      }),
+    /** What Spotify says of a playlist or an album — its name, its description (an album's: who made it), its cover and
+     * its count — in one read; null when the athlete can't read it. */
+    details: (uri: string): Promise<ContextDetails | null> =>
+      soft(async () => {
+        const ctx = contextPath(uri);
+        if (!ctx) return null;
+        if (ctx.kind === "playlist") {
+          return playlistDetails((await request<Parameters<typeof playlistDetails>[0]>("GET", `/playlists/${ctx.id}`, { query: { fields: "name,description,images" } })) ?? {});
+        }
+        const a = await request<{ name?: unknown; images?: unknown; total_tracks?: unknown; artists?: Array<{ name?: unknown }> }>("GET", `/albums/${ctx.id}`);
+        const name = plainSpotifyText(a?.name, MUSIC_NAME_MAX);
+        if (!name) return null;
+        const by = (a?.artists ?? []).map((x) => plainSpotifyText(x?.name, 60)).filter(Boolean);
+        return { name, description: by.length ? plainSpotifyText(`Album by ${by.join(", ")}`, MUSIC_DESCRIPTION_MAX) : "", image: coverOf(a?.images), total: totalOf(a?.total_tracks) };
+      }),
+    /** One page of the athlete's own playlists (and those they follow), with what the dock keeps of each; `next` is the
+     * offset of the page after it, or null. One read: the add flow asks for the next page only when the athlete does. */
+    myPlaylists: async (offset = 0, limit = PLAYLISTS_PAGE): Promise<{ items: PlaylistSummary[]; next: number | null }> => {
+      const res = await request<{ items?: Array<Record<string, unknown> | null>; next?: unknown }>("GET", "/me/playlists", { query: { limit, offset } });
+      const raw = res?.items ?? [];
+      const items = raw.flatMap((p) => {
+        if (!p || typeof p.id !== "string") return [];
+        const d = playlistDetails(p as Parameters<typeof playlistDetails>[0]);
+        return d ? [{ id: p.id, uri: typeof p.uri === "string" ? p.uri : `spotify:playlist:${p.id}`, ...d }] : [];
+      });
+      return { items, next: res?.next && raw.length > 0 ? offset + raw.length : null };
     },
-    /** A playlist's or an album's name, when Spotify lets the athlete read it; else null. */
-    name: async (uri: string): Promise<string | null> => {
-      const ctx = contextPath(uri);
-      if (!ctx) return null;
-      try {
-        const res = await request<{ name?: unknown }>("GET", `/${ctx.kind}s/${ctx.id}`, ctx.kind === "playlist" ? { query: { fields: "name" } } : {});
-        return typeof res?.name === "string" && res.name.trim() ? res.name.trim() : null;
-      } catch (e) {
-        if (e instanceof NotConnected) throw e;
-        return null;
-      }
-    },
-    /** The athlete's own playlists (and those they follow), a short list. */
-    myPlaylists: async (limit = 20): Promise<PlaylistSummary[]> => {
-      const res = await request<{ items?: Array<{ id: string; name: string; uri?: string; items?: { total?: number }; tracks?: { total?: number } } | null> }>(
-        "GET",
-        "/me/playlists",
-        { query: { limit } },
-      );
-      return (res?.items ?? [])
-        .filter((p): p is NonNullable<typeof p> => !!p && typeof p.id === "string")
-        .map((p) => ({ id: p.id, name: p.name, uri: p.uri ?? `spotify:playlist:${p.id}`, total: p.items?.total ?? p.tracks?.total ?? null }));
-    },
-    searchAlbums: async (q: string, opts: RequestOptions = {}): Promise<AlbumHit[]> =>
-      (await request<{ albums?: { items?: AlbumHit[] } }>("GET", "/search", { ...opts, query: { q, type: "album", limit: 10 } }))?.albums?.items ?? [],
-    /** Every track of an album (pages of 50, at most 20 pages). */
-    albumTracks: async (id: string, opts: RequestOptions = {}): Promise<string[]> =>
-      (await pages<{ uri?: string }>(`/albums/${id}/tracks`, { limit: 50 }, 20, opts)).map((t) => t.uri).filter((u): u is string => typeof u === "string"),
-    createPlaylist: async (name: string, description: string, opts: RequestOptions = {}): Promise<{ id: string }> => {
-      const res = await request<{ id?: string }>("POST", "/me/playlists", { ...opts, body: { name, public: false, description } });
-      if (!res?.id) throw new SpotifyError(500, "NO_PLAYLIST_ID", null, "/me/playlists");
-      return { id: res.id };
-    },
-    addItems: (id: string, uris: string[], opts: RequestOptions = {}) => request("POST", `/playlists/${id}/items`, { ...opts, body: { uris } }),
-    replaceItems: (id: string, uris: string[], opts: RequestOptions = {}) => request("PUT", `/playlists/${id}/items`, { ...opts, body: { uris } }),
   };
 }
 

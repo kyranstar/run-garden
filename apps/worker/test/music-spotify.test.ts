@@ -218,7 +218,7 @@ describe("login", () => {
     expect(to.searchParams.get("code_challenge")).toMatch(/^[A-Za-z0-9_-]{43}$/);
     expect(to.searchParams.get("state")).toBeTruthy();
     expect(to.searchParams.get("scope")!.split(" ").sort()).toEqual(
-      ["playlist-modify-private", "playlist-read-private", "user-modify-playback-state", "user-read-currently-playing", "user-read-playback-state"],
+      ["playlist-read-private", "user-modify-playback-state", "user-read-currently-playing", "user-read-playback-state"],
     );
     // Nothing secret travels in the URL: no verifier, no secret.
     expect(res.headers.get("location")).not.toContain("a-test-session-secret");
@@ -610,11 +610,11 @@ describe("the dock's read and its shortcuts", () => {
 
   it("reads the connection and the shortcuts — three statements, no fetch", async () => {
     let res = await call("GET", "/api/music");
-    expect(res.body).toEqual({ connected: false, music: { shortcuts: [] } });
+    expect(res.body).toEqual({ connected: false, music: { shortcuts: [] }, choices: {} });
     expect(res.statements).toHaveLength(3);
     await connect();
     res = await call("GET", "/api/music");
-    expect(res.body).toEqual({ connected: true, music: { shortcuts: [] } });
+    expect(res.body).toEqual({ connected: true, music: { shortcuts: [] }, choices: {} });
     expect(tokenCalls).toEqual([]);
   });
 
