@@ -1,6 +1,6 @@
 import { useRef, useState } from "react";
 import type { CoachPlanDto, PlanWeekResponse, RaceHubResponse, WorkoutDto } from "@rg/api-client";
-import { addDays, humanizeWorkoutTitle, startOfIsoWeek } from "@rg/domain";
+import { addDays, humanizeWorkoutTitle, linesOf, startOfIsoWeek, weekNaming, type LineBlock, type TrainingLine } from "@rg/domain";
 import { dayOfMonth, formatMinutes, monthTitle } from "../components.js";
 import { IconAlert, IconCheck, IconClock } from "../icons.js";
 import type { PendingGhost } from "./coach-panel.js";
@@ -115,33 +115,82 @@ function blockWeekOf(p: Pick<CoachPlanDto, "startDate" | "endDate">, weekStart: 
   return `week ${weeks(weekStart)} of ${weeks(startOfIsoWeek(p.endDate))}`;
 }
 
-type WeekPlanBlock = Pick<CoachPlanDto, "id" | "name" | "discipline" | "raceDate" | "startDate" | "endDate" | "source">;
+type WeekPlanBlock = Pick<CoachPlanDto, "id" | "name" | "discipline" | "raceDate" | "startDate" | "endDate" | "source"> &
+  Partial<Pick<CoachPlanDto, "status" | "planRaceDate">>;
 
 /**
- * The plan a week's line names, its week, and how many other plans hold the week (review-3's re-check). A plan holds a
- * week when it runs into it (one starting mid-week holds it; one that ended the Sunday before does not).
- *  - The MAIN plan: a running plan with a race first; else the one holding the most of the week's sessions (`week`'s
- *    rows by their plan); a tie to the earlier start.
+ * The plan a week's line names, its week, and how many other groups hold the week — by `weekNaming`, the one rule the
+ * week brief shares (training lines §3.6). A plan holds a week when it runs into it (one starting mid-week holds it;
+ * one that ended the Sunday before does not).
+ *  - The MAIN group: the one holding the most of the week's sessions (`week`'s rows by their plan); a tie to the run
+ *    line with a race, then the earlier start. A group is a training line or a plan of its own (Studio, COROS). Inside
+ *    a line the phase holding the most sessions names the week; a tie to the later start.
  *  - Its own count: a coach block's, counted from its own dates as the server counts a block's weeks — never the count
  *    the week's read gives, which is the longest block's. A watch plan's (or the Studio's) week isn't one the read
  *    gives: none.
- *  - `planMore`: the other plans holding the week ("+1").
+ *  - `planMore`: the other groups holding the week ("+1"); a line's own phases are never one.
+ *  - `lines`: as the plans read answers them; absent, worked out from the coach blocks.
  *  - None holding it: no name; the count as the read gives it (`planWeekOf` undefined).
  */
 export function weekPlan(
   blocks: ReadonlyArray<WeekPlanBlock>,
   weekStart: string,
   week?: Pick<PlanWeekResponse, "days"> | null,
+  lines?: ReadonlyArray<TrainingLine>,
 ): { planName: string | null; planWeekOf: string | null | undefined; planMore: number } {
-  const holding = blocks.filter((p) => startOfIsoWeek(p.startDate) <= weekStart && weekStart <= p.endDate);
-  if (holding.length === 0) return { planName: null, planWeekOf: undefined, planMore: 0 };
-  const sessions = (id: string) =>
-    (week?.days ?? []).reduce((n, d) => n + d.workouts.filter((w) => w.planId === id && w.category !== "rest").length, 0);
-  const raced = (p: WeekPlanBlock) => (p.discipline === "run" && !!p.raceDate ? 1 : 0);
-  const main = [...holding].sort(
-    (x, y) => raced(y) - raced(x) || sessions(y.id) - sessions(x.id) || x.startDate.localeCompare(y.startDate) || x.id.localeCompare(y.id),
-  )[0]!;
-  return { planName: main.name, planWeekOf: (main.source ?? "coach") === "coach" ? blockWeekOf(main, weekStart) : null, planMore: holding.length - 1 };
+  const sessionsByPlan = new Map<string, number>();
+  for (const d of week?.days ?? []) {
+    for (const w of d.workouts) {
+      if (w.planId && w.category !== "rest") sessionsByPlan.set(w.planId, (sessionsByPlan.get(w.planId) ?? 0) + 1);
+    }
+  }
+  // The lines the plans read answers; an older payload has none, so they are worked out from the coach blocks.
+  const known =
+    lines ??
+    linesOf(
+      blocks
+        .filter((b) => (b.source ?? "coach") === "coach")
+        .map((b) => ({
+          id: b.id,
+          discipline: b.discipline as LineBlock["discipline"],
+          status: (b.status ?? "active") as LineBlock["status"],
+          name: b.name,
+          startDate: b.startDate,
+          endDate: b.endDate,
+          planRaceDate: b.planRaceDate ?? b.raceDate,
+        })),
+      weekStart,
+    );
+  const named = weekNaming(blocks, known, weekStart, sessionsByPlan);
+  const main = blocks.find((b) => b.id === named.planId);
+  if (!main) return { planName: null, planWeekOf: undefined, planMore: 0 };
+  return { planName: main.name, planWeekOf: (main.source ?? "coach") === "coach" ? blockWeekOf(main, weekStart) : null, planMore: named.others };
+}
+
+/**
+ * The week-jump menu: the plans' weeks, the longest span numbering the list. A coach phase's span is its whole line's
+ * (a line's second phase carries on the count from the line's first phase, never "wk 1" again); a Studio or COROS plan's
+ * is its own. With no lines (an older payload) a phase counts from its own start.
+ */
+export function jumpWeeksOf(
+  plans: ReadonlyArray<Pick<CoachPlanDto, "id" | "startDate" | "endDate" | "source">>,
+  lines?: ReadonlyArray<Pick<TrainingLine, "startDate" | "endDate" | "phases">>,
+): Array<{ monday: string; label: string }> {
+  if (plans.length === 0) return [];
+  const spans = plans.map((p) => {
+    const line = (p.source ?? "coach") === "coach" ? lines?.find((l) => l.phases.some((ph) => ph.id === p.id)) : undefined;
+    return { start: startOfIsoWeek(line?.startDate ?? p.startDate), end: startOfIsoWeek(line?.endDate ?? p.endDate) };
+  });
+  const anchor = spans.reduce((a, b) => (Date.parse(b.end) - Date.parse(b.start) > Date.parse(a.end) - Date.parse(a.start) ? b : a));
+  const mondays = new Set<string>();
+  for (const s of spans) {
+    for (let m = s.start; m <= s.end; m = addDays(m, 7)) mondays.add(m);
+  }
+  return [...mondays].sort().map((monday) => {
+    const idx = Math.floor((Date.parse(monday) - Date.parse(anchor.start)) / 604_800_000) + 1;
+    const inAnchor = monday >= anchor.start && monday <= anchor.end;
+    return { monday, label: `${inAnchor ? `wk ${idx} · ` : ""}${weekRangeLabel(monday)}` };
+  });
 }
 
 /** The plan a week's line names (`weekPlan`'s main plan). */

@@ -26,7 +26,8 @@ import { planRoutes } from "../src/routes/plan.js";
 import { applyJobResult, applyMove, emitPendingWork } from "../src/services/jobs.js";
 import { openIntentFor } from "../src/services/sync-intents.js";
 import { createSession, SESSION_COOKIE } from "../src/auth/sessions.js";
-import { makeTestDb, makeTestUser, mountRoutes, connectTestCoros } from "./helpers.js";
+import { cloneTestDb, makeTestDb, makeTestUser, mountRoutes, connectTestCoros } from "./helpers.js";
+import { WEEK_NAMING_CASES, datedPlans } from "../../../packages/domain/test/week-naming-cases.js";
 
 const { activities, corosWriteJobs, plannedWorkouts, scheduleOverrides, workoutCompletionMatches } = schema;
 
@@ -581,12 +582,12 @@ describe("GET /week — brief facts (2026-08-11 rework §4)", () => {
     return addDays(startOfIsoWeek(today), offsetWeeks * 7);
   }
 
-  async function seedWeekWorkout(date: string, opts: { state?: string; seconds?: number; category?: string; title?: string } = {}): Promise<string> {
+  async function seedWeekWorkout(date: string, opts: { state?: string; seconds?: number; category?: string; title?: string; planId?: string } = {}): Promise<string> {
     const id = newId();
     await db.insert(plannedWorkouts).values({
       id,
       userId,
-      planId: "p",
+      planId: opts.planId ?? "p",
       sourceWorkoutId: `4738:${id.slice(0, 6)}`,
       title: opts.title ?? "Session",
       category: (opts.category ?? "easy") as never,
@@ -621,10 +622,11 @@ describe("GET /week — brief facts (2026-08-11 rework §4)", () => {
       createdAt: nowInstant(),
       updatedAt: nowInstant(),
     });
-    await seedWeekWorkout(monday, { state: "completed", seconds: 2400 });
-    await seedWeekWorkout(addDays(monday, 2), { seconds: 3600, category: "quality" });
-    await seedWeekWorkout(addDays(monday, 5), { seconds: 5400, category: "long" });
-    await seedWeekWorkout(addDays(monday, 6), { category: "rest" });
+    // The week's sessions are the plan's own: a plan id nothing knows would be a plan of its own, naming the week.
+    await seedWeekWorkout(monday, { state: "completed", seconds: 2400, planId: "cp1" });
+    await seedWeekWorkout(addDays(monday, 2), { seconds: 3600, category: "quality", planId: "cp1" });
+    await seedWeekWorkout(addDays(monday, 5), { seconds: 5400, category: "long", planId: "cp1" });
+    await seedWeekWorkout(addDays(monday, 6), { category: "rest", planId: "cp1" });
     await db.insert(schema.coachMessages).values({
       id: newId(),
       userId,
@@ -773,6 +775,82 @@ describe("GET /week — brief facts (2026-08-11 rework §4)", () => {
     const w = body.days.flatMap((d) => d.workouts)[0]!;
     expect(w.title).toBe("Easy run");
     expect(w.corosName).toBe("T1004");
+  });
+
+  /** `GET /week?start=` against a copy of the database that reports every statement. */
+  async function weekWithStatements(start: string): Promise<{ body: Record<string, unknown>; statements: string[] }> {
+    const statements: string[] = [];
+    const counted = cloneTestDb(db, { onStatement: (q) => statements.push(q) });
+    const app = mountRoutes(counted, "/api/plan", planRoutes);
+    const res = await app.request(`/api/plan/week?start=${start}`, { headers: { Cookie: cookie } }, makeEnv());
+    expect(res.status).toBe(200);
+    return { body: (await res.json()) as Record<string, unknown>, statements };
+  }
+
+  const coachPlanRow = (p: { id: string; name: string; discipline: string; status: string; startDate: string; endDate: string; raceDate?: string | null }) => ({
+    ...p,
+    userId,
+    raceDate: p.raceDate ?? null,
+    stampPrefix: p.id.slice(0, 8),
+    createdAt: nowInstant(),
+    updatedAt: nowInstant(),
+  });
+
+  it("the brief's reads: the same statement count with a past line and a completed phase as with one active plan (pinned)", async () => {
+    const monday = mondayOf(0);
+    await db.insert(schema.coachPlans).values(
+      coachPlanRow({ id: "only", name: "Only", discipline: "run", status: "active", startDate: addDays(monday, -14), endDate: addDays(monday, 20) }),
+    );
+    await seedWeekWorkout(monday, { planId: "only" });
+    const one = await weekWithStatements(monday);
+    await db.insert(schema.coachPlans).values([
+      coachPlanRow({ id: "done", name: "Done", discipline: "run", status: "completed", startDate: addDays(monday, -70), endDate: addDays(monday, -15) }),
+      coachPlanRow({ id: "lift", name: "Lift", discipline: "lift", status: "active", startDate: addDays(monday, -14), endDate: addDays(monday, 20) }),
+    ]);
+    await seedWeekWorkout(addDays(monday, 1), { planId: "lift" });
+    const many = await weekWithStatements(monday);
+    expect(many.statements.length).toBe(one.statements.length);
+    // Measured before this change (one active plan, one workout): 13. The widened plans read is the same statement.
+    expect(one.statements.length).toBe(13);
+  });
+
+  describe("the week-naming table (training lines §3.6): the brief names the phase the week line names", () => {
+    for (const c of WEEK_NAMING_CASES) {
+      it(c.name, async () => {
+        const monday = mondayOf(0);
+        const weekStart = addDays(monday, c.weekOffset * 7);
+        const dated = datedPlans(monday, c);
+        // A Studio plan is no row the brief reads: only its sessions reach the week.
+        await db.insert(schema.coachPlans).values(
+          dated.filter((p) => (p.source ?? "coach") === "coach").map((p) => coachPlanRow({ ...p, name: p.name })),
+        );
+        let n = 0;
+        for (const p of dated) {
+          for (let k = 0; k < p.sessions; k++) {
+            await seedWeekWorkout(addDays(weekStart, n++ % 7), { planId: p.id });
+          }
+        }
+        const { body } = await weekWithStatements(weekStart);
+        expect([body.weekIndex, body.weekTotal]).toEqual(c.expect.weekOf ?? [null, null]);
+      });
+    }
+  });
+
+  it("a rest day is no session, and a one-off bucket's row never names the week (whether or not its container is read)", async () => {
+    const monday = mondayOf(0);
+    await db.insert(schema.coachPlans).values([
+      coachPlanRow({ id: "base", name: "Base", discipline: "run", status: "active", startDate: addDays(monday, -7), endDate: addDays(monday, 20) }),
+      coachPlanRow({ id: "lift", name: "Lift", discipline: "lift", status: "active", startDate: addDays(monday, -14), endDate: addDays(monday, 20) }),
+    ]);
+    await seedWeekWorkout(monday, { planId: "base" });
+    await seedWeekWorkout(addDays(monday, 1), { planId: "lift" });
+    await seedWeekWorkout(addDays(monday, 2), { planId: "base", category: "rest" });
+    await seedWeekWorkout(addDays(monday, 3), { planId: "base", category: "rest" });
+    // One session each: the tie goes to the earlier start (the lifting plan's, at week 3 of 5).
+    expect(await weekWithStatements(monday).then((r) => [r.body.weekIndex, r.body.weekTotal])).toEqual([3, 5]);
+    // A one-off's session whose container row is not there is no plan's: it names nothing.
+    for (let i = 0; i < 3; i++) await seedWeekWorkout(addDays(monday, 4 + (i % 2)), { planId: "adhoc-lift-gone" });
+    expect(await weekWithStatements(monday).then((r) => [r.body.weekIndex, r.body.weekTotal])).toEqual([3, 5]);
   });
 
   it("validates the start param (must be a Monday)", async () => {

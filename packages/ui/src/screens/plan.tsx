@@ -36,7 +36,7 @@ import { useUnits } from "../use-units.js";
 import { YourPlans } from "./plan-cards.js";
 import { LineSheet, PlanSheet } from "./plan-sheet.js";
 import { ThreadCoachCards } from "./thread-coach-cards.js";
-import { askable, displayCompletionState, focusAfterRemove, WeekView, weekPlan, weekRangeLabel } from "./week-view.js";
+import { askable, displayCompletionState, focusAfterRemove, jumpWeeksOf, WeekView, weekPlan } from "./week-view.js";
 import { useCorosReadNow } from "./use-coros-read.js";
 import { CorosCheck } from "./coros-check.js";
 import { isOneOff, SessionSheet } from "../components/session-sheet.js";
@@ -829,25 +829,13 @@ export function PlanScreen() {
   const onGhostTap = (proposalId: string) => focusProposal(proposalId, false);
 
   // ── Jump menu: the active plans' weeks, longest plan numbering the list ─
-  const jumpWeeks = useMemo(() => {
-    if (activePlans.length === 0) return [];
-    const spans = activePlans.map((p) => ({
-      start: startOfIsoWeek(p.startDate),
-      end: startOfIsoWeek(p.endDate),
-    }));
-    const anchor = spans.reduce((a, b) =>
-      Date.parse(b.end) - Date.parse(b.start) > Date.parse(a.end) - Date.parse(a.start) ? b : a,
-    );
-    const mondays = new Set<string>();
-    for (const s of spans) {
-      for (let m = s.start; m <= s.end; m = addDays(m, 7)) mondays.add(m);
-    }
-    return [...mondays].sort().map((monday) => {
-      const idx = Math.floor((Date.parse(monday) - Date.parse(anchor.start)) / 604_800_000) + 1;
-      const inAnchor = monday >= anchor.start && monday <= anchor.end;
-      return { monday, label: `${inAnchor ? `wk ${idx} · ` : ""}${weekRangeLabel(monday)}` };
-    });
-  }, [activePlans]);
+  const jumpWeeks = useMemo(() => jumpWeeksOf(activePlans, coachPlans.data?.lines), [activePlans, coachPlans.data?.lines]);
+  // The plans that can name a week: every one but a retired plan or a one-off container, so a phase that has ended
+  // still names its past weeks (training lines §3.6; the brief reads the same set).
+  const namingPlans = useMemo(
+    () => (coachPlans.data?.plans ?? []).filter((p) => p.status !== "retired" && p.kind !== "loose"),
+    [coachPlans.data?.plans],
+  );
 
   const pickWeek = (monday: string) => {
     weekCursor.current = monday;
@@ -999,7 +987,7 @@ export function PlanScreen() {
             onOpenWorkout={openWorkout}
             onGhostTap={onGhostTap}
             onBrief={() => setBriefOpen(true)}
-            {...weekPlan(activePlans, week.data.weekStart, week.data)}
+            {...weekPlan(namingPlans, week.data.weekStart, week.data, lines)}
             race={race}
           />
         )}

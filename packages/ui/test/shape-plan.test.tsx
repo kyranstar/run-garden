@@ -116,12 +116,13 @@ describe("the week first", () => {
     expect(line(-1, "taper")).toBe("Aug 10–16 · 1 of 6 done");
   });
 
-  it("the plan the line names: the week's main plan (no sessions told: a tie, to the earlier start — review-3's re-check), none when no block holds it", () => {
+  it("the plan the line names: the week's main plan (no sessions told: a tie between a line's phases goes to the later start — training lines §3.6), none when no block holds it", () => {
     const block = (id: string, startDate: string, endDate: string): CoachPlanDto => ({ ...runPlan, id, name: id, startDate, endDate });
+    // The three phases are one running line (each starts within a week of the last's end).
     const plans = [block("Short", "2026-08-03", "2026-08-30"), block("Long", "2026-07-13", "2026-10-04"), block("Later", "2026-09-07", "2026-11-01")];
-    expect(weekPlanName(plans, "2026-08-10")).toBe("Long");
+    expect(weekPlanName(plans, "2026-08-10")).toBe("Short");
     expect(weekPlanName(plans, "2026-10-26")).toBe("Later");
-    expect(weekPlanName(plans, "2026-09-14")).toBe("Long");
+    expect(weekPlanName(plans, "2026-09-14")).toBe("Later");
     expect(weekPlanName(plans, "2026-11-09")).toBeNull();
     // A block that starts mid-week holds that week; one that ended the Sunday before does not.
     expect(weekPlanName([block("Midweek", "2026-08-12", "2026-08-30")], "2026-08-10")).toBe("Midweek");

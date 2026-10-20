@@ -53,7 +53,11 @@ import {
   type WorkoutDoc,
   type WorkoutSyncView,
   type WriteLane,
+  type LineBlock,
+  type WeekPlan,
   appAuthoredRow,
+  linesOf,
+  weekNaming,
 } from "@rg/domain";
 import { conditionWord, DEFAULT_GARDEN_CONFIG, type GardenSnapshot } from "@rg/garden-engine";
 import { proposeReschedules, summarizeStageRows } from "@rg/scheduling";
@@ -1107,11 +1111,10 @@ planRoutes.get("/week", async (c) => {
         .orderBy(asc(plannedWorkouts.effectiveDate), asc(plannedWorkouts.effectiveTime)),
       exerciseNameMap(db),
       cloudPresence(db, userId),
-      // Week n of m against the active coach plan covering this week's Monday.
-      db
-        .select()
-        .from(coachPlans)
-        .where(and(eq(coachPlans.userId, userId), eq(coachPlans.status, "active"))),
+      // Every coach plan of the user, whatever its status: the week's name is worked out from them by `weekNaming`
+      // (training lines §3.6) — a completed phase still names its past weeks, a retired one is known only to be left
+      // out (its rows must not read as a plan of their own). One statement, as the active-only read was.
+      db.select().from(coachPlans).where(eq(coachPlans.userId, userId)),
       // 4-week adherence source (all disciplines), trend against the 4 prior.
       db
         .select(plannedRowColumns())
@@ -1156,14 +1159,55 @@ planRoutes.get("/week", async (c) => {
   // brief read "Week 1 of 1" on top of a real four-week block, and `deloadWeek`
   // and the plan's race date went with it (a bucket has no `coach_plan_weeks`
   // rows and no race).
-  const covering = activePlans
-    .filter((p) => !isLoosePlan(p) && p.startDate <= weekEnd && p.endDate >= weekStart)
-    .sort(
-      (a, b) =>
-        Date.parse(b.endDate) - Date.parse(b.startDate) - (Date.parse(a.endDate) - Date.parse(a.startDate)) ||
-        a.startDate.localeCompare(b.startDate) ||
-        a.id.localeCompare(b.id),
-    )[0];
+  //
+  // Which phase names the week is the Plan screen's week line's question too, and one rule answers both
+  // (`weekNaming`, training lines §3.6): the group holding the most of the week's sessions; inside a line, its phase
+  // holding the most. The week's own rows give the sessions; the coach rows give the lines. A plan that is no coach row
+  // (the Studio's, COROS's) is known here only by its sessions: a group of its own, naming the week with no counter.
+  const coachRows = activePlans.filter((p) => !isLoosePlan(p));
+  const lines = linesOf(
+    coachRows.map(
+      (p): LineBlock => ({
+        id: p.id,
+        discipline: p.discipline as LineBlock["discipline"],
+        status: p.status as LineBlock["status"],
+        name: p.name,
+        startDate: p.startDate,
+        endDate: p.endDate,
+        planRaceDate: p.raceDate,
+      }),
+    ),
+    today,
+  );
+  const knownPlanIds = new Set(activePlans.map((p) => p.id));
+  const sessionsByPlan = new Map<string, number>();
+  const otherPlans = new Map<string, WeekPlan>();
+  for (const w of rows) {
+    if (w.category === "rest" || isLoosePlan({ id: w.planId })) continue;
+    sessionsByPlan.set(w.planId, (sessionsByPlan.get(w.planId) ?? 0) + 1);
+    if (!knownPlanIds.has(w.planId) && !otherPlans.has(w.planId)) {
+      otherPlans.set(w.planId, {
+        id: w.planId,
+        discipline: w.sport === "run" ? "run" : "lift",
+        startDate: weekStart,
+        endDate: weekEnd,
+        raceDate: prefs.raceDate,
+        source: "studio",
+      });
+    }
+  }
+  const naming = weekNaming(
+    [
+      ...coachRows
+        .filter((p) => p.status !== "retired")
+        .map((p): WeekPlan => ({ id: p.id, discipline: p.discipline, startDate: p.startDate, endDate: p.endDate, raceDate: p.raceDate, source: "coach" })),
+      ...otherPlans.values(),
+    ],
+    lines,
+    weekStart,
+    sessionsByPlan,
+  );
+  const covering = coachRows.find((p) => p.id === naming.planId);
 
   // Second (final) wave: the two reads gated on wave-one results — per-workout
   // sync views (need `rows`; presence threaded, not re-queried) and this
