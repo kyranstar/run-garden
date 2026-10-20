@@ -1,5 +1,6 @@
-import type { APIRequestContext, Page } from "@playwright/test";
+import type { APIRequestContext, Page, TestInfo } from "@playwright/test";
 import { test, expect } from "./fixtures.js";
+import { seededAccount } from "./seeded-accounts.js";
 
 /**
  * THE WATCH JOURNEYS (Phase 3 Task 11; spec §4–§6; approved mocks §1–3).
@@ -22,35 +23,22 @@ import { test, expect } from "./fixtures.js";
  * fresh stack to run again.
  *
  * With the switch on, each project takes (b) and (c) on an account of its own (`fixture-login?account=watch-<project>`),
- * seeded when its run starts: the two projects run at once on one stack, and on one account they moved the same future
+ * seeded before the run (the global setup, seeded-accounts.ts — never while other tests run): the two projects run at
+ * once on one stack, and on one account they moved the same future
  * slot to today and each saw the other's "Log your session", so one (c) timed out whatever the day. (a) reads the
  * stack's own seeded account.
  */
 
 const WATCH = process.env.RG_E2E_WATCH === "1";
 
-/** The sign-in's query: with the switch on, this project's own account. */
-const accountOf = (project: string): string => (WATCH ? `?account=watch-${project}` : "");
+/** The sign-in's query: with the switch on, this project's own account, seeded before the run. */
+const accountOf = (testInfo: TestInfo): string => (WATCH ? `?account=${seededAccount(testInfo, `watch-${testInfo.project.name}`)}` : "");
 
 test.describe.configure({ mode: "serial" });
 
-test.beforeAll(async ({ playwright }, testInfo) => {
-  if (!WATCH) return;
-  // A seed takes several seconds, longer while the other project seeds its own.
-  testInfo.setTimeout(150_000);
-  const req = await playwright.request.newContext({ baseURL: testInfo.project.use.baseURL });
-  try {
-    expect((await req.post(`/api/dev/fixture-login${accountOf(testInfo.project.name)}`)).ok()).toBeTruthy();
-    const seeded = await req.post("/api/dev/seed", { timeout: 120_000 });
-    expect(seeded.ok(), await seeded.text()).toBeTruthy();
-  } finally {
-    await req.dispose();
-  }
-});
-
 test.beforeEach(async ({ context, baseURL }, testInfo) => {
   // context.request sends no Origin header, which the /api/dev/* origin guard allows.
-  expect((await context.request.post(`${baseURL}/api/dev/fixture-login${accountOf(testInfo.project.name)}`)).ok()).toBeTruthy();
+  expect((await context.request.post(`${baseURL}/api/dev/fixture-login${accountOf(testInfo)}`)).ok()).toBeTruthy();
 });
 
 interface Slot {

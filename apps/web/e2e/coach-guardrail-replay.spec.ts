@@ -1,4 +1,5 @@
 import { test, expect, type APIRequestContext } from "@playwright/test";
+import { seedAlone } from "./seeded-accounts.js";
 
 /**
  * THE GUARDRAILS, DRIVEN END TO END through the real HTTP surface.
@@ -29,7 +30,10 @@ import { test, expect, type APIRequestContext } from "@playwright/test";
  *     --var FIXTURE_MODEL_URL:http://127.0.0.1:8898 --var AI_GATEWAY_API_KEY:stub
  *   RG_API_PORT=8844 RG_WEB_PORT=5244 pnpm --filter @rg/web dev        # :5244
  *   RG_BASE=http://localhost:5244 RG_MODEL_STUB=1 \
- *     pnpm --filter @rg/web exec playwright test e2e/coach-guardrail-replay.spec.ts
+ *     pnpm --filter @rg/web exec playwright test e2e/coach-guardrail-replay.spec.ts --workers 1
+ *
+ * One worker: each project's run seeds the fixture account again first (`seedAlone`, which refuses more), and a seed
+ * holds the worker while it runs.
  */
 
 const STUB = "http://127.0.0.1:8898";
@@ -107,8 +111,7 @@ test("the four guardrails the ski-prep failure walked straight through", async (
 }) => {
   test.setTimeout(240_000);
   const request = context.request;
-  expect((await request.post(`${baseURL}/api/dev/fixture-login`)).ok()).toBeTruthy();
-  expect((await request.post(`${baseURL}/api/dev/seed`)).ok()).toBeTruthy();
+  await seedAlone(request, test.info());
 
   const today = (await (await request.get(`${baseURL}/api/plan/today`)).json()).today as string;
   const iso = (offset: number) => {

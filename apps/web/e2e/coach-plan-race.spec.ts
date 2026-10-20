@@ -1,5 +1,6 @@
 import type { APIRequestContext, Page } from "@playwright/test";
 import { test, expect } from "./fixtures.js";
+import { seededAccount } from "./seeded-accounts.js";
 
 /**
  * A COACH PLAN'S RACE, CLEARED FROM ITS SHEET — END TO END (stream G, 2026-10-19: a race was cancelled, and the coach
@@ -29,12 +30,12 @@ async function model(path: string): Promise<void> {
   await fetch(`${MODEL}${path}`, { method: "POST" });
 }
 
-/** An account of the project's own, seeded: the plan it builds is nobody else's. */
+/** An account of the project's own, seeded before the run (the global setup, seeded-accounts.ts): the plan it builds is
+ * nobody else's. */
 async function signIn(request: APIRequestContext, baseURL: string | undefined, account: string) {
   for (let attempt = 1; ; attempt++) {
     try {
       expect((await request.post(`${baseURL}/api/dev/fixture-login?account=${account}`)).ok()).toBeTruthy();
-      expect((await request.post(`${baseURL}/api/dev/seed`)).ok()).toBeTruthy();
       return;
     } catch (e) {
       if (attempt >= 3 || !/ECONNRESET|socket hang up/.test(String(e))) throw e;
@@ -96,7 +97,7 @@ const dayWords = (date: string) => {
 
 test("a coach block's race, cleared from its sheet: the sheet, the week and the opening chips no longer name it", async ({ page, context, baseURL }, testInfo) => {
   test.setTimeout(240_000);
-  await signIn(context.request, baseURL, `race-${testInfo.project.name}`);
+  await signIn(context.request, baseURL, seededAccount(testInfo, `race-${testInfo.project.name}`));
   const settingsRace = ((await (await context.request.get(`${baseURL}/api/settings`)).json()) as { prefs: { raceDate: string | null } }).prefs.raceDate;
   const earlier = await retireLeftovers(context.request, baseURL);
   await model("/use/race_plan");

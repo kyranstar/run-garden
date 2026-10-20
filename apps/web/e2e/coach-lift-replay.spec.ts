@@ -1,4 +1,5 @@
 import { test, expect } from "@playwright/test";
+import { seedAlone } from "./seeded-accounts.js";
 
 /**
  * END-TO-END REPLAY of the live 2026-08-16 failure.
@@ -10,7 +11,10 @@ import { test, expect } from "@playwright/test";
  *     --var FIXTURE_MODEL_URL:http://127.0.0.1:8899 --var AI_GATEWAY_API_KEY:stub
  *   RG_API_PORT=8840 RG_WEB_PORT=5240 pnpm --filter @rg/web dev     # :5240
  *   RG_BASE=http://localhost:5240 RG_MODEL_STUB=1 \
- *     pnpm --filter @rg/web exec playwright test e2e/coach-lift-replay.spec.ts
+ *     pnpm --filter @rg/web exec playwright test e2e/coach-lift-replay.spec.ts --workers 1
+ *
+ * One worker: each project's run seeds the fixture account again first (`seedAlone`, which refuses more), and a seed
+ * holds the worker while it runs.
  *
  * THREAD_COACH:1 — the thread coach this replays has stepped back everywhere else (§8 §6): without it, the message
  * is kept with a receipt and nothing wakes.
@@ -45,8 +49,7 @@ test("the athlete's verbatim ski-prep message produces real proposals with real 
   baseURL,
 }) => {
   test.setTimeout(120_000);
-  expect((await context.request.post(`${baseURL}/api/dev/fixture-login`)).ok()).toBeTruthy();
-  expect((await context.request.post(`${baseURL}/api/dev/seed`)).ok()).toBeTruthy();
+  await seedAlone(context.request, test.info());
 
   const res = await context.request.post(`${baseURL}/api/coach/message`, {
     data: { body: MESSAGE },

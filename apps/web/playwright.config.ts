@@ -6,6 +6,8 @@ import { defineConfig, devices } from "@playwright/test";
  */
 export default defineConfig({
   testDir: "./e2e",
+  // Every account a spec signs into is seeded here, before the first test: never while other tests run (seeded-accounts.ts).
+  globalSetup: "./e2e/global-setup.ts",
   timeout: 30_000,
   fullyParallel: false,
   // A stray `test.only` fails CI instead of running one test and passing

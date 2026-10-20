@@ -1,5 +1,6 @@
 import type { APIRequestContext, BrowserContext, Page } from "@playwright/test";
 import { test, expect } from "./fixtures.js";
+import { seedAlone } from "./seeded-accounts.js";
 
 /**
  * R11 (J02): A QUICK START PLAYED OFFLINE, SAVED ONCE BACK ONLINE. The athlete opens the Studio with no network (on a
@@ -16,7 +17,8 @@ import { test, expect } from "./fixtures.js";
  * --var APP_URL:http://localhost:<port>` (its `[assets]` serve `apps/web/dist`); then `RG_E2E_BUILT=1
  * RG_BASE=http://localhost:<port> pnpm --filter @rg/web exec playwright test quickstart-offline --project desktop
  * --workers 1`. Chromium only (Playwright's WebKit cannot load offline through a service worker). The journey seeds
- * the fixture again (which removes the account's checks), so today's check is unanswered when it starts.
+ * the fixture again (which removes the account's checks), so today's check is unanswered when it starts — alone
+ * (`seedAlone`: a run of one worker, or it refuses), so the seed holds the worker while nothing else runs.
  */
 
 test.skip(!process.env.RG_E2E_BUILT, "needs the built app with its service worker (RG_E2E_BUILT=1; see the header)");
@@ -24,10 +26,8 @@ test.skip(({ browserName }) => browserName !== "chromium", "offline through a se
 test.setTimeout(240_000);
 
 /** A fresh fixture; the browser signed in, its service worker in control, nothing of an earlier journey on the device. */
-async function underTheWorker(page: Page, context: BrowserContext, baseURL: string): Promise<void> {
-  const req = context.request;
-  expect((await req.post(`${baseURL}/api/dev/fixture-login`)).ok()).toBeTruthy();
-  expect((await req.post(`${baseURL}/api/dev/seed`, { timeout: 120_000 })).ok()).toBeTruthy();
+async function underTheWorker(page: Page, context: BrowserContext): Promise<void> {
+  await seedAlone(context.request, test.info());
   await page.goto("/");
   await page.evaluate(() => navigator.serviceWorker.ready.then(() => undefined));
   await page.reload();
@@ -100,7 +100,7 @@ const stored = (page: Page, store: string) =>
   );
 
 test("a quick start played offline is saved once back online: one workout, one session, its before-reading, no calendar", async ({ page, context, baseURL }) => {
-  await underTheWorker(page, context, baseURL!);
+  await underTheWorker(page, context);
   const req = context.request;
   const today = ((await (await req.get(`${baseURL}/api/plan/today`)).json()) as { today: string }).today;
 
@@ -164,7 +164,7 @@ test("a quick start played offline is saved once back online: one workout, one s
 });
 
 test("the network cut with the builder open: started, played and saved offline, check skipped — sent when the network comes back", async ({ page, context, baseURL }) => {
-  await underTheWorker(page, context, baseURL!);
+  await underTheWorker(page, context);
   const req = context.request;
   const today = ((await (await req.get(`${baseURL}/api/plan/today`)).json()) as { today: string }).today;
   await page.goto("/studio/build/quick/hip_opener");
@@ -197,7 +197,7 @@ test("the network cut with the builder open: started, played and saved offline, 
 });
 
 test("days into the offline week: the jaw release still starts on the real profiles; with those gone too, it needs a connection", async ({ page, context, baseURL }) => {
-  await underTheWorker(page, context, baseURL!);
+  await underTheWorker(page, context);
   await page.goto("/studio/build/quick/condition_care");
   await expect(page.getByRole("button", { name: "Start now" })).toBeVisible({ timeout: 30_000 });
   await expect

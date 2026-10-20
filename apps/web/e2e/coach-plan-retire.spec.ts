@@ -1,5 +1,6 @@
 import type { APIRequestContext, Page } from "@playwright/test";
 import { test, expect } from "./fixtures.js";
+import { seededAccount } from "./seeded-accounts.js";
 
 /**
  * A PLAN THE COACH BUILT, RETIRED FROM PLAN — END TO END (§8 §4, stream P): in an account of its own, the coach builds
@@ -27,12 +28,12 @@ async function model(path: string): Promise<void> {
   await fetch(`${MODEL}${path}`, { method: "POST" });
 }
 
-/** An account of the project's own, seeded: the plan it builds and retires is nobody else's. */
+/** An account of the project's own, seeded before the run (the global setup, seeded-accounts.ts): the plan it builds and
+ * retires is nobody else's. */
 async function signIn(request: APIRequestContext, baseURL: string | undefined, account: string) {
   for (let attempt = 1; ; attempt++) {
     try {
       expect((await request.post(`${baseURL}/api/dev/fixture-login?account=${account}`)).ok()).toBeTruthy();
-      expect((await request.post(`${baseURL}/api/dev/seed`)).ok()).toBeTruthy();
       return;
     } catch (e) {
       if (attempt >= 3 || !/ECONNRESET|socket hang up/.test(String(e))) throw e;
@@ -60,7 +61,7 @@ type PlanDto = { id: string; name: string; status: string; startDate: string };
 
 test("a block the coach built, retired from Plan a slice a request: off the plan, and retired", async ({ page, context, baseURL }, testInfo) => {
   test.setTimeout(240_000);
-  await signIn(context.request, baseURL, `retire-${testInfo.project.name}`);
+  await signIn(context.request, baseURL, seededAccount(testInfo, `retire-${testInfo.project.name}`));
   await model("/use/whole_plan");
   try {
     // The block, from the conversation: one card, Approve plan.

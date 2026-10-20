@@ -1,5 +1,6 @@
-import type { APIRequestContext, Page } from "@playwright/test";
+import type { APIRequestContext, Page, TestInfo } from "@playwright/test";
 import { test, expect } from "./fixtures.js";
+import { seededAccount } from "./seeded-accounts.js";
 
 /**
  * THE BODY CHECK ON THE TODAY CARD (the new shape §4, stream E): "How's your body?" — Fresh · A bit heavy · Sore
@@ -13,9 +14,10 @@ import { test, expect } from "./fixtures.js";
  *     the plan's again.
  *   - Sore somewhere: the area picker, an area, Done — eased when the session works it, else noted.
  *
- * Each project and each kind takes an account of its own (`fixture-login?account=body-<kind>-<project>`), seeded at the
- * start: the two projects run at once on one stack. The engine account moves today's runs a day on, so the programme
- * session heads the card; the run account moves a run of the plan to today, so the run does.
+ * Each project and each kind takes an account of its own (`fixture-login?account=body-<kind>-<project>`), seeded before
+ * the run (the global setup, seeded-accounts.ts — never while other tests run): the two projects run at once on one
+ * stack. The engine account moves today's runs a day on, so the programme session heads the card; the run account moves
+ * a run of the plan to today, so the run does.
  *
  * Run: `RG_API_PORT=… RG_WEB_PORT=… bash apps/web/e2e/fixture-stack.sh`, then
  * `RG_BASE=http://localhost:<web> pnpm --filter @rg/web exec playwright test body-check`. `RG_E2E_SHOTS=<dir>` also
@@ -52,20 +54,19 @@ function works(s: SessionRead, regions: readonly string[], muscles: readonly str
 }
 const worksHips = (s: SessionRead): boolean => works(s, ["hips"], HIP_MUSCLES);
 const worksLegs = (s: SessionRead): boolean => works(s, LEG_REGIONS, LEG_MUSCLES);
-const accountOf = (kind: Kind, project: string): string => `?account=body-${kind}-${project}`;
+/** The sign-in's query: this project's account of the kind, seeded before the run. */
+const accountOf = (kind: Kind, testInfo: TestInfo): string => `?account=${seededAccount(testInfo, `body-${kind}-${testInfo.project.name}`)}`;
 const SHOTS = process.env.RG_E2E_SHOTS ?? "";
 
 test.describe.configure({ mode: "serial" });
 
 test.beforeAll(async ({ playwright }, testInfo) => {
-  // Two seeds, each several seconds — longer while the other project seeds its own.
-  testInfo.setTimeout(300_000);
+  // Each account is seeded already (the global setup): here, only the day each journey needs.
+  testInfo.setTimeout(60_000);
   for (const kind of ["engine", "run"] as const) {
     const req = await playwright.request.newContext({ baseURL: testInfo.project.use.baseURL });
     try {
-      expect((await req.post(`/api/dev/fixture-login${accountOf(kind, testInfo.project.name)}`)).ok()).toBeTruthy();
-      const seeded = await req.post("/api/dev/seed", { timeout: 120_000 });
-      expect(seeded.ok(), await seeded.text()).toBeTruthy();
+      expect((await req.post(`/api/dev/fixture-login${accountOf(kind, testInfo)}`)).ok()).toBeTruthy();
       await arrange(req, kind);
     } finally {
       await req.dispose();
@@ -148,7 +149,7 @@ async function shoot(page: Page, name: string, project: string) {
 
 test.describe("an engine session", () => {
   test.beforeEach(async ({ context, baseURL }, testInfo) => {
-    expect((await context.request.post(`${baseURL}/api/dev/fixture-login${accountOf("engine", testInfo.project.name)}`)).ok()).toBeTruthy();
+    expect((await context.request.post(`${baseURL}/api/dev/fixture-login${accountOf("engine", testInfo)}`)).ok()).toBeTruthy();
   });
 
   test("Fresh, A bit heavy (one mode down) and Undo, Sore somewhere — on the card", async ({ page, context }, testInfo) => {
@@ -172,7 +173,7 @@ test.describe("an engine session", () => {
     await shoot(page, "engine-eased", testInfo.project.name);
 
     await page.getByRole("button", { name: "Undo" }).click();
-    await expect(card.locator(".body-check-line")).toHaveText("Kept as planned.");
+    await expect(card.locator(".body-check-line")).toHaveText("Kept as planned.", { timeout: 30_000 });
     // The focus moved to the line that says so.
     await expect(card.locator(".body-check-line")).toBeFocused();
     const back = (await (await req.get(`/api/sessions/${session.id}`)).json()) as SessionRead;
@@ -202,7 +203,7 @@ test.describe("an engine session", () => {
 
 test.describe("a run of the plan", () => {
   test.beforeEach(async ({ context, baseURL }, testInfo) => {
-    expect((await context.request.post(`${baseURL}/api/dev/fixture-login${accountOf("run", testInfo.project.name)}`)).ok()).toBeTruthy();
+    expect((await context.request.post(`${baseURL}/api/dev/fixture-login${accountOf("run", testInfo)}`)).ok()).toBeTruthy();
   });
 
   test("Fresh, A bit heavy (eased by the ease op) and Undo, Sore somewhere — on the card", async ({ page, context }, testInfo) => {
@@ -228,7 +229,7 @@ test.describe("a run of the plan", () => {
     await shoot(page, "run-eased", testInfo.project.name);
 
     await page.getByRole("button", { name: "Undo" }).click();
-    await expect(card.locator(".body-check-line")).toHaveText("Kept as planned.");
+    await expect(card.locator(".body-check-line")).toHaveText("Kept as planned.", { timeout: 30_000 });
     await expect(card.locator(".body-check-line")).toBeFocused();
     const back = ((await (await req.get(`/api/plan/workouts/${run.id}`)).json()) as { workout: { title: string; stageSummary: string | null; calendarSeconds: number } }).workout;
     expect([back.title, back.stageSummary, back.calendarSeconds]).toEqual([before.title, before.stageSummary, before.calendarSeconds]);

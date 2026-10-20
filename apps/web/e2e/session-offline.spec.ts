@@ -1,5 +1,6 @@
 import type { APIRequestContext, BrowserContext, Page } from "@playwright/test";
 import { test, expect } from "./fixtures.js";
+import { seedAlone } from "./seeded-accounts.js";
 
 /**
  * THE SESSION JOURNEYS, ONLINE, OFFLINE, RELOADED AND REOPENED (Phase 2b plan Task 8; spec §2b; Review Focus 2).
@@ -17,9 +18,9 @@ import { test, expect } from "./fixtures.js";
  * --var APP_URL:http://localhost:<port>` (its `[assets]` serve `apps/web/dist`), after `wrangler d1 migrations apply
  * run-garden-db --local --persist-to <dir>`; then `RG_E2E_BUILT=1 RG_BASE=http://localhost:<port> pnpm --filter
  * @rg/web exec playwright test session-offline --project desktop --workers 1` (one at a time: each journey seeds the
- * fixture again, which holds the worker for seconds). Chromium only (Playwright's WebKit cannot reload
- * offline through a service worker). Each journey seeds the fixture again and moves one of its program slots to
- * today, later than now.
+ * fixture again, which holds the worker for seconds — `seedAlone` refuses a run of more than one worker). Chromium
+ * only (Playwright's WebKit cannot reload offline through a service worker). Each journey seeds the fixture again and
+ * moves one of its program slots to today, later than now.
  *
  * For CI it would need: a smoke job that builds the web app and serves `dist` from the fixture worker (one origin,
  * as here) instead of the Vite dev server, and a Chromium project; the iPhone half stays the owner's spike steps.
@@ -36,8 +37,7 @@ interface Slot {
 /** A fresh fixture with a program slot today, later than now; the browser signed in, its service worker in control. */
 async function freshSlot(page: Page, context: BrowserContext, baseURL: string): Promise<Slot> {
   const req = context.request;
-  expect((await req.post(`${baseURL}/api/dev/fixture-login`)).ok()).toBeTruthy();
-  expect((await req.post(`${baseURL}/api/dev/seed`, { timeout: 120_000 })).ok()).toBeTruthy();
+  await seedAlone(req, test.info());
   const today = (await (await req.get(`${baseURL}/api/plan/today`)).json()) as { today: string };
   const week = JSON.stringify(await (await req.get(`${baseURL}/api/plan/week`)).json());
   const ids = [...new Set([...week.matchAll(/"id":"(slot-[^"]+)"/g)].map((m) => m[1]!))];

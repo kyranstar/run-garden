@@ -1,8 +1,10 @@
-import type { APIRequestContext, Locator, Page } from "@playwright/test";
+import type { APIRequestContext, Locator, Page, TestInfo } from "@playwright/test";
 import { test, expect } from "./fixtures.js";
+import { runTag, seededAccount } from "./seeded-accounts.js";
 
 /**
- * THE COACH NOTICES — END TO END (stream H, 2026-10-19). In an account of its own: last week's review as the Monday cron
+ * THE COACH NOTICES — END TO END (stream H, 2026-10-19). In an account of its own, new each run and seeded before it
+ * (the global setup, seeded-accounts.ts — never while other tests run): last week's review as the Monday cron
  * writes it and a run finished this morning as a watch import lands it (`POST /api/dev/coach-notices`, fixture mode
  * only). The coach's opening screen says the review first — its first sentence, the whole of it one tap down, "Plan
  * this week" first among the chips — and, opened again, the run in figures in the athlete's units ("Today's run is in
@@ -29,14 +31,13 @@ const REVIEW_LINE = "Last week you ran 4 times for 32.1 kilometres, and the two 
 const RUN_LINE = "Today's run is in — 16 km at 5:40 /km, mostly easy.";
 const RUN_REQUEST = "Plan tomorrow around today's run — 16 km at 5:40 /km, mostly easy.";
 
-/** An account of its own for this run of the spec, seeded: the review and the run are nobody else's, and nothing in it
- * has asked the coach anything yet. */
-async function signIn(request: APIRequestContext, baseURL: string | undefined, project: string): Promise<void> {
-  const account = `notices-${Date.now().toString(36)}-${project}`.slice(0, 32);
+/** The test's account of its own, new this run and seeded before it (`which` tells the three tests' apart): the review
+ * and the run are nobody else's, and nothing in it has asked the coach anything yet. */
+async function signIn(request: APIRequestContext, baseURL: string | undefined, testInfo: TestInfo, which = ""): Promise<void> {
+  const account = seededAccount(testInfo, `notices-${runTag()}-${testInfo.project.name}${which}`);
   for (let attempt = 1; ; attempt++) {
     try {
       expect((await request.post(`${baseURL}/api/dev/fixture-login?account=${account}`)).ok()).toBeTruthy();
-      expect((await request.post(`${baseURL}/api/dev/seed`, { timeout: 120_000 })).ok()).toBeTruthy();
       return;
     } catch (e) {
       if (attempt >= 3 || !/ECONNRESET|socket hang up/.test(String(e))) throw e;
@@ -73,7 +74,7 @@ async function shot(page: Page, name: string, project: string): Promise<void> {
 test("the coach notices: last week's review, then this morning's run, each said once, the run's chip sent as the athlete's words", async ({ page, context, baseURL }, testInfo) => {
   test.setTimeout(180_000);
   const project = testInfo.project.name;
-  await signIn(context.request, baseURL, project);
+  await signIn(context.request, baseURL, testInfo);
   const seeded = await context.request.post(`${baseURL}/api/dev/coach-notices`, {
     data: { review: REVIEW, run: { meters: 16_000, seconds: 5440, zones: [1200, 3500, 600, 100, 40] } },
   });
@@ -140,7 +141,7 @@ test("the coach notices: last week's review, then this morning's run, each said 
 
 test("a slow library never keeps the coach's line from the athlete: held 5 s, the line and the chips are drawn at once, the quick starts after them — nothing moves", async ({ page, context, baseURL }, testInfo) => {
   test.setTimeout(120_000);
-  await signIn(context.request, baseURL, `${testInfo.project.name}-l`);
+  await signIn(context.request, baseURL, testInfo, "-l");
   await context.request.post(`${baseURL}/api/dev/coach-notices`, { data: { review: REVIEW } });
   await page.goto("/");
   let released = false;
@@ -170,7 +171,7 @@ test("a slow library never keeps the coach's line from the athlete: held 5 s, th
 
 test("the coach's opening holds still while it is read: with its reads held back, Build your own is drawn once, where it stays", async ({ page, context, baseURL }, testInfo) => {
   test.setTimeout(120_000);
-  await signIn(context.request, baseURL, `${testInfo.project.name}-h`);
+  await signIn(context.request, baseURL, testInfo, "-h");
   await context.request.post(`${baseURL}/api/dev/coach-notices`, { data: { review: REVIEW } });
   await page.goto("/");
   for (const path of ["**/api/coach/nudges*", "**/api/templates*"]) {
