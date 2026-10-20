@@ -1078,6 +1078,40 @@ a.note {
   font-weight: var(--weight-medium);
 }
 
+/* THE WATCH'S EARLIER VERSION (the owner, 2026-10-19: "not actionable or
+   removable"). The account line opens to the sessions it counts — date ·
+   title, each a whole row to tap, opening the session's sheet — and the sheet
+   says it in one sentence with what can be done about it. Calm: `.note`, never
+   `.note-warn`; nothing failed. */
+.sync-stale > summary {
+  cursor: pointer;
+  list-style-position: inside;
+}
+.sync-stale-list {
+  list-style: none;
+  margin: var(--space-2) 0 0;
+  padding: 0;
+}
+.sync-stale-link {
+  display: flex;
+  align-items: center;
+  min-height: var(--tap);
+  font-size: var(--text-sm);
+}
+.watch-version {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-4);
+}
+.watch-version-says,
+.watch-version-error {
+  margin: 0;
+}
+.watch-version-error {
+  font-size: var(--text-xs);
+  color: var(--ink-soft);
+}
+
 /* THE scroll owner. Every box that can clip its content wears this — and
    only one box per dialog does, so a dialog has exactly one thing to scroll.
    It carries the affordance with it: a real scrollbar where the platform

@@ -38,6 +38,7 @@ import {
   type WorkoutDto,
 } from "@rg/api-client";
 import { docOriginRow, doseText, newId, type DoseStep, type DoseTarget } from "@rg/domain";
+import { APP_BUILT_CHOICE, WatchVersion } from "./watch-version.js";
 import { EXERCISES, isProfileId, label as vocab, PROFILES } from "@rg/exercise-library";
 import { effortAdvice } from "@rg/workout";
 import { Banner, CompletionPill, ConfirmDialog, EmptyState, formatDayLong, formatTime, Sheet, Spinner } from "../components.js";
@@ -835,6 +836,9 @@ export function SessionSheet({ w, today, onClose }: { w: WorkoutDto; today: stri
         </p>
         {/* A modal sheet hides the nav, so it keeps its own small Ask, seeing the workout (the integrated review, I3). */}
         <AskCoach focus={workoutFocus(w)} wrap="session-ask-row" />
+        {/* The watch holds an earlier version of this session (the owner, 2026-10-19): said, and the watch's kept if the
+            athlete wants. An app-built session is never rewritten from here, so there is nothing to send. */}
+        {w.corosSyncView === "content_stale" ? <WatchVersion workoutId={w.id} choice={APP_BUILT_CHOICE} /> : null}
         {notKept ? (
           <Banner kind="warn">
             This session isn't being kept on this device. It plays while you're online, and a reload starts it again.

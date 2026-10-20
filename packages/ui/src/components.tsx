@@ -313,8 +313,7 @@ const COROS_PILL: Record<WorkoutSyncView, { label: string; cls: string; icon: Re
     label: "Older on watch",
     cls: "pill-neutral",
     icon: <IconCalendarOnly />,
-    title:
-      "Your COROS watch has this session on the right day, but with the version Run Garden replaced. There is no way to rewrite a session's content on COROS, so the watch keeps the older one.",
+    title: "Your COROS watch has this session on the right day, in an earlier version than Run Garden's.",
   },
   syncing: { label: "Syncing", cls: "pill-progress", icon: <IconSync />, title: "Sending this change to your COROS watch." },
   waiting_for_device: { label: "Waiting for COROS", cls: "pill-progress", icon: <IconSync />, title: "Queued — this reaches your watch once COROS is connected in Settings." },
@@ -536,12 +535,9 @@ export function syncActionCopy(action: SyncAction): { says: string; todo: string
         todo: null,
       };
     case "watch_keeps_old_copy":
-      return {
-        says:
-          "Your COROS watch is keeping the version Run Garden replaced, and there's no way to" +
-          " rewrite it. Run this one — what's here is the session.",
-        todo: null,
-      };
+      // Said plainly, and no more: what to do about it — send this version, or keep the watch's — is the session
+      // sheet's own (`WatchVersion`), which takes this sentence's place there.
+      return { says: "Your watch has an earlier version of this session.", todo: null };
     case "watch_copy_differs":
       return {
         says:
@@ -684,10 +680,13 @@ export function SyncStatusLine({
   status,
   onRetry,
   retrying,
+  SessionLink,
 }: {
   status: SyncStatusDto;
   onRetry?: () => void;
   retrying?: boolean;
+  /** The screen's own link to a session's sheet (this module is router-free); without it the list is plain text. */
+  SessionLink?: (props: { workoutId: string; children: ReactNode }) => ReactNode;
 }) {
   /**
    * THE LINE STOPPED CLAIMING THE WATCH.
@@ -714,16 +713,14 @@ export function SyncStatusLine({
    * is a claim about the two things this app reconciles.
    */
   const contentStale = status.contentStaleCount ?? 0;
-  // …AND WHAT THAT MEANS FOR TODAY. "Your watch has an older version of 2
-  // sessions" is the account-level twin of the per-session defect this line's
-  // own doc comment describes: it states a divergence and stops, so it reads as
-  // a job the athlete has been handed. What is LEFT in this count (since the
-  // content-rewrite lane landed) is the divergences no rewrite can reach — the
-  // ones in flight are `pendingCount` now — so the second clause is the whole
-  // instruction, and it is "nothing".
-  const staleLine =
-    `Your watch keeps an older version of ${contentStale} session${contentStale === 1 ? "" : "s"}` +
-    ` — Run Garden has the ${contentStale === 1 ? "one" : "ones"} to run`;
+  // …AND WHICH, ONE TAP DOWN. The owner (2026-10-19): "It's always there and
+  // annoying and not actionable or removable." It counted sessions weeks past
+  // (the server counts only those still to run now), and it said a divergence
+  // and stopped. Now the line opens to the sessions it counts, date · title,
+  // each opening its own sheet — where the athlete sends Run Garden's version
+  // to the watch or keeps the watch's, and the count goes down as they do.
+  const staleSessions = status.contentStaleSessions ?? [];
+  const staleLine = `Your watch has an earlier version of ${contentStale} session${contentStale === 1 ? "" : "s"}`;
   const line = (() => {
     // Cloud-direct COROS (spec §5): the connection's health outranks Mac
     // presence — "synced X ago" or an honest error, never a Mac mystery.
@@ -760,7 +757,23 @@ export function SyncStatusLine({
   })();
   return (
     <div className="row">
-      <span className="muted">{line}</span>
+      {line === staleLine && staleSessions.length > 0 ? (
+        <details className="sync-stale">
+          <summary className="muted tap-pad">{line}</summary>
+          <ul className="sync-stale-list">
+            {staleSessions.map((s) => {
+              const label = `${formatDayShort(s.date)} · ${s.title}`;
+              return (
+                <li key={s.workoutId}>
+                  {SessionLink ? <SessionLink workoutId={s.workoutId}>{label}</SessionLink> : label}
+                </li>
+              );
+            })}
+          </ul>
+        </details>
+      ) : (
+        <span className="muted">{line}</span>
+      )}
       {status.state === "sync_issue" && onRetry ? (
         <button className="btn btn-small" disabled={retrying} onClick={onRetry}>
           {retrying ? "Retrying…" : "Retry"}

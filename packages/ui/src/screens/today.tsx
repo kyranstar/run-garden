@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useRef, useState, type ReactNode } from "react";
 import { Link } from "react-router-dom";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { api, ApiError } from "@rg/api-client";
@@ -28,6 +28,15 @@ export function undoRefusalText(err: unknown): string {
   // The session's plan was retired (Stage 2 Task 9): nothing of it goes back on the watch.
   if (code === "plan_retired") return "That plan is retired.";
   return "Couldn't undo — try again.";
+}
+
+/** A session the sync line names, opening its sheet on the Plan (`?workout=`). */
+function PlanSessionLink({ workoutId, children }: { workoutId: string; children: ReactNode }) {
+  return (
+    <Link className="sync-stale-link" to={`/plan?workout=${encodeURIComponent(workoutId)}`}>
+      {children}
+    </Link>
+  );
 }
 
 export function SyncPanel({ quietWhenHealthy = false }: { quietWhenHealthy?: boolean } = {}) {
@@ -113,7 +122,7 @@ export function SyncPanel({ quietWhenHealthy = false }: { quietWhenHealthy?: boo
 
   return (
     <div className="stack" style={{ gap: "var(--space-4)" }} aria-live="polite">
-      <SyncStatusLine status={status.data} onRetry={() => retry.mutate()} retrying={retry.isPending} />
+      <SyncStatusLine status={status.data} onRetry={() => retry.mutate()} retrying={retry.isPending} SessionLink={PlanSessionLink} />
       <SyncNotesStack
         notes={notes.data?.notes ?? []}
         onDismiss={(id) => dismiss.mutate(id)}

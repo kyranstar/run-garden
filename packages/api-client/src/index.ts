@@ -1588,17 +1588,31 @@ export interface SyncStatusDto {
   state: SyncStatusState;
   pendingCount: number;
   issueCount: number;
-  /** Sessions Run Garden has rewritten since COROS was last given them.
-   * Deliberately NOT part of `issueCount` or of `state`: there is no
-   * content-write job, so the Retry button cannot act on it. The line says it;
-   * nothing badges it. Optional so an older worker's payload still parses. */
+  /** Sessions still to run that Run Garden has rewritten since COROS was last
+   * given them, with no write for them on its way (a past or finished one's
+   * watch copy is a record). Deliberately NOT part of `issueCount` or of
+   * `state`: what to do about each is its own sheet's (send the app's version,
+   * or keep the watch's), not Retry's. Optional so an older worker's payload
+   * still parses. */
   contentStaleCount?: number;
+  /** Those sessions, soonest first: the line lists them, each opening its sheet. */
+  contentStaleSessions?: Array<{ workoutId: string; date: string; title: string }>;
   lastCorosReadAt: string | null;
   writesEnabled: boolean;
   registered: boolean;
   /** Cloud-direct COROS: present when a cloud connection exists (or errors).
    * The sync line prefers this over Mac presence. */
   cloud?: { connected: boolean; lastSyncAt: string | null; error: string | null } | null;
+}
+
+/**
+ * What the athlete can do about a session's earlier version on the watch (`GET /api/plan/workouts/:id`'s
+ * `watchVersion`, present only on a row whose view is `content_stale`): send the app's version when a rewrite can
+ * reach it, else why not; keeping the watch's version is always possible.
+ */
+export interface WatchVersionDto {
+  send: boolean;
+  why?: "writes_off" | "not_connected" | "cant_rewrite";
 }
 
 export type SyncNoteKind =
@@ -2375,7 +2389,15 @@ export const api = {
     get<PlanResponse>(
       `/api/plan/workouts${start ? `?start=${start}${end ? `&end=${end}` : ""}` : ""}`,
     ),
-  workout: (id: string) => get<Record<string, unknown> & { workout: WorkoutDto }>(`/api/plan/workouts/${id}`),
+  workout: (id: string) => get<Record<string, unknown> & { workout: WorkoutDto; watchVersion?: WatchVersionDto }>(`/api/plan/workouts/${id}`),
+  /** Send the app's version of a session to the watch (its content rewrite, queued); the coach's drain runs it. */
+  sendWatchVersion: async (id: string) => {
+    const res = await post<{ ok: true; coachDrain?: boolean }>(`/api/plan/workouts/${id}/watch-version/send`);
+    if (res.coachDrain) void drainCoach().catch(() => undefined);
+    return res;
+  },
+  /** Keep the watch's version: the app stops calling it a divergence; nothing is written to the watch. */
+  keepWatchVersion: (id: string) => post<{ ok: true }>(`/api/plan/workouts/${id}/watch-version/keep`),
   candidates: (id: string) => get<CandidateResponse>(`/api/plan/workouts/${id}/candidates`),
   move: async (id: string, toDate: string, toTime: string) =>
     drainedWatch(

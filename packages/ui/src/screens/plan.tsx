@@ -40,6 +40,7 @@ import { askable, displayCompletionState, focusAfterRemove, WeekView, weekPlan, 
 import { useCorosReadNow } from "./use-coros-read.js";
 import { CorosCheck } from "./coros-check.js";
 import { SessionSheet } from "../components/session-sheet.js";
+import { WatchVersion } from "../components/watch-version.js";
 import { isAppSession } from "../components/today-program.js";
 import { AskCoach, useCoachSeeing } from "./studio/coach-ask.js";
 import { workoutFocus } from "./studio/coach-focus.js";
@@ -210,6 +211,7 @@ export function RunWorkoutDetail({
      "COROS has no way to be told a session's new content", which stopped being
      true the day the content-rewrite lane landed. Two tellings of one fact, one
      of them stale, is exactly what the action layer exists to end. */
+  const olderOnWatch = syncView === "content_stale";
   const corosDisagrees =
     w.effectiveDate !== w.lastVerifiedCorosDate &&
     syncView !== "content_stale" &&
@@ -335,7 +337,8 @@ export function RunWorkoutDetail({
             when there is neither — so a synced session is exactly as quiet as
             it was before any of this existed. */}
         <SyncActionNote
-          action={w.syncAction}
+          /* An earlier version on the watch is `WatchVersion`'s to say, with what can be done about it (below). */
+          action={olderOnWatch && w.syncAction?.code === "watch_keeps_old_copy" ? undefined : w.syncAction}
           kind={syncView === "needs_attention" || syncView === "sync_issue" ? "warn" : "info"}
           reason={
             corosDisagrees
@@ -351,6 +354,9 @@ export function RunWorkoutDetail({
           reasonShown={!!w.watchCoverage}
           settingsLink={<Link to="/settings">Open Settings</Link>}
         />
+        {/* The watch holds an earlier version: say so, and offer what the row can honestly do — send this version,
+            or keep the watch's (the owner, 2026-10-19). The choice arrives with the sheet's own read. */}
+        {olderOnWatch ? <WatchVersion workoutId={w.id} choice={detail.data?.watchVersion} /> : null}
         <div className="hero-durations">
           <div>
             <div className="num">{formatMinutes(w.workoutSeconds)}</div>
