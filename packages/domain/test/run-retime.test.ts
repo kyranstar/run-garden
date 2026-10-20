@@ -95,11 +95,11 @@ describe("repeated intervals change their count, not their length", () => {
   });
 
   it("two sets of repeats change together, each by the same share", () => {
-    // 10 + 6 × (2 + 1) + 6 × (1 + 1) + 10 = 50 → 35: three of each make 35.
-    const s = run(wu(10), reps(6, [t("work", 2, "interval"), t("recovery", 1)]), reps(6, [t("work", 1, "interval"), t("recovery", 1)]), cd(10));
-    const r = ok(retimeRun(s, 35 * 60));
+    // 10 + 6 × (2 + 1) + 6 × (1:30 + 1) + 10 = 53 → 37: three of each make 36.5.
+    const s = run(wu(10), reps(6, [t("work", 2, "interval"), t("recovery", 1)]), reps(6, [t("work", 1.5, "interval"), t("recovery", 1)]), cd(10));
+    const r = ok(retimeRun(s, 37 * 60));
     expect(roundsOf(r.structure)).toEqual([1, 3, 3, 1]);
-    expect(r.summary).toBe("3 × 2 min (was 6 × 2) · 3 × 1 min (was 6 × 1)");
+    expect(r.summary).toBe("3 × 2 min (was 6 × 2) · 3 × 90s (was 6 × 90)");
   });
 
   it("distance reps keep their distance: only the count changes", () => {
@@ -202,6 +202,104 @@ describe("a session that mixes repeats and a block: reps first, then the block f
     expect(r.structure.segments[2]!.rounds).toBe(1);
     expect(r.structure.segments[1]!.steps[0]!.target.seconds).toBe(14 * 60);
     expect(minutes(r)).toBe(44);
+  });
+});
+
+describe("short reps beside a main set are accessories: kept as they are (the lead's ruling, 2026-10-20)", () => {
+  const stride = (seconds: number) => [t("work", seconds / 60, "strides"), t("recovery", 40 / 60, "easy")];
+
+  it("an easy 40 with 6 × 20 s strides, cut to 30: the strides stay 6 × 20 s, the easy block shortens", () => {
+    // 34 easy + 6 × (20 s + 40 s) = 40 → 30: the block takes it all, 24.
+    const s = run(one(t("work", 34, "easy")), reps(6, stride(20)));
+    const r = ok(retimeRun(s, 30 * 60));
+    expect(roundsOf(r.structure)).toEqual([1, 6]);
+    expect(secondsOf(r.structure)[0]).toEqual([24 * 60]);
+    expect(r.seconds).toBe(30 * 60);
+    expect(r.summary).toBe("easy 24 min (was 34)");
+  });
+
+  it("a tempo session with strides: its tempo reps change their count, the strides stay", () => {
+    // 10 + 3 × (8 + 2) + 4 × (20 s + 40 s) + 10 = 54 → 44: two tempo reps make 44, the strides as they are.
+    const s = run(wu(10), reps(3, [t("work", 8, "tempo"), t("recovery", 2, "easy")]), reps(4, stride(20)), cd(10));
+    const r = ok(retimeRun(s, 44 * 60));
+    expect(roundsOf(r.structure)).toEqual([1, 2, 4, 1]);
+    expect(r.seconds).toBe(44 * 60);
+    expect(r.summary).toBe("2 × 8 min (was 3 × 8)");
+    // The count is chosen with the strides counted: → 47 is two reps (44), not three (54) — as it would be were the
+    // strides' four minutes left out of the sum.
+    expect(roundsOf(ok(retimeRun(s, 47 * 60)).structure)).toEqual([1, 2, 4, 1]);
+  });
+
+  it("the edge: a 60 s rep is an accessory and stays; a 61 s rep is an interval and its count changes", () => {
+    const at = (seconds: number) => run(one(t("work", 30, "easy")), reps(6, [t("work", seconds / 60, "interval"), t("recovery", 1, "easy")]));
+    // 30 + 6 × 2 = 42 → 36: sixty-second reps stay six, the block 24.
+    const sixty = ok(retimeRun(at(60), 36 * 60));
+    expect(roundsOf(sixty.structure)).toEqual([1, 6]);
+    expect(secondsOf(sixty.structure)[0]).toEqual([24 * 60]);
+    // 30 + 6 × 2:01 = 42.1 → 36: sixty-one-second reps go first — three of them, the block as it was.
+    const sixtyOne = ok(retimeRun(at(61), 36 * 60));
+    expect(roundsOf(sixtyOne.structure)).toEqual([1, 3]);
+    expect(secondsOf(sixtyOne.structure)[0]).toEqual([30 * 60]);
+  });
+
+  it("…and by distance: 200 m is an accessory, 201 m an interval", () => {
+    const at = (meters: number) => run(one(t("work", 30, "easy")), reps(6, [d("work", meters, 300, "interval"), t("recovery", 1, "easy")]));
+    expect(roundsOf(ok(retimeRun(at(200), 30 * 60)).structure)).toEqual([1, 6]);
+    expect(ok(retimeRun(at(201), 30 * 60)).structure.segments[1]!.rounds).toBeLessThan(6);
+  });
+
+  it("a rep holding a long piece as well as a short one is an interval: its count changes", () => {
+    // 30 + 6 × (30 s + 2 min + 1 min) = 51 → 41: reps first — three make 40.5, the block as it was.
+    const s = run(one(t("work", 30, "easy")), reps(6, [t("work", 0.5, "strides"), t("work", 2, "interval"), t("recovery", 1, "easy")]));
+    expect(ok(retimeRun(s, 41 * 60)).structure.segments[1]!.rounds).toBe(3);
+  });
+
+  it("no block, the reps at one and still too long: the strides give way to the count nearest the target", () => {
+    // 10 + 3 × (8 + 2) + 4 × 1 + 10 = 54 → 31: one tempo rep (34 with the strides) — then one stride makes 31.
+    const s = run(wu(10), reps(3, [t("work", 8, "tempo"), t("recovery", 2, "easy")]), reps(4, stride(20)), cd(10));
+    const r = ok(retimeRun(s, 31 * 60));
+    expect(roundsOf(r.structure)).toEqual([1, 1, 1, 1]);
+    expect(r.summary).toBe("1 × 8 min (was 3 × 8) · 1 × 20s (was 4 × 20)");
+  });
+
+  it("with the block at its floor, the accessory's count gives way — to the fewest that let the block keep five minutes", () => {
+    // 6 easy + 6 × 1 = 12 → 9: the block can give only 1, so four strides, the block 5.
+    const r = ok(retimeRun(run(one(t("work", 6, "easy")), reps(6, stride(20))), 9 * 60));
+    expect(roundsOf(r.structure)).toEqual([1, 4]);
+    expect(secondsOf(r.structure)[0]).toEqual([5 * 60]);
+    expect(r.summary).toBe("easy 5 min (was 6) · 4 × 20s (was 6 × 20)");
+  });
+
+  it("reps and a block with strides: the reps go to one and the block to its floor before the strides give way", () => {
+    // 10 + 6 steady + 3 × 10 + 6 × 1 + 10 = 62 → 37: one rep and the block at 5 leave room for two strides.
+    const s = run(wu(10), one(t("work", 6, "steady")), reps(3, [t("work", 10, "threshold")]), reps(6, stride(20)), cd(10));
+    const r = ok(retimeRun(s, 37 * 60));
+    expect(roundsOf(r.structure)).toEqual([1, 1, 1, 2, 1]);
+    expect(secondsOf(r.structure)[1]).toEqual([300]);
+    expect(r.seconds).toBe(37 * 60);
+    expect(r.summary).toBe("steady 5 min (was 6) · 1 × 10 min (was 3 × 10) · 2 × 20s (was 6 × 20)");
+  });
+
+  it("…down to one, before the warm-up and cool-down give anything", () => {
+    // 10 + 20 + 6 × 1 + 10 = 46 → 25: the block at 5, one stride (1), and the warm-up and cool-down share 19.
+    const r = ok(retimeRun(run(wu(10), one(t("work", 20, "easy")), reps(6, stride(20)), cd(10)), 25 * 60));
+    expect(roundsOf(r.structure)).toEqual([1, 1, 1, 1]);
+    expect(secondsOf(r.structure)[1]).toEqual([300]);
+    expect(minutes(r)).toBe(25);
+  });
+
+  it("longer: the accessory stays as it is and the block extends", () => {
+    const r = ok(retimeRun(run(one(t("work", 34, "easy")), reps(6, stride(20))), 50 * 60));
+    expect(roundsOf(r.structure)).toEqual([1, 6]);
+    expect(secondsOf(r.structure)[0]).toEqual([44 * 60]);
+  });
+
+  it("a session of short reps alone — 10 × 200 m, no block — keeps the rule: its count changes", () => {
+    // 10 + 10 × (200 m at 40 s + 200 m jog at 80 s) + 10 = 40 → 30: five reps.
+    const s = run(wu(10), reps(10, [d("work", 200, 200, "interval"), d("recovery", 200, 400, "easy")]), cd(10));
+    const r = ok(retimeRun(s, 30 * 60));
+    expect(roundsOf(r.structure)).toEqual([1, 5, 1]);
+    expect(r.summary).toBe("5 × 200 m (was 10 × 200)");
   });
 });
 

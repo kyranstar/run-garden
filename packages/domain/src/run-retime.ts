@@ -20,6 +20,13 @@
  *     stands (longer: never past the target, so the block only extends) — THEN THE BLOCK for the remainder. A count that
  *     would leave the block under its floor is not taken. Several sets of repeats change together, each by the same
  *     share of its count.
+ *  7. SHORT REPS ARE ACCESSORIES, NOT THE MAIN SET (the lead's ruling, 2026-10-20): a set whose work steps are each a
+ *     minute or less, or 200 m or less (strides, pickups, short hill sprints), beside a main set — a continuous block, or
+ *     longer reps — is kept as it is while the main set changes, as the warm-up and cool-down are; longer, it stays too.
+ *     Only once the main set is at its floor (the block at five minutes, the reps at one) does its count give way: the
+ *     most of it that leaves the block its floor (with no block, the count nearest the target), down to one, before the
+ *     warm-up and cool-down shrink. Short reps with nothing else between the warm-up and cool-down (10 × 200 m) are the
+ *     main set: their count changes, by rule 2.
  *  A target the session already is (to the minute) changes nothing (`changed: false`).
  *
  * THE SHAPE IS KEPT. What comes back has the same segments and the same steps, in order, with their roles and labels:
@@ -147,6 +154,16 @@ export function foldRepeats(steps: readonly RetimeStep[]): RetimeSegment[] {
 
 // ── The rule ───────────────────────────────────────────────────────────────────────────────────────────────────────
 
+/** A rep this short or shorter is an accessory beside a main set (the lead's ruling, 2026-10-20): a minute, or 200 m. */
+export const ACCESSORY_MAX_SEC = 60;
+export const ACCESSORY_MAX_METERS = 200;
+
+/** A set of short reps — strides, pickups, short hill sprints: each of its work steps a minute or less, or 200 m or less. */
+function isAccessory(seg: RetimeSegment): boolean {
+  const work = seg.steps.filter((s) => s.role === "work");
+  return work.length > 0 && work.every((s) => (s.target.kind === "time" ? s.target.seconds <= ACCESSORY_MAX_SEC : s.target.meters <= ACCESSORY_MAX_METERS));
+}
+
 /** A step that a block's scaling moves: work long enough to be a block (a minute, or 100 m). */
 const scalable = (s: RetimeStep): boolean =>
   s.role !== "recovery" && (s.target.kind === "time" ? s.target.seconds >= MINUTE : s.target.meters >= HUNDRED_M);
@@ -219,8 +236,14 @@ export function retimeRun(structure: RunStructure, targetSeconds: number): Retim
   let b = segs.length;
   while (b > a && isCooldown(segs[b - 1]!)) b -= 1;
   const middle = segs.map((_, i) => i).filter((i) => i >= a && i < b);
-  const reps = middle.filter((i) => segs[i]!.repeat);
   const blockAt: At[] = middle.filter((i) => !segs[i]!.repeat).flatMap((i) => segs[i]!.steps.flatMap((s, j) => (scalable(s) ? [[i, j] as const] : [])));
+  // Short reps beside a main set — a block, or longer reps — are its accessories: kept, as the warm-up and cool-down
+  // are. Short reps alone are the main set, and their count changes.
+  const allReps = middle.filter((i) => segs[i]!.repeat);
+  const hasMain = blockAt.length > 0 || allReps.some((i) => !isAccessory(segs[i]!));
+  const reps = hasMain ? allReps.filter((i) => !isAccessory(segs[i]!)) : allReps;
+  const extras = hasMain ? allReps.filter((i) => isAccessory(segs[i]!)) : [];
+  const extrasNow = () => sum(extras.map((i) => segmentSeconds(segs[i]!)));
   const fixedInBlocks = sum(middle.filter((i) => !segs[i]!.repeat).flatMap((i) => segs[i]!.steps.filter((s) => !scalable(s)).map((s) => s.target.seconds)));
   const warmAt: At[] = segs.flatMap((s, i) => (i < a ? s.steps.flatMap((x, j) => (x.role === "warmup" ? [[i, j] as const] : [])) : []));
   const coolAt: At[] = segs.flatMap((s, i) => (i >= b ? s.steps.flatMap((x, j) => (x.role === "cooldown" ? [[i, j] as const] : [])) : []));
@@ -233,7 +256,7 @@ export function retimeRun(structure: RunStructure, targetSeconds: number): Retim
 
   const shorter = targetSeconds < total;
   const blockFloor = Math.min(K0, RETIME_FLOOR_SEC);
-  const oneEach = sum(reps.map((i) => segmentSeconds(segs[i]!, 1)));
+  const oneEach = sum([...reps, ...extras].map((i) => segmentSeconds(segs[i]!, 1)));
   const leastMiddle = fixedInBlocks + blockFloor + oneEach;
   const now = () => runStructureSeconds({ segments: segs });
 
@@ -247,7 +270,7 @@ export function retimeRun(structure: RunStructure, targetSeconds: number): Retim
     if (warmFloor + coolFloor > room + 0.5) {
       return { refused: "too_short", reason: words.tooShort(wantedMinutes, reps.length > 0 ? "one rep" : "a 5-minute main block") };
     }
-    for (const i of reps) segs[i]!.rounds = 1;
+    for (const i of [...reps, ...extras]) segs[i]!.rounds = 1;
     scaleGroup(segs, blockAt, blockFloor, blockFloor, now, null);
     const roomMinutes = Math.floor(room / MINUTE);
     let w = W + D > 0 ? Math.round((roomMinutes * W) / (W + D)) * MINUTE : 0;
@@ -264,32 +287,64 @@ export function retimeRun(structure: RunStructure, targetSeconds: number): Retim
     return result(structure, segs, a, b);
   }
 
-  // Rule 2, 5 and 6: the counts first — the block as it stands — then the block for what is left.
+  // Rule 2, 5 and 6: the counts first — the block as it stands, the accessories as they are — then the block for what
+  // is left.
+  const held = extrasNow();
   if (reps.length > 0) {
     const lo = (i: number) => (shorter ? 1 : segs[i]!.rounds);
     const hi = (i: number) => (shorter ? segs[i]!.rounds : Math.max(segs[i]!.rounds, Math.floor(segs[i]!.rounds * RETIME_REP_GROWTH)));
-    const shares = new Set<number>([0, 1, Number.POSITIVE_INFINITY]);
-    for (const i of reps) for (let k = lo(i); k <= hi(i); k++) shares.add(k / segs[i]!.rounds);
-    let best: { counts: number[]; score: number; seconds: number } | null = null;
-    for (const share of [...shares].sort((x, y) => x - y)) {
-      const counts = reps.map((i) => Math.min(hi(i), Math.max(lo(i), Math.round(segs[i]!.rounds * share))));
-      const repSeconds = sum(reps.map((i, k) => segmentSeconds(segs[i]!, counts[k])));
-      const base = W + D + fixedInBlocks + repSeconds;
-      if (blockAt.length > 0) {
-        const block = targetSeconds - base;
-        if (shorter ? block < blockFloor : block < K0) continue;
-      }
-      const score = Math.abs(targetSeconds - (base + K0));
-      if (!best || score < best.score - 1e-9 || (Math.abs(score - best.score) <= 1e-9 && repSeconds < best.seconds)) best = { counts, score, seconds: repSeconds };
+    const best = bestCounts(segs, reps, lo, hi, (repSeconds) => {
+      const base = W + D + fixedInBlocks + held + repSeconds;
+      if (blockAt.length > 0 && (shorter ? targetSeconds - base < blockFloor : targetSeconds - base < K0)) return null;
+      return Math.abs(targetSeconds - (base + K0));
+    });
+    // No count leaves the block its floor beside the accessories: one each, and the accessories give way (below).
+    if (best) reps.forEach((i, k) => (segs[i]!.rounds = best[k]!));
+    else if (shorter) for (const i of reps) segs[i]!.rounds = 1;
+  }
+  const repSeconds = sum(reps.map((i) => segmentSeconds(segs[i]!)));
+  // THE ACCESSORIES GIVE WAY only once the main set is at its floor — the block at five minutes, the reps at one — and
+  // only so far: the most of their count that leaves the block its floor; with no block, the count nearest the target.
+  if (shorter && extras.length > 0) {
+    const rest = W + D + fixedInBlocks + repSeconds;
+    const mainAtFloor = blockAt.length > 0 ? targetSeconds - rest - held < blockFloor : reps.every((i) => segs[i]!.rounds === 1) && rest + held > targetSeconds;
+    if (mainAtFloor) {
+      const counts = bestCounts(segs, extras, () => 1, (i) => segs[i]!.rounds, (extraSeconds) => {
+        if (blockAt.length > 0) return targetSeconds - rest - extraSeconds < blockFloor ? null : -extraSeconds;
+        return Math.abs(targetSeconds - rest - extraSeconds);
+      });
+      extras.forEach((i, k) => (segs[i]!.rounds = counts?.[k] ?? 1));
     }
-    if (best) reps.forEach((i, k) => (segs[i]!.rounds = best!.counts[k]!));
   }
   if (blockAt.length > 0) {
-    const repSeconds = sum(reps.map((i) => segmentSeconds(segs[i]!)));
-    const block = Math.max(shorter ? blockFloor : K0, targetSeconds - W - D - fixedInBlocks - repSeconds);
+    const block = Math.max(shorter ? blockFloor : K0, targetSeconds - W - D - fixedInBlocks - repSeconds - extrasNow());
     scaleGroup(segs, blockAt, block, blockFloor, now, wantedMinutes);
   }
   return result(structure, segs, a, b);
+}
+
+/**
+ * The counts of the repeat segments at `at`, each between `lo` and `hi`, all by one share of their counts — the share
+ * whose seconds `score` scores lowest (null: not allowed), a tie to the fewer seconds. Null when no share is allowed.
+ */
+function bestCounts(
+  segs: readonly RetimeSegment[],
+  at: readonly number[],
+  lo: (i: number) => number,
+  hi: (i: number) => number,
+  score: (seconds: number) => number | null,
+): number[] | null {
+  const shares = new Set<number>([0, 1, Number.POSITIVE_INFINITY]);
+  for (const i of at) for (let k = lo(i); k <= hi(i); k++) shares.add(k / segs[i]!.rounds);
+  let best: { counts: number[]; score: number; seconds: number } | null = null;
+  for (const share of [...shares].sort((x, y) => x - y)) {
+    const counts = at.map((i) => Math.min(hi(i), Math.max(lo(i), Math.round(segs[i]!.rounds * share))));
+    const seconds = sum(at.map((i, k) => segmentSeconds(segs[i]!, counts[k])));
+    const s = score(seconds);
+    if (s === null) continue;
+    if (!best || s < best.score - 1e-9 || (Math.abs(s - best.score) <= 1e-9 && seconds < best.seconds)) best = { counts, score: s, seconds };
+  }
+  return best ? best.counts : null;
 }
 
 function copyOf(s: RunStructure): RunStructure {
