@@ -34,6 +34,8 @@
  *                plan's race day and holds the race, then the finish
  *   programme_change  a programme's settings (§8 §5): reads the plans, then moves the first programme read_plans lists
  *                to Tuesdays and Thursdays (change_programme), then the finish
+ *   retime_run   a run's length (the owner's decision, 2026-10-20): sets the run the athlete is looking at to 43 minutes
+ *                (adjust_plan's adjust — the app re-times its steps by the rule), then the finish
  *
  * `ctx.opening` is the run's opening message (its first user message's text): a script may read what the run was
  * asked from in it. `ctx.messages` is the request's whole history: a script may read a tool's result from it.
@@ -332,6 +334,21 @@ function designedRun(turn, ctx) {
   return uses(["finish", { summary: RUN_LINE }]);
 }
 
+/** The finish's words for a run re-timed. */
+export const RETIME_LINE = "Tomorrow's tempo is shorter: two blocks, easy either side as before.";
+
+/**
+ * A run's length (the owner's decision, 2026-10-20): the run the athlete is looking at — the opening's "a planned
+ * workout (id …)" — set to 43 minutes with adjust_plan, then the finish. The app re-times its steps; the script only
+ * states the length. Asked from nothing, it changes nothing and says so.
+ */
+function retimeRun(turn, ctx) {
+  const id = /a planned workout \(id ([^)\s]+)\)/.exec(ctx.opening ?? "")?.[1];
+  if (!id) return uses(["finish", { summary: NO_FOCUS_LINE }]);
+  if (turn === 0) return uses(["adjust_plan", { workoutId: id, change: { kind: "adjust", durationMinutes: 43 }, why: "A shorter day before the weekend." }]);
+  return uses(["finish", { summary: RETIME_LINE }]);
+}
+
 /** The finish's words for a programme moved to other days. */
 export const PROGRAMME_LINE = "Tuesdays and Thursdays from next week; this week stays as it is.";
 
@@ -364,6 +381,8 @@ export const SCRIPTS = {
   programme_change: { main: programmeChange, reviewer },
   // §8 §3: a designed run.
   designed_run: { main: designedRun, reviewer },
+  // 2026-10-20: a run's length, re-timed by the rule.
+  retime_run: { main: retimeRun, reviewer },
   // §8 §5: whole plans in the conversation.
   whole_plan: { main: wholePlan, reviewer },
   // Stream G: a block with its race, whose race day the plan's sheet then changes.

@@ -7,6 +7,7 @@
  * approved on its own surface (Task 8); until then the thread's approve and decline answer it 409 `not_yet`.
  */
 import { dayLabel, describeOps, type AdaptiveConfig, type CoachOp } from "@rg/domain";
+import type { RetimeExpectation } from "./adjust-retime.js";
 
 /** The thread coach's ops a designed proposal may carry as a change to the plan (Task 8b; ruling I6), and since the new
  * shape §5 its proven single-session ones too: ease (a swap for an easier kind is an ease, its `verb` "swap"), remove
@@ -45,6 +46,12 @@ export interface PlanAdjustOp {
   op: PlanChange;
   /** A swap's (the new shape §5): an ease to an easier kind of session, as the coach asked for it. */
   verb?: "swap";
+  /**
+   * A length's (the owner's decision, 2026-10-20): the structured run re-timed by the rule when it was proposed
+   * (adjust-retime.ts `retimeOfRow`) — what the card says, and what the applier must find again at the tap to apply it;
+   * null: the length alone (not a structured run). Absent on a change proposed before it: the length alone.
+   */
+  retime?: RetimeExpectation | null;
   why: string;
   /** Advisory notes for the athlete, as a workout's validator warnings are. */
   issues: Array<{ code: string; message: string }>;
@@ -182,7 +189,7 @@ export interface ChangeWords {
   title: string;
 }
 
-export function describeChange(p: Pick<PlanAdjustOp, "op" | "row">): ChangeWords {
+export function describeChange(p: Pick<PlanAdjustOp, "op" | "row"> & { retime?: PlanAdjustOp["retime"] }): ChangeWords {
   const planned = new Map([
     [
       p.op.workoutId,
@@ -192,6 +199,8 @@ export function describeChange(p: Pick<PlanAdjustOp, "op" | "row">): ChangeWords
         ...(p.row.minutes !== null ? { durationMinutes: p.row.minutes } : {}),
         ...(p.row.onWatch ? { onWatch: true } : {}),
         ...(p.row.appPushed ? { appPushed: true } : {}),
+        // A length re-timed by the rule: "Tempo 35 → 25 min · 3 × 5 min (was 5 × 5)", the line the applier must match.
+        ...(p.op.kind === "adjust" && p.retime ? { retime: { minutes: p.retime.minutes, summary: p.retime.summary } } : {}),
       },
     ],
   ]);

@@ -134,7 +134,8 @@ export async function placedTimes(
     } else if (c.kind === "adjust" || c.kind === "ease") {
       // An ease is the session rewritten (the new shape §5): its length is the eased session's.
       s.source = null;
-      s.session.workoutSeconds = (c.kind === "ease" ? c.session.durationMinutes : c.durationMinutes) * 60;
+      // A length re-timed by the rule is the rule's (the card's), which the counts may leave off the coach's.
+      s.session.workoutSeconds = (c.kind === "ease" ? c.session.durationMinutes : ((any as PlanAdjustOp).retime?.minutes ?? c.durationMinutes)) * 60;
       touched.add(s.date);
     } else if (c.kind === "restore") {
       // A restore's session is skipped until approved: not among the day's sessions here.

@@ -168,7 +168,7 @@ export const readProposals: DesignTool = {
               'moved', ${op("$.outcome.moved")}, 'wDate', ${op("$.outcome.written.date")}, 'wTime', ${op("$.outcome.written.time")},
               'why', ${op("$.outcome.why")}, 'reason', ${op("$.outcome.reason")}, 'basedOn', json(${op("$.doc.basedOn")}),
               'change', ${op("$.op.kind")}, 'rowTitle', ${op("$.row.title")}, 'toDate', ${op("$.op.toDate")}, 'toTime', ${op("$.op.toTime")},
-              'minutes', ${op("$.op.durationMinutes")}, 'skipReason', ${op("$.op.reason")}, 'changeWhy', ${op("$.why")},
+              'minutes', coalesce(${op("$.retime.minutes")}, ${op("$.op.durationMinutes")}), 'skipReason', ${op("$.op.reason")}, 'changeWhy', ${op("$.why")},
               'planTitle', ${op("$.title")}, 'planSummary', ${op("$.summary")}, 'planDone', ${op("$.outcome.summary")}, 'placed', ${op("$.outcome.placed")}))
               from json_each(case when json_valid(${c.ops}) then ${c.ops} else '[]' end) o) as ops
           from ${c} where ${c.userId} = ${ctx.userId} and ${c.status} != 'rehearsal' ${p.status ? sql`and ${c.status} = ${p.status}` : sql``}

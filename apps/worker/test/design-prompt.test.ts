@@ -264,8 +264,9 @@ describe("3A-B — the prompt agrees with the code", () => {
   it("Task 8b: adjust_plan — the main block's line, verbatim, and its line among the tools", () => {
     expect(roleBlock("main")).toContain(
       // The new shape §5: the thread coach's single-session changes beside them (design-plan-powers.test.ts).
-      // 2026-10-18, decision guidance: a length set with adjust doesn't reach the watch — said, with what does.
-      "To change a session already on the plan, call adjust_plan: skip it (a flare day), move it, or change a watch-plan run's length — or ease it or swap it for an easier run (heavy legs), remove it, or put a skipped one back. A programme session is skipped or moved, never re-timed. To make one shorter, skip it and propose the shorter workout. A length set with adjust changes the plan, not the watch: shorter and easy on the watch is ease with durationMinutes; longer, or the same work in less time, is a new run you design, the old one skipped. Your new workout and the change go to the athlete together.",
+      // 2026-10-18, decision guidance: what a length set with adjust does to the watch — said, with what changes a run's
+      // purpose. 2026-10-20: a structured run's length is re-timed by the rule, and the watch gets it (adjust-retime.ts).
+      "To change a session already on the plan, call adjust_plan: skip it (a flare day), move it, or change a watch-plan run's length — or ease it or swap it for an easier run (heavy legs), remove it, or put a skipped one back. A programme session is skipped or moved, never re-timed. To make one shorter, skip it and propose the shorter workout. A length set with adjust re-times a structured run by a fixed rule — warm-up and cool-down kept, reps counted, the main block scaled — and the watch gets it; to change its purpose, ease it or design a new run, the old skipped. Your new workout and the change go to the athlete together.",
     );
     expect(line("adjust_plan")).toContain("the main coach's — change a session already on the plan, inside your proposal: skip it, move it, or change a watch-plan run's length");
     // "Change its length", never "shorten" (fix round, 5): a length may go either way.

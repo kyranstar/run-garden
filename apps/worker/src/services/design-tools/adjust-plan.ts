@@ -57,8 +57,11 @@ import { z } from "zod";
 import { accountState, coachProposals, corosWriteJobs, plannedWorkouts, plannedWorkoutStages, programs } from "@rg/database";
 import { addDays, appAuthoredRow, coachOpSchema, dayLabel, docOriginRow, hasWatchAddress, humanizeWorkoutTitle } from "@rg/domain";
 import type { ConditionProfile } from "@rg/exercise-library";
+import { runWireOf } from "../../env.js";
+import { retimeOfRow, type RetimeExpectation, type RetimeStageFields } from "../adjust-retime.js";
 import { easedRun, runOnWatch } from "../body-check.js";
 import { NOT_ACTIONABLE, whyNotActionable } from "../coach-apply.js";
+import { thresholdSql } from "../designed-runs.js";
 import { horizonDays } from "../design-context.js";
 import { clockIn, todayLeadRefusal } from "../design-time.js";
 import { OPEN_PROPOSAL_STATUSES } from "../design-review.js";
@@ -130,10 +133,13 @@ interface Row {
   sport?: string | null;
   meters?: number | null;
   pushed?: number | null;
-  /** An ease's too (`easedRun`): its calendar block, whether COROS holds it as the import saw it, and its stages. */
+  /** An ease's too (`easedRun`): its calendar block, whether COROS holds it as the import saw it, and its stages — a
+   * length's too (`retimeOfRow`): each stage's place, kind, count, length and label. */
   blockSec?: number | null;
   sync?: string | null;
   stages?: unknown;
+  /** Its workout document (a length re-times a designed run by it). */
+  doc?: string | null;
 }
 
 const minutesOf = (r: Row): number | null => {
@@ -333,6 +339,37 @@ function coachOpOf(c: z.output<typeof change>, row: Row, workoutId: string): Pla
   return eased ? op(eased.session) : op(timed(category, title, Math.max(MINUTES.min, Math.round((now ?? MINUTES.min) * EASE_SHARE))));
 }
 
+/**
+ * A length by the rule (the owner's decision, 2026-10-20; adjust-retime.ts): the structured run re-timed from the row
+ * and its stages as they stand — what the card says and the applier checks again at the tap — or `length_only`.
+ */
+function retimeOf(row: Row, minutes: number, threshold: unknown, ctx: ToolContext) {
+  const t = parsedJson(threshold) as { v?: unknown } | null;
+  const stages = (parsedArray(row.stages) as Array<Record<string, unknown>>).flatMap((s): RetimeStageFields[] => {
+    const str = (v: unknown) => (typeof v === "string" ? v : null);
+    const num = (v: unknown) => (typeof v === "number" ? v : null);
+    return typeof s.id === "string" && typeof s.kind === "string" && typeof s.durationType === "string"
+      ? [{ id: s.id, parentStageId: str(s.parentStageId), ord: num(s.ord) ?? 0, kind: s.kind, repeatCount: num(s.repeatCount), durationType: s.durationType, durationSeconds: num(s.durationSeconds), distanceMeters: num(s.distanceMeters), label: str(s.label) }]
+      : [];
+  });
+  return retimeOfRow(
+    {
+      id: row.id,
+      sport: row.sport ?? "run",
+      title: row.title,
+      category: row.category,
+      qualitySubtype: row.subtype,
+      sourceEstimatedDurationSeconds: row.sourceSec,
+      fallbackEstimatedDurationSeconds: row.fallbackSec,
+      calendarBlockDurationSeconds: row.blockSec ?? (row.fallbackSec ?? 0),
+      workoutDoc: row.doc ?? null,
+    },
+    stages,
+    minutes,
+    { thresholdSecPerKm: typeof t?.v === "number" ? t.v : null, runWire: runWireOf(ctx.env) },
+  );
+}
+
 /** A row's stages as the read gives them (JSON): what `easedRun` reads of them. */
 function parsedStages(raw: unknown): Array<{ id: string; parentStageId: string | null; durationType: string }> {
   const list = typeof raw === "string" ? (parsedJson(raw) as unknown) : raw;
@@ -455,8 +492,11 @@ export const adjustPlan: DesignTool = {
           'archived', ${pw.archivedAt}, 'sourceSec', ${pw.sourceEstimatedDurationSeconds}, 'fallbackSec', ${pw.fallbackEstimatedDurationSeconds},
           'swid', ${pw.sourceWorkoutId}, 'sidp', ${pw.sourceIdInPlan}, 'spid', ${pw.sourceProgramId}, 'lvd', ${pw.lastVerifiedCorosDate},
           'sport', ${pw.sport}, 'meters', ${pw.expectedDistanceMeters}, 'blockSec', ${pw.calendarBlockDurationSeconds}, 'sync', ${pw.corosSyncState},
-          'stages', (select json_group_array(json_object('id', st.id, 'parentStageId', st.parent_stage_id, 'durationType', st.duration_type))
+          'stages', (select json_group_array(json_object('id', st.id, 'parentStageId', st.parent_stage_id, 'durationType', st.duration_type,
+              'ord', st.ord, 'kind', st.kind, 'repeatCount', st.repeat_count, 'durationSeconds', st.duration_seconds,
+              'distanceMeters', st.distance_meters, 'label', st.label))
             from ${plannedWorkoutStages} st where st.workout_id = ${pw.id}),
+          'doc', ${pw.workoutDoc},
           'pushed', exists(select 1 from ${corosWriteJobs} j where j.id = ${pw.id} || '-push' and j.user_id = ${ctx.userId}),
           'care', (select case when json_valid(${programs.config}) then json_extract(${programs.config}, '$.careProfiles') end
             from ${programs} where ${programs.id} = ${pw.planId} and ${programs.userId} = ${ctx.userId}))
@@ -464,6 +504,8 @@ export const adjustPlan: DesignTool = {
       propOps: sql`(select ${coachProposals.ops} from ${coachProposals} where ${coachProposals.id} = ${proposalId} and ${coachProposals.userId} = ${ctx.userId})`,
       propStatus: sql`(select ${coachProposals.status} from ${coachProposals} where ${coachProposals.id} = ${proposalId} and ${coachProposals.userId} = ${ctx.userId})`,
       restoring: sql`(select ${accountState.restoreId} from ${accountState} where ${accountState.userId} = ${ctx.userId})`,
+      // A length re-times a designed run's distances at their paces, from the athlete's threshold.
+      threshold: thresholdSql(ctx.userId),
       // The thread coach's agreed rest resolved lately, its days (the athlete's today is known only after this read:
       // the UTC day's week and a day more either side hold it); counted below as the dossier counts it.
       sanctioned: sql`(select json_group_array(${pw.resolutionDate}) from ${pw} where ${pw.userId} = ${ctx.userId}
@@ -505,6 +547,17 @@ export const adjustPlan: DesignTool = {
       );
     }
 
+    // A STRUCTURED RUN'S LENGTH IS RE-TIMED BY THE RULE (the owner's decision, 2026-10-20): what the card says, kept on
+    // the op for the applier to find again at the tap — or refused in the rule's words; null: the length alone.
+    let retime: RetimeExpectation | null | undefined;
+    if (p.change.kind === "adjust") {
+      const r = retimeOf(row!, p.change.durationMinutes, extra.threshold, ctx);
+      if (r.kind === "refused") return refuse(r.refusal, r.reason, "Ease it with adjust_plan (easy and shorter), or design the run you want and skip this one.");
+      if (r.kind === "unchanged") {
+        return refuse("no_change", `Re-timed by its structure, that run stays ${r.minutes} min: its reps come no nearer ${p.change.durationMinutes}.`, "Leave it as it is, choose another length, or ease it.");
+      }
+      retime = r.kind === "retimed" ? r.expect : null;
+    }
     // The thread coach's own op, as its schema stores one (an ease's or a swap's eased session built from the row).
     const op = coachOpOf(p.change, row!, p.workoutId);
     const snapshot = snapshotOf(row!);
@@ -531,9 +584,11 @@ export const adjustPlan: DesignTool = {
       id,
       op,
       ...(p.change.kind === "swap" ? { verb: "swap" as const } : {}),
+      ...(retime !== undefined ? { retime } : {}),
       why: p.why,
       issues: [
-        ...(op.kind === "adjust" && snapshot.onWatch ? [{ code: "watch_unchanged", message: "The watch keeps its copy as it is: only the plan's length changes." }] : []),
+        // Re-timed by the rule, the watch gets the new version; a length alone leaves the watch's copy as it is.
+        ...(op.kind === "adjust" && !retime && snapshot.onWatch ? [{ code: "watch_unchanged", message: "The watch keeps its copy as it is: only the plan's length changes." }] : []),
         ...careNote,
         ...restNote,
       ],

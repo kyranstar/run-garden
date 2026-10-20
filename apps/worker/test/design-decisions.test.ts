@@ -65,9 +65,10 @@ describe("the prompt's criteria, each in its role's block", () => {
     expect(runs).toContain("Effort race is a segment run at race effort over its own distance, so give it distanceM.");
   });
 
-  it("4. a run's length: adjust changes the plan, not the watch; shorter on the watch is ease, longer is a new run — the main coach's", () => {
+  it("4. a run's length: adjust re-times a structured run by the rule and the watch gets it; a new purpose is ease or a new run — the main coach's", () => {
+    // The owner's decision, 2026-10-20 (adjust-retime.ts): the coach states the length, the code re-times the steps.
     expect(main).toContain(
-      "A length set with adjust changes the plan, not the watch: shorter and easy on the watch is ease with durationMinutes; longer, or the same work in less time, is a new run you design, the old one skipped.",
+      "A length set with adjust re-times a structured run by a fixed rule — warm-up and cool-down kept, reps counted, the main block scaled — and the watch gets it; to change its purpose, ease it or design a new run, the old skipped.",
     );
     expect(others).not.toContain("A length set with adjust");
   });

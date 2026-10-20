@@ -7,7 +7,10 @@ import { test, expect } from "./fixtures.js";
  * their paces from the athlete's threshold, a distance's time on the watch, the totals, "Goes to your watch when you
  * approve" → Approve → "Added to your plan" → the row in the coach lane with its stages, and its watch create queued as a
  * `run_watch` session whose program — built by the lane's own builder, never sent (the fixture's COROS holds no
- * credentials) — carries each step's role, time and pace bytes (a recovery bare). Everything but the model is the real app and worker.
+ * credentials) — carries each step's role, time and pace bytes (a recovery bare). Then its length (`retime_run`, the
+ * owner's decision of 2026-10-20): asked from its sheet, the coach states 43 minutes, the change's card says the new
+ * structure the app's rule made ("53 → 43 min · 2 × 8 min (was 3 × 8)"), and once approved the row's stages and its
+ * queued create are that structure. Everything but the model is the real app and worker.
  *
  * Needs the fixture stack on the scripted model, and skips itself otherwise:
  *
@@ -24,6 +27,8 @@ const LIVE = ["active", "stepping", "waiting_athlete", "waiting_review", "waitin
 const SHOTS = process.env.RG_COACH_SHOTS ?? null;
 /** The scripted finish (coach-design-scripts.mjs `RUN_LINE`). */
 const RUN_LINE = "Three tempo blocks tomorrow, easy either side.";
+/** The scripted finish of the run's length (coach-design-scripts.mjs `RETIME_LINE`). */
+const RETIME_LINE = "Tomorrow's tempo is shorter: two blocks, easy either side as before.";
 /** A threshold of 4:49 /km: tempo 4:59–5:14, easy 5:49–6:49 (`paceBandFor`); a recovery carries none. */
 const THRESHOLD = 289;
 
@@ -176,6 +181,41 @@ test("a designed run: asked for → its card with its steps and paces → Approv
     await page.goto(`/plan?workout=${encodeURIComponent(workoutId)}`);
     await expect(page.getByText("Tempo blocks").first()).toBeVisible({ timeout: 20_000 });
     await shot(page, "run-on-plan", testInfo);
+
+    // ITS LENGTH, RE-TIMED BY THE RULE (the owner's decision, 2026-10-20): asked from the run's own sheet, the coach
+    // states 43 minutes (`retime_run`) and the app re-times its steps — 53 minutes (10 easy, 3 × (8 + 2), 2 km easy at
+    // 12:38) to 43: two blocks, the nearest count, the warm-up and cool-down kept. The card says the new structure
+    // before approval, and the row's stages and the queued create are that structure after.
+    await model("/use/retime_run");
+    // The sheet's own Ask (its backdrop covers the nav's Coach): the coach sees this run.
+    await page.locator(`button.ask-coach[data-focus="workout:${workoutId}"]:visible`).first().click();
+    await expect(sheet(page)).toBeVisible();
+    await newConversation(page);
+    await expect(sheet(page).locator(".coach-seeing")).toContainText("Tempo blocks");
+    await send(page, "Make tomorrow's run shorter");
+    await expect(sheet(page).locator(".coach-msg--coach", { hasText: RETIME_LINE })).toBeVisible({ timeout: 60_000 });
+    const changes = sheet(page).locator(".coach-changes");
+    await expect(changes).toContainText("1 change", { timeout: 20_000 });
+    await changes.getByRole("button", { name: "Look closer" }).click();
+    const line = changes.locator(".coach-pc-item--change .coach-pc-change");
+    await expect(line).toContainText("Tempo blocks 53 → 43 min · 2 × 8 min (was 3 × 8)");
+    await expect(line).not.toContainText("watch unchanged");
+    await noOverflow(page);
+    await shot(page, "run-retime-card", testInfo);
+    await changes.getByRole("button", { name: "Approve", exact: true }).click();
+    await expect(changes.locator(".coach-pc-outcome--done")).toBeVisible({ timeout: 30_000 });
+    await shot(page, "run-retimed", testInfo);
+
+    // The row is the card's: 43 minutes, two blocks in its stages — and the create still queued carries two rounds.
+    const retimed = (await (await context.request.get(`${baseURL}/api/plan/workouts/${workoutId}`)).json()) as { workout: Record<string, unknown> };
+    expect(String(retimed.workout.stageSummary)).toBe("10 min easy · 2 × 8 min tempo / 2 min recovery · 2 km easy");
+    const rejob = (await (await context.request.get(`${baseURL}/api/dev/coach-job?workoutId=${encodeURIComponent(workoutId)}`)).json()) as {
+      kind: string;
+      steps: Array<{ exerciseType: number; targetValue: number }>;
+    };
+    expect(rejob.kind).toBe("coach_create_workout");
+    expect(rejob.steps.map((s) => s.exerciseType)).toEqual([1, 2, 4, 2, 4, 3]);
+    expect(rejob.steps.map((s) => s.targetValue)).toEqual([600, 480, 120, 480, 120, 758]);
   } finally {
     await model("/use/");
   }

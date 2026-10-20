@@ -221,7 +221,8 @@ function changeOf(c: PlanAdjustOp): Record<string, unknown> {
     date: c.date,
     title: untrusted(cut(c.row.title, TITLE_MAX)),
     ...(c.op.kind === "move" ? { to: c.op.toTime ? `${c.op.toDate} ${c.op.toTime}` : c.op.toDate } : {}),
-    ...(c.op.kind === "adjust" ? { minutes: c.op.durationMinutes } : {}),
+    // A length re-timed by the rule: the rule's minutes, and what its steps became.
+    ...(c.op.kind === "adjust" ? { minutes: c.retime?.minutes ?? c.op.durationMinutes, ...(c.retime?.summary ? { steps: c.retime.summary } : {}) } : {}),
     why: untrusted(cut(c.why, NOTE_MAX)),
   };
 }

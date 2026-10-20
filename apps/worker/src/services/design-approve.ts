@@ -83,6 +83,12 @@
  * `applied_refs` snapshot is the thread card's, which never shows a designed proposal: each change's own `before` is
  * this record. A change has no draft (Edit before approve never names one) and needs no review.
  *
+ * A LENGTH RE-TIMED BY THE RULE (the owner's decision, 2026-10-20; adjust-retime.ts). A structured run's length carries
+ * what its card said the rule makes of it (`retime`, kept by adjust_plan): it is declared at RETIME_COST and its stage
+ * inserts, handed to the applier (`retimes`), which re-times the run only when the rule, run again, finds the same — and
+ * it is made when the row is at the rule's length saying the card's steps. A length with no `retime` (not a structured
+ * run, or proposed before the rule) changes the length alone, as before.
+ *
  * A CLAIM NO REQUEST FINISHES (the recovery rule; the Task 9 review). An approve claims its changes (`applying`, with
  * when — `at` — and the session as it stood) before the applier runs. For APPLYING_STALE_MS from its `at` the claim is
  * that approve's, still applying: another approve answers it in flight (`inFlight`; the route's 409 `in_flight` when
@@ -426,12 +432,21 @@ const PLAN_MAX = 10;
 export const PLAN_BATCH_FIXED = 1 + 1 + 1 + 1 + 1 + 2 + 1 + 1;
 /** A skip: the applier's read of the session and its write. */
 export const SKIP_COST = 2;
-/** A length: the read, and the write with its document's revision — before the rows its day's collision pass moves. */
+/** A length alone (a session the rule doesn't re-time, `retime` null): the read, and the write with its document's revision
+ * — before the rows its day's collision pass moves. */
 export const ADJUST_COST = 3;
 /** …and on a session the athlete had chosen the watch's version of (watch-copy-marker.ts; review-S3 A1), the app's claim
  * again (2), its stage rows read (1), and its rewrite on what the watch holds — the stamp read, the open intent, the older
  * rewrite superseded, the job (4). Declared only for such a session (the plan read says which). */
 export const ADJUST_RECLAIM_COST = 2 + 1 + 4;
+/**
+ * A length RE-TIMED BY THE RULE (2026-10-20; coach-apply.ts `writeRetimed`): the read and its stage rows read (2), the row
+ * and its revision (2), its stage rows' delete (1) — and their inserts, the op's own (`retime.stageInserts`, what the card
+ * counted) — the content intent closed and recorded (2), a queued create brought up to date (1), and its watch copy's
+ * rewrite at its most — the stamp read, the open intent, the older rewrite superseded, the job (4) — before the rows its
+ * day's collision pass moves. The "keep the watch's version" mark lifts in the same row write: nothing more for it.
+ */
+export const RETIME_COST = 2 + 2 + 1 + 2 + 1 + 4;
 /**
  * A move: the read, and `applyMove` at its most — the row, its override, its intent (two), its write and its audit (6),
  * and a programme session's own way off its old day: the intent resolved, its sent build found (two), the copy taken off
@@ -492,11 +507,13 @@ export function calendarOpsFitting(left: number): number {
 }
 
 /** What a change costs, by the sessions the day it lands on already holds (`dayRows`, this request's own included). */
-export function planOpCostOf(op: Pick<PlanAdjustOp, "op">, dayRows: number, reclaims = false): number {
+export function planOpCostOf(op: Pick<PlanAdjustOp, "op"> & { retime?: PlanAdjustOp["retime"] }, dayRows: number, reclaims = false): number {
   switch (op.op.kind) {
     case "skip":
       return SKIP_COST;
     case "adjust":
+      // Re-timed by the rule (its claim and rewrite included, the mark's lift too); else the length alone.
+      if (op.retime) return RETIME_COST + op.retime.stageInserts + dayRows;
       return ADJUST_COST + dayRows + (reclaims ? ADJUST_RECLAIM_COST : 0);
     case "move":
       return MOVE_COST + dayRows + 1;
@@ -513,7 +530,7 @@ export function planOpCostOf(op: Pick<PlanAdjustOp, "op">, dayRows: number, recl
 /** What an op costs, by the sessions its day already holds (`dayRows`, this request's own included) — a change's too
  * (`planOpCostOf`; the request's changes add PLAN_BATCH_FIXED once). */
 export function opCostOf(
-  op: (Pick<DocWorkoutOp, "target"> & { doc?: WorkoutDoc }) | Pick<PlanAdjustOp, "op">,
+  op: (Pick<DocWorkoutOp, "target"> & { doc?: WorkoutDoc }) | (Pick<PlanAdjustOp, "op"> & { retime?: PlanAdjustOp["retime"] }),
   dayRows: number,
   edit?: ApproveInput["edit"],
   /** A change's session carries the "keep the watch's version" mark: a length re-claims it (`ADJUST_RECLAIM_COST`). */
@@ -566,6 +583,8 @@ interface RowState {
   resolution: string | null;
   /** It carries the "keep the watch's version" mark (watch-copy-marker.ts): a length re-claims it. */
   reclaims: boolean;
+  /** Its stage summary: a length re-timed by the rule is there when it says what the card's re-time does. */
+  stageSummary: string | null;
 }
 
 interface Plan {
@@ -619,7 +638,7 @@ async function readPlan(
         'category', ${pw.category}, 'sport', ${pw.sport}, 'origin', ${pw.origin}, 'content', ${pw.contentState},
         'completion', ${pw.completionState}, 'rev', ${pw.workoutDocRev}, 'archived', ${pw.archivedAt},
         'seconds', ${pw.fallbackEstimatedDurationSeconds}, 'sourceSeconds', ${pw.sourceEstimatedDurationSeconds}, 'subtype', ${pw.qualitySubtype},
-        'resolution', ${pw.resolutionDate}, 'marked', ${pw.sourceContentFingerprint} like ${`${TAKE_WATCH_COPY}%`},
+        'resolution', ${pw.resolutionDate}, 'marked', ${pw.sourceContentFingerprint} like ${`${TAKE_WATCH_COPY}%`}, 'stages', ${pw.stageSummary},
         'pinned', exists(select 1 from ${scheduleOverrides} so where so.workout_id = ${pw.id} and so.kind = 'time_change'),
         'summary', case when json_valid(${pw.workoutDoc}) then json_extract(${pw.workoutDoc}, '$.intent.summary') end))
         from ${pw} where ${pw.userId} = ${userId} and ${pw.id} in (${values([...keyOf.values(), ...revised])})) as rows,
@@ -656,6 +675,7 @@ async function readPlan(
       minutes: typeof x.sourceSeconds === "number" ? Math.round(x.sourceSeconds / 60) : typeof x.seconds === "number" ? Math.round(x.seconds / 60) : null,
       resolution: typeof x.resolution === "string" ? x.resolution : null,
       reclaims: x.marked === 1 || x.marked === true,
+      stageSummary: typeof x.stages === "string" ? x.stages : null,
     });
   }
   // Each revision id names one op's revision; its ref was checked in the read (the op's own).
@@ -887,7 +907,7 @@ function planVerdict(
     const cause: NotEditableCause = docOriginRow({ origin: row.origin }) ? "studio" : "programme";
     return { refusal: { error: "not_editable", cause, why: NOT_EDITABLE_WHY[cause] } };
   }
-  if (effectThere(c, row)) return { made: beforeOf(row), replayFrom: null };
+  if (effectThere(c, row, op.retime)) return { made: beforeOf(row), replayFrom: null };
   // A move to today never lands at a past time (the polish round, 1): its time asked for, or the one it keeps (the
   // applier's own rule, coach-apply.ts), at least the lead after now — else refused, the session left where it is.
   if (c.kind === "move" && c.toDate === today) {
@@ -898,16 +918,16 @@ function planVerdict(
 }
 
 /** A change's effect is on the plan: the session skipped, at its new day (and time, when one was asked for), at its
- * length — and since the new shape §5 the eased session in its place (its name and length), off the plan, or back on
- * it. */
-function effectThere(c: PlanChange, row: RowState): boolean {
+ * length — re-timed by the rule, at the rule's length saying the card's steps (its stage summary) — and since the new
+ * shape §5 the eased session in its place (its name and length), off the plan, or back on it. */
+function effectThere(c: PlanChange, row: RowState, retime?: PlanAdjustOp["retime"]): boolean {
   switch (c.kind) {
     case "skip":
       return row.dto.completionState === "skipped";
     case "move":
       return row.dto.date === c.toDate && (c.toTime === undefined || row.dto.time === c.toTime);
     case "adjust":
-      return row.minutes === c.durationMinutes;
+      return retime ? row.minutes === retime.minutes && row.stageSummary === retime.stageSummary : row.minutes === c.durationMinutes;
     case "ease":
       return row.dto.title === c.session.title && row.dto.category === c.session.category && row.minutes === c.session.durationMinutes;
     case "remove":
@@ -928,7 +948,7 @@ function effectThere(c: PlanChange, row: RowState): boolean {
 function claimMade(op: DesignedPlanOp, row: RowState | undefined, today: string | null): { made: PlanBefore; replayFrom: string | null } | null {
   const claim = claimOf(op);
   // (An archived row is a remove's effect, and no other change's.)
-  if (!claim || !row || (row.archived && op.op.kind !== "remove") || !effectThere(op.op, row)) return null;
+  if (!claim || !row || (row.archived && op.op.kind !== "remove") || !effectThere(op.op, row, op.retime)) return null;
   const resolved = op.op.kind === "skip" ? row.resolution : null;
   return { made: claim.before, replayFrom: resolved !== null && (today === null || resolved <= today) ? resolved : null };
 }
@@ -1079,7 +1099,11 @@ export async function approveDesignOps(
     current = { ...p, ops: claimOps, status: claimStatus, resolvedAt };
     let res: Awaited<ReturnType<typeof applyOps>>;
     try {
-      res = await applyOps(db, userId, ctx.prefs, p.id, batch.map((c) => c.op));
+      res = await applyOps(db, userId, ctx.prefs, p.id, batch.map((c) => c.op), {
+        // A length the card said the rule re-times (`retime`): the applier re-times it only when it finds the same.
+        retimes: new Map(batch.flatMap((c) => (c.op.kind === "adjust" && c.retime ? [[c.op.workoutId, c.retime] as const] : []))),
+        ...(ctx.runWire ? { runWire: ctx.runWire } : {}),
+      });
     } catch (e) {
       // THE RELEASE (the recovery rule): the applier threw — a fault it doesn't catch, its own or one of the D1's. The
       // claims go stale at once, under the same guard (one statement, reserved in PLAN_BATCH_FIXED): nothing waits on them,
@@ -1104,8 +1128,10 @@ export async function approveDesignOps(
     }
     if (res.resimFrom) replayFrom = earliest(replayFrom, res.resimFrom);
     // Nothing after the applier may turn an applied change into an error (the thread route's own rule): caught.
-    // A move, an ease's convergence or a remove's unpush may queue a watch job for the client to drain.
-    const queues = (c: DesignedPlanOp) => (c.op.kind === "move" || c.op.kind === "ease") && res.updated.includes(c.op.workoutId) || (c.op.kind === "remove" && res.archived.includes(c.op.workoutId));
+    // A move, an ease's convergence, a re-timed length's or a remove's unpush may queue a watch job for the client to drain.
+    const queues = (c: DesignedPlanOp) =>
+      ((c.op.kind === "move" || c.op.kind === "ease" || (c.op.kind === "adjust" && !!c.retime)) && res.updated.includes(c.op.workoutId)) ||
+      (c.op.kind === "remove" && res.archived.includes(c.op.workoutId));
     if (batch.some(queues)) coachDrain = await coachDrainQueued(db, userId).catch(() => false);
   }
   if (replayFrom !== null) await recordReplayFrom(db, userId, replayFrom).catch(() => undefined);

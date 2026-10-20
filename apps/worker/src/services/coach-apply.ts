@@ -1,4 +1,4 @@
-import { and, asc, desc, eq, gte, inArray, isNotNull, isNull, lte, notInArray, or } from "drizzle-orm";
+import { and, asc, desc, eq, gte, inArray, isNotNull, isNull, lte, notInArray, or, sql } from "drizzle-orm";
 import {
   calendarEventSuppressions,
   coachPlanWeeks,
@@ -52,6 +52,7 @@ import {
   unskipWorkout,
 } from "./plan-mutations.js";
 import { resolveRaceConflict } from "./race-conflict.js";
+import type { RetimeExpectation, RetimeWrite } from "./adjust-retime.js";
 import { isLoosePlan } from "./coach-plans.js";
 import {
   docForCoachSession,
@@ -949,6 +950,96 @@ export async function enqueueContentConvergence(
 }
 
 /**
+ * A STRUCTURED RUN'S RE-TIME, WRITTEN (the owner's decision, 2026-10-20; adjust-retime.ts). What an ease writes, for
+ * the steps the rule made:
+ *  - the row: its length (the rule's), its stage summary and distance, `calendar_only` until the watch confirms — a
+ *    designed run's own columns, a plan run's a coach session's (`sessionColumns`, as an ease) keeping its name, category
+ *    and subtype; "keep the watch's version" lifted (`unmarkedFingerprint`: the newer change stands, review-S3 A1);
+ *  - its document's next revision, and its stage rows replaced — in one batch with the row;
+ *  - the app's claim on its content (`coach_adjust`), so a COROS read never hands the row back to the older copy;
+ *  - a create of it still queued: the new session, so the watch never gets the old one;
+ *  - its watch copy rewritten (`enqueueContentConvergence`, on what the watch holds: the row as it was read) — refused
+ *    quietly when it isn't on the watch, or writes are off: the session not on the watch just gets its new stages.
+ * Statements (design-approve.ts `RETIME_COST`): the batch (row, revision, delete, the inserts), the claim (2), the
+ * create (1), the rewrite (at most 4) — after the applier's row and stage reads.
+ */
+async function writeRetimed(
+  db: Db,
+  v: {
+    userId: string;
+    /** The row as read, before this write: its address and fingerprint are what the watch holds. */
+    row: typeof plannedWorkouts.$inferSelect;
+    minutes: number;
+    write: RetimeWrite;
+    proposalId: string;
+    now: string;
+    thresholdPaceSecPerKm?: number;
+    prefs: UserPreferences;
+    runWire: RunWire;
+  },
+): Promise<void> {
+  const { row, write: w } = v;
+  const pw = plannedWorkouts;
+  const seconds = v.minutes * 60;
+  const columns =
+    w.family === "designed"
+      ? {
+          calendarBlockDurationSeconds: seconds,
+          fallbackEstimatedDurationSeconds: seconds,
+          sourceEstimatedDurationSeconds: null,
+          durationEstimate: null,
+          expectedDistanceMeters: w.expectedDistanceMeters,
+          stageSummary: w.stageSummary,
+          corosSyncState: "calendar_only",
+        }
+      : { ...sessionColumns(w.session), title: row.title, category: row.category, qualitySubtype: row.qualitySubtype };
+  await runAtomically(db, [
+    db
+      .update(pw)
+      .set({
+        ...columns,
+        ...updateDocColumns(w.doc),
+        sourceContentFingerprint: unmarkedFingerprint(pw.sourceContentFingerprint),
+        updatedAt: v.now,
+      })
+      .where(and(eq(pw.id, row.id), eq(pw.userId, v.userId))),
+    ...(w.doc ? [revisionInsert(db, { userId: v.userId, workoutId: row.id, sourceKind: "coach", sourceRef: v.proposalId, now: v.now })] : []),
+    db.delete(plannedWorkoutStages).where(eq(plannedWorkoutStages.workoutId, row.id)),
+    ...insertBatches(w.stages).map((batch) => db.insert(plannedWorkoutStages).values(batch)),
+  ]);
+  const watch = w.family === "designed" ? w.session : w.watchSession;
+  await recordIntent(db, {
+    userId: v.userId,
+    targetKind: "workout",
+    targetId: row.id,
+    kind: "content",
+    payload: { fingerprint: fingerprint(watch) },
+    source: "coach_adjust",
+  });
+  // A create not yet run carries the session it was queued with: it goes with the new one.
+  await db
+    .update(corosWriteJobs)
+    .set({ payload: sql`json_set(${corosWriteJobs.payload}, '$.session', json(${JSON.stringify(watch)}))`, expectedContentFingerprint: fingerprint(watch), updatedAt: v.now })
+    .where(
+      and(
+        eq(corosWriteJobs.id, `${row.id}-push`),
+        eq(corosWriteJobs.userId, v.userId),
+        eq(corosWriteJobs.kind, "coach_create_workout"),
+        eq(corosWriteJobs.status, "queued"),
+      ),
+    );
+  await enqueueContentConvergence(db, {
+    userId: v.userId,
+    workout: row,
+    session: watch,
+    now: v.now,
+    corosWritesEnabled: v.prefs.corosWritesEnabled ?? false,
+    ...(v.thresholdPaceSecPerKm !== undefined ? { thresholdPaceSecPerKm: v.thresholdPaceSecPerKm } : {}),
+    runWire: v.runWire,
+  });
+}
+
+/**
  * Archive aftermath (audit#3 D2): every coach-archived row needs the same
  * "user_removed" suppression a hand removal gets — import's presence-healing
  * keys on suppressions, and without one the next 90-day COROS read
@@ -1057,8 +1148,12 @@ export function whyNotActionable(
  * audited op by op (2026-08-17), because "ease is the one that bit" is a
  * finding about one bug, not a statement about the vocabulary.
  *
- *  · `ease` — YES, and it is the only in-place content rewrite in the file. It
- *    updates an existing row's every session-decided column. Converged above.
+ *  · `ease` — YES, an in-place content rewrite. It updates an existing row's
+ *    every session-decided column. Converged above.
+ *  · `adjust` of a structured run re-timed by the rule (2026-10-20,
+ *    adjust-retime.ts) — YES, the other one: its steps change, so it converges
+ *    as an ease does. A length alone (an unstructured run, a lift, the thread
+ *    coach's adjust) — NO: no content is written.
  *  · `add`, `firmUp`, `reshapeWeek`, `windDown`, `createPlan` — NO. All five go
  *    through `insertSession`, which INSERTS a row under a fresh proposal-derived
  *    id and `onConflictDoNothing`; a re-apply of the same proposal carries the
@@ -1094,7 +1189,19 @@ export async function applyOps(
    * `priorRefs`: the before-states the proposal already holds, which this apply never overwrites — a thread proposal
    * that shapes a plan applies its other ops a run at a time, between its structural ops' chunks (§8 §4).
    */
-  opts: { only?: (i: number) => boolean; priorRefs?: Record<string, { date?: string; summary?: string; durationMinutes?: number }> | null } = {},
+  opts: {
+    only?: (i: number) => boolean;
+    priorRefs?: Record<string, { date?: string; summary?: string; durationMinutes?: number }> | null;
+    /**
+     * The re-times the cards showed, by workout id (the coach designer's approve, from each `adjust`'s
+     * `PlanAdjustOp.retime`): an `adjust` of a session named here re-times its structured run by the rule
+     * (adjust-retime.ts) — only when the rule, run again now, finds what the card said. An `adjust` of a session not
+     * named here changes its length alone, as it always has: the thread coach's card says "watch unchanged".
+     */
+    retimes?: ReadonlyMap<string, RetimeExpectation>;
+    /** The run wire in force (§8 phase 2): what a re-timed designed run is made by and goes to the watch on. v1 when absent. */
+    runWire?: RunWire;
+  } = {},
 ): Promise<ApplyResult> {
   const inScope = (i: number) => !opts.only || opts.only(i);
   const now = nowInstant();
@@ -1436,9 +1543,17 @@ export async function applyOps(
         break;
       }
       /**
-       * Duration only. `ease` is the op that rewrites what a session IS; this
-       * one changes how long it lasts and touches nothing else, which is what
-       * lets a taper reach twelve sessions without twelve session bodies.
+       * A STRUCTURED RUN IS RE-TIMED BY THE RULE (the owner's decision, 2026-10-20). The coach states the new length
+       * and the code does the arithmetic (adjust-retime.ts `retimeOfRow`, @rg/domain `retimeRun`): the warm-up and
+       * cool-down kept, the reps counted, the main block scaled. A taper still reaches twelve sessions without twelve
+       * session bodies — each is re-timed from its own steps. It is done only for a session the card said so of
+       * (`opts.retimes`, the designer's approve), and only when the rule, run again on the row as it stands, finds what
+       * the card said: else the session changed since, and nothing is written (`missed`). It writes what an ease writes —
+       * the row (its name, category and subtype kept), its stage rows, its document's next revision, the app's claim
+       * on the content and the rewrite of the watch's copy — and a create still queued for it carries the new session.
+       *
+       * Otherwise — a session not named, an unstructured run, a lift — duration only, as below. `ease` is the op that
+       * rewrites what a session IS; this one changes how long it lasts and touches nothing else.
        *
        * THE LENGTH THE ATHLETE SEES (audit 1, coach finding 4). Every display
        * and placement reader — Plan, Today, the calendar event, day placement,
@@ -1466,6 +1581,28 @@ export async function applyOps(
           break;
         }
         const row = found.row;
+        const expected = opts.retimes?.get(op.workoutId);
+        if (expected) {
+          const { retimeOfRow, sameRetime } = await import("./adjust-retime.js");
+          const stages = await db
+            .select()
+            .from(plannedWorkoutStages)
+            .where(eq(plannedWorkoutStages.workoutId, op.workoutId))
+            .orderBy(asc(plannedWorkoutStages.ord));
+          const r = retimeOfRow(row, stages, op.durationMinutes, {
+            thresholdSecPerKm: thresholdPaceSecPerKm ?? null,
+            runWire: opts.runWire ?? "v1",
+            weightUnit: prefs.weightUnit,
+          });
+          if (r.kind !== "retimed" || !sameRetime(r.expect, expected)) {
+            out.missed.push("a session it re-times has changed since it was suggested, so it is as it was");
+            break;
+          }
+          await writeRetimed(db, { userId, row, minutes: r.minutes, write: r.write, proposalId, now, thresholdPaceSecPerKm, prefs, runWire: opts.runWire ?? "v1" });
+          touchedDates.add(row.effectiveDate);
+          out.updated.push(op.workoutId);
+          break;
+        }
         // The athlete chose the watch's version (watch-copy-marker.ts), then approved this: the newer change stands
         // (review-S3 A1). The mark lifts as an ease's does, the app's claim on the content is live again, and its
         // rewrite goes to the watch on what the watch holds — never the watch's older copy taken over it at the read.
