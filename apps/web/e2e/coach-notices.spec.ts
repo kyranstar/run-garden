@@ -12,7 +12,7 @@ import { runTag, seededAccount } from "./seeded-accounts.js";
  * athlete's words; after that the run is old news, and a new conversation opens on the day's own line. Nothing here
  * calls a model on its own: the line is read free, and the one run is the tap's (fixture mode's canned answer).
  *
- * "Read it all" opens the whole review in a sheet of its own over the coach. A library held 5 s never keeps the line from
+ * "Read it all" opens the whole review in a sheet of its own over the coach. A library held back never keeps the line from
  * the athlete: the line and the chips are drawn at once, the quick starts after them, nothing moving.
  *
  * And the opening holds still while it is read (UX System 4): with the chips' and the templates' reads held back 1.5 s,
@@ -139,34 +139,38 @@ test("the coach notices: last week's review, then this morning's run, each said 
   expect(await chipLabels(page)).not.toContain("Plan tomorrow around it");
 });
 
-test("a slow library never keeps the coach's line from the athlete: held 5 s, the line and the chips are drawn at once, the quick starts after them — nothing moves", async ({ page, context, baseURL }, testInfo) => {
+test("a slow library never keeps the coach's line from the athlete: held, the line and the chips are drawn at once, the quick starts after them — nothing moves", async ({ page, context, baseURL }, testInfo) => {
   test.setTimeout(120_000);
   await signIn(context.request, baseURL, testInfo, "-l");
   await context.request.post(`${baseURL}/api/dev/coach-notices`, { data: { review: REVIEW } });
   await page.goto("/");
+  // The library is held until the test lets it go — after the line is drawn — so however slow the runner, a line that
+  // waited for the library would never be drawn at all.
+  let release!: () => void;
+  const held = new Promise<void>((r) => (release = r));
   let released = false;
   await page.route("**/api/library*", async (route) => {
-    await new Promise((r) => setTimeout(r, 5_000));
+    await held;
     released = true;
     await route.continue();
   });
-  const opened = Date.now();
   await page.locator("button.nav-coach:visible").first().click();
-  await expect(coachLine(page)).toHaveText(REVIEW_LINE, { timeout: 4_000 });
+  await expect(coachLine(page)).toHaveText(REVIEW_LINE, { timeout: 20_000 });
   expect(released).toBe(false);
-  expect(Date.now() - opened).toBeLessThan(4_500);
   const first = coachSheet(page).locator(".coach-chips button").first();
   const chipY = (await first.boundingBox())!.y;
   // The ways to start yourself wait, last on the screen.
   await expect(coachSheet(page).locator(".coach-start--holding")).toBeVisible();
   await expect(coachSheet(page).getByRole("link", { name: "Build your own" })).toHaveCount(0);
+  release();
   const build = coachSheet(page).getByRole("link", { name: "Build your own" });
   await expect(build).toBeVisible({ timeout: 15_000 });
   expect(released).toBe(true);
   const buildY = (await build.boundingBox())!.y;
   await page.waitForTimeout(1_500);
-  expect((await first.boundingBox())!.y).toBe(chipY);
-  expect((await build.boundingBox())!.y).toBe(buildY);
+  // Half a pixel: the sheet's own settling may leave a fraction; a line that jumped would move by far more.
+  expect((await first.boundingBox())!.y).toBeCloseTo(chipY, 0);
+  expect((await build.boundingBox())!.y).toBeCloseTo(buildY, 0);
 });
 
 test("the coach's opening holds still while it is read: with its reads held back, Build your own is drawn once, where it stays", async ({ page, context, baseURL }, testInfo) => {
