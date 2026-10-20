@@ -48,7 +48,7 @@ import { loggedTopKgByWeek } from "../services/logged-sets.js";
 import { applyOps, isStructuralOp } from "../services/coach-apply.js";
 import { approveStructural, retireInChunks, structuralStarted } from "./thread-structural.js";
 import { evaluateTriggers, pendingTriggers } from "../services/coach-triggers.js";
-import { coachBlockAdherence, isLoosePlan, plansEndedOn } from "../services/coach-plans.js";
+import { coachBlockAdherence, isLoosePlan, lineBlockOf, loadNonCoachPlanEntries, plansEndedOn } from "../services/coach-plans.js";
 import { setCoachPlanRace } from "../services/coach-plan-race.js";
 import {
   openWakeIsFresh,
@@ -767,133 +767,14 @@ coachRoutes.get("/plans", async (c) => {
   const userId = c.get("userId");
   const prefs = await loadPreferences(db, userId);
   const rows = await db.select().from(coachPlans).where(eq(coachPlans.userId, userId));
-  // Studio-authored lifting plans are real plans this app created and wrote
-  // to COROS — "Manage plans" claiming "no plans" while one is live on the
-  // watch reads as a lie. They carry source:"studio" so the UI renders them
-  // with Studio affordances instead of coach ones.
-  // Newest studio plan only: generate keeps full history and each replace
-  // retires the previous plan's COROS sessions — listing superseded rows as
-  // live would be the same lie pointed the other way.
-  //
-  // And only while something of it is (or was) on the watch: the generator's
-  // screens are retired (Stage 2), so a draft it never pushed is nothing the
-  // athlete can act on, and listing it hid the lifting intake card. One that
-  // was retired leaves the list; one past its last day reads as completed.
   const today = todayInZone(prefs.timezone);
-  const studio = (
-    await db
-      .select()
-      .from(studioPlans)
-      .where(eq(studioPlans.userId, userId))
-      .orderBy(desc(studioPlans.createdAt))
-      .limit(1)
-  )[0];
-  const studioEntries = [];
-  // Its pushes' statuses: one row each (a plan's sessions, not more).
-  const pushStatuses = studio
-    ? (
-        await db
-          .select({ status: studioPlanPushes.status })
-          .from(studioPlanPushes)
-          .where(eq(studioPlanPushes.planId, studio.id))
-      ).map((p) => p.status)
-    : [];
-  if (studio && pushStatuses.some((s) => s !== "deleted") && !(await studioPlanRetired(db, userId, studio.id))) {
-    // Real span from the brief the plan was generated with — createdAt-based
-    // dates rendered "wk 1/1 · ends <creation day>" for a 16-week plan that
-    // hadn't even started (2026-08-12 audit finding 6).
-    const brief = studio.brief as { startDate?: string } | null;
-    const start = brief?.startDate ?? studio.createdAt.slice(0, 10);
-    const end = studioPlanEnd(studio);
-    // "Written to COROS" only when a push has actually materialized there —
-    // generate and push are separate actions.
-    const status: "active" | "draft" | "completed" =
-      end < today ? "completed" : pushStatuses.includes("verified") ? "active" : "draft";
-    studioEntries.push({
-      id: studio.id,
-      discipline: "lift" as const,
-      name: ((studio.plan as { name?: string })?.name ?? "Lifting plan"),
-      status,
-      startDate: start,
-      endDate: end,
-      raceDate: prefs.raceDate,
-      source: "studio" as const,
-    });
-  }
-
-  // The imported COROS plan IS the user's running plan — a page that shows
-  // its 35 workouts while the run slot claims "no plan" denies reality
-  // (audit finding 6). Read-only card: the app doesn't author these.
-  const corosPlans = await db
-    .select()
-    .from(trainingPlans)
-    .where(
-      and(
-        eq(trainingPlans.userId, userId),
-        eq(trainingPlans.status, "active"),
-        eq(trainingPlans.provider, "coros"),
-      ),
-    );
-  const corosEntries = [];
-  if (corosPlans.length > 0) {
-    const owned = await db
-      .select({
-        planId: plannedWorkouts.planId,
-        sport: plannedWorkouts.sport,
-        date: plannedWorkouts.effectiveDate,
-      })
-      .from(plannedWorkouts)
-      .where(
-        and(
-          eq(plannedWorkouts.userId, userId),
-          isNull(plannedWorkouts.archivedAt),
-          inArray(
-            plannedWorkouts.planId,
-            corosPlans.map((p) => p.id),
-          ),
-        ),
-      );
-    for (const p of corosPlans) {
-      const mine = owned.filter((w) => w.planId === p.id);
-      const runs = mine.filter((w) => w.sport === "run");
-      // A RUN card only for the plan that is actually the running plan:
-      // majority-run and still holding future run work. (The strength
-      // container the studio pushes into also lives in training_plans and
-      // owns a couple of stray runs — it must not masquerade as one.)
-      const futureRun = runs.some((w) => w.date >= today);
-      if (!futureRun || runs.length * 2 < mine.length) continue;
-      const dates = mine.map((w) => w.date).sort();
-      // COROS containers often carry NULL spans and code names — derive the
-      // span from the workouts themselves and never render a bare code.
-      const name = !p.name || p.name === "COROS plan" || looksLikeCodeTitle(p.name)
-        ? "COROS running plan"
-        : p.name;
-      corosEntries.push({
-        id: p.id,
-        discipline: "run" as const,
-        name,
-        status: "active" as const,
-        startDate: p.startDate ?? dates[0]!,
-        endDate: p.endDate ?? dates[dates.length - 1]!,
-        raceDate: prefs.raceDate,
-        source: "coros" as const,
-      });
-    }
-  }
+  // The Studio's and COROS's plans: one reader, shared with the week brief's naming (`GET /api/plan/week`).
+  const { studioEntries, corosEntries } = await loadNonCoachPlanEntries(db, userId, prefs);
 
   // The loose `adhoc-` buckets are containers of one-offs, not plans: they
   // never reach this read (a line is built from coach blocks only).
   const coachRows = rows.filter((r) => !isLoosePlan(r));
-  const blocks: LineBlock[] = coachRows.map((r) => ({
-    id: r.id,
-    discipline: r.discipline as LineBlock["discipline"],
-    status: r.status as LineBlock["status"],
-    name: r.name,
-    startDate: r.startDate,
-    endDate: r.endDate,
-    // The block's OWN race (the row), never the Settings fallback.
-    planRaceDate: r.raceDate,
-  }));
+  const blocks: LineBlock[] = coachRows.map(lineBlockOf);
   // One grouped statement: each block's sessions dated today or later that
   // are still to do.
   const future = new Map<string, number>();

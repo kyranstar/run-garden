@@ -53,7 +53,6 @@ import {
   type WorkoutDoc,
   type WorkoutSyncView,
   type WriteLane,
-  type LineBlock,
   type WeekPlan,
   appAuthoredRow,
   linesOf,
@@ -83,7 +82,7 @@ import { buildRaceHub, withPhaseLine } from "../services/race-hub.js";
 import { cloudPresence, deriveWorkoutSync, type CloudPresence } from "../services/sync-status.js";
 import { exerciseNameMap, resolveCodesInText } from "../services/exercise-catalog.js";
 import { buildReadiness } from "../services/readiness.js";
-import { isLoosePlan } from "../services/coach-plans.js";
+import { isLoosePlan, lineBlockOf, loadNonCoachPlanEntries } from "../services/coach-plans.js";
 import { repairPlannedWorkoutFidelity } from "../services/plan-repair.js";
 import { executeCloudJobs } from "../services/coros-write-cloud.js";
 import { todayConditions } from "../services/condition-views.js";
@@ -1095,7 +1094,7 @@ planRoutes.get("/week", async (c) => {
   // same batching as /today. `findRaceConflict` needs only prefs;
   // `latestCoachMsg`/`acts`/`historyRows` need only userId/today. No writes
   // happen in this handler, so read ordering is free.
-  const [rows, catalog, presence, activePlans, historyRows, acts, latestCoachMsg, raceMismatch] =
+  const [rows, catalog, presence, coachPlanRows, historyRows, acts, latestCoachMsg, raceMismatch, nonCoach] =
     await Promise.all([
       db
         .select(plannedRowColumns())
@@ -1148,11 +1147,12 @@ planRoutes.get("/week", async (c) => {
       // Two race truths must never coexist silently (audit#2 #3): the imported
       // plan's race row vs the athlete's stated race day.
       findRaceConflict(db, userId, prefs),
+      // The Studio's and COROS's plans, as the plan list reads them: candidates to name the week, with real dates.
+      loadNonCoachPlanEntries(db, userId, prefs),
     ]);
 
   // "Week n of m" is a statement about a BLOCK's planned duration, so only a
-  // block may answer it — and when two blocks overlap this week, the longest
-  // span wins deterministically rather than whichever row D1 returned first.
+  // block may answer it.
   //
   // Approving one coach one-off used to mint a single-day "Coach one-offs"
   // bucket, and an unordered `.find()` let that bucket answer for the week: the
@@ -1160,48 +1160,26 @@ planRoutes.get("/week", async (c) => {
   // and the plan's race date went with it (a bucket has no `coach_plan_weeks`
   // rows and no race).
   //
-  // Which phase names the week is the Plan screen's week line's question too, and one rule answers both
-  // (`weekNaming`, training lines §3.6): the group holding the most of the week's sessions; inside a line, its phase
-  // holding the most. The week's own rows give the sessions; the coach rows give the lines. A plan that is no coach row
-  // (the Studio's, COROS's) is known here only by its sessions: a group of its own, naming the week with no counter.
-  const coachRows = activePlans.filter((p) => !isLoosePlan(p));
-  const lines = linesOf(
-    coachRows.map(
-      (p): LineBlock => ({
-        id: p.id,
-        discipline: p.discipline as LineBlock["discipline"],
-        status: p.status as LineBlock["status"],
-        name: p.name,
-        startDate: p.startDate,
-        endDate: p.endDate,
-        planRaceDate: p.raceDate,
-      }),
-    ),
-    today,
-  );
-  const knownPlanIds = new Set(activePlans.map((p) => p.id));
+  // Which phase names the week is the Plan screen's week line's question too, and one rule over one candidate set
+  // answers both (`weekNaming`, training lines §3.6): the candidates are the plan list's own — the non-retired coach
+  // rows and the Studio's and COROS's entries (`loadNonCoachPlanEntries`, the list's reader). The group holding the
+  // most of the week's sessions names it; inside a line, its phase holding the most. A session of any other plan id (a
+  // programme's slot, the Studio programme's designed runs, a Studio lift in COROS's container) is no candidate's: it
+  // forms no group and is no "+1", here or on the Plan screen.
+  const coachRows = coachPlanRows.filter((p) => !isLoosePlan(p));
+  const lines = linesOf(coachRows.map(lineBlockOf), today);
   const sessionsByPlan = new Map<string, number>();
-  const otherPlans = new Map<string, WeekPlan>();
   for (const w of rows) {
-    if (w.category === "rest" || isLoosePlan({ id: w.planId })) continue;
-    sessionsByPlan.set(w.planId, (sessionsByPlan.get(w.planId) ?? 0) + 1);
-    if (!knownPlanIds.has(w.planId) && !otherPlans.has(w.planId)) {
-      otherPlans.set(w.planId, {
-        id: w.planId,
-        discipline: w.sport === "run" ? "run" : "lift",
-        startDate: weekStart,
-        endDate: weekEnd,
-        raceDate: prefs.raceDate,
-        source: "studio",
-      });
-    }
+    if (w.category !== "rest") sessionsByPlan.set(w.planId, (sessionsByPlan.get(w.planId) ?? 0) + 1);
   }
   const naming = weekNaming(
     [
       ...coachRows
         .filter((p) => p.status !== "retired")
         .map((p): WeekPlan => ({ id: p.id, discipline: p.discipline, startDate: p.startDate, endDate: p.endDate, raceDate: p.raceDate, source: "coach" })),
-      ...otherPlans.values(),
+      ...[...nonCoach.studioEntries, ...nonCoach.corosEntries].map(
+        (e): WeekPlan => ({ id: e.id, discipline: e.discipline, startDate: e.startDate, endDate: e.endDate, raceDate: e.raceDate, source: e.source }),
+      ),
     ],
     lines,
     weekStart,

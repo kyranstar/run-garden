@@ -113,5 +113,8 @@ describe("appMade on the workout row", () => {
   });
 });
 
-/** Each route's statements for this account, measured on the code before `appMade` existed. */
-const STATEMENTS = { workouts: 8, today: 19, week: 11, detail: 11 };
+/**
+ * Each route's statements for this account, measured on the code before `appMade` existed. The week's grew from 11 to
+ * 13 when its naming began reading the plan list's Studio and COROS entries (training lines §3.6): `appMade` adds none.
+ */
+const STATEMENTS = { workouts: 8, today: 19, week: 13, detail: 11 };

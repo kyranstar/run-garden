@@ -1,6 +1,8 @@
-import { and, eq, gte, inArray, lte } from "drizzle-orm";
-import { coachPlans, plannedWorkouts } from "@rg/database";
+import { and, desc, eq, gte, inArray, isNull, lte } from "drizzle-orm";
+import { coachPlans, plannedWorkouts, studioPlanPushes, studioPlans, trainingPlans } from "@rg/database";
+import { looksLikeCodeTitle, todayInZone, type LineBlock, type UserPreferences } from "@rg/domain";
 import type { Db } from "./db.js";
+import { studioPlanEnd, studioPlanRetired } from "./studio-push.js";
 
 /**
  * Block adherence (fairness spec §4): completed ÷ (completed + skipped +
@@ -104,4 +106,151 @@ export async function plansEndedOn(
       ),
     );
   return rows.filter((p) => !isLoosePlan(p));
+}
+
+
+/**
+ * A coach plan row as a training line's block (the one mapping every reader of lines uses). The block's OWN race (the
+ * row's), never Settings'.
+ */
+export function lineBlockOf(r: {
+  id: string;
+  discipline: string;
+  status: string;
+  name: string;
+  startDate: string;
+  endDate: string;
+  raceDate: string | null;
+}): LineBlock {
+  return {
+    id: r.id,
+    discipline: r.discipline as LineBlock["discipline"],
+    status: r.status as LineBlock["status"],
+    name: r.name,
+    startDate: r.startDate,
+    endDate: r.endDate,
+    planRaceDate: r.raceDate,
+  };
+}
+
+/**
+ * The plans that are no coach rows — the Studio's newest lifting plan and the imported COROS running plan — as the
+ * plan list shows them (`GET /api/coach/plans`) and the week brief names weeks from them (`GET /api/plan/week`): ONE
+ * reader, so the two sides' candidate sets are the same, with the same real dates.
+ */
+export async function loadNonCoachPlanEntries(db: Db, userId: string, prefs: Pick<UserPreferences, "raceDate" | "timezone">) {
+  // Studio-authored lifting plans are real plans this app created and wrote
+  // to COROS — "Manage plans" claiming "no plans" while one is live on the
+  // watch reads as a lie. They carry source:"studio" so the UI renders them
+  // with Studio affordances instead of coach ones.
+  // Newest studio plan only: generate keeps full history and each replace
+  // retires the previous plan's COROS sessions — listing superseded rows as
+  // live would be the same lie pointed the other way.
+  //
+  // And only while something of it is (or was) on the watch: the generator's
+  // screens are retired (Stage 2), so a draft it never pushed is nothing the
+  // athlete can act on, and listing it hid the lifting intake card. One that
+  // was retired leaves the list; one past its last day reads as completed.
+  const today = todayInZone(prefs.timezone);
+  const studio = (
+    await db
+      .select()
+      .from(studioPlans)
+      .where(eq(studioPlans.userId, userId))
+      .orderBy(desc(studioPlans.createdAt))
+      .limit(1)
+  )[0];
+  const studioEntries = [];
+  // Its pushes' statuses: one row each (a plan's sessions, not more).
+  const pushStatuses = studio
+    ? (
+        await db
+          .select({ status: studioPlanPushes.status })
+          .from(studioPlanPushes)
+          .where(eq(studioPlanPushes.planId, studio.id))
+      ).map((p) => p.status)
+    : [];
+  if (studio && pushStatuses.some((s) => s !== "deleted") && !(await studioPlanRetired(db, userId, studio.id))) {
+    // Real span from the brief the plan was generated with — createdAt-based
+    // dates rendered "wk 1/1 · ends <creation day>" for a 16-week plan that
+    // hadn't even started (2026-08-12 audit finding 6).
+    const brief = studio.brief as { startDate?: string } | null;
+    const start = brief?.startDate ?? studio.createdAt.slice(0, 10);
+    const end = studioPlanEnd(studio);
+    // "Written to COROS" only when a push has actually materialized there —
+    // generate and push are separate actions.
+    const status: "active" | "draft" | "completed" =
+      end < today ? "completed" : pushStatuses.includes("verified") ? "active" : "draft";
+    studioEntries.push({
+      id: studio.id,
+      discipline: "lift" as const,
+      name: ((studio.plan as { name?: string })?.name ?? "Lifting plan"),
+      status,
+      startDate: start,
+      endDate: end,
+      raceDate: prefs.raceDate,
+      source: "studio" as const,
+    });
+  }
+
+  // The imported COROS plan IS the user's running plan — a page that shows
+  // its 35 workouts while the run slot claims "no plan" denies reality
+  // (audit finding 6). Read-only card: the app doesn't author these.
+  const corosPlans = await db
+    .select()
+    .from(trainingPlans)
+    .where(
+      and(
+        eq(trainingPlans.userId, userId),
+        eq(trainingPlans.status, "active"),
+        eq(trainingPlans.provider, "coros"),
+      ),
+    );
+  const corosEntries = [];
+  if (corosPlans.length > 0) {
+    const owned = await db
+      .select({
+        planId: plannedWorkouts.planId,
+        sport: plannedWorkouts.sport,
+        date: plannedWorkouts.effectiveDate,
+      })
+      .from(plannedWorkouts)
+      .where(
+        and(
+          eq(plannedWorkouts.userId, userId),
+          isNull(plannedWorkouts.archivedAt),
+          inArray(
+            plannedWorkouts.planId,
+            corosPlans.map((p) => p.id),
+          ),
+        ),
+      );
+    for (const p of corosPlans) {
+      const mine = owned.filter((w) => w.planId === p.id);
+      const runs = mine.filter((w) => w.sport === "run");
+      // A RUN card only for the plan that is actually the running plan:
+      // majority-run and still holding future run work. (The strength
+      // container the studio pushes into also lives in training_plans and
+      // owns a couple of stray runs — it must not masquerade as one.)
+      const futureRun = runs.some((w) => w.date >= today);
+      if (!futureRun || runs.length * 2 < mine.length) continue;
+      const dates = mine.map((w) => w.date).sort();
+      // COROS containers often carry NULL spans and code names — derive the
+      // span from the workouts themselves and never render a bare code.
+      const name = !p.name || p.name === "COROS plan" || looksLikeCodeTitle(p.name)
+        ? "COROS running plan"
+        : p.name;
+      corosEntries.push({
+        id: p.id,
+        discipline: "run" as const,
+        name,
+        status: "active" as const,
+        startDate: p.startDate ?? dates[0]!,
+        endDate: p.endDate ?? dates[dates.length - 1]!,
+        raceDate: prefs.raceDate,
+        source: "coros" as const,
+      });
+    }
+  }
+  return { studioEntries, corosEntries };
 }

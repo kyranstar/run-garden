@@ -118,6 +118,20 @@ function blockWeekOf(p: Pick<CoachPlanDto, "startDate" | "endDate">, weekStart: 
 type WeekPlanBlock = Pick<CoachPlanDto, "id" | "name" | "discipline" | "raceDate" | "startDate" | "endDate" | "source"> &
   Partial<Pick<CoachPlanDto, "status" | "planRaceDate">>;
 
+/** A coach plan as a line's block (the client's one mapping, for an older payload with no lines): the plan's OWN race
+ * (`planRaceDate`), never Settings' fallback in `raceDate`. */
+function lineBlockOfDto(b: WeekPlanBlock): LineBlock {
+  return {
+    id: b.id,
+    discipline: b.discipline as LineBlock["discipline"],
+    status: (b.status ?? "active") as LineBlock["status"],
+    name: b.name,
+    startDate: b.startDate,
+    endDate: b.endDate,
+    planRaceDate: b.planRaceDate ?? null,
+  };
+}
+
 /**
  * The plan a week's line names, its week, and how many other groups hold the week — by `weekNaming`, the one rule the
  * week brief shares (training lines §3.6). A plan holds a week when it runs into it (one starting mid-week holds it;
@@ -148,17 +162,7 @@ export function weekPlan(
   const known =
     lines ??
     linesOf(
-      blocks
-        .filter((b) => (b.source ?? "coach") === "coach")
-        .map((b) => ({
-          id: b.id,
-          discipline: b.discipline as LineBlock["discipline"],
-          status: (b.status ?? "active") as LineBlock["status"],
-          name: b.name,
-          startDate: b.startDate,
-          endDate: b.endDate,
-          planRaceDate: b.planRaceDate ?? b.raceDate,
-        })),
+      blocks.filter((b) => (b.source ?? "coach") === "coach").map(lineBlockOfDto),
       weekStart,
     );
   const named = weekNaming(blocks, known, weekStart, sessionsByPlan);
@@ -179,9 +183,12 @@ export function jumpWeeksOf(
   if (plans.length === 0) return [];
   const spans = plans.map((p) => {
     const line = (p.source ?? "coach") === "coach" ? lines?.find((l) => l.phases.some((ph) => ph.id === p.id)) : undefined;
-    return { start: startOfIsoWeek(line?.startDate ?? p.startDate), end: startOfIsoWeek(line?.endDate ?? p.endDate) };
+    return { start: startOfIsoWeek(line?.startDate ?? p.startDate), end: startOfIsoWeek(line?.endDate ?? p.endDate), line: !!line };
   });
-  const anchor = spans.reduce((a, b) => (Date.parse(b.end) - Date.parse(b.start) > Date.parse(a.end) - Date.parse(a.start) ? b : a));
+  // When a line holds any of the weeks listed, the line numbers them (its first phase anchors, §3.6 "weeks within the
+  // line"), the longest line first; with none, the longest span.
+  const anchors = spans.some((s) => s.line) ? spans.filter((s) => s.line) : spans;
+  const anchor = anchors.reduce((a, b) => (Date.parse(b.end) - Date.parse(b.start) > Date.parse(a.end) - Date.parse(a.start) ? b : a));
   const mondays = new Set<string>();
   for (const s of spans) {
     for (let m = s.start; m <= s.end; m = addDays(m, 7)) mondays.add(m);

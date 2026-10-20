@@ -18,8 +18,14 @@ export type NamingPlan = {
   end: number;
   /** Day offset of the plan's own race, if it has one. */
   race?: number;
-  /** Default "coach". A Studio plan is not a row the brief reads: only its sessions reach the week. */
-  source?: "coach" | "studio";
+  /**
+   * Default "coach". "studio" is the Studio's lifting plan (its entry comes from the plan list's reader). "orphan" is
+   * no plan at all: sessions filed under an id that is no candidate (a programme's slots, a Studio lift in COROS's
+   * container plan), which form no group and are no "+1" on either side.
+   */
+  source?: "coach" | "studio" | "orphan";
+  /** The sport its sessions carry (default: run for a run plan, strength for a lift). */
+  sport?: "run" | "strength" | "mobility";
   /** A one-off bucket: no plan of its own. */
   loose?: boolean;
   /** Its sessions in the queried week. */
@@ -124,6 +130,34 @@ export const WEEK_NAMING_CASES: NamingCase[] = [
       P("adhoc-lift-1", { discipline: "lift", loose: true, start: 1, end: 1, sessions: 5 }),
     ],
     expect: { planId: "run", others: 0, weekOf: [2, 4] },
+  },
+  {
+    name: "a programme's slots outnumbering the line: they are no plan's, and name nothing",
+    weekOffset: 0,
+    plans: [
+      P("run", { start: -7, end: 20, sessions: 1 }),
+      P("prog-0c1f9a2e", { discipline: "lift", sport: "strength", source: "orphan", start: -7, end: 20, sessions: 5 }),
+    ],
+    expect: { planId: "run", others: 0, weekOf: [2, 4] },
+  },
+  {
+    name: "a Studio-pushed lift in COROS's container plan: the container is no candidate; the Studio plan holds the week with none of it, so the line names it",
+    weekOffset: 0,
+    plans: [
+      P("run", { start: -7, end: 20, sessions: 1 }),
+      P("studio-1", { discipline: "lift", source: "studio", start: -7, end: 20, sessions: 0 }),
+      P("800000000000001234", { discipline: "lift", sport: "strength", source: "orphan", start: -7, end: 20, sessions: 4 }),
+    ],
+    expect: { planId: "run", others: 1, weekOf: [2, 4] },
+  },
+  {
+    name: "a tie in sessions between a line and a Studio plan that started earlier: the earlier start, the Studio plan",
+    weekOffset: 0,
+    plans: [
+      P("run", { start: -7, end: 20, sessions: 2 }),
+      P("studio-1", { discipline: "lift", source: "studio", start: -35, end: 20, sessions: 2 }),
+    ],
+    expect: { planId: "studio-1", others: 1, weekOf: null },
   },
   {
     name: "no plan holds the week: no name, no counter",

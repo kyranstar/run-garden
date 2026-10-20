@@ -582,7 +582,7 @@ describe("GET /week — brief facts (2026-08-11 rework §4)", () => {
     return addDays(startOfIsoWeek(today), offsetWeeks * 7);
   }
 
-  async function seedWeekWorkout(date: string, opts: { state?: string; seconds?: number; category?: string; title?: string; planId?: string } = {}): Promise<string> {
+  async function seedWeekWorkout(date: string, opts: { state?: string; seconds?: number; category?: string; title?: string; planId?: string; sport?: string } = {}): Promise<string> {
     const id = newId();
     await db.insert(plannedWorkouts).values({
       id,
@@ -591,7 +591,7 @@ describe("GET /week — brief facts (2026-08-11 rework §4)", () => {
       sourceWorkoutId: `4738:${id.slice(0, 6)}`,
       title: opts.title ?? "Session",
       category: (opts.category ?? "easy") as never,
-      sport: "run",
+      sport: opts.sport ?? "run",
       originalPlanDate: date,
       lastVerifiedCorosDate: date,
       effectiveDate: date,
@@ -796,7 +796,7 @@ describe("GET /week — brief facts (2026-08-11 rework §4)", () => {
     updatedAt: nowInstant(),
   });
 
-  it("the brief's reads: the same statement count with a past line and a completed phase as with one active plan (pinned)", async () => {
+  it("the brief's reads: the same statement count with a past line and a completed phase as with one active plan, and the widest week stays under 45 (pinned)", async () => {
     const monday = mondayOf(0);
     await db.insert(schema.coachPlans).values(
       coachPlanRow({ id: "only", name: "Only", discipline: "run", status: "active", startDate: addDays(monday, -14), endDate: addDays(monday, 20) }),
@@ -810,8 +810,26 @@ describe("GET /week — brief facts (2026-08-11 rework §4)", () => {
     await seedWeekWorkout(addDays(monday, 1), { planId: "lift" });
     const many = await weekWithStatements(monday);
     expect(many.statements.length).toBe(one.statements.length);
-    // Measured before this change (one active plan, one workout): 13. The widened plans read is the same statement.
-    expect(one.statements.length).toBe(13);
+    // One active plan, one workout: 13 before the plan list's reader was shared, 15 after (its Studio and COROS reads).
+    expect(one.statements.length).toBe(15);
+    // The widest week: a Studio plan and a COROS running plan add their reads (measured: 18).
+    const at = nowInstant();
+    await db.insert(schema.studioPlans).values({
+      id: "studio-1",
+      userId,
+      brief: { goal: "general", durationWeeks: 4, startDate: monday },
+      plan: { name: "Lift", weeks: [] },
+      version: 1,
+      createdAt: at,
+      updatedAt: at,
+    });
+    await db.insert(schema.studioPlanPushes).values({ id: newId(), planId: "studio-1", planVersion: 1, happenDay: monday, sessionTitle: "W1", status: "verified", updatedAt: at });
+    await db.insert(schema.trainingPlans).values({ id: "tp-run", userId, provider: "coros", sourcePlanId: "4738", name: "10K Training Plan", startDate: addDays(monday, -21), endDate: addDays(monday, 42), status: "active", createdAt: at, updatedAt: at });
+    await seedWeekWorkout(addDays(monday, 2), { planId: "tp-run" });
+    await seedWeekWorkout(addDays(monday, 9), { planId: "tp-run" });
+    const widest = await weekWithStatements(monday);
+    expect(widest.statements.length).toBe(18);
+    expect(widest.statements.length).toBeLessThanOrEqual(45);
   });
 
   describe("the week-naming table (training lines §3.6): the brief names the phase the week line names", () => {
@@ -820,14 +838,38 @@ describe("GET /week — brief facts (2026-08-11 rework §4)", () => {
         const monday = mondayOf(0);
         const weekStart = addDays(monday, c.weekOffset * 7);
         const dated = datedPlans(monday, c);
-        // A Studio plan is no row the brief reads: only its sessions reach the week.
         await db.insert(schema.coachPlans).values(
           dated.filter((p) => (p.source ?? "coach") === "coach").map((p) => coachPlanRow({ ...p, name: p.name })),
         );
+        // The Studio's plan, as a pushed plan the list reads: its brief gives its real start and its length.
+        for (const p of dated.filter((d) => d.source === "studio")) {
+          const startIso = startOfIsoWeek(p.startDate);
+          const weeks = (Date.parse(p.endDate) - Date.parse(startIso)) / 86_400_000 + 1;
+          expect(weeks % 7).toBe(0);
+          await db.insert(schema.studioPlans).values({
+            id: p.id,
+            userId,
+            brief: { goal: "general", durationWeeks: weeks / 7, sessionsPerWeek: 2, sessionMinutes: 45, startDate: p.startDate },
+            plan: { name: p.name, weeks: [] },
+            version: 1,
+            createdAt: nowInstant(),
+            updatedAt: nowInstant(),
+          });
+          await db.insert(schema.studioPlanPushes).values({
+            id: newId(),
+            planId: p.id,
+            planVersion: 1,
+            happenDay: p.startDate,
+            sessionTitle: "W1 session",
+            status: "verified",
+            updatedAt: nowInstant(),
+          });
+        }
         let n = 0;
         for (const p of dated) {
+          const sport = p.sport ?? (p.discipline === "run" ? "run" : p.discipline === "lift" ? "strength" : "mobility");
           for (let k = 0; k < p.sessions; k++) {
-            await seedWeekWorkout(addDays(weekStart, n++ % 7), { planId: p.id });
+            await seedWeekWorkout(addDays(weekStart, n++ % 7), { planId: p.id, sport });
           }
         }
         const { body } = await weekWithStatements(weekStart);

@@ -8,10 +8,8 @@
  */
 import { describe, expect, it } from "vitest";
 import type { CoachPlanDto, PlanWeekResponse, WorkoutDto } from "@rg/api-client";
-import { linesOf, startOfIsoWeek, type LineBlock } from "@rg/domain";
 import { linesOf, type LineBlock } from "@rg/domain";
 import { jumpWeeksOf, weekLine, weekPlan, weekPlanName } from "../src/screens/week-view.js";
-import { WEEK_NAMING_CASES, datedPlans } from "../../domain/test/week-naming-cases.js";
 import { WEEK_NAMING_CASES, datedPlans } from "../../domain/test/week-naming-cases.js";
 
 const plan = (id: string, name: string, startDate: string, endDate: string, o: Partial<CoachPlanDto> = {}): CoachPlanDto => ({
@@ -86,6 +84,15 @@ describe("the week's main plan, its own count, and how many others", () => {
     expect(line([lift, base], w)).toBe("Oct 12–18 · Spring base, week 6 of 12 +1 · 0 of 6 done");
   });
 
+  it("with no lines in hand, a plan's race is its OWN (planRaceDate), never Settings' fallback in raceDate", () => {
+    // The 10K build's raceDate is Settings' fallback (it has no race of its own): a tie goes to the earlier start.
+    const settingsRace = { ...tenK, raceDate: "2026-12-01", planRaceDate: null };
+    const w = week(["cp-lift", "cp-10k"]);
+    expect(weekPlan([lift, settingsRace], w.weekStart, w).planName).toBe("Strength block");
+    const own = { ...tenK, raceDate: "2026-12-01", planRaceDate: "2026-12-01" };
+    expect(weekPlan([lift, own], w.weekStart, w).planName).toBe("10K build");
+  });
+
   it("reads the lines the plans read answers, and works them out itself when it has none", () => {
     const w = week(["cp-10k", "cp-base"]);
     const blocks = [base, tenK];
@@ -111,10 +118,12 @@ describe("the week-jump menu numbers a line's weeks from its first phase", () =>
   it("without the lines it numbers from the phase's own start, as it did", () => {
     expect(jumpWeeksOf([second]).find((j) => j.monday === "2026-10-12")?.label).toMatch(/^wk 2 · /);
   });
-  it("a Studio plan beside the line is a span of its own; the longest span anchors the numbers", () => {
+  it("a Studio plan beside the line is a span of its own, but the line numbers the weeks (§3.6): Oct 12 is week 6 though the Studio span is longer", () => {
     const studio = plan("st-1", "Studio", "2026-08-31", "2026-11-01", { source: "studio", discipline: "lift" });
     const labels = jumpWeeksOf([second, studio], dtoLines([first, second], "2026-10-12"));
-    expect(labels.find((j) => j.monday === "2026-10-12")?.label).toMatch(/^wk 7 · /);
+    expect(labels.find((j) => j.monday === "2026-10-12")?.label).toMatch(/^wk 6 · /);
+    // A week only the Studio plan holds is numbered by nothing (no anchor holds it).
+    expect(labels.find((j) => j.monday === "2026-08-31")?.label).not.toMatch(/^wk /);
   });
 });
 
@@ -126,15 +135,15 @@ describe("the shared week-naming table (training lines §3.6): the week brief is
     it(c.name, () => {
       const dated = datedPlans(monday, c);
       const weekStart = shift(monday, c.weekOffset * 7);
-      // What the Plan screen holds: no one-off buckets, no retired plan.
+      // What the Plan screen holds: no one-off buckets, no retired plan, and no id that is no plan (a programme's slots).
       const blocks = dated
-        .filter((p) => !p.loose && p.status !== "retired")
+        .filter((p) => !p.loose && p.status !== "retired" && p.source !== "orphan")
         .map((p) =>
           plan(p.id, p.name, p.startDate, p.endDate, {
             discipline: p.discipline,
             status: p.status,
             raceDate: p.raceDate,
-            source: p.source ?? "coach",
+            source: p.source === "studio" ? "studio" : "coach",
           }),
         );
       const ids = dated.flatMap((p) => Array.from({ length: p.sessions }, () => p.id));
