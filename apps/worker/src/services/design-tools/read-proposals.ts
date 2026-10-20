@@ -147,7 +147,7 @@ export const readProposals: DesignTool = {
     additionalProperties: false,
   },
   statementCost: 1,
-  cpuWeight: 0.4,
+  cpuWeight: 0.5,
   roles: READ_ROLES,
   async run(ctx, raw) {
     const p = parseInput(input, raw, "optionally status, limit and cursor");
