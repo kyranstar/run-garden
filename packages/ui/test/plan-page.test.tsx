@@ -9,9 +9,9 @@ import { renderToStaticMarkup } from "react-dom/server";
 import { MemoryRouter } from "react-router-dom";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import type { CoachPlanDto, PlanDetailResponse, PlanWeekResponse, WorkoutDto } from "@rg/api-client";
+import type { CoachPlanDto, PlanDetailResponse, ProgramDto, TrainingLineDto, PlanWeekResponse, WorkoutDto } from "@rg/api-client";
 import { BriefExplainerSheet, HEADLINE_COPY, headlineContext, WeeklyBrief } from "../src/screens/plan-brief.js";
-import { planEntries, planRowState, progressionHeadline, YourPlans } from "../src/screens/plan-cards.js";
+import { lineRowState, planEntries, planRowState, progressionHeadline, YourPlans } from "../src/screens/plan-cards.js";
 import { removeConfirmCopy } from "../src/screens/plan.js";
 import {
   centerScrollTop,
@@ -310,56 +310,138 @@ describe("Your plans", () => {
       raceDate: null,
     };
     // Deliberately out of order — the list sorts by start date.
-    expect(planEntries([upcoming, runPlan], []).map((e) => (e.kind === "plan" ? e.plan.name : ""))).toEqual(["Fall Half Block", "Post-10K block"]);
+    expect(planEntries([upcoming, runPlan], [], undefined, "2026-09-02").live.map((e) => (e.kind === "plan" ? e.plan.name : ""))).toEqual(["Fall Half Block", "Post-10K block"]);
     expect(planRowState({ kind: "plan", plan: upcoming }, "2026-09-02").state).toBe("Starts Oct 24");
     expect(planRowState({ kind: "plan", plan: runPlan }, "2026-09-02").state).toBe("Week 8 of 12 · ends Oct 4");
   });
 
-  // ── A container of loose sessions is not a training block ───────────────
-  // Production has two of these rows, one per discipline, both named "Coach
-  // one-offs" and both spanning a single day (`ensureAdhocPlan` writes
-  // startDate === endDate). Rendered as plans they read "wk 1/1" with a
-  // 100%-full progress bar: a bucket of one-offs wearing a block's vocabulary.
-  const looseLift: CoachPlanDto = {
-    id: "adhoc-lift-bd363a58",
-    discipline: "lift",
-    name: "Coach one-offs",
-    status: "active",
-    startDate: "2026-08-17",
-    endDate: "2026-08-17",
-    raceDate: "2026-10-11",
-    source: "coach",
-    kind: "loose",
-    holds: { sessions: 4, done: 1, firstDate: "2026-08-18", lastDate: "2026-08-24" },
-  };
-  const looseMobility: CoachPlanDto = {
-    ...looseLift,
-    id: "adhoc-mobility-bd363a58",
-    discipline: "mobility",
-    startDate: "2026-08-18",
-    endDate: "2026-08-18",
-    holds: { sessions: 1, done: 0, firstDate: "2026-08-18", lastDate: "2026-08-18" },
-  };
+  // ── Training lines (2026-10-20): one row per line, no one-off buckets, Past plans a tap down ──
+  const phase = (id: string, name: string, startDate: string, endDate: string, extra: Partial<TrainingLineDto["phases"][number]> = {}) => ({
+    id,
+    discipline: "run" as const,
+    status: "active" as const,
+    name,
+    startDate,
+    endDate,
+    planRaceDate: null,
+    futureSessions: 3,
+    ...extra,
+  });
+  const mkLine = (phases: TrainingLineDto["phases"], extra: Partial<TrainingLineDto> = {}): TrainingLineDto => ({
+    key: `run:${phases[0]!.id}`,
+    discipline: "run",
+    name: "Running",
+    phases,
+    currentPhaseId: phases[0]!.id,
+    startDate: phases[0]!.startDate,
+    endDate: phases[phases.length - 1]!.endDate,
+    goalRaceDate: null,
+    ended: false,
+    ...extra,
+  });
+  const asPlan = (p: TrainingLineDto["phases"][number]): CoachPlanDto => ({ ...p, source: "coach", raceDate: null }) as unknown as CoachPlanDto;
+  const threePhases = [
+    phase("a1", "Foundation block", "2026-07-06", "2026-08-02"),
+    phase("a2", "Base block", "2026-08-31", "2026-09-27"),
+    phase("a3", "Build block", "2026-09-28", "2026-12-12", { planRaceDate: "2026-12-12" }),
+  ];
+  const multi = mkLine(threePhases, { currentPhaseId: "a2", goalRaceDate: "2026-12-12" });
+  const names = (es: ReturnType<typeof planEntries>["live"]) =>
+    es.map((e) => (e.kind === "line" ? `line:${e.line.key}` : e.kind === "plan" ? e.plan.id : e.program.id));
 
-  it("a loose container says its CONTENTS: no week counter, no end date", () => {
-    const row = planRowState({ kind: "plan", plan: looseLift }, "2026-09-02");
-    expect(row).toEqual({ kind: "Lifting one-offs", state: "4 sessions · 1 done" });
-    expect(row.state).not.toMatch(/week|ends/i);
+  it("a line's row reads its kind, the phase it is in, and what it builds toward", () => {
+    expect(lineRowState(multi, "2026-09-02")).toEqual({
+      kind: "Running",
+      state: "Phase 2 of 3 · Base block · week 1 of 4",
+      goal: "Toward Dec 12",
+    });
   });
 
-  it("gives the two production rows two distinguishable names, and the mobility one a place on the list", () => {
+  it("a line that has not started says when it starts; a goal-less line has no goal", () => {
+    const l = mkLine([phase("b1", "Base block", "2026-10-05", "2026-11-01")]);
+    expect(lineRowState(l, "2026-09-02")).toEqual({ kind: "Running", state: "Starts Oct 5", goal: null });
+  });
+
+  it("a many-phase line that has not started says when the line starts", () => {
+    const l = mkLine([phase("f1", "Base block", "2026-10-05", "2026-11-01"), phase("f2", "Build block", "2026-11-02", "2026-12-12")]);
+    expect(lineRowState(l, "2026-09-02").state).toBe("Starts Oct 5");
+  });
+
+  it("a one-phase line reads as a block's row does", () => {
+    const l = mkLine([phase("b1", "Fall block", "2026-07-13", "2026-10-04")]);
+    expect(lineRowState(l, "2026-09-02").state).toBe("Week 8 of 12 · ends Oct 4");
+    expect(lineRowState(l, "2026-09-02").state).toBe(planRowState({ kind: "plan", plan: asPlan(l.phases[0]!) }, "2026-09-02").state);
+  });
+
+  it("on a boundary day the row names the phase the line says is current", () => {
+    const l = mkLine(
+      [phase("c1", "First block", "2026-08-03", "2026-08-30"), phase("c2", "Second block", "2026-08-30", "2026-09-27")],
+      { currentPhaseId: "c2" },
+    );
+    expect(lineRowState(l, "2026-08-30").state).toBe("Phase 2 of 2 · Second block · week 1 of 4");
+  });
+
+  it("lists lines, not the blocks inside them; programmes first, then lines and Studio/COROS plans by start", () => {
+    const studio = { ...asPlan(phase("s1", "Studio lifts", "2026-08-01", "2026-12-01", { discipline: "lift" as never })), source: "studio" } as CoachPlanDto;
+    const program = { id: "pg1", name: "Core", status: "active", week: { done: 0, goal: 3 }, block: null } as unknown as ProgramDto;
+    const { live, past } = planEntries(threePhases.map(asPlan).concat(studio), [program], [multi], "2026-09-02");
+    expect(names(live)).toEqual(["pg1", `line:${multi.key}`, "s1"]);
+    expect(past).toEqual([]);
+  });
+
+  it("never says one-offs", () => {
     const html = render(
-      createElement(YourPlans, { plans: [looseLift, looseMobility], programs: undefined, today: "2026-09-02", onOpenPlan: noop }),
+      createElement(YourPlans, { plans: [asPlan(threePhases[0]!)], lines: [multi], programs: undefined, today: "2026-09-02", onOpenPlan: noop, onOpenLine: noop }),
     );
-    expect(html).toContain("Lifting one-offs");
-    expect(html).toContain("Mobility one-offs");
-    expect(html).toContain("1 session");
+    expect(html).toContain("Running · Phase 2 of 3 · Base block · week 1 of 4");
+    expect(html).toContain("Toward Dec 12");
+    expect(html).not.toMatch(/one-offs/i);
   });
 
-  it("says a bucket is empty rather than inventing a session count", () => {
-    expect(planRowState({ kind: "plan", plan: { ...looseLift, holds: { sessions: 0, done: 0, firstDate: null, lastDate: null } } }, "2026-09-02").state).toBe(
-      "Nothing here yet",
+  it("a payload without lines shows the coach's blocks as rows, without crashing", () => {
+    const blocks = [asPlan(threePhases[1]!), asPlan(threePhases[2]!)];
+    const { live } = planEntries(blocks, [], undefined, "2026-09-02");
+    expect(names(live)).toEqual(["a2", "a3"]);
+    const html = render(createElement(YourPlans, { plans: blocks, programs: undefined, today: "2026-09-02", onOpenPlan: noop, onOpenLine: noop }));
+    expect(html).toContain("Base block");
+    expect(html).not.toMatch(/one-offs/i);
+  });
+
+  it("a payload with lines renders no duplicate block rows for blocks inside a line", () => {
+    const html = render(
+      createElement(YourPlans, { plans: threePhases.map(asPlan), lines: [multi], programs: undefined, today: "2026-09-02", onOpenPlan: noop, onOpenLine: noop }),
     );
+    expect(html.match(/class="plan-row"/g)).toHaveLength(1);
+    expect(html).not.toContain("Foundation block");
+  });
+
+  it("an ended line, an ended Studio plan and a completed block go to Past plans, latest first; retired are absent", () => {
+    const endedLine = mkLine([phase("e1", "Old block", "2026-05-04", "2026-06-28", { status: "completed" })], { ended: true });
+    const newerLine = mkLine([phase("e2", "Newer block", "2026-07-06", "2026-08-02", { discipline: "lift" as never })], { discipline: "lift", name: "Lifting", ended: true });
+    const studio = { ...asPlan(phase("s2", "Old studio", "2026-06-01", "2026-07-20", { discipline: "lift" as never })), source: "studio" } as CoachPlanDto;
+    const retired = { ...asPlan(phase("r1", "Dropped", "2026-06-01", "2026-06-20")), status: "retired" } as CoachPlanDto;
+    const done = { ...asPlan(phase("d1", "Done block", "2026-04-01", "2026-12-30")), status: "completed" } as CoachPlanDto;
+    const { live, past } = planEntries([studio, retired, done], [], [endedLine, newerLine, multi], "2026-09-02");
+    expect(names(live)).toEqual([`line:${multi.key}`]);
+    // Latest end first: Done block (Dec 30, no line holds it), the newer line (Aug 2), Old studio (Jul 20), the old line (Jun 28).
+    expect(names(past)).toEqual(["d1", `line:${newerLine.key}`, "s2", `line:${endedLine.key}`]);
+    expect(names(past)).not.toContain("r1");
+  });
+
+  it("Past plans is a closed disclosure whose rows read kind and dates", () => {
+    const endedLine = mkLine([phase("e1", "Old block", "2026-10-04", "2026-12-12")], { ended: true });
+    const html = render(
+      createElement(YourPlans, { plans: [], lines: [endedLine], programs: undefined, today: "2027-01-05", onOpenPlan: noop, onOpenLine: noop }),
+    );
+    expect(html).toMatch(/<details class="plan-past">/);
+    expect(html).not.toMatch(/<details[^>]*\sopen/);
+    expect(html).toContain("Past plans");
+    expect(html).toContain("Running · Oct 4 – Dec 12");
+  });
+
+  it("no Past plans disclosure when nothing is past", () => {
+    const html = render(createElement(YourPlans, { plans: [], lines: [multi], programs: undefined, today: "2026-09-02", onOpenPlan: noop, onOpenLine: noop }));
+    expect(html).not.toContain("Past plans");
   });
 });
 

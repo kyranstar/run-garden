@@ -984,9 +984,15 @@ export function PlanScreen() {
         {coachProps ? <ThreadCoachCards {...coachProps} /> : null}
         <YourPlans
           plans={coachPlans.data?.plans ?? []}
+          lines={coachPlans.data?.lines}
           programs={programs.data}
           today={today ?? week.data.weekStart}
           onOpenPlan={openPlan}
+          // Until the line's own sheet (next task), a line opens its current phase.
+          onOpenLine={(key) => {
+            const line = coachPlans.data?.lines?.find((l) => l.key === key);
+            if (line) openPlan(line.currentPhaseId);
+          }}
         />
       </div>
 

@@ -180,6 +180,7 @@ const runPlan: CoachPlanDto = {
   source: "coach",
 };
 const liftPlan: CoachPlanDto = { ...runPlan, id: "cp2", discipline: "lift", name: "Strength Block", startDate: "2026-09-21", endDate: "2026-10-25", raceDate: null };
+// The plan sheet still opens a bucket by its own id (the detail route answers kind "loose"); the list never shows one.
 const loose: CoachPlanDto = { ...runPlan, id: "cp3", discipline: "mobility", name: "Coach one-offs", kind: "loose", holds: { sessions: 2, done: 1, firstDate: "2026-08-12", lastDate: "2026-08-14" } };
 const program = {
   id: "pg1",
@@ -199,12 +200,11 @@ describe("Your plans, one list", () => {
     expect(planRowState({ kind: "plan", plan: liftPlan }, today)).toEqual({ kind: "Lifting plan", state: "Starts Sep 21" });
     expect(planRowState({ kind: "plan", plan: { ...runPlan, status: "draft", source: "studio" } }, today)).toEqual({ kind: "Running plan", state: "Draft — not on your watch" });
     expect(planRowState({ kind: "plan", plan: { ...runPlan, source: "coros" } }, today)).toEqual({ kind: "Running plan", state: "From COROS · week 5 of 12" });
-    expect(planRowState({ kind: "plan", plan: loose }, today)).toEqual({ kind: "Mobility one-offs", state: "2 sessions · 1 done" });
   });
 
   it("one list under one heading, a row a button, programs first then plans in time order", () => {
     const html = renderToStaticMarkup(
-      wrap(createElement(YourPlans, { plans: [liftPlan, loose, runPlan], programs: { programs: [program], places: [], profiles: [] }, today: "2026-08-11", onOpenPlan: noop }), { open: noop }),
+      wrap(createElement(YourPlans, { plans: [liftPlan, runPlan], programs: { programs: [program], places: [], profiles: [] }, today: "2026-08-11", onOpenPlan: noop, onOpenLine: noop }), { open: noop }),
     );
     expect(html).toMatch(/<h2[^>]*>Your plans<\/h2>/);
     const rows = [...html.matchAll(/<button type="button" class="plan-row"[^>]*>([\s\S]*?)<\/button>/g)].map((m) => m[1]!.replace(/<[^>]+>/g, " ").replace(/\s+/g, " ").trim());
@@ -212,22 +212,24 @@ describe("Your plans, one list", () => {
       "Strength &amp; mobility Program · Block 2 · week 3 of 5 · 1 of 3 this week",
       "Fall Half Block Running plan · Week 5 of 12 · ends Oct 4",
       "Strength Block Lifting plan · Starts Sep 21",
-      "Coach one-offs Mobility one-offs · 2 sessions · 1 done",
     ]);
     // No sport sections, no sparklines: the sheet holds the detail.
     expect(html).not.toContain("plan-section");
     expect(html).not.toContain("<svg");
   });
 
-  it("a retired or finished plan is not on the list", () => {
+  it("a retired plan is nowhere; a finished one is under Past plans, not on the live list", () => {
     const html = renderToStaticMarkup(
-      wrap(createElement(YourPlans, { plans: [{ ...runPlan, status: "retired" }, { ...liftPlan, status: "completed" }], programs: undefined, today: "2026-08-11", onOpenPlan: noop }), null),
+      wrap(createElement(YourPlans, { plans: [{ ...runPlan, status: "retired" }, { ...liftPlan, status: "completed" }], programs: undefined, today: "2026-08-11", onOpenPlan: noop, onOpenLine: noop }), null),
     );
-    expect(html).not.toContain('class="plan-row"');
+    expect(html).not.toContain("Fall Half Block");
+    const [live, past] = html.split("Past plans");
+    expect(live).not.toContain("Strength Block");
+    expect(past).toContain("Strength Block");
   });
 
   it("its foot: a new program, and a plan asked of the coach (§8 §6: thread-coach-steps-back)", () => {
-    const html = renderToStaticMarkup(wrap(createElement(YourPlans, { plans: [], programs: undefined, today: "2026-08-11", onOpenPlan: noop }), { open: noop }));
+    const html = renderToStaticMarkup(wrap(createElement(YourPlans, { plans: [], programs: undefined, today: "2026-08-11", onOpenPlan: noop, onOpenLine: noop }), { open: noop }));
     expect(html).toContain("New program…");
     expect(html).toContain("Plan with the coach");
   });
