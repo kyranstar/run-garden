@@ -359,7 +359,7 @@ describe("Your plans", () => {
 
   it("a line that has not started says when it starts; a goal-less line has no goal", () => {
     const l = mkLine([phase("b1", "Base block", "2026-10-05", "2026-11-01")]);
-    expect(lineRowState(l, "2026-09-02")).toEqual({ kind: "Running", state: "Starts Oct 5", goal: null });
+    expect(lineRowState(l, "2026-09-02")).toEqual({ kind: "Running plan", state: "Starts Oct 5", goal: null });
   });
 
   it("a many-phase line that has not started says when the line starts", () => {
@@ -393,7 +393,10 @@ describe("Your plans", () => {
     const html = render(
       createElement(YourPlans, { plans: [asPlan(threePhases[0]!)], lines: [multi], programs: undefined, today: "2026-09-02", onOpenPlan: noop, onOpenLine: noop }),
     );
-    expect(html).toContain("Running · Phase 2 of 3 · Base block · week 1 of 4");
+    // The title is the sport; the phase is the sub-line, once, with no kind prefix.
+    expect(html).toContain('<span class="plan-row-name">Running</span>');
+    expect(html).toContain('<span class="plan-row-state">Phase 2 of 3 · Base block · week 1 of 4</span>');
+    expect(html.match(/Base block/g)).toHaveLength(1);
     expect(html).toContain("Toward Dec 12");
     expect(html).not.toMatch(/one-offs/i);
   });
@@ -436,7 +439,24 @@ describe("Your plans", () => {
     expect(html).toMatch(/<details class="plan-past">/);
     expect(html).not.toMatch(/<details[^>]*\sopen/);
     expect(html).toContain("Past plans");
-    expect(html).toContain("Running · Oct 4 – Dec 12");
+    expect(html).toContain("Running plan · Oct 4 – Dec 12");
+  });
+
+  it("a one-phase line's row is its block's row: the block's name, kind and state", () => {
+    const l = mkLine([phase("b1", "Fall block", "2026-07-13", "2026-10-04")]);
+    const lineHtml = render(createElement(YourPlans, { plans: [], lines: [l], programs: undefined, today: "2026-09-02", onOpenPlan: noop, onOpenLine: noop }));
+    const blockHtml = render(createElement(YourPlans, { plans: [asPlan(l.phases[0]!)], programs: undefined, today: "2026-09-02", onOpenPlan: noop, onOpenLine: noop }));
+    expect(lineHtml).toContain('<span class="plan-row-name">Fall block</span>');
+    expect(lineHtml).toContain("Running plan · Week 8 of 12 · ends Oct 4");
+    const row = (h: string) => h.match(/<button type="button" class="plan-row"[\s\S]*?<\/button>/)![0];
+    expect(row(lineHtml)).toBe(row(blockHtml));
+  });
+
+  it("a line with no phases is skipped, not a crash", () => {
+    const empty = mkLine([phase("z1", "x", "2026-09-01", "2026-09-30")], { phases: [], currentPhaseId: "none" });
+    expect(planEntries([], [], [empty], "2026-09-02")).toEqual({ live: [], past: [] });
+    const html = render(createElement(YourPlans, { plans: [], lines: [empty], programs: undefined, today: "2026-09-02", onOpenPlan: noop, onOpenLine: noop }));
+    expect(html).not.toContain('class="plan-row"');
   });
 
   it("no Past plans disclosure when nothing is past", () => {

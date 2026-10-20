@@ -988,7 +988,7 @@ export function PlanScreen() {
           programs={programs.data}
           today={today ?? week.data.weekStart}
           onOpenPlan={openPlan}
-          // Until the line's own sheet (next task), a line opens its current phase.
+          // A line opens its current phase's plan sheet.
           onOpenLine={(key) => {
             const line = coachPlans.data?.lines?.find((l) => l.key === key);
             if (line) openPlan(line.currentPhaseId);

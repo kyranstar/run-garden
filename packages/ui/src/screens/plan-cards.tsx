@@ -85,7 +85,7 @@ export function lineRowState(line: TrainingLineDto, today: string): { kind: stri
   const goal = line.goalRaceDate ? `Toward ${formatShortDate(line.goalRaceDate)}` : null;
   const idx = Math.max(0, line.phases.findIndex((p) => p.id === line.currentPhaseId));
   const phase = line.phases[idx]!;
-  if (line.phases.length === 1) return { kind: line.name, state: blockState({ ...phase, source: "coach" }, today), goal };
+  if (line.phases.length === 1) return { kind: `${line.name} plan`, state: blockState({ ...phase, source: "coach" }, today), goal };
   if (today < line.startDate) return { kind: line.name, state: `Starts ${formatShortDate(line.startDate)}`, goal };
   const { into, total } = blockWeek(phase, today);
   const where = into === 0 ? `starts ${formatShortDate(phase.startDate)}` : `week ${into} of ${total}`;
@@ -94,7 +94,10 @@ export function lineRowState(line: TrainingLineDto, today: string): { kind: stri
 
 const entryStart = (e: PlanEntry): string => (e.kind === "line" ? e.line.startDate : e.kind === "plan" ? e.plan.startDate : "");
 const entryEnd = (e: PlanEntry): string => (e.kind === "line" ? e.line.endDate : e.kind === "plan" ? e.plan.endDate : "");
-const entryName = (e: PlanEntry): string => (e.kind === "line" ? e.line.name : e.kind === "plan" ? e.plan.name : e.program.name);
+/** What a row is called: a program or plan by its name; a one-phase line by its block's name (as a block's row is); a
+ * many-phase line by its sport ("Running"), so its title never changes with the phase it is in. */
+const entryName = (e: PlanEntry): string =>
+  e.kind === "line" ? (e.line.phases.length === 1 ? e.line.phases[0]!.name : e.line.name) : e.kind === "plan" ? e.plan.name : e.program.name;
 
 /**
  * The list's order. Live: programs first, then lines and Studio / COROS plans as they start. Past: ended lines and
@@ -109,7 +112,9 @@ export function planEntries(
 ): { live: PlanEntry[]; past: PlanEntry[] } {
   const inLine = new Set((lines ?? []).flatMap((l) => l.phases.map((p) => p.id)));
   const candidates: PlanEntry[] = [
-    ...(lines ?? []).map((line): PlanEntry => ({ kind: "line", line })),
+    ...(lines ?? [])
+      .filter((l) => l.phases.length > 0)
+      .map((line): PlanEntry => ({ kind: "line", line })),
     ...plans
       .filter((p) => p.status !== "retired" && !inLine.has(p.id))
       .map((plan): PlanEntry => ({ kind: "plan", plan })),
@@ -163,9 +168,11 @@ export function YourPlans({
   const { live, past } = planEntries(plans, programList, lines, today);
   const row = (e: PlanEntry, isPast: boolean) => {
     const id = e.kind === "program" ? e.program.id : e.kind === "line" ? e.line.key : e.plan.id;
-    const name = e.kind === "program" ? e.program.name : e.kind === "line" ? (e.line.phases.find((p) => p.id === e.line.currentPhaseId)?.name ?? e.line.name) : e.plan.name;
+    const name = entryName(e);
     const { kind, state, goal } = e.kind === "line" ? lineRowState(e.line, today) : { ...planRowState(e, today), goal: null };
-    const says = isPast && e.kind !== "program" ? `${kind} · ${formatShortDate(entryStart(e))} – ${formatShortDate(entryEnd(e))}` : `${kind} · ${state}`;
+    // A many-phase line's title is the sport, so its sub-line is the state alone; every other row leads with its kind.
+    const alone = e.kind === "line" && e.line.phases.length > 1;
+    const says = isPast && e.kind !== "program" ? `${kind} · ${formatShortDate(entryStart(e))} – ${formatShortDate(entryEnd(e))}` : alone ? state : `${kind} · ${state}`;
     return (
       <li key={`${e.kind}:${id}`}>
         <button
