@@ -933,6 +933,39 @@ describe("WorkoutDetail branches on origin", () => {
   });
 });
 
+// ── A one-off says so (training lines §3.4, 2026-10-20) ─────────────────────
+
+describe("a one-off's sheet says One-off where a programme session names its programme", () => {
+  const run = (planId: string) =>
+    slot({ id: "run-1", title: "Easy 40", category: "easy", sport: "run", origin: null, contentState: null, programId: null, planId });
+
+  it("a coach one-off (its plan is a one-off bucket) opens the workout sheet, which says One-off", async () => {
+    mount(session(), { detail: true, w: run("adhoc-run-u1") });
+    await until(() => body().includes("Easy 40"), "the workout sheet");
+    expect(body()).toContain("One-off");
+  });
+
+  it("a session of a plan says neither One-off nor a programme", async () => {
+    mount(session(), { detail: true, w: run("cp-base-1") });
+    await until(() => body().includes("Easy 40"), "the workout sheet");
+    expect(body()).not.toContain("One-off");
+    expect(body()).not.toContain("Garden program");
+  });
+
+  it("a programme session still names its programme, and is no one-off", async () => {
+    mount(session(), { w: slot({ planId: "prog-p1" }) });
+    await until(() => body().includes("Supported row"), "the session sheet");
+    expect(document.querySelector("[role=dialog] h2")?.textContent).toBe("Garden program");
+    expect(body()).not.toContain("One-off");
+  });
+
+  it("an app session filed as a one-off says so too", async () => {
+    mount(session(), { w: slot({ planId: "adhoc-mobility-u1", programId: null }) });
+    await until(() => body().includes("Supported row"), "the session sheet");
+    expect(document.querySelector(".session-when")?.textContent).toContain("One-off");
+  });
+});
+
 // ── The watch (Phase 3 Task 8; approved mocks §1–2) ─────────────────────────
 
 describe("the watch in the session sheet's foot (Phase 3 Task 8)", () => {

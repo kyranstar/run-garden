@@ -5,9 +5,10 @@ import { seededAccount } from "./seeded-accounts.js";
 /**
  * A PLAN THE COACH BUILT, RETIRED FROM PLAN — END TO END (§8 §4, stream P): in an account of its own, the coach builds
  * a block from the conversation (`whole_plan`, applied through `applyStructuralChunk` on the real worker), then Plan's
- * Your plans → the block → Retire… → "Retire the plan": the app asks `POST /api/coach/plans/:id/retire` until it no
- * longer answers `remaining`, each request a slice of the plan's sessions archived on D1, and the block is retired —
- * gone from next week, its sessions off the plan.
+ * Your plans → the block → Stop this plan… → "Stop the plan" (training lines §3.3: a coach block is a line's phase,
+ * and a line is stopped): the app asks `POST /api/coach/plans/:id/retire` until it no longer answers `remaining`, each
+ * request a slice of the plan's sessions archived on D1, and the block is retired — gone from next week, its sessions
+ * off the plan.
  *
  * Needs the fixture stack on the scripted model, and skips itself otherwise:
  *
@@ -87,17 +88,17 @@ test("a block the coach built, retired from Plan a slice a request: off the plan
     await card.getByRole("link", { name: "See it on Plan" }).click();
     await expect(sheet(page)).toHaveCount(0);
 
-    // Retire it from Your plans: the app asks until nothing remains.
+    // Stop it from Your plans (a coach block is a training line now): the app asks until nothing remains.
     const retires: { status: number; body: unknown }[] = [];
     page.on("response", async (r) => {
       if (r.url().endsWith(`/api/coach/plans/${block!.id}/retire`)) retires.push({ status: r.status(), body: await r.json().catch(() => null) });
     });
     await page.locator(".your-plans .plan-row", { hasText: "10K build" }).first().click();
-    await page.getByRole("button", { name: "Retire…" }).first().click();
-    const confirm = page.getByRole("dialog", { name: "Retire this plan?" });
+    await page.getByRole("button", { name: "Stop this plan…" }).first().click();
+    const confirm = page.getByRole("dialog", { name: "Stop this plan?" });
     await expect(confirm).toBeVisible();
     await shot(page, "retire-confirm", testInfo);
-    await confirm.getByRole("button", { name: "Retire the plan" }).click();
+    await confirm.getByRole("button", { name: "Stop the plan" }).click();
     await expect(confirm).toHaveCount(0, { timeout: 30_000 });
     // The last answer is the one that retired it; any before it said `remaining`.
     await expect.poll(() => retires.at(-1)?.body ?? null, { timeout: 20_000 }).toEqual({ ok: true });

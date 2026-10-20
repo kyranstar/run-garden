@@ -34,12 +34,12 @@ import { RaceStrip, useRaceHub } from "./race-strip.js";
 import { leafStageCount, StageStructure } from "./stage-structure.js";
 import { useUnits } from "../use-units.js";
 import { YourPlans } from "./plan-cards.js";
-import { PlanSheet } from "./plan-sheet.js";
+import { LineSheet, PlanSheet } from "./plan-sheet.js";
 import { ThreadCoachCards } from "./thread-coach-cards.js";
 import { askable, displayCompletionState, focusAfterRemove, WeekView, weekPlan, weekRangeLabel } from "./week-view.js";
 import { useCorosReadNow } from "./use-coros-read.js";
 import { CorosCheck } from "./coros-check.js";
-import { SessionSheet } from "../components/session-sheet.js";
+import { isOneOff, SessionSheet } from "../components/session-sheet.js";
 import { WatchVersion } from "../components/watch-version.js";
 import { isAppSession } from "../components/today-program.js";
 import { AskCoach, useCoachSeeing } from "./studio/coach-ask.js";
@@ -308,7 +308,11 @@ export function RunWorkoutDetail({
       <div className="stack">
         <div className="row">
           <CategoryDot category={w.category} />
-          <span className="muted">{workoutKindLabel(w.category, w) ?? w.category}</span>
+          {/* A coach one-off is no plan's session: it says so (training lines §3.4). */}
+          <span className="muted">
+            {workoutKindLabel(w.category, w) ?? w.category}
+            {isOneOff(w) ? " · One-off" : null}
+          </span>
           <CompletionPill state={completion} />
           <CorosPill state={syncView} hideWhenHealthy />
         </div>
@@ -890,14 +894,35 @@ export function PlanScreen() {
     setParams(next);
   };
   const planParam = params.get("plan");
+  const lines = coachPlans.data?.lines;
+  // A training line's sheet is `?line=<key>`; an old `?plan=<coach block>` link opens the line holding that block, at
+  // that phase (training lines §3.3). A Studio or COROS plan's link opens its own sheet, as it always did.
+  const lineOfPlan = planParam ? lines?.find((l) => l.phases.some((p) => p.id === planParam)) : undefined;
+  const lineKey = params.get("line") ?? lineOfPlan?.key ?? null;
+  // …and from then on the address is the line's: a Stop that takes the block out of the plans read leaves the line's
+  // sheet open, saying so, rather than falling back to the block's own.
+  useEffect(() => {
+    if (!planParam || !lineOfPlan) return;
+    const next = new URLSearchParams(params);
+    next.delete("plan");
+    next.set("line", lineOfPlan.key);
+    setParams(next, { replace: true });
+  }, [planParam, lineOfPlan, params, setParams]);
   const openPlan = (id: string) => {
     const next = new URLSearchParams(params);
     next.set("plan", id);
     setParams(next);
   };
+  const openLine = (key: string) => {
+    const next = new URLSearchParams(params);
+    next.delete("plan");
+    next.set("line", key);
+    setParams(next);
+  };
   const closePlan = () => {
     const next = new URLSearchParams(params);
     next.delete("plan");
+    next.delete("line");
     setParams(next);
   };
   // The week's brief, opened from its line: the numbers, the coach's line, the race.
@@ -984,15 +1009,11 @@ export function PlanScreen() {
         {coachProps ? <ThreadCoachCards {...coachProps} /> : null}
         <YourPlans
           plans={coachPlans.data?.plans ?? []}
-          lines={coachPlans.data?.lines}
+          lines={lines}
           programs={programs.data}
           today={today ?? week.data.weekStart}
           onOpenPlan={openPlan}
-          // A line opens its current phase's plan sheet.
-          onOpenLine={(key) => {
-            const line = coachPlans.data?.lines?.find((l) => l.key === key);
-            if (line) openPlan(line.currentPhaseId);
-          }}
+          onOpenLine={openLine}
         />
       </div>
 
@@ -1004,7 +1025,17 @@ export function PlanScreen() {
         </div>
       </Sheet>
 
-      {planParam ? (
+      {lineKey ? (
+        <LineSheet
+          lineKey={lineKey}
+          lines={lines}
+          plans={coachPlans.data?.plans ?? []}
+          today={today ?? week.data.weekStart}
+          focusPhaseId={lineOfPlan ? planParam : null}
+          onClose={closePlan}
+          onRename={(id, name) => rename.mutate({ id, name })}
+        />
+      ) : planParam ? (
         <PlanSheet
           planId={planParam}
           plans={coachPlans.data?.plans ?? []}

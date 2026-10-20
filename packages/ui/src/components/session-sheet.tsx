@@ -236,6 +236,14 @@ export function sessionTitle(s: SessionDto): string {
   return s.view?.theme?.name ?? "Session";
 }
 
+/**
+ * A coach one-off (training lines §3.4): filed in its sport's bucket of one-offs (the worker's `LOOSE_PLAN_ID_PREFIX`,
+ * "adhoc-"), which is never a plan, so its sheet says "One-off" where a programme's session names its programme.
+ */
+export function isOneOff(w: { planId?: string }): boolean {
+  return w.planId?.startsWith("adhoc-") ?? false;
+}
+
 function itemDose(s: SessionDto, item: SessionItemDto): { text: string; up: boolean } {
   const build = s.build!;
   const target = (build.targets[item.exerciseId] as DoseTarget | undefined) ?? null;
@@ -836,6 +844,7 @@ export function SessionSheet({ w, today, onClose }: { w: WorkoutDto; today: stri
       <div ref={body0} className="stack session-sheet">
         <p className="session-when">
           {formatDayLong(date)} at {formatTime(w.effectiveTime)}
+          {isOneOff(w) ? " · One-off" : null}
           {reading ? " · " : null}
           {reading && changeable && !needsCheck ? (
             <button type="button" className="linklike session-reading" aria-expanded={rechecking} onClick={recheck}>

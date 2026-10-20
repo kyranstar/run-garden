@@ -1,9 +1,9 @@
 import { useUnits, useWeightUnit } from "../use-units.js";
 import { useEffect, useRef, useState } from "react";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
-import { api, ApiError, type CoachPlanDto, type PlanDetailResponse } from "@rg/api-client";
+import { api, ApiError, type CoachPlanDto, type PlanDetailResponse, type TrainingLineDto } from "@rg/api-client";
 import { ConfirmDialog, formatShortDate, Sheet, Spinner, useEscapeKey } from "../components.js";
-import { dayLabel, startOfIsoWeek } from "@rg/domain";
+import { dayLabel, lineSentenceName, planEnded, startOfIsoWeek } from "@rg/domain";
 import { PlannedVsActualBars, progressionInUnits, ProgressionStepChart } from "./plan-charts.js";
 import { useCoach } from "./studio/coach-ask.js";
 import { NUDGES_QUERY } from "./studio/coach-conversation-model.js";
@@ -16,7 +16,15 @@ const planPhrase = (title: string): string => (/\bplan$/i.test(title.trim()) ? `
  * "Ask about this plan", Extend and Wind down (§8 §6: the conversation works on whole plans now).
  */
 export function planRequests(title: string): { ask: string; extend: string; windDown: string } {
-  const plan = planPhrase(title);
+  return requestsFor(planPhrase(title));
+}
+
+/** A training line's words: its end is the line's, so they name the line ("Extend my running plan by two weeks"). */
+export function lineRequests(discipline: TrainingLineDto["discipline"]): { ask: string; extend: string; windDown: string } {
+  return requestsFor(lineSentenceName(discipline));
+}
+
+function requestsFor(plan: string): { ask: string; extend: string; windDown: string } {
   return { ask: `How is ${plan} going?`, extend: `Extend ${plan} by two weeks`, windDown: `Wind down ${plan}` };
 }
 
@@ -129,6 +137,9 @@ function PlanRace({ planId, race, firstDay, canChange }: { planId: string; race:
  * conversation with the request written (`planRequests`; §8 §6 — the thread coach has stepped back); Rename and Retire…
  * are the app's own. The page routes it by `?plan=<id>`, so links and back work. A plan the retired generator made
  * still opens here.
+ *
+ * A one-phase training line is this sheet too (training lines §3.3, `LineSheet`): its Retire is "Stop this plan", with a
+ * confirm that counts the sessions leaving the calendar (`useStopLine`), and an ended line's sheet is read-only.
  */
 export function PlanSheet({
   planId,
@@ -136,19 +147,23 @@ export function PlanSheet({
   onClose,
   onRetire,
   onRename,
+  line,
+  today = "",
 }: {
   planId: string;
   plans: CoachPlanDto[];
   onClose: () => void;
   /**
    * Retire the plan; `source` says which kind, so the page asks the right route. Resolves with why it did not happen
-   * (said in the confirmation, which stays open), or null.
+   * (said in the confirmation, which stays open), or null. Not asked for a line's block, which is stopped instead.
    */
-  onRetire: (id: string, source: "coach" | "studio") => Promise<string | null>;
+  onRetire?: (id: string, source: "coach" | "studio") => Promise<string | null>;
   onRename: (id: string, name: string) => void;
+  /** The one-phase training line this block is: Retire becomes "Stop this plan". */
+  line?: TrainingLineDto;
+  /** The account's today: which of the line's phases have ended. */
+  today?: string;
 }) {
-  const units = useUnits();
-  const weightUnit = useWeightUnit();
   const coach = useCoach();
   const plan = plans.find((p) => p.id === planId);
   const detail = useQuery<PlanDetailResponse>({
@@ -169,17 +184,12 @@ export function PlanSheet({
   const renameBtn = useRef<HTMLButtonElement>(null);
   /** Who made it: the coach, the retired generator ("studio"), or COROS. */
   const source = (detail.data?.plan ?? plan)?.source ?? "coach";
+  const stop = useStopLine(line ?? null, today);
+  /** A line that has ended, or that was just stopped, is read: nothing in it changes from here. */
+  const readOnly = !!line && (line.ended || stop.stopped);
 
   const d = detail.data;
   const title = d?.plan.name ?? plan?.name ?? "Plan";
-  // Race day as a labeled vertical line on every by-week chart (user
-  // request): week index relative to the plan's own W1.
-  const raceWeek = d?.plan.raceDate
-    ? Math.floor(
-        (Date.parse(d.plan.raceDate) - Date.parse(startOfIsoWeek(d.plan.startDate))) / (7 * 86_400_000),
-      ) + 1
-    : null;
-  const raceLabel = d?.plan.raceDate ? `race · ${formatShortDate(d.plan.raceDate)}` : undefined;
   const requests = planRequests(title);
 
   /**
@@ -202,7 +212,7 @@ export function PlanSheet({
             {/* "Extend" and "Wind down" are things you do to a block with a
                 planned duration. A container of loose sessions has neither, so
                 it is not offered a taper. Each opens the coach with its words. */}
-            {(d?.plan ?? plan)?.kind === "loose" || !coach ? null : (
+            {(d?.plan ?? plan)?.kind === "loose" || !coach || readOnly ? null : (
               <>
                 <button type="button" className="btn" onClick={() => coach.open({ request: requests.extend })}>
                   Extend
@@ -212,35 +222,53 @@ export function PlanSheet({
                 </button>
               </>
             )}
-            <button
-              type="button"
-              className="btn"
-              ref={renameBtn}
-              aria-expanded={renaming}
-              aria-controls="studio-rename"
-              onClick={() => {
-                if (renaming) {
+            {readOnly ? null : (
+              <button
+                type="button"
+                className="btn"
+                ref={renameBtn}
+                aria-expanded={renaming}
+                aria-controls="studio-rename"
+                onClick={() => {
+                  if (renaming) {
+                    setRenaming(false);
+                    return;
+                  }
+                  setName(title);
+                  setConfirmingRetire(false);
+                  setRenaming(true);
+                }}
+              >
+                Rename
+              </button>
+            )}
+            {line ? null : (
+              <button
+                type="button"
+                className="btn"
+                aria-haspopup="dialog"
+                onClick={() => {
                   setRenaming(false);
-                  return;
-                }
-                setName(title);
-                setConfirmingRetire(false);
-                setRenaming(true);
-              }}
-            >
-              Rename
-            </button>
-            <button
-              type="button"
-              className="btn"
-              aria-haspopup="dialog"
-              onClick={() => {
-                setRenaming(false);
-                setConfirmingRetire(true);
-              }}
-            >
-              Retire…
-            </button>
+                  setConfirmingRetire(true);
+                }}
+              >
+                Retire…
+              </button>
+            )}
+            {/* A line's block is stopped, not retired: the line's current phase and every one after it. */}
+            {line && !readOnly ? (
+              <button
+                type="button"
+                className="btn"
+                aria-haspopup="dialog"
+                onClick={() => {
+                  setRenaming(false);
+                  stop.ask();
+                }}
+              >
+                Stop this plan…
+              </button>
+            ) : null}
           </>
         ) : null}
         {/* A plan the retired generator made has no screen of its own any more: it is retired here, as a coach plan
@@ -278,7 +306,7 @@ export function PlanSheet({
       <>
         {actions}
         <div id="studio-rename" className="disclosure-body">
-          {renaming ? (
+          {renaming && !readOnly ? (
             <div className="row studio-modal-rename">
               <input
                 value={name}
@@ -329,115 +357,537 @@ export function PlanSheet({
   return (
     <Sheet open onClose={onClose} title={title} footer={footer}>
       <div className="stack studio-modal">
-        {detail.isLoading ? <Spinner label="Loading plan detail" /> : null}
-        {detail.isError ? <p className="muted">Couldn't load this plan's detail — the actions below still work.</p> : null}
-        {d ? (
-          <>
-            <div className="row studio-modal-meta">
-              <span className={`pill ${d.plan.discipline === "lift" ? "pill-lift" : "pill-run"}`}>
-                {d.plan.discipline === "lift" ? "Lift" : d.plan.discipline === "mobility" ? "Mobility" : "Run"}
-              </span>
-              <span className={`pill ${d.plan.status === "active" ? "pill-ok" : "pill-neutral"}`}>
-                {d.plan.source === "studio" && d.plan.status === "active" ? "active · on watch" : d.plan.status}
-              </span>
-              {/* A container of loose sessions has no span to state: its dates
-                  are wherever its one-offs fell. It reports its contents on
-                  the line below instead. */}
-              {d.plan.kind === "loose" ? (
-                <span className="faint">one-offs · no planned duration</span>
-              ) : (
-                <span className="faint num">
-                  {formatShortDate(d.plan.startDate)} → {formatShortDate(d.plan.endDate)}
-                </span>
-              )}
-            </div>
-            <p className="faint studio-modal-sub num">
-              {d.sessions.done} of {d.sessions.planned} sessions done
-              {d.adherencePct !== null ? ` · adherence ${d.adherencePct}%` : ""}
-            </p>
-            {/* The plan's own race (stream G): a watch plan's or the Studio's race day is Settings', said there. */}
-            {d.plan.planRaceDate ? (
-              <PlanRace
-                key={d.plan.planRaceDate}
-                planId={d.plan.id}
-                race={d.plan.planRaceDate}
-                firstDay={d.plan.startDate}
-                canChange={(d.plan.source ?? "coach") === "coach" && d.plan.kind !== "loose"}
-              />
-            ) : null}
-
-            {d.progressions.length > 0 ? (
-              <div className="prog-chips">
-                {d.progressions.map((p) => progressionInUnits(p, units, weightUnit)).map((p) => (
-                  <span key={p.key} className="prog-chip">
-                    <span className="prog-chip-label">{p.label}</span>
-                    <span className="prog-chip-value num">
-                      {p.from} → <b>{p.to} {p.unit}</b>
-                    </span>
-                  </span>
-                ))}
-              </div>
-            ) : null}
-
-            {d.progressions.length > 0 ? (
-              <div className="studio-modal-charts">
-                {d.plan.discipline === "lift"
-                  ? d.progressions
-                      .filter((p) => p.key.startsWith("lift:") && p.key !== "lift:weekly-sets")
-                      .slice(0, 2)
-                      .map((p) => <ProgressionStepChart key={p.key} progression={progressionInUnits(p, units, weightUnit)} discipline="lift" raceWeek={raceWeek} raceLabel={raceLabel} />)
-                  : [
-                      ...d.progressions
-                        .filter((p) => p.key === "run:long-run")
-                        .map((p) => <ProgressionStepChart key={p.key} progression={progressionInUnits(p, units, weightUnit)} discipline="run" raceWeek={raceWeek} raceLabel={raceLabel} />),
-                      ...d.progressions
-                        .filter((p) => p.key === "run:weekly-minutes")
-                        .map((p) => <PlannedVsActualBars key={p.key} progression={p} raceWeek={raceWeek} raceLabel={raceLabel} />),
-                    ]}
-              </div>
-            ) : null}
-
-            {/* No weeks, no Weeks heading — a container of one-offs has none,
-                and an empty list under a heading reads as a failed load.
-                (`hidden` would not do it: `.studio-modal-weeks` declares
-                `display: flex`, which out-specifies the UA's `[hidden]`.) */}
-            {d.weeks.length === 0 ? null : (
-              <div className="studio-modal-weeks">
-                <h3 className="card-title">Weeks</h3>
-                {d.weeks.map((w) => (
-                  <div key={w.weekStart} className={`wkrow ${w.current ? "is-current" : ""}`}>
-                    <span className="wkrow-num faint num">W{w.index}</span>
-                    <span className="wkrow-desc">{w.summary}</span>
-                    {/* Internal states wear plain words: a "firm" week is on
-                        the calendar; a "shape" week is an outline the coach
-                        fills in as it approaches. */}
-                    <span className={`wkrow-state ${w.state === "firm" || w.done ? "is-firm" : ""}`}>
-                      {w.done ? "✓ done" : w.current ? "now" : w.state === "firm" ? "scheduled" : "outline"}
-                    </span>
-                  </div>
-                ))}
-              </div>
-            )}
-          </>
-        ) : null}
+        {stop.said}
+        <PlanDetailBody planId={planId} race={readOnly ? "read" : "own"} />
       </div>
-      <ConfirmDialog
-        open={confirmingRetire}
-        onClose={() => setConfirmingRetire(false)}
-        title="Retire this plan?"
-        confirmLabel="Retire the plan"
-        busy={retiring}
-        error={retireError}
-        onConfirm={async () => {
-          setRetiring(true);
-          const why = await onRetire(planId, source === "studio" ? "studio" : "coach");
-          setRetiring(false);
-          if (why) setRetireError(why);
-        }}
-      >
-        “{title}” stops here and every session still ahead of it is archived. Sessions you have
-        already done are kept.
-      </ConfirmDialog>
+      {line ? (
+        stop.dialog
+      ) : (
+        <ConfirmDialog
+          open={confirmingRetire}
+          onClose={() => setConfirmingRetire(false)}
+          title="Retire this plan?"
+          confirmLabel="Retire the plan"
+          busy={retiring}
+          error={retireError}
+          onConfirm={async () => {
+            if (!onRetire) return;
+            setRetiring(true);
+            const why = await onRetire(planId, source === "studio" ? "studio" : "coach");
+            setRetiring(false);
+            if (why) setRetireError(why);
+          }}
+        >
+          “{title}” stops here and every session still ahead of it is archived. Sessions you have
+          already done are kept.
+        </ConfirmDialog>
+      )}
     </Sheet>
+  );
+}
+
+/**
+ * What a plan's detail says, from `GET /api/coach/plans/:id/detail`: its kind and state, its dates, the sessions done
+ * and its adherence, its race, its progressions graphed, and its weeks. The plan sheet's body, and the open phase's in a
+ * training line's sheet. `race`: "own" — the plan's own race, changed here when the coach wrote it; "read" — said, never
+ * changed (an ended line); "none" — not said (a line says its race once, on its last phase).
+ */
+function PlanDetailBody({ planId, race }: { planId: string; race: "own" | "read" | "none" }) {
+  const units = useUnits();
+  const weightUnit = useWeightUnit();
+  const detail = useQuery<PlanDetailResponse>({
+    queryKey: ["plan-detail", planId],
+    queryFn: () => api.planDetail(planId),
+    staleTime: 60_000,
+  });
+  const d = detail.data;
+  // Race day as a labeled vertical line on every by-week chart (user
+  // request): week index relative to the plan's own W1.
+  const raceWeek = d?.plan.raceDate
+    ? Math.floor(
+        (Date.parse(d.plan.raceDate) - Date.parse(startOfIsoWeek(d.plan.startDate))) / (7 * 86_400_000),
+      ) + 1
+    : null;
+  const raceLabel = d?.plan.raceDate ? `race · ${formatShortDate(d.plan.raceDate)}` : undefined;
+  return (
+    <>
+      {detail.isLoading ? <Spinner label="Loading plan detail" /> : null}
+      {detail.isError ? <p className="muted">Couldn't load this plan's detail — the actions below still work.</p> : null}
+      {d ? (
+        <>
+          <div className="row studio-modal-meta">
+            <span className={`pill ${d.plan.discipline === "lift" ? "pill-lift" : "pill-run"}`}>
+              {d.plan.discipline === "lift" ? "Lift" : d.plan.discipline === "mobility" ? "Mobility" : "Run"}
+            </span>
+            <span className={`pill ${d.plan.status === "active" ? "pill-ok" : "pill-neutral"}`}>
+              {d.plan.source === "studio" && d.plan.status === "active" ? "active · on watch" : d.plan.status}
+            </span>
+            {/* A container of loose sessions has no span to state: its dates
+                are wherever its one-offs fell. It reports its contents on
+                the line below instead. */}
+            {d.plan.kind === "loose" ? (
+              <span className="faint">one-offs · no planned duration</span>
+            ) : (
+              <span className="faint num">
+                {formatShortDate(d.plan.startDate)} → {formatShortDate(d.plan.endDate)}
+              </span>
+            )}
+          </div>
+          <p className="faint studio-modal-sub num">
+            {d.sessions.done} of {d.sessions.planned} sessions done
+            {d.adherencePct !== null ? ` · adherence ${d.adherencePct}%` : ""}
+          </p>
+          {/* The plan's own race (stream G): a watch plan's or the Studio's race day is Settings', said there. */}
+          {d.plan.planRaceDate && race !== "none" ? (
+            <PlanRace
+              key={d.plan.planRaceDate}
+              planId={d.plan.id}
+              race={d.plan.planRaceDate}
+              firstDay={d.plan.startDate}
+              canChange={race === "own" && (d.plan.source ?? "coach") === "coach" && d.plan.kind !== "loose"}
+            />
+          ) : null}
+
+          {d.progressions.length > 0 ? (
+            <div className="prog-chips">
+              {d.progressions.map((p) => progressionInUnits(p, units, weightUnit)).map((p) => (
+                <span key={p.key} className="prog-chip">
+                  <span className="prog-chip-label">{p.label}</span>
+                  <span className="prog-chip-value num">
+                    {p.from} → <b>{p.to} {p.unit}</b>
+                  </span>
+                </span>
+              ))}
+            </div>
+          ) : null}
+
+          {d.progressions.length > 0 ? (
+            <div className="studio-modal-charts">
+              {d.plan.discipline === "lift"
+                ? d.progressions
+                    .filter((p) => p.key.startsWith("lift:") && p.key !== "lift:weekly-sets")
+                    .slice(0, 2)
+                    .map((p) => <ProgressionStepChart key={p.key} progression={progressionInUnits(p, units, weightUnit)} discipline="lift" raceWeek={raceWeek} raceLabel={raceLabel} />)
+                : [
+                    ...d.progressions
+                      .filter((p) => p.key === "run:long-run")
+                      .map((p) => <ProgressionStepChart key={p.key} progression={progressionInUnits(p, units, weightUnit)} discipline="run" raceWeek={raceWeek} raceLabel={raceLabel} />),
+                    ...d.progressions
+                      .filter((p) => p.key === "run:weekly-minutes")
+                      .map((p) => <PlannedVsActualBars key={p.key} progression={p} raceWeek={raceWeek} raceLabel={raceLabel} />),
+                  ]}
+            </div>
+          ) : null}
+
+          {/* No weeks, no Weeks heading — a container of one-offs has none,
+              and an empty list under a heading reads as a failed load.
+              (`hidden` would not do it: `.studio-modal-weeks` declares
+              `display: flex`, which out-specifies the UA's `[hidden]`.) */}
+          {d.weeks.length === 0 ? null : (
+            <div className="studio-modal-weeks">
+              <h3 className="card-title">Weeks</h3>
+              {d.weeks.map((w) => (
+                <div key={w.weekStart} className={`wkrow ${w.current ? "is-current" : ""}`}>
+                  <span className="wkrow-num faint num">W{w.index}</span>
+                  <span className="wkrow-desc">{w.summary}</span>
+                  {/* Internal states wear plain words: a "firm" week is on
+                      the calendar; a "shape" week is an outline the coach
+                      fills in as it approaches. */}
+                  <span className={`wkrow-state ${w.state === "firm" || w.done ? "is-firm" : ""}`}>
+                    {w.done ? "✓ done" : w.current ? "now" : w.state === "firm" ? "scheduled" : "outline"}
+                  </span>
+                </div>
+              ))}
+            </div>
+          )}
+        </>
+      ) : null}
+    </>
+  );
+}
+
+// ── Training lines (2026-10-20, the spec §3.3) ──────────────────────────────
+
+/** Where a phase stands in its line: ended (its last day has passed), the line's current phase, or ahead of it. */
+export function linePhaseState(line: TrainingLineDto, phase: TrainingLineDto["phases"][number], today: string): "ended" | "current" | "later" {
+  if (planEnded(phase.endDate, today)) return "ended";
+  return phase.id === line.currentPhaseId ? "current" : "later";
+}
+
+/**
+ * What "Stop this plan" retires: the current phase and every phase after it, in order, never one that has ended. A
+ * line that names no phase of its own as current (an older or odd payload) stops every phase that has not ended.
+ */
+function phasesToStop(line: TrainingLineDto, today: string): TrainingLineDto["phases"] {
+  const at = Math.max(0, line.phases.findIndex((p) => p.id === line.currentPhaseId));
+  return line.phases.slice(at).filter((p) => !planEnded(p.endDate, today));
+}
+
+/** The sessions "Stop this plan" takes off the calendar: those still ahead in the phases it retires. */
+export function stopCount(line: TrainingLineDto, today: string): number {
+  return phasesToStop(line, today).reduce((n, p) => n + p.futureSessions, 0);
+}
+
+/**
+ * Stop a line: retire its current phase, then each later one, in order — never a phase that has ended. A retire that
+ * fails (or answers not ok) stops the walk there and fails the stop; the phases retired before it stay retired.
+ */
+export async function stopLine(
+  line: TrainingLineDto,
+  today: string,
+  retire: (id: string) => Promise<{ ok: boolean }>,
+): Promise<{ stopped: string[] }> {
+  const stopped: string[] = [];
+  for (const p of phasesToStop(line, today)) {
+    const res = await retire(p.id);
+    if (!res.ok) throw new Error("not_stopped");
+    stopped.push(p.id);
+  }
+  return { stopped };
+}
+
+/** The confirm's count: "14 sessions leave your calendar." */
+function sessionsLeave(n: number): string {
+  if (n === 0) return "No sessions leave your calendar.";
+  return n === 1 ? "1 session leaves your calendar." : `${n} sessions leave your calendar.`;
+}
+
+/** The result line once it stopped: "Stopped. 14 sessions left your calendar." */
+function stoppedWords(n: number): string {
+  if (n === 0) return "Stopped.";
+  return `Stopped. ${n === 1 ? "1 session" : `${n} sessions`} left your calendar.`;
+}
+
+/** What a stop that failed part-way says, in its confirm, which stays open to try again. */
+const STOP_FAILED = "That didn't go through — try again.";
+
+/** What a stop reads again: the plans and lines, the phases' details, the week, the coach's view and its chips. */
+const STOP_READS = [["coach-plans"], ["plan-detail"], ["plan"], ["plan-week"], ["coach-state"], [...NUDGES_QUERY]];
+
+/**
+ * "Stop this plan" for a line's sheet: `ask` opens its confirm (`dialog`), which counts the sessions leaving the
+ * calendar; confirming retires the phases (`stopLine`, each through `api.coachPlanRetire`, which asks again while the
+ * server answers `remaining`). A phase retired by an earlier press is never asked again, so after a press that failed
+ * part-way a second press retires only what is left. Stopped, the sheet says so in `said` and the focus goes there —
+ * the button pressed has gone, and the focus must not fall to the page.
+ */
+function useStopLine(line: TrainingLineDto | null, today: string) {
+  const qc = useQueryClient();
+  const [asking, setAsking] = useState(false);
+  const [count, setCount] = useState(0);
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const [stoppedCount, setStoppedCount] = useState<number | null>(null);
+  const retired = useRef(new Set<string>());
+  const saidRef = useRef<HTMLParagraphElement>(null);
+  useEffect(() => {
+    if (stoppedCount !== null) saidRef.current?.focus({ preventScroll: true });
+  }, [stoppedCount]);
+  const confirm = async () => {
+    if (!line || busy) return;
+    setBusy(true);
+    setError(null);
+    try {
+      await stopLine(line, today, async (id) => {
+        if (retired.current.has(id)) return { ok: true };
+        const res = await api.coachPlanRetire(id);
+        if (res.ok) retired.current.add(id);
+        return res;
+      });
+      setAsking(false);
+      setStoppedCount(count);
+    } catch {
+      setError(STOP_FAILED);
+    } finally {
+      setBusy(false);
+      for (const queryKey of STOP_READS) void qc.invalidateQueries({ queryKey });
+    }
+  };
+  return {
+    stopped: stoppedCount !== null,
+    ask: () => {
+      if (!line) return;
+      setError(null);
+      setCount(stopCount(line, today));
+      setAsking(true);
+    },
+    said:
+      stoppedCount !== null ? (
+        <p ref={saidRef} className="line-stopped" role="status" tabIndex={-1}>
+          {stoppedWords(stoppedCount)}
+        </p>
+      ) : null,
+    dialog: (
+      <ConfirmDialog
+        open={asking}
+        onClose={() => {
+          setError(null);
+          setAsking(false);
+        }}
+        title="Stop this plan?"
+        confirmLabel="Stop the plan"
+        busy={busy}
+        error={error}
+        onConfirm={() => void confirm()}
+      >
+        {sessionsLeave(count)} What you've done stays.
+      </ConfirmDialog>
+    ),
+  };
+}
+
+/**
+ * A TRAINING LINE'S SHEET (training lines §3.3): the page routes it by `?line=<key>`; an old `?plan=<coach block>`
+ * link opens the block's line, scrolled to that phase (`focusPhaseId`). A line of one phase is the plan sheet, Retire
+ * become "Stop this plan"; a line of several lists its phases (`LinePhases`). Which of the two is decided as it opens,
+ * and the line last read is kept: a Stop that takes the line out of the plans read leaves the sheet where it is, saying
+ * so, rather than taking it away from under the focus.
+ */
+export function LineSheet({
+  lineKey,
+  lines,
+  plans,
+  today,
+  focusPhaseId = null,
+  onClose,
+  onRename,
+}: {
+  lineKey: string;
+  /** `GET /api/coach/plans` `lines`. */
+  lines: readonly TrainingLineDto[] | undefined;
+  plans: CoachPlanDto[];
+  today: string;
+  focusPhaseId?: string | null;
+  onClose: () => void;
+  onRename: (id: string, name: string) => void;
+}) {
+  const found = lines?.find((l) => l.key === lineKey) ?? null;
+  const [held, setHeld] = useState(found);
+  if (found && found !== held) setHeld(found);
+  const line = found ?? held;
+  const [many] = useState(() => (line?.phases.length ?? 0) > 1);
+  if (!line || line.phases.length === 0) {
+    return (
+      <Sheet open onClose={onClose} title="Plan">
+        <p className="muted">This plan isn't here any more.</p>
+      </Sheet>
+    );
+  }
+  return many ? (
+    <LinePhases line={line} today={today} focusPhaseId={focusPhaseId} onClose={onClose} onRename={onRename} />
+  ) : (
+    <PlanSheet planId={line.phases[0]!.id} plans={plans} line={line} today={today} onClose={onClose} onRename={onRename} />
+  );
+}
+
+/**
+ * A line of several phases, in order: one that has ended is a heading that opens to its detail (its adherence is its
+ * own), the current one is open with its detail as the plan sheet draws it, and those ahead are a heading and dates.
+ * Rename is on each phase's heading; the line's race is its last phase's, said once and changed there; Extend and Wind
+ * down write the line's end in the coach's box. An ended line, or one just stopped, is read-only.
+ */
+function LinePhases({
+  line,
+  today,
+  focusPhaseId,
+  onClose,
+  onRename,
+}: {
+  line: TrainingLineDto;
+  today: string;
+  focusPhaseId: string | null;
+  onClose: () => void;
+  onRename: (id: string, name: string) => void;
+}) {
+  const coach = useCoach();
+  const stop = useStopLine(line, today);
+  const readOnly = line.ended || stop.stopped;
+  const requests = lineRequests(line.discipline);
+  const last = line.phases[line.phases.length - 1]!;
+  // The phase an old link named opens, when it is one that has ended.
+  const [open, setOpen] = useState<ReadonlySet<string>>(() => new Set(focusPhaseId ? [focusPhaseId] : []));
+  const [renaming, setRenaming] = useState<string | null>(null);
+  const phaseEls = useRef(new Map<string, HTMLLIElement>());
+  const renameBtns = useRef(new Map<string, HTMLButtonElement>());
+  const focusAt = useRef(focusPhaseId);
+  useEffect(() => {
+    if (focusAt.current) phaseEls.current.get(focusAt.current)?.scrollIntoView?.({ block: "start" });
+  }, []);
+  const closeRename = (id: string) => {
+    setRenaming(null);
+    renameBtns.current.get(id)?.focus();
+  };
+
+  const footer = (
+    <div className="btn-row studio-modal-actions">
+      {readOnly || !coach ? null : (
+        <>
+          <button type="button" className="btn" onClick={() => coach.open({ request: requests.extend })}>
+            Extend
+          </button>
+          <button type="button" className="btn" onClick={() => coach.open({ request: requests.windDown })}>
+            Wind down
+          </button>
+        </>
+      )}
+      {readOnly ? null : (
+        <button
+          type="button"
+          className="btn"
+          aria-haspopup="dialog"
+          onClick={() => {
+            setRenaming(null);
+            stop.ask();
+          }}
+        >
+          Stop this plan…
+        </button>
+      )}
+      <span className="studio-modal-grow" />
+      {coach ? (
+        <button type="button" className="btn btn-primary" onClick={() => coach.open({ request: requests.ask })}>
+          Ask about this plan
+        </button>
+      ) : null}
+    </div>
+  );
+
+  return (
+    <Sheet open onClose={onClose} title={line.name} footer={footer}>
+      <div className="stack line-sheet">
+        {stop.said}
+        <p className="faint num line-sheet-span">
+          {formatShortDate(line.startDate)} → {formatShortDate(line.endDate)} · {line.phases.length}{" "}
+          {line.phases.length === 1 ? "phase" : "phases"}
+        </p>
+        {/* The line's goal is its last phase's race: said once, and changed there. */}
+        {last.planRaceDate ? (
+          <PlanRace
+            key={`${last.id}:${last.planRaceDate}`}
+            planId={last.id}
+            race={last.planRaceDate}
+            firstDay={last.startDate}
+            canChange={!readOnly}
+          />
+        ) : null}
+        <ol className="line-phases">
+          {line.phases.map((p, i) => {
+            const state = linePhaseState(line, p, today);
+            const opened = state === "current" || (state === "ended" && open.has(p.id));
+            const heading = (
+              <>
+                <span className="line-phase-name">
+                  Phase {i + 1} · {p.name}
+                </span>
+                <span className="line-phase-dates faint num">
+                  {formatShortDate(p.startDate)} → {formatShortDate(p.endDate)}
+                  {state === "ended" ? " · ended" : state === "current" ? " · now" : ""}
+                </span>
+              </>
+            );
+            return (
+              <li
+                key={p.id}
+                id={`line-phase-${p.id}`}
+                className={`line-phase is-${state}`}
+                ref={(el) => {
+                  if (el) phaseEls.current.set(p.id, el);
+                  else phaseEls.current.delete(p.id);
+                }}
+              >
+                <div className="line-phase-head">
+                  <h3 className="line-phase-h">
+                    {state === "ended" ? (
+                      <button
+                        type="button"
+                        className="line-phase-toggle"
+                        aria-expanded={opened}
+                        aria-controls={`line-phase-body-${p.id}`}
+                        onClick={() =>
+                          setOpen((was) => {
+                            const next = new Set(was);
+                            if (next.has(p.id)) next.delete(p.id);
+                            else next.add(p.id);
+                            return next;
+                          })
+                        }
+                      >
+                        {heading}
+                      </button>
+                    ) : (
+                      <span className="line-phase-title">{heading}</span>
+                    )}
+                  </h3>
+                  {readOnly ? null : (
+                    <button
+                      type="button"
+                      className="btn btn-small"
+                      ref={(el) => {
+                        if (el) renameBtns.current.set(p.id, el);
+                        else renameBtns.current.delete(p.id);
+                      }}
+                      aria-expanded={renaming === p.id}
+                      aria-controls={`line-phase-rename-${p.id}`}
+                      onClick={() => setRenaming(renaming === p.id ? null : p.id)}
+                    >
+                      Rename
+                    </button>
+                  )}
+                </div>
+                <div id={`line-phase-rename-${p.id}`} className="disclosure-body">
+                  {renaming === p.id && !readOnly ? (
+                    <PhaseRename
+                      initial={p.name}
+                      onSave={(name) => {
+                        onRename(p.id, name);
+                        closeRename(p.id);
+                      }}
+                      onCancel={() => closeRename(p.id)}
+                    />
+                  ) : null}
+                </div>
+                <div id={`line-phase-body-${p.id}`} className="disclosure-body">
+                  {opened ? (
+                    <div className="stack studio-modal line-phase-body">
+                      <PlanDetailBody planId={p.id} race="none" />
+                    </div>
+                  ) : null}
+                </div>
+              </li>
+            );
+          })}
+        </ol>
+      </div>
+      {stop.dialog}
+    </Sheet>
+  );
+}
+
+/** A phase's name, edited under its heading: Enter or Save keeps it, Escape or Cancel leaves it as it was. */
+function PhaseRename({ initial, onSave, onCancel }: { initial: string; onSave: (name: string) => void; onCancel: () => void }) {
+  const [name, setName] = useState(initial);
+  // Escape closes the field, not the sheet: while it is open, it is the top thing.
+  useEscapeKey(true, onCancel);
+  const save = () => {
+    if (name.trim()) onSave(name.trim());
+  };
+  return (
+    <div className="row studio-modal-rename">
+      <input
+        value={name}
+        autoFocus
+        aria-label="Phase name"
+        onChange={(e) => setName(e.target.value)}
+        onKeyDown={(e) => {
+          if (e.key === "Enter") save();
+        }}
+      />
+      <button type="button" className="btn btn-primary" disabled={!name.trim()} onClick={save}>
+        Save
+      </button>
+      <button type="button" className="btn" onClick={onCancel}>
+        Cancel
+      </button>
+    </div>
   );
 }
