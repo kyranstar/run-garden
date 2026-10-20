@@ -1093,22 +1093,40 @@ function doseLine(step: Step, ex: SessionExerciseDto | undefined): string {
   return `${reps}${w}`.trim();
 }
 
-/** "Next · Right side", "Then · Supported row", or during a rest "Next · Supported row · 10 each side @ 20 lb". */
-function nextLine(state: PlayerState, step: Step, exercises: Readonly<Record<string, SessionExerciseDto | undefined>>): string | null {
+/** The next step that is not a rest — what a rest gets the athlete ready for — or null at the end. */
+function nextWork(state: PlayerState): Step | null {
   for (let i = state.index + 1; i < state.live.steps.length; i++) {
     const n = state.live.steps[i]!;
-    if (n.kind === "rest") continue;
-    const name = (n.exerciseId && exercises[n.exerciseId]?.name) || null;
-    if (step.kind === "rest") {
-      const dose = doseLine(n, n.exerciseId ? exercises[n.exerciseId] : undefined);
-      return ["Next", name, dose || null].filter(Boolean).join(" · ");
-    }
-    if (n.exerciseId === step.exerciseId && n.side && n.side !== step.side) return `Next · ${sideWord(n.side)}`;
-    if (n.exerciseId === step.exerciseId) return null;
-    return name ? `${step.kind === "set" ? "Then" : "Next"} · ${name}` : null;
+    if (n.kind !== "rest") return n;
   }
   return null;
 }
+
+/** "Next · Right side", "Then · Supported row", or during a rest "Next · Supported row · 10 each side @ 20 lb". */
+function nextLine(state: PlayerState, step: Step, exercises: Readonly<Record<string, SessionExerciseDto | undefined>>): string | null {
+  const n = nextWork(state);
+  if (!n) return null;
+  const name = (n.exerciseId && exercises[n.exerciseId]?.name) || null;
+  if (step.kind === "rest") {
+    const dose = doseLine(n, n.exerciseId ? exercises[n.exerciseId] : undefined);
+    return ["Next", name, dose || null].filter(Boolean).join(" · ");
+  }
+  if (n.exerciseId === step.exerciseId && n.side && n.side !== step.side) return `Next · ${sideWord(n.side)}`;
+  if (n.exerciseId === step.exerciseId) return null;
+  return name ? `${step.kind === "set" ? "Then" : "Next"} · ${name}` : null;
+}
+
+/**
+ * A move's how at a glance (the owner, 2026-10-19): the library's one plain sentence of it (`text.summary`), or null
+ * when it has none — a move the slice lacks, or a blank line — so nothing is drawn, never an empty box.
+ */
+const summaryOf = (ex: SessionExerciseDto | undefined): string | null => ex?.text.summary.trim() || null;
+
+/**
+ * The summary as the stage shows it: quiet words, at most three lines. Plain text in reading order — no control (a
+ * tap on it is the stage's: it pauses and resumes; the full how-to is ⓘ's) and in no live region.
+ */
+const HowtoLine = ({ text }: { text: string | null }) => (text ? <p className="player-howto">{text}</p> : null);
 
 function eyebrow(step: Step, careLabel: string | null, exercise?: { contraction?: readonly string[] }, part?: string | null): string {
   // A document build names the part, as the Studio does; an engine build its block.
@@ -1213,10 +1231,14 @@ function StepBody({
         ) : null}
         {log}
         {following ? <span className="player-next">{following}</span> : null}
+        {/* What comes next, in a word of how: the athlete gets ready for it. */}
+        <HowtoLine text={summaryOf(exercises[nextWork(state)?.exerciseId ?? ""])} />
       </>
     );
   }
   const name = exercise?.name ?? step.exerciseId ?? "";
+  // The move's how, under its name; a document item's cue (today's intent) after it.
+  const howto = <HowtoLine text={summaryOf(exercise)} />;
   if (step.kind === "set") {
     const t = step.target ?? {};
     const each = exercise?.laterality === "unilateral" ? " each side" : "";
@@ -1225,6 +1247,8 @@ function StepBody({
       <>
         <span className="eyebrow player-eyebrow">{eyebrow(step, careLabel, exercise, part)}</span>
         <h1 className="display player-name">{name}</h1>
+        {/* The set done, its log card is the step: the how steps aside for it (the card fits a short phone whole). */}
+        {log ? null : howto}
         {cueLine}
         {log ??
           (open ? (
@@ -1257,6 +1281,7 @@ function StepBody({
     <>
       <span className="eyebrow player-eyebrow">{eyebrow(step, careLabel, exercise, part)}</span>
       <h1 className="display player-name">{name}</h1>
+      {howto}
       {cueLine}
       {step.side ? <span className="player-meta">{sideWord(step.side)}</span> : null}
       {held === null ? (

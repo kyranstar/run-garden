@@ -134,6 +134,13 @@ async function stepTo(n: number) {
 }
 /** What sits right under the move's name. */
 const underName = () => document.querySelector("h1.player-name")?.nextElementSibling ?? null;
+/** The cue, read where it sits: right after the summary under the name. */
+const cueAfterSummary = () => {
+  const next = underName()?.nextElementSibling ?? null;
+  return next?.className === "player-cue" ? next.textContent : null;
+};
+/** The library's own summary of a move (never typed here). */
+const summaryOf = (id: string) => exercise(id).text.summary;
 /**
  * The footer's actions in order: each one's words, and whether it is the primary one. Every one is a 44px `.btn`. Back
  * (the step before, beside them on every step) is not one of the step's own.
@@ -153,19 +160,34 @@ function cardTitle(): string | null {
 const S = 1000;
 
 describe("a document workout's items, played", () => {
-  it("an item's cue shows under the move's name", async () => {
+  it("an item's cue shows under the move's name, after its summary: the summary the how, the cue today's intent", async () => {
     await start(docBuild(), docView());
-    // A move whose item has no cue shows none.
+    // A move whose item has no cue shows none: its summary alone.
     expect(document.querySelector("h1.player-name")!.textContent).toMatch(/^Low lunge/);
     expect(document.querySelector(".player-cue")).toBeNull();
+    expect(underName()!.textContent).toBe(summaryOf("lowLunge"));
     await stepTo(3);
     expect(document.querySelector("h1.player-name")!.textContent).toBe("Goblet squat");
-    expect(underName()!.textContent).toBe(SQUAT_CUE);
+    expect(underName()!.className).toBe("player-howto");
+    expect(underName()!.textContent).toBe(summaryOf("gobletSquat"));
+    expect(cueAfterSummary()).toBe(SQUAT_CUE);
     await stepTo(8);
     expect(document.querySelector("h1.player-name")!.textContent).toBe("Wall sit");
-    expect(underName()!.textContent).toBe(HOLD_CUE);
+    expect(underName()!.textContent).toBe(summaryOf("wallSit"));
+    expect(cueAfterSummary()).toBe(HOLD_CUE);
     await stepTo(9);
-    expect(underName()!.textContent).toBe(STRETCH_CUE);
+    expect(underName()!.textContent).toBe(summaryOf("reclinedButterfly"));
+    expect(cueAfterSummary()).toBe(STRETCH_CUE);
+  });
+
+  it("a move with no summary keeps its cue right under its name", async () => {
+    const b = docBuild();
+    const squat = b.exercises.gobletSquat!;
+    await start(docBuild({ exercises: { ...b.exercises, gobletSquat: { ...squat, text: { ...squat.text, summary: "" } } } }), docView());
+    await stepTo(3);
+    expect(document.querySelector(".player-howto")).toBeNull();
+    expect(underName()!.className).toBe("player-cue");
+    expect(underName()!.textContent).toBe(SQUAT_CUE);
   });
 
   it("a cue is said of its move: swapped for another, the slot shows none; swapped back, it shows again", async () => {
@@ -176,11 +198,14 @@ describe("a document workout's items, played", () => {
     await click("Use");
     await until(() => document.querySelector("h1.player-name")!.textContent === "Supported split squat", "the alternate");
     expect(document.querySelector(".player-cue")).toBeNull();
+    // The summary is the move's own: the alternate's now.
+    expect(underName()!.textContent).toBe(summaryOf("splitSquat"));
     await click("Swap");
     await until(() => !!document.querySelector('[role="dialog"]'), "the swap list again");
     await click("Use");
     await until(() => document.querySelector("h1.player-name")!.textContent === "Goblet squat", "the planned move");
-    expect(underName()!.textContent).toBe(SQUAT_CUE);
+    expect(underName()!.textContent).toBe(summaryOf("gobletSquat"));
+    expect(cueAfterSummary()).toBe(SQUAT_CUE);
   });
 
   it("a hold to max counts up past its target, shows the target, and Done logs the seconds held", async () => {
@@ -296,6 +321,24 @@ describe("a document workout's items, played", () => {
     const stored = await readLive<Stored>(db!, SLOT);
     expect(stored?.recorder.live.entries.lowLunge!.sets[0]!.sides).toEqual({ left: 50, right: 40 });
     expect(stored?.recorder.live.entries.wallSit!.sets[0]).toMatchObject({ done: true, secs: 58 });
+  });
+
+  it("a rest says the next move's summary under its Next line, and the hold to max after it says its own above its ring", async () => {
+    await start(maxBuild(), docView());
+    // The hold before the rest names the move after it: a rest is passed over.
+    await stepTo(2);
+    expect(document.querySelector(".player-next")!.textContent).toBe("Next · Wall sit");
+    await stepTo(3);
+    const next = document.querySelector(".player-next")!;
+    expect(next.textContent).toMatch(/^Next · Wall sit/);
+    expect(next.nextElementSibling?.className).toBe("player-howto");
+    expect(next.nextElementSibling?.textContent).toBe(summaryOf("wallSit"));
+    expect([...document.querySelectorAll(".player-howto")]).toHaveLength(1);
+    await stepTo(4);
+    await at(T0 + 20 * S);
+    expect(document.querySelector(".player-ring-mark")).not.toBeNull();
+    expect(underName()!.textContent).toBe(summaryOf("wallSit"));
+    expect(underName()!.nextElementSibling?.className).toBe("player-ring");
   });
 
   it("an Edit card holds the clocks while it is open; Confirm writes to the hold, and the next step is neither touched nor skipped", async () => {

@@ -158,6 +158,21 @@ test.describe("on the fixture stack", () => {
     await page.getByRole("button", { name: "Start now" }).click();
     await intoThePlayer(page);
     await expect(page.getByRole("banner")).toContainText(/Desk reset · 1 of \d+/);
+
+    // The move's how at a glance (2026-10-19): its summary right under its name, in the viewport with the actions, at
+    // most three lines — the same words the ⓘ sheet opens with.
+    const howto = page.locator("h1.player-name + p.player-howto");
+    await expect(howto).toBeVisible();
+    const said = (await howto.innerText()).trim();
+    expect(said.length).toBeGreaterThan(20);
+    const box = (await howto.boundingBox())!;
+    const lineHeight = await howto.evaluate((el) => parseFloat(getComputedStyle(el).lineHeight));
+    expect(box.height).toBeLessThanOrEqual(lineHeight * 3 + 1);
+    const viewport = page.viewportSize()!;
+    const actions = (await page.locator(".player-actions").boundingBox())!;
+    expect(actions.y + actions.height).toBeLessThanOrEqual(viewport.height + 1);
+    await page.getByRole("button", { name: "How to" }).click();
+    await expect(page.getByRole("dialog").locator(".howto-summary")).toHaveText(said);
   });
 
   test("a template saved from the builder, then reused: Start plays it, and the workout made is the template's", async ({ page }, info) => {

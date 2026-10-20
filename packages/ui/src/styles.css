@@ -8475,6 +8475,21 @@ button.session-chip::after {
   text-wrap: balance;
   overflow-wrap: anywhere;
 }
+/* The move's how at a glance (2026-10-19): the library's one plain sentence, under the name (before a cue) — and in a
+   rest, the next move's under "Next". Quieter than the cue, at most three lines; plain text, never a control. */
+.player-howto {
+  display: -webkit-box;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 3;
+  line-clamp: 3;
+  overflow: hidden;
+  max-width: 100%;
+  color: var(--ink-soft);
+  font-size: var(--text-sm);
+  line-height: 1.4;
+  text-wrap: balance;
+  overflow-wrap: anywhere;
+}
 .player-ring {
   position: relative;
   width: min(220px, 62vw);
@@ -8547,6 +8562,22 @@ button.session-chip::after {
   place-content: center;
   justify-items: center;
   gap: var(--space-3);
+}
+/* A short screen (an SE; any phone's browser with its bars showing): a smaller ring, a closer stack and the summary at
+   two lines give it its room, so the stage still fits without scrolling — the ring and the actions whole, with the
+   music line and "Tap for sound" showing too. After the ring's and the summary's own rules, which it narrows. */
+@media (max-height: 740px) {
+  .player-main {
+    gap: var(--space-3);
+    padding-block: var(--space-4);
+  }
+  .player-ring {
+    width: min(180px, 62vw);
+  }
+  .player-howto {
+    -webkit-line-clamp: 2;
+    line-clamp: 2;
+  }
 }
 .player-actions {
   display: grid;

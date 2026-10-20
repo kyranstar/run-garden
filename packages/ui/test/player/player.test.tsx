@@ -26,7 +26,7 @@ import { readLive, type LiveSession } from "../../src/offline/live.js";
 import { saveExtras } from "../../src/player/stored.js";
 import { PlayerScreen } from "../../src/screens/player.js";
 import type { Cue, CuePlayer, SoundSettings } from "../../src/player/cue-player.js";
-import { build, flagLabel, profiles, SLOT, T0, view } from "./fixtures.js";
+import { build, exercise, flagLabel, profiles, SLOT, T0, view } from "./fixtures.js";
 
 (globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
 
@@ -1032,5 +1032,126 @@ describe("the player, by touch (the sound pass's quality of life)", () => {
     // Inside that block: no rule closes the block between its start and the pulse.
     expect(sheet.slice(motionOk, pulse)).not.toMatch(/\n\}/);
     expect(sheet).toMatch(/\.player-ring\.is-ending \.player-ring-fill \{[^}]*stroke: var\(--/);
+  });
+});
+
+// ── The move's how at a glance (the owner, 2026-10-19: "a bit of the instructions … without opening the whole info
+// screen") ──────────────────────────────────────────────────────────────────────────────────────────────────────────
+
+/** Every summary line on the stage, in order. */
+const howtoLines = () => [...document.querySelectorAll<HTMLElement>(".player-howto")].map((p) => p.textContent);
+/** The library's own summary of a move (never typed here). */
+const summaryOf = (id: string) => exercise(id).text.summary;
+/** What sits right under the move's name. */
+const underName = () => document.querySelector("h1.player-name")?.nextElementSibling as HTMLElement | null;
+
+describe("the move's how, in one quiet line", () => {
+  it("the get-ready, the hold and a set each say their move's summary right under its name — plain words, no control, nothing announced", async () => {
+    await storedStart();
+    mount();
+    await until(() => text().includes("1 of 9"), "the first step");
+    expect(text()).toContain("Get ready");
+    expect(underName()!.tagName).toBe("P");
+    expect(underName()!.className).toBe("player-howto");
+    expect(underName()!.textContent).toBe(summaryOf("lowLunge"));
+    expect(underName()!.closest("button, a, label, [role], [tabindex], [aria-live]")).toBeNull();
+    expect(howtoLines()).toEqual([summaryOf("lowLunge")]);
+    // The hold itself, once the get-ready is over: the same line, where it was.
+    await at(T0 + 13 * S);
+    expect(text()).not.toContain("Get ready");
+    expect(underName()!.textContent).toBe(summaryOf("lowLunge"));
+    await click("Skip");
+    await click("Skip");
+    await until(() => text().includes("3 of 9"), "the first set");
+    expect(underName()!.textContent).toBe(summaryOf("gobletSquat"));
+    expect(howtoLines()).toEqual([summaryOf("gobletSquat")]);
+  });
+
+  it("a rest says the next move's summary under its Next line", async () => {
+    await storedStart();
+    mount();
+    await toFirstSet();
+    await click("Done");
+    await click(/^Confirm/);
+    await until(() => text().includes("4 of 9"), "the rest");
+    const next = document.querySelector(".player-next")!;
+    expect(next.textContent).toMatch(/^Next · Goblet squat/);
+    expect(next.nextElementSibling?.className).toBe("player-howto");
+    expect(next.nextElementSibling?.textContent).toBe(summaryOf("gobletSquat"));
+    expect(howtoLines()).toEqual([summaryOf("gobletSquat")]);
+  });
+
+  it("a move with no summary draws nothing — no empty line — and neither does a rest before it, nor a move the slice lacks", async () => {
+    const b = build();
+    const blank = (id: string, summary: string) => ({ ...b.exercises[id]!, text: { ...b.exercises[id]!.text, summary } });
+    const { reclinedButterfly: _gone, ...kept } = b.exercises;
+    await storedStart(build({ exercises: { ...kept, lowLunge: blank("lowLunge", ""), gobletSquat: blank("gobletSquat", "  ") } }));
+    mount();
+    await until(() => text().includes("1 of 9"), "the first step");
+    expect(document.querySelector(".player-howto")).toBeNull();
+    expect(underName()!.className).toBe("player-meta");
+    await click("Skip");
+    await click("Skip");
+    await until(() => text().includes("3 of 9"), "the first set");
+    expect(document.querySelector(".player-howto")).toBeNull();
+    await click("Done");
+    await click(/^Confirm/);
+    await until(() => text().includes("4 of 9"), "the rest");
+    expect(document.querySelector(".player-next")!.textContent).toMatch(/^Next · Goblet squat/);
+    expect(document.querySelector(".player-howto")).toBeNull();
+    // A move that has one says it.
+    for (let i = 0; i < 10 && !text().includes("8 of 9"); i++) await press("ArrowRight");
+    expect(howtoLines()).toEqual([summaryOf("wallSit")]);
+    // The new move's how-to opened over it: closed, and on to the stretch, missing from the slice — named by its id,
+    // no line under it.
+    await press("Escape");
+    await press("ArrowRight");
+    await until(() => text().includes("9 of 9"), "the stretch");
+    expect(document.querySelector("h1.player-name")!.textContent).toBe("reclinedButterfly");
+    expect(document.querySelector(".player-howto")).toBeNull();
+  });
+
+  it("the set done, its log card is the step: the summary steps aside while the card is open, and is back when it closes", async () => {
+    await storedStart();
+    mount();
+    await toFirstSet();
+    expect(howtoLines()).toEqual([summaryOf("gobletSquat")]);
+    await click("Done");
+    expect(document.querySelector(".player-log")).not.toBeNull();
+    expect(document.querySelector(".player-howto")).toBeNull();
+    await press("Escape");
+    expect(document.querySelector(".player-log")).toBeNull();
+    expect(underName()!.textContent).toBe(summaryOf("gobletSquat"));
+  });
+
+  it("quiet and short — the soft ink a step down, three lines at most — and on a short screen the ring and the stage's margins make its room", () => {
+    const sheet = css();
+    const rule = sheet.match(/\n\.player-howto \{([^}]*)\}/)?.[1] ?? "";
+    expect(rule).toContain("color: var(--ink-soft)");
+    expect(rule).toContain("font-size: var(--text-sm)");
+    expect(rule).toContain("-webkit-line-clamp: 3");
+    expect(rule).toContain("overflow: hidden");
+    // After the ring's and the summary's own rules, or theirs would win.
+    const short = sheet.indexOf("@media (max-height: 740px)");
+    expect(short).toBeGreaterThan(sheet.indexOf("\n.player-ring {"));
+    expect(short).toBeGreaterThan(sheet.indexOf("\n.player-howto {"));
+    const block = sheet.slice(short, sheet.indexOf("\n}", short));
+    expect(block).toMatch(/\.player-ring \{\s*width: min\(180px, 62vw\);/);
+    expect(block).toMatch(/\.player-main \{\s*gap: var\(--space-3\);\s*padding-block: var\(--space-4\);/);
+    expect(block).toMatch(/\.player-howto \{\s*-webkit-line-clamp: 2;\s*line-clamp: 2;/);
+  });
+
+  it("a tap on the summary is the stage's: it pauses the hold, and the next one resumes it", async () => {
+    await storedStart();
+    mount({ cues: recordingCues(() => true).cues });
+    await until(() => text().includes("1 of 9"), "the first step");
+    await at(T0 + 13 * S);
+    await act(async () => document.querySelector<HTMLElement>(".player-howto")!.click());
+    expect(text()).toContain("Paused");
+    expect(document.querySelector(".player")!.classList.contains("is-paused")).toBe(true);
+    await act(async () => document.querySelector<HTMLElement>(".player-howto")!.click());
+    expect(text()).not.toContain("Paused");
+    // Nothing opened: the how-to stays the ⓘ's.
+    expect(document.querySelector('[role="dialog"]')).toBeNull();
   });
 });
