@@ -126,6 +126,7 @@ import { addDays, appAuthoredRow, dayLabel, docOriginRow, humanizeWorkoutTitle, 
 import { EXERCISES } from "@rg/exercise-library";
 import { deriveDoc, startEditing, toProposable, type DocDerived, type DocIssue } from "@rg/workout";
 import type { Db } from "./db.js";
+import { TAKE_WATCH_COPY } from "./watch-copy-marker.js";
 import { CALENDAR_OPS_PER_REQUEST } from "./calendar-sync.js";
 import { applyOps, applyStructuralChunk, NOT_ACTIONABLE, STRUCTURAL_MIN_BUDGET, whyNotActionable, type StructuralProgress } from "./coach-apply.js";
 import { coachDrainQueued } from "./coros-write-cloud.js";
@@ -427,6 +428,10 @@ export const PLAN_BATCH_FIXED = 1 + 1 + 1 + 1 + 1 + 2 + 1 + 1;
 export const SKIP_COST = 2;
 /** A length: the read, and the write with its document's revision — before the rows its day's collision pass moves. */
 export const ADJUST_COST = 3;
+/** …and on a session the athlete had chosen the watch's version of (watch-copy-marker.ts; review-S3 A1), the app's claim
+ * again (2), its stage rows read (1), and its rewrite on what the watch holds — the stamp read, the open intent, the older
+ * rewrite superseded, the job (4). Declared only for such a session (the plan read says which). */
+export const ADJUST_RECLAIM_COST = 2 + 1 + 4;
 /**
  * A move: the read, and `applyMove` at its most — the row, its override, its intent (two), its write and its audit (6),
  * and a programme session's own way off its old day: the intent resolved, its sent build found (two), the copy taken off
@@ -487,12 +492,12 @@ export function calendarOpsFitting(left: number): number {
 }
 
 /** What a change costs, by the sessions the day it lands on already holds (`dayRows`, this request's own included). */
-export function planOpCostOf(op: Pick<PlanAdjustOp, "op">, dayRows: number): number {
+export function planOpCostOf(op: Pick<PlanAdjustOp, "op">, dayRows: number, reclaims = false): number {
   switch (op.op.kind) {
     case "skip":
       return SKIP_COST;
     case "adjust":
-      return ADJUST_COST + dayRows;
+      return ADJUST_COST + dayRows + (reclaims ? ADJUST_RECLAIM_COST : 0);
     case "move":
       return MOVE_COST + dayRows + 1;
     // The new shape §5: an ease (a swap is one) rewrites its session — before the rows its day's collision pass moves.
@@ -511,8 +516,10 @@ export function opCostOf(
   op: (Pick<DocWorkoutOp, "target"> & { doc?: WorkoutDoc }) | Pick<PlanAdjustOp, "op">,
   dayRows: number,
   edit?: ApproveInput["edit"],
+  /** A change's session carries the "keep the watch's version" mark: a length re-claims it (`ADJUST_RECLAIM_COST`). */
+  reclaims = false,
 ): number {
-  if ("op" in op) return planOpCostOf(op, dayRows);
+  if ("op" in op) return planOpCostOf(op, dayRows, reclaims);
   if (op.target.kind === "revise") return REVISE_BASE + dayRows;
   const time = edit && edit.time !== undefined ? edit.time : op.target.time;
   // A designed run (§8 §3): the coach lane's row, its stages and its watch create.
@@ -557,6 +564,8 @@ interface RowState {
   subtype: string | null;
   minutes: number | null;
   resolution: string | null;
+  /** It carries the "keep the watch's version" mark (watch-copy-marker.ts): a length re-claims it. */
+  reclaims: boolean;
 }
 
 interface Plan {
@@ -610,7 +619,7 @@ async function readPlan(
         'category', ${pw.category}, 'sport', ${pw.sport}, 'origin', ${pw.origin}, 'content', ${pw.contentState},
         'completion', ${pw.completionState}, 'rev', ${pw.workoutDocRev}, 'archived', ${pw.archivedAt},
         'seconds', ${pw.fallbackEstimatedDurationSeconds}, 'sourceSeconds', ${pw.sourceEstimatedDurationSeconds}, 'subtype', ${pw.qualitySubtype},
-        'resolution', ${pw.resolutionDate},
+        'resolution', ${pw.resolutionDate}, 'marked', ${pw.sourceContentFingerprint} like ${`${TAKE_WATCH_COPY}%`},
         'pinned', exists(select 1 from ${scheduleOverrides} so where so.workout_id = ${pw.id} and so.kind = 'time_change'),
         'summary', case when json_valid(${pw.workoutDoc}) then json_extract(${pw.workoutDoc}, '$.intent.summary') end))
         from ${pw} where ${pw.userId} = ${userId} and ${pw.id} in (${values([...keyOf.values(), ...revised])})) as rows,
@@ -646,6 +655,7 @@ async function readPlan(
       subtype: typeof x.subtype === "string" ? x.subtype : null,
       minutes: typeof x.sourceSeconds === "number" ? Math.round(x.sourceSeconds / 60) : typeof x.seconds === "number" ? Math.round(x.seconds / 60) : null,
       resolution: typeof x.resolution === "string" ? x.resolution : null,
+      reclaims: x.marked === 1 || x.marked === true,
     });
   }
   // Each revision id names one op's revision; its ref was checked in the read (the op's own).
@@ -1039,7 +1049,7 @@ export async function approveDesignOps(
     }
     // The day whose collision pass the change may move sessions on: a move's new one, a length's or an ease's own.
     const day = c.op.kind === "move" ? c.op.toDate : c.op.kind === "adjust" || c.op.kind === "ease" ? row?.dto.date : undefined;
-    const cost = (batch.length === 0 ? PLAN_BATCH_FIXED - (replayCounted ? 1 : 0) : 0) + opCostOf(c, rowsOn(day));
+    const cost = (batch.length === 0 ? PLAN_BATCH_FIXED - (replayCounted ? 1 : 0) : 0) + opCostOf(c, rowsOn(day), undefined, row?.reclaims);
     if (!first && cost > left) {
       remaining.push(...changes.slice(i).map((x) => x.id));
       full = true;

@@ -85,7 +85,7 @@ import { separateDayCollisions } from "./day-placement.js";
 import { freshThrough } from "./design-tools/record-answer.js";
 import { buildSessionOutcome, NotTodayError, SessionLockedError, type BuildOverrides } from "./session-build.js";
 import { recordIntent } from "./sync-intents.js";
-import { unmarkedFingerprint, watchCopyBase } from "./watch-copy-marker.js";
+import { markedFingerprint, takesWatchCopy, unmarkedFingerprint, watchCopyBase } from "./watch-copy-marker.js";
 import { revisionInsert } from "./workout-doc-store.js";
 
 /** The three answers, in the card's order. */
@@ -214,7 +214,9 @@ interface RunEase {
   at: string;
   session: CoachSession;
   to: { meters: number } | { minutes: number };
-  before: { columns: RunColumns; doc: string | null; stages: StageRow[]; claimed: boolean };
+  /** `fingerprint`: the row's own then — a "keep the watch's version" mark among them (watch-copy-marker.ts), which an
+   *  Undo the watch never saw puts back (review-S3 U1). Absent on a record written before it. */
+  before: { columns: RunColumns; doc: string | null; stages: StageRow[]; claimed: boolean; fingerprint?: string };
 }
 
 type Ease = EngineEase | RunEase;
@@ -730,7 +732,7 @@ async function easeRun(db: Db, userId: string, s: Subject, answer: Answer, recor
     const onWatch = runOnWatch(run.row);
     const plan = easedRun(run.row, run.stages, onWatch);
     if (!plan) return { record: { change: { kind: "ask" }, ease: record?.ease ?? null }, coachDrain: false };
-    ease = { kind: "run", state: "easing", at: ctx.now, session: plan.session, to: plan.to, before: { columns: pick(run.row), doc: run.row.workoutDoc, stages: run.stages, claimed: run.claimed } };
+    ease = { kind: "run", state: "easing", at: ctx.now, session: plan.session, to: plan.to, before: { columns: pick(run.row), doc: run.row.workoutDoc, stages: run.stages, claimed: run.claimed, fingerprint: run.row.sourceContentFingerprint } };
     await writeRecord(db, userId, id, { change: record?.change ?? null, ease }, ctx);
   }
   if (!holdsRun(run.row, ease.session)) await applyRunEase(db, userId, run.row, ease.session, ctx);
@@ -783,7 +785,13 @@ async function restoreRun(db: Db, userId: string, s: Subject, ease: RunEase, ctx
       .set({
         ...columns,
         // Reached: a new claim of the app's below — lifting a "keep the watch's version" mark (watch-copy-marker.ts).
-        ...(reached ? { sourceContentFingerprint: unmarkedFingerprint(pw.sourceContentFingerprint) } : {}),
+        // Not reached, from a row the athlete had chosen the watch's version of: the ease lifted the mark, and this puts
+        // it back — on what the watch holds — so the next read still takes the watch's copy (review-S3 U1).
+        ...(reached
+          ? { sourceContentFingerprint: unmarkedFingerprint(pw.sourceContentFingerprint) }
+          : b.fingerprint !== undefined && takesWatchCopy(b.fingerprint)
+            ? { sourceContentFingerprint: markedFingerprint(pw.sourceContentFingerprint) }
+            : {}),
         workoutDoc: b.doc,
         ...(b.doc !== null ? { workoutDocRev: sql`case when ${pw.workoutDoc} is ${b.doc} then ${pw.workoutDocRev} else coalesce(${pw.workoutDocRev}, 0) + 1 end` } : {}),
         updatedAt: ctx.now,

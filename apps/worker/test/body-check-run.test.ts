@@ -215,6 +215,8 @@ describe("putting the run back", () => {
     const row = await rowOf(db, id);
     expect(facts(row)).toEqual(before);
     expect(await stagesOf(id)).toEqual(stagesBefore);
+    // Its fingerprint as it was: no "keep the watch's version" mark it never had (review-S3 U1's put-back is only for one).
+    expect(row.sourceContentFingerprint).toBe("0123456789abcdef");
     expect(row.workoutDocRev).toBe(3);
     // The plan's document is the next revision, the athlete's own (they took the ease back).
     const revisions = await db.select().from(workoutDocRevisions).where(eq(workoutDocRevisions.workoutId, id)).orderBy(asc(workoutDocRevisions.rev));

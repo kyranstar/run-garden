@@ -8,7 +8,7 @@
  * did), then sent again or kept.
  */
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { and, eq } from "drizzle-orm";
+import { and, eq, isNull } from "drizzle-orm";
 import { createHash } from "node:crypto";
 import { schema } from "@rg/database";
 import { addDays, coachOpSchema, newId, nowInstant, todayInZone, type CoachSession, type UserPreferences } from "@rg/domain";
@@ -24,6 +24,7 @@ import { executeCloudJobs } from "../src/services/coros-write-cloud.js";
 import { importPlanSnapshot } from "../src/services/import-plan.js";
 import { computeSyncStatus } from "../src/services/sync-status.js";
 import { convergeDivergedContent } from "../src/services/content-converge.js";
+import { answerBodyCheck, undoBodyCheck } from "../src/services/body-check.js";
 import { recordIntent } from "../src/services/sync-intents.js";
 import { isWrite, makeTestDb, makeTestUser, mountRoutes } from "./helpers.js";
 
@@ -532,6 +533,80 @@ describe("POST /api/plan/workouts/:id/watch-version/keep", () => {
     const d = await detail(a, a.workoutId);
     expect(d.workout.corosSyncView).toBe("content_stale");
     expect(d.watchVersion).toEqual({ send: true });
+  });
+
+  it("U1: Keep, a body check's ease, then Undo before its rewrite runs — the mark comes back, and the next read still takes the watch's copy", async () => {
+    const a = await easedAndFailed();
+    const [before] = await a.db.select().from(schema.plannedWorkouts).where(eq(schema.plannedWorkouts.id, a.workoutId));
+    expect((await request(a, `/api/plan/workouts/${a.workoutId}/watch-version/keep`, "POST")).status).toBe(200);
+    // The read-now after Keep never landed (COROS away): today's check eases the run, then the athlete undoes it.
+    const ctx = { today: before!.effectiveDate, now: nowInstant(), prefs: a.prefs };
+    await answerBodyCheck(a.db, a.userId, a.workoutId, { feel: "heavy" }, ctx);
+    const [eased] = await a.db.select().from(schema.plannedWorkouts).where(eq(schema.plannedWorkouts.id, a.workoutId));
+    expect(eased!.sourceContentFingerprint, "the ease lifted the mark").toBe(before!.sourceContentFingerprint);
+    expect((await rewrites(a, a.workoutId)).some((j) => j.status === "queued")).toBe(true);
+
+    await undoBodyCheck(a.db, a.userId, a.workoutId, ctx);
+    const [back] = await a.db.select().from(schema.plannedWorkouts).where(eq(schema.plannedWorkouts.id, a.workoutId));
+    expect(back!.title).toBe(EASED.title);
+    expect(back!.sourceContentFingerprint, "the mark is back, on what the watch holds").toBe(`take-watch-copy:${before!.sourceContentFingerprint}`);
+    const open = await a.db
+      .select()
+      .from(schema.syncIntents)
+      .where(and(eq(schema.syncIntents.targetId, a.workoutId), eq(schema.syncIntents.kind, "content"), isNull(schema.syncIntents.resolvedAt)));
+    expect(open).toEqual([]);
+    expect((await detail(a, a.workoutId)).workout.corosSyncView).toBe("taking_watch_copy");
+
+    await readAndImport(a);
+    const [taken] = await a.db.select().from(schema.plannedWorkouts).where(eq(schema.plannedWorkouts.id, a.workoutId));
+    expect(taken!.title, "the watch's session").toBe("Threshold 5x5");
+    expect((await detail(a, a.workoutId)).workout.corosSyncView).toBe("synced");
+  });
+
+  it("A1: a coach re-time approved after Keep stands — the mark lifted, the app's claim again, its rewrite on what the watch holds; Send if it fails", async () => {
+    const a = await easedAndFailed();
+    const [before] = await a.db.select().from(schema.plannedWorkouts).where(eq(schema.plannedWorkouts.id, a.workoutId));
+    expect((await request(a, `/api/plan/workouts/${a.workoutId}/watch-version/keep`, "POST")).status).toBe(200);
+    const out = await applyOps(a.db, a.userId, a.prefs, "p-adjust", [coachOpSchema.parse({ kind: "adjust", workoutId: a.workoutId, durationMinutes: 25 })]);
+    expect(out.missed).toEqual([]);
+    const [row] = await a.db.select().from(schema.plannedWorkouts).where(eq(schema.plannedWorkouts.id, a.workoutId));
+    expect(row!.sourceContentFingerprint, "the mark lifted").toBe(before!.sourceContentFingerprint);
+    expect(row!.calendarBlockDurationSeconds).toBe(1500);
+    const open = await a.db
+      .select()
+      .from(schema.syncIntents)
+      .where(and(eq(schema.syncIntents.targetId, a.workoutId), eq(schema.syncIntents.kind, "content"), isNull(schema.syncIntents.resolvedAt)));
+    expect(open.map((i) => i.source)).toEqual(["coach_adjust"]);
+    const queued = (await rewrites(a, a.workoutId)).find((j) => j.status === "queued");
+    expect(queued, "its rewrite, on what the watch holds").toBeDefined();
+    expect((queued!.payload as { importedFingerprint?: string }).importedFingerprint).toBe(before!.sourceContentFingerprint);
+    expect((queued!.payload as { session: { durationMinutes: number } }).session.durationMinutes).toBe(25);
+
+    // The read: the newer change stands.
+    await readAndImport(a);
+    const [after] = await a.db.select().from(schema.plannedWorkouts).where(eq(schema.plannedWorkouts.id, a.workoutId));
+    expect(after!.title).toBe(EASED.title);
+    expect(after!.calendarBlockDurationSeconds).toBe(1500);
+    // Its rewrite failed: Send is offered.
+    await a.db.update(schema.corosWriteJobs).set({ status: "failed" }).where(eq(schema.corosWriteJobs.id, queued!.id));
+    const d = await detail(a, a.workoutId);
+    expect(d.workout.corosSyncView).toBe("content_stale");
+    expect(d.watchVersion).toEqual({ send: true });
+  });
+
+  it("a re-time of a session that never chose the watch's version is what it always was: no claim, no rewrite", async () => {
+    const a = await account();
+    await readAndImport(a);
+    const [row] = await a.db
+      .select()
+      .from(schema.plannedWorkouts)
+      .where(and(eq(schema.plannedWorkouts.userId, a.userId), eq(schema.plannedWorkouts.title, "Threshold 5x5")));
+    const out = await applyOps(a.db, a.userId, a.prefs, "p-adjust-plain", [coachOpSchema.parse({ kind: "adjust", workoutId: row!.id, durationMinutes: 25 })]);
+    expect(out.missed).toEqual([]);
+    expect(await a.db.select().from(schema.syncIntents).where(eq(schema.syncIntents.targetId, row!.id))).toEqual([]);
+    expect(await rewrites(a, row!.id)).toEqual([]);
+    const [after] = await a.db.select().from(schema.plannedWorkouts).where(eq(schema.plannedWorkouts.id, row!.id));
+    expect(after!.sourceContentFingerprint).toBe(row!.sourceContentFingerprint);
   });
 
   it("a rewrite still only queued is stopped: nothing more reaches the watch for it", async () => {
