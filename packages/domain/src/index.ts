@@ -38,3 +38,4 @@ export * from "./workout-doc.js";
 export * from "./profile.js";
 export * from "./objective-board.js";
 export * from "./growth.js";
+export * from "./training-lines.js";
