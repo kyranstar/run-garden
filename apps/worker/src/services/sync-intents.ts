@@ -1,4 +1,4 @@
-import { and, eq, isNull, ne } from "drizzle-orm";
+import { and, eq, inArray, isNull, or, sql, type SQL } from "drizzle-orm";
 import { plannedWorkouts, syncIntents } from "@rg/database";
 import { newId, nowInstant } from "@rg/domain";
 import type { Db } from "./db.js";
@@ -97,48 +97,88 @@ export async function openMoveIntents(
 }
 
 /**
- * Workout ids whose CONTENT Run Garden has rewritten since COROS was last
- * given them — the ids of open, un-superseded `content` intents on workouts
- * that are still in the plan.
+ * Why a content claim was closed with NOTHING WRITTEN TO THE WATCH — kept on the intent itself, in its payload
+ * (`$.closedBecause`), because a close of this kind is not the close a verified rewrite makes:
  *
- * This is the whole signal behind `deriveWorkoutSync`'s `content_stale` and
- * the account line's `contentStaleCount`. A content intent stays open until
- * something rewrites COROS — which since 2026-08-17 something DOES: the
- * `coach_update_workout` kind, enqueued by `coach-apply.ts`'s
- * `enqueueContentConvergence` and resolved by the write consumer when the wire
- * confirms the new content. So this is no longer a permanent fact by
- * construction; what is left in it are the divergences a rewrite cannot reach —
- * a session COROS never held, or one whose new content cannot cross the wire —
- * which is still a fact to say out loud rather than badge as an "issue" with a
- * Retry button that cannot help.
+ *  · `past`, `completed`, `missed`, `skipped`, `archived` — the session's story is over, so its watch copy is a record
+ *    and the divergence can never be acted on (`closeMootContentClaims`, the hourly's housekeeping);
+ *  · `kept_watch_version` — the athlete chose to leave the watch as it is (`keepWatchVersion`).
  *
- * Archived workouts are excluded on the same principle `issueCount` already
- * uses: a divergence behind a session that has been removed from the plan is
- * not divergence the athlete can see or care about.
+ * Either way the app's copy is still the app's: the watch never caught up with it. So a claim closed like this still
+ * HOLDS the content for everything that asks "whose content is this" (`contentClaimHeld`) — the import's rule 7 and
+ * its sport-flip check, the Plan's choice of which stages to read — and stops counting only as a divergence: the
+ * account line, the row's "Older on watch", the operator's convergence evidence and the imported-row ownership proof
+ * read OPEN intents alone, as before.
  */
-export async function openContentIntentTargets(
+export type ContentClaimClosedBecause = "past" | "completed" | "missed" | "skipped" | "archived" | "kept_watch_version";
+
+/** Where `ContentClaimClosedBecause` lives on the intent. */
+export const CLOSED_BECAUSE_PATH = "$.closedBecause";
+
+/**
+ * A content intent that still CLAIMS its session's content for the app: open, or closed with nothing written
+ * (`closedBecause`). Not superseded. `json_valid` first and in a CASE, so a payload that is not JSON — none is written
+ * so, but the import reads this — can never throw: it is simply not a closed claim.
+ */
+export function contentClaimHeld(): SQL {
+  return and(
+    isNull(syncIntents.supersededBy),
+    or(
+      isNull(syncIntents.resolvedAt),
+      sql`(case when json_valid(${syncIntents.payload}) then json_extract(${syncIntents.payload}, ${CLOSED_BECAUSE_PATH}) end) is not null`,
+    ),
+  )!;
+}
+
+/**
+ * Close these open content intents with NOTHING WRITTEN, saying why (`ContentClaimClosedBecause`): one statement. Only
+ * an intent still open and not superseded is touched, so a close that lost a race to a verified rewrite (which closes
+ * it as a convergence) changes nothing. The reason merges into the payload; what was there stays.
+ */
+export async function closeContentClaims(
   db: Db,
   userId: string,
-  opts: {
-    /**
-     * Drop sessions the athlete has already DONE.
-     *
-     * A completed workout's watch copy is a record, not a plan: the divergence
-     * is real and permanently unactionable, because there is nothing left to
-     * run and nothing worth rewriting. Counting it turned the account line into
-     * "Your watch keeps an older version of 1 session — Run Garden has the one
-     * to run" about a run finished hours earlier (2026-08-18).
-     *
-     * Off by default, and deliberately: `routes/plan.ts` uses this set to decide
-     * whether a row's stored stages are the app's rather than the wire's, which
-     * stays true after the session is done — dropping completed rows there would
-     * render the detail sheet from the wrong copy.
-     */
-    excludeCompleted?: boolean;
-  } = {},
-): Promise<Set<string>> {
+  intentIds: readonly string[],
+  because: ContentClaimClosedBecause,
+  now: string,
+): Promise<void> {
+  if (intentIds.length === 0) return;
+  await db
+    .update(syncIntents)
+    .set({
+      resolvedAt: now,
+      payload: sql`json_set(case when json_valid(${syncIntents.payload}) then ${syncIntents.payload} else '{}' end, ${CLOSED_BECAUSE_PATH}, ${because})`,
+    })
+    .where(
+      and(
+        eq(syncIntents.userId, userId),
+        eq(syncIntents.kind, "content"),
+        inArray(syncIntents.id, [...intentIds]),
+        isNull(syncIntents.resolvedAt),
+        isNull(syncIntents.supersededBy),
+      ),
+    );
+}
+
+/**
+ * THE APP'S CONTENT CLAIMS on workouts still in the plan, in one read — two sets, because they answer two questions:
+ *
+ *  · `held` — whose content is this? Every content intent that still claims it (`contentClaimHeld`): open, or closed
+ *    with nothing written. `routes/plan.ts` reads its stored stages as the app's rather than the wire's for these, and
+ *    that stays true after the session is done — a past session keeps being rendered from the copy it was.
+ *  · `open` — is there a divergence the athlete can still do something about? Open intents only: the whole signal
+ *    behind `deriveWorkoutSync`'s `content_stale` (which the route narrows further to sessions still to run).
+ *
+ * A content intent stays open until something rewrites COROS — `coach_update_workout`, enqueued by `coach-apply.ts`'s
+ * `enqueueContentConvergence` and resolved by the write consumer when the wire confirms the new content — or until
+ * the divergence stops mattering (`closeContentClaims`).
+ *
+ * Archived workouts are excluded on the same principle `issueCount` already uses: a divergence behind a session that
+ * has been removed from the plan is not divergence the athlete can see or care about.
+ */
+export async function contentClaims(db: Db, userId: string): Promise<{ held: Set<string>; open: Set<string> }> {
   const rows = await db
-    .select({ targetId: syncIntents.targetId })
+    .select({ targetId: syncIntents.targetId, resolvedAt: syncIntents.resolvedAt })
     .from(syncIntents)
     .innerJoin(plannedWorkouts, eq(syncIntents.targetId, plannedWorkouts.id))
     .where(
@@ -146,13 +186,17 @@ export async function openContentIntentTargets(
         eq(syncIntents.userId, userId),
         eq(syncIntents.targetKind, "workout"),
         eq(syncIntents.kind, "content"),
-        isNull(syncIntents.resolvedAt),
-        isNull(syncIntents.supersededBy),
+        contentClaimHeld(),
         isNull(plannedWorkouts.archivedAt),
-        ...(opts.excludeCompleted ? [ne(plannedWorkouts.completionState, "completed")] : []),
       ),
     );
-  return new Set(rows.map((r) => r.targetId));
+  const held = new Set<string>();
+  const open = new Set<string>();
+  for (const r of rows) {
+    held.add(r.targetId);
+    if (r.resolvedAt === null) open.add(r.targetId);
+  }
+  return { held, open };
 }
 
 /**

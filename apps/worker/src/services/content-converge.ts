@@ -275,6 +275,12 @@ export interface ConvergeOptions {
   today?: string;
   /** The run wire in force (§8 phase 2): a designed run is made, and asked to go, by it. v1 when absent. */
   runWire?: RunWire;
+  /**
+   * Rewrites only: a row whose plan is an UNPUSH (the app's copy cannot cross the wire) is reported skipped and nothing
+   * is queued for it. The athlete's "Send this version to the watch" (watch-version.ts) — a send that took the session
+   * off the watch would be the opposite of what was asked.
+   */
+  rewritesOnly?: boolean;
 }
 
 /** A coach job that has not finished: a rewrite for its row is already on its way, or another write is in flight. */
@@ -590,6 +596,10 @@ export async function convergeDivergedContent(
       continue;
     }
     const action = watchPushable(session, designed ? anchorOf : undefined, opts.runWire) ? ("rewrite" as const) : ("unpush" as const);
+    if (action === "unpush" && opts.rewritesOnly) {
+      reports.push({ ...base, action: "skipped", address: located, reason: "rewrites only: the app's own copy cannot cross the wire" });
+      continue;
+    }
     const report: ContentConvergeRowReport = {
       ...base,
       action,

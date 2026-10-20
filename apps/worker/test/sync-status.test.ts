@@ -154,7 +154,8 @@ describe("computeSyncStatus", () => {
     const db = makeTestDb();
     const { userId, prefs } = await makeTestUser(db, { corosWritesEnabled: true });
     await connectTestCoros(db, userId);
-    const workoutId = await insertWorkout(db, userId);
+    // Dated ahead: a session whose day has gone is not counted either (watch-version-count.test.ts).
+    const workoutId = await insertWorkout(db, userId, { effectiveDate: addDays(todayInZone(prefs.timezone), 2) });
     await recordIntent(db, {
       userId,
       targetKind: "workout",

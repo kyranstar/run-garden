@@ -68,9 +68,11 @@ import { applyMove } from "../services/jobs.js";
 import { removeFromPlan, unskipWorkout } from "../services/plan-mutations.js";
 import { gardenSees, recentGardenEvents, REQUEST_GARDEN_STEP, resimulateFrom } from "../services/garden-sync.js";
 import {
-  openContentIntentTargets,
+  contentClaims,
   openMoveIntents,
 } from "../services/sync-intents.js";
+import { keepWatchVersion, stillToRun } from "../services/watch-version.js";
+import { sendWatchVersion, watchVersionChoice } from "../services/watch-version-send.js";
 import { findRaceConflict, resolveRaceConflict } from "../services/race-conflict.js";
 import { buildRaceHub, withPhaseLine } from "../services/race-hub.js";
 import { cloudPresence, deriveWorkoutSync, type CloudPresence } from "../services/sync-status.js";
@@ -321,9 +323,9 @@ async function loadWorkoutViews(
   // accepted and never read — a full D1 round trip, on every Today, week and
   // plan render, whose result was discarded. The content intents below are
   // the ones the derivation actually consults.
-  const [presence, contentStale, jobChunks] = await Promise.all([
+  const [presence, claims, jobChunks] = await Promise.all([
     precomputedPresence ?? cloudPresence(db, userId),
-    openContentIntentTargets(db, userId),
+    contentClaims(db, userId),
     Promise.all(
       chunkIds(ids).map((chunk) =>
         db
@@ -348,6 +350,9 @@ async function loadWorkoutViews(
   // Second wave, and only for the rows whose coverage answer lives in stage
   // rows — a coach-authored run. Typically a handful per week; an imported
   // COROS plan contributes none, so the common page pays nothing at all.
+  // Which copy of the stages is the app's: every claim it still HOLDS — open, or closed with nothing written (a past
+  // session's, or one the athlete kept the watch's version of). A session done keeps being read from the copy it was.
+  const contentStale = claims.held;
   const stageIds = workouts.filter((w) => needsRunStages(w, contentStale.has(w.id))).map((w) => w.id);
   const stageChunks =
     stageIds.length > 0
@@ -417,7 +422,9 @@ async function loadWorkoutViews(
     const corosSyncView = deriveWorkoutSync({
       effectiveDate: w.effectiveDate,
       lastVerifiedCorosDate: w.lastVerifiedCorosDate,
-      hasOpenContentIntent: contentRewritten,
+      // "Older on watch" only while the athlete can still do something about it: an OPEN claim on a session still to
+      // run (the account line's rule, `watchEarlierVersions`). A past or finished session's watch copy is a record.
+      hasOpenContentIntent: claims.open.has(w.id) && stillToRun(w, today),
       hasPendingJob: pendingIds.has(w.id),
       hasFailedJob: failedIds.has(w.id),
       presence,
@@ -1285,12 +1292,13 @@ planRoutes.get("/workouts/:id", async (c) => {
   )[0];
   if (!w) return c.json({ error: "not_found" }, 404);
   const prefs = await loadPreferences(db, userId);
+  const presence = await cloudPresence(db, userId);
   const syncViews = await loadWorkoutViews(
     db,
     userId,
     [w],
     prefs,
-    undefined,
+    presence,
     todayInZone(prefs.timezone),
     runWireOf(c.env),
   );
@@ -1325,7 +1333,19 @@ planRoutes.get("/workouts/:id", async (c) => {
     .where(eq(corosWriteJobs.workoutId, w.id))
     .orderBy(desc(corosWriteJobs.requestedAt))
     .limit(3);
+  // The watch holds an earlier version: what the athlete can do about it — read only for such a row (a dry run of the
+  // convergence plan, `watchVersionChoice`), so every other sheet pays nothing.
+  const watchVersion =
+    syncViews.get(w.id)?.corosSyncView === "content_stale"
+      ? await watchVersionChoice(db, userId, w, {
+          prefs,
+          online: presence.online,
+          today: todayInZone(prefs.timezone),
+          runWire: runWireOf(c.env),
+        })
+      : undefined;
   return c.json({
+    ...(watchVersion ? { watchVersion } : {}),
     workout: workoutDto(
       w,
       syncViews.get(w.id),
@@ -1757,6 +1777,48 @@ planRoutes.post("/workouts/:id/remove", async (c) => {
 planRoutes.post("/workouts/:id/restore-calendar", async (c) => {
   await restoreCalendarEvent(c.get("db"), c.get("userId"), c.req.param("id"));
   await syncCalendar(c.get("db"), c.env, c.get("userId")).catch(() => undefined);
+  return c.json({ ok: true });
+});
+
+/**
+ * THE WATCH HOLDS AN EARLIER VERSION (the owner, 2026-10-19: "not actionable or removable"). `send`: the app's version
+ * goes to the watch — the content rewrite the convergence backfill queues, for this session alone and only when one
+ * can reach it (`sendWatchVersion`); 409 `{ error }` with the reason when not (`nothing_to_send`, `writes_off`,
+ * `not_connected`, `cant_rewrite`), nothing written. It queues the write and runs none: `coachDrain`, and the client
+ * drains it (`POST /api/coach/drain`). `keep`: the watch keeps its version and the app stops calling it a divergence —
+ * the session's open content claim closed as kept, its still-queued rewrite superseded, nothing written to the watch
+ * or the session (`keepWatchVersion`). Idempotent.
+ */
+planRoutes.post("/workouts/:id/watch-version/send", async (c) => {
+  const db = c.get("db");
+  const userId = c.get("userId");
+  const [w] = await db
+    .select()
+    .from(plannedWorkouts)
+    .where(and(eq(plannedWorkouts.id, c.req.param("id")), eq(plannedWorkouts.userId, userId)))
+    .limit(1);
+  if (!w) return c.json({ error: "not_found" }, 404);
+  const prefs = await loadPreferences(db, userId);
+  const sent = await sendWatchVersion(db, userId, w, {
+    prefs,
+    online: (await cloudPresence(db, userId)).online,
+    today: todayInZone(prefs.timezone),
+    runWire: runWireOf(c.env),
+  });
+  if (!sent.ok) return c.json({ error: sent.error }, 409);
+  return c.json({ ok: true, coachDrain: true });
+});
+
+planRoutes.post("/workouts/:id/watch-version/keep", async (c) => {
+  const db = c.get("db");
+  const userId = c.get("userId");
+  const [w] = await db
+    .select({ id: plannedWorkouts.id })
+    .from(plannedWorkouts)
+    .where(and(eq(plannedWorkouts.id, c.req.param("id")), eq(plannedWorkouts.userId, userId)))
+    .limit(1);
+  if (!w) return c.json({ error: "not_found" }, 404);
+  await keepWatchVersion(db, userId, w.id, nowInstant());
   return c.json({ ok: true });
 });
 

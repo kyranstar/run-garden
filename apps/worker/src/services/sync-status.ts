@@ -7,7 +7,8 @@ import {
   studioPlans,
 } from "@rg/database";
 import { todayInZone, type LocalDate, type UserPreferences, type WorkoutSyncView } from "@rg/domain";
-import { openContentIntentTargets, openMoveIntents } from "./sync-intents.js";
+import { openMoveIntents } from "./sync-intents.js";
+import { SETTLED_COMPLETION_STATES, watchEarlierVersions, type WatchEarlierVersion } from "./watch-version.js";
 import { studioPlanRetired } from "./studio-push.js";
 import type { Db } from "./db.js";
 
@@ -33,9 +34,6 @@ export async function cloudPresence(db: Db, userId: string): Promise<CloudPresen
   const online = row?.status === "connected";
   return { registered: online, online, writeCapable: online };
 }
-
-/** A session the athlete has settled: its watch copy is history, not a job. */
-const RESOLVED_COMPLETION_STATES = ["completed", "missed", "skipped"] as const;
 
 export interface OpenFailedCoachWrite {
   id: string;
@@ -64,8 +62,8 @@ export interface OpenFailedCoachWrite {
  * and 09-30; weeks later all four were past and missed, none archived, nothing
  * newer verified — and "4 changes couldn't sync" stood for ever. A past
  * session's watch copy can never be rewritten and Retry has nothing to do for
- * it, so it is not an issue; the same reasoning `openContentIntentTargets(…,
- * { excludeCompleted: true })` applies to a finished session's stale copy.
+ * it, so it is not an issue; the same reasoning `watchEarlierVersions` applies to a
+ * past or finished session's earlier watch copy (`stillToRun`).
  */
 export async function openFailedCoachWrites(
   db: Db,
@@ -85,7 +83,7 @@ export async function openFailedCoachWrites(
           eq(corosWriteJobs.status, "failed"),
           isNull(plannedWorkouts.archivedAt),
           gte(plannedWorkouts.effectiveDate, today),
-          notInArray(plannedWorkouts.completionState, [...RESOLVED_COMPLETION_STATES]),
+          notInArray(plannedWorkouts.completionState, [...SETTLED_COMPLETION_STATES]),
         ),
       ),
     db
@@ -118,14 +116,16 @@ export interface SyncStatus {
   issueCount: number;
   /**
    * Sessions whose content Run Garden has rewritten and COROS has not been given
-   * yet (open `content` intents). NOT folded into `issueCount`, still: an issue
-   * is something the Retry button acts on, and the rows left in this state are
-   * the ones no rewrite can reach — a session that was never on the watch, or one
-   * whose new content cannot cross the wire. A rewrite that CAN happen closes its
-   * intent on verify (`coach_update_workout`), so this count no longer includes
-   * divergences that are merely in flight; those are `pendingCount`.
+   * yet (open `content` intents) — only those still to run, with no write for
+   * them on its way (`watchEarlierVersions`): a past or finished session's watch
+   * copy is a record, and one being sent is `pendingCount`. NOT folded into
+   * `issueCount`: an issue is something the Retry button acts on, and what to do
+   * about these is each session's own (send the app's version, or keep the
+   * watch's), in its sheet.
    */
   contentStaleCount: number;
+  /** Those sessions, soonest first — the line lists them, each opening its sheet. */
+  contentStaleSessions: WatchEarlierVersion[];
   lastCorosReadAt: string | null;
   writesEnabled: boolean;
   registered: boolean;
@@ -140,12 +140,13 @@ export async function computeSyncStatus(
   // sequential await here is a full round trip. All seven reads below are
   // independent of one another (only failedStudio, in the second wave,
   // depends on a result), so they go out as one Promise.all wave.
+  const today = todayInZone(prefs.timezone);
   const [
     presence,
     pending,
     failedJobs,
     openIntents,
-    contentStaleTargets,
+    contentStaleSessions,
     failedCoachWrites,
     studioPlanRows,
     corosConnRows,
@@ -183,11 +184,11 @@ export async function computeSyncStatus(
         ),
       openMoveIntents(db, userId),
       // The one divergence this line CAN detect that isn't a job: an approved
-      // ease rewrote a session COROS still holds in its old form.
-      // Completed sessions excluded: their watch copy is history, and counting
-      // one made the status line hand the athlete a job about a run they had
-      // already finished.
-      openContentIntentTargets(db, userId, { excludeCompleted: true }),
+      // ease rewrote a session COROS still holds in its old form. Only sessions
+      // still to run: a finished one (2026-08-18, a run done hours earlier) or a
+      // past one (2026-10-19, three sessions weeks past and missed, for ever)
+      // has a watch copy that is history, not a job.
+      watchEarlierVersions(db, userId, today),
       // A terminally-failed coach watch-push is an issue the user can see and
       // act on (audit#2 #6) — it has no move intent, so count it directly.
       // A failed CONTENT REWRITE counts the same way and for the same reason:
@@ -197,7 +198,7 @@ export async function computeSyncStatus(
       // the one kind whose failure was silent. Only while the session can still
       // be written, and not once a later write superseded it — see
       // `openFailedCoachWrites`, which POST /api/sync/retry acts on too.
-      openFailedCoachWrites(db, userId, todayInZone(prefs.timezone)),
+      openFailedCoachWrites(db, userId, today),
       // Scoped to the NEWEST studio plan — the same predicate POST
       // /api/sync/retry acts on. Counting retired plans' failed rows (usually
       // failed deletes) inflates a badge the Retry button can never clear,
@@ -248,7 +249,6 @@ export async function computeSyncStatus(
   // A RETIRED plan keeps what is behind today on the watch as it is (`retireStudioPlan`): a failed row there with an
   // address is a copy left alone on purpose, which Retry keeps too — never an issue the athlete could clear. One read
   // more, only when the plan has a failed row.
-  const today = todayInZone(prefs.timezone);
   const keptBehind = (r: (typeof failedRows)[number]) =>
     Boolean(r.corosIdInPlan && r.corosProgramId && r.corosPlanId) && (r.corosHappenDay ?? r.happenDay) < today;
   const failedStudio =
@@ -270,7 +270,8 @@ export async function computeSyncStatus(
     state,
     pendingCount: pending.length,
     issueCount,
-    contentStaleCount: contentStaleTargets.size,
+    contentStaleCount: contentStaleSessions.length,
+    contentStaleSessions,
     lastCorosReadAt: corosConn?.lastSyncAt ?? null,
     writesEnabled: prefs.corosWritesEnabled,
     registered: presence.registered,
@@ -319,8 +320,9 @@ export async function computeSyncStatus(
 export function deriveWorkoutSync(v: {
   effectiveDate: string;
   lastVerifiedCorosDate: string;
-  /** An open `content` intent: an approved ease rewrote this session after
-   * COROS was last given it. Never resolves — COROS cannot confirm content. */
+  /** An open `content` intent on a session still to run (`stillToRun`): an
+   * approved ease rewrote this session after COROS was last given it, and the
+   * athlete can still do something about it. A verified rewrite closes it. */
   hasOpenContentIntent: boolean;
   hasPendingJob: boolean;
   hasFailedJob: boolean;
