@@ -3,7 +3,20 @@ import type { SavePostStatus, SavesStatusDto } from "@rg/saves";
 // The popup's view of the import, as plain data: pure, so it is tested without a browser. The headline is the
 // pipeline's health (the app's state); one post's trouble shows on that post's row, never in the headline.
 
-export type PopupAction = "check_now" | "process_anyway" | "retry";
+export type PopupAction = "check_now" | "process_anyway" | "retry" | "options";
+
+/** What the background reports while the app URL or token is not saved: the popup then points to Options. */
+export const NOT_CONFIGURED = "Set the app URL and token in Options";
+
+/** A link only to an https page; anything else (javascript:, data:, http:) is plain text. */
+export function safeHref(url: string): string | null {
+  return url.startsWith("https://") ? url : null;
+}
+
+/** A post key as the app's routes take it: 1 to 64 characters of the shortcode alphabet. */
+export function isPostKey(key: unknown): key is string {
+  return typeof key === "string" && /^[A-Za-z0-9_-]{1,64}$/.test(key);
+}
 
 export interface PopupPost {
   id: string;
@@ -23,6 +36,8 @@ export interface PopupCheck {
 
 export interface PopupModel {
   headline: string;
+  /** Why the status could not be read (the app error), else "". */
+  detail: string;
   lastCheck: string;
   nextCheck: string;
   /** "3 waiting" while calls to the app wait in the local queue, else "". */
@@ -107,11 +122,12 @@ export function popupModel(input: PopupInput): PopupModel {
     .slice(0, MAX_POSTS);
 
   const offered = new Set(posts.flatMap((p) => p.actions));
-  const actions: PopupAction[] = status ? ["check_now"] : ["retry"];
+  const actions: PopupAction[] = status ? ["check_now"] : [input.appError === NOT_CONFIGURED ? "options" : "retry"];
   for (const a of ["process_anyway", "retry"] as const) if (offered.has(a) && !actions.includes(a)) actions.push(a);
 
   return {
     headline: headlineOf(input),
+    detail: status ? "" : (input.appError ?? ""),
     lastCheck: ago(status?.lastCheckAt ?? null, now),
     nextCheck: until(input.nextCheckAt, now),
     queue: input.queueSize > 0 ? `${input.queueSize} waiting` : "",

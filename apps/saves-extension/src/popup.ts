@@ -1,12 +1,12 @@
 import type { CheckNowResponse, OverrideResponse, StatusResponse } from "./background.js";
-import { popupModel, type PopupAction, type PopupModel } from "./status.js";
+import { popupModel, safeHref, type PopupAction, type PopupModel } from "./status.js";
 
 // Renders popupModel with plain DOM (text is always set with textContent). The popup holds no token and calls no app
 // route itself: it asks the background, which calls the token routes.
 
 const root = document.getElementById("root") as HTMLElement;
 
-const LABELS: Record<PopupAction, string> = { check_now: "Check now", process_anyway: "Process anyway", retry: "Retry" };
+const LABELS: Record<PopupAction, string> = { check_now: "Check now", process_anyway: "Process anyway", retry: "Retry", options: "Options" };
 
 function el<K extends keyof HTMLElementTagNameMap>(tag: K, text?: string, className?: string): HTMLElementTagNameMap[K] {
   const node = document.createElement(tag);
@@ -62,6 +62,7 @@ function render(m: PopupModel): void {
   const frag = document.createDocumentFragment();
   const problem = m.headline !== "Up to date";
   frag.append(el("h1", m.headline, problem ? "problem" : undefined));
+  if (m.detail) frag.append(el("p", m.detail, "meta"));
   if (note) frag.append(el("p", note, "meta"));
   frag.append(el("p", [`Last check ${m.lastCheck}`, `Next ${m.nextCheck}`, m.queue].filter(Boolean).join(" · "), "meta"));
   if (m.totals) frag.append(el("p", m.totals, "meta"));
@@ -70,6 +71,7 @@ function render(m: PopupModel): void {
   const bar = el("div");
   for (const a of m.actions) {
     if (a === "check_now") bar.append(button(LABELS[a], (b) => void checkNow(b)));
+    else if (a === "options") bar.append(button(LABELS[a], () => void chrome.runtime.openOptionsPage()));
     else if (a === "retry" && m.posts.length === 0) bar.append(button(LABELS[a], () => void load()));
   }
   frag.append(bar);
@@ -93,8 +95,9 @@ function render(m: PopupModel): void {
       const li = el("li", undefined, "row");
       const line = el("div", undefined, "line");
       const link = el("a", p.creator);
-      if (p.url.startsWith("https://")) {
-        link.href = p.url;
+      const href = safeHref(p.url);
+      if (href) {
+        link.href = href;
         link.target = "_blank";
         link.rel = "noopener noreferrer";
       }

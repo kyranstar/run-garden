@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import type { PostRowDto, SavesStatusDto } from "@rg/saves";
-import { popupModel } from "../src/status.js";
+import { NOT_CONFIGURED, isPostKey, popupModel, safeHref } from "../src/status.js";
 
 const NOW = Date.parse("2026-10-23T12:00:00.000Z");
 const HOUR = 3_600_000;
@@ -129,5 +129,41 @@ describe("popupModel posts and actions", () => {
     expect(m.posts).toEqual([]);
     expect(m.actions).toEqual(["retry"]);
     expect(m.spend).toBe("");
+  });
+});
+
+describe("popupModel detail and settings", () => {
+  it("carries the app error as a detail line under App unreachable", () => {
+    const m = model({ status: null, appError: "App unreachable (502)" });
+    expect(m.headline).toBe("App unreachable");
+    expect(m.detail).toBe("App unreachable (502)");
+    expect(m.actions).toEqual(["retry"]);
+  });
+
+  it("a missing app URL or token shows its message and offers Options", () => {
+    const m = model({ status: null, appError: NOT_CONFIGURED });
+    expect(m.detail).toBe(NOT_CONFIGURED);
+    expect(m.actions).toEqual(["options"]);
+  });
+
+  it("has no detail when the status is read", () => {
+    expect(model({ appError: "x" }).detail).toBe("");
+  });
+});
+
+describe("popup render helpers", () => {
+  it("links only https urls", () => {
+    expect(safeHref("https://example.com/p/a")).toBe("https://example.com/p/a");
+    expect(safeHref("javascript:alert(1)")).toBeNull();
+    expect(safeHref("data:text/html,x")).toBeNull();
+    expect(safeHref("http://example.com")).toBeNull();
+  });
+
+  it("accepts only shortcode-shaped keys, at most 64", () => {
+    expect(isPostKey("Abc_-123")).toBe(true);
+    expect(isPostKey("")).toBe(false);
+    expect(isPostKey("a/b")).toBe(false);
+    expect(isPostKey("a".repeat(65))).toBe(false);
+    expect(isPostKey(5)).toBe(false);
   });
 });

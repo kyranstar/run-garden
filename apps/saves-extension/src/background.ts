@@ -4,6 +4,7 @@ import { chromeTabs, createPageReader } from "./page-reader.js";
 import { chromeStore, ExtQueue } from "./queue.js";
 import { loadSettings } from "./settings.js";
 import { SOURCE } from "./feed.js";
+import { isPostKey, NOT_CONFIGURED } from "./status.js";
 import type { SavesStatusDto } from "@rg/saves";
 
 // The service worker: a check every 6 hours (each delayed 0–30 min, so checks never land on the same minute), and one
@@ -82,7 +83,7 @@ async function popupStatus(): Promise<StatusResponse> {
   const nextCheckAt = (await chrome.alarms.get(JITTERED))?.scheduledTime ?? (await chrome.alarms.get(ALARM))?.scheduledTime ?? null;
   const queueSize = await new ExtQueue(chromeStore).size();
   const settings = await loadSettings(chromeStore);
-  if (!settings) return { status: null, appError: "Set the app URL and token in Options", queueSize, nextCheckAt };
+  if (!settings) return { status: null, appError: NOT_CONFIGURED, queueSize, nextCheckAt };
   try {
     const status = await createAppClient({ appUrl: settings.appUrl, token: settings.token, fetchImpl }).status();
     const last = (await chromeStore.get("lastCheck")) as CheckSummary | undefined;
@@ -114,7 +115,7 @@ chrome.runtime.onMessage.addListener((message: unknown, sender, sendResponse) =>
     popupStatus().then(sendResponse, (e: unknown) => sendResponse({ status: null, appError: messageOf(e, "App unreachable"), queueSize: 0, nextCheckAt: null }));
     return true;
   }
-  if (m?.type === "override" && typeof m.key === "string" && (m.action === "process" || m.action === "skip" || m.action === "reference")) {
+  if (m?.type === "override" && isPostKey(m.key) && (m.action === "process" || m.action === "skip" || m.action === "reference")) {
     override(m.key, m.action).then(sendResponse, (e: unknown) => sendResponse({ ok: false, message: messageOf(e, "The app did not answer") }));
     return true;
   }
