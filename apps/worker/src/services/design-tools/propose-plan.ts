@@ -259,7 +259,8 @@ interface PlanRow {
  *  - else its line goes on: an extend or a wind-down is its END's — the line's last phase — and a week's change (or a
  *    retirement) the phase now running or next;
  *  - or a next phase continues it, from the day after the line's last phase ends (today at the earliest), which joins
- *    the line while it starts within LINE_GAP_DAYS of that end.
+ *    the line while it starts within LINE_GAP_DAYS (8) of that end — a full week's rest between keeps the line; eight rest
+ *    days, and it is a line of its own (owner, 2026-10-23).
  * `phases`: the athlete's blocks of its discipline.
  */
 function endedRefusal(plan: PlanRow, kind: PlanStructureChange["kind"], phases: LineBlock[], today: string): ToolErr {

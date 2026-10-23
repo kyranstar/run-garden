@@ -16,7 +16,7 @@ import { MemoryRouter, useLocation } from "react-router-dom";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { api, ApiError, type CoachPlanDto, type PlanDetailResponse, type TrainingLineDto } from "@rg/api-client";
-import { linesOf } from "@rg/domain";
+import { lastPhaseOf, linesOf } from "@rg/domain";
 import { CoachOpenContext } from "../src/screens/studio/coach-ask.js";
 import { NUDGES_QUERY } from "../src/screens/studio/coach-conversation-model.js";
 import { LineSheet, linePhaseState, stopCount, stopLine } from "../src/screens/plan-sheet.js";
@@ -101,6 +101,8 @@ function mountSheet(
     details?: Record<string, PlanDetailResponse>;
     onRename?: (id: string, name: string) => void;
     open?: (args?: { request?: string }) => void;
+    /** The page's fresh read of the account's today and the lines (`LineSheet`'s `refresh`). */
+    refresh?: () => Promise<{ today: string | null; lines: readonly TrainingLineDto[] | undefined }>;
   } = {},
 ): { qc: QueryClient; rerender: (lines: TrainingLineDto[]) => void } {
   const qc = new QueryClient({ defaultOptions: { queries: { retry: false, staleTime: Infinity } } });
@@ -129,6 +131,7 @@ function mountSheet(
             focusPhaseId: opts.focusPhaseId ?? null,
             onClose: () => undefined,
             onRename: opts.onRename ?? (() => undefined),
+            ...(opts.refresh ? { refresh: opts.refresh } : {}),
           }),
         ),
       ),
@@ -354,6 +357,23 @@ describe("a line's sheet lists its phases", () => {
     expect(asked.mock.calls).toEqual([["r3", "2026-12-13"]]);
   });
 
+  it("the race and Change race are the phase the line's end is — as the server's `last` — never a later-starting one that ends first (B5)", async () => {
+    const asked = vi.spyOn(api, "coachPlanRace").mockResolvedValue({ ok: true, raceDate: "2026-12-13", demoted: 0 });
+    const build = phase("L", "Long build", "2026-10-05", "2026-12-06", { planRaceDate: "2026-12-06" });
+    const sharpen = phase("S", "Sharpening", "2026-10-12", "2026-11-01");
+    const line = mkLine([build, sharpen], { currentPhaseId: "S", goalRaceDate: "2026-12-06", endDate: "2026-12-06" });
+    // The one definition the server's read_plans `last`, its chips and the line's goal use.
+    expect(lastPhaseOf(line).id).toBe("L");
+    mountSheet(line);
+    expect(text(document.body)).toContain("Race · Sun 6 Dec");
+    act(() => button("Change").click());
+    const field = document.querySelector<HTMLInputElement>('input[type="date"][aria-label="Race day"]')!;
+    expect(field.min).toBe("2026-10-05");
+    type(field, "2026-12-13");
+    await act(async () => button("Save").click());
+    expect(asked.mock.calls).toEqual([["L", "2026-12-13"]]);
+  });
+
   it("Extend and Wind down write the line's end in the box", () => {
     const open = vi.fn();
     mountSheet(running, { open });
@@ -525,6 +545,83 @@ describe("Stop this plan", () => {
     expect(heading("n1")).not.toContain("Starts");
   });
 
+  it("its confirm reads the account's today again first: a page left open overnight never stops the phase that ended yesterday (B2)", async () => {
+    const retire = vi.spyOn(api, "coachPlanRetire").mockResolvedValue({ ok: true });
+    // Drawn on Nov 8, the base block's last day; Stop is pressed on the 9th.
+    const refresh = vi.fn(async () => ({ today: "2026-11-09", lines: [running] }));
+    mountSheet(running, { today: "2026-11-08", refresh });
+    act(() => button("Stop this plan…").click());
+    await flush();
+    expect(refresh).toHaveBeenCalledTimes(1);
+    const confirm = dialog("Stop this plan?");
+    expect(text(confirm)).toContain("5 sessions leave your calendar.");
+    await act(async () => button("Stop the plan", confirm!).click());
+    await flush();
+    expect(retire.mock.calls).toEqual([["r3", "last"]]);
+  });
+
+  it("…and a press that failed part way never takes the split line read since: the second press stops what was left (B2)", async () => {
+    vi.spyOn(api, "coachPlanRetire").mockResolvedValueOnce({ ok: true }).mockRejectedValueOnce(new TypeError("Failed to fetch")).mockResolvedValue({ ok: true });
+    const retire = vi.mocked(api.coachPlanRetire);
+    const split = linesOf([bridge, { ...base, status: "retired" as const }, build], TODAY);
+    let reads = 0;
+    const refresh = vi.fn(async () => ({ today: TODAY, lines: reads++ === 0 ? [running] : split }));
+    mountSheet(running, { refresh });
+    act(() => button("Stop this plan…").click());
+    await flush();
+    await act(async () => button("Stop the plan", dialog("Stop this plan?")!).click());
+    await flush();
+    act(() => button("Cancel", dialog("Stop this plan?")!).click());
+    act(() => button("Stop this plan…").click());
+    await flush();
+    expect(text(dialog("Stop this plan?"))).toContain("14 sessions leave your calendar.");
+    await act(async () => button("Stop the plan", dialog("Stop this plan?")!).click());
+    await flush();
+    expect(retire.mock.calls).toEqual([["r2", "more"], ["r3", "last"], ["r3", "last"]]);
+  });
+
+  it("while a stop runs it cannot be closed: Cancel is off until it answers (B4)", async () => {
+    let answer: (v: { ok: boolean }) => void = () => undefined;
+    vi.spyOn(api, "coachPlanRetire").mockImplementation(() => new Promise((r) => (answer = r)));
+    mountSheet(running);
+    act(() => button("Stop this plan…").click());
+    await act(async () => button("Stop the plan", dialog("Stop this plan?")!).click());
+    await flush();
+    const cancel = button("Cancel", dialog("Stop this plan?")!);
+    expect(cancel.disabled).toBe(true);
+    act(() => document.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true })));
+    expect(dialog("Stop this plan?")).not.toBeNull();
+    await act(async () => answer({ ok: true }));
+    await flush();
+    await act(async () => answer({ ok: true }));
+    await flush();
+    expect(dialog("Stop this plan?")).toBeNull();
+    expect(text(document.querySelector(".line-stopped"))).toBe("Stopped. 14 sessions left your calendar.");
+  });
+
+  it("a stop that failed part way, its confirm closed: the sheet says so and Finish stopping retires the rest (B4)", async () => {
+    const retire = vi
+      .spyOn(api, "coachPlanRetire")
+      .mockResolvedValueOnce({ ok: true })
+      .mockRejectedValueOnce(new TypeError("Failed to fetch"))
+      .mockResolvedValueOnce({ ok: true });
+    mountSheet(running);
+    act(() => button("Stop this plan…").click());
+    await act(async () => button("Stop the plan", dialog("Stop this plan?")!).click());
+    await flush();
+    act(() => button("Cancel", dialog("Stop this plan?")!).click());
+    expect(dialog("Stop this plan?")).toBeNull();
+    const left = document.querySelector(".line-stop-partial");
+    expect(left?.getAttribute("role")).toBe("alert");
+    expect(text(left)).toContain("Only part of this plan stopped.");
+    expect(text(left)).toContain("That didn't go through — try again.");
+    await act(async () => button("Finish stopping", left!).click());
+    await flush();
+    expect(retire.mock.calls).toEqual([["r2", "more"], ["r3", "last"], ["r3", "last"]]);
+    expect(document.querySelector(".line-stop-partial")).toBeNull();
+    expect(text(document.querySelector(".line-stopped"))).toBe("Stopped. 14 sessions left your calendar.");
+  });
+
   it("the sheet stays, saying so, when the stopped line leaves the plans read", async () => {
     vi.spyOn(api, "coachPlanRetire").mockResolvedValue({ ok: true });
     const sheet = mountSheet(running);
@@ -664,14 +761,14 @@ describe("the Plan routes a line's sheet", () => {
   }
 
   /** The Plan at `entry`; `withToday: false` — the workouts read names no today, so the page has only the week's start. */
-  function mountPlan(entry: string, { withToday = true }: { withToday?: boolean } = {}) {
+  function mountPlan(entry: string, { withToday = true, today = () => TODAY }: { withToday?: boolean; today?: () => string } = {}) {
     const json = (b: unknown, status = 200) => new Response(JSON.stringify(b), { status, headers: { "Content-Type": "application/json" } });
     vi.stubGlobal(
       "fetch",
       vi.fn(async (url: string) => {
         const path = url.replace(/\?.*$/, "");
         if (path === "/api/plan/week") return json(WEEK);
-        if (path === "/api/plan/workouts") return json(withToday ? { today: TODAY, workouts: [], plan: null } : { workouts: [], plan: null });
+        if (path === "/api/plan/workouts") return json(withToday ? { today: today(), workouts: [], plan: null } : { workouts: [], plan: null });
         if (path === "/api/coach/plans") return json({ plans: [...running.phases.map(asPlan), studio], lines: [running] });
         if (path === "/api/programs") return json({ programs: [], places: [], profiles: [] });
         if (path === "/api/coach/state") return json({ messages: [], pendingProposals: [], settledProposals: [], openQuestion: null, memoryCount: 0, lastCoachAt: null, wakeAdvised: false });
@@ -743,6 +840,23 @@ describe("the Plan routes a line's sheet", () => {
     await settle();
     expect(dialog("Running")).not.toBeNull();
     expect(findButton("Stop this plan…")).toBeUndefined();
+  });
+
+  it("the page reads its today and its lines again before a Stop's confirm: the day it was opened is not the day it is pressed (B2)", async () => {
+    const retire = vi.spyOn(api, "coachPlanRetire").mockResolvedValue({ ok: true });
+    let day = "2026-11-08";
+    mountPlan("/plan?line=run:r1", { today: () => day });
+    await settle();
+    expect(heading("r2")).toContain("· now");
+    // Left open overnight (the app does not read again on focus).
+    day = "2026-11-09";
+    act(() => button("Stop this plan…").click());
+    await settle();
+    const confirm = dialog("Stop this plan?");
+    expect(text(confirm)).toContain("5 sessions leave your calendar.");
+    await act(async () => button("Stop the plan", confirm!).click());
+    await settle();
+    expect(retire.mock.calls).toEqual([["r3", "last"]]);
   });
 
   it("a line's row in Your plans opens the line's sheet", async () => {

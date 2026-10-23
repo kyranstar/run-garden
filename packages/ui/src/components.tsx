@@ -1557,6 +1557,7 @@ export function ConfirmDialog({
   confirmLabel,
   onConfirm,
   busy,
+  lockWhileBusy = false,
   error,
 }: {
   open: boolean;
@@ -1568,9 +1569,15 @@ export function ConfirmDialog({
   confirmLabel: string;
   onConfirm: () => void;
   busy?: boolean;
+  /**
+   * While `busy`, it cannot be closed (Cancel off; Escape and the backdrop do nothing): for an action whose failure
+   * part way must be said where it was asked for — a line's Stop (B4).
+   */
+  lockWhileBusy?: boolean;
   /** The last try did not go through: said here, and the dialog stays open to try again. */
   error?: ReactNode;
 }) {
+  const locked = !!busy && lockWhileBusy;
   // The press that failed pinned the dialog's frame (`usePinnedTop`): below lg its height is held, and growth goes to
   // the body's scroll region. So the line takes the explanation's place — one line in one line's room — and is brought
   // into view should it wrap.
@@ -1582,12 +1589,12 @@ export function ConfirmDialog({
   return (
     <Sheet
       open={open}
-      onClose={onClose}
+      onClose={locked ? () => undefined : onClose}
       title={title}
       centered
       footer={
         <div className="btn-row">
-          <button type="button" className="btn" onClick={onClose}>
+          <button type="button" className="btn" disabled={locked} onClick={onClose}>
             Cancel
           </button>
           <button

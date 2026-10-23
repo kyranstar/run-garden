@@ -203,7 +203,7 @@ export interface ObservedWorkout {
   /**
    * Why the source workout is archived, or `null` if it is not. Only
    * `"absence_confirmed"` (the importer confirmed it gone from COROS over two
-   * consecutive reads) means COROS-side drift; `"user_removed"`,
+   * consecutive reads) means COROS-side drift; `"user_removed"`, `"abandoned_start_now"`,
    * `"duplicate_mirror"` and `"program_replaced"` are the app's own
    * bookkeeping and never drift.
    */
@@ -374,7 +374,7 @@ export function detectDrift(
       if (seen.title !== row.sessionTitle) continue;
       findings.push({ pushId: row.id, kind: "missing" });
     } else if (seen.archiveReason) {
-      // user_removed / duplicate_mirror / program_replaced: the app's own bookkeeping, not a
+      // user_removed / duplicate_mirror / program_replaced / abandoned_start_now: the app's own bookkeeping, not a
       // COROS-side deletion. Not drift.
     } else if (seen.title !== row.sessionTitle) {
       findings.push({ pushId: row.id, kind: "renamed", observedDay: seen.corosDate });

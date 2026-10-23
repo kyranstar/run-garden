@@ -116,6 +116,21 @@ describe("the week-jump menu numbers a line's weeks from its first phase", () =>
     expect(labels[0]).toMatchObject({ monday: "2026-09-07" });
     expect(labels[0]!.label).toMatch(/^wk 1 · /);
   });
+  it("a full rest week between two blocks is a week of the line: the next block carries the count on (owner, 2026-10-23)", () => {
+    // Mon Sep 28 – Sun Oct 18, a week off, then Mon Oct 26 – Sun Nov 22: one line, as the server answers it.
+    const a = plan("cp-a", "Base", "2026-09-28", "2026-10-18", { status: "completed" });
+    const b = plan("cp-b", "Build", "2026-10-26", "2026-11-22");
+    const one = dtoLines([a, b], "2026-10-23");
+    expect(one.map((l) => l.phases.map((p) => p.id))).toEqual([["cp-a", "cp-b"]]);
+    const labels = jumpWeeksOf([a, b], one);
+    expect(labels.find((j) => j.monday === "2026-10-19")?.label).toMatch(/^wk 4 · /);
+    expect(labels.find((j) => j.monday === "2026-10-26")?.label).toMatch(/^wk 5 · /);
+    // Eight rest days (Build from Tue Oct 27): a line of its own, counted from its own first week.
+    const late = plan("cp-b", "Build", "2026-10-27", "2026-11-22");
+    const two = dtoLines([a, late], "2026-10-23");
+    expect(two.map((l) => l.phases.map((p) => p.id))).toEqual([["cp-a"], ["cp-b"]]);
+    expect(jumpWeeksOf([a, late], two).find((j) => j.monday === "2026-10-26")?.label).toMatch(/^wk 1 · /);
+  });
   it("without the lines it numbers from the phase's own start, as it did", () => {
     expect(jumpWeeksOf([second]).find((j) => j.monday === "2026-10-12")?.label).toMatch(/^wk 2 · /);
   });

@@ -4,6 +4,7 @@ import {
   type LineBlock,
   type TrainingLine,
   type WeekPlan,
+  lastPhaseOf,
   lineSentenceName,
   linesOf,
   phaseWeekOf,
@@ -39,14 +40,25 @@ describe("linesOf", () => {
   });
 
   it.each([
+    [6, 1],
     [7, 1],
     [8, 2],
-  ])("a gap of %i days gives %i line(s)", (gap, n) => {
+  ])("%i whole rest days between two blocks give %i line(s): a full week's rest keeps one line (owner, 2026-10-23)", (rest, n) => {
     const x = blk("X", "2026-01-01", "2026-01-10");
-    const startY = new Date(Date.UTC(2026, 0, 10 + gap)).toISOString().slice(0, 10);
+    const startY = new Date(Date.UTC(2026, 0, 10 + rest + 1)).toISOString().slice(0, 10);
     const y = blk("Y", startY, "2026-03-01");
     expect(linesOf([x, y], "2026-01-05")).toHaveLength(n);
-    expect(LINE_GAP_DAYS).toBe(7);
+    // The start may be at most this many days after the running end: seven rest days, then the next block's first.
+    expect(LINE_GAP_DAYS).toBe(8);
+  });
+
+  it("Monday-to-Sunday blocks with one week off between them are one line (spec §1: more than a week's break starts a new one)", () => {
+    // A ends Sun Oct 18; B starts Mon Oct 26 — the end + 8.
+    const a = blk("A", "2026-09-28", "2026-10-18");
+    const b = blk("B", "2026-10-26", "2026-11-22");
+    expect(linesOf([a, b], "2026-10-23").map((l) => l.phases.map((p) => p.id))).toEqual([["A", "B"]]);
+    const late = blk("B", "2026-10-27", "2026-11-22");
+    expect(linesOf([a, late], "2026-10-23").map((l) => l.phases.map((p) => p.id))).toEqual([["A"], ["B"]]);
   });
 
   it("overlapping blocks join, and the running max end is kept", () => {
@@ -63,11 +75,11 @@ describe("linesOf", () => {
     expect(l[0]!.phases.map((p) => p.id)).toEqual(["a", "b"]);
   });
 
-  it("a retired middle phase: joined when C starts within 7 days of A's end, else two lines", () => {
+  it("a retired middle phase: joined when at most seven rest days lie between A's end and C's start, else two lines", () => {
     const a = blk("A", "2026-01-01", "2026-01-28");
     const mid = blk("M", "2026-01-29", "2026-02-25", { status: "retired" });
-    const near = blk("C", "2026-02-04", "2026-03-01");
-    const far = blk("C", "2026-02-05", "2026-03-01");
+    const near = blk("C", "2026-02-05", "2026-03-01");
+    const far = blk("C", "2026-02-06", "2026-03-01");
     const joined = linesOf([a, mid, near], "2026-02-10");
     expect(joined).toHaveLength(1);
     expect(joined[0]!.phases.map((p) => p.id)).toEqual(["A", "C"]);
@@ -135,6 +147,23 @@ describe("linesOf", () => {
     const earlyRace = blk("E", "2026-10-01", "2026-12-12", { planRaceDate: "2026-11-01" });
     const last = blk("F", "2026-12-13", "2027-01-01");
     expect(linesOf([earlyRace, last], "2026-10-20")[0]!.goalRaceDate).toBeNull();
+  });
+
+  it("the last phase is the one the line's end is, never the latest to start — for its goal and once it has ended too (B5)", () => {
+    // A sharpening block inside a long build with the race: the build starts first and ends last.
+    const build = blk("L", "2026-01-05", "2026-03-29", { planRaceDate: "2026-03-29" });
+    const sharpen = blk("S", "2026-02-02", "2026-02-22");
+    const [l] = linesOf([build, sharpen], "2026-02-10");
+    expect(l!.phases.map((p) => p.id)).toEqual(["L", "S"]);
+    expect(lastPhaseOf(l!).id).toBe("L");
+    expect(l!.goalRaceDate).toBe("2026-03-29");
+    const [over] = linesOf([build, sharpen], "2026-04-10");
+    expect(over!.ended).toBe(true);
+    expect(over!.currentPhaseId).toBe("L");
+    // Of phases ending the same day, the later-starting.
+    const a = blk("A", "2026-01-05", "2026-02-22");
+    const b = blk("B", "2026-02-02", "2026-02-22");
+    expect(lastPhaseOf(linesOf([a, b], "2026-02-10")[0]!).id).toBe("B");
   });
 });
 

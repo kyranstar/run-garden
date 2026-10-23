@@ -13,7 +13,8 @@
  * TRAINING LINES (training lines §3.1, §3.7): the blocks read are grouped as the plan list groups them (@rg/domain
  * `linesOf`): `lines`, each its sport's name and its phases in order (id, name, dates, ended or not), its end, its
  * `last` phase (the one its end is: what "Extend / Wind down my running plan" acts on) and its goal race. Said once
- * beside the lines: a new block starting within a week of a line's last phase joins it (`continueLine`, CONTINUE_LINE —
+ * beside the lines: a new block starting after at most a week's rest (LINE_MAX_REST_DAYS, seven rest days) from a line's
+ * end joins it (`continueLine`, CONTINUE_LINE —
  * the chip's "Plan what comes after my running plan" reads it while the line's last phase still runs), and a line is
  * extended or wound down through its last phase (`extendLine`, EXTEND_LINE).
  *

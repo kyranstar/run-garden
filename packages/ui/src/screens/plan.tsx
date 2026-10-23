@@ -1024,6 +1024,12 @@ export function PlanScreen() {
           focusPhaseId={lineOfPlan ? planParam : null}
           onClose={closePlan}
           onRename={(id, name) => rename.mutate({ id, name })}
+          // A Stop's confirm counts by the account's today as it is now (B2): this page is not read again on focus, so
+          // one left open overnight still holds yesterday's.
+          refresh={async () => {
+            const [read, mine] = await Promise.all([plan.refetch({ throwOnError: true }), coachPlans.refetch({ throwOnError: true })]);
+            return { today: read.data?.today ?? null, lines: mine.data?.lines };
+          }}
         />
       ) : planParam ? (
         <PlanSheet

@@ -31,7 +31,7 @@ Each of these causes has its own fix in this design:
 ## 3. Decisions (vetoable)
 
 1. **Lines are worked out at read time; no link column.**
-   - **Rule:** a line is a maximal chain of the athlete's coach blocks of one sport, excluding buckets and retired blocks, ordered by start date, where each block starts no more than 7 days after the previous one ends. Overlapping blocks join too.
+   - **Rule:** a line is a maximal chain of the athlete's coach blocks of one sport, excluding buckets and retired blocks, ordered by start date, where each block starts no more than 8 days after the previous one ends — at most 7 whole rest days between, so a full rest week between two Monday-to-Sunday blocks keeps one line (owner, 2026-10-23; it was 7 days, which split such blocks). Overlapping blocks join too.
    - **Why derived:**
      - The existing data already chains (the owner's three running blocks abut exactly).
      - Nothing has to be backfilled in production.
@@ -102,7 +102,7 @@ These are reconsidered only if the result still feels like too many.
 
 ## 6. Risks and how they're covered
 
-- **Chaining a block that shouldn't chain.** Example: a coach-made 1-week deload placed 5 days after a block. That is fine: it is part of the line. A separate goal started within a week of another of the same sport would wrongly chain. A test pins the 7-day rule, and the veto option (a stored link) stays open.
+- **Chaining a block that shouldn't chain.** Example: a coach-made 1-week deload placed 5 days after a block. That is fine: it is part of the line. A separate goal started after a week's rest or less from another of the same sport would wrongly chain. Tests pin the rule (7 rest days join, 8 split), and the veto option (a stored link) stays open.
 - **Two readers disagreeing about the phase that names a week.** One shared function, pinned by a table of cases that both the server and client tests run.
 - **Bulk "Stop this plan".** The confirm names the count. Past phases and completed sessions are never touched, which is pinned. It uses the existing chunked `retirePlan` per phase, within the per-request statement budget.
 - **Budgets.** Lines are grouped in memory from the rows `GET /api/coach/plans` already reads, so no statement is added. The line sheet reads its phases' details in one request, within 45 statements, or the client pages them. The plan decides which, and the result is measured and pinned.
@@ -112,7 +112,7 @@ These are reconsidered only if the result still feels like too many.
 - **Pure functions** in `@rg/domain`: the line grouping (`linesOf`), the ended rule, the week-naming rule and the row's words.
 - **Table-driven tests:**
   - abutting blocks;
-  - a 7-day and an 8-day gap;
+  - 7 and 8 whole rest days between two blocks (one line, then two);
   - overlaps;
   - a retired middle phase;
   - a bucket among blocks;

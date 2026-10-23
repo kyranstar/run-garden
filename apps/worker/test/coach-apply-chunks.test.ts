@@ -561,6 +561,61 @@ describe("applyStructuralChunk: what it writes", () => {
     });
   }
 
+  for (const [kind, reason] of [
+    ["extendPlan", "That plan was stopped, so it wasn't extended."],
+    ["windDown", "That plan was stopped, so nothing was eased down."],
+    ["firmUp", "That plan was stopped, so no sessions were added."],
+    ["reshapeWeek", "That plan was stopped, so the week was left as it was."],
+  ] as const) {
+    it(`${kind} on a plan the athlete stopped is refused in words, and writes nothing (B3)`, async () => {
+      const w = await world();
+      const planId = await seedPlan(w, sessionsFrom(w.monday, 3));
+      expect((await applyAll(w, "stop", { kind: "retirePlan", planId }, 45)).at(-1)!.result.status).toBe("done");
+      const sessions = sessionsFrom(addDays(w.monday, 7), 2, "Late");
+      const op = {
+        extendPlan: { kind: "extendPlan", planId, shapeWeeks: [{ weekStart: addDays(w.monday, 70), volumeTarget: "x", keySessions: [] }] },
+        windDown: { kind: "windDown", planId, sessions },
+        firmUp: { kind: "firmUp", planId, weekStart: addDays(w.monday, 7), sessions },
+        reshapeWeek: { kind: "reshapeWeek", planId, weekStart: addDays(w.monday, 7), sessions },
+      }[kind] as CoachOp;
+      const before = await planState(w);
+      expect(await chunk(w, op, null, 45)).toEqual({ status: "refused", reason, spent: 1 });
+      expect(await planState(w)).toEqual(before);
+    });
+  }
+
+  it("a retire of a plan already stopped stays idempotent: done, nothing more changed (B3)", async () => {
+    const w = await world();
+    const planId = await seedPlan(w, sessionsFrom(w.monday, 3));
+    await applyAll(w, "stop", { kind: "retirePlan", planId }, 45);
+    const before = await planState(w);
+    expect((await applyAll(w, "again", { kind: "retirePlan", planId }, 45)).at(-1)!.result.status).toBe("done");
+    expect(await planState(w)).toEqual(before);
+  });
+
+  it("a chunk taking an op over part way after the plan was stopped adds nothing more — a new plan's own too (B3)", async () => {
+    const w = await world();
+    const planId = await seedPlan(w, sessionsFrom(w.monday, 2));
+    const firm: CoachOp = { kind: "firmUp", planId, weekStart: addDays(w.monday, 7), sessions: sessionsFrom(addDays(w.monday, 7), 7, "Firm") };
+    const created: CoachOp = {
+      kind: "createPlan", discipline: "run", name: "Next block", startDate: addDays(w.monday, 49), endDate: addDays(w.monday, 76),
+      firmSessions: sessionsFrom(addDays(w.monday, 49), 7, "Next"), shapeWeeks: [],
+    };
+    for (const [op, id, proposalId, reason] of [
+      [firm, planId, "p-firm", "That plan was stopped, so no sessions were added."],
+      [created, "cp-p-new-0", "p-new", "That plan was stopped, so no more sessions were added."],
+    ] as const) {
+      const first = await chunk(w, op, null, 10, proposalId);
+      expect(first.status, proposalId).toBe("more");
+      // The athlete stops the plan between two chunks of the approve.
+      await w.db.update(schema.coachPlans).set({ status: "retired" }).where(eq(schema.coachPlans.id, id));
+      const before = await planState(w);
+      const next = await chunk(w, op, (first as { progress: StructuralProgress }).progress, 10, proposalId);
+      expect(next, proposalId).toEqual({ status: "refused", reason, spent: 1 });
+      expect(await planState(w)).toEqual(before);
+    }
+  });
+
   it("every call moves on, whatever its budget: a budget of 1 still ends, its first unit run each time", async () => {
     const w = await world();
     const planId = await seedPlan(w, sessionsFrom(w.monday, 5));

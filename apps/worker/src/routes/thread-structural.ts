@@ -122,7 +122,10 @@ export async function approveStructural(
     }
     ops[i] = {
       ...op,
-      progress: r.status === "done" ? { step: "done", done: 0, summary: r.summary } : { step: "refused", done: 0, reason: r.reason },
+      progress:
+        r.status === "done"
+          ? { step: "done", done: 0, summary: r.summary, ...(r.unchanged ? { unchanged: true } : {}) }
+          : { step: "refused", done: 0, reason: r.reason },
     };
   }
   // The garden forgets what a run of the thread's other ops resolved, in the request that ran it.
@@ -162,7 +165,13 @@ export async function approveStructural(
     return Array.isArray(pr.missed) ? (pr.missed as string[]) : [];
   });
   const shortfall = missed.length > 0 ? ` · ${missed.join("; ")}` : "";
-  await receipt(`✓ approved — ${p.title}${shortfall}`).catch((e: unknown) =>
+  // Every op found nothing to change (B6: a race conflict the banner had already settled): the receipt says so, never
+  // "✓ approved" for an approval that changed nothing.
+  const unchanged = ops.every((o) => o.progress?.unchanged === true);
+  const said = unchanged
+    ? `Nothing to change — ${p.title}: ${ops.map((o) => inLine(String(o.progress!.summary))).join("; ")}`
+    : `✓ approved — ${p.title}${shortfall}`;
+  await receipt(said).catch((e: unknown) =>
     console.error(`approve ${p.id}: applied, but the receipt failed: ${e instanceof Error ? e.message : String(e)}`),
   );
   await resim();
@@ -175,6 +184,7 @@ export async function approveStructural(
     applied: { created: [], updated: [], archived: [], missed, resimFrom },
     summaries: ops.flatMap((o) => (o.progress?.step === "done" && typeof o.progress.summary === "string" ? [o.progress.summary] : [])),
     ...(coachDrain ? { coachDrain: true } : {}),
+    ...(unchanged ? { unchanged: true } : {}),
   });
 }
 
@@ -199,6 +209,8 @@ export async function retireInChunks(
   prefs: UserPreferences,
   receipt: (body: string) => Promise<void>,
   words: string | null = RETIRED_RECEIPT,
+  /** A training line's Stop (`?stop=`): a phase that has ended by the account's today is left as it is (B2). */
+  stopping = false,
 ): Promise<Response> {
   const db = c.get("db");
   const userId = c.get("userId");
@@ -211,6 +223,7 @@ export async function retireInChunks(
     budget: RETIRE_CHUNK_BUDGET,
     now: new Date(),
     prefs,
+    stopping,
   });
   // A tap on "retire" against a plan that is not there is a 404, not a receipt saying it was retired.
   if (r.status === "refused") return c.json({ error: "not_found" }, 404);

@@ -1,6 +1,6 @@
 import { and, desc, eq, gte, inArray, isNull, lte, sql } from "drizzle-orm";
 import { auditEvents, coachPlans, plannedWorkouts, studioPlanPushes, studioPlans, trainingPlans } from "@rg/database";
-import { looksLikeCodeTitle, todayInZone, type LineBlock, type LocalDate, type TrainingLine, type UserPreferences } from "@rg/domain";
+import { lastPhaseOf as domainLastPhaseOf, looksLikeCodeTitle, todayInZone, type LineBlock, type LocalDate, type TrainingLine, type UserPreferences } from "@rg/domain";
 import type { Db } from "./db.js";
 import { STUDIO_PLAN_RETIRED, studioPlanEnd } from "./studio-push.js";
 
@@ -134,9 +134,10 @@ export function lineBlockOf(r: {
 }
 
 /** A training line's last phase: the one its end is (of phases ending that day, the later-starting) — the phase its
- * Extend and Wind down act on (training lines §3.3), and what "Plan what comes after" follows. */
+ * Extend and Wind down act on (training lines §3.3), and what "Plan what comes after" follows. The domain's one
+ * definition (B5), which the line's goal and the line sheet's Change race read too. */
 export function lastPhaseOf(line: TrainingLine): LineBlock {
-  return line.phases.filter((p) => p.endDate === line.endDate).at(-1)!;
+  return domainLastPhaseOf(line);
 }
 
 /** Whether the newest Studio plan is listed, by its pushes' statuses: something of it is (or was) on the watch. A plan

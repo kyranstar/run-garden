@@ -3,7 +3,7 @@ import { useEffect, useRef, useState } from "react";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { api, ApiError, type CoachPlanDto, type PlanDetailResponse, type TrainingLineDto } from "@rg/api-client";
 import { ConfirmDialog, formatShortDate, Sheet, Spinner, useEscapeKey } from "../components.js";
-import { dayLabel, lineSentenceName, planEnded, startOfIsoWeek } from "@rg/domain";
+import { dayLabel, lastPhaseOf, lineSentenceName, planEnded, startOfIsoWeek } from "@rg/domain";
 import { PlannedVsActualBars, progressionInUnits, ProgressionStepChart } from "./plan-charts.js";
 import { useCoach } from "./studio/coach-ask.js";
 import { NUDGES_QUERY } from "./studio/coach-conversation-model.js";
@@ -269,7 +269,7 @@ export function PlanSheet({
                 aria-haspopup="dialog"
                 onClick={() => {
                   setRenaming(false);
-                  stop.ask(line);
+                  void stop.ask(line);
                 }}
               >
                 Stop this plan…
@@ -549,29 +549,43 @@ const STOP_READS = [["coach-plans"], ["plan-detail"], ["plan"], ["plan-week"], [
 /** A line sheet's "Stop this plan" (`useStopLine`), held by `LineSheet` and drawn by the sheet it shows. */
 export type LineStop = ReturnType<typeof useStopLine>;
 
+/** The page's own reads again — the account's today and the lines — before a Stop's confirm says what it stops (B2). */
+export type StopRefresh = () => Promise<{ today: string | null; lines: readonly TrainingLineDto[] | undefined }>;
+
 /**
- * "Stop this plan" for a line's sheet. `ask(line)` opens its confirm (`dialog`) and takes what it will stop as it is
- * then: the line and the day, so the phases and the count the confirm says. Confirming retires those phases
- * (`stopLine`, each through `api.coachPlanRetire`, which asks again while the server answers `remaining`) — never the
- * line as read since, which a failed press can have split (a retired phase leaves a gap `linesOf` breaks the line at).
- * A phase retired by an earlier press is never asked again, so a second press retires only what is left. A refusal the
- * server gives words to (or a plan gone) is said in them; any other failure asks to try again. Stopped, the sheet says
- * so in `said` and the focus goes there — the button pressed has gone, and the focus must not fall to the page.
+ * "Stop this plan" for a line's sheet. `ask(line)` reads the account's today and the lines again (`refresh`: a page
+ * left open overnight keeps yesterday's, and would stop a phase that ended then — B2), then opens its confirm
+ * (`dialog`) and takes what it will stop as it is then: the line and the day, so the phases and the count the confirm
+ * says. Once a press has been made, the line is the one being stopped — never the line as read since, which a failed
+ * press can have split (a retired phase leaves a gap `linesOf` breaks the line at); a read that fails leaves the page's
+ * day (and the server never retires a phase that has ended by its own today). Confirming retires those phases
+ * (`stopLine`, each through `api.coachPlanRetire`, which asks again while the server answers `remaining`). A phase
+ * retired by an earlier press is never asked again, so a second press retires only what is left. A refusal the server
+ * gives words to (or a plan gone) is said in them; any other failure asks to try again. While a stop runs its confirm
+ * cannot be closed (B4): its failure must have somewhere to be said. Closed after a failure part way, the sheet says
+ * only part stopped and offers Finish stopping, which retires the rest. Stopped, the sheet says so in `said` and the
+ * focus goes there — the button pressed has gone, and the focus must not fall to the page.
  *
  * `today` is the account's, or null while it is not known: then there is no Stop (`canStop`), since a stand-in day can
  * make a phase that has ended look live.
  */
-function useStopLine(today: string | null) {
+function useStopLine(today: string | null, refresh?: StopRefresh) {
   const qc = useQueryClient();
   const [asking, setAsking] = useState(false);
   const [count, setCount] = useState(0);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [begun, setBegun] = useState(false);
+  /** The confirm was closed after a press that failed part way: the sheet says so, with Finish stopping (B4). */
+  const [partWay, setPartWay] = useState(false);
   const [stoppedCount, setStoppedCount] = useState<number | null>(null);
   const [stoppedIds, setStoppedIds] = useState<ReadonlySet<string>>(() => new Set());
   const asked = useRef<{ line: TrainingLineDto; today: string } | null>(null);
   const retired = useRef(new Set<string>());
+  /** A press has been made (`begun`, read inside `ask` across its read). */
+  const pressed = useRef(false);
+  /** `ask` is reading the page again: a second tap waits for it. */
+  const reading = useRef(false);
   const saidRef = useRef<HTMLParagraphElement>(null);
   useEffect(() => {
     if (stoppedCount !== null) saidRef.current?.focus({ preventScroll: true });
@@ -579,6 +593,7 @@ function useStopLine(today: string | null) {
   const confirm = async () => {
     const what = asked.current;
     if (!what || busy) return;
+    pressed.current = true;
     setBegun(true);
     setBusy(true);
     setError(null);
@@ -590,6 +605,7 @@ function useStopLine(today: string | null) {
         return res;
       });
       setAsking(false);
+      setPartWay(false);
       setStoppedIds(new Set(retired.current));
       setStoppedCount(count);
     } catch (e) {
@@ -607,29 +623,60 @@ function useStopLine(today: string | null) {
     stopped: stoppedCount !== null,
     /** The phases this Stop retired, once it is done: each says "stopped" (none before). */
     stoppedIds,
-    ask: (line: TrainingLineDto) => {
-      if (today === null) return;
-      asked.current = { line, today };
-      setError(null);
-      setCount(stopCount(line, today));
-      setAsking(true);
+    ask: async (line: TrainingLineDto): Promise<void> => {
+      if (today === null || reading.current) return;
+      const open = (what: { line: TrainingLineDto; today: string }) => {
+        asked.current = what;
+        setError(null);
+        setPartWay(false);
+        setCount(stopCount(what.line, what.today));
+        setAsking(true);
+      };
+      // Nothing to read again (a sheet drawn without the page): it opens at once, by the day it has.
+      if (!refresh) return open({ line, today });
+      reading.current = true;
+      let what = { line, today };
+      try {
+        const fresh = await refresh();
+        if (fresh.today) {
+          const now = pressed.current ? line : (fresh.lines?.find((l) => l.key === line.key) ?? line);
+          what = { line: now, today: fresh.today };
+        }
+      } catch {
+        // Not read: the page's day stands — and the server never retires a phase that has ended by its own today.
+      } finally {
+        reading.current = false;
+      }
+      open(what);
     },
     said:
       stoppedCount !== null ? (
         <p ref={saidRef} className="line-stopped" role="status" tabIndex={-1}>
           {stoppedWords(stoppedCount)}
         </p>
+      ) : partWay ? (
+        <div className="line-stop-partial" role="alert">
+          <p>Only part of this plan stopped. {error}</p>
+          <button type="button" className="btn" disabled={busy} onClick={() => void confirm()}>
+            Finish stopping
+          </button>
+        </div>
       ) : null,
     dialog: (
       <ConfirmDialog
         open={asking}
         onClose={() => {
-          setError(null);
+          if (busy) return;
+          // Closed after a press that retired some phases and failed on the next: the line is left split, so the sheet
+          // keeps the failure and the way to finish (B4). Otherwise there is nothing left to say.
+          if (error !== null && retired.current.size > 0) setPartWay(true);
+          else setError(null);
           setAsking(false);
         }}
         title="Stop this plan?"
         confirmLabel="Stop the plan"
         busy={busy}
+        lockWhileBusy
         error={error}
         onConfirm={() => void confirm()}
       >
@@ -657,6 +704,7 @@ export function LineSheet({
   focusPhaseId = null,
   onClose,
   onRename,
+  refresh,
 }: {
   lineKey: string;
   /** `GET /api/coach/plans` `lines`. */
@@ -669,8 +717,10 @@ export function LineSheet({
   focusPhaseId?: string | null;
   onClose: () => void;
   onRename: (id: string, name: string) => void;
+  /** The page's today and lines read again, before a Stop's confirm (B2). */
+  refresh?: StopRefresh;
 }) {
-  const stop = useStopLine(todayKnown ? today : null);
+  const stop = useStopLine(todayKnown ? today : null, refresh);
   const found = lines?.find((l) => l.key === lineKey) ?? null;
   const [held, setHeld] = useState(found);
   if (!stop.begun && found && found !== held) setHeld(found);
@@ -717,7 +767,8 @@ function LinePhases({
   const coach = useCoach();
   const readOnly = line.ended || stop.stopped;
   const requests = lineRequests(line.discipline);
-  const last = line.phases[line.phases.length - 1]!;
+  // The phase the line's end is (B5: the one definition — the server's `last`, its chips and the line's goal use it too).
+  const last = lastPhaseOf(line);
   // The phase an old link named opens, when it is one that has ended.
   const [open, setOpen] = useState<ReadonlySet<string>>(() => new Set(focusPhaseId ? [focusPhaseId] : []));
   const [renaming, setRenaming] = useState<string | null>(null);
@@ -751,7 +802,7 @@ function LinePhases({
           aria-haspopup="dialog"
           onClick={() => {
             setRenaming(null);
-            stop.ask(line);
+            void stop.ask(line);
           }}
         >
           Stop this plan…

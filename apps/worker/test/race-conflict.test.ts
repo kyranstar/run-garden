@@ -110,6 +110,43 @@ describe("race conflict", () => {
     expect(row!.category).toBe("race");
   });
 
+  it("finds the row that disagrees, whichever race row the table holds first (B6)", async () => {
+    const db = makeTestDb();
+    const { userId, prefs } = await makeTestUser(db);
+    const today = todayInZone(prefs.timezone);
+    const statedDay = addDays(today, 50);
+    // A race row on the stated day comes first; the one that disagrees is second.
+    await seedRaceRow(db, userId, "agrees", statedDay);
+    await seedRaceRow(db, userId, "differs", addDays(today, 30));
+    expect((await findRaceConflict(db, userId, { ...prefs, raceDate: statedDay }))?.workoutId).toBe("differs");
+  });
+
+  it("keep settings moves a coach plan's own race to the stated day — or clears it when that day is before the plan starts (B6)", async () => {
+    const db = makeTestDb();
+    const { userId, prefs } = await makeTestUser(db);
+    const today = todayInZone(prefs.timezone);
+    const planDay = addDays(today, 30);
+    for (const [id, start] of [["cp-later", addDays(today, -10)], ["cp-early", addDays(today, -10)]] as const) {
+      await db.insert(schema.coachPlans).values({
+        id, userId, discipline: "run", name: id, status: "active", startDate: start, endDate: planDay, raceDate: planDay, stampPrefix: id,
+        createdAt: nowInstant(), updatedAt: nowInstant(),
+      });
+    }
+    const planOf = async (id: string) => (await db.select().from(schema.coachPlans).where(eq(schema.coachPlans.id, id)))[0]!;
+    // The athlete's race is 50 days on: the plan's race moves there.
+    await seedRaceRow(db, userId, "race-later", planDay);
+    await db.update(schema.plannedWorkouts).set({ planId: "cp-later" }).where(eq(schema.plannedWorkouts.id, "race-later"));
+    expect((await resolveRaceConflict(db, userId, { ...prefs, raceDate: addDays(today, 50) }, "settings"))?.workoutId).toBe("race-later");
+    expect((await planOf("cp-later")).raceDate).toBe(addDays(today, 50));
+    // The athlete's race is before the plan began: the plan names no race.
+    await seedRaceRow(db, userId, "race-early", planDay);
+    await db.update(schema.plannedWorkouts).set({ planId: "cp-early" }).where(eq(schema.plannedWorkouts.id, "race-early"));
+    expect((await resolveRaceConflict(db, userId, { ...prefs, raceDate: addDays(today, -20) }, "settings"))?.workoutId).toBe("race-early");
+    expect((await planOf("cp-early")).raceDate).toBeNull();
+    // A plan whose own race is another day is left as it is.
+    expect((await planOf("cp-later")).raceDate).toBe(addDays(today, 50));
+  });
+
   it("applies as a coach op through applyOps", async () => {
     const db = makeTestDb();
     const { userId, prefs } = await makeTestUser(db);

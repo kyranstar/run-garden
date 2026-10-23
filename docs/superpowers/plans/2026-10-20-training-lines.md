@@ -17,7 +17,7 @@
 
 - **Workers Free:** ≤45 D1 statements per request. `GET /api/coach/plans` may add at most 1 statement.
 - **No migration and no production data change.** `planned_workouts.plan_id` stays NOT NULL, and the buckets stay as internal rows.
-- **Chain rule:** coach blocks of one sport, excluding buckets (`adhoc-` id prefix, `LOOSE_PLAN_ID_PREFIX`) and `retired` ones, ordered by start date. A block joins the line when its start is ≤ the line's latest end + 7 days. Overlap joins.
+- **Chain rule:** coach blocks of one sport, excluding buckets (`adhoc-` id prefix, `LOOSE_PLAN_ID_PREFIX`) and `retired` ones, ordered by start date. A block joins the line when its start is ≤ the line's latest end + 8 days (at most 7 whole rest days between; owner, 2026-10-23 — it was + 7). Overlap joins.
 - **Line names:** "Running", "Lifting", "Mobility". In sentences: "my running plan", "my lifting plan", "my mobility plan".
 - **Copy, exactly:**
   - "Your plans", "Past plans", "Stop this plan", "One-off"
@@ -59,7 +59,7 @@
     - `key` is `${discipline}:${phases[0].id}`.
     - `currentPhaseId` is the phase covering today, else the next to start, else the last.
     - `goalRaceDate` is the last phase's `planRaceDate` when it is ≥ today, else null.
-  - `const LINE_GAP_DAYS = 7`
+  - `const LINE_GAP_DAYS = 7` (since 2026-10-23: `LINE_MAX_REST_DAYS = 7`, `LINE_GAP_DAYS = LINE_MAX_REST_DAYS + 1`)
   - `function planEnded(endDate: string, today: string): boolean` (`endDate < today`)
   - `function linesOf(blocks: readonly LineBlock[], today: string): TrainingLine[]` drops `retired` defensively and applies the chain rule. Lines are sorted by `startDate`. Callers pass coach blocks only, never buckets.
   - `function lineSentenceName(discipline: LineBlock["discipline"]): "my running plan" | "my lifting plan" | "my mobility plan"`
@@ -73,9 +73,9 @@
 
 - [ ] **Step 1: Write the failing tests** (table-driven, synthetic ids)
   - `linesOf` chains three abutting run blocks into one line with 3 phases. Its `currentPhaseId` is the one covering today.
-  - A gap of 7 days joins; a gap of 8 days makes two lines (`LINE_GAP_DAYS` boundary).
+  - A gap of 7 days joins; a gap of 8 days makes two lines (`LINE_GAP_DAYS` boundary). Since 2026-10-23: 7 whole rest days (start = end + 8) join, 8 rest days make two.
   - Overlapping blocks join.
-  - A retired middle phase leaves `[A, C]` joined when C starts ≤ A.end + 7, and two lines otherwise (Review Focus 1).
+  - A retired middle phase leaves `[A, C]` joined when C starts ≤ A.end + 7, and two lines otherwise (Review Focus 1). Since 2026-10-23: ≤ A.end + 8.
   - A run block and a lift block make two lines.
   - A one-phase line has `phases.length === 1`.
   - With every phase ended, `ended === true` and `currentPhaseId` is the last phase.

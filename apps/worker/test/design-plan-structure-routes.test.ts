@@ -270,6 +270,30 @@ describe("approving a whole plan", () => {
     expect((await planOp(id)).outcome).toMatchObject({ status: "refused", error: "plan_refused" });
   });
 
+  it("a plan change approved after its plan was stopped is refused in plain words — and one stopped mid-approve adds no more (B3)", async () => {
+    const first = await planned(createPlan({ perWeek: 3 }));
+    await approveAll(first);
+    const planId = `cp-${first}-0`;
+    const id = await planned({ kind: "extendPlan", planId, shapeWeeks: [{ weekStart: addDays(monday, 21), volumeTarget: "x", keySessions: [] }] });
+    await db.update(coachPlans).set({ status: "retired" }).where(eq(coachPlans.id, planId));
+    const endOf = async (pid: string) => (await db.select({ endDate: coachPlans.endDate }).from(coachPlans).where(eq(coachPlans.id, pid)))[0]!.endDate;
+    const end = await endOf(planId);
+    const res = await invoke("POST", `/api/coach/proposals/${id}/approve`, {});
+    expect(res.json.refused).toEqual([{ opId: "plan", error: "plan_refused", why: "That plan was stopped, so it wasn't extended." }]);
+    expect(await endOf(planId)).toBe(end);
+
+    // A new plan of many sessions, its approve part way when the athlete stops it: the next request adds nothing more.
+    const big = await planned(createPlan({ perWeek: 7 }));
+    expect((await invoke("POST", `/api/coach/proposals/${big}/approve`, {})).json.remaining).toEqual(["plan"]);
+    const made = (await sessionsOf(`cp-${big}-0`)).length;
+    expect(made).toBeGreaterThan(0);
+    expect(made).toBeLessThan(7);
+    await db.update(coachPlans).set({ status: "retired" }).where(eq(coachPlans.id, `cp-${big}-0`));
+    const next = await invoke("POST", `/api/coach/proposals/${big}/approve`, {});
+    expect(next.json.refused).toEqual([{ opId: "plan", error: "plan_refused", why: "That plan was stopped, so no more sessions were added." }]);
+    expect(await sessionsOf(`cp-${big}-0`)).toHaveLength(made);
+  });
+
   it("with watch writes on, the sessions' creates wait for the client to drain them", async () => {
     await savePreferences(db, userId, { ...prefs, corosWritesEnabled: true });
     const id = await planned(createPlan({ perWeek: 3 }));

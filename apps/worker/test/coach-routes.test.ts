@@ -346,6 +346,36 @@ describe("coach routes", () => {
     expect(statuses.every((p) => p.status === "retired")).toBe(true);
   });
 
+  it("a Stop sent with yesterday's today leaves a phase that has ended as it was: never retired, so it stays in Past plans with its credit (B2)", async () => {
+    vi.useFakeTimers({ toFake: ["Date"] });
+    try {
+      // Noon on Nov 10 in the athlete's zone: the base block ended yesterday, the race build is today's.
+      vi.setSystemTime(new Date("2026-11-10T20:00:00Z"));
+      cookie = `${SESSION_COOKIE}=${await createSession(db, userId)}`;
+      expect(todayInZone(prefs.timezone)).toBe("2026-11-10");
+      for (const [id, startDate, endDate] of [["base", "2026-10-12", "2026-11-09"], ["build", "2026-11-10", "2026-12-06"], ["solo", "2026-10-12", "2026-11-09"]] as const) {
+        await db.insert(schema.coachPlans).values({
+          id, userId, discipline: "run", name: `Block ${id}`, status: "active", startDate, endDate, stampPrefix: id, createdAt: nowInstant(), updatedAt: nowInstant(),
+        });
+      }
+      // The page, open since yesterday, still counts the base block as running and stops it first.
+      const stale = await client().post("/api/coach/plans/base/retire?stop=more");
+      expect(stale.status).toBe(200);
+      expect(await stale.json()).toMatchObject({ ok: true });
+      expect((await client().post("/api/coach/plans/build/retire?stop=last")).status).toBe(200);
+      // A plan's own Retire (no Stop) is as it was: it retires what it is asked to.
+      expect((await client().post("/api/coach/plans/solo/retire")).status).toBe(200);
+      const status = new Map(
+        (await db.select({ id: schema.coachPlans.id, status: schema.coachPlans.status }).from(schema.coachPlans).where(eq(schema.coachPlans.userId, userId))).map((p) => [p.id, p.status]),
+      );
+      expect(Object.fromEntries(status)).toEqual({ base: "active", build: "retired", solo: "retired" });
+      const receipts = (await db.select().from(schema.coachMessages).where(eq(schema.coachMessages.userId, userId))).filter((m) => m.role === "receipt").map((m) => m.body);
+      expect(receipts.sort()).toEqual(["Plan retired — completed history stays.", "Plan stopped — completed history stays."]);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
   it("retiring a plan that isn't there is a 404, not a receipt saying it was retired", async () => {
     // The last silent failure in the coach pipeline (2026-08-17): `retirePlan`
     // against a missing `coach_plans` row did nothing, threw nothing, and the
@@ -909,6 +939,18 @@ describe("GET /plans answers training lines (2026-10-20)", () => {
     const body = await read();
     expect(body.lines.flatMap((l) => l.phases.map((p) => p.id))).toEqual(["live"]);
     expect(body.plans.map((p) => p.id).sort()).toEqual(["gone", "live"]);
+  });
+
+  it("a full rest week between two Monday-to-Sunday blocks keeps them one line; eight rest days make two (owner, 2026-10-23)", async () => {
+    // A ends Sun Oct 18; B starts Mon Oct 26: seven rest days, Oct 19–25.
+    await seedBlock("wa", "2026-09-28", "2026-10-18", "completed");
+    await seedBlock("wb", "2026-10-26", "2026-11-22");
+    expect((await read()).lines.map((l) => l.phases.map((p) => p.id))).toEqual([["wa", "wb"]]);
+    // A lifting pair with eight rest days between (Oct 19–26): two lines.
+    await seedBlock("la", "2026-09-28", "2026-10-18", "completed", { discipline: "lift" });
+    await seedBlock("lb", "2026-10-27", "2026-11-22", "active", { discipline: "lift" });
+    const lift = (await read()).lines.filter((l) => l.key.startsWith("lift:")).map((l) => l.phases.map((p) => p.id));
+    expect(lift).toEqual([["la"], ["lb"]]);
   });
 
   it("a completed block stays in its line as a past phase", async () => {

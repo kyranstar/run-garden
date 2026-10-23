@@ -1,10 +1,11 @@
-import { and, asc, eq, inArray, isNull, lt, lte, ne, notExists, or, type SQL } from "drizzle-orm";
-import { calendarEventSuppressions, performedSessions, plannedWorkouts, syncErrors, syncRuns } from "@rg/database";
+import { and, asc, eq, inArray, isNotNull, isNull, lt, lte, ne, notExists, notInArray, or, sql, type SQL } from "drizzle-orm";
+import { calendarEventSuppressions, performedSessions, plannedWorkouts, sessionBuilds, syncErrors, syncRuns } from "@rg/database";
 import { addDays, DOC_ORIGINS, newId, nowInstant, todayInZone, type UserPreferences } from "@rg/domain";
 import type { Db } from "./db.js";
 import { PLAYED_OFFLINE_CALENDAR_STATE, PLAYED_OFFLINE_DAYS_BACK, START_NOW_CALENDAR_STATE, STARTED_AT_ONCE_STATES } from "./doc-workouts.js";
 import { plannedRowColumns } from "./planned-columns.js";
 import { removeFromPlan } from "./plan-mutations.js";
+import { UNSTARTED_AT_PATH } from "./session-build.js";
 
 /**
  * Daily reconciliation of completion states:
@@ -16,8 +17,11 @@ import { removeFromPlan } from "./plan-mutations.js";
  *  - A workout started at once (Start now) and closed without Discard, its
  *    day ended with nothing logged, was never planned: it is removed as the
  *    player's Discard removes it, never asked about and never missed. One
- *    played offline and recorded on reconnect (R11) is made after its day:
- *    it is removed only once the outbox has had its reach (a week) to deliver its session.
+ *    played offline and recorded on reconnect (R11) is made after its day,
+ *    and one whose session was begun may have its save still in the outbox:
+ *    each is removed only once the outbox has had its reach (a week) to
+ *    deliver its session. The removal is the sweep's (`abandoned_start_now`),
+ *    so a save that arrives after it brings the workout back (session-save).
  */
 
 const SYNC_GRACE_DAYS = 1; // window passes → wait one full day before asking
@@ -46,14 +50,26 @@ const ABANDONED_START_NOW_MAX = 2;
 /**
  * A workout started at once and left with nothing logged, as the player's Discard judges it (`removeAbandonedStartNow`):
  * booked on no calendar (Start now's state, which a move to a day of the plan's ends), not done, not answered
- * (completed, skipped, missed), no session saved for it. One played offline only once it was recorded before
- * `recordedBefore` (the outbox's reach to deliver).
+ * (completed, skipped, missed), no session saved for it. One played offline — and one whose session was begun, its
+ * review perhaps still open on the device and its save in the outbox (B1, seen in prod: a session played to the end and
+ * saved a day later was swept at midnight) — only once it was recorded before `recordedBefore` (the outbox's reach).
+ * Only one never begun goes as soon as its day is over.
  */
 function abandonedStartNow(db: Db, recordedBefore: string): SQL {
   const pw = plannedWorkouts;
+  const neverBegun = and(
+    or(isNull(pw.contentState), notInArray(pw.contentState, ["started", "done"])),
+    // A build locked for play, or locked once and un-started since (ruling 2b-R19: another device's save may follow).
+    notExists(
+      db
+        .select({ id: sessionBuilds.id })
+        .from(sessionBuilds)
+        .where(and(eq(sessionBuilds.workoutId, pw.id), or(isNotNull(sessionBuilds.lockedAt), sql`json_extract(${sessionBuilds.payload}, ${UNSTARTED_AT_PATH}) is not null`))),
+    ),
+  );
   return and(
     or(
-      eq(pw.calendarSyncState, START_NOW_CALENDAR_STATE),
+      and(eq(pw.calendarSyncState, START_NOW_CALENDAR_STATE), or(neverBegun, lt(pw.createdAt, recordedBefore))),
       and(eq(pw.calendarSyncState, PLAYED_OFFLINE_CALENDAR_STATE), lt(pw.createdAt, recordedBefore)),
     ),
     inArray(pw.origin, [...DOC_ORIGINS]),
@@ -83,7 +99,14 @@ export async function reconcileCompletionStates(
     .orderBy(asc(plannedWorkouts.effectiveDate), asc(plannedWorkouts.id))
     .limit(ABANDONED_START_NOW_MAX);
   for (const w of abandoned) {
-    const removed = await removeFromPlan(db, userId, w.id, { now: nowIso, source: "auto_resolve", prefs, onlyIf: abandonedStartNow(db, recordedBefore) });
+    // The sweep's own reason, never the athlete's `user_removed`: a save that arrives later brings it back.
+    const removed = await removeFromPlan(db, userId, w.id, {
+      now: nowIso,
+      source: "auto_resolve",
+      prefs,
+      archiveReason: "abandoned_start_now",
+      onlyIf: abandonedStartNow(db, recordedBefore),
+    });
     if (removed.removed) stats.abandonedRemoved += 1;
   }
 

@@ -1253,15 +1253,18 @@ coachRoutes.post("/plans/:id/race", async (c) => {
  * Retire a coach plan, a slice a request, `remaining` until it is retired (§8 §4; thread-structural.ts), then its
  * receipt. A training line's "Stop this plan" retires its phases one after another and says so once (final review,
  * M3): `?stop=more` for a phase with more to retire after it (no receipt), `?stop=last` for its last ("Plan stopped").
- * Without it — any other caller — the plan's own Retire receipt, as ever.
+ * A Stop never retires a phase that has ended by the account's today — the page's may be yesterday's (B2): that one is
+ * ok, unchanged, and keeps its place in Past plans and its credit. Without it — any other caller — the plan's own
+ * Retire receipt, as ever.
  */
 coachRoutes.post("/plans/:id/retire", async (c) => {
   const db = c.get("db");
   const userId = c.get("userId");
   const prefs = await loadPreferences(db, userId);
   const stop = c.req.query("stop");
+  const stopping = stop === "more" || stop === "last";
   const words = stop === "more" ? null : stop === "last" ? STOPPED_RECEIPT : RETIRED_RECEIPT;
-  return retireInChunks(c, c.req.param("id"), prefs, (body) => receipt(db, userId, body), words);
+  return retireInChunks(c, c.req.param("id"), prefs, (body) => receipt(db, userId, body), words, stopping);
 });
 
 /** Expiry sweep for the hourly cron (all users handled by the caller). */
