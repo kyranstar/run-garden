@@ -462,19 +462,30 @@ export async function executeCloudJobs(
           // fingerprint the one the job was queued (or brought up to date) with, read with the payload this drain pushed —
           // is answered here. A claim on another session (the drain read the create before the re-time, and landed the
           // older one) stays open, and the row still says so. One statement.
-          await db
-            .update(syncIntents)
-            .set({ resolvedAt: done })
-            .where(
-              and(
-                eq(syncIntents.userId, userId),
-                eq(syncIntents.targetId, spec.workoutId),
-                eq(syncIntents.kind, "content"),
-                isNull(syncIntents.resolvedAt),
-                isNull(syncIntents.supersededBy),
-                sql`json_extract(${syncIntents.payload}, '$.fingerprint') = ${job.expectedContentFingerprint}`,
-              ),
-            );
+          //
+          // ONLY WHEN THIS CALL WROTE IT (review A2). A same-day `already_present` found a copy under the stamp and
+          // wrote nothing: it is whatever an EARLIER attempt landed — and a create requeued after a transient failure
+          // (a lost answer, `not_visible`, a runtime ceiling) is still `queued`, so a re-time brings it up to the new
+          // session after its first attempt may already have put the old one on the watch. Closing the claim on the
+          // job's fingerprint then read "Synced" over a watch holding the older session, for good. The found copy is
+          // not compared with the one built (a comparison across COROS's re-encoding, whose false "same" would be that
+          // very lie): the claim stays open, the row says "Older on watch" — true if the old copy landed, and if the
+          // new one did, Send's rewrite verifies it by value and closes it.
+          if (result.reason !== "already_present") {
+            await db
+              .update(syncIntents)
+              .set({ resolvedAt: done })
+              .where(
+                and(
+                  eq(syncIntents.userId, userId),
+                  eq(syncIntents.targetId, spec.workoutId),
+                  eq(syncIntents.kind, "content"),
+                  isNull(syncIntents.resolvedAt),
+                  isNull(syncIntents.supersededBy),
+                  sql`json_extract(${syncIntents.payload}, '$.fingerprint') = ${job.expectedContentFingerprint}`,
+                ),
+              );
+          }
           // COROS STORED A DESIGNED RUN DIFFERENTLY (review-2 I2): the job stays
           // `verified` — the program is ours, on that day, and every later move,
           // ease, Undo and removal proves ownership by a verified create's stamp

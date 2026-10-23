@@ -115,6 +115,75 @@ describe("a re-timed run's queued create lands the new session: its claim closes
     expect(cost).toBeLessThanOrEqual(BUDGET);
   });
 
+  it("A2: a create whose first attempt LANDED (its answer lost), re-timed while its retry waits — the retry finds the older session there and closes nothing", async () => {
+    const a = await account();
+    // Attempt 1: the write reaches COROS, its answer is lost — the lane records a transient error and requeues it.
+    let lost = false;
+    const lossy = (async (...args: Parameters<typeof fetch>) => {
+      const url = String(args[0] instanceof Request ? args[0].url : args[0]);
+      const res = await a.server.fetchImpl(...args);
+      if (!lost && url.includes("/training/schedule/update")) {
+        lost = true;
+        throw new TypeError("fetch failed");
+      }
+      return res;
+    }) as typeof fetch;
+    await executeCloudJobs(a.db, makeEnv(), a.userId, a.prefs, { fetchImpl: lossy, cap: 1 });
+    const [first] = await a.db.select().from(corosWriteJobs).where(eq(corosWriteJobs.id, `${a.id}-push`));
+    expect(first!.status, "requeued for its retry").toBe("queued");
+    const landed = (a.server.state.schedule.programs ?? []).filter((p) => String(p.name ?? "").startsWith("Tempo"));
+    expect(landed.map((p) => p.exercises?.length), "the 35-minute tempo is on the watch").toEqual([7]);
+
+    // The coach re-times it 35 → 25 while the retry waits: the queued create is brought up to the new session.
+    const row = (await a.db.select().from(plannedWorkouts).where(eq(plannedWorkouts.id, a.id)))[0]!;
+    const stages = await a.db.select().from(plannedWorkoutStages).where(eq(plannedWorkoutStages.workoutId, a.id));
+    const r = retimeOfRow(row, stages, 25, { thresholdSecPerKm: null, runWire: "v1" });
+    if (r.kind !== "retimed") throw new Error("not re-timed");
+    await applyOps(a.db, a.userId, a.prefs, "dp-2", [{ kind: "adjust", workoutId: a.id, durationMinutes: 25 }], { retimes: new Map([[a.id, r.expect]]) });
+
+    await drain(a);
+    const [create] = await a.db.select().from(corosWriteJobs).where(eq(corosWriteJobs.id, `${a.id}-push`));
+    expect(create!.status, "the stamp is ours, on its day: verified").toBe("verified");
+    const after = (await a.db.select().from(plannedWorkouts).where(eq(plannedWorkouts.id, a.id)))[0]!;
+    expect(a.server.programByIdInPlan(after.sourceIdInPlan!)!.exercises!.length, "the watch still holds the 35-minute tempo").toBe(7);
+    // The app's claim on the 25-minute one is not answered by a copy this create never wrote.
+    expect((await openIntentFor(a.db, a.userId, a.id, "content"))?.source).toBe("coach_adjust");
+    expect(await viewOf(a)).toBe("content_stale");
+    expect((await watchEarlierVersions(a.db, a.userId, a.today)).map((w) => w.workoutId)).toContain(a.id);
+  });
+
+  it("A2: when the copy an earlier attempt landed IS the new session, the row says so only until Send — whose rewrite verifies it and closes the claim", async () => {
+    const a = await account();
+    const row = (await a.db.select().from(plannedWorkouts).where(eq(plannedWorkouts.id, a.id)))[0]!;
+    const stages = await a.db.select().from(plannedWorkoutStages).where(eq(plannedWorkoutStages.workoutId, a.id));
+    const r = retimeOfRow(row, stages, 25, { thresholdSecPerKm: null, runWire: "v1" });
+    if (r.kind !== "retimed") throw new Error("not re-timed");
+    await applyOps(a.db, a.userId, a.prefs, "dp-2", [{ kind: "adjust", workoutId: a.id, durationMinutes: 25 }], { retimes: new Map([[a.id, r.expect]]) });
+    let lost = false;
+    const lossy = (async (...args: Parameters<typeof fetch>) => {
+      const url = String(args[0] instanceof Request ? args[0].url : args[0]);
+      const res = await a.server.fetchImpl(...args);
+      if (!lost && url.includes("/training/schedule/update")) {
+        lost = true;
+        throw new TypeError("fetch failed");
+      }
+      return res;
+    }) as typeof fetch;
+    await executeCloudJobs(a.db, makeEnv(), a.userId, a.prefs, { fetchImpl: lossy, cap: 1 });
+    await drain(a);
+    expect((await a.db.select().from(corosWriteJobs).where(eq(corosWriteJobs.id, `${a.id}-push`)))[0]!.status).toBe("verified");
+    expect(await viewOf(a), "a copy this create never wrote proves nothing").toBe("content_stale");
+
+    const cookie = `${SESSION_COOKIE}=${await createSession(a.db, a.userId)}`;
+    const sent = await mountRoutes(a.db, "/api/plan", planRoutes).request(`/api/plan/workouts/${a.id}/watch-version/send`, { method: "POST", headers: { Cookie: cookie } }, makeEnv());
+    expect(sent.status).toBe(200);
+    await drain(a);
+    expect(await openIntentFor(a.db, a.userId, a.id, "content")).toBeNull();
+    expect(await viewOf(a)).toBe("synced");
+    const after = (await a.db.select().from(plannedWorkouts).where(eq(plannedWorkouts.id, a.id)))[0]!;
+    expect(a.server.programByIdInPlan(after.sourceIdInPlan!)!.exercises!.length, "the 25-minute tempo").toBe(5);
+  });
+
   it("a claim on another session than the one the create carried stays open — the row still says the watch holds an older one", async () => {
     // The race the review names: the drain read the create's session before the re-time brought it up to date, so the
     // create lands the older session while the claim is on the newer.
