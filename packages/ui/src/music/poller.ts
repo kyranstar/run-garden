@@ -47,7 +47,9 @@ export function makePoller(deps: PollerDeps) {
       if (isSlowDown(e)) wait = Math.max(POLL_MS, e.retryAfterMs ?? POLL_MS);
       deps.onError?.(e);
     }
-    // Still this generation (both paths above return when the dock closed meanwhile), so still active.
+    // The dock may have stopped it from inside `onState` or `onError` (a sign-in gone): a read queued under the old
+    // generation would still go out (its token ask) before being dropped.
+    if (gen !== generation) return;
     queue(wait, gen);
   }
 

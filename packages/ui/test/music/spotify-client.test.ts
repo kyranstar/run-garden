@@ -745,6 +745,28 @@ describe("polling the player", () => {
     expect([reads, errors.length, t.pending()]).toEqual([1, 0, 0]);
   });
 
+  it("a read whose failure or answer stops it (a sign-in gone) schedules nothing more — no read, so no token ask, 5 s on", async () => {
+    for (const how of ["error", "state"] as const) {
+      const t = timers();
+      let reads = 0;
+      const poller: ReturnType<typeof makePoller> = makePoller({
+        read: async () => {
+          reads += 1;
+          if (how === "error") throw new Error("not connected");
+          return null;
+        },
+        onState: () => poller.stop(),
+        onError: () => poller.stop(),
+        schedule: t.schedule,
+      });
+      poller.set({ expanded: true, visible: true });
+      await t.advance(0);
+      expect(reads, how).toBe(1);
+      await t.advance(60_000);
+      expect([reads, t.pending()], how).toEqual([1, 0]);
+    }
+  });
+
   it("hands each read to the dock", async () => {
     const t = timers();
     const states: unknown[] = [];
