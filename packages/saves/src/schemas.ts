@@ -135,6 +135,13 @@ export interface PostRowDto {
   reason: string | null;
   updatedAt: string;
 }
+/** One item of `GET /work`: `filter` = resubmit the post to `/posts` (the filter runs again); `extract` = fetch its media. */
+export interface WorkItem {
+  source: string;
+  key: string;
+  url: string;
+  action: "filter" | "extract";
+}
 export interface SavesStatusDto {
   state: "ok" | "login_needed" | "feed_changed" | "paused_budget" | "error" | "idle";
   lastCheckAt: string | null;

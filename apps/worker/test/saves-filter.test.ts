@@ -8,6 +8,8 @@ import { schema } from "@rg/database";
 import type { SavedPostRow } from "@rg/database";
 import type { Env } from "../src/env.js";
 import type { Db } from "../src/services/db.js";
+import { overridePost } from "../src/services/saves-ledger.js";
+import { loadOutOfCredits } from "../src/services/ai-credits.js";
 import { FILTER_MODEL_DEFAULT, filterPost, TRAINING_WORDS } from "../src/services/saves-filter.js";
 import { IMPORT_BUDGET_MICROS, IMPORT_KINDS } from "../src/services/saves-budget.js";
 import { savedPostId } from "../src/services/saves-ledger.js";
@@ -64,15 +66,15 @@ describe("filterPost", () => {
   });
 
   it("drops a creator whose 3 earlier posts were all not training", async () => {
-    for (const k of ["a", "b", "c"]) await seen(k, { status: "filtered_out", filterVerdict: "not" });
+    for (const k of ["a", "b", "c"]) await seen(k, { status: "filtered_out", filterVerdict: "not", filterStage: "model" });
     const out = await filterPost(db, env(), userId, await seen("new"), NOW, gateway("{}").fetchImpl);
     expect(out).toMatchObject({ status: "filtered_out", verdict: "not", stage: "creator" });
   });
 
   it("does not decide on a mixed or short history", async () => {
-    await seen("a", { filterVerdict: "training", status: "queued" });
-    await seen("b", { filterVerdict: "training", status: "queued" });
-    await seen("c", { filterVerdict: "not", status: "filtered_out" });
+    await seen("a", { filterVerdict: "training", filterStage: "model", status: "queued" });
+    await seen("b", { filterVerdict: "training", filterStage: "model", status: "queued" });
+    await seen("c", { filterVerdict: "not", filterStage: "model", status: "filtered_out" });
     const gw = gateway('{"verdict":"training","reason":"drills"}');
     const out = await filterPost(db, env(), userId, await seen("new"), NOW, gw.fetchImpl);
     expect(out.stage).toBe("model");
@@ -216,5 +218,77 @@ describe("filterPost", () => {
     const row = await seen("p", { lastErrorCode: "filtering", updatedAt: "2026-10-23T09:00:00.000Z" });
     const out = await filterPost(db, env(), userId, row, NOW, gateway('{"verdict":"not","reason":"r"}').fetchImpl);
     expect(out.status).toBe("filtered_out");
+  });
+
+  it("counts seeded verdicts toward the creator", async () => {
+    for (const k of ["a", "b", "c"]) await seen(k, { status: "queued", filterVerdict: "training", filterStage: "seed", seeded: true });
+    const out = await filterPost(db, env(), userId, await seen("new"), NOW, gateway("{}").fetchImpl);
+    expect(out).toMatchObject({ status: "queued", stage: "creator" });
+  });
+
+  it("never counts creator-stage verdicts (a creator verdict cannot feed itself)", async () => {
+    for (const k of ["a", "b", "c"]) await seen(k, { status: "filtered_out", filterVerdict: "not", filterStage: "creator" });
+    const gw = gateway('{"verdict":"training","reason":"x"}');
+    const out = await filterPost(db, env(), userId, await seen("new"), NOW, gw.fetchImpl);
+    expect(out.stage).toBe("model");
+    expect(gw.spy).toHaveBeenCalledTimes(1);
+  });
+
+  it("an owner 'process' on one of three model 'not's counts as training: the next post goes to the model", async () => {
+    const rows: SavedPostRow[] = [];
+    for (const k of ["a", "b", "c"]) rows.push(await seen(k, { status: "filtered_out", filterVerdict: "not", filterStage: "model" }));
+    expect(await overridePost(db, userId, { id: rows[0]!.id }, "process", NOW)).toBe("ok");
+    const gw = gateway('{"verdict":"maybe","reason":"x"}');
+    const out = await filterPost(db, env(), userId, await seen("new"), NOW, gw.fetchImpl);
+    expect(out.stage).toBe("model");
+    expect(gw.spy).toHaveBeenCalledTimes(1);
+  });
+
+  it("retries once on a retryable status, under one reservation, and bills one row", async () => {
+    vi.useFakeTimers({ toFake: ["setTimeout"] });
+    try {
+      let n = 0;
+      const fetchImpl = vi.fn(async () =>
+        ++n === 1
+          ? new Response("busy", { status: 503 })
+          : new Response(JSON.stringify({ choices: [{ message: { content: '{"verdict":"not","reason":"r"}' } }], usage: { prompt_tokens: 100, completion_tokens: 10 } }), { status: 200 }),
+      ) as unknown as typeof fetch;
+      const pending = filterPost(db, env(), userId, await seen("p"), NOW, fetchImpl);
+      await vi.advanceTimersByTimeAsync(5000);
+      const out = await pending;
+      expect(out.status).toBe("filtered_out");
+      expect(fetchImpl).toHaveBeenCalledTimes(2);
+      const rows = await db.select().from(llmUsage);
+      expect(rows).toHaveLength(1);
+      expect(rows[0]!.requestFingerprint).toBeNull();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("does not retry a non-retryable status, warns with the status, and records out-of-credits on a 402", async () => {
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => undefined);
+    try {
+      const fetchImpl = vi.fn(async () => new Response("positive credit balance required", { status: 402 })) as unknown as typeof fetch;
+      const out = await filterPost(db, env(), userId, await seen("p"), NOW, fetchImpl);
+      expect(fetchImpl).toHaveBeenCalledTimes(1);
+      expect(out).toMatchObject({ status: "seen", errorCode: "model_failed" });
+      expect(warn.mock.calls.map((c) => String(c[0])).join("\n")).toContain("402");
+      expect(await loadOutOfCredits(db, userId)).not.toBeNull();
+    } finally {
+      warn.mockRestore();
+    }
+  });
+
+  it("clears out-of-credits on a call that worked", async () => {
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => undefined);
+    try {
+      await filterPost(db, env(), userId, await seen("a"), NOW, vi.fn(async () => new Response("x", { status: 402 })) as unknown as typeof fetch);
+      expect(await loadOutOfCredits(db, userId)).not.toBeNull();
+      await filterPost(db, env(), userId, await seen("b", { creatorHandle: "o" }), NOW, gateway('{"verdict":"not","reason":"r"}').fetchImpl);
+      expect(await loadOutOfCredits(db, userId)).toBeNull();
+    } finally {
+      warn.mockRestore();
+    }
   });
 });

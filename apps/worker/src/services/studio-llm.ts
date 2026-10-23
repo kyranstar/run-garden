@@ -64,7 +64,9 @@ const TIMEOUT_MS = 600_000;
 // in-progress body read in workerd (a stuck generate hung 13+ minutes).
 const STREAM_STALL_MS = 150_000;
 // Pause before the single transient-failure retry in chatCompletion.
-const RETRY_BACKOFF_MS = 1500;
+export const RETRY_BACKOFF_MS = 1500;
+/** Gateway statuses worth one resend (a failed request is not billed). */
+export const RETRYABLE_STATUSES: ReadonlySet<number> = new Set([408, 429, 500, 502, 503, 504, 520, 522, 524, 529]);
 
 /** One log line per rejected generation so `wrangler tail` shows WHY a
  * syntactically-successful LLM response was refused (zod paths, JSON parse,
@@ -621,7 +623,6 @@ export async function chatCompletion(
   // dropped connections). Deterministic failures are returned immediately:
   // a non-retryable 4xx won't change on a resend, and our own timeout abort
   // has already spent the full patience budget.
-  const RETRYABLE_STATUSES = new Set([408, 429, 500, 502, 503, 504, 520, 522, 524, 529]);
   let lastFailure: { ok: false; reason: string } = { ok: false, reason: "llm_error" };
   for (let attempt = 0; attempt < 2; attempt++) {
     if (attempt > 0) await new Promise((resolve) => setTimeout(resolve, RETRY_BACKOFF_MS));

@@ -70,6 +70,6 @@ savesRoutes.post("/posts", async (c) => {
   });
 });
 
-savesRoutes.get("/work", async (c) => c.json({ keys: await workList(c.get("db"), c.get("userId")) }));
+savesRoutes.get("/work", async (c) => c.json({ keys: await workList(c.get("db"), c.get("userId"), nowInstant()) }));
 
 savesRoutes.get("/status", async (c) => c.json(await savesStatus(c.get("db"), c.get("userId"), nowInstant())));

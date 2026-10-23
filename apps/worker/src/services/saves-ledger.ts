@@ -1,10 +1,12 @@
 import { and, asc, desc, eq, inArray, isNotNull, isNull, lt, or, sql } from "drizzle-orm";
 import { schema } from "@rg/database";
 import type { SavedPostRow } from "@rg/database";
-import type { CheckReport, PostSubmit, SaveErrorCode, SavesStatusDto } from "@rg/saves";
+import type { CheckReport, PostSubmit, SaveErrorCode, SavesStatusDto, WorkItem } from "@rg/saves";
+import { nowInstant } from "@rg/domain";
 import { sha256Hex } from "../auth/crypto.js";
 import type { Db } from "./db.js";
 import { importSpend } from "./saves-budget.js";
+import { CLAIM_STALE_MS } from "./saves-filter.js";
 
 const { savedPosts, saveChecks } = schema;
 
@@ -85,20 +87,37 @@ export async function freshKeys(db: Db, userId: string, source: string, keys: re
   return out;
 }
 
-/** Posts the extension should fetch media for: queued with no extraction, or failed in a way worth retrying. Oldest first. */
+/**
+ * What the extension should pick up. `filter`: a `seen` post the filter left behind (a model failure, a budget pause
+ * while the import budget has room again, or a claim older than `CLAIM_STALE_MS`): the extension re-reads it and
+ * resubmits `/posts`, which runs the filter again. `extract`: queued with no extraction, or failed in a way worth
+ * retrying: fetch its media. Filter work first, then oldest first; `limit` across both. Two statements.
+ */
 export async function workList(
   db: Db,
   userId: string,
+  now: string = nowInstant(),
   limit: number = WORK_LIMIT,
-): Promise<{ source: string; key: string; url: string }[]> {
+): Promise<WorkItem[]> {
+  const stale = new Date(new Date(now).getTime() - CLAIM_STALE_MS).toISOString();
+  const { spentMicros, capMicros } = await importSpend(db, userId, new Date(now));
+  const isFilter = and(
+    eq(savedPosts.status, "seen"),
+    or(
+      eq(savedPosts.lastErrorCode, "model_failed"),
+      spentMicros < capMicros ? eq(savedPosts.lastErrorCode, "budget_paused") : undefined,
+      and(eq(savedPosts.lastErrorCode, "filtering"), lt(savedPosts.updatedAt, stale)),
+    ),
+  );
   const rows = await db
-    .select({ source: savedPosts.source, key: savedPosts.sourceKey, url: savedPosts.url })
+    .select({ source: savedPosts.source, key: savedPosts.sourceKey, url: savedPosts.url, status: savedPosts.status })
     .from(savedPosts)
     .where(
       and(
         eq(savedPosts.userId, userId),
         isNotNull(savedPosts.url),
         or(
+          isFilter,
           and(eq(savedPosts.status, "queued"), isNull(savedPosts.extraction)),
           and(
             eq(savedPosts.status, "failed"),
@@ -108,9 +127,11 @@ export async function workList(
         ),
       ),
     )
-    .orderBy(asc(savedPosts.updatedAt), asc(savedPosts.id))
+    .orderBy(sql`CASE WHEN ${savedPosts.status} = 'seen' THEN 0 ELSE 1 END`, asc(savedPosts.updatedAt), asc(savedPosts.id))
     .limit(limit);
-  return rows.flatMap((r) => (r.url ? [{ source: r.source, key: r.key, url: r.url }] : []));
+  return rows.flatMap((r) =>
+    r.url ? [{ source: r.source, key: r.key, url: r.url, action: r.status === "seen" ? ("filter" as const) : ("extract" as const) }] : [],
+  );
 }
 
 /**

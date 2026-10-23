@@ -178,11 +178,11 @@ describe("POST /posts with the model (filter)", () => {
     vi.fn(async () => new Response(JSON.stringify({ choices: [{ message: { content } }], usage: { prompt_tokens: 100, completion_tokens: 20 } }), { status: 200 }));
   afterEach(() => vi.unstubAllGlobals());
 
-  it("filters out a 'not' within 10 statements (2 auth, 2 ledger, claim, creator history, reserve 2, settle, outcome; the model call excluded)", async () => {
+  it("filters out a 'not' within 12 statements (2 auth, 2 ledger, claim, creator history, reserve 2, settle, credits note 2, outcome; the model call excluded)", async () => {
     vi.stubGlobal("fetch", answer('{"verdict":"not","reason":"a recipe"}'));
     const { body, cost } = await post("/posts", submit("m1"), auth, await live());
     expect(body).toEqual({ status: "filtered_out", verdict: "not", reason: "a recipe" });
-    expect(cost).toBeLessThanOrEqual(10);
+    expect(cost).toBeLessThanOrEqual(12);
   });
   it("makes ONE model call and ONE usage row for two simultaneous submits of a new key", async () => {
     const fetchMock = answer('{"verdict":"training","reason":"drills"}');
@@ -196,6 +196,23 @@ describe("POST /posts with the model (filter)", () => {
   });
 });
 
+describe("POST /posts resubmitting a stranded post", () => {
+  afterEach(() => vi.unstubAllGlobals());
+  it("re-runs the filter on a known seen post, with the fresh cover", async () => {
+    await seedPost("again", { status: "seen", lastErrorCode: "model_failed", creatorHandle: "someone", caption: "c", mediaType: "video" });
+    const calls: any[] = [];
+    vi.stubGlobal("fetch", vi.fn(async (_u: unknown, init?: RequestInit) => {
+      calls.push(JSON.parse(String(init?.body)));
+      return new Response(JSON.stringify({ choices: [{ message: { content: '{"verdict":"training","reason":"x"}' } }], usage: { prompt_tokens: 10, completion_tokens: 5 } }), { status: 200 });
+    }));
+    const env = await makeEnv({ FIXTURE_MODE: "0", AI_GATEWAY_API_KEY: "k", AI_GATEWAY_BASE_URL: "https://gw.test/v1" });
+    const { body } = await post("/posts", submit("again", { cover: { mime: "image/jpeg", base64: "AAAA" } }), auth, env);
+    expect(body.status).toBe("queued");
+    expect(calls).toHaveLength(1);
+    expect(JSON.stringify(calls[0].messages[1].content)).toContain("data:image/jpeg;base64,AAAA");
+  });
+});
+
 describe("GET /work", () => {
   it("lists a queued post and a failed one with 2 attempts, not one with 3, oldest first", async () => {
     await seedPost("queued", { updatedAt: "2026-10-02T00:00:00.000Z" });
@@ -206,9 +223,27 @@ describe("GET /work", () => {
     await seedPost("withExtraction", { status: "queued", extraction: { kind: "tips" } });
     const { body } = await call("/work");
     expect(body.keys).toEqual([
-      { source: SRC, key: "failed2", url: "https://example.com/p/failed2" },
-      { source: SRC, key: "queued", url: "https://example.com/p/queued" },
+      { source: SRC, key: "failed2", url: "https://example.com/p/failed2", action: "extract" },
+      { source: SRC, key: "queued", url: "https://example.com/p/queued", action: "extract" },
     ]);
+  });
+  it("lists stranded seen posts as filter work, first: model_failed, budget_paused under the cap, a stale claim", async () => {
+    await seedPost("q", { updatedAt: "2026-10-01T00:00:00.000Z" });
+    await seedPost("mf", { status: "seen", lastErrorCode: "model_failed", updatedAt: "2026-10-02T00:00:00.000Z" });
+    await seedPost("bp", { status: "seen", lastErrorCode: "budget_paused", updatedAt: "2026-10-03T00:00:00.000Z" });
+    await seedPost("stale", { status: "seen", lastErrorCode: "filtering", updatedAt: "2026-10-04T00:00:00.000Z" });
+    await seedPost("fresh", { status: "seen", lastErrorCode: "filtering", updatedAt: new Date().toISOString() });
+    await seedPost("plain", { status: "seen", updatedAt: "2026-10-01T00:00:00.000Z" });
+    const { body } = await call("/work");
+    expect(body.keys.map((k: any) => `${k.key}:${k.action}`)).toEqual(["mf:filter", "bp:filter", "stale:filter", "q:extract"]);
+  });
+  it("leaves budget_paused posts out while the import budget is spent", async () => {
+    await seedPost("bp", { status: "seen", lastErrorCode: "budget_paused" });
+    await db.insert(schema.llmUsage).values({
+      id: "spent", userId, kind: "import_extract", model: "m", inputTokens: 1, outputTokens: 1,
+      costMicros: 5_000_000, cacheHit: false, createdAt: new Date().toISOString(),
+    });
+    expect((await call("/work")).body.keys).toEqual([]);
   });
   it("hands out at most 20", async () => {
     for (let i = 0; i < 25; i++) await seedPost(`q${i}`);

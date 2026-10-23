@@ -8,7 +8,8 @@ import type { Db } from "./db.js";
 import { messagesCostMicros } from "./llm-messages.js";
 import { wakeGateway } from "./gateway-route.js";
 import { IMPORT_KINDS, reserveImport, settleImport } from "./saves-budget.js";
-import { extractJson } from "./studio-llm.js";
+import { noteGatewayOutcome } from "./ai-credits.js";
+import { extractJson, RETRY_BACKOFF_MS, RETRYABLE_STATUSES } from "./studio-llm.js";
 
 const { savedPosts } = schema;
 
@@ -71,7 +72,9 @@ async function finish(db: Db, row: SavedPostRow, out: FilterOutcome, now: string
  * Decide a fresh (`seen`) post: the creator's history, then a small model on the caption and cover. The post is CLAIMED
  * first by one conditional UPDATE (status still `seen` and nobody else's live claim), so of two simultaneous submits
  * only one filters and pays; the other answers `seen`/`busy`. The write that ends the filter moves the post on, or
- * leaves it `seen` with an error code (`budget_paused`, `model_failed`) for a later submit to retry.
+ * leaves it `seen` with an error code (`budget_paused`, `model_failed`). A `seen` post is never in `/known`'s fresh
+ * list, so the extension finds it again through `workList` (saves-ledger.ts), which hands it back as `filter` work, and
+ * resubmits it to `/posts`, which runs this again.
  * D1 statements: claim 1, creator history 1, reserve 2, settle 1, outcome 1.
  */
 export async function filterPost(
@@ -101,8 +104,11 @@ export async function filterPost(
   if (claimed.length === 0) return { status: "seen", errorCode: "busy" };
 
   // The creator: three or more earlier decided posts, all one verdict, decide this one.
+  // Only decisions that teach the creator count: the model's, the seed's and the owner's (a `process` override reads as
+  // training). Never the creator stage's own, so a creator verdict cannot feed itself.
+  const effective = sql<string | null>`CASE WHEN ${savedPosts.filterStage} = 'owner' THEN 'training' ELSE ${savedPosts.filterVerdict} END`;
   const history = await db
-    .select({ verdict: savedPosts.filterVerdict, n: sql<number>`count(*)` })
+    .select({ verdict: effective, n: sql<number>`count(*)` })
     .from(savedPosts)
     .where(
       and(
@@ -110,11 +116,11 @@ export async function filterPost(
         eq(savedPosts.source, post.source),
         eq(savedPosts.creatorHandle, post.creatorHandle ?? ""),
         ne(savedPosts.id, post.id),
-        eq(savedPosts.seeded, false),
-        sql`${savedPosts.filterVerdict} IS NOT NULL`,
+        sql`${savedPosts.filterStage} IN ('model', 'seed', 'owner')`,
+        sql`(${savedPosts.filterStage} = 'owner' OR ${savedPosts.filterVerdict} IS NOT NULL)`,
       ),
     )
-    .groupBy(savedPosts.filterVerdict);
+    .groupBy(effective);
   const only = history.length === 1 ? history[0]! : null;
   if (only && Number(only.n) >= CREATOR_MIN_POSTS && (only.verdict === "training" || only.verdict === "not")) {
     const verdict = only.verdict;
@@ -172,6 +178,8 @@ export async function filterPost(
   let settled = false;
   try {
     const result = await askModel(gateway.env, fetchImpl, model, system, userText, post.cover);
+    // A 402 records out-of-credits (the owner's banner); a call that worked clears it; any other failure says nothing.
+    await noteGatewayOutcome(db, userId, result.ok ? { ok: true } : { ok: false, reason: result.reason });
     if (!result.ok) return await failed("model_failed");
     const cost = messagesCostMicros(model, {
       inputTokens: result.inputTokens,
@@ -214,7 +222,9 @@ function parseVerdict(content: string): FilterVerdict {
 
 /**
  * One OpenAI-compatible chat completion with an image part. `chatCompletion` (studio-llm.ts) takes string content only
- * and streams, so this is a small request of its own: not streamed (120 tokens), one attempt (a retry is a second bill).
+ * and streams, so this is a small request of its own: not streamed (120 tokens). Like it, one resend on a retryable
+ * status (a failed request is not billed, so one reservation covers both attempts). Failures carry a reason
+ * (`gateway_<status>` / `llm_error`) and are logged.
  */
 async function askModel(
   env: Env,
@@ -223,45 +233,67 @@ async function askModel(
   system: string,
   userText: string,
   cover: PostSubmit["cover"],
-): Promise<{ ok: true; content: string; inputTokens: number; outputTokens: number } | { ok: false }> {
-  const controller = new AbortController();
-  const timer = setTimeout(() => controller.abort(), CALL_TIMEOUT_MS);
-  try {
-    const response = await fetchImpl(`${env.AI_GATEWAY_BASE_URL || "https://ai-gateway.vercel.sh/v1"}/chat/completions`, {
-      method: "POST",
-      signal: controller.signal,
-      headers: { Authorization: `Bearer ${env.AI_GATEWAY_API_KEY}`, "Content-Type": "application/json" },
-      body: JSON.stringify({
-        model,
-        max_tokens: FILTER_MAX_TOKENS,
-        messages: [
-          { role: "system", content: system },
-          {
-            role: "user",
-            content: [
-              { type: "text", text: userText },
-              ...(cover ? [{ type: "image_url", image_url: { url: `data:${cover.mime};base64,${cover.base64}` } }] : []),
-            ],
-          },
+): Promise<{ ok: true; content: string; inputTokens: number; outputTokens: number } | { ok: false; reason: string }> {
+  const body = JSON.stringify({
+    model,
+    max_tokens: FILTER_MAX_TOKENS,
+    messages: [
+      { role: "system", content: system },
+      {
+        role: "user",
+        content: [
+          { type: "text", text: userText },
+          ...(cover ? [{ type: "image_url", image_url: { url: `data:${cover.mime};base64,${cover.base64}` } }] : []),
         ],
-      }),
-    });
-    if (!response.ok) return { ok: false };
-    const body = (await response.json().catch(() => null)) as {
-      choices?: Array<{ message?: { content?: unknown } }>;
-      usage?: { prompt_tokens?: number; completion_tokens?: number };
-    } | null;
-    const content = body?.choices?.[0]?.message?.content;
-    if (typeof content !== "string") return { ok: false };
-    return {
-      ok: true,
-      content,
-      inputTokens: body?.usage?.prompt_tokens ?? estimateInputTokens([system, userText], cover),
-      outputTokens: body?.usage?.completion_tokens ?? Math.ceil(content.length / 3),
-    };
-  } catch {
-    return { ok: false };
-  } finally {
-    clearTimeout(timer);
+      },
+    ],
+  });
+  let failure: { ok: false; reason: string } = { ok: false, reason: "llm_error" };
+  for (let attempt = 0; attempt < 2; attempt++) {
+    if (attempt > 0) await new Promise((resolve) => setTimeout(resolve, RETRY_BACKOFF_MS));
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), CALL_TIMEOUT_MS);
+    try {
+      const response = await fetchImpl(`${env.AI_GATEWAY_BASE_URL || "https://ai-gateway.vercel.sh/v1"}/chat/completions`, {
+        method: "POST",
+        signal: controller.signal,
+        headers: { Authorization: `Bearer ${env.AI_GATEWAY_API_KEY}`, "Content-Type": "application/json" },
+        body,
+      });
+      if (!response.ok) {
+        const detail = await response.text().catch(() => "");
+        console.warn(
+          JSON.stringify({ level: "warn", msg: "saves filter: ai gateway error", status: response.status, model, attempt, detail: detail.slice(0, 300) }),
+        );
+        failure = { ok: false, reason: `gateway_${response.status}` };
+        if (RETRYABLE_STATUSES.has(response.status)) continue;
+        return failure;
+      }
+      const json = (await response.json().catch(() => null)) as {
+        choices?: Array<{ message?: { content?: unknown } }>;
+        usage?: { prompt_tokens?: number; completion_tokens?: number };
+      } | null;
+      const content = json?.choices?.[0]?.message?.content;
+      if (typeof content !== "string") {
+        failure = { ok: false, reason: "gateway_bad_response" };
+        continue;
+      }
+      return {
+        ok: true,
+        content,
+        inputTokens: json?.usage?.prompt_tokens ?? estimateInputTokens([system, userText], cover),
+        outputTokens: json?.usage?.completion_tokens ?? Math.ceil(content.length / 3),
+      };
+    } catch (e) {
+      console.warn(
+        JSON.stringify({ level: "warn", msg: "saves filter: ai gateway request failed", model, attempt, detail: String(e).slice(0, 200) }),
+      );
+      failure = { ok: false, reason: "llm_error" };
+      if (controller.signal.aborted) return failure;
+    } finally {
+      clearTimeout(timer);
+    }
   }
+  return failure;
 }
+
