@@ -33,7 +33,7 @@ import { insertBatches, runAtomically, type AtomicStatement, type Db } from "./d
 import { separateDayCollisions, windowTimeFor } from "./day-placement.js";
 import { loadOwnProgramNames, unstampTitle } from "./coros-stamp.js";
 import { openMoveIntents, resolveIntent } from "./sync-intents.js";
-import { adoptsWatchCopy } from "./watch-copy-marker.js";
+import { adoptsWatchCopy, watchCopyBase } from "./watch-copy-marker.js";
 import { dismissSyncNotesOf, postSyncNote } from "./sync-notes.js";
 import { reconcileWorkout } from "./reconcile.js";
 import { SETTLED_PUSH, sentBuildIdOf } from "./session-build.js";
@@ -620,6 +620,58 @@ export async function importPlanSnapshot(
 
   const seenSourceIds = new Set<string>();
 
+  /**
+   * A COACH SESSION'S OWN COPY AT A NEW ADDRESS (review A5, the belt to jobs.ts `followNewPlacement`'s braces). A move
+   * COROS made as remove-and-add puts the session at a new idInPlan; when the row's address did not follow (the lane
+   * died between the verified move and its result, or a move verified before the follow existed), this read would find
+   * an unclaimed workout, mint a row for it and archive the session's row as its `duplicate_mirror` — prod's 10-13 →
+   * 10-15 long run. The read follows the session there instead, but only on evidence nothing else can share:
+   *  - the row is coach-created (a verified `coach_create_workout`) — so its program id is the placement's — live,
+   *    scheduled, and not app-built (a program slot has its own rule, 3-R9 above);
+   *  - the wire workout carries a name the row's OWN verified coach write stamped (`ownCoachStamps`; a stamp is unique
+   *    plan-wide by the create's own guard), in the COROS plan of the row's address;
+   *  - the row's recorded address is served by no workout of this read, its recorded day inside the read's window (so
+   *    the absence is evidence, as rule 8 reads it), and no row at all claims the new one — so a copy the athlete made
+   *    beside the original (two carriers, the original still at its address) is never taken;
+   *  - on the row's day, with the steps the row last observed there (`watchCopyBase`: under a Keep mark, what it kept);
+   *  - exactly one such row.
+   * Anything short of that goes the way it always went (a new row, and the mirror dedupe), so the dedupe decides every
+   * case it decided before. One statement, and only when it fires.
+   */
+  const servedAddresses = new Set(admitted.map((w) => w.sourceWorkoutId));
+  const coachCreated = new Set(
+    watchWrites.filter((r) => r.kind === "coach_create_workout" && r.status === "verified").map((r) => r.workoutId),
+  );
+  const rowsByOwnStamp = new Map<string, string[]>();
+  for (const key of ownCoachStamps) {
+    const cut = key.indexOf("\n");
+    const [id, name] = [key.slice(0, cut), key.slice(cut + 1)];
+    if (!coachCreated.has(id)) continue;
+    rowsByOwnStamp.set(name, [...(rowsByOwnStamp.get(name) ?? []), id]);
+  }
+  const followedRows = new Set<string>();
+  const ownCopyMoved = (src: SourcePlannedWorkout): StoredWorkout | undefined => {
+    const rows = (rowsByOwnStamp.get(src.title) ?? []).flatMap((id) => {
+      const w = existingById.get(id);
+      return w &&
+        !w.archivedAt &&
+        w.completionState === "scheduled" &&
+        !appAuthoredRow(w) &&
+        !followedRows.has(w.id) &&
+        w.sourceWorkoutId !== w.id &&
+        !servedAddresses.has(w.sourceWorkoutId) &&
+        // Absent only where this read looks: its recorded day inside the window (rule 8's own test of absence).
+        w.lastVerifiedCorosDate >= input.rangeStart &&
+        w.lastVerifiedCorosDate <= input.rangeEnd &&
+        w.sourceWorkoutId.split(":")[0] === src.sourcePlanId &&
+        w.effectiveDate === src.date &&
+        watchCopyBase(w.sourceContentFingerprint) === src.contentFingerprint
+        ? [w]
+        : [];
+    });
+    return rows.length === 1 ? rows[0] : undefined;
+  };
+
   /** How many wire workouts in this read carry each stamp of ours: an orphan is only ever its stamp's one carrier. */
   const stampCarriers = new Map<string, number>();
   for (const src of admitted) {
@@ -918,6 +970,27 @@ export async function importPlanSnapshot(
           now,
         );
       }
+      continue;
+    }
+
+    const moved = !current && atAddress.length === 0 ? ownCopyMoved(src) : undefined;
+    if (moved) {
+      // The coach session's own copy, at the address COROS gave it (`ownCopyMoved`): the row follows it.
+      const followed = {
+        sourceWorkoutId: src.sourceWorkoutId,
+        sourceIdInPlan: src.sourceIdInPlan ?? null,
+        sourceProgramId: src.planProgramId ?? src.sourceIdInPlan ?? null,
+        lastVerifiedCorosDate: src.date,
+        missingReads: 0,
+      };
+      await db
+        .update(plannedWorkouts)
+        .set({ ...followed, updatedAt: now })
+        .where(eq(plannedWorkouts.id, moved.id));
+      // The read's own picture of the row follows too: rule 8 below then finds it served, never missing.
+      Object.assign(moved, followed);
+      followedRows.add(moved.id);
+      stats.unchanged += 1;
       continue;
     }
 

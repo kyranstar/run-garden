@@ -409,6 +409,24 @@ export const corosWriteResultSchema = z.object({
   observedDate: z.string().optional(),
   observedFingerprint: z.string().optional(),
   observedVersion: z.string().optional(),
+  /**
+   * A REMOVE-AND-ADD MOVE IS A NEW PLACEMENT (review A5): the session now sits at a new `idInPlan`, under a program
+   * id COROS issued, and the placement it replaced is gone. Read back from the schedule that verified the move, never
+   * assumed from what was sent. The planned row's address follows it (jobs.ts `applyJobResult`) — else the next read
+   * finds the session's own copy at an address no row claims, mints a row for it, and archives the session's row as
+   * that copy's mirror. Absent on every other outcome: a direct update keeps the address.
+   */
+  readdressed: z
+    .object({
+      planId: z.string(),
+      idInPlan: z.string(),
+      /** The placement's own program id — the delete triple's third element; what a coach-created row records. */
+      planProgramId: z.string(),
+      /** COROS's `program.id` for it — what an imported row records. */
+      programId: z.string().optional(),
+      replaced: z.object({ idInPlan: z.string(), planProgramId: z.string(), programId: z.string().optional() }),
+    })
+    .optional(),
   errorCategory: z.string().optional(),
   finishedAt: z.string(),
   /** Ed25519 signature over the canonical result payload, by the device key. */

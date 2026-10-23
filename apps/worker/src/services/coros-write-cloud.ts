@@ -51,6 +51,7 @@ import { enqueueUnpushIfOurs } from "./plan-mutations.js";
 import { sentBuildIdOf } from "./session-build.js";
 import { recordedStampFor, renamedCopyOfRow, SPENT_STAMP_STATUSES } from "./coros-stamp.js";
 import { gatedAtClaim, unlockSentBuild, unpushBuild } from "./watch-push.js";
+import { takesWatchCopy } from "./watch-copy-marker.js";
 
 /**
  * Cloud write consumer (cloud-direct spec §4): the same job queue with all
@@ -461,19 +462,30 @@ export async function executeCloudJobs(
           // fingerprint the one the job was queued (or brought up to date) with, read with the payload this drain pushed —
           // is answered here. A claim on another session (the drain read the create before the re-time, and landed the
           // older one) stays open, and the row still says so. One statement.
-          await db
-            .update(syncIntents)
-            .set({ resolvedAt: done })
-            .where(
-              and(
-                eq(syncIntents.userId, userId),
-                eq(syncIntents.targetId, spec.workoutId),
-                eq(syncIntents.kind, "content"),
-                isNull(syncIntents.resolvedAt),
-                isNull(syncIntents.supersededBy),
-                sql`json_extract(${syncIntents.payload}, '$.fingerprint') = ${job.expectedContentFingerprint}`,
-              ),
-            );
+          //
+          // ONLY WHEN THIS CALL WROTE IT (review A2). A same-day `already_present` found a copy under the stamp and
+          // wrote nothing: it is whatever an EARLIER attempt landed — and a create requeued after a transient failure
+          // (a lost answer, `not_visible`, a runtime ceiling) is still `queued`, so a re-time brings it up to the new
+          // session after its first attempt may already have put the old one on the watch. Closing the claim on the
+          // job's fingerprint then read "Synced" over a watch holding the older session, for good. The found copy is
+          // not compared with the one built (a comparison across COROS's re-encoding, whose false "same" would be that
+          // very lie): the claim stays open, the row says "Older on watch" — true if the old copy landed, and if the
+          // new one did, Send's rewrite verifies it by value and closes it.
+          if (result.reason !== "already_present") {
+            await db
+              .update(syncIntents)
+              .set({ resolvedAt: done })
+              .where(
+                and(
+                  eq(syncIntents.userId, userId),
+                  eq(syncIntents.targetId, spec.workoutId),
+                  eq(syncIntents.kind, "content"),
+                  isNull(syncIntents.resolvedAt),
+                  isNull(syncIntents.supersededBy),
+                  sql`json_extract(${syncIntents.payload}, '$.fingerprint') = ${job.expectedContentFingerprint}`,
+                ),
+              );
+          }
           // COROS STORED A DESIGNED RUN DIFFERENTLY (review-2 I2): the job stays
           // `verified` — the program is ours, on that day, and every later move,
           // ease, Undo and removal proves ownership by a verified create's stamp
@@ -764,7 +776,14 @@ export async function executeCloudJobs(
         // on-demand session's copy is the build the athlete sent; only Send and
         // Take off write it. A rewrite queued before that rule (or by any path
         // that missed it) is superseded here, before any wire call.
-        if (job.workout && appAuthoredRow(job.workout)) {
+        //
+        // NOR OVER A COPY THE ATHLETE CHOSE (review A1). A row carrying the "keep the watch's version" mark
+        // (watch-copy-marker.ts) is waiting for the next read to take the watch's copy; Keep supersedes every rewrite of
+        // it not running, and a new change of the app's lifts the mark before it queues its own. A rewrite that reaches
+        // here anyway — revived by a Retry of one a Keep before that rule left failed — would put the version the athlete
+        // chose against on the watch and, verified, stamp the wire's fingerprint over the mark: the app's row "synced"
+        // while the watch holds another session, for good. Superseded, before any wire call; the mark stays.
+        if (job.workout && (appAuthoredRow(job.workout) || takesWatchCopy(job.workout.sourceContentFingerprint))) {
           await db
             .update(corosWriteJobs)
             .set({ status: "superseded", updatedAt: nowInstant() })

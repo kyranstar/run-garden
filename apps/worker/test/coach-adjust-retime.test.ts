@@ -162,6 +162,37 @@ describe("a designed run re-timed by its document", () => {
     expect(parseStoredWorkoutDoc(row.workoutDoc)!.parts[1]!.rounds).toBe(3);
   });
 
+  it("with no card, on the watch, its watch version the athlete kept: the length alone — never its stage rows read back as a coach session, never taken off the watch (review A3, A4)", async () => {
+    // A tempo with a distance cool-down (the reclaim built a distance block the watch can't take, and queued the
+    // removal of the copy), and one of times alone (the reclaim re-sent it as threshold and easy work).
+    const steady = (cooldown: { durationSec: number } | { distanceM: number }) =>
+      tempoDoc({
+        parts: [
+          { purpose: "warmup", format: "steady", items: [{ kind: "run", effort: "easy", target: { durationSec: 600 } }] },
+          { purpose: "run", format: "steady", items: [{ kind: "run", effort: "tempo", target: { durationSec: 1200 } }] },
+          { purpose: "cooldown", format: "steady", items: [{ kind: "run", effort: "recovery", target: cooldown }] },
+        ],
+      });
+    for (const doc of [steady({ distanceM: 2000 }), steady({ durationSec: 600 })]) {
+      const { db, userId, prefs, today } = await setup();
+      // A threshold, so the distance is timed and the run goes to the watch.
+      await db.insert(schema.dailyHealth).values({ id: `${userId}:${today}`, userId, date: today, thresholdPaceSecPerKm: 289, contentFingerprint: "h", updatedAt: nowInstant() });
+      const id = await designedRun(db, userId, prefs, today, doc);
+      expect((await jobsOf(db, id)).map((j) => j.kind), "its create").toEqual(["coach_create_workout"]);
+      await onTheWatch(db, id, addDays(today, 2));
+      await db.update(plannedWorkouts).set({ sourceContentFingerprint: "take-watch-copy:0123456789abcdef" }).where(eq(plannedWorkouts.id, id));
+      const stages = await stagesOf(db, id);
+      const out = await applyOps(db, userId, prefs, "p", [{ kind: "adjust", workoutId: id, durationMinutes: 30 }]);
+      expect(out).toMatchObject({ updated: [id], missed: [] });
+      const row = await rowOf(db, id);
+      expect(row.calendarBlockDurationSeconds).toBe(1800);
+      expect(row.sourceContentFingerprint, "the mark stays").toBe("take-watch-copy:0123456789abcdef");
+      expect(await stagesOf(db, id)).toEqual(stages);
+      expect((await jobsOf(db, id)).map((j) => j.kind), "nothing for the watch: no rewrite, no removal").toEqual(["coach_create_workout"]);
+      expect(await openIntentFor(db, userId, id, "content")).toBeNull();
+    }
+  });
+
   it("a distance in it is timed at its pace, re-timed to the 100 m, and its typed words go", async () => {
     const { db, userId, prefs, today } = await setup();
     const doc = tempoDoc({

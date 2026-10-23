@@ -17,7 +17,6 @@ import { createSession, SESSION_COOKIE } from "../src/auth/sessions.js";
 import { coachRoutes } from "../src/routes/coach.js";
 import {
   ADJUST_COST,
-  ADJUST_RECLAIM_COST,
   APPROVE_FIXED,
   opCostOf,
   PLAN_BATCH_FIXED,
@@ -254,15 +253,13 @@ describe("a row stating another length than its steps (review-L minor 6)", () =>
 });
 
 describe("the approve: declared from the card, applied when the rule finds it again", () => {
-  it("a re-timed length costs RETIME_COST and its stage inserts; a length alone ADJUST_COST (and the reclaim's on a marked row)", () => {
+  it("a re-timed length costs RETIME_COST and its stage inserts; a length alone ADJUST_COST — on a marked row too (review A4)", () => {
     expect(RETIME_COST).toBe(12);
     const op = { kind: "adjust", workoutId: "w", durationMinutes: 25 } as const;
     const card = { minutes: 25, summary: "3 × 5 min (was 5 × 5)", stageSummary: "s", stageRows: 12, stageInserts: 3 };
     expect(planOpCostOf({ op, retime: card }, 2)).toBe(RETIME_COST + 3 + 2);
-    // A marked row's reclaim is inside the re-time's own (the mark lifts in its row write).
-    expect(planOpCostOf({ op, retime: card }, 2, true)).toBe(RETIME_COST + 3 + 2);
     expect(planOpCostOf({ op, retime: null }, 2)).toBe(ADJUST_COST + 2);
-    expect(planOpCostOf({ op }, 2, true)).toBe(ADJUST_COST + 2 + ADJUST_RECLAIM_COST);
+    expect(planOpCostOf({ op }, 2)).toBe(ADJUST_COST + 2);
   });
 
   it("applies the card's re-time: the stages, the length, the rewrite queued — within what it declared; asked again, made, nothing written", async () => {

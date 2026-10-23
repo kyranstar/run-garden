@@ -17,6 +17,7 @@ import { mockCorosServer } from "../../../packages/coros/test/mock-coros-server.
 import type { Env } from "../src/env.js";
 import type { Db } from "../src/services/db.js";
 import { planRoutes } from "../src/routes/plan.js";
+import { syncRoutes } from "../src/routes/sync.js";
 import { createSession, SESSION_COOKIE } from "../src/auth/sessions.js";
 import { applyOps } from "../src/services/coach-apply.js";
 import { connectCoros } from "../src/services/coros-connection.js";
@@ -375,8 +376,8 @@ describe("POST /api/plan/workouts/:id/watch-version/keep", () => {
     expect(waiting.workout.corosSyncView).toBe("taking_watch_copy");
     expect(waiting.workout.syncAction).toEqual({ agent: "app", code: "taking_watch_copy" });
     expect(waiting.watchVersion).toBeUndefined();
-    // The failed rewrite stays as it was: nothing is sent.
-    expect((await rewrites(a, a.workoutId))[0]!.status).toBe("failed");
+    // The failed rewrite is stopped with the claim it served: nothing is sent, and no Retry can send it (A1).
+    expect((await rewrites(a, a.workoutId))[0]!.status).toBe("superseded");
     // Nothing of the app's copy goes before the read brings the watch's in: a structure the app held is still there.
     const exercises = { exercises: [{ name: "Calf raise", sets: 2, reps: 12 }] };
     await a.db.update(schema.plannedWorkouts).set({ structuredJson: exercises }).where(eq(schema.plannedWorkouts.id, a.workoutId));
@@ -563,35 +564,33 @@ describe("POST /api/plan/workouts/:id/watch-version/keep", () => {
     expect((await detail(a, a.workoutId)).workout.corosSyncView).toBe("synced");
   });
 
-  it("A1: a coach re-time approved after Keep stands — the mark lifted, the app's claim again, its rewrite on what the watch holds; Send if it fails", async () => {
+  it("A4: a length alone, approved after Keep, is what its card says — the plan's length, and the watch keeps its copy: no claim, no rewrite of the version the athlete chose against", async () => {
     const a = await easedAndFailed();
-    const [before] = await a.db.select().from(schema.plannedWorkouts).where(eq(schema.plannedWorkouts.id, a.workoutId));
     expect((await request(a, `/api/plan/workouts/${a.workoutId}/watch-version/keep`, "POST")).status).toBe(200);
+    const [kept] = await a.db.select().from(schema.plannedWorkouts).where(eq(schema.plannedWorkouts.id, a.workoutId));
+    const jobsBefore = (await rewrites(a, a.workoutId)).map((j) => [j.id, j.status]);
     const out = await applyOps(a.db, a.userId, a.prefs, "p-adjust", [coachOpSchema.parse({ kind: "adjust", workoutId: a.workoutId, durationMinutes: 25 })]);
     expect(out.missed).toEqual([]);
     const [row] = await a.db.select().from(schema.plannedWorkouts).where(eq(schema.plannedWorkouts.id, a.workoutId));
-    expect(row!.sourceContentFingerprint, "the mark lifted").toBe(before!.sourceContentFingerprint);
-    expect(row!.calendarBlockDurationSeconds).toBe(1500);
+    expect(row!.calendarBlockDurationSeconds, "the plan's length").toBe(1500);
+    expect(row!.sourceContentFingerprint, "the mark stays: the read still takes the watch's copy").toBe(kept!.sourceContentFingerprint);
     const open = await a.db
       .select()
       .from(schema.syncIntents)
       .where(and(eq(schema.syncIntents.targetId, a.workoutId), eq(schema.syncIntents.kind, "content"), isNull(schema.syncIntents.resolvedAt)));
-    expect(open.map((i) => i.source)).toEqual(["coach_adjust"]);
-    const queued = (await rewrites(a, a.workoutId)).find((j) => j.status === "queued");
-    expect(queued, "its rewrite, on what the watch holds").toBeDefined();
-    expect((queued!.payload as { importedFingerprint?: string }).importedFingerprint).toBe(before!.sourceContentFingerprint);
-    expect((queued!.payload as { session: { durationMinutes: number } }).session.durationMinutes).toBe(25);
+    expect(open, "no claim of the app's").toEqual([]);
+    expect((await rewrites(a, a.workoutId)).map((j) => [j.id, j.status]), "nothing queued for the watch").toEqual(jobsBefore);
+    expect((await detail(a, a.workoutId)).workout.corosSyncView).toBe("taking_watch_copy");
 
-    // The read: the newer change stands.
+    // The read takes the watch's copy, as the athlete chose: the eased session never reaches the watch.
+    const writes = a.server.counts.scheduleWrites;
+    await executeCloudJobs(a.db, makeEnv(), a.userId, a.prefs, { fetchImpl: a.server.fetchImpl });
+    expect(a.server.counts.scheduleWrites).toBe(writes);
     await readAndImport(a);
     const [after] = await a.db.select().from(schema.plannedWorkouts).where(eq(schema.plannedWorkouts.id, a.workoutId));
-    expect(after!.title).toBe(EASED.title);
-    expect(after!.calendarBlockDurationSeconds).toBe(1500);
-    // Its rewrite failed: Send is offered.
-    await a.db.update(schema.corosWriteJobs).set({ status: "failed" }).where(eq(schema.corosWriteJobs.id, queued!.id));
-    const d = await detail(a, a.workoutId);
-    expect(d.workout.corosSyncView).toBe("content_stale");
-    expect(d.watchVersion).toEqual({ send: true });
+    expect(after!.title).toBe("Threshold 5x5");
+    expect(normalizeCorosSchedule(a.server.state.schedule).workouts.map((w) => w.title)).not.toContain(EASED.title);
+    expect((await detail(a, a.workoutId)).workout.corosSyncView).toBe("synced");
   });
 
   it("a re-time of a session that never chose the watch's version is what it always was: no claim, no rewrite", async () => {
@@ -607,6 +606,50 @@ describe("POST /api/plan/workouts/:id/watch-version/keep", () => {
     expect(await rewrites(a, row!.id)).toEqual([]);
     const [after] = await a.db.select().from(schema.plannedWorkouts).where(eq(schema.plannedWorkouts.id, row!.id));
     expect(after!.sourceContentFingerprint).toBe(row!.sourceContentFingerprint);
+  });
+
+  it("A1: Keep after a failed rewrite clears the sync line, and Retry can't put the app's version back over the watch's", async () => {
+    const a = await easedAndFailed();
+    const issues = (await computeSyncStatus(a.db, a.userId, a.prefs)).issueCount;
+    expect(issues, "the failed rewrite is the line's issue before Keep").toBe(1);
+    expect((await request(a, `/api/plan/workouts/${a.workoutId}/watch-version/keep`, "POST")).status).toBe(200);
+    const kept = await computeSyncStatus(a.db, a.userId, a.prefs);
+    expect(kept.issueCount, "the rewrite the athlete chose against is no issue").toBe(0);
+    expect(kept.state).not.toBe("sync_issue");
+
+    await readAndImport(a);
+    const retry = await mountRoutes(a.db, "/api/sync", syncRoutes).request("/api/sync/retry", { method: "POST", headers: { Cookie: a.cookie } }, makeEnv());
+    expect(retry.status).toBe(200);
+    expect(((await retry.json()) as { coachRetried: number }).coachRetried).toBe(0);
+    await executeCloudJobs(a.db, makeEnv(), a.userId, a.prefs, { fetchImpl: a.server.fetchImpl });
+    expect((await rewrites(a, a.workoutId)).map((j) => j.status)).toEqual(["superseded"]);
+    const titles = normalizeCorosSchedule(a.server.state.schedule).workouts.map((w) => w.title);
+    expect(titles, "the watch keeps its own version").not.toContain(EASED.title);
+
+    await readAndImport(a);
+    const [row] = await a.db.select().from(schema.plannedWorkouts).where(eq(schema.plannedWorkouts.id, a.workoutId));
+    expect(row!.title).toBe("Threshold 5x5");
+    expect((await detail(a, a.workoutId)).workout.corosSyncView).toBe("synced");
+  });
+
+  it("A1 backstop: a rewrite that reaches the lane for a row taking the watch's version is stopped there, before any wire call", async () => {
+    const a = await easedAndFailed();
+    expect((await request(a, `/api/plan/workouts/${a.workoutId}/watch-version/keep`, "POST")).status).toBe(200);
+    const [marked] = await a.db.select().from(schema.plannedWorkouts).where(eq(schema.plannedWorkouts.id, a.workoutId));
+    // Revived behind Keep's back (a Retry of a rewrite a Keep before this fix left failed): queued again.
+    await a.db
+      .update(schema.corosWriteJobs)
+      .set({ status: "queued", lastErrorCategory: null })
+      .where(and(eq(schema.corosWriteJobs.workoutId, a.workoutId), eq(schema.corosWriteJobs.kind, "coach_update_workout")));
+    const writesBefore = a.server.counts.scheduleWrites;
+    await executeCloudJobs(a.db, makeEnv(), a.userId, a.prefs, { fetchImpl: a.server.fetchImpl });
+    expect((await rewrites(a, a.workoutId)).map((j) => j.status)).toEqual(["superseded"]);
+    expect(a.server.counts.scheduleWrites, "nothing written to COROS").toBe(writesBefore);
+    const [after] = await a.db.select().from(schema.plannedWorkouts).where(eq(schema.plannedWorkouts.id, a.workoutId));
+    expect(after!.sourceContentFingerprint, "the mark stays: the read still takes the watch's copy").toBe(marked!.sourceContentFingerprint);
+    await readAndImport(a);
+    const [taken] = await a.db.select().from(schema.plannedWorkouts).where(eq(schema.plannedWorkouts.id, a.workoutId));
+    expect(taken!.title).toBe("Threshold 5x5");
   });
 
   it("a rewrite still only queued is stopped: nothing more reaches the watch for it", async () => {
