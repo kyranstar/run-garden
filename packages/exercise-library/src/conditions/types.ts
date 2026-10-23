@@ -108,8 +108,9 @@ export interface ConditionProfile {
    */
   allowRecord?(ex: ExerciseRecord, mode: Mode, today: CheckReading): boolean;
   /**
-   * Why `allowRecord` holds this record back today, in the profile's own words (null when it allows it). The engine
-   * shows it when a day's theme lost its moves to the rule (e.g. a jumping day while the athlete feels off).
+   * Why `allowRecord` — or `allowPattern`, for one of the record's patterns — holds this record back today, in the
+   * profile's own words (null when both allow it). The engine shows it when a day's theme lost its moves to the rule
+   * (e.g. a jumping day while the athlete feels off); today's fit (`fitToday`) gives it as a move's reason.
    */
   recordReason?(ex: ExerciseRecord, mode: Mode, today: CheckReading): string | null;
   coreCandidate(a: Attrs): boolean;

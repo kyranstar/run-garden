@@ -606,14 +606,21 @@ describe("3A-B — the opening message says what the code holds", () => {
     expect((await build()).header).not.toContain(noCheck);
     await db.delete(schema.conditionChecks);
     const none = await build();
-    // Since 2026-10-23 TMJ's gates read only the mode and "feeling off": an unanswered check closes nothing today, so the
-    // header says nothing of the kind (the validator lets the day's jumps and presses through).
+    // Since 2026-10-23 TMJ's gates read the mode, "feeling off" and a flare reading (review M1): an unanswered check
+    // closes nothing today and an answer could only close more, so the header says nothing of the kind (the validator
+    // lets the day's jumps and presses through until the check says it is a flare day).
     expect(none.header).not.toContain(noCheck);
     expect(none.header).not.toMatch(/stay closed until the athlete logs one/);
-    expect(validateWorkoutDoc(workoutDocSchema.parse({
+    const jumps = workoutDocSchema.parse({
       version: 1, title: "Jumps", intent: { summary: "Jumps.", goals: [], focus: [], effort: "develop" },
       parts: [{ purpose: "power", format: "straight", items: [{ kind: "exercise", libraryId: "pogoHop", dose: { sets: 2, reps: 5 } }] }], source: { kind: "coach" },
-    }), { library: EXERCISES, activeProfiles: [TMJ], day: { date: "2026-03-10", today: "2026-03-10", readings: {} } }).filter((i) => i.severity === "error")).toEqual([]);
+    });
+    const errorsOn = (readings: Record<string, { pre: number; post: null; feelingOff: boolean }>) =>
+      validateWorkoutDoc(jumps, { library: EXERCISES, activeProfiles: [TMJ], day: { date: "2026-03-10", today: "2026-03-10", readings } }).filter((i) => i.severity === "error").map((i) => i.code);
+    expect(errorsOn({})).toEqual([]);
+    expect(errorsOn({ tmj: { pre: 7, post: null, feelingOff: false } })).toEqual(["condition_gate"]);
+    // The coach is told so, in the profile's own lines.
+    expect(none.header).toContain("in every mode on a flare day — today's check of 5 or more (a day with no check yet stays open)");
     // A designer or a reviewer reads the day's reading as before.
     for (const role of ["designer", "reviewer"] as const) {
       const other = await build({ role, scope: { kind: "week" }, parentId: "run-0", brief: "b", request: null });

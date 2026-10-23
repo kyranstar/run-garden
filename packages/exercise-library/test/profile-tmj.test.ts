@@ -114,21 +114,24 @@ describe("TMJ profile — exercise rules", () => {
     for (const f of FORMAT_IDS) expect(TMJ.fitsFormat(a(3), f), f).toBe(f === "straight" || f === "superset");
   });
 
-  it("allowPattern: overhead pressing in consistent and build whatever the check, never in recovery", () => {
+  it("allowPattern: overhead pressing in consistent and build below the flare line, answered or not; never in recovery, never on a flare day", () => {
     for (const mode of MODE_IDS) {
-      for (const pre of [null, 0, 1, 2, 3, 4, 5, 9]) {
-        expect(TMJ.allowPattern("push-v", mode, reading(pre)), `${mode} ${pre}`).toBe(mode !== "recovery");
-        for (const p of PATTERNS.filter(x => x !== "push-v")) expect(TMJ.allowPattern(p, mode, reading(pre))).toBe(true);
+      for (const pre of [null, 0, 1, 2, 3, 4, 5, 9, 10]) {
+        for (const feelingOff of [false, true]) {
+          const today = reading(pre, { feelingOff });
+          expect(TMJ.allowPattern("push-v", mode, today), `${mode} ${pre} ${feelingOff}`).toBe(mode !== "recovery" && (pre === null || pre < 5));
+          for (const p of PATTERNS.filter(x => x !== "push-v")) expect(TMJ.allowPattern(p, mode, today)).toBe(true);
+        }
       }
     }
   });
 
-  it("allowRecord: a plyometric move never in recovery, never when feeling off, otherwise allowed — the check answered or not", () => {
+  it("allowRecord: a plyometric move never in recovery, never when feeling off, never on a flare day, otherwise allowed — the check answered or not", () => {
     const rec = (contraction: string[]) => ({ contraction }) as unknown as ExerciseRecord;
     for (const mode of MODE_IDS) {
-      for (const pre of [null, 0, 1, 2, 3, 4, 5]) {
+      for (const pre of [null, 0, 1, 2, 3, 4, 5, 9, 10]) {
         for (const feelingOff of [false, true]) {
-          const ok = mode !== "recovery" && !feelingOff;
+          const ok = mode !== "recovery" && !feelingOff && (pre === null || pre < 5);
           const today = reading(pre, { feelingOff });
           expect(TMJ.allowRecord!(rec(["plyometric"]), mode, today), `${mode} ${pre} ${feelingOff}`).toBe(ok);
           expect(TMJ.allowRecord!(rec(["eccentric", "plyometric"]), mode, today), `${mode} ${pre} ${feelingOff} mixed`).toBe(ok);
@@ -138,14 +141,16 @@ describe("TMJ profile — exercise rules", () => {
     }
   });
 
-  it("recordReason: the profile's words exactly when allowRecord holds a jump back, and nothing otherwise", () => {
-    const rec = (contraction: string[]) => ({ contraction }) as unknown as ExerciseRecord;
+  it("recordReason: the profile's words exactly when allowRecord holds a jump back or allowPattern an overhead press, and nothing otherwise", () => {
+    const rec = (contraction: string[], patterns: string[] = ["squat"]) => ({ contraction, patterns }) as unknown as ExerciseRecord;
     for (const mode of MODE_IDS) {
-      for (const pre of [null, 0, 1, 2, 3, 4, 5]) {
+      for (const pre of [null, 0, 1, 2, 3, 4, 5, 9]) {
         for (const feelingOff of [false, true]) {
           const today = reading(pre, { feelingOff });
           const why = TMJ.recordReason!(rec(["plyometric"]), mode, today);
           expect(why === null, `${mode} ${pre} ${feelingOff}`).toBe(TMJ.allowRecord!(rec(["plyometric"]), mode, today));
+          const press = TMJ.recordReason!(rec(["isotonic"], ["push-v"]), mode, today);
+          expect(press === null, `press ${mode} ${pre} ${feelingOff}`).toBe(TMJ.allowPattern("push-v", mode, today));
           expect(TMJ.recordReason!(rec(["isotonic"]), mode, today)).toBe(null);
         }
       }
@@ -154,6 +159,10 @@ describe("TMJ profile — exercise rules", () => {
     expect(TMJ.recordReason!(rec(["plyometric"]), "build", reading(null))).toBe(null);
     expect(TMJ.recordReason!(rec(["plyometric"]), "consistent", reading(1, { feelingOff: true }))).toBe("Jumps sit out while you're feeling off.");
     expect(TMJ.recordReason!(rec(["plyometric"]), "recovery", reading(1))).toBe("Jumps sit out a recovery day.");
+    expect(TMJ.recordReason!(rec(["plyometric"]), "build", reading(7))).toBe("Jumps sit out a flare day.");
+    expect(TMJ.recordReason!(rec(["isotonic"], ["push-v"]), "build", reading(7))).toBe("Overhead pressing sits out a flare day.");
+    expect(TMJ.recordReason!(rec(["isotonic"], ["push-v"]), "recovery", reading(1))).toBe("Overhead pressing sits out a recovery day.");
+    expect(TMJ.recordReason!(rec(["isotonic"], ["push-v"]), "build", reading(null))).toBe(null);
   });
 
   it("profiles read the record type, not eligibility (layering): no profile imports the eligibility rules", () => {
@@ -203,11 +212,33 @@ describe("TMJ profile — the plyometric gate through eligibility (Task 5)", () 
     }
   });
 
-  it("in consistent and build, whatever the check says — answered or not — up to the mode's difficulty cap", () => {
+  it("in consistent and build below the flare line — answered or not — up to the mode's difficulty cap", () => {
     for (const ex of plyometric) {
       for (const mode of ["consistent", "build"] as const) {
         const cap = data.modes[mode].maxDifficulty;
-        for (const pre of [null, 0, 1, 2, 3, 4, 6]) expect(eligible(data, ex, { equipment: gym, mode, checks: checks(pre) }), `${ex.id} ${mode} ${pre}`).toBe(ex.difficulty <= cap);
+        for (const pre of [null, 0, 1, 2, 3, 4]) expect(eligible(data, ex, { equipment: gym, mode, checks: checks(pre) }), `${ex.id} ${mode} ${pre}`).toBe(ex.difficulty <= cap);
+      }
+    }
+  });
+
+  // A flare day proposes recovery, but a mode chosen above it (or a planned day) is still a flare day (review M1).
+  it("a flare day denies every plyometric move in every mode — an answered check of 5 or more", () => {
+    for (const ex of plyometric) {
+      for (const mode of MODE_IDS) {
+        for (const pre of [5, 7, 10]) expect(eligible(data, ex, { equipment: gym, mode, checks: checks(pre) }), `${ex.id} ${mode} ${pre}`).toBe(false);
+      }
+    }
+  });
+
+  it("overhead pressing: in consistent and build below the flare line, answered or not; never in recovery, never on a flare day", () => {
+    const presses = EXERCISES.filter(e => e.patterns.includes("push-v"));
+    expect(presses.map(e => e.id)).toContain("halfKneelingPress");
+    for (const ex of presses) {
+      for (const mode of MODE_IDS) {
+        for (const pre of [null, 0, 4, 5, 7, 10]) {
+          const open = mode !== "recovery" && (pre === null || pre < 5) && ex.difficulty <= data.modes[mode].maxDifficulty;
+          expect(eligible(data, ex, { equipment: gym, mode, checks: checks(pre) }), `${ex.id} ${mode} ${pre}`).toBe(open);
+        }
       }
     }
   });
@@ -229,6 +260,14 @@ describe("TMJ profile — the plyometric gate through eligibility (Task 5)", () 
     const breath = EXERCISES.find(e => e.id === "breath")!;
     expect(recordFlareSafe(TMJ, breath)).toBe(true);
     expect(flareSafe(data, breath)).toBe(true);
+  });
+
+  it("no overhead press reads flare-safe either, however gently rated: a flare day leaves it out", () => {
+    const press = EXERCISES.find(e => e.id === "halfKneelingPress")!;
+    const gentle = { ...press, conditions: { ...press.conditions, tmj: { clench: 0, neckLoad: 0, faceDown: false } } };
+    expect(TMJ.flareSafe(gentle.conditions.tmj)).toBe(true);
+    expect(recordFlareSafe(TMJ, gentle)).toBe(false);
+    expect(flareSafe(data, gentle)).toBe(false);
   });
 
   it("a profile without the hook allows the record (the hook is optional; absent means allow)", () => {

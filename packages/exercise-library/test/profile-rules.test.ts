@@ -57,8 +57,8 @@ describe("describeRules — TMJ", () => {
     expect(lines).toEqual([
       { rule: "attributes", text: "a move with no rating for this profile. Every library move is rated clench 0–3, neckLoad 0–3 and faceDown (yes or no)." },
       { rule: "never", text: "a move whose rating can't be read — a value missing or off its scale — in every workout." },
-      { rule: "allowPattern", text: "overhead pressing (the push-v pattern) in recovery mode." },
-      { rule: "allowRecord", text: "plyometric moves (jumps, hops, bounds, landings) in recovery mode or while the athlete feels off." },
+      { rule: "allowPattern", text: "overhead pressing (the push-v pattern) in recovery mode, and in every mode on a flare day — today's check of 5 or more (a day with no check yet stays open)." },
+      { rule: "allowRecord", text: "plyometric moves (jumps, hops, bounds, landings) in recovery mode or while the athlete feels off, and in every mode on a flare day — today's check of 5 or more (a day with no check yet stays open)." },
       { rule: "fitsMode", text: "a move above its mode's caps: recovery — clench ≤ 1, neckLoad ≤ 1, face-down allowed; consistent — clench ≤ 2, neckLoad ≤ 2, face-down allowed; build — clench ≤ 3, neckLoad ≤ 2, face-down allowed. Neck and posture care work (a \"Jaw care\" move, or one working the deep neck flexors) is never held to the neckLoad caps. Cue a face-down move: forehead on stacked hands or a towel — nothing presses on the jaw or cheek." },
       { rule: "fitsFormat", text: "a move above its format's clench cap: clench ≤ 3 in straight sets and supersets; clench ≤ 1 in circuits, ladders and flows; clench ≤ 2 in holds. Cue a clench 3 move: breathe out through the effort, jaw soft." },
       { rule: "flare", text: "on a flare day — a check of 5 or more — a move that isn't flare-safe (flare-safe: clench ≤ 1, neckLoad ≤ 1, no face-down positions)." },
@@ -85,18 +85,26 @@ describe("describeRules — TMJ", () => {
     expect(line("never")).toContain("off its scale");
   });
 
-  it("allowPattern and allowRecord: the modes and the day that close overhead pressing and jumps — never the check's number", () => {
+  it("allowPattern and allowRecord: the modes, the day and the flare line that close overhead pressing and jumps", () => {
     const plyo = EXERCISES.find((e) => e.contraction.includes("plyometric"))!;
     const closedIn = (ok: (m: Mode) => boolean): Mode[] => (MODE_IDS as readonly Mode[]).filter((m) => !ok(m));
+    // Below the flare line, or with no check yet, only recovery closes them; from the flare line up, every mode does.
+    const pressAt = first(range(0, 10), (pre) => !TMJ.allowPattern("push-v", "build", reading(pre)));
+    const jumpAt = first(range(0, 10), (pre) => !TMJ.allowRecord!(plyo, "build", reading(pre)));
+    expect(pressAt).toBe(first(range(0, 10), (pre) => TMJ.flare(reading(pre))));
+    expect(jumpAt).toBe(pressAt);
     for (const pre of [null, ...range(0, 10)]) {
-      expect(closedIn((m) => TMJ.allowPattern("push-v", m, reading(pre))), String(pre)).toEqual(["recovery"]);
-      expect(closedIn((m) => TMJ.allowRecord!(plyo, m, reading(pre))), String(pre)).toEqual(["recovery"]);
+      const closed = pre !== null && pre >= pressAt ? [...MODE_IDS] : ["recovery"];
+      expect(closedIn((m) => TMJ.allowPattern("push-v", m, reading(pre))), String(pre)).toEqual(closed);
+      expect(closedIn((m) => TMJ.allowRecord!(plyo, m, reading(pre))), String(pre)).toEqual(closed);
     }
-    expect(line("allowPattern")).toContain("in recovery mode");
-    expect(line("allowRecord")).toContain("in recovery mode");
+    for (const l of [line("allowPattern"), line("allowRecord")]) {
+      expect(l).toContain("in recovery mode");
+      expect(l).toContain(`in every mode on a flare day — today's check of ${pressAt} or more (a day with no check yet stays open)`);
+      expect(l).not.toMatch(/or less/);
+    }
     expect(TMJ.allowRecord!(plyo, "build", reading(0, { feelingOff: true }))).toBe(false);
     expect(line("allowRecord")).toContain("feels off");
-    for (const l of [line("allowPattern"), line("allowRecord")]) expect(l).not.toMatch(/answered|or less/);
   });
 
   it("fitsMode: each mode's caps, the neck-work exemption and the face-down cue", () => {

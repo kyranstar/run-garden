@@ -109,6 +109,51 @@ describe("the gate holds in every plan, jumping day or not", () => {
   test("feeling off: none in 200 seeded builds, even with a calm check on a jumping day", () => {
     expect(builds({ d: withTwins, mode: consistentOrBuild, check: () => ({ ...calm, feelingOff: true }), themes: jumpingDay, stress: true }).flatMap(reach)).toEqual([]);
   });
+
+  // A flare day proposes recovery, but the athlete may choose another mode (the session sheet's Mode picker) and a
+  // planned Maintain or Develop day may land on one: the jumps sit it out whatever the mode (review M1).
+  test("a flare day (an answered check of 5 or more): none in 200 seeded builds in consistent or build, on a jumping day", () => {
+    for (const pre of [5, 7, 10]) {
+      expect(builds({ d: withTwins, mode: consistentOrBuild, check: () => ({ ...calm, pre }), themes: jumpingDay, stress: true }).flatMap(reach), String(pre)).toEqual([]);
+    }
+  });
+});
+
+describe("overhead pressing sits out a flare day in every mode (review M1)", () => {
+  const PRESSES = EXERCISES.filter(e => e.patterns.includes("push-v"));
+  const isPress = (id: string) => byId.get(id)?.patterns.includes("push-v") ?? false;
+  // Every press rated 👍 and saved, every other move done recently: ranking and the new-move guarantee reach for them.
+  const pressPrefs = { ratings: Object.fromEntries(PRESSES.map(e => [e.id, 1])), excluded: [], pinned: [] as string[] };
+  const doneButPresses = (today: string): HistorySession[] => [{
+    id: "h1", date: addDays(today, -3), startedAt: null, mode: "consistent", theme: null, blockNumber: 1,
+    checks: { tmj: { pre: 1, post: 1, feelingOff: false } },
+    done: EXERCISES.filter(e => !isPress(e.id)).map(e => ({ id: e.id, secs: 60 })), entries: [],
+  }];
+  const presses = (pre: number | null): string[][] => Array.from({ length: 200 }, (_, i) => {
+    const today = addDays("2026-10-05", i % 29);
+    const mode = consistentOrBuild(i);
+    const themes = everyTheme(data, mode);
+    const plan = Builder.build(data, {
+      today, mode, theme: themes[i % themes.length] ?? null, minutes: [15, 20, 30, 40, 60][i % 5]!, location: PLACES[i % PLACES.length]!,
+      unit: "lb", sessions: doneButPresses(today), prefs: pressPrefs, savedIds: PRESSES.map(e => e.id), block,
+      checks: { tmj: { ...calm, pre } }, swaps: {}, programId: `press-${i}`,
+    });
+    return [
+      ...plan.items.map(it => it.exercise.id),
+      ...plan.steps.flatMap(s => (s.exerciseId ? [s.exerciseId] : [])),
+      ...Object.values(plan.alternatives).flatMap(alts => alts.map(a => a.id)),
+      ...Object.values(plan.swapState.slots).flatMap(slot => [slot.original, ...slot.pool].map(c => c.id)),
+    ].filter(isPress);
+  });
+
+  test("the library has overhead pressing, and a calm or unanswered day reaches it in consistent and build", () => {
+    expect(PRESSES.length).toBeGreaterThan(0);
+    for (const pre of [1, 4, null]) expect(presses(pre).filter(r => r.length > 0).length, String(pre)).toBeGreaterThan(20);
+  });
+
+  test("a check of 5 or more: none in 200 seeded builds in consistent or build — plan, steps, offered swaps or swap pools", () => {
+    for (const pre of [5, 7, 10]) expect(presses(pre).flat(), String(pre)).toEqual([]);
+  });
 });
 
 describe("only on a jumping day", () => {
@@ -466,6 +511,16 @@ describe("a jumping day the gate empties says why, in the profile's words", () =
     expect(v.theme?.id).toBe("plyoIntro");
     expect(v.plan.items.some(i => isPlyometric(i.exercise))).toBe(false);
     expect(v.themeReasons).toEqual(["Jumps sit out while you're feeling off."]);
+  });
+
+  test("a flare day with the mode chosen above recovery: no jumps, no overhead pressing, and the theme's reason line says why (review M1)", () => {
+    for (const pre of [5, 7]) {
+      const v = view({ ...calm, pre });
+      expect(v.mode, String(pre)).toBe("build");
+      expect(v.plan.items.some(i => isPlyometric(i.exercise)), String(pre)).toBe(false);
+      expect(v.plan.items.some(i => i.exercise.patterns.includes("push-v")), String(pre)).toBe(false);
+      expect(v.themeReasons, String(pre)).toEqual(["Jumps sit out a flare day."]);
+    }
   });
 
   test("a calm check, a check of 4, or none: the jumps are there and no reason line is added; another theme never gets one", () => {

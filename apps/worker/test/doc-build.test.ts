@@ -53,7 +53,10 @@ async function create(doc: WorkoutDoc, date = today): Promise<string> {
   return res.body.workout.id;
 }
 
-/** Today's jaw check. Since 2026-10-23 a jump is closed only on a recovery day or while feeling off: the tests that close one say so. */
+/**
+ * Today's jaw check. Since 2026-10-23 a jump is closed on a recovery day, while feeling off, or on a flare day (a check of
+ * 5 or more, review M1): the tests written while a flare alone didn't close one say "feeling off" too.
+ */
 const check = async (value: number, feelingOff = false) => {
   const res = await call("POST", "/api/conditions/checks", { profileId: "tmj", value, feelingOff });
   expect(res.status).toBe(200);
@@ -551,6 +554,21 @@ describe("Start re-gates with the day's reading", () => {
     expect(built.body.build.fromDoc.swaps).toHaveLength(1);
     expect(movesOf(built.body.build.steps)).toEqual(["tempoSquat", "bwSplitSquat"]);
     expect((await call("POST", `/api/sessions/${id}/start`, { buildId: built.body.build.buildId })).status).toBe(200);
+  });
+
+  it("a flare reading alone closes the jump, a Develop document's too — at Start, and from the sheet's own pre-check (review M1)", async () => {
+    const develop: WorkoutDoc = { ...landingsDoc(), intent: { ...landingsDoc().intent, effort: "develop" } };
+    const id = await create(develop);
+    const built = await call("POST", `/api/sessions/${id}/build`, {});
+    expect(movesOf(built.body.build.steps)).toEqual(["snapDown", "bwSplitSquat"]);
+    await check(7);
+    const stale = await call("POST", `/api/sessions/${id}/start`, { buildId: built.body.build.buildId });
+    expect(stale.status).toBe(409);
+    expect(stale.body.session.build.fromDoc.swaps).toEqual([
+      { path: "parts[0].items[0]", from: "snapDown", to: "tempoSquat", reason: "Snap-down isn't allowed with today's Jaw / head check at 7." },
+    ]);
+    const sheet = await call("POST", `/api/sessions/${await create(develop)}/build`, { checks: { tmj: { pre: 5, feelingOff: false } } });
+    expect(sheet.body.build.fromDoc.swaps.map((s: { to: string }) => s.to)).toEqual(["tempoSquat"]);
   });
 
   it("the sheet's own pre-check is the day's reading too", async () => {

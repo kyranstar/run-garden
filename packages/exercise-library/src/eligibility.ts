@@ -24,7 +24,8 @@ export function hasEquipment(ex: ExerciseRecord, equipment: readonly string[] | 
  * With `checks`, the day's readings apply (an unanswered profile reads as unanswered); without them, the
  * question is whether the move fits this mode at all, judged on each profile's calmest day.
  * A recovery day whose reading is a profile's flare takes only that profile's flare-safe moves: a flare is a recovery
- * day, and the strictest one (a mode chosen above recovery on a flare day keeps that mode's own caps).
+ * day, and the strictest one (a mode chosen above recovery on a flare day keeps that mode's own caps, and whatever the
+ * profile's pattern and record rules close on that reading — the jaw's jumps and overhead pressing).
  * An active profile with no rating on the record fails closed.
  */
 export function fitsMode(data: EngineData, ex: ExerciseRecord, mode: Mode, checks?: Readonly<Record<string, CheckReading>>): boolean {
@@ -58,12 +59,15 @@ export const eligible = (data: EngineData, ex: ExerciseRecord, { equipment, mode
 export const flareDay = (profile: ConditionProfile): CheckReading => ({ pre: profile.check.max, post: null, feelingOff: false });
 
 /**
- * One profile's flare-safe verdict on a whole record: its ratings are flare-safe and its record rule allows it in
- * recovery on a flare day (so a low-clench jump is never "safe"). The one verdict eligibility and the library share.
+ * One profile's flare-safe verdict on a whole record: its ratings are flare-safe and its pattern and record rules allow
+ * it in recovery on a flare day (so a low-clench jump, or a gently rated overhead press, is never "safe"). The one
+ * verdict eligibility and the library share.
  */
 export function recordFlareSafe(profile: ConditionProfile, ex: ExerciseRecord): boolean {
   const a = attrsOf(ex, profile);
-  return a != null && profile.flareSafe(a) && (profile.allowRecord?.(ex, "recovery", flareDay(profile)) ?? true);
+  const day = flareDay(profile);
+  return a != null && profile.flareSafe(a) && ex.patterns.every((pt) => profile.allowPattern(pt, "recovery", day)) &&
+    (profile.allowRecord?.(ex, "recovery", day) ?? true);
 }
 
 /** Safe on a flare day for every active profile (true when no profile is active). */
