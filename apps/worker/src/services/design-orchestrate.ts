@@ -725,7 +725,8 @@ export interface SetEstimate {
   samples: { designers: number; mains: number };
 }
 
-/** The set's estimated cost before its designers run (see the module comment). One statement. */
+/** The set's estimated cost before its designers run (see the module comment), from the athlete's own runs — never a
+ * rehearsal's. One statement. */
 export async function estimateSetCost(db: Db, userId: string, workouts: number, now: Date): Promise<SetEstimate> {
   const since = new Date(now.getTime() - ESTIMATE_WINDOW_DAYS * 86_400_000).toISOString();
   // What a designer cost: its own spend and its reviewers'.
@@ -733,11 +734,16 @@ export async function estimateSetCost(db: Db, userId: string, workouts: number, 
   // A designer that stopped at its OWN ceiling — its spend reached its limit, so it ran — spent what a workout can
   // cost: it counts (leaving it out would read low). One stopped by the set's limit before it ran (nothing spent), or
   // part way, doesn't.
+  // A rehearsal's runs — its main and the designers it started, which carry its `rehearsal` — are the rehearsal lane's
+  // (audit C1), never a measure of what the athlete's sets cost (review L4), as `weekCanPay` (coach-runs.ts) reads them.
+  const notRehearsal = (alias: "d" | "m") =>
+    sql.raw(`coalesce(CASE WHEN json_valid(${alias}.state) THEN json_extract(${alias}.state, '$.settings.rehearsal') END, 0) = 0`);
   const designers = sql`FROM coach_runs d WHERE d.user_id = ${userId} AND d.role = 'designer' AND d.created_at >= ${since}
     AND (d.status = 'finished' OR (d.status = 'stopped_cap' AND d.error = 'run_ceiling'
-      AND json_valid(d.state) AND ${cost} * 1000000 >= json_extract(d.state, '$.settings.ceilingMicros')))`;
+      AND json_valid(d.state) AND ${cost} * 1000000 >= json_extract(d.state, '$.settings.ceilingMicros')))
+    AND ${notRehearsal("d")}`;
   const mains = sql`FROM coach_runs m WHERE m.user_id = ${userId} AND m.parent_id IS NULL AND m.status = 'finished' AND m.created_at >= ${since}
-    AND ${setRunSql("m")}`;
+    AND ${setRunSql("m")} AND ${notRehearsal("m")}`;
   const [row] = (await db.all(sql`
     SELECT
       (SELECT count(*) ${designers}) AS designers,
