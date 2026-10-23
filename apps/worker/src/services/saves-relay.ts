@@ -1,6 +1,6 @@
 import { and, eq, inArray, lt, or, sql } from "drizzle-orm";
 import type { ZodIssue } from "zod";
-import { PROFILE_IDS } from "@rg/exercise-library";
+import { PROFILES } from "@rg/exercise-library";
 import { schema } from "@rg/database";
 import { extractionSchema } from "@rg/saves";
 import type { Extraction, SaveErrorCode } from "@rg/saves";
@@ -12,6 +12,7 @@ import { IMPORT_KINDS, reserveImport, settleImport } from "./saves-budget.js";
 import { noteGatewayOutcome } from "./ai-credits.js";
 import { extractJson } from "./studio-llm.js";
 import { MAX_EXTRACT_ATTEMPTS, RELAY_CLAIM_STALE_MS, RETRYABLE_ERROR_CODES } from "./saves-ledger.js";
+import { matchPost } from "./saves-match.js";
 
 const { savedPosts } = schema;
 
@@ -60,7 +61,16 @@ export const CANNED_EXTRACTION: Extraction = {
       load: "bodyweight",
       contraction: ["isotonic"],
       difficulty: 2,
-      conditions: Object.fromEntries(PROFILE_IDS.map((p) => [p, { attrs: { load: 2, safe: true }, note: "synthetic" }])) as never,
+      // Every profile rated on its own scale (each at its floor, each flag off), so the move's record validates when matched.
+      conditions: Object.fromEntries(
+        Object.values(PROFILES).map((p) => [
+          p.id,
+          {
+            attrs: Object.fromEntries(Object.entries(p.attributes).map(([k, s]) => [k, s.kind === "scale" ? s.min : false])),
+            note: "synthetic",
+          },
+        ]),
+      ) as never,
       evidence: { name: "stated", dose: "inferred", steps: "stated" },
       confidence: "high",
     },
@@ -107,8 +117,9 @@ export function readRelayRequest(
  * retries (with `retryIssues` for a schema failure).
  *
  * Order: reserve the worst case, claim the post (`extracting`), call, settle (in a `finally`: a throw settles to
- * nothing spent), then one write that counts the attempt and stores the outcome. D1 statements, happy path: reserve 2,
- * claim 1, out-of-credits note 2, settle 1, outcome 1 = 7 (matchPost, Task 8, adds its own).
+ * nothing spent), then one write that counts the attempt and stores the outcome, then `matchPost`. D1 statements, happy
+ * path: reserve 2, claim 1, out-of-credits note 2, settle 1, outcome 1 = 7, plus matchPost's (≤ 12 for a 12-move post
+ * with a judge call): ≤ 19, and the route's bearer guard 2.
  */
 export async function relayExtract(
   db: Db,
@@ -171,11 +182,32 @@ export async function relayExtract(
       })
       .where(and(eq(savedPosts.id, post.id), eq(savedPosts.userId, userId), eq(savedPosts.status, "extracting")));
 
+  /**
+   * After the extraction is stored, its moves are matched (saves-match.ts): the post becomes `matched`, or `failed`
+   * (`model_failed`, with the issues the extension retries with) when a new move's record does not validate. A throw
+   * while matching leaves the post `failed`/`unknown`, which `/work` hands out again, never `extracted` with nothing to
+   * move it on.
+   */
+  const matched = async (extraction: Extraction): Promise<RelayResult> => {
+    try {
+      const out = await matchPost(db, env, userId, post.id, nowIso, fetchImpl);
+      if (out.issues) return { ok: false, code: "model_failed", issues: out.issues };
+      return { ok: true, extraction };
+    } catch (e) {
+      console.warn(JSON.stringify({ level: "warn", msg: "saves relay: matching failed", detail: String(e).slice(0, 200) }));
+      await db
+        .update(savedPosts)
+        .set({ status: "failed", lastErrorCode: "unknown", updatedAt: nowIso })
+        .where(and(eq(savedPosts.id, post.id), eq(savedPosts.userId, userId), eq(savedPosts.status, "extracted")))
+        .catch(() => undefined);
+      return { ok: false, code: "unknown" };
+    }
+  };
+
   if (gateway.kind === "canned") {
     if (!(await claim())) return refusal();
     await finish({ extraction: CANNED_EXTRACTION }, 0);
-    // SEAM (Task 8): `matchPost(db, env, userId, post, CANNED_EXTRACTION, ...)` is called here and below, after the extraction is stored.
-    return { ok: true, extraction: CANNED_EXTRACTION };
+    return matched(CANNED_EXTRACTION);
   }
 
   // The worst case takes every body character as a quarter token; a typical reel is far smaller (see the constants).
@@ -238,8 +270,7 @@ export async function relayExtract(
       return { ok: false, code: "model_failed", issues: parsed.issues };
     }
     await finish({ extraction: parsed.extraction }, cost);
-    // SEAM (Task 8): `matchPost(db, env, userId, post, parsed.extraction, ...)` is called here, after the extraction is stored.
-    return { ok: true, extraction: parsed.extraction };
+    return await matched(parsed.extraction);
   } catch (e) {
     console.warn(JSON.stringify({ level: "warn", msg: "saves relay: failed", detail: String(e).slice(0, 200) }));
     if (!settled) await settleImport(db, reservation.usageId, null).catch(() => undefined);

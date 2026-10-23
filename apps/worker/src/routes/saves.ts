@@ -14,6 +14,7 @@ import { savesImportEnabled } from "../env.js";
 import { freshKeys, KNOWN_MAX_KEYS, recordCheck, savedPostId, savesStatus, upsertPost, workList } from "../services/saves-ledger.js";
 import { filterPost } from "../services/saves-filter.js";
 import { markTooLarge, readRelayRequest, relayExtract } from "../services/saves-relay.js";
+import { assembleBatch } from "../services/saves-batches.js";
 
 const knownSchema = z
   .object({ source: z.string().regex(SAVE_SOURCE_RE), keys: z.array(z.string().min(1).max(64)).max(KNOWN_MAX_KEYS) })
@@ -33,11 +34,13 @@ async function body<T extends z.ZodTypeAny>(c: { req: { json: () => Promise<unkn
   return schemaOf.safeParse(raw);
 }
 
+/** A check's start and finish. A finish then gathers the matched posts into a batch (at most one released per 20 h). */
 savesRoutes.post("/checks", async (c) => {
   const parsed = await body(c, checkReportSchema);
   if (!parsed.success) return c.json({ error: "invalid", issues: parsed.error.issues }, 422);
-  // Task 8 adds the batch assembly here, on `finish`.
-  await recordCheck(c.get("db"), c.get("userId"), parsed.data, nowInstant());
+  const now = nowInstant();
+  await recordCheck(c.get("db"), c.get("userId"), parsed.data, now);
+  if (parsed.data.phase === "finish") await assembleBatch(c.get("db"), c.env, c.get("userId"), now);
   return c.json({ ok: true });
 });
 
@@ -101,7 +104,7 @@ savesRoutes.post("/posts/:key/extract", async (c) => {
     new Date(nowInstant()),
     fetch,
   );
-  if (out.ok) return c.json({ status: "extracted", moves: out.extraction.moves.length, kind: out.extraction.kind });
+  if (out.ok) return c.json({ status: "matched", moves: out.extraction.moves.length, kind: out.extraction.kind });
   if (out.status === 404) return c.json({ error: "not_found" }, 404);
   if (out.status === 409) return c.json({ error: "conflict" }, 409);
   const http = out.code === "too_large" ? 413 : out.code === "budget_paused" ? 429 : 502;

@@ -1,13 +1,14 @@
 import {
   CONTRACTIONS, DOSE_TYPES, EQUIPMENT_IDS, LATERALITY, LOADS, PATTERNS, POSITIONS, PROFILES, REGIONS,
 } from "@rg/exercise-library";
-import type { PostSubmit } from "./schemas.js";
+import type { ExtractedMove, PostSubmit } from "./schemas.js";
 
 // Prompts for the two model calls. A saved post's text is untrusted: it only ever appears inside a <post-data> block,
 // never in the system message, and the instructions say to treat it as data.
 
 export const FILTER_PROMPT_VERSION = "filter-1";
 export const EXTRACT_PROMPT_VERSION = "extract-1";
+export const MATCH_PROMPT_VERSION = "match-1";
 
 const OPEN = "<post-data>";
 const CLOSE = "</post-data>";
@@ -44,6 +45,49 @@ export function filterMessages(post: PostSubmit): { system: string; userText: st
       'products, news and the like. "maybe": unclear from the text alone.',
   ].join("\n");
   return { system, userText: dataBlock(post) };
+}
+
+/** One move the names could not settle, and the library moves whose names are near it. */
+export interface MatchJudgeItem {
+  /** The move's index in the extraction: the number the reply names it by. */
+  position: number;
+  move: Pick<ExtractedMove, "name" | "aliases" | "patterns" | "regions" | "summary">;
+  candidates: { id: string; name: string; patterns: readonly string[]; regions: readonly string[] }[];
+}
+
+/**
+ * The matching judge: is each move (read by a model from a stranger's post, so untrusted, inside the data block) one of
+ * its candidate library moves (the app's own data, listed after the block)?
+ */
+export function matchMessages(items: readonly MatchJudgeItem[]): { system: string; userText: string } {
+  const system = [
+    "You decide whether exercise moves read from a saved social video post are moves a training app's library already has.",
+    DATA_RULE,
+    "Each move comes with candidate library moves whose names are close. A candidate is the same move only when it is " +
+      "the same exercise done the same way, whatever it is called. A variation (another position, other equipment, " +
+      "another direction or movement) is not the same move.",
+    'Reply with JSON only: {"matches":[{"move":<move number>,"id":"<one of that move\'s candidate ids>"|null}]}, one ' +
+      "entry per move. Use null when no candidate is the same move, or when unsure.",
+  ].join("\n");
+  const moves = items.map((it) =>
+    [
+      `move ${it.position}: ${defang(it.move.name)}`,
+      it.move.aliases.length ? `  also called: ${defang(it.move.aliases.join("; "))}` : "",
+      `  patterns: ${defang(it.move.patterns.join(", "))}; regions: ${defang(it.move.regions.join(", "))}`,
+      it.move.summary ? `  summary: ${defang(it.move.summary)}` : "",
+    ]
+      .filter(Boolean)
+      .join("\n"),
+  );
+  const candidates = items.map((it) =>
+    [
+      `Candidates for move ${it.position}:`,
+      ...it.candidates.map(
+        (c) => `- "${c.id}": ${c.name} (patterns: ${c.patterns.join(", ")}; regions: ${c.regions.join(", ")})`,
+      ),
+    ].join("\n"),
+  );
+  return { system, userText: ["Decide each move.", OPEN, ...moves, CLOSE, ...candidates].join("\n") };
 }
 
 function profileGuide(): string {

@@ -145,7 +145,17 @@ export interface WorkItem {
 export interface SavesStatusDto {
   state: "ok" | "login_needed" | "feed_changed" | "paused_budget" | "error" | "idle";
   lastCheckAt: string | null;
+  /** When moves last arrived: the newest batch's save, else its release. Null before the first batch. */
+  lastImportAt: string | null;
+  /** What the import has brought so far: the distinct moves linked from saved posts (library and personal alike, links the owner saved), and the posts those links come from. */
+  totals: { moves: number; posts: number };
   checks: CheckRowDto[];
   posts: PostRowDto[];
   spend: { spentMicros: number; capMicros: number };
 }
+
+/** The matching judge's reply: for each move it was asked about, the candidate id that is the same move, or null. */
+export const matchVerdictSchema = z.object({
+  matches: z.array(z.object({ move: z.number().int(), id: z.string().max(80).nullable() })).max(12),
+});
+export type MatchVerdict = z.infer<typeof matchVerdictSchema>;

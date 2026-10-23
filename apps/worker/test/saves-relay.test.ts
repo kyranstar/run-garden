@@ -5,7 +5,7 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { eq } from "drizzle-orm";
 import { schema } from "@rg/database";
-import { PROFILE_IDS } from "@rg/exercise-library";
+import { PROFILES } from "@rg/exercise-library";
 import { extractionSchema } from "@rg/saves";
 import type { Env } from "../src/env.js";
 import type { Db } from "../src/services/db.js";
@@ -29,9 +29,16 @@ let statements = 0;
 /** The fake gateway looks at the database to prove the order; those reads are not the route's. */
 let probing = false;
 
-const conditions = Object.fromEntries(PROFILE_IDS.map((p) => [p, { attrs: { load: 2, safe: true }, note: "ok" }]));
+/** A rating every profile accepts (each scale at its floor, each flag off), so the matched move's record validates. */
+const conditions = Object.fromEntries(
+  Object.values(PROFILES).map((p) => [
+    p.id,
+    { attrs: Object.fromEntries(Object.entries(p.attributes).map(([k, s]) => [k, s.kind === "scale" ? s.min : false])), note: "ok" },
+  ]),
+);
+/** No library name is near it, so matching asks no judge: the relay's own calls stay the only ones. */
 const move = {
-  name: "Hip switch", aliases: [], summary: "s", steps: ["a"], cues: [], mistakes: [], purpose: "mobility",
+  name: "Zorbex shuffle", aliases: [], summary: "s", steps: ["a"], cues: [], mistakes: [], purpose: "mobility",
   dose: { text: "10 each", type: "reps", range: [8, 12] }, patterns: ["mobility"], regions: ["hips"], equipment: ["mat"],
   position: "seated", laterality: "alternating", load: "bodyweight", contraction: ["isotonic"], difficulty: 2, conditions,
   evidence: { name: "stated", dose: "inferred", steps: "stated" }, confidence: "high",
@@ -111,14 +118,26 @@ describe("relayExtract", () => {
     expect((init.headers as Record<string, string>).Authorization).toBe("Bearer k");
   });
 
-  it("stores a valid extraction and moves the post to extracted (the seam for matchPost), counting the attempt", async () => {
+  it("stores a valid extraction, then matches it: the post is matched with its pending links, the attempt counted", async () => {
     const id = await seed("k");
     const out = await run(id, bodyText(), gateway(GOOD));
-    expect(out.ok && out.extraction.moves[0]!.name).toBe("Hip switch");
+    expect(out.ok && out.extraction.moves[0]!.name).toBe("Zorbex shuffle");
     const row = await reload(id);
-    expect(row).toMatchObject({ status: "extracted", extractAttempts: 1, lastErrorCode: null });
+    expect(row).toMatchObject({ status: "matched", extractAttempts: 1, lastErrorCode: null });
     expect(row.extraction).toMatchObject({ kind: "single_move" });
     expect(row.costMicros).toBeGreaterThan(0);
+    const links = await db.select().from(schema.savedPostMoves);
+    expect(links).toEqual([expect.objectContaining({ postId: id, position: 0, moveKind: "personal", status: "pending" })]);
+    expect(await db.select().from(schema.personalMoves)).toEqual([expect.objectContaining({ id: links[0]!.moveId, status: "pending" })]);
+  });
+
+  it("fails the post as model_failed, with the issues, when a move's record does not validate", async () => {
+    const id = await seed("k");
+    const out = await run(id, bodyText(), gateway({ ...GOOD, moves: [{ ...move, steps: [] }] }));
+    expect(out).toMatchObject({ ok: false, code: "model_failed" });
+    expect(!out.ok && out.issues?.[0]).toMatch(/^moves\.0: /);
+    expect(await reload(id)).toMatchObject({ status: "failed", lastErrorCode: "model_failed", extractAttempts: 1 });
+    expect(await db.select().from(schema.personalMoves)).toEqual([]);
   });
 
   it("inserts the reservation before the call and settles it to the real cost after", async () => {
@@ -306,7 +325,8 @@ describe("relayExtract", () => {
     const gw = gateway(GOOD);
     expect(await run(id, bodyText(), gw, env({ FIXTURE_MODE: "1" }))).toMatchObject({ ok: true });
     expect(gw.spy).not.toHaveBeenCalled();
-    expect(await reload(id)).toMatchObject({ status: "extracted", extractAttempts: 1 });
+    expect(await reload(id)).toMatchObject({ status: "matched", extractAttempts: 1 });
+    expect(await db.select().from(schema.personalMoves)).toHaveLength(1);
     expect(await db.select().from(llmUsage)).toHaveLength(0);
   });
 
@@ -344,21 +364,22 @@ async function route(key: string, text: string, headers: Record<string, string> 
 }
 
 describe("POST /api/saves/posts/:key/extract", () => {
-  it("relays a real-mode extraction in at most 7 D1 statements of its own (matchPost excluded)", async () => {
+  it("relays a real-mode extraction in at most 7 D1 statements of its own, plus matchPost's", async () => {
     const own = await seed("own");
     statements = 0;
     await run(own, bodyText(), gateway(GOOD));
-    // reserve 2 (spend, insert) + claim 1 + out-of-credits note 2 (restore check, clear) + settle 1 + outcome 1
-    expect(statements).toBe(7);
+    // reserve 2 (spend, insert) + claim 1 + out-of-credits note 2 (restore check, clear) + settle 1 + outcome 1;
+    // matchPost for one new move and no judge: post 1, personal moves 1, the move, its link and the post 3
+    expect(statements).toBe(7 + 5);
     await seed("k");
     const gw = gateway(GOOD);
     vi.stubGlobal("fetch", gw.fetchImpl);
     try {
       const { res, json, cost } = await route("k", bodyText());
       expect(res.status).toBe(200);
-      expect(json).toMatchObject({ status: "extracted", moves: 1 });
+      expect(json).toMatchObject({ status: "matched", moves: 1 });
       expect(gw.seen).toHaveLength(1);
-      expect(cost).toBeLessThanOrEqual(7 + 2); // the relay's 7 + the bearer guard's user and restore lookups
+      expect(cost).toBeLessThanOrEqual(7 + 2 + 5); // the relay's 7 + the bearer guard's user and restore lookups + matchPost's 5
     } finally {
       vi.unstubAllGlobals();
     }
@@ -368,8 +389,35 @@ describe("POST /api/saves/posts/:key/extract", () => {
     await seed("k");
     const { res, json, cost } = await route("k", bodyText(), {}, `?source=${SRC}`, await routeEnv({ FIXTURE_MODE: "1" }));
     expect(res.status).toBe(200);
-    expect(json.status).toBe("extracted");
-    expect(cost).toBeLessThanOrEqual(7);
+    expect(json.status).toBe("matched");
+    // auth 2 + claim 1 + outcome 1 + matchPost's 5 (post, personal moves, the move, its link, the post)
+    expect(cost).toBeLessThanOrEqual(9);
+  });
+
+  it("stays within 45 statements at its worst: 12 moves, a judge call, every move new", async () => {
+    await seed("k");
+    const fuzzy = { ...move, name: "the 90 90 switch" };
+    const moves = [...Array.from({ length: 11 }, (_, i) => ({ ...move, name: `Zorbex shuffle ${String.fromCharCode(98 + i)} variant` })), fuzzy];
+    let calls = 0;
+    vi.stubGlobal("fetch", vi.fn(async (_u: unknown, init?: RequestInit) => {
+      calls += 1;
+      await new Response(init?.body as BodyInit).arrayBuffer();
+      const content = calls === 1 ? JSON.stringify({ ...GOOD, kind: "routine", moves }) : JSON.stringify({ matches: [{ move: 11, id: null }] });
+      return new Response(JSON.stringify({ model: MODEL, choices: [{ message: { content } }], usage: { prompt_tokens: 100, completion_tokens: 50 } }), { status: 200 });
+    }));
+    try {
+      const { res, json, cost } = await route("k", bodyText());
+      expect(res.status).toBe(200);
+      expect(json).toMatchObject({ status: "matched", moves: 12 });
+      expect(calls).toBe(2);
+      expect(await db.select().from(schema.personalMoves)).toHaveLength(12);
+      expect((await db.select().from(llmUsage)).map((r) => r.kind).sort()).toEqual([IMPORT_KINDS.extract, IMPORT_KINDS.match]);
+      // 9 (auth 2 + relay 7) + matchPost: post 1, personal moves 1, judge 5, moves 2, links 2, post 1
+      expect(cost).toBeLessThanOrEqual(45);
+      expect(cost).toBeLessThanOrEqual(9 + 13);
+    } finally {
+      vi.unstubAllGlobals();
+    }
   });
 
   it("400s a model outside the allowlist before any call or write", async () => {

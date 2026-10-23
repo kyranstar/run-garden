@@ -83,10 +83,12 @@ export interface Env {
   SAVES_TOKEN_SHA256?: string;
   /** The saved-posts import switch: only "1" is on (`savesImportEnabled`). Absent in production until the owner turns it on. Var. */
   SAVES_IMPORT?: string;
-  /** The saved-posts filter's model (gateway id); unset: `FILTER_MODEL_DEFAULT` in services/saves-filter.ts. Var. */
+  /** The saved-posts filter's model (gateway id), also the matching judge's; unset: `FILTER_MODEL_DEFAULT` in services/saves-filter.ts. Var. */
   SAVES_FILTER_MODEL?: string;
   /** The extraction relay's body cap in bytes (default 20_000_000). */
   SAVES_RELAY_MAX_BYTES?: string;
+  /** Only "1" creates new saves batches `held` (no release, no notice) for the bootstrap's curation; absent: `released` (services/saves-batches.ts). Var. */
+  SAVES_HOLD_BATCHES?: string;
 }
 
 export const stagingEnabled = (env: Env): boolean => env.STAGING === "1";

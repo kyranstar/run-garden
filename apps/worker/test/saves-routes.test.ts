@@ -60,9 +60,10 @@ const submit = (key: string, over: Record<string, unknown> = {}) => ({
   ...over,
 });
 
-async function seedPost(key: string, fields: Partial<typeof savedPosts.$inferInsert> = {}) {
+async function seedPost(key: string, fields: Partial<typeof savedPosts.$inferInsert> = {}): Promise<string> {
+  const id = await savedPostId(userId, SRC, key);
   await db.insert(savedPosts).values({
-    id: await savedPostId(userId, SRC, key),
+    id,
     userId,
     source: SRC,
     sourceKey: key,
@@ -72,6 +73,7 @@ async function seedPost(key: string, fields: Partial<typeof savedPosts.$inferIns
     updatedAt: "2026-10-01T00:00:00.000Z",
     ...fields,
   });
+  return id;
 }
 
 beforeEach(async () => {
@@ -253,14 +255,14 @@ describe("GET /work", () => {
 
 describe("POST /checks", () => {
   const checkId = "6f1c1d0e-2b7a-4b8e-9c55-0a1b2c3d4e5f";
-  it("opens a row on start and sets the counts and error on finish, within 4 statements", async () => {
+  it("opens a row on start and sets the counts and error on finish, within 4 statements plus assembleBatch's (nothing waiting: 2)", async () => {
     expect((await post("/checks", { checkId, phase: "start" })).body).toEqual({ ok: true });
     const fin = await post("/checks", {
       checkId, phase: "finish", found: 5, fresh: 3, filtered: 1, extracted: 1, failed: 1,
       error: { code: "login_needed", message: "signed out" },
     });
     expect(fin.body).toEqual({ ok: true });
-    expect(fin.cost).toBeLessThanOrEqual(4);
+    expect(fin.cost).toBeLessThanOrEqual(4 + 2);
     const rows = await db.select().from(saveChecks);
     expect(rows).toHaveLength(1);
     expect(rows[0]).toMatchObject({ found: 5, fresh: 3, filtered: 1, extracted: 1, failed: 1, errorCode: "login_needed", errorMessage: "signed out" });
@@ -270,21 +272,62 @@ describe("POST /checks", () => {
     await post("/checks", { checkId, phase: "finish", found: 2 });
     expect((await db.select().from(saveChecks))[0]).toMatchObject({ found: 2 });
   });
+  it("a finish gathers the matched posts into a released batch, within 4 + 6 statements; a start never does", async () => {
+    const id = await seedPost("m", { status: "matched", updatedAt: "2026-10-22T00:00:00.000Z" });
+    await db.insert(schema.savedPostMoves).values({
+      id: "spm1", userId, postId: id, position: 0, moveId: "hip9090", moveKind: "library", confidence: 1, status: "pending",
+      createdAt: "2026-10-22T00:00:00.000Z",
+    });
+    await post("/checks", { checkId, phase: "start" });
+    expect(await db.select().from(schema.saveBatches)).toEqual([]);
+    const fin = await post("/checks", { checkId, phase: "finish", found: 1 });
+    expect(fin.body).toEqual({ ok: true });
+    expect(fin.cost).toBeLessThanOrEqual(4 + 6);
+    const [batch] = await db.select().from(schema.saveBatches);
+    expect(batch).toMatchObject({ userId, status: "released", notice: "From your saves: 1 move you already had." });
+    expect((await db.select().from(savedPosts))[0]!.batchId).toBe(batch!.id);
+  });
 });
 
 describe("GET /status", () => {
-  it("is idle with nothing, and reads the latest check and posts, within 5 statements", async () => {
+  it("is idle with nothing, and reads the latest check and posts, within 6 statements", async () => {
     const idle = await call("/status");
-    expect(idle.body).toMatchObject({ state: "idle", lastCheckAt: null, checks: [], posts: [] });
+    expect(idle.body).toMatchObject({ state: "idle", lastCheckAt: null, lastImportAt: null, checks: [], posts: [], totals: { moves: 0, posts: 0 } });
     expect(idle.body.spend.capMicros).toBe(5_000_000);
     await seedPost("p1");
     await post("/checks", { checkId: "6f1c1d0e-2b7a-4b8e-9c55-0a1b2c3d4e5f", phase: "finish", error: { code: "budget_paused", message: "cap" } });
     const { body, cost } = await call("/status");
-    expect(cost).toBeLessThanOrEqual(5);
+    // 2 auth, checks, posts, spend, the import's totals
+    expect(cost).toBeLessThanOrEqual(6);
     expect(body.state).toBe("paused_budget");
     expect(body.checks).toHaveLength(1);
     expect(body.posts).toEqual([
       { id: await savedPostId(userId, SRC, "p1"), key: "p1", url: "https://example.com/p/p1", creator: { handle: "" }, status: "queued", reason: null, updatedAt: "2026-10-01T00:00:00.000Z" },
     ]);
+  });
+  it("counts the moves and posts the owner saved, and dates the last import by its batch, not its check", async () => {
+    const a = await seedPost("a", { status: "matched" });
+    const b = await seedPost("b", { status: "matched" });
+    const c = await seedPost("c", { status: "matched" });
+    const link = (id: string, postId: string, position: number, moveId: string, status: "pending" | "saved" | "removed") => ({
+      id, userId, postId, position, moveId, moveKind: "library" as const, confidence: 1, status, createdAt: "2026-10-01T00:00:00.000Z",
+    });
+    await db.insert(schema.savedPostMoves).values([
+      link("1", a, 0, "hip9090", "saved"),
+      link("2", a, 1, "otherMove", "saved"),
+      link("3", b, 0, "hip9090", "saved"),
+      link("4", c, 0, "thirdMove", "pending"),
+      link("5", b, 1, "fourthMove", "removed"),
+    ]);
+    await db.insert(schema.saveBatches).values([
+      { id: "b1", userId, status: "saved", createdAt: "2026-10-01T00:00:00.000Z", releasedAt: "2026-10-01T00:00:00.000Z", savedAt: "2026-10-03T00:00:00.000Z" },
+      { id: "b2", userId, status: "released", createdAt: "2026-10-05T00:00:00.000Z", releasedAt: "2026-10-05T00:00:00.000Z" },
+      { id: "b3", userId, status: "held", createdAt: "2026-10-09T00:00:00.000Z" },
+    ]);
+    await post("/checks", { checkId: "6f1c1d0e-2b7a-4b8e-9c55-0a1b2c3d4e5f", phase: "start" });
+    const { body } = await call("/status");
+    expect(body.totals).toEqual({ moves: 2, posts: 2 });
+    expect(body.lastImportAt).toBe("2026-10-05T00:00:00.000Z");
+    expect(body.lastCheckAt).not.toBe(body.lastImportAt);
   });
 });

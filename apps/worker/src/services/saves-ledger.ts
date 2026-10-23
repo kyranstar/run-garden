@@ -8,7 +8,7 @@ import type { Db } from "./db.js";
 import { importSpend } from "./saves-budget.js";
 import { CLAIM_STALE_MS } from "./saves-filter.js";
 
-const { savedPosts, saveChecks } = schema;
+const { savedPosts, saveChecks, savedPostMoves, saveBatches } = schema;
 
 /** A post is extracted this many times at most. */
 export const MAX_EXTRACT_ATTEMPTS = 3;
@@ -179,7 +179,10 @@ export async function recordCheck(db: Db, userId: string, r: CheckReport, now: s
 const STATUS_CHECKS = 10;
 const STATUS_POSTS = 30;
 
-/** What the app and the extension popup show: the latest checks and posts, the spend, and one word for how it is going. */
+/**
+ * What the app and the extension popup show: the latest checks and posts, the spend, what the import brought (`totals`,
+ * `lastImportAt`), and one word for how it is going. Four statements.
+ */
 export async function savesStatus(db: Db, userId: string, now: string): Promise<SavesStatusDto> {
   const checks = await db
     .select()
@@ -194,6 +197,16 @@ export async function savesStatus(db: Db, userId: string, now: string): Promise<
     .orderBy(desc(savedPosts.updatedAt))
     .limit(STATUS_POSTS);
   const spend = await importSpend(db, userId, new Date(now));
+  // What the import brought, in one statement: the moves and posts behind the links the owner saved, and when the newest
+  // batch arrived (saved, else released) — not when the extension last looked.
+  const [imported] = (await db.all(sql`SELECT
+    (SELECT count(DISTINCT ${savedPostMoves.moveId}) FROM ${savedPostMoves} WHERE ${savedPostMoves.userId} = ${userId} AND ${savedPostMoves.status} = 'saved') AS moves,
+    (SELECT count(DISTINCT ${savedPostMoves.postId}) FROM ${savedPostMoves} WHERE ${savedPostMoves.userId} = ${userId} AND ${savedPostMoves.status} = 'saved') AS posts,
+    (SELECT max(coalesce(${saveBatches.savedAt}, ${saveBatches.releasedAt})) FROM ${saveBatches} WHERE ${saveBatches.userId} = ${userId}) AS last`)) as Array<{
+    moves: number | null;
+    posts: number | null;
+    last: string | null;
+  }>;
   const last = checks[0];
   const code = last?.errorCode ?? null;
   const state: SavesStatusDto["state"] = !last
@@ -208,6 +221,8 @@ export async function savesStatus(db: Db, userId: string, now: string): Promise<
   return {
     state,
     lastCheckAt: last?.startedAt ?? null,
+    lastImportAt: imported?.last ?? null,
+    totals: { moves: Number(imported?.moves ?? 0), posts: Number(imported?.posts ?? 0) },
     checks: checks.map((c) => ({
       id: c.id,
       startedAt: c.startedAt,
