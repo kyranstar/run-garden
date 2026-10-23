@@ -1,5 +1,5 @@
-import { parseWeightList, type Weight } from "@rg/domain";
-import { makeEngineData } from "@rg/exercise-library";
+import { addDays, parseWeightList, type Weight } from "@rg/domain";
+import { ROTATED_OUT_DAYS, makeEngineData } from "@rg/exercise-library";
 import { describe, expect, test } from "vitest";
 import { Blocks, Lib, Rng, type Block, type BlockCtx } from "../src/index.js";
 import { dataWith, ex, lifted, session, tmj } from "./fixtures.js";
@@ -74,6 +74,25 @@ test("rotation doesn't flip-flop: a lift rotated out stays out, and one rotation
   const again = Blocks.ensure(data, second, ctx({ today: "2026-09-18", sessions: [...clenchy, ...stalled] })).block;
   expect(again.core.row).toBe("proneRow");
   expect(again.rotations.length).toBe(1);
+});
+
+test("a lift rotated out may come back 21 days after the session that rotated it out (2026-10-23)", () => {
+  expect(ROTATED_OUT_DAYS).toBe(21);
+  const b = withCore(Blocks.ensure(data, null, ctx()).block, { row: "supportedRow" });
+  const clenchy = ["2026-09-03", "2026-09-05", "2026-09-08"].map((d, i) => session(d, { idSuffix: "r", entries: [{ id: "supportedRow", clenched: i > 0, sets: [{ w: lb(25), reps: 8 }] }] }));
+  const first = Blocks.ensure(data, b, ctx({ today: "2026-09-10", sessions: clenchy })).block;
+  expect(first.rotations).toEqual([expect.objectContaining({ family: "row", from: "supportedRow", to: "proneRow", date: "2026-09-10" })]);
+  const stalled = ["2026-09-22", "2026-09-24", "2026-09-26", "2026-09-28"].map(d => session(d, { idSuffix: "p", entries: [{ id: "proneRow", sets: [{ w: null, reps: 10 }] }] }));
+  const sessions = [...clenchy, ...stalled];
+  // A day short: proneRow stalls, but supportedRow is still out and there's nothing else to take.
+  expect(addDays("2026-09-10", ROTATED_OUT_DAYS - 1)).toBe("2026-09-30");
+  expect(Blocks.ensure(data, first, ctx({ today: "2026-09-30", sessions })).block.core.row).toBe("proneRow");
+  // 21 days on, it may come back.
+  const back = Blocks.ensure(data, first, ctx({ today: "2026-10-01", sessions }));
+  expect(back.block.core.row).toBe("supportedRow");
+  expect(back.events).toEqual([expect.stringMatching(/^proneRow → supportedRow: no progress in 3 sessions\.$/)]);
+  // Judged only on its sessions since it came back: the old clenched ones don't rotate it straight out again.
+  expect(Blocks.ensure(data, back.block, ctx({ today: "2026-10-03", sessions })).block.core.row).toBe("supportedRow");
 });
 
 test("a lift judged only on sessions since it joined the block", () => {
