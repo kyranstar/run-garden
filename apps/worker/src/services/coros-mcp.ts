@@ -112,11 +112,6 @@ async function connRow(db: Db, userId: string): Promise<ConnRow | undefined> {
   )[0];
 }
 
-/** Whether the athlete's sleep connection needs reconnecting (the sync line says so: audit C2). One statement. */
-export async function sleepReconnectDue(db: Db, userId: string): Promise<boolean> {
-  return sleepNeedsReconnect((await connRow(db, userId))?.status);
-}
-
 interface McpMeta {
   issuer?: string;
   tokenUrl?: string;

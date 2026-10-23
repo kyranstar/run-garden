@@ -15,7 +15,7 @@ import type { AppContext } from "../auth/middleware.js";
 import { requireUser } from "../auth/middleware.js";
 import { deriveBackfillStatus } from "../services/backfill.js";
 import { loadPreferences } from "../services/calendar-sync.js";
-import { corosConnectionStatus } from "../services/coros-connection.js";
+import { corosConnectionsForSyncLine } from "../services/coros-connection.js";
 import { applyMove } from "../services/jobs.js";
 import { executeCloudJobs } from "../services/coros-write-cloud.js";
 import { openMoveIntents } from "../services/sync-intents.js";
@@ -23,7 +23,6 @@ import { activeSyncNotes, dismissSyncNote, DISMISS_ONLY_NOTE_KINDS } from "../se
 import { computeSyncStatus, openFailedCoachWrites } from "../services/sync-status.js";
 import { pushStudioPlan, retireStudioPlan, studioPlanRetired, undoStudioAdoption } from "../services/studio-push.js";
 import { corosReadNow } from "../services/coros-read.js";
-import { sleepReconnectDue } from "../services/coros-mcp.js";
 import { countOrphanedMirrors, repairOrphanedMirrors } from "../services/mirror-repair.js";
 import { convergeDivergedContent, countDivergedContent } from "../services/content-converge.js";
 import {
@@ -52,14 +51,14 @@ syncRoutes.get("/status", async (c) => {
   const status = await computeSyncStatus(db, userId, prefs);
   // Cloud-direct COROS (spec §5): when a cloud connection exists, presence
   // means "connection healthy", not Mac liveness — the line speaks it.
-  const cloud = await corosConnectionStatus(db, userId);
+  // The sleep connection rides the same read (audit C2): the line says when COROS expired it — no statement more.
+  const { coros: cloud, sleepNeedsReconnect } = await corosConnectionsForSyncLine(db, userId);
   return c.json({
     ...status,
     cloud: cloud.connected || cloud.status === "error"
       ? { connected: cloud.connected, lastSyncAt: cloud.lastSyncAt, error: cloud.lastErrorCategory }
       : null,
-    // COROS expired the sleep connection (audit C2): five weeks with only Settings saying so. The line says it too.
-    sleepNeedsReconnect: await sleepReconnectDue(db, userId),
+    sleepNeedsReconnect,
   });
 });
 
