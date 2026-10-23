@@ -29,7 +29,9 @@
  *    any review, using no round (`too_long`; Task 13's fix wave, §2.4: two of thirteen first drafts were sent to review
  *    far over the asked length);
  *  - a full revision of a reviewed draft whose review asked for nothing (`nothing_to_fix`, using no round; §2.3) — unless
- *    its changeNote names an open validator note's code: a text fix is an amend;
+ *    its changeNote names an open validator note's code, or — once a run — answers the review's gap on the request (the
+ *    request scored under 5, the changeNote citing it: the request, or what the athlete asked; audit C5: a move the
+ *    athlete asked for, refused, and the athlete told to add it themselves): a text fix is an amend;
  *  - a changeNote past PROSE_CEILING × its cap (act-common.ts `prose`: it is kept whole up to there, as only a model
  *    reads it), saying its length.
  * Everything else — the validator's warnings — goes with the draft as its costs.
@@ -207,6 +209,8 @@ export interface ReviewRound {
   kept?: boolean;
   /** A revision's line in the op's change list, once judged: what changed, and why it wasn't kept if it wasn't. */
   change?: string;
+  /** A revision allowed only for the review's gap on the request (audit C5): one a run. */
+  forRequest?: true;
 }
 
 export type DesignProposalStatus = "unreviewed" | "pending" | "rehearsal";
@@ -395,16 +399,22 @@ export const proposeWorkout: DesignTool = {
       );
     }
     // A full revision of a reviewed draft costs a round: only when something must change (§2.3) — a must-fix of its
-    // review, or an open validator note the changeNote names.
+    // review, or an open validator note the changeNote names — or, once a run, to close the review's gap on the request
+    // (audit C5): what the athlete asked for is never left for them to add.
     const held = kept ? log.find((r) => r.toolUseId === kept.toolUseId) : undefined;
-    if (ctx.review && kept?.review && held?.status === "reviewed" && kept.review.mustFix.length === 0 && !namesOpenNote(p.changeNote, kept.issues)) {
-      const open = [...new Set(kept.issues.map((i) => i.code))];
+    const emptyRevision = !!(ctx.review && kept?.review && held?.status === "reviewed" && kept.review.mustFix.length === 0);
+    const requestGap = emptyRevision && requestGapOpen(kept!.review!, log);
+    const forRequest = requestGap && citesRequest(p.changeNote);
+    if (emptyRevision && !namesOpenNote(p.changeNote, kept!.issues) && !forRequest) {
+      const open = [...new Set(kept!.issues.map((i) => i.code))];
+      const ways = [
+        ...(open.length > 0 ? [`name the note the revision fixes in changeNote (open: ${open.join(", ")})`] : []),
+        ...(requestGap ? ["say in changeNote what the athlete asked that it adds — the request — once"] : []),
+      ];
       return refuse(
         "nothing_to_fix",
-        "Nothing must change in the reviewed draft: call finish — or propose_workout with amend: true for text-only fixes. A full revision costs a review round; it is allowed when changeNote names an open validator note's code.",
-        open.length > 0
-          ? `Call finish; or amend the text; or name the note the revision fixes in changeNote (open: ${open.join(", ")}).`
-          : "Call finish; or amend the text with amend: true.",
+        "Nothing must change in the reviewed draft: call finish — or propose_workout with amend: true for text-only fixes. A full revision costs a review round; it is allowed when changeNote names an open validator note's code, or, once, the review's gap on the request.",
+        ways.length > 0 ? `Call finish; or amend the text; or ${ways.join("; or ")}.` : "Call finish; or amend the text with amend: true.",
       );
     }
 
@@ -512,7 +522,15 @@ export const proposeWorkout: DesignTool = {
     let replaced = false;
     const round = countedRounds(log) + 1;
     const reviewRunId = reviewerRunId(ctx.run.id, toolUseId);
-    const entry: ReviewRound = { round, toolUseId, reviewRunId, status: "reviewing", ...(p.changeNote ? { changeNote: p.changeNote } : {}) };
+    const entry: ReviewRound = {
+      round,
+      toolUseId,
+      reviewRunId,
+      status: "reviewing",
+      ...(p.changeNote ? { changeNote: p.changeNote } : {}),
+      // Allowed only for the request's gap (no must-fix, no named note): its one such round is spent.
+      ...(forRequest && !namesOpenNote(p.changeNote, kept?.issues ?? []) ? { forRequest: true as const } : {}),
+    };
     if (ctx.review && kept?.review) {
       // A revision of a reviewed draft: held apart while its review runs; the op keeps the best so far.
       op = { ...kept, candidate: { ...version, round, reviewRunId }, reviewLog: [...log, entry] };
@@ -732,6 +750,16 @@ function namesOpenNote(changeNote: string | undefined, issues: ReadonlyArray<{ c
   const said = changeNote.toLowerCase();
   return issues.some((i) => said.includes(i.code.toLowerCase()));
 }
+
+/** Whether the review left a gap on the request (scored under 5) that no revision of this run has spent its one round
+ * on yet (audit C5). */
+function requestGapOpen(review: DesignReview, log: readonly ReviewRound[]): boolean {
+  const score = review.scores?.request;
+  return typeof score === "number" && score < 5 && !log.some((r) => r.forRequest);
+}
+
+/** Whether a changeNote cites the request: the dimension, or what the athlete asked ("you asked for…"). */
+const citesRequest = (changeNote: string | undefined): boolean => !!changeNote && /\b(request|requested|asked)\b/i.test(changeNote);
 
 /** A draft whose minutes pass its own target by more than max(TOO_LONG_MIN_OVER, 15%): refused (§2.4); else null. */
 export function tooLong(minutes: number, target: number | undefined): ToolErr | null {
