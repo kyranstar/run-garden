@@ -403,7 +403,7 @@ describe("record_answer", () => {
         })
       ).result,
     );
-    expect(eight.receipt.recorded).toHaveLength(8);
+    expect((eight.receipt as { recorded: unknown[] }).recorded).toHaveLength(8);
     const nine = err(
       (
         await call("record_answer", { ...ctxOf(r), toolUseId: "toolu_nine" }, {
