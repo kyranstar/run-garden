@@ -941,6 +941,18 @@ describe("GET /plans answers training lines (2026-10-20)", () => {
     expect(body.plans.map((p) => p.id).sort()).toEqual(["gone", "live"]);
   });
 
+  it("a full rest week between two Monday-to-Sunday blocks keeps them one line; eight rest days make two (owner, 2026-10-23)", async () => {
+    // A ends Sun Oct 18; B starts Mon Oct 26: seven rest days, Oct 19–25.
+    await seedBlock("wa", "2026-09-28", "2026-10-18", "completed");
+    await seedBlock("wb", "2026-10-26", "2026-11-22");
+    expect((await read()).lines.map((l) => l.phases.map((p) => p.id))).toEqual([["wa", "wb"]]);
+    // A lifting pair with eight rest days between (Oct 19–26): two lines.
+    await seedBlock("la", "2026-09-28", "2026-10-18", "completed", { discipline: "lift" });
+    await seedBlock("lb", "2026-10-27", "2026-11-22", "active", { discipline: "lift" });
+    const lift = (await read()).lines.filter((l) => l.key.startsWith("lift:")).map((l) => l.phases.map((p) => p.id));
+    expect(lift).toEqual([["la"], ["lb"]]);
+  });
+
   it("a completed block stays in its line as a past phase", async () => {
     await seedBlock("old", "2026-09-14", "2026-10-11", "completed");
     await seedBlock("now", "2026-10-12", "2026-10-25");

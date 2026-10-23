@@ -3,9 +3,10 @@
  *
  * Chain rule: a line is a maximal chain of one discipline's coach blocks
  * (retired ones dropped), taken in (startDate, id) order, where each block
- * starts no more than LINE_GAP_DAYS after the running maximum end of the
- * chain so far. Overlapping blocks join too. Callers pass coach blocks
- * only, never the loose `adhoc-` buckets.
+ * starts no more than LINE_GAP_DAYS (8) after the running maximum end of the
+ * chain so far — at most LINE_MAX_REST_DAYS (7) whole rest days between, so
+ * a full rest week keeps the line (owner, 2026-10-23). Overlapping blocks
+ * join too. Callers pass coach blocks only, never the loose `adhoc-` buckets.
  *
  * Naming rule (`weekNaming`): the plan that names a week is the naming phase
  * of the group holding the most sessions that week. A group is a line (all
@@ -39,7 +40,14 @@ export type TrainingLine = {
   ended: boolean;
 };
 
-export const LINE_GAP_DAYS = 7;
+/**
+ * How long a break keeps a line: at most this many whole rest days between the running end and a block's first day.
+ * A full rest week between two Monday-to-Sunday blocks is one line (owner, 2026-10-23; the spec §1: "a break of more
+ * than a week starts a new line"); eight rest days start a new one.
+ */
+export const LINE_MAX_REST_DAYS = 7;
+/** A block joins its sport's line when it starts no more than this many days after the line's running end. */
+export const LINE_GAP_DAYS = LINE_MAX_REST_DAYS + 1;
 
 const LINE_NAMES = {
   run: "Running",
