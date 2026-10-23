@@ -249,6 +249,27 @@ test("a block's first move keeps to the block's share when one fits it — a sho
   expect(checked).toBeGreaterThan(30);
 });
 
+test("a never-done move ranked below the best keeps to the block's share — only the best-ranked new move keeps its place", () => {
+  // The care pool ranks: levatorStretch (done long ago, rated 👍, on theme; 96 s, over the 90 s share), then the
+  // never-done downRegulationFlow (the week's new move; 158 s, over it too), then moves done in each of the last three
+  // sessions — doorOpeners first, which fits. The new move is not the best-ranked, so the share decides: it never
+  // overruns the block (it was forced in at 158 s, 2026-10-23 review L2).
+  const doneOn = (date: string, ...but: string[]): HistorySession => normalise({
+    id: `s-${date}`, date, startedAt: `${date}T18:00:00`, seconds: 1800, pre: 1, post: 1, entries: [],
+    done: data.exercises.filter(ex => !but.includes(ex.id)).map(ex => ({ id: ex.id, secs: 60 })),
+  });
+  const sessions = [doneOn("2026-08-15", "downRegulationFlow"), ...["2026-09-20", "2026-09-24", "2026-09-27"].map(d => doneOn(d, "downRegulationFlow", "levatorStretch"))];
+  const plan = Builder.build(data, input({
+    sessions, mode: "consistent", minutes: 15, theme: upperBack, prefs: { ratings: { levatorStretch: 1 }, excluded: [], pinned: [] },
+  }));
+  const share = (data.skeleton.shares.consistent.care ?? 0) * 15 * 60;
+  const care = plan.items.filter(i => i.block === "care");
+  const secs = plan.steps.filter(s => care.some(i => i.slotKey === s.slotKey)).reduce((n, s) => n + s.seconds + (s.prepGap || 0), 0);
+  expect(care.map(i => i.exercise.id)).toEqual(["doorOpeners"]);
+  expect(secs).toBeLessThanOrEqual(share);
+  expect(plan.plannedSeconds).toBeLessThanOrEqual(900);
+});
+
 test("going slightly over budget shrinks the plan a little instead of dropping whole blocks", () => {
   // This session used to land 17 s over budget and lose its entire accessory superset (and its new move).
   const plan = Builder.build(data, input({ sessions: allDoneBut("deadBug"), theme: themeById("deskUnwind"), minutes: 15 }));
