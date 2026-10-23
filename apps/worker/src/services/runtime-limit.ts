@@ -26,3 +26,22 @@ export function isRuntimeLimit(error: unknown): boolean {
     typeof error === "string" ? error : error instanceof Error ? error.message : String(error ?? ""),
   );
 }
+
+/**
+ * OUR OWN DATABASE FAILING IS NOT A REMOTE SERVICE FAILING EITHER (audit C3). At 2026-10-18 12:30Z "D1_ERROR: Network
+ * connection lost" — the Worker losing D1, mid-read — was stamped `api_error` on the COROS connection and recorded as
+ * `coros_unreachable`. D1's own failures carry its mark (`D1_ERROR`, `D1_…_ERROR`, "D1 DB is overloaded", "D1 DB
+ * storage operation …"); a wrapper's `cause` is read too. A statement of ours that D1 refused (a missing column, a
+ * constraint, too many variables, a syntax error) is not the database failing: it is a bug every retry meets, and it is
+ * left to the caller's own handling.
+ */
+const D1_MARK = /\bD1_[A-Z_]*ERROR\b|\bD1 DB\b/;
+const OUR_STATEMENT = /SQLITE_(ERROR|CONSTRAINT|MISMATCH|RANGE|TOOBIG)|constraint failed|no such (table|column)|has no column|syntax error|too many SQL variables/i;
+export function isStorageError(error: unknown): boolean {
+  for (let e: unknown = error, depth = 0; e != null && depth < 4; depth++) {
+    const message = typeof e === "string" ? e : e instanceof Error ? e.message : "";
+    if (D1_MARK.test(message) && !OUR_STATEMENT.test(message)) return true;
+    e = e instanceof Error ? e.cause : null;
+  }
+  return false;
+}

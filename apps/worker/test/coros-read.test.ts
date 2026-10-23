@@ -209,6 +209,32 @@ describe("corosReadNow", () => {
     expect(coros.counts.detail ?? 0).toBe(detailsAfterHeal);
   });
 
+  // Audit C3: at 10-18 12:30Z "D1_ERROR: Network connection lost" was stamped `api_error` on the COROS connection and
+  // the read recorded `coros_unreachable` — our storage failing, reported as COROS's outage.
+  it("a storage failure after the wire calls is our own: storage_error, and the COROS connection stays healthy", async () => {
+    let armed = false;
+    const db = makeTestDb({
+      onStatement: (sql) => {
+        if (armed && /^insert into "activities"/.test(sql)) throw new Error("D1_ERROR: Network connection lost.");
+      },
+    });
+    const { userId, prefs } = await makeTestUser(db);
+    const coros = fakeCoros(todayInZone(prefs.timezone));
+    expect((await connectCoros(db, makeEnv(), userId, { email: "a@b.c", pwdMd5: PWD_MD5, region: "us" }, coros.fetchImpl)).status).toBe("connected");
+    await markSynced(db, userId, READ_FRESHNESS_MS + 1_000);
+    armed = true;
+    const res = await corosReadNow(db, makeEnv(), userId, prefs, { fetchImpl: coros.fetchImpl });
+    armed = false;
+    expect(res.status).toBe("storage_error");
+    const [conn] = await db
+      .select()
+      .from(schema.providerConnections)
+      .where(and(eq(schema.providerConnections.userId, userId), eq(schema.providerConnections.provider, "coros")));
+    expect(conn).toMatchObject({ status: "connected", lastErrorCategory: null });
+    // …and the next read goes ahead as usual.
+    expect((await corosReadNow(db, makeEnv(), userId, prefs, { fetchImpl: coros.fetchImpl, force: true })).status).toBe("ok");
+  });
+
   it("not connected → not_connected; network failure → coros_unreachable", async () => {
     const db = makeTestDb();
     const { userId, prefs } = await makeTestUser(db);

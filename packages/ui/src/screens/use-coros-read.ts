@@ -9,7 +9,9 @@ export type CorosCheckState =
   | "still_syncing"
   | "not_connected"
   | "bad_credentials"
-  | "coros_unreachable";
+  | "coros_unreachable"
+  /** The read failed on the app's own storage, not at COROS (the worker's `storage_error`). */
+  | "storage_error";
 
 const BUSY_RETRY_MS = 2500;
 const BUSY_RETRY_MAX = 3;
@@ -67,6 +69,7 @@ export function useCorosReadNow(): { state: CorosCheckState } {
   if (s === "not_connected") return { state: "not_connected" };
   if (s === "bad_credentials") return { state: "bad_credentials" };
   if (s === "coros_unreachable") return { state: "coros_unreachable" };
+  if (s === "storage_error") return { state: "storage_error" };
   if (s === "busy" && busySeen.current < BUSY_RETRY_MAX) return { state: "checking" };
   // Retries exhausted while another pull still holds the lock: say so —
   // "silence is only allowed for success" (audit finding 11).

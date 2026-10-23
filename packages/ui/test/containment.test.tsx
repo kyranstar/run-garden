@@ -135,11 +135,13 @@ describe("prose never wears the label primitive", () => {
   });
 
   it("every COROS-check state is a note, not a pill", () => {
-    for (const state of ["checking", "not_connected", "bad_credentials", "still_syncing", "coros_unreachable"] as const) {
+    for (const state of ["checking", "not_connected", "bad_credentials", "still_syncing", "coros_unreachable", "storage_error"] as const) {
       const html = render(createElement(CorosCheck, { state }));
       expect(html, state).toContain('class="note');
       expect(html, state).not.toContain("pill");
     }
+    // Our own storage failing is never said as COROS's outage (audit C3).
+    expect(render(createElement(CorosCheck, { state: "storage_error" }))).not.toContain("unreachable");
   });
 
   it("the shell carries a backstop that cannot be silently removed", () => {
