@@ -225,7 +225,7 @@ describe("GET /status", () => {
     expect(body.state).toBe("paused_budget");
     expect(body.checks).toHaveLength(1);
     expect(body.posts).toEqual([
-      { key: "p1", url: "https://example.com/p/p1", creator: { handle: "" }, status: "queued", reason: null, updatedAt: "2026-10-01T00:00:00.000Z" },
+      { id: await savedPostId(userId, SRC, "p1"), key: "p1", url: "https://example.com/p/p1", creator: { handle: "" }, status: "queued", reason: null, updatedAt: "2026-10-01T00:00:00.000Z" },
     ]);
   });
 });

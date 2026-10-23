@@ -39,6 +39,7 @@ import { objectiveBoardRoutes } from "./routes/objectives-board.js";
 import { importRoutes } from "./routes/imports.js";
 import { lifeosRoutes } from "./routes/lifeos.js";
 import { savesRoutes } from "./routes/saves.js";
+import { mySavesRoutes } from "./routes/my-saves.js";
 import { workoutRoutes } from "./routes/workouts.js";
 import { templateRoutes } from "./routes/templates.js";
 import { musicRoutes } from "./routes/music.js";
@@ -143,6 +144,8 @@ app.route("/api/music", musicRoutes);
 // LifeOS (the owner's habit app) reads the plan with a bearer token, never a cookie.
 app.route("/api/lifeos", lifeosRoutes);
 app.route("/api/saves", savesRoutes);
+// The same import as the owner sees it in Settings -> Saves: the session cookie, 404 unless SAVES_IMPORT.
+app.route("/api/my-saves", mySavesRoutes);
 // The parity harness: 404 unless staging or PARITY_ENABLED, then requireUser.
 // Its DTO hash calls this same app in-process, as the caller.
 app.route("/api/admin", adminRoutes((req, env, ctx) => app.fetch(req, env, ctx)));

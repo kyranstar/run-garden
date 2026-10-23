@@ -188,6 +188,7 @@ export async function savesStatus(db: Db, userId: string, now: string): Promise<
       errorCode: (c.errorCode as SaveErrorCode | null) ?? null,
     })),
     posts: posts.map((p) => ({
+      id: p.id,
       key: p.sourceKey,
       url: p.url ?? "",
       creator: { handle: p.creatorHandle ?? "", ...(p.creatorName ? { name: p.creatorName } : {}) },
@@ -197,4 +198,42 @@ export async function savesStatus(db: Db, userId: string, now: string): Promise<
     })),
     spend,
   };
+}
+
+export type OverrideAction = "process" | "skip" | "reference";
+export type OverrideResult = "ok" | "not_found" | "conflict";
+
+/**
+ * The owner's word on one post. `process` sends a filtered-out or failed post back to the queue (stage "owner", attempts
+ * and the last error cleared); `skip` and `reference` set their status (a reference keeps the post's links; its routine
+ * is never offered whole). The post is named by row id or by (source, key). Another account's post is "not_found"; a
+ * `process` on a post that is neither filtered out nor failed is a "conflict". Two statements.
+ */
+export async function overridePost(
+  db: Db,
+  userId: string,
+  by: { id: string } | { source: string; key: string },
+  action: OverrideAction,
+  now: string,
+): Promise<OverrideResult> {
+  const mine = and(
+    eq(savedPosts.userId, userId),
+    "id" in by ? eq(savedPosts.id, by.id) : and(eq(savedPosts.source, by.source), eq(savedPosts.sourceKey, by.key)),
+  );
+  const [row] = await db.select({ id: savedPosts.id, status: savedPosts.status }).from(savedPosts).where(mine).limit(1);
+  if (!row) return "not_found";
+  const where = and(eq(savedPosts.id, row.id), eq(savedPosts.userId, userId));
+  if (action === "process") {
+    if (row.status !== "filtered_out" && row.status !== "failed") return "conflict";
+    await db
+      .update(savedPosts)
+      .set({ status: "queued", filterStage: "owner", extractAttempts: 0, lastErrorCode: null, lastError: null, updatedAt: now })
+      .where(where);
+    return "ok";
+  }
+  await db
+    .update(savedPosts)
+    .set({ status: action === "skip" ? "skipped_by_owner" : "reference_only", updatedAt: now })
+    .where(where);
+  return "ok";
 }

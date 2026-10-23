@@ -126,6 +126,8 @@ export interface CheckRowDto {
   errorCode: SaveErrorCode | null;
 }
 export interface PostRowDto {
+  /** The ledger's row id (what an owner override names). */
+  id: string;
   key: string;
   url: string;
   creator: { handle: string; name?: string };

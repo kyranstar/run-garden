@@ -12,6 +12,7 @@
   "dependencies": {
     "@rg/analytics": "workspace:*",
     "@rg/domain": "workspace:*",
+    "@rg/saves": "workspace:*",
     "@rg/session-engine": "workspace:*"
   },
   "devDependencies": {

@@ -17,6 +17,7 @@
     "@rg/exercise-library": "workspace:*",
     "@rg/garden-engine": "workspace:*",
     "@rg/garden-renderer": "workspace:*",
+    "@rg/saves": "workspace:*",
     "@rg/session-engine": "workspace:*",
     "@rg/workout": "workspace:*",
     "@tanstack/react-query": "^5.62.0",

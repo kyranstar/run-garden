@@ -2406,6 +2406,9 @@ export function withQuery(path: string, qs: URLSearchParams): string {
   return query ? `${path}?${query}` : path;
 }
 
+/** The React Query key of Settings -> Saves' status read. */
+export const SAVES_STATUS_QUERY = ["saves-status"] as const;
+
 export const api = {
   me: () => get<MeResponse>("/api/auth/me"),
   logout: () => post("/api/auth/logout"),
@@ -2511,6 +2514,11 @@ export const api = {
   /** The settings, whole: what is left out is its default again. 400 for a limit raised past its default. */
   coachPreferencesUpdate: (coach: import("@rg/domain").CoachPreferences) =>
     request<CoachPreferencesDto>("/api/coach/preferences", { method: "PUT", body: JSON.stringify(coach) }),
+  /** Settings -> Saves: what the saved-posts import did (404 while the feature is off). */
+  savesStatus: () => get<import("@rg/saves").SavesStatusDto>("/api/my-saves/status"),
+  /** The owner's word on one saved post: process anyway (also Retry), skip, or keep as a reference. */
+  savesOverride: (id: string, action: "process" | "skip" | "reference") =>
+    post<{ ok: boolean }>(`/api/my-saves/posts/${encodeURIComponent(id)}/override`, { action }),
   /** The rolling week's AI spend against the cap. */
   coachSpend: () => get<CoachSpendDto>("/api/coach/spend"),
   coachMemoryDelete: (id: string) =>

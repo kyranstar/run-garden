@@ -37,6 +37,8 @@ import { CoachMemorySection } from "./settings/coach-memory.js";
 import { CoachAiSection, TrainingTimes } from "./settings/coach-settings.js";
 import { useLivePrefs, useSaveAsYouGo, useSettingSwitch } from "./settings/save.js";
 import { SoundsSection } from "./settings/sounds.js";
+import { SavesSection } from "./settings/saves.js";
+import { ageText } from "./settings/age.js";
 
 const TZ_OPTIONS: string[] = (() => {
   const sv = (Intl as unknown as { supportedValuesOf?: (k: string) => string[] }).supportedValuesOf;
@@ -1430,12 +1432,6 @@ const hostOf = (origin: string | undefined): string | null => {
   }
 };
 
-function ageText(exportedAt: string, now: Date): string {
-  const days = Math.floor((now.getTime() - Date.parse(exportedAt)) / 86_400_000);
-  if (!(days > 0)) return "today";
-  return days === 1 ? "1 day ago" : `${days.toLocaleString()} days ago`;
-}
-
 const localDay = (iso: string) => new Date(iso).toLocaleDateString("en-CA");
 
 /** Rows per table, plain names for the ones an athlete recognises. */
@@ -1874,6 +1870,7 @@ export function SettingsScreen() {
       <SettingsGroup id="settings-coach" title="Coach & AI">
         <CoachAiSection prefs={prefs} />
         <CoachMemorySection />
+        <SavesSection />
       </SettingsGroup>
       <SettingsGroup id="settings-garden" title="Garden">
         <GardenSection />
