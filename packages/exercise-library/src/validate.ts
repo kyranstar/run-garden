@@ -41,115 +41,147 @@ export interface ValidateOptions {
   jumpTagExempt?: readonly string[];
 }
 
-export function validateLibrary(data: EngineData, options: ValidateOptions = {}): string[] {
+export interface RecordContext {
+  themes: EngineData["themes"];
+  profiles: readonly ConditionProfile[];
+  /** Ids already taken: a record whose id is in here is a duplicate. */
+  knownIds: ReadonlySet<string>;
+  /**
+   * `library`: the public library's rules. `personal`: an owner's own move: the id must match `personalId` (the
+   * caller's pattern: this package cannot import it), there is no provenance or camelCase rule, and the muscles, setup,
+   * focus, mistakes and breathing may be empty.
+   */
+  mode: "library" | "personal";
+  personalId?: RegExp;
+  jumpTagExempt?: ReadonlySet<string>;
+}
+
+/** One record's own problems as "<id>: <message>". The checks that need the whole list (links, ladders, coverage) stay in `validateLibrary`. */
+export function validateRecord(ex: ExerciseRecord, ctx: RecordContext): string[] {
   const errors: string[] = [];
   const err = (id: string, msg: string) => errors.push(`${id}: ${msg}`);
   const inVocab = (id: string, field: string, value: unknown, list: readonly string[]) => {
     if (!inList(list, value)) err(id, `${field} "${String(value)}" is not in the vocabulary`);
   };
+  const { profiles, knownIds } = ctx;
+  const personal = ctx.mode === "personal";
+  const jumpTagExempt = ctx.jumpTagExempt ?? new Set(JUMP_TAG_EXEMPT);
+  const data = { themes: ctx.themes };
+  const id = ex.id || "(missing id)";
+  if (personal) { if (!ctx.personalId?.test(ex.id || "") || (ex.id || "").length > 80) err(id, "id must be a personal move id"); }
+  else if (!/^[a-z][A-Za-z0-9]*$/.test(ex.id || "")) err(id, "id must be camelCase");
+  if (knownIds.has(ex.id)) err(id, "duplicate id");
+  if (!ex.name) err(id, "missing name");
+  if (!ex.family) err(id, "missing family");
+  const lists: Array<[string, unknown, readonly string[]]> = [["pattern", ex.patterns, PATTERNS], ["region", ex.regions, REGIONS], ["role", ex.roles, ROLES]];
+  for (const [field, list, vocab] of lists) {
+    if (!Array.isArray(list) || !list.length) err(id, `needs at least one ${field}`);
+    else for (const v of list) inVocab(id, field, v, vocab);
+  }
+  inVocab(id, "position", ex.position, POSITIONS);
+  inVocab(id, "laterality", ex.laterality, LATERALITY);
+  inVocab(id, "load", ex.load, LOADS);
+  const gear: string[] = [...(ex.equipment?.all ?? []), ...(ex.equipment?.oneOf ?? [])];
+  for (const i of gear) inVocab(id, "equipment", i, EQUIPMENT_IDS);
+
+  // Curation fields: required on every record.
+  const listOf = (field: string, value: unknown, vocab: readonly string[], min: number) => {
+    if (!Array.isArray(value) || value.length < min) { err(id, `${field} needs at least ${min}`); return; }
+    for (const v of value) inVocab(id, field, v, vocab);
+    for (const v of new Set(value)) if (value.filter(x => x === v).length > 1) err(id, `${field} repeats "${String(v)}"`);
+  };
+  listOf("contraction", ex.contraction, CONTRACTIONS, 1);
+  listOf("purposes", ex.purposes, PURPOSES, 1);
+  listOf("muscles.primary", ex.muscles?.primary, MUSCLES, personal ? 0 : 1);
+  listOf("muscles.secondary", ex.muscles?.secondary, MUSCLES, 0);
+  const primary: readonly unknown[] = Array.isArray(ex.muscles?.primary) ? ex.muscles.primary : [];
+  const secondary: readonly unknown[] = Array.isArray(ex.muscles?.secondary) ? ex.muscles.secondary : [];
+  for (const m of new Set(primary)) if (secondary.includes(m)) err(id, `muscle "${String(m)}" is in both primary and secondary`);
+  const regions: readonly unknown[] = Array.isArray(ex.regions) ? ex.regions : [];
+  const placed = [...primary, ...secondary].filter(m => typeof m === "string" && m in MUSCLE_REGION);
+  if (placed.length && !placed.some(m => regions.includes(MUSCLE_REGION[m as MuscleId]))) err(id, "no primary or secondary muscle sits in the record's regions");
+  if (!Array.isArray(ex.themes)) err(id, "themes must be a list");
+  else {
+    for (const t of ex.themes) if (!data.themes.some(x => x.id === t)) err(id, `theme "${t}" does not exist`);
+    for (const t of new Set(ex.themes)) if (ex.themes.filter(x => x === t).length > 1) err(id, `themes repeats "${t}"`);
+  }
+  if (Array.isArray(ex.tags)) {
+    for (const t of ex.tags) inVocab(id, "tag", t, TAGS);
+    for (const t of new Set(ex.tags)) if (ex.tags.filter(x => x === t).length > 1) err(id, `tags repeats "${t}"`);
+    // A move that jumps or lands is gated as a jump only through its contraction: the tag alone gates nothing.
+    if (ex.tags.some(t => (JUMP_TAGS as readonly string[]).includes(t)) && !plyometric(ex) && !jumpTagExempt.has(ex.id)) {
+      err(id, `a jump-like tag (${JUMP_TAGS.join(", ")}) needs a plyometric contraction, or an exemption`);
+    }
+  }
+
+  const d = (ex.dose ?? {}) as { type?: unknown; range?: unknown; sets?: unknown };
+  inVocab(id, "dose.type", d.type, DOSE_TYPES);
+  const range = d.range as number[] | undefined;
+  if (!Array.isArray(range) || range.length !== 2 || !((range[0] ?? 0) > 0) || (range[0] ?? 0) > (range[1] ?? 0)) err(id, "dose.range must be [low, high] with 0 < low ≤ high");
+  const sets = d.sets as number[] | undefined;
+  if (sets && (!Array.isArray(sets) || sets.length !== 2 || (sets[0] ?? 0) < 1 || (sets[0] ?? 0) > (sets[1] ?? 0))) err(id, "dose.sets must be [min, max] with 1 ≤ min ≤ max");
+  if (ex.load === "external") {
+    if (d.type !== "reps" && d.type !== "carry") err(id, "external load needs reps or carry dosing");
+    if (!gear.some(i => inList(LOAD_IMPLEMENTS, i))) err(id, "external load needs a loadable implement");
+  }
+  if ((ex.roles || []).includes("core") && ex.load === "none") err(id, "core lifts must be logged (load external or bodyweight)");
+
+  // Every known profile rates every record, on each attribute's own scale.
+  const conditions = (ex.conditions ?? {}) as Record<string, unknown>;
+  for (const p of profiles) {
+    const a = conditions[p.id];
+    if (!a || typeof a !== "object") { err(id, `conditions.${p.id} is missing`); continue; }
+    const attrs = a as Record<string, unknown>;
+    for (const [k, spec] of Object.entries(p.attributes)) {
+      const v = attrs[k];
+      if (spec.kind === "scale") {
+        if (typeof v !== "number" || !Number.isInteger(v) || v < spec.min || v > spec.max) err(id, `conditions.${p.id}.${k} must be ${spec.min}–${spec.max}`);
+      } else if (typeof v !== "boolean") err(id, `conditions.${p.id}.${k} must be true or false`);
+    }
+    for (const k of Object.keys(attrs)) if (!(k in p.attributes)) err(id, `conditions.${p.id}.${k} is not an attribute of "${p.id}"`);
+  }
+  for (const k of Object.keys(conditions)) if (!profiles.some(p => p.id === k)) err(id, `conditions.${k} is not a known condition profile`);
+  if (![1, 2, 3, 4, 5].includes(ex.difficulty)) err(id, "difficulty must be 1–5");
+
+  const t = (ex.text ?? {}) as unknown as Record<string, unknown>;
+  for (const f of TEXT_STRINGS) {
+    const s = t[f];
+    if (personal && f === "breathing" && s === "") continue;
+    if (typeof s !== "string" || !s.trim()) err(id, `text.${f} is required`);
+  }
+  for (const f of TEXT_LISTS) {
+    const l = t[f];
+    if (personal && f !== "steps" && Array.isArray(l) && !l.length) continue;
+    if (!Array.isArray(l) || !l.length || l.some(s => typeof s !== "string" || !s.trim())) err(id, `text.${f} needs at least one line`);
+  }
+  const notes = (t.conditions ?? {}) as Record<string, unknown>;
+  for (const p of profiles) {
+    const note = notes[p.id];
+    if (typeof note !== "string" || !note.trim()) err(id, `text.conditions.${p.id} is required`);
+  }
+
+  // A COROS mapping names a catalog T-code, never a per-account catalog id or a name (Phase 3, spec §2).
+  const coros = ex.providers?.coros;
+  if (coros && !/^T\d{4}$/.test(String(coros.key))) err(id, `providers.coros.key "${String(coros.key)}" is not a COROS T-code`);
+
+  // Provenance is private (spec §3.1): never a sources field, a link, or a creator handle. A personal record lives in
+  // the owner's own account, not the public repository, so its text may name anything.
+  if (personal) return errors;
+  if ("sources" in ex) err(id, "sources are private and never part of the library");
+  if (PROVENANCE.test(JSON.stringify(ex))) err(id, "carries a link or a handle (provenance stays private)");
+  return errors;
+}
+
+export function validateLibrary(data: EngineData, options: ValidateOptions = {}): string[] {
+  const errors: string[] = [];
+  const err = (id: string, msg: string) => errors.push(`${id}: ${msg}`);
   const profiles = options.profiles ?? Object.values(PROFILES);
   const jumpTagExempt = new Set(options.jumpTagExempt ?? JUMP_TAG_EXEMPT);
   const ids = new Set<string>();
 
   for (const ex of data.exercises) {
-    const id = ex.id || "(missing id)";
-    if (!/^[a-z][A-Za-z0-9]*$/.test(ex.id || "")) err(id, "id must be camelCase");
-    if (ids.has(ex.id)) err(id, "duplicate id");
+    errors.push(...validateRecord(ex, { themes: data.themes, profiles, knownIds: ids, mode: "library", jumpTagExempt }));
     ids.add(ex.id);
-    if (!ex.name) err(id, "missing name");
-    if (!ex.family) err(id, "missing family");
-    const lists: Array<[string, unknown, readonly string[]]> = [["pattern", ex.patterns, PATTERNS], ["region", ex.regions, REGIONS], ["role", ex.roles, ROLES]];
-    for (const [field, list, vocab] of lists) {
-      if (!Array.isArray(list) || !list.length) err(id, `needs at least one ${field}`);
-      else for (const v of list) inVocab(id, field, v, vocab);
-    }
-    inVocab(id, "position", ex.position, POSITIONS);
-    inVocab(id, "laterality", ex.laterality, LATERALITY);
-    inVocab(id, "load", ex.load, LOADS);
-    const gear: string[] = [...(ex.equipment?.all ?? []), ...(ex.equipment?.oneOf ?? [])];
-    for (const i of gear) inVocab(id, "equipment", i, EQUIPMENT_IDS);
-
-    // Curation fields: required on every record.
-    const listOf = (field: string, value: unknown, vocab: readonly string[], min: number) => {
-      if (!Array.isArray(value) || value.length < min) { err(id, `${field} needs at least ${min}`); return; }
-      for (const v of value) inVocab(id, field, v, vocab);
-      for (const v of new Set(value)) if (value.filter(x => x === v).length > 1) err(id, `${field} repeats "${String(v)}"`);
-    };
-    listOf("contraction", ex.contraction, CONTRACTIONS, 1);
-    listOf("purposes", ex.purposes, PURPOSES, 1);
-    listOf("muscles.primary", ex.muscles?.primary, MUSCLES, 1);
-    listOf("muscles.secondary", ex.muscles?.secondary, MUSCLES, 0);
-    const primary: readonly unknown[] = Array.isArray(ex.muscles?.primary) ? ex.muscles.primary : [];
-    const secondary: readonly unknown[] = Array.isArray(ex.muscles?.secondary) ? ex.muscles.secondary : [];
-    for (const m of new Set(primary)) if (secondary.includes(m)) err(id, `muscle "${String(m)}" is in both primary and secondary`);
-    const regions: readonly unknown[] = Array.isArray(ex.regions) ? ex.regions : [];
-    const placed = [...primary, ...secondary].filter(m => typeof m === "string" && m in MUSCLE_REGION);
-    if (placed.length && !placed.some(m => regions.includes(MUSCLE_REGION[m as MuscleId]))) err(id, "no primary or secondary muscle sits in the record's regions");
-    if (!Array.isArray(ex.themes)) err(id, "themes must be a list");
-    else {
-      for (const t of ex.themes) if (!data.themes.some(x => x.id === t)) err(id, `theme "${t}" does not exist`);
-      for (const t of new Set(ex.themes)) if (ex.themes.filter(x => x === t).length > 1) err(id, `themes repeats "${t}"`);
-    }
-    if (Array.isArray(ex.tags)) {
-      for (const t of ex.tags) inVocab(id, "tag", t, TAGS);
-      for (const t of new Set(ex.tags)) if (ex.tags.filter(x => x === t).length > 1) err(id, `tags repeats "${t}"`);
-      // A move that jumps or lands is gated as a jump only through its contraction: the tag alone gates nothing.
-      if (ex.tags.some(t => (JUMP_TAGS as readonly string[]).includes(t)) && !plyometric(ex) && !jumpTagExempt.has(ex.id)) {
-        err(id, `a jump-like tag (${JUMP_TAGS.join(", ")}) needs a plyometric contraction, or an exemption`);
-      }
-    }
-
-    const d = (ex.dose ?? {}) as { type?: unknown; range?: unknown; sets?: unknown };
-    inVocab(id, "dose.type", d.type, DOSE_TYPES);
-    const range = d.range as number[] | undefined;
-    if (!Array.isArray(range) || range.length !== 2 || !((range[0] ?? 0) > 0) || (range[0] ?? 0) > (range[1] ?? 0)) err(id, "dose.range must be [low, high] with 0 < low ≤ high");
-    const sets = d.sets as number[] | undefined;
-    if (sets && (!Array.isArray(sets) || sets.length !== 2 || (sets[0] ?? 0) < 1 || (sets[0] ?? 0) > (sets[1] ?? 0))) err(id, "dose.sets must be [min, max] with 1 ≤ min ≤ max");
-    if (ex.load === "external") {
-      if (d.type !== "reps" && d.type !== "carry") err(id, "external load needs reps or carry dosing");
-      if (!gear.some(i => inList(LOAD_IMPLEMENTS, i))) err(id, "external load needs a loadable implement");
-    }
-    if ((ex.roles || []).includes("core") && ex.load === "none") err(id, "core lifts must be logged (load external or bodyweight)");
-
-    // Every known profile rates every record, on each attribute's own scale.
-    const conditions = (ex.conditions ?? {}) as Record<string, unknown>;
-    for (const p of profiles) {
-      const a = conditions[p.id];
-      if (!a || typeof a !== "object") { err(id, `conditions.${p.id} is missing`); continue; }
-      const attrs = a as Record<string, unknown>;
-      for (const [k, spec] of Object.entries(p.attributes)) {
-        const v = attrs[k];
-        if (spec.kind === "scale") {
-          if (typeof v !== "number" || !Number.isInteger(v) || v < spec.min || v > spec.max) err(id, `conditions.${p.id}.${k} must be ${spec.min}–${spec.max}`);
-        } else if (typeof v !== "boolean") err(id, `conditions.${p.id}.${k} must be true or false`);
-      }
-      for (const k of Object.keys(attrs)) if (!(k in p.attributes)) err(id, `conditions.${p.id}.${k} is not an attribute of "${p.id}"`);
-    }
-    for (const k of Object.keys(conditions)) if (!profiles.some(p => p.id === k)) err(id, `conditions.${k} is not a known condition profile`);
-    if (![1, 2, 3, 4, 5].includes(ex.difficulty)) err(id, "difficulty must be 1–5");
-
-    const t = (ex.text ?? {}) as unknown as Record<string, unknown>;
-    for (const f of TEXT_STRINGS) {
-      const s = t[f];
-      if (typeof s !== "string" || !s.trim()) err(id, `text.${f} is required`);
-    }
-    for (const f of TEXT_LISTS) {
-      const l = t[f];
-      if (!Array.isArray(l) || !l.length || l.some(s => typeof s !== "string" || !s.trim())) err(id, `text.${f} needs at least one line`);
-    }
-    const notes = (t.conditions ?? {}) as Record<string, unknown>;
-    for (const p of profiles) {
-      const note = notes[p.id];
-      if (typeof note !== "string" || !note.trim()) err(id, `text.conditions.${p.id} is required`);
-    }
-
-    // A COROS mapping names a catalog T-code, never a per-account catalog id or a name (Phase 3, spec §2).
-    const coros = ex.providers?.coros;
-    if (coros && !/^T\d{4}$/.test(String(coros.key))) err(id, `providers.coros.key "${String(coros.key)}" is not a COROS T-code`);
-
-    // Provenance is private (spec §3.1): never a sources field, a link, or a creator handle.
-    if ("sources" in ex) err(id, "sources are private and never part of the library");
-    if (PROVENANCE.test(JSON.stringify(ex))) err(id, "carries a link or a handle (provenance stays private)");
   }
 
   const byId = new Map(data.exercises.map(ex => [ex.id, ex]));
