@@ -1757,9 +1757,9 @@ describe("a document workout in the sheet, CUJ wave", () => {
   it("on a flare day, a document above Recover says the day's go-Recover line, as the builder does, with Edit in Studio (CUJ re-walk §2.6)", async () => {
     const tmjView = { profileId: "tmj", check: { label: "Jaw / head", min: 0, max: 10 }, care: "Jaw care" };
     mount(docSession({ profiles: [tmjView], checks: { tmj: { pre: 6, feelingOff: false } } } as Partial<SessionDto>), { w: docRow() });
-    await until(() => body().includes("Jaw/head is at 6 right now."), "the line");
+    await until(() => body().includes("Jaw/head is at 6 today — an easy day helps it settle."), "the line");
     const line = document.querySelector(".session-advice")!;
-    expect(line.textContent).toContain("Jaw/head is at 6 right now.");
+    expect(line.textContent).toContain("Jaw/head is at 6 today — an easy day helps it settle.");
     expect(line.querySelector("a")!.textContent).toBe("Edit in Studio");
   });
 

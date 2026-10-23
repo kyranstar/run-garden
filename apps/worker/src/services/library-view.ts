@@ -20,7 +20,7 @@
  * the account's own, and only the detail returns them. No payload carries `providers` internals.
  *
  * Safety, per switched-on profile: `never` when the profile allows the move in no mode even on its calmest day,
- * `safe` when it is also safe on a flare day (`flareSafe`), else `care` (allowed with limits — a mode, a calm check).
+ * `safe` when it is also safe on a flare day (`flareSafe`), else `care` (allowed with limits — a mode, the day's reading).
  * The profile's whole-record rule (`allowRecord`, e.g. the jaw profile's plyometric gate) counts: a move it refuses in
  * every mode reads `never`; one it allows only on a calm, answered check reads `care`, never `safe`.
  * "Unlocks": a move the default place's gear cannot do now, that the gear would make doable, that the athlete has not
@@ -189,7 +189,7 @@ export function safetyFor(profile: ConditionProfile, ex: ExerciseRecord): Safety
   if (!a || profile.never(a)) return "never";
   const calm = bestDay(profile);
   const someMode = MODE_IDS.some(
-    (mode) => profile.fitsMode(a, mode) && ex.patterns.every((p) => profile.allowPattern(p, mode, calm)) && (profile.allowRecord?.(ex, mode, calm) ?? true),
+    (mode) => profile.fitsMode(a, mode, ex) && ex.patterns.every((p) => profile.allowPattern(p, mode, calm)) && (profile.allowRecord?.(ex, mode, calm) ?? true),
   );
   if (!someMode) return "never";
   // The library's one flare-safe verdict: a move the record rule refuses on a flare day is never "safe", whatever its

@@ -366,8 +366,8 @@ describe("approve: judged again for its day, by the server's rules", () => {
       { doc: landingsDoc({ alternates: false, title: "Landings" }), target: { kind: "new", date: TODAY, time: "18:30" } },
       { doc: calmDoc({ title: "Friday" }), target: { kind: "new", date: later } },
     ]);
-    // Then the jaw flared: a pre-check of 7 closes jumps for the day.
-    await db.insert(conditionChecks).values({ id: newId(), userId: rich.userId, profileId: "tmj", kind: "pre", value: 7, localDate: TODAY, at: at(TODAY, "09:10") });
+    // Then the jaw flared and the athlete feels off: that (since 2026-10-23, not the 7 alone) closes jumps for the day.
+    await db.insert(conditionChecks).values({ id: newId(), userId: rich.userId, profileId: "tmj", kind: "pre", value: 7, feelingOff: true, localDate: TODAY, at: at(TODAY, "09:10") });
     const res = await approve(id);
     expect(res.status).toBe("partially_approved");
     expect(res.applied.map((a) => a.opId)).toEqual([opIds[1]]);
@@ -514,7 +514,7 @@ describe("edit before approve", () => {
 
   it("an edited draft the day refuses is answered as the Studio answers a save, and nothing is recorded", async () => {
     const { id, opIds } = await designed([{ doc: calmDoc({ title: "Tonight" }), target: { kind: "new", date: TODAY, time: "19:00" } }]);
-    await db.insert(conditionChecks).values({ id: newId(), userId: rich.userId, profileId: "tmj", kind: "pre", value: 7, localDate: TODAY, at: at(TODAY, "09:10") });
+    await db.insert(conditionChecks).values({ id: newId(), userId: rich.userId, profileId: "tmj", kind: "pre", value: 7, feelingOff: true, localDate: TODAY, at: at(TODAY, "09:10") });
     const jumpy = landingsDoc({ alternates: false, title: "Tonight, with jumps" });
     await expect(approve(id, { edit: { opId: opIds[0]!, doc: jumpy } })).rejects.toMatchObject({ message: "invalid_doc" });
     await expect(approve(id, { edit: { opId: opIds[0]!, doc: calmDoc(), date: day(1) } })).rejects.toMatchObject({ message: "past_date" });
@@ -883,7 +883,7 @@ describe("what was written, after Edit before approve", () => {
 
   it("an op refused at approval, then approved through Edit before approve with the move the day closes swapped out", async () => {
     const { id, opIds } = await designed([{ doc: landingsDoc({ alternates: false, title: "Landings" }), target: { kind: "new", date: TODAY, time: "18:30" } }]);
-    await db.insert(conditionChecks).values({ id: newId(), userId: rich.userId, profileId: "tmj", kind: "pre", value: 7, localDate: TODAY, at: at(TODAY, "09:10") });
+    await db.insert(conditionChecks).values({ id: newId(), userId: rich.userId, profileId: "tmj", kind: "pre", value: 7, feelingOff: true, localDate: TODAY, at: at(TODAY, "09:10") });
     expect((await approve(id)).refused.map((r) => r.error)).toEqual(["invalid_doc"]);
     expect((await opOf(id, opIds[0]!)).outcome).toMatchObject({ status: "refused" });
     // The athlete swaps the jump for a squat that lands nothing.
@@ -1059,7 +1059,7 @@ describe("the day the coach proposed against is the day the approval judges", ()
   });
 
   it("and so a draft propose refused is refused at approval, and one it passed is approved", async () => {
-    await db.insert(conditionChecks).values({ id: newId(), userId: rich.userId, profileId: "tmj", kind: "pre", value: 7, localDate: TODAY, at: at(TODAY, "08:30") });
+    await db.insert(conditionChecks).values({ id: newId(), userId: rich.userId, profileId: "tmj", kind: "pre", value: 7, feelingOff: true, localDate: TODAY, at: at(TODAY, "08:30") });
     const main = await run({ userId: rich.userId, role: "main", scope: { kind: "now" } });
     const jumpy = landingsDoc({ alternates: false });
     const v = await validateWorkout.run(ctxOf(rich.userId, main), { doc: jumpy, date: TODAY });

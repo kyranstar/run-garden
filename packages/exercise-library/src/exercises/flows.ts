@@ -79,7 +79,7 @@ export const FLOWS = defineExercises([
     family: "downRegulationFlow",
     patterns: ["breathe", "mobility"],
     regions: ["core", "low-back", "hips"],
-    roles: ["cooldown", "downshift"],
+    roles: ["cooldown", "downshift", "jaw-care"],
     equipment: { all: ["mat"] },
     position: "kneeling",
     laterality: "bilateral",

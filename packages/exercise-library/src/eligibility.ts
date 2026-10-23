@@ -23,6 +23,8 @@ export function hasEquipment(ex: ExerciseRecord, equipment: readonly string[] | 
  * The mode's general limits plus every active profile's `never`, `fitsMode`, `allowPattern` and `allowRecord`.
  * With `checks`, the day's readings apply (an unanswered profile reads as unanswered); without them, the
  * question is whether the move fits this mode at all, judged on each profile's calmest day.
+ * A recovery day whose reading is a profile's flare takes only that profile's flare-safe moves: a flare is a recovery
+ * day, and the strictest one (a mode chosen above recovery on a flare day keeps that mode's own caps).
  * An active profile with no rating on the record fails closed.
  */
 export function fitsMode(data: EngineData, ex: ExerciseRecord, mode: Mode, checks?: Readonly<Record<string, CheckReading>>): boolean {
@@ -33,8 +35,9 @@ export function fitsMode(data: EngineData, ex: ExerciseRecord, mode: Mode, check
   for (const p of data.profiles.active) {
     const a = attrsOf(ex, p);
     if (!a) return false;
-    if (p.never(a) || !p.fitsMode(a, mode)) return false;
+    if (p.never(a) || !p.fitsMode(a, mode, ex)) return false;
     const today = checks ? checks[p.id] ?? UNANSWERED : bestDay(p);
+    if (mode === "recovery" && p.flare(today) && !p.flareSafe(a)) return false;
     if (!ex.patterns.every(pattern => p.allowPattern(pattern, mode, today))) return false;
     if (p.allowRecord && !p.allowRecord(ex, mode, today)) return false;
   }
@@ -118,7 +121,7 @@ export const FIT_RANK: Readonly<Record<FitState, number>> = { fits: 0, care: 1, 
 function allowedIn(rec: ExerciseRecord, p: ConditionProfile, modes: readonly Mode[], r: CheckReading): boolean {
   const a = attrsOf(rec, p)!;
   return modes.some(
-    (m) => p.fitsMode(a, m) && rec.patterns.every((pt) => p.allowPattern(pt, m, r)) && (p.allowRecord?.(rec, m, r) ?? true),
+    (m) => p.fitsMode(a, m, rec) && rec.patterns.every((pt) => p.allowPattern(pt, m, r)) && (p.allowRecord?.(rec, m, r) ?? true),
   );
 }
 
@@ -126,9 +129,9 @@ function profileFit(rec: ExerciseRecord, p: ConditionProfile, r: CheckReading): 
   const a = attrsOf(rec, p);
   // An unrated move fails closed, as everywhere else in the library.
   if (!a || p.never(a)) return { state: "not", reason: `${p.label} rules this move out.` };
-  // A flare day, or feeling off, is a recovery day.
+  // A flare day, or feeling off, is a recovery day; a flare day's recovery takes flare-safe moves only (as `fitsMode`).
   const easy = p.flare(r) || r.feelingOff;
-  if (allowedIn(rec, p, easy ? ["recovery"] : MODE_IDS, r)) {
+  if (allowedIn(rec, p, easy ? ["recovery"] : MODE_IDS, r) && (!p.flare(r) || recordFlareSafe(p, rec))) {
     return recordFlareSafe(p, rec)
       ? { state: "fits", reason: `Safe for ${p.label}, even on a flare day.` }
       : { state: "care", reason: `Fine today, within ${p.label} limits.` };

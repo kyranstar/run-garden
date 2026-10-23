@@ -1,5 +1,5 @@
 import type { Weight, WeightUnit } from "@rg/domain";
-import { attrsOf, type ConditionProfile, type EngineData, type ExerciseRecord, type HistorySession, type Mode, type Theme } from "@rg/exercise-library";
+import { ROTATED_OUT_DAYS, attrsOf, type ConditionProfile, type EngineData, type ExerciseRecord, type HistorySession, type Mode, type Theme } from "@rg/exercise-library";
 import { Hist } from "./hist.js";
 import { Lib } from "./lib.js";
 import { Prog } from "./prog.js";
@@ -134,8 +134,9 @@ function ensure(data: EngineData, block: Block | null, ctx: BlockCtx): { block: 
     if (!setAside && rotations.some(r => r.family === fam.id && r.date === ctx.today)) continue;   // at most once a day
     const why = ruledOut ? `not allowed with ${ruledOut.label}` : setAside ? "not for me" : rotateReason(data, id, ctx.sessions || [], { ...block, core, rotations }, fam.id);
     if (!why) continue;
-    // Lifts rotated out earlier in this block stay out.
-    const out = [id, ...rotations.filter(r => r.family === fam.id).map(r => r.from).filter((x): x is string => Boolean(x))];
+    // Lifts rotated out earlier in this block stay out until ROTATED_OUT_DAYS after the session that rotated them out
+    // (2026-10-23: the engine's behaviour changed on purpose, and this frozen copy changed with it in step).
+    const out = [id, ...rotations.filter(r => r.family === fam.id && Hist.daysBetween(r.date, ctx.today) < ROTATED_OUT_DAYS).map(r => r.from).filter((x): x is string => Boolean(x))];
     const pick = pickVariant(data, fam.id, { ...c, prefs: { ...c.prefs, excluded: [...c.prefs.excluded, ...out] } }, Lib.get(data, id) ? id : null);
     if (!pick) continue;
     core[fam.id] = pick.id;

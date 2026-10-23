@@ -31,6 +31,25 @@ const PORTED_TO: Record<string, string[] | null> = {
   "store": null,
 };
 
+/**
+ * Standalone tests whose rule the owner changed on purpose after the port, by "file: name", each with the name of the
+ * test that now holds the rule in its place (in the same ported file). 2026-10-23: the TMJ rules relaxed after an
+ * evidence review — overhead pressing may be a block lift and needs no calm check, the progression cue leads with a soft
+ * jaw, build reads a 24-hour response, and recovery takes face-down positions (a flare day's recovery stays flare-safe).
+ */
+const CHANGED_ON_PURPOSE: Readonly<Record<string, string>> = {
+  "engine-blocks: a first block picks one Home-friendly lift per family, never overhead pressing":
+    "a first block picks one Home-friendly lift per family; overhead pressing may be one",
+  "engine-builder: overhead pressing needs a calm jaw even when build is forced":
+    "overhead pressing never in recovery, even on a calm day; above it, whatever the check",
+  "engine-prog: build: top of the range with a quiet jaw goes up one bell": "build: top of the range with the jaw soft goes up one bell",
+  "engine-proposal: build when calm, clean, rested, and on track": "build when the jaw is steady, rested, and on track",
+  ...Object.fromEntries(["alpha", "bravo", "charlie"].map(seed => [
+    `simulation: simulation ${seed}: every session fits its time and recovery stays flare-safe`,
+    `simulation ${seed}: every session fits its time and a flare day's recovery stays flare-safe`,
+  ])),
+};
+
 /** [standalone file, test name] for all 219 standalone tests. */
 const STANDALONE: ReadonlyArray<readonly [string, string]> = [
   ["data", "the library validates cleanly"],
@@ -289,10 +308,11 @@ test("the captured standalone suite has 219 tests in 17 files", () => {
 test("every standalone test has a same-named vitest test where it was ported (stats and store: Phase 2)", () => {
   const missing: string[] = [];
   let checked = 0;
-  for (const [file, name] of STANDALONE) {
+  for (const [file, standaloneName] of STANDALONE) {
     const targets = PORTED_TO[file];
     if (targets === null || targets === undefined) continue;
     checked += 1;
+    const name = CHANGED_ON_PURPOSE[`${file}: ${standaloneName}`] ?? standaloneName;
     const found = targets.some(t => {
       const { exact, patterns } = declaredNames(t);
       return exact.has(name) || patterns.some(p => p.test(name));
@@ -301,6 +321,11 @@ test("every standalone test has a same-named vitest test where it was ported (st
   }
   expect(missing).toEqual([]);
   expect(checked).toBe(199);
+});
+
+test("every rule changed on purpose names a standalone test", () => {
+  const known = new Set(STANDALONE.map(([file, name]) => `${file}: ${name}`));
+  expect(Object.keys(CHANGED_ON_PURPOSE).filter(k => !known.has(k))).toEqual([]);
 });
 
 test("every ported test file exists", () => {

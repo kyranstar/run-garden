@@ -40,12 +40,12 @@ test("start weight comes from the exercise's startKg, snapped to a bell", () => 
   expect(Prog.suggest(data, g(), [], { ...gym, unit: "kg" }).w).toEqual({ v: 12.5, u: "kg" });
 });
 
-test("build: top of the range with a quiet jaw goes up one bell", () => {
+test("build: top of the range with the jaw soft goes up one bell", () => {
   const s = Prog.suggest(data, g(), [past([{ w: lb(25), reps: 8 }, { w: lb(25), reps: 8 }])], kb);
   expect(s.action).toBe("up");
   expect(s.w).toEqual(lb(30));
   expect(s.reps).toBe(5);
-  expect(s.note).toBe("Hit 8 with a quiet jaw — go up.");
+  expect(s.note).toBe("Hit 8 with the jaw soft — go up.");
 });
 
 test("consistent: needs two sessions at the top before going up", () => {
@@ -71,9 +71,9 @@ test("clench or a symptom rise steps down; a rough pre-check holds", () => {
   expect(rose.action).toBe("down");
   expect(rose.note).toBe("Symptoms rose during last session — one step lighter.");
   expect(Prog.suggest(data, g(), [past([{ w: lb(25), reps: 8 }])], withPre(kb, 5)).action).toBe("hold");
-  expect(Prog.suggest(data, g(), [past([{ w: lb(25), reps: 8 }])], withPre(kb, 5)).note).toBe("Jaw/head is up today — hold here and keep it easy.");
+  expect(Prog.suggest(data, g(), [past([{ w: lb(25), reps: 8 }])], withPre(kb, 5)).note).toBe("Jaw/head is up today — hold this weight, jaw soft.");
   expect(Prog.suggest(data, g(), [past([{ w: lb(25), reps: 8 }])], withPre(kb, 3)).action).toBe("hold");
-  expect(Prog.suggest(data, g(), [past([{ w: lb(25), reps: 8 }])], withPre(kb, 3)).note).toBe("Symptoms are higher than last session — hold here.");
+  expect(Prog.suggest(data, g(), [past([{ w: lb(25), reps: 8 }])], withPre(kb, 3)).note).toBe("Jaw/head is up on last session — hold this weight today.");
   expect(Prog.suggest(data, g(), [past([{ w: lb(25), reps: 8 }])], withPre(kb, 2)).action).toBe("up");
 });
 

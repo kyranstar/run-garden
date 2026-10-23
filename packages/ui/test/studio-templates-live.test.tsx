@@ -24,6 +24,7 @@ import { quickStartFor } from "../src/screens/studio/templates-model.js";
 import { emptyStudioCtx } from "../src/screens/studio/model.js";
 import { libraryDto, placesDto, primedClient, profileDto, todayDto, TODAY, type Primed } from "./studio-fixtures.js";
 import { DEVICE_PREFS } from "./studio-fixtures.js";
+import { useCheckGatedTmj } from "./check-gated-profile.js";
 
 (globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
 
@@ -255,6 +256,8 @@ function setValue(input: HTMLInputElement, value: string) {
 // ── The list ───────────────────────────────────────────────────────────────
 
 describe("a template from the list", () => {
+  // A gate the check reads: TMJ's until 2026-10-23, a stand-in's since (`CHECK_GATED`).
+  useCheckGatedTmj();
   it("its name opens the builder on it, and the builder's way back is the list", async () => {
     serve([tpl("t1", "Hips & posture")]);
     mount("/studio/templates");

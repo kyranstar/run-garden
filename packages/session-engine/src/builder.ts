@@ -411,7 +411,8 @@ function jumpsAvailable(data: EngineData, input: JumpsInput, history?: HistIndex
   return jumpsAvailableIn(makeContext(data, { ...input, theme: null, minutes: 0, unit: "lb", block: null }, history));
 }
 
-// The day's checks apply (Lib.eligible with checks): e.g. overhead pressing needs an answered, calm check.
+// The day's checks apply (Lib.eligible with checks): e.g. jumps sit out while feeling off, and a flare day's recovery takes
+// flare-safe moves only.
 function candidates(block: BlockId, formatId: FormatId, ctx: Ctx): ExerciseRecord[] {
   const taken = movesInPlan(ctx);
   return slotPool(block, formatId, ctx).filter(ex => !taken.has(moveKey(ex)) && !ctx.used.has(ex.id));
@@ -448,7 +449,12 @@ function timedFormat(block: BlockId, ctx: Ctx): FormatId {
   return themed || (allowed.includes("holds") ? "holds" : allowed[0]!);
 }
 
-/** Adds items to a timed block (or to an existing group) while they fit. */
+/**
+ * Adds items to a timed block (or to an existing group) while they fit. A block's minimum items take the best-ranked
+ * move that fits its share too — unless the best-ranked is the week's new move, which keeps its place (the new-move
+ * promise) — and only when none fits is the best-ranked added anyway (2026-10-23: a long first pick, such as the care
+ * block's 2–5 minute breathing piece, no longer overruns a short session's share and crowds out the rest).
+ */
 function fillTimed(block: BlockId, budget: number, ctx: Ctx, group: Group | null = null, addAtMost = Infinity): { groups: Group[]; spent: number } {
   const formatId = group ? group.format : timedFormat(block, ctx);
   const items = group ? group.items : [];
@@ -463,11 +469,14 @@ function fillTimed(block: BlockId, budget: number, ctx: Ctx, group: Group | null
     const prevPosition = items.length ? items[items.length - 1]!.exercise.position : null;
     const ranked = Select.rank(ctx.data, pool, { ...ctx, prevPosition, coreRegions: block === "prep" ? ctx.coreRegions : null });
     let picked: { item: Item; cost: number } | null = null;
+    let forced: { item: Item; cost: number } | null = null;
     for (const r of ranked) {
       const item = makeItem(r, block, slotKey, formatId, ctx);
       const cost = costOf(windows(item, formatId));
-      if (spent + cost <= budget || items.length < min) { picked = { item, cost }; break; }
+      if (spent + cost <= budget || (items.length < min && r.isNew)) { picked = { item, cost }; break; }
+      if (items.length < min && !forced) forced = { item, cost };
     }
+    picked ??= forced;
     if (!picked) break;
     items.push(picked.item);
     ctx.used.add(picked.item.exercise.id);

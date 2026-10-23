@@ -132,7 +132,8 @@ describe("a document workout the day now keeps a move of (Stage 2 batch end: the
     return { workoutId: workout.id, buildId };
   }
   /** The jaw rises after Send, before the lane runs: the day's latest reading. */
-  const flare = () => recordCheck(db, userId, { profileId: "tmj", value: 6, feelingOff: false }, { today: DAY, now: "2026-10-09T19:05:00.000Z" });
+  // A high reading and feeling off: since 2026-10-23 that is what closes a jump on a Maintain or Develop day.
+  const flare = () => recordCheck(db, userId, { profileId: "tmj", value: 6, feelingOff: true }, { today: DAY, now: "2026-10-09T19:05:00.000Z" });
 
   it("the reading rose after Send: superseded, nothing written, the build unlocked — the sheet no longer says it is on its way", async () => {
     const { workoutId, buildId } = await docSent();

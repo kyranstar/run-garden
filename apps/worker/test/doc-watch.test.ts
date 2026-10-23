@@ -62,8 +62,8 @@ async function builtDoc(doc: WorkoutDoc = landingsDoc()): Promise<{ workoutId: s
   return { workoutId: workout.id, buildId: built.build!.buildId };
 }
 
-/** The jaw rises after the build: the day's latest reading. */
-const flare = () => recordCheck(db, userId, { profileId: "tmj", value: 6, feelingOff: false }, { today: DAY, now: LATER });
+/** The jaw rises after the build and the athlete feels off: the day's latest reading closes the jump (since 2026-10-23 a high number alone no longer does). */
+const flare = () => recordCheck(db, userId, { profileId: "tmj", value: 6, feelingOff: true }, { today: DAY, now: LATER });
 
 const call = async (method: "GET" | "POST", path: string, body?: unknown, env: Env = switchOn()) => {
   const cookie = `${SESSION_COOKIE}=${await createSession(db, userId, "test")}`;

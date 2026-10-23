@@ -6,8 +6,8 @@ import { data, home } from "./builder-fixtures.js";
 
 // The day's theme rotation. Every theme is in it (the owner, 2026-10-16: Ski prep, Athletic base and Jumps and landings
 // joined the others). A jumping day (plyoIntro) is proposed only when today's jumps block has a jump to take
-// (`Builder.jumpsAvailable`, the block's own rule): the jaw profile's gate — an answered check of 2 or less, not feeling
-// off — the place's gear, the moves set aside, the next rung unlocked, no rung resting after a clench. What the proposal
+// (`Builder.jumpsAvailable`, the block's own rule): the jaw profile's gate — not feeling off (since 2026-10-23 it asks
+// for no calm check) — the place's gear, the moves set aside, the next rung unlocked, no rung resting after a clench. What the proposal
 // can't know (a session too short for the block) is caught after the build: a proposed jumping day that still holds no
 // jump is proposed again without one. A hand pick stands. A theme marked `inRotation: false` is still never proposed,
 // and can still be chosen by hand.
@@ -79,18 +79,23 @@ describe("every theme is in the rotation", () => {
   });
 
   /**
-   * Days a year each theme is proposed, per mode: the mean of the four seeded years (about 225 sessions each: some 145
-   * consistent, 58 build, 22 recovery), pinned within 7 days a year per theme (R10's line: a library change moves a
-   * theme by less than that). Before the three joined (2026-10-16) the same years ran: consistent — carryDay 46,
-   * hipsPosture 34, upperBackNeck 30, posteriorChain 20, deskUnwind 14; build — carryDay 17, hipsPosture 12,
-   * upperBackNeck 11, fullBody 8, posteriorChain 5, deskUnwind 5; recovery — jawReset 12, gentleMobility 5,
-   * deskUnwind 4. Every theme that was there comes up less often, hipsPosture most (Ski prep and Athletic base share its
-   * lunges, squats and hips).
+   * Days a year each theme is proposed, per mode: the mean of the four seeded years (about 225 sessions each: some 108
+   * consistent, 96 build, 21 recovery), pinned within 7 days a year per theme (R10's line: a library change moves a
+   * theme by less than that). Re-pinned 2026-10-23, when the TMJ rules relaxed after an evidence review: build now reads
+   * a 24-hour response (the jaw under 5 and no more than 2 worse than the last session) instead of a calm check of 2 or
+   * less, a clean week and a clean last session, so build days rose from some 58 a year to 96; and jumps no longer
+   * need a calm, answered check. Before (2026-10-16 to 2026-10-23) the same years ran: consistent — carryDay 41,
+   * upperBackNeck 25, skiPrep 21, hipsPosture 17, posteriorChain 14, athleticBase 13, deskUnwind 10, plyoIntro 4;
+   * build — carryDay 15, skiPrep 7, upperBackNeck 6, athleticBase 6, hipsPosture 6, fullBody 6, deskUnwind 6,
+   * posteriorChain 3, plyoIntro 3; recovery — jawReset 12, deskUnwind 6, gentleMobility 4. Before the three joined
+   * (2026-10-16): consistent — carryDay 46, hipsPosture 34, upperBackNeck 30, posteriorChain 20, deskUnwind 14; build —
+   * carryDay 17, hipsPosture 12, upperBackNeck 11, fullBody 8, posteriorChain 5, deskUnwind 5; recovery — jawReset 12,
+   * gentleMobility 5, deskUnwind 4.
    */
   const PINNED: Record<string, Record<string, number>> = {
-    consistent: { carryDay: 41, upperBackNeck: 25, skiPrep: 21, hipsPosture: 17, posteriorChain: 14, athleticBase: 13, deskUnwind: 10, plyoIntro: 4 },
-    build: { carryDay: 15, skiPrep: 7, upperBackNeck: 6, athleticBase: 6, hipsPosture: 6, fullBody: 6, deskUnwind: 6, posteriorChain: 3, plyoIntro: 3 },
-    recovery: { jawReset: 12, deskUnwind: 6, gentleMobility: 4 },
+    consistent: { carryDay: 28, skiPrep: 19, upperBackNeck: 14, deskUnwind: 13, athleticBase: 11, posteriorChain: 8, hipsPosture: 8, plyoIntro: 7 },
+    build: { carryDay: 29, upperBackNeck: 13, skiPrep: 11, deskUnwind: 9, hipsPosture: 9, athleticBase: 8, fullBody: 8, plyoIntro: 5, posteriorChain: 4 },
+    recovery: { jawReset: 10, deskUnwind: 6, gentleMobility: 5 },
   };
 
   test("each theme comes up about as often a year as pinned, per mode", () => {
@@ -107,11 +112,13 @@ describe("every theme is in the rotation", () => {
     for (const id of ["skiPrep", "athleticBase", "plyoIntro"]) expect(got.consistent?.[id] ?? 0, id).toBeGreaterThan(0);
   });
 
-  test("every jumping day the year proposed had a calm, answered check and no \"feeling off\", and its plan holds a jump", () => {
+  test("every jumping day the year proposed had no \"feeling off\", and its plan holds a jump — whatever the check said", () => {
     const jumping = allDays.filter(x => x.theme === "plyoIntro");
     expect(jumping.length).toBeGreaterThan(10);
-    const bad = jumping.filter(x => x.feelingOff || x.check.pre == null || x.check.pre > 2 || !x.jumps).map(x => `${x.seed} ${x.today}`);
+    const bad = jumping.filter(x => x.feelingOff || x.mode === "recovery" || !x.jumps).map(x => `${x.seed} ${x.today}`);
     expect(bad).toEqual([]);
+    // No calm check any more (2026-10-23): some jumping days had a check of 3 or 4, or none.
+    expect(jumping.some(x => x.check.pre == null || x.check.pre > 2)).toBe(true);
   });
 });
 
@@ -130,17 +137,23 @@ describe("a jumping day only when today's gate lets a jump through", () => {
     expect(calmPicks.length).toBeGreaterThan(10);
   });
 
-  test("on those same days, a check of 3 or 4, no check, or feeling off never picks it", () => {
-    const readings: Array<[string, Readonly<Record<string, CheckReading>> | undefined]> = [
+  test("on those same days, feeling off (or nothing of the jumps block passed) never picks it; a check of 3 or 4, or none, still does", () => {
+    const closed: Array<[string, Readonly<Record<string, CheckReading>> | undefined]> = [
+      ["nothing of the jumps block passed", undefined],
+      ["feeling off", { tmj: { ...calm, feelingOff: true } }],
+    ];
+    // Since 2026-10-23 the gate reads no number: the same day picks the same theme.
+    const open: Array<[string, Readonly<Record<string, CheckReading>>]> = [
       ["a check of 3", { tmj: { ...calm, pre: 3 } }],
       ["a check of 4", { tmj: { ...calm, pre: 4 } }],
       ["no check", { tmj: { ...calm, pre: null } }],
       ["no reading at all", {}],
-      ["nothing of the jumps block passed", undefined],
-      ["feeling off", { tmj: { ...calm, feelingOff: true } }],
     ];
     const bad: string[] = [];
-    for (const x of calmPicks) for (const [what, checks] of readings) if (theme(x, checks) === "plyoIntro") bad.push(`${x.seed} ${x.today}: ${what}`);
+    for (const x of calmPicks) {
+      for (const [what, checks] of closed) if (theme(x, checks) === "plyoIntro") bad.push(`${x.seed} ${x.today}: ${what}, picked`);
+      for (const [what, checks] of open) if (theme(x, checks) !== "plyoIntro") bad.push(`${x.seed} ${x.today}: ${what}, not picked`);
+    }
     expect(bad).toEqual([]);
   });
 
@@ -162,24 +175,20 @@ describe("a jumping day only when today's gate lets a jump through", () => {
     expect(picked).toBe(true);
   });
 
-  test("a manual pick of plyoIntro stands as before: jumps on a calm day; otherwise none, and the reason line says why", () => {
+  test("a manual pick of plyoIntro stands as before: jumps unless feeling off; then none, and the reason line says why", () => {
     const view = (check: CheckReading) => Planner.planToday(data, {
       today: "2026-11-02", day: { date: "2026-11-02", checks: { tmj: check }, override: { mode: "build", theme: "plyoIntro" }, swaps: {} },
     }, program()).view;
-    const calmDay = view(calm);
-    expect([calmDay.theme?.id, calmDay.themeOverridden, calmDay.themeReasons]).toEqual(["plyoIntro", true, []]);
-    expect(calmDay.plan.items.some(i => isPlyometric(i.exercise))).toBe(true);
-    for (const [check, why] of [
-      [{ ...calm, pre: 4 }, "Jumps need a calm jaw (2 or less) — you're at 4."],
-      [{ ...calm, pre: null }, "Jumps need a jaw check first."],
-      [{ ...calm, feelingOff: true }, "No jumps while you're feeling off."],
-    ] as const) {
+    for (const check of [calm, { ...calm, pre: 4 }, { ...calm, pre: null }]) {
       const v = view(check);
-      expect([v.theme?.id, v.themeOverridden, v.themeReasons]).toEqual(["plyoIntro", true, [why]]);
-      expect(v.plan.items.some(i => isPlyometric(i.exercise))).toBe(false);
-      // The proposal beside the pick still never offers a jumping day the gate shuts.
-      expect(v.proposedTheme?.id).not.toBe("plyoIntro");
+      expect([v.theme?.id, v.themeOverridden, v.themeReasons], String(check.pre)).toEqual(["plyoIntro", true, []]);
+      expect(v.plan.items.some(i => isPlyometric(i.exercise)), String(check.pre)).toBe(true);
     }
+    const off = view({ ...calm, feelingOff: true });
+    expect([off.theme?.id, off.themeOverridden, off.themeReasons]).toEqual(["plyoIntro", true, ["Jumps sit out while you're feeling off."]]);
+    expect(off.plan.items.some(i => isPlyometric(i.exercise))).toBe(false);
+    // The proposal beside the pick still never offers a jumping day the gate shuts.
+    expect(off.proposedTheme?.id).not.toBe("plyoIntro");
   });
 });
 
@@ -327,8 +336,8 @@ describe("a proposed jumping day has a jump: the proposal and the jumps block re
     expect([calmDay.theme?.id, calmDay.themeOverridden, hasJump(calmDay)]).toEqual(["plyoIntro", true, false]);
     // The jaw allows jumps today: no profile has a reason to give (what the line said before this change).
     expect(calmDay.themeReasons).toEqual([]);
-    const four = view(x, { excluded: PLYO, theme: "plyoIntro", check: { ...calm, pre: 4 } });
-    expect([four.theme?.id, four.themeOverridden, hasJump(four)]).toEqual(["plyoIntro", true, false]);
-    expect(four.themeReasons).toEqual(["Jumps need a calm jaw (2 or less) — you're at 4."]);
+    const off = view(x, { excluded: PLYO, theme: "plyoIntro", check: { ...calm, feelingOff: true } });
+    expect([off.theme?.id, off.themeOverridden, hasJump(off)]).toEqual(["plyoIntro", true, false]);
+    expect(off.themeReasons).toEqual(["Jumps sit out while you're feeling off."]);
   });
 });

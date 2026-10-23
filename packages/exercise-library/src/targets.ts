@@ -9,6 +9,13 @@ export interface CoreFamily {
   patterns: readonly Pattern[];
 }
 
+/**
+ * A core lift rotated out of its block mid-block (a profile's rotation rule, a stall) may come back this many days after
+ * the session that rotated it out — the rotation's own date (2026-10-23; before, it stayed out for the rest of the
+ * block). The session engine's `Blocks.ensure` reads it; a profile's `describeRules` may say it.
+ */
+export const ROTATED_OUT_DAYS = 21;
+
 /** Core families are tag queries: a core-role exercise with one of these patterns. */
 export const CORE_FAMILIES: readonly CoreFamily[] = [
   { id: "squat", label: "Squat", patterns: ["squat", "lunge"] },

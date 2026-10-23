@@ -53,12 +53,17 @@ test("flareSafe needs low clench, low neck load, and no face-down lying", () => 
 
 test("fitsMode applies the mode limits", () => {
   expect(Lib.fitsMode(data, get("breath"), "recovery")).toBe(true);
-  expect(Lib.fitsMode(data, get("proneYTW"), "recovery")).toBe(false);
+  // Since 2026-10-23: recovery takes face-down positions (a flare day doesn't), overhead pressing plays above
+  // recovery, and a top-clench move is build's.
+  expect(Lib.fitsMode(data, get("proneYTW"), "recovery")).toBe(true);
+  expect(Lib.fitsMode(data, get("proneYTW"), "recovery", { tmj: { pre: 6, post: null, feelingOff: false } })).toBe(false);
   expect(Lib.fitsMode(data, get("gobletSquat"), "recovery")).toBe(false);
   expect(Lib.fitsMode(data, get("gobletSquat"), "consistent")).toBe(true);
-  expect(Lib.fitsMode(data, get("halfKneelingPress"), "consistent")).toBe(false);
+  expect(Lib.fitsMode(data, get("halfKneelingPress"), "recovery")).toBe(false);
+  expect(Lib.fitsMode(data, get("halfKneelingPress"), "consistent")).toBe(true);
   expect(Lib.fitsMode(data, get("halfKneelingPress"), "build")).toBe(true);
-  expect(Lib.fitsMode(data, get("heavyThing"), "build")).toBe(false);
+  expect(Lib.fitsMode(data, get("heavyThing"), "consistent")).toBe(false);
+  expect(Lib.fitsMode(data, get("heavyThing"), "build")).toBe(true);
 });
 
 test("eligible combines equipment, mode, and exclusions", () => {
@@ -84,12 +89,13 @@ test("vocab helpers", () => {
 });
 
 describe("beyond the standalone suite", () => {
-  test("the day's checks: overhead pressing needs an answered check of 2 or less (spec §5 change 1)", () => {
+  test("the day's checks: overhead pressing needs no calm check any more — any day above recovery (2026-10-23)", () => {
     const press = get("halfKneelingPress");
-    expect(Lib.fitsMode(data, press, "build", { tmj: { pre: 2, post: null, feelingOff: false } })).toBe(true);
-    expect(Lib.fitsMode(data, press, "build", { tmj: { pre: 3, post: null, feelingOff: false } })).toBe(false);
-    expect(Lib.fitsMode(data, press, "build", { tmj: { pre: null, post: null, feelingOff: false } })).toBe(false);
-    expect(Lib.fitsMode(data, press, "build", {})).toBe(false);
+    for (const mode of ["consistent", "build"] as const) {
+      for (const pre of [null, 0, 2, 3, 4]) expect(Lib.fitsMode(data, press, mode, { tmj: { pre, post: null, feelingOff: false } }), `${mode} ${pre}`).toBe(true);
+      expect(Lib.fitsMode(data, press, mode, {})).toBe(true);
+    }
+    expect(Lib.fitsMode(data, press, "recovery", {})).toBe(false);
   });
 
   test("library lookups are per EngineData, never a stale global cache (spec §5 change 5)", () => {

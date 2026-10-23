@@ -1,7 +1,7 @@
 import { isPlyometric, plyometricDay, type Theme } from "@rg/exercise-library";
 import { describe, expect, test } from "vitest";
 import { Builder, Lib, type HistorySession, type Mode, type Plan } from "../src/index.js";
-import { PLACES, data, gym, home, makeInput, themeById, themeFor } from "./builder-fixtures.js";
+import { PLACES, block, data, gym, home, makeInput, themeById, themeFor } from "./builder-fixtures.js";
 import { normalise } from "./fixtures.js";
 
 // Ported from the standalone tests/engine-builder.test.js (the standalone `jaw` block is `care`).
@@ -34,9 +34,12 @@ for (const loc of PLACES) {
           expect(Lib.fitsMode(data, it.exercise, mode), `${it.exercise.id} breaks ${mode} limits`).toBe(true);
         }
         if (mode === "recovery") {
-          expect(plan.items.every(i => Lib.flareSafe(data, i.exercise))).toBe(true);
           expect(plan.items.filter(i => i.block === "care").length).toBeGreaterThanOrEqual(3);
           expect(plan.steps.every(s => s.kind === "timed"), "recovery is all timed").toBe(true);
+          // Recovery takes face-down positions since 2026-10-23; a flare day's recovery stays flare-safe.
+          const flare = Builder.build(data, input({ mode, minutes, location: loc, theme: themeFor(mode), pre: 6 }));
+          expect(flare.items.filter(i => !Lib.flareSafe(data, i.exercise)).map(i => i.exercise.id), "a flare day's recovery is flare-safe").toEqual([]);
+          expect(flare.items.filter(i => i.block === "care").length).toBeGreaterThanOrEqual(3);
         }
       });
     }
@@ -130,7 +133,7 @@ test("bad or stale swaps that name the original are ignored too", () => {
   const baseJson = JSON.stringify(base);
   const cases: Array<Record<string, { from?: string; to: string }>> = [
     { "prep:1": { from: at("prep:1"), to: "doesNotExist" } },
-    { "prep:1": { from: at("prep:1"), to: "halfKneelingPress" } },       // push-v: not allowed in consistent
+    { "prep:1": { from: at("prep:1"), to: "halfKneelingPress" } },       // a core lift, not a prep move
     { "prep:1": { from: at("prep:1"), to: at("prep:0") } },              // already in the plan
     { "prep:1": { from: "breath", to: Builder.alternatives(data, i({}), "prep:1")[0]!.id } }, // stale: slot holds something else now
     { "core:0": { from: at("core:0"), to: "doesNotExist" } },
@@ -149,11 +152,19 @@ test("sessions open with a breathing drill; the final jaw check never opens", ()
   }
 });
 
-test("overhead pressing needs a calm jaw even when build is forced", () => {
+test("overhead pressing never in recovery, even on a calm day; above it, whatever the check", () => {
   for (const d of ["2026-09-22", "2026-09-23", "2026-09-24", "2026-09-25", "2026-09-26", "2026-09-27", "2026-09-28", "2026-09-29"]) {
-    for (const theme of data.themes.filter(t => t.modes.includes("build"))) {
-      const plan = Builder.build(data, input({ today: d, mode: "build", pre: 5, minutes: 40, theme }));
-      expect(plan.items.some(it => it.exercise.patterns.includes("push-v")), `${d} ${theme.id}: push-v on a rough day`).toBe(false);
+    for (const theme of data.themes.filter(t => t.modes.includes("recovery"))) {
+      const plan = Builder.build(data, input({ today: d, mode: "recovery", pre: 0, minutes: 40, location: gym, theme }));
+      expect(plan.items.some(it => it.exercise.patterns.includes("push-v")), `${d} ${theme.id}: push-v in recovery`).toBe(false);
+    }
+  }
+  // Above recovery the check doesn't decide it (2026-10-23): the press may be the block's press lift.
+  const pressBlock = { ...block, core: { press: "halfKneelingPress" } };
+  for (const mode of ["consistent", "build"] as const) {
+    for (const pre of [null, 3, 4]) {
+      const plan = Builder.build(data, input({ mode, pre, minutes: 40, location: gym, theme: themeFor(mode), block: pressBlock }));
+      expect(plan.items.some(it => it.exercise.id === "halfKneelingPress"), `${mode} ${pre}`).toBe(true);
     }
   }
 });
@@ -220,6 +231,24 @@ test("the weekly new move is guaranteed whenever a never-done move fits a slot, 
   expect(missed).toEqual([]);
 });
 
+test("a block's first move keeps to the block's share when one fits it — a short session's care block never takes the long breathing piece over a move that fits", () => {
+  // Every move done before, so none is the week's new move (which keeps its place, above): the share decides.
+  const done = allDoneBut();
+  let checked = 0;
+  for (const loc of PLACES) for (const mode of ["consistent", "build"] as const) for (const minutes of [15, 20]) {
+    for (const theme of data.themes.filter(t => t.modes.includes(mode))) {
+      const plan = Builder.build(data, input({ sessions: done, mode, theme, minutes, location: loc }));
+      const share = (data.skeleton.shares[mode].care ?? 0) * minutes * 60;
+      const care = plan.items.filter(i => i.block === "care");
+      const secs = plan.steps.filter(s => care.some(i => i.slotKey === s.slotKey)).reduce((n, s) => n + s.seconds + (s.prepGap || 0), 0);
+      expect(care.length, `${loc.id} ${mode} ${minutes} ${theme.id}`).toBeGreaterThanOrEqual(1);
+      expect(secs, `${loc.id} ${mode} ${minutes} ${theme.id}: ${care.map(i => i.exercise.id).join(", ")}`).toBeLessThanOrEqual(share);
+      checked += 1;
+    }
+  }
+  expect(checked).toBeGreaterThan(30);
+});
+
 test("going slightly over budget shrinks the plan a little instead of dropping whole blocks", () => {
   // This session used to land 17 s over budget and lose its entire accessory superset (and its new move).
   const plan = Builder.build(data, input({ sessions: allDoneBut("deadBug"), theme: themeById("deskUnwind"), minutes: 15 }));
@@ -280,10 +309,10 @@ describe("beyond the standalone suite", () => {
     Builder.build(data, input({ today: d, mode: "build", pre, minutes: 40, location: gym, theme, ...extra }))));
   const hasPushV = (plan: Plan) => plan.items.some(it => it.exercise.patterns.includes("push-v"));
 
-  test("overhead pressing needs an answered check: with no check today, build never includes it (spec §5 change 1)", () => {
-    expect(gymBuilds(1).some(hasPushV), "a calm, answered check should allow overhead pressing somewhere").toBe(true);
-    expect(gymBuilds(null).some(hasPushV)).toBe(false);
-    expect(gymBuilds(null, { checks: {} }).some(hasPushV)).toBe(false);
+  test("overhead pressing needs no answered check any more: with no check today, build may include it (2026-10-23)", () => {
+    expect(gymBuilds(1).some(hasPushV), "a calm, answered check allows overhead pressing somewhere").toBe(true);
+    expect(gymBuilds(null).some(hasPushV), "so does no check").toBe(true);
+    expect(gymBuilds(null, { checks: {} }).some(hasPushV), "or no reading at all").toBe(true);
   });
 
   test("a build carries up to 3 alternatives per slot, with the steps a swap would play", () => {
@@ -315,11 +344,35 @@ describe("beyond the standalone suite", () => {
     }
   });
 
-  test("alternatives follow the day's checks too: no overhead pressing offered on a rough day", () => {
-    for (const plan of gymBuilds(5)) {
-      for (const alts of Object.values(plan.alternatives)) {
-        for (const a of alts) expect(Lib.get(data, a.id)!.patterns.includes("push-v"), a.id).toBe(false);
+  test("a flare day's recovery still moves the legs: every place and length holds easy lower-body work beyond the care block", () => {
+    const LOWER = new Set(["hips", "glutes", "quads", "hamstrings", "calves", "ankles", "feet"]);
+    for (const loc of PLACES) for (const minutes of [15, 30, 60]) for (const theme of [...data.themes.filter(t => t.modes.includes("recovery")), null]) {
+      for (const d of ["2026-09-28", "2026-09-29"]) {
+        const plan = Builder.build(data, input({ today: d, mode: "recovery", pre: 6, minutes, location: loc, theme }));
+        const lower = plan.items.filter(i => i.block !== "care" && i.exercise.regions.some(r => LOWER.has(r)));
+        expect(lower.length, `${loc.id} ${minutes} ${theme?.id ?? "no theme"} ${d}: ${plan.items.map(i => i.exercise.id).join(", ")}`).toBeGreaterThan(0);
+        expect(plan.items.every(i => Lib.flareSafe(data, i.exercise))).toBe(true);
       }
     }
+  });
+
+  test("alternatives follow the day's checks too: a flare day's recovery offers only flare-safe moves", () => {
+    let offered = 0;
+    for (const d of DAYS) {
+      for (const theme of data.themes.filter(t => t.modes.includes("recovery"))) {
+        const plan = Builder.build(data, input({ today: d, mode: "recovery", pre: 6, minutes: 40, location: gym, theme }));
+        for (const alts of Object.values(plan.alternatives)) {
+          for (const a of alts) {
+            offered += 1;
+            expect(Lib.flareSafe(data, Lib.get(data, a.id)!), a.id).toBe(true);
+          }
+        }
+      }
+    }
+    expect(offered).toBeGreaterThan(0);
+    // On a calm recovery day the same slots may offer the face-down Y-T-W.
+    const calm = DAYS.flatMap(d => data.themes.filter(t => t.modes.includes("recovery")).map(theme =>
+      Builder.build(data, input({ today: d, mode: "recovery", pre: 1, minutes: 40, location: gym, theme }))));
+    expect(calm.some(p => Object.values(p.alternatives).some(alts => alts.some(a => !Lib.flareSafe(data, Lib.get(data, a.id)!)))), "a calm recovery day offers more than flare-safe moves").toBe(true);
   });
 });

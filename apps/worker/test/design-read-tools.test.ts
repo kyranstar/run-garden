@@ -696,16 +696,21 @@ describe("search_library and get_exercise", () => {
     };
     const lateLastNight = await withTmj();
     const none = await withTmj();
-    // 23:50 last night in Los Angeles is 06:50 UTC today — the same UTC day as now.
-    await db.insert(schema.conditionChecks).values({ id: newId(), userId: lateLastNight, profileId: "tmj", kind: "daily", value: 9, localDate: day(1), at: at(day(1), "23:50") });
+    const offToday = await withTmj();
+    // 23:50 last night in Los Angeles is 06:50 UTC today — the same UTC day as now. A 9 and feeling off then: read as
+    // today's, it would close the jumps.
+    await db.insert(schema.conditionChecks).values({ id: newId(), userId: lateLastNight, profileId: "tmj", kind: "daily", value: 9, feelingOff: true, localDate: day(1), at: at(day(1), "23:50") });
+    await db.insert(schema.conditionChecks).values({ id: newId(), userId: offToday, profileId: "tmj", kind: "daily", value: 2, feelingOff: true, localDate: TODAY, at: at(TODAY, "07:00") });
     const fits = async (user: string) =>
       (await ok("search_library", { query: "jump", limit: 30 }, { user })).data.moves.map((m: { id: string; fit: string; fitWhy: string }) => `${m.id} ${m.fit} ${m.fitWhy}`);
+    // Since 2026-10-23 no check today closes no jump; feeling off today does.
     const unanswered = await fits(none);
-    expect(unanswered.some((f: string) => / not /.test(f))).toBe(true);
+    expect(unanswered.some((f: string) => / not /.test(f))).toBe(false);
     expect(await fits(lateLastNight)).toEqual(unanswered);
+    expect((await fits(offToday)).some((f: string) => / not /.test(f))).toBe(true);
     // "Fits today" leaves out exactly the moves today's reading rules out.
-    const all = await ok("search_library", { query: "jump", limit: 30 }, { user: none });
-    const fitOnly = await ok("search_library", { query: "jump", filters: { fitToday: true }, limit: 30 }, { user: none });
+    const all = await ok("search_library", { query: "jump", limit: 30 }, { user: offToday });
+    const fitOnly = await ok("search_library", { query: "jump", filters: { fitToday: true }, limit: 30 }, { user: offToday });
     const notToday = all.data.moves.filter((m: { fit: string }) => m.fit === "not").map((m: { id: string }) => m.id);
     expect(notToday.length).toBeGreaterThan(0);
     expect(fitOnly.data.moves.map((m: { id: string }) => m.id)).toEqual(all.data.moves.map((m: { id: string }) => m.id).filter((id: string) => !notToday.includes(id)));

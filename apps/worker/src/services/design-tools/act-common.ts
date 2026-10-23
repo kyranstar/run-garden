@@ -49,7 +49,7 @@ import {
   type WorkoutDoc,
 } from "@rg/domain";
 import { EQUIPMENT_IDS, EXERCISES, LOCATION_PRESETS, MUSCLES, NO_EQUIPMENT_GEAR, REGIONS, type ExerciseRecord } from "@rg/exercise-library";
-import { deriveDoc, validateWorkoutDoc, type DocDerived, type DocIssue, type ValidateCtx } from "@rg/workout";
+import { deriveDoc, gatesReadTheCheck, validateWorkoutDoc, type DocDerived, type DocIssue, type ValidateCtx } from "@rg/workout";
 import { defaultFromRow, defaultPlaceSql, namedFromRow, ownPlaceSql, type PlaceGear } from "../default-place.js";
 import { recentOf } from "../doc-workouts.js";
 import { runCtxOf, runCtxSql } from "../designed-runs.js";
@@ -625,14 +625,15 @@ export interface Judged {
  * B-M8): a logged check may open it, and the main coach is the one who asks. */
 export const ASK_FOR_CHECK = 'if no check is logged today, the main coach may ask_athlete({ check: "condition", why })';
 
-/** Today, with an active profile whose check isn't answered yet (the validator's own rule: a value, or feeling off): a
- * gate that reads it may open once it is. */
+/** Today, with an active profile whose check isn't answered yet (the validator's own rule: a value, or feeling off) and
+ * that has a gate an answered check could open (`gatesReadTheCheck`): it may open once the check is answered. Since
+ * 2026-10-23 TMJ has no such gate, so asking for its check opens nothing. */
 export function noCheckToday(vctx: ValidateCtx): boolean {
   const d = vctx.day;
   if (!d || d.date !== d.today) return false;
   return vctx.activeProfiles.some((p) => {
     const r = d.readings[p.id];
-    return !r || (r.pre == null && !r.feelingOff && !d.feelingOff);
+    return (!r || (r.pre == null && !r.feelingOff && !d.feelingOff)) && gatesReadTheCheck(p, vctx.library);
   });
 }
 

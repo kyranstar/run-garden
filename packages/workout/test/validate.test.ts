@@ -22,8 +22,10 @@ const record = (id: string): ExerciseRecord => {
   return e;
 };
 const BRIDGE = record("bridge");
-/** A move the profile forbids outright (no real record is rated that high). */
-const NEVER_MOVE: ExerciseRecord = { ...BRIDGE, id: "testNeverMove", name: "Test forbidden move", legacyIds: [], conditions: { tmj: { clench: 3, neckLoad: 0, faceDown: false } } };
+/** A move the profile forbids outright: a rating off its scale (no real record has one; clench 3 is allowed since 2026-10-23). */
+const NEVER_MOVE: ExerciseRecord = { ...BRIDGE, id: "testNeverMove", name: "Test forbidden move", legacyIds: [], conditions: { tmj: { clench: 4, neckLoad: 0, faceDown: false } } };
+/** A top-clench move (no real record is rated that high): build only, and only in straight sets or a superset. */
+const TOP_CLENCH: ExerciseRecord = { ...BRIDGE, id: "testTopClench", name: "Test top-clench move", legacyIds: [], conditions: { tmj: { clench: 3, neckLoad: 0, faceDown: false } } };
 /** A move with no rating for the active profile: it must fail closed. */
 const UNRATED: ExerciseRecord = { ...BRIDGE, id: "testUnratedMove", name: "Test unrated move", legacyIds: [], conditions: {} };
 /** A jump whose easier variant is a bridge (no real jump steps down to a move recovery allows). */
@@ -32,6 +34,7 @@ const HOP_DOWN_TO_BRIDGE: ExerciseRecord = { ...record("pogoHop"), id: "testHopE
 const LIBRARY: ExerciseRecord[] = [
   ...EXERCISES.map((e) => (e.id === "bridge" ? { ...e, legacyIds: [...e.legacyIds, "oldBridge"] } : e)),
   NEVER_MOVE,
+  TOP_CLENCH,
   UNRATED,
   HOP_DOWN_TO_BRIDGE,
 ];
@@ -337,7 +340,7 @@ describe("too_large (final review I4): a document a Worker cannot afford is refu
       { path: "parts", code: "too_long_for_watch", severity: "warning", message: "This workout has 205 steps and a watch takes 200, so it can't go to the watch whole." },
     ]);
     // Every other rule still reads it (a long document is judged like any other).
-    expect(codes(check(steps(41), dayOf(reading(3))))).toContain("warning:mode_above_day@intent.effort");
+    expect(codes(check(steps(41), dayOf(reading(6))))).toContain("warning:mode_above_day@intent.effort");
     // A template is the same document: its size is its own, whatever the day.
     expect(codes(only(check(steps(41), null), "too_long_for_watch"))).toEqual(["warning:too_long_for_watch@parts"]);
   });
@@ -384,37 +387,39 @@ describe("condition_never", () => {
 });
 
 describe("condition_pattern", () => {
-  const press = (effort: WorkoutDoc["intent"]["effort"]) => one(ex("halfKneelingPress", { sets: 3, reps: 6 }), effort);
+  const press = (effort: WorkoutDoc["intent"]["effort"], format = "straight") => one(ex("halfKneelingPress", { sets: 3, reps: 6 }), effort, format);
 
-  it("a push-v item in a maintain workout at a calm reading of 1 is an error (the profile allows it only in build)", () => {
-    expect(codes(check(press("maintain"), dayOf(reading(1))))).toContain(`error:condition_pattern@${P0}.libraryId`);
-    // The same in a template: no day opens it in this mode.
-    expect(codes(check(press("maintain"), null))).toContain(`error:condition_pattern@${P0}.libraryId`);
+  it("a push-v item in a recover workout is an error on any day and in a template (the profile allows it above recovery only)", () => {
+    for (const day of [dayOf(reading(0)), dayOf(null), FUTURE(), null]) {
+      expect(codes(check(press("recover", "holds"), day))).toContain(`error:condition_pattern@${P0}.libraryId`);
+    }
   });
 
-  it("in a develop workout it follows the day: allowed when calm, an error unanswered or above the line", () => {
-    expect(only(check(press("develop"), dayOf(reading(1))), "condition_pattern")).toEqual([]);
-    expect(only(check(press("develop"), dayOf(null)), "condition_pattern")).toHaveLength(1);
-    expect(only(check(press("develop"), dayOf(reading(3))), "condition_pattern")).toHaveLength(1);
-    // A template is judged on the calmest day.
-    expect(only(check(press("develop"), null), "condition_pattern")).toEqual([]);
+  it("in a maintain or develop workout the check doesn't decide it (2026-10-23): calm, unanswered or above the old line, no gate", () => {
+    for (const effort of ["maintain", "develop"] as const) {
+      for (const day of [dayOf(reading(1)), dayOf(null), dayOf(reading(3)), dayOf(reading(4)), FUTURE(), null]) {
+        expect(only(check(press(effort), day), "condition_pattern"), effort).toEqual([]);
+        expect(only(check(press(effort), day), "condition_gate_pending"), effort).toEqual([]);
+      }
+    }
   });
 });
 
 describe("condition_gate", () => {
   const hop = (effort: WorkoutDoc["intent"]["effort"] = "maintain", extra: Over = {}) => one(ex("pogoHop", { sets: 3, reps: 10 }, extra), effort);
 
-  it("a plyometric item with a null reading is an error: unanswered means not allowed", () => {
-    const [issue] = check(hop(), dayOf(null));
-    expect(issue).toMatchObject({ path: `${P0}.libraryId`, code: "condition_gate", severity: "error" });
-    expect(issue!.message).toMatch(/Jaw \/ head/);
+  it("a plyometric item on the day itself with no check yet is allowed: the jaw's gate reads only feeling off, and the day hasn't said so (as the engine reads it)", () => {
+    expect(check(hop(), dayOf(null))).toEqual([]);
     // A missing reading is the same as a null one.
-    expect(codes(check(hop(), dayOf(null, { readings: {} })))).toEqual([`error:condition_gate@${P0}.libraryId`]);
+    expect(check(hop(), dayOf(null, { readings: {} }))).toEqual([]);
   });
 
-  it("allowed with an answered, calm reading; an error above it, or in a recovery workout whatever the reading", () => {
-    expect(check(hop(), dayOf(reading(2)))).toEqual([]);
-    expect(codes(check(hop(), dayOf(reading(3))))).toEqual([`error:condition_gate@${P0}.libraryId`]);
+  it("allowed whatever the check's number since 2026-10-23; an error while feeling off, or in a recovery workout whatever the reading", () => {
+    for (const pre of [0, 2, 3, 4, 7]) expect(only(check(hop(), dayOf(reading(pre))), "condition_gate"), String(pre)).toEqual([]);
+    const [off] = only(check(hop(), dayOf(reading(1, true))), "condition_gate");
+    expect(off).toMatchObject({ path: `${P0}.libraryId`, code: "condition_gate", severity: "error", message: "Pogo hops isn't allowed while you're feeling off." });
+    // The day's own "feeling off", with no check answered, is the same.
+    expect(codes(only(check(hop(), dayOf(null, { feelingOff: true })), "condition_gate"))).toEqual([`error:condition_gate@${P0}.libraryId`]);
     expect(only(check(hop("recover"), dayOf(reading(0))), "condition_gate")).toHaveLength(1);
     expect(only(check(hop("recover"), null), "condition_gate")).toHaveLength(1);
   });
@@ -433,7 +438,7 @@ describe("condition_gate", () => {
   });
 
   it("the fix is an alternate the day allows", () => {
-    const [issue] = check(hop("maintain", alt("lineHopForwardBack", "bridge")), dayOf(null));
+    const [issue] = only(check(hop("maintain", alt("lineHopForwardBack", "bridge")), dayOf(reading(1, true))), "condition_gate");
     expect(issue).toMatchObject({ code: "condition_gate", fix: "bridge" });
   });
 });
@@ -491,9 +496,20 @@ describe("condition_gate_pending", () => {
 });
 
 describe("condition_mode", () => {
+  it("lying face down fits a recover workout since 2026-10-23; on a flare day it is a flare cost", () => {
+    expect(check(one(ex("proneYTW", { sets: 2, reps: 8 }), "recover", "holds"))).toEqual([]);
+    expect(codes(check(one(ex("proneYTW", { sets: 2, reps: 8 }), "recover", "holds"), dayOf(reading(6))))).toEqual([`warning:condition_flare@${P0}.libraryId`]);
+  });
+
+  it("a top-clench move fits a develop workout's straight sets; a maintain workout warns, and so does a circuit", () => {
+    expect(check(one(ex("testTopClench", { sets: 3, reps: 8 }), "develop"))).toEqual([]);
+    expect(codes(check(one(ex("testTopClench", { sets: 3, reps: 8 }), "maintain")))).toEqual([`warning:condition_mode@${P0}.libraryId`]);
+    const circuit = docOf([part("main", "circuit", [ex("testTopClench", { sets: 1, holdSec: 40 }), ex("deadBug", { sets: 1, holdSec: 40 }), ex("birdDog", { sets: 1, holdSec: 40 })], { rounds: 2 })], "develop");
+    expect(codes(check(circuit))).toEqual([`warning:condition_format@${P0}.libraryId`]);
+  });
+
   it("a move the profile caps out of the workout's mode is a warning", () => {
-    // Lying face down is out of recovery; farmer carry is rated above what recovery allows (and is loaded: mode_limits).
-    expect(codes(check(one(ex("proneYTW", { sets: 2, reps: 8 }), "recover", "holds")))).toEqual([`warning:condition_mode@${P0}.libraryId`]);
+    // Farmer carry is rated above what recovery allows (and is loaded: mode_limits).
     expect(codes(check(one(ex("farmerCarry", { sets: 2, carryM: 40 }), "recover", "holds")))).toEqual([
       `warning:condition_mode@${P0}.libraryId`,
       `warning:mode_limits@${P0}.libraryId`,
@@ -532,17 +548,22 @@ describe("condition_flare", () => {
 describe("mode_above_day", () => {
   it("a high reading with a develop workout is a warning carrying the profile's own sentence", () => {
     const [issue] = only(check(one(ex("bridge", { sets: 2, reps: 10 }), "develop"), dayOf(reading(6))), "mode_above_day");
-    expect(issue).toMatchObject({ path: "intent.effort", severity: "warning", message: "Jaw/head is at 6 right now.", fix: "recover" });
+    expect(issue).toMatchObject({ path: "intent.effort", severity: "warning", message: "Jaw/head is at 6 today — an easy day helps it settle.", fix: "recover" });
   });
 
   it("a develop workout on a day the profile's build checks fail carries the failed check's words", () => {
-    expect(check(one(ex("bridge", { sets: 2, reps: 10 }), "develop"), dayOf(reading(3)))).toEqual([
-      expect.objectContaining({ code: "mode_above_day", message: "A Develop or Peak day needs a calm jaw (2 or less) — you're at 3.", fix: "maintain" }),
+    // No check today and nothing behind it to fall back on.
+    expect(check(one(ex("bridge", { sets: 2, reps: 10 }), "develop"), dayOf(null))).toEqual([
+      expect.objectContaining({ code: "mode_above_day", message: "Log today's jaw check to open a Develop or Peak day.", fix: "maintain" }),
     ]);
-    // The recent sessions are read too: a flare in the last week.
-    const flared = { id: "s1", date: addDays(TODAY, -2), startedAt: null, mode: "consistent" as const, theme: null, blockNumber: null, checks: { tmj: reading(6) }, done: [], entries: [] };
-    const issues = check(one(ex("bridge", { sets: 2, reps: 10 }), "develop"), dayOf(reading(1), { recent: { last: flared, week: [flared] } }));
-    expect(issues).toEqual([expect.objectContaining({ code: "mode_above_day", message: "Your jaw has flared in the last 7 days." })]);
+    // The recent sessions are read too: today 3 above the last session's before-check (the 24-hour response).
+    const last = { id: "s1", date: addDays(TODAY, -1), startedAt: null, mode: "consistent" as const, theme: null, blockNumber: null, checks: { tmj: { pre: 1, post: 1, feelingOff: false } }, done: [], entries: [] };
+    const issues = check(one(ex("bridge", { sets: 2, reps: 10 }), "develop"), dayOf(reading(4), { recent: { last, week: [last] } }));
+    expect(issues).toEqual([expect.objectContaining({ code: "mode_above_day", message: "Jaw/head is up 3 since last session — a steady day lets it settle.", fix: "maintain" })]);
+    // A check of 3, or a flare earlier in the week, is no bar any more.
+    expect(check(one(ex("bridge", { sets: 2, reps: 10 }), "develop"), dayOf(reading(3), { recent: { last, week: [last] } }))).toEqual([]);
+    const flared = { ...last, id: "s0", date: addDays(TODAY, -3), checks: { tmj: reading(6) } };
+    expect(check(one(ex("bridge", { sets: 2, reps: 10 }), "develop"), dayOf(reading(1), { recent: { last, week: [flared, last] } }))).toEqual([]);
   });
 
   it("a maintain workout on a calm day, a recover workout on a flare day, a template and a future day raise nothing", () => {
@@ -590,13 +611,15 @@ describe("alternates meet the same rules as the move they stand in for", () => {
     expect(codes(check(withAlt("pogoHop", "recover", "holds")))).toEqual([`error:condition_gate@${A0}`]);
   });
 
-  it("an overhead press offered in a maintain workout is an error at the alternate", () => {
-    expect(codes(check(withAlt("halfKneelingPress")))).toEqual([`error:condition_pattern@${A0}`]);
+  it("an overhead press offered in a recover workout is an error at the alternate; in a maintain one it is fine", () => {
+    expect(codes(check(withAlt("halfKneelingPress", "recover", "holds")))).toEqual([`warning:condition_mode@${A0}`, `error:condition_pattern@${A0}`, `warning:mode_limits@${A0}`]);
+    expect(check(withAlt("halfKneelingPress"))).toEqual([]);
   });
 
-  it("a jump offered on an unanswered day is an error at the alternate; allowed on a calm, answered one", () => {
-    expect(codes(check(withAlt("pogoHop"), dayOf(null)))).toEqual([`error:condition_gate@${A0}`]);
+  it("a jump offered while feeling off is an error at the alternate; allowed otherwise, the check answered or not", () => {
+    expect(codes(only(check(withAlt("pogoHop"), dayOf(reading(1, true))), "condition_gate"))).toEqual([`error:condition_gate@${A0}`]);
     expect(check(withAlt("pogoHop"), dayOf(CALM))).toEqual([]);
+    expect(check(withAlt("pogoHop"), dayOf(null))).toEqual([]);
   });
 
   it("on a future day an alternate's gate adds nothing (the item's own pending rule covers the day)", () => {
@@ -627,8 +650,8 @@ describe("mode_limits", () => {
 
   it("names the day in the document's own effort words — a Maintain day — never the engine's mode name", () => {
     // A move the profile keeps out of this effort whatever the reading, and a format it does not use.
-    expect(only(check(one(ex("halfKneelingPress", { sets: 2, reps: 6 }), "maintain")), "condition_pattern")[0]!.message).toBe(
-      "Half-kneeling one-arm press isn't allowed on a Maintain day with TMJ.",
+    expect(only(check(one(ex("halfKneelingPress", { sets: 2, reps: 6 }), "recover", "holds")), "condition_pattern")[0]!.message).toBe(
+      "Half-kneeling one-arm press isn't allowed on a Recover day with TMJ.",
     );
     const circuit = docOf([part("main", "circuit", ["bridge", "deadBug", "birdDog"].map((id) => ex(id, { sets: 1, holdSec: 40 })), { rounds: 2 })], "maintain");
     expect(only(check(circuit), "mode_limits")[0]!.message).toBe("A Maintain day doesn't use a circuit.");
@@ -637,7 +660,7 @@ describe("mode_limits", () => {
       "Goblet squat uses added weight, which a Recover day leaves out.",
     );
     const all = [
-      ...check(one(ex("halfKneelingPress", { sets: 2, reps: 6 }), "maintain")),
+      ...check(one(ex("halfKneelingPress", { sets: 2, reps: 6 }), "recover", "holds")),
       ...check(circuit),
       ...check(one(ex("tuckJump", { sets: 2, reps: 3 }), "recover", "holds")),
     ].map((i) => i.message);
@@ -734,17 +757,20 @@ describe("care_share (Task 13, A10): a cared-for profile's care part, measured a
     expect(share(one1("develop"))).toEqual([]);
     // 41 minutes with no care move in the care part: under every effort's share, each named.
     const long = [...OTHER, part("main", "holds", [hold("childHands", 285), hold("catCow", 285), hold("figureFour", 285), hold("legsUp", 285)])];
-    const none = (effort: WorkoutDoc["intent"]["effort"]) => share(recoverWith([hold("breath", 45)], effort, long))[0]?.message;
+    const none = (effort: WorkoutDoc["intent"]["effort"]) => share(recoverWith([hold("physiologicalSigh", 45)], effort, long))[0]?.message;
     expect(none("maintain")).toMatch(/^Jaw care is 0 of 41 minutes \(0%\); a Maintain day gives it about 10% — about 4 minutes, 1–3 moves\./);
     expect(none("peak")).toMatch(/^Jaw care is 0 of 41 minutes \(0%\); a Peak day gives it about 7% — about 3 minutes, 1–3 moves\./);
   });
 
   it("counts only the moves made for that care, wherever they are — and says which in the care part are not", () => {
-    // Breathing for the jaw in the care part is no care move: it isn't counted, and it is named.
-    const breathOnly = recoverWith([hold("breath", 105), hold("rocabado", 45)]);
+    // A breathing drill the care block doesn't take (since 2026-10-23 it takes the slow breathing pieces — jaw reset
+    // breathing, 90-90 breathing, the down-regulation flow — but not the sigh) is no care move: not counted, and named.
+    const breathOnly = recoverWith([hold("physiologicalSigh", 105), hold("rocabado", 45)]);
     expect(share(breathOnly)[0]!.message).toBe(
-      "Jaw care is 1 of 23 minutes (4%); a Recover day gives it about 27% — about 6 minutes, 3–6 moves. Only jaw care moves count: Jaw reset breathing isn't one.",
+      "Jaw care is 1 of 23 minutes (4%); a Recover day gives it about 27% — about 6 minutes, 3–6 moves. Only jaw care moves count: Physiological sigh isn't one.",
     );
+    // Jaw reset breathing is a care move now: counted.
+    expect(share(recoverWith([hold("breath", 105), hold("rocabado", 45)]))[0]!.message).toMatch(/^Jaw care is 3 of 23 minutes \(13%\);/);
     // A care move in the cool-down counts toward the share: 2 in the care part and 4 there, of 21 minutes (2 alone is under).
     const spread = docOf([OTHER[0]!, part("care", "holds", [hold("rocabado", 105)]), part("cooldown", "holds", [hold("figureFour", 285), hold("jawMassage", 225)])], "recover");
     expect(share(spread)).toEqual([]);
@@ -770,7 +796,7 @@ describe("care_share (Task 13, A10): a cared-for profile's care part, measured a
     expect(minutesIn(recoverWith([hold("rocabado", 45), rest(60), hold("jawMassage", 45)]))).toEqual([3, 23]);
     expect(minutesIn(recoverWith([hold("rocabado", 45), hold("jawMassage", 45), rest(60)]))).toEqual([3, 23]);
     // A rest that leads into a move that is no care, or that opens the part, is not care's.
-    expect(minutesIn(recoverWith([hold("rocabado", 45), rest(60), hold("breath", 45)]))).toEqual([1, 23]);
+    expect(minutesIn(recoverWith([hold("rocabado", 45), rest(60), hold("physiologicalSigh", 45)]))).toEqual([1, 23]);
     expect(minutesIn(recoverWith([rest(60), hold("rocabado", 45)]))).toEqual([1, 22]);
   });
 
@@ -810,8 +836,8 @@ describe("progression_jump", () => {
     expect(check(hop("tuckJump", "develop"), done("broadJumpStick"))).toEqual([]);
   });
 
-  it("its fix is never a move the day refuses: at a jaw of 6 the snap-down is a jump kept out too, so it is not offered (CUJ re-walk)", () => {
-    const gated = dayOf(reading(6), { done: new Set<string>() });
+  it("its fix is never a move the day refuses: feeling off, the snap-down is a jump kept out too, so it is not offered (CUJ re-walk)", () => {
+    const gated = dayOf(reading(1, true), { done: new Set<string>() });
     const refused = (id: string) => check(hop(id), gated).some((i) => i.severity === "error" && i.path === `${P0}.libraryId`);
     expect(refused("snapDown")).toBe(true);
     const jump = check(hop("pogoHop"), gated).find((i) => i.code === "progression_jump")!;
@@ -864,7 +890,11 @@ describe("the engine's own builds validate", () => {
     issues: DocIssue[];
     /** Item and alternate paths the engine's own eligibility (`fitsMode` with the day's checks) refuses on an unanswered day. */
     engineRefusesUnanswered: string[];
-    /** The same, items only. */
+    /**
+     * The items the engine would refuse were the day to come unanswered or feeling off — what a day ahead can still bring
+     * (2026-10-23: the jaw's gates read only "feeling off" and the mode, so an unanswered day closes nothing today, while
+     * a day ahead may yet be one the athlete feels off).
+     */
     engineRefusesItems: string[];
     /** The same day, unanswered: the items and alternates the validator refuses by a pattern or record rule. */
     validatorRefusesUnanswered: string[];
@@ -917,12 +947,13 @@ describe("the engine's own builds validate", () => {
       const ahead = validateWorkoutDoc(doc, { ...base, day: { date: addDays(today, 2), today, readings: { tmj: calm }, recent } });
       const engineRefusesUnanswered: string[] = [];
       const engineRefusesItems: string[] = [];
-      const refuses = (id: string): boolean => !fitsMode(data, data.exercises.find((e) => e.id === id)!, plan.mode, { tmj: UNANSWERED });
+      const refuses = (id: string, r: CheckReading = UNANSWERED): boolean => !fitsMode(data, data.exercises.find((e) => e.id === id)!, plan.mode, { tmj: r });
       doc.parts.forEach((p, pi) =>
         p.items.forEach((it, ii) => {
           if (it.kind !== "exercise") return;
           const at = `parts[${pi}].items[${ii}]`;
-          if (refuses(it.libraryId)) engineRefusesUnanswered.push(`${at}.libraryId`), engineRefusesItems.push(`${at}.libraryId`);
+          if (refuses(it.libraryId)) engineRefusesUnanswered.push(`${at}.libraryId`);
+          if (refuses(it.libraryId) || refuses(it.libraryId, { ...UNANSWERED, feelingOff: true })) engineRefusesItems.push(`${at}.libraryId`);
           (it.alternates ?? []).forEach((a, ai) => {
             if (refuses(a.libraryId)) engineRefusesUnanswered.push(`${at}.alternates[${ai}].libraryId`);
           });
@@ -952,13 +983,18 @@ describe("the engine's own builds validate", () => {
       const disagreements = cases.flatMap((r) => r.issues.filter((i) => engineRules.has(i.code)).map((i) => `${r.label}: ${i.code} ${i.path} — ${i.message}`));
       expect(disagreements).toEqual([]);
       // Unanswered, the validator refuses exactly what the engine's eligibility refuses, items and alternates alike; two
-      // days ahead, exactly the items wait on the day.
+      // days ahead, exactly the items the day could still close (unanswered or feeling off) wait on it.
       for (const c of cases) {
         expect(c.validatorRefusesUnanswered, c.label).toEqual(c.engineRefusesUnanswered);
         expect(c.pendingAhead, c.label).toEqual(c.engineRefusesItems);
       }
-      // Not vacuous: the builds hold gated moves (jumps on plyometric days; overhead presses in build).
-      if (mode !== "recovery") expect(cases.reduce((n, c) => n + c.engineRefusesItems.length, 0)).toBeGreaterThan(10);
-    });
+      // Not vacuous: the builds hold gated moves (jumps on plyometric days) — and since 2026-10-23 an unanswered day
+      // closes none of them.
+      if (mode !== "recovery") {
+        expect(cases.reduce((n, c) => n + c.engineRefusesItems.length, 0)).toBeGreaterThan(10);
+        expect(cases.flatMap((c) => c.engineRefusesUnanswered)).toEqual([]);
+      }
+      // 200 plans, each validated three times: some 3–5 s on a quiet machine, past the 5 s default on a loaded one.
+    }, 60_000);
   }
 });

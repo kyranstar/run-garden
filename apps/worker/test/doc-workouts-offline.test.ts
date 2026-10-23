@@ -53,7 +53,9 @@ const offline = (body: Record<string, unknown>) => call("POST", "/api/workouts",
 describe("POST /api/workouts with playedOffline", () => {
   it("records a quick start played offline: the day's gate is skipped, no calendar is booked, and the same key names the same row", async () => {
     await activateTmj(db, userId);
-    // A jump today with no jaw check the server knows of: the planned create refuses it.
+    // A jump today while the server knows the athlete feels off (since 2026-10-23 an unanswered check no longer closes
+    // one): the planned create refuses it.
+    expect((await call("POST", "/api/conditions/checks", { profileId: "tmj", value: 1, feelingOff: true })).status).toBe(200);
     const gated = quick(landingsDoc({ alternates: false }));
     expect((await call("POST", "/api/workouts", { date: today, doc: gated, startNow: true, clientId: newId() })).status).toBe(422);
     const clientId = newId();

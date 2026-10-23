@@ -1,5 +1,5 @@
-import { parseWeightList, type Weight } from "@rg/domain";
-import { makeEngineData } from "@rg/exercise-library";
+import { addDays, parseWeightList, type Weight } from "@rg/domain";
+import { ROTATED_OUT_DAYS, makeEngineData } from "@rg/exercise-library";
 import { describe, expect, test } from "vitest";
 import { Blocks, Lib, Rng, type Block, type BlockCtx } from "../src/index.js";
 import { dataWith, ex, lifted, session, tmj } from "./fixtures.js";
@@ -25,13 +25,15 @@ const lb = (v: number): Weight => ({ v, u: "lb" });
 const ctx = (extra: Partial<BlockCtx> = {}): BlockCtx => ({ today: "2026-09-01", equipment: home, prefs, weeks: 5, sessions: [], ...extra });
 const withCore = (b: Block, core: Record<string, string>): Block => ({ ...b, core: { ...b.core, ...core } });
 
-test("a first block picks one Home-friendly lift per family, never overhead pressing", () => {
+test("a first block picks one Home-friendly lift per family; overhead pressing may be one", () => {
   const { block, events } = Blocks.ensure(data, null, ctx());
   expect(block.number).toBe(1);
   expect(block.startedAt).toBe("2026-09-01");
   expect(block.weeks).toBe(5);
   expect(block.core.row).toBe("supportedRow");       // chestRow needs dumbbells
-  expect(block.core.press).toBe("floorPress");
+  expect(block.core.press).toBe("floorPress");       // the level-2 press; the overhead press is a level up
+  // Since 2026-10-23 overhead pressing plays in every mode a block lift does, so TMJ no longer keeps it out of blocks.
+  expect(Blocks.familyCandidates(data, "press", { equipment: home }).map(x => x.id)).toContain("ohPress");
   expect(["gobletSquat", "tempoSquat", "frontSquat"]).toContain(block.core.squat);
   expect(events[0]).toMatch(/Block 1/);
 });
@@ -74,6 +76,25 @@ test("rotation doesn't flip-flop: a lift rotated out stays out, and one rotation
   const again = Blocks.ensure(data, second, ctx({ today: "2026-09-18", sessions: [...clenchy, ...stalled] })).block;
   expect(again.core.row).toBe("proneRow");
   expect(again.rotations.length).toBe(1);
+});
+
+test("a lift rotated out may come back 21 days after the session that rotated it out (2026-10-23)", () => {
+  expect(ROTATED_OUT_DAYS).toBe(21);
+  const b = withCore(Blocks.ensure(data, null, ctx()).block, { row: "supportedRow" });
+  const clenchy = ["2026-09-03", "2026-09-05", "2026-09-08"].map((d, i) => session(d, { idSuffix: "r", entries: [{ id: "supportedRow", clenched: i > 0, sets: [{ w: lb(25), reps: 8 }] }] }));
+  const first = Blocks.ensure(data, b, ctx({ today: "2026-09-10", sessions: clenchy })).block;
+  expect(first.rotations).toEqual([expect.objectContaining({ family: "row", from: "supportedRow", to: "proneRow", date: "2026-09-10" })]);
+  const stalled = ["2026-09-22", "2026-09-24", "2026-09-26", "2026-09-28"].map(d => session(d, { idSuffix: "p", entries: [{ id: "proneRow", sets: [{ w: null, reps: 10 }] }] }));
+  const sessions = [...clenchy, ...stalled];
+  // A day short: proneRow stalls, but supportedRow is still out and there's nothing else to take.
+  expect(addDays("2026-09-10", ROTATED_OUT_DAYS - 1)).toBe("2026-09-30");
+  expect(Blocks.ensure(data, first, ctx({ today: "2026-09-30", sessions })).block.core.row).toBe("proneRow");
+  // 21 days on, it may come back.
+  const back = Blocks.ensure(data, first, ctx({ today: "2026-10-01", sessions }));
+  expect(back.block.core.row).toBe("supportedRow");
+  expect(back.events).toEqual([expect.stringMatching(/^proneRow → supportedRow: no progress in 3 sessions\.$/)]);
+  // Judged only on its sessions since it came back: the old clenched ones don't rotate it straight out again.
+  expect(Blocks.ensure(data, back.block, ctx({ today: "2026-10-03", sessions })).block.core.row).toBe("supportedRow");
 });
 
 test("a lift judged only on sessions since it joined the block", () => {
@@ -153,7 +174,8 @@ describe("beyond the standalone suite", () => {
   });
 
   describe("a block lift an active profile forbids is not kept (audit M6)", () => {
-    // heavySquat is clench 3 (TMJ never), e.g. assigned while no profile was active; ohPress is overhead pressing.
+    // heavySquat is clench 3 — a top-clench move, build's only, so never a block's lift (TMJ's coreCandidate) — e.g.
+    // assigned while no profile was active. ohPress is overhead pressing, which TMJ no longer keeps out of blocks.
     const withHeavy = dataWith([...data.exercises.map(e => e as never), lifted("heavySquat", { family: "squat", conditions: tmj(3) })]);
     const block = (core: Record<string, string>): Block => ({ ...Blocks.ensure(withHeavy, null, ctx()).block, core: { ...Blocks.ensure(withHeavy, null, ctx()).block.core, ...core } });
 
@@ -163,13 +185,14 @@ describe("beyond the standalone suite", () => {
         expect(next.core.squat).not.toBe("heavySquat");
         expect(events.join(" ")).toMatch(/heavySquat → .+: not allowed with TMJ\./);
       }
+      // Overhead pressing is no longer forbidden: a pinned overhead press stays.
       const { block: next } = Blocks.ensure(withHeavy, block({ press: "ohPress" }), ctx({ today: "2026-09-03", prefs: { ...prefs, pinned: ["ohPress"] } }));
-      expect(next.core.press).not.toBe("ohPress");
+      expect(next.core.press).toBe("ohPress");
     });
 
     test("graduation never switches a block to a lift an active profile rules out (re-review m6)", () => {
       const b = block({ press: "floorPress" });
-      expect(Blocks.graduate(withHeavy, b, "press", "ohPress", "2026-09-03", home)).toBe(b);
+      expect(Blocks.graduate(withHeavy, b, "press", "ohPress", "2026-09-03", home).core.press).toBe("ohPress");
       expect(Blocks.graduate(withHeavy, block({ squat: "gobletSquat" }), "squat", "heavySquat", "2026-09-03", home).core.squat).toBe("gobletSquat");
       expect(Blocks.graduate(withHeavy, block({ squat: "gobletSquat" }), "squat", "frontSquat", "2026-09-03", home).core.squat).toBe("frontSquat");
     });

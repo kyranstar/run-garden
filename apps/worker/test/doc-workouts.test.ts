@@ -190,8 +190,10 @@ describe("POST /api/workouts", () => {
 
   it("422 with the issues on a fatal one, and nothing is written", async () => {
     await activateTmj(db, userId);
+    // Feeling off today (since 2026-10-23 that, not an unanswered check, closes a jump).
+    expect((await call("POST", "/api/conditions/checks", { profileId: "tmj", value: 1, feelingOff: true })).status).toBe(200);
     const writesBefore = statements.filter(isWrite).length;
-    // A jump today with no jaw check answered, and no alternate to stand in: the gate is closed.
+    // A jump today while feeling off, and no alternate to stand in: the gate is closed.
     const res = await call("POST", "/api/workouts", { date: today, doc: landingsDoc({ alternates: false }) });
     expect(res.status).toBe(422);
     expect(res.body.error).toBe("invalid_doc");
@@ -248,6 +250,8 @@ describe("POST /api/workouts", () => {
 
   it("today, a gated move its alternate answers is a warning naming the alternate (as the day's build swaps it); the row keeps the athlete's document", async () => {
     await activateTmj(db, userId);
+    // Feeling off today: the jump is closed (since 2026-10-23 an unanswered check no longer closes it).
+    expect((await call("POST", "/api/conditions/checks", { profileId: "tmj", value: 1, feelingOff: true })).status).toBe(200);
     const doc = landingsDoc();
     const res = await call("POST", "/api/workouts", { date: today, doc });
     expect(res.status).toBe(201);
