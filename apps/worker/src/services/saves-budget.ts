@@ -30,13 +30,19 @@ export async function importSpend(db: Db, userId: string, now: Date): Promise<{ 
   return { spentMicros: Math.round(Number(row?.spent ?? 0)), capMicros: IMPORT_BUDGET_MICROS };
 }
 
-/** Put a call on the record at its worst case before it is made; refuse when that would pass the cap. */
+/**
+ * Put a call on the record at its worst case before it is made; refuse when that would pass the cap. `worstMicros` is
+ * what the row holds (and what the cap check counts) while the call runs; `estimateMicros` is what a typical call costs,
+ * written in the fingerprint: a reservation orphaned by a crash counts at that once stale (`weekCostSql`), not at the
+ * worst case.
+ */
 export async function reserveImport(
   db: Db,
   userId: string,
   kind: ImportKind,
   model: string,
   worstMicros: number,
+  estimateMicros: number,
   now: Date,
 ): Promise<{ ok: true; usageId: string } | { ok: false; reason: "budget_paused" }> {
   const { spentMicros, capMicros } = await importSpend(db, userId, now);
@@ -51,7 +57,7 @@ export async function reserveImport(
     outputTokens: 0,
     costMicros: worstMicros,
     cacheHit: false,
-    requestFingerprint: `${kind}${RESERVATION_MARK}${worstMicros}`,
+    requestFingerprint: `${kind}${RESERVATION_MARK}${Math.min(estimateMicros, worstMicros)}`,
     createdAt: now.toISOString(),
   });
   return { ok: true, usageId };

@@ -43,21 +43,21 @@ describe("the import budget", () => {
   it("refuses a reservation that would pass the cap, and takes one that fits", async () => {
     await row(IMPORT_KINDS.extract, 4_990_000, NOW);
     expect(await importSpend(db, userId, NOW)).toEqual({ spentMicros: 4_990_000, capMicros: IMPORT_BUDGET_MICROS });
-    expect(await reserveImport(db, userId, IMPORT_KINDS.match, MODEL, 20_000, NOW)).toEqual({ ok: false, reason: "budget_paused" });
-    const ok = await reserveImport(db, userId, IMPORT_KINDS.match, MODEL, 10_000, NOW);
+    expect(await reserveImport(db, userId, IMPORT_KINDS.match, MODEL, 20_000, 2_000, NOW)).toEqual({ ok: false, reason: "budget_paused" });
+    const ok = await reserveImport(db, userId, IMPORT_KINDS.match, MODEL, 10_000, 1_000, NOW);
     expect(ok.ok).toBe(true);
     expect((await importSpend(db, userId, NOW)).spentMicros).toBe(5_000_000);
   });
 
   it("settles to the actual cost, and a null settle zeroes the row", async () => {
-    const r = await reserveImport(db, userId, IMPORT_KINDS.filter, MODEL, 300_000, NOW);
+    const r = await reserveImport(db, userId, IMPORT_KINDS.filter, MODEL, 300_000, 30_000, NOW);
     if (!r.ok) throw new Error("reserve");
     expect((await importSpend(db, userId, NOW)).spentMicros).toBe(300_000);
     await settleImport(db, r.usageId, { model: MODEL, inputTokens: 100, outputTokens: 50, costMicros: 1_234 });
     expect((await importSpend(db, userId, NOW)).spentMicros).toBe(1_234);
     const [settled] = await db.select().from(llmUsage).where(eq(llmUsage.id, r.usageId));
     expect(settled).toMatchObject({ inputTokens: 100, outputTokens: 50, costMicros: 1_234, requestFingerprint: null });
-    const r2 = await reserveImport(db, userId, IMPORT_KINDS.filter, MODEL, 300_000, NOW);
+    const r2 = await reserveImport(db, userId, IMPORT_KINDS.filter, MODEL, 300_000, 30_000, NOW);
     if (!r2.ok) throw new Error("reserve");
     await settleImport(db, r2.usageId, null);
     expect((await importSpend(db, userId, NOW)).spentMicros).toBe(1_234);
@@ -76,6 +76,20 @@ describe("the import budget", () => {
     await row(IMPORT_KINDS.extract, 900_000, new Date(NOW.getTime() - 16 * 60_000), "import:x;est=40000");
     await row(IMPORT_KINDS.match, 700_000, new Date(NOW.getTime() - 5 * 60_000), "import:y;est=10000");
     expect((await importSpend(db, userId, NOW)).spentMicros).toBe(40_000 + 700_000);
+  });
+});
+
+describe("a reserved estimate", () => {
+  it("is what an orphaned reservation counts once stale (never above the worst case)", async () => {
+    const early = new Date(NOW.getTime() - 16 * 60_000);
+    const r = await reserveImport(db, userId, IMPORT_KINDS.extract, MODEL, 800_000, 25_000, early);
+    if (!r.ok) throw new Error("reserve");
+    expect((await importSpend(db, userId, early)).spentMicros).toBe(800_000);
+    expect((await importSpend(db, userId, NOW)).spentMicros).toBe(25_000);
+    const big = await reserveImport(db, userId, IMPORT_KINDS.extract, MODEL, 1_000, 9_000, early);
+    if (!big.ok) throw new Error("reserve");
+    const [row2] = await db.select().from(llmUsage).where(eq(llmUsage.id, big.usageId));
+    expect(row2!.requestFingerprint).toContain(";est=1000");
   });
 });
 

@@ -85,6 +85,8 @@ export interface Env {
   SAVES_IMPORT?: string;
   /** The saved-posts filter's model (gateway id); unset: `FILTER_MODEL_DEFAULT` in services/saves-filter.ts. Var. */
   SAVES_FILTER_MODEL?: string;
+  /** The extraction relay's body cap in bytes (default 20_000_000). */
+  SAVES_RELAY_MAX_BYTES?: string;
 }
 
 export const stagingEnabled = (env: Env): boolean => env.STAGING === "1";

@@ -172,7 +172,17 @@ export async function filterPost(
       outputTokens: FILTER_MAX_TOKENS,
     }),
   );
-  const reservation = await reserveImport(db, userId, IMPORT_KINDS.filter, model, worst, new Date(now));
+  // A typical filter reply is a short verdict (about 40 tokens), against the 120-token ceiling the worst case holds.
+  const typical = Math.max(
+    1,
+    messagesCostMicros(model, {
+      inputTokens: estimateInputTokens([system, userText], post.cover),
+      cacheReadTokens: 0,
+      cacheWriteTokens: 0,
+      outputTokens: 40,
+    }),
+  );
+  const reservation = await reserveImport(db, userId, IMPORT_KINDS.filter, model, worst, typical, new Date(now));
   if (!reservation.ok) return finish(db, post, { status: "seen", errorCode: reservation.reason }, now);
 
   let settled = false;
