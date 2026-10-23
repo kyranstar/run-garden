@@ -227,6 +227,72 @@ describe("a remove-and-add move re-keys the planned row (review A5)", () => {
     expect((await rowOf(a, "gone")).archivedAt).not.toBeNull();
   });
 
+  it("belt and braces: a read that finds the session's own stamped copy at an address no row claims follows it there — no row minted, nothing archived", async () => {
+    const a = await account();
+    const { id, date } = await coachLongRun(a);
+    const before = await rowOf(a, id);
+    const toDate = addDays(date, 2);
+    await moveByRemoveAndAdd(a, id, toDate);
+    const clone = await rowOf(a, id);
+    // The re-key lost (the lane died between the verified move and its result — or a move verified before the fix).
+    await a.db
+      .update(schema.plannedWorkouts)
+      .set({ sourceWorkoutId: before.sourceWorkoutId, sourceIdInPlan: before.sourceIdInPlan, sourceProgramId: before.sourceProgramId })
+      .where(eq(schema.plannedWorkouts.id, id));
+    const rowsBefore = (await a.db.select().from(schema.plannedWorkouts).where(eq(schema.plannedWorkouts.userId, a.userId))).length;
+
+    await readAndImport(a);
+    await readAndImport(a);
+    const after = await rowOf(a, id);
+    expect(after.archivedAt).toBeNull();
+    expect(after.sourceWorkoutId, "followed to its copy").toBe(clone.sourceWorkoutId);
+    expect(after.sourceIdInPlan).toBe(clone.sourceIdInPlan);
+    expect(after.sourceProgramId).toBe(clone.sourceProgramId);
+    expect(after.missingReads).toBe(0);
+    const rowsAfter = (await a.db.select().from(schema.plannedWorkouts).where(eq(schema.plannedWorkouts.userId, a.userId))).length;
+    expect(rowsAfter).toBe(rowsBefore);
+    expect((await liveOn(a, toDate)).filter((w) => w.title === "Long run").map((w) => w.id)).toEqual([id]);
+  });
+
+  it("…and only then: the athlete's copy of the session beside the original is not taken for it (the dedupe decides, as before)", async () => {
+    const a = await account();
+    const { id } = await coachLongRun(a);
+    const coach = await rowOf(a, id);
+    // A copy made in the COROS app: the same name and steps, the same day, a slot of its own — the original still at its address.
+    const next = Number(a.server.state.schedule.maxIdInPlan) + 1;
+    const entity = structuredClone(a.server.entityByIdInPlan(coach.sourceIdInPlan!)!);
+    const program = structuredClone(a.server.programByIdInPlan(coach.sourceIdInPlan!)!);
+    a.server.state.schedule.entities!.push({ ...entity, id: "copy-entity", idInPlan: String(next), planProgramId: String(next) });
+    a.server.state.schedule.programs!.push({ ...program, id: "copy-program", idInPlan: String(next) });
+    a.server.state.schedule.maxIdInPlan = next;
+
+    await readAndImport(a);
+    const after = await rowOf(a, id);
+    expect(after.sourceWorkoutId, "the coach row keeps its own copy").toBe(coach.sourceWorkoutId);
+    expect(after.archivedAt).toBeNull();
+    const copies = (await a.db.select().from(schema.plannedWorkouts).where(eq(schema.plannedWorkouts.userId, a.userId))).filter(
+      (w) => w.sourceIdInPlan === String(next),
+    );
+    expect(copies.map((w) => w.archiveReason), "minted, and archived as the coach row's mirror — as it always was").toEqual(["duplicate_mirror"]);
+  });
+
+  it("…nor a copy whose steps differ: an edited workout is not the session's own copy", async () => {
+    const a = await account();
+    const { id, date } = await coachLongRun(a);
+    const before = await rowOf(a, id);
+    await moveByRemoveAndAdd(a, id, addDays(date, 2));
+    const moved = await rowOf(a, id);
+    await a.db
+      .update(schema.plannedWorkouts)
+      .set({ sourceWorkoutId: before.sourceWorkoutId, sourceIdInPlan: before.sourceIdInPlan, sourceProgramId: before.sourceProgramId })
+      .where(eq(schema.plannedWorkouts.id, id));
+    const program = a.server.programByIdInPlan(moved.sourceIdInPlan!)!;
+    program.exercises = [{ ...program.exercises![0]!, targetValue: Number(program.exercises![0]!.targetValue) + 600 }];
+
+    await readAndImport(a);
+    expect((await rowOf(a, id)).sourceWorkoutId, "not followed").toBe(before.sourceWorkoutId);
+  });
+
   it("a LIVE row of the same plan still claiming the new address is left alone: the re-key is skipped, never thrown", async () => {
     const a = await account();
     const { id, date } = await coachLongRun(a);
