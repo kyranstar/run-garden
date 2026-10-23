@@ -78,12 +78,19 @@ async function setup(o: { writes?: boolean } = {}) {
 }
 
 beforeEach(() => {
+  // The runs land two days on, and a weekend day places them by another path (22 statements, not the pinned 23): on
+  // the real clock this went red every Thursday and Friday. A Tuesday, Date only, so the database's timers still run.
+  vi.useFakeTimers({ toFake: ["Date"] });
+  vi.setSystemTime(new Date("2026-10-20T19:00:00Z"));
   vi.stubGlobal("fetch", (async () => {
     fetches += 1;
     return new Response("{}", { status: 404 });
   }) as typeof fetch);
 });
-afterEach(() => vi.unstubAllGlobals());
+afterEach(() => {
+  vi.unstubAllGlobals();
+  vi.useRealTimers();
+});
 
 const REVIEW: OpReview = { scores: { intent: 4, structure: 4 }, notes: { intent: "Clear." }, mustFix: [], improvements: [], rounds: 1, changes: [] };
 
