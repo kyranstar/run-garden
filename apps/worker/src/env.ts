@@ -83,6 +83,8 @@ export interface Env {
   SAVES_TOKEN_SHA256?: string;
   /** The saved-posts import switch: only "1" is on (`savesImportEnabled`). Absent in production until the owner turns it on. Var. */
   SAVES_IMPORT?: string;
+  /** The saved-posts filter's model (gateway id); unset: `FILTER_MODEL_DEFAULT` in services/saves-filter.ts. Var. */
+  SAVES_FILTER_MODEL?: string;
 }
 
 export const stagingEnabled = (env: Env): boolean => env.STAGING === "1";

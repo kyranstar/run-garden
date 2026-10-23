@@ -2,7 +2,7 @@
  * The saved-posts import's token routes (/api/saves/*): behind SAVES_IMPORT and a bearer token, never a cookie; the
  * ledger's idempotence; the work list; and each route's D1 statement count (Workers Free: 45 a request).
  */
-import { beforeEach, describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { schema } from "@rg/database";
 import type { Env } from "../src/env.js";
 import type { Db } from "../src/services/db.js";
@@ -25,7 +25,7 @@ async function makeEnv(over: Partial<Env> = {}, token: string | null = TOKEN): P
     DB: {} as unknown as Env["DB"],
     ASSETS: {} as unknown as Env["ASSETS"],
     APP_URL: "https://app.test",
-    FIXTURE_MODE: "0",
+    FIXTURE_MODE: "1",
     AI_DEFAULT_ENABLED: "1",
     SESSION_SECRET: "test-session-secret",
     TOKEN_ENCRYPTION_KEY: "test-token-encryption-key",
@@ -146,7 +146,7 @@ describe("POST /posts", () => {
   it("records a fresh post, queued, within 8 statements", async () => {
     const { res, body, cost } = await post("/posts", submit("p1"));
     expect(res.status).toBe(200);
-    expect(body).toEqual({ status: "queued" });
+    expect(body).toEqual({ status: "queued", verdict: "maybe", reason: "fixture mode: not asked" });
     expect(cost).toBeLessThanOrEqual(8);
     const rows = await db.select().from(savedPosts);
     expect(rows).toHaveLength(1);
@@ -158,7 +158,7 @@ describe("POST /posts", () => {
     const [first] = await db.select().from(savedPosts);
     await new Promise((r) => setTimeout(r, 5));
     const again = await post("/posts", submit("p1", { caption: "changed" }));
-    expect(again.body).toEqual({ status: "queued" });
+    expect(again.body).toEqual({ status: "queued", verdict: "maybe", reason: "fixture mode: not asked" });
     const rows = await db.select().from(savedPosts);
     expect(rows).toHaveLength(1);
     expect(rows[0]).toEqual(first);
@@ -169,6 +169,30 @@ describe("POST /posts", () => {
   });
   it("refuses a bad body with 422", async () => {
     expect((await post("/posts", { ...submit("p1"), url: "http://insecure.example.com/x" })).res.status).toBe(422);
+  });
+});
+
+describe("POST /posts with the model (filter)", () => {
+  const live = () => makeEnv({ FIXTURE_MODE: "0", AI_GATEWAY_API_KEY: "k", AI_GATEWAY_BASE_URL: "https://gw.test/v1" });
+  const answer = (content: string) =>
+    vi.fn(async () => new Response(JSON.stringify({ choices: [{ message: { content } }], usage: { prompt_tokens: 100, completion_tokens: 20 } }), { status: 200 }));
+  afterEach(() => vi.unstubAllGlobals());
+
+  it("filters out a 'not' within 10 statements (2 auth, 2 ledger, claim, creator history, reserve 2, settle, outcome; the model call excluded)", async () => {
+    vi.stubGlobal("fetch", answer('{"verdict":"not","reason":"a recipe"}'));
+    const { body, cost } = await post("/posts", submit("m1"), auth, await live());
+    expect(body).toEqual({ status: "filtered_out", verdict: "not", reason: "a recipe" });
+    expect(cost).toBeLessThanOrEqual(10);
+  });
+  it("makes ONE model call and ONE usage row for two simultaneous submits of a new key", async () => {
+    const fetchMock = answer('{"verdict":"training","reason":"drills"}');
+    vi.stubGlobal("fetch", fetchMock);
+    const env = await live();
+    const [a, b] = await Promise.all([post("/posts", submit("race"), auth, env), post("/posts", submit("race"), auth, env)]);
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    expect(await db.select().from(schema.llmUsage)).toHaveLength(1);
+    expect([a.res.status, b.res.status]).toEqual([200, 200]);
+    expect(a.body.status === "queued" || b.body.status === "queued").toBe(true);
   });
 });
 

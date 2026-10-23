@@ -6,15 +6,13 @@
  */
 import { Hono } from "hono";
 import { z } from "zod";
-import { eq } from "drizzle-orm";
-import { schema } from "@rg/database";
 import { checkReportSchema, postSubmitSchema, SAVE_SOURCE_RE } from "@rg/saves";
 import { nowInstant } from "@rg/domain";
 import type { AppContext } from "../auth/middleware.js";
 import { bearerGuard } from "../auth/token.js";
 import { savesImportEnabled } from "../env.js";
 import { freshKeys, KNOWN_MAX_KEYS, recordCheck, savesStatus, upsertPost, workList } from "../services/saves-ledger.js";
-import { runFilter } from "../services/saves-filter.js";
+import { filterPost } from "../services/saves-filter.js";
 
 const knownSchema = z
   .object({ source: z.string().regex(SAVE_SOURCE_RE), keys: z.array(z.string().min(1).max(64)).max(KNOWN_MAX_KEYS) })
@@ -63,15 +61,12 @@ savesRoutes.post("/posts", async (c) => {
       ...(row.filterReason ? { reason: row.filterReason } : {}),
     });
   }
-  const out = await runFilter(row, parsed.data);
-  await db
-    .update(schema.savedPosts)
-    .set({ status: out.status, filterVerdict: out.verdict ?? null, filterReason: out.reason ?? null, updatedAt: now })
-    .where(eq(schema.savedPosts.id, row.id));
+  const out = await filterPost(db, c.env, c.get("userId"), { ...row, cover: parsed.data.cover }, now, fetch);
   return c.json({
     status: out.status,
     ...(out.verdict ? { verdict: out.verdict } : {}),
     ...(out.reason ? { reason: out.reason } : {}),
+    ...(out.errorCode ? { errorCode: out.errorCode } : {}),
   });
 });
 
