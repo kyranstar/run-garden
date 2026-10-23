@@ -326,6 +326,22 @@ importers:
         specifier: ^3.0.0
         version: 3.2.7(@types/node@22.20.1)(jsdom@25.0.1)(terser@5.49.0)(tsx@4.23.1)
 
+  packages/saves:
+    dependencies:
+      '@rg/exercise-library':
+        specifier: workspace:*
+        version: link:../exercise-library
+      zod:
+        specifier: ^3.24.1
+        version: 3.25.76
+    devDependencies:
+      typescript:
+        specifier: ^5.7.3
+        version: 5.9.3
+      vitest:
+        specifier: ^3.0.0
+        version: 3.2.7(@types/node@22.20.1)(jsdom@25.0.1)(terser@5.49.0)(tsx@4.23.1)
+
   packages/scheduling:
     dependencies:
       '@rg/domain':
