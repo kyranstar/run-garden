@@ -1,0 +1,17 @@
+{
+  "manifest_version": 3,
+  "name": "Run Garden Saves",
+  "version": "0.1.0",
+  "description": "Reads your saved posts in your own browser and sends the training ones to Run Garden.",
+  "minimum_chrome_version": "120",
+  "permissions": ["alarms", "storage", "scripting", "tabs"],
+  "host_permissions": [
+    "https://www.instagram.com/*",
+    "https://*.cdninstagram.com/*",
+    "https://*.fbcdn.net/*",
+    "__APP_ORIGIN__/*"
+  ],
+  "background": { "service_worker": "background.js" },
+  "action": { "default_popup": "popup.html", "default_title": "Saves" },
+  "options_page": "options.html"
+}

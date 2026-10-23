@@ -1,0 +1,30 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Saves — options</title>
+    <style>
+      :root { color-scheme: light dark; font: 15px/1.4 system-ui, sans-serif; }
+      body { max-width: 30rem; margin: 2rem auto; padding: 0 1rem; }
+      label { display: block; margin: 1rem 0 0.25rem; font-weight: 600; }
+      input { box-sizing: border-box; width: 100%; min-height: 44px; padding: 0 0.75rem; font: inherit; }
+      button { min-height: 44px; min-width: 44px; margin-top: 1.25rem; padding: 0 1.25rem; font: inherit; }
+      output { display: block; margin-top: 0.75rem; }
+    </style>
+  </head>
+  <body>
+    <h1>Saves</h1>
+    <form id="form">
+      <label for="appUrl">App URL</label>
+      <input id="appUrl" name="appUrl" type="url" required autocomplete="off" />
+      <label for="token">Import token</label>
+      <input id="token" name="token" type="password" autocomplete="off" spellcheck="false" />
+      <label for="maxPages">Pages per check</label>
+      <input id="maxPages" name="maxPages" type="number" min="1" max="20" step="1" placeholder="20" />
+      <button type="submit">Save</button>
+      <output id="status" role="status"></output>
+    </form>
+    <script src="options.js"></script>
+  </body>
+</html>
