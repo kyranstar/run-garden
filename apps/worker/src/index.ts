@@ -10,7 +10,7 @@ import {
   workoutCompletionMatches,
 } from "@rg/database";
 import { addDays, nowInstant, startOfIsoWeek, todayInZone } from "@rg/domain";
-import { computeWeeklyFacts, DISCIPLINES } from "@rg/analytics";
+import { computeWeeklyFacts, WEEKLY_REVIEW_SPORTS } from "@rg/analytics";
 import type { Env } from "./env.js";
 import { coachDesignerEnabled, fixtureModeEnabled, stagingEnabled, threadCoachEnabled } from "./env.js";
 import { installStagingGuard } from "./services/staging.js";
@@ -526,12 +526,13 @@ export async function weekly(db: Db, env: Env): Promise<void> {
         (a.startTimeLocal ?? a.startTime).slice(0, 10);
       // All three disciplines, not runs only: a week with two lifts and a
       // yoga session and no runs is a real training week, and a review that
-      // called it empty would be wrong.
+      // called it empty would be wrong. And hikes (the owner, 2026-10-23): a
+      // 3.6 h hike was left out of the week's totals.
       const acts = (
         await db.select().from(activities).where(eq(activities.userId, userId))
       ).filter(
         (a) =>
-          DISCIPLINES.includes(a.sport as (typeof DISCIPLINES)[number]) &&
+          WEEKLY_REVIEW_SPORTS.includes(a.sport) &&
           localDate(a) >= weekStart &&
           localDate(a) <= weekEnd,
       );

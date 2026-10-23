@@ -140,6 +140,12 @@ describe("buildWeeklyReviewSystemPrompt", () => {
     // Generic: nothing of any one athlete in it.
     expect(buildWeeklyReviewSystemPrompt("mi").replace(/miles/g, "kilometres")).toBe(p);
   });
+
+  it("says the totals cover every kind of session the facts count — a hike's hours and distance are never running (2026-10-23)", () => {
+    expect(buildWeeklyReviewSystemPrompt("km")).toContain(
+      "`sessions` counts last week's sessions by kind (runs, lifts, yoga sessions, hikes); `totalHours` and `totalDistance` cover all of them, so never call them running hours or a running distance.",
+    );
+  });
 });
 
 describe("generateWeeklyReview", () => {
