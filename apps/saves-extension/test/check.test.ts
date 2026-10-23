@@ -1,4 +1,5 @@
 import { describe, expect, it } from "vitest";
+import { EXERCISES } from "@rg/exercise-library";
 import type { CheckReport, PostSubmit, WorkItem } from "@rg/saves";
 import { DEFAULT_CONFIG, runCheck, singleFlight, type CheckDeps } from "../src/check.js";
 import type { AppClient, ExtractAnswer, SubmitAnswer } from "../src/app-client.js";
@@ -9,17 +10,33 @@ import { code, media, mediaFetch, memoryStore, page } from "./fixtures.js";
 
 const NOW = Date.parse("2026-10-23T12:00:00Z");
 
-/** The app's token routes, at the client's interface: remembers keys, answers submits and extracts as scripted. */
+/** The relay's claim (saves-relay.ts): which failed posts a call may take, while attempts remain. */
+const CLAIMABLE_FAILED = new Set(["media_failed", "model_failed", "app_unreachable", "budget_paused", "unknown", "too_large"]);
+
+/**
+ * The app's token routes, at the client's interface: remembers keys, answers submits and extracts as scripted, and keeps
+ * each post's ledger row the way the Worker does, so an extract the relay would not claim answers `conflict`.
+ */
 class FakeApp implements AppClient {
   log: string[] = [];
   knownKeys = new Set<string>();
   submits: PostSubmit[] = [];
   extracts: { key: string; body: string; opts: { model: string; maxTokens: number } }[] = [];
   reports: CheckReport[] = [];
+  failedReports: { key: string; code: string }[] = [];
   workItems: WorkItem[] = [];
   extractAnswers: ExtractAnswer[] = [];
+  /** Post rows by key; a key never seen counts as queued (a work-list post). */
+  rows = new Map<string, { status: string; code: string | null; attempts: number }>();
+  claimable = CLAIMABLE_FAILED;
   verdict: (p: PostSubmit) => SubmitAnswer = () => ({ status: "queued", verdict: "training" });
   down = { start: false, submit: false };
+
+  row(key: string) {
+    let r = this.rows.get(key);
+    if (!r) this.rows.set(key, (r = { status: "queued", code: null, attempts: 0 }));
+    return r;
+  }
 
   async reportCheck(r: CheckReport) {
     this.log.push(`check:${r.phase}`);
@@ -35,16 +52,30 @@ class FakeApp implements AppClient {
     if (this.down.submit) throw new AppUnreachableError("The app answered 503");
     this.knownKeys.add(p.key);
     this.submits.push(p);
-    return this.verdict(p);
+    const answer = this.verdict(p);
+    if (!this.rows.has(p.key)) this.rows.set(p.key, { status: answer.status, code: null, attempts: 0 });
+    return answer;
   }
   async work() {
     this.log.push("work");
     return this.workItems;
   }
-  async extract(_source: string, key: string, body: string, opts: { model: string; maxTokens: number }) {
+  async extract(_source: string, key: string, body: string, opts: { model: string; maxTokens: number }): Promise<ExtractAnswer> {
     this.log.push(`extract:${key}`);
+    const row = this.row(key);
+    const takes = row.attempts < 3 && (row.status === "queued" || (row.status === "failed" && this.claimable.has(row.code ?? "")));
+    if (!takes) return { ok: false, code: "conflict" };
     this.extracts.push({ key, body, opts });
-    return this.extractAnswers.shift() ?? { ok: true as const };
+    const answer = this.extractAnswers.shift() ?? { ok: true as const };
+    if (!answer.ok && answer.code === "budget_paused") return answer; // refused before the claim: nothing counted
+    row.attempts++;
+    if (answer.ok) Object.assign(row, { status: "matched", code: null });
+    else Object.assign(row, { status: "failed", code: answer.code });
+    return answer;
+  }
+  async reportFailed(_source: string, key: string, code: "gone" | "media_failed" | "too_large") {
+    this.log.push(`failed:${key}:${code}`);
+    this.failedReports.push({ key, code });
   }
   get finish() {
     return this.reports.find((r) => r.phase === "finish");
@@ -125,7 +156,7 @@ describe("runCheck", () => {
     expect(Object.keys(JSON.parse(reel.body))[0]).toBe("model");
     expect(reel.opts).toEqual({ model: DEFAULT_CONFIG.model, maxTokens: DEFAULT_CONFIG.maxTokens });
     expect(reel.body).toContain("data:video/mp4;base64,AQIDBAUG");
-    expect((deps.fetchImpl as ReturnType<typeof mediaFetch>).urls).toContain(`https://cdn.example.com/${a}-480.mp4`);
+    expect((deps.fetchImpl as ReturnType<typeof mediaFetch>).urls).toContain(`https://synthetic.cdninstagram.com/${a}-480.mp4`);
     expect(app.finish).toMatchObject({ phase: "finish", found: 5, fresh: 3, filtered: 1, extracted: 2, failed: 0 });
     expect(app.finish!.error).toBeUndefined();
     expect(app.finish!.checkId).toBe(app.reports[0]!.checkId);
@@ -174,6 +205,46 @@ describe("runCheck", () => {
     await runCheck(deps);
     expect(reader.reads).toEqual([null]);
     expect(app.submits).toHaveLength(50);
+  });
+
+  it("a resume cursor older than 24 h is dropped and reported once", async () => {
+    const app = new FakeApp();
+    app.verdict = () => ({ status: "filtered_out" });
+    const reader = fakeReader(Array.from({ length: 25 }, (_, p) => [media(code(p * 2 + 1)), media(code(p * 2 + 2))]));
+    const deps = makeDeps(app, reader);
+    let clock = NOW;
+    deps.now = () => clock;
+    await runCheck(deps); // 20 pages; a cursor at page 21
+
+    clock = NOW + 25 * 3_600_000;
+    reader.reads.length = 0;
+    const second = await runCheck(deps);
+    expect(reader.reads).toEqual([null]);
+    expect(second.error).toMatchObject({ code: "unknown", message: expect.stringMatching(/older saves/i) });
+
+    reader.reads.length = 0;
+    const third = await runCheck(deps);
+    expect(reader.reads).toEqual([null]);
+    expect(third.error).toBeNull();
+  });
+
+  it("a resume cursor that fails twice is dropped and reported once; new saves keep flowing meanwhile", async () => {
+    const app = new FakeApp();
+    app.verdict = () => ({ status: "filtered_out" });
+    const reader = fakeReader([[media(code(1))], [media(code(2))], [media(code(3))]]);
+    const deps = makeDeps(app, reader, { config: { ...DEFAULT_CONFIG, maxPages: 2 } });
+    await runCheck(deps); // pages 1–2; a cursor at page 3
+    reader.fail = (maxId) => (maxId === "c2" ? new ReaderError("Instagram answered 400") : null);
+
+    const second = await runCheck(deps); // the first failed resume: kept
+    expect(second.error).toMatchObject({ code: "unknown", message: "Instagram answered 400" });
+    const third = await runCheck(deps); // the second: dropped
+    expect(third.error).toMatchObject({ code: "unknown", message: expect.stringMatching(/older saves/i) });
+
+    reader.reads.length = 0;
+    const fourth = await runCheck(deps);
+    expect(reader.reads).toEqual([null]);
+    expect(fourth.error).toBeNull();
   });
 
   it("a LoginNeededError ends the check with error login_needed and no submits", async () => {
@@ -268,7 +339,7 @@ describe("runCheck", () => {
     await deps.queue.push({ kind: "submit", source: "instagram", key: "broken", payload: null });
     await deps.queue.push({ kind: "submit", source: "instagram", key: code(9), payload: { post: { key: code(9) }, coverUrl: null } });
     const summary = await runCheck(deps);
-    expect(summary.failed).toBe(1);
+    expect(summary).toMatchObject({ failed: 1, error: null });
     expect(app.log).toContain(`submit:${code(9)}`);
     expect(await deps.queue.size()).toBe(0);
   });
@@ -317,18 +388,49 @@ describe("runCheck", () => {
       ];
       const summary = await runCheck(makeDeps(app, reader));
       expect(app.extracts).toHaveLength(2);
-      expect(summary).toMatchObject({ extracted: 0, failed: 1, error: { code: "model_failed" } });
+      // One post's failure is counted, never the check's error (spec §12: the check itself went fine).
+      expect(summary).toMatchObject({ extracted: 0, failed: 1, error: null });
+      expect(app.finish!.error).toBeUndefined();
     });
 
-    it("too_large is retried once at the next smaller variant", async () => {
+    it("too_large is retried once at the next smaller variant, and the relay's claim takes that retry", async () => {
       const { app, reader } = one();
       app.extractAnswers = [{ ok: false, code: "too_large" }, { ok: true }];
       const deps = makeDeps(app, reader);
       const summary = await runCheck(deps);
       const urls = (deps.fetchImpl as ReturnType<typeof mediaFetch>).urls.filter((u) => u.endsWith(".mp4"));
-      expect(urls).toEqual([`https://cdn.example.com/${code(1)}-480.mp4`, `https://cdn.example.com/${code(1)}-360.mp4`]);
+      expect(urls).toEqual([`https://synthetic.cdninstagram.com/${code(1)}-480.mp4`, `https://synthetic.cdninstagram.com/${code(1)}-360.mp4`]);
       expect(app.extracts).toHaveLength(2);
       expect(summary).toMatchObject({ extracted: 1, failed: 0 });
+      expect(app.rows.get(code(1))).toMatchObject({ status: "matched", attempts: 2 });
+    });
+
+    it("a claim that refuses the smaller retry (the relay before this fix) leaves the post failed", async () => {
+      const { app, reader } = one();
+      app.claimable = new Set([...CLAIMABLE_FAILED].filter((c) => c !== "too_large"));
+      app.extractAnswers = [{ ok: false, code: "too_large" }, { ok: true }];
+      const summary = await runCheck(makeDeps(app, reader));
+      expect(app.extracts).toHaveLength(1);
+      expect(summary).toMatchObject({ extracted: 0, failed: 1 });
+    });
+
+    it("a 413's maxBytes picks a size that fits, for that post's retry and the rest of the check", async () => {
+      const app = new FakeApp();
+      const reader = fakeReader([[media(code(1), "video"), media(code(2), "video")]]);
+      app.extractAnswers = [{ ok: false, code: "too_large", maxBytes: 200_000 }];
+      const fat = (url: string) => (url.endsWith("-480.mp4") ? new Response(new Uint8Array(300_000), { headers: { "content-type": "video/mp4" } }) : null);
+      const summary = await runCheck(makeDeps(app, reader, { fetchImpl: mediaFetch(fat) }));
+      // code(2) is submitted first (newest last): its 480 body is refused with the cap, its 360 retry fits; code(1) goes straight to 360.
+      expect(app.extracts.map((x) => [x.key, x.body.length < 200_000])).toEqual([
+        [code(2), false],
+        [code(2), true],
+        [code(1), true],
+      ]);
+      expect(summary).toMatchObject({ extracted: 2, failed: 0 });
+    });
+
+    it("defaults the relay body limit to 4.5 MB until the gateway is measured", () => {
+      expect(DEFAULT_CONFIG.maxBodyBytes).toBe(4_500_000);
     });
 
     it("too_large twice, or with nothing smaller, counts the post as failed after at most one retry", async () => {
@@ -336,11 +438,11 @@ describe("runCheck", () => {
       app.extractAnswers = [{ ok: false, code: "too_large" }, { ok: false, code: "too_large" }];
       const summary = await runCheck(makeDeps(app, reader));
       expect(app.extracts).toHaveLength(2);
-      expect(summary).toMatchObject({ extracted: 0, failed: 1, error: { code: "too_large" } });
+      expect(summary).toMatchObject({ extracted: 0, failed: 1, error: null });
 
       const small = new FakeApp();
       small.extractAnswers = [{ ok: false, code: "too_large" }];
-      const onlySmall = fakeReader([[media(code(1), "video", { video_versions: [{ width: 360, height: 640, url: "https://cdn.example.com/only-360.mp4" }] })]]);
+      const onlySmall = fakeReader([[media(code(1), "video", { video_versions: [{ width: 360, height: 640, url: "https://synthetic.cdninstagram.com/only-360.mp4" }] })]]);
       expect(await runCheck(makeDeps(small, onlySmall))).toMatchObject({ failed: 1 });
       expect(small.extracts).toHaveLength(1);
     });
@@ -362,11 +464,13 @@ describe("runCheck", () => {
         fetchImpl: mediaFetch((u) => (u.endsWith(".mp4") ? new Response(new Uint8Array(400_000), { headers: { "content-type": "video/mp4" } }) : null)),
         config: { ...DEFAULT_CONFIG, maxBodyBytes: 200_000 },
       });
-      expect(await runCheck(allBig)).toMatchObject({ extracted: 0, failed: 1, error: { code: "too_large" } });
+      expect(await runCheck(allBig)).toMatchObject({ extracted: 0, failed: 1, error: null });
       expect(none.extracts).toHaveLength(0);
+      // Told to the app, so its work list stops handing out a post no size of which can be sent.
+      expect(none.failedReports).toEqual([{ key: code(1), code: "too_large" }]);
     });
 
-    it("an expired media link fails that post (media_failed) and the check goes on", async () => {
+    it("an expired media link fails that post: reported to the app as media_failed, and the check goes on", async () => {
       const app = new FakeApp();
       const reader = fakeReader([[media(code(1), "video"), media(code(2), "video")]]);
       const deps = makeDeps(app, reader, {
@@ -374,8 +478,30 @@ describe("runCheck", () => {
       });
       const summary = await runCheck(deps);
       expect(app.extracts.map((x) => x.key)).toEqual([code(2)]);
-      expect(summary).toMatchObject({ extracted: 1, failed: 1, error: { code: "media_failed" } });
+      expect(app.failedReports).toEqual([{ key: code(1), code: "media_failed" }]);
+      expect(summary).toMatchObject({ extracted: 1, failed: 1, error: null });
       expect(await deps.queue.size()).toBe(0);
+    });
+
+    it("sends the library's move names with the post, so the model reuses them", async () => {
+      const { app, reader } = one();
+      await runCheck(makeDeps(app, reader));
+      const text = bodyText(app.extracts[0]!.body);
+      expect(text).toContain("Moves the app already has");
+      expect(text).toContain(EXERCISES[0]!.name);
+    });
+
+    it("a replayed extract the app no longer wants (409 or 404) is nothing to do, not a failure", async () => {
+      for (const answer of [{ ok: false, code: "conflict" }, { ok: false, code: "not_found" }] as const) {
+        const app = new FakeApp();
+        app.extract = async () => answer;
+        const deps = makeDeps(app, fakeReader([[]], [media(code(5))]));
+        await deps.queue.push({ kind: "extract", source: "instagram", key: code(5) });
+        const summary = await runCheck(deps);
+        expect(summary).toMatchObject({ failed: 0, error: null });
+        expect(app.failedReports).toEqual([]);
+        expect(await deps.queue.size()).toBe(0);
+      }
     });
 
     it("budget_paused stops extraction for the rest of the check", async () => {
@@ -439,14 +565,24 @@ describe("runCheck", () => {
       expect(app.extracts).toHaveLength(20);
     });
 
-    it("a post that is gone counts as failed and the list goes on", async () => {
+    it("a post that is gone is reported to the app as gone, counts as failed, and the list goes on", async () => {
       const app = new FakeApp();
       const [gone, here] = [code(60), code(61)];
       app.workItems = [gone, here].map((key) => ({ source: "instagram", key, url: `https://www.instagram.com/reel/${key}/`, action: "extract" as const }));
       const reader = fakeReader([[]], [media(here)]);
       const summary = await runCheck(makeDeps(app, reader));
       expect(app.extracts.map((x) => x.key)).toEqual([here]);
-      expect(summary).toMatchObject({ extracted: 1, failed: 1, error: { code: "gone" } });
+      expect(app.failedReports).toEqual([{ key: gone, code: "gone" }]);
+      expect(summary).toMatchObject({ extracted: 1, failed: 1, error: null });
+    });
+
+    it("filter work whose post is gone is reported as gone too", async () => {
+      const app = new FakeApp();
+      app.workItems = [{ source: "instagram", key: code(62), url: `https://www.instagram.com/reel/${code(62)}/`, action: "filter" }];
+      const summary = await runCheck(makeDeps(app, fakeReader([[]])));
+      expect(app.failedReports).toEqual([{ key: code(62), code: "gone" }]);
+      expect(app.submits).toEqual([]);
+      expect(summary).toMatchObject({ failed: 1, error: null });
     });
   });
 });

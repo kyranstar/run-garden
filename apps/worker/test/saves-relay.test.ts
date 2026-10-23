@@ -299,9 +299,22 @@ describe("relayExtract", () => {
 
   it("does not list a fresh extracting post, nor claim a failed one whose code is not retryable", async () => {
     await seed("fresh", { status: "extracting", updatedAt: NOW });
-    const big = await seed("big", { status: "failed", lastErrorCode: "too_large" });
+    const gone = await seed("gone", { status: "failed", lastErrorCode: "gone" });
     expect(await workList(db, userId, NOW)).toEqual([]);
-    expect(await run(big, bodyText(), gateway(GOOD))).toMatchObject({ ok: false, status: 409 });
+    expect(await run(gone, bodyText(), gateway(GOOD))).toMatchObject({ ok: false, status: 409 });
+  });
+
+  it("takes the extension's smaller retry of a post the gateway found too large, while attempts remain; /work still leaves it out", async () => {
+    const id = await seed("k");
+    expect(await run(id, bodyText(), gateway("", { status: 413 }))).toMatchObject({ ok: false, code: "too_large" });
+    expect(await workList(db, userId, NOW)).toEqual([]);
+    expect(await run(id, bodyText(MODEL, 3000, 1_000), gateway(GOOD))).toMatchObject({ ok: true });
+    expect(await reload(id)).toMatchObject({ status: "matched", extractAttempts: 2 });
+  });
+
+  it("refuses a too-large post's retry once its attempts are spent", async () => {
+    const id = await seed("k", { status: "failed", lastErrorCode: "too_large", extractAttempts: 3 });
+    expect(await run(id, bodyText(), gateway(GOOD))).toMatchObject({ ok: false, status: 409 });
   });
 
   it("never echoes the model's own words in the issues it returns", async () => {
@@ -445,14 +458,20 @@ describe("POST /api/saves/posts/:key/extract", () => {
     const gw = gateway(GOOD);
     vi.stubGlobal("fetch", gw.fetchImpl);
     try {
-      const { res, json } = await route("k", bodyText(MODEL, 3000, 2_000), {}, `?source=${SRC}`, await routeEnv({ SAVES_RELAY_MAX_BYTES: "1000" }));
+      const small = await routeEnv({ SAVES_RELAY_MAX_BYTES: "1000" });
+      const { res, json } = await route("k", bodyText(MODEL, 3000, 2_000), {}, `?source=${SRC}`, small);
       expect(res.status).toBe(413);
-      expect(json).toMatchObject({ error: "too_large" });
+      // The Worker's own cap travels back, so the extension can pick a size that fits.
+      expect(json).toEqual({ error: "too_large", maxBytes: 1000 });
       expect(gw.spy).not.toHaveBeenCalled();
       // The post is marked, so /work stops handing it out.
       expect(await reload(await savedPostId(userId, SRC, "k"))).toMatchObject({ status: "failed", lastErrorCode: "too_large", extractAttempts: 1 });
       expect(await workList(db, userId, NOW)).toEqual([]);
       expect(await db.select().from(llmUsage)).toHaveLength(0);
+      // The extension's retry at a size under the cap is taken.
+      const retry = await route("k", bodyText(MODEL, 3000, 100), {}, `?source=${SRC}`, small);
+      expect(retry.res.status).toBe(200);
+      expect(await reload(await savedPostId(userId, SRC, "k"))).toMatchObject({ status: "matched", extractAttempts: 2 });
     } finally {
       vi.unstubAllGlobals();
     }

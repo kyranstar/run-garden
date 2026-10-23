@@ -67,6 +67,24 @@ describe("the app client", () => {
     expect(await ask()).toEqual({ ok: false, code: "unknown" });
   });
 
+  it("carries the Worker's own cap back from a 413", async () => {
+    const { client } = recorder(() => json(413, { error: "too_large", maxBytes: 1000 }));
+    expect(await client.extract("instagram", "k", "{}", { model: "m", maxTokens: 1 })).toEqual({ ok: false, code: "too_large", maxBytes: 1000 });
+  });
+
+  it("reports a post it could not fetch; the app's 404 or 409 is nothing more to do", async () => {
+    const answers = [json(200, { status: "failed", errorCode: "gone" }), json(404, { error: "not_found" }), json(409, { error: "conflict" })];
+    const { calls, client } = recorder(() => answers.shift()!);
+    await client.reportFailed("instagram", "Syn/1", "gone");
+    await client.reportFailed("instagram", "k", "media_failed");
+    await client.reportFailed("instagram", "k", "media_failed");
+    expect(calls[0]!.url).toBe("https://app.example.com/api/saves/posts/Syn%2F1/failed?source=instagram");
+    expect(calls[0]!.init.method).toBe("POST");
+    expect(JSON.parse(String(calls[0]!.init.body))).toEqual({ code: "gone" });
+    const down = recorder(() => json(503, { error: "restore_in_progress" }));
+    await expect(down.client.reportFailed("instagram", "k", "gone")).rejects.toBeInstanceOf(AppUnreachableError);
+  });
+
   it("an outage (network, 5xx, a non-JSON gateway page) is AppUnreachableError; a 401 or 422 is AppRefusedError", async () => {
     const down = recorder(() => {
       throw new TypeError("Failed to fetch");

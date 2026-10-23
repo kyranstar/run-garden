@@ -3,6 +3,7 @@
  * ledger's idempotence; the work list; and each route's D1 statement count (Workers Free: 45 a request).
  */
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { eq } from "drizzle-orm";
 import { schema } from "@rg/database";
 import type { Env } from "../src/env.js";
 import type { Db } from "../src/services/db.js";
@@ -12,6 +13,7 @@ import { savedPostId } from "../src/services/saves-ledger.js";
 import { makeTestDb, makeTestUser, mountRoutes } from "./helpers.js";
 
 const { savedPosts, saveChecks } = schema;
+const eqId = (id: string) => eq(savedPosts.id, id);
 const TOKEN = "b".repeat(64);
 const SRC = "testsrc";
 
@@ -250,6 +252,62 @@ describe("GET /work", () => {
   it("hands out at most 20", async () => {
     for (let i = 0; i < 25; i++) await seedPost(`q${i}`);
     expect((await call("/work")).body.keys).toHaveLength(20);
+  });
+});
+
+describe("POST /posts/:key/failed (a post the extension could not fetch)", () => {
+  const failed = (key: string, code: string, query = `?source=${SRC}`) => post(`/posts/${key}/failed${query}`, { code });
+
+  it("marks a gone post failed/gone, within 4 statements; it is never handed out again", async () => {
+    const id = await seedPost("g");
+    const { res, body, cost } = await failed("g", "gone");
+    expect(res.status).toBe(200);
+    expect(body).toEqual({ status: "failed", errorCode: "gone" });
+    expect(cost).toBeLessThanOrEqual(4); // auth 2 + the update 1 (+1 only to tell 404 from 409)
+    const [row] = await db.select().from(savedPosts).where(eqId(id));
+    expect(row).toMatchObject({ status: "failed", lastErrorCode: "gone", extractAttempts: 0 });
+    expect((await call("/work")).body.keys).toEqual([]);
+  });
+
+  it("marks a seen post gone too (filter work whose post was deleted)", async () => {
+    await seedPost("s", { status: "seen", lastErrorCode: "model_failed" });
+    expect((await failed("s", "gone")).body).toEqual({ status: "failed", errorCode: "gone" });
+    expect((await call("/work")).body.keys).toEqual([]);
+  });
+
+  it("counts a media failure as an attempt and moves the post to the back of the work list; after 3 it is not handed out", async () => {
+    await seedPost("m", { updatedAt: "2026-10-01T00:00:00.000Z" });
+    await seedPost("other", { updatedAt: "2026-10-02T00:00:00.000Z" });
+    expect((await failed("m", "media_failed")).body).toEqual({ status: "failed", errorCode: "media_failed" });
+    const [row] = await db.select().from(savedPosts).where(eqId(await savedPostId(userId, SRC, "m")));
+    expect(row).toMatchObject({ status: "failed", lastErrorCode: "media_failed", extractAttempts: 1 });
+    expect((await call("/work")).body.keys.map((k: any) => k.key)).toEqual(["other", "m"]);
+    await failed("m", "media_failed");
+    await failed("m", "media_failed");
+    expect((await call("/work")).body.keys.map((k: any) => k.key)).toEqual(["other"]);
+  });
+
+  it("marks a post too large to send at any size failed/too_large, as the relay's own cap does: an attempt, and off the work list", async () => {
+    await seedPost("big");
+    expect((await failed("big", "too_large")).body).toEqual({ status: "failed", errorCode: "too_large" });
+    const [row] = await db.select().from(savedPosts).where(eqId(await savedPostId(userId, SRC, "big")));
+    expect(row).toMatchObject({ status: "failed", lastErrorCode: "too_large", extractAttempts: 1 });
+    expect((await call("/work")).body.keys).toEqual([]);
+  });
+
+  it("leaves a finished post as it is (409), 404s an unknown one, refuses a bad code or source", async () => {
+    await seedPost("done", { status: "matched" });
+    expect((await failed("done", "gone")).res.status).toBe(409);
+    expect((await failed("nope", "gone")).res.status).toBe(404);
+    expect((await failed("done", "model_failed")).res.status).toBe(422);
+    expect((await failed("done", "gone", "?source=Bad Source")).res.status).toBe(400);
+    const [row] = await db.select().from(savedPosts).where(eqId(await savedPostId(userId, SRC, "done")));
+    expect(row!.status).toBe("matched");
+  });
+
+  it("a media failure leaves a seen post to its filter work", async () => {
+    await seedPost("s", { status: "seen", lastErrorCode: "model_failed" });
+    expect((await failed("s", "media_failed")).res.status).toBe(409);
   });
 });
 

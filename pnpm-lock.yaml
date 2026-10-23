@@ -25,6 +25,9 @@ importers:
 
   apps/saves-extension:
     dependencies:
+      '@rg/exercise-library':
+        specifier: workspace:*
+        version: link:../../packages/exercise-library
       '@rg/saves':
         specifier: workspace:*
         version: link:../../packages/saves

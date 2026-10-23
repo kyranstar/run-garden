@@ -35,12 +35,30 @@ export function bytesToBase64(bytes: Uint8Array): string {
   return btoa(binary);
 }
 
-/** Download one media file into memory as base64. A failed download (an expired signed link, the network) is MediaError. */
+/** The media hosts the manifest grants (`https://*.cdninstagram.com/*`, `https://*.fbcdn.net/*`): nothing else is fetched. */
+const MEDIA_DOMAINS = ["cdninstagram.com", "fbcdn.net"];
+
+export function isMediaUrl(url: string): boolean {
+  let parsed: URL;
+  try {
+    parsed = new URL(url);
+  } catch {
+    return false;
+  }
+  const host = parsed.hostname.toLowerCase();
+  return parsed.protocol === "https:" && MEDIA_DOMAINS.some((d) => host === d || host.endsWith(`.${d}`));
+}
+
+/**
+ * Download one media file into memory as base64. Only from the site's media hosts; a link elsewhere, or a failed download
+ * (an expired signed link, the network), is MediaError.
+ */
 export async function fetchAsBase64(
   url: string,
   fetchImpl: typeof fetch,
   fallbackMime = "application/octet-stream",
 ): Promise<{ mime: string; base64: string; bytes: number }> {
+  if (!isMediaUrl(url)) throw new MediaError("A media link is not on the site's media hosts");
   let res: Response;
   try {
     // A signed CDN link needs no cookie; sending none keeps the request as small as the site's own.

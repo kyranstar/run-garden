@@ -1,19 +1,20 @@
 // Synthetic feed fixtures, shaped like the web app's saved-posts feed (`items[].media`). Every handle, caption and URL here
-// is made up (example.com media); nothing comes from a real saved post.
+// is made up (media on a made-up `synthetic.` host under the CDN domain the extension accepts); nothing comes from a
+// real saved post, and nothing is ever fetched.
 import { shortcodeToPk } from "../src/shortcode.js";
 import type { KvStore } from "../src/queue.js";
 
 export type MediaKind = "video" | "image" | "carousel";
 
 const candidates = (tag: string) => [
-  { width: 1080, height: 1350, url: `https://cdn.example.com/${tag}-1080.jpg` },
-  { width: 640, height: 800, url: `https://cdn.example.com/${tag}-640.jpg` },
-  { width: 320, height: 400, url: `https://cdn.example.com/${tag}-320.jpg` },
-  { width: 150, height: 150, url: `https://cdn.example.com/${tag}-150.jpg` },
+  { width: 1080, height: 1350, url: `https://synthetic.cdninstagram.com/${tag}-1080.jpg` },
+  { width: 640, height: 800, url: `https://synthetic.cdninstagram.com/${tag}-640.jpg` },
+  { width: 320, height: 400, url: `https://synthetic.cdninstagram.com/${tag}-320.jpg` },
+  { width: 150, height: 150, url: `https://synthetic.cdninstagram.com/${tag}-150.jpg` },
 ];
 
 const videos = (tag: string, widths = [720, 480, 360]) =>
-  widths.map((w) => ({ width: w, height: Math.round((w * 16) / 9), url: `https://cdn.example.com/${tag}-${w}.mp4`, type: 101 }));
+  widths.map((w) => ({ width: w, height: Math.round((w * 16) / 9), url: `https://synthetic.cdninstagram.com/${tag}-${w}.mp4`, type: 101 }));
 
 /** One synthetic media object. `code` is the post's shortcode; its pk is derived from it, as the site's are. */
 export function media(code: string, kind: MediaKind = "video", over: Record<string, unknown> = {}): Record<string, unknown> {

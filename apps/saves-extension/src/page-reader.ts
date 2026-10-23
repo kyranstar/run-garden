@@ -2,9 +2,13 @@ import { LoginNeededError, PostGoneError, ReaderError } from "./errors.js";
 
 export { LoginNeededError };
 
-// Reading the owner's saves from inside an instagram.com tab: the requests run in the page itself (its origin, its
+// Reading the owner's saves from inside an instagram.com tab: the requests are made from the tab (its origin, its
 // cookies), as the site's own pages make them, so the extension holds no credentials. One tab per check: the owner's
 // own if one is open (left open), else a background tab opened for the check and closed after it.
+//
+// The script runs in Chrome's ISOLATED world (the default), not the page's MAIN world: a content script's fetch is
+// already a same-origin request from the tab, with its cookies, so MAIN adds nothing, while the isolated world keeps
+// the page's own scripts from seeing the reads or swapping `fetch` under them. Probe R5 confirms the feed answers it.
 
 export const IG_ORIGIN = "https://www.instagram.com";
 /** The web app's id, sent as `x-ig-app-id` the way the site's own requests send it. */
@@ -94,8 +98,8 @@ export function createPageReader(tabs: TabsAdapter): FeedReader & { close(): Pro
 }
 
 /**
- * Runs INSIDE the instagram.com page (`chrome.scripting.executeScript`, main world), so it must stay self-contained:
- * it may use only its arguments and the page's globals, never anything else from this module.
+ * Runs INSIDE the instagram.com tab (`chrome.scripting.executeScript`, isolated world), so it must stay self-contained:
+ * it may use only its arguments and the globals, never anything else from this module.
  */
 export async function pageFetch(path: string, appId: string): Promise<RawPageResponse> {
   try {
@@ -150,7 +154,7 @@ export function chromeTabs(): TabsAdapter {
       await chrome.tabs.remove(id);
     },
     async fetchInTab(tabId, path, appId) {
-      const [first] = await chrome.scripting.executeScript({ target: { tabId }, world: "MAIN", func: pageFetch, args: [path, appId] });
+      const [first] = await chrome.scripting.executeScript({ target: { tabId }, func: pageFetch, args: [path, appId] });
       const result = first?.result as RawPageResponse | undefined;
       return result ?? { status: 0, contentType: "", redirected: false, finalUrl: "", text: "", error: "no result" };
     },

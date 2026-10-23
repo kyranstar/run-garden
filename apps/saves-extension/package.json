@@ -8,6 +8,7 @@
     "typecheck": "tsc --noEmit"
   },
   "dependencies": {
+    "@rg/exercise-library": "workspace:*",
     "@rg/saves": "workspace:*"
   },
   "devDependencies": {

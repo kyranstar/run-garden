@@ -11,7 +11,7 @@ import { nowInstant } from "@rg/domain";
 import type { AppContext } from "../auth/middleware.js";
 import { bearerGuard } from "../auth/token.js";
 import { savesImportEnabled } from "../env.js";
-import { freshKeys, KNOWN_MAX_KEYS, recordCheck, savedPostId, savesStatus, upsertPost, workList } from "../services/saves-ledger.js";
+import { freshKeys, KNOWN_MAX_KEYS, markFetchFailed, recordCheck, savedPostId, savesStatus, upsertPost, workList } from "../services/saves-ledger.js";
 import { filterPost } from "../services/saves-filter.js";
 import { markTooLarge, readRelayRequest, relayExtract } from "../services/saves-relay.js";
 import { assembleBatch } from "../services/saves-batches.js";
@@ -76,6 +76,27 @@ savesRoutes.post("/posts", async (c) => {
 
 savesRoutes.get("/work", async (c) => c.json({ keys: await workList(c.get("db"), c.get("userId"), nowInstant()) }));
 
+const failedSchema = z.object({ code: z.enum(["gone", "media_failed", "too_large"]) }).strict();
+
+/**
+ * A post the extension could not send before any relay call: `gone` (the site no longer has it), `media_failed` (an
+ * attempt counted; it goes to the back of `/work`) or `too_large` (too large even at its smallest size; marked as the
+ * relay's own cap marks it). 404 for an unknown post, 409 for one that is not waiting. One statement (two for a
+ * 404/409), and the bearer guard's two.
+ */
+savesRoutes.post("/posts/:key/failed", async (c) => {
+  const source = c.req.query("source") ?? "";
+  const key = c.req.param("key");
+  if (!SAVE_SOURCE_RE.test(source) || key.length > 64) return c.json({ error: "invalid", issues: ["source"] }, 400);
+  const parsed = await body(c, failedSchema);
+  if (!parsed.success) return c.json({ error: "invalid", issues: parsed.error.issues }, 422);
+  const userId = c.get("userId");
+  const out = await markFetchFailed(c.get("db"), userId, await savedPostId(userId, source, key), parsed.data.code, nowInstant());
+  if (out === "not_found") return c.json({ error: "not_found" }, 404);
+  if (out === "conflict") return c.json({ error: "conflict" }, 409);
+  return c.json({ status: "failed", errorCode: parsed.data.code });
+});
+
 savesRoutes.get("/status", async (c) => c.json(await savesStatus(c.get("db"), c.get("userId"), nowInstant())));
 
 /**
@@ -88,10 +109,12 @@ savesRoutes.post("/posts/:key/extract", async (c) => {
   const asked = readRelayRequest(c.req.raw, c.env);
   const userId = c.get("userId");
   if (!asked.ok) {
-    // The Worker's own 413: the post is marked so `/work` stops handing it out (it would be re-downloaded every check).
+    // The Worker's own 413: the post is marked so `/work` stops handing it out (it would be re-downloaded every check),
+    // and the cap is sent back so the extension's one smaller retry can pick a size that fits.
     if (asked.status === 413) {
       const id = await savedPostId(userId, source, c.req.param("key"));
       await markTooLarge(c.get("db"), userId, id, nowInstant());
+      return c.json({ error: asked.error, maxBytes: asked.maxBytes }, 413);
     }
     return c.json({ error: asked.error }, asked.status);
   }

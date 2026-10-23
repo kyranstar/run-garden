@@ -94,7 +94,10 @@ const relayMaxBytes = (env: Env): number => {
 export function readRelayRequest(
   req: Request,
   env: Env,
-): { ok: true; model: string; maxTokens: number; length: number } | { ok: false; status: 400 | 411 | 413; error: string } {
+):
+  | { ok: true; model: string; maxTokens: number; length: number }
+  | { ok: false; status: 400 | 411; error: string }
+  | { ok: false; status: 413; error: string; maxBytes: number } {
   const model = req.headers.get("x-saves-model") ?? EXTRACT_MODEL_DEFAULT;
   if (!EXTRACT_MODELS.includes(model)) return { ok: false, status: 400, error: "model_not_allowed" };
   const rawTokens = req.headers.get("x-saves-max-tokens");
@@ -106,7 +109,8 @@ export function readRelayRequest(
   // The body is never read here, so its length must be declared.
   const length = Number(req.headers.get("content-length"));
   if (!Number.isInteger(length) || length <= 0) return { ok: false, status: 411, error: "length_required" };
-  if (length > relayMaxBytes(env)) return { ok: false, status: 413, error: "too_large" };
+  const maxBytes = relayMaxBytes(env);
+  if (length > maxBytes) return { ok: false, status: 413, error: "too_large", maxBytes };
   return { ok: true, model, maxTokens, length };
 }
 
@@ -151,7 +155,9 @@ export async function relayExtract(
           lt(savedPosts.extractAttempts, MAX_EXTRACT_ATTEMPTS),
           or(
             eq(savedPosts.status, "queued"),
-            and(eq(savedPosts.status, "failed"), inArray(savedPosts.lastErrorCode, [...RETRYABLE_ERROR_CODES])),
+            // `too_large` too: the extension retries a too-large post at a smaller size straight away (`/work` never
+            // hands it out again, so only that retry reaches it); the attempt limit above still holds.
+            and(eq(savedPosts.status, "failed"), inArray(savedPosts.lastErrorCode, [...RETRYABLE_ERROR_CODES, "too_large"])),
             and(eq(savedPosts.status, "extracting"), lt(savedPosts.updatedAt, stale)),
           ),
         ),
@@ -373,7 +379,10 @@ function issueText(i: ZodIssue): string {
   }
 }
 
-/** A body over the cap: the post is `failed` with `too_large` (not retryable) and the attempt counted. One statement. */
+/**
+ * A body over the cap: the post is `failed` with `too_large` and the attempt counted. `/work` never hands it out again;
+ * only the extension's immediate retry at a smaller size may claim it (while attempts remain). One statement.
+ */
 export async function markTooLarge(db: Db, userId: string, postId: string, now: string): Promise<void> {
   await db
     .update(savedPosts)

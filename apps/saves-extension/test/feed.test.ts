@@ -57,17 +57,17 @@ describe("parseFeedPage", () => {
     const [reel, photo, carousel] = posts;
     expect(reel!.videoVariants.map((x) => x.width)).toEqual([720, 480, 360]);
     expect(reel!.images).toEqual([]);
-    expect(reel!.coverUrl).toBe("https://cdn.example.com/SynReel0001-320.jpg");
+    expect(reel!.coverUrl).toBe("https://synthetic.cdninstagram.com/SynReel0001-320.jpg");
     expect(photo!.videoVariants).toEqual([]);
-    expect(photo!.images).toEqual([{ width: 640, url: "https://cdn.example.com/SynPhoto001-640.jpg" }]);
+    expect(photo!.images).toEqual([{ width: 640, url: "https://synthetic.cdninstagram.com/SynPhoto001-640.jpg" }]);
     // A carousel: every slide's image (a video slide by its cover), and the first video slide's variants.
     expect(carousel!.images.map((i) => i.url)).toEqual([
-      "https://cdn.example.com/SynCarou001-s1-640.jpg",
-      "https://cdn.example.com/SynCarou001-s2-640.jpg",
-      "https://cdn.example.com/SynCarou001-s3-640.jpg",
+      "https://synthetic.cdninstagram.com/SynCarou001-s1-640.jpg",
+      "https://synthetic.cdninstagram.com/SynCarou001-s2-640.jpg",
+      "https://synthetic.cdninstagram.com/SynCarou001-s3-640.jpg",
     ]);
-    expect(carousel!.videoVariants.map((x) => x.url)).toContain("https://cdn.example.com/SynCarou001-s2-480.mp4");
-    expect(carousel!.coverUrl).toBe("https://cdn.example.com/SynCarou001-s1-320.jpg");
+    expect(carousel!.videoVariants.map((x) => x.url)).toContain("https://synthetic.cdninstagram.com/SynCarou001-s2-480.mp4");
+    expect(carousel!.coverUrl).toBe("https://synthetic.cdninstagram.com/SynCarou001-s1-320.jpg");
   });
 
   it("reads a missing caption or name as empty, and the last page's cursor as null", () => {

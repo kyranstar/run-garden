@@ -18,7 +18,10 @@ export const WORK_LIMIT = 20;
 export const RELAY_CLAIM_STALE_MS = 10 * 60_000;
 /** The most keys one `/known` call carries. */
 export const KNOWN_MAX_KEYS = 200;
-/** Failures that are worth another try; the rest (gone, too_large, login_needed, feed_changed) wait for the owner. */
+/**
+ * Failures `/work` hands out again; the rest (gone, too_large, login_needed, feed_changed) wait for the owner. (The relay
+ * also claims a `too_large` post, for the extension's immediate smaller retry — never through `/work`.)
+ */
 export const RETRYABLE_ERROR_CODES: readonly SaveErrorCode[] = ["media_failed", "model_failed", "app_unreachable", "budget_paused", "unknown"];
 
 
@@ -149,6 +152,52 @@ export async function workList(
   return rows.flatMap((r) =>
     r.url ? [{ source: r.source, key: r.key, url: r.url, action: r.status === "seen" ? ("filter" as const) : ("extract" as const) }] : [],
   );
+}
+
+/** Why the extension could not send a post, before any relay call. */
+export type FetchFailure = "gone" | "media_failed" | "too_large";
+
+/**
+ * A post the extension could not send. `gone`: the site no longer has it, so it is `failed`/`gone` for good (from any
+ * waiting state: seen, queued, failed, or a stale relay claim). `media_failed`: its media would not download; an attempt
+ * is counted and `updatedAt` moves it behind the rest of `/work`, which stops handing it out once the attempts run out.
+ * `too_large`: even its smallest size is over the body limit, so it is marked as the relay's own cap marks it (an
+ * attempt counted; `/work` never hands it out again). Both from queued, a retryable failure or a stale claim (a seen
+ * post is filter work, which needs no media). Anything else (finished, skipped, a live claim) is left as it is. One
+ * statement, and one more to tell an unknown post from that.
+ */
+export async function markFetchFailed(
+  db: Db,
+  userId: string,
+  id: string,
+  code: FetchFailure,
+  now: string,
+): Promise<OverrideResult> {
+  const relayStale = new Date(new Date(now).getTime() - RELAY_CLAIM_STALE_MS).toISOString();
+  const staleClaim = and(eq(savedPosts.status, "extracting"), lt(savedPosts.updatedAt, relayStale));
+  const waiting =
+    code === "gone"
+      ? or(inArray(savedPosts.status, ["seen", "queued", "failed"]), staleClaim)
+      : or(
+          eq(savedPosts.status, "queued"),
+          and(eq(savedPosts.status, "failed"), inArray(savedPosts.lastErrorCode, [...RETRYABLE_ERROR_CODES, "too_large"])),
+          staleClaim,
+        );
+  const updated = await db
+    .update(savedPosts)
+    .set(
+      code === "gone"
+        ? { status: "failed", lastErrorCode: "gone", updatedAt: now }
+        : { status: "failed", lastErrorCode: code, extractAttempts: sql`${savedPosts.extractAttempts} + 1`, updatedAt: now },
+    )
+    .where(and(eq(savedPosts.id, id), eq(savedPosts.userId, userId), waiting))
+    .returning({ id: savedPosts.id });
+  if (updated.length > 0) return "ok";
+  const [row] = await db
+    .select({ id: savedPosts.id })
+    .from(savedPosts)
+    .where(and(eq(savedPosts.id, id), eq(savedPosts.userId, userId)));
+  return row ? "conflict" : "not_found";
 }
 
 /**
