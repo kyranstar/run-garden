@@ -13,7 +13,7 @@ import { sha256Hex } from "../src/auth/crypto.js";
 import { savesRoutes } from "../src/routes/saves.js";
 import { loadOutOfCredits } from "../src/services/ai-credits.js";
 import { IMPORT_KINDS } from "../src/services/saves-budget.js";
-import { savedPostId, workList } from "../src/services/saves-ledger.js";
+import { overridePost, savedPostId, workList } from "../src/services/saves-ledger.js";
 import { CANNED_EXTRACTION, EXTRACT_MODEL_DEFAULT, EXTRACT_MODELS, relayExtract } from "../src/services/saves-relay.js";
 import { makeTestDb, makeTestUser, mountRoutes } from "./helpers.js";
 
@@ -266,6 +266,16 @@ describe("relayExtract", () => {
     expect(await run(id, bodyText(), gw)).toMatchObject({ ok: false, status: 409 });
     expect(gw.spy).not.toHaveBeenCalled();
     expect(await workList(db, userId, NOW)).toEqual([]);
+  });
+
+  it("gives up a stale extracting post on its last attempt as failed/unknown, which the owner's process can requeue", async () => {
+    const id = await seed("k", { status: "extracting", extractAttempts: 3, updatedAt: "2026-10-23T09:00:00.000Z" });
+    const fresh = await seed("fresh", { status: "extracting", extractAttempts: 3, updatedAt: NOW });
+    expect(await workList(db, userId, NOW)).toEqual([]);
+    expect(await reload(id)).toMatchObject({ status: "failed", lastErrorCode: "unknown" });
+    expect((await reload(fresh)).status).toBe("extracting");
+    expect(await overridePost(db, userId, { id }, "process", NOW)).toBe("ok");
+    expect(await reload(id)).toMatchObject({ status: "queued", extractAttempts: 0 });
   });
 
   it("does not list a fresh extracting post, nor claim a failed one whose code is not retryable", async () => {

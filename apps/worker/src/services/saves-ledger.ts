@@ -1,4 +1,4 @@
-import { and, asc, desc, eq, inArray, isNotNull, isNull, lt, or, sql } from "drizzle-orm";
+import { and, asc, desc, eq, gte, inArray, isNotNull, isNull, lt, or, sql } from "drizzle-orm";
 import { schema } from "@rg/database";
 import type { SavedPostRow } from "@rg/database";
 import type { CheckReport, PostSubmit, SaveErrorCode, SavesStatusDto, WorkItem } from "@rg/saves";
@@ -93,7 +93,7 @@ export async function freshKeys(db: Db, userId: string, source: string, keys: re
  * What the extension should pick up. `filter`: a `seen` post the filter left behind (a model failure, a budget pause
  * while the import budget has room again, or a claim older than `CLAIM_STALE_MS`): the extension re-reads it and
  * resubmits `/posts`, which runs the filter again. `extract`: queued with no extraction, or failed in a way worth
- * retrying: fetch its media. Filter work first, then oldest first; `limit` across both. Two statements.
+ * retrying: fetch its media. Filter work first, then oldest first; `limit` across both. Three statements (the first gives up on an exhausted stale claim).
  */
 export async function workList(
   db: Db,
@@ -104,6 +104,19 @@ export async function workList(
   const stale = new Date(new Date(now).getTime() - CLAIM_STALE_MS).toISOString();
   const { spentMicros, capMicros } = await importSpend(db, userId, new Date(now));
   const relayStale = new Date(new Date(now).getTime() - RELAY_CLAIM_STALE_MS).toISOString();
+  // A claim whose request died on its last attempt is neither listed nor reclaimable (attempts are spent): give it up as
+  // `failed`/`unknown`, so the owner's retry can requeue it instead of it reading "extracting" forever.
+  await db
+    .update(savedPosts)
+    .set({ status: "failed", lastErrorCode: "unknown", updatedAt: now })
+    .where(
+      and(
+        eq(savedPosts.userId, userId),
+        eq(savedPosts.status, "extracting"),
+        lt(savedPosts.updatedAt, relayStale),
+        gte(savedPosts.extractAttempts, MAX_EXTRACT_ATTEMPTS),
+      ),
+    );
   const isFilter = and(
     eq(savedPosts.status, "seen"),
     or(
