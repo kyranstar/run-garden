@@ -59,6 +59,25 @@ export const DEV_BUDGET = {
   capMicros: 15_000_000, // $15 / rolling 7 days, rehearsals and replays together
 };
 
+/** The saved-posts import's calls' kinds in `llm_usage`, all with this before them (saves-budget.ts `IMPORT_KINDS`). */
+export const IMPORT_USAGE_PREFIX = "import_";
+
+/** Whether a usage kind is the saved-posts import's. It has a budget of its own (saves-budget.ts: $5 / 30 days). */
+export function isImportUsageKind(kind: string): boolean {
+  return kind.startsWith(IMPORT_USAGE_PREFIX);
+}
+
+/** The same, in SQL, of a `llm_usage` row. */
+export function importUsageSql(): SQL {
+  return sql`substr(${llmUsage.kind}, 1, ${IMPORT_USAGE_PREFIX.length}) = ${IMPORT_USAGE_PREFIX}`;
+}
+
+/** The athlete's own lane in SQL: every call but the rehearsal lane's and the import's. Every reader of the
+ * athlete's week (cutoff, warning, read reserve, a run's start) takes THIS, so a new lane is added in one place. */
+export function ownerUsageSql(): SQL {
+  return sql`(NOT ${devUsageSql()} AND NOT ${importUsageSql()})`;
+}
+
 /** Whether a usage kind is the rehearsal lane's: a replay's, or a rehearsal's. */
 export function isDevUsageKind(kind: string): boolean {
   return kind === REPLAY_USAGE_KIND || kind.startsWith(REHEARSAL_USAGE_PREFIX);
@@ -87,7 +106,7 @@ export const REPLAY_RESERVATION_STALE_MINUTES = 15;
 export function weekCostSql(now: Date): SQL {
   const stale = new Date(now.getTime() - REPLAY_RESERVATION_STALE_MINUTES * 60_000).toISOString();
   const mark = sql`instr(${llmUsage.requestFingerprint}, ${RESERVATION_MARK})`;
-  return sql`(CASE WHEN ${llmUsage.kind} = ${REPLAY_USAGE_KIND} AND ${mark} > 0 AND ${llmUsage.createdAt} < ${stale}
+  return sql`(CASE WHEN (${llmUsage.kind} = ${REPLAY_USAGE_KIND} OR ${importUsageSql()}) AND ${mark} > 0 AND ${llmUsage.createdAt} < ${stale}
     THEN CAST(substr(${llmUsage.requestFingerprint}, ${mark} + ${RESERVATION_MARK.length}) AS INTEGER)
     ELSE ${llmUsage.costMicros} END)`;
 }
@@ -96,7 +115,7 @@ export function weekCostSql(now: Date): SQL {
 async function weekSpentMicros(db: Db, userId: string, dev: boolean): Promise<number> {
   const now = new Date(Date.now());
   const since = new Date(now.getTime() - 7 * 86_400_000).toISOString();
-  const lane = dev ? devUsageSql() : sql`NOT ${devUsageSql()}`;
+  const lane = dev ? devUsageSql() : ownerUsageSql();
   const [row] = await db
     .select({ spent: sql<number | null>`sum(${weekCostSql(now)})` })
     .from(llmUsage)

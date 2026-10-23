@@ -113,6 +113,10 @@ export const MODEL_PRICES: Readonly<Record<string, ModelPrice>> = {
   "anthropic/claude-haiku-5.5": { input: 0.5, output: 2.5, cacheRead: 0.05, cacheWrite: 0.625 },
   "anthropic/claude-haiku-4.5": { input: 1, output: 5, cacheRead: 0.1, cacheWrite: 1.25 },
   "anthropic/claude-3-haiku": { input: 0.25, output: 1.25, cacheRead: 0.03, cacheWrite: 0.3 },
+  // The saved-posts import's two Gemini models (saves-budget.ts). Same listing, fetched 2026-10-23, global rates (the
+  // gateway lists no cache-write price for Gemini: its caching is implicit, so a write is charged as plain input).
+  "google/gemini-3.6-flash": { input: 0.75, output: 3.75, cacheRead: 0.075, cacheWrite: 0.75 },
+  "google/gemini-3.1-flash-lite": { input: 0.25, output: 1.5, cacheRead: 0.03, cacheWrite: 0.25 },
 };
 
 /**

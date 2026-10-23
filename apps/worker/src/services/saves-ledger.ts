@@ -4,6 +4,7 @@ import type { SavedPostRow } from "@rg/database";
 import type { CheckReport, PostSubmit, SaveErrorCode, SavesStatusDto } from "@rg/saves";
 import { sha256Hex } from "../auth/crypto.js";
 import type { Db } from "./db.js";
+import { importSpend } from "./saves-budget.js";
 
 const { savedPosts, saveChecks } = schema;
 
@@ -16,8 +17,6 @@ export const KNOWN_MAX_KEYS = 200;
 /** Failures that are worth another try; the rest (gone, too_large, login_needed, feed_changed) wait for the owner. */
 export const RETRYABLE_ERROR_CODES: readonly SaveErrorCode[] = ["media_failed", "model_failed", "app_unreachable", "budget_paused", "unknown"];
 
-/** The import's rolling 30-day cap; Task 5 owns the spend ledger and replaces `spendOf`. */
-export const IMPORT_BUDGET_MICROS = 5_000_000;
 
 /**
  * A post's row id: a hash of the account, the source and the source's own key, formatted as a uuid. Another account's
@@ -139,11 +138,6 @@ export async function recordCheck(db: Db, userId: string, r: CheckReport, now: s
     .onConflictDoUpdate({ target: saveChecks.id, set: counts, setWhere: eq(saveChecks.userId, userId) });
 }
 
-/** The import's spend in the last 30 days. A stub until Task 5's ledger; zero. */
-async function spendOf(_db: Db, _userId: string, _now: string): Promise<{ spentMicros: number; capMicros: number }> {
-  return { spentMicros: 0, capMicros: IMPORT_BUDGET_MICROS };
-}
-
 const STATUS_CHECKS = 10;
 const STATUS_POSTS = 30;
 
@@ -161,7 +155,7 @@ export async function savesStatus(db: Db, userId: string, now: string): Promise<
     .where(and(eq(savedPosts.userId, userId), isNotNull(savedPosts.url)))
     .orderBy(desc(savedPosts.updatedAt))
     .limit(STATUS_POSTS);
-  const spend = await spendOf(db, userId, now);
+  const spend = await importSpend(db, userId, new Date(now));
   const last = checks[0];
   const code = last?.errorCode ?? null;
   const state: SavesStatusDto["state"] = !last

@@ -40,7 +40,7 @@ import { CALENDAR_OPS_PER_REQUEST, loadPreferences, syncCalendar } from "../serv
 import { recordReplayFrom, REQUEST_GARDEN_STEP, resimulateFrom, unseenCompletions } from "../services/garden-sync.js";
 import { waitUntilSafe } from "../services/wait-until.js";
 import { ensureRead } from "../services/coach-reads.js";
-import { DEV_BUDGET, isDevUsageKind, LLM_BUDGET, weekCostSql } from "../services/llm.js";
+import { DEV_BUDGET, isDevUsageKind, isImportUsageKind, LLM_BUDGET, weekCostSql } from "../services/llm.js";
 import { COACH_DRAIN_KINDS, coachDrainQueued, executeCloudJobs } from "../services/coros-write-cloud.js";
 import { exerciseNameMap, resolveExerciseName } from "../services/exercise-catalog.js";
 import { liftProgressions, liftWeekSummary, runProgressions } from "../services/plan-progressions.js";
@@ -354,7 +354,9 @@ coachRoutes.get("/spend", async (c) => {
     .from(llmUsage)
     .where(and(eq(llmUsage.userId, userId), gte(llmUsage.createdAt, since)))
     .groupBy(llmUsage.kind);
+  // The import has a budget of its own (saves-budget.ts; GET /api/saves/status): not in the athlete's week.
   const all = rows
+    .filter((r) => !isImportUsageKind(r.kind))
     .map((r) => ({
       kind: r.kind,
       calls: Number(r.calls ?? 0),

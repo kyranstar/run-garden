@@ -401,7 +401,8 @@ describe("cost", () => {
       "anthropic/claude-sonnet-5",
       "anthropic/claude-sonnet-5.5",
     ];
-    expect(Object.keys(MODEL_PRICES).sort()).toEqual(listed);
+    // Claude ids only: the saved-posts import's Gemini rows are pinned in saves-budget.test.ts.
+    expect(Object.keys(MODEL_PRICES).filter((id) => id.startsWith("anthropic/")).sort()).toEqual(listed);
     // The cache-read outliers the old five-row table missed.
     expect(MODEL_PRICES["anthropic/claude-fable-5"]).toEqual({ input: 10, output: 50, cacheRead: 1, cacheWrite: 12.5 });
     expect(MODEL_PRICES["anthropic/claude-opus-5-fast"]).toEqual({ input: 10, output: 50, cacheRead: 1, cacheWrite: 12.5 });

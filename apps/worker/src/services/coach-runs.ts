@@ -34,7 +34,7 @@ import {
   type KeyLine,
   type SetEstimate,
 } from "./design-orchestrate.js";
-import { DEV_BUDGET, devBudgetStatus, devUsageSql, LLM_BUDGET, llmBudgetStatus, REHEARSAL_USAGE_PREFIX, weekCostSql } from "./llm.js";
+import { DEV_BUDGET, devBudgetStatus, devUsageSql, LLM_BUDGET, llmBudgetStatus, ownerUsageSql, REHEARSAL_USAGE_PREFIX, weekCostSql } from "./llm.js";
 import { utf8Bytes } from "./utf8.js";
 import {
   callMessages,
@@ -1116,7 +1116,7 @@ async function weekCanPay(
     + coalesce((SELECT sum(k.cost_usd) FROM coach_runs k WHERE k.user_id = m.user_id AND k.parent_id = m.id), 0)
     + coalesce((SELECT sum(g.cost_usd) FROM coach_runs g WHERE g.user_id = m.user_id
         AND g.parent_id IN (SELECT k.id FROM coach_runs k WHERE k.user_id = m.user_id AND k.parent_id = m.id)), 0))`;
-  const lane = rehearsal ? devUsageSql() : sql`NOT ${devUsageSql()}`;
+  const lane = rehearsal ? devUsageSql() : ownerUsageSql();
   const [row] = (await db.all(sql`
     SELECT (SELECT coalesce(sum(${weekCostSql(now)}), 0) FROM ${llmUsage} WHERE ${llmUsage.userId} = ${userId} AND ${llmUsage.createdAt} >= ${since} AND ${lane}) AS spent,
       (SELECT json_group_array(c) FROM (
