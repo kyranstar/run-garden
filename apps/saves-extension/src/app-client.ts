@@ -1,5 +1,5 @@
 import { SAVE_ERROR_CODES } from "@rg/saves";
-import type { CheckReport, PostSubmit, SaveErrorCode, SavePostStatus, WorkItem } from "@rg/saves";
+import type { CheckReport, PostSubmit, SaveErrorCode, SavePostStatus, SavesStatusDto, WorkItem } from "@rg/saves";
 import { AppRefusedError, AppUnreachableError } from "./errors.js";
 
 // The app's token routes (`/api/saves/*`). The token travels only in the Authorization header: never in a URL, a log
@@ -33,6 +33,10 @@ export interface AppClient {
   extract(source: string, key: string, body: string, opts: { model: string; maxTokens: number }): Promise<ExtractAnswer>;
   /** Tells the app a post could not be sent, so its work list stops handing it out first. A 404/409 is nothing to do. */
   reportFailed(source: string, key: string, code: FetchFailure): Promise<void>;
+  /** The import's status, as the popup shows it. */
+  status(): Promise<SavesStatusDto>;
+  /** The owner's word on one post (the popup's Process anyway and Retry). */
+  override(source: string, key: string, action: "process" | "skip" | "reference"): Promise<void>;
 }
 
 /** The most keys one `/known` call carries (the Worker's KNOWN_MAX_KEYS). */
@@ -130,6 +134,14 @@ export function createAppClient(opts: { appUrl: string; token: string; fetchImpl
       const res = await postJson(`/api/saves/posts/${encodeURIComponent(key)}/failed?source=${encodeURIComponent(source)}`, { code });
       if (res.status === 404 || res.status === 409) return; // unknown, or no longer waiting: nothing to mark
       await expectOk(res);
+    },
+
+    async status() {
+      return (await expectOk(await call("/api/saves/status", { method: "GET" }))) as unknown as SavesStatusDto;
+    },
+
+    async override(source, key, action) {
+      await expectOk(await postJson(`/api/saves/posts/${encodeURIComponent(key)}/override?source=${encodeURIComponent(source)}`, { action }));
     },
   };
 }

@@ -25,6 +25,13 @@ class FakeApp implements AppClient {
   reports: CheckReport[] = [];
   failedReports: { key: string; code: string }[] = [];
   workItems: WorkItem[] = [];
+  /** The popup's calls; a check never makes them. */
+  status(): Promise<never> {
+    throw new Error("a check never reads the status");
+  }
+  override(): Promise<void> {
+    throw new Error("a check never overrides a post");
+  }
   extractAnswers: ExtractAnswer[] = [];
   /** Post rows by key; a key never seen counts as queued (a work-list post). */
   rows = new Map<string, { status: string; code: string | null; attempts: number }>();

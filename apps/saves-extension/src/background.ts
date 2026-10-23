@@ -3,6 +3,8 @@ import { DEFAULT_CONFIG, runCheck, singleFlight, type CheckSummary } from "./che
 import { chromeTabs, createPageReader } from "./page-reader.js";
 import { chromeStore, ExtQueue } from "./queue.js";
 import { loadSettings } from "./settings.js";
+import { SOURCE } from "./feed.js";
+import type { SavesStatusDto } from "@rg/saves";
 
 // The service worker: a check every 6 hours (each delayed 0–30 min, so checks never land on the same minute), and one
 // on the popup's "Check now". Checks are single-flight: an alarm during a long check, or a second "Check now", joins
@@ -65,9 +67,55 @@ chrome.alarms.onAlarm.addListener((alarm) => {
   }
 });
 
+export interface StatusResponse {
+  status: SavesStatusDto | null;
+  appError: string | null;
+  queueSize: number;
+  nextCheckAt: number | null;
+}
+export type OverrideResponse = { ok: true } | { ok: false; message: string };
+
+const messageOf = (e: unknown, fallback: string): string => (e instanceof Error ? e.message : fallback);
+
+/** What the popup shows: the app's status (or why it could not be read), the local queue, and the next alarm. */
+async function popupStatus(): Promise<StatusResponse> {
+  const nextCheckAt = (await chrome.alarms.get(JITTERED))?.scheduledTime ?? (await chrome.alarms.get(ALARM))?.scheduledTime ?? null;
+  const queueSize = await new ExtQueue(chromeStore).size();
+  const settings = await loadSettings(chromeStore);
+  if (!settings) return { status: null, appError: "Set the app URL and token in Options", queueSize, nextCheckAt };
+  try {
+    const status = await createAppClient({ appUrl: settings.appUrl, token: settings.token, fetchImpl }).status();
+    const last = (await chromeStore.get("lastCheck")) as CheckSummary | undefined;
+    return { status, appError: last?.error?.message ?? null, queueSize, nextCheckAt };
+  } catch (e) {
+    return { status: null, appError: messageOf(e, "App unreachable"), queueSize, nextCheckAt };
+  }
+}
+
+async function override(key: string, action: "process" | "skip" | "reference"): Promise<OverrideResponse> {
+  const settings = await loadSettings(chromeStore);
+  if (!settings) return { ok: false, message: "Set the app URL and token in Options" };
+  try {
+    await createAppClient({ appUrl: settings.appUrl, token: settings.token, fetchImpl }).override(SOURCE, key, action);
+    return { ok: true };
+  } catch (e) {
+    return { ok: false, message: messageOf(e, "The app did not answer") };
+  }
+}
+
 chrome.runtime.onMessage.addListener((message: unknown, sender, sendResponse) => {
   if (sender.id !== chrome.runtime.id) return;
-  if ((message as { type?: unknown } | null)?.type !== "check-now") return;
-  checkOnce().then(sendResponse, (e: unknown) => sendResponse({ ok: false, message: e instanceof Error ? e.message : "The check failed" }));
-  return true; // the answer comes asynchronously
+  const m = message as { type?: unknown; key?: unknown; action?: unknown } | null;
+  if (m?.type === "check-now") {
+    checkOnce().then(sendResponse, (e: unknown) => sendResponse({ ok: false, message: messageOf(e, "The check failed") }));
+    return true; // the answer comes asynchronously
+  }
+  if (m?.type === "status") {
+    popupStatus().then(sendResponse, (e: unknown) => sendResponse({ status: null, appError: messageOf(e, "App unreachable"), queueSize: 0, nextCheckAt: null }));
+    return true;
+  }
+  if (m?.type === "override" && typeof m.key === "string" && (m.action === "process" || m.action === "skip" || m.action === "reference")) {
+    override(m.key, m.action).then(sendResponse, (e: unknown) => sendResponse({ ok: false, message: messageOf(e, "The app did not answer") }));
+    return true;
+  }
 });

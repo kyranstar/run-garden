@@ -11,7 +11,7 @@ import { nowInstant } from "@rg/domain";
 import type { AppContext } from "../auth/middleware.js";
 import { bearerGuard } from "../auth/token.js";
 import { savesImportEnabled } from "../env.js";
-import { freshKeys, KNOWN_MAX_KEYS, markFetchFailed, recordCheck, savedPostId, savesStatus, upsertPost, workList } from "../services/saves-ledger.js";
+import { freshKeys, KNOWN_MAX_KEYS, markFetchFailed, overridePost, recordCheck, savedPostId, savesStatus, upsertPost, workList } from "../services/saves-ledger.js";
 import { filterPost } from "../services/saves-filter.js";
 import { markTooLarge, readRelayRequest, relayExtract } from "../services/saves-relay.js";
 import { assembleBatch } from "../services/saves-batches.js";
@@ -95,6 +95,21 @@ savesRoutes.post("/posts/:key/failed", async (c) => {
   if (out === "not_found") return c.json({ error: "not_found" }, 404);
   if (out === "conflict") return c.json({ error: "conflict" }, 409);
   return c.json({ status: "failed", errorCode: parsed.data.code });
+});
+
+const overrideSchema = z.object({ action: z.enum(["process", "skip", "reference"]) }).strict();
+
+/** The owner's word on one post from the extension popup (the cookie route's twin, found by source and key): process anyway, skip, or keep as a reference. */
+savesRoutes.post("/posts/:key/override", async (c) => {
+  const source = c.req.query("source") ?? "";
+  const key = c.req.param("key");
+  if (!SAVE_SOURCE_RE.test(source) || key.length > 64) return c.json({ error: "invalid", issues: ["source"] }, 400);
+  const parsed = await body(c, overrideSchema);
+  if (!parsed.success) return c.json({ error: "invalid", issues: parsed.error.issues }, 422);
+  const result = await overridePost(c.get("db"), c.get("userId"), { source, key }, parsed.data.action, nowInstant());
+  if (result === "not_found") return c.json({ error: "not_found" }, 404);
+  if (result === "conflict") return c.json({ error: "not_overridable" }, 409);
+  return c.json({ ok: true });
 });
 
 savesRoutes.get("/status", async (c) => c.json(await savesStatus(c.get("db"), c.get("userId"), nowInstant())));

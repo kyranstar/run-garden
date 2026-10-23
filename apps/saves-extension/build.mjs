@@ -41,7 +41,7 @@ manifest.host_permissions = manifest.host_permissions.map((p) => (p === PLACEHOL
 await writeFile(join(dist, "manifest.json"), `${JSON.stringify(manifest, null, 2)}\n`);
 
 for (const file of await readdir(src)) {
-  if (file.endsWith(".html")) await copyFile(join(src, file), join(dist, file));
+  if (file.endsWith(".html") || file.endsWith(".css")) await copyFile(join(src, file), join(dist, file));
 }
 
 console.log(`saves-extension: dist/ built for ${appOrigin}`);

@@ -118,3 +118,26 @@ describe("the app client", () => {
     expect(await client.submitPost({} as never)).toEqual({ status: "queued", verdict: "training", reason: "drills" });
   });
 });
+
+describe("the app client: status and override", () => {
+  it("reads the status with GET /api/saves/status", async () => {
+    const { calls, client } = recorder(() => json(200, { state: "ok", posts: [] }));
+    expect(await client.status()).toMatchObject({ state: "ok" });
+    expect(calls[0]!.url).toBe("https://app.example.com/api/saves/status");
+    expect(calls[0]!.init.method).toBe("GET");
+    expect(header(calls[0]!.init, "authorization")).toBe(`Bearer ${TOKEN}`);
+  });
+
+  it("posts an override to the key's route with the source in the query, the token only in the header", async () => {
+    const { calls, client } = recorder(() => json(200, { ok: true }));
+    await client.override("instagram", "a/b", "process");
+    expect(calls[0]!.url).toBe("https://app.example.com/api/saves/posts/a%2Fb/override?source=instagram");
+    expect(calls[0]!.url).not.toContain(TOKEN);
+    expect(JSON.parse(String(calls[0]!.init.body))).toEqual({ action: "process" });
+  });
+
+  it("an override the app finds not overridable is a refusal; an outage is unreachable", async () => {
+    await expect(recorder(() => json(409, { error: "not_overridable" })).client.override("instagram", "k", "skip")).rejects.toBeInstanceOf(AppRefusedError);
+    await expect(recorder(() => json(503, {})).client.override("instagram", "k", "skip")).rejects.toBeInstanceOf(AppUnreachableError);
+  });
+});

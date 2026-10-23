@@ -389,3 +389,53 @@ describe("GET /status", () => {
     expect(body.lastCheckAt).not.toBe(body.lastImportAt);
   });
 });
+
+describe("POST /posts/:key/override (the owner's word, from the popup)", () => {
+  const override = (key: string, body: unknown, query = `?source=${SRC}`, headers: Record<string, string> = auth) =>
+    post(`/posts/${key}/override${query}`, body, headers);
+  const rowOf = async (key: string) => (await db.select().from(savedPosts).where(eqId(await savedPostId(userId, SRC, key))))[0]!;
+
+  it("process puts a filtered_out post back to queued for the owner, within 5 statements", async () => {
+    await seedPost("a", { status: "filtered_out", filterStage: "model", extractAttempts: 3 });
+    const { res, body, cost } = await override("a", { action: "process" });
+    expect(res.status).toBe(200);
+    expect(body).toEqual({ ok: true });
+    expect(cost).toBeLessThanOrEqual(5);
+    expect(await rowOf("a")).toMatchObject({ status: "queued", filterStage: "owner", extractAttempts: 0 });
+  });
+
+  it("process retries a failed post; skip and reference set their statuses", async () => {
+    await seedPost("f", { status: "failed", lastErrorCode: "media_failed" });
+    await seedPost("s", { status: "queued" });
+    await seedPost("r", { status: "filtered_out" });
+    expect((await override("f", { action: "process" })).res.status).toBe(200);
+    expect((await override("s", { action: "skip" })).res.status).toBe(200);
+    expect((await override("r", { action: "reference" })).res.status).toBe(200);
+    expect((await rowOf("f")).status).toBe("queued");
+    expect((await rowOf("s")).status).toBe("skipped_by_owner");
+    expect((await rowOf("r")).status).toBe("reference_only");
+  });
+
+  it("409s a post that cannot be processed, 404s an unknown one or another user's", async () => {
+    await seedPost("done", { status: "extracted" });
+    expect((await override("done", { action: "process" })).res.status).toBe(409);
+    expect((await override("nope", { action: "skip" })).res.status).toBe(404);
+    const other = (await makeTestUser(db)).userId;
+    await db.insert(savedPosts).values({
+      id: await savedPostId(other, SRC, "theirs"), userId: other, source: SRC, sourceKey: "theirs", url: "https://example.com/p/t",
+      firstSeenAt: "2026-10-01T00:00:00.000Z", status: "filtered_out", updatedAt: "2026-10-01T00:00:00.000Z",
+    });
+    expect((await override("theirs", { action: "skip" })).res.status).toBe(404);
+    const [theirs] = await db.select().from(savedPosts).where(eqId(await savedPostId(other, SRC, "theirs")));
+    expect(theirs!.status).toBe("filtered_out");
+  });
+
+  it("refuses a bad action (422), a bad source (400), and a missing or cookie-only token (401)", async () => {
+    await seedPost("a", { status: "filtered_out" });
+    expect((await override("a", { action: "nope" })).res.status).toBe(422);
+    expect((await override("a", { action: "skip" }, "?source=Bad Source")).res.status).toBe(400);
+    expect((await override("a", { action: "skip" }, `?source=${SRC}`, {})).res.status).toBe(401);
+    expect((await override("a", { action: "skip" }, `?source=${SRC}`, { Cookie: "rg_session=x" })).res.status).toBe(401);
+    expect((await rowOf("a")).status).toBe("filtered_out");
+  });
+});
