@@ -364,7 +364,7 @@ export async function createDesignedRun(
     };
   }
   if (input.date < ctx.today) throw new PastDateError();
-  const doc = parsedDoc(input.doc);
+  const doc = await parsedDoc(db, userId, input.doc);
   const [day, ran] = await Promise.all([
     docDayContext(db, userId, { date: input.date, today: ctx.today, workoutId: id, placeId: doc.setting?.placeId }),
     db.all(sql`select ${runCtxSql(userId, input.date)} as r`) as Promise<Array<{ r: unknown }>>,
@@ -380,7 +380,7 @@ export async function createDesignedRun(
 
   const threshold = running.thresholdSecPerKm;
   const resolved = runWatchSteps(made.session, threshold, wire);
-  const derived = deriveDoc(doc, EXERCISES);
+  const derived = deriveDoc(doc, day.library);
   const seconds = resolved.totalSeconds ?? derived.estimatedMinutes * 60;
   const efforts = new Set(doc.parts.flatMap((p) => p.items.flatMap((i) => (i.kind === "run" ? [i.effort] : []))));
   const subtype = derived.category === "quality" ? (SUBTYPE_OF.find(([e]) => efforts.has(e))?.[1] ?? null) : null;

@@ -132,6 +132,7 @@ import { addDays, appAuthoredRow, dayLabel, docOriginRow, humanizeWorkoutTitle, 
 import { EXERCISES } from "@rg/exercise-library";
 import { deriveDoc, startEditing, toProposable, type DocDerived, type DocIssue } from "@rg/workout";
 import type { Db } from "./db.js";
+import { accountLibraryFrom, personalMovesSql } from "./account-library.js";
 import { CALENDAR_OPS_PER_REQUEST } from "./calendar-sync.js";
 import { applyOps, applyStructuralChunk, NOT_ACTIONABLE, RETIME_CHANGED, STRUCTURAL_MIN_BUDGET, whyNotActionable, type StructuralProgress } from "./coach-apply.js";
 import { coachDrainQueued } from "./coros-write-cloud.js";
@@ -398,7 +399,8 @@ export const APPROVE_FIXED = 7;
 export const DECLINE_COST = 6;
 /**
  * The day a new workout or a revision is judged for (`docDayContext`): the place (two when the place it names is gone),
- * the profiles and the set-aside moves, the history (at most five reads) and the day's checks.
+ * the profiles and the set-aside moves, the history (at most five reads) and the day's checks. (Its library, the
+ * account's, comes with the plan read: `readPlan`.)
  */
 const DAY_READS = 2 + 2 + 5 + 1;
 /** A new workout at a time asked for: its key's read, its day, the restore check, and the batch (the Studio programme,
@@ -607,8 +609,9 @@ const str = (v: unknown, fallback = ""): string => (typeof v === "string" ? v : 
 
 /**
  * ONE statement: the rows these ops' workouts are (or would be) — each new op's keyed row, each revise op's target, each
- * change's session — the revisions carrying these ops' refs, and the scheduled sessions on each day they touch (`dates`,
- * and each revised or changed row's own day).
+ * change's session — the revisions carrying these ops' refs, the scheduled sessions on each day they touch (`dates`,
+ * and each revised or changed row's own day), and — when there are workouts — the account's library they are judged in
+ * (`accountLibraryFrom`: the request's own, so judging them reads it again for nothing).
  */
 async function readPlan(
   db: Db,
@@ -644,8 +647,10 @@ async function readPlan(
         where ${pw.userId} = ${userId} and ${pw.archivedAt} is null and ${pw.completionState} = 'scheduled' and ${pw.category} != 'rest'
           and (${pw.effectiveDate} in (${values(dates)})
             or ${pw.effectiveDate} in (select ${pw.effectiveDate} from ${pw} where ${pw.userId} = ${userId} and ${pw.id} in (${values(revised)})))
-        group by ${pw.effectiveDate})) as days
-  `)) as Array<{ rows: unknown; revisions: unknown; days: unknown }>;
+        group by ${pw.effectiveDate})) as days,
+      ${ops.length > 0 ? personalMovesSql(userId) : sql`null`} as library
+  `)) as Array<{ rows: unknown; revisions: unknown; days: unknown; library: unknown }>;
+  if (ops.length > 0) await accountLibraryFrom(db, userId, row?.library);
   const rows = new Map<string, RowState>();
   for (const x of parsedRows(row?.rows)) {
     rows.set(str(x.id), {

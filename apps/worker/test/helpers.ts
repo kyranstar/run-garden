@@ -7,6 +7,7 @@ import { schema } from "@rg/database";
 import { newId, nowInstant, DEFAULT_USER_PREFERENCES, type UserPreferences } from "@rg/domain";
 import type { AppContext } from "../src/auth/middleware.js";
 import type { Db } from "../src/services/db.js";
+import { forgetAccountLibrary } from "../src/services/account-library.js";
 import { savePreferences } from "../src/services/calendar-sync.js";
 
 const MIGRATIONS_DIR = join(__dirname, "../../../packages/database/migrations");
@@ -233,6 +234,8 @@ export async function connectTestCoros(db: Db, userId: string): Promise<void> {
 export function mountRoutes(db: Db, path: string, routes: Hono<AppContext>): Hono<AppContext> {
   const app = new Hono<AppContext>();
   app.use("*", async (c, next) => {
+    // A request's own reads start afresh, as a `Db` made for each request starts (the account library's memo).
+    forgetAccountLibrary(db);
     c.set("db", db);
     await next();
   });

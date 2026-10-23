@@ -50,6 +50,7 @@ import {
 } from "@rg/domain";
 import { EQUIPMENT_IDS, EXERCISES, LOCATION_PRESETS, MUSCLES, NO_EQUIPMENT_GEAR, REGIONS, type ExerciseRecord } from "@rg/exercise-library";
 import { deriveDoc, gatesReadTheCheck, validateWorkoutDoc, type DocDerived, type DocIssue, type ValidateCtx } from "@rg/workout";
+import { accountLibraryFrom, personalMovesSql, type AccountLibrary } from "../account-library.js";
 import { defaultFromRow, defaultPlaceSql, namedFromRow, ownPlaceSql, type PlaceGear } from "../default-place.js";
 import { recentOf } from "../doc-workouts.js";
 import { runCtxOf, runCtxSql } from "../designed-runs.js";
@@ -322,6 +323,8 @@ export interface DocAthlete {
   keyResultIds: Set<string>;
   /** Each of those key results' measure by id (null when the stored one no longer reads): what a test must move. */
   keyResultMeasures: Map<string, KeyResultMeasure | null>;
+  /** The account's library (`all`: what the document's moves resolve in), read in the same statement. */
+  library: AccountLibrary;
 }
 
 /** Enough for a week of sessions and the last before it, under one chunk of `loadSessionsById` (90). */
@@ -346,7 +349,8 @@ function recentSql(userId: string, now: Date): SQL {
 /**
  * The athlete a document is judged for, in ONE statement: `readAthlete` (preferences, profiles, today's reading) with
  * the moves set aside, the place's gear (default-place.ts: the place the document names, else the default place), the
- * recent sessions' ids, the focus areas, the objectives' and key results' ids, and the caller's own `extras`. A place
+ * recent sessions' ids, the focus areas, the objectives' and key results' ids, the account's personal moves (its
+ * library, `accountLibraryFrom`: the request's later reads of it cost nothing), and the caller's own `extras`. A place
  * the document names that is no place is refused.
  */
 export async function readDocAthlete(ctx: ToolContext, o: { placeId?: string; extras?: Record<string, SQL> }): Promise<DocAthlete | ToolErr> {
@@ -359,6 +363,7 @@ export async function readDocAthlete(ctx: ToolContext, o: { placeId?: string; ex
     actObjectives: sql`(select json_group_array(id) from ${live})`,
     actKeyResults: sql`(select json_group_array(json_object('id', ${keyResults.id}, 'measure', case when json_valid(${keyResults.measure}) then json(${keyResults.measure}) end))
       from ${keyResults} where ${keyResults.userId} = ${ctx.userId} and ${keyResults.objectiveId} in ${live})`,
+    actLibrary: personalMovesSql(ctx.userId),
     ...o.extras,
   });
   let place: DocPlace;
@@ -381,6 +386,7 @@ export async function readDocAthlete(ctx: ToolContext, o: { placeId?: string; ex
     const k = x as { id?: unknown; measure?: unknown } | null;
     return typeof k?.id === "string" ? [{ id: k.id, measure: k.measure }] : [];
   });
+  const library = await accountLibraryFrom(ctx.db, ctx.userId, extra.actLibrary);
   const focusAreas = new Map(
     parsedArray(extra.actFocus).flatMap((f) => {
       const x = f as { id?: unknown; refs?: unknown } | null;
@@ -402,6 +408,7 @@ export async function readDocAthlete(ctx: ToolContext, o: { placeId?: string; ex
         return [k.id, m.success ? m.data : null] as const;
       }),
     ),
+    library,
   };
 }
 
@@ -513,8 +520,8 @@ export const runCtxExtra = (ctx: ToolContext, date: string): Record<string, SQL>
 
 /**
  * The validator's context for `date` (see the module comment): what docDayContext gives the create path, the day's
- * reading excepted — this one is the opening context's. At most five statements: doneStats, then the recent sessions
- * (`loadSessionsById`: four, one chunk).
+ * reading excepted — this one is the opening context's; its library the account's, read with the athlete. At most five
+ * statements: doneStats, then the recent sessions (`loadSessionsById`: four, one chunk).
  */
 export async function docValidateCtx(ctx: ToolContext, a: DocAthlete, date: string): Promise<ValidateCtx> {
   const today = a.athlete.today;
@@ -528,7 +535,7 @@ export async function docValidateCtx(ctx: ToolContext, a: DocAthlete, date: stri
   return {
     // The run wire in use (§8 phase 2): a run's steps are counted as it writes them.
     runWire: runWireOf(ctx.env),
-    library: EXERCISES,
+    library: a.library.all,
     activeProfiles: a.athlete.profiles,
     day: { date, today, readings, done, recent: recentOf(sessions, today) },
     excluded: a.setAside,
@@ -649,7 +656,7 @@ export function judge(raw: unknown, vctx: ValidateCtx, o: { keyResults?: Readonl
   const warnings = issues.filter((i) => i.severity === "warning");
   const parsed = workoutDocSchema.safeParse(raw);
   const buildable = parsed.success && !errors.some((e) => e.code === "bounds" || e.code === "too_large");
-  return { doc: parsed.success ? parsed.data : null, errors, warnings, derived: buildable ? deriveDoc(parsed.data!, EXERCISES) : null };
+  return { doc: parsed.success ? parsed.data : null, errors, warnings, derived: buildable ? deriveDoc(parsed.data!, vctx.library) : null };
 }
 
 /**

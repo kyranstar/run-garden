@@ -50,6 +50,7 @@ import { sql } from "drizzle-orm";
 import { z } from "zod";
 import { accountState, coachPlans, coachProposals } from "@rg/database";
 import { addDays, coachOpSchema, dayLabel, daysBetween, describeOps, isoWeekday, LINE_GAP_DAYS, linesOf, planEnded, validateOps, type CoachOp, type LineBlock, type OpLine } from "@rg/domain";
+import { accountLibraryFrom, personalMovesSql } from "../account-library.js";
 import { guardrailCtx } from "../coach-wake.js";
 import { buildExerciseIndex, exerciseNameMap, resolveOpsExercises } from "../exercise-catalog.js";
 import { OPEN_PROPOSAL_STATUSES } from "../design-review.js";
@@ -365,6 +366,8 @@ export const proposePlan: DesignTool = {
                 and substr(${coachPlans.id}, 1, ${LOOSE_PLAN_ID_PREFIX.length}) <> ${LOOSE_PLAN_ID_PREFIX}
                 and ${coachPlans.startDate} <= ${op.endDate} and ${coachPlans.endDate} >= ${op.startDate})`
           : sql`null`,
+      // The account's personal moves (its library), for the condition check of the sessions' moves.
+      planLibrary: personalMovesSql(ctx.userId),
     });
     const opsText = typeof extra.propOps === "string" ? extra.propOps : null;
     const all = ((opsText ? parsedJson(opsText) : null) as unknown[] | null) ?? [];
@@ -416,6 +419,7 @@ export const proposePlan: DesignTool = {
       readings: Object.fromEntries(Object.entries(athlete.readings).map(([id, r]) => [id, { pre: r.pre, post: null, feelingOff: r.feelingOff }])),
       today: athlete.today,
       catalog,
+      library: (await accountLibraryFrom(ctx.db, ctx.userId, extra.planLibrary)).all,
     });
     if (conditions.length > 0) {
       const shown = conditions.slice(0, CONDITION_FINDINGS_SHOWN).join("; ");

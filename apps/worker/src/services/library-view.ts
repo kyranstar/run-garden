@@ -45,6 +45,7 @@ import {
   type EquipmentId,
   type ExerciseRecord,
 } from "@rg/exercise-library";
+import { forgetAccountLibrary } from "./account-library.js";
 import { restoreInProgress } from "./account-state.js";
 import { activeProfileIds } from "./condition-views.js";
 import { loadPreferences } from "./calendar-sync.js";
@@ -554,6 +555,8 @@ export async function setExercisePrefs(db: Db, userId: string, exerciseId: strin
       updatedAt: now,
     })
     .onConflictDoUpdate({ target: exercisePrefs.id, set });
+  // A pin decides the engine's pool of personal moves: a later read in this request reads it.
+  forgetAccountLibrary(db, userId);
   const [row] = await db.select().from(exercisePrefs).where(eq(exercisePrefs.id, `${userId}:${exerciseId}`)).limit(1);
   return {
     exerciseId,

@@ -84,6 +84,7 @@ import {
   type Target,
 } from "@rg/session-engine";
 import { sha256Hex } from "../auth/crypto.js";
+import { loadAccountLibrary, PUBLIC_LIBRARY, type AccountLibrary } from "./account-library.js";
 import { restoreInProgress } from "./account-state.js";
 import { loadPreferences } from "./calendar-sync.js";
 import type { Db } from "./db.js";
@@ -447,26 +448,37 @@ const engineVersion = (): Promise<string> => libraryFingerprint().then((h) => `$
 /** A document build's version plus the library's fingerprint: what a document's moves resolve to moves with it. */
 const docBuildVersion = (): Promise<string> => libraryFingerprint().then((h) => `${DOC_BUILD_VERSION}+${h}`);
 
-let exercisesById: Map<string, ExerciseRecord> | null = null;
-function exerciseRecord(id: string): ExerciseRecord | undefined {
-  exercisesById ??= new Map(EXERCISES.map((e) => [e.id, e]));
-  return exercisesById.get(id);
+/** A record of `pool` by its own id (never a legacy one). */
+function recordIn(pool: readonly ExerciseRecord[], id: string): ExerciseRecord | undefined {
+  const record = makeLibraryIndex(pool)(id);
+  return record?.id === id ? record : undefined;
 }
-function slice(id: string): ExerciseSlice | undefined {
-  const record = exerciseRecord(id);
-  if (!record) return undefined;
+/** A record as the player needs it, offline (never the provider mappings). */
+function sliceOf(record: ExerciseRecord): ExerciseSlice {
   const { providers: _providers, ...rest } = record;
   return rest;
 }
 
 const engineDataCache = new Map<string, EngineData>();
-/** The engine's data for these active and cared-for profiles, made once per isolate. */
-export function engineDataFor(active: readonly string[], care: readonly string[]): EngineData {
-  const key = `${active.join(",")}|${care.join(",")}`;
+/** The keys of `engineDataCache` made for a personal pool, oldest first: at most `PERSONAL_ENGINE_DATA` are kept. */
+const personalEngineKeys: string[] = [];
+const PERSONAL_ENGINE_DATA = 8;
+/**
+ * The engine's data for these active and cared-for profiles, planning from the account library's `engine` pool (the
+ * public library and the pinned active personal moves; the public library alone by default), made once per isolate for
+ * the profiles and that pool (`personalHash`).
+ */
+export function engineDataFor(active: readonly string[], care: readonly string[], library: AccountLibrary = PUBLIC_LIBRARY): EngineData {
+  const personal = library.engine !== EXERCISES;
+  const key = `${active.join(",")}|${care.join(",")}${personal ? `|${library.personalHash}` : ""}`;
   let data = engineDataCache.get(key);
   if (!data) {
-    data = makeEngineData({ activeProfiles: active, careProfiles: care, exercises: EXERCISES });
+    data = makeEngineData({ activeProfiles: active, careProfiles: care, exercises: library.engine });
     engineDataCache.set(key, data);
+    if (personal) {
+      personalEngineKeys.push(key);
+      if (personalEngineKeys.length > PERSONAL_ENGINE_DATA) engineDataCache.delete(personalEngineKeys.shift()!);
+    }
   }
   return data;
 }
@@ -530,7 +542,7 @@ export interface Composed {
  */
 export function composeBuild(input: ComposeInput): Composed {
   const { context: c } = input;
-  const data = engineDataFor(c.activeProfiles, c.careProfiles);
+  const data = engineDataFor(c.activeProfiles, c.careProfiles, c.library);
   const checks: Record<string, CheckReading> = Object.fromEntries(
     Object.entries(input.checks).map(([p, a]) => [p, { pre: a.pre, post: null, feelingOff: a.feelingOff }]),
   );
@@ -594,15 +606,15 @@ export function composeBuild(input: ComposeInput): Composed {
   const exercises: Record<string, ExerciseSlice> = {};
   const add = (id: string) => {
     if (exercises[id]) return;
-    const s = slice(id);
-    if (s) exercises[id] = s;
+    const record = recordIn(data.exercises, id);
+    if (record) exercises[id] = sliceOf(record);
   };
   for (const it of plan.items) add(it.exercise.id);
   for (const list of Object.values(plan.alternatives)) for (const a of list) add(a.id);
   const targets: Record<string, Target> = {};
   for (const it of plan.items) if (it.target) targets[it.exercise.id] = it.target;
 
-  const name = (id: string | null | undefined): string | null => (id ? (exerciseRecord(id)?.name ?? null) : null);
+  const name = (id: string | null | undefined): string | null => (id ? (recordIn(data.exercises, id)?.name ?? null) : null);
   const themeRef = (t: { id: string; name: string } | null) => (t ? { id: t.id, name: t.name } : null);
   const view: SessionView = {
     mode: v.mode,
@@ -1090,8 +1102,15 @@ async function dayInputs(db: Db, userId: string, row: SlotRow, builds: readonly 
   // The engine plans from exactly these (the trimmed sessions and the summary), so they are what the hash covers:
   // a change to the history that this build cannot read is no reason to build again.
   const historyJson = JSON.stringify(history);
-  // The whole context the build reads (unit, places, profiles, prefs, saved ids, and the program settings it reads).
-  const hashedContext: BuildContext = { ...context, config: buildConfigOf(context.config) };
+  // The whole context the build reads (unit, places, profiles, prefs, saved ids, and the program settings it reads) —
+  // the library as its personal hash: the public library is the engine version's, and an account with no personal moves
+  // hashes as it did before them.
+  const { library, ...read } = context;
+  const hashedContext: Omit<BuildContext, "library"> & { personal?: string } = {
+    ...read,
+    config: buildConfigOf(context.config),
+    ...(library.personalHash ? { personal: library.personalHash } : {}),
+  };
   const hashOf = (b: Block | null) =>
     sha256Hex(
       JSON.stringify(
@@ -1382,12 +1401,17 @@ interface DocDayInputs {
   inputsHash: string;
 }
 
-/** The library's jumps: what a document build's frontier is read for. */
-const JUMP_IDS: readonly string[] = EXERCISES.filter(isPlyometric).map((e) => e.id);
+/** A library's jumps, made once per library array: what a document build's frontier is read for. */
+const JUMP_IDS = new WeakMap<readonly ExerciseRecord[], readonly string[]>();
+function jumpIdsOf(library: readonly ExerciseRecord[]): readonly string[] {
+  let ids = JUMP_IDS.get(library);
+  if (!ids) JUMP_IDS.set(library, (ids = library.filter(isPlyometric).map((e) => e.id)));
+  return ids;
+}
 
 /** Whether a document holds a jump — an item or one of its alternates — so that an option of its ⇄ could be one. */
-function docHoldsJump(doc: WorkoutDoc): boolean {
-  const find = makeLibraryIndex(EXERCISES);
+function docHoldsJump(doc: WorkoutDoc, library: readonly ExerciseRecord[]): boolean {
+  const find = makeLibraryIndex(library);
   const jump = (id: string): boolean => {
     const rec = find(id);
     return rec !== undefined && isPlyometric(rec);
@@ -1423,7 +1447,9 @@ const docValidateCtx = (
   today: string,
   jumpsDone: ReadonlySet<string>,
 ): ValidateCtx =>
-  dayValidateCtx({ profiles: context.activeProfiles, checks, date, today, excluded: context.prefs.excluded, equipment: context.location.equipment, done: jumpsDone });
+  dayValidateCtx({
+    library: context.library.all, profiles: context.activeProfiles, checks, date, today, excluded: context.prefs.excluded, equipment: context.location.equipment, done: jumpsDone,
+  });
 
 /** The day's checks for a document row (the request's, recorded, over the day's) and its context; reads only. */
 async function docDay(
@@ -1457,8 +1483,9 @@ async function docDayInputs(db: Db, userId: string, row: SlotRow, builds: readon
   if (!doc) throw new NoDocumentError();
   const { context, checks, preChecks } = await docDay(db, userId, row, req, ctx, doc.setting?.placeId);
   // One statement, only when an option could be a jump: what the frontier and the one-new-jump rule read.
-  const jumpsDone = docHoldsJump(doc)
-    ? doneCleanlyOf(await doneStats(db, userId, ctx.today, ctx.today), context.activeProfiles.filter(isProfileId).map((id) => PROFILES[id]), JUMP_IDS)
+  const library = context.library;
+  const jumpsDone = docHoldsJump(doc, library.all)
+    ? doneCleanlyOf(await doneStats(db, userId, ctx.today, ctx.today), context.activeProfiles.filter(isProfileId).map((id) => PROFILES[id]), jumpIdsOf(library.all))
     : new Set<string>();
   const version = await docBuildVersion();
   const rev = row.workoutDocRev ?? null;
@@ -1467,6 +1494,8 @@ async function docDayInputs(db: Db, userId: string, row: SlotRow, builds: readon
       canonical({
         engine: version, date, doc: row.workoutDoc, rev, checks, profiles: context.activeProfiles, location: context.location, unit: context.unit,
         jumpsDone: [...jumpsDone].sort(),
+        // The account's personal moves, which a document's moves resolve in (none: hashed as before there were any).
+        ...(library.personalHash ? { personal: library.personalHash } : {}),
       }),
     ),
   );
@@ -1503,7 +1532,9 @@ async function commitDocBuild(
   const gated = preview ? { doc, swaps: [], blocked: [] } : gateDoc(doc, judge);
   let made: ReturnType<typeof materializeDocBuild>;
   try {
-    made = materializeDocBuild(gated.doc, { date, location: viewLocationOf(context.location), checks: preview ? {} : checks, library: EXERCISES, judge });
+    made = materializeDocBuild(gated.doc, {
+      date, location: viewLocationOf(context.location), checks: preview ? {} : checks, library: context.library.all, offered: context.library.offered, judge,
+    });
   } catch (e) {
     // Too large to build (`playerStepsFromDoc` checks the bound before making a step) — today, ahead, or grown past it
     // by the day's swap: refused with the issue, nothing materialised, never a 500.
@@ -1610,13 +1641,13 @@ async function lockDocBuild(
 async function refuseGatedSnapshot(db: Db, userId: string, row: SlotRow, sent: BuildRow, today: string): Promise<Record<string, DocSlot> | null> {
   const snapshot = parseStoredWorkoutDoc(sent.workoutDoc);
   if (!snapshot) return null;
-  const profiles = await activeProfilesOf(db, userId);
+  const [profiles, library] = await Promise.all([activeProfilesOf(db, userId), loadAccountLibrary(db, userId)]);
   const checks = await slotChecks(db, userId, row.id, row.effectiveDate, today, profiles);
   // "No equipment" is the room's props here too. Gear the place lacks is a warning, so it never refuses Start (the
   // snapshot's errors alone do); it takes off an offer that needs more (an offer is only ever a clean one) and adds the
   // cost to a planned alternate's reasons (`slotsForDay`). A named place's gear is not read again.
   const bare = snapshot.setting?.placeId === NO_EQUIPMENT.id;
-  const day = dayValidateCtx({ profiles, checks, date: row.effectiveDate, today, ...(bare ? { equipment: NO_EQUIPMENT.equipment } : {}) });
+  const day = dayValidateCtx({ library: library.all, profiles, checks, date: row.effectiveDate, today, ...(bare ? { equipment: NO_EQUIPMENT.equipment } : {}) });
   const errors = snapshotErrors(snapshot, day);
   if (errors.length > 0) throw new GatedError(errors);
   const stored = storedOf(sent);

@@ -27,6 +27,7 @@ import { CORE_FAMILIES, COVERAGE_TARGETS, EXERCISES, FORMATS, MODES, PROFILES, S
 import { Hist, Planner, Rng, type Block, type DayState, type HistorySession, type Mode, type ProgramState } from "@rg/session-engine";
 import { LOCATIONS, WORLDS, seededHistory, type Seeded } from "../../../packages/session-engine/test/seeded-history.js";
 import type { Db } from "../src/services/db.js";
+import { PUBLIC_LIBRARY } from "../src/services/account-library.js";
 import { buildSession, composeBuild, type BuildContext, type ComposeInput } from "../src/services/session-build.js";
 import { slotId } from "../src/services/program-slots.js";
 import { loadBuildHistory, rowsOf } from "../src/services/engine-inputs.js";
@@ -95,6 +96,7 @@ function programmeBuilds(p: number, h: ReturnType<typeof histories>[number]): st
       defaultMinutes: pick([15, 20, 30, 40, 45, 60]),
       modes: pick(MODE_SETS),
     },
+    library: PUBLIC_LIBRARY,
   };
   const programId = `programme-${p}`;
   const out: string[] = [];
@@ -221,6 +223,7 @@ const readContext: BuildContext = {
   activeProfiles: ["tmj"],
   careProfiles: ["tmj"],
   config: { weeklyGoal: 4, blockWeeks: 5, defaultMinutes: 30, modes: ALL_MODES },
+  library: PUBLIC_LIBRARY,
 };
 
 /** An account's reads at many days and blocks, and the build each read makes, as JSON lines. */

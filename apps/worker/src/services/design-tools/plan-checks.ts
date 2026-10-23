@@ -19,7 +19,7 @@
  *    for the card — a distance block keeps its session in the app.
  */
 import { dayLabel, type CoachSession, type WorkoutDoc, type WorkoutItem } from "@rg/domain";
-import { EXERCISES, type CheckReading, type ConditionProfile } from "@rg/exercise-library";
+import type { CheckReading, ConditionProfile, ExerciseRecord } from "@rg/exercise-library";
 import { coachSessionEffort, makeLibraryIndex, validateWorkoutDoc, type DocIssueCode } from "@rg/workout";
 import { watchPushable } from "../coach-apply.js";
 import { corosKeyOfName, libraryIdsByKey } from "../coros-exercise-map.js";
@@ -56,10 +56,17 @@ export interface PlanSession {
  */
 export function planConditionFindings(
   sessions: readonly PlanSession[],
-  o: { profiles: readonly ConditionProfile[]; readings: Readonly<Record<string, CheckReading>>; today: string; catalog?: PlanCatalog | null },
+  o: {
+    profiles: readonly ConditionProfile[];
+    readings: Readonly<Record<string, CheckReading>>;
+    today: string;
+    catalog?: PlanCatalog | null;
+    /** What the moves are judged in: the account library's `all` (`loadAccountLibrary`). */
+    library: readonly ExerciseRecord[];
+  },
 ): string[] {
   if (o.profiles.length === 0) return [];
-  const library = makeLibraryIndex(EXERCISES);
+  const library = makeLibraryIndex(o.library);
   /** Through the catalog: the coach's words → the athlete's catalog row → its T-code → the library move it maps. */
   const viaCatalog = (name: string): string | undefined => {
     if (!o.catalog) return undefined;
@@ -112,7 +119,7 @@ export function planConditionFindings(
     }));
     const doc: WorkoutDoc = { version: 1, title: "Plan sessions", intent: { summary: "A plan's sessions.", goals: [], focus: [], effort: g.effort }, parts, source: { kind: "coach" } };
     const readings = g.date === o.today ? o.readings : {};
-    for (const issue of validateWorkoutDoc(doc, { library: EXERCISES, activeProfiles: o.profiles, day: { date: g.date, today: o.today, readings } })) {
+    for (const issue of validateWorkoutDoc(doc, { library: o.library, activeProfiles: o.profiles, day: { date: g.date, today: o.today, readings } })) {
       const at = ITEM_ID.exec(issue.path);
       // Every one of these is an error here: the document carries no alternates, the one thing that softens a later
       // day's gate to a note.

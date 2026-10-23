@@ -45,6 +45,7 @@ import { EXERCISES, PROFILES, isDoneCleanly, isProfileId, type ConditionProfile 
 import { Hist, type HistorySession, type HistorySummary } from "@rg/session-engine";
 import { deriveDoc, makeLibraryIndex, QUICK_START_KINDS, validateWorkoutDoc, type DocDerived, type DocIssue, type ValidateCtx } from "@rg/workout";
 import { sha256Hex } from "../auth/crypto.js";
+import { loadAccountLibrary } from "./account-library.js";
 import { restoreInProgress } from "./account-state.js";
 import { runAtomically, type Db } from "./db.js";
 import { judgeDoc } from "./doc-build.js";
@@ -272,25 +273,26 @@ export function recentOf(sessions: readonly HistorySession[], today: string): { 
 }
 
 /**
- * What a document for `date` is validated with: the active profiles, the day's reading (the row's own pre-check and
- * the day's checks, as its session sheet reads them — none for a day ahead), what was done cleanly and the recent
- * sessions, the moves set aside, and the gear of the place the document names, by default-place.ts's one rule (as its
- * build reads it, `placeOrDefault`): one of the athlete's places, a preset, or "No equipment" (a bare room's own
- * props); none named, or one deleted since, the athlete's default place.
+ * What a document for `date` is validated with: the account's library (`all`: its personal moves too), the active
+ * profiles, the day's reading (the row's own pre-check and the day's checks, as its session sheet reads them — none for
+ * a day ahead), what was done cleanly and the recent sessions, the moves set aside, and the gear of the place the
+ * document names, by default-place.ts's one rule (as its build reads it, `placeOrDefault`): one of the athlete's places,
+ * a preset, or "No equipment" (a bare room's own props); none named, or one deleted since, the athlete's default place.
  */
 export async function docDayContext(
   db: Db,
   userId: string,
   o: { date: string; today: string; workoutId: string; placeId?: string },
 ): Promise<ValidateCtx> {
-  const [{ active, profiles, excluded }, place, history] = await Promise.all([
+  const [{ active, profiles, excluded }, place, history, library] = await Promise.all([
     profilesAndSetAside(db, userId),
     placeOrDefault(db, userId, o.placeId),
     loadBuildHistory(db, userId, o.today, null),
+    loadAccountLibrary(db, userId),
   ]);
   const checks = o.date <= o.today && active.length > 0 ? await slotChecks(db, userId, o.workoutId, o.date, o.today, active) : {};
   return {
-    library: EXERCISES,
+    library: library.all,
     activeProfiles: profiles,
     day: {
       date: o.date,
@@ -323,10 +325,15 @@ export async function profilesAndSetAside(db: Db, userId: string): Promise<{ act
   return { active, profiles: active.map((id) => PROFILES[id]), excluded: setAside.map((r) => r.exerciseId) };
 }
 
-/** A document as the schema reads it; else `DocInvalidError` with its schema issues (nothing else can be read of it). */
-export function parsedDoc(raw: unknown): WorkoutDoc {
+/**
+ * A document as the schema reads it; else `DocInvalidError` with its schema issues (nothing else can be read of it),
+ * its moves named against the account's library (read only then).
+ */
+export async function parsedDoc(db: Db, userId: string, raw: unknown): Promise<WorkoutDoc> {
   const parsed = workoutDocSchema.safeParse(raw);
-  if (!parsed.success) throw new DocInvalidError(validateWorkoutDoc(raw, { library: EXERCISES, activeProfiles: [], day: null }));
+  if (!parsed.success) {
+    throw new DocInvalidError(validateWorkoutDoc(raw, { library: (await loadAccountLibrary(db, userId)).all, activeProfiles: [], day: null }));
+  }
   return parsed.data;
 }
 
@@ -347,15 +354,17 @@ async function validated(
   day: { date: string; today: string; workoutId: string },
   opts: { playedOffline?: boolean } = {},
 ): Promise<{ doc: WorkoutDoc; derived: DocDerived; warnings: DocIssue[] }> {
-  const doc = parsedDoc(raw);
+  const doc = await parsedDoc(db, userId, raw);
   if (opts.playedOffline && !(await appAuthored(db, userId, doc))) throw new PlayedOfflineRefusedError("source");
+  // A run is told by its run items alone, whatever library its moves resolve in: refused before the day is read.
   const derived = deriveDoc(doc, EXERCISES);
   if (derived.discipline === "run") throw new RunUnsupportedError();
   const ctx = await docDayContext(db, userId, { ...day, placeId: doc.setting?.placeId });
   // Played offline: what was done is recorded, not planned — the day was judged on the device, and its gate is skipped
   // here (judged as a template is: every reading-dependent rule on the calmest day). Everything else still holds.
   const warnings = accepted(judgeDoc(doc, opts.playedOffline ? { ...ctx, day: null } : ctx));
-  return { doc, derived, warnings };
+  // Its personal moves count in what is derived (its minutes, its kind).
+  return { doc, derived: ctx.library === EXERCISES ? derived : deriveDoc(doc, ctx.library), warnings };
 }
 
 // ── Writes ───────────────────────────────────────────────────────────────────────────────────────────────────

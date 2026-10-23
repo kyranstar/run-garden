@@ -15,6 +15,7 @@ import { docFromBuild } from "@rg/workout";
 import { LOCATIONS, WORLDS, seededHistory } from "../../../packages/session-engine/test/seeded-history.js";
 import { liveExerciseCatalog } from "../../../packages/domain/test/coach-survival/catalog.js";
 import { corosKeyOf } from "../src/services/coros-exercise-map.js";
+import { PUBLIC_LIBRARY } from "../src/services/account-library.js";
 import type { EngineContext } from "../src/services/engine-inputs.js";
 import { composeBuild, type ComposeInput } from "../src/services/session-build.js";
 import { watchStepsFromDoc } from "../src/services/watch-doc.js";
@@ -49,6 +50,7 @@ function seededInputs(n: number): Array<{ label: string; input: ComposeInput }> 
       activeProfiles: ["tmj"],
       careProfiles: ["tmj"],
       config: adaptiveConfigSchema.parse({ defaultMinutes: [20, 30, 45][i % 3], careProfiles: ["tmj"] }),
+      library: PUBLIC_LIBRARY,
     };
     const overrides: ComposeInput["overrides"] = { mode };
     if (rng() < 0.7) overrides.theme = themes[Math.floor(rng() * themes.length)]!.id;

@@ -25,7 +25,7 @@
  */
 import type { WorkoutDoc, WorkoutItem } from "@rg/domain";
 import { sessionLead } from "@rg/domain";
-import { EXERCISES, PROFILES, isPlyometric, isProfileId, label, onFrontier, type ExerciseRecord } from "@rg/exercise-library";
+import { PROFILES, isPlyometric, isProfileId, label, onFrontier, type ExerciseRecord } from "@rg/exercise-library";
 import { Swapping, type SlotChoice, type Step, type Target } from "@rg/session-engine";
 import {
   DocTooLargeError,
@@ -206,6 +206,8 @@ export function judgeDoc(doc: WorkoutDoc, ctx: ValidateCtx): { errors: DocIssue[
 
 /** What the validator reads of a day when only its errors matter: the active profiles and each one's reading. */
 export function dayValidateCtx(o: {
+  /** What the document's moves resolve in: the account library's `all` (`loadAccountLibrary`). */
+  library: readonly ExerciseRecord[];
   profiles: readonly string[];
   checks: Readonly<Record<string, CheckAnswer>>;
   date: string;
@@ -216,7 +218,7 @@ export function dayValidateCtx(o: {
   done?: ReadonlySet<string>;
 }): ValidateCtx {
   return {
-    library: EXERCISES,
+    library: o.library,
     activeProfiles: o.profiles.filter(isProfileId).map((id) => PROFILES[id]),
     day: {
       date: o.date,
@@ -268,7 +270,13 @@ export interface DocBuildInput {
   /** The place, as the view carries it (its gear and implement weights, for the player offline). */
   location: SessionView["location"];
   checks: Record<string, CheckAnswer>;
+  /** What the document's moves resolve in: the account library's `all`. */
   library: readonly ExerciseRecord[];
+  /**
+   * What a slot's ⇄ may offer beside the document's own alternates (`libraryOffers`): the account library's `offered`
+   * (an archived personal move resolves, and is never offered). `library` when not given.
+   */
+  offered?: readonly ExerciseRecord[];
   /** The day's judgement (`dayValidateCtx`, with the athlete's set-aside moves and the place's gear): the options' gate. */
   judge: ValidateCtx;
 }
@@ -430,6 +438,7 @@ const areaWords = (region: string): string =>
 function docSlots(
   doc: WorkoutDoc,
   library: readonly ExerciseRecord[],
+  offerable: readonly ExerciseRecord[],
   judge: ValidateCtx,
 ): { slots: Record<string, DocSlot>; records: ExerciseRecord[] } {
   const find = makeLibraryIndex(library);
@@ -456,7 +465,7 @@ function docSlots(
       if (to && to.id !== own && !planned.some((p) => p.to.id === to.id)) planned.push({ to, why: alt.why });
     }
     const away = { ids: new Set(planned.map((p) => p.to.id)), keys: new Set(held.filter((r) => r.id !== own).map((r) => Swapping.moveKeyOf(r))) };
-    return { at, item, planned, offered: rec ? libraryOffers(rec, library, find, away) : [] };
+    return { at, item, planned, offered: rec ? libraryOffers(rec, offerable, find, away) : [] };
   });
   const byKey = new Map(asked.map((a) => [a.at.key, a]));
   /** An item is judged enough once three of the library's moves are clean (all it plans comes first, so is judged). */
@@ -623,7 +632,7 @@ export function materializeDocBuild(doc: WorkoutDoc, input: DocBuildInput): Mate
       ...(rec && freshJump(rec, input.judge) ? { fresh: true as const } : {}),
     });
   }
-  const { slots, records } = docSlots(doc, input.library, input.judge);
+  const { slots, records } = docSlots(doc, input.library, input.offered ?? input.library, input.judge);
   for (const rec of records) if (!exercises[rec.id]) exercises[rec.id] = sliceOf(rec);
   const mode = modeOfEffort(doc.intent.effort);
   const minutes = deriveDoc(doc, input.library).estimatedMinutes;

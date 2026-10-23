@@ -14,6 +14,7 @@ import { newId } from "@rg/domain";
 import type { ExerciseRecord } from "@rg/exercise-library";
 import { batchNotice } from "@rg/saves";
 import type { Env } from "../env.js";
+import { forgetAccountLibrary } from "./account-library.js";
 import { runAtomically, type Db } from "./db.js";
 
 const { savedPosts, savedPostMoves, personalMoves, saveBatches, exerciseProvenance } = schema;
@@ -222,5 +223,7 @@ export async function saveBatch(
       .set({ status: "saved", savedAt: now })
       .where(and(eq(saveBatches.id, batchId), eq(saveBatches.userId, userId))),
   ]);
+  // Its moves are the library's now: a later read in this request reads them.
+  forgetAccountLibrary(db, userId);
   return { moves: Number(batch.moves), links: Number(batch.links) };
 }

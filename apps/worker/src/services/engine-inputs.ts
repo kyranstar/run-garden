@@ -54,6 +54,7 @@ import {
   type MoveSummary,
   type Prefs,
 } from "@rg/session-engine";
+import { loadAccountLibrary, type AccountLibrary } from "./account-library.js";
 import { restoreInProgress } from "./account-state.js";
 import { loadPreferences } from "./calendar-sync.js";
 import { chunkIds, type Db } from "./db.js";
@@ -585,6 +586,8 @@ export interface EngineContext {
   careProfiles: string[];
   /** The program's settings (defaults filled; a stored config that does not parse reads as the defaults). */
   config: AdaptiveConfig;
+  /** The account's library (`loadAccountLibrary`): a document's moves resolve in `all`; the engine plans from `engine`. */
+  library: AccountLibrary;
 }
 
 /** The library's Home preset: where sessions happen for an account that has set up no place yet. */
@@ -661,7 +664,7 @@ export async function loadEngineContext(
     if (parsed.success) config = parsed.data;
   }
 
-  const [conditionRows, prefRows, savedRows, placeRows, userPrefs] = await Promise.all([
+  const [conditionRows, prefRows, savedRows, placeRows, userPrefs, library] = await Promise.all([
     db
       .select({ profileId: userConditions.profileId })
       .from(userConditions)
@@ -675,6 +678,7 @@ export async function loadEngineContext(
       .where(eq(locationsTable.userId, userId))
       .orderBy(...defaultPlaceOrder(userId)),
     opts.prefs ? Promise.resolve(opts.prefs) : loadPreferences(db, userId),
+    loadAccountLibrary(db, userId),
   ]);
   const unit = userPrefs.weightUnit;
 
@@ -692,7 +696,7 @@ export async function loadEngineContext(
 
   if (placeRows.length === 0) {
     const home = presetHome();
-    return { prefs, savedIds, location: home, locations: [home], unit, activeProfiles, careProfiles, config };
+    return { prefs, savedIds, location: home, locations: [home], unit, activeProfiles, careProfiles, config, library };
   }
   // The default first (the profile's choice, the place marked default, the first made), then the rest as they were made.
   const [defaultRow, ...rest] = placeRows;
@@ -700,5 +704,5 @@ export async function loadEngineContext(
   const ordered = [defaultRow!, ...rest].map((r) => toEngineLocation(r, unit));
   const pick = (id: string | null | undefined) => (id ? ordered.find((p) => p.id === id) : undefined);
   const location = pick(opts.locationId) ?? pick(config.defaultLocationId) ?? ordered[0]!;
-  return { prefs, savedIds, location, locations: ordered, unit, activeProfiles, careProfiles, config };
+  return { prefs, savedIds, location, locations: ordered, unit, activeProfiles, careProfiles, config, library };
 }

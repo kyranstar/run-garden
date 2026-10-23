@@ -31,6 +31,7 @@ import { schema } from "@rg/database";
 import type { Db } from "../src/services/db.js";
 import { buildSession, composeBuild, sessionCurrency, type ComposeInput } from "../src/services/session-build.js";
 import { slotId } from "../src/services/program-slots.js";
+import { PUBLIC_LIBRARY } from "../src/services/account-library.js";
 import { loadBuildHistory, loadHistory, type BuildHistory, type EngineContext } from "../src/services/engine-inputs.js";
 import { makeTestDb, makeTestUser } from "./helpers.js";
 
@@ -109,6 +110,7 @@ const context: EngineContext = {
   activeProfiles: ["tmj"],
   careProfiles: ["tmj"],
   config: adaptiveConfigSchema.parse({ defaultMinutes: 30, careProfiles: ["tmj"] }),
+  library: PUBLIC_LIBRARY,
 };
 
 /** Plausible sessions: the engine plans each day's session and a log of it is kept, about 4 days a week. */

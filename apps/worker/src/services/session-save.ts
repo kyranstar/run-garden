@@ -377,7 +377,7 @@ async function graduationStatements(
   const pending = p.review.graduations.filter((g) => block!.core[g.family] !== g.to);
   if (pending.length === 0) return { applied: true, statements: [] };
   const context = await loadEngineContext(db, userId, slot.planId, p.locationId ? { locationId: p.locationId } : {});
-  const data = engineDataFor(context.activeProfiles, context.careProfiles);
+  const data = engineDataFor(context.activeProfiles, context.careProfiles, context.library);
   let applied = true;
   for (const g of pending) {
     const next = Blocks.graduate(data, block, g.family, g.to, p.localDate, context.location.equipment);

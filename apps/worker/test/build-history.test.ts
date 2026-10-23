@@ -16,6 +16,7 @@ import { Hist, Rng, type Block, type HistorySession } from "@rg/session-engine";
 import { LOCATIONS, WORLDS, seededHistory, type Seeded } from "../../../packages/session-engine/test/seeded-history.js";
 import type { Db } from "../src/services/db.js";
 import { composeBuild } from "../src/services/session-build.js";
+import { PUBLIC_LIBRARY } from "../src/services/account-library.js";
 import { loadBuildHistory, loadHistory, type EngineContext } from "../src/services/engine-inputs.js";
 import { makeTestDb, makeTestUser } from "./helpers.js";
 
@@ -85,6 +86,7 @@ const context: EngineContext = {
   activeProfiles: ["tmj"],
   careProfiles: ["tmj"],
   config: adaptiveConfigSchema.parse({ defaultMinutes: 30, careProfiles: ["tmj"] }),
+  library: PUBLIC_LIBRARY,
 };
 
 interface Account {

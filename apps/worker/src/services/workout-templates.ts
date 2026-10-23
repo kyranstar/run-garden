@@ -17,6 +17,7 @@ import { workoutTemplates } from "@rg/database";
 import { newId, parseStoredWorkoutDoc, type WorkoutDoc } from "@rg/domain";
 import { EXERCISES } from "@rg/exercise-library";
 import { deriveDoc, type DocIssue } from "@rg/workout";
+import { loadAccountLibrary } from "./account-library.js";
 import type { Db } from "./db.js";
 import { judgeDoc } from "./doc-build.js";
 import { accepted, keyedRowId, parsedDoc, profilesAndSetAside } from "./doc-workouts.js";
@@ -91,9 +92,9 @@ function dtoOf(r: Row): TemplateDto {
 
 /** The document, schema-checked, then judged with no day (`judgeDoc`): refused on any error, its warnings answered. */
 async function validated(db: Db, userId: string, raw: unknown): Promise<{ doc: WorkoutDoc; warnings: DocIssue[] }> {
-  const doc = parsedDoc(raw);
-  const { profiles, excluded } = await profilesAndSetAside(db, userId);
-  return { doc, warnings: accepted(judgeDoc(doc, { library: EXERCISES, activeProfiles: profiles, day: null, excluded })) };
+  const doc = await parsedDoc(db, userId, raw);
+  const [{ profiles, excluded }, library] = await Promise.all([profilesAndSetAside(db, userId), loadAccountLibrary(db, userId)]);
+  return { doc, warnings: accepted(judgeDoc(doc, { library: library.all, activeProfiles: profiles, day: null, excluded })) };
 }
 
 /** The account's templates: pinned first, then the most recently used, then by name. */

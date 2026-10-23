@@ -51,6 +51,7 @@ import type { Step } from "@rg/session-engine";
 import { watchPushEnabled, type Env } from "../env.js";
 import { sha256Hex } from "../auth/crypto.js";
 import type { Db } from "./db.js";
+import { loadAccountLibrary } from "./account-library.js";
 import { corosKeyOf } from "./coros-exercise-map.js";
 import { freeStamp, STAMP_SEPARATOR, stampName, takenStampsOn } from "./coros-stamp.js";
 import { exerciseNameMap } from "./exercise-catalog.js";
@@ -529,10 +530,13 @@ async function gatedSnapshot(
   profiles: readonly string[],
   checks: Readonly<Record<string, CheckAnswer>>,
 ): Promise<boolean> {
-  const [stored] = await db.select({ doc: sessionBuilds.workoutDoc }).from(sessionBuilds).where(eq(sessionBuilds.id, buildId)).limit(1);
+  const [[stored], library] = await Promise.all([
+    db.select({ doc: sessionBuilds.workoutDoc }).from(sessionBuilds).where(eq(sessionBuilds.id, buildId)).limit(1),
+    loadAccountLibrary(db, row.userId),
+  ]);
   const snapshot = parseStoredWorkoutDoc(stored?.doc ?? null);
   if (!snapshot) return false;
-  return snapshotErrors(snapshot, dayValidateCtx({ profiles, checks, date: row.effectiveDate, today: row.effectiveDate })).length > 0;
+  return snapshotErrors(snapshot, dayValidateCtx({ library: library.all, profiles, checks, date: row.effectiveDate, today: row.effectiveDate })).length > 0;
 }
 
 /**
