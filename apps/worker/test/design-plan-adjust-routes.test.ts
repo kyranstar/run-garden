@@ -23,7 +23,7 @@ import { createSession, SESSION_COOKIE } from "../src/auth/sessions.js";
 import { coachRoutes } from "../src/routes/coach.js";
 import { buildDossier } from "../src/services/coach-context.js";
 import { wake } from "../src/services/coach-wake.js";
-import { APPLYING_STALE_MS, APPROVE_FIXED, DECLINE_COST, MOVE_COST, PLAN_BATCH_FIXED, REQUEST_BUDGET, SKIP_COST, ADJUST_COST, ADJUST_RECLAIM_COST, type DesignedOp } from "../src/services/design-approve.js";
+import { APPLYING_STALE_MS, APPROVE_FIXED, DECLINE_COST, MOVE_COST, PLAN_BATCH_FIXED, REQUEST_BUDGET, SKIP_COST, ADJUST_COST, type DesignedOp } from "../src/services/design-approve.js";
 import { adjustPlan } from "../src/services/design-tools/adjust-plan.js";
 import { designProposalId, proposeWorkout } from "../src/services/design-tools/propose.js";
 import { isToolErr, type OpReview, type ToolContext } from "../src/services/design-tools/types.js";
@@ -214,7 +214,7 @@ describe("POST /api/coach/proposals/:id/approve with changes", () => {
     expect(res.total).toBeLessThanOrEqual(APPROVE_FIXED + PLAN_BATCH_FIXED + MOVE_COST + 1 + 1);
   });
 
-  it("a length for a session whose watch version the athlete chose re-claims it, and declares it: its changes split where it would not fit (review-S3 A1)", async () => {
+  it("a length for a session whose watch version the athlete chose is a length like any other: the mark stays, nothing for the watch, a plain length's cost (review A4)", async () => {
     await db.insert(schema.providerConnections).values({ id: newId(), userId, provider: "coros", status: "connected", createdAt: nowInstant(), updatedAt: nowInstant() } as never);
     await db.insert(schema.userPreferences).values({ userId, prefs: { ...prefs, corosWritesEnabled: true }, updatedAt: nowInstant() } as never).onConflictDoUpdate({ target: schema.userPreferences.userId, set: { prefs: { ...prefs, corosWritesEnabled: true } } });
     // A COROS session on the watch the athlete chose to keep the watch's version of (watch-copy-marker.ts), its own steps.
@@ -230,25 +230,17 @@ describe("POST /api/coach/proposals/:id/approve with changes", () => {
         { workoutId: "w-4-07:00", change: { kind: "move", toDate: addDays(today, 5), toTime: "12:00" }, why: "A freer day." },
       ],
     });
-    const costs: number[] = [];
-    const chunks: string[][] = [];
-    let remaining: string[] | null = null;
-    for (let i = 0; remaining === null || remaining.length > 0; i++) {
-      if (i >= MAX_LOOP_ITERATIONS) throw new Error("the approve never finished");
-      const res = await invoke("POST", `/api/coach/proposals/${id}/approve`, remaining ? { opIds: remaining } : {});
-      expect(res.status).toBe(200);
-      costs.push(res.total);
-      chunks.push((res.json.changed as Array<{ opId: string }>).map((c) => c.opId));
-      remaining = res.json.remaining as string[];
-    }
-    // The three fit one request at a plain length's cost; this length's claim and rewrite take the room the move needed.
-    expect(chunks).toEqual([[planAdjustId("w-1-07:00"), planAdjustId("w-2-07:00")], [planAdjustId("w-4-07:00")]]);
-    for (const cost of costs) expect(cost).toBeLessThanOrEqual(REQUEST_BUDGET);
-    expect(costs[0]).toBeLessThanOrEqual(APPROVE_FIXED + PLAN_BATCH_FIXED + SKIP_COST + (ADJUST_COST + ADJUST_RECLAIM_COST + 1));
-    // Re-claimed: the mark lifted, the app's claim open, and its rewrite queued on what the watch holds.
-    expect((await rowOf("w-2-07:00")).sourceContentFingerprint).toBe("0123456789abcdef");
-    const jobs = await db.select().from(schema.corosWriteJobs).where(eq(schema.corosWriteJobs.workoutId, "w-2-07:00"));
-    expect(jobs.map((j) => [j.kind, j.status, j.expectedContentFingerprint])).toEqual([["coach_update_workout", "queued", "0123456789abcdef"]]);
+    const res = await invoke("POST", `/api/coach/proposals/${id}/approve`, {});
+    expect(res.status).toBe(200);
+    // The three fit one request, as three plain changes do.
+    expect((res.json.changed as Array<{ opId: string }>).map((c) => c.opId)).toEqual([planAdjustId("w-1-07:00"), planAdjustId("w-2-07:00"), planAdjustId("w-4-07:00")]);
+    expect(res.json.remaining).toEqual([]);
+    expect(res.total).toBeLessThanOrEqual(APPROVE_FIXED + PLAN_BATCH_FIXED + SKIP_COST + (ADJUST_COST + 1) + (MOVE_COST + 1 + 1));
+    // The card's promise: only the plan's length. The mark stays (the read takes the watch's copy), and no write is queued.
+    const row = await rowOf("w-2-07:00");
+    expect(row.fallbackEstimatedDurationSeconds).toBe(1200);
+    expect(row.sourceContentFingerprint).toBe("take-watch-copy:0123456789abcdef");
+    expect(await db.select().from(schema.corosWriteJobs).where(eq(schema.corosWriteJobs.workoutId, "w-2-07:00"))).toEqual([]);
   });
 });
 

@@ -6,7 +6,8 @@ import type { Db } from "./db.js";
 export type IntentSource =
   | "user_move" | "calendar_drag" | "studio_push" | "studio_retire"
   | "remove_from_plan" | "auto_resolve" | "undo" | "coach_ease" | "coach_remove"
-  /** A coach re-time of a session the athlete had chosen the watch's version of: the app's claim again. */
+  /** A structured run re-timed by the rule (coach-apply.ts `writeRetimed`): the app's claim on the re-timed session. A
+   * length alone claims nothing — on a row taking the watch's version neither (review A4). */
   | "coach_adjust"
   /** An adaptive program's re-placement retracting a slot it no longer wants. */
   | "program_replace";

@@ -42,7 +42,7 @@ import { separateDayCollisions, windowTimeFor } from "./day-placement.js";
 import { coachStamp, recordedStampFor, stampName, takenStampsOn, takenStampsOnDays } from "./coros-stamp.js";
 import { applyMove } from "./jobs.js";
 import { openIntentFor, recordIntent } from "./sync-intents.js";
-import { takesWatchCopy, unmarkedFingerprint, watchCopyBase } from "./watch-copy-marker.js";
+import { unmarkedFingerprint, watchCopyBase } from "./watch-copy-marker.js";
 import {
   enqueueUnpushIfOurs,
   unpushInsertIfOurs,
@@ -1618,10 +1618,13 @@ export async function applyOps(
           out.updated.push(op.workoutId);
           break;
         }
-        // The athlete chose the watch's version (watch-copy-marker.ts), then approved this: the newer change stands
-        // (review-S3 A1). The mark lifts as an ease's does, the app's claim on the content is live again, and its
-        // rewrite goes to the watch on what the watch holds — never the watch's older copy taken over it at the read.
-        const reclaims = takesWatchCopy(row.sourceContentFingerprint);
+        // A ROW TAKING THE WATCH'S VERSION (watch-copy-marker.ts) IS NO EXCEPTION (review A3, A4). Its card says what
+        // every length's says — "The watch keeps its copy as it is: only the plan's length changes" — and that is what
+        // happens: the mark stays, no claim, nothing for the watch. (A re-claim here used to lift the mark and re-send
+        // the app's copy — the version the athlete had just chosen against — built from its stage rows: a designed run
+        // read back as a coach session, its tempo as threshold, a repeat as nothing, a distance unpushable and the copy
+        // taken off the watch.) The next read takes the watch's copy whole, its own length with it, as the athlete
+        // asked when they kept it — as any upstream content replaces a length an adjust set, which claims nothing.
         // The document states the new length — `setting.targetMinutes`, and
         // nothing else of it — as the row's next revision, in the same batch
         // (Stage 1 dual-write; `updateDocColumns` keeps a row resolved
@@ -1644,33 +1647,11 @@ export async function applyOps(
               // enqueued here, so flipping it to `calendar_only` stranded the
               // row as "not synced" forever. The watch copy is unchanged.
               ...(doc ? updateDocColumns(doc) : {}),
-              ...(reclaims ? { sourceContentFingerprint: unmarkedFingerprint(plannedWorkouts.sourceContentFingerprint) } : {}),
               updatedAt: now,
             })
             .where(and(eq(plannedWorkouts.id, op.workoutId), eq(plannedWorkouts.userId, userId))),
           ...(doc ? [revisionInsert(db, { userId, workoutId: op.workoutId, sourceKind: "coach", sourceRef: proposalId, now })] : []),
         ]);
-        if (reclaims) {
-          await recordIntent(db, { userId, targetKind: "workout", targetId: op.workoutId, kind: "content", source: "coach_adjust" });
-          // The app's copy as the watch would get it: its own stage rows or structure, at its new length.
-          const { sessionFromRow } = await import("./content-converge.js");
-          const stages = await db
-            .select()
-            .from(plannedWorkoutStages)
-            .where(eq(plannedWorkoutStages.workoutId, op.workoutId))
-            .orderBy(asc(plannedWorkoutStages.ord));
-          const session = sessionFromRow({ ...row, calendarBlockDurationSeconds: op.durationMinutes * 60 }, stages);
-          if (session) {
-            await enqueueContentConvergence(db, {
-              userId,
-              workout: row,
-              session,
-              now,
-              corosWritesEnabled: prefs.corosWritesEnabled ?? false,
-              thresholdPaceSecPerKm,
-            });
-          }
-        }
         // A longer or shorter block can collide with its neighbours.
         touchedDates.add(row.effectiveDate);
         out.updated.push(op.workoutId);
