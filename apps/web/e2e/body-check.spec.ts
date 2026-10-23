@@ -9,7 +9,8 @@ import { seededAccount } from "./seeded-accounts.js";
  *
  *   - Fresh: chosen, nothing changes, no line.
  *   - A bit heavy: the engine session is rebuilt one mode down ("Eased to a … session for heavy legs"); the run is eased
- *     by the ease op — by time, the run being on the watch ("Eased to 1 h 27 min …"). Undo puts it back ("Kept as
+ *     by the ease op — by time when the run is on the watch ("Eased to 1 h 27 min …"), by distance when it is not and the
+ *     plan prescribes it so ("Eased to 14 km …"; a run moved onto today is queued, not on the watch). Undo puts it back ("Kept as
  *     planned.") and the server's copy is
  *     the plan's again.
  *   - Sore somewhere: the area picker, an area, Done — eased when the session works it, else noted.
@@ -210,22 +211,42 @@ test.describe("a run of the plan", () => {
     const req = context.request;
     const run = await headed(req, "run");
     expect(run.origin).toBeNull();
-    const before = ((await (await req.get(`/api/plan/workouts/${run.id}`)).json()) as { workout: { title: string; stageSummary: string | null; calendarSeconds: number; workoutSeconds: number | null } }).workout;
+    const before = ((await (await req.get(`/api/plan/workouts/${run.id}`)).json()) as { workout: { title: string; stageSummary: string | null; calendarSeconds: number; workoutSeconds: number | null; corosSyncState: string; hasWatchAddress?: boolean } }).workout;
+    // On the watch (a watch address, or COROS holding it) the run eases by time; else, prescribed by distance, by distance
+    // (the worker's `runOnWatch`/`easedRun`). Which of the two today's run is depends on the day — a run the fixture plan
+    // has on today is native and synced; one moved here from a later day is queued (`calendar_only`) with no watch address.
+    const onWatch = before.hasWatchAddress === true || before.corosSyncState === "synced";
+    const planned = /^(\d+(?:\.\d+)?) (km|mi)\b/.exec(before.stageSummary ?? "");
+    const byDistance = !onWatch && planned !== null;
     const { card } = await openCheck(page);
 
     await answer(page, "Fresh");
     await expect(card.locator(".body-check-line")).toBeEmpty();
 
     await answer(page, "A bit heavy");
-    await expect(card.locator(".body-check-line")).toHaveText(/^Eased to (\d+ h( \d+ min)?|\d+ min) for heavy legs\s*Undo$/, { timeout: 30_000 });
-    // By time — the run is on the watch — 0.7 of the plan's, held easy; and the card names that time.
-    const eased = ((await (await req.get(`/api/plan/workouts/${run.id}`)).json()) as { workout: { calendarSeconds: number; stageSummary: string | null } }).workout;
-    const minutes = eased.calendarSeconds / 60;
-    expect(Math.abs(minutes - (before.workoutSeconds ?? before.calendarSeconds) / 60 * 0.7)).toBeLessThanOrEqual(1);
-    expect(eased.stageSummary).toMatch(/easy/i);
-    const h = Math.floor(minutes / 60);
-    const words = h === 0 ? `${minutes} min` : minutes % 60 === 0 ? `${h} h` : `${h} h ${minutes % 60} min`;
-    await expect(card.locator(".body-check-line")).toContainText(`Eased to ${words} for heavy legs`);
+    const line = card.locator(".body-check-line");
+    let easedTo: string;
+    if (byDistance) {
+      // By distance — 0.7 of the plan's, to the 100 m, in the account's units, held easy; the card names that distance.
+      const [, value, unit] = planned!;
+      const km = unit === "mi" ? Number(value) * 1.609344 : Number(value);
+      const shown = (Math.round((km * 1000 * 0.7) / 100) * 100) / 1000 / (unit === "mi" ? 1.609344 : 1);
+      const fixed = shown.toFixed(1);
+      easedTo = `${fixed.endsWith(".0") ? fixed.slice(0, -2) : fixed} ${unit}`;
+      await expect(line).toHaveText(`Eased to ${easedTo} for heavy legs Undo`, { timeout: 30_000 });
+      const eased = ((await (await req.get(`/api/plan/workouts/${run.id}`)).json()) as { workout: { stageSummary: string | null } }).workout;
+      expect(eased.stageSummary).toBe(`${easedTo} easy`);
+    } else {
+      await expect(line).toHaveText(/^Eased to (\d+ h( \d+ min)?|\d+ min) for heavy legs\s*Undo$/, { timeout: 30_000 });
+      // By time — the run is on the watch — 0.7 of the plan's, held easy; and the card names that time.
+      const eased = ((await (await req.get(`/api/plan/workouts/${run.id}`)).json()) as { workout: { calendarSeconds: number; stageSummary: string | null } }).workout;
+      const minutes = eased.calendarSeconds / 60;
+      expect(Math.abs(minutes - (before.workoutSeconds ?? before.calendarSeconds) / 60 * 0.7)).toBeLessThanOrEqual(1);
+      expect(eased.stageSummary).toMatch(/easy/i);
+      const h = Math.floor(minutes / 60);
+      easedTo = h === 0 ? `${minutes} min` : minutes % 60 === 0 ? `${h} h` : `${h} h ${minutes % 60} min`;
+      await expect(line).toContainText(`Eased to ${easedTo} for heavy legs`);
+    }
     await shoot(page, "run-eased", testInfo.project.name);
 
     await page.getByRole("button", { name: "Undo" }).click();
