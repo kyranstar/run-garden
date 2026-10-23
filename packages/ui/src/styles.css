@@ -7956,6 +7956,18 @@ button.session-chip {
   margin: 0;
   font-weight: var(--weight-medium);
 }
+/* A Stop left part way, its confirm closed (B4): said in the confirm's warn ink, with the way to finish beside it. */
+.line-stop-partial {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--space-2) var(--space-4);
+}
+.line-stop-partial p {
+  margin: 0;
+  color: var(--warn-ink);
+  font-weight: var(--weight-medium);
+}
 
 /* Mobile compaction ("no unnecessary wrapping"): prose shrinks, numbers stay,
    the brief chips and week header each hold one row. Phone-first, so the
