@@ -79,10 +79,21 @@ function cmp(a: string, b: string): number {
   return a < b ? -1 : a > b ? 1 : 0;
 }
 
+/**
+ * A training line's last phase: the one its end is — of phases ending that day, the later-starting (B5: one definition
+ * everywhere). The line's goal (its race) is this phase's, Change race and Extend / Wind down act on it, and "Plan what
+ * comes after" follows it; an ended line's current phase is it. Never the latest to START: a short block inside a long
+ * build starts later and ends first.
+ */
+export function lastPhaseOf<P extends { startDate: string; endDate: string }>(line: { phases: readonly P[] }): P {
+  const end = line.phases.reduce((m, p) => (p.endDate > m ? p.endDate : m), line.phases[0]!.endDate);
+  return line.phases.filter((p) => p.endDate === end).at(-1)!;
+}
+
 function makeLine(phases: LineBlock[], today: string): TrainingLine {
   const first = phases[0]!;
-  const last = phases[phases.length - 1]!;
-  const endDate = phases.reduce((m, p) => (p.endDate > m ? p.endDate : m), first.endDate);
+  const last = lastPhaseOf({ phases });
+  const endDate = last.endDate;
   // Overlapping phases can both cover today: the later-starting one is current.
   const covering = phases.filter((p) => p.startDate <= today && today <= p.endDate);
   const upcoming = phases.filter((p) => p.startDate > today);

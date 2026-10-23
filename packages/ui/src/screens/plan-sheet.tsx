@@ -3,7 +3,7 @@ import { useEffect, useRef, useState } from "react";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { api, ApiError, type CoachPlanDto, type PlanDetailResponse, type TrainingLineDto } from "@rg/api-client";
 import { ConfirmDialog, formatShortDate, Sheet, Spinner, useEscapeKey } from "../components.js";
-import { dayLabel, lineSentenceName, planEnded, startOfIsoWeek } from "@rg/domain";
+import { dayLabel, lastPhaseOf, lineSentenceName, planEnded, startOfIsoWeek } from "@rg/domain";
 import { PlannedVsActualBars, progressionInUnits, ProgressionStepChart } from "./plan-charts.js";
 import { useCoach } from "./studio/coach-ask.js";
 import { NUDGES_QUERY } from "./studio/coach-conversation-model.js";
@@ -767,7 +767,8 @@ function LinePhases({
   const coach = useCoach();
   const readOnly = line.ended || stop.stopped;
   const requests = lineRequests(line.discipline);
-  const last = line.phases[line.phases.length - 1]!;
+  // The phase the line's end is (B5: the one definition — the server's `last`, its chips and the line's goal use it too).
+  const last = lastPhaseOf(line);
   // The phase an old link named opens, when it is one that has ended.
   const [open, setOpen] = useState<ReadonlySet<string>>(() => new Set(focusPhaseId ? [focusPhaseId] : []));
   const [renaming, setRenaming] = useState<string | null>(null);

@@ -16,7 +16,7 @@ import { MemoryRouter, useLocation } from "react-router-dom";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { api, ApiError, type CoachPlanDto, type PlanDetailResponse, type TrainingLineDto } from "@rg/api-client";
-import { linesOf } from "@rg/domain";
+import { lastPhaseOf, linesOf } from "@rg/domain";
 import { CoachOpenContext } from "../src/screens/studio/coach-ask.js";
 import { NUDGES_QUERY } from "../src/screens/studio/coach-conversation-model.js";
 import { LineSheet, linePhaseState, stopCount, stopLine } from "../src/screens/plan-sheet.js";
@@ -355,6 +355,23 @@ describe("a line's sheet lists its phases", () => {
     type(field, "2026-12-13");
     await act(async () => button("Save").click());
     expect(asked.mock.calls).toEqual([["r3", "2026-12-13"]]);
+  });
+
+  it("the race and Change race are the phase the line's end is — as the server's `last` — never a later-starting one that ends first (B5)", async () => {
+    const asked = vi.spyOn(api, "coachPlanRace").mockResolvedValue({ ok: true, raceDate: "2026-12-13", demoted: 0 });
+    const build = phase("L", "Long build", "2026-10-05", "2026-12-06", { planRaceDate: "2026-12-06" });
+    const sharpen = phase("S", "Sharpening", "2026-10-12", "2026-11-01");
+    const line = mkLine([build, sharpen], { currentPhaseId: "S", goalRaceDate: "2026-12-06", endDate: "2026-12-06" });
+    // The one definition the server's read_plans `last`, its chips and the line's goal use.
+    expect(lastPhaseOf(line).id).toBe("L");
+    mountSheet(line);
+    expect(text(document.body)).toContain("Race · Sun 6 Dec");
+    act(() => button("Change").click());
+    const field = document.querySelector<HTMLInputElement>('input[type="date"][aria-label="Race day"]')!;
+    expect(field.min).toBe("2026-10-05");
+    type(field, "2026-12-13");
+    await act(async () => button("Save").click());
+    expect(asked.mock.calls).toEqual([["L", "2026-12-13"]]);
   });
 
   it("Extend and Wind down write the line's end in the box", () => {

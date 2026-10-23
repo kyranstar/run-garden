@@ -4,6 +4,7 @@ import {
   type LineBlock,
   type TrainingLine,
   type WeekPlan,
+  lastPhaseOf,
   lineSentenceName,
   linesOf,
   phaseWeekOf,
@@ -135,6 +136,23 @@ describe("linesOf", () => {
     const earlyRace = blk("E", "2026-10-01", "2026-12-12", { planRaceDate: "2026-11-01" });
     const last = blk("F", "2026-12-13", "2027-01-01");
     expect(linesOf([earlyRace, last], "2026-10-20")[0]!.goalRaceDate).toBeNull();
+  });
+
+  it("the last phase is the one the line's end is, never the latest to start — for its goal and once it has ended too (B5)", () => {
+    // A sharpening block inside a long build with the race: the build starts first and ends last.
+    const build = blk("L", "2026-01-05", "2026-03-29", { planRaceDate: "2026-03-29" });
+    const sharpen = blk("S", "2026-02-02", "2026-02-22");
+    const [l] = linesOf([build, sharpen], "2026-02-10");
+    expect(l!.phases.map((p) => p.id)).toEqual(["L", "S"]);
+    expect(lastPhaseOf(l!).id).toBe("L");
+    expect(l!.goalRaceDate).toBe("2026-03-29");
+    const [over] = linesOf([build, sharpen], "2026-04-10");
+    expect(over!.ended).toBe(true);
+    expect(over!.currentPhaseId).toBe("L");
+    // Of phases ending the same day, the later-starting.
+    const a = blk("A", "2026-01-05", "2026-02-22");
+    const b = blk("B", "2026-02-02", "2026-02-22");
+    expect(lastPhaseOf(linesOf([a, b], "2026-02-10")[0]!).id).toBe("B");
   });
 });
 
