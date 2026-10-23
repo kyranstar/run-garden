@@ -1994,11 +1994,12 @@ export interface StructuralChunkInput {
 }
 
 /**
- * The least a caller with a leftover should call with: a chunk's reads and one session at its ordinary most (the
- * threshold, the rows and days, the stamps; the row, its revision, two stage statements and its watch create; the
- * collision pass's two reads and two of its day's rows moved).
+ * The least a caller with a leftover should call with: a chunk taking an op over part way reads its plan again first
+ * (`planStoppedOrGone`, one statement — before the first unit, which runs whatever it costs: review L3), then a chunk's
+ * reads and one session at its ordinary most (the threshold, the rows and days, the stamps; the row, its revision, two
+ * stage statements and its watch create; the collision pass's two reads and two of its day's rows moved).
  */
-export const STRUCTURAL_MIN_BUDGET = 3 + 5 + 4;
+export const STRUCTURAL_MIN_BUDGET = 1 + 3 + 5 + 4;
 
 /** A chunk's sessions read at once: their ids and days bound well under D1's 100 variables. */
 const SESSION_WINDOW = 24;
