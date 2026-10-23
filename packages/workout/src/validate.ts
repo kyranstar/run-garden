@@ -42,7 +42,8 @@
  * - condition_gate (error): `allowRecord` refuses the record for this mode and the day.
  * - condition_gate_pending (warning, or error): a future day, and a pattern or record rule the day's reading could close;
  *   a warning only when the item carries an alternate that passes in recovery mode (the mode's limits and every
- *   profile's rules, at the calmest, unanswered and worst readings).
+ *   profile's rules, at the calmest, unanswered and worst readings) and is flare-safe (`recordFlareSafe`): the day
+ *   may be a flare day.
  * - condition_mode (warning): `fitsMode` is false for the workout's mode.
  * - condition_format (warning): `fitsFormat` is false for the part's format.
  * - condition_flare (warning): today's reading is a flare (`flare`) and the move is not flare-safe (`recordFlareSafe`).
@@ -538,12 +539,16 @@ export function validateWorkoutDoc(input: unknown, ctx: ValidateCtx): DocIssue[]
   /** Raises none of the condition, mode, athlete or place issues here: a fix to offer. */
   const fitsHere = (rec: ExerciseRecord, format: DocFormat): boolean => judge(rec, format).length === 0;
 
-  /** Passes in recovery mode whatever the day's check reads: what a future day's gated move needs as its alternate. */
+  /**
+   * Passes in recovery mode whatever the day's check reads, a flare included: what a future day's gated move needs as
+   * its alternate. Recovery's caps are not the flare-safe ones (recovery takes face-down positions since 2026-10-23), so
+   * the move must be flare-safe too (`recordFlareSafe`) — else the stand-in a flare day swaps in is one it leaves out.
+   */
   const passesRecovery = (rec: ExerciseRecord): boolean =>
     limitsAgainst(rec, "recovery", "") === null &&
     profiles.every((p) => {
       const a = attrsOf(rec, p);
-      if (!a || p.never(a) || !p.fitsMode(a, "recovery", rec)) return false;
+      if (!a || p.never(a) || !p.fitsMode(a, "recovery", rec) || !recordFlareSafe(p, rec)) return false;
       return [bestDay(p), UNANSWERED, worstDay(p)].every((r) => patternOk(p, rec, "recovery", r) && recordOk(p, rec, "recovery", r));
     });
 

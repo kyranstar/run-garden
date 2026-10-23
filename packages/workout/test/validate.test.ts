@@ -7,7 +7,7 @@
 import { readFileSync } from "node:fs";
 import { describe, expect, it } from "vitest";
 import { addDays, daysBetween, type WorkoutDoc, type WorkoutItem, type WorkoutPart } from "@rg/domain";
-import { EXERCISES, TMJ, UNANSWERED, fitsMode, type CheckReading, type ConditionProfile, type ExerciseRecord, type Mode } from "@rg/exercise-library";
+import { EXERCISES, TMJ, UNANSWERED, fitsMode, recordFlareSafe, type CheckReading, type ConditionProfile, type ExerciseRecord, type Mode } from "@rg/exercise-library";
 import { Planner, Rng, type DayState, type ProgramState } from "@rg/session-engine";
 import { LOCATIONS, seededHistory } from "../../session-engine/test/seeded-history.js";
 import { DOC_ISSUE_CODES, docFromBuild, validateWorkoutDoc, type DayContext, type DocIssue, type ValidateCtx } from "../src/index.js";
@@ -483,6 +483,22 @@ describe("condition_gate_pending", () => {
   it("an alternate that is itself gated (or fails recovery) does not count", () => {
     expect(codes(check(hop(alt("lineHopForwardBack")), FUTURE()))).toEqual([`error:condition_gate_pending@${P0}.libraryId`]);
     expect(codes(check(hop(alt("farmerCarry")), FUTURE()))).toEqual([`error:condition_gate_pending@${P0}.libraryId`]);
+  });
+
+  it("a face-down alternate doesn't count: recovery takes it since 2026-10-23, but the day ahead may be a flare day, which doesn't (review L1)", () => {
+    expect(codes(check(hop(alt("proneYTW")), FUTURE()))).toEqual([`error:condition_gate_pending@${P0}.libraryId`]);
+    expect(check(hop(alt("proneYTW", "bridge")), FUTURE())).toEqual([expect.objectContaining({ code: "condition_gate_pending", severity: "warning", fix: "bridge" })]);
+  });
+
+  it("nor is the library's stand-in a face-down move, even where it is the closest (review L1)", () => {
+    const pullJump: ExerciseRecord = { ...record("pogoHop"), id: "testPullJump", name: "Test pull jump", legacyIds: [], patterns: ["pull-h"], regions: ["upper-back", "shoulders"], easier: [], harder: [] };
+    // proneYTW first: the closest stand-in by pattern and region, and the first the library offers.
+    const lib = [record("proneYTW"), pullJump, ...LIBRARY.filter((e) => e.id !== "proneYTW")];
+    const [issue] = validateWorkoutDoc(one(ex("testPullJump", { sets: 3, reps: 10 })), { library: lib, activeProfiles: [TMJ], day: FUTURE() });
+    expect(issue).toMatchObject({ code: "condition_gate_pending", severity: "error" });
+    expect(issue!.fix).toBeDefined();
+    expect(issue!.fix).not.toBe("proneYTW");
+    expect(recordFlareSafe(TMJ, lib.find((e) => e.id === issue!.fix)!)).toBe(true);
   });
 
   it("an easier variant is not an alternate the item carries: still an error, the variant offered as the fix", () => {
