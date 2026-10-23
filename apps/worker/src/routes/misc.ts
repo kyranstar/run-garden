@@ -418,6 +418,9 @@ const MIN_HRMAX_RUNS = 10;
  * session's shape and the exercise keys); auto-km is the fallback — which is
  * also every pre-0018 row (splitType "auto_km" or null).
  */
+/** Sports whose laps are sets and holds, not a partition of the session's time (audit D3). */
+const SET_LAP_SPORTS: ReadonlySet<string> = new Set(["strength", "yoga"]);
+
 export function preferLapView<T extends { splitType?: string | null }>(rows: T[]): T[] {
   const workout = rows.filter((r) => r.splitType === "workout");
   return workout.length > 0 ? workout : rows;
@@ -746,11 +749,14 @@ insightRoutes.get("/", async (c) => {
   // The watch's per-run time-in-zone record rides along (audit#2 (a1)):
   // where it exists it IS the low/high classification, and the lap/avg-HR
   // bucketing against the ceiling is the fallback for zone-less runs.
+  // A lift's or a flow's laps are its sets and rests, never a partition of its time (audit D3): COROS sends every set
+  // twice, and the rows stored before 2026-10-23 keep both copies — their seconds doubled the strength week's bar.
+  // Its zones or its average decide.
   const toIntensityInput = (a: (typeof actRows)[number]): IntensityRunInput => ({
     activityId: a.id,
     durationSeconds: a.durationSeconds,
     avgHeartRate: a.avgHeartRate,
-    laps: lapsOf(a.id).map((l) => ({
+    laps: (SET_LAP_SPORTS.has(a.sport) ? [] : lapsOf(a.id)).map((l) => ({
       avgHeartRate: l.avgHeartRate ?? null,
       durationSeconds: l.durationSeconds,
     })),

@@ -239,4 +239,33 @@ describe("buildEffortPackage", () => {
     expect(a.text).toContain("trailing 7d load 278 · 28d 278");
     expect(a.text).toContain("achilles");
   });
+
+  it("a lift's laps are never km — set laps by their exercise; laps that add up past the session are said never to be summed (audit D3)", async () => {
+    const db = makeTestDb();
+    const { userId } = await makeTestUser(db);
+    const lift = { sport: "strength", durationSeconds: 2881, elapsedSeconds: 2950, distanceMeters: null, avgPaceSecPerKm: null, title: "Strength" };
+    const lap = (activityId: string, splitType: string, lapIndex: number, durationSeconds: number) => ({
+      id: `${activityId}:${splitType}:${lapIndex}`,
+      activityId,
+      lapIndex,
+      durationSeconds,
+      avgHeartRate: 110,
+      splitType,
+      exerciseNameKey: "T1041",
+    });
+    // As stored before the fix: every set twice, labelled by the 1 km rule, adding up to twice the session.
+    const before = await seedActivity(db, userId, lift);
+    await db.insert(schema.activityLaps).values([1, 2, 3, 4].map((i) => lap(before, "auto_km", i, 2881 / 2)));
+    const old = (await buildEffortPackage(db, userId, before))!.text;
+    expect(old).not.toMatch(/\bkm \d/);
+    expect(old).toContain("lap 1 (Bench Press): 24:01 · HR 110");
+    expect(old).toContain("these laps add up to 1:36:02, past the session's own 49:10");
+    // As stored now: set laps, one copy.
+    const after = await seedActivity(db, userId, { ...lift, startTime: "2026-08-07T12:08:02Z", startTimeLocal: "2026-08-07T05:08:02" });
+    await db.insert(schema.activityLaps).values([1, 2].map((i) => lap(after, "set", i, 2881 / 2)));
+    const now = (await buildEffortPackage(db, userId, after))!.text;
+    expect(now).toContain("lap 1 (Bench Press): 24:01 · HR 110");
+    expect(now).not.toMatch(/\bkm \d/);
+    expect(now).not.toContain("add up to");
+  });
 });

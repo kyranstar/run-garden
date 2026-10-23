@@ -74,7 +74,7 @@ export async function buildActivityBackfill(
     }
     activities.push(normalizeCorosActivity(item, detail));
     if (detail) {
-      const laps = normalizeCorosLaps(detail);
+      const laps = normalizeCorosLaps(detail, item.sportType);
       if (laps.length > 0) lapsByProviderId[item.labelId] = laps;
       const strength = strengthDetailOf(item.sportType, detail);
       if (strength) strengthDetailsByProviderId[item.labelId] = strength;
