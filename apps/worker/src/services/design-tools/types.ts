@@ -190,7 +190,7 @@ export interface SetHooks {
    * The week's spend now and one model call's worst case (Task 13's fix wave, §2.11): what the step's own weekly read
    * gave, with its call's cost — or, in a step that called no model, one read. Absent: the week isn't weighed.
    */
-  week?(): Promise<{ spentMicros: number; callWorstMicros: number }>;
+  week?(): Promise<{ spentMicros: number; callWorstMicros: number; cutoffMicros?: number }>;
   /** Whether any of these designers is already in the tree: a replay of the call that started them (no statement). */
   started(runIds: readonly string[]): boolean;
   /** A line a tool put in the proposal for one workout of the set (drop_workout's): kept with its key in the main

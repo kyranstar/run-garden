@@ -328,6 +328,9 @@ export interface SweepAccountStats {
   garden: ReadNowResult["garden"] | null;
   /** Coach reads this turn claimed and generated (each a model call). */
   coachReads: number;
+  /** Why the drain read nothing, when something held it back (`processCoachReads`' skip: the budget reserve, no key,
+   * AI off, out of credits…) — absent when it ran (audit C1: a paused drain read as a silent `coachReads: 0`). */
+  coachReadsSkipped?: string;
   /** Planned workouts the read could not write (a partial read). */
   failedWrites: number;
 }
@@ -350,6 +353,7 @@ export async function corosSweepAccount(
     () => null,
   );
   let coachReads = 0;
+  let coachReadsSkipped: string | null = null;
   let garden = result?.garden ?? null;
   if (result) {
     // A replay an earlier invocation left on record (capped, or killed) walks on here too, capped like the read's
@@ -368,6 +372,7 @@ export async function corosSweepAccount(
     // here and one an hour in the hourly cron.
     const reads = await processCoachReads(db, env, userId, prefs, { cap: 1 }).catch(() => null);
     coachReads = reads?.attempted ?? 0;
+    coachReadsSkipped = reads?.skipped ?? null;
   }
   return {
     read: result?.status ?? "failed",
@@ -375,6 +380,7 @@ export async function corosSweepAccount(
     fullSchedule: result?.fullSchedule === true,
     garden,
     coachReads,
+    ...(coachReadsSkipped ? { coachReadsSkipped } : {}),
     failedWrites: result?.failedWrites ?? 0,
   };
 }

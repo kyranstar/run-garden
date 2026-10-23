@@ -94,6 +94,7 @@ import { googleCalendarClient } from "../services/google-calendar.js";
 import { loadPreferences, savePreferences, syncCalendar } from "../services/calendar-sync.js";
 import { emitPendingWork } from "../services/jobs.js";
 import { llmBudgetStatus, LLM_BUDGET } from "../services/llm.js";
+import { autoReadsPaused } from "../services/coach-reads.js";
 import { loadOutOfCredits } from "../services/ai-credits.js";
 import {
   ingestActivities,
@@ -1414,6 +1415,9 @@ settingsRoutes.get("/", async (c) => {
       // The AI gateway answered 402 (out of credits) and nothing has worked
       // since — when that started, or null (ai-credits.ts).
       outOfCreditsSince: outOfCredits?.since ?? null,
+      // The automatic activity reads stop at their reserve (coach-reads.ts):
+      // said, never silent (audit C1).
+      autoReadsPaused: autoReadsPaused(budget),
     },
   });
 });

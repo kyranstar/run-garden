@@ -15,7 +15,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import { DEFAULT_USER_PREFERENCES } from "@rg/domain";
 import { OUT_OF_CREDITS_LINE } from "../src/ai-credits.js";
 import { CoachRead } from "../src/screens/coach-read.js";
-import { CoachAiSection } from "../src/screens/settings/coach-settings.js";
+import { AUTO_READS_PAUSED_LINE, CoachAiSection } from "../src/screens/settings/coach-settings.js";
 
 (globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
 
@@ -145,5 +145,39 @@ describe("Settings → Coach & AI", () => {
     mount(createElement(CoachAiSection, { prefs: DEFAULT_USER_PREFERENCES }));
     await until(() => text().includes("AI this week"), "the card");
     expect(text()).not.toContain(OUT_OF_CREDITS_LINE);
+  });
+});
+
+describe("Settings → Coach & AI: the automatic reads paused (audit C1)", () => {
+  function settingsWorker(llm: { spentDollars: number; cutoff: boolean; autoReadsPaused?: boolean }) {
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async (url: string) =>
+        url.startsWith("/api/settings")
+          ? json({ prefs: DEFAULT_USER_PREFERENCES, llm: { warnDollars: 5, cutoffDollars: 20, maxDollars: 25, warn: true, outOfCreditsSince: null, ...llm } })
+          : json({ error: "not_found" }, 404),
+      ),
+    );
+  }
+
+  it("one plain line while the week's spend holds them back", async () => {
+    settingsWorker({ spentDollars: 12.4, cutoff: false, autoReadsPaused: true });
+    mount(createElement(CoachAiSection, { prefs: DEFAULT_USER_PREFERENCES }));
+    await until(() => text().includes("AI this week"), "the card");
+    expect(AUTO_READS_PAUSED_LINE).toBe("Automatic reads paused — weekly budget");
+    expect(text().split(AUTO_READS_PAUSED_LINE)).toHaveLength(2);
+  });
+
+  it("none while they run — nor at the cutoff, whose spend line already says the AI waits for the week", async () => {
+    settingsWorker({ spentDollars: 6.4, cutoff: false, autoReadsPaused: false });
+    mount(createElement(CoachAiSection, { prefs: DEFAULT_USER_PREFERENCES }));
+    await until(() => text().includes("AI this week"), "the card");
+    expect(text()).not.toContain(AUTO_READS_PAUSED_LINE);
+    act(() => root?.unmount());
+    host?.remove();
+    settingsWorker({ spentDollars: 20.1, cutoff: true, autoReadsPaused: true });
+    mount(createElement(CoachAiSection, { prefs: DEFAULT_USER_PREFERENCES }));
+    await until(() => text().includes("paused until the week clears"), "the cutoff's line");
+    expect(text()).not.toContain(AUTO_READS_PAUSED_LINE);
   });
 });

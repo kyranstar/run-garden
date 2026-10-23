@@ -8,6 +8,8 @@
  * never answers for these paths first.
  *
  *   POST /                  { scope?, request?, rehearsal?, focus?, conversationId? } → { run, existing, conversationId }
+ *                           (409 `week_budget` past the athlete's week; a rehearsal past the rehearsal lane's own,
+ *                           409 `rehearsal_budget` { spentUsd, capUsd }: llm.ts DEV_BUDGET)
  *                           (the new shape §5: no conversationId, the current conversation — its newest ask under 18 hours
  *                           old — else a new one; null, a new one; a run's id, the conversation it is a turn of; 400
  *                           `bad_conversation` for one that can't be an id) (one live main run per athlete: a
@@ -65,6 +67,7 @@ import {
   LIVE_STATUSES,
   noteOnTrail,
   parseScopeRequest,
+  RehearsalBudgetError,
   runStep,
   type CoachRunDto,
   type RunDeps,
@@ -155,6 +158,8 @@ export function makeCoachRunRoutes(deps: () => RunDeps = defaultRunDeps): Hono<A
     } catch (e) {
       // The week can't pay for it (Task 13's fix wave, §2.11): nothing started.
       if (e instanceof WeekBudgetError) return c.json({ error: "week_budget", spentUsd: e.spentUsd, cutoffUsd: e.cutoffUsd }, 409);
+      // A rehearsal past the rehearsal lane's week (audit C1: rehearsals and replays together): nothing started.
+      if (e instanceof RehearsalBudgetError) return c.json({ error: "rehearsal_budget", spentUsd: e.spentUsd, capUsd: e.capUsd }, 409);
       // Not the athlete's, or not one there (404); a day the run can't plan, or a set's suggestion (400, in words).
       if (e instanceof FocusError) {
         return e.code === "focus_not_found" ? c.json({ error: e.code }, 404) : c.json({ error: e.code, why: e.why ?? "" }, 400);

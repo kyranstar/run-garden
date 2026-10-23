@@ -34,7 +34,7 @@ import {
   type KeyLine,
   type SetEstimate,
 } from "./design-orchestrate.js";
-import { LLM_BUDGET, llmBudgetStatus, weekCostSql } from "./llm.js";
+import { DEV_BUDGET, devBudgetStatus, devUsageSql, LLM_BUDGET, llmBudgetStatus, REHEARSAL_USAGE_PREFIX, weekCostSql } from "./llm.js";
 import { utf8Bytes } from "./utf8.js";
 import {
   callMessages,
@@ -135,8 +135,9 @@ import {
  * The stamp a step leaves is the end of the step.
  *
  * MONEY. Before every model call: the run's own ceiling (state), the step and state caps, then the weekly cap
- * (`llmBudgetStatus`, the one the whole app shares) as a hard ceiling — the call is made only when its worst case fits
- * under it. Every call is recorded in `llm_usage` by role (design_main | design_workout | design_review): a row is
+ * (`llmBudgetStatus`, the one the whole app shares; a rehearsal's, the rehearsal lane's own: `devBudgetStatus`, audit C1)
+ * as a hard ceiling — the call is made only when its worst case fits under it. Every call is recorded in `llm_usage` by
+ * role (design_main | design_workout | design_review; a rehearsal's with `rehearsal_` before it): a row is
  * written before the call at what a killed call could have cost — so a step killed mid-call is still counted — and set
  * to the real usage after it, or to what a broken-off answer had used, or to zero when nothing was billed. A step killed
  * mid-call counts against its RUN's ceiling at a realistic estimate its row carries (`deadStepEstimateMicros`, at most
@@ -255,6 +256,20 @@ const USAGE_KIND: Readonly<Record<ToolRole, string>> = {
   designer: "design_workout",
   reviewer: "design_review",
 };
+
+/** A call's kind in `llm_usage`: its role's — a rehearsal's marked as the rehearsal lane's (llm.ts `DEV_BUDGET`), so the
+ * athlete's week never counts it (audit C1). */
+export const usageKindOf = (role: ToolRole, rehearsal: boolean | undefined): string => `${rehearsal ? REHEARSAL_USAGE_PREFIX : ""}${USAGE_KIND[role]}`;
+
+/** What a run's lane may spend in the rolling week, and what it has: the athlete's (the cutoff) or a rehearsal's (the
+ * rehearsal lane's cap: rehearsals and replays together). ONE statement. */
+async function laneWeek(db: Db, userId: string, rehearsal: boolean): Promise<{ spentMicros: number; cutoffMicros: number }> {
+  if (rehearsal) {
+    const dev = await devBudgetStatus(db, userId);
+    return { spentMicros: dev.spentMicros, cutoffMicros: dev.capMicros };
+  }
+  return { spentMicros: (await llmBudgetStatus(db, userId)).spentMicros, cutoffMicros: LLM_BUDGET.cutoffMicros };
+}
 
 // ── The budget ──────────────────────────────────────────────────────────
 
@@ -1050,6 +1065,17 @@ export class WeekBudgetError extends Error {
   }
 }
 
+/** A rehearsal the rehearsal lane's week can't pay for (audit C1: `DEV_BUDGET`, rehearsals and replays together): nothing
+ * started. The route answers it 409 `{ error: "rehearsal_budget", spentUsd, capUsd }`. */
+export class RehearsalBudgetError extends Error {
+  constructor(
+    readonly spentUsd: number,
+    readonly capUsd: number,
+  ) {
+    super("rehearsal_budget");
+  }
+}
+
 /** A now or later-today run's cost before any is measured (micros): about a set's designer with its reviewers. */
 export const DEFAULT_SINGLE_RUN_COST_MICROS = DEFAULT_WORKOUT_COST_MICROS;
 /** A week's set before any is measured: the workouts it usually plans ("usually 2–4"). */
@@ -1066,9 +1092,16 @@ export const START_MEDIAN_MIN = 3;
  * median whole-tree cost of the athlete's main runs of its kind that finished or stopped at their own ceiling (round 2,
  * Minor 7: those are what such a run really costs) (a single workout's, or a set's) when there are
  * START_MEDIAN_MIN of them, else the estimate (a set's: its workouts at the designer's default and the main coach's).
- * ONE statement.
+ * A rehearsal weighs its own lane (audit C1): the rehearsal lane's spend against its cap (`DEV_BUDGET`), and rehearsals'
+ * costs — never the athlete's runs', nor theirs a rehearsal's. ONE statement.
  */
-async function weekCanPay(db: Db, userId: string, scope: RunScope, now: Date): Promise<{ ok: boolean; spentMicros: number }> {
+async function weekCanPay(
+  db: Db,
+  userId: string,
+  scope: RunScope,
+  now: Date,
+  rehearsal: boolean,
+): Promise<{ ok: boolean; spentMicros: number; cutoffMicros: number }> {
   const since = new Date(now.getTime() - 7 * 86_400_000).toISOString();
   const measuredSince = new Date(now.getTime() - START_MEDIAN_DAYS * 86_400_000).toISOString();
   const set = isSetScope(scope);
@@ -1083,13 +1116,15 @@ async function weekCanPay(db: Db, userId: string, scope: RunScope, now: Date): P
     + coalesce((SELECT sum(k.cost_usd) FROM coach_runs k WHERE k.user_id = m.user_id AND k.parent_id = m.id), 0)
     + coalesce((SELECT sum(g.cost_usd) FROM coach_runs g WHERE g.user_id = m.user_id
         AND g.parent_id IN (SELECT k.id FROM coach_runs k WHERE k.user_id = m.user_id AND k.parent_id = m.id)), 0))`;
+  const lane = rehearsal ? devUsageSql() : sql`NOT ${devUsageSql()}`;
   const [row] = (await db.all(sql`
-    SELECT (SELECT coalesce(sum(${weekCostSql(now)}), 0) FROM ${llmUsage} WHERE ${llmUsage.userId} = ${userId} AND ${llmUsage.createdAt} >= ${since}) AS spent,
+    SELECT (SELECT coalesce(sum(${weekCostSql(now)}), 0) FROM ${llmUsage} WHERE ${llmUsage.userId} = ${userId} AND ${llmUsage.createdAt} >= ${since} AND ${lane}) AS spent,
       (SELECT json_group_array(c) FROM (
         SELECT ${tree} AS c FROM coach_runs m
         WHERE m.user_id = ${userId} AND m.parent_id IS NULL AND m.created_at >= ${measuredSince}
           AND (m.status = 'finished' OR (m.status = 'stopped_cap' AND m.error = 'run_ceiling'))
           AND json_valid(m.scope) AND ${kindOf} = ${set ? "set" : "single"}
+          AND coalesce(CASE WHEN json_valid(m.state) THEN json_extract(m.state, '$.settings.rehearsal') END, 0) = ${rehearsal ? 1 : 0}
         ORDER BY m.created_at DESC LIMIT ${START_MEDIAN_RUNS})) AS costs
   `)) as Array<{ spent: number | null; costs: string | null }>;
   const spentMicros = Math.round(Number(row?.spent ?? 0));
@@ -1100,7 +1135,8 @@ async function weekCanPay(db: Db, userId: string, scope: RunScope, now: Date): P
   const estimate = set ? DEFAULT_WORKOUT_COST_MICROS * workouts + DEFAULT_SET_MAIN_COST_MICROS : DEFAULT_SINGLE_RUN_COST_MICROS;
   const mid = costs.length >> 1;
   const need = costs.length < START_MEDIAN_MIN ? estimate : costs.length % 2 === 1 ? costs[mid]! : Math.round((costs[mid - 1]! + costs[mid]!) / 2);
-  return { ok: spentMicros + need <= LLM_BUDGET.cutoffMicros, spentMicros };
+  const cutoffMicros = rehearsal ? DEV_BUDGET.capMicros : LLM_BUDGET.cutoffMicros;
+  return { ok: spentMicros + need <= cutoffMicros, spentMicros, cutoffMicros };
 }
 
 /** A JSON array's finite numbers; none when it isn't one. */
@@ -1213,12 +1249,13 @@ export async function createRun(db: Db, userId: string, input: CreateRunInput, n
   };
 
   // The week first (§2.11): a run it can't pay for never starts — though a live run still comes back as itself.
-  const week = await weekCanPay(db, userId, scope, now);
+  const week = await weekCanPay(db, userId, scope, now, rehearsal);
   const created = week.ok ? await insert() : null;
   if (created) return created;
   let { nodes, root } = await live();
   if (!week.ok && (!root || windowClosed(root.settings, root.createdAt, now))) {
-    throw new WeekBudgetError(week.spentMicros / 1_000_000, LLM_BUDGET.cutoffMicros / 1_000_000);
+    if (rehearsal) throw new RehearsalBudgetError(week.spentMicros / 1_000_000, week.cutoffMicros / 1_000_000);
+    throw new WeekBudgetError(week.spentMicros / 1_000_000, week.cutoffMicros / 1_000_000);
   }
   if (root && windowClosed(root.settings, root.createdAt, now) && (await expireTree(db, userId, root, nodes, now)).took) {
     const fresh = await insert();
@@ -1894,9 +1931,10 @@ interface StepCtx {
   allowModel: boolean;
   /** What this step's model call cost, once it is known: kept on the run even if the step then breaks. */
   spent: number;
-  /** The week's spend as the step's model call read it before the call, and that call's worst case (§2.11: plan_set
-   * weighs the week from it). Absent in a step that made no model call. */
-  week?: { spentMicros: number; worstMicros: number };
+  /** The week's spend as the step's model call read it before the call, that call's worst case, and the week's cutoff —
+   * its lane's: a rehearsal's is the rehearsal lane's cap (§2.11: plan_set weighs the week from it). Absent in a step
+   * that made no model call. */
+  week?: { spentMicros: number; worstMicros: number; cutoffMicros: number };
   /** The step's model call's usage, once billed (M5): its tokens, on the step's first event. */
   usage?: { input: number; cacheRead: number; cacheWrite: number; output: number };
 }
@@ -2532,9 +2570,10 @@ async function modelStep(s: StepCtx): Promise<Advance> {
   // recorded before it (round 2, A-M2), so a call admitted never records more than the cutoff — fits under the week's
   // cutoff with everything spent so far. A run's and a tree's own ceilings are checked against what has been spent, so
   // a run may pass its own by one call's cost (its last): the week's is the account's guard rail, and is never passed.
-  const week = await llmBudgetStatus(db, userId);
-  if (week.spentMicros + worstMicros > LLM_BUDGET.cutoffMicros) return end({ ...stop(state, "stopped_cap", "weekly_cap", LINES.weeklyCap), stopTree: true });
-  s.week = { spentMicros: week.spentMicros, worstMicros };
+  // A rehearsal's week is the rehearsal lane's, against its own cap (audit C1): never the athlete's, nor theirs it.
+  const week = await laneWeek(db, userId, settings.rehearsal === true);
+  if (week.spentMicros + worstMicros > week.cutoffMicros) return end({ ...stop(state, "stopped_cap", "weekly_cap", LINES.weeklyCap), stopTree: true });
+  s.week = { spentMicros: week.spentMicros, worstMicros, cutoffMicros: week.cutoffMicros };
 
   // ── The newest (unsent) message: the time now if the frozen clock has drifted, the last-turn note at a cap ──
   const timezone = settings.timezone || "UTC";
@@ -2551,7 +2590,7 @@ async function modelStep(s: StepCtx): Promise<Advance> {
   await db.insert(llmUsage).values({
     id: usageId,
     userId,
-    kind: USAGE_KIND[run.role],
+    kind: usageKindOf(run.role, settings.rehearsal),
     model,
     inputTokens: promptTokens,
     outputTokens: worst.outputTokens,
@@ -3255,9 +3294,9 @@ function setHooks(s: StepCtx): SetHooks {
     // The week's spend now (§2.11): the step's own weekly read and its call's cost, or — a step of queued calls — one
     // read, with the worst case of a call on this run's state.
     async week() {
-      if (s.week) return { spentMicros: s.week.spentMicros + s.spent, callWorstMicros: s.week.worstMicros };
-      const status = await llmBudgetStatus(s.db, s.userId);
-      return { spentMicros: status.spentMicros, callWorstMicros: callWorstMicros(s) };
+      if (s.week) return { spentMicros: s.week.spentMicros + s.spent, callWorstMicros: s.week.worstMicros, cutoffMicros: s.week.cutoffMicros };
+      const week = await laneWeek(s.db, s.userId, s.state.settings.rehearsal === true);
+      return { spentMicros: week.spentMicros, callWorstMicros: callWorstMicros(s), cutoffMicros: week.cutoffMicros };
     },
     keyLine(key, line) {
       const set = s.state.set ?? { rounds: [] };

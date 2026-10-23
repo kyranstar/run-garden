@@ -423,11 +423,14 @@ export async function hourly(db: Db, env: Env): Promise<void> {
       // three to seven times a steady one's CPU, on the free plan's 10 ms — and a killed run did none of them, so
       // the next did all three again. Now the rest waits for the next run: nothing is dropped, only deferred.
       let heavyStep: HourlyHeavyStep | null = garden.simulatedDays > 1 ? "garden" : null;
+      // Why the drain read nothing, when something held it back — on the run row, never silent (audit C1).
+      let coachReadsSkipped: string | null = null;
       if (heavyStep === null) {
         // Perception catch-up: drains reads a dropped waitUntil missed — one a run. The half-hourly sweep drains
         // the backlog after each ingest.
         const reads = await processCoachReads(db, env, userId, prefs, { cap: 1 }).catch(() => null);
         if (reads && reads.attempted > 0) heavyStep = "coach_read";
+        coachReadsSkipped = reads?.skipped ?? null;
       }
       await stillOurs();
       if (heavyStep === null) {
@@ -468,7 +471,7 @@ export async function hourly(db: Db, env: Env): Promise<void> {
         });
         if (docs && docs.scanned > 0) heavyStep = "doc_backfill";
       }
-      await finishSyncRun(db, runId, "ok", { ...rec, ...garden, heavyStep });
+      await finishSyncRun(db, runId, "ok", { ...rec, ...garden, heavyStep, ...(coachReadsSkipped ? { coachReadsSkipped } : {}) });
     } catch (e) {
       if (e instanceof RestoreBegan) await dropSyncRun(db, runId);
       else await finishSyncRun(db, runId, "error");

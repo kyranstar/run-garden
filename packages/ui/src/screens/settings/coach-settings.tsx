@@ -25,6 +25,9 @@ import { useSettingSwitch } from "./save.js";
 /** The coach's settings' read. */
 export const COACH_PREFERENCES_QUERY = ["coach-preferences"] as const;
 
+/** While the week's spend holds the automatic activity reads back (the worker's reserve, under the cutoff): one line. */
+export const AUTO_READS_PAUSED_LINE = "Automatic reads paused — weekly budget";
+
 const usd = (v: number): string => `$${v.toFixed(2)}`;
 
 /** Each limit by what a request asks for: one workout, or a plan of several (a request that plans raises its run to it). */
@@ -313,6 +316,8 @@ export function CoachAiSection({ prefs }: { prefs: UserPreferences }) {
       ) : null}
       {coachOn() ? <CoachLimitsLive /> : null}
       {spend ? <p className="coach-spend">{spendLine(spend)}</p> : null}
+      {/* At the cutoff the spend line already says everything waits for the week. */}
+      {llm?.autoReadsPaused && !(spend?.cutoff ?? llm.cutoff) ? <p className="coach-spend">{AUTO_READS_PAUSED_LINE}</p> : null}
       {llm?.outOfCreditsSince ? <p className="ai-credits ai-credits-note">{OUT_OF_CREDITS_LINE}</p> : null}
     </Card>
   );

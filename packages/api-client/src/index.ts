@@ -441,6 +441,8 @@ export interface SettingsResponse {
     cutoff: boolean;
     /** When the AI gateway started answering 402 (out of credits), or null. */
     outOfCreditsSince?: string | null;
+    /** The automatic activity reads are paused: the week's spend reached their reserve. */
+    autoReadsPaused?: boolean;
   };
 }
 
@@ -584,6 +586,8 @@ export interface CoachSpendDto {
   spentUsd: number;
   warnMicros: number;
   cutoffMicros: number;
+  /** Rehearsals' and replays' spend, apart from the athlete's (never in `spentMicros`), against their own cap. */
+  rehearsalAndReplay?: { spentMicros: number; spentUsd: number; capMicros: number };
 }
 
 export interface CoachPlanDto {

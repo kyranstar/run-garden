@@ -22,7 +22,8 @@
  *                A body without the exact confirm is a 404 (nothing read, nothing called); with it, anything else wrong is
  *                400 { error: "bad_request", why }. Not the athlete's finished main run (another's, a sub-run, live,
  *                stopped, a rehearsal, none): 404. A step the run never took: 409 { error: "not_replayable", why }. The
- *                week can't cover the first call: 409 { error: "weekly_cap", why, spentUsd, cutoffUsd }.
+ *                week can't cover the first call: 409 { error: "weekly_cap", why, spentUsd, cutoffUsd } — the rehearsal
+ *                lane's week (llm.ts DEV_BUDGET: rehearsals and replays together), never the athlete's.
  *                Statements and fetches: the sign-in's 2, then 4 + 2 a variant + 1 more past the first (8 variants: 23,
  *                pinned).
  *   GET /runs?limit=20 → { runs: [{ id, at, words, line, outcome, steps, costUsd }] }  the athlete's finished main runs,
