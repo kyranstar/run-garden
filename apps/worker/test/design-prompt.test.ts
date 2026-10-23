@@ -325,6 +325,15 @@ describe("3A round 2 — the prompt's remaining words", () => {
     expect(submitReview.description.length).toBeLessThanOrEqual(400);
   });
 
+  // Audit C4 (prod): "glutes, legs, and back are really sore" — the draft "Upper-back pull & core, legs off" passed
+  // review at 4.3/5 with no must-fix item.
+  it("C4: loading an area the athlete called sore today is must-fix, on either rubric — and a bare \"back\" is both", () => {
+    const line =
+      'Also must-fix: a move that loads an area the athlete called sore today — in the request, a check-in or a recorded answer — beyond easy circulation or gentle range; a bare "back" is the upper and the low back both.';
+    expect(roleBlock("reviewer")).toContain(line);
+    expect(roleBlock("reviewer", undefined, "run")).toContain(line);
+  });
+
   it("B-I1: the main coach asks for today's check only when a workout today needs it", () => {
     expect(roleBlock("main")).toContain("today's condition check only when a workout today needs it");
   });

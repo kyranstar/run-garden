@@ -354,6 +354,79 @@ describe("record_answer", () => {
   it("is the main coach's alone (a designer has a brief, not the request)", () => {
     expect(tool("record_answer").roles).toEqual(["main"]);
   });
+
+  // Audit C4 (prod): "glutes, legs, and back are really sore" was kept as glutes, quads, hamstrings and low-back; the
+  // draft "Upper-back pull & core, legs off" loaded the back the athlete called sore, and passed review.
+  it("a bare \"back\" — no upper, lower or mid before it — is kept as both the upper back and the low back", async () => {
+    const r = await run({ request: "My glutes, legs, and back are really sore today." });
+    const c = ctxOf(r);
+    const out = ok(
+      (
+        await call("record_answer", c, {
+          answers: [
+            { question: "soreness", area: "glutes", quote: "glutes" },
+            { question: "soreness", area: "quads", quote: "legs" },
+            { question: "soreness", area: "hamstrings", quote: "legs" },
+            { question: "soreness", area: "low-back", quote: "back are really sore" },
+          ],
+        })
+      ).result,
+    );
+    expect(out.summary).toBe("Noted from your request: soreness — glutes, quads, hamstrings, low back, upper back");
+    const rows = await db.select().from(schema.athleteAnswers).where(like(schema.athleteAnswers.id, `ra:${r.id}:%`));
+    expect(rows.map((row) => row.subjectId).sort()).toEqual(["glutes", "hamstrings", "low-back", "quads", "upper-back"]);
+    expect(rows.find((row) => row.subjectId === "upper-back")).toMatchObject({ questionId: "soreness", subjectKind: "region", text: "back are really sore", source: "request" });
+    expect(new Set(rows.map((row) => row.id)).size).toBe(5);
+    // Recorded under either back area, and twice: still the two of them, once each.
+    const twice = await run({ request: "My back is sore." });
+    await call("record_answer", ctxOf(twice), {
+      answers: [
+        { question: "soreness", area: "upper-back", quote: "back is sore" },
+        { question: "soreness", area: "low-back", quote: "My back" },
+      ],
+    });
+    const both = await db.select().from(schema.athleteAnswers).where(like(schema.athleteAnswers.id, `ra:${twice.id}:%`));
+    expect(both.map((row) => row.subjectId).sort()).toEqual(["low-back", "upper-back"]);
+  });
+
+  it("keeps at most eight areas in its one insert (under D1's 100 binds); more is refused, in words", async () => {
+    const r = await run({ request: "My back, glutes and quads are sore and my back is tight; my back hurts." });
+    const eight = ok(
+      (
+        await call("record_answer", ctxOf(r), {
+          answers: [
+            { question: "soreness", area: "lats", quote: "My back" },
+            { question: "tightness", area: "lats", quote: "my back is tight" },
+            { question: "soreness", area: "glutes", quote: "glutes" },
+            { question: "soreness", area: "quads", quote: "quads are sore" },
+          ],
+        })
+      ).result,
+    );
+    expect(eight.receipt.recorded).toHaveLength(8);
+    const nine = err(
+      (
+        await call("record_answer", { ...ctxOf(r), toolUseId: "toolu_nine" }, {
+          answers: ["soreness", "tightness", "pain"].map((question) => ({ question, area: "thoracic", quote: "my back hurts" })),
+        })
+      ).result,
+    );
+    expect(nine.error).toBe("too_many_areas");
+  });
+
+  it("a qualified back stays the part it names; \"the back of my legs\" is no back", async () => {
+    const r = await run({ request: "My lower back is tight, and the back of my legs is sore." });
+    const c = ctxOf(r);
+    await call("record_answer", c, {
+      answers: [
+        { question: "tightness", area: "low-back", quote: "lower back is tight" },
+        { question: "soreness", area: "hamstrings", quote: "the back of my legs is sore" },
+        { question: "soreness", area: "low-back", quote: "back of my legs" },
+      ],
+    });
+    const rows = await db.select().from(schema.athleteAnswers).where(like(schema.athleteAnswers.id, `ra:${r.id}:%`));
+    expect(rows.map((row) => `${row.questionId}:${row.subjectId}`).sort()).toEqual(["soreness:hamstrings", "soreness:low-back", "tightness:low-back"]);
+  });
 });
 
 // ── remember ────────────────────────────────────────────────────────────────────────────────────────────────────────

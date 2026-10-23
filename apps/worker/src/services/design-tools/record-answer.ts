@@ -6,7 +6,10 @@
  * case or punctuation — and a quote the request doesn't hold is refused: this keeps what was SAID; what the coach
  * concluded goes to `remember`, marked as inferred. A value is kept only when the athlete gave that number ("a 6",
  * "six"): "wrecked" is no 8. Rows are `athlete_answers` with `source 'request'` on the athlete's local today, the quote
- * as the athlete's words, fresh for the question's days.
+ * as the athlete's words, fresh for the question's days. A bare "back" — the quote names the back with no upper, lower,
+ * low, mid or middle before it — is kept as both the upper back and the low back, whichever back area the coach gave
+ * (audit C4: "glutes, legs, and back are really sore" was kept as the low back alone, and the next draft loaded the
+ * upper back). An area kept twice is kept once.
  *
  * A rehearsal run writes nothing: it answers as it would (`{ recorded, rehearsal: true }`, the same receipt).
  *
@@ -43,6 +46,23 @@ export const CHECKIN_IDS = Object.keys(CHECKIN_QUESTIONS) as [CheckinQuestion, .
 
 const MAX_ANSWERS = 6;
 const QUOTE_MAX = 200;
+/** The rows one call may keep (a bare back's two included): one insert, 12 binds a row, under D1's 100. */
+const MAX_ROWS = 8;
+
+/** The areas a coach gives for "back"; a bare one is kept as both of `BARE_BACK`. */
+const BACK_AREAS: ReadonlySet<string> = new Set(["upper-back", "low-back", "thoracic", "lats"]);
+const BARE_BACK = ["upper-back", "low-back"] as const;
+/** Words before "back" that name its part. */
+const BACK_PARTS: ReadonlySet<string> = new Set(["upper", "lower", "low", "mid", "middle"]);
+/** Words beside "back" that make it no body part: "the back of my legs", "back to back", "came back from". */
+const NOT_BODY_AFTER: ReadonlySet<string> = new Set(["of", "to", "from", "off", "into"]);
+const NOT_BODY_BEFORE: ReadonlySet<string> = new Set(["to", "came", "come", "coming", "got", "get", "getting", "go", "going", "went", "bounce", "bounced", "bouncing"]);
+
+/** Does the quote name the back bare — "back" with no part before it, as a body part? */
+export function bareBack(quote: string): boolean {
+  const w = words(quote).trim().split(" ");
+  return w.some((x, i) => x === "back" && !BACK_PARTS.has(w[i - 1] ?? "") && !NOT_BODY_BEFORE.has(w[i - 1] ?? "") && !NOT_BODY_AFTER.has(w[i + 1] ?? ""));
+}
 
 const REGION_SET = new Set<string>(REGIONS);
 const MUSCLE_SET = new Set<string>(MUSCLES);
@@ -193,7 +213,8 @@ export const recordAnswer: DesignTool = {
     });
     const request = typeof extra.runRequest === "string" ? extra.runRequest : "";
     const focus = focusAreasOf(extra.focusAreas);
-    const rows: AnswerRow[] = [];
+    // Keyed by question and area, so an area kept twice is kept once — the coach's own answer before a bare back's.
+    const kept = new Map<string, { row: Omit<AnswerRow, "id">; expanded: boolean }>();
     const handle = answerHandle(ctx.run.id, ctx.toolUseId ?? `call-${ctx.now.getTime()}`);
     for (const [i, a] of p.answers.entries()) {
       const found = quoteIn(request, a.quote);
@@ -220,22 +241,42 @@ export const recordAnswer: DesignTool = {
       } else if (a.area) {
         return refuse("bad_area", `answers.${i}: ${a.question} is not by area.`, "Leave area out for energy.");
       }
-      rows.push({
-        id: `${handle}:${i}`,
-        userId: ctx.userId,
-        questionId: a.question,
-        subjectKind: subject?.kind ?? null,
-        subjectId: subject?.id ?? null,
-        valueNum: a.value ?? null,
-        valueChoice: null,
-        text: a.quote,
-        source: "request",
-        localDate: athlete.today,
-        at: ctx.now.toISOString(),
-        expiresAt: freshThrough(a.question, athlete.today),
-        subjectWords: subject?.words ?? null,
-      });
+      // A bare "back" is both the upper and the low back (audit C4), whichever back area was given.
+      const subjects: Array<{ subject: Subject | null; expanded: boolean }> = [{ subject, expanded: false }];
+      if (subject && BACK_AREAS.has(subject.id) && bareBack(a.quote)) {
+        for (const id of BARE_BACK) if (id !== subject.id) subjects.push({ subject: subjectOf(id, focus), expanded: true });
+      }
+      for (const s of subjects) {
+        const key = `${a.question}:${s.subject?.kind ?? ""}:${s.subject?.id ?? ""}`;
+        const had = kept.get(key);
+        if (had && !(had.expanded && !s.expanded)) continue;
+        kept.set(key, {
+          expanded: s.expanded,
+          row: {
+            userId: ctx.userId,
+            questionId: a.question,
+            subjectKind: s.subject?.kind ?? null,
+            subjectId: s.subject?.id ?? null,
+            valueNum: a.value ?? null,
+            valueChoice: null,
+            text: a.quote,
+            source: "request",
+            localDate: athlete.today,
+            at: ctx.now.toISOString(),
+            expiresAt: freshThrough(a.question, athlete.today),
+            subjectWords: s.subject?.words ?? null,
+          },
+        });
+      }
     }
+    if (kept.size > MAX_ROWS) {
+      return refuse(
+        "too_many_areas",
+        `answers: ${kept.size} areas to keep; at most ${MAX_ROWS} at once (a bare "back" keeps two).`,
+        "Keep the areas that change today's design; send the rest in a second call.",
+      );
+    }
+    const rows: AnswerRow[] = [...kept.values()].map((k, n) => ({ id: `${handle}:${n}`, ...k.row }));
     // A rehearsal is never the athlete's record.
     if (!ctx.run.rehearsal) await insertAnswers(ctx.db, rows);
     const line = answeredLine(rows.map((r) => ({ questionId: r.questionId, subjectWords: r.subjectWords, valueNum: r.valueNum ?? null })));
