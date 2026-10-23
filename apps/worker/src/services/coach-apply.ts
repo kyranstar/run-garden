@@ -42,7 +42,7 @@ import { separateDayCollisions, windowTimeFor } from "./day-placement.js";
 import { coachStamp, recordedStampFor, stampName, takenStampsOn, takenStampsOnDays } from "./coros-stamp.js";
 import { applyMove } from "./jobs.js";
 import { openIntentFor, recordIntent } from "./sync-intents.js";
-import { unmarkedFingerprint, watchCopyBase } from "./watch-copy-marker.js";
+import { takesWatchCopy, unmarkedFingerprint, watchCopyBase } from "./watch-copy-marker.js";
 import {
   enqueueUnpushIfOurs,
   unpushInsertIfOurs,
@@ -75,6 +75,11 @@ import {
 /** The applier's words for a length whose card the session no longer matches (its re-time, run again at the tap, finds
  * other steps): the designer's approve refuses it as `changed_since_suggested` (review-L minor 5). */
 export const RETIME_CHANGED = "a session it re-times has changed since it was suggested, so it is as it was";
+
+/** The applier's words for a length alone on a session taking the watch's version (review L1): the next read takes the
+ * watch's copy whole, its length with it, so a length set now would be undone without a word. The designer's
+ * `adjust_plan` refuses it in the same words before it is proposed. */
+export const FOLLOWS_WATCH_VERSION = "this session follows the watch's version until the next sync — change it after that";
 
 export interface ApplyResult {
   created: string[];
@@ -1647,13 +1652,17 @@ export async function applyOps(
           out.updated.push(op.workoutId);
           break;
         }
-        // A ROW TAKING THE WATCH'S VERSION (watch-copy-marker.ts) IS NO EXCEPTION (review A3, A4). Its card says what
-        // every length's says — "The watch keeps its copy as it is: only the plan's length changes" — and that is what
-        // happens: the mark stays, no claim, nothing for the watch. (A re-claim here used to lift the mark and re-send
-        // the app's copy — the version the athlete had just chosen against — built from its stage rows: a designed run
-        // read back as a coach session, its tempo as threshold, a repeat as nothing, a distance unpushable and the copy
-        // taken off the watch.) The next read takes the watch's copy whole, its own length with it, as the athlete
-        // asked when they kept it — as any upstream content replaces a length an adjust set, which claims nothing.
+        // A ROW TAKING THE WATCH'S VERSION (watch-copy-marker.ts) TAKES NO LENGTH ALONE (review L1; A3, A4 before it).
+        // The next read takes the watch's copy whole, its own length with it, as the athlete asked when they kept it —
+        // so a length written here would be undone without a word, while its card said "only the plan's length
+        // changes". Refused until that read, in plain words (a change proposed before the Keep included). Re-claiming
+        // is no answer either: it would lift the mark and re-send the app's copy — the version the athlete had just
+        // chosen against — built from its stage rows (a designed run read back as a coach session, its tempo as
+        // threshold, a repeat as nothing, a distance unpushable and the copy taken off the watch).
+        if (takesWatchCopy(row.sourceContentFingerprint)) {
+          out.missed.push(FOLLOWS_WATCH_VERSION);
+          break;
+        }
         // The document states the new length — `setting.targetMinutes`, and
         // nothing else of it — as the row's next revision, in the same batch
         // (Stage 1 dual-write; `updateDocColumns` keeps a row resolved

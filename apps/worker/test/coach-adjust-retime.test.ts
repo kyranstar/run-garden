@@ -13,7 +13,7 @@ import type { Env } from "../src/env.js";
 import type { Db } from "../src/services/db.js";
 import { createSession, SESSION_COOKIE } from "../src/auth/sessions.js";
 import { planRoutes } from "../src/routes/plan.js";
-import { applyOps, writeRetimed } from "../src/services/coach-apply.js";
+import { applyOps, FOLLOWS_WATCH_VERSION, writeRetimed } from "../src/services/coach-apply.js";
 import { retimeOfRow, type RetimeExpectation } from "../src/services/adjust-retime.js";
 import { createDesignedRun } from "../src/services/designed-runs.js";
 import { openIntentFor } from "../src/services/sync-intents.js";
@@ -162,7 +162,7 @@ describe("a designed run re-timed by its document", () => {
     expect(parseStoredWorkoutDoc(row.workoutDoc)!.parts[1]!.rounds).toBe(3);
   });
 
-  it("with no card, on the watch, its watch version the athlete kept: the length alone — never its stage rows read back as a coach session, never taken off the watch (review A3, A4)", async () => {
+  it("with no card, on the watch, its watch version the athlete kept: a length alone is refused until the next read (review L1) — never its stage rows read back as a coach session, never taken off the watch (review A3, A4)", async () => {
     // A tempo with a distance cool-down (the reclaim built a distance block the watch can't take, and queued the
     // removal of the copy), and one of times alone (the reclaim re-sent it as threshold and easy work).
     const steady = (cooldown: { durationSec: number } | { distanceM: number }) =>
@@ -182,11 +182,12 @@ describe("a designed run re-timed by its document", () => {
       await onTheWatch(db, id, addDays(today, 2));
       await db.update(plannedWorkouts).set({ sourceContentFingerprint: "take-watch-copy:0123456789abcdef" }).where(eq(plannedWorkouts.id, id));
       const stages = await stagesOf(db, id);
+      const before = await rowOf(db, id);
+      // The next read takes the watch's copy whole, its length with it: a length now would be undone without a word.
       const out = await applyOps(db, userId, prefs, "p", [{ kind: "adjust", workoutId: id, durationMinutes: 30 }]);
-      expect(out).toMatchObject({ updated: [id], missed: [] });
-      const row = await rowOf(db, id);
-      expect(row.calendarBlockDurationSeconds).toBe(1800);
-      expect(row.sourceContentFingerprint, "the mark stays").toBe("take-watch-copy:0123456789abcdef");
+      expect(out).toMatchObject({ updated: [], missed: [FOLLOWS_WATCH_VERSION] });
+      expect(await rowOf(db, id), "nothing written: its length, its mark").toEqual(before);
+      expect(before.sourceContentFingerprint, "the mark stays").toBe("take-watch-copy:0123456789abcdef");
       expect(await stagesOf(db, id)).toEqual(stages);
       expect((await jobsOf(db, id)).map((j) => j.kind), "nothing for the watch: no rewrite, no removal").toEqual(["coach_create_workout"]);
       expect(await openIntentFor(db, userId, id, "content")).toBeNull();
