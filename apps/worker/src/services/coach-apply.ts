@@ -288,8 +288,14 @@ export function coachStageRows(workoutId: string, session: CoachSession, thresho
   // stage list and the watch's step list cannot disagree — the intent
   // harness's `store_stage_role_is_positional` ledger entry was this bug, and
   // deleting it was the point.
+  //
+  // ONE EXCEPTION, the app's alone (audit D4, 2026-10-23): an easy FLOAT — the jog between two reps — is stored a
+  // recovery. The coach's "recovery", "jog" and "float" all fold onto `easy`, and the wire's rule calls such a block
+  // work; an 11-stage quality session stored its four jogs as work, so the coach's plan context read nine work stages
+  // and the sheet's Full structure "work — 2 min (easy)". The watch keeps it a "Run" step: a role-4 step would drop the
+  // jog's easy band, and no reader of the wire is wrong for it.
   const roles = runBlockRoles(blocks);
-  return blocks.map((b, i) => {
+  const rows = blocks.map((b, i) => {
     const band = paceBandFor(b.intensity, thresholdPaceSecPerKm);
     return {
       id: `${workoutId}:${i}`,
@@ -317,6 +323,29 @@ export function coachStageRows(workoutId: string, session: CoachSession, thresho
       label: b.intensity ?? null,
     };
   });
+  const floats = easyFloats(rows);
+  return rows.map((r, i) => (r.kind === "work" && floats[i] ? { ...r, kind: "recovery" as const } : r));
+}
+
+/** What `easyFloats` reads of a thread-coach run's stage: its label (the block's intensity) and its measure. */
+export type FloatStageFields = { label: string | null; durationType: string; durationSeconds: number | null; distanceMeters: number | null };
+
+/**
+ * Which of a thread-coach run's stages are EASY FLOATS — the recoveries its words cannot name (review-L minor 3): an
+ * easy stage between two pickups (stages neither easy nor rest), and one after a pickup as long as such a float (the
+ * last of a written-out set). One rule for the stored kinds (`coachStageRows`) and the re-time's roles (adjust-retime.ts).
+ */
+export function easyFloats(stages: readonly FloatStageFields[]): boolean[] {
+  const n = stages.length;
+  const easy = (i: number) => stages[i]?.label === "easy";
+  const pickup = (i: number) => i >= 0 && i < n && stages[i]!.label !== "easy" && stages[i]!.label !== "rest";
+  const lengthOf = (s: FloatStageFields) => `${s.durationType}:${s.durationSeconds ?? s.distanceMeters}`;
+  const float = stages.map((_, i) => easy(i) && pickup(i - 1) && pickup(i + 1));
+  const floatLengths = new Set(stages.filter((_, i) => float[i]).map(lengthOf));
+  stages.forEach((s, i) => {
+    if (easy(i) && pickup(i - 1) && floatLengths.has(lengthOf(s))) float[i] = true;
+  });
+  return float;
 }
 
 /**

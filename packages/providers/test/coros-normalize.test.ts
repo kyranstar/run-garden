@@ -15,7 +15,7 @@ import {
 } from "../src/coros/normalize.js";
 import type { RawCorosActivityListItem, RawCorosProgram } from "../src/coros/raw-types.js";
 import { fixtureRawSchedule, FIXTURE_PLAN_ID } from "../src/fixtures/coros-schedule.js";
-import { fixtureCorosCompletedThreshold } from "../src/fixtures/activities.js";
+import { fixtureCorosCompletedThreshold, fixtureCorosStrengthLapList } from "../src/fixtures/activities.js";
 
 const BASE = "2026-08-03"; // Monday
 
@@ -296,6 +296,34 @@ describe("COROS activity normalization (contract)", () => {
     expect(a.distanceMeters).toBeUndefined();
     expect(a.avgPaceSecPerKm).toBeUndefined();
     expect(a.durationSeconds).toBe(1800);
+  });
+});
+
+describe("a strength or yoga activity's laps are its sets, never km splits (audit D3)", () => {
+  // As production stores them: the strength lap list rides the account's 1 km auto-lap setting (lapDistance 100000),
+  // and every set comes twice, once per lap type, the same sets (docs/reports/2026-10-04-coros-spikes.md §1).
+  const lapList = fixtureCorosStrengthLapList().map((l) => ({ ...l, lapDistance: 100000 }));
+  const items = lapList.flatMap((l) => l.lapItemList ?? []);
+  const copy = items.filter((i) => i.lapType === 0);
+  const sumOf = (xs: Array<{ durationSeconds: number }>) => xs.reduce((s, l) => s + l.durationSeconds, 0);
+
+  it("a strength session's laps are sets — one lap type, adding up to the session once, not twice", () => {
+    expect(copy.length * 2).toBe(items.length); // the wire's two copies
+    for (const laps of [normalizeCorosLaps({ summary: { sportType: 402 }, lapList }), normalizeCorosLaps({ lapList }, 402)]) {
+      expect(laps.map((l) => l.splitType)).toEqual(copy.map(() => "set"));
+      expect(laps.map((l) => l.lapIndex)).toEqual(copy.map((i) => i.lapIndex));
+      expect(sumOf(laps)).toBe(copy.reduce((s, i) => s + Number(i.time) / 100, 0));
+      expect(laps[0]).toMatchObject({ exerciseNameKey: "T1061", durationSeconds: 36, avgHeartRate: 112 });
+    }
+  });
+
+  it("a yoga session's too (both COROS yoga codes); a run's 1 km view stays km splits", () => {
+    for (const sportType of [904, 403]) {
+      const laps = normalizeCorosLaps({ summary: { sportType }, lapList: [{ lapDistance: 100000, lapItemList: [{ lapIndex: 1, time: 60000, avgHr: 90 }] }] });
+      expect(laps.map((l) => l.splitType), String(sportType)).toEqual(["set"]);
+    }
+    const run = normalizeCorosLaps({ summary: { sportType: 100 }, lapList: [{ lapDistance: 100000, lapItemList: [{ lapIndex: 1, time: 30000, distance: 100000 }] }] });
+    expect(run.map((l) => l.splitType)).toEqual(["auto_km"]);
   });
 });
 

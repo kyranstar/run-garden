@@ -43,8 +43,10 @@ function setup(
     tokenFails?: boolean;
     /** No answer for the token at all (offline). */
     tokenOffline?: boolean;
-    /** The tagging waits for this before it answers. */
+    /** The first tagging (the first open's, when it has playlists to tag) waits for this before it answers. */
     tagGate?: Promise<void>;
+    /** Each save reaches the server as it is sent, and its answer waits for this. */
+    saveGate?: Promise<void>;
   } = {},
 ) {
   const owned = [
@@ -78,15 +80,19 @@ function setup(
   const opened: string[] = [];
   const timers: Array<{ fn: () => void; at: number }> = [];
   let ids = 0;
+  /** What the server holds: the last save to reach it. */
+  let server: MusicPreferences | null = null;
   const dock = makeDockController({
     spotify,
     saveMusic: async (music) => {
       saved.push(music);
+      server = music;
+      if (opts.saveGate) await opts.saveGate;
       return music;
     },
     tag: async (playlists) => {
       tagged.push(playlists);
-      if (opts.tagGate) await opts.tagGate;
+      if (opts.tagGate && tagged.length === 1) await opts.tagGate;
       if (opts.tagFails) throw new Error("offline");
       return Object.fromEntries(playlists.map((p) => [p.key, keywordGoodFor(p.name, p.description)]));
     },
@@ -126,7 +132,7 @@ function setup(
     }
     clock = until;
   }
-  return { fake, dock, saved, tagged, opened, commands, advance, state: (): DockState => dock.get(), backoff, tokenAsks: () => tokenAsks };
+  return { fake, dock, saved, tagged, opened, commands, advance, state: (): DockState => dock.get(), backoff, tokenAsks: () => tokenAsks, server: () => server };
 }
 
 describe("it plays only when asked", () => {
@@ -348,6 +354,54 @@ describe("an edit made while the first open reads and tags (review-M M1)", () =>
     await opening;
     expect(saved.at(-1)!.shortcuts.map((s) => s.id)).toEqual(["s1"]);
   });
+
+  it("a save still out when the tagging answers is never overwritten: one removed stays removed, one added stays added — on the server too", async () => {
+    const spa = { id: "spa", label: "Spa", uri: `spotify:playlist:${SPA}`, shuffle: true };
+    // Removed while the first open tags, its save not yet answered.
+    {
+      let release: () => void = () => undefined;
+      let answer: () => void = () => undefined;
+      const { dock, tagged, server, state } = setup({
+        music: { shortcuts: [spa, mine("s1", `spotify:playlist:${sid("other")}`, { goodFor: [] })] },
+        tagGate: new Promise<void>((r) => (release = r)),
+        saveGate: new Promise<void>((r) => (answer = r)),
+      });
+      const opening = dock.open();
+      for (let i = 0; i < 200 && tagged.length === 0; i++) await new Promise((r) => setTimeout(r, 0));
+      const removing = dock.remove("spa");
+      release();
+      for (let i = 0; i < 20; i++) await new Promise((r) => setTimeout(r, 0));
+      answer();
+      await Promise.all([opening, removing]);
+      expect(server()!.shortcuts.map((s) => s.id)).toEqual(["s1"]);
+      expect(state().music.shortcuts.map((s) => s.id)).toEqual(["s1"]);
+    }
+    // Added while the first open tags, its save not yet answered.
+    {
+      let release: () => void = () => undefined;
+      let answer: () => void = () => undefined;
+      const { dock, tagged, server, state } = setup({
+        music: { shortcuts: [spa] },
+        tagGate: new Promise<void>((r) => (release = r)),
+        saveGate: new Promise<void>((r) => (answer = r)),
+      });
+      const opening = dock.open();
+      for (let i = 0; i < 200 && tagged.length === 0; i++) await new Promise((r) => setTimeout(r, 0));
+      const adding = dock.addPlaylist({ id: PL, uri: `spotify:playlist:${PL}`, name: "Easy run", description: "Steady songs for easy miles", image: null, total: 30 });
+      for (let i = 0; i < 200 && tagged.length < 2; i++) await new Promise((r) => setTimeout(r, 0));
+      release();
+      for (let i = 0; i < 20; i++) await new Promise((r) => setTimeout(r, 0));
+      answer();
+      expect(await adding).toEqual({ kind: "saved" });
+      await opening;
+      const kept = server()!.shortcuts;
+      expect(kept.map((s) => [s.id, s.goodFor])).toEqual([
+        ["spa", ["mobility", "wind-down"]],
+        ["s1", ["run"]],
+      ]);
+      expect(state().music.shortcuts).toEqual(kept);
+    }
+  });
 });
 
 describe("no answer for a token (review-M2 m2)", () => {
@@ -496,6 +550,29 @@ describe("a workout's music, at its Start", () => {
     await dock.setVisible(true);
     expect(commands()).toContain("PUT /me/player/play");
     expect(state().workout).toBeNull();
+  });
+
+  it("its Play finding no device, the link opened or blocked: the player's line turns to Open Spotify, with the link to tap — never Ready again", async () => {
+    for (const allowOpen of [false, true]) {
+      // Held back at Start, then offered again ("Ready to play Spa"); no device open, and the browser may block the link.
+      const { dock, opened, state, backoff, advance } = setup({ devices: [], allowOpen });
+      backoff.hit(null);
+      await dock.autoPlay(target, "perf-1");
+      await advance(BACKOFF_FIRST_MS);
+      expect(state().workout).toEqual({ target, status: "ready" });
+      await dock.playWorkout(target);
+      expect(opened, String(allowOpen)).toEqual([`https://open.spotify.com/playlist/${SPA}`]);
+      expect(state().workout, String(allowOpen)).toEqual({ target, status: "no_device" });
+      expect(state().link).toBe(`https://open.spotify.com/playlist/${SPA}`);
+    }
+    // Couldn't start (no answer), then Play finds no device: the same.
+    const silent = setup({ devices: [{ ...phone }], allowOpen: false });
+    silent.fake.script("GET /me/player/devices", { status: 500 });
+    await silent.dock.autoPlay(target, "perf-1");
+    expect(silent.state().workout).toEqual({ target, status: "failed", why: "error" });
+    silent.fake.state.devices.splice(0);
+    await silent.dock.playWorkout(target);
+    expect(silent.state().workout).toEqual({ target, status: "no_device" });
   });
 
   it("backing off: no call, and the player says so calmly", async () => {

@@ -1224,6 +1224,11 @@ beforeAll(async () => {
 
   // ── 5p: a programme change's approve (§8 §5), request by request — six a week at four weeks ahead onto other days ──
   {
+    // On a Wednesday noon's clock (Date only): on the real one, early on a Monday in the athlete's zone (01:05, not
+    // noon), the programme placed and retracted in two requests, not three or more, and the check below went red.
+    vi.useFakeTimers({ toFake: ["Date"] });
+    vi.setSystemTime(new Date("2026-10-21T19:00:00Z"));
+    const today = todayInZone(TZ);
     const dbp = makeTestDb();
     const { userId: uid } = await makeTestUser(dbp, { timezone: TZ });
     const cookiep = `${SESSION_COOKIE}=${await createSession(dbp, uid)}`;
@@ -1277,6 +1282,7 @@ beforeAll(async () => {
     chunkSamples.forEach((samples, k) => {
       shapes.set(`5p.${k + 1}`, { label: `5p. programme change approve request ${k + 1} of ${chunkSamples.length}`, samples, first: chunkFirst[k]!, budget: 4 });
     });
+    vi.useRealTimers();
   }
 
   // ── 6: the objectives board over two years ──

@@ -426,6 +426,20 @@ describe("low-intensity share windows", () => {
     expect(week, "no weekly bucket covers the strapless run").toBeDefined();
     expect(week!.lowSeconds + week!.highSeconds).toBe(week!.durationSeconds);
   });
+
+  it("splits a lift's week by its heart rate, never by its laps — sets stored twice never double the bar (audit D3)", async () => {
+    for (let i = 0; i < 5; i++) {
+      const id = await seedActivity(userId, { date: addDays(today, -(3 + i * 2)), sport: "strength", title: "Strength", durationSeconds: 3600, avgHeartRate: 110, lapCount: 0 });
+      // As stored before 2026-10-23: every set twice (two lap types of the same sets), labelled by the 1 km rule.
+      await db.insert(activityLaps).values(
+        Array.from({ length: 8 }, (_, n) => ({ id: `${id}:auto_km:${n}`, activityId: id, lapIndex: n, durationSeconds: 900, avgHeartRate: 110, splitType: "auto_km" })),
+      );
+    }
+    const body = await client(cookie).get("strength");
+    const lifted = body.weekly.weeks.filter((w) => w.durationSeconds > 0);
+    expect(lifted.length).toBeGreaterThan(0);
+    for (const w of lifted) expect(w.lowSeconds + w.highSeconds, w.weekStart).toBe(w.durationSeconds);
+  });
 });
 
 // ── Easy ceiling: 26-week basis and its honesty caveat ───────────────────────

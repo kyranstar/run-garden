@@ -161,6 +161,9 @@ export function buildWeeklyReviewSystemPrompt(units: Units): string {
     `This athlete reads distances in ${distanceUnitName(units)}. \`totalDistance\` is already`,
     `in ${distanceUnitName(units)} and \`totalHours\` is already in hours — quote them as given,`,
     `name the unit as "${distanceUnitName(units)}", and never convert or recompute a number.`,
+    // Hikes count in the week now (the owner, 2026-10-23): its hours and distance are no longer a runner's alone.
+    "`sessions` counts last week's sessions by kind (runs, lifts, yoga sessions, hikes); `totalHours` and",
+    "`totalDistance` cover all of them, so never call them running hours or a running distance.",
     'Reply with ONLY a JSON object of the form {"narrative": "..."} and nothing else.',
   ].join(" ");
 }

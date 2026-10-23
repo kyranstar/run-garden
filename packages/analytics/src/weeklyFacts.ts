@@ -1,6 +1,17 @@
 import type { DateRange, LocalDate, NormalizedActivity, PlannedWorkout } from "@rg/domain";
 import { inRange, isQuality, startOfIsoWeek } from "@rg/domain";
+import { DISCIPLINES } from "./discipline.js";
 import type { PersonalRecord } from "./records.js";
+
+/**
+ * The sports the weekly review counts (the owner, 2026-10-23): the three disciplines, and hikes — a 3.6 h hike was
+ * left out of the week's totals while the coach discussed it. Narrower than everything the watch records: a walk, a
+ * ride, a swim or a ski day stay out until asked for. The dashboard's disciplines (`DISCIPLINES`) stay three.
+ */
+export const WEEKLY_REVIEW_SPORTS: readonly string[] = [...DISCIPLINES, "hike"];
+
+/** What the review calls each sport's sessions — never a lift or a hike a "run". */
+const SESSION_LABELS: Readonly<Record<string, string>> = { run: "runs", strength: "lifts", yoga: "yoga sessions", hike: "hikes" };
 
 /**
  * Deterministic facts for the weekly review. A downstream LLM formatter may
@@ -31,8 +42,11 @@ export interface WeeklyFacts {
   completed: number;
   moved: number;
   skipped: number;
+  /** Every counted session's — a hike's included. */
   totalDurationSeconds: number;
   totalDistanceMeters: number;
+  /** The week's sessions by kind ("runs", "lifts", "yoga sessions", "hikes"), each one that happened. */
+  sessions: Record<string, number>;
   qualitySessions: number;
   longRunCompleted: boolean;
   adherencePct: number;
@@ -58,6 +72,11 @@ export function computeWeeklyFacts(input: WeeklyFactsInput): WeeklyFacts {
   );
   const future = considered.filter((w) => w.completionState === "scheduled").length;
   const denominator = considered.length - future;
+  const sessions: Record<string, number> = {};
+  for (const a of input.activities) {
+    const label = SESSION_LABELS[a.sport] ?? `${a.sport} sessions`;
+    sessions[label] = (sessions[label] ?? 0) + 1;
+  }
 
   const facts: WeeklyFacts = {
     weekStart: startOfIsoWeek(input.range.start),
@@ -67,6 +86,7 @@ export function computeWeeklyFacts(input: WeeklyFactsInput): WeeklyFacts {
     skipped: considered.filter((w) => w.completionState === "skipped").length,
     totalDurationSeconds: input.activities.reduce((s, a) => s + a.durationSeconds, 0),
     totalDistanceMeters: input.activities.reduce((s, a) => s + (a.distanceMeters ?? 0), 0),
+    sessions,
     qualitySessions: completedWorkouts.filter((w) => isQuality(w)).length,
     longRunCompleted: completedWorkouts.some((w) => w.category === "long"),
     adherencePct: denominator > 0 ? Math.round((completedWorkouts.length / denominator) * 100) : 0,

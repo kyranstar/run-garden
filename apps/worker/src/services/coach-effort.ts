@@ -159,9 +159,12 @@ export async function buildEffortPackage(
   const workoutLaps = allLaps.filter((l) => l.splitType === "workout");
   const laps = workoutLaps.length > 0 ? workoutLaps : allLaps.filter((l) => l.splitType !== "workout");
   const autoKmLaps = workoutLaps.length > 0 ? allLaps.filter((l) => l.splitType === "auto_km") : [];
+  // Only a run's auto-laps are km (audit D3): a lift's or a flow's laps are sets, and the ones stored before
+  // 2026-10-23 carry "auto_km" (their list rode the 1 km auto-lap setting).
+  const kmLaps = act.sport === "run";
   const splitLines = laps.slice(0, MAX_SPLITS).map((l, i) => {
     const label =
-      l.splitType === "auto_km"
+      l.splitType === "auto_km" && kmLaps
         ? `km ${i + 1}`
         : `lap ${l.lapIndex}${labelForLap(l.exerciseNameKey)}`;
     return (
@@ -175,6 +178,15 @@ export async function buildEffortPackage(
     );
   });
   if (laps.length > MAX_SPLITS) splitLines.push(`…and ${laps.length - MAX_SPLITS} more laps`);
+  // The guard (audit D3): laps adding up past the session's own time are not one partition of it — a strength
+  // session stored before 2026-10-23 holds each set twice (COROS sends two lap types of the same sets).
+  const lapTotal = laps.reduce((s, l) => s + l.durationSeconds, 0);
+  const sessionSeconds = Math.max(act.elapsedSeconds ?? 0, act.durationSeconds);
+  if (sessionSeconds > 0 && lapTotal > sessionSeconds * 1.1) {
+    splitLines.push(
+      `these laps add up to ${hms(lapTotal)}, past the session's own ${hms(sessionSeconds)}: COROS sent some twice — never sum or count them`,
+    );
+  }
   if (autoKmLaps.length > 0) {
     splitLines.push(
       `per-km paces: ${autoKmLaps

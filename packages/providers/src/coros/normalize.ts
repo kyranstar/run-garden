@@ -6,6 +6,7 @@ import {
   type RawCorosActivityDetail,
   type RawCorosActivityListItem,
   type RawCorosEntity,
+  type RawCorosLapItem,
   type RawCorosExercise,
   type RawCorosProgram,
   type RawCorosSchedule,
@@ -755,7 +756,25 @@ export function normalizeCorosActivity(
   };
 }
 
-export function normalizeCorosLaps(detail: RawCorosActivityDetail): Array<{
+/**
+ * Sports whose laps are sets and holds, not distance (audit D3, 2026-10-23). Their lap list rides the account's 1 km
+ * auto-lap setting all the same (`lapDistance` 100000), so the distance rule below labelled every set `auto_km` — the
+ * coach read "km 1, km 2…" for a lift.
+ */
+const SET_LAP_SPORTS: ReadonlySet<string> = new Set(["strength", "yoga"]);
+
+/** A COROS activity sportType whose laps are sets (strength, yoga): never km splits. */
+export function isSetLapSport(sportType: number | undefined): boolean {
+  return sportType != null && SET_LAP_SPORTS.has(sportIdForCorosCode(sportType));
+}
+
+/**
+ * `sportType` is the activity's (the list item's); the detail's own summary answers when it is not given. A strength
+ * or yoga session's laps are `set` laps, read as the logged sets read them (watch-sets.ts, ruling R3): every set
+ * arrives twice, once per lap type, the same sets (docs/reports/2026-10-04-coros-spikes.md §1), so only the lowest lap
+ * type is kept — both copies made a session's laps add up to twice its time.
+ */
+export function normalizeCorosLaps(detail: RawCorosActivityDetail, sportType: number | undefined = detail.summary?.sportType): Array<{
   lapIndex: number;
   durationSeconds: number;
   distanceMeters?: number;
@@ -776,11 +795,8 @@ export function normalizeCorosLaps(detail: RawCorosActivityDetail): Array<{
   // vice versa). Readers pick a view by `splitType`; they must never mix the
   // two, or every lap-by-lap sum counts the effort twice.
   const lists = detail.lapList ?? [];
-  const views = lists.filter((l) => (l.lapItemList?.length ?? 0) > 0);
-  const workout = views.find((l) => l.lapDistance !== 100000);
-  const autoKm = views.find((l) => l.lapDistance === 100000);
-  const mapView = (view: (typeof lists)[number] | undefined, splitType: "workout" | "auto_km") =>
-    (view?.lapItemList ?? []).map((lap, i) => ({
+  const mapItems = (items: RawCorosLapItem[], splitType: "workout" | "auto_km" | "set") =>
+    items.map((lap, i) => ({
       lapIndex: lap.lapIndex ?? i,
       durationSeconds: (lap.time ?? 0) / 100, // centiseconds
       distanceMeters: lap.distance != null ? lap.distance / 100 : undefined,
@@ -796,5 +812,14 @@ export function normalizeCorosLaps(detail: RawCorosActivityDetail): Array<{
       avgPowerWatts: positive(lap.avgPower),
       exerciseNameKey: lap.exerciseNameKey || undefined,
     }));
-  return [...mapView(workout, "workout"), ...mapView(autoKm, "auto_km")];
+  if (isSetLapSport(sportType)) {
+    const items = lists.flatMap((l) => l.lapItemList ?? []).filter((i): i is RawCorosLapItem => !!i && typeof i === "object");
+    const codes = items.map((i) => i.lapType).filter((t): t is number => typeof t === "number" && Number.isInteger(t));
+    const lowest = codes.length > 0 ? Math.min(...codes) : undefined;
+    return mapItems(lowest === undefined ? items : items.filter((i) => i.lapType === lowest), "set");
+  }
+  const views = lists.filter((l) => (l.lapItemList?.length ?? 0) > 0);
+  const workout = views.find((l) => l.lapDistance !== 100000);
+  const autoKm = views.find((l) => l.lapDistance === 100000);
+  return [...mapItems(workout?.lapItemList ?? [], "workout"), ...mapItems(autoKm?.lapItemList ?? [], "auto_km")];
 }

@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { computeWeeklyFacts } from "../src/weeklyFacts.js";
+import { computeWeeklyFacts, WEEKLY_REVIEW_SPORTS } from "../src/weeklyFacts.js";
 import { mkActivity, mkWorkout } from "./builders.js";
 
 const range = { start: "2026-03-02", end: "2026-03-08" };
@@ -44,12 +44,30 @@ describe("computeWeeklyFacts", () => {
       skipped: 1,
       totalDurationSeconds: 9000,
       totalDistanceMeters: 26_000,
+      sessions: { runs: 2 },
       qualitySessions: 1,
       longRunCompleted: true,
       adherencePct: 67,
       notableRecord: "Fastest comeback: 4 days",
       gardenSummary: "2 new plants took root; 1 wildlife visitor arrived",
     });
+  });
+
+  it("names each kind of session — a lift a lift, a hike a hike (the owner, 2026-10-23) — and its hours join the week's", () => {
+    const facts = computeWeeklyFacts({
+      range,
+      workouts: [],
+      activities: [
+        mkActivity({ id: "r", sport: "run", durationSeconds: 3600, distanceMeters: 10_000 }),
+        mkActivity({ id: "s", sport: "strength", durationSeconds: 2400, distanceMeters: undefined }),
+        mkActivity({ id: "y", sport: "yoga", durationSeconds: 1800, distanceMeters: undefined }),
+        mkActivity({ id: "h", sport: "hike", durationSeconds: 12_960, distanceMeters: 14_000 }),
+      ],
+      garden: { plantsAdded: 0, wildlife: 0 },
+    });
+    expect(facts.sessions).toEqual({ runs: 1, lifts: 1, "yoga sessions": 1, hikes: 1 });
+    expect(facts.totalDurationSeconds).toBe(3600 + 2400 + 1800 + 12_960);
+    expect(WEEKLY_REVIEW_SPORTS).toEqual(["run", "strength", "yoga", "hike"]);
   });
 
   it("stays deterministic and quiet when nothing happened", () => {

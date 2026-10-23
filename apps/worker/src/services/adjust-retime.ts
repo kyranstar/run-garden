@@ -58,7 +58,7 @@ import {
 } from "@rg/domain";
 import type { plannedWorkouts, plannedWorkoutStages } from "@rg/database";
 import { summarizeStageRows } from "@rg/scheduling";
-import { coachStageRows, sessionDoc } from "./coach-apply.js";
+import { coachStageRows, easyFloats, sessionDoc } from "./coach-apply.js";
 import { insertBatches } from "./db.js";
 import { designedRunStages } from "./designed-runs.js";
 
@@ -276,7 +276,7 @@ const shortStage = (s: RetimeStageFields): boolean =>
 
 /**
  * Each block's role, from its intensity — the thread coach's blocks carry no role, and the stored kinds are the wire's
- * (`runBlockRoles`), which cannot tell a float from work or pickups from a main set:
+ * (`runBlockRoles`; since 2026-10-23 a float's recovery too), which cannot tell pickups from a main set:
  *  - a rest is a recovery;
  *  - AN EASY FLOAT IS A RECOVERY (review-L minor 3): an easy block between two pickups (blocks neither easy nor rest),
  *    and one after a pickup as long as such a float (the last of a written-out set);
@@ -287,13 +287,9 @@ const shortStage = (s: RetimeStageFields): boolean =>
 function threadCoachRoles(sorted: readonly RetimeStageFields[]): RetimeStep["role"][] {
   const n = sorted.length;
   const easy = (i: number) => sorted[i]?.label === "easy";
-  const pickup = (i: number) => i >= 0 && i < n && sorted[i]!.label !== "easy" && sorted[i]!.label !== "rest";
-  const lengthOf = (s: RetimeStageFields) => `${s.durationType}:${s.durationSeconds ?? s.distanceMeters}`;
-  const float = sorted.map((_, i) => easy(i) && pickup(i - 1) && pickup(i + 1));
-  const floatLengths = new Set(sorted.filter((_, i) => float[i]).map(lengthOf));
-  sorted.forEach((s, i) => {
-    if (easy(i) && pickup(i - 1) && floatLengths.has(lengthOf(s))) float[i] = true;
-  });
+  // The floats by the one rule the stored kinds use too (coach-apply.ts `easyFloats`, audit D4); rows stored before
+  // 2026-10-23 still say work for them, so it reads the labels, never the kinds.
+  const float = easyFloats(sorted);
   const longHard = sorted.map((s) => HARD.has(s.label ?? "") && !shortStage(s));
   return sorted.map((s, i): RetimeStep["role"] => {
     if (s.label === "rest" || float[i]) return "recovery";

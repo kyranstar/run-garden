@@ -218,17 +218,31 @@ export function makeDockController(deps: DockDeps) {
     });
   }
 
-  async function save(next: MusicPreferences): Promise<boolean> {
-    set({ busy: "saving" });
-    let stored: MusicPreferences;
-    try {
-      stored = await deps.saveMusic(next);
-    } catch {
-      set({ busy: null, notice: { text: "Couldn't save. Try again.", tone: "warn" } });
-      return false;
-    }
-    set({ music: stored, busy: null });
-    return true;
+  /** The saves, one at a time: each waits for the one before it to answer. */
+  let saving: Promise<unknown> = Promise.resolve();
+  /**
+   * Save the playlists as `build` makes them from the playlists as they are when this save's turn comes — each save
+   * the whole list, so one built while another was still out would write over it (the first open's tagging, answering
+   * while an add's save was out, dropped the added playlist; one removed came back). `build` answering null: nothing
+   * to save.
+   */
+  function save(build: (music: MusicPreferences) => MusicPreferences | null): Promise<boolean> {
+    const turn = saving.then(async (): Promise<boolean> => {
+      const next = build(state.music);
+      if (!next) return true;
+      set({ busy: "saving" });
+      let stored: MusicPreferences;
+      try {
+        stored = await deps.saveMusic(next);
+      } catch {
+        set({ busy: null, notice: { text: "Couldn't save. Try again.", tone: "warn" } });
+        return false;
+      }
+      set({ music: stored, busy: null });
+      return true;
+    });
+    saving = turn.catch(() => false);
+    return turn;
   }
 
   /** What the playlists suit, by id; {} when the Worker couldn't say (the next open tags them). */
@@ -255,7 +269,8 @@ export function makeDockController(deps: DockDeps) {
     const fresh = linked(deps.newId(), uri, label, details);
     const goodFor = (await tagsFor([fresh]))[fresh.id];
     const next: MusicShortcut = goodFor ? { ...fresh, goodFor } : fresh;
-    if (!(await save({ ...state.music, shortcuts: [...state.music.shortcuts, next] }))) return { kind: "failed" };
+    const added = (music: MusicPreferences) => (music.shortcuts.some((s) => s.uri === uri) ? null : { ...music, shortcuts: [...music.shortcuts, next] });
+    if (!(await save(added))) return { kind: "failed" };
     set({ adding: null, playlists: null });
     return { kind: "saved" };
   }
@@ -294,15 +309,18 @@ export function makeDockController(deps: DockDeps) {
       return s.id === "spa" && s.label === "Spa" ? { ...named, label: linked(s.id, s.uri, d.name, d).label } : named;
     };
     const tags = await tagsFor(untagged.filter((s) => asked.has(s.id)).map(withDetails));
-    // Merged into the playlists as they are by now (review-M M1): one removed meanwhile stays removed, a rename or tags
-    // set meanwhile are kept — tags only where none were set.
-    const shortcuts = state.music.shortcuts.map((s) => {
-      if (!asked.has(s.id)) return s;
-      const next = withDetails(s);
-      const goodFor = tags[s.id];
-      return goodFor && next.goodFor === undefined ? { ...next, goodFor } : next;
+    // Merged into the playlists as they are by its turn to save (review-M M1; after any save still out): one removed
+    // meanwhile stays removed, one added stays added, a rename or tags set meanwhile are kept — tags only where none
+    // were set.
+    await save((music) => {
+      const shortcuts = music.shortcuts.map((s) => {
+        if (!asked.has(s.id)) return s;
+        const next = withDetails(s);
+        const goodFor = tags[s.id];
+        return goodFor && next.goodFor === undefined ? { ...next, goodFor } : next;
+      });
+      return JSON.stringify(shortcuts) !== JSON.stringify(music.shortcuts) ? { ...music, shortcuts } : null;
     });
-    if (JSON.stringify(shortcuts) !== JSON.stringify(state.music.shortcuts)) await save({ ...state.music, shortcuts });
   }
 
   const deviceId = (): string | undefined => state.player?.device?.id ?? undefined;
@@ -400,7 +418,9 @@ export function makeDockController(deps: DockDeps) {
         set({ workout: { target, status: "no_device" }, devices: [] });
       }
     },
-    /** The player's Play for a workout's music that couldn't start on its own: a tap, so the link may open. */
+    /** The player's Play for a workout's music that couldn't start on its own: a tap, so the link may open. Still no
+     * device (the link opened, or the browser blocked it): the player's line says "Open Spotify to play …" with the
+     * link to tap — never "Ready to play …" again, whose Play would take the same blocked path. */
     async playWorkout(target: WorkoutTarget): Promise<void> {
       if (state.connection !== "connected" || state.busy) return;
       if (heldBack()) {
@@ -410,7 +430,9 @@ export function makeDockController(deps: DockDeps) {
       const noDevice = state.devices !== null && chooseDevice(state.devices, deps.prefer()) === null;
       const pending = remote.play({ id: target.id, label: target.label, uri: target.uri, shuffle: true }, { noDevice });
       set({ busy: "playing", notice: null });
-      await applyRemote(await guarded(() => pending, { tapped: true }));
+      const out = await guarded(() => pending, { tapped: true });
+      await applyRemote(out);
+      if (out && out.kind !== "playing") set({ workout: { target, status: "no_device" } });
       if (state.busy === "playing") set({ busy: null });
     },
     async pause(): Promise<void> {
@@ -485,14 +507,16 @@ export function makeDockController(deps: DockDeps) {
       return link(p.uri, p.name, p);
     },
     async remove(id: string): Promise<void> {
-      if (await save({ ...state.music, shortcuts: state.music.shortcuts.filter((s) => s.id !== id) })) set({ editingId: null });
+      if (await save((music) => ({ ...music, shortcuts: music.shortcuts.filter((s) => s.id !== id) }))) set({ editingId: null });
     },
     /** A playlist's label and what it suits, as the athlete set them. */
     async edit(id: string, patch: { label: string; goodFor: MusicGoodFor[] }): Promise<boolean> {
       const label = patch.label.trim().slice(0, MUSIC_LABEL_MAX).trim();
       if (!label) return false;
-      const shortcuts = state.music.shortcuts.map((s) => (s.id === id ? { ...s, label, goodFor: [...new Set(patch.goodFor)] } : s));
-      const ok = await save({ ...state.music, shortcuts });
+      const ok = await save((music) => ({
+        ...music,
+        shortcuts: music.shortcuts.map((s) => (s.id === id ? { ...s, label, goodFor: [...new Set(patch.goodFor)] } : s)),
+      }));
       if (ok) set({ editingId: null });
       return ok;
     },
