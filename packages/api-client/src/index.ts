@@ -1625,6 +1625,8 @@ export interface SyncStatusDto {
   /** Cloud-direct COROS: present when a cloud connection exists (or errors).
    * The sync line prefers this over Mac presence. */
   cloud?: { connected: boolean; lastSyncAt: string | null; error: string | null } | null;
+  /** COROS expired the sleep connection: no sleep comes in until it is reconnected (Settings). */
+  sleepNeedsReconnect?: boolean;
 }
 
 /**

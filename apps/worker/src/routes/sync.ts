@@ -23,6 +23,7 @@ import { activeSyncNotes, dismissSyncNote, DISMISS_ONLY_NOTE_KINDS } from "../se
 import { computeSyncStatus, openFailedCoachWrites } from "../services/sync-status.js";
 import { pushStudioPlan, retireStudioPlan, studioPlanRetired, undoStudioAdoption } from "../services/studio-push.js";
 import { corosReadNow } from "../services/coros-read.js";
+import { sleepReconnectDue } from "../services/coros-mcp.js";
 import { countOrphanedMirrors, repairOrphanedMirrors } from "../services/mirror-repair.js";
 import { convergeDivergedContent, countDivergedContent } from "../services/content-converge.js";
 import {
@@ -57,6 +58,8 @@ syncRoutes.get("/status", async (c) => {
     cloud: cloud.connected || cloud.status === "error"
       ? { connected: cloud.connected, lastSyncAt: cloud.lastSyncAt, error: cloud.lastErrorCategory }
       : null,
+    // COROS expired the sleep connection (audit C2): five weeks with only Settings saying so. The line says it too.
+    sleepNeedsReconnect: await sleepReconnectDue(db, userId),
   });
 });
 

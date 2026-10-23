@@ -75,6 +75,7 @@ import { activitiesAround, activityRows, doneEntries, doneTerms, sessionsWhere, 
 import type { SystemBlock } from "./llm-messages.js";
 import { loadProfileWithPreferences } from "./profile.js";
 import { PENDING_HASH } from "./watch-sets.js";
+import { SLEEP_RECONNECT_WORDS, sleepConnectionStatusSql, sleepNeedsReconnect } from "./coros-mcp.js";
 
 /** The D1 statements one build runs: the profile with the preferences (4: its row, the preferences, the places, the
  * conditions) and seven reads — today's checks, the objectives, the memory core, the plan over the horizon, the
@@ -302,6 +303,8 @@ interface Reads {
     hrvLast: string | null;
     rhrLast: string | null;
     sleepLast: string | null;
+    /** The official COROS sleep connection's status (coros-mcp.ts), or null with none. */
+    sleepConnection: string | null;
     /** The watch's connections and its last sync (an instant), or null. */
     watchConnected: number;
     watchSynced: string | null;
@@ -483,6 +486,7 @@ async function read(
         (select max(${dailyHealth.date}) from ${dailyHealth} where ${dailyHealth.userId} = ${userId}
            and ${dailyHealth.restingHeartRate} is not null) as rhrLast,
         (select max(${sleepRecords.date}) from ${sleepRecords} where ${sleepRecords.userId} = ${userId}) as sleepLast,
+        ${sleepConnectionStatusSql(userId)} as sleepConnection,
         ${thresholdSql(userId)} as runThreshold,
         ${runWeeksSql(userId, today)} as runWeeks`) as Promise<
       Array<Reads["counts"] & { open: string | null; declined: string | null; draftDate: string | null; runThreshold: unknown; runWeeks: unknown }>
@@ -846,7 +850,9 @@ function indexSection(r: Reads, end: string, beyond: string[], now: Date): strin
   out.push(`- objectives: ${r.objectives.length} active`);
   // The day and how long ago in brackets: the readings are joined by " · " already.
   const fresh = (word: string, date: string | null): string => (date ? `${word} last ${dayLabel(date)} (${relativeDay(date, r.today)})` : `${word} none recorded`);
-  out.push(`- readiness: ${[fresh("HRV", c.hrvLast), fresh("resting HR", c.rhrLast), fresh("sleep", c.sleepLast)].join(" · ")}`);
+  // An expired sleep connection says so (audit C2): a date alone read as a quiet week, not a dead feed.
+  const sleep = `${fresh("sleep", c.sleepLast)}${sleepNeedsReconnect(c.sleepConnection) ? ` — ${SLEEP_RECONNECT_WORDS}` : ""}`;
+  out.push(`- readiness: ${[fresh("HRV", c.hrvLast), fresh("resting HR", c.rhrLast), sleep].join(" · ")}`);
   // The suggestions still open, so a request one already answers is answered by it (13b §1; A8); their titles are a
   // coach run's words, marked.
   if (r.open.length) {

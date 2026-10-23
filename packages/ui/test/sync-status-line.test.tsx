@@ -30,4 +30,15 @@ describe("the sync line", () => {
     expect(line("api_error")).toContain("COROS unreachable — retrying");
     expect(line(null)).toContain("Synced with COROS");
   });
+
+  // Audit C2: COROS expired the sleep connection on 09-18 and for five weeks only Settings said so.
+  it("an expired sleep connection says so, briefly, where a clean sync would — a COROS outage still leads", () => {
+    const render = (s: SyncStatusDto) => renderToStaticMarkup(createElement(SyncStatusLine, { status: s }));
+    const sleepless = (error: string | null): SyncStatusDto => ({ ...status(error), sleepNeedsReconnect: true });
+    expect(render(sleepless(null))).toContain("Sleep sync stopped — reconnect in Settings");
+    expect(render(sleepless(null))).not.toContain("Synced with COROS");
+    expect(render(sleepless("api_error"))).toContain("COROS unreachable — retrying");
+    expect(render({ ...sleepless(null), cloud: null })).toContain("Sleep sync stopped — reconnect in Settings");
+    expect(render({ ...status(null), sleepNeedsReconnect: false })).not.toContain("Sleep");
+  });
 });
