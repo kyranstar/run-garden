@@ -11,7 +11,7 @@
  *
  * Synthetic data only.
  */
-import { beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { eq } from "drizzle-orm";
 import { schema } from "@rg/database";
 import { addDays, todayInZone, workoutDocSchema, type UserPreferences, type WorkoutDoc } from "@rg/domain";
@@ -91,6 +91,10 @@ beforeEach(async () => {
   ({ userId, prefs } = await makeTestUser(db, { units: "mi" }));
   cookie = `${SESSION_COOKIE}=${await createSession(db, userId)}`;
   vi.spyOn(console, "warn").mockImplementation(() => undefined);
+});
+
+afterEach(() => {
+  vi.useRealTimers();
 });
 
 async function call(method: string, path: string, opts: { env?: Env; body?: unknown } = {}) {
@@ -249,26 +253,32 @@ describe("the athlete's music for one workout", () => {
   });
 
   it("a choice follows its workout when it moves later: kept by the workout's day now, still four statements (review-M M4)", async () => {
+    // The workouts are made on the route's clock's days, not the real calendar's: a choice takes its workout's later
+    // day, so a workout made on a real today past the 25th outranked this test's moves (red from 2026-10-26). Date
+    // only, so the database's timers still run.
+    vi.useFakeTimers({ toFake: ["Date"] });
+    vi.setSystemTime(clock);
     const client = await clientFor(db, userId);
-    const made = await client("POST", "/api/workouts", { date: todayInZone(prefs.timezone), doc: calmDoc() });
+    const made = await client("POST", "/api/workouts", { date: today(), doc: calmDoc() });
     expect(made.status, JSON.stringify(made.body)).toBe(201);
     const w1 = made.body.workout.id as string;
     expect((await choose(w1, { date: "2026-10-19", use: "none" })).status).toBe(200);
     // Moved to the 25th; on the 22nd another choice is made.
     await db.update(schema.plannedWorkouts).set({ effectiveDate: "2026-10-25" }).where(eq(schema.plannedWorkouts.id, w1));
     clock = Date.parse("2026-10-22T12:00:00Z");
+    vi.setSystemTime(clock);
     const res = await choose("w2", { date: "2026-10-22", use: "none" });
     expect(res.body.choices).toEqual({ w2: { date: "2026-10-22", use: "none" }, [w1]: { date: "2026-10-25", use: "none" } });
     expect(res.statements).toHaveLength(4);
     // The workout being chosen for, moved since the sheet read it: its day now — kept already, or chosen for the first time.
     await db.update(schema.plannedWorkouts).set({ effectiveDate: "2026-10-28" }).where(eq(schema.plannedWorkouts.id, w1));
     expect((await choose(w1, { date: "2026-10-25", use: "default" })).body.choices[w1]).toEqual({ date: "2026-10-28", use: "default" });
-    const w3 = ((await client("POST", "/api/workouts", { date: todayInZone(prefs.timezone), doc: calmDoc({ title: "Third" }) })).body.workout.id) as string;
+    const w3 = ((await client("POST", "/api/workouts", { date: today(), doc: calmDoc({ title: "Third" }) })).body.workout.id) as string;
     await db.update(schema.plannedWorkouts).set({ effectiveDate: "2026-10-30" }).where(eq(schema.plannedWorkouts.id, w3));
     expect((await choose(w3, { date: "2026-10-19", use: "none" })).body.choices[w3]).toEqual({ date: "2026-10-30", use: "none" });
     // Another account's workout of the same id is never read for this one's day.
     const other = await makeTestUser(db);
-    const theirs = await (await clientFor(db, other.userId))("POST", "/api/workouts", { date: todayInZone(prefs.timezone), doc: calmDoc({ title: "Theirs" }) });
+    const theirs = await (await clientFor(db, other.userId))("POST", "/api/workouts", { date: today(), doc: calmDoc({ title: "Theirs" }) });
     await db.update(schema.plannedWorkouts).set({ effectiveDate: "2026-12-01" }).where(eq(schema.plannedWorkouts.id, theirs.body.workout.id));
     expect((await choose(theirs.body.workout.id, { date: "2026-10-22", use: "none" })).body.choices[theirs.body.workout.id]).toEqual({ date: "2026-10-22", use: "none" });
   });
