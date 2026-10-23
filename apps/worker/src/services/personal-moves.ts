@@ -17,10 +17,17 @@ import { toPersonalRecord, validatePersonalRecord } from "./personal-records.js"
 
 const { personalMoves } = schema;
 
-/** What matching needs of a personal move: never the record itself. */
-export type PersonalMatchRow = Pick<PersonalMoveRow, "id" | "status" | "mergedInto"> & { name: string | null };
+/**
+ * What matching needs of a personal move: never the record itself. `patterns` and `regions` are the record's lists as
+ * JSON text, parsed only for a move offered to the judge.
+ */
+export type PersonalMatchRow = Pick<PersonalMoveRow, "id" | "status" | "mergedInto"> & {
+  name: string | null;
+  patterns?: string | null;
+  regions?: string | null;
+};
 
-/** The account's personal moves, every status, for matching. ONE statement; the name is read out of the record by SQLite. */
+/** The account's personal moves, every status, for matching. ONE statement; the fields are read out of the record by SQLite. */
 export async function loadPersonalForMatch(db: Db, userId: string): Promise<PersonalMatchRow[]> {
   return db
     .select({
@@ -28,6 +35,8 @@ export async function loadPersonalForMatch(db: Db, userId: string): Promise<Pers
       status: personalMoves.status,
       mergedInto: personalMoves.mergedInto,
       name: sql<string | null>`json_extract(${personalMoves.record}, '$.name')`,
+      patterns: sql<string | null>`json_extract(${personalMoves.record}, '$.patterns')`,
+      regions: sql<string | null>`json_extract(${personalMoves.record}, '$.regions')`,
     })
     .from(personalMoves)
     .where(eq(personalMoves.userId, userId));

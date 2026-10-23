@@ -168,6 +168,17 @@ describe("matchMoves", () => {
     expect(d).toMatchObject({ kind: "personal", id: "myKeptMovebbbbbb" });
   });
 
+  it("offers the owner's own near names to the judge too (never a merged one), marked as theirs", () => {
+    const rows = [
+      { id: "myZorbexHipSwitchaaaaaa", status: "active", mergedInto: null, name: "Zorbex hip switch" },
+      // As near by its words as the active one, but merged away: never a candidate.
+      { id: "myZorbexBigSwitchbbbbbb", status: "merged", mergedInto: "myZorbexHipSwitchaaaaaa", name: "Zorbex big switch" },
+    ];
+    const [d] = matchMoves(extraction([move("the zorbex switch")]), EXERCISES, rows);
+    expect(d).toMatchObject({ kind: "new", check: true });
+    expect(d!.candidates?.map((c) => [c.kind, c.id])).toEqual([["personal", "myZorbexHipSwitchaaaaaa"]]);
+  });
+
   it("makes two new moves with one normalised name in one post one move", () => {
     const out = matchMoves(extraction([move("Zorbex shuffle"), move("zorbex shuffles")]), EXERCISES, []);
     expect(out[0]).toMatchObject({ kind: "new" });
@@ -224,6 +235,30 @@ describe("matchPost", () => {
     expect(link).toMatchObject({ moveKind: "personal", moveId: pm!.id, checkFlag: false });
     expect(pm).toMatchObject({ status: "pending", batchId: null, editedByOwner: false });
     expect((pm!.record as { name: string }).name).toBe("the 90 90 switch");
+  });
+
+  it("a later post's 'the zorbex switch' joins an earlier post's 'Zorbex hip switch' through the judge: one move, checked", async () => {
+    const first = await extracted("a", [move("Zorbex hip switch")]);
+    await matchPost(db, env(), userId, first, NOW, judge({}).fetchImpl);
+    const [mine] = await db.select().from(personalMoves);
+    const later = await extracted("b", [move("the zorbex switch")]);
+    const gw = judge({ matches: [{ move: 0, id: mine!.id }] });
+    expect(await matchPost(db, env(), userId, later, NOW, gw.fetchImpl)).toEqual({ newMoves: 0, linked: 1 });
+    expect(await db.select().from(personalMoves)).toHaveLength(1);
+    const [link] = await linksOf(later);
+    expect(link).toMatchObject({ moveId: mine!.id, moveKind: "personal", checkFlag: true, confidence: 0.6 });
+    // The owner's move name came from a model reading a post: it is asked about inside the data block, never beside the library's.
+    const text: string = gw.calls[0].messages[1].content;
+    const at = text.indexOf("Zorbex hip switch");
+    expect(at).toBeGreaterThan(text.indexOf("<post-data>"));
+    expect(at).toBeLessThan(text.indexOf("</post-data>"));
+    expect(text.slice(text.indexOf("</post-data>"))).not.toContain(mine!.id);
+  });
+
+  it("stores a new move the extraction was unsure of flagged to check", async () => {
+    const id = await extracted("k", [move("Zorbex quad shuffle", { confidence: "low" }), move("Zorbex neck nod")]);
+    await matchPost(db, env(), userId, id, NOW, judge({}).fetchImpl);
+    expect((await linksOf(id)).map((l) => l.checkFlag)).toEqual([true, false]);
   });
 
   it("never takes an id the judge was not offered", async () => {

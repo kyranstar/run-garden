@@ -47,46 +47,57 @@ export function filterMessages(post: PostSubmit): { system: string; userText: st
   return { system, userText: dataBlock(post) };
 }
 
-/** One move the names could not settle, and the library moves whose names are near it. */
+/** One move the names could not settle, and the moves whose names are near it. */
 export interface MatchJudgeItem {
   /** The move's index in the extraction: the number the reply names it by. */
   position: number;
   move: Pick<ExtractedMove, "name" | "aliases" | "patterns" | "regions" | "summary">;
-  candidates: { id: string; name: string; patterns: readonly string[]; regions: readonly string[] }[];
+  /**
+   * `library` (the default): the app's own moves. `personal`: the owner's moves, imported from earlier posts — their
+   * names were written by a model reading a stranger's post, so they are listed inside the data block.
+   */
+  candidates: { id: string; name: string; patterns: readonly string[]; regions: readonly string[]; kind?: "library" | "personal" }[];
 }
+
+type Candidate = MatchJudgeItem["candidates"][number];
+const candidateLine = (c: Candidate, text: (s: string) => string): string =>
+  `- "${text(c.id)}": ${text(c.name)} (patterns: ${text(c.patterns.join(", "))}; regions: ${text(c.regions.join(", "))})`;
 
 /**
  * The matching judge: is each move (read by a model from a stranger's post, so untrusted, inside the data block) one of
- * its candidate library moves (the app's own data, listed after the block)?
+ * its candidates — the library's (the app's own data, listed after the block) or the owner's own earlier imports
+ * (model-written too, so inside the block, defanged)?
  */
 export function matchMessages(items: readonly MatchJudgeItem[]): { system: string; userText: string } {
   const system = [
-    "You decide whether exercise moves read from a saved social video post are moves a training app's library already has.",
+    "You decide whether exercise moves read from a saved social video post are moves a training app already has: in " +
+      "its library, or among the owner's own moves saved from earlier posts.",
     DATA_RULE,
-    "Each move comes with candidate library moves whose names are close. A candidate is the same move only when it is " +
-      "the same exercise done the same way, whatever it is called. A variation (another position, other equipment, " +
-      "another direction or movement) is not the same move.",
+    "Each move comes with candidate moves whose names are close: the owner's own (listed with the move, inside the " +
+      "data) and the library's (listed after the data). A candidate is the same move only when it is the same exercise " +
+      "done the same way, whatever it is called. A variation (another position, other equipment, another direction or " +
+      "movement) is not the same move.",
     'Reply with JSON only: {"matches":[{"move":<move number>,"id":"<one of that move\'s candidate ids>"|null}]}, one ' +
       "entry per move. Use null when no candidate is the same move, or when unsure.",
   ].join("\n");
-  const moves = items.map((it) =>
-    [
+  const moves = items.map((it) => {
+    const mine = it.candidates.filter((c) => c.kind === "personal");
+    return [
       `move ${it.position}: ${defang(it.move.name)}`,
       it.move.aliases.length ? `  also called: ${defang(it.move.aliases.join("; "))}` : "",
       `  patterns: ${defang(it.move.patterns.join(", "))}; regions: ${defang(it.move.regions.join(", "))}`,
       it.move.summary ? `  summary: ${defang(it.move.summary)}` : "",
+      mine.length ? `  the owner's own candidates for move ${it.position}:\n${mine.map((c) => `  ${candidateLine(c, defang)}`).join("\n")}` : "",
     ]
       .filter(Boolean)
-      .join("\n"),
-  );
-  const candidates = items.map((it) =>
-    [
-      `Candidates for move ${it.position}:`,
-      ...it.candidates.map(
-        (c) => `- "${c.id}": ${c.name} (patterns: ${c.patterns.join(", ")}; regions: ${c.regions.join(", ")})`,
-      ),
-    ].join("\n"),
-  );
+      .join("\n");
+  });
+  const candidates = items.flatMap((it) => {
+    const library = it.candidates.filter((c) => c.kind !== "personal");
+    return library.length
+      ? [[`Library candidates for move ${it.position}:`, ...library.map((c) => candidateLine(c, (s) => s))].join("\n")]
+      : [];
+  });
   return { system, userText: ["Decide each move.", OPEN, ...moves, CLOSE, ...candidates].join("\n") };
 }
 

@@ -161,9 +161,9 @@ describe("saveBatch", () => {
     expect(await batchOf(id)).toMatchObject({ status: "saved", savedAt: at(2) });
     const links = (await db.select().from(exerciseProvenance)).sort((x, y) => (x.sourceKey ?? "").localeCompare(y.sourceKey ?? ""));
     expect(links.map((l) => ({ ...l, id: undefined }))).toEqual([
-      { id: undefined, userId, exerciseId: pm!.id, sourceType: SRC, url: "https://example.com/p/a", creator: "someone", sourceKey: "a#0", createdAt: at(2) },
-      { id: undefined, userId, exerciseId: HIP_SWITCH.id, sourceType: SRC, url: "https://example.com/p/a", creator: "someone", sourceKey: "a#1", createdAt: at(2) },
-      { id: undefined, userId, exerciseId: pm!.id, sourceType: SRC, url: "https://example.com/p/b", creator: "someone", sourceKey: "b#0", createdAt: at(2) },
+      { id: undefined, userId, exerciseId: pm!.id, sourceType: SRC, url: "https://example.com/p/a", creator: "someone", sourceKey: "imp:a#0", createdAt: at(2) },
+      { id: undefined, userId, exerciseId: HIP_SWITCH.id, sourceType: SRC, url: "https://example.com/p/a", creator: "someone", sourceKey: "imp:a#1", createdAt: at(2) },
+      { id: undefined, userId, exerciseId: pm!.id, sourceType: SRC, url: "https://example.com/p/b", creator: "someone", sourceKey: "imp:b#0", createdAt: at(2) },
     ]);
   });
 
@@ -194,7 +194,50 @@ describe("saveBatch", () => {
     const id = (await assembleBatch(db, env(), userId, at(1)))!;
     await db.update(savedPostMoves).set({ status: "removed" }).where(eq(savedPostMoves.position, 1));
     expect(await saveBatch(db, userId, id, at(2))).toEqual({ moves: 1, links: 1 });
-    expect((await db.select().from(exerciseProvenance)).map((l) => l.sourceKey)).toEqual(["a#0"]);
+    expect((await db.select().from(exerciseProvenance)).map((l) => l.sourceKey)).toEqual(["imp:a#0"]);
+  });
+
+  it("leaves a new move whose only link was removed pending, and does not count it", async () => {
+    await matched("a", [move("Zorbex quad shuffle"), move("90/90 Hip Switch")]);
+    const id = (await assembleBatch(db, env(), userId, at(1)))!;
+    await db.update(savedPostMoves).set({ status: "removed" }).where(eq(savedPostMoves.position, 0));
+    expect(await saveBatch(db, userId, id, at(2))).toEqual({ moves: 0, links: 1 });
+    expect((await db.select().from(personalMoves))[0]).toMatchObject({ status: "pending" });
+    expect((await db.select().from(exerciseProvenance)).map((l) => l.exerciseId)).toEqual([HIP_SWITCH.id]);
+  });
+
+  it("leaves a curated link to the same post and move exactly as it is, and adds no second one", async () => {
+    await db.insert(exerciseProvenance).values({
+      id: "curated", userId, exerciseId: HIP_SWITCH.id, sourceType: SRC, url: "https://example.com/p/a", creator: "curated",
+      sourceKey: "a#3", createdAt: T0,
+    });
+    const [before] = await db.select().from(exerciseProvenance);
+    await matched("a", [move("90/90 Hip Switch")]);
+    const id = (await assembleBatch(db, env(), userId, at(1)))!;
+    expect(await saveBatch(db, userId, id, at(2))).toEqual({ moves: 0, links: 1 });
+    expect(await db.select().from(exerciseProvenance)).toEqual([before]);
+  });
+
+  it("never overwrites a curated link whose key reads like an import's, and adds its own under imp:", async () => {
+    await db.insert(exerciseProvenance).values({
+      id: "curated", userId, exerciseId: "someOtherMove", sourceType: SRC, url: "https://example.com/p/a", creator: "curated",
+      sourceKey: "a#0", createdAt: T0,
+    });
+    const [before] = await db.select().from(exerciseProvenance);
+    await matched("a", [move("90/90 Hip Switch")]);
+    const id = (await assembleBatch(db, env(), userId, at(1)))!;
+    await saveBatch(db, userId, id, at(2));
+    const rows = await db.select().from(exerciseProvenance);
+    expect(rows.find((r) => r.id === "curated")).toEqual(before);
+    expect(rows.filter((r) => r.id !== "curated").map((r) => [r.exerciseId, r.sourceKey])).toEqual([[HIP_SWITCH.id, "imp:a#0"]]);
+  });
+
+  it("lists a move once per post, however many times the post shows it", async () => {
+    await matched("a", [move("90/90 Hip Switch"), move("90-90 hip switches")]);
+    const id = (await assembleBatch(db, env(), userId, at(1)))!;
+    expect(await saveBatch(db, userId, id, at(2))).toEqual({ moves: 0, links: 2 });
+    expect((await db.select().from(exerciseProvenance)).map((r) => [r.exerciseId, r.sourceKey])).toEqual([[HIP_SWITCH.id, "imp:a#0"]]);
+    expect((await db.select().from(savedPostMoves)).every((l) => l.status === "saved")).toBe(true);
   });
 
   it("makes usable a pending move an earlier, unsaved batch brought, when this batch links to it", async () => {
@@ -217,7 +260,7 @@ describe("saveBatch", () => {
     for (let i = 0; i < posts.length; i += 5) await db.insert(savedPosts).values(posts.slice(i, i + 5));
     const links = posts.flatMap((p) =>
       Array.from({ length: 12 }, (_, position) => ({
-        id: newId(), userId, postId: p.id, position, moveId: HIP_SWITCH.id, moveKind: "library" as const, batchId,
+        id: newId(), userId, postId: p.id, position, moveId: EXERCISES[position]!.id, moveKind: "library" as const, batchId,
         confidence: 1, checkFlag: false, status: "pending" as const, createdAt: T0,
       })),
     );

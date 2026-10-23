@@ -6,11 +6,15 @@
  *  2. The same test against the owner's own moves (active, pending or archived; a merged one resolves to the move it was
  *     merged into) → that personal move, high. This is also how the same new move across posts becomes ONE move: the
  *     first post's pending move is there when the second post is matched.
- *  3. Otherwise a library move whose name shares enough words (token overlap ≥ `FUZZY_MIN`) is a candidate, and
+ *  3. Otherwise a library move or one of the owner's own (not merged) whose name shares enough words (token overlap
+ *     ≥ `FUZZY_MIN`) is a candidate, and
  *  4. one cheap judge call per post (`import_match` spend, reserved and settled) says which candidate, if any, is the
- *     same move: yes → that library move, medium, flagged "check this"; no → a new move. No answer at all (fixture
- *     mode, no key, the budget, a failed call) → a new move flagged "check this", for the owner to merge in review.
+ *     same move: yes → that library or personal move, medium, flagged "check this"; no → a new move. No answer at all
+ *     (fixture mode, no key, the budget, a failed call) → a new move flagged "check this", for the owner to merge in
+ *     review.
  *  5. Two new moves with one normalised name in one post are one personal move with two links.
+ *
+ * A new move the extraction itself was unsure of (`confidence: "low"`) is flagged "check this" too (spec §4 call 11).
  *
  * `matchPost` writes what it decided as PENDING (personal moves and post-move links, no batch yet) and the post as
  * `matched`, in one transaction. Nothing it writes is usable until the batch is saved (saves-batches.ts). A new move's
@@ -35,7 +39,7 @@ import { buildPersonalRecord, loadPersonalForMatch, newPersonalMoveId, type Pers
 
 const { savedPosts, personalMoves, savedPostMoves } = schema;
 
-/** The least token overlap (shared words over all words) that makes a library move a candidate for the judge. */
+/** The least token overlap (shared words over all words) that makes a library or personal move a candidate for the judge. */
 export const FUZZY_MIN = 0.6;
 /** The most candidates one move takes to the judge. */
 export const MAX_CANDIDATES = 3;
@@ -54,6 +58,8 @@ export interface MatchCandidate {
   name: string;
   patterns: readonly string[];
   regions: readonly string[];
+  /** A library move, or one of the owner's own (whose name a model wrote: the judge sees it inside the data block). */
+  kind: "library" | "personal";
   score: number;
 }
 
@@ -68,7 +74,7 @@ export interface MatchDecision {
   check: boolean;
   /** A new move's draft: what its personal record is built from. */
   draft?: ExtractedMove;
-  /** Library moves near a new move's name, for the judge (step 3); a decision still holding them was never answered. */
+  /** Library and personal moves near a new move's name, for the judge (step 3); a decision still holding them was never answered. */
   candidates?: MatchCandidate[];
   /** A new move repeating an earlier new move of the same post (step 5): that move's position. */
   sameAs?: number;
@@ -152,11 +158,33 @@ const firstHit = (keys: readonly string[], index: ReadonlyMap<string, string>): 
   return undefined;
 };
 
-/** Shared words over all words (Jaccard), the best over the move's name and aliases. */
-function candidatesFor(move: ExtractedMove, index: LibraryIndex): MatchCandidate[] {
+/** A move that may be offered to the judge: its words, and the candidate it would be (its score filled in when offered). */
+type Pooled = { words: Set<string>; candidate: () => Omit<MatchCandidate, "score"> };
+
+const parseList = (raw: string | null | undefined): string[] => {
+  if (!raw) return [];
+  try {
+    const v: unknown = JSON.parse(raw);
+    return Array.isArray(v) ? v.filter((x): x is string => typeof x === "string") : [];
+  } catch {
+    return [];
+  }
+};
+
+/** The owner's moves that can be candidates: every one but a merged one (its target is in the pool under its own name). */
+function personalPool(rows: readonly PersonalMatchRow[]): Pooled[] {
+  return rows
+    .filter((r) => r.name && r.status in STATUS_RANK && r.status !== "merged")
+    .map((r) => ({
+      words: wordsOf(r.name!),
+      candidate: () => ({ id: r.id, name: r.name!, patterns: parseList(r.patterns), regions: parseList(r.regions), kind: "personal" as const }),
+    }));
+}
+
+/** Shared words over all words (Jaccard), the best over the move's name and aliases; the closest `MAX_CANDIDATES` of both pools. */
+function candidatesFor(move: ExtractedMove, index: LibraryIndex, mine: readonly Pooled[]): MatchCandidate[] {
   const own = [move.name, ...move.aliases].map(wordsOf).filter((w) => w.size > 0);
-  const out: MatchCandidate[] = [];
-  for (const { rec, words } of index.words) {
+  const score = (words: Set<string>): number => {
     let best = 0;
     for (const w of own) {
       let shared = 0;
@@ -164,10 +192,22 @@ function candidatesFor(move: ExtractedMove, index: LibraryIndex): MatchCandidate
       if (shared === 0) continue;
       best = Math.max(best, shared / (w.size + words.size - shared));
     }
-    if (best >= FUZZY_MIN) out.push({ id: rec.id, name: rec.name, patterns: rec.patterns, regions: rec.regions, score: best });
+    return best;
+  };
+  const out: MatchCandidate[] = [];
+  for (const { rec, words } of index.words) {
+    const s = score(words);
+    if (s >= FUZZY_MIN) out.push({ id: rec.id, name: rec.name, patterns: rec.patterns, regions: rec.regions, kind: "library", score: s });
+  }
+  for (const p of mine) {
+    const s = score(p.words);
+    if (s >= FUZZY_MIN) out.push({ ...p.candidate(), score: s });
   }
   return out.sort((a, b) => b.score - a.score || a.id.localeCompare(b.id)).slice(0, MAX_CANDIDATES);
 }
+
+/** A new move's flag: the extraction itself was unsure of it. */
+const unsure = (draft: ExtractedMove): boolean => draft.confidence === "low";
 
 /** Step 5: a new move whose normalised name an earlier new move of the post already has becomes a link to that one. */
 function dedupeNew(decisions: readonly MatchDecision[]): MatchDecision[] {
@@ -186,8 +226,8 @@ function dedupeNew(decisions: readonly MatchDecision[]): MatchDecision[] {
 }
 
 /**
- * Steps 1–3 and 5, without the judge: a move with library candidates comes back `new`, flagged, holding them — what it
- * stays if the judge never answers (`applyVerdicts`).
+ * Steps 1–3 and 5, without the judge: a move with candidates comes back `new`, flagged, holding them — what it stays
+ * if the judge never answers (`applyVerdicts`).
  */
 export function matchMoves(
   extraction: Extraction,
@@ -196,6 +236,7 @@ export function matchMoves(
 ): MatchDecision[] {
   const lib = libraryIndex(library);
   const mine = personalIndex(personal);
+  const pool = personalPool(personal);
   return dedupeNew(
     extraction.moves.map((move, position): MatchDecision => {
       const keys = [move.name, ...move.aliases].map(normalizeMoveName).filter(Boolean);
@@ -203,18 +244,18 @@ export function matchMoves(
       if (libraryId) return { position, kind: "library", id: libraryId, confidence: "high", check: false };
       const personalId = firstHit(keys, mine);
       if (personalId) return { position, kind: "personal", id: personalId, confidence: "high", check: false };
-      const candidates = candidatesFor(move, lib);
+      const candidates = candidatesFor(move, lib, pool);
       if (candidates.length) return { position, kind: "new", confidence: "low", check: true, draft: move, candidates };
-      return { position, kind: "new", confidence: move.confidence, check: false, draft: move };
+      return { position, kind: "new", confidence: move.confidence, check: unsure(move), draft: move };
     }),
   );
 }
 
 /**
- * Step 4's outcome on the decisions: an answered move is the candidate the judge named (medium, flagged), or new
- * (unflagged) when it named none or one it was not offered. A move repeating an earlier one of the post takes that
- * one's answer (it is never asked about twice). Unanswered moves (`verdicts` null, or a move the reply left out) stay
- * new and flagged.
+ * Step 4's outcome on the decisions: an answered move is the candidate the judge named — library or personal, medium,
+ * flagged — or new (flagged only if the extraction was unsure of it) when it named none or one it was not offered. A
+ * move repeating an earlier one of the post takes that one's answer (it is never asked about twice). Unanswered moves
+ * (`verdicts` null, or a move the reply left out) stay new and flagged.
  */
 export function applyVerdicts(
   decisions: readonly MatchDecision[],
@@ -225,8 +266,9 @@ export function applyVerdicts(
       const asked = verdicts?.has(d.position) ? d.position : d.sameAs;
       if (!d.candidates?.length || !d.draft || asked === undefined || !verdicts?.has(asked)) return d;
       const id = verdicts.get(asked);
-      if (id && d.candidates.some((c) => c.id === id)) return { position: d.position, kind: "library", id, confidence: "medium", check: true };
-      return { position: d.position, kind: "new", confidence: d.draft.confidence, check: false, draft: d.draft };
+      const named = id ? d.candidates.find((c) => c.id === id) : undefined;
+      if (named) return { position: d.position, kind: named.kind, id: named.id, confidence: "medium", check: true };
+      return { position: d.position, kind: "new", confidence: d.draft.confidence, check: unsure(d.draft), draft: d.draft };
     }),
   );
 }

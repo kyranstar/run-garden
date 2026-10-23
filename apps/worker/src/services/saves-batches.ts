@@ -8,7 +8,7 @@
  * `exercise_provenance` (what the Studio's "from your saves", the engine's bonus and the coach's "saved" read) is
  * written only by `saveBatch`. Both run in a constant number of set-based statements, however big the batch.
  */
-import { and, eq, getTableColumns, isNull, or, sql } from "drizzle-orm";
+import { and, eq, getTableColumns, isNull, sql } from "drizzle-orm";
 import { schema } from "@rg/database";
 import { newId } from "@rg/domain";
 import type { ExerciseRecord } from "@rg/exercise-library";
@@ -149,13 +149,22 @@ export async function assembleBatch(db: Db, env: Env, userId: string, now: strin
   return id;
 }
 
+/** The import's own key space in `exercise_provenance`: never a curated link's `<code>#<index>`. */
+export const IMPORT_KEY_PREFIX = "imp:";
+
 /**
- * The owner's "Save these": the batch's pending personal moves (and any pending move one of its links names, brought
- * by an earlier batch not yet saved) become `active`, its pending links `saved` and written to `exercise_provenance`
- * (`exercise_id` = the move, `source_type` = the post's source, `source_key` = the post's key + "#" + position, url,
- * creator), and the batch `saved`. A removed link is left out. Null for a batch that isn't this account's; a batch
- * already saved (or dismissed) changes nothing. D1 statements: the batch and its counts 1, then one transaction of 4 —
- * set-based, so the same 5 for 6 links or 600.
+ * The owner's "Save these":
+ *  - the pending personal moves a kept (pending) link of the batch names become `active` — one the owner removed or
+ *    re-matched away (no kept link names it) stays pending and is never offered; a pending move an earlier, unsaved
+ *    batch brought is activated when this batch keeps a link to it;
+ *  - each kept link is written to `exercise_provenance` (`exercise_id` = the move, `source_type` = the post's source,
+ *    `source_key` = "imp:" + the post's key + "#" + position, url, creator) unless the account already links that move
+ *    to that post (a curated link stays exactly as it is, and a move never lists one post twice). Insert-only: an
+ *    import never rewrites a provenance row;
+ *  - the links become `saved`, the batch `saved`.
+ * A removed link is left out. Null for a batch that isn't this account's; a batch already saved (or dismissed) changes
+ * nothing. D1 statements: the batch and its counts 1, then one transaction of 4 — set-based, so the same 5 for 6 links
+ * or 600.
  */
 export async function saveBatch(
   db: Db,
@@ -171,10 +180,7 @@ export async function saveBatch(
   const movesToKeep = and(
     eq(personalMoves.userId, userId),
     eq(personalMoves.status, "pending"),
-    or(
-      eq(personalMoves.batchId, batchId),
-      sql`${personalMoves.id} IN (SELECT ${savedPostMoves.moveId} FROM ${savedPostMoves} WHERE ${pendingLinks} AND ${savedPostMoves.moveKind} = 'personal')`,
-    ),
+    sql`${personalMoves.id} IN (SELECT ${savedPostMoves.moveId} FROM ${savedPostMoves} WHERE ${pendingLinks} AND ${savedPostMoves.moveKind} = 'personal')`,
   );
   const [batch] = await db
     .select({
@@ -191,19 +197,25 @@ export async function saveBatch(
   // In order: the moves and the links are read while the links are still pending; the links are marked last.
   await runAtomically(db, [
     db.update(personalMoves).set({ status: "active", updatedAt: now }).where(movesToKeep),
+    // One row per kept link, except where the account already links the move to the post (`existing`) or an earlier
+    // position of the same post shows the same move (`twin`). The aliased tables are named by their alias inside their
+    // subquery, so the unaliased names there are the outer row's.
     db
       .insert(exerciseProvenance)
       .select(
         sql`SELECT ${savedPostMoves.id}, ${savedPostMoves.userId}, ${savedPostMoves.moveId}, ${savedPosts.source}, ${savedPosts.url},
           coalesce(nullif(${savedPosts.creatorHandle}, ''), ${savedPosts.creatorName}),
-          ${savedPosts.sourceKey} || '#' || ${savedPostMoves.position}, ${now}
+          ${IMPORT_KEY_PREFIX} || ${savedPosts.sourceKey} || '#' || ${savedPostMoves.position}, ${now}
           FROM ${savedPostMoves} JOIN ${savedPosts} ON ${savedPosts.id} = ${savedPostMoves.postId}
-          WHERE ${pendingLinks} AND ${savedPosts.userId} = ${userId}`,
+          WHERE ${pendingLinks} AND ${savedPosts.userId} = ${userId}
+            AND NOT EXISTS (SELECT 1 FROM ${exerciseProvenance} AS existing
+              WHERE existing.user_id = ${userId} AND existing.exercise_id = ${savedPostMoves.moveId} AND existing.url = ${savedPosts.url})
+            AND NOT EXISTS (SELECT 1 FROM ${savedPostMoves} AS twin
+              WHERE twin.user_id = ${userId} AND twin.batch_id = ${batchId} AND twin.status = 'pending'
+                AND twin.post_id = ${savedPostMoves.postId} AND twin.move_id = ${savedPostMoves.moveId}
+                AND twin.position < ${savedPostMoves.position})`,
       )
-      .onConflictDoUpdate({
-        target: [exerciseProvenance.userId, exerciseProvenance.sourceType, exerciseProvenance.sourceKey],
-        set: { exerciseId: sql`excluded.exercise_id`, url: sql`excluded.url`, creator: sql`excluded.creator` },
-      }),
+      .onConflictDoNothing(),
     db.update(savedPostMoves).set({ status: "saved" }).where(pendingLinks),
     db
       .update(saveBatches)
