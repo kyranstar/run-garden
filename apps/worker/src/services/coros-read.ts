@@ -9,7 +9,7 @@ import { corosClient, touchCorosSync } from "./coros-connection.js";
 import { ingestActivities } from "./completion.js";
 import { ingestDailyHealth, upsertAthleteZones } from "./health-ingest.js";
 import { importPlanSnapshot } from "./import-plan.js";
-import { isRuntimeLimit } from "./runtime-limit.js";
+import { isRuntimeLimit, isStorageError } from "./runtime-limit.js";
 import { loadPreferences } from "./calendar-sync.js";
 import { advanceGarden, firstDayToReplay, recordReplayFrom, replayPending, resimulateFrom } from "./garden-sync.js";
 import { REQUEST_REPLAY_MAX_DAYS, SWEEP_REPLAY_MAX_DAYS } from "./cron-limits.js";
@@ -35,7 +35,8 @@ const FULL_SCHEDULE_STALE_MS = 6 * 3600 * 1000;
 
 export interface ReadNowResult {
   /** "restoring": a restore is replacing the account — nothing is read in (B2). */
-  status: "ok" | "fresh" | "busy" | "not_connected" | "coros_unreachable" | "bad_credentials" | "restoring";
+  /** "storage_error": the read failed on our own storage (D1), not at COROS — the connection is left healthy (audit C3). */
+  status: "ok" | "fresh" | "busy" | "not_connected" | "coros_unreachable" | "bad_credentials" | "restoring" | "storage_error";
   ingested?: number;
   /** The read ran out of Worker budget rather than failing at COROS. Reported so
    *  a caller can retry without treating the connection as unhealthy. */
@@ -304,6 +305,11 @@ export async function corosReadNow(
       // next invocation starts with a fresh allowance.
       return { status: "coros_unreachable", runtimeLimited: true };
     }
+    if (isStorageError(e)) {
+      // Our database, not COROS (audit C3: "D1_ERROR: Network connection lost" read as a COROS outage). The connection
+      // is left as it is — a red COROS error clears only on a later successful read — and the next read tries again.
+      return { status: "storage_error" };
+    }
     await db
       .update(providerConnections)
       .set({
@@ -328,6 +334,9 @@ export interface SweepAccountStats {
   garden: ReadNowResult["garden"] | null;
   /** Coach reads this turn claimed and generated (each a model call). */
   coachReads: number;
+  /** Why the drain read nothing, when something held it back (`processCoachReads`' skip: the budget reserve, no key,
+   * AI off, out of credits…) — absent when it ran (audit C1: a paused drain read as a silent `coachReads: 0`). */
+  coachReadsSkipped?: string;
   /** Planned workouts the read could not write (a partial read). */
   failedWrites: number;
 }
@@ -350,6 +359,7 @@ export async function corosSweepAccount(
     () => null,
   );
   let coachReads = 0;
+  let coachReadsSkipped: string | null = null;
   let garden = result?.garden ?? null;
   if (result) {
     // A replay an earlier invocation left on record (capped, or killed) walks on here too, capped like the read's
@@ -368,6 +378,7 @@ export async function corosSweepAccount(
     // here and one an hour in the hourly cron.
     const reads = await processCoachReads(db, env, userId, prefs, { cap: 1 }).catch(() => null);
     coachReads = reads?.attempted ?? 0;
+    coachReadsSkipped = reads?.skipped ?? null;
   }
   return {
     read: result?.status ?? "failed",
@@ -375,6 +386,7 @@ export async function corosSweepAccount(
     fullSchedule: result?.fullSchedule === true,
     garden,
     coachReads,
+    ...(coachReadsSkipped ? { coachReadsSkipped } : {}),
     failedWrites: result?.failedWrites ?? 0,
   };
 }

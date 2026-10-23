@@ -731,6 +731,9 @@ export function SyncStatusLine({
   // to the watch or keeps the watch's, and the count goes down as they do.
   const staleSessions = status.contentStaleSessions ?? [];
   const staleLine = `Your watch has an earlier version of ${contentStale} session${contentStale === 1 ? "" : "s"}`;
+  // COROS expired the sleep connection (audit C2): five weeks with only Settings saying so. Where a clean sync would
+  // read, this does — anything louder about COROS itself still leads.
+  const sleepLine = status.sleepNeedsReconnect ? "Sleep sync stopped — reconnect in Settings" : null;
   const line = (() => {
     // Cloud-direct COROS (spec §5): the connection's health outranks Mac
     // presence — "synced X ago" or an honest error, never a Mac mystery.
@@ -748,9 +751,11 @@ export function SyncStatusLine({
       if (status.state === "sync_issue") {
         return `${status.issueCount} change${status.issueCount === 1 ? "" : "s"} couldn't sync`;
       }
+      if (sleepLine) return sleepLine;
       if (contentStale > 0) return staleLine;
       return `Synced with COROS${status.cloud.lastSyncAt ? ` · ${relativeTime(status.cloud.lastSyncAt)}` : " · first sync pending"}`;
     }
+    if (sleepLine && status.state === "in_sync") return sleepLine;
     if (contentStale > 0 && status.state === "in_sync") return staleLine;
     switch (status.state) {
       case "in_sync":

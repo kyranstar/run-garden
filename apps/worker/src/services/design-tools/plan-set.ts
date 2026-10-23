@@ -212,7 +212,8 @@ export const planSet: DesignTool = {
       const runLeft = budget.ceilingMicros - budget.spentMicros;
       // The week too (§2.11): what it has left, less one call's worst case — the next call is checked against it.
       const week = ctx.set.week ? await ctx.set.week() : null;
-      const weekLeft = week ? LLM_BUDGET.cutoffMicros - week.spentMicros - week.callWorstMicros : Number.POSITIVE_INFINITY;
+      // Its lane's cutoff: a rehearsal's is the rehearsal lane's cap (audit C1).
+      const weekLeft = week ? (week.cutoffMicros ?? LLM_BUDGET.cutoffMicros) - week.spentMicros - week.callWorstMicros : Number.POSITIVE_INFINITY;
       const left = Math.min(runLeft, weekLeft);
       const n = p.briefs.length;
       if (perWorkout * n + mainNeed > left) {

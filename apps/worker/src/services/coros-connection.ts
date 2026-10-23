@@ -1,10 +1,11 @@
-import { and, eq } from "drizzle-orm";
+import { and, eq, inArray } from "drizzle-orm";
 import { providerConnections } from "@rg/database";
 import { newId, nowInstant } from "@rg/domain";
 import { CorosApiError, CorosClient, type CorosRegion } from "@rg/coros";
 import { decryptSecret, encryptSecret } from "../auth/crypto.js";
 import type { Env } from "../env.js";
 import type { Db } from "./db.js";
+import { sleepNeedsReconnect } from "./coros-mcp.js";
 
 /**
  * The cloud COROS connection (cloud-direct spec §1): one provider_connections
@@ -186,7 +187,25 @@ export interface CorosConnectionStatus {
 }
 
 export async function corosConnectionStatus(db: Db, userId: string): Promise<CorosConnectionStatus> {
-  const row = await connRow(db, userId);
+  return statusOf(await connRow(db, userId));
+}
+
+/**
+ * The sync line's two connections in ONE statement (it is polled every 30 s): the COROS connection's status, and
+ * whether COROS expired the sleep connection (`coros_mcp`; audit C2 — five weeks with only Settings saying so).
+ */
+export async function corosConnectionsForSyncLine(db: Db, userId: string): Promise<{ coros: CorosConnectionStatus; sleepNeedsReconnect: boolean }> {
+  const rows = await db
+    .select()
+    .from(providerConnections)
+    .where(and(eq(providerConnections.userId, userId), inArray(providerConnections.provider, [PROVIDER, "coros_mcp"])));
+  return {
+    coros: statusOf(rows.find((r) => r.provider === PROVIDER)),
+    sleepNeedsReconnect: sleepNeedsReconnect(rows.find((r) => r.provider === "coros_mcp")?.status),
+  };
+}
+
+function statusOf(row: ConnRow | undefined): CorosConnectionStatus {
   if (!row || row.status === "disconnected") {
     return { connected: false, status: row?.status ?? null, lastSyncAt: null, lastErrorCategory: null, email: null, region: null };
   }

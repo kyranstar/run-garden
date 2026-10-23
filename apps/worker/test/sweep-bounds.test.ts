@@ -21,6 +21,7 @@ import { REQUEST_REPLAY_MAX_DAYS, SWEEP_REPLAY_MAX_DAYS } from "../src/services/
 import { corosReadNow } from "../src/services/coros-read.js";
 import { advanceGarden, loadGarden, resimulateFrom } from "../src/services/garden-sync.js";
 import { closeStrandedSyncRuns } from "../src/services/reconcile-daily.js";
+import { AUTO_READ_RESERVE_MICROS } from "../src/services/coach-reads.js";
 import { makeTestDb } from "./helpers.js";
 import { gardenTimeline, replayMarker } from "./garden-compare.js";
 import { seedRealisticAccount } from "./realistic-account.js";
@@ -81,6 +82,35 @@ describe("the half-hourly COROS half has its own run row", () => {
     expect(stats).toHaveProperty("garden");
     expect(stats.sleep).toBe(false);
     expect(stats.backfill).toBe(false);
+  });
+
+  it("a drain the budget reserve held back says so in the run's stats — never a silent coachReads: 0 (audit C1)", { timeout: 60_000 }, async () => {
+    const db = makeTestDb({ boundVariableCap: 100 });
+    const acct = await seedRealisticAccount(db, { newActivities: false, gardenBehindDays: 2, corosBaseMonday: lastMonday() });
+    vi.stubGlobal("fetch", acct.fetchImpl);
+    // The athlete's week at the automatic reads' reserve.
+    await db.insert(schema.llmUsage).values({
+      id: newId(), userId: acct.userId, kind: "weekly_review", model: "m", inputTokens: 1, outputTokens: 1, costMicros: AUTO_READ_RESERVE_MICROS,
+      cacheHit: false, requestFingerprint: "f", createdAt: new Date(Date.now() - 3_600_000).toISOString(),
+    });
+    const llm = acct.fetches.llm;
+    await halfHourly(db, acct.env);
+    const [run] = corosRunsSync(db, acct.userId);
+    const stats = run!.stats as Record<string, unknown>;
+    expect(stats.read).toBe("ok");
+    expect(stats.coachReads).toBe(0);
+    expect(stats.coachReadsSkipped).toBe("budget_reserve");
+    expect(acct.fetches.llm - llm).toBe(0);
+    // The hourly's drain says so on its own run row too (the garden's replay finished first: else it is that run's
+    // heavy step, and the drain waits).
+    await advanceGarden(db, acct.userId, acct.prefs);
+    expect(await replayMarker(db, acct.userId)).toBeNull();
+    await hourly(db, acct.env);
+    const [reconcile] = await db
+      .select()
+      .from(schema.syncRuns)
+      .where(and(eq(schema.syncRuns.userId, acct.userId), eq(schema.syncRuns.kind, "reconcile")));
+    expect((reconcile!.stats as Record<string, unknown>).coachReadsSkipped).toBe("budget_reserve");
   });
 
   it("an account with no COROS connection gets no coros_read row", async () => {

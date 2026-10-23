@@ -20,6 +20,9 @@ import { buildEffortPackage } from "./coach-effort.js";
  */
 
 export const AUTO_READ_RESERVE_MICROS = 12_000_000; // auto-reads stop at $12; interactive keeps $8 headroom
+
+/** Whether the automatic reads are paused by the athlete's week (`llmBudgetStatus`): at the reserve. Settings says so. */
+export const autoReadsPaused = (budget: { spentMicros: number }): boolean => budget.spentMicros >= AUTO_READ_RESERVE_MICROS;
 export const READ_MAX_ATTEMPTS = 5;
 export const READ_RECLAIM_MINUTES = 10;
 export const READ_WINDOW_DAYS = 14;
@@ -383,7 +386,7 @@ export async function processCoachReads(
   const gate = gateReason(env, prefs);
   if (gate) return { processed: 0, attempted: 0, skipped: gate };
   const budget = await llmBudgetStatus(db, userId);
-  if (budget.spentMicros >= AUTO_READ_RESERVE_MICROS) return { processed: 0, attempted: 0, skipped: "budget_reserve" };
+  if (autoReadsPaused(budget)) return { processed: 0, attempted: 0, skipped: "budget_reserve" };
   // The AI account is out of credits (a 402 is on record, ai-credits.ts): the
   // ambient drain does not ask again — no call, no claim, no attempt spent, and
   // no cron heavy step used up on an answer that is already known. The first

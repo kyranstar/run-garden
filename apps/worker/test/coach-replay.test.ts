@@ -6,7 +6,8 @@
  * Pinned here: a variant with no variable set sends the production request byte for byte (a run driven to its finish
  * through the real client, then replayed through the same transport); each variable's words land in one block after
  * the cached prefix, which is unchanged; the gate (the switch, the owner, the exact confirm, enums only); ownership;
- * the weekly cap and the request's own cap; the first call alone, then the rest (the prefix cached once); nothing
+ * the weekly cap — the rehearsal lane's, never the athlete's (audit C1) — and the request's own cap; the first call
+ * alone, then the rest (the prefix cached once); nothing
  * written but `llm_usage`; the listing's shape; and every request's statements and fetches (≤ 45).
  *
  * The model is a stub: no key, no network. Synthetic data only.
@@ -35,7 +36,7 @@ import { buildDesignContext, designContextBuilder } from "../src/services/design
 import { REVIEW_DIMENSIONS } from "../src/services/design-prompt.js";
 import { allTools } from "../src/services/design-tools/index.js";
 import { designProposalId } from "../src/services/design-tools/propose.js";
-import { LLM_BUDGET, llmBudgetStatus, REPLAY_RESERVATION_STALE_MINUTES } from "../src/services/llm.js";
+import { DEV_BUDGET, devBudgetStatus, LLM_BUDGET, llmBudgetStatus, REHEARSAL_USAGE_PREFIX, REPLAY_RESERVATION_STALE_MINUTES } from "../src/services/llm.js";
 import { callMessages, DESIGN_MODEL_TIMEOUT_MS, messagesCostMicros, sendMessagesBody, type ContentBlock, type MessagesOk, type MessagesResult } from "../src/services/llm-messages.js";
 import { NOW, seedRichAthlete, TODAY } from "./design-read-fixture.js";
 import { calmDoc } from "./doc-workout-fixture.js";
@@ -601,8 +602,28 @@ describe("ownership", () => {
 // ── Money ───────────────────────────────────────────────────────────────────────────────────────────────────────────
 
 describe("spend", () => {
-  it("refuses with the cap's words, calling nothing, when the first call's worst case would pass the weekly cutoff", async () => {
+  it("refuses with the cap's words, calling nothing, when the first call's worst case would pass the rehearsal lane's weekly cap", async () => {
     const runId = await storedRun();
+    await db.insert(schema.llmUsage).values({
+      id: newId(),
+      userId,
+      kind: `${REHEARSAL_USAGE_PREFIX}design_main`,
+      model: "anthropic/claude-opus-5.5",
+      inputTokens: 1,
+      outputTokens: 1,
+      costMicros: DEV_BUDGET.capMicros - 10_000,
+      createdAt: new Date().toISOString(),
+    });
+    const res = await call("POST", "", replay(runId, [{ id: "a" }, { id: "b", tone: "warm" }]));
+    expect(res.status).toBe(409);
+    expect(res.body).toMatchObject({ error: "weekly_cap", why: REPLAY_WORDS.weeklyCap, cutoffUsd: DEV_BUDGET.capMicros / 1_000_000 });
+    expect(calls).toHaveLength(0);
+    expect(await usageRows()).toHaveLength(1);
+  });
+
+  it("the athlete's week never refuses a replay, nor does a replay count in it (audit C1)", async () => {
+    const runId = await storedRun();
+    const athlete = (await llmBudgetStatus(db, userId)).spentMicros;
     await db.insert(schema.llmUsage).values({
       id: newId(),
       userId,
@@ -610,14 +631,15 @@ describe("spend", () => {
       model: "anthropic/claude-opus-5.5",
       inputTokens: 1,
       outputTokens: 1,
-      costMicros: LLM_BUDGET.cutoffMicros - 10_000,
+      costMicros: LLM_BUDGET.cutoffMicros,
       createdAt: new Date().toISOString(),
     });
-    const res = await call("POST", "", replay(runId, [{ id: "a" }, { id: "b", tone: "warm" }]));
-    expect(res.status).toBe(409);
-    expect(res.body).toMatchObject({ error: "weekly_cap", why: REPLAY_WORDS.weeklyCap });
-    expect(calls).toHaveLength(0);
-    expect(await usageRows()).toHaveLength(1);
+    replies = [finishing("Line 1.", { costMicros: 30_000 })];
+    const res = await call("POST", "", replay(runId, [{ id: "a" }]));
+    expect(res.status).toBe(200);
+    expect(calls).toHaveLength(1);
+    expect((await llmBudgetStatus(db, userId)).spentMicros).toBe(athlete + LLM_BUDGET.cutoffMicros);
+    expect((await devBudgetStatus(db, userId)).spentMicros).toBe(30_000);
   });
 
   it("skips, in the cap's words, the variants the weekly cutoff can't cover after the first", async () => {
@@ -627,11 +649,11 @@ describe("spend", () => {
     await db.insert(schema.llmUsage).values({
       id: newId(),
       userId,
-      kind: "design_main",
+      kind: REPLAY_USAGE_KIND,
       model: "anthropic/claude-opus-5.5",
       inputTokens: 1,
       outputTokens: 1,
-      costMicros: LLM_BUDGET.cutoffMicros - 450_000,
+      costMicros: DEV_BUDGET.capMicros - 450_000,
       createdAt: new Date().toISOString(),
     });
     replies = [finishing("Line 1.", { costMicros: 300_000 })];
@@ -748,7 +770,7 @@ describe("a replay's reservations", () => {
     ]);
   });
 
-  it(`count at their worst for ${REPLAY_RESERVATION_STALE_MINUTES} minutes — longer than any replay call can run — then at their estimate; the coach's own are unchanged`, async () => {
+  it(`count at their worst for ${REPLAY_RESERVATION_STALE_MINUTES} minutes — longer than any replay call can run — then at their estimate, in the rehearsal lane's week; the coach's own are unchanged, in the athlete's`, async () => {
     expect(REPLAY_RESERVATION_STALE_MINUTES * 60_000).toBeGreaterThan(DESIGN_MODEL_TIMEOUT_MS);
     await db.insert(schema.llmUsage).values([
       reservation({ costMicros: 400_000, est: 20_000, at: minutesAgo(REPLAY_RESERVATION_STALE_MINUTES + 1) }), // orphaned: its estimate
@@ -756,12 +778,14 @@ describe("a replay's reservations", () => {
       reservation({ costMicros: 30_000, at: minutesAgo(60) }), // settled: what it cost
       reservation({ kind: "design_main", costMicros: 400_000, est: 20_000, at: minutesAgo(60) }), // the coach's own: unchanged
     ]);
-    expect((await llmBudgetStatus(db, userId)).spentMicros).toBe(20_000 + 400_000 + 30_000 + 400_000);
+    expect((await devBudgetStatus(db, userId)).spentMicros).toBe(20_000 + 400_000 + 30_000);
+    expect((await llmBudgetStatus(db, userId)).spentMicros).toBe(400_000);
   });
 
-  it(`an orphaned replay no longer blocks the live coach once ${REPLAY_RESERVATION_STALE_MINUTES} minutes have passed — its step, and a new ask`, async () => {
+  it(`an orphaned replay never blocks the live coach — its step, nor a new ask — and stops blocking the next replay once ${REPLAY_RESERVATION_STALE_MINUTES} minutes have passed`, async () => {
     const orphans = (at: string) => Array.from({ length: 7 }, () => reservation({ costMicros: 380_000, est: 20_000, at })); // $2.66 at worst
     const spent = { id: newId(), userId, kind: "design_main", model: "m", inputTokens: 1, outputTokens: 1, costMicros: LLM_BUDGET.cutoffMicros - 2_150_000, createdAt: minutesAgo(60) };
+    const rehearsed = { id: newId(), userId, kind: `${REHEARSAL_USAGE_PREFIX}design_main`, model: "m", inputTokens: 1, outputTokens: 1, costMicros: DEV_BUDGET.capMicros - 2_150_000, createdAt: minutesAgo(60) };
     const deps: RunDeps = { callModel: async () => finishing("Done.") as MessagesResult, buildContext: designContextBuilder, tools: allTools(), clock: () => 0 };
     // On the real clock: the week is the real week (llmBudgetStatus reads it so).
     const at = (s: number) => new Date(Date.now() + s * 1_000);
@@ -775,15 +799,20 @@ describe("a replay's reservations", () => {
       const out = await runStep(db, env, runId, userId, at(2), deps);
       return out.kind === "ok" ? out.result.status : out.kind;
     };
-    await db.insert(schema.llmUsage).values(spent);
+    await db.insert(schema.llmUsage).values([spent, rehearsed]);
     const first = await asked("Something calm.");
-    // A replay cut off just now: its reservations stand, so the coach's step can't be covered, and a new ask is refused.
+    // A replay cut off just now: its reservations stand at their worst — in the rehearsal lane's week alone. The coach's
+    // step is covered, and so is a new ask.
     await db.insert(schema.llmUsage).values(orphans(minutesAgo(5)));
-    expect(await modelStep(first)).toBe("stopped_cap");
-    await expect(createRun(db, userId, { scope: { kind: "now" }, request: "Again." }, at(3))).rejects.toThrow("week_budget");
-    // Orphaned past the window: they count at their estimate, and the coach goes on.
-    await db.update(schema.llmUsage).set({ createdAt: minutesAgo(REPLAY_RESERVATION_STALE_MINUTES + 1) }).where(eq(schema.llmUsage.kind, REPLAY_USAGE_KIND));
+    expect(await modelStep(first)).toBe("finished");
     expect(await modelStep(await asked("Again."))).toBe("finished");
+    // The next replay can't be covered while they stand…
+    const runId = await storedRun();
+    expect((await call("POST", "", replay(runId, [{ id: "a" }]))).status).toBe(409);
+    // …and orphaned past the window, they count at their estimate: it goes on.
+    await db.update(schema.llmUsage).set({ createdAt: minutesAgo(REPLAY_RESERVATION_STALE_MINUTES + 1) }).where(eq(schema.llmUsage.kind, REPLAY_USAGE_KIND));
+    replies = [finishing("Line 1.", { costMicros: 21_000 })];
+    expect((await call("POST", "", replay(runId, [{ id: "a" }]))).status).toBe(200);
   });
 
   it("each batch's rows are dated when they are written — not when the request began — so a batch still running is held at its worst", async () => {
@@ -818,22 +847,28 @@ describe("a replay's reservations", () => {
     expect(batch.createdAt).toBe(clock.toISOString());
     expect(Date.parse(batch.createdAt) + DESIGN_MODEL_TIMEOUT_MS).toBeLessThan(Date.parse(batch.createdAt) + REPLAY_RESERVATION_STALE_MINUTES * 60_000);
     // The week holds it at its worst while it runs (the first, settled, at its cost).
-    expect((await llmBudgetStatus(db, userId)).spentMicros).toBe(21_000 + batch.costMicros);
+    expect((await devBudgetStatus(db, userId)).spentMicros).toBe(21_000 + batch.costMicros);
     expect(batch.costMicros).toBeGreaterThan(320_000);
     gates[1]!.release();
     expect((await pending).status).toBe(200);
   });
 
-  it("GET /api/coach/spend shows the week as the gate counts it: an orphaned reservation at its estimate", async () => {
+  it("GET /api/coach/spend shows the week as the gates count it: the athlete's, and an orphaned reservation at its estimate apart", async () => {
     await db.insert(schema.llmUsage).values([
       reservation({ costMicros: 400_000, est: 20_000, at: minutesAgo(REPLAY_RESERVATION_STALE_MINUTES + 1) }),
       reservation({ kind: "design_main", costMicros: 50_000, at: minutesAgo(60) }),
     ]);
     const res = await mountRoutes(db, "/api/coach", coachRoutes).request("/api/coach/spend", { headers: { Cookie: cookie } }, env);
-    const body = (await res.json()) as { spentMicros: number; byKind: Array<{ kind: string; costMicros: number }> };
+    const body = (await res.json()) as {
+      spentMicros: number;
+      byKind: Array<{ kind: string; costMicros: number }>;
+      rehearsalAndReplay: { spentMicros: number; byKind: Array<{ kind: string; costMicros: number }> };
+    };
     expect(body.spentMicros).toBe((await llmBudgetStatus(db, userId)).spentMicros);
-    expect(body.spentMicros).toBe(70_000);
-    expect(body.byKind.find((k) => k.kind === REPLAY_USAGE_KIND)).toMatchObject({ costMicros: 20_000 });
+    expect(body.spentMicros).toBe(50_000);
+    expect(body.byKind.find((k) => k.kind === REPLAY_USAGE_KIND)).toBeUndefined();
+    expect(body.rehearsalAndReplay.spentMicros).toBe((await devBudgetStatus(db, userId)).spentMicros);
+    expect(body.rehearsalAndReplay.byKind.find((k) => k.kind === REPLAY_USAGE_KIND)).toMatchObject({ costMicros: 20_000 });
   });
 });
 

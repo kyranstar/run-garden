@@ -6,7 +6,9 @@
  * stays its own (fix round 4): every later read, which queues only that row, is still a read — activities and health
  * run — and a partial full-schedule read keeps its `lastFullScheduleAt`. An error that is no constraint, or more bad
  * rows than the retry cap, is no bad row: the read fails as any failed read does — `api_error` on the connection,
- * `coros_unreachable` answered. Driven through the real read (`corosReadNow`) against a renormalizing COROS.
+ * `coros_unreachable` answered — unless it is the database itself failing (audit C3: "D1_ERROR: Network connection
+ * lost"), which is ours, not COROS's: `storage_error`, the connection left healthy. Driven through the real read
+ * (`corosReadNow`) against a renormalizing COROS.
  *
  * Synthetic fixtures only.
  */
@@ -41,6 +43,8 @@ let poisonAll = false;
 let stagesBroken = false;
 /** The next write of a partial read's detail to the connection fails (once): the read fails after its schedule landed. */
 let partialNoteFailsOnce = false;
+/** What that write fails with. */
+let partialNoteError = "D1_ERROR: Network connection lost.";
 
 /** The test database, with the two failures wired into its statements (by bound value, as a constraint would be). */
 function failingDb(): Db {
@@ -66,7 +70,7 @@ function failingDb(): Db {
       stmt.run = (...params: unknown[]) => {
         if (partialNoteFailsOnce && params.some((p) => typeof p === "string" && p.includes("could not be saved"))) {
           partialNoteFailsOnce = false;
-          throw new Error("D1_ERROR: Network connection lost.");
+          throw new Error(partialNoteError);
         }
         return run(...params);
       };
@@ -88,6 +92,7 @@ beforeEach(async () => {
   poisonAll = false;
   stagesBroken = false;
   partialNoteFailsOnce = false;
+  partialNoteError = "D1_ERROR: Network connection lost.";
   db = failingDb();
   ({ userId, prefs } = await makeTestUser(db));
   server = renormalizingCoros({ baseMonday: startOfIsoWeek(todayInZone(prefs.timezone)) });
@@ -194,13 +199,30 @@ describe("a read whose import cannot write", () => {
   it("a read that fails after its full schedule landed keeps lastFullScheduleAt: the failure is recorded beside it", async () => {
     poisonTitle = "Easy + Strides";
     partialNoteFailsOnce = true;
+    partialNoteError = "Cannot read properties of undefined (reading 'title')";
     const first = await read();
     expect(first.status).toBe("coros_unreachable");
     const conn = await connection();
     expect(conn.lastErrorCategory).toBe("api_error");
     const meta = conn.meta as { lastFullScheduleAt?: string; lastErrorDetail?: string };
-    expect(meta.lastErrorDetail).toContain("Network connection lost");
+    expect(meta.lastErrorDetail).toContain("Cannot read properties");
     expect(typeof meta.lastFullScheduleAt).toBe("string");
+    poisonTitle = null;
+    const second = await read();
+    expect(second.status).toBe("ok");
+    expect(second.fullSchedule).toBeUndefined();
+  });
+
+  it("the database failing there is ours, not COROS's (audit C3): storage_error, the connection untouched, lastFullScheduleAt kept", async () => {
+    poisonTitle = "Easy + Strides";
+    partialNoteFailsOnce = true;
+    const first = await read();
+    expect(first.status).toBe("storage_error");
+    const conn = await connection();
+    expect(conn.status).toBe("connected");
+    expect(conn.lastErrorCategory).toBeNull();
+    expect(typeof (conn.meta as { lastFullScheduleAt?: string }).lastFullScheduleAt).toBe("string");
+    expect(await syncStatusError()).toBeNull();
     poisonTitle = null;
     const second = await read();
     expect(second.status).toBe("ok");
@@ -230,8 +252,9 @@ describe("a read whose import cannot write", () => {
     poisonTitle = "Easy + Strides";
     poisonKind = "other";
     const result = await read();
-    expect(result.status).toBe("coros_unreachable");
-    expect((await connection()).lastErrorCategory).toBe("api_error");
+    // The database itself failing (audit C3): the read fails, as ours — never a COROS outage on the connection.
+    expect(result.status).toBe("storage_error");
+    expect((await connection()).lastErrorCategory).toBeNull();
     // Its batch rolled back whole; the read stopped there.
     expect((await planned()).map((r) => r.title)).not.toContain("Easy + Strides");
   });

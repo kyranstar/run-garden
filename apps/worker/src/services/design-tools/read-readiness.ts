@@ -11,6 +11,7 @@ import { z } from "zod";
 import { dailyHealth, sleepRecords } from "@rg/database";
 import { addDays, daysBetween } from "@rg/domain";
 import { buildReadiness } from "../readiness.js";
+import { SLEEP_RECONNECT_WORDS, sleepConnectionStatusSql, sleepNeedsReconnect } from "../coros-mcp.js";
 import type { DesignTool } from "./types.js";
 import { ageWords, answer, durationWords, isErr, parsedArray, parseInput, READ_ROLES, readAthlete } from "./read-common.js";
 
@@ -66,6 +67,9 @@ export const readReadiness: DesignTool = {
           from ${h} where ${h.userId} = ${ctx.userId} and ${h.date} between ${lo} and ${hi})`,
       sleep: sql`(select json_group_array(json_object('date', ${s.date}, 'seconds', ${s.durationSeconds}, 'quality', ${s.qualityScore}))
           from ${s} where ${s.userId} = ${ctx.userId} and ${s.date} between ${lo} and ${hi})`,
+      // The feed itself (audit C2): its newest night ever, and whether its connection expired.
+      sleepEver: sql`(select max(${s.date}) from ${s} where ${s.userId} = ${ctx.userId})`,
+      sleepConnection: sleepConnectionStatusSql(ctx.userId),
     });
     const today = athlete.today;
     const from = addDays(today, -(LOOKBACK_DAYS - 1));
@@ -106,8 +110,12 @@ export const readReadiness: DesignTool = {
     };
     say("HRV", hrv);
     say("resting heart rate", rhr);
-    if (!lastSleep) missing.push(`no sleep recorded in the last ${LOOKBACK_DAYS} days`);
-    else if (daysBetween(lastSleep.date, today) > STALE_DAYS) missing.push(`sleep last recorded ${daysBetween(lastSleep.date, today)} d ago`);
+    // Why, when it is known: the connection that brings it expired.
+    const why = sleepNeedsReconnect(typeof extra.sleepConnection === "string" ? extra.sleepConnection : null) ? ` — ${SLEEP_RECONNECT_WORDS}` : "";
+    const ever = typeof extra.sleepEver === "string" ? extra.sleepEver : null;
+    if (!lastSleep) missing.push(ever ? `no sleep since ${ever}${why}` : `no sleep recorded in the last ${LOOKBACK_DAYS} days${why}`);
+    else if (daysBetween(lastSleep.date, today) > STALE_DAYS) missing.push(`sleep last recorded ${daysBetween(lastSleep.date, today)} d ago${why}`);
+    else if (why) missing.push(`sleep last recorded ${ageWords(lastSleep.date, today)}${why}`);
     if (!view.verdict) missing.push("no readiness verdict: too little recent data to judge");
 
     const byDate = new Map(health.map((r) => [r.date, r]));

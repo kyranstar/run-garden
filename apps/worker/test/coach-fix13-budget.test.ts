@@ -21,7 +21,7 @@ import { createRun, DEFAULT_SINGLE_RUN_COST_MICROS, newRunState, ROUTE_OVERHEAD,
 import { DEFAULT_SET_MAIN_COST_MICROS, DEFAULT_WORKOUT_COST_MICROS } from "../src/services/design-orchestrate.js";
 import { allTools } from "../src/services/design-tools/index.js";
 import { isToolErr, type SetHooks, type ToolContext, type ToolErr } from "../src/services/design-tools/types.js";
-import { LLM_BUDGET } from "../src/services/llm.js";
+import { DEV_BUDGET, LLM_BUDGET } from "../src/services/llm.js";
 import { NOW, seedRichAthlete, TODAY } from "./design-read-fixture.js";
 import { makeTestDb, makeTestUser, mountRoutes } from "./helpers.js";
 
@@ -153,7 +153,7 @@ describe("starting a run the week can't pay for (§2.11)", () => {
 describe("plan_set sizes the set to what the week has left (§2.11)", () => {
   const brief = (key: string, i: number) => ({ key, date: addDays(TODAY, i), purpose: "Care.", emphasis: "Mobility.", constraints: "Home.", why: "Spread out.", sameDayWhy: "A short care session only." });
 
-  async function planCtx(week: { spentMicros: number; callWorstMicros: number } | null): Promise<ToolContext> {
+  async function planCtx(week: { spentMicros: number; callWorstMicros: number; cutoffMicros?: number } | null): Promise<ToolContext> {
     const { userId: uid } = await seedRichAthlete(db);
     const id = (await createRun(db, uid, { scope: { kind: "week" }, request: null }, NOW)).run.id;
     const set: SetHooks = {
@@ -177,6 +177,14 @@ describe("plan_set sizes the set to what the week has left (§2.11)", () => {
     expect(err.why).toContain("this week's AI budget has $2.60 left — enough for 2 workouts.");
     expect(err.fix).toBe("Plan 2 or fewer: the sessions the week needs most, around the runs.");
     expect(isToolErr(await planSet.run({ ...ctx, toolUseId: "toolu_w2" }, { briefs: [brief("a", 0), brief("c", 4)] }))).toBe(false);
+  });
+
+  it("a rehearsal's week is weighed against its lane's cutoff (audit C1: the rehearsal lane's cap, not the athlete's)", async () => {
+    // $3.00 left under the rehearsal lane's $15 — though the athlete's $20 would leave $8.
+    const ctx = await planCtx({ spentMicros: DEV_BUDGET.capMicros - 3_000_000, callWorstMicros: 400_000, cutoffMicros: DEV_BUDGET.capMicros });
+    const err = (await planSet.run(ctx, { briefs: [brief("a", 0), brief("b", 2), brief("c", 4)] })) as ToolErr;
+    expect(err.error).toBe("over_budget");
+    expect(err.why).toContain("this week's AI budget has $2.60 left — enough for 2 workouts.");
   });
 
   it("the run's own ceiling the tighter: as before; no week known (hooks without it): the run's alone", async () => {

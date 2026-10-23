@@ -40,7 +40,7 @@ import { CALENDAR_OPS_PER_REQUEST, loadPreferences, syncCalendar } from "../serv
 import { recordReplayFrom, REQUEST_GARDEN_STEP, resimulateFrom, unseenCompletions } from "../services/garden-sync.js";
 import { waitUntilSafe } from "../services/wait-until.js";
 import { ensureRead } from "../services/coach-reads.js";
-import { LLM_BUDGET, weekCostSql } from "../services/llm.js";
+import { DEV_BUDGET, isDevUsageKind, LLM_BUDGET, weekCostSql } from "../services/llm.js";
 import { COACH_DRAIN_KINDS, coachDrainQueued, executeCloudJobs } from "../services/coros-write-cloud.js";
 import { exerciseNameMap, resolveExerciseName } from "../services/exercise-catalog.js";
 import { liftProgressions, liftWeekSummary, runProgressions } from "../services/plan-progressions.js";
@@ -333,7 +333,9 @@ async function threadSignals(
  * path. This is a separate, on-demand read — one grouped query, no joins.
  *
  * `spentMicros` is the same figure `llmBudgetStatus` gates on, so the totals
- * here and the "coach is resting" cutoff can never disagree.
+ * here and the "coach is resting" cutoff can never disagree. Rehearsals and
+ * replays are the developer's (audit C1): never in it — `rehearsalAndReplay`
+ * shows them apart, against their own cap (llm.ts DEV_BUDGET).
  */
 coachRoutes.get("/spend", async (c) => {
   const db = c.get("db");
@@ -352,7 +354,7 @@ coachRoutes.get("/spend", async (c) => {
     .from(llmUsage)
     .where(and(eq(llmUsage.userId, userId), gte(llmUsage.createdAt, since)))
     .groupBy(llmUsage.kind);
-  const byKind = rows
+  const all = rows
     .map((r) => ({
       kind: r.kind,
       calls: Number(r.calls ?? 0),
@@ -361,7 +363,10 @@ coachRoutes.get("/spend", async (c) => {
       costMicros: Number(r.costMicros ?? 0),
     }))
     .sort((a, b) => b.costMicros - a.costMicros);
+  const byKind = all.filter((r) => !isDevUsageKind(r.kind));
+  const dev = all.filter((r) => isDevUsageKind(r.kind));
   const spentMicros = byKind.reduce((sum, r) => sum + r.costMicros, 0);
+  const devMicros = dev.reduce((sum, r) => sum + r.costMicros, 0);
   return c.json({
     since,
     spentMicros,
@@ -371,6 +376,12 @@ coachRoutes.get("/spend", async (c) => {
     warnMicros: LLM_BUDGET.warnMicros,
     cutoffMicros: LLM_BUDGET.cutoffMicros,
     byKind,
+    rehearsalAndReplay: {
+      spentMicros: devMicros,
+      spentUsd: Math.round(devMicros / 10_000) / 100,
+      capMicros: DEV_BUDGET.capMicros,
+      byKind: dev,
+    },
   });
 });
 

@@ -28,6 +28,8 @@ export function CorosCheck({ state }: { state: CorosCheckState }) {
       return <span className="note">Still syncing with COROS…</span>;
     case "coros_unreachable":
       return <span className="note">COROS unreachable — will retry</span>;
+    case "storage_error":
+      return <span className="note">Couldn&rsquo;t save the COROS read — will retry</span>;
     default:
       return null;
   }

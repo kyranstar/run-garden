@@ -1,4 +1,4 @@
-import { and, eq, inArray, sql } from "drizzle-orm";
+import { and, eq, inArray, sql, type SQL } from "drizzle-orm";
 import { oauthStates, providerConnections, sleepRecords } from "@rg/database";
 import { addDays, daysBetween, fingerprint, newId, nowInstant, todayInZone, type LocalDate } from "@rg/domain";
 import { decryptSecret, encryptSecret } from "../auth/crypto.js";
@@ -27,6 +27,17 @@ import { restoreInProgress } from "./account-state.js";
  */
 
 const PROVIDER = "coros_mcp" as const;
+
+/** What every coach context says while the sleep connection has expired (audit C2: it stayed expired five weeks, and
+ * only Settings said so). */
+export const SLEEP_RECONNECT_WORDS = "the watch's sleep connection needs reconnecting";
+/** Whether the sleep connection needs reconnecting: COROS expired it (`markNeedsReauth` — the only way its row reads
+ * `error`; Settings reads it so too). The sweep never retries it: its refresh token is dead. */
+export const sleepNeedsReconnect = (status: string | null | undefined): boolean => status === "error";
+/** The sleep connection's status, as a scalar subquery: null with none. */
+export function sleepConnectionStatusSql(userId: string): SQL {
+  return sql`(select ${providerConnections.status} from ${providerConnections} where ${providerConnections.userId} = ${userId} and ${providerConnections.provider} = ${PROVIDER})`;
+}
 const MCP_URL = "https://mcp.coros.com/mcp";
 const SCOPES = "openid mcp.tools offline_access";
 const PROTOCOL_VERSION = "2025-06-18";

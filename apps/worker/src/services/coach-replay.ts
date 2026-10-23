@@ -35,8 +35,9 @@
  * comparison between variants, a strong one of the block itself.
  *
  * MONEY: the first variant is called alone (it writes the shared prefix to the cache), the rest together once it has
- * answered. Before each, the weekly cap (`llmBudgetStatus`, as the runs: a call's worst case — the prompt written to the
- * cache and its whole output ceiling — must fit under the cutoff) and this request's own cap (REPLAY_REQUEST_CAP_MICROS,
+ * answered. Before each, the weekly cap — the rehearsal lane's (`devBudgetStatus`, audit C1: rehearsals and replays
+ * together, never the athlete's week): a call's worst case — the prompt written to the cache and its whole output
+ * ceiling — must fit under DEV_BUDGET — and this request's own cap (REPLAY_REQUEST_CAP_MICROS,
  * on a realistic estimate: the prompt read from the cache, twice the largest output seen). A variant neither covers is
  * skipped, in words; a first call the week can't cover refuses the whole replay. THE REQUEST'S CAP IS SOFT (review,
  * minor 2): a short first answer can let later ones run much longer than estimated — up to about three times the cap
@@ -45,7 +46,7 @@
  * it at its worst case, marked with its estimate, settled after — and nothing else is written anywhere. A request cut
  * off partway leaves its rows marked: they count at their worst while a call of theirs may still run, then at their
  * estimate (llm.ts `weekCostSql`, REPLAY_RESERVATION_STALE_MINUTES; review I1), so an orphaned batch never locks the
- * coach out for the week.
+ * rehearsal lane out for the week (the athlete's coach never counts them at all).
  *
  * A PROSE REPLAY takes at most REPLAY_PROSE_VARIANTS_MAX variants: each answer is a whole streamed document, and its
  * parse is the request's CPU (review, minor 3; the design CPU bench's shape 12).
@@ -70,7 +71,7 @@ import { allTools } from "./design-tools/index.js";
 import { designProposalId } from "./design-tools/propose.js";
 import type { DesignTool } from "./design-tools/types.js";
 import { athleteText, clipProse } from "./design-prose.js";
-import { LLM_BUDGET, llmBudgetStatus, REPLAY_USAGE_KIND, RESERVATION_MARK } from "./llm.js";
+import { devBudgetStatus, DEV_BUDGET, REPLAY_USAGE_KIND, RESERVATION_MARK } from "./llm.js";
 import {
   designModel,
   messagesCostMicros,
@@ -115,7 +116,7 @@ const OUTPUT_GUESS = 4_000;
 const FINISH_SHOWN_MAX = LINE_MAX * PROSE_CEILING;
 
 export const REPLAY_WORDS = {
-  weeklyCap: "The weekly AI budget can't cover this call.",
+  weeklyCap: "This week's rehearsal and replay budget can't cover this call.",
   requestCap: "This replay reached its own spending limit.",
   capNote:
     "The $1.00 limit per replay is soft: it is checked on an estimate (twice the longest answer seen so far), so a replay can spend up to about three times it. The weekly cap is the hard bound.",
@@ -541,10 +542,12 @@ export async function replayRun(db: Db, env: Env, userId: string, input: ReplayB
   };
 
   // ── The first variant, alone: it writes the shared prefix to the cache ──
-  const week = (await llmBudgetStatus(db, userId)).spentMicros;
+  // The rehearsal lane's week (audit C1): a replay is the developer's, never the athlete's — counted with rehearsals,
+  // against their own cap.
+  const week = (await devBudgetStatus(db, userId)).spentMicros;
   const first = plan(0);
-  if (week + first.worstMicros > LLM_BUDGET.cutoffMicros) {
-    return { kind: "weekly_cap", why: REPLAY_WORDS.weeklyCap, spentUsd: usd(week), cutoffUsd: usd(LLM_BUDGET.cutoffMicros) };
+  if (week + first.worstMicros > DEV_BUDGET.capMicros) {
+    return { kind: "weekly_cap", why: REPLAY_WORDS.weeklyCap, spentUsd: usd(week), cutoffUsd: usd(DEV_BUDGET.capMicros) };
   }
   first.estimateMicros = estimate(first, true);
   if (first.estimateMicros > REPLAY_REQUEST_CAP_MICROS) {
@@ -558,7 +561,7 @@ export async function replayRun(db: Db, env: Env, userId: string, input: ReplayB
     if (variants[0]!.error) {
       for (const v of variants.slice(1)) v.skipped = { reason: "first_failed", why: REPLAY_WORDS.firstFailed };
     } else {
-      const weekNow = (await llmBudgetStatus(db, userId)).spentMicros;
+      const weekNow = (await devBudgetStatus(db, userId)).spentMicros;
       const batch: Planned[] = [];
       let estimated = spent;
       let worst = weekNow;
@@ -567,7 +570,7 @@ export async function replayRun(db: Db, env: Env, userId: string, input: ReplayB
         const est = estimate(p, false);
         if (estimated + est > REPLAY_REQUEST_CAP_MICROS) {
           variants[i]!.skipped = { reason: "request_cap", why: REPLAY_WORDS.requestCap };
-        } else if (worst + p.worstMicros > LLM_BUDGET.cutoffMicros) {
+        } else if (worst + p.worstMicros > DEV_BUDGET.capMicros) {
           variants[i]!.skipped = { reason: "weekly_cap", why: REPLAY_WORDS.weeklyCap };
         } else {
           p.estimateMicros = est;

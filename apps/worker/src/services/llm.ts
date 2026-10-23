@@ -44,6 +44,30 @@ export interface LlmBudgetStatus {
 
 /** The voice workshop's replay calls' kind in `llm_usage` (coach-replay.ts). */
 export const REPLAY_USAGE_KIND = "coach_replay";
+/** A rehearsal run's calls' kinds in `llm_usage`: its role's kind with this before it (`rehearsal_design_main`, …:
+ * coach-runs.ts). */
+export const REHEARSAL_USAGE_PREFIX = "rehearsal_";
+
+/**
+ * THE REHEARSAL LANE (audit C1): the live scenario suite's rehearsal runs and the voice workshop's replays are the
+ * developer's, not the athlete's. Recorded like every call, but never counted in the athlete's week (`llmBudgetStatus`:
+ * the cutoff, the warning, the automatic reads' reserve, a run's start): forty rehearsals in one evening ($10.36) once
+ * read as the athlete's and paused their activity reads for six and a half days. Their own rolling-week cap instead —
+ * over it a rehearsal never starts, a rehearsal's step stops, a replay is refused.
+ */
+export const DEV_BUDGET = {
+  capMicros: 15_000_000, // $15 / rolling 7 days, rehearsals and replays together
+};
+
+/** Whether a usage kind is the rehearsal lane's: a replay's, or a rehearsal's. */
+export function isDevUsageKind(kind: string): boolean {
+  return kind === REPLAY_USAGE_KIND || kind.startsWith(REHEARSAL_USAGE_PREFIX);
+}
+
+/** The same, in SQL, of a `llm_usage` row. */
+export function devUsageSql(): SQL {
+  return sql`(${llmUsage.kind} = ${REPLAY_USAGE_KIND} OR substr(${llmUsage.kind}, 1, ${REHEARSAL_USAGE_PREFIX.length}) = ${REHEARSAL_USAGE_PREFIX})`;
+}
 /** A reservation's mark in its row's fingerprint, its realistic estimate after it (`…;est=<micros>`): written with the row
  * at the call's worst case before the call, gone once the call is settled. The coach's runs mark theirs the same way. */
 export const RESERVATION_MARK = ";est=";
@@ -68,19 +92,38 @@ export function weekCostSql(now: Date): SQL {
     ELSE ${llmUsage.costMicros} END)`;
 }
 
-export async function llmBudgetStatus(db: Db, userId: string): Promise<LlmBudgetStatus> {
+/** The rolling week's spend of one lane — the athlete's, or the rehearsal lane's (`DEV_BUDGET`). ONE statement. */
+async function weekSpentMicros(db: Db, userId: string, dev: boolean): Promise<number> {
   const now = new Date(Date.now());
   const since = new Date(now.getTime() - 7 * 86_400_000).toISOString();
+  const lane = dev ? devUsageSql() : sql`NOT ${devUsageSql()}`;
   const [row] = await db
     .select({ spent: sql<number | null>`sum(${weekCostSql(now)})` })
     .from(llmUsage)
-    .where(and(eq(llmUsage.userId, userId), gte(llmUsage.createdAt, since)));
-  const spentMicros = Math.round(Number(row?.spent ?? 0));
+    .where(and(eq(llmUsage.userId, userId), gte(llmUsage.createdAt, since), lane));
+  return Math.round(Number(row?.spent ?? 0));
+}
+
+/** The athlete's week: every call but the rehearsal lane's. */
+export async function llmBudgetStatus(db: Db, userId: string): Promise<LlmBudgetStatus> {
+  const spentMicros = await weekSpentMicros(db, userId, false);
   return {
     spentMicros,
     warn: spentMicros >= LLM_BUDGET.warnMicros,
     cutoff: spentMicros >= LLM_BUDGET.cutoffMicros,
   };
+}
+
+export interface DevBudgetStatus {
+  spentMicros: number;
+  capMicros: number;
+  over: boolean;
+}
+
+/** The rehearsal lane's week: rehearsals' and replays' calls, against `DEV_BUDGET`. ONE statement. */
+export async function devBudgetStatus(db: Db, userId: string): Promise<DevBudgetStatus> {
+  const spentMicros = await weekSpentMicros(db, userId, true);
+  return { spentMicros, capMicros: DEV_BUDGET.capMicros, over: spentMicros >= DEV_BUDGET.capMicros };
 }
 
 type Units = UserPreferences["units"];

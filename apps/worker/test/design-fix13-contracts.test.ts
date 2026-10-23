@@ -4,7 +4,7 @@
  *  - §2.2 AN AMEND: propose_workout({ amend: true }) fixes the text of a reviewed draft — no reviewer, no round, the
  *    review kept with the change note among its changes; any other difference refused, naming the first path.
  *  - §2.3 NO EMPTY REVISIONS: a full revision of a reviewed draft whose review asked for nothing is refused, unless its
- *    change note names an open validator note's code.
+ *    change note names an open validator note's code — or, once a run, the review's gap on the request (audit C5).
  *  - §2.4 OVER-LENGTH DRAFTS: a draft well past its own target minutes is refused before any review, using no round.
  *  - §2.1 SOFT CAPS: free text is accepted whole up to four times its cap, and refused past that in words.
  *
@@ -90,9 +90,9 @@ function doc(over: { title?: string; whys?: [string, string]; reps?: number; set
 
 const minutesOf = (d: unknown): number => deriveDoc(workoutDocSchema.parse({ ...(d as object), source: { kind: "coach" } }), EXERCISES).estimatedMinutes;
 
-const review = (o: { mustFix?: string[] } = {}): DesignReview => ({
-  scores: { intent: 4, sequencing: 4 },
-  notes: { intent: "Clear.", sequencing: "Fine." },
+const review = (o: { mustFix?: string[]; request?: number } = {}): DesignReview => ({
+  scores: { intent: 4, sequencing: 4, ...(o.request !== undefined ? { request: o.request } : {}) },
+  notes: { intent: "Clear.", sequencing: "Fine.", ...(o.request !== undefined ? { request: "No move opens the back, which you asked for." } : {}) },
   mustFix: o.mustFix ?? [],
   improvements: ["Say why the dead bug comes second."],
 });
@@ -103,7 +103,7 @@ async function proposalOf(mainRunId: string) {
 }
 
 /** A main run holding one draft with its review in (the verdict applied as the loop applies it), and issues if given. */
-async function reviewed(o: { mustFix?: string[]; issues?: DocWorkoutOp["issues"] } = {}) {
+async function reviewed(o: { mustFix?: string[]; issues?: DocWorkoutOp["issues"]; request?: number } = {}) {
   const run = await mainRun();
   const h = hooks();
   const c = ctxOf(run, h.review);
@@ -198,6 +198,42 @@ describe("no empty revisions (§2.3)", () => {
     expect(e.fix).toContain("open: mode_limits");
     const must = await reviewed({ mustFix: ["Fewer reps on the bridge."] });
     expect(ok(await proposeWorkout.run(ctxOf(must.run, must.h.review), { doc: doc({ reps: 10 }), target: { kind: "new", date: TODAY }, changeNote: "Fewer reps." })).control).toBe("review");
+  });
+
+  // Audit C5 (prod): asked for "a post run deep stretch… opens up my back/hips", the review scored the request 4 with
+  // nothing must-fix; the coach's revision adding a supine twist "(you asked for back opening)" was refused
+  // nothing_to_fix, and the athlete was told to add it themselves.
+  it("allowed once when the change note answers the review's gap on the request — the request, or what the athlete asked", async () => {
+    for (const changeNote of ["Added a supine twist for the low back (you asked for back opening).", "Closes the request gap: a twist for the back."]) {
+      const gap = await reviewed({ request: 4 });
+      const out = ok(await proposeWorkout.run(ctxOf(gap.run, gap.h.review), { doc: doc({ reps: 10 }), target: { kind: "new", date: TODAY }, changeNote }));
+      expect(out.control).toBe("review");
+      expect(gap.h.started).toHaveLength(1);
+    }
+  });
+
+  it("not without a gap on the request, nor a change note that cites it — and the refusal says how", async () => {
+    const full = await reviewed({ request: 5 });
+    expect(err(await proposeWorkout.run(ctxOf(full.run, full.h.review), { doc: doc({ reps: 10 }), target: { kind: "new", date: TODAY }, changeNote: "You asked for more." })).error).toBe("nothing_to_fix");
+    const gap = await reviewed({ request: 4 });
+    const e = err(await proposeWorkout.run(ctxOf(gap.run, gap.h.review), { doc: doc({ reps: 10 }), target: { kind: "new", date: TODAY }, changeNote: "Fewer reps." }));
+    expect(e.error).toBe("nothing_to_fix");
+    expect(e.fix).toContain("the request");
+    expect(gap.h.started).toEqual([]);
+  });
+
+  it("once a run: a second revision for the request is refused — no churn", async () => {
+    const { run, h } = await reviewed({ request: 4 });
+    const c = ctxOf(run, h.review);
+    ok(await proposeWorkout.run(c, { doc: doc({ reps: 10 }), target: { kind: "new", date: TODAY }, changeNote: "A twist for the back you asked for." }));
+    const p = await proposalOf(run.id);
+    const op = applyVerdict(p.ops[0]!, c.toolUseId!, { review: review({ request: 4 }) })!;
+    await db.update(schema.coachProposals).set({ ops: [op] }).where(eq(schema.coachProposals.id, p.id));
+    expect(countedRounds(op.reviewLog!)).toBe(2);
+    h.started.length = 0;
+    const again = err(await proposeWorkout.run(ctxOf(run, h.review), { doc: doc({ reps: 8 }), target: { kind: "new", date: TODAY }, changeNote: "More of what you asked for." }));
+    expect(again.error).toBe("nothing_to_fix");
+    expect(h.started).toEqual([]);
   });
 });
 

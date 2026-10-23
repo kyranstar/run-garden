@@ -54,6 +54,10 @@ import { buildReadiness } from "./readiness.js";
 import { plannedRowColumns } from "./planned-columns.js";
 import { docWorkoutDates, hasDocWorkout, isDesignedProposal, isPlanStructureOp, isProgrammeChangeOp, openPlanChanges, type PlanStructureOp, type ProgrammeChangeOp } from "./proposal-kinds.js";
 import { liveMemoryWhere } from "./memory-core.js";
+import { SLEEP_RECONNECT_WORDS, sleepConnectionStatusSql, sleepNeedsReconnect } from "./coros-mcp.js";
+
+/** Nights without sleep past which the feed reads as stopped (sleep lands keyed on the day it ended, a pull a night). */
+const SLEEP_STALE_DAYS = 2;
 
 /**
  * The dossier (spec §2): everything the coach reads, packaged as ONE terse
@@ -818,12 +822,17 @@ export async function buildDossier(
     .select()
     .from(sleepRecords)
     .where(and(eq(sleepRecords.userId, userId), gte(sleepRecords.date, since30)));
-  const anySleepEver = sleep.length
-    ? 1
-    : (await db
-        .select({ n: sql<number>`count(*)` })
-        .from(sleepRecords)
-        .where(eq(sleepRecords.userId, userId)))[0]?.n ?? 0;
+  // The feed itself (audit C2): its newest night ever, and whether its connection expired — one statement. A feed that
+  // stopped says since when, and why when it is known, never a blank baseline.
+  const [feed] = (await db.all(sql`
+    SELECT (SELECT max(${sleepRecords.date}) FROM ${sleepRecords} WHERE ${sleepRecords.userId} = ${userId}) AS last,
+      ${sleepConnectionStatusSql(userId)} AS status`)) as Array<{ last: string | null; status: string | null }>;
+  const lastSleep = feed?.last ?? null;
+  const anySleepEver = lastSleep ? 1 : 0;
+  const reconnect = sleepNeedsReconnect(feed?.status);
+  // Stopped: nothing for more than two nights (sleep lands keyed on the day it ended), or the connection expired.
+  const sleepStopped = lastSleep !== null && (reconnect || lastSleep < addDays(today, -SLEEP_STALE_DAYS));
+  const sinceLine = `no data since ${lastSleep}${reconnect ? ` — ${SLEEP_RECONNECT_WORDS}` : ""}.`;
   // `health` is loaded up in §1 (the readiness line needs it there).
   const baseline = (xs: number[]) =>
     xs.length ? xs.reduce((a, b) => a + b, 0) / xs.length : null;
@@ -858,7 +867,9 @@ export async function buildDossier(
   const wellnessLines: string[] = [
     anySleepEver === 0
       ? "sleep: NO DATA AT ALL — sleep_records is empty for this athlete (0 rows, ever). Never state, infer, or ask them to confirm anything about their sleep."
-      : `30d sleep baseline: ${fmt(sleepBase, 1)}h`,
+      : sleepBase === null
+        ? `sleep: ${sinceLine} Never state or infer their sleep since then.`
+        : `30d sleep baseline: ${fmt(sleepBase, 1)}h${sleepStopped ? ` · ${sinceLine}` : ""}`,
     `30d baselines: HRV ${fmt(hrvBase)}ms · RHR ${fmt(rhrBase)}bpm (HRV here is measured overnight, during sleep)`,
     ...(bandLine ? [bandLine] : []),
     ...(latestRecoveryEta
