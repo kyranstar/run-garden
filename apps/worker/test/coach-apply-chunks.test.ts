@@ -13,7 +13,7 @@ import { and, eq, inArray, sql } from "drizzle-orm";
 import { schema } from "@rg/database";
 import { addDays, startOfIsoWeek, todayInZone, type CoachOp, type CoachSession, type UserPreferences } from "@rg/domain";
 import type { Db } from "../src/services/db.js";
-import { applyStructuralChunk, type StructuralChunkResult, type StructuralProgress } from "../src/services/coach-apply.js";
+import { applyStructuralChunk, STRUCTURAL_MIN_BUDGET, type StructuralChunkResult, type StructuralProgress } from "../src/services/coach-apply.js";
 import { makeTestDb, makeTestUser } from "./helpers.js";
 
 const NOW = new Date();
@@ -614,6 +614,35 @@ describe("applyStructuralChunk: what it writes", () => {
       expect(next, proposalId).toEqual({ status: "refused", reason, spent: 1 });
       expect(await planState(w)).toEqual(before);
     }
+  });
+
+  // Review L3: a chunk taking an op over part way reads its plan again (one statement) before its first unit, which runs
+  // whatever it costs — so a caller holding exactly STRUCTURAL_MIN_BUDGET (design-approve's `left` at PLAN_STRUCTURE_FIXED
+  // + STRUCTURAL_MIN_BUDGET) and a session at its most ended a statement past the request's budget.
+  it("a chunk taking over part way, given STRUCTURAL_MIN_BUDGET, never spends past it — the plan's re-read and a session at its most", async () => {
+    const w = await world();
+    // The day already holds the athlete's other plan's session: the collision pass reads twice and moves both.
+    await seedPlan(w, [{ date: w.monday, session: runSession("Other", 40) }], 0);
+    // A run of eight blocks: two stage statements. Writes on: its stamps read and its watch create.
+    const long = {
+      category: "quality",
+      title: "Ladder",
+      durationMinutes: 80,
+      run: { blocks: Array.from({ length: 8 }, (_, i) => ({ kind: "duration", value: 10, intensity: i % 2 === 0 ? "easy" : "threshold" })) },
+    } as CoachSession;
+    const op: CoachOp = {
+      kind: "createPlan", discipline: "run", name: "Ladder block", startDate: w.monday, endDate: addDays(w.monday, 13),
+      firmSessions: [{ date: w.monday, session: long }], shapeWeeks: [],
+    };
+    // The plan's row, its first unit alone: the session waits for the next chunk.
+    const first = await chunk(w, op, null, 1);
+    expect(first).toMatchObject({ status: "more", progress: { step: "sessions", done: 0 } });
+    w.statements.length = 0;
+    const next = await chunk(w, op, (first as { progress: StructuralProgress }).progress, STRUCTURAL_MIN_BUDGET);
+    expect(next).toMatchObject({ progress: { step: "firm" } });
+    // At the edge: the re-read and the session at its most fill the budget exactly — never past it.
+    expect(next.spent).toBe(STRUCTURAL_MIN_BUDGET);
+    expect(w.statements.length).toBeLessThanOrEqual(next.spent);
   });
 
   it("every call moves on, whatever its budget: a budget of 1 still ends, its first unit run each time", async () => {

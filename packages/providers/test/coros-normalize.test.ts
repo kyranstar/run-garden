@@ -325,6 +325,31 @@ describe("a strength or yoga activity's laps are its sets, never km splits (audi
     const run = normalizeCorosLaps({ summary: { sportType: 100 }, lapList: [{ lapDistance: 100000, lapItemList: [{ lapIndex: 1, time: 30000, distance: 100000 }] }] });
     expect(run.map((l) => l.splitType)).toEqual(["auto_km"]);
   });
+
+  // Every set lap is stored as `${activityId}:set:${lapIndex}` under UNIQUE(activity_id, lap_index): a lapIndex the
+  // kept items repeat threw on insert, and the whole read landed as "COROS unreachable" on every sweep (review M1).
+  it("a set lap's index is never repeated — two lists repeating the kept indices, or items with no lap type, keep the first", () => {
+    const twoLists = normalizeCorosLaps({
+      summary: { sportType: 402 },
+      lapList: [
+        { lapDistance: 100000, lapItemList: [{ lapIndex: 1, time: 3600, lapType: 0, exerciseNameKey: "T1061" }, { lapIndex: 2, time: 9000, lapType: 0 }] },
+        { lapDistance: 0, lapItemList: [{ lapIndex: 1, time: 3700, lapType: 0, exerciseNameKey: "T1055" }, { lapIndex: 3, time: 3000, lapType: 0 }] },
+      ],
+    });
+    expect(twoLists.map((l) => l.lapIndex)).toEqual([1, 2, 3]);
+    expect(twoLists[0]).toMatchObject({ durationSeconds: 36, exerciseNameKey: "T1061" });
+
+    const untyped = normalizeCorosLaps(
+      {
+        lapList: [
+          { lapItemList: [{ lapIndex: 1, time: 6000 }, { lapIndex: 2, time: 6000 }] },
+          { lapItemList: [{ lapIndex: 1, time: 6000 }, { lapIndex: 2, time: 6000 }] },
+        ],
+      },
+      904,
+    );
+    expect(untyped.map((l) => [l.splitType, l.lapIndex])).toEqual([["set", 1], ["set", 2]]);
+  });
 });
 
 // The old per-provider sport-name helper and its admit-list were retired in

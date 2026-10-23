@@ -429,6 +429,41 @@ describe("adjust_plan: a change to a session already on the plan, into the run's
     expect(op!.issues).toEqual([{ code: "watch_unchanged", message: "The watch keeps its copy as it is: only the plan's length changes." }]);
   });
 
+  describe("a session taking the watch's version (\"Keep the watch's version\", review L1)", () => {
+    // The next read takes the watch's copy whole (import-plan.ts rule 7), so a length the plan set would be reverted
+    // without a word while the card said only the plan's length changes: refused until that read, in plain words.
+    const FOLLOWS = "This session follows the watch's version until the next sync — change it after that.";
+    const MARK = "take-watch-copy:0123456789abcdef";
+    const keepWatch = (id: string) =>
+      db.update(plannedWorkouts).set({ sourceWorkoutId: "123:456", sourceIdInPlan: "7", sourceProgramId: "p-9", sourceContentFingerprint: MARK }).where(eq(plannedWorkouts.id, id));
+
+    it("a length alone is refused when proposed, nothing stored; unmarked, the same length is proposed as before", async () => {
+      const r = await mainRun();
+      const run = await watchRun();
+      await keepWatch(run);
+      const res = refused((await adjust(r, shorten(run))).res);
+      expect(res.error).toBe("follows_watch_version");
+      expect(res.why).toBe(FOLLOWS);
+      expect(await proposalOf(designProposalId(r.id))).toBeUndefined();
+
+      await db.update(plannedWorkouts).set({ sourceContentFingerprint: "0123456789abcdef" }).where(eq(plannedWorkouts.id, run));
+      ok((await adjust(r, shorten(run))).res);
+      expect((await planOps(designProposalId(r.id))).map((o) => o.op.kind)).toEqual(["adjust"]);
+    });
+
+    it("a length proposed before the Keep is refused at the approve in the same words, the session untouched", async () => {
+      const run = await watchRun();
+      const { id } = await proposal({ changes: [shorten(run)] });
+      await keepWatch(run);
+      const before = await rowOf(run);
+      const res = await approve(id);
+      expect(res.refused).toEqual([{ opId: planAdjustId(run), error: "not_editable", cause: "unknown", why: FOLLOWS }]);
+      const after = await rowOf(run);
+      expect(after.calendarBlockDurationSeconds).toBe(before.calendarBlockDurationSeconds);
+      expect(after.sourceContentFingerprint).toBe(MARK);
+    });
+  });
+
   describe("a condition-care programme's session (fix wave 3B, B-I6)", () => {
     /** The fixture's programme, its care switched on for the athlete's active profile (TMJ). */
     const careFor = async (profiles: string[]) => {

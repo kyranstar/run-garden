@@ -83,6 +83,31 @@ describe("telemetry ingest", () => {
     });
   });
 
+  // Review M1: one activity's laps that collide on UNIQUE(activity_id, lap_index) threw out of the ingest, so the whole
+  // read landed as "COROS unreachable" on every sweep and no later activity was ever stored.
+  it("one activity's colliding laps never block the others — the rest land, the collider's activity too", async () => {
+    const db = makeTestDb();
+    const { userId } = await makeTestUser(db);
+    const lap = (lapIndex: number, splitType: string) => ({ lapIndex, durationSeconds: 300, splitType });
+    await ingestActivities(db, {
+      userId,
+      sources: [
+        src({ providerActivityId: "clash", contentFingerprint: "fp-clash" }),
+        src({ providerActivityId: "fine", startTime: "2026-08-07T12:08:02Z", startTimeLocal: "2026-08-07T05:08:02", contentFingerprint: "fp-fine" }),
+      ],
+      lapsByProviderId: {
+        clash: [lap(1, "workout"), lap(1, "auto_km")],
+        fine: [lap(1, "workout"), lap(2, "workout")],
+      },
+    });
+
+    const rows = await db.select().from(schema.activities);
+    expect(rows).toHaveLength(2);
+    const fine = (await db.select().from(schema.activitySourceLinks)).find((l) => l.providerActivityId === "fine")!;
+    const fineLaps = await db.select().from(schema.activityLaps).where(eq(schema.activityLaps.activityId, fine.activityId));
+    expect(fineLaps.map((l) => l.lapIndex).sort()).toEqual([1, 2]);
+  });
+
   it("refreshes telemetry when the fingerprint changes, skips when unchanged", async () => {
     const db = makeTestDb();
     const { userId } = await makeTestUser(db);

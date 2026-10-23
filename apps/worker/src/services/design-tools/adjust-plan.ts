@@ -60,7 +60,7 @@ import type { ConditionProfile } from "@rg/exercise-library";
 import { runWireOf } from "../../env.js";
 import { retimeOfRow, type RetimeExpectation, type RetimeStageFields } from "../adjust-retime.js";
 import { easedRun, runOnWatch } from "../body-check.js";
-import { NOT_ACTIONABLE, whyNotActionable } from "../coach-apply.js";
+import { FOLLOWS_WATCH_VERSION, NOT_ACTIONABLE, whyNotActionable } from "../coach-apply.js";
 import { thresholdSql } from "../designed-runs.js";
 import { horizonDays } from "../design-context.js";
 import { clockIn, todayLeadRefusal } from "../design-time.js";
@@ -68,6 +68,7 @@ import { OPEN_PROPOSAL_STATUSES } from "../design-review.js";
 import { describeChange, isDocWorkoutOp, isPlanAdjustOp, planAdjustId, type PlanAdjustOp, type PlanChange, type PlanRowSnapshot } from "../proposal-kinds.js";
 import { capInWords, isErr, mainRunIdOf, parseAct, prose } from "./act-common.js";
 import { clipProse } from "../design-prose.js";
+import { takesWatchCopy } from "../watch-copy-marker.js";
 import { designProposalId, upsertProposal, type DocWorkoutOp } from "./propose.js";
 import { dateField, DATE_SCHEMA, parsedArray, parsedJson, readAthlete, refuse, untrusted } from "./read-common.js";
 import type { DesignTool, ToolContext, ToolErr, ToolOk } from "./types.js";
@@ -140,6 +141,8 @@ interface Row {
   stages?: unknown;
   /** Its workout document (a length re-times a designed run by it). */
   doc?: string | null;
+  /** Its content fingerprint: a "Keep the watch's version" mark takes no length alone (watch-copy-marker.ts). */
+  fp?: string | null;
 }
 
 const minutesOf = (r: Row): number | null => {
@@ -496,7 +499,7 @@ export const adjustPlan: DesignTool = {
               'ord', st.ord, 'kind', st.kind, 'repeatCount', st.repeat_count, 'durationSeconds', st.duration_seconds,
               'distanceMeters', st.distance_meters, 'label', st.label))
             from ${plannedWorkoutStages} st where st.workout_id = ${pw.id}),
-          'doc', ${pw.workoutDoc},
+          'doc', ${pw.workoutDoc}, 'fp', ${pw.sourceContentFingerprint},
           'pushed', exists(select 1 from ${corosWriteJobs} j where j.id = ${pw.id} || '-push' and j.user_id = ${ctx.userId}),
           'care', (select case when json_valid(${programs.config}) then json_extract(${programs.config}, '$.careProfiles') end
             from ${programs} where ${programs.id} = ${pw.planId} and ${programs.userId} = ${ctx.userId}))
@@ -557,6 +560,15 @@ export const adjustPlan: DesignTool = {
         return refuse("no_change", `Re-timed by its structure, that run stays ${r.minutes} min: its reps come no nearer ${p.change.durationMinutes}.`, "Leave it as it is, choose another length, or ease it.");
       }
       retime = r.kind === "retimed" ? r.expect : null;
+      // A session taking the watch's version (review L1): the next read takes the watch's copy whole, its length with
+      // it — a length alone would be undone without a word, while its card said only the plan's length changes.
+      if (retime === null && takesWatchCopy(row!.fp)) {
+        return refuse(
+          "follows_watch_version",
+          `${FOLLOWS_WATCH_VERSION.charAt(0).toUpperCase()}${FOLLOWS_WATCH_VERSION.slice(1)}.`,
+          "Leave its length as it is: it can change once the watch's version has come in at the next sync.",
+        );
+      }
     }
     // The thread coach's own op, as its schema stores one (an ease's or a swap's eased session built from the row).
     const op = coachOpOf(p.change, row!, p.workoutId);

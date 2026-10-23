@@ -447,6 +447,14 @@ describe("a three-workout set, end to end", () => {
       // A now run's main is not a set's.
       row(`old-now-${a.userId}`, { role: "main", cost: 2, scope: { kind: "now" } }),
     ]);
+    // A rehearsal's set — its main and its designers, finished — is the rehearsal lane's, never a measure of what the
+    // athlete's sets cost (review L4).
+    const rehearsal = JSON.stringify({ settings: { rehearsal: true, ceilingMicros: 1_500_000 } });
+    await db.insert(schema.coachRuns).values([
+      { ...row(`reh-main-${a.userId}`, { role: "main", cost: 0.9 }), state: rehearsal },
+      { ...row(`reh-d1-${a.userId}`, { role: "designer", parentId: `reh-main-${a.userId}`, cost: 1 }), state: rehearsal },
+      { ...row(`reh-d2-${a.userId}`, { role: "designer", parentId: `reh-main-${a.userId}`, cost: 1.5, status: "stopped_cap", error: "run_ceiling", steps: 3 }), state: rehearsal },
+    ]);
     // Runs older than the estimate's window don't count.
     const long = new Date(NOW.getTime() - 90 * 86_400_000).toISOString();
     await db.insert(schema.coachRuns).values([

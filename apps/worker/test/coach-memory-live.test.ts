@@ -87,6 +87,21 @@ describe("a rehearsal's memory and a superseded item never reach the thread coac
     expect(n).toBe(DOSSIER_STATEMENTS);
   });
 
+  // Review L6: the seed above holds no sleep, so the pin never saw the sleep path — the feed's statement (audit C2)
+  // runs whether or not there are nights, where the count it replaced ran only for an empty window.
+  it("the dossier with sleep in its window runs the same statements: its sleep feed is one statement, nights or none", async () => {
+    const today = todayInZone(prefs.timezone);
+    await db.insert(schema.sleepRecords).values(
+      [1, 2, 3].map((back) => {
+        const date = new Date(Date.parse(`${today}T12:00:00Z`) - back * 86_400_000).toISOString().slice(0, 10);
+        return { id: `${userId}:${date}`, userId, date, durationSeconds: 7 * 3600, contentFingerprint: date, updatedAt: nowInstant() };
+      }),
+    );
+    const { value: dossier, statements: n } = await counted(() => buildDossier(db, userId, prefs, today));
+    expect(dossier.text).toContain("30d sleep baseline: 7.0h");
+    expect(n).toBe(DOSSIER_STATEMENTS);
+  });
+
   it("the effort package's memory section lists only live items", async () => {
     const activityId = newId();
     await db.insert(schema.activities).values({
@@ -129,7 +144,9 @@ describe("a rehearsal's memory and a superseded item never reach the thread coac
   });
 });
 
-// The statements each reader ran before this change, measured on this seed: unchanged.
+// The statements each reader ran before this change, measured on this seed: unchanged. The dossier's 23 holds with
+// sleep in its window too (review L6): its sleep feed (audit C2) is one statement every time, where the count it
+// replaced ran only for an empty window — so with nights it is one more than before audit C2's 22.
 const DOSSIER_STATEMENTS = 23;
 const EFFORT_STATEMENTS = 13;
 const GUARDRAIL_STATEMENTS = 4;

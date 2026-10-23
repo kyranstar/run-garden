@@ -214,13 +214,13 @@ describe("POST /api/coach/proposals/:id/approve with changes", () => {
     expect(res.total).toBeLessThanOrEqual(APPROVE_FIXED + PLAN_BATCH_FIXED + MOVE_COST + 1 + 1);
   });
 
-  it("a length for a session whose watch version the athlete chose is a length like any other: the mark stays, nothing for the watch, a plain length's cost (review A4)", async () => {
+  it("a length proposed before the athlete kept the watch's version is refused at the approve in plain words — the session untouched, nothing for the watch; the rest applied within a plain request's cost (review L1)", async () => {
     await db.insert(schema.providerConnections).values({ id: newId(), userId, provider: "coros", status: "connected", createdAt: nowInstant(), updatedAt: nowInstant() } as never);
     await db.insert(schema.userPreferences).values({ userId, prefs: { ...prefs, corosWritesEnabled: true }, updatedAt: nowInstant() } as never).onConflictDoUpdate({ target: schema.userPreferences.userId, set: { prefs: { ...prefs, corosWritesEnabled: true } } });
-    // A COROS session on the watch the athlete chose to keep the watch's version of (watch-copy-marker.ts), its own steps.
+    // A COROS session on the watch, its own steps.
     await db
       .update(plannedWorkouts)
-      .set({ lastVerifiedCorosDate: addDays(today, 2), sourceWorkoutId: "123:9", sourceIdInPlan: "9", sourceProgramId: "p-1", sourceContentFingerprint: "take-watch-copy:0123456789abcdef" })
+      .set({ lastVerifiedCorosDate: addDays(today, 2), sourceWorkoutId: "123:9", sourceIdInPlan: "9", sourceProgramId: "p-1", sourceContentFingerprint: "0123456789abcdef" })
       .where(eq(plannedWorkouts.id, "w-2-07:00"));
     await db.insert(schema.plannedWorkoutStages).values({ id: "w-2-07:00:s0", workoutId: "w-2-07:00", ord: 0, kind: "work", durationType: "time", durationSeconds: 1800, label: "easy" } as never);
     const { id } = await designed({
@@ -230,16 +230,20 @@ describe("POST /api/coach/proposals/:id/approve with changes", () => {
         { workoutId: "w-4-07:00", change: { kind: "move", toDate: addDays(today, 5), toTime: "12:00" }, why: "A freer day." },
       ],
     });
+    // Then the athlete keeps the watch's version (watch-copy-marker.ts): the next read takes the watch's copy whole, its
+    // length with it — the plan's length would be undone without a word.
+    await db.update(plannedWorkouts).set({ sourceContentFingerprint: "take-watch-copy:0123456789abcdef" }).where(eq(plannedWorkouts.id, "w-2-07:00"));
+    const before = await rowOf("w-2-07:00");
     const res = await invoke("POST", `/api/coach/proposals/${id}/approve`, {});
     expect(res.status).toBe(200);
-    // The three fit one request, as three plain changes do.
-    expect((res.json.changed as Array<{ opId: string }>).map((c) => c.opId)).toEqual([planAdjustId("w-1-07:00"), planAdjustId("w-2-07:00"), planAdjustId("w-4-07:00")]);
+    expect((res.json.changed as Array<{ opId: string }>).map((c) => c.opId)).toEqual([planAdjustId("w-1-07:00"), planAdjustId("w-4-07:00")]);
+    expect(res.json.refused).toEqual([
+      { opId: planAdjustId("w-2-07:00"), error: "not_editable", cause: "unknown", why: "This session follows the watch's version until the next sync — change it after that." },
+    ]);
     expect(res.json.remaining).toEqual([]);
     expect(res.total).toBeLessThanOrEqual(APPROVE_FIXED + PLAN_BATCH_FIXED + SKIP_COST + (ADJUST_COST + 1) + (MOVE_COST + 1 + 1));
-    // The card's promise: only the plan's length. The mark stays (the read takes the watch's copy), and no write is queued.
-    const row = await rowOf("w-2-07:00");
-    expect(row.fallbackEstimatedDurationSeconds).toBe(1200);
-    expect(row.sourceContentFingerprint).toBe("take-watch-copy:0123456789abcdef");
+    // Nothing written: its length and its mark (the read still takes the watch's copy), and no write queued.
+    expect(await rowOf("w-2-07:00")).toEqual(before);
     expect(await db.select().from(schema.corosWriteJobs).where(eq(schema.corosWriteJobs.workoutId, "w-2-07:00"))).toEqual([]);
   });
 });

@@ -33,10 +33,12 @@ export function isRuntimeLimit(error: unknown): boolean {
  * `coros_unreachable`. D1's own failures carry its mark (`D1_ERROR`, `D1_…_ERROR`, "D1 DB is overloaded", "D1 DB
  * storage operation …"); a wrapper's `cause` is read too. A statement of ours that D1 refused (a missing column, a
  * constraint, too many variables, a syntax error) is not the database failing: it is a bug every retry meets, and it is
- * left to the caller's own handling.
+ * left to the caller's own handling. So are D1's own codes for a statement it could not run as written (review L2):
+ * `D1_TYPE_ERROR` (a value it cannot bind — an `undefined`) and `D1_COLUMN_NOTFOUND` (a column the statement read
+ * that is not there) are bugs of ours that every retry hits, not the database failing.
  */
 const D1_MARK = /\bD1_[A-Z_]*ERROR\b|\bD1 DB\b/;
-const OUR_STATEMENT = /SQLITE_(ERROR|CONSTRAINT|MISMATCH|RANGE|TOOBIG)|constraint failed|no such (table|column)|has no column|syntax error|too many SQL variables/i;
+const OUR_STATEMENT = /SQLITE_(ERROR|CONSTRAINT|MISMATCH|RANGE|TOOBIG)|\bD1_(TYPE_ERROR|COLUMN_NOTFOUND)\b|constraint failed|no such (table|column)|has no column|syntax error|too many SQL variables/i;
 export function isStorageError(error: unknown): boolean {
   for (let e: unknown = error, depth = 0; e != null && depth < 4; depth++) {
     const message = typeof e === "string" ? e : e instanceof Error ? e.message : "";

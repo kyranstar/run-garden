@@ -56,6 +56,7 @@ describe("isStorageError", () => {
 
   it("reads the cause a wrapper keeps", () => {
     expect(isStorageError(new Error("Failed query: insert into activities", { cause: new Error("D1_ERROR: Network connection lost.") }))).toBe(true);
+    expect(isStorageError(new Error("Failed query: insert into activities", { cause: new Error("D1_TYPE_ERROR: Type 'undefined' not supported for value 'undefined'") }))).toBe(false);
   });
 
   it.each([
@@ -70,6 +71,9 @@ describe("isStorageError", () => {
     "D1_ERROR: table planned_workout_stages has no column named note: SQLITE_ERROR",
     "D1_ERROR: UNIQUE constraint failed: planned_workouts.id: SQLITE_CONSTRAINT",
     "D1_EXEC_ERROR: Error in line 1: near \"x\": syntax error",
+    // A value D1 cannot bind (an `undefined`), or a column a statement named that is not there (review L2).
+    "D1_TYPE_ERROR: Type 'undefined' not supported for value 'undefined'",
+    "D1_COLUMN_NOTFOUND: Column not found",
   ])("does not match %j", (message) => {
     expect(isStorageError(new Error(message))).toBe(false);
   });

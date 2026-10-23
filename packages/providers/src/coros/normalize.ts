@@ -816,7 +816,13 @@ export function normalizeCorosLaps(detail: RawCorosActivityDetail, sportType: nu
     const items = lists.flatMap((l) => l.lapItemList ?? []).filter((i): i is RawCorosLapItem => !!i && typeof i === "object");
     const codes = items.map((i) => i.lapType).filter((t): t is number => typeof t === "number" && Number.isInteger(t));
     const lowest = codes.length > 0 ? Math.min(...codes) : undefined;
-    return mapItems(lowest === undefined ? items : items.filter((i) => i.lapType === lowest), "set");
+    // One lap per index (review M1): the lists are flattened into one view, so two lists repeating the kept indices —
+    // or items with no lap type, where nothing is filtered — repeated a lapIndex, and a set lap is stored by its index
+    // (`${activityId}:set:${lapIndex}`, UNIQUE(activity_id, lap_index)). The first keeps it.
+    const seen = new Set<number>();
+    return mapItems(lowest === undefined ? items : items.filter((i) => i.lapType === lowest), "set").filter((l) =>
+      seen.has(l.lapIndex) ? false : (seen.add(l.lapIndex), true),
+    );
   }
   const views = lists.filter((l) => (l.lapItemList?.length ?? 0) > 0);
   const workout = views.find((l) => l.lapDistance !== 100000);

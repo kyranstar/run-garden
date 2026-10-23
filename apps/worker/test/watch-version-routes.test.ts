@@ -30,6 +30,8 @@ import { recordIntent } from "../src/services/sync-intents.js";
 import { isWrite, makeTestDb, makeTestUser, mountRoutes } from "./helpers.js";
 
 const TEST_KEY = Buffer.alloc(32, 7).toString("base64");
+/** The mock account's "Threshold 5x5" as the import blocks it out on the calendar: the watch's own length. */
+const AFTER_READ_BLOCK_SECONDS = 4740; // 79 min
 const THRESHOLD = 289;
 
 function makeEnv(): Env {
@@ -564,16 +566,18 @@ describe("POST /api/plan/workouts/:id/watch-version/keep", () => {
     expect((await detail(a, a.workoutId)).workout.corosSyncView).toBe("synced");
   });
 
-  it("A4: a length alone, approved after Keep, is what its card says — the plan's length, and the watch keeps its copy: no claim, no rewrite of the version the athlete chose against", async () => {
+  it("A4/L1: a length alone after Keep is refused in plain words — nothing written, no claim, no rewrite — and the read brings the watch's copy in at its own length", async () => {
     const a = await easedAndFailed();
     expect((await request(a, `/api/plan/workouts/${a.workoutId}/watch-version/keep`, "POST")).status).toBe(200);
     const [kept] = await a.db.select().from(schema.plannedWorkouts).where(eq(schema.plannedWorkouts.id, a.workoutId));
     const jobsBefore = (await rewrites(a, a.workoutId)).map((j) => [j.id, j.status]);
+    // Review L1: the next read takes the watch's copy whole, so a length written now would be undone without a word
+    // while its card said "only the plan's length changes". Refused until then — a change proposed before the Keep too.
     const out = await applyOps(a.db, a.userId, a.prefs, "p-adjust", [coachOpSchema.parse({ kind: "adjust", workoutId: a.workoutId, durationMinutes: 25 })]);
-    expect(out.missed).toEqual([]);
+    expect(out.missed).toEqual(["this session follows the watch's version until the next sync — change it after that"]);
+    expect(out.updated).toEqual([]);
     const [row] = await a.db.select().from(schema.plannedWorkouts).where(eq(schema.plannedWorkouts.id, a.workoutId));
-    expect(row!.calendarBlockDurationSeconds, "the plan's length").toBe(1500);
-    expect(row!.sourceContentFingerprint, "the mark stays: the read still takes the watch's copy").toBe(kept!.sourceContentFingerprint);
+    expect(row, "nothing written: its length, its mark").toEqual(kept);
     const open = await a.db
       .select()
       .from(schema.syncIntents)
@@ -582,15 +586,25 @@ describe("POST /api/plan/workouts/:id/watch-version/keep", () => {
     expect((await rewrites(a, a.workoutId)).map((j) => [j.id, j.status]), "nothing queued for the watch").toEqual(jobsBefore);
     expect((await detail(a, a.workoutId)).workout.corosSyncView).toBe("taking_watch_copy");
 
-    // The read takes the watch's copy, as the athlete chose: the eased session never reaches the watch.
+    // The read takes the watch's copy, as the athlete chose: the eased session never reaches the watch, and the length
+    // is the watch's own — never the 25 min a length alone would have set and the read silently undone.
     const writes = a.server.counts.scheduleWrites;
     await executeCloudJobs(a.db, makeEnv(), a.userId, a.prefs, { fetchImpl: a.server.fetchImpl });
     expect(a.server.counts.scheduleWrites).toBe(writes);
     await readAndImport(a);
     const [after] = await a.db.select().from(schema.plannedWorkouts).where(eq(schema.plannedWorkouts.id, a.workoutId));
     expect(after!.title).toBe("Threshold 5x5");
+    const wire = normalizeCorosSchedule(a.server.state.schedule).workouts.find((w) => w.title === "Threshold 5x5")!;
+    expect(after!.sourceEstimatedDurationSeconds, "the watch's own length").toBe(wire.estimatedDurationSeconds);
+    expect(after!.calendarBlockDurationSeconds).toBe(AFTER_READ_BLOCK_SECONDS);
     expect(normalizeCorosSchedule(a.server.state.schedule).workouts.map((w) => w.title)).not.toContain(EASED.title);
     expect((await detail(a, a.workoutId)).workout.corosSyncView).toBe("synced");
+
+    // After the read the session is the watch's own copy, unmarked: a length is the plan's again.
+    const again = await applyOps(a.db, a.userId, a.prefs, "p-adjust-after", [coachOpSchema.parse({ kind: "adjust", workoutId: a.workoutId, durationMinutes: 25 })]);
+    expect(again.missed).toEqual([]);
+    const [retimed] = await a.db.select().from(schema.plannedWorkouts).where(eq(schema.plannedWorkouts.id, a.workoutId));
+    expect(retimed!.calendarBlockDurationSeconds).toBe(1500);
   });
 
   it("a re-time of a session that never chose the watch's version is what it always was: no claim, no rewrite", async () => {
@@ -606,6 +620,7 @@ describe("POST /api/plan/workouts/:id/watch-version/keep", () => {
     expect(await rewrites(a, row!.id)).toEqual([]);
     const [after] = await a.db.select().from(schema.plannedWorkouts).where(eq(schema.plannedWorkouts.id, row!.id));
     expect(after!.sourceContentFingerprint).toBe(row!.sourceContentFingerprint);
+    expect(after!.calendarBlockDurationSeconds, "the plan's length, as before (review L1 refuses only a row taking the watch's version)").toBe(1500);
   });
 
   it("A1: Keep after a failed rewrite clears the sync line, and Retry can't put the app's version back over the watch's", async () => {

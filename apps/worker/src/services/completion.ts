@@ -447,6 +447,56 @@ async function ingestWatchSets(
   }
 }
 
+type IngestLap = NonNullable<IngestInput["lapsByProviderId"]>[string][number];
+
+/** A statement D1 refused on a constraint — the same rows meet it on every retry. */
+function isConstraintCollision(error: unknown): boolean {
+  for (let e: unknown = error, depth = 0; e != null && depth < 4; depth++) {
+    if (/constraint failed|SQLITE_CONSTRAINT/i.test(e instanceof Error ? e.message : String(e))) return true;
+    e = e instanceof Error ? e.cause : null;
+  }
+  return false;
+}
+
+/**
+ * One activity's laps, replaced whole. A collision on UNIQUE(activity_id, lap_index) — two laps the wire gave one
+ * index — is that activity's alone (review M1): it threw out of the ingest, every later activity went unstored, and
+ * the read was recorded as COROS unreachable on every sweep. It is logged and the activity lands without those laps;
+ * anything else (D1 down, a runtime ceiling) still fails the read as before.
+ */
+async function writeLaps(db: Db, activityId: string, laps: readonly IngestLap[]): Promise<void> {
+  const lapRows = laps.map((l) => ({
+    // The view is part of the identity: workout laps and auto-km laps
+    // share lapIndex ranges (0018 — both views are stored now).
+    id: `${activityId}:${l.splitType ?? "lap"}:${l.lapIndex}`,
+    activityId,
+    lapIndex: l.lapIndex,
+    durationSeconds: l.durationSeconds,
+    distanceMeters: l.distanceMeters ?? null,
+    avgHeartRate: l.avgHeartRate ?? null,
+    avgPaceSecPerKm: l.avgPaceSecPerKm ?? null,
+    splitType: l.splitType ?? null,
+    avgCadenceSpm: l.avgCadenceSpm ?? null,
+    minHeartRate: l.minHeartRate ?? null,
+    maxHeartRate: l.maxHeartRate ?? null,
+    elevGainMeters: l.elevGainMeters ?? null,
+    avgGradePercent: l.avgGradePercent ?? null,
+    avgPowerWatts: l.avgPowerWatts ?? null,
+    exerciseNameKey: l.exerciseNameKey ?? null,
+  }));
+  await db.delete(activityLaps).where(eq(activityLaps.activityId, activityId));
+  try {
+    // Column count derived from the row itself: a hardcoded count silently
+    // rots when the table grows (migration 0012's lap telemetry columns
+    // pushed 8-column batches past the ~100-bound-variable cap, failing
+    // ingest for any run with 8+ laps).
+    await chunkedInsert(lapRows, (batch) => db.insert(activityLaps).values(batch));
+  } catch (e) {
+    if (isRuntimeLimit(e) || !isConstraintCollision(e)) throw e;
+    console.error(`[laps] ${activityId}: ${(e instanceof Error ? e.message : String(e)).slice(0, 300)}`);
+  }
+}
+
 async function stampSourceFingerprint(db: Db, src: SourceActivity): Promise<void> {
   await db
     .update(activitySourceLinks)
@@ -628,35 +678,7 @@ export async function ingestActivities(db: Db, input: IngestInput): Promise<Inge
       corosProgramIdByActivity.set(activityId, src.sourcePlannedWorkoutId);
     }
     const laps = input.lapsByProviderId?.[src.providerActivityId];
-    if (laps && laps.length > 0) {
-      await db.delete(activityLaps).where(eq(activityLaps.activityId, activityId));
-      const lapRows = laps.map((l) => ({
-        // The view is part of the identity: workout laps and auto-km laps
-        // share lapIndex ranges (0018 — both views are stored now).
-        id: `${activityId}:${l.splitType ?? "lap"}:${l.lapIndex}`,
-        activityId,
-        lapIndex: l.lapIndex,
-        durationSeconds: l.durationSeconds,
-        distanceMeters: l.distanceMeters ?? null,
-        avgHeartRate: l.avgHeartRate ?? null,
-        avgPaceSecPerKm: l.avgPaceSecPerKm ?? null,
-        splitType: l.splitType ?? null,
-        avgCadenceSpm: l.avgCadenceSpm ?? null,
-        minHeartRate: l.minHeartRate ?? null,
-        maxHeartRate: l.maxHeartRate ?? null,
-        elevGainMeters: l.elevGainMeters ?? null,
-        avgGradePercent: l.avgGradePercent ?? null,
-        avgPowerWatts: l.avgPowerWatts ?? null,
-        exerciseNameKey: l.exerciseNameKey ?? null,
-      }));
-      // Column count derived from the row itself: a hardcoded count silently
-      // rots when the table grows (migration 0012's lap telemetry columns
-      // pushed 8-column batches past the ~100-bound-variable cap, failing
-      // ingest for any run with 8+ laps).
-      await chunkedInsert(lapRows, (batch) =>
-        db.insert(activityLaps).values(batch),
-      );
-    }
+    if (laps && laps.length > 0) await writeLaps(db, activityId, laps);
     await ingestWatchSets(db, input, src, activityId, adoptedFromApp);
     // Commit marker: everything for this source landed, so the skip check may
     // now trust the fingerprint (audit#3 D4).
