@@ -51,6 +51,7 @@ import { enqueueUnpushIfOurs } from "./plan-mutations.js";
 import { sentBuildIdOf } from "./session-build.js";
 import { recordedStampFor, renamedCopyOfRow, SPENT_STAMP_STATUSES } from "./coros-stamp.js";
 import { gatedAtClaim, unlockSentBuild, unpushBuild } from "./watch-push.js";
+import { takesWatchCopy } from "./watch-copy-marker.js";
 
 /**
  * Cloud write consumer (cloud-direct spec §4): the same job queue with all
@@ -764,7 +765,14 @@ export async function executeCloudJobs(
         // on-demand session's copy is the build the athlete sent; only Send and
         // Take off write it. A rewrite queued before that rule (or by any path
         // that missed it) is superseded here, before any wire call.
-        if (job.workout && appAuthoredRow(job.workout)) {
+        //
+        // NOR OVER A COPY THE ATHLETE CHOSE (review A1). A row carrying the "keep the watch's version" mark
+        // (watch-copy-marker.ts) is waiting for the next read to take the watch's copy; Keep supersedes every rewrite of
+        // it not running, and a new change of the app's lifts the mark before it queues its own. A rewrite that reaches
+        // here anyway — revived by a Retry of one a Keep before that rule left failed — would put the version the athlete
+        // chose against on the watch and, verified, stamp the wire's fingerprint over the mark: the app's row "synced"
+        // while the watch holds another session, for good. Superseded, before any wire call; the mark stays.
+        if (job.workout && (appAuthoredRow(job.workout) || takesWatchCopy(job.workout.sourceContentFingerprint))) {
           await db
             .update(corosWriteJobs)
             .set({ status: "superseded", updatedAt: nowInstant() })

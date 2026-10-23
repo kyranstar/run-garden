@@ -126,12 +126,17 @@ export async function openClaimIds(db: Db, userId: string, workoutId: string): P
 
 type WorkoutRow = Pick<typeof plannedWorkouts.$inferSelect, "id" | "origin">;
 
+/** The rewrites Keep stops: every one not running — queued, failed (Retry's), switched off by a restore (Send's). */
+const KEEP_SUPERSEDES = ["queued", "failed", "restored"] as const;
+
 export type KeepOutcome = { kept: number } | { error: "app_built" };
 
 /**
  * KEEP THE WATCH'S VERSION: the app takes the watch's copy. The row's open content claims are released the ordinary
- * way (as a converged rewrite releases them), a rewrite of it still only queued is superseded so nothing more reaches
- * the watch for it (one already running finishes, and the read then takes what it wrote), and the row is marked
+ * way (as a converged rewrite releases them), and every rewrite of it not running is superseded so nothing more reaches
+ * the watch for it — one queued, one failed (whose Retry would put the version the athlete chose against back on the
+ * watch, and which the account line would go on counting as an issue: review A1), one a restore switched off (whose
+ * Send would) — while one already running finishes, and the read then takes what it wrote; and the row is marked
  * (watch-copy-marker.ts: the fingerprint it had is kept inside the mark) so the next COROS read rewrites it from the
  * wire: title, stages, sport, and its lift or mobility structure dropped then, not before — until the read, nothing of
  * the app's copy is lost. Until then a row still to run says so (`taking_watch_copy`). Nothing is
@@ -151,7 +156,7 @@ export async function keepWatchVersion(db: Db, userId: string, row: WorkoutRow, 
         eq(corosWriteJobs.userId, userId),
         eq(corosWriteJobs.workoutId, row.id),
         eq(corosWriteJobs.kind, "coach_update_workout"),
-        eq(corosWriteJobs.status, "queued"),
+        inArray(corosWriteJobs.status, [...KEEP_SUPERSEDES]),
       ),
     );
   await releaseContentClaims(db, userId, row.id, now);
