@@ -7,4 +7,4 @@
  * this is a constant; `test/schema-version.test.ts` fails when a migration is
  * added without bumping it.
  */
-export const SCHEMA_VERSION = "0028";
+export const SCHEMA_VERSION = "0029";

@@ -64,6 +64,11 @@ import {
   dismissedInsights,
   exercisePrefs,
   exerciseProvenance,
+  personalMoves,
+  saveBatches,
+  saveChecks,
+  savedPostMoves,
+  savedPosts,
   gardenDayInputs,
   gardenEvents,
   gardenPlants,
@@ -209,6 +214,12 @@ const ENTRIES: ReadonlyArray<readonly [SQLiteTable, TableScope]> = [
   [workoutTemplates, USER],
   [coachRuns, USER],
   [coachRunEvents, USER],
+  // saved posts and what came of them (0029) — each carries its own user_id
+  [savedPosts, USER],
+  [saveChecks, USER],
+  [saveBatches, USER],
+  [personalMoves, USER],
+  [savedPostMoves, USER],
 
   // children — reached only through a parent's ids
   [trainingPlanVersions, child("training_plans", "plan_id")],
