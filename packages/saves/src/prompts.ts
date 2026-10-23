@@ -12,8 +12,11 @@ export const EXTRACT_PROMPT_VERSION = "extract-1";
 const OPEN = "<post-data>";
 const CLOSE = "</post-data>";
 
-/** A post's text with any look-alike data marker removed, so it can never close or open the block itself. */
-const defang = (s: string): string => s.replace(/<\s*\/?\s*post-data\s*>/gi, "");
+/**
+ * A post's text with every `<` swapped for a look-alike, so no marker can appear in it, however the pieces are nested
+ * (stripping the marker instead lets `</post-</post-data>data>` re-form one).
+ */
+const defang = (s: string): string => s.replace(/</g, "‹");
 
 function dataBlock(post: Pick<PostSubmit, "caption" | "hashtags" | "creator" | "mediaType">): string {
   return [
