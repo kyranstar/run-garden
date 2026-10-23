@@ -13,10 +13,11 @@
  *   reading-dependent rule on each profile's calmest day — "does this fit the workout's mode at all"; a `day` whose
  *   `date` is after its `today` is a future day (that day's check is unknown); any other day uses `day.readings`.
  *   The day's own `feelingOff` joins every profile's reading. A reading with neither a "before" number nor "feeling
- *   off" (null, absent, or only an "after") is unanswered — and unanswered means not allowed: a move a reading can
- *   close must pass both unanswered and at the profile's worst reading. On the day itself the worst is the scale's top
- *   number, the day's "feeling off" as the day says it (not said is not feeling off, as the engine reads the day,
- *   2026-10-23); on a day ahead, nothing of the day is known, "feeling off" included.
+ *   off" (null, absent, or only an "after") is unanswered. On the day itself it is read as the engine reads the day:
+ *   unanswered, and not feeling off unless the day says so (2026-10-23) — a rule that needs an answered check refuses
+ *   it; one that closes only on a high reading (a flare gate) lets the move through until the check says so
+ *   (review M1: unanswered days stay open). On a day ahead nothing of the day is known, "feeling off" included: a move
+ *   a reading can close must pass both unanswered and at the profile's worst reading (else it waits on that day).
  * - The workout's mode is `modeOfEffort(intent.effort)`. Every active profile is read through its contract only
  *   (`never`, `fitsMode`, `fitsFormat`, `allowPattern` per pattern, `allowRecord`, `flare`, the library's shared
  *   `recordFlareSafe`, `recoveryReason`, `buildChecks`) — this file never names a profile. A record with no rating for
@@ -42,7 +43,8 @@
  * - condition_gate (error): `allowRecord` refuses the record for this mode and the day.
  * - condition_gate_pending (warning, or error): a future day, and a pattern or record rule the day's reading could close;
  *   a warning only when the item carries an alternate that passes in recovery mode (the mode's limits and every
- *   profile's rules, at the calmest, unanswered and worst readings).
+ *   profile's rules, at the calmest, unanswered and worst readings) and is flare-safe (`recordFlareSafe`): the day
+ *   may be a flare day.
  * - condition_mode (warning): `fitsMode` is false for the workout's mode.
  * - condition_format (warning): `fitsFormat` is false for the part's format.
  * - condition_flare (warning): today's reading is a flare (`flare`) and the move is not flare-safe (`recordFlareSafe`).
@@ -386,8 +388,9 @@ const GATES_READ_THE_CHECK = new WeakMap<ConditionProfile, WeakMap<readonly Exer
 /**
  * Whether a profile has a gate an answered check today could open: a move of the library its pattern or record rules
  * allow on the profile's calmest day but refuse on the day itself unanswered — as `validateWorkoutDoc` reads such a day
- * (unanswered, or the scale's top number; not feeling off). Without one, an unanswered check closes nothing today, and
- * asking the athlete for one opens nothing. Probed from the rules themselves, never from their words.
+ * (unanswered, not feeling off). Without one, an unanswered check closes nothing today, and asking the athlete for one
+ * opens nothing: a gate that closes only on a high number (a flare gate, review M1) is open until the check
+ * says otherwise, so an answer could only close more. Probed from the rules themselves, never from their words.
  */
 export function gatesReadTheCheck(p: ConditionProfile, library: readonly ExerciseRecord[]): boolean {
   let byLibrary = GATES_READ_THE_CHECK.get(p);
@@ -395,9 +398,8 @@ export function gatesReadTheCheck(p: ConditionProfile, library: readonly Exercis
   let known = byLibrary.get(library);
   if (known === undefined) {
     const best = bestDay(p);
-    const unknown: CheckReading[] = [UNANSWERED, { ...worstDay(p), feelingOff: false }];
     const open = (rec: ExerciseRecord, m: Mode, r: CheckReading): boolean => patternOk(p, rec, m, r) && recordOk(p, rec, m, r);
-    known = library.some((rec) => attrsOf(rec, p) !== undefined && MODE_IDS.some((m) => open(rec, m, best) && unknown.some((r) => !open(rec, m, r))));
+    known = library.some((rec) => attrsOf(rec, p) !== undefined && MODE_IDS.some((m) => open(rec, m, best) && !open(rec, m, UNANSWERED)));
     byLibrary.set(library, known);
   }
   return known;
@@ -484,10 +486,10 @@ export function validateWorkoutDoc(input: unknown, ctx: ValidateCtx): DocIssue[]
     if (phase === "any") return null;
     const r = readingOf(p);
     const why: GateFail["why"] = phase === "future" ? "pending" : "today";
-    // Today, an unanswered reading is not feeling off (the day would have said so, joined in `readingOf`): only its
-    // number is unknown. A day ahead knows nothing yet.
-    const worst = phase === "future" ? worstDay(p) : { ...worstDay(p), feelingOff: false };
-    for (const t of answered(r) ? [r] : [UNANSWERED, worst]) {
+    // Today, an unanswered reading is read as the engine reads the day: unanswered, and not feeling off (the day would
+    // have said so, joined in `readingOf`) — a rule that needs an answer refuses it, one that closes only on a high
+    // number (a flare) waits for the check to say so (review M1). A day ahead knows nothing yet: its worst may come.
+    for (const t of answered(r) ? [r] : phase === "future" ? [UNANSWERED, worstDay(p)] : [UNANSWERED]) {
       if (!patternOk(p, rec, mode, t)) return { rule: "pattern", why };
       if (!recordOk(p, rec, mode, t)) return { rule: "record", why };
     }
@@ -538,12 +540,16 @@ export function validateWorkoutDoc(input: unknown, ctx: ValidateCtx): DocIssue[]
   /** Raises none of the condition, mode, athlete or place issues here: a fix to offer. */
   const fitsHere = (rec: ExerciseRecord, format: DocFormat): boolean => judge(rec, format).length === 0;
 
-  /** Passes in recovery mode whatever the day's check reads: what a future day's gated move needs as its alternate. */
+  /**
+   * Passes in recovery mode whatever the day's check reads, a flare included: what a future day's gated move needs as
+   * its alternate. Recovery's caps are not the flare-safe ones (recovery takes face-down positions since 2026-10-23), so
+   * the move must be flare-safe too (`recordFlareSafe`) — else the stand-in a flare day swaps in is one it leaves out.
+   */
   const passesRecovery = (rec: ExerciseRecord): boolean =>
     limitsAgainst(rec, "recovery", "") === null &&
     profiles.every((p) => {
       const a = attrsOf(rec, p);
-      if (!a || p.never(a) || !p.fitsMode(a, "recovery", rec)) return false;
+      if (!a || p.never(a) || !p.fitsMode(a, "recovery", rec) || !recordFlareSafe(p, rec)) return false;
       return [bestDay(p), UNANSWERED, worstDay(p)].every((r) => patternOk(p, rec, "recovery", r) && recordOk(p, rec, "recovery", r));
     });
 

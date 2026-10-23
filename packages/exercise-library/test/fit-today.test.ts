@@ -25,7 +25,8 @@ describe("today's condition fit", () => {
     // Overhead pressing: no calm check any more (2026-10-23), only never in recovery.
     const press = rec("halfKneelingPress");
     for (const r of [reading(1), reading(4), reading(null)]) expect(fitToday(press, tmj, r)).toEqual({ state: "care", reason: "Fine today, within TMJ limits." });
-    expect(fitToday(press, tmj, reading(8))!.state).toBe("not");
+    expect(fitToday(press, tmj, reading(8))).toEqual({ state: "not", reason: "Overhead pressing sits out a flare day." });
+    expect(fitToday(press, tmj, reading(5))).toEqual({ state: "not", reason: "Overhead pressing sits out a flare day." });
     expect(fitToday(press, tmj, reading(1, true))!.state).toBe("not");
     // No reading for the profile at all is unanswered.
     expect(fitToday(press, tmj, {})).toEqual(fitToday(press, tmj, reading(null)));
@@ -49,6 +50,9 @@ describe("today's condition fit", () => {
     expect(fitToday(jump, tmj, reading(1))!.state).toBe("care");
     expect(fitToday(jump, tmj, reading(null))!.state).toBe("care");
     expect(fitToday(jump, tmj, reading(4))!.state).toBe("care");
+    // A flare day: the jumps sit it out (review M1).
+    expect(fitToday(jump, tmj, reading(5))).toEqual({ state: "not", reason: "Jumps sit out a flare day." });
+    expect(fitToday(jump, tmj, reading(8))).toEqual({ state: "not", reason: "Jumps sit out a flare day." });
   });
 
   it("a top-clench move is fine with limits (build's sets) on a calm day, not on a flare day", () => {

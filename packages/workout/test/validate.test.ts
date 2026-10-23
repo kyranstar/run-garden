@@ -7,10 +7,10 @@
 import { readFileSync } from "node:fs";
 import { describe, expect, it } from "vitest";
 import { addDays, daysBetween, type WorkoutDoc, type WorkoutItem, type WorkoutPart } from "@rg/domain";
-import { EXERCISES, TMJ, UNANSWERED, fitsMode, type CheckReading, type ConditionProfile, type ExerciseRecord, type Mode } from "@rg/exercise-library";
+import { EXERCISES, TMJ, UNANSWERED, fitsMode, recordFlareSafe, type CheckReading, type ConditionProfile, type ExerciseRecord, type Mode } from "@rg/exercise-library";
 import { Planner, Rng, type DayState, type ProgramState } from "@rg/session-engine";
 import { LOCATIONS, seededHistory } from "../../session-engine/test/seeded-history.js";
-import { DOC_ISSUE_CODES, docFromBuild, validateWorkoutDoc, type DayContext, type DocIssue, type ValidateCtx } from "../src/index.js";
+import { DOC_ISSUE_CODES, docFromBuild, gatesReadTheCheck, validateWorkoutDoc, type DayContext, type DocIssue, type ValidateCtx } from "../src/index.js";
 import { WORLD, jumpDayBuilds, seededBuilds, stored } from "./seeded-builds.js";
 
 // ── Fixtures ──────────────────────────────────────────────────────────────────────────────────────────────────────
@@ -395,12 +395,31 @@ describe("condition_pattern", () => {
     }
   });
 
-  it("in a maintain or develop workout the check doesn't decide it (2026-10-23): calm, unanswered or above the old line, no gate", () => {
+  it("in a maintain or develop workout no calm check decides it (2026-10-23): calm, unanswered or above the old line, no gate", () => {
     for (const effort of ["maintain", "develop"] as const) {
-      for (const day of [dayOf(reading(1)), dayOf(null), dayOf(reading(3)), dayOf(reading(4)), FUTURE(), null]) {
+      for (const day of [dayOf(reading(1)), dayOf(null), dayOf(null, { readings: {} }), dayOf(reading(3)), dayOf(reading(4)), null]) {
         expect(only(check(press(effort), day), "condition_pattern"), effort).toEqual([]);
         expect(only(check(press(effort), day), "condition_gate_pending"), effort).toEqual([]);
       }
+    }
+  });
+
+  it("on a flare day it is an error whatever the effort — a mode chosen above recovery is still a flare day (review M1)", () => {
+    for (const effort of ["maintain", "develop", "peak"] as const) {
+      for (const pre of [5, 7]) {
+        expect(only(check(press(effort), dayOf(reading(pre))), "condition_pattern"), `${effort} ${pre}`).toEqual([
+          expect.objectContaining({ path: `${P0}.libraryId`, severity: "error", message: `Half-kneeling one-arm press isn't allowed with today's Jaw / head check at ${pre}.` }),
+        ]);
+      }
+    }
+  });
+
+  it("a day ahead may be a flare day: it waits on that day's check, as a jump does (review M1)", () => {
+    for (const effort of ["maintain", "develop"] as const) {
+      expect(codes(check(press(effort), FUTURE())), effort).toEqual([`error:condition_gate_pending@${P0}.libraryId`]);
+      expect(check(one(ex("halfKneelingPress", { sets: 3, reps: 6 }, alt("bridge")), effort), FUTURE()), effort).toEqual([
+        expect.objectContaining({ code: "condition_gate_pending", severity: "warning", fix: "bridge" }),
+      ]);
     }
   });
 });
@@ -414,8 +433,24 @@ describe("condition_gate", () => {
     expect(check(hop(), dayOf(null, { readings: {} }))).toEqual([]);
   });
 
-  it("allowed whatever the check's number since 2026-10-23; an error while feeling off, or in a recovery workout whatever the reading", () => {
-    for (const pre of [0, 2, 3, 4, 7]) expect(only(check(hop(), dayOf(reading(pre))), "condition_gate"), String(pre)).toEqual([]);
+  it("a develop workout's jump on a flare day is an error; on a day with no check yet it stays (review M1)", () => {
+    for (const pre of [5, 7, 10]) {
+      const errors = check(hop("develop"), dayOf(reading(pre))).filter((i) => i.severity === "error");
+      expect(codes(errors), String(pre)).toEqual([`error:condition_gate@${P0}.libraryId`]);
+      expect(errors[0]!.message).toBe(`Pogo hops isn't allowed with today's Jaw / head check at ${pre}.`);
+    }
+    // No check yet: the jump stays — nothing at the item, no error (a Develop day with no check is only advice).
+    for (const day of [dayOf(null), dayOf(null, { readings: {} })]) {
+      const issues = check(hop("develop"), day);
+      expect(issues.filter((i) => i.severity === "error" || i.path.startsWith(P0))).toEqual([]);
+      expect(codes(issues)).toEqual(["warning:mode_above_day@intent.effort"]);
+    }
+    // The alternate the day allows is the fix.
+    expect(only(check(hop("develop", alt("bridge")), dayOf(reading(7))), "condition_gate")).toEqual([expect.objectContaining({ fix: "bridge" })]);
+  });
+
+  it("allowed below the flare line whatever the check's number since 2026-10-23; an error while feeling off, or in a recovery workout whatever the reading", () => {
+    for (const pre of [0, 2, 3, 4]) expect(only(check(hop(), dayOf(reading(pre))), "condition_gate"), String(pre)).toEqual([]);
     const [off] = only(check(hop(), dayOf(reading(1, true))), "condition_gate");
     expect(off).toMatchObject({ path: `${P0}.libraryId`, code: "condition_gate", severity: "error", message: "Pogo hops isn't allowed while you're feeling off." });
     // The day's own "feeling off", with no check answered, is the same.
@@ -424,17 +459,26 @@ describe("condition_gate", () => {
     expect(only(check(hop("recover"), null), "condition_gate")).toHaveLength(1);
   });
 
-  it("unanswered means not allowed even when a profile's own rule would let an unanswered check through", () => {
-    // A made-up profile whose record rule only refuses a high reading: unanswered, the validator still refuses.
+  it("on the day itself an unanswered check reads as the engine reads it: a rule that closes only on a high reading lets it through, one that needs an answer doesn't (review M1)", () => {
+    // A made-up profile whose record rule only refuses a high reading (as the jaw's flare gate does): unanswered, open.
     const lib = LIBRARY.map((e) => ({ ...e, conditions: { ...e.conditions, testLenient: {} } }));
-    const run = (r: CheckReading | null) =>
-      validateWorkoutDoc(one(ex("bridge", { sets: 2, reps: 10 })), { library: lib, activeProfiles: [LENIENT], day: dayOf(null, { readings: { testLenient: r } }) });
-    expect(codes(run(null))).toEqual([`error:condition_gate@${P0}.libraryId`]);
-    expect(run(null)[0]!.message).toBe("Glute bridge needs today's Lenient check answered first.");
+    const run = (r: CheckReading | null, p: ConditionProfile = LENIENT) =>
+      validateWorkoutDoc(one(ex("bridge", { sets: 2, reps: 10 })), { library: lib, activeProfiles: [p], day: dayOf(null, { readings: { testLenient: r } }) });
+    expect(run(null)).toEqual([]);
     expect(run(reading(3))).toEqual([]);
     expect(codes(run(reading(6)))).toEqual([`error:condition_gate@${P0}.libraryId`]);
     // A reading with no "before" number and no "feeling off" is unanswered too.
-    expect(codes(run({ pre: null, post: 2, feelingOff: false }))).toEqual([`error:condition_gate@${P0}.libraryId`]);
+    expect(run({ pre: null, post: 2, feelingOff: false })).toEqual([]);
+    // A rule that needs an answered check refuses the unanswered day, and says so.
+    const needsAnswer: ConditionProfile = { ...LENIENT, allowRecord: (rec, _mode, today) => rec.id !== "bridge" || (today.pre != null && today.pre <= 4) };
+    expect(codes(run(null, needsAnswer))).toEqual([`error:condition_gate@${P0}.libraryId`]);
+    expect(run(null, needsAnswer)[0]!.message).toBe("Glute bridge needs today's Lenient check answered first.");
+    expect(codes(run({ pre: null, post: 2, feelingOff: false }, needsAnswer))).toEqual([`error:condition_gate@${P0}.libraryId`]);
+    // Only an answer could open what such a rule closes: the probe the coach's "ask for a check" reads.
+    expect(gatesReadTheCheck(needsAnswer, lib)).toBe(true);
+    expect(gatesReadTheCheck(LENIENT, lib)).toBe(false);
+    // The jaw's gates close on a flare reading, never on a missing one: an answer can only close more.
+    expect(gatesReadTheCheck(TMJ, EXERCISES)).toBe(false);
   });
 
   it("the fix is an alternate the day allows", () => {
@@ -483,6 +527,22 @@ describe("condition_gate_pending", () => {
   it("an alternate that is itself gated (or fails recovery) does not count", () => {
     expect(codes(check(hop(alt("lineHopForwardBack")), FUTURE()))).toEqual([`error:condition_gate_pending@${P0}.libraryId`]);
     expect(codes(check(hop(alt("farmerCarry")), FUTURE()))).toEqual([`error:condition_gate_pending@${P0}.libraryId`]);
+  });
+
+  it("a face-down alternate doesn't count: recovery takes it since 2026-10-23, but the day ahead may be a flare day, which doesn't (review L1)", () => {
+    expect(codes(check(hop(alt("proneYTW")), FUTURE()))).toEqual([`error:condition_gate_pending@${P0}.libraryId`]);
+    expect(check(hop(alt("proneYTW", "bridge")), FUTURE())).toEqual([expect.objectContaining({ code: "condition_gate_pending", severity: "warning", fix: "bridge" })]);
+  });
+
+  it("nor is the library's stand-in a face-down move, even where it is the closest (review L1)", () => {
+    const pullJump: ExerciseRecord = { ...record("pogoHop"), id: "testPullJump", name: "Test pull jump", legacyIds: [], patterns: ["pull-h"], regions: ["upper-back", "shoulders"], easier: [], harder: [] };
+    // proneYTW first: the closest stand-in by pattern and region, and the first the library offers.
+    const lib = [record("proneYTW"), pullJump, ...LIBRARY.filter((e) => e.id !== "proneYTW")];
+    const [issue] = validateWorkoutDoc(one(ex("testPullJump", { sets: 3, reps: 10 })), { library: lib, activeProfiles: [TMJ], day: FUTURE() });
+    expect(issue).toMatchObject({ code: "condition_gate_pending", severity: "error" });
+    expect(issue!.fix).toBeDefined();
+    expect(issue!.fix).not.toBe("proneYTW");
+    expect(recordFlareSafe(TMJ, lib.find((e) => e.id === issue!.fix)!)).toBe(true);
   });
 
   it("an easier variant is not an alternate the item carries: still an error, the variant offered as the fix", () => {
@@ -891,9 +951,9 @@ describe("the engine's own builds validate", () => {
     /** Item and alternate paths the engine's own eligibility (`fitsMode` with the day's checks) refuses on an unanswered day. */
     engineRefusesUnanswered: string[];
     /**
-     * The items the engine would refuse were the day to come unanswered or feeling off — what a day ahead can still bring
-     * (2026-10-23: the jaw's gates read only "feeling off" and the mode, so an unanswered day closes nothing today, while
-     * a day ahead may yet be one the athlete feels off).
+     * The items the engine would refuse were the day to come unanswered, feeling off or at the check's top number — what
+     * a day ahead can still bring (2026-10-23: the jaw's gates read the mode, "feeling off" and a flare reading, so an
+     * unanswered day closes nothing today, while a day ahead may yet be one the athlete feels off or flares).
      */
     engineRefusesItems: string[];
     /** The same day, unanswered: the items and alternates the validator refuses by a pattern or record rule. */
@@ -953,7 +1013,8 @@ describe("the engine's own builds validate", () => {
           if (it.kind !== "exercise") return;
           const at = `parts[${pi}].items[${ii}]`;
           if (refuses(it.libraryId)) engineRefusesUnanswered.push(`${at}.libraryId`);
-          if (refuses(it.libraryId) || refuses(it.libraryId, { ...UNANSWERED, feelingOff: true })) engineRefusesItems.push(`${at}.libraryId`);
+          const ahead = [UNANSWERED, { ...UNANSWERED, feelingOff: true }, { ...UNANSWERED, pre: TMJ.check.max }];
+          if (ahead.some((r) => refuses(it.libraryId, r))) engineRefusesItems.push(`${at}.libraryId`);
           (it.alternates ?? []).forEach((a, ai) => {
             if (refuses(a.libraryId)) engineRefusesUnanswered.push(`${at}.alternates[${ai}].libraryId`);
           });

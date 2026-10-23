@@ -473,7 +473,7 @@ function fillTimed(block: BlockId, budget: number, ctx: Ctx, group: Group | null
     for (const r of ranked) {
       const item = makeItem(r, block, slotKey, formatId, ctx);
       const cost = costOf(windows(item, formatId));
-      if (spent + cost <= budget || (items.length < min && r.isNew)) { picked = { item, cost }; break; }
+      if (spent + cost <= budget || (items.length < min && r === ranked[0] && r.isNew)) { picked = { item, cost }; break; }
       if (items.length < min && !forced) forced = { item, cost };
     }
     picked ??= forced;

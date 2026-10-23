@@ -15,8 +15,9 @@ import { fileURLToPath } from "node:url";
 const DAY = "2026-10-07";
 
 /**
- * TMJ on, the jaw at `pre` today, and feeling off or not. Since 2026-10-23 the jaw's gate keeps jumps out only on a
- * recovery day or while feeling off, so a day that closes them here is a high reading and feeling off.
+ * TMJ on, the jaw at `pre` today, and feeling off or not. Since 2026-10-23 the jaw's gate keeps jumps out on a
+ * recovery day, while feeling off, or on a flare day (an answered check of 5 or more, review M1); the tests written
+ * while a flare alone didn't close them say "feeling off" too.
  */
 const ctxAt = (pre: number | null, feelingOff = false): ValidateCtx => ({
   library: EXERCISES,
@@ -107,6 +108,34 @@ describe("gateDoc", () => {
     expect(gateDoc(landingsDoc(), ctxAt(4))).toEqual({ doc: landingsDoc(), swaps: [], blocked: [] });
     // Feeling off, with no number, does.
     expect(gateDoc(landingsDoc(), { ...ctxAt(null), day: { date: DAY, today: DAY, readings: {}, feelingOff: true } }).swaps.map((s) => s.to)).toEqual(["tempoSquat"]);
+  });
+
+  // A flare day proposes recovery; a document planned above it (or the athlete's own choice of effort) still lands on a
+  // flare day, and the day keeps its jumps and overhead pressing out — the reading alone, no "feeling off" (review M1).
+  it("a flare reading alone keeps a jump and an overhead press out of a Maintain or Develop document; a day with no check yet keeps them in", () => {
+    const pressDoc = (effort: "maintain" | "develop", alternates = true): WorkoutDoc => workoutDocSchema.parse({
+      ...calmDoc(), intent: { ...calmDoc().intent, effort },
+      parts: [{ purpose: "main", format: "straight", items: [
+        { kind: "exercise", libraryId: "halfKneelingPress", dose: { sets: 2, reps: 8 }, ...(alternates ? { alternates: [{ libraryId: "tempoSquat" }] } : {}) },
+      ] }],
+    });
+    const landings = (effort: "maintain" | "develop", alternates = true): WorkoutDoc => ({ ...landingsDoc({ alternates }), intent: { ...landingsDoc().intent, effort } });
+    for (const effort of ["maintain", "develop"] as const) {
+      for (const pre of [5, 7]) {
+        const label = `${effort} ${pre}`;
+        expect(gateDoc(landings(effort), ctxAt(pre)).swaps, label).toEqual([
+          { path: "parts[0].items[0]", from: "snapDown", to: "tempoSquat", reason: `Snap-down isn't allowed with today's Jaw / head check at ${pre}.` },
+        ]);
+        expect(gateDoc(pressDoc(effort), ctxAt(pre)).swaps.map((s) => [s.from, s.to]), label).toEqual([["halfKneelingPress", "tempoSquat"]]);
+        // No alternate: the day blocks it, and a save today refuses it.
+        expect(gateDoc(landings(effort, false), ctxAt(pre)).blocked.map((i) => [i.path, i.code]), label).toEqual([["parts[0].items[0].libraryId", "condition_gate"]]);
+        expect(judgeDoc(pressDoc(effort, false), ctxAt(pre)).errors.map((i) => [i.path, i.code]), label).toEqual([["parts[0].items[0].libraryId", "condition_pattern"]]);
+      }
+      for (const pre of [null, 4]) {
+        expect(gateDoc(landings(effort), ctxAt(pre)), `${effort} ${pre}`).toEqual({ doc: landings(effort), swaps: [], blocked: [] });
+        expect(gateDoc(pressDoc(effort), ctxAt(pre)), `${effort} ${pre}`).toEqual({ doc: pressDoc(effort), swaps: [], blocked: [] });
+      }
+    }
   });
 
   it("the day's own swap never stands in a jump past the frontier: the next alternate does", () => {

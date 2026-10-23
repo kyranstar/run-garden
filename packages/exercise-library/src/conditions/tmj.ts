@@ -6,7 +6,8 @@ import type { Attrs, AttributeSpec, CheckReading, ConditionProfile, EntryFlags, 
 // TMJ: jaw clenching, neck load, and lying face down. The rules began as the standalone tool's. On 2026-10-23, after an
 // evidence review (the BMJ 2023 TMD guideline, OPPERA, systematic reviews) found no published evidence that heavy
 // lifting or bracing, overhead pressing, jumping and running, face-down positions or neck loading cause or worsen TMD,
-// they were relaxed: a top-clench move is build's, in sets with rest; overhead pressing and jumps need no calm check;
+// they were relaxed: a top-clench move is build's, in sets with rest; overhead pressing and jumps need no calm check
+// (both sit out a flare day — an answered check of HIGH_PRE or more — in every mode, the owner's approved intent);
 // recovery takes face-down positions (a flare day stays flare-safe); neck and posture care work is never held to the
 // neck-load caps; build reads how the jaw answered the last session (a 24-hour response rule); a rotated-out move may
 // come back. What the review did support — a soft jaw through effort, neck and posture training, breathing — leads the
@@ -17,7 +18,10 @@ const ID = "tmj";
 const FLAG = "clenched";
 /** A symptom rise this big (post − pre) makes a session rough. */
 const SYMPTOM_RISE = 2;
-/** A check this high is a flare: the jaw is up today. Recovery and the hold rule draw this line, and build opens below it. */
+/**
+ * A check this high is a flare: the jaw is up today. Recovery and the hold rule draw this line, build opens below it, and
+ * jumps and overhead pressing sit out at or above it in every mode.
+ */
 const HIGH_PRE = 5;
 /** The most a flare-safe move may rate. */
 const FLARE_SAFE = { clench: 1, neckLoad: 1, faceDown: false } as const;
@@ -111,6 +115,8 @@ function neckCare(ex: ExerciseRecord): boolean {
   return roles.some((r) => (CARE.block.roles as readonly string[]).includes(r)) || primary.includes(NECK_CARE_MUSCLE);
 }
 
+/** A flare reading: an answered check at the flare line. A check not answered yet is none (the day stays open). */
+const flareReading = (r: CheckReading): boolean => r.pre != null && r.pre >= HIGH_PRE;
 const checkOf = (s: SessionChecks | null | undefined): CheckReading | null => (s && s.checks ? s.checks[ID] ?? null : null);
 const flagged = (e: EntryFlags | null | undefined): boolean => Boolean(e && Array.isArray(e.flags) && e.flags.includes(FLAG));
 const flaggedCount = (s: HistorySession): number => (s.entries || []).filter(e => flagged(e)).length;
@@ -162,11 +168,12 @@ function describeRules(): RuleLine[] {
     i === 0 ? `${pct(care.share[m])} of a ${m} session (${care.min[m]}–${care.max[m]} moves)` : `${pct(care.share[m])} of a ${m} one (${care.min[m]}–${care.max[m]})`,
   );
   const neckWork = `Neck and posture care work (a "${care.label}" move, or one working the ${label(NECK_CARE_MUSCLE).toLowerCase()}) is never held to the neckLoad caps.`;
+  const flareGate = `in every mode on a flare day — today's check of ${HIGH_PRE} or more (a day with no check yet stays open)`;
   return [
     { rule: "attributes", text: `a move with no rating for this profile. Every library move is rated ${list(ratings)}.` },
     { rule: "never", text: "a move whose rating can't be read — a value missing or off its scale — in every workout." },
-    { rule: "allowPattern", text: "overhead pressing (the push-v pattern) in recovery mode." },
-    { rule: "allowRecord", text: "plyometric moves (jumps, hops, bounds, landings) in recovery mode or while the athlete feels off." },
+    { rule: "allowPattern", text: `overhead pressing (the push-v pattern) in recovery mode, and ${flareGate}.` },
+    { rule: "allowRecord", text: `plyometric moves (jumps, hops, bounds, landings) in recovery mode or while the athlete feels off, and ${flareGate}.` },
     { rule: "fitsMode", text: `a move above its mode's caps: ${MODE_IDS.map((m) => `${m} — ${caps(MODE_CAPS[m])}`).join("; ")}. ${neckWork} Cue a face-down move: ${FACE_DOWN_CUE}.` },
     { rule: "fitsFormat", text: `a move above its format's clench cap: ${[...formatCaps].map(([cap, fs]) => `clench ≤ ${cap} in ${list(fs.map((f) => FORMAT_WORDS[f]))}`).join("; ")}. Cue a clench ${topClench()} move: ${EFFORT_CUE}.` },
     { rule: "flare", text: `on a flare day — a check of ${HIGH_PRE} or more — a move that isn't flare-safe (flare-safe: ${caps(FLARE_SAFE)}).` },
@@ -195,14 +202,22 @@ export const TMJ: ConditionProfile = {
     return r.clench <= cap.clench && (r.neckLoad <= cap.neckLoad || (ex != null && neckCare(ex))) && (!r.faceDown || cap.faceDown);
   },
   fitsFormat: (a, formatId) => read(a).clench <= (FORMAT_CAPS[formatId] ?? -1),
-  // Overhead pressing on any day above recovery.
-  allowPattern: (pattern, mode) => pattern !== "push-v" || mode !== "recovery",
-  // Jumps, hops, bounds and landings on any day above recovery, unless the athlete feels off.
-  allowRecord: (ex, mode, today) => !isPlyometric(ex) || (mode !== "recovery" && !today.feelingOff),
+  // Overhead pressing on any day above recovery, unless it is a flare day (in any mode: an override or a planned day
+  // above recovery is still one). A day with no check yet is no flare day.
+  allowPattern: (pattern, mode, today) => pattern !== "push-v" || (mode !== "recovery" && !flareReading(today)),
+  // Jumps, hops, bounds and landings on any day above recovery, unless the athlete feels off or it is a flare day.
+  allowRecord: (ex, mode, today) => !isPlyometric(ex) || (mode !== "recovery" && !today.feelingOff && !flareReading(today)),
+  // The words for both rules: a jump the record rule holds back, an overhead press the pattern rule does.
   recordReason(ex, mode, today) {
-    if (!isPlyometric(ex)) return null;
-    if (mode === "recovery") return "Jumps sit out a recovery day.";
-    if (today.feelingOff) return "Jumps sit out while you're feeling off.";
+    if (isPlyometric(ex)) {
+      if (mode === "recovery") return "Jumps sit out a recovery day.";
+      if (today.feelingOff) return "Jumps sit out while you're feeling off.";
+      if (flareReading(today)) return "Jumps sit out a flare day.";
+    }
+    if (Array.isArray(ex.patterns) && ex.patterns.includes("push-v")) {
+      if (mode === "recovery") return "Overhead pressing sits out a recovery day.";
+      if (flareReading(today)) return "Overhead pressing sits out a flare day.";
+    }
     return null;
   },
   // A block's lift plays on consistent days too: a top-clench move (build's only) is never one.
@@ -214,8 +229,8 @@ export const TMJ: ConditionProfile = {
     const r = read(a);
     return r.clench <= FLARE_SAFE.clench && r.neckLoad <= FLARE_SAFE.neckLoad && (!r.faceDown || FLARE_SAFE.faceDown);
   },
-  // The jaw is up today: the line recovery and the hold rule draw.
-  flare: (r) => r.pre != null && r.pre >= HIGH_PRE,
+  // The jaw is up today: the line recovery, the hold rule and the jumps' and overhead pressing's flare gate draw.
+  flare: flareReading,
 
   recoveryReason(ctx) {
     const pre = ctx.reading.pre;
