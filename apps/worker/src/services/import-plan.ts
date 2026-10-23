@@ -630,8 +630,9 @@ export async function importPlanSnapshot(
    *    scheduled, and not app-built (a program slot has its own rule, 3-R9 above);
    *  - the wire workout carries a name the row's OWN verified coach write stamped (`ownCoachStamps`; a stamp is unique
    *    plan-wide by the create's own guard), in the COROS plan of the row's address;
-   *  - the row's recorded address is served by no workout of this read, and no row at all claims the new one — so a copy
-   *    the athlete made beside the original (two carriers, the original still at its address) is never taken;
+   *  - the row's recorded address is served by no workout of this read, its recorded day inside the read's window (so
+   *    the absence is evidence, as rule 8 reads it), and no row at all claims the new one — so a copy the athlete made
+   *    beside the original (two carriers, the original still at its address) is never taken;
    *  - on the row's day, with the steps the row last observed there (`watchCopyBase`: under a Keep mark, what it kept);
    *  - exactly one such row.
    * Anything short of that goes the way it always went (a new row, and the mirror dedupe), so the dedupe decides every
@@ -659,6 +660,9 @@ export async function importPlanSnapshot(
         !followedRows.has(w.id) &&
         w.sourceWorkoutId !== w.id &&
         !servedAddresses.has(w.sourceWorkoutId) &&
+        // Absent only where this read looks: its recorded day inside the window (rule 8's own test of absence).
+        w.lastVerifiedCorosDate >= input.rangeStart &&
+        w.lastVerifiedCorosDate <= input.rangeEnd &&
         w.sourceWorkoutId.split(":")[0] === src.sourcePlanId &&
         w.effectiveDate === src.date &&
         watchCopyBase(w.sourceContentFingerprint) === src.contentFingerprint

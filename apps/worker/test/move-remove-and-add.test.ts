@@ -62,7 +62,7 @@ async function account(): Promise<Account> {
   return { db, userId, prefs, server, today: todayInZone(prefs.timezone) };
 }
 
-async function readAndImport(a: Account): Promise<void> {
+async function readAndImport(a: Account, window: { from: string; to: string } = { from: addDays(a.today, -40), to: addDays(a.today, 80) }): Promise<void> {
   const normalized = normalizeCorosSchedule(a.server.state.schedule);
   await importPlanSnapshot(
     a.db,
@@ -75,8 +75,8 @@ async function readAndImport(a: Account): Promise<void> {
         ...(normalized.planEnd ? { endDate: normalized.planEnd } : {}),
       },
       workouts: normalized.workouts,
-      rangeStart: addDays(a.today, -40),
-      rangeEnd: addDays(a.today, 80),
+      rangeStart: window.from,
+      rangeEnd: window.to,
       source: "fixture",
     },
     a.prefs,
@@ -274,6 +274,21 @@ describe("a remove-and-add move re-keys the planned row (review A5)", () => {
       (w) => w.sourceIdInPlan === String(next),
     );
     expect(copies.map((w) => w.archiveReason), "minted, and archived as the coach row's mirror — as it always was").toEqual(["duplicate_mirror"]);
+  });
+
+  it("…nor where the read does not look: a row whose recorded day is outside the read's window is not absent from it", async () => {
+    const a = await account();
+    const { id, date } = await coachLongRun(a);
+    const before = await rowOf(a, id);
+    const toDate = addDays(date, 2);
+    await moveByRemoveAndAdd(a, id, toDate);
+    // The verified result never applied: the row still records the original placement, on the original day.
+    await a.db
+      .update(schema.plannedWorkouts)
+      .set({ sourceWorkoutId: before.sourceWorkoutId, sourceIdInPlan: before.sourceIdInPlan, sourceProgramId: before.sourceProgramId, lastVerifiedCorosDate: date })
+      .where(eq(schema.plannedWorkouts.id, id));
+    await readAndImport(a, { from: addDays(date, 1), to: addDays(a.today, 80) });
+    expect((await rowOf(a, id)).sourceWorkoutId, "not followed on a read that can't see its day").toBe(before.sourceWorkoutId);
   });
 
   it("…nor a copy whose steps differ: an edited workout is not the session's own copy", async () => {
