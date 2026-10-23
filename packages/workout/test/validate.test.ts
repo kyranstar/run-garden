@@ -757,17 +757,20 @@ describe("care_share (Task 13, A10): a cared-for profile's care part, measured a
     expect(share(one1("develop"))).toEqual([]);
     // 41 minutes with no care move in the care part: under every effort's share, each named.
     const long = [...OTHER, part("main", "holds", [hold("childHands", 285), hold("catCow", 285), hold("figureFour", 285), hold("legsUp", 285)])];
-    const none = (effort: WorkoutDoc["intent"]["effort"]) => share(recoverWith([hold("breath", 45)], effort, long))[0]?.message;
+    const none = (effort: WorkoutDoc["intent"]["effort"]) => share(recoverWith([hold("physiologicalSigh", 45)], effort, long))[0]?.message;
     expect(none("maintain")).toMatch(/^Jaw care is 0 of 41 minutes \(0%\); a Maintain day gives it about 10% — about 4 minutes, 1–3 moves\./);
     expect(none("peak")).toMatch(/^Jaw care is 0 of 41 minutes \(0%\); a Peak day gives it about 7% — about 3 minutes, 1–3 moves\./);
   });
 
   it("counts only the moves made for that care, wherever they are — and says which in the care part are not", () => {
-    // Breathing for the jaw in the care part is no care move: it isn't counted, and it is named.
-    const breathOnly = recoverWith([hold("breath", 105), hold("rocabado", 45)]);
+    // A breathing drill the care block doesn't take (since 2026-10-23 it takes the slow breathing pieces — jaw reset
+    // breathing, 90-90 breathing, the down-regulation flow — but not the sigh) is no care move: not counted, and named.
+    const breathOnly = recoverWith([hold("physiologicalSigh", 105), hold("rocabado", 45)]);
     expect(share(breathOnly)[0]!.message).toBe(
-      "Jaw care is 1 of 23 minutes (4%); a Recover day gives it about 27% — about 6 minutes, 3–6 moves. Only jaw care moves count: Jaw reset breathing isn't one.",
+      "Jaw care is 1 of 23 minutes (4%); a Recover day gives it about 27% — about 6 minutes, 3–6 moves. Only jaw care moves count: Physiological sigh isn't one.",
     );
+    // Jaw reset breathing is a care move now: counted.
+    expect(share(recoverWith([hold("breath", 105), hold("rocabado", 45)]))[0]!.message).toMatch(/^Jaw care is 3 of 23 minutes \(13%\);/);
     // A care move in the cool-down counts toward the share: 2 in the care part and 4 there, of 21 minutes (2 alone is under).
     const spread = docOf([OTHER[0]!, part("care", "holds", [hold("rocabado", 105)]), part("cooldown", "holds", [hold("figureFour", 285), hold("jawMassage", 225)])], "recover");
     expect(share(spread)).toEqual([]);
@@ -793,7 +796,7 @@ describe("care_share (Task 13, A10): a cared-for profile's care part, measured a
     expect(minutesIn(recoverWith([hold("rocabado", 45), rest(60), hold("jawMassage", 45)]))).toEqual([3, 23]);
     expect(minutesIn(recoverWith([hold("rocabado", 45), hold("jawMassage", 45), rest(60)]))).toEqual([3, 23]);
     // A rest that leads into a move that is no care, or that opens the part, is not care's.
-    expect(minutesIn(recoverWith([hold("rocabado", 45), rest(60), hold("breath", 45)]))).toEqual([1, 23]);
+    expect(minutesIn(recoverWith([hold("rocabado", 45), rest(60), hold("physiologicalSigh", 45)]))).toEqual([1, 23]);
     expect(minutesIn(recoverWith([rest(60), hold("rocabado", 45)]))).toEqual([1, 22]);
   });
 

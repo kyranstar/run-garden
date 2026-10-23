@@ -79,6 +79,12 @@ const MODE_CAPS: Record<Mode, { clench: number; neckLoad: number; faceDown: bool
 /** The most clenching each format tolerates: least where the work runs on without rest. */
 const FORMAT_CAPS: Record<FormatId, number> = { straight: 3, superset: 3, circuit: 1, ladder: 1, flow: 1, holds: 2 };
 
+/**
+ * The care block takes the library's moves with its role. Since 2026-10-23 that is jaw exercise beside what the review
+ * supported most — neck and posture training (chin nods, wall angels, door openers, band pull-aparts, thoracic
+ * extension) and breathing / down-regulation (jaw reset and 90-90 breathing, the 2–3 minute down-regulation flow) —
+ * roles given to existing moves; the block's size is unchanged.
+ */
 const CARE: NonNullable<ConditionProfile["care"]> = {
   block: {
     label: "Jaw care",

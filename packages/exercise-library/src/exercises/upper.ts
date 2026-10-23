@@ -157,7 +157,7 @@ export const UPPER = defineExercises([
     family: "scapular",
     patterns: ["pull-h"],
     regions: ["upper-back", "shoulders"],
-    roles: ["activation", "accessory"],
+    roles: ["activation", "accessory", "jaw-care"],
     equipment: { all: ["band"] },
     position: "standing",
     laterality: "bilateral",

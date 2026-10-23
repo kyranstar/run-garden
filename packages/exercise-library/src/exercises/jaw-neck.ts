@@ -415,7 +415,7 @@ export const JAW_NECK = defineExercises([
     family: "scapularMobility",
     patterns: ["mobility"],
     regions: ["upper-back", "shoulders", "thoracic"],
-    roles: ["warmup", "activation", "mobility"],
+    roles: ["warmup", "activation", "mobility", "jaw-care"],
     equipment: { all: ["wall"] },
     position: "standing",
     laterality: "bilateral",

@@ -393,11 +393,16 @@ function fillTimed(block: BlockId, budget: number, ctx: Ctx, group: Group | null
     const prevPosition = items.length ? items[items.length - 1]!.exercise.position : null;
     const ranked = Select.rank(ctx.data, pool, { ...ctx, prevPosition, coreRegions: block === "prep" ? ctx.coreRegions : null });
     let picked: { item: Item; cost: number } | null = null;
+    // A minimum item takes the best-ranked one that fits, or the week's new move when it ranks first, else the
+    // best-ranked (2026-10-23: the engine's behaviour changed on purpose, and this frozen copy changed with it in step).
+    let forced: { item: Item; cost: number } | null = null;
     for (const r of ranked) {
       const item = makeItem(r, block, slotKey, formatId, ctx);
       const cost = costOf(windows(item, formatId));
-      if (spent + cost <= budget || items.length < min) { picked = { item, cost }; break; }
+      if (spent + cost <= budget || (items.length < min && r.isNew)) { picked = { item, cost }; break; }
+      if (items.length < min && !forced) forced = { item, cost };
     }
+    picked ??= forced;
     if (!picked) break;
     items.push(picked.item);
     ctx.used.add(picked.item.exercise.id);

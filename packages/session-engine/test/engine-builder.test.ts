@@ -231,6 +231,24 @@ test("the weekly new move is guaranteed whenever a never-done move fits a slot, 
   expect(missed).toEqual([]);
 });
 
+test("a block's first move keeps to the block's share when one fits it — a short session's care block never takes the long breathing piece over a move that fits", () => {
+  // Every move done before, so none is the week's new move (which keeps its place, above): the share decides.
+  const done = allDoneBut();
+  let checked = 0;
+  for (const loc of PLACES) for (const mode of ["consistent", "build"] as const) for (const minutes of [15, 20]) {
+    for (const theme of data.themes.filter(t => t.modes.includes(mode))) {
+      const plan = Builder.build(data, input({ sessions: done, mode, theme, minutes, location: loc }));
+      const share = (data.skeleton.shares[mode].care ?? 0) * minutes * 60;
+      const care = plan.items.filter(i => i.block === "care");
+      const secs = plan.steps.filter(s => care.some(i => i.slotKey === s.slotKey)).reduce((n, s) => n + s.seconds + (s.prepGap || 0), 0);
+      expect(care.length, `${loc.id} ${mode} ${minutes} ${theme.id}`).toBeGreaterThanOrEqual(1);
+      expect(secs, `${loc.id} ${mode} ${minutes} ${theme.id}: ${care.map(i => i.exercise.id).join(", ")}`).toBeLessThanOrEqual(share);
+      checked += 1;
+    }
+  }
+  expect(checked).toBeGreaterThan(30);
+});
+
 test("going slightly over budget shrinks the plan a little instead of dropping whole blocks", () => {
   // This session used to land 17 s over budget and lose its entire accessory superset (and its new move).
   const plan = Builder.build(data, input({ sessions: allDoneBut("deadBug"), theme: themeById("deskUnwind"), minutes: 15 }));
