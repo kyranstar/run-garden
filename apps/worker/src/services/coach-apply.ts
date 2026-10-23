@@ -1974,6 +1974,12 @@ export interface StructuralChunkInput {
   now: Date;
   /** The athlete's preferences: their zone (today), watch writes, units, day windows. */
   prefs: UserPreferences;
+  /**
+   * A training line's "Stop this plan" retiring one of its phases: a phase whose last day has passed (by the account's
+   * today, not the page's — a page left open overnight keeps yesterday's) is left as it is, done with nothing changed.
+   * Retired, it would leave Past plans and the garden's credit for finishing it (B2).
+   */
+  stopping?: boolean;
 }
 
 /**
@@ -2005,6 +2011,8 @@ interface Chunk {
   writesOn: boolean;
   budget: number;
   spent: number;
+  /** `StructuralChunkInput.stopping`. */
+  stopping: boolean;
 }
 
 type StepResult = { p: StructuralProgress; stalled?: true } | { refused: string };
@@ -2026,13 +2034,23 @@ export async function applyStructuralChunk(db: Db, input: StructuralChunkInput):
     writesOn: input.prefs.corosWritesEnabled ?? false,
     budget: input.budget,
     spent: 0,
+    stopping: input.stopping ?? false,
   };
   let p: StructuralProgress = input.progress ? { ...input.progress } : { step: "start", done: 0 };
+  // A chunk taking over part way (B3): a plan stopped since its first chunk takes no more of it — the stop archived
+  // what it had added, and this would add after it. Its first step reads the plan itself (`checkPlan`, extendPlan's own).
+  if (p.step !== "start" && p.step !== "done" && op.kind !== "retirePlan" && op.kind !== "resolveRaceConflict") {
+    const why = await planStoppedOrGone(k, op);
+    if (why) return { status: "refused", reason: why, spent: k.spent };
+  }
+  // The read above is not a unit of the op's: the call's first unit still runs whatever it costs, so a small budget
+  // still moves the op on.
+  const base = k.spent;
   // Bounded: every step either moves on or stalls, and a call's budget ends it long before this.
   for (let steps = 0; steps < 1000; steps++) {
     if (p.step === "done") return { status: "done", spent: k.spent, summary: structuralSummary(op, p) };
-    if (k.spent > 0 && k.spent >= k.budget) break;
-    const r = await structuralStep(k, op, p, k.spent === 0);
+    if (k.spent > base && k.spent >= k.budget) break;
+    const r = await structuralStep(k, op, p, k.spent === base);
     if ("refused" in r) return { status: "refused", reason: r.refused, spent: k.spent };
     p = r.p;
     if (r.stalled) break;
@@ -2048,6 +2066,42 @@ const PLAN_GONE: Record<Exclude<StructuralOp["kind"], "createPlan" | "resolveRac
   firmUp: "That plan isn't there any more, so no sessions were added.",
   reshapeWeek: "That plan isn't there any more, so the week was left as it was.",
 };
+
+/**
+ * Why an op that shapes a plan did nothing to one the athlete stopped (B3, as a retired programme refuses its change):
+ * a suggestion made before the Stop, approved after it — or a chunk part way when it ran — would bring sessions back
+ * onto a plan the athlete ended. A retire stays idempotent: it is never refused for this.
+ */
+const PLAN_STOPPED: Record<Exclude<StructuralOp["kind"], "resolveRaceConflict" | "retirePlan">, string> = {
+  // A new plan stopped while its sessions were still going in (it is on the Plan from its first chunk).
+  createPlan: "That plan was stopped, so no more sessions were added.",
+  extendPlan: "That plan was stopped, so it wasn't extended.",
+  windDown: "That plan was stopped, so nothing was eased down.",
+  firmUp: "That plan was stopped, so no sessions were added.",
+  reshapeWeek: "That plan was stopped, so the week was left as it was.",
+};
+
+/** A plan's status, as a refusal: stopped (any op but a retire). Null while it may be shaped. */
+function planStopped(op: StructuralOp, plan: { status: string }): string | null {
+  return plan.status === "retired" && op.kind !== "retirePlan" && op.kind !== "resolveRaceConflict" ? PLAN_STOPPED[op.kind] : null;
+}
+
+/**
+ * A chunk taking an op over part way: its plan read again (one statement), the refusal when it may no longer be shaped
+ * — stopped, or gone (a new plan's own row too). Null for an op that names no plan, a retire, and a plan that may be.
+ */
+async function planStoppedOrGone(k: Chunk, op: StructuralOp): Promise<string | null> {
+  if (op.kind === "retirePlan" || op.kind === "resolveRaceConflict") return null;
+  const planId = op.kind === "createPlan" ? `cp-${k.proposalId}-${k.opIndex}` : op.planId;
+  const [plan] = await k.db
+    .select({ status: coachPlans.status })
+    .from(coachPlans)
+    .where(and(eq(coachPlans.id, planId), eq(coachPlans.userId, k.userId)))
+    .limit(1);
+  k.spent += 1;
+  if (!plan) return op.kind === "createPlan" ? "That plan isn't there any more, so no more sessions were added." : PLAN_GONE[op.kind];
+  return planStopped(op, plan);
+}
 
 async function structuralStep(k: Chunk, op: StructuralOp, p: StructuralProgress, first: boolean): Promise<StepResult> {
   const sessionIdOf = (n: number) => `cw-${k.proposalId}-${k.opIndex}-${n}`;
@@ -2140,12 +2194,14 @@ async function structuralStep(k: Chunk, op: StructuralOp, p: StructuralProgress,
       if (p.step === "start") {
         if (!may(k, 1 + 2 + 1, first)) return { p, stalled: true };
         const [plan] = await k.db
-          .select({ name: coachPlans.name, endDate: coachPlans.endDate })
+          .select({ name: coachPlans.name, endDate: coachPlans.endDate, status: coachPlans.status })
           .from(coachPlans)
           .where(and(eq(coachPlans.id, op.planId), eq(coachPlans.userId, k.userId)))
           .limit(1);
         k.spent += 1;
         if (!plan) return { refused: PLAN_GONE.extendPlan };
+        const stopped = planStopped(op, plan);
+        if (stopped) return { refused: stopped };
         const lastEnd = addDays(op.shapeWeeks.map((w) => w.weekStart).sort().at(-1)!, 6);
         const stmts = [
           ...shapeWeekStatements(k, op.planId, op.shapeWeeks),
@@ -2179,7 +2235,11 @@ async function structuralStep(k: Chunk, op: StructuralOp, p: StructuralProgress,
   return { p: { step: "start", done: 0 } };
 }
 
-/** The plan an op names, the athlete's: its name kept for the summary, or the op refused in words. One read. */
+/**
+ * The plan an op names, the athlete's: its name kept for the summary, or the op refused in words — gone, or stopped
+ * (any op but a retire, B3). A Stop's retire of a phase that has already ended is done there, nothing changed (B2).
+ * One read.
+ */
 async function checkPlan(
   k: Chunk,
   op: Extract<StructuralOp, { planId: string }>,
@@ -2190,12 +2250,15 @@ async function checkPlan(
 ): Promise<StepResult> {
   if (!may(k, 1, first)) return { p, stalled: true };
   const [plan] = await k.db
-    .select({ name: coachPlans.name })
+    .select({ name: coachPlans.name, status: coachPlans.status, endDate: coachPlans.endDate })
     .from(coachPlans)
     .where(and(eq(coachPlans.id, planId), eq(coachPlans.userId, k.userId)))
     .limit(1);
   k.spent += 1;
   if (!plan) return { refused: PLAN_GONE[op.kind] };
+  const stopped = planStopped(op, plan);
+  if (stopped) return { refused: stopped };
+  if (k.stopping && op.kind === "retirePlan" && plan.endDate < k.today) return { p: { ...p, step: "done", done: 0, name: plan.name, ended: true } };
   return { p: { ...p, step: next, done: 0, name: plan.name } };
 }
 
@@ -2508,6 +2571,7 @@ function structuralSummary(op: StructuralOp, p: StructuralProgress): string {
       return (n > 0 ? `Eased ${name} down with ${countOf(n, "gentler session")}` : `Eased ${name} down`) + passedNote(p);
     }
     case "retirePlan":
+      if (p.ended === true) return `${name} had already ended, so it was left as it was`;
       return archived > 0 ? `Retired ${name} and took ${countOf(archived, "session")} off your plan` : `Retired ${name}`;
     case "extendPlan":
       return `Extended ${name} by ${countOf(op.shapeWeeks.length, "week")}`;

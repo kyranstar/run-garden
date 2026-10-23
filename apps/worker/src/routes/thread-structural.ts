@@ -199,6 +199,8 @@ export async function retireInChunks(
   prefs: UserPreferences,
   receipt: (body: string) => Promise<void>,
   words: string | null = RETIRED_RECEIPT,
+  /** A training line's Stop (`?stop=`): a phase that has ended by the account's today is left as it is (B2). */
+  stopping = false,
 ): Promise<Response> {
   const db = c.get("db");
   const userId = c.get("userId");
@@ -211,6 +213,7 @@ export async function retireInChunks(
     budget: RETIRE_CHUNK_BUDGET,
     now: new Date(),
     prefs,
+    stopping,
   });
   // A tap on "retire" against a plan that is not there is a 404, not a receipt saying it was retired.
   if (r.status === "refused") return c.json({ error: "not_found" }, 404);
