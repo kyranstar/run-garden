@@ -16,6 +16,8 @@ const NOW = Date.parse("2026-10-23T12:00:00.000Z");
 const status = (over: Partial<SavesStatusDto> = {}): SavesStatusDto => ({
   state: "ok",
   lastCheckAt: "2026-10-23T09:00:00.000Z",
+  lastImportAt: "2026-10-21T09:00:00.000Z",
+  totals: { moves: 12, posts: 5 },
   checks: [],
   posts: [
     { id: "p1", key: "k1", url: "https://example.com/p/k1", creator: { handle: "someone", name: "Some One" }, status: "filtered_out", reason: "not a workout", updatedAt: "2026-10-22T00:00:00.000Z" },
@@ -73,6 +75,25 @@ describe("SavesSection", () => {
     await flush();
     expect(host.textContent).toContain("Saves");
     expect(host.textContent).toContain("Last check 8 days ago");
+  });
+
+  it("says when the last import was (its batch, not the check) and what it brought", async () => {
+    await mount({ status: 200, body: status() });
+    await flush();
+    expect(host.textContent).toContain("Last import 2 days ago · 12 moves from 5 posts");
+  });
+
+  it("says one move from one post in the singular", async () => {
+    await mount({ status: 200, body: status({ totals: { moves: 1, posts: 1 } }) });
+    await flush();
+    expect(host.textContent).toContain("Last import 2 days ago · 1 move from 1 post");
+  });
+
+  it("says when the last check was while nothing has been imported yet", async () => {
+    await mount({ status: 200, body: status({ lastImportAt: null, totals: { moves: 0, posts: 0 } }) });
+    await flush();
+    expect(host.textContent).toContain("Last check today");
+    expect(host.textContent).not.toContain("Last import");
   });
 
   it("says Paused — import budget when the state is paused_budget", async () => {

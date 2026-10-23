@@ -1,6 +1,6 @@
 /**
- * App Settings -> Coach & AI -> Saves: one row that says what the saved-posts import did ("Last import 2 days ago",
- * "Last check 8 days ago" once a week has passed, "Paused — import budget"), opening a sheet of the posts: who, where
+ * App Settings -> Coach & AI -> Saves: one row that says what the saved-posts import did ("Last import 2 days ago · 12
+ * moves from 5 posts", "Last check 8 days ago" once a week has passed, "Paused — import budget"), opening a sheet of the posts: who, where
  * each stands and why, the link, and Process anyway / Retry where they apply.
  *
  * The section shows nothing unless the status read answers 200: the feature off is a 404, and no error is shown.
@@ -28,7 +28,9 @@ const STATUS_WORD: Record<SavePostStatus, string> = {
   reference_only: "Reference only",
 };
 
-/** The row's one line. */
+const count = (n: number, one: string) => `${n.toLocaleString()} ${n === 1 ? one : `${one}s`}`;
+
+/** The row's one line. "Last import" is dated by the newest batch, never by the check that found nothing new. */
 export function savesLine(s: SavesStatusDto, now: Date): string {
   if (s.state === "paused_budget") return "Paused — import budget";
   if (!s.lastCheckAt) return "No checks yet";
@@ -37,7 +39,8 @@ export function savesLine(s: SavesStatusDto, now: Date): string {
   if (s.state === "login_needed") return "Needs a new login";
   if (s.state === "feed_changed") return "Needs an extension update";
   if (s.state === "error") return `Last check failed ${ageText(s.lastCheckAt, now)}`;
-  return `Last import ${ageText(s.lastCheckAt, now)}`;
+  if (!s.lastImportAt) return `Last check ${ageText(s.lastCheckAt, now)}`;
+  return `Last import ${ageText(s.lastImportAt, now)} · ${count(s.totals.moves, "move")} from ${count(s.totals.posts, "post")}`;
 }
 
 const creatorOf = (p: PostRowDto) => p.creator.name || p.creator.handle || "Unknown";
