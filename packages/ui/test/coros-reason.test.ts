@@ -3,7 +3,7 @@
  * its sync state, so a just-approved designed run read "Syncing" beside "COROS has never been given it", and a failed
  * create never said it failed. Each state, said for what it is; a dated one as it always was.
  */
-import { describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { corosReasonSentence } from "../src/screens/plan.js";
 
 const never = (syncView: string) => corosReasonSentence({ syncView, lastVerifiedCorosDate: "", effectiveDate: "2026-10-20" });
@@ -24,6 +24,15 @@ describe("never on the watch", () => {
 });
 
 describe("on the watch on another day: as it always was", () => {
+  // A day in another year names its year, so these read in 2026 (red from 2027-01-01 on the real clock). Date only.
+  beforeEach(() => {
+    vi.useFakeTimers({ toFake: ["Date"] });
+    vi.setSystemTime(new Date("2026-10-19T12:00:00Z"));
+  });
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+
   it("each dated state names both days or the one COROS still shows", () => {
     expect(dated("needs_attention")).toBe("COROS has this on Monday, October 19; Run Garden has Tuesday, October 20.");
     expect(dated("calendar_only")).toBe("Your COROS watch still has this on Monday, October 19 — this move hasn't been written to COROS.");
