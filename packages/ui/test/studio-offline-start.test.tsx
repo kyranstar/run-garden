@@ -25,6 +25,7 @@ import { enqueue, outboxEntries } from "../src/offline/outbox.js";
 import { loadExtras } from "../src/player/stored.js";
 import { forgetOfflineIdentity } from "../src/offline/me.js";
 import { DEVICE_PREFS, libraryDto, placesDto, primedClient, profileDto, todayDto, TODAY, type Primed } from "./studio-fixtures.js";
+import { useCheckGatedTmj } from "./check-gated-profile.js";
 
 (globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
 
@@ -435,6 +436,8 @@ describe("what an offline start needs kept on the device (R11 fix round 1)", () 
 });
 
 describe("judged offline as the server would (R11)", () => {
+  // A gate the check reads: TMJ's until 2026-10-23, a stand-in's since (`CHECK_GATED`).
+  useCheckGatedTmj();
   /** A press the jaw's flare keeps out, at develop effort. */
   const pressDoc = docOf("Press day", "develop", "halfKneelingPress");
   /** What this device kept of Today: yesterday's, its jaw read calm then. */

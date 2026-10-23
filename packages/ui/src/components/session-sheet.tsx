@@ -76,7 +76,7 @@ export function blockLabel(blockId: string, moves: ReadonlyArray<{ contraction?:
 }
 /**
  * The sheet's one reason line: the mode's reasons, then a hand-picked theme's own reasons. A theme picked by hand has
- * none unless today held its moves back (a jumping day on an uncalm check), and then they say why.
+ * none unless today held its moves back (a jumping day while feeling off), and then they say why.
  */
 export function reasonLine(view: {
   modeReasons: readonly string[];

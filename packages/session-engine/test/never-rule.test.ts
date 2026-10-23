@@ -5,21 +5,23 @@ import {
   type Block, type BuildInput, type BuildResult, type DayState, type EngineLocation, type HistorySession, type ProgramState,
 } from "../src/index.js";
 
-// The `never` rule at build level (spec §7, audit I3): the real library plus a clench-3 twin of every record.
-// Each twin is rated 👍, saved and never done, so ranking, the new-move guarantee and every swap path would pick
-// it first if anything let it through. No twin may reach a plan item, a step, an offered alternative, a block
-// lift, a graduation or a saved block.
+// The `never` rule at build level (spec §7, audit I3): the real library plus a twin of every record whose TMJ rating
+// `never` refuses. Since 2026-10-23 no rating on the scale is refused (a clench-3 move is build's, in sets with rest;
+// see top-clench.test.ts), so each twin's clench is off the scale (4) — a rating the profile can't read. Each twin is
+// rated 👍, saved and never done, so ranking, the new-move guarantee and every swap path would pick it first if
+// anything let it through. No twin may reach a plan item, a step, an offered alternative, a block lift, a graduation or
+// a saved block.
 
 const twinId = (id: string) => `never${id[0]!.toUpperCase()}${id.slice(1)}`;
 const twins: ExerciseRecord[] = EXERCISES.map(e => ({
   ...e, id: twinId(e.id), legacyIds: [], family: `never-${e.family}`, name: `Never ${e.name}`, harder: [], easier: [],
-  conditions: { ...e.conditions, tmj: { ...e.conditions.tmj!, clench: 3 } },
+  conditions: { ...e.conditions, tmj: { ...e.conditions.tmj!, clench: 4 } },
 }));
 const TWINS = new Set(twins.map(t => t.id));
 const library = [...EXERCISES, ...twins];
 const tmjData = makeEngineData({ activeProfiles: ["tmj"], careProfiles: ["tmj"], exercises: library });
-// TMJ stops clench 3 in several places (mode and format caps, core candidates) besides `never`. This variant keeps
-// only `never`, so these tests fail if any path stops consulting it.
+// TMJ stops an off-scale clench in several places (mode and format caps, core candidates) besides `never`. This
+// variant keeps only `never`, so these tests fail if any path stops consulting it.
 const neverOnly: ConditionProfile = {
   ...TMJ,
   fitsMode: () => true, fitsFormat: () => true, coreCandidate: () => true, blockAssignable: () => true, flareSafe: () => true,

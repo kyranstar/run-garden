@@ -41,20 +41,25 @@ test("a 4+ day gap rebuilds the habit first", () => {
   expect(r.reasons[0]).toMatch(/4 days/);
 });
 
-test("build when calm, clean, rested, and on track", () => {
+test("build when the jaw is steady, rested, and on track", () => {
   const r = mode({});
   expect(r.mode).toBe("build");
   expect(r.reasons[0]).toMatch(/3 sessions/);
-  expect(r.reasons[0]).toBe("Jaw calm (1) · 3 sessions in the last 7 days.");
+  expect(r.reasons[0]).toBe("Jaw steady (1) · 3 sessions in the last 7 days.");
   expect(mode({ pre: null }).mode).toBe("build");    // falls back to last session's post (1)
+  // The 24-hour response rule (2026-10-23): a jaw at 3, no worse than 2 above last session, is no bar to build; nor a
+  // flare earlier in the week, nor one move flagged last session.
+  expect(mode({ pre: 3 }).mode).toBe("build");
+  expect(mode({ sessions: [session(day(5), { pre: 6, post: 5 }), session(day(3)), session(day(1))] }).mode).toBe("build");
+  expect(mode({ sessions: [...calmWeek.slice(0, 2), session(day(1), { entries: [{ id: "a", clenched: true, sets: [] }] })] }).mode).toBe("build");
 });
 
 test("each build condition explains itself when it fails", () => {
-  expect(mode({ pre: 3 }).reasons[0]).toMatch(/calm jaw/);
-  const flared = [session(day(5), { pre: 6, post: 5 }), session(day(3)), session(day(1))];
-  expect(mode({ sessions: flared }).reasons[0]).toMatch(/flared/);
-  const unclean = [...calmWeek.slice(0, 2), session(day(1), { entries: [{ id: "a", clenched: true, sets: [] }] })];
-  expect(mode({ sessions: unclean }).reasons[0]).toMatch(/wasn't clean/);
+  expect(mode({ pre: 4 }).reasons[0]).toBe("Jaw/head is up 3 since last session — a steady day lets it settle.");
+  const endedHigh = [...calmWeek.slice(0, 2), session(day(1), { pre: 4, post: 5 })];
+  expect(mode({ pre: null, sessions: endedHigh }).reasons[0]).toBe("Jaw/head is at 5 — a steady day today; Develop and Peak open below 5.");
+  const noAfterCheck = [...calmWeek.slice(0, 2), session(day(1), { pre: 1, post: null })];
+  expect(mode({ pre: null, sessions: noAfterCheck }).reasons[0]).toBe("Log today's jaw check to open a Develop or Peak day.");
   const builtYesterday = [...calmWeek.slice(0, 2), session(day(1), { mode: "build" })];
   expect(mode({ sessions: builtYesterday }).reasons[0]).toMatch(/48 hours/);
   expect(mode({ sessions: calmWeek.slice(1) }).reasons[0]).toMatch(/consistency first/);

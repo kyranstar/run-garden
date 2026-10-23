@@ -14,7 +14,9 @@
  *   `date` is after its `today` is a future day (that day's check is unknown); any other day uses `day.readings`.
  *   The day's own `feelingOff` joins every profile's reading. A reading with neither a "before" number nor "feeling
  *   off" (null, absent, or only an "after") is unanswered — and unanswered means not allowed: a move a reading can
- *   close must pass both unanswered and at the profile's worst reading.
+ *   close must pass both unanswered and at the profile's worst reading. On the day itself the worst is the scale's top
+ *   number, the day's "feeling off" as the day says it (not said is not feeling off, as the engine reads the day,
+ *   2026-10-23); on a day ahead, nothing of the day is known, "feeling off" included.
  * - The workout's mode is `modeOfEffort(intent.effort)`. Every active profile is read through its contract only
  *   (`never`, `fitsMode`, `fitsFormat`, `allowPattern` per pattern, `allowRecord`, `flare`, the library's shared
  *   `recordFlareSafe`, `recoveryReason`, `buildChecks`) — this file never names a profile. A record with no rating for
@@ -139,6 +141,7 @@ import {
   EQUIPMENT,
   EQUIPMENT_IDS,
   MODES,
+  MODE_IDS,
   MUSCLES,
   REGIONS,
   UNANSWERED,
@@ -377,6 +380,28 @@ export function effortAdvice(
 }
 const patternOk = (p: ConditionProfile, rec: ExerciseRecord, mode: Mode, r: CheckReading): boolean => rec.patterns.every((pt) => p.allowPattern(pt, mode, r));
 const recordOk = (p: ConditionProfile, rec: ExerciseRecord, mode: Mode, r: CheckReading): boolean => !p.allowRecord || p.allowRecord(rec, mode, r);
+/** `gatesReadTheCheck`'s answers by profile and library (both fixed objects for a Worker's life). */
+const GATES_READ_THE_CHECK = new WeakMap<ConditionProfile, WeakMap<readonly ExerciseRecord[], boolean>>();
+
+/**
+ * Whether a profile has a gate an answered check today could open: a move of the library its pattern or record rules
+ * allow on the profile's calmest day but refuse on the day itself unanswered — as `validateWorkoutDoc` reads such a day
+ * (unanswered, or the scale's top number; not feeling off). Without one, an unanswered check closes nothing today, and
+ * asking the athlete for one opens nothing. Probed from the rules themselves, never from their words.
+ */
+export function gatesReadTheCheck(p: ConditionProfile, library: readonly ExerciseRecord[]): boolean {
+  let byLibrary = GATES_READ_THE_CHECK.get(p);
+  if (!byLibrary) GATES_READ_THE_CHECK.set(p, (byLibrary = new WeakMap()));
+  let known = byLibrary.get(library);
+  if (known === undefined) {
+    const best = bestDay(p);
+    const unknown: CheckReading[] = [UNANSWERED, { ...worstDay(p), feelingOff: false }];
+    const open = (rec: ExerciseRecord, m: Mode, r: CheckReading): boolean => patternOk(p, rec, m, r) && recordOk(p, rec, m, r);
+    known = library.some((rec) => attrsOf(rec, p) !== undefined && MODE_IDS.some((m) => open(rec, m, best) && unknown.some((r) => !open(rec, m, r))));
+    byLibrary.set(library, known);
+  }
+  return known;
+}
 /** A reading that says something: a "before" number, or "feeling off". */
 const answered = (r: CheckReading | null): r is CheckReading => r !== null && (r.pre != null || r.feelingOff);
 
@@ -459,7 +484,10 @@ export function validateWorkoutDoc(input: unknown, ctx: ValidateCtx): DocIssue[]
     if (phase === "any") return null;
     const r = readingOf(p);
     const why: GateFail["why"] = phase === "future" ? "pending" : "today";
-    for (const t of answered(r) ? [r] : [UNANSWERED, worstDay(p)]) {
+    // Today, an unanswered reading is not feeling off (the day would have said so, joined in `readingOf`): only its
+    // number is unknown. A day ahead knows nothing yet.
+    const worst = phase === "future" ? worstDay(p) : { ...worstDay(p), feelingOff: false };
+    for (const t of answered(r) ? [r] : [UNANSWERED, worst]) {
       if (!patternOk(p, rec, mode, t)) return { rule: "pattern", why };
       if (!recordOk(p, rec, mode, t)) return { rule: "record", why };
     }
@@ -488,7 +516,7 @@ export function validateWorkoutDoc(input: unknown, ctx: ValidateCtx): DocIssue[]
         out.push({ code: "condition_never", severity: "error", message: `${name} is never allowed with ${p.label}.` });
         continue;
       }
-      if (!p.fitsMode(a, mode)) out.push({ code: "condition_mode", severity: "warning", message: `${name} is more than ${p.label} allows on a ${dayWord} day.` });
+      if (!p.fitsMode(a, mode, rec)) out.push({ code: "condition_mode", severity: "warning", message: `${name} is more than ${p.label} allows on a ${dayWord} day.` });
       if (!p.fitsFormat(a, FORMAT_RULE[format])) out.push({ code: "condition_format", severity: "warning", message: `${name} doesn't suit ${FORMAT_WORDS[format]} with ${p.label}.` });
       const g = gate(p, rec);
       if (g?.why === "pending") out.push({ code: "condition_gate_pending", severity: "warning", message: "", pending: p });
@@ -515,7 +543,7 @@ export function validateWorkoutDoc(input: unknown, ctx: ValidateCtx): DocIssue[]
     limitsAgainst(rec, "recovery", "") === null &&
     profiles.every((p) => {
       const a = attrsOf(rec, p);
-      if (!a || p.never(a) || !p.fitsMode(a, "recovery")) return false;
+      if (!a || p.never(a) || !p.fitsMode(a, "recovery", rec)) return false;
       return [bestDay(p), UNANSWERED, worstDay(p)].every((r) => patternOk(p, rec, "recovery", r) && recordOk(p, rec, "recovery", r));
     });
 

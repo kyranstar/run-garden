@@ -23,6 +23,7 @@ import { draftStore } from "../src/studio-drafts.js";
 import { offlineDb } from "../src/offline/idb.js";
 import { loadExtras } from "../src/player/stored.js";
 import { DEVICE_PREFS, libraryDto, placesDto, primedClient, profileDto, todayDto, twoPlacesDto, TODAY, type Primed } from "./studio-fixtures.js";
+import { useCheckGatedTmj } from "./check-gated-profile.js";
 
 (globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
 
@@ -384,6 +385,8 @@ describe("Add a move", () => {
 // ── Errors block, with a Fix ───────────────────────────────────────────────
 
 describe("an error", () => {
+  // A gate the check opens: TMJ's until 2026-10-23, a stand-in's since (`CHECK_GATED`).
+  useCheckGatedTmj();
   it("keeps Start off — its reason Start's own description — and Fix swaps in the alternate and Start comes on", async () => {
     await draftStore().save(draft({ type: "setIntent", intent: { effort: "develop" } }, into(1, "halfKneelingPress", { alternates: [{ libraryId: "floorPress" }] })));
     serve();
@@ -538,6 +541,7 @@ describe("reordering", () => {
 // ── Start now ──────────────────────────────────────────────────────────────
 
 describe("Start now", () => {
+  useCheckGatedTmj();
   it("makes the workout for today, builds it, starts it, and opens the player — the builder now on that workout", async () => {
     await draftStore().save(draft(into(1, "gobletSquat")));
     const calls = serve();
@@ -764,6 +768,7 @@ describe("the footer", () => {
 // ── Fix round 1: focus never falls to the page ─────────────────────────────
 
 describe("focus", () => {
+  useCheckGatedTmj();
   const atRow = (p: number, i: number) => document.querySelector(`[data-at="${p}-${i}"]`);
 
   it("after a suggestion's ＋, on the move's new row", async () => {
@@ -911,6 +916,7 @@ const pressDoc = (title: string): WorkoutDoc => ({
 });
 
 describe("a planned workout that can't change, judged by today", () => {
+  useCheckGatedTmj();
   it("under way today, and today's check rules a move out: the note says so, but offers no Fix, and nothing waits to start", async () => {
     serve({ docs: [{ doc: pressDoc("Thursday press"), rev: 2 }], planned: [{ ...plannedRow("w1"), contentState: "started" } as WorkoutDto] });
     mount("/studio/build/workout/w1", { library: libraryDto({ tmj: true }), today: todayDto({ value: 3 }) });
@@ -921,12 +927,12 @@ describe("a planned workout that can't change, judged by today", () => {
     expect(text()).not.toContain("Fix the note above to start.");
     expect(startButton()).toBeNull();
     expect(document.querySelector(".stu-build-foot [hidden]")).toBeNull();
-    // Nothing here can be fixed, so nothing says "to fix": the count is of notes — the rule-out, and the Develop day's
-    // cost ("A Develop or Peak day needs a calm jaw…") — in the neutral style, and the rule-out is a note to a screen reader too.
+    // Nothing here can be fixed, so nothing says "to fix": the count is of notes — the rule-out (since 2026-10-23 a 3 is
+    // no bar to a Develop day, so no cost beside it) — in the neutral style, and the rule-out is a note to a screen reader too.
     const count = document.querySelector(".stu-sum-count")!;
-    expect(count.textContent).toBe("2 notes");
+    expect(count.textContent).toBe("1 note");
     expect(count.classList.contains("stu-sum-count--error")).toBe(false);
-    expect(document.querySelector('.stu-sum [role="status"]')!.textContent).toBe("2 notes");
+    expect(document.querySelector('.stu-sum [role="status"]')!.textContent).toBe("1 note");
     expect(document.querySelector(".stu-note .stu-note-text .visually-hidden")!.textContent).toBe("Note: ");
     expect(text()).not.toContain("to fix");
     expect(text()).not.toContain("To fix");
@@ -938,8 +944,8 @@ describe("a planned workout that can't change, judged by today", () => {
     expect(flag.textContent).toBe(", has a note");
     expect(text()).not.toContain("needs a fix");
     // The count is of the notes listed with it: none folded away out of sight, none said twice.
-    expect(listedNotes().length).toBe(2);
-    expect(document.querySelectorAll(".stu-sum .stu-note").length).toBe(2);
+    expect(listedNotes().length).toBe(1);
+    expect(document.querySelectorAll(".stu-sum .stu-note").length).toBe(1);
   });
 
   it("…and today's check unanswered: the note says so, with no check to answer from here", async () => {
@@ -1322,6 +1328,7 @@ describe("Do it again (CUJ B2)", () => {
 });
 
 describe("Start offers today's before reading (CUJ R5)", () => {
+  useCheckGatedTmj();
   // A calm move nothing waits on: TMJ on, Today carrying its chip, today unanswered.
   const calm = () => draftStore().save(draft(into(1, "catCow")));
 

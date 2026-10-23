@@ -21,11 +21,12 @@ describe("today's condition fit", () => {
     }
   });
 
-  it("a move allowed with limits is care on a calm day, not today on a flare day or unanswered", () => {
+  it("a move allowed with limits is care on any day above recovery — answered or not — and not today on a flare day", () => {
+    // Overhead pressing: no calm check any more (2026-10-23), only never in recovery.
     const press = rec("halfKneelingPress");
-    expect(fitToday(press, tmj, reading(1))).toEqual({ state: "care", reason: "Fine today, within TMJ limits." });
+    for (const r of [reading(1), reading(4), reading(null)]) expect(fitToday(press, tmj, r)).toEqual({ state: "care", reason: "Fine today, within TMJ limits." });
     expect(fitToday(press, tmj, reading(8))!.state).toBe("not");
-    expect(fitToday(press, tmj, reading(null))!.state).toBe("not");
+    expect(fitToday(press, tmj, reading(1, true))!.state).toBe("not");
     // No reading for the profile at all is unanswered.
     expect(fitToday(press, tmj, {})).toEqual(fitToday(press, tmj, reading(null)));
   });
@@ -40,16 +41,25 @@ describe("today's condition fit", () => {
 
   it("a jump says why it is not for today, in the profile's own words", () => {
     const jump = rec("landingStick");
-    const f = fitToday(jump, tmj, reading(null))!;
+    const f = fitToday(jump, tmj, reading(1, true))!;
     expect(f.state).toBe("not");
-    expect(f.reason).toBe(PROFILES.tmj.recordReason!(jump, "build", { pre: null, post: null, feelingOff: false }));
+    expect(f.reason).toBe(PROFILES.tmj.recordReason!(jump, "build", { pre: 1, post: null, feelingOff: true }));
+    expect(f.reason).toBe("Jumps sit out while you're feeling off.");
+    // No calm check any more: answered or not, a jump is fine above recovery.
     expect(fitToday(jump, tmj, reading(1))!.state).toBe("care");
-    expect(fitToday(jump, tmj, reading(1, true))!.state).toBe("not");
+    expect(fitToday(jump, tmj, reading(null))!.state).toBe("care");
+    expect(fitToday(jump, tmj, reading(4))!.state).toBe("care");
+  });
+
+  it("a top-clench move is fine with limits (build's sets) on a calm day, not on a flare day", () => {
+    const clenching = { ...rec("gobletSquat"), conditions: { tmj: { clench: 3, neckLoad: 0, faceDown: false } } };
+    expect(fitToday(clenching, tmj, reading(0))).toEqual({ state: "care", reason: "Fine today, within TMJ limits." });
+    expect(fitToday(clenching, tmj, reading(8))!.state).toBe("not");
   });
 
   it("a move the profile never allows says so by name; an unrated move fails closed and says so", () => {
-    const clenching = { ...rec("gobletSquat"), conditions: { tmj: { clench: 3, neckLoad: 0, faceDown: false } } };
-    expect(fitToday(clenching, tmj, reading(0))).toEqual({ state: "not", reason: "TMJ rules this move out." });
+    const unreadable = { ...rec("gobletSquat"), conditions: { tmj: { clench: 4, neckLoad: 0, faceDown: false } } };
+    expect(fitToday(unreadable, tmj, reading(0))).toEqual({ state: "not", reason: "TMJ rules this move out." });
     expect(fitToday({ ...rec("gobletSquat"), conditions: {} }, tmj, reading(0))).toEqual({ state: "not", reason: "TMJ rules this move out." });
   });
 

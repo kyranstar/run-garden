@@ -25,13 +25,15 @@ const lb = (v: number): Weight => ({ v, u: "lb" });
 const ctx = (extra: Partial<BlockCtx> = {}): BlockCtx => ({ today: "2026-09-01", equipment: home, prefs, weeks: 5, sessions: [], ...extra });
 const withCore = (b: Block, core: Record<string, string>): Block => ({ ...b, core: { ...b.core, ...core } });
 
-test("a first block picks one Home-friendly lift per family, never overhead pressing", () => {
+test("a first block picks one Home-friendly lift per family; overhead pressing may be one", () => {
   const { block, events } = Blocks.ensure(data, null, ctx());
   expect(block.number).toBe(1);
   expect(block.startedAt).toBe("2026-09-01");
   expect(block.weeks).toBe(5);
   expect(block.core.row).toBe("supportedRow");       // chestRow needs dumbbells
-  expect(block.core.press).toBe("floorPress");
+  expect(block.core.press).toBe("floorPress");       // the level-2 press; the overhead press is a level up
+  // Since 2026-10-23 overhead pressing plays in every mode a block lift does, so TMJ no longer keeps it out of blocks.
+  expect(Blocks.familyCandidates(data, "press", { equipment: home }).map(x => x.id)).toContain("ohPress");
   expect(["gobletSquat", "tempoSquat", "frontSquat"]).toContain(block.core.squat);
   expect(events[0]).toMatch(/Block 1/);
 });
@@ -172,7 +174,8 @@ describe("beyond the standalone suite", () => {
   });
 
   describe("a block lift an active profile forbids is not kept (audit M6)", () => {
-    // heavySquat is clench 3 (TMJ never), e.g. assigned while no profile was active; ohPress is overhead pressing.
+    // heavySquat is clench 3 — a top-clench move, build's only, so never a block's lift (TMJ's coreCandidate) — e.g.
+    // assigned while no profile was active. ohPress is overhead pressing, which TMJ no longer keeps out of blocks.
     const withHeavy = dataWith([...data.exercises.map(e => e as never), lifted("heavySquat", { family: "squat", conditions: tmj(3) })]);
     const block = (core: Record<string, string>): Block => ({ ...Blocks.ensure(withHeavy, null, ctx()).block, core: { ...Blocks.ensure(withHeavy, null, ctx()).block.core, ...core } });
 
@@ -182,13 +185,14 @@ describe("beyond the standalone suite", () => {
         expect(next.core.squat).not.toBe("heavySquat");
         expect(events.join(" ")).toMatch(/heavySquat → .+: not allowed with TMJ\./);
       }
+      // Overhead pressing is no longer forbidden: a pinned overhead press stays.
       const { block: next } = Blocks.ensure(withHeavy, block({ press: "ohPress" }), ctx({ today: "2026-09-03", prefs: { ...prefs, pinned: ["ohPress"] } }));
-      expect(next.core.press).not.toBe("ohPress");
+      expect(next.core.press).toBe("ohPress");
     });
 
     test("graduation never switches a block to a lift an active profile rules out (re-review m6)", () => {
       const b = block({ press: "floorPress" });
-      expect(Blocks.graduate(withHeavy, b, "press", "ohPress", "2026-09-03", home)).toBe(b);
+      expect(Blocks.graduate(withHeavy, b, "press", "ohPress", "2026-09-03", home).core.press).toBe("ohPress");
       expect(Blocks.graduate(withHeavy, block({ squat: "gobletSquat" }), "squat", "heavySquat", "2026-09-03", home).core.squat).toBe("gobletSquat");
       expect(Blocks.graduate(withHeavy, block({ squat: "gobletSquat" }), "squat", "frontSquat", "2026-09-03", home).core.squat).toBe("frontSquat");
     });

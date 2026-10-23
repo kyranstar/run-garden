@@ -21,6 +21,7 @@ import { buildCtxOf, judgeDraft, suggestCtxOf } from "../src/screens/studio/buil
 import { emptyStudioCtx, studioCtxFrom } from "../src/screens/studio/model.js";
 import { accountTodayGuess } from "../src/components.js";
 import { libraryDto, placesDto, primedClient, profileDto, staticRouter, text, todayDto, TODAY, type Primed } from "./studio-fixtures.js";
+import { useCheckGatedTmj } from "./check-gated-profile.js";
 
 const rec = (id: string) => EXERCISES.find((r) => r.id === id)!;
 const HOME_GEAR = ["mat", "kettlebell", "dumbbells", "bench", "chair", "band", "wall"];
@@ -133,6 +134,8 @@ describe("activate before loading", () => {
 });
 
 describe("errors block, with their reason and a Fix", () => {
+  // A gate the check reads: TMJ's until 2026-10-23, a stand-in's since (`CHECK_GATED`).
+  useCheckGatedTmj();
   it("a move today's reading rules out keeps Start off, the note says why with its Fix, and the actions say where to look", () => {
     const d = draft({ type: "setIntent", intent: { effort: "develop" } }, into(1, "halfKneelingPress", { alternates: [{ libraryId: "floorPress" }] }));
     const html = renderBuilder("/studio/build/new", { draft: d, primed: { library: libraryDto({ tmj: true }), today: todayDto({ value: 3 }) } });
@@ -221,6 +224,7 @@ describe("the item sheet", () => {
 });
 
 describe("the summary", () => {
+  useCheckGatedTmj();
   it("says the minutes, the kind and the place", () => {
     const d = draft(into(1, "gobletSquat"));
     const html = renderBuilder("/studio/build/new", { draft: d });
@@ -319,10 +323,10 @@ describe("the day's advice to ease off (CUJ R15)", () => {
     expect(html).toMatch(/class="stu-sum-body" hidden=""/);
     const body = html.indexOf('class="stu-sum-body"');
     // …and the advice is above the fold, with its Fix.
-    const advice = html.indexOf("Jaw/head is at 6 right now.");
+    const advice = html.indexOf("Jaw/head is at 6 today — an easy day helps it settle.");
     expect(advice).toBeGreaterThan(-1);
     expect(advice).toBeLessThan(body);
-    expect(html.split("Jaw/head is at 6 right now.").length - 1).toBe(1);
+    expect(html.split("Jaw/head is at 6 today — an easy day helps it settle.").length - 1).toBe(1);
     expect(html.slice(advice, body)).toMatch(/<button[^>]*class="btn btn-small stu-note-fix"[^>]*>[^<]*Recover[^<]*<\/button>/);
     // A cost that isn't the day's advice still folds away.
     const inView = html.slice(html.indexOf('class="stu-sum"'), body);

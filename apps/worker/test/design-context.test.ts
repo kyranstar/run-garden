@@ -8,7 +8,7 @@ import { readFileSync } from "node:fs";
 import { beforeEach, describe, expect, it } from "vitest";
 import { schema } from "@rg/database";
 import { newId, workoutDocSchema, type WorkoutDoc } from "@rg/domain";
-import { EQUIPMENT, EQUIPMENT_IDS, EXERCISES, libraryLine, TMJ, usedValues, type ConditionProfile, type DescribedRule, type HistorySession } from "@rg/exercise-library";
+import { EQUIPMENT, EQUIPMENT_IDS, EXERCISES, isPlyometric, libraryLine, TMJ, usedValues, type ConditionProfile, type DescribedRule, type HistorySession } from "@rg/exercise-library";
 import { FORMAT_OF_PART, validateWorkoutDoc } from "@rg/workout";
 import type { Env } from "../src/env.js";
 import type { Db } from "../src/services/db.js";
@@ -602,21 +602,30 @@ describe("3A-B — the opening message says what the code holds", () => {
   // Round 2 (B-I1): today's check opens today's gates only; a later day's wait on that day's.
   const noCheck = `No ${TMJ.label} check is logged today: the moves its gates close stay closed today unless the athlete logs a check that allows them; a later day's gates wait on that day's check.`;
 
-  it("B5: with no condition check today and a profile whose gates read it, one line says so — only on such a day, and only to the main coach (round 2, B-M12)", async () => {
+  it("B5: with no condition check today, a line says so only for a profile with a gate an answered check opens — only on such a day, and only to the main coach (round 2, B-M12)", async () => {
     expect((await build()).header).not.toContain(noCheck);
     await db.delete(schema.conditionChecks);
     const none = await build();
-    expect(none.header.split("\n").filter((l) => l === noCheck)).toHaveLength(1);
+    // Since 2026-10-23 TMJ's gates read only the mode and "feeling off": an unanswered check closes nothing today, so the
+    // header says nothing of the kind (the validator lets the day's jumps and presses through).
+    expect(none.header).not.toContain(noCheck);
     expect(none.header).not.toMatch(/stay closed until the athlete logs one/);
-    // The main coach asks for it; a designer can't, and a reviewer judges what it is given.
+    expect(validateWorkoutDoc(workoutDocSchema.parse({
+      version: 1, title: "Jumps", intent: { summary: "Jumps.", goals: [], focus: [], effort: "develop" },
+      parts: [{ purpose: "power", format: "straight", items: [{ kind: "exercise", libraryId: "pogoHop", dose: { sets: 2, reps: 5 } }] }], source: { kind: "coach" },
+    }), { library: EXERCISES, activeProfiles: [TMJ], day: { date: "2026-03-10", today: "2026-03-10", readings: {} } }).filter((i) => i.severity === "error")).toEqual([]);
+    // A designer or a reviewer reads the day's reading as before.
     for (const role of ["designer", "reviewer"] as const) {
       const other = await build({ role, scope: { kind: "week" }, parentId: "run-0", brief: "b", request: null });
       expect(other.header, role).not.toContain(`No ${TMJ.label} check is logged today`);
       expect(other.header, role).toContain("none today — unanswered, so a rule that needs an answered check stays closed");
     }
-    // A profile with no gate that reads the check needs no check to open one.
-    const ungated: ConditionProfile = { ...TMJ, describeRules: () => TMJ.describeRules().filter((l) => l.rule !== "allowPattern" && l.rule !== "allowRecord") };
-    expect(gatesReadTheCheck(TMJ)).toBe(true);
+    // The probe is the rules, not their words: a profile whose jumps need an answered calm check (TMJ's rule until
+    // 2026-10-23) has such a gate; TMJ now, and a profile with no gate at all, don't.
+    const calmGate: ConditionProfile = { ...TMJ, allowRecord: (ex, mode, t) => !isPlyometric(ex) || (mode !== "recovery" && !t.feelingOff && t.pre != null && t.pre <= 2) };
+    const ungated: ConditionProfile = { ...TMJ, allowPattern: () => true, allowRecord: undefined };
+    expect(gatesReadTheCheck(calmGate)).toBe(true);
+    expect(gatesReadTheCheck(TMJ)).toBe(false);
     expect(gatesReadTheCheck(ungated)).toBe(false);
   });
 

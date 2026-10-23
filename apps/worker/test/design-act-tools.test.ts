@@ -9,13 +9,14 @@ import { beforeAll, describe, expect, it, onTestFinished, vi } from "vitest";
 import { and, eq, like } from "drizzle-orm";
 import { schema } from "@rg/database";
 import { newId, NO_EQUIPMENT_PLACE, workoutDocSchema } from "@rg/domain";
-import { EXERCISES } from "@rg/exercise-library";
+import { EXERCISES, TMJ, isPlyometric, type CheckReading, type ConditionProfile } from "@rg/exercise-library";
+import type { ValidateCtx } from "@rg/workout";
 import type { Env } from "../src/env.js";
 import type { Db } from "../src/services/db.js";
 import { readingsOfDay } from "../src/services/condition-views.js";
 import { buildDesignContext } from "../src/services/design-context.js";
 import { ACT_TOOLS } from "../src/services/design-tools/index.js";
-import { docValidateCtx, readDocAthlete, unwrapUntrusted, WORKOUT_DOC_JSON_SCHEMA } from "../src/services/design-tools/act-common.js";
+import { docValidateCtx, judge, noCheckToday, readDocAthlete, unwrapUntrusted, WORKOUT_DOC_JSON_SCHEMA } from "../src/services/design-tools/act-common.js";
 import { searchLibraryTool } from "../src/services/design-tools/read-library.js";
 import { RESULT_BUDGET_BYTES } from "../src/services/design-tools/read-common.js";
 import { defaultPlace } from "../src/services/default-place.js";
@@ -44,7 +45,8 @@ beforeAll(async () => {
   rich = await seedRichAthlete(db);
   high = await seedRichAthlete(db);
   await db.insert(schema.conditionChecks).values([
-    { id: newId(), userId: high.userId, profileId: "tmj", kind: "pre", value: 7, localDate: TODAY, at: at(TODAY, "08:30") },
+    // A 7 and feeling off: since 2026-10-23 feeling off (or a recovery day), not the number, is what closes a jump today.
+    { id: newId(), userId: high.userId, profileId: "tmj", kind: "pre", value: 7, feelingOff: true, localDate: TODAY, at: at(TODAY, "08:30") },
     // Later, but no answer: never the day's reading.
     { id: newId(), userId: high.userId, profileId: "tmj", kind: "daily", value: null, feelingOff: false, localDate: TODAY, at: at(TODAY, "09:00") },
   ]);
@@ -122,14 +124,14 @@ describe("the day's reading — one rule for the opening context and the validat
     expect(readingsOfDay([{ ...rows[2]! }], ["tmj"]).has("tmj")).toBe(false);
   });
 
-  it("the header says 7 at 08:30, and the validator's day reads 7: a jump is refused today, as the header's rule says", async () => {
+  it("the header says 7, feeling off at 08:30, and the validator's day reads it: a jump is refused today, as the header's rule says", async () => {
     const r = await run({ userId: high.userId });
     const context = await buildDesignContext(db, ENV, high.userId, { id: r.id, role: "main", scope: { kind: "now" }, request: null, parentId: null }, NOW);
-    expect(context.header).toContain("Today's: 7 at 08:30.");
+    expect(context.header).toContain("Today's: 7, feeling off at 08:30.");
     const a = await readDocAthlete(ctxOf(r), {});
     if ("error" in a) throw new Error(a.why);
     const vctx = await docValidateCtx(ctxOf(r), a, TODAY);
-    expect(vctx.day?.readings.tmj).toEqual({ pre: 7, post: null, feelingOff: false });
+    expect(vctx.day?.readings.tmj).toEqual({ pre: 7, post: null, feelingOff: true });
     const v = data((await call("validate_workout", ctxOf(r), { doc: landingsDoc(), date: TODAY })).result);
     expect(v.valid).toBe(false);
     expect(v.errors.map((e: { path: string; code: string }) => `${e.path} ${e.code}`)).toContain("parts[0].items[0].libraryId condition_gate");
@@ -1421,17 +1423,29 @@ describe("3A round 2 — the act tools' gates and tests", () => {
     expect(gateOf(data((await call("validate_workout", ctxOf(r), { doc: powerDoc("pogoHop"), date: TODAY })).result))?.fix).toBeUndefined();
   });
 
-  it("B-M8: with no check logged today, a gate's refusal says the main coach may ask for it — at validate and at propose; with one logged, it doesn't", async () => {
+  it("B-M8: a gate's refusal says the main coach may ask for a check only when none is logged today and an answered one could open it", async () => {
+    // Since 2026-10-23 TMJ's gates read only the mode and "feeling off": with no check logged, a jump is no refusal at
+    // all, and a refusal by the mode (a jump on a Recover day) is one no check opens — neither asks.
     const none = await run({ userId: (await unchecked()).userId });
-    const gate = gateOf(data((await call("validate_workout", ctxOf(none), { doc: powerDoc("pogoHop"), date: TODAY })).result))!;
-    expect(gate.message).toContain(ASK);
-    const refused = err((await call("propose_workout", ctxOf(none), { doc: powerDoc("pogoHop"), target: { kind: "new", date: TODAY } })).result);
+    expect(gateOf(data((await call("validate_workout", ctxOf(none), { doc: powerDoc("pogoHop"), date: TODAY })).result))).toBeUndefined();
+    expect(data((await call("propose_workout", ctxOf(none), { doc: powerDoc("pogoHop"), target: { kind: "new", date: TODAY } })).result).stored).toBe(true);
+    const recover = { ...powerDoc("pogoHop"), intent: { summary: "Easy.", goals: [], focus: [], effort: "recover" } };
+    const byMode = data((await call("validate_workout", ctxOf(none), { doc: recover, date: TODAY })).result);
+    expect(gateOf(byMode)!.message).not.toContain("ask_athlete");
+    const refused = err((await call("propose_workout", ctxOf(none), { doc: recover, target: { kind: "new", date: TODAY } })).result);
     expect(refused.error).toBe("invalid_workout");
-    expect(refused.fix).toContain(ASK);
-    // A check is logged (7, a closed gate): asking again opens nothing.
-    const logged = await run({ userId: high.userId });
-    expect(gateOf(data((await call("validate_workout", ctxOf(logged), { doc: powerDoc("pogoHop"), date: TODAY })).result))!.message).not.toContain("ask_athlete");
-    expect(err((await call("propose_workout", ctxOf(logged), { doc: powerDoc("pogoHop"), target: { kind: "new", date: TODAY } })).result).fix).not.toContain("ask_athlete");
+    expect(refused.fix).not.toContain("ask_athlete");
+    // A profile whose jumps need an answered, calm check (TMJ's rule until 2026-10-23): with none logged, the refusal
+    // asks; with one logged, it doesn't.
+    const calmGate: ConditionProfile = { ...TMJ, allowRecord: (ex, mode, t) => !isPlyometric(ex) || (mode !== "recovery" && !t.feelingOff && t.pre != null && t.pre <= 2) };
+    const vctx = (readings: Record<string, CheckReading>): ValidateCtx =>
+      ({ library: EXERCISES, activeProfiles: [calmGate], day: { date: TODAY, today: TODAY, readings } });
+    expect(noCheckToday(vctx({}))).toBe(true);
+    expect(gateOf(judge(powerDoc("pogoHop"), vctx({})))!.message).toContain(ASK);
+    expect(noCheckToday(vctx({ tmj: { pre: 7, post: null, feelingOff: false } }))).toBe(false);
+    expect(gateOf(judge(powerDoc("pogoHop"), vctx({ tmj: { pre: 7, post: null, feelingOff: false } })))!.message).not.toContain("ask_athlete");
+    // TMJ itself, no check logged: nothing an answered check would open, so no ask.
+    expect(noCheckToday({ library: EXERCISES, activeProfiles: [TMJ], day: { date: TODAY, today: TODAY, readings: {} } })).toBe(false);
   });
 
   it("B-M10: a test whose move its key result's measure doesn't read is an advisory note — at validate and in the draft's costs — read in the statement already run", async () => {

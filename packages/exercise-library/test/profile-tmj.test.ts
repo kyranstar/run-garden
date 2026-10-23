@@ -3,11 +3,14 @@ import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { describe, expect, it } from "vitest";
 import {
-  EXERCISES, FORMAT_IDS, LOCATION_PRESETS, MODE_IDS, PATTERNS, PROFILES, TMJ, eligible, flareSafe, isDoneCleanly, makeEngineData, recordFlareSafe,
+  EXERCISES, FORMAT_IDS, LOCATION_PRESETS, MODE_IDS, PATTERNS, PROFILES, TMJ, eligible, fitToday, flareSafe, isDoneCleanly, makeEngineData,
+  recordFlareSafe,
   type Attrs, type CheckReading, type ConditionProfile, type EngineData, type ExerciseRecord, type HistorySession, type Mode, type ProposalCtx,
 } from "../src/index.js";
 
-// The TMJ profile reproduces the standalone tool's thresholds and sentences exactly.
+// The TMJ profile: the standalone tool's rules as relaxed on 2026-10-23 after an evidence review — top-clench moves in
+// build's sets with rest, overhead pressing and jumps outside recovery with no calm check, face-down positions in
+// recovery (a flare day stays flare-safe), and build on a 24-hour response rule.
 
 const a = (clench: number, neckLoad = 0, faceDown = false): Attrs => ({ clench, neckLoad, faceDown });
 const reading = (pre: number | null, extra: Partial<CheckReading> = {}): CheckReading => ({ pre, post: null, feelingOff: false, ...extra });
@@ -36,50 +39,96 @@ describe("TMJ profile — exercise rules", () => {
     expect(TMJ.attributes).toEqual({ clench: { kind: "scale", min: 0, max: 3 }, neckLoad: { kind: "scale", min: 0, max: 3 }, faceDown: { kind: "flag" } });
   });
 
-  it.each([[0, false], [1, false], [2, false], [3, true]])("never: clench %i → %s", (clench, expected) => {
+  // No rating on the scale is ruled out any more (a top-clench move is build's, in sets with rest): only a rating the
+  // profile can't read is.
+  it.each([[0, false], [1, false], [2, false], [3, false]])("never: clench %i → %s", (clench, expected) => {
     expect(TMJ.never(a(clench))).toBe(expected);
   });
 
-  // recovery: clench ≤ 1, neck ≤ 1, no face-down; consistent and build: clench ≤ 2, neck ≤ 2.
+  it("never: only a rating the profile can't read — missing, off its scale, or the wrong kind", () => {
+    expect(TMJ.never({ clench: 4, neckLoad: 0, faceDown: false })).toBe(true);
+    expect(TMJ.never({ clench: 1, neckLoad: -1, faceDown: false })).toBe(true);
+    expect(TMJ.never({ clench: 1.5, neckLoad: 0, faceDown: false })).toBe(true);
+    expect(TMJ.never({ clench: 1, neckLoad: 0, faceDown: 1 })).toBe(true);
+    expect(TMJ.never({ clench: 1, neckLoad: 0 })).toBe(true);
+    expect(TMJ.never(a(3, 3, true))).toBe(false);
+  });
+
+  // recovery: clench ≤ 1, neck ≤ 1, face-down allowed; consistent: clench ≤ 2, neck ≤ 2; build: clench ≤ 3, neck ≤ 2.
   it.each<[Mode, number, number, boolean, boolean]>([
     ["recovery", 1, 1, false, true],
     ["recovery", 2, 0, false, false],
     ["recovery", 0, 2, false, false],
-    ["recovery", 0, 0, true, false],
+    ["recovery", 0, 0, true, true],
+    ["recovery", 1, 1, true, true],
     ["consistent", 2, 2, true, true],
     ["consistent", 3, 0, false, false],
     ["consistent", 0, 3, false, false],
     ["build", 2, 2, true, true],
-    ["build", 3, 0, false, false],
+    ["build", 3, 0, false, true],
+    ["build", 3, 2, true, true],
     ["build", 2, 3, false, false],
   ])("fitsMode %s: clench %i, neck %i, faceDown %s → %s", (mode, clench, neck, faceDown, expected) => {
     expect(TMJ.fitsMode(a(clench, neck, faceDown), mode)).toBe(expected);
   });
 
-  // The standalone formats' maxClench: circuit, ladder and flow 1; straight, superset and holds 2.
+  it("fitsMode: neck and posture care work is never held to the neck-load caps; everything else is", () => {
+    const rec = (roles: string[], primary: string[]) => ({ roles, muscles: { primary, secondary: [] } }) as unknown as ExerciseRecord;
+    const careRole = rec(["jaw-care"], ["upper-traps"]);
+    const neckFlexors = rec(["activation"], ["deep-neck-flexors"]);
+    const other = rec(["accessory"], ["upper-traps"]);
+    for (const mode of MODE_IDS) {
+      for (const neck of [0, 1, 2, 3]) {
+        expect(TMJ.fitsMode(a(0, neck), mode, careRole), `${mode} care ${neck}`).toBe(true);
+        expect(TMJ.fitsMode(a(0, neck), mode, neckFlexors), `${mode} flexors ${neck}`).toBe(true);
+        expect(TMJ.fitsMode(a(0, neck), mode, other), `${mode} other ${neck}`).toBe(TMJ.fitsMode(a(0, neck), mode));
+      }
+      // Only the neck cap: clenching still counts.
+      expect(TMJ.fitsMode(a(3, 0), "consistent", careRole)).toBe(false);
+    }
+    expect(TMJ.fitsMode(a(0, 2), "recovery", other)).toBe(false);
+    // Not on a flare day: flare-safe keeps its neck cap.
+    expect(TMJ.flareSafe(a(0, 2))).toBe(false);
+  });
+
+  it("the library's neck and posture care work fits every mode's neck-load cap", () => {
+    const care = EXERCISES.filter(e => e.roles.includes("jaw-care") || e.muscles.primary.includes("deep-neck-flexors"));
+    expect(care.map(e => e.id)).toEqual(expect.arrayContaining(["chinTuck", "chinNodHold", "rocabado"]));
+    for (const ex of care) {
+      for (const mode of MODE_IDS) {
+        for (const neckLoad of [0, 1, 2, 3]) expect(TMJ.fitsMode({ clench: 0, neckLoad, faceDown: false }, mode, ex), `${ex.id} ${mode} ${neckLoad}`).toBe(true);
+      }
+    }
+  });
+
+  // Circuits, ladders and flows tolerate the least clenching; holds 2; straight sets and supersets, with their rest, 3.
   it("fitsFormat applies each format's clench cap", () => {
-    const caps: Record<string, number> = { straight: 2, superset: 2, circuit: 1, ladder: 1, flow: 1, holds: 2 };
+    const caps: Record<string, number> = { straight: 3, superset: 3, circuit: 1, ladder: 1, flow: 1, holds: 2 };
     for (const f of FORMAT_IDS) {
       for (const clench of [0, 1, 2, 3]) expect(TMJ.fitsFormat(a(clench), f), `${f} ${clench}`).toBe(clench <= (caps[f] ?? -1));
     }
   });
 
-  it("allowPattern: overhead pressing only in build, and only with an answered pre-check of 2 or less", () => {
+  it("a top-clench move: only in build, and only in straight sets or a superset", () => {
+    for (const mode of MODE_IDS) expect(TMJ.fitsMode(a(3), mode), mode).toBe(mode === "build");
+    for (const f of FORMAT_IDS) expect(TMJ.fitsFormat(a(3), f), f).toBe(f === "straight" || f === "superset");
+  });
+
+  it("allowPattern: overhead pressing in consistent and build whatever the check, never in recovery", () => {
     for (const mode of MODE_IDS) {
-      for (const pre of [null, 0, 1, 2, 3, 5]) {
-        const ok = mode === "build" && pre != null && pre <= 2;
-        expect(TMJ.allowPattern("push-v", mode, reading(pre)), `${mode} ${pre}`).toBe(ok);
+      for (const pre of [null, 0, 1, 2, 3, 4, 5, 9]) {
+        expect(TMJ.allowPattern("push-v", mode, reading(pre)), `${mode} ${pre}`).toBe(mode !== "recovery");
         for (const p of PATTERNS.filter(x => x !== "push-v")) expect(TMJ.allowPattern(p, mode, reading(pre))).toBe(true);
       }
     }
   });
 
-  it("allowRecord: a plyometric move never in recovery, never when feeling off, otherwise only with an answered pre-check of 2 or less", () => {
+  it("allowRecord: a plyometric move never in recovery, never when feeling off, otherwise allowed — the check answered or not", () => {
     const rec = (contraction: string[]) => ({ contraction }) as unknown as ExerciseRecord;
     for (const mode of MODE_IDS) {
       for (const pre of [null, 0, 1, 2, 3, 4, 5]) {
         for (const feelingOff of [false, true]) {
-          const ok = mode !== "recovery" && !feelingOff && pre != null && pre <= 2;
+          const ok = mode !== "recovery" && !feelingOff;
           const today = reading(pre, { feelingOff });
           expect(TMJ.allowRecord!(rec(["plyometric"]), mode, today), `${mode} ${pre} ${feelingOff}`).toBe(ok);
           expect(TMJ.allowRecord!(rec(["eccentric", "plyometric"]), mode, today), `${mode} ${pre} ${feelingOff} mixed`).toBe(ok);
@@ -101,10 +150,10 @@ describe("TMJ profile — exercise rules", () => {
         }
       }
     }
-    expect(TMJ.recordReason!(rec(["plyometric"]), "build", reading(4))).toBe("Jumps need a calm jaw (2 or less) — you're at 4.");
-    expect(TMJ.recordReason!(rec(["plyometric"]), "build", reading(null))).toBe("Jumps need a jaw check first.");
-    expect(TMJ.recordReason!(rec(["plyometric"]), "consistent", reading(1, { feelingOff: true }))).toBe("No jumps while you're feeling off.");
-    expect(TMJ.recordReason!(rec(["plyometric"]), "recovery", reading(1))).toBe("No jumps on a recovery day.");
+    expect(TMJ.recordReason!(rec(["plyometric"]), "build", reading(4))).toBe(null);
+    expect(TMJ.recordReason!(rec(["plyometric"]), "build", reading(null))).toBe(null);
+    expect(TMJ.recordReason!(rec(["plyometric"]), "consistent", reading(1, { feelingOff: true }))).toBe("Jumps sit out while you're feeling off.");
+    expect(TMJ.recordReason!(rec(["plyometric"]), "recovery", reading(1))).toBe("Jumps sit out a recovery day.");
   });
 
   it("profiles read the record type, not eligibility (layering): no profile imports the eligibility rules", () => {
@@ -112,6 +161,7 @@ describe("TMJ profile — exercise rules", () => {
     for (const f of readdirSync(dir)) expect(readFileSync(join(dir, f), "utf8"), f).not.toMatch(/from "\.\.\/eligibility/);
   });
 
+  // A block's lift plays on consistent days too, so a top-clench (build-only) move is no block lift.
   it("coreCandidate: clench ≤ 2; flareSafe: clench ≤ 1, neck ≤ 1, not face down", () => {
     expect([0, 1, 2, 3].map(c => TMJ.coreCandidate(a(c)))).toEqual([true, true, true, false]);
     expect(TMJ.flareSafe(a(1, 1, false))).toBe(true);
@@ -120,9 +170,11 @@ describe("TMJ profile — exercise rules", () => {
     expect(TMJ.flareSafe(a(0, 0, true))).toBe(false);
   });
 
-  it("blockAssignable: overhead pressing is never a block's core lift", () => {
+  // It held overhead pressing out of blocks only because the press was build-only behind a calm check; a block's lift now
+  // plays in every mode overhead pressing does.
+  it("blockAssignable: overhead pressing may be a block's core lift", () => {
     const rec = (patterns: string[]) => ({ patterns }) as unknown as ExerciseRecord;
-    expect(TMJ.blockAssignable(rec(["push-v"]))).toBe(false);
+    expect(TMJ.blockAssignable(rec(["push-v"]))).toBe(true);
     expect(TMJ.blockAssignable(rec(["push-h"]))).toBe(true);
   });
 
@@ -151,12 +203,11 @@ describe("TMJ profile — the plyometric gate through eligibility (Task 5)", () 
     }
   });
 
-  it("in consistent and build, only with an answered pre-check of 2 or less", () => {
+  it("in consistent and build, whatever the check says — answered or not — up to the mode's difficulty cap", () => {
     for (const ex of plyometric) {
       for (const mode of ["consistent", "build"] as const) {
         const cap = data.modes[mode].maxDifficulty;
-        for (const pre of [null, 3, 4, 6]) expect(eligible(data, ex, { equipment: gym, mode, checks: checks(pre) }), `${ex.id} ${mode} ${pre}`).toBe(false);
-        for (const pre of [0, 1, 2]) expect(eligible(data, ex, { equipment: gym, mode, checks: checks(pre) }), `${ex.id} ${mode} ${pre}`).toBe(ex.difficulty <= cap);
+        for (const pre of [null, 0, 1, 2, 3, 4, 6]) expect(eligible(data, ex, { equipment: gym, mode, checks: checks(pre) }), `${ex.id} ${mode} ${pre}`).toBe(ex.difficulty <= cap);
       }
     }
   });
@@ -185,38 +236,109 @@ describe("TMJ profile — the plyometric gate through eligibility (Task 5)", () 
     const hookless: ConditionProfile = rest;
     const loose: EngineData = { ...data, profiles: { active: [hookless], care: [hookless] } };
     const tuck = EXERCISES.find(e => e.id === "tuckJump")!;
-    expect(eligible(data, tuck, { equipment: gym, mode: "build", checks: checks(4) })).toBe(false);
-    expect(eligible(loose, tuck, { equipment: gym, mode: "build", checks: checks(4) })).toBe(true);
+    const feelingOff = { tmj: reading(1, { feelingOff: true }) };
+    expect(eligible(data, tuck, { equipment: gym, mode: "build", checks: feelingOff })).toBe(false);
+    expect(eligible(loose, tuck, { equipment: gym, mode: "build", checks: feelingOff })).toBe(true);
+  });
+});
+
+describe("TMJ profile — face-down in recovery, and a flare day stays flare-safe (through eligibility)", () => {
+  const data = makeEngineData({ activeProfiles: ["tmj"], careProfiles: ["tmj"], exercises: EXERCISES });
+  const gym = LOCATION_PRESETS.find(l => l.id === "gym")!.equipment;
+  const proneYTW = EXERCISES.find(e => e.id === "proneYTW")!;
+  const breath = EXERCISES.find(e => e.id === "breath")!;
+  const checks = (pre: number | null, feelingOff = false) => ({ tmj: reading(pre, { feelingOff }) });
+
+  it("the library's face-down move is otherwise flare-safe, so face-down alone decides it", () => {
+    expect(proneYTW.conditions.tmj).toMatchObject({ faceDown: true });
+    expect(TMJ.flareSafe({ ...proneYTW.conditions.tmj!, faceDown: false })).toBe(true);
+  });
+
+  it("a recovery day takes a face-down move — on its calmest day, below the flare line, or while feeling off", () => {
+    expect(eligible(data, proneYTW, { equipment: gym, mode: "recovery" })).toBe(true);
+    for (const pre of [null, 0, 2, 4]) expect(eligible(data, proneYTW, { equipment: gym, mode: "recovery", checks: checks(pre) }), String(pre)).toBe(true);
+    expect(eligible(data, proneYTW, { equipment: gym, mode: "recovery", checks: checks(1, true) })).toBe(true);
+  });
+
+  it("a flare day's recovery takes flare-safe moves only: no face-down; flare-safe moves stay", () => {
+    for (const pre of [5, 6, 10]) {
+      expect(eligible(data, proneYTW, { equipment: gym, mode: "recovery", checks: checks(pre) }), String(pre)).toBe(false);
+      expect(eligible(data, breath, { equipment: gym, mode: "recovery", checks: checks(pre) }), String(pre)).toBe(true);
+    }
+    // Every move a flare day's recovery takes is flare-safe.
+    for (const ex of EXERCISES) {
+      if (eligible(data, ex, { equipment: gym, mode: "recovery", checks: checks(6) })) expect(flareSafe(data, ex), ex.id).toBe(true);
+    }
+  });
+
+  it("the Studio's fit for today agrees: a flare day rules the face-down move out, a recovery-feeling day does not", () => {
+    expect(fitToday(proneYTW, [TMJ], { tmj: reading(6) })).toEqual({ state: "not", reason: "Not with jaw / head at 6 today." });
+    expect(fitToday(breath, [TMJ], { tmj: reading(6) })?.state).toBe("fits");
+    expect(fitToday(proneYTW, [TMJ], { tmj: reading(1, { feelingOff: true }) })?.state).toBe("care");
+    expect(fitToday(proneYTW, [TMJ], { tmj: reading(1) })?.state).toBe("care");
   });
 });
 
 describe("TMJ profile — proposal", () => {
-  it("recovery reasons, in the standalone order and words", () => {
+  it("recovery reasons, in order, in calm words", () => {
     expect(TMJ.recoveryReason(ctx({ feelingOff: true, pre: 6 }))).toBe("You said you're feeling off.");
-    expect(TMJ.recoveryReason(ctx({ pre: 6 }))).toBe("Jaw/head is at 6 right now.");
+    expect(TMJ.recoveryReason(ctx({ pre: 6 }))).toBe("Jaw/head is at 6 today — an easy day helps it settle.");
     expect(TMJ.recoveryReason(ctx({ pre: 4 }))).toBe(null);
-    expect(TMJ.recoveryReason(ctx({ pre: 1, last: session("2026-09-28", { pre: 1, post: 3 }) }))).toBe("Symptoms rose 1 → 3 last session.");
-    expect(TMJ.recoveryReason(ctx({ pre: 1, last: session("2026-09-28", { flags: [["clenched"], ["clenched"], []] }) }))).toBe("You clenched on 2 lifts last session.");
+    expect(TMJ.recoveryReason(ctx({ pre: 1, last: session("2026-09-28", { pre: 1, post: 3 }) }))).toBe("Jaw/head went 1 → 3 last session — an easy day helps it settle.");
+    expect(TMJ.recoveryReason(ctx({ pre: 1, last: session("2026-09-28", { flags: [["clenched"], ["clenched"], []] }) }))).toBe("Clenched on 2 lifts last session — an easy day, jaw soft.");
     expect(TMJ.recoveryReason(ctx({ pre: 1, last: session("2026-09-28", { flags: [["clenched"]] }) }))).toBe(null);
     expect(TMJ.recoveryReason(ctx({ pre: null, last: null }))).toBe(null);
   });
 
-  it("build checks 1–3 with the standalone reasons", () => {
+  describe("build checks: the 24-hour response rule", () => {
     const failing = (c: ProposalCtx) => TMJ.buildChecks(c).filter(([ok]) => !ok).map(([, r]) => r);
-    expect(failing(ctx({ pre: 1 }))).toEqual([]);
-    expect(failing(ctx({ pre: 3 }))).toEqual(["A Develop or Peak day needs a calm jaw (2 or less) — you're at 3."]);
-    expect(failing(ctx({ pre: null, last: session("2026-09-28", { post: null }) }))).toEqual(["A Develop or Peak day needs a jaw check first."]);
-    // The athlete chose an effort (Develop, Peak), never the engine's mode: its name is in none of the profile's lines.
-    for (const pre of [null, 3, 9]) for (const why of failing(ctx({ pre }))) expect(why).not.toMatch(/\bbuild\b/i);
-    const flared = [session("2026-09-24", { pre: 6, post: 5 }), session("2026-09-28")];
-    expect(failing(ctx({ pre: 1, week: flared, last: flared[1] }))).toEqual(["Your jaw has flared in the last 7 days."]);
-    expect(failing(ctx({ pre: 1, last: session("2026-09-28", { flags: [["clenched"]] }) }))).toEqual(["Last session wasn't clean."]);
-    expect(failing(ctx({ pre: 1, last: session("2026-09-28", { pre: 1, post: 3 }) }))).toContain("Last session wasn't clean.");
+
+    it("(a) the jaw level — today's check, else how the last session ended — answered and under the flare line", () => {
+      expect(failing(ctx({ pre: 1 }))).toEqual([]);
+      expect(failing(ctx({ pre: 3 }))).toEqual([]);
+      expect(failing(ctx({ pre: 3, last: session("2026-09-28", { pre: 2, post: 2 }) }))).toEqual([]);
+      expect(failing(ctx({ pre: 4, last: session("2026-09-28", { pre: 3, post: 3 }) }))).toEqual([]);
+      expect(failing(ctx({ pre: 5, last: session("2026-09-28", { pre: 4, post: 4 }) }))).toEqual(["Jaw/head is at 5 — a steady day today; Develop and Peak open below 5."]);
+      expect(failing(ctx({ pre: null, last: session("2026-09-28", { pre: 3, post: 4 }) }))).toEqual([]);
+      expect(failing(ctx({ pre: null, last: session("2026-09-28", { pre: 4, post: 5 }) }))).toEqual(["Jaw/head is at 5 — a steady day today; Develop and Peak open below 5."]);
+      expect(failing(ctx({ pre: null, last: session("2026-09-28", { post: null }) }))).toEqual(["Log today's jaw check to open a Develop or Peak day."]);
+      expect(failing(ctx({ pre: null, last: null }))).toEqual(["Log today's jaw check to open a Develop or Peak day."]);
+      expect(failing(ctx({ pre: 2, last: null }))).toEqual([]);
+    });
+
+    it("(b) the last session didn't make things worse: today against its before-check, else its own rise", () => {
+      // Today's check answered: today − the last session's before-check.
+      expect(failing(ctx({ pre: 3, last: session("2026-09-28", { pre: 1, post: 0 }) }))).toEqual([]);
+      expect(failing(ctx({ pre: 4, last: session("2026-09-28", { pre: 1, post: 0 }) }))).toEqual(["Jaw/head is up 3 since last session — a steady day lets it settle."]);
+      // …even when the last session ended high: today's answer is what counts.
+      expect(failing(ctx({ pre: 1, last: session("2026-09-28", { pre: 0, post: 4 }) }))).toEqual([]);
+      // No answer today: the last session's after-check − its before-check.
+      expect(failing(ctx({ pre: null, last: session("2026-09-28", { pre: 1, post: 3 }) }))).toEqual([]);
+      expect(failing(ctx({ pre: null, last: session("2026-09-28", { pre: 1, post: 4 }) }))).toEqual(["Jaw/head went 1 → 4 last session — a steady day lets it settle."]);
+      // Nothing to compare against: nothing made worse.
+      expect(failing(ctx({ pre: 3, last: session("2026-09-28", { pre: null, post: 3 }) }))).toEqual([]);
+    });
+
+    it("no week-long lockout, no weekly average, no clean-session rule any more", () => {
+      const flared = [session("2026-09-24", { pre: 6, post: 5 }), session("2026-09-28")];
+      expect(failing(ctx({ pre: 1, week: flared, last: flared[1] }))).toEqual([]);
+      const highPosts = [session("2026-09-25", { pre: 3, post: 4 }), session("2026-09-28", { pre: 3, post: 4 })];
+      expect(failing(ctx({ pre: 3, week: highPosts, last: highPosts[1] }))).toEqual([]);
+      expect(failing(ctx({ pre: 1, last: session("2026-09-28", { flags: [["clenched"]] }) }))).toEqual([]);
+    });
+
+    it("every line is the athlete's effort's words, never the engine's mode", () => {
+      for (const c of [ctx({ pre: null, last: null }), ctx({ pre: 5 }), ctx({ pre: 4, last: session("2026-09-28", { pre: 0 }) }), ctx({ pre: null, last: session("2026-09-28", { pre: 0, post: 4 }) })]) {
+        const lines = failing(c);
+        expect(lines.length).toBeGreaterThan(0);
+        for (const why of lines) expect(why).not.toMatch(/\bbuild\b/i);
+      }
+    });
   });
 
   it("build label names today's level, falling back to how the last session ended", () => {
-    expect(TMJ.buildLabel(ctx({ pre: 1 }))).toBe("Jaw calm (1)");
-    expect(TMJ.buildLabel(ctx({ pre: null, last: session("2026-09-28", { post: 2 }) }))).toBe("Jaw calm (2)");
+    expect(TMJ.buildLabel(ctx({ pre: 1 }))).toBe("Jaw steady (1)");
+    expect(TMJ.buildLabel(ctx({ pre: null, last: session("2026-09-28", { post: 2 }) }))).toBe("Jaw steady (2)");
   });
 });
 
@@ -234,23 +356,35 @@ describe("TMJ profile — progression, selection, milestones, care", () => {
     expect(TMJ.stepDownCause(e(), { checks: {} })).toBe(null);
   });
 
-  it("holdReason: a high check today, or a rise since last session", () => {
+  it("holdReason: a high check today, or a rise since last session — in calm words", () => {
     expect(TMJ.holdReason(reading(null), s(0, 0))).toBe(null);
-    expect(TMJ.holdReason(reading(5), null)).toBe("Jaw/head is up today — hold here and keep it easy.");
-    expect(TMJ.holdReason(reading(3), s(1, 1))).toBe("Symptoms are higher than last session — hold here.");
+    expect(TMJ.holdReason(reading(5), null)).toBe("Jaw/head is up today — hold this weight, jaw soft.");
+    expect(TMJ.holdReason(reading(3), s(1, 1))).toBe("Jaw/head is up on last session — hold this weight today.");
     expect(TMJ.holdReason(reading(2), s(1, 1))).toBe(null);
     expect(TMJ.holdReason(reading(3), null)).toBe(null);
   });
 
-  it("quiet phrase, flag penalty, rotation and calm streak words", () => {
-    expect(TMJ.quietPhrase).toBe("with a quiet jaw");
+  it("quiet phrase leads with a soft jaw; flag penalty, rotation and calm streak words", () => {
+    expect(TMJ.quietPhrase).toBe("with the jaw soft");
     expect(TMJ.flagPenaltyWeight).toBe(2);
     expect(TMJ.rotateReason([e(["clenched"]), e(), e(["clenched"])])).toBe("clenched in 2 of the last 3 sessions");
     expect(TMJ.rotateReason([e(["clenched"]), e(), e(), e(["clenched"])])).toBe(null);
     expect(TMJ.calmStreakLabel).toBe("calm-jaw");
   });
 
-  it("care: the jaw-care block and the jaw coverage target", () => {
+  it("no profile sentence frames movement as a danger", () => {
+    const sentences = [
+      TMJ.quietPhrase,
+      ...TMJ.describeRules().map(l => l.text),
+      TMJ.recoveryReason(ctx({ pre: 6 }))!, TMJ.recoveryReason(ctx({ pre: 1, last: session("2026-09-28", { pre: 1, post: 3 }) }))!,
+      TMJ.recoveryReason(ctx({ pre: 1, last: session("2026-09-28", { flags: [["clenched"], ["clenched"]] }) }))!,
+      ...TMJ.buildChecks(ctx({ pre: 5 })).map(([, r]) => r), ...TMJ.buildChecks(ctx({ pre: null, last: null })).map(([, r]) => r),
+      TMJ.holdReason(reading(5), null)!, TMJ.holdReason(reading(3), s(1, 1))!,
+    ];
+    for (const t of sentences) expect(t, t).not.toMatch(/\b(danger|dangerous|unsafe|risk|risky|harm|damage|injur\w*|never allowed|avoid)\b/i);
+  });
+
+  it("care: the jaw-care block and its coverage targets", () => {
     expect(TMJ.care).toEqual({
       block: {
         label: "Jaw care", roles: ["jaw-care"], formats: ["holds"],
@@ -276,7 +410,13 @@ describe("TMJ profile — the flare definition (Phase 2d: flare days on the cond
 
   it("agrees with recovery's own threshold: a flare reading always proposes recovery", () => {
     for (const pre of [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10]) {
-      expect(TMJ.recoveryReason(ctx({ pre, last: null })) === `Jaw/head is at ${pre} right now.`).toBe(TMJ.flare(reading(pre)));
+      expect(TMJ.recoveryReason(ctx({ pre, last: null })) !== null).toBe(TMJ.flare(reading(pre)));
+    }
+  });
+
+  it("agrees with build's level line: the level build opens below is the flare line", () => {
+    for (const pre of [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10]) {
+      expect(TMJ.buildChecks(ctx({ pre, last: null })).every(([ok]) => ok)).toBe(!TMJ.flare(reading(pre)));
     }
   });
 });

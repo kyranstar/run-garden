@@ -8,8 +8,8 @@ import { Builder, Hist, Planner, Prog, type BuildResult, type HistorySession, ty
 import { PLACES, block, data, home } from "./builder-fixtures.js";
 
 // Plyometric moves in the programme (Task 5, ruling b). Two layers keep them where they belong:
-//  - the condition profile's gate (`allowRecord`): the jaw profile never allows one in recovery, when feeling off, or
-//    without an answered, calm check;
+//  - the condition profile's gate (`allowRecord`): the jaw profile never allows one in recovery or when feeling off
+//    (since 2026-10-23 it no longer asks for an answered, calm check);
 //  - the engine: a plyometric move is placed only on a jumping day (a theme that emphasises plyometric work), only
 //    from the athlete's frontier (no easier variant, or one already done), the next rung first, in one straight-set or
 //    superset block that plays after the warm-up and before the core lifts.
@@ -99,12 +99,11 @@ describe("the gate holds in every plan, jumping day or not", () => {
     expect(plans.flatMap(reach)).toEqual([]);
   });
 
-  test("a pre-check of 4: none in 200 seeded builds in consistent or build", () => {
-    expect(builds({ d: withTwins, mode: consistentOrBuild, check: () => ({ ...calm, pre: 4 }), themes: everyTheme, stress: true }).flatMap(reach)).toEqual([]);
-  });
-
-  test("an unanswered check: none in 200 seeded builds in consistent or build", () => {
-    expect(builds({ d: withTwins, mode: consistentOrBuild, check: () => ({ ...calm, pre: null }), themes: everyTheme, stress: true }).flatMap(reach)).toEqual([]);
+  test("no calm check any more (2026-10-23): a pre-check of 4, or none, lets a jumping day reach them in most of 200 builds", () => {
+    for (const pre of [4, null]) {
+      const plans = builds({ d: withTwins, mode: consistentOrBuild, check: () => ({ ...calm, pre }), themes: jumpingDay, stress: true });
+      expect(plans.filter(p => p.items.some(i => GATED.has(i.exercise.id))).length, String(pre)).toBeGreaterThan(100);
+    }
   });
 
   test("feeling off: none in 200 seeded builds, even with a calm check on a jumping day", () => {
@@ -115,6 +114,10 @@ describe("the gate holds in every plan, jumping day or not", () => {
 describe("only on a jumping day", () => {
   test("any other theme (or none): no plyometric move anywhere in 200 seeded builds, even calm, rated 👍, saved, new and allowed in every block", () => {
     expect(builds({ d: withTwins, mode: consistentOrBuild, check: () => calm, themes: nonJumping, stress: true }).flatMap(reach)).toEqual([]);
+    // Nor with the check high or unanswered: the jumping day, not the check, is what places them.
+    for (const pre of [4, null]) {
+      expect(builds({ d: withTwins, mode: consistentOrBuild, check: () => ({ ...calm, pre }), themes: nonJumping, stress: true }).flatMap(reach), String(pre)).toEqual([]);
+    }
   });
 
   test("the jumping day reaches them: a calm check on plyoIntro places plyometric moves in most builds", () => {
@@ -458,24 +461,20 @@ describe("a jumping day the gate empties says why, in the profile's words", () =
     today: "2026-11-02", day: { date: "2026-11-02", checks: { tmj: check }, override: { mode: "build", theme }, swaps: {} },
   }, program).view;
 
-  test("a check of 4, no check, feeling off: no jumps, and the theme's reason line says why", () => {
-    for (const [check, why] of [
-      [{ ...calm, pre: 4 }, "Jumps need a calm jaw (2 or less) — you're at 4."],
-      [{ ...calm, pre: null }, "Jumps need a jaw check first."],
-      [{ ...calm, feelingOff: true }, "No jumps while you're feeling off."],
-    ] as const) {
-      const v = view(check);
-      expect(v.theme?.id).toBe("plyoIntro");
-      expect(v.plan.items.some(i => isPlyometric(i.exercise))).toBe(false);
-      expect(v.themeReasons).toEqual([why]);
-    }
+  test("feeling off: no jumps, and the theme's reason line says why", () => {
+    const v = view({ ...calm, feelingOff: true });
+    expect(v.theme?.id).toBe("plyoIntro");
+    expect(v.plan.items.some(i => isPlyometric(i.exercise))).toBe(false);
+    expect(v.themeReasons).toEqual(["Jumps sit out while you're feeling off."]);
   });
 
-  test("a calm check: the jumps are there and no reason line is added; another theme never gets one", () => {
-    const calmDay = view(calm);
-    expect(calmDay.plan.items.some(i => isPlyometric(i.exercise))).toBe(true);
-    expect(calmDay.themeReasons).toEqual([]);
-    expect(view({ ...calm, pre: 4 }, "skiPrep").themeReasons).toEqual([]);
+  test("a calm check, a check of 4, or none: the jumps are there and no reason line is added; another theme never gets one", () => {
+    for (const check of [calm, { ...calm, pre: 4 }, { ...calm, pre: null }]) {
+      const v = view(check);
+      expect(v.plan.items.some(i => isPlyometric(i.exercise)), String(check.pre)).toBe(true);
+      expect(v.themeReasons, String(check.pre)).toEqual([]);
+    }
+    expect(view({ ...calm, feelingOff: true }, "skiPrep").themeReasons).toEqual([]);
   });
 });
 
@@ -497,9 +496,9 @@ describe("ready for the next: the harder variant only when today's gate and the 
     expect(suggest("consistent", calm)).toMatchObject({ action: "tempo", graduate: null });
   });
 
-  test("a check of 4 or feeling off: the gate refuses the tuck jump, so it isn't offered", () => {
-    expect(suggest("build", { ...calm, pre: 4 }, 3)).toMatchObject({ action: "tempo", graduate: null });
+  test("feeling off: the gate refuses the tuck jump, so it isn't offered; a check of 4 no longer does", () => {
     expect(suggest("build", { ...calm, feelingOff: true })).toMatchObject({ action: "tempo", graduate: null });
+    expect(suggest("build", { ...calm, pre: 4 }, 3)).toMatchObject({ action: "graduate", graduate: "tuckJump" });
   });
 
   test("the harder variant is on the frontier from the move just topped out: a one-way link never skips the ladder", () => {
@@ -629,7 +628,7 @@ describe("final review: rest and retry read every logged jump, swaps keep the se
     const off = plan({ tmj: calm }, true);
     expect(off.plan.items.some(i => isPlyometric(i.exercise))).toBe(false);
     expect(off.input.checks).toEqual({ tmj: { ...calm, feelingOff: true } });
-    expect(off.themeReasons).toEqual(["No jumps while you're feeling off."]);
+    expect(off.themeReasons).toEqual(["Jumps sit out while you're feeling off."]);
     // A profile with no check yet reads as unanswered and feeling off.
     expect(plan({}, true).input.checks).toEqual({ tmj: { pre: null, post: null, feelingOff: true } });
     // The day's own record is the day as the athlete left it.

@@ -1,6 +1,6 @@
 import { expect, test } from "vitest";
 import {
-  EXERCISES, LOCATION_PRESETS, MODE_IDS, coreFamilyOf, coverageProblems, eligible, flareSafe, makeEngineData, type EngineData,
+  EXERCISES, LOCATION_PRESETS, MODE_IDS, coreFamilyOf, coverageProblems, eligible, flareDay, flareSafe, makeEngineData, type EngineData,
 } from "../src/index.js";
 
 // Ported from the standalone tests/data.test.js: every block a mode uses must have real choices at every
@@ -24,7 +24,18 @@ for (const loc of LOCATION_PRESETS) {
           expect(n, `core family ${fam.id} has no option`).toBeGreaterThanOrEqual(1);
         }
       }
-      if (mode === "recovery") for (const ex of ok) expect(flareSafe(data, ex), `${ex.id} is not flare-safe`).toBe(true);
+      if (mode === "recovery") {
+        // A flare day's recovery takes flare-safe moves only, and still has real choices in every block it uses.
+        const flare = Object.fromEntries(data.profiles.active.map(p => [p.id, flareDay(p)]));
+        const onFlare = EXERCISES.filter(ex => eligible(data, ex, { equipment: loc.equipment, mode, checks: flare }));
+        for (const ex of onFlare) expect(flareSafe(data, ex), `${ex.id} is not flare-safe`).toBe(true);
+        for (const [block, share] of Object.entries(data.skeleton.shares[mode])) {
+          if (!share) continue;
+          const roles = data.skeleton.blocks[block as "care"]?.roles ?? [];
+          const n = onFlare.filter(ex => ex.roles.some(r => roles.includes(r))).length;
+          expect(n, `on a flare day, ${block} has ${n} candidates`).toBeGreaterThanOrEqual(3);
+        }
+      }
     });
   }
 }

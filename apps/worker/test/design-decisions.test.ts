@@ -242,12 +242,13 @@ describe("propose_plan: what the card says of the watch, and what the condition 
   });
 
   it("a lift session whose move today's condition check keeps out is refused in words, nothing written", async () => {
-    // Today's check reads high: jumps are closed today.
-    await db.insert(schema.conditionChecks).values({ id: newId(), userId: rich.userId, profileId: "tmj", kind: "pre", value: 7, localDate: TODAY, at: at(TODAY, "08:30") });
+    // Today's check reads high and the athlete feels off: jumps are closed today (since 2026-10-23 the number alone
+    // closes none).
+    await db.insert(schema.conditionChecks).values({ id: newId(), userId: rich.userId, profileId: "tmj", kind: "pre", value: 7, feelingOff: true, localDate: TODAY, at: at(TODAY, "08:30") });
     const r = await propose(block("lift", [{ date: TODAY, session: lift("Legs", ["Goblet squat", "Pogo hops"]) }], TODAY));
     const e = refused(r.res);
     expect(e.error).toBe("plan_refused");
-    expect(e.why).toMatch(/^The condition rules refuse it: Wed 13 May · Legs: Pogo hops isn't allowed with today's .+ check at 7\.$/);
+    expect(e.why).toMatch(/^The condition rules refuse it: Wed 13 May · Legs: Pogo hops isn't allowed while you're feeling off\.$/);
     expect(e.fix).toContain("plan_set");
     expect(r.writes).toBe(0);
     expect(r.count).toBeLessThanOrEqual(proposePlan.statementCost);

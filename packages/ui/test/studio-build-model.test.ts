@@ -46,14 +46,16 @@ import {
 } from "../src/screens/studio/build-model.js";
 import { emptyStudioCtx, studioCtxFrom, type MovePrefs, type StudioCtx } from "../src/screens/studio/model.js";
 import { libraryDto, profileDto, row, twoPlacesDto } from "./studio-fixtures.js";
+import { CHECK_GATED } from "./check-gated-profile.js";
 
 const TODAY = "2026-10-12";
 const rec = (id: string) => EXERCISES.find((r) => r.id === id)!;
 const prefs = (over: Partial<MovePrefs> = {}): MovePrefs => ({ rating: null, pinned: false, excluded: false, lastDoneOn: null, timesDone30d: 0, doneCleanly: false, ...over });
 
 const studio = (over: Partial<StudioCtx> = {}): StudioCtx => ({ ...emptyStudioCtx, today: TODAY, ...over });
+/** A day with a profile whose gate reads the check (TMJ's rule until 2026-10-23, `CHECK_GATED`): what the gating notes are held with. */
 const tmjCtx = (pre: number | null): StudioCtx =>
-  studio({ profiles: [PROFILES.tmj], readings: pre === null ? {} : { tmj: { pre, post: null, feelingOff: false } } });
+  studio({ profiles: [CHECK_GATED], readings: pre === null ? {} : { tmj: { pre, post: null, feelingOff: false } } });
 
 /** A structured draft, with these edits made. */
 function draft(...actions: EditAction[]): DraftDoc {
@@ -177,6 +179,21 @@ describe("the notes, and what they block", () => {
     expect(j.notes[0]!.check).toBeNull();
     expect(j.checks).toEqual([]);
     expect(j.blocked).toBe(j.notes[0]!.message);
+  });
+
+  it("with TMJ itself (since 2026-10-23) no check is asked: a press on a Develop day is fine unanswered or high; a Recover day refuses it by its mode", () => {
+    const real = (pre: number | null): StudioCtx => studio({ profiles: [PROFILES.tmj], readings: pre === null ? {} : { tmj: { pre, post: null, feelingOff: false } } });
+    const develop = draft({ type: "setIntent", intent: { effort: "develop" } }, into(1, "halfKneelingPress"));
+    for (const pre of [null, 3, 4]) {
+      const j = judgeDraft(develop, buildCtxOf(real(pre), TODAY), TODAY);
+      expect(j.notes.filter((n) => n.severity === "error"), String(pre)).toEqual([]);
+      expect(j.checks).toEqual([]);
+    }
+    const recover = draft({ type: "setIntent", intent: { effort: "recover" } }, into(1, "halfKneelingPress"));
+    const j = judgeDraft(recover, buildCtxOf(real(null), TODAY), TODAY);
+    expect(j.notes.find((n) => n.code === "condition_pattern")!.message).toBe("Half-kneeling one-arm press isn't allowed on a Recover day with TMJ.");
+    expect(j.checks).toEqual([]);
+    expect(j.blocked).toBe("Half-kneeling one-arm press isn't allowed on a Recover day with TMJ.");
   });
 
   it("a day ahead is judged as one: no check is asked for, the pending rule decides", () => {

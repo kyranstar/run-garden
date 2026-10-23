@@ -94,17 +94,22 @@ export interface ConditionProfile {
 
   // Exercise rules (everywhere the profile is active)
   never(a: Attrs): boolean;
-  fitsMode(a: Attrs, mode: Mode): boolean;
+  /**
+   * The mode's caps on the ratings. With the record — every reader that has one passes it — a profile may also judge the
+   * move by what it is (TMJ never holds neck and posture care work to its neck-load caps); without it, by its ratings
+   * alone.
+   */
+  fitsMode(a: Attrs, mode: Mode, ex?: ExerciseRecord): boolean;
   fitsFormat(a: Attrs, formatId: FormatId): boolean;
   allowPattern(pattern: Pattern, mode: Mode, today: CheckReading): boolean;
   /**
    * A rule on the whole record for today, beside `allowPattern` (optional; absent allows): for what one pattern can't
-   * say, e.g. "plyometric moves never in recovery, otherwise only with an answered, calm check".
+   * say, e.g. "plyometric moves never in recovery, nor while the athlete feels off".
    */
   allowRecord?(ex: ExerciseRecord, mode: Mode, today: CheckReading): boolean;
   /**
    * Why `allowRecord` holds this record back today, in the profile's own words (null when it allows it). The engine
-   * shows it when a day's theme lost its moves to the rule (e.g. a jumping day on an uncalm check).
+   * shows it when a day's theme lost its moves to the rule (e.g. a jumping day while the athlete feels off).
    */
   recordReason?(ex: ExerciseRecord, mode: Mode, today: CheckReading): string | null;
   coreCandidate(a: Attrs): boolean;
@@ -112,7 +117,8 @@ export interface ConditionProfile {
   flareSafe(a: Attrs): boolean;
   /**
    * The profile's flare definition (one-workout-system spec §6: "a flare (profile-defined)"): a day whose reading
-   * meets it is a flare day — counted on the Progress condition tile, and the day the flare-safe rules exist for.
+   * meets it is a flare day — counted on the Progress condition tile, and the day the flare-safe rules exist for: a
+   * recovery day on a flare reading takes flare-safe moves only (eligibility's `fitsMode` with the day's checks).
    */
   flare(reading: CheckReading): boolean;
 

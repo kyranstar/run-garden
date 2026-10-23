@@ -132,11 +132,12 @@ describe("today's condition fit", () => {
     }
   });
 
-  it("a move allowed with limits is care on a calm day, not today on a flare day or unanswered", () => {
+  it("a move allowed with limits is care on any day above recovery — answered or not — and not today on a flare day", () => {
+    // Overhead pressing needs no calm check since 2026-10-23.
     const press = rec("halfKneelingPress");
     expect(fitToday(press, tmj, reading(1))!.state).toBe("care");
+    expect(fitToday(press, tmj, reading(null))!.state).toBe("care");
     expect(fitToday(press, tmj, reading(8))!.state).toBe("not");
-    expect(fitToday(press, tmj, reading(null))!.state).toBe("not");
   });
 
   it("a flare day, or feeling off, is a recovery day: a move allowed only in harder sessions is not for today", () => {
@@ -151,16 +152,18 @@ describe("today's condition fit", () => {
 
   it("a jump says why it is not for today, in the profile's own words", () => {
     const jump = rec("landingStick");
-    const f = fitToday(jump, tmj, reading(null))!;
+    const f = fitToday(jump, tmj, reading(1, true))!;
     expect(f.state).toBe("not");
-    expect(f.reason).toBe(PROFILES.tmj.recordReason!(jump, "build", { pre: null, post: null, feelingOff: false }));
+    expect(f.reason).toBe(PROFILES.tmj.recordReason!(jump, "build", { pre: 1, post: null, feelingOff: true }));
     expect(fitToday(jump, tmj, reading(1))!.state).toBe("care");
-    expect(fitToday(jump, tmj, reading(1, true))!.state).toBe("not");
+    // No calm check any more (2026-10-23): unanswered, a jump is fine above recovery.
+    expect(fitToday(jump, tmj, reading(null))!.state).toBe("care");
   });
 
   it("a move the profile never allows says so by name", () => {
-    const clenching = { ...rec("gobletSquat"), conditions: { tmj: { clench: 3, neckLoad: 0, faceDown: false } } };
-    const f = fitToday(clenching, tmj, reading(0))!;
+    // A rating off its scale (clench 3 is build's since 2026-10-23, so no longer "never").
+    const unreadable = { ...rec("gobletSquat"), conditions: { tmj: { clench: 4, neckLoad: 0, faceDown: false } } };
+    const f = fitToday(unreadable, tmj, reading(0))!;
     expect(f.state).toBe("not");
     expect(f.reason).toBe("TMJ rules this move out.");
     // An unrated move fails closed, and says so — not left to a profile's own reader to happen to fail closed.

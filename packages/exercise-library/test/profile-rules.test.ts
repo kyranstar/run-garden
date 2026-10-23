@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import {
-  EXERCISES, FORMAT_IDS, MODE_IDS, PROFILES, TMJ,
+  EXERCISES, FORMAT_IDS, MODE_IDS, PROFILES, ROTATED_OUT_DAYS, TMJ,
   type Attrs, type CheckReading, type DescribedRule, type FormatId, type HistoryEntry, type HistorySession, type Mode, type ProposalCtx,
   type SessionChecks,
 } from "../src/index.js";
@@ -56,17 +56,17 @@ describe("describeRules — TMJ", () => {
   it("reads, exactly", () => {
     expect(lines).toEqual([
       { rule: "attributes", text: "a move with no rating for this profile. Every library move is rated clench 0–3, neckLoad 0–3 and faceDown (yes or no)." },
-      { rule: "never", text: "a move rated clench 3 or more, in every workout." },
-      { rule: "allowPattern", text: "overhead pressing (the push-v pattern), except in build mode with today's check answered at 2 or less." },
-      { rule: "allowRecord", text: "plyometric moves (jumps, hops, bounds, landings) in recovery mode, while the athlete feels off, or without today's check answered at 2 or less." },
-      { rule: "fitsMode", text: "a move above its mode's caps: recovery — clench ≤ 1, neckLoad ≤ 1, no face-down positions; consistent — clench ≤ 2, neckLoad ≤ 2, face-down allowed; build — clench ≤ 2, neckLoad ≤ 2, face-down allowed." },
-      { rule: "fitsFormat", text: "a move above its format's clench cap: clench ≤ 2 in straight sets, supersets and holds; clench ≤ 1 in circuits, ladders and flows." },
+      { rule: "never", text: "a move whose rating can't be read — a value missing or off its scale — in every workout." },
+      { rule: "allowPattern", text: "overhead pressing (the push-v pattern) in recovery mode." },
+      { rule: "allowRecord", text: "plyometric moves (jumps, hops, bounds, landings) in recovery mode or while the athlete feels off." },
+      { rule: "fitsMode", text: "a move above its mode's caps: recovery — clench ≤ 1, neckLoad ≤ 1, face-down allowed; consistent — clench ≤ 2, neckLoad ≤ 2, face-down allowed; build — clench ≤ 3, neckLoad ≤ 2, face-down allowed. Neck and posture care work (a \"Jaw care\" move, or one working the deep neck flexors) is never held to the neckLoad caps. Cue a face-down move: forehead on stacked hands or a towel — nothing presses on the jaw or cheek." },
+      { rule: "fitsFormat", text: "a move above its format's clench cap: clench ≤ 3 in straight sets and supersets; clench ≤ 1 in circuits, ladders and flows; clench ≤ 2 in holds. Cue a clench 3 move: breathe out through the effort, jaw soft." },
       { rule: "flare", text: "on a flare day — a check of 5 or more — a move that isn't flare-safe (flare-safe: clench ≤ 1, neckLoad ≤ 1, no face-down positions)." },
       { rule: "recoveryReason", text: "a mode above recovery when the athlete feels off, today's check is 5 or more, the last session's check rose by 2 or more, or 2 or more moves were flagged \"Clenched\" last session." },
-      { rule: "buildChecks", text: "build mode, unless all of these hold: a check of 2 or less — today's, else how the last session ended; no check of 5 or more in the past 7 days, and after-session checks averaging 3 or less; a clean last session — no move flagged \"Clenched\" and a rise of 1 or less." },
+      { rule: "buildChecks", text: "build mode, unless both hold: the jaw level — today's check, else how the last session ended — is answered and under 5; and the last session didn't leave it worse — today's check at most 2 above that session's before-check, or without today's check, that session's after-check at most 2 above its before-check." },
       { rule: "stepDownCause", text: "a move flagged \"Clenched\", or every move of a session whose check rose by 2 or more, steps down next time." },
       { rule: "holdReason", text: "hold a move rather than progress it when today's check is 5 or more, or 2 or more above the last session's before-check." },
-      { rule: "rotateReason", text: "a move flagged \"Clenched\" in 2 of its last 3 sessions rotates out." },
+      { rule: "rotateReason", text: "a move flagged \"Clenched\" in 2 of its last 3 sessions rotates out; it may come back 21 days after the session that rotated it out." },
       { rule: "care", text: "a \"Jaw care\" part in holds, about 27% of a recovery session (3–6 moves), 10% of a consistent one (1–3), 7% of a build one (1–3)." },
     ]);
   });
@@ -79,37 +79,51 @@ describe("describeRules — TMJ", () => {
     }
   });
 
-  it("never: the clench line the rule draws", () => {
-    expect(line("never")).toContain(`clench ${first(range(0, 3), (c) => TMJ.never(a(c)))} or more`);
+  it("never: no rating on the scale, only one off it", () => {
+    for (const c of range(0, 3)) expect(TMJ.never(a(c)), String(c)).toBe(false);
+    expect(TMJ.never(a(4))).toBe(true);
+    expect(line("never")).toContain("off its scale");
   });
 
-  it("allowPattern and allowRecord: the calm line overhead pressing and jumps draw", () => {
+  it("allowPattern and allowRecord: the modes and the day that close overhead pressing and jumps — never the check's number", () => {
     const plyo = EXERCISES.find((e) => e.contraction.includes("plyometric"))!;
-    expect(line("allowPattern")).toContain(`answered at ${last(range(0, 10), (pre) => TMJ.allowPattern("push-v", "build", reading(pre)))} or less`);
-    expect(line("allowRecord")).toContain(`answered at ${last(range(0, 10), (pre) => TMJ.allowRecord!(plyo, "build", reading(pre)))} or less`);
-    expect(TMJ.allowPattern("push-v", "consistent", reading(0))).toBe(false);
-    expect(TMJ.allowRecord!(plyo, "recovery", reading(0))).toBe(false);
+    const closedIn = (ok: (m: Mode) => boolean): Mode[] => (MODE_IDS as readonly Mode[]).filter((m) => !ok(m));
+    for (const pre of [null, ...range(0, 10)]) {
+      expect(closedIn((m) => TMJ.allowPattern("push-v", m, reading(pre))), String(pre)).toEqual(["recovery"]);
+      expect(closedIn((m) => TMJ.allowRecord!(plyo, m, reading(pre))), String(pre)).toEqual(["recovery"]);
+    }
+    expect(line("allowPattern")).toContain("in recovery mode");
+    expect(line("allowRecord")).toContain("in recovery mode");
     expect(TMJ.allowRecord!(plyo, "build", reading(0, { feelingOff: true }))).toBe(false);
+    expect(line("allowRecord")).toContain("feels off");
+    for (const l of [line("allowPattern"), line("allowRecord")]) expect(l).not.toMatch(/answered|or less/);
   });
 
-  it("fitsMode: each mode's caps", () => {
+  it("fitsMode: each mode's caps, the neck-work exemption and the face-down cue", () => {
     for (const mode of MODE_IDS as readonly Mode[]) {
       const clench = last(range(0, 3), (c) => TMJ.fitsMode(a(c), mode));
       const neck = last(range(0, 3), (n) => TMJ.fitsMode(a(0, n), mode));
       const faceDown = TMJ.fitsMode(a(0, 0, true), mode) ? "face-down allowed" : "no face-down positions";
       expect(line("fitsMode"), mode).toContain(`${mode} — clench ≤ ${clench}, neckLoad ≤ ${neck}, ${faceDown}`);
     }
+    const neckWork = EXERCISES.find((e) => e.id === "chinNodHold")!;
+    expect(TMJ.fitsMode(a(0, 3), "recovery", neckWork)).toBe(true);
+    expect(line("fitsMode")).toContain(`(a "${TMJ.care!.block.label}" move, or one working the deep neck flexors) is never held to the neckLoad caps`);
+    expect(line("fitsMode")).toContain("forehead on stacked hands or a towel — nothing presses on the jaw or cheek");
   });
 
-  it("fitsFormat: each format's cap", () => {
+  it("fitsFormat: each format's cap, and the cue for a top-clench move", () => {
     const words: Record<FormatId, string> = { straight: "straight sets", superset: "supersets", circuit: "circuits", ladder: "ladders", flow: "flows", holds: "holds" };
-    const segments = line("fitsFormat").replace(/^[^:]*: /, "").replace(/\.$/, "").split("; ");
+    const caps = line("fitsFormat").split(". ")[0]!;
+    const segments = caps.replace(/^[^:]*: /, "").replace(/\.$/, "").split("; ");
     for (const f of FORMAT_IDS) {
       const cap = last(range(0, 3), (c) => TMJ.fitsFormat(a(c), f));
       const segment = segments.find((s) => new RegExp(`(in |, | and )${words[f]}(,| and|$)`).test(s));
       expect(segment, f).toBeDefined();
       expect(segment, f).toMatch(new RegExp(`^clench ≤ ${cap} in `));
     }
+    const top = last(range(0, 3), (c) => FORMAT_IDS.some((f) => TMJ.fitsFormat(a(c), f)));
+    expect(line("fitsFormat")).toContain(`Cue a clench ${top} move: breathe out through the effort, jaw soft.`);
   });
 
   it("flare: the flare line and the flare-safe caps", () => {
@@ -130,17 +144,24 @@ describe("describeRules — TMJ", () => {
     expect(text).toContain(`${first(range(0, 10), (k) => TMJ.recoveryReason(ctx({ pre: 0, last: session("2026-09-28", { flagged: k }) })) !== null)} or more moves were flagged "${TMJ.setFlag!.label}"`);
   });
 
-  it("buildChecks: the calm level, the flared week, the week's after-checks, a clean last session", () => {
+  it("buildChecks: the level line, today against the last session, the last session's own rise — and nothing else", () => {
     const text = line("buildChecks");
     const fails = (c: ProposalCtx): boolean => TMJ.buildChecks(c).some(([ok]) => !ok);
-    const clean = session("2026-09-28", { pre: 0, post: 0 });
-    expect(text).toContain(`a check of ${last(range(0, 10), (lvl) => !fails(ctx({ pre: lvl, last: clean })))} or less`);
-    const weekWith = (pre: number) => [session("2026-09-25", { pre, post: 0 }), clean];
-    expect(text).toContain(`no check of ${first(range(0, 10), (pre) => fails(ctx({ pre: 0, week: weekWith(pre), last: clean })))} or more in the past 7 days`);
-    const weekPost = (post: number) => [session("2026-09-25", { pre: 0, post }), session("2026-09-26", { pre: post, post })];
-    expect(text).toContain(`averaging ${last(range(0, 10), (post) => !fails(ctx({ pre: 0, week: weekPost(post), last: clean })))} or less`);
-    expect(text).toContain(`a rise of ${last(range(0, 10), (r) => !fails(ctx({ pre: 0, week: [clean], last: session("2026-09-28", { pre: 0, post: r }) })))} or less`);
-    expect(fails(ctx({ pre: 0, week: [clean], last: session("2026-09-28", { pre: 0, post: 0, flagged: 1 }) }))).toBe(true);
+    // (a) The level, today's check else the last session's after-check: answered and under the line.
+    const level = first(range(0, 10), (lvl) => fails(ctx({ pre: lvl, last: null })));
+    expect(level).toBe(first(range(0, 10), (lvl) => fails(ctx({ pre: null, last: session("2026-09-28", { pre: lvl, post: lvl }) }))));
+    expect(text).toContain(`is answered and under ${level}`);
+    expect(fails(ctx({ pre: null, last: null }))).toBe(true);
+    // (b) Today against the last session's before-check; without today's check, that session's own rise.
+    const todayRise = last(range(0, 4), (d) => !fails(ctx({ pre: d, last: session("2026-09-28", { pre: 0, post: 0 }) })));
+    expect(text).toContain(`today's check at most ${todayRise} above that session's before-check`);
+    const ownRise = last(range(0, 4), (r) => !fails(ctx({ pre: null, last: session("2026-09-28", { pre: 0, post: r }) })));
+    expect(text).toContain(`that session's after-check at most ${ownRise} above its before-check`);
+    // The rules it no longer has: a flare earlier in the week, the week's after-checks, a flagged move last session.
+    const lastClean = session("2026-09-28", { pre: 0, post: 0 });
+    expect(fails(ctx({ pre: 0, week: [session("2026-09-25", { pre: 9, post: 9 }), lastClean], last: lastClean }))).toBe(false);
+    expect(fails(ctx({ pre: 0, last: session("2026-09-28", { pre: 0, post: 0, flagged: 1 }) }))).toBe(false);
+    expect(text).not.toMatch(/7 days|averag|flagged/);
   });
 
   it("stepDownCause: the flag and the rise that step a move down", () => {
@@ -163,6 +184,8 @@ describe("describeRules — TMJ", () => {
     // The window: the furthest back the last of `flags` consecutive flags can sit and still rotate the move.
     const window = last(range(flags - 1, 7), (end) => TMJ.rotateReason(log(range(end - flags + 1, end))) !== null) + 1;
     expect(line("rotateReason")).toContain(`in ${flags} of its last ${window} sessions`);
+    // The engine's rest for a rotated-out lift (`Blocks.ensure` reads the same constant).
+    expect(line("rotateReason")).toContain(`it may come back ${ROTATED_OUT_DAYS} days after the session that rotated it out`);
   });
 
   it("care: the care block's label, formats and shares", () => {

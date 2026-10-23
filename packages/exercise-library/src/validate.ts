@@ -1,7 +1,8 @@
 import { PROFILES } from "./conditions/index.js";
 import type { ConditionProfile } from "./conditions/types.js";
-import { coreFamilyOf, eligible, flareSafe } from "./eligibility.js";
+import { coreFamilyOf, eligible, flareDay, flareSafe } from "./eligibility.js";
 import type { EngineData } from "./engine-data.js";
+import type { ExerciseRecord } from "./record.js";
 import { LOCATION_PRESETS, type LocationPreset } from "./equipment.js";
 import {
   CONTRACTIONS, DOSE_TYPES, EQUIPMENT_IDS, LATERALITY, LOAD_IMPLEMENTS, LOADS, MODE_IDS, MUSCLES, MUSCLE_REGION, PATTERNS, POSITIONS, PURPOSES, REGIONS, ROLES, TAGS, type Mode, type MuscleId,
@@ -209,22 +210,31 @@ export function validateLibrary(data: EngineData, options: ValidateOptions = {})
 
 /**
  * Every block a mode uses has real choices at this location: at least 3 candidates per timed block, an
- * option for every core family when the mode has core lifts, and nothing unsafe on a flare day in recovery.
+ * option for every core family when the mode has core lifts, and on a flare day in recovery, nothing that isn't
+ * flare-safe and still 3 candidates per block.
  */
 export function coverageProblems(data: EngineData, loc: Pick<LocationPreset, "equipment">, mode: Mode): string[] {
   const problems: string[] = [];
+  const timedBlocks = (on: readonly ExerciseRecord[], prefix: string): void => {
+    for (const [block, share] of Object.entries(data.skeleton.shares[mode])) {
+      if (!share || block === "core") continue;
+      const roles: readonly string[] = data.skeleton.blocks[block as keyof typeof data.skeleton.blocks]?.roles ?? [];
+      const n = on.filter(ex => ex.roles.some(r => roles.includes(r))).length;
+      if (n < 3) problems.push(`${prefix}${block} has ${n} candidates`);
+    }
+  };
   const ok = data.exercises.filter(ex => eligible(data, ex, { equipment: loc.equipment, mode }));
-  for (const [block, share] of Object.entries(data.skeleton.shares[mode])) {
-    if (!share || block === "core") continue;
-    const roles: readonly string[] = data.skeleton.blocks[block as keyof typeof data.skeleton.blocks]?.roles ?? [];
-    const n = ok.filter(ex => ex.roles.some(r => roles.includes(r))).length;
-    if (n < 3) problems.push(`${block} has ${n} candidates`);
-  }
+  timedBlocks(ok, "");
   if (data.modes[mode].coreCount[1]) {
     for (const fam of data.coreFamilies) {
       if (!ok.some(ex => coreFamilyOf(data, ex) === fam.id)) problems.push(`core family ${fam.id} has no option`);
     }
   }
-  if (mode === "recovery") for (const ex of ok) if (!flareSafe(data, ex)) problems.push(`${ex.id} is not flare-safe`);
+  if (mode === "recovery") {
+    const flare = Object.fromEntries(data.profiles.active.map(p => [p.id, flareDay(p)]));
+    const onFlare = data.exercises.filter(ex => eligible(data, ex, { equipment: loc.equipment, mode, checks: flare }));
+    for (const ex of onFlare) if (!flareSafe(data, ex)) problems.push(`${ex.id} is not flare-safe`);
+    timedBlocks(onFlare, "on a flare day, ");
+  }
   return problems;
 }

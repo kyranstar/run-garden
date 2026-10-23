@@ -57,7 +57,7 @@ import {
   type EquipmentId,
   type FormatId,
 } from "@rg/exercise-library";
-import { FORMAT_OF_PART, modeOfEffort } from "@rg/workout";
+import { FORMAT_OF_PART, gatesReadTheCheck as gatesOpenedByCheck, modeOfEffort } from "@rg/workout";
 import { runWireOf, type Env } from "../env.js";
 import { latestReading, readingsOfDay } from "./condition-views.js";
 import type { Db } from "./db.js";
@@ -683,10 +683,10 @@ const PROFILE_FORMAT_WORDS: Record<FormatId, string> = {
   straight: "straight sets", superset: "supersets", circuit: "circuits", ladder: "ladders", flow: "flows", holds: "holds",
 };
 
-/** Whether a profile has a gate that reads the day's check (a refusal it lifts only on an answered check): without a
- * check today, what such a gate closes stays closed (validate.ts reads an unanswered check as not calm). */
-export function gatesReadTheCheck(p: Pick<ConditionProfile, "describeRules">): boolean {
-  return p.describeRules().some((l) => l.rule === "allowPattern" || l.rule === "allowRecord");
+/** Whether a profile has a gate an answered check today could open (the validator's own probe of the profile's rules,
+ * `@rg/workout`): without a check today, what such a gate closes stays closed. Since 2026-10-23 TMJ has none. */
+export function gatesReadTheCheck(p: ConditionProfile): boolean {
+  return gatesOpenedByCheck(p, EXERCISES);
 }
 
 function conditionsSection(r: Reads, role: Role): string[] {

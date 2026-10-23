@@ -53,8 +53,9 @@ async function create(doc: WorkoutDoc, date = today): Promise<string> {
   return res.body.workout.id;
 }
 
-const check = async (value: number) => {
-  const res = await call("POST", "/api/conditions/checks", { profileId: "tmj", value, feelingOff: false });
+/** Today's jaw check. Since 2026-10-23 a jump is closed only on a recovery day or while feeling off: the tests that close one say so. */
+const check = async (value: number, feelingOff = false) => {
+  const res = await call("POST", "/api/conditions/checks", { profileId: "tmj", value, feelingOff });
   expect(res.status).toBe(200);
 };
 
@@ -330,7 +331,7 @@ describe("building a document workout", () => {
     };
     const id = await create(doc);
     expect((await rowOf(id)).sport).toBe("strength");
-    await check(6);
+    await check(6, true);
     const built = await call("POST", `/api/sessions/${id}/build`, {});
     expect(built.body.build.fromDoc.swaps.map((x: { to: string }) => x.to)).toEqual(["catCow"]);
     const started = await call("POST", `/api/sessions/${id}/start`, { buildId: built.body.build.buildId });
@@ -443,21 +444,9 @@ describe("⇄ keeps the athlete's jump frontier and one new jump a session (Stag
     expect(build.items.find((i: { exerciseId: string }) => i.exerciseId === "snapDown").fresh).toBeUndefined();
   });
 
-  it("the day's own swap never stands in a jump past the frontier: the next alternate does", async () => {
-    await activateTmj(db, userId);
-    await check(1);
-    // A press the day keeps out on a Maintain day (overhead pressing is a Develop day's), planned with a box jump the
-    // athlete has not reached (its snap-down never done) and a tempo squat.
-    const doc = workoutDocSchema.parse({
-      ...calmDoc(),
-      parts: [{ purpose: "main", format: "straight", items: [
-        { kind: "exercise", libraryId: "halfKneelingPress", dose: { sets: 2, reps: 8 }, alternates: [{ libraryId: "boxJumpStepDown" }, { libraryId: "tempoSquat" }] },
-      ] }],
-    });
-    const build = (await call("POST", `/api/sessions/${await create(doc)}/build`, { checks: { tmj: { pre: 1, feelingOff: false } } })).body.build;
-    expect(build.fromDoc.swaps.map((s: { from: string; to: string }) => [s.from, s.to])).toEqual([["halfKneelingPress", "tempoSquat"]]);
-    expect(offeredIn(build)).not.toContain("boxJumpStepDown");
-  });
+  // "The day's own swap never stands in a jump past the frontier" is held in doc-build-gate.test.ts (gateDoc), with a
+  // profile that closes overhead pressing today: since 2026-10-23 TMJ closes no move today that leaves jumps open, so
+  // no TMJ day reaches that path through the API.
 
   it("the jumps done are among the build's inputs: a rung done since makes the stored build stale", async () => {
     await activateTmj(db, userId);
@@ -518,7 +507,7 @@ describe("Start re-gates with the day's reading", () => {
     const built = await call("POST", `/api/sessions/${id}/build`, {});
     expect(movesOf(built.body.build.steps)).toEqual(["snapDown", "bwSplitSquat"]);
 
-    await check(6);
+    await check(6, true);
     const stale = await call("POST", `/api/sessions/${id}/start`, { buildId: built.body.build.buildId });
     expect(stale.status).toBe(409);
     expect(stale.body.error).toBe("stale");
@@ -539,7 +528,7 @@ describe("Start re-gates with the day's reading", () => {
   it("with no passing alternate Start refuses with the issues, and nothing locks", async () => {
     const id = await create(landingsDoc({ alternates: false }));
     const built = await call("POST", `/api/sessions/${id}/build`, {});
-    await check(6);
+    await check(6, true);
     const refused = await call("POST", `/api/sessions/${id}/start`, { buildId: built.body.build.buildId });
     expect(refused.status).toBe(409);
     expect(refused.body.error).toBe("gated");
@@ -557,7 +546,7 @@ describe("Start re-gates with the day's reading", () => {
 
   it("a build made once the day's check closed a move already holds the swap, and Start locks it as shown", async () => {
     const id = await create(landingsDoc());
-    await check(6);
+    await check(6, true);
     const built = await call("POST", `/api/sessions/${id}/build`, {});
     expect(built.body.build.fromDoc.swaps).toHaveLength(1);
     expect(movesOf(built.body.build.steps)).toEqual(["tempoSquat", "bwSplitSquat"]);
@@ -566,8 +555,8 @@ describe("Start re-gates with the day's reading", () => {
 
   it("the sheet's own pre-check is the day's reading too", async () => {
     const id = await create(landingsDoc());
-    const built = await call("POST", `/api/sessions/${id}/build`, { checks: { tmj: { pre: 7, feelingOff: false } } });
-    expect(built.body.checks).toEqual({ tmj: { pre: 7, feelingOff: false } });
+    const built = await call("POST", `/api/sessions/${id}/build`, { checks: { tmj: { pre: 7, feelingOff: true } } });
+    expect(built.body.checks).toEqual({ tmj: { pre: 7, feelingOff: true } });
     expect(built.body.build.fromDoc.swaps.map((s: { to: string }) => s.to)).toEqual(["tempoSquat"]);
   });
 
@@ -586,7 +575,7 @@ describe("Start re-gates with the day's reading", () => {
       id: `push:${built.body.build.buildId}`, userId, workoutId: id, kind: "program_session_push", expectedContentFingerprint: "fp",
       originalDate: today, destinationDate: today, requestedAt: nowInstant(), updatedAt: nowInstant(), status: "verified",
     });
-    await check(6);
+    await check(6, true);
     // Something else the payload holds (a stamp another request wrote) is never rewritten by the trim.
     await db.update(sessionBuilds).set({ payload: sql`json_set(${sessionBuilds.payload}, '$.stamp', 'kept')` }).where(eq(sessionBuilds.id, built.body.build.buildId));
     statements.length = 0;
@@ -612,7 +601,7 @@ describe("Start re-gates with the day's reading", () => {
     const built = await call("POST", `/api/sessions/${id}/build`, {});
     const second = await call("POST", `/api/sessions/${other}/build`, {});
     await lockCurrentBuild(db, userId, id, built.body.build.buildId, nowInstant(), { as: "send", prefs });
-    await check(6);
+    await check(6, true);
     // A push names the sent build (the watch switch is off in tests, so the job is written by hand).
     await db.insert(schema.corosWriteJobs).values({
       id: `push:${built.body.build.buildId}`, userId, workoutId: id, kind: "program_session_push", expectedContentFingerprint: "fp",

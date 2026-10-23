@@ -40,7 +40,8 @@ let rich: Awaited<ReturnType<typeof seedRichAthlete>>;
 async function athlete(o: { highToday?: boolean; note?: string } = {}) {
   const a = await seedRichAthlete(db);
   if (o.highToday) {
-    await db.insert(schema.conditionChecks).values({ id: newId(), userId: a.userId, profileId: "tmj", kind: "pre", value: 7, localDate: TODAY, at: at(TODAY, "08:30") });
+    // A 7 and feeling off: since 2026-10-23 that (not the number) is what closes a jump today.
+    await db.insert(schema.conditionChecks).values({ id: newId(), userId: a.userId, profileId: "tmj", kind: "pre", value: 7, feelingOff: true, localDate: TODAY, at: at(TODAY, "08:30") });
   }
   if (o.note) {
     await db.insert(schema.performedSessions).values({

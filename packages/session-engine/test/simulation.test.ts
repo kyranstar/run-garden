@@ -9,7 +9,7 @@ import { data, gym, home } from "./builder-fixtures.js";
 const pairable = (a: ExerciseRecord, b: ExerciseRecord) => a.dose.type === "reps" && b.dose.type === "reps" &&
   !a.patterns.some(p => b.patterns.includes(p)) && Vocab.positionGroup(a.position) === Vocab.positionGroup(b.position);
 
-interface Run { today: string; mode: Mode; minutes: number; plan: BuildResult; equipment: readonly string[]; blockNumber: number; blockStart: string }
+interface Run { today: string; mode: Mode; pre: number; minutes: number; plan: BuildResult; equipment: readonly string[]; blockNumber: number; blockStart: string }
 
 // 12 weeks of plausible use: 2–5 sessions a week, occasional 2–3 day flares, a few ratings.
 function simulate(seed: string): { sessions: HistorySession[]; runs: Run[] } {
@@ -33,7 +33,7 @@ function simulate(seed: string): { sessions: HistorySession[]; runs: Run[] } {
     const location = rng() < 0.2 ? gym : home;
     const minutes = [15, 30, 30, 40][Math.floor(rng() * 4)]!;
     const plan = Builder.build(data, { today, mode, theme, minutes, location, unit: "lb", sessions, prefs, block, checks, swaps: {} });
-    runs.push({ today, mode, minutes, plan, equipment: location.equipment, blockNumber: block.number, blockStart: block.startedAt });
+    runs.push({ today, mode, pre, minutes, plan, equipment: location.equipment, blockNumber: block.number, blockStart: block.startedAt });
     const entries = plan.items.filter(it => it.target).map(it => ({
       id: it.exercise.id, implement: null, perSide: false, format: it.format,
       flags: rng() < 0.04 ? ["clenched"] : [],
@@ -54,14 +54,20 @@ function simulate(seed: string): { sessions: HistorySession[]; runs: Run[] } {
   return { sessions, runs };
 }
 
+test("the simulations meet flare days in recovery, so each seed's flare-safe check bites somewhere", () => {
+  const flareRecoveries = ["alpha", "bravo", "charlie"].flatMap(seed => simulate(seed).runs).filter(r => r.mode === "recovery" && r.pre >= 5);
+  expect(flareRecoveries.length).toBeGreaterThan(0);
+});
+
 for (const seed of ["alpha", "bravo", "charlie"]) {
   const { sessions, runs } = simulate(seed);
 
-  test(`simulation ${seed}: every session fits its time and recovery stays flare-safe`, () => {
+  test(`simulation ${seed}: every session fits its time and a flare day's recovery stays flare-safe`, () => {
     expect(runs.length, `${runs.length} sessions`).toBeGreaterThanOrEqual(30);
     for (const r of runs) {
       expect(r.plan.plannedSeconds, `${r.today} over budget`).toBeLessThanOrEqual(r.minutes * 60);
-      if (r.mode === "recovery") expect(r.plan.items.every(i => Lib.flareSafe(data, i.exercise)), `${r.today} recovery has a non-flare-safe move`).toBe(true);
+      // Since 2026-10-23 recovery takes face-down positions; a flare day (a check of 5 or more) stays flare-safe.
+      if (r.mode === "recovery" && r.pre >= 5) expect(r.plan.items.every(i => Lib.flareSafe(data, i.exercise)), `${r.today} a flare day's recovery has a non-flare-safe move`).toBe(true);
     }
   });
 

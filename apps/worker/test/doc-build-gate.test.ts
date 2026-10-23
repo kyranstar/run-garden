@@ -14,11 +14,14 @@ import { fileURLToPath } from "node:url";
 
 const DAY = "2026-10-07";
 
-/** TMJ on, the jaw at `pre` today. */
-const ctxAt = (pre: number | null): ValidateCtx => ({
+/**
+ * TMJ on, the jaw at `pre` today, and feeling off or not. Since 2026-10-23 the jaw's gate keeps jumps out only on a
+ * recovery day or while feeling off, so a day that closes them here is a high reading and feeling off.
+ */
+const ctxAt = (pre: number | null, feelingOff = false): ValidateCtx => ({
   library: EXERCISES,
   activeProfiles: [PROFILES.tmj],
-  day: { date: DAY, today: DAY, readings: pre === null ? {} : { tmj: { pre, post: null, feelingOff: false } } },
+  day: { date: DAY, today: DAY, readings: pre === null ? {} : { tmj: { pre, post: null, feelingOff } } },
 });
 
 function withPower(items: unknown[]): WorkoutDoc {
@@ -43,7 +46,7 @@ describe("gateDoc", () => {
         { purpose: "accessory", format: "straight", items: [{ kind: "exercise", libraryId: "bridge", dose: { sets: 2, reps: 10 }, alternates: [{ libraryId: "snapDown" }, { libraryId: "deadBug" }] }] },
       ],
     });
-    const gated = gateDoc(main, ctxAt(6));
+    const gated = gateDoc(main, ctxAt(6, true));
     expect(gated.swaps).toEqual([]);
     expect(gated.blocked).toEqual([]);
     expect(gated.doc.parts[1]!.items[0]).toEqual({ kind: "exercise", libraryId: "bridge", dose: { sets: 2, reps: 10 }, alternates: [{ libraryId: "deadBug" }] });
@@ -61,7 +64,7 @@ describe("gateDoc", () => {
         alternates: [{ libraryId: "pogoHop", why: "Another jump." }, { libraryId: "tempoSquat", why: "No landing." }, { libraryId: "bwSplitSquat" }],
       },
     ]);
-    const gated = gateDoc(doc, ctxAt(6));
+    const gated = gateDoc(doc, ctxAt(6, true));
     expect(gated.swaps).toEqual([{ path: "parts[0].items[0]", from: "snapDown", to: "tempoSquat", reason: expect.any(String) }]);
     expect(gated.doc.parts[0]!.items[0]).toEqual({
       kind: "exercise",
@@ -81,11 +84,11 @@ describe("gateDoc", () => {
       { kind: "exercise", libraryId: "snapDown", dose: { sets: 2, reps: 5 }, alternates: [{ libraryId: "tempoSquat" }, { libraryId: "bwSplitSquat" }] },
     ]);
     // Set aside, tempo squats cost a warning: the split squat, clean, stands in.
-    const setAside: ValidateCtx = { ...ctxAt(6), excluded: ["tempoSquat"] };
+    const setAside: ValidateCtx = { ...ctxAt(6, true), excluded: ["tempoSquat"] };
     expect(gateDoc(doc, setAside).swaps.map((s) => s.to)).toEqual(["bwSplitSquat"]);
     // Every alternate costs something: the first the day allows.
-    expect(gateDoc(doc, { ...ctxAt(6), excluded: ["tempoSquat", "bwSplitSquat"] }).swaps.map((s) => s.to)).toEqual(["tempoSquat"]);
-    expect(gateDoc(doc, ctxAt(6)).swaps.map((s) => s.to)).toEqual(["tempoSquat"]);
+    expect(gateDoc(doc, { ...ctxAt(6, true), excluded: ["tempoSquat", "bwSplitSquat"] }).swaps.map((s) => s.to)).toEqual(["tempoSquat"]);
+    expect(gateDoc(doc, ctxAt(6, true)).swaps.map((s) => s.to)).toEqual(["tempoSquat"]);
   });
 
   it("a gated item with no passing alternate is blocked, while another item's swap still stands", () => {
@@ -93,19 +96,39 @@ describe("gateDoc", () => {
       { kind: "exercise", libraryId: "snapDown", dose: { sets: 2, reps: 5 }, alternates: [{ libraryId: "tempoSquat" }] },
       { kind: "exercise", libraryId: "pogoHop", dose: { sets: 2, reps: 10 }, alternates: [{ libraryId: "lineHopForwardBack" }] },
     ]);
-    const gated = gateDoc(doc, ctxAt(6));
+    const gated = gateDoc(doc, ctxAt(6, true));
     expect(gated.swaps.map((s) => s.path)).toEqual(["parts[0].items[0]"]);
     expect(gated.blocked.map((i) => [i.path, i.code])).toEqual([["parts[0].items[1].libraryId", "condition_gate"]]);
     expect(gated.blocked.every((i) => i.severity === "error")).toBe(true);
   });
 
-  it("an unanswered check keeps a jump out too (unanswered is not allowed)", () => {
-    expect(gateDoc(landingsDoc(), ctxAt(null)).swaps.map((s) => s.to)).toEqual(["tempoSquat"]);
+  it("an unanswered check keeps no jump out any more (2026-10-23): the jaw's gate reads only feeling off and the mode", () => {
+    expect(gateDoc(landingsDoc(), ctxAt(null))).toEqual({ doc: landingsDoc(), swaps: [], blocked: [] });
+    expect(gateDoc(landingsDoc(), ctxAt(4))).toEqual({ doc: landingsDoc(), swaps: [], blocked: [] });
+    // Feeling off, with no number, does.
+    expect(gateDoc(landingsDoc(), { ...ctxAt(null), day: { date: DAY, today: DAY, readings: {}, feelingOff: true } }).swaps.map((s) => s.to)).toEqual(["tempoSquat"]);
+  });
+
+  it("the day's own swap never stands in a jump past the frontier: the next alternate does", () => {
+    // A profile that closes overhead pressing today while jumps stay open (TMJ no longer has such a gate, 2026-10-23).
+    const pressClosed: ValidateCtx = { ...ctxAt(1), activeProfiles: [{ ...PROFILES.tmj, allowPattern: (p) => p !== "push-v" }] };
+    const doc = workoutDocSchema.parse({
+      ...calmDoc(),
+      parts: [{ purpose: "main", format: "straight", items: [
+        { kind: "exercise", libraryId: "halfKneelingPress", dose: { sets: 2, reps: 8 }, alternates: [{ libraryId: "boxJumpStepDown" }, { libraryId: "tempoSquat" }] },
+      ] }],
+    });
+    // The box jump's snap-down never done: past the frontier, so the tempo squat stands in.
+    const notReached = gateDoc(doc, { ...pressClosed, day: { ...pressClosed.day!, done: new Set<string>() } });
+    expect(notReached.swaps.map((s) => [s.from, s.to])).toEqual([["halfKneelingPress", "tempoSquat"]]);
+    // Its rungs below done: the box jump, first, stands in.
+    const reached = gateDoc(doc, { ...pressClosed, day: { ...pressClosed.day!, done: new Set(["snapDown", "landingStick"]) } });
+    expect(reached.swaps.map((s) => [s.from, s.to])).toEqual([["halfKneelingPress", "boxJumpStepDown"]]);
   });
 
   it("an alternate that is the item's own move is no stand-in", () => {
     const doc = withPower([{ kind: "exercise", libraryId: "snapDown", dose: { sets: 2, reps: 5 }, alternates: [{ libraryId: "snapDown" }] }]);
-    const gated = gateDoc(doc, ctxAt(6));
+    const gated = gateDoc(doc, ctxAt(6, true));
     expect(gated.swaps).toEqual([]);
     expect(gated.blocked.map((i) => i.code)).toEqual(["condition_gate"]);
   });
@@ -133,7 +156,7 @@ describe("judgeDoc (a save's judgement)", () => {
     const doc = withPower([
       { kind: "exercise", libraryId: "snapDown", dose: { sets: 2, reps: 5 }, alternates: [{ libraryId: "pogoHop" }, { libraryId: "tempoSquat" }] },
     ]);
-    const judged = judgeDoc(doc, ctxAt(6));
+    const judged = judgeDoc(doc, ctxAt(6, true));
     expect(judged.errors).toEqual([]);
     const name = EXERCISES.find((e) => e.id === "tempoSquat")!.name;
     expect(judged.warnings).toContainEqual(
@@ -144,7 +167,7 @@ describe("judgeDoc (a save's judgement)", () => {
   });
 
   it("today: what no alternate answers is the error", () => {
-    const judged = judgeDoc(landingsDoc({ alternates: false }), ctxAt(6));
+    const judged = judgeDoc(landingsDoc({ alternates: false }), ctxAt(6, true));
     expect(judged.errors.map((i) => [i.path, i.code, i.severity])).toEqual([["parts[0].items[0].libraryId", "condition_gate", "error"]]);
   });
 
@@ -276,7 +299,7 @@ describe("materializeDocBuild", () => {
         ] }],
       });
       // TMJ at 6: the jump is kept out; the split squat is set aside by the athlete (a warning: a cost, not a block).
-      const judge: ValidateCtx = { ...ctxAt(6), excluded: ["bwSplitSquat"] };
+      const judge: ValidateCtx = { ...ctxAt(6, true), excluded: ["bwSplitSquat"] };
       const made = materializeDocBuild(planned, input(judge));
       const alternates = made.slots["core:0"]!.alternates!;
       expect(alternates.map((a) => a.id)).toEqual(["gobletSquat", "bwSplitSquat"]);
@@ -350,8 +373,8 @@ describe("materializeDocBuild", () => {
       }
       // Planned, it comes after the clean ones, saying why — the validator alone would have called it clean.
       const planned = upper([{ libraryId: "proneYTW" }, { libraryId: "deadBug" }]);
-      expect(validateWorkoutDoc(planned, ctxAt(6)).filter((i) => i.path.startsWith("parts[0].items[0].alternates[0]"))).toEqual([]);
-      const alternates = materializeDocBuild(planned, input(ctxAt(6))).slots["core:0"]!.alternates!;
+      expect(validateWorkoutDoc(planned, ctxAt(6, true)).filter((i) => i.path.startsWith("parts[0].items[0].alternates[0]"))).toEqual([]);
+      const alternates = materializeDocBuild(planned, input(ctxAt(6, true))).slots["core:0"]!.alternates!;
       expect(alternates.map((a) => a.id)).toEqual(["deadBug", "proneYTW"]);
       expect(alternates[1]!.reasons.join(" ")).toMatch(/flare/);
     });
@@ -388,10 +411,10 @@ describe("materializeDocBuild", () => {
       const cued = withPower([
         { kind: "exercise", libraryId: "snapDown", dose: { sets: 2, reps: 5 }, cue: "Land soft.", alternates: [{ libraryId: "tempoSquat" }] },
       ]);
-      const gated = gateDoc(cued, ctxAt(6));
+      const gated = gateDoc(cued, ctxAt(6, true));
       expect(gated.swaps.map((s) => s.to)).toEqual(["tempoSquat"]);
       expect(gated.doc.parts[0]!.items[0]).not.toHaveProperty("cue");
-      expect(materializeDocBuild(gated.doc, input(ctxAt(6))).slots["accessory:0"]?.cue).toBeUndefined();
+      expect(materializeDocBuild(gated.doc, input(ctxAt(6, true))).slots["accessory:0"]?.cue).toBeUndefined();
       // Played as written, the cue stays.
       expect(materializeDocBuild(cued, input(ctxAt(1))).slots["accessory:0"]?.cue).toBe("Land soft.");
     });
@@ -538,8 +561,8 @@ describe("the materialised build the player's tests play (packages/ui/test/playe
         { kind: "exercise", libraryId: "deadBug", dose: { sets: 2, reps: 8, restSec: 30 } },
       ] }],
     });
-    // TMJ at 6 (a flare; jumps kept out), the split squat set aside by the athlete.
-    const judge: ValidateCtx = { ...ctxAt(6), excluded: ["bwSplitSquat"] };
+    // TMJ at 6 (a flare) and feeling off (jumps kept out), the split squat set aside by the athlete.
+    const judge: ValidateCtx = { ...ctxAt(6, true), excluded: ["bwSplitSquat"] };
     const made = materializeDocBuild(doc, { date: DAY, location, checks: {}, library: EXERCISES, judge });
     const fixture: unknown = JSON.parse(readFileSync(fileURLToPath(new URL("../../../packages/ui/test/player/doc-build-fixture.json", import.meta.url)), "utf8"));
     expect({
@@ -560,14 +583,14 @@ describe("slotsForDay (Start of a build sent to the watch)", () => {
     });
     const sent = materializeDocBuild(doc, { date: DAY, location, checks: {}, library: EXERCISES, judge: ctxAt(1) }).slots;
     expect(sent["core:0"]!.alternates!.map((a) => a.id)).toEqual(["snapDown", "bwSplitSquat"]);
-    const now = slotsForDay(sent, doc, ctxAt(6));
+    const now = slotsForDay(sent, doc, ctxAt(6, true));
     expect(now["core:0"]!.alternates!.map((a) => a.id)).toEqual(["bwSplitSquat"]);
     expect(now["core:0"]!.cue).toBe("Slow down.");
     // An offer stays only when it costs nothing in the item's place today (whole-branch M-2): any issue takes it off.
     const shut = (now["core:0"]!.offers ?? []).map((o) => o.id);
     for (const o of sent["core:0"]!.offers ?? []) {
       const probe = workoutDocSchema.parse({ ...doc, parts: [{ ...doc.parts[0]!, items: [{ ...doc.parts[0]!.items[0]!, libraryId: o.id, alternates: undefined }] }] });
-      const costs = validateWorkoutDoc(probe, ctxAt(6)).some((i) => i.path === "parts[0].items[0].libraryId");
+      const costs = validateWorkoutDoc(probe, ctxAt(6, true)).some((i) => i.path === "parts[0].items[0].libraryId");
       expect(shut.includes(o.id), o.id).toBe(!costs);
     }
     // The same day: nothing changes.
@@ -592,7 +615,7 @@ describe("slotsForDay (Start of a build sent to the watch)", () => {
     // Sent on a calm day: the prone Y-T-W is offered, the planned alternate costs nothing.
     expect((sent["core:0"]!.offers ?? []).map((o) => o.id)).toContain("proneYTW");
     expect(sent["core:0"]!.alternates!.map((a) => [a.id, a.reasons])).toEqual([["pushupPullThrough", ["A push and a pull."]]]);
-    const now = slotsForDay(sent, doc, ctxAt(6));
+    const now = slotsForDay(sent, doc, ctxAt(6, true));
     // Started on a flare day: the Y-T-W is not flare-safe — a cost, so no longer an offer.
     expect((now["core:0"]!.offers ?? []).map((o) => o.id)).not.toContain("proneYTW");
     const alt = now["core:0"]!.alternates![0]!;
@@ -619,7 +642,7 @@ describe("a document saved with run segments among its moves (before designed ru
   it("a save refuses it, today or ahead", () => {
     expect(judgeDoc(mixed(), ctxAt(1)).errors.map((i) => i.code)).toEqual(["run_mixed"]);
     // On a day a gate refuses a move (the save's own swap pass), it is still refused, never turned into a warning.
-    const today = judgeDoc(mixed(), ctxAt(9));
+    const today = judgeDoc(mixed(), ctxAt(9, true));
     expect(today.errors.map((i) => i.code)).toContain("run_mixed");
     expect(today.warnings.map((i) => i.code)).not.toContain("run_mixed");
     const ahead = { ...ctxAt(1), day: { date: "2026-10-09", today: DAY, readings: {} } };

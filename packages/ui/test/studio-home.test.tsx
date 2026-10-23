@@ -97,9 +97,11 @@ describe("the Studio home", () => {
   });
 
   it("a theme with nothing for today says why, rather than promising 0 moves", () => {
-    // Jumps need an answered, calm jaw check: with none yet, the jumping theme has nothing that fits today.
-    const html = section(home({ library: libraryDto({ tmj: true }) }), "Themes");
+    // Jumps sit out while the athlete feels off: on such a day the jumping theme has nothing that fits today.
+    const html = section(home({ library: libraryDto({ tmj: true }), today: todayDto({ value: 1, feelingOff: true }) }), "Themes");
     expect(text(html)).toContain("Jumps and landings None fit today");
+    // No check yet is no bar since 2026-10-23: the jumps fit.
+    expect(text(section(home({ library: libraryDto({ tmj: true }) }), "Themes"))).not.toContain("Jumps and landings None fit today");
     // A count of nothing, not any count that ends in a nought ("30 moves" is fine).
     expect(text(html)).not.toMatch(/(^|[^0-9])0 moves/);
     // A bare mat has no carry gear: the card names the place instead.

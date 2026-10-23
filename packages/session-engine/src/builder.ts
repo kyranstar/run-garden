@@ -411,7 +411,8 @@ function jumpsAvailable(data: EngineData, input: JumpsInput, history?: HistIndex
   return jumpsAvailableIn(makeContext(data, { ...input, theme: null, minutes: 0, unit: "lb", block: null }, history));
 }
 
-// The day's checks apply (Lib.eligible with checks): e.g. overhead pressing needs an answered, calm check.
+// The day's checks apply (Lib.eligible with checks): e.g. jumps sit out while feeling off, and a flare day's recovery takes
+// flare-safe moves only.
 function candidates(block: BlockId, formatId: FormatId, ctx: Ctx): ExerciseRecord[] {
   const taken = movesInPlan(ctx);
   return slotPool(block, formatId, ctx).filter(ex => !taken.has(moveKey(ex)) && !ctx.used.has(ex.id));

@@ -443,10 +443,18 @@ describe("jumps only in a power part, on a day that passes the gate", () => {
     for (const id of up) expect(rec(id).easier.length === 0 || rec(id).easier.some((e) => done.has(e)), id).toBe(true);
   });
 
-  it("never on a recovery, unanswered, feeling-off, future or template day", () => {
+  it("never on a recovery, feeling-off, future or template day", () => {
     expect(suggest(doc("recover"), 1)).toEqual([]);
-    for (const day of [dayOf(null), dayOf(reading(1, true)), dayOf(reading(1), { date: "2026-03-12" }), null]) {
+    for (const day of [dayOf(reading(1, true)), dayOf(reading(1), { date: "2026-03-12" }), null]) {
       expect(ids(suggest(doc("maintain"), 1, { day })).filter((id) => isPlyometric(rec(id)))).toEqual([]);
+    }
+  });
+
+  it("a day with no check yet, or a check of 4, offers them: the jaw's gate reads no number since 2026-10-23", () => {
+    for (const day of [dayOf(null), dayOf(reading(4))]) {
+      const s = ids(suggest(doc("maintain"), 1, { day }));
+      expect(s.length, String(day.readings.tmj?.pre)).toBeGreaterThan(0);
+      for (const id of s) expect(isPlyometric(rec(id)), id).toBe(true);
     }
   });
 
