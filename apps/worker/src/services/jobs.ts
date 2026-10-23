@@ -1,4 +1,4 @@
-import { and, desc, eq, inArray, like, lt, ne, notInArray, or } from "drizzle-orm";
+import { and, desc, eq, inArray, isNotNull, like, lt, ne, notInArray, or, sql, type SQL } from "drizzle-orm";
 import {
   auditEvents,
   backfillState,
@@ -423,6 +423,59 @@ export async function claimNextJob(
   return { ...job, status: "claimed", workout };
 }
 
+/**
+ * A REMOVE-AND-ADD MOVE'S NEW PLACEMENT, FOLLOWED (review A5, seen in prod). The executor cloned the session onto its
+ * new day at a new `idInPlan` and deleted the original; the row's address must follow, or the next read finds the
+ * session's own copy at an address no row claims, mints a new row for it (in whatever COROS-import plan the wire's plan
+ * maps to) and archives this row as that copy's `duplicate_mirror` — the one remove_and_add prod ever ran did exactly
+ * that to a coach long run (10-13 → 10-15).
+ *
+ * The row's columns, for the verified update: `sourceWorkoutId` and `sourceIdInPlan` the clone's, and
+ * `sourceProgramId` the clone's of the KIND the row already holds — that column is COROS's `program.id` on an imported
+ * row (its second ownership proof) and the placement's `planProgramId` on a coach-created one (its delete triple); a
+ * row holding neither of the replaced placement's keeps what it has.
+ *
+ * NO OTHER ROW'S STALE CLAIM MAY BLOCK IT. COROS proved the slot free plan-wide before the add, so any other row
+ * recording that address is recording history: an ARCHIVED one is released (its address cleared, as rule 8 clears a
+ * program row's: `sourceWorkoutId` its own id) — else the unique index (user, plan, address) refuses the re-key, and a
+ * throw here would leave a moved session's job claimed. A LIVE row of the same plan still claiming it (its copy gone
+ * from COROS, not yet confirmed absent) is not touched: the re-key is skipped in the same statement rather than thrown,
+ * and the read resolves the clone between that address's claimants as it resolves any recycled slot.
+ * One statement here (the release), the re-key inside the verified update.
+ */
+async function followNewPlacement(
+  db: Db,
+  userId: string,
+  workoutId: string,
+  moved: NonNullable<CorosWriteResult["readdressed"]>,
+  now: string,
+): Promise<Record<string, SQL>> {
+  const pw = plannedWorkouts;
+  const address = `${moved.planId}:${moved.idInPlan}`;
+  await db
+    .update(pw)
+    .set({ sourceWorkoutId: sql`${pw.id}`, sourceIdInPlan: null, sourceProgramId: null, updatedAt: now })
+    .where(and(eq(pw.userId, userId), eq(pw.sourceWorkoutId, address), ne(pw.id, workoutId), isNotNull(pw.archivedAt)));
+  const free = sql`not exists (select 1 from ${pw} o where o.user_id = ${userId} and o.source_workout_id = ${address}
+    and o.id <> ${workoutId} and o.plan_id = (select p.plan_id from ${pw} p where p.id = ${workoutId}))`;
+  const programId = sql.join(
+    [
+      sql`case`,
+      ...(moved.replaced.programId !== undefined && moved.programId !== undefined
+        ? [sql`when ${pw.sourceProgramId} = ${moved.replaced.programId} then ${moved.programId}`]
+        : []),
+      sql`when ${pw.sourceProgramId} = ${moved.replaced.planProgramId} then ${moved.planProgramId}`,
+      sql`else ${pw.sourceProgramId} end`,
+    ],
+    sql` `,
+  );
+  return {
+    sourceWorkoutId: sql`case when ${free} then ${address} else ${pw.sourceWorkoutId} end`,
+    sourceIdInPlan: sql`case when ${free} then ${moved.idInPlan} else ${pw.sourceIdInPlan} end`,
+    sourceProgramId: sql`case when ${free} then ${programId} else ${pw.sourceProgramId} end`,
+  };
+}
+
 /** Map a signed device result onto job + workout state. */
 export async function applyJobResult(
   db: Db,
@@ -543,6 +596,7 @@ export async function applyJobResult(
       if (result.observedFingerprint) {
         workoutUpdates.sourceContentFingerprint = keepsMark(plannedWorkouts.sourceContentFingerprint, result.observedFingerprint);
       }
+      if (result.readdressed) Object.assign(workoutUpdates, await followNewPlacement(db, userId, job.workoutId, result.readdressed, now));
       const intent = await openIntentFor(db, userId, job.workoutId, "move");
       if (intent) await resolveIntent(db, intent.id, now);
       break;

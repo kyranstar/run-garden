@@ -155,6 +155,36 @@ describe("executeMoveJob — remove-and-add fallback", () => {
     expect(cloneProgram?.name).toBe("Threshold 5x5");
   });
 
+  it("a verified remove-and-add says where the session now is, and which placement it replaced (review A5)", async () => {
+    const { server, client } = await setup();
+    const before = server.programByIdInPlan("11")!;
+    server.updateRejectResult = "1001";
+    const result = await executeMoveJob(client, job(server));
+
+    expect(result.outcome).toBe("verified");
+    expect(result.pathUsed).toBe("remove_and_add");
+    // Read back from the schedule, never assumed from what was sent: the server issues the program's own id.
+    const clone = server.entityByIdInPlan("21")!;
+    const cloneProgram = server.programByIdInPlan("21")!;
+    expect(cloneProgram.id).toBeDefined();
+    expect(cloneProgram.id).not.toBe(before.id);
+    expect(result.readdressed).toEqual({
+      planId: FIXTURE_PLAN_ID,
+      idInPlan: "21",
+      planProgramId: String(clone.planProgramId),
+      programId: String(cloneProgram.id),
+      replaced: { idInPlan: "11", planProgramId: "11", programId: String(before.id) },
+    });
+  });
+
+  it("a direct update keeps the session where it was: no new placement to report", async () => {
+    const { server, client } = await setup();
+    const result = await executeMoveJob(client, job(server));
+    expect(result.outcome).toBe("verified");
+    expect(result.pathUsed).toBe("direct_update");
+    expect(result.readdressed).toBeUndefined();
+  });
+
   it("leaves the original untouched when clone insertion fails verification", async () => {
     const { server, client } = await setup();
     server.updateRejectResult = "1001";

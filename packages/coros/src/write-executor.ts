@@ -117,6 +117,21 @@ function versionOf(program: RawCorosProgram | undefined): string | undefined {
   return program?.version != null ? String(program.version) : undefined;
 }
 
+/**
+ * Where a remove-and-add left the session, and the placement it replaced (review A5) — both as the schedule reads
+ * them: the clone's entity and program as the verifying read found them (COROS issues the program's own id), the
+ * original's as the read before the write found it. The caller re-keys its row by this; without it the next read
+ * takes the session's own copy at the new address for a stranger's.
+ */
+function readdressedOf(clone: Located, original: Located, planId: string): MoveJobResult["readdressed"] {
+  const idsOf = (l: Located) => ({
+    idInPlan: String(l.entity.idInPlan),
+    planProgramId: String(l.entity.planProgramId ?? l.entity.idInPlan),
+    ...(l.program?.id != null ? { programId: String(l.program.id) } : {}),
+  });
+  return { planId: String(clone.entity.planId ?? planId), ...idsOf(clone), replaced: idsOf(original) };
+}
+
 export interface MoveJobOptions {
   /**
    * yyyy-mm-dd anchor for the plan-wide sweep the remove-and-add fallback
@@ -427,6 +442,7 @@ async function removeAndAdd(
       observedDate: clone.date,
       observedFingerprint: clone.program ? corosProgramFingerprint(clone.program) : undefined,
       observedVersion: versionOf(clone.program),
+      readdressed: readdressedOf(clone, original, planId),
     });
   }
   if (
@@ -482,6 +498,7 @@ async function removeAndAdd(
       : undefined,
     observedVersion:
       cloneStill.program?.version != null ? String(cloneStill.program.version) : undefined,
+    readdressed: readdressedOf(cloneStill, original, planId),
   });
 }
 
