@@ -87,5 +87,10 @@ export const ARCHIVE_REASONS = [
   "duplicate_mirror",
   /** An adaptive program's edit no longer wants this future, unmoved, unbuilt slot (re-placement). */
   "program_replaced",
+  /**
+   * The daily reconcile's sweep of a workout started at once (Start now) and left with nothing logged — the app's
+   * bookkeeping, not a person's decision: a save that arrives for it later brings it back (session-save.ts).
+   */
+  "abandoned_start_now",
 ] as const;
 export type ArchiveReason = (typeof ARCHIVE_REASONS)[number];

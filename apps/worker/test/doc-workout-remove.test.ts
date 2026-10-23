@@ -106,6 +106,19 @@ async function made(body: Record<string, unknown>): Promise<string> {
   return res.body.workout.id as string;
 }
 
+/** An app session of `workoutId` played on `day` (9:16–9:33 AM there), as the player's outbox sends it. */
+function saveBody(id: string, workoutId: string, buildId: string | null, day: string) {
+  return {
+    id, source: "app", sourceRef: null, workoutId, buildId, localDate: day,
+    startedAt: `${day}T17:16:00.000Z`, endedAt: `${day}T17:33:00.000Z`, seconds: 1020, plannedSeconds: 1020, minutes: 17,
+    mode: "build", theme: null, locationId: null, blockRef: null, blockNumber: null, completed: true,
+    stepsTotal: 1, stepsDone: 1, movesDone: [{ exerciseId: "bridge", seconds: 120, slotKey: "core:0" }], note: null, newMove: null,
+    entries: [{ exerciseId: "bridge", implement: null, format: "straight", perSide: false, sets: [{ setIndex: 0, side: null, reps: 12, seconds: null, load: null, done: true, flags: [] }] }],
+    checks: [],
+    review: {},
+  };
+}
+
 async function started(id: string): Promise<void> {
   const built = await call("POST", `/api/sessions/${id}/build`, {});
   expect(built.status, JSON.stringify(built.body)).toBe(200);
@@ -220,7 +233,7 @@ describe("the player's Discard of a workout started at once, nothing logged", ()
     expect(await rowOf(planned)).toMatchObject({ archivedAt: null, contentState: "built" });
   });
 
-  it("closed without Discard: once its day has ended with nothing logged, the hourly reconcile removes it as Discard would — never asked about, never missed (the lead's ruling)", async () => {
+  it("closed without Discard: once its day has ended, one never started goes as Discard would; one started waits the outbox's reach — never asked about, never missed (B1)", async () => {
     // Pinned: 5 PM in the test athlete's zone (America/Los_Angeles, UTC-8 in November) on a Wednesday.
     vi.useFakeTimers({ toFake: ["Date"] });
     try {
@@ -230,7 +243,7 @@ describe("the player's Discard of a workout started at once, nothing logged", ()
       expect(day).toBe("2026-11-18");
       const begun = await made({ date: day, time: "17:00", startNow: true });
       await started(begun);
-      // Its watch work, queued: cancelled with it.
+      // Its watch work, queued: cancelled with it, when it goes.
       await db.insert(corosWriteJobs).values({
         id: "push:abandoned", userId, workoutId: begun, kind: "program_session_push", expectedContentFingerprint: "fp",
         originalDate: day, destinationDate: day, requestedAt: nowInstant(), status: "queued", updatedAt: nowInstant(),
@@ -254,11 +267,27 @@ describe("the player's Discard of a workout started at once, nothing logged", ()
       await reconcileCompletionStates(db, userId, prefs);
       for (const id of [begun, left, logged, planned]) expect((await rowOf(id)).archivedAt, id).toBeNull();
 
-      // 12:30 AM the next day: the two left with nothing logged are gone, their watch work with them.
+      // 12:30 AM the next day: the one never started is gone — by the sweep, not by the athlete.
       vi.setSystemTime(new Date("2026-11-19T08:30:00Z"));
-      expect(await reconcileCompletionStates(db, userId, prefs)).toMatchObject({ abandonedRemoved: 2, markedUnresolved: 0 });
-      expect((await rowOf(begun)).archivedAt).not.toBeNull();
+      expect(await reconcileCompletionStates(db, userId, prefs)).toMatchObject({ abandonedRemoved: 1, markedUnresolved: 0 });
       expect((await rowOf(left)).archivedAt).not.toBeNull();
+      expect((await rowOf(left)).archiveReason).toBe("abandoned_start_now");
+      // The one started is kept: its review may still be open on the device, its save in the outbox (B1).
+      expect((await rowOf(begun)).archivedAt).toBeNull();
+      expect((await db.select().from(corosWriteJobs).where(eq(corosWriteJobs.id, "push:abandoned")))[0]!.status).toBe("queued");
+
+      // Days on: the planned one needs attention; the started one is still kept.
+      vi.setSystemTime(new Date("2026-11-22T20:00:00Z"));
+      await reconcileCompletionStates(db, userId, prefs);
+      expect((await rowOf(planned)).completionState).toBe("unresolved");
+      vi.setSystemTime(new Date("2026-11-25T20:00:00Z"));
+      await reconcileCompletionStates(db, userId, prefs);
+      expect((await rowOf(begun)).archivedAt).toBeNull();
+      // Past the outbox's reach (a week from its start), still with nothing logged: removed, its watch work with it.
+      vi.setSystemTime(new Date("2026-11-26T02:00:00Z"));
+      expect(await reconcileCompletionStates(db, userId, prefs)).toMatchObject({ abandonedRemoved: 1 });
+      expect((await rowOf(begun)).archivedAt).not.toBeNull();
+      expect((await rowOf(begun)).archiveReason).toBe("abandoned_start_now");
       expect((await db.select().from(corosWriteJobs).where(eq(corosWriteJobs.id, "push:abandoned")))[0]!.status).toBe("superseded");
       expect((await rowOf(logged)).archivedAt).toBeNull();
       expect((await rowOf(planned)).archivedAt).toBeNull();
@@ -266,14 +295,80 @@ describe("the player's Discard of a workout started at once, nothing logged", ()
       const barred = await db.select().from(schema.calendarEventSuppressions);
       expect(barred.filter((s) => s.reason === "user_removed").map((s) => s.workoutId).sort()).toEqual([begun, left].sort());
 
-      // Days on: the planned one needs attention, then is missed; the Start-now ones never read as either.
-      vi.setSystemTime(new Date("2026-11-22T20:00:00Z"));
-      await reconcileCompletionStates(db, userId, prefs);
-      expect((await rowOf(planned)).completionState).toBe("unresolved");
+      // Then the planned one is missed; the Start-now ones never read as either.
       vi.setSystemTime(new Date("2026-11-27T20:00:00Z"));
       await reconcileCompletionStates(db, userId, prefs);
       expect((await rowOf(planned)).completionState).toBe("missed");
       for (const id of [begun, left, logged]) expect((await rowOf(id)).completionState, id).toBe("scheduled");
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("a session the outbox delivers after the sweep: the workout comes back, done and matched — never slot_gone (B1)", async () => {
+    vi.useFakeTimers({ toFake: ["Date"] });
+    try {
+      // 9:16 AM, a Saturday in the athlete's zone: Start now, played to the end.
+      vi.setSystemTime(new Date("2026-11-21T17:16:00Z"));
+      call = await clientFor(db, userId);
+      const day = todayInZone(prefs.timezone);
+      expect(day).toBe("2026-11-21");
+      const begun = await made({ date: day, time: "09:16", startNow: true });
+      const built = await call("POST", `/api/sessions/${begun}/build`, {});
+      expect(built.status).toBe(200);
+      const buildId = built.body.build.buildId as string;
+      expect((await call("POST", `/api/sessions/${begun}/start`, { buildId })).status).toBe(200);
+      // Started on a device the server did not hear from (offline): the server holds it built, never started.
+      const startedOffline = await made({ date: day, time: "09:20", startNow: true });
+      expect((await call("POST", `/api/sessions/${startedOffline}/build`, {})).status).toBe(200);
+
+      // The sweep: the one the server never saw started goes at the day's end; the started one once the week is out.
+      vi.setSystemTime(new Date("2026-11-22T08:15:00Z"));
+      await reconcileCompletionStates(db, userId, prefs);
+      expect((await rowOf(startedOffline)).archivedAt).not.toBeNull();
+      expect((await rowOf(begun)).archivedAt).toBeNull();
+      vi.setSystemTime(new Date("2026-11-29T08:15:00Z"));
+      await reconcileCompletionStates(db, userId, prefs);
+      expect((await rowOf(begun)).archivedAt).not.toBeNull();
+
+      // The review screen was left open; the saves arrive now.
+      call = await clientFor(db, userId);
+      for (const [workoutId, b] of [[begun, buildId], [startedOffline, null]] as const) {
+        const saved = await call("PUT", `/api/sessions/performed/${workoutId}-p`, saveBody(`${workoutId}-p`, workoutId, b, day));
+        expect(saved.body, workoutId).toMatchObject({ status: "saved", matched: true });
+        expect(saved.body.notes, workoutId).not.toContain("slot_gone");
+        expect(await rowOf(workoutId), workoutId).toMatchObject({
+          archivedAt: null, archiveReason: null, completionState: "completed", contentState: "done", resolutionDate: day,
+        });
+        // Its suppression goes with the archive it explained.
+        expect((await db.select().from(schema.calendarEventSuppressions).where(eq(schema.calendarEventSuppressions.workoutId, workoutId))).length).toBe(0);
+        const [match] = await db.select().from(schema.workoutCompletionMatches).where(eq(schema.workoutCompletionMatches.workoutId, workoutId));
+        expect(match).toMatchObject({ method: "app_session", undoneAt: null });
+      }
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("a session for a workout the athlete removed keeps today's answer: slot_gone, still removed (B1)", async () => {
+    vi.useFakeTimers({ toFake: ["Date"] });
+    try {
+      vi.setSystemTime(new Date("2026-11-21T17:16:00Z"));
+      call = await clientFor(db, userId);
+      const day = todayInZone(prefs.timezone);
+      const now = await made({ date: day, time: "09:16", startNow: true });
+      const built = await call("POST", `/api/sessions/${now}/build`, {});
+      const buildId = built.body.build.buildId as string;
+      expect((await call("POST", `/api/sessions/${now}/start`, { buildId })).status).toBe(200);
+      // Discarded here; another device's save of it drains later (ruling 2b-R19).
+      expect((await call("POST", `/api/sessions/${now}/unstart`)).body.removed).toBe(true);
+      expect((await rowOf(now)).archiveReason).toBe("user_removed");
+      vi.setSystemTime(new Date("2026-11-22T18:00:00Z"));
+      call = await clientFor(db, userId);
+      const saved = await call("PUT", `/api/sessions/performed/${now}-p`, saveBody(`${now}-p`, now, buildId, day));
+      expect(saved.body).toMatchObject({ status: "saved", matched: false, notes: ["slot_gone"] });
+      expect((await rowOf(now)).archivedAt).not.toBeNull();
+      expect(await rowOf(now)).toMatchObject({ archiveReason: "user_removed", completionState: "scheduled" });
     } finally {
       vi.useRealTimers();
     }

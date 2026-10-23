@@ -26,7 +26,8 @@
  *  4. The slot's match (`app_session`, confidence 1). The app's save supersedes the matcher's automatic guesses —
  *     another activity on this slot, the joined watch activity on another slot — but never a manual match (ruling
  *     2b-R5, `planMatch`); when it cannot match, the save still lands and says why. The slot → `completed` on the
- *     session's day, `content_state = 'done'`, its discipline the build's.
+ *     session's day, `content_state = 'done'`, its discipline the build's. A slot the daily reconcile swept as an
+ *     abandoned Start now (`abandoned_start_now`) comes back to be matched; one a person removed stays removed (B1).
  *  5. The review: ratings and "not for me" → `exercise_prefs`, the new move's first day; an accepted graduation →
  *     the block's lift (once: a retried save finds the lift already switched).
  *  6. The garden replays from the earliest day the save touched: the slot's, the session's, a displaced activity's
@@ -45,6 +46,7 @@ import { DateTime } from "luxon";
 import {
   activities,
   activitySourceLinks,
+  calendarEventSuppressions,
   conditionChecks,
   exercisePrefs,
   performedSessions,
@@ -65,6 +67,7 @@ import {
   performedSessionSaveSchema,
   todayInZone,
   toKg,
+  type ArchiveReason,
   type PerformedSessionWire,
   type SourceActivity,
   type UserPreferences,
@@ -557,7 +560,31 @@ const localDayOf = (a: Pick<ActivityRow, "startTime" | "startTimeLocal">) => (a.
  * A retry finds its own `app:` match on the slot and changes nothing.
  */
 async function planMatch(db: Db, userId: string, slot: SlotRow, performedId: string, activityId: string, now: string): Promise<MatchPlan> {
-  if (slot.archivedAt !== null) return { matched: false, notes: ["slot_gone"], statements: [], alsoFrom: [] };
+  // A slot a person took off the plan stays off it: the session lands unmatched. One the daily reconcile swept as an
+  // abandoned Start now (B1) was the app's guess that nothing would be logged, and this save proves it wrong: the slot
+  // comes back, as it was, and is matched — its archive and the suppression that explained it undone with the save.
+  const revived = slot.archivedAt !== null && slot.archiveReason === SWEPT_START_NOW;
+  if (slot.archivedAt !== null && !revived) return { matched: false, notes: ["slot_gone"], statements: [], alsoFrom: [] };
+  const revive: AtomicStatement[] = revived
+    ? [
+        db
+          .update(plannedWorkouts)
+          .set({ archivedAt: null, archiveReason: null, updatedAt: now })
+          .where(and(eq(plannedWorkouts.id, slot.id), eq(plannedWorkouts.userId, userId), eq(plannedWorkouts.archiveReason, SWEPT_START_NOW))),
+        db.delete(calendarEventSuppressions).where(eq(calendarEventSuppressions.workoutId, slot.id)),
+      ]
+    : [];
+  const plan = await planLiveMatch(db, userId, slot, performedId, activityId, now);
+  if (!revived) return plan;
+  // Brought back only to be this session's: when it cannot be matched (a manual match stands), it stays swept.
+  return plan.matched ? { ...plan, statements: [...revive, ...plan.statements] } : { matched: false, notes: ["slot_gone"], statements: [], alsoFrom: [] };
+}
+
+/** The daily reconcile's archive reason for an abandoned Start now (reconcile-daily.ts): the one a save may undo. */
+const SWEPT_START_NOW: ArchiveReason = "abandoned_start_now";
+
+/** `planMatch` for a slot on the plan. */
+async function planLiveMatch(db: Db, userId: string, slot: SlotRow, performedId: string, activityId: string, now: string): Promise<MatchPlan> {
   const [held] = await db
     .select({ id: workoutCompletionMatches.id, activityId: workoutCompletionMatches.activityId, method: workoutCompletionMatches.method })
     .from(workoutCompletionMatches)
