@@ -1,4 +1,5 @@
 import { and, eq, inArray, lt, or, sql } from "drizzle-orm";
+import type { ZodIssue } from "zod";
 import { PROFILE_IDS } from "@rg/exercise-library";
 import { schema } from "@rg/database";
 import { extractionSchema } from "@rg/saves";
@@ -10,6 +11,7 @@ import { wakeGateway } from "./gateway-route.js";
 import { IMPORT_KINDS, reserveImport, settleImport } from "./saves-budget.js";
 import { noteGatewayOutcome } from "./ai-credits.js";
 import { extractJson } from "./studio-llm.js";
+import { MAX_EXTRACT_ATTEMPTS, RELAY_CLAIM_STALE_MS, RETRYABLE_ERROR_CODES } from "./saves-ledger.js";
 
 const { savedPosts } = schema;
 
@@ -20,15 +22,15 @@ export const EXTRACT_MODEL_DEFAULT = "google/gemini-3.6-flash";
 export const EXTRACT_MAX_TOKENS_CAP = 4000;
 /** The largest request body the relay takes. R2 sets the real value; `SAVES_RELAY_MAX_BYTES` overrides. */
 export const RELAY_MAX_BYTES = 20_000_000;
-/** A post another relay claimed this long ago is a request that died; it may be claimed again. */
-export const RELAY_CLAIM_STALE_MS = 10 * 60_000;
+/** The model's context window in tokens: a body cannot cost more input than this, whatever its length. */
+export const EXTRACT_CONTEXT_TOKENS = 1_048_576;
 const CALL_TIMEOUT_MS = 120_000;
 const ISSUES_MAX = 12;
 
 /**
  * What a typical reel costs, for the reservation's estimate (what a crash-orphaned reservation counts at once stale):
  * about 3k tokens of prompt and a ~1.6 Mbps video (200 KB a second, base64 inflating it by a third) read at ~300 tokens
- * a second, and a ~1.5k-token reply. The WORST case instead takes every base64 character as a quarter token.
+ * a second, and a ~1.5k-token reply. The WORST case instead takes every base64 character as a quarter token, up to the model's context window.
  */
 const TEXT_PROMPT_TOKENS = 3_000;
 const VIDEO_BYTES_PER_SECOND = 200_000;
@@ -129,13 +131,16 @@ export async function relayExtract(
     const stale = new Date(now.getTime() - RELAY_CLAIM_STALE_MS).toISOString();
     const claimed = await db
       .update(savedPosts)
-      .set({ status: "extracting", updatedAt: nowIso })
+      // The attempt is counted here, so a post that crashes every time (before any outcome is written) still runs out.
+      .set({ status: "extracting", updatedAt: nowIso, extractAttempts: sql`${savedPosts.extractAttempts} + 1` })
       .where(
         and(
           eq(savedPosts.id, post.id),
           eq(savedPosts.userId, userId),
+          lt(savedPosts.extractAttempts, MAX_EXTRACT_ATTEMPTS),
           or(
-            inArray(savedPosts.status, ["queued", "failed"]),
+            eq(savedPosts.status, "queued"),
+            and(eq(savedPosts.status, "failed"), inArray(savedPosts.lastErrorCode, [...RETRYABLE_ERROR_CODES])),
             and(eq(savedPosts.status, "extracting"), lt(savedPosts.updatedAt, stale)),
           ),
         ),
@@ -150,7 +155,7 @@ export async function relayExtract(
       .where(and(eq(savedPosts.id, post.id), eq(savedPosts.userId, userId)));
     return { ok: false, code: "unknown", status: row ? 409 : 404 };
   };
-  /** The one write that ends a relay: counts the attempt and stores the outcome. */
+  /** The one write that ends a relay: stores the outcome (the attempt was counted by the claim). */
   const finish = (
     out: { extraction: Extraction } | { code: SaveErrorCode },
     costMicros: number,
@@ -161,7 +166,6 @@ export async function relayExtract(
         status: "extraction" in out ? "extracted" : "failed",
         ...("extraction" in out ? { extraction: out.extraction, lastErrorCode: null } : { lastErrorCode: out.code }),
         lastError: null,
-        extractAttempts: sql`${savedPosts.extractAttempts} + 1`,
         costMicros: sql`${savedPosts.costMicros} + ${costMicros}`,
         updatedAt: nowIso,
       })
@@ -177,7 +181,7 @@ export async function relayExtract(
   // The worst case takes every body character as a quarter token; a typical reel is far smaller (see the constants).
   const worst = Math.max(
     1,
-    messagesCostMicros(model, { inputTokens: Math.ceil(length / 4), cacheReadTokens: 0, cacheWriteTokens: 0, outputTokens: maxTokens }),
+    messagesCostMicros(model, { inputTokens: Math.min(Math.ceil(length / 4), EXTRACT_CONTEXT_TOKENS), cacheReadTokens: 0, cacheWriteTokens: 0, outputTokens: maxTokens }),
   );
   const videoSeconds = ((length * 3) / 4 / VIDEO_BYTES_PER_SECOND);
   const typical = Math.max(
@@ -190,7 +194,14 @@ export async function relayExtract(
     }),
   );
   const reservation = await reserveImport(db, userId, IMPORT_KINDS.extract, model, worst, typical, now);
-  if (!reservation.ok) return { ok: false, code: reservation.reason };
+  if (!reservation.ok) {
+    // The post waits `queued` with the reason, and its `updatedAt` moves it behind other work in `/work`.
+    await db
+      .update(savedPosts)
+      .set({ lastErrorCode: reservation.reason, updatedAt: nowIso })
+      .where(and(eq(savedPosts.id, post.id), eq(savedPosts.userId, userId), eq(savedPosts.status, "queued")));
+    return { ok: false, code: reservation.reason };
+  }
 
   let settled = false;
   try {
@@ -248,7 +259,7 @@ function parseExtraction(content: string): { ok: true; extraction: Extraction } 
   if (parsed.success) return { ok: true, extraction: parsed.data };
   return {
     ok: false,
-    issues: parsed.error.issues.slice(0, ISSUES_MAX).map((i) => `${i.path.join(".") || "(root)"}: ${i.message}`.slice(0, 200)),
+    issues: parsed.error.issues.slice(0, ISSUES_MAX).map(issueText),
   };
 }
 
@@ -306,4 +317,35 @@ async function callGateway(
   } finally {
     clearTimeout(timer);
   }
+}
+
+/**
+ * One line the extension sends back to the model as a retry hint, OUTSIDE the prompt's data block. Built only from the
+ * path, the zod code and our own schema's limits: never zod's `message` or `received`, which echo what the model wrote
+ * (a value, an unrecognized key name).
+ */
+function issueText(i: ZodIssue): string {
+  const where = i.path.map(String).join(".") || "(root)";
+  switch (i.code) {
+    case "invalid_enum_value":
+      return `${where}: must be one of ${i.options.map(String).join(", ")}`.slice(0, 300);
+    case "invalid_type":
+      return `${where}: ${i.received === "undefined" ? "is required" : `must be ${i.expected}`}`;
+    case "too_small":
+      return `${where}: too short or too small (minimum ${i.minimum})`;
+    case "too_big":
+      return `${where}: too long or too large (maximum ${i.maximum})`;
+    case "unrecognized_keys":
+      return `${where}: has keys that are not part of the format`;
+    default:
+      return `${where}: invalid (${i.code})`;
+  }
+}
+
+/** A body over the cap: the post is `failed` with `too_large` (not retryable) and the attempt counted. One statement. */
+export async function markTooLarge(db: Db, userId: string, postId: string, now: string): Promise<void> {
+  await db
+    .update(savedPosts)
+    .set({ status: "failed", lastErrorCode: "too_large", extractAttempts: sql`${savedPosts.extractAttempts} + 1`, updatedAt: now })
+    .where(and(eq(savedPosts.id, postId), eq(savedPosts.userId, userId), inArray(savedPosts.status, ["queued", "failed"])));
 }

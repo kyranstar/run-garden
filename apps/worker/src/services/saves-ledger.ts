@@ -14,6 +14,8 @@ const { savedPosts, saveChecks } = schema;
 export const MAX_EXTRACT_ATTEMPTS = 3;
 /** The most posts `/work` hands out at once. */
 export const WORK_LIMIT = 20;
+/** A post another relay claimed (`extracting`) this long ago is a request that died; `/work` hands it out again and the relay may reclaim it. */
+export const RELAY_CLAIM_STALE_MS = 10 * 60_000;
 /** The most keys one `/known` call carries. */
 export const KNOWN_MAX_KEYS = 200;
 /** Failures that are worth another try; the rest (gone, too_large, login_needed, feed_changed) wait for the owner. */
@@ -101,6 +103,7 @@ export async function workList(
 ): Promise<WorkItem[]> {
   const stale = new Date(new Date(now).getTime() - CLAIM_STALE_MS).toISOString();
   const { spentMicros, capMicros } = await importSpend(db, userId, new Date(now));
+  const relayStale = new Date(new Date(now).getTime() - RELAY_CLAIM_STALE_MS).toISOString();
   const isFilter = and(
     eq(savedPosts.status, "seen"),
     or(
@@ -119,6 +122,7 @@ export async function workList(
         or(
           isFilter,
           and(eq(savedPosts.status, "queued"), isNull(savedPosts.extraction)),
+          and(eq(savedPosts.status, "extracting"), lt(savedPosts.updatedAt, relayStale), lt(savedPosts.extractAttempts, MAX_EXTRACT_ATTEMPTS)),
           and(
             eq(savedPosts.status, "failed"),
             lt(savedPosts.extractAttempts, MAX_EXTRACT_ATTEMPTS),

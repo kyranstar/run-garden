@@ -13,7 +13,7 @@ import { bearerGuard } from "../auth/token.js";
 import { savesImportEnabled } from "../env.js";
 import { freshKeys, KNOWN_MAX_KEYS, recordCheck, savedPostId, savesStatus, upsertPost, workList } from "../services/saves-ledger.js";
 import { filterPost } from "../services/saves-filter.js";
-import { readRelayRequest, relayExtract } from "../services/saves-relay.js";
+import { markTooLarge, readRelayRequest, relayExtract } from "../services/saves-relay.js";
 
 const knownSchema = z
   .object({ source: z.string().regex(SAVE_SOURCE_RE), keys: z.array(z.string().min(1).max(64)).max(KNOWN_MAX_KEYS) })
@@ -83,8 +83,15 @@ savesRoutes.post("/posts/:key/extract", async (c) => {
   const source = c.req.query("source") ?? "";
   if (!SAVE_SOURCE_RE.test(source)) return c.json({ error: "invalid", issues: ["source"] }, 400);
   const asked = readRelayRequest(c.req.raw, c.env);
-  if (!asked.ok) return c.json({ error: asked.error }, asked.status);
   const userId = c.get("userId");
+  if (!asked.ok) {
+    // The Worker's own 413: the post is marked so `/work` stops handing it out (it would be re-downloaded every check).
+    if (asked.status === 413) {
+      const id = await savedPostId(userId, source, c.req.param("key"));
+      await markTooLarge(c.get("db"), userId, id, nowInstant());
+    }
+    return c.json({ error: asked.error }, asked.status);
+  }
   const out = await relayExtract(
     c.get("db"),
     c.env,
