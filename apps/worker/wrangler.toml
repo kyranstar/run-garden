@@ -103,6 +103,8 @@ APP_URL = "https://run-garden-staging.kyranadams.workers.dev"
 FIXTURE_MODE = "0"
 AI_DEFAULT_ENABLED = "0"
 STAGING = "1"
+# The saved-posts import (routes/saves.ts): on in staging; production turns it on in the go-live task.
+SAVES_IMPORT = "1"
 
 [[env.staging.d1_databases]]
 binding = "DB"

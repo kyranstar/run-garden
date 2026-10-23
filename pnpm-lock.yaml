@@ -104,6 +104,9 @@ importers:
       '@rg/providers':
         specifier: workspace:*
         version: link:../../packages/providers
+      '@rg/saves':
+        specifier: workspace:*
+        version: link:../../packages/saves
       '@rg/scheduling':
         specifier: workspace:*
         version: link:../../packages/scheduling

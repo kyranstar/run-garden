@@ -7,17 +7,16 @@
  *   holds its hash. Without the secret the endpoint doesn't exist (404); a wrong or missing token is 401.
  * - The plan is the owner's (`ALLOWED_GOOGLE_EMAIL`) only. GET only; nothing is written; no cookie is read.
  */
-import { Hono, type Context, type Next } from "hono";
-import { and, eq, gte, inArray, isNull, lte, sql } from "drizzle-orm";
+import { Hono } from "hono";
+import { and, eq, gte, inArray, isNull, lte } from "drizzle-orm";
 import { schema } from "@rg/database";
 import { addDays, daysBetween, isLocalDate } from "@rg/domain";
 import type { AppContext } from "../auth/middleware.js";
-import { sha256Hex } from "../auth/crypto.js";
+import { bearerGuard } from "../auth/token.js";
 import { chunkIds } from "../services/db.js";
-import { restoreInProgress } from "../services/account-state.js";
 import { plannedRowColumns } from "../services/planned-columns.js";
 
-const { activities, plannedWorkouts, users, workoutCompletionMatches } = schema;
+const { activities, plannedWorkouts, workoutCompletionMatches } = schema;
 
 /** A planned time, `HH:MM`. */
 const TIME = /^\d{2}:\d{2}$/;
@@ -25,22 +24,8 @@ const TIME = /^\d{2}:\d{2}$/;
 /** At most this many days per request. */
 export const LIFEOS_MAX_DAYS = 31;
 
-/** Equal-length hex strings, compared without an early exit. */
-function sameHex(a: string, b: string): boolean {
-  if (a.length !== b.length) return false;
-  let diff = 0;
-  for (let i = 0; i < a.length; i++) diff |= a.charCodeAt(i) ^ b.charCodeAt(i);
-  return diff === 0;
-}
-
-export async function requireLifeosToken(c: Context<AppContext>, next: Next): Promise<void | Response> {
-  const expected = c.env.LIFEOS_TOKEN_SHA256?.trim().toLowerCase();
-  if (!expected) return c.json({ error: "not_found" }, 404);
-  const header = c.req.header("authorization") ?? "";
-  const token = header.startsWith("Bearer ") ? header.slice("Bearer ".length).trim() : "";
-  if (!token || !sameHex(await sha256Hex(token), expected)) return c.json({ error: "unauthenticated" }, 401);
-  await next();
-}
+/** The bearer door (auth/token.ts): 404 without the secret, 401 on a bad token, 503 during a restore. */
+export const requireLifeosToken = bearerGuard((env) => env.LIFEOS_TOKEN_SHA256);
 
 export interface LifeosSession {
   id: string;
@@ -75,22 +60,14 @@ lifeosRoutes.get("/plan", async (c) => {
     return c.json({ error: "bad_range" }, 400);
   }
   const db = c.get("db");
-  const owner = await db
-    .select({ id: users.id })
-    .from(users)
-    .where(sql`lower(${users.email}) = ${c.env.ALLOWED_GOOGLE_EMAIL.trim().toLowerCase()}`)
-    .get();
-  if (!owner) return c.json({ error: "not_found" }, 404);
-  // A restore empties the plan and refills it page by page: an empty day then isn't a rest day (LifeOS would
-  // withdraw the habit's chance). LifeOS reads 5xx as "try again later".
-  if (await restoreInProgress(db, owner.id)) return c.json({ error: "restore_in_progress" }, 503);
+  const ownerId = c.get("userId");
 
   const rows = await db
     .select(plannedRowColumns())
     .from(plannedWorkouts)
     .where(
       and(
-        eq(plannedWorkouts.userId, owner.id),
+        eq(plannedWorkouts.userId, ownerId),
         gte(plannedWorkouts.effectiveDate, from),
         lte(plannedWorkouts.effectiveDate, to),
         isNull(plannedWorkouts.archivedAt),

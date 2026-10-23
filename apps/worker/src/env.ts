@@ -79,6 +79,10 @@ export interface Env {
   COROS_MCP_TOKEN?: string;
   /** SHA-256 (hex) of the token LifeOS reads the plan with (`/api/lifeos/plan`). Unset: the endpoint is off. Secret. */
   LIFEOS_TOKEN_SHA256?: string;
+  /** SHA-256 (hex) of the token the saves extension posts with (`/api/saves/*`). Unset: the endpoints are off. Secret. */
+  SAVES_TOKEN_SHA256?: string;
+  /** The saved-posts import switch: only "1" is on (`savesImportEnabled`). Absent in production until the owner turns it on. Var. */
+  SAVES_IMPORT?: string;
 }
 
 export const stagingEnabled = (env: Env): boolean => env.STAGING === "1";
@@ -99,3 +103,6 @@ export const threadCoachEnabled = (env: Env | undefined): boolean => env?.THREAD
 export function fixtureModeEnabled(env: Env): boolean {
   return env.FIXTURE_MODE === "1";
 }
+
+/** The saved-posts import (`/api/saves/*`): only "1" is on. A missing env (a test host with none) is off. */
+export const savesImportEnabled = (env: Env | undefined): boolean => env?.SAVES_IMPORT === "1";

@@ -38,6 +38,7 @@ import { objectiveRoutes, profileRoutes } from "./routes/profile.js";
 import { objectiveBoardRoutes } from "./routes/objectives-board.js";
 import { importRoutes } from "./routes/imports.js";
 import { lifeosRoutes } from "./routes/lifeos.js";
+import { savesRoutes } from "./routes/saves.js";
 import { workoutRoutes } from "./routes/workouts.js";
 import { templateRoutes } from "./routes/templates.js";
 import { musicRoutes } from "./routes/music.js";
@@ -83,6 +84,9 @@ app.use("*", withDb);
  * and non-browser clients omit the header.
  */
 export const originGuard: MiddlewareHandler<AppContext> = async (c, next) => {
+  // /api/saves/ is bearer-only: the browser extension posts from a chrome-extension:// origin, and those routes
+  // never read the session cookie, so there is no ambient credential for a forged cross-site request to ride.
+  if (c.req.path.startsWith("/api/saves/")) return next();
   if (!["GET", "HEAD", "OPTIONS"].includes(c.req.method)) {
     const origin = c.req.header("origin");
     if (origin && origin !== new URL(c.env.APP_URL).origin) {
@@ -138,6 +142,7 @@ app.route("/api/today", todayBodyRoutes);
 app.route("/api/music", musicRoutes);
 // LifeOS (the owner's habit app) reads the plan with a bearer token, never a cookie.
 app.route("/api/lifeos", lifeosRoutes);
+app.route("/api/saves", savesRoutes);
 // The parity harness: 404 unless staging or PARITY_ENABLED, then requireUser.
 // Its DTO hash calls this same app in-process, as the caller.
 app.route("/api/admin", adminRoutes((req, env, ctx) => app.fetch(req, env, ctx)));

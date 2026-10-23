@@ -24,6 +24,7 @@
     "@rg/exercise-library": "workspace:*",
     "@rg/garden-engine": "workspace:*",
     "@rg/providers": "workspace:*",
+    "@rg/saves": "workspace:*",
     "@rg/scheduling": "workspace:*",
     "@rg/session-engine": "workspace:*",
     "@rg/workout": "workspace:*",
