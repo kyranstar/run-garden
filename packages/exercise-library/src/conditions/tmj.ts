@@ -62,12 +62,16 @@ function read(a: Attrs | undefined): TmjAttrs {
   };
 }
 
+const ATTRIBUTE_SPECS = Object.entries(ATTRIBUTES);
+
 /** A rating the profile can read: every attribute present, a whole number on its scale or a yes/no. */
 function readable(a: Attrs | undefined): boolean {
-  return Object.entries(ATTRIBUTES).every(([key, spec]) => {
-    const v = a?.[key];
-    return spec.kind === "scale" ? typeof v === "number" && Number.isInteger(v) && v >= spec.min && v <= spec.max : typeof v === "boolean";
-  });
+  if (!a) return false;
+  for (const [key, spec] of ATTRIBUTE_SPECS) {
+    const v = a[key];
+    if (spec.kind === "scale" ? !(typeof v === "number" && Number.isInteger(v) && v >= spec.min && v <= spec.max) : typeof v !== "boolean") return false;
+  }
+  return true;
 }
 
 const MODE_CAPS: Record<Mode, { clench: number; neckLoad: number; faceDown: boolean }> = {
