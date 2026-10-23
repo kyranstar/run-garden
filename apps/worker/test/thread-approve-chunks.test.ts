@@ -182,6 +182,22 @@ describe("a structural thread approve, a chunk a request", () => {
     expect(await receipts()).toEqual(["✓ approved — New block · that plan isn't there any more, so nothing was retired"]);
   });
 
+  it("an approval that changes nothing says so — never \"✓ approved\" for nothing; one that changes something is approved (B6)", async () => {
+    // The banner already settled the race days: nothing to resolve.
+    const id = await proposal([{ kind: "resolveRaceConflict", keep: "settings" }]);
+    const r = await approve(id);
+    expect(r.status).toBe(200);
+    expect(r.json).toMatchObject({ ok: true, unchanged: true });
+    expect(await receipts()).toEqual(["Nothing to change — New block: your race day and your plan already agree"]);
+    // Beside a change that lands, the approval is an approval.
+    await seedRow("w-skip", addDays(today, 2));
+    const mixed = await proposal([{ kind: "skip", workoutId: "w-skip" }, { kind: "resolveRaceConflict", keep: "settings" }]);
+    let res = await approve(mixed);
+    for (let i = 0; i < 5 && res.json.remaining; i++) res = await approve(mixed);
+    expect(res.json.unchanged).toBeUndefined();
+    expect((await receipts()).at(-1)).toBe("✓ approved — New block");
+  });
+
   it("a plan part-applied is never expired: the sweep leaves it, and its next approve finishes it whatever the date", async () => {
     const id = await proposal([createPlan(40)]);
     expect((await approve(id)).json).toEqual({ ok: true, remaining: true });

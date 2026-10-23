@@ -1957,7 +1957,7 @@ export type StructuralProgress = { step: string; done: number; [k: string]: unkn
 export type StructuralChunkResult =
   | { status: "more"; progress: StructuralProgress; spent: number }
   /** `summary`: one plain line ("Added “10K block” with 8 sessions"). */
-  | { status: "done"; spent: number; summary: string }
+  | { status: "done"; spent: number; summary: string; /** It found nothing to change, and changed nothing (B6). */ unchanged?: true }
   /** `reason`: in words, a whole sentence. */
   | { status: "refused"; reason: string; spent: number };
 
@@ -1997,7 +1997,7 @@ const ARCHIVE_SLICE_MAX = 36;
 const UNPUSH_COST = 3;
 /** A programme slot's way off the watch, at its most — never a coach plan's row, counted for safety. */
 const PROGRAMME_UNPUSH_COST = 10;
-/** `resolveRaceConflict` at its most: the conflict's reads and its one write. */
+/** `resolveRaceConflict` at its most: the conflict's read and its write — keep "settings": the row's demotion, its coach plan's read and that plan's race moved (`setCoachPlanRace`'s three). */
 const RACE_CONFLICT_COST = 6;
 
 interface Chunk {
@@ -2048,7 +2048,7 @@ export async function applyStructuralChunk(db: Db, input: StructuralChunkInput):
   const base = k.spent;
   // Bounded: every step either moves on or stalls, and a call's budget ends it long before this.
   for (let steps = 0; steps < 1000; steps++) {
-    if (p.step === "done") return { status: "done", spent: k.spent, summary: structuralSummary(op, p) };
+    if (p.step === "done") return { status: "done", spent: k.spent, summary: structuralSummary(op, p), ...(p.unchanged === true ? { unchanged: true as const } : {}) };
     if (k.spent > base && k.spent >= k.budget) break;
     const r = await structuralStep(k, op, p, k.spent === base);
     if ("refused" in r) return { status: "refused", reason: r.refused, spent: k.spent };
@@ -2226,7 +2226,7 @@ async function structuralStep(k: Chunk, op: StructuralOp, p: StructuralProgress,
         // Approving after the banner already converged the dates is a clean no-op — it re-checks the data.
         const resolved = await resolveRaceConflict(k.db, k.userId, k.prefs, op.keep);
         k.spent += RACE_CONFLICT_COST;
-        return { p: { ...p, step: "done", done: 0, resolved: resolved !== null } };
+        return { p: { ...p, step: "done", done: 0, resolved: resolved !== null, ...(resolved === null ? { unchanged: true } : {}) } };
       }
       break;
     }
@@ -2258,7 +2258,7 @@ async function checkPlan(
   if (!plan) return { refused: PLAN_GONE[op.kind] };
   const stopped = planStopped(op, plan);
   if (stopped) return { refused: stopped };
-  if (k.stopping && op.kind === "retirePlan" && plan.endDate < k.today) return { p: { ...p, step: "done", done: 0, name: plan.name, ended: true } };
+  if (k.stopping && op.kind === "retirePlan" && plan.endDate < k.today) return { p: { ...p, step: "done", done: 0, name: plan.name, ended: true, unchanged: true } };
   return { p: { ...p, step: next, done: 0, name: plan.name } };
 }
 
