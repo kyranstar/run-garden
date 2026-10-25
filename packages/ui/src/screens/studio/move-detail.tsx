@@ -11,13 +11,21 @@
  *   TMJ              the move's note for each switched-on profile, in its own plain words
  *   MUSCLES          the primary ones, then "Also" the secondary
  *   EASIER AND HARDER  each a link to that move
+ *   FROM YOUR SAVES  one of the athlete's own moves (saved-posts import): each post it came from — its creator, and a
+ *                    link that opens the post in a new tab; the meta line starts "Yours"
  *   YOUR HISTORY     last done · times in 30 days · best set or hold; 👍 👎 · Pin · Not for me
  *   ──────────────────────────────────────────────────────
  *   [ Add ]  [ Ask ]       (Ask: the app's coach sheet, about this move — coach everywhere, A3)
  *
- * Everything but the history and the athlete's say is the bundled library, so the detail opens at once and offline;
- * the move's own read (`GET /api/library/:id`) adds the best set and the freshest say when it answers. Terms explain
- * themselves one tap down (the glossary), as on a row. A section with nothing to say is not drawn.
+ * Everything but the history and the athlete's say is the account's library on the device (the bundle, and the
+ * athlete's own moves once their read has answered: `useAccountLibrary`), so the detail opens at once and offline; the
+ * move's own read (`GET /api/library/:id`) adds the best set and the freshest say when it answers. Terms explain
+ * themselves one tap down (the glossary), as on a row. A section with nothing to say is not drawn. An archived move of
+ * the athlete's own — kept for the workouts and history that hold it, never offered — still opens from its address,
+ * marked so, with no Add and no say (the server takes neither for it).
+ *
+ * A creator's name is a model's reading of a post: drawn as text, never as markup, and never as an address. A post's
+ * address is a link only when it is a web page's (http or https).
  *
  * Focus: the sheet takes it on open and hands it back on close (`Sheet`); the pane moves it to its heading on open,
  * and when an Easier or Harder link swaps the move in place, both put it on the new move's heading (the sheet: on the
@@ -25,9 +33,10 @@
  */
 import { useEffect, useId, useRef, type ReactNode, type RefObject } from "react";
 import { Link } from "react-router-dom";
-import { EXERCISES, type ExerciseRecord } from "@rg/exercise-library";
+import type { ExerciseRecord } from "@rg/exercise-library";
 import { formatWeightIn, secondsText, type WeightUnit } from "@rg/domain";
-import type { LibraryItemDto } from "@rg/api-client";
+import type { LibraryItemDto, PersonalMoveDto } from "@rg/api-client";
+import { PUBLIC_LIBRARY, useAccountLibrary } from "../../library/account-library.js";
 import { Sheet, useEscapeKey, useIsomorphicLayoutEffect } from "../../components.js";
 import { IconCheck, IconClose, IconPin } from "../../icons.js";
 import { checkWord } from "../../components/condition-check-sheet.js";
@@ -44,10 +53,41 @@ export interface MoveLink {
   state?: unknown;
 }
 
-const byId = new Map(EXERCISES.map((r) => [r.id, r]));
-
 /** The moves a ladder names that the library has, in its order. */
-const ladder = (ids: readonly string[]): ExerciseRecord[] => ids.map((id) => byId.get(id)).filter((r): r is ExerciseRecord => !!r);
+const ladder = (ids: readonly string[], find: (id: string) => ExerciseRecord | undefined): ExerciseRecord[] =>
+  ids.map((id) => find(id)).filter((r): r is ExerciseRecord => !!r);
+
+/** A saved post's address as a link: a web page's only (never `javascript:` or the like); null otherwise. */
+export function postHref(url: string | null): string | null {
+  if (!url) return null;
+  try {
+    const u = new URL(url);
+    return u.protocol === "https:" || u.protocol === "http:" ? u.href : null;
+  } catch {
+    return null;
+  }
+}
+
+/** The posts one of the athlete's own moves came from: each its creator (as text) and a link that opens it. */
+function SavedFrom({ links }: { links: PersonalMoveDto["links"] }) {
+  const shown = links.map((l) => ({ creator: l.creator?.trim() || null, href: postHref(l.url) })).filter((l) => l.creator || l.href);
+  if (shown.length === 0) return null;
+  return (
+    <ul className="stu-saved">
+      {shown.map((l, i) => (
+        <li key={`${i}-${l.href ?? ""}`}>
+          {l.creator ? <span className="stu-saved-by">{l.creator}</span> : null}
+          {l.href ? (
+            <a className="stu-saved-link" href={l.href} target="_blank" rel="noopener noreferrer">
+              Open post
+              {l.creator ? <span className="visually-hidden">{` by ${l.creator}`}</span> : null}
+            </a>
+          ) : null}
+        </li>
+      ))}
+    </ul>
+  );
+}
 
 /** "Best: 12 kg × 8", "Best hold: 45 s", "Best: 10 reps" — in the athlete's weight unit; null with no best yet. */
 export function bestLine(best: LibraryItemDto["history"]["best"] | null | undefined, unit: WeightUnit): string | null {
@@ -110,16 +150,21 @@ export interface MoveDetailBodyProps {
   weightUnit: WeightUnit;
   /** The address of another move (Easier, Harder). */
   moveLink: (id: string) => MoveLink;
+  /** The account's library on the device: what a ladder's moves resolve in. The bundled library when absent. */
+  find?: (id: string) => ExerciseRecord | undefined;
+  /** One of the athlete's own moves: its status and the posts it came from. */
+  own?: PersonalMoveDto | null;
 }
 
 /** Everything under the name, in the spec's order. */
-export function MoveDetailBody({ rec, ctx, today, say, onSay, sayError, best, weightUnit, moveLink }: MoveDetailBodyProps) {
+export function MoveDetailBody({ rec, ctx, today, say, onSay, sayError, best, weightUnit, moveLink, find = PUBLIC_LIBRARY.find, own = null }: MoveDetailBodyProps) {
   const t = rec.text;
   const fit = fitOf(rec, ctx);
   const gear = gearLine(rec);
   const notes = ctx.profiles.map((p) => ({ p, note: t.conditions[p.id] })).filter((x): x is { p: (typeof x)["p"]; note: string } => !!x.note);
-  const easier = ladder(rec.easier);
-  const harder = ladder(rec.harder);
+  const easier = ladder(rec.easier, find);
+  const harder = ladder(rec.harder, find);
+  const archived = own?.status === "archived";
   const prefs = ctx.prefs.get(rec.id);
   // The history in words; the athlete's own marks are the toggles below, not words.
   const history = historyLine(prefs ? { ...prefs, pinned: false, excluded: false } : null, today);
@@ -129,6 +174,8 @@ export function MoveDetailBody({ rec, ctx, today, say, onSay, sayError, best, we
       <p className="stu-detail-sum">{t.summary}</p>
       <p className="stu-meta stu-detail-meta">
         {dotted([
+          own ? <span className="pill pill-neutral">Yours</span> : null,
+          archived ? <span>Archived</span> : null,
           rec.purposes.length ? <TermList ids={rec.purposes} /> : null,
           rec.contraction.length ? <TermList ids={rec.contraction} /> : null,
           rec.tags.length ? <TermList ids={rec.tags} /> : null,
@@ -199,38 +246,45 @@ export function MoveDetailBody({ rec, ctx, today, say, onSay, sayError, best, we
           </ul>
         </Section>
       ) : null}
+      {own && own.links.length ? (
+        <Section title="From your saves">
+          <SavedFrom links={own.links} />
+        </Section>
+      ) : null}
       <Section title="Your history">
         <p className="stu-detail-history">{[...history, ...(bestText ? [bestText] : [])].join(" · ") || "Not done yet."}</p>
-        <div className="btn-row stu-say" role="group" aria-label={`Your say on ${rec.name}`}>
-          <button
-            type="button"
-            className="chipbtn"
-            aria-pressed={say.rating === 1}
-            aria-label="More like this"
-            onClick={() => onSay({ rating: say.rating === 1 ? null : 1 })}
-          >
-            {say.rating === 1 ? <IconCheck /> : null}
-            <span aria-hidden="true">👍</span>
-          </button>
-          <button
-            type="button"
-            className="chipbtn"
-            aria-pressed={say.rating === -1}
-            aria-label="Less like this"
-            onClick={() => onSay({ rating: say.rating === -1 ? null : -1 })}
-          >
-            {say.rating === -1 ? <IconCheck /> : null}
-            <span aria-hidden="true">👎</span>
-          </button>
-          <button type="button" className="chipbtn" aria-pressed={say.pinned} onClick={() => onSay({ pinned: !say.pinned })}>
-            {say.pinned ? <IconCheck /> : <IconPin />}
-            Pin
-          </button>
-          <button type="button" className="chipbtn" aria-pressed={say.excluded} onClick={() => onSay({ excluded: !say.excluded })}>
-            {say.excluded ? <IconCheck /> : null}
-            Not for me
-          </button>
-        </div>
+        {archived ? null : (
+          <div className="btn-row stu-say" role="group" aria-label={`Your say on ${rec.name}`}>
+            <button
+              type="button"
+              className="chipbtn"
+              aria-pressed={say.rating === 1}
+              aria-label="More like this"
+              onClick={() => onSay({ rating: say.rating === 1 ? null : 1 })}
+            >
+              {say.rating === 1 ? <IconCheck /> : null}
+              <span aria-hidden="true">👍</span>
+            </button>
+            <button
+              type="button"
+              className="chipbtn"
+              aria-pressed={say.rating === -1}
+              aria-label="Less like this"
+              onClick={() => onSay({ rating: say.rating === -1 ? null : -1 })}
+            >
+              {say.rating === -1 ? <IconCheck /> : null}
+              <span aria-hidden="true">👎</span>
+            </button>
+            <button type="button" className="chipbtn" aria-pressed={say.pinned} onClick={() => onSay({ pinned: !say.pinned })}>
+              {say.pinned ? <IconCheck /> : <IconPin />}
+              Pin
+            </button>
+            <button type="button" className="chipbtn" aria-pressed={say.excluded} onClick={() => onSay({ excluded: !say.excluded })}>
+              {say.excluded ? <IconCheck /> : null}
+              Not for me
+            </button>
+          </div>
+        )}
         {sayError ? (
           <p className="stu-detail-error" role="alert">
             {sayError}
@@ -256,6 +310,10 @@ export interface MoveDetailProps {
 
 /** The detail, as a sheet (phones) or the pane (from md). */
 export function MoveDetail({ rec, ctx, today, wide, onClose, onAdd, moveLink, added }: MoveDetailProps) {
+  const account = useAccountLibrary();
+  const own = account.mine.get(rec.id) ?? null;
+  // Archived: kept for what holds it, never offered — no Add.
+  const addable = own?.status !== "archived";
   const item = useLibraryItem(rec.id);
   const { say, set, error } = useMoveSay(rec.id, ctx);
   const weightUnit = useWeightUnit();
@@ -272,15 +330,19 @@ export function MoveDetail({ rec, ctx, today, wide, onClose, onAdd, moveLink, ad
       best={item.data?.history.best}
       weightUnit={weightUnit}
       moveLink={moveLink}
+      find={account.find}
+      own={own}
     />
   );
   const foot = (
     <div className="stu-detail-actions">
       {added}
       <div className="stu-detail-buttons">
-        <button type="button" className="btn btn-primary stu-detail-add" onClick={() => onAdd(rec)}>
-          Add
-        </button>
+        {addable ? (
+          <button type="button" className="btn btn-primary stu-detail-add" onClick={() => onAdd(rec)}>
+            Add
+          </button>
+        ) : null}
         {/* A phone's sheet is modal — the nav's Coach out of reach — so it asks itself, seeing the move (the integrated
             review, I3). The pane beside the list (from md) leaves the nav in reach: the nav's Coach sees the move. */}
         {wide ? null : <AskCoach focus={moveFocus(rec)} />}

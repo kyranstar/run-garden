@@ -39,6 +39,7 @@ import { toProposable, type DraftDoc } from "@rg/workout";
 import { Sheet } from "../../components.js";
 import { IconCheck, IconClose, IconPin } from "../../icons.js";
 import { useStudioDraft, type DraftStore, type StudioDraft } from "../../studio-drafts.js";
+import { useAccountLibrary } from "../../library/account-library.js";
 import {
   addedText,
   addMove,
@@ -117,6 +118,7 @@ export interface AddDeps {
   /** This device's draft. Read when the Add is made — never what a render last saw. */
   drafts: Pick<DraftStore, "load"> & { save: (doc: DraftDoc) => Promise<unknown>; clear: () => Promise<void> };
   qc: QueryClient;
+  /** What the target's moves resolve in: the account's `all` (the sheet's). The bundled library when absent. */
   library?: readonly ExerciseRecord[];
 }
 
@@ -279,6 +281,8 @@ export function AddSheet({ rec, ctx, today, onClose, onAdded, drafts, onLeaveWhi
   const workouts = editableWorkouts(planned.data?.workouts ?? [], today);
   const tpls = usableTemplates(templates.data?.templates ?? []);
   const { say, set: setSay, error: sayError } = useMoveSay(rec.id, ctx);
+  // What the target already holds resolves in the account's whole library (an archived move of the athlete's own too).
+  const { all } = useAccountLibrary();
 
   // The draft the sheet offers: the FIRST read's answer, for the sheet's lifetime, so the row never comes or goes once
   // the list is drawn (what Add writes reads the device again at that moment).
@@ -336,7 +340,7 @@ export function AddSheet({ rec, ctx, today, onClose, onAdded, drafts, onLeaveWhi
     const patience = setTimeout(() => {
       if (live.current) setStuck(true);
     }, SAVE_PATIENCE.ms);
-    const writing = addTo(target, rec, { drafts: { load, save, clear }, qc });
+    const writing = addTo(target, rec, { drafts: { load, save, clear }, qc, library: all });
     inFlight.current = writing;
     try {
       const done = await writing;

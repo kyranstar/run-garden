@@ -20,6 +20,7 @@ import type { CheckReading } from "@rg/exercise-library";
 import { startEditing, toProposable, type EditorState } from "@rg/workout";
 import { formatDayShort, formatTime } from "../../components.js";
 import { keepStarted } from "../../components/start-session.js";
+import type { AccountLibrary } from "../../library/account-library.js";
 import { saveBuild } from "../../offline/builds.js";
 import { offlineDb } from "../../offline/idb.js";
 import { requestPersistentStorage } from "../../offline/live.js";
@@ -220,6 +221,11 @@ export interface BuildFlowsIn {
    * ordinary check before the build, so the server gates and builds on it; the rest are dropped (fix round 2).
    */
   keptOffline: MutableRefObject<Map<string, KeptAnswer>>;
+  /**
+   * The account's library on the device (`useAccountLibrary`): a document's moves resolve in `all` — its judge for
+   * another day, a build made here (R11) — and a Fix names only an `offered` move.
+   */
+  library: AccountLibrary;
 }
 
 /** An answer kept offline (`keptOffline`): the reading, and the account's day it was answered on. */
@@ -290,6 +296,7 @@ export function useBuildFlows({
   place,
   profilesKnown,
   keptOffline,
+  library,
 }: BuildFlowsIn) {
   /** Changed since it was saved: the two read alike through the schema (its key order, its empty parts dropped). */
   const dirtyOf = (l: Loaded | null): boolean =>
@@ -514,7 +521,7 @@ export function useBuildFlows({
       return;
     }
     const readings = date === bc.today ? bc.readings : recorded;
-    const day = date === bc.today ? judged : judgeDraft(cur.editor.doc, { ...bc, today: date, readings }, date);
+    const day = date === bc.today ? judged : judgeDraft(cur.editor.doc, { ...bc, today: date, readings }, date, library.all, library.offered);
     if (day?.blocked) {
       setFlow({ step: "refused", text: day.blocked });
       return;
@@ -530,7 +537,7 @@ export function useBuildFlows({
     const localId = localIdOf(once.clientId);
     try {
       const where = { id: place?.id ?? "home", name: place?.name ?? "Home", equipment: place?.equipment ?? [] };
-      const { build, view } = localBuild(sent, { localId, date, checks, location: where, now: now.getTime() });
+      const { build, view } = localBuild(sent, { localId, date, checks, location: where, now: now.getTime(), library: library.all });
       const start: LocalStart = { localId, clientId: once.clientId, userId: uid, kind, title: sent.title, doc: sent, date, time: nowHHMM(now, timeZone), createdAt: now.getTime() };
       await rememberLocalStart(db, start);
       await saveBuild(db, { workoutId: localId, build, view }, now.getTime());
@@ -699,7 +706,7 @@ export function useBuildFlows({
   const schedule = async (when: string, time: string | null): Promise<string | null> => {
     const cur = live.current;
     if (!cur) return null;
-    const j = judgeDraft(cur.editor.doc, bc, when);
+    const j = judgeDraft(cur.editor.doc, bc, when, library.all, library.offered);
     if (!j.doc) return EMPTY_BLOCK;
     if (j.blocked) return j.blocked;
     const sent = forSchedule(j.doc, source);

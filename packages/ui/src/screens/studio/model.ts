@@ -19,6 +19,7 @@ import {
   CONTRACTIONS,
   EQUIPMENT,
   EQUIPMENT_IDS,
+  EXERCISES,
   FIT_RANK,
   fitToday as libraryFitToday,
   hasEquipment,
@@ -176,9 +177,15 @@ export interface StudioCtx {
   today: string | null;
   /** The account's timezone (the profile's): its days, where no Today read says which one it is (CUJ J34). */
   timeZone: string | null;
+  /**
+   * The moves the Studio offers (`useAccountLibrary().offered`): the bundled library and the athlete's active own moves
+   * — what search, browse, the pickers, the suggestions and quick starts draw from. The bundled library until the
+   * personal read answers, and when it fails. A document's moves resolve in the account's `all`, never in this.
+   */
+  library: readonly ExerciseRecord[];
 }
 
-export const emptyStudioCtx: StudioCtx = { profiles: [], readings: {}, prefs: new Map(), place: null, places: [], focusRefs: [], today: null, timeZone: null };
+export const emptyStudioCtx: StudioCtx = { profiles: [], readings: {}, prefs: new Map(), place: null, places: [], focusRefs: [], today: null, timeZone: null, library: EXERCISES };
 
 /**
  * The default place, in the server's order (apps/worker/src/services/default-place.ts): the profile's chosen default
@@ -190,12 +197,19 @@ export function defaultPlaceOf<P extends { id: string; isDefault: boolean }>(pla
 }
 
 /**
- * The context from the four reads the Studio makes, each optional: offline, or before they answer, the list still
+ * The context from the five reads the Studio makes, each optional: offline, or before they answer, the list still
  * renders from the bundled library and simply knows less. The switched-on profiles come from the library read and
  * from today's (which the service worker keeps offline); the place is the default place in the server's order
- * (`defaultPlaceOf`), else the library's Home; the focus areas come from the profile.
+ * (`defaultPlaceOf`), else the library's Home; the focus areas come from the profile; the moves on offer are the
+ * account's (`offered`: the personal read's), else the bundled library.
  */
-export function studioCtxFrom(library?: LibraryListDto, today?: TodayResponse, places?: PlacesResponse, profile?: ProfileDto): StudioCtx {
+export function studioCtxFrom(
+  library?: LibraryListDto,
+  today?: TodayResponse,
+  places?: PlacesResponse,
+  profile?: ProfileDto,
+  offered: readonly ExerciseRecord[] = EXERCISES,
+): StudioCtx {
   const ids = [...new Set([...(library?.profiles ?? []).map((p) => p.profileId), ...(today?.conditions ?? []).map((c) => c.profileId)])];
   const readings: Record<string, CheckReading> = {};
   for (const c of today?.conditions ?? []) {
@@ -224,6 +238,7 @@ export function studioCtxFrom(library?: LibraryListDto, today?: TodayResponse, p
     focusRefs: [...new Set((profile?.focusAreas ?? []).flatMap((f) => f.refs))],
     today: today?.today ?? null,
     timeZone: profile?.timezone ?? null,
+    library: offered,
   };
 }
 

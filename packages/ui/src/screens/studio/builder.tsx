@@ -58,9 +58,8 @@ import { Link, Navigate, useLocation, useNavigate } from "react-router-dom";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { api, ApiError, type ConditionCheckDto, type DesignDraftResponse, type DocIssueDto, type SessionDto, type WorkoutDto } from "@rg/api-client";
 import { addDays, EFFORT_LEVELS, GOAL_LABELS, type WorkoutDoc } from "@rg/domain";
-import { EXERCISES, GLOSSARY, label, type CheckReading, type ExerciseRecord } from "@rg/exercise-library";
+import { GLOSSARY, label, type CheckReading, type ExerciseRecord } from "@rg/exercise-library";
 import {
-  makeLibraryIndex,
   HISTORY_LIMIT,
   placementFor,
   redo,
@@ -145,16 +144,17 @@ export function BuilderRoute() {
   return <Builder source={source} />;
 }
 
-/** Suggestions for one part; a malformed probe (a programming error) suggests nothing rather than breaking the page. */
-function suggestionsFor(doc: WorkoutDoc, i: number, sctx: SuggestCtx): Suggestion[] {
+/**
+ * Suggestions for one part, from the moves the athlete is offered (`offered`: an archived move of their own never); a
+ * malformed probe (a programming error) suggests nothing rather than breaking the page.
+ */
+function suggestionsFor(doc: WorkoutDoc, i: number, sctx: SuggestCtx, offered: readonly ExerciseRecord[]): Suggestion[] {
   try {
-    return suggestForPart(doc, i, EXERCISES, sctx);
+    return suggestForPart(doc, i, offered, sctx);
   } catch {
     return [];
   }
 }
-
-const find = makeLibraryIndex(EXERCISES);
 
 function Builder({ source }: { source: BuildSource }) {
   const qc = useQueryClient();
@@ -163,7 +163,12 @@ function Builder({ source }: { source: BuildSource }) {
   /** What the templates list asked of this visit (its Start, its Schedule…), and where its way back goes. */
   const arrived = location.state as BuilderArrival | null;
   const back = builderBack(arrived?.from);
-  const { ctx, settled, profilesKnown } = useStudioReads();
+  // `account`: the account's library (the bundle and the athlete's own moves). What the document holds resolves in `all`
+  // — its judge, its minutes, its edits, a build made here — and what is offered (suggestions, the picker, ⇄) is
+  // `offered`. Read here, once for the page: the parts below are handed its index (`find`), never a read of their own
+  // (each would ask again, failed, as edits mount them).
+  const { ctx, settled, profilesKnown, library: account } = useStudioReads();
+  const { all, offered, find } = account;
   const unit = useWeightUnit();
   const settings = useQuery({ queryKey: ["settings"], queryFn: api.settings, staleTime: 60_000 });
   // The account's timezone: "now" is read on its clock, as the server reads it (CUJ R14).
@@ -200,7 +205,8 @@ function Builder({ source }: { source: BuildSource }) {
     staleTime: Infinity,
     initialData: {} as Record<string, CheckReading>,
   });
-  // A quick start (spec §9): built here, from the bundled library, as soon as what it is judged with is known — no
+  // A quick start (spec §9): built here, from the moves on offer (`ctx.library`: the bundle and the athlete's own active
+  // moves), as soon as what it is judged with is known — the athlete's own moves' read included (`settled`) — no
   // network, no AI; the day's seed keeps it the same workout all day. Kept nowhere until it is started, scheduled or
   // saved as a template, so the workout being built on this device is never touched.
   const quick = source.kind === "quick" ? source.quick : null;
@@ -263,24 +269,24 @@ function Builder({ source }: { source: BuildSource }) {
     (action: EditAction): Rejection | undefined => {
       const cur = live.current;
       if (!cur) return "missing";
-      const r = tryEdit(cur.editor, action, EXERCISES);
+      const r = tryEdit(cur.editor, action, all);
       if (r.rejected) return r.rejected === "unchanged" ? undefined : r.rejected;
       commit(r.state);
       return undefined;
     },
-    [commit],
+    [commit, all],
   );
   /** Several editor actions as one edit (one Undo). */
   const editMany = useCallback(
     (actions: readonly EditAction[]): Rejection | undefined => {
       const cur = live.current;
       if (!cur) return "missing";
-      const r = editAll(cur.editor, actions, EXERCISES);
+      const r = editAll(cur.editor, actions, all);
       if (r.rejected) return r.rejected === "unchanged" ? undefined : r.rejected;
       commit(r.state);
       return undefined;
     },
-    [commit],
+    [commit, all],
   );
 
   // ── What it is judged and suggested with ──
@@ -299,11 +305,17 @@ function Builder({ source }: { source: BuildSource }) {
   // A planned workout done with (its day passed, done, gone) is judged by the static rules alone: today's reading says
   // nothing of another day. One under way today keeps today's.
   const judgeOn = isWorkout ? judgeDayOf(plannedRow, today, date) : date;
-  const judged = useMemo(() => (doc ? judgeDraft(doc, bc, judgeOn) : null), [doc, bc, judgeOn]);
+  const judged = useMemo(() => (doc ? judgeDraft(doc, bc, judgeOn, all, offered) : null), [doc, bc, judgeOn, all, offered]);
   const sctx = useMemo(() => suggestCtxOf(bc, date), [bc, date]);
-  const suggestions = useMemo(() => (doc ? doc.parts.map((p, i) => (showsSuggestions(p) ? suggestionsFor(doc, i, sctx) : [])) : []), [doc, sctx]);
-  const ghostAt = useMemo(() => (doc ? activationAt(doc) : null), [doc]);
-  const ghost = useMemo(() => (doc && ghostAt !== null ? suggestionsFor(withPart(doc, ghostAt, "activation"), ghostAt, sctx) : []), [doc, ghostAt, sctx]);
+  const suggestions = useMemo(
+    () => (doc ? doc.parts.map((p, i) => (showsSuggestions(p) ? suggestionsFor(doc, i, sctx, offered) : [])) : []),
+    [doc, sctx, offered],
+  );
+  const ghostAt = useMemo(() => (doc ? activationAt(doc, all) : null), [doc, all]);
+  const ghost = useMemo(
+    () => (doc && ghostAt !== null ? suggestionsFor(withPart(doc, ghostAt, "activation"), ghostAt, sctx, offered) : []),
+    [doc, ghostAt, sctx, offered],
+  );
 
   // ── What is open ──
   const [editing, setEditing] = useState<{ part: number; item: number } | null>(null);
@@ -434,6 +446,7 @@ function Builder({ source }: { source: BuildSource }) {
     place: here,
     profilesKnown,
     keptOffline,
+    library: account,
   });
 
   // ── Not ready ──
@@ -693,11 +706,12 @@ function Builder({ source }: { source: BuildSource }) {
         <div className="stu-parts">
           {doc.parts.map((part, pi) => (
             <Fragment key={pi}>
-              {showGhost && ghostAt === pi ? <GhostPart list={ghost} onAdd={(rec, why) => addSuggested("ghost", rec, why)} onDismiss={dismissGhost} /> : null}
+              {showGhost && ghostAt === pi ? <GhostPart list={ghost} find={find} onAdd={(rec, why) => addSuggested("ghost", rec, why)} onDismiss={dismissGhost} /> : null}
               <PartBlock
+                find={find}
                 index={pi}
                 part={part}
-                minutes={partMinutes(doc, pi)}
+                minutes={partMinutes(doc, pi, all)}
                 suggestions={suggestions[pi] ?? []}
                 flagged={(i) => notesAt(pi, i).some((n) => n.severity === "error")}
                 onItem={(i) => setEditing({ part: pi, item: i })}
@@ -711,7 +725,7 @@ function Builder({ source }: { source: BuildSource }) {
               />
             </Fragment>
           ))}
-          {showGhost && ghostAt === doc.parts.length ? <GhostPart list={ghost} onAdd={(rec, why) => addSuggested("ghost", rec, why)} onDismiss={dismissGhost} /> : null}
+          {showGhost && ghostAt === doc.parts.length ? <GhostPart list={ghost} find={find} onAdd={(rec, why) => addSuggested("ghost", rec, why)} onDismiss={dismissGhost} /> : null}
           {!frozen && addable.length ? (
             <div className="stu-add-parts">
               <span className="stu-build-k">Add a part</span>
@@ -908,7 +922,7 @@ function Builder({ source }: { source: BuildSource }) {
           unit={unit}
           bc={bc}
           ctx={ctx}
-          library={EXERCISES}
+          library={offered}
           onEdit={edit}
           onMoved={(to) => setEditing({ part: to[0], item: to[1] })}
           onRemove={() => removeItem(editing.part, editing.item)}
@@ -933,7 +947,7 @@ function Builder({ source }: { source: BuildSource }) {
         <MovePicker
           doc={doc}
           part={doc.parts[picking]!}
-          suggestions={suggestions[picking]?.length ? suggestions[picking]! : suggestionsFor(doc, picking, sctx)}
+          suggestions={suggestions[picking]?.length ? suggestions[picking]! : suggestionsFor(doc, picking, sctx, offered)}
           ctx={ctx}
           error={pickError}
           onPick={(rec, why) => {
@@ -950,7 +964,7 @@ function Builder({ source }: { source: BuildSource }) {
           today={today}
           later={laterToday(new Date(), settings.data?.prefs ?? null, today, judged.derived?.estimatedMinutes ?? 0, timeZone)}
           usual={usualTime(settings.data?.prefs ?? null, today)}
-          judgeFor={(d) => judgeDraft(doc, bc, d)}
+          judgeFor={(d) => judgeDraft(doc, bc, d, all, offered)}
           checkLabel={checkLabel}
           onCheck={onCheck}
           onSchedule={schedule}
@@ -1035,15 +1049,18 @@ function EffortPicker({
   );
 }
 
-const recsOf = (list: readonly Suggestion[]) =>
+/** A move by its id or a legacy id, in the account's library (the builder's `find`). */
+type Find = (id: string) => ExerciseRecord | undefined;
+
+const recsOf = (list: readonly Suggestion[], find: Find) =>
   list.flatMap((s) => {
     const rec = find(s.libraryId);
     return rec ? [{ rec, why: s.reason }] : [];
   });
 
 /** A part's suggestions while it has no move: a row each — the name explains itself (its reason, one tap down), ＋ adds it. */
-function SuggestionChips({ list, onAdd }: { list: readonly Suggestion[]; onAdd: (rec: ExerciseRecord, why: string) => void }) {
-  const recs = recsOf(list);
+function SuggestionChips({ list, find, onAdd }: { list: readonly Suggestion[]; find: Find; onAdd: (rec: ExerciseRecord, why: string) => void }) {
+  const recs = recsOf(list, find);
   if (recs.length === 0) return null;
   return (
     <div className="stu-sugs">
@@ -1068,9 +1085,9 @@ function SuggestionChips({ list, onAdd }: { list: readonly Suggestion[]; onAdd: 
  * library name can hold itself ("Active pigeon · back-leg lift") — and, its last chip, "＋ Add": the part's one Add a
  * move, which opens the picker, where they come first, each a tap to add.
  */
-function SuggestionLine({ list, partName, onPick }: { list: readonly Suggestion[]; partName: string; onPick: () => void }) {
+function SuggestionLine({ list, find, partName, onPick }: { list: readonly Suggestion[]; find: Find; partName: string; onPick: () => void }) {
   const hid = useId();
-  const recs = recsOf(list);
+  const recs = recsOf(list, find);
   if (recs.length === 0) return null;
   return (
     <div className="stu-sug-line">
@@ -1098,6 +1115,7 @@ function SuggestionLine({ list, partName, onPick }: { list: readonly Suggestion[
 }
 
 function PartBlock({
+  find,
   index,
   part,
   minutes,
@@ -1109,6 +1127,8 @@ function PartBlock({
   onPick,
   readOnly = false,
 }: {
+  /** What the part holds resolves in: the account's whole library (an archived move of the athlete's own too). */
+  find: Find;
   index: number;
   part: WorkoutDoc["parts"][number];
   minutes: number;
@@ -1125,7 +1145,7 @@ function PartBlock({
   const name = label(part.purpose);
   const tip = GLOSSARY[part.purpose];
   const meta = [formatLine(part), minutes ? `${minutes} min` : ""].filter(Boolean).join(" · ");
-  const lined = part.items.length > 0 && recsOf(suggestions).length > 0;
+  const lined = part.items.length > 0 && recsOf(suggestions, find).length > 0;
   return (
     <section className="stu-part" data-part={index} aria-labelledby={hid}>
       <div className="stu-part-head">
@@ -1188,9 +1208,9 @@ function PartBlock({
         </ul>
       ) : null}
       {readOnly || suggestions.length === 0 ? null : part.items.length === 0 ? (
-        <SuggestionChips list={suggestions} onAdd={onAdd} />
+        <SuggestionChips list={suggestions} find={find} onAdd={onAdd} />
       ) : (
-        <SuggestionLine list={suggestions} partName={name} onPick={onPick} />
+        <SuggestionLine list={suggestions} find={find} partName={name} onPick={onPick} />
       )}
       {/* One control per action: while the suggestions fold to one line, its ＋ is the part's Add a move. */}
       {readOnly || lined ? null : (
@@ -1204,7 +1224,7 @@ function PartBlock({
 }
 
 /** A part the workout does not have yet, prompted: activation once a part loads a lift. */
-function GhostPart({ list, onAdd, onDismiss }: { list: readonly Suggestion[]; onAdd: (rec: ExerciseRecord, why: string) => void; onDismiss: () => void }) {
+function GhostPart({ list, find, onAdd, onDismiss }: { list: readonly Suggestion[]; find: Find; onAdd: (rec: ExerciseRecord, why: string) => void; onDismiss: () => void }) {
   const hid = useId();
   const tip = GLOSSARY.activation;
   return (
@@ -1217,7 +1237,7 @@ function GhostPart({ list, onAdd, onDismiss }: { list: readonly Suggestion[]; on
           <IconClose size={16} />
         </button>
       </div>
-      <SuggestionChips list={list} onAdd={onAdd} />
+      <SuggestionChips list={list} find={find} onAdd={onAdd} />
     </section>
   );
 }

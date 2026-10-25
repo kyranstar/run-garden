@@ -6,7 +6,7 @@ import { createElement, type ReactElement } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
 import { createPath, Router, type To } from "react-router-dom";
 import { onlineManager, QueryClient, QueryClientProvider } from "@tanstack/react-query";
-import type { LibraryListDto, LibraryRowDto, PlacesResponse, TodayResponse } from "@rg/api-client";
+import type { LibraryListDto, LibraryRowDto, PersonalMovesDto, PlacesResponse, TodayResponse } from "@rg/api-client";
 import { DEFAULT_SCHEDULING_PREFERENCES, type ProfileDto } from "@rg/domain";
 import { EXERCISES } from "@rg/exercise-library";
 
@@ -112,6 +112,8 @@ export interface Primed {
   today?: TodayResponse;
   places?: PlacesResponse;
   profile?: ProfileDto;
+  /** The athlete's own moves (`GET /api/library/personal`); `{ moves: [] }` for an account with none. */
+  personal?: PersonalMovesDto;
 }
 
 export function primedClient(p: Primed = {}): QueryClient {
@@ -120,6 +122,7 @@ export function primedClient(p: Primed = {}): QueryClient {
   if (p.today) qc.setQueryData(["today"], p.today);
   if (p.places) qc.setQueryData(["places"], p.places);
   if (p.profile) qc.setQueryData(["profile"], p.profile);
+  if (p.personal) qc.setQueryData(["library", "personal"], p.personal);
   return qc;
 }
 

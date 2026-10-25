@@ -30,6 +30,7 @@ import { api, ApiError, type TemplateDto } from "@rg/api-client";
 import { accountTodayGuess, ConfirmDialog, EmptyState, Sheet, Spinner } from "../../components.js";
 import { features } from "../../features.js";
 import { IconBack, IconMore, IconPin } from "../../icons.js";
+import { useAccountLibrary } from "../../library/account-library.js";
 import { requestPersistentStorage } from "../../offline/live.js";
 import { cuePlayer } from "../../player/cue-player.js";
 import { TEMPLATES_QUERY } from "./add-sheet.js";
@@ -61,6 +62,8 @@ export function TemplatesScreen() {
   const settings = useQuery({ queryKey: ["settings"], queryFn: api.settings, staleTime: 60_000 });
   const timeZone = settings.data?.prefs?.timezone ?? null;
   const today = accountTodayGuess(todayQ.data?.today, timeZone);
+  // A row's minutes, where the server said none: its moves resolved in the account's whole library.
+  const { all } = useAccountLibrary();
   const list = useMemo(() => sortTemplates(q.data?.templates ?? []), [q.data]);
   const [menuId, setMenuId] = useState<string | null>(null);
   const [renaming, setRenaming] = useState<TemplateDto | null>(null);
@@ -193,7 +196,7 @@ export function TemplatesScreen() {
     body = (
       <ul className="stu-tpl-list">
         {list.map((t) => {
-          const facts = [...(t.pinned ? ["Pinned"] : []), ...templateFacts(t, today, timeZone)];
+          const facts = [...(t.pinned ? ["Pinned"] : []), ...templateFacts(t, today, timeZone, all)];
           return (
             <li key={t.id} className="stu-tpl" data-id={t.id}>
               <h2 className="stu-tpl-name">

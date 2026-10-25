@@ -10,9 +10,13 @@
  *                   content is on), then the athlete's pinned templates — each a link to the builder, pre-filled.
  *   quickStartFor   a quick start for the day, built on the device (no network, no AI) with everything the builder
  *                   judges with, seeded by the date: the same tile gives the same workout all day, another the next.
+ *
+ * A quick start draws from the moves the athlete is offered (`ctx.library`: the bundle and their active own moves); a
+ * template's minutes, worked out here, read its moves in the account's whole library (`all`: an archived move of their
+ * own still has its seconds).
  */
 import { deriveDoc, quickStartDoc, type QuickStart, type QuickStartKind } from "@rg/workout";
-import { EXERCISES, type CheckReading } from "@rg/exercise-library";
+import { EXERCISES, type CheckReading, type ExerciseRecord } from "@rg/exercise-library";
 import type { TemplateDto } from "@rg/api-client";
 import { accountTodayGuess, dateInZone, formatShortDate, workoutKindLabel } from "../../components.js";
 import { addTargetHref } from "./add-model.js";
@@ -84,19 +88,22 @@ export function lastUsedText(iso: string | null, today: string, timeZone?: strin
 
 /**
  * A template's minutes and kind: the server's (derived from its document there), so the list and the home's tile say
- * the same. Worked out here only for a row the server said nothing of but whose document reads; with no document,
- * nothing.
+ * the same. Worked out here only for a row the server said nothing of but whose document reads — its moves resolved in
+ * `library`, the account's `all` (the bundled library when absent); with no document, nothing.
  */
-export function templateShape(t: TemplateDto): { minutes: number | null; discipline: string | null } {
+export function templateShape(t: TemplateDto, library: readonly ExerciseRecord[] = EXERCISES): { minutes: number | null; discipline: string | null } {
   if (t.minutes !== null && t.discipline !== null) return { minutes: t.minutes, discipline: t.discipline };
-  const d = t.doc ? deriveDoc(t.doc, EXERCISES) : null;
+  const d = t.doc ? deriveDoc(t.doc, library) : null;
   return { minutes: t.minutes ?? d?.estimatedMinutes ?? null, discipline: t.discipline ?? d?.discipline ?? null };
 }
 
-/** A row's facts: "34 min", "Strength", "Used 3 days ago". A template whose document no longer reads says so. */
-export function templateFacts(t: TemplateDto, today: string, timeZone?: string | null): string[] {
+/**
+ * A row's facts: "34 min", "Strength", "Used 3 days ago". A template whose document no longer reads says so. Its moves
+ * resolve in `library` (`templateShape`).
+ */
+export function templateFacts(t: TemplateDto, today: string, timeZone?: string | null, library: readonly ExerciseRecord[] = EXERCISES): string[] {
   if (!t.doc) return ["Can't be opened"];
-  const { minutes, discipline } = templateShape(t);
+  const { minutes, discipline } = templateShape(t, library);
   // The app's one word for a kind — the builder's summary says the same (`workoutKindLabel`).
   const kind = discipline ? (workoutKindLabel(discipline, { docSource: t.doc.source?.kind ?? null }) ?? null) : null;
   return [minutes !== null ? `${minutes} min` : null, kind, lastUsedText(t.lastUsedAt, today, timeZone)].filter((x): x is string => !!x);
@@ -115,17 +122,18 @@ export interface QuickTile {
 /**
  * The home's quick starts: the built-in ones on offer, then the athlete's pinned templates that can be opened. A
  * built-in tile says the minutes of the very workout it opens today (`quickStartFor`) — what the builder, then Today and
- * Plan, say of it — never a nominal length.
+ * Plan, say of it — never a nominal length. A template's moves resolve in `all` (the account's; the offered moves when
+ * absent).
  */
-export function quickTiles(ctx: StudioCtx, templates: readonly TemplateDto[] = []): QuickTile[] {
+export function quickTiles(ctx: StudioCtx, templates: readonly TemplateDto[] = [], all: readonly ExerciseRecord[] = ctx.library): QuickTile[] {
   const own = sortTemplates(templates.filter((t) => t.pinned && t.doc !== null));
   const minutesOf = (kind: QuickStartKind): number | null => {
     const made = quickStartFor(kind, ctx, accountTodayGuess(ctx.today, ctx.timeZone));
-    return "doc" in made ? deriveDoc(made.doc, EXERCISES).estimatedMinutes : null;
+    return "doc" in made ? deriveDoc(made.doc, ctx.library).estimatedMinutes : null;
   };
   return [
     ...quickStarts(ctx).map((q) => ({ key: q.kind, title: q.title, minutes: minutesOf(q.kind), href: quickHref(q.kind) })),
-    ...own.map((t) => ({ key: `template:${t.id}`, title: t.name, minutes: templateShape(t).minutes, href: templateHref(t.id) })),
+    ...own.map((t) => ({ key: `template:${t.id}`, title: t.name, minutes: templateShape(t, all).minutes, href: templateHref(t.id) })),
   ];
 }
 
@@ -133,8 +141,9 @@ export function quickTiles(ctx: StudioCtx, templates: readonly TemplateDto[] = [
 export const daySeed = (date: string): number => Number(date.replace(/-/g, "")) || 0;
 
 /**
- * A quick start for the day: `quickStartDoc` with today's readings (and any this page recorded), the place's gear, the
- * athlete's set-aside, pinned and recent moves — what the builder judges with — and the day's seed.
+ * A quick start for the day: `quickStartDoc` over the moves the athlete is offered (`ctx.library`) with today's readings
+ * (and any this page recorded), the place's gear, the athlete's set-aside, pinned and recent moves — what the builder
+ * judges with — and the day's seed.
  */
 export function quickStartFor(
   kind: QuickStartKind,
@@ -142,5 +151,5 @@ export function quickStartFor(
   today: string,
   recorded: Readonly<Record<string, CheckReading>> = {},
 ): QuickStart {
-  return quickStartDoc(kind, EXERCISES, { ...suggestCtxOf(buildCtxOf(ctx, today, recorded), today), seed: daySeed(today) });
+  return quickStartDoc(kind, ctx.library, { ...suggestCtxOf(buildCtxOf(ctx, today, recorded), today), seed: daySeed(today) });
 }

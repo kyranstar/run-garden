@@ -53,12 +53,14 @@ export const runtimeCaching: RuntimeCaching[] = [
   {
     // What a quick start or a template needs to start OFFLINE (R11 fix round 1): the templates (their documents), the
     // library's view as the Studio reads it (the account's condition profiles — judged by none of their rules, a Start
-    // offline is refused) and the profile (the account's zone — the session's day). Kept a week, the outbox's reach, so
-    // a jaw release on the second to seventh day offline still judges by the real profiles; in a cache of its own, with
-    // the account's other answers forgotten on a 401 (above, and packages/ui/src/offline/me.ts). Only these lists: never
-    // a filtered library, one move's or one template's own read.
+    // offline is refused), the athlete's own moves (saved-posts import: a template holding one resolves, times and
+    // plays) and the profile (the account's zone — the session's day). Kept a week, the outbox's reach, so a jaw release
+    // on the second to seventh day offline still judges by the real profiles; in a cache of its own, with the account's
+    // other answers forgotten on a 401 (above, and packages/ui/src/offline/me.ts). Only these lists: never a filtered
+    // library, one move's or one template's own read.
     urlPattern: ({ url }) =>
-      /^\/api\/(templates|profile)$/.test(url.pathname) || (url.pathname === "/api/library" && [...url.searchParams.keys()].every((k) => k === "limit")),
+      /^\/api\/(templates|profile|library\/personal)$/.test(url.pathname) ||
+      (url.pathname === "/api/library" && [...url.searchParams.keys()].every((k) => k === "limit")),
     handler: "NetworkFirst",
     options: {
       cacheName: "rg-studio-cache",

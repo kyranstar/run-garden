@@ -1,8 +1,9 @@
 /**
  * A BUILD MADE ON THE DEVICE (R11): a quick start, or a template whose document is here, started with no network. The
  * player plays it exactly as it plays the server's build of a document (`materializeDocBuild`): the steps are the
- * document's own (`playerStepsFromDoc`), the moves the bundle's library, each slot's cue and "to max" what its item
- * says, each move's target its item's dose, and the parts and doses in the builder's words. What only the server can
+ * document's own (`playerStepsFromDoc`), the moves the account's library on the device (the bundle and the athlete's
+ * own moves: `useAccountLibrary().all`, so one of their own — an archived one too — plays), each slot's cue and "to
+ * max" what its item says, each move's target its item's dose, and the parts and doses in the builder's words. What only the server can
  * work out is left out: no ⇄ offers (the library's usual moves are judged against the athlete's history), no history
  * on a target. Its day is the day it is played: what the save carries as its date, whenever it is sent.
  */
@@ -21,6 +22,7 @@ export interface LocalBuildInput {
   checks: Readonly<Record<string, { pre: number | null; feelingOff: boolean }>>;
   /** Where it is done: the builder's place (its gear). */
   location: { id: string; name: string; equipment: readonly string[] };
+  /** What the document's moves resolve in: the account's `all` (the builder's). The bundled library when absent. */
   library?: readonly ExerciseRecord[];
   now?: number;
 }

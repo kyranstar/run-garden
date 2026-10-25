@@ -56,7 +56,7 @@ const TEMPLATES = [
 ];
 
 function renderAt(path: string, el: React.ReactElement, p: Primed & { templates?: TemplateDto[] } = {}): string {
-  const qc = primedClient({ places: placesDto(["mat", "kettlebell", "dumbbells", "bench", "chair", "band", "wall"]), today: todayDto(null, false), library: libraryDto(), profile: profileDto(), ...p });
+  const qc = primedClient({ places: placesDto(["mat", "kettlebell", "dumbbells", "bench", "chair", "band", "wall"]), today: todayDto(null, false), library: libraryDto(), profile: profileDto(), personal: { moves: [] }, ...p });
   if (p.templates) qc.setQueryData(["templates"], { templates: p.templates });
   return renderToStaticMarkup(createElement(QueryClientProvider, { client: qc }, staticRouter(path, el)));
 }
@@ -202,6 +202,12 @@ describe("a quick start in the builder", () => {
 
   it("waits for the profile too: its focus areas shape the quick start (CUJ R7)", () => {
     const html = at("hip_opener", { profile: undefined });
+    expect(html).not.toContain("stu-item-name");
+    expect(html).toContain("Opening the workout");
+  });
+
+  it("waits for the athlete's own moves too: a quick start draws from them (saved-posts import)", () => {
+    const html = at("hip_opener", { personal: undefined });
     expect(html).not.toContain("stu-item-name");
     expect(html).toContain("Opening the workout");
   });

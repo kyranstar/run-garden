@@ -12,14 +12,17 @@ import { Link } from "react-router-dom";
 import { useQuery } from "@tanstack/react-query";
 import { api } from "@rg/api-client";
 import { IconClock, IconPlus } from "../../icons.js";
+import { useAccountLibrary } from "../../library/account-library.js";
 import { TEMPLATES_QUERY } from "./add-sheet.js";
 import type { StudioCtx } from "./model.js";
 import { quickTiles, TEMPLATES_HREF } from "./templates-model.js";
 
 export function QuickStarts({ ctx }: { ctx: StudioCtx }) {
   const templates = useQuery({ queryKey: TEMPLATES_QUERY, queryFn: api.templates, staleTime: 30_000 });
+  // A pinned template's moves resolve in the account's whole library (an archived move of the athlete's own too).
+  const { all } = useAccountLibrary();
   // Each built-in tile builds today's workout to say its minutes: once per change of what it is built with.
-  const tiles = useMemo(() => quickTiles(ctx, templates.data?.templates), [ctx, templates.data]);
+  const tiles = useMemo(() => quickTiles(ctx, templates.data?.templates, all), [ctx, templates.data, all]);
   return (
     <div className="stu-quick">
       {tiles.map((qs) => (

@@ -12,17 +12,33 @@
  * another place's, bodyweight only, any equipment, or one piece — the places first, one piece of gear one tap down.
  */
 import { useId } from "react";
-import { CONTRACTIONS, EQUIPMENT, EQUIPMENT_IDS, EXERCISES, label, MUSCLE_REGION, MUSCLES, NO_EQUIPMENT_PLACE_ID, REGIONS, type ExerciseRecord } from "@rg/exercise-library";
+import { CONTRACTIONS, EQUIPMENT, EQUIPMENT_IDS, label, MUSCLE_REGION, MUSCLES, NO_EQUIPMENT_PLACE_ID, REGIONS, type ExerciseRecord } from "@rg/exercise-library";
 import { Sheet, countNoun } from "../../components.js";
 import { ChipRow, type ChipSpec } from "./chip-row.js";
 import { browseParts, browseTags, difficultyLabel, placeWord, visibleThemes, type Mine, type StudioCtx, type StudioFilters } from "./model.js";
 
-const has = (pred: (r: ExerciseRecord) => boolean): boolean => EXERCISES.some(pred);
-const AREAS = REGIONS.filter((g) => has((r) => r.regions.includes(g)));
-const HOWS = CONTRACTIONS.filter((c) => has((r) => r.contraction.includes(c)));
-const GEAR = EQUIPMENT_IDS.filter((g) => has((r) => r.equipment.all.includes(g) || r.equipment.oneOf.includes(g)));
-const musclesIn = (area: string) =>
-  MUSCLES.filter((m) => MUSCLE_REGION[m] === area && has((r) => r.muscles.primary.includes(m) || r.muscles.secondary.includes(m)));
+/** The values a facet offers: each only where a move on offer has it. */
+interface Facets {
+  areas: readonly (typeof REGIONS)[number][];
+  hows: readonly (typeof CONTRACTIONS)[number][];
+  gear: readonly (typeof EQUIPMENT_IDS)[number][];
+  musclesIn: (area: string) => readonly (typeof MUSCLES)[number][];
+}
+const facetsMade = new WeakMap<readonly ExerciseRecord[], Facets>();
+/** The facets of the moves on offer (`ctx.library`), worked out once per library. */
+function facetsOf(records: readonly ExerciseRecord[]): Facets {
+  const had = facetsMade.get(records);
+  if (had) return had;
+  const has = (pred: (r: ExerciseRecord) => boolean): boolean => records.some(pred);
+  const facets: Facets = {
+    areas: REGIONS.filter((g) => has((r) => r.regions.includes(g))),
+    hows: CONTRACTIONS.filter((c) => has((r) => r.contraction.includes(c))),
+    gear: EQUIPMENT_IDS.filter((g) => has((r) => r.equipment.all.includes(g) || r.equipment.oneOf.includes(g))),
+    musclesIn: (area) => MUSCLES.filter((m) => MUSCLE_REGION[m] === area && has((r) => r.muscles.primary.includes(m) || r.muscles.secondary.includes(m))),
+  };
+  facetsMade.set(records, facets);
+  return facets;
+}
 const MAXES = [1, 2, 3, 4];
 const MINE: ReadonlyArray<[Mine, string]> = [
   ["pinned", "Pinned"],
@@ -108,21 +124,22 @@ export function FilterControls({
     { key: "bodyweight", label: placeWord(NO_EQUIPMENT_PLACE_ID, ctx), on: f.place === NO_EQUIPMENT_PLACE_ID, onClick: () => setPlace(NO_EQUIPMENT_PLACE_ID) },
     { key: "any", label: "Any equipment", on: f.gear === "any" || (f.gear === undefined && f.place === undefined && !ctx.place), onClick: () => setGear("any") },
   ];
-  const gear: ChipSpec[] = [...places, ...GEAR.map((g) => ({ key: g, label: EQUIPMENT[g], on: f.gear === g, onClick: () => setGear(f.gear === g ? undefined : g) }))];
-  const muscles = f.area ? musclesIn(f.area) : [];
+  const facets = facetsOf(ctx.library);
+  const gear: ChipSpec[] = [...places, ...facets.gear.map((g) => ({ key: g, label: EQUIPMENT[g], on: f.gear === g, onClick: () => setGear(f.gear === g ? undefined : g) }))];
+  const muscles = f.area ? facets.musclesIn(f.area) : [];
   return (
     <div className="stu-facets-body">
-      <Facet level={level} title="Part" chips={browseParts(EXERCISES, ctx).map((p) => choice("part", p, label(p)))} />
-      <Facet level={level} title="Body area" chips={AREAS.map((g) => choice("area", g, label(g)))} />
+      <Facet level={level} title="Part" chips={browseParts(ctx.library, ctx).map((p) => choice("part", p, label(p)))} />
+      <Facet level={level} title="Body area" chips={facets.areas.map((g) => choice("area", g, label(g)))} />
       {f.area && muscles.length > 1 ? (
         <Facet level={level} title={`${label(f.area)}: muscle`} chips={muscles.map((m) => choice("muscle", m, label(m)))} />
       ) : null}
-      <Facet level={level} title="Contraction" chips={HOWS.map((c) => choice("how", c, label(c)))} />
+      <Facet level={level} title="Contraction" chips={facets.hows.map((c) => choice("how", c, label(c)))} />
       <Facet level={level} title="Equipment" chips={gear} limit={places.length} more="More equipment" less="Less equipment" />
       <Facet
         level={level}
         title="Tags"
-        chips={browseTags(EXERCISES).map((t) => choice("tag", t, label(t)))}
+        chips={browseTags(ctx.library).map((t) => choice("tag", t, label(t)))}
         limit={FIRST_TAGS}
         more="More tags"
         less="Fewer tags"

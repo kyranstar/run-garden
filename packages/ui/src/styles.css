@@ -9812,6 +9812,38 @@ a.stu-qs:hover {
   font-weight: var(--weight-medium);
   color: var(--green-ink);
 }
+/* One of the athlete's own moves: "Yours" (a neutral pill) leads the meta line;
+   the posts it came from are each a creator and a link out, a fingertip's
+   height as a ladder's link is. */
+.stu-saved {
+  display: flex;
+  flex-direction: column;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+.stu-saved li {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  column-gap: var(--space-5);
+  min-width: 0;
+  min-height: var(--tap);
+}
+.stu-saved-by {
+  min-width: 0;
+  overflow-wrap: anywhere;
+  font-size: var(--text-sm);
+  color: var(--ink);
+}
+.stu-saved-link {
+  display: inline-flex;
+  align-items: center;
+  min-height: var(--tap);
+  font-size: var(--text-sm);
+  font-weight: var(--weight-medium);
+  color: var(--green-ink);
+}
 .stu-detail-history {
   color: var(--ink);
 }

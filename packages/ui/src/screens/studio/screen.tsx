@@ -19,8 +19,10 @@
  *    as many entries as it went in — or, when the list changed under an open pane, replaces the entry with the list.
  *
  * Instant and offline by construction: the library is in the bundle and `studioResults` is a pure function over it.
- * The three reads (`GET /api/library` for the athlete's pins, ratings and history; today's readings; the default
- * place's gear) only add knowledge — before they answer, or with no network, the list is the same list knowing less.
+ * The reads (`GET /api/library` for the athlete's pins, ratings and history; today's readings; the default place's
+ * gear; the athlete's own moves, `useAccountLibrary`) only add knowledge — before they answer, or with no network, the
+ * list is the same list knowing less. A move's address resolves in the account's whole library (an archived move of
+ * the athlete's own still opens); the list offers what the athlete is offered (`ctx.library`).
  * The whole view is deferred (`useDeferredValue`): the field and the chips answer at once, the 150-row list a frame
  * later, and the home stays until the list is ready rather than flashing a wrong one.
  *
@@ -37,8 +39,10 @@ import { useCallback, useDeferredValue, useEffect, useMemo, useRef, useState } f
 import { Navigate, useLocation, useMatch, useNavigate, useNavigationType, useSearchParams } from "react-router-dom";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { api } from "@rg/api-client";
-import { EXERCISES, type ExerciseRecord } from "@rg/exercise-library";
+import type { ExerciseRecord } from "@rg/exercise-library";
+import { isPersonalId } from "@rg/saves";
 import { accountTodayGuess, settling } from "../../components.js";
+import { useAccountLibrary, type AccountLibraryRead } from "../../library/account-library.js";
 import { SearchField } from "../../components/search-field.js";
 import { WatchPreviewSheet } from "../../components/watch-preview-sheet.js";
 import { IconFilters } from "../../icons.js";
@@ -83,12 +87,6 @@ export function useMinWidth(px: number): boolean {
 /** A move's address, carrying the list's own search so the list is still there behind it. */
 export const moveHref = (id: string, search: string): string => `/studio/move/${encodeURIComponent(id)}${search ? `?${search}` : ""}`;
 
-const byId = new Map<string, ExerciseRecord>();
-for (const r of EXERCISES) {
-  byId.set(r.id, r);
-  for (const old of r.legacyIds) if (!byId.has(old)) byId.set(old, r);
-}
-
 /**
  * The athlete's side of the Studio: profiles and today's readings, their say on each move, the place's gear.
  *
@@ -101,21 +99,29 @@ export function useStudioCtx(): StudioCtx {
 
 /**
  * The context, and whether its reads have all answered — or, offline, given up for now (`paused`): what is built from
- * them once and kept (a quick start) waits for that, rather than being built twice, the first time knowing less.
+ * them once and kept (a quick start) waits for that, rather than being built twice, the first time knowing less. The
+ * athlete's own moves are one of them (`useAccountLibrary`): `ctx.library` is what they are offered.
  * `profilesKnown`: the library read (the switched-on profiles' one full list) has answered at some point — false while
  * it is paused or failed with nothing kept, when "no profile is on" would be a guess. `loading`: one of them has not
  * answered yet, nor failed (`settling`) — what a page draws from them, and whatever sits under that, waits (the Studio
  * home).
  */
-export function useStudioReads(): { ctx: StudioCtx; settled: boolean; profilesKnown: boolean; loading: boolean } {
+export function useStudioReads(): { ctx: StudioCtx; settled: boolean; profilesKnown: boolean; loading: boolean; library: AccountLibraryRead } {
   const library = useQuery({ queryKey: ["library", "studio"], queryFn: () => api.listLibrary({ limit: 200 }), staleTime: 60_000 });
   const today = useQuery({ queryKey: ["today"], queryFn: api.today });
   const places = useQuery({ queryKey: ["places"], queryFn: api.listPlaces, staleTime: 60_000 });
   // The focus areas (CUJ R7): what the suggestions and the quick starts lean to.
   const profile = useQuery({ queryKey: ["profile"], queryFn: api.getProfile, staleTime: 60_000 });
-  const ctx = useMemo(() => studioCtxFrom(library.data, today.data, places.data, profile.data), [library.data, today.data, places.data, profile.data]);
-  const settled = [library, today, places, profile].every((q) => !q.isPending || q.fetchStatus === "paused");
-  return { ctx, settled, profilesKnown: library.data !== undefined, loading: settling(library, today, places, profile) };
+  // The athlete's own moves: what the list offers (`offered`). What is built once from the context waits for their read
+  // (`settled`); they only fill the list in, so the page never waits on them (`loading`).
+  const own = useAccountLibrary();
+  const offered = own.offered;
+  const ctx = useMemo(
+    () => studioCtxFrom(library.data, today.data, places.data, profile.data, offered),
+    [library.data, today.data, places.data, profile.data, offered],
+  );
+  const settled = own.settled && [library, today, places, profile].every((q) => !q.isPending || q.fetchStatus === "paused");
+  return { ctx, settled, profilesKnown: library.data !== undefined, loading: settling(library, today, places, profile), library: own };
 }
 
 /** What a history entry under the Studio carries: whether it came from the home, and how deep into moves it is. */
@@ -147,7 +153,8 @@ export function StudioScreen() {
   const navigate = useNavigate();
   const search = params.toString();
   const url = useMemo(() => readStudio(new URLSearchParams(search)), [search]);
-  const { ctx, loading } = useStudioReads();
+  // `account`: the account's library — a move's address resolves in all of it (`find`); the list offers `ctx.library`.
+  const { ctx, loading, library: account } = useStudioReads();
   const qc = useQueryClient();
   const wide = useMinWidth(DETAIL_PANE_MIN_PX);
   const [sheetOpen, setSheetOpen] = useState(false);
@@ -159,7 +166,9 @@ export function StudioScreen() {
   // ── The move open, from the path ──
   const moveMatch = useMatch("/studio/move/:id");
   const openId = moveMatch?.params.id ?? null;
-  const openRec = openId ? (byId.get(openId) ?? null) : null;
+  const openRec = openId ? (account.find(openId) ?? null) : null;
+  // One of the athlete's own, its read not answered yet: the detail waits for it rather than leaving the address.
+  const openWaits = !!openId && !openRec && isPersonalId(openId) && !account.settled;
 
   // ── The field, and the URL it writes to ──
   const [text, setText] = useState(url.q);
@@ -341,12 +350,12 @@ export function StudioScreen() {
   const view = useMemo(() => ({ q: text, filters: url.filters, listing }), [text, url.filters, listing]);
   const shown = useDeferredValue(view);
   const results = useMemo(
-    () => (shown.listing ? studioResults(EXERCISES, shown.q, shown.filters, ctx) : []),
+    () => (shown.listing ? studioResults(ctx.library, shown.q, shown.filters, ctx) : []),
     [shown.listing, shown.q, shown.filters, ctx],
   );
   // What the sheet's primary action promises, at once (not deferred): the filters as they stand.
   const sheetCount = useMemo(
-    () => (sheetOpen ? studioResults(EXERCISES, text, url.filters, ctx).length : 0),
+    () => (sheetOpen ? studioResults(ctx.library, text, url.filters, ctx).length : 0),
     [sheetOpen, text, url.filters, ctx],
   );
 
@@ -399,7 +408,7 @@ export function StudioScreen() {
   const set = setFilterCount(url.filters, ctx);
   const today = accountTodayGuess(ctx.today, ctx.timeZone);
   // A move the library does not have (an old link): the list, without it.
-  if (openId && !openRec) return <Navigate to={{ pathname: "/studio", search: search ? `?${search}` : "" }} replace />;
+  if (openId && !openRec && !openWaits) return <Navigate to={{ pathname: "/studio", search: search ? `?${search}` : "" }} replace />;
 
   const detail = openRec ? (
     <MoveDetail
@@ -441,7 +450,7 @@ export function StudioScreen() {
               filters={url.filters}
               listFilters={shown.filters}
               ctx={ctx}
-              records={EXERCISES}
+              records={ctx.library}
               results={results}
               today={today}
               canClear={clearable(url.filters, url.all)}

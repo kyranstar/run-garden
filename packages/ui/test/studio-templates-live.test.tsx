@@ -190,7 +190,7 @@ function mount(path: string, primed: Primed & { templates?: TemplateDto[]; stric
   root = createRoot(host);
   // The reads a session has once the app is open (the profile among them: the home is drawn once they have answered,
   // and a read that failed is asked again by the next screen that needs it).
-  const qc = primedClient({ places: placesDto(HOME_GEAR), today: todayDto(null, false), library: libraryDto(), profile: profileDto(), ...primed });
+  const qc = primedClient({ places: placesDto(HOME_GEAR), today: todayDto(null, false), library: libraryDto(), profile: profileDto(), personal: { moves: [] }, ...primed });
   qc.setQueryData(["settings"], { prefs: DEVICE_PREFS });
   if (primed.templates) qc.setQueryData(["templates"], { templates: primed.templates });
   const app = createElement(

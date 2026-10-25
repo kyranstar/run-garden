@@ -325,7 +325,10 @@ export function suggestCtxOf(bc: BuildCtx, date: string): SuggestCtx {
     seed: seedOf(date),
   };
 }
-/** Gear not known yet: suggest as if every piece were there (the place's read narrows it). */
+/**
+ * Gear not known yet: suggest as if every piece were there (the place's read narrows it). The bundled library's gear is
+ * the whole vocabulary (`EQUIPMENT_IDS`), and a move of the athlete's own names only that vocabulary's.
+ */
 const ALL_GEAR: readonly string[] = [...new Set(EXERCISES.flatMap((r) => [...r.equipment.all, ...r.equipment.oneOf]))];
 
 // ── The notes ──────────────────────────────────────────────────────────────
@@ -407,13 +410,16 @@ const keyOf = (i: DocIssue): string => `${i.path}|${i.code}`;
 
 /**
  * The draft judged for `date` — or, with no date (a planned workout done with: see `judgeDayOf`), by the static rules
- * alone: no day, so nothing a day's reading decides.
+ * alone: no day, so nothing a day's reading decides. Its moves resolve in `library` (the account's `all`: an archived
+ * move of the athlete's own still reads); a Fix names only a move in `offered` (the account's offered moves), as the
+ * server's judge does. Absent, both the bundled library.
  */
-export function judgeDraft(draft: DraftDoc, bc: BuildCtx, date: string | null, library: Library = EXERCISES): Judged {
+export function judgeDraft(draft: DraftDoc, bc: BuildCtx, date: string | null, library: Library = EXERCISES, offered?: Library): Judged {
   const doc = toProposable(draft);
   if (!doc) return { doc: null, derived: null, notes: [], blocked: EMPTY_BLOCK, checks: [] };
   const vctx = (readings: BuildCtx["readings"]) => ({
     library,
+    ...(offered && offered !== library ? { offered } : {}),
     activeProfiles: bc.profiles,
     day: date === null ? null : { ...dayFor(bc, date), readings },
     excluded: bc.excluded,

@@ -78,7 +78,7 @@ describe("the read cache (rg-read-cache)", () => {
     for (const path of ["/api/workouts", "/api/workouts?from=2026-10-12&to=2026-11-09", "/api/places"]) {
       expect(matches(path), path).toBe(true);
     }
-    for (const path of ["/api/templates", "/api/library", "/api/library?limit=200", "/api/profile"]) expect(matches(path), path).toBe(false);
+    for (const path of ["/api/templates", "/api/library", "/api/library?limit=200", "/api/library/personal", "/api/profile"]) expect(matches(path), path).toBe(false);
   });
 
   // A planned workout's document is kept in a cache of its own (below): one entry a workout here would push Today out.
@@ -137,12 +137,14 @@ describe("the studio cache (rg-studio-cache)", () => {
     return fn({ url: new URL(`https://run.garden.test${path}`), request: { mode: "cors" } });
   };
 
-  it("answers the templates, the library as the Studio reads it, and the profile — and nothing else", () => {
-    for (const path of ["/api/templates", "/api/library", "/api/library?limit=200", "/api/profile"]) expect(matches(path), path).toBe(true);
+  it("answers the templates, the library as the Studio reads it, the athlete's own moves, and the profile — and nothing else", () => {
+    for (const path of ["/api/templates", "/api/library", "/api/library?limit=200", "/api/library/personal", "/api/profile"]) expect(matches(path), path).toBe(true);
     for (const path of [
       "/api/library?part=main",
       "/api/library?limit=200&q=squat",
       "/api/library/gobletSquat",
+      "/api/library/personalx",
+      "/api/library/personal/x",
       "/api/templates/t1",
       "/api/templates/t1/use",
       "/api/templatesx",

@@ -9,14 +9,14 @@
  *   Cat-cow · …
  *
  * The same search as the Studio's list (`studioResults`: the shared `searchLibrary`, the place's gear, today's fit),
- * so the two rank alike and it works offline — and the same chips: the part's kind of move and the Studio's two
- * defaults (the place's gear, "fits today"), each removable, so a move the defaults hide is one tap away, never
- * missing. A tap puts the move into this part, dosed for it (`suggestedItem`: one set in a light part), with the
- * suggestion's reason as its why; a refusal (a full part) says so and nothing changes. Moves already in the workout
- * are left out.
+ * over the same moves (`ctx.library`: the bundle and the athlete's active own moves), so the two rank alike and it
+ * works offline — and the same chips: the part's kind of move and the Studio's two defaults (the place's gear, "fits
+ * today"), each removable, so a move the defaults hide is one tap away, never missing. A tap puts the move into this
+ * part, dosed for it (`suggestedItem`: one set in a light part), with the suggestion's reason as its why; a refusal (a
+ * full part) says so and nothing changes. Moves already in the workout are left out.
  */
 import { useMemo, useState } from "react";
-import { EXERCISES, label, type ExerciseRecord } from "@rg/exercise-library";
+import { label, type ExerciseRecord } from "@rg/exercise-library";
 import type { WorkoutDoc, WorkoutPart } from "@rg/domain";
 import { makeLibraryIndex, type Suggestion } from "@rg/workout";
 import { Sheet } from "../../components.js";
@@ -46,7 +46,7 @@ export function MovePicker({
   error,
   onPick,
   onClose,
-  library = EXERCISES,
+  library = ctx.library,
 }: {
   doc: WorkoutDoc;
   part: WorkoutPart;
@@ -56,6 +56,7 @@ export function MovePicker({
   error: string | null;
   onPick: (rec: ExerciseRecord, why?: string) => void;
   onClose: () => void;
+  /** What it offers: the Studio's (`ctx.library`) when absent. */
   library?: readonly ExerciseRecord[];
 }) {
   const [q, setQ] = useState("");

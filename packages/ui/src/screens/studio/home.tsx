@@ -20,7 +20,7 @@ import { useId, type ReactNode } from "react";
 import { Link } from "react-router-dom";
 import { useQuery } from "@tanstack/react-query";
 import { api } from "@rg/api-client";
-import { EXERCISES, label } from "@rg/exercise-library";
+import { label } from "@rg/exercise-library";
 import { settling, Spinner } from "../../components.js";
 import { IconChevron } from "../../icons.js";
 import { TEMPLATES_QUERY } from "./add-sheet.js";
@@ -53,7 +53,7 @@ export function StudioHome({
   /** Open the list with these filters (`all`: every move). */
   onBrowse: (filters: StudioFilters | "all") => void;
 }) {
-  const themes = visibleThemes(ctx).map((t) => ({ t, word: themeCountWord(EXERCISES, t.id, ctx) }));
+  const themes = visibleThemes(ctx).map((t) => ({ t, word: themeCountWord(ctx.library, t.id, ctx) }));
   // The athlete's templates: the count is the templates link's (the quick starts read them too, for the pinned ones).
   // Offline, the link has no count.
   const templates = useQuery({ queryKey: TEMPLATES_QUERY, queryFn: api.templates, staleTime: 30_000 });
@@ -92,7 +92,7 @@ export function StudioHome({
           <button type="button" className="chip" onClick={() => onBrowse("all")}>
             All moves
           </button>
-          {browseParts(EXERCISES, ctx).map((p) => (
+          {browseParts(ctx.library, ctx).map((p) => (
             <button key={p} type="button" className="chip" onClick={() => onBrowse({ part: p })}>
               {label(p)}
             </button>
@@ -113,7 +113,7 @@ export function StudioHome({
 
       <Section title="Tags">
         <ChipRow
-          chips={browseTags(EXERCISES).map((t) => ({ key: t, label: label(t), onClick: () => onBrowse({ tag: t }) }))}
+          chips={browseTags(ctx.library).map((t) => ({ key: t, label: label(t), onClick: () => onBrowse({ tag: t }) }))}
           limit={HOME_TAGS}
           more="More tags"
           less="Fewer tags"
