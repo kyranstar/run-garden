@@ -11,7 +11,7 @@ import { schema } from "@rg/database";
 import { nowInstant, todayInZone, workoutDocSchema, type WorkoutDoc } from "@rg/domain";
 import { EXERCISES, PROFILE_IDS } from "@rg/exercise-library";
 import { personalMoveId, type ExtractedMove } from "@rg/saves";
-import { makeLibraryIndex } from "@rg/workout";
+import { deriveDoc, makeLibraryIndex } from "@rg/workout";
 import type { Env } from "../src/env.js";
 import type { Db } from "../src/services/db.js";
 import {
@@ -301,6 +301,38 @@ describe("documents holding personal moves", () => {
     // Saved again as it stands, it still validates.
     const again = await call("PUT", `/api/workouts/${workoutId}/doc`, { doc: docOf("bridge", id), baseRev: made.body.workout.docRev });
     expect(again.status, JSON.stringify(again.body)).toBe(200);
+  });
+
+  it("the run check reads a move's seconds from its record: a jog plus personal moves is a run only without them, and is judged, not blanket-refused (Task 12 review 1)", async () => {
+    // Unresolved, a move dosed by sets alone is 0 s of work and a lift's assumed rest; its record gives it reps, a tempo and a shorter rest.
+    const a = await addMove("Wall Angel Slide", "active", { draft: { dose: { text: "3 x 15-20", range: [15, 20] } } });
+    const b = await addMove("Prone Y Raise", "active", { draft: { dose: { text: "3 x 15-20", range: [15, 20] } } });
+    const doc = workoutDocSchema.parse({
+      version: 1,
+      title: "Jog and upper back",
+      intent: { summary: "A short jog, then the upper back.", goals: ["posture"], focus: [], effort: "maintain" },
+      parts: [
+        { purpose: "warmup", format: "steady", items: [{ kind: "run", effort: "easy", target: { durationSec: 300 } }] },
+        { purpose: "main", format: "straight", items: [a, b].map((libraryId) => ({ kind: "exercise", libraryId, dose: { sets: 3 } })) },
+      ],
+      source: { kind: "studio" },
+    });
+    // The fixture crosses the line: a run judged in the public library, strength in the account's.
+    expect(deriveDoc(doc, EXERCISES).discipline).toBe("run");
+    const library = await loadAccountLibrary(db, userId);
+    expect(deriveDoc(doc, library.all).discipline).toBe("strength");
+
+    // Not a run, so it reaches the judge: refused for mixing a run with moves (run_mixed), with the judge's other issues and
+    // their fixes beside it — not "Runs can't be planned in the Studio yet", which a derive in the public library gave.
+    const made = await create(doc);
+    expect(made.status).toBe(422);
+    expect(made.body.error).toBe("invalid_doc");
+    expect(made.body.issues).toContainEqual(expect.objectContaining({ code: "run_mixed", severity: "error" }));
+    expect(made.body.issues).toContainEqual(expect.objectContaining({ path: "parts[1].items[0].dose", code: "dose_mismatch", fix: expect.any(String) }));
+    const id = (await create(docOf("bridge", a))).body.workout.id;
+    const revised = await call("PUT", `/api/workouts/${id}/doc`, { doc, baseRev: 1 });
+    expect(revised.status).toBe(422);
+    expect(revised.body.error).toBe("invalid_doc");
   });
 
   it("⇄ offers an active personal move in a slot's place, never an archived one", async () => {

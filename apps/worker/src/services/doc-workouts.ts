@@ -356,15 +356,18 @@ async function validated(
 ): Promise<{ doc: WorkoutDoc; derived: DocDerived; warnings: DocIssue[] }> {
   const doc = await parsedDoc(db, userId, raw);
   if (opts.playedOffline && !(await appAuthored(db, userId, doc))) throw new PlayedOfflineRefusedError("source");
-  // A run is told by its run items alone, whatever library its moves resolve in: refused before the day is read.
-  const derived = deriveDoc(doc, EXERCISES);
+  // A run is told by its share of the document's seconds, and a move's seconds come from its record: derived in the
+  // account's library (read once a request — the day's context below finds it with no statement), refused before the
+  // day is read. In the public library alone, a personal move is 0 s of work: a jog beside a few of them would be a run.
+  const library = (await loadAccountLibrary(db, userId)).all;
+  const derived = deriveDoc(doc, library);
   if (derived.discipline === "run") throw new RunUnsupportedError();
   const ctx = await docDayContext(db, userId, { ...day, placeId: doc.setting?.placeId });
   // Played offline: what was done is recorded, not planned — the day was judged on the device, and its gate is skipped
   // here (judged as a template is: every reading-dependent rule on the calmest day). Everything else still holds.
   const warnings = accepted(judgeDoc(doc, opts.playedOffline ? { ...ctx, day: null } : ctx));
   // Its personal moves count in what is derived (its minutes, its kind).
-  return { doc, derived: ctx.library === EXERCISES ? derived : deriveDoc(doc, ctx.library), warnings };
+  return { doc, derived, warnings };
 }
 
 // ── Writes ───────────────────────────────────────────────────────────────────────────────────────────────────
