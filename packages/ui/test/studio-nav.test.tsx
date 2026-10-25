@@ -16,6 +16,7 @@ import { features, studioFlag } from "../src/features.js";
 import { BuilderRoute } from "../src/screens/studio/builder.js";
 import { StudioScreen } from "../src/screens/studio/screen.js";
 import { TemplatesScreen } from "../src/screens/studio/templates.js";
+import { SaveBatchScreen, SavesScreen } from "../src/screens/studio/saves.js";
 import { AppShell, NAV } from "../src/shell.js";
 import { staticRouter } from "./studio-fixtures.js";
 
@@ -57,17 +58,19 @@ describe("the Studio's pages", () => {
     expect(app).toMatch(/import \{ StudioScreen \} from "\.\/screens\/studio\/screen\.js";/);
   });
 
-  it("/studio is the library, /studio/build/* the builder (Task 6), /studio/templates the templates (Task 7); the objectives board's address goes to Growth", () => {
+  it("/studio is the library, /studio/build/* the builder (Task 6), /studio/templates the templates (Task 7), /studio/saves[/:batchId] From your saves (saved-posts import); the objectives board's address goes to Growth", () => {
     const el = StudioRoute();
     expect(el.type).toBe(Routes);
     const routes = Children.toArray((el.props as { children: unknown }).children) as ReactElement<{ path: string; element: ReactElement }>[];
     expect(routes.map((r) => [r.props.path, r.props.element.type])).toEqual([
       ["build/*", BuilderRoute],
       ["templates", TemplatesScreen],
+      ["saves", SavesScreen],
+      ["saves/:batchId", SaveBatchScreen],
       ["objectives", Navigate],
       ["*", StudioScreen],
     ]);
-    expect(routes[2]!.props.element.props).toEqual({ to: "/growth", replace: true });
+    expect(routes.find((r) => r.props.path === "objectives")!.props.element.props).toEqual({ to: "/growth", replace: true });
   });
 
   it("the route no longer asks the build's flag: the Studio's pages answer whatever it says", () => {

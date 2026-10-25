@@ -87,11 +87,15 @@ export function useMinWidth(px: number): boolean {
 /** A move's address, carrying the list's own search so the list is still there behind it. */
 export const moveHref = (id: string, search: string): string => `/studio/move/${encodeURIComponent(id)}${search ? `?${search}` : ""}`;
 
+/** The Studio's one library read asks for this many rows: the route's cap (apps/worker library-view.ts `MAX_LIBRARY_LIMIT`). */
+export const STUDIO_LIBRARY_LIMIT = 500;
+
 /**
  * The athlete's side of the Studio: profiles and today's readings, their say on each move, the place's gear.
  *
- * `limit: 200` is the route's cap and covers the whole library today (150 moves). Past 200 the prefs of the moves
- * beyond it would simply be missing — those rows would show no history or pin — until this asks for them by page.
+ * `limit: STUDIO_LIBRARY_LIMIT` (500) is the route's cap: one read covers what the Studio offers — the public library
+ * (175 moves) and the athlete's active own moves (up to ~300). Past it the prefs of the moves beyond would simply be
+ * missing — those rows would show no history or pin — until this asks for them by page.
  */
 export function useStudioCtx(): StudioCtx {
   return useStudioReads().ctx;
@@ -107,7 +111,7 @@ export function useStudioCtx(): StudioCtx {
  * home).
  */
 export function useStudioReads(): { ctx: StudioCtx; settled: boolean; profilesKnown: boolean; loading: boolean; library: AccountLibraryRead } {
-  const library = useQuery({ queryKey: ["library", "studio"], queryFn: () => api.listLibrary({ limit: 200 }), staleTime: 60_000 });
+  const library = useQuery({ queryKey: ["library", "studio"], queryFn: () => api.listLibrary({ limit: STUDIO_LIBRARY_LIMIT }), staleTime: 60_000 });
   const today = useQuery({ queryKey: ["today"], queryFn: api.today });
   const places = useQuery({ queryKey: ["places"], queryFn: api.listPlaces, staleTime: 60_000 });
   // The focus areas (CUJ R7): what the suggestions and the quick starts lean to.

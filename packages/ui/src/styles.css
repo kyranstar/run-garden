@@ -11224,6 +11224,104 @@ a.stu-tpl-open:focus-visible::before {
   color: var(--danger-ink);
 }
 
+/* ── From your saves (saved-posts import, Task 15) ────────────────────────
+   The templates' list at every width: a row is the move's name (a button
+   stretched over the row, opening its sheet), then its labels — New or
+   "Linked to …", and Check this — the creator and the dose as posted. Save
+   these is pinned above the tab bar as the builder's actions are
+   (`.stu-build-foot`). A model wrote every name and creator: each wraps. */
+.stu-save-row {
+  min-height: var(--tap);
+}
+.stu-save-open {
+  display: inline;
+  padding: 0;
+  border: 0;
+  background: none;
+  color: inherit;
+  font: inherit;
+  text-align: left;
+  overflow-wrap: anywhere;
+  cursor: pointer;
+}
+.stu-save-open::before {
+  content: "";
+  position: absolute;
+  inset: 0;
+}
+.stu-save-open:hover {
+  color: var(--green-ink);
+}
+.stu-save-open:focus-visible {
+  outline: none;
+}
+.stu-save-open:focus-visible::before {
+  outline: 2px solid var(--focus);
+  outline-offset: -2px;
+  border-radius: var(--radius-sm);
+}
+.stu-save-meta {
+  flex-wrap: wrap;
+  align-items: center;
+  column-gap: var(--space-2);
+  row-gap: var(--space-1);
+}
+.stu-save-tags {
+  display: inline-flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--space-2);
+  min-width: 0;
+}
+.stu-save-linked,
+.stu-save-by {
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+.stu-save-linked {
+  color: var(--ink);
+}
+.stu-save-sheet {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-4);
+  min-width: 0;
+}
+.stu-save-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-3);
+}
+.stu-save-form {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-5);
+  min-width: 0;
+}
+.stu-save-set {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-3);
+  min-width: 0;
+  margin: 0;
+  padding: 0;
+  border: 0;
+}
+/* A rating that is yes or no: the label — its word and the box — is the target. */
+.stu-save-flag {
+  align-items: flex-start;
+  justify-content: space-between;
+  min-width: var(--tap);
+  min-height: var(--tap);
+  cursor: pointer;
+}
+.stu-save-flag input {
+  width: 1.25rem;
+  height: 1.25rem;
+  margin: 0;
+  accent-color: var(--green);
+}
+
 @media (min-width: 900px) {
   /* The summary beside the parts, held in view as they scroll. */
   .stu-build-grid {

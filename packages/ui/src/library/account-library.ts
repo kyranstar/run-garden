@@ -14,8 +14,9 @@
  * the bundled library, as it always was, and works offline.
  *
  * A record is taken only under a personal id (`isPersonalId`): a move of the account can never stand in for a public
- * one. A move merged into another is listed under its target (its id among the target's `legacyIds`), so it resolves
- * as the target.
+ * one. A move merged into another resolves as its target: the read lists each merged id with the move that answers for
+ * it now (`merged`), and `all` carries the id among that move's `legacyIds` — a personal move's, or a public move's (a
+ * copy of the public record, in `all` alone, as the Worker's account-library.ts does). `offered` is never touched.
  */
 import { useQuery } from "@tanstack/react-query";
 import { api, type PersonalMoveDto, type PersonalMovesDto } from "@rg/api-client";
@@ -52,15 +53,38 @@ const usable = (m: unknown): m is PersonalMoveDto => {
   return !!r && typeof r === "object" && typeof r.id === "string" && isPersonalId(r.id) && typeof r.name === "string";
 };
 
+/** Each target's merged ids, from the read's `merged` (a merged id must be a personal id; an odd entry is left out). */
+function aliasesOf(merged: unknown): Map<string, string[]> {
+  const out = new Map<string, string[]>();
+  if (!Array.isArray(merged)) return out;
+  for (const m of merged as Array<{ id?: unknown; into?: unknown } | null>) {
+    const id = m?.id;
+    const into = m?.into;
+    if (typeof id !== "string" || typeof into !== "string" || !isPersonalId(id) || id === into) continue;
+    out.set(into, [...(out.get(into) ?? []), id]);
+  }
+  return out;
+}
+
+/**
+ * A record with these merged ids among its legacy ids — the record itself when it has them all already (a personal
+ * target's record comes with them: the Worker lists its merged ids there), so `all` and `offered` share it.
+ */
+const withAliases = (r: ExerciseRecord, ids: readonly string[] | undefined): ExerciseRecord =>
+  ids?.length && !ids.every((id) => r.legacyIds.includes(id)) ? { ...r, legacyIds: [...new Set([...r.legacyIds, ...ids])] } : r;
+
 /** The two views of one answer of the personal read, made once for it. */
 export function accountLibraryOf(data: PersonalMovesDto | undefined): AccountLibrary {
   if (!data || typeof data !== "object") return PUBLIC_LIBRARY;
   const had = made.get(data);
   if (had) return had;
   const moves = (Array.isArray(data.moves) ? data.moves : []).filter(usable);
+  const aliases = aliasesOf(data.merged);
+  // A move merged into a public one: that move with the merged ids among its legacy ids, in `all` alone.
+  const base = EXERCISES.some((e) => aliases.has(e.id)) ? EXERCISES.map((e) => withAliases(e, aliases.get(e.id))) : EXERCISES;
   let lib = PUBLIC_LIBRARY;
-  if (moves.length > 0) {
-    const all = [...EXERCISES, ...moves.map((m) => m.record)];
+  if (moves.length > 0 || base !== EXERCISES) {
+    const all = [...base, ...moves.map((m) => withAliases(m.record, aliases.get(m.record.id)))];
     const active = moves.filter((m) => m.status === "active").map((m) => m.record);
     lib = {
       all,

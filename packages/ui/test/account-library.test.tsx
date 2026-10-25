@@ -181,6 +181,29 @@ describe("accountLibraryOf: the bundled library and the owner's moves, merged on
     expect(lib.mine.get(LANTERN.id)?.links).toHaveLength(2);
   });
 
+  it("a merged move resolves as its target in all — a public move's too — and is never offered (Task 15)", () => {
+    const INTO_PUBLIC = "myOldGobletThing0a0b0c";
+    const INTO_MINE = "myLanternOld1x2y3z";
+    const goblet = EXERCISES.find((r) => r.id === "gobletSquat")!;
+    const lib = accountLibraryOf({ ...MOVES, merged: [{ id: INTO_PUBLIC, into: "gobletSquat" }, { id: INTO_MINE, into: LANTERN.id }] });
+    expect(lib.find(INTO_PUBLIC)?.id).toBe("gobletSquat");
+    expect(lib.find(INTO_MINE)?.id).toBe(LANTERN.id);
+    expect(lib.all.find((r) => r.id === "gobletSquat")!.legacyIds).toEqual([...goblet.legacyIds, INTO_PUBLIC]);
+    // What is offered is untouched: the public record itself, and no merged id.
+    expect(lib.offered.find((r) => r.id === "gobletSquat")).toBe(goblet);
+    expect(lib.offered.map((r) => r.id)).not.toContain(INTO_MINE);
+    expect(lib.mine.has(INTO_MINE)).toBe(false);
+    // Only a merge, no move of the account's: still found; nothing more offered.
+    const only = accountLibraryOf({ moves: [], merged: [{ id: INTO_PUBLIC, into: "gobletSquat" }] });
+    expect(only.offered).toBe(EXERCISES);
+    expect(only.find(INTO_PUBLIC)?.id).toBe("gobletSquat");
+    // A merged id that isn't a personal id, or a target the library doesn't hold, changes nothing.
+    const odd = accountLibraryOf({ moves: [], merged: [{ id: "gobletSquat", into: "bridge" }, { id: INTO_PUBLIC, into: "notAMove" }] });
+    expect(odd.find("gobletSquat")?.id).toBe("gobletSquat");
+    expect(odd.find(INTO_PUBLIC)).toBeUndefined();
+    expect(odd.all).toBe(EXERCISES);
+  });
+
   it("a record that is not a personal id never stands in the library (it could shadow a public move)", () => {
     const fake = { ...LANTERN, id: "gobletSquat", name: "Not a goblet squat" };
     const lib = accountLibraryOf({ moves: [move(fake, "active", [])] });
