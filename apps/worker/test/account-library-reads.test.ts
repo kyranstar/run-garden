@@ -6,7 +6,7 @@
  * ratings; a converter keeps it a move; the watch gets it as free text by its own name; the owner lists their moves.
  * Synthetic data only (example.com links, made-up names).
  */
-import { beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { eq } from "drizzle-orm";
 import { schema } from "@rg/database";
 import { nowInstant, todayInZone, workoutDocSchema, type UserPreferences, type WorkoutDoc } from "@rg/domain";
@@ -27,15 +27,20 @@ import { buildDesignContext, contextStatements } from "../src/services/design-co
 import { checkFocus, FocusError } from "../src/services/design-focus.js";
 import { designedManifest } from "../src/routes/design-proposals.js";
 import { READ_TOOLS } from "../src/services/design-tools/index.js";
+import { markUntrusted } from "../src/services/design-prompt.js";
 import type { ToolContext, ToolOk } from "../src/services/design-tools/types.js";
 import { loggedSetsByActivity } from "../src/services/logged-sets.js";
 import { toPersonalRecord } from "../src/services/personal-records.js";
 import { savePerformedSession } from "../src/services/session-save.js";
+import { buildSession, recordCheck } from "../src/services/session-build.js";
+import { createDocWorkout } from "../src/services/doc-workouts.js";
+import { sessionRoutes } from "../src/routes/sessions.js";
+import { ACT_TOOLS } from "../src/services/design-tools/index.js";
 import { watchPreview } from "../src/services/watch-push.js";
 import { docForBuild } from "../src/services/workout-doc-store.js";
 import { connectTestCoros, makeTestDb, makeTestUser, mountRoutes } from "./helpers.js";
 import { clientFor, type Reply } from "./doc-workout-fixture.js";
-import { seedCatalog, switchOn } from "./watch-push-fixture.js";
+import { DAY, NOON, seedCatalog, seedTmj, switchOn } from "./watch-push-fixture.js";
 
 const { personalMoves, exercisePrefs, exerciseProvenance, performedSets, athleteAnswers, performedSessions } = schema;
 
@@ -212,7 +217,10 @@ describe("a run asked from a personal move", () => {
     expect(ctx.header).toContain(`(id ${pending})`);
     expect(ctx.header).toContain("Band Pull Apart Hold");
     expect(ctx.header).toContain("(from your saves, not yet saved)");
-    expect(ctx.header).toContain("Band Pull Apart Hold, slow and even.");
+    // A model's reading of a creator's post: marked as a saved post's words, never as the athlete's own wish.
+    expect(ctx.header).toContain(markUntrusted("saved post", "Band Pull Apart Hold"));
+    expect(ctx.header).toContain(markUntrusted("saved post", "Band Pull Apart Hold, slow and even."));
+    expect(ctx.header).not.toContain(markUntrusted("athlete", "Band Pull Apart Hold"));
 
     const placed = await call("POST", "/api/workouts", { date: today, doc: docOf(pending) });
     expect(placed.status).toBe(422);
@@ -264,8 +272,16 @@ describe("suggestions come only from what is offered", () => {
 describe("pins", () => {
   it("setExercisePrefs pins an active personal move (the engine's pool then holds it)", async () => {
     const active = await addMove("Wall Angel Slide", "active");
+    await cookieOf(userId);
+    statements.length = 0;
+    expect((await library("PUT", "/gobletSquat/prefs", { rating: 1 })).status).toBe(200);
+    // A public id: the session, requireUser's restore check, the service's own, the write, the read back — no library read.
+    expect(statements.length).toBe(5);
+    statements.length = 0;
     const res = await library("PUT", `/${active}/prefs`, { pinned: true });
     expect(res.status, JSON.stringify(res.body)).toBe(200);
+    // A personal id: one more, the account's library (is it offered?).
+    expect(statements.length).toBe(6);
     expect(res.body.prefs).toMatchObject({ exerciseId: active, pinned: true });
     forgetAccountLibrary(db, userId);
     expect((await loadAccountLibrary(db, userId)).engine.map((r) => r.id)).toContain(active);
@@ -325,8 +341,15 @@ describe("the owner's own moves: GET /api/library/personal", () => {
     expect(list.status).toBe(200);
     expect(list.body.items.map((i: { id: string }) => i.id)).toContain(active);
     expect(list.body.items.map((i: { id: string }) => i.id)).not.toContain(archived);
+    await cookieOf(userId);
+    statements.length = 0;
     const item = await library("GET", `/${archived}`);
     expect(item.status).toBe(200);
+    // The session, the account's library, then its prefs, links and history beside the profiles — for any id.
+    expect(statements.length).toBe(6);
+    statements.length = 0;
+    expect((await library("GET", "/gobletSquat")).status).toBe(200);
+    expect(statements.length).toBe(6);
     expect(item.body).toMatchObject({ id: archived, name: "Wall Angel Hold" });
     expect((await library("GET", "/myNotAMove000000")).status).toBe(404);
   });
@@ -395,5 +418,99 @@ describe("sessions and history", () => {
     const steps = preview.steps.filter((s) => s.name.startsWith(name.slice(0, 10)));
     expect(steps.length).toBeGreaterThan(0);
     expect(steps.every((s) => s.freeText)).toBe(true);
+  });
+});
+
+describe("round 1: what reaches the coach and the athlete", () => {
+  it("read_history and read_day read a personal move's logged sets with its name, marked — within their declared cost", async () => {
+    const id = await addMove("Wall Angel Slide", "active");
+    const sid = "7c1f2c3d-4e5f-4a6b-8c7d-9e0f1a2b3c4d";
+    const at = `${today}T18:00:00.000Z`;
+    await db.insert(performedSessions).values({
+      id: sid, userId, workoutId: null, activityId: null, buildId: null, source: "app", sourceRef: null, localDate: today, startedAt: at,
+      endedAt: null, seconds: 1800, plannedSeconds: 1800, minutes: 30, mode: "build", theme: null, locationId: null, blockRef: null,
+      blockNumber: null, completed: true, stepsTotal: null, stepsDone: null, movesDone: [], note: null, newMove: null, payloadHash: "h", createdAt: at, updatedAt: at,
+    });
+    await db.insert(performedSets).values([0, 1].map((setIndex) => ({
+      id: `${sid}-${setIndex}`, performedSessionId: sid, entryIndex: 0, exerciseId: id, implement: null, format: "straight", perSide: false,
+      setIndex, side: null, reps: 10, seconds: null, loadValue: null, loadUnit: null, loadKg: null, done: true, flags: [],
+    })));
+    for (const [name, input] of [["read_history", { from: today, to: today }], ["read_day", { date: today }]] as const) {
+      forgetAccountLibrary(db);
+      statements.length = 0;
+      const res = (await readTool(name).run(toolCtx(), input)) as ToolOk;
+      expect(statements.length, name).toBeLessThanOrEqual(readTool(name).statementCost);
+      const entries = (res.data as { entries?: unknown[]; done?: unknown[] }).entries ?? (res.data as { done: unknown[] }).done;
+      const moves = (entries[0] as { moves: unknown[] }).moves;
+      expect(moves, name).toEqual([U(`${id} (Wall Angel Slide, the athlete's own move) 2 × 10`)]);
+    }
+  });
+
+  it("a validator message naming a personal move reaches the coach marked; the same message of a public move stays plain", async () => {
+    const id = await addMove("Wall Angel Slide", "active");
+    const validate = ACT_TOOLS.find((t) => t.name === "validate_workout")!;
+    // Seconds for a move counted in reps: a dose note that names the move.
+    const doc = workoutDocSchema.parse({
+      version: 1, title: "Upper back", intent: { summary: "Wake the upper back.", goals: ["posture"], focus: [], effort: "maintain" },
+      parts: [{ purpose: "main", format: "straight", items: [id, "gobletSquat"].map((libraryId) => ({ kind: "exercise", libraryId, dose: { sets: 2, holdSec: 30, restSec: 30 } })) }],
+      source: { kind: "studio" },
+    });
+    const res = (await validate.run(toolCtx(), { doc, date: today })) as ToolOk;
+    const data = res.data as { errors: Array<{ path: string; message: unknown }>; warnings: Array<{ path: string; message: unknown }> };
+    const issues = [...data.errors, ...data.warnings];
+    const mine = issues.filter((i) => i.path.startsWith("parts[0].items[0]"));
+    const theirs = issues.filter((i) => i.path.startsWith("parts[0].items[1]"));
+    expect(mine.length).toBeGreaterThan(0);
+    expect(theirs.length).toBeGreaterThan(0);
+    for (const i of mine) expect(i.message, i.path).toMatchObject({ untrusted: true, text: expect.any(String) });
+    expect(mine.some((i) => (i.message as { text: string }).text.includes("Wall Angel Slide"))).toBe(true);
+    for (const i of theirs) expect(typeof i.message, i.path).toBe("string");
+  });
+});
+
+describe("round 1: a sent build's Start refusal", () => {
+  const LATER = "2026-10-09T19:05:00.000Z";
+  const ctx = () => ({ today: DAY, now: NOON, prefs });
+  beforeEach(async () => {
+    vi.useFakeTimers({ toFake: ["Date"] });
+    vi.setSystemTime(new Date(NOON));
+    await connectTestCoros(db, userId);
+    await seedTmj(db, userId);
+    await seedCatalog(db);
+  });
+  afterEach(() => vi.useRealTimers());
+
+  const sessions = async (method: "GET" | "POST", path: string, body?: unknown): Promise<Reply> => {
+    const res = await mountRoutes(db, "/api/sessions", sessionRoutes).request(
+      `/api/sessions/${path}`,
+      { method, headers: { Cookie: await cookieOf(userId), "Content-Type": "application/json" }, ...(body === undefined ? {} : { body: JSON.stringify(body) }) },
+      switchOn(),
+    );
+    return { status: res.status, body: await res.json() };
+  };
+
+  it("never names an archived personal move among its fixes", async () => {
+    // A jump with one of the athlete's own moves as its alternate, sent at a calm reading; the move is archived since.
+    const own = await addMove("Wall Slide Hold", "active");
+    const doc = workoutDocSchema.parse({
+      version: 1, title: "Landings", intent: { summary: "Land softly.", goals: ["athleticism"], focus: [], effort: "maintain" },
+      parts: [{ purpose: "power", format: "straight", items: [{ kind: "exercise", libraryId: "snapDown", dose: { sets: 2, reps: 5, restSec: 45 }, alternates: [{ libraryId: own }] }] }],
+      source: { kind: "studio" },
+    });
+    await recordCheck(db, userId, { profileId: "tmj", value: 1, feelingOff: false }, ctx());
+    const { workout } = await createDocWorkout(db, userId, { date: DAY, time: "18:00", doc }, ctx());
+    const built = await buildSession(db, userId, workout.id, { checks: { tmj: { pre: 1, feelingOff: false } } }, ctx());
+    const buildId = built.build!.buildId;
+    const preview = await sessions("GET", `${workout.id}/watch-preview`);
+    expect(preview.status, JSON.stringify(preview.body)).toBe(200);
+    expect((await sessions("POST", `${workout.id}/send-to-watch`, { buildId, digest: preview.body.digest })).status).toBe(200);
+    await db.update(personalMoves).set({ status: "archived" }).where(eq(personalMoves.id, own));
+    // The jaw rises and the athlete feels off: the day's latest reading closes the jump.
+    await recordCheck(db, userId, { profileId: "tmj", value: 6, feelingOff: true }, { today: DAY, now: LATER });
+    const refused = await sessions("POST", `${workout.id}/start`, { buildId });
+    expect(refused.status, JSON.stringify(refused.body)).toBe(409);
+    expect(refused.body.error).toBe("gated");
+    expect(refused.body.issues.length).toBeGreaterThan(0);
+    expect(refused.body.issues.map((i: { fix?: string }) => i.fix)).not.toContain(own);
   });
 });

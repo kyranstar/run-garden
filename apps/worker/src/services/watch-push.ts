@@ -455,9 +455,10 @@ export function catalogIdsByKey(catalog: ReadonlyMap<string, string>): Map<strin
 }
 
 /**
- * The athlete's catalog, and the deps `watchStepsFromBuild` resolves moves with — the build's moves in the account's
- * library when it holds one of the athlete's own (`libraryFor`: one statement then): such a move has no T-code
- * (`corosKeyOf`), so it goes as free text by its own name, and a merged one's id reads as its target.
+ * The athlete's catalog, and the deps `watchStepsFromBuild` resolves moves with — `corosKeyOf` in the account's library
+ * when the build holds one of the athlete's own moves (`libraryFor`: one statement then). A move is looked up by its own
+ * id: one of the athlete's own moves has no T-code, so it goes as free text by its own name — and so does any id the
+ * library doesn't hold by its own id (an old or merged one; a build's moves are their current ids).
  */
 async function planDeps(db: Db, userId: string, build: WatchBuild): Promise<{ catalog: Map<string, string>; deps: WatchPlanDeps }> {
   const [catalog, library] = await Promise.all([exerciseNameMap(db), libraryFor(db, userId, Object.keys(build.exercises))]);
@@ -541,7 +542,7 @@ async function gatedSnapshot(
   ]);
   const snapshot = parseStoredWorkoutDoc(stored?.doc ?? null);
   if (!snapshot) return false;
-  return snapshotErrors(snapshot, dayValidateCtx({ library: library.all, profiles, checks, date: row.effectiveDate, today: row.effectiveDate })).length > 0;
+  return snapshotErrors(snapshot, dayValidateCtx({ library: library.all, offered: library.offered, profiles, checks, date: row.effectiveDate, today: row.effectiveDate })).length > 0;
 }
 
 /**

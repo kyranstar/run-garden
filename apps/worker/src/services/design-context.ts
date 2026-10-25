@@ -31,7 +31,7 @@
  *
  * THE ACCOUNT'S LIBRARY (saved-posts import, Task 13) rides in the counts statement (`personalMovesSql`): the moves of a
  * session asked from read by the account's library, and so does a move asked from — one of the athlete's own moves
- * included, its words marked as theirs; a pending one (still in review: "Ask the coach" before its batch is saved) is read
+ * included, its words marked as a saved post's (a model's reading of a creator's post, never the athlete's wish); a pending one (still in review: "Ask the coach" before its batch is saved) is read
  * from its own row, in the focus's one statement, and said to be not yet saved. It is never a move a workout can place.
  */
 import { and, asc, eq, gte, inArray, isNull, lte, sql, type SQL } from "drizzle-orm";
@@ -928,10 +928,13 @@ function aroundSection(around: NonNullable<Reads["around"]>, date: string, today
 
 const ASKED_FROM = "The athlete asked from:";
 const DIFFICULTY_WORDS: Record<string, string> = { too_easy: "too easy", right: "about right", too_hard: "too hard" };
+/** A saved post's words — one of the athlete's own moves' name or summary, a model's reading of the post. */
+const savedPost = (text: string): string => markUntrusted("saved post", text);
+
 /** A move's name by any id the account's library resolves (an old one, a merged one): the athlete's own move's marked. */
 function moveName(library: AccountLibrary, id: string): string | null {
   const rec = makeLibraryIndex(library.all)(id);
-  return rec ? (isPersonalId(rec.id) ? athlete(rec.name) : rec.name) : null;
+  return rec ? (isPersonalId(rec.id) ? savedPost(rec.name) : rec.name) : null;
 }
 const str = (v: unknown): string | null => (typeof v === "string" && v.trim() !== "" ? v : null);
 const num = (v: unknown): number | null => (typeof v === "number" && Number.isFinite(v) ? v : null);
@@ -1075,8 +1078,8 @@ function doseLine(dose: ExerciseRecord["dose"]): string {
 
 /**
  * A move asked from: the library's (the bundled library) in its own words; one of the athlete's own moves — by the
- * account's library, an archived or merged one too, else (still in review) its pending row's record — in theirs, marked,
- * with its dose as the post had it, and said to be not yet saved while it is pending.
+ * account's library, an archived or merged one too, else (still in review) its pending row's record — in the saved
+ * post's words, marked, with its dose as the post had it, and said to be not yet saved while it is pending.
  */
 function moveLines(id: string, r: Reads, rows: Map<string, Array<Record<string, unknown>>>): string[] {
   const library = makeLibraryIndex(r.library.all)(id);
@@ -1087,7 +1090,7 @@ function moveLines(id: string, r: Reads, rows: Map<string, Array<Record<string, 
   const about = `- For: ${(rec.purposes ?? []).map(vocabLabel).join(", ")}; regions: ${(rec.regions ?? []).map(vocabLabel).join(", ")}; difficulty ${rec.difficulty} of 5.`;
   if (!isPersonalId(rec.id) && !pending) return [`${ASKED_FROM} a move in the library — ${rec.name} (id ${rec.id}): ${rec.text.summary}`, about];
   return [
-    `${ASKED_FROM} one of their own moves${pending ? " (from your saves, not yet saved)" : ""} — ${athlete(rec.name)} (id ${id}): ${athlete(rec.text?.summary ?? "")}`,
+    `${ASKED_FROM} one of their own moves${pending ? " (from your saves, not yet saved)" : ""} — ${savedPost(rec.name)} (id ${id}): ${savedPost(rec.text?.summary ?? "")}`,
     about,
     ...(rec.dose ? [`- Its dose as seen: ${doseLine(rec.dose)}.`] : []),
     ...(pending ? ["- Not yet in the library: no workout can hold it until its batch is saved."] : []),

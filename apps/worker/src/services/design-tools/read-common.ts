@@ -31,6 +31,7 @@ import { z } from "zod";
 import { conditionChecks, userConditions, userPreferences } from "@rg/database";
 import { addDays, dayLabel, daysBetween, isLocalDate, isoWeekday, todayInZone, userPreferencesSchema, weightInUnit, type UserPreferences, type WeightUnit } from "@rg/domain";
 import { isProfileId, profileById, UNANSWERED, type CheckReading, type ConditionProfile } from "@rg/exercise-library";
+import { accountLibraryFrom, personalMovesSql } from "../account-library.js";
 import { readingsOfDay } from "../condition-views.js";
 import type { Db } from "../db.js";
 import type { ToolContext, ToolErr, ToolOk, ToolRole } from "./types.js";
@@ -356,14 +357,25 @@ export async function readAthlete(
 }
 
 /**
+ * The athlete alone, with the account's library carried in the same statement (`personalMovesSql`): kept as the
+ * request's (`accountLibraryFrom`), so a tool that reads the athlete this way finds the library with no statement more.
+ */
+async function athleteWithLibrary(db: Db, userId: string, now: Date): Promise<Athlete> {
+  const { athlete, extra } = await readAthlete(db, userId, now, { library: personalMovesSql(userId) });
+  await accountLibraryFrom(db, userId, extra.library);
+  return athlete;
+}
+
+/**
  * The athlete read once for a step's calls (the loop puts it in their ToolContext): the first call that needs nothing
  * beside the athlete reads it, the others share that read — one statement and one parse a step, not one a call. Each
- * call gets its own `missing` (a tool adds to its own). A read that fails is not kept: the next call reads again.
+ * call gets its own `missing` (a tool adds to its own). A read that fails is not kept: the next call reads again. The
+ * account's library rides in it (`athleteWithLibrary`): a read of one of the athlete's own moves costs nothing more.
  */
 export function sharedAthlete(db: Db, userId: string, now: Date): () => Promise<Athlete> {
   let read: Promise<Athlete> | null = null;
   return async () => {
-    read ??= readAthlete(db, userId, now).then((r) => r.athlete);
+    read ??= athleteWithLibrary(db, userId, now);
     try {
       const athlete = await read;
       return { ...athlete, missing: [...athlete.missing] };
@@ -375,9 +387,10 @@ export function sharedAthlete(db: Db, userId: string, now: Date): () => Promise<
 }
 
 /** The athlete, for a read tool that needs nothing beside them: the step's shared read (ToolContext.athlete), or a read
- * of its own outside the loop. */
+ * of its own outside the loop — either way with the account's library kept as the request's (`loadAccountLibrary`
+ * after it costs nothing). */
 export async function athleteOf(ctx: Pick<ToolContext, "db" | "userId" | "now" | "athlete">): Promise<Athlete> {
-  return ctx.athlete ? ctx.athlete() : (await readAthlete(ctx.db, ctx.userId, ctx.now)).athlete;
+  return ctx.athlete ? ctx.athlete() : athleteWithLibrary(ctx.db, ctx.userId, ctx.now);
 }
 
 // ── Words and figures ───────────────────────────────────────────────────────────────────────────────────────────────

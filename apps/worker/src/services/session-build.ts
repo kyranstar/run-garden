@@ -1647,7 +1647,8 @@ async function refuseGatedSnapshot(db: Db, userId: string, row: SlotRow, sent: B
   // snapshot's errors alone do); it takes off an offer that needs more (an offer is only ever a clean one) and adds the
   // cost to a planned alternate's reasons (`slotsForDay`). A named place's gear is not read again.
   const bare = snapshot.setting?.placeId === NO_EQUIPMENT.id;
-  const day = dayValidateCtx({ library: library.all, profiles, checks, date: row.effectiveDate, today, ...(bare ? { equipment: NO_EQUIPMENT.equipment } : {}) });
+  // Its fixes name only moves the athlete is offered (an archived move resolves, never offered).
+  const day = dayValidateCtx({ library: library.all, offered: library.offered, profiles, checks, date: row.effectiveDate, today, ...(bare ? { equipment: NO_EQUIPMENT.equipment } : {}) });
   const errors = snapshotErrors(snapshot, day);
   if (errors.length > 0) throw new GatedError(errors);
   const stored = storedOf(sent);

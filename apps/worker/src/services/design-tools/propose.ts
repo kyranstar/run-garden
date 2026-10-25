@@ -109,6 +109,7 @@ import {
   idsRefusal,
   isErr,
   issueOut,
+  type IssueOut,
   judge,
   mainRunIdOf,
   noCheckToday,
@@ -152,7 +153,7 @@ export interface DocWorkoutOp {
    * is had (a review that couldn't be read is one: its `note` says the validator's view stands). */
   review: OpReview | null;
   /** The validator's warnings for the day: the costs shown beside Approve. */
-  issues: Array<ReturnType<typeof issueOut>>;
+  issues: IssueOut[];
   derived: Record<string, unknown>;
   /** The run that designed it. */
   by: { runId: string; role: "main" | "designer" };
@@ -184,7 +185,7 @@ export interface DraftVersion {
   time?: string;
   doc: WorkoutDoc;
   changeNote?: string;
-  issues: Array<ReturnType<typeof issueOut>>;
+  issues: IssueOut[];
   derived: Record<string, unknown>;
   at: string;
 }
@@ -480,7 +481,7 @@ export const proposeWorkout: DesignTool = {
     const vctx = await docValidateCtx(ctx, a, date);
     const judged = judge(doc, vctx, { keyResults: a.keyResultMeasures });
     if (judged.errors.length > 0 || !judged.doc || !judged.derived) {
-      return refuse("invalid_workout", errorsLine(judged.errors), invalidFix(judged.errors, date === today, noCheckToday(vctx)));
+      return refuse("invalid_workout", errorsLine(judged.errors, judged.own), invalidFix(judged.errors, date === today, noCheckToday(vctx)));
     }
     // Well past its own target length: trimmed or explained before any review, using no round (§2.4).
     const long = tooLong(judged.derived.estimatedMinutes, judged.doc.setting?.targetMinutes);
@@ -493,7 +494,7 @@ export const proposeWorkout: DesignTool = {
           : { kind: "new", date, ...(time ? { time } : {}) }
         : { kind: "revise", workoutId: p.target.workoutId, baseRev: p.target.baseRev };
     const derived = derivedSummary(judged.derived);
-    const issues = judged.warnings.slice(0, WARNINGS_SHOWN).map(issueOut);
+    const issues = judged.warnings.slice(0, WARNINGS_SHOWN).map((i) => issueOut(i, judged.own));
     const draft: DraftForReview = {
       proposalId,
       target: draftTarget,
@@ -847,7 +848,7 @@ async function amendDraft(
   const vctx = await docValidateCtx(ctx, o.a, kept.date);
   const judged = judge(o.doc, vctx, { keyResults: o.a.keyResultMeasures });
   if (judged.errors.length > 0 || !judged.doc || !judged.derived) {
-    return refuse("invalid_workout", errorsLine(judged.errors), invalidFix(judged.errors, kept.date === o.today, noCheckToday(vctx)));
+    return refuse("invalid_workout", errorsLine(judged.errors, judged.own), invalidFix(judged.errors, kept.date === o.today, noCheckToday(vctx)));
   }
   const diff = firstNonTextDiff(kept.doc, judged.doc);
   if (diff) {
@@ -864,7 +865,7 @@ async function amendDraft(
   const op: DocWorkoutOp = {
     ...kept,
     doc: judged.doc,
-    issues: judged.warnings.slice(0, WARNINGS_SHOWN).map(issueOut),
+    issues: judged.warnings.slice(0, WARNINGS_SHOWN).map((i) => issueOut(i, judged.own)),
     derived: derivedSummary(judged.derived),
     reviewLog: [...(kept.reviewLog ?? []), entry],
     review: { ...kept.review, changes: [...kept.review.changes, change] },

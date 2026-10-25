@@ -58,7 +58,9 @@ import { runWireOf } from "../../env.js";
 import { loadSessionsById } from "../engine-inputs.js";
 import { doneCleanlyOf, doneStats } from "../library-view.js";
 import { PENDING_HASH } from "../watch-sets.js";
-import { parsedArray, readAthlete, refuse, type Athlete } from "./read-common.js";
+import { isPersonalId } from "@rg/saves";
+import { markUntrusted } from "../design-prompt.js";
+import { parsedArray, readAthlete, refuse, untrusted, type Athlete, type Untrusted } from "./read-common.js";
 import { measureWords } from "./read-objectives.js";
 import type { ToolContext, ToolErr } from "./types.js";
 
@@ -627,6 +629,8 @@ export interface Judged {
   errors: CoachIssue[];
   warnings: CoachIssue[];
   derived: DocDerived | null;
+  /** Whether an issue names one of the athlete's own moves (`ownMoveIssue`): its message reaches the model marked. */
+  own: (i: CoachIssue) => boolean;
 }
 
 /** What the coach's refusal of a move today's check closes adds when no check is logged today (fix wave 3A round 2,
@@ -658,7 +662,37 @@ export function judge(raw: unknown, vctx: ValidateCtx, o: { keyResults?: Readonl
   const warnings = issues.filter((i) => i.severity === "warning");
   const parsed = workoutDocSchema.safeParse(raw);
   const buildable = parsed.success && !errors.some((e) => e.code === "bounds" || e.code === "too_large");
-  return { doc: parsed.success ? parsed.data : null, errors, warnings, derived: buildable ? deriveDoc(parsed.data!, vctx.library) : null };
+  return { doc: parsed.success ? parsed.data : null, errors, warnings, derived: buildable ? deriveDoc(parsed.data!, vctx.library) : null, own: ownMoveIssue(raw, find) };
+}
+
+const ITEM_AT = /^parts\[(\d+)\]\.items\[(\d+)\]/;
+
+/** The move ids an item of a document holds: its own and its alternates'. */
+function itemIds(item: unknown): string[] {
+  const x = item as { libraryId?: unknown; alternates?: unknown } | null;
+  const alternates = Array.isArray(x?.alternates) ? (x!.alternates as Array<{ libraryId?: unknown }>) : [];
+  return [x?.libraryId, ...alternates.map((a) => a?.libraryId)].filter((id): id is string => typeof id === "string");
+}
+
+/**
+ * Whether an issue of `raw` names one of the athlete's own moves — whose name is a model's reading of a saved post, and
+ * which validate.ts (and `testNotes`) write into their messages: the move at its path (an item, or one of its
+ * alternates), its fix, or any of the document's own moves whose name its message holds. The one funnel the coach's
+ * answers mark untrusted text at (`issueOut`, `errorsLine`); a library move's message stays plain.
+ */
+function ownMoveIssue(raw: unknown, find: LibraryIndex): (i: CoachIssue) => boolean {
+  const own = (id: string | undefined): boolean => id !== undefined && isPersonalId(find(id)?.id ?? "");
+  const parts = Array.isArray((raw as { parts?: unknown } | null)?.parts) ? ((raw as { parts: unknown[] }).parts) : [];
+  const itemsOf = (p: unknown): unknown[] => (Array.isArray((p as { items?: unknown } | null)?.items) ? ((p as { items: unknown[] }).items) : []);
+  const names = [...new Set(parts.flatMap(itemsOf).flatMap(itemIds).flatMap((id) => {
+    const rec = find(id);
+    return rec && isPersonalId(rec.id) && rec.name.trim() !== "" ? [rec.name] : [];
+  }))];
+  return (i) => {
+    const at = ITEM_AT.exec(i.path);
+    if (at && itemIds(itemsOf(parts[Number(at[1])])[Number(at[2])]).some(own)) return true;
+    return own(i.fix) || names.some((name) => i.message.includes(name));
+  };
 }
 
 /**
@@ -734,8 +768,22 @@ function coachFix(i: DocIssue, raw: unknown, noCheck: boolean, find: LibraryInde
 export const ERRORS_SHOWN = 20;
 export const WARNINGS_SHOWN = 15;
 
-/** One issue as the model reads it. */
-export const issueOut = (i: CoachIssue) => ({ path: i.path, code: i.code, message: i.message, ...(i.fix !== undefined ? { fix: i.fix } : {}) });
+/** One issue as the model reads it — and as a proposal keeps it — its message marked when it names one of the athlete's own moves. */
+export interface IssueOut {
+  path: string;
+  code: CoachIssue["code"];
+  message: string | Untrusted;
+  fix?: string;
+}
+
+/** One issue as the model reads it: `own` (the judgement's, `Judged.own`) says when its message is marked (`untrusted`). */
+export const issueOut = (i: CoachIssue, own: (i: CoachIssue) => boolean): IssueOut => ({
+  path: i.path,
+  code: i.code,
+  message: own(i) ? untrusted(i.message) : i.message,
+  ...(i.fix !== undefined ? { fix: i.fix } : {}),
+});
+
 
 const round1 = (n: number): number => Math.round(n * 10) / 10;
 
@@ -762,8 +810,10 @@ export function derivedSummary(d: DocDerived): Record<string, unknown> {
 }
 
 /** The validator's errors, as one teachable line (the first few, then how many more). */
-export function errorsLine(errors: readonly CoachIssue[], shown = 6): string {
-  const head = errors.slice(0, shown).map((e) => `${e.path} (${e.code}): ${e.message}${e.fix !== undefined ? ` (fix: ${e.fix})` : ""}`);
+export function errorsLine(errors: readonly CoachIssue[], own: (i: CoachIssue) => boolean, shown = 6): string {
+  // A message naming one of the athlete's own moves marked in place, as the prompt explains the tag.
+  const words = (e: CoachIssue) => (own(e) ? markUntrusted("saved post", e.message) : e.message);
+  const head = errors.slice(0, shown).map((e) => `${e.path} (${e.code}): ${words(e)}${e.fix !== undefined ? ` (fix: ${e.fix})` : ""}`);
   return `${head.join("; ")}${errors.length > shown ? `; and ${errors.length - shown} more` : ""}`;
 }
 

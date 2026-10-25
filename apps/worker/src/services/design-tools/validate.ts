@@ -103,9 +103,9 @@ export const validateWorkout: DesignTool = {
       data: {
         date: p.date,
         valid: judged.errors.length === 0,
-        errors: judged.errors.slice(0, ERRORS_SHOWN).map(issueOut),
+        errors: judged.errors.slice(0, ERRORS_SHOWN).map((i) => issueOut(i, judged.own)),
         ...(judged.errors.length > ERRORS_SHOWN ? { moreErrors: judged.errors.length - ERRORS_SHOWN } : {}),
-        warnings: judged.warnings.slice(0, WARNINGS_SHOWN).map(issueOut),
+        warnings: judged.warnings.slice(0, WARNINGS_SHOWN).map((i) => issueOut(i, judged.own)),
         ...(judged.warnings.length > WARNINGS_SHOWN ? { moreWarnings: judged.warnings.length - WARNINGS_SHOWN } : {}),
         derived: judged.derived ? derivedSummary(judged.derived) : null,
         place: { id: a.place.id, default: a.place.default },

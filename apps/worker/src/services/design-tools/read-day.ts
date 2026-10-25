@@ -11,6 +11,7 @@ import { z } from "zod";
 import { conditionChecks, performedSessions, plannedWorkouts } from "@rg/database";
 import { dayLabel } from "@rg/domain";
 import { isProfileId, profileById } from "@rg/exercise-library";
+import { loadAccountLibrary } from "../account-library.js";
 import type { DesignTool } from "./types.js";
 import { answer, athleteOf, dateField, dayWords, isErr, localTimeOf, parseInput, READ_ROLES, readTagged } from "./read-common.js";
 import { planClock, planItem, planTerm } from "./read-plan.js";
@@ -34,6 +35,8 @@ export const readDay: DesignTool = {
     const p = parseInput(input, raw, "an optional date (YYYY-MM-DD)");
     if (isErr(p)) return p;
     const athlete = await athleteOf(ctx);
+    // One of the athlete's own moves reads by its name: the account's library rode in the athlete's read (no statement).
+    const library = await loadAccountLibrary(ctx.db, ctx.userId);
     const date = p.date ?? athlete.today;
     const clock = planClock(athlete, ctx.now);
     const scope = sessionsWhere(ctx.userId, sql`${performedSessions.localDate} = ${date}`);
@@ -43,7 +46,7 @@ export const readDay: DesignTool = {
     ]);
     const done = doneEntries(
       { sessions: rows.get("s"), sets: rows.get("x"), checks: rows.get("c"), activities: rows.get("a") },
-      { tz: athlete.tz, units: athlete.prefs.units, weightUnit: athlete.prefs.weightUnit, today: athlete.today },
+      { tz: athlete.tz, units: athlete.prefs.units, weightUnit: athlete.prefs.weightUnit, today: athlete.today, library: library.all },
       { from: date, to: date },
     );
     const readings = checkRows(rows.get("c"))

@@ -73,8 +73,11 @@ export type PromptToolName = (typeof PROMPT_TOOL_NAMES)[number];
 
 const UNTRUSTED_TAG = "untrusted";
 
-/** Where untrusted text came from: the app's own words, never text from the source itself. */
-export type UntrustedSource = "athlete" | "memory" | "main coach" | "designer run" | "parent run";
+/**
+ * Where untrusted text came from: the app's own words, never text from the source itself. A "saved post" is a model's
+ * reading of a post the athlete saved (one of their own moves' name and words): information, never the athlete's wish.
+ */
+export type UntrustedSource = "athlete" | "memory" | "main coach" | "designer run" | "parent run" | "saved post";
 
 /**
  * Text from outside the app's own code (the athlete's request and profile words, memory, another run's brief) inside

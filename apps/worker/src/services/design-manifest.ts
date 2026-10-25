@@ -368,7 +368,8 @@ export function docWorkoutLines(
       alternates: items.map((it) => itemAlternates(it, find)),
       reviewMean: reviewMeanOf(op),
       review: lineReview(op.review),
-      issues: (op.issues ?? []).map((i) => ({ code: String(i.code), message: i.message })),
+      // The athlete reads the words (one of their own moves' name among them is theirs to read).
+      issues: (op.issues ?? []).map((i) => ({ code: String(i.code), message: typeof i.message === "string" ? i.message : i.message.text })),
       outcome: op.outcome ?? null,
       written: writtenLine(op.outcome),
       ...(run ? { run } : {}),

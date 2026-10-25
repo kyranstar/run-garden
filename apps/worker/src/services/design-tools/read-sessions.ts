@@ -21,6 +21,7 @@ import { sql, type SQL } from "drizzle-orm";
 import { activities, conditionChecks, performedSessions, performedSets } from "@rg/database";
 import { addDays, type WeightUnit } from "@rg/domain";
 import { EXERCISES, PROFILES, isProfileId, profileById, THEMES, type ExerciseRecord } from "@rg/exercise-library";
+import { isPersonalId } from "@rg/saves";
 import { makeLibraryIndex } from "@rg/workout";
 import { readingsBySession, sessionPerActivity, watchMove, type CheckRowLike } from "../logged-sets.js";
 import { COROS_EXERCISE_PREFIX, PENDING_HASH } from "../watch-sets.js";
@@ -205,10 +206,13 @@ export const knownMove = (id: string, library: readonly ExerciseRecord[] = EXERC
 /**
  * A move and its words: plain for a move the app knows, marked for one it does not (an import's own name). A watch
  * move reads by name (fix wave 13, A2): the library move its key maps to, else its key with COROS's own name — never a
- * bare code the coach can't read.
+ * bare code the coach can't read. One of the athlete's own moves (in `library`, the account's) reads by its name too,
+ * the line marked whole: the name is a model's reading of a saved post.
  */
 export function moveLine(id: string, words: string, library?: readonly ExerciseRecord[]): string | Untrusted {
   if (!knownMove(id, library)) return untrusted(`${id} ${words}`);
+  const own = library ? makeLibraryIndex(library)(id) : undefined;
+  if (own && isPersonalId(own.id)) return untrusted(`${id} (${own.name}, the athlete's own move) ${words}`);
   const watch = watchMove(id);
   if (!watch) return `${id} ${words}`;
   if ("libraryId" in watch) return `${watch.libraryId} ${words}`;

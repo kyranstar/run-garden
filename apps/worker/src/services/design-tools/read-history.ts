@@ -30,6 +30,7 @@ import {
   readTagged,
 } from "./read-common.js";
 import { activitiesAround, DONE_KINDS, doneEntries, doneTerms, sessionsWhere, type DoneKind } from "./read-sessions.js";
+import { loadAccountLibrary } from "../account-library.js";
 
 const DEFAULT_LIMIT = 10;
 const MAX_LIMIT = 30;
@@ -72,11 +73,13 @@ export const readHistory: DesignTool = {
     const after = keyCursor(p.cursor, 1);
     if (isErr(after)) return after;
     const athlete = await athleteOf(ctx);
+    // One of the athlete's own moves reads by its name: the account's library rode in the athlete's read (no statement).
+    const library = await loadAccountLibrary(ctx.db, ctx.userId);
     const scope = sessionsWhere(ctx.userId, sql`${performedSessions.localDate} between ${p.from} and ${p.to}`);
     const rows = await readTagged(ctx.db, doneTerms(ctx.userId, scope, { activitiesWhere: activitiesAround(p.from, p.to) }));
     const all = doneEntries(
       { sessions: rows.get("s"), sets: rows.get("x"), checks: rows.get("c"), activities: rows.get("a") },
-      { tz: athlete.tz, units: athlete.prefs.units, weightUnit: athlete.prefs.weightUnit, today: athlete.today },
+      { tz: athlete.tz, units: athlete.prefs.units, weightUnit: athlete.prefs.weightUnit, today: athlete.today, library: library.all },
       { from: p.from, to: p.to },
     ).filter((e) => !p.kind || e.kind === p.kind);
     // Newest first: a page starts at its cursor's line, or at the newest.

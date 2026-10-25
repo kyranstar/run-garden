@@ -920,7 +920,8 @@ export function reviewPacket(o: { round: number; draft: DraftForReview; records:
     ...(d.changeNote ? [`What changed from the last draft, in the designer's words: ${markUntrusted("designer run", d.changeNote)}`] : []),
     ...(o.brief ? [`The main coach's brief for this workout:\n${markUntrusted("main coach", o.brief)}`] : []),
   ];
-  const issues = d.issues.map((i) => `- ${i.path} (${i.code}): ${i.message}`);
+  // A message naming one of the athlete's own moves is marked: the name is a saved post's reading.
+  const issues = d.issues.map((i) => `- ${i.path} (${i.code}): ${typeof i.message === "string" ? i.message : markUntrusted("saved post", i.message.text)}`);
   const validator = [
     "# The validator's view (the app's own check, for that day)",
     "Errors: none — a draft with an error is refused before it is reviewed.",
