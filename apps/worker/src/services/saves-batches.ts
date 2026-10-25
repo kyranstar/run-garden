@@ -37,7 +37,7 @@ const parseList = (raw: unknown): string[] => {
  * The batch's notice from its moves, as `batchNotice` words it: a move is new when it is a personal move still pending,
  * and one the owner already had otherwise (the library's, or a personal move saved before). Each move counts once.
  */
-function noticeOf(
+export function noticeOf(
   rows: readonly { moveId: string | null; moveKind: string | null; moveStatus: string | null; regions: unknown; contraction: unknown }[],
 ): string {
   const fresh = new Map<string, Pick<ExerciseRecord, "regions" | "contraction">>();

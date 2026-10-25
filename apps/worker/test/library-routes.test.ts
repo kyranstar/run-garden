@@ -8,11 +8,13 @@ import { beforeEach, describe, expect, it } from "vitest";
 import { and, eq, sql } from "drizzle-orm";
 import { schema } from "@rg/database";
 import { adaptiveConfigSchema, addDays, newId, nowInstant } from "@rg/domain";
-import { EXERCISES, hasEquipment, TMJ } from "@rg/exercise-library";
+import { EXERCISES, hasEquipment, PROFILE_IDS, TMJ } from "@rg/exercise-library";
+import { personalMoveId, type ExtractedMove } from "@rg/saves";
 import type { Db } from "../src/services/db.js";
 import type { Env } from "../src/env.js";
 import { libraryRoutes } from "../src/routes/library.js";
-import { safetyFor, setExercisePrefs } from "../src/services/library-view.js";
+import { MAX_LIBRARY_LIMIT, safetyFor, setExercisePrefs } from "../src/services/library-view.js";
+import { toPersonalRecord } from "../src/services/personal-records.js";
 import { RestoreInProgressError } from "../src/services/programs.js";
 import { buildSession } from "../src/services/session-build.js";
 import { saveProgramState } from "../src/services/engine-inputs.js";
@@ -184,7 +186,7 @@ describe("GET /api/library", () => {
     for (const q of [
       "?pattern=juggling", "?region=elbow", "?role=hero", "?equipment=trampoline", "?safe=maybe", "?location=nowhere",
       "?purpose=fun", "?tag=nope", "?theme=nope", "?muscle=elbow", "?contraction=floppy", "?position=upside-down",
-      "?laterality=trilateral", "?maxDifficulty=9", "?maxDifficulty=x", "?limit=0", "?limit=201",
+      "?laterality=trilateral", "?maxDifficulty=9", "?maxDifficulty=x", "?limit=0", "?limit=501",
     ]) {
       const res = await call("GET", `/api/library${q}`);
       expect(res.status, q).toBe(422);
@@ -324,12 +326,31 @@ describe("GET /api/library — the Studio's filters, ranking and history", () =>
     expect(easy.every((r) => r.difficulty <= 2)).toBe(true);
   });
 
-  it("limits to 50 by default (max 200) and says how many matched", async () => {
+  it("limits to 50 by default (max 500) and says how many matched", async () => {
     const dflt = await list("", false);
     expect(dflt.items).toHaveLength(50);
     expect(dflt.matched).toBe(EXERCISES.length);
     expect(dflt.total).toBe(EXERCISES.length);
     expect((await list("?limit=3", false)).items).toHaveLength(3);
+    expect(MAX_LIBRARY_LIMIT).toBe(500);
+  });
+
+  it("the Studio's one read (limit 500) holds the whole library and 300 of the athlete's own moves", async () => {
+    const draft = (n: number): ExtractedMove => ({
+      name: `Zorbex reach ${n}`, aliases: [], summary: "A synthetic move.", steps: ["Start.", "Finish."], cues: [], mistakes: [], purpose: "mobility",
+      dose: { text: "8" }, patterns: ["mobility"], regions: ["hips"], equipment: [], position: "seated", laterality: "bilateral", load: "none",
+      contraction: ["isotonic"], difficulty: 2,
+      conditions: Object.fromEntries(PROFILE_IDS.map((p) => [p, { attrs: { clench: 0, neckLoad: 0, faceDown: false }, note: "Fine." }])) as unknown as ExtractedMove["conditions"],
+      evidence: { name: "stated", dose: "inferred", steps: "stated" }, confidence: "high",
+    });
+    const rows = Array.from({ length: 300 }, (_, n) => {
+      const id = personalMoveId(`Zorbex reach ${n}`, `${userId}:${n}`);
+      return { id, userId, status: "active", mergedInto: null, batchId: null, record: toPersonalRecord(id, draft(n)), editedByOwner: false, createdAt: NOW, updatedAt: NOW };
+    });
+    for (let i = 0; i < rows.length; i += 10) await db.insert(schema.personalMoves).values(rows.slice(i, i + 10));
+    const all = await list("?limit=500", false);
+    expect(all.total).toBe(EXERCISES.length + 300);
+    expect(all.items).toHaveLength(EXERCISES.length + 300);
   });
 
   it("ranks an exact name, then a name prefix, then name/summary/tag contains, then the rest; ties by name", async () => {

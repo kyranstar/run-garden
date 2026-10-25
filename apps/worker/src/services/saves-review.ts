@@ -1,0 +1,448 @@
+/**
+ * "FROM YOUR SAVES", THE REVIEW (saved-posts import, Task 15; the Studio's `/studio/saves/:batchId`). What a batch
+ * brought, and the owner's word on it before anything is used:
+ *
+ *  - the batches (`listBatches`) and one batch's rows (`batchDetail`): each link of a post to a move — a NEW move (a
+ *    personal move still pending) or one LINKED to a move the owner already has (the library's, or a personal move saved
+ *    before), "check this" where the match or the reading was unsure, the dose as the post gave it;
+ *  - an edit of a personal move (`editPersonalMove`), held to the library's own validation (`validatePersonalRecord`);
+ *  - a re-match (`rematchLink`): "Same as…" repoints the link to a library move or an active personal move, and a pending
+ *    move it leaves (named by no other pending link of the account) is merged into it; "Not this move" makes the post's
+ *    move its own new move, from the post's stored reading at that position. Saving writes each link by the move it
+ *    names, so repointing the link is what makes the save right;
+ *  - Remove (`removeLink`): the row is left out of the save, and its move — if no kept row names it — stays pending,
+ *    never used;
+ *  - the bootstrap's held batch (`createHeldBatch`) and its release (`releaseBatch`, worded as `assembleBatch` words a
+ *    batch). Save is `saveBatch` (saves-batches.ts).
+ *
+ * Every row a write touches must be the account's and pending; a batch, row or move of another account is not found.
+ * A write that changes a move the account's library holds (an active move edited, a merge) forgets this request's read
+ * of it. Model-written text (names, summaries, creators) is returned as data; the app draws it as text.
+ */
+import { and, eq, isNull, sql } from "drizzle-orm";
+import { schema } from "@rg/database";
+import { newId } from "@rg/domain";
+import { EXERCISES, type ExerciseRecord } from "@rg/exercise-library";
+import {
+  extractedMoveSchema, isPersonalId, personalMoveId,
+  type PersonalMovePatch, type SaveBatchCountsDto, type SaveBatchDetailDto, type SaveBatchDto, type SaveBatchRowDto,
+} from "@rg/saves";
+import { makeLibraryIndex } from "@rg/workout";
+import { forgetAccountLibrary, loadAccountLibrary } from "./account-library.js";
+import { runAtomically, type Db } from "./db.js";
+import { buildPersonalRecord } from "./personal-moves.js";
+import { validatePersonalRecord } from "./personal-records.js";
+import { noticeOf } from "./saves-batches.js";
+
+const { savedPosts, savedPostMoves, personalMoves, saveBatches } = schema;
+
+/** The most batches the list returns (one is released a day at most). */
+export const BATCH_LIST_LIMIT = 60;
+
+const publicMove = makeLibraryIndex(EXERCISES);
+
+/** A batch row as read, with its counts (`BATCH_COLUMNS`). */
+interface BatchRead {
+  id: string;
+  status: SaveBatchDto["status"];
+  notice: string | null;
+  theme: string | null;
+  createdAt: string;
+  releasedAt: string | null;
+  savedAt: string | null;
+  fresh: number | null;
+  linked: number | null;
+  removed: number | null;
+}
+
+/**
+ * The batch's columns and its counts, for a select over `save_batches b`: NEW is each distinct move of a kept row
+ * (pending or saved) that is a personal move still pending or brought by this batch (so a saved batch keeps its count);
+ * LINKED each distinct other move of a kept row; REMOVED the rows taken out.
+ */
+const BATCH_COLUMNS = sql`b.id as id, b.status as status, b.notice as notice, b.theme as theme, b.created_at as createdAt,
+  b.released_at as releasedAt, b.saved_at as savedAt,
+  (select count(distinct l.move_id) from saved_post_moves l
+     left join personal_moves pm on pm.id = l.move_id and pm.user_id = l.user_id
+     where l.user_id = b.user_id and l.batch_id = b.id and l.status <> 'removed' and l.move_kind = 'personal'
+       and coalesce(pm.status = 'pending' or pm.batch_id = b.id, 0)) as fresh,
+  (select count(distinct l.move_id) from saved_post_moves l
+     left join personal_moves pm on pm.id = l.move_id and pm.user_id = l.user_id
+     where l.user_id = b.user_id and l.batch_id = b.id and l.status <> 'removed'
+       and not (l.move_kind = 'personal' and coalesce(pm.status = 'pending' or pm.batch_id = b.id, 0))) as linked,
+  (select count(*) from saved_post_moves l where l.user_id = b.user_id and l.batch_id = b.id and l.status = 'removed') as removed`;
+
+function batchOf(r: BatchRead): SaveBatchDto {
+  const counts: SaveBatchCountsDto = { new: Number(r.fresh ?? 0), linked: Number(r.linked ?? 0), removed: Number(r.removed ?? 0) };
+  return {
+    id: r.id, status: r.status, notice: r.notice, theme: r.theme, createdAt: r.createdAt, releasedAt: r.releasedAt, savedAt: r.savedAt, counts,
+  };
+}
+
+async function readBatch(db: Db, userId: string, batchId: string): Promise<SaveBatchDto | null> {
+  const [row] = (await db.all(sql`select ${BATCH_COLUMNS} from save_batches b where b.id = ${batchId} and b.user_id = ${userId} limit 1`)) as BatchRead[];
+  return row ? batchOf(row) : null;
+}
+
+/** The account's released and saved batches (held ones too with `held`), newest first. ONE statement. */
+export async function listBatches(db: Db, userId: string, opts: { held: boolean }): Promise<{ batches: SaveBatchDto[] }> {
+  const statuses = JSON.stringify(opts.held ? ["held", "released", "saved"] : ["released", "saved"]);
+  const rows = (await db.all(sql`select ${BATCH_COLUMNS} from save_batches b
+    where b.user_id = ${userId} and b.status in (select value from json_each(${statuses}))
+    order by coalesce(b.released_at, b.created_at) desc, b.id desc
+    limit ${BATCH_LIST_LIMIT}`)) as BatchRead[];
+  return { batches: rows.map(batchOf) };
+}
+
+/** A link of the batch as read. */
+interface RowRead {
+  postMoveId: string;
+  position: number;
+  status: SaveBatchRowDto["status"];
+  moveId: string;
+  moveKind: "library" | "personal";
+  checkFlag: number;
+  url: string | null;
+  creator: string | null;
+  postKind: string | null;
+  seenName: string | null;
+  seenSummary: string | null;
+  seenDose: string | null;
+  moveStatus: string | null;
+  /** A pending, active or archived personal move's record, as stored (JSON text). */
+  record: string | null;
+}
+
+const text = (v: unknown): string | null => (typeof v === "string" ? v : null);
+
+/**
+ * One batch and its rows, in the posts' order and each post's moves in theirs; null when the batch isn't this
+ * account's. D1 statements: the batch 1, the rows 1, and the account's library 1 only when a row names a move that has
+ * been merged since (its target's name).
+ */
+export async function batchDetail(db: Db, userId: string, batchId: string): Promise<SaveBatchDetailDto | null> {
+  const batch = await readBatch(db, userId, batchId);
+  if (!batch) return null;
+  // The post's reading of each move is read out by SQLite: the extraction is never handed over whole.
+  const reads = (await db.all(sql`select l.id as postMoveId, l.position as position, l.status as status, l.move_id as moveId,
+      l.move_kind as moveKind, l.check_flag as checkFlag, p.url as url,
+      coalesce(nullif(p.creator_handle, ''), p.creator_name) as creator,
+      json_extract(p.extraction, '$.kind') as postKind,
+      json_extract(p.extraction, '$.moves[' || l.position || '].name') as seenName,
+      json_extract(p.extraction, '$.moves[' || l.position || '].summary') as seenSummary,
+      json_extract(p.extraction, '$.moves[' || l.position || '].dose.text') as seenDose,
+      pm.status as moveStatus,
+      case when pm.status in ('pending', 'active', 'archived') then pm.record end as record
+    from saved_post_moves l
+      join saved_posts p on p.id = l.post_id and p.user_id = l.user_id
+      left join personal_moves pm on pm.id = l.move_id and pm.user_id = l.user_id and l.move_kind = 'personal'
+    where l.user_id = ${userId} and l.batch_id = ${batchId}
+    order by p.first_seen_at, p.id, l.position`)) as RowRead[];
+
+  // A merged (or missing) personal move: its target's name, through the account's library.
+  const merged = reads.some((r) => r.moveKind === "personal" && (r.moveStatus === "merged" || r.moveStatus === null));
+  const find = merged ? makeLibraryIndex((await loadAccountLibrary(db, userId)).all) : publicMove;
+  const records = new Map<string, ExerciseRecord | null>();
+  const recordOf = (r: RowRead): ExerciseRecord | null => {
+    if (!r.record) return null;
+    if (!records.has(r.moveId)) {
+      let rec: ExerciseRecord | null = null;
+      try {
+        const parsed = JSON.parse(r.record) as ExerciseRecord;
+        rec = parsed && typeof parsed === "object" && typeof parsed.name === "string" ? { ...parsed, id: r.moveId } : null;
+      } catch {
+        rec = null;
+      }
+      records.set(r.moveId, rec);
+    }
+    return records.get(r.moveId) ?? null;
+  };
+
+  const rows = reads.map((r): SaveBatchRowDto => {
+    const record = recordOf(r);
+    const fresh = r.moveKind === "personal" && r.moveStatus === "pending";
+    const seenName = text(r.seenName);
+    const seenSummary = text(r.seenSummary);
+    const linkedName = fresh ? undefined : (record?.name ?? find(r.moveId)?.name ?? r.moveId);
+    return {
+      postMoveId: r.postMoveId,
+      position: Number(r.position),
+      status: r.status,
+      post: { url: r.url, creator: r.creator, kind: text(r.postKind) },
+      move: {
+        id: r.moveId,
+        name: fresh ? (record?.name ?? seenName ?? r.moveId) : (seenName ?? linkedName ?? r.moveId),
+        summary: fresh ? (record?.text?.summary ?? seenSummary ?? "") : (seenSummary ?? ""),
+        kind: fresh ? "new" : "linked",
+        ...(linkedName === undefined ? {} : { linkedName }),
+        check: Boolean(r.checkFlag),
+        seenDose: text(r.seenDose),
+      },
+      ...(record ? { record } : {}),
+    };
+  });
+  return { batch, rows };
+}
+
+// ── Edit ─────────────────────────────────────────────────────────────────────────────────────────────────────────────
+
+export type EditOutcome = { kind: "ok"; record: ExerciseRecord } | { kind: "not_found" } | { kind: "invalid"; issues: string[] };
+
+/** The record with the owner's edit: each field sent replaces the record's; the conditions replace the profiles named. */
+export function applyPatch(rec: ExerciseRecord, p: PersonalMovePatch): ExerciseRecord {
+  const t = p.text ?? {};
+  return {
+    ...rec,
+    ...(p.name !== undefined ? { name: p.name } : {}),
+    ...(p.dose ? { dose: p.dose } : {}),
+    ...(p.conditions ? { conditions: { ...rec.conditions, ...p.conditions } } : {}),
+    text: {
+      ...rec.text,
+      ...(t.summary !== undefined ? { summary: t.summary } : {}),
+      ...(t.steps !== undefined ? { steps: t.steps } : {}),
+      ...(t.focus !== undefined ? { focus: t.focus } : {}),
+      ...(t.mistakes !== undefined ? { mistakes: t.mistakes } : {}),
+      ...(t.conditions ? { conditions: { ...rec.text.conditions, ...t.conditions } } : {}),
+    },
+    id: rec.id,
+  };
+}
+
+/**
+ * The owner's edit of one of their pending or active moves (an archived or merged one, or another account's, is not
+ * found). The edited record must pass `validatePersonalRecord`; the issues come back without the id. Marks the move
+ * edited (an import never rewrites it). D1 statements: the move 1, its write 1.
+ */
+export async function editPersonalMove(db: Db, userId: string, id: string, patch: PersonalMovePatch, now: string): Promise<EditOutcome> {
+  const [row] = await db
+    .select({ status: personalMoves.status, record: personalMoves.record })
+    .from(personalMoves)
+    .where(and(eq(personalMoves.id, id), eq(personalMoves.userId, userId)))
+    .limit(1);
+  if (!row || (row.status !== "pending" && row.status !== "active")) return { kind: "not_found" };
+  const rec = row.record as ExerciseRecord | null;
+  if (!rec || typeof rec !== "object") return { kind: "not_found" };
+  const next = applyPatch({ ...rec, id }, patch);
+  const problems = validatePersonalRecord(next);
+  if (problems.length) return { kind: "invalid", issues: problems.map((p) => (p.startsWith(`${id}: `) ? p.slice(id.length + 2) : p)) };
+  await db
+    .update(personalMoves)
+    .set({ record: next, editedByOwner: true, updatedAt: now })
+    .where(and(eq(personalMoves.id, id), eq(personalMoves.userId, userId), eq(personalMoves.status, row.status)));
+  if (row.status === "active") forgetAccountLibrary(db, userId);
+  return { kind: "ok", record: next };
+}
+
+// ── Re-match, remove ─────────────────────────────────────────────────────────────────────────────────────────────────
+
+export type RematchOutcome =
+  | { kind: "ok"; moveId: string; moveKind: "library" | "personal" }
+  | { kind: "not_found" }
+  | { kind: "target_not_found" }
+  | { kind: "conflict"; error: "not_pending" | "same_move" | "already_own" | "no_reading" }
+  | { kind: "invalid"; issues: string[] };
+
+interface LinkRead {
+  status: string;
+  batchId: string | null;
+  postId: string;
+  position: number;
+  moveId: string;
+  moveKind: "library" | "personal";
+  /** The post's reading of the move at the link's position (JSON text), or null. */
+  draft: string | null;
+  moveStatus: string | null;
+  /** The account's other pending links naming the same move. */
+  others: number;
+  targetStatus: string | null;
+}
+
+/**
+ * The owner's re-match of one pending row:
+ *  - `to` a library move or one of the account's active moves ("Same as…"): the link names it; a pending move the link
+ *    leaves, named by no other pending link of the account, is merged into it (`merged_into`, a public id allowed);
+ *  - `to` null ("Not this move"): the post's move is its own new move — a pending personal move built from the post's
+ *    stored reading at that position — unless it is already (409).
+ * A saved or removed row is 409; a target that isn't a library move or an active move of the account's is not found.
+ * D1 statements: the link with all it needs 1, then one transaction of 1–2.
+ */
+export async function rematchLink(db: Db, userId: string, linkId: string, to: string | null, now: string): Promise<RematchOutcome> {
+  const [link] = (await db.all(sql`select l.status as status, l.batch_id as batchId, l.post_id as postId, l.position as position,
+      l.move_id as moveId, l.move_kind as moveKind,
+      json_extract(p.extraction, '$.moves[' || l.position || ']') as draft,
+      pm.status as moveStatus,
+      (select count(*) from saved_post_moves o
+         where o.user_id = l.user_id and o.status = 'pending' and o.move_id = l.move_id and o.id <> l.id) as others,
+      (select t.status from personal_moves t where t.user_id = l.user_id and t.id = ${to ?? ""}) as targetStatus
+    from saved_post_moves l
+      join saved_posts p on p.id = l.post_id and p.user_id = l.user_id
+      left join personal_moves pm on pm.id = l.move_id and pm.user_id = l.user_id and l.move_kind = 'personal'
+    where l.id = ${linkId} and l.user_id = ${userId}
+    limit 1`)) as LinkRead[];
+  if (!link) return { kind: "not_found" };
+  if (link.status !== "pending") return { kind: "conflict", error: "not_pending" };
+  const ownPending = link.moveKind === "personal" && link.moveStatus === "pending";
+  const pendingLink = and(eq(savedPostMoves.id, linkId), eq(savedPostMoves.userId, userId), eq(savedPostMoves.status, "pending"));
+
+  if (to === null) {
+    if (ownPending && Number(link.others) === 0) return { kind: "conflict", error: "already_own" };
+    let raw: unknown = null;
+    try {
+      raw = link.draft ? JSON.parse(link.draft) : null;
+    } catch {
+      raw = null;
+    }
+    const draft = extractedMoveSchema.safeParse(raw);
+    if (!draft.success) return { kind: "conflict", error: "no_reading" };
+    // A new id each time: the post's move made its own again after a merge is a move of its own again.
+    const id = personalMoveId(draft.data.name, `${userId}:${link.postId}:${link.position}:${newId()}`);
+    const built = buildPersonalRecord(id, draft.data);
+    if (!built.ok) return { kind: "invalid", issues: built.issues };
+    await runAtomically(db, [
+      db.insert(personalMoves).values({
+        id, userId, status: "pending", mergedInto: null, batchId: link.batchId, record: built.record, editedByOwner: false, createdAt: now, updatedAt: now,
+      }),
+      db.update(savedPostMoves).set({ moveId: id, moveKind: "personal", checkFlag: false }).where(pendingLink),
+    ]);
+    return { kind: "ok", moveId: id, moveKind: "personal" };
+  }
+
+  let target: { id: string; kind: "library" | "personal" } | null = null;
+  if (isPersonalId(to)) target = link.targetStatus === "active" ? { id: to, kind: "personal" } : null;
+  else {
+    const rec = publicMove(to);
+    target = rec ? { id: rec.id, kind: "library" } : null;
+  }
+  if (!target) return { kind: "target_not_found" };
+  if (target.id === link.moveId) return { kind: "conflict", error: "same_move" };
+  const merge = ownPending && Number(link.others) === 0;
+  await runAtomically(db, [
+    db.update(savedPostMoves).set({ moveId: target.id, moveKind: target.kind, checkFlag: false }).where(pendingLink),
+    ...(merge
+      ? [
+          db
+            .update(personalMoves)
+            .set({ status: "merged", mergedInto: target.id, updatedAt: now })
+            .where(and(eq(personalMoves.id, link.moveId), eq(personalMoves.userId, userId), eq(personalMoves.status, "pending"))),
+        ]
+      : []),
+  ]);
+  // The account's library holds a merged move (as its target's): a later read in this request reads it.
+  if (merge) forgetAccountLibrary(db, userId);
+  return { kind: "ok", moveId: target.id, moveKind: target.kind };
+}
+
+/** Take a pending row out of the batch: it is left out of the save. D1 statements: 1 (2 when it can't be). */
+export async function removeLink(db: Db, userId: string, linkId: string): Promise<"ok" | "not_found" | "conflict"> {
+  const done = await db
+    .update(savedPostMoves)
+    .set({ status: "removed" })
+    .where(and(eq(savedPostMoves.id, linkId), eq(savedPostMoves.userId, userId), eq(savedPostMoves.status, "pending")))
+    .returning({ id: savedPostMoves.id });
+  if (done.length) return "ok";
+  const [row] = await db
+    .select({ id: savedPostMoves.id })
+    .from(savedPostMoves)
+    .where(and(eq(savedPostMoves.id, linkId), eq(savedPostMoves.userId, userId)))
+    .limit(1);
+  return row ? "conflict" : "not_found";
+}
+
+// ── The bootstrap: a held batch, its release ─────────────────────────────────────────────────────────────────────────
+
+/**
+ * A held batch of these posts' pending, unbatched rows (the bootstrap's curation by theme): the batch is stamped on those
+ * rows, on the posts that have no batch, and on the pending, unbatched personal moves the rows name. Null — nothing
+ * written — when none of the posts has such a row. D1 statements: the waiting rows with their counts 1, one transaction
+ * of 4.
+ */
+export async function createHeldBatch(
+  db: Db,
+  userId: string,
+  input: { theme: string | null; postIds: readonly string[] },
+  now: string,
+): Promise<SaveBatchDto | null> {
+  const posts = JSON.stringify([...new Set(input.postIds)]);
+  const waitingRows = and(
+    eq(savedPostMoves.userId, userId),
+    eq(savedPostMoves.status, "pending"),
+    isNull(savedPostMoves.batchId),
+    sql`${savedPostMoves.postId} IN (SELECT value FROM json_each(${posts}))`,
+  );
+  // Counted as the batch will count them: a pending personal move is new, any other move one the owner had.
+  const fresh = sql`${savedPostMoves.moveKind} = 'personal' AND ${personalMoves.status} = 'pending'`;
+  const [waiting] = await db
+    .select({
+      n: sql<number>`count(*)`,
+      fresh: sql<number>`count(distinct CASE WHEN ${fresh} THEN ${savedPostMoves.moveId} END)`,
+      linked: sql<number>`count(distinct CASE WHEN ${fresh} THEN NULL ELSE ${savedPostMoves.moveId} END)`,
+    })
+    .from(savedPostMoves)
+    .leftJoin(personalMoves, and(eq(personalMoves.id, savedPostMoves.moveId), eq(personalMoves.userId, userId)))
+    .where(waitingRows);
+  if (!waiting || Number(waiting.n) === 0) return null;
+  const batch = {
+    id: newId(), userId, status: "held" as const, theme: input.theme?.trim() || null, createdAt: now, releasedAt: null, savedAt: null, fittedAt: null, notice: null,
+  };
+  const id = batch.id;
+  await runAtomically(db, [
+    db.update(savedPostMoves).set({ batchId: id }).where(waitingRows),
+    db
+      .update(savedPosts)
+      .set({ batchId: id })
+      .where(
+        and(
+          eq(savedPosts.userId, userId),
+          isNull(savedPosts.batchId),
+          sql`${savedPosts.id} IN (SELECT ${savedPostMoves.postId} FROM ${savedPostMoves} WHERE ${savedPostMoves.userId} = ${userId} AND ${savedPostMoves.batchId} = ${id})`,
+        ),
+      ),
+    db
+      .update(personalMoves)
+      .set({ batchId: id })
+      .where(
+        and(
+          eq(personalMoves.userId, userId),
+          eq(personalMoves.status, "pending"),
+          isNull(personalMoves.batchId),
+          sql`${personalMoves.id} IN (SELECT ${savedPostMoves.moveId} FROM ${savedPostMoves} WHERE ${savedPostMoves.userId} = ${userId} AND ${savedPostMoves.batchId} = ${id} AND ${savedPostMoves.moveKind} = 'personal')`,
+        ),
+      ),
+    db.insert(saveBatches).values(batch),
+  ]);
+  return {
+    id, status: "held", notice: null, theme: batch.theme, createdAt: now, releasedAt: null, savedAt: null,
+    counts: { new: Number(waiting.fresh), linked: Number(waiting.linked), removed: 0 },
+  };
+}
+
+/** The batch (with its counts) and each of its kept rows' moves, as `noticeOf` reads them. */
+interface ReleaseRead extends BatchRead {
+  moveId: string | null;
+  moveKind: string | null;
+  moveStatus: string | null;
+  regions: unknown;
+  contraction: unknown;
+}
+
+/**
+ * Release a held batch: released now, with its notice worded from its kept rows (as `assembleBatch` words one).
+ * D1 statements: the batch with its rows' moves 1, the write 1.
+ */
+export async function releaseBatch(db: Db, userId: string, batchId: string, now: string): Promise<SaveBatchDto | "not_found" | "conflict"> {
+  const rows = (await db.all(sql`select ${BATCH_COLUMNS}, l.move_id as moveId, l.move_kind as moveKind, pm.status as moveStatus,
+      json_extract(pm.record, '$.regions') as regions, json_extract(pm.record, '$.contraction') as contraction
+    from save_batches b
+      left join saved_post_moves l on l.batch_id = b.id and l.user_id = b.user_id and l.status = 'pending'
+      left join personal_moves pm on pm.id = l.move_id and pm.user_id = b.user_id
+    where b.id = ${batchId} and b.user_id = ${userId}`)) as ReleaseRead[];
+  const first = rows[0];
+  if (!first) return "not_found";
+  if (first.status !== "held") return "conflict";
+  const notice = noticeOf(rows);
+  await db
+    .update(saveBatches)
+    .set({ status: "released", releasedAt: now, notice })
+    .where(and(eq(saveBatches.id, batchId), eq(saveBatches.userId, userId), eq(saveBatches.status, "held")));
+  return { ...batchOf(first), status: "released", releasedAt: now, notice };
+}

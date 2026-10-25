@@ -70,12 +70,16 @@ export interface LibraryQuery extends LibraryFilters {
   location?: string;
   /** Only moves safe on a flare day for every switched-on profile. */
   safe?: boolean;
-  /** Rows to return (default 50, at most 200); `matched` on the list says how many matched. */
+  /** Rows to return (default 50, at most 500); `matched` on the list says how many matched. */
   limit?: number;
 }
 
 export const DEFAULT_LIBRARY_LIMIT = 50;
-export const MAX_LIBRARY_LIMIT = 200;
+/**
+ * The most rows one list returns: the Studio reads the athlete's say on every move it offers in ONE read, and what it
+ * offers is the public library (175 moves) and the athlete's active own moves (up to ~300).
+ */
+export const MAX_LIBRARY_LIMIT = 500;
 
 export interface LibraryRow {
   id: string;
@@ -605,15 +609,35 @@ export interface PersonalMoveView {
   links: Array<{ url: string | null; creator: string | null }>;
 }
 
+/** A move merged into another (`GET /api/library/personal`): its id, and the move that answers for it now. */
+export interface MergedMoveView {
+  id: string;
+  /** Its final target: an active or archived move of the account's, or a public move. */
+  into: string;
+}
+
+/**
+ * The account's merged moves and their final targets, as the library reads them: each merged id is among its target's
+ * `legacyIds` in `all` (a personal target's, or — merged into a public move — the public record's there).
+ */
+function mergedOf(all: readonly ExerciseRecord[]): MergedMoveView[] {
+  const out: MergedMoveView[] = [];
+  for (const r of all) for (const id of r.legacyIds) if (id !== r.id && isPersonalId(id)) out.push({ id, into: r.id });
+  return out;
+}
+
 /**
  * The owner's own moves (saved-posts import): every active and archived one — never a pending one (the review's) nor
- * a merged one (its target stands for it, with its links) — by name. Two statements: the account's library
- * (`loadAccountLibrary`, which holds the records), then their links (`exercise_provenance`, one bound list of ids).
+ * a merged one (its target stands for it, with its links) — by name; and each merged move with the move that answers
+ * for it (`merged`), so the device resolves a merged id as the Worker does, a move merged into a public one too. Two
+ * statements: the account's library (`loadAccountLibrary`, which holds the records), then their links
+ * (`exercise_provenance`, one bound list of ids).
  */
-export async function listPersonalMoves(db: Db, userId: string): Promise<{ moves: PersonalMoveView[] }> {
+export async function listPersonalMoves(db: Db, userId: string): Promise<{ moves: PersonalMoveView[]; merged: MergedMoveView[] }> {
   const library = await loadAccountLibrary(db, userId);
+  const merged = library.personalHash ? mergedOf(library.all) : [];
   const mine = library.all.filter((r) => isPersonalId(r.id));
-  if (mine.length === 0) return { moves: [] };
+  if (mine.length === 0) return { moves: [], merged };
   const offered = new Set(library.offered.filter((r) => isPersonalId(r.id)).map((r) => r.id));
   const ids = mine.flatMap((r) => [r.id, ...r.legacyIds]);
   const rows = (await db.all(sql`
@@ -630,5 +654,5 @@ export async function listPersonalMoves(db: Db, userId: string): Promise<{ moves
   const moves = mine
     .map((record): PersonalMoveView => ({ record, status: offered.has(record.id) ? "active" : "archived", links: links.get(record.id) ?? [] }))
     .sort((a, b) => a.record.name.localeCompare(b.record.name, "en", { sensitivity: "base" }) || a.record.id.localeCompare(b.record.id));
-  return { moves };
+  return { moves, merged };
 }

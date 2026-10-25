@@ -2171,7 +2171,7 @@ export interface LibraryQuery {
   position?: string;
   laterality?: string;
   maxDifficulty?: number;
-  /** Default 50, at most 200. */
+  /** Default 50, at most 500. */
   limit?: number;
 }
 
@@ -2242,9 +2242,14 @@ export interface PersonalMoveDto {
   links: Array<{ url: string | null; creator: string | null }>;
 }
 
-/** Exact shape of `GET /api/library/personal`: never a pending or merged move. */
+/**
+ * Exact shape of `GET /api/library/personal`: never a pending or merged move in `moves`; each merged move in `merged`,
+ * with the move that answers for it now (an active or archived move of the account's, or a public move).
+ */
 export interface PersonalMovesDto {
   moves: PersonalMoveDto[];
+  /** Absent from an answer kept from before it was added (the service worker keeps this read a week). */
+  merged?: Array<{ id: string; into: string }>;
 }
 
 /** `PUT /api/library/:id/prefs`: only what is sent changes. */
@@ -2422,6 +2427,9 @@ export function withQuery(path: string, qs: URLSearchParams): string {
 
 /** The React Query key of Settings -> Saves' status read. */
 export const SAVES_STATUS_QUERY = ["saves-status"] as const;
+/** "From your saves": the batches (`GET /api/my-saves/batches`), and one batch's rows under its id. */
+export const SAVES_BATCHES_QUERY = ["saves", "batches"] as const;
+export const savesBatchQuery = (id: string) => ["saves", "batch", id] as const;
 
 export const api = {
   me: () => get<MeResponse>("/api/auth/me"),
@@ -2533,6 +2541,28 @@ export const api = {
   /** The owner's word on one saved post: process anyway (also Retry), skip, or keep as a reference. */
   savesOverride: (id: string, action: "process" | "skip" | "reference") =>
     post<{ ok: boolean }>(`/api/my-saves/posts/${encodeURIComponent(id)}/override`, { action }),
+  // "From your saves", the review (worker routes: apps/worker/src/routes/my-saves.ts; 404 while the feature is off).
+  /** Released and saved batches, newest first (held ones too with `held`). */
+  savesBatches: (opts: { held?: boolean } = {}) =>
+    get<import("@rg/saves").SaveBatchesDto>(`/api/my-saves/batches${opts.held ? "?held=1" : ""}`),
+  /** One batch and its rows. 404 for a batch that isn't the account's. */
+  savesBatch: (id: string) => get<import("@rg/saves").SaveBatchDetailDto>(`/api/my-saves/batches/${encodeURIComponent(id)}`),
+  /** "Save these": the kept rows' moves become the account's, their posts its links. */
+  savesSaveBatch: (id: string) => post<{ moves: number; links: number }>(`/api/my-saves/batches/${encodeURIComponent(id)}/save`),
+  /** Edit a pending or active personal move. 422 `invalid_record` with `issues` when the edit leaves it invalid. */
+  savesEditMove: (id: string, patch: import("@rg/saves").PersonalMovePatch) =>
+    put<{ record: ExerciseRecord }>(`/api/my-saves/moves/${encodeURIComponent(id)}`, patch),
+  /** "Same as…" (`to`: a library move or one of the account's active moves) or "Not this move" (`to`: null). */
+  savesRematch: (postMoveId: string, to: string | null) =>
+    post<{ ok: boolean; move: { id: string; kind: "library" | "personal" } }>(`/api/my-saves/post-moves/${encodeURIComponent(postMoveId)}/rematch`, { to }),
+  /** "Remove": the row is left out of the save. */
+  savesRemove: (postMoveId: string) => post<{ ok: boolean }>(`/api/my-saves/post-moves/${encodeURIComponent(postMoveId)}/remove`),
+  /** The bootstrap: a held batch of these posts' unbatched moves. 409 when none has one. */
+  savesCreateBatch: (theme: string | null, postIds: string[]) =>
+    post<{ batch: import("@rg/saves").SaveBatchDto }>("/api/my-saves/batches", { theme, postIds }),
+  /** Release a held batch, with its notice. */
+  savesReleaseBatch: (id: string) =>
+    post<{ batch: import("@rg/saves").SaveBatchDto }>(`/api/my-saves/batches/${encodeURIComponent(id)}/release`),
   /** The rolling week's AI spend against the cap. */
   coachSpend: () => get<CoachSpendDto>("/api/coach/spend"),
   coachMemoryDelete: (id: string) =>

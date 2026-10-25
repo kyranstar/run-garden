@@ -3,11 +3,12 @@
  * API"; services/library-view.ts).
  *
  *   GET  /?q=&pattern=&region=&role=&equipment=&purpose=&tag=&theme=&muscle=&contraction=&position=&laterality=
- *        &maxDifficulty=&location=&safe=&limit=   slim rows ranked by the match (limit default 50, max 200; `matched`
+ *        &maxDifficulty=&location=&safe=&limit=   slim rows ranked by the match (limit default 50, max 500; `matched`
  *                                                 counts them all), the default place, the switched-on profiles
  *                                                 and the wishlist's unlock counts
  *   GET  /personal                                                 the owner's own moves (saved-posts import): each
- *                                                                  active and archived one's record, status and links
+ *                                                                  active and archived one's record, status and links,
+ *                                                                  and each merged move's final target (`merged`)
  *   GET  /:id                                                      the whole record with the athlete's history for it
  *                                                                  (a personal move by its id, an archived one too)
  *   PUT  /:id/prefs  {rating?: 1|-1|null, excluded?, pinned?}      → `{prefs}`; only what is sent changes

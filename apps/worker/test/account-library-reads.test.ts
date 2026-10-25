@@ -328,10 +328,12 @@ describe("the owner's own moves: GET /api/library/personal", () => {
       { url: "https://example.com/p/2", creator: "Example Coach 2" },
     ]);
     expect(moves.find((m) => m.record.id === archived)).toMatchObject({ record: { name: "Prone Y Raise Hold" }, links: [{ url: "https://example.com/p/3", creator: "Example Coach 3" }] });
+    // The merged move, with the move that answers for it (Task 15: the device resolves it as the Worker does).
+    expect(res.body.merged).toEqual([{ id: merged, into: active }]);
     // Nothing yet: none.
     const other = await makeTestUser(db);
     userId = other.userId;
-    expect((await library("GET", "/personal")).body).toEqual({ moves: [] });
+    expect((await library("GET", "/personal")).body).toEqual({ moves: [], merged: [] });
   });
 
   it("the browse list offers an active move and never an archived one; the item reads either", async () => {
