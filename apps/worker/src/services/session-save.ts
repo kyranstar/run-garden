@@ -72,12 +72,13 @@ import {
   type SourceActivity,
   type UserPreferences,
 } from "@rg/domain";
-import { EXERCISES } from "@rg/exercise-library";
+import type { ExerciseRecord } from "@rg/exercise-library";
 import { ORPHAN_ADOPTION_FLOOR, scoreAgainstStoredRow } from "@rg/providers";
 import { Blocks } from "@rg/session-engine";
-import { deriveDoc } from "@rg/workout";
+import { deriveDoc, makeLibraryIndex } from "@rg/workout";
 import type { ZodIssue } from "zod";
 import { sha256Hex } from "../auth/crypto.js";
+import { libraryFor, libraryForDocs } from "./account-library.js";
 import { restoreInProgress } from "./account-state.js";
 import { ROLLING_WINDOW_DAYS } from "./backfill.js";
 import { chunkIds, insertBatches, runAtomically, type AtomicStatement, type Db } from "./db.js";
@@ -214,7 +215,8 @@ async function docDisciplineOf(db: Db, userId: string, slot: SlotRow, buildId: s
         .limit(1)
     : [];
   const played = parseStoredWorkoutDoc(build?.doc ?? null) ?? parseStoredWorkoutDoc(slot.workoutDoc);
-  const discipline = played ? deriveDoc(played, EXERCISES).discipline : slot.sport;
+  // Derived in the account's library when it names one of the athlete's own moves (one statement more, then).
+  const discipline = played ? deriveDoc(played, (await libraryForDocs(db, userId, [played])).all).discipline : slot.sport;
   return discipline === "strength" ? "strength" : "yoga";
 }
 
@@ -311,17 +313,29 @@ export function setRows(performedId: string, p: PerformedSessionWire) {
   );
 }
 
-let libraryIds: Set<string> | undefined;
+/** The moves a review names: its ratings', its "not for me" marks' and the new move's. */
+const reviewedIds = (p: PerformedSessionWire): string[] => [
+  ...new Set([...Object.keys(p.review.ratings), ...Object.keys(p.review.excluded), ...(p.newMove ? [p.newMove] : [])]),
+];
+
+/**
+ * What a review's moves are judged in: the account's library when it names one of the athlete's own moves (one
+ * statement, once a request), else the public library — so a review of library moves alone costs what it did.
+ */
+export async function reviewLibrary(db: Db, userId: string, p: PerformedSessionWire): Promise<readonly ExerciseRecord[]> {
+  return (await libraryFor(db, userId, reviewedIds(p))).all;
+}
 
 /**
  * The review's preferences: each touched exercise's row as it will be (ratings, "not for me", the new move's first
  * day), upserted whole so one statement serves every field. Read now; the statements run with the rest of the save.
  */
 export async function prefStatements(db: Db, userId: string, p: PerformedSessionWire, now: string): Promise<AtomicStatement[]> {
-  // Only the library's exercises: a key it does not have is junk (a bug, a hand-made PUT), never a row (audit 2b-A M-4).
-  libraryIds ??= new Set(EXERCISES.map((e) => e.id));
-  const ids = [...new Set([...Object.keys(p.review.ratings), ...Object.keys(p.review.excluded), ...(p.newMove ? [p.newMove] : [])])]
-    .filter((id) => libraryIds!.has(id))
+  // Only the account library's exercises, by their own ids — the public library's and the athlete's own moves: a key it
+  // does not have is junk (a bug, a hand-made PUT), never a row (audit 2b-A M-4).
+  const find = makeLibraryIndex(await reviewLibrary(db, userId, p));
+  const ids = reviewedIds(p)
+    .filter((id) => find(id)?.id === id)
     .sort();
   if (ids.length === 0) return [];
   const existing = new Map<string, typeof exercisePrefs.$inferSelect>();
@@ -877,7 +891,7 @@ async function write(
   );
 
   // 5. The review's decisions.
-  statements.push(...prefs, ...sessionAnswerStatements(db, userId, performedId, p, "review", now), ...graduation.statements);
+  statements.push(...prefs, ...sessionAnswerStatements(db, userId, performedId, p, "review", now, await reviewLibrary(db, userId, p)), ...graduation.statements);
 
   // 6. The garden's replay, on record with the save: whatever happens to the replay itself, the change is not lost.
   statements.push(gardenChangeStatement(db, userId, replayFrom));

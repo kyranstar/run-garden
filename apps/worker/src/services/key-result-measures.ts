@@ -85,6 +85,8 @@ import {
   type KeyResultUnit,
 } from "@rg/domain";
 import { EXERCISES, type ExerciseRecord } from "@rg/exercise-library";
+import { makeLibraryIndex } from "@rg/workout";
+import { libraryFor } from "./account-library.js";
 import type { Db } from "./db.js";
 import { sessionPerActivity } from "./logged-sets.js";
 import { PENDING_HASH } from "./watch-sets.js";
@@ -111,6 +113,11 @@ export interface MeasureContext {
   today: string;
   /** The race hub's race date (the user's preferences), for run_best's labels; the caller has read it already. */
   raceDate?: string | null;
+  /**
+   * The account's library (`all`), when the caller has it. Absent: read only when a measure names one of the athlete's
+   * own moves (`libraryFor`: one statement then), else the public library.
+   */
+  library?: readonly ExerciseRecord[];
 }
 
 export interface MeasureRequest {
@@ -121,23 +128,24 @@ export interface MeasureRequest {
 
 // ── The library's ids ───────────────────────────────────────────────────────────────────────────────────────────────
 
-let movesById: Map<string, ExerciseRecord> | null = null;
-/** The library move an id names now — its own id or one it had (`legacyIds`) — or undefined. */
-export function libraryMove(id: string): ExerciseRecord | undefined {
-  if (movesById === null) {
-    movesById = new Map();
-    for (const e of EXERCISES) for (const legacy of e.legacyIds) if (!movesById.has(legacy)) movesById.set(legacy, e);
-    for (const e of EXERCISES) movesById.set(e.id, e);
-  }
-  return movesById.get(id);
+/**
+ * The library move an id names now — its own id or one it had (`legacyIds`) — or undefined; in `library` (the account's
+ * `all`, given: one of the athlete's own moves, a merged one as its target), else the public library.
+ */
+export function libraryMove(id: string, library: readonly ExerciseRecord[] = EXERCISES): ExerciseRecord | undefined {
+  return makeLibraryIndex(library)(id);
 }
-const canonicalId = (id: string): string => libraryMove(id)?.id ?? id;
+/** An id as the move it now is, in `library`. */
+const canonicalIn = (library: readonly ExerciseRecord[]) => {
+  const find = makeLibraryIndex(library);
+  return (id: string): string => find(id)?.id ?? id;
+};
 
 /** Every id a logged set (or a document's item) of these moves may carry: each move's id and the ids it had. */
-function loggedIdsOf(libraryIds: readonly string[]): string[] {
+function loggedIdsOf(libraryIds: readonly string[], library: readonly ExerciseRecord[]): string[] {
   const out = new Set<string>();
   for (const id of libraryIds) {
-    const move = libraryMove(id);
+    const move = libraryMove(id, library);
     out.add(id);
     if (move) {
       out.add(move.id);
@@ -357,7 +365,13 @@ const maxOf = (xs: readonly (number | null | undefined)[]): number | undefined =
  * swapped into (a document build's ⇄ option: the slot's max, the option's window) — the slot the session saved it in
  * (`slot`), else the one at its entry's place; null when none says.
  */
-function prescriptionFor(p: Prescribed | undefined, exerciseId: string, entryIndex: number, slot: string | undefined): Prescription | null {
+function prescriptionFor(
+  p: Prescribed | undefined,
+  exerciseId: string,
+  entryIndex: number,
+  slot: string | undefined,
+  canonicalId: (id: string) => string,
+): Prescription | null {
   if (!p) return null;
   const items = (p.items ?? []).filter((i) => canonicalId(i[0]) === exerciseId);
   if (items.length > 0) {
@@ -405,7 +419,14 @@ function holdShowsCapacity(seconds: number | null, p: Prescription | null): bool
 type SetValues = [string, number, number, string | null, string, number | null, number | null, number | null];
 
 /** The done sets of these moves in [from, to], one physical session once, each judged against its prescription. */
-async function loggedSets(db: Db, userId: string, from: string, to: string, exerciseIds: readonly string[]): Promise<LoggedSet[]> {
+async function loggedSets(
+  db: Db,
+  userId: string,
+  from: string,
+  to: string,
+  exerciseIds: readonly string[],
+  canonicalId: (id: string) => string,
+): Promise<LoggedSet[]> {
   const inWindow = and(
     eq(performedSessions.userId, userId),
     gte(performedSessions.localDate, from),
@@ -577,7 +598,7 @@ async function loggedSets(db: Db, userId: string, from: string, to: string, exer
     .filter((r) => chosen.has(r.sessionId))
     .map((r) => {
       const exerciseId = canonicalId(r.exerciseId);
-      const p = prescriptionFor(prescribedFor(r.sessionId), exerciseId, r.entryIndex, slotOf(r.sessionId, exerciseId));
+      const p = prescriptionFor(prescribedFor(r.sessionId), exerciseId, r.entryIndex, slotOf(r.sessionId, exerciseId), canonicalId);
       return {
         date: chosen.get(r.sessionId)!.localDate,
         exerciseId,
@@ -624,7 +645,7 @@ function showsCapacity(m: StrengthMeasure, s: LoggedSet): boolean {
   }
 }
 
-function measureStrength(m: StrengthMeasure, sets: readonly LoggedSet[], today: string): Measured {
+function measureStrength(m: StrengthMeasure, sets: readonly LoggedSet[], today: string, canonicalId: (id: string) => string): Measured {
   const from = windowStart(today, m.windowDays);
   const ids = new Set(m.libraryIds.map(canonicalId));
   const days = new Map<string, { best: number; capacity: number }>();
@@ -864,8 +885,11 @@ export async function measureKeyResults(
   );
   const bests = running.filter((m): m is Extract<KeyResultMeasure, { kind: "run_best" }> => m.kind === "run_best");
 
+  const strengthIds = strength.flatMap((m) => m.libraryIds);
+  const library = ctx.library ?? (await libraryFor(db, userId, strengthIds)).all;
+  const canonical = canonicalIn(library);
   const [sets, runs, days] = await Promise.all([
-    strength.length > 0 ? loggedSets(db, userId, earliest(today, strength), today, loggedIdsOf(strength.flatMap((m) => m.libraryIds))) : [],
+    strength.length > 0 ? loggedSets(db, userId, earliest(today, strength), today, loggedIdsOf(strengthIds, library), canonical) : [],
     running.length > 0 ? runsBetween(db, userId, earliest(today, running), today) : [],
     threshold.length > 0 ? thresholdDays(db, userId, earliest(today, threshold), today) : [],
   ]);
@@ -886,7 +910,7 @@ export async function measureKeyResults(
     switch (m.kind) {
       case "hold_max":
       case "best_set":
-        return finish(request, measureStrength(m, sets, today));
+        return finish(request, measureStrength(m, sets, today, canonical));
       case "run_best":
         return finish(request, measureRunBest(m, runs, labels, today));
       case "pace_at_hr":

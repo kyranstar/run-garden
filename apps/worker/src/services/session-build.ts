@@ -1364,7 +1364,7 @@ async function commitBuild(
   };
   // The build's workout document, in the same statement as the build (Stage 1 dual-write): a snapshot of this build,
   // no revisions. A conversion that fails is logged by its code and stored as NULL — never a failed build.
-  const workoutDoc = storedDocText(docForBuild(stored.build));
+  const workoutDoc = storedDocText(docForBuild(stored.build, undefined, context.library.all));
   return storeBuild(db, userId, s, { engineVersion: version, inputsHash: recordedHash, stored, workoutDoc }, ctx);
 }
 
@@ -1448,7 +1448,7 @@ const docValidateCtx = (
   jumpsDone: ReadonlySet<string>,
 ): ValidateCtx =>
   dayValidateCtx({
-    library: context.library.all, profiles: context.activeProfiles, checks, date, today, excluded: context.prefs.excluded, equipment: context.location.equipment, done: jumpsDone,
+    library: context.library.all, offered: context.library.offered, profiles: context.activeProfiles, checks, date, today, excluded: context.prefs.excluded, equipment: context.location.equipment, done: jumpsDone,
   });
 
 /** The day's checks for a document row (the request's, recorded, over the day's) and its context; reads only. */
@@ -1485,7 +1485,7 @@ async function docDayInputs(db: Db, userId: string, row: SlotRow, builds: readon
   // One statement, only when an option could be a jump: what the frontier and the one-new-jump rule read.
   const library = context.library;
   const jumpsDone = docHoldsJump(doc, library.all)
-    ? doneCleanlyOf(await doneStats(db, userId, ctx.today, ctx.today), context.activeProfiles.filter(isProfileId).map((id) => PROFILES[id]), jumpIdsOf(library.all))
+    ? doneCleanlyOf(await doneStats(db, userId, ctx.today, ctx.today, library.all), context.activeProfiles.filter(isProfileId).map((id) => PROFILES[id]), jumpIdsOf(library.all))
     : new Set<string>();
   const version = await docBuildVersion();
   const rev = row.workoutDocRev ?? null;

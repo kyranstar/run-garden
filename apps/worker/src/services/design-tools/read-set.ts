@@ -29,7 +29,8 @@ import { sql, type SQL } from "drizzle-orm";
 import { z } from "zod";
 import { plannedWorkouts } from "@rg/database";
 import { addDays, daysBetween } from "@rg/domain";
-import { EXERCISES } from "@rg/exercise-library";
+import type { ExerciseRecord } from "@rg/exercise-library";
+import { accountLibraryFrom, personalMovesSql } from "../account-library.js";
 import { deriveDoc, type BalanceProfile } from "@rg/workout";
 import { REVIEW_DIMENSIONS } from "../design-prompt.js";
 import { balanceInUnits, isHard, movesOf, opIdOf, readSetProposal, repeatsOnConsecutiveDays, reviewMeanOf } from "../design-orchestrate.js";
@@ -136,12 +137,12 @@ function workoutOf(op: DocWorkoutOp, view: View, detail: Detail, today: string):
 
 /** The set's combined balance: each document derived again in full (the stored summary keeps a workout's top regions
  * only), summed; its minutes are the workouts' own (what the cards show). */
-function combinedOf(ops: DocWorkoutOp[]): Record<string, unknown> {
+function combinedOf(ops: DocWorkoutOp[], library: readonly ExerciseRecord[]): Record<string, unknown> {
   const balance: BalanceProfile = { isometricSec: 0, isotonicReps: 0, eccentricReps: 0, plyoContacts: 0, aerobicSec: 0, mobilitySec: 0, recoverySec: 0 };
   const regions = new Map<string, number>();
   for (const op of ops) {
     try {
-      const d = deriveDoc(op.doc, EXERCISES);
+      const d = deriveDoc(op.doc, library);
       for (const k of Object.keys(balance) as Array<keyof BalanceProfile>) balance[k] += d.balance[k];
       for (const [k, v] of Object.entries(d.regionExposure)) regions.set(k, (regions.get(k) ?? 0) + v);
     } catch {
@@ -261,8 +262,10 @@ export const readSet: DesignTool = {
     // The athlete (today, for each workout's day) with the plan's hard runs, beside the set (fix wave 13, A6, I6).
     const [read, { athlete, extra }] = await Promise.all([
       readSetProposal(ctx.db, ctx.userId, proposalId, view.role === "reviewer" && mainRunId ? { designersOf: mainRunId } : {}),
-      readAthlete(ctx.db, ctx.userId, ctx.now, { hardRuns: hardRunsSql(ctx.userId, ctx.now) }),
+      // With the account's library: a workout's own moves (one of the athlete's too) derived in it.
+      readAthlete(ctx.db, ctx.userId, ctx.now, { hardRuns: hardRunsSql(ctx.userId, ctx.now), library: personalMovesSql(ctx.userId) }),
     ]);
+    const library = await accountLibraryFrom(ctx.db, ctx.userId, extra.library);
     const today = athlete.today;
     if (view.role === "reviewer") {
       const under = view.underReview;
@@ -278,7 +281,7 @@ export const readSet: DesignTool = {
     const { pairs, runs } = hardDays(judged, hardRunsOf(extra.hardRuns), today);
     const repeats = repeatsOnConsecutiveDays(judged);
     const rest = {
-      combined: combinedOf(judged),
+      combined: combinedOf(judged, library.all),
       hardDaysInARow: { count: pairs.length, pairs, runs, counts: HARD_COUNTS },
       notes: flags.slice(-NOTES_SHOWN).map((f) => untrusted(cut(f, NOTE_MAX))),
       planChanges: read.changes.map(changeOf),

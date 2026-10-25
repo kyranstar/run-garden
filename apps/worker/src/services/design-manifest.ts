@@ -37,8 +37,9 @@ import {
   type WorkoutItem,
   type WorkoutPart,
 } from "@rg/domain";
-import { EXERCISES, label, LOCATION_PRESETS, noEquipmentPlace } from "@rg/exercise-library";
-import { deriveDoc, makeLibraryIndex } from "@rg/workout";
+import { EXERCISES, label, LOCATION_PRESETS, noEquipmentPlace, type ExerciseRecord } from "@rg/exercise-library";
+import { deriveDoc, makeLibraryIndex, type LibraryIndex } from "@rg/workout";
+import { accountLibraryFrom, personalMovesSql, PUBLIC_LIBRARY, type AccountLibrary } from "./account-library.js";
 import type { Db } from "./db.js";
 import { defaultFromRow, defaultPlaceSql } from "./default-place.js";
 import type { DesignedOp, DesignedPlanOp, DesignedProgrammeOp, DesignedStructureOp, OpOutcome, PlanOpOutcome, PlanStructureOutcome, ProgrammeChangeOutcome, Written } from "./design-approve.js";
@@ -181,8 +182,6 @@ export function lineReview(review: DesignedOp["review"]): LineReview | null {
 /** A place id (or none) → the name the athlete knows it by. */
 export type PlaceNamer = (placeId: string | undefined) => string;
 
-const find = makeLibraryIndex(EXERCISES);
-
 /** "Hips and back · 24 min" — the coach manifest's summary shape. */
 export const summaryLine = (title: string, minutes: number): string => `${title} · ${minutes} min`;
 
@@ -200,8 +199,8 @@ export function partLine(part: WorkoutPart): string {
   return `${name} · ${label(part.format)}${rounds}`;
 }
 
-/** A move and its dose, as the builder's row says them. */
-function itemLine(it: WorkoutItem): string {
+/** A move and its dose, as the builder's row says them (a move by its name in the account's library, `find`). */
+function itemLine(it: WorkoutItem, find: LibraryIndex): string {
   switch (it.kind) {
     case "exercise":
       return `${find(it.libraryId)?.name ?? it.libraryId} ${doseSummary(it.dose)}`.trim();
@@ -220,7 +219,7 @@ function itemWhy(it: WorkoutItem): string | null {
 }
 
 /** The moves weighed instead of a move: each by its library name, with its why in the athlete's words. */
-function itemAlternates(it: WorkoutItem): Array<{ name: string; why: string | null }> {
+function itemAlternates(it: WorkoutItem, find: LibraryIndex): Array<{ name: string; why: string | null }> {
   if (it.kind !== "exercise" || !it.alternates) return [];
   return it.alternates.map((a) => ({ name: find(a.libraryId)?.name ?? athleteText(a.libraryId), why: a.why ? athleteText(a.why) : null }));
 }
@@ -332,10 +331,18 @@ export function runLine(doc: WorkoutDoc, ctx: RunLineCtx): RunLine | null {
   return { segments, totalSeconds: whole.totalSeconds, totalMeters: whole.totalMeters, watch };
 }
 
-export function docWorkoutLines(ops: readonly DesignedOp[], placeName: PlaceNamer, at: LineClock, running: RunLineCtx = { thresholdSecPerKm: null, corosWritesEnabled: false }): DocWorkoutLine[] {
+/** Each workout's line; its moves named, and its minutes and kind derived, in `library` (the account's `all`). */
+export function docWorkoutLines(
+  ops: readonly DesignedOp[],
+  placeName: PlaceNamer,
+  at: LineClock,
+  running: RunLineCtx = { thresholdSecPerKm: null, corosWritesEnabled: false },
+  library: readonly ExerciseRecord[] = EXERCISES,
+): DocWorkoutLine[] {
+  const find = makeLibraryIndex(library);
   return ops.map((op) => {
     const doc = op.doc;
-    const derived = deriveDoc(doc, EXERCISES);
+    const derived = deriveDoc(doc, library);
     const run = runLine(doc, running);
     // A run's minutes are its steps' on the watch (a distance at its pace), else derived.
     const minutes = run?.totalSeconds != null ? Math.round(run.totalSeconds / 60) : derived.estimatedMinutes;
@@ -355,10 +362,10 @@ export function docWorkoutLines(ops: readonly DesignedOp[], placeName: PlaceName
       effort: label(doc.intent.effort),
       place: placeName(doc.setting?.placeId),
       parts: doc.parts.map(partLine),
-      detail: items.map(itemLine),
+      detail: items.map((it) => itemLine(it, find)),
       intent: doc.intent.summary ? athleteText(doc.intent.summary) : null,
       whys: items.map(itemWhy),
-      alternates: items.map(itemAlternates),
+      alternates: items.map((it) => itemAlternates(it, find)),
       reviewMean: reviewMeanOf(op),
       review: lineReview(op.review),
       issues: (op.issues ?? []).map((i) => ({ code: String(i.code), message: i.message })),
@@ -494,14 +501,18 @@ export async function manifestReads(
   dayRows: SQL = sql`null`,
   /** A set's other sessions in its days (`setContextSql`), in the same statement. */
   context: SQL = sql`null`,
-): Promise<{ placeName: PlaceNamer; prefs: UserPreferences; dayRows: unknown; context: SetContextRow[] | null; thresholdSecPerKm: number | null }> {
+  /** Read the account's library too (`personalMovesSql`), in the same statement: the lines name and derive moves in it. */
+  withLibrary = false,
+): Promise<{ placeName: PlaceNamer; prefs: UserPreferences; dayRows: unknown; context: SetContextRow[] | null; thresholdSecPerKm: number | null; library: AccountLibrary }> {
   const l = locations;
   const [row] = (await db.all(
     sql`select ${defaultPlaceSql(userId)} as fallback,
       (select json_group_array(json_object('id', ${l.id}, 'name', ${l.name})) from ${l} where ${l.userId} = ${userId}) as own,
       (select ${userPreferences.prefs} from ${userPreferences} where ${userPreferences.userId} = ${userId}) as prefs,
-      ${dayRows} as dayRows, ${context} as context, ${thresholdSql(userId)} as threshold`,
-  )) as Array<{ fallback: unknown; own: unknown; prefs: unknown; dayRows: unknown; context: unknown; threshold: unknown }>;
+      ${dayRows} as dayRows, ${context} as context, ${thresholdSql(userId)} as threshold,
+      ${withLibrary ? personalMovesSql(userId) : sql`null`} as library`,
+  )) as Array<{ fallback: unknown; own: unknown; prefs: unknown; dayRows: unknown; context: unknown; threshold: unknown; library: unknown }>;
+  const library = withLibrary ? await accountLibraryFrom(db, userId, row?.library) : PUBLIC_LIBRARY;
   let stored: unknown = {};
   try {
     stored = typeof row?.prefs === "string" ? JSON.parse(row.prefs) : (row?.prefs ?? {});
@@ -527,7 +538,7 @@ export async function manifestReads(
   };
   // A designed run's card reads the athlete's threshold (§8 §3): in this statement, no other.
   const thresholdSecPerKm = runningFactsOf(row?.threshold ?? null, null).threshold?.secPerKm ?? null;
-  return { placeName, prefs, dayRows: row?.dayRows ?? null, context: contextRows(row?.context ?? null), thresholdSecPerKm };
+  return { placeName, prefs, dayRows: row?.dayRows ?? null, context: contextRows(row?.context ?? null), thresholdSecPerKm, library };
 }
 
 // ── A set's other sessions (Task 13's fix wave, §2.9; 13d D7) ───────────────────────────────────────────────────────

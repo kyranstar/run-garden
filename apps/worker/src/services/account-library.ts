@@ -17,12 +17,15 @@
  *
  * COST. One statement — the moves with their pins (`loadAccountLibrary`), made once a request (memoised on the request's
  * `Db`); a read that already spends one statement on the athlete carries it as a column instead (`personalMovesSql`,
- * then `accountLibraryFrom`), and the request's later reads find it. The views are made once an isolate for a set of
- * personal moves, found again by `personalHash` (a hash of the rows as read: status, merge target, pin and the record's
- * own text), so a request whose set is unchanged parses no record, and every index made per array is found again too.
+ * then `accountLibraryFrom`), and the request's later reads find it; a read that needs it only for the personal moves it
+ * meets (a history, a stored document's minutes) asks `libraryFor` with their ids, and pays nothing when none is one.
+ * The views are made once an isolate for a set of personal moves, found again by `personalHash` (a hash of the rows as
+ * read: status, merge target, pin and the record's own text), so a request whose set is unchanged parses no record, and
+ * every index made per array is found again too.
  */
 import { and, asc, eq, inArray, sql, type SQL } from "drizzle-orm";
 import { schema } from "@rg/database";
+import type { WorkoutDoc } from "@rg/domain";
 import { EXERCISES, type ExerciseRecord } from "@rg/exercise-library";
 import { isPersonalId } from "@rg/saves";
 import { makeLibraryIndex } from "@rg/workout";
@@ -103,14 +106,16 @@ export function loadAccountLibrary(db: Db, userId: string): Promise<AccountLibra
 
 /**
  * The account's personal moves as one column of a read that spends its statement on the athlete anyway (`readAthlete`'s
- * extras): a JSON array of `[id, status, merged into, record text, pinned]`. `accountLibraryFrom` reads it.
+ * extras): a JSON array of `[id, status, merged into, record text, pinned]`. `accountLibraryFrom` reads it. Its tables
+ * go by their own aliases, so it reads the same as a column of a query builder's select over another table (whose
+ * columns a builder names bare: an `id` there would be ambiguous).
  */
 export function personalMovesSql(userId: string): SQL {
-  return sql`(select json_group_array(json_array(${personalMoves.id}, ${personalMoves.status}, ${personalMoves.mergedInto},
-      case when ${personalMoves.status} = 'merged' then null else ${personalMoves.record} end, coalesce(${exercisePrefs.pinned}, 0)))
-    from ${personalMoves} left join ${exercisePrefs}
-      on ${exercisePrefs.userId} = ${personalMoves.userId} and ${exercisePrefs.exerciseId} = ${personalMoves.id}
-    where ${personalMoves.userId} = ${userId} and ${personalMoves.status} in ('active', 'archived', 'merged'))`;
+  return sql`(select json_group_array(json_array(pm_lib.id, pm_lib.status, pm_lib.merged_into,
+      case when pm_lib.status = 'merged' then null else pm_lib.record end, coalesce(ep_lib.pinned, 0)))
+    from personal_moves pm_lib left join exercise_prefs ep_lib
+      on ep_lib.user_id = pm_lib.user_id and ep_lib.exercise_id = pm_lib.id
+    where pm_lib.user_id = ${userId} and pm_lib.status in ('active', 'archived', 'merged'))`;
 }
 
 /**
@@ -120,6 +125,29 @@ export function personalMovesSql(userId: string): SQL {
 export function accountLibraryFrom(db: Db, userId: string, raw: unknown): Promise<AccountLibrary> {
   forgetAccountLibrary(db, userId);
   return memoised(db, userId, () => libraryOf(rowsOf(raw)));
+}
+
+/**
+ * The account's library when any of `ids` is a personal id (`loadAccountLibrary`: one statement, once a request), else
+ * the public library at no cost: a read that names only library moves stays as it was, and one that names a personal
+ * move resolves it — a merged one as its target.
+ */
+export function libraryFor(db: Db, userId: string, ids: Iterable<string>): Promise<AccountLibrary> {
+  for (const id of ids) if (isPersonalId(id)) return loadAccountLibrary(db, userId);
+  return Promise.resolve(PUBLIC_LIBRARY);
+}
+
+/** Every move id a document names: its moves' and their alternates'. */
+export function docMoveIds(doc: WorkoutDoc | null | undefined): string[] {
+  if (!doc) return [];
+  return doc.parts.flatMap((p) =>
+    p.items.flatMap((i) => (i.kind === "exercise" ? [i.libraryId, ...(i.alternates ?? []).map((a) => a.libraryId)] : [])),
+  );
+}
+
+/** `libraryFor` the moves these documents name. */
+export function libraryForDocs(db: Db, userId: string, docs: Iterable<WorkoutDoc | null | undefined>): Promise<AccountLibrary> {
+  return libraryFor(db, userId, [...docs].flatMap(docMoveIds));
 }
 
 /**

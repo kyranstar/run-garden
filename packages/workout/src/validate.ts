@@ -248,7 +248,14 @@ export interface RunCtx {
 export interface ValidateCtx {
   /** The run wire in use (§8 phase 2, `RUN_WIRE_V2`): how a run's steps are counted against the watch's. v1 when absent. */
   runWire?: RunWire;
+  /** What the document's moves resolve in. */
   library: readonly ExerciseRecord[];
+  /**
+   * What a fix may suggest — a guess for an unknown move, a stand-in, an easier step — when it is narrower than
+   * `library`: the account's offered moves, where an archived personal move still resolves but is never offered.
+   * Absent: `library`.
+   */
+  offered?: readonly ExerciseRecord[];
   activeProfiles: readonly ConditionProfile[];
   /** null only for templates and library contexts. */
   day: DayContext | null;
@@ -463,7 +470,11 @@ export function validateWorkoutDoc(input: unknown, ctx: ValidateCtx): DocIssue[]
   // Built only when a move is unknown and needs a fix (2026-10-18, the decision guidance's fix round): built on every
   // call, it was three quarters of a small document's check — propose_plan's condition check runs one a day and effort.
   let guessIndex: ((s: string) => string | undefined) | null = null;
-  const guessExercise = (s: string): string | undefined => (guessIndex ??= guesser(ctx.library.flatMap((e) => [[e.id, e.id], [e.name, e.id]] as const)))(s);
+  const suggestable = ctx.offered ?? ctx.library;
+  const guessExercise = (s: string): string | undefined => (guessIndex ??= guesser(suggestable.flatMap((e) => [[e.id, e.id], [e.name, e.id]] as const)))(s);
+  // A move a fix may name: one the athlete is offered (the document's own moves still resolve in `library`).
+  const offeredFind = ctx.offered && ctx.offered !== ctx.library ? makeLibraryIndex(ctx.offered) : null;
+  const isOffered = (r: ExerciseRecord): boolean => offeredFind === null || offeredFind(r.id)?.id === r.id;
   const issues: DocIssue[] = [];
   /** Records an issue; a fix that came out undefined is left off. */
   const add = (issue: DocIssue): void => {
@@ -578,7 +589,7 @@ export function validateWorkoutDoc(input: unknown, ctx: ValidateCtx): DocIssue[]
   /** The library's best stand-in for a gated move that must hold on any day (see FIXES in the header). */
   function recoverySubstitute(rec: ExerciseRecord, format: DocFormat): string | undefined {
     let best: { id: string; score: number } | undefined;
-    for (const r of ctx.library) {
+    for (const r of suggestable) {
       if (r.id === rec.id || isPlyometric(r)) continue;
       const score = (r.patterns.some((pt) => rec.patterns.includes(pt)) ? 2 : 0) + (r.regions.some((g) => rec.regions.includes(g)) ? 1 : 0);
       if (score === 0 || (best && score <= best.score)) continue;
@@ -602,7 +613,7 @@ export function validateWorkoutDoc(input: unknown, ctx: ValidateCtx): DocIssue[]
         const r = find(id);
         if (!r || seen.has(r.id)) continue;
         seen.add(r.id);
-        if (onFrontier(r, isDone) && !judge(r, format).some((f) => f.severity === "error")) return r;
+        if (onFrontier(r, isDone) && isOffered(r) && !judge(r, format).some((f) => f.severity === "error")) return r;
         next.push(...r.easier);
       }
       level = next;
@@ -899,7 +910,7 @@ export function validateWorkoutDoc(input: unknown, ctx: ValidateCtx): DocIssue[]
     if (rec.id !== item.libraryId) add({ path: idAt, code: "legacy_id", message: `${rec.name} is listed under an old id.`, fix: rec.id, severity: "warning" });
 
     const name = rec.name;
-    const options = candidates(rec, item);
+    const options = candidates(rec, item).filter(isOffered);
     const alternates = (item.alternates ?? []).map((a) => find(a.libraryId)).filter((r): r is ExerciseRecord => r !== undefined && r.id !== rec.id);
     const better = (): string | undefined => fixAmong(options, (r) => fitsHere(r, part.format));
     for (const f of judge(rec, part.format)) {

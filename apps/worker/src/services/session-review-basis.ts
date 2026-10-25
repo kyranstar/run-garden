@@ -22,8 +22,10 @@
 import { and, eq, inArray, sql } from "drizzle-orm";
 import { exercisePrefs, plannedWorkouts, programs } from "@rg/database";
 import { addDays, adaptiveConfigSchema, isLocalDate, startOfIsoWeek, type WeightUnit } from "@rg/domain";
-import { EXERCISES, type EngineData, type ExerciseRecord } from "@rg/exercise-library";
+import type { EngineData, ExerciseRecord } from "@rg/exercise-library";
 import { Hist, Lib, Records, type Block, type HistorySession, type RecordsState } from "@rg/session-engine";
+import { makeLibraryIndex } from "@rg/workout";
+import { loadAccountLibrary } from "./account-library.js";
 import { activeProfileIds } from "./condition-views.js";
 import { chunkIds, type Db } from "./db.js";
 import { loadProgramState, loadSessionsById } from "./engine-inputs.js";
@@ -397,7 +399,10 @@ export async function reviewBasis(db: Db, userId: string, workoutId: string, ctx
   const parsed = adaptiveConfigSchema.safeParse(program?.config ?? {});
   const weeklyGoal = parsed.success ? parsed.data.weeklyGoal : 4;
 
-  const data = engineDataFor(await activeProfileIds(db, userId), []);
+  // The engine's pool as the build's own (`library.engine`: the athlete's pinned moves among it); the account's library,
+  // once a request — a build or Start in this request read it already.
+  const [active, library] = await Promise.all([activeProfileIds(db, userId), loadAccountLibrary(db, userId)]);
+  const data = engineDataFor(active, [], library);
   // The moves the session may hold by its end: its own, and what ⇄ offers (the engine's; a document's alternates and offers).
   const planned = Object.values(build.fromDoc?.slots ?? {}).flatMap((s) => [...(s.alternates ?? []), ...(s.offers ?? [])]);
   const offered = [...Object.values(build.alternatives).flat(), ...planned];
@@ -410,10 +415,11 @@ export async function reviewBasis(db: Db, userId: string, workoutId: string, ctx
   const lifts = block ? Object.values(block.core).filter((id): id is string => !!id && ids.includes(id)) : [];
   const sessions = await loadGraduationSessions(db, userId, data, lifts, Hist.TRIM.progressionEntries);
   const exercises: Record<string, ExerciseSlice> = {};
+  const find = makeLibraryIndex(library.all);
   for (const lift of lifts) {
-    const ex = EXERCISES.find((e) => e.id === lift);
+    const ex = find(lift);
     for (const h of ex?.harder ?? []) {
-      const harder = EXERCISES.find((e) => e.id === h);
+      const harder = find(h);
       if (harder && !build.exercises[harder.id]) exercises[harder.id] = sliceOf(harder);
     }
   }

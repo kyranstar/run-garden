@@ -18,7 +18,14 @@
  *    statements.
  *  - get_exercise: one record — dose, notes for the switched-on profiles, safety and today's fit, easier and harder by
  *    name; the how-to text only with `howTo` — with the athlete's history: their rating, pin and set-aside, how many
- *    sessions, the last five sessions' sets, and their best. Three statements.
+ *    sessions, the last five sessions' sets, and their best. Three statements: the athlete with the account's library,
+ *    what the athlete has of the move beside its last sessions' sets, and the done tally.
+ *
+ * THE ACCOUNT'S LIBRARY (saved-posts import, Task 13): search runs over what the athlete is offered (the public library
+ * and their active personal moves; an archived one is never offered); get_exercise reads any move the account's library
+ * resolves, an archived one too (Review Focus 4). A personal move is marked `yours` — with its links in get_exercise, and
+ * `archived` when it is — and its words (a model's, from the athlete's saves) are marked untrusted. The library rides in
+ * the athlete's statement (`personalMovesSql`), so it costs none. The schema's offered values stay the public library's.
  */
 import { sql } from "drizzle-orm";
 import { z } from "zod";
@@ -47,6 +54,9 @@ import {
   type LibraryFilters,
   type SearchFacet,
 } from "@rg/exercise-library";
+import { isPersonalId } from "@rg/saves";
+import { makeLibraryIndex } from "@rg/workout";
+import { accountLibraryFrom, personalMovesSql } from "../account-library.js";
 import { namedFromRow, ownPlaceSql } from "../default-place.js";
 import { doneStats, safetyFor, type DoneStat } from "../library-view.js";
 import { PENDING_HASH } from "../watch-sets.js";
@@ -73,11 +83,10 @@ import {
   relativeDay,
   untrusted,
   weightWords,
+  untrustedOrNull,
   type Athlete,
 } from "./read-common.js";
 import { movesOf, sessionRows, sessionsOnce, setRows } from "./read-sessions.js";
-
-const byId = new Map(EXERCISES.map((e) => [e.id, e]));
 
 /** Today's fit for the athlete: the library's one rule (`fitToday`, the Studio's list reads it too). */
 const fitFor = (rec: ExerciseRecord, athlete: Pick<Athlete, "profiles" | "readings">) => fitToday(rec, athlete.profiles, athlete.readings);
@@ -123,8 +132,15 @@ const gearWords = (ex: ExerciseRecord): string | null => {
   return parts.length ? parts.join(", ") : null;
 };
 
-/** A move's name: the library's own words, marked when the athlete saved the move from outside. */
-const nameOf = (ex: ExerciseRecord, saved: ReadonlySet<string>) => (saved.has(ex.id) ? untrusted(ex.name) : ex.name);
+/** A move's name: the library's own words, marked when the athlete saved the move from outside (a personal move always). */
+const nameOf = (ex: ExerciseRecord, saved: ReadonlySet<string>) => (saved.has(ex.id) || isPersonalId(ex.id) ? untrusted(ex.name) : ex.name);
+/** A personal move's own words — a model's, from the athlete's saves — marked; the library's as they are. */
+const wordsOf = (ex: ExerciseRecord, text: string) => (isPersonalId(ex.id) && text.trim() !== "" ? untrusted(text) : text);
+/** Every string in a personal move's how-to marked (a list, item by item); the library's as it is. */
+const howToOf = (ex: ExerciseRecord, howTo: Omit<ExerciseRecord["text"], "conditions">) =>
+  isPersonalId(ex.id)
+    ? Object.fromEntries(Object.entries(howTo).map(([k, v]) => [k, Array.isArray(v) ? v.map((t: string) => wordsOf(ex, t)) : typeof v === "string" ? wordsOf(ex, v) : v]))
+    : howTo;
 
 // ── search_library ──────────────────────────────────────────────────────────────────────────────────────────────────
 
@@ -222,8 +238,10 @@ export const searchLibraryTool: DesignTool = {
     const { athlete, extra } = await readAthlete(ctx.db, ctx.userId, ctx.now, {
       movePrefs: PREFS_SQL(ctx.userId),
       saved: SAVED_SQL(ctx.userId),
+      library: personalMovesSql(ctx.userId),
       ...(f.place ? { place: ownPlaceSql(ctx.userId, f.place) } : {}),
     });
+    const library = await accountLibraryFrom(ctx.db, ctx.userId, extra.library);
     // A place's gear by the one rule validate_workout reads it by (default-place.ts).
     let gear: string[] | null = null;
     if (f.place) {
@@ -235,7 +253,7 @@ export const searchLibraryTool: DesignTool = {
     }
     const prefs = prefsOf(extra.movePrefs);
     const saved = new Set(parsedArray(extra.saved).filter((x): x is string => typeof x === "string"));
-    const done = await doneStats(ctx.db, ctx.userId, addDays(athlete.today, -29), athlete.today);
+    const done = await doneStats(ctx.db, ctx.userId, addDays(athlete.today, -29), athlete.today, library.all);
 
     const fits = new Map<string, ReturnType<typeof fitFor>>();
     const fitOf = (ex: ExerciseRecord) => {
@@ -254,9 +272,10 @@ export const searchLibraryTool: DesignTool = {
       },
     });
     const query = p.query ?? "";
-    const found = agentSearch(EXERCISES, query, libFilters, ctxOf(false));
+    // What the athlete is offered: an archived personal move is never found.
+    const found = agentSearch(library.offered, query, libFilters, ctxOf(false));
     const matches = found.hits;
-    const setAside = EXERCISES.filter((ex) => prefs.get(ex.id)?.excluded);
+    const setAside = library.offered.filter((ex) => prefs.get(ex.id)?.excluded);
     // Only how many: no diagnosis of a zero (round 3, R2-M1).
     const setAsideHidden = setAside.length ? agentSearch(setAside, query, libFilters, ctxOf(true), { explain: false }).hits.length : 0;
     const limit = p.limit ?? DEFAULT_LIMIT;
@@ -287,6 +306,7 @@ export const searchLibraryTool: DesignTool = {
         return {
           id: ex.id,
           name: nameOf(ex, saved),
+          ...(isPersonalId(ex.id) ? { yours: true } : {}),
           is: isWords(ex),
           dose: doseWords(ex.dose),
           ...(gear ? { gear } : {}),
@@ -296,7 +316,7 @@ export const searchLibraryTool: DesignTool = {
           ...(pr?.rating ? { rating: pr.rating } : {}),
           ...(pr?.pinned ? { pinned: true } : {}),
           ...(matched ? { matched } : {}),
-          ...(p.withSummary ? { summary: ex.text.summary } : {}),
+          ...(p.withSummary ? { summary: wordsOf(ex, ex.text.summary) } : {}),
         };
       },
       cursorOf: (_h, i) => encodeCursor([offset + i]),
@@ -341,34 +361,47 @@ export const getExercise: DesignTool = {
   async run(ctx, raw) {
     const p = parseInput(exerciseInput, raw, "a library id, and optionally howTo");
     if (isErr(p)) return p;
-    const ex = byId.get(p.id) ?? EXERCISES.find((e) => e.legacyIds.includes(p.id));
+    // ONE: the athlete, with the account's library — a personal move's record is the account's own, an archived one too.
+    const { athlete, extra: read } = await readAthlete(ctx.db, ctx.userId, ctx.now, { library: personalMovesSql(ctx.userId) });
+    const library = await accountLibraryFrom(ctx.db, ctx.userId, read.library);
+    const ex = makeLibraryIndex(library.all)(p.id);
     if (!ex) return refuse("not_found", `The library has no move with id ${JSON.stringify(p.id)}.`, "Use an id from search_library.");
+    const own = isPersonalId(ex.id);
     const ids = jsonList([ex.id, ...ex.legacyIds]);
     const s = performedSessions;
     const x = performedSets;
     const mine = sql`${s.userId} = ${ctx.userId} and ${s.payloadHash} != ${PENDING_HASH} and ${x.done} = 1 and ${x.exerciseId} in ${ids}`;
-    const { athlete, extra } = await readAthlete(ctx.db, ctx.userId, ctx.now, {
-      movePrefs: sql`(select json_group_array(json_object('id', ${exercisePrefs.exerciseId}, 'rating', ${exercisePrefs.rating}, 'pinned', ${exercisePrefs.pinned},
+    // TWO: what the athlete has of the move — their marks, its links, totals and heaviest set, one row — beside its last
+    // sessions' sets (a row each; none, and the one row stands alone).
+    const rows = (await ctx.db.all(sql`
+      select k.movePrefs as movePrefs, k.links as links, k.totals as totals, k.heaviest as heaviest, rs.*
+      from (select
+        (select json_group_array(json_object('id', ${exercisePrefs.exerciseId}, 'rating', ${exercisePrefs.rating}, 'pinned', ${exercisePrefs.pinned},
           'excluded', ${exercisePrefs.excluded}, 'introducedOn', ${exercisePrefs.introducedOn}))
-          from ${exercisePrefs} where ${exercisePrefs.userId} = ${ctx.userId} and ${exercisePrefs.exerciseId} = ${ex.id})`,
-      saved: sql`(select count(*) from ${exerciseProvenance} where ${exerciseProvenance.userId} = ${ctx.userId} and ${exerciseProvenance.exerciseId} in ${ids})`,
-      totals: sql`(select json_object('sessions', count(distinct ${s.id}), 'last', max(${s.localDate}), 'reps', max(${x.reps}), 'secs', max(${x.seconds}))
-          from ${x} join ${s} on ${s.id} = ${x.performedSessionId} where ${mine})`,
-      heaviest: sql`(select json_object('v', ${x.loadValue}, 'u', ${x.loadUnit}, 'r', ${x.reps})
+          from ${exercisePrefs} where ${exercisePrefs.userId} = ${ctx.userId} and ${exercisePrefs.exerciseId} = ${ex.id}) as movePrefs,
+        (select json_group_array(json_object('url', url, 'creator', creator)) from (
+          select ${exerciseProvenance.url} as url, ${exerciseProvenance.creator} as creator from ${exerciseProvenance}
+          where ${exerciseProvenance.userId} = ${ctx.userId} and ${exerciseProvenance.exerciseId} in ${ids}
+          order by ${exerciseProvenance.createdAt}, ${exerciseProvenance.id})) as links,
+        (select json_object('sessions', count(distinct ${s.id}), 'last', max(${s.localDate}), 'reps', max(${x.reps}), 'secs', max(${x.seconds}))
+          from ${x} join ${s} on ${s.id} = ${x.performedSessionId} where ${mine}) as totals,
+        (select json_object('v', ${x.loadValue}, 'u', ${x.loadUnit}, 'r', ${x.reps})
           from ${x} join ${s} on ${s.id} = ${x.performedSessionId} where ${mine} and ${x.loadKg} > 0
-          order by ${x.loadKg} desc, ${x.reps} desc limit 1)`,
-    });
-    const recentRows = (await ctx.db.all(sql`
-      select ${s.id} as id, ${s.localDate} as date, ${s.startedAt} as startedAt, ${s.activityId} as activityId, ${s.source} as source,
-             ${s.createdAt} as createdAt, ${x.entryIndex} as e, ${x.setIndex} as i, ${x.exerciseId} as ex, ${x.reps} as r, ${x.seconds} as sec,
-             ${x.loadValue} as v, ${x.loadUnit} as u, ${x.side} as side, ${x.perSide} as ps, ${x.flags} as f
-      from ${x} join ${s} on ${s.id} = ${x.performedSessionId}
-      where ${mine} and ${s.id} in (
-        select recent.id from performed_sessions recent
-        where recent.user_id = ${ctx.userId} and recent.payload_hash != ${PENDING_HASH} and exists (
-          select 1 from performed_sets logged where logged.performed_session_id = recent.id and logged.done = 1 and logged.exercise_id in ${ids})
-        order by recent.local_date desc, recent.started_at desc limit ${RECENT_READ})`)) as Array<Record<string, unknown>>;
-    const done = await doneStats(ctx.db, ctx.userId, addDays(athlete.today, -29), athlete.today);
+          order by ${x.loadKg} desc, ${x.reps} desc limit 1) as heaviest) k
+      left join (
+        select ${s.id} as id, ${s.localDate} as date, ${s.startedAt} as startedAt, ${s.activityId} as activityId, ${s.source} as source,
+               ${s.createdAt} as createdAt, ${x.entryIndex} as e, ${x.setIndex} as i, ${x.exerciseId} as ex, ${x.reps} as r, ${x.seconds} as sec,
+               ${x.loadValue} as v, ${x.loadUnit} as u, ${x.side} as side, ${x.perSide} as ps, ${x.flags} as f
+        from ${x} join ${s} on ${s.id} = ${x.performedSessionId}
+        where ${mine} and ${s.id} in (
+          select recent.id from performed_sessions recent
+          where recent.user_id = ${ctx.userId} and recent.payload_hash != ${PENDING_HASH} and exists (
+            select 1 from performed_sets logged where logged.performed_session_id = recent.id and logged.done = 1 and logged.exercise_id in ${ids})
+          order by recent.local_date desc, recent.started_at desc limit ${RECENT_READ})) rs on 1 = 1`)) as Array<Record<string, unknown>>;
+    const extra = rows[0] ?? {};
+    const recentRows = rows.filter((r) => typeof r.id === "string");
+    // THREE: the done tally, its old ids (a merged move's too) the move's own.
+    const done = await doneStats(ctx.db, ctx.userId, addDays(athlete.today, -29), athlete.today, library.all);
 
     // A row per set: each session once.
     const sessionOnce = [...new Map(recentRows.map((r) => [r.id, { ...r, movesDone: "[]" }])).values()];
@@ -379,7 +412,13 @@ export const getExercise: DesignTool = {
     const recent = sessions.map((sess) => `${sess.date} ${movesOf(sets.filter((st) => st.session === sess.id), athlete.prefs.weightUnit).map((m) => m.words).join("; ")}`);
 
     const pref = prefsOf(extra.movePrefs).get(ex.id);
-    const savedMove = Number(extra.saved) > 0;
+    const links = parsedArray(extra.links).flatMap((l) => {
+      const x = l as { url?: unknown; creator?: unknown } | null;
+      return x ? [{ url: untrustedOrNull(x.url), creator: untrustedOrNull(x.creator) }] : [];
+    });
+    const savedMove = links.length > 0;
+    // Archived: resolved for its history, never offered.
+    const archived = own && makeLibraryIndex(library.offered)(ex.id)?.id !== ex.id;
     const totals = (parsedJson(extra.totals) ?? {}) as { sessions?: number; last?: string | null; reps?: number | null; secs?: number | null };
     const heaviest = parsedJson(extra.heaviest) as { v?: number; u?: string; r?: number | null } | null;
     const best: string[] = [];
@@ -390,7 +429,12 @@ export const getExercise: DesignTool = {
     const d = done.get(ex.id);
     const fit = fitFor(ex, athlete);
     const { conditions: notes, ...howTo } = ex.text;
-    const named = (list: readonly string[]) => list.flatMap((id) => (byId.has(id) ? [{ id, name: byId.get(id)!.name }] : []));
+    const find = makeLibraryIndex(library.all);
+    const named = (list: readonly string[]) =>
+      list.flatMap((id) => {
+        const step = find(id);
+        return step ? [{ id: step.id, name: nameOf(step, new Set()) }] : [];
+      });
 
     const missing: string[] = [...athlete.missing];
     if (!totals.sessions) missing.push("the athlete has not logged this move");
@@ -400,7 +444,7 @@ export const getExercise: DesignTool = {
       missing,
       data: {
         id: ex.id,
-        name: savedMove ? untrusted(ex.name) : ex.name,
+        name: savedMove || own ? untrusted(ex.name) : ex.name,
         family: ex.family,
         patterns: ex.patterns,
         regions: ex.regions,
@@ -417,11 +461,13 @@ export const getExercise: DesignTool = {
         tags: ex.tags,
         safety: Object.fromEntries(athlete.profiles.map((pr) => [pr.id, safetyFor(pr, ex)])),
         ...(fit ? { fit: fit.state, fitWhy: fit.reason } : {}),
-        summary: ex.text.summary,
-        conditionNotes: athlete.profiles.flatMap((pr) => (notes[pr.id] ? [{ profile: pr.label, note: notes[pr.id] }] : [])),
+        summary: wordsOf(ex, ex.text.summary),
+        conditionNotes: athlete.profiles.flatMap((pr) => (notes[pr.id] ? [{ profile: pr.label, note: wordsOf(ex, notes[pr.id]!) }] : [])),
         easier: named(ex.easier),
         harder: named(ex.harder),
         yours: {
+          // The athlete's own move (from their saves): its links, and whether it is archived (never offered).
+          ...(own ? { own: true, ...(archived ? { archived: true } : {}), links } : {}),
           rating: pref?.rating ?? null,
           pinned: pref?.pinned ?? false,
           setAside: pref?.excluded ?? false,
@@ -434,7 +480,7 @@ export const getExercise: DesignTool = {
           best: best.length ? best.join("; ") : null,
           recent,
         },
-        ...(p.howTo ? { howTo } : {}),
+        ...(p.howTo ? { howTo: howToOf(ex, howTo) } : {}),
       },
       summary: `Read ${ex.name}${totals.sessions ? ` and ${plural(totals.sessions, "session")} of history` : ""}`,
     });

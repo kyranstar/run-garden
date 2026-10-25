@@ -208,6 +208,8 @@ export function judgeDoc(doc: WorkoutDoc, ctx: ValidateCtx): { errors: DocIssue[
 export function dayValidateCtx(o: {
   /** What the document's moves resolve in: the account library's `all` (`loadAccountLibrary`). */
   library: readonly ExerciseRecord[];
+  /** What a fix may suggest: the account library's `offered` (an archived move resolves, never offered). Absent: `library`. */
+  offered?: readonly ExerciseRecord[];
   profiles: readonly string[];
   checks: Readonly<Record<string, CheckAnswer>>;
   date: string;
@@ -219,6 +221,7 @@ export function dayValidateCtx(o: {
 }): ValidateCtx {
   return {
     library: o.library,
+    ...(o.offered ? { offered: o.offered } : {}),
     activeProfiles: o.profiles.filter(isProfileId).map((id) => PROFILES[id]),
     day: {
       date: o.date,

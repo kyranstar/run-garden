@@ -51,7 +51,7 @@ import type { Step } from "@rg/session-engine";
 import { watchPushEnabled, type Env } from "../env.js";
 import { sha256Hex } from "../auth/crypto.js";
 import type { Db } from "./db.js";
-import { loadAccountLibrary } from "./account-library.js";
+import { libraryFor, loadAccountLibrary, PUBLIC_LIBRARY } from "./account-library.js";
 import { corosKeyOf } from "./coros-exercise-map.js";
 import { freeStamp, STAMP_SEPARATOR, stampName, takenStampsOn } from "./coros-stamp.js";
 import { exerciseNameMap } from "./exercise-catalog.js";
@@ -454,10 +454,15 @@ export function catalogIdsByKey(catalog: ReadonlyMap<string, string>): Map<strin
   return new Map([...seen].filter((e): e is [string, string] => e[1] !== null));
 }
 
-/** The athlete's catalog, and the deps `watchStepsFromBuild` resolves moves with. */
-async function planDeps(db: Db): Promise<{ catalog: Map<string, string>; deps: WatchPlanDeps }> {
-  const catalog = await exerciseNameMap(db);
-  return { catalog, deps: { catalogIdByKey: catalogIdsByKey(catalog), keyOf: (id) => corosKeyOf(id) } };
+/**
+ * The athlete's catalog, and the deps `watchStepsFromBuild` resolves moves with — the build's moves in the account's
+ * library when it holds one of the athlete's own (`libraryFor`: one statement then): such a move has no T-code
+ * (`corosKeyOf`), so it goes as free text by its own name, and a merged one's id reads as its target.
+ */
+async function planDeps(db: Db, userId: string, build: WatchBuild): Promise<{ catalog: Map<string, string>; deps: WatchPlanDeps }> {
+  const [catalog, library] = await Promise.all([exerciseNameMap(db), libraryFor(db, userId, Object.keys(build.exercises))]);
+  const all = library === PUBLIC_LIBRARY ? undefined : library.all;
+  return { catalog, deps: { catalogIdByKey: catalogIdsByKey(catalog), keyOf: (id) => corosKeyOf(id, all) } };
 }
 
 /** The step count does not depend on the catalog, so a refusal needs no catalog read. */
@@ -634,7 +639,7 @@ async function pushPayloadFor(
   /** The build's push as the caller read it (null: none); read here when not given. */
   known?: Awaited<ReturnType<typeof jobById>>,
 ): Promise<{ payload: ProgramSessionPushJob; plan: WatchPlan; catalog: Map<string, string> }> {
-  const { catalog, deps } = await planDeps(db);
+  const { catalog, deps } = await planDeps(db, userId, build);
   const plan = watchStepsFromBuild(build, deps);
   const taken = await takenStampsOn(db, userId, row.effectiveDate, { jobId: pushJobId(build.buildId) });
   const earlier = known !== undefined ? known : await jobById(db, pushJobId(build.buildId));

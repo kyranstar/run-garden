@@ -7,11 +7,13 @@
  *   session    a session the athlete did: its `performed_sessions` id
  *   activity   an activity: its `activities` id
  *   objective  an objective: its `objectives` id
- *   move       a library exercise: its id (the bundled library)
+ *   move       a library exercise: its id — the bundled library's, or one of the account's personal moves (saved-posts
+ *              import): an active or archived one, a merged one (its target stands for it), or a pending one still in
+ *              review, so "Ask the coach" works from the review screen before its batch is saved
  *   proposal   one of the coach's designed suggestions: its `dp-` id — a follow-up that changes it (phase A2)
  *
  * The route validates the shape (`focusSchema`: 400 `bad_focus`). `checkFocus` holds it to the signed-in athlete in ONE
- * statement — none for a day or a move — and answers a suggestion's own scope (a follow-up asks nothing else): another
+ * statement — none for a day or a library move — and answers a suggestion's own scope (a follow-up asks nothing else): another
  * athlete's object, or one that isn't there, is `focus_not_found` (the route's 404); a set's suggestion is refused in
  * words (`focus_is_set`: a week plan is changed by planning it again). A day is held to the run's horizon by
  * `dayOutOfRange` (a week back, to the last day a run plans, +6: `focus_out_of_range`, in words). The focus is kept in
@@ -19,9 +21,10 @@
  */
 import { sql } from "drizzle-orm";
 import { z } from "zod";
-import { activities, coachProposals, objectives, performedSessions, plannedWorkouts } from "@rg/database";
+import { activities, coachProposals, objectives, performedSessions, personalMoves, plannedWorkouts } from "@rg/database";
 import { addDays, dayLabel, isLocalDate } from "@rg/domain";
 import { EXERCISES } from "@rg/exercise-library";
+import { isPersonalId } from "@rg/saves";
 import type { Db } from "./db.js";
 import { designProposalId } from "./design-tools/propose.js";
 import type { RunScope } from "./design-tools/types.js";
@@ -65,15 +68,18 @@ export class FocusError extends Error {
   }
 }
 
-/** Whether a create checks a focus of this kind with a statement (a day and a move need none). */
-export const focusCheckedInDb = (kind: FocusKind): boolean => kind !== "day" && kind !== "move";
+/** A move focus on one of the account's own moves (a personal id): it is read from the account's rows. */
+const personalMove = (focus: RunFocus): boolean => focus.kind === "move" && isPersonalId(focus.id);
 
-/** Whether the opening context reads a focus of this kind with a statement: every kind but a move (a day's plan rows are
- * read too). */
-export const focusReadInContext = (kind: FocusKind): boolean => kind !== "move";
+/** Whether a create checks this focus with a statement: a day and a library move need none; a personal move one. */
+export const focusCheckedInDb = (focus: RunFocus): boolean => focus.kind !== "day" && (focus.kind !== "move" || personalMove(focus));
+
+/** Whether the opening context reads this focus with a statement: every kind but a library move (a day's plan rows are
+ * read too; a personal move's record and status). */
+export const focusReadInContext = (focus: RunFocus): boolean => focus.kind !== "move" || personalMove(focus);
 
 const MOVES = new Map(EXERCISES.map((e) => [e.id, e]));
-/** The library move a focus names, or none. */
+/** The library move a focus names, or none (a personal move is the account's: design-context.ts reads it). */
 export const focusMove = (id: string) => MOVES.get(id) ?? null;
 
 /** A designed suggestion the athlete has seen: never a rehearsal's, one still under review, or one closed with its run. */
@@ -93,6 +99,10 @@ function ownedSql(userId: string, focus: RunFocus) {
       return sql`select 1 as found, null as scope from ${activities} where ${activities.userId} = ${userId} and ${activities.id} = ${focus.id}`;
     case "objective":
       return sql`select 1 as found, null as scope from ${objectives} where ${objectives.userId} = ${userId} and ${objectives.id} = ${focus.id}`;
+    case "move":
+      // One of the account's own moves, whatever its status: pending (still in review), active, archived, or merged
+      // (its target stands for it).
+      return sql`select 1 as found, null as scope from ${personalMoves} where ${personalMoves.userId} = ${userId} and ${personalMoves.id} = ${focus.id}`;
     case "proposal":
       // Its run's scope says whether it is a set's, and is the scope a follow-up asks for — an auto run that planned a
       // set (the new shape §5: `raisedAt`) reads as a week's.
@@ -120,13 +130,13 @@ function scopeOfColumn(text: unknown): RunScope | null {
 }
 
 /**
- * The focus is the athlete's: one statement for a planned workout, a session, an activity, an objective or a suggestion
- * — none for a day (`dayOutOfRange` holds it) or a move (the bundled library). Answers a suggestion's own scope; throws
+ * The focus is the athlete's: one statement for a planned workout, a session, an activity, an objective, a suggestion or
+ * a personal move — none for a day (`dayOutOfRange` holds it) or a library move (the bundled library). Answers a suggestion's own scope; throws
  * `focus_not_found` for another athlete's or a missing one, `focus_is_set` for a set's suggestion.
  */
 export async function checkFocus(db: Db, userId: string, focus: RunFocus): Promise<{ scope: RunScope | null }> {
   if (focus.kind === "day") return { scope: null };
-  if (focus.kind === "move") {
+  if (focus.kind === "move" && !isPersonalId(focus.id)) {
     if (!focusMove(focus.id)) throw new FocusError("focus_not_found");
     return { scope: null };
   }

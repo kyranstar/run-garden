@@ -8,7 +8,7 @@ import { sql } from "drizzle-orm";
 import { z } from "zod";
 import { workoutTemplates } from "@rg/database";
 import { parseStoredWorkoutDoc } from "@rg/domain";
-import { EXERCISES } from "@rg/exercise-library";
+import { accountLibraryFrom, personalMovesSql } from "../account-library.js";
 import { deriveDoc } from "@rg/workout";
 import type { DesignTool } from "./types.js";
 import {
@@ -60,7 +60,10 @@ export const listTemplates: DesignTool = {
           from ${t} where ${t.userId} = ${ctx.userId}
           order by ${t.pinned} desc, ${t.uses} desc, ${t.lastUsedAt} is null, ${t.lastUsedAt} desc, ${t.name}, ${t.id}
           limit ${limit + 1} offset ${offset}))`,
+      // The account's library: a template's own moves (one of the athlete's too) derived in it.
+      library: personalMovesSql(ctx.userId),
     });
+    const library = await accountLibraryFrom(ctx.db, ctx.userId, extra.library);
     // The page's own order (an aggregate's input order is SQLite's to choose), compared as SQL compares, byte by byte.
     const rows = (parsedArray(extra.templates) as Array<Record<string, unknown>>).sort(
       (a, b) =>
@@ -79,7 +82,7 @@ export const listTemplates: DesignTool = {
       limit,
       render: (r) => {
         const doc = parseStoredWorkoutDoc(r.doc);
-        const derived = doc ? deriveDoc(doc, EXERCISES) : null;
+        const derived = doc ? deriveDoc(doc, library.all) : null;
         return {
           id: r.id,
           minutes: derived?.estimatedMinutes ?? null,

@@ -18,8 +18,9 @@ import { and, between, desc, eq, isNotNull, isNull, or, sql } from "drizzle-orm"
 import { z } from "zod";
 import { activities, athleteAnswers, coachProposals, performedSessions, plannedWorkouts } from "@rg/database";
 import { dayLabel, dayRangeLabel, parseStoredWorkoutDoc, type WorkoutDoc, type WorkoutDose, type WorkoutItem } from "@rg/domain";
-import { EXERCISES } from "@rg/exercise-library";
+import type { ExerciseRecord } from "@rg/exercise-library";
 import { deriveDoc } from "@rg/workout";
+import { accountLibraryFrom, personalMovesSql } from "../account-library.js";
 import { likeWordPatterns } from "../like-pattern.js";
 import { reviewMeanOf } from "../design-orchestrate.js";
 import { isDocWorkoutOp, opIdOf } from "../proposal-kinds.js";
@@ -158,8 +159,8 @@ const marked = (key: string, text: string | undefined): Record<string, Untrusted
 /** An id or vocabulary value as the document holds it: plain when it reads as one, marked when it does not. */
 const ID = /^[A-Za-z0-9][A-Za-z0-9_.:-]{0,79}$/;
 const idOr = (s: string): string | Untrusted => (ID.test(s) ? s : untrusted(s));
-/** A move id: plain when the library (or the COROS catalog) knows it, marked when it does not. */
-const moveId = (id: string): string | Untrusted => (knownMove(id) ? id : untrusted(id));
+/** A move id: plain when the library — the account's, given (one of the athlete's own moves) — or the COROS catalog knows it, marked when it does not. */
+const moveId = (id: string, library?: readonly ExerciseRecord[]): string | Untrusted => (knownMove(id, library) ? id : untrusted(id));
 
 /** A dose as it is, but the weight as the athlete typed it ("35 lb") marked. */
 function markDose(dose: WorkoutDose): Record<string, unknown> {
@@ -167,16 +168,16 @@ function markDose(dose: WorkoutDose): Record<string, unknown> {
   return { ...rest, ...(load === undefined ? {} : load === "bodyweight" ? { load } : { load: { typed: untrusted(load.typed), kg: load.kg } }) };
 }
 
-function markItem(item: WorkoutItem): Record<string, unknown> {
+function markItem(item: WorkoutItem, library?: readonly ExerciseRecord[]): Record<string, unknown> {
   switch (item.kind) {
     case "exercise":
       return {
         kind: item.kind,
-        libraryId: moveId(item.libraryId),
+        libraryId: moveId(item.libraryId, library),
         dose: markDose(item.dose),
         ...(item.side ? { side: item.side } : {}),
         ...(item.test ? { test: item.test.keyResultId !== undefined ? { keyResultId: idOr(item.test.keyResultId) } : {} } : {}),
-        ...(item.alternates ? { alternates: item.alternates.map((a) => ({ libraryId: moveId(a.libraryId), ...marked("why", a.why) })) } : {}),
+        ...(item.alternates ? { alternates: item.alternates.map((a) => ({ libraryId: moveId(a.libraryId, library), ...marked("why", a.why) })) } : {}),
         ...marked("why", item.why),
         ...marked("progression", item.progression),
         ...marked("cue", item.cue),
@@ -202,9 +203,9 @@ function markItem(item: WorkoutItem): Record<string, unknown> {
 /**
  * The document as the model may read it: its structure and numbers as they are, every word marked, and every id or
  * vocabulary value that is not plainly one marked too (the stored document passed its schema, which bounds lengths,
- * not words).
+ * not words). `library`: the account's (`all`), when the read has it — an id of one of the athlete's own moves is then plain.
  */
-export function markedDoc(doc: WorkoutDoc): Record<string, unknown> {
+export function markedDoc(doc: WorkoutDoc, library?: readonly ExerciseRecord[]): Record<string, unknown> {
   const { setting, basedOn, source } = doc;
   return {
     title: untrusted(doc.title),
@@ -230,7 +231,7 @@ export function markedDoc(doc: WorkoutDoc): Record<string, unknown> {
       ...(part.rounds !== undefined ? { rounds: part.rounds } : {}),
       ...(part.restBetweenRoundsSec !== undefined ? { restBetweenRoundsSec: part.restBetweenRoundsSec } : {}),
       ...marked("why", part.why),
-      items: part.items.map(markItem),
+      items: part.items.map((item) => markItem(item, library)),
     })),
     source: { kind: source.kind, ...marked("ref", source.ref) },
     ...(basedOn ? { basedOn: { kind: basedOn.kind, id: idOr(basedOn.id), ...(basedOn.rev !== undefined ? { rev: basedOn.rev } : {}) } } : {}),
@@ -257,7 +258,9 @@ async function suggestion(ctx: ToolContext, proposalId: string, opId: string): P
   const { athlete, extra } = await readAthlete(ctx.db, ctx.userId, ctx.now, {
     proposal: sql`(select json_object('status', ${c.status}, 'ops', ${c.ops}) from ${c}
         where ${c.id} = ${proposalId} and ${c.userId} = ${ctx.userId} and ${c.status} != 'rehearsal')`,
+    library: personalMovesSql(ctx.userId),
   });
+  const library = await accountLibraryFrom(ctx.db, ctx.userId, extra.library);
   const held = parsedJson(extra.proposal) as { status?: string; ops?: unknown } | null;
   const ops = parsedArray(typeof held?.ops === "string" ? held.ops : null);
   // An op is read as stored: one written before ops carried their run (`by`) has no opId and is never this one.
@@ -301,7 +304,7 @@ async function suggestion(ctx: ToolContext, proposalId: string, opId: string): P
       derived: { minutes: typeof d.minutes === "number" ? d.minutes : null, mode: typeof d.mode === "string" ? d.mode : null },
       review: op.review ? { mean, rounds: op.review.rounds } : null,
       ...(Object.keys(outcome).length ? outcome : { outcome: "open" }),
-      document: doc ? markedDoc(doc) : null,
+      document: doc ? markedDoc(doc, library.all) : null,
     },
     summary: `Read the suggestion for ${dayLabel(op.date)}`,
   });
@@ -334,7 +337,10 @@ export const getWorkout: DesignTool = {
       row: sql`(select json_object('date', ${pw.effectiveDate}, 'time', ${pw.effectiveTime}, 'state', ${pw.completionState}, 'category', ${pw.category}, 'origin', ${pw.origin},
           'content', ${pw.contentState}, 'rev', ${pw.workoutDocRev}, 'doc', ${pw.workoutDoc})
           from ${pw} where ${pw.id} = ${p.id} and ${pw.userId} = ${ctx.userId} and ${pw.archivedAt} is null)`,
+      library: personalMovesSql(ctx.userId),
     });
+    // The account's library, with the athlete: a document's own moves (one of the athlete's included) read by it.
+    const library = await accountLibraryFrom(ctx.db, ctx.userId, extra.library);
     const row = parsedJson(extra.row) as { date?: string; time?: string; state?: string; category?: string; origin?: string | null; content?: string | null; rev?: number | null; doc?: string | null } | null;
     if (!row || typeof row.date !== "string") return notFound(p.id);
 
@@ -350,7 +356,7 @@ export const getWorkout: DesignTool = {
     ]);
     const actuals = doneEntries(
       { sessions: rows.get("s"), sets: rows.get("x"), checks: rows.get("c"), activities: rows.get("a") },
-      { tz: athlete.tz, units: athlete.prefs.units, weightUnit: athlete.prefs.weightUnit, today: athlete.today },
+      { tz: athlete.tz, units: athlete.prefs.units, weightUnit: athlete.prefs.weightUnit, today: athlete.today, library: library.all },
     )
       .filter((e) => e.kind === "session")
       .map((e) => e.entry);
@@ -370,7 +376,7 @@ export const getWorkout: DesignTool = {
     if (!doc) {
       missing.push(row.doc ? "the stored document does not read" : row.content === "outline" ? "no document: an outline built on its day" : "no document");
     }
-    const derived = doc ? deriveDoc(doc, EXERCISES) : null;
+    const derived = doc ? deriveDoc(doc, library.all) : null;
     return answer({
       source: "the workout's row and document, logged sessions and the athlete's feedback",
       now: ctx.now,
@@ -387,7 +393,7 @@ export const getWorkout: DesignTool = {
         derived: derived ? { minutes: derived.estimatedMinutes, discipline: derived.discipline, category: derived.category, mode: derived.mode } : null,
         actuals,
         feedback,
-        document: doc ? markedDoc(doc) : null,
+        document: doc ? markedDoc(doc, library.all) : null,
       },
       summary: `Read the workout on ${dayLabel(row.date)}${actuals.length ? " and what was done in it" : ""}`,
     });

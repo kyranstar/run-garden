@@ -2233,6 +2233,20 @@ export interface ExercisePrefsDto {
   introducedOn: string | null;
 }
 
+/** One of the owner's own moves (saved-posts import), as `GET /api/library/personal` lists it. */
+export interface PersonalMoveDto {
+  record: ExerciseRecord;
+  /** Active: offered and pinnable; archived: kept for old workouts and history, never offered. */
+  status: "active" | "archived";
+  /** The saved posts it came from (and those of any move merged into it), oldest first. */
+  links: Array<{ url: string | null; creator: string | null }>;
+}
+
+/** Exact shape of `GET /api/library/personal`: never a pending or merged move. */
+export interface PersonalMovesDto {
+  moves: PersonalMoveDto[];
+}
+
 /** `PUT /api/library/:id/prefs`: only what is sent changes. */
 export interface ExercisePrefsPatch {
   rating?: 1 | -1 | null;
@@ -2801,6 +2815,8 @@ export const api = {
   listLibrary: (query: LibraryQuery = {}) => get<LibraryListDto>(`/api/library${libraryQueryString(query)}`),
   /** 404 `not_found` for a move the library does not have. */
   getLibraryItem: (id: string) => get<LibraryItemDto>(`/api/library/${encodeURIComponent(id)}`),
+  /** The owner's own moves from their saves: active and archived, with their links. */
+  listPersonalMoves: () => get<PersonalMovesDto>("/api/library/personal"),
   /** Rate, set aside ("not for me") or pin one move; only what is sent changes. */
   setExercisePrefs: (id: string, patch: ExercisePrefsPatch) =>
     put<{ prefs: ExercisePrefsDto }>(`/api/library/${encodeURIComponent(id)}/prefs`, patch),

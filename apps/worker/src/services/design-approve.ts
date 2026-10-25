@@ -129,10 +129,10 @@
 import { and, eq, sql, type SQL } from "drizzle-orm";
 import { coachMessages, coachProposals, plannedWorkouts, scheduleOverrides, workoutDocRevisions } from "@rg/database";
 import { addDays, appAuthoredRow, dayLabel, docOriginRow, humanizeWorkoutTitle, isRunDoc, newId, workoutDocSchema, type WorkoutDoc } from "@rg/domain";
-import { EXERCISES } from "@rg/exercise-library";
+import { EXERCISES, type ExerciseRecord } from "@rg/exercise-library";
 import { deriveDoc, startEditing, toProposable, type DocDerived, type DocIssue } from "@rg/workout";
 import type { Db } from "./db.js";
-import { accountLibraryFrom, personalMovesSql } from "./account-library.js";
+import { accountLibraryFrom, loadAccountLibrary, personalMovesSql } from "./account-library.js";
 import { CALENDAR_OPS_PER_REQUEST } from "./calendar-sync.js";
 import { applyOps, applyStructuralChunk, NOT_ACTIONABLE, RETIME_CHANGED, STRUCTURAL_MIN_BUDGET, whyNotActionable, type StructuralProgress } from "./coach-apply.js";
 import { coachDrainQueued } from "./coros-write-cloud.js";
@@ -610,7 +610,8 @@ const str = (v: unknown, fallback = ""): string => (typeof v === "string" ? v : 
 /**
  * ONE statement: the rows these ops' workouts are (or would be) — each new op's keyed row, each revise op's target, each
  * change's session — the revisions carrying these ops' refs, the scheduled sessions on each day they touch (`dates`,
- * and each revised or changed row's own day), and — when there are workouts — the account's library they are judged in
+ * and each revised or changed row's own day), and — when there are workouts, these or the proposal's (`withLibrary`: its
+ * receipt names every workout approved so far) — the account's library they are judged, placed and named in
  * (`accountLibraryFrom`: the request's own, so judging them reads it again for nothing).
  */
 async function readPlan(
@@ -620,6 +621,7 @@ async function readPlan(
   ops: readonly DesignedOp[],
   dates: readonly string[],
   changes: readonly DesignedPlanOp[] = [],
+  withLibrary = ops.length > 0,
 ): Promise<Plan> {
   const keyOf = new Map<string, string>();
   for (const op of ops) if (op.target.kind === "new") keyOf.set(opIdOf(op), await keyedRowId(userId, approvalKey(proposalId, opIdOf(op))));
@@ -648,9 +650,9 @@ async function readPlan(
           and (${pw.effectiveDate} in (${values(dates)})
             or ${pw.effectiveDate} in (select ${pw.effectiveDate} from ${pw} where ${pw.userId} = ${userId} and ${pw.id} in (${values(revised)})))
         group by ${pw.effectiveDate})) as days,
-      ${ops.length > 0 ? personalMovesSql(userId) : sql`null`} as library
+      ${withLibrary ? personalMovesSql(userId) : sql`null`} as library
   `)) as Array<{ rows: unknown; revisions: unknown; days: unknown; library: unknown }>;
-  if (ops.length > 0) await accountLibraryFrom(db, userId, row?.library);
+  if (withLibrary) await accountLibraryFrom(db, userId, row?.library);
   const rows = new Map<string, RowState>();
   for (const x of parsedRows(row?.rows)) {
     rows.set(str(x.id), {
@@ -998,6 +1000,8 @@ export async function approveDesignOps(
     workoutsInHand,
     [...workoutsInHand.flatMap((o) => dayOf(o, input.edit) ?? []), ...changesInHand.flatMap((c) => (c.op.kind === "move" ? [c.op.toDate] : []))],
     changesInHand,
+    // The receipt names every workout of the proposal: its library read here too, while the statement runs anyway.
+    allDesignedOps(p.ops).some(isDocWorkoutOp),
   );
   // An op whose workout is there already — a crash, a double tap, an approve that raced a decline or a newer plan — is
   // applied, and made no second time; a declined or superseded op whose workout isn't there stays as it was. A declined
@@ -1308,7 +1312,9 @@ export async function approveDesignOps(
     return before?.status !== "refused" || before.error !== r.error;
   });
   if (remaining.length === 0 && inFlight.length === 0 && news && allDesignedOps(next).some((o) => o.outcome?.status === "applied")) {
-    await receipt(db, userId, approvedReceipt(p.title, allDesignedOps(next)), p.id).catch((e: unknown) =>
+    // Its minutes in the account's library, which `readPlan` read for a proposal with workouts (none here without one).
+    const library = allDesignedOps(next).some(isDocWorkoutOp) ? (await loadAccountLibrary(db, userId)).all : EXERCISES;
+    await receipt(db, userId, approvedReceipt(p.title, allDesignedOps(next), library), p.id).catch((e: unknown) =>
       console.error(JSON.stringify({ level: "error", msg: "design approve: applied, but the receipt failed", proposal: p.id, error: e instanceof Error ? e.message : "unknown" })),
     );
   }
@@ -1400,7 +1406,8 @@ async function applyOp(
       // The athlete's own version (Edit before approve) is placed as the Studio's save places it.
       let time = asked;
       if (!mine) {
-        const placed = approveTimeOf(target, deriveDoc(op.doc, EXERCISES).category, { now: new Date(ctx.now), prefs: ctx.prefs });
+        // Placed by its category in the account's library (`readPlan` read it: no statement here).
+        const placed = approveTimeOf(target, deriveDoc(op.doc, (await loadAccountLibrary(db, userId)).all).category, { now: new Date(ctx.now), prefs: ctx.prefs });
         if ("refused" in placed) return { refusal: { error: placed.code, why: placed.refused }, error: new PastTimeError(placed.code, placed.refused) };
         time = placed.pinned ? placed.time : null;
       } else if (asked) {
@@ -1549,8 +1556,8 @@ function changeLine(c: PlanAdjustOp): string {
  * each workout as it was WRITTEN (the athlete's version and day, when edited or moved), each change as the manifest says
  * it, then any the server refused, with why; "(k of n; d declined)" while some are not approved.
  */
-function approvedReceipt(title: string, ops: readonly AnyDesignedOp[]): string {
-  const minutesOf = (doc: WorkoutDoc) => deriveDoc(doc, EXERCISES).estimatedMinutes;
+function approvedReceipt(title: string, ops: readonly AnyDesignedOp[], library: readonly ExerciseRecord[]): string {
+  const minutesOf = (doc: WorkoutDoc) => deriveDoc(doc, library).estimatedMinutes;
   const done: string[] = [];
   const not: string[] = [];
   let declined = 0;
@@ -1739,8 +1746,8 @@ export interface DesignDraft {
   outcome: OpOutcome | null;
 }
 
-/** The op's draft, or null when the proposal holds no such op. */
-export function designDraft(p: Pick<DesignProposalRow, "id" | "status" | "ops">, opId: string): DesignDraft | null {
+/** The op's draft, or null when the proposal holds no such op; derived in `library` (the account's `all`). */
+export function designDraft(p: Pick<DesignProposalRow, "id" | "status" | "ops">, opId: string, library: readonly ExerciseRecord[] = EXERCISES): DesignDraft | null {
   const op = designedOps(p.ops).find((o) => opIdOf(o) === opId);
   if (!op) return null;
   return {
@@ -1748,7 +1755,7 @@ export function designDraft(p: Pick<DesignProposalRow, "id" | "status" | "ops">,
     opId,
     status: p.status,
     doc: op.doc,
-    derived: deriveDoc(op.doc, EXERCISES),
+    derived: deriveDoc(op.doc, library),
     rev: null,
     target: op.target,
     date: op.date,

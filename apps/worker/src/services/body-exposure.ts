@@ -12,15 +12,19 @@
  * RUNS LOAD THE LEGS (audit I5): a run is no working set, so the regions are the sessions' alone; the runs in the range
  * are kept apart (`ranDays`, `lastRun`) for the caller to say what they loaded (`RUN_REGIONS`).
  *
- * Two statements: the athlete with the focus areas, then the range in one read (`readTagged`). With `derive: false`
+ * A move counts by the account's library (saved-posts import, Task 13): one of the athlete's own moves — an archived or
+ * merged one too — loads its regions and muscles as a library move does; it rides in the athlete's statement.
+ *
+ * Two statements: the athlete with the focus areas (and the account's library), then the range in one read (`readTagged`). With `derive: false`
  * (Growth's body map) the range's sets are read as one row a session's move — its working sets and its longest hold,
  * counted by SQLite — in place of a row a set: a busy season holds thousands of sets (the integrated review, I2).
  */
 import { sql, type SQL } from "drizzle-orm";
 import { athleteProfiles, performedSessions, performedSets } from "@rg/database";
 import { focusAreaSchema, type FocusArea } from "@rg/domain";
-import { EXERCISES, MUSCLE_REGION, REGIONS, type MuscleId, type Region } from "@rg/exercise-library";
-import { derivePerformed, type BalanceProfile, type PerformedInput } from "@rg/workout";
+import { MUSCLE_REGION, REGIONS, type ExerciseRecord, type MuscleId, type Region } from "@rg/exercise-library";
+import { derivePerformed, makeLibraryIndex, type BalanceProfile, type PerformedInput } from "@rg/workout";
+import { accountLibraryFrom, personalMovesSql, type AccountLibrary } from "./account-library.js";
 import type { Db } from "./db.js";
 import { watchMove } from "./logged-sets.js";
 import { parsedArray, readAthlete, readTagged, type Athlete } from "./design-tools/read-common.js";
@@ -39,8 +43,6 @@ import {
 /** The statements one `readExposure` makes. */
 export const EXPOSURE_STATEMENTS = 2;
 
-const LIBRARY = new Set(EXERCISES.map((e) => e.id));
-const BY_ID = new Map(EXERCISES.map((e) => [e.id, e]));
 
 /**
  * WHAT A RUN WORKS — the one list (the new shape, the lead's ruling of 2026-10-18 and its amendment): the hips, the
@@ -50,15 +52,15 @@ const BY_ID = new Map(EXERCISES.map((e) => [e.id, e]));
  */
 export const RUN_REGIONS = ["hips", "glutes", "quads", "hamstrings", "calves", "ankles", "feet"] as const satisfies readonly Region[];
 
-/** What a library move names — its regions and muscles — read once a move (a focus area asks it of every set). */
-const NAMES = new Map<string, ReadonlySet<string>>();
-function namesOf(exerciseId: string): ReadonlySet<string> | null {
-  const known = NAMES.get(exerciseId);
-  if (known) return known;
-  const rec = BY_ID.get(exerciseId);
-  if (!rec) return null;
-  const says = new Set<string>([...rec.regions, ...rec.muscles.primary, ...rec.muscles.secondary]);
-  NAMES.set(exerciseId, says);
+/** What a move names — its regions and muscles — read once a move and library (a focus area asks it of every set). */
+const NAMES = new WeakMap<readonly ExerciseRecord[], Map<string, ReadonlySet<string> | null>>();
+function namesOf(library: readonly ExerciseRecord[], exerciseId: string): ReadonlySet<string> | null {
+  let mine = NAMES.get(library);
+  if (!mine) NAMES.set(library, (mine = new Map()));
+  if (mine.has(exerciseId)) return mine.get(exerciseId)!;
+  const rec = makeLibraryIndex(library)(exerciseId);
+  const says = rec ? new Set<string>([...rec.regions, ...rec.muscles.primary, ...rec.muscles.secondary]) : null;
+  mine.set(exerciseId, says);
   return says;
 }
 /** The region a focus area's ref names: itself, or the region its muscle sits under. */
@@ -66,6 +68,8 @@ export const regionOf = (ref: string): string | undefined => ((REGIONS as readon
 
 export interface Exposure {
   athlete: Athlete;
+  /** The account's library the range was read by (one of the athlete's own moves is a move it knows). */
+  library: AccountLibrary;
   focus: FocusArea[];
   /** One per physical session, in the range. */
   sessions: SessionRow[];
@@ -149,7 +153,10 @@ export async function readExposure(
   const derive = opts.derive !== false;
   const { athlete, extra } = await readAthlete(db, userId, now, {
     focus: sql`(select ${athleteProfiles.focusAreas} from ${athleteProfiles} where ${athleteProfiles.userId} = ${userId})`,
+    library: personalMovesSql(userId),
   });
+  const library = await accountLibraryFrom(db, userId, extra.library);
+  const find = makeLibraryIndex(library.all);
   const { from, to } = typeof range === "function" ? range(athlete.today) : range;
   const focus = parsedArray(typeof extra.focus === "string" ? extra.focus : null).flatMap((f) => {
     const parsed = focusAreaSchema.safeParse(f);
@@ -182,7 +189,7 @@ export async function readExposure(
   const unknown = new Set<string>();
   const watchUnknown = new Map<string, Set<string>>();
   const noteUnknown = (id: string, sessionId: string): void => {
-    if (LIBRARY.has(id)) return;
+    if (find(id)) return;
     const w = watchMove(id);
     if (w && "key" in w) {
       const name = w.corosName ?? w.key;
@@ -190,7 +197,7 @@ export async function readExposure(
     } else unknown.add(id);
   };
   const add = (input: PerformedInput) => {
-    const d = derivePerformed(input, EXERCISES);
+    const d = derivePerformed(input, library.all);
     for (const k of Object.keys(balance) as Array<keyof BalanceProfile>) balance[k] += d.balance[k];
     for (const [k, v] of Object.entries(d.regionExposure)) regions.set(k, (regions.get(k) ?? 0) + v);
     for (const [k, v] of Object.entries(d.muscleExposure)) muscles.set(k, (muscles.get(k) ?? 0) + v);
@@ -201,7 +208,7 @@ export async function readExposure(
    * never counts a set twice).
    */
   const trains = (exerciseId: string, f: FocusArea): boolean => {
-    const says = namesOf(exerciseId);
+    const says = namesOf(library.all, exerciseId);
     return says !== null && f.refs.some((ref) => says.has(ref));
   };
   const countFocus = (exerciseId: string, workingSets: number, date: string) => {
@@ -278,6 +285,7 @@ export async function readExposure(
   const lastRun = ranDays.length ? ranDays.reduce((x, y) => (y > x ? y : x)) : null;
   return {
     athlete,
+    library,
     focus,
     sessions: chosen,
     sets,

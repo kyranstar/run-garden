@@ -1,7 +1,8 @@
 /**
  * THE SESSION REVIEW'S FEEDBACK, KEPT (Stage 1 Task 15). `exercise_prefs.rating` holds only the latest rating; each
  * save also writes what the athlete said as `athlete_answers` rows, so the history survives the next save:
- *  - one `exercise_feedback` row per rated library exercise (+1 / -1; a cleared rating says nothing, so no row);
+ *  - one `exercise_feedback` row per rated library exercise (+1 / -1; a cleared rating says nothing, so no row) — a move
+ *    of the account's library (`library`: the account's `all`, so one of the athlete's own moves counts too);
  *  - one `workout_feedback` row when the review carries the workout-level slot (rating 1–5, difficulty, words).
  * The ids are deterministic per (user, performed session, question, subject): a re-save of the same session upserts
  * its rows and never doubles them. The words are the athlete's own: stored as data, never logged.
@@ -9,12 +10,11 @@
 import { sql } from "drizzle-orm";
 import { schema } from "@rg/database";
 import type { PerformedSessionWire } from "@rg/domain";
-import { EXERCISES } from "@rg/exercise-library";
+import type { ExerciseRecord } from "@rg/exercise-library";
+import { makeLibraryIndex } from "@rg/workout";
 import { insertBatches, type AtomicStatement, type Db } from "./db.js";
 
 const { athleteAnswers } = schema;
-
-let libraryIds: Set<string> | undefined;
 
 export function sessionAnswerStatements(
   db: Db,
@@ -23,14 +23,16 @@ export function sessionAnswerStatements(
   p: PerformedSessionWire,
   source: "review" | "watch_review",
   now: string,
+  /** What a rated move must be, by its own id: the account's library (`reviewLibrary`, session-save.ts). */
+  library: readonly ExerciseRecord[],
 ): AtomicStatement[] {
-  libraryIds ??= new Set(EXERCISES.map((e) => e.id));
+  const find = makeLibraryIndex(library);
   const common = { userId, source, localDate: p.localDate, at: now, workoutId: p.workoutId, performedSessionId: performedId };
   type Row = typeof athleteAnswers.$inferInsert;
   const exerciseRows: Row[] = [];
   for (const exerciseId of Object.keys(p.review.ratings).sort()) {
     const rating = p.review.ratings[exerciseId];
-    if (rating === null || rating === undefined || !libraryIds.has(exerciseId)) continue;
+    if (rating === null || rating === undefined || find(exerciseId)?.id !== exerciseId) continue;
     exerciseRows.push({
       id: `${userId}:${performedId}:exercise_feedback:${exerciseId}`,
       questionId: "exercise_feedback",

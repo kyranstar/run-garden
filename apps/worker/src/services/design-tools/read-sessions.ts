@@ -20,7 +20,8 @@
 import { sql, type SQL } from "drizzle-orm";
 import { activities, conditionChecks, performedSessions, performedSets } from "@rg/database";
 import { addDays, type WeightUnit } from "@rg/domain";
-import { EXERCISES, PROFILES, isProfileId, profileById, THEMES } from "@rg/exercise-library";
+import { EXERCISES, PROFILES, isProfileId, profileById, THEMES, type ExerciseRecord } from "@rg/exercise-library";
+import { makeLibraryIndex } from "@rg/workout";
 import { readingsBySession, sessionPerActivity, watchMove, type CheckRowLike } from "../logged-sets.js";
 import { COROS_EXERCISE_PREFIX, PENDING_HASH } from "../watch-sets.js";
 import { activityDateOf, dayWords, distanceWords, localTimeOf, minutesOf, paceWords, parsedArray, untrusted, weightWords, type Untrusted } from "./read-common.js";
@@ -190,21 +191,24 @@ export function sessionsOnce(sessions: readonly SessionRow[]): SessionRow[] {
 
 // ── Words ───────────────────────────────────────────────────────────────────────────────────────────────────────────
 
-const LIBRARY = new Set(EXERCISES.flatMap((e) => [e.id, ...e.legacyIds]));
+
 const THEME_NAME = new Map(THEMES.map((t) => [t.id, t.name]));
 const FLAG_LABEL = new Map(Object.values(PROFILES).flatMap((p) => (p.setFlag ? [[p.setFlag.id, p.setFlag.label] as const] : [])));
 
-/** A move id the app's own code wrote (the library's, or a COROS catalog key), or one from outside it. */
-export const knownMove = (id: string): boolean =>
-  LIBRARY.has(id) || (id.startsWith(COROS_EXERCISE_PREFIX) && /^[A-Za-z0-9]{1,20}$/.test(id.slice(COROS_EXERCISE_PREFIX.length)));
+/**
+ * A move id the app's own code wrote — the library's (`library`, given: the account's, so one of the athlete's own moves
+ * too, an archived or merged one; else the public library), or a COROS catalog key — or one from outside it.
+ */
+export const knownMove = (id: string, library: readonly ExerciseRecord[] = EXERCISES): boolean =>
+  makeLibraryIndex(library)(id) !== undefined || (id.startsWith(COROS_EXERCISE_PREFIX) && /^[A-Za-z0-9]{1,20}$/.test(id.slice(COROS_EXERCISE_PREFIX.length)));
 
 /**
  * A move and its words: plain for a move the app knows, marked for one it does not (an import's own name). A watch
  * move reads by name (fix wave 13, A2): the library move its key maps to, else its key with COROS's own name — never a
  * bare code the coach can't read.
  */
-export function moveLine(id: string, words: string): string | Untrusted {
-  if (!knownMove(id)) return untrusted(`${id} ${words}`);
+export function moveLine(id: string, words: string, library?: readonly ExerciseRecord[]): string | Untrusted {
+  if (!knownMove(id, library)) return untrusted(`${id} ${words}`);
   const watch = watchMove(id);
   if (!watch) return `${id} ${words}`;
   if ("libraryId" in watch) return `${watch.libraryId} ${words}`;
@@ -279,6 +283,8 @@ export interface DoneCtx {
   weightUnit: WeightUnit;
   /** The athlete's today: with it, each line says its day ("Tue 12 May · yesterday"; fix wave 13, I6). */
   today?: string;
+  /** The account's library (`all`), when the read has it: one of the athlete's own moves is then a move the app wrote. */
+  library?: readonly ExerciseRecord[];
 }
 
 /** A line's kind, as the model filters by it: a logged session, a run, or another sport (its `sport` says which). */
@@ -321,7 +327,7 @@ export function doneEntries(
     const mine = sets.filter((x) => x.session === s.id);
     const moves = movesOf(mine, ctx.weightUnit);
     const loggedIds = new Set(mine.map((x) => x.exerciseId));
-    const played = s.movesDone.filter((m) => !loggedIds.has(m.exerciseId)).map((m) => moveLine(m.exerciseId, playedWords(m.seconds)));
+    const played = s.movesDone.filter((m) => !loggedIds.has(m.exerciseId)).map((m) => moveLine(m.exerciseId, playedWords(m.seconds), ctx.library));
     const checks = [...(readings.get(s.id) ?? new Map<string, { pre: number | null; post: number | null }>()).entries()]
       .filter(([profileId, r]) => isProfileId(profileId) && (r.pre !== null || r.post !== null))
       .sort(([a], [b]) => a.localeCompare(b))
@@ -332,7 +338,7 @@ export function doneEntries(
     if (s.theme) entry.theme = THEME_NAME.get(s.theme) ?? untrusted(s.theme);
     if (s.workoutId) entry.workoutId = s.workoutId;
     if (checks.length) entry.checks = checks;
-    entry.moves = moves.map((m) => moveLine(m.exerciseId, m.words));
+    entry.moves = moves.map((m) => moveLine(m.exerciseId, m.words, ctx.library));
     if (played.length) entry.played = played;
     if (a?.hr) entry.hr = Math.round(a.hr);
     if (a?.load) entry.load = Math.round(a.load);

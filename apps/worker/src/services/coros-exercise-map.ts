@@ -23,9 +23,15 @@
  *
  * Pure and deterministic, from public data only (the catalog's T-codes and
  * COROS's own English locale) — no D1 read anywhere in here.
+ *
+ * ONE OF THE ATHLETE'S OWN MOVES (a personal move, saved-posts import) has
+ * no key: its name is a model's reading of a post, never reviewed, so an exact
+ * name match would be the unreviewed computed tier. It goes to the watch as
+ * free text by its own name.
  */
 import { EXERCISES, type ExerciseRecord } from "@rg/exercise-library";
 import { COROS_EXERCISE_NAMES } from "@rg/providers";
+import { isPersonalId } from "@rg/saves";
 import { strictExerciseKey } from "./exercise-catalog.js";
 
 /** The generic catalog steps (Warm Up, Training, Cool Down, Rest): never a movement's mapping. */
@@ -77,18 +83,20 @@ function keyOfRecord(record: ExerciseRecord): string | null {
 
 let shippedById: Map<string, ExerciseRecord> | null = null;
 
-/** The key the watch gets for a library move: a curated `exact` mapping, else the computed one, else null. */
+/**
+ * The key the watch gets for a library move (by its own id, in `library` — given, the account's — else the shipped
+ * library): a curated `exact` mapping, else the computed one, else null — and null for one of the athlete's own moves
+ * (see the header).
+ */
 export function corosKeyOf(exerciseId: string, library?: readonly ExerciseRecord[]): string | null {
-  const record = library
-    ? library.find((e) => e.id === exerciseId)
-    : (shippedById ??= new Map(EXERCISES.map((e) => [e.id, e]))).get(exerciseId);
-  return record ? keyOfRecord(record) : null;
+  const record = library ? library.find((e) => e.id === exerciseId) : (shippedById ??= new Map(EXERCISES.map((e) => [e.id, e]))).get(exerciseId);
+  return record && !isPersonalId(record.id) ? keyOfRecord(record) : null;
 }
 
 function reverse(library: readonly ExerciseRecord[]): Map<string, string> {
   const claims = new Map<string, string[]>();
   for (const e of library) {
-    const key = keyOfRecord(e);
+    const key = isPersonalId(e.id) ? null : keyOfRecord(e);
     if (key) claims.set(key, [...(claims.get(key) ?? []), e.id]);
   }
   const out = new Map<string, string>();

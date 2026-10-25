@@ -8,7 +8,9 @@
  *  - `docForStages` — COROS stages → `planned_workouts.workout_doc` (a rest day has none);
  *  - `docForStudioSession` — an old Studio session (no writer stores one today; the backfill may).
  * Each passes the library (`makeLibraryIndex`), so a legacy id is stored as the move it now is and an id the library
- * no longer has as free text.
+ * no longer has as free text — but never one of the athlete's own moves (saved-posts import, Task 13): an engine build
+ * may hold a pinned personal move, and it stays a move (`docForBuild` reads it in the account's library when given, else
+ * by the build's own copy of its record), resolved in the account's library wherever the document is read.
  *
  * NEVER FAILS THE WRITE. A converter that throws, or a document the schema refuses, is logged by its code only —
  * `workout doc conversion failed: <source>/<code>`, never a message, a title or anything the athlete wrote — and the
@@ -42,6 +44,7 @@ import {
   type WorkoutItem,
 } from "@rg/domain";
 import { EXERCISES, type ExerciseRecord } from "@rg/exercise-library";
+import { isPersonalId } from "@rg/saves";
 import {
   docFromBuildWithKept,
   docFromCoachSession,
@@ -128,9 +131,20 @@ function failed(source: LogSource, code: string, onFailed?: ConversionFailed): v
   onFailed?.(`${source}/${code}`);
 }
 
-/** An engine build (`session_builds.payload.build`) → its document. */
-export function docForBuild(build: BuildPayload, onFailed?: ConversionFailed): WorkoutDoc | null {
-  return converted("engine", () => docFromBuildWithKept(build, { library: library() }).doc, onFailed);
+/**
+ * An engine build (`session_builds.payload.build`) → its document. `accountLibrary`: the account's (`all`), when the
+ * caller has it. A personal move the library doesn't resolve is still the build's own move (its copy of the record is
+ * in `build.exercises`): kept a move, never free text.
+ */
+export function docForBuild(build: BuildPayload, onFailed?: ConversionFailed, accountLibrary?: readonly ExerciseRecord[]): WorkoutDoc | null {
+  const find = accountLibrary ? makeLibraryIndex(accountLibrary) : library();
+  const index: LibraryIndex = (id) => {
+    const found = find(id);
+    if (found || !isPersonalId(id) || !build.exercises[id]) return found;
+    // The converter reads a record's id (and a jump's contraction): the build's own copy carries what it needs.
+    return { ...build.exercises[id], id } as unknown as ExerciseRecord;
+  };
+  return converted("engine", () => docFromBuildWithKept(build, { library: index }).doc, onFailed);
 }
 
 /** A coach session → its document; a rest day has none. Stored loads are typed in the athlete's weight unit. */

@@ -18,7 +18,7 @@
  */
 import { sql, type SQL } from "drizzle-orm";
 import type { SchedulingPreferences } from "@rg/domain";
-import { EXERCISES } from "@rg/exercise-library";
+import { EXERCISES, type ExerciseRecord } from "@rg/exercise-library";
 import { deriveDoc } from "@rg/workout";
 import { relaidDay, type PlaceableSession } from "./day-placement.js";
 import { approveTimeOf } from "./design-time.js";
@@ -95,6 +95,8 @@ export async function placedTimes(
   ops: readonly unknown[],
   rowsJson: unknown,
   at: { now: Date; today: string; prefs: SchedulingPreferences },
+  /** What the workouts' minutes and kinds are derived in: the account's library (`all`). */
+  library: readonly ExerciseRecord[] = EXERCISES,
 ): Promise<Map<string, string>> {
   let rows: DayRow[] = [];
   try {
@@ -158,7 +160,7 @@ export async function placedTimes(
     if (!isDocWorkoutOp(any) || !open(any)) continue;
     const op = any as DocWorkoutOp;
     const opId = op.by.runId;
-    const derived = deriveDoc(op.doc, EXERCISES);
+    const derived = deriveDoc(op.doc, library);
     const seconds = derived.estimatedMinutes * 60;
     if (op.target.kind === "new") {
       if (op.date < at.today) continue;

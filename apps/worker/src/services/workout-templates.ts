@@ -15,9 +15,9 @@
 import { and, asc, desc, eq, sql } from "drizzle-orm";
 import { workoutTemplates } from "@rg/database";
 import { newId, parseStoredWorkoutDoc, type WorkoutDoc } from "@rg/domain";
-import { EXERCISES } from "@rg/exercise-library";
+import type { ExerciseRecord } from "@rg/exercise-library";
 import { deriveDoc, type DocIssue } from "@rg/workout";
-import { loadAccountLibrary } from "./account-library.js";
+import { libraryForDocs, loadAccountLibrary } from "./account-library.js";
 import type { Db } from "./db.js";
 import { judgeDoc } from "./doc-build.js";
 import { accepted, keyedRowId, parsedDoc, profilesAndSetAside } from "./doc-workouts.js";
@@ -73,9 +73,18 @@ const columns = {
 };
 type Row = { id: string; name: string; doc: unknown; pinned: boolean; uses: number; lastUsedAt: string | null; createdAt: string; updatedAt: string };
 
-function dtoOf(r: Row): TemplateDto {
-  const doc = parseStoredWorkoutDoc(r.doc);
-  const derived = doc ? deriveDoc(doc, EXERCISES) : null;
+/**
+ * The rows as the client reads them, each document's minutes and discipline derived in the account's library when one
+ * holds one of the athlete's own moves (`libraryForDocs`: one statement then — none when the request read it already).
+ */
+async function dtosOf(db: Db, userId: string, rows: readonly Row[]): Promise<TemplateDto[]> {
+  const docs = rows.map((r) => parseStoredWorkoutDoc(r.doc));
+  const library = (await libraryForDocs(db, userId, docs)).all;
+  return rows.map((r, i) => dtoOf(r, docs[i]!, library));
+}
+
+function dtoOf(r: Row, doc: WorkoutDoc | null, library: readonly ExerciseRecord[]): TemplateDto {
+  const derived = doc ? deriveDoc(doc, library) : null;
   return {
     id: r.id,
     name: r.name,
@@ -94,7 +103,7 @@ function dtoOf(r: Row): TemplateDto {
 async function validated(db: Db, userId: string, raw: unknown): Promise<{ doc: WorkoutDoc; warnings: DocIssue[] }> {
   const doc = await parsedDoc(db, userId, raw);
   const [{ profiles, excluded }, library] = await Promise.all([profilesAndSetAside(db, userId), loadAccountLibrary(db, userId)]);
-  return { doc, warnings: accepted(judgeDoc(doc, { library: library.all, activeProfiles: profiles, day: null, excluded })) };
+  return { doc, warnings: accepted(judgeDoc(doc, { library: library.all, offered: library.offered, activeProfiles: profiles, day: null, excluded })) };
 }
 
 /** The account's templates: pinned first, then the most recently used, then by name. */
@@ -105,7 +114,7 @@ export async function listTemplates(db: Db, userId: string): Promise<TemplateDto
     .where(eq(t.userId, userId))
     .orderBy(desc(t.pinned), sql`${t.lastUsedAt} is null`, desc(t.lastUsedAt), asc(t.name), asc(t.id))
     .limit(MAX_TEMPLATES);
-  return rows.map(dtoOf);
+  return dtosOf(db, userId, rows);
 }
 
 /**
@@ -121,7 +130,7 @@ export async function createTemplate(
   const id = input.clientId ? await keyedRowId(userId, input.clientId) : newId();
   const saved = async (): Promise<{ template: TemplateDto; warnings: DocIssue[]; repeated: true } | null> => {
     const [made] = await db.select(columns).from(t).where(and(eq(t.id, id), eq(t.userId, userId))).limit(1);
-    return made ? { template: dtoOf(made), warnings: [], repeated: true } : null;
+    return made ? { template: (await dtosOf(db, userId, [made]))[0]!, warnings: [], repeated: true } : null;
   };
   if (input.clientId) {
     const made = await saved();
@@ -145,7 +154,7 @@ export async function createTemplate(
     throw e;
   }
   if (inserted.length === 0) throw new TooManyTemplatesError();
-  return { template: dtoOf(row), warnings };
+  return { template: (await dtosOf(db, userId, [row]))[0]!, warnings };
 }
 
 export async function updateTemplate(
@@ -175,7 +184,7 @@ export async function updateTemplate(
     if (!current) throw new TemplateNotFoundError();
     throw new StaleTemplateError(current.updatedAt);
   }
-  return { template: dtoOf({ ...row, ...set }), warnings: checked?.warnings ?? [] };
+  return { template: (await dtosOf(db, userId, [{ ...row, ...set }]))[0]!, warnings: checked?.warnings ?? [] };
 }
 
 export async function deleteTemplate(db: Db, userId: string, id: string): Promise<void> {
@@ -191,6 +200,6 @@ export async function useTemplate(db: Db, userId: string, id: string, now: strin
     .where(and(eq(t.id, id), eq(t.userId, userId)))
     .returning(columns);
   if (!row) throw new TemplateNotFoundError();
-  const template = dtoOf(row);
-  return { template, doc: template.doc ? { ...template.doc, basedOn: { kind: "template", id } } : null };
+  const [template] = await dtosOf(db, userId, [row]);
+  return { template: template!, doc: template!.doc ? { ...template!.doc, basedOn: { kind: "template", id } } : null };
 }

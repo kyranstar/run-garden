@@ -28,6 +28,11 @@
  *
  * Budget: `DESIGN_CONTEXT_STATEMENTS` D1 statements, whatever the account holds (a counting test pins it), well inside
  * the step's 45 with the model call and the tool calls.
+ *
+ * THE ACCOUNT'S LIBRARY (saved-posts import, Task 13) rides in the counts statement (`personalMovesSql`): the moves of a
+ * session asked from read by the account's library, and so does a move asked from — one of the athlete's own moves
+ * included, its words marked as theirs; a pending one (still in review: "Ask the coach" before its batch is saved) is read
+ * from its own row, in the focus's one statement, and said to be not yet saved. It is never a move a workout can place.
  */
 import { and, asc, eq, gte, inArray, isNull, lte, sql, type SQL } from "drizzle-orm";
 import {
@@ -40,6 +45,7 @@ import {
   keyResults,
   objectives,
   performedSessions,
+  personalMoves,
   plannedWorkouts,
   providerConnections,
   sleepRecords,
@@ -55,9 +61,12 @@ import {
   type ConditionProfile,
   type DescribedRule,
   type EquipmentId,
+  type ExerciseRecord,
   type FormatId,
 } from "@rg/exercise-library";
-import { FORMAT_OF_PART, gatesReadTheCheck as gatesOpenedByCheck, modeOfEffort } from "@rg/workout";
+import { isPersonalId } from "@rg/saves";
+import { FORMAT_OF_PART, gatesReadTheCheck as gatesOpenedByCheck, makeLibraryIndex, modeOfEffort } from "@rg/workout";
+import { accountLibraryFrom, personalMovesSql, type AccountLibrary } from "./account-library.js";
 import { runWireOf, type Env } from "../env.js";
 import { latestReading, readingsOfDay } from "./condition-views.js";
 import type { Db } from "./db.js";
@@ -65,7 +74,7 @@ import type { Db } from "./db.js";
 import { RUN_LIMITS } from "./design-limits.js";
 import { LATER_LEAD_MIN } from "./design-time.js";
 import { memoryCore } from "./memory-core.js";
-import { focusMove, focusReadInContext, type RunFocus } from "./design-focus.js";
+import { focusReadInContext, type RunFocus } from "./design-focus.js";
 import { CONTEXT_TURNS, conversationBlock, conversationRows, type TurnRow } from "./coach-conversation.js";
 import { runningFactsOf, runningLine, runWeeksSql, thresholdSql, watchLine, type RunningFacts } from "./designed-runs.js";
 import { FOCUS_LINES, SHARED_PROMPT, markUntrusted, roleBlock, type ReviewRubric, type UntrustedSource } from "./design-prompt.js";
@@ -82,13 +91,14 @@ import { SLEEP_RECONNECT_WORDS, sleepConnectionStatusSql, sleepNeedsReconnect } 
  * answers, the activities, and one statement of scalar counts (the watch's last sync, the open suggestions, today's
  * declines and a reviewer's draft day among them: fix wave 13) — and for a reviewer whose draft is found, one more: the
  * days around the draft's (I9); for a main run asked from something the athlete was looking at (coach everywhere, A1),
- * one more: its focus's facts — none for a move, which the bundled library holds; and for a main run that is a later
+ * one more: its focus's facts — none for a library move, which the bundled library holds (one for a personal move: its
+ * own row, a pending one's record); and for a main run that is a later
  * turn of a conversation (the new shape §5: `conversation`, the conversation to read — none for its first turn), one
  * more: the turns before it (coach-conversation.ts `conversationRows`). */
 export function contextStatements(role: DesignRun["role"], focus?: RunFocus | null, conversation?: string | null): number {
   if (role === "reviewer") return 12;
   if (role !== "main") return 11;
-  return 11 + (focus && focusReadInContext(focus.kind) ? 1 : 0) + (conversation ? 1 : 0);
+  return 11 + (focus && focusReadInContext(focus) ? 1 : 0) + (conversation ? 1 : 0);
 }
 /** The most one build runs (the step loop budgets for it): a main run's with a focus and a conversation. */
 export const DESIGN_CONTEXT_STATEMENTS = 13;
@@ -323,6 +333,8 @@ interface Reads {
   conversation: TurnRow[] | null;
   /** The athlete's running (designed runs, §8 §3): their threshold and the last four weeks — read in the counts statement. */
   running: RunningFacts;
+  /** The account's library (`personalMovesSql`, read in the counts statement): what a session's moves and a move asked from resolve in. */
+  library: AccountLibrary;
 }
 
 /** An op still the athlete's to decide (coach-runs.ts' alsoOpen rule, R2): undecided, refused at approval, or being applied. */
@@ -344,7 +356,8 @@ function draftDateSql(userId: string, reviewerId: string): SQL {
 
 /**
  * A main run's focus, read (coach everywhere, A1): ONE statement, every term scoped to the athlete — so another
- * athlete's id reads as nothing — and none for a move (the bundled library). A planned workout or a day by the plan's
+ * athlete's id reads as nothing — and none for a library move (the bundled library); a personal move's own row (its
+ * status and, while it is pending, its record: the account's library holds the rest). A planned workout or a day by the plan's
  * own term (read_plan's: its title, intent and revision with it); a session by the log's own terms — the session, its
  * done sets and checks — with the athlete's ratings of it; an activity by the log's; an objective with its key results;
  * a suggestion with its ops.
@@ -352,8 +365,15 @@ function draftDateSql(userId: string, reviewerId: string): SQL {
 async function focusRead(db: Db, userId: string, focus: RunFocus): Promise<Map<string, Array<Record<string, unknown>>>> {
   const pw = plannedWorkouts;
   switch (focus.kind) {
-    case "move":
-      return new Map();
+    case "move": {
+      if (!isPersonalId(focus.id)) return new Map();
+      const pm = personalMoves;
+      return readTagged(db, [
+        sql`select 'm' as t, json_object('status', ${pm.status},
+            'record', case when ${pm.status} = 'pending' and json_valid(${pm.record}) then json(${pm.record}) end) as j
+          from ${pm} where ${pm.userId} = ${userId} and ${pm.id} = ${focus.id}`,
+      ]);
+    }
     case "workout":
       return readTagged(db, [planTerm(userId, sql`${pw.id} = ${focus.id}`)]);
     case "day":
@@ -488,11 +508,13 @@ async function read(
         (select max(${sleepRecords.date}) from ${sleepRecords} where ${sleepRecords.userId} = ${userId}) as sleepLast,
         ${sleepConnectionStatusSql(userId)} as sleepConnection,
         ${thresholdSql(userId)} as runThreshold,
-        ${runWeeksSql(userId, today)} as runWeeks`) as Promise<
-      Array<Reads["counts"] & { open: string | null; declined: string | null; draftDate: string | null; runThreshold: unknown; runWeeks: unknown }>
+        ${runWeeksSql(userId, today)} as runWeeks,
+        ${personalMovesSql(userId)} as library`) as Promise<
+      Array<Reads["counts"] & { open: string | null; declined: string | null; draftDate: string | null; runThreshold: unknown; runWeeks: unknown; library: unknown }>
     >,
   ]);
-  const { open: openJson, declined: declinedJson, draftDate: rawDraft, runThreshold, runWeeks, ...counts } = countRows[0]!;
+  const { open: openJson, declined: declinedJson, draftDate: rawDraft, runThreshold, runWeeks, library: rawLibrary, ...counts } = countRows[0]!;
+  const library = await accountLibraryFrom(db, userId, rawLibrary);
   const open = parsedArray(openJson)
     .flatMap((x) => {
       const o = x as { title?: unknown; date?: unknown; c?: unknown };
@@ -519,10 +541,13 @@ async function read(
     open,
     declinedToday: { n: Number(declined?.n ?? 0) || 0, reasons: Number(declined?.reasons ?? 0) || 0 },
     draftDate,
-    around: draftDate ? await daysAround(db, userId, { tz, units: prefs.units === "mi" ? "mi" : "km", weightUnit: prefs.weightUnit }, today, draftDate) : null,
+    around: draftDate
+      ? await daysAround(db, userId, { tz, units: prefs.units === "mi" ? "mi" : "km", weightUnit: prefs.weightUnit, library: library.all }, today, draftDate)
+      : null,
     focus: focus && focusRows ? { focus, rows: focusRows } : null,
     conversation: conversationTurns,
     running: runningFactsOf(runThreshold, runWeeks),
+    library,
   };
 }
 
@@ -903,7 +928,11 @@ function aroundSection(around: NonNullable<Reads["around"]>, date: string, today
 
 const ASKED_FROM = "The athlete asked from:";
 const DIFFICULTY_WORDS: Record<string, string> = { too_easy: "too easy", right: "about right", too_hard: "too hard" };
-const MOVE_NAMES = new Map(EXERCISES.flatMap((e) => [[e.id, e.name] as const, ...e.legacyIds.map((id) => [id, e.name] as const)]));
+/** A move's name by any id the account's library resolves (an old one, a merged one): the athlete's own move's marked. */
+function moveName(library: AccountLibrary, id: string): string | null {
+  const rec = makeLibraryIndex(library.all)(id);
+  return rec ? (isPersonalId(rec.id) ? athlete(rec.name) : rec.name) : null;
+}
 const str = (v: unknown): string | null => (typeof v === "string" && v.trim() !== "" ? v : null);
 const num = (v: unknown): number | null => (typeof v === "number" && Number.isFinite(v) ? v : null);
 /** A figure as the athlete reads it: whole when it is, else to a tenth. */
@@ -952,7 +981,7 @@ function dayLines(date: string, rows: Map<string, Array<Record<string, unknown>>
 }
 
 function sessionLines(id: string, rows: Map<string, Array<Record<string, unknown>>>, r: Reads): string[] {
-  const ctx: DoneCtx = { tz: r.tz, units: r.prefs.units === "mi" ? "mi" : "km", weightUnit: r.prefs.weightUnit, today: r.today };
+  const ctx: DoneCtx = { tz: r.tz, units: r.prefs.units === "mi" ? "mi" : "km", weightUnit: r.prefs.weightUnit, today: r.today, library: r.library.all };
   const entry = doneEntries({ sessions: rows.get("s"), sets: rows.get("x"), checks: rows.get("c") }, ctx).find((e) => e.kind === "session")?.entry;
   if (!entry) return [`${ASKED_FROM} a session that isn't there any more (id ${id}).`];
   const e = entry as { date: string; minutes?: number | null; mode?: string; theme?: unknown; moves?: unknown[]; played?: unknown[]; checks?: Array<{ profile: string; before: number | null; after: number | null }> };
@@ -974,9 +1003,12 @@ function sessionLines(id: string, rows: Map<string, Array<Record<string, unknown
     if (n !== null) return Math.sign(n);
     return a.choice === "loved" || a.choice === "liked" ? 1 : a.choice === "disliked" || a.choice === "not_for_me" ? -1 : 0;
   };
-  const moves = answers.filter((a) => a.q === "exercise_feedback" && MOVE_NAMES.has(String(a.subject)));
-  const liked = moves.filter((a) => said(a) > 0).map((a) => MOVE_NAMES.get(String(a.subject))!);
-  const disliked = moves.filter((a) => said(a) < 0).map((a) => MOVE_NAMES.get(String(a.subject))!);
+  const moves = answers.flatMap((a) => {
+    const name = a.q === "exercise_feedback" ? moveName(r.library, String(a.subject)) : null;
+    return name ? [{ a, name }] : [];
+  });
+  const liked = moves.filter((m) => said(m.a) > 0).map((m) => m.name);
+  const disliked = moves.filter((m) => said(m.a) < 0).map((m) => m.name);
   const ratings = [rating || null, liked.length ? `liked ${liked.join(", ")}` : null, disliked.length ? `didn't like ${disliked.join(", ")}` : null].filter(Boolean);
   if (ratings.length) out.push(`- Their ratings: ${ratings.join("; ")}.`);
   const words = str(whole?.text);
@@ -1034,12 +1066,31 @@ function objectiveLines(id: string, rows: Map<string, Array<Record<string, unkno
   return out;
 }
 
-function moveLines(id: string): string[] {
-  const rec = focusMove(id);
+const DOSE_UNIT: Record<ExerciseRecord["dose"]["type"], string> = { reps: "reps", time: "s", breaths: "breaths", carry: "s carried" };
+/** A record's dose, as its record holds it: "8–12 reps, 2–3 sets". */
+function doseLine(dose: ExerciseRecord["dose"]): string {
+  const span = ([lo, hi]: readonly [number, number]) => (lo === hi ? String(lo) : `${lo}–${hi}`);
+  return `${span(dose.range)} ${DOSE_UNIT[dose.type]}${dose.sets ? `, ${span(dose.sets)} sets` : ""}`;
+}
+
+/**
+ * A move asked from: the library's (the bundled library) in its own words; one of the athlete's own moves — by the
+ * account's library, an archived or merged one too, else (still in review) its pending row's record — in theirs, marked,
+ * with its dose as the post had it, and said to be not yet saved while it is pending.
+ */
+function moveLines(id: string, r: Reads, rows: Map<string, Array<Record<string, unknown>>>): string[] {
+  const library = makeLibraryIndex(r.library.all)(id);
+  const row = rows.get("m")?.[0];
+  const pending = !library && row?.status === "pending" ? (row.record as ExerciseRecord | null) : null;
+  const rec = library ?? (pending && typeof pending === "object" && typeof pending.name === "string" ? pending : null);
   if (!rec) return [`${ASKED_FROM} a move the library doesn't hold (id ${id}).`];
+  const about = `- For: ${(rec.purposes ?? []).map(vocabLabel).join(", ")}; regions: ${(rec.regions ?? []).map(vocabLabel).join(", ")}; difficulty ${rec.difficulty} of 5.`;
+  if (!isPersonalId(rec.id) && !pending) return [`${ASKED_FROM} a move in the library — ${rec.name} (id ${rec.id}): ${rec.text.summary}`, about];
   return [
-    `${ASKED_FROM} a move in the library — ${rec.name} (id ${rec.id}): ${rec.text.summary}`,
-    `- For: ${rec.purposes.map(vocabLabel).join(", ")}; regions: ${rec.regions.map(vocabLabel).join(", ")}; difficulty ${rec.difficulty} of 5.`,
+    `${ASKED_FROM} one of their own moves${pending ? " (from your saves, not yet saved)" : ""} — ${athlete(rec.name)} (id ${id}): ${athlete(rec.text?.summary ?? "")}`,
+    about,
+    ...(rec.dose ? [`- Its dose as seen: ${doseLine(rec.dose)}.`] : []),
+    ...(pending ? ["- Not yet in the library: no workout can hold it until its batch is saved."] : []),
   ];
 }
 
@@ -1098,7 +1149,7 @@ function focusSection(f: NonNullable<Reads["focus"]>, r: Reads, time: string): s
             : focus.kind === "objective"
               ? objectiveLines(focus.id, rows)
               : focus.kind === "move"
-                ? moveLines(focus.id)
+                ? moveLines(focus.id, r, rows)
                 : proposalLines(focus.id, rows, r.today);
   return [...lines, FOCUS_LINES[focus.kind]].join("\n");
 }

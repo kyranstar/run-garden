@@ -27,9 +27,9 @@ import { z } from "zod";
 import { and, asc, desc, eq, gte, isNull, lte, or, sql } from "drizzle-orm";
 import { plannedWorkouts } from "@rg/database";
 import { isLocalDate, nowInstant, parseStoredWorkoutDoc, todayInZone } from "@rg/domain";
-import { EXERCISES } from "@rg/exercise-library";
 import { deriveDoc } from "@rg/workout";
 import { requireUser, type AppContext } from "../auth/middleware.js";
+import { libraryForDocs } from "../services/account-library.js";
 import { CALENDAR_OPS_PER_REQUEST, loadPreferences, syncCalendar } from "../services/calendar-sync.js";
 import { waitUntilSafe } from "../services/wait-until.js";
 import {
@@ -167,7 +167,9 @@ workoutRoutes.get("/:id/doc", async (c) => {
   if (!row || row.archivedAt) return c.json({ error: "not_found" }, 404);
   const doc = parseStoredWorkoutDoc(row.workoutDoc);
   if (!doc) return c.json({ doc: null, reason: row.workoutDoc === null || row.workoutDoc === undefined ? "missing" : "invalid" });
-  return c.json({ doc, derived: deriveDoc(doc, EXERCISES), rev: row.workoutDocRev ?? null });
+  // Derived in the account's library when it holds one of the athlete's own moves (one statement more, then).
+  const library = await libraryForDocs(c.get("db"), c.get("userId"), [doc]);
+  return c.json({ doc, derived: deriveDoc(doc, library.all), rev: row.workoutDocRev ?? null });
 });
 
 workoutRoutes.get("/", async (c) => {

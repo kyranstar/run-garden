@@ -15,6 +15,12 @@
  *                    saved move came from) with the athlete's last five entries and best set
  *   setExercisePrefs `{rating?, excluded?, pinned?}` → `exercise_prefs`, the row the review save writes
  *                    (`${userId}:${exerciseId}`), changing only the fields sent
+ *   listPersonalMoves the owner's own moves (saved-posts import): each active and archived one whole, with its links
+ *
+ * THE ACCOUNT'S LIBRARY (saved-posts import, Task 13; account-library.ts): the list searches what the athlete is offered
+ * (`offered`: the public library and their active personal moves); one move reads by any id the account's library
+ * resolves (`all`: an archived move too, a merged one as its target); a say on a move is taken for a public move or an
+ * active personal one — an archived move is never offered, so it is never pinned anew.
  *
  * The library's own data never carries provenance (it is public); a saved move's links live in `exercise_provenance`,
  * the account's own, and only the detail returns them. No payload carries `providers` internals.
@@ -45,7 +51,9 @@ import {
   type EquipmentId,
   type ExerciseRecord,
 } from "@rg/exercise-library";
-import { forgetAccountLibrary } from "./account-library.js";
+import { isPersonalId } from "@rg/saves";
+import { makeLibraryIndex } from "@rg/workout";
+import { forgetAccountLibrary, loadAccountLibrary } from "./account-library.js";
 import { restoreInProgress } from "./account-state.js";
 import { activeProfileIds } from "./condition-views.js";
 import { loadPreferences } from "./calendar-sync.js";
@@ -179,10 +187,8 @@ export class UnknownPlaceError extends Error {
   }
 }
 
-const byId = new Map(EXERCISES.map((e) => [e.id, e]));
-/** Every id a move has gone by (renames keep history) → its current id. */
-const canonicalId = new Map(EXERCISES.flatMap((e) => [e.id, ...e.legacyIds].map((i) => [i, e.id] as const)));
-export const libraryHas = (id: string): boolean => byId.has(id);
+/** A public move by its own id (never an old one): what a say on a move was always taken for. */
+const publicMove = new Map(EXERCISES.map((e) => [e.id, e]));
 
 /** A profile's verdict on a move (see the header). An unrated move reads as `never`: it fails closed. */
 export function safetyFor(profile: ConditionProfile, ex: ExerciseRecord): Safety {
@@ -246,10 +252,17 @@ export interface DoneStat {
  *  - the tally `isDoneCleanly` reads, exactly as the engine's history summary counts it (`historyRows`,
  *    engine-inputs.ts): an entry is the sets with one entry index, named by its first set, and it counts only with a
  *    done set; `logged` is the entries up to today, each flag the entries any of whose sets carries it.
- * Legacy ids are merged into the move they now are. Shared with a document workout's build (session-build.ts), which
- * reads the jumps done cleanly from it (`doneCleanlyOf`) for the frontier its ⇄ honours.
+ * Legacy ids are merged into the move they now are, in `library` (the account's `all`: a merged personal move's into its
+ * target; the public library's by default). Shared with a document workout's build (session-build.ts), which reads the
+ * jumps done cleanly from it (`doneCleanlyOf`) for the frontier its ⇄ honours.
  */
-export async function doneStats(db: Db, userId: string, since: string, today: string): Promise<Map<string, DoneStat>> {
+export async function doneStats(
+  db: Db,
+  userId: string,
+  since: string,
+  today: string,
+  library: readonly ExerciseRecord[] = EXERCISES,
+): Promise<Map<string, DoneStat>> {
   const rows = (await db.all(sql`
     with e as (
       -- Logged entries (with a done set). With exactly one MIN() in a query, SQLite takes the bare columns from the
@@ -288,8 +301,9 @@ export async function doneStats(db: Db, userId: string, since: string, today: st
     flag: string | null;
   }>;
   const out = new Map<string, DoneStat>();
+  const find = makeLibraryIndex(library);
   for (const r of rows) {
-    const id = canonicalId.get(r.exerciseId) ?? r.exerciseId;
+    const id = find(r.exerciseId)?.id ?? r.exerciseId;
     const cur = out.get(id) ?? { last: null, n30: 0, logged: 0, flags: {} };
     if (r.kind === "done") {
       if (r.last && (!cur.last || r.last > cur.last)) cur.last = r.last;
@@ -312,23 +326,26 @@ export function doneCleanlyOf(stats: ReadonlyMap<string, DoneStat>, profiles: re
 }
 
 export async function listLibrary(db: Db, userId: string, query: LibraryQuery): Promise<LibraryList> {
-  const [active, prefRows, savedRows, place, userPrefs] = await Promise.all([
+  const [active, prefRows, savedRows, place, userPrefs, library] = await Promise.all([
     activeProfileIds(db, userId),
     db.select().from(exercisePrefs).where(eq(exercisePrefs.userId, userId)),
     db.select({ exerciseId: exerciseProvenance.exerciseId }).from(exerciseProvenance).where(eq(exerciseProvenance.userId, userId)),
     defaultPlace(db, userId),
     loadPreferences(db, userId),
+    loadAccountLibrary(db, userId),
   ]);
+  // What the athlete may be offered: the public library and their active personal moves (an archived one never).
+  const offered = library.offered;
   const at = query.location ? await placeEquipment(db, userId, query.location) : null;
   const profiles = active.map(profileById);
   const prefs = new Map(prefRows.map((r) => [r.exerciseId, r]));
   const saved = new Set(savedRows.map((r) => r.exerciseId));
   const today = todayInZone(userPrefs.timezone);
-  const done = await doneStats(db, userId, addDays(today, -29), today);
+  const done = await doneStats(db, userId, addDays(today, -29), today, library.all);
 
-  const safeOf = new Map(EXERCISES.map((ex) => [ex.id, safetyOf(profiles, ex)]));
+  const safeOf = new Map(offered.map((ex) => [ex.id, safetyOf(profiles, ex)]));
   const { q, location: _location, safe, limit, ...filters } = query;
-  const matches = searchLibrary(EXERCISES, q ?? "", filters, {
+  const matches = searchLibrary(offered, q ?? "", filters, {
     accepts: (ex) => (!at || hasEquipment(ex, at)) && (!safe || Object.values(safeOf.get(ex.id)!).every((s) => s === "safe")),
     fit: (ex) => Math.max(0, ...Object.values(safeOf.get(ex.id)!).map((s) => SAFETY_RANK[s])),
   });
@@ -369,7 +386,7 @@ export async function listLibrary(db: Db, userId: string, query: LibraryQuery): 
     .map((equipmentId) => ({
       equipmentId,
       label: EQUIPMENT[equipmentId],
-      unlocks: EXERCISES.filter(
+      unlocks: offered.filter(
         (ex) =>
           !hasEquipment(ex, place.equipment) &&
           hasEquipment(ex, [...place.equipment, equipmentId]) &&
@@ -379,7 +396,7 @@ export async function listLibrary(db: Db, userId: string, query: LibraryQuery): 
     }));
 
   return {
-    total: EXERCISES.length,
+    total: offered.length,
     matched: matches.length,
     items: rows,
     place: { id: place.id, name: place.name },
@@ -470,15 +487,20 @@ async function entriesOf(db: Db, userId: string, ex: ExerciseRecord): Promise<Hi
     .map((g) => ({ ...g.view, sets: g.sets.sort((x, y) => x.i - y.i).map((s) => s.set) }));
 }
 
-const named = (ids: readonly string[]) =>
+/** The moves `ids` name that the library resolves, by name (an easier or harder step it no longer has is left out). */
+const named = (find: (id: string) => ExerciseRecord | undefined, ids: readonly string[]) =>
   ids.flatMap((id) => {
-    const ex = byId.get(id);
+    const ex = find(id);
     return ex ? [{ id, name: ex.name }] : [];
   });
 
+/** One move whole, by its id in the account's library (`all`: an archived personal move too); a pending one is not here. */
 export async function libraryItem(db: Db, userId: string, id: string): Promise<LibraryItem> {
-  const ex = byId.get(id);
-  if (!ex) throw new LibraryItemNotFoundError();
+  const library = await loadAccountLibrary(db, userId);
+  const find = makeLibraryIndex(library.all);
+  // A move by its own id (an old one is not this read's), the public library's or the account's own.
+  const ex = find(id);
+  if (!ex || ex.id !== id) throw new LibraryItemNotFoundError();
   const [active, [pref], provenance, entries] = await Promise.all([
     activeProfileIds(db, userId),
     db.select().from(exercisePrefs).where(and(eq(exercisePrefs.userId, userId), eq(exercisePrefs.exerciseId, id))).limit(1),
@@ -508,8 +530,8 @@ export async function libraryItem(db: Db, userId: string, id: string): Promise<L
     text,
     conditionNotes: profiles.flatMap((p) => (notes[p.id] ? [{ profileId: p.id, label: p.label, note: notes[p.id]! }] : [])),
     safety: safetyOf(profiles, ex),
-    easier: named(ex.easier),
-    harder: named(ex.harder),
+    easier: named(find, ex.easier),
+    harder: named(find, ex.harder),
     prefs: {
       exerciseId: ex.id,
       rating: ratingOf(pref?.rating),
@@ -534,9 +556,17 @@ export interface PrefsPatch {
  * (`${userId}:${exerciseId}`), with the same meaning. Only the fields sent change; a new row starts unrated, not set
  * aside, unpinned and not yet introduced. The flags are independent, as the save leaves them: the engine puts "not
  * for me" before a pin. Refused while a restore is replacing the account.
+ *
+ * Taken for a public move or an ACTIVE personal move of the account (by its own id): an unknown, pending, archived or
+ * merged one is `LibraryItemNotFoundError` — an archived move is never offered, so it is never pinned anew. A personal
+ * id reads the account's library (one statement); a public one none.
  */
 export async function setExercisePrefs(db: Db, userId: string, exerciseId: string, patch: PrefsPatch, now: string): Promise<ExercisePrefsView> {
-  if (!byId.has(exerciseId)) throw new LibraryItemNotFoundError();
+  if (!publicMove.has(exerciseId)) {
+    if (!isPersonalId(exerciseId)) throw new LibraryItemNotFoundError();
+    const offered = makeLibraryIndex((await loadAccountLibrary(db, userId)).offered);
+    if (offered(exerciseId)?.id !== exerciseId) throw new LibraryItemNotFoundError();
+  }
   if (await restoreInProgress(db, userId)) throw new RestoreInProgressError();
   const set: Partial<typeof exercisePrefs.$inferInsert> = { updatedAt: now };
   if (patch.rating !== undefined) set.rating = patch.rating;
@@ -565,4 +595,40 @@ export async function setExercisePrefs(db: Db, userId: string, exerciseId: strin
     pinned: row?.pinned ?? false,
     introducedOn: row?.introducedOn ?? null,
   };
+}
+
+/** One of the owner's own moves (`GET /api/library/personal`): its record whole, whether it is offered, its links. */
+export interface PersonalMoveView {
+  record: ExerciseRecord;
+  status: "active" | "archived";
+  /** The saved posts it came from — its own, and those of any move merged into it — oldest first. */
+  links: Array<{ url: string | null; creator: string | null }>;
+}
+
+/**
+ * The owner's own moves (saved-posts import): every active and archived one — never a pending one (the review's) nor
+ * a merged one (its target stands for it, with its links) — by name. Two statements: the account's library
+ * (`loadAccountLibrary`, which holds the records), then their links (`exercise_provenance`, one bound list of ids).
+ */
+export async function listPersonalMoves(db: Db, userId: string): Promise<{ moves: PersonalMoveView[] }> {
+  const library = await loadAccountLibrary(db, userId);
+  const mine = library.all.filter((r) => isPersonalId(r.id));
+  if (mine.length === 0) return { moves: [] };
+  const offered = new Set(library.offered.filter((r) => isPersonalId(r.id)).map((r) => r.id));
+  const ids = mine.flatMap((r) => [r.id, ...r.legacyIds]);
+  const rows = (await db.all(sql`
+    select ${exerciseProvenance.exerciseId} as exerciseId, ${exerciseProvenance.url} as url, ${exerciseProvenance.creator} as creator
+    from ${exerciseProvenance}
+    where ${exerciseProvenance.userId} = ${userId} and ${exerciseProvenance.exerciseId} in (select value from json_each(${JSON.stringify(ids)}))
+    order by ${exerciseProvenance.createdAt}, ${exerciseProvenance.id}`)) as Array<{ exerciseId: string; url: string | null; creator: string | null }>;
+  const find = makeLibraryIndex(library.all);
+  const links = new Map<string, PersonalMoveView["links"]>();
+  for (const r of rows) {
+    const id = find(r.exerciseId)?.id ?? r.exerciseId;
+    links.set(id, [...(links.get(id) ?? []), { url: r.url, creator: r.creator }]);
+  }
+  const moves = mine
+    .map((record): PersonalMoveView => ({ record, status: offered.has(record.id) ? "active" : "archived", links: links.get(record.id) ?? [] }))
+    .sort((a, b) => a.record.name.localeCompare(b.record.name, "en", { sensitivity: "base" }) || a.record.id.localeCompare(b.record.id));
+  return { moves };
 }

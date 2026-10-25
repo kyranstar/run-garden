@@ -28,7 +28,9 @@ import {
   type WeeklyVolumeValue,
 } from "@rg/analytics";
 import { addDays, startOfIsoWeek, type LocalDate, type WeightUnit } from "@rg/domain";
-import { CORE_FAMILIES, EXERCISES, isProfileId, profileById } from "@rg/exercise-library";
+import { CORE_FAMILIES, isProfileId, profileById } from "@rg/exercise-library";
+import { makeLibraryIndex } from "@rg/workout";
+import { libraryFor } from "./account-library.js";
 import { activeProfileIds } from "./condition-views.js";
 import { chunkIds, type Db } from "./db.js";
 import { loadProgramState } from "./engine-inputs.js";
@@ -45,16 +47,6 @@ export interface ProgressDto {
   lifts: Array<{ exerciseId: string; name: string; trend: MetricResult<LiftTopSetsValue> }>;
 }
 
-let canonicalIds: Map<string, string> | null = null;
-/** A library move's id from any id it has had (`legacyIds`), so an old log still counts for its lift. */
-function canonical(id: string): string {
-  if (canonicalIds === null) {
-    canonicalIds = new Map();
-    for (const e of EXERCISES) for (const legacy of e.legacyIds) if (!canonicalIds.has(legacy)) canonicalIds.set(legacy, e.id);
-    for (const e of EXERCISES) canonicalIds.set(e.id, e.id);
-  }
-  return canonicalIds.get(id) ?? id;
-}
 
 const FAMILY_ORDER = new Map(CORE_FAMILIES.map((f, i) => [f.id, i]));
 
@@ -146,6 +138,11 @@ export async function loadProgress(db: Db, userId: string, today: LocalDate, wei
       ),
     )
   ).flat();
+  // A move's id from any id it has had (`legacyIds`), so an old log still counts for its lift — in the account's library
+  // when a set or a lift names one of the athlete's own moves (a merged one counts as its target; one statement, then).
+  const library = (await libraryFor(db, userId, new Set([...setRows.map((r) => r.exerciseId), ...lifts]))).all;
+  const find = makeLibraryIndex(library);
+  const canonical = (id: string): string => find(id)?.id ?? id;
   const setsBySession = new Map<string, LoggedLoadSet[]>();
   for (const r of setRows) {
     if (r.loadKg === null || !(r.loadKg > 0)) continue;
@@ -188,6 +185,6 @@ export async function loadProgress(db: Db, userId: string, today: LocalDate, wei
     weightUnit,
     conditions,
     volume: weeklyStrengthVolume(strength, today),
-    lifts: lifts.map((exerciseId) => ({ exerciseId, name: exerciseDisplayName(exerciseId), trend: liftTopSets(strength, exerciseId, today) })),
+    lifts: lifts.map((exerciseId) => ({ exerciseId, name: exerciseDisplayName(exerciseId, library), trend: liftTopSets(strength, exerciseId, today) })),
   };
 }

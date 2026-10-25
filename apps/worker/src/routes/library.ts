@@ -6,11 +6,15 @@
  *        &maxDifficulty=&location=&safe=&limit=   slim rows ranked by the match (limit default 50, max 200; `matched`
  *                                                 counts them all), the default place, the switched-on profiles
  *                                                 and the wishlist's unlock counts
+ *   GET  /personal                                                 the owner's own moves (saved-posts import): each
+ *                                                                  active and archived one's record, status and links
  *   GET  /:id                                                      the whole record with the athlete's history for it
+ *                                                                  (a personal move by its id, an archived one too)
  *   PUT  /:id/prefs  {rating?: 1|-1|null, excluded?, pinned?}      → `{prefs}`; only what is sent changes
  *
  * 422 `invalid_query` for a filter outside the vocabularies or a place that is not this user's (nor a preset);
- * 404 `not_found` for a move the library does not have; 422 `invalid_prefs` for a body that is not one of the above;
+ * 404 `not_found` for a move the account's library does not have (a say on a move: nor offers — an archived or pending
+ * personal move); 422 `invalid_prefs` for a body that is not one of the above;
  * 423 while a restore is replacing the account (`requireUser`, and the service's own check).
  */
 import { Hono } from "hono";
@@ -26,6 +30,7 @@ import {
   MAX_LIBRARY_LIMIT,
   libraryItem,
   listLibrary,
+  listPersonalMoves,
   setExercisePrefs,
   UnknownPlaceError,
 } from "../services/library-view.js";
@@ -77,6 +82,9 @@ libraryRoutes.get("/", async (c) => {
     throw e;
   }
 });
+
+// Before `/:id`: "personal" is no move's id, and this is the owner's list.
+libraryRoutes.get("/personal", async (c) => c.json(await listPersonalMoves(c.get("db"), c.get("userId"))));
 
 libraryRoutes.get("/:id", async (c) => {
   try {

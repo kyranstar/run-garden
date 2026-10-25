@@ -18,6 +18,7 @@ import type { Db } from "./db.js";
 import { clearOutOfCredits, OUT_OF_CREDITS_REASON, recordOutOfCredits } from "./ai-credits.js";
 import { loadPreferences } from "./calendar-sync.js";
 import { designContextBuilder, startOfLocalDate } from "./design-context.js";
+import { libraryForDocs } from "./account-library.js";
 import { checkFocus, dayOutOfRange, type RunFocus } from "./design-focus.js";
 import { DESIGNER_CEILING_MICROS, MAX_TOOL_CALLS_PER_TURN, RUN_LIMITS, SET_REDO_ROUNDS } from "./design-limits.js";
 import { NO_TOOL_LINE } from "./design-prompt.js";
@@ -3197,7 +3198,10 @@ function reviewHooks(s: StepCtx): ReviewHooks {
     async start(req) {
       const { state, run, root } = s;
       const at = s.now.toISOString();
-      const packet = reviewPacket({ round: req.round, draft: req.draft, records: toolRecords(state.messages, state.results), ...(state.brief ? { brief: state.brief } : {}) });
+      // The draft's moves named in the account's library when it holds one of the athlete's own (the proposing call read
+      // it with the athlete: found again, no statement).
+      const library = (await libraryForDocs(s.db, s.userId, [req.draft.doc])).all;
+      const packet = reviewPacket({ round: req.round, draft: req.draft, records: toolRecords(state.messages, state.results), library, ...(state.brief ? { brief: state.brief } : {}) });
       const rootSettings = root.settings ?? state.settings;
       const reviewerState = newRunState("reviewer", run.scope, {
         rehearsal: state.settings.rehearsal,

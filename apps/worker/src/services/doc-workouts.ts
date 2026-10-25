@@ -41,11 +41,11 @@ import {
   type UserPreferences,
   type WorkoutDoc,
 } from "@rg/domain";
-import { EXERCISES, PROFILES, isDoneCleanly, isProfileId, type ConditionProfile } from "@rg/exercise-library";
+import { EXERCISES, PROFILES, isDoneCleanly, isProfileId, type ConditionProfile, type ExerciseRecord } from "@rg/exercise-library";
 import { Hist, type HistorySession, type HistorySummary } from "@rg/session-engine";
 import { deriveDoc, makeLibraryIndex, QUICK_START_KINDS, validateWorkoutDoc, type DocDerived, type DocIssue, type ValidateCtx } from "@rg/workout";
 import { sha256Hex } from "../auth/crypto.js";
-import { loadAccountLibrary } from "./account-library.js";
+import { libraryForDocs, loadAccountLibrary } from "./account-library.js";
 import { restoreInProgress } from "./account-state.js";
 import { runAtomically, type Db } from "./db.js";
 import { judgeDoc } from "./doc-build.js";
@@ -124,7 +124,8 @@ async function startedToday(db: Db, userId: string, doc: WorkoutDoc, today: stri
     );
   for (const row of rows) {
     const theirs = parseStoredWorkoutDoc(row.workoutDoc);
-    if (theirs && startOf(theirs) === start) return dtoOf(row, theirs, deriveDoc(theirs, EXERCISES).estimatedMinutes);
+    // Its minutes in the account's library (the create read it: none more).
+    if (theirs && startOf(theirs) === start) return dtoOf(row, theirs, deriveDoc(theirs, (await libraryForDocs(db, userId, [theirs])).all).estimatedMinutes);
   }
   return null;
 }
@@ -249,10 +250,11 @@ export interface DocWriteSource {
 /**
  * The moves the athlete has done CLEANLY by the summary's day — `DayContext.done`, by the library's one rule for what
  * unlocks the next rung (`isDoneCleanly`, the engine's own): a clenched exposure is not a clean one. Each move's tally
- * merges its entries under every legacy id into the move it now is, as the engine's history stats do.
+ * merges its entries under every legacy id into the move it now is, as the engine's history stats do — in `library` (the
+ * account's `all`: a merged personal move's into its target).
  */
-export function doneCleanly(summary: HistorySummary, profiles: readonly ConditionProfile[]): Set<string> {
-  const find = makeLibraryIndex(EXERCISES);
+export function doneCleanly(summary: HistorySummary, profiles: readonly ConditionProfile[], library: readonly ExerciseRecord[] = EXERCISES): Set<string> {
+  const find = makeLibraryIndex(library);
   const byMove = new Map<string, { lastDate: string | null; logged: number; flags: Record<string, number> }>();
   for (const [raw, m] of Object.entries(summary.moves)) {
     if (m.last === null && !m.logged) continue;
@@ -293,12 +295,13 @@ export async function docDayContext(
   const checks = o.date <= o.today && active.length > 0 ? await slotChecks(db, userId, o.workoutId, o.date, o.today, active) : {};
   return {
     library: library.all,
+    offered: library.offered,
     activeProfiles: profiles,
     day: {
       date: o.date,
       today: o.today,
       readings: Object.fromEntries(Object.entries(checks).map(([p, a]) => [p, { pre: a.pre, post: null, feelingOff: a.feelingOff }])),
-      done: doneCleanly(history.summary, profiles),
+      done: doneCleanly(history.summary, profiles, library.all),
       recent: recentOf(history.sessions, o.today),
     },
     excluded,
@@ -426,7 +429,8 @@ async function keyedRow(db: Db, userId: string, id: string): Promise<{ workout: 
   if (!row) return null;
   const doc = parseStoredWorkoutDoc(row.workoutDoc);
   if (!doc) return null;
-  return { workout: dtoOf(row, doc, deriveDoc(doc, EXERCISES).estimatedMinutes), warnings: [], repeated: true };
+  // Its minutes in the account's library when it holds one of the athlete's own moves (one statement more, then).
+  return { workout: dtoOf(row, doc, deriveDoc(doc, (await libraryForDocs(db, userId, [doc])).all).estimatedMinutes), warnings: [], repeated: true };
 }
 
 /**

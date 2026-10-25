@@ -7,7 +7,8 @@
  * session still being written (`PENDING_HASH`) is not there yet.
  *
  * This is the DTO boundary: exercise ids become words here and nowhere else
- * (`exerciseDisplayName`), and weights are put in the athlete's unit — a
+ * (`exerciseDisplayName`: one of the athlete's own moves by the account's
+ * library, read only when a set names one), and weights are put in the athlete's unit — a
  * weight already in that unit stays exactly as typed; a converted one is
  * rounded to the half unit (`weightInUnit`). The Activity feed reads the same
  * sets through `performedByActivity` (Phase 2d Task 2, ruling 2d-R4), which
@@ -19,6 +20,8 @@ import { conditionChecks, corosExercises, performedSessions, performedSets } fro
 import { addDays, SESSION_MODES, weightInUnit, type SessionMode, type Weight, type WeightUnit } from "@rg/domain";
 import { EXERCISES, isProfileId, profileById, THEMES, type ExerciseRecord } from "@rg/exercise-library";
 import { COROS_EXERCISE_NAMES } from "@rg/providers";
+import { makeLibraryIndex } from "@rg/workout";
+import { libraryFor } from "./account-library.js";
 import { chunkIds, type Db } from "./db.js";
 import { libraryIdsByKey } from "./coros-exercise-map.js";
 import { COROS_EXERCISE_PREFIX, PENDING_HASH, WATCH_SOURCE } from "./watch-sets.js";
@@ -37,19 +40,13 @@ export interface LoggedExerciseDto {
   sets: LoggedSetDto[];
 }
 
-let libraryNames: Map<string, string> | null = null;
-
-/** An exercise id as the athlete reads it: the library's name, COROS's English name for its key, or the key as sent. */
-export function exerciseDisplayName(id: string): string {
-  if (libraryNames === null) {
-    libraryNames = new Map();
-    for (const e of EXERCISES) {
-      libraryNames.set(e.id, e.name);
-      for (const legacy of e.legacyIds) if (!libraryNames.has(legacy)) libraryNames.set(legacy, e.name);
-    }
-  }
-  const library = libraryNames.get(id);
-  if (library) return library;
+/**
+ * An exercise id as the athlete reads it: the library's name (by any id it has held; `library`, given, is the account's,
+ * so one of the athlete's own moves reads by its name too), COROS's English name for its key, or the key as sent.
+ */
+export function exerciseDisplayName(id: string, library: readonly ExerciseRecord[] = EXERCISES): string {
+  const name = makeLibraryIndex(library)(id)?.name;
+  if (name) return name;
   if (id.startsWith(COROS_EXERCISE_PREFIX)) {
     const key = id.slice(COROS_EXERCISE_PREFIX.length);
     return COROS_EXERCISE_NAMES[key] ?? key;
@@ -132,6 +129,7 @@ async function sessionsOfActivities(db: Db, userId: string, activityIds: readonl
  */
 async function setsOfSessions(
   db: Db,
+  userId: string,
   activityBySession: ReadonlyMap<string, string>,
   unit: WeightUnit,
   asTyped: (sessionId: string) => boolean,
@@ -148,6 +146,8 @@ async function setsOfSessions(
     )
   ).flat();
 
+  // Named by the account's library when a set names one of the athlete's own moves (one statement more, then).
+  const library = (await libraryFor(db, userId, new Set(sets.map((r) => r.exerciseId)))).all;
   const out = new Map<string, LoggedExerciseDto[]>();
   const byExercise = new Map<string, Map<string, LoggedExerciseDto>>();
   for (const r of sets) {
@@ -157,7 +157,7 @@ async function setsOfSessions(
     byExercise.set(activityId, rows);
     let exercise = rows.get(r.exerciseId);
     if (!exercise) {
-      exercise = { exerciseId: r.exerciseId, name: exerciseDisplayName(r.exerciseId), sets: [] };
+      exercise = { exerciseId: r.exerciseId, name: exerciseDisplayName(r.exerciseId, library), sets: [] };
       rows.set(r.exerciseId, exercise);
       list.push(exercise);
     }
@@ -184,7 +184,7 @@ export async function loggedSetsByActivity(
 ): Promise<Map<string, LoggedExerciseDto[]>> {
   const chosen = await sessionsOfActivities(db, userId, activityIds);
   const activityBySession = new Map([...chosen.values()].map((s) => [s.id, s.activityId!]));
-  return setsOfSessions(db, activityBySession, unit, () => false);
+  return setsOfSessions(db, userId, activityBySession, unit, () => false);
 }
 
 // ── What a session was: the feed's row and expansion (Phase 2d Task 2, mocks §8) ─────────────────────────────
@@ -345,7 +345,7 @@ export async function performedByActivity(
   const activityBySession = new Map(chosen.map((s) => [s.id, s.activityId!]));
   const own = new Set(chosen.filter((s) => s.source !== WATCH_SOURCE).map((s) => s.id));
   const [logged, checkRows] = await Promise.all([
-    setsOfSessions(db, activityBySession, unit, (id) => own.has(id)),
+    setsOfSessions(db, userId, activityBySession, unit, (id) => own.has(id)),
     checkRowsOfSessions(db, userId, chosen),
   ]);
   const readings = readingsBySession(chosen, checkRows);

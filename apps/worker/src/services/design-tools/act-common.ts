@@ -48,8 +48,8 @@ import {
   type MusicShortcut,
   type WorkoutDoc,
 } from "@rg/domain";
-import { EQUIPMENT_IDS, EXERCISES, LOCATION_PRESETS, MUSCLES, NO_EQUIPMENT_GEAR, REGIONS, type ExerciseRecord } from "@rg/exercise-library";
-import { deriveDoc, gatesReadTheCheck, validateWorkoutDoc, type DocDerived, type DocIssue, type ValidateCtx } from "@rg/workout";
+import { EQUIPMENT_IDS, LOCATION_PRESETS, MUSCLES, NO_EQUIPMENT_GEAR, REGIONS } from "@rg/exercise-library";
+import { deriveDoc, gatesReadTheCheck, makeLibraryIndex, validateWorkoutDoc, type DocDerived, type DocIssue, type LibraryIndex, type ValidateCtx } from "@rg/workout";
 import { accountLibraryFrom, personalMovesSql, type AccountLibrary } from "../account-library.js";
 import { defaultFromRow, defaultPlaceSql, namedFromRow, ownPlaceSql, type PlaceGear } from "../default-place.js";
 import { recentOf } from "../doc-workouts.js";
@@ -525,7 +525,7 @@ export const runCtxExtra = (ctx: ToolContext, date: string): Record<string, SQL>
  */
 export async function docValidateCtx(ctx: ToolContext, a: DocAthlete, date: string): Promise<ValidateCtx> {
   const today = a.athlete.today;
-  const stats = await doneStats(ctx.db, ctx.userId, addDays(today, -29), today);
+  const stats = await doneStats(ctx.db, ctx.userId, addDays(today, -29), today, a.library.all);
   const done = doneCleanlyOf(stats, a.athlete.profiles, stats.keys());
   const sessions = a.recentIds.length > 0 ? await loadSessionsById(ctx.db, ctx.userId, a.recentIds) : [];
   const readings =
@@ -536,6 +536,7 @@ export async function docValidateCtx(ctx: ToolContext, a: DocAthlete, date: stri
     // The run wire in use (§8 phase 2): a run's steps are counted as it writes them.
     runWire: runWireOf(ctx.env),
     library: a.library.all,
+    offered: a.library.offered,
     activeProfiles: a.athlete.profiles,
     day: { date, today, readings, done, recent: recentOf(sessions, today) },
     excluded: a.setAside,
@@ -651,7 +652,8 @@ export function noCheckToday(vctx: ValidateCtx): boolean {
  */
 export function judge(raw: unknown, vctx: ValidateCtx, o: { keyResults?: ReadonlyMap<string, KeyResultMeasure | null> } = {}): Judged {
   const noCheck = noCheckToday(vctx);
-  const issues: CoachIssue[] = [...validateWorkoutDoc(raw, vctx).map((i) => coachFix(i, raw, noCheck)), ...testNotes(raw, o.keyResults)];
+  const find = makeLibraryIndex(vctx.library);
+  const issues: CoachIssue[] = [...validateWorkoutDoc(raw, vctx).map((i) => coachFix(i, raw, noCheck, find)), ...testNotes(raw, o.keyResults, find)];
   const errors = issues.filter((i) => i.severity === "error");
   const warnings = issues.filter((i) => i.severity === "warning");
   const parsed = workoutDocSchema.safeParse(raw);
@@ -665,7 +667,7 @@ export function judge(raw: unknown, vctx: ValidateCtx, o: { keyResults?: Readonl
  * the measure reads as its fix when it reads one. A key result the athlete doesn't have is `idsRefusal`'s; one whose
  * stored measure no longer reads has nothing to compare with.
  */
-function testNotes(raw: unknown, keyResults: ReadonlyMap<string, KeyResultMeasure | null> | undefined): CoachIssue[] {
+function testNotes(raw: unknown, keyResults: ReadonlyMap<string, KeyResultMeasure | null> | undefined, find: LibraryIndex): CoachIssue[] {
   if (!keyResults || keyResults.size === 0) return [];
   const out: CoachIssue[] = [];
   const parts = Array.isArray((raw as { parts?: unknown } | null)?.parts) ? ((raw as { parts: unknown[] }).parts) : [];
@@ -677,8 +679,8 @@ function testNotes(raw: unknown, keyResults: ReadonlyMap<string, KeyResultMeasur
       const id = x?.test?.keyResultId;
       const measure = typeof id === "string" ? keyResults.get(id) : undefined;
       if (!measure) return;
-      const own = typeof x?.libraryId === "string" ? RECORD_BY_ID.get(x.libraryId) : undefined;
-      const reads = "libraryIds" in measure ? measure.libraryIds.map((l) => RECORD_BY_ID.get(l)?.id ?? l) : [];
+      const own = typeof x?.libraryId === "string" ? find(x.libraryId) : undefined;
+      const reads = "libraryIds" in measure ? measure.libraryIds.map((l) => find(l)?.id ?? l) : [];
       if (own && reads.includes(own.id)) return;
       out.push({
         path: own ? `parts[${p}].items[${i}].libraryId` : `parts[${p}].items[${i}].test.keyResultId`,
@@ -692,8 +694,6 @@ function testNotes(raw: unknown, keyResults: ReadonlyMap<string, KeyResultMeasur
   return out;
 }
 
-/** A library record by its id or one of its old ids. */
-const RECORD_BY_ID = new Map<string, ExerciseRecord>(EXERCISES.flatMap((e) => [[e.id, e] as const, ...e.legacyIds.map((l) => [l, e] as const)]));
 const ITEM_ID_PATH = /^parts\[(\d+)\]\.items\[(\d+)\]\.libraryId$/;
 
 /** The library id of the item at a `parts[p].items[i].libraryId` path, if there is one. */
@@ -713,15 +713,15 @@ function itemIdAt(raw: unknown, path: string): string | undefined {
  *    another family (a box squat for pogo hops) is another quality, so none is offered, and the message says how to
  *    choose; today, with no check logged, it adds that the main coach may ask for one (`ASK_FOR_CHECK`).
  */
-function coachFix(i: DocIssue, raw: unknown, noCheck: boolean): DocIssue {
+function coachFix(i: DocIssue, raw: unknown, noCheck: boolean, find: LibraryIndex): DocIssue {
   if (i.code === "unknown_exercise") {
     const search = "find the move with search_library and use an id it shows";
     return { ...i, fix: i.fix !== undefined ? `"${i.fix}", or ${search}` : `${search[0]!.toUpperCase()}${search.slice(1)}` };
   }
   const today = i.code === "condition_gate" || i.code === "condition_pattern";
   if (today || (i.code === "condition_gate_pending" && i.severity === "error")) {
-    const own = RECORD_BY_ID.get(itemIdAt(raw, i.path) ?? "");
-    const offered = i.fix !== undefined ? RECORD_BY_ID.get(i.fix) : undefined;
+    const own = find(itemIdAt(raw, i.path) ?? "");
+    const offered = i.fix !== undefined ? find(i.fix) : undefined;
     const ask = today && noCheck ? ASK_FOR_CHECK : null;
     if (offered && own && own.family && offered.family === own.family) return ask ? { ...i, message: `${i.message} Or, ${ask}.` } : i;
     const { fix: _f, ...rest } = i;

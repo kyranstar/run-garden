@@ -40,6 +40,7 @@ import { coachProposals } from "@rg/database";
 import { isLocalDate, nowInstant, todayInZone } from "@rg/domain";
 import type { AppContext } from "../auth/middleware.js";
 import { coachDesignerEnabled, runWireOf } from "../env.js";
+import { accountLibraryFrom, personalMovesSql } from "../services/account-library.js";
 import { loadPreferences, syncCalendar } from "../services/calendar-sync.js";
 import { waitUntilSafe } from "../services/wait-until.js";
 import {
@@ -159,13 +160,15 @@ export async function declineDesigned(c: C, p: DesignProposalRow): Promise<Respo
 /** `GET …/ops/:opId/draft`. */
 export async function designedDraft(c: C): Promise<Response> {
   if (!coachDesignerEnabled(c.env)) return c.json({ error: "not_found" }, 404);
-  const [p] = await c
-    .get("db")
-    .select({ id: coachProposals.id, status: coachProposals.status, ops: coachProposals.ops })
+  const db = c.get("db");
+  const userId = c.get("userId");
+  // With the account's library in the same statement: the draft is derived in it (one of the athlete's own moves too).
+  const [p] = await db
+    .select({ id: coachProposals.id, status: coachProposals.status, ops: coachProposals.ops, library: personalMovesSql(userId) })
     .from(coachProposals)
-    .where(and(eq(coachProposals.id, c.req.param("id")!), eq(coachProposals.userId, c.get("userId"))))
+    .where(and(eq(coachProposals.id, c.req.param("id")!), eq(coachProposals.userId, userId)))
     .limit(1);
-  const draft = p ? designDraft(p, c.req.param("opId")!) : null;
+  const draft = p ? designDraft(p, c.req.param("opId")!, (await accountLibraryFrom(db, userId, p.library)).all) : null;
   if (!draft) return c.json({ error: "not_found" }, 404);
   return c.json(draft);
 }
@@ -197,12 +200,19 @@ export async function designedManifest(db: Db, userId: string, proposalId: strin
   if (workouts.length === 0) return { lines: [], changes: planChangeLines(all), ...withPlans };
   const prefix = designProposalId("");
   const runId = proposalId.startsWith(prefix) ? proposalId.slice(prefix.length) : null;
-  const reads = await manifestReads(db, userId, dayRowsSql(userId, all), setContextSql(userId, runId, all));
+  // With the account's library: the cards name, time and derive a workout's moves in it (one of the athlete's own too).
+  const reads = await manifestReads(db, userId, dayRowsSql(userId, all), setContextSql(userId, runId, all), true);
   const today = clockIn(reads.prefs.timezone, now).date;
-  const placed = await placedTimes(userId, proposalId, all, reads.dayRows, { now, today, prefs: reads.prefs });
+  const placed = await placedTimes(userId, proposalId, all, reads.dayRows, { now, today, prefs: reads.prefs }, reads.library.all);
   return {
     // A designed run's card (§8 §3): its steps with the athlete's threshold, and whether an approve sends it to the watch.
-    lines: docWorkoutLines(workouts, reads.placeName, { now, prefs: reads.prefs, placed }, { thresholdSecPerKm: reads.thresholdSecPerKm, corosWritesEnabled: reads.prefs.corosWritesEnabled === true, runWire }),
+    lines: docWorkoutLines(
+      workouts,
+      reads.placeName,
+      { now, prefs: reads.prefs, placed },
+      { thresholdSecPerKm: reads.thresholdSecPerKm, corosWritesEnabled: reads.prefs.corosWritesEnabled === true, runWire },
+      reads.library.all,
+    ),
     changes: planChangeLines(all),
     ...withPlans,
     ...(reads.context ? { context: reads.context } : {}),

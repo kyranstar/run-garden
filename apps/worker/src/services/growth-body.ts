@@ -34,7 +34,8 @@ import {
   type GrowthHold,
   type GrowthPeriod,
 } from "@rg/domain";
-import { EXERCISES } from "@rg/exercise-library";
+import type { ExerciseRecord } from "@rg/exercise-library";
+import { makeLibraryIndex } from "@rg/workout";
 import type { Db } from "./db.js";
 import { EXPOSURE_STATEMENTS, readExposure, regionOf, RUN_REGIONS } from "./body-exposure.js";
 import { exerciseDisplayName } from "./logged-sets.js";
@@ -49,7 +50,6 @@ export const A_LOT_PER_WEEK = 10;
 /** Holds shown, at most. */
 export const HOLDS_SHOWN = 5;
 
-const BY_ID = new Map(EXERCISES.map((e) => [e.id, e]));
 /** The area a library region is drawn in, if any. */
 const AREA_OF = new Map<string, BodyArea>(BODY_AREAS.flatMap((a) => BODY_AREA_REGIONS[a].map((r) => [r, a] as const)));
 const RUN_AREAS = new Set<BodyArea>(RUN_REGIONS.flatMap((r) => (AREA_OF.has(r) ? [AREA_OF.get(r)!] : [])));
@@ -63,16 +63,18 @@ export function areaLevel(work: number, days: number): BodyAreaLevel {
 }
 
 /** A move held for time: an isometric strength move dosed in seconds. */
-const HOLDS = new Set(EXERCISES.filter((e) => e.dose.type === "time" && e.contraction.includes("isometric") && e.purposes.includes("strength")).map((e) => e.id));
+const isHold = (e: ExerciseRecord): boolean => e.dose.type === "time" && e.contraction.includes("isometric") && e.purposes.includes("strength");
 
-/** The figure's areas a library move loads, each once: read once a move. */
-const AREAS_OF_MOVE = new Map<string, readonly BodyArea[]>();
-function areasOfMove(exerciseId: string): readonly BodyArea[] {
-  const known = AREAS_OF_MOVE.get(exerciseId);
+/** The figure's areas a move of the account's library loads (one of the athlete's own too), each once: read once a move and library. */
+const AREAS_OF_MOVE = new WeakMap<readonly ExerciseRecord[], Map<string, readonly BodyArea[]>>();
+function areasOfMove(library: readonly ExerciseRecord[], exerciseId: string): readonly BodyArea[] {
+  let mine = AREAS_OF_MOVE.get(library);
+  if (!mine) AREAS_OF_MOVE.set(library, (mine = new Map()));
+  const known = mine.get(exerciseId);
   if (known) return known;
-  const rec = BY_ID.get(exerciseId);
+  const rec = makeLibraryIndex(library)(exerciseId);
   const areas = rec ? [...new Set(rec.regions.flatMap((r) => (AREA_OF.has(r) ? [AREA_OF.get(r)!] : [])))] : [];
-  AREAS_OF_MOVE.set(exerciseId, areas);
+  mine.set(exerciseId, areas);
   return areas;
 }
 
@@ -88,7 +90,7 @@ export async function growthBody(db: Db, userId: string, now: Date, period: Grow
   const sets = new Map<BodyArea, number>();
   const last = new Map<BodyArea, string>();
   for (const m of x.byMove) {
-    for (const a of areasOfMove(m.exerciseId)) {
+    for (const a of areasOfMove(x.library.all, m.exerciseId)) {
       sets.set(a, (sets.get(a) ?? 0) + m.sets);
       if ((last.get(a) ?? "") < m.date) last.set(a, m.date);
     }
@@ -139,13 +141,16 @@ export async function growthBody(db: Db, userId: string, now: Date, period: Grow
 function longestHolds(x: Awaited<ReturnType<typeof readExposure>>): GrowthHold[] {
   const dayOf = new Map(x.sessions.map((s) => [s.id, s.date]));
   const best = new Map<string, GrowthHold>();
+  const find = makeLibraryIndex(x.library.all);
   // Each session's move, its longest set held (its shorter side) — counted by SQLite (`readExposure`'s moves).
   for (const m of x.moves) {
     const date = dayOf.get(m.session);
-    if (date === undefined || m.held === null || !HOLDS.has(m.exerciseId)) continue;
+    const rec = find(m.exerciseId);
+    // By its own id, as the holds were always read (an old id is not its move's hold here).
+    if (date === undefined || m.held === null || !rec || rec.id !== m.exerciseId || !isHold(rec)) continue;
     const b = best.get(m.exerciseId);
     if (!b || m.held > b.seconds || (m.held === b.seconds && date < b.date)) {
-      best.set(m.exerciseId, { exerciseId: m.exerciseId, name: exerciseDisplayName(m.exerciseId), seconds: m.held, date });
+      best.set(m.exerciseId, { exerciseId: m.exerciseId, name: exerciseDisplayName(m.exerciseId, x.library.all), seconds: m.held, date });
     }
   }
   return [...best.values()].sort((a, b) => b.seconds - a.seconds || a.date.localeCompare(b.date) || a.exerciseId.localeCompare(b.exerciseId)).slice(0, HOLDS_SHOWN);
