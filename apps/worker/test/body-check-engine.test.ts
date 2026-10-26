@@ -7,7 +7,7 @@
  * Synthetic data only; a fixed Friday (`today`, `now` passed in).
  */
 import { beforeEach, describe, expect, it, vi } from "vitest";
-import { eq } from "drizzle-orm";
+import { desc, eq } from "drizzle-orm";
 import { schema } from "@rg/database";
 import { todayInZone, type SessionMode, type UserPreferences } from "@rg/domain";
 import { EXERCISES, MUSCLE_REGION } from "@rg/exercise-library";
@@ -18,6 +18,10 @@ import { answerBodyCheck, BODY_REGIONS, BodyCheckClosedError, readBodyCheck, und
 import { RUN_REGIONS } from "../src/services/body-exposure.js";
 import { buildSession, loadSession, type SessionResponse } from "../src/services/session-build.js";
 import { isWrite, makeTestDb, makeTestUser, mountRoutes } from "./helpers.js";
+import { personalMoveId } from "@rg/saves";
+import { toPersonalRecord } from "../src/services/personal-records.js";
+import { forgetAccountLibrary } from "../src/services/account-library.js";
+import { savedMoveDraft } from "./saves-batch-fixture.js";
 import { DAY, makeEnv, NOON, seedProgram, seedSlot, seedTmj } from "./watch-push-fixture.js";
 
 const { plannedWorkouts, sessionBuilds } = schema;
@@ -313,5 +317,38 @@ describe("what it costs", () => {
     console.log("body check (engine) statements", costs);
     expect(costs.read).toBeLessThanOrEqual(3);
     for (const cost of [costs.built, costs.eased, costs.undo]) expect(cost).toBeLessThanOrEqual(BUDGET);
+  });
+});
+
+describe("an engine session holding a saved move (final review I6)", () => {
+  it("Sore in the area only the saved move works eases the day: the move resolves through the account's library", async () => {
+    const id = await seedSlot(db, userId, programId, DAY);
+    const built = await buildSession(db, userId, id, { overrides: { mode: "build", minutes: 40 } }, ctx());
+    const quietArea = BODY_REGIONS.find((r) => !worked(built).has(r))!;
+    expect(quietArea).toBeDefined();
+    // A pinned saved move working that area, in today's session (as the engine places a pinned move). A personal record's
+    // muscles are empty: its regions carry the answer.
+    const moveId = personalMoveId("Zorbex Area Drill", `${userId}:zorbex`);
+    const at = NOON;
+    await db.insert(schema.personalMoves).values({
+      id: moveId, userId, status: "active", mergedInto: null, batchId: null, editedByOwner: false, createdAt: at, updatedAt: at,
+      record: toPersonalRecord(moveId, savedMoveDraft("Zorbex Area Drill", { regions: [quietArea as never] })),
+    });
+    await db.insert(schema.exercisePrefs).values({ id: `${userId}:${moveId}`, userId, exerciseId: moveId, pinned: true, updatedAt: at });
+    const [row] = await db.select().from(sessionBuilds).where(eq(sessionBuilds.workoutId, id)).orderBy(desc(sessionBuilds.version)).limit(1);
+    const payload = row!.payload as { build: { items: Array<Record<string, unknown>> } };
+    const items = payload.build.items;
+    await db
+      .update(sessionBuilds)
+      .set({ payload: { ...payload, build: { ...payload.build, items: [...items, { ...items[0], exerciseId: moveId }] } } })
+      .where(eq(sessionBuilds.id, row!.id));
+    // A new request (the test's Db outlives one): its library is read afresh.
+    forgetAccountLibrary(db);
+    statements = [];
+    const out = await answerBodyCheck(db, userId, id, { feel: "sore", areas: [quietArea] }, ctx());
+    expect(out.view.change).toEqual({ kind: "eased", to: { mode: "consistent" } });
+    // The account's library is read once in the request: the region check's read is the rebuild's too.
+    expect(statements.filter((q) => /from "personal_moves"/i.test(q)).length).toBe(1);
+    expect(statements.length).toBeLessThanOrEqual(BUDGET);
   });
 });

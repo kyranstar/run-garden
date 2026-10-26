@@ -75,8 +75,10 @@ import {
   type SessionMode,
   type UserPreferences,
 } from "@rg/domain";
-import { EXERCISES, isProfileId, label as vocab, MUSCLE_REGION, profileById, type MuscleId } from "@rg/exercise-library";
+import { isProfileId, label as vocab, MUSCLE_REGION, profileById, type MuscleId } from "@rg/exercise-library";
 import type { Swaps } from "@rg/session-engine";
+import { makeLibraryIndex } from "@rg/workout";
+import { libraryFor } from "./account-library.js";
 import { RUN_REGIONS } from "./body-exposure.js";
 import { applyOps, enqueueContentConvergence, sessionColumns } from "./coach-apply.js";
 import { coachDrainQueued } from "./coros-write-cloud.js";
@@ -472,11 +474,16 @@ async function dayBuild(db: Db, userId: string, workoutId: string, ctx: BodyChec
   };
 }
 
-/** The regions a build works: each move's regions and its primary muscles' regions. */
-function workedRegions(exerciseIds: readonly string[]): Set<string> {
+/**
+ * The regions a build works: each move's regions and its primary muscles' regions. A move resolves through the account's
+ * library (a pinned saved move works its area too; its record's muscles are empty, so its regions carry it): no statement
+ * when the build names no personal move, else the request's one library read (`libraryFor`).
+ */
+async function workedRegions(db: Db, userId: string, exerciseIds: readonly string[]): Promise<Set<string>> {
+  const find = makeLibraryIndex((await libraryFor(db, userId, exerciseIds)).all);
   const out = new Set<string>();
   for (const id of exerciseIds) {
-    const rec = EXERCISES.find((e) => e.id === id);
+    const rec = find(id);
     if (!rec) continue;
     for (const r of rec.regions) out.add(r);
     for (const m of rec.muscles.primary) out.add(MUSCLE_REGION[m as MuscleId]);
@@ -507,7 +514,7 @@ async function easeEngine(db: Db, userId: string, s: Subject, answer: Answer, re
   const id = s.row.id;
   const prior = record?.ease?.kind === "engine" ? record.ease : null;
   const day = await dayBuild(db, userId, id, ctx);
-  const works = workedRegions(day.build.exerciseIds);
+  const works = await workedRegions(db, userId, day.build.exerciseIds);
   if (answer.feel === "sore" && !worksSore(answer, works)) {
     // Not an area today works: noted, and an ease of the day no longer asked for goes back (or, recorded and not yet
     // applied, is never applied).
