@@ -1,7 +1,7 @@
 import {
   PROFILES, PROFILE_IDS, THEMES, defineExercises, validateRecord,
   type Dose, type DoseType, type ExerciseRecord, type Purpose, type Role,
-} from "@rg/exercise-library";
+ LOAD_IMPLEMENTS } from "@rg/exercise-library";
 import { PERSONAL_ID_RE, type ExtractedMove } from "@rg/saves";
 
 // A personal move: a move extracted from the owner's saved posts that the public library doesn't have, stored per
@@ -91,6 +91,22 @@ function rolesOf(purposes: readonly Purpose[]): Role[] {
 }
 
 /** The record for a personal move. It may not pass `validatePersonalRecord`: a draft that is missing something says so there. */
+/**
+ * Repairs a reading the library's rules would refuse where the fix is plain, instead of paying for a second extraction
+ * that says the same (the first live night, 2026-10-26: "external load needs a loadable implement" cost a post two full
+ * calls). Each repair is a line for the owner; a repaired move is flagged to check.
+ */
+export function repairDraft(draft: ExtractedMove): { draft: ExtractedMove; repairs: string[] } {
+  const repairs: string[] = [];
+  let out = draft;
+  if (out.load === "external" && !out.equipment.some((e) => (LOAD_IMPLEMENTS as readonly string[]).includes(e))) {
+    // Bands, a bench, a wall or nothing: not a load the app logs — the move counts as bodyweight.
+    out = { ...out, load: "bodyweight" };
+    repairs.push("load read as external with no loadable implement; stored as bodyweight");
+  }
+  return { draft: out, repairs };
+}
+
 export function toPersonalRecord(id: string, draft: ExtractedMove): ExerciseRecord {
   const purposes = purposesOf(draft);
   const conditions = Object.fromEntries(PROFILE_IDS.map(p => [p, { ...draft.conditions[p].attrs }]));

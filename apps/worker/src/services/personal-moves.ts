@@ -13,7 +13,7 @@ import type { PersonalMoveRow } from "@rg/database";
 import type { ExerciseRecord } from "@rg/exercise-library";
 import { personalMoveId, type ExtractedMove } from "@rg/saves";
 import type { Db } from "./db.js";
-import { toPersonalRecord, validatePersonalRecord } from "./personal-records.js";
+import { toPersonalRecord, validatePersonalRecord, repairDraft } from "./personal-records.js";
 
 const { personalMoves } = schema;
 
@@ -54,16 +54,20 @@ export const newPersonalMoveId = (userId: string, postId: string, position: numb
  * (every profile's rating present); a build that throws anyway is reported, never thrown. Issues are the validator's
  * own words with the id taken off (the id is built from the model's name).
  */
-export function buildPersonalRecord(id: string, draft: ExtractedMove): { ok: true; record: ExerciseRecord } | { ok: false; issues: string[] } {
+export function buildPersonalRecord(
+  id: string,
+  draft: ExtractedMove,
+): { ok: true; record: ExerciseRecord; repairs: string[] } | { ok: false; issues: string[] } {
+  const repaired = repairDraft(draft);
   let record: ExerciseRecord;
   try {
-    record = toPersonalRecord(id, draft);
+    record = toPersonalRecord(id, repaired.draft);
   } catch {
     return { ok: false, issues: ["the move could not be built into a record"] };
   }
   const problems = validatePersonalRecord(record);
   if (problems.length) return { ok: false, issues: problems.map((p) => safeIssue(id, p)) };
-  return { ok: true, record };
+  return { ok: true, record, repairs: repaired.repairs };
 }
 
 /**

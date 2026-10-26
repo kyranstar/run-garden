@@ -255,6 +255,15 @@ describe("matchPost", () => {
     expect(text.slice(text.indexOf("</post-data>"))).not.toContain(mine!.id);
   });
 
+  it("a new move read as external load with no implement is stored as bodyweight and flagged to check — no retry", async () => {
+    const id = await extracted("k", [move("Band pull apart hold", { load: "external", equipment: ["band"], confidence: "high" })]);
+    const out = await matchPost(db, env(), userId, id, NOW, judge({}).fetchImpl);
+    expect(out.issues).toBeUndefined();
+    const [pm] = await db.select().from(personalMoves);
+    expect((pm!.record as { load: string }).load).toBe("bodyweight");
+    expect((await linksOf(id)).map((l) => [l.moveKind, l.checkFlag])).toEqual([["personal", true]]);
+  });
+
   it("stores a new move the extraction was unsure of flagged to check", async () => {
     const id = await extracted("k", [move("Zorbex quad shuffle", { confidence: "low" }), move("Zorbex neck nod")]);
     await matchPost(db, env(), userId, id, NOW, judge({}).fetchImpl);

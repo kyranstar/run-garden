@@ -472,6 +472,8 @@ export async function matchPost(
   const newIds = new Map<number, string>();
   const moveRows: (typeof personalMoves.$inferInsert)[] = [];
   const issues: string[] = [];
+  /** Positions whose record was repaired to pass the library's rules: flagged to check, whatever the match said. */
+  const repaired = new Set<number>();
   for (const d of decisions) {
     if (d.kind !== "new" || !d.draft || d.sameAs !== undefined) continue;
     const id = newPersonalMoveId(userId, postId, d.position, d.draft.name);
@@ -480,6 +482,7 @@ export async function matchPost(
       issues.push(...built.issues.map((i) => `moves.${d.position}: ${i}`));
       continue;
     }
+    if (built.repairs.length) repaired.add(d.position);
     newIds.set(d.position, id);
     moveRows.push({ id, userId, status: "pending", mergedInto: null, batchId: null, record: built.record, editedByOwner: false, createdAt: now, updatedAt: now });
   }
@@ -494,7 +497,7 @@ export async function matchPost(
     moveKind: d.kind === "library" ? "library" : "personal",
     batchId: null,
     confidence: CONFIDENCE_VALUE[d.confidence],
-    checkFlag: d.check,
+    checkFlag: d.check || repaired.has(d.position),
     status: "pending",
     createdAt: now,
   }));

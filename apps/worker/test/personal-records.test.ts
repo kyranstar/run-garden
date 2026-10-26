@@ -2,7 +2,7 @@
 import { describe, expect, it } from "vitest";
 import { PROFILE_IDS } from "@rg/exercise-library";
 import { personalMoveId, type ExtractedMove } from "@rg/saves";
-import { PURPOSE_RULES, toPersonalRecord, validatePersonalRecord } from "../src/services/personal-records.js";
+import { PURPOSE_RULES, repairDraft, toPersonalRecord, validatePersonalRecord } from "../src/services/personal-records.js";
 
 const move = (over: Partial<ExtractedMove> = {}): ExtractedMove => ({
   name: "Dumbbell Row",
@@ -123,6 +123,22 @@ describe("purposes and roles, from the draft's patterns, contraction and load", 
 
   it("a personal move is never a core lift", () => {
     for (const c of cases) expect(toPersonalRecord(id, move(c.draft)).roles).not.toContain("core");
+  });
+});
+
+describe("repairDraft", () => {
+  it("an external load with no loadable implement is stored as bodyweight, with a line saying so", () => {
+    for (const equipment of [[], ["band"], ["bench", "wall"]] as ExtractedMove["equipment"][]) {
+      const { draft, repairs } = repairDraft(move({ load: "external", equipment }));
+      expect(draft.load).toBe("bodyweight");
+      expect(repairs).toEqual(["load read as external with no loadable implement; stored as bodyweight"]);
+      expect(validatePersonalRecord(toPersonalRecord(id, draft))).toEqual([]);
+    }
+  });
+
+  it("leaves a loaded move with its implement, and a bodyweight move, alone", () => {
+    expect(repairDraft(move({ load: "external", equipment: ["kettlebell"] }))).toEqual({ draft: move({ load: "external", equipment: ["kettlebell"] }), repairs: [] });
+    expect(repairDraft(move({ load: "bodyweight", equipment: [] })).repairs).toEqual([]);
   });
 });
 
