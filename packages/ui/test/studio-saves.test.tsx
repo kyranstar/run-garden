@@ -312,6 +312,37 @@ describe("a move's sheet", () => {
     await until(() => invalidated.mock.calls.some(([f]) => JSON.stringify(f?.queryKey) === '["library"]'), "the library read again");
   });
 
+  it("Same as… offers the batch's other new moves first, by name — merging two new moves the matcher missed (final review I4)", async () => {
+    const calls = serve();
+    mount("/studio/saves/b1");
+    await until(() => !!rowOf(NECK.name), "the rows");
+    await openRow(NECK.name);
+    await click(button("Same as…", dialog(NECK.name)!), "Same as…");
+    const picker = dialog("Same as…")!;
+    const names = buttons(picker).map((b) => b.querySelector(".stu-pick-name")?.textContent ?? null).filter(Boolean);
+    // The batch's other new move at the top; never the row's own move.
+    expect(names[0]).toBe(QUAD.name);
+    expect(names).not.toContain(NECK.name);
+    expect(names.filter((n) => n === QUAD.name)).toHaveLength(1);
+    await click(buttons(picker).find((b) => b.querySelector(".stu-pick-name")?.textContent === QUAD.name), QUAD.name);
+    await until(() => posts(calls, "/api/my-saves/post-moves/pm3/rematch").length === 1, "the re-match");
+    expect(posts(calls, "/api/my-saves/post-moves/pm3/rematch")[0]!.body).toEqual({ to: QUAD.id });
+  });
+
+  it("Same as…'s search narrows the batch's new moves too", async () => {
+    serve();
+    mount("/studio/saves/b1");
+    await until(() => !!rowOf(NECK.name), "the rows");
+    await openRow(NECK.name);
+    await click(button("Same as…", dialog(NECK.name)!), "Same as…");
+    const picker = dialog("Same as…")!;
+    setValue(picker.querySelector<HTMLInputElement>('input[type="search"]')!, "Lantern");
+    await settle();
+    const names = buttons(picker).map((b) => b.querySelector(".stu-pick-name")?.textContent ?? null).filter(Boolean);
+    expect(names).not.toContain(QUAD.name);
+    expect(names).toContain(LANTERN.name);
+  });
+
   it("Not this move makes the post's move its own; Remove takes the row out", async () => {
     const calls = serve();
     mount("/studio/saves/b1");

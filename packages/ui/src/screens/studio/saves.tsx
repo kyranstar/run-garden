@@ -22,8 +22,9 @@
  *
  * A row opens the move's sheet: its words, the post (its creator, and a link that opens it apart), the dose as the post
  * gave it and as it would be saved, and — while the row is pending — Edit (a new move, or one of the owner's own),
- * Not this move (the post's move becomes a new move of its own, from the post's reading), Same as… (a library move or
- * one of the owner's own, from what the Studio offers), Remove, and Ask the coach (the coach, seeing the move). Save
+ * Not this move (the post's move becomes a new move of its own, from the post's reading), Same as… (another new move of
+ * the batch — two the matcher missed — or a library move or one of the owner's own, from what the Studio offers), Remove,
+ * and Ask the coach (the coach, seeing the move). Save
  * these keeps what is left: the new moves become the owner's, their posts their links. Notes, under the rows, is what
  * the kept posts say about when, why or how often (spec §17) — one line each, with its creator, read-only: what the
  * coach keeps in memory on Save (each removable in Settings afterwards).
@@ -280,6 +281,7 @@ export function SaveBatchScreen() {
           key={openRow.postMoveId}
           row={openRow}
           mode={open.mode}
+          siblings={newMoves(rows)}
           offered={account.offered}
           find={account.find}
           ownStatus={account.mine.get(openRow.move.id)?.status}
@@ -294,9 +296,17 @@ export function SaveBatchScreen() {
 
 // ── A move's sheet ───────────────────────────────────────────────────────────────────────────────────────────────────
 
+/** The batch's new moves still pending (one each, by their record): "Same as…" may name one — two new moves the matcher missed. */
+function newMoves(rows: readonly SaveBatchRowDto[]): ExerciseRecord[] {
+  const out = new Map<string, ExerciseRecord>();
+  for (const r of rows) if (r.status === "pending" && r.move.kind === "new" && r.record && !out.has(r.move.id)) out.set(r.move.id, r.record);
+  return [...out.values()];
+}
+
 function MoveSheet({
   row,
   mode,
+  siblings,
   offered,
   find,
   ownStatus,
@@ -306,6 +316,7 @@ function MoveSheet({
 }: {
   row: SaveBatchRowDto;
   mode: Open["mode"];
+  siblings: readonly ExerciseRecord[];
   offered: readonly ExerciseRecord[];
   find: (id: string) => ExerciseRecord | undefined;
   ownStatus?: "active" | "archived";
@@ -339,6 +350,7 @@ function MoveSheet({
     return (
       <Sheet open onClose={() => onMode("view")} title="Same as…">
         <SamePicker
+          siblings={siblings}
           offered={offered}
           except={row.move.id}
           busy={busy}
@@ -447,14 +459,19 @@ function MoveSheet({
   );
 }
 
-/** "Same as…": the moves the Studio offers (the library, and the owner's own active moves), searched as the Studio searches. */
+/**
+ * "Same as…": the batch's other new moves first (two new moves the matcher missed), then the moves the Studio offers
+ * (the library, and the owner's own active moves) — each searched as the Studio searches.
+ */
 function SamePicker({
+  siblings,
   offered,
   except,
   busy,
   error,
   onPick,
 }: {
+  siblings: readonly ExerciseRecord[];
   offered: readonly ExerciseRecord[];
   except: string;
   busy: boolean;
@@ -462,7 +479,12 @@ function SamePicker({
   onPick: (rec: ExerciseRecord) => void;
 }) {
   const [q, setQ] = useState("");
-  const listed = useMemo(() => searchLibrary(offered, q).filter((r) => r.id !== except).slice(0, PICK_LIMIT), [offered, q, except]);
+  const listed = useMemo(() => {
+    const first = (q.trim() ? searchLibrary(siblings, q) : siblings).filter((r) => r.id !== except);
+    const firstIds = new Set(first.map((r) => r.id));
+    const rest = searchLibrary(offered, q).filter((r) => r.id !== except && !firstIds.has(r.id));
+    return [...first, ...rest].slice(0, PICK_LIMIT);
+  }, [siblings, offered, q, except]);
   return (
     <div className="stu-picker">
       <SearchField value={q} onChange={setQ} label="Search moves" placeholder="Search moves" />
