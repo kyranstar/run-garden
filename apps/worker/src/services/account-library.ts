@@ -43,10 +43,24 @@ export interface AccountLibrary {
   engine: readonly ExerciseRecord[];
   /** A hash of the account's personal moves as read (empty when it has none): a build that reads them is made again when it changes. */
   personalHash: string;
+  /**
+   * The personal moves (active or archived) the athlete never edited: their condition ratings are the post's reading, as
+   * a model rated it from the video — not checked by the athlete (coach-context audit I6). Empty with none.
+   */
+  unchecked: ReadonlySet<string>;
 }
 
+/** What a saved move's ratings are while the athlete never edited it (`unchecked`; coach-context audit I6). */
+export const UNCHECKED_RATINGS = "from the post's reading, not checked by the athlete";
+
 /** An account with no personal moves: every view the public library itself. */
-export const PUBLIC_LIBRARY: AccountLibrary = Object.freeze({ all: EXERCISES, offered: EXERCISES, engine: EXERCISES, personalHash: "" });
+export const PUBLIC_LIBRARY: AccountLibrary = Object.freeze({
+  all: EXERCISES,
+  offered: EXERCISES,
+  engine: EXERCISES,
+  personalHash: "",
+  unchecked: new Set<string>(),
+});
 
 /** The statuses a library holds (a pending move is the review's alone). */
 const RESOLVED = ["active", "archived", "merged"] as const;
@@ -63,6 +77,8 @@ interface Row {
   /** The record's own JSON text; null for a merged move (only its target is read). */
   record: string | null;
   pinned: boolean;
+  /** The athlete edited it (`edited_by_owner`): its ratings are theirs, not only the post's reading. */
+  edited: boolean;
 }
 
 /** The views made in this isolate, by `personalHash`, least recently used first. */
@@ -95,24 +111,25 @@ export function loadAccountLibrary(db: Db, userId: string): Promise<AccountLibra
         mergedInto: personalMoves.mergedInto,
         record: sql<string | null>`CASE WHEN ${personalMoves.status} = 'merged' THEN NULL ELSE ${personalMoves.record} END`,
         pinned: sql<number>`coalesce(${exercisePrefs.pinned}, 0)`,
+        edited: personalMoves.editedByOwner,
       })
       .from(personalMoves)
       .leftJoin(exercisePrefs, and(eq(exercisePrefs.userId, personalMoves.userId), eq(exercisePrefs.exerciseId, personalMoves.id)))
       .where(and(eq(personalMoves.userId, userId), inArray(personalMoves.status, [...RESOLVED])))
       .orderBy(asc(personalMoves.id));
-    return libraryOf(rows.map((r) => ({ ...r, pinned: Boolean(r.pinned) })));
+    return libraryOf(rows.map((r) => ({ ...r, pinned: Boolean(r.pinned), edited: Boolean(r.edited) })));
   });
 }
 
 /**
  * The account's personal moves as one column of a read that spends its statement on the athlete anyway (`readAthlete`'s
- * extras): a JSON array of `[id, status, merged into, record text, pinned]`. `accountLibraryFrom` reads it. Its tables
+ * extras): a JSON array of `[id, status, merged into, record text, pinned, edited]`. `accountLibraryFrom` reads it. Its tables
  * go by their own aliases, so it reads the same as a column of a query builder's select over another table (whose
  * columns a builder names bare: an `id` there would be ambiguous).
  */
 export function personalMovesSql(userId: string): SQL {
   return sql`(select json_group_array(json_array(pm_lib.id, pm_lib.status, pm_lib.merged_into,
-      case when pm_lib.status = 'merged' then null else pm_lib.record end, coalesce(ep_lib.pinned, 0)))
+      case when pm_lib.status = 'merged' then null else pm_lib.record end, coalesce(ep_lib.pinned, 0), coalesce(pm_lib.edited_by_owner, 0)))
     from personal_moves pm_lib left join exercise_prefs ep_lib
       on ep_lib.user_id = pm_lib.user_id and ep_lib.exercise_id = pm_lib.id
     where pm_lib.user_id = ${userId} and pm_lib.status in ('active', 'archived', 'merged'))`;
@@ -182,9 +199,18 @@ function rowsOf(raw: unknown): Row[] {
   if (!Array.isArray(list)) return [];
   return list.flatMap((r): Row[] => {
     if (!Array.isArray(r)) return [];
-    const [id, status, mergedInto, record, pinned] = r as unknown[];
+    const [id, status, mergedInto, record, pinned, edited] = r as unknown[];
     if (typeof id !== "string" || typeof status !== "string") return [];
-    return [{ id, status, mergedInto: typeof mergedInto === "string" ? mergedInto : null, record: typeof record === "string" ? record : null, pinned: pinned === 1 || pinned === true }];
+    return [
+      {
+        id,
+        status,
+        mergedInto: typeof mergedInto === "string" ? mergedInto : null,
+        record: typeof record === "string" ? record : null,
+        pinned: pinned === 1 || pinned === true,
+        edited: edited === 1 || edited === true,
+      },
+    ];
   });
 }
 
@@ -194,7 +220,8 @@ async function libraryOf(read: readonly Row[]): Promise<AccountLibrary> {
   // In id order, however they were read: the same moves hash the same.
   const rows = [...read].sort((a, b) => (a.id < b.id ? -1 : a.id > b.id ? 1 : 0));
   const personalHash = (
-    await sha256Hex(rows.map((r) => `${r.id}\u0000${r.status}\u0000${r.mergedInto ?? ""}\u0000${r.pinned ? 1 : 0}\u0000${r.record ?? ""}`).join("\u0001"))
+    // An edited move's mark joins its row's text (an unedited one hashes as it always has: no build is made again for it).
+    await sha256Hex(rows.map((r) => `${r.id}\u0000${r.status}\u0000${r.mergedInto ?? ""}\u0000${r.pinned ? 1 : 0}\u0000${r.record ?? ""}${r.edited ? "\u0000e" : ""}`).join("\u0001"))
   ).slice(0, 16);
   let views = kept.get(personalHash);
   if (views) {
@@ -233,11 +260,13 @@ function viewsOf(rows: readonly Row[], personalHash: string): AccountLibrary {
   const mine: ExerciseRecord[] = [];
   const active: ExerciseRecord[] = [];
   const pinned: ExerciseRecord[] = [];
+  const unchecked = new Set<string>();
   for (const row of rows) {
     if (row.status === "merged") continue;
     const rec = recordOf(row, aliases.get(row.id) ?? []);
     if (!rec) continue;
     mine.push(rec);
+    if (!row.edited) unchecked.add(rec.id);
     if (row.status !== "active") continue;
     active.push(rec);
     if (row.pinned) pinned.push(rec);
@@ -250,6 +279,7 @@ function viewsOf(rows: readonly Row[], personalHash: string): AccountLibrary {
     offered: active.length > 0 ? [...EXERCISES, ...active] : EXERCISES,
     engine: pinned.length > 0 ? [...EXERCISES, ...pinned] : EXERCISES,
     personalHash,
+    unchecked,
   };
 }
 

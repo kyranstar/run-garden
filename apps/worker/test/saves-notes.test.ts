@@ -24,6 +24,7 @@ import { savedPostId } from "../src/services/saves-ledger.js";
 import { matchPost } from "../src/services/saves-match.js";
 import { assembleBatch, saveBatch } from "../src/services/saves-batches.js";
 import { memoryCore } from "../src/services/memory-core.js";
+import { buildDesignContext } from "../src/services/design-context.js";
 import { READ_TOOLS } from "../src/services/design-tools/index.js";
 import type { ReadOk } from "../src/services/design-tools/read-common.js";
 import type { ToolContext } from "../src/services/design-tools/types.js";
@@ -246,6 +247,14 @@ describe("the coach reads them as memory", () => {
     expect((await memoryCore(db, userId, today)).map((m) => m.body)).toEqual([A_INSIGHTS[0]]);
     // In the core now: recall_memory reads what lies beyond it.
     expect((await readTool("recall_memory", { query: "quad shuffle" })).data.memories).toEqual([]);
+    // Its core line names its source — a creator's tip, not the coach's inference — and marks its words as a saved post's
+    // (coach-context audit I3).
+    const { system } = await buildDesignContext(db, {} as Env, userId, { id: "run-mem", role: "main", scope: { kind: "now" }, request: "Something easy.", parentId: null }, new Date(NOW));
+    const line = system[3]!.text.split("\n").find((l) => l.includes(A_INSIGHTS[0]!))!;
+    expect(line).toBe(
+      `- [${item!.id}] observation, from a saved post — a creator's tip as a model read it, not the athlete's words or the coach's inference, pinned: <untrusted from="saved post">${A_INSIGHTS[0]}</untrusted>`,
+    );
+    expect(line).not.toContain("the coach's inference, not yet confirmed");
   });
 });
 
@@ -283,8 +292,18 @@ describe("a move's note on its link", () => {
     // The coach's: get_exercise, the note marked as text from outside.
     const ex = await readTool("get_exercise", { id: quad });
     expect(ex.data.yours.links).toEqual([{ url: U("https://example.com/p/a"), creator: U("coach_a"), note: U(QUAD_PURPOSE) }]);
+    statements.length = 0;
     const hip = await readTool("get_exercise", { id: HIP_SWITCH.id });
+    const hipStatements = statements.length;
     expect(hip.data.yours.saved).toBe(true);
+    // A library move's links too (final review I5; the ruling: the curated links and the ones Save wrote), each marked —
+    // in the statements it had (the links ride in its second read).
+    expect(hip.data.yours.own).toBeUndefined();
+    expect(hip.data.yours.links).toEqual([
+      { url: U("https://example.com/curated"), creator: U("Curated Coach"), note: null },
+      { url: U("https://example.com/p/a"), creator: U("coach_a"), note: U(HIP_PURPOSE) },
+    ]);
+    expect(hipStatements).toBeLessThanOrEqual(READ_TOOLS.find((t) => t.name === "get_exercise")!.statementCost);
   });
 });
 

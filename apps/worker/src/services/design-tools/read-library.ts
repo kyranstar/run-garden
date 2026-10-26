@@ -56,7 +56,7 @@ import {
 } from "@rg/exercise-library";
 import { isPersonalId } from "@rg/saves";
 import { makeLibraryIndex } from "@rg/workout";
-import { accountLibraryFrom, personalMovesSql } from "../account-library.js";
+import { accountLibraryFrom, personalMovesSql, UNCHECKED_RATINGS } from "../account-library.js";
 import { namedFromRow, ownPlaceSql } from "../default-place.js";
 import { doneStats, safetyFor, type DoneStat } from "../library-view.js";
 import { PENDING_HASH } from "../watch-sets.js";
@@ -345,11 +345,11 @@ const exerciseInput = z.object({ id: z.string().min(1).max(80), howTo: z.boolean
 export const getExercise: DesignTool = {
   name: "get_exercise",
   description:
-    "One library move whole — dose, condition notes, safety and today's fit, easier and harder moves — with the athlete's history and best; its how-to text only when asked.",
+    "One move whole — a library id or a saved move's own — dose, condition notes, safety and today's fit, easier and harder moves, its saved-post links and notes, the athlete's history and best; its how-to only when asked.",
   inputSchema: {
     type: "object",
     properties: {
-      id: { type: "string", description: "A library id from search_library." },
+      id: { type: "string", description: "A library id from search_library, or a saved move's from read_saves." },
       howTo: { type: "boolean", description: "Also the how-to: setup, steps, focus, mistakes, breathing, why. Default: the one-line summary only." },
     },
     required: ["id"],
@@ -429,6 +429,10 @@ export const getExercise: DesignTool = {
     if ((ex.dose.type === "time" || ex.dose.type === "carry") && totals.secs) best.push(`longest ${totals.secs} s`);
     const d = done.get(ex.id);
     const fit = fitFor(ex, athlete);
+    // A saved move the athlete never edited: its ratings — and every verdict built on them — are the post's reading as a
+    // model rated it from the video, said as such (coach-context audit I6; principles §2.9, weak evidence named weak).
+    const unchecked = own && library.unchecked.has(ex.id);
+    const rated = (words: string): string => (unchecked ? `${words} (rated from the post)` : words);
     const { conditions: notes, ...howTo } = ex.text;
     const find = makeLibraryIndex(library.all);
     const named = (list: readonly string[]) =>
@@ -460,15 +464,18 @@ export const getExercise: DesignTool = {
         dose: ex.dose,
         difficulty: ex.difficulty,
         tags: ex.tags,
-        safety: Object.fromEntries(athlete.profiles.map((pr) => [pr.id, safetyFor(pr, ex)])),
-        ...(fit ? { fit: fit.state, fitWhy: fit.reason } : {}),
+        safety: Object.fromEntries(athlete.profiles.map((pr) => [pr.id, rated(safetyFor(pr, ex))])),
+        ...(fit ? { fit: fit.state, fitWhy: unchecked ? `Rated from the post: ${fit.reason}` : fit.reason } : {}),
+        ...(unchecked ? { ratings: UNCHECKED_RATINGS } : {}),
         summary: wordsOf(ex, ex.text.summary),
         conditionNotes: athlete.profiles.flatMap((pr) => (notes[pr.id] ? [{ profile: pr.label, note: wordsOf(ex, notes[pr.id]!) }] : [])),
         easier: named(ex.easier),
         harder: named(ex.harder),
         yours: {
-          // The athlete's own move (from their saves): its links, and whether it is archived (never offered).
-          ...(own ? { own: true, ...(archived ? { archived: true } : {}), links } : {}),
+          // The athlete's own move (from their saves), and whether it is archived (never offered); the links to the posts it
+          // was saved from — any move's, a library move's too (the curated links and the ones Save wrote), marked.
+          ...(own ? { own: true, ...(archived ? { archived: true } : {}) } : {}),
+          ...(own || links.length > 0 ? { links } : {}),
           rating: pref?.rating ?? null,
           pinned: pref?.pinned ?? false,
           setAside: pref?.excluded ?? false,

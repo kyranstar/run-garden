@@ -84,7 +84,15 @@ export const MEMORY_CORE_ORDER: SQL[] = [desc(m.pinned), desc(sql`coalesce(${m.u
  */
 export function memoryCore(db: Db, userId: string, today: string) {
   return db
-    .select({ id: m.id, kind: m.kind, body: m.body, pinned: m.pinned, confidence: m.confidence })
+    .select({
+      id: m.id,
+      kind: m.kind,
+      body: m.body,
+      pinned: m.pinned,
+      confidence: m.confidence,
+      // Where it came from (`provenance.source`): a saved post's tip reads as one, never as the coach's inference.
+      source: sql<string | null>`case when json_valid(${m.provenance}) then json_extract(${m.provenance}, '$.source') end`,
+    })
     .from(m)
     .where(memoryCoreWhere(userId, today))
     .orderBy(...MEMORY_CORE_ORDER)

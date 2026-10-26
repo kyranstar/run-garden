@@ -64,6 +64,7 @@ import {
   EXERCISES,
   label as vocabLabel,
   libraryLine,
+  PROFILES,
   profileById,
   usedValues,
   type ConditionProfile,
@@ -74,7 +75,7 @@ import {
 } from "@rg/exercise-library";
 import { isPersonalId } from "@rg/saves";
 import { FORMAT_OF_PART, gatesReadTheCheck as gatesOpenedByCheck, makeLibraryIndex, modeOfEffort } from "@rg/workout";
-import { accountLibraryFrom, personalMovesSql, type AccountLibrary } from "./account-library.js";
+import { accountLibraryFrom, personalMovesSql, UNCHECKED_RATINGS, type AccountLibrary } from "./account-library.js";
 import { runWireOf, type Env } from "../env.js";
 import { latestReading, readingsOfDay } from "./condition-views.js";
 import type { Db } from "./db.js";
@@ -82,6 +83,8 @@ import type { Db } from "./db.js";
 import { RUN_LIMITS } from "./design-limits.js";
 import { LATER_LEAD_MIN } from "./design-time.js";
 import { memoryCore } from "./memory-core.js";
+import { SAVED_POST_SOURCE } from "./coach-memory.js";
+import { FIT_SAVES_REQUEST } from "./coach-opening-line.js";
 import { focusReadInContext, type RunFocus } from "./design-focus.js";
 import { CONTEXT_TURNS, conversationBlock, conversationRows, type TurnRow } from "./coach-conversation.js";
 import { runningFactsOf, runningLine, runWeeksSql, thresholdSql, watchLine, type RunningFacts } from "./designed-runs.js";
@@ -301,7 +304,7 @@ interface Reads {
   activeProfiles: string[];
   checks: Array<{ id: string; profileId: string; value: number | null; feelingOff: boolean; at: string }>;
   objectives: Array<{ id: string; title: string }>;
-  memory: Array<{ id: string; kind: string; body: string; pinned: boolean; confidence: string }>;
+  memory: Array<{ id: string; kind: string; body: string; pinned: boolean; confidence: string; source?: string | null }>;
   plan: Array<{
     id: string;
     date: string;
@@ -380,9 +383,17 @@ async function focusRead(db: Db, userId: string, focus: RunFocus): Promise<Map<s
     case "move": {
       if (!isPersonalId(focus.id)) return new Map();
       const pm = personalMoves;
+      // While pending: its record, whether the owner edited it, and the first post it came from with the match's
+      // confidence and flag (verbatim audit gap 4) — in the same statement.
       return readTagged(db, [
         sql`select 'm' as t, json_object('status', ${pm.status},
-            'record', case when ${pm.status} = 'pending' and json_valid(${pm.record}) then json(${pm.record}) end) as j
+            'record', case when ${pm.status} = 'pending' and json_valid(${pm.record}) then json(${pm.record}) end,
+            'edited', ${pm.editedByOwner},
+            'link', case when ${pm.status} = 'pending' then (select json_object('url', fp.url,
+                'creator', coalesce(nullif(fp.creator_handle, ''), fp.creator_name), 'confidence', fl.confidence, 'check', fl.check_flag)
+              from saved_post_moves fl join saved_posts fp on fp.id = fl.post_id and fp.user_id = fl.user_id
+              where fl.user_id = ${pm.userId} and fl.move_id = ${pm.id} and fl.status = 'pending'
+              order by fl.created_at, fl.id limit 1) end) as j
           from ${pm} where ${pm.userId} = ${userId} and ${pm.id} = ${focus.id}`,
       ]);
     }
@@ -670,6 +681,9 @@ const CONFIDENCE_WORDS: Record<string, string> = {
   inferred: "inferred — the coach's inference, not yet confirmed",
 };
 
+/** A memory item from a saved post, in its marks: whose words they are. */
+const SAVED_POST_WORDS = "from a saved post — a creator's tip as a model read it, not the athlete's words or the coach's inference";
+
 function memoryBlock(r: Reads): string {
   const lines = [
     "# Memory — the pinned core",
@@ -677,8 +691,10 @@ function memoryBlock(r: Reads): string {
   ];
   if (r.memory.length === 0) lines.push("(none yet)");
   for (const m of r.memory) {
-    const marks = [m.kind, CONFIDENCE_WORDS[m.confidence] ?? m.confidence, ...(m.pinned ? ["pinned"] : [])].join(", ");
-    lines.push(`- [${m.id}] ${marks}: ${markUntrusted("memory", m.body)}`);
+    // A saved post's tip (Save kept it, spec §17): its source in place of a confidence that would read as the coach's own.
+    const fromPost = m.source === SAVED_POST_SOURCE;
+    const marks = [m.kind, fromPost ? SAVED_POST_WORDS : (CONFIDENCE_WORDS[m.confidence] ?? m.confidence), ...(m.pinned ? ["pinned"] : [])].join(", ");
+    lines.push(`- [${m.id}] ${marks}: ${markUntrusted(fromPost ? "saved post" : "memory", m.body)}`);
   }
   return lines.join("\n");
 }
@@ -1092,10 +1108,34 @@ function doseLine(dose: ExerciseRecord["dose"]): string {
   return `${span(dose.range)} ${DOSE_UNIT[dose.type]}${dose.sets ? `, ${span(dose.sets)} sets` : ""}`;
 }
 
+/** The most of a pending move's steps its focus shows, and the characters of each (verbatim audit gap 4). */
+const FOCUS_STEPS = 3;
+const FOCUS_STEP_CHARS = 80;
+
+/** A record's ratings, per profile it rates: "TMJ clench 0 of 3, neckLoad 1 of 3, faceDown no" — numbers and flags only. */
+function ratingsWords(rec: ExerciseRecord): string | null {
+  const parts = Object.values(PROFILES).flatMap((p) => {
+    const attrs = (rec.conditions as Record<string, Record<string, unknown> | undefined> | undefined)?.[p.id];
+    if (!attrs || typeof attrs !== "object") return [];
+    const words = Object.entries(p.attributes).map(([k, spec]) => {
+      const v = attrs[k];
+      return spec.kind === "scale" ? `${k} ${typeof v === "number" ? v : "?"} of ${spec.max}` : `${k} ${v === true ? "yes" : v === false ? "no" : "?"}`;
+    });
+    return [`${p.label} ${words.join(", ")}`];
+  });
+  return parts.length > 0 ? parts.join("; ") : null;
+}
+
+/** A match's confidence in words (saves-match.ts `CONFIDENCE_VALUE`: high 1, medium 0.6, low 0.3). */
+const confidenceWords = (v: number | null): string | null => (v === null ? null : v >= 0.9 ? "high" : v >= 0.5 ? "medium" : "low");
+
 /**
  * A move asked from: the library's (the bundled library) in its own words; one of the athlete's own moves — by the
  * account's library, an archived or merged one too, else (still in review) its pending row's record — in the saved
- * post's words, marked, with its dose as the post had it, and said to be not yet saved while it is pending.
+ * post's words, marked, with its dose as the post had it, and said to be not yet saved while it is pending. A pending
+ * move also shows what the owner sees in review (verbatim audit gap 4): its ratings per profile (the post's reading
+ * unless the owner edited it), its first steps (marked), the post it came from (marked) and the match's confidence and
+ * flag.
  */
 function moveLines(id: string, r: Reads, rows: Map<string, Array<Record<string, unknown>>>): string[] {
   const library = makeLibraryIndex(r.library.all)(id);
@@ -1109,8 +1149,29 @@ function moveLines(id: string, r: Reads, rows: Map<string, Array<Record<string, 
     `${ASKED_FROM} one of their own moves${pending ? " (from your saves, not yet saved)" : ""} — ${savedPost(rec.name)} (id ${id}): ${savedPost(rec.text?.summary ?? "")}`,
     about,
     ...(rec.dose ? [`- Its dose as seen: ${doseLine(rec.dose)}.`] : []),
+    ...(pending ? pendingLines(rec, row ?? {}) : []),
     ...(pending ? ["- Not yet in the library: no workout can hold it until its batch is saved."] : []),
   ];
+}
+
+/** What review shows of a pending move, for the coach (`moveLines`): ratings, steps, the post, the match. */
+function pendingLines(rec: ExerciseRecord, row: Record<string, unknown>): string[] {
+  const out: string[] = [];
+  const ratings = ratingsWords(rec);
+  const edited = row.edited === 1 || row.edited === true;
+  if (ratings) out.push(`- Ratings, ${edited ? "as the athlete edited them" : `from the post's reading (not checked by the athlete)`}: ${ratings}.`);
+  const steps = (Array.isArray(rec.text?.steps) ? rec.text.steps : []).filter((x): x is string => typeof x === "string").slice(0, FOCUS_STEPS);
+  if (steps.length > 0) out.push(`- Its first steps: ${steps.map((x) => savedPost(cutChars(x, FOCUS_STEP_CHARS))).join("; ")}`);
+  const link = (typeof row.link === "string" ? parsedJson(row.link) : row.link) as { url?: unknown; creator?: unknown; confidence?: unknown; check?: unknown } | null;
+  if (link && typeof link === "object") {
+    const url = str(link.url);
+    const creator = str(link.creator);
+    if (url || creator) out.push(`- From a post${creator ? ` by ${savedPost(creator)}` : ""}${url ? `: ${savedPost(url)}` : ""}`);
+    const confidence = confidenceWords(num(link.confidence));
+    const check = link.check === 1 || link.check === true;
+    if (confidence || check) out.push(`- Its match: ${[...(confidence ? [`${confidence} confidence`] : []), ...(check ? ["flagged Check this"] : [])].join("; ")}.`);
+  }
+  return out;
 }
 
 const OUTCOME_WORDS: Record<string, string> = { refused: "open", applying: "being applied", applied: "approved", declined: "declined", superseded: "superseded" };
@@ -1149,7 +1210,7 @@ function proposalLines(id: string, rows: Map<string, Array<Record<string, unknow
       out.push(`- a programme change: ${coach(`${String(op.title ?? "")} · ${String(op.summary ?? "")}`)} — ${outcome}`);
     } else if (op.kind === "move_pins") {
       // The moves in rotation (saved-posts import, Task 18): its card's words, the coach's own — marked.
-      out.push(`- moves in rotation: ${coach(`${String(op.title ?? "")} · ${String(op.summary ?? "")}`)} — ${outcome}`);
+      out.push(`- moves for the engine's pool: ${coach(`${String(op.title ?? "")} · ${String(op.summary ?? "")}`)} — ${outcome}`);
     }
   }
   return out;
@@ -1188,27 +1249,36 @@ function cutChars(text: string, max: number): string {
   return chars.length <= max ? text : `${chars.slice(0, max - 1).join("").trimEnd()}…`;
 }
 
+/** Whether a run asks about the saves (coach-context audit I4): the Fit chip's request, or one that names them. */
+export const asksAboutSaves = (request: string | null | undefined): boolean =>
+  !!request && (request === FIT_SAVES_REQUEST || /saves|saved/i.test(request));
+
 /**
  * "From the athlete's saves …" (Task 17): the waiting batch's moves the library offers, at most SAVES_MOVES_MAX — new
  * ones first, as read_saves lists them — each by name and summary (cut to SAVES_NAME_CHARS and SAVES_SUMMARY_CHARS; a
- * personal move's marked as a saved post's) and id, new or the athlete's already, and how many of the batch's posts
- * show it. The rest — past the twelve, or archived since (never offered) — counted in a line. Then, when the kept posts
- * say when, why or how often to do something (spec §17), "Notes from these posts:" and at most SAVES_INSIGHTS_MAX of
- * those insights, each cut to SAVES_NOTE_CHARS and marked as a saved post's. Null when no move of it is offered.
+ * personal move's marked as a saved post's) and id, new or the athlete's already, how many of the batch's posts show it,
+ * and — a saved move the athlete never edited — whose its ratings are. Past the twelve counted in a line, the moves
+ * archived since (never offered) in their own. Then, when the kept posts say when, why or how often to do something
+ * (spec §17), "Notes from these posts:" and at most SAVES_INSIGHTS_MAX of those insights, each cut to SAVES_NOTE_CHARS
+ * and marked as a saved post's. Only for a run that asks about the saves (`full`): any other main run gets one index
+ * line, so a waiting batch never crowds an unrelated design (coach-context audit I4). Null when no move of it is offered.
  */
-function savesSection(batch: SavedBatch, r: Reads): string | null {
+function savesSection(batch: SavedBatch, r: Reads, full: boolean): string | null {
   const { moves, archived } = savedMovesOf(batch, r.library);
   if (moves.length === 0) return null;
+  if (!full) return `From your saves: ${plural(moves.length, "move")} waiting, not yet fitted in — read_saves`;
   const lines = moves.slice(0, SAVES_MOVES_MAX).map(({ record, new: fresh, postIds }) => {
     const words = (text: string, max: number) => (isPersonalId(record.id) ? savedPost(cutChars(text, max)) : cutChars(text, max));
-    return `- ${words(record.name, SAVES_NAME_CHARS)} (${record.id}) — ${words(record.text?.summary ?? "", SAVES_SUMMARY_CHARS)}; ${fresh ? "new" : "yours already"}; from ${plural(postIds.length, "post")}`;
+    const ratings = r.library.unchecked.has(record.id) ? `; ratings: ${UNCHECKED_RATINGS}` : "";
+    return `- ${words(record.name, SAVES_NAME_CHARS)} (${record.id}) — ${words(record.text?.summary ?? "", SAVES_SUMMARY_CHARS)}; ${fresh ? "new" : "yours already"}; from ${plural(postIds.length, "post")}${ratings}`;
   });
-  const more = Math.max(0, moves.length - SAVES_MOVES_MAX) + archived.length;
+  const more = Math.max(0, moves.length - SAVES_MOVES_MAX);
   const notes = batch.insights.slice(0, SAVES_INSIGHTS_MAX).map((i) => `- ${savedPost(cutChars(i.text, SAVES_NOTE_CHARS))}`);
   return [
     `From the athlete's saves (saved ${dayWords(todayInZone(r.tz, new Date(batch.savedAt)), r.today)}, not yet fitted in):`,
     ...lines,
-    ...(more > 0 ? [`- and ${more} more`] : []),
+    ...(more > 0 ? [`- and ${more} more (read_saves)`] : []),
+    ...(archived.length > 0 ? [`- ${plural(archived.length, "move")} archived since, not offered`] : []),
     ...(notes.length > 0 ? ["Notes from these posts:", ...notes] : []),
   ].join("\n");
 }
@@ -1260,7 +1330,7 @@ function header(r: Reads, run: DesignRun, role: Role, scope: { kind: ScopeKind; 
   if (conversation) parts.push(conversation);
   if (role === "main" && r.focus) parts.push(focusSection(r.focus, r, time));
   // What came in from the athlete's saves (Task 17), last before the request: what "Fit these in" asks about.
-  const saves = role === "main" && r.saves ? savesSection(r.saves, r) : null;
+  const saves = role === "main" && r.saves ? savesSection(r.saves, r, asksAboutSaves(run.request)) : null;
   if (saves) parts.push(saves);
   parts.push(run.request ? `The athlete's request, in their own words:\n${athlete(run.request)}` : NO_REQUEST[role]);
   return parts.join("\n\n");

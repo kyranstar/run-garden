@@ -187,13 +187,36 @@ describe("the coach's library reads", () => {
       { url: U("https://example.com/p/2"), creator: U("Example Coach 2"), note: null },
     ]);
     expect(data.howTo.steps).toEqual([U("Set up tall."), U("Move slowly through the range.")]);
-    // A public move stays as it was: no links, not its own.
+    // A public move with no link stays as it was: no links, not its own.
     const goblet = ((await readTool("get_exercise").run(toolCtx(), { id: "gobletSquat" })) as ToolOk).data as Record<string, any>;
     expect(goblet.yours.own).toBeUndefined();
     expect(goblet.yours.links).toBeUndefined();
     // A pending move is the review's alone.
     const pending = await addMove("Band Pull Apart Hold", "pending");
     expect(await readTool("get_exercise").run(toolCtx(), { id: pending })).toMatchObject({ error: "not_found" });
+  });
+});
+
+describe("get_exercise: ratings a model read from a post (coach-context audit I6)", () => {
+  it("a saved move the athlete never edited says whose its ratings are, and its safety and fit words say rated from the post; edited, they are the athlete's", async () => {
+    await seedTmj(db, userId);
+    const id = await addMove("Zorbex Neck Nod", "active");
+    const read = async () => ((await readTool("get_exercise").run(toolCtx(), { id })) as ToolOk).data as Record<string, any>;
+    const unedited = await read();
+    expect(unedited.ratings).toBe("from the post's reading, not checked by the athlete");
+    expect(Object.values(unedited.safety).length).toBeGreaterThan(0);
+    for (const v of Object.values(unedited.safety)) expect(v).toMatch(/ \(rated from the post\)$/);
+    if (unedited.fitWhy !== undefined) expect(unedited.fitWhy).toMatch(/^Rated from the post: /);
+    await db.update(personalMoves).set({ editedByOwner: true }).where(eq(personalMoves.id, id));
+    forgetAccountLibrary(db);
+    const edited = await read();
+    expect(edited.ratings).toBeUndefined();
+    for (const v of Object.values(edited.safety)) expect(v).not.toContain("rated from the post");
+    if (edited.fitWhy !== undefined) expect(edited.fitWhy).not.toContain("Rated from the post");
+    // A library move's ratings are the library's own.
+    const goblet = ((await readTool("get_exercise").run(toolCtx(), { id: "gobletSquat" })) as ToolOk).data as Record<string, any>;
+    expect(goblet.ratings).toBeUndefined();
+    for (const v of Object.values(goblet.safety)) expect(v).not.toContain("rated from the post");
   });
 });
 
@@ -226,6 +249,37 @@ describe("a run asked from a personal move", () => {
     const placed = await call("POST", "/api/workouts", { date: today, doc: docOf(pending) });
     expect(placed.status).toBe(422);
     expect(placed.body.issues).toContainEqual(expect.objectContaining({ path: "parts[0].items[0].libraryId", code: "unknown_exercise" }));
+  });
+
+  it("a pending move's focus sees what the owner is looking at (verbatim audit gap 4): ratings per profile, its first steps, the post, the match — in the statements it had", async () => {
+    const pending = await addMove("Band Pull Apart Hold", "pending");
+    // Three steps over the three shown, one long (each cut at 80 characters).
+    const long = `Squeeze the shoulder blades together and hold, ${"slowly ".repeat(20)}`;
+    const [row] = await db.select().from(personalMoves).where(eq(personalMoves.id, pending));
+    const rec = row!.record as { text: { steps: string[] } };
+    await db.update(personalMoves).set({ record: { ...rec, text: { ...rec.text, steps: ["Set up tall.", long, "Lower with control.", "A fourth, not shown."] } } }).where(eq(personalMoves.id, pending));
+    await db.insert(schema.savedPosts).values({
+      id: "post-p", userId, source: "testsrc", sourceKey: "p", url: "https://example.com/p/p", creatorHandle: "coach_pending",
+      firstSeenAt: NOON, status: "matched", updatedAt: NOON,
+    });
+    await db.insert(schema.savedPostMoves).values({
+      id: "link-p", userId, postId: "post-p", position: 0, moveId: pending, moveKind: "personal", batchId: null, confidence: 0.3, checkFlag: true, status: "pending", createdAt: NOON,
+    });
+    const focus = { kind: "move" as const, id: pending };
+    statements.length = 0;
+    const ctx = await buildDesignContext(db, {} as Env, userId, { id: "run-p", role: "main", scope: { kind: "now" }, request: "Is this one fine for me?", parentId: null, focus }, new Date());
+    expect(statements.length).toBe(contextStatements("main", focus));
+    const saved = (text: string) => markUntrusted("saved post", text);
+    const cut = `${Array.from(long).slice(0, 79).join("").trimEnd()}…`;
+    expect(ctx.header).toContain(`- Ratings, from the post's reading (not checked by the athlete): TMJ clench 0 of 3, neckLoad 1 of 3, faceDown no.`);
+    expect(ctx.header).toContain(`- Its first steps: ${saved("Set up tall.")}; ${saved(cut)}; ${saved("Lower with control.")}`);
+    expect(ctx.header).not.toContain("A fourth, not shown.");
+    expect(ctx.header).toContain(`- From a post by ${saved("coach_pending")}: ${saved("https://example.com/p/p")}`);
+    expect(ctx.header).toContain("- Its match: low confidence; flagged Check this.");
+    // Edited by the owner in review: the ratings are theirs.
+    await db.update(personalMoves).set({ editedByOwner: true }).where(eq(personalMoves.id, pending));
+    const edited = await buildDesignContext(db, {} as Env, userId, { id: "run-p2", role: "main", scope: { kind: "now" }, request: "Is this one fine for me?", parentId: null, focus }, new Date());
+    expect(edited.header).toContain("- Ratings, as the athlete edited them: TMJ clench 0 of 3, neckLoad 1 of 3, faceDown no.");
   });
 
   it("an active move reads from the account's library; an unknown personal id is focus_not_found", async () => {
