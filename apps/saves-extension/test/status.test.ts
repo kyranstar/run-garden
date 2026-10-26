@@ -33,7 +33,8 @@ const model = (over: Partial<Parameters<typeof popupModel>[0]> = {}) =>
 describe("popupModel headlines", () => {
   it.each([
     ["ok", "Up to date"],
-    ["idle", "Up to date"],
+    // Before any check has run (verbatim audit gap 10): a state of its own, not "Up to date".
+    ["idle", "No check yet"],
     ["login_needed", "Instagram wants you to log in again"],
     ["feed_changed", "Instagram changed something — the extension needs an update"],
     ["paused_budget", "Paused — import budget"],
@@ -81,11 +82,11 @@ describe("popupModel facts", () => {
     expect(model({ queueSize: 3 }).queue).toBe("3 waiting");
   });
 
-  it("the newest checks come as counts, an error check carries its code", () => {
+  it("the last 10 checks come as counts — with how many the filter left out (spec §8) — an error check carries its code", () => {
     const c = (id: string, over = {}) => ({ id, startedAt: "2026-10-23T08:00:00.000Z", finishedAt: "2026-10-23T08:01:00.000Z", found: 5, fresh: 2, filtered: 1, extracted: 1, failed: 0, errorCode: null, ...over });
-    const m = model({ status: status({ checks: [c("a"), c("b", { errorCode: "login_needed", fresh: 0 }), c("c"), c("d"), c("e")] }) });
-    expect(m.checks).toHaveLength(3);
-    expect(m.checks[0]).toEqual({ when: "4 h ago", counts: "5 found · 2 new · 1 extracted · 0 failed", error: null });
+    const m = model({ status: status({ checks: [c("a"), c("b", { errorCode: "login_needed", fresh: 0 }), ...Array.from({ length: 10 }, (_, i) => c(`x${i}`))] }) });
+    expect(m.checks).toHaveLength(10);
+    expect(m.checks[0]).toEqual({ when: "4 h ago", counts: "5 found · 2 new · 1 filtered · 1 extracted · 0 failed", error: null });
     expect(m.checks[1]!.error).toBe("login_needed");
   });
 

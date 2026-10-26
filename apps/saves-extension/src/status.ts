@@ -59,13 +59,15 @@ export interface PopupInput {
 
 const HEADLINES: Record<Exclude<SavesStatusDto["state"], "error">, string> = {
   ok: "Up to date",
-  idle: "Up to date",
+  // Before any check has run: nothing is up to date yet (verbatim audit gap 10; an added state — the six keep their copy).
+  idle: "No check yet",
   login_needed: "Instagram wants you to log in again",
   feed_changed: "Instagram changed something — the extension needs an update",
   paused_budget: "Paused — import budget",
 };
 
-const MAX_CHECKS = 3;
+/** The checks the popup lists (spec §8: the last 10, each with its filtered count). */
+const MAX_CHECKS = 10;
 const MAX_POSTS = 8;
 const MINUTE = 60_000;
 const HOUR = 60 * MINUTE;
@@ -134,7 +136,7 @@ export function popupModel(input: PopupInput): PopupModel {
     totals: status ? `${status.totals.moves} moves from ${status.totals.posts} posts` : "",
     checks: (status?.checks ?? []).slice(0, MAX_CHECKS).map((c) => ({
       when: ago(c.startedAt, now),
-      counts: `${c.found} found · ${c.fresh} new · ${c.extracted} extracted · ${c.failed} failed`,
+      counts: `${c.found} found · ${c.fresh} new · ${c.filtered} filtered · ${c.extracted} extracted · ${c.failed} failed`,
       error: c.errorCode,
     })),
     posts,
