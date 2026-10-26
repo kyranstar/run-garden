@@ -59,6 +59,12 @@ beforeEach(async () => {
   statements = 0;
   db = makeTestDb({ boundVariableCap: 100, onStatement: () => (statements += 1) });
   ({ userId, prefs } = await makeTestUser(db));
+  // The real calendar day, pinned at midday in the athlete's zone (19:00Z is 12:00 PDT / 11:00 PST): the routes read
+  // the clock, and a workout placed "today" is refused once the day's slots are past — this suite failed at 23:59 local
+  // on 2026-10-25 and blocked a deploy. Dates stay relative to today; only the hour is held.
+  today = todayInZone(prefs.timezone);
+  vi.useFakeTimers({ toFake: ["Date"] });
+  vi.setSystemTime(new Date(`${today}T19:00:00Z`));
   today = todayInZone(prefs.timezone);
   cookie = `${SESSION_COOKIE}=${await createSession(db, userId)}`;
   vi.stubGlobal("fetch", (async () => {
@@ -70,6 +76,7 @@ beforeEach(async () => {
 });
 
 afterEach(() => {
+  vi.useRealTimers();
   vi.unstubAllGlobals();
 });
 
