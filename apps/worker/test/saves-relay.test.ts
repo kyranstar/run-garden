@@ -167,6 +167,19 @@ describe("relayExtract", () => {
     expect(est).toBeLessThan(worst);
   });
 
+  it("a reply the model cut off at its output limit (finish_reason length) is model_failed with a cut-off issue, not 'not valid JSON'", async () => {
+    const id = await seed("k");
+    const cut = JSON.stringify(GOOD).slice(0, 80);
+    const fetchImpl = (async () =>
+      new Response(JSON.stringify({ model: MODEL, choices: [{ message: { content: cut }, finish_reason: "length" }], usage: { prompt_tokens: 100, completion_tokens: 4000 } }))) as unknown as typeof fetch;
+    const out = await relayExtract(db, env(), userId, { id }, request(bodyText()), new Date(NOW), fetchImpl);
+    expect(!out.ok && out.code).toBe("model_failed");
+    expect(!out.ok && out.issues?.[0]).toMatch(/cut off at the output limit \(4000 tokens\)/);
+    const row = await reload(id);
+    expect(row).toMatchObject({ status: "failed", lastErrorCode: "model_failed", extractAttempts: 1 });
+    expect(row.lastError).toMatch(/cut off/);
+  });
+
   it("refuses a schema-invalid reply as model_failed with issues; the attempt is counted and the post failed", async () => {
     const id = await seed("k");
     const out = await run(id, bodyText(), gateway({ kind: "routine", summary: "s", themes: [], moves: [{ name: "" }] }));
@@ -450,9 +463,10 @@ describe("POST /api/saves/posts/:key/extract", () => {
     }
   });
 
-  it("400s max tokens above 4000, or not a number", async () => {
+  it("400s max tokens above the cap (12,000), or not a number", async () => {
     await seed("k");
-    expect((await route("k", bodyText(), { "x-saves-max-tokens": "4001" })).res.status).toBe(400);
+    expect((await route("k", bodyText(), { "x-saves-max-tokens": "12001" })).res.status).toBe(400);
+    expect((await route("k", bodyText(), { "x-saves-max-tokens": "12000" })).res.status).not.toBe(400);
     expect((await route("k", bodyText(), { "x-saves-max-tokens": "lots" })).res.status).toBe(400);
   });
 

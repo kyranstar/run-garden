@@ -20,7 +20,11 @@ const { savedPosts } = schema;
 export const EXTRACT_MODELS: readonly string[] = ["google/gemini-3.6-flash"];
 export const EXTRACT_MODEL_DEFAULT = "google/gemini-3.6-flash";
 /** The most output tokens a request may ask for (`x-saves-max-tokens`). */
-export const EXTRACT_MAX_TOKENS_CAP = 4000;
+/**
+ * The most output tokens an extraction may ask for. 4,000 cut off 18 of the first 43 live replies (2026-10-26: a routine's
+ * moves, each with twelve condition notes, run long) — every one then failed as "not valid JSON" and paid twice.
+ */
+export const EXTRACT_MAX_TOKENS_CAP = 12_000;
 /** The largest request body the relay takes. R2 sets the real value; `SAVES_RELAY_MAX_BYTES` overrides. */
 export const RELAY_MAX_BYTES = 20_000_000;
 /** The model's context window in tokens: a body cannot cost more input than this, whatever its length. */
@@ -275,6 +279,12 @@ export async function relayExtract(
       await finish({ code: "model_failed", why: ["the reply came from a model that is not allowed"] }, cost);
       return { ok: false, code: "model_failed", issues: ["the reply came from a model that is not allowed"] };
     }
+    if (call.finishReason === "length") {
+      // Cut off at the output limit: not a JSON problem, and a retry at the same length would be cut the same way.
+      const issues = [`the reply was cut off at the output limit (${call.outputTokens} tokens): write less — shorter steps, cues and condition notes, no aliases`];
+      await finish({ code: "model_failed", why: issues }, cost);
+      return { ok: false, code: "model_failed", issues };
+    }
     const parsed = parseExtraction(call.content);
     if (!parsed.ok) {
       await finish({ code: "model_failed", why: parsed.issues }, cost);
@@ -316,7 +326,7 @@ async function callGateway(
   model: string,
   length: number,
 ): Promise<
-  | { ok: true; content: string; model: string | null; inputTokens: number; outputTokens: number }
+  | { ok: true; content: string; model: string | null; inputTokens: number; outputTokens: number; finishReason: string | null }
   | { ok: false; reason: string }
 > {
   const controller = new AbortController();
@@ -341,17 +351,19 @@ async function callGateway(
     // The reply is small JSON: parsed whole.
     const json = (await response.json().catch(() => null)) as {
       model?: unknown;
-      choices?: Array<{ message?: { content?: unknown } }>;
+      choices?: Array<{ message?: { content?: unknown }; finish_reason?: unknown }>;
       usage?: { prompt_tokens?: number; completion_tokens?: number };
     } | null;
     const content = json?.choices?.[0]?.message?.content;
     if (typeof content !== "string") return { ok: false, reason: "gateway_bad_response" };
+    const finishReason = json?.choices?.[0]?.finish_reason;
     return {
       ok: true,
       content,
       model: typeof json?.model === "string" ? json.model : null,
       inputTokens: json?.usage?.prompt_tokens ?? Math.ceil(length / 4),
       outputTokens: json?.usage?.completion_tokens ?? Math.ceil(content.length / 3),
+      finishReason: typeof finishReason === "string" ? finishReason : null,
     };
   } catch (e) {
     console.warn(JSON.stringify({ level: "warn", msg: "saves relay: ai gateway request failed", model, detail: String(e).slice(0, 200) }));

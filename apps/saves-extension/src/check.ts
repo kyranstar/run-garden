@@ -31,7 +31,8 @@ export const DEFAULT_CONFIG: CheckConfig = {
   maxWork: 20,
   minVideoWidth: MIN_VIDEO_WIDTH,
   model: "google/gemini-3.6-flash",
-  maxTokens: 4000,
+  // The Worker's EXTRACT_MAX_TOKENS_CAP: 4,000 cut off 18 of the first 43 live replies (2026-10-26).
+  maxTokens: 12_000,
   // Just under the relay's own cap (RELAY_MAX_BYTES, 20 MB). The gateway's limit is learned from its 413 at run time
   // (probe R2): the 4.5 MB guess this held before (2026-10-25) refused 32 of the first 38 videos before sending anything.
   maxBodyBytes: 19_500_000,
