@@ -42,7 +42,9 @@ describe("the prompt text", () => {
   });
 
   it("keeps the shared prefix under about 6k tokens (characters ÷ 4)", () => {
-    expect(SHARED_PROMPT.length / 4).toBeLessThanOrEqual(6000);
+    // REBASED 2026-10-25 (Task 18): pin_moves acting line + integration guidance — measured 6,183.25 (was 5,958.25 against
+    // 6,000); held with design-fix13-prompt.test.ts's cap, ≥ 100 tokens headroom.
+    expect(SHARED_PROMPT.length / 4).toBeLessThanOrEqual(6290);
     for (const r of ROLES) expect(roleBlock(r).length / 4, r).toBeLessThanOrEqual(ROLE_CAP[r]);
   });
 
@@ -61,6 +63,8 @@ describe("the prompt text", () => {
       "read_plans", "propose_plan", "change_programme",
       // Saved-posts import, Task 17: what came in from the athlete's saves.
       "read_saves",
+      // Saved-posts import, Task 18: the moves in rotation, changed with the athlete's approval.
+      "pin_moves",
     ];
     expect([...PROMPT_TOOL_NAMES].sort()).toEqual([...spec].sort());
     for (const name of PROMPT_TOOL_NAMES) expect(ALL_TEXT, name).toContain(name);
@@ -308,7 +312,8 @@ describe("3A-B — the prompt agrees with the code", () => {
   });
 
   it("stays within its size: the shared prefix and each role block with its budget", () => {
-    expect(SHARED_PROMPT.length / 4).toBeLessThanOrEqual(6000);
+    // REBASED 2026-10-25 (Task 18): pin_moves acting line + integration guidance — measured 6,183.25 (the cap above).
+    expect(SHARED_PROMPT.length / 4).toBeLessThanOrEqual(6290);
     for (const role of ROLES) expect(roleBlock(role, RUN_LIMITS[role].maxCalls).length / 4, role).toBeLessThanOrEqual(ROLE_CAP[role]);
   });
 });

@@ -22,6 +22,11 @@
  * pattern, a line a setting and where its next sessions go; Approve and Not now, each its own op (`card.opId`: a
  * suggestion may change two programmes); "Moving your sessions…" while its sessions are placed a request at a time;
  * "Programme updated" when done. Its state is the read's `programmes` part, its own line by its op.
+ *
+ * THE MOVES IN ROTATION (saved-posts import, Task 18) are the same card in theirs (`PINS_WORDS`): the coach's title, line
+ * and lines — one a placement, one a saved move left out — Approve and Not now, its own op; "Rotation updated" when done,
+ * with a line for each move it left (archived since, not in rotation) and no link: nothing of it is on Plan. Its state is
+ * the read's `pins` part, its own line by its op.
  */
 import { useEffect, useId, useRef, useState } from "react";
 import { Link } from "react-router-dom";
@@ -32,6 +37,7 @@ import {
   type CoachConversationCardDto,
   type DesignApproveRequest,
   type DesignApproveResponse,
+  type DesignPinsLineDto,
   type DesignPlanLineDto,
   type DesignProgrammeLineDto,
 } from "@rg/api-client";
@@ -72,7 +78,11 @@ export interface PlanCardWords {
   superseded: string;
   /** Refused, the server's words missing. */
   refused: string;
+  /** Done: where to see it ("See it on Plan"); null when nothing of it is on a screen of its own. */
+  link: { to: string; label: string } | null;
 }
+
+const SEE_PLAN = { to: "/plan", label: "See it on Plan" };
 
 export const PLAN_WORDS: PlanCardWords = {
   done: PLAN_ADDED,
@@ -85,6 +95,7 @@ export const PLAN_WORDS: PlanCardWords = {
   declined: "Not added",
   superseded: "Replaced by a newer plan",
   refused: "It couldn't be added.",
+  link: SEE_PLAN,
 };
 
 /** A programme change's words (§8 §5): its sessions are moved, as the settings sheet's own save says. */
@@ -99,11 +110,28 @@ export const PROGRAMME_WORDS: PlanCardWords = {
   declined: "Not changed",
   superseded: "Replaced by a newer change",
   refused: "It couldn't be changed.",
+  link: SEE_PLAN,
 };
 
-/** What the card reads of its op's line: a plan's or a programme change's. */
-type CardLine = Pick<DesignPlanLineDto | DesignProgrammeLineDto, "opId" | "lines" | "issues"> & {
-  outcome: { status: string; why?: string } | null;
+/** The moves in rotation's words (saved-posts import, Task 18): one write, done at once; nothing of it is on Plan. */
+export const PINS_WORDS: PlanCardWords = {
+  done: "Rotation updated",
+  doing: "Updating your rotation…",
+  part: "",
+  inFlight: "It's being applied right now.",
+  approve: "Approve",
+  finish: "Approve",
+  unfinished: "It isn't done yet — tap again.",
+  declined: "Not changed",
+  superseded: "Replaced by a newer suggestion",
+  refused: "It couldn't be saved.",
+  link: null,
+};
+
+/** What the card reads of its op's line: a plan's, a programme change's or the moves in rotation's (whose applied
+ * outcome has its lines: a move left). */
+type CardLine = Pick<DesignPlanLineDto | DesignProgrammeLineDto | DesignPinsLineDto, "opId" | "lines" | "issues"> & {
+  outcome: { status: string; why?: string; lines?: string[] } | null;
 };
 
 /** Approve the plan's own ops (`opIds`, never `{}`: the suggestion may hold other cards' workouts and changes) until
@@ -166,13 +194,14 @@ export function PlanCard({ card, closed = false }: { card: PlanCardInput; closed
   const oneTap = useOneTap();
   const read = useQuery({ queryKey: designProposalQuery(card.proposalId), queryFn: () => readProposal(card.proposalId), retry: false });
   const programme = card.kind === "programme";
-  const w = programme ? PROGRAMME_WORDS : PLAN_WORDS;
-  // A programme change's line is its own op's (a suggestion may change two programmes); a plan's, the suggestion's one.
-  const plan: CardLine | null = programme
-    ? (read.data?.programmes?.find((g) => g.opId === card.opId) ?? (card.opId ? null : (read.data?.programmes?.[0] ?? null)))
-    : (read.data?.plans?.[0] ?? null);
+  const pins = card.kind === "pins";
+  const w = programme ? PROGRAMME_WORDS : pins ? PINS_WORDS : PLAN_WORDS;
+  // A programme change's line is its own op's (a suggestion may change two programmes) — the moves in rotation's too; a
+  // plan's, the suggestion's one.
+  const own = <T extends { opId: string }>(xs: readonly T[] | undefined): T | null => xs?.find((g) => g.opId === card.opId) ?? (card.opId ? null : (xs?.[0] ?? null));
+  const plan: CardLine | null = programme ? own(read.data?.programmes) : pins ? own(read.data?.pins) : (read.data?.plans?.[0] ?? null);
   /** The card's own op: what its buttons approve and decline, nothing else of the suggestion. */
-  const own = [plan?.opId ?? card.opId ?? PLAN_OP_ID];
+  const opIds = [plan?.opId ?? card.opId ?? PLAN_OP_ID];
   const status = read.data?.status ?? card.status;
   const reread = () => qc.invalidateQueries({ queryKey: designProposalQuery(card.proposalId) });
   const after = async () => {
@@ -184,13 +213,13 @@ export function PlanCard({ card, closed = false }: { card: PlanCardInput; closed
   const [busyLine, setBusyLine] = useState<string | null>(null);
   const approve = useMutation({
     networkMode: "always",
-    mutationFn: () => approvePlanUntilDone((body) => api.coachDesignApprove(card.proposalId, body), reread, own),
+    mutationFn: () => approvePlanUntilDone((body) => api.coachDesignApprove(card.proposalId, body), reread, opIds),
     onSuccess: (answers) => setBusyLine(answers.some((a) => (a.inFlight ?? []).length > 0) ? w.inFlight : null),
     onSettled: after,
   });
   const decline = useMutation({
     networkMode: "always",
-    mutationFn: () => api.coachDesignDecline(card.proposalId, { opIds: own }),
+    mutationFn: () => api.coachDesignDecline(card.proposalId, { opIds }),
     onSettled: after,
   });
   // Once decided, the focus goes to what came of it (the buttons it was pressed on are gone).
@@ -209,6 +238,8 @@ export function PlanCard({ card, closed = false }: { card: PlanCardInput; closed
   const started = plan?.outcome?.status === "applying";
   const decidable = outcome === null && (status === "pending" || status === "partially_approved");
   const lines = card.lines && card.lines.length > 0 ? card.lines : (plan?.lines ?? []);
+  /** What the approve left (the moves in rotation's: a move archived since, an unpin of one not in rotation). */
+  const left = plan?.outcome?.status === "applied" ? (plan.outcome.lines ?? []) : [];
   const working = approve.isPending;
 
   if (closed) {
@@ -256,11 +287,11 @@ export function PlanCard({ card, closed = false }: { card: PlanCardInput; closed
       ) : outcome !== null ? (
         <p ref={outcomeRef} className="coach-changes-outcome" role="status" tabIndex={-1}>
           {outcome === w.done ? `✓ ${w.done}` : outcome}
-          {outcome === w.done ? (
+          {outcome === w.done && w.link ? (
             <>
               {" "}
-              <Link className="linklike tap-pad" to="/plan">
-                See it on Plan
+              <Link className="linklike tap-pad" to={w.link.to}>
+                {w.link.label}
               </Link>
             </>
           ) : null}
@@ -269,6 +300,13 @@ export function PlanCard({ card, closed = false }: { card: PlanCardInput; closed
         <p className="coach-changes-outcome" role="status">
           {w.part}
         </p>
+      ) : null}
+      {left.length > 0 && !working ? (
+        <ul className="coach-plan-notes">
+          {left.map((l, k) => (
+            <li key={k}>{l}</li>
+          ))}
+        </ul>
       ) : null}
       {busyLine && !working ? (
         <p className="coach-changes-outcome" role="status">

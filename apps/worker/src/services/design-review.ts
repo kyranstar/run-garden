@@ -70,7 +70,9 @@ import {
   isDocWorkoutOp,
   isPlanAdjustOp,
   isPlanStructureOp,
+  isMovePinsOp,
   isProgrammeChangeOp,
+  type MovePinsOp,
   type PlanAdjustOp,
   type PlanStructureOp,
   type ProgrammeChangeOp,
@@ -78,7 +80,7 @@ import {
 import { utf8Bytes } from "./utf8.js";
 
 /** An op of a design's proposal: a designed workout, or a change to a session already on the plan (Task 8b). */
-type DesignOp = DocWorkoutOp | PlanAdjustOp | PlanStructureOp | ProgrammeChangeOp;
+type DesignOp = DocWorkoutOp | PlanAdjustOp | PlanStructureOp | ProgrammeChangeOp | MovePinsOp;
 
 /** The designed workout run `runId` holds in `ops` (a change belongs to no run: never one). */
 const ofRun = (ops: readonly DesignOp[], runId: string): DocWorkoutOp | undefined =>
@@ -569,25 +571,27 @@ export const PLAN_EXPIRY_DAYS = 3;
  * The proposal row's title, rationale and expiry, computed from its ops (propose_workout writes them; so does a
  * verdict that changes which version an op holds, adjust_plan and propose_plan). The workouts name it, then its changes
  * are counted ("Calm hips · 1 plan change"); a proposal of one change alone is named by it ("Strength — skipped"); a
- * whole plan change by its own title, after the workouts and changes ("10K build"), and a programme change by its own
- * ("Mobility: new days"). It expires on its last day — a move's destination among them — and a plan change on its first
- * new day or PLAN_EXPIRY_DAYS after it was proposed, whichever comes first (its sessions start then: approved later,
- * they would start in the past); a programme change, which takes effect whenever it is approved, PLAN_EXPIRY_DAYS after.
+ * whole plan change by its own title, after the workouts and changes ("10K build"), a programme change by its own
+ * ("Mobility: new days"), and the moves in rotation by the coach's (Task 18). It expires on its last day — a move's
+ * destination among them — and a plan change on its first new day or PLAN_EXPIRY_DAYS after it was proposed, whichever
+ * comes first (its sessions start then: approved later, they would start in the past); a programme change, which takes
+ * effect whenever it is approved, PLAN_EXPIRY_DAYS after — and the moves in rotation the same.
  */
 export function proposalFields(all: readonly unknown[]): { title: string; rationale: string; expiresAt: string } {
   const ops = all.filter(isDocWorkoutOp) as DocWorkoutOp[];
   const changes = all.filter(isPlanAdjustOp);
   const plans = all.filter(isPlanStructureOp);
   const programmes = all.filter(isProgrammeChangeOp);
+  const pins = all.filter(isMovePinsOp);
   const counted = `${changes.length} plan change${changes.length === 1 ? "" : "s"}`;
   const workouts = ops.length === 0 ? null : ops.length === 1 ? ops[0]!.doc.title : `${ops.length} workouts`;
   const changed = workouts === null ? (changes.length === 0 ? null : changes.length === 1 ? describeChange(changes[0]!).title : counted) : changes.length > 0 ? `${workouts} · ${counted}` : workouts;
-  const title = [changed, ...plans.map((p) => p.title), ...programmes.map((g) => g.title)].filter((t): t is string => !!t).join(" · ");
+  const title = [changed, ...plans.map((p) => p.title), ...programmes.map((g) => g.title), ...pins.map((g) => g.title)].filter((t): t is string => !!t).join(" · ");
   const planDays = plans.map((p) => [p.date, addDays(p.at.slice(0, 10), PLAN_EXPIRY_DAYS)].sort()[0]!);
-  const programmeDays = programmes.map((g) => addDays(g.at.slice(0, 10), PLAN_EXPIRY_DAYS));
+  const programmeDays = [...programmes, ...pins].map((g) => addDays(g.at.slice(0, 10), PLAN_EXPIRY_DAYS));
   return {
     title,
-    rationale: [...ops.map((o) => o.changeNote ?? o.doc.intent.summary), ...changes.map((c) => c.why), ...plans.map((p) => p.why), ...programmes.map((g) => g.why)].join(" · ").slice(0, 500),
+    rationale: [...ops.map((o) => o.changeNote ?? o.doc.intent.summary), ...changes.map((c) => c.why), ...plans.map((p) => p.why), ...programmes.map((g) => g.why), ...pins.map((g) => g.why)].join(" · ").slice(0, 500),
     expiresAt: [...ops.map((o) => o.date), ...changes.flatMap((c) => (c.op.kind === "move" ? [c.date, c.op.toDate] : [c.date])), ...planDays, ...programmeDays].sort().at(-1)!,
   };
 }
@@ -1068,7 +1072,7 @@ const STOPPED_CHANGE = "not reviewed: the coach stopped before its review was in
  * expiry): left out. In the athlete's words (fix wave 3B, B-I3): the day as the app names it, nothing "proposed". */
 export function pastDayLine(ops: readonly DesignOp[]): string {
   const named = (op: DesignOp) =>
-    isPlanStructureOp(op) || isProgrammeChangeOp(op) ? op.title : isPlanAdjustOp(op) ? describeChange(op).title : (op as DocWorkoutOp).doc.title;
+    isPlanStructureOp(op) || isProgrammeChangeOp(op) || isMovePinsOp(op) ? op.title : isPlanAdjustOp(op) ? describeChange(op).title : (op as DocWorkoutOp).doc.title;
   return `Its day passed before it could be suggested, so left out: ${ops.map((op) => `“${named(op)}” (${dayLabel(op.date)})`).join(", ")}.`;
 }
 

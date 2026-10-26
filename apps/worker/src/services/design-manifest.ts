@@ -42,14 +42,26 @@ import { deriveDoc, makeLibraryIndex, type LibraryIndex } from "@rg/workout";
 import { accountLibraryFrom, personalMovesSql, PUBLIC_LIBRARY, type AccountLibrary } from "./account-library.js";
 import type { Db } from "./db.js";
 import { defaultFromRow, defaultPlaceSql } from "./default-place.js";
-import type { DesignedOp, DesignedPlanOp, DesignedProgrammeOp, DesignedStructureOp, OpOutcome, PlanOpOutcome, PlanStructureOutcome, ProgrammeChangeOutcome, Written } from "./design-approve.js";
+import type {
+  DesignedOp,
+  DesignedPinsOp,
+  DesignedPlanOp,
+  DesignedProgrammeOp,
+  DesignedStructureOp,
+  MovePinsOutcome,
+  OpOutcome,
+  PlanOpOutcome,
+  PlanStructureOutcome,
+  ProgrammeChangeOutcome,
+  Written,
+} from "./design-approve.js";
 import { reviewMeanOf } from "./design-orchestrate.js";
 import { runningFactsOf, thresholdSql } from "./designed-runs.js";
 import { REVIEW_DIMENSIONS, RUN_REVIEW_DIMENSIONS } from "./design-prompt.js";
 import { athleteText, clipProse } from "./design-prose.js";
 import { acceptedLine, idInWords, REVIEW_ITEM_MAX, REVIEW_NOTE_MAX, type AcceptedCost } from "./design-review.js";
 import { approveTimeOf } from "./design-time.js";
-import { changeVerb, describeChange, isDocWorkoutOp, isPlanAdjustOp, isPlanStructureOp, isProgrammeChangeOp, opIdOf, type ChangeVerb } from "./proposal-kinds.js";
+import { changeVerb, describeChange, isDocWorkoutOp, isMovePinsOp, isPlanAdjustOp, isPlanStructureOp, isProgrammeChangeOp, opIdOf, type ChangeVerb } from "./proposal-kinds.js";
 
 /** One designed workout, as the athlete reads it before (and after) deciding. */
 export interface DocWorkoutLine {
@@ -459,6 +471,36 @@ export function programmeChangeLines(ops: readonly unknown[]): ProgrammeChangeLi
     lines: g.lines,
     why: g.why,
     issues: (g.issues ?? []).map((i) => ({ code: String(i.code), message: i.message })),
+    outcome: g.outcome ?? null,
+  }));
+}
+
+/** The moves in rotation as the manifest gives them (saved-posts import, Task 18): the coach's words and lines for the
+ * card, the moves it pins and unpins, and how it stands — `applied` with what was written and a line for each move left.
+ * No advisories (`issues`, always empty: the card's shape). */
+export interface PinsLine {
+  opId: string;
+  title: string;
+  summary: string;
+  lines: string[];
+  why: string;
+  pin: string[];
+  unpin: string[];
+  issues: Array<{ code: string; message: string }>;
+  outcome: MovePinsOutcome | null;
+}
+
+/** Each change to the moves in rotation's line, in the proposal's order (Task 18). */
+export function pinsLines(ops: readonly unknown[]): PinsLine[] {
+  return (ops.filter(isMovePinsOp) as DesignedPinsOp[]).map((g) => ({
+    opId: g.id,
+    title: g.title,
+    summary: g.summary,
+    lines: g.lines,
+    why: g.why,
+    pin: g.pin,
+    unpin: g.unpin,
+    issues: [],
     outcome: g.outcome ?? null,
   }));
 }

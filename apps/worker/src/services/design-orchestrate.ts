@@ -682,7 +682,7 @@ export async function supersedeOlderPlans(
   const changedOutcome = sql`json_object('status', 'superseded', 'at', ${at}, 'reason', ${reason}, 'by', ${proposalId})`;
   // Each designed op's outcome once this is written — the changes' too: the proposal's status follows both kinds.
   const after = sql`(SELECT CASE WHEN ${changed(sql`o.value`)} OR ${covered(sql`o.value`)} THEN 'superseded' ELSE coalesce(json_extract(o.value, '$.outcome.status'), 'open') END AS st
-    FROM json_each(coach_proposals.ops) o WHERE json_extract(o.value, '$.kind') IN ('doc_workout', 'plan_adjust', 'plan_structure', 'programme_change'))`;
+    FROM json_each(coach_proposals.ops) o WHERE json_extract(o.value, '$.kind') IN ('doc_workout', 'plan_adjust', 'plan_structure', 'programme_change', 'move_pins'))`;
   const status = sql`(SELECT CASE
       WHEN sum(st IN ('applied', 'declined', 'superseded')) < count(*) THEN coach_proposals.status
       WHEN sum(st = 'applied') = count(*) THEN 'approved'

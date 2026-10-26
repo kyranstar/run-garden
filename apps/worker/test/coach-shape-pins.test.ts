@@ -55,8 +55,14 @@ const BEFORE = { tools: 34_935, shared: 20_450, main: 4_586 };
  * Reading line in the shared prompt (23,729 → 23,833) — 709 characters, so 10,240 since §8's start; held with about the
  * same margin as before. The batch's moves are in the opening message (a main run's, only while a saved batch waits),
  * its posts and routines in the tool's answer.
+ *
+ * REBASED 2026-10-25 (Task 18): pin_moves acting line + integration guidance (saved-posts import: the coach keeps a
+ * saved move in rotation with the athlete's approval, and fits saved moves in selectively) — a new act tool, its schema
+ * compact (tools 39,746 → 40,761: the moves, the batch, the card's own words with their caps) and the shared prompt
+ * 23,833 → 24,733 (its Acting line, and the integration guidance with its selectivity paragraph, word for word, under
+ * "# Integrating saved moves") — 1,915 characters, so 12,155 since §8's start; held with about the same margin as before.
  */
-const GROWTH_MAX_CHARS = 10_270;
+const GROWTH_MAX_CHARS = 12_190;
 
 const toolsSent = () => JSON.stringify(allTools().map((t) => ({ name: t.name, description: t.description, input_schema: t.inputSchema })));
 

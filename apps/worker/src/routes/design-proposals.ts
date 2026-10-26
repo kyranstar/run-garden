@@ -6,7 +6,7 @@
  * ever applied.
  *
  *   POST /api/coach/proposals/:id/approve  { opIds? } → { ok, status, applied, changed, refused, settled, remaining,
- *        coachDrain? } every op named (none: all) — the workouts through the Studio's create / revise path, the changes
+ *        coachDrain?, planned?, pinned? } every op named (none: all) — the workouts through the Studio's create / revise path, the changes
  *        to sessions already on the plan through the thread coach's applier (Task 8b) — within one request's budget; the
  *        rest come back in `remaining`: call again with `{ opIds: remaining }` until it is empty. The request that ends
  *        it hands the calendar one bounded sync step, in the room its ops left (Task 9). A change another approve is
@@ -25,7 +25,9 @@
  *        `rev: null`) with its `target`, `date`, `time`, `outcome` and the proposal's `status`
  *   GET  /api/coach/proposals/:id (routes/coach.ts) → for a designed proposal, also its manifest: the workouts' `lines`
  *        and its changes to sessions already on the plan (`changes`, Task 8b) — a change has no draft (404) — and, for a
- *        set's (a week or the next N), `context`: the plan's other sessions in its days (Task 13's fix wave, §2.9)
+ *        set's (a week or the next N), `context`: the plan's other sessions in its days (Task 13's fix wave, §2.9); its
+ *        whole plan changes (`plans`), programme changes (`programmes`) and moves in rotation (`pins`, saved-posts
+ *        import Task 18) when it holds some
  *
  * 400 `unknown_op` (an op id the proposal doesn't hold) and `bad_request`; 409 `not_pending` with the status (a
  * proposal no longer the athlete's: expired — its day passed, as a thread proposal's — declined, approved, or never
@@ -55,7 +57,7 @@ import {
   UnknownOpError,
   type DesignProposalRow,
 } from "../services/design-approve.js";
-import { docWorkoutLines, manifestReads, planChangeLines, planStructureLines, programmeChangeLines, setContextSql } from "../services/design-manifest.js";
+import { docWorkoutLines, manifestReads, pinsLines, planChangeLines, planStructureLines, programmeChangeLines, setContextSql } from "../services/design-manifest.js";
 import { designProposalId } from "../services/design-tools/propose.js";
 import { dayRowsSql, placedTimes } from "../services/design-placement.js";
 import { clockIn, PastTimeError } from "../services/design-time.js";
@@ -125,7 +127,7 @@ export async function approveDesigned(c: C, p: DesignProposalRow & { expiresAt: 
     const answer = await approveDesignOps(db, userId, p, parsed.data, { today, now: nowInstant(), prefs, runWire: runWireOf(c.env) }, undefined, meter);
     // A change another approve is applying is left to it (Task 8b's recovery rule): 409 only when nothing else was named.
     const { inFlight, ...rest } = answer;
-    const nothingElse = [rest.applied, rest.changed, rest.refused, rest.settled, rest.remaining, rest.planned ?? []].every((xs) => xs.length === 0);
+    const nothingElse = [rest.applied, rest.changed, rest.refused, rest.settled, rest.remaining, rest.planned ?? [], rest.pinned ?? []].every((xs) => xs.length === 0);
     if (inFlight && nothingElse) return c.json({ error: "in_flight", opIds: inFlight, ...rest }, 409);
     // The calendar follows the plan, as after a Studio save (Task 9): once the approve is over and this request wrote
     // something, one bounded step in the room its declared costs left — none when the chunk was full (the half-hourly
@@ -194,9 +196,10 @@ export async function designedManifest(db: Db, userId: string, proposalId: strin
   const workouts = designedOps(ops);
   // A whole plan change's lines are its own (§8 §5): computed when it was proposed, no read.
   const plans = planStructureLines(all);
-  // A programme change's too (§8 §5).
+  // A programme change's too (§8 §5), and the moves in rotation's (saved-posts import, Task 18).
   const programmes = programmeChangeLines(all);
-  const withPlans = { ...(plans.length > 0 ? { plans } : {}), ...(programmes.length > 0 ? { programmes } : {}) };
+  const pins = pinsLines(all);
+  const withPlans = { ...(plans.length > 0 ? { plans } : {}), ...(programmes.length > 0 ? { programmes } : {}), ...(pins.length > 0 ? { pins } : {}) };
   if (workouts.length === 0) return { lines: [], changes: planChangeLines(all), ...withPlans };
   const prefix = designProposalId("");
   const runId = proposalId.startsWith(prefix) ? proposalId.slice(prefix.length) : null;

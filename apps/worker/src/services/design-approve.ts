@@ -121,6 +121,17 @@
  * back. One that has started is finished by Approve, never declined or expired half made, as a plan change is. A
  * client that stops asking leaves the hourly pass to place the rest by the settings already written.
  *
+ * THE MOVES IN ROTATION (saved-posts import, Task 18). A `move_pins` op — pin_moves' moves to pin and unpin, and the
+ * saves batch it fits in — is applied after the programme changes and before the workouts, so a workout of the same
+ * request whose engine build reads the account's pinned moves sees them. It is one short write, never claimed: its
+ * account's library and the named moves' pins are read (one statement), each move the library no longer offers —
+ * archived since — is skipped with a line, an unpin of a move not in rotation is a line, and the rest are written in
+ * one upsert a MOVE_PINS_PER ids (`exercise_prefs.pinned`), guarded by the proposal as this request last wrote it (a
+ * decline that landed first wins: nothing written); then the batch, still the athlete's and saved, is marked fitted in
+ * (`fitted_at`) — however many moves were pinned: it was considered. A write found made is made again, the same. It is
+ * refused only when the library can't be read or the batch is another account's — never for a skip — and stays open.
+ * Its cost is MOVE_PINS_FIXED and one a MOVE_PINS_PER ids (`movePinsCostOf`).
+ *
  * THE THREAD. Approving writes one plain receipt in the thread once nothing of the request remains — the workouts
  * approved, each as written (design-manifest.ts), how many were declined, and any not approved with why — and a decline
  * that declines the whole proposal says "Left as planned", as the thread's own does. A receipt that fails never fails
@@ -130,9 +141,9 @@ import { and, eq, sql, type SQL } from "drizzle-orm";
 import { coachMessages, coachProposals, plannedWorkouts, scheduleOverrides, workoutDocRevisions } from "@rg/database";
 import { addDays, appAuthoredRow, dayLabel, docOriginRow, humanizeWorkoutTitle, isRunDoc, newId, workoutDocSchema, type WorkoutDoc } from "@rg/domain";
 import { EXERCISES, type ExerciseRecord } from "@rg/exercise-library";
-import { deriveDoc, startEditing, toProposable, type DocDerived, type DocIssue } from "@rg/workout";
+import { deriveDoc, makeLibraryIndex, startEditing, toProposable, type DocDerived, type DocIssue } from "@rg/workout";
 import type { Db } from "./db.js";
-import { accountLibraryFrom, loadAccountLibrary, personalMovesSql } from "./account-library.js";
+import { accountLibraryFrom, forgetAccountLibrary, loadAccountLibrary, personalMovesSql, type AccountLibrary } from "./account-library.js";
 import { CALENDAR_OPS_PER_REQUEST } from "./calendar-sync.js";
 import { applyOps, applyStructuralChunk, NOT_ACTIONABLE, RETIME_CHANGED, STRUCTURAL_MIN_BUDGET, whyNotActionable, type StructuralProgress } from "./coach-apply.js";
 import { coachDrainQueued } from "./coros-write-cloud.js";
@@ -170,7 +181,9 @@ import {
   opIdOf,
   type ChangeVerb,
   isProgrammeChangeOp,
+  isMovePinsOp,
   sameSetting,
+  type MovePinsOp,
   type PlanAdjustOp,
   type PlanChange,
   type PlanStructureOp,
@@ -202,7 +215,11 @@ export type RefusalCode =
   | "stale"
   /** A length re-timed by the rule whose session changed since its card was drawn (adjust-retime.ts; review-L minor 5):
    * the rule, run again, finds other steps — nothing written. */
-  | "changed_since_suggested";
+  | "changed_since_suggested"
+  /** The moves in rotation (Task 18): the account's library couldn't be read — nothing written. */
+  | "library_unreadable"
+  /** The moves in rotation (Task 18): the saves batch it names is another account's — nothing written. */
+  | "bad_batch";
 
 /** Why a planned workout can't change (`not_editable`), as the Studio's own rules say it — and, for a change's length,
  * that a Studio workout's is its document's (`studio`). */
@@ -285,8 +302,22 @@ export type ProgrammeChangeOutcome =
 /** A programme change, as a proposal holds it once the athlete has seen it. */
 export type DesignedProgrammeOp = ProgrammeChangeOp & { outcome?: ProgrammeChangeOutcome };
 
+/**
+ * How a change to the moves in rotation ended (Task 18): applied, with the moves it pinned and unpinned and a line for
+ * each it left — a move archived since, an unpin of one not in rotation, a batch no longer saved.
+ */
+export type MovePinsOutcome =
+  | { status: "applied"; at: string; pinned: string[]; unpinned: string[]; lines: string[] }
+  | Exclude<OpOutcome, { status: "applied" }>;
+
+/** The moves in rotation, as a proposal holds them once the athlete has seen them. */
+export type DesignedPinsOp = MovePinsOp & { outcome?: MovePinsOutcome };
+
 /** Any kind of a designed proposal's ops. */
-export type AnyDesignedOp = DesignedOp | DesignedPlanOp | DesignedStructureOp | DesignedProgrammeOp;
+export type AnyDesignedOp = DesignedOp | DesignedPlanOp | DesignedStructureOp | DesignedProgrammeOp | DesignedPinsOp;
+
+/** Any op's outcome. */
+type AnyOutcome = OpOutcome | PlanOpOutcome | PlanStructureOutcome | ProgrammeChangeOutcome | MovePinsOutcome;
 
 export type DesignProposalStatus = "pending" | "partially_approved" | "approved" | "declined" | "superseded";
 
@@ -482,6 +513,14 @@ export const PROGRAMME_CHANGE_FIXED = 1 + 1;
 export const PROGRAMME_WRITE_COST = 1 + 3;
 /** The least room a pass is given: its fixed reads and one retraction (program-slots.ts `placeSlotsWithin`). */
 export const PROGRAMME_MIN_BUDGET = 3 + 1 + 1 + RETRACT_COST;
+
+/** The moves in rotation's own part (Task 18): the account's library with the named moves' pins and the batch (one
+ * read), and the batch marked fitted in. */
+export const MOVE_PINS_FIXED = 1 + 1;
+/** The moves one upsert writes. */
+export const MOVE_PINS_PER = 20;
+/** What a change to the moves in rotation costs: MOVE_PINS_FIXED, and one upsert a MOVE_PINS_PER of its moves. */
+export const movePinsCostOf = (op: Pick<MovePinsOp, "pin" | "unpin">): number => MOVE_PINS_FIXED + Math.ceil((op.pin.length + op.unpin.length) / MOVE_PINS_PER);
 
 /**
  * THE CALENDAR'S STEP AFTER AN APPROVE (Task 9). A Studio save and the thread coach's approve hand the calendar one
@@ -804,6 +843,9 @@ export interface ApproveAnswer {
   coachDrain?: true;
   /** The whole plan changes this request finished (§8 §5). Present only when there are some. */
   planned?: Planned[];
+  /** The changes to the moves in rotation this request applied (Task 18), each in one line. Present only when there are
+   * some. */
+  pinned?: Planned[];
   /** Changes another approve is applying (its claim within APPLYING_STALE_MS): never applied twice — the route answers 409
    * `in_flight` when nothing else was named. Present only when there are some. */
   inFlight?: string[];
@@ -983,7 +1025,7 @@ export async function approveDesignOps(
   const applied: Applied[] = [];
   const changed: Changed[] = [];
   const refused: Refused[] = [];
-  const outcomes = new Map<string, OpOutcome | PlanOpOutcome | PlanStructureOutcome | ProgrammeChangeOutcome>();
+  const outcomes = new Map<string, AnyOutcome>();
   if (inPlan.length === 0 && declined.length === 0) {
     if (p.status === "superseded") throw new NotOpenError(p.status);
     return { status: p.status as DesignProposalStatus, applied, changed, refused, settled, remaining: overflow };
@@ -1010,8 +1052,8 @@ export async function approveDesignOps(
   for (const op of inHand) {
     const was = op.outcome?.status;
     // A whole plan change or a programme change (§8 §5): its chunks are its applier's own to find done (each retried does
-    // nothing twice).
-    if (isPlanStructureOp(op) || isProgrammeChangeOp(op)) {
+    // nothing twice). The moves in rotation (Task 18) too: written again, the same.
+    if (isPlanStructureOp(op) || isProgrammeChangeOp(op) || isMovePinsOp(op)) {
       if (was === "declined" || was === "superseded") settled.push({ opId: op.id, outcome: was });
       else todo.push(op);
       continue;
@@ -1253,6 +1295,26 @@ export async function approveDesignOps(
     if (full) break;
   }
 
+  // THE MOVES IN ROTATION (Task 18), after the programme changes and before the workouts: a workout's engine build in this
+  // request reads the pins as they now are.
+  const pinsOps = todo.filter(isMovePinsOp) as DesignedPinsOp[];
+  const pinned: Planned[] = [];
+  if (full) remaining.push(...pinsOps.map((g) => g.id));
+  for (const [i, g] of (full ? [] : pinsOps).entries()) {
+    const cost = movePinsCostOf(g);
+    if (!first && cost > left) {
+      remaining.push(...pinsOps.slice(i).map((x) => x.id));
+      full = true;
+      break;
+    }
+    first = false;
+    left -= cost;
+    const outcome = await applyMovePins(db, userId, g, current, ctx.now);
+    outcomes.set(g.id, outcome);
+    if (outcome.status === "applied") pinned.push({ opId: g.id, summary: pinsDoneLine(outcome) });
+    else if (outcome.status === "refused") refused.push({ opId: g.id, error: outcome.error, why: outcome.why });
+  }
+
   for (const [i, op] of (full ? [] : workouts).entries()) {
     const opId = opIdOf(op);
     const day = dayOf(op, input.edit) ?? (op.target.kind === "revise" ? plan.rows.get(op.target.workoutId)?.dto.date : undefined);
@@ -1293,6 +1355,7 @@ export async function approveDesignOps(
   const drain = {
     ...(coachDrain ? { coachDrain: true as const } : {}),
     ...(planned.length > 0 ? { planned } : {}),
+    ...(pinned.length > 0 ? { pinned } : {}),
     ...(inFlight.length > 0 ? { inFlight } : {}),
   };
   if (outcomes.size === 0) {
@@ -1307,7 +1370,7 @@ export async function approveDesignOps(
 
   // One receipt once nothing of the request remains — nor of another applying it (a change in flight: the approve that
   // finishes it writes it) — when it changed something the thread has not been told.
-  const news = applied.length > 0 || changed.length > 0 || planned.length > 0 || refused.some((r) => {
+  const news = applied.length > 0 || changed.length > 0 || planned.length > 0 || pinned.length > 0 || refused.some((r) => {
     const before = ops.find((o) => opIdOf(o) === r.opId)?.outcome;
     return before?.status !== "refused" || before.error !== r.error;
   });
@@ -1360,6 +1423,79 @@ async function applyProgrammeChunk(
   const placed = await placeSlotsWithin(db, userId, g.programId, ctx.today, ctx.prefs, ctx.now, budget);
   const next: ProgrammeProgress = { written: true, placed: progress.placed + placed.placed.length, archived: progress.archived + placed.archived.length };
   return placed.more ? { status: "more", progress: next, spent: placed.spent } : { status: "done", progress: next, spent: placed.spent };
+}
+
+/** "2 moves kept in rotation, 1 taken out": the moves in rotation done, for the answer and the receipt — counted. */
+export function pinsDoneLine(o: Pick<Extract<MovePinsOutcome, { status: "applied" }>, "pinned" | "unpinned">): string {
+  const parts = [
+    ...(o.pinned.length > 0 ? [`${o.pinned.length} move${o.pinned.length === 1 ? "" : "s"} kept in rotation`] : []),
+    ...(o.unpinned.length > 0 ? [`${o.unpinned.length} taken out`] : []),
+  ];
+  return parts.length > 0 ? parts.join(", ") : "rotation unchanged";
+}
+
+/**
+ * The moves in rotation, applied (see the module comment): one read — the account's library (`personalMovesSql`, kept as
+ * the request's), the named moves' pins and the batch — then an upsert a MOVE_PINS_PER moves written, and the batch marked
+ * fitted in, each guarded by the proposal as this request last wrote it (`current`); the request's library forgotten
+ * after, so a later read sees the pins.
+ */
+async function applyMovePins(db: Db, userId: string, g: MovePinsOp, current: DesignProposalRow, now: string): Promise<MovePinsOutcome> {
+  const unreadable: MovePinsOutcome = { status: "refused", at: now, error: "library_unreadable", why: "The athlete's library couldn't be read just now — try again." };
+  let row: { library: unknown; pinned_now: unknown; batch: unknown } | undefined;
+  let library: AccountLibrary;
+  try {
+    // The batch's status when it is the athlete's; another account's reads as one, never its status.
+    [row] = (await db.all(sql`
+      select ${personalMovesSql(userId)} as library,
+        (select json_group_array(json_array(ep.exercise_id, ep.pinned)) from exercise_prefs ep
+          where ep.user_id = ${userId} and ep.exercise_id in (${values([...g.pin, ...g.unpin])})) as pinned_now,
+        ${g.batchId ? sql`(select case when sb.user_id = ${userId} then sb.status else '~other' end from save_batches sb where sb.id = ${g.batchId})` : sql`null`} as batch
+    `)) as Array<{ library: unknown; pinned_now: unknown; batch: unknown }>;
+    library = await accountLibraryFrom(db, userId, row?.library);
+  } catch {
+    return unreadable;
+  }
+  if (row?.batch === "~other") return { status: "refused", at: now, error: "bad_batch", why: "That saves batch isn't the athlete's." };
+  const offered = new Set(library.offered.map((e) => e.id));
+  const nameOf = makeLibraryIndex(library.all);
+  const named = (id: string) => nameOf(id)?.name ?? id;
+  const pinnedNow = new Set(
+    (parsedRows(row?.pinned_now) as unknown[]).flatMap((r) => (Array.isArray(r) && typeof r[0] === "string" && (r[1] === 1 || r[1] === true) ? [r[0]] : [])),
+  );
+  const lines: string[] = [];
+  const pinned: string[] = [];
+  const unpinned: string[] = [];
+  for (const id of g.pin) {
+    if (offered.has(id)) pinned.push(id);
+    else lines.push(`${named(id)} — not in your library any more, skipped`);
+  }
+  for (const id of g.unpin) {
+    if (!offered.has(id)) lines.push(`${named(id)} — not in your library any more, skipped`);
+    else if (pinnedNow.has(id)) unpinned.push(id);
+    else lines.push(`${named(id)} — wasn't in rotation`);
+  }
+  // Each write only while the proposal is as this request last wrote it: a decline that landed first wins.
+  const asRead = sql`exists (select 1 from coach_proposals cp where cp.id = ${current.id} and cp.user_id = ${userId}
+    and cp.status = ${current.status} and cp.ops = ${JSON.stringify(current.ops)})`;
+  const writes = [...pinned.map((id) => [id, 1] as const), ...unpinned.map((id) => [id, 0] as const)];
+  for (let at = 0; at < writes.length; at += MOVE_PINS_PER) {
+    await db.run(sql`
+      insert into exercise_prefs (id, user_id, exercise_id, rating, excluded, pinned, introduced_on, updated_at)
+      select ${userId} || ':' || json_extract(j.value, '$[0]'), ${userId}, json_extract(j.value, '$[0]'), null, 0, json_extract(j.value, '$[1]'), null, ${now}
+      from json_each(${JSON.stringify(writes.slice(at, at + MOVE_PINS_PER))}) j
+      where ${asRead}
+      on conflict (id) do update set pinned = excluded.pinned, updated_at = excluded.updated_at
+    `);
+  }
+  // A pin decides the engine's pool of personal moves: a later read in this request reads it.
+  if (writes.length > 0) forgetAccountLibrary(db, userId);
+  if (g.batchId) {
+    if (row?.batch === "saved") {
+      await db.run(sql`update save_batches set fitted_at = ${now} where id = ${g.batchId} and user_id = ${userId} and status = 'saved' and ${asRead}`);
+    } else lines.push("Its saves batch is no longer saved — not marked fitted in");
+  }
+  return { status: "applied", at: now, pinned, unpinned, lines };
 }
 
 /** An op found applied (made already) as the answer says it. */
@@ -1496,7 +1632,7 @@ function newestSupersededBy(ops: readonly AnyDesignedOp[]): string | null {
 const staleAt = (now: string): string => new Date(Date.parse(now) - APPLYING_STALE_MS).toISOString();
 
 /** The proposal's ops with these outcomes on the designed ones they name; every other op as it was. */
-function withOutcomes(ops: unknown, outcomes: ReadonlyMap<string, OpOutcome | PlanOpOutcome | PlanStructureOutcome | ProgrammeChangeOutcome>): unknown[] {
+function withOutcomes(ops: unknown, outcomes: ReadonlyMap<string, AnyOutcome>): unknown[] {
   return (Array.isArray(ops) ? ops : []).map((o) => {
     if (!isDesignedOp(o)) return o;
     const outcome = outcomes.get(opIdOf(o as AnyDesignedOp));
@@ -1564,6 +1700,15 @@ function approvedReceipt(title: string, ops: readonly AnyDesignedOp[], library: 
   let superseded = 0;
   for (const any of ops) {
     if (any.outcome?.status === "superseded") superseded += 1;
+    // The moves in rotation (Task 18): its title and what it changed, counted — never a move's name (a personal move's is
+    // a post's reading, and the thread's coach reads the receipts).
+    if (isMovePinsOp(any)) {
+      const g = (any as DesignedPinsOp).outcome;
+      if (g?.status === "applied") done.push(any.title === title ? pinsDoneLine(g) : `${any.title}: ${pinsDoneLine(g)}`);
+      else if (g?.status === "refused") not.push(`${any.title} (${g.why})`);
+      else if (g?.status === "declined") declined += 1;
+      continue;
+    }
     // A programme change (§8 §5): its title and what it set.
     if (isProgrammeChangeOp(any)) {
       const g = (any as DesignedProgrammeOp).outcome;

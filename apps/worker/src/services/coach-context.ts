@@ -52,7 +52,17 @@ import { findRaceConflict } from "./race-conflict.js";
 import { buildRaceHub } from "./race-hub.js";
 import { buildReadiness } from "./readiness.js";
 import { plannedRowColumns } from "./planned-columns.js";
-import { docWorkoutDates, hasDocWorkout, isDesignedProposal, isPlanStructureOp, isProgrammeChangeOp, openPlanChanges, type PlanStructureOp, type ProgrammeChangeOp } from "./proposal-kinds.js";
+import {
+  docWorkoutDates,
+  hasDocWorkout,
+  isDesignedProposal,
+  isMovePinsOp,
+  isPlanStructureOp,
+  isProgrammeChangeOp,
+  openPlanChanges,
+  type PlanStructureOp,
+  type ProgrammeChangeOp,
+} from "./proposal-kinds.js";
 import { liveMemoryWhere } from "./memory-core.js";
 import { SLEEP_RECONNECT_WORDS, sleepConnectionStatusSql, sleepNeedsReconnect } from "./coros-mcp.js";
 
@@ -252,8 +262,10 @@ function designedWords(ops: unknown): string {
   if (programme) return `a programme change: ${programme.title}`;
   const n = openPlanChanges(ops);
   const changes = `${n} change${n === 1 ? " to a session" : "s to sessions"} already planned`;
-  if (!hasDocWorkout(ops)) return `a designed proposal: ${changes}`;
-  return `a designed workout for ${docWorkoutDates(ops).join(", ") || "a day to come"}${n > 0 ? ` and ${changes}` : ""}`;
+  // The moves in rotation (saved-posts import, Task 18): named beside the rest, the conversation coach's to apply.
+  const pins = Array.isArray(ops) && ops.some(isMovePinsOp) ? "a change to the moves in rotation" : null;
+  if (!hasDocWorkout(ops)) return `a designed proposal: ${[...(n > 0 || !pins ? [changes] : []), ...(pins ? [pins] : [])].join(" and ")}`;
+  return `a designed workout for ${docWorkoutDates(ops).join(", ") || "a day to come"}${n > 0 ? ` and ${changes}` : ""}${pins ? ` and ${pins}` : ""}`;
 }
 
 export async function buildDossier(

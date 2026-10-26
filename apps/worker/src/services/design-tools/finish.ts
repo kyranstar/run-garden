@@ -30,7 +30,7 @@ import { refuse } from "./read-common.js";
 import { reviewRunning } from "../design-review.js";
 import { athleteText, clipProse } from "../design-prose.js";
 import { designProposalId, type DocWorkoutOp } from "./propose.js";
-import { isDocWorkoutOp, isPlanAdjustOp, isPlanStructureOp, isProgrammeChangeOp } from "../proposal-kinds.js";
+import { isDocWorkoutOp, isMovePinsOp, isPlanAdjustOp, isPlanStructureOp, isProgrammeChangeOp } from "../proposal-kinds.js";
 
 /** The athlete's line, at most (characters): clipped to it, never refused. */
 export const LINE_MAX = 300;
@@ -85,6 +85,7 @@ export const finish: DesignTool = {
     const changes = all.filter(isPlanAdjustOp).length;
     const plans = all.filter(isPlanStructureOp).length;
     const programmes = all.filter(isProgrammeChangeOp).length;
+    const pins = all.filter(isMovePinsOp).length;
     const own = designer ? ops.find((o) => o.by?.runId === ctx.run.id) : undefined;
     const mine = row && (ctx.run.role === "main" ? all.length > 0 : !!own);
     // A designer's line is its workout's title (M3); the main coach's, its own words clipped where the athlete reads them.
@@ -103,7 +104,7 @@ export const finish: DesignTool = {
     return {
       data: { proposalId, ...(unreviewed ? { unreviewed: true } : {}) },
       summary: line,
-      receipt: { final: true, proposal: { id: proposalId, status: promoted ? "pending" : row.status, workouts: ops.length, ...(changes > 0 ? { changes } : {}), ...(plans > 0 ? { plans } : {}), ...(programmes > 0 ? { programmes } : {}) } },
+      receipt: { final: true, proposal: { id: proposalId, status: promoted ? "pending" : row.status, workouts: ops.length, ...(changes > 0 ? { changes } : {}), ...(plans > 0 ? { plans } : {}), ...(programmes > 0 ? { programmes } : {}), ...(pins > 0 ? { pins } : {}) } },
     };
   },
 };

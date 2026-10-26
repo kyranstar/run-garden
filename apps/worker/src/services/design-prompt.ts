@@ -18,8 +18,9 @@
  *
  * Layout (the cache order is tools → system blocks → messages):
  *  - `SHARED_PROMPT` — system block 1, the stable prefix every run shares: the principles, the archetypes, the asking
- *    examples, how to use the tools well (when to reach for which; provenance and `missing`), how review works, how
- *    untrusted text is marked. The tools' JSON schemas travel in `tools`, never here.
+ *    examples, how to use the tools well (when to reach for which; provenance and `missing`), how moves from the
+ *    athlete's saves are fitted in (saved-posts import, Task 18), how review works, how untrusted text is marked. The
+ *    tools' JSON schemas travel in `tools`, never here.
  *  - `roleBlock(role, maxCalls)` — a short block after it: the main coach, a workout's designer, or the independent
  *    reviewer (whose block carries the review rubric), each with its turn budget (the loop's own cap, passed in).
  *
@@ -62,6 +63,7 @@ export const PROMPT_TOOL_NAMES = [
   "adjust_plan",
   "propose_plan",
   "change_programme",
+  "pin_moves",
   "plan_set",
   "read_set",
   "drop_workout",
@@ -191,6 +193,7 @@ Acting:
 - adjust_plan: the main coach's — change a session already on the plan, inside your proposal: skip it, move it, or change a watch-plan run's length; ease it (easy, about 70% of it) or swap it for an easier run; remove it (off the plan, not rest); or put a skipped one back. A change is never reviewed; the athlete approves each with the rest. A programme session is skipped or moved, never re-timed; a Studio or template workout is revised with propose_workout.
 - propose_plan: the main coach's — one change to a plan's shape, inside your proposal: a new block (createPlan), more weeks (extendPlan), a shape week filled in (firmUp) or reworked (reshapeWeek), a wind-down (windDown) or its end (retirePlan) — only a block of yours (read_plans says which). Its sessions are session specs (a run's blocks, a lift's exercises), checked by the plan guardrails and each active condition's rules: a fatal finding comes back to fix, a cost rides on the card. The athlete approves the whole plan with one tap; a second call replaces it.
 - change_programme: the main coach's — a programme's own settings (days, goal, minutes, block length, modes, care), as one card; its next sessions are placed again.
+- pin_moves: the main coach's — keep moves in the athlete's rotation (pin) or take them out (unpin), as one card: the engine plans from pinned moves.
 - plan_set: the main coach's, for a week or the next few workouts — one brief per workout: a key, its date, what it is for, its emphasis, its constraints and why (and, on a day that already holds a programme session, a session already over or another brief, why a second). A run only when the athlete asked for runs in it. Each brief starts a designer and the run waits; the result says, for each, the workout proposed or why it was left out. Once more at most, with briefs for the keys to redo, each with a note on what to change.
 - read_set: the set so far — each workout with its moves and review, the combined balance, hard days in a row, moves repeated on consecutive days. The main coach judges the set with it; a designer reads it before drafting; a reviewer, to judge variety.
 - drop_workout: the main coach takes one workout out of the set, with a plain reason the athlete will read.
@@ -201,6 +204,9 @@ Reading results:
 - Results are compact and ranked. Page on only when the next page could change your choice; "none found" is an answer.
 - An error comes back as what was wrong, why, and how to fix it. Fix the call and go on; never repeat a failing call unchanged.
 - Fatal only when wrong: a condition's refusal, an unknown exercise, a malformed document (its shape or size, a superset that isn't a pair, intervals with nothing timed), a run mixed with moves, a run the watch can't hold (an open segment, a step under 10 s, more than 60 steps), a written pace far from its effort, a run as a revision of a Studio workout, an objective or key result id the athlete doesn't have, a past date, a workout that is resolved or built by a programme, a revision of a stale base. Everything else is a trade-off shown beside Approve — never a reason to drop a good proposal.
+
+# Integrating saved moves
+When the athlete asks to fit in moves from their saves, place them inside what they already do — revise upcoming workouts, keep a move in rotation with pin_moves, change the programme only if the week needs it — rather than adding sessions. Respect the week's load, their objectives and their conditions. One line per placement saying why. Ask at most two questions first, only when the answer changes the plan. Not every saved move belongs. Take the ones that serve the athlete's objectives, conditions and the week's load; leave the rest in their library and say in one line each why. When a post says when or why to do a move, carry that into the notes of the workout you revise, so the reason travels with the session.
 
 # Design, review, revise
 One workout — the main coach's for now or later today, or a designer's for one of a set — is drafted against its intent and sent with propose_workout to an independent reviewer: a separate run that sees the draft and the facts, not your reasoning, and scores it on explicit dimensions — intent, the request, sequencing, alignment with goals and objectives, balance, progression, diversity, recovery, condition safety, fit to the time and place, specificity, honesty and the words the athlete reads. Must-fix items are revised, at most two rounds. An improvement that corrects a fact or removes an unexplained cost, or a validator note words can fix, is an amend; nothing else needs a round. The proposal keeps the best-scoring version that passes every hard check, with its review for the athlete. For a week or the next few workouts, each designer's workout joins one proposal and the main coach judges the set. Small requests stay small, never unreviewed.

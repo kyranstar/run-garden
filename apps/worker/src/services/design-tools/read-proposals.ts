@@ -137,6 +137,20 @@ function programmeOf(o: Record<string, unknown>, today: string): Record<string, 
   };
 }
 
+/** A change to the moves in rotation (saved-posts import, Task 18; pin_moves'), as the tool reports it: its card's words
+ * and the coach's why — the model's: marked — and how it ended. */
+function pinsOf(o: Record<string, unknown>, today: string): Record<string, unknown> {
+  const str = (v: unknown): string | null => (typeof v === "string" && v.length > 0 ? v : null);
+  return {
+    kind: "move_pins",
+    ...(typeof o.date === "string" && isLocalDate(o.date) ? { date: o.date, day: dayWords(o.date, today) } : {}),
+    ...(str(o.planTitle) ? { title: untrusted(str(o.planTitle)!) } : {}),
+    ...(str(o.planSummary) ? { summary: untrusted(str(o.planSummary)!) } : {}),
+    ...(str(o.changeWhy) ? { why: untrusted(str(o.changeWhy)!) } : {}),
+    ...decided(o),
+  };
+}
+
 export const readProposals: DesignTool = {
   name: "read_proposals",
   description:
@@ -193,7 +207,7 @@ export const readProposals: DesignTool = {
           created: dayOf(localDateOf(athlete.tz, r.createdAt), athlete.today),
           status: r.status,
           resolved: dayOf(localDateOf(athlete.tz, r.resolvedAt), athlete.today),
-          ops: ops.slice(0, OPS_SHOWN).map((o) => (o.kind === "plan_adjust" ? changeOf(o, athlete.today) : o.kind === "plan_structure" ? planOf(o, athlete.today) : o.kind === "programme_change" ? programmeOf(o, athlete.today) : {
+          ops: ops.slice(0, OPS_SHOWN).map((o) => (o.kind === "plan_adjust" ? changeOf(o, athlete.today) : o.kind === "plan_structure" ? planOf(o, athlete.today) : o.kind === "programme_change" ? programmeOf(o, athlete.today) : o.kind === "move_pins" ? pinsOf(o, athlete.today) : {
             kind: typeof o.kind === "string" ? o.kind : "unknown",
             ...(typeof o.opId === "string" && ID.test(o.opId) ? { opId: o.opId } : {}),
             ...(typeof o.date === "string" && isLocalDate(o.date) ? { date: o.date, day: dayWords(o.date, athlete.today) } : {}),

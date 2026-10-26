@@ -9,8 +9,8 @@
  * READ BACK (`readConversation`; `GET /api/coach/conversation`, `?id=` for a given one): `{ id, startedAt, turns }`, at
  * most CONVERSATION_TURNS_MAX turns, the newest of them, oldest first — each the athlete's words as they wrote them, the
  * run's status, the coach's line (its finish's words or its answer; a stop's own line; null while live), its cards —
- * a workout, the plan changes, a set, a whole plan (§8 §5: its lines too): one line each, by the proposal — and the
- * question it waits on. None current, or
+ * a workout, the plan changes, a set, a whole plan (§8 §5: its lines too), the moves in rotation (saved-posts import,
+ * Task 18: the coach's lines too): one line each, by the proposal — and the question it waits on. None current, or
  * none of the athlete's by that id: `{ id: null, startedAt: null, turns: [] }`. A rehearsal's is never read. ONE
  * statement (`turnsSql`): the runs with, per run, its last line, its question and its proposal's ops in brief, read in
  * SQL — never a whole state, a whole trail or a whole document.
@@ -28,7 +28,7 @@ import { markUntrusted } from "./design-prompt.js";
 import { clipProse } from "./design-prose.js";
 import { CHECK_ASKED } from "./design-tools/ask.js";
 import { designProposalId } from "./design-tools/propose.js";
-import { PLAN_LINES_MAX } from "./proposal-kinds.js";
+import { PINS_LINES_MAX, PLAN_LINES_MAX } from "./proposal-kinds.js";
 
 /** A conversation goes quiet after this long with no new ask: the next ask (naming none) starts a new one. */
 export const CONVERSATION_QUIET_HOURS = 18;
@@ -44,8 +44,9 @@ export const CONVERSATION_ID = /^[A-Za-z0-9_-]{1,100}$/;
 // ── Shapes ──────────────────────────────────────────────────────────────────────────────────────────────────────────
 
 export interface ConversationCard {
-  /** `programme` (§8 §5): a change to a programme's settings, approved with one tap — one card a programme. */
-  kind: "workout" | "plan_changes" | "set" | "plan" | "programme";
+  /** `programme` (§8 §5): a change to a programme's settings, approved with one tap — one card a programme; `pins`
+   * (saved-posts import, Task 18): the moves in rotation the coach would change, approved with one tap. */
+  kind: "workout" | "plan_changes" | "set" | "plan" | "programme" | "pins";
   proposalId: string;
   title: string;
   /** One line: "Today · Now · 24 min · Maintain", "3 changes to your week", "3 workouts · Wed 13 – Fri 15 May",
@@ -54,9 +55,10 @@ export interface ConversationCard {
   /** Its proposal's status: pending, partially_approved, approved, declined, superseded, expired. */
   status: string;
   /** A whole plan's (§8 §5): the thread coach's own manifest lines, at most 8, then "and N more"; a programme change's, a
-   * line a setting and where its next sessions go. */
+   * line a setting and where its next sessions go; the moves in rotation's, the coach's own lines (at most 20). */
   lines?: string[];
-  /** A programme change's op (§8 §5): what its card approves and declines — a proposal may hold one a programme. */
+  /** A programme change's op (§8 §5): what its card approves and declines — a proposal may hold one a programme; the
+   * moves in rotation's too. */
   opId?: string;
   /** A designed run's (§8 §3): a workout card whose body is a run — its steps, paces and the watch line (the manifest's). */
   sport?: "run";
@@ -95,7 +97,7 @@ export interface ConversationDto {
 
 /** A proposal's op in brief, as `turnsSql` reads it. */
 interface OpBrief {
-  kind: "doc_workout" | "plan_adjust" | "plan_structure" | "programme_change";
+  kind: "doc_workout" | "plan_adjust" | "plan_structure" | "programme_change" | "move_pins";
   date: string | null;
   time: string | null;
   atNow: number | null;
@@ -115,7 +117,7 @@ interface OpBrief {
   planTitle?: string | null;
   planSummary?: string | null;
   lines?: unknown;
-  /** A programme change's op id (§8 §5). */
+  /** A programme change's op id (§8 §5), and the moves in rotation's. */
   opId?: string | null;
 }
 
@@ -198,9 +200,9 @@ export async function conversationRows(db: Db, userId: string, conversation: SQL
           'title', ${op("$.doc.title")}, 'minutes', ${op("$.derived.minutes")}, 'effort', ${op("$.doc.intent.effort")},
           'by', ${op("$.by.role")}, 'change', ${op("$.op.kind")}, 'row', ${op("$.row.title")},
           'outcome', ${op("$.outcome.status")}, 'reason', ${op("$.outcome.reason")}, 'discipline', ${op("$.derived.discipline")},
-          'planTitle', ${op("$.title")}, 'planSummary', ${op("$.summary")}, 'lines', json(CASE WHEN ${op("$.kind")} IN ('plan_structure', 'programme_change') THEN ${op("$.lines")} END),
-          'opId', CASE WHEN ${op("$.kind")} = 'programme_change' THEN ${op("$.id")} END))
-        FROM json_each(CASE WHEN json_valid(p.ops) THEN p.ops ELSE '[]' END) o WHERE ${op("$.kind")} IN ('doc_workout', 'plan_adjust', 'plan_structure', 'programme_change'))))
+          'planTitle', ${op("$.title")}, 'planSummary', ${op("$.summary")}, 'lines', json(CASE WHEN ${op("$.kind")} IN ('plan_structure', 'programme_change', 'move_pins') THEN ${op("$.lines")} END),
+          'opId', CASE WHEN ${op("$.kind")} IN ('programme_change', 'move_pins') THEN ${op("$.id")} END))
+        FROM json_each(CASE WHEN json_valid(p.ops) THEN p.ops ELSE '[]' END) o WHERE ${op("$.kind")} IN ('doc_workout', 'plan_adjust', 'plan_structure', 'programme_change', 'move_pins'))))
         FROM coach_proposals p WHERE p.id = ${DESIGNED_PREFIX} || r.id AND p.user_id = r.user_id) AS proposal,
       (SELECT up.prefs FROM user_preferences up WHERE up.user_id = ${userId}) AS prefs
     FROM c, s, coach_runs r
@@ -277,16 +279,17 @@ function isSet(scopeText: string | null, p: ProposalBrief): boolean {
   return kind === "week" || kind === "next_n" || p.ops.some((o) => o.kind === "doc_workout" && o.by === "designer");
 }
 
-/** A whole plan change's lines, as the statement read them: strings only, at most PLAN_LINES_MAX and its "and N more". */
-function planLinesOf(raw: unknown): string[] {
+/** A whole plan change's lines, as the statement read them: strings only, at most PLAN_LINES_MAX and its "and N more" —
+ * or `max`. */
+function planLinesOf(raw: unknown, max = PLAN_LINES_MAX + 1): string[] {
   const list = typeof raw === "string" ? parsed(raw) : raw;
-  return (Array.isArray(list) ? list : []).filter((l): l is string => typeof l === "string").slice(0, PLAN_LINES_MAX + 1);
+  return (Array.isArray(list) ? list : []).filter((l): l is string => typeof l === "string").slice(0, max);
 }
 
 /**
  * A turn's cards (see the module comment): none for a proposal the athlete never saw. A set's proposal is one card;
  * otherwise each designed workout is one, and the changes to the plan one between them; a whole plan change (§8 §5) is
- * one card of its own, last, with its lines.
+ * one card of its own, after them, with its lines — then each programme change, then the moves in rotation (Task 18).
  */
 export function cardsOf(scopeText: string | null, p: ProposalBrief | null, today: string): ConversationCard[] {
   if (!p || UNSEEN.has(p.status)) return [];
@@ -307,6 +310,18 @@ export function cardsOf(scopeText: string | null, p: ProposalBrief | null, today
       lines: planLinesOf(o.lines),
       ...(str(o.opId) ? { opId: str(o.opId)! } : {}),
     }));
+  // The moves in rotation (saved-posts import, Task 18): one card, last — its own op approved and declined, the coach's
+  // own words and lines.
+  const pins = p.ops
+    .filter((o) => o.kind === "move_pins")
+    .map((o): ConversationCard => ({
+      kind: "pins",
+      ...base,
+      title: str(o.planTitle) ?? "Moves in rotation",
+      summary: str(o.planSummary) ?? "",
+      lines: planLinesOf(o.lines, PINS_LINES_MAX),
+      ...(str(o.opId) ? { opId: str(o.opId)! } : {}),
+    }));
   const changesCard = (): ConversationCard[] => {
     if (changes.length === 0) return [];
     const inWeek = changes.every((c) => !c.date || c.date <= addDays(today, 6));
@@ -315,7 +330,7 @@ export function cardsOf(scopeText: string | null, p: ProposalBrief | null, today
   if (workouts.length > 0 && isSet(scopeText, p)) {
     const days = workouts.flatMap((w) => (w.date ? [w.date] : [])).sort();
     const what = `${plural(workouts.length, "workout")}${changes.length > 0 ? ` and ${plural(changes.length, "change")}` : ""}`;
-    return [{ kind: "set", ...base, title: p.title || "Your week", summary: days.length > 0 ? `${what} · ${dayRangeLabel(days[0]!, days.at(-1)!)}` : what }, ...plans, ...programmes];
+    return [{ kind: "set", ...base, title: p.title || "Your week", summary: days.length > 0 ? `${what} · ${dayRangeLabel(days[0]!, days.at(-1)!)}` : what }, ...plans, ...programmes, ...pins];
   }
   return [
     ...workouts.map((w): ConversationCard => ({
@@ -328,6 +343,7 @@ export function cardsOf(scopeText: string | null, p: ProposalBrief | null, today
     ...changesCard(),
     ...plans,
     ...programmes,
+    ...pins,
   ];
 }
 
@@ -457,6 +473,12 @@ function turnLines(row: TurnRow, today: string, clock: Intl.DateTimeFormat): str
       const g = p!.ops.find((o) => o.kind === "programme_change" && o.opId === card.opId);
       const how = g?.outcome === "applying" ? "being applied" : standing(card.status, g?.outcome, g?.reason);
       out.push(`  Suggested a programme change (id ${card.proposalId}): ${title} · ${clipProse(card.summary, TITLE_MAX)} — ${how}`);
+    } else if (card.kind === "pins") {
+      // The moves in rotation (Task 18): its title and line are the coach's words; how it stands is its op's.
+      const g = p!.ops.find((o) => o.kind === "move_pins" && o.opId === card.opId);
+      out.push(
+        `  Suggested moves to keep in rotation (id ${card.proposalId}): ${title} · ${markUntrusted("main coach", clipProse(card.summary, TITLE_MAX))} — ${standing(card.status, g?.outcome, g?.reason)}`,
+      );
     } else if (card.kind === "plan") {
       // A whole plan (§8 §5): its title and line are the coach's words; how it stands is its op's.
       const plan = p!.ops.find((o) => o.kind === "plan_structure");

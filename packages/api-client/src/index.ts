@@ -813,6 +813,9 @@ export interface DesignProposalReadDto {
   plans?: DesignPlanLineDto[];
   /** Its programme changes (§8 §5); absent when it holds none, or from an older server. */
   programmes?: DesignProgrammeLineDto[];
+  /** Its changes to the moves in rotation (saved-posts import, Task 18); absent when it holds none, or from an older
+   * server. */
+  pins?: DesignPinsLineDto[];
   /** A set's: the plan's other rows in its date span; absent otherwise. */
   context?: DesignContextRowDto[];
 }
@@ -856,6 +859,29 @@ export interface DesignProgrammeLineDto {
   outcome:
     | { status: "applied"; at: string; placed: number; archived: number }
     | { status: "applying"; at: string; progress: { written: boolean; placed: number; archived: number } }
+    | { status: "refused"; at: string; error: string; why: string }
+    | { status: "declined"; at: string; reason?: string }
+    | { status: "superseded"; at: string; reason: string; by: string }
+    | null;
+}
+
+/**
+ * A change to the moves in rotation in a suggestion (saved-posts import, Task 18): the coach's title, line and lines
+ * (one a placement, one a saved move left out) and why, the moves it pins and unpins, no notes (`issues` empty), and how
+ * it stands — `applied` with the moves written and a line for each left (archived since, not in rotation), `refused`
+ * with why (its library unreadable, a batch not the athlete's).
+ */
+export interface DesignPinsLineDto {
+  opId: string;
+  title: string;
+  summary: string;
+  lines: string[];
+  why: string;
+  pin: string[];
+  unpin: string[];
+  issues: Array<{ code: string; message: string }>;
+  outcome:
+    | { status: "applied"; at: string; pinned: string[]; unpinned: string[]; lines: string[] }
     | { status: "refused"; at: string; error: string; why: string }
     | { status: "declined"; at: string; reason?: string }
     | { status: "superseded"; at: string; reason: string; by: string }
@@ -961,6 +987,8 @@ export interface DesignApproveResponse {
   coachDrain?: true;
   /** The whole plan changes this request finished (§8 §5), each with what was added. */
   planned?: Array<{ opId: string; summary: string }>;
+  /** The changes to the moves in rotation this request applied (saved-posts import, Task 18), each in one line. */
+  pinned?: Array<{ opId: string; summary: string }>;
   /**
    * Changes another approve is applying (its claim inside the server's window, Task 8b): never applied twice, never a
    * failure — they are being changed. Only when nothing else was answered is it a 409 `in_flight` naming them (`opIds`).
@@ -1396,15 +1424,17 @@ export type CoachRunCreateResult = (
  */
 export interface CoachConversationCardDto {
   /** `plan` (§8 §5): a whole plan — a new block, its extension, a week, a wind-down — approved with one tap; `programme`,
-   * a change to a programme's settings, one card a programme. */
-  kind: "workout" | "plan_changes" | "set" | "plan" | "programme";
+   * a change to a programme's settings, one card a programme; `pins` (saved-posts import, Task 18), the moves the coach
+   * would keep in rotation or take out, approved with one tap. */
+  kind: "workout" | "plan_changes" | "set" | "plan" | "programme" | "pins";
   proposalId: string;
   title: string;
   summary: string;
   status: CoachProposalDto["status"] | (string & {});
-  /** A plan's (§8 §5): what it holds, line by line — at most 8, then "and N more"; a programme change's, a setting each. */
+  /** A plan's (§8 §5): what it holds, line by line — at most 8, then "and N more"; a programme change's, a setting each;
+   * the moves in rotation's, the coach's own (at most 20). */
   lines?: string[];
-  /** A programme change's op (§8 §5): what the card approves and declines. */
+  /** A programme change's op (§8 §5), or the moves in rotation's: what the card approves and declines. */
   opId?: string;
   /** A designed run's (§8 §3): a workout card whose body is a run — its steps, paces and the watch line (its line's `run`). */
   sport?: "run";

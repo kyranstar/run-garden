@@ -837,6 +837,20 @@ beforeAll(async () => {
       const data = isToolErr(read) ? null : (read.data as { batch?: { id?: string } | null; moves?: unknown[] });
       if (data?.batch?.id !== batchId || !data.moves?.length) throw new Error(`8. read_saves: the bench's call didn't read its batch (${JSON.stringify(data?.batch ?? null)})`);
       await measureTool("read_saves", images.get("saves")!, ctx, {});
+      // pin_moves (Task 18) at its widest, over the same account (its personal moves in the library it reads): twenty to
+      // pin — the batch's new moves among them — twenty to unpin, the batch, and twenty lines at their longest.
+      const personal = (data.moves as Array<{ id: string; new: boolean }>).filter((m) => m.new).map((m) => m.id);
+      const toPin = [...personal, ...EXERCISES.slice(24).map((e) => e.id)].slice(0, 20);
+      const toUnpin = EXERCISES.slice(24).map((e) => e.id).filter((id) => !toPin.includes(id)).slice(0, 20);
+      await measureTool("pin_moves", images.get("saves")!, ctx, {
+        pin: toPin,
+        unpin: toUnpin,
+        batchId,
+        title: words(4, 60),
+        summary: words(5, 120),
+        lines: Array.from({ length: 20 }, (_, i) => words(i, 160)),
+        why: words(6, 300),
+      });
     }
     await measureTool("validate_workout", images.get("read12")!, ctx, { doc: docs[0], date: TODAY });
     await measureTool("propose_workout", images.get("read12")!, ctx, { doc: docs[0], target: { kind: "new", date: TODAY }, changeNote: words(6, 180) });

@@ -24,7 +24,7 @@ import { calmDoc, landingsDoc } from "./doc-workout-fixture.js";
 import { makeTestDb, makeTestUser } from "./helpers.js";
 
 const ENV = {} as Env;
-const ACT_NAMES = ["validate_workout", "ask_athlete", "record_answer", "remember", "propose_workout", "adjust_plan", "propose_plan", "change_programme", "plan_set", "read_set", "drop_workout", "submit_review", "finish"];
+const ACT_NAMES = ["validate_workout", "ask_athlete", "record_answer", "remember", "propose_workout", "adjust_plan", "propose_plan", "change_programme", "pin_moves", "plan_set", "read_set", "drop_workout", "submit_review", "finish"];
 
 let db: Db;
 let counting = false;
@@ -90,6 +90,7 @@ describe("the registry", () => {
       adjust_plan: ["main"],
       propose_plan: ["main"],
       change_programme: ["main"],
+      pin_moves: ["main"],
       plan_set: ["main"],
       read_set: ["main", "designer", "reviewer"],
       drop_workout: ["main"],
@@ -311,6 +312,27 @@ describe("each act tool's declared statement cost is the most it runs", () => {
     expect(n).toBe(4);
     expect(tool("change_programme").statementCost).toBe(4);
     const refused = await measured("change_programme", { ...change, programmeId: "nope" }, rich.userId, await runRow(rich.userId));
+    expect(refused.count).toBe(1);
+  });
+
+  it("pin_moves: the athlete with the account's library, the proposal, the restore marker and the batch in one read, then one write — refusals read only", async () => {
+    const main = await runRow(rich.userId);
+    const words = { title: "Goblet squats stay in", summary: "One move kept in rotation", lines: ["Goblet squat — in rotation: your strength days need a squat."], why: "It serves your legs." };
+    const pin = { ...words, pin: ["gobletSquat", "deadBug"], unpin: ["wallSit"] };
+    const n = await most("pin_moves", [
+      { input: pin, run: main, toolUseId: "toolu_pins_budget_1" },
+      // A second call replaces the first; a replay writes nothing.
+      { input: { ...pin, unpin: [] }, run: main, toolUseId: "toolu_pins_budget_2" },
+      { input: pin, run: main, toolUseId: "toolu_pins_budget_1" },
+      // Refused: an id that isn't a move, a batch nobody has, a move named in both; an empty account's public moves, stored.
+      { input: { ...pin, pin: ["noSuchMove"] } },
+      { input: { ...pin, batchId: "batch-nobody-has" } },
+      { input: pin, userId: empty, run: await runRow(empty) },
+      { input: { ...pin, unpin: ["gobletSquat"] } },
+    ]);
+    expect(n).toBe(2);
+    expect(tool("pin_moves").statementCost).toBe(2);
+    const refused = await measured("pin_moves", { ...pin, pin: ["noSuchMove"] }, rich.userId, await runRow(rich.userId));
     expect(refused.count).toBe(1);
   });
 

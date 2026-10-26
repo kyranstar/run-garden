@@ -1390,7 +1390,9 @@ describe("the prompt says how a set works", () => {
       expect(roleBlock("main"), name).toContain(name);
     }
     expect(roleBlock("main")).toMatch(/once more/);
-    expect(SHARED_PROMPT.length / 4).toBeLessThanOrEqual(6000);
+    // REBASED 2026-10-25 (Task 18): pin_moves acting line + integration guidance — measured 6,183.25; the same cap as
+    // design-prompt.test.ts's and design-fix13's.
+    expect(SHARED_PROMPT.length / 4).toBeLessThanOrEqual(6290);
     // REBASED 2026-10-19 for the owner's voice (the coach's last words, in the main block): measured 1,620 without its
     // turns — the same cap as design-prompt.test.ts's and design-fix13's.
     expect(roleBlock("main").length / 4).toBeLessThanOrEqual(1660);
