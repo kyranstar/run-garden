@@ -95,7 +95,7 @@ function scenarios(): Record<string, unknown[]> {
     read_objectives: [{}, { limit: 1 }, { limit: 1, cursor: encodeCursor([1]) }],
     search_library: [{}, { query: "squat" }, { query: "hip", filters: { fitToday: true, place: rich.gymId, purpose: "mobility" }, limit: 30 }, { filters: { place: "nope" } }],
     get_exercise: [{ id: "gobletSquat" }, { id: "deadBug", howTo: true }, { id: "catCow" }, { id: "nope" }],
-    read_saves: [{}, { limit: 12 }, { batchId: "no-such-batch" }, { limit: 13 }],
+    read_saves: [{}, { limit: 12 }, { offset: 12 }, { batchId: "no-such-batch" }, { limit: 13 }],
     list_templates: [{}, { limit: 50 }, { limit: 5, cursor: encodeCursor([15]) }],
     read_proposals: [{}, { status: "approved" }, { limit: 30 }, { cursor: encodeCursor([at(day(9), "10:00"), "~"]) }],
     recall_memory: [{}, { query: "hills likes", kind: "note" }, { limit: 30, cursor: encodeCursor([at(day(25)), "~"]) }],

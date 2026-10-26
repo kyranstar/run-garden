@@ -12,15 +12,18 @@
  *  - `posts`: how many of the batch's posts show it; `links`: the first LINKS_MAX of them, the url (plain: an address,
  *    not prose) and the creator (the handle, else the name: marked); `fromPost`: the first post's reading
  *    (`extraction.summary`: marked).
- * And `routines`: the batch's routine posts, each its reading (marked) and its moves' ids in the post's order. A move
- * merged since reads as the move it went into (the account's library, Task 12).
+ * And `routines` (at most ROUTINES_MAX): the batch's routine posts, each its reading (marked) and its moves' ids in the
+ * post's order. A move merged since reads as the move it went into (the account's library, Task 12); a move the library
+ * no longer offers — archived since, or merged into an archived move — is left out of both and named in `missing`
+ * (an archived move is resolvable but never offered).
  *
  * Nothing to read — no such batch — is an answer that says so (`missing`), never an error. A batchId that is not a saved
  * batch of the athlete's — another account's, one not saved, one nobody has — is refused alike (`not_found`), so nothing
  * says another account's batch exists.
  *
- * SIZE. At most SAVES_MOVES_MAX moves a read (`limit`), and of those as many as fit RESULT_BUDGET_BYTES with the
- * routines; whatever is left out is named in `missing`.
+ * SIZE. At most SAVES_MOVES_MAX moves a read (`limit`), from `offset` in the batch's one order, and of those as many as
+ * fit RESULT_BUDGET_BYTES with the routines; `missing` says how many moves are left and the offset that reads them (a
+ * batch stays readable by id once it is fitted in), and how many routines the cap or the room left out.
  *
  * COST. Two statements: the athlete (the step's shared read, which carries the account's library: `athleteOf`) and the
  * batch with the account's pins. `savesBatchSql` and `savedMovesOf` are the opening context's too (design-context.ts,
@@ -32,7 +35,7 @@ import { dayLabel } from "@rg/domain";
 import type { ExerciseRecord } from "@rg/exercise-library";
 import { isPersonalId, moveGroup } from "@rg/saves";
 import { makeLibraryIndex } from "@rg/workout";
-import { loadAccountLibrary } from "../account-library.js";
+import { loadAccountLibrary, type AccountLibrary } from "../account-library.js";
 import { utf8Bytes } from "../utf8.js";
 import type { DesignTool } from "./types.js";
 import {
@@ -151,18 +154,57 @@ export function savedBatchOf(raw: unknown): SavedBatch | null {
 const inPostOrder = (links: readonly SavedLink[]): SavedLink[] =>
   [...links].sort((a, b) => byBytes(a.seen, b.seen) || byBytes(a.postId, b.postId) || a.position - b.position);
 
+/** The personal moves a library offers, by id, made once an array (`offered` is the public library and the active moves). */
+const OFFERED_OWN = new WeakMap<readonly ExerciseRecord[], ReadonlySet<string>>();
+function offeredOwn(offered: readonly ExerciseRecord[]): ReadonlySet<string> {
+  let ids = OFFERED_OWN.get(offered);
+  if (!ids) OFFERED_OWN.set(offered, (ids = new Set(offered.flatMap((r) => (isPersonalId(r.id) ? [r.id] : [])))));
+  return ids;
+}
+
+/** What a link names, as the coach may offer it: the move it is in the account's library (`all`: a merged move as its
+ * target), when the library still offers it — an archived move, or one merged into an archived move, is never offered. */
+export interface SavedResolver {
+  /** The offered move a link names; null for one the library no longer holds or doesn't offer. */
+  find(moveId: string): ExerciseRecord | null;
+}
+
+function resolverOf(library: Pick<AccountLibrary, "all" | "offered">): SavedResolver & { archived(moveId: string): string | null } {
+  const inAll = makeLibraryIndex(library.all);
+  const own = offeredOwn(library.offered);
+  const offered = (r: ExerciseRecord) => !isPersonalId(r.id) || own.has(r.id);
+  return {
+    find: (moveId) => {
+      const r = inAll(moveId);
+      return r && offered(r) ? r : null;
+    },
+    archived: (moveId) => {
+      const r = inAll(moveId);
+      return r && !offered(r) ? r.id : null;
+    },
+  };
+}
+
 /**
- * The batch's moves, each once — by the move it is in the account's library (`all`: a merged move as its target) — new
- * ones first, then in the order the posts showed them; `unread` counts the moves the library no longer holds.
+ * The batch's moves the coach may offer, each once — by the move it is in the account's library (a merged move as its
+ * target) — new ones first, then in the order the posts showed them. `archived`: the moves left out because the
+ * library no longer offers them (archived since, or merged into an archived move), by id; `unread`: how many it no
+ * longer holds at all. `find` resolves a link the same way (for a routine's order).
  */
-export function savedMovesOf(batch: SavedBatch, all: readonly ExerciseRecord[]): { moves: SavedMove[]; unread: number } {
-  const find = makeLibraryIndex(all);
+export function savedMovesOf(
+  batch: SavedBatch,
+  library: Pick<AccountLibrary, "all" | "offered">,
+): { moves: SavedMove[]; archived: string[]; unread: number; find: SavedResolver["find"] } {
+  const resolve = resolverOf(library);
   const byId = new Map<string, SavedMove>();
+  const archived = new Set<string>();
   const unread = new Set<string>();
   for (const l of inPostOrder(batch.links)) {
-    const record = find(l.moveId);
+    const record = resolve.find(l.moveId);
     if (!record) {
-      unread.add(l.moveId);
+      const gone = resolve.archived(l.moveId);
+      if (gone) archived.add(gone);
+      else unread.add(l.moveId);
       continue;
     }
     let move = byId.get(record.id);
@@ -172,7 +214,7 @@ export function savedMovesOf(batch: SavedBatch, all: readonly ExerciseRecord[]):
   }
   // New first; each part in the posts' order (the sort is stable).
   const moves = [...byId.values()].sort((a, b) => Number(b.new) - Number(a.new));
-  return { moves, unread: unread.size };
+  return { moves, archived: [...archived], unread: unread.size, find: resolve.find };
 }
 
 /** A move's words: a personal move's, marked (a model's reading of a post, or the owner's edit); the library's, as they are. */
@@ -180,7 +222,9 @@ const wordsOf = (record: ExerciseRecord, text: string): string | Untrusted => (i
 
 const bytesOf = (value: unknown): number => utf8Bytes(JSON.stringify(value));
 
-const input = z.object({ batchId: z.string().min(1).max(100).optional(), limit: limitField(SAVES_MOVES_MAX).optional() }).strict();
+const input = z
+  .object({ batchId: z.string().min(1).max(100).optional(), limit: limitField(SAVES_MOVES_MAX).optional(), offset: z.number().int().min(0).max(10_000).optional() })
+  .strict();
 
 export const readSaves: DesignTool = {
   name: "read_saves",
@@ -190,7 +234,8 @@ export const readSaves: DesignTool = {
     type: "object",
     properties: {
       batchId: { type: "string", description: "A saved batch's id; default the newest not yet fitted in." },
-      limit: { type: "integer", minimum: 1, maximum: SAVES_MOVES_MAX, description: `Default ${SAVES_MOVES_MAX}, the most; missing names any left out.` },
+      limit: { type: "integer", minimum: 1, maximum: SAVES_MOVES_MAX, description: `Default ${SAVES_MOVES_MAX}, the most.` },
+      offset: { type: "integer", minimum: 0, description: "Moves to skip: the offset missing gives." },
     },
     additionalProperties: false,
   },
@@ -200,7 +245,7 @@ export const readSaves: DesignTool = {
   cpuWeight: 1.2,
   roles: READ_ROLES,
   async run(ctx, raw) {
-    const p = parseInput(input, raw, "optionally batchId and limit");
+    const p = parseInput(input, raw, "optionally batchId, limit and offset");
     if (isErr(p)) return p;
     const limit = p.limit ?? SAVES_MOVES_MAX;
     const [athlete, rows] = await Promise.all([
@@ -225,11 +270,19 @@ export const readSaves: DesignTool = {
     // The athlete's read carried the account's library: this costs no statement.
     const library = await loadAccountLibrary(ctx.db, ctx.userId);
     const pins = new Set(parsedArray(rows[0]?.pins).filter((id): id is string => typeof id === "string"));
-    const { moves, unread } = savedMovesOf(batch, library.all);
-    const find = makeLibraryIndex(library.all);
+    const { moves, archived, unread, find } = savedMovesOf(batch, library);
+    const offset = p.offset ?? 0;
+    if (offset > 0 && offset >= moves.length) {
+      return refuse(
+        "bad_offset",
+        `The batch lists ${plural(moves.length, "move")}; offset ${offset} is past them.`,
+        "Pass the offset a previous answer's missing gave, or leave it out to start from the first move.",
+      );
+    }
     const postOf = (id: string): SavedPost | undefined => batch.posts.get(id);
 
-    const listed = moves.slice(0, limit).map((m) => ({
+    // This page's moves, in the batch's one order.
+    const listed = moves.slice(offset, offset + limit).map((m) => ({
       id: m.record.id,
       name: wordsOf(m.record, m.record.name),
       summary: wordsOf(m.record, m.record.text?.summary ?? ""),
@@ -240,7 +293,7 @@ export const readSaves: DesignTool = {
       links: m.postIds.slice(0, LINKS_MAX).map((id) => ({ url: postOf(id)?.url ?? null, creator: untrustedOrNull(postOf(id)?.creator) })),
       fromPost: untrustedOrNull(postOf(m.postIds[0]!)?.summary),
     }));
-    // The routine posts, as they came in: each its reading and its kept moves in the post's order.
+    // The routine posts, as they came in: each its reading and its kept, offered moves in the post's order.
     const byPost = new Map<string, string[]>();
     for (const l of inPostOrder(batch.links)) {
       if (postOf(l.postId)?.kind !== "routine") continue;
@@ -255,23 +308,34 @@ export const readSaves: DesignTool = {
     const head = { id: batch.id, savedAt: localDateOf(athlete.tz, batch.savedAt) };
     const fixed = [
       ...athlete.missing,
-      ...(moves.length > limit ? [`${plural(moves.length - limit, "more move", "more moves")} in this batch, not listed (at most ${SAVES_MOVES_MAX} a read)`] : []),
+      ...(archived.length > 0 ? [`${plural(archived.length, "move")} of this batch archived since, not offered: ${archived.join(", ")}`] : []),
       ...(unread > 0 ? [`${plural(unread, "move")} of this batch no longer in the library`] : []),
-      ...(moves.length === 0 ? ["the batch holds no move the athlete kept"] : []),
+      ...(moves.length === 0 ? ["the batch holds no move the athlete kept and the library offers"] : []),
     ];
-    const movesLeft = (left: typeof listed): string =>
-      `${plural(left.length, "more move", "more moves")} not shown for room: ${left.map((m) => m.id).join(", ")} (get_exercise reads each)`;
-    const routinesLeft = (n: number): string => `${plural(n, "more routine", "more routines")} not shown for room`;
+    /** The moves after this page: how many, and the offset that reads them. */
+    const movesLeft = (kept: number): string[] => {
+      const left = moves.length - (offset + kept);
+      return left > 0 ? [`${plural(left, "more move", "more moves")} — pass offset: ${offset + kept}`] : [];
+    };
+    /** The routines left out: by the cap when it alone cut them, else for room. */
+    const routinesLeft = (kept: number): string[] => {
+      const left = routines.length - kept;
+      if (left <= 0) return [];
+      return kept === Math.min(routines.length, ROUTINES_MAX)
+        ? [`${plural(left, "more routine", "more routines")}, at most ${ROUTINES_MAX} a read`]
+        : [`${plural(left, "more routine", "more routines")} not shown for room`];
+    };
     const sizeOf = (missing: string[], ms: unknown[], rs: unknown[]): number =>
       bytesOf(answer({ source: SOURCE, now: ctx.now, missing, data: { batch: head, moves: ms, routines: rs }, summary: "" }));
 
-    // A page that fits: every listed move and routine when they fit; else as many moves as fit (at least one), then
-    // routines, with room kept for the lines that say what was left out.
-    const offered = routines.slice(0, ROUTINES_MAX);
+    // A page that fits: every listed move and routine (up to the cap) when they fit with the lines that say what is
+    // left; else as many moves as fit (at least one), then routines, with room kept for the longest such lines.
+    const capped = routines.slice(0, ROUTINES_MAX);
     let kept = listed.length;
-    let keptRoutines = offered.length;
-    if (sizeOf(fixed, listed, offered) > RESULT_BUDGET_BYTES) {
-      let total = sizeOf([...fixed, movesLeft(listed), routinesLeft(routines.length)], [], []);
+    let keptRoutines = capped.length;
+    if (sizeOf([...fixed, ...movesLeft(kept), ...routinesLeft(keptRoutines)], listed, capped) > RESULT_BUDGET_BYTES) {
+      const longestLeft = [`${moves.length} more moves — pass offset: ${moves.length}`, `${routines.length} more routines not shown for room`];
+      let total = sizeOf([...fixed, ...longestLeft], [], []);
       kept = 0;
       for (const item of listed) {
         const add = bytesOf(item) + (kept > 0 ? 1 : 0);
@@ -280,18 +344,14 @@ export const readSaves: DesignTool = {
         kept += 1;
       }
       keptRoutines = 0;
-      for (const item of offered) {
+      for (const item of capped) {
         const add = bytesOf(item) + (keptRoutines > 0 ? 1 : 0);
         if (total + add > RESULT_BUDGET_BYTES) break;
         total += add;
         keptRoutines += 1;
       }
     }
-    const missing = [
-      ...fixed,
-      ...(kept < listed.length ? [movesLeft(listed.slice(kept))] : []),
-      ...(keptRoutines < routines.length ? [routinesLeft(routines.length - keptRoutines)] : []),
-    ];
+    const missing = [...fixed, ...movesLeft(kept), ...routinesLeft(keptRoutines)];
     const shown = listed.slice(0, kept);
     const fresh = shown.filter((m) => m.new).length;
     const when = head.savedAt ? ` (saved ${dayLabel(head.savedAt)})` : "";

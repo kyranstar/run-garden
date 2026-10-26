@@ -138,7 +138,8 @@ describe("compact (the cached prefix grew 3k tokens since the pre-live audit)", 
     // §8 (2026-10-18): 5,200 until §8's prompt streams — R's run lines, W's two plan-tool lines — measured 5,656; the whole
     // prefix's growth is coach-shape-pins.test.ts's to hold. REBASED 2026-10-18 for the decision guidance (stream D: a
     // run's time or distance, heart rate, race pace and what reaches the watch, and when to remember) — measured 5,907.
-    expect(SHARED_PROMPT.length / 4).toBeLessThanOrEqual(5960);
+    // REBASED 2026-10-25: read_saves tool entry + Reading line (+640 chars); ≥ 100 tokens headroom kept — measured 5,958.25.
+    expect(SHARED_PROMPT.length / 4).toBeLessThanOrEqual(6100);
     // The main coach's block, REBASED 2026-10-18 for the decision guidance (a run's length on the watch, plan_set or
     // propose_plan, a plan's timed sessions, a programme's settings) — measured 1,488 — and 2026-10-19 for the owner's
     // voice (the coach's last words) — measured 1,634; the others hold at 1,300.

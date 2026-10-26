@@ -826,9 +826,16 @@ beforeAll(async () => {
         summary: words(i, 280),
         moves: [0, 1, 2].map((k) => ({ library: library[(i * 3 + k) % library.length]! })),
       }));
-      await seedSavedBatch(withSaves.db, userId, { savedAt: at(day(1)), posts: [...longBatchPosts(), ...more], pinned: library.slice(0, 6) });
+      const { batchId } = await seedSavedBatch(withSaves.db, userId, { savedAt: at(day(1)), posts: [...longBatchPosts(), ...more], pinned: library.slice(0, 6) });
       images.set("saves", imageOf(withSaves.db));
       withSaves.close();
+      // Once, before timing it: the call reads that batch and lists its moves (as many of its long ones as fit the answer),
+      // never the no-batch path a window or clock shift would leave it.
+      const probe = open(images.get("saves")!);
+      const read = await allTools().find((t) => t.name === "read_saves")!.run(ctx(probe), {});
+      probe.close();
+      const data = isToolErr(read) ? null : (read.data as { batch?: { id?: string } | null; moves?: unknown[] });
+      if (data?.batch?.id !== batchId || !data.moves?.length) throw new Error(`8. read_saves: the bench's call didn't read its batch (${JSON.stringify(data?.batch ?? null)})`);
       await measureTool("read_saves", images.get("saves")!, ctx, {});
     }
     await measureTool("validate_workout", images.get("read12")!, ctx, { doc: docs[0], date: TODAY });

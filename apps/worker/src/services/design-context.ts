@@ -35,8 +35,9 @@
  * from its own row, in the focus's one statement, and said to be not yet saved. It is never a move a workout can place.
  *
  * WHAT CAME IN FROM THE ATHLETE'S SAVES (saved-posts import, Task 17): a main run's opening message lists the moves of
- * the newest batch the athlete saved in the last 14 days and nothing has fitted in yet — at most 12, one line each, a
- * personal move's name and summary marked as a saved post's — just before the request ("From the athlete's saves …").
+ * the newest batch the athlete saved in the last 14 days and nothing has fitted in yet — at most 12 the library offers,
+ * one line each, the name and summary cut short (a personal move's marked as a saved post's) — just before the request
+ * ("From the athlete's saves …").
  * The batch rides in the counts statement (read_saves' own `savesBatchSql`), so it costs no statement, and the section
  * is there only when such a batch is. read_saves has the posts, the pins and the routines.
  */
@@ -1171,19 +1172,31 @@ function focusSection(f: NonNullable<Reads["focus"]>, r: Reads, time: string): s
   return [...lines, FOCUS_LINES[focus.kind]].join("\n");
 }
 
+/** The most characters of a move's name, and of its summary, the saves section shows (read_saves has them whole). */
+const SAVES_NAME_CHARS = 40;
+const SAVES_SUMMARY_CHARS = 60;
+
+/** `text` cut to `max` characters (code points), the last an ellipsis; as it is when it fits. */
+function cutChars(text: string, max: number): string {
+  const chars = Array.from(text);
+  return chars.length <= max ? text : `${chars.slice(0, max - 1).join("").trimEnd()}…`;
+}
+
 /**
- * "From the athlete's saves …" (Task 17): the waiting batch's moves, at most SAVES_MOVES_MAX — new ones first, as
- * read_saves lists them — each by name, id and summary (a personal move's marked as a saved post's), new or the athlete's
- * already, and how many of the batch's posts show it; the rest counted. Null when no move of it reads.
+ * "From the athlete's saves …" (Task 17): the waiting batch's moves the library offers, at most SAVES_MOVES_MAX — new
+ * ones first, as read_saves lists them — each by name and summary (cut to SAVES_NAME_CHARS and SAVES_SUMMARY_CHARS; a
+ * personal move's marked as a saved post's) and id, new or the athlete's already, and how many of the batch's posts
+ * show it. The rest — past the twelve, or archived since (never offered) — counted in a last line. Null when no move
+ * of it is offered.
  */
 function savesSection(batch: SavedBatch, r: Reads): string | null {
-  const { moves } = savedMovesOf(batch, r.library.all);
+  const { moves, archived } = savedMovesOf(batch, r.library);
   if (moves.length === 0) return null;
   const lines = moves.slice(0, SAVES_MOVES_MAX).map(({ record, new: fresh, postIds }) => {
-    const words = (text: string) => (isPersonalId(record.id) ? savedPost(text) : text);
-    return `- ${words(record.name)} (${record.id}) — ${words(record.text?.summary ?? "")}; ${fresh ? "new" : "yours already"}; from ${plural(postIds.length, "post")}`;
+    const words = (text: string, max: number) => (isPersonalId(record.id) ? savedPost(cutChars(text, max)) : cutChars(text, max));
+    return `- ${words(record.name, SAVES_NAME_CHARS)} (${record.id}) — ${words(record.text?.summary ?? "", SAVES_SUMMARY_CHARS)}; ${fresh ? "new" : "yours already"}; from ${plural(postIds.length, "post")}`;
   });
-  const more = moves.length - SAVES_MOVES_MAX;
+  const more = Math.max(0, moves.length - SAVES_MOVES_MAX) + archived.length;
   return [
     `From the athlete's saves (saved ${dayWords(todayInZone(r.tz, new Date(batch.savedAt)), r.today)}, not yet fitted in):`,
     ...lines,

@@ -51,11 +51,12 @@ const BEFORE = { tools: 34_935, shared: 20_450, main: 4_586 };
  * plan's entry and how to continue a line are in its answer, not in the prefix.
  *
  * REBASED 2026-10-25 for read_saves (saved-posts import, Task 17: what came in from the athlete's saves): a new read
- * tool, its schema compact (tools 39,141 → 39,677) and one Reading line in the shared prompt (23,729 → 23,833) — 640
- * characters, so 10,171 since §8's start; held with about the same margin as before. The batch's moves are in the
- * opening message (a main run's, only while a saved batch waits), its posts and routines in the tool's answer.
+ * tool, its schema compact (tools 39,141 → 39,746, its `offset` among them since the review's fix round) and one
+ * Reading line in the shared prompt (23,729 → 23,833) — 709 characters, so 10,240 since §8's start; held with about the
+ * same margin as before. The batch's moves are in the opening message (a main run's, only while a saved batch waits),
+ * its posts and routines in the tool's answer.
  */
-const GROWTH_MAX_CHARS = 10_200;
+const GROWTH_MAX_CHARS = 10_270;
 
 const toolsSent = () => JSON.stringify(allTools().map((t) => ({ name: t.name, description: t.description, input_schema: t.inputSchema })));
 

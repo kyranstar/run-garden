@@ -16,7 +16,7 @@ import type { Env } from "../src/env.js";
 import type { Db } from "../src/services/db.js";
 import { PROMPT_TOOL_NAMES, SHARED_PROMPT } from "../src/services/design-prompt.js";
 import { READ_TOOLS } from "../src/services/design-tools/index.js";
-import { RESULT_BUDGET_BYTES, sharedAthlete, type ReadOk } from "../src/services/design-tools/read-common.js";
+import { plural, RESULT_BUDGET_BYTES, sharedAthlete, type ReadOk } from "../src/services/design-tools/read-common.js";
 import { isToolErr, type ToolContext, type ToolErr } from "../src/services/design-tools/types.js";
 import { savedPostId } from "../src/services/saves-ledger.js";
 import { matchPost } from "../src/services/saves-match.js";
@@ -78,7 +78,7 @@ describe("read_saves: the registry", () => {
     expect(t.inputSchema).toMatchObject({
       type: "object",
       additionalProperties: false,
-      properties: { batchId: { type: "string" }, limit: { type: "integer", minimum: 1, maximum: 12 } },
+      properties: { batchId: { type: "string" }, limit: { type: "integer", minimum: 1, maximum: 12 }, offset: { type: "integer", minimum: 0 } },
     });
     // The prompt names it, in one line of its own under "Reading", beside the library's tools.
     expect(PROMPT_TOOL_NAMES).toContain("read_saves");
@@ -201,16 +201,60 @@ describe("read_saves", () => {
     expect(JSON.stringify(await ok({}))).not.toContain(theirs.batchId);
   });
 
-  it("limit: 12 by default and at most; a batch with more says how many more it holds", async () => {
+  it("limit: 12 by default and at most; a batch with more says how many more and the offset that reads them", async () => {
     const drafts = Array.from({ length: 15 }, (_, i) => ({ draft: savedMoveDraft(`Zorbex move ${String(i).padStart(2, "0")}`, { summary: "Short." }) }));
     await seedSavedBatch(db, userId, { savedAt: daysAgo(1), posts: [{ kind: "single_move", summary: "s", moves: drafts.slice(0, 8) }, { kind: "single_move", summary: "s", moves: drafts.slice(8) }] });
     const r = await ok({});
     expect(r.data.moves).toHaveLength(12);
-    expect(r.missing).toContain("3 more moves in this batch, not listed (at most 12 a read)");
-    expect((await ok({ limit: 4 })).data.moves).toHaveLength(4);
+    expect(r.missing).toContain("3 more moves — pass offset: 12");
+    const four = await ok({ limit: 4 });
+    expect(four.data.moves).toHaveLength(4);
+    expect(four.missing).toContain("11 more moves — pass offset: 4");
     const refused = (await read({ limit: 13 })).r as ToolErr;
     expect(refused.error).toBe("invalid_input");
     expect(refused.why).toMatch(/^limit:/);
+  });
+
+  it("offset pages the moves in the same order: the page after the first starts where it ended, and says nothing more is left", async () => {
+    const drafts = Array.from({ length: 15 }, (_, i) => ({ draft: savedMoveDraft(`Zorbex move ${String(i).padStart(2, "0")}`, { summary: "Short." }) }));
+    await seedSavedBatch(db, userId, { savedAt: daysAgo(1), posts: [{ kind: "single_move", summary: "s", moves: drafts }] });
+    const whole = [...(await ok({})).data.moves, ...(await ok({ offset: 12 })).data.moves].map((m: any) => m.name.text);
+    expect(whole).toEqual(drafts.map((d) => d.draft.name));
+    const second = await ok({ offset: 12 });
+    expect(second.data.moves).toHaveLength(3);
+    expect(second.missing!.filter((m) => m.includes("offset"))).toEqual([]);
+    // A page in the middle: four from the fifth.
+    expect((await ok({ offset: 4, limit: 4 })).data.moves.map((m: any) => m.name.text)).toEqual(drafts.slice(4, 8).map((d) => d.draft.name));
+    // Past the end: refused, saying how many there are; two statements still.
+    const { r, count } = await read({ offset: 15 });
+    expect((r as ToolErr).error).toBe("bad_offset");
+    expect((r as ToolErr).why).toBe("The batch lists 15 moves; offset 15 is past them.");
+    expect(count).toBe(2);
+    expect(((await read({ offset: -1 })).r as ToolErr).error).toBe("invalid_input");
+  });
+
+  it("an archived move is never offered: left out of the moves and the routines, and named in missing — a move merged into it too", async () => {
+    const C = savedMoveDraft("Zorbex calf raise", { regions: ["calves"] });
+    const { moveIds } = await seedSavedBatch(db, userId, { savedAt: daysAgo(1), posts: [{ kind: "routine", moves: [{ draft: A }, { library: "gobletSquat" }, { draft: B }, { draft: C }] }] });
+    const [a, , b, c] = moveIds[0]!;
+    const pm = schema.personalMoves;
+    // After saving, the owner archived A and merged C into it.
+    await db.update(pm).set({ status: "archived" }).where(and(eq(pm.userId, userId), eq(pm.id, a!)));
+    await db.update(pm).set({ status: "merged", mergedInto: a! }).where(and(eq(pm.userId, userId), eq(pm.id, c!)));
+    const r = await ok({});
+    expect(r.data.moves.map((m: any) => m.id)).toEqual([b, "gobletSquat"]);
+    expect(r.data.routines).toEqual([{ post: expect.anything(), order: ["gobletSquat", b] }]);
+    expect(r.missing).toContain(`1 move of this batch archived since, not offered: ${a}`);
+    expect(JSON.stringify(r.data)).not.toContain(a!);
+  });
+
+  it("routines: at most 5 a read, the rest counted as the cap's, not the room's", async () => {
+    const posts: SavedPostSpec[] = Array.from({ length: 7 }, (_, i) => ({ kind: "routine", summary: `Routine ${i}.`, moves: [{ library: "gobletSquat" }, { library: "deadBug" }] }));
+    await seedSavedBatch(db, userId, { savedAt: daysAgo(1), posts });
+    const r = await ok({});
+    expect(r.data.routines.map((x: any) => x.post.text)).toEqual(["Routine 0.", "Routine 1.", "Routine 2.", "Routine 3.", "Routine 4."]);
+    expect(r.missing).toContain("2 more routines, at most 5 a read");
+    expect(r.missing!.some((m) => m.includes("for room"))).toBe(false);
   });
 
   it("twelve moves at their longest stay within the answer's budget, and every marked text has its marker first", async () => {
@@ -222,7 +266,7 @@ describe("read_saves", () => {
     // What did not fit is said, never cut silently.
     const shown = r.data.moves.length;
     expect(shown).toBeGreaterThan(3);
-    if (shown < 12) expect(r.missing!.some((m) => new RegExp(`^${12 - shown} more moves? not shown for room: `).test(m))).toBe(true);
+    if (shown < 12) expect(r.missing).toContain(`${plural(12 - shown, "more move", "more moves")} — pass offset: ${shown}`);
     for (const lead of ["LONG-reading", "LONG-handle", "LONG move", "LONG-summary"]) {
       const at = [...text.matchAll(new RegExp(lead, "g"))];
       expect(at.length, lead).toBeGreaterThan(0);
