@@ -11,9 +11,10 @@
  *   TMJ              the move's note for each switched-on profile, in its own plain words
  *   MUSCLES          the primary ones, then "Also" the secondary
  *   EASIER AND HARDER  each a link to that move
- *   FROM YOUR SAVES  one of the athlete's own moves (saved-posts import): each post it came from — its creator, and a
- *                    link that opens the post in a new tab, and under them the post's note on the move (what it is
- *                    for, or when to do it); the meta line starts "Yours"
+ *   FROM YOUR SAVES  any move the owner's saves link to (saved-posts import) — one of their own (the meta line starts
+ *                    "Yours"), or a library move: a curated link or one Save wrote (its read's `provenance`) — each
+ *                    post: its creator, a link that opens it in a new tab, and under them the post's note on the move
+ *                    (what it is for, or when to do it)
  *   YOUR HISTORY     last done · times in 30 days · best set or hold; 👍 👎 · Pin · Not for me
  *   ──────────────────────────────────────────────────────
  *   [ Add ]  [ Ask ]       (Ask: the app's coach sheet, about this move — coach everywhere, A3)
@@ -37,6 +38,7 @@ import { Link } from "react-router-dom";
 import type { ExerciseRecord } from "@rg/exercise-library";
 import { formatWeightIn, secondsText, type WeightUnit } from "@rg/domain";
 import type { LibraryItemDto, PersonalMoveDto } from "@rg/api-client";
+import { postHref } from "../../post-link.js";
 import { PUBLIC_LIBRARY, useAccountLibrary } from "../../library/account-library.js";
 import { Sheet, useEscapeKey, useIsomorphicLayoutEffect } from "../../components.js";
 import { IconCheck, IconClose, IconPin } from "../../icons.js";
@@ -58,22 +60,18 @@ export interface MoveLink {
 const ladder = (ids: readonly string[], find: (id: string) => ExerciseRecord | undefined): ExerciseRecord[] =>
   ids.map((id) => find(id)).filter((r): r is ExerciseRecord => !!r);
 
-/** A saved post's address as a link: a web page's only (never `javascript:` or the like); null otherwise. */
-export function postHref(url: string | null): string | null {
-  if (!url) return null;
-  try {
-    const u = new URL(url);
-    return u.protocol === "https:" || u.protocol === "http:" ? u.href : null;
-  } catch {
-    return null;
-  }
-}
+/** A saved post's address as a link: a web page's only (the shared helper, post-link.ts). */
+export { postHref };
+
+/** A link from a move to a saved post: its address, its creator and its note on the move (any of them may be missing). */
+export type SavedLink = { url: string | null; creator: string | null; note?: string | null };
 
 /**
- * The posts one of the athlete's own moves came from: each its creator (as text) and a link that opens it, and under
- * them the post's note on the move (as text).
+ * The posts a move came from — one of the athlete's own moves, or a library move the owner's saves link to (the curated
+ * links, and the ones Save wrote): each its creator (as text) and a link that opens it, and under them the post's note
+ * on the move (as text).
  */
-function SavedFrom({ links }: { links: PersonalMoveDto["links"] }) {
+function SavedFrom({ links }: { links: readonly SavedLink[] }) {
   const shown = links
     .map((l) => ({ creator: l.creator?.trim() || null, href: postHref(l.url), note: l.note?.trim() || null }))
     .filter((l) => l.creator || l.href || l.note);
@@ -161,10 +159,12 @@ export interface MoveDetailBodyProps {
   find?: (id: string) => ExerciseRecord | undefined;
   /** One of the athlete's own moves: its status and the posts it came from. */
   own?: PersonalMoveDto | null;
+  /** A library move's links to saved posts (the move's own read: `provenance`) — any move that has them (final review I5). */
+  links?: readonly SavedLink[];
 }
 
 /** Everything under the name, in the spec's order. */
-export function MoveDetailBody({ rec, ctx, today, say, onSay, sayError, best, weightUnit, moveLink, find = PUBLIC_LIBRARY.find, own = null }: MoveDetailBodyProps) {
+export function MoveDetailBody({ rec, ctx, today, say, onSay, sayError, best, weightUnit, moveLink, find = PUBLIC_LIBRARY.find, own = null, links = [] }: MoveDetailBodyProps) {
   const t = rec.text;
   const fit = fitOf(rec, ctx);
   const gear = gearLine(rec);
@@ -253,9 +253,9 @@ export function MoveDetailBody({ rec, ctx, today, say, onSay, sayError, best, we
           </ul>
         </Section>
       ) : null}
-      {own && own.links.length ? (
+      {(own?.links.length ?? 0) > 0 || links.length > 0 ? (
         <Section title="From your saves">
-          <SavedFrom links={own.links} />
+          <SavedFrom links={own?.links.length ? own.links : links} />
         </Section>
       ) : null}
       <Section title="Your history">
@@ -339,6 +339,7 @@ export function MoveDetail({ rec, ctx, today, wide, onClose, onAdd, moveLink, ad
       moveLink={moveLink}
       find={account.find}
       own={own}
+      links={item.data?.provenance ?? []}
     />
   );
   const foot = (

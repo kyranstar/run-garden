@@ -11,6 +11,7 @@ import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { api, SAVES_STATUS_QUERY } from "@rg/api-client";
 import type { PostRowDto, SavePostStatus, SavesStatusDto } from "@rg/saves";
 import { Card, Sheet } from "../../components.js";
+import { postHref } from "../../post-link.js";
 import { ageText } from "./age.js";
 
 const STALE_DAYS = 7;
@@ -47,6 +48,8 @@ const creatorOf = (p: PostRowDto) => p.creator.name || p.creator.handle || "Unkn
 
 function PostRow({ post, busy, onProcess }: { post: PostRowDto; busy: boolean; onProcess: (id: string) => void }) {
   const action = post.status === "filtered_out" ? "Process anyway" : post.status === "failed" ? "Retry" : null;
+  // A web page's address only (the shared check); the link a fingertip's target (`.stu-saved-link`: min-height --tap).
+  const href = postHref(post.url);
   return (
     <div className="setting-row">
       <span className="place-row-main">
@@ -55,11 +58,12 @@ function PostRow({ post, busy, onProcess }: { post: PostRowDto; busy: boolean; o
           {STATUS_WORD[post.status]}
           {post.reason ? ` · ${post.reason}` : ""}
         </small>
-        <small>
-          <a href={post.url} target="_blank" rel="noopener noreferrer">
+        {href ? (
+          <a className="stu-saved-link" href={href} target="_blank" rel="noopener noreferrer">
             Open post
+            <span className="visually-hidden">{` by ${creatorOf(post)}`}</span>
           </a>
-        </small>
+        ) : null}
       </span>
       {action ? (
         <button type="button" className="btn btn-small" disabled={busy} onClick={() => onProcess(post.id)}>

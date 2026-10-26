@@ -113,6 +113,22 @@ describe("SavesSection", () => {
     expect(document.body.textContent).toContain("not a workout");
   });
 
+  it("Open post is a fingertip's target (the shared saved-link class, its min-height the --tap token) and a link only to a web page (final review M6)", async () => {
+    const odd = { id: "p3", key: "k3", url: "javascript:alert(1)", creator: { handle: "odd" }, status: "matched" as const, reason: null, updatedAt: "2026-10-22T00:00:00.000Z" };
+    await mount({ status: 200, body: status({ posts: [...status().posts, odd] }) });
+    await flush();
+    await act(async () => { (host.querySelector("button.place-row") as HTMLButtonElement).click(); });
+    const links = [...document.querySelectorAll<HTMLAnchorElement>(".sheet a, [role=dialog] a")];
+    expect(links.map((a) => a.getAttribute("href"))).toEqual(["https://example.com/p/k1", "https://example.com/p/k2"]);
+    for (const a of links) {
+      expect(a.classList.contains("stu-saved-link")).toBe(true);
+      expect(a.closest("small")).toBeNull();
+      expect(a.rel).toBe("noopener noreferrer");
+    }
+    // The odd post is still listed, with no link.
+    expect(document.body.textContent).toContain("odd");
+  });
+
   it("Process anyway calls the override", async () => {
     await mount({ status: 200, body: status() });
     await flush();

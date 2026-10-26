@@ -13,7 +13,7 @@ import { createRoot, type Root } from "react-dom/client";
 import { MemoryRouter, Route, Routes, useLocation } from "react-router-dom";
 import { QueryClientProvider } from "@tanstack/react-query";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import type { PersonalMoveDto, PersonalMovesDto, TemplateDto } from "@rg/api-client";
+import type { LibraryItemDto, PersonalMoveDto, PersonalMovesDto, TemplateDto } from "@rg/api-client";
 import type { WorkoutDoc } from "@rg/domain";
 import { EXERCISES, type ExerciseRecord } from "@rg/exercise-library";
 import { suggestedItem } from "@rg/workout";
@@ -84,7 +84,7 @@ const json = (b: unknown, status = 200) => new Response(JSON.stringify(b), { sta
  * The network: the personal list answers `personal` (a 503 when it is null), the templates list `templates` when given;
  * every other read fails as a dropped connection does. The paths asked, in order.
  */
-function network(o: { personal?: PersonalMovesDto | null; templates?: TemplateDto[] } = {}): string[] {
+function network(o: { personal?: PersonalMovesDto | null; templates?: TemplateDto[]; items?: Record<string, LibraryItemDto> } = {}): string[] {
   const asked: string[] = [];
   vi.stubGlobal("matchMedia", vi.fn((q: string) => ({ matches: false, media: q, addEventListener: () => undefined, removeEventListener: () => undefined })));
   vi.stubGlobal(
@@ -94,6 +94,8 @@ function network(o: { personal?: PersonalMovesDto | null; templates?: TemplateDt
       asked.push(`${init?.method ?? "GET"} ${path}`);
       if (path === "/api/library/personal") return o.personal ? json(o.personal) : json({ error: "unavailable" }, 503);
       if (path === "/api/templates" && o.templates) return json({ templates: o.templates });
+      const item = /^\/api\/library\/([^/]+)$/.exec(path)?.[1];
+      if (item && o.items?.[item]) return json(o.items[item]);
       throw new TypeError("Failed to fetch");
     }),
   );
@@ -280,6 +282,49 @@ describe("a personal move's detail", () => {
     // A link with no note shows none.
     const second = [...sheet.querySelectorAll("li")].find((li) => li.textContent?.includes("Second Example"))!;
     expect(second.querySelector(".stu-saved-note")).toBeNull();
+  });
+
+  it("a library move's links show too, with their notes — the curated ones and the ones Save wrote; a link that isn't a web page's is no anchor (final review I5)", async () => {
+    const goblet = EXERCISES.find((e) => e.id === "gobletSquat")!;
+    const { conditions: _c, ...text } = goblet.text;
+    const item = (provenance: LibraryItemDto["provenance"]): LibraryItemDto => ({
+      id: goblet.id, name: goblet.name, family: goblet.family, patterns: [...goblet.patterns], regions: [...goblet.regions], roles: [...goblet.roles],
+      equipment: { all: [...goblet.equipment.all], oneOf: [...goblet.equipment.oneOf] }, position: goblet.position, laterality: goblet.laterality,
+      load: goblet.load, dose: goblet.dose, difficulty: goblet.difficulty, tags: [...goblet.tags], text, conditionNotes: [], safety: {},
+      easier: [], harder: [], prefs: { exerciseId: goblet.id, rating: null, excluded: false, pinned: false, introducedOn: null },
+      saved: provenance.length > 0, provenance, history: { last: [], best: null },
+    });
+    network({
+      personal: MOVES,
+      items: {
+        gobletSquat: item([
+          { sourceType: "testsrc", url: "https://example.com/p/curated", creator: "Curated Coach", note: null },
+          { sourceType: "testsrc", url: "https://example.com/p/saved", creator: "Example Coach", note: "Hold it low before a run." },
+          { sourceType: "testsrc", url: "javascript:alert(1)", creator: "Odd Coach", note: null },
+        ]),
+      },
+    });
+    mountStudio("/studio/move/gobletSquat");
+    await until(() => dialog()?.querySelector("h2")?.textContent === goblet.name && !!dialog()?.querySelector(".stu-saved"), "the move's links");
+    const sheet = dialog()!;
+    // Not the athlete's own: no "Yours".
+    expect(sheet.textContent).not.toContain("Yours");
+    expect([...sheet.querySelectorAll("h3, h2")].some((h) => h.textContent === "From your saves")).toBe(true);
+    const links = [...sheet.querySelectorAll<HTMLAnchorElement>(".stu-saved a[target=_blank]")];
+    expect(links.map((a) => a.getAttribute("href"))).toEqual(["https://example.com/p/curated", "https://example.com/p/saved"]);
+    expect(links.every((a) => a.getAttribute("rel") === "noopener noreferrer")).toBe(true);
+    const saved = [...sheet.querySelectorAll(".stu-saved li")].find((li) => li.textContent?.includes("Example Coach"))!;
+    expect(saved.querySelector(".stu-saved-note")?.textContent).toBe("Hold it low before a run.");
+    const odd = [...sheet.querySelectorAll(".stu-saved li")].find((li) => li.textContent?.includes("Odd Coach"))!;
+    expect(odd.querySelector("a")).toBeNull();
+  });
+
+  it("a library move with no links shows no From your saves", async () => {
+    network({ personal: MOVES });
+    mountStudio("/studio/move/gobletSquat");
+    await until(() => dialog()?.querySelector("h2")?.textContent === "Goblet squat", "the move's detail");
+    await settle(20);
+    expect([...dialog()!.querySelectorAll("h3, h2")].some((h) => h.textContent === "From your saves")).toBe(false);
   });
 
   it("a note is text, never markup; a link with only a note still shows it", async () => {
