@@ -24,6 +24,9 @@
  *  - a proposal already with the athlete (`proposal_pending`: the main run's finish made it pending; "call finish");
  *  - a revision of a workout another run of this design already revises (`target_taken`) — but not the first version a
  *    set's redo replaces (`ctx.replaces`) — or that a change of the proposal's skips or moves (adjust_plan, Task 8b);
+ *  - a draft for another workout than the one the run already holds — a new workout on another day, a revision of
+ *    another workout, or the one kind for the other (`one_workout`, pointing at plan_set; coach-context audit C1): each
+ *    run designs one workout, and a second target would silently replace the first;
  *  - a third draft from one run, once two rounds of review are done (`rounds_done`: ruling 4);
  *  - a draft whose minutes run past its own `setting.targetMinutes` by more than max(TOO_LONG_MIN_OVER, 15%) — before
  *    any review, using no round (`too_long`; Task 13's fix wave, §2.4: two of thirteen first drafts were sent to review
@@ -390,6 +393,15 @@ export const proposeWorkout: DesignTool = {
     const kept = mine ? withoutAbandoned(mine) : undefined;
     // An amend: the reviewed draft's text fixed, no round, no reviewer (§2.2) — whatever rounds are left.
     if (p.amend) return amendDraft(ctx, { a, doc, target: p.target, changeNote: p.changeNote, replaces: p.replaces, kept, all, opsText, proposalId, today });
+    // One workout per run (coach-context audit C1): a draft for another workout is never a revision round of this run's
+    // — it would replace it, and whatever said both were placed would be wrong.
+    if (kept && !sameTarget(kept, p.target)) {
+      return refuse(
+        "one_workout",
+        `This run already designs ${targetWords(kept)}: each run holds one workout, and a draft for another would replace it.`,
+        "Revise that one (the same target) — or, to change several workouts, plan_set with one brief per workout, naming it.",
+      );
+    }
     // The draft and two revisions at most (ruling 4): a further draft is never reviewed, so it is never proposed.
     const log = kept?.reviewLog ?? [];
     if (ctx.review && countedRounds(log) >= REVIEW_ROUNDS) {
@@ -805,6 +817,19 @@ export function firstNonTextDiff(a: unknown, b: unknown, path = ""): string | nu
   return Object.is(a, b) ? null : path || "doc";
 }
 
+/** Whether `target` names the workout the run's op holds: a new one on its day (its time may move), or the same revision. */
+function sameTarget(kept: DocWorkoutOp, asked: z.infer<typeof target>): boolean {
+  return asked.kind === "new"
+    ? kept.target.kind === "new" && asked.date === kept.date
+    : kept.target.kind === "revise" && asked.workoutId === kept.target.workoutId;
+}
+
+/** The run's workout, in words: "a new workout on 2026-10-24", or "a revision of “Hips and back” on 2026-10-24". */
+function targetWords(kept: DocWorkoutOp): string {
+  const title = typeof kept.doc.title === "string" && kept.doc.title.trim() ? `“${kept.doc.title.trim()}”` : "a workout";
+  return kept.target.kind === "new" ? `a new workout on ${kept.date}` : `a revision of ${title} on ${kept.date}`;
+}
+
 /**
  * An amend (§2.2): the run's reviewed draft with its text fixed — judged again (an error refuses it as a draft's would),
  * no reviewer, no round; the review stands and the changeNote joins its changes. Beyond the athlete's read: the
@@ -834,11 +859,7 @@ async function amendDraft(
       "Propose the draft without amend: it is reviewed first.",
     );
   }
-  const sameTarget =
-    o.target.kind === "new"
-      ? kept.target.kind === "new" && o.target.date === kept.date
-      : kept.target.kind === "revise" && o.target.workoutId === kept.target.workoutId;
-  if (!sameTarget) {
+  if (!sameTarget(kept, o.target)) {
     return refuse("amend_not_text", "target differs from the reviewed draft's: an amend changes text only.", "Keep the reviewed draft's target — or propose a full revision without amend.");
   }
   const free = freeTextRefusal(o.doc, kept.doc);

@@ -8,7 +8,7 @@
 import { beforeAll, describe, expect, it, onTestFinished, vi } from "vitest";
 import { and, eq, like } from "drizzle-orm";
 import { schema } from "@rg/database";
-import { newId, NO_EQUIPMENT_PLACE, workoutDocSchema } from "@rg/domain";
+import { addDays, newId, NO_EQUIPMENT_PLACE, workoutDocSchema } from "@rg/domain";
 import { EXERCISES, TMJ, isPlyometric, type CheckReading, type ConditionProfile } from "@rg/exercise-library";
 import type { ValidateCtx } from "@rg/workout";
 import type { Env } from "../src/env.js";
@@ -583,6 +583,23 @@ describe("propose_workout", () => {
     expect(p.title).toBe("Two");
   });
 
+  it("one workout per run (coach-context audit C1): a draft for a different workout is refused one_workout, pointing at plan_set — nothing written, the run's own op stands", async () => {
+    const r = await run();
+    ok((await call("propose_workout", ctxOf(r), { doc: calmDoc({ title: "One" }), target: { kind: "new", date: TODAY } })).result);
+    // Another day's new workout, then a revision of a Studio workout: neither is a revision round of the first.
+    for (const target of [{ kind: "new", date: addDays(TODAY, 2) }, { kind: "revise", workoutId: rich.todayDocId, baseRev: 2 }]) {
+      const { result, writes } = await call("propose_workout", ctxOf(r), { doc: calmDoc({ title: "Two" }), target });
+      const e = err(result);
+      expect(e.error, JSON.stringify(target)).toBe("one_workout");
+      expect(e.why).toContain(`a new workout on ${TODAY}`);
+      expect(e.fix).toContain("plan_set");
+      expect(writes).toEqual([]);
+    }
+    expect((await proposal(r.id))!.ops.map((o) => o.doc.title)).toEqual(["One"]);
+    // The same workout again is still its revision round.
+    expect(ok((await call("propose_workout", ctxOf(r), { doc: calmDoc({ title: "One, again" }), target: { kind: "new", date: TODAY, time: "18:00" } })).result).data).toMatchObject({ replaced: true });
+  });
+
   it("revises a Studio workout at its current revision; the copy get_workout returned (marked) is accepted as its text", async () => {
     const r = await run();
     const marked = markedDoc(studioDoc({ title: "Strong hips, easy back" }));
@@ -699,8 +716,11 @@ describe("propose_workout", () => {
     ]);
     expect(p.title).toBe("2 workouts");
     expect(p.expiresAt).toBe(day(-1));
-    const taken = err((await call("propose_workout", ctxOf(one), { doc: studioDoc(), target: { kind: "revise", workoutId: rich.todayDocId, baseRev: 2 } })).result);
+    // A third designer (one already holds its own workout: one_workout, since 2026-10-25's fix wave).
+    const three = await run({ role: "designer", parentId: main.id, scope: { kind: "week" } });
+    const taken = err((await call("propose_workout", ctxOf(three), { doc: studioDoc(), target: { kind: "revise", workoutId: rich.todayDocId, baseRev: 2 } })).result);
     expect(taken.error).toBe("target_taken");
+    expect(err((await call("propose_workout", ctxOf(one), { doc: studioDoc(), target: { kind: "revise", workoutId: rich.todayDocId, baseRev: 2 } })).result).error).toBe("one_workout");
   });
 
   it("refuses into a proposal the athlete already settled, and during a restore; a write that raced another is refused, nothing lost", async () => {
