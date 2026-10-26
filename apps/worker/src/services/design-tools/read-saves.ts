@@ -267,8 +267,9 @@ export const readSaves: DesignTool = {
   },
   statementCost: 2,
   // Measured (design-cpu-bench.test.ts 8.read_saves: 40 posts, 120 links, 36 moves): 0.97–1.09 ms scaled p50 on a loaded
-  // runner; declared with room, as its peers are.
-  cpuWeight: 1.2,
+  // runner (Task 17). Re-measured on a quiet tree (the fix wave, 2026-10-25; 1-minute load 1.9–2.1 on 8 cores, scale
+  // ×0.93–×1.07): 0.54, 0.49 and 0.47 ms scaled p50 — declared at the highest, rounded up to the tenth, as its peers are.
+  cpuWeight: 0.6,
   roles: READ_ROLES,
   async run(ctx, raw) {
     const p = parseInput(input, raw, "optionally batchId, limit and offset");
