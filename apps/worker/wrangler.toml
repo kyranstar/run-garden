@@ -66,7 +66,7 @@ crons = [
 # Non-secret configuration. Secrets are set with `wrangler secret put`:
 #   SESSION_SECRET, TOKEN_ENCRYPTION_KEY, GOOGLE_CLIENT_ID, GOOGLE_CLIENT_SECRET,
 #   ALLOWED_GOOGLE_EMAIL, STRAVA_CLIENT_ID, STRAVA_CLIENT_SECRET,
-#   STRAVA_WEBHOOK_VERIFY_TOKEN, AI_GATEWAY_API_KEY
+#   STRAVA_WEBHOOK_VERIFY_TOKEN, AI_GATEWAY_API_KEY, SAVES_TOKEN_SHA256
 APP_URL = "https://run-garden-api.kyranadams.workers.dev"
 FIXTURE_MODE = "0"
 AI_DEFAULT_ENABLED = "1"
@@ -90,6 +90,12 @@ COACH_DESIGNER = "1"
 # APP_URL + /api/music/spotify/callback (and http://127.0.0.1:8787/api/music/spotify/callback for local dev).
 # The owner's app, created and pasted 2026-10-19: the dock is on.
 SPOTIFY_CLIENT_ID = "dac97051030e4adcb9e6e223ec01ffc3"
+# The saved-posts import (routes/saves.ts, /api/my-saves): on since the owner's go-live, 2026-10-25 (plan
+# 2026-10-23-saved-posts-import.md Task 19). Only "1" is on; remove it and every saves route is a 404 again. The token's
+# SHA-256 is the secret SAVES_TOKEN_SHA256. SAVES_HOLD_BATCHES holds every new batch for curation (the bootstrap, Task 20);
+# unset it once the starter batches are all released.
+SAVES_IMPORT = "1"
+SAVES_HOLD_BATCHES = "1"
 
 # ── Staging (inert: no crons, outbound fetch guarded — see docs/STAGING.md) ──
 # vars, d1_databases and triggers are declared in full; nothing here points at
