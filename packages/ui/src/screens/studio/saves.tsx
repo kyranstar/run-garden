@@ -39,7 +39,7 @@ import { Link, useParams } from "react-router-dom";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { api, ApiError, SAVES_BATCHES_QUERY, SAVES_STATUS_QUERY, savesBatchQuery } from "@rg/api-client";
 import { PROFILES, searchLibrary, type ExerciseRecord } from "@rg/exercise-library";
-import { FIT_SAVES_REQUEST, type SaveBatchDetailDto, type SaveBatchInsightDto, type SaveBatchRowDto } from "@rg/saves";
+import { FIT_SAVES_REQUEST, type CheckWhy, type SaveBatchDetailDto, type SaveBatchInsightDto, type SaveBatchRowDto } from "@rg/saves";
 import { EmptyState, Sheet, Spinner } from "../../components.js";
 import { SearchField } from "../../components/search-field.js";
 import { IconBack } from "../../icons.js";
@@ -431,6 +431,9 @@ function MoveSheet({
         <p className="stu-meta stu-save-meta">
           <RowTags row={row} />
         </p>
+        {row.move.check && row.move.checkWhy?.length ? (
+          <p className="stu-meta stu-save-meta stu-save-why">{dotted(row.move.checkWhy.map((w) => <span key={w}>{CHECK_WHY_WORDS[w]}</span>))}</p>
+        ) : null}
         <p className="stu-meta stu-save-meta">
           {dotted([
             row.move.seenDose ? <span key="seen">{`In the post: ${row.move.seenDose}`}</span> : null,
@@ -457,6 +460,17 @@ function MoveSheet({
             ))}
           </ol>
         ) : null}
+        {rec?.text.focus.length ? (
+          <>
+            <h3 className="eyebrow">Cues</h3>
+            <ul className="stu-detail-list stu-save-cues">
+              {rec.text.focus.map((c, i) => (
+                <li key={`${i}-${c}`}>{c}</li>
+              ))}
+            </ul>
+          </>
+        ) : null}
+        {rec ? <Ratings rec={rec} /> : null}
         {error ? (
           <p className="stu-detail-error" role="alert">
             {error}
@@ -464,6 +478,42 @@ function MoveSheet({
         ) : null}
       </div>
     </Sheet>
+  );
+}
+
+/** "Check this", why — each reason as a fact (verbatim audit gap 5). */
+const CHECK_WHY_WORDS: Readonly<Record<CheckWhy, string>> = {
+  low_confidence: "Low confidence",
+  inferred_name: "Name inferred",
+  inferred_dose: "Dose inferred",
+};
+
+/**
+ * The move's ratings, per profile it rates — each attribute on its scale ("Clench 0 of 3", "Face down no"), the profile's
+ * note under them — folded under "Ratings": a long sheet stays short until asked (verbatim audit gap 5). A model rated a
+ * new move from the post; Edit changes them.
+ */
+function Ratings({ rec }: { rec: ExerciseRecord }) {
+  const rated = Object.values(PROFILES).flatMap((p) => {
+    const attrs = (rec.conditions as Record<string, Record<string, unknown> | undefined>)[p.id];
+    if (!attrs) return [];
+    const words = Object.entries(p.attributes).map(([k, spec]) => {
+      const v = attrs[k];
+      return spec.kind === "scale" ? `${attrWord(k)} ${typeof v === "number" ? v : "?"} of ${spec.max}` : `${attrWord(k)} ${v === true ? "yes" : v === false ? "no" : "?"}`;
+    });
+    return [{ id: p.id, line: `${p.label}: ${words.join(" · ")}`, note: rec.text.conditions?.[p.id]?.trim() || null }];
+  });
+  if (rated.length === 0) return null;
+  return (
+    <details className="stu-save-ratings">
+      <summary>Ratings</summary>
+      <ul className="stu-detail-list">
+        {rated.map((r) => (
+          <li key={r.id}>{r.line}</li>
+        ))}
+      </ul>
+      {rated.map((r) => (r.note ? <p key={`${r.id}-note`} className="stu-detail-note">{r.note}</p> : null))}
+    </details>
   );
 }
 

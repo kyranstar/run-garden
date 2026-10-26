@@ -11330,6 +11330,28 @@ a.stu-tpl-open:focus-visible::before {
   gap: var(--space-4);
   min-width: 0;
 }
+/* Why a row says "Check this" (verbatim audit gap 5): its reasons, as facts. */
+.stu-save-why {
+  color: var(--ink-soft);
+}
+.stu-save-sheet h3 {
+  margin: 0;
+}
+/* The move's ratings, folded: the summary a fingertip's target. */
+.stu-save-ratings > summary {
+  display: flex;
+  align-items: center;
+  min-height: var(--tap);
+  cursor: pointer;
+  font-size: var(--text-sm);
+  font-weight: var(--weight-medium);
+  color: var(--ink);
+}
+.stu-save-ratings > summary:focus-visible {
+  outline: 2px solid var(--focus);
+  outline-offset: 2px;
+  border-radius: var(--radius-sm);
+}
 .stu-save-actions {
   display: flex;
   flex-wrap: wrap;

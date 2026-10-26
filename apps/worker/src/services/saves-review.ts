@@ -29,7 +29,7 @@ import { newId } from "@rg/domain";
 import { EXERCISES, type ExerciseRecord } from "@rg/exercise-library";
 import {
   extractedMoveSchema, isPersonalId, personalMoveId,
-  type PersonalMovePatch, type SaveBatchCountsDto, type SaveBatchDetailDto, type SaveBatchDto, type SaveBatchRowDto,
+  type CheckWhy, type PersonalMovePatch, type SaveBatchCountsDto, type SaveBatchDetailDto, type SaveBatchDto, type SaveBatchRowDto,
 } from "@rg/saves";
 import { makeLibraryIndex } from "@rg/workout";
 import { forgetAccountLibrary, loadAccountLibrary } from "./account-library.js";
@@ -120,6 +120,12 @@ interface RowRead {
   seenName: string | null;
   seenSummary: string | null;
   seenDose: string | null;
+  /** The match's confidence (saves-match.ts `CONFIDENCE_VALUE`: 1, 0.6, 0.3). */
+  confidence: number | null;
+  /** The reading's own confidence in the move, and whether the post said its name and dose. */
+  seenConfidence: string | null;
+  nameEvidence: string | null;
+  doseEvidence: string | null;
   moveStatus: string | null;
   /** The move is one this batch brought (`BORN_HERE`): 1 or 0. */
   born: number;
@@ -150,6 +156,10 @@ export async function batchDetail(db: Db, userId: string, batchId: string): Prom
       json_extract(p.extraction, '$.moves[' || l.position || '].name') as seenName,
       json_extract(p.extraction, '$.moves[' || l.position || '].summary') as seenSummary,
       json_extract(p.extraction, '$.moves[' || l.position || '].dose.text') as seenDose,
+      l.confidence as confidence,
+      json_extract(p.extraction, '$.moves[' || l.position || '].confidence') as seenConfidence,
+      json_extract(p.extraction, '$.moves[' || l.position || '].evidence.name') as nameEvidence,
+      json_extract(p.extraction, '$.moves[' || l.position || '].evidence.dose') as doseEvidence,
       pm.status as moveStatus, ${BORN_HERE} as born,
       case when pm.status in ('pending', 'active', 'archived') then pm.record end as record
     from saved_post_moves l
@@ -195,12 +205,26 @@ export async function batchDetail(db: Db, userId: string, batchId: string): Prom
         kind: fresh ? "new" : "linked",
         ...(linkedName === undefined ? {} : { linkedName }),
         check: Boolean(r.checkFlag),
+        ...(r.checkFlag ? { checkWhy: checkWhyOf(r) } : {}),
         seenDose: text(r.seenDose),
       },
       ...(record ? { record } : {}),
     };
   });
   return { batch, rows, insights };
+}
+
+/**
+ * Why a flagged row says "Check this" (verbatim audit gap 5): the match was not a sure one (below `CONFIDENCE_VALUE.high`)
+ * or the reading was unsure of the move (`confidence: "low"`), and what the post never said — its name, its dose — the
+ * reading inferred (`evidence`).
+ */
+function checkWhyOf(r: RowRead): CheckWhy[] {
+  const out: CheckWhy[] = [];
+  if ((r.confidence !== null && Number(r.confidence) < 1) || r.seenConfidence === "low") out.push("low_confidence");
+  if (r.nameEvidence === "inferred") out.push("inferred_name");
+  if (r.doseEvidence === "inferred") out.push("inferred_dose");
+  return out;
 }
 
 // ── Edit ─────────────────────────────────────────────────────────────────────────────────────────────────────────────

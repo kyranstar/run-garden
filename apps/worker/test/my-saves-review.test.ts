@@ -227,6 +227,21 @@ describe("GET /batches/:id", () => {
     expect(rows[1].record).toBeUndefined();
   });
 
+  it("Check this says why, as data — low confidence, an inferred name or dose (the reading's evidence) — and only on a row it flags (verbatim audit gap 5)", async () => {
+    const { batchId, b } = await seed();
+    // Post b's neck nod: the reading was unsure (confidence low) and its dose was inferred (the draft's evidence).
+    await db.update(savedPosts).set({
+      extraction: extraction([move("Zorbex quad shuffles"), move("Zorbex neck nod", { regions: ["neck"], confidence: "low", evidence: { name: "inferred", dose: "inferred", steps: "stated" } })]),
+    }).where(eq(savedPosts.id, b));
+    const res = await call("GET", `/batches/${batchId}`);
+    // In the statements it had: the reading's evidence rides in the rows' read.
+    expect(statements.length).toBe(3);
+    const rows = res.body.rows as any[];
+    expect(rows[3].move).toMatchObject({ check: true, checkWhy: ["low_confidence", "inferred_name", "inferred_dose"] });
+    // A row it doesn't flag carries none.
+    for (const r of rows.slice(0, 3)) expect(r.move.checkWhy).toBeUndefined();
+  });
+
   it("a row linked to one of the owner's own moves names it and carries its record", async () => {
     const { batchId, b } = await seed();
     const lantern = await ownMove("Lantern reach", "active");

@@ -49,7 +49,7 @@ const ROWS: SaveBatchRowDto[] = [
   },
   {
     postMoveId: "pm3", position: 0, status: "pending", post: { url: "javascript:alert(1)", creator: HOSTILE, kind: "single_move" },
-    move: { id: NECK.id, name: NECK.name, summary: NECK.text.summary, kind: "new", check: true, seenDose: null }, record: NECK,
+    move: { id: NECK.id, name: NECK.name, summary: NECK.text.summary, kind: "new", check: true, checkWhy: ["low_confidence", "inferred_dose"], seenDose: null }, record: NECK,
   },
 ];
 const PERSONAL: PersonalMovesDto = { moves: [{ record: LANTERN, status: "active", links: [] }], merged: [] };
@@ -323,6 +323,32 @@ describe("a move's sheet", () => {
     await openRow(NECK.name);
     expect(dialog(NECK.name)!.querySelector("a[href]")).toBeNull();
     expect(dialog(NECK.name)!.textContent).toContain(HOSTILE);
+  });
+
+  it("shows the move's ratings per profile (folded, a tap opens them) and its cues; Check this says why, as data (verbatim audit gap 5)", async () => {
+    serve();
+    mount("/studio/saves/b1");
+    await until(() => !!rowOf(NECK.name), "the rows");
+    await openRow(NECK.name);
+    const sheet = dialog(NECK.name)!;
+    // Why "Check this": the reasons the server gave, each a fact — never an explainer.
+    const why = sheet.querySelector(".stu-save-why");
+    expect([...why!.querySelectorAll("span:not(.stu-sep)")].map((x) => x.textContent)).toEqual(["Low confidence", "Dose inferred"]);
+    // The ratings, folded under their summary: per profile, each attribute on its scale, the profile's note with them.
+    const ratings = sheet.querySelector<HTMLDetailsElement>("details.stu-save-ratings")!;
+    expect(ratings).not.toBeNull();
+    expect(ratings.open).toBe(false);
+    expect(ratings.querySelector("summary")?.textContent).toBe("Ratings");
+    const line = ratings.querySelector("li")!.textContent!.replace(/\s+/g, " ").trim();
+    expect(line).toBe("TMJ: Clench 0 of 3 · Neck load 0 of 3 · Face down no");
+    expect(ratings.textContent).toContain("Glutes work; the jaw doesn't.");
+    // The cues (the record's focus), as text.
+    const cues = [...sheet.querySelectorAll(".stu-save-cues li")].map((li) => li.textContent);
+    expect(cues).toEqual(["Knees stay in line with the feet.", "Ribs stay down."]);
+    await click(button("Close", sheet), "Close");
+    // A row it doesn't flag says no why.
+    await openRow(QUAD.name);
+    expect(dialog(QUAD.name)!.querySelector(".stu-save-why")).toBeNull();
   });
 
   it("Same as… picks from the moves the Studio offers and re-matches the row", async () => {

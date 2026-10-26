@@ -31,6 +31,9 @@ export interface SaveBatchDto {
  * saves section for it). */
 export const FIT_SAVES_REQUEST = "Fit the new moves from my saves into my training.";
 
+/** A reason a row says "Check this" (`SaveBatchRowDto.move.checkWhy`). */
+export type CheckWhy = "low_confidence" | "inferred_name" | "inferred_dose";
+
 export interface SaveBatchesDto {
   batches: SaveBatchDto[];
 }
@@ -61,6 +64,11 @@ export interface SaveBatchRowDto {
     linkedName?: string;
     /** "Check this": a match the names alone did not settle, or a move the reading was unsure of. */
     check: boolean;
+    /**
+     * Why it says "Check this", as data (only on a row it flags): the match or the reading was not confident, or the post
+     * never said the move's name or its dose (the reading's evidence: inferred).
+     */
+    checkWhy?: CheckWhy[];
     /** The dose as the post prescribed it ("3 x 10"), beside the stored one. */
     seenDose: string | null;
   };
