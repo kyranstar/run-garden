@@ -19,16 +19,72 @@ function doseOf(draft: ExtractedMove): Dose {
   return draft.dose.sets ? { ...dose, sets: draft.dose.sets } : dose;
 }
 
-/** The draft carries no purposes; read one from how the move is done. */
+type Pattern = ExtractedMove["patterns"][number];
+type Region = ExtractedMove["regions"][number];
+
+const any = (have: readonly string[], want: readonly string[]): boolean => have.some(x => want.includes(x));
+const passive = (d: ExtractedMove): boolean => d.contraction.length > 0 && d.contraction.every(c => c === "passive");
+/** Mobility work with no weight in the hands: a mobility drill (bodyweight too), or an unloaded rotation. */
+const mobilityDrill = (d: ExtractedMove): boolean =>
+  d.load !== "external" && (d.patterns.includes("mobility") || (d.load === "none" && d.patterns.includes("rotate")));
+const TRUNK: readonly Pattern[] = ["anti-extend", "anti-rotate", "anti-lateral"];
+const STRENGTH_PATTERNS: readonly Pattern[] = [
+  "squat", "hinge", "lunge", "push-h", "push-v", "pull-h", "pull-v", "carry", "calf-raise", "toe-raise",
+];
+/** The regions a jaw or neck move may also name and still be care (the library's trap, levator and scalene stretches). */
+const CARE_REGIONS: readonly Region[] = ["jaw", "neck", "upper-back", "shoulders", "thoracic"];
+/** Jaw or neck work, alone and unloaded: what the library labels condition-care / jaw-care. */
+const care = (d: ExtractedMove): boolean =>
+  d.load !== "external" &&
+  !d.contraction.includes("plyometric") &&
+  (d.regions.includes("jaw") || (d.regions.includes("neck") && d.regions.every(r => CARE_REGIONS.includes(r))));
+
+/** One row of the purpose table: the draft it decides, and the purposes it gives. */
+export interface PurposeRule {
+  readonly rule: string;
+  readonly when: (d: ExtractedMove) => boolean;
+  readonly purposes: readonly Purpose[];
+  /** The row adds its purposes and the table reads on (care rides beside what the move does). */
+  readonly adds?: true;
+}
+
+/**
+ * The draft carries no purposes; they are read from how the move is done, mirroring the public library's labels (a
+ * mobility drill is mobility + warm-up, a relaxed stretch a cool-down's, jaw and neck work condition-care). Read in
+ * order: an `adds` row contributes and the table reads on; the first other row that matches decides. Passive moves keep
+ * `recovery`.
+ */
+export const PURPOSE_RULES: readonly PurposeRule[] = [
+  { rule: "jaw or neck care", when: care, purposes: ["condition-care"], adds: true },
+  { rule: "plyometric", when: d => d.contraction.includes("plyometric"), purposes: ["power"] },
+  { rule: "external load", when: d => d.load === "external", purposes: ["strength"] },
+  { rule: "breath or release", when: d => any(d.patterns, ["breathe", "release"]), purposes: ["recovery", "cooldown"] },
+  { rule: "relaxed stretch", when: d => passive(d) && d.patterns.includes("mobility"), purposes: ["stretch", "cooldown", "recovery"] },
+  { rule: "passive", when: passive, purposes: ["recovery"] },
+  { rule: "held stretch", when: d => mobilityDrill(d) && d.contraction.every(c => c === "isometric"), purposes: ["mobility", "stretch"] },
+  { rule: "mobility drill", when: mobilityDrill, purposes: ["mobility", "warmup"] },
+  { rule: "trunk control", when: d => any(d.patterns, TRUNK), purposes: ["activation", "strength"] },
+  { rule: "primer", when: d => d.load === "none" && any(d.patterns, STRENGTH_PATTERNS), purposes: ["activation", "warmup"] },
+  { rule: "bodyweight strength", when: d => any(d.patterns, STRENGTH_PATTERNS), purposes: ["strength"] },
+  { rule: "otherwise", when: () => true, purposes: ["conditioning"] },
+];
+
 function purposesOf(draft: ExtractedMove): Purpose[] {
-  if (draft.contraction.length && draft.contraction.every(c => c === "passive")) return ["recovery"];
-  return [draft.load === "external" ? "strength" : "conditioning"];
+  const out: Purpose[] = [];
+  for (const row of PURPOSE_RULES) {
+    if (!row.when(draft)) continue;
+    for (const p of row.purposes) if (!out.includes(p)) out.push(p);
+    if (!row.adds) break;
+  }
+  return out;
 }
 
 const ROLE_OF: Partial<Record<Purpose, Role>> = {
   warmup: "warmup", activation: "activation", mobility: "mobility", stretch: "stretch", cooldown: "cooldown", recovery: "downshift",
+  "condition-care": "jaw-care", strength: "accessory", power: "accessory", conditioning: "accessory", balance: "accessory",
 };
 
+/** The slots a personal move can fill, from its purposes. Never `core`: a saved move is not made a main lift. */
 function rolesOf(purposes: readonly Purpose[]): Role[] {
   const roles = [...new Set(purposes.flatMap(p => ROLE_OF[p] ?? []))];
   return roles.length ? roles : ["accessory"];

@@ -2,7 +2,7 @@
 import { describe, expect, it } from "vitest";
 import { PROFILE_IDS } from "@rg/exercise-library";
 import { personalMoveId, type ExtractedMove } from "@rg/saves";
-import { toPersonalRecord, validatePersonalRecord } from "../src/services/personal-records.js";
+import { PURPOSE_RULES, toPersonalRecord, validatePersonalRecord } from "../src/services/personal-records.js";
 
 const move = (over: Partial<ExtractedMove> = {}): ExtractedMove => ({
   name: "Dumbbell Row",
@@ -61,6 +61,68 @@ describe("toPersonalRecord", () => {
 
   it("a post naming a handle in its text is fine in a personal record", () => {
     expect(validatePersonalRecord(toPersonalRecord(id, move({ summary: "Shown by @someone." })))).toEqual([]);
+  });
+});
+
+/**
+ * Purposes and roles come from how the post's move is done (final review I7; coach-context audit I1b): one table, a test
+ * per row. Each case is a draft that row decides; the expected labels mirror the public library's own (a jaw or neck
+ * move is condition-care / jaw-care; a mobility drill is mobility + warm-up; a relaxed stretch is a cool-down's).
+ */
+describe("purposes and roles, from the draft's patterns, contraction and load", () => {
+  const unloaded = { load: "none" as const, equipment: [] as ExtractedMove["equipment"], dose: { text: "30 s", type: "time" as const, range: [20, 40] as [number, number] } };
+  const cases: Array<{ rule: string; draft: Partial<ExtractedMove>; purposes: string[]; roles: string[] }> = [
+    { rule: "jaw or neck care", draft: { ...unloaded, patterns: ["mobility"], regions: ["jaw"], contraction: ["isotonic"] }, purposes: ["condition-care", "mobility", "warmup"], roles: ["jaw-care", "mobility", "warmup"] },
+    { rule: "plyometric", draft: { load: "bodyweight", equipment: [], patterns: ["squat"], regions: ["quads"], contraction: ["plyometric"] }, purposes: ["power"], roles: ["accessory"] },
+    { rule: "external load", draft: {}, purposes: ["strength"], roles: ["accessory"] },
+    { rule: "breath or release", draft: { ...unloaded, patterns: ["release"], regions: ["hips"], contraction: ["passive"] }, purposes: ["recovery", "cooldown"], roles: ["downshift", "cooldown"] },
+    { rule: "relaxed stretch", draft: { ...unloaded, patterns: ["mobility"], regions: ["hamstrings"], contraction: ["passive"] }, purposes: ["stretch", "cooldown", "recovery"], roles: ["stretch", "cooldown", "downshift"] },
+    { rule: "passive", draft: { ...unloaded, patterns: ["hinge"], regions: ["low-back"], contraction: ["passive"] }, purposes: ["recovery"], roles: ["downshift"] },
+    { rule: "held stretch", draft: { ...unloaded, patterns: ["mobility"], regions: ["hips"], contraction: ["isometric"] }, purposes: ["mobility", "stretch"], roles: ["mobility", "stretch"] },
+    { rule: "mobility drill", draft: { ...unloaded, patterns: ["mobility", "rotate"], regions: ["hips"], contraction: ["isotonic"] }, purposes: ["mobility", "warmup"], roles: ["mobility", "warmup"] },
+    { rule: "trunk control", draft: { load: "bodyweight", equipment: [], patterns: ["anti-extend"], regions: ["core"], contraction: ["isometric"] }, purposes: ["activation", "strength"], roles: ["activation", "accessory"] },
+    { rule: "primer", draft: { load: "none", equipment: [], patterns: ["hinge"], regions: ["glutes"], contraction: ["isotonic"] }, purposes: ["activation", "warmup"], roles: ["activation", "warmup"] },
+    { rule: "bodyweight strength", draft: { load: "bodyweight", equipment: [], patterns: ["push-h"], regions: ["chest"], contraction: ["isotonic"] }, purposes: ["strength"], roles: ["accessory"] },
+    { rule: "otherwise", draft: { load: "bodyweight", equipment: [], patterns: ["rotate"], regions: ["core"], contraction: ["isotonic"] }, purposes: ["conditioning"], roles: ["accessory"] },
+  ];
+
+  it("has one case here for every row of the table, in its order", () => {
+    expect(cases.map(c => c.rule)).toEqual(PURPOSE_RULES.map(r => r.rule));
+  });
+
+  for (const c of cases) {
+    it(`${c.rule}: ${c.purposes.join(", ")} → ${c.roles.join(", ")}`, () => {
+      const rec = toPersonalRecord(id, move(c.draft));
+      expect(rec.purposes).toEqual(c.purposes);
+      expect(rec.roles).toEqual(c.roles);
+      expect(validatePersonalRecord(rec)).toEqual([]);
+    });
+  }
+
+  it("care rides beside the move's own labels: a passive neck release, a neck stretch", () => {
+    const release = toPersonalRecord(id, move({ ...unloaded, patterns: ["release"], regions: ["neck"], contraction: ["passive"] }));
+    expect(release.purposes).toEqual(["condition-care", "recovery", "cooldown"]);
+    expect(release.roles).toEqual(["jaw-care", "downshift", "cooldown"]);
+    const stretch = toPersonalRecord(id, move({ ...unloaded, patterns: ["mobility"], regions: ["neck", "shoulders"], contraction: ["passive"] }));
+    expect(stretch.roles).toEqual(["jaw-care", "stretch", "cooldown", "downshift"]);
+  });
+
+  it("no care for a loaded neck move, or for a move that works the neck among other regions", () => {
+    const shrug = toPersonalRecord(id, move({ patterns: ["carry"], regions: ["neck", "upper-back"] }));
+    expect(shrug.purposes).toEqual(["strength"]);
+    const child = toPersonalRecord(id, move({ ...unloaded, patterns: ["mobility"], regions: ["low-back", "hips", "neck"], contraction: ["passive"] }));
+    expect(child.purposes).not.toContain("condition-care");
+    expect(child.roles).not.toContain("jaw-care");
+  });
+
+  it("a bodyweight mobility drill (a lunge with a reach) is still mobility, not strength", () => {
+    const rec = toPersonalRecord(id, move({ load: "bodyweight", equipment: [], patterns: ["lunge", "mobility", "rotate"], regions: ["hips"], contraction: ["isotonic"] }));
+    expect(rec.purposes).toEqual(["mobility", "warmup"]);
+    expect(rec.roles).toEqual(["mobility", "warmup"]);
+  });
+
+  it("a personal move is never a core lift", () => {
+    for (const c of cases) expect(toPersonalRecord(id, move(c.draft)).roles).not.toContain("core");
   });
 });
 
