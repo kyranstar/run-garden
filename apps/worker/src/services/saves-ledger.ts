@@ -299,11 +299,16 @@ export async function savesStatus(db: Db, userId: string, now: string): Promise<
 export type OverrideAction = "process" | "skip" | "reference";
 export type OverrideResult = "ok" | "not_found" | "conflict";
 
+/** The statuses the owner's `process` sends back to the queue. */
+const PROCESSABLE = ["filtered_out", "failed"] as const;
+
 /**
- * The owner's word on one post. `process` sends a filtered-out or failed post back to the queue (stage "owner", attempts
- * and the last error cleared); `skip` and `reference` set their status (a reference keeps the post's links; its routine
- * is never offered whole). The post is named by row id or by (source, key). Another account's post is "not_found"; a
- * `process` on a post that is neither filtered out nor failed is a "conflict". Two statements.
+ * The owner's word on one post. `process` sends a filtered-out or failed post back to the queue (stage "owner", attempts,
+ * the last error and any stored extraction cleared — `/work` hands out only a queued post with no extraction, so one kept
+ * from a failed match would strand it); `skip` and `reference` set their status (a reference keeps the post's links; its
+ * routine is never offered whole). The post is named by row id or by (source, key). Another account's post is
+ * "not_found"; a `process` on a post that is neither filtered out nor failed — also one that moved on between the read and
+ * the write (a relay's claim) — is a "conflict". Two statements.
  */
 export async function overridePost(
   db: Db,
@@ -320,12 +325,21 @@ export async function overridePost(
   if (!row) return "not_found";
   const where = and(eq(savedPosts.id, row.id), eq(savedPosts.userId, userId));
   if (action === "process") {
-    if (row.status !== "filtered_out" && row.status !== "failed") return "conflict";
-    await db
+    if (!(PROCESSABLE as readonly string[]).includes(row.status)) return "conflict";
+    const requeued = await db
       .update(savedPosts)
-      .set({ status: "queued", filterStage: "owner", extractAttempts: 0, lastErrorCode: null, lastError: null, updatedAt: now })
-      .where(where);
-    return "ok";
+      .set({
+        status: "queued",
+        filterStage: "owner",
+        extraction: null,
+        extractAttempts: 0,
+        lastErrorCode: null,
+        lastError: null,
+        updatedAt: now,
+      })
+      .where(and(where, inArray(savedPosts.status, [...PROCESSABLE])))
+      .returning({ id: savedPosts.id });
+    return requeued.length > 0 ? "ok" : "conflict";
   }
   await db
     .update(savedPosts)

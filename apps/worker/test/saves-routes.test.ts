@@ -416,6 +416,39 @@ describe("POST /posts/:key/override (the owner's word, from the popup)", () => {
     expect((await rowOf("r")).status).toBe("reference_only");
   });
 
+  it("process on a failed post that kept its extraction clears it, so /work hands it out as extract work (final review I1)", async () => {
+    await seedPost("kept", {
+      status: "failed", lastErrorCode: "model_failed", extractAttempts: 3, extraction: { kind: "tips" }, lastError: "moves.0: bad",
+    });
+    expect((await call("/work")).body.keys).toEqual([]);
+    expect((await override("kept", { action: "process" })).res.status).toBe(200);
+    expect(await rowOf("kept")).toMatchObject({ status: "queued", extraction: null, extractAttempts: 0, lastErrorCode: null, lastError: null });
+    expect((await call("/work")).body.keys).toEqual([{ source: SRC, key: "kept", url: "https://example.com/p/kept", action: "extract" }]);
+  });
+
+  it("process never requeues a post that moved on between its read and its write: 409, the post as it stood", async () => {
+    type Raw = { $client: { prepare: (s: string) => { run: (...a: unknown[]) => unknown } } };
+    let racyId = "";
+    let armed = false;
+    // A relay's claim lands after the override read the row as failed, before its write.
+    db = makeTestDb({
+      boundVariableCap: 100,
+      onStatement: (text) => {
+        statements += 1;
+        if (armed && /^\s*update\s+"saved_posts"/i.test(text)) {
+          armed = false;
+          (db as unknown as Raw).$client.prepare(`UPDATE saved_posts SET status = 'extracting' WHERE id = ?`).run(racyId);
+        }
+      },
+    });
+    ({ userId } = await makeTestUser(db));
+    email = `runner-${userId}@example.com`;
+    racyId = await seedPost("racy", { status: "failed", lastErrorCode: "media_failed" });
+    armed = true;
+    expect((await override("racy", { action: "process" })).res.status).toBe(409);
+    expect(await rowOf("racy")).toMatchObject({ status: "extracting", lastErrorCode: "media_failed" });
+  });
+
   it("409s a post that cannot be processed, 404s an unknown one or another user's", async () => {
     await seedPost("done", { status: "extracted" });
     expect((await override("done", { action: "process" })).res.status).toBe(409);
