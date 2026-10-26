@@ -12,6 +12,8 @@
 - "Make sure I can have some diagnostic observability into how its working, maybe in the extension. Also, if there's a cheap way to filter out non-workout content, that would be ideal to save cost."
 - On the Mac: "usually my mac is open but sometimes there can be gaps of a week or more."
 
+- (2026-10-25, during the build) "can we ensure that it uses actually good judgment for when to recommend certain exercises and when to skip? Or basically avoid always adding every exercise." … "I would like to add a 'notes/context' section, both global and for specific workouts, where if it learns anything from these posts it can record it there for the coach to learn from in the future, for example stuff in a reel that is describing when to do certain workouts or for what purpose." → §17.
+
 **Research behind this design:** a map of the code this plugs into, and a survey of every current way to get saved posts out of Instagram and to read a reel (both 2026-10-23; notes in the private ledger). Their findings are summarised in §2 and §4.
 
 ---
@@ -315,3 +317,15 @@ None. A builder check (2026-10-23) raised three questions, and each is settled a
 - **When a move becomes usable:** §4 calls 9–11, from the owner's own words.
 - **Reaching posts below the feed's stop point:** §5.1's work list.
 - **The budget mechanism:** §4 call 12, by sequencing after the audit fix wave.
+
+## 17. Addendum (2026-10-25): notes from the saves, and selective fitting
+
+**The ask.** Two things the owner added once Phases A–B were built: the coach must not fit in every saved move, and anything a post teaches about *when* or *why* to do something should be kept where the coach can learn from it later — globally, and against the specific move or workout it concerns.
+
+**Decisions.**
+1. **Selective fitting is prompt guidance, not a new op.** The `pin_moves` proposal and the revised workouts already carry `lines`; the integration guidance (§7, Task 18) says to take only the moves that serve the athlete's objectives, conditions and the week's load, to leave the rest in the library, and to say in one line each why a move was left. `fitted_at` is still set on approval: the batch was considered, not necessarily used.
+2. **Global notes live in the coach's memory** (`coach_memory`, the single long-term knowledge store). The extraction gains `insights`: standalone guidance a post states beyond any one move's steps — when to do it, for what, how often, who it suits. On **Save** (nothing from a batch is used before), each insight of a post with at least one kept link becomes a memory row: kind `observation`, confidence `inferred`, provenance `saved post`, evidence the post's link. It is the athlete's memory like any other: it shows in Settings' memory list, can be pinned or removed there, is found by `recall_memory`, and is never in the pinned core unless the owner pins it. Identical bodies are not written twice.
+3. **Per-move notes live on the link.** `exercise_provenance` gains `note`: what the post says this move is for or when to do it (the extraction's `purpose`). Written only on Save. Shown under the link in move detail; carried by `get_exercise` and `read_saves` as untrusted text.
+4. **Per-workout notes already exist.** A workout document has `notes`; when the coach fits a saved move into a session it carries the post's guidance into that workout's notes, so the reason travels with the session. No schema change.
+5. **The review screen shows the insights** read-only (`Notes`, under the batch's rows) so the owner sees what the coach will learn before saving. Removal is per memory item afterwards, in Settings.
+6. **Untrusted throughout.** Insights, purposes and creators are model-written text: marked for the coach, rendered as text in the UI.

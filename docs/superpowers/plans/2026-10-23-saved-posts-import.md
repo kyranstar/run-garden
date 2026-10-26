@@ -761,6 +761,7 @@
     - An id archived since the proposal is skipped, with a line in the outcome.
     - Outcomes are `applied` or `refused`.
   - **Integration guidance** (copy, in the prompt's integration section): "When the athlete asks to fit in moves from their saves, place them inside what they already do — revise upcoming workouts, keep a move in rotation with pin_moves, change the programme only if the week needs it — rather than adding sessions. Respect the week's load, their objectives and their conditions. One line per placement saying why. Ask at most two questions first, only when the answer changes the plan."
+  - **Selectivity (owner's ask, 2026-10-25; spec §17.1), appended to the same paragraph verbatim:** "Not every saved move belongs. Take the ones that serve the athlete's objectives, conditions and the week's load; leave the rest in their library and say in one line each why. When a post says when or why to do a move, carry that into the notes of the workout you revise, so the reason travels with the session."
 
 - [ ] **Step 1: Write the failing tests**
   - The tool proposes pins.
@@ -775,6 +776,34 @@
 - [ ] **Step 3:** Implement.
 - [ ] **Step 4:** Run the Step 2 command. Expect PASS.
 - [ ] **Step 5:** Commit: `feat(coach): move_pins — the coach can keep a saved move in rotation, with the owner's approval`.
+
+### Task 18b: Notes from the saves — insights into memory, a move's note on its link (spec §17, 2026-10-25)
+
+**Files:**
+- Modify:
+  - `packages/saves/src/schemas.ts` (`extractionSchema` gains `insights: z.array(z.string().max(200)).max(5)`; older stored extractions without it still parse: `.default([])`), `packages/saves/src/prompts.ts` (the extraction asks for `insights` and sharpens `purpose`: "what the post says this move is for, or when to do it");
+  - `packages/database`: migration `0030_provenance_note.sql` (`ALTER TABLE exercise_provenance ADD COLUMN note TEXT`), `schema/exercise-settings.ts`, `SCHEMA_VERSION = "0030"`;
+  - `apps/worker/src/services/saves-batches.ts` `saveBatch`: the provenance insert carries `note = json_extract(extraction, '$.moves[' || position || '].purpose')`; one more set-based statement inserts `coach_memory` rows from `json_each(extraction, '$.insights')` for the batch's posts with ≥ 1 kept link — kind `observation`, confidence `inferred`, body ≤ 300, provenance `{source: "saved post", at: now}`, evidence `[url]` (stringified), `pinned` false, no expiry, `active` true; skipped when a live row with the same body exists for the user; caps ≤ 5 per post, ≤ 20 per batch; `saveBatch`'s statement pin updated (≤ 9);
+  - `apps/worker/src/services/saves-review.ts` (`GET /api/my-saves/batches/:id` returns `insights: { postId, url, creator, text }[]` for the batch's posts), `library-view.ts` `libraryItem` and `listPersonalMoves` links carry `note`, `design-tools/read-library.ts` `get_exercise` links carry `note` (untrusted), `design-tools/read-saves.ts` links carry `note` and the answer carries `insights` (untrusted), `design-context.ts` saves section adds `Notes from these posts:` then ≤ 5 `- {insight}` lines (untrusted, "saved post", clipped at 160 chars) and the header-size pin is re-measured;
+  - `packages/api-client` DTOs; `packages/ui/src/screens/studio/move-detail.tsx` (the note as text under each link), `saves.tsx` (a `Notes` section under the rows: one line per insight with its creator; read-only; density rule).
+- Test: `apps/worker/test/saves-notes.test.ts`; updates to `packages/saves/test/schemas.test.ts`, `apps/worker/test/my-saves-review.test.ts`, `design-read-saves.test.ts`, `design-context.test.ts`, `packages/ui/test/studio-saves.test.tsx`, `account-library.test.tsx` (move detail note).
+
+**Interfaces:**
+- **Consumes:** `saveBatch` (Task 8/15), `coach_memory` (memory v2; `MEMORY_KINDS` includes `observation`), the saves section and `read_saves` (Task 17), move detail (Task 14).
+- **Produces:** `exercise_provenance.note`; memory rows with `provenance.source = "saved post"`; `insights` on the batch detail DTO and the `read_saves` answer.
+- **Copy, exactly:** review screen section heading `Notes`; context sub-heading `Notes from these posts:`.
+
+- [ ] **Step 1: Write the failing tests**
+  - An extraction with `insights` parses; one without still parses with `[]`.
+  - Save writes one observation per insight of a post with a kept link, with provenance `saved post` and the post's url as evidence; a post whose rows were all removed writes none; an identical body already live is not written twice; the per-post and per-batch caps hold; `saveBatch`'s statement count is pinned and does not grow with rows.
+  - Save writes each link's `note` from the move's `purpose`; `GET /api/library/:id` and `GET /api/library/personal` carry it; `get_exercise` carries it as Untrusted.
+  - `recall_memory` finds a saved-post observation; it is not in the memory core.
+  - The batch page lists `insights`; the saves context section carries `Notes from these posts:` when the batch has any, and stays within its size pin.
+  - UI: the `Notes` section renders the insights as text (a hostile insight renders inert); move detail shows the note under its link.
+- [ ] **Step 2:** Run `pnpm vitest run apps/worker/test/saves-notes.test.ts packages/saves/test/schemas.test.ts`. Expect FAIL.
+- [ ] **Step 3:** Implement.
+- [ ] **Step 4:** Run the Step 2 command and `pnpm vitest run apps/worker/test/my-saves-review.test.ts apps/worker/test/design-read-saves.test.ts apps/worker/test/design-context.test.ts apps/worker/test/saves-*.test.ts packages/ui/test/studio-saves.test.tsx packages/ui/test/account-library.test.tsx`. Expect PASS.
+- [ ] **Step 5:** Commit: `feat(saves): notes from the saves — insights into the coach's memory, a move's note on its link`.
 
 ## Phase D — live probes, setup and the starter set
 
