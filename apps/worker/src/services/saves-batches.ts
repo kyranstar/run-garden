@@ -8,16 +8,18 @@
  * `exercise_provenance` (what the Studio's "from your saves", the engine's bonus and the coach's "saved" read) is
  * written only by `saveBatch`. Both run in a constant number of set-based statements, however big the batch.
  */
-import { and, eq, getTableColumns, isNull, sql } from "drizzle-orm";
+import { and, eq, getTableColumns, isNull, sql, type SQL } from "drizzle-orm";
 import { schema } from "@rg/database";
-import { newId } from "@rg/domain";
+import { newId, todayInZone } from "@rg/domain";
 import type { ExerciseRecord } from "@rg/exercise-library";
-import { batchNotice } from "@rg/saves";
+import { batchNotice, type SaveBatchInsightDto } from "@rg/saves";
 import type { Env } from "../env.js";
 import { forgetAccountLibrary } from "./account-library.js";
+import { SAVED_POST_SOURCE } from "./coach-memory.js";
 import { runAtomically, type Db } from "./db.js";
+import { EARLIEST_ZONE, liveMemoryWhere } from "./memory-core.js";
 
-const { savedPosts, savedPostMoves, personalMoves, saveBatches, exerciseProvenance } = schema;
+const { savedPosts, savedPostMoves, personalMoves, saveBatches, exerciseProvenance, coachMemory } = schema;
 
 /** The least time between two released batches. */
 export const BATCH_GAP_MS = 20 * 3_600_000;
@@ -153,18 +155,123 @@ export async function assembleBatch(db: Db, env: Env, userId: string, now: strin
 /** The import's own key space in `exercise_provenance`: never a curated link's `<code>#<index>`. */
 export const IMPORT_KEY_PREFIX = "imp:";
 
+/** A post's insights Save keeps, at most (the extraction's own cap): the first ones, by their place in the post. */
+export const INSIGHTS_PER_POST = 5;
+/** The insights one Save keeps, at most: the first, by the posts' order and then each post's. */
+export const INSIGHTS_PER_BATCH = 20;
+/** A memory item's words, at most (as the coach's `remember` and an edit keep them). */
+const MEMORY_BODY_MAX = 300;
+
+/** A post's extraction, when it reads as JSON (else null: every JSON function then reads nothing). */
+const extractionDoc = (extraction: SQL): SQL => sql`case when json_valid(${extraction}) then ${extraction} end`;
+
+/**
+ * The note Save writes on a link (spec §17): the post's reading of the move at the link's position — its `purpose`,
+ * what the post says the move is for or when to do it — when it is words; null otherwise. A model's reading of a
+ * stranger's post: the app draws it as text, and the coach reads it marked.
+ */
+function noteAt(): SQL {
+  const doc = extractionDoc(sql`${savedPosts.extraction}`);
+  const path = sql`'$.moves[' || ${savedPostMoves.position} || '].purpose'`;
+  return sql`nullif(trim(case when json_type(${doc}, ${path}) = 'text' then json_extract(${doc}, ${path}) end), '')`;
+}
+
+/**
+ * A batch's insights as rows (spec §17) — `post_id, url, creator, seen, idx, body`, and `nth`: 1 the first time the
+ * batch gives those words, by the posts' order (first seen, then id) and each post's own — from the posts `keptPosts`
+ * names (a select of post ids: those with a kept link). An insight is words (at most MEMORY_BODY_MAX, trimmed) among a
+ * post's first INSIGHTS_PER_POST places. One rule for what Save keeps, what the batch page shows and what the coach
+ * reads. Its tables go by their own aliases (`ins_p`, `ins_j`), so it reads the same inside any select.
+ */
+export function insightRowsSql(userId: string, keptPosts: SQL): SQL {
+  return sql`select ins_p.id as post_id, ins_p.url as url, coalesce(nullif(ins_p.creator_handle, ''), ins_p.creator_name) as creator,
+      ins_p.first_seen_at as seen, ins_j.key as idx, trim(ins_j.value) as body,
+      row_number() over (partition by trim(ins_j.value) order by ins_p.first_seen_at, ins_p.id, ins_j.key) as nth
+    from saved_posts ins_p, json_each(${extractionDoc(sql.raw("ins_p.extraction"))}, '$.insights') ins_j
+    where ins_p.user_id = ${userId} and ins_p.id in (${keptPosts})
+      and ins_j.type = 'text' and ins_j.key < ${INSIGHTS_PER_POST} and length(trim(ins_j.value)) between 1 and ${MEMORY_BODY_MAX}`;
+}
+
+/**
+ * `insightRowsSql`'s first `max` distinct insights, in order, as ONE JSON value (a scalar subquery):
+ * `[[postId, url, creator, text, seen, index]]` — sort by `seen`, `postId`, `index` (`insightsOf`) rather than trust an
+ * aggregate's order.
+ */
+export function insightsJsonSql(userId: string, keptPosts: SQL, max: number): SQL {
+  return sql`(select json_group_array(json_array(ins_i.post_id, ins_i.url, ins_i.creator, ins_i.body, ins_i.seen, ins_i.idx)) from (
+      select * from (${insightRowsSql(userId, keptPosts)}) where nth = 1 order by seen, post_id, idx limit ${max}) ins_i)`;
+}
+
+/** One insight of a batch's post, as `insightsJsonSql` reads it (the batch page's shape): its text and creator a model's. */
+export type BatchInsight = SaveBatchInsightDto;
+
+const textOrNull = (v: unknown): string | null => (typeof v === "string" ? v : null);
+
+/** `insightsJsonSql`'s value, read and put in the posts' order; [] when it doesn't read. */
+export function insightsOf(raw: unknown): BatchInsight[] {
+  let list: unknown = raw;
+  if (typeof raw === "string") {
+    try {
+      list = JSON.parse(raw);
+    } catch {
+      return [];
+    }
+  }
+  if (!Array.isArray(list)) return [];
+  const rows = list.flatMap((x): Array<BatchInsight & { seen: string; idx: number }> => {
+    const [postId, url, creator, text, seen, idx] = Array.isArray(x) ? (x as unknown[]) : [];
+    return typeof postId === "string" && typeof text === "string"
+      ? [{ postId, url: textOrNull(url), creator: textOrNull(creator), text, seen: textOrNull(seen) ?? "", idx: typeof idx === "number" ? idx : 0 }]
+      : [];
+  });
+  const cmp = (a: string, b: string) => (a < b ? -1 : a > b ? 1 : 0);
+  return rows
+    .sort((a, b) => cmp(a.seen, b.seen) || cmp(a.postId, b.postId) || a.idx - b.idx)
+    .map(({ postId, url, creator, text }) => ({ postId, url, creator, text }));
+}
+
+/**
+ * The statement that keeps the batch's insights in the coach's memory (spec §17), set-based: each of `insightRowsSql`'s
+ * insights of the posts with a kept (pending) link of the batch becomes an `observation` the coach `inferred`, its
+ * provenance a saved post (`SAVED_POST_SOURCE`, the post and its link, when) and its evidence the post's link; not
+ * pinned, never expiring. Words the batch gives twice are kept once (the earlier post's); words the account already
+ * holds in a live item (memory-core.ts: active, not superseded, not lapsed anywhere yet, not a rehearsal's) are not kept
+ * again. At most INSIGHTS_PER_BATCH, by the posts' order and each post's own. The id is the post's and the insight's
+ * place (`saved:<post>:<index>`), so a replay writes nothing. The unaliased `coach_memory` in the guard is its own
+ * subquery's.
+ */
+function insightWrites(db: Db, userId: string, kept: SQL, now: string) {
+  const today = todayInZone(EARLIEST_ZONE, new Date(now));
+  const keptPosts = sql`select ${savedPostMoves.postId} from ${savedPostMoves} where ${kept}`;
+  return db
+    .insert(coachMemory)
+    .select(
+      sql`SELECT 'saved:' || i.post_id || ':' || i.idx, ${userId}, 'observation', i.body,
+          json_object('source', ${SAVED_POST_SOURCE}, 'postId', i.post_id, 'url', i.url, 'at', ${now}),
+          ${now}, NULL, 1, 0, 'inferred', NULL, case when i.url is not null then json_array(i.url) end, ${now}
+        FROM (${insightRowsSql(userId, keptPosts)}) i
+        WHERE i.nth = 1
+          AND NOT EXISTS (SELECT 1 FROM ${coachMemory} WHERE ${liveMemoryWhere(userId, today)} AND ${coachMemory.body} = i.body)
+        ORDER BY i.seen, i.post_id, i.idx
+        LIMIT ${INSIGHTS_PER_BATCH}`,
+    )
+    .onConflictDoNothing();
+}
+
 /**
  * The owner's "Save these":
  *  - the pending personal moves a kept (pending) link of the batch names become `active` — one the owner removed or
  *    re-matched away (no kept link names it) stays pending and is never offered; a pending move an earlier, unsaved
  *    batch brought is activated when this batch keeps a link to it;
  *  - each kept link is written to `exercise_provenance` (`exercise_id` = the move, `source_type` = the post's source,
- *    `source_key` = "imp:" + the post's key + "#" + position, url, creator) unless the account already links that move
- *    to that post (a curated link stays exactly as it is, and a move never lists one post twice). Insert-only: an
- *    import never rewrites a provenance row;
+ *    `source_key` = "imp:" + the post's key + "#" + position, url, creator, and its `note`: the post's purpose for the
+ *    move, `noteAt`) unless the account already links that move to that post (a curated link stays exactly as it is,
+ *    its note none, and a move never lists one post twice). Insert-only: an import never rewrites a provenance row;
+ *  - the insights of each post with a kept link become the coach's memory (`insightWrites`, spec §17): nothing from a
+ *    batch is used before Save, and a post whose rows were all removed teaches nothing;
  *  - the links become `saved`, the batch `saved`.
  * A removed link is left out. Null for a batch that isn't this account's; a batch already saved (or dismissed) changes
- * nothing. D1 statements: the batch and its counts 1, then one transaction of 4 — set-based, so the same 5 for 6 links
+ * nothing. D1 statements: the batch and its counts 1, then one transaction of 5 — set-based, so the same 6 for 6 links
  * or 600.
  */
 export async function saveBatch(
@@ -206,7 +313,7 @@ export async function saveBatch(
       .select(
         sql`SELECT ${savedPostMoves.id}, ${savedPostMoves.userId}, ${savedPostMoves.moveId}, ${savedPosts.source}, ${savedPosts.url},
           coalesce(nullif(${savedPosts.creatorHandle}, ''), ${savedPosts.creatorName}),
-          ${IMPORT_KEY_PREFIX} || ${savedPosts.sourceKey} || '#' || ${savedPostMoves.position}, ${now}
+          ${IMPORT_KEY_PREFIX} || ${savedPosts.sourceKey} || '#' || ${savedPostMoves.position}, ${now}, ${noteAt()}
           FROM ${savedPostMoves} JOIN ${savedPosts} ON ${savedPosts.id} = ${savedPostMoves.postId}
           WHERE ${pendingLinks} AND ${savedPosts.userId} = ${userId}
             AND NOT EXISTS (SELECT 1 FROM ${exerciseProvenance} AS existing
@@ -217,6 +324,8 @@ export async function saveBatch(
                 AND twin.position < ${savedPostMoves.position})`,
       )
       .onConflictDoNothing(),
+    // While the links are still pending: they say which posts were kept.
+    insightWrites(db, userId, pendingLinks!, now),
     db.update(savedPostMoves).set({ status: "saved" }).where(pendingLinks),
     db
       .update(saveBatches)

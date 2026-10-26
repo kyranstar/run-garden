@@ -75,6 +75,12 @@ export const exerciseProvenance = sqliteTable(
     creator: text("creator"),
     sourceKey: text("source_key"),
     createdAt: text("created_at").notNull(),
+    /**
+     * Migration 0030 (saved-posts import, spec §17): what the post says this move is for, or when to do it — the
+     * extraction's purpose, written on Save. A model's reading of a stranger's post: drawn as text, marked for the coach.
+     * Null for a curated link.
+     */
+    note: text("note"),
   },
   (t) => [uniqueIndex("exercise_provenance_key_unique").on(t.userId, t.sourceType, t.sourceKey)],
 );

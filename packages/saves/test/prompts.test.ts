@@ -42,6 +42,16 @@ describe("buildExtractBody", () => {
     expect(text).toContain("Glute bridge");
     expect(EXTRACT_PROMPT_VERSION).toBeTruthy();
   });
+  it("asks for the post's insights and words a move's purpose as what it is for, or when to do it (spec §17)", () => {
+    const j = JSON.parse(buildExtractBody(args));
+    const system: string = j.messages[0].content;
+    expect(system).toContain('"insights":["<=5 of <=200 chars"]');
+    expect(system).toContain(
+      "insights: what the post says about when, why or how often to do this, beyond any one move's steps (at most 5 of <=200 chars; empty when none).",
+    );
+    expect(system).toContain("purpose (<=160: what the post says this move is for, or when to do it)");
+    expect(EXTRACT_PROMPT_VERSION).toBe("extract-2");
+  });
   it("omits the file part with no video", () => {
     const j = JSON.parse(buildExtractBody({ ...args, video: undefined }));
     expect(j.messages.at(-1).content.some((p: { type: string }) => p.type === "file")).toBe(false);

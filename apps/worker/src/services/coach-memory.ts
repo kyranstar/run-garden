@@ -19,6 +19,21 @@ export type MemoryKind = (typeof MEMORY_KINDS)[number];
 export const COACH_CONFIDENCES = ["stated", "inferred"] as const;
 export type CoachConfidence = (typeof COACH_CONFIDENCES)[number];
 
+/** The provenance source of an item kept from a saved post's insights (saved-posts import, spec §17). */
+export const SAVED_POST_SOURCE = "saved post";
+
+/**
+ * Where an item kept from a saved post came from (spec §17): written only by Save (saves-batches.ts `insightWrites`,
+ * set-based, so as SQL rather than through `memoryWrites`) — the post, its link, and when. An `observation` the coach
+ * `inferred`: live and outside the pinned core like any other, unless the athlete pins it.
+ */
+export interface SavedPostMemoryProvenance {
+  source: typeof SAVED_POST_SOURCE;
+  postId: string;
+  url: string | null;
+  at: string;
+}
+
 /** Where a coach-designer item came from. */
 export interface DesignMemoryProvenance {
   /** The athlete's words (stated), or the coach's inference. */
@@ -31,6 +46,9 @@ export interface DesignMemoryProvenance {
   rehearsal?: true;
 }
 
+/** Where a memory v2 item came from: a coach's run, or a saved post. */
+export type MemoryProvenance = DesignMemoryProvenance | SavedPostMemoryProvenance;
+
 export interface NewMemory {
   id: string;
   userId: string;
@@ -40,7 +58,7 @@ export interface NewMemory {
   evidence: string[] | null;
   /** A note's last day (the athlete's local date). */
   expiresAt: string | null;
-  provenance: DesignMemoryProvenance;
+  provenance: MemoryProvenance;
   /** The item this one replaces: kept, marked superseded by this one. */
   replaces?: string;
 }

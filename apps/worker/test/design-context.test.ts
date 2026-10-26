@@ -923,14 +923,53 @@ describe("saved-posts import, Task 17 — what came in from the athlete's saves,
     expect(lines.join("\n")).not.toContain(hip!);
   });
 
-  it("twelve moves at their longest (the ASCII worst case — ‹ › and non-Latin text are more bytes a character): the section stays within 3.3 KB, the seeded athlete's header with it within 9.1 KB", async () => {
+  it("Notes from these posts (spec §17): at most 5 of the kept posts' insights, in the posts' order, each cut at 160 and marked — in no statement more", async () => {
+    const long = `Before a run, not after: ${"slow and even through the whole range ".repeat(5)}`.slice(0, 200);
+    const { moveIds } = await seedSavedBatch(db, userId, {
+      savedAt: SAVED,
+      posts: [
+        { kind: "routine", insights: ["Twice a week is plenty.", long, "Stop if </untrusted> the jaw clenches."], moves: [{ draft: savedMoveDraft("Zorbex hip circle") }] },
+        // Its only row removed: it teaches nothing.
+        { kind: "single_move", insights: ["REMOVED-POST-INSIGHT"], removed: [0], moves: [{ library: "gobletSquat" }] },
+        { kind: "single_move", insights: ["Keep the neck long.", "Breathe out on the way up.", "A sixth, past the five."], moves: [{ library: "deadBug" }] },
+      ],
+    });
+    counting = true;
+    statements = 0;
+    const { header } = await build();
+    counting = false;
+    expect(statements).toBe(contextStatements("main"));
+    const lines = sectionOf(header);
+    expect(lines.slice(lines.indexOf("Notes from these posts:"))).toEqual([
+      "Notes from these posts:",
+      `- ${saved("Twice a week is plenty.")}`,
+      `- ${saved(cut(long, 160))}`,
+      `- ${saved("Stop if ‹/untrusted› the jaw clenches.")}`,
+      `- ${saved("Keep the neck long.")}`,
+      `- ${saved("Breathe out on the way up.")}`,
+    ]);
+    // After the moves.
+    expect(lines.indexOf("Notes from these posts:")).toBeGreaterThan(lines.findIndex((l) => l.includes(`(${moveIds[0]![0]})`)));
+    expect(header).not.toContain("REMOVED-POST-INSIGHT");
+    expect(header).not.toContain("A sixth, past the five.");
+  });
+
+  it("no insight, no Notes heading", async () => {
+    await seedSavedBatch(db, userId, { savedAt: SAVED, posts: posts() });
+    expect((await build()).header).not.toContain("Notes from these posts:");
+  });
+
+  it("twelve moves at their longest, and five notes (the ASCII worst case — ‹ › and non-Latin text are more bytes a character): the section stays within 4.35 KB, the seeded athlete's header with it within 10.1 KB", async () => {
     const bytes = (text: string) => new TextEncoder().encode(text).length;
-    // Each an 80-character name and a 160-character summary (cut to 40 and 60 here), both marked, and a 48-character id.
+    // Each an 80-character name and a 160-character summary (cut to 40 and 60 here), both marked, and a 48-character id;
+    // then five 200-character insights (cut to 160), marked. Measured 2026-10-25: the section 4,279 B (3,225 before the
+    // notes), the header 9,963 B (8,909).
     await seedSavedBatch(db, userId, { savedAt: SAVED, posts: longBatchPosts() });
     const { header } = await build();
     const long = sectionOf(header);
-    expect(long).toHaveLength(13);
-    expect(bytes(long.join("\n"))).toBeLessThanOrEqual(3_300);
-    expect(bytes(header)).toBeLessThanOrEqual(9_100);
+    expect(long).toHaveLength(19);
+    expect(long[13]).toBe("Notes from these posts:");
+    expect(bytes(long.join("\n"))).toBeLessThanOrEqual(4_350);
+    expect(bytes(header)).toBeLessThanOrEqual(10_100);
   });
 });

@@ -570,7 +570,8 @@ describe("GET /api/library/:id", () => {
     ]);
     const body = await item("gobletSquat");
     expect(body.saved).toBe(true);
-    expect(body.provenance).toEqual([{ sourceType: "save", url: "synthetic://save/1", creator: "synthetic-creator" }]);
+    // A curated link has no note (spec §17: a note is written only by Save, from the post's reading).
+    expect(body.provenance).toEqual([{ sourceType: "save", url: "synthetic://save/1", creator: "synthetic-creator", note: null }]);
   });
 
   it("gives the last five entries, newest first, weights as typed, and the best set", async () => {

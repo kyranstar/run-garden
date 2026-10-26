@@ -193,7 +193,8 @@ describe("GET /batches/:id", () => {
     const { batchId, a, b, quad, neck } = await seed();
     const res = await call("GET", `/batches/${batchId}`);
     expect(res.status, JSON.stringify(res.body)).toBe(200);
-    // The session, the batch, its rows (no move of the rows is merged: the account's library is not read).
+    // The session, the batch (its insights ride in it), its rows (no move of the rows is merged: the account's library is
+    // not read).
     expect(statements.length).toBe(3);
     expect(statements.filter(isWrite)).toEqual([]);
     expect(res.body.batch).toMatchObject({ id: batchId, status: "released", counts: { new: 2, linked: 1, removed: 0 } });
@@ -477,8 +478,8 @@ describe("remove and save", () => {
     const small = await call("POST", `/batches/${batchId}/save`);
     expect(small.status).toBe(200);
     const few = statements.length;
-    // The session, the restore guard, the batch and its counts, one transaction of 4.
-    expect(few).toBe(7);
+    // The session, the restore guard, the batch and its counts, one transaction of 5 (the insights kept in memory, spec §17).
+    expect(few).toBe(8);
 
     const big = "batch-600";
     await db.insert(saveBatches).values({ id: big, userId, status: "released", createdAt: T0, releasedAt: T0 });

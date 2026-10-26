@@ -5,7 +5,8 @@
  *  - the batches (`listBatches`) and one batch's rows (`batchDetail`): each link of a post to a move — a NEW move (a
  *    personal move this batch brought, saved or not) or one LINKED to a move the owner already had (the library's, or a
  *    personal move another batch brought), "check this" where the match or the reading was unsure, the dose as the post
- *    gave it — the list's counts and the page's labels by one rule;
+ *    gave it — the list's counts and the page's labels by one rule; and the insights of its kept posts (spec §17: what
+ *    they say about when, why or how often, which Save keeps in the coach's memory);
  *  - an edit of a personal move (`editPersonalMove`), held to the library's own validation (`validatePersonalRecord`);
  *  - a re-match (`rematchLink`): "Same as…" repoints the link to a library move or an active personal move, and a pending
  *    move it leaves (named by no other pending link of the account) is merged into it; "Not this move" makes the post's
@@ -35,7 +36,7 @@ import { forgetAccountLibrary, loadAccountLibrary } from "./account-library.js";
 import { runAtomically, type Db } from "./db.js";
 import { buildPersonalRecord } from "./personal-moves.js";
 import { validatePersonalRecord } from "./personal-records.js";
-import { BATCH_GAP_MS, noticeOf } from "./saves-batches.js";
+import { BATCH_GAP_MS, INSIGHTS_PER_BATCH, insightsJsonSql, insightsOf, noticeOf } from "./saves-batches.js";
 
 const { savedPosts, savedPostMoves, personalMoves, saveBatches } = schema;
 
@@ -127,13 +128,18 @@ interface RowRead {
 const text = (v: unknown): string | null => (typeof v === "string" ? v : null);
 
 /**
- * One batch and its rows, in the posts' order and each post's moves in theirs; null when the batch isn't this
- * account's. D1 statements: the batch 1, the rows 1, and the account's library 1 only when a row names a move that has
- * been merged since (its target's name).
+ * One batch and its rows, in the posts' order and each post's moves in theirs, and the insights of its posts that keep
+ * a row (spec §17: what the coach keeps in memory on Save — the same rule, read out by SQLite; a post whose rows were
+ * all removed teaches nothing); null when the batch isn't this account's. D1 statements: the batch with its insights 1,
+ * the rows 1, and the account's library 1 only when a row names a move that has been merged since (its target's name).
  */
 export async function batchDetail(db: Db, userId: string, batchId: string): Promise<SaveBatchDetailDto | null> {
-  const batch = await readBatch(db, userId, batchId);
-  if (!batch) return null;
+  const keptPosts = sql`select nl.post_id from saved_post_moves nl where nl.user_id = b.user_id and nl.batch_id = b.id and nl.status <> 'removed'`;
+  const [head] = (await db.all(sql`select ${BATCH_COLUMNS}, ${insightsJsonSql(userId, keptPosts, INSIGHTS_PER_BATCH)} as insights
+    from save_batches b where b.id = ${batchId} and b.user_id = ${userId} limit 1`)) as Array<BatchRead & { insights: unknown }>;
+  if (!head) return null;
+  const batch = batchOf(head);
+  const insights = insightsOf(head.insights);
   // The post's reading of each move is read out by SQLite: the extraction is never handed over whole.
   const reads = (await db.all(sql`select l.id as postMoveId, l.position as position, l.status as status, l.move_id as moveId,
       l.move_kind as moveKind, l.check_flag as checkFlag, p.url as url,
@@ -192,7 +198,7 @@ export async function batchDetail(db: Db, userId: string, batchId: string): Prom
       ...(record ? { record } : {}),
     };
   });
-  return { batch, rows };
+  return { batch, rows, insights };
 }
 
 // ── Edit ─────────────────────────────────────────────────────────────────────────────────────────────────────────────

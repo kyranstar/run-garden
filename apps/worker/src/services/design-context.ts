@@ -36,8 +36,9 @@
  *
  * WHAT CAME IN FROM THE ATHLETE'S SAVES (saved-posts import, Task 17): a main run's opening message lists the moves of
  * the newest batch the athlete saved in the last 14 days and nothing has fitted in yet — at most 12 the library offers,
- * one line each, the name and summary cut short (a personal move's marked as a saved post's) — just before the request
- * ("From the athlete's saves …").
+ * one line each, the name and summary cut short (a personal move's marked as a saved post's), then what its kept posts
+ * say about when, why or how often to do something ("Notes from these posts:", at most 5, marked) — just before the
+ * request ("From the athlete's saves …").
  * The batch rides in the counts statement (read_saves' own `savesBatchSql`), so it costs no statement, and the section
  * is there only when such a batch is. read_saves has the posts, the pins and the routines.
  */
@@ -87,7 +88,7 @@ import { runningFactsOf, runningLine, runWeeksSql, thresholdSql, watchLine, type
 import { FOCUS_LINES, SHARED_PROMPT, markUntrusted, roleBlock, type ReviewRubric, type UntrustedSource } from "./design-prompt.js";
 import { dayWords, distanceWords, minutesOf, paceWords, parsedArray, parsedJson, plural, readTagged, relativeDay } from "./design-tools/read-common.js";
 import { planTerm } from "./design-tools/read-plan.js";
-import { SAVES_MOVES_MAX, savedBatchOf, savedMovesOf, savesBatchSql, type SavedBatch } from "./design-tools/read-saves.js";
+import { SAVES_INSIGHTS_MAX, SAVES_MOVES_MAX, savedBatchOf, savedMovesOf, savesBatchSql, type SavedBatch } from "./design-tools/read-saves.js";
 import { activitiesAround, activityRows, doneEntries, doneTerms, sessionsWhere, setRows, type DoneCtx } from "./design-tools/read-sessions.js";
 import type { SystemBlock } from "./llm-messages.js";
 import { loadProfileWithPreferences } from "./profile.js";
@@ -1178,6 +1179,8 @@ function focusSection(f: NonNullable<Reads["focus"]>, r: Reads, time: string): s
 /** The most characters of a move's name, and of its summary, the saves section shows (read_saves has them whole). */
 const SAVES_NAME_CHARS = 40;
 const SAVES_SUMMARY_CHARS = 60;
+/** The most characters of one of the posts' notes (insights) the saves section shows (read_saves has them whole). */
+const SAVES_NOTE_CHARS = 160;
 
 /** `text` cut to `max` characters (code points), the last an ellipsis; as it is when it fits. */
 function cutChars(text: string, max: number): string {
@@ -1189,8 +1192,9 @@ function cutChars(text: string, max: number): string {
  * "From the athlete's saves …" (Task 17): the waiting batch's moves the library offers, at most SAVES_MOVES_MAX — new
  * ones first, as read_saves lists them — each by name and summary (cut to SAVES_NAME_CHARS and SAVES_SUMMARY_CHARS; a
  * personal move's marked as a saved post's) and id, new or the athlete's already, and how many of the batch's posts
- * show it. The rest — past the twelve, or archived since (never offered) — counted in a last line. Null when no move
- * of it is offered.
+ * show it. The rest — past the twelve, or archived since (never offered) — counted in a line. Then, when the kept posts
+ * say when, why or how often to do something (spec §17), "Notes from these posts:" and at most SAVES_INSIGHTS_MAX of
+ * those insights, each cut to SAVES_NOTE_CHARS and marked as a saved post's. Null when no move of it is offered.
  */
 function savesSection(batch: SavedBatch, r: Reads): string | null {
   const { moves, archived } = savedMovesOf(batch, r.library);
@@ -1200,10 +1204,12 @@ function savesSection(batch: SavedBatch, r: Reads): string | null {
     return `- ${words(record.name, SAVES_NAME_CHARS)} (${record.id}) — ${words(record.text?.summary ?? "", SAVES_SUMMARY_CHARS)}; ${fresh ? "new" : "yours already"}; from ${plural(postIds.length, "post")}`;
   });
   const more = Math.max(0, moves.length - SAVES_MOVES_MAX) + archived.length;
+  const notes = batch.insights.slice(0, SAVES_INSIGHTS_MAX).map((i) => `- ${savedPost(cutChars(i.text, SAVES_NOTE_CHARS))}`);
   return [
     `From the athlete's saves (saved ${dayWords(todayInZone(r.tz, new Date(batch.savedAt)), r.today)}, not yet fitted in):`,
     ...lines,
     ...(more > 0 ? [`- and ${more} more`] : []),
+    ...(notes.length > 0 ? ["Notes from these posts:", ...notes] : []),
   ].join("\n");
 }
 

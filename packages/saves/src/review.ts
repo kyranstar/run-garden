@@ -62,9 +62,24 @@ export interface SaveBatchRowDto {
   record?: ExerciseRecord;
 }
 
+/**
+ * One insight of a post of the batch that has a kept row (spec §17): what the post says about when, why or how often to
+ * do something — what the coach keeps in memory when the batch is saved. A model's reading of a stranger's post: the
+ * text and the creator are drawn as text.
+ */
+export interface SaveBatchInsightDto {
+  postId: string;
+  url: string | null;
+  /** The creator's handle, else their name. */
+  creator: string | null;
+  text: string;
+}
+
 export interface SaveBatchDetailDto {
   batch: SaveBatchDto;
   rows: SaveBatchRowDto[];
+  /** In the posts' order (absent from an answer kept from before it was added). */
+  insights?: SaveBatchInsightDto[];
 }
 
 const line = (max: number) => z.string().max(max);

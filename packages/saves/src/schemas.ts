@@ -95,9 +95,15 @@ export const extractionSchema = z
       .object({ rounds: z.number().optional(), restSec: z.number().optional(), order: z.array(z.number()) })
       .strict()
       .optional(),
+    /**
+     * What the post says about when, why or how often to do this, beyond any one move's steps (spec §17): kept in the
+     * coach's memory when the owner saves the batch. An extraction stored before they were asked for has none.
+     */
+    insights: z.array(z.string().max(200)).max(5).default([]),
   })
   .strict();
-export type Extraction = z.infer<typeof extractionSchema>;
+/** An extraction as stored: one read before `insights` were asked for has none (the schema reads it as `[]`). */
+export type Extraction = z.input<typeof extractionSchema>;
 
 export const checkReportSchema = z
   .object({

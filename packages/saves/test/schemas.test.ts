@@ -71,6 +71,17 @@ describe("schemas", () => {
     expect(extractionSchema.safeParse({ ...ex, themes: Array(6).fill("t") }).success).toBe(false);
     expect(extractionSchema.safeParse({ ...ex, summary: "s".repeat(301) }).success).toBe(false);
   });
+  it("extraction insights (spec §17): at most 5 of at most 200 characters; one stored before they were asked for reads as none", () => {
+    const ex = { kind: "routine", summary: "s", themes: ["a"], moves: [move] };
+    const withInsights = extractionSchema.safeParse({ ...ex, insights: ["Do it before a run, not after.", "Twice a week is plenty."] });
+    expect(withInsights.success && withInsights.data.insights).toEqual(["Do it before a run, not after.", "Twice a week is plenty."]);
+    const older = extractionSchema.safeParse(ex);
+    expect(older.success && older.data.insights).toEqual([]);
+    expect(extractionSchema.safeParse({ ...ex, insights: Array(6).fill("i") }).success).toBe(false);
+    expect(extractionSchema.safeParse({ ...ex, insights: ["i".repeat(201)] }).success).toBe(false);
+    expect(extractionSchema.safeParse({ ...ex, insights: ["i".repeat(200)] }).success).toBe(true);
+    expect(extractionSchema.safeParse({ ...ex, insights: [3] }).success).toBe(false);
+  });
   it("check report", () => {
     const id = "0b0c6b9e-6d4c-4b8e-9d57-1f0f2a9f3a11";
     expect(checkReportSchema.safeParse({ checkId: id, phase: "start" }).success).toBe(true);

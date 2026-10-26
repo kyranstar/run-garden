@@ -154,16 +154,18 @@ describe("saveBatch", () => {
     expect(await db.select().from(exerciseProvenance)).toEqual([]);
     statements = 0;
     expect(await saveBatch(db, userId, id, at(2))).toEqual({ moves: 1, links: 3 });
-    expect(statements).toBe(5);
+    // The batch and its counts, then one transaction of 5 (the insights kept in memory, spec §17).
+    expect(statements).toBe(6);
     const [pm] = await db.select().from(personalMoves);
     expect(pm).toMatchObject({ status: "active", updatedAt: at(2) });
     expect((await db.select().from(savedPostMoves)).every((l) => l.status === "saved")).toBe(true);
     expect(await batchOf(id)).toMatchObject({ status: "saved", savedAt: at(2) });
     const links = (await db.select().from(exerciseProvenance)).sort((x, y) => (x.sourceKey ?? "").localeCompare(y.sourceKey ?? ""));
     expect(links.map((l) => ({ ...l, id: undefined }))).toEqual([
-      { id: undefined, userId, exerciseId: pm!.id, sourceType: SRC, url: "https://example.com/p/a", creator: "someone", sourceKey: "imp:a#0", createdAt: at(2) },
-      { id: undefined, userId, exerciseId: HIP_SWITCH.id, sourceType: SRC, url: "https://example.com/p/a", creator: "someone", sourceKey: "imp:a#1", createdAt: at(2) },
-      { id: undefined, userId, exerciseId: pm!.id, sourceType: SRC, url: "https://example.com/p/b", creator: "someone", sourceKey: "imp:b#0", createdAt: at(2) },
+      // Each with its note: the post's purpose for the move (spec §17).
+      { id: undefined, userId, exerciseId: pm!.id, sourceType: SRC, url: "https://example.com/p/a", creator: "someone", sourceKey: "imp:a#0", createdAt: at(2), note: "mobility" },
+      { id: undefined, userId, exerciseId: HIP_SWITCH.id, sourceType: SRC, url: "https://example.com/p/a", creator: "someone", sourceKey: "imp:a#1", createdAt: at(2), note: "mobility" },
+      { id: undefined, userId, exerciseId: pm!.id, sourceType: SRC, url: "https://example.com/p/b", creator: "someone", sourceKey: "imp:b#0", createdAt: at(2), note: "mobility" },
     ]);
   });
 
@@ -267,7 +269,7 @@ describe("saveBatch", () => {
     for (const chunk of insertBatches(links)) await db.insert(savedPostMoves).values(chunk);
     statements = 0;
     expect(await saveBatch(db, userId, batchId, at(1))).toEqual({ moves: 0, links: 600 });
-    expect(statements).toBe(5);
+    expect(statements).toBe(6);
     expect(await db.select().from(exerciseProvenance)).toHaveLength(600);
   });
 });

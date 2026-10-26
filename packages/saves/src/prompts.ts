@@ -7,7 +7,7 @@ import type { ExtractedMove, PostSubmit } from "./schemas.js";
 // never in the system message, and the instructions say to treat it as data.
 
 export const FILTER_PROMPT_VERSION = "filter-1";
-export const EXTRACT_PROMPT_VERSION = "extract-1";
+export const EXTRACT_PROMPT_VERSION = "extract-2";
 export const MATCH_PROMPT_VERSION = "match-1";
 
 const OPEN = "<post-data>";
@@ -128,9 +128,11 @@ function extractSystem(): string {
     DATA_RULE,
     "Reply with one JSON object only, no prose, shaped:",
     '{"kind":"routine"|"single_move"|"tips"|"not_training","summary":"<=300 chars","themes":["<=5 short words"],' +
-      '"moves":[Move, ... at most 12],"routine":{"rounds":n,"restSec":n,"order":[move indexes]} (optional)}',
+      '"moves":[Move, ... at most 12],"routine":{"rounds":n,"restSec":n,"order":[move indexes]} (optional),' +
+      '"insights":["<=5 of <=200 chars"]}',
     "Move = {name (<=80), aliases[<=5], summary (<=160), steps[<=8 of <=200], cues[<=6 of <=160], mistakes[<=5 of <=160], " +
-      "purpose (<=160), dose:{text (<=80), type?, range?:[low,high], sets?:[min,max]}, patterns[], regions[], equipment[], " +
+      "purpose (<=160: what the post says this move is for, or when to do it), " +
+      "dose:{text (<=80), type?, range?:[low,high], sets?:[min,max]}, patterns[], regions[], equipment[], " +
       "position, laterality, load, contraction[], difficulty (whole number 1 to 5), conditions, corosHint? (<=60), " +
       'evidence:{name,dose,steps each "stated" or "inferred"}, confidence:"high"|"medium"|"low"}.',
     `patterns: ${PATTERNS.join(", ")}.`,
@@ -143,6 +145,7 @@ function extractSystem(): string {
     `dose type: ${DOSE_TYPES.join(", ")}.`,
     "conditions: an object with one entry for every profile below, each {attrs:{...}, note:\"<=160 chars\"}:",
     profileGuide(),
+    "insights: what the post says about when, why or how often to do this, beyond any one move's steps (at most 5 of <=200 chars; empty when none).",
     "Only list moves the post actually shows or states. Mark evidence \"stated\" when the post says it and \"inferred\" when you filled it in. " +
       "Use kind \"not_training\" with an empty moves list when the post teaches no exercise.",
   ].join("\n");

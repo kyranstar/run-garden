@@ -40,6 +40,8 @@ export interface SavedPostSpec {
   url?: string;
   /** A position whose link the owner removed before saving. */
   removed?: number[];
+  /** What the post says about when, why or how often (the extraction's `insights`, spec §17). */
+  insights?: string[];
 }
 
 export interface SeededBatch {
@@ -74,12 +76,13 @@ export async function seedSavedBatch(
     const postId = `post-${n}-${i}-${userId.slice(0, 8)}`;
     postIds.push(postId);
     const seen = new Date(Date.parse(o.savedAt) - (o.posts.length - i) * 60_000).toISOString();
-    const drafts = post.moves.flatMap((m) => ("draft" in m ? [m.draft] : []));
+    // The post's reading, a move at each link's position (a library move's read by its library name).
+    const drafts = post.moves.map((m) => ("draft" in m ? m.draft : savedMoveDraft(EXERCISES.find((e) => e.id === m.library)?.name ?? m.library)));
     await db.insert(savedPosts).values({
       id: postId, userId, source: "testsrc", sourceKey: `k${n}-${i}`, url: post.url ?? `https://example.com/p/${n}-${i}`,
       creatorHandle: post.handle ?? `coach_${i}`, creatorName: post.name === undefined ? `Coach ${i}` : post.name, caption: "", hashtags: [], mediaType: "video",
       firstSeenAt: seen, status: "matched",
-      extraction: { kind: post.kind ?? "routine", summary: post.summary ?? `A short routine, post ${i}.`, themes: [], moves: drafts },
+      extraction: { kind: post.kind ?? "routine", summary: post.summary ?? `A short routine, post ${i}.`, themes: [], moves: drafts, ...(post.insights ? { insights: post.insights } : {}) },
       extractAttempts: 1, batchId, updatedAt: seen,
     });
     const ids: string[] = [];
@@ -116,8 +119,9 @@ export async function seedSavedBatch(
 export const longText = (lead: string, n: number): string => (lead + " " + "slow and even through the whole range ".repeat(20)).slice(0, n);
 
 /**
- * Twelve new moves at their longest — an 80-character name, a 160-character summary — across four routine posts of
- * three, each post with a long link, creator and reading: the most read_saves or the context's section holds.
+ * Twelve new moves at their longest — an 80-character name, a 160-character summary and purpose (each link's note) —
+ * across four routine posts of three, each post with a long link, creator and reading, and five insights of 200
+ * characters (spec §17): the most read_saves or the context's section holds.
  */
 export function longBatchPosts(lead = "LONG"): SavedPostSpec[] {
   return [0, 1, 2, 3].map((p) => ({
@@ -125,8 +129,12 @@ export function longBatchPosts(lead = "LONG"): SavedPostSpec[] {
     summary: longText(`${lead}-reading-${p}`, 300),
     handle: longText(`${lead}-handle-${p}`, 64).replace(/ /g, "_"),
     url: `https://example.com/${"p".repeat(120)}/${lead}-${p}`,
+    insights: [0, 1, 2, 3, 4].map((i) => longText(`${lead}-insight-${p}-${i}`, 200)),
     moves: [0, 1, 2].map((m) => ({
-      draft: savedMoveDraft(longText(`${lead} move ${p * 3 + m}`, 80), { summary: longText(`${lead}-summary-${p * 3 + m}`, 160) }),
+      draft: savedMoveDraft(longText(`${lead} move ${p * 3 + m}`, 80), {
+        summary: longText(`${lead}-summary-${p * 3 + m}`, 160),
+        purpose: longText(`${lead}-purpose-${p * 3 + m}`, 160),
+      }),
     })),
   }));
 }

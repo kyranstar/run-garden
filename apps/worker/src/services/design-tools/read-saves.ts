@@ -10,20 +10,24 @@
  *  - `new`: the batch brought it (`personal_moves.batch_id`, not merged since); else the athlete had it already;
  *  - `pinned` (`exercise_prefs.pinned`) and `groups` (the notice's grouping: @rg/saves `moveGroup`);
  *  - `posts`: how many of the batch's posts show it; `links`: the first LINKS_MAX of them, the url (plain: an address,
- *    not prose) and the creator (the handle, else the name: marked); `fromPost`: the first post's reading
+ *    not prose), the creator (the handle, else the name: marked) and the note (spec §17: what the post says the move is
+ *    for, or when to do it — the post's reading of it, `purpose`: marked); `fromPost`: the first post's reading
  *    (`extraction.summary`: marked).
  * And `routines` (at most ROUTINES_MAX): the batch's routine posts, each its reading (marked) and its moves' ids in the
- * post's order. A move merged since reads as the move it went into (the account's library, Task 12); a move the library
- * no longer offers — archived since, or merged into an archived move — is left out of both and named in `missing`
- * (an archived move is resolvable but never offered).
+ * post's order. And `insights` (at most SAVES_INSIGHTS_MAX, spec §17): what the batch's kept posts say about when, why
+ * or how often to do something, in the posts' order (marked) — Save kept them in the coach's memory too. A move merged
+ * since reads as the move it went into (the account's library, Task 12); a move the library no longer offers —
+ * archived since, or merged into an archived move — is left out of both and named in `missing` (an archived move is
+ * resolvable but never offered).
  *
  * Nothing to read — no such batch — is an answer that says so (`missing`), never an error. A batchId that is not a saved
  * batch of the athlete's — another account's, one not saved, one nobody has — is refused alike (`not_found`), so nothing
  * says another account's batch exists.
  *
  * SIZE. At most SAVES_MOVES_MAX moves a read (`limit`), from `offset` in the batch's one order, and of those as many as
- * fit RESULT_BUDGET_BYTES with the routines; `missing` says how many moves are left and the offset that reads them (a
- * batch stays readable by id once it is fitted in), and how many routines the cap or the room left out.
+ * fit RESULT_BUDGET_BYTES beside the insights (on every page, room kept for them first), with the routines; `missing`
+ * says how many moves are left and the offset that reads them (a batch stays readable by id once it is fitted in), and
+ * how many routines the cap or the room left out.
  *
  * COST. Two statements: the athlete (the step's shared read, which carries the account's library: `athleteOf`) and the
  * batch with the account's pins. `savesBatchSql` and `savedMovesOf` are the opening context's too (design-context.ts,
@@ -36,6 +40,7 @@ import type { ExerciseRecord } from "@rg/exercise-library";
 import { isPersonalId, moveGroup } from "@rg/saves";
 import { makeLibraryIndex } from "@rg/workout";
 import { loadAccountLibrary, type AccountLibrary } from "../account-library.js";
+import { insightsJsonSql, insightsOf, type BatchInsight } from "../saves-batches.js";
 import { utf8Bytes } from "../utf8.js";
 import type { DesignTool } from "./types.js";
 import {
@@ -65,6 +70,8 @@ export const SAVES_MOVES_MAX = 12;
 const LINKS_MAX = 3;
 /** The routines one read lists, at most. */
 const ROUTINES_MAX = 5;
+/** The insights of the batch's kept posts one read lists, and the opening context's section shows, at most. */
+export const SAVES_INSIGHTS_MAX = 5;
 
 const SOURCE = "the athlete's saves";
 const NONE_WAITING = `no saved batch waiting to be fitted in: none saved in the last ${SAVES_WINDOW_DAYS} days, or each one is fitted in already`;
@@ -77,6 +84,8 @@ export interface SavedLink {
   born: boolean;
   /** When the post was first seen: the order the posts came in. */
   seen: string;
+  /** The post's reading of the move's purpose (read_saves' only: `posts`): a model's words. */
+  note?: string | null;
 }
 
 /** A post of the batch, as read_saves shows it (the context reads none). Every string but the url is from outside. */
@@ -92,6 +101,8 @@ export interface SavedBatch {
   savedAt: string;
   links: SavedLink[];
   posts: Map<string, SavedPost>;
+  /** The first SAVES_INSIGHTS_MAX insights of its kept posts, in the posts' order (saves-batches.ts `insightsOf`). */
+  insights: BatchInsight[];
 }
 
 /** A move of the batch: its record in the account's library, whether the batch brought it, the posts showing it in order. */
@@ -99,14 +110,17 @@ export interface SavedMove {
   record: ExerciseRecord;
   new: boolean;
   postIds: string[];
+  /** Each post's note on the move (its first link's), beside `postIds`: null with none or unread. */
+  notes: Array<string | null>;
 }
 
 /**
  * The batch as ONE JSON value — a scalar subquery, so it rides in a statement that reads something else (the opening
  * context's counts): `{ id, savedAt, links: [[moveId, postId, position, born, seen]], posts? }`, or null with no batch.
  * Without `batchId`: the newest saved batch from the last SAVES_WINDOW_DAYS not fitted in; with it, that saved batch of
- * the athlete's. `posts` adds each post's url, creator, kind and reading (read_saves'). Its tables go by their own
- * aliases, so it reads the same inside any select.
+ * the athlete's. `insights`: the first SAVES_INSIGHTS_MAX of its kept posts (`insightsJsonSql`). `posts` adds each
+ * post's url, creator, kind and reading, and each link's note (read_saves'). Its tables go by their own aliases, so it
+ * reads the same inside any select.
  */
 export function savesBatchSql(userId: string, o: { now: Date; batchId?: string; posts?: boolean }): SQL {
   const since = new Date(o.now.getTime() - SAVES_WINDOW_DAYS * 86_400_000).toISOString();
@@ -118,13 +132,19 @@ export function savesBatchSql(userId: string, o: { now: Date; batchId?: string; 
         from saved_posts sv_q where sv_q.user_id = ${userId} and sv_q.id in (
           select sv_k.post_id from saved_post_moves sv_k where sv_k.user_id = ${userId} and sv_k.batch_id = sv_b.id and sv_k.status = 'saved')))`
     : sql``;
+  // A link's note: the post's reading of the move at its position (`purpose`), when it is words.
+  const doc = sql`case when json_valid(sv_p.extraction) then sv_p.extraction end`;
+  const path = sql`'$.moves[' || sv_l.position || '].purpose'`;
+  const note = o.posts ? sql`, case when json_type(${doc}, ${path}) = 'text' then nullif(trim(json_extract(${doc}, ${path})), '') end` : sql``;
+  const keptPosts = sql`select sv_n.post_id from saved_post_moves sv_n where sv_n.user_id = ${userId} and sv_n.batch_id = sv_b.id and sv_n.status = 'saved'`;
   return sql`(select json_object('id', sv_b.id, 'savedAt', sv_b.saved_at,
       'links', json((select json_group_array(json_array(sv_l.move_id, sv_l.post_id, sv_l.position,
-          coalesce(sv_m.batch_id = sv_b.id and sv_m.status != 'merged', 0), coalesce(sv_p.first_seen_at, '')))
+          coalesce(sv_m.batch_id = sv_b.id and sv_m.status != 'merged', 0), coalesce(sv_p.first_seen_at, '')${note}))
         from saved_post_moves sv_l
         left join saved_posts sv_p on sv_p.user_id = sv_l.user_id and sv_p.id = sv_l.post_id
         left join personal_moves sv_m on sv_m.user_id = sv_l.user_id and sv_m.id = sv_l.move_id
-        where sv_l.user_id = ${userId} and sv_l.batch_id = sv_b.id and sv_l.status = 'saved'))${posts})
+        where sv_l.user_id = ${userId} and sv_l.batch_id = sv_b.id and sv_l.status = 'saved')),
+      'insights', json(${insightsJsonSql(userId, keptPosts, SAVES_INSIGHTS_MAX)})${posts})
     from save_batches sv_b where sv_b.user_id = ${userId} and sv_b.status = 'saved' and ${which}
     order by sv_b.saved_at desc, sv_b.id desc limit 1)`;
 }
@@ -133,12 +153,12 @@ const str = (v: unknown): string | null => (typeof v === "string" ? v : null);
 
 /** `savesBatchSql`'s value, read; null with no batch (or one that doesn't read). */
 export function savedBatchOf(raw: unknown): SavedBatch | null {
-  const b = parsedJson(raw) as { id?: unknown; savedAt?: unknown; links?: unknown; posts?: unknown } | null;
+  const b = parsedJson(raw) as { id?: unknown; savedAt?: unknown; links?: unknown; posts?: unknown; insights?: unknown } | null;
   if (!b || typeof b !== "object" || typeof b.id !== "string" || typeof b.savedAt !== "string" || !Number.isFinite(Date.parse(b.savedAt))) return null;
   const links = parsedArray(b.links).flatMap((x): SavedLink[] => {
-    const [moveId, postId, position, born, seen] = Array.isArray(x) ? (x as unknown[]) : [];
+    const [moveId, postId, position, born, seen, note] = Array.isArray(x) ? (x as unknown[]) : [];
     return typeof moveId === "string" && typeof postId === "string" && typeof position === "number"
-      ? [{ moveId, postId, position, born: born === 1 || born === true, seen: str(seen) ?? "" }]
+      ? [{ moveId, postId, position, born: born === 1 || born === true, seen: str(seen) ?? "", note: str(note) }]
       : [];
   });
   const posts = new Map(
@@ -147,7 +167,7 @@ export function savedBatchOf(raw: unknown): SavedBatch | null {
       return typeof id === "string" ? [[id, { url: str(url), creator: str(creator), kind: str(kind), summary: str(summary) }]] : [];
     }),
   );
-  return { id: b.id, savedAt: b.savedAt, links, posts };
+  return { id: b.id, savedAt: b.savedAt, links, posts, insights: insightsOf(b.insights).slice(0, SAVES_INSIGHTS_MAX) };
 }
 
 /** The links in the order the posts showed them: the posts as they came in, each post's by position. */
@@ -208,9 +228,12 @@ export function savedMovesOf(
       continue;
     }
     let move = byId.get(record.id);
-    if (!move) byId.set(record.id, (move = { record, new: false, postIds: [] }));
+    if (!move) byId.set(record.id, (move = { record, new: false, postIds: [], notes: [] }));
     if (l.born) move.new = true;
-    if (!move.postIds.includes(l.postId)) move.postIds.push(l.postId);
+    if (!move.postIds.includes(l.postId)) {
+      move.postIds.push(l.postId);
+      move.notes.push(l.note ?? null);
+    }
   }
   // New first; each part in the posts' order (the sort is stable).
   const moves = [...byId.values()].sort((a, b) => Number(b.new) - Number(a.new));
@@ -264,7 +287,9 @@ export const readSaves: DesignTool = {
           "Leave batchId out to read the newest saved batch not yet fitted in.",
         );
       }
-      return answer({ source: SOURCE, now: ctx.now, missing: [...athlete.missing, NONE_WAITING], data: { batch: null, moves: [], routines: [] }, summary: "Nothing new from your saves" });
+      return answer({
+        source: SOURCE, now: ctx.now, missing: [...athlete.missing, NONE_WAITING], data: { batch: null, moves: [], routines: [], insights: [] }, summary: "Nothing new from your saves",
+      });
     }
 
     // The athlete's read carried the account's library: this costs no statement.
@@ -290,7 +315,9 @@ export const readSaves: DesignTool = {
       pinned: pins.has(m.record.id),
       groups: moveGroup(m.record),
       posts: m.postIds.length,
-      links: m.postIds.slice(0, LINKS_MAX).map((id) => ({ url: postOf(id)?.url ?? null, creator: untrustedOrNull(postOf(id)?.creator) })),
+      links: m.postIds
+        .slice(0, LINKS_MAX)
+        .map((id, k) => ({ url: postOf(id)?.url ?? null, creator: untrustedOrNull(postOf(id)?.creator), note: untrustedOrNull(m.notes[k]) })),
       fromPost: untrustedOrNull(postOf(m.postIds[0]!)?.summary),
     }));
     // The routine posts, as they came in: each its reading and its kept, offered moves in the post's order.
@@ -304,6 +331,8 @@ export const readSaves: DesignTool = {
       else byPost.set(l.postId, [id]);
     }
     const routines = [...byPost].map(([postId, order]) => ({ post: untrustedOrNull(postOf(postId)?.summary), order }));
+    // What the kept posts say about when, why or how often (a model's reading): on every page, room kept for them first.
+    const insights = batch.insights.map((i) => untrusted(i.text));
 
     const head = { id: batch.id, savedAt: localDateOf(athlete.tz, batch.savedAt) };
     const fixed = [
@@ -326,7 +355,7 @@ export const readSaves: DesignTool = {
         : [`${plural(left, "more routine", "more routines")} not shown for room`];
     };
     const sizeOf = (missing: string[], ms: unknown[], rs: unknown[]): number =>
-      bytesOf(answer({ source: SOURCE, now: ctx.now, missing, data: { batch: head, moves: ms, routines: rs }, summary: "" }));
+      bytesOf(answer({ source: SOURCE, now: ctx.now, missing, data: { batch: head, moves: ms, routines: rs, insights }, summary: "" }));
 
     // A page that fits: every listed move and routine (up to the cap) when they fit with the lines that say what is
     // left; else as many moves as fit (at least one), then routines, with room kept for the longest such lines.
@@ -359,7 +388,7 @@ export const readSaves: DesignTool = {
       source: SOURCE,
       now: ctx.now,
       missing,
-      data: { batch: head, moves: shown, routines: routines.slice(0, keptRoutines) },
+      data: { batch: head, moves: shown, routines: routines.slice(0, keptRoutines), insights },
       summary: shown.length ? `Read ${plural(shown.length, "move")} from your saves, ${fresh} new${when}` : `Nothing to fit in from your saves${when}`,
     });
   },

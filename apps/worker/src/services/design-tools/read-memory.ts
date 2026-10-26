@@ -2,10 +2,11 @@
  * recall_memory(query?, kind?) — memory beyond the pinned core (Stage 3 spec §4, §9; principles §6.7). The opening
  * context carries the core; this reads the rest of what is live (memory-core.ts: one definition for both — never a
  * superseded, switched-off or expired item, nor one a rehearsal run wrote), newest first, each with its kind,
- * confidence (stated, inferred — the coach's own inference, not yet confirmed — or confirmed), where it came from, when
- * it was learned, when it expires, and its evidence. `query` matches every word. Bodies and evidence are memory:
- * marked. A page that fits, paged by key (a memory the run writes meanwhile never shifts the next page). Two
- * statements: the athlete (for today), then the page.
+ * confidence (stated, inferred — the coach's own inference, not yet confirmed — or confirmed), where it came from (its
+ * provenance's source: "saved post" for what a post the athlete saved says about when, why or how often — Save kept it,
+ * spec §17), when it was learned, when it expires, and its evidence. `query` matches every word. Bodies and evidence
+ * are memory: marked. A page that fits, paged by key (a memory the run writes meanwhile never shifts the next page).
+ * Two statements: the athlete (for today), then the page.
  */
 import { and, desc, eq, notInArray, sql } from "drizzle-orm";
 import { z } from "zod";

@@ -93,7 +93,7 @@ describe("read_saves", () => {
     const { r, count } = await read({});
     expect(isToolErr(r as never)).toBe(false);
     const a = r as ReadOk;
-    expect(a.data).toEqual({ batch: null, moves: [], routines: [] });
+    expect(a.data).toEqual({ batch: null, moves: [], routines: [], insights: [] });
     expect(a.missing).toContain("no saved batch waiting to be fitted in: none saved in the last 14 days, or each one is fitted in already");
     expect(a.summary).toBe("Nothing new from your saves");
     expect(count).toBe(2);
@@ -120,20 +120,21 @@ describe("read_saves", () => {
       {
         id: a, name: U("Zorbex hip circle"), summary: U("Zorbex hip circle, slow and even."), new: true, pinned: false, groups: "hip", posts: 2,
         links: [
-          { url: expect.stringMatching(/^https:\/\/example\.com\/p\//), creator: U("coach_zero") },
+          // Each with its note: the post's reading of what the move is for (spec §17), marked.
+          { url: expect.stringMatching(/^https:\/\/example\.com\/p\//), creator: U("coach_zero"), note: U("mobility") },
           // No handle: the creator's name.
-          { url: expect.stringMatching(/^https:\/\/example\.com\/p\//), creator: U("Coach One") },
+          { url: expect.stringMatching(/^https:\/\/example\.com\/p\//), creator: U("Coach One"), note: U("mobility") },
         ],
         fromPost: U("Three moves for the hips, slow."),
       },
       {
         id: b, name: U("Zorbex neck nod"), summary: U("A small nod, chin tucked."), new: true, pinned: false, groups: "neck", posts: 1,
-        links: [{ url: expect.any(String), creator: U("coach_zero") }], fromPost: U("Three moves for the hips, slow."),
+        links: [{ url: expect.any(String), creator: U("coach_zero"), note: U("mobility") }], fromPost: U("Three moves for the hips, slow."),
       },
       {
         // The library's own words: code, not marked.
         id: "gobletSquat", name: GOBLET.name, summary: GOBLET.text.summary, new: false, pinned: true, groups: moveGroup(GOBLET), posts: 1,
-        links: [{ url: expect.any(String), creator: U("coach_zero") }], fromPost: U("Three moves for the hips, slow."),
+        links: [{ url: expect.any(String), creator: U("coach_zero"), note: U("mobility") }], fromPost: U("Three moves for the hips, slow."),
       },
     ]);
     // The routine post, its moves in the post's order; the single move's post is no routine.
@@ -158,7 +159,7 @@ describe("read_saves", () => {
     expect(r.data.batch.id).toBe(batchId);
     const hip = EXERCISES.find((e) => e.name === "90/90 hip switches")!;
     expect(r.data.moves.map((m: any) => [m.new, m.new ? m.name : m.id])).toEqual([[true, U("Zorbex quad shuffle")], [false, hip.id]]);
-    expect(r.data.moves[0].links).toEqual([{ url: "https://example.com/p/real", creator: U("coach_real") }]);
+    expect(r.data.moves[0].links).toEqual([{ url: "https://example.com/p/real", creator: U("coach_real"), note: U("mobility") }]);
     expect(r.data.routines).toEqual([{ post: U("Hips, then the neck."), order: [r.data.moves[0].id, hip.id] }]);
   });
 
@@ -258,6 +259,8 @@ describe("read_saves", () => {
   });
 
   it("twelve moves at their longest stay within the answer's budget, and every marked text has its marker first", async () => {
+    // With five 200-character insights and a 160-character note on every link (spec §17). Measured 2026-10-25: 6,337 B,
+    // 4 of the 12 moves on the first page.
     await seedSavedBatch(db, userId, { savedAt: daysAgo(1), posts: longBatchPosts() });
     const r = await ok({});
     const { summary: _s, ...forModel } = r;
@@ -267,11 +270,35 @@ describe("read_saves", () => {
     const shown = r.data.moves.length;
     expect(shown).toBeGreaterThan(3);
     if (shown < 12) expect(r.missing).toContain(`${plural(12 - shown, "more move", "more moves")} — pass offset: ${shown}`);
-    for (const lead of ["LONG-reading", "LONG-handle", "LONG move", "LONG-summary"]) {
+    expect(r.data.insights).toHaveLength(5);
+    for (const lead of ["LONG-reading", "LONG-handle", "LONG move", "LONG-summary", "LONG-purpose", "LONG-insight"]) {
       const at = [...text.matchAll(new RegExp(lead, "g"))];
       expect(at.length, lead).toBeGreaterThan(0);
       for (const m of at) expect(text.slice(m.index! - 26, m.index), lead).toBe('{"untrusted":true,"text":"');
     }
+  });
+
+  it("insights (spec §17): at most 5 of the kept posts', in the posts' order, marked; a post whose rows were all removed gives none — in the statements it had", async () => {
+    const posts = twoPosts();
+    posts[0]!.insights = ["Twice a week is plenty.", "Before a run, not after."];
+    posts[1]!.insights = ["Keep the neck long.", "Breathe out on the way up.", "Stop if the jaw clenches."];
+    const removed: SavedPostSpec = { kind: "single_move", insights: ["REMOVED-POST-INSIGHT"], removed: [0], moves: [{ library: "deadBug" }] };
+    await seedSavedBatch(db, userId, { savedAt: daysAgo(1), posts: [posts[0]!, removed, posts[1]!, { kind: "single_move", insights: ["A sixth."], moves: [{ library: "deadBug" }] }] });
+    const { r, count } = await read({});
+    expect(count).toBe(2);
+    const a = r as ReadOk & { data: any };
+    expect(a.data.insights).toEqual([
+      U("Twice a week is plenty."), U("Before a run, not after."), U("Keep the neck long."), U("Breathe out on the way up."), U("Stop if the jaw clenches."),
+    ]);
+    expect(JSON.stringify(a)).not.toContain("REMOVED-POST-INSIGHT");
+    expect(JSON.stringify(a)).not.toContain("A sixth.");
+  });
+
+  it("a link's note is its post's reading of the move — null when the post gave none", async () => {
+    const quiet = savedMoveDraft("Zorbex quiet move", { purpose: "" });
+    await seedSavedBatch(db, userId, { savedAt: daysAgo(1), posts: [{ kind: "single_move", moves: [{ draft: quiet }] }] });
+    const r = await ok({});
+    expect(r.data.moves[0].links).toEqual([{ url: expect.any(String), creator: U("coach_0"), note: null }]);
   });
 
   it("in a step, the athlete is the step's shared read: the batch is one statement more", async () => {

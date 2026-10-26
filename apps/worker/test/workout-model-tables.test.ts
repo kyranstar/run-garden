@@ -214,7 +214,7 @@ describe("one fully populated row per new table round-trips (D1's 100-variable c
         schema.exerciseProvenance,
         {
           id: "prov-1", userId, exerciseId: "goblet-squat", sourceType: "video", url: "https://example.com/v/1",
-          creator: "example-creator", sourceKey: "example-1", createdAt: at,
+          creator: "example-creator", sourceKey: "example-1", createdAt: at, note: "Before a run, to wake the hips up.",
         },
       ],
     ];

@@ -181,9 +181,10 @@ describe("the coach's library reads", () => {
     const data = res.data as Record<string, any>;
     expect(data).toMatchObject({ id: archived, name: U("Prone Y Raise Hold"), summary: U("Prone Y Raise Hold, slow and even.") });
     expect(data.yours).toMatchObject({ own: true, archived: true, saved: true });
+    // No note on these links (each written without one).
     expect(data.yours.links).toEqual([
-      { url: U("https://example.com/p/1"), creator: U("Example Coach 1") },
-      { url: U("https://example.com/p/2"), creator: U("Example Coach 2") },
+      { url: U("https://example.com/p/1"), creator: U("Example Coach 1"), note: null },
+      { url: U("https://example.com/p/2"), creator: U("Example Coach 2"), note: null },
     ]);
     expect(data.howTo.steps).toEqual([U("Set up tall."), U("Move slowly through the range.")]);
     // A public move stays as it was: no links, not its own.
@@ -324,8 +325,8 @@ describe("the owner's own moves: GET /api/library/personal", () => {
     expect(moves.map((m) => m.record.id)).not.toContain(merged);
     // A move merged into it brings its link along.
     expect(moves.find((m) => m.record.id === active)!.links).toEqual([
-      { url: "https://example.com/p/1", creator: "Example Coach 1" },
-      { url: "https://example.com/p/2", creator: "Example Coach 2" },
+      { url: "https://example.com/p/1", creator: "Example Coach 1", note: null },
+      { url: "https://example.com/p/2", creator: "Example Coach 2", note: null },
     ]);
     expect(moves.find((m) => m.record.id === archived)).toMatchObject({ record: { name: "Prone Y Raise Hold" }, links: [{ url: "https://example.com/p/3", creator: "Example Coach 3" }] });
     // The merged move, with the move that answers for it (Task 15: the device resolves it as the Worker does).

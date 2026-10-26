@@ -174,8 +174,11 @@ export interface LibraryItem {
   harder: Array<{ id: string; name: string }>;
   prefs: ExercisePrefsView;
   saved: boolean;
-  /** Where a saved move came from — the account's own links. */
-  provenance: Array<{ sourceType: string; url: string | null; creator: string | null }>;
+  /**
+   * Where a saved move came from — the account's own links; each with its note (spec §17: what the post says the move
+   * is for, or when to do it — a model's reading, drawn as text), null for a curated link.
+   */
+  provenance: Array<{ sourceType: string; url: string | null; creator: string | null; note: string | null }>;
   history: { last: HistoryEntryView[]; best: BestSet | null };
 }
 
@@ -509,7 +512,7 @@ export async function libraryItem(db: Db, userId: string, id: string): Promise<L
     activeProfileIds(db, userId),
     db.select().from(exercisePrefs).where(and(eq(exercisePrefs.userId, userId), eq(exercisePrefs.exerciseId, id))).limit(1),
     db
-      .select({ sourceType: exerciseProvenance.sourceType, url: exerciseProvenance.url, creator: exerciseProvenance.creator })
+      .select({ sourceType: exerciseProvenance.sourceType, url: exerciseProvenance.url, creator: exerciseProvenance.creator, note: exerciseProvenance.note })
       .from(exerciseProvenance)
       .where(and(eq(exerciseProvenance.userId, userId), eq(exerciseProvenance.exerciseId, id)))
       .orderBy(asc(exerciseProvenance.createdAt), asc(exerciseProvenance.id)),
@@ -605,8 +608,11 @@ export async function setExercisePrefs(db: Db, userId: string, exerciseId: strin
 export interface PersonalMoveView {
   record: ExerciseRecord;
   status: "active" | "archived";
-  /** The saved posts it came from — its own, and those of any move merged into it — oldest first. */
-  links: Array<{ url: string | null; creator: string | null }>;
+  /**
+   * The saved posts it came from — its own, and those of any move merged into it — oldest first; each with its note
+   * (what the post says the move is for, or when to do it: a model's reading, drawn as text), null when it has none.
+   */
+  links: Array<{ url: string | null; creator: string | null; note: string | null }>;
 }
 
 /** A move merged into another (`GET /api/library/personal`): its id, and the move that answers for it now. */
@@ -641,15 +647,16 @@ export async function listPersonalMoves(db: Db, userId: string): Promise<{ moves
   const offered = new Set(library.offered.filter((r) => isPersonalId(r.id)).map((r) => r.id));
   const ids = mine.flatMap((r) => [r.id, ...r.legacyIds]);
   const rows = (await db.all(sql`
-    select ${exerciseProvenance.exerciseId} as exerciseId, ${exerciseProvenance.url} as url, ${exerciseProvenance.creator} as creator
+    select ${exerciseProvenance.exerciseId} as exerciseId, ${exerciseProvenance.url} as url, ${exerciseProvenance.creator} as creator,
+      ${exerciseProvenance.note} as note
     from ${exerciseProvenance}
     where ${exerciseProvenance.userId} = ${userId} and ${exerciseProvenance.exerciseId} in (select value from json_each(${JSON.stringify(ids)}))
-    order by ${exerciseProvenance.createdAt}, ${exerciseProvenance.id}`)) as Array<{ exerciseId: string; url: string | null; creator: string | null }>;
+    order by ${exerciseProvenance.createdAt}, ${exerciseProvenance.id}`)) as Array<{ exerciseId: string; url: string | null; creator: string | null; note: string | null }>;
   const find = makeLibraryIndex(library.all);
   const links = new Map<string, PersonalMoveView["links"]>();
   for (const r of rows) {
     const id = find(r.exerciseId)?.id ?? r.exerciseId;
-    links.set(id, [...(links.get(id) ?? []), { url: r.url, creator: r.creator }]);
+    links.set(id, [...(links.get(id) ?? []), { url: r.url, creator: r.creator, note: r.note ?? null }]);
   }
   const moves = mine
     .map((record): PersonalMoveView => ({ record, status: offered.has(record.id) ? "active" : "archived", links: links.get(record.id) ?? [] }))
