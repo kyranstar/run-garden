@@ -20,13 +20,14 @@
  *
  * A row opens the move's sheet: its words, the post (its creator, and a link that opens it apart), the dose as the post
  * gave it and as it would be saved, and — while the row is pending — Edit (a new move, or one of the owner's own),
- * Not this move (the post's move is a move of its own), Same as… (a library move or one of the owner's own, from what
- * the Studio offers), Remove, and Ask the coach (the coach, seeing the move). Save these keeps what is left: the new
- * moves become the owner's, their posts their links.
+ * Not this move (the post's move becomes a new move of its own, from the post's reading), Same as… (a library move or
+ * one of the owner's own, from what the Studio offers), Remove, and Ask the coach (the coach, seeing the move). Save
+ * these keeps what is left: the new moves become the owner's, their posts their links.
  *
  * A model wrote the names, summaries and creators: drawn as text, never as markup; a post's address is a link only when
- * it is a web page's (`postHref`). Every write reads the batch again; one that changes the owner's moves reads their
- * moves again too (the Studio's library), so search and the builder see a saved or edited move at once.
+ * it is a web page's (`postHref`). Every write reads the batch again; one that changes the owner's moves (save, edit,
+ * either re-match) reads the whole library again (`["library"]`: their moves, the Studio's list, a move's own detail),
+ * so search, the builder and a move's detail see a saved or edited move at once.
  */
 import { useEffect, useId, useMemo, useRef, useState, type ReactNode } from "react";
 import { Link, useParams } from "react-router-dom";
@@ -37,7 +38,7 @@ import type { SaveBatchDetailDto, SaveBatchRowDto } from "@rg/saves";
 import { EmptyState, Sheet, Spinner } from "../../components.js";
 import { SearchField } from "../../components/search-field.js";
 import { IconBack } from "../../icons.js";
-import { PERSONAL_MOVES_QUERY, useAccountLibrary } from "../../library/account-library.js";
+import { useAccountLibrary } from "../../library/account-library.js";
 import { AskCoach, useCoachSeeing } from "./coach-ask.js";
 import { moveFocus } from "./coach-focus.js";
 import { doseLine } from "./model.js";
@@ -167,11 +168,14 @@ export function SaveBatchScreen() {
   const shown = shownRows(rows);
   const openRow = open ? (rows.find((r) => r.postMoveId === open.postMoveId) ?? null) : null;
 
-  /** Read the batch again (and the batches); `moves`: the owner's moves changed, so read those again too. */
+  /**
+   * Read the batch again (and the batches); `moves`: the owner's moves changed, so read the whole library again — their
+   * moves (`["library", "personal"]`), the Studio's list and a move's own detail (`["library", "item", id]`) alike.
+   */
   const refresh = (moves: boolean) => {
     void qc.invalidateQueries({ queryKey: savesBatchQuery(batchId) });
     void qc.invalidateQueries({ queryKey: SAVES_BATCHES_QUERY });
-    if (moves) void qc.invalidateQueries({ queryKey: PERSONAL_MOVES_QUERY });
+    if (moves) void qc.invalidateQueries({ queryKey: ["library"] });
   };
 
   const save = async () => {
@@ -182,8 +186,6 @@ export function SaveBatchScreen() {
       setStatus("Saved.");
       refresh(true);
       void qc.invalidateQueries({ queryKey: SAVES_STATUS_QUERY });
-      // The Studio's say on each move it offers: the saved moves among them now.
-      void qc.invalidateQueries({ queryKey: ["library", "studio"] });
     } catch (e) {
       setStatus(writeError(e, "save"));
     } finally {
@@ -252,7 +254,6 @@ export function SaveBatchScreen() {
         <MoveSheet
           key={openRow.postMoveId}
           row={openRow}
-          rows={rows}
           mode={open.mode}
           offered={account.offered}
           find={account.find}
@@ -270,7 +271,6 @@ export function SaveBatchScreen() {
 
 function MoveSheet({
   row,
-  rows,
   mode,
   offered,
   find,
@@ -280,7 +280,6 @@ function MoveSheet({
   onDone,
 }: {
   row: SaveBatchRowDto;
-  rows: readonly SaveBatchRowDto[];
   mode: Open["mode"];
   offered: readonly ExerciseRecord[];
   find: (id: string) => ExerciseRecord | undefined;
@@ -289,7 +288,7 @@ function MoveSheet({
   onClose: () => void;
   onDone: (line: string, moves: boolean, gone?: boolean) => void;
 }) {
-  const actions = rowActions(row, rows, ownStatus);
+  const actions = rowActions(row, ownStatus);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   // What the coach sees while the sheet is open (its "Seeing" hint from the nav's Coach).

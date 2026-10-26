@@ -108,6 +108,7 @@ let root: Root | null = null;
 let host: HTMLElement | null = null;
 let where = "";
 let opener: CoachOpener & { open: ReturnType<typeof vi.fn> };
+let client: ReturnType<typeof primedClient>;
 
 function Where() {
   const loc = useLocation();
@@ -121,6 +122,7 @@ function mount(path: string) {
   root = createRoot(host);
   const qc = primedClient({ places: placesDto(["mat"]), today: todayDto(null, false), library: libraryDto(), profile: profileDto(), personal: PERSONAL });
   qc.setQueryData(["settings"], { prefs: DEVICE_PREFS });
+  client = qc;
   opener = { open: vi.fn() };
   act(() => {
     root!.render(
@@ -263,9 +265,11 @@ describe("a move's sheet", () => {
     expect(picker).not.toBeNull();
     setValue(picker!.querySelector<HTMLInputElement>('input[type="search"]')!, "Lantern");
     await settle();
+    const invalidated = vi.spyOn(client, "invalidateQueries");
     await click(buttons(picker!).find((b) => b.textContent?.includes(LANTERN.name)), "Lantern reach");
     await until(() => posts(calls, "/api/my-saves/post-moves/pm3/rematch").length === 1, "the re-match");
     expect(posts(calls, "/api/my-saves/post-moves/pm3/rematch")[0]!.body).toEqual({ to: LANTERN.id });
+    await until(() => invalidated.mock.calls.some(([f]) => JSON.stringify(f?.queryKey) === '["library"]'), "the library read again");
   });
 
   it("Not this move makes the post's move its own; Remove takes the row out", async () => {
@@ -281,8 +285,8 @@ describe("a move's sheet", () => {
 
     await until(() => !!rowOf(QUAD.name), "the rows again");
     await openRow(QUAD.name);
-    // A new move that is the post's own: nothing to un-match.
-    expect(button("Not this move", dialog(QUAD.name)!)).toBeNull();
+    // A new move too: the post's own reading makes another, every time.
+    expect(button("Not this move", dialog(QUAD.name)!)).not.toBeNull();
     await click(button("Remove", dialog(QUAD.name)!), "Remove");
     await until(() => posts(calls, "/api/my-saves/post-moves/pm1/remove").length === 1 && !rowOf(QUAD.name), "the removal");
   });
@@ -303,11 +307,14 @@ describe("a move's sheet", () => {
     expect(sheet.querySelector('[role="alert"]')!.textContent).toContain("conditions.tmj.clench must be 0–3");
     setValue(input, "Zorbex quad walk");
     await settle();
+    const invalidated = vi.spyOn(client, "invalidateQueries");
     await click(button("Save", sheet), "Save");
     const puts = calls.filter((c) => c.method === "PUT" && c.path === `/api/my-saves/moves/${QUAD.id}`);
     await until(() => calls.filter((c) => c.method === "PUT").length === 2, "the edit");
     expect(puts.length).toBeGreaterThan(0);
     expect(calls.filter((c) => c.method === "PUT").map((c) => c.body)).toEqual([{ name: "Bad name" }, { name: "Zorbex quad walk" }]);
+    // The whole library is read again — the move's own detail too (`["library", "item", id]`), not only the list.
+    expect(invalidated).toHaveBeenCalledWith({ queryKey: ["library"] });
   });
 });
 

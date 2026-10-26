@@ -36,25 +36,21 @@ export function batchFacts(b: SaveBatchDto): string[] {
 /** The rows drawn: a removed one is gone from the list. */
 export const shownRows = (rows: readonly SaveBatchRowDto[]): SaveBatchRowDto[] => rows.filter((r) => r.status !== "removed");
 
-/** Another kept row of the batch names the same move (two posts with one new move). */
-export const sharesMove = (row: SaveBatchRowDto, rows: readonly SaveBatchRowDto[]): boolean =>
-  rows.some((o) => o.postMoveId !== row.postMoveId && o.status === "pending" && o.move.id === row.move.id);
-
 export interface RowActions {
   /** A new move, or one of the owner's own active moves: theirs to change. Never the library's. */
   edit: boolean;
-  /** A linked row, or a new move another row shares: the post's move can be its own. */
+  /** The post's move made a new move of its own, from the post's reading (every time; the move it leaves is never used). */
   notThis: boolean;
   sameAs: boolean;
   remove: boolean;
 }
 
 /** What a row's sheet offers: a pending row is the owner's to change; a saved one only to edit (its move) and ask about. */
-export function rowActions(row: SaveBatchRowDto, rows: readonly SaveBatchRowDto[], ownStatus?: "active" | "archived"): RowActions {
+export function rowActions(row: SaveBatchRowDto, ownStatus?: "active" | "archived"): RowActions {
   const pending = row.status === "pending";
   return {
     edit: !!row.record && (row.move.kind === "new" || ownStatus === "active"),
-    notThis: pending && (row.move.kind === "linked" || sharesMove(row, rows)),
+    notThis: pending,
     sameAs: pending,
     remove: pending,
   };
