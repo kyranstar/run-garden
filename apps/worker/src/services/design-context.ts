@@ -33,6 +33,12 @@
  * session asked from read by the account's library, and so does a move asked from — one of the athlete's own moves
  * included, its words marked as a saved post's (a model's reading of a creator's post, never the athlete's wish); a pending one (still in review: "Ask the coach" before its batch is saved) is read
  * from its own row, in the focus's one statement, and said to be not yet saved. It is never a move a workout can place.
+ *
+ * WHAT CAME IN FROM THE ATHLETE'S SAVES (saved-posts import, Task 17): a main run's opening message lists the moves of
+ * the newest batch the athlete saved in the last 14 days and nothing has fitted in yet — at most 12, one line each, a
+ * personal move's name and summary marked as a saved post's — just before the request ("From the athlete's saves …").
+ * The batch rides in the counts statement (read_saves' own `savesBatchSql`), so it costs no statement, and the section
+ * is there only when such a batch is. read_saves has the posts, the pins and the routines.
  */
 import { and, asc, eq, gte, inArray, isNull, lte, sql, type SQL } from "drizzle-orm";
 import {
@@ -80,6 +86,7 @@ import { runningFactsOf, runningLine, runWeeksSql, thresholdSql, watchLine, type
 import { FOCUS_LINES, SHARED_PROMPT, markUntrusted, roleBlock, type ReviewRubric, type UntrustedSource } from "./design-prompt.js";
 import { dayWords, distanceWords, minutesOf, paceWords, parsedArray, parsedJson, plural, readTagged, relativeDay } from "./design-tools/read-common.js";
 import { planTerm } from "./design-tools/read-plan.js";
+import { SAVES_MOVES_MAX, savedBatchOf, savedMovesOf, savesBatchSql, type SavedBatch } from "./design-tools/read-saves.js";
 import { activitiesAround, activityRows, doneEntries, doneTerms, sessionsWhere, setRows, type DoneCtx } from "./design-tools/read-sessions.js";
 import type { SystemBlock } from "./llm-messages.js";
 import { loadProfileWithPreferences } from "./profile.js";
@@ -94,7 +101,8 @@ import { SLEEP_RECONNECT_WORDS, sleepConnectionStatusSql, sleepNeedsReconnect } 
  * one more: its focus's facts — none for a library move, which the bundled library holds (one for a personal move: its
  * own row, a pending one's record); and for a main run that is a later
  * turn of a conversation (the new shape §5: `conversation`, the conversation to read — none for its first turn), one
- * more: the turns before it (coach-conversation.ts `conversationRows`). */
+ * more: the turns before it (coach-conversation.ts `conversationRows`). A main run's saves batch (Task 17) rides in the
+ * counts statement: none more. */
 export function contextStatements(role: DesignRun["role"], focus?: RunFocus | null, conversation?: string | null): number {
   if (role === "reviewer") return 12;
   if (role !== "main") return 11;
@@ -335,6 +343,8 @@ interface Reads {
   running: RunningFacts;
   /** The account's library (`personalMovesSql`, read in the counts statement): what a session's moves and a move asked from resolve in. */
   library: AccountLibrary;
+  /** A main run's waiting saves batch (read_saves' `savesBatchSql`, in the counts statement): saved in the last 14 days, not fitted in; else null. */
+  saves: SavedBatch | null;
 }
 
 /** An op still the athlete's to decide (coach-runs.ts' alsoOpen rule, R2): undecided, refused at approval, or being applied. */
@@ -430,6 +440,8 @@ async function read(
   const cp = coachProposals;
   const designPrefix = "dp-";
   const day = sql`substr(coalesce(${activities.startTimeLocal}, ${activities.startTime}), 1, 10)`;
+  // A main run's saves batch (Task 17): a sub-run designs from its brief.
+  const isMain = run.role !== "designer" && run.role !== "reviewer";
 
   const [conversationTurns, focusRows, checks, objectiveRows, memory, plan, answers, history, countRows] = await Promise.all([
     conversation ? conversationRows(db, userId, sql`${conversation}`, { limit: CONTEXT_TURNS, exclude: run.id }) : null,
@@ -509,11 +521,12 @@ async function read(
         ${sleepConnectionStatusSql(userId)} as sleepConnection,
         ${thresholdSql(userId)} as runThreshold,
         ${runWeeksSql(userId, today)} as runWeeks,
-        ${personalMovesSql(userId)} as library`) as Promise<
-      Array<Reads["counts"] & { open: string | null; declined: string | null; draftDate: string | null; runThreshold: unknown; runWeeks: unknown; library: unknown }>
+        ${personalMovesSql(userId)} as library,
+        ${isMain ? savesBatchSql(userId, { now }) : sql`null`} as saves`) as Promise<
+      Array<Reads["counts"] & { open: string | null; declined: string | null; draftDate: string | null; runThreshold: unknown; runWeeks: unknown; library: unknown; saves: unknown }>
     >,
   ]);
-  const { open: openJson, declined: declinedJson, draftDate: rawDraft, runThreshold, runWeeks, library: rawLibrary, ...counts } = countRows[0]!;
+  const { open: openJson, declined: declinedJson, draftDate: rawDraft, runThreshold, runWeeks, library: rawLibrary, saves: rawSaves, ...counts } = countRows[0]!;
   const library = await accountLibraryFrom(db, userId, rawLibrary);
   const open = parsedArray(openJson)
     .flatMap((x) => {
@@ -548,6 +561,7 @@ async function read(
     conversation: conversationTurns,
     running: runningFactsOf(runThreshold, runWeeks),
     library,
+    saves: isMain ? savedBatchOf(rawSaves) : null,
   };
 }
 
@@ -1157,6 +1171,26 @@ function focusSection(f: NonNullable<Reads["focus"]>, r: Reads, time: string): s
   return [...lines, FOCUS_LINES[focus.kind]].join("\n");
 }
 
+/**
+ * "From the athlete's saves …" (Task 17): the waiting batch's moves, at most SAVES_MOVES_MAX — new ones first, as
+ * read_saves lists them — each by name, id and summary (a personal move's marked as a saved post's), new or the athlete's
+ * already, and how many of the batch's posts show it; the rest counted. Null when no move of it reads.
+ */
+function savesSection(batch: SavedBatch, r: Reads): string | null {
+  const { moves } = savedMovesOf(batch, r.library.all);
+  if (moves.length === 0) return null;
+  const lines = moves.slice(0, SAVES_MOVES_MAX).map(({ record, new: fresh, postIds }) => {
+    const words = (text: string) => (isPersonalId(record.id) ? savedPost(text) : text);
+    return `- ${words(record.name)} (${record.id}) — ${words(record.text?.summary ?? "")}; ${fresh ? "new" : "yours already"}; from ${plural(postIds.length, "post")}`;
+  });
+  const more = moves.length - SAVES_MOVES_MAX;
+  return [
+    `From the athlete's saves (saved ${dayWords(todayInZone(r.tz, new Date(batch.savedAt)), r.today)}, not yet fitted in):`,
+    ...lines,
+    ...(more > 0 ? [`- and ${more} more`] : []),
+  ].join("\n");
+}
+
 const BRIEF_SOURCES: Record<DesignRun["role"], { from: UntrustedSource; label: string }> = {
   main: { from: "parent run", label: "The brief:" },
   designer: { from: "main coach", label: "The main coach's brief for this workout:" },
@@ -1203,6 +1237,9 @@ function header(r: Reads, run: DesignRun, role: Role, scope: { kind: ScopeKind; 
   const conversation = role === "main" && r.conversation ? conversationBlock(r.conversation, now) : null;
   if (conversation) parts.push(conversation);
   if (role === "main" && r.focus) parts.push(focusSection(r.focus, r, time));
+  // What came in from the athlete's saves (Task 17), last before the request: what "Fit these in" asks about.
+  const saves = role === "main" && r.saves ? savesSection(r.saves, r) : null;
+  if (saves) parts.push(saves);
   parts.push(run.request ? `The athlete's request, in their own words:\n${athlete(run.request)}` : NO_REQUEST[role]);
   return parts.join("\n\n");
 }

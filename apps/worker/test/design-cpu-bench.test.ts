@@ -106,6 +106,7 @@ import { at, day, NOW, seedOwnerPlans, seedRichAthlete, TODAY } from "./design-r
 import { seedLongHistory, words } from "./long-history-fixture.js";
 import { activateTmj, calmDoc } from "./doc-workout-fixture.js";
 import { makeTestDb, makeTestUser, MAX_LOOP_ITERATIONS, mountRoutes } from "./helpers.js";
+import { longBatchPosts, seedSavedBatch } from "./saves-batch-fixture.js";
 
 const ON_CI = process.env.CI === "true";
 /** The calibration loop's median on the reference machine (session-build-bench.test.ts: Apple silicon, Node 21). */
@@ -814,6 +815,22 @@ beforeAll(async () => {
       ["recall_memory", { limit: 30 }],
     ];
     for (const [name, input] of reads) await measureTool(name, images.get("read12")!, ctx, input);
+    // read_saves (saved-posts import, Task 17) over a bootstrap-sized saved batch: 40 posts — four routines of three new
+    // moves at their longest (an 80-character name, a 160-character summary, a long link, creator and reading), then 36
+    // posts of three library moves each (24 of them), half of them routines — 120 links grouped into 36 moves, the 12 it lists.
+    {
+      const withSaves = open(images.get("read12")!);
+      const library = EXERCISES.slice(0, 24).map((e) => e.id);
+      const more = Array.from({ length: 36 }, (_, i) => ({
+        kind: i % 2 ? ("routine" as const) : ("single_move" as const),
+        summary: words(i, 280),
+        moves: [0, 1, 2].map((k) => ({ library: library[(i * 3 + k) % library.length]! })),
+      }));
+      await seedSavedBatch(withSaves.db, userId, { savedAt: at(day(1)), posts: [...longBatchPosts(), ...more], pinned: library.slice(0, 6) });
+      images.set("saves", imageOf(withSaves.db));
+      withSaves.close();
+      await measureTool("read_saves", images.get("saves")!, ctx, {});
+    }
     await measureTool("validate_workout", images.get("read12")!, ctx, { doc: docs[0], date: TODAY });
     await measureTool("propose_workout", images.get("read12")!, ctx, { doc: docs[0], target: { kind: "new", date: TODAY }, changeNote: words(6, 180) });
     // propose_plan at its heaviest (§8 §5; the decision guidance's fix round, I1): MAX_PLAN_SESSIONS (24) lift and

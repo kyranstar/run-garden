@@ -17,12 +17,13 @@ import { encodeCursor, MAX_TAGGED_TERMS, readAthlete, readTagged, RESULT_BUDGET_
 import { isToolErr, type DesignTool, type ToolErr, type ToolOk } from "../src/services/design-tools/types.js";
 import { TOOL_RESULT_MAX_BYTES } from "../src/services/coach-runs.js";
 import { at, day, NOW, seedOtherAthlete, seedRichAthlete, studioDoc, TODAY } from "./design-read-fixture.js";
+import { longBatchPosts, seedSavedBatch } from "./saves-batch-fixture.js";
 import { everyPage, isWrite, makeTestDb, makeTestUser } from "./helpers.js";
 
 const ENV = {} as Env;
 const READ_NAMES = [
   "read_profile", "read_day", "read_plan", "read_plans", "list_workouts", "get_workout", "read_history", "read_balance", "read_readiness",
-  "read_answers", "read_objectives", "search_library", "get_exercise", "list_templates", "read_proposals", "recall_memory",
+  "read_answers", "read_objectives", "search_library", "get_exercise", "read_saves", "list_templates", "read_proposals", "recall_memory",
 ];
 /** "Well under" the loop's cut: room for the loop's own framing and a richer account than the fixture's. */
 const DEFAULT_RESULT_MAX_BYTES = 6_500;
@@ -94,6 +95,7 @@ function scenarios(): Record<string, unknown[]> {
     read_objectives: [{}, { limit: 1 }, { limit: 1, cursor: encodeCursor([1]) }],
     search_library: [{}, { query: "squat" }, { query: "hip", filters: { fitToday: true, place: rich.gymId, purpose: "mobility" }, limit: 30 }, { filters: { place: "nope" } }],
     get_exercise: [{ id: "gobletSquat" }, { id: "deadBug", howTo: true }, { id: "catCow" }, { id: "nope" }],
+    read_saves: [{}, { limit: 12 }, { batchId: "no-such-batch" }, { limit: 13 }],
     list_templates: [{}, { limit: 50 }, { limit: 5, cursor: encodeCursor([15]) }],
     read_proposals: [{}, { status: "approved" }, { limit: 30 }, { cursor: encodeCursor([at(day(9), "10:00"), "~"]) }],
     recall_memory: [{}, { query: "hills likes", kind: "note" }, { limit: 30, cursor: encodeCursor([at(day(25)), "~"]) }],
@@ -247,7 +249,13 @@ describe("untrusted text", () => {
       workoutDoc: JSON.stringify({ ...studioDoc({ why: long("why").slice(0, 160) }), source: { kind: "studio", ref: long("ref").slice(0, 200) } }),
       workoutDocRev: 1, createdAt: at(day(1)), updatedAt: at(day(1)),
     });
+    // A saved batch whose posts' readings, creators and new moves' names and summaries are long (read_saves).
+    await seedSavedBatch(db, userId, { savedAt: at(day(1)), posts: longBatchPosts("LONG-saves") });
     const checks: Array<[string, unknown, string]> = [
+      ["read_saves", {}, "LONG-saves-reading"],
+      ["read_saves", {}, "LONG-saves-handle"],
+      ["read_saves", {}, "LONG-saves move"],
+      ["read_saves", {}, "LONG-saves-summary"],
       ["read_history", { from: day(2), to: TODAY }, "LONG-note"],
       ["read_answers", {}, "LONG-answer"],
       ["recall_memory", {}, "LONG-memory"],

@@ -59,6 +59,8 @@ describe("the prompt text", () => {
       "adjust_plan",
       // §8 (stream W): the plans themselves, and a change to one's shape — and to a programme's settings.
       "read_plans", "propose_plan", "change_programme",
+      // Saved-posts import, Task 17: what came in from the athlete's saves.
+      "read_saves",
     ];
     expect([...PROMPT_TOOL_NAMES].sort()).toEqual([...spec].sort());
     for (const name of PROMPT_TOOL_NAMES) expect(ALL_TEXT, name).toContain(name);

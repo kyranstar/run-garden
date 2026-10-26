@@ -46,6 +46,7 @@ const TOOL_WORDS: Record<PromptToolName, string> = {
   read_objectives: "your objectives",
   search_library: "the library",
   get_exercise: "the move's details",
+  read_saves: "your saves",
   list_templates: "your templates",
   read_proposals: "your suggestions",
   recall_memory: "what the coach remembers",

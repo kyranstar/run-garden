@@ -50,6 +50,7 @@ export const PROMPT_TOOL_NAMES = [
   "read_objectives",
   "search_library",
   "get_exercise",
+  "read_saves",
   "list_templates",
   "read_proposals",
   "recall_memory",
@@ -178,6 +179,7 @@ Reading:
 - read_objectives: objectives and key results with progress and how good the evidence is (a legend says what each flag means).
 - read_profile: the whole profile — goals, focus areas with their library refs, events, places with equipment and implements, units, conditions.
 - search_library and get_exercise: search by words and filters (purpose, pattern, region, equipment, fit today and more), then the full record with the athlete's history. Choose from what the search shows you, not from memory.
+- read_saves: the athlete's newest saved batch not yet fitted in — its moves, their posts and routines.
 - list_workouts and get_workout: past and planned document workouts with their intent; one workout's document, revision, actuals and feedback. When a design starts from one the athlete has — "like last week's", "more of Tuesday's" — set the document's basedOn: { kind, id, rev } — kind workout (with get_workout's rev), template, performed for a logged session, or proposal for a suggestion, read back with get_workout({ proposalId, opId }).
 - list_templates: the athlete's saved workouts. read_proposals: suggestions still open and past ones, with how they ended — approved, edited or declined, and why; learn from them. recall_memory: memory beyond the pinned core.
 Acting:

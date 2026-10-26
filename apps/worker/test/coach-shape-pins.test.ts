@@ -49,8 +49,13 @@ const BEFORE = { tools: 34_935, shared: 20_450, main: 4_586 };
  * NOT REBASED 2026-10-20 for training lines (the coach sees lines and the Studio plan): read_plans' description names the
  * Studio plan, 16 characters (tools 39,125 → 39,141), inside the margin — 9,531 since §8's start; its lines, the Studio
  * plan's entry and how to continue a line are in its answer, not in the prefix.
+ *
+ * REBASED 2026-10-25 for read_saves (saved-posts import, Task 17: what came in from the athlete's saves): a new read
+ * tool, its schema compact (tools 39,141 → 39,677) and one Reading line in the shared prompt (23,729 → 23,833) — 640
+ * characters, so 10,171 since §8's start; held with about the same margin as before. The batch's moves are in the
+ * opening message (a main run's, only while a saved batch waits), its posts and routines in the tool's answer.
  */
-const GROWTH_MAX_CHARS = 9_560;
+const GROWTH_MAX_CHARS = 10_200;
 
 const toolsSent = () => JSON.stringify(allTools().map((t) => ({ name: t.name, description: t.description, input_schema: t.inputSchema })));
 
