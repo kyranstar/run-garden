@@ -53,6 +53,21 @@ describe("toSeed", () => {
     }
   });
 
+  it("reads a capture's category slugs by their words: a training word inside one makes the post training", () => {
+    for (const category of ["exercise-strength", "mobility-stretching", "posture-desk-pain", "tmj-jaw-neck", "fitness-general"]) {
+      expect(toSeed(record({ category }))?.seed.status, category).toBe("queued");
+    }
+    for (const category of ["nutrition-recipe", "music-art", "mindset-wellbeing", "education-other", "events-places", "product-shopping", "other", "general"]) {
+      expect(toSeed(record({ category }))?.seed.status, category).toBe("filtered_out");
+    }
+  });
+
+  it("reads the category from under `analysis` when the record keeps it there", () => {
+    expect(toSeed(record({ category: undefined, analysis: { category: "exercise-strength", summary: "x" } }))?.seed.status).toBe("queued");
+    expect(toSeed(record({ category: undefined, analysis: { category: "nutrition-recipe" } }))?.seed.status).toBe("filtered_out");
+    expect(toSeed(record({ category: undefined, analysis: {} }))?.seed.status).toBe("filtered_out");
+  });
+
   for (const category of ["recipes", "travel", "humour", "", null, undefined, ["food", "travel"]]) {
     it(`a post of category ${JSON.stringify(category)} is filtered out: not training (first capture)`, () => {
       const out = body(record({ category }));

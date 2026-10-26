@@ -7,8 +7,10 @@
  *
  * The capture's records are read loosely — they were written by hand-run agents, not by this app: the key (`key`,
  * `shortcode` or `code`), the post's link (`url`, `postUrl` or `link`; a web page's only), the creator (a handle string,
- * or `{handle|username, name|fullName}`, or `owner`), the category (`category` or `categories`, a string or a list; any
- * training one makes the post training), and, when present, the caption, hashtags (else the caption's), media type and
+ * or `{handle|username, name|fullName}`, or `owner`), the category (`category` or `categories`, at the top or under
+ * `analysis`; a string or a list; a training one makes the post training when its words hold a training category's —
+ * so a capture's slug such as `exercise-strength` or `fitness-general` reads as the spec's), and, when present, the
+ * caption, hashtags (else the caption's), media type and
  * date. Every field is cut to the route's own limits (`postSubmitSchema`); a record the route could not take (no key,
  * no web link) is null — the command counts and skips it. Nothing here names a site, a post or a person.
  */
@@ -31,16 +33,26 @@ export const WEB_PROTOCOL = ["ht", "tps:"].join("");
 
 /** A category as compared: lower case, words only ("Jaw / Neck" → "jaw neck"). */
 const words = (v) => String(v ?? "").toLowerCase().replace(/[^a-z0-9]+/g, " ").trim();
-/** Each training category, and each part of a paired one ("mobility/stretching" → mobility, stretching), as `words` reads it. */
-const TRAINING_WORDS = new Set(
-  TRAINING_CATEGORIES.flatMap((c) => [words(c), ...c.split("/").map(words)]),
+/**
+ * Each training category, and each part of a paired one ("mobility/stretching" → mobility, stretching), as its words:
+ * a phrase matches a category whose words hold every word of it ("general fitness" needs both; "fitness-general" has them).
+ */
+const TRAINING_PHRASES = [...new Set(TRAINING_CATEGORIES.flatMap((c) => [words(c), ...c.split("/").map(words)]))].map((p) =>
+  p.split(" "),
 );
 
 /** Does the record's category (a string or a list) name a training one? */
 export function isTraining(category) {
   const list = Array.isArray(category) ? category : [category];
-  return list.some((c) => TRAINING_WORDS.has(words(c)));
+  return list.some((c) => {
+    const have = new Set(words(c).split(" ").filter(Boolean));
+    return have.size > 0 && TRAINING_PHRASES.some((phrase) => phrase.every((w) => have.has(w)));
+  });
 }
+
+/** The record's category: at the top, or under the capture's `analysis`. */
+const categoryOf = (r) =>
+  r.category ?? r.categories ?? (r.analysis && typeof r.analysis === "object" ? r.analysis.category ?? r.analysis.categories : undefined);
 
 const str = (v) => (typeof v === "string" && v.trim() ? v.trim() : null);
 const first = (...vs) => vs.map(str).find((v) => v !== null) ?? null;
@@ -94,7 +106,7 @@ export function toSeed(record) {
   if (!key || key.length > KEY_MAX || !url) return null;
   const caption = (typeof record.caption === "string" ? record.caption : "").slice(0, CAPTION_MAX);
   const postedAt = postedAtOf(record);
-  const training = isTraining(record.category ?? record.categories);
+  const training = isTraining(categoryOf(record));
   return {
     key,
     url,
