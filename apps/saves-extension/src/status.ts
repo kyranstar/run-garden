@@ -61,19 +61,23 @@ export interface PopupInput {
   checking?: boolean;
 }
 
-/** A check that started but has not finished is running — for this long; after it, it died with its worker. */
-const CHECK_RUNNING_MAX_MS = 2 * 3_600_000;
-
-/** Is a check in progress — by the background's word, or the newest check row still open and recent enough? */
+/**
+ * Is a check in progress? Only by the background's own word: a check row the app still holds open says the worker that
+ * ran it died (bad wifi, a sleep, a reload) — the first live night a reloaded popup read such a row as running and kept
+ * Check now locked (2026-10-26). The open row reads "did not finish"; Check now starts a fresh check.
+ */
 export function isChecking(input: PopupInput): boolean {
-  if (input.checking) return true;
+  return input.checking === true;
+}
+
+/** The newest check row the app holds open while no check runs here: it died with its worker. */
+export function lastCheckDied(input: PopupInput): boolean {
   const newest = input.status?.checks[0];
-  if (!newest || newest.finishedAt !== null) return false;
-  const started = Date.parse(newest.startedAt);
-  return !Number.isNaN(started) && input.now - started < CHECK_RUNNING_MAX_MS;
+  return !input.checking && !!newest && newest.finishedAt === null;
 }
 
 export const CHECKING = "Checking…";
+export const CHECK_DIED = "The last check did not finish — Check now starts a new one";
 
 const HEADLINES: Record<Exclude<SavesStatusDto["state"], "error">, string> = {
   ok: "Up to date",
@@ -149,7 +153,7 @@ export function popupModel(input: PopupInput): PopupModel {
 
   return {
     headline: headlineOf(input),
-    detail: status ? "" : (input.appError ?? ""),
+    detail: status ? (lastCheckDied(input) ? CHECK_DIED : "") : (input.appError ?? ""),
     lastCheck: ago(status?.lastCheckAt ?? null, now),
     nextCheck: until(input.nextCheckAt, now),
     queue: input.queueSize > 0 ? `${input.queueSize} waiting` : "",

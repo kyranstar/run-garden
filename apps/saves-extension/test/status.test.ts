@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import type { PostRowDto, SavesStatusDto } from "@rg/saves";
-import { CHECKING, NOT_CONFIGURED, isChecking, isPostKey, popupModel, safeHref } from "../src/status.js";
+import { CHECK_DIED, CHECKING, NOT_CONFIGURED, isChecking, isPostKey, popupModel, safeHref } from "../src/status.js";
 
 const NOW = Date.parse("2026-10-23T12:00:00.000Z");
 const HOUR = 3_600_000;
@@ -34,33 +34,32 @@ describe("a running check", () => {
   const open = { id: "c9", startedAt: "2026-10-23T11:58:00.000Z", finishedAt: null, found: 0, fresh: 0, filtered: 0, extracted: 0, failed: 0, errorCode: null };
   const done = { ...open, id: "c8", startedAt: "2026-10-23T09:00:00.000Z", finishedAt: "2026-10-23T09:03:00.000Z", found: 12, fresh: 3, filtered: 2 };
 
-  it("by the background's word: the headline is Checking…, not a problem, and Check now is on but the model says checking", () => {
-    const m = model({ checking: true });
+  it("by the background's word: the headline is Checking…, the open row in progress, and the model says checking", () => {
+    const m = model({ checking: true, status: status({ checks: [open, done] }) });
     expect(m.headline).toBe(CHECKING);
     expect(m.checking).toBe(true);
+    expect(m.detail).toBe("");
     expect(m.actions).toContain("check_now");
-  });
-
-  it("by the newest check row still open and recent — the popup reopened after the background forgot it said so", () => {
-    const m = model({ status: status({ checks: [open, done] }) });
-    expect(isChecking({ status: status({ checks: [open] }), appError: null, queueSize: 0, nextCheckAt: null, now: NOW })).toBe(true);
-    expect(m.headline).toBe(CHECKING);
     expect(m.checks[0]).toMatchObject({ when: "2 min ago", counts: "in progress", error: null });
     expect(m.checks[1]?.counts).toBe("12 found · 3 new · 2 filtered · 0 extracted · 0 failed");
   });
 
-  it("an open check older than two hours died with its worker: did not finish, and the headline is the app's", () => {
-    const stale = { ...open, startedAt: "2026-10-23T09:30:00.000Z" };
-    const m = model({ status: status({ checks: [stale] }) });
-    expect(m.headline).toBe("Up to date");
+  it("an open check row while no check runs here died with its worker: not checking, a detail says so, Check now stays live", () => {
+    // The first live night: a reload mid-check left the app's row open, and the popup read it as running — locked.
+    const m = model({ status: status({ checks: [open, done] }) });
+    expect(isChecking({ status: status({ checks: [open] }), appError: null, queueSize: 0, nextCheckAt: null, now: NOW })).toBe(false);
     expect(m.checking).toBe(false);
+    expect(m.headline).toBe("Up to date");
+    expect(m.detail).toBe(CHECK_DIED);
     expect(m.checks[0]?.counts).toBe("did not finish");
+    expect(m.actions).toContain("check_now");
   });
 
-  it("a finished check is never in progress", () => {
+  it("a finished check is never in progress and leaves no detail", () => {
     const m = model({ status: status({ checks: [done] }) });
     expect(m.checking).toBe(false);
     expect(m.headline).toBe("Up to date");
+    expect(m.detail).toBe("");
   });
 });
 
