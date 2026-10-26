@@ -53,6 +53,11 @@ const ROWS: SaveBatchRowDto[] = [
   },
 ];
 const PERSONAL: PersonalMovesDto = { moves: [{ record: LANTERN, status: "active", links: [] }], merged: [] };
+/** What the posts say about when, why or how often (spec §17): a model's reading, one of them hostile. */
+const INSIGHTS: NonNullable<SaveBatchDetailDto["insights"]> = [
+  { postId: "post-a", url: "https://example.com/p/a", creator: "coach_a", text: "Do the quad shuffle before a run, not after." },
+  { postId: "post-b", url: "javascript:alert(1)", creator: HOSTILE, text: `Twice a week ${HOSTILE}` },
+];
 
 // ── The server ──
 
@@ -63,8 +68,9 @@ interface Call {
 }
 const json = (b: unknown, status = 200) => new Response(JSON.stringify(b), { status, headers: { "Content-Type": "application/json" } });
 
-function serve(): Call[] {
+function serve(o: { insights?: SaveBatchDetailDto["insights"] } = {}): Call[] {
   const calls: Call[] = [];
+  const insights = "insights" in o ? o.insights : INSIGHTS;
   let batch = { ...BATCH };
   let rows = ROWS.map((r) => ({ ...r }));
   vi.stubGlobal(
@@ -75,7 +81,7 @@ function serve(): Call[] {
       const body = init?.body ? JSON.parse(String(init.body)) : undefined;
       calls.push({ method, path, body });
       if (method === "GET" && path === "/api/my-saves/batches") return json({ batches: [batch] });
-      if (method === "GET" && path === "/api/my-saves/batches/b1") return json({ batch, rows } satisfies SaveBatchDetailDto);
+      if (method === "GET" && path === "/api/my-saves/batches/b1") return json({ batch, rows, ...(insights ? { insights } : {}) } satisfies SaveBatchDetailDto);
       if (method === "GET" && path === "/api/my-saves/batches/gone") return json({ error: "not_found" }, 404);
       if (method === "POST" && path === "/api/my-saves/batches/b1/save") {
         batch = { ...batch, status: "saved", savedAt: "2026-10-24T12:00:00.000Z" };
@@ -209,6 +215,40 @@ describe("a batch's rows", () => {
     expect(document.querySelector("img")).toBeNull();
     // Each row's open button is a fingertip's target, and Save these is there.
     expect(button("Save these")).not.toBeNull();
+  });
+
+  it("Notes, under the rows: one line per insight with its creator, as text — read-only, a hostile one inert (spec §17)", async () => {
+    serve();
+    mount("/studio/saves/b1");
+    await until(() => !!rowOf(QUAD.name), "the rows");
+    const section = [...document.querySelectorAll<HTMLElement>("section")].find((x) => x.querySelector("h2")?.textContent === "Notes") ?? null;
+    expect(section).not.toBeNull();
+    const lines = [...section!.querySelectorAll("li")].map((li) => li.textContent?.replace(/\s+/g, " ").trim());
+    expect(lines).toHaveLength(2);
+    expect(lines[0]).toContain("Do the quad shuffle before a run, not after.");
+    expect(lines[0]).toContain("coach_a");
+    expect(lines[1]).toContain(`Twice a week ${HOSTILE}`);
+    expect(lines[1]).toContain(HOSTILE);
+    // Text, never markup; nothing in it to press or follow.
+    expect(document.querySelector("img")).toBeNull();
+    expect(section!.querySelector("a, button, input")).toBeNull();
+    // Under the rows, above Save these.
+    const rows = document.querySelector(".stu-tpl-list")!;
+    expect(rows.compareDocumentPosition(section!) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+    expect(section!.compareDocumentPosition(button("Save these")!) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+  });
+
+  it("no insights — none, or an answer kept from before they were read — no Notes", async () => {
+    for (const insights of [[], undefined]) {
+      serve({ insights });
+      mount("/studio/saves/b1");
+      await until(() => !!rowOf(QUAD.name), "the rows");
+      expect([...document.querySelectorAll("h2")].some((h) => h.textContent === "Notes")).toBe(false);
+      act(() => root?.unmount());
+      host?.remove();
+      root = null;
+      vi.unstubAllGlobals();
+    }
   });
 
   it("Save these calls save; the batch reads as saved after", async () => {

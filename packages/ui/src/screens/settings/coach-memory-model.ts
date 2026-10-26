@@ -48,6 +48,8 @@ const SOURCE_WORDS: Record<string, string> = {
   // A request, never the coach's "run" (fix wave 3B, B-I12).
   coach_inference: "From a coach request",
   studio_brief: "From the old Studio's brief",
+  // What a post the athlete saved says about when, why or how often (saved-posts import, spec §17).
+  "saved post": "From a saved post",
 };
 
 /** Where it came from, in a few words, and when: "From your message, Oct 3". Never an id. */

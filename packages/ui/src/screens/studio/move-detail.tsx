@@ -12,7 +12,8 @@
  *   MUSCLES          the primary ones, then "Also" the secondary
  *   EASIER AND HARDER  each a link to that move
  *   FROM YOUR SAVES  one of the athlete's own moves (saved-posts import): each post it came from — its creator, and a
- *                    link that opens the post in a new tab; the meta line starts "Yours"
+ *                    link that opens the post in a new tab, and under them the post's note on the move (what it is
+ *                    for, or when to do it); the meta line starts "Yours"
  *   YOUR HISTORY     last done · times in 30 days · best set or hold; 👍 👎 · Pin · Not for me
  *   ──────────────────────────────────────────────────────
  *   [ Add ]  [ Ask ]       (Ask: the app's coach sheet, about this move — coach everywhere, A3)
@@ -24,8 +25,8 @@
  * the athlete's own — kept for the workouts and history that hold it, never offered — still opens from its address,
  * marked so, with no Add and no say (the server takes neither for it).
  *
- * A creator's name is a model's reading of a post: drawn as text, never as markup, and never as an address. A post's
- * address is a link only when it is a web page's (http or https).
+ * A creator's name and a link's note are a model's reading of a post: drawn as text, never as markup, and never as an
+ * address. A post's address is a link only when it is a web page's (http or https).
  *
  * Focus: the sheet takes it on open and hands it back on close (`Sheet`); the pane moves it to its heading on open,
  * and when an Easier or Harder link swaps the move in place, both put it on the new move's heading (the sheet: on the
@@ -68,9 +69,14 @@ export function postHref(url: string | null): string | null {
   }
 }
 
-/** The posts one of the athlete's own moves came from: each its creator (as text) and a link that opens it. */
+/**
+ * The posts one of the athlete's own moves came from: each its creator (as text) and a link that opens it, and under
+ * them the post's note on the move (as text).
+ */
 function SavedFrom({ links }: { links: PersonalMoveDto["links"] }) {
-  const shown = links.map((l) => ({ creator: l.creator?.trim() || null, href: postHref(l.url) })).filter((l) => l.creator || l.href);
+  const shown = links
+    .map((l) => ({ creator: l.creator?.trim() || null, href: postHref(l.url), note: l.note?.trim() || null }))
+    .filter((l) => l.creator || l.href || l.note);
   if (shown.length === 0) return null;
   return (
     <ul className="stu-saved">
@@ -83,6 +89,7 @@ function SavedFrom({ links }: { links: PersonalMoveDto["links"] }) {
               {l.creator ? <span className="visually-hidden">{` by ${l.creator}`}</span> : null}
             </a>
           ) : null}
+          {l.note ? <p className="stu-saved-note">{l.note}</p> : null}
         </li>
       ))}
     </ul>

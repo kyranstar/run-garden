@@ -9844,6 +9844,15 @@ a.stu-qs:hover {
   font-weight: var(--weight-medium);
   color: var(--green-ink);
 }
+/* The post's note on the move (spec §17), on its own line under the link. */
+.stu-saved-note {
+  flex-basis: 100%;
+  margin: 0 0 var(--space-2);
+  min-width: 0;
+  overflow-wrap: anywhere;
+  font-size: var(--text-sm);
+  color: var(--ink-soft);
+}
 .stu-detail-history {
   color: var(--ink);
 }
@@ -11279,6 +11288,36 @@ a.stu-tpl-open:focus-visible::before {
   overflow-wrap: anywhere;
 }
 .stu-save-linked {
+  color: var(--ink);
+}
+/* Notes (spec §17): what the kept posts say about when, why or how often, under
+   the rows — a line each, its creator beside it; read-only. */
+.stu-save-notes {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+  min-width: 0;
+  margin-top: var(--space-5);
+}
+.stu-save-notes h2 {
+  margin: 0;
+}
+.stu-save-notes-list {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+.stu-save-note {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  column-gap: var(--space-2);
+  min-width: 0;
+  overflow-wrap: anywhere;
+  font-size: var(--text-sm);
   color: var(--ink);
 }
 .stu-save-sheet {

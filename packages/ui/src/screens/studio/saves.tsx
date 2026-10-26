@@ -16,25 +16,29 @@
  *                                 Linked to 90/90 hip switches · coach_a · 8 each side
  *                                 Zorbex neck nod          [New] [Check this]
  *                                 …
+ *                                 NOTES
+ *                                 Do it before a run, not after. · coach_a
  *                                 [ Save these ]
  *
  * A row opens the move's sheet: its words, the post (its creator, and a link that opens it apart), the dose as the post
  * gave it and as it would be saved, and — while the row is pending — Edit (a new move, or one of the owner's own),
  * Not this move (the post's move becomes a new move of its own, from the post's reading), Same as… (a library move or
  * one of the owner's own, from what the Studio offers), Remove, and Ask the coach (the coach, seeing the move). Save
- * these keeps what is left: the new moves become the owner's, their posts their links.
+ * these keeps what is left: the new moves become the owner's, their posts their links. Notes, under the rows, is what
+ * the kept posts say about when, why or how often (spec §17) — one line each, with its creator, read-only: what the
+ * coach keeps in memory on Save (each removable in Settings afterwards).
  *
- * A model wrote the names, summaries and creators: drawn as text, never as markup; a post's address is a link only when
- * it is a web page's (`postHref`). Every write reads the batch again; one that changes the owner's moves (save, edit,
- * either re-match) reads the whole library again (`["library"]`: their moves, the Studio's list, a move's own detail),
- * so search, the builder and a move's detail see a saved or edited move at once.
+ * A model wrote the names, summaries, notes and creators: drawn as text, never as markup; a post's address is a link
+ * only when it is a web page's (`postHref`). Every write reads the batch again; one that changes the owner's moves
+ * (save, edit, either re-match) reads the whole library again (`["library"]`: their moves, the Studio's list, a move's
+ * own detail), so search, the builder and a move's detail see a saved or edited move at once.
  */
 import { useEffect, useId, useMemo, useRef, useState, type ReactNode } from "react";
 import { Link, useParams } from "react-router-dom";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { api, ApiError, SAVES_BATCHES_QUERY, SAVES_STATUS_QUERY, savesBatchQuery } from "@rg/api-client";
 import { PROFILES, searchLibrary, type ExerciseRecord } from "@rg/exercise-library";
-import type { SaveBatchDetailDto, SaveBatchRowDto } from "@rg/saves";
+import type { SaveBatchDetailDto, SaveBatchInsightDto, SaveBatchRowDto } from "@rg/saves";
 import { EmptyState, Sheet, Spinner } from "../../components.js";
 import { SearchField } from "../../components/search-field.js";
 import { IconBack } from "../../icons.js";
@@ -144,6 +148,26 @@ function RowTags({ row }: { row: SaveBatchRowDto }) {
   );
 }
 
+/** What the kept posts say about when, why or how often (spec §17): a line each, its creator beside it; nothing to press. */
+function Notes({ insights }: { insights: readonly SaveBatchInsightDto[] }) {
+  const id = useId();
+  if (insights.length === 0) return null;
+  return (
+    <section className="stu-save-notes" aria-labelledby={id}>
+      <h2 id={id} className="eyebrow">
+        Notes
+      </h2>
+      <ul className="stu-save-notes-list">
+        {insights.map((n, i) => (
+          <li key={`${i}-${n.postId}`} className="stu-save-note">
+            {dotted([<span key="text">{n.text}</span>, n.creator ? <span key="by" className="stu-save-by">{n.creator}</span> : null])}
+          </li>
+        ))}
+      </ul>
+    </section>
+  );
+}
+
 type Open = { postMoveId: string; mode: "view" | "edit" | "pick" };
 
 export function SaveBatchScreen() {
@@ -243,6 +267,7 @@ export function SaveBatchScreen() {
         {status}
       </p>
       {body}
+      {data ? <Notes insights={data.insights ?? []} /> : null}
       {data && canSave(data.batch, rows) ? (
         <div className="stu-build-foot stu-save-foot">
           <button type="button" className="btn btn-primary" disabled={saving} onClick={() => void save()}>

@@ -42,8 +42,8 @@ const move = (record: ExerciseRecord, status: PersonalMoveDto["status"], links: 
 const MOVES: PersonalMovesDto = {
   moves: [
     move(LANTERN, "active", [
-      { url: "https://example.com/p/lantern-1", creator: "Example Coach" },
-      { url: null, creator: "Second Example" },
+      { url: "https://example.com/p/lantern-1", creator: "Example Coach", note: "Before a run, to wake the hips up." },
+      { url: null, creator: "Second Example", note: null },
     ]),
     move(WINDMILL, "archived", [{ url: "https://example.com/p/windmill", creator: "Example Coach" }]),
   ],
@@ -265,6 +265,33 @@ describe("a personal move's detail", () => {
     // The athlete's say and Add, as for any move it is offered.
     expect([...sheet.querySelectorAll("button")].some((b) => b.textContent === "Add")).toBe(true);
     expect(where).toBe(`/studio/move/${LANTERN.id}`);
+  });
+
+  it("Move detail shows each link's note under it, as text (spec §17)", async () => {
+    network({ personal: MOVES });
+    mountStudio(`/studio/move/${LANTERN.id}`);
+    await until(() => dialog()?.querySelector("h2")?.textContent === "Lantern reach", "the move's detail");
+    const sheet = dialog()!;
+    const first = [...sheet.querySelectorAll("li")].find((li) => li.textContent?.includes("Example Coach") && !li.textContent?.includes("Second"))!;
+    const note = first.querySelector(".stu-saved-note");
+    expect(note?.textContent).toBe("Before a run, to wake the hips up.");
+    // Under the link.
+    expect(first.querySelector("a")!.compareDocumentPosition(note!) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+    // A link with no note shows none.
+    const second = [...sheet.querySelectorAll("li")].find((li) => li.textContent?.includes("Second Example"))!;
+    expect(second.querySelector(".stu-saved-note")).toBeNull();
+  });
+
+  it("a note is text, never markup; a link with only a note still shows it", async () => {
+    const hostile = move(personal("myNotedMove1q2w3e", "Noted move", "A move."), "active", [
+      { url: null, creator: null, note: '<img src=x onerror="alert(1)"> after a run' },
+    ]);
+    network({ personal: { moves: [hostile] } });
+    mountStudio("/studio/move/myNotedMove1q2w3e");
+    await until(() => dialog()?.querySelector("h2")?.textContent === "Noted move", "the move's detail");
+    const sheet = dialog()!;
+    expect(sheet.querySelector("img")).toBeNull();
+    expect(sheet.querySelector(".stu-saved-note")?.textContent).toBe('<img src=x onerror="alert(1)"> after a run');
   });
 
   it("a creator's words are text, never markup; an address that is not a web page is no link", async () => {

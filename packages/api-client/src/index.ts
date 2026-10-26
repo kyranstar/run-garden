@@ -551,8 +551,9 @@ export interface CoachMemoryItem {
   kind: "fact" | "rule" | "note" | "observation";
   body: string;
   /** Where it came from: the thread coach's cause (message, question, open, manual), a coach run's (athlete_words,
-   * coach_inference, with its run), or the old Studio's brief (studio_brief). */
-  provenance: { source: string; messageId?: string; runId?: string; planId?: string; at: string };
+   * coach_inference, with its run), the old Studio's brief (studio_brief), or a post the athlete saved ("saved post",
+   * with the post and its link). */
+  provenance: { source: string; messageId?: string; runId?: string; planId?: string; postId?: string; url?: string | null; at: string };
   learnedAt: string;
   expiresAt: string | null;
   // Memory v2 (Stage 3 Task 10): the list's read has always carried these columns; typed now that it shows them.
@@ -2279,8 +2280,12 @@ export interface PersonalMoveDto {
   record: ExerciseRecord;
   /** Active: offered and pinnable; archived: kept for old workouts and history, never offered. */
   status: "active" | "archived";
-  /** The saved posts it came from (and those of any move merged into it), oldest first. */
-  links: Array<{ url: string | null; creator: string | null }>;
+  /**
+   * The saved posts it came from (and those of any move merged into it), oldest first. `note`: what the post says the
+   * move is for, or when to do it (a model's reading: drawn as text); null with none, absent from an answer kept from
+   * before it was added.
+   */
+  links: Array<{ url: string | null; creator: string | null; note?: string | null }>;
 }
 
 /**
@@ -2323,8 +2328,8 @@ export interface LibraryItemDto {
   harder: Array<{ id: string; name: string }>;
   prefs: ExercisePrefsDto;
   saved: boolean;
-  /** Where a saved move came from — the account's own links. */
-  provenance: Array<{ sourceType: string; url: string | null; creator: string | null }>;
+  /** Where a saved move came from — the account's own links; each with its note (null for a curated link). */
+  provenance: Array<{ sourceType: string; url: string | null; creator: string | null; note?: string | null }>;
   history: {
     /** The last five entries, newest first, weights as typed. */
     last: Array<{

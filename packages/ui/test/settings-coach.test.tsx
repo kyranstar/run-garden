@@ -93,6 +93,8 @@ describe("each item, in plain words", () => {
     // "Request", never the coach's "run" (fix wave 3B, B-I12).
     expect(from("coach_inference", { runId: "run-SECRET" })).toBe("From a coach request, Oct 3");
     expect(from("studio_brief", { planId: "plan-SECRET" })).toBe("From the old Studio's brief, Oct 3");
+    // An insight a saved post gave (saved-posts import, spec §17): neither the post's id nor its link.
+    expect(from("saved post", { postId: "post-SECRET", url: "https://example.com/p/SECRET" })).toBe("From a saved post, Oct 3");
     expect(from("weekly")).toBe("From the coach, Oct 3");
   });
 
