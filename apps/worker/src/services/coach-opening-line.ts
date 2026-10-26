@@ -23,6 +23,10 @@ export interface OpeningChip {
   id: string;
   label: string;
   request: string;
+  /** A chip that only navigates (its `request` is empty and starts nothing). */
+  href?: string;
+  /** A chip that saves this batch of the athlete's saves first, then sends its `request`. */
+  saveBatchId?: string;
 }
 
 /** The opening's own line: what the coach noticed, before the athlete says anything. */
@@ -31,8 +35,9 @@ export interface CoachOpeningLine {
   id: string;
   /** One line, the coach's. */
   line: string;
-  /** `review`: the weekly review's; `session`: the app's own words about a session; `read`: the coach's read of it. */
-  source: "review" | "session" | "read";
+  /** `review`: the weekly review's; `session`: the app's own words about a session; `read`: the coach's read of it;
+   * `saves`: a released batch of the athlete's saves. */
+  source: "review" | "session" | "read" | "saves";
   /** What a tap sends (first among the chips). */
   chips: OpeningChip[];
   /** The planned session the finished one completed: the screen finds its quick review by it. */
@@ -170,12 +175,28 @@ export function reviewOpening(r: { weekStart: LocalDate; narrative: string | nul
   };
 }
 
+/** The words "Fit these in" sends, once the batch is saved. */
+export const FIT_SAVES_REQUEST = "Fit the new moves from my saves into my training.";
+
+/** The opening for a released batch of the athlete's saves: its notice as it was worded, and the two chips. */
+export function savesOpening(b: { id: string; notice: string; releasedAt: string }): CoachOpeningLine {
+  return {
+    id: `saves:${b.id}`,
+    line: b.notice,
+    source: "saves",
+    chips: [
+      { id: "saves-see", label: "See them", request: "", href: `/studio/saves/${b.id}` },
+      { id: "saves-fit", label: "Fit these in", request: FIT_SAVES_REQUEST, saveBatchId: b.id },
+    ],
+  };
+}
+
 /** The days a finished session is still news: today and yesterday. */
 export const sessionDays = (today: LocalDate): LocalDate[] => [today, addDays(today, -1)];
 
-/** An opening the screen has shown: `review:…` or `session:…` (the `?seen=` list, at most this many). */
+/** An opening the screen has shown: `review:…`, `session:…` or `saves:…` (the `?seen=` list, at most this many). */
 export const SEEN_MAX = 8;
-const SEEN_ID = /^(review|session):[A-Za-z0-9_.:-]{1,100}$/;
+const SEEN_ID = /^(review|session|saves):[A-Za-z0-9_.:-]{1,100}$/;
 
 /** The `?seen=` list: openings this device has shown, comma-separated; anything else is left out. */
 export function parseSeen(raw: string | null | undefined): Set<string> {

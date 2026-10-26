@@ -96,7 +96,12 @@ function mountSheet(client: QueryClient = primedClient({ today: caution })): Que
         createElement(
           MemoryRouter,
           { initialEntries: ["/plan"] },
-          createElement(CoachSheetProvider, { loopDeps: quietLoop(() => run()) }, createElement(Routes, null, createElement(Route, { path: "/plan", element: createElement(Screen) }))),
+          createElement(CoachSheetProvider, { loopDeps: quietLoop(() => run()) }, createElement(
+            Routes,
+            null,
+            createElement(Route, { path: "/plan", element: createElement(Screen) }),
+            createElement(Route, { path: "/studio/saves/:batchId", element: createElement("div", { id: "saves-screen" }, "review screen") }),
+          )),
         ),
       ),
     ),
@@ -360,6 +365,71 @@ describe("the coach notices: its own line, and its chips first", () => {
     await click(button("Plan this week", dialog()!), "Plan this week");
     await until(() => posts(calls).length === 1, "the start");
     expect(posts(calls)).toEqual(["Plan my week around how last week went."]);
+  });
+
+  const SAVES = {
+    id: "saves:abc",
+    line: "From your saves: 2 new moves (1 hip, 1 neck), 1 you already had.",
+    source: "saves" as const,
+    chips: [
+      { id: "saves-see", label: "See them", request: "", href: "/studio/saves/abc" },
+      { id: "saves-fit", label: "Fit these in", request: "Fit the new moves from my saves into my training.", saveBatchId: "abc" },
+    ],
+  };
+
+  it("from your saves: both chips fit; See them navigates to the batch and starts nothing", async () => {
+    const calls = server({ "GET /api/coach/nudges": { nudges: [MISSED], opening: SAVES }, "POST /api/coach/runs": startRun });
+    mountSheet();
+    await openCoach();
+    await until(drawn, "the opening drawn");
+    expect(line()).toBe(SAVES.line);
+    expect(chips()).toEqual(["See them", "Fit these in", ...GENERAL_CHIPS]);
+    expect(JSON.parse(localStorage.getItem(OPENING_SEEN_KEY) ?? "[]")).toEqual(["saves:abc"]);
+    await click(button("See them", dialog()!), "See them");
+    await until(() => !!document.getElementById("saves-screen"), "the review screen");
+    expect(posts(calls)).toEqual([]);
+    expect(calls.some((c) => c.path === "/api/my-saves/batches/abc/save")).toBe(false);
+  });
+
+  it("Fit these in saves the batch, then sends the request; the library and the batch reads are refreshed", async () => {
+    const order: string[] = [];
+    const calls = server({
+      "GET /api/coach/nudges": { nudges: [], opening: SAVES },
+      "POST /api/my-saves/batches/abc/save": () => {
+        order.push("save");
+        return { moves: 2, links: 3 };
+      },
+      "POST /api/coach/runs": (body: unknown) => {
+        order.push("ask");
+        return startRun(body);
+      },
+    });
+    const client = mountSheet();
+    const spy = vi.spyOn(client, "invalidateQueries");
+    await openCoach();
+    await until(drawn, "the opening drawn");
+    await click(button("Fit these in", dialog()!), "Fit these in");
+    await until(() => posts(calls).length === 1, "the start");
+    expect(order).toEqual(["save", "ask"]);
+    expect(posts(calls)).toEqual([SAVES.chips[1]!.request]);
+    const keys = spy.mock.calls.map((c) => JSON.stringify((c[0] as { queryKey: unknown }).queryKey));
+    expect(keys).toEqual(expect.arrayContaining([JSON.stringify(["library", "personal"]), JSON.stringify(["library"]), JSON.stringify(["saves", "batch", "abc"]), JSON.stringify(["saves", "batches"])]));
+  });
+
+  it("a save that fails says so and sends nothing; the chip stays for another try", async () => {
+    const calls = server({
+      "GET /api/coach/nudges": { nudges: [], opening: SAVES },
+      "POST /api/my-saves/batches/abc/save": () => json({ error: "boom" }, 500),
+      "POST /api/coach/runs": startRun,
+    });
+    mountSheet();
+    await openCoach();
+    await until(drawn, "the opening drawn");
+    await click(button("Fit these in", dialog()!), "Fit these in");
+    await until(() => !!dialog()!.querySelector('[role="alert"]'), "the failure said");
+    expect(dialog()!.querySelector('[role="alert"]')!.textContent).toBe("Couldn't save these moves. Try again.");
+    expect(posts(calls)).toEqual([]);
+    expect(button("Fit these in", dialog()!)).not.toBeNull();
   });
 
   it("Read it all: the whole review in a sheet of its own, over the coach — from the opening's read, whatever the activity feed holds of that week", async () => {

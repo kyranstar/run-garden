@@ -82,7 +82,8 @@ export const OPENING_CHIPS_MAX = 2;
 /** A chip before the starters: the session's quick review, opened; or words a tap sends (`needs`: a "needs you" one). */
 export type OpeningChip =
   | { kind: "review"; id: string; label: string; workoutId: string }
-  | { kind: "ask"; id: string; label: string; request: string; needs: boolean };
+  | { kind: "open"; id: string; label: string; href: string }
+  | { kind: "ask"; id: string; label: string; request: string; needs: boolean; saveBatchId?: string };
 
 /**
  * The chips before the starters, in this order and at most two (stream H): how it felt — when the coach's line is about
@@ -97,7 +98,10 @@ export function openingChips(
   const out: OpeningChip[] = [];
   const workoutId = opening && opening.source !== "review" ? opening.workoutId : undefined;
   if (workoutId && offers.some((o) => o.workoutId === workoutId)) out.push({ kind: "review", id: `felt:${workoutId}`, label: HOW_IT_FELT, workoutId });
-  for (const c of opening?.chips ?? []) out.push({ kind: "ask", id: c.id, label: c.label, request: c.request, needs: false });
+  for (const c of opening?.chips ?? []) {
+    if (c.href) out.push({ kind: "open", id: c.id, label: c.label, href: c.href });
+    else out.push({ kind: "ask", id: c.id, label: c.label, request: c.request, needs: false, ...(c.saveBatchId ? { saveBatchId: c.saveBatchId } : {}) });
+  }
   for (const n of nudges) out.push({ kind: "ask", id: n.id, label: n.label, request: n.request, needs: true });
   return out.slice(0, OPENING_CHIPS_MAX);
 }

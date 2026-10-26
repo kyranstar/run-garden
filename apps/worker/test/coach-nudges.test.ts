@@ -418,21 +418,21 @@ describe("at most two, the most pressing first", () => {
     expect(await nudges()).toEqual([]);
   });
 
-  it("writes nothing, and costs at most six statements", async () => {
+  it("writes nothing, and costs at most seven statements", async () => {
     await seedAll();
     await seedRun("Plan my week", new Date().toISOString());
     statements.length = 0;
     await nudges();
     expect(statements.filter(isWrite)).toEqual([]);
     // The missed sessions, the activities, the plans, last week's review (the opening's, stream H), their outline weeks,
-    // the athlete's recent asks.
-    expect(statements.length).toBe(6);
+    // the athlete's recent asks, and the newest released saves batch (the opening's).
+    expect(statements.length).toBe(7);
   });
 
-  it("a quiet account costs four: nothing to look up weeks for, nothing to have asked", async () => {
+  it("a quiet account costs five: nothing to look up weeks for, nothing to have asked", async () => {
     statements.length = 0;
     expect(await nudges()).toEqual([]);
-    expect(statements.length).toBe(4);
+    expect(statements.length).toBe(5);
   });
 });
 
@@ -444,7 +444,7 @@ describe("GET /api/coach/nudges", () => {
       env(designer),
     );
 
-  it("answers { nudges } for the signed-in athlete, in 8 statements with the sign-in and the preferences", async () => {
+  it("answers { nudges } for the signed-in athlete, in 9 statements with the sign-in and the preferences", async () => {
     await setRace(addDays(today, 10));
     await seedPlan({ id: "cp1", name: "10K", endDate: addDays(today, 40) });
     await seedWeek("cp1", addDays(today, 4), "shape");
@@ -458,7 +458,7 @@ describe("GET /api/coach/nudges", () => {
       ],
     });
     expect(statements.filter(isWrite)).toEqual([]);
-    expect(statements.length).toBe(8);
+    expect(statements.length).toBe(9);
   });
 
   it("is a 404 while the coach designer is off, and a 401 signed out", async () => {
