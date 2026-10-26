@@ -61,8 +61,10 @@ const BEFORE = { tools: 34_935, shared: 20_450, main: 4_586 };
  * compact (tools 39,746 → 40,761: the moves, the batch, the card's own words with their caps) and the shared prompt
  * 23,833 → 24,733 (its Acting line, and the integration guidance with its selectivity paragraph, word for word, under
  * "# Integrating saved moves") — 1,915 characters, so 12,155 since §8's start; held with about the same margin as before.
+ * REBASED again 2026-10-25 (Task 18 review 1): pin_moves' description says a lines-only card closes its batch (tools
+ * 40,761 → 40,802), so 12,196; the same margin.
  */
-const GROWTH_MAX_CHARS = 12_190;
+const GROWTH_MAX_CHARS = 12_230;
 
 const toolsSent = () => JSON.stringify(allTools().map((t) => ({ name: t.name, description: t.description, input_schema: t.inputSchema })));
 

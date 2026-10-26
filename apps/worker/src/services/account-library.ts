@@ -159,6 +159,16 @@ export function forgetAccountLibrary(db: Db, userId?: string): void {
   else perRequest.get(db)?.delete(userId);
 }
 
+/**
+ * The account's library from `personalMovesSql`'s column (`raw`) with `pins` written since (move id → pinned), kept as this
+ * request's — no statement: a writer of pins (the moves in rotation's approve, saved-posts import Task 18) leaves the
+ * request's later reads the library as it now is without paying for a read. A pin of a public move changes no view.
+ */
+export function reseedAccountLibrary(db: Db, userId: string, raw: unknown, pins: ReadonlyMap<string, boolean>): Promise<AccountLibrary> {
+  forgetAccountLibrary(db, userId);
+  return memoised(db, userId, () => libraryOf(rowsOf(raw).map((r) => (pins.has(r.id) ? { ...r, pinned: pins.get(r.id)! } : r))));
+}
+
 /** `personalMovesSql`'s rows; a row that doesn't read is left out. */
 function rowsOf(raw: unknown): Row[] {
   let list: unknown = raw;

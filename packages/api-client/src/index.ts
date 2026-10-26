@@ -867,9 +867,10 @@ export interface DesignProgrammeLineDto {
 
 /**
  * A change to the moves in rotation in a suggestion (saved-posts import, Task 18): the coach's title, line and lines
- * (one a placement, one a saved move left out) and why, the moves it pins and unpins, no notes (`issues` empty), and how
- * it stands — `applied` with the moves written and a line for each left (archived since, not in rotation), `refused`
- * with why (its library unreadable, a batch not the athlete's).
+ * (one a placement, one a saved move left out) and why, the moves it pins and unpins (both empty: a lines-only card that
+ * closes its batch), no notes (`issues` empty), and how it stands — `applying` while an approve writes it, `applied` with
+ * the moves written and a line for each left (archived or set aside since, not in rotation), `refused` with why (its
+ * library unreadable, a batch not the athlete's).
  */
 export interface DesignPinsLineDto {
   opId: string;
@@ -882,6 +883,7 @@ export interface DesignPinsLineDto {
   issues: Array<{ code: string; message: string }>;
   outcome:
     | { status: "applied"; at: string; pinned: string[]; unpinned: string[]; lines: string[] }
+    | { status: "applying"; at: string }
     | { status: "refused"; at: string; error: string; why: string }
     | { status: "declined"; at: string; reason?: string }
     | { status: "superseded"; at: string; reason: string; by: string }

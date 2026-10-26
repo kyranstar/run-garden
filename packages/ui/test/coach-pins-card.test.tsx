@@ -15,6 +15,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import type { CoachConversationCardDto, DesignApproveResponse, DesignPinsLineDto } from "@rg/api-client";
 import { toConversation, toProposal } from "../src/screens/studio/coach-tolerance.js";
 import { PINS_WORDS, PlanCard } from "../src/screens/studio/plan-card.js";
+import { ProposalCard } from "../src/screens/studio/proposal-card.js";
 import { button, click, serve, text, until } from "./coach-live-harness.js";
 import { primedClient } from "./studio-fixtures.js";
 
@@ -122,6 +123,16 @@ describe("the moves-in-rotation card", () => {
     await until(() => text().includes("couldn't be read just now"), "the refusal");
   });
 
+  it("one an approve claimed and didn't finish (review 1, finding 4): it says so and offers Finish — never Not now", async () => {
+    serve({ "GET /api/coach/proposals/dp-run-3": () => read("pending", { status: "applying", at: "x" }) });
+    await mount(card());
+    await until(() => !!button(PINS_WORDS.finish), "Finish");
+    expect(PINS_WORDS.finish).toBe("Finish");
+    expect(text()).toContain(PINS_WORDS.part);
+    expect(button("Not now")).toBeNull();
+    expect(button("Approve")).toBeNull();
+  });
+
   it("an older turn's, closed: one line of what came of it, its lines one tap down", async () => {
     serve({ "GET /api/coach/proposals/dp-run-3": () => read("approved", { status: "applied", at: "x", pinned: ["myZorbexHipCircle1"], unpinned: [], lines: [] }) });
     await mount(card({ status: "approved" }), true);
@@ -130,11 +141,58 @@ describe("the moves-in-rotation card", () => {
   });
 });
 
+describe("a suggestion holding a workout beside the moves in rotation (or a programme change) — review 1, finding 1", () => {
+  const workout = {
+    opId: "wk-1", kind: "new", date: "2026-10-15", time: "18:00", title: "Hips, gently", minutes: 24, summary: "Hips, gently · 24 min", effort: "Develop",
+    place: "Home", parts: ["Main"], detail: ["Glute bridge 2 × 12"], reviewMean: 4.5, review: null, issues: [], outcome: null, written: null,
+  };
+  const programme = {
+    opId: "prog-p1", programmeId: "p1", title: "Mobility: new days", summary: "Tue · Thu", lines: [], why: "w", issues: [], outcome: null,
+  };
+  async function mountWorkoutCard(beside: Record<string, unknown>) {
+    const calls = serve({
+      "GET /api/coach/proposals/dp-run-3": () => ({ id: "dp-run-3", status: "pending", resolvedAt: null, lines: [workout], changes: [], ...beside }),
+      "POST /api/coach/proposals/dp-run-3/approve": () => answer({ status: "partially_approved" }),
+      "POST /api/coach/proposals/dp-run-3/decline": () => ({ ok: true, status: "partially_approved", declined: ["wk-1"], settled: [] }),
+    });
+    host = document.createElement("div");
+    document.body.appendChild(host);
+    root = createRoot(host);
+    client = primedClient();
+    await act(async () => {
+      root!.render(createElement(MemoryRouter, null, createElement(QueryClientProvider, { client: client! }, createElement(ProposalCard, { proposalId: "dp-run-3", today: "2026-10-15" }))));
+    });
+    await until(() => !!button("Approve") && !button("Approve")!.disabled, "Approve");
+    return calls;
+  }
+
+  for (const [what, beside] of [
+    ["the moves in rotation", { pins: [line()] }],
+    ["a programme change", { programmes: [programme] }],
+  ] as const) {
+    it(`the workout's card approves only its own workout, never \`{}\` — ${what} beside it is its own card's to decide`, async () => {
+      const calls = await mountWorkoutCard(beside);
+      await click(button("Approve"), "Approve");
+      await until(() => calls.some((c) => c.method === "POST"), "the approve");
+      expect(calls.filter((c) => c.method === "POST").map((c) => [c.path, c.body])).toEqual([["/api/coach/proposals/dp-run-3/approve", { opIds: ["wk-1"] }]]);
+    });
+
+    it(`the workout's card declines only its own workout — ${what} beside it stays open`, async () => {
+      const calls = await mountWorkoutCard(beside);
+      await click(button("Decline"), "Decline");
+      await until(() => !!document.querySelector(".coach-pc-decline"), "the reason box");
+      await click(button("Decline", document.querySelector(".coach-pc-decline")!), "Decline, confirmed");
+      await until(() => calls.some((c) => c.method === "POST"), "the decline");
+      expect(calls.filter((c) => c.method === "POST").map((c) => [c.path, c.body])).toEqual([["/api/coach/proposals/dp-run-3/decline", { opIds: ["wk-1"] }]]);
+    });
+  }
+});
+
 describe("the moves in rotation, read tolerantly", () => {
   it("a suggestion's pins lines, each with its op and outcome; the card's kind, op and lines", () => {
     const applied = { status: "applied" as const, at: "x", pinned: ["a"], unpinned: ["b"], lines: ["c"] };
-    const r = toProposal({ id: "dp-1", status: "approved", resolvedAt: null, pins: [line(applied), { nonsense: true }, line(null, { opId: "" })] });
-    expect(r.pins).toEqual([line(applied)]);
+    const r = toProposal({ id: "dp-1", status: "approved", resolvedAt: null, pins: [line(applied), { nonsense: true }, line(null, { opId: "" }), line({ status: "applying", at: "y" }, { opId: "pins-2", pin: [] })] });
+    expect(r.pins).toEqual([line(applied), line({ status: "applying", at: "y" }, { opId: "pins-2", pin: [] })]);
     const c = toConversation({ id: "c1", startedAt: "x", turns: [{ runId: "r1", at: "x", words: "w", status: "finished", line: null, cards: [card()], question: null }] });
     expect(c.turns[0]!.cards[0]).toMatchObject({ kind: "pins", opId: OP, lines: LINES });
   });

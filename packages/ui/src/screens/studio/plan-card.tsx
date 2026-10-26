@@ -113,14 +113,15 @@ export const PROGRAMME_WORDS: PlanCardWords = {
   link: SEE_PLAN,
 };
 
-/** The moves in rotation's words (saved-posts import, Task 18): one write, done at once; nothing of it is on Plan. */
+/** The moves in rotation's words (saved-posts import, Task 18): one write, done at once — one an approve claimed and didn't
+ * finish (the app closed) is finished by Approve; nothing of it is on Plan. */
 export const PINS_WORDS: PlanCardWords = {
   done: "Rotation updated",
   doing: "Updating your rotation…",
-  part: "",
-  inFlight: "It's being applied right now.",
+  part: "It was interrupted — Finish saves it.",
+  inFlight: "It's being saved right now — Finish takes it on from there.",
   approve: "Approve",
-  finish: "Approve",
+  finish: "Finish",
   unfinished: "It isn't done yet — tap again.",
   declined: "Not changed",
   superseded: "Replaced by a newer suggestion",

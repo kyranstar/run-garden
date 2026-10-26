@@ -147,7 +147,7 @@ function pinsOf(o: Record<string, unknown>, today: string): Record<string, unkno
     ...(str(o.planTitle) ? { title: untrusted(str(o.planTitle)!) } : {}),
     ...(str(o.planSummary) ? { summary: untrusted(str(o.planSummary)!) } : {}),
     ...(str(o.changeWhy) ? { why: untrusted(str(o.changeWhy)!) } : {}),
-    ...decided(o),
+    ...(o.outcome === "applying" ? { outcome: "being_applied" } : decided(o)),
   };
 }
 

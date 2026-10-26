@@ -315,7 +315,7 @@ describe("each act tool's declared statement cost is the most it runs", () => {
     expect(refused.count).toBe(1);
   });
 
-  it("pin_moves: the athlete with the account's library, the proposal, the restore marker and the batch in one read, then one write — refusals read only", async () => {
+  it("pin_moves: the athlete with the account's library, the moves set aside, the proposal, the restore marker and the batch in one read, then one write — refusals read only", async () => {
     const main = await runRow(rich.userId);
     const words = { title: "Goblet squats stay in", summary: "One move kept in rotation", lines: ["Goblet squat — in rotation: your strength days need a squat."], why: "It serves your legs." };
     const pin = { ...words, pin: ["gobletSquat", "deadBug"], unpin: ["wallSit"] };
@@ -329,6 +329,8 @@ describe("each act tool's declared statement cost is the most it runs", () => {
       { input: { ...pin, batchId: "batch-nobody-has" } },
       { input: pin, userId: empty, run: await runRow(empty) },
       { input: { ...pin, unpin: ["gobletSquat"] } },
+      // No move and no batch (a lines-only card needs its batch): refused before any read.
+      { input: { ...words, pin: [], unpin: [] } },
     ]);
     expect(n).toBe(2);
     expect(tool("pin_moves").statementCost).toBe(2);

@@ -163,15 +163,16 @@ export const PINS_LINES_MAX = 20;
  * A change to the moves in the athlete's rotation inside a designed proposal (saved-posts import, Task 18;
  * design-tools/pin-moves.ts): the moves to pin (`exercise_prefs.pinned` true — the engine plans from a pinned personal
  * move) and to unpin, each a move the athlete is offered when it was proposed, and the saves batch it fits in
- * (`batchId`: marked fitted in once approved). Applied at approval in one batched upsert (design-approve.ts); a move
- * archived since is skipped with a line. `why`, `title`, `summary` and `lines` are the coach's own words for the card —
+ * (`batchId`: marked fitted in once approved). Applied at approval in one batched upsert under a claim (design-approve.ts);
+ * a move archived or set aside since is skipped with a line. `why`, `title`, `summary` and `lines` are the coach's own words for the card —
  * a line a placement, a line a saved move left out — data, marked wherever they are shown back to a model.
  */
 export interface MovePinsOp {
   kind: "move_pins";
   /** `pinsId(mainRunId)`: one per proposal — a second call replaces the first. */
   id: string;
-  /** At most PINS_MAX each, never an id in both. */
+  /** At most PINS_MAX each, never an id in both; both empty only beside a `batchId` (a lines-only card that closes its
+   * batch). */
   pin: string[];
   unpin: string[];
   batchId?: string;

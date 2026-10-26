@@ -12,25 +12,36 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { and, eq } from "drizzle-orm";
 import { schema } from "@rg/database";
 import { EXERCISES } from "@rg/exercise-library";
-import { newId } from "@rg/domain";
+import { addDays, newId } from "@rg/domain";
 import type { Env } from "../src/env.js";
 import type { Db } from "../src/services/db.js";
 import { createSession, SESSION_COOKIE } from "../src/auth/sessions.js";
 import { coachRoutes } from "../src/routes/coach.js";
 import { forgetAccountLibrary, loadAccountLibrary } from "../src/services/account-library.js";
-import { savePreferences } from "../src/services/calendar-sync.js";
+import { loadPreferences, savePreferences } from "../src/services/calendar-sync.js";
+import { createDocWorkout } from "../src/services/doc-workouts.js";
 import { conversationBlock, conversationRows, namedConversationSql, readConversation } from "../src/services/coach-conversation.js";
 import { currentRun, endedLine } from "../src/services/coach-runs.js";
 import { markUntrusted, PROMPT_TOOL_NAMES, SHARED_PROMPT } from "../src/services/design-prompt.js";
-import { APPROVE_FIXED, MOVE_PINS_FIXED, movePinsCostOf, REQUEST_BUDGET, type DesignedPinsOp } from "../src/services/design-approve.js";
+import {
+  APPLYING_STALE_MS,
+  APPROVE_FIXED,
+  MOVE_PINS_FIXED,
+  movePinsCostOf,
+  REQUEST_BUDGET,
+  REVISE_BASE,
+  type DesignedOp,
+  type DesignedPinsOp,
+} from "../src/services/design-approve.js";
 import { designedManifest } from "../src/routes/design-proposals.js";
 import { supersedeOlderPlans } from "../src/services/design-orchestrate.js";
 import { proposalFields } from "../src/services/design-review.js";
 import { ACT_TOOLS } from "../src/services/design-tools/index.js";
-import { designProposalId } from "../src/services/design-tools/propose.js";
+import { designProposalId, proposeWorkout } from "../src/services/design-tools/propose.js";
 import { readProposals } from "../src/services/design-tools/read-proposals.js";
 import { isToolErr, type ToolContext, type ToolErr, type ToolOk } from "../src/services/design-tools/types.js";
 import { pinsId } from "../src/services/proposal-kinds.js";
+import { calmDoc } from "./doc-workout-fixture.js";
 import { savedMoveDraft, seedSavedBatch } from "./saves-batch-fixture.js";
 import { makeTestDb, makeTestUser, MAX_LOOP_ITERATIONS, mountRoutes } from "./helpers.js";
 
@@ -236,6 +247,7 @@ describe("pin_moves: the coach keeps a saved move in rotation", () => {
     // Another account's personal move reads as one nobody has.
     expect(await refusal({ pin: [theirs.a] })).toMatch(/^not_a_move: /);
     expect(await refusal({ pin: [a], unpin: [a] })).toMatch(/^invalid_input: .*both pin and unpin/);
+    // No move and no batch: nothing for the card to do (with a batch, a lines-only card closes it — below).
     expect(await refusal({})).toMatch(/^invalid_input: No move to pin or unpin/);
     expect(await refusal({ pin: [], unpin: [] })).toMatch(/^invalid_input: No move to pin or unpin/);
     expect(await refusal({ pin: EXERCISES.slice(0, 21).map((e) => e.id) })).toMatch(/^invalid_input: /);
@@ -245,6 +257,14 @@ describe("pin_moves: the coach keeps a saved move in rotation", () => {
     expect(await batchWords("batch-nobody-has")).toMatch(/^bad_batch: /);
     expect(await batchWords(theirs.batchId)).toBe(await batchWords("batch-nobody-has"));
     expect(await batchWords(released.batchId)).toBe(await batchWords("batch-nobody-has"));
+    // A move the athlete set aside: never pinned behind their back (review 1, finding 7) — a personal move's name marked.
+    await db.insert(exercisePrefs).values([
+      { id: `${userId}:deadBug`, userId, exerciseId: "deadBug", excluded: true, updatedAt: NOW.toISOString() },
+      { id: `${userId}:${a}`, userId, exerciseId: a, excluded: true, updatedAt: NOW.toISOString() },
+    ]);
+    expect(await refusal({ pin: ["deadBug"] })).toBe(`set_aside: ${DEAD_BUG.name} is set aside as not for you — ask before putting it back.`);
+    expect(await refusal({ pin: [a, "gobletSquat"] })).toBe(`set_aside: ${markUntrusted("saved post", "Zorbex hip circle")} is set aside as not for you — ask before putting it back.`);
+    await db.delete(exercisePrefs).where(eq(exercisePrefs.userId, userId));
     // A designer's run may not.
     const designer: ToolContext = { ...ctx, run: { ...ctx.run, role: "designer", parentId: ctx.run.id } };
     expect(await refusal({ pin: [a] }, designer)).toMatch(/^not_for_role: /);
@@ -277,23 +297,28 @@ describe("approving the moves in rotation", () => {
   it("pins two moves — the engine pool then holds the personal one — marks the batch fitted in, writes one receipt; asked again, settled", async () => {
     const { batchId, a, b } = await batch();
     const { id } = await proposed({ pin: [a, "gobletSquat"], batchId });
-    forgetAccountLibrary(db, userId);
-    expect((await loadAccountLibrary(db, userId)).engine.some((e) => e.id === a)).toBe(false);
     const { answers, costs } = await approveAll(id);
     expect(answers).toHaveLength(1);
     expect(answers[0]).toMatchObject({ status: "approved", refused: [], remaining: [], pinned: [{ opId: pinsId(id.slice(3)), summary: "2 moves kept in rotation" }] });
     // Measured, exactly what it declares: the approve's own part (the session and its restore check, the proposal, the
-    // preferences, the plan read, the proposal's write, the receipt) and the op's — the library and pins read, one
-    // upsert, the batch marked.
-    expect(movePinsCostOf({ pin: [a, "gobletSquat"], unpin: [] })).toBe(3);
-    expect(costs).toEqual([APPROVE_FIXED + 3]);
+    // preferences, the plan read, the proposal's write, the receipt) and the op's — its claim, the library and pins read,
+    // one upsert, the batch marked.
+    expect(movePinsCostOf({ pin: [a, "gobletSquat"], unpin: [] })).toBe(4);
+    expect(costs).toEqual([APPROVE_FIXED + MOVE_PINS_FIXED + 1]);
     expect(await pinnedIds()).toEqual([a, "gobletSquat"].sort());
-    forgetAccountLibrary(db, userId);
-    const library = await loadAccountLibrary(db, userId);
-    expect(library.engine.some((e) => e.id === a)).toBe(true);
+    // The request's own library was seeded again with the pins it wrote (review 1, finding 5): a later read in that request
+    // finds the personal move in the engine's pool and pays nothing — the route's request ran on this very Db.
+    statements = 0;
+    const seeded = await loadAccountLibrary(db, userId);
+    expect(statements).toBe(0);
+    expect(seeded.engine.some((e) => e.id === a)).toBe(true);
     // The other new move stays offered, out of the engine's pool.
-    expect(library.engine.some((e) => e.id === b)).toBe(false);
-    expect(library.offered.some((e) => e.id === b)).toBe(true);
+    expect(seeded.engine.some((e) => e.id === b)).toBe(false);
+    expect(seeded.offered.some((e) => e.id === b)).toBe(true);
+    // And the same as a fresh read of what was written.
+    forgetAccountLibrary(db, userId);
+    const fresh = await loadAccountLibrary(db, userId);
+    expect(fresh.engine.map((e) => e.id)).toEqual(seeded.engine.map((e) => e.id));
     expect(await fittedAt(batchId)).toBe(NOW.toISOString());
     expect((await opOf(id)).outcome).toEqual({ status: "applied", at: NOW.toISOString(), pinned: [a, "gobletSquat"], unpinned: [], lines: [] });
     const receipts = await db.select().from(coachMessages).where(and(eq(coachMessages.userId, userId), eq(coachMessages.role, "receipt")));
@@ -350,22 +375,106 @@ describe("approving the moves in rotation", () => {
     expect((await proposalOf(id)).status).toBe("pending");
   });
 
-  it("its declared cost: two, and one a twenty ids; forty ids in one request within 45, measured exactly", async () => {
-    expect(MOVE_PINS_FIXED).toBe(2);
-    expect(movePinsCostOf({ pin: ["x"], unpin: [] })).toBe(3);
-    expect(movePinsCostOf({ pin: Array.from({ length: 20 }, (_, i) => `p${i}`), unpin: [] })).toBe(3);
-    expect(movePinsCostOf({ pin: Array.from({ length: 20 }, (_, i) => `p${i}`), unpin: ["u"] })).toBe(4);
+  it("its declared cost: three, and one a twenty ids; the most — twenty pins, twenty unpins and the batch — in one request, measured exactly", async () => {
+    expect(MOVE_PINS_FIXED).toBe(3);
+    expect(movePinsCostOf({ pin: [], unpin: [] })).toBe(3);
+    expect(movePinsCostOf({ pin: ["x"], unpin: [] })).toBe(4);
+    expect(movePinsCostOf({ pin: Array.from({ length: 20 }, (_, i) => `p${i}`), unpin: [] })).toBe(4);
+    expect(movePinsCostOf({ pin: Array.from({ length: 20 }, (_, i) => `p${i}`), unpin: ["u"] })).toBe(5);
+    const { batchId } = await batch();
     const ids = EXERCISES.slice(0, 40).map((e) => e.id);
     // The twenty to unpin are pinned already.
     await seedSavedBatch(db, userId, { savedAt: SAVED_AT, posts: [{ moves: [{ library: ids[20]! }] }], pinned: ids.slice(20) });
-    const { id } = await proposed({ pin: ids.slice(0, 20), unpin: ids.slice(20) });
+    const { id } = await proposed({ pin: ids.slice(0, 20), unpin: ids.slice(20), batchId });
     const { answers, costs } = await approveAll(id);
     expect(answers.at(-1)!.status).toBe("approved");
-    // The approve's own, the read and two upserts (no batch to mark: none named) — within what it declares (four).
-    expect(costs).toEqual([APPROVE_FIXED + 3]);
-    expect(costs[0]!).toBeLessThanOrEqual(APPROVE_FIXED + movePinsCostOf({ pin: ids.slice(0, 20), unpin: ids.slice(20) }));
+    // The approve's own, the claim, the read, two upserts and the batch marked: exactly what it declares.
+    expect(costs).toEqual([APPROVE_FIXED + MOVE_PINS_FIXED + 2]);
+    expect(movePinsCostOf({ pin: ids.slice(0, 20), unpin: ids.slice(20) })).toBe(MOVE_PINS_FIXED + 2);
     expect(costs[0]!).toBeLessThanOrEqual(REQUEST_BUDGET);
     expect(await pinnedIds()).toEqual(ids.slice(0, 20).sort());
+    expect(await fittedAt(batchId)).toBe(NOW.toISOString());
+  });
+
+  it("a lines-only card with its batch (no move pinned): approved, the batch is marked fitted in and no say on a move is written", async () => {
+    const { batchId } = await batch();
+    const ctx = await mainRun();
+    const stored = ok((await pins(ctx, { pin: [], batchId, lines: ["Zorbex hip circle — left in your library: your hips are well covered this week."] })).res);
+    expect(stored.data).toMatchObject({ pin: [], unpin: [], batchId });
+    const id = designProposalId(ctx.run.id);
+    await db.update(coachProposals).set({ status: "pending" }).where(eq(coachProposals.id, id));
+    const { answers, costs } = await approveAll(id);
+    expect(answers.at(-1)).toMatchObject({ status: "approved", refused: [] });
+    expect(costs).toEqual([APPROVE_FIXED + MOVE_PINS_FIXED]);
+    expect(await fittedAt(batchId)).toBe(NOW.toISOString());
+    expect(await db.select().from(exercisePrefs).where(eq(exercisePrefs.userId, userId))).toEqual([]);
+    expect((await opOf(id)).outcome).toEqual({ status: "applied", at: NOW.toISOString(), pinned: [], unpinned: [], lines: [] });
+  });
+
+  it("claimed while it applies (review 1, finding 4): a decline then is refused in flight, as a programme change's is; a fresh claim is another approve's; a stale one is retried", async () => {
+    const { batchId, a } = await batch();
+    const { id } = await proposed({ pin: [a], batchId });
+    const op = await opOf(id);
+    const claim = async (at: string) =>
+      db.update(coachProposals).set({ ops: [{ ...op, outcome: { status: "applying", at } }] }).where(eq(coachProposals.id, id));
+    await claim(new Date(NOW.getTime() - 1000).toISOString());
+    const decline = await invoke("POST", `/api/coach/proposals/${id}/decline`, { opIds: [op.id] });
+    expect(decline.status).toBe(409);
+    expect(decline.json).toMatchObject({ error: "in_flight", opIds: [op.id] });
+    expect((await opOf(id)).outcome?.status).toBe("applying");
+    const busy = await invoke("POST", `/api/coach/proposals/${id}/approve`, { opIds: [op.id] });
+    expect(busy.status).toBe(409);
+    expect(busy.json).toMatchObject({ error: "in_flight" });
+    expect(await pinnedIds()).toEqual([]);
+    // Past the window its request died: the next approve takes it over and writes it (the same write again).
+    vi.setSystemTime(new Date(NOW.getTime() + APPLYING_STALE_MS + 1000));
+    const { answers } = await approveAll(id, [op.id]);
+    expect(answers.at(-1)!.status).toBe("approved");
+    expect(await pinnedIds()).toEqual([a]);
+  });
+
+  it("a move the athlete set aside since it was proposed is skipped with a line — the engine leaves it out whatever its pin", async () => {
+    const { a } = await batch();
+    const { id } = await proposed({ pin: [a, "gobletSquat"] });
+    await db.insert(exercisePrefs).values({ id: `${userId}:gobletSquat`, userId, exerciseId: "gobletSquat", excluded: true, updatedAt: NOW.toISOString() });
+    await approveAll(id);
+    expect((await opOf(id)).outcome).toEqual({ status: "applied", at: NOW.toISOString(), pinned: [a], unpinned: [], lines: [`${GOBLET.name} — set aside as not for you since, skipped`] });
+    expect(await pinnedIds()).toEqual([a]);
+  });
+
+  it("beside a revised workout (review 1, finding 2): the pins alone, then pins and workout in one request — no read the costs don't declare, each exact", async () => {
+    const prefs = await loadPreferences(db, userId);
+    const day = addDays(TODAY, 3);
+    const revisedBeside = async () => {
+      const made = await createDocWorkout(db, userId, { date: day, doc: calmDoc({ title: "Mine" }) }, { today: TODAY, now: NOW.toISOString(), prefs });
+      const { a, batchId } = await batch();
+      const ctx = await mainRun();
+      const drafted = await proposeWorkout.run(ctx, { doc: calmDoc({ title: "Mine, calmer" }), target: { kind: "revise", workoutId: made.workout.id, baseRev: 1 } });
+      if (isToolErr(drafted)) throw new Error(`propose refused: ${drafted.error} — ${drafted.why}`);
+      ok((await pins(ctx, { pin: [a], batchId })).res);
+      const id = designProposalId(ctx.run.id);
+      const [p] = await db.select().from(coachProposals).where(eq(coachProposals.id, id));
+      const review = { scores: { intent: 4 }, notes: { intent: "Clear." }, mustFix: [], improvements: [], rounds: 1, changes: [] };
+      await db.update(coachProposals).set({ status: "pending", ops: (p!.ops as DesignedOp[]).map((o) => (o.kind === "doc_workout" ? { ...o, review } : o)) }).where(eq(coachProposals.id, id));
+      return { id, a, opId: pinsId(ctx.run.id) };
+    };
+    // The pins alone: the receipt names the proposal's workout too, from the request's library — seeded, never read again.
+    const alone = await revisedBeside();
+    const first = await invoke("POST", `/api/coach/proposals/${alone.id}/approve`, { opIds: [alone.opId] });
+    expect(first.status).toBe(200);
+    expect(first.json.pinned).toHaveLength(1);
+    expect(first.total).toBe(APPROVE_FIXED + MOVE_PINS_FIXED + 1);
+    // Both in one request: the workout's day, built after the pins, reads the library the pins left — no statement more.
+    const both = await revisedBeside();
+    const res = await invoke("POST", `/api/coach/proposals/${both.id}/approve`, {});
+    expect(res.status).toBe(200);
+    expect(res.json).toMatchObject({ status: "approved", remaining: [] });
+    expect(res.json.applied).toHaveLength(1);
+    // Within what it declares — the day holds the workout alone (the revision's own session): REVISE_BASE + 1 — and
+    // measured exactly: the pins' 11 as above, and the revision's own 10. (With `forgetAccountLibrary` in the re-seed's
+    // place, the pins alone measured 12: the receipt read the library again.)
+    expect(res.total).toBeLessThanOrEqual(APPROVE_FIXED + MOVE_PINS_FIXED + 1 + REVISE_BASE + 1);
+    expect(res.total).toBe(APPROVE_FIXED + MOVE_PINS_FIXED + 1 + 10);
   });
 
   it("Not now declines it; nothing pinned, the batch not marked", async () => {

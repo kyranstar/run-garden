@@ -334,13 +334,15 @@ function toPinsLine(v: unknown): DesignPinsLineDto | null {
   const outcome: DesignPinsLineDto["outcome"] =
     o?.status === "applied"
       ? { status: "applied", at: text(o.at), pinned: texts(o.pinned), unpinned: texts(o.unpinned), lines: texts(o.lines) }
-      : o?.status === "refused"
-        ? { status: "refused", at: text(o.at), error: text(o.error), why: text(o.why) }
-        : o?.status === "declined"
-          ? { status: "declined", at: text(o.at), ...(typeof o.reason === "string" ? { reason: o.reason } : {}) }
-          : o?.status === "superseded"
-            ? { status: "superseded", at: text(o.at), reason: text(o.reason), by: text(o.by) }
-            : null;
+      : o?.status === "applying"
+        ? { status: "applying", at: text(o.at) }
+        : o?.status === "refused"
+          ? { status: "refused", at: text(o.at), error: text(o.error), why: text(o.why) }
+          : o?.status === "declined"
+            ? { status: "declined", at: text(o.at), ...(typeof o.reason === "string" ? { reason: o.reason } : {}) }
+            : o?.status === "superseded"
+              ? { status: "superseded", at: text(o.at), reason: text(o.reason), by: text(o.by) }
+              : null;
   return {
     opId: p.opId,
     title: words(p.title) ?? "Moves in rotation",

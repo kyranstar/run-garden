@@ -126,11 +126,16 @@
  * request whose engine build reads the account's pinned moves sees them. It is one short write, never claimed: its
  * account's library and the named moves' pins are read (one statement), each move the library no longer offers —
  * archived since — is skipped with a line, an unpin of a move not in rotation is a line, and the rest are written in
- * one upsert a MOVE_PINS_PER ids (`exercise_prefs.pinned`), guarded by the proposal as this request last wrote it (a
- * decline that landed first wins: nothing written); then the batch, still the athlete's and saved, is marked fitted in
- * (`fitted_at`) — however many moves were pinned: it was considered. A write found made is made again, the same. It is
- * refused only when the library can't be read or the batch is another account's — never for a skip — and stays open.
- * Its cost is MOVE_PINS_FIXED and one a MOVE_PINS_PER ids (`movePinsCostOf`).
+ * one upsert a MOVE_PINS_PER ids (`exercise_prefs.pinned`), guarded by the proposal as this request last wrote it; then
+ * the batch, still the athlete's and saved, is marked fitted in (`fitted_at`) — however many moves were pinned, none
+ * among them (a lines-only card closes its batch): it was considered. A move the athlete set aside since
+ * (`exercise_prefs.excluded`) is skipped with a line too: the engine leaves it out whatever its pin. It is CLAIMED first
+ * (`applying`, under the same guard as every write), as a programme change is: a decline then answers it in flight,
+ * another approve within APPLYING_STALE_MS too, and past it the claim is simply taken over — the write is the same again,
+ * so nothing is released. The request's library is seeded again with the pins written (`reseedAccountLibrary`), so a
+ * later read in the request — a workout's day, the receipt — pays nothing. It is refused only when the library can't be
+ * read or the batch is another account's — never for a skip — and stays open. Its cost is MOVE_PINS_FIXED and one a
+ * MOVE_PINS_PER ids (`movePinsCostOf`).
  *
  * THE THREAD. Approving writes one plain receipt in the thread once nothing of the request remains — the workouts
  * approved, each as written (design-manifest.ts), how many were declined, and any not approved with why — and a decline
@@ -143,7 +148,7 @@ import { addDays, appAuthoredRow, dayLabel, docOriginRow, humanizeWorkoutTitle, 
 import { EXERCISES, type ExerciseRecord } from "@rg/exercise-library";
 import { deriveDoc, makeLibraryIndex, startEditing, toProposable, type DocDerived, type DocIssue } from "@rg/workout";
 import type { Db } from "./db.js";
-import { accountLibraryFrom, forgetAccountLibrary, loadAccountLibrary, personalMovesSql, type AccountLibrary } from "./account-library.js";
+import { accountLibraryFrom, loadAccountLibrary, personalMovesSql, reseedAccountLibrary, type AccountLibrary } from "./account-library.js";
 import { CALENDAR_OPS_PER_REQUEST } from "./calendar-sync.js";
 import { applyOps, applyStructuralChunk, NOT_ACTIONABLE, RETIME_CHANGED, STRUCTURAL_MIN_BUDGET, whyNotActionable, type StructuralProgress } from "./coach-apply.js";
 import { coachDrainQueued } from "./coros-write-cloud.js";
@@ -308,6 +313,8 @@ export type DesignedProgrammeOp = ProgrammeChangeOp & { outcome?: ProgrammeChang
  */
 export type MovePinsOutcome =
   | { status: "applied"; at: string; pinned: string[]; unpinned: string[]; lines: string[] }
+  /** Claimed by an approve writing it (review 1): never declined meanwhile; past APPLYING_STALE_MS, taken over. */
+  | { status: "applying"; at: string }
   | Exclude<OpOutcome, { status: "applied" }>;
 
 /** The moves in rotation, as a proposal holds them once the athlete has seen them. */
@@ -373,10 +380,11 @@ export function programmeOpsOf(ops: unknown): DesignedProgrammeOp[] {
   return Array.isArray(ops) ? (ops.filter(isProgrammeChangeOp) as DesignedProgrammeOp[]) : [];
 }
 
-/** A whole plan change or a programme change that has started (claimed, a part applied): never declined, never expired
- * under the athlete — Approve finishes it. */
+/** A whole plan change, a programme change or the moves in rotation that has started (claimed, a part applied): never
+ * declined, never expired under the athlete — Approve finishes it. */
 export const planStarted = (op: unknown): boolean =>
-  (isPlanStructureOp(op) || isProgrammeChangeOp(op)) && (op as DesignedStructureOp | DesignedProgrammeOp).outcome?.status === "applying";
+  (isPlanStructureOp(op) || isProgrammeChangeOp(op) || isMovePinsOp(op)) &&
+  (op as DesignedStructureOp | DesignedProgrammeOp | DesignedPinsOp).outcome?.status === "applying";
 
 /** Every op of a designed proposal the athlete decides: its workouts, its changes and its plan changes, in the proposal's
  * order. */
@@ -514,9 +522,9 @@ export const PROGRAMME_WRITE_COST = 1 + 3;
 /** The least room a pass is given: its fixed reads and one retraction (program-slots.ts `placeSlotsWithin`). */
 export const PROGRAMME_MIN_BUDGET = 3 + 1 + 1 + RETRACT_COST;
 
-/** The moves in rotation's own part (Task 18): the account's library with the named moves' pins and the batch (one
- * read), and the batch marked fitted in. */
-export const MOVE_PINS_FIXED = 1 + 1;
+/** The moves in rotation's own part (Task 18): its claim's write, the account's library with the named moves' pins and
+ * the batch (one read), and the batch marked fitted in. */
+export const MOVE_PINS_FIXED = 1 + 1 + 1;
 /** The moves one upsert writes. */
 export const MOVE_PINS_PER = 20;
 /** What a change to the moves in rotation costs: MOVE_PINS_FIXED, and one upsert a MOVE_PINS_PER of its moves. */
@@ -1301,6 +1309,12 @@ export async function approveDesignOps(
   const pinned: Planned[] = [];
   if (full) remaining.push(...pinsOps.map((g) => g.id));
   for (const [i, g] of (full ? [] : pinsOps).entries()) {
+    const claim = g.outcome?.status === "applying" ? g.outcome : null;
+    // Another approve is writing it (its claim fresh): never twice at once. Past the window, taken over.
+    if (claim && claimFresh(claim, ctx.now)) {
+      inFlight.push(g.id);
+      continue;
+    }
     const cost = movePinsCostOf(g);
     if (!first && cost > left) {
       remaining.push(...pinsOps.slice(i).map((x) => x.id));
@@ -1309,10 +1323,15 @@ export async function approveDesignOps(
     }
     first = false;
     left -= cost;
+    // THE CLAIM, under the same guard as every write, before anything of it is written: a decline from here is in flight.
+    const claimOps = withOutcomes(current.ops, new Map([[g.id, { status: "applying" as const, at: ctx.now }]]));
+    const claimStatus = statusOfOps(allDesignedOps(claimOps));
+    const claimedAt = await writeOps(db, userId, current, claimOps, claimStatus, ctx.now);
+    current = { ...current, ops: claimOps, status: claimStatus, resolvedAt: claimedAt };
     const outcome = await applyMovePins(db, userId, g, current, ctx.now);
     outcomes.set(g.id, outcome);
     if (outcome.status === "applied") pinned.push({ opId: g.id, summary: pinsDoneLine(outcome) });
-    else if (outcome.status === "refused") refused.push({ opId: g.id, error: outcome.error, why: outcome.why });
+    else refused.push({ opId: g.id, error: outcome.error, why: outcome.why });
   }
 
   for (const [i, op] of (full ? [] : workouts).entries()) {
@@ -1436,19 +1455,25 @@ export function pinsDoneLine(o: Pick<Extract<MovePinsOutcome, { status: "applied
 
 /**
  * The moves in rotation, applied (see the module comment): one read — the account's library (`personalMovesSql`, kept as
- * the request's), the named moves' pins and the batch — then an upsert a MOVE_PINS_PER moves written, and the batch marked
- * fitted in, each guarded by the proposal as this request last wrote it (`current`); the request's library forgotten
- * after, so a later read sees the pins.
+ * the request's), the named moves' pins and set-asides, and the batch — then an upsert a MOVE_PINS_PER moves written, and
+ * the batch marked fitted in, each guarded by the proposal as this request last wrote it (`current`: its claim); the
+ * request's library then seeded again with the pins written, so a later read in the request pays nothing.
  */
-async function applyMovePins(db: Db, userId: string, g: MovePinsOp, current: DesignProposalRow, now: string): Promise<MovePinsOutcome> {
-  const unreadable: MovePinsOutcome = { status: "refused", at: now, error: "library_unreadable", why: "The athlete's library couldn't be read just now — try again." };
+async function applyMovePins(
+  db: Db,
+  userId: string,
+  g: MovePinsOp,
+  current: DesignProposalRow,
+  now: string,
+): Promise<Extract<MovePinsOutcome, { status: "applied" | "refused" }>> {
+  const unreadable = { status: "refused" as const, at: now, error: "library_unreadable" as const, why: "The athlete's library couldn't be read just now — try again." };
   let row: { library: unknown; pinned_now: unknown; batch: unknown } | undefined;
   let library: AccountLibrary;
   try {
     // The batch's status when it is the athlete's; another account's reads as one, never its status.
     [row] = (await db.all(sql`
       select ${personalMovesSql(userId)} as library,
-        (select json_group_array(json_array(ep.exercise_id, ep.pinned)) from exercise_prefs ep
+        (select json_group_array(json_array(ep.exercise_id, ep.pinned, ep.excluded)) from exercise_prefs ep
           where ep.user_id = ${userId} and ep.exercise_id in (${values([...g.pin, ...g.unpin])})) as pinned_now,
         ${g.batchId ? sql`(select case when sb.user_id = ${userId} then sb.status else '~other' end from save_batches sb where sb.id = ${g.batchId})` : sql`null`} as batch
     `)) as Array<{ library: unknown; pinned_now: unknown; batch: unknown }>;
@@ -1460,15 +1485,18 @@ async function applyMovePins(db: Db, userId: string, g: MovePinsOp, current: Des
   const offered = new Set(library.offered.map((e) => e.id));
   const nameOf = makeLibraryIndex(library.all);
   const named = (id: string) => nameOf(id)?.name ?? id;
-  const pinnedNow = new Set(
-    (parsedRows(row?.pinned_now) as unknown[]).flatMap((r) => (Array.isArray(r) && typeof r[0] === "string" && (r[1] === 1 || r[1] === true) ? [r[0]] : [])),
-  );
+  const prefs = (parsedRows(row?.pinned_now) as unknown[]).flatMap((r) => (Array.isArray(r) && typeof r[0] === "string" ? [r as [string, unknown, unknown]] : []));
+  const flagged = (i: 1 | 2) => new Set(prefs.filter((r) => r[i] === 1 || r[i] === true).map((r) => r[0]));
+  const pinnedNow = flagged(1);
+  const setAside = flagged(2);
   const lines: string[] = [];
   const pinned: string[] = [];
   const unpinned: string[] = [];
   for (const id of g.pin) {
-    if (offered.has(id)) pinned.push(id);
-    else lines.push(`${named(id)} — not in your library any more, skipped`);
+    if (!offered.has(id)) lines.push(`${named(id)} — not in your library any more, skipped`);
+    // Set aside since it was proposed: the engine leaves it out whatever its pin, so "kept in rotation" would be false.
+    else if (setAside.has(id)) lines.push(`${named(id)} — set aside as not for you since, skipped`);
+    else pinned.push(id);
   }
   for (const id of g.unpin) {
     if (!offered.has(id)) lines.push(`${named(id)} — not in your library any more, skipped`);
@@ -1488,8 +1516,9 @@ async function applyMovePins(db: Db, userId: string, g: MovePinsOp, current: Des
       on conflict (id) do update set pinned = excluded.pinned, updated_at = excluded.updated_at
     `);
   }
-  // A pin decides the engine's pool of personal moves: a later read in this request reads it.
-  if (writes.length > 0) forgetAccountLibrary(db, userId);
+  // A pin decides the engine's pool of personal moves: the request's library, seeded again with what was written, so a
+  // later read in this request — a workout's day, the receipt — finds it and pays nothing.
+  if (writes.length > 0) await reseedAccountLibrary(db, userId, row?.library, new Map(writes.map(([id, on]) => [id, on === 1])));
   if (g.batchId) {
     if (row?.batch === "saved") {
       await db.run(sql`update save_batches set fitted_at = ${now} where id = ${g.batchId} and user_id = ${userId} and status = 'saved' and ${asRead}`);
