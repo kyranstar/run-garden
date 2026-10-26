@@ -31,3 +31,33 @@ export function batchNotice(newMoves: Pick<ExerciseRecord, "regions" | "contract
   const head = `${n} new ${n === 1 ? "move" : "moves"} (${breakdown})`;
   return linked > 0 ? `From your saves: ${head}, ${linked} you already had.` : `From your saves: ${head}.`;
 }
+
+const WORDS = ["zero", "one", "two", "three", "four", "five", "six", "seven", "eight", "nine", "ten", "eleven", "twelve"];
+
+/** "one"…"twelve"; digits beyond. */
+export function numberWord(n: number): string {
+  return Number.isInteger(n) && n >= 1 && n <= 12 ? WORDS[n]! : String(n);
+}
+
+/** Moves counted by group, biggest first; ties keep the order of first appearance (as `batchNotice` does). */
+export function groupCounts(moves: Pick<ExerciseRecord, "regions" | "contraction">[]): Array<{ group: MoveGroup; count: number }> {
+  const counts = new Map<MoveGroup, number>();
+  for (const m of moves) counts.set(moveGroup(m), (counts.get(moveGroup(m)) ?? 0) + 1);
+  return [...counts].sort((a, b) => b[1] - a[1]).map(([group, count]) => ({ group, count }));
+}
+
+/** The open card's line: what came in, and the question (Studio's saves card and the coach opening share it). */
+export function savesCardLine(counts: { new: number; linked: number }, groups: Array<{ group: MoveGroup; count: number }>): string {
+  const cap = (w: string) => w.charAt(0).toUpperCase() + w.slice(1);
+  const ask = (n: number) => `Want me to fit ${n === 1 ? "it" : "them"} into the week, or choose first?`;
+  if (counts.new === 0) {
+    const n = counts.linked;
+    return `${cap(numberWord(n))} saved ${n === 1 ? "move" : "moves"} you already have came in. ${ask(n)}`;
+  }
+  const items = groups.slice(0, 4).map((g) => (counts.new === 1 ? g.group : `${g.count} ${g.group}`));
+  const rest = groups.slice(4).reduce((t, g) => t + g.count, 0);
+  const list = rest > 0
+    ? `${items.join(", ")} and ${rest} more`
+    : items.length > 1 ? `${items.slice(0, -1).join(", ")} and ${items[items.length - 1]}` : items.join("");
+  return `${cap(numberWord(counts.new))} new ${counts.new === 1 ? "move" : "moves"} came in from your saves: ${list}. ${ask(counts.new)}`;
+}

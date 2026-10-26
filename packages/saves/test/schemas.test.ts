@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 import { PROFILE_IDS } from "@rg/exercise-library";
 import {
-  checkReportSchema, extractedMoveSchema, extractionSchema, filterVerdictSchema, postSubmitSchema, SAVE_SOURCE_RE,
+  checkReportSchema, extractedMoveSchema, extractionSchema, filterVerdictSchema, postSubmitSchema, SAVE_SOURCE_RE, fitSchema,
 } from "../src/index.js";
 
 const post = {
@@ -90,5 +90,20 @@ describe("schemas", () => {
     expect(checkReportSchema.safeParse({ checkId: id, phase: "finish", error: { code: "other", message: "m" } }).success).toBe(false);
     expect(checkReportSchema.safeParse({ checkId: id, phase: "finish", error: { code: "gone", message: "m".repeat(201) } }).success).toBe(false);
     expect(checkReportSchema.safeParse({ checkId: id, phase: "start", x: 1 }).success).toBe(false);
+  });
+});
+
+describe("fitSchema", () => {
+  it("takes personal ids with include or skip, strictly", () => {
+    expect(fitSchema.safeParse({ choices: {} }).success).toBe(true);
+    expect(fitSchema.safeParse({ choices: { myZorbexQuadShuffleabc123: "include" } }).success).toBe(true);
+    expect(fitSchema.safeParse({ choices: { myZorbexQuadShuffleabc123: "maybe" } }).success).toBe(false);
+    expect(fitSchema.safeParse({ choices: { gobletSquat: "skip" } }).success).toBe(false);
+    expect(fitSchema.safeParse({ choices: {}, extra: 1 }).success).toBe(false);
+  });
+  it("holds to 60 choices", () => {
+    const many = (n: number) => Object.fromEntries(Array.from({ length: n }, (_, i) => [`myZorbex${i}`, "skip"]));
+    expect(fitSchema.safeParse({ choices: many(60) }).success).toBe(true);
+    expect(fitSchema.safeParse({ choices: many(61) }).success).toBe(false);
   });
 });

@@ -486,6 +486,7 @@ const CHECK_WHY_WORDS: Readonly<Record<CheckWhy, string>> = {
   low_confidence: "Low confidence",
   inferred_name: "Name inferred",
   inferred_dose: "Dose inferred",
+  near_duplicate: "Looks like a move you have",
 };
 
 /**

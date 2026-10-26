@@ -1,9 +1,14 @@
 import { z } from "zod";
 import { DOSE_TYPES, PROFILE_IDS, type ExerciseRecord } from "@rg/exercise-library";
+import { PERSONAL_ID_RE } from "./ids.js";
+import type { MoveGroup } from "./breakdown.js";
 
 // The review of a batch ("From your saves", Studio `/studio/saves/:batchId`): the owner's side of what the import
 // brought, before anything of it is used. The Worker answers these shapes (apps/worker/src/routes/my-saves.ts); the app
 // reads them (packages/ui/src/screens/studio/saves.tsx).
+
+/** A move's say in "Fit these in": use it in the plan, or leave it out. */
+export type FitChoice = "include" | "skip";
 
 /** What a batch's links hold: distinct new moves, distinct moves the owner already had, and the rows taken out. */
 export interface SaveBatchCountsDto {
@@ -15,7 +20,7 @@ export interface SaveBatchCountsDto {
 /** One batch, as the list and the review's head show it. */
 export interface SaveBatchDto {
   id: string;
-  status: "held" | "released" | "saved" | "dismissed";
+  status: "held" | "released" | "saved" | "dismissed" | "superseded";
   /** "From your saves: 2 new moves (1 hip, 1 neck), 1 you already had." — null while held. */
   notice: string | null;
   theme: string | null;
@@ -25,6 +30,12 @@ export interface SaveBatchDto {
   /** When a pins card naming it was approved (the coach fitted it in, spec §17.1); null until then. */
   fittedAt: string | null;
   counts: SaveBatchCountsDto;
+  /** When the owner dismissed the batch's card; null until then. (Optional until the Worker answers it.) */
+  dismissedAt?: string | null;
+  /** When "Fit these in" started; null until then. */
+  fitStartedAt?: string | null;
+  /** The server's reading of the one-hour rule: a fit is under way. */
+  fitting?: boolean;
 }
 
 /** The words "Fit these in" sends — the coach opening's chip and the batch page's button alike (the coach reads the whole
@@ -32,7 +43,7 @@ export interface SaveBatchDto {
 export const FIT_SAVES_REQUEST = "Fit the new moves from my saves into my training.";
 
 /** A reason a row says "Check this" (`SaveBatchRowDto.move.checkWhy`). */
-export type CheckWhy = "low_confidence" | "inferred_name" | "inferred_dose";
+export type CheckWhy = "low_confidence" | "inferred_name" | "inferred_dose" | "near_duplicate";
 
 export interface SaveBatchesDto {
   batches: SaveBatchDto[];
@@ -71,6 +82,12 @@ export interface SaveBatchRowDto {
     checkWhy?: CheckWhy[];
     /** The dose as the post prescribed it ("3 x 10"), beside the stored one. */
     seenDose: string | null;
+    /** The extraction's `purpose` at the link's position. (Optional until the Worker answers it.) */
+    purpose?: string | null;
+    /** The move this one looks like (a near-duplicate): its id and name. */
+    like?: { id: string; name: string };
+    /** The move's stored fit choice (null for a linked row). */
+    choice?: FitChoice | null;
   };
   /** A personal move's record (new, or linked to one of the owner's own). */
   record?: ExerciseRecord;
@@ -147,3 +164,32 @@ export const rematchSchema = z.object({ to: z.string().min(1).max(80).nullable()
 export const createBatchSchema = z
   .object({ theme: z.string().trim().max(60).nullable(), postIds: z.array(z.string().min(1).max(80)).min(1).max(100) })
   .strict();
+
+/** `POST /api/my-saves/batches/:id/fit`: each new move's say, by id (a move left out of `choices` is included). */
+export const fitSchema = z
+  .object({ choices: z.record(z.string().regex(PERSONAL_ID_RE), z.enum(["include", "skip"])) })
+  .strict()
+  .refine((b) => Object.keys(b.choices).length <= 60, { message: "too many choices" });
+export type FitBody = z.infer<typeof fitSchema>;
+
+/** The answer to a fit: the batch, the words to send the coach, and what the fit takes in. */
+export interface FitAnswerDto {
+  batchId: string;
+  /** `FIT_SAVES_REQUEST`. */
+  request: string;
+  moves: number;
+  links: number;
+}
+
+/** The batch the open card is about. */
+export interface OpenSavesBatchDto {
+  id: string;
+  counts: { new: number; linked: number };
+  groups: Array<{ group: MoveGroup; count: number }>;
+  line: string;
+  fitting: boolean;
+}
+
+export interface OpenSavesDto {
+  open: OpenSavesBatchDto | null;
+}
