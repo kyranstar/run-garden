@@ -16,8 +16,10 @@
  *   POST /post-moves/:id/rematch {to}              "Same as…" (a library move or an active move of the account's) or
  *                                                  null, "Not this move" → `{ok, move}`
  *   POST /post-moves/:id/remove                    the row is left out of the save
- *   POST /batches {theme, postIds}                 the bootstrap: a held batch of those posts' unbatched rows → 201
- *   POST /batches/:id/release                      a held batch released, with its notice → `{batch}`
+ *   POST /batches {theme, postIds}                 the bootstrap: a themed held batch of those posts' rows (in no batch, or
+ *                                                  in a held one) → 201; at most 100 posts
+ *   POST /batches/:id/release                      a held batch released, with its notice → `{batch}`; 409 `too_soon`
+ *                                                  within 20 h of the account's last release
  *
  * 404 `not_found` for a batch, row or move that isn't this account's (and for a re-match target that is neither a
  * library move nor an active move of the account's); 409 for a row that is no longer pending, a release of a batch that
@@ -88,6 +90,7 @@ mySavesRoutes.post("/batches/:id/release", async (c) => {
   const out = await releaseBatch(c.get("db"), c.get("userId"), c.req.param("id"), nowInstant());
   if (out === "not_found") return c.json(notFound, 404);
   if (out === "conflict") return c.json({ error: "not_held" }, 409);
+  if (out === "too_soon") return c.json({ error: "too_soon" }, 409);
   return c.json({ batch: out });
 });
 

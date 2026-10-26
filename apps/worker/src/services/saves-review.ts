@@ -3,17 +3,20 @@
  * brought, and the owner's word on it before anything is used:
  *
  *  - the batches (`listBatches`) and one batch's rows (`batchDetail`): each link of a post to a move — a NEW move (a
- *    personal move still pending) or one LINKED to a move the owner already has (the library's, or a personal move saved
- *    before), "check this" where the match or the reading was unsure, the dose as the post gave it;
+ *    personal move this batch brought, saved or not) or one LINKED to a move the owner already had (the library's, or a
+ *    personal move another batch brought), "check this" where the match or the reading was unsure, the dose as the post
+ *    gave it — the list's counts and the page's labels by one rule;
  *  - an edit of a personal move (`editPersonalMove`), held to the library's own validation (`validatePersonalRecord`);
  *  - a re-match (`rematchLink`): "Same as…" repoints the link to a library move or an active personal move, and a pending
  *    move it leaves (named by no other pending link of the account) is merged into it; "Not this move" makes the post's
- *    move its own new move, from the post's stored reading at that position. Saving writes each link by the move it
- *    names, so repointing the link is what makes the save right;
+ *    move a new move of its own, from the post's stored reading at that position, every time (a pending move it leaves
+ *    stays pending: never activated, never offered). Saving writes each link by the move it names, so repointing the
+ *    link is what makes the save right;
  *  - Remove (`removeLink`): the row is left out of the save, and its move — if no kept row names it — stays pending,
  *    never used;
- *  - the bootstrap's held batch (`createHeldBatch`) and its release (`releaseBatch`, worded as `assembleBatch` words a
- *    batch). Save is `saveBatch` (saves-batches.ts).
+ *  - the bootstrap's themed held batches (`createHeldBatch`, gathering posts out of the held batch a check made in hold
+ *    mode) and their release (`releaseBatch`: worded as `assembleBatch` words a batch, and — the cadence — never within
+ *    `BATCH_GAP_MS` of the last release). Save is `saveBatch` (saves-batches.ts).
  *
  * Every row a write touches must be the account's and pending; a batch, row or move of another account is not found.
  * A write that changes a move the account's library holds (an active move edited, a merge) forgets this request's read
@@ -32,7 +35,7 @@ import { forgetAccountLibrary, loadAccountLibrary } from "./account-library.js";
 import { runAtomically, type Db } from "./db.js";
 import { buildPersonalRecord } from "./personal-moves.js";
 import { validatePersonalRecord } from "./personal-records.js";
-import { noticeOf } from "./saves-batches.js";
+import { BATCH_GAP_MS, noticeOf } from "./saves-batches.js";
 
 const { savedPosts, savedPostMoves, personalMoves, saveBatches } = schema;
 
@@ -56,20 +59,26 @@ interface BatchRead {
 }
 
 /**
+ * A row's move is NEW to its batch when it is a personal move the batch brought (`personal_moves.batch_id` is the
+ * batch's), whatever its status now — so a saved batch still shows the moves it brought as new — and not merged since
+ * (a merged move reads as its target). Anything else — the library's, a move another batch brought — is LINKED. The
+ * list's counts and the page's labels use this one rule. SQL over `l` (the link) and `pm` (its personal move).
+ */
+const BORN_HERE = sql`(l.move_kind = 'personal' and coalesce(pm.batch_id = l.batch_id and pm.status <> 'merged', 0))`;
+
+/**
  * The batch's columns and its counts, for a select over `save_batches b`: NEW is each distinct move of a kept row
- * (pending or saved) that is a personal move still pending or brought by this batch (so a saved batch keeps its count);
- * LINKED each distinct other move of a kept row; REMOVED the rows taken out.
+ * (pending or saved) that the batch brought (`BORN_HERE`), LINKED each distinct other move of a kept row, REMOVED the
+ * rows taken out.
  */
 const BATCH_COLUMNS = sql`b.id as id, b.status as status, b.notice as notice, b.theme as theme, b.created_at as createdAt,
   b.released_at as releasedAt, b.saved_at as savedAt,
   (select count(distinct l.move_id) from saved_post_moves l
      left join personal_moves pm on pm.id = l.move_id and pm.user_id = l.user_id
-     where l.user_id = b.user_id and l.batch_id = b.id and l.status <> 'removed' and l.move_kind = 'personal'
-       and coalesce(pm.status = 'pending' or pm.batch_id = b.id, 0)) as fresh,
+     where l.user_id = b.user_id and l.batch_id = b.id and l.status <> 'removed' and ${BORN_HERE}) as fresh,
   (select count(distinct l.move_id) from saved_post_moves l
      left join personal_moves pm on pm.id = l.move_id and pm.user_id = l.user_id
-     where l.user_id = b.user_id and l.batch_id = b.id and l.status <> 'removed'
-       and not (l.move_kind = 'personal' and coalesce(pm.status = 'pending' or pm.batch_id = b.id, 0))) as linked,
+     where l.user_id = b.user_id and l.batch_id = b.id and l.status <> 'removed' and not ${BORN_HERE}) as linked,
   (select count(*) from saved_post_moves l where l.user_id = b.user_id and l.batch_id = b.id and l.status = 'removed') as removed`;
 
 function batchOf(r: BatchRead): SaveBatchDto {
@@ -109,6 +118,8 @@ interface RowRead {
   seenSummary: string | null;
   seenDose: string | null;
   moveStatus: string | null;
+  /** The move is one this batch brought (`BORN_HERE`): 1 or 0. */
+  born: number;
   /** A pending, active or archived personal move's record, as stored (JSON text). */
   record: string | null;
 }
@@ -131,7 +142,7 @@ export async function batchDetail(db: Db, userId: string, batchId: string): Prom
       json_extract(p.extraction, '$.moves[' || l.position || '].name') as seenName,
       json_extract(p.extraction, '$.moves[' || l.position || '].summary') as seenSummary,
       json_extract(p.extraction, '$.moves[' || l.position || '].dose.text') as seenDose,
-      pm.status as moveStatus,
+      pm.status as moveStatus, ${BORN_HERE} as born,
       case when pm.status in ('pending', 'active', 'archived') then pm.record end as record
     from saved_post_moves l
       join saved_posts p on p.id = l.post_id and p.user_id = l.user_id
@@ -160,7 +171,7 @@ export async function batchDetail(db: Db, userId: string, batchId: string): Prom
 
   const rows = reads.map((r): SaveBatchRowDto => {
     const record = recordOf(r);
-    const fresh = r.moveKind === "personal" && r.moveStatus === "pending";
+    const fresh = Boolean(r.born);
     const seenName = text(r.seenName);
     const seenSummary = text(r.seenSummary);
     const linkedName = fresh ? undefined : (record?.name ?? find(r.moveId)?.name ?? r.moveId);
@@ -239,7 +250,7 @@ export type RematchOutcome =
   | { kind: "ok"; moveId: string; moveKind: "library" | "personal" }
   | { kind: "not_found" }
   | { kind: "target_not_found" }
-  | { kind: "conflict"; error: "not_pending" | "same_move" | "already_own" | "no_reading" }
+  | { kind: "conflict"; error: "not_pending" | "same_move" | "no_reading" }
   | { kind: "invalid"; issues: string[] };
 
 interface LinkRead {
@@ -261,8 +272,9 @@ interface LinkRead {
  * The owner's re-match of one pending row:
  *  - `to` a library move or one of the account's active moves ("Same as…"): the link names it; a pending move the link
  *    leaves, named by no other pending link of the account, is merged into it (`merged_into`, a public id allowed);
- *  - `to` null ("Not this move"): the post's move is its own new move — a pending personal move built from the post's
- *    stored reading at that position — unless it is already (409).
+ *  - `to` null ("Not this move"): the post's move is a new move of its own — a pending personal move built from the
+ *    post's stored reading at that position — every time (409 only when the reading has no move there). A pending move
+ *    the link leaves stays pending: no kept link names it, so saving never activates it, and nothing offers it.
  * A saved or removed row is 409; a target that isn't a library move or an active move of the account's is not found.
  * D1 statements: the link with all it needs 1, then one transaction of 1–2.
  */
@@ -285,7 +297,6 @@ export async function rematchLink(db: Db, userId: string, linkId: string, to: st
   const pendingLink = and(eq(savedPostMoves.id, linkId), eq(savedPostMoves.userId, userId), eq(savedPostMoves.status, "pending"));
 
   if (to === null) {
-    if (ownPending && Number(link.others) === 0) return { kind: "conflict", error: "already_own" };
     let raw: unknown = null;
     try {
       raw = link.draft ? JSON.parse(link.draft) : null;
@@ -351,10 +362,13 @@ export async function removeLink(db: Db, userId: string, linkId: string): Promis
 // ── The bootstrap: a held batch, its release ─────────────────────────────────────────────────────────────────────────
 
 /**
- * A held batch of these posts' pending, unbatched rows (the bootstrap's curation by theme): the batch is stamped on those
- * rows, on the posts that have no batch, and on the pending, unbatched personal moves the rows name. Null — nothing
- * written — when none of the posts has such a row. D1 statements: the waiting rows with their counts 1, one transaction
- * of 4.
+ * A themed held batch of these posts' pending rows (the bootstrap's curation, plan Task 20): rows in no batch yet, or
+ * in a HELD batch of the account's — in hold mode every check's finish gathers the matched posts into one theme-less
+ * held batch (`assembleBatch`), which the curation then splits by theme. A released, saved or dismissed batch's rows are
+ * never taken. The new batch is stamped on those rows, on their posts (from no batch, or a held one), and on the pending
+ * personal moves they name that no batch or a held batch brought; a held batch left with no rows at all goes (its
+ * moveless posts' stamp with it). Null — nothing written — when no post has such a row.
+ * D1 statements: the waiting rows 1, one transaction of 6, the new batch with its counts 1.
  */
 export async function createHeldBatch(
   db: Db,
@@ -363,28 +377,21 @@ export async function createHeldBatch(
   now: string,
 ): Promise<SaveBatchDto | null> {
   const posts = JSON.stringify([...new Set(input.postIds)]);
+  /** The account's held batches as they stand before this one is made. */
+  const heldIds = sql`(SELECT ${saveBatches.id} FROM ${saveBatches} WHERE ${saveBatches.userId} = ${userId} AND ${saveBatches.status} = 'held')`;
   const waitingRows = and(
     eq(savedPostMoves.userId, userId),
     eq(savedPostMoves.status, "pending"),
-    isNull(savedPostMoves.batchId),
+    sql`(${savedPostMoves.batchId} IS NULL OR ${savedPostMoves.batchId} IN ${heldIds})`,
     sql`${savedPostMoves.postId} IN (SELECT value FROM json_each(${posts}))`,
   );
-  // Counted as the batch will count them: a pending personal move is new, any other move one the owner had.
-  const fresh = sql`${savedPostMoves.moveKind} = 'personal' AND ${personalMoves.status} = 'pending'`;
-  const [waiting] = await db
-    .select({
-      n: sql<number>`count(*)`,
-      fresh: sql<number>`count(distinct CASE WHEN ${fresh} THEN ${savedPostMoves.moveId} END)`,
-      linked: sql<number>`count(distinct CASE WHEN ${fresh} THEN NULL ELSE ${savedPostMoves.moveId} END)`,
-    })
-    .from(savedPostMoves)
-    .leftJoin(personalMoves, and(eq(personalMoves.id, savedPostMoves.moveId), eq(personalMoves.userId, userId)))
-    .where(waitingRows);
+  const [waiting] = await db.select({ n: sql<number>`count(*)` }).from(savedPostMoves).where(waitingRows);
   if (!waiting || Number(waiting.n) === 0) return null;
-  const batch = {
-    id: newId(), userId, status: "held" as const, theme: input.theme?.trim() || null, createdAt: now, releasedAt: null, savedAt: null, fittedAt: null, notice: null,
-  };
-  const id = batch.id;
+  const id = newId();
+  /** A held batch, other than the new one, that no row names any more. */
+  const emptyHeld = sql`${saveBatches.userId} = ${userId} AND ${saveBatches.status} = 'held' AND ${saveBatches.id} <> ${id}
+    AND NOT EXISTS (SELECT 1 FROM ${savedPostMoves} WHERE ${savedPostMoves.userId} = ${userId} AND ${savedPostMoves.batchId} = ${saveBatches.id})`;
+  // In order: the rows move first (the held batches are read before the new one exists); the new batch is written last.
   await runAtomically(db, [
     db.update(savedPostMoves).set({ batchId: id }).where(waitingRows),
     db
@@ -393,7 +400,7 @@ export async function createHeldBatch(
       .where(
         and(
           eq(savedPosts.userId, userId),
-          isNull(savedPosts.batchId),
+          sql`(${savedPosts.batchId} IS NULL OR ${savedPosts.batchId} IN ${heldIds})`,
           sql`${savedPosts.id} IN (SELECT ${savedPostMoves.postId} FROM ${savedPostMoves} WHERE ${savedPostMoves.userId} = ${userId} AND ${savedPostMoves.batchId} = ${id})`,
         ),
       ),
@@ -404,20 +411,25 @@ export async function createHeldBatch(
         and(
           eq(personalMoves.userId, userId),
           eq(personalMoves.status, "pending"),
-          isNull(personalMoves.batchId),
+          sql`(${personalMoves.batchId} IS NULL OR ${personalMoves.batchId} IN ${heldIds})`,
           sql`${personalMoves.id} IN (SELECT ${savedPostMoves.moveId} FROM ${savedPostMoves} WHERE ${savedPostMoves.userId} = ${userId} AND ${savedPostMoves.batchId} = ${id} AND ${savedPostMoves.moveKind} = 'personal')`,
         ),
       ),
-    db.insert(saveBatches).values(batch),
+    db
+      .update(savedPosts)
+      .set({ batchId: null })
+      .where(and(eq(savedPosts.userId, userId), sql`${savedPosts.batchId} IN (SELECT ${saveBatches.id} FROM ${saveBatches} WHERE ${emptyHeld})`)),
+    db.delete(saveBatches).where(emptyHeld),
+    db.insert(saveBatches).values({
+      id, userId, status: "held", theme: input.theme?.trim() || null, createdAt: now, releasedAt: null, savedAt: null, fittedAt: null, notice: null,
+    }),
   ]);
-  return {
-    id, status: "held", notice: null, theme: batch.theme, createdAt: now, releasedAt: null, savedAt: null,
-    counts: { new: Number(waiting.fresh), linked: Number(waiting.linked), removed: 0 },
-  };
+  return readBatch(db, userId, id);
 }
 
-/** The batch (with its counts) and each of its kept rows' moves, as `noticeOf` reads them. */
+/** The batch (with its counts), the account's last release, and each of its kept rows' moves, as `noticeOf` reads them. */
 interface ReleaseRead extends BatchRead {
+  lastRelease: string | null;
   moveId: string | null;
   moveKind: string | null;
   moveStatus: string | null;
@@ -426,11 +438,20 @@ interface ReleaseRead extends BatchRead {
 }
 
 /**
- * Release a held batch: released now, with its notice worded from its kept rows (as `assembleBatch` words one).
- * D1 statements: the batch with its rows' moves 1, the write 1.
+ * Release a held batch: released now, with its notice worded from its kept rows (as `assembleBatch` words one) — but
+ * never within `BATCH_GAP_MS` of the account's last release (the cadence: at most one batch released per 20 h, so the
+ * coach brings the saves up at most once a day). D1 statements: the batch with its rows' moves and the last release 1,
+ * the write 1.
  */
-export async function releaseBatch(db: Db, userId: string, batchId: string, now: string): Promise<SaveBatchDto | "not_found" | "conflict"> {
-  const rows = (await db.all(sql`select ${BATCH_COLUMNS}, l.move_id as moveId, l.move_kind as moveKind, pm.status as moveStatus,
+export async function releaseBatch(
+  db: Db,
+  userId: string,
+  batchId: string,
+  now: string,
+): Promise<SaveBatchDto | "not_found" | "conflict" | "too_soon"> {
+  const rows = (await db.all(sql`select ${BATCH_COLUMNS},
+      (select max(r.released_at) from save_batches r where r.user_id = b.user_id) as lastRelease,
+      l.move_id as moveId, l.move_kind as moveKind, pm.status as moveStatus,
       json_extract(pm.record, '$.regions') as regions, json_extract(pm.record, '$.contraction') as contraction
     from save_batches b
       left join saved_post_moves l on l.batch_id = b.id and l.user_id = b.user_id and l.status = 'pending'
@@ -439,6 +460,7 @@ export async function releaseBatch(db: Db, userId: string, batchId: string, now:
   const first = rows[0];
   if (!first) return "not_found";
   if (first.status !== "held") return "conflict";
+  if (first.lastRelease && Date.parse(now) - Date.parse(first.lastRelease) < BATCH_GAP_MS) return "too_soon";
   const notice = noticeOf(rows);
   await db
     .update(saveBatches)

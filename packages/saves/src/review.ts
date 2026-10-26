@@ -114,7 +114,7 @@ export type PersonalMovePatch = z.infer<typeof personalMovePatchSchema>;
 /** `POST /api/my-saves/post-moves/:id/rematch`: a library move or one of the owner's active moves ("Same as…"), or null — the move is its own ("Not this move"). */
 export const rematchSchema = z.object({ to: z.string().min(1).max(80).nullable() }).strict();
 
-/** `POST /api/my-saves/batches`: a held batch of these posts' unbatched moves (the bootstrap). */
+/** `POST /api/my-saves/batches`: a themed held batch of these posts' moves (the bootstrap's batches are 20–60 posts). */
 export const createBatchSchema = z
-  .object({ theme: z.string().trim().max(60).nullable(), postIds: z.array(z.string().min(1).max(80)).min(1).max(500) })
+  .object({ theme: z.string().trim().max(60).nullable(), postIds: z.array(z.string().min(1).max(80)).min(1).max(100) })
   .strict();

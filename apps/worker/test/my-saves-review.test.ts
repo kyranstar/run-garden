@@ -160,12 +160,31 @@ describe("GET /batches", () => {
     ]);
   });
 
-  it("a saved batch keeps its counts: its new moves are still the ones it brought", async () => {
-    const { batchId, b } = await seed();
+  it("a saved batch keeps its counts, and its page still shows the moves it brought as New — the list and the page agree", async () => {
+    const { batchId, b, quad } = await seed();
     expect((await call("POST", `/post-moves/${(await linkAt(b, 1)).id}/remove`)).status).toBe(200);
     expect((await call("POST", `/batches/${batchId}/save`)).status).toBe(200);
     const res = await call("GET", "/batches");
     expect(res.body.batches[0]).toMatchObject({ id: batchId, status: "saved", savedAt: NOW, counts: { new: 1, linked: 1, removed: 1 } });
+    const page = await call("GET", `/batches/${batchId}`);
+    expect(page.body.batch.counts).toEqual(res.body.batches[0].counts);
+    const kept = (page.body.rows as any[]).filter((r) => r.status !== "removed");
+    expect(kept.map((r) => [r.move.id, r.move.kind, r.status])).toEqual([
+      [quad, "new", "saved"],
+      [HIP_SWITCH.id, "linked", "saved"],
+      [quad, "new", "saved"],
+    ]);
+    expect(kept[0].move.linkedName).toBeUndefined();
+    const distinct = (kind: string) => new Set(kept.filter((r) => r.move.kind === kind).map((r) => r.move.id)).size;
+    expect({ new: distinct("new"), linked: distinct("linked") }).toEqual({ new: 1, linked: 1 });
+  });
+
+  it("a pending move another batch brought reads as linked here, on the page and in the counts alike", async () => {
+    const { batchId, neck } = await seed();
+    await db.update(personalMoves).set({ batchId: "an-earlier-batch" }).where(eq(personalMoves.id, neck));
+    const page = await call("GET", `/batches/${batchId}`);
+    expect((page.body.rows as any[]).find((r) => r.move.id === neck).move).toMatchObject({ kind: "linked", linkedName: "Zorbex neck nod" });
+    expect(page.body.batch.counts).toEqual({ new: 1, linked: 2, removed: 0 });
   });
 });
 
@@ -332,17 +351,35 @@ describe("POST /post-moves/:id/rematch", () => {
     expect(row.move).toMatchObject({ id: now.moveId, kind: "new", name: "90/90 Hip Switch" });
   });
 
-  it("null on a row whose new move is its own is 409; on a shared new move it makes this post's own", async () => {
-    const { a, b, quad } = await seed();
-    expect((await call("POST", `/post-moves/${(await linkAt(b, 1)).id}/rematch`, { to: null })).status).toBe(409);
-    expect(statements.filter(isWrite)).toEqual([]);
+  it("Not this move always makes the post's own move from its reading; a new move it leaves stays pending, never used", async () => {
+    const { batchId, a, b, quad, neck } = await seed();
+    // A new move that is the post's own already: another, from the reading; the one it leaves stays pending.
+    expect((await call("POST", `/post-moves/${(await linkAt(b, 1)).id}/rematch`, { to: null })).status).toBe(200);
+    const again = (await linkAt(b, 1)).moveId;
+    expect(again).not.toBe(neck);
+    expect((await moveRow(again))!.record as ExerciseRecord).toMatchObject({ name: "Zorbex neck nod" });
+    expect(await moveRow(neck)).toMatchObject({ status: "pending", mergedInto: null });
+    // A shared new move: this post's own; the other post still names the shared one.
     expect((await call("POST", `/post-moves/${(await linkAt(b, 0)).id}/rematch`, { to: null })).status).toBe(200);
     const own = (await linkAt(b, 0)).moveId;
     expect(own).not.toBe(quad);
     expect((await moveRow(own))!.record as ExerciseRecord).toMatchObject({ name: "Zorbex quad shuffles" });
-    // Post a still names the shared move, still pending.
     expect((await linkAt(a, 0)).moveId).toBe(quad);
     expect((await moveRow(quad))!.status).toBe("pending");
+    // Saved: the moves the rows name are the owner's; the one left behind is never used.
+    expect((await call("POST", `/batches/${batchId}/save`)).body).toEqual({ moves: 3, links: 4 });
+    expect((await moveRow(again))!.status).toBe("active");
+    expect((await moveRow(neck))!.status).toBe("pending");
+    expect((await library("/personal")).body.moves.map((m: { record: { id: string } }) => m.record.id)).not.toContain(neck);
+  });
+
+  it("Not this move is 409 when the post's reading has no move at that position", async () => {
+    const { b } = await seed();
+    await db.update(savedPosts).set({ extraction: extraction([move("Zorbex quad shuffles")]) }).where(eq(savedPosts.id, b));
+    const res = await call("POST", `/post-moves/${(await linkAt(b, 1)).id}/rematch`, { to: null });
+    expect(res.status).toBe(409);
+    expect(res.body.error).toBe("no_reading");
+    expect(statements.filter(isWrite)).toEqual([]);
   });
 
   it("'Same as' another personal move merges it", async () => {
@@ -494,8 +531,8 @@ describe("POST /batches and /batches/:id/release", () => {
     const e = await matched("e", [move("Zorbex calf rock", { regions: ["calves"] })]);
     const made = await call("POST", "/batches", { theme: "Hips and neck", postIds: [c, d] });
     expect(made.status, JSON.stringify(made.body)).toBe(201);
-    // The session, the restore guard, the waiting rows with their counts, one transaction of 4.
-    expect(statements.length).toBe(7);
+    // The session, the restore guard, the waiting rows, one transaction of 6, the batch with its counts.
+    expect(statements.length).toBe(10);
     const id = made.body.batch.id as string;
     expect(made.body.batch).toMatchObject({ status: "held", theme: "Hips and neck", notice: null, releasedAt: null, counts: { new: 2, linked: 1, removed: 0 } });
     expect((await linkAt(c, 0)).batchId).toBe(id);
@@ -517,12 +554,59 @@ describe("POST /batches and /batches/:id/release", () => {
     expect((await call("POST", "/batches/nope/release")).status).toBe(404);
   });
 
-  it("a batch of posts with no unbatched move is 409, and nothing is written", async () => {
+  it("gathers the posts' moves out of the held batch a check made (hold mode), and drops a held batch left empty", async () => {
+    const hold = { ...matchEnv, SAVES_HOLD_BATCHES: "1" } as Env;
+    const c = await matched("c", [move("Zorbex hip circle"), move("90/90 Hip Switch")]);
+    const d = await matched("d", [move("Zorbex neck nod", { regions: ["neck"] })]);
+    const e = await matched("e", [move("Zorbex calf rock", { regions: ["calves"] })]);
+    const held = (await assembleBatch(db, hold, userId, at(1)))!;
+    expect((await batchRow(held)).status).toBe("held");
+    expect((await linkAt(c, 0)).batchId).toBe(held);
+
+    const made = await call("POST", "/batches", { theme: "Hips and neck", postIds: [c, d] });
+    expect(made.status, JSON.stringify(made.body)).toBe(201);
+    // The session, the restore guard, the waiting rows, one transaction of 6, the batch with its counts.
+    expect(statements.length).toBe(10);
+    const id = made.body.batch.id as string;
+    expect(made.body.batch).toMatchObject({ status: "held", theme: "Hips and neck", counts: { new: 2, linked: 1, removed: 0 } });
+    for (const [post, position] of [[c, 0], [c, 1], [d, 0]] as const) expect((await linkAt(post, position)).batchId).toBe(id);
+    expect((await moveRow((await linkAt(c, 0)).moveId))!.batchId).toBe(id);
+    expect((await moveRow((await linkAt(d, 0)).moveId))!.batchId).toBe(id);
+    expect((await db.select().from(savedPosts).where(eq(savedPosts.id, d)))[0]!.batchId).toBe(id);
+    // The check's held batch keeps the third post.
+    expect((await linkAt(e, 0)).batchId).toBe(held);
+    expect((await moveRow((await linkAt(e, 0)).moveId))!.batchId).toBe(held);
+    expect((await batchRow(held)).status).toBe("held");
+
+    // The last post out: the check's held batch is left with nothing, and goes.
+    const last = await call("POST", "/batches", { theme: "Calves", postIds: [e] });
+    expect(last.status).toBe(201);
+    expect((await linkAt(e, 0)).batchId).toBe(last.body.batch.id);
+    expect((await db.select().from(saveBatches).where(eq(saveBatches.id, held)))).toEqual([]);
+    expect((await call("GET", "/batches?held=1")).body.batches.map((b: { id: string }) => b.id).sort()).toEqual([id, last.body.batch.id].sort());
+  });
+
+  it("never takes rows out of a released batch: a batch of those posts is 409, and nothing is written", async () => {
     const { a } = await seed();
     const res = await call("POST", "/batches", { theme: null, postIds: [a, "nope"] });
     expect(res.status).toBe(409);
     expect(statements.filter(isWrite)).toEqual([]);
     expect((await call("POST", "/batches", { theme: null, postIds: [] })).status).toBe(422);
+    // At most 100 posts a batch (the bootstrap's are 20–60).
+    const many = Array.from({ length: 101 }, (_, i) => `post-${i}`);
+    expect((await call("POST", "/batches", { theme: null, postIds: many })).status).toBe(422);
+    expect((await call("POST", "/batches", { theme: null, postIds: many.slice(0, 100) })).status).toBe(409);
+  });
+
+  it("a release within 20 h of the last is 409 too_soon, and the batch stays held", async () => {
+    await db.insert(saveBatches).values({ id: "recent", userId, status: "released", createdAt: at(0), releasedAt: new Date(Date.parse(NOW) - 2 * 3_600_000).toISOString() });
+    const c = await matched("c", [move("Zorbex hip circle")]);
+    const id = (await call("POST", "/batches", { theme: null, postIds: [c] })).body.batch.id as string;
+    const res = await call("POST", `/batches/${id}/release`);
+    expect(res.status).toBe(409);
+    expect(res.body).toEqual({ error: "too_soon" });
+    expect(statements.filter(isWrite)).toEqual([]);
+    expect(await batchRow(id)).toMatchObject({ status: "held", releasedAt: null, notice: null });
   });
 });
 
