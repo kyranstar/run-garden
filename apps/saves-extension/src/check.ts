@@ -32,7 +32,9 @@ export const DEFAULT_CONFIG: CheckConfig = {
   minVideoWidth: MIN_VIDEO_WIDTH,
   model: "google/gemini-3.6-flash",
   maxTokens: 4000,
-  maxBodyBytes: 4_500_000,
+  // Just under the relay's own cap (RELAY_MAX_BYTES, 20 MB). The gateway's limit is learned from its 413 at run time
+  // (probe R2): the 4.5 MB guess this held before (2026-10-25) refused 32 of the first 38 videos before sending anything.
+  maxBodyBytes: 19_500_000,
 };
 
 /** The library's own move names, sent with each post so the model reuses them for the same move. */
@@ -218,8 +220,9 @@ export async function runCheck(deps: CheckDeps): Promise<CheckSummary> {
 
   /**
    * Fetch a post's media and call the relay: one retry, either with the issues on `model_failed` or a size down on
-   * `too_large`. A post that is gone, whose media would not download, or that no size can send is told to the app. A 409
-   * or 404 (a replay or work item the app no longer wants) is nothing to do.
+   * `too_large`; when no size fits (before sending, or after the gateway's 413), one last try sends the video by its
+   * link and no bytes (probe R2). A post that is gone, or whose media would not download, is told to the app. A 409 or
+   * 404 (a replay or work item the app no longer wants) is nothing to do.
    */
   async function sendExtract(entry: QueueEntry): Promise<void> {
     if (budgetPaused) return; // the app keeps the post queued; its work list hands it back once the budget has room
@@ -243,8 +246,10 @@ export async function runCheck(deps: CheckDeps): Promise<CheckSummary> {
       let videoUrl: string | null = null;
       let retryIssues: string[] | undefined;
       let retried = false;
+      /** The last resort for a video no size of which fits: its link in place of its bytes. Once per post. */
+      let byLink = false;
       for (;;) {
-        if (variant && videoUrl !== variant.url) {
+        if (variant && videoUrl !== variant.url && !byLink) {
           const got = await fetchAsBase64(variant.url, deps.fetchImpl, "video/mp4");
           video = { mime: got.mime, base64: got.base64 };
           videoUrl = variant.url;
@@ -252,7 +257,8 @@ export async function runCheck(deps: CheckDeps): Promise<CheckSummary> {
         const body = buildExtractBody({
           model: config.model,
           post: toSubmit(post, entry.source),
-          video,
+          video: byLink ? undefined : video,
+          ...(byLink && variant ? { videoUrl: variant.url } : {}),
           images,
           libraryNames: LIBRARY_NAMES,
           retryIssues,
@@ -261,9 +267,15 @@ export async function runCheck(deps: CheckDeps): Promise<CheckSummary> {
         if (utf8Length(body) > bodyLimit) {
           // Over the limit the gateway or the Worker would refuse it: try a smaller size before sending anything.
           const smaller = variant ? nextSmaller(post.videoVariants, variant.width) : null;
-          if (!smaller) return fetchFailed(entry.source, entry.key, "too_large");
-          variant = smaller;
-          continue;
+          if (smaller) {
+            variant = smaller;
+            continue;
+          }
+          if (variant && !byLink) {
+            byLink = true;
+            continue;
+          }
+          return fetchFailed(entry.source, entry.key, "too_large");
         }
         const answer = await app.extract(entry.source, entry.key, body, { model: config.model, maxTokens: config.maxTokens });
         if (answer.ok) {
@@ -290,9 +302,13 @@ export async function runCheck(deps: CheckDeps): Promise<CheckSummary> {
         if (answer.code === "too_large") {
           if (answer.maxBytes) bodyLimit = Math.min(bodyLimit, answer.maxBytes);
           const smaller = variant ? nextSmaller(post.videoVariants, variant.width) : null;
-          if (!retried && smaller) {
+          if (!retried && smaller && !byLink) {
             retried = true;
             variant = smaller;
+            continue;
+          }
+          if (variant && !byLink) {
+            byLink = true;
             continue;
           }
         }

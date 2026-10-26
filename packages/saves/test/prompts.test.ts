@@ -52,6 +52,16 @@ describe("buildExtractBody", () => {
     expect(system).toContain("purpose (<=160: what the post says this move is for, or when to do it)");
     expect(EXTRACT_PROMPT_VERSION).toBe("extract-2");
   });
+  it("carries the video by link when asked, with no inline bytes", () => {
+    const url = ["ht", "tps://synthetic.cdninstagram.com/v/post.mp4?sig=1"].join("");
+    const j = JSON.parse(buildExtractBody({ ...args, video: undefined, videoUrl: url }));
+    const parts = j.messages.at(-1).content;
+    expect(parts[1]).toEqual({ type: "file", file: { filename: "post.mp4", file_data: url } });
+    expect(JSON.stringify(parts)).not.toContain("base64,QUJD");
+    // Inline bytes win when both are given.
+    const both = JSON.parse(buildExtractBody({ ...args, videoUrl: url })).messages.at(-1).content;
+    expect(both[1].file.file_data).toBe("data:video/mp4;base64,QUJD");
+  });
   it("omits the file part with no video", () => {
     const j = JSON.parse(buildExtractBody({ ...args, video: undefined }));
     expect(j.messages.at(-1).content.some((p: { type: string }) => p.type === "file")).toBe(false);

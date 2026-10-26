@@ -436,22 +436,43 @@ describe("runCheck", () => {
       expect(summary).toMatchObject({ extracted: 2, failed: 0 });
     });
 
-    it("defaults the relay body limit to 4.5 MB until the gateway is measured", () => {
-      expect(DEFAULT_CONFIG.maxBodyBytes).toBe(4_500_000);
+    it("defaults the relay body limit to just under the relay's 20 MB cap; the gateway's 413 lowers it at run time", () => {
+      expect(DEFAULT_CONFIG.maxBodyBytes).toBe(19_500_000);
     });
 
-    it("too_large twice, or with nothing smaller, counts the post as failed after at most one retry", async () => {
+    /** The body's file part carries the video by link (no bytes), or by bytes (no link). */
+    const videoPart = (body: string): { byLink: string | null; inline: boolean } => {
+      const parts = JSON.parse(body).messages.at(-1).content as { type: string; file?: { file_data: string } }[];
+      const file = parts.find((p) => p.type === "file")?.file?.file_data ?? "";
+      return { byLink: file.startsWith("https://") ? file : null, inline: file.startsWith("data:") };
+    };
+
+    it("too_large twice, or with nothing smaller, sends the video by its link as a last try — once", async () => {
       const { app, reader } = one();
       app.extractAnswers = [{ ok: false, code: "too_large" }, { ok: false, code: "too_large" }];
       const summary = await runCheck(makeDeps(app, reader));
-      expect(app.extracts).toHaveLength(2);
-      expect(summary).toMatchObject({ extracted: 0, failed: 1, error: null });
+      expect(app.extracts).toHaveLength(3);
+      expect(app.extracts.map((x) => videoPart(x.body))).toEqual([
+        { byLink: null, inline: true },
+        { byLink: null, inline: true },
+        { byLink: `https://synthetic.cdninstagram.com/${code(1)}-360.mp4`, inline: false },
+      ]);
+      expect(summary).toMatchObject({ extracted: 1, failed: 0, error: null });
 
       const small = new FakeApp();
       small.extractAnswers = [{ ok: false, code: "too_large" }];
       const onlySmall = fakeReader([[media(code(1), "video", { video_versions: [{ width: 360, height: 640, url: "https://synthetic.cdninstagram.com/only-360.mp4" }] })]]);
-      expect(await runCheck(makeDeps(small, onlySmall))).toMatchObject({ failed: 1 });
-      expect(small.extracts).toHaveLength(1);
+      expect(await runCheck(makeDeps(small, onlySmall))).toMatchObject({ extracted: 1, failed: 0 });
+      expect(small.extracts.map((x) => videoPart(x.body).byLink)).toEqual([null, "https://synthetic.cdninstagram.com/only-360.mp4"]);
+    });
+
+    it("a link try the gateway refuses leaves the post failed, with no further try", async () => {
+      const { app, reader } = one();
+      app.extractAnswers = [{ ok: false, code: "too_large" }, { ok: false, code: "too_large" }, { ok: false, code: "unknown", issues: ["File URL data not supported"] }];
+      const summary = await runCheck(makeDeps(app, reader));
+      expect(app.extracts).toHaveLength(3);
+      expect(summary).toMatchObject({ extracted: 0, failed: 1, error: null });
+      expect(app.rows.get(code(1))).toMatchObject({ status: "failed", code: "unknown" });
     });
 
     it("a body over the relay's size limit steps down to a smaller variant before sending anything", async () => {
@@ -471,10 +492,22 @@ describe("runCheck", () => {
         fetchImpl: mediaFetch((u) => (u.endsWith(".mp4") ? new Response(new Uint8Array(400_000), { headers: { "content-type": "video/mp4" } }) : null)),
         config: { ...DEFAULT_CONFIG, maxBodyBytes: 200_000 },
       });
-      expect(await runCheck(allBig)).toMatchObject({ extracted: 0, failed: 1, error: null });
-      expect(none.extracts).toHaveLength(0);
-      // Told to the app, so its work list stops handing out a post no size of which can be sent.
-      expect(none.failedReports).toEqual([{ key: code(1), code: "too_large" }]);
+      // No size fits: the video goes by its link, with no bytes, before anything is given up.
+      expect(await runCheck(allBig)).toMatchObject({ extracted: 1, failed: 0, error: null });
+      expect(none.extracts).toHaveLength(1);
+      expect(videoPart(none.extracts[0]!.body)).toEqual({ byLink: `https://synthetic.cdninstagram.com/${code(1)}-360.mp4`, inline: false });
+      expect(none.extracts[0]!.body.length).toBeLessThan(200_000);
+      expect(none.failedReports).toEqual([]);
+
+      // A post with no video at all and a body still over the limit is told to the app as too_large.
+      const noVideo = new FakeApp();
+      const imagesOnly = makeDeps(noVideo, fakeReader([[media(code(1), "carousel")]]), {
+        fetchImpl: mediaFetch((u) => (u.endsWith(".jpg") ? new Response(new Uint8Array(400_000), { headers: { "content-type": "image/jpeg" } }) : null)),
+        config: { ...DEFAULT_CONFIG, maxBodyBytes: 200_000 },
+      });
+      expect(await runCheck(imagesOnly)).toMatchObject({ extracted: 0, failed: 1, error: null });
+      expect(noVideo.extracts).toHaveLength(0);
+      expect(noVideo.failedReports).toEqual([{ key: code(1), code: "too_large" }]);
     });
 
     it("an expired media link fails that post: reported to the app as media_failed, and the check goes on", async () => {

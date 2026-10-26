@@ -120,6 +120,8 @@ export interface ExtractBodyArgs {
   libraryNames: string[];
   retryIssues?: string[];
   maxTokens: number;
+  /** The video by its link instead of inline bytes (probe R2: when no size of it fits the gateway's body limit). */
+  videoUrl?: string;
 }
 
 function extractSystem(): string {
@@ -173,6 +175,9 @@ export function buildExtractBody(args: ExtractBodyArgs): string {
       type: "file",
       file: { filename: "post.mp4", file_data: `data:${args.video.mime};base64,${args.video.base64}` },
     });
+  } else if (args.videoUrl) {
+    // The gateway fetches a hosted file itself (its docs: "a supported URL"), so the body stays small.
+    content.push({ type: "file", file: { filename: "post.mp4", file_data: args.videoUrl } });
   }
   for (const img of args.images) {
     content.push({ type: "image_url", image_url: { url: `data:${img.mime};base64,${img.base64}` } });
