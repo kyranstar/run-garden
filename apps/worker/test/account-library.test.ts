@@ -12,6 +12,7 @@ import { nowInstant, todayInZone, workoutDocSchema, type WorkoutDoc } from "@rg/
 import { EXERCISES, PROFILE_IDS } from "@rg/exercise-library";
 import { personalMoveId, type ExtractedMove } from "@rg/saves";
 import { deriveDoc, makeLibraryIndex } from "@rg/workout";
+import { Lib, Rng, Select } from "@rg/session-engine";
 import type { Env } from "../src/env.js";
 import type { Db } from "../src/services/db.js";
 import {
@@ -196,6 +197,39 @@ describe("loadAccountLibrary", () => {
     await db.update(personalMoves).set({ status: "archived" }).where(eq(personalMoves.id, id));
     forgetAccountLibrary(db, userId);
     expect((await loadAccountLibrary(db, userId)).personalHash).not.toBe(pinned);
+  });
+});
+
+describe("a pinned saved move's selection bonus (coach-context audit I1c)", () => {
+  it("a pinned personal move of role mobility is preferred for a mobility slot over an equal move the athlete didn't pin: the saved-link bonus, from the pin", async () => {
+    // A personal move that is the public library's own mobility drill in all but its id: equal on every score part.
+    const twin = EXERCISES.find((e) => e.roles.includes("mobility") && e.load === "none" && !e.tags.length)!;
+    const id = personalMoveId("Zorbex twin drill", `${userId}:twin`);
+    const now = nowInstant();
+    await db.insert(personalMoves).values({
+      id, userId, status: "active", mergedInto: null, batchId: null, editedByOwner: false, createdAt: now, updatedAt: now,
+      record: { ...twin, id, name: "Zorbex twin drill", family: id, legacyIds: [], easier: [], harder: [] },
+    });
+    await pin(id);
+    // A public move the athlete pinned (their own Studio pin): no saved-link bonus from that ("From your saves" would be false).
+    await pin("gobletSquat");
+    const context = await loadEngineContext(db, userId, null, {});
+    expect(context.savedIds).toContain(id);
+    expect(context.savedIds).not.toContain("gobletSquat");
+    const data = engineDataFor(context.activeProfiles, context.careProfiles, context.library);
+    const candidates = [Lib.get(data, twin.id)!, Lib.get(data, id)!];
+    const rank = (saved: readonly string[]) =>
+      Select.rank(data, candidates, {
+        today, theme: null, debt: { patterns: {}, regions: {} }, maxDebt: 1, coverageLast: { patterns: {}, regions: {} }, stats: new Map(),
+        prefs: context.prefs, rng: Rng.create("twin"), newMoveOpen: false, saved: new Set(saved),
+      });
+    const ranked = rank(context.savedIds);
+    expect(ranked[0]!.ex.id).toBe(id);
+    expect(ranked[0]!.reasons).toContain("From your saves");
+    // Unpinned, it has no bonus: the saves' weight less, and no such reason.
+    const bare = rank([]).find((r) => r.ex.id === id)!;
+    expect(bare.reasons).not.toContain("From your saves");
+    expect(ranked[0]!.total - bare.total).toBeCloseTo(Select.WEIGHTS.saved, 5);
   });
 });
 

@@ -44,6 +44,7 @@ import {
   type WeightUnit,
 } from "@rg/domain";
 import { isProfileId, LOCATION_PRESETS } from "@rg/exercise-library";
+import { isPersonalId } from "@rg/saves";
 import {
   Hist,
   historyFromPerformed,
@@ -692,7 +693,9 @@ export async function loadEngineContext(
     excluded: byExercise.filter((r) => r.excluded).map((r) => r.exerciseId),
     pinned: byExercise.filter((r) => r.pinned).map((r) => r.exerciseId),
   };
-  const savedIds = sortedUnique(savedRows.map((r) => r.exerciseId));
+  // The saved-link bonus: a move with a link to a saved post, or a pinned saved (personal) move — every personal move
+  // came from the saves, so "From your saves" stays true (coach-context audit I1c; a public move's pin keeps its own role).
+  const savedIds = sortedUnique([...savedRows.map((r) => r.exerciseId), ...prefs.pinned.filter(isPersonalId)]);
 
   if (placeRows.length === 0) {
     const home = presetHome();
