@@ -2,6 +2,7 @@
  * Shared fixtures for the Studio's tests: the payloads the screen reads (`GET /api/library`, `/api/plan/today`,
  * `/api/places`), generic and with no personal data. The condition profile is the library's public TMJ profile.
  */
+import type { SaveBatchesDto } from "@rg/saves";
 import { createElement, type ReactElement } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
 import { createPath, Router, type To } from "react-router-dom";
@@ -114,6 +115,8 @@ export interface Primed {
   profile?: ProfileDto;
   /** The athlete's own moves (`GET /api/library/personal`); `{ moves: [] }` for an account with none. */
   personal?: PersonalMovesDto;
+  /** The batches from the athlete's saves (`GET /api/my-saves/batches`). */
+  saves?: SaveBatchesDto;
 }
 
 export function primedClient(p: Primed = {}): QueryClient {
@@ -123,6 +126,7 @@ export function primedClient(p: Primed = {}): QueryClient {
   if (p.places) qc.setQueryData(["places"], p.places);
   if (p.profile) qc.setQueryData(["profile"], p.profile);
   if (p.personal) qc.setQueryData(["library", "personal"], p.personal);
+  if (p.saves) qc.setQueryData(["saves", "batches"], p.saves);
   return qc;
 }
 

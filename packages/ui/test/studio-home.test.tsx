@@ -6,6 +6,7 @@
 import { createElement } from "react";
 import { describe, expect, it } from "vitest";
 import { EXERCISES, TAGS, label } from "@rg/exercise-library";
+import type { SaveBatchDto } from "@rg/saves";
 import { StudioScreen } from "../src/screens/studio/screen.js";
 import { emptyStudioCtx, studioResults } from "../src/screens/studio/model.js";
 import { libraryDto, placesDto, readsGivenUp, renderAt, text, todayDto } from "./studio-fixtures.js";
@@ -151,5 +152,29 @@ describe("the Studio home", () => {
       expect(s, t).toMatch(/<button type="button"/);
       expect(s, t).not.toMatch(/<a /);
     }
+  });
+});
+
+describe("the way back to the saves (final review I2; spec §6)", () => {
+  const batch = (over: Partial<SaveBatchDto>): SaveBatchDto => ({
+    id: "b1", status: "released", notice: "From your saves: 1 new move (hip).", theme: null, createdAt: "2026-10-23T10:00:00.000Z",
+    releasedAt: "2026-10-23T10:00:00.000Z", savedAt: null, fittedAt: null, counts: { new: 1, linked: 0, removed: 0 }, ...over,
+  });
+  const link = (html: string) => /<a[^>]*href="\/studio\/saves"[^>]*>(.*?)<\/a>/.exec(html);
+
+  it("a From your saves link beside Templates while a batch waits — released, or saved and not fitted in — with how many", () => {
+    const html = home({ saves: { batches: [batch({ id: "b1" }), batch({ id: "b2", status: "saved", savedAt: "2026-10-24T10:00:00.000Z" })] } });
+    const a = link(html);
+    expect(a).not.toBeNull();
+    expect(text(a![1]!)).toBe("From your saves (2)");
+    // A fingertip's target, as the Templates link is (min-height var(--tap)).
+    expect(a![0]).toContain('class="linklike stu-tpl-link"');
+    expect(html.indexOf('href="/studio/saves"')).toBeLessThan(html.indexOf(">Templates"));
+  });
+
+  it("none when nothing waits (fitted in, or none at all), and none when the read never answered (offline, or the import off)", () => {
+    expect(link(home({ saves: { batches: [batch({ status: "saved", savedAt: "2026-10-24T10:00:00.000Z", fittedAt: "2026-10-24T11:00:00.000Z" })] } }))).toBeNull();
+    expect(link(home({ saves: { batches: [] } }))).toBeNull();
+    expect(link(home())).toBeNull();
   });
 });

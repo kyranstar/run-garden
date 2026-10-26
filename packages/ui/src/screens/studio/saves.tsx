@@ -18,7 +18,7 @@
  *                                 …
  *                                 NOTES
  *                                 Do it before a run, not after. · coach_a
- *                                 [ Save these ]
+ *                                 [ Save these ]      (once saved, not yet fitted in: [ Fit these in ])
  *
  * A row opens the move's sheet: its words, the post (its creator, and a link that opens it apart), the dose as the post
  * gave it and as it would be saved, and — while the row is pending — Edit (a new move, or one of the owner's own),
@@ -39,18 +39,18 @@ import { Link, useParams } from "react-router-dom";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { api, ApiError, SAVES_BATCHES_QUERY, SAVES_STATUS_QUERY, savesBatchQuery } from "@rg/api-client";
 import { PROFILES, searchLibrary, type ExerciseRecord } from "@rg/exercise-library";
-import type { SaveBatchDetailDto, SaveBatchInsightDto, SaveBatchRowDto } from "@rg/saves";
+import { FIT_SAVES_REQUEST, type SaveBatchDetailDto, type SaveBatchInsightDto, type SaveBatchRowDto } from "@rg/saves";
 import { EmptyState, Sheet, Spinner } from "../../components.js";
 import { SearchField } from "../../components/search-field.js";
 import { IconBack } from "../../icons.js";
 import { useAccountLibrary } from "../../library/account-library.js";
-import { AskCoach, useCoachSeeing } from "./coach-ask.js";
+import { AskCoach, useCoach, useCoachSeeing } from "./coach-ask.js";
 import { moveFocus } from "./coach-focus.js";
 import { doseLine } from "./model.js";
 import { postHref } from "./move-detail.js";
 import { dotted } from "./move-row.js";
 import {
-  attrWord, batchDay, batchFacts, canSave, DOSE_TYPES, DOSE_WORD, formOf, patchOf, rowActions, savesHref, shownRows, writeError,
+  attrWord, batchDay, batchFacts, canFit, canSave, DOSE_TYPES, DOSE_WORD, formOf, patchOf, rowActions, savesHref, shownRows, writeError,
   type MoveForm,
 } from "./saves-model.js";
 
@@ -176,6 +176,7 @@ export function SaveBatchScreen() {
   const qc = useQueryClient();
   const q = useQuery({ queryKey: savesBatchQuery(batchId), queryFn: () => api.savesBatch(batchId), retry });
   const account = useAccountLibrary();
+  const coach = useCoach();
   const [open, setOpen] = useState<Open | null>(null);
   const [status, setStatus] = useState<string | null>(null);
   const [saving, setSaving] = useState(false);
@@ -273,6 +274,13 @@ export function SaveBatchScreen() {
         <div className="stu-build-foot stu-save-foot">
           <button type="button" className="btn btn-primary" disabled={saving} onClick={() => void save()}>
             Save these
+          </button>
+        </div>
+      ) : data && coach && canFit(data.batch) ? (
+        <div className="stu-build-foot stu-save-foot">
+          {/* Saved already: the coach is asked, as the opening's chip asks once it has saved (final review I3). */}
+          <button type="button" className="btn btn-primary" onClick={() => coach.open({ request: FIT_SAVES_REQUEST })}>
+            Fit these in
           </button>
         </div>
       ) : null}

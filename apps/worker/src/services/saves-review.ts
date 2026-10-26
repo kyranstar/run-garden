@@ -54,6 +54,7 @@ interface BatchRead {
   createdAt: string;
   releasedAt: string | null;
   savedAt: string | null;
+  fittedAt: string | null;
   fresh: number | null;
   linked: number | null;
   removed: number | null;
@@ -73,7 +74,7 @@ const BORN_HERE = sql`(l.move_kind = 'personal' and coalesce(pm.batch_id = l.bat
  * rows taken out.
  */
 const BATCH_COLUMNS = sql`b.id as id, b.status as status, b.notice as notice, b.theme as theme, b.created_at as createdAt,
-  b.released_at as releasedAt, b.saved_at as savedAt,
+  b.released_at as releasedAt, b.saved_at as savedAt, b.fitted_at as fittedAt,
   (select count(distinct l.move_id) from saved_post_moves l
      left join personal_moves pm on pm.id = l.move_id and pm.user_id = l.user_id
      where l.user_id = b.user_id and l.batch_id = b.id and l.status <> 'removed' and ${BORN_HERE}) as fresh,
@@ -85,7 +86,8 @@ const BATCH_COLUMNS = sql`b.id as id, b.status as status, b.notice as notice, b.
 function batchOf(r: BatchRead): SaveBatchDto {
   const counts: SaveBatchCountsDto = { new: Number(r.fresh ?? 0), linked: Number(r.linked ?? 0), removed: Number(r.removed ?? 0) };
   return {
-    id: r.id, status: r.status, notice: r.notice, theme: r.theme, createdAt: r.createdAt, releasedAt: r.releasedAt, savedAt: r.savedAt, counts,
+    id: r.id, status: r.status, notice: r.notice, theme: r.theme, createdAt: r.createdAt, releasedAt: r.releasedAt, savedAt: r.savedAt,
+    fittedAt: r.fittedAt ?? null, counts,
   };
 }
 

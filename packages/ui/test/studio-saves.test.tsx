@@ -13,7 +13,7 @@ import { QueryClientProvider } from "@tanstack/react-query";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { PersonalMovesDto } from "@rg/api-client";
 import { EXERCISES, type ExerciseRecord } from "@rg/exercise-library";
-import type { SaveBatchDetailDto, SaveBatchDto, SaveBatchRowDto } from "@rg/saves";
+import { FIT_SAVES_REQUEST, type SaveBatchDetailDto, type SaveBatchDto, type SaveBatchRowDto } from "@rg/saves";
 import { StudioRoute } from "../src/app.js";
 import { CoachOpenContext, type CoachOpener } from "../src/screens/studio/coach-ask.js";
 import { patchOf, formOf } from "../src/screens/studio/saves-model.js";
@@ -36,7 +36,7 @@ const HOSTILE = '<img src=x onerror="alert(1)">';
 
 const BATCH: SaveBatchDto = {
   id: "b1", status: "released", notice: "From your saves: 2 new moves (1 hip, 1 neck), 1 you already had.", theme: null,
-  createdAt: "2026-10-23T10:00:00.000Z", releasedAt: "2026-10-23T10:00:00.000Z", savedAt: null, counts: { new: 2, linked: 1, removed: 0 },
+  createdAt: "2026-10-23T10:00:00.000Z", releasedAt: "2026-10-23T10:00:00.000Z", savedAt: null, fittedAt: null, counts: { new: 2, linked: 1, removed: 0 },
 };
 const ROWS: SaveBatchRowDto[] = [
   {
@@ -68,10 +68,10 @@ interface Call {
 }
 const json = (b: unknown, status = 200) => new Response(JSON.stringify(b), { status, headers: { "Content-Type": "application/json" } });
 
-function serve(o: { insights?: SaveBatchDetailDto["insights"] } = {}): Call[] {
+function serve(o: { insights?: SaveBatchDetailDto["insights"]; batch?: Partial<SaveBatchDto> } = {}): Call[] {
   const calls: Call[] = [];
   const insights = "insights" in o ? o.insights : INSIGHTS;
-  let batch = { ...BATCH };
+  let batch = { ...BATCH, ...o.batch };
   let rows = ROWS.map((r) => ({ ...r }));
   vi.stubGlobal(
     "fetch",
@@ -258,6 +258,36 @@ describe("a batch's rows", () => {
     await click(button("Save these"), "Save these");
     await until(() => posts(calls, "/api/my-saves/batches/b1/save").length === 1 && !button("Save these"), "the save");
     expect(text()).toContain("Saved");
+  });
+
+  it("after Save these, Fit these in opens the coach with the Fit request — the batch saved already, never saved twice (final review I3)", async () => {
+    const calls = serve();
+    mount("/studio/saves/b1");
+    await until(() => !!button("Save these"), "Save these");
+    // Before the save, the page offers Save these, not Fit these in.
+    expect(button("Fit these in")).toBeNull();
+    await click(button("Save these"), "Save these");
+    await until(() => !!button("Fit these in"), "Fit these in");
+    expect(button("Save these")).toBeNull();
+    await click(button("Fit these in"), "Fit these in");
+    expect(opener.open).toHaveBeenCalledWith({ request: FIT_SAVES_REQUEST });
+    expect(posts(calls, "/api/my-saves/batches/b1/save")).toHaveLength(1);
+  });
+
+  it("a saved batch not yet fitted in offers Fit these in when the page is opened again; one fitted in, nothing", async () => {
+    serve({ batch: { status: "saved", savedAt: "2026-10-24T12:00:00.000Z" } });
+    mount("/studio/saves/b1");
+    await until(() => !!button("Fit these in"), "Fit these in");
+    act(() => root?.unmount());
+    host?.remove();
+    root = null;
+    vi.unstubAllGlobals();
+    serve({ batch: { status: "saved", savedAt: "2026-10-24T12:00:00.000Z", fittedAt: "2026-10-24T13:00:00.000Z" } });
+    mount("/studio/saves/b1");
+    await until(() => !!rowOf(QUAD.name), "the rows");
+    await settle(10);
+    expect(button("Fit these in")).toBeNull();
+    expect(button("Save these")).toBeNull();
   });
 
   it("a batch that isn't there says so", async () => {

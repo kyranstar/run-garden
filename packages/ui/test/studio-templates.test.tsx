@@ -56,7 +56,8 @@ const TEMPLATES = [
 ];
 
 function renderAt(path: string, el: React.ReactElement, p: Primed & { templates?: TemplateDto[] } = {}): string {
-  const qc = primedClient({ places: placesDto(["mat", "kettlebell", "dumbbells", "bench", "chair", "band", "wall"]), today: todayDto(null, false), library: libraryDto(), profile: profileDto(), personal: { moves: [] }, ...p });
+  // The saves' batches answered (none waiting): the home waits for that read too (its "From your saves" link, 2026-10-25).
+  const qc = primedClient({ places: placesDto(["mat", "kettlebell", "dumbbells", "bench", "chair", "band", "wall"]), today: todayDto(null, false), library: libraryDto(), profile: profileDto(), personal: { moves: [] }, saves: { batches: [] }, ...p });
   if (p.templates) qc.setQueryData(["templates"], { templates: p.templates });
   return renderToStaticMarkup(createElement(QueryClientProvider, { client: qc }, staticRouter(path, el)));
 }

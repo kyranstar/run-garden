@@ -60,6 +60,13 @@ export function rowActions(row: SaveBatchRowDto, ownStatus?: "active" | "archive
 export const canSave = (b: SaveBatchDto, rows: readonly SaveBatchRowDto[]): boolean =>
   (b.status === "released" || b.status === "held") && rows.some((r) => r.status === "pending");
 
+/** Whether the page offers "Fit these in" (final review I3): a saved batch nothing has fitted in yet. */
+export const canFit = (b: SaveBatchDto): boolean => b.status === "saved" && !b.fittedAt;
+
+/** How many batches wait for the owner (final review I2): released and not saved, or saved and not fitted in. */
+export const waitingBatches = (batches: readonly SaveBatchDto[]): number =>
+  batches.filter((b) => b.status === "released" || canFit(b)).length;
+
 // ── The edit form ────────────────────────────────────────────────────────────────────────────────────────────────────
 
 export const DOSE_WORD: Readonly<Record<DoseType, string>> = { reps: "Reps", time: "Seconds", breaths: "Breaths", carry: "Carry seconds" };

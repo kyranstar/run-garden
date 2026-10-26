@@ -15,6 +15,7 @@
  * and are shown as text.
  */
 import { addDays, formatDurationShort, type LocalDate } from "@rg/domain";
+import { FIT_SAVES_REQUEST } from "@rg/saves";
 import { clipProse } from "./design-prose.js";
 import { paceWords } from "./design-tools/read-common.js";
 
@@ -175,8 +176,8 @@ export function reviewOpening(r: { weekStart: LocalDate; narrative: string | nul
   };
 }
 
-/** The words "Fit these in" sends, once the batch is saved. */
-export const FIT_SAVES_REQUEST = "Fit the new moves from my saves into my training.";
+/** The words "Fit these in" sends, once the batch is saved (@rg/saves: the batch page sends the same). */
+export { FIT_SAVES_REQUEST };
 
 /** The opening for a released batch of the athlete's saves: its notice as it was worded, and the two chips. */
 export function savesOpening(b: { id: string; notice: string; releasedAt: string }): CoachOpeningLine {

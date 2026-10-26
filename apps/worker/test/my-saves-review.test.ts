@@ -150,7 +150,7 @@ describe("GET /batches", () => {
     expect(res.body.batches).toEqual([
       {
         id: batchId, status: "released", notice: "From your saves: 2 new moves (1 hip, 1 neck), 1 you already had.", theme: null,
-        createdAt: at(1), releasedAt: at(1), savedAt: null, counts: { new: 2, linked: 1, removed: 0 },
+        createdAt: at(1), releasedAt: at(1), savedAt: null, fittedAt: null, counts: { new: 2, linked: 1, removed: 0 },
       },
     ]);
     const all = await call("GET", "/batches?held=1");
@@ -158,6 +158,16 @@ describe("GET /batches", () => {
       [held, "held"],
       [batchId, "released"],
     ]);
+  });
+
+  it("each batch says when it was fitted in (null until a pins card closes it): the page's Fit these in and the Studio's row read it (final review I2/I3)", async () => {
+    const { batchId } = await seed();
+    expect((await call("POST", `/batches/${batchId}/save`)).status).toBe(200);
+    expect((await call("GET", "/batches")).body.batches[0]).toMatchObject({ id: batchId, status: "saved", fittedAt: null });
+    expect((await call("GET", `/batches/${batchId}`)).body.batch).toMatchObject({ status: "saved", fittedAt: null });
+    await db.update(saveBatches).set({ fittedAt: at(40) }).where(eq(saveBatches.id, batchId));
+    expect((await call("GET", "/batches")).body.batches[0]).toMatchObject({ fittedAt: at(40) });
+    expect((await call("GET", `/batches/${batchId}`)).body.batch.fittedAt).toBe(at(40));
   });
 
   it("a saved batch keeps its counts, and its page still shows the moves it brought as New — the list and the page agree", async () => {

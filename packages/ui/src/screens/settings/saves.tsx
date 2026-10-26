@@ -1,12 +1,14 @@
 /**
  * App Settings -> Coach & AI -> Saves: one row that says what the saved-posts import did ("Last import 2 days ago · 12
- * moves from 5 posts", "Last check 8 days ago" once a week has passed, "Paused — import budget"), opening a sheet of the posts: who, where
- * each stands and why, the link, and Process anyway / Retry where they apply.
+ * moves from 5 posts", "Last check 8 days ago" once a week has passed, "Paused — import budget"), opening a sheet: first
+ * a row to the review screen ("From your saves", /studio/saves), then the posts: who, where each stands and why, the
+ * link, and Process anyway / Retry where they apply.
  *
  * The section shows nothing unless the status read answers 200: the feature off is a 404, and no error is shown.
  * Self-contained: the screen places it with one line.
  */
 import { useState } from "react";
+import { Link } from "react-router-dom";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { api, SAVES_STATUS_QUERY } from "@rg/api-client";
 import type { PostRowDto, SavePostStatus, SavesStatusDto } from "@rg/saves";
@@ -97,6 +99,15 @@ export function SavesSection() {
       </button>
       {open ? (
         <Sheet open onClose={() => setOpen(false)} title="Saves">
+          {/* The review screen first (spec §8): the batches, and each batch's moves. */}
+          <Link className="place-row" to="/studio/saves">
+            <span className="place-row-main">
+              <b>From your saves</b>
+            </span>
+            <span className="faint" aria-hidden>
+              ›
+            </span>
+          </Link>
           {status.data.posts.map((p) => (
             <PostRow key={p.id} post={p} busy={process.isPending} onProcess={(id) => process.mutate(id)} />
           ))}

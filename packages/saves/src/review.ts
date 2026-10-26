@@ -22,8 +22,14 @@ export interface SaveBatchDto {
   createdAt: string;
   releasedAt: string | null;
   savedAt: string | null;
+  /** When a pins card naming it was approved (the coach fitted it in, spec §17.1); null until then. */
+  fittedAt: string | null;
   counts: SaveBatchCountsDto;
 }
+
+/** The words "Fit these in" sends — the coach opening's chip and the batch page's button alike (the coach reads the whole
+ * saves section for it). */
+export const FIT_SAVES_REQUEST = "Fit the new moves from my saves into my training.";
 
 export interface SaveBatchesDto {
   batches: SaveBatchDto[];

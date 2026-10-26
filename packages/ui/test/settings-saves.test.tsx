@@ -6,6 +6,7 @@
 import { act, createElement } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
+import { MemoryRouter } from "react-router-dom";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { SavesStatusDto } from "@rg/saves";
 import { SavesSection } from "../src/screens/settings/saves.js";
@@ -44,7 +45,7 @@ function mount(reply: { status: number; body?: unknown }) {
   const qc = new QueryClient({ defaultOptions: { queries: { retry: false } } });
   root = createRoot(host);
   return act(async () => {
-    root.render(createElement(QueryClientProvider, { client: qc }, createElement(SavesSection)));
+    root.render(createElement(QueryClientProvider, { client: qc }, createElement(MemoryRouter, null, createElement(SavesSection))));
   });
 }
 const flush = () => act(async () => { await new Promise((r) => setTimeout(r, 0)); });
@@ -118,7 +119,7 @@ describe("SavesSection", () => {
     await mount({ status: 200, body: status({ posts: [...status().posts, odd] }) });
     await flush();
     await act(async () => { (host.querySelector("button.place-row") as HTMLButtonElement).click(); });
-    const links = [...document.querySelectorAll<HTMLAnchorElement>(".sheet a, [role=dialog] a")];
+    const links = [...document.querySelectorAll<HTMLAnchorElement>("[role=dialog] a[target=_blank]")];
     expect(links.map((a) => a.getAttribute("href"))).toEqual(["https://example.com/p/k1", "https://example.com/p/k2"]);
     for (const a of links) {
       expect(a.classList.contains("stu-saved-link")).toBe(true);
@@ -127,6 +128,19 @@ describe("SavesSection", () => {
     }
     // The odd post is still listed, with no link.
     expect(document.body.textContent).toContain("odd");
+  });
+
+  it("the sheet links to the review screen first — From your saves, to /studio/saves (final review I2; spec §8)", async () => {
+    await mount({ status: 200, body: status() });
+    await flush();
+    await act(async () => { (host.querySelector("button.place-row") as HTMLButtonElement).click(); });
+    const review = [...document.querySelectorAll<HTMLAnchorElement>("a")].find((a) => a.getAttribute("href") === "/studio/saves");
+    expect(review).toBeDefined();
+    expect(review!.textContent).toContain("From your saves");
+    // A whole row's target, before the posts.
+    expect(review!.classList.contains("place-row")).toBe(true);
+    const firstPost = document.querySelector('a[href="https://example.com/p/k1"]')!;
+    expect(review!.compareDocumentPosition(firstPost) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
   });
 
   it("Process anyway calls the override", async () => {

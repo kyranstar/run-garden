@@ -3075,6 +3075,10 @@ button.session-chip {
 .card-title + .place-row {
   border-top: 0;
 }
+/* A row that goes somewhere (Settings → Saves → From your saves): a link drawn as the row it is. */
+a.place-row {
+  text-decoration: none;
+}
 .place-row-main {
   display: grid;
   gap: var(--space-1);
