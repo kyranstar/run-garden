@@ -1,5 +1,5 @@
 import type { CheckNowResponse, OverrideResponse, StatusResponse } from "./background.js";
-import { popupModel, safeHref, type PopupAction, type PopupModel } from "./status.js";
+import { CHECKING, popupModel, safeHref, type PopupAction, type PopupModel } from "./status.js";
 
 // Renders popupModel with plain DOM (text is always set with textContent). The popup holds no token and calls no app
 // route itself: it asks the background, which calls the token routes.
@@ -25,15 +25,21 @@ function button(label: string, onClick: (b: HTMLButtonElement) => void, quiet = 
 const ask = <T>(message: unknown): Promise<T> => chrome.runtime.sendMessage(message) as Promise<T>;
 
 let note = "";
+/** While a check runs, the popup re-reads the status every few seconds so a reopened popup shows it moving. */
+const REFRESH_MS = 5_000;
+let refresh: ReturnType<typeof setTimeout> | null = null;
 
 async function load(): Promise<void> {
   let answer: StatusResponse;
   try {
     answer = await ask<StatusResponse>({ type: "status" });
   } catch {
-    answer = { status: null, appError: "the extension did not answer", queueSize: 0, nextCheckAt: null };
+    answer = { status: null, appError: "the extension did not answer", queueSize: 0, nextCheckAt: null, checking: false };
   }
-  render(popupModel({ ...answer, now: Date.now() }));
+  const m = popupModel({ ...answer, now: Date.now() });
+  render(m);
+  if (refresh) clearTimeout(refresh);
+  refresh = m.checking ? setTimeout(() => void load(), REFRESH_MS) : null;
 }
 
 async function checkNow(b: HTMLButtonElement): Promise<void> {
@@ -60,7 +66,7 @@ async function override(key: string): Promise<void> {
 
 function render(m: PopupModel): void {
   const frag = document.createDocumentFragment();
-  const problem = m.headline !== "Up to date";
+  const problem = m.headline !== "Up to date" && !m.checking;
   frag.append(el("h1", m.headline, problem ? "problem" : undefined));
   if (m.detail) frag.append(el("p", m.detail, "meta"));
   if (note) frag.append(el("p", note, "meta"));
@@ -70,7 +76,14 @@ function render(m: PopupModel): void {
 
   const bar = el("div");
   for (const a of m.actions) {
-    if (a === "check_now") bar.append(button(LABELS[a], (b) => void checkNow(b)));
+    if (a === "check_now") {
+      const b = button(LABELS[a], (b) => void checkNow(b));
+      if (m.checking) {
+        b.disabled = true;
+        b.textContent = CHECKING;
+      }
+      bar.append(b);
+    }
     else if (a === "options") bar.append(button(LABELS[a], () => void chrome.runtime.openOptionsPage()));
     else if (a === "retry" && m.posts.length === 0) bar.append(button(LABELS[a], () => void load()));
   }

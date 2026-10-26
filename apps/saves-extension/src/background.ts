@@ -49,7 +49,16 @@ async function check(): Promise<CheckNowResponse> {
   }
 }
 
-const checkOnce = singleFlight(check);
+/** True from the moment a check starts until it settles; the popup reads it as "Checking…" between its own opens. */
+let checking = false;
+const checkOnce = singleFlight(async () => {
+  checking = true;
+  try {
+    return await check();
+  } finally {
+    checking = false;
+  }
+});
 
 async function ensureAlarm(): Promise<void> {
   // Created once: re-creating it on every start would push the next check back. A missed alarm fires on wake.
@@ -73,6 +82,8 @@ export interface StatusResponse {
   appError: string | null;
   queueSize: number;
   nextCheckAt: number | null;
+  /** A check is running in this service worker right now. */
+  checking: boolean;
 }
 export type OverrideResponse = { ok: true } | { ok: false; message: string };
 
@@ -83,13 +94,13 @@ async function popupStatus(): Promise<StatusResponse> {
   const nextCheckAt = (await chrome.alarms.get(JITTERED))?.scheduledTime ?? (await chrome.alarms.get(ALARM))?.scheduledTime ?? null;
   const queueSize = await new ExtQueue(chromeStore).size();
   const settings = await loadSettings(chromeStore);
-  if (!settings) return { status: null, appError: NOT_CONFIGURED, queueSize, nextCheckAt };
+  if (!settings) return { status: null, appError: NOT_CONFIGURED, queueSize, nextCheckAt, checking };
   try {
     const status = await createAppClient({ appUrl: settings.appUrl, token: settings.token, fetchImpl }).status();
     const last = (await chromeStore.get("lastCheck")) as CheckSummary | undefined;
-    return { status, appError: last?.error?.message ?? null, queueSize, nextCheckAt };
+    return { status, appError: last?.error?.message ?? null, queueSize, nextCheckAt, checking };
   } catch (e) {
-    return { status: null, appError: messageOf(e, "App unreachable"), queueSize, nextCheckAt };
+    return { status: null, appError: messageOf(e, "App unreachable"), queueSize, nextCheckAt, checking };
   }
 }
 
@@ -112,7 +123,7 @@ chrome.runtime.onMessage.addListener((message: unknown, sender, sendResponse) =>
     return true; // the answer comes asynchronously
   }
   if (m?.type === "status") {
-    popupStatus().then(sendResponse, (e: unknown) => sendResponse({ status: null, appError: messageOf(e, "App unreachable"), queueSize: 0, nextCheckAt: null }));
+    popupStatus().then(sendResponse, (e: unknown) => sendResponse({ status: null, appError: messageOf(e, "App unreachable"), queueSize: 0, nextCheckAt: null, checking }));
     return true;
   }
   if (m?.type === "override" && isPostKey(m.key) && (m.action === "process" || m.action === "skip" || m.action === "reference")) {

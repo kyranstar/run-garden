@@ -36,6 +36,8 @@ export interface PopupCheck {
 
 export interface PopupModel {
   headline: string;
+  /** A check is running: the headline says so, Check now waits, and the popup re-reads the status while it lasts. */
+  checking: boolean;
   /** Why the status could not be read (the app error), else "". */
   detail: string;
   lastCheck: string;
@@ -55,7 +57,23 @@ export interface PopupInput {
   queueSize: number;
   nextCheckAt: number | null;
   now: number;
+  /** The background's word that a check is running in it right now (absent from an older background). */
+  checking?: boolean;
 }
+
+/** A check that started but has not finished is running — for this long; after it, it died with its worker. */
+const CHECK_RUNNING_MAX_MS = 2 * 3_600_000;
+
+/** Is a check in progress — by the background's word, or the newest check row still open and recent enough? */
+export function isChecking(input: PopupInput): boolean {
+  if (input.checking) return true;
+  const newest = input.status?.checks[0];
+  if (!newest || newest.finishedAt !== null) return false;
+  const started = Date.parse(newest.startedAt);
+  return !Number.isNaN(started) && input.now - started < CHECK_RUNNING_MAX_MS;
+}
+
+export const CHECKING = "Checking…";
 
 const HEADLINES: Record<Exclude<SavesStatusDto["state"], "error">, string> = {
   ok: "Up to date",
@@ -103,12 +121,14 @@ function postActions(status: SavePostStatus): PopupAction[] {
 function headlineOf(input: PopupInput): string {
   const { status } = input;
   if (!status) return "App unreachable";
+  if (isChecking(input)) return CHECKING;
   if (status.state !== "error") return HEADLINES[status.state];
   return `Error: ${input.appError ?? status.checks[0]?.errorCode ?? "the last check failed"}`;
 }
 
 export function popupModel(input: PopupInput): PopupModel {
   const { status, now } = input;
+  const checking = isChecking(input);
   const posts: PopupPost[] = (status?.posts ?? [])
     .map((p) => ({
       id: p.id,
@@ -134,9 +154,15 @@ export function popupModel(input: PopupInput): PopupModel {
     nextCheck: until(input.nextCheckAt, now),
     queue: input.queueSize > 0 ? `${input.queueSize} waiting` : "",
     totals: status ? `${status.totals.moves} moves from ${status.totals.posts} posts` : "",
-    checks: (status?.checks ?? []).slice(0, MAX_CHECKS).map((c) => ({
+    checking,
+    checks: (status?.checks ?? []).slice(0, MAX_CHECKS).map((c, i) => ({
       when: ago(c.startedAt, now),
-      counts: `${c.found} found · ${c.fresh} new · ${c.filtered} filtered · ${c.extracted} extracted · ${c.failed} failed`,
+      counts:
+        c.finishedAt !== null
+          ? `${c.found} found · ${c.fresh} new · ${c.filtered} filtered · ${c.extracted} extracted · ${c.failed} failed`
+          : i === 0 && checking
+            ? "in progress"
+            : "did not finish",
       error: c.errorCode,
     })),
     posts,

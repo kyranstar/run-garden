@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import type { PostRowDto, SavesStatusDto } from "@rg/saves";
-import { NOT_CONFIGURED, isPostKey, popupModel, safeHref } from "../src/status.js";
+import { CHECKING, NOT_CONFIGURED, isChecking, isPostKey, popupModel, safeHref } from "../src/status.js";
 
 const NOW = Date.parse("2026-10-23T12:00:00.000Z");
 const HOUR = 3_600_000;
@@ -29,6 +29,40 @@ const status = (over: Partial<SavesStatusDto> = {}): SavesStatusDto => ({
 
 const model = (over: Partial<Parameters<typeof popupModel>[0]> = {}) =>
   popupModel({ status: status(), appError: null, queueSize: 0, nextCheckAt: NOW + 3 * HOUR, now: NOW, ...over });
+
+describe("a running check", () => {
+  const open = { id: "c9", startedAt: "2026-10-23T11:58:00.000Z", finishedAt: null, found: 0, fresh: 0, filtered: 0, extracted: 0, failed: 0, errorCode: null };
+  const done = { ...open, id: "c8", startedAt: "2026-10-23T09:00:00.000Z", finishedAt: "2026-10-23T09:03:00.000Z", found: 12, fresh: 3, filtered: 2 };
+
+  it("by the background's word: the headline is Checking…, not a problem, and Check now is on but the model says checking", () => {
+    const m = model({ checking: true });
+    expect(m.headline).toBe(CHECKING);
+    expect(m.checking).toBe(true);
+    expect(m.actions).toContain("check_now");
+  });
+
+  it("by the newest check row still open and recent — the popup reopened after the background forgot it said so", () => {
+    const m = model({ status: status({ checks: [open, done] }) });
+    expect(isChecking({ status: status({ checks: [open] }), appError: null, queueSize: 0, nextCheckAt: null, now: NOW })).toBe(true);
+    expect(m.headline).toBe(CHECKING);
+    expect(m.checks[0]).toMatchObject({ when: "2 min ago", counts: "in progress", error: null });
+    expect(m.checks[1]?.counts).toBe("12 found · 3 new · 2 filtered · 0 extracted · 0 failed");
+  });
+
+  it("an open check older than two hours died with its worker: did not finish, and the headline is the app's", () => {
+    const stale = { ...open, startedAt: "2026-10-23T09:30:00.000Z" };
+    const m = model({ status: status({ checks: [stale] }) });
+    expect(m.headline).toBe("Up to date");
+    expect(m.checking).toBe(false);
+    expect(m.checks[0]?.counts).toBe("did not finish");
+  });
+
+  it("a finished check is never in progress", () => {
+    const m = model({ status: status({ checks: [done] }) });
+    expect(m.checking).toBe(false);
+    expect(m.headline).toBe("Up to date");
+  });
+});
 
 describe("popupModel headlines", () => {
   it.each([
