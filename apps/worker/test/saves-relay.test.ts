@@ -172,7 +172,10 @@ describe("relayExtract", () => {
     const out = await run(id, bodyText(), gateway({ kind: "routine", summary: "s", themes: [], moves: [{ name: "" }] }));
     expect(out).toMatchObject({ ok: false, code: "model_failed" });
     expect(!out.ok && out.issues!.length).toBeGreaterThan(0);
-    expect(await reload(id)).toMatchObject({ status: "failed", extractAttempts: 1, lastErrorCode: "model_failed", extraction: null });
+    const row = await reload(id);
+    expect(row).toMatchObject({ status: "failed", extractAttempts: 1, lastErrorCode: "model_failed", extraction: null });
+    // Why is kept for the lead to read (the first live run's failures said nothing): the issues, joined.
+    expect(row.lastError).toBe((!out.ok && out.issues!.join(" | ")) || "x");
     expect((await db.select().from(llmUsage))[0]!.requestFingerprint).toBeNull();
   });
 

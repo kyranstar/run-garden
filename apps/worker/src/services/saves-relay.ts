@@ -27,6 +27,8 @@ export const RELAY_MAX_BYTES = 20_000_000;
 export const EXTRACT_CONTEXT_TOKENS = 1_048_576;
 const CALL_TIMEOUT_MS = 120_000;
 const ISSUES_MAX = 12;
+/** The most of a failure's reasons `last_error` keeps. */
+const LAST_ERROR_CHARS = 600;
 
 /**
  * What a typical reel costs, for the reservation's estimate (what a crash-orphaned reservation counts at once stale):
@@ -172,9 +174,12 @@ export async function relayExtract(
       .where(and(eq(savedPosts.id, post.id), eq(savedPosts.userId, userId)));
     return { ok: false, code: "unknown", status: row ? 409 : 404 };
   };
-  /** The one write that ends a relay: stores the outcome (the attempt was counted by the claim). */
+  /**
+   * The one write that ends a relay: stores the outcome (the attempt was counted by the claim). A failure keeps why, as
+   * `last_error` (the schema's issues, the gateway's reason): the lead reads it to tune the prompt (first live run, 2026-10-25).
+   */
   const finish = (
-    out: { extraction: Extraction } | { code: SaveErrorCode },
+    out: { extraction: Extraction } | { code: SaveErrorCode; why?: string[] },
     costMicros: number,
   ): Promise<unknown> =>
     db
@@ -182,7 +187,7 @@ export async function relayExtract(
       .set({
         status: "extraction" in out ? "extracted" : "failed",
         ...("extraction" in out ? { extraction: out.extraction, lastErrorCode: null } : { lastErrorCode: out.code }),
-        lastError: null,
+        lastError: "extraction" in out || !out.why?.length ? null : out.why.join(" | ").slice(0, LAST_ERROR_CHARS),
         costMicros: sql`${savedPosts.costMicros} + ${costMicros}`,
         updatedAt: nowIso,
       })
@@ -251,7 +256,7 @@ export async function relayExtract(
       await settleImport(db, reservation.usageId, null);
       settled = true;
       const code: SaveErrorCode = call.reason === "gateway_413" ? "too_large" : "model_failed";
-      await finish({ code }, 0);
+      await finish({ code, why: [call.reason] }, 0);
       return { ok: false, code };
     }
     // A reply from an unlisted model is priced as that model (the table's ceiling when unknown), never as the one asked for.
@@ -267,12 +272,12 @@ export async function relayExtract(
     settled = true;
     if (call.model && !modelAllowed(call.model)) {
       console.warn(JSON.stringify({ level: "warn", msg: "saves relay: reply from a model outside the allowlist", requested: model, got: call.model }));
-      await finish({ code: "model_failed" }, cost);
+      await finish({ code: "model_failed", why: ["the reply came from a model that is not allowed"] }, cost);
       return { ok: false, code: "model_failed", issues: ["the reply came from a model that is not allowed"] };
     }
     const parsed = parseExtraction(call.content);
     if (!parsed.ok) {
-      await finish({ code: "model_failed" }, cost);
+      await finish({ code: "model_failed", why: parsed.issues }, cost);
       return { ok: false, code: "model_failed", issues: parsed.issues };
     }
     await finish({ extraction: parsed.extraction }, cost);
@@ -281,7 +286,7 @@ export async function relayExtract(
     console.warn(JSON.stringify({ level: "warn", msg: "saves relay: failed", detail: String(e).slice(0, 200) }));
     if (!settled) await settleImport(db, reservation.usageId, null).catch(() => undefined);
     settled = true;
-    await finish({ code: "model_failed" }, 0).catch(() => undefined);
+    await finish({ code: "model_failed", why: [String(e).slice(0, 200)] }, 0).catch(() => undefined);
     return { ok: false, code: "model_failed" };
   } finally {
     // A throw must not leave the reservation at its worst case: it settles to nothing spent.
