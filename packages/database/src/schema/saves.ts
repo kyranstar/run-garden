@@ -65,13 +65,17 @@ export const saveBatches = sqliteTable(
   {
     id: text("id").primaryKey(),
     userId: text("user_id").notNull(),
-    status: text("status").$type<"held" | "released" | "saved" | "dismissed">().notNull(),
+    status: text("status").$type<"held" | "released" | "saved" | "dismissed" | "superseded">().notNull(),
     theme: text("theme"),
     createdAt: text("created_at").notNull(),
     releasedAt: text("released_at"),
     savedAt: text("saved_at"),
     fittedAt: text("fitted_at"),
     notice: text("notice"),
+    /** Migration 0031: when the owner dismissed the batch; null until then. */
+    dismissedAt: text("dismissed_at"),
+    /** Migration 0031: when the batch's fit began; null until a fit starts. */
+    fitStartedAt: text("fit_started_at"),
   },
   (t) => [index("save_batches_status_idx").on(t.userId, t.status, t.releasedAt)],
 );
@@ -87,6 +91,8 @@ export const personalMoves = sqliteTable(
     batchId: text("batch_id"),
     record: text("record", { mode: "json" }).$type<unknown>().notNull(),
     editedByOwner: integer("edited_by_owner", { mode: "boolean" }).notNull().default(false),
+    /** Migration 0031: the owner's choice for this move; null means the coach's call. */
+    fitChoice: text("fit_choice").$type<"include" | "skip">(),
     createdAt: text("created_at").notNull(),
     updatedAt: text("updated_at").notNull(),
   },
@@ -107,6 +113,8 @@ export const savedPostMoves = sqliteTable(
     confidence: real("confidence"),
     checkFlag: integer("check_flag", { mode: "boolean" }).notNull().default(false),
     status: text("status").$type<"pending" | "saved" | "removed">().notNull(),
+    /** Migration 0031: the near-duplicate move this link's move is like; null when none. */
+    likeMoveId: text("like_move_id"),
     createdAt: text("created_at").notNull(),
   },
   (t) => [

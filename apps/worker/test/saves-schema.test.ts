@@ -62,4 +62,20 @@ describe("save_batches and save_checks", () => {
     expect((await db.select().from(saveBatches))[0]).toMatchObject({ releasedAt: null, notice: null });
     expect((await db.select().from(saveChecks))[0]).toMatchObject({ found: 0, failed: 0, finishedAt: null });
   });
+
+  it("0031: a batch's dismissal and fit start, a move's fit choice, a link's like — null until written", async () => {
+    const db = makeTestDb();
+    await db.insert(saveBatches).values({ id: "b1", userId: "u1", status: "released", createdAt: T });
+    await db.insert(personalMoves).values({ id: "m1", userId: "u1", status: "pending", record: { id: "m1", name: "Example" }, createdAt: T, updatedAt: T });
+    await db.insert(savedPostMoves).values({ id: "l1", userId: "u1", postId: "p1", position: 0, moveId: "m1", moveKind: "personal", status: "pending", createdAt: T });
+    expect((await db.select().from(saveBatches))[0]).toMatchObject({ dismissedAt: null, fitStartedAt: null });
+    expect((await db.select().from(personalMoves))[0]!.fitChoice).toBeNull();
+    expect((await db.select().from(savedPostMoves))[0]!.likeMoveId).toBeNull();
+    await db.update(saveBatches).set({ status: "superseded", dismissedAt: T, fitStartedAt: T });
+    await db.update(personalMoves).set({ fitChoice: "skip" });
+    await db.update(savedPostMoves).set({ likeMoveId: "m0" });
+    expect((await db.select().from(saveBatches))[0]).toMatchObject({ status: "superseded", dismissedAt: T, fitStartedAt: T });
+    expect((await db.select().from(personalMoves))[0]!.fitChoice).toBe("skip");
+    expect((await db.select().from(savedPostMoves))[0]!.likeMoveId).toBe("m0");
+  });
 });
