@@ -317,7 +317,7 @@ export function cardsOf(scopeText: string | null, p: ProposalBrief | null, today
     .map((o): ConversationCard => ({
       kind: "pins",
       ...base,
-      title: str(o.planTitle) ?? "Moves in rotation",
+      title: str(o.planTitle) ?? "Moves for your programme",
       summary: str(o.planSummary) ?? "",
       lines: planLinesOf(o.lines, PINS_LINES_MAX),
       ...(str(o.opId) ? { opId: str(o.opId)! } : {}),
@@ -477,7 +477,7 @@ function turnLines(row: TurnRow, today: string, clock: Intl.DateTimeFormat): str
       // The moves in rotation (Task 18): its title and line are the coach's words; how it stands is its op's.
       const g = p!.ops.find((o) => o.kind === "move_pins" && o.opId === card.opId);
       out.push(
-        `  Suggested moves to keep in rotation (id ${card.proposalId}): ${title} · ${markUntrusted("main coach", clipProse(card.summary, TITLE_MAX))} — ${g?.outcome === "applying" ? "being applied" : standing(card.status, g?.outcome, g?.reason)}`,
+        `  Suggested moves for the engine's pool (id ${card.proposalId}): ${title} · ${markUntrusted("main coach", clipProse(card.summary, TITLE_MAX))} — ${g?.outcome === "applying" ? "being applied" : standing(card.status, g?.outcome, g?.reason)}`,
       );
     } else if (card.kind === "plan") {
       // A whole plan (§8 §5): its title and line are the coach's words; how it stands is its op's.

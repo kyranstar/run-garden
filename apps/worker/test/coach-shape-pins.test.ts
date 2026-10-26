@@ -63,8 +63,14 @@ const BEFORE = { tools: 34_935, shared: 20_450, main: 4_586 };
  * "# Integrating saved moves") — 1,915 characters, so 12,155 since §8's start; held with about the same margin as before.
  * REBASED again 2026-10-25 (Task 18 review 1): pin_moves' description says a lines-only card closes its batch (tools
  * 40,761 → 40,802), so 12,196; the same margin.
+ * REBASED 2026-10-25 (the saved-posts fix wave, after the coach-context audit): what a pin does (the pool the engine plans
+ * from: a core lift stays, other moves become eligible) in pin_moves' description and acting line, a batch's new moves
+ * accounted for by id in its lines; read_saves' and get_exercise's descriptions name the notes, insights and a saved
+ * move's own id; recall_memory's names the saved-post source (tools 40,802 → 41,104); the integration paragraph's one
+ * workout per run and closing the batch, the saved-post sentence under Untrusted text (shared 24,733 → 25,164); pin_moves
+ * among the main block's choices (6,632 → 6,667) — 768 characters, so 12,964; held with about the same margin as before.
  */
-const GROWTH_MAX_CHARS = 12_230;
+const GROWTH_MAX_CHARS = 13_000;
 
 const toolsSent = () => JSON.stringify(allTools().map((t) => ({ name: t.name, description: t.description, input_schema: t.inputSchema })));
 

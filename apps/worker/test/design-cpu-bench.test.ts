@@ -826,7 +826,7 @@ beforeAll(async () => {
         summary: words(i, 280),
         moves: [0, 1, 2].map((k) => ({ library: library[(i * 3 + k) % library.length]! })),
       }));
-      const { batchId } = await seedSavedBatch(withSaves.db, userId, { savedAt: at(day(1)), posts: [...longBatchPosts(), ...more], pinned: library.slice(0, 6) });
+      const { batchId, moveIds } = await seedSavedBatch(withSaves.db, userId, { savedAt: at(day(1)), posts: [...longBatchPosts(), ...more], pinned: library.slice(0, 6) });
       images.set("saves", imageOf(withSaves.db));
       withSaves.close();
       // Once, before timing it: the call reads that batch and lists its moves (as many of its long ones as fit the answer),
@@ -838,8 +838,9 @@ beforeAll(async () => {
       if (data?.batch?.id !== batchId || !data.moves?.length) throw new Error(`8. read_saves: the bench's call didn't read its batch (${JSON.stringify(data?.batch ?? null)})`);
       await measureTool("read_saves", images.get("saves")!, ctx, {});
       // pin_moves (Task 18) at its widest, over the same account (its personal moves in the library it reads): twenty to
-      // pin — the batch's new moves among them — twenty to unpin, the batch, and twenty lines at their longest.
-      const personal = (data.moves as Array<{ id: string; new: boolean }>).filter((m) => m.new).map((m) => m.id);
+      // pin — every one of the batch's twelve new moves among them, as the card must account for each (the fix wave,
+      // coach-context audit I5) — twenty to unpin, the batch, and twenty lines at their longest.
+      const personal = [...new Set(moveIds.flat().filter((id): id is string => typeof id === "string" && id.startsWith("my")))];
       const toPin = [...personal, ...EXERCISES.slice(24).map((e) => e.id)].slice(0, 20);
       const toUnpin = EXERCISES.slice(24).map((e) => e.id).filter((id) => !toPin.includes(id)).slice(0, 20);
       await measureTool("pin_moves", images.get("saves")!, ctx, {

@@ -263,7 +263,7 @@ function designedWords(ops: unknown): string {
   const n = openPlanChanges(ops);
   const changes = `${n} change${n === 1 ? " to a session" : "s to sessions"} already planned`;
   // The moves in rotation (saved-posts import, Task 18): named beside the rest, the conversation coach's to apply.
-  const pins = Array.isArray(ops) && ops.some(isMovePinsOp) ? "a change to the moves in rotation" : null;
+  const pins = Array.isArray(ops) && ops.some(isMovePinsOp) ? "a change to the engine's pool (pins)" : null;
   if (!hasDocWorkout(ops)) return `a designed proposal: ${[...(n > 0 || !pins ? [changes] : []), ...(pins ? [pins] : [])].join(" and ")}`;
   return `a designed workout for ${docWorkoutDates(ops).join(", ") || "a day to come"}${n > 0 ? ` and ${changes}` : ""}${pins ? ` and ${pins}` : ""}`;
 }

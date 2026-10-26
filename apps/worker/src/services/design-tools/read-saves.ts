@@ -245,6 +245,9 @@ const wordsOf = (record: ExerciseRecord, text: string): string | Untrusted => (i
 
 const bytesOf = (value: unknown): number => utf8Bytes(JSON.stringify(value));
 
+/** How the coach closes the batch it read (coach-context audit I2): a pins card naming it, approved, marks it fitted in. */
+const closeLine = (batchId: string): string => `pin_moves({ batchId: ${JSON.stringify(batchId)} }) closes this batch once approved — with the moves you pin, or none`;
+
 const input = z
   .object({ batchId: z.string().min(1).max(100).optional(), limit: limitField(SAVES_MOVES_MAX).optional(), offset: z.number().int().min(0).max(10_000).optional() })
   .strict();
@@ -252,7 +255,7 @@ const input = z
 export const readSaves: DesignTool = {
   name: "read_saves",
   description:
-    "What came in from the athlete's saves: the newest saved batch not yet fitted in (or batchId's). Each move new or theirs already, pinned or not, its posts and their reading; the routines in post order.",
+    "What came in from the athlete's saves: the newest saved batch not yet fitted in (or batchId's). Each move — a saved one by its own id — new or theirs already, pinned or not, its posts with their notes; the posts' insights; routines.",
   inputSchema: {
     type: "object",
     properties: {
@@ -355,7 +358,7 @@ export const readSaves: DesignTool = {
         : [`${plural(left, "more routine", "more routines")} not shown for room`];
     };
     const sizeOf = (missing: string[], ms: unknown[], rs: unknown[]): number =>
-      bytesOf(answer({ source: SOURCE, now: ctx.now, missing, data: { batch: head, moves: ms, routines: rs, insights }, summary: "" }));
+      bytesOf(answer({ source: SOURCE, now: ctx.now, missing, data: { batch: head, moves: ms, routines: rs, insights, next: closeLine(batch.id) }, summary: "" }));
 
     // A page that fits: every listed move and routine (up to the cap) when they fit with the lines that say what is
     // left; else as many moves as fit (at least one), then routines, with room kept for the longest such lines.
@@ -388,7 +391,7 @@ export const readSaves: DesignTool = {
       source: SOURCE,
       now: ctx.now,
       missing,
-      data: { batch: head, moves: shown, routines: routines.slice(0, keptRoutines), insights },
+      data: { batch: head, moves: shown, routines: routines.slice(0, keptRoutines), insights, next: closeLine(batch.id) },
       summary: shown.length ? `Read ${plural(shown.length, "move")} from your saves, ${fresh} new${when}` : `Nothing to fit in from your saves${when}`,
     });
   },

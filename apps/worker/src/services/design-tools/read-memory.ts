@@ -45,7 +45,7 @@ const input = z
 
 export const recallMemory: DesignTool = {
   name: "recall_memory",
-  description: "Memory beyond the pinned core, newest first: kind, the body, confidence (stated, inferred or confirmed), source, evidence. Filter by words or kind.",
+  description: "Memory beyond the pinned core, newest first: kind, the body, confidence (stated, inferred or confirmed), source (saved post: a creator's tip Save kept, not the athlete's words), evidence. Filter by words or kind.",
   inputSchema: {
     type: "object",
     properties: {

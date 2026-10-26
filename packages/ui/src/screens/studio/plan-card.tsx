@@ -23,9 +23,9 @@
  * suggestion may change two programmes); "Moving your sessions…" while its sessions are placed a request at a time;
  * "Programme updated" when done. Its state is the read's `programmes` part, its own line by its op.
  *
- * THE MOVES IN ROTATION (saved-posts import, Task 18) are the same card in theirs (`PINS_WORDS`): the coach's title, line
- * and lines — one a placement, one a saved move left out — Approve and Not now, its own op; "Rotation updated" when done,
- * with a line for each move it left (archived since, not in rotation) and no link: nothing of it is on Plan. Its state is
+ * THE PINS (saved-posts import, Task 18) are the same card in theirs (`PINS_WORDS`): the coach's title, line and lines —
+ * one a placement, one a saved move left out — Approve and Not now, its own op; "Programme's pool updated" when done,
+ * with a line for each move it left (archived since, not pinned) and no link: nothing of it is on Plan. Its state is
  * the read's `pins` part, its own line by its op.
  */
 import { useEffect, useId, useRef, useState } from "react";
@@ -113,11 +113,12 @@ export const PROGRAMME_WORDS: PlanCardWords = {
   link: SEE_PLAN,
 };
 
-/** The moves in rotation's words (saved-posts import, Task 18): one write, done at once — one an approve claimed and didn't
- * finish (the app closed) is finished by Approve; nothing of it is on Plan. */
+/** The pins' words (saved-posts import, Task 18): one write, done at once — one an approve claimed and didn't finish (the
+ * app closed) is finished by Approve; nothing of it is on Plan. A pin puts a move in the pool the programme plans from
+ * (a core lift stays; other moves become eligible): it schedules nothing. */
 export const PINS_WORDS: PlanCardWords = {
-  done: "Rotation updated",
-  doing: "Updating your rotation…",
+  done: "Programme's pool updated",
+  doing: "Updating your programme's pool…",
   part: "It was interrupted — Finish saves it.",
   inFlight: "It's being saved right now — Finish takes it on from there.",
   approve: "Approve",

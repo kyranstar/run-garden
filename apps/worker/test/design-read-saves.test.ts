@@ -86,6 +86,17 @@ describe("read_saves: the registry", () => {
     expect(reading.split("\n").filter((l) => l.startsWith("- read_saves:"))).toHaveLength(1);
     expect(READ_TOOLS.map((t) => t.name).indexOf("read_saves")).toBe(READ_TOOLS.map((t) => t.name).indexOf("get_exercise") + 1);
   });
+
+  it("its description names what a fit reads it for — the posts' notes, the insights, a saved move's own id (coach-context audit M5); get_exercise's takes that id", () => {
+    expect(tool().description).toContain("notes");
+    expect(tool().description).toContain("insights");
+    expect(tool().description).toContain("a saved one by its own id");
+    const get = READ_TOOLS.find((t) => t.name === "get_exercise")!;
+    expect(get.description).toContain("a saved move's own");
+    expect(get.description).toContain("saved-post links and notes");
+    expect(get.description.length).toBeLessThanOrEqual(240);
+    expect((get.inputSchema as { properties: { id: { description: string } } }).properties.id.description).toBe("A library id from search_library, or a saved move's from read_saves.");
+  });
 });
 
 describe("read_saves", () => {
@@ -140,6 +151,8 @@ describe("read_saves", () => {
     // The routine post, its moves in the post's order; the single move's post is no routine.
     expect(r.data.routines).toEqual([{ post: U("Three moves for the hips, slow."), order: [a, "gobletSquat", b] }]);
     expect(r.summary).toBe("Read 3 moves from your saves, 2 new (saved Thu 22 Oct)");
+    // How the coach closes it (coach-context audit I2): a pins card naming it, approved.
+    expect(r.data.next).toBe(`pin_moves({ batchId: ${JSON.stringify(batchId)} }) closes this batch once approved — with the moves you pin, or none`);
   });
 
   it("reads what saving a real batch leaves: the post's new moves new, a library move it named yours already", async () => {

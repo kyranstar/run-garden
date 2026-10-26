@@ -2,7 +2,7 @@
 /**
  * THE MOVES IN ROTATION IN THE CONVERSATION (saved-posts import, Task 18) — the plan card's shape for the coach's
  * `move_pins` suggestion: its title, its line, the coach's lines (one a placement, one a saved move left out); one
- * Approve and one Not now, each its own op only; approved, "Rotation updated" with the lines the server skipped (a move
+ * Approve and one Not now, each its own op only; approved, "Programme's pool updated" with the lines the server skipped (a move
  * archived since); declined, "Not changed". The conversation hands a `pins` card to the plan card, and reads one
  * tolerantly. The server is a stubbed fetch. Synthetic data only.
  */
@@ -73,13 +73,13 @@ async function mount(c: CoachConversationCardDto, closed = false) {
 }
 
 describe("the moves-in-rotation card", () => {
-  it("shows its title, line and the coach's lines; Approve approves its own op, then says Rotation updated with what was skipped", async () => {
+  it("shows its title, line and the coach's lines; Approve approves its own op, then says Programme's pool updated with what was skipped", async () => {
     let state = read("pending");
     const calls = serve({
       "GET /api/coach/proposals/dp-run-3": () => state,
       "POST /api/coach/proposals/dp-run-3/approve": () => {
         state = read("approved", { status: "applied", at: "x", pinned: ["myZorbexHipCircle1"], unpinned: [], lines: ["Zorbex quad shuffle — not in your library any more, skipped"] });
-        return answer({ status: "approved", pinned: [{ opId: OP, summary: "1 move kept in rotation" }] });
+        return answer({ status: "approved", pinned: [{ opId: OP, summary: "1 move in your programme's pool" }] });
       },
     });
     await mount(card());
@@ -90,7 +90,8 @@ describe("the moves-in-rotation card", () => {
     expect(button("Not now")).not.toBeNull();
     await click(button("Approve"), "Approve");
     await until(() => text().includes(`✓ ${PINS_WORDS.done}`), "updated");
-    expect(PINS_WORDS.done).toBe("Rotation updated");
+    // AMENDED 2026-10-25 (the saved-posts fix wave, coach-context audit I1a): a pin puts a move in the programme's pool.
+    expect(PINS_WORDS.done).toBe("Programme's pool updated");
     expect(text()).toContain("Zorbex quad shuffle — not in your library any more, skipped");
     // Its own op only: never the suggestion's other cards.
     expect(calls.filter((c) => c.method === "POST").map((c) => c.body)).toEqual([{ opIds: [OP] }]);

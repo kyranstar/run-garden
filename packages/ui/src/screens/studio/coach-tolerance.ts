@@ -345,7 +345,7 @@ function toPinsLine(v: unknown): DesignPinsLineDto | null {
               : null;
   return {
     opId: p.opId,
-    title: words(p.title) ?? "Moves in rotation",
+    title: words(p.title) ?? "Moves for your programme",
     summary: text(p.summary),
     lines: texts(p.lines),
     why: text(p.why),

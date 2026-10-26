@@ -1444,13 +1444,14 @@ async function applyProgrammeChunk(
   return placed.more ? { status: "more", progress: next, spent: placed.spent } : { status: "done", progress: next, spent: placed.spent };
 }
 
-/** "2 moves kept in rotation, 1 taken out": the moves in rotation done, for the answer and the receipt — counted. */
+/** "2 moves in your programme's pool, 1 taken out": the pins done, for the answer and the receipt — counted. A pin puts a
+ * move in the pool the engine plans from (a core lift stays; other moves become eligible): it schedules nothing. */
 export function pinsDoneLine(o: Pick<Extract<MovePinsOutcome, { status: "applied" }>, "pinned" | "unpinned">): string {
   const parts = [
-    ...(o.pinned.length > 0 ? [`${o.pinned.length} move${o.pinned.length === 1 ? "" : "s"} kept in rotation`] : []),
+    ...(o.pinned.length > 0 ? [`${o.pinned.length} move${o.pinned.length === 1 ? "" : "s"} in your programme's pool`] : []),
     ...(o.unpinned.length > 0 ? [`${o.unpinned.length} taken out`] : []),
   ];
-  return parts.length > 0 ? parts.join(", ") : "rotation unchanged";
+  return parts.length > 0 ? parts.join(", ") : "pool unchanged";
 }
 
 /**
@@ -1501,7 +1502,7 @@ async function applyMovePins(
   for (const id of g.unpin) {
     if (!offered.has(id)) lines.push(`${named(id)} — not in your library any more, skipped`);
     else if (pinnedNow.has(id)) unpinned.push(id);
-    else lines.push(`${named(id)} — wasn't in rotation`);
+    else lines.push(`${named(id)} — wasn't pinned`);
   }
   // Each write only while the proposal is as this request last wrote it: a decline that landed first wins.
   const asRead = sql`exists (select 1 from coach_proposals cp where cp.id = ${current.id} and cp.user_id = ${userId}

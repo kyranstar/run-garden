@@ -16,8 +16,10 @@ const ROLES = ["main", "designer", "reviewer"] as const;
 /** Each role block's cap, in tokens at 4 characters. The main block's REBASED 2026-10-18 for the decision guidance (a run's
  * length on the watch, plan_set or propose_plan, a plan's timed sessions, a programme's settings) to match
  * design-fix13-prompt.test.ts's 1,540 — measured 1,488 — and again 2026-10-19 for the owner's voice (the coach's last
- * words: brisk, one next step, no apologies, not the card) — measured 1,634 with its turns; the others hold at 1,500. */
-const ROLE_CAP = { main: 1660, designer: 1500, reviewer: 1500 } as const;
+ * words: brisk, one next step, no apologies, not the card) — measured 1,634 with its turns; REBASED 2026-10-25 (saved-posts
+ * fix wave: "fit saved moves in with pin_moves" among the scope's choices) — measured 1,666.75 with its turns, ≥ 100
+ * tokens headroom as design-fix13-prompt.test.ts's; the others hold at 1,500. */
+const ROLE_CAP = { main: 1770, designer: 1500, reviewer: 1500 } as const;
 // With a run's reviewer block too (§8 §3: a reviewer's block holds its draft's rubric).
 const ALL_TEXT = [SHARED_PROMPT, ...ROLES.map((r) => roleBlock(r)), roleBlock("reviewer", undefined, "run")].join("\n");
 
@@ -44,7 +46,10 @@ describe("the prompt text", () => {
   it("keeps the shared prefix under about 6k tokens (characters ÷ 4)", () => {
     // REBASED 2026-10-25 (Task 18): pin_moves acting line + integration guidance — measured 6,183.25 (was 5,958.25 against
     // 6,000); held with design-fix13-prompt.test.ts's cap, ≥ 100 tokens headroom.
-    expect(SHARED_PROMPT.length / 4).toBeLessThanOrEqual(6290);
+    // REBASED 2026-10-25 (saved-posts fix wave): the integration paragraph's one workout per run, the pool a pin
+    // puts a move in, closing the batch; the saved-post sentence under Untrusted text; pin_moves' acting line — measured
+    // 6,291; ≥ 100 tokens headroom.
+    expect(SHARED_PROMPT.length / 4).toBeLessThanOrEqual(6400);
     for (const r of ROLES) expect(roleBlock(r).length / 4, r).toBeLessThanOrEqual(ROLE_CAP[r]);
   });
 
@@ -313,7 +318,8 @@ describe("3A-B — the prompt agrees with the code", () => {
 
   it("stays within its size: the shared prefix and each role block with its budget", () => {
     // REBASED 2026-10-25 (Task 18): pin_moves acting line + integration guidance — measured 6,183.25 (the cap above).
-    expect(SHARED_PROMPT.length / 4).toBeLessThanOrEqual(6290);
+    // REBASED 2026-10-25 (saved-posts fix wave) — measured 6,291 (the cap above).
+    expect(SHARED_PROMPT.length / 4).toBeLessThanOrEqual(6400);
     for (const role of ROLES) expect(roleBlock(role, RUN_LIMITS[role].maxCalls).length / 4, role).toBeLessThanOrEqual(ROLE_CAP[role]);
   });
 });

@@ -1,11 +1,14 @@
 /**
- * pin_moves(pin?, unpin?, batchId?, title, summary, lines, why) — the main coach keeps moves in the athlete's rotation, or
- * takes them out (saved-posts import, Task 18): what the Studio's pin does (`exercise_prefs.pinned`) — the engine plans
- * from a pinned personal move — as one card the athlete approves. When the athlete asks to fit in the moves from their
- * saves, the coach places them inside what they already do: it revises upcoming workouts, keeps a move in rotation with
- * this, and names `batchId` (read_saves') so the batch is marked fitted in once approved — however many it pinned: with a
- * batch and no move at all, the card is its lines alone (each saved move left out, and why), and approving it closes the
- * batch.
+ * pin_moves(pin?, unpin?, batchId?, title, summary, lines, why) — the main coach puts moves in the pool the engine plans
+ * from, or takes them out (saved-posts import, Task 18): what the Studio's pin does (`exercise_prefs.pinned`) — a pinned
+ * core lift stays in its block; a pinned personal move joins the engine's pool (`account-library.ts` `engine`) and gets
+ * the saved-link bonus in the slots its role fills; a pin schedules nothing — as one card the athlete approves. When the
+ * athlete asks to fit in the moves from their saves, the coach places them inside what they already do: it revises the
+ * one workout its run holds, pins a move with this, and names `batchId` (read_saves') so the batch is marked fitted in
+ * once approved — however many it pinned: with a batch and no move at all, the card is its lines alone (each saved move
+ * left out, and why), and approving it closes the batch. With a batch, every new move of it the athlete is offered must
+ * be accounted for — pinned, unpinned, or named by its id in a line — else `incomplete`, naming the missing ids; a line's
+ * ids are stored as the moves' names, so the card reads names (coach-context audit I5).
  *
  * STORED as one op of kind `move_pins` (proposal-kinds.ts `MovePinsOp`) in the main run's proposal, as change_programme
  * stores its own: the moves, the batch, the coach's own words for the card — its title, its line, a line a placement and
@@ -18,15 +21,17 @@
  * an archived or merged one, an unknown one, another account's (`not_a_move`); a move to pin the athlete set aside as not
  * for them (`exercise_prefs.excluded`: the engine leaves it out whatever its pin — only the athlete puts it back:
  * `set_aside`); a batch that isn't a saved batch of the athlete's — another account's, one not saved, one nobody has, all
- * in the same words (`bad_batch`); a proposal already with the athlete (`proposal_pending`) or closed; a restore under way
- * (`restoring`).
+ * in the same words (`bad_batch`); a card with a batch that leaves one of its offered new moves unaccounted for — not
+ * pinned, not unpinned, its id in no line (`incomplete`, naming the ids); a proposal already with the athlete
+ * (`proposal_pending`) or closed; a restore under way (`restoring`).
  *
- * Statements: the athlete with the account's library, the moves set aside, the proposal, the restore marker and the
- * batch (one read); the proposal's guarded upsert.
+ * Statements: the athlete with the account's library, the moves set aside, the proposal, the restore marker, the batch
+ * and its new moves (one read); the proposal's guarded upsert.
  */
 import { sql } from "drizzle-orm";
 import { z } from "zod";
-import { accountState, coachProposals, exercisePrefs, saveBatches } from "@rg/database";
+import { accountState, coachProposals, exercisePrefs, personalMoves, saveBatches } from "@rg/database";
+import type { ExerciseRecord } from "@rg/exercise-library";
 import { isPersonalId } from "@rg/saves";
 import { makeLibraryIndex } from "@rg/workout";
 import { accountLibraryFrom, personalMovesSql } from "../account-library.js";
@@ -36,7 +41,7 @@ import { clipProse } from "../design-prose.js";
 import { isMovePinsOp, PINS_LINES_MAX, PINS_MAX, pinsId, type MovePinsOp } from "../proposal-kinds.js";
 import { capInWords, isErr, mainRunIdOf, parseAct, prose } from "./act-common.js";
 import { designProposalId, upsertProposal } from "./propose.js";
-import { parsedJson, readAthlete, refuse } from "./read-common.js";
+import { parsedJson, plural, readAthlete, refuse } from "./read-common.js";
 import type { DesignTool, ToolOk } from "./types.js";
 
 const TITLE_MAX = 60;
@@ -58,6 +63,16 @@ const input = z
   })
   .strict();
 
+/** A personal id as a line may carry one (PERSONAL_ID_RE's shape, inside prose). */
+const PERSONAL_ID_IN_TEXT = /\bmy[A-Z][A-Za-z0-9]{1,60}\b/g;
+
+/** A line as the card shows it: each of the account's personal ids it names as that move's name (the athlete knows moves
+ * by name; the coach named them by id to account for them). An id the library doesn't hold stays as written. */
+function namesFor(line: string, all: readonly ExerciseRecord[]): string {
+  const find = makeLibraryIndex(all);
+  return line.replace(PERSONAL_ID_IN_TEXT, (id) => find(id)?.name ?? id);
+}
+
 /** What a stored change answers: the moves, never the coach's own words back. */
 function storedAnswer(proposalId: string, op: MovePinsOp, o: { replaced?: boolean } = {}): ToolOk {
   return {
@@ -71,7 +86,7 @@ function storedAnswer(proposalId: string, op: MovePinsOp, o: { replaced?: boolea
       ...(op.batchId ? { batchId: op.batchId } : {}),
       next: "It goes to the athlete as one card — Approve or Not now — never reviewed. A second pin_moves replaces it. Call finish when the rest is done.",
     },
-    summary: `Moves in rotation: ${op.pin.length} to pin, ${op.unpin.length} to unpin`,
+    summary: `Moves for the engine's pool: ${op.pin.length} to pin, ${op.unpin.length} to unpin`,
     receipt: { proposalId, opId: op.id },
   };
 }
@@ -79,7 +94,7 @@ function storedAnswer(proposalId: string, op: MovePinsOp, o: { replaced?: boolea
 export const pinMoves: DesignTool = {
   name: "pin_moves",
   description:
-    "The main coach: keep moves in rotation (pin; the engine plans from pinned moves) or take them out (unpin), as one card. batchId: the read_saves batch you fit in — with no move, the lines alone close it. A second call replaces it.",
+    "The main coach: put moves in the pool the engine plans from (pin: a core lift stays; other moves become eligible) or take them out (unpin), as one card. batchId: the read_saves batch you fit in — each new move of it pinned or named by its id in a line; with no move, the lines alone close it. A second call replaces it.",
   inputSchema: {
     type: "object",
     properties: {
@@ -88,7 +103,7 @@ export const pinMoves: DesignTool = {
       batchId: { type: "string" },
       title: { type: "string", description: `The card's title: ${capInWords(TITLE_MAX)}.` },
       summary: { type: "string", description: `One line under it: ${capInWords(SUMMARY_MAX)}.` },
-      lines: { type: "array", items: { type: "string" }, maxItems: PINS_LINES_MAX, description: "One per placement and one per saved move left out, each with why." },
+      lines: { type: "array", items: { type: "string" }, maxItems: PINS_LINES_MAX, description: "One per placement and one per saved move left out, each with why; a batch's new move by its id." },
       why: { type: "string", description: `Why, in one plain line: ${capInWords(WHY_MAX)}.` },
     },
     required: ["title", "summary", "lines", "why"],
@@ -101,16 +116,16 @@ export const pinMoves: DesignTool = {
     const parsed = parseAct(input, raw, "pin and/or unpin (move ids), batchId when fitting in a saves batch, and the card's title, summary, lines and why");
     if (isErr(parsed)) return parsed;
     const mainRunId = mainRunIdOf(ctx);
-    if (ctx.run.role !== "main" || !mainRunId) return refuse("not_for_role", "Only the main coach changes the moves in rotation.", "Say in your finish line what you would keep in rotation.");
+    if (ctx.run.role !== "main" || !mainRunId) return refuse("not_for_role", "Only the main coach changes the moves in the engine's pool.", "Say in your finish line what you would pin.");
     const pin = [...new Set(parsed.pin ?? [])];
     const unpin = [...new Set(parsed.unpin ?? [])];
     // A lines-only card closes its batch (every saved move left out, each line saying why); with no batch, nothing to do.
     if (pin.length + unpin.length === 0 && !parsed.batchId) {
-      return refuse("invalid_input", "No move to pin or unpin.", "Name the moves: pin to keep them in rotation, unpin to take them out — or, fitting in a batch with none, its batchId.");
+      return refuse("invalid_input", "No move to pin or unpin.", "Name the moves: pin to put them in the engine's pool, unpin to take them out — or, fitting in a batch with none, its batchId.");
     }
     const both = pin.filter((id) => unpin.includes(id));
     if (both.length > 0) {
-      return refuse("invalid_input", `${both.map((id) => JSON.stringify(id)).join(", ")} is in both pin and unpin.`, "Name each move once: pin to keep it in rotation, unpin to take it out.");
+      return refuse("invalid_input", `${both.map((id) => JSON.stringify(id)).join(", ")} is in both pin and unpin.`, "Name each move once: pin to put it in the engine's pool, unpin to take it out.");
     }
 
     const proposalId = designProposalId(mainRunId);
@@ -121,6 +136,11 @@ export const pinMoves: DesignTool = {
       restoring: sql`(select ${accountState.restoreId} from ${accountState} where ${accountState.userId} = ${ctx.userId})`,
       batch: parsed.batchId
         ? sql`(select ${saveBatches.status} from ${saveBatches} where ${saveBatches.id} = ${parsed.batchId} and ${saveBatches.userId} = ${ctx.userId})`
+        : sql`null`,
+      // The new moves the batch brought, still active: each must be accounted for (coach-context audit I5).
+      batchNew: parsed.batchId
+        ? sql`(select json_group_array(${personalMoves.id}) from ${personalMoves} where ${personalMoves.userId} = ${ctx.userId}
+            and ${personalMoves.batchId} = ${parsed.batchId} and ${personalMoves.status} = 'active')`
         : sql`null`,
       setAside:
         pin.length > 0
@@ -136,12 +156,12 @@ export const pinMoves: DesignTool = {
     // A replay of this very call: what it stored, or that a later one replaced it.
     if (ctx.toolUseId && held) {
       if (held.toolUseId === ctx.toolUseId) return storedAnswer(proposalId, held);
-      if (held.replaces?.includes(ctx.toolUseId)) return { data: { stored: true, proposalId, superseded: true, note: "a later pin_moves replaced this one" }, summary: "An earlier change to the moves in rotation, already replaced" };
+      if (held.replaces?.includes(ctx.toolUseId)) return { data: { stored: true, proposalId, superseded: true, note: "a later pin_moves replaced this one" }, summary: "An earlier change to the engine's pool, already replaced" };
     }
     const status = typeof extra.propStatus === "string" ? extra.propStatus : null;
     if (status === "pending") return refuse("proposal_pending", "Your proposal is already with the athlete.", "Call finish.");
     if (status !== null && !(OPEN_PROPOSAL_STATUSES as readonly string[]).includes(status)) {
-      return refuse("proposal_closed", `This design's proposal is already ${status}.`, "Finish: say what you would keep in rotation, and the athlete can ask again.");
+      return refuse("proposal_closed", `This design's proposal is already ${status}.`, "Finish: say what you would pin, and the athlete can ask again.");
     }
     if (typeof extra.restoring === "string" && extra.restoring.length > 0) {
       return refuse("restoring", "The athlete's account is being restored right now.", "Finish, and say the moves can be fitted in once the restore is done.");
@@ -169,6 +189,17 @@ export const pinMoves: DesignTool = {
       const name = (id: string) => (isPersonalId(id) ? markUntrusted("saved post", find(id)?.name ?? id) : (find(id)?.name ?? id));
       return refuse("set_aside", `${aside.map(name).join(", ")} ${aside.length === 1 ? "is" : "are"} set aside as not for you — ask before putting it back.`, "Leave it out of pin — or ask the athlete with ask_athlete; only they put it back, in the Studio.");
     }
+    // Every new move of the batch the athlete is offered, accounted for: pinned, unpinned, or named by its id in a line —
+    // so a move left out is left out with a reason the card shows (coach-context audit I5).
+    const fresh = ((parsedJson(extra.batchNew) as unknown[] | null) ?? []).filter((x): x is string => typeof x === "string" && offered.has(x));
+    const unaccounted = fresh.filter((id) => !pin.includes(id) && !unpin.includes(id) && !parsed.lines.some((l) => l.includes(id)));
+    if (unaccounted.length > 0) {
+      return refuse(
+        "incomplete",
+        `${plural(unaccounted.length, "new move")} of this batch ${unaccounted.length === 1 ? "is" : "are"} not accounted for: ${unaccounted.map((id) => JSON.stringify(id)).join(", ")}.`,
+        "Pin each new move, or name it by its id in a line saying why it was left out (the card shows its name).",
+      );
+    }
 
     const at = ctx.now.toISOString();
     const toolUseId = ctx.toolUseId ?? `call-${at}`;
@@ -181,7 +212,7 @@ export const pinMoves: DesignTool = {
       why: clipProse(parsed.why, WHY_MAX),
       title: clipProse(parsed.title, TITLE_MAX),
       summary: clipProse(parsed.summary, SUMMARY_MAX),
-      lines: parsed.lines.map((l) => clipProse(l, LINE_MAX)),
+      lines: parsed.lines.map((l) => clipProse(namesFor(l, library.all), LINE_MAX)),
       date: athlete.today,
       toolUseId,
       ...(held ? { replaces: [...(held.replaces ?? []), held.toolUseId] } : {}),
