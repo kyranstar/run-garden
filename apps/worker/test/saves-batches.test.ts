@@ -146,6 +146,19 @@ describe("assembleBatch", () => {
   });
 });
 
+describe("assembleBatch's notice and the review page agree on what is new (final review M1)", () => {
+  it("a pending move an earlier, unsaved batch brought reads as one the owner had, not new", async () => {
+    await matched("a", [move("Zorbex quad shuffle")]);
+    const first = await assembleBatch(db, env(), userId, at(0));
+    expect((await batchOf(first!)).notice).toBe("From your saves: 1 new move (hip).");
+    // Never saved: the move stays pending, the first batch's. A later post shows it again, and a new one.
+    await matched("b", [move("Zorbex quad shuffles"), move("Zorbex neck nod", { regions: ["neck"] })], userId, at(2));
+    const second = await assembleBatch(db, env(), userId, at(21));
+    // The page counts 1 New (the neck nod, born here) and 1 Linked (the shuffle, the first batch's): the notice too.
+    expect((await batchOf(second!)).notice).toBe("From your saves: 1 new move (neck), 1 you already had.");
+  });
+});
+
 describe("saveBatch", () => {
   it("writes provenance only on save: moves active, links saved, the batch saved", async () => {
     await matched("a", [move("Zorbex quad shuffle"), move("90/90 Hip Switch")]);

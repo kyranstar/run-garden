@@ -272,16 +272,21 @@ interface LinkRead {
   /** The account's other pending links naming the same move. */
   others: number;
   targetStatus: string | null;
+  /** The batch that brought the target, when it is a personal move. */
+  targetBatchId: string | null;
 }
 
 /**
  * The owner's re-match of one pending row:
- *  - `to` a library move or one of the account's active moves ("Same as…"): the link names it; a pending move the link
- *    leaves, named by no other pending link of the account, is merged into it (`merged_into`, a public id allowed);
+ *  - `to` a library move, one of the account's active moves, or a new (pending) move the row's own batch brought
+ *    ("Same as…" — two new moves the matcher missed, merged in review): the link names it; a pending move the link
+ *    leaves, named by no other pending link of the account, is merged into it (`merged_into`, a public id allowed; a
+ *    sibling target is activated on Save, since a kept row names it);
  *  - `to` null ("Not this move"): the post's move is a new move of its own — a pending personal move built from the
  *    post's stored reading at that position — every time (409 only when the reading has no move there). A pending move
  *    the link leaves stays pending: no kept link names it, so saving never activates it, and nothing offers it.
- * A saved or removed row is 409; a target that isn't a library move or an active move of the account's is not found.
+ * A saved or removed row is 409; a target that isn't a library move, an active move of the account's or a pending move of
+ * the row's batch (another batch's pending move included) is not found.
  * D1 statements: the link with all it needs 1, then one transaction of 1–2.
  */
 export async function rematchLink(db: Db, userId: string, linkId: string, to: string | null, now: string): Promise<RematchOutcome> {
@@ -291,7 +296,8 @@ export async function rematchLink(db: Db, userId: string, linkId: string, to: st
       pm.status as moveStatus,
       (select count(*) from saved_post_moves o
          where o.user_id = l.user_id and o.status = 'pending' and o.move_id = l.move_id and o.id <> l.id) as others,
-      (select t.status from personal_moves t where t.user_id = l.user_id and t.id = ${to ?? ""}) as targetStatus
+      (select t.status from personal_moves t where t.user_id = l.user_id and t.id = ${to ?? ""}) as targetStatus,
+      (select t.batch_id from personal_moves t where t.user_id = l.user_id and t.id = ${to ?? ""}) as targetBatchId
     from saved_post_moves l
       join saved_posts p on p.id = l.post_id and p.user_id = l.user_id
       left join personal_moves pm on pm.id = l.move_id and pm.user_id = l.user_id and l.move_kind = 'personal'
@@ -325,7 +331,10 @@ export async function rematchLink(db: Db, userId: string, linkId: string, to: st
   }
 
   let target: { id: string; kind: "library" | "personal" } | null = null;
-  if (isPersonalId(to)) target = link.targetStatus === "active" ? { id: to, kind: "personal" } : null;
+  if (isPersonalId(to)) {
+    const sibling = link.targetStatus === "pending" && link.batchId !== null && link.targetBatchId === link.batchId;
+    target = link.targetStatus === "active" || sibling ? { id: to, kind: "personal" } : null;
+  }
   else {
     const rec = publicMove(to);
     target = rec ? { id: rec.id, kind: "library" } : null;
@@ -439,6 +448,7 @@ interface ReleaseRead extends BatchRead {
   moveId: string | null;
   moveKind: string | null;
   moveStatus: string | null;
+  moveBatchId: string | null;
   regions: unknown;
   contraction: unknown;
 }
@@ -446,18 +456,19 @@ interface ReleaseRead extends BatchRead {
 /**
  * Release a held batch: released now, with its notice worded from its kept rows (as `assembleBatch` words one) — but
  * never within `BATCH_GAP_MS` of the account's last release (the cadence: at most one batch released per 20 h, so the
- * coach brings the saves up at most once a day). D1 statements: the batch with its rows' moves and the last release 1,
- * the write 1.
+ * coach brings the saves up at most once a day), and never with no row to show ("nothing_to_release": every row was
+ * removed — "0 moves you already had" says nothing). D1 statements: the batch with its rows' moves and the last release
+ * 1, the write 1.
  */
 export async function releaseBatch(
   db: Db,
   userId: string,
   batchId: string,
   now: string,
-): Promise<SaveBatchDto | "not_found" | "conflict" | "too_soon"> {
+): Promise<SaveBatchDto | "not_found" | "conflict" | "too_soon" | "nothing_to_release"> {
   const rows = (await db.all(sql`select ${BATCH_COLUMNS},
       (select max(r.released_at) from save_batches r where r.user_id = b.user_id) as lastRelease,
-      l.move_id as moveId, l.move_kind as moveKind, pm.status as moveStatus,
+      l.move_id as moveId, l.move_kind as moveKind, pm.status as moveStatus, pm.batch_id as moveBatchId,
       json_extract(pm.record, '$.regions') as regions, json_extract(pm.record, '$.contraction') as contraction
     from save_batches b
       left join saved_post_moves l on l.batch_id = b.id and l.user_id = b.user_id and l.status = 'pending'
@@ -467,7 +478,8 @@ export async function releaseBatch(
   if (!first) return "not_found";
   if (first.status !== "held") return "conflict";
   if (first.lastRelease && Date.parse(now) - Date.parse(first.lastRelease) < BATCH_GAP_MS) return "too_soon";
-  const notice = noticeOf(rows);
+  if (!rows.some((r) => r.moveId)) return "nothing_to_release";
+  const notice = noticeOf(rows, batchId);
   await db
     .update(saveBatches)
     .set({ status: "released", releasedAt: now, notice })

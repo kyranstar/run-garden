@@ -36,17 +36,32 @@ const parseList = (raw: unknown): string[] => {
 };
 
 /**
- * The batch's notice from its moves, as `batchNotice` words it: a move is new when it is a personal move still pending,
- * and one the owner already had otherwise (the library's, or a personal move saved before). Each move counts once.
+ * The batch's notice from its moves, as `batchNotice` words it: a move is new when it is a personal move this batch
+ * brings — its `batch_id` this batch's, or (a batch being assembled, before the stamp) a pending move no batch brought
+ * yet — and not merged; one the owner already had otherwise (the library's, a personal move saved before, or a pending
+ * one an earlier batch brought). The review's own rule (`BORN_HERE`, saves-review.ts), so the notice and the page agree.
+ * Each move counts once.
  */
 export function noticeOf(
-  rows: readonly { moveId: string | null; moveKind: string | null; moveStatus: string | null; regions: unknown; contraction: unknown }[],
+  rows: readonly {
+    moveId: string | null;
+    moveKind: string | null;
+    moveStatus: string | null;
+    moveBatchId: string | null;
+    regions: unknown;
+    contraction: unknown;
+  }[],
+  batchId: string,
 ): string {
   const fresh = new Map<string, Pick<ExerciseRecord, "regions" | "contraction">>();
   const had = new Set<string>();
   for (const r of rows) {
     if (!r.moveId) continue;
-    if (r.moveKind === "personal" && r.moveStatus === "pending") {
+    const born =
+      r.moveKind === "personal" &&
+      r.moveStatus !== "merged" &&
+      (r.moveBatchId === batchId || (r.moveBatchId === null && r.moveStatus === "pending"));
+    if (born) {
       if (!fresh.has(r.moveId)) {
         fresh.set(r.moveId, {
           regions: parseList(r.regions) as ExerciseRecord["regions"][number][],
@@ -78,6 +93,7 @@ export async function assembleBatch(db: Db, env: Env, userId: string, now: strin
       moveId: savedPostMoves.moveId,
       moveKind: savedPostMoves.moveKind,
       moveStatus: personalMoves.status,
+      moveBatchId: personalMoves.batchId,
       regions: sql<unknown>`json_extract(${personalMoves.record}, '$.regions')`,
       contraction: sql<unknown>`json_extract(${personalMoves.record}, '$.contraction')`,
     })
@@ -102,7 +118,7 @@ export async function assembleBatch(db: Db, env: Env, userId: string, now: strin
     releasedAt: held ? null : now,
     savedAt: null,
     fittedAt: null,
-    notice: held ? null : noticeOf(waiting),
+    notice: held ? null : noticeOf(waiting, id),
   };
   // `INSERT … SELECT <row> WHERE <a post took the batch>`: every column in the table's order (none is generated),
   // through its own mapping.

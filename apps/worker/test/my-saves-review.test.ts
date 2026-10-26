@@ -405,12 +405,39 @@ describe("POST /post-moves/:id/rematch", () => {
     expect(await moveRow(quad)).toMatchObject({ status: "pending", mergedInto: null });
   });
 
-  it("the target is a library move or an active move of the account's: anything else is 404; the same move is 409", async () => {
-    const { a, b, quad } = await seed();
+  it("'Same as' a new move of the same batch merges two new moves the matcher missed: the row repoints, the move it leaves is merged into it (final review I4)", async () => {
+    const { batchId, a, b, quad, neck } = await seed();
+    const res = await call("POST", `/post-moves/${(await linkAt(b, 1)).id}/rematch`, { to: quad });
+    expect(res.status, JSON.stringify(res.body)).toBe(200);
+    expect(res.body).toEqual({ ok: true, move: { id: quad, kind: "personal" } });
+    // The session, the restore guard, the link with all it needs, then one transaction: the link and the merge.
+    expect(statements.length).toBe(5);
+    expect(await linkAt(b, 1)).toMatchObject({ moveId: quad, moveKind: "personal", checkFlag: false, status: "pending" });
+    expect(await moveRow(neck)).toMatchObject({ status: "merged", mergedInto: quad, updatedAt: NOW });
+    expect(await moveRow(quad)).toMatchObject({ status: "pending", mergedInto: null });
+    // The page: one new move (the quad shuffle) on three rows, one linked (the library's hip switch).
+    const page = (await call("GET", `/batches/${batchId}`)).body;
+    expect(page.batch.counts).toEqual({ new: 1, linked: 1, removed: 0 });
+    // Saved: the move every kept row names is the owner's; the merged one reads as it.
+    expect((await call("POST", `/batches/${batchId}/save`)).body).toEqual({ moves: 1, links: 4 });
+    expect((await moveRow(quad))!.status).toBe("active");
+    expect((await moveRow(neck))!.status).toBe("merged");
+    expect((await library("/personal")).body.merged).toEqual([{ id: neck, into: quad }]);
+    expect(a).toBeTruthy();
+  });
+
+  it("the target is a library move, an active move of the account's, or a new move of the row's own batch: anything else is 404; the same move is 409", async () => {
+    const { a, b } = await seed();
     const link = (await linkAt(b, 1)).id;
     const archived = await ownMove("Windmill switch", "archived");
     const theirs = await ownMove("Prone Y raise", "active", (await makeTestUser(db)).userId);
-    for (const to of ["notAMove", quad, archived, theirs, "myNotAMove000000"]) {
+    // A new move another batch brought, still pending (its batch not saved).
+    const elsewhere = await ownMove("Lantern sweep", "pending");
+    await db.insert(saveBatches).values({ id: "other-batch", userId, status: "released", createdAt: T0, releasedAt: T0 });
+    await db.update(personalMoves).set({ batchId: "other-batch" }).where(eq(personalMoves.id, elsewhere));
+    // And one no batch brought yet.
+    const loose = await ownMove("Lantern turn", "pending");
+    for (const to of ["notAMove", elsewhere, loose, archived, theirs, "myNotAMove000000"]) {
       const res = await call("POST", `/post-moves/${link}/rematch`, { to });
       expect(res.status, to).toBe(404);
       expect(statements.filter(isWrite), to).toEqual([]);
@@ -597,6 +624,29 @@ describe("POST /batches and /batches/:id/release", () => {
     const many = Array.from({ length: 101 }, (_, i) => `post-${i}`);
     expect((await call("POST", "/batches", { theme: null, postIds: many })).status).toBe(422);
     expect((await call("POST", "/batches", { theme: null, postIds: many.slice(0, 100) })).status).toBe(409);
+  });
+
+  it("release words a pending move an earlier, unsaved batch brought as one the owner had — as the page counts it (final review M1)", async () => {
+    const { batchId: first } = await seed();
+    await db.update(saveBatches).set({ releasedAt: at(-30) }).where(eq(saveBatches.id, first));
+    // A later post shows the first batch's (unsaved) quad shuffle again.
+    const c = await matched("c", [move("Zorbex quad shuffles")]);
+    const id = (await call("POST", "/batches", { theme: null, postIds: [c] })).body.batch.id as string;
+    expect((await call("GET", `/batches/${id}`)).body.batch.counts).toMatchObject({ new: 0, linked: 1 });
+    const released = await call("POST", `/batches/${id}/release`);
+    expect(released.status, JSON.stringify(released.body)).toBe(200);
+    expect(released.body.batch.notice).toBe("From your saves: 1 move you already had.");
+  });
+
+  it("a held batch whose rows were all removed is never released: 409 nothing_to_release, nothing written (final review M2)", async () => {
+    const c = await matched("c", [move("Zorbex hip circle")]);
+    const id = (await call("POST", "/batches", { theme: null, postIds: [c] })).body.batch.id as string;
+    expect((await call("POST", `/post-moves/${(await linkAt(c, 0)).id}/remove`)).status).toBe(200);
+    const res = await call("POST", `/batches/${id}/release`);
+    expect(res.status).toBe(409);
+    expect(res.body).toEqual({ error: "nothing_to_release" });
+    expect(statements.filter(isWrite)).toEqual([]);
+    expect(await batchRow(id)).toMatchObject({ status: "held", releasedAt: null, notice: null });
   });
 
   it("a release within 20 h of the last is 409 too_soon, and the batch stays held", async () => {
