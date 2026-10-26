@@ -687,6 +687,13 @@ function Builder({ source }: { source: BuildSource }) {
               </button>
             )}
           </div>
+          {/* The document's notes (verbatim audit gap 7): what the coach carried into it — a post's when or why — one line. */}
+          {doc.notes?.trim() ? (
+            <div className="stu-build-goals stu-build-notes">
+              <span className="stu-build-k">Notes</span>
+              <span className="stu-build-goal-list stu-build-notes-text">{doc.notes.trim()}</span>
+            </div>
+          ) : null}
         </header>
 
         {/* Nothing to sum up until there is a move: the actions say so ("Add a move first."). */}

@@ -472,4 +472,25 @@ describe("fix wave 3B: Edit before approve (B-I8) and the goal line (A-M2, LIVE)
     await until(() => titleField()?.value === "Coach's hips", "the draft");
     expect(document.querySelector(".stu-build-goal-list")?.textContent).toBe("Aerobic base · Condition care");
   });
+
+  it("the workout's notes show as one line under the goals — what the coach carried from a post, as text (verbatim audit gap 7)", async () => {
+    const notes = 'Hips before the run, as the post says: twice a week is plenty. <img src=x onerror="alert(1)">';
+    serve({ draft: draftOf({ doc: { ...coachDoc("Coach's hips"), notes } }) });
+    mount("/studio/build/proposal/dp-1/run-a");
+    await until(() => titleField()?.value === "Coach's hips", "the draft");
+    const row = document.querySelector(".stu-build-notes")!;
+    expect(row).not.toBeNull();
+    expect(row.querySelector(".stu-build-k")?.textContent).toBe("Notes");
+    expect(row.querySelector(".stu-build-notes-text")?.textContent).toBe(notes);
+    expect(document.querySelector("img")).toBeNull();
+    // Under the goals.
+    expect(document.querySelector(".stu-build-goals")!.compareDocumentPosition(row) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+  });
+
+  it("a workout with no notes shows no Notes line", async () => {
+    serve({ draft: draftOf() });
+    mount("/studio/build/proposal/dp-1/run-a");
+    await until(() => titleField()?.value === "Coach's hips", "the draft");
+    expect(document.querySelector(".stu-build-notes")).toBeNull();
+  });
 });
