@@ -134,6 +134,8 @@ Reached only from the card (and from Settings → Saves for older batches). Titl
     path): saves the batch (as `/save` does today, including the §17 memory and provenance writes), stores the choices,
     returns the request text to send. Replaces the two-step save + chip; `/save` stays for the move sheet's needs.
   - `POST /batches/:id/dismiss` → sets `dismissed_at`.
+  - `POST /batches/:id/fit/cancel` → clears `fit_started_at` when the run could not start after `/fit` (a run already at
+    work, the week's budget, offline), so the card never reads "Fitting in…" for the full hour (§12.1).
 - `read_saves` adds `choice` per move. The fit-in request's context (the opening the run reads) carries the batch id,
   as today.
 - `pin_moves` validation (§3.4). The op's stored lines keep the `{ moveId?, text }` shape so the card can render the
@@ -190,13 +192,16 @@ These were ledgered during go-live and are part of this round:
 
 ## 9. Constraints
 
-- Workers Free: ≤45 D1 statements a request, 10 ms CPU. `GET /open` is one statement; `/fit` stays within the save
-  route's budget plus one update for the choices.
+- Workers Free: ≤45 D1 statements a request, 10 ms CPU. `GET /open` is one statement while a batch is open or nothing
+  waits; when nothing is open and new moves wait it assembles the next batch first (the assembler's own budget, ≤10
+  statements in all), which is what makes "when it is fitted in, the next waiting batch opens" true without waiting for
+  the extension's next check. `/fit` stays within the save route's budget plus two (a fit-check read and the choices).
 - Public repository: no real post links, handles, captions or media in code, fixtures, tests or docs. The move names in
   this document are the owner's own extracted names, already in the private database; they do not appear in tests.
 - The owner's voice: brisk, one next step, no apologies, no explainers.
 - Every principle in `workout-system-principles.md` and the original design's §10 (privacy) still applies.
-- Migrations: 0031 (`dismissed_at`, `fit_choice`), additive.
+- Migrations: 0031 (`save_batches.dismissed_at`, `save_batches.fit_started_at`, `personal_moves.fit_choice`,
+  `saved_post_moves.like_move_id`), additive.
 
 ## 10. The owner's answers (2026-10-26)
 
