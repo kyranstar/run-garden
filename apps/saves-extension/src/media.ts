@@ -49,25 +49,40 @@ export function isMediaUrl(url: string): boolean {
   return parsed.protocol === "https:" && MEDIA_DOMAINS.some((d) => host === d || host.endsWith(`.${d}`));
 }
 
+/** The most a media download may take, headers to last byte. A CDN that stalls must not pin the whole check (2026-10-26). */
+export const MEDIA_TIMEOUT_MS = 90_000;
+
 /**
- * Download one media file into memory as base64. Only from the site's media hosts; a link elsewhere, or a failed download
- * (an expired signed link, the network), is MediaError.
+ * Download one media file into memory as base64. Only from the site's media hosts; a link elsewhere, a failed download
+ * (an expired signed link, the network), or one that outlasts `timeoutMs` is MediaError.
  */
 export async function fetchAsBase64(
   url: string,
   fetchImpl: typeof fetch,
   fallbackMime = "application/octet-stream",
+  timeoutMs = MEDIA_TIMEOUT_MS,
 ): Promise<{ mime: string; base64: string; bytes: number }> {
   if (!isMediaUrl(url)) throw new MediaError("A media link is not on the site's media hosts");
-  let res: Response;
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), timeoutMs);
   try {
-    // A signed CDN link needs no cookie; sending none keeps the request as small as the site's own.
-    res = await fetchImpl(url, { credentials: "omit" });
-  } catch {
-    throw new MediaError("A media download failed");
+    let res: Response;
+    try {
+      // A signed CDN link needs no cookie; sending none keeps the request as small as the site's own.
+      res = await fetchImpl(url, { credentials: "omit", signal: controller.signal });
+    } catch {
+      throw new MediaError(controller.signal.aborted ? "A media download timed out" : "A media download failed");
+    }
+    if (!res.ok) throw new MediaError(`A media download answered ${res.status}`);
+    let bytes: Uint8Array;
+    try {
+      bytes = new Uint8Array(await res.arrayBuffer());
+    } catch {
+      throw new MediaError(controller.signal.aborted ? "A media download timed out" : "A media download failed");
+    }
+    const mime = (res.headers.get("content-type") ?? "").split(";")[0]!.trim().toLowerCase() || fallbackMime;
+    return { mime, base64: bytesToBase64(bytes), bytes: bytes.length };
+  } finally {
+    clearTimeout(timer);
   }
-  if (!res.ok) throw new MediaError(`A media download answered ${res.status}`);
-  const bytes = new Uint8Array(await res.arrayBuffer());
-  const mime = (res.headers.get("content-type") ?? "").split(";")[0]!.trim().toLowerCase() || fallbackMime;
-  return { mime, base64: bytesToBase64(bytes), bytes: bytes.length };
 }

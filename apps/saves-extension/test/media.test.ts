@@ -78,6 +78,26 @@ describe("fetchAsBase64", () => {
     expect(calls).toBe(1);
   });
 
+  it("gives up on a download that stalls — headers never arriving, or the body never ending — as MediaError", async () => {
+    const neverAnswers: typeof fetch = (_u, init) =>
+      new Promise((_resolve, reject) => init?.signal?.addEventListener("abort", () => reject(new DOMException("aborted", "AbortError"))));
+    await expect(fetchAsBase64("https://synthetic.cdninstagram.com/a.mp4", neverAnswers, "video/mp4", 20)).rejects.toThrow(/timed out/);
+
+    const bodyStalls: typeof fetch = (_u, init) =>
+      Promise.resolve(
+        new Response(
+          new ReadableStream({
+            start(controller) {
+              controller.enqueue(new Uint8Array([1, 2, 3]));
+              init?.signal?.addEventListener("abort", () => controller.error(new DOMException("aborted", "AbortError")));
+            },
+          }),
+          { headers: { "content-type": "video/mp4" } },
+        ),
+      );
+    await expect(fetchAsBase64("https://synthetic.cdninstagram.com/b.mp4", bodyStalls, "video/mp4", 20)).rejects.toThrow(/timed out/);
+  });
+
   it("throws MediaError on an expired link (403) or a network failure", async () => {
     const forbidden = (async () => new Response("", { status: 403 })) as typeof fetch;
     await expect(fetchAsBase64("https://synthetic.cdninstagram.com/a.mp4", forbidden)).rejects.toBeInstanceOf(MediaError);
