@@ -32,6 +32,10 @@ const GUARDED = [
   join(ROOT, "apps", "worker", "scripts", "build-provenance.mjs"),
   join(ROOT, "apps", "worker", "test", "build-provenance.test.ts"),
   join(ROOT, "apps", "worker", "test", "provenance-import.test.ts"),
+  // The saved-posts seed (plan Task 20 Step 1): reads the private capture from a path it is given; its test is synthetic.
+  join(ROOT, "apps", "worker", "scripts", "seed-saves.mjs"),
+  join(ROOT, "apps", "worker", "scripts", "seed-saves-lib.mjs"),
+  join(ROOT, "apps", "worker", "test", "seed-saves-transform.test.ts"),
 ];
 
 test("the library package and the import's fixtures hold no links, handles or social site names", () => {
