@@ -390,7 +390,13 @@ describe("pin_moves: the coach keeps a saved move in rotation", () => {
       [b, `${B.name} ${B.name} opens the neck.`, `${B.name} ${B.name} opens the neck.`],
       // A hyphen joining a word is no separator.
       ["gobletSquat", `${GOBLET.name}-style depth on Mondays.`, `${GOBLET.name}-style depth on Mondays.`],
+      // A library id may be an ordinary word (review round 2): with no separator it stays; with one it goes. A personal id
+      // is never a word: it goes with none.
+      ["bridge", "Bridge the gap to full extension.", "Bridge the gap to full extension."],
+      ["bridge", "bridge: the glutes", "The glutes"],
+      [a, `${a} opens the hips`, "Opens the hips"],
     ];
+    expect(EXERCISES.find((e) => e.id === "bridge")?.name).toBe("Glute bridge");
     ok((await pins(ctx, { pin: [a, b], batchId, lines: cases.map(([moveId, text]) => ({ moveId, text })) })).res);
     expect((await opOf(designProposalId(ctx.run.id))).lines.map((l) => l.text)).toEqual(cases.map(([, , stored]) => stored));
   });

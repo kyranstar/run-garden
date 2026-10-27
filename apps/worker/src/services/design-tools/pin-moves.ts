@@ -99,25 +99,28 @@ const WORD_CHAR = /^[\p{L}\p{N}]/u;
  * "Name: …", "Name (id): …", "Name – (id) – …", "id — …" — gone with the separator after it, and its first letter a
  * capital. The name is a copy only when a separator follows it, or the "(id)" or id that does: a name opening an
  * ordinary sentence stays whole ("Plank's hold time goes up.", "Plank variations help your core."), as does a name
- * written twice with no separator (rare — the schema says never to write it). An id, which is never a word, needs no
- * separator after it, so no "(id)" is left to read back as a second name. Nothing but punctuation left: the text as
- * written.
+ * written twice with no separator (rare — the schema says never to write it). A "(id)", or a personal id (never a word:
+ * PERSONAL_ID_RE), needs no separator after it, so no "(id)" is left to read back as a second name; any other bare id
+ * needs one, as the name does — a library id may be an ordinary word ("Bridge the gap…", id `bridge`; review round 2).
+ * Nothing but punctuation left: the text as written.
  */
 function lineTextOf(text: string, id: string, name: string): string {
   const t = text.trim();
   // Longest first: an id never stops short at a name that begins it.
   const copies = [...new Set([name, `(${id})`, id])].filter((c) => c.length > 0).sort((a, b) => b.length - a.length);
+  // The copies that are never a word: closed by nothing at all.
+  const free = new Set([`(${id})`, ...(isPersonalId(id) ? [id] : [])]);
   const copyAt = (i: number): string | undefined =>
     copies.find((c) => t.slice(i, i + c.length).toLowerCase() === c.toLowerCase() && !WORD_CHAR.test(t.slice(i + c.length)));
-  // Copy after copy, each with what follows it; the text starts after the last copy a separator (or, an id, nothing)
-  // closes.
+  // Copy after copy, each with what follows it; the text starts after the last copy a separator (or, one never a word,
+  // nothing) closes.
   let at = 0;
   let cut = -1;
   for (let copy = copyAt(at); copy !== undefined; copy = copyAt(at)) {
     at += copy.length;
     const after = AFTER_COPY.exec(t.slice(at))!;
     at += after[0].length;
-    if (after[1] !== undefined || copy !== name) cut = at;
+    if (after[1] !== undefined || free.has(copy)) cut = at;
   }
   const rest = cut >= 0 ? t.slice(cut) : t;
   if (!/[\p{L}\p{N}]/u.test(rest)) return t;
