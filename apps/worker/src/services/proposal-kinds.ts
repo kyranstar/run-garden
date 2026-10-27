@@ -160,12 +160,39 @@ export const PINS_MAX = 20;
 export const PINS_LINES_MAX = 20;
 
 /**
+ * A line of a `move_pins` card (the saves flow redesigned, §3.5): about a move (`moveId`), with that move's name as the
+ * account's library named it when the line was stored — the card sets it in bold, once — and the coach's text, which
+ * never repeats it; or text alone (a general line). Stored before that change, a line was a plain string: it reads as
+ * its text (`pinsCardLinesOf`).
+ */
+export interface PinsCardLine {
+  moveId?: string;
+  name?: string;
+  text: string;
+}
+
+/** A `move_pins` op's lines as stored, whatever their age: a plain string (before the saves flow redesign) is its text;
+ * an object keeps its move and name when they are texts; anything without a text is dropped. */
+export function pinsCardLinesOf(raw: unknown): PinsCardLine[] {
+  return (Array.isArray(raw) ? raw : []).flatMap((l): PinsCardLine[] => {
+    if (typeof l === "string") return l.trim() ? [{ text: l }] : [];
+    const o = l && typeof l === "object" ? (l as Record<string, unknown>) : null;
+    if (!o || typeof o.text !== "string" || !o.text.trim()) return [];
+    return [{ ...(typeof o.moveId === "string" && o.moveId ? { moveId: o.moveId } : {}), ...(typeof o.name === "string" && o.name ? { name: o.name } : {}), text: o.text }];
+  });
+}
+
+/** A card line as one plain text — every reader that hands lines to a model or as strings: "Name: text", or the text. */
+export const pinsLineText = (l: PinsCardLine): string => (l.name ? `${l.name}: ${l.text}` : l.text);
+
+/**
  * A change to the moves in the athlete's rotation inside a designed proposal (saved-posts import, Task 18;
  * design-tools/pin-moves.ts): the moves to pin (`exercise_prefs.pinned` true — the engine plans from a pinned personal
  * move) and to unpin, each a move the athlete is offered when it was proposed, and the saves batch it fits in
  * (`batchId`: marked fitted in once approved). Applied at approval in one batched upsert under a claim (design-approve.ts);
- * a move archived or set aside since is skipped with a line. `why`, `title`, `summary` and `lines` are the coach's own words for the card —
- * a line a placement, a line a saved move left out — data, marked wherever they are shown back to a model.
+ * a move archived or set aside since is skipped with a line. `why`, `title`, the lines' texts and (without a batch)
+ * `summary` are the coach's own words for the card — a line a placement, a line a saved move left out — and a line's
+ * `name` the library's: data, marked wherever they are shown back to a model.
  */
 export interface MovePinsOp {
   kind: "move_pins";
@@ -178,8 +205,11 @@ export interface MovePinsOp {
   batchId?: string;
   why: string;
   title: string;
+  /** With a batch, the count the tool writes (pin-moves.ts `pinsSummaryLine`); without one, the coach's line. */
   summary: string;
-  lines: string[];
+  /** Each a `PinsCardLine` since the saves flow redesign (§3.5). An op stored before it holds plain strings: a reader of a
+   * stored op reads them through `pinsCardLinesOf`, never as typed here. */
+  lines: PinsCardLine[];
   /** The day it was proposed: today (the readers that list what is still open read an op's day). */
   date: string;
   toolUseId: string;

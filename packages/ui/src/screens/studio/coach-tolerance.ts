@@ -26,6 +26,7 @@ import {
   type DesignChangeLineDto,
   type DesignContextRowDto,
   type DesignLineDto,
+  type DesignPinsCardLineDto,
   type DesignPinsLineDto,
   type DesignPlanLineDto,
   type DesignProgrammeLineDto,
@@ -325,6 +326,17 @@ function toProgrammeLine(v: unknown): DesignProgrammeLineDto | null {
   };
 }
 
+/** A pins card's lines (the saves flow redesigned, §3.5): a plain string (stored before it) is its text; an object with a
+ * text keeps its move and name when they are texts; anything else goes. */
+function toPinsCardLines(v: unknown): DesignPinsCardLineDto[] {
+  return list(v).flatMap((x): DesignPinsCardLineDto[] => {
+    if (typeof x === "string") return [{ text: x }];
+    const l = record(x);
+    if (!l || typeof l.text !== "string") return [];
+    return [{ ...(typeof l.moveId === "string" && l.moveId ? { moveId: l.moveId } : {}), ...(typeof l.name === "string" && l.name ? { name: l.name } : {}), text: l.text }];
+  });
+}
+
 /** A change to the moves in rotation's line (saved-posts import, Task 18): its id or nothing; its texts texts; its outcome
  * by its status, its own fields read. */
 function toPinsLine(v: unknown): DesignPinsLineDto | null {
@@ -347,7 +359,7 @@ function toPinsLine(v: unknown): DesignPinsLineDto | null {
     opId: p.opId,
     title: words(p.title) ?? "Moves for your programme",
     summary: text(p.summary),
-    lines: texts(p.lines),
+    lines: toPinsCardLines(p.lines),
     why: text(p.why),
     pin: texts(p.pin),
     unpin: texts(p.unpin),
@@ -424,6 +436,15 @@ function toCard(v: unknown): CoachConversationCardDto | null {
     status: text(c.status),
     // A plan's lines (§8 §5): texts only.
     ...(Array.isArray(c.lines) ? { lines: texts(c.lines) } : {}),
+    // The moves in rotation's lines as drawn (§3.5): a name or null, and a text — a line with no text goes.
+    ...(Array.isArray(c.pinLines)
+      ? {
+          pinLines: c.pinLines.flatMap((x) => {
+            const l = record(x);
+            return l && typeof l.text === "string" ? [{ name: typeof l.name === "string" && l.name ? l.name : null, text: l.text }] : [];
+          }),
+        }
+      : {}),
     // A programme change's op (§8 §5): a text, or nothing.
     ...(typeof c.opId === "string" && c.opId ? { opId: c.opId } : {}),
   };

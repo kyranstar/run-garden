@@ -867,6 +867,17 @@ export interface DesignProgrammeLineDto {
 }
 
 /**
+ * A line of a change to the moves in rotation (the saves flow redesigned, §3.5): the move it is about and that move's
+ * name — the card sets it in bold, once — and the coach's text; or the text alone (a general line, or one stored before
+ * the redesign).
+ */
+export interface DesignPinsCardLineDto {
+  moveId?: string;
+  name?: string;
+  text: string;
+}
+
+/**
  * A change to the moves in rotation in a suggestion (saved-posts import, Task 18): the coach's title, line and lines
  * (one a placement, one a saved move left out) and why, the moves it pins and unpins (both empty: a lines-only card that
  * closes its batch), no notes (`issues` empty), and how it stands — `applying` while an approve writes it, `applied` with
@@ -877,7 +888,7 @@ export interface DesignPinsLineDto {
   opId: string;
   title: string;
   summary: string;
-  lines: string[];
+  lines: DesignPinsCardLineDto[];
   why: string;
   pin: string[];
   unpin: string[];
@@ -1435,8 +1446,11 @@ export interface CoachConversationCardDto {
   summary: string;
   status: CoachProposalDto["status"] | (string & {});
   /** A plan's (§8 §5): what it holds, line by line — at most 8, then "and N more"; a programme change's, a setting each;
-   * the moves in rotation's, the coach's own (at most 20). */
+   * the moves in rotation's, the coach's own (at most 20), each one text ("Name: text"). */
   lines?: string[];
+  /** The moves in rotation's lines as the card draws them (the saves flow redesigned, §3.5): a move's name in bold, once,
+   * then the text — the name null for a general line or one stored before the redesign. Absent from an older server. */
+  pinLines?: Array<{ name: string | null; text: string }>;
   /** A programme change's op (§8 §5), or the moves in rotation's: what the card approves and declines. */
   opId?: string;
   /** A designed run's (§8 §3): a workout card whose body is a run — its steps, paces and the watch line (its line's `run`). */

@@ -61,7 +61,19 @@ import { REVIEW_DIMENSIONS, RUN_REVIEW_DIMENSIONS } from "./design-prompt.js";
 import { athleteText, clipProse } from "./design-prose.js";
 import { acceptedLine, idInWords, REVIEW_ITEM_MAX, REVIEW_NOTE_MAX, type AcceptedCost } from "./design-review.js";
 import { approveTimeOf } from "./design-time.js";
-import { changeVerb, describeChange, isDocWorkoutOp, isMovePinsOp, isPlanAdjustOp, isPlanStructureOp, isProgrammeChangeOp, opIdOf, type ChangeVerb } from "./proposal-kinds.js";
+import {
+  changeVerb,
+  describeChange,
+  isDocWorkoutOp,
+  isMovePinsOp,
+  isPlanAdjustOp,
+  isPlanStructureOp,
+  isProgrammeChangeOp,
+  opIdOf,
+  pinsCardLinesOf,
+  type ChangeVerb,
+  type PinsCardLine,
+} from "./proposal-kinds.js";
 
 /** One designed workout, as the athlete reads it before (and after) deciding. */
 export interface DocWorkoutLine {
@@ -476,13 +488,14 @@ export function programmeChangeLines(ops: readonly unknown[]): ProgrammeChangeLi
 }
 
 /** The moves in rotation as the manifest gives them (saved-posts import, Task 18): the coach's words and lines for the
- * card, the moves it pins and unpins, and how it stands — `applied` with what was written and a line for each move left.
+ * card — each a move's name and its text (the saves flow redesigned, §3.5), a line stored before that its text alone —
+ * the moves it pins and unpins, and how it stands — `applied` with what was written and a line for each move left.
  * No advisories (`issues`, always empty: the card's shape). */
 export interface PinsLine {
   opId: string;
   title: string;
   summary: string;
-  lines: string[];
+  lines: PinsCardLine[];
   why: string;
   pin: string[];
   unpin: string[];
@@ -496,7 +509,7 @@ export function pinsLines(ops: readonly unknown[]): PinsLine[] {
     opId: g.id,
     title: g.title,
     summary: g.summary,
-    lines: g.lines,
+    lines: pinsCardLinesOf(g.lines),
     why: g.why,
     pin: g.pin,
     unpin: g.unpin,

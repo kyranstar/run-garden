@@ -28,7 +28,7 @@ import { markUntrusted } from "./design-prompt.js";
 import { clipProse } from "./design-prose.js";
 import { CHECK_ASKED } from "./design-tools/ask.js";
 import { designProposalId } from "./design-tools/propose.js";
-import { PINS_LINES_MAX, PLAN_LINES_MAX } from "./proposal-kinds.js";
+import { PINS_LINES_MAX, pinsCardLinesOf, pinsLineText, PLAN_LINES_MAX } from "./proposal-kinds.js";
 
 /** A conversation goes quiet after this long with no new ask: the next ask (naming none) starts a new one. */
 export const CONVERSATION_QUIET_HOURS = 18;
@@ -55,8 +55,12 @@ export interface ConversationCard {
   /** Its proposal's status: pending, partially_approved, approved, declined, superseded, expired. */
   status: string;
   /** A whole plan's (§8 §5): the thread coach's own manifest lines, at most 8, then "and N more"; a programme change's, a
-   * line a setting and where its next sessions go; the moves in rotation's, the coach's own lines (at most 20). */
+   * line a setting and where its next sessions go; the moves in rotation's, the coach's own lines (at most 20), each as
+   * one text ("Name: text", `pinsLineText`). */
   lines?: string[];
+  /** The moves in rotation's lines, as the card draws them (the saves flow redesigned, §3.5): a move's name, set in bold
+   * once, and the text — null for a general line or one stored before the redesign (a plain string). */
+  pinLines?: Array<{ name: string | null; text: string }>;
   /** A programme change's op (§8 §5): what its card approves and declines — a proposal may hold one a programme; the
    * moves in rotation's too. */
   opId?: string;
@@ -311,17 +315,21 @@ export function cardsOf(scopeText: string | null, p: ProposalBrief | null, today
       ...(str(o.opId) ? { opId: str(o.opId)! } : {}),
     }));
   // The moves in rotation (saved-posts import, Task 18): one card, last — its own op approved and declined, the coach's
-  // own words and lines.
+  // own words and lines; each line a move's name and its text (§3.5), or a plain string stored before that.
   const pins = p.ops
     .filter((o) => o.kind === "move_pins")
-    .map((o): ConversationCard => ({
-      kind: "pins",
-      ...base,
-      title: str(o.planTitle) ?? "Moves for your programme",
-      summary: str(o.planSummary) ?? "",
-      lines: planLinesOf(o.lines, PINS_LINES_MAX),
-      ...(str(o.opId) ? { opId: str(o.opId)! } : {}),
-    }));
+    .map((o): ConversationCard => {
+      const lines = pinsCardLinesOf(typeof o.lines === "string" ? parsed(o.lines) : o.lines).slice(0, PINS_LINES_MAX);
+      return {
+        kind: "pins",
+        ...base,
+        title: str(o.planTitle) ?? "Moves for your programme",
+        summary: str(o.planSummary) ?? "",
+        lines: lines.map(pinsLineText),
+        pinLines: lines.map((l) => ({ name: l.name ?? null, text: l.text })),
+        ...(str(o.opId) ? { opId: str(o.opId)! } : {}),
+      };
+    });
   const changesCard = (): ConversationCard[] => {
     if (changes.length === 0) return [];
     const inWeek = changes.every((c) => !c.date || c.date <= addDays(today, 6));

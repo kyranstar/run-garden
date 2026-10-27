@@ -37,6 +37,11 @@ const LINES = [
   "Zorbex hip circle — in rotation: it opens the hips your Thursday runs tighten.",
   "Zorbex neck nod — left in your library: your neck care already covers it.",
 ];
+/** The lines as the server keeps them since the saves flow redesign (§3.5): a move's name apart from its text. */
+const PIN_LINES = [
+  { name: "Zorbex hip circle", text: "In rotation: it opens the hips your Thursday runs tighten." },
+  { name: null, text: "Your neck care already covers the rest." },
+];
 const card = (over: Partial<CoachConversationCardDto> = {}): CoachConversationCardDto => ({
   kind: "pins",
   proposalId: "dp-run-3",
@@ -51,7 +56,7 @@ const line = (outcome: DesignPinsLineDto["outcome"] = null, over: Partial<Design
   opId: OP,
   title: "One saved move into your rotation",
   summary: "Hip circle in; the neck nod waits",
-  lines: LINES,
+  lines: LINES.map((text) => ({ text })),
   why: "It serves your hips.",
   pin: ["myZorbexHipCircle1"],
   unpin: [],
@@ -134,6 +139,30 @@ describe("the moves-in-rotation card", () => {
     expect(button("Approve")).toBeNull();
   });
 
+  it("each line shows its move's name once, in bold, then its text; a line with no move is its text", async () => {
+    const shown = () => [...document.querySelectorAll(".coach-plan-lines li")].map((l) => [l.textContent, [...l.querySelectorAll("strong")].map((s) => s.textContent)]);
+    const want = [
+      ["Zorbex hip circle In rotation: it opens the hips your Thursday runs tighten.", ["Zorbex hip circle"]],
+      ["Your neck care already covers the rest.", []],
+    ];
+    serve({ "GET /api/coach/proposals/dp-run-3": () => read("pending") });
+    await mount(card({ lines: ["Zorbex hip circle: In rotation: it opens the hips your Thursday runs tighten.", "Your neck care already covers the rest."], pinLines: PIN_LINES }));
+    await until(() => !!button("Approve") && !button("Approve")!.disabled, "Approve");
+    expect(shown()).toEqual(want);
+    act(() => root?.unmount());
+    host?.remove();
+    // Closed, one tap down: the same.
+    await mount(card({ status: "approved", pinLines: PIN_LINES }), true);
+    expect(shown()).toEqual(want);
+    act(() => root?.unmount());
+    host?.remove();
+    // A card from an older server, with no lines of its own: the suggestion's read, each line with its name.
+    serve({ "GET /api/coach/proposals/dp-run-3": () => ({ ...read("pending"), pins: [line(null, { lines: [{ moveId: "myZorbexHipCircle1", name: "Zorbex hip circle", text: PIN_LINES[0]!.text }, { text: PIN_LINES[1]!.text }] })] }) });
+    await mount(card({ lines: undefined }));
+    await until(() => document.querySelectorAll(".coach-plan-lines li").length === 2, "the read's lines");
+    expect(shown()).toEqual(want);
+  });
+
   it("an older turn's, closed: one line of what came of it, its lines one tap down", async () => {
     serve({ "GET /api/coach/proposals/dp-run-3": () => read("approved", { status: "applied", at: "x", pinned: ["myZorbexHipCircle1"], unpinned: [], lines: [] }) });
     await mount(card({ status: "approved" }), true);
@@ -196,5 +225,11 @@ describe("the moves in rotation, read tolerantly", () => {
     expect(r.pins).toEqual([line(applied), line({ status: "applying", at: "y" }, { opId: "pins-2", pin: [] })]);
     const c = toConversation({ id: "c1", startedAt: "x", turns: [{ runId: "r1", at: "x", words: "w", status: "finished", line: null, cards: [card()], question: null }] });
     expect(c.turns[0]!.cards[0]).toMatchObject({ kind: "pins", opId: OP, lines: LINES });
+    // A line stored before the saves flow redesign is a plain string: its text. A move's line keeps its move and name.
+    const named = { moveId: "myZorbexHipCircle1", name: "Zorbex hip circle", text: "In rotation." };
+    expect(toProposal({ id: "dp-1", status: "pending", resolvedAt: null, pins: [{ ...line(), lines: ["Plain.", named, { text: 3 }, { name: "x" }, 7] }] }).pins![0]!.lines).toEqual([{ text: "Plain." }, named]);
+    // The card's pin lines: a name or null, and a text.
+    const withPins = toConversation({ id: "c1", startedAt: "x", turns: [{ runId: "r1", at: "x", words: "w", status: "finished", line: null, cards: [card({ pinLines: [...PIN_LINES, { name: 3, text: "Odd name." }, { name: "No text" }] as never })], question: null }] });
+    expect(withPins.turns[0]!.cards[0]!.pinLines).toEqual([...PIN_LINES, { name: null, text: "Odd name." }]);
   });
 });

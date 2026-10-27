@@ -17,15 +17,16 @@ const SENTENCE_END = /[.!?]["'”’)\]]?(?=\s)/g;
 
 /**
  * `text` within `max` characters: unchanged when it fits; else cut after its last sentence end inside the cap, as long
- * as that keeps at least half of it; else at the last word that fits, with "…".
+ * as that keeps at least half of it — or wherever it falls, with `atSentence` (a pins card's line, the saves flow
+ * redesigned §3.5: never a cut word when a whole sentence fits); else at the last word that fits, with "…".
  */
-export function clipProse(text: string, max: number): string {
+export function clipProse(text: string, max: number, o: { atSentence?: boolean } = {}): string {
   const t = text.trim();
   if (t.length <= max) return t;
   const head = `${t.slice(0, max)} `;
   let end = -1;
   for (const m of head.matchAll(SENTENCE_END)) end = m.index + m[0].length;
-  if (end >= max / 2) return head.slice(0, end).trim();
+  if (end > 0 && (o.atSentence || end >= max / 2)) return head.slice(0, end).trim();
   const room = t.slice(0, max - 1);
   const space = room.lastIndexOf(" ");
   return `${(space >= max / 2 ? room.slice(0, space) : room).replace(/[\s,;:–—-]+$/, "")}…`;

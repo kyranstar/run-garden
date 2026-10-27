@@ -24,7 +24,8 @@
  * "Programme updated" when done. Its state is the read's `programmes` part, its own line by its op.
  *
  * THE PINS (saved-posts import, Task 18) are the same card in theirs (`PINS_WORDS`): the coach's title, line and lines —
- * one a placement, one a saved move left out — Approve and Not now, its own op; "Programme's pool updated" when done,
+ * one a placement, one a saved move left out, each with its move's name in bold, once, then its text (the saves flow
+ * redesigned, §3.5: `pinLines`) — Approve and Not now, its own op; "Programme's pool updated" when done,
  * with a line for each move it left (archived since, not pinned) and no link: nothing of it is on Plan. Its state is
  * the read's `pins` part, its own line by its op.
  */
@@ -37,6 +38,7 @@ import {
   type CoachConversationCardDto,
   type DesignApproveRequest,
   type DesignApproveResponse,
+  type DesignPinsCardLineDto,
   type DesignPinsLineDto,
   type DesignPlanLineDto,
   type DesignProgrammeLineDto,
@@ -130,11 +132,30 @@ export const PINS_WORDS: PlanCardWords = {
   link: null,
 };
 
-/** What the card reads of its op's line: a plan's, a programme change's or the moves in rotation's (whose applied
- * outcome has its lines: a move left). */
-type CardLine = Pick<DesignPlanLineDto | DesignProgrammeLineDto | DesignPinsLineDto, "opId" | "lines" | "issues"> & {
+/** What the card reads of its op's line: a plan's, a programme change's or the moves in rotation's (whose lines name
+ * their moves, and whose applied outcome has its lines: a move left). */
+type CardLine = Pick<DesignPlanLineDto | DesignProgrammeLineDto | DesignPinsLineDto, "opId" | "issues"> & {
+  lines: ReadonlyArray<string | DesignPinsCardLineDto>;
   outcome: { status: string; why?: string; lines?: string[] } | null;
 };
+
+/** A line as the card draws it: a move's name, in bold, once, then its text (the moves in rotation's, §3.5) — or its text. */
+interface DrawnLine {
+  name: string | null;
+  text: string;
+}
+const drawn = (l: string | DesignPinsCardLineDto): DrawnLine => (typeof l === "string" ? { name: null, text: l } : { name: l.name ?? null, text: l.text });
+
+/** One drawn line: every text the coach or a post wrote is data, rendered as text. */
+function lineItem(l: DrawnLine, i: number) {
+  return (
+    <li key={i}>
+      {l.name ? <strong>{l.name}</strong> : null}
+      {l.name ? " " : null}
+      {l.text}
+    </li>
+  );
+}
 
 /** Approve the plan's own ops (`opIds`, never `{}`: the suggestion may hold other cards' workouts and changes) until
  * nothing remains: every answer, in order. A write that met another (409 `proposal_changed`) is read again and asked once
@@ -187,7 +208,7 @@ export function planOutcomeLine(status: string, plan: CardLine | null, w: PlanCa
 }
 
 type PlanCardInput = Pick<CoachConversationCardDto, "proposalId" | "title" | "summary" | "status" | "lines"> &
-  Partial<Pick<CoachConversationCardDto, "kind" | "opId">>;
+  Partial<Pick<CoachConversationCardDto, "kind" | "opId" | "pinLines">>;
 
 export function PlanCard({ card, closed = false }: { card: PlanCardInput; closed?: boolean }) {
   const qc = useQueryClient();
@@ -239,7 +260,9 @@ export function PlanCard({ card, closed = false }: { card: PlanCardInput; closed
   const outcome = planOutcomeLine(status, plan, w);
   const started = plan?.outcome?.status === "applying";
   const decidable = outcome === null && (status === "pending" || status === "partially_approved");
-  const lines = card.lines && card.lines.length > 0 ? card.lines : (plan?.lines ?? []);
+  // The card's own lines — the moves in rotation's as drawn, each with its move's name — else the suggestion's read.
+  const lines: DrawnLine[] =
+    card.pinLines && card.pinLines.length > 0 ? card.pinLines : card.lines && card.lines.length > 0 ? card.lines.map(drawn) : (plan?.lines ?? []).map(drawn);
   /** What the approve left (the moves in rotation's: a move archived since, an unpin of one not in rotation). */
   const left = plan?.outcome?.status === "applied" ? (plan.outcome.lines ?? []) : [];
   const working = approve.isPending;
@@ -254,9 +277,7 @@ export function PlanCard({ card, closed = false }: { card: PlanCardInput; closed
           </button>
         </p>
         <ul id={linesId} className="coach-plan-lines" hidden={!open}>
-          {lines.map((l, i) => (
-            <li key={i}>{l}</li>
-          ))}
+          {lines.map(lineItem)}
         </ul>
       </div>
     );
@@ -269,11 +290,7 @@ export function PlanCard({ card, closed = false }: { card: PlanCardInput; closed
       </h3>
       {card.summary ? <p className="coach-changes-summary">{card.summary}</p> : null}
       {lines.length > 0 ? (
-        <ul className="coach-plan-lines">
-          {lines.map((l, i) => (
-            <li key={i}>{l}</li>
-          ))}
-        </ul>
+        <ul className="coach-plan-lines">{lines.map(lineItem)}</ul>
       ) : null}
       {plan && plan.issues.length > 0 && decidable ? (
         <ul className="coach-plan-notes">

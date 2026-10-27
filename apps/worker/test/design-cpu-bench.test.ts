@@ -90,6 +90,7 @@ import { REVIEW_DIMENSIONS } from "../src/services/design-prompt.js";
 import { reviewPacket, toolRecords, TOOL_RECORDS_MAX_BYTES } from "../src/services/design-review.js";
 import { adjustPlan } from "../src/services/design-tools/adjust-plan.js";
 import { allTools } from "../src/services/design-tools/index.js";
+import { PIN_LINE_MAX } from "../src/services/design-tools/pin-moves.js";
 import { designProposalId, proposeWorkout } from "../src/services/design-tools/propose.js";
 import { MAX_PLAN_SESSIONS } from "../src/services/design-tools/propose-plan.js";
 import { changeProgramme } from "../src/services/design-tools/change-programme.js";
@@ -839,7 +840,9 @@ beforeAll(async () => {
       await measureTool("read_saves", images.get("saves")!, ctx, {});
       // pin_moves (Task 18) at its widest, over the same account (its personal moves in the library it reads): twenty to
       // pin — every one of the batch's twelve new moves among them, as the card must account for each (the fix wave,
-      // coach-context audit I5) — twenty to unpin, the batch, and twenty lines at their longest.
+      // coach-context audit I5) — twenty to unpin, the batch, and twenty lines at their longest: since the saves flow
+      // redesign (§3.5) a line a move, each of the twelve named by its moveId (its name looked up, a leading copy of it
+      // stripped, its text clipped after the name), the rest general lines.
       const personal = [...new Set(moveIds.flat().filter((id): id is string => typeof id === "string" && id.startsWith("my")))];
       const toPin = [...personal, ...EXERCISES.slice(24).map((e) => e.id)].slice(0, 20);
       const toUnpin = EXERCISES.slice(24).map((e) => e.id).filter((id) => !toPin.includes(id)).slice(0, 20);
@@ -849,7 +852,7 @@ beforeAll(async () => {
         batchId,
         title: words(4, 60),
         summary: words(5, 120),
-        lines: Array.from({ length: 20 }, (_, i) => words(i, 160)),
+        lines: Array.from({ length: 20 }, (_, i) => (personal[i] ? { moveId: personal[i], text: words(i, PIN_LINE_MAX) } : { text: words(i, PIN_LINE_MAX) })),
         why: words(6, 300),
       });
     }

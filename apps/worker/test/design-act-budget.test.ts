@@ -317,7 +317,8 @@ describe("each act tool's declared statement cost is the most it runs", () => {
 
   it("pin_moves: the athlete with the account's library, the moves set aside, the proposal, the restore marker and the batch in one read, then one write — refusals read only", async () => {
     const main = await runRow(rich.userId);
-    const words = { title: "Goblet squats stay in", summary: "One move kept in rotation", lines: ["Goblet squat — in rotation: your strength days need a squat."], why: "It serves your legs." };
+    // A line a move, by its moveId (the saves flow redesigned, §3.5).
+    const words = { title: "Goblet squats stay in", summary: "One move kept in rotation", lines: [{ moveId: "gobletSquat", text: "in rotation: your strength days need a squat." }], why: "It serves your legs." };
     const pin = { ...words, pin: ["gobletSquat", "deadBug"], unpin: ["wallSit"] };
     const n = await most("pin_moves", [
       { input: pin, run: main, toolUseId: "toolu_pins_budget_1" },
