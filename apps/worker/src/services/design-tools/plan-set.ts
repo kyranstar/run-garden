@@ -11,7 +11,8 @@
  *    done, skipped or missed (read from the plan) without one — with it, the brief stands and its designer is told why.
  *  - a `note` on a first plan (a note is a redo's).
  * And in a fit-in run, before anything is read: a brief whose purpose, emphasis or constraints names a move the athlete
- * skipped in its batch — by id, or by name in any case (`skipped_move`; the saves flow, §12.5): the run's skip set.
+ * skipped in its batch — by id, or by name as whole words in any case (`skipped_move`; the saves flow, §12.5): the
+ * run's skip set.
  * Once more at most (SET_REDO_ROUNDS): a REDO names keys of the first plan only, each brief with a `note` on what to
  * change; its designer is told where the first version went, may revise the same workout (propose_workout lets it:
  * `ToolContext.replaces`), and its reviewed workout replaces the first version. A day held by a workout dropped or left
@@ -81,12 +82,23 @@ const str = (max: number, description: string) => ({ type: "string", minLength: 
 
 const FIELDS = "briefs: one per workout, each { key, date, time?, purpose, emphasis, constraints, why, sameDayWhy?, note? }";
 
-/** The skipped moves (the run's skip set) a brief's purpose, emphasis or constraints names — by id, or by name in any
- * case — each once, in the skip set's order. A move with no name is matched by its id alone. */
+/** Every regex syntax character of `text` escaped (each may be escaped under the `u` flag). */
+const escapeRegExp = (text: string): string => text.replace(/[.*+?^$|()[\]{}\\]/g, "\\$&");
+/** A name as a whole word or phrase, in any case: no letter or digit (any script's) right before or after it. The
+ * name is a model's reading of a post, so it is matched as text, never as a pattern. */
+const wholeWords = (name: string): RegExp => new RegExp(`(?<![\\p{L}\\p{N}])${escapeRegExp(name)}(?![\\p{L}\\p{N}])`, "iu");
+
+/** The skipped moves (the run's skip set) a brief's purpose, emphasis or constraints names — by id (an opaque token,
+ * anywhere), or by name as whole words in any case ("Row" is not in "narrow") — each once, in the skip set's order. A
+ * move with no name is matched by its id alone. */
 function skippedIn(briefs: ReadonlyArray<z.infer<typeof brief>>, skip: readonly SavesSkip[] | undefined): SavesSkip[] {
   if (!skip || skip.length === 0) return [];
-  const words = briefs.map((b) => [b.purpose, b.emphasis, b.constraints].join("\n")).join("\n").toLowerCase();
-  return skip.filter((s) => [s.id, s.name.trim()].some((w) => w !== "" && words.includes(w.toLowerCase())));
+  const words = briefs.map((b) => [b.purpose, b.emphasis, b.constraints].join("\n")).join("\n");
+  const lower = words.toLowerCase();
+  return skip.filter((s) => {
+    const name = s.name.trim();
+    return lower.includes(s.id.toLowerCase()) || (name !== "" && wholeWords(name).test(words));
+  });
 }
 
 export const planSet: DesignTool = {

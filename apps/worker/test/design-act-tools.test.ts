@@ -1671,6 +1671,35 @@ describe("saves flow §12.5 — a move the athlete skipped stays out of the fit-
     expect(started).toEqual([]);
   });
 
+  it("plan_set names a skipped move by its whole name, in any case — never inside another word", async () => {
+    // Synthetic skip sets: the check reads the run's skip set alone (no batch is read).
+    const planned = async (savesSkip: SavesSkip[], words: Record<string, unknown>) => {
+      const started: string[][] = [];
+      const w = await run({ userId: fit.userId, scope: { kind: "week" } });
+      const { result, count } = await call("plan_set", fitIn(w, savesSkip, { set: setHooks(started) }), { briefs: [brief(words)] });
+      return { result, count, started };
+    };
+    const row: SavesSkip[] = [{ id: "myRowSynthetic01", name: "Row" }];
+    // "Row" is not in "narrow", nor in "rowing": the designer starts.
+    for (const constraints of ["A narrow stance throughout.", "No rowing machine at home."]) {
+      const inside = await planned(row, { constraints });
+      expect(ok(inside.result).control, constraints).toBe("set");
+      expect(inside.started).toHaveLength(1);
+    }
+    // As a word of its own, in any case: refused before any read.
+    for (const purpose of ["Keep a row every week.", "ROW, then hinge."]) {
+      const word = await planned(row, { purpose });
+      expect(err(word.result), purpose).toMatchObject({ error: "skipped_move", why: named("Row") });
+      expect(word.count).toBe(0);
+      expect(word.started).toEqual([]);
+    }
+    // A name of several words, in another case — and a name with a pattern's characters is matched as text.
+    expect(err((await planned(skip, { emphasis: "Open with the wall Slide, SLOW." })).result)).toMatchObject({ error: "skipped_move", why: named(SLIDE) });
+    const odd: SavesSkip[] = [{ id: "myOddSynthetic01", name: "Bird dog (3+1)" }];
+    expect(err((await planned(odd, { emphasis: "Then the bird DOG (3+1)." })).result)).toMatchObject({ error: "skipped_move", why: named("Bird dog (3+1)") });
+    expect(ok((await planned(odd, { emphasis: "Then the bird dog 3 and 1." })).result).control).toBe("set");
+  });
+
   it("outside a fit-in run (no skip set) nothing changes", async () => {
     // A move the athlete skipped in a batch is still in their library: a run that fits no batch may place it — and a
     // fit-in run whose batch has nothing skipped refuses nothing.
