@@ -30,12 +30,12 @@ export interface SaveBatchDto {
   /** When a pins card naming it was approved (the coach fitted it in, spec §17.1); null until then. */
   fittedAt: string | null;
   counts: SaveBatchCountsDto;
-  /** When the owner dismissed the batch's card; null until then. (Optional until the Worker answers it.) */
-  dismissedAt?: string | null;
-  /** When "Fit these in" started; null until then. */
-  fitStartedAt?: string | null;
+  /** When the owner put the batch aside ("not now"); null until then, and again once Fit them in brings it back. */
+  dismissedAt: string | null;
+  /** When the latest "Fit them in" started; null until then, and once its run could not start or its card closed. */
+  fitStartedAt: string | null;
   /** The server's reading of the one-hour rule: a fit is under way. */
-  fitting?: boolean;
+  fitting: boolean;
 }
 
 /** The words "Fit these in" sends — the coach opening's chip and the batch page's button alike (the coach reads the whole
@@ -82,12 +82,12 @@ export interface SaveBatchRowDto {
     checkWhy?: CheckWhy[];
     /** The dose as the post prescribed it ("3 x 10"), beside the stored one. */
     seenDose: string | null;
-    /** The extraction's `purpose` at the link's position. (Optional until the Worker answers it.) */
-    purpose?: string | null;
-    /** The move this one looks like (a near-duplicate): its id and name. */
+    /** The extraction's `purpose` at the link's position: what the post says the move is for. */
+    purpose: string | null;
+    /** The move this one looks like (a near-duplicate flagged at the cut): its id and name. Only on a row that has one. */
     like?: { id: string; name: string };
-    /** The move's stored fit choice (null for a linked row). */
-    choice?: FitChoice | null;
+    /** The move's stored fit choice: null for the coach's call, and always for a linked row. */
+    choice: FitChoice | null;
   };
   /** A personal move's record (new, or linked to one of the owner's own). */
   record?: ExerciseRecord;
@@ -165,7 +165,7 @@ export const createBatchSchema = z
   .object({ theme: z.string().trim().max(60).nullable(), postIds: z.array(z.string().min(1).max(80)).min(1).max(100) })
   .strict();
 
-/** `POST /api/my-saves/batches/:id/fit`: each new move's say, by id (a move left out of `choices` is included). */
+/** `POST /api/my-saves/batches/:id/fit`: each new move's say, by id (a move left out of `choices` is the coach's call). */
 export const fitSchema = z
   .object({ choices: z.record(z.string().regex(PERSONAL_ID_RE), z.enum(["include", "skip"])) })
   .strict()

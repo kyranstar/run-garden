@@ -158,7 +158,8 @@ describe("the Studio home", () => {
 describe("the way back to the saves (final review I2; spec §6)", () => {
   const batch = (over: Partial<SaveBatchDto>): SaveBatchDto => ({
     id: "b1", status: "released", notice: "From your saves: 1 new move (hip).", theme: null, createdAt: "2026-10-23T10:00:00.000Z",
-    releasedAt: "2026-10-23T10:00:00.000Z", savedAt: null, fittedAt: null, counts: { new: 1, linked: 0, removed: 0 }, ...over,
+    releasedAt: "2026-10-23T10:00:00.000Z", savedAt: null, fittedAt: null, counts: { new: 1, linked: 0, removed: 0 },
+    dismissedAt: null, fitStartedAt: null, fitting: false, ...over,
   });
   const link = (html: string) => /<a[^>]*href="\/studio\/saves"[^>]*>(.*?)<\/a>/.exec(html);
 

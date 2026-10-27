@@ -18,7 +18,11 @@
  *    never used;
  *  - the bootstrap's themed held batches (`createHeldBatch`, gathering posts out of the held batch a check made in hold
  *    mode) and their release (`releaseBatch`: worded as `assembleBatch` words a batch, and — one batch at a time —
- *    never while another batch of the account's is open). Save is `saveBatch` (saves-batches.ts).
+ *    never while another batch of the account's is open). Save is `saveBatch` (saves-batches.ts);
+ *  - the one path (the saves flow redesigned, 2026-10-26; spec §3.2, §4, §12.1, §12.3): the open batch the card is
+ *    about (`readOpenBatch`, cutting the next one when none is open and new moves wait), "Fit them in" (`fitBatch`:
+ *    Save with the owner's choices, and the fit started), "not now" (`dismissBatch`: nothing saved) and a fit whose run
+ *    could not start (`cancelFit`).
  *
  * Every row a write touches must be the account's and pending; a batch, row or move of another account is not found.
  * A write that changes a move the account's library holds (an active move edited, a merge) forgets this request's read
@@ -29,15 +33,20 @@ import { schema } from "@rg/database";
 import { newId } from "@rg/domain";
 import { EXERCISES, type ExerciseRecord } from "@rg/exercise-library";
 import {
-  extractedMoveSchema, isPersonalId, personalMoveId,
-  type CheckWhy, type PersonalMovePatch, type SaveBatchCountsDto, type SaveBatchDetailDto, type SaveBatchDto, type SaveBatchRowDto,
+  extractedMoveSchema, FIT_SAVES_REQUEST, groupCounts, isPersonalId, personalMoveId, savesCardLine,
+  type CheckWhy, type FitAnswerDto, type FitChoice, type OpenSavesBatchDto, type OpenSavesDto, type PersonalMovePatch,
+  type SaveBatchCountsDto, type SaveBatchDetailDto, type SaveBatchDto, type SaveBatchRowDto,
 } from "@rg/saves";
 import { makeLibraryIndex } from "@rg/workout";
+import type { Env } from "../env.js";
 import { forgetAccountLibrary, loadAccountLibrary } from "./account-library.js";
 import { runAtomically, type Db } from "./db.js";
 import { buildPersonalRecord } from "./personal-moves.js";
 import { validatePersonalRecord } from "./personal-records.js";
-import { INSIGHTS_PER_BATCH, insightsJsonSql, insightsOf, noticeOf, openBatchSql } from "./saves-batches.js";
+import {
+  assembleBatch, choicesWrite, FIT_STARTED_TTL_MS, INSIGHTS_PER_BATCH, insightsJsonSql, insightsOf, isFitting, noticeOf,
+  openBatchSql, parseList, saveBatch,
+} from "./saves-batches.js";
 
 const { savedPosts, savedPostMoves, personalMoves, saveBatches } = schema;
 
@@ -56,6 +65,8 @@ interface BatchRead {
   releasedAt: string | null;
   savedAt: string | null;
   fittedAt: string | null;
+  dismissedAt: string | null;
+  fitStartedAt: string | null;
   fresh: number | null;
   linked: number | null;
   removed: number | null;
@@ -71,42 +82,49 @@ interface BatchRead {
  */
 export const NEW_IN_BATCH = sql`(l.move_kind = 'personal' and coalesce(pm.status <> 'merged' and (pm.batch_id = l.batch_id or pm.status = 'pending'), 0))`;
 
+/** NEW: each distinct move of a kept row (pending or saved) of the batch `b` that is new to it (`NEW_IN_BATCH`). */
+const FRESH_COUNT = sql`(select count(distinct l.move_id) from saved_post_moves l
+     left join personal_moves pm on pm.id = l.move_id and pm.user_id = l.user_id
+     where l.user_id = b.user_id and l.batch_id = b.id and l.status <> 'removed' and ${NEW_IN_BATCH})`;
+/** LINKED: each distinct other move of a kept row of the batch `b` (one the owner already had). */
+const LINKED_COUNT = sql`(select count(distinct l.move_id) from saved_post_moves l
+     left join personal_moves pm on pm.id = l.move_id and pm.user_id = l.user_id
+     where l.user_id = b.user_id and l.batch_id = b.id and l.status <> 'removed' and not ${NEW_IN_BATCH})`;
+
 /**
- * The batch's columns and its counts, for a select over `save_batches b`: NEW is each distinct move of a kept row
- * (pending or saved) that is new to the batch (`NEW_IN_BATCH`), LINKED each distinct other move of a kept row, REMOVED
- * the rows taken out.
+ * The batch's columns and its counts, for a select over `save_batches b`: NEW (`FRESH_COUNT`), LINKED
+ * (`LINKED_COUNT`), REMOVED the rows taken out.
  */
 const BATCH_COLUMNS = sql`b.id as id, b.status as status, b.notice as notice, b.theme as theme, b.created_at as createdAt,
-  b.released_at as releasedAt, b.saved_at as savedAt, b.fitted_at as fittedAt,
-  (select count(distinct l.move_id) from saved_post_moves l
-     left join personal_moves pm on pm.id = l.move_id and pm.user_id = l.user_id
-     where l.user_id = b.user_id and l.batch_id = b.id and l.status <> 'removed' and ${NEW_IN_BATCH}) as fresh,
-  (select count(distinct l.move_id) from saved_post_moves l
-     left join personal_moves pm on pm.id = l.move_id and pm.user_id = l.user_id
-     where l.user_id = b.user_id and l.batch_id = b.id and l.status <> 'removed' and not ${NEW_IN_BATCH}) as linked,
+  b.released_at as releasedAt, b.saved_at as savedAt, b.fitted_at as fittedAt, b.dismissed_at as dismissedAt,
+  b.fit_started_at as fitStartedAt,
+  ${FRESH_COUNT} as fresh,
+  ${LINKED_COUNT} as linked,
   (select count(*) from saved_post_moves l where l.user_id = b.user_id and l.batch_id = b.id and l.status = 'removed') as removed`;
 
-function batchOf(r: BatchRead): SaveBatchDto {
+/** The batch as the app reads it; `fitting` is the one-hour rule (`isFitting`) at `now`. */
+function batchOf(r: BatchRead, now: string): SaveBatchDto {
   const counts: SaveBatchCountsDto = { new: Number(r.fresh ?? 0), linked: Number(r.linked ?? 0), removed: Number(r.removed ?? 0) };
+  const fitStartedAt = r.fitStartedAt ?? null;
   return {
     id: r.id, status: r.status, notice: r.notice, theme: r.theme, createdAt: r.createdAt, releasedAt: r.releasedAt, savedAt: r.savedAt,
-    fittedAt: r.fittedAt ?? null, counts,
+    fittedAt: r.fittedAt ?? null, counts, dismissedAt: r.dismissedAt ?? null, fitStartedAt, fitting: isFitting(fitStartedAt, now),
   };
 }
 
-async function readBatch(db: Db, userId: string, batchId: string): Promise<SaveBatchDto | null> {
+async function readBatch(db: Db, userId: string, batchId: string, now: string): Promise<SaveBatchDto | null> {
   const [row] = (await db.all(sql`select ${BATCH_COLUMNS} from save_batches b where b.id = ${batchId} and b.user_id = ${userId} limit 1`)) as BatchRead[];
-  return row ? batchOf(row) : null;
+  return row ? batchOf(row, now) : null;
 }
 
 /** The account's released and saved batches (held ones too with `held`), newest first. ONE statement. */
-export async function listBatches(db: Db, userId: string, opts: { held: boolean }): Promise<{ batches: SaveBatchDto[] }> {
+export async function listBatches(db: Db, userId: string, opts: { held: boolean }, now: string): Promise<{ batches: SaveBatchDto[] }> {
   const statuses = JSON.stringify(opts.held ? ["held", "released", "saved"] : ["released", "saved"]);
   const rows = (await db.all(sql`select ${BATCH_COLUMNS} from save_batches b
     where b.user_id = ${userId} and b.status in (select value from json_each(${statuses}))
     order by coalesce(b.released_at, b.created_at) desc, b.id desc
     limit ${BATCH_LIST_LIMIT}`)) as BatchRead[];
-  return { batches: rows.map(batchOf) };
+  return { batches: rows.map((r) => batchOf(r, now)) };
 }
 
 /** A link of the batch as read. */
@@ -134,22 +152,33 @@ interface RowRead {
   born: number;
   /** A pending, active or archived personal move's record, as stored (JSON text). */
   record: string | null;
+  /** What the post says the move is for (the reading's `purpose` at the link's position). */
+  purpose: unknown;
+  /** The move the link's move looks like (a near-duplicate flagged at the cut), and its name. */
+  likeId: string | null;
+  likeName: unknown;
+  /** The personal move's stored fit choice. */
+  choice: string | null;
 }
 
 const text = (v: unknown): string | null => (typeof v === "string" ? v : null);
 
+const choiceOf = (v: unknown): FitChoice | null => (v === "include" || v === "skip" ? v : null);
+
 /**
  * One batch and its rows, in the posts' order and each post's moves in theirs, and the insights of its posts that keep
  * a row (spec §17: what the coach keeps in memory on Save — the same rule, read out by SQLite; a post whose rows were
- * all removed teaches nothing); null when the batch isn't this account's. D1 statements: the batch with its insights 1,
- * the rows 1, and the account's library 1 only when a row names a move that has been merged since (its target's name).
+ * all removed teaches nothing); null when the batch isn't this account's. Each row carries what the post says its move
+ * is for (`purpose`), the move it looks like when the cut flagged one (`like`), and — a new row's only — the owner's fit
+ * choice. D1 statements: the batch with its insights 1, the rows 1, and the account's library 1 only when a row names a
+ * move that has been merged since (its target's name).
  */
-export async function batchDetail(db: Db, userId: string, batchId: string): Promise<SaveBatchDetailDto | null> {
+export async function batchDetail(db: Db, userId: string, batchId: string, now: string): Promise<SaveBatchDetailDto | null> {
   const keptPosts = sql`select nl.post_id from saved_post_moves nl where nl.user_id = b.user_id and nl.batch_id = b.id and nl.status <> 'removed'`;
   const [head] = (await db.all(sql`select ${BATCH_COLUMNS}, ${insightsJsonSql(userId, keptPosts, INSIGHTS_PER_BATCH)} as insights
     from save_batches b where b.id = ${batchId} and b.user_id = ${userId} limit 1`)) as Array<BatchRead & { insights: unknown }>;
   if (!head) return null;
-  const batch = batchOf(head);
+  const batch = batchOf(head, now);
   const insights = insightsOf(head.insights);
   // The post's reading of each move is read out by SQLite: the extraction is never handed over whole.
   const reads = (await db.all(sql`select l.id as postMoveId, l.position as position, l.status as status, l.move_id as moveId,
@@ -164,7 +193,11 @@ export async function batchDetail(db: Db, userId: string, batchId: string): Prom
       json_extract(p.extraction, '$.moves[' || l.position || '].evidence.name') as nameEvidence,
       json_extract(p.extraction, '$.moves[' || l.position || '].evidence.dose') as doseEvidence,
       pm.status as moveStatus, ${NEW_IN_BATCH} as born,
-      case when pm.status in ('pending', 'active', 'archived') then pm.record end as record
+      case when pm.status in ('pending', 'active', 'archived') then pm.record end as record,
+      json_extract(p.extraction, '$.moves[' || l.position || '].purpose') as purpose,
+      l.like_move_id as likeId,
+      (select json_extract(lm.record, '$.name') from personal_moves lm where lm.id = l.like_move_id and lm.user_id = l.user_id) as likeName,
+      pm.fit_choice as choice
     from saved_post_moves l
       join saved_posts p on p.id = l.post_id and p.user_id = l.user_id
       left join personal_moves pm on pm.id = l.move_id and pm.user_id = l.user_id and l.move_kind = 'personal'
@@ -210,6 +243,9 @@ export async function batchDetail(db: Db, userId: string, batchId: string): Prom
         check: Boolean(r.checkFlag),
         ...(r.checkFlag ? { checkWhy: checkWhyOf(r) } : {}),
         seenDose: text(r.seenDose),
+        purpose: text(r.purpose),
+        ...(r.likeId ? { like: { id: r.likeId, name: text(r.likeName) ?? r.likeId } } : {}),
+        choice: fresh ? choiceOf(r.choice) : null,
       },
       ...(record ? { record } : {}),
     };
@@ -219,14 +255,15 @@ export async function batchDetail(db: Db, userId: string, batchId: string): Prom
 
 /**
  * Why a flagged row says "Check this" (verbatim audit gap 5): the match was not a sure one (below `CONFIDENCE_VALUE.high`)
- * or the reading was unsure of the move (`confidence: "low"`), and what the post never said — its name, its dose — the
- * reading inferred (`evidence`).
+ * or the reading was unsure of the move (`confidence: "low"`), what the post never said — its name, its dose — the
+ * reading inferred (`evidence`), and a move that looks like another (the cut's near-duplicate, spec §12.4).
  */
 function checkWhyOf(r: RowRead): CheckWhy[] {
   const out: CheckWhy[] = [];
   if ((r.confidence !== null && Number(r.confidence) < 1) || r.seenConfidence === "low") out.push("low_confidence");
   if (r.nameEvidence === "inferred") out.push("inferred_name");
   if (r.doseEvidence === "inferred") out.push("inferred_dose");
+  if (r.likeId) out.push("near_duplicate");
   return out;
 }
 
@@ -314,6 +351,8 @@ interface LinkRead {
  *  - `to` null ("Not this move"): the post's move is a new move of its own — a pending personal move built from the
  *    post's stored reading at that position — every time (409 only when the reading has no move there). A pending move
  *    the link leaves stays pending: no kept link names it, so saving never activates it, and nothing offers it.
+ * Either way the owner's word settles the row: its "Check this" and the move it looked like (`like_move_id`) are
+ * cleared, and a merged move's fit choice with it (spec §4).
  * A saved or removed row is 409; a target that isn't a library move, an active move of the account's or a pending move of
  * the row's batch (another batch's pending move included) is not found.
  * D1 statements: the link with all it needs 1, then one transaction of 1–2.
@@ -354,7 +393,7 @@ export async function rematchLink(db: Db, userId: string, linkId: string, to: st
       db.insert(personalMoves).values({
         id, userId, status: "pending", mergedInto: null, batchId: link.batchId, record: built.record, editedByOwner: false, createdAt: now, updatedAt: now,
       }),
-      db.update(savedPostMoves).set({ moveId: id, moveKind: "personal", checkFlag: false }).where(pendingLink),
+      db.update(savedPostMoves).set({ moveId: id, moveKind: "personal", checkFlag: false, likeMoveId: null }).where(pendingLink),
     ]);
     return { kind: "ok", moveId: id, moveKind: "personal" };
   }
@@ -372,12 +411,12 @@ export async function rematchLink(db: Db, userId: string, linkId: string, to: st
   if (target.id === link.moveId) return { kind: "conflict", error: "same_move" };
   const merge = ownPending && Number(link.others) === 0;
   await runAtomically(db, [
-    db.update(savedPostMoves).set({ moveId: target.id, moveKind: target.kind, checkFlag: false }).where(pendingLink),
+    db.update(savedPostMoves).set({ moveId: target.id, moveKind: target.kind, checkFlag: false, likeMoveId: null }).where(pendingLink),
     ...(merge
       ? [
           db
             .update(personalMoves)
-            .set({ status: "merged", mergedInto: target.id, updatedAt: now })
+            .set({ status: "merged", mergedInto: target.id, fitChoice: null, updatedAt: now })
             .where(and(eq(personalMoves.id, link.moveId), eq(personalMoves.userId, userId), eq(personalMoves.status, "pending"))),
         ]
       : []),
@@ -468,7 +507,7 @@ export async function createHeldBatch(
       id, userId, status: "held", theme: input.theme?.trim() || null, createdAt: now, releasedAt: null, savedAt: null, fittedAt: null, notice: null,
     }),
   ]);
-  return readBatch(db, userId, id);
+  return readBatch(db, userId, id, now);
 }
 
 /** The batch with its counts, whether another batch is open, and its kept rows' moves as `noticeOf` reads them. */
@@ -512,5 +551,211 @@ export async function releaseBatch(
     .update(saveBatches)
     .set({ status: "released", releasedAt: now, notice })
     .where(and(eq(saveBatches.id, batchId), eq(saveBatches.userId, userId), eq(saveBatches.status, "held")));
-  return { ...batchOf(first), status: "released", releasedAt: now, notice };
+  return { ...batchOf(first, now), status: "released", releasedAt: now, notice };
+}
+
+// ── The one path: the open batch, Fit them in, not now, a fit that could not start ─────────────────────────────────
+
+/** `readOpenBatch`'s one read: the open batch as JSON (or null), and how many matched posts wait with a new move. */
+interface OpenRead {
+  open: string | null;
+  waiting: number;
+}
+
+/**
+ * The open batch (`openBatchSql`; the newest, though one is open at a time) as ONE JSON value — its id, its fit's start,
+ * its NEW and LINKED counts (as the list counts them), and each kept row's new move with the regions and contraction the
+ * groups read, and where the move first shows (post first seen, post id, position) so the groups keep the posts' order —
+ * and `waiting`: the matched posts in no batch yet with a pending link to a pending personal move (what `assembleBatch`
+ * would cut). Two scalar subqueries, one statement.
+ */
+function openReadSql(userId: string) {
+  return sql`select
+    (select json_object('id', b.id, 'fitStartedAt', b.fit_started_at, 'new', ${FRESH_COUNT}, 'linked', ${LINKED_COUNT},
+        'moves', (select json_group_array(json_array(l.move_id, p.first_seen_at, p.id, l.position,
+              json_extract(pm.record, '$.regions'), json_extract(pm.record, '$.contraction')))
+            from saved_post_moves l
+              join saved_posts p on p.id = l.post_id and p.user_id = l.user_id
+              left join personal_moves pm on pm.id = l.move_id and pm.user_id = l.user_id
+            where l.user_id = b.user_id and l.batch_id = b.id and l.status <> 'removed' and ${NEW_IN_BATCH}))
+      from save_batches b
+      where b.user_id = ${userId} and ${openBatchSql("b")}
+      order by coalesce(b.released_at, b.created_at) desc, b.id desc
+      limit 1) as open,
+    (select count(*) from saved_posts w
+      where w.user_id = ${userId} and w.status = 'matched' and w.batch_id is null
+        and exists (select 1 from saved_post_moves wl
+          join personal_moves wm on wm.id = wl.move_id and wm.user_id = wl.user_id
+          where wl.user_id = w.user_id and wl.post_id = w.id and wl.status = 'pending' and wl.move_kind = 'personal'
+            and wm.status = 'pending')) as waiting`;
+}
+
+/** A JSON value as SQLite hands it over: parsed when it is text (a subquery's JSON may arrive as text). */
+const jsonValue = (raw: unknown): unknown => {
+  if (typeof raw !== "string") return raw;
+  try {
+    return JSON.parse(raw) as unknown;
+  } catch {
+    return null;
+  }
+};
+
+/** `openReadSql`'s open batch as the card reads it: the groups of its new moves, each once, in the posts' order. */
+function openOf(raw: unknown, now: string): OpenSavesBatchDto | null {
+  const o = jsonValue(raw) as { id?: unknown; fitStartedAt?: unknown; new?: unknown; linked?: unknown; moves?: unknown } | null;
+  if (!o || typeof o !== "object" || typeof o.id !== "string") return null;
+  const list = jsonValue(o.moves);
+  const seen = (Array.isArray(list) ? list : []).flatMap((x) => {
+    const [moveId, firstSeen, postId, position, regions, contraction] = Array.isArray(x) ? (x as unknown[]) : [];
+    return typeof moveId === "string"
+      ? [{ moveId, key: [text(firstSeen) ?? "", text(postId) ?? ""] as const, position: Number(position ?? 0), regions, contraction }]
+      : [];
+  });
+  const cmp = (a: string, b: string) => (a < b ? -1 : a > b ? 1 : 0);
+  seen.sort((a, b) => cmp(a.key[0], b.key[0]) || cmp(a.key[1], b.key[1]) || a.position - b.position);
+  const moves = new Map<string, Pick<ExerciseRecord, "regions" | "contraction">>();
+  for (const m of seen) {
+    if (!moves.has(m.moveId)) {
+      moves.set(m.moveId, {
+        regions: parseList(m.regions) as ExerciseRecord["regions"],
+        contraction: parseList(m.contraction) as ExerciseRecord["contraction"],
+      });
+    }
+  }
+  const groups = groupCounts([...moves.values()]);
+  const counts = { new: Number(o.new ?? 0), linked: Number(o.linked ?? 0) };
+  return { id: o.id, counts, groups, line: savesCardLine(counts, groups), fitting: isFitting(text(o.fitStartedAt), now) };
+}
+
+/**
+ * The open batch the Today card, the coach's chip and its saves card are about (spec §3.1–§3.2): its id, its counts
+ * (new, already yours), its new moves' groups and the card's line (`savesCardLine`), and whether a fit is at work
+ * (`isFitting`). `{ open: null }` when none is open. With none open and new moves waiting, the next batch is cut here
+ * (`assembleBatch`) — never while batches are held (`SAVES_HOLD_BATCHES`) — and the open batch read again: the cut's id
+ * is only the one it tried to write, so the read is what says a batch is open.
+ * D1 statements: ONE; when it cuts, the cut's (7, or 8) and the read again.
+ */
+export async function readOpenBatch(db: Db, env: Env, userId: string, now: string): Promise<OpenSavesDto> {
+  const read = async (): Promise<OpenRead | undefined> => ((await db.all(openReadSql(userId))) as OpenRead[])[0];
+  let row = await read();
+  if (row && row.open === null && Number(row.waiting) > 0 && env.SAVES_HOLD_BATCHES !== "1") {
+    await assembleBatch(db, env, userId, now);
+    row = await read();
+  }
+  return { open: openOf(row?.open ?? null, now) };
+}
+
+export type FitOutcome =
+  | { kind: "ok"; answer: FitAnswerDto }
+  | { kind: "not_found" }
+  | { kind: "conflict"; error: "fitting" | "batch_open" | "already_fitted" | "not_released" };
+
+/** The batch `fitBatch` reads: its state, whether another batch of the account's is open, and what a saved batch holds. */
+interface FitRead {
+  status: SaveBatchDto["status"];
+  fittedAt: string | null;
+  fitStartedAt: string | null;
+  otherOpen: number;
+  /** The batch's active moves (the new moves its save made usable), and its saved links. */
+  moves: number;
+  links: number;
+}
+
+/**
+ * "Fit them in" (spec §3.2, §4, §12.1, §12.3): the batch saved with the owner's choices (`{ moveId: include | skip }`;
+ * a new move left out is the coach's call) and its fit started — the answer is the request the app sends the coach.
+ *  - a `released` batch: `saveBatch` with the choices (the save route's own writes: the moves, the provenance, the
+ *    coach's memory), its fit started, no longer put aside;
+ *  - a `saved` batch (a re-fit once a fit's card was declined, or a batch saved before): its choices rewritten and its
+ *    fit started, in one transaction of 2 — nothing is saved twice.
+ * Refused, in order: another account's batch (not found); one already fitted in; one never released (held) or
+ * dissolved (superseded); one whose fit is at work (`isFitting`: a second tap never starts a second run); one while
+ * another batch is open (`openBatchSql`: a dismissed batch comes back only when no other is open, §12.3).
+ * D1 statements: the batch with whether another is open 1, then `saveBatch` with the choices (7) — or the transaction
+ * of 2 for a saved batch.
+ */
+export async function fitBatch(
+  db: Db,
+  userId: string,
+  batchId: string,
+  choices: Record<string, FitChoice>,
+  now: string,
+): Promise<FitOutcome> {
+  const [b] = (await db.all(sql`select b.status as status, b.fitted_at as fittedAt, b.fit_started_at as fitStartedAt,
+      exists (select 1 from save_batches o where o.user_id = b.user_id and o.id <> b.id and ${openBatchSql("o")}) as otherOpen,
+      (select count(*) from personal_moves m where m.user_id = b.user_id and m.batch_id = b.id and m.status = 'active') as moves,
+      (select count(*) from saved_post_moves l where l.user_id = b.user_id and l.batch_id = b.id and l.status = 'saved') as links
+    from save_batches b
+    where b.id = ${batchId} and b.user_id = ${userId}
+    limit 1`)) as FitRead[];
+  if (!b) return { kind: "not_found" };
+  if (b.fittedAt) return { kind: "conflict", error: "already_fitted" };
+  if (b.status !== "released" && b.status !== "saved") return { kind: "conflict", error: "not_released" };
+  if (isFitting(b.fitStartedAt, now)) return { kind: "conflict", error: "fitting" };
+  if (Number(b.otherOpen)) return { kind: "conflict", error: "batch_open" };
+  const ok = (moves: number, links: number): FitOutcome => ({ kind: "ok", answer: { batchId, request: FIT_SAVES_REQUEST, moves, links } });
+
+  if (b.status === "released") {
+    const saved = await saveBatch(db, userId, batchId, now, { at: now, choices });
+    return saved ? ok(saved.moves, saved.links) : { kind: "not_found" };
+  }
+  await runAtomically(db, [
+    choicesWrite(db, userId, batchId, choices),
+    db
+      .update(saveBatches)
+      .set({ fitStartedAt: now, dismissedAt: null })
+      .where(and(eq(saveBatches.id, batchId), eq(saveBatches.userId, userId), isNull(saveBatches.fittedAt))),
+  ]);
+  return ok(Number(b.moves), Number(b.links));
+}
+
+/** Whether the batch is this account's (a refused write's second read: why it was refused). */
+async function batchExists(db: Db, userId: string, batchId: string): Promise<boolean> {
+  const [row] = await db
+    .select({ id: saveBatches.id })
+    .from(saveBatches)
+    .where(and(eq(saveBatches.id, batchId), eq(saveBatches.userId, userId)))
+    .limit(1);
+  return Boolean(row);
+}
+
+/**
+ * "Not now" (spec §3.2, §12.3): the open batch put aside — `dismissed_at` set, and nothing else. It is never saved: its
+ * moves and links stay pending, nothing enters the library or the coach's memory, and the next batch can open. Only an
+ * open batch whose fit is not at work (a fit under way is the coach's now); else "conflict".
+ * D1 statements: the write 1 (the batch read 1 more when it matched nothing).
+ */
+export async function dismissBatch(db: Db, userId: string, batchId: string, now: string): Promise<"ok" | "not_found" | "conflict"> {
+  // Not fitting: no fit, or one begun FIT_STARTED_TTL_MS or more ago (`isFitting`, in SQL over ISO instants).
+  const stale = new Date(Date.parse(now) - FIT_STARTED_TTL_MS).toISOString();
+  const done = await db
+    .update(saveBatches)
+    .set({ dismissedAt: now })
+    .where(
+      and(
+        eq(saveBatches.id, batchId),
+        eq(saveBatches.userId, userId),
+        openBatchSql("save_batches"),
+        sql`(${saveBatches.fitStartedAt} is null or ${saveBatches.fitStartedAt} <= ${stale})`,
+      ),
+    )
+    .returning({ id: saveBatches.id });
+  if (done.length) return "ok";
+  return (await batchExists(db, userId, batchId)) ? "conflict" : "not_found";
+}
+
+/**
+ * A fit whose run could not start (a run already at work, the week's budget, offline — spec §4, §12.1): its start
+ * cleared at once, so the card offers "Fit them in" again rather than "Fitting in…" for the hour. The save stands. A
+ * batch already fitted in keeps its fit (nothing to cancel). D1 statements: the write 1 (the batch read 1 more when it
+ * matched nothing).
+ */
+export async function cancelFit(db: Db, userId: string, batchId: string): Promise<"ok" | "not_found"> {
+  const done = await db
+    .update(saveBatches)
+    .set({ fitStartedAt: null })
+    .where(and(eq(saveBatches.id, batchId), eq(saveBatches.userId, userId), isNull(saveBatches.fittedAt)))
+    .returning({ id: saveBatches.id });
+  if (done.length) return "ok";
+  return (await batchExists(db, userId, batchId)) ? "ok" : "not_found";
 }

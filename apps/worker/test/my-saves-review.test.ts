@@ -153,6 +153,8 @@ describe("GET /batches", () => {
       {
         id: batchId, status: "released", notice: "From your saves: 2 new moves (1 hip, 1 neck), 1 you already had.", theme: null,
         createdAt: at(1), releasedAt: at(1), savedAt: null, fittedAt: null, counts: { new: 2, linked: 1, removed: 0 },
+        // Put aside, and never fitted: the card's "not now" and the fit's start (saves-flow redesign).
+        dismissedAt: at(2), fitStartedAt: null, fitting: false,
       },
     ]);
     const all = await call("GET", "/batches?held=1");
@@ -224,13 +226,16 @@ describe("GET /batches/:id", () => {
     expect(rows[0]).toMatchObject({
       position: 0, status: "pending",
       post: { url: "https://example.com/p/a", creator: "coach_a", kind: "routine" },
-      move: { name: "Zorbex quad shuffle", summary: "Zorbex quad shuffle, slow and even.", seenDose: "3 x 10" },
+      move: { name: "Zorbex quad shuffle", summary: "Zorbex quad shuffle, slow and even.", seenDose: "3 x 10", purpose: "mobility", choice: null },
       record: { id: quad, name: "Zorbex quad shuffle", dose: { type: "reps", range: [10, 10], sets: [3, 3] } },
     });
     expect(rows[0].move.linkedName).toBeUndefined();
-    // A linked row: the name as the post gave it, the library's name, no record.
-    expect(rows[1]).toMatchObject({ move: { name: "90/90 Hip Switch", linkedName: "90/90 hip switches", seenDose: "8 each side" } });
+    // No near-duplicate at the cut: no row looks like another move.
+    for (const r of rows) expect(r.move.like).toBeUndefined();
+    // A linked row: the name as the post gave it, the library's name, no record, no choice (the new rows' alone).
+    expect(rows[1]).toMatchObject({ move: { name: "90/90 Hip Switch", linkedName: "90/90 hip switches", seenDose: "8 each side", purpose: "mobility", choice: null } });
     expect(rows[1].record).toBeUndefined();
+    expect(res.body.batch).toMatchObject({ dismissedAt: null, fitStartedAt: null, fitting: false });
   });
 
   it("Check this says why, as data — low confidence, an inferred name or dose (the reading's evidence) — and only on a row it flags (verbatim audit gap 5)", async () => {

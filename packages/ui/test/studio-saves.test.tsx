@@ -37,19 +37,20 @@ const HOSTILE = '<img src=x onerror="alert(1)">';
 const BATCH: SaveBatchDto = {
   id: "b1", status: "released", notice: "From your saves: 2 new moves (1 hip, 1 neck), 1 you already had.", theme: null,
   createdAt: "2026-10-23T10:00:00.000Z", releasedAt: "2026-10-23T10:00:00.000Z", savedAt: null, fittedAt: null, counts: { new: 2, linked: 1, removed: 0 },
+  dismissedAt: null, fitStartedAt: null, fitting: false,
 };
 const ROWS: SaveBatchRowDto[] = [
   {
     postMoveId: "pm1", position: 0, status: "pending", post: { url: "https://example.com/p/a", creator: "coach_a", kind: "routine" },
-    move: { id: QUAD.id, name: QUAD.name, summary: QUAD.text.summary, kind: "new", check: false, seenDose: "3 x 10" }, record: QUAD,
+    move: { id: QUAD.id, name: QUAD.name, summary: QUAD.text.summary, kind: "new", check: false, seenDose: "3 x 10", purpose: "Loosens the quads before a run.", choice: null }, record: QUAD,
   },
   {
     postMoveId: "pm2", position: 1, status: "pending", post: { url: "https://example.com/p/a", creator: "coach_a", kind: "routine" },
-    move: { id: HIP.id, name: "90/90 Hip Switch", summary: "Switch the knees side to side.", kind: "linked", linkedName: HIP.name, check: false, seenDose: "8 each side" },
+    move: { id: HIP.id, name: "90/90 Hip Switch", summary: "Switch the knees side to side.", kind: "linked", linkedName: HIP.name, check: false, seenDose: "8 each side", purpose: null, choice: null },
   },
   {
     postMoveId: "pm3", position: 0, status: "pending", post: { url: "javascript:alert(1)", creator: HOSTILE, kind: "single_move" },
-    move: { id: NECK.id, name: NECK.name, summary: NECK.text.summary, kind: "new", check: true, checkWhy: ["low_confidence", "inferred_dose"], seenDose: null }, record: NECK,
+    move: { id: NECK.id, name: NECK.name, summary: NECK.text.summary, kind: "new", check: true, checkWhy: ["low_confidence", "inferred_dose"], seenDose: null, purpose: null, choice: null }, record: NECK,
   },
 ];
 const PERSONAL: PersonalMovesDto = { moves: [{ record: LANTERN, status: "active", links: [] }], merged: [] };

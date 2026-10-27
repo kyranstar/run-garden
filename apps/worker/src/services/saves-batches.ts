@@ -14,7 +14,7 @@ import { and, eq, getTableColumns, isNull, sql, type SQL } from "drizzle-orm";
 import { schema } from "@rg/database";
 import { newId, todayInZone } from "@rg/domain";
 import type { ExerciseRecord } from "@rg/exercise-library";
-import { batchNotice, nearDuplicateOf, type NearCandidate, type SaveBatchInsightDto } from "@rg/saves";
+import { batchNotice, nearDuplicateOf, type FitChoice, type NearCandidate, type SaveBatchInsightDto } from "@rg/saves";
 import type { Env } from "../env.js";
 import { forgetAccountLibrary } from "./account-library.js";
 import { SAVED_POST_SOURCE } from "./coach-memory.js";
@@ -46,7 +46,8 @@ export function openBatchSql(alias: string): SQL {
 
 const textOrNull = (v: unknown): string | null => (typeof v === "string" ? v : null);
 
-const parseList = (raw: unknown): string[] => {
+/** A JSON list of strings as SQLite hands it over (a list, or its text); [] when it isn't one. */
+export const parseList = (raw: unknown): string[] => {
   if (Array.isArray(raw)) return raw.filter((x): x is string => typeof x === "string");
   if (typeof raw !== "string") return [];
   try {
@@ -358,26 +359,43 @@ function insightWrites(db: Db, userId: string, kept: SQL, now: string) {
 }
 
 /**
- * The owner's "Save these":
+ * The owner's choices, `{ moveId: "include" | "skip" }` (JSON), set on the batch's ACTIVE personal moves — the new moves
+ * its save made usable (each stamped with the batch): a move the object doesn't name is the coach's call (null). An id
+ * that is not one of them — a move whose row was removed (still pending), one merged by Same as…, another account's,
+ * none at all — is never written. Looked up as `likeWrite` looks up its marks, so any key reads safely.
+ */
+export function choicesWrite(db: Db, userId: string, batchId: string, choices: Record<string, FitChoice>) {
+  const json = JSON.stringify(choices);
+  return db
+    .update(personalMoves)
+    .set({ fitChoice: sql`(SELECT value FROM json_each(${json}) WHERE key = ${personalMoves.id})` })
+    .where(and(eq(personalMoves.userId, userId), eq(personalMoves.batchId, batchId), eq(personalMoves.status, "active")));
+}
+
+/**
+ * The owner's "Save these" (and, with `fit`, the save that starts "Fit them in", spec §4):
  *  - the pending personal moves a kept (pending) link of the batch names become `active`, and this batch's — one the
  *    owner removed or re-matched away (no kept link names it) stays pending and is never offered; a pending move an
  *    earlier, unsaved batch brought is activated when this batch keeps a link to it, and belongs to this batch since;
+ *  - with `fit`, those moves take the owner's choices (`choicesWrite`), right after they are activated;
  *  - each kept link is written to `exercise_provenance` (`exercise_id` = the move, `source_type` = the post's source,
  *    `source_key` = "imp:" + the post's key + "#" + position, url, creator, and its `note`: the post's purpose for the
  *    move, `noteAt`) unless the account already links that move to that post (a curated link stays exactly as it is,
  *    its note none, and a move never lists one post twice). Insert-only: an import never rewrites a provenance row;
  *  - the insights of each post with a kept link become the coach's memory (`insightWrites`, spec §17): nothing from a
  *    batch is used before Save, and a post whose rows were all removed teaches nothing;
- *  - the links become `saved`, the batch `saved`.
+ *  - the links become `saved`, the batch `saved` — and with `fit`, its fit started (`fit_started_at` = `fit.at`) and
+ *    no longer put aside (`dismissed_at` cleared).
  * A removed link is left out. Null for a batch that isn't this account's; a batch already saved (or dismissed) changes
- * nothing. D1 statements: the batch and its counts 1, then one transaction of 5 — set-based, so the same 6 for 6 links
- * or 600.
+ * nothing. D1 statements: the batch and its counts 1, then one transaction of 5 (6 with `fit`) — set-based, so the
+ * same 6 (or 7) for 6 links or 600.
  */
 export async function saveBatch(
   db: Db,
   userId: string,
   batchId: string,
   now: string,
+  fit?: { at: string; choices: Record<string, FitChoice> },
 ): Promise<{ moves: number; links: number } | null> {
   const pendingLinks = and(
     eq(savedPostMoves.userId, userId),
@@ -404,6 +422,8 @@ export async function saveBatch(
   // In order: the moves and the links are read while the links are still pending; the links are marked last.
   await runAtomically(db, [
     db.update(personalMoves).set({ status: "active", batchId, updatedAt: now }).where(movesToKeep),
+    // The choices, once the moves they name are the batch's active moves.
+    ...(fit ? [choicesWrite(db, userId, batchId, fit.choices)] : []),
     // One row per kept link, except where the account already links the move to the post (`existing`) or an earlier
     // position of the same post shows the same move (`twin`). The aliased tables are named by their alias inside their
     // subquery, so the unaliased names there are the outer row's.
@@ -428,7 +448,7 @@ export async function saveBatch(
     db.update(savedPostMoves).set({ status: "saved" }).where(pendingLinks),
     db
       .update(saveBatches)
-      .set({ status: "saved", savedAt: now })
+      .set({ status: "saved", savedAt: now, ...(fit ? { fitStartedAt: fit.at, dismissedAt: null } : {}) })
       .where(and(eq(saveBatches.id, batchId), eq(saveBatches.userId, userId))),
   ]);
   // Its moves are the library's now: a later read in this request reads them.
