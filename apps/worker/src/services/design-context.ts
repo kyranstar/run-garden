@@ -85,7 +85,7 @@ import { RUN_LIMITS } from "./design-limits.js";
 import { LATER_LEAD_MIN } from "./design-time.js";
 import { memoryCore } from "./memory-core.js";
 import { SAVED_POST_SOURCE } from "./coach-memory.js";
-import { FIT_SAVES_REQUEST } from "./coach-opening-line.js";
+import { FIT_SAVES_REQUEST } from "@rg/saves";
 import { focusReadInContext, type RunFocus } from "./design-focus.js";
 import { CONTEXT_TURNS, conversationBlock, conversationRows, type TurnRow } from "./coach-conversation.js";
 import { runningFactsOf, runningLine, runWeeksSql, thresholdSql, watchLine, type RunningFacts } from "./designed-runs.js";

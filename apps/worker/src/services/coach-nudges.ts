@@ -1,9 +1,9 @@
 import { and, desc, eq, gte, inArray, isNull, lte, sql } from "drizzle-orm";
-import { activities, coachPlans, coachPlanWeeks, coachReads, coachRuns, plannedWorkouts, saveBatches, weeklyReviews, workoutCompletionMatches } from "@rg/database";
+import { activities, coachPlans, coachPlanWeeks, coachReads, coachRuns, plannedWorkouts, weeklyReviews, workoutCompletionMatches } from "@rg/database";
 import { addDays, lineSentenceName, linesOf, QUALITY_SUBTYPE_LABELS, startOfIsoWeek, type LocalDate, type QualitySubtype, type UserPreferences } from "@rg/domain";
 import { chunkIds, type Db } from "./db.js";
 import { isLoosePlan, lineBlockOf } from "./coach-plans.js";
-import { reviewOpening, savesOpening, sessionDays, sessionOpening, type CoachOpeningLine, type FinishedSession } from "./coach-opening-line.js";
+import { reviewOpening, sessionDays, sessionOpening, type CoachOpeningLine, type FinishedSession } from "./coach-opening-line.js";
 import { COMEBACK_GAP_DAYS, endingLine, FIRM_HORIZON_DAYS, REFIRE_WINDOW_MS } from "./coach-triggers.js";
 
 /**
@@ -142,7 +142,7 @@ export async function readCoachOpening(
   seen: ReadonlySet<string> = new Set(),
 ): Promise<CoachOpeningRead> {
   const lastWeek = addDays(startOfIsoWeek(today), -7);
-  const [missedRows, recent, plans, reviews, batches] = await Promise.all([
+  const [missedRows, recent, plans, reviews] = await Promise.all([
     db
       .select({
         id: plannedWorkouts.id,
@@ -212,13 +212,6 @@ export async function readCoachOpening(
       .select({ weekStart: weeklyReviews.weekStart, narrative: weeklyReviews.narrative, createdAt: weeklyReviews.createdAt })
       .from(weeklyReviews)
       .where(and(eq(weeklyReviews.userId, userId), eq(weeklyReviews.weekStart, lastWeek)))
-      .limit(1),
-    // The newest released batch of the athlete's saves (one read; a saved batch is acted on, a held one not yet theirs).
-    db
-      .select({ id: saveBatches.id, notice: saveBatches.notice, releasedAt: saveBatches.releasedAt })
-      .from(saveBatches)
-      .where(and(eq(saveBatches.userId, userId), eq(saveBatches.status, "released")))
-      .orderBy(desc(saveBatches.releasedAt))
       .limit(1),
   ]);
   // A bucket of one-offs is no plan: it has no weeks, and is forever "ending" on its last one-off.
@@ -306,15 +299,11 @@ export async function readCoachOpening(
     found.push({ id: `ending:${ending.last.id}`, label, request: `${label} — it ends ${inDays(daysBetween(today, ending.line.endDate))}.` });
   }
 
-  // The opening's own line: the review first, then a released batch of saves, then the newest session still news — each with the moment after which an
+  // The opening's own line: the review first, then the newest session still news — each with the moment after which an
   // ask of the athlete's makes it old news. One this device has shown gives way to the next.
   const candidates: Array<{ opening: CoachOpeningLine; since: string }> = [];
   const review = reviews[0] ? reviewOpening(reviews[0]) : null;
   if (review) candidates.push({ opening: review, since: reviews[0]!.createdAt });
-  const batch = batches[0];
-  if (batch?.notice && batch.releasedAt) {
-    candidates.push({ opening: savesOpening({ id: batch.id, notice: batch.notice, releasedAt: batch.releasedAt }), since: batch.releasedAt });
-  }
   const days = sessionDays(today);
   const done = recent.find(
     (a) =>

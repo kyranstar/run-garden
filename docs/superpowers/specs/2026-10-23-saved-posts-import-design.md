@@ -187,6 +187,8 @@ A small private Chrome extension on the owner's Mac checks their Instagram saved
 
 ## 6. The owner's experience
 
+> Superseded in part (2026-10-26): the notice, the review screen and "Fitting them in" are now 2026-10-26-saves-flow-redesign-design.md (§3) — the Today card, the coach's saves card and the one-decision batch page.
+
 - **The notice.** The coach's opening line gets a new source, `saves`. When an unannounced batch exists:
   - The line reads "From your saves: 4 new moves (2 hip, 1 neck, 1 jump), 3 you already had."
   - Chips: **See them** opens the review screen (a link, not a coach request), and **Fit these in** starts a coach run.

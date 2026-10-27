@@ -35,15 +35,14 @@
  */
 import { useEffect, useId, useRef, useState, type ReactNode } from "react";
 import { createPortal } from "react-dom";
-import { Link, useNavigate } from "react-router-dom";
-import { useQuery, useQueryClient } from "@tanstack/react-query";
-import { api, SAVES_BATCHES_QUERY, savesBatchQuery, type CoachAlsoOpenDto, type CoachNudgeDto, type CoachOpeningDto } from "@rg/api-client";
+import { Link } from "react-router-dom";
+import { useQuery } from "@tanstack/react-query";
+import { api, type CoachAlsoOpenDto, type CoachNudgeDto, type CoachOpeningDto } from "@rg/api-client";
 import { formatDayLong, settling, Sheet, Spinner } from "../../components.js";
 import { LogYourSession, type WatchReviewOffer } from "../../components/today-program.js";
 import { WatchReviewSheet } from "../../components/watch-review-sheet.js";
 import { IconCoachSmall } from "../../icons.js";
 import { TEMPLATES_QUERY } from "./add-sheet.js";
-import { PERSONAL_MOVES_QUERY } from "../../library/account-library.js";
 import { AlsoWaiting } from "./also-waiting.js";
 import { BUILD_NEW_HREF } from "./build-entry.js";
 import { markOpeningSeen, NUDGES_QUERY, openingChips, openingLine, readOpeningSeen, starterChips, startersBeside } from "./coach-conversation-model.js";
@@ -63,9 +62,6 @@ export const READ_THE_REVIEW = "Read it all";
 export { NUDGES_QUERY };
 /** At most this many "needs you" chips, before the starters (the server's own cap, held here too). */
 export const NUDGES_SHOWN = 2;
-
-/** Said when "Fit these in" could not save the batch first (the request is not sent). */
-export const SAVE_FAILED = "Couldn't save these moves. Try again.";
 
 /** The coach's words, left, with its mark: a line of the conversation (the opening's, a turn's answer). */
 export function CoachSays({ children, turn, focusable = false }: { children: ReactNode; turn?: string; focusable?: boolean }) {
@@ -156,29 +152,6 @@ export function CoachOpening({
   /** Chips tapped here: gone at once, before any read comes back (one landing later changes nothing drawn, and the next
    * opening draws from a read of its own). */
   const [tapped, setTapped] = useState<readonly string[]>([]);
-  const navigate = useNavigate();
-  const qc = useQueryClient();
-  const [saving, setSaving] = useState(false);
-  const [saveError, setSaveError] = useState(false);
-  /** "Fit these in": the batch saved first (awaited), so the coach finds the moves; failing, nothing is sent. */
-  const saveThenAsk = async (batchId: string, chipId: string, request: string) => {
-    setSaving(true);
-    setSaveError(false);
-    try {
-      await api.savesSaveBatch(batchId);
-    } catch {
-      setSaving(false);
-      setSaveError(true);
-      return;
-    }
-    void qc.invalidateQueries({ queryKey: PERSONAL_MOVES_QUERY });
-    void qc.invalidateQueries({ queryKey: ["library"] });
-    void qc.invalidateQueries({ queryKey: savesBatchQuery(batchId) });
-    void qc.invalidateQueries({ queryKey: SAVES_BATCHES_QUERY });
-    setSaving(false);
-    setTapped((t) => [...t, chipId]);
-    onAsk(request);
-  };
   const shownId = drawn.current?.opening?.id ?? null;
   useEffect(() => {
     if (shownId) markOpeningSeen(shownId);
@@ -213,24 +186,13 @@ export function CoachOpening({
             const o = offers.find((x) => x.workoutId === c.workoutId)!;
             return <HowItFelt key={c.id} offer={o} label={c.label} disabled={busy} />;
           }
-          if (c.kind === "open") {
-            return (
-              <button key={c.id} type="button" className="chip coach-chip coach-chip--opening" disabled={busy} onClick={() => navigate(c.href)}>
-                {c.label}
-              </button>
-            );
-          }
           return (
             <button
               key={c.id}
               type="button"
               className={`chip coach-chip ${c.needs ? "coach-chip--needs" : "coach-chip--opening"}`}
-              disabled={busy || saving}
+              disabled={busy}
               onClick={() => {
-                if (c.saveBatchId) {
-                  void saveThenAsk(c.saveBatchId, c.id, c.request);
-                  return;
-                }
                 setTapped((t) => [...t, c.id]);
                 onAsk(c.request);
               }}
@@ -245,11 +207,6 @@ export function CoachOpening({
           </button>
         ))}
       </div>
-      {saveError ? (
-        <p className="stu-add-error" role="alert">
-          {SAVE_FAILED}
-        </p>
-      ) : null}
       {alsoOpen.length > 0 ? <AlsoWaiting items={alsoOpen} today={ctx.today} /> : null}
       {startHolding ? (
         // Last on the screen, so its waiting moves nothing under a tap: the line and the chips are above it. (Answered

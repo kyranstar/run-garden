@@ -22,9 +22,7 @@ import {
   firstSentence,
   parseSeen,
   REVIEW_REQUEST,
-  FIT_SAVES_REQUEST,
   reviewOpening,
-  savesOpening,
   SEEN_MAX,
   sessionFacts,
   sessionOpening,
@@ -481,56 +479,13 @@ describe("which line: the review, then the session, then none (the screen's own)
   });
 });
 
-describe("From your saves: a released batch", () => {
-  it("the line is the batch's notice, verbatim, with See them (navigates, sends nothing) and Fit these in (saves, then asks)", async () => {
-    const id = await seedBatch({ id: "b1" });
-    const out = await read();
-    expect(out.opening).toEqual({
-      id: "saves:b1",
-      line: "From your saves: 2 new moves (1 hip, 1 neck), 1 you already had.",
-      source: "saves",
-      chips: [
-        { id: "saves-see", label: "See them", request: "", href: `/studio/saves/${id}` },
-        { id: "saves-fit", label: "Fit these in", request: FIT_SAVES_REQUEST, saveBatchId: id },
-      ],
-    });
-    expect(FIT_SAVES_REQUEST).toBe("Fit the new moves from my saves into my training.");
-    expect(savesOpening({ id: "x", notice: "n", releasedAt: iso(HOUR) }).chips.map((c) => c.id)).toEqual(["saves-see", "saves-fit"]);
-  });
-
-  it("the review before it; once the review was shown here, the saves line", async () => {
-    await seedReview();
-    await seedBatch({ id: "b2" });
-    expect((await read()).opening?.id).toBe(`review:${lastWeek()}`);
-    expect((await read([`review:${lastWeek()}`])).opening?.id).toBe("saves:b2");
-    expect((await read([`review:${lastWeek()}`, "saves:b2"])).opening).toBeNull();
-  });
-
-  it("saves before a session", async () => {
-    await seedBatch({ id: "b3" });
+describe("A released saves batch is not the opening's line", () => {
+  it("a released batch is never the opening's line, and parseSeen drops saves:…", async () => {
+    await seedBatch({ id: "b1" });
+    expect((await read()).opening).toBeNull();
     await seedActivity({ id: "a20", date: today });
-    expect((await read()).opening?.id).toBe("saves:b3");
-    expect((await read(["saves:b3"])).opening?.id).toBe("session:a20");
-  });
-
-  it("a held, saved or dismissed batch never shows; the newest released one does", async () => {
-    await seedBatch({ id: "h", status: "held" });
-    await seedBatch({ id: "s", status: "saved" });
-    await seedBatch({ id: "d", status: "dismissed" });
-    expect((await read()).opening).toBeNull();
-    await seedBatch({ id: "old", releasedAt: iso(30 * HOUR) });
-    await seedBatch({ id: "new", releasedAt: iso(3 * HOUR) });
-    expect((await read()).opening?.id).toBe("saves:new");
-  });
-
-  it("asked about since it was released: old news", async () => {
-    await seedBatch({ id: "b4", releasedAt: iso(10 * HOUR) });
-    await seedAsk("Fit the new moves from my saves into my training.", iso(5 * HOUR));
-    expect((await read()).opening).toBeNull();
-  });
-
-  it("parseSeen keeps saves:<id>, a uuid's too", () => {
-    expect([...parseSeen("saves:abc,saves:0b9d6c1e-2f3a-4c5d-8e7f-123456789abc")]).toEqual(["saves:abc", "saves:0b9d6c1e-2f3a-4c5d-8e7f-123456789abc"]);
+    expect((await read(["saves:b1"])).opening?.id).toBe("session:a20");
+    expect([...parseSeen("saves:abc,session:a20,saves:0b9d6c1e-2f3a-4c5d-8e7f-123456789abc")]).toEqual(["session:a20"]);
   });
 });
 
@@ -560,22 +515,23 @@ describe("the cost", () => {
     expect(out.nudges.length).toBe(1);
     expect(statements.filter(isWrite)).toEqual([]);
     // The missed sessions, the activities (with what each completed, its sets and its read), the plans, the review;
-    // the plan's outline weeks; the athlete's asks; the newest released saves batch (a read of its own: another table).
-    expect(statements.length).toBe(7);
+    // the plan's outline weeks; the athlete's asks. (Saves flow redesign: the saves batch read goes: 7 to 6.)
+    expect(statements.length).toBe(6);
   });
 
-  it("five on a quiet account; six with a line to offer (its asks read)", async () => {
+  it("four on a quiet account; five with a line to offer (its asks read)", async () => {
     statements.length = 0;
     expect(await read()).toEqual({ opening: null, nudges: [] });
-    expect(statements.length).toBe(5);
+    expect(statements.length).toBe(4);
     await seedActivity({ id: "a11", date: today });
     statements.length = 0;
     expect((await read()).opening?.id).toBe("session:a11");
-    expect(statements.length).toBe(6);
+    expect(statements.length).toBe(5);
     // Every line already shown here: nothing to ask about.
     statements.length = 0;
     expect((await read(["session:a11"])).opening).toBeNull();
-    expect(statements.length).toBe(5);
+    expect(statements.length).toBe(4);
+    // (Saves flow redesign: the saves batch read goes: each of these is one fewer.)
   });
 });
 
@@ -600,7 +556,7 @@ describe("GET /api/coach/nudges", () => {
   const get = (query = "") =>
     mountRoutes(db, "/api/coach/nudges", makeCoachNudgesRoutes({ now: () => new Date() })).request(`/api/coach/nudges${query}`, { headers: { Cookie: cookie } }, env);
 
-  it("answers the opening beside the nudges, `?seen=` giving way, in eight statements with the sign-in and the preferences", async () => {
+  it("answers the opening beside the nudges, `?seen=` giving way, in seven statements with the sign-in and the preferences", async () => {
     await seedReview();
     await seedActivity({ id: "a12", date: today });
     const first = await get();
@@ -612,8 +568,9 @@ describe("GET /api/coach/nudges", () => {
     expect(body.nudges).toEqual([]);
     expect(body.opening).toMatchObject({ id: "session:a12", line: "Today's run is in — 16 km at 5:40 /km." });
     expect(statements.filter(isWrite)).toEqual([]);
-    // The sign-in, the preferences; the missed sessions, the activities, the plans, the review, the saves batch; the asks.
-    expect(statements.length).toBe(8);
+    // The sign-in, the preferences; the missed sessions, the activities, the plans, the review; the asks.
+    // (Saves flow redesign: the saves batch read goes: 8 to 7.)
+    expect(statements.length).toBe(7);
   });
 
   it("with nothing to say, the shape an older screen knows: { nudges } alone", async () => {

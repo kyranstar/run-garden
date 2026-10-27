@@ -25,7 +25,7 @@ import {
 } from "../src/services/design-context.js";
 import { REVIEW_DIMENSIONS, SHARED_PROMPT, roleBlock } from "../src/services/design-prompt.js";
 import { RUN_LIMITS } from "../src/services/coach-runs.js";
-import { FIT_SAVES_REQUEST } from "../src/services/coach-opening-line.js";
+import { FIT_SAVES_REQUEST } from "@rg/saves";
 import { RUN_LIMITS as ROLE_CAPS } from "../src/services/design-limits.js";
 import type { SystemBlock } from "../src/services/llm-messages.js";
 import { makeTestDb, makeTestUser } from "./helpers.js";

@@ -1499,25 +1499,19 @@ export interface CoachNudgeDto {
   request: string;
 }
 
-/**
- * A chip of the opening's own line: a nudge's shape, and for a saves batch either a link (`href`: it navigates and sends
- * nothing; its `request` is empty) or a batch to save (`saveBatchId`: saved first, then `request` is sent).
- */
-export interface CoachOpeningChipDto extends CoachNudgeDto {
-  href?: string;
-  saveBatchId?: string;
-}
+/** A chip of the opening's own line: a nudge's shape (a tap sends its `request`). */
+export type CoachOpeningChipDto = CoachNudgeDto;
 
 /**
  * The coach's own line on its opening screen, when it noticed something (stream H): last week's review (`review`), a
- * session just finished in the app's own words (`session`) or the coach's read of it (`read`), or a released batch of the athlete's saves (`saves`). `chips` come first among
+ * session just finished in the app's own words (`session`) or the coach's read of it (`read`). `chips` come first among
  * the chips, each sent as the athlete's words; `workoutId` is the planned session the finished one completed (its quick
  * review, when the app offers one). `id` is stable while it holds: the screen keeps the ones it has shown.
  */
 export interface CoachOpeningDto {
   id: string;
   line: string;
-  source: "review" | "session" | "read" | "saves";
+  source: "review" | "session" | "read";
   chips: CoachOpeningChipDto[];
   workoutId?: string;
   /** A review's whole text and its week: "Read it all" opens it from the opening (absent from an older server). */
