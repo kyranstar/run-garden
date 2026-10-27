@@ -55,6 +55,8 @@
  *
  * A free-text move is refused (act-common.ts `freeTextRefusal`): no condition rule can judge it. A revision may keep
  * one its workout's current document already holds, unchanged.
+ * In a fit-in run, a move the athlete skipped in its batch is refused by name, new, revised or amended, as an item or
+ * an alternate (act-common.ts `skippedRefusal`; the saves flow, §12.5): the run's skip set, no statement.
  *
  * Its status: `rehearsal` for a rehearsal run, never listed; otherwise `unreviewed` — never shown to the athlete
  * (`pending` is the only status the app lists). propose never writes `pending`: the main run's finish does, once every
@@ -122,6 +124,7 @@ import {
   readDocAthlete,
   runCtxExtra,
   runUnsupported,
+  skippedRefusal,
   WARNINGS_SHOWN,
   withFocusRefs,
   withMusicIds,
@@ -490,6 +493,9 @@ export const proposeWorkout: DesignTool = {
     if (free) return free;
     const ids = idsRefusal(doc, a);
     if (ids) return ids;
+    // A fit-in run's: a move the athlete skipped in its batch stays out (the saves flow, §12.5).
+    const skipped = skippedRefusal(doc, ctx.run.savesSkip);
+    if (skipped) return skipped;
     const vctx = await docValidateCtx(ctx, a, date);
     const judged = judge(doc, vctx, { keyResults: a.keyResultMeasures });
     if (judged.errors.length > 0 || !judged.doc || !judged.derived) {
@@ -866,6 +872,8 @@ async function amendDraft(
   if (free) return free;
   const ids = idsRefusal(o.doc, o.a);
   if (ids) return ids;
+  const skipped = skippedRefusal(o.doc, ctx.run.savesSkip);
+  if (skipped) return skipped;
   const vctx = await docValidateCtx(ctx, o.a, kept.date);
   const judged = judge(o.doc, vctx, { keyResults: o.a.keyResultMeasures });
   if (judged.errors.length > 0 || !judged.doc || !judged.derived) {

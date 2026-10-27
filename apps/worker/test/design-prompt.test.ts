@@ -49,7 +49,10 @@ describe("the prompt text", () => {
     // REBASED 2026-10-25 (saved-posts fix wave): the integration paragraph's one workout per run, the pool a pin
     // puts a move in, closing the batch; the saved-post sentence under Untrusted text; pin_moves' acting line — measured
     // 6,291; ≥ 100 tokens headroom.
-    expect(SHARED_PROMPT.length / 4).toBeLessThanOrEqual(6400);
+    // REBASED 2026-10-26 (saves flow redesign): the integration paragraph's include, skip and coach per move, never both
+    // of a near-duplicate pair, a line's moveId; read_saves' Reading line names a fit-in run's own batch — measured
+    // 6,414.75; ≥ 100 tokens headroom.
+    expect(SHARED_PROMPT.length / 4).toBeLessThanOrEqual(6520);
     for (const r of ROLES) expect(roleBlock(r).length / 4, r).toBeLessThanOrEqual(ROLE_CAP[r]);
   });
 
@@ -319,7 +322,9 @@ describe("3A-B — the prompt agrees with the code", () => {
   it("stays within its size: the shared prefix and each role block with its budget", () => {
     // REBASED 2026-10-25 (Task 18): pin_moves acting line + integration guidance — measured 6,183.25 (the cap above).
     // REBASED 2026-10-25 (saved-posts fix wave) — measured 6,291 (the cap above).
-    expect(SHARED_PROMPT.length / 4).toBeLessThanOrEqual(6400);
+    // REBASED 2026-10-26 (saves flow redesign): the integration paragraph's choices and near-duplicates — measured 6,414.75
+    // (the cap above).
+    expect(SHARED_PROMPT.length / 4).toBeLessThanOrEqual(6520);
     for (const role of ROLES) expect(roleBlock(role, RUN_LIMITS[role].maxCalls).length / 4, role).toBeLessThanOrEqual(ROLE_CAP[role]);
   });
 });

@@ -76,8 +76,11 @@ const BEFORE = { tools: 34_935, shared: 20_450, main: 4_586 };
  * so the model never writes it) and its text at the raised 280 cap — its summary optional with a batch (the card counts),
  * its description naming the fit-in run's batch and the athlete's include and skip (tools 41,131 → 41,455) — measured
  * 13,315; held with 435 characters (~124 tokens) of headroom.
+ * REBASED 2026-10-26 (saves flow redesign): the integration paragraph says how the athlete's choices work (include, skip,
+ * coach), never both of a near-duplicate pair, and a line's moveId; read_saves' Reading line names a fit-in run's own
+ * batch (shared 25,164 → 25,659) — measured 13,810; held with 440 characters (~126 tokens) of headroom.
  */
-const GROWTH_MAX_CHARS = 13_750;
+const GROWTH_MAX_CHARS = 14_250;
 
 const toolsSent = () => JSON.stringify(allTools().map((t) => ({ name: t.name, description: t.description, input_schema: t.inputSchema })));
 

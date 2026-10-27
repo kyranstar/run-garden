@@ -26,11 +26,14 @@ import { markedDoc } from "../src/services/design-tools/read-workouts.js";
 import { recallMemory } from "../src/services/design-tools/read-memory.js";
 import { readAnswers } from "../src/services/design-tools/read-answers.js";
 import { askedAnswerRows } from "../src/services/design-tools/record-answer.js";
-import { isToolErr, type DesignReview, type DesignTool, type ReviewHooks, type ReviewStart, type ToolContext, type ToolErr, type ToolOk, type ToolRole } from "../src/services/design-tools/types.js";
+import { isToolErr, type DesignReview, type DesignTool, type ReviewHooks, type ReviewStart, type SavesSkip, type SetHooks, type ToolContext, type ToolErr, type ToolOk, type ToolRole } from "../src/services/design-tools/types.js";
 import { docDayContext } from "../src/services/doc-workouts.js";
+import { markUntrusted } from "../src/services/design-prompt.js";
+import { skipSetOf } from "../src/services/saves-batches.js";
 import { at, day, NOW, seedRichAthlete, studioDoc, TODAY } from "./design-read-fixture.js";
 import { calmDoc, landingsDoc } from "./doc-workout-fixture.js";
 import { isWrite, makeTestDb, makeTestUser } from "./helpers.js";
+import { savedMoveDraft, seedSavedBatch } from "./saves-batch-fixture.js";
 
 const ENV = {} as Env;
 
@@ -1567,5 +1570,119 @@ describe("3A round 2 — the act tools' gates and tests", () => {
     // The draft carries it as a cost, for the reviewer and the athlete.
     ok((await call("propose_workout", ctxOf(r), { doc: testOf("sidePlank", wallSit), target: { kind: "new", date: TODAY } })).result);
     expect((await proposal(r.id))!.ops[0]!.issues.map((i) => i.code)).toContain("test_unmeasured");
+  });
+});
+
+// ── The saves flow (§12.5): a move the athlete skipped stays out of the fit-in run's workouts ─────────────────────────
+
+describe("saves flow §12.5 — a move the athlete skipped stays out of the fit-in run's workouts", () => {
+  /** An athlete of its own, with a saved batch: two moves skipped, one included (synthetic names). */
+  let fit: Awaited<ReturnType<typeof seedRichAthlete>>;
+  let batchId: string;
+  let slide: string;
+  let hinge: string;
+  let couch: string;
+  let skip: SavesSkip[];
+  const SLIDE = "Wall slide, slow";
+  const HINGE = "Kneeling hip hinge";
+  beforeAll(async () => {
+    fit = await seedRichAthlete(db);
+    const seeded = await seedSavedBatch(db, fit.userId, {
+      savedAt: at(day(1)),
+      posts: [{ moves: [{ draft: savedMoveDraft(SLIDE), choice: "skip" }, { draft: savedMoveDraft(HINGE), choice: "skip" }, { draft: savedMoveDraft("Couch stretch, long"), choice: "include" }] }],
+    });
+    batchId = seeded.batchId;
+    [slide, hinge, couch] = seeded.moveIds[0] as [string, string, string];
+    // The skip set as the run's create reads it (Task 6).
+    skip = (await skipSetOf(db, fit.userId, batchId))!;
+    expect(skip.map((s) => s.id).sort()).toEqual([slide, hinge].sort());
+  });
+
+  /** A fit-in run's context: its batch and that batch's skip set (null: a run that fits no batch). */
+  const fitIn = (r: Awaited<ReturnType<typeof run>>, savesSkip: SavesSkip[] | null = skip, extra: Partial<ToolContext> = {}): ToolContext => {
+    const c = ctxOf(r, extra);
+    return { ...c, run: { ...c.run, ...(savesSkip ? { savesBatchId: batchId, savesSkip } : {}) } };
+  };
+  const named = (...names: string[]) => `the athlete skipped ${names.map((n) => markUntrusted("saved post", n)).join(", ")} — it stays out of this fit-in`;
+  const withAlternate = (libraryId: string, alternate: string) => ({ ...item(libraryId), alternates: [{ libraryId: alternate, why: "If the knees ache." }] });
+  /** Set hooks that start whatever they are asked to, with room for any set: what started, kept. */
+  const setHooks = (started: string[][]): SetHooks => ({
+    rounds: () => [],
+    start: async (ds) => (started.push(ds.map((d) => d.runId)), ds.map((d) => d.runId)),
+    budget: () => ({ ceilingMicros: 1_000_000_000, spentMicros: 0, mainSpentMicros: 0, perDesignerMicros: null, estimate: null }),
+    started: () => false,
+    keyLine: () => undefined,
+  });
+  const brief = (over: Record<string, unknown> = {}) => ({
+    key: "tue", date: addDays(TODAY, 1), purpose: "Hips that move well before the long run.", emphasis: "Slow, controlled range.", constraints: "Thirty minutes at home.",
+    why: "The day after an easy run.", ...over,
+  });
+
+  it("propose_workout refuses a skipped move of the run's batch, new or revised, as an item or an alternate: skipped_move, naming it", async () => {
+    const asItem = await call("propose_workout", fitIn(await run({ userId: fit.userId })), { doc: docOf([item("bridge"), item(slide)]), target: { kind: "new", date: TODAY } });
+    const e = err(asItem.result);
+    expect(e).toEqual({ error: "skipped_move", why: named(SLIDE), fix: "Leave it out of the workout; the athlete chose to skip it." });
+    expect(asItem.writes).toEqual([]);
+    // As an alternate, in a revision of a Studio workout.
+    const r = await run({ userId: fit.userId });
+    const asAlternate = await call("propose_workout", fitIn(r), { doc: docOf([withAlternate("bridge", hinge)]), target: { kind: "revise", workoutId: fit.todayDocId, baseRev: 2 } });
+    expect(err(asAlternate.result)).toMatchObject({ error: "skipped_move", why: named(HINGE) });
+    expect(asAlternate.writes).toEqual([]);
+    // Every skipped move at once, each named once, in the document's order.
+    const both = err((await call("propose_workout", fitIn(r), { doc: docOf([withAlternate("bridge", hinge), item(slide), item(hinge)]), target: { kind: "new", date: TODAY } })).result);
+    expect(both.why).toBe(named(HINGE, SLIDE));
+    expect(await proposal(r.id)).toBeUndefined();
+    // The batch's included move is the athlete's to place: stored.
+    ok((await call("propose_workout", fitIn(r), { doc: docOf([item("bridge"), item(couch)]), target: { kind: "new", date: TODAY } })).result);
+    expect((await proposal(r.id))!.ops).toHaveLength(1);
+  });
+
+  it("amend refuses it too", async () => {
+    const r = await run({ userId: fit.userId });
+    ok((await call("propose_workout", fitIn(r), { doc: docOf([item("bridge")]), target: { kind: "new", date: TODAY } })).result);
+    // Reviewed as the review loop leaves it (design-review.test.ts drives the loop itself).
+    const p = (await proposal(r.id))!;
+    const review: DesignReview = { scores: { intent: 4 }, notes: { intent: "Clear." }, mustFix: [], improvements: [] };
+    await db.update(schema.coachProposals).set({ ops: p.ops.map((o) => ({ ...o, review: { ...review, rounds: 1, changes: [] } })) }).where(eq(schema.coachProposals.id, designProposalId(r.id)));
+    const { result, writes } = await call("propose_workout", fitIn(r), { doc: docOf([withAlternate("bridge", slide)]), target: { kind: "new", date: TODAY }, amend: true, changeNote: "A gentler alternate." });
+    expect(err(result)).toEqual({ error: "skipped_move", why: named(SLIDE), fix: "Leave it out of the workout; the athlete chose to skip it." });
+    expect(writes).toEqual([]);
+    expect((await proposal(r.id))!.ops[0]!.doc.parts[0]!.items[0]).not.toHaveProperty("alternates");
+  });
+
+  it("plan_set refuses a brief naming a skipped move — nothing started", async () => {
+    const r = await run({ userId: fit.userId, scope: { kind: "week" } });
+    const started: string[][] = [];
+    // By its id, or its name in any case — in the purpose, the emphasis or the constraints.
+    for (const [over, names] of [
+      [{ purpose: `Hips: ${slide} and a bridge.` }, [SLIDE]],
+      [{ emphasis: "the WALL SLIDE, SLOW, then the kneeling hip hinge" }, [SLIDE, HINGE]],
+      [{ constraints: `Thirty minutes; ${HINGE.toLowerCase()} last.` }, [HINGE]],
+    ] as Array<[Record<string, unknown>, string[]]>) {
+      const { result, count } = await call("plan_set", fitIn(r, skip, { set: setHooks(started) }), { briefs: [brief({ key: "mon", date: TODAY }), brief(over)] });
+      const e = err(result);
+      expect(e.error, JSON.stringify(over)).toBe("skipped_move");
+      for (const n of names) expect(e.why).toContain(markUntrusted("saved post", n));
+      expect(e.why).toMatch(/^the athlete skipped .* — it stays out of this fit-in$/);
+      expect(e.fix).toContain("the athlete chose to skip it");
+      // Refused before any read: nothing read, nothing started.
+      expect(count).toBe(0);
+    }
+    expect(started).toEqual([]);
+  });
+
+  it("outside a fit-in run (no skip set) nothing changes", async () => {
+    // A move the athlete skipped in a batch is still in their library: a run that fits no batch may place it — and a
+    // fit-in run whose batch has nothing skipped refuses nothing.
+    for (const savesSkip of [null, []]) {
+      const r = await run({ userId: fit.userId });
+      ok((await call("propose_workout", fitIn(r, savesSkip), { doc: docOf([item("bridge"), withAlternate("deadBug", hinge), item(slide)]), target: { kind: "new", date: TODAY } })).result);
+      expect((await proposal(r.id))!.ops).toHaveLength(1);
+      const started: string[][] = [];
+      const w = await run({ userId: fit.userId, scope: { kind: "week" } });
+      const out = ok((await call("plan_set", fitIn(w, savesSkip, { set: setHooks(started) }), { briefs: [brief({ purpose: `Hips: ${SLIDE} and ${slide}.` })] })).result);
+      expect(out.control).toBe("set");
+      expect(started).toHaveLength(1);
+    }
   });
 });

@@ -144,7 +144,10 @@ describe("compact (the cached prefix grew 3k tokens since the pre-live audit)", 
     // REBASED 2026-10-25 (saved-posts fix wave): the integration paragraph's one workout per run, the pool a pin
     // puts a move in, closing the batch; the saved-post sentence under Untrusted text; pin_moves' acting line — measured
     // 6,291; ≥ 100 tokens headroom.
-    expect(SHARED_PROMPT.length / 4).toBeLessThanOrEqual(6400);
+    // REBASED 2026-10-26 (saves flow redesign): the integration paragraph's include, skip and coach per move, never both
+    // of a near-duplicate pair, a line's moveId (+464 chars, word for word, after closing the batch); read_saves' Reading
+    // line names a fit-in run's own batch (+31) — measured 6,414.75; ≥ 100 tokens headroom.
+    expect(SHARED_PROMPT.length / 4).toBeLessThanOrEqual(6520);
     // The main coach's block, REBASED 2026-10-18 for the decision guidance (a run's length on the watch, plan_set or
     // propose_plan, a plan's timed sessions, a programme's settings) — measured 1,488 — and 2026-10-19 for the owner's
     // voice (the coach's last words) — measured 1,634; REBASED 2026-10-25 (saved-posts fix wave: pin_moves among the

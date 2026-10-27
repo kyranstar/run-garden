@@ -10,6 +10,8 @@
  *  - a second brief on a date without `sameDayWhy`, and a date that holds a programme session or a session already
  *    done, skipped or missed (read from the plan) without one — with it, the brief stands and its designer is told why.
  *  - a `note` on a first plan (a note is a redo's).
+ * And in a fit-in run, before anything is read: a brief whose purpose, emphasis or constraints names a move the athlete
+ * skipped in its batch — by id, or by name in any case (`skipped_move`; the saves flow, §12.5): the run's skip set.
  * Once more at most (SET_REDO_ROUNDS): a REDO names keys of the first plan only, each brief with a `note` on what to
  * change; its designer is told where the first version went, may revise the same workout (propose_workout lets it:
  * `ToolContext.replaces`), and its reviewed workout replaces the first version. A day held by a workout dropped or left
@@ -48,10 +50,10 @@ import {
 } from "../design-orchestrate.js";
 import { FROZEN_STATES } from "../workout-doc-store.js";
 import { LLM_BUDGET } from "../llm.js";
-import { capInWords, isErr, parseAct, prose } from "./act-common.js";
+import { capInWords, isErr, parseAct, prose, skippedErr } from "./act-common.js";
 import { designProposalId, type DocWorkoutOp } from "./propose.js";
 import { dateField, DATE_SCHEMA, jsonList, parsedArray, readAthlete, refuse } from "./read-common.js";
-import type { DesignTool, SetBrief, SetRound } from "./types.js";
+import type { DesignTool, SavesSkip, SetBrief, SetRound } from "./types.js";
 
 const KEY = /^[A-Za-z0-9_-]{1,24}$/;
 const CLOCK = /^([01]\d|2[0-3]):[0-5]\d$/;
@@ -78,6 +80,14 @@ const usd = (micros: number): string => `$${(micros / 1_000_000).toFixed(2)}`;
 const str = (max: number, description: string) => ({ type: "string", minLength: 1, description: `${description.replace(/\.$/, "")} — ${capInWords(max)}.` });
 
 const FIELDS = "briefs: one per workout, each { key, date, time?, purpose, emphasis, constraints, why, sameDayWhy?, note? }";
+
+/** The skipped moves (the run's skip set) a brief's purpose, emphasis or constraints names — by id, or by name in any
+ * case — each once, in the skip set's order. A move with no name is matched by its id alone. */
+function skippedIn(briefs: ReadonlyArray<z.infer<typeof brief>>, skip: readonly SavesSkip[] | undefined): SavesSkip[] {
+  if (!skip || skip.length === 0) return [];
+  const words = briefs.map((b) => [b.purpose, b.emphasis, b.constraints].join("\n")).join("\n").toLowerCase();
+  return skip.filter((s) => [s.id, s.name.trim()].some((w) => w !== "" && words.includes(w.toLowerCase())));
+}
 
 export const planSet: DesignTool = {
   name: "plan_set",
@@ -135,6 +145,9 @@ export const planSet: DesignTool = {
         "Judge the set with read_set, take a workout out with drop_workout if it must go, then call finish.",
       );
     }
+    // A fit-in run's (the saves flow, §12.5): a move the athlete skipped stays out of every brief — before any read.
+    const skipped = skippedIn(p.briefs, ctx.run.savesSkip);
+    if (skipped.length > 0) return skippedErr(skipped, "Leave it out of every brief; the athlete chose to skip it.");
     const first = earlier[0];
     const redo = first !== undefined;
     const proposalId = designProposalId(ctx.run.id);

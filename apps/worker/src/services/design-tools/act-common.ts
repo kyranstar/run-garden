@@ -62,7 +62,7 @@ import { isPersonalId } from "@rg/saves";
 import { markUntrusted } from "../design-prompt.js";
 import { parsedArray, readAthlete, refuse, untrusted, type Athlete, type Untrusted } from "./read-common.js";
 import { measureWords } from "./read-objectives.js";
-import type { ToolContext, ToolErr } from "./types.js";
+import type { SavesSkip, ToolContext, ToolErr } from "./types.js";
 
 // ── Input ───────────────────────────────────────────────────────────────────────────────────────────────────────────
 
@@ -494,6 +494,31 @@ export function idsRefusal(doc: Record<string, unknown>, a: Pick<DocAthlete, "ob
     `${bad.slice(0, 6).join("; ")}${bad.length > 6 ? `; and ${bad.length - 6} more` : ""}.`,
     "Use an objective id from the profile, or a key result id from read_objectives — or leave it out.",
   );
+}
+
+/**
+ * Moves the athlete skipped, refused by name (the saves flow, §12.5): propose_workout's and plan_set's one refusal, each
+ * with its own fix. Each name is a model's reading of a post — marked; one with no name reads as its id.
+ */
+export function skippedErr(hits: readonly SavesSkip[], fix: string): ToolErr {
+  const names = hits.map((s) => (s.name ? markUntrusted("saved post", s.name) : JSON.stringify(s.id))).join(", ");
+  return refuse("skipped_move", `the athlete skipped ${names} — it stays out of this fit-in`, fix);
+}
+
+/**
+ * A move the athlete skipped in the batch this fit-in run fits (the saves flow, §12.5) — as an item of the document or
+ * one of its alternates — refused, every one named once, in the document's order. The skip set is the run's (read at its
+ * create): no statement. Null outside a fit-in run, or with none of them.
+ */
+export function skippedRefusal(doc: Record<string, unknown>, skip: readonly SavesSkip[] | undefined): ToolErr | null {
+  if (!skip || skip.length === 0) return null;
+  const parts = Array.isArray(doc.parts) ? (doc.parts as unknown[]) : [];
+  const ids = parts.flatMap((part) => {
+    const items = (part as { items?: unknown } | null)?.items;
+    return Array.isArray(items) ? items.flatMap(itemIds) : [];
+  });
+  const hits = [...new Set(ids)].flatMap((id) => skip.filter((s) => s.id === id));
+  return hits.length > 0 ? skippedErr(hits, "Leave it out of the workout; the athlete chose to skip it.") : null;
 }
 
 /**
