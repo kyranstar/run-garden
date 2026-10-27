@@ -7,7 +7,7 @@ import type { ExtractedMove, PostSubmit } from "./schemas.js";
 // never in the system message, and the instructions say to treat it as data.
 
 export const FILTER_PROMPT_VERSION = "filter-1";
-export const EXTRACT_PROMPT_VERSION = "extract-2";
+export const EXTRACT_PROMPT_VERSION = "extract-3";
 export const MATCH_PROMPT_VERSION = "match-1";
 
 const OPEN = "<post-data>";
@@ -147,7 +147,7 @@ function extractSystem(): string {
     `dose type: ${DOSE_TYPES.join(", ")}.`,
     "conditions: an object with one entry for every profile below, each {attrs:{...}, note:\"<=160 chars\"}:",
     profileGuide(),
-    "insights: what the post says about when, why or how often to do this, beyond any one move's steps (at most 5 of <=200 chars; empty when none).",
+    "insights: guidance the post gives about when, why, how often or who it suits — never a dose (sets, reps, seconds) and never a description of one move (that is the move's summary); at most 5 of <=200 chars; empty when none.",
     "Only list moves the post actually shows or states. Mark evidence \"stated\" when the post says it and \"inferred\" when you filled it in. " +
       "Use kind \"not_training\" with an empty moves list when the post teaches no exercise.",
   ].join("\n");

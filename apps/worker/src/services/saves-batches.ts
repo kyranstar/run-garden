@@ -14,7 +14,7 @@ import { and, eq, getTableColumns, isNull, sql, type SQL } from "drizzle-orm";
 import { schema } from "@rg/database";
 import { newId, todayInZone } from "@rg/domain";
 import type { ExerciseRecord } from "@rg/exercise-library";
-import { batchNotice, nearDuplicateOf, type FitChoice, type NearCandidate, type SaveBatchInsightDto } from "@rg/saves";
+import { batchNotice, keepInsight, nearDuplicateOf, type FitChoice, type NearCandidate, type SaveBatchInsightDto } from "@rg/saves";
 import type { Env } from "../env.js";
 import { forgetAccountLibrary } from "./account-library.js";
 import type { SavesSkip } from "./design-tools/types.js";
@@ -329,6 +329,8 @@ function noteAt(): SQL {
 export function insightRowsSql(userId: string, keptPosts: SQL): SQL {
   return sql`select ins_p.id as post_id, ins_p.url as url, coalesce(nullif(ins_p.creator_handle, ''), ins_p.creator_name) as creator,
       ins_p.first_seen_at as seen, ins_j.key as idx, trim(ins_j.value) as body,
+      (select json_group_array(json_extract(ins_m.value, '$.summary')) from json_each(${extractionDoc(sql.raw("ins_p.extraction"))}, '$.moves') ins_m
+        where json_type(ins_m.value, '$.summary') = 'text') as sums,
       row_number() over (partition by trim(ins_j.value) order by ins_p.first_seen_at, ins_p.id, ins_j.key) as nth
     from saved_posts ins_p, json_each(${extractionDoc(sql.raw("ins_p.extraction"))}, '$.insights') ins_j
     where ins_p.user_id = ${userId} and ins_p.id in (${keptPosts})
@@ -337,19 +339,24 @@ export function insightRowsSql(userId: string, keptPosts: SQL): SQL {
 
 /**
  * `insightRowsSql`'s first `max` distinct insights, in order, as ONE JSON value (a scalar subquery):
- * `[[postId, url, creator, text, seen, index]]` — sort by `seen`, `postId`, `index` (`insightsOf`) rather than trust an
+ * `[[postId, url, creator, text, seen, index, [the post's move summaries]]]` — sort by `seen`, `postId`, `index` (`insightsOf`) rather than trust an
  * aggregate's order.
  */
 export function insightsJsonSql(userId: string, keptPosts: SQL, max: number): SQL {
-  return sql`(select json_group_array(json_array(ins_i.post_id, ins_i.url, ins_i.creator, ins_i.body, ins_i.seen, ins_i.idx)) from (
+  return sql`(select json_group_array(json_array(ins_i.post_id, ins_i.url, ins_i.creator, ins_i.body, ins_i.seen, ins_i.idx, json(ins_i.sums))) from (
       select * from (${insightRowsSql(userId, keptPosts)}) where nth = 1 order by seen, post_id, idx limit ${max}) ins_i)`;
 }
 
 /** One insight of a batch's post, as `insightsJsonSql` reads it (the batch page's shape): its text and creator a model's. */
 export type BatchInsight = SaveBatchInsightDto;
 
-/** `insightsJsonSql`'s value, read and put in the posts' order; [] when it doesn't read. */
+/** `insightsJsonSql`'s value, put in the posts' order, keeping only what `keepInsight` does (no restated dose or move description); [] when it doesn't read. */
 export function insightsOf(raw: unknown): BatchInsight[] {
+  return survivorsOf(raw).map(({ postId, url, creator, text }) => ({ postId, url, creator, text }));
+}
+
+/** `insightsOf`'s survivors with their place in their post (`idx`), which Save's memory ids are made of. */
+function survivorsOf(raw: unknown): Array<BatchInsight & { seen: string; idx: number }> {
   let list: unknown = raw;
   if (typeof raw === "string") {
     try {
@@ -360,15 +367,14 @@ export function insightsOf(raw: unknown): BatchInsight[] {
   }
   if (!Array.isArray(list)) return [];
   const rows = list.flatMap((x): Array<BatchInsight & { seen: string; idx: number }> => {
-    const [postId, url, creator, text, seen, idx] = Array.isArray(x) ? (x as unknown[]) : [];
-    return typeof postId === "string" && typeof text === "string"
+    const [postId, url, creator, text, seen, idx, sums] = Array.isArray(x) ? (x as unknown[]) : [];
+    const summaries = Array.isArray(sums) ? sums.filter((v): v is string => typeof v === "string") : [];
+    return typeof postId === "string" && typeof text === "string" && keepInsight(text, summaries)
       ? [{ postId, url: textOrNull(url), creator: textOrNull(creator), text, seen: textOrNull(seen) ?? "", idx: typeof idx === "number" ? idx : 0 }]
       : [];
   });
   const cmp = (a: string, b: string) => (a < b ? -1 : a > b ? 1 : 0);
-  return rows
-    .sort((a, b) => cmp(a.seen, b.seen) || cmp(a.postId, b.postId) || a.idx - b.idx)
-    .map(({ postId, url, creator, text }) => ({ postId, url, creator, text }));
+  return rows.sort((a, b) => cmp(a.seen, b.seen) || cmp(a.postId, b.postId) || a.idx - b.idx);
 }
 
 /**
@@ -381,20 +387,20 @@ export function insightsOf(raw: unknown): BatchInsight[] {
  * place (`saved:<post>:<index>`), so a replay writes nothing. The unaliased `coach_memory` in the guard is its own
  * subquery's.
  */
-function insightWrites(db: Db, userId: string, kept: SQL, now: string) {
+function insightWrites(db: Db, userId: string, survivors: ReadonlyArray<BatchInsight & { idx: number }>, now: string) {
   const today = todayInZone(EARLIEST_ZONE, new Date(now));
-  const keptPosts = sql`select ${savedPostMoves.postId} from ${savedPostMoves} where ${kept}`;
+  const rows = JSON.stringify(survivors.map((i) => [i.postId, i.idx, i.text, i.url]));
   return db
     .insert(coachMemory)
     .select(
       sql`SELECT 'saved:' || i.post_id || ':' || i.idx, ${userId}, 'observation', i.body,
           json_object('source', ${SAVED_POST_SOURCE}, 'postId', i.post_id, 'url', i.url, 'at', ${now}),
           ${now}, NULL, 1, 0, 'inferred', NULL, case when i.url is not null then json_array(i.url) end, ${now}
-        FROM (${insightRowsSql(userId, keptPosts)}) i
-        WHERE i.nth = 1
-          AND NOT EXISTS (SELECT 1 FROM ${coachMemory} WHERE ${liveMemoryWhere(userId, today)} AND ${coachMemory.body} = i.body)
-        ORDER BY i.seen, i.post_id, i.idx
-        LIMIT ${INSIGHTS_PER_BATCH}`,
+        FROM (SELECT json_extract(j.value, '$[0]') AS post_id, json_extract(j.value, '$[1]') AS idx,
+            json_extract(j.value, '$[2]') AS body, json_extract(j.value, '$[3]') AS url, j.key AS ord
+          FROM json_each(${rows}) j) i
+        WHERE NOT EXISTS (SELECT 1 FROM ${coachMemory} WHERE ${liveMemoryWhere(userId, today)} AND ${coachMemory.body} = i.body)
+        ORDER BY i.ord`,
     )
     .onConflictDoNothing();
 }
@@ -489,6 +495,7 @@ export async function saveBatch(db: Db, userId: string, batchId: string, now: st
       status: saveBatches.status,
       moves: sql<number>`(SELECT count(*) FROM ${personalMoves} WHERE ${movesToKeep})`,
       links: sql<number>`(SELECT count(*) FROM ${savedPostMoves} WHERE ${pendingLinks})`,
+      insights: insightsJsonSql(userId, sql`select ${savedPostMoves.postId} from ${savedPostMoves} where ${keptLinks}`, INSIGHTS_PER_BATCH),
     })
     .from(saveBatches)
     .where(and(eq(saveBatches.id, batchId), eq(saveBatches.userId, userId)))
@@ -523,7 +530,7 @@ export async function saveBatch(db: Db, userId: string, batchId: string, now: st
       )
       .onConflictDoNothing(),
     // While the links are still pending: they say which posts were kept.
-    insightWrites(db, userId, keptLinks, now),
+    insightWrites(db, userId, survivorsOf(batch.insights), now),
     db.update(savedPostMoves).set({ status: "saved" }).where(keptLinks),
   ] as const;
   const thisBatch = and(eq(saveBatches.id, batchId), eq(saveBatches.userId, userId));

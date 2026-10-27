@@ -47,10 +47,10 @@ describe("buildExtractBody", () => {
     const system: string = j.messages[0].content;
     expect(system).toContain('"insights":["<=5 of <=200 chars"]');
     expect(system).toContain(
-      "insights: what the post says about when, why or how often to do this, beyond any one move's steps (at most 5 of <=200 chars; empty when none).",
+      "insights: guidance the post gives about when, why, how often or who it suits — never a dose (sets, reps, seconds) and never a description of one move (that is the move's summary); at most 5 of <=200 chars; empty when none.",
     );
     expect(system).toContain("purpose (<=160: what the post says this move is for, or when to do it)");
-    expect(EXTRACT_PROMPT_VERSION).toBe("extract-2");
+    expect(EXTRACT_PROMPT_VERSION).toBe("extract-3");
   });
   it("carries the video by link when asked, with no inline bytes", () => {
     const url = ["ht", "tps://synthetic.cdninstagram.com/v/post.mp4?sig=1"].join("");

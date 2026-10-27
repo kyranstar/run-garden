@@ -128,7 +128,11 @@ export async function seedSavedBatch(
 }
 
 /** Text of `n` characters exactly, starting with `lead`. */
-export const longText = (lead: string, n: number): string => (lead + " " + "slow and even through the whole range ".repeat(20)).slice(0, n);
+export const longText = (lead: string, n: number, filler = "slow and even through the whole range "): string =>
+  (lead + " " + filler.repeat(20)).slice(0, n);
+
+/** An insight's filler: words no move summary shares, so the insight tightening (`keepInsight`) keeps it. */
+const INSIGHT_FILLER = "gentle pace until warm, later build volume carefully ";
 
 /**
  * Twelve new moves at their longest — an 80-character name, a 160-character summary and purpose (each link's note) —
@@ -141,7 +145,7 @@ export function longBatchPosts(lead = "LONG"): SavedPostSpec[] {
     summary: longText(`${lead}-reading-${p}`, 300),
     handle: longText(`${lead}-handle-${p}`, 64).replace(/ /g, "_"),
     url: `https://example.com/${"p".repeat(120)}/${lead}-${p}`,
-    insights: [0, 1, 2, 3, 4].map((i) => longText(`${lead}-insight-${p}-${i}`, 200)),
+    insights: [0, 1, 2, 3, 4].map((i) => longText(`${lead}-insight-${p}-${i}`, 200, INSIGHT_FILLER)),
     moves: [0, 1, 2].map((m) => ({
       draft: savedMoveDraft(longText(`${lead} move ${p * 3 + m}`, 80), {
         summary: longText(`${lead}-summary-${p * 3 + m}`, 160),

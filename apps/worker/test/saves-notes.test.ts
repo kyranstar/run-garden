@@ -175,21 +175,21 @@ describe("Save keeps a post's insights in the coach's memory", () => {
 
   it("at most 5 a post and 20 a batch, in the posts' order and each post's own; only words — never a blank or a number", async () => {
     // Stored past the schema's 5 (an extraction is read as stored): the first 5 places count.
-    const a = await matched("a", [move("Zorbex quad shuffle", QUAD_PURPOSE)], ["a0"]);
+    const a = await matched("a", [move("Zorbex quad shuffle", QUAD_PURPOSE)], ["Alpha 0"]);
     await db.update(savedPosts).set({
-      extraction: { kind: "routine", summary: "s", themes: [], moves: [move("Zorbex quad shuffle", QUAD_PURPOSE)], insights: ["a0", 7, "  ", "a3", "a4", "a5", "a6", "a7"] },
+      extraction: { kind: "routine", summary: "s", themes: [], moves: [move("Zorbex quad shuffle", QUAD_PURPOSE)], insights: ["Alpha 0", 7, "  ", "Alpha 3", "Alpha 4", "Alpha 5", "Alpha 6", "Alpha 7"] },
     }).where(eq(savedPosts.id, a));
     for (let p = 1; p <= 5; p++) {
-      await matched(`p${p}`, [move("Zorbex quad shuffle", QUAD_PURPOSE)], [0, 1, 2, 3, 4].map((i) => `p${p}-${i}`), at(p / 10));
+      await matched(`p${p}`, [move("Zorbex quad shuffle", QUAD_PURPOSE)], [0, 1, 2, 3, 4].map((i) => `Plan ${p}-${i}`), at(p / 10));
     }
     const batchId = (await assembleBatch(db, matchEnv, userId, at(1)))!;
     await saveBatch(db, userId, batchId, NOW);
     const written = await bodies();
     expect(written).toHaveLength(20);
     // Post a's: index 0, 3 and 4 (1 is a number, 2 blank; 5 and on past the cap).
-    expect(written.filter((x) => x.startsWith("a")).sort()).toEqual(["a0", "a3", "a4"]);
+    expect(written.filter((x) => x.startsWith("Alpha")).sort()).toEqual(["Alpha 0", "Alpha 3", "Alpha 4"]);
     // Then the posts in order: p1 to p3 whole, p4 two (the twentieth), p5 none.
-    const per = (lead: string) => written.filter((x) => x.startsWith(`${lead}-`)).length;
+    const per = (lead: string) => written.filter((x) => x.startsWith(`Plan ${lead.slice(1)}-`)).length;
     expect([per("p1"), per("p2"), per("p3"), per("p4"), per("p5")]).toEqual([5, 5, 5, 2, 0]);
   });
 
@@ -223,6 +223,26 @@ describe("Save keeps a post's insights in the coach's memory", () => {
     expect(fresh.sort()).toEqual(
       Array.from({ length: 4 }, (_, i) => [0, 1, 2, 3, 4].map((n) => `Insight ${i}-${n}.`)).flat().sort(),
     );
+  });
+});
+
+describe("an insight that only restates a dose or a move is not kept", () => {
+  it("a dose-only insight and one that repeats a move's summary are never kept, shown, or read by the coach — Save still 6 statements", async () => {
+    const guidance = "Do the quad shuffle before a run, not after.";
+    const dose = "3 sets of 10 reps";
+    const restated = "Perform 3 sets of each zorbex movement to build quad wobble control";
+    const a = await matched(
+      "a",
+      [{ ...move("Zorbex quad shuffle", QUAD_PURPOSE), summary: "Builds quad wobble control through the front thigh." }],
+      [dose, restated, guidance],
+    );
+    const batchId = (await assembleBatch(db, matchEnv, userId, at(1)))!;
+    const page = await call("GET", `/batches/${batchId}`);
+    expect(page.body.insights).toEqual([{ postId: a, url: "https://example.com/p/a", creator: "coach_a", text: guidance }]);
+    statements.length = 0;
+    await saveBatch(db, userId, batchId, NOW);
+    expect(statements.length).toBe(6);
+    expect(await bodies()).toEqual([guidance]);
   });
 });
 
