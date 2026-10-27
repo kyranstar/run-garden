@@ -108,6 +108,10 @@ export const plannedWorkouts = sqliteTable(
     workoutDoc: text("workout_doc"),
     /** Bumped on every workout_doc write; NULL = no doc. */
     workoutDocRev: integer("workout_doc_rev"),
+    /**
+     * The program name the watch holds a copy of this row under when the app did not push that copy (set when a coach or watch-plan session is adopted into a Studio document; cleared when the copy is gone).
+     */
+    watchCopyName: text("watch_copy_name"),
     createdAt: text("created_at").notNull(),
     updatedAt: text("updated_at").notNull(),
   },
