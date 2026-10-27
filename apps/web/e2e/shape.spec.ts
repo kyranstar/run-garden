@@ -23,12 +23,12 @@ async function mainNav(page: Page) {
 /** The coach's sheet: a dialog named Coach. */
 const coachSheet = (page: Page) => page.getByRole("dialog", { name: "Coach" });
 
-test("the nav: Today · Plan · Coach · Growth, the coach a button that opens its sheet", async ({ page }) => {
+test("the nav: Today · Plan · Coach · Studio · Growth, the coach a button that opens its sheet", async ({ page }) => {
   await page.goto("/");
   const nav = await mainNav(page);
   await expect(nav).toBeVisible();
   const names = await nav.locator(":scope > a, :scope > button").allInnerTexts();
-  expect(names.map((n) => n.trim())).toEqual(["Today", "Plan", "Coach", "Growth"]);
+  expect(names.map((n) => n.trim())).toEqual(["Today", "Plan", "Coach", "Studio", "Growth"]);
   await nav.getByRole("link", { name: "Plan" }).click();
   await expect(page).toHaveURL(/\/plan$/);
   await nav.getByRole("link", { name: "Growth" }).click();
