@@ -1,13 +1,14 @@
 /**
- * "FROM YOUR SAVES" — what the review screen draws from (saves.tsx): a batch's facts, which rows show and what each
- * row's sheet offers, the edit form and the patch it sends (only what changed), and a refused write in plain words; and
- * the open batch's words on Today and in the coach (saves-today-card.tsx, coach-saves.tsx).
+ * "FROM YOUR SAVES" — what the review screen draws from (saves.tsx): a batch's facts, the page's rows (one per new move,
+ * its line of purpose, the tally of the owner's choices) and what each row's sheet offers, the edit form and the patch
+ * it sends (only what changed), and a refused write in plain words; and the open batch's words on Today and in the
+ * coach (saves-today-card.tsx, coach-saves.tsx).
  * Pure: no React, no network.
  */
 import { ApiError } from "@rg/api-client";
 import { dayLabel } from "@rg/domain";
 import { DOSE_TYPES, PROFILES, type Dose, type DoseType, type ExerciseRecord } from "@rg/exercise-library";
-import type { OpenSavesBatchDto, OpenSavesDto, PersonalMovePatch, SaveBatchDto, SaveBatchRowDto } from "@rg/saves";
+import { numberWord, type FitChoice, type OpenSavesBatchDto, type OpenSavesDto, type PersonalMovePatch, type SaveBatchDto, type SaveBatchRowDto } from "@rg/saves";
 
 /** The batches (`/studio/saves`), or one batch's rows. */
 export const savesHref = (batchId?: string): string => (batchId ? `/studio/saves/${encodeURIComponent(batchId)}` : "/studio/saves");
@@ -23,7 +24,7 @@ export function dayOf(instant: string): string {
 /** A batch by its day: when it was released (a held one: when it was made). */
 export const batchDay = (b: SaveBatchDto): string => dayOf(b.releasedAt ?? b.createdAt);
 
-/** "Hips · 2 new · 1 linked · Saved": the theme, the counts that aren't zero, and where it stands. */
+/** "Hips · 2 new · 1 linked · Saved": the theme, the counts that aren't zero, and where it stands — put aside included. */
 export function batchFacts(b: SaveBatchDto): string[] {
   return [
     ...(b.theme ? [b.theme] : []),
@@ -31,11 +32,9 @@ export function batchFacts(b: SaveBatchDto): string[] {
     ...(b.counts.linked ? [`${b.counts.linked} linked`] : []),
     ...(b.counts.removed ? [`${b.counts.removed} removed`] : []),
     ...(b.status === "saved" ? ["Saved"] : b.status === "held" ? ["Held"] : b.status === "dismissed" ? ["Dismissed"] : []),
+    ...(b.dismissedAt && !b.fittedAt ? ["Put aside"] : []),
   ];
 }
-
-/** The rows drawn: a removed one is gone from the list. */
-export const shownRows = (rows: readonly SaveBatchRowDto[]): SaveBatchRowDto[] => rows.filter((r) => r.status !== "removed");
 
 export interface RowActions {
   /** A new move, or one of the owner's own active moves: theirs to change. Never the library's. */
@@ -57,16 +56,95 @@ export function rowActions(row: SaveBatchRowDto, ownStatus?: "active" | "archive
   };
 }
 
-/** "Save these" is there while the batch is unsaved and a row is still kept. */
-export const canSave = (b: SaveBatchDto, rows: readonly SaveBatchRowDto[]): boolean =>
-  (b.status === "released" || b.status === "held") && rows.some((r) => r.status === "pending");
+/** Whether a batch can be fitted in ("Fit these in", "Fit them in"): released or saved, not fitted in, no fit at work. */
+export const canFit = (b: SaveBatchDto): boolean => !b.fittedAt && !b.fitting && (b.status === "released" || b.status === "saved");
 
-/** Whether the page offers "Fit these in" (final review I3): a saved batch nothing has fitted in yet. */
-export const canFit = (b: SaveBatchDto): boolean => b.status === "saved" && !b.fittedAt;
-
-/** How many batches wait for the owner (final review I2): released and not saved, or saved and not fitted in. */
+/** How many batches wait for the owner: released or saved, and not fitted in yet (put aside too). */
 export const waitingBatches = (batches: readonly SaveBatchDto[]): number =>
-  batches.filter((b) => b.status === "released" || canFit(b)).length;
+  batches.filter((b) => !b.fittedAt && (b.status === "released" || b.status === "saved")).length;
+
+// ── The batch page: one row per new move (the saves flow redesigned §3.3) ──────────────────────────────────────────
+
+/** A new move's row: its name, one line of what it is for, and its first kept link (the sheet's). */
+export interface PageRow {
+  moveId: string;
+  row: SaveBatchRowDto;
+  name: string;
+  purpose: string;
+  /** "Check this" on any of its kept links. */
+  check: boolean;
+  /** The move it looks like (a near-duplicate), from the first of its kept links that names one. */
+  like?: { id: string; name: string };
+}
+
+/** A move the owner already has: by the name it has among their moves. */
+export interface OwnedRow {
+  moveId: string;
+  name: string;
+  row: SaveBatchRowDto;
+}
+
+/** The longest line of purpose a row shows. */
+const PURPOSE_MAX = 80;
+
+/** Cut between words to at most `max` characters, "…" at the end when anything was cut. */
+function cutByWord(s: string, max: number): string {
+  if (s.length <= max) return s;
+  const room = s.slice(0, max);
+  const space = room.lastIndexOf(" ");
+  return `${(space > 0 ? room.slice(0, space) : room.slice(0, max - 1)).trimEnd()}…`;
+}
+
+/** What the move is for, in one line: the post's purpose, else its summary's first sentence — at most 80 characters. */
+export function purposeLine(row: SaveBatchRowDto): string {
+  const purpose = row.move.purpose?.trim();
+  const line = purpose || (row.move.summary.trim().match(/^.*?[.!?](?=\s|$)/)?.[0] ?? row.move.summary.trim());
+  return cutByWord(line, PURPOSE_MAX);
+}
+
+/**
+ * The page's rows: one per distinct move of the kept rows (a removed row is gone), in the posts' order, each holding
+ * its first kept link — the new moves, and apart from them the moves already the owner's.
+ */
+export function pageRowsOf(rows: readonly SaveBatchRowDto[]): { fresh: PageRow[]; owned: OwnedRow[] } {
+  const fresh = new Map<string, PageRow>();
+  const owned = new Map<string, OwnedRow>();
+  for (const row of rows) {
+    if (row.status === "removed") continue;
+    const id = row.move.id;
+    const seen = fresh.get(id);
+    if (seen) {
+      seen.check ||= row.move.check;
+      if (!seen.like && row.move.like) seen.like = row.move.like;
+      continue;
+    }
+    if (owned.has(id)) continue;
+    if (row.move.kind === "new") {
+      fresh.set(id, { moveId: id, row, name: row.move.name, purpose: purposeLine(row), check: row.move.check, ...(row.move.like ? { like: row.move.like } : {}) });
+    } else owned.set(id, { moveId: id, name: row.move.linkedName ?? row.move.name, row });
+  }
+  return { fresh: [...fresh.values()], owned: [...owned.values()] };
+}
+
+/** A move's pending links: every post of the batch that shows it, still the owner's to change. */
+export const pendingLinksOf = (rows: readonly SaveBatchRowDto[], moveId: string): string[] =>
+  rows.filter((r) => r.status === "pending" && r.move.id === moveId).map((r) => r.postMoveId);
+
+/**
+ * The foot's tally of the owner's choices over these moves (a move with no choice is on the coach's call): "2 in · 1 out
+ * · 6 on the coach's call", zero parts left out; every move on the coach's call: "On the coach's call", "Both on the
+ * coach's call", "All nine on the coach's call". No moves: nothing.
+ */
+export function tallyLine(choices: Readonly<Record<string, FitChoice | undefined>>, moveIds: readonly string[]): string {
+  const n = moveIds.length;
+  if (n === 0) return "";
+  const of = (c: FitChoice) => moveIds.filter((id) => choices[id] === c).length;
+  const inc = of("include");
+  const out = of("skip");
+  const coach = n - inc - out;
+  if (coach === n) return n === 1 ? "On the coach's call" : n === 2 ? "Both on the coach's call" : `All ${numberWord(n)} on the coach's call`;
+  return [inc ? `${inc} in` : null, out ? `${out} out` : null, coach ? `${coach} on the coach's call` : null].filter(Boolean).join(" · ");
+}
 
 // ── The open batch: the Today card, the coach's chip and its saves card (the saves flow redesigned §3.1–§3.2) ──────────
 
@@ -230,10 +308,9 @@ export function patchOf(rec: ExerciseRecord, f: MoveForm): PersonalMovePatch | n
 
 // ── A refused write ──────────────────────────────────────────────────────────────────────────────────────────────────
 
-export type Write = "save" | "edit" | "match" | "remove";
-
-/** Why a write did not happen, in plain words: the library's own words for an edit it refuses. */
-export function writeError(e: unknown, what: Write): string {
+/** Why a row's write (an edit, a re-match, a removal) did not happen, in plain words: the library's own words for an
+ * edit it refuses. */
+export function writeError(e: unknown): string {
   if (e instanceof ApiError) {
     const body = e.body as { error?: unknown; issues?: unknown } | null;
     if (e.status === 404) return "That isn't there any more.";
@@ -242,8 +319,8 @@ export function writeError(e: unknown, what: Write): string {
       if (issues.length) return issues.join(" · ");
     }
     if (e.status === 422) return "That edit can't be saved.";
-    if (e.status === 409) return what === "save" ? "This batch has changed. Look again." : "That row has changed. Look again.";
-    return what === "save" ? "Couldn't save these. Try again." : "Couldn't save that. Try again.";
+    if (e.status === 409) return "That row has changed. Look again.";
+    return "Couldn't save that. Try again.";
   }
-  return what === "save" ? "Saving needs a connection." : "That needs a connection.";
+  return "That needs a connection.";
 }

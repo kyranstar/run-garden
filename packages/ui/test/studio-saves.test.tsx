@@ -1,9 +1,11 @@
 // @vitest-environment jsdom
 /**
- * Saved-posts import, Task 15 — "FROM YOUR SAVES", THE REVIEW SCREEN (`/studio/saves`, `/studio/saves/:batchId`): the
- * batches, then a batch's rows (New / Linked to {name} / Check this), then a move's sheet — Edit, Not this move,
- * Same as…, Remove, Ask the coach — and Save these at the foot. A model's words (names, summaries, creators) are text,
- * never markup; a post's address is a link only when it is a web page's. Synthetic data only (example.com, made-up names).
+ * "FROM YOUR SAVES", THE REVIEW SCREEN (`/studio/saves`, `/studio/saves/:batchId`; saved-posts import Task 15, the saves
+ * flow redesigned §3.3): the batches — one put aside reads so, and offers Fit them in — then a batch's page: "{n} new
+ * moves", the one bold line, one row per new move (its name, one line of what it is for, Skip | Coach | Include), the
+ * moves already yours folded, and a sticky foot with the tally and Fit these in; then a move's sheet — Edit, Not this
+ * move, Same as…, Remove, Ask the coach. A model's words (names, summaries, creators) are text, never markup; a post's
+ * address is a link only when it is a web page's. Synthetic data only (example.com, made-up names).
  */
 import "fake-indexeddb/auto";
 import { act, createElement } from "react";
@@ -11,12 +13,12 @@ import { createRoot, type Root } from "react-dom/client";
 import { MemoryRouter, Route, Routes, useLocation } from "react-router-dom";
 import { QueryClientProvider } from "@tanstack/react-query";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import type { PersonalMovesDto } from "@rg/api-client";
+import { OPEN_SAVES_QUERY, savesBatchQuery, type PersonalMovesDto } from "@rg/api-client";
 import { EXERCISES, type ExerciseRecord } from "@rg/exercise-library";
-import { FIT_SAVES_REQUEST, type SaveBatchDetailDto, type SaveBatchDto, type SaveBatchRowDto } from "@rg/saves";
+import { FIT_SAVES_REQUEST, type FitChoice, type SaveBatchDetailDto, type SaveBatchDto, type SaveBatchRowDto } from "@rg/saves";
 import { StudioRoute } from "../src/app.js";
 import { CoachOpenContext, type CoachOpener } from "../src/screens/studio/coach-ask.js";
-import { patchOf, formOf } from "../src/screens/studio/saves-model.js";
+import { FITTING_LINE, OPEN_FIRST_LINE, patchOf, formOf } from "../src/screens/studio/saves-model.js";
 import { DEVICE_PREFS, libraryDto, placesDto, primedClient, profileDto, todayDto } from "./studio-fixtures.js";
 
 (globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
@@ -29,16 +31,21 @@ function personal(id: string, name: string, summary: string): ExerciseRecord {
   return { ...rest, id, name, legacyIds: [], easier: [], harder: [], text: { ...base.text, summary } };
 }
 const QUAD = personal("myZorbexQuadShuffle1a2b3c", "Zorbex quad shuffle", "Shuffle the quads, slow and even.");
-const NECK = personal("myZorbexNeckNod4d5e6f", "Zorbex neck nod", "Nod slowly, the jaw soft.");
+const NECK = personal("myZorbexNeckNod4d5e6f", "Zorbex neck nod", "Nod slowly, the jaw soft. Then rest.");
+const CALF = personal("myZorbexCalfRocker7j8k9l", "Zorbex calf rocker", "Rock heel to toe.");
 const LANTERN = personal("myLanternReach7g8h9i", "Lantern reach", "Reach long and slow, the hips level.");
 const HIP = EXERCISES.find((e) => e.name === "90/90 hip switches")!;
 const HOSTILE = '<img src=x onerror="alert(1)">';
 
 const BATCH: SaveBatchDto = {
-  id: "b1", status: "released", notice: "From your saves: 2 new moves (1 hip, 1 neck), 1 you already had.", theme: null,
-  createdAt: "2026-10-23T10:00:00.000Z", releasedAt: "2026-10-23T10:00:00.000Z", savedAt: null, fittedAt: null, counts: { new: 2, linked: 1, removed: 0 },
+  id: "b1", status: "released", notice: "From your saves: 3 new moves (1 hip, 1 neck, 1 calf), 1 you already had.", theme: null,
+  createdAt: "2026-10-23T10:00:00.000Z", releasedAt: "2026-10-23T10:00:00.000Z", savedAt: null, fittedAt: null, counts: { new: 3, linked: 1, removed: 0 },
   dismissedAt: null, fitStartedAt: null, fitting: false,
 };
+/**
+ * Three posts: two share Zorbex quad shuffle; one new move is flagged, like a move of the owner's (Lantern reach); one
+ * library move the owner already has (90/90 hip switches).
+ */
 const ROWS: SaveBatchRowDto[] = [
   {
     postMoveId: "pm1", position: 0, status: "pending", post: { url: "https://example.com/p/a", creator: "coach_a", kind: "routine" },
@@ -50,7 +57,19 @@ const ROWS: SaveBatchRowDto[] = [
   },
   {
     postMoveId: "pm3", position: 0, status: "pending", post: { url: "javascript:alert(1)", creator: HOSTILE, kind: "single_move" },
-    move: { id: NECK.id, name: NECK.name, summary: NECK.text.summary, kind: "new", check: true, checkWhy: ["low_confidence", "inferred_dose"], seenDose: null, purpose: null, choice: null }, record: NECK,
+    move: {
+      id: NECK.id, name: NECK.name, summary: NECK.text.summary, kind: "new", check: true, checkWhy: ["low_confidence", "inferred_dose", "near_duplicate"], seenDose: "5 slow",
+      purpose: null, like: { id: LANTERN.id, name: LANTERN.name }, choice: null,
+    },
+    record: NECK,
+  },
+  {
+    postMoveId: "pm4", position: 0, status: "pending", post: { url: "https://example.com/p/c", creator: "coach_c", kind: "routine" },
+    move: { id: QUAD.id, name: QUAD.name, summary: QUAD.text.summary, kind: "new", check: false, seenDose: "2 x 12", purpose: "Warms the knees.", choice: null }, record: QUAD,
+  },
+  {
+    postMoveId: "pm5", position: 1, status: "pending", post: { url: "https://example.com/p/c", creator: "coach_c", kind: "routine" },
+    move: { id: CALF.id, name: CALF.name, summary: CALF.text.summary, kind: "new", check: false, seenDose: "20 reps", purpose: "Wakes the calves.", choice: null }, record: CALF,
   },
 ];
 const PERSONAL: PersonalMovesDto = { moves: [{ record: LANTERN, status: "active", links: [] }], merged: [] };
@@ -69,11 +88,30 @@ interface Call {
 }
 const json = (b: unknown, status = 200) => new Response(JSON.stringify(b), { status, headers: { "Content-Type": "application/json" } });
 
-function serve(o: { insights?: SaveBatchDetailDto["insights"]; batch?: Partial<SaveBatchDto> } = {}): Call[] {
+interface Serve {
+  insights?: SaveBatchDetailDto["insights"];
+  batch?: Partial<SaveBatchDto>;
+  /** The rows' own status (a fitted batch's are saved). */
+  rowStatus?: SaveBatchRowDto["status"];
+  /** Only these rows (by postMoveId). */
+  only?: string[];
+  /** Each move's stored fit choice. */
+  choices?: Record<string, FitChoice>;
+  /** `/fit`'s answer instead of a fit. */
+  fit?: Response;
+  /** `/rematch`'s answer instead of a re-match. */
+  rematch?: Response;
+}
+
+function serve(o: Serve = {}): Call[] {
   const calls: Call[] = [];
   const insights = "insights" in o ? o.insights : INSIGHTS;
   let batch = { ...BATCH, ...o.batch };
-  let rows = ROWS.map((r) => ({ ...r }));
+  let rows: SaveBatchRowDto[] = ROWS.filter((r) => !o.only || o.only.includes(r.postMoveId)).map((r) => ({
+    ...r,
+    status: o.rowStatus ?? r.status,
+    move: { ...r.move, choice: r.move.kind === "new" ? (o.choices?.[r.move.id] ?? null) : null },
+  }));
   vi.stubGlobal(
     "fetch",
     vi.fn(async (input: string, init?: RequestInit) => {
@@ -84,10 +122,12 @@ function serve(o: { insights?: SaveBatchDetailDto["insights"]; batch?: Partial<S
       if (method === "GET" && path === "/api/my-saves/batches") return json({ batches: [batch] });
       if (method === "GET" && path === "/api/my-saves/batches/b1") return json({ batch, rows, ...(insights ? { insights } : {}) } satisfies SaveBatchDetailDto);
       if (method === "GET" && path === "/api/my-saves/batches/gone") return json({ error: "not_found" }, 404);
-      if (method === "POST" && path === "/api/my-saves/batches/b1/save") {
-        batch = { ...batch, status: "saved", savedAt: "2026-10-24T12:00:00.000Z" };
-        rows = rows.map((r) => (r.status === "pending" ? { ...r, status: "saved" } : r));
-        return json({ moves: 2, links: 3 });
+      if (method === "GET" && path === "/api/my-saves/open") return json({ open: null });
+      if (method === "POST" && path === "/api/my-saves/batches/b1/fit") {
+        if (o.fit) return o.fit.clone();
+        batch = { ...batch, status: "saved", savedAt: "2026-10-24T12:00:00.000Z", dismissedAt: null, fitStartedAt: "2026-10-24T12:00:00.000Z", fitting: true };
+        rows = rows.map((r) => (r.status === "pending" ? { ...r, status: "saved", move: { ...r.move, choice: body.choices[r.move.id] ?? null } } : r));
+        return json({ batchId: "b1", request: FIT_SAVES_REQUEST, moves: 3, links: 5 });
       }
       const rematch = /^\/api\/my-saves\/post-moves\/([^/]+)\/(rematch|remove)$/.exec(path);
       if (rematch && method === "POST") {
@@ -96,7 +136,18 @@ function serve(o: { insights?: SaveBatchDetailDto["insights"]; batch?: Partial<S
           rows = rows.map((r) => (r.postMoveId === id ? { ...r, status: "removed" } : r));
           return json({ ok: true });
         }
-        return json({ ok: true, move: { id: body.to ?? "myOwnMove000001", kind: body.to && !body.to.startsWith("my") ? "library" : "personal" } });
+        if (o.rematch) return o.rematch.clone();
+        // The owner's word settles the row: no Check this, no like; to a move of theirs, the row is already theirs.
+        const to = body.to as string | null;
+        const sibling = rows.find((r) => r.move.id === to && r.move.kind === "new");
+        rows = rows.map((r) => {
+          if (r.postMoveId !== id || to === null) return r;
+          const { like: _like, checkWhy: _why, ...move } = r.move;
+          if (sibling) return { ...r, move: { ...sibling.move }, record: sibling.record };
+          const own = to === LANTERN.id ? LANTERN : null;
+          return { ...r, move: { ...move, id: to, kind: "linked", linkedName: own?.name ?? to, check: false, choice: null }, ...(own ? { record: own } : {}) };
+        });
+        return json({ ok: true, move: { id: to ?? "myOwnMove000001", kind: to && !to.startsWith("my") ? "library" : "personal" } });
       }
       const edit = /^\/api\/my-saves\/moves\/([^/]+)$/.exec(path);
       if (edit && method === "PUT") {
@@ -185,9 +236,21 @@ const buttons = (scope: ParentNode = document) => [...scope.querySelectorAll<HTM
 const button = (name: string, scope: ParentNode = document) =>
   buttons(scope).find((b) => b.textContent?.trim() === name || b.getAttribute("aria-label") === name) ?? null;
 const dialog = (title: string) => [...document.querySelectorAll<HTMLElement>('[role="dialog"]')].find((d) => d.querySelector("h2")?.textContent === title) ?? null;
+/** A new move's row on the page. */
 const rowOf = (name: string) => [...document.querySelectorAll<HTMLElement>(".stu-save-row")].find((r) => r.querySelector(".stu-save-open")?.textContent === name) ?? null;
 const openRow = (name: string) => click(rowOf(name)?.querySelector(".stu-save-open"), `${name}'s row`);
+const rowNames = () => [...document.querySelectorAll<HTMLElement>(".stu-save-row .stu-save-open")].map((b) => b.textContent);
+/** A move already yours, unfolded. */
+const ownedOf = (name: string) => [...document.querySelectorAll<HTMLElement>(".stu-save-owned-row")].find((r) => r.querySelector(".stu-save-open")?.textContent === name) ?? null;
+const fold = () => buttons().find((b) => /^[▸▾] Already yours · \d+$/.test(b.textContent?.trim() ?? "")) ?? null;
+/** A row's Skip | Coach | Include: each radio's word and whether it is checked. */
+const control = (name: string) => rowOf(name)?.querySelector<HTMLElement>('[role="radiogroup"]') ?? null;
+const radios = (name: string) => [...(control(name)?.querySelectorAll<HTMLButtonElement>('[role="radio"]') ?? [])];
+const checked = (name: string) => radios(name).find((r) => r.getAttribute("aria-checked") === "true")?.textContent ?? null;
+const choose = (name: string, word: "Skip" | "Coach" | "Include") => click(radios(name).find((r) => r.textContent === word), `${name}'s ${word}`);
+const tally = () => document.querySelector(".stu-save-tally")?.textContent ?? null;
 const posts = (calls: Call[], path: string) => calls.filter((c) => c.method !== "GET" && c.path === path);
+const fitBody = (calls: Call[]) => posts(calls, "/api/my-saves/batches/b1/fit")[0]?.body;
 
 function setValue(input: HTMLInputElement | HTMLTextAreaElement, value: string) {
   const proto = input instanceof HTMLTextAreaElement ? HTMLTextAreaElement.prototype : HTMLInputElement.prototype;
@@ -197,25 +260,229 @@ function setValue(input: HTMLInputElement | HTMLTextAreaElement, value: string) 
 
 // ── The batch ──
 
-describe("a batch's rows", () => {
-  it("Rows render New / Linked to {name} / Check this, under From your saves", async () => {
+describe("a batch's page (the saves flow redesigned §3.3)", () => {
+  it("one row per new move, its purpose and control — no creator, no dose; Already yours folded: ▸ Already yours · 1", async () => {
     serve();
     mount("/studio/saves/b1");
     await until(() => !!rowOf(QUAD.name), "the rows");
-    expect(document.querySelector("h1")?.textContent).toBe("From your saves");
-    expect(rowOf(QUAD.name)!.textContent).toContain("New");
-    expect(rowOf(QUAD.name)!.textContent).not.toContain("Check this");
-    expect(rowOf("90/90 Hip Switch")!.textContent).toContain(`Linked to ${HIP.name}`);
-    expect(rowOf("90/90 Hip Switch")!.textContent).not.toContain("New");
-    expect(rowOf(NECK.name)!.textContent).toContain("New");
+    // Two posts show Zorbex quad shuffle: one row. The posts' order. The move already yours is not among them.
+    expect(rowNames()).toEqual([QUAD.name, NECK.name, CALF.name]);
+    // The row: its name, one line of what it is for (the post's purpose, else the summary's first sentence), the control.
+    const quad = rowOf(QUAD.name)!;
+    expect(quad.querySelector(".stu-save-purpose")?.textContent).toBe("Loosens the quads before a run.");
+    expect(rowOf(CALF.name)!.querySelector(".stu-save-purpose")?.textContent).toBe("Wakes the calves.");
+    expect(rowOf(NECK.name)!.querySelector(".stu-save-purpose")?.textContent).toBe("Nod slowly, the jaw soft.");
+    // A flagged move keeps its flag word, then the move it looks like.
     expect(rowOf(NECK.name)!.textContent).toContain("Check this");
-    // The dose as the post gave it.
-    expect(rowOf(QUAD.name)!.textContent).toContain("3 x 10");
-    // A creator's words are text: no element is made of them.
-    expect(rowOf(NECK.name)!.textContent).toContain(HOSTILE);
+    expect(rowOf(NECK.name)!.textContent).toContain(`like ${LANTERN.name}`);
+    expect(quad.textContent).not.toContain("Check this");
+    // No creator, no dose on a row — and no New label.
+    for (const name of [QUAD.name, NECK.name, CALF.name]) {
+      const row = rowOf(name)!.textContent!;
+      for (const word of ["coach_a", "coach_c", HOSTILE, "3 x 10", "2 x 12", "5 slow", "20 reps", "New"]) expect(row, `${name}: ${word}`).not.toContain(word);
+    }
     expect(document.querySelector("img")).toBeNull();
-    // Each row's open button is a fingertip's target, and Save these is there.
-    expect(button("Save these")).not.toBeNull();
+    // Skip | Coach | Include, named by its move; Coach to start.
+    for (const name of [QUAD.name, NECK.name, CALF.name]) {
+      expect(control(name)?.getAttribute("aria-label")).toBe(name);
+      expect(radios(name).map((r) => r.textContent)).toEqual(["Skip", "Coach", "Include"]);
+      expect(checked(name)).toBe("Coach");
+    }
+    // Already yours: one folded line; unfolded, the names — each opens its sheet, none has a control.
+    expect(fold()?.textContent?.trim()).toBe("▸ Already yours · 1");
+    expect(fold()?.getAttribute("aria-expanded")).toBe("false");
+    expect(text()).not.toContain(HIP.name);
+    await click(fold(), "Already yours");
+    expect(fold()?.textContent?.trim()).toBe("▾ Already yours · 1");
+    expect(fold()?.getAttribute("aria-expanded")).toBe("true");
+    const owned = ownedOf(HIP.name);
+    expect(owned).not.toBeNull();
+    expect(owned!.querySelector('[role="radiogroup"]')).toBeNull();
+    expect(owned!.textContent).not.toContain("8 each side");
+    await click(owned!.querySelector(".stu-save-open"), HIP.name);
+    expect(dialog("90/90 Hip Switch")).not.toBeNull();
+    // Nothing of the old page: no Save these.
+    expect(button("Save these")).toBeNull();
+  });
+
+  it("the title and the line, word for word", async () => {
+    serve();
+    mount("/studio/saves/b1");
+    await until(() => !!rowOf(QUAD.name), "the rows");
+    expect(document.querySelector("h1")?.textContent).toBe("3 new moves");
+    const line = document.querySelector<HTMLElement>(".stu-save-line")!;
+    expect(line.textContent).toBe("On Coach, the coach decides. Include is in. Skip stays out.");
+    expect([...line.querySelectorAll("b, strong")].map((b) => b.textContent)).toEqual(["Coach", "Include", "Skip"]);
+    act(() => root?.unmount());
+    host?.remove();
+    root = null;
+    vi.unstubAllGlobals();
+    // One new move: "1 new move".
+    serve({ only: ["pm2", "pm3"] });
+    mount("/studio/saves/b1");
+    await until(() => !!rowOf(NECK.name), "the row");
+    expect(document.querySelector("h1")?.textContent).toBe("1 new move");
+  });
+
+  it("the tally follows the controls: All three on the coach's call → 1 in · 1 out · 1 on the coach's call", async () => {
+    serve();
+    mount("/studio/saves/b1");
+    await until(() => !!rowOf(QUAD.name), "the rows");
+    expect(tally()).toBe("All three on the coach's call");
+    await choose(QUAD.name, "Include");
+    expect(checked(QUAD.name)).toBe("Include");
+    expect(tally()).toBe("1 in · 2 on the coach's call");
+    await choose(NECK.name, "Skip");
+    expect(checked(NECK.name)).toBe("Skip");
+    expect(tally()).toBe("1 in · 1 out · 1 on the coach's call");
+    await choose(QUAD.name, "Coach");
+    expect(tally()).toBe("1 out · 2 on the coach's call");
+    // The foot: the tally and one button.
+    const foot = document.querySelector(".stu-save-foot")!;
+    expect(buttons(foot).map((b) => b.textContent)).toEqual(["Fit these in"]);
+  });
+
+  it("the control is three radios: a fingertip's each, the arrows move the choice", async () => {
+    serve();
+    mount("/studio/saves/b1");
+    await until(() => !!rowOf(QUAD.name), "the rows");
+    const [skip, coach, include] = radios(QUAD.name);
+    // One stop in the tab order: the checked one.
+    expect([skip, coach, include].map((r) => r!.tabIndex)).toEqual([-1, 0, -1]);
+    await act(async () => {
+      coach!.dispatchEvent(new KeyboardEvent("keydown", { key: "ArrowRight", bubbles: true }));
+    });
+    expect(checked(QUAD.name)).toBe("Include");
+    expect(document.activeElement).toBe(radios(QUAD.name)[2]);
+    await act(async () => {
+      radios(QUAD.name)[2]!.dispatchEvent(new KeyboardEvent("keydown", { key: "ArrowRight", bubbles: true }));
+    });
+    expect(checked(QUAD.name)).toBe("Skip");
+  });
+
+  it("Fit these in fits with the choices — Coach sent as nothing — and opens the coach with the fit", async () => {
+    // Zorbex neck nod was included before (a fit since declined): it starts on Include.
+    const calls = serve({ choices: { [NECK.id]: "include" } });
+    mount("/studio/saves/b1");
+    await until(() => !!rowOf(QUAD.name), "the rows");
+    expect(checked(NECK.name)).toBe("Include");
+    expect(tally()).toBe("1 in · 2 on the coach's call");
+    await choose(QUAD.name, "Include");
+    await choose(CALF.name, "Skip");
+    await choose(NECK.name, "Coach");
+    const invalidated = vi.spyOn(client, "invalidateQueries");
+    await click(button("Fit these in"), "Fit these in");
+    await until(() => opener.open.mock.calls.length === 1, "the coach opened");
+    expect(fitBody(calls)).toEqual({ choices: { [QUAD.id]: "include", [CALF.id]: "skip" } });
+    expect(opener.open).toHaveBeenCalledWith({ fit: { batchId: "b1", request: FIT_SAVES_REQUEST }, seeing: null });
+    // The open batch, the batches and this batch read again (`savesChanged`), the library too: the save made the moves the owner's.
+    const keys = invalidated.mock.calls.map(([f]) => JSON.stringify(f?.queryKey));
+    for (const key of [OPEN_SAVES_QUERY, savesBatchQuery("b1"), ["library"]]) expect(keys).toContain(JSON.stringify(key));
+    // While the fit is at work: no button, no control — the line in its place.
+    await until(() => text().includes(FITTING_LINE), "Fitting in…");
+    expect(button("Fit these in")).toBeNull();
+    expect(control(QUAD.name)).toBeNull();
+    expect(posts(calls, "/api/my-saves/batches/b1/fit")).toHaveLength(1);
+    expect(posts(calls, "/api/my-saves/batches/b1/fit/cancel")).toHaveLength(0);
+  });
+
+  it("like {name} merges in one tap", async () => {
+    const calls = serve();
+    mount("/studio/saves/b1");
+    await until(() => !!rowOf(NECK.name), "the rows");
+    const like = button(`like ${LANTERN.name}`, rowOf(NECK.name)!);
+    expect(like).not.toBeNull();
+    const invalidated = vi.spyOn(client, "invalidateQueries");
+    await click(like, "like Lantern reach");
+    await until(() => posts(calls, "/api/my-saves/post-moves/pm3/rematch").length === 1, "the re-match");
+    expect(posts(calls, "/api/my-saves/post-moves/pm3/rematch")[0]!.body).toEqual({ to: LANTERN.id });
+    // Merged: the row is gone from the new moves, and is one of the owner's now.
+    await until(() => !rowOf(NECK.name), "the row merged");
+    expect(rowNames()).toEqual([QUAD.name, CALF.name]);
+    expect(document.querySelector("h1")?.textContent).toBe("2 new moves");
+    expect(fold()?.textContent?.trim()).toBe("▸ Already yours · 2");
+    expect(tally()).toBe("Both on the coach's call");
+    expect(invalidated.mock.calls.some(([f]) => JSON.stringify(f?.queryKey) === '["library"]')).toBe(true);
+  });
+
+  it("a like whose move has gone (merged by another row's Same as…): the page reads again, the like is plain text, no error", async () => {
+    const calls = serve({ rematch: json({ error: "not_found" }, 404) });
+    mount("/studio/saves/b1");
+    await until(() => !!rowOf(NECK.name), "the rows");
+    await click(button(`like ${LANTERN.name}`, rowOf(NECK.name)!), "like Lantern reach");
+    await until(() => !button(`like ${LANTERN.name}`, rowOf(NECK.name) ?? undefined), "the like as text");
+    expect(posts(calls, "/api/my-saves/post-moves/pm3/rematch")).toHaveLength(1);
+    expect(rowOf(NECK.name)!.textContent).toContain(`like ${LANTERN.name}`);
+    expect(document.querySelector('[role="alert"]')).toBeNull();
+    expect(document.querySelector('[role="status"]')?.textContent ?? "").toBe("");
+    // Read again.
+    expect(calls.filter((c) => c.method === "GET" && c.path === "/api/my-saves/batches/b1").length).toBeGreaterThan(1);
+  });
+
+  it("a removed move's row goes, and its choice is never sent", async () => {
+    const calls = serve();
+    mount("/studio/saves/b1");
+    await until(() => !!rowOf(NECK.name), "the rows");
+    await choose(NECK.name, "Include");
+    await choose(QUAD.name, "Skip");
+    expect(tally()).toBe("1 in · 1 out · 1 on the coach's call");
+    await openRow(NECK.name);
+    await click(button("Remove", dialog(NECK.name)!), "Remove");
+    await until(() => posts(calls, "/api/my-saves/post-moves/pm3/remove").length === 1 && !rowOf(NECK.name), "the removal");
+    expect(tally()).toBe("1 out · 1 on the coach's call");
+    // A move two posts show: Remove takes it out of both, and its row goes.
+    await openRow(QUAD.name);
+    await click(button("Remove", dialog(QUAD.name)!), "Remove");
+    await until(() => !rowOf(QUAD.name), "the two-post move removed");
+    expect(posts(calls, "/api/my-saves/post-moves/pm1/remove")).toHaveLength(1);
+    expect(posts(calls, "/api/my-saves/post-moves/pm4/remove")).toHaveLength(1);
+    expect(document.querySelector("h1")?.textContent).toBe("1 new move");
+    expect(tally()).toBe("On the coach's call");
+    await click(button("Fit these in"), "Fit these in");
+    await until(() => !!fitBody(calls), "the fit");
+    // Every move left on the coach's call: nothing sent.
+    expect(fitBody(calls)).toEqual({ choices: {} });
+  });
+
+  it("409 batch_open says finish the batch that is open first", async () => {
+    const calls = serve({ fit: json({ error: "batch_open" }, 409) });
+    mount("/studio/saves/b1");
+    await until(() => !!button("Fit these in"), "Fit these in");
+    await click(button("Fit these in"), "Fit these in");
+    await until(() => text().includes(OPEN_FIRST_LINE), "the refusal");
+    expect(opener.open).not.toHaveBeenCalled();
+    expect(posts(calls, "/api/my-saves/batches/b1/fit/cancel")).toHaveLength(0);
+    // The page stays as it was: its controls, its button.
+    expect(control(QUAD.name)).not.toBeNull();
+    expect(button("Fit these in")).not.toBeNull();
+  });
+
+  it("a fitted batch is read-only", async () => {
+    serve({ batch: { status: "saved", savedAt: "2026-10-24T12:00:00.000Z", fittedAt: "2026-10-24T13:00:00.000Z" }, rowStatus: "saved" });
+    mount("/studio/saves/b1");
+    await until(() => !!rowOf(QUAD.name), "the rows");
+    await settle(10);
+    expect(rowNames()).toEqual([QUAD.name, NECK.name, CALF.name]);
+    expect(document.querySelector('[role="radiogroup"]')).toBeNull();
+    expect(document.querySelector(".stu-save-foot")).toBeNull();
+    expect(button("Fit these in")).toBeNull();
+    expect(tally()).toBeNull();
+    // Nothing to merge any more: the like is words.
+    expect(button(`like ${LANTERN.name}`)).toBeNull();
+    expect(rowOf(NECK.name)!.textContent).toContain(`like ${LANTERN.name}`);
+    // A name still opens its sheet.
+    await openRow(QUAD.name);
+    expect(dialog(QUAD.name)).not.toBeNull();
+  });
+
+  it("a batch fitted in before but whose fit was declined (saved, not fitted) offers its controls and Fit these in again", async () => {
+    const calls = serve({ batch: { status: "saved", savedAt: "2026-10-24T12:00:00.000Z" }, rowStatus: "saved", choices: { [CALF.id]: "skip" } });
+    mount("/studio/saves/b1");
+    await until(() => !!button("Fit these in"), "Fit these in");
+    expect(checked(CALF.name)).toBe("Skip");
+    await click(button("Fit these in"), "Fit these in");
+    await until(() => !!fitBody(calls), "the fit");
+    expect(fitBody(calls)).toEqual({ choices: { [CALF.id]: "skip" } });
   });
 
   it("Notes, under the rows: one line per insight with its creator, as text — read-only, a hostile one inert (spec §17)", async () => {
@@ -233,10 +500,10 @@ describe("a batch's rows", () => {
     // Text, never markup; nothing in it to press or follow.
     expect(document.querySelector("img")).toBeNull();
     expect(section!.querySelector("a, button, input")).toBeNull();
-    // Under the rows, above Save these.
+    // Under the rows, above the foot.
     const rows = document.querySelector(".stu-tpl-list")!;
     expect(rows.compareDocumentPosition(section!) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
-    expect(section!.compareDocumentPosition(button("Save these")!) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+    expect(section!.compareDocumentPosition(button("Fit these in")!) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
   });
 
   it("no insights — none, or an answer kept from before they were read — no Notes", async () => {
@@ -252,50 +519,11 @@ describe("a batch's rows", () => {
     }
   });
 
-  it("Save these calls save; the batch reads as saved after", async () => {
-    const calls = serve();
-    mount("/studio/saves/b1");
-    await until(() => !!button("Save these"), "Save these");
-    await click(button("Save these"), "Save these");
-    await until(() => posts(calls, "/api/my-saves/batches/b1/save").length === 1 && !button("Save these"), "the save");
-    expect(text()).toContain("Saved");
-  });
-
-  it("after Save these, Fit these in opens the coach with the Fit request — the batch saved already, never saved twice (final review I3)", async () => {
-    const calls = serve();
-    mount("/studio/saves/b1");
-    await until(() => !!button("Save these"), "Save these");
-    // Before the save, the page offers Save these, not Fit these in.
-    expect(button("Fit these in")).toBeNull();
-    await click(button("Save these"), "Save these");
-    await until(() => !!button("Fit these in"), "Fit these in");
-    expect(button("Save these")).toBeNull();
-    await click(button("Fit these in"), "Fit these in");
-    expect(opener.open).toHaveBeenCalledWith({ request: FIT_SAVES_REQUEST });
-    expect(posts(calls, "/api/my-saves/batches/b1/save")).toHaveLength(1);
-  });
-
-  it("a saved batch not yet fitted in offers Fit these in when the page is opened again; one fitted in, nothing", async () => {
-    serve({ batch: { status: "saved", savedAt: "2026-10-24T12:00:00.000Z" } });
-    mount("/studio/saves/b1");
-    await until(() => !!button("Fit these in"), "Fit these in");
-    act(() => root?.unmount());
-    host?.remove();
-    root = null;
-    vi.unstubAllGlobals();
-    serve({ batch: { status: "saved", savedAt: "2026-10-24T12:00:00.000Z", fittedAt: "2026-10-24T13:00:00.000Z" } });
-    mount("/studio/saves/b1");
-    await until(() => !!rowOf(QUAD.name), "the rows");
-    await settle(10);
-    expect(button("Fit these in")).toBeNull();
-    expect(button("Save these")).toBeNull();
-  });
-
   it("a batch that isn't there says so", async () => {
     serve();
     mount("/studio/saves/gone");
     await until(() => text().includes("isn't there"), "the refusal");
-    expect(button("Save these")).toBeNull();
+    expect(button("Fit these in")).toBeNull();
   });
 });
 
@@ -334,7 +562,7 @@ describe("a move's sheet", () => {
     const sheet = dialog(NECK.name)!;
     // Why "Check this": the reasons the server gave, each a fact — never an explainer.
     const why = sheet.querySelector(".stu-save-why");
-    expect([...why!.querySelectorAll("span:not(.stu-sep)")].map((x) => x.textContent)).toEqual(["Low confidence", "Dose inferred"]);
+    expect([...why!.querySelectorAll("span:not(.stu-sep)")].map((x) => x.textContent)).toEqual(["Low confidence", "Dose inferred", "Looks like another move"]);
     // The ratings, folded under their summary: per profile, each attribute on its scale, the profile's note with them.
     const ratings = sheet.querySelector<HTMLDetailsElement>("details.stu-save-ratings")!;
     expect(ratings).not.toBeNull();
@@ -403,8 +631,9 @@ describe("a move's sheet", () => {
   it("Not this move makes the post's move its own; Remove takes the row out", async () => {
     const calls = serve();
     mount("/studio/saves/b1");
-    await until(() => !!rowOf("90/90 Hip Switch"), "the rows");
-    await openRow("90/90 Hip Switch");
+    await until(() => !!fold(), "the rows");
+    await click(fold(), "Already yours");
+    await click(ownedOf(HIP.name)?.querySelector(".stu-save-open"), HIP.name);
     // A linked row has no edit (the library's move is not the owner's to change).
     expect(button("Edit", dialog("90/90 Hip Switch")!)).toBeNull();
     await click(button("Not this move", dialog("90/90 Hip Switch")!), "Not this move");
@@ -416,7 +645,8 @@ describe("a move's sheet", () => {
     // A new move too: the post's own reading makes another, every time.
     expect(button("Not this move", dialog(QUAD.name)!)).not.toBeNull();
     await click(button("Remove", dialog(QUAD.name)!), "Remove");
-    await until(() => posts(calls, "/api/my-saves/post-moves/pm1/remove").length === 1 && !rowOf(QUAD.name), "the removal");
+    await until(() => posts(calls, "/api/my-saves/post-moves/pm4/remove").length === 1 && !rowOf(QUAD.name), "the removal");
+    expect(posts(calls, "/api/my-saves/post-moves/pm1/remove")).toHaveLength(1);
   });
 
   it("Edit sends what changed; an edit the library refuses says why", async () => {
@@ -452,11 +682,36 @@ describe("the batches", () => {
     mount("/studio/saves");
     await until(() => !!document.querySelector('a[href="/studio/saves/b1"]'), "the batch");
     expect(document.querySelector("h1")?.textContent).toBe("From your saves");
-    expect(text()).toContain("2 new");
+    expect(text()).toContain("3 new");
     expect(text()).toContain("1 linked");
+    // Not put aside: nothing to bring back.
+    expect(text()).not.toContain("Put aside");
+    expect(button("Fit them in")).toBeNull();
     await click(document.querySelector('a[href="/studio/saves/b1"]'), "the batch");
     expect(where).toBe("/studio/saves/b1");
     await until(() => !!rowOf(QUAD.name), "the rows");
+  });
+
+  it("the list: a dismissed batch reads Put aside and offers Fit them in", async () => {
+    const calls = serve({ batch: { dismissedAt: "2026-10-24T09:00:00.000Z" } });
+    mount("/studio/saves");
+    await until(() => !!document.querySelector('a[href="/studio/saves/b1"]'), "the batch");
+    const item = document.querySelector('a[href="/studio/saves/b1"]')!.closest("li")!;
+    expect(item.textContent).toContain("Put aside");
+    await click(button("Fit them in", item), "Fit them in");
+    await until(() => opener.open.mock.calls.length === 1, "the coach opened");
+    // The same fit as the coach's card: every move on the coach's call.
+    expect(fitBody(calls)).toEqual({ choices: {} });
+    expect(opener.open).toHaveBeenCalledWith({ fit: { batchId: "b1", request: FIT_SAVES_REQUEST }, seeing: null });
+  });
+
+  it("the list: Fit them in refused while another batch is open says so", async () => {
+    serve({ batch: { dismissedAt: "2026-10-24T09:00:00.000Z" }, fit: json({ error: "batch_open" }, 409) });
+    mount("/studio/saves");
+    await until(() => !!button("Fit them in"), "Fit them in");
+    await click(button("Fit them in"), "Fit them in");
+    await until(() => text().includes(OPEN_FIRST_LINE), "the refusal");
+    expect(opener.open).not.toHaveBeenCalled();
   });
 });
 

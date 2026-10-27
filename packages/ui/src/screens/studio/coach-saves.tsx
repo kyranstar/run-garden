@@ -25,7 +25,7 @@ import { createPortal } from "react-dom";
 import { Link } from "react-router-dom";
 import { useQuery, useQueryClient, type QueryClient } from "@tanstack/react-query";
 import { api, ApiError, OPEN_SAVES_QUERY, SAVES_BATCHES_QUERY, savesBatchQuery } from "@rg/api-client";
-import type { OpenSavesBatchDto, OpenSavesDto } from "@rg/saves";
+import type { FitChoice, OpenSavesBatchDto, OpenSavesDto } from "@rg/saves";
 import { Sheet } from "../../components.js";
 import { PERSONAL_MOVES_QUERY } from "../../library/account-library.js";
 import { CoachSays } from "./coach-opening.js";
@@ -65,21 +65,26 @@ export function cancelFit(qc: QueryClient, batchId: string): void {
 }
 
 /**
- * "Fit them in" with every new move on the coach's call: `/fit` with `{}`, then `then(batchId, request)` — the
- * conversation's send, or the coach opened with the fit. While it is out, `pending`; refused, `line` (`fitRefusal`).
+ * "Fit them in" with every new move on the coach's call (`/fit` with `{}`) — or the batch page's "Fit these in" with
+ * the owner's choices — then `then(batchId, request)`: the conversation's send, or the coach opened with the fit. While
+ * it is out, `pending`; refused, `line` (`fitRefusal`) and the batch read again (what is true: Fitting in…, or fitted).
  * A fit the server refused is never cancelled: nothing of it started.
  */
-export function useFitThemIn(then: (batchId: string, request: string) => void): { fit: (batchId: string) => void; pending: boolean; line: string | null } {
+export function useFitThemIn(then: (batchId: string, request: string) => void): {
+  fit: (batchId: string, choices?: Record<string, FitChoice>) => void;
+  pending: boolean;
+  line: string | null;
+} {
   const qc = useQueryClient();
   const oneTap = useOneTap();
   const [pending, setPending] = useState(false);
   const [line, setLine] = useState<string | null>(null);
-  const fit = (batchId: string) =>
+  const fit = (batchId: string, choices: Record<string, FitChoice> = {}) =>
     oneTap(async () => {
       setPending(true);
       setLine(null);
       try {
-        const answer = await api.savesFit(batchId, {});
+        const answer = await api.savesFit(batchId, choices);
         // Fitting at once wherever the open batch is drawn — the read again confirms it.
         qc.setQueryData<OpenSavesDto>(OPEN_SAVES_QUERY, (d) => (d?.open?.id === batchId ? { open: { ...d.open, fitting: true } } : d));
         savesChanged(qc, batchId);
@@ -89,7 +94,7 @@ export function useFitThemIn(then: (batchId: string, request: string) => void): 
         then(answer.batchId, answer.request);
       } catch (e) {
         setLine(fitRefusal(e));
-        if (e instanceof ApiError) void qc.invalidateQueries({ queryKey: OPEN_SAVES_QUERY });
+        if (e instanceof ApiError) savesChanged(qc, batchId);
       } finally {
         setPending(false);
       }

@@ -11237,14 +11237,161 @@ a.stu-tpl-open:focus-visible::before {
   color: var(--danger-ink);
 }
 
-/* ── From your saves (saved-posts import, Task 15) ────────────────────────
-   The templates' list at every width: a row is the move's name (a button
-   stretched over the row, opening its sheet), then its labels — New or
-   "Linked to …", and Check this — the creator and the dose as posted. Save
-   these is pinned above the tab bar as the builder's actions are
-   (`.stu-build-foot`). A model wrote every name and creator: each wraps. */
+/* ── From your saves (saved-posts import, Task 15; the saves flow redesigned §3.3) ──
+   The templates' list at every width: a row is one new move — its name (a
+   button stretched over the row, opening its sheet), one line of what it is
+   for (Check this and `like {name}` after it), and Skip | Coach | Include
+   beside them; never the creator or the dose. The control wraps under the
+   name only where the name would have less than its minimum (a 320 phone).
+   The moves already yours fold under one line. The tally and Fit these in
+   are pinned above the tab bar as the builder's actions are
+   (`.stu-build-foot`). A model wrote every name and purpose: each wraps. */
+.stu-save-head {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+  min-width: 0;
+}
+.stu-save-line {
+  margin: 0;
+  font-size: var(--text-sm);
+  color: var(--ink-soft);
+}
+.stu-save-line b {
+  font-weight: var(--weight-bold);
+  color: var(--ink);
+}
 .stu-save-row {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-4);
   min-height: var(--tap);
+}
+.stu-save-what {
+  display: flex;
+  flex: 1 1 0;
+  flex-direction: column;
+  gap: var(--space-1);
+  /* The name's own room before the control goes under it: about two words. */
+  min-width: min(100%, 8rem);
+}
+/* A piece of the second line with the dot before it: the two never part. */
+.stu-save-bit {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-2);
+  min-width: 0;
+}
+.stu-save-purpose,
+.stu-save-liketext {
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+/* The near-duplicate's merge: a link's look, a fingertip's height (on a flagged row only). */
+.stu-save-like {
+  position: relative;
+  display: inline-flex;
+  align-items: center;
+  min-height: var(--tap);
+  text-align: left;
+  overflow-wrap: anywhere;
+}
+/* Skip | Coach | Include: three equal-height cells, each the 44px floor; the
+   chosen one bold and filled (Include green, Skip struck) — never the colour
+   alone. Above the stretched name, so each keeps its own tap. */
+.stu-choice {
+  position: relative;
+  display: inline-flex;
+  flex: none;
+  border: 1px solid var(--border-strong);
+  border-radius: var(--radius-md);
+  background: var(--bg-raised);
+  overflow: hidden;
+}
+.stu-choice-opt {
+  min-width: var(--tap);
+  min-height: var(--tap);
+  padding: 0 var(--space-4);
+  border: 0;
+  background: none;
+  color: var(--ink-soft);
+  font: var(--weight-regular) var(--text-xs) var(--font);
+  cursor: pointer;
+}
+.stu-choice-opt + .stu-choice-opt {
+  border-left: 1px solid var(--border);
+}
+.stu-choice-opt[aria-checked="true"] {
+  background: var(--bg-sunken);
+  color: var(--ink);
+  font-weight: var(--weight-bold);
+}
+.stu-choice-include[aria-checked="true"] {
+  background: var(--green);
+  color: var(--on-accent);
+}
+.stu-choice-skip[aria-checked="true"] {
+  text-decoration: line-through;
+}
+.stu-choice-opt:focus-visible {
+  outline: 2px solid var(--focus);
+  outline-offset: -3px;
+}
+/* Already yours: one quiet line, a disclosure — then the names, a row each. */
+.stu-save-owned {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-3);
+  min-width: 0;
+}
+.stu-save-fold {
+  align-self: flex-start;
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-3);
+  min-height: var(--tap);
+  padding: 0;
+  border: 0;
+  background: none;
+  color: var(--ink-soft);
+  font: var(--weight-medium) var(--text-sm) var(--font);
+  cursor: pointer;
+}
+.stu-save-fold:hover {
+  color: var(--ink);
+}
+.stu-save-fold:focus-visible {
+  outline: 2px solid var(--focus);
+  outline-offset: 2px;
+  border-radius: var(--radius-sm);
+}
+.stu-save-owned-row {
+  min-height: var(--tap);
+}
+/* The foot: the tally over the one button; a refusal or "Fitting in…" under it. */
+.stu-save-tally,
+.stu-save-foot-line,
+.stu-save-fitting {
+  margin: 0;
+  font-size: var(--text-sm);
+}
+.stu-save-tally {
+  color: var(--ink-soft);
+}
+.stu-save-foot-line {
+  color: var(--ink);
+}
+.stu-save-fitting {
+  align-self: flex-start;
+}
+/* The list: a batch put aside brings itself back — the refusal, if any, under the row. */
+.stu-save-again-line {
+  grid-column: 1 / -1;
+  margin: 0;
+  font-size: var(--text-xs);
+  color: var(--ink);
 }
 .stu-save-open {
   display: inline;

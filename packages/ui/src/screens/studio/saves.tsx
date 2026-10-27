@@ -1,58 +1,67 @@
 /**
- * "FROM YOUR SAVES" (saved-posts import, Task 15): where the owner first sees what the import brought, and says what of
- * it to keep. Two pages under the Studio:
+ * "FROM YOUR SAVES" (saved-posts import, Task 15; the saves flow redesigned §3.3): where the owner sees what the import
+ * brought and says, per new move, what the coach does with it. Two pages under the Studio:
  *
  *   /studio/saves                 ‹ Studio
  *                                 From your saves
  *                                 Fri 23 Oct                       2 new · 1 linked
- *                                 Thu 15 Oct                       3 new · Saved
+ *                                 Thu 15 Oct          2 new · Put aside   [ Fit them in ]
  *
  *   /studio/saves/:batchId        ‹ Saves
- *                                 From your saves
- *                                 Fri 23 Oct · 2 new · 1 linked
- *                                 Zorbex quad shuffle      [New]
- *                                 coach_a · 3 x 10
- *                                 90/90 Hip Switch
- *                                 Linked to 90/90 hip switches · coach_a · 8 each side
- *                                 Zorbex neck nod          [New] [Check this]
- *                                 …
- *                                 NOTES
- *                                 Do it before a run, not after. · coach_a
- *                                 [ Save these ]      (once saved, not yet fitted in: [ Fit these in ])
+ *                                 3 new moves
+ *                                 On Coach, the coach decides. Include is in. Skip stays out.     (three words bold)
+ *                                 Zorbex quad shuffle                       [Skip|Coach|Include]
+ *                                 Loosens the quads before a run.
+ *                                 Zorbex neck nod                           [Skip|Coach|Include]
+ *                                 Nod slowly. · Check this · like Lantern reach
+ *                                 ▸ Already yours · 1
+ *                                 NOTES …
+ *                                 ┌ 1 in · 1 out · 1 on the coach's call ┐
+ *                                 └ [ Fit these in ]                      ┘   (sticky)
  *
- * A row opens the move's sheet: its words, the post (its creator, and a link that opens it apart), the dose as the post
- * gave it and as it would be saved, and — while the row is pending — Edit (a new move, or one of the owner's own),
+ * One row per new move (two posts that show one move: one row), its name, one line of what it is for and Skip | Coach
+ * | Include — never its creator or dose. A flagged move keeps "Check this", then the move it looks like: `like {name}`,
+ * a tap merging it into that move while the row is the owner's to change. The moves the owner already has fold under
+ * one line. Fit these in saves the batch with the choices (Coach sent as nothing) and opens the coach with the fit,
+ * which sends the request; while that fit is at work, "Fitting in… open the coach" in its place. A fitted batch reads
+ * the same, with no control and no foot. On the list, a batch put aside reads so, and Fit them in brings it back (the
+ * coach card's fit: every move on the coach's call).
+ *
+ * A name opens the move's sheet: its words, the post (its creator, and a link that opens it apart), the dose as the
+ * post gave it and as it would be saved, and — while the row is pending — Edit (a new move, or one of the owner's own),
  * Not this move (the post's move becomes a new move of its own, from the post's reading), Same as… (another new move of
  * the batch — two the matcher missed — or a library move or one of the owner's own, from what the Studio offers), Remove,
- * and Ask the coach (the coach, seeing the move). Save
- * these keeps what is left: the new moves become the owner's, their posts their links. Notes, under the rows, is what
- * the kept posts say about when, why or how often (spec §17) — one line each, with its creator, read-only: what the
- * coach keeps in memory on Save (each removable in Settings afterwards).
+ * and Ask the coach (the coach, seeing the move). A row is a move, so Same as…, Remove and the like's merge write each
+ * of the move's pending links. Notes, under the rows, is what the kept posts say about when, why or how often (spec §17)
+ * — one line each, with its creator, read-only: what the coach keeps in memory once the batch is saved.
  *
- * A model wrote the names, summaries, notes and creators: drawn as text, never as markup; a post's address is a link
- * only when it is a web page's (`postHref`). Every write reads the batch again; one that changes the owner's moves
- * (save, edit, either re-match) reads the whole library again (`["library"]`: their moves, the Studio's list, a move's
- * own detail), so search, the builder and a move's detail see a saved or edited move at once.
+ * A model wrote the names, summaries, purposes, notes and creators: drawn as text, never as markup; a post's address is
+ * a link only when it is a web page's (`postHref`). Every write reads the batch again; one that changes the owner's
+ * moves (a fit, an edit, either re-match) reads the whole library again (`["library"]`: their moves, the Studio's list,
+ * a move's own detail), so search, the builder and a move's detail see a saved or edited move at once.
  */
-import { useEffect, useId, useMemo, useRef, useState, type ReactNode } from "react";
+import { useEffect, useId, useMemo, useRef, useState, type KeyboardEvent, type ReactNode } from "react";
 import { Link, useParams } from "react-router-dom";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { api, ApiError, SAVES_BATCHES_QUERY, SAVES_STATUS_QUERY, savesBatchQuery } from "@rg/api-client";
 import { PROFILES, searchLibrary, type ExerciseRecord } from "@rg/exercise-library";
-import { FIT_SAVES_REQUEST, type CheckWhy, type SaveBatchDetailDto, type SaveBatchInsightDto, type SaveBatchRowDto } from "@rg/saves";
+import type { CheckWhy, FitChoice, SaveBatchDetailDto, SaveBatchInsightDto, SaveBatchRowDto } from "@rg/saves";
 import { EmptyState, Sheet, Spinner } from "../../components.js";
 import { SearchField } from "../../components/search-field.js";
 import { IconBack } from "../../icons.js";
 import { useAccountLibrary } from "../../library/account-library.js";
 import { AskCoach, useCoach, useCoachSeeing } from "./coach-ask.js";
 import { moveFocus } from "./coach-focus.js";
+import { useFitThemIn } from "./coach-saves.js";
 import { doseLine } from "./model.js";
 import { postHref } from "./move-detail.js";
 import { dotted } from "./move-row.js";
 import {
-  attrWord, batchDay, batchFacts, canFit, canSave, DOSE_TYPES, DOSE_WORD, formOf, patchOf, rowActions, savesHref, shownRows, writeError,
-  type MoveForm,
+  attrWord, batchDay, batchFacts, canFit, DOSE_TYPES, DOSE_WORD, FITTING_LINE, formOf, pageRowsOf, patchOf, pendingLinksOf, rowActions,
+  savesHref, tallyLine, writeError,
+  type MoveForm, type OwnedRow, type PageRow,
 } from "./saves-model.js";
+import { useOneTap } from "./use-one-tap.js";
 
 /** The most moves the "Same as…" list shows at once (the search narrows it). */
 const PICK_LIMIT = 40;
@@ -108,6 +117,7 @@ function Facts({ facts }: { facts: readonly string[] }) {
 
 export function SavesScreen() {
   const q = useQuery({ queryKey: SAVES_BATCHES_QUERY, queryFn: () => api.savesBatches(), retry });
+  const coach = useCoach();
   const batches = q.data?.batches ?? [];
   return (
     <div className="stu-tpls stu-saves">
@@ -129,6 +139,8 @@ export function SavesScreen() {
               <p className="stu-tpl-meta">
                 <Facts facts={batchFacts(b)} />
               </p>
+              {/* Put aside (spec §12.3): Fit them in brings it back — the coach's card's fit, the coach opened with it. */}
+              {coach && b.dismissedAt && canFit(b) ? <FitAgain batchId={b.id} /> : null}
             </li>
           ))}
         </ul>
@@ -137,15 +149,150 @@ export function SavesScreen() {
   );
 }
 
+/** A batch put aside: Fit them in fits it with every new move on the coach's call and opens the coach with the fit. */
+function FitAgain({ batchId }: { batchId: string }) {
+  const coach = useCoach();
+  const qc = useQueryClient();
+  const { fit, pending, line } = useFitThemIn((id, request) => {
+    void qc.invalidateQueries({ queryKey: SAVES_STATUS_QUERY });
+    coach?.open({ fit: { batchId: id, request }, seeing: null });
+  });
+  return (
+    <>
+      <span className="stu-tpl-acts">
+        <button type="button" className="btn" disabled={pending} onClick={() => fit(batchId)}>
+          Fit them in
+        </button>
+      </span>
+      {line ? (
+        <p className="stu-save-again-line" role="status">
+          {line}
+        </p>
+      ) : null}
+    </>
+  );
+}
+
 // ── One batch ────────────────────────────────────────────────────────────────────────────────────────────────────────
 
-/** The row's labels: New, or Linked to {name}; and Check this. */
-function RowTags({ row }: { row: SaveBatchRowDto }) {
+/**
+ * A row's second line: what the move is for, then Check this when flagged, then the move it looks like — a button that
+ * merges it into that move (`onLike`), else words. No creator, no dose.
+ */
+function RowTags({ page, onLike }: { page: PageRow; onLike?: () => void }) {
+  const like = page.like ? `like ${page.like.name}` : null;
+  const items = [
+    page.purpose ? <span className="stu-save-purpose">{page.purpose}</span> : null,
+    page.check ? <span className="pill pill-warn">Check this</span> : null,
+    like && onLike ? (
+      <button type="button" className="linklike stu-save-like" onClick={onLike}>
+        {like}
+      </button>
+    ) : like ? (
+      <span className="stu-save-liketext">{like}</span>
+    ) : null,
+  ].filter((x) => x !== null);
+  if (items.length === 0) return null;
+  // Each dot kept with what follows it: a line breaks only between whole pieces, never leaving a dot at its end.
+  return (
+    <p className="stu-tpl-meta stu-save-meta">
+      {items.map((item, i) => (
+        <span key={i} className="stu-save-bit">
+          {i > 0 ? (
+            <span className="stu-sep" aria-hidden="true">
+              ·
+            </span>
+          ) : null}
+          {item}
+        </span>
+      ))}
+    </p>
+  );
+}
+
+/** The sheet's labels: New, or Linked to {name}; and Check this. */
+function MoveTags({ row }: { row: SaveBatchRowDto }) {
   return (
     <span className="stu-save-tags">
       {row.move.kind === "new" ? <span className="pill pill-ok">New</span> : <span className="stu-save-linked">{`Linked to ${row.move.linkedName ?? row.move.id}`}</span>}
       {row.move.check ? <span className="pill pill-warn">Check this</span> : null}
     </span>
+  );
+}
+
+/** Skip | Coach | Include, in that order: Coach is no choice at all (null) — the coach's call. */
+const CHOICES: ReadonlyArray<{ word: "Skip" | "Coach" | "Include"; value: FitChoice | null }> = [
+  { word: "Skip", value: "skip" },
+  { word: "Coach", value: null },
+  { word: "Include", value: "include" },
+];
+
+/** A new move's say in the fit: three radios named by the move, one stop in the tab order, the arrows move the choice. */
+function ChoiceControl({ name, value, onPick }: { name: string; value: FitChoice | null; onPick: (choice: FitChoice | null) => void }) {
+  const refs = useRef<Array<HTMLButtonElement | null>>([]);
+  const at = Math.max(0, CHOICES.findIndex((c) => c.value === value));
+  const last = CHOICES.length - 1;
+  const onKeyDown = (e: KeyboardEvent<HTMLButtonElement>, i: number) => {
+    const to =
+      e.key === "ArrowRight" || e.key === "ArrowDown"
+        ? i === last ? 0 : i + 1
+        : e.key === "ArrowLeft" || e.key === "ArrowUp"
+          ? i === 0 ? last : i - 1
+          : e.key === "Home"
+            ? 0
+            : e.key === "End"
+              ? last
+              : null;
+    if (to === null) return;
+    e.preventDefault();
+    onPick(CHOICES[to]!.value);
+    refs.current[to]?.focus();
+  };
+  return (
+    <div className="stu-choice" role="radiogroup" aria-label={name}>
+      {CHOICES.map((c, i) => (
+        <button
+          key={c.word}
+          ref={(el) => {
+            refs.current[i] = el;
+          }}
+          type="button"
+          role="radio"
+          aria-checked={i === at}
+          tabIndex={i === at ? 0 : -1}
+          className={`stu-choice-opt stu-choice-${c.word.toLowerCase()}`}
+          onClick={() => onPick(c.value)}
+          onKeyDown={(e) => onKeyDown(e, i)}
+        >
+          {c.word}
+        </button>
+      ))}
+    </div>
+  );
+}
+
+/** The moves the owner already has: one folded line; unfolded, their names — each opens its sheet, none has a control. */
+function AlreadyYours({ owned, onOpen }: { owned: readonly OwnedRow[]; onOpen: (row: SaveBatchRowDto) => void }) {
+  const [unfolded, setUnfolded] = useState(false);
+  return (
+    <div className="stu-save-owned">
+      <button type="button" className="stu-save-fold" aria-expanded={unfolded} onClick={() => setUnfolded((u) => !u)}>
+        <span aria-hidden="true">{unfolded ? "▾" : "▸"}</span> Already yours · {owned.length}
+      </button>
+      {unfolded ? (
+        <ul className="stu-tpl-list">
+          {owned.map((o) => (
+            <li key={o.moveId} className="stu-tpl stu-save-owned-row">
+              <span className="stu-tpl-name">
+                <button type="button" className="stu-save-open" aria-haspopup="dialog" onClick={() => onOpen(o.row)}>
+                  {o.name}
+                </button>
+              </span>
+            </li>
+          ))}
+        </ul>
+      ) : null}
+    </div>
   );
 }
 
@@ -171,17 +318,29 @@ function Notes({ insights }: { insights: readonly SaveBatchInsightDto[] }) {
 
 type Open = { postMoveId: string; mode: "view" | "edit" | "pick" };
 
+/** A like by its move and the move it names: one the server no longer knows stays words. */
+const likeKey = (p: PageRow): string => `${p.moveId}\u0000${p.like?.id ?? ""}`;
+
 export function SaveBatchScreen() {
   const { batchId = "" } = useParams();
   const qc = useQueryClient();
   const q = useQuery({ queryKey: savesBatchQuery(batchId), queryFn: () => api.savesBatch(batchId), retry });
   const account = useAccountLibrary();
   const coach = useCoach();
+  const oneTap = useOneTap();
   const [open, setOpen] = useState<Open | null>(null);
   const [status, setStatus] = useState<string | null>(null);
-  const [saving, setSaving] = useState(false);
+  /** The owner's choices on this page, by move (null: back on the coach's call); a move not here keeps its stored one. */
+  const [picks, setPicks] = useState<ReadonlyMap<string, FitChoice | null>>(() => new Map());
+  /** Likes whose move has gone since the page was read (merged by another row's Same as…): words, not a button. */
+  const [staleLikes, setStaleLikes] = useState<ReadonlySet<string>>(() => new Set());
   const title = useRef<HTMLHeadingElement>(null);
   const focusTitle = useRef(false);
+  const { fit, pending, line } = useFitThemIn((id, request) => {
+    // The batch saved: Settings → Saves' last import moved too. Seeing nothing: the fit is the batch's, not this page's.
+    void qc.invalidateQueries({ queryKey: SAVES_STATUS_QUERY });
+    coach?.open({ fit: { batchId: id, request }, seeing: null });
+  });
 
   useEffect(() => {
     if (!focusTitle.current) return;
@@ -190,9 +349,20 @@ export function SaveBatchScreen() {
   });
 
   const data: SaveBatchDetailDto | undefined = q.data;
-  const rows = data?.rows ?? [];
-  const shown = shownRows(rows);
+  const rows = useMemo(() => data?.rows ?? [], [data]);
+  const { fresh, owned } = useMemo(() => pageRowsOf(rows), [rows]);
   const openRow = open ? (rows.find((r) => r.postMoveId === open.postMoveId) ?? null) : null;
+  /** Choosing: a batch that can be fitted in, with the coach there to fit it. */
+  const choosing = !!data && !!coach && canFit(data.batch);
+
+  const choiceOf = (p: PageRow): FitChoice | null => (picks.has(p.moveId) ? (picks.get(p.moveId) ?? null) : p.row.move.choice);
+  const moveIds = fresh.map((p) => p.moveId);
+  const choices: Record<string, FitChoice | undefined> = Object.fromEntries(fresh.map((p) => [p.moveId, choiceOf(p) ?? undefined]));
+  /** What Fit these in sends: the current new moves' choices only, a move on the coach's call left out. */
+  const sent: Record<string, FitChoice> = Object.fromEntries(fresh.flatMap((p) => {
+    const c = choiceOf(p);
+    return c ? [[p.moveId, c] as const] : [];
+  }));
 
   /**
    * Read the batch again (and the batches); `moves`: the owner's moves changed, so read the whole library again — their
@@ -204,21 +374,6 @@ export function SaveBatchScreen() {
     if (moves) void qc.invalidateQueries({ queryKey: ["library"] });
   };
 
-  const save = async () => {
-    if (saving) return;
-    setSaving(true);
-    try {
-      await api.savesSaveBatch(batchId);
-      setStatus("Saved.");
-      refresh(true);
-      void qc.invalidateQueries({ queryKey: SAVES_STATUS_QUERY });
-    } catch (e) {
-      setStatus(writeError(e, "save"));
-    } finally {
-      setSaving(false);
-    }
-  };
-
   /** A row's write done: the sheet closes, the page says what changed. */
   const done = (line: string, moves: boolean, gone = false) => {
     setOpen(null);
@@ -227,67 +382,105 @@ export function SaveBatchScreen() {
     refresh(moves);
   };
 
+  /** `like {name}`: the move merged into the one it looks like — each post that shows it — in one tap. */
+  const merge = (p: PageRow, like: { id: string; name: string }) =>
+    oneTap(async () => {
+      try {
+        for (const id of pendingLinksOf(rows, p.moveId)) await api.savesRematch(id, like.id);
+        setStatus(`Linked to ${like.name}.`);
+        focusTitle.current = true;
+      } catch (e) {
+        // The move it looked like has gone (another row's Same as… merged it): no error — the like becomes words.
+        if (isGone(e)) setStaleLikes((s) => new Set(s).add(likeKey(p)));
+        else setStatus(writeError(e));
+      } finally {
+        refresh(true);
+      }
+    });
+
+  const sheetOf = (row: SaveBatchRowDto) => setOpen({ postMoveId: row.postMoveId, mode: "view" });
+
   let body: ReactNode;
   if (!data) body = <ReadState q={q} gone="That batch isn't there." what="this batch" />;
-  else if (shown.length === 0) body = <EmptyState title="Nothing left in this batch." />;
+  else if (fresh.length === 0 && owned.length === 0) body = <EmptyState title="Nothing left in this batch." />;
   else {
     body = (
-      <ul className="stu-tpl-list">
-        {shown.map((row) => (
-          <li key={row.postMoveId} className="stu-tpl stu-save-row">
-            <h2 className="stu-tpl-name">
-              <button type="button" className="stu-save-open" aria-haspopup="dialog" onClick={() => setOpen({ postMoveId: row.postMoveId, mode: "view" })}>
-                {row.move.name}
-              </button>
-            </h2>
-            <p className="stu-tpl-meta stu-save-meta">
-              {dotted([
-                <RowTags key="tags" row={row} />,
-                row.post.creator ? <span className="stu-save-by">{row.post.creator}</span> : null,
-                row.move.seenDose ? <span>{row.move.seenDose}</span> : null,
-              ])}
-            </p>
-          </li>
-        ))}
-      </ul>
+      <>
+        {fresh.length ? (
+          <ul className="stu-tpl-list">
+            {fresh.map((p) => {
+              const like = p.like && rowActions(p.row).sameAs && !staleLikes.has(likeKey(p)) ? p.like : null;
+              return (
+                <li key={p.moveId} className="stu-tpl stu-save-row">
+                  <div className="stu-save-what">
+                    <h2 className="stu-tpl-name">
+                      <button type="button" className="stu-save-open" aria-haspopup="dialog" onClick={() => sheetOf(p.row)}>
+                        {p.name}
+                      </button>
+                    </h2>
+                    <RowTags page={p} onLike={like ? () => merge(p, like) : undefined} />
+                  </div>
+                  {choosing ? (
+                    <ChoiceControl name={p.name} value={choiceOf(p)} onPick={(c) => setPicks((m) => new Map(m).set(p.moveId, c))} />
+                  ) : null}
+                </li>
+              );
+            })}
+          </ul>
+        ) : null}
+        {owned.length ? <AlreadyYours owned={owned} onOpen={sheetOf} /> : null}
+      </>
     );
   }
 
+  const n = fresh.length;
   return (
     <div className="stu-tpls stu-saves">
       <BackBar to={savesHref()} label="Saves" />
-      <h1 ref={title} tabIndex={-1}>
-        From your saves
-      </h1>
-      {data ? (
-        <p className="stu-tpl-meta">
-          <Facts facts={[batchDay(data.batch), ...batchFacts(data.batch)].filter(Boolean)} />
-        </p>
-      ) : null}
+      <div className="stu-save-head">
+        <h1 ref={title} tabIndex={-1}>
+          {data ? `${n} new ${n === 1 ? "move" : "moves"}` : "From your saves"}
+        </h1>
+        {choosing && n > 0 ? (
+          <p className="stu-save-line">
+            On <b>Coach</b>, the coach decides. <b>Include</b> is in. <b>Skip</b> stays out.
+          </p>
+        ) : null}
+      </div>
       {/* Empty, it is visually hidden — never display: none — so the region stays in the page and is heard when it speaks. */}
       <p className={status ? "stu-tpl-status" : "stu-tpl-status visually-hidden"} role="status">
         {status}
       </p>
       {body}
       {data ? <Notes insights={data.insights ?? []} /> : null}
-      {data && canSave(data.batch, rows) ? (
+      {choosing ? (
         <div className="stu-build-foot stu-save-foot">
-          <button type="button" className="btn btn-primary" disabled={saving} onClick={() => void save()}>
-            Save these
-          </button>
-        </div>
-      ) : data && coach && canFit(data.batch) ? (
-        <div className="stu-build-foot stu-save-foot">
-          {/* Saved already: the coach is asked, as the opening's chip asks once it has saved (final review I3). */}
-          <button type="button" className="btn btn-primary" onClick={() => coach.open({ request: FIT_SAVES_REQUEST })}>
+          {n > 0 ? <p className="stu-save-tally">{tallyLine(choices, moveIds)}</p> : null}
+          <button type="button" className="btn btn-primary" disabled={pending} onClick={() => fit(batchId, sent)}>
             Fit these in
           </button>
+          {line ? (
+            <p className="stu-save-foot-line" role="status">
+              {line}
+            </p>
+          ) : null}
+        </div>
+      ) : data?.batch.fitting ? (
+        <div className="stu-build-foot stu-save-foot">
+          {coach ? (
+            <button type="button" className="linklike tap-pad stu-save-fitting" onClick={() => coach.open()}>
+              {FITTING_LINE}
+            </button>
+          ) : (
+            <p className="stu-save-fitting">{FITTING_LINE}</p>
+          )}
         </div>
       ) : null}
       {openRow && open ? (
         <MoveSheet
           key={openRow.postMoveId}
           row={openRow}
+          links={pendingLinksOf(rows, openRow.move.id)}
           mode={open.mode}
           siblings={newMoves(rows)}
           offered={account.offered}
@@ -296,6 +489,7 @@ export function SaveBatchScreen() {
           onMode={(mode) => setOpen({ postMoveId: openRow.postMoveId, mode })}
           onClose={() => setOpen(null)}
           onDone={done}
+          onRead={() => refresh(true)}
         />
       ) : null}
     </div>
@@ -313,6 +507,7 @@ function newMoves(rows: readonly SaveBatchRowDto[]): ExerciseRecord[] {
 
 function MoveSheet({
   row,
+  links,
   mode,
   siblings,
   offered,
@@ -321,8 +516,11 @@ function MoveSheet({
   onMode,
   onClose,
   onDone,
+  onRead,
 }: {
   row: SaveBatchRowDto;
+  /** The move's pending links — each post of the batch that shows it: Same as… and Remove write them all (a row is a move). */
+  links: readonly string[];
   mode: Open["mode"];
   siblings: readonly ExerciseRecord[];
   offered: readonly ExerciseRecord[];
@@ -331,6 +529,8 @@ function MoveSheet({
   onMode: (mode: Open["mode"]) => void;
   onClose: () => void;
   onDone: (line: string, moves: boolean, gone?: boolean) => void;
+  /** A write refused part-way through the move's links: the batch read again, whatever went through. */
+  onRead: () => void;
 }) {
   const actions = rowActions(row, ownStatus);
   const [busy, setBusy] = useState(false);
@@ -339,7 +539,7 @@ function MoveSheet({
   const focus = moveFocus({ id: row.move.id, name: row.move.name });
   useCoachSeeing(focus);
 
-  const run = async (write: () => Promise<unknown>, what: "match" | "remove" | "edit", line: string, moves: boolean, gone = false) => {
+  const run = async (write: () => Promise<unknown>, line: string, moves: boolean, gone = false) => {
     if (busy) return;
     setBusy(true);
     setError(null);
@@ -347,8 +547,21 @@ function MoveSheet({
       await write();
       onDone(line, moves, gone);
     } catch (e) {
-      setError(writeError(e, what));
+      setError(writeError(e));
       setBusy(false);
+    }
+  };
+  /** Each of the move's pending links in turn (the row's own when it has none left to change); refused part-way, the
+   * batch is read again — what went through stays. */
+  const eachLink = (write: (postMoveId: string) => Promise<unknown>) => async () => {
+    const ids = links.length ? links : [row.postMoveId];
+    for (const [i, id] of ids.entries()) {
+      try {
+        await write(id);
+      } catch (e) {
+        if (i > 0) onRead();
+        throw e;
+      }
     }
   };
 
@@ -363,7 +576,7 @@ function MoveSheet({
           except={row.move.id}
           busy={busy}
           error={error}
-          onPick={(target) => void run(() => api.savesRematch(row.postMoveId, target.id), "match", `Linked to ${target.name}.`, true)}
+          onPick={(target) => void run(eachLink((id) => api.savesRematch(id, target.id)), `Linked to ${target.name}.`, true)}
         />
       </Sheet>
     );
@@ -390,7 +603,7 @@ function MoveSheet({
               setError(patch.error);
               return;
             }
-            void run(() => api.savesEditMove(row.move.id, patch), "edit", `Saved ${patch.name ?? row.move.name}.`, true);
+            void run(() => api.savesEditMove(row.move.id, patch), `Saved ${patch.name ?? row.move.name}.`, true);
           }}
         />
       </Sheet>
@@ -407,7 +620,7 @@ function MoveSheet({
         </button>
       ) : null}
       {actions.notThis ? (
-        <button type="button" className="btn" disabled={busy} onClick={() => void run(() => api.savesRematch(row.postMoveId, null), "match", `${row.move.name} is a move of its own.`, true)}>
+        <button type="button" className="btn" disabled={busy} onClick={() => void run(() => api.savesRematch(row.postMoveId, null), `${row.move.name} is a move of its own.`, true)}>
           Not this move
         </button>
       ) : null}
@@ -417,7 +630,7 @@ function MoveSheet({
         </button>
       ) : null}
       {actions.remove ? (
-        <button type="button" className="btn stu-tpl-del" disabled={busy} onClick={() => void run(() => api.savesRemove(row.postMoveId), "remove", `Removed ${row.move.name}.`, false, true)}>
+        <button type="button" className="btn stu-tpl-del" disabled={busy} onClick={() => void run(eachLink((id) => api.savesRemove(id)), `Removed ${row.move.name}.`, false, true)}>
           Remove
         </button>
       ) : null}
@@ -429,7 +642,7 @@ function MoveSheet({
       <div className="stu-save-sheet">
         {row.move.summary ? <p className="stu-detail-sum">{row.move.summary}</p> : null}
         <p className="stu-meta stu-save-meta">
-          <RowTags row={row} />
+          <MoveTags row={row} />
         </p>
         {row.move.check && row.move.checkWhy?.length ? (
           <p className="stu-meta stu-save-meta stu-save-why">{dotted(row.move.checkWhy.map((w) => <span key={w}>{CHECK_WHY_WORDS[w]}</span>))}</p>
@@ -481,12 +694,15 @@ function MoveSheet({
   );
 }
 
-/** "Check this", why — each reason as a fact (verbatim audit gap 5). */
+/**
+ * "Check this", why — each reason as a fact (verbatim audit gap 5). A near-duplicate's own move is named on the row
+ * (`like {name}`); here it is only the reason — the move it looks like may be the owner's or another new one.
+ */
 const CHECK_WHY_WORDS: Readonly<Record<CheckWhy, string>> = {
   low_confidence: "Low confidence",
   inferred_name: "Name inferred",
   inferred_dose: "Dose inferred",
-  near_duplicate: "Looks like a move you have",
+  near_duplicate: "Looks like another move",
 };
 
 /**
