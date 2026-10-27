@@ -40,12 +40,12 @@ import {
 import { makeLibraryIndex } from "@rg/workout";
 import type { Env } from "../env.js";
 import { forgetAccountLibrary, loadAccountLibrary } from "./account-library.js";
-import { runAtomically, type Db } from "./db.js";
+import { runAtomically, runAtomicallyClaim, type Db } from "./db.js";
 import { buildPersonalRecord } from "./personal-moves.js";
 import { validatePersonalRecord } from "./personal-records.js";
 import {
-  assembleBatch, choicesWrite, FIT_STARTED_TTL_MS, INSIGHTS_PER_BATCH, insightsJsonSql, insightsOf, isFitting, noticeOf,
-  openBatchSql, parseList, saveBatch,
+  assembleBatch, choicesWrite, fitClaimSql, INSIGHTS_PER_BATCH, insightsJsonSql, insightsOf, isFitting, noticeOf,
+  notFittingSql, openBatchSql, parseList, saveBatch,
 } from "./saves-batches.js";
 
 const { savedPosts, savedPostMoves, personalMoves, saveBatches } = schema;
@@ -671,6 +671,9 @@ interface FitRead {
  * Refused, in order: another account's batch (not found); one already fitted in; one never released (held) or
  * dissolved (superseded); one whose fit is at work (`isFitting`: a second tap never starts a second run); one while
  * another batch is open (`openBatchSql`: a dismissed batch comes back only when no other is open, §12.3).
+ * The read only answers why; the writes themselves claim the fit (`fitClaimSql`, checked again in the transaction, its
+ * last write counted): a tap that loses to another between the read and the write — the other's fit started, or the
+ * batch saved since — writes nothing, its choices included, and is refused as `fitting`.
  * D1 statements: the batch with whether another is open 1, then `saveBatch` with the choices (7) — or the transaction
  * of 2 for a saved batch.
  */
@@ -695,18 +698,24 @@ export async function fitBatch(
   if (Number(b.otherOpen)) return { kind: "conflict", error: "batch_open" };
   const ok = (moves: number, links: number): FitOutcome => ({ kind: "ok", answer: { batchId, request: FIT_SAVES_REQUEST, moves, links } });
 
+  const lost: FitOutcome = { kind: "conflict", error: "fitting" };
+
   if (b.status === "released") {
     const saved = await saveBatch(db, userId, batchId, now, { at: now, choices });
+    if (saved === "lost") return lost;
     return saved ? ok(saved.moves, saved.links) : { kind: "not_found" };
   }
-  await runAtomically(db, [
-    choicesWrite(db, userId, batchId, choices),
+  // A saved batch: its choices only while the claim holds, then the claim itself (the transaction's last write).
+  const gate = fitClaimSql(userId, batchId, "saved", now);
+  const claimed = await runAtomicallyClaim(db, [
+    choicesWrite(db, userId, batchId, choices, gate),
     db
       .update(saveBatches)
       .set({ fitStartedAt: now, dismissedAt: null })
-      .where(and(eq(saveBatches.id, batchId), eq(saveBatches.userId, userId), isNull(saveBatches.fittedAt))),
+      .where(and(eq(saveBatches.id, batchId), eq(saveBatches.userId, userId), gate))
+      .returning({ id: saveBatches.id }),
   ]);
-  return ok(Number(b.moves), Number(b.links));
+  return claimed ? ok(Number(b.moves), Number(b.links)) : lost;
 }
 
 /** Whether the batch is this account's (a refused write's second read: why it was refused). */
@@ -726,8 +735,6 @@ async function batchExists(db: Db, userId: string, batchId: string): Promise<boo
  * D1 statements: the write 1 (the batch read 1 more when it matched nothing).
  */
 export async function dismissBatch(db: Db, userId: string, batchId: string, now: string): Promise<"ok" | "not_found" | "conflict"> {
-  // Not fitting: no fit, or one begun FIT_STARTED_TTL_MS or more ago (`isFitting`, in SQL over ISO instants).
-  const stale = new Date(Date.parse(now) - FIT_STARTED_TTL_MS).toISOString();
   const done = await db
     .update(saveBatches)
     .set({ dismissedAt: now })
@@ -736,7 +743,7 @@ export async function dismissBatch(db: Db, userId: string, batchId: string, now:
         eq(saveBatches.id, batchId),
         eq(saveBatches.userId, userId),
         openBatchSql("save_batches"),
-        sql`(${saveBatches.fitStartedAt} is null or ${saveBatches.fitStartedAt} <= ${stale})`,
+        notFittingSql(sql`${saveBatches.fitStartedAt}`, now),
       ),
     )
     .returning({ id: saveBatches.id });

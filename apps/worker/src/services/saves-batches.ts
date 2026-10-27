@@ -18,7 +18,7 @@ import { batchNotice, nearDuplicateOf, type FitChoice, type NearCandidate, type 
 import type { Env } from "../env.js";
 import { forgetAccountLibrary } from "./account-library.js";
 import { SAVED_POST_SOURCE } from "./coach-memory.js";
-import { runAtomically, type Db } from "./db.js";
+import { runAtomically, runAtomicallyClaim, type Db } from "./db.js";
 import { EARLIEST_ZONE, liveMemoryWhere } from "./memory-core.js";
 import { loadPersonalForMatch } from "./personal-moves.js";
 
@@ -42,6 +42,26 @@ export function isFitting(fitStartedAt: string | null, now: string): boolean {
 export function openBatchSql(alias: string): SQL {
   const a = sql.raw(alias);
   return sql`(${a}.status in ('released','saved') and ${a}.fitted_at is null and ${a}.dismissed_at is null)`;
+}
+
+/** Not fitting at `now` (`isFitting` false), in SQL over a `fit_started_at` column of ISO instants: no fit, or one
+ * begun `FIT_STARTED_TTL_MS` or more ago. */
+export function notFittingSql(column: SQL, now: string): SQL {
+  const stale = new Date(Date.parse(now) - FIT_STARTED_TTL_MS).toISOString();
+  return sql`(${column} is null or ${column} <= ${stale})`;
+}
+
+/**
+ * A fit may start (spec §12.1, §12.3), in SQL: the batch is the account's, of `status`, not fitted in, not fitting at
+ * `now` (`notFittingSql`), and no other batch of the account's is open (`openBatchSql`). Every write a fit makes carries
+ * it, and the batch's own write — the transaction's LAST, the only one that changes what it reads — claims the fit: of
+ * two taps at once (the transactions run one after the other), one writes everything and the other nothing, however
+ * close their clocks.
+ */
+export function fitClaimSql(userId: string, batchId: string, status: "released" | "saved", now: string): SQL {
+  return sql`exists (select 1 from save_batches fc where fc.id = ${batchId} and fc.user_id = ${userId} and fc.status = ${status}
+    and fc.fitted_at is null and ${notFittingSql(sql.raw("fc.fit_started_at"), now)}
+    and not exists (select 1 from save_batches fo where fo.user_id = fc.user_id and fo.id <> fc.id and ${openBatchSql("fo")}))`;
 }
 
 const textOrNull = (v: unknown): string | null => (typeof v === "string" ? v : null);
@@ -362,18 +382,25 @@ function insightWrites(db: Db, userId: string, kept: SQL, now: string) {
  * The owner's choices, `{ moveId: "include" | "skip" }` (JSON), set on the batch's ACTIVE personal moves — the new moves
  * its save made usable (each stamped with the batch): a move the object doesn't name is the coach's call (null). An id
  * that is not one of them — a move whose row was removed (still pending), one merged by Same as…, another account's,
- * none at all — is never written. Looked up as `likeWrite` looks up its marks, so any key reads safely.
+ * none at all — is never written. Looked up as `likeWrite` looks up its marks, so any key reads safely. Only while
+ * `gate` holds (the fit's claim, `fitClaimSql`), so a tap that loses the claim never rewrites the winner's choices.
  */
-export function choicesWrite(db: Db, userId: string, batchId: string, choices: Record<string, FitChoice>) {
+export function choicesWrite(db: Db, userId: string, batchId: string, choices: Record<string, FitChoice>, gate: SQL) {
   const json = JSON.stringify(choices);
   return db
     .update(personalMoves)
     .set({ fitChoice: sql`(SELECT value FROM json_each(${json}) WHERE key = ${personalMoves.id})` })
-    .where(and(eq(personalMoves.userId, userId), eq(personalMoves.batchId, batchId), eq(personalMoves.status, "active")));
+    .where(and(eq(personalMoves.userId, userId), eq(personalMoves.batchId, batchId), eq(personalMoves.status, "active"), gate));
+}
+
+/** A fit's start: when (`at`, the request's now) and the owner's choices. */
+export interface FitStart {
+  at: string;
+  choices: Record<string, FitChoice>;
 }
 
 /**
- * The owner's "Save these" (and, with `fit`, the save that starts "Fit them in", spec §4):
+ * The owner's "Save these" (and, with `fit`, the save that starts "Fit them in", spec §4, §12.1):
  *  - the pending personal moves a kept (pending) link of the batch names become `active`, and this batch's — one the
  *    owner removed or re-matched away (no kept link names it) stays pending and is never offered; a pending move an
  *    earlier, unsaved batch brought is activated when this batch keeps a link to it, and belongs to this batch since;
@@ -386,27 +413,31 @@ export function choicesWrite(db: Db, userId: string, batchId: string, choices: R
  *    batch is used before Save, and a post whose rows were all removed teaches nothing;
  *  - the links become `saved`, the batch `saved` — and with `fit`, its fit started (`fit_started_at` = `fit.at`) and
  *    no longer put aside (`dismissed_at` cleared).
+ * With `fit`, every write carries the fit's claim (`fitClaimSql`: still released, not fitting, no other batch open) and
+ * the batch's write, last, claims it: "lost" — and nothing written — when another tap claimed it first (or the batch
+ * went saved since its read), so two taps never start two fits.
  * A removed link is left out. Null for a batch that isn't this account's; a batch already saved (or dismissed) changes
  * nothing. D1 statements: the batch and its counts 1, then one transaction of 5 (6 with `fit`) — set-based, so the
  * same 6 (or 7) for 6 links or 600.
  */
-export async function saveBatch(
-  db: Db,
-  userId: string,
-  batchId: string,
-  now: string,
-  fit?: { at: string; choices: Record<string, FitChoice> },
-): Promise<{ moves: number; links: number } | null> {
+export async function saveBatch(db: Db, userId: string, batchId: string, now: string): Promise<SavedCounts | null>;
+export async function saveBatch(db: Db, userId: string, batchId: string, now: string, fit: FitStart): Promise<SavedCounts | null | "lost">;
+export async function saveBatch(db: Db, userId: string, batchId: string, now: string, fit?: FitStart): Promise<SavedCounts | null | "lost"> {
   const pendingLinks = and(
     eq(savedPostMoves.userId, userId),
     eq(savedPostMoves.batchId, batchId),
     eq(savedPostMoves.status, "pending"),
   );
-  const movesToKeep = and(
+  const keptIn = (links: SQL | undefined) => and(
     eq(personalMoves.userId, userId),
     eq(personalMoves.status, "pending"),
-    sql`${personalMoves.id} IN (SELECT ${savedPostMoves.moveId} FROM ${savedPostMoves} WHERE ${pendingLinks} AND ${savedPostMoves.moveKind} = 'personal')`,
+    sql`${personalMoves.id} IN (SELECT ${savedPostMoves.moveId} FROM ${savedPostMoves} WHERE ${links} AND ${savedPostMoves.moveKind} = 'personal')`,
   );
+  const movesToKeep = keptIn(pendingLinks);
+  // The writes' links (and so their moves): with a fit, only while its claim holds.
+  const gate = fit ? fitClaimSql(userId, batchId, "released", now) : undefined;
+  const keptLinks = and(pendingLinks, gate)!;
+  const movesToActivate = keptIn(keptLinks);
   const [batch] = await db
     .select({
       status: saveBatches.status,
@@ -417,13 +448,15 @@ export async function saveBatch(
     .where(and(eq(saveBatches.id, batchId), eq(saveBatches.userId, userId)))
     .limit(1);
   if (!batch) return null;
-  if (batch.status === "saved" || batch.status === "dismissed") return { moves: 0, links: 0 };
+  // Saved since the fit read it: another tap's (or the move sheet's) save came first.
+  if (batch.status === "saved" || batch.status === "dismissed") return fit ? "lost" : { moves: 0, links: 0 };
 
-  // In order: the moves and the links are read while the links are still pending; the links are marked last.
-  await runAtomically(db, [
-    db.update(personalMoves).set({ status: "active", batchId, updatedAt: now }).where(movesToKeep),
+  // In order: the moves and the links are read while the links are still pending; the links are marked last, and the
+  // batch (with a fit: the claim, the one write that changes what the gate reads) after them.
+  const statements = [
+    db.update(personalMoves).set({ status: "active", batchId, updatedAt: now }).where(movesToActivate),
     // The choices, once the moves they name are the batch's active moves.
-    ...(fit ? [choicesWrite(db, userId, batchId, fit.choices)] : []),
+    ...(fit && gate ? [choicesWrite(db, userId, batchId, fit.choices, gate)] : []),
     // One row per kept link, except where the account already links the move to the post (`existing`) or an earlier
     // position of the same post shows the same move (`twin`). The aliased tables are named by their alias inside their
     // subquery, so the unaliased names there are the outer row's.
@@ -434,7 +467,7 @@ export async function saveBatch(
           coalesce(nullif(${savedPosts.creatorHandle}, ''), ${savedPosts.creatorName}),
           ${IMPORT_KEY_PREFIX} || ${savedPosts.sourceKey} || '#' || ${savedPostMoves.position}, ${now}, ${noteAt()}
           FROM ${savedPostMoves} JOIN ${savedPosts} ON ${savedPosts.id} = ${savedPostMoves.postId}
-          WHERE ${pendingLinks} AND ${savedPosts.userId} = ${userId}
+          WHERE ${keptLinks} AND ${savedPosts.userId} = ${userId}
             AND NOT EXISTS (SELECT 1 FROM ${exerciseProvenance} AS existing
               WHERE existing.user_id = ${userId} AND existing.exercise_id = ${savedPostMoves.moveId} AND existing.url = ${savedPosts.url})
             AND NOT EXISTS (SELECT 1 FROM ${savedPostMoves} AS twin
@@ -444,14 +477,30 @@ export async function saveBatch(
       )
       .onConflictDoNothing(),
     // While the links are still pending: they say which posts were kept.
-    insightWrites(db, userId, pendingLinks!, now),
-    db.update(savedPostMoves).set({ status: "saved" }).where(pendingLinks),
-    db
-      .update(saveBatches)
-      .set({ status: "saved", savedAt: now, ...(fit ? { fitStartedAt: fit.at, dismissedAt: null } : {}) })
-      .where(and(eq(saveBatches.id, batchId), eq(saveBatches.userId, userId))),
-  ]);
+    insightWrites(db, userId, keptLinks, now),
+    db.update(savedPostMoves).set({ status: "saved" }).where(keptLinks),
+  ] as const;
+  const thisBatch = and(eq(saveBatches.id, batchId), eq(saveBatches.userId, userId));
+  if (fit && gate) {
+    const claimed = await runAtomicallyClaim(db, [
+      ...statements,
+      db
+        .update(saveBatches)
+        .set({ status: "saved", savedAt: now, fitStartedAt: fit.at, dismissedAt: null })
+        .where(and(thisBatch, gate))
+        .returning({ id: saveBatches.id }),
+    ]);
+    if (!claimed) return "lost";
+  } else {
+    await runAtomically(db, [...statements, db.update(saveBatches).set({ status: "saved", savedAt: now }).where(thisBatch)]);
+  }
   // Its moves are the library's now: a later read in this request reads them.
   forgetAccountLibrary(db, userId);
   return { moves: Number(batch.moves), links: Number(batch.links) };
+}
+
+/** What a save made usable: the new moves activated, the links kept. */
+export interface SavedCounts {
+  moves: number;
+  links: number;
 }

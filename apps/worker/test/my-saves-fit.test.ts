@@ -16,7 +16,7 @@ import { createSession, SESSION_COOKIE } from "../src/auth/sessions.js";
 import { mySavesRoutes } from "../src/routes/my-saves.js";
 import { savedPostId } from "../src/services/saves-ledger.js";
 import { matchPost } from "../src/services/saves-match.js";
-import { assembleBatch, FIT_STARTED_TTL_MS } from "../src/services/saves-batches.js";
+import { assembleBatch, FIT_STARTED_TTL_MS, saveBatch } from "../src/services/saves-batches.js";
 import { toPersonalRecord } from "../src/services/personal-records.js";
 import { isWrite, makeTestDb, makeTestUser, mountRoutes } from "./helpers.js";
 
@@ -382,6 +382,97 @@ describe("POST /batches/:id/fit", () => {
     expect(fitted.status).toBe(409);
     expect(fitted.body).toEqual({ error: "already_fitted" });
     expect(writes()).toEqual([]);
+  });
+});
+
+// ── Two taps at once: the claim is the write's ───────────────────────────────────────────────────────────────────────
+
+describe("POST /batches/:id/fit: two taps at once", () => {
+  /**
+   * The 200 and the 409 of two fits sent together, whichever won. Both fit reads are held until both have read (the
+   * read is the first `db.all` of a fit), so each tap reads "not fitting, nothing else open" before either writes: the
+   * worst interleaving, made certain.
+   */
+  const race = async (batchId: string, first: Record<string, string>, second: Record<string, string>) => {
+    const realAll = db.all.bind(db) as (q: unknown) => unknown;
+    let arrived = 0;
+    let release: () => void = () => undefined;
+    const bothRead = new Promise<void>((r) => (release = r));
+    const spy = vi.spyOn(db, "all").mockImplementation((async (q: unknown) => {
+      const rows = await realAll(q);
+      arrived += 1;
+      if (arrived === 2) release();
+      if (arrived <= 2) await bothRead;
+      return rows;
+    }) as never);
+    const [x, y] = await Promise.all([fit(batchId, first), fit(batchId, second)]);
+    spy.mockRestore();
+    expect(arrived).toBeGreaterThanOrEqual(2);
+    const won = [x, y].filter((r) => r.status === 200);
+    const lost = [x, y].filter((r) => r.status === 409);
+    expect(won, JSON.stringify([x.body, y.body])).toHaveLength(1);
+    expect(lost).toHaveLength(1);
+    expect(lost[0]!.body).toEqual({ error: "fitting" });
+    return { winner: won[0] === x ? first : second, answer: won[0]!.body };
+  };
+
+  it("on a released batch: one 200 and one 409 fitting; the winner's choices alone, one save, one fit start", async () => {
+    const { batchId, a, b } = await seed();
+    const { winner, answer } = await race(batchId, { [a]: "include", [b]: "skip" }, { [a]: "skip" });
+    expect(answer).toEqual({ batchId, request: FIT_SAVES_REQUEST, moves: 2, links: 3 });
+    expect((await moveRow(a)).fitChoice).toBe(winner[a]);
+    expect((await moveRow(b)).fitChoice).toBe(winner[b] ?? null);
+    expect(await batchRow(batchId)).toMatchObject({ status: "saved", savedAt: NOW, fitStartedAt: NOW });
+    expect(await db.select().from(exerciseProvenance).where(eq(exerciseProvenance.userId, userId))).toHaveLength(3);
+    expect(await memory()).toHaveLength(2);
+  });
+
+  it("on a saved batch (a re-fit): one 200 and one 409 fitting; the winner's choices alone", async () => {
+    const { batchId, a, b } = await seed();
+    expect((await fit(batchId, { [a]: "include", [b]: "include" })).status).toBe(200);
+    expect((await call("POST", `/batches/${batchId}/fit/cancel`)).status).toBe(200);
+    vi.setSystemTime(new Date(LATER));
+    const { winner } = await race(batchId, { [a]: "skip" }, { [b]: "skip" });
+    expect((await moveRow(a)).fitChoice).toBe(winner[a] ?? null);
+    expect((await moveRow(b)).fitChoice).toBe(winner[b] ?? null);
+    expect(await batchRow(batchId)).toMatchObject({ status: "saved", savedAt: NOW, fitStartedAt: LATER });
+  });
+
+  it("the batch went saved between the fit's read and its write: 409 fitting, and no choice written", async () => {
+    const { batchId, a, b } = await seed();
+    // The move sheet's Save came first; the fit's read still saw the batch released.
+    expect((await call("POST", `/batches/${batchId}/save`)).status).toBe(200);
+    vi.spyOn(db, "all").mockResolvedValueOnce([{ status: "released", fittedAt: null, fitStartedAt: null, otherOpen: 0, moves: 0, links: 0 }]);
+    const res = await fit(batchId, { [a]: "skip", [b]: "include" });
+    expect(res.status, JSON.stringify(res.body)).toBe(409);
+    expect(res.body).toEqual({ error: "fitting" });
+    expect(writes()).toEqual([]);
+    for (const id of [a, b]) expect(await moveRow(id)).toMatchObject({ status: "active", fitChoice: null });
+    expect(await batchRow(batchId)).toMatchObject({ status: "saved", fitStartedAt: null });
+  });
+
+  it("a fit's save whose claim fails in the transaction writes nothing at all — another fit at work, or another batch open", async () => {
+    const { batchId, p1, p2, a, b } = await seed();
+    const untouched = async () => {
+      for (const id of [a, b]) expect(await moveRow(id)).toMatchObject({ status: "pending", fitChoice: null });
+      for (const [post, position] of [[p1, 0], [p1, 1], [p2, 0]] as const) expect((await linkAt(post, position)).status).toBe("pending");
+      expect(await memory()).toEqual([]);
+      expect(await db.select().from(exerciseProvenance).where(eq(exerciseProvenance.userId, userId))).toEqual([]);
+    };
+    // Another tap's fit began a minute ago (its read saw none): still released, but fitting.
+    await db.update(saveBatches).set({ fitStartedAt: new Date(Date.parse(NOW) - 60_000).toISOString() }).where(eq(saveBatches.id, batchId));
+    expect(await saveBatch(db, userId, batchId, NOW, { at: NOW, choices: { [a]: "include" } })).toBe("lost");
+    await untouched();
+    expect(await batchRow(batchId)).toMatchObject({ status: "released", savedAt: null });
+    // No fit at work, but another batch opened since the read.
+    await db.update(saveBatches).set({ fitStartedAt: null }).where(eq(saveBatches.id, batchId));
+    await db.insert(saveBatches).values({ id: "other-open", userId, status: "released", createdAt: NOW, releasedAt: NOW });
+    statements.length = 0;
+    expect(await saveBatch(db, userId, batchId, NOW, { at: NOW, choices: { [a]: "include" } })).toBe("lost");
+    // The batch and its counts 1, the transaction of 6 (every write gated, the last one counted).
+    expect(statements.length).toBe(7);
+    await untouched();
+    expect(await batchRow(batchId)).toMatchObject({ status: "released", savedAt: null, fitStartedAt: null });
   });
 });
 

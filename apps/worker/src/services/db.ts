@@ -71,6 +71,31 @@ export async function runAtomically(db: Db, statements: readonly AtomicStatement
 }
 
 /**
+ * `runAtomically`, answering how many rows its LAST statement wrote: a conditional write that claims something (the
+ * other statements gated on the same condition), read inside the transaction rather than by another statement. The last
+ * statement must end in `.returning(...)`. D1 hands a returning statement's rows back from `batch()`; the better-sqlite3
+ * driver the tests use reads them with `all()` inside its native transaction.
+ */
+export async function runAtomicallyClaim(db: Db, statements: readonly AtomicStatement[]): Promise<number> {
+  if (statements.length === 0) return 0;
+  const d1 = db as unknown as { batch?: (q: readonly [AtomicStatement, ...AtomicStatement[]]) => Promise<unknown[]> };
+  if (typeof d1.batch === "function") {
+    const results = await d1.batch(statements as [AtomicStatement, ...AtomicStatement[]]);
+    const last = results[results.length - 1];
+    return Array.isArray(last) ? last.length : 0;
+  }
+  const sqlite = db as unknown as { transaction: (run: () => void) => void };
+  let claimed = 0;
+  sqlite.transaction(() => {
+    statements.forEach((s, i) => {
+      if (i < statements.length - 1) (s as unknown as { run: () => unknown }).run();
+      else claimed = (s as unknown as { all: () => unknown[] }).all().length;
+    });
+  });
+  return claimed;
+}
+
+/**
  * The same ~100 bound-variable cap seen from the other side: an `inArray`
  * binds one variable per element, so a list longer than this becomes a failing
  * statement in production while passing in tests — better-sqlite3 has no such
