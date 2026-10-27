@@ -1,12 +1,12 @@
 // @vitest-environment jsdom
 /**
- * THE NEW SHAPE, THE NAV (2026-10-17 design §3): three places — Today, Plan, Growth — and one coach in the middle.
+ * THE NEW SHAPE, THE NAV (2026-10-17 design §3): four places — Today, Plan, Studio, Growth — and one coach among them.
  *
- *  - Phones: a bottom bar of four: Today · Plan · Coach (a filled sprout pill, a real button) · Growth. Settings is the
+ *  - Phones: a bottom bar of five: Today · Plan · Coach (a filled sprout pill, a real button) · Studio · Growth. Settings is the
  *    athlete's mark at the top right of each place.
- *  - From lg: the rail — Today, Plan, Coach, Growth — with Settings at its foot.
+ *  - From lg: the rail — Today, Plan, Coach, Studio, Growth — with Settings at its foot.
  *  - Routes: `/` Today, `/plan`, `/growth` (`/runs`, `/insights` and `/studio/objectives` go there), `/settings`; the
- *    Studio's pages keep their routes but `/studio` is no tab; `/garden` is gone (one home).
+ *    Studio's pages keep their routes under the `/studio` tab; `/garden` is gone (one home).
  *
  * The Coach button opens the app's one coach sheet (`useCoach().open`), and is not drawn without it.
  */
@@ -55,7 +55,7 @@ const src = (file: string) => readFileSync(resolve(dirname(fileURLToPath(import.
 const app = src("app.tsx");
 const css = src("styles.css");
 
-describe("three places and one coach", () => {
+describe("four places and one coach", () => {
   it("NAV is the four places: Today, Plan, Studio, Growth", () => {
     expect(NAV.map((n) => [n.to, n.label])).toEqual([
       ["/", "Today"],

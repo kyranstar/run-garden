@@ -499,7 +499,7 @@ button {
   width: 22px;
   height: 22px;
 }
-/* THE COACH IN THE MIDDLE (the new shape, §3): a real button between Plan and Growth, its sprout on a filled pill —
+/* THE COACH IN THE MIDDLE (the new shape, §3): a real button between Plan and Studio, its sprout on a filled pill —
    the one filled thing in the bar, so it reads as an action rather than a place. It stays inside the bar's own height
    (never raised over the page), which is what keeps it clear of the music pill above the bar's left edge. */
 .nav-coach {

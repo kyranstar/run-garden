@@ -1,6 +1,6 @@
 /**
- * The Studio's pages (Stage 2 Task 4, reshaped 2026-10-17 by the new shape §3): the Studio is no tab any more — its
- * library is reached from the coach's opening screen and search — but every page keeps its route, with the wide
+ * The Studio's pages (Stage 2 Task 4, reshaped 2026-10-17 by the new shape §3): the Studio is a tab again (2026-10-26),
+ * and every page keeps its route, with the wide
  * treatment `/plan` has, on `/studio` and everything under it. The flag that shipped the tab dark is gone from the
  * routes: the Studio is on in production (the owner's call, 2026-10-16), so its "off" branches were dead.
  */

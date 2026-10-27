@@ -14,8 +14,8 @@ import { SceneMarkContext } from "./scene-mark.js";
 /**
  * THE NAV (2026-10-17 design §3, Studio made a tab 2026-10-26): four places — Today, Plan, Studio, Growth — and one
  * coach among them. The phone's bar is Today · Plan · Coach · Studio · Growth, five equal controls; the rail from lg is
- * the same five with Settings at its foot. Settings on a phone is the athlete's mark at the top right of each place.
- * The Studio's pages keep their routes under `/studio`, and its tab is lit on all of them.
+ * the same five with Settings at its foot. Settings on a phone is the athlete's mark at the top right of Today, Plan and Growth (the Studio's
+ * pages wear their own headers). The Studio's pages keep their routes under `/studio`, and its tab is lit on all of them.
  */
 export const NAV = [
   { to: "/", label: "Today", icon: <IconToday /> },

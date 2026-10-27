@@ -11,7 +11,7 @@
  *
  * `studio` — the Studio (Stage 2). Unlike `player` it is decided by the BUILD, not by a constant: on wherever Vite says
  * DEV — the dev server, the fixture stack the e2e and screenshot runs use, and vitest — and off in a production build
- * unless that build sets `VITE_STUDIO=1` (production does). Since the new shape the Studio is no tab and its routes
+ * unless that build sets `VITE_STUDIO=1` (production does). Since the Studio became a tab its routes
  * answer whatever this says; the session sheet's Edit still reads it.
  *
  * `coach` — the coach designer in the Studio (Stage 3 Task 9): the composer, the run view and a designed workout's
