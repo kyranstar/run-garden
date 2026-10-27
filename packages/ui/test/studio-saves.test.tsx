@@ -326,27 +326,32 @@ describe("a batch's page (the saves flow redesigned §3.3)", () => {
     expect(document.querySelector("h1")?.textContent).toBe("1 new move");
   });
 
-  it("no new move: the title says No new moves and Fit these in is there but disabled — a batch of only moves already yours, or one every row of which was removed", async () => {
-    // Only a move already yours (final fix wave, saves flow redesign: never "0 new moves").
+  it("no new move: the title says No new moves; with moves already yours Fit these in still fits (choices {}), with no row left it is disabled", async () => {
+    // Only a move already yours (fix wave round 2, saves flow redesign): a batch of its own — the coach may still pin it.
     const calls = serve({ only: ["pm2"] });
     mount("/studio/saves/b1");
     await until(() => !!fold(), "Already yours");
     expect(document.querySelector("h1")?.textContent).toBe("No new moves");
+    expect(fold()?.textContent?.trim()).toBe("▸ Already yours · 1");
     expect(document.querySelector(".stu-save-line")).toBeNull();
     expect(tally()).toBeNull();
-    expect(button("Fit these in")?.disabled).toBe(true);
+    expect(button("Fit these in")?.disabled).toBe(false);
     await click(button("Fit these in"), "Fit these in");
-    expect(fitBody(calls)).toBeUndefined();
+    await until(() => !!fitBody(calls), "the fit");
+    expect(fitBody(calls)).toEqual({ choices: {} });
+    await until(() => opener.open.mock.calls.length === 1, "the coach opened");
     act(() => root?.unmount());
     host?.remove();
     root = null;
     vi.unstubAllGlobals();
-    // Every row removed: nothing left, and the same foot.
-    serve({ rowStatus: "removed" });
+    // Every row removed: nothing left — the foot stays, Fit these in disabled (the server would answer `empty`).
+    const none = serve({ rowStatus: "removed" });
     mount("/studio/saves/b1");
     await until(() => text().includes("Nothing left in this batch."), "nothing left");
     expect(document.querySelector("h1")?.textContent).toBe("No new moves");
     expect(button("Fit these in")?.disabled).toBe(true);
+    await click(button("Fit these in"), "Fit these in");
+    expect(fitBody(none)).toBeUndefined();
   });
 
   it("the tally follows the controls: All three on the coach's call → 1 in · 1 out · 1 on the coach's call", async () => {
@@ -728,6 +733,22 @@ describe("the batches", () => {
     // The same fit as the coach's card: no choices key — what the owner chose on the page stands.
     expect(fitBody(calls)).toEqual({});
     expect(opener.open).toHaveBeenCalledWith({ fit: { batchId: "b1", request: FIT_SAVES_REQUEST }, seeing: null });
+  });
+
+  it("the list: a batch with no row left — put aside or not — shows its facts and no Fit them in", async () => {
+    for (const dismissedAt of ["2026-10-24T09:00:00.000Z", null]) {
+      serve({ batch: { dismissedAt, counts: { new: 0, linked: 0, removed: 5 } } });
+      mount("/studio/saves");
+      await until(() => !!document.querySelector('a[href="/studio/saves/b1"]'), "the batch");
+      const item = document.querySelector('a[href="/studio/saves/b1"]')!.closest("li")!;
+      expect(item.textContent, String(dismissedAt)).toContain("5 removed");
+      if (dismissedAt) expect(item.textContent).toContain("Put aside");
+      expect(button("Fit them in", item), String(dismissedAt)).toBeNull();
+      act(() => root?.unmount());
+      host?.remove();
+      root = null;
+      vi.unstubAllGlobals();
+    }
   });
 
   it("the list: Fit them in refused while another batch is open says so", async () => {

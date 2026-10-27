@@ -130,9 +130,11 @@ Reached only from the card (and from Settings → Saves for older batches). Titl
 - Owner routes (all under `/api/my-saves`, bearer session as today):
   - `GET /open` → the open batch for the indicators and the card: id, counts (new, already yours), the summary line,
     and the groups. 404-shaped answer (`{ open: null }`) when none.
-  - `POST /batches/:id/fit` with `{ choices: { [moveId]: "include" | "skip" } }` (empty object for the coach's-call
-    path): saves the batch (as `/save` does today, including the §17 memory and provenance writes), stores the choices,
-    returns the request text to send. Replaces the two-step save + chip; `/save` stays for the move sheet's needs.
+  - `POST /batches/:id/fit` with `{ choices?: { [moveId]: "include" | "skip" } }`: saves the batch (as `/save` does
+    today, including the §17 memory and provenance writes), stores the choices, returns the request text to send.
+    Replaces the two-step save + chip; `/save` stays for the move sheet's needs. `choices` absent (the one-tap
+    coach's-call path: Today, the coach's card, the list) keeps the stored choices; `{}` (the page, every move on Coach)
+    clears them.
   - `POST /batches/:id/dismiss` → sets `dismissed_at`.
   - `POST /batches/:id/fit/cancel` → clears `fit_started_at` when the run could not start after `/fit` (a run already at
     work, the week's budget, offline), so the card never reads "Fitting in…" for the full hour (§12.1).

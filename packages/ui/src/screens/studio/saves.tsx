@@ -23,10 +23,11 @@
  * | Include — never its creator or dose. A flagged move keeps "Check this", then the move it looks like: `like {name}`,
  * a tap merging it into that move while the row is the owner's to change. The moves the owner already has fold under
  * one line. Fit these in saves the batch with the choices (Coach sent as nothing) and opens the coach with the fit,
- * which sends the request; while that fit is at work, "Fitting in… open the coach" in its place. With no new move (only
- * moves already yours, or every row removed) the title says "No new moves" and Fit these in is disabled. A fitted batch
- * reads the same, with no control and no foot. On the list, a batch put aside reads so, and Fit them in brings it back
- * (the coach card's fit: no choices sent, so what the owner chose here stands).
+ * which sends the request; while that fit is at work, "Fitting in… open the coach" in its place. With no new move the
+ * title says "No new moves": moves already yours still fit in (the coach may pin them; choices `{}`), and only a batch
+ * with no row left disables Fit these in. A fitted batch reads the same, with no control and no foot. On the list, a
+ * batch put aside reads so, and Fit them in brings it back (the coach card's fit: no choices sent, so what the owner
+ * chose here stands) — never for a batch with no row left, which shows its facts only.
  *
  * A name opens the move's sheet: its words, the post (its creator, and a link that opens it apart), the dose as the
  * post gave it and as it would be saved, and — while the row is pending — Edit (a new move, or one of the owner's own),
@@ -58,8 +59,8 @@ import { doseLine } from "./model.js";
 import { postHref } from "./move-detail.js";
 import { dotted } from "./move-row.js";
 import {
-  attrWord, batchDay, batchFacts, canFit, DOSE_TYPES, DOSE_WORD, FITTING_LINE, formOf, pageRowsOf, patchOf, pendingLinksOf, rowActions,
-  savesHref, tallyLine, writeError,
+  attrWord, batchDay, batchFacts, canFit, DOSE_TYPES, DOSE_WORD, FITTING_LINE, formOf, keepsRows, pageRowsOf, patchOf, pendingLinksOf,
+  rowActions, savesHref, tallyLine, writeError,
   type MoveForm, type OwnedRow, type PageRow,
 } from "./saves-model.js";
 import { useOneTap } from "./use-one-tap.js";
@@ -141,7 +142,7 @@ export function SavesScreen() {
                 <Facts facts={batchFacts(b)} />
               </p>
               {/* Put aside (spec §12.3): Fit them in brings it back — the coach's card's fit, the coach opened with it. */}
-              {coach && b.dismissedAt && canFit(b) ? <FitAgain batchId={b.id} /> : null}
+              {coach && b.dismissedAt && canFit(b) && keepsRows(b) ? <FitAgain batchId={b.id} /> : null}
             </li>
           ))}
         </ul>
@@ -458,8 +459,8 @@ export function SaveBatchScreen() {
       {choosing ? (
         <div className="stu-build-foot stu-save-foot">
           {n > 0 ? <p className="stu-save-tally">{tallyLine(choices, moveIds)}</p> : null}
-          {/* No new move (only moves already yours, or nothing left in it): nothing to fit in. */}
-          <button type="button" className="btn btn-primary" disabled={pending || n === 0} onClick={() => fit(batchId, sent)}>
+          {/* Nothing left in it (every row removed): nothing to fit in. Moves already yours alone still fit. */}
+          <button type="button" className="btn btn-primary" disabled={pending || (n === 0 && owned.length === 0)} onClick={() => fit(batchId, sent)}>
             Fit these in
           </button>
           {line ? (

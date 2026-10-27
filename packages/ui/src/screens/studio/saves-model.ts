@@ -59,6 +59,10 @@ export function rowActions(row: SaveBatchRowDto, ownStatus?: "active" | "archive
 /** Whether a batch can be fitted in ("Fit these in", "Fit them in"): released or saved, not fitted in, no fit at work. */
 export const canFit = (b: SaveBatchDto): boolean => !b.fittedAt && !b.fitting && (b.status === "released" || b.status === "saved");
 
+/** Whether a batch still keeps a row (a new move or one already yours): one every row of which was removed has nothing to
+ * fit in (the server answers `empty`), so the list offers it no Fit them in. */
+export const keepsRows = (b: SaveBatchDto): boolean => b.counts.new + b.counts.linked > 0;
+
 /** How many batches wait for the owner: released or saved, and not fitted in yet (put aside too). */
 export const waitingBatches = (batches: readonly SaveBatchDto[]): number =>
   batches.filter((b) => !b.fittedAt && (b.status === "released" || b.status === "saved")).length;

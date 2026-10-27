@@ -13,6 +13,7 @@ import {
   fitRefusal,
   FITTING_LINE,
   isFitBatchGone,
+  keepsRows,
   OPEN_FIRST_LINE,
   openShown,
   pageRowsOf,
@@ -68,6 +69,13 @@ describe("the open batch's words (the saves flow redesigned)", () => {
     expect(fitRefusal(new ApiError(404, { error: "not_found" }))).toBeNull();
     expect(fitRefusal(new ApiError(500, null))).toBe(FIT_FAILED_LINE);
     expect(fitRefusal(new TypeError("Failed to fetch"))).toBe(FIT_FAILED_LINE);
+  });
+
+  it("a batch keeps rows while it has a new move or one already yours; every row removed, it keeps none", () => {
+    const b = (counts: SaveBatchDto["counts"]) => ({ counts }) as SaveBatchDto;
+    expect(keepsRows(b({ new: 2, linked: 0, removed: 0 }))).toBe(true);
+    expect(keepsRows(b({ new: 0, linked: 3, removed: 1 }))).toBe(true);
+    expect(keepsRows(b({ new: 0, linked: 0, removed: 4 }))).toBe(false);
   });
 
   it("a fit's run refused for its batch (404 saves_batch_not_found) is the fit's failure; any other 404 is not", () => {
