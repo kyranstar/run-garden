@@ -56,29 +56,32 @@ const app = src("app.tsx");
 const css = src("styles.css");
 
 describe("three places and one coach", () => {
-  it("NAV is the three places: Today, Plan, Growth", () => {
+  it("NAV is the four places: Today, Plan, Studio, Growth", () => {
     expect(NAV.map((n) => [n.to, n.label])).toEqual([
       ["/", "Today"],
       ["/plan", "Plan"],
+      ["/studio", "Studio"],
       ["/growth", "Growth"],
     ]);
   });
 
-  it("the phone's bar: Today · Plan · Coach · Growth, the Coach a button in the middle", () => {
+  it("the phone's bar: Today · Plan · Coach · Studio · Growth, the Coach a button before Studio", () => {
     expect(controls(shellAt("/"), "bottom-nav")).toEqual([
       ["a", "/", "Today"],
       ["a", "/plan", "Plan"],
       ["button", "", "Coach"],
+      ["a", "/studio", "Studio"],
       ["a", "/growth", "Growth"],
     ]);
   });
 
-  it("the rail: the same four, then Settings at its foot", () => {
+  it("the rail: the same five, then Settings at its foot", () => {
     const rail = controls(shellAt("/plan"), "side-nav");
     expect(rail).toEqual([
       ["a", "/", "Today"],
       ["a", "/plan", "Plan"],
       ["button", "", "Coach"],
+      ["a", "/studio", "Studio"],
       ["a", "/growth", "Growth"],
       ["a", "/settings", "Settings"],
     ]);
@@ -87,11 +90,10 @@ describe("three places and one coach", () => {
     expect(foot).toContain('href="/settings"');
   });
 
-  it("no Studio tab, no Activity tab, no Settings tab in the phone's bar", () => {
+  it("no Activity tab, no Settings tab in the phone's bar", () => {
     const html = shellAt("/");
     for (const nav of ["bottom-nav", "side-nav"]) {
       const texts = controls(html, nav).map(([, , t]) => t);
-      expect(texts, nav).not.toContain("Studio");
       expect(texts, nav).not.toContain("Activity");
       expect(texts, nav).not.toContain("Garden");
     }
@@ -119,10 +121,11 @@ describe("three places and one coach", () => {
     expect(shellAt("/growth")).toMatch(/<a aria-current="page" class="active" href="\/growth">/);
   });
 
-  it("without the coach's sheet in the app, no Coach button: the three places alone", () => {
+  it("without the coach's sheet in the app, no Coach button: the four places alone", () => {
     expect(controls(shellAt("/", null), "bottom-nav")).toEqual([
       ["a", "/", "Today"],
       ["a", "/plan", "Plan"],
+      ["a", "/studio", "Studio"],
       ["a", "/growth", "Growth"],
     ]);
   });
@@ -201,7 +204,7 @@ describe("the routes", () => {
     expect(app).not.toContain('path="/garden"');
   });
 
-  it("the Studio's pages keep their routes, though /studio is no tab", () => {
+  it("the Studio's pages keep their routes, /studio a tab", () => {
     expect(app).toContain('<Route path="/studio/*" element={<StudioRoute />} />');
     expect(app).toContain('<Route path="build/*" element={<BuilderRoute />} />');
     expect(app).toContain('<Route path="templates" element={<TemplatesScreen />} />');

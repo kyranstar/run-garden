@@ -2,7 +2,7 @@ import { useEffect, useState, type ReactNode } from "react";
 import { Link, NavLink, useLocation, useNavigate } from "react-router-dom";
 import { PRODUCT_NAME } from "@rg/domain";
 import type { RestoreStatus } from "@rg/api-client";
-import { IconGrowth, IconPlan, IconSettings, IconSprout, IconToday } from "./icons.js";
+import { IconGrowth, IconPlan, IconSettings, IconSprout, IconStudio, IconToday } from "./icons.js";
 import { CoachBoundary } from "./screens/studio/coach-boundary.js";
 import { useCoach } from "./screens/studio/coach-ask.js";
 import { CoachNavMark } from "./screens/studio/run-keeper.js";
@@ -12,19 +12,21 @@ import { MusicDock, useMusicOn } from "./music/dock.js";
 import { SceneMarkContext } from "./scene-mark.js";
 
 /**
- * THE NEW SHAPE'S NAV (2026-10-17 design §3): three places — Today, Plan, Growth — and one coach in the middle. The
- * phone's bar is Today · Plan · Coach · Growth; the rail from lg is the same four with Settings at its foot. Settings on
- * a phone is the athlete's mark at the top right of each place. The Studio is no tab: its pages keep their routes and
- * are reached from the coach's opening screen and search.
+ * THE NAV (2026-10-17 design §3, Studio made a tab 2026-10-26): four places — Today, Plan, Studio, Growth — and one
+ * coach among them. The phone's bar is Today · Plan · Coach · Studio · Growth, five equal controls; the rail from lg is
+ * the same five with Settings at its foot. Settings on a phone is the athlete's mark at the top right of each place.
+ * The Studio's pages keep their routes under `/studio`, and its tab is lit on all of them.
  */
 export const NAV = [
   { to: "/", label: "Today", icon: <IconToday /> },
   { to: "/plan", label: "Plan", icon: <IconPlan /> },
+  { to: "/studio", label: "Studio", icon: <IconStudio /> },
   { to: "/growth", label: "Growth", icon: <IconGrowth /> },
 ];
 
-/** The places: each carries the athlete's mark (Settings, on a phone) at its top right. */
-const PLACES = new Set(NAV.map((n) => n.to));
+/** The places: each carries the athlete's mark (Settings, on a phone) at its top right. The Studio, a tab, is not one:
+ * its pages carry their own headers, and the mark stays off them as before. */
+const PLACES = new Set(NAV.map((n) => n.to).filter((to) => to !== "/studio"));
 
 /** The routes that take the wide treatment at lg: the plan's week grid, the Studio's columns. */
 const isWide = (pathname: string): boolean =>
@@ -53,7 +55,7 @@ function CoachButton() {
   );
 }
 
-/** The nav's four, in order: the places, the coach between Plan and Growth. */
+/** The nav's five, in order: the places, the coach between Plan and Studio. */
 function NavItems() {
   return (
     <>
@@ -67,7 +69,7 @@ function NavItems() {
 function PlaceLink({ item }: { item: (typeof NAV)[number] }) {
   return (
     <>
-      {item.to === "/growth" ? <CoachButton /> : null}
+      {item.to === "/studio" ? <CoachButton /> : null}
       <NavLink to={item.to} end={item.to === "/"}>
         {item.icon}
         {item.label}

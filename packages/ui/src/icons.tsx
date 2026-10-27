@@ -32,6 +32,14 @@ export const IconPlan = ({ size }: IconProps) => (
   </svg>
 );
 
+/** The Studio (a tab): a kettlebell in outline: a round body under a handle, drawn on IconPlan's grid and stroke. */
+export const IconStudio = ({ size }: IconProps) => (
+  <svg {...base(size)}>
+    <path d="M9 8.5V7a3 3 0 0 1 6 0v1.5" />
+    <path d="M12 8.5c-4.4 0-7.5 2.7-7.5 6.2 0 3.2 3 5.8 7.5 5.8s7.5-2.6 7.5-5.8c0-3.5-3.1-6.2-7.5-6.2Z" />
+  </svg>
+);
+
 /** The coach's button in the nav (the new shape, §3): the garden's two-leaf sprout, standing alone — it sits on a
  * filled pill, so it carries no ground line. */
 export const IconSprout = ({ size }: IconProps) => (

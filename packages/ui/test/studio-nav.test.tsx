@@ -32,14 +32,14 @@ function shellAt(path: string): string {
 }
 
 describe("the Studio's pages", () => {
-  it("are no tab: no nav entry leads to /studio", () => {
-    expect(NAV.map((n) => n.to)).not.toContain("/studio");
-    const html = shellAt("/studio");
-    expect(html).not.toContain('href="/studio"');
+  it("is a tab: the nav leads to /studio, lit on /studio/saves", () => {
+    expect(NAV.map((n) => n.to)).toContain("/studio");
+    expect(shellAt("/")).toContain('href="/studio"');
+    expect(shellAt("/studio/saves")).toMatch(/<a aria-current="page" class="active" href="\/studio">/);
   });
 
-  it("the places' labels stay short enough for four equal controls at 320px", () => {
-    // 320 / 4 = 80px a control; the 11.2px label must fit inside it (spec §15).
+  it("the labels stay short enough for five equal controls at 320px", () => {
+    // 320 / 5 = 64px a control; the 11.2px label must fit inside it (spec §15).
     for (const n of NAV) expect(n.label.length, n.label).toBeLessThanOrEqual(8);
   });
 
