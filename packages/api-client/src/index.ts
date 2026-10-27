@@ -2625,6 +2625,9 @@ export const api = {
     rehearsal?: boolean;
     focus?: CoachRunFocus;
     conversationId?: string | null;
+    /** The saved batch a fit-in run fits ("Fit them in", after its `/fit`): 404 `saves_batch_not_found` unless it is a
+     * saved batch of the athlete's. */
+    savesBatchId?: string;
   }) => post<CoachRunCreateResult>("/api/coach/runs", body),
   /**
    * The coach's opening read: its "needs you" chips (at most two) and, when the coach noticed something, its own line —

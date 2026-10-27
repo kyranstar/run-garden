@@ -17,6 +17,7 @@ import type { ExerciseRecord } from "@rg/exercise-library";
 import { batchNotice, nearDuplicateOf, type FitChoice, type NearCandidate, type SaveBatchInsightDto } from "@rg/saves";
 import type { Env } from "../env.js";
 import { forgetAccountLibrary } from "./account-library.js";
+import type { SavesSkip } from "./design-tools/types.js";
 import { SAVED_POST_SOURCE } from "./coach-memory.js";
 import { runAtomically, runAtomicallyClaim, type Db } from "./db.js";
 import { EARLIEST_ZONE, liveMemoryWhere } from "./memory-core.js";
@@ -411,6 +412,31 @@ export function choicesWrite(db: Db, userId: string, batchId: string, choices: R
     .update(personalMoves)
     .set({ fitChoice: sql`(SELECT value FROM json_each(${json}) WHERE key = ${personalMoves.id})` })
     .where(and(eq(personalMoves.userId, userId), eq(personalMoves.batchId, batchId), eq(personalMoves.status, "active"), gate));
+}
+
+/**
+ * The skip set of the batch a fit-in run fits (spec §12.1, §12.5), in ONE statement: null unless the batch is a `saved`
+ * batch of the account's (another account's, one not saved, one nobody has: alike); else its new moves — active,
+ * stamped with the batch — the owner chose to skip (`fit_choice = 'skip'`), each with its name, by id ([] with none).
+ */
+export async function skipSetOf(db: Db, userId: string, batchId: string): Promise<SavesSkip[] | null> {
+  const rows = (await db.all(sql`
+    select (select json_group_array(json_array(m.id, json_extract(m.record, '$.name'))) from personal_moves m
+        where m.user_id = ${userId} and m.batch_id = b.id and m.status = 'active' and m.fit_choice = 'skip') as skip
+    from save_batches b where b.user_id = ${userId} and b.id = ${batchId} and b.status = 'saved'`)) as Array<{ skip: string | null }>;
+  if (rows.length === 0) return null;
+  let list: unknown = [];
+  try {
+    list = JSON.parse(rows[0]!.skip ?? "[]");
+  } catch {
+    list = [];
+  }
+  return (Array.isArray(list) ? list : [])
+    .flatMap((x): SavesSkip[] => {
+      const [id, name] = Array.isArray(x) ? (x as unknown[]) : [];
+      return typeof id === "string" ? [{ id, name: textOrNull(name) ?? "" }] : [];
+    })
+    .sort((a, b) => (a.id < b.id ? -1 : a.id > b.id ? 1 : 0));
 }
 
 /** A fit's start: when (`at`, the request's now) and the owner's choices. */

@@ -1012,4 +1012,45 @@ describe("saved-posts import, Task 17 — what came in from the athlete's saves,
     // A library move's ratings are the library's own.
     expect(lines.find((l) => l.includes("(gobletSquat)"))).not.toContain("ratings:");
   });
+
+  it("a run told its batch reads that batch — saved 30 days ago, with a newer unfitted batch waiting — in full whatever the request, with each move's choice and like; statements unchanged", async () => {
+    // Sun 8 Feb, 11:00 in Los Angeles: past the 14-day window.
+    const old = await seedSavedBatch(db, userId, {
+      savedAt: "2026-02-08T19:00:00.000Z",
+      posts: [
+        {
+          kind: "routine",
+          moves: [
+            { draft: savedMoveDraft("Zorbex hip circle"), choice: "include" },
+            { draft: savedMoveDraft("Zorbex neck nod"), choice: "skip" },
+            // A near-duplicate of the first, on the coach's call.
+            { draft: savedMoveDraft("Zorbex hip circle wide"), like: 0 },
+            { library: "gobletSquat" },
+          ],
+        },
+      ],
+    });
+    await seedSavedBatch(db, userId, { savedAt: SAVED, posts: [{ moves: [{ draft: savedMoveDraft("Zorbex calf rock") }] }] });
+    const [hip, neck, wide] = old.moveIds[0]!;
+    counting = true;
+    statements = 0;
+    // An ordinary request: the run's batch alone makes the section whole.
+    const { header } = await build({ savesBatchId: old.batchId });
+    counting = false;
+    expect(statements).toBe(contextStatements("main"));
+    const lines = sectionOf(header);
+    expect(lines).toEqual([
+      "From the athlete's saves (saved Sun 8 Feb · 30 d ago, not yet fitted in):",
+      `- ${saved("Zorbex hip circle")} (${hip}) — ${saved("Zorbex hip circle, slow and even.")}; new; the athlete: include; from 1 post${RATED}`,
+      `- ${saved("Zorbex neck nod")} (${neck}) — ${saved("Zorbex neck nod, slow and even.")}; new; the athlete skipped it — not placed; from 1 post${RATED}`,
+      `- ${saved("Zorbex hip circle wide")} (${wide}) — ${saved("Zorbex hip circle wide, slow and even.")}; new; from 1 post; like ${saved("Zorbex hip circle")}${RATED}`,
+      `- ${cut(GOBLET.name, 40)} (gobletSquat) — ${cut(GOBLET.text.summary, 60)}; yours already; from 1 post`,
+    ]);
+    for (const words of ["the athlete: include", "the athlete skipped it — not placed", "like "]) expect(lines.join("\n")).toContain(words);
+    expect(header).not.toContain("Zorbex calf rock");
+    // Not told its batch, the run reads the newest waiting one, as before: one index line for an ordinary request.
+    const told = (await build()).header;
+    expect(sectionOf(told)).toEqual([]);
+    expect(told).toContain("From your saves: 1 move waiting, not yet fitted in — read_saves");
+  });
 });

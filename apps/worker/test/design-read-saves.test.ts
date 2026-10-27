@@ -129,7 +129,7 @@ describe("read_saves", () => {
     expect(r.data.batch).toEqual({ id: batchId, savedAt: "2026-10-22" });
     expect(r.data.moves).toEqual([
       {
-        id: a, name: U("Zorbex hip circle"), summary: U("Zorbex hip circle, slow and even."), new: true, pinned: false, groups: "hip", posts: 2,
+        id: a, name: U("Zorbex hip circle"), summary: U("Zorbex hip circle, slow and even."), new: true, choice: "coach", like: null, pinned: false, groups: "hip", posts: 2,
         links: [
           // Each with its note: the post's reading of what the move is for (spec §17), marked.
           { url: expect.stringMatching(/^https:\/\/example\.com\/p\//), creator: U("coach_zero"), note: U("mobility") },
@@ -139,12 +139,12 @@ describe("read_saves", () => {
         fromPost: U("Three moves for the hips, slow."),
       },
       {
-        id: b, name: U("Zorbex neck nod"), summary: U("A small nod, chin tucked."), new: true, pinned: false, groups: "neck", posts: 1,
+        id: b, name: U("Zorbex neck nod"), summary: U("A small nod, chin tucked."), new: true, choice: "coach", like: null, pinned: false, groups: "neck", posts: 1,
         links: [{ url: expect.any(String), creator: U("coach_zero"), note: U("mobility") }], fromPost: U("Three moves for the hips, slow."),
       },
       {
         // The library's own words: code, not marked.
-        id: "gobletSquat", name: GOBLET.name, summary: GOBLET.text.summary, new: false, pinned: true, groups: moveGroup(GOBLET), posts: 1,
+        id: "gobletSquat", name: GOBLET.name, summary: GOBLET.text.summary, new: false, choice: "coach", like: null, pinned: true, groups: moveGroup(GOBLET), posts: 1,
         links: [{ url: expect.any(String), creator: U("coach_zero"), note: U("mobility") }], fromPost: U("Three moves for the hips, slow."),
       },
     ]);
@@ -273,7 +273,8 @@ describe("read_saves", () => {
 
   it("twelve moves at their longest stay within the answer's budget, and every marked text has its marker first", async () => {
     // With five 200-character insights and a 160-character note on every link (spec §17). Measured 2026-10-25: 6,337 B,
-    // 4 of the 12 moves on the first page.
+    // 4 of the 12 moves on the first page. RE-PINNED 2026-10-26 (saves flow redesign: each move's choice and like,
+    // +29 B a move at the least — 1,259 B a move here): 6,315 B, 3 of the 12 on the first page, routines in the rest.
     await seedSavedBatch(db, userId, { savedAt: daysAgo(1), posts: longBatchPosts() });
     const r = await ok({});
     const { summary: _s, ...forModel } = r;
@@ -281,7 +282,7 @@ describe("read_saves", () => {
     expect(new TextEncoder().encode(text).length).toBeLessThanOrEqual(RESULT_BUDGET_BYTES);
     // What did not fit is said, never cut silently.
     const shown = r.data.moves.length;
-    expect(shown).toBeGreaterThan(3);
+    expect(shown).toBeGreaterThan(2);
     if (shown < 12) expect(r.missing).toContain(`${plural(12 - shown, "more move", "more moves")} — pass offset: ${shown}`);
     expect(r.data.insights).toHaveLength(5);
     for (const lead of ["LONG-reading", "LONG-handle", "LONG move", "LONG-summary", "LONG-purpose", "LONG-insight"]) {
@@ -323,6 +324,41 @@ describe("read_saves", () => {
     expect(count).toBe(1);
     // Outside a step it reads the athlete too: two, the most.
     expect((await read({})).count).toBe(2);
+  });
+
+  it("with the run's batch and no batchId, read_saves reads it past the 14-day window; each move's choice and like (the like's name marked when personal)", async () => {
+    const C = savedMoveDraft("Zorbex hip circle wide");
+    const old = await seedSavedBatch(db, userId, {
+      savedAt: daysAgo(30),
+      posts: [
+        { kind: "routine", moves: [{ draft: A, choice: "include" }, { draft: B, choice: "skip" }, { draft: C, like: 0 }, { library: "gobletSquat" }] },
+        { kind: "single_move", moves: [{ draft: savedMoveDraft("Zorbex calf rock") }] },
+      ],
+    });
+    const newer = await seedSavedBatch(db, userId, { savedAt: daysAgo(1), posts: [{ moves: [{ library: "deadBug" }] }] });
+    const [a, b, c] = old.moveIds[0]!;
+    const [calf] = old.moveIds[1]!;
+    // The calf rock is like the library's dead bug: a library move's name is its own words, plain.
+    const pm = schema.savedPostMoves;
+    await db.update(pm).set({ likeMoveId: "deadBug", checkFlag: true }).where(and(eq(pm.userId, userId), eq(pm.moveId, calf!)));
+    const fitIn = { run: { id: "run-saves", role: "main" as const, scope: { kind: "now" as const }, parentId: null, rehearsal: false, savesBatchId: old.batchId, savesSkip: [{ id: b!, name: "Zorbex neck nod" }] } };
+
+    const { r, count } = await read({}, userId, fitIn);
+    expect(count).toBe(2);
+    const data = (r as ReadOk & { data: any }).data;
+    expect(data.batch).toEqual({ id: old.batchId, savedAt: "2026-09-24" });
+    expect(data.moves.map((m: any) => [m.id, m.new, m.choice, m.like])).toEqual([
+      [a, true, "include", null],
+      [b, true, "skip", null],
+      // A saved move's name is a model's reading of a post: marked.
+      [c, true, "coach", { id: a, name: U("Zorbex hip circle") }],
+      [calf, true, "coach", { id: "deadBug", name: DEAD_BUG.name }],
+      // A move the athlete had already is the coach's call, whatever it is like.
+      ["gobletSquat", false, "coach", null],
+    ]);
+    // A batchId still reads the batch it names; with neither, the newest waiting one in the window.
+    expect((await read({ batchId: newer.batchId }, userId, fitIn)).r).toMatchObject({ data: { batch: { id: newer.batchId } } });
+    expect((await ok({})).data.batch.id).toBe(newer.batchId);
   });
 
   it("a move merged since into another reads as that move", async () => {

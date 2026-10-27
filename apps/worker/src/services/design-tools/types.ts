@@ -34,6 +34,13 @@ export interface RunScope {
   n?: number;
 }
 
+/** A move the athlete skipped in the batch a fit-in run fits (the saves flow, §12.5): never placed. Its name is a
+ * model's reading of a post — marked wherever it reaches the model. */
+export interface SavesSkip {
+  id: string;
+  name: string;
+}
+
 export interface ToolContext {
   db: Db;
   env: Env;
@@ -48,6 +55,11 @@ export interface ToolContext {
     rehearsal: boolean;
     /** A main run's conversation (the new shape §5): propose_workout's `replaces` names a suggestion of this one. */
     conversationId?: string;
+    /** A fit-in run's batch (the saves flow, §12.1), and a set's designers': what read_saves and pin_moves read when
+     * no batchId is given. */
+    savesBatchId?: string;
+    /** That batch's skipped moves, as the create read them (`skipSetOf`): what this run's workout tools refuse. */
+    savesSkip?: SavesSkip[];
   };
   now: Date;
   /**

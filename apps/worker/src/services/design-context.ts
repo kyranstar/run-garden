@@ -35,10 +35,11 @@
  * from its own row, in the focus's one statement, and said to be not yet saved. It is never a move a workout can place.
  *
  * WHAT CAME IN FROM THE ATHLETE'S SAVES (saved-posts import, Task 17): a main run's opening message lists the moves of
- * the newest batch the athlete saved in the last 14 days and nothing has fitted in yet — at most 12 the library offers,
- * one line each, the name and summary cut short (a personal move's marked as a saved post's), then what its kept posts
- * say about when, why or how often to do something ("Notes from these posts:", at most 5, marked) — just before the
- * request ("From the athlete's saves …").
+ * the newest batch the athlete saved in the last 14 days and nothing has fitted in yet — or, for a fit-in run told its
+ * batch (`savesBatchId`, the saves flow §12.1), that batch whatever its age — at most 12 the library offers, one line
+ * each, the name and summary cut short (a personal move's marked as a saved post's), the athlete's choice for it and
+ * the move it is like (§12.4), then what its kept posts say about when, why or how often to do something ("Notes from
+ * these posts:", at most 5, marked) — just before the request ("From the athlete's saves …").
  * The batch rides in the counts statement (read_saves' own `savesBatchSql`), so it costs no statement, and the section
  * is there only when such a batch is. read_saves has the posts, the pins and the routines.
  */
@@ -91,7 +92,7 @@ import { runningFactsOf, runningLine, runWeeksSql, thresholdSql, watchLine, type
 import { FOCUS_LINES, SHARED_PROMPT, markUntrusted, roleBlock, type ReviewRubric, type UntrustedSource } from "./design-prompt.js";
 import { dayWords, distanceWords, minutesOf, paceWords, parsedArray, parsedJson, plural, readTagged, relativeDay } from "./design-tools/read-common.js";
 import { planTerm } from "./design-tools/read-plan.js";
-import { SAVES_INSIGHTS_MAX, SAVES_MOVES_MAX, savedBatchOf, savedMovesOf, savesBatchSql, type SavedBatch } from "./design-tools/read-saves.js";
+import { SAVES_INSIGHTS_MAX, SAVES_MOVES_MAX, savedBatchOf, savedMovesOf, savesBatchSql, type SavedBatch, type SavedChoice } from "./design-tools/read-saves.js";
 import { activitiesAround, activityRows, doneEntries, doneTerms, sessionsWhere, setRows, type DoneCtx } from "./design-tools/read-sessions.js";
 import type { SystemBlock } from "./llm-messages.js";
 import { loadProfileWithPreferences } from "./profile.js";
@@ -168,6 +169,9 @@ export interface DesignRun {
   /** A main run's conversation (the new shape §5): its turns before this one are read — none when the run is the
    * conversation's first (its id the run's own). */
   conversationId?: string | null;
+  /** A fit-in main run's batch (the saves flow, §12.1): the saves section reads that saved batch — whatever its age,
+   * fitted in or not — and in full, whatever the request. */
+  savesBatchId?: string | null;
 }
 
 export interface DesignContext {
@@ -348,7 +352,8 @@ interface Reads {
   running: RunningFacts;
   /** The account's library (`personalMovesSql`, read in the counts statement): what a session's moves and a move asked from resolve in. */
   library: AccountLibrary;
-  /** A main run's waiting saves batch (read_saves' `savesBatchSql`, in the counts statement): saved in the last 14 days, not fitted in; else null. */
+  /** A main run's saves batch (read_saves' `savesBatchSql`, in the counts statement): the run's own (`savesBatchId`),
+   * else the newest saved in the last 14 days, not fitted in; else null. */
   saves: SavedBatch | null;
 }
 
@@ -438,7 +443,7 @@ async function read(
   userId: string,
   now: Date,
   horizonEnd: (today: string) => string,
-  run: Pick<DesignRun, "id" | "role">,
+  run: Pick<DesignRun, "id" | "role" | "savesBatchId">,
   focus: RunFocus | null = null,
   conversation: string | null = null,
 ): Promise<Reads> {
@@ -535,7 +540,7 @@ async function read(
         ${thresholdSql(userId)} as runThreshold,
         ${runWeeksSql(userId, today)} as runWeeks,
         ${personalMovesSql(userId)} as library,
-        ${isMain ? savesBatchSql(userId, { now }) : sql`null`} as saves`) as Promise<
+        ${isMain ? savesBatchSql(userId, { now, batchId: run.savesBatchId ?? undefined }) : sql`null`} as saves`) as Promise<
       Array<Reads["counts"] & { open: string | null; declined: string | null; draftDate: string | null; runThreshold: unknown; runWeeks: unknown; library: unknown; saves: unknown }>
     >,
   ]);
@@ -1249,28 +1254,37 @@ function cutChars(text: string, max: number): string {
   return chars.length <= max ? text : `${chars.slice(0, max - 1).join("").trimEnd()}…`;
 }
 
+/** The athlete's choice for a move, as its line says it (the saves flow, §3.4): nothing on the coach's call. */
+const SAVES_CHOICE_WORDS: Record<SavedChoice, string> = { include: "; the athlete: include", skip: "; the athlete skipped it — not placed", coach: "" };
+
 /** Whether a run asks about the saves (coach-context audit I4): the Fit chip's request, or one that names them. */
 export const asksAboutSaves = (request: string | null | undefined): boolean =>
   !!request && (request === FIT_SAVES_REQUEST || /saves|saved/i.test(request));
 
 /**
- * "From the athlete's saves …" (Task 17): the waiting batch's moves the library offers, at most SAVES_MOVES_MAX — new
- * ones first, as read_saves lists them — each by name and summary (cut to SAVES_NAME_CHARS and SAVES_SUMMARY_CHARS; a
- * personal move's marked as a saved post's) and id, new or the athlete's already, how many of the batch's posts show it,
- * and — a saved move the athlete never edited — whose its ratings are. Past the twelve counted in a line, the moves
- * archived since (never offered) in their own. Then, when the kept posts say when, why or how often to do something
- * (spec §17), "Notes from these posts:" and at most SAVES_INSIGHTS_MAX of those insights, each cut to SAVES_NOTE_CHARS
- * and marked as a saved post's. Only for a run that asks about the saves (`full`): any other main run gets one index
- * line, so a waiting batch never crowds an unrelated design (coach-context audit I4). Null when no move of it is offered.
+ * "From the athlete's saves …" (Task 17): the batch's moves the library offers, at most SAVES_MOVES_MAX — new ones
+ * first, as read_saves lists them — each by name and summary (cut to SAVES_NAME_CHARS and SAVES_SUMMARY_CHARS; a
+ * personal move's marked as a saved post's) and id, new or the athlete's already, the athlete's choice when they chose
+ * first (the saves flow, §3.4: "the athlete: include", or "the athlete skipped it — not placed"; nothing on the coach's
+ * call), how many of the batch's posts show it, the move it is like (§12.4: "like <name>", cut and marked as a move's
+ * own name is), and — a saved move the athlete never edited — whose its ratings are. Past the twelve counted in a line,
+ * the moves archived since (never offered) in their own. Then, when the kept posts say when, why or how often to do
+ * something (spec §17), "Notes from these posts:" and at most SAVES_INSIGHTS_MAX of those insights, each cut to
+ * SAVES_NOTE_CHARS and marked as a saved post's. Only for a run that asks about the saves, or a fit-in run told its
+ * batch (`full`): any other main run gets one index line, so a waiting batch never crowds an unrelated design
+ * (coach-context audit I4). Null when no move of it is offered.
  */
 function savesSection(batch: SavedBatch, r: Reads, full: boolean): string | null {
   const { moves, archived } = savedMovesOf(batch, r.library);
   if (moves.length === 0) return null;
   if (!full) return `From your saves: ${plural(moves.length, "move")} waiting, not yet fitted in — read_saves`;
-  const lines = moves.slice(0, SAVES_MOVES_MAX).map(({ record, new: fresh, postIds }) => {
-    const words = (text: string, max: number) => (isPersonalId(record.id) ? savedPost(cutChars(text, max)) : cutChars(text, max));
+  const lines = moves.slice(0, SAVES_MOVES_MAX).map(({ record, new: fresh, postIds, choice, like }) => {
+    const wordsOf = (of: { id: string }, text: string, max: number) => (isPersonalId(of.id) ? savedPost(cutChars(text, max)) : cutChars(text, max));
+    const words = (text: string, max: number) => wordsOf(record, text, max);
+    const chose = SAVES_CHOICE_WORDS[choice];
+    const alike = like ? `; like ${wordsOf(like, like.name, SAVES_NAME_CHARS)}` : "";
     const ratings = r.library.unchecked.has(record.id) ? `; ratings: ${UNCHECKED_RATINGS}` : "";
-    return `- ${words(record.name, SAVES_NAME_CHARS)} (${record.id}) — ${words(record.text?.summary ?? "", SAVES_SUMMARY_CHARS)}; ${fresh ? "new" : "yours already"}; from ${plural(postIds.length, "post")}${ratings}`;
+    return `- ${words(record.name, SAVES_NAME_CHARS)} (${record.id}) — ${words(record.text?.summary ?? "", SAVES_SUMMARY_CHARS)}; ${fresh ? "new" : "yours already"}${chose}; from ${plural(postIds.length, "post")}${alike}${ratings}`;
   });
   const more = Math.max(0, moves.length - SAVES_MOVES_MAX);
   const notes = batch.insights.slice(0, SAVES_INSIGHTS_MAX).map((i) => `- ${savedPost(cutChars(i.text, SAVES_NOTE_CHARS))}`);
@@ -1330,7 +1344,8 @@ function header(r: Reads, run: DesignRun, role: Role, scope: { kind: ScopeKind; 
   if (conversation) parts.push(conversation);
   if (role === "main" && r.focus) parts.push(focusSection(r.focus, r, time));
   // What came in from the athlete's saves (Task 17), last before the request: what "Fit these in" asks about.
-  const saves = role === "main" && r.saves ? savesSection(r.saves, r, asksAboutSaves(run.request)) : null;
+  // A fit-in run told its batch (the saves flow, §12.1) has the whole section, whatever its words.
+  const saves = role === "main" && r.saves ? savesSection(r.saves, r, asksAboutSaves(run.request) || !!run.savesBatchId) : null;
   if (saves) parts.push(saves);
   parts.push(run.request ? `The athlete's request, in their own words:\n${athlete(run.request)}` : NO_REQUEST[role]);
   return parts.join("\n\n");

@@ -2,12 +2,18 @@
  * read_saves — what came in from the athlete's saves (saved-posts import, Task 17). Task 16's opening brings a released
  * batch with "Fit these in", which saves it and asks the coach to fit its new moves in; this is how the coach sees them.
  *
- * THE BATCH: the newest the athlete saved in the last SAVES_WINDOW_DAYS that nothing has fitted in yet (`fitted_at`
- * null) — or the saved batch `batchId` names, whatever its age or fit. Its moves come from the links the owner kept
- * (`saved`; a removed one never), each move once, new ones first and then in the order the posts showed them:
+ * THE BATCH: the saved batch `batchId` names, whatever its age or fit — else the one the run fits
+ * (`ctx.run.savesBatchId`, the saves flow §12.1: "Fit them in" tells the run its batch), whatever its age too (§8.2) —
+ * else the newest the athlete saved in the last SAVES_WINDOW_DAYS that nothing has fitted in yet (`fitted_at` null).
+ * Its moves come from the links the owner kept (`saved`; a removed one never), each move once, new ones first and then
+ * in the order the posts showed them:
  *  - `name`, `summary`: a personal move's are a model's reading of a creator's post (or the owner's edit of it), marked;
  *    a library move's are the library's own words;
  *  - `new`: the batch brought it (`personal_moves.batch_id`, not merged since); else the athlete had it already;
+ *  - `choice` (§3.4): what the athlete chose for a new move before the fit (`personal_moves.fit_choice`) — `include`
+ *    (pin it, always) or `skip` (never placed) — else `coach`, the coach's call; a move they had already is `coach`;
+ *  - `like` (§12.4): the move a near-duplicate is like (`saved_post_moves.like_move_id`), as the account's library
+ *    offers it — its id and name, a personal move's marked — or null;
  *  - `pinned` (`exercise_prefs.pinned`) and `groups` (the notice's grouping: @rg/saves `moveGroup`);
  *  - `posts`: how many of the batch's posts show it; `links`: the first LINKS_MAX of them, the url (plain: an address,
  *    not prose), the creator (the handle, else the name: marked) and the note (spec §17: what the post says the move is
@@ -37,7 +43,7 @@ import { sql, type SQL } from "drizzle-orm";
 import { z } from "zod";
 import { dayLabel } from "@rg/domain";
 import type { ExerciseRecord } from "@rg/exercise-library";
-import { isPersonalId, moveGroup } from "@rg/saves";
+import { isPersonalId, moveGroup, type FitChoice } from "@rg/saves";
 import { makeLibraryIndex } from "@rg/workout";
 import { loadAccountLibrary, type AccountLibrary } from "../account-library.js";
 import { insightsJsonSql, insightsOf, type BatchInsight } from "../saves-batches.js";
@@ -84,6 +90,10 @@ export interface SavedLink {
   born: boolean;
   /** When the post was first seen: the order the posts came in. */
   seen: string;
+  /** The owner's fit choice for the move (`personal_moves.fit_choice`): null on the coach's call, or a library move's. */
+  fitChoice: FitChoice | null;
+  /** The move this link's move is like, flagged a near-duplicate (`saved_post_moves.like_move_id`); else null. */
+  likeId: string | null;
   /** The post's reading of the move's purpose (read_saves' only: `posts`): a model's words. */
   note?: string | null;
 }
@@ -105,10 +115,17 @@ export interface SavedBatch {
   insights: BatchInsight[];
 }
 
+/** Who decides whether a move of the batch joins (the saves flow, §3.4): the athlete (include, skip), or the coach. */
+export type SavedChoice = FitChoice | "coach";
+
 /** A move of the batch: its record in the account's library, whether the batch brought it, the posts showing it in order. */
 export interface SavedMove {
   record: ExerciseRecord;
   new: boolean;
+  /** The athlete's choice for a new move; `coach` with none, and for a move the athlete had already. */
+  choice: SavedChoice;
+  /** The move it is like (a near-duplicate, §12.4) as the library offers it; null with none, or one not offered. */
+  like: ExerciseRecord | null;
   postIds: string[];
   /** Each post's note on the move (its first link's), beside `postIds`: null with none or unread. */
   notes: Array<string | null>;
@@ -116,7 +133,8 @@ export interface SavedMove {
 
 /**
  * The batch as ONE JSON value — a scalar subquery, so it rides in a statement that reads something else (the opening
- * context's counts): `{ id, savedAt, links: [[moveId, postId, position, born, seen]], posts? }`, or null with no batch.
+ * context's counts): `{ id, savedAt, links: [[moveId, postId, position, born, seen, fitChoice, likeId]], posts? }`, or
+ * null with no batch.
  * Without `batchId`: the newest saved batch from the last SAVES_WINDOW_DAYS not fitted in; with it, that saved batch of
  * the athlete's. `insights`: the first SAVES_INSIGHTS_MAX of its kept posts (`insightsJsonSql`). `posts` adds each
  * post's url, creator, kind and reading, and each link's note (read_saves'). Its tables go by their own aliases, so it
@@ -139,7 +157,7 @@ export function savesBatchSql(userId: string, o: { now: Date; batchId?: string; 
   const keptPosts = sql`select sv_n.post_id from saved_post_moves sv_n where sv_n.user_id = ${userId} and sv_n.batch_id = sv_b.id and sv_n.status = 'saved'`;
   return sql`(select json_object('id', sv_b.id, 'savedAt', sv_b.saved_at,
       'links', json((select json_group_array(json_array(sv_l.move_id, sv_l.post_id, sv_l.position,
-          coalesce(sv_m.batch_id = sv_b.id and sv_m.status != 'merged', 0), coalesce(sv_p.first_seen_at, '')${note}))
+          coalesce(sv_m.batch_id = sv_b.id and sv_m.status != 'merged', 0), coalesce(sv_p.first_seen_at, ''), sv_m.fit_choice, sv_l.like_move_id${note}))
         from saved_post_moves sv_l
         left join saved_posts sv_p on sv_p.user_id = sv_l.user_id and sv_p.id = sv_l.post_id
         left join personal_moves sv_m on sv_m.user_id = sv_l.user_id and sv_m.id = sv_l.move_id
@@ -156,9 +174,14 @@ export function savedBatchOf(raw: unknown): SavedBatch | null {
   const b = parsedJson(raw) as { id?: unknown; savedAt?: unknown; links?: unknown; posts?: unknown; insights?: unknown } | null;
   if (!b || typeof b !== "object" || typeof b.id !== "string" || typeof b.savedAt !== "string" || !Number.isFinite(Date.parse(b.savedAt))) return null;
   const links = parsedArray(b.links).flatMap((x): SavedLink[] => {
-    const [moveId, postId, position, born, seen, note] = Array.isArray(x) ? (x as unknown[]) : [];
+    const [moveId, postId, position, born, seen, fit, like, note] = Array.isArray(x) ? (x as unknown[]) : [];
     return typeof moveId === "string" && typeof postId === "string" && typeof position === "number"
-      ? [{ moveId, postId, position, born: born === 1 || born === true, seen: str(seen) ?? "", note: str(note) }]
+      ? [
+          {
+            moveId, postId, position, born: born === 1 || born === true, seen: str(seen) ?? "",
+            fitChoice: fit === "include" || fit === "skip" ? fit : null, likeId: str(like), note: str(note),
+          },
+        ]
       : [];
   });
   const posts = new Map(
@@ -207,9 +230,11 @@ function resolverOf(library: Pick<AccountLibrary, "all" | "offered">): SavedReso
 
 /**
  * The batch's moves the coach may offer, each once — by the move it is in the account's library (a merged move as its
- * target) — new ones first, then in the order the posts showed them. `archived`: the moves left out because the
- * library no longer offers them (archived since, or merged into an archived move), by id; `unread`: how many it no
- * longer holds at all. `find` resolves a link the same way (for a routine's order).
+ * target) — new ones first, then in the order the posts showed them; each with the athlete's choice (a new move's own,
+ * else the coach's call) and the move it is like (its first link's that names one the library offers, never itself —
+ * resolved here, at no cost). `archived`: the moves left out because the library no longer offers them (archived
+ * since, or merged into an archived move), by id; `unread`: how many it no longer holds at all. `find` resolves a link
+ * the same way (for a routine's order).
  */
 export function savedMovesOf(
   batch: SavedBatch,
@@ -228,8 +253,16 @@ export function savedMovesOf(
       continue;
     }
     let move = byId.get(record.id);
-    if (!move) byId.set(record.id, (move = { record, new: false, postIds: [], notes: [] }));
-    if (l.born) move.new = true;
+    if (!move) byId.set(record.id, (move = { record, new: false, choice: "coach", like: null, postIds: [], notes: [] }));
+    if (l.born) {
+      move.new = true;
+      // The athlete chose for the batch's own new moves alone: a move they had already stays the coach's call.
+      if (l.fitChoice) move.choice = l.fitChoice;
+    }
+    if (!move.like && l.likeId) {
+      const like = resolve.find(l.likeId);
+      if (like && like.id !== record.id) move.like = like;
+    }
     if (!move.postIds.includes(l.postId)) {
       move.postIds.push(l.postId);
       move.notes.push(l.note ?? null);
@@ -255,11 +288,11 @@ const input = z
 export const readSaves: DesignTool = {
   name: "read_saves",
   description:
-    "What came in from the athlete's saves: the newest saved batch not yet fitted in (or batchId's). Each move — a saved one by its own id — new or theirs already, pinned or not, its posts with their notes; the posts' insights; routines.",
+    "The athlete's saves: the run's batch, else the newest not yet fitted in (or batchId's). Each move — a saved one by its own id — new or theirs, the athlete's choice, its near-duplicate, pinned or not, its posts' notes; insights; routines.",
   inputSchema: {
     type: "object",
     properties: {
-      batchId: { type: "string", description: "A saved batch's id; default the newest not yet fitted in." },
+      batchId: { type: "string", description: "A saved batch's id; default the run's batch, else the newest not yet fitted in." },
       limit: { type: "integer", minimum: 1, maximum: SAVES_MOVES_MAX, description: `Default ${SAVES_MOVES_MAX}, the most.` },
       offset: { type: "integer", minimum: 0, description: "Moves to skip: the offset missing gives." },
     },
@@ -275,9 +308,11 @@ export const readSaves: DesignTool = {
     const p = parseInput(input, raw, "optionally batchId, limit and offset");
     if (isErr(p)) return p;
     const limit = p.limit ?? SAVES_MOVES_MAX;
+    // A fit-in run reads the batch it fits (§12.1), whatever its age (§8.2), unless the model names another.
+    const batchId = p.batchId ?? ctx.run.savesBatchId;
     const [athlete, rows] = await Promise.all([
       athleteOf(ctx),
-      ctx.db.all(sql`select ${savesBatchSql(ctx.userId, { now: ctx.now, batchId: p.batchId, posts: true })} as batch,
+      ctx.db.all(sql`select ${savesBatchSql(ctx.userId, { now: ctx.now, batchId, posts: true })} as batch,
           (select json_group_array(sv_e.exercise_id) from exercise_prefs sv_e where sv_e.user_id = ${ctx.userId} and sv_e.pinned = 1) as pins`) as Promise<
         Array<{ batch: unknown; pins: unknown }>
       >,
@@ -288,7 +323,7 @@ export const readSaves: DesignTool = {
         return refuse(
           "not_found",
           `No saved batch of the athlete's has id ${JSON.stringify(p.batchId)}.`,
-          "Leave batchId out to read the newest saved batch not yet fitted in.",
+          ctx.run.savesBatchId ? "Leave batchId out to read the batch this run fits in." : "Leave batchId out to read the newest saved batch not yet fitted in.",
         );
       }
       return answer({
@@ -316,6 +351,8 @@ export const readSaves: DesignTool = {
       name: wordsOf(m.record, m.record.name),
       summary: wordsOf(m.record, m.record.text?.summary ?? ""),
       new: m.new,
+      choice: m.choice,
+      like: m.like ? { id: m.like.id, name: wordsOf(m.like, m.like.name) } : null,
       pinned: pins.has(m.record.id),
       groups: moveGroup(m.record),
       posts: m.postIds.length,

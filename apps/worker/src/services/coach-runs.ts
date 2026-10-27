@@ -72,6 +72,7 @@ import { designProposalId } from "./design-tools/propose.js";
 import { athleteText, clipProse } from "./design-prose.js";
 import { sharedAthlete } from "./design-tools/read-common.js";
 import { askedAnswerRows, insertAnswers, undoUntil } from "./design-tools/record-answer.js";
+import { skipSetOf } from "./saves-batches.js";
 import {
   isToolErr,
   type DesignTool,
@@ -79,6 +80,7 @@ import {
   type ReviewOf,
   type RunScope,
   type RunScopeKind,
+  type SavesSkip,
   type SetHooks,
   type SetRound,
   type ToolContext,
@@ -400,6 +402,12 @@ export interface RunSettings {
   /** An auto run's only (§8 §5): when propose_plan raised its ceiling to `setCeilingMicros` (once), with a set's window
    * from then — a run that proposes a whole plan, never a set's (`raisedAt` says that). */
   planRaisedAt?: string;
+  /** A fit-in main run's and its set's designers' (the saves flow, §12.1): the saved batch it fits in, checked as the
+   * account's at the create — what its opening context and read_saves read whatever its age, and pin_moves closes. */
+  savesBatchId?: string;
+  /** With `savesBatchId`: the batch's moves the athlete skipped, as the create read them (`skipSetOf`; [] with none) —
+   * what the run's workout tools refuse (§12.5). */
+  savesSkip?: SavesSkip[];
 }
 
 export interface PendingCall {
@@ -499,6 +507,9 @@ export function newRunState(
     focus?: RunFocus;
     /** An auto main run's: the set's ceiling plan_set may raise it to (default: a set's). */
     setCeilingMicros?: number;
+    /** A fit-in run's batch and its skip set (§12.1): a main run's and its designers'; never a reviewer's. */
+    savesBatchId?: string;
+    savesSkip?: SavesSkip[];
   } = {},
 ): RunState {
   const limits = RUN_LIMITS[role];
@@ -517,6 +528,7 @@ export function newRunState(
       ...(opts.window ? { window: opts.window } : {}),
       ...(opts.focus && role === "main" ? { focus: opts.focus } : {}),
       ...(scope.kind === "auto" && role === "main" ? { setCeilingMicros: opts.setCeilingMicros ?? RUN_CEILING_MICROS.week } : {}),
+      ...(opts.savesBatchId && role !== "reviewer" ? { savesBatchId: opts.savesBatchId, savesSkip: opts.savesSkip ?? [] } : {}),
     },
     system: null,
     messages: [],
@@ -680,6 +692,8 @@ export interface ContextRun {
   /** A main run's conversation (the new shape §5): its turns before this one are read into its opening context — none
    * when it is the conversation's first (its id the run's own). */
   conversationId?: string;
+  /** A fit-in main run's batch (the saves flow, §12.1): its opening context reads it, whatever its age, in full. */
+  savesBatchId?: string;
 }
 
 /**
@@ -1040,6 +1054,12 @@ export interface CreateRunInput {
    * its first run's being the conversation's), that one, when it is the athlete's in this run's lane — else a new one.
    */
   conversationId?: string | null;
+  /**
+   * The saved batch a fit-in run fits (the saves flow, §12.1; "Fit them in" sets it): a `saved` batch of the account's,
+   * read with its skip set in one statement (`skipSetOf`) — a `SavesBatchError` when it isn't — and kept with the run,
+   * its designers' too.
+   */
+  savesBatchId?: string | null;
 }
 
 export const REQUEST_MAX_CHARS = 2_000;
@@ -1057,6 +1077,14 @@ export type CreateRunResult =
       /** What this request asked for, not started: the screen can offer to start it once the live run is cancelled. */
       ignoredRequest: { scope: RunScope; request: string | null; focus?: RunFocus };
     };
+
+/** Nothing started: the batch a fit-in create named is not a saved batch of the account's — another account's, one not
+ * saved, one nobody has, alike (the saves flow, §12.1). The route answers it 404 `saves_batch_not_found`. */
+export class SavesBatchError extends Error {
+  constructor() {
+    super("saves_batch_not_found");
+  }
+}
 
 /** Nothing started: the week's spend and what a run of the scope costs would pass the weekly cutoff (Task 13's fix wave,
  * §2.11). The route answers it 409 `{ error: "week_budget", spentUsd, cutoffUsd }`. */
@@ -1161,6 +1189,8 @@ function numbersOf(text: string | null): number[] {
  * A live run whose window has closed is not offered: it is expired, with its plain line, and the new run starts.
  * A run the week can't pay for (`weekCanPay`, one statement first: Task 13's fix wave, §2.11) never starts: the answer
  * is a `WeekBudgetError` (the route's 409) — unless a live run is there to come back as itself.
+ * A fit-in create (`savesBatchId`, the saves flow §12.1) reads the batch and its skip set first — one statement more,
+ * only then — and a batch that isn't a saved one of the account's starts nothing (`SavesBatchError`, the route's 404).
  */
 export async function createRun(db: Db, userId: string, input: CreateRunInput, now: Date): Promise<CreateRunResult> {
   const at = now.toISOString();
@@ -1183,6 +1213,11 @@ export async function createRun(db: Db, userId: string, input: CreateRunInput, n
     const outside = dayOutOfRange(focus.id, localDate(timezone, now));
     if (outside) throw outside;
   }
+  // The batch a fit-in run fits (the saves flow, §12.1): a saved batch of the account's, with its skip set, in one
+  // statement — or nothing starts.
+  const savesBatchId = input.savesBatchId ?? null;
+  const savesSkip = savesBatchId ? await skipSetOf(db, userId, savesBatchId) : null;
+  if (savesBatchId && !savesSkip) throw new SavesBatchError();
   const ceilingKind = startCeilingKind(scope.kind);
   const lowered = own?.ceilingsUsd?.[ceilingKind];
   // An auto run's set ceiling, for plan_set to raise it to: the athlete's lower set limit, else the default.
@@ -1194,6 +1229,7 @@ export async function createRun(db: Db, userId: string, input: CreateRunInput, n
     ...(lowered !== undefined ? { ceilingMicros: Math.round(Math.min(lowered, COACH_CEILING_DEFAULTS_USD[ceilingKind]) * 1_000_000) } : {}),
     ...(loweredSet !== undefined ? { setCeilingMicros: Math.round(Math.min(loweredSet, COACH_CEILING_DEFAULTS_USD.set) * 1_000_000) } : {}),
     ...(focus ? { focus: { kind: focus.kind, id: focus.id } } : {}),
+    ...(savesBatchId && savesSkip ? { savesBatchId, savesSkip } : {}),
   });
   const insert = async (): Promise<CreateRunResult | null> => {
     const id = newId();
@@ -2526,6 +2562,8 @@ async function contextStep(s: StepCtx): Promise<StepEnd> {
     ...(s.state.settings.focus ? { focus: s.state.settings.focus } : {}),
     // Its conversation (the new shape §5): only a main run's state holds one.
     ...(s.state.settings.conversationId && s.run.role === "main" ? { conversationId: s.state.settings.conversationId } : {}),
+    // The batch a fit-in run fits (the saves flow, §12.1): the context reads a main run's alone.
+    ...(s.state.settings.savesBatchId && s.run.role === "main" ? { savesBatchId: s.state.settings.savesBatchId } : {}),
   };
   const built = await s.deps.buildContext.build(s.db, s.env, s.userId, run, s.now);
   s.state.system = built.system;
@@ -2869,6 +2907,11 @@ async function runTools(
       parentId: run.parentId,
       rehearsal: state.settings.rehearsal,
       ...(run.role === "main" && state.settings.conversationId ? { conversationId: state.settings.conversationId } : {}),
+      // A fit-in run's batch and skip set (§12.1, §12.5): a main run's and its designers' — what their tools default to
+      // and refuse.
+      ...(run.role !== "reviewer" && state.settings.savesBatchId
+        ? { savesBatchId: state.settings.savesBatchId, savesSkip: state.settings.savesSkip ?? [] }
+        : {}),
     },
     now: s.now,
     ...(s.deps.review && run.role !== "reviewer" ? { review: reviewHooks(s) } : {}),
@@ -3327,6 +3370,8 @@ function setHooks(s: StepCtx): SetHooks {
           ceilingMicros: DESIGNER_CEILING_MICROS,
           ...(state.settings.timezone ? { timezone: state.settings.timezone } : {}),
           ...(state.settings.window ? { window: state.settings.window } : {}),
+          // A fit-in run's batch and skip set (§12.1, §12.5): its designers place moves too.
+          ...(state.settings.savesBatchId ? { savesBatchId: state.settings.savesBatchId, savesSkip: state.settings.savesSkip ?? [] } : {}),
           toldAt: state.toldAt,
           brief: d.brief,
         }),

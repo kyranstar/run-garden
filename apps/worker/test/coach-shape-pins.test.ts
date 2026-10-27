@@ -69,8 +69,11 @@ const BEFORE = { tools: 34_935, shared: 20_450, main: 4_586 };
  * move's own id; recall_memory's names the saved-post source (tools 40,802 → 41,104); the integration paragraph's one
  * workout per run and closing the batch, the saved-post sentence under Untrusted text (shared 24,733 → 25,164); pin_moves
  * among the main block's choices (6,632 → 6,667) — 768 characters, so 12,964; held with about the same margin as before.
+ * REBASED 2026-10-26 (saves flow redesign): read_saves' description and its batchId's name the run's batch (a fit-in
+ * run is told its batch), each move's choice and its near-duplicate (tools 41,104 → 41,131) — measured 12,991; held
+ * with 409 characters (~117 tokens) of headroom.
  */
-const GROWTH_MAX_CHARS = 13_000;
+const GROWTH_MAX_CHARS = 13_400;
 
 const toolsSent = () => JSON.stringify(allTools().map((t) => ({ name: t.name, description: t.description, input_schema: t.inputSchema })));
 

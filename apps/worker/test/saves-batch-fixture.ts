@@ -4,9 +4,10 @@
  * `batch_id` the batch's), and the links (`saved_post_moves`, `saved`) from each post's position to a move — a library
  * move or one of the batch's own. Inserted directly, so a test or a bench shapes the batch it needs. Synthetic data only.
  */
+import { eq } from "drizzle-orm";
 import { schema } from "@rg/database";
 import { EXERCISES, PROFILES } from "@rg/exercise-library";
-import { personalMoveId, type ExtractedMove } from "@rg/saves";
+import { personalMoveId, type ExtractedMove, type FitChoice } from "@rg/saves";
 import type { Db } from "../src/services/db.js";
 import { toPersonalRecord } from "../src/services/personal-records.js";
 
@@ -27,8 +28,12 @@ export const savedMoveDraft = (name: string, over: Partial<ExtractedMove> = {}):
   evidence: { name: "stated", dose: "inferred", steps: "stated" }, confidence: "high", ...over,
 });
 
-/** A move one of the batch's posts shows: a library move by id, or a new one by its draft (the batch brings it). */
-export type SavedLink = { library: string } | { draft: ExtractedMove };
+/**
+ * A move one of the batch's posts shows: a library move by id, or a new one by its draft (the batch brings it) — with
+ * the owner's fit choice for it (`personal_moves.fit_choice`; none: the coach's call) and, flagged as a near-duplicate,
+ * the position in the same post of the move it is like (`saved_post_moves.like_move_id`, the link checked).
+ */
+export type SavedLink = { library: string } | { draft: ExtractedMove; choice?: FitChoice; like?: number };
 
 export interface SavedPostSpec {
   /** Its moves, by position. */
@@ -97,7 +102,7 @@ export async function seedSavedBatch(
           born.set(m.draft.name, moveId);
           await db.insert(personalMoves).values({
             id: moveId, userId, status: "active", mergedInto: null, batchId, record: toPersonalRecord(moveId, m.draft), editedByOwner: false,
-            createdAt: seen, updatedAt: o.savedAt,
+            fitChoice: m.choice ?? null, createdAt: seen, updatedAt: o.savedAt,
           });
         }
       }
@@ -106,6 +111,13 @@ export async function seedSavedBatch(
         id: `spm-${postId}-${position}`, userId, postId, position, moveId, moveKind: "library" in m ? "library" : "personal", batchId,
         confidence: 0.9, checkFlag: false, status: post.removed?.includes(position) ? "removed" : status === "saved" ? "saved" : "pending", createdAt: seen,
       });
+    }
+    // Near-duplicates: each such link checked, like the move at its `like` position.
+    for (const [position, m] of post.moves.entries()) {
+      if (!("draft" in m) || m.like === undefined) continue;
+      const like = ids[m.like];
+      if (!like) throw new Error(`no move at position ${m.like} of post ${i}`);
+      await db.update(savedPostMoves).set({ likeMoveId: like, checkFlag: true }).where(eq(savedPostMoves.id, `spm-${postId}-${position}`));
     }
     moveIds.push(ids);
   }

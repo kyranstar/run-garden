@@ -7,7 +7,7 @@
  * signed in or not; then the session is checked. Mounted ahead of `/api/coach` in index.ts so the coach's own sign-in
  * never answers for these paths first.
  *
- *   POST /                  { scope?, request?, rehearsal?, focus?, conversationId? } → { run, existing, conversationId }
+ *   POST /                  { scope?, request?, rehearsal?, focus?, conversationId?, savesBatchId? } → { run, existing, conversationId }
  *                           (409 `week_budget` past the athlete's week; a rehearsal past the rehearsal lane's own,
  *                           409 `rehearsal_budget` { spentUsd, capUsd }: llm.ts DEV_BUDGET)
  *                           (the new shape §5: no conversationId, the current conversation — its newest ask under 18 hours
@@ -21,6 +21,10 @@
  *                           (one statement; none for a day or a move); 400 { error: "focus_out_of_range" | "focus_is_set",
  *                           why } for a day past the run's horizon or a set's suggestion, in words. A suggestion's focus
  *                           with no scope takes the suggestion's own.
+ *                           `savesBatchId` (the saves flow, §12.1: "Fit them in" sets it): the saved batch the run
+ *                           fits — read with its skip set in one statement more, kept with the run and its designers;
+ *                           400 `bad_saves_batch` when it isn't an id; 404 `saves_batch_not_found` when it isn't a saved
+ *                           batch of the athlete's, and nothing starts.
  *   POST /:id/step          → { status, nextDue, events }    (409 busy while another step holds the run)
  *                           With the step alarm on (COACH_STEP_ALARM, coach-run-stepper.ts): `?afterSeq=n` → { status,
  *                           armed: true, nextDue: null, events after n } at once — the run's object is armed and its
@@ -69,6 +73,7 @@ import {
   parseScopeRequest,
   RehearsalBudgetError,
   runStep,
+  SavesBatchError,
   type CoachRunDto,
   type RunDeps,
   WeekBudgetError,
@@ -78,6 +83,8 @@ import { undoRemembered } from "../services/design-tools/remember.js";
 
 /** A condition check's id, at most (ids are the app's own: `newId`). */
 const CHECK_ID_MAX_CHARS = 100;
+/** A saves batch's id as a fit-in create names it (the app's own: `newId`). */
+const SAVES_BATCH_ID = /^[A-Za-z0-9-]{1,100}$/;
 
 /** A run a step goes on from: live, and not waiting on the athlete. */
 const AT_WORK: readonly string[] = ["active", "stepping", "waiting_review", "waiting_set"];
@@ -122,7 +129,14 @@ export function makeCoachRunRoutes(deps: () => RunDeps = defaultRunDeps): Hono<A
   routes.use("*", requireUser);
 
   routes.post("/", async (c) => {
-    const body = (await c.req.json().catch(() => null)) as { scope?: unknown; request?: unknown; rehearsal?: unknown; focus?: unknown; conversationId?: unknown } | null;
+    const body = (await c.req.json().catch(() => null)) as {
+      scope?: unknown;
+      request?: unknown;
+      rehearsal?: unknown;
+      focus?: unknown;
+      conversationId?: unknown;
+      savesBatchId?: unknown;
+    } | null;
     // No scope: the athlete's default; "next workouts" with no count: theirs (Settings → Coach, Task 10).
     const asked = body && typeof body === "object" && !Array.isArray(body) ? parseScopeRequest(body.scope) : null;
     if (!body || !asked) return c.json({ error: "bad_scope" }, 400);
@@ -141,6 +155,11 @@ export function makeCoachRunRoutes(deps: () => RunDeps = defaultRunDeps): Hono<A
     if (conversationId !== undefined && conversationId !== null && (typeof conversationId !== "string" || !CONVERSATION_ID.test(conversationId))) {
       return c.json({ error: "bad_conversation" }, 400);
     }
+    // The batch a fit-in run fits (the saves flow, §12.1): absent, or a batch's id.
+    const savesBatchId = body.savesBatchId;
+    if (savesBatchId !== undefined && (typeof savesBatchId !== "string" || !SAVES_BATCH_ID.test(savesBatchId))) {
+      return c.json({ error: "bad_saves_batch" }, 400);
+    }
     try {
       const created = await createRun(
         c.get("db"),
@@ -151,6 +170,7 @@ export function makeCoachRunRoutes(deps: () => RunDeps = defaultRunDeps): Hono<A
           rehearsal: body.rehearsal === true,
           ...(focus?.success ? { focus: focus.data } : {}),
           ...(conversationId !== undefined ? { conversationId: conversationId as string | null } : {}),
+          ...(savesBatchId !== undefined ? { savesBatchId: savesBatchId as string } : {}),
         },
         new Date(),
       );
@@ -164,6 +184,8 @@ export function makeCoachRunRoutes(deps: () => RunDeps = defaultRunDeps): Hono<A
       if (e instanceof FocusError) {
         return e.code === "focus_not_found" ? c.json({ error: e.code }, 404) : c.json({ error: e.code, why: e.why ?? "" }, 400);
       }
+      // Not a saved batch of the athlete's (§12.1): nothing started, and nothing says another account's exists.
+      if (e instanceof SavesBatchError) return c.json({ error: "saves_batch_not_found" }, 404);
       throw e;
     }
   });

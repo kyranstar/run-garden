@@ -24,10 +24,11 @@ import {
   type ContextBuilder,
   type RunDeps,
 } from "../src/services/coach-runs.js";
-import type { DesignTool } from "../src/services/design-tools/types.js";
+import type { DesignTool, ToolContext } from "../src/services/design-tools/types.js";
 import { designContextBuilder } from "../src/services/design-context.js";
 import type { ContentBlock, MessagesOk, MessagesRequest, MessagesResult } from "../src/services/llm-messages.js";
 import { makeTestDb, makeTestUser, mountRoutes } from "./helpers.js";
+import { savedMoveDraft, seedSavedBatch } from "./saves-batch-fixture.js";
 
 const BUDGET = 45;
 
@@ -624,5 +625,89 @@ describe("every request within the budget", () => {
     const cancelled = await measured("POST", `/${id}/cancel`);
     expect(cancelled.status).toBe(200);
     expect(cancelled.cost).toBeLessThanOrEqual(BUDGET);
+  });
+});
+
+describe("the fit-in run is told its batch (saves flow redesign, §12.1)", () => {
+  const SAVED = "2026-09-20T18:00:00.000Z";
+  const stateOf = async (id: string) =>
+    JSON.parse((await db.select().from(schema.coachRuns).where(eq(schema.coachRuns.id, id)))[0]!.state!) as { settings: Record<string, unknown> };
+  /** A saved batch: one new move included, one skipped, one on the coach's call, and a library move it named. */
+  const fitBatch = (user = userId, status: "saved" | "released" = "saved") =>
+    seedSavedBatch(db, user, {
+      savedAt: SAVED,
+      status,
+      posts: [
+        {
+          moves: [
+            { draft: savedMoveDraft("Zorbex hip circle"), choice: "include" },
+            { draft: savedMoveDraft("Zorbex neck nod"), choice: "skip" },
+            { draft: savedMoveDraft("Zorbex calf rock") },
+            { library: "gobletSquat" },
+          ],
+        },
+      ],
+    });
+
+  it("a fit-in create carries its batch and skip set into the run's settings — one more statement", async () => {
+    const { batchId, moveIds } = await fitBatch();
+    const skipped = { id: moveIds[0]![1]!, name: "Zorbex neck nod" };
+    const base = await measured("POST", "", { scope: { kind: "now" }, request: "Fit them in." });
+    expect(base.status).toBe(200);
+    expect((await stateOf(base.body.run.id as string)).settings).not.toHaveProperty("savesBatchId");
+    await call("POST", `/${base.body.run.id}/cancel`);
+
+    const fit = await measured("POST", "", { scope: { kind: "now" }, request: "Fit them in.", savesBatchId: batchId });
+    expect(fit.status).toBe(200);
+    expect(fit.body.existing).toBe(false);
+    // The batch and its skip set, read in one statement (saves-batches.ts skipSetOf).
+    expect(fit.cost).toBe(base.cost + 1);
+    expect(fit.cost).toBeLessThanOrEqual(BUDGET);
+    const id = fit.body.run.id as string;
+    expect((await stateOf(id)).settings).toMatchObject({ savesBatchId: batchId, savesSkip: [skipped] });
+
+    // Its tools are told — and so are a designer's it starts, which inherits both; never more than the main run's.
+    const seen: ToolContext["run"][] = [];
+    tools = [
+      {
+        ...costly("peek", 0),
+        roles: ["main", "designer"],
+        async run(ctx) {
+          seen.push(ctx.run);
+          if (ctx.run.role === "main") await ctx.set!.start([{ runId: `${ctx.run.id}-d1`, key: "a", brief: "Calm hips.", date: "2026-09-22" }]);
+          return { data: {}, summary: "Peeked." };
+        },
+      },
+    ];
+    turns = [answer([use("peek")]), answer([use("peek")])];
+    await call("POST", `/${id}/step`); // the main run's context
+    await call("POST", `/${id}/step`); // its model step: peek starts a designer
+    expect((await stateOf(`${id}-d1`)).settings).toMatchObject({ savesBatchId: batchId, savesSkip: [skipped] });
+    await call("POST", `/${id}/step`); // the designer's context
+    await call("POST", `/${id}/step`); // its model step: peek
+    expect(seen.map((r) => [r.role, r.savesBatchId, r.savesSkip])).toEqual([
+      ["main", batchId, [skipped]],
+      ["designer", batchId, [skipped]],
+    ]);
+  });
+
+  it("another account's or an unsaved batch is 404 saves_batch_not_found, and nothing starts; a non-string is 400 bad_saves_batch", async () => {
+    const other = await makeTestUser(db);
+    const theirs = await fitBatch(other.userId);
+    const released = await fitBatch(userId, "released");
+    for (const savesBatchId of [theirs.batchId, released.batchId, "batch-nobody-has"]) {
+      const res = await call("POST", "", { scope: { kind: "now" }, request: "Fit them in.", savesBatchId });
+      expect(res.status, savesBatchId).toBe(404);
+      expect(res.body, savesBatchId).toEqual({ error: "saves_batch_not_found" });
+    }
+    for (const savesBatchId of [42, null, true, { id: released.batchId }, [released.batchId], "", "has space", "x".repeat(101)]) {
+      const res = await call("POST", "", { scope: { kind: "now" }, savesBatchId });
+      expect(res.status, JSON.stringify(savesBatchId)).toBe(400);
+      expect(res.body, JSON.stringify(savesBatchId)).toEqual({ error: "bad_saves_batch" });
+    }
+    expect(await db.select().from(schema.coachRuns)).toHaveLength(0);
+    // The account's own saved batch starts one.
+    const mine = await fitBatch();
+    expect((await call("POST", "", { scope: { kind: "now" }, savesBatchId: mine.batchId })).status).toBe(200);
   });
 });
