@@ -7,6 +7,7 @@
  *
  * With --dry-run it prints the read-only SELECT counts; without it, the four UPDATEs in order, joined by ";\n". It
  * never runs wrangler, never opens a database and writes no file: the lead pipes what it prints, one statement at a time.
+ * Run in order; statement 4 (superseded) last, or 1–3 match nothing.
  */
 import { resolve } from "node:path";
 import { pathToFileURL } from "node:url";

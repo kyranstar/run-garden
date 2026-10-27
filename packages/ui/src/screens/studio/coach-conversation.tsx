@@ -20,6 +20,9 @@
  *  - One run at a time: while the coach works nothing more is sent; the run already there (`existing`) shows, with one
  *    line, the words kept. The week's budget, a refused focus, no connection: one plain line each, the words kept. The
  *    coach off (a 404): one quiet line, and no box.
+ *  - A fit of saved moves (its request sent with its batch) that can't start is cancelled, and its words are never left
+ *    in the box: the saves card's Fit them in is back. Its batch refused (404 `saves_batch_not_found`): the fit's own
+ *    line, never "the coach off".
  *  - The focus: the box takes it as the sheet opens on a new conversation (or with words written for the athlete) —
  *    once; a send moves it to the run; a run ending moves it to the coach's line, never into the box (a phone's
  *    keyboard, a screen reader).
@@ -75,6 +78,7 @@ import {
   type ExistingOffer,
 } from "./run-model.js";
 import { RunView, TurnTrail } from "./run-view.js";
+import { FIT_FAILED_LINE, isFitBatchGone } from "./saves-model.js";
 import { useCoachRun, type LoopDeps } from "./use-coach-run.js";
 import { useOneTap } from "./use-one-tap.js";
 
@@ -185,17 +189,14 @@ export function CoachConversation({ ctx, loopDeps, request = null, seeing: seenA
   const answering = asked?.kind === "questions" && asked.questions.length === 1;
 
   // ── A fit of saved moves (the saves flow redesigned §3.2, §12.1): its request sent with its batch ──
-  /** Words a fit that could not start left in the box: the athlete's to send, never by a stray Return. */
-  const [kept, setKept] = useState<string | null>(null);
   /** The fit-in run a send here started, until it ends: one that ends with no pins card ends its fit at once. */
   const [fitRun, setFitRun] = useState<{ runId: string; batchId: string } | null>(null);
-  /** A fit the server took whose run could not start: cancelled at once (Fit them in comes back), the words kept. */
-  const fitNotStarted = (batchId: string, words: string) => {
-    const said = words.slice(0, REQUEST_MAX_CHARS);
-    setDraft(said);
-    setKept(said);
-    cancelFit(qc, batchId);
-  };
+  /**
+   * A fit the server took whose run could not start: cancelled at once, so the card's Fit them in comes back. Its words
+   * are never left in the box (the final fix wave): sent from there, they would carry no batch — the box keeps only
+   * what the athlete wrote.
+   */
+  const fitNotStarted = (batchId: string) => cancelFit(qc, batchId);
 
   const oneTap = useOneTap();
   const start = useMutation({
@@ -233,11 +234,11 @@ export function CoachConversation({ ctx, loopDeps, request = null, seeing: seenA
       void qc.invalidateQueries({ queryKey: NUDGES_QUERY, refetchType: "all" });
       // A fit: the run already there answered (one run at a time) — the fit can't start; else its run is watched.
       if (savesBatchId) {
-        if (res.existing) fitNotStarted(savesBatchId, words);
+        if (res.existing) fitNotStarted(savesBatchId);
         else setFitRun({ runId: res.run.id, batchId: savesBatchId });
       }
     },
-    onError: (e, { words, savesBatchId }) => {
+    onError: (e, { savesBatchId }) => {
       // The week can't pay for it (§2.11): a fact, in the ink a status is — the words kept.
       const refused = weekBudgetRefusal(e);
       setBudgetLine(refused);
@@ -247,9 +248,11 @@ export function CoachConversation({ ctx, loopDeps, request = null, seeing: seenA
         setLine(null);
         void qc.invalidateQueries({ queryKey: COACH_SPEND_QUERY });
       } else if (focusLine) setLine(focusLine);
+      // A fit whose batch the run no longer takes: the fit's own line — before a 404 is read as the coach off.
+      else if (savesBatchId && isFitBatchGone(e)) setLine(FIT_FAILED_LINE);
       else if (isNotAvailable(e)) setUnavailable(true);
       else setLine(COULDNT_REACH_LINE);
-      if (savesBatchId) fitNotStarted(savesBatchId, words);
+      if (savesBatchId) fitNotStarted(savesBatchId);
     },
   });
   const answer = useMutation({
@@ -278,13 +281,13 @@ export function CoachConversation({ ctx, loopDeps, request = null, seeing: seenA
   /**
    * The athlete's words, sent: a new run, or the answer to the one question the run waits on. `savesBatchId`: a fit's
    * request (its `/fit` answered) — never an answer; when its run can't start here (a send out, the week used up, the
-   * coach at work), the fit is cancelled and the words wait in the box.
+   * coach at work), the fit is cancelled and its words go nowhere (the card's Fit them in is back).
    */
   const send = (words: string, opts: { savesBatchId?: string } = {}) => {
     const said = words.trim();
     const fitId = opts.savesBatchId;
     if (!said) return;
-    if (fitId && (busy || usedUp || working)) return fitNotStarted(fitId, said);
+    if (fitId && (busy || usedUp || working)) return fitNotStarted(fitId);
     if (busy || usedUp) return;
     if (working) {
       if (answering && liveId) void oneTap(() => answer.mutateAsync({ runId: liveId, words: said }));
@@ -296,7 +299,7 @@ export function CoachConversation({ ctx, loopDeps, request = null, seeing: seenA
       return start.mutateAsync(fitId ? { words: said, savesBatchId: fitId } : { words: said });
     });
     // A tap still out took it: a fit dropped so is a fit that can't start.
-    if (!out && fitId) fitNotStarted(fitId, said);
+    if (!out && fitId) fitNotStarted(fitId);
   };
 
   // ── The focus ──
@@ -477,7 +480,7 @@ export function CoachConversation({ ctx, loopDeps, request = null, seeing: seenA
             // The ✕ goes with the line: the focus to the box, never to the page.
             boxRef.current?.focus();
           }}
-          held={(request !== null && draft === request.slice(0, REQUEST_MAX_CHARS)) || (kept !== null && draft === kept)}
+          held={request !== null && draft === request.slice(0, REQUEST_MAX_CHARS)}
         />
       </div>
     </>

@@ -882,7 +882,7 @@ expect(keepInsight("Twice a week is enough", [])).toBe(true);
   1. Look up the full ids of the three held batches (`7514d1d4…`, `80bcb380…`, `90e095ad…`) with a read-only `wrangler d1 execute run-garden-db --remote --command "select id, status from save_batches where status = 'held'"`. Use `WRANGLER_WRITE_LOGS=false` and no output file.
   2. Run the script with `--dry-run`. Execute its SELECTs the same read-only way, and check the counts: about 66 moves.
   3. Run the script without `--dry-run`, and pipe its output to `wrangler d1 execute run-garden-db --remote --command`, one statement at a time, in order.
-  4. Open Today: `GET /open` assembles the first batch of ≤ 12. Do this promptly after deploy, so that no check cuts the unbatched pool ahead of the older dissolved posts.
+  4. Open Today: `GET /open` assembles a batch of ≤ 12 when none is open. Expect that the first `GET /open` after deploy (any device) will already have cut a batch of ≤ 12 from the unbatched pool before the dissolve. That is fine: the dissolve only changes the ORDER in which the older posts come (they join the pool and, oldest first, lead the batches cut after that one); nothing open, saved, fitted or active is touched.
 
 ### Task 16: The stale bridge poll answers 410
 

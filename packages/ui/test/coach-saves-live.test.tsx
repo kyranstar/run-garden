@@ -26,9 +26,10 @@ import { FIT_SAVES_REQUEST, type OpenSavesBatchDto } from "@rg/saves";
 import { useCoach, useCoachSeeing } from "../src/screens/studio/coach-ask.js";
 import { workoutFocus } from "../src/screens/studio/coach-focus.js";
 import { CoachSheetProvider } from "../src/screens/studio/coach-sheet.js";
-import { FITTING_LINE, OPEN_FIRST_LINE, PUT_ASIDE_LINE } from "../src/screens/studio/saves-model.js";
+import { NOT_AVAILABLE_LINE } from "../src/screens/studio/run-model.js";
+import { FIT_FAILED_LINE, FITTING_LINE, OPEN_FIRST_LINE, PUT_ASIDE_LINE } from "../src/screens/studio/saves-model.js";
 import type { LoopDeps } from "../src/screens/studio/use-coach-run.js";
-import { button, click, dialog, drivenLoop, json, quietLoop, run, serve, settle, until, type Call, type Routes as Served } from "./coach-live-harness.js";
+import { button, click, dialog, drivenLoop, json, quietLoop, run, serve, settle, type, until, type Call, type Routes as Served } from "./coach-live-harness.js";
 import { libraryDto, placesDto, primedClient, profileDto, TODAY, todayDto } from "./studio-fixtures.js";
 
 (globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
@@ -242,22 +243,41 @@ describe("the open batch in the coach", () => {
     expect(order).toEqual(["run"]);
   });
 
-  it("a refused run start cancels the fit: the card offers Fit them in again", async () => {
+  it("a refused run start cancels the fit: the card offers Fit them in again, and the box keeps only the athlete's own words", async () => {
     const { calls } = server({
       more: { "POST /api/coach/runs": json({ error: "week_budget", spentUsd: 4.99, cutoffUsd: 5 }, 409) },
     });
     mountSheet();
     await openCoach();
     await until(() => !!card(), "the saves card");
+    // The athlete had started writing something of their own.
+    await type(box()!, "Something for my hips");
     await click(button("Fit them in", card()!), "Fit them in");
     await until(() => posted(calls, "/api/my-saves/batches/b1/fit/cancel") === 1, "the fit cancelled");
     await until(() => !!button("Fit them in", card()!), "Fit them in back");
     expect(card()!.textContent).not.toContain(FITTING_LINE);
-    // The words stay in the box, the athlete's to send.
-    expect(box()!.value).toBe(FIT_SAVES_REQUEST);
+    // The fit's words are never left in the box (final fix wave): Fit them in is back, and a plain send of them would
+    // carry no batch. The athlete's own words stay as they were.
+    expect(box()!.value).toBe("Something for my hips");
     // Cancelled after its own fit, once.
     const paths = calls.filter((c) => c.method === "POST").map((c) => c.path);
     expect(paths).toEqual(["/api/my-saves/batches/b1/fit", "/api/coach/runs", "/api/my-saves/batches/b1/fit/cancel"]);
+  });
+
+  it("a run start refused 404 saves_batch_not_found cancels the fit and says the fit's own line — never that the coach isn't available", async () => {
+    const { calls } = server({
+      more: { "POST /api/coach/runs": json({ error: "saves_batch_not_found" }, 404) },
+    });
+    mountSheet();
+    await openCoach();
+    await until(() => !!card(), "the saves card");
+    await click(button("Fit them in", card()!), "Fit them in");
+    await until(() => posted(calls, "/api/my-saves/batches/b1/fit/cancel") === 1, "the fit cancelled");
+    await until(() => !!dialog()?.textContent?.includes(FIT_FAILED_LINE), "the fit's line");
+    // The coach is there: its box stays, and nothing says otherwise (final fix wave, saves flow redesign).
+    expect(dialog()!.textContent).not.toContain(NOT_AVAILABLE_LINE);
+    expect(box()).not.toBeNull();
+    expect(box()!.value).toBe("");
   });
 
   it("a fit the server refuses (409 batch_open) says finish the batch that is open first, and cancels nothing", async () => {
@@ -336,17 +356,18 @@ describe("a fit the coach was opened with (Today's Fit them in)", () => {
     expect(posted(calls, "/api/my-saves/batches/b1/fit/cancel")).toBe(0);
   });
 
-  it("the coach at work: the fit is cancelled, nothing sent, and its words wait in the box", async () => {
+  it("the coach at work: the fit is cancelled, nothing sent, and its words are not left in the box", async () => {
     const live = conversation([turn({ status: "active", line: null })]);
     const { calls } = server({ open: { ...OPEN, fitting: true }, conv: live, more: { "POST /api/coach/runs": startRun } });
     mountSheet(quietLoop(() => run()));
     await openCoach("coach-fit");
     await until(() => posted(calls, "/api/my-saves/batches/b1/fit/cancel") === 1, "the fit cancelled");
     expect(runPosts(calls)).toEqual([]);
-    expect(box()!.value).toBe(FIT_SAVES_REQUEST);
+    await settle(20);
+    expect(box()!.value).toBe("");
   });
 
-  it("the run already there answers (existing): the fit is cancelled and its words wait in the box", async () => {
+  it("the run already there answers (existing): the fit is cancelled and its words are not left in the box", async () => {
     const { calls } = server({
       open: { ...OPEN, fitting: true },
       more: { "POST /api/coach/runs": json({ run: run({ id: "run-x", request: "plan my week" }), existing: true, offer: "continue_or_cancel", ignoredRequest: { scope: { kind: "now" }, request: FIT_SAVES_REQUEST }, conversationId: "run-1" }) },
@@ -355,7 +376,8 @@ describe("a fit the coach was opened with (Today's Fit them in)", () => {
     await openCoach("coach-fit");
     await until(() => posted(calls, "/api/my-saves/batches/b1/fit/cancel") === 1, "the fit cancelled");
     expect(runPosts(calls)).toHaveLength(1);
-    expect(box()!.value).toBe(FIT_SAVES_REQUEST);
+    await settle(20);
+    expect(box()!.value).toBe("");
   });
 
   it("a fit-in run that ends without its card cancels the fit (no hour of Fitting in…); one that ends with it doesn't", async () => {

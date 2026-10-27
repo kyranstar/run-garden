@@ -12,6 +12,7 @@ import {
   FIT_FAILED_LINE,
   fitRefusal,
   FITTING_LINE,
+  isFitBatchGone,
   OPEN_FIRST_LINE,
   openShown,
   pageRowsOf,
@@ -67,6 +68,14 @@ describe("the open batch's words (the saves flow redesigned)", () => {
     expect(fitRefusal(new ApiError(404, { error: "not_found" }))).toBeNull();
     expect(fitRefusal(new ApiError(500, null))).toBe(FIT_FAILED_LINE);
     expect(fitRefusal(new TypeError("Failed to fetch"))).toBe(FIT_FAILED_LINE);
+  });
+
+  it("a fit's run refused for its batch (404 saves_batch_not_found) is the fit's failure; any other 404 is not", () => {
+    expect(isFitBatchGone(new ApiError(404, { error: "saves_batch_not_found" }))).toBe(true);
+    expect(isFitBatchGone(new ApiError(404, { error: "not_found" }))).toBe(false);
+    expect(isFitBatchGone(new ApiError(404, null))).toBe(false);
+    expect(isFitBatchGone(new ApiError(409, { error: "saves_batch_not_found" }))).toBe(false);
+    expect(isFitBatchGone(new TypeError("Failed to fetch"))).toBe(false);
   });
 });
 

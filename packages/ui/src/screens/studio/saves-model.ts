@@ -192,6 +192,14 @@ export function fitRefusal(e: unknown): string | null {
   return FIT_FAILED_LINE;
 }
 
+/**
+ * A fit's run refused because its batch is not a saved batch of the account's (the run create's 404
+ * `saves_batch_not_found`): the fit's own failure (`FIT_FAILED_LINE`) — never read as the coach being off, which a bare
+ * 404 means.
+ */
+export const isFitBatchGone = (e: unknown): boolean =>
+  e instanceof ApiError && e.status === 404 && (e.body as { error?: unknown } | null)?.error === "saves_batch_not_found";
+
 // ── The edit form ────────────────────────────────────────────────────────────────────────────────────────────────────
 
 export const DOSE_WORD: Readonly<Record<DoseType, string>> = { reps: "Reps", time: "Seconds", breaths: "Breaths", carry: "Carry seconds" };
