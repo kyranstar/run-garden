@@ -34,6 +34,19 @@ export interface Call {
   finished: number;
 }
 
+/** A scripted answer: `body` sent as JSON, or `text` as it is. */
+export interface Scripted {
+  status: number;
+  body?: unknown;
+  text?: string;
+  headers?: Record<string, string>;
+  gate?: Promise<void>;
+}
+
+/** What Spotify's shuffle answers now: 200 and an opaque id of 27 characters that isn't JSON (prod, 2026-10-26; this
+ * one is synthetic). */
+export const OPAQUE_ANSWER = "synthetic0opaque0answer0id0";
+
 export const sid = (word: string): string => `${word.replace(/[^A-Za-z0-9]/g, "")}${"0".repeat(22)}`.slice(0, 22);
 /** The i-th track of an album (or playlist) in the fake: distinct per container and index. */
 export const trackUri = (containerId: string, i: number): string => `spotify:track:${sid(`${containerId.slice(0, 10)}t${i}x`)}`;
@@ -60,13 +73,15 @@ export function fakeSpotify(init: { devices?: FakeDevice[]; albums?: FakeAlbum[]
     ),
     player: null as null | Record<string, unknown>,
     /** Scripted answers, consumed in order, by "METHOD /path" (the path without the API base or query). */
-    script: new Map<string, Array<{ status: number; body?: unknown; headers?: Record<string, string>; gate?: Promise<void> }>>(),
+    script: new Map<string, Array<Scripted>>(),
     validToken: "token-1",
   };
   const calls: Call[] = [];
 
   const reply = (status: number, body?: unknown, headers: Record<string, string> = {}): Response =>
     new Response(status === 204 || body === undefined ? null : JSON.stringify(body), { status, headers: { "content-type": "application/json", ...headers } });
+  /** A body that isn't JSON: what Spotify's shuffle answers (seen in prod, 2026-10-26). */
+  const raw = (status: number, text: string): Response => new Response(text, { status });
   const playerError = (status: number, reason: string) => reply(status, { error: { status, message: reason, reason } });
 
   const fetchImpl = (async (input: RequestInfo | URL, init?: RequestInit) => {
@@ -88,13 +103,13 @@ export function fakeSpotify(init: { devices?: FakeDevice[]; albums?: FakeAlbum[]
 
   function answer(method: string, path: string, q: URLSearchParams, body: any, auth: string | null): Response {
     const scripted = state.script.get(`${method} ${path}`)?.shift();
-    if (scripted) return reply(scripted.status, scripted.body, scripted.headers);
+    if (scripted) return scripted.text !== undefined ? raw(scripted.status, scripted.text) : reply(scripted.status, scripted.body, scripted.headers);
     if (auth !== `Bearer ${state.validToken}`) return reply(401, { error: { status: 401, message: "The access token expired" } });
     const deviceFor = () => state.devices.find((d) => d.id === (q.get("device_id") ?? state.devices.find((x) => x.is_active)?.id));
 
     if (method === "GET" && path === "/me/player/devices") return reply(200, { devices: state.devices });
     if (method === "GET" && path === "/me/player") return state.player ? reply(200, state.player) : reply(204);
-    if (method === "PUT" && path === "/me/player/shuffle") return deviceFor() ? reply(204) : playerError(404, "NO_ACTIVE_DEVICE");
+    if (method === "PUT" && path === "/me/player/shuffle") return deviceFor() ? raw(200, OPAQUE_ANSWER) : playerError(404, "NO_ACTIVE_DEVICE");
     if (method === "PUT" && path === "/me/player/play") {
       const d = deviceFor();
       if (!d) return playerError(404, "NO_ACTIVE_DEVICE");
@@ -168,7 +183,7 @@ export function fakeSpotify(init: { devices?: FakeDevice[]; albums?: FakeAlbum[]
   }
 
   /** Script the next answers to one endpoint. */
-  const script = (key: string, ...answers: Array<{ status: number; body?: unknown; headers?: Record<string, string>; gate?: Promise<void> }>) => {
+  const script = (key: string, ...answers: Scripted[]) => {
     state.script.set(key, [...(state.script.get(key) ?? []), ...answers]);
   };
 

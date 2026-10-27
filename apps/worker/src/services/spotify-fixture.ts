@@ -196,7 +196,8 @@ spotifyFixtureApi.put("/me/player/shuffle", (c) => {
   const device = target(c);
   if (!device) return playerError(c, 404, "Player command failed: No active device found", "NO_ACTIVE_DEVICE");
   state.shuffle = c.req.query("state") === "true";
-  return c.body(null, 204);
+  // As Spotify answers it (seen in prod, 2026-10-26): 200 and an opaque id that isn't JSON — not its documented 204.
+  return new Response("fixture0opaque0answer0id000", { status: 200 });
 });
 
 spotifyFixtureApi.put("/me/player/play", async (c) => {

@@ -171,6 +171,13 @@ describe("the playlists", () => {
     expect(fake.calls.find((c) => c.path === "/me/player/play")!.body).toMatchObject({ context_uri: `spotify:playlist:${PL}` });
   });
 
+  it("a tap plays when Spotify's shuffle answers 200 with an opaque id — never \"Spotify didn't answer\" (prod, 2026-10-26)", async () => {
+    const { dock, state } = setup({ music: { shortcuts: [mine("s1")] } });
+    await dock.tap("s1");
+    expect(state().notice).toBeNull();
+    expect(state().player).toMatchObject({ is_playing: true, context: { uri: `spotify:playlist:${PL}` } });
+  });
+
   it("what each suits, in plain words", () => {
     expect(goodForWords({ label: "Mix", goodFor: ["mobility", "wind-down"] })).toBe("Mobility · Winding down");
     expect(goodForWords({ label: "Mix" })).toBe("");

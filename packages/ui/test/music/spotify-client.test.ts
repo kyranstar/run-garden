@@ -7,7 +7,7 @@
  *    it), Spotify's own wait when longer, reset by a success; NO_ACTIVE_DEVICE is told apart;
  *  - a playlist's or an album's details in one read (its name, its description made plain, its cover, its count), and
  *    the athlete's playlists a page at a time;
- *  - a shortcut plays with shuffle on: the shuffle's 204 before the play is sent, from a random position inside the
+ *  - a shortcut plays with shuffle on: the shuffle's answer before the play is sent, from a random position inside the
  *    context's count; a device that refuses a shuffle before it plays gets it after;
  *  - no device listed: the open.spotify.com link opens, and when the app is visible again the play is retried against
  *    the device that is now listed;
@@ -18,7 +18,7 @@
  * Synthetic ids only.
  */
 import { describe, expect, it } from "vitest";
-import { API, fakeSpotify, fakeTokens, sid, trackUri } from "./fake-spotify.js";
+import { API, fakeSpotify, fakeTokens, OPAQUE_ANSWER, sid, trackUri } from "./fake-spotify.js";
 import { isNoDevice, makeSpotify, NotConnected, SpotifyError } from "../../src/music/spotify.js";
 import { BACKOFF_FIRST_MS, BACKOFF_KEY, BACKOFF_MAX_MS, makeBackoff } from "../../src/music/backoff.js";
 import { openUrlOf, parseSpotifyLink } from "../../src/music/links.js";
@@ -339,6 +339,24 @@ describe("the client", () => {
     expect(fake.calls.map((c) => c.query)).toEqual([{ limit: "20", offset: "0" }, { limit: "20", offset: "20" }]);
   });
 
+  it("a command's answer is never read: Spotify's shuffle answers 200 with an opaque id, not JSON (prod, 2026-10-26)", async () => {
+    const { fake, spotify } = setup({ devices: [{ ...phone, is_active: true, supports_volume: true }] });
+    for (const key of ["PUT /me/player/shuffle", "PUT /me/player/play", "PUT /me/player/pause", "POST /me/player/next", "PUT /me/player/volume"]) {
+      fake.script(key, { status: 200, text: OPAQUE_ANSWER });
+    }
+    await expect(spotify.shuffle(true, "phone-1")).resolves.toBeNull();
+    await expect(spotify.play({ contextUri: `spotify:playlist:${PL}`, deviceId: "phone-1" })).resolves.toBeNull();
+    await expect(spotify.pause("phone-1")).resolves.toBeNull();
+    await expect(spotify.next("phone-1")).resolves.toBeNull();
+    await expect(spotify.volume(50, "phone-1")).resolves.toBeNull();
+  });
+
+  it("a read's answer is still JSON, and one that isn't is still an error — never taken for nothing playing", async () => {
+    const { fake, spotify } = setup();
+    fake.script("GET /me/player", { status: 200, text: OPAQUE_ANSWER });
+    await expect(spotify.player()).rejects.toThrow(SyntaxError);
+  });
+
   it("NO_ACTIVE_DEVICE is told apart from other refusals", async () => {
     const { fake, spotify } = setup({ devices: [] });
     const err = await spotify.play({ contextUri: `spotify:playlist:${ID}`, deviceId: undefined }).catch((e: unknown) => e);
@@ -420,7 +438,7 @@ describe("choosing a device", () => {
 });
 
 describe("playing a shortcut", () => {
-  it("shuffle on, its 204 before the play is sent, then the play on the chosen device from a random position inside the count", async () => {
+  it("shuffle on, its answer before the play is sent, then the play on the chosen device from a random position inside the count", async () => {
     const { fake, spotify } = setup({ devices: [phone], ownedPlaylists: [{ id: PL, name: "Mine", total: 40 }] });
     const out = await playContext(spotify, { uri: `spotify:playlist:${PL}`, shuffle: true }, { prefer: "Smartphone", random: () => 0.5 });
     expect(out).toMatchObject({ kind: "playing", device: { id: "phone-1" } });

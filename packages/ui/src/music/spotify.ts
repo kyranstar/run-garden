@@ -8,6 +8,8 @@
  *    here, before the network (`SpotifyError` 429, reason "BACKOFF", with the time left). A success once it has run out
  *    resets it. A token the Worker can't hand out (its 5xx) backs off the same way (reason "TOKEN").
  *  - 404 `NO_ACTIVE_DEVICE` (or any 404 from a player command): `isNoDevice` — the dock's open-link fallback.
+ *  - A command's success (a PUT or a POST) answers null whatever its body: Spotify documents 204, but its shuffle
+ *    answers 200 with an opaque id that isn't JSON. Only a read's body is parsed.
  *
  * It reads and plays; it never creates, changes or deletes anything in the athlete's Spotify account.
  *
@@ -202,7 +204,9 @@ export function makeSpotify(deps: SpotifyDeps) {
         throw new SpotifyError(res.status, typeof body?.error?.reason === "string" ? body.error.reason : null, null, path);
       }
       backoff.ok();
-      if (res.status === 204 || res.status === 202) return null;
+      // A command's answer is never read: Spotify's shuffle answers 200 with an opaque id that isn't JSON (2026-10-26),
+      // and parsing it failed every play before the play was sent.
+      if (method !== "GET" || res.status === 204 || res.status === 202) return null;
       const text = await res.text();
       return text ? (JSON.parse(text) as T) : null;
     }
