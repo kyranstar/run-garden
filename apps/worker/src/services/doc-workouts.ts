@@ -20,12 +20,13 @@
  *
  * REVISING ONE (`reviseDocWorkout`). Any planned workout is revisable unless there is a clear reason (workout-editability
  * spec §3, `revisability` in @rg/domain): its day has passed, it is resolved or under way, it is race day or a rest day,
- * a programme's session (the engine builds it), or a run — each `NotEditableError` with its reason, why and what to do
- * instead; a base revision that is not the row's current one is `StaleRevisionError` — never a silent overwrite, and the
- * update itself re-checks them, so a write that lands in between still wins. A revisable row whose origin is not
- * app-authored — a coach session or a COROS-plan import, whose truth was its stage rows — is ADOPTED in the same atomic
- * write: it becomes a Studio document workout (`adoptionColumns`), its stage rows deleted, its plan and its watch address
- * kept. The same document again is no new revision. `watchHasOlder`: the watch holds (or is being sent) a copy built
+ * a programme's session (the engine builds it), or a run — each refused with its why and what to do instead (a day gone
+ * as `PastDateError`, a run as `RunUnsupportedError`, the rest as `NotEditableError` with its reason); a base revision
+ * that is not the row's current one is `StaleRevisionError` — never a silent overwrite, and the update itself re-checks
+ * them, so a write that lands in between still wins. A revisable row whose origin is not app-authored — a coach session
+ * or a COROS-plan import, whose truth was its stage rows — is ADOPTED in the same atomic write: it becomes a Studio
+ * document workout (`adoptionColumns`), its stage rows deleted, its plan and its watch address kept. The same document
+ * again is no new revision (and still adopts). `watchHasOlder`: the watch holds (or is being sent) a copy built
  * from another revision, or a copy the app did not push from a build (an adopted row's) — the athlete is offered "Send
  * the new version". A new length runs the day's collision pass (a pinned time stays); the answer carries the row's date
  * and time as they then are.
@@ -93,10 +94,23 @@ export class DocInvalidError extends Error {
   }
 }
 
-/** A run is not played by the app yet (Stage 3 adds its execution path): a document that derives to one is refused. */
+/** Why a workout can't be revised, and what to do instead (`revisability`'s words), when a refusal is one. */
+export interface RefusalWords {
+  why: string;
+  instead: string;
+}
+
+/**
+ * A run is not played by the app yet (Stage 3 adds its execution path): a document that derives to one is refused —
+ * and a planned run is not revised (`revisability`'s `run`, which carries its why and instead: runs are re-planned).
+ */
 export class RunUnsupportedError extends Error {
-  constructor() {
+  readonly why?: string;
+  readonly instead?: string;
+  constructor(words?: RefusalWords) {
     super("run_unsupported");
+    this.why = words?.why;
+    this.instead = words?.instead;
   }
 }
 
@@ -150,9 +164,14 @@ async function startedToday(db: Db, userId: string, doc: WorkoutDoc, today: stri
   return null;
 }
 
+/** A day gone: no workout is made for it, and a revise of one is refused (`revisability`'s `past`, with its words). */
 export class PastDateError extends Error {
-  constructor() {
+  readonly why?: string;
+  readonly instead?: string;
+  constructor(words?: RefusalWords) {
     super("past_date");
+    this.why = words?.why;
+    this.instead = words?.instead;
   }
 }
 
@@ -176,6 +195,17 @@ export class NotEditableError extends Error {
     this.why = r.why;
     this.instead = r.instead;
   }
+}
+
+/**
+ * The error a refused revisability is thrown as (spec §3's error codes): a day gone keeps `past_date`
+ * (`PastDateError`), a run keeps `run_unsupported` (`RunUnsupportedError`), every other reason is `NotEditableError` —
+ * each with its why and instead.
+ */
+function notRevisable(r: Extract<Revisability, { ok: false }>): Error {
+  if (r.reason === "past") return new PastDateError(r);
+  if (r.reason === "run") return new RunUnsupportedError(r);
+  return new NotEditableError(r);
 }
 
 /**
@@ -698,8 +728,8 @@ async function heldCopyName(
 /**
  * `PUT /api/workouts/:id/doc`: a new revision of a workout's document, adopting a watch-shaped row (see the header).
  * `calendarChanged`: its title, category or booked length moved — what its event shows. Throws
- * `DocWorkoutNotFoundError`, `NotEditableError`, `StaleRevisionError`, `DocInvalidError`, `RunUnsupportedError`,
- * `RestoreInProgressError`.
+ * `DocWorkoutNotFoundError`, `NotEditableError`, `PastDateError`, `StaleRevisionError`, `DocInvalidError`,
+ * `RunUnsupportedError`, `RestoreInProgressError`.
  */
 export async function reviseDocWorkout(
   db: Db,
@@ -737,14 +767,17 @@ export async function reviseDocWorkout(
   if (!row || row.archivedAt) throw new DocWorkoutNotFoundError();
   // Refused before the document is judged: the row decides (its day, its state, its kind), never the draft.
   const verdict = await revisabilityOf(db, userId, row, ctx.today);
-  if (!verdict.ok) throw new NotEditableError(verdict);
+  if (!verdict.ok) throw notRevisable(verdict);
   if ((row.workoutDocRev ?? 0) !== input.baseRev) throw new StaleRevisionError(row.workoutDocRev ?? null);
 
   const { doc, derived, warnings } = await validated(db, userId, input.doc, { date: row.effectiveDate, today: ctx.today, workoutId });
   if (await restoreInProgress(db, userId)) throw new RestoreInProgressError();
-  // Adopted (a coach session, a COROS-plan import): decided by this read — the update's guard still holds its revision,
-  // and every write that could change its origin moves the revision on. The same document again adopts it too: the
-  // revise is a taking-over, not only an edit. The name its copy is held under is read now, before the batch.
+  // Adopted (a coach session, a COROS-plan import): decided by this read, and the update's guard still holds its
+  // revision. The same document again adopts it too, with no new revision — a deliberate save of it is the athlete (or
+  // the coach) taking the session into the Studio. That is safe without the revision moving: the adoption columns are
+  // idempotent (constants, and a copy name never written over one already held), so a second adoption landing on the
+  // same revision — another save of the same document — writes what the first wrote. The name its copy is held under is
+  // read now, before the batch.
   const adopting = verdict.adopts;
   const copyName = adopting && row.watchCopyName === null ? await heldCopyName(db, userId, row) : null;
 
@@ -827,7 +860,7 @@ export async function reviseDocWorkout(
     if (!after || after.archivedAt) throw new DocWorkoutNotFoundError();
     if ((after.workoutDocRev ?? 0) !== input.baseRev) throw new StaleRevisionError(after.workoutDocRev ?? null);
     const now = await revisabilityOf(db, userId, after, ctx.today);
-    if (!now.ok) throw new NotEditableError(now);
+    if (!now.ok) throw notRevisable(now);
     throw new StaleRevisionError(after.workoutDocRev ?? null);
   }
   // A new length can overlap the day's other plans: the collision pass (a pinned time stays), and the time it leaves.

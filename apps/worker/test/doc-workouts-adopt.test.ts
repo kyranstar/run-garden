@@ -7,7 +7,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { eq } from "drizzle-orm";
 import { schema } from "@rg/database";
-import { addDays, nowInstant, type WorkoutDoc } from "@rg/domain";
+import { addDays, nowInstant, workoutDocSchema, type WorkoutDoc } from "@rg/domain";
 import type { Db } from "../src/services/db.js";
 import { repairPlannedWorkoutFidelity } from "../src/services/plan-repair.js";
 import { makeTestDb, makeTestUser, pinMiddayToday } from "./helpers.js";
@@ -141,6 +141,8 @@ const WORDS = {
   race: { why: "It's race day.", instead: "Leave it; design around it." },
   past: { why: "Its day has passed.", instead: "Propose for today or later." },
 } as const;
+/** The route's own line for a run, kept beside the why and instead. */
+const RUN_MESSAGE = "Runs can't be planned in the Studio yet.";
 
 describe("a revise adopts a watch-shaped row", () => {
   it("a coach session with stages and a synced copy is adopted", async () => {
@@ -300,6 +302,38 @@ describe("a revise adopts a watch-shaped row", () => {
     expect(JSON.parse(row.workoutDoc!)).toEqual(mine);
   });
 
+  it("a Studio or template revise is no adoption: no stage delete, and its content columns are left as they are", async () => {
+    const sentinel = {
+      structuredJson: { exercises: [{ name: "Sentinel", sets: 1, reps: 1 }] },
+      stageSummary: "sentinel summary",
+      expectedDistanceMeters: 1234,
+      qualitySubtype: "sentinel-subtype",
+      sourceEstimatedDurationSeconds: 999,
+      durationEstimate: { seconds: 999, source: "sentinel" },
+      sourceVersion: "sentinel-version",
+      sourceContentFingerprint: "sentinel-fp",
+      watchCopyName: "Sentinel copy",
+    };
+    const docs: Array<[string, WorkoutDoc]> = [
+      ["studio", calmDoc()],
+      ["template", { ...calmDoc(), basedOn: { kind: "template", id: "tpl-invented" } }],
+    ];
+    for (const [origin, doc] of docs) {
+      const made = await call("POST", "/api/workouts", { date: tomorrow, doc });
+      expect(made.body.workout.origin).toBe(origin);
+      const id = made.body.workout.id as string;
+      // Columns no Studio write sets, and a stage row no document workout has: a revise must leave every one of them.
+      await db.update(plannedWorkouts).set(sentinel).where(eq(plannedWorkouts.id, id));
+      await db.insert(plannedWorkoutStages).values({ id: `${id}:0`, workoutId: id, parentStageId: null, ord: 0, kind: "work", durationType: "none" });
+      statements.length = 0;
+      const res = await call("PUT", `/api/workouts/${id}/doc`, { doc: { ...doc, title: "Revised, invented" }, baseRev: 1 });
+      expect(res.status).toBe(200);
+      expect(statements.some((s) => /^delete from "planned_workout_stages"/.test(s))).toBe(false);
+      expect(await rowOf(id)).toMatchObject({ ...sentinel, origin, title: "Revised, invented", workoutDocRev: 2 });
+      expect(await stagesOf(id)).toHaveLength(1);
+    }
+  });
+
   it("adopting a row on the watch stays within the statement budget (≤ 45), with history on the account", async () => {
     await activateTmj(db, userId);
     const id = "cw-test-11-0";
@@ -313,7 +347,7 @@ describe("a revise adopts a watch-shaped row", () => {
   });
 });
 
-describe("a row that cannot be revised says why, and what to do instead (409 not_editable)", () => {
+describe("a row that cannot be revised says why, and what to do instead", () => {
   it("a programme session: 409 not_editable cause programme with the spec's why and instead", async () => {
     await seedWatchShaped("slot-test-1", { origin: "program", planId: "prog-invented", stages: 0 });
     const res = await call("PUT", "/api/workouts/slot-test-1/doc", { doc: calmDoc({ title: "Mine now" }), baseRev: 1 });
@@ -321,21 +355,43 @@ describe("a row that cannot be revised says why, and what to do instead (409 not
     expect(await rowOf("slot-test-1")).toMatchObject({ origin: "program", title: "Legs, invented", workoutDocRev: 1 });
   });
 
-  it("rest / race / a run with no document: 409 with their reasons", async () => {
+  it("rest / race: 409 not_editable with their reasons", async () => {
     await seedWatchShaped("cw-rest-1", { category: "rest", sport: "rest", doc: null, stages: 0 });
     await seedWatchShaped("cw-race-1", { category: "race", sport: "run", doc: null, stages: 0 });
-    await seedWatchShaped("cw-run-1", { category: "easy", sport: "run", doc: null, stages: 2 });
-    for (const [id, cause] of [["cw-rest-1", "rest"], ["cw-race-1", "race"], ["cw-run-1", "run"]] as const) {
+    for (const [id, cause] of [["cw-rest-1", "rest"], ["cw-race-1", "race"]] as const) {
       const res = await call("PUT", `/api/workouts/${id}/doc`, { doc: calmDoc({ title: "Not this one" }), baseRev: 0 });
       expect(res).toEqual({ status: 409, body: { error: "not_editable", cause, ...WORDS[cause] } });
       expect(await rowOf(id)).toMatchObject({ origin: null, workoutDoc: null, workoutDocRev: null });
     }
+  });
+
+  it("a run with no document (its sport and category say run): 422 run_unsupported, with why and instead", async () => {
+    await seedWatchShaped("cw-run-1", { category: "easy", sport: "run", doc: null, stages: 2 });
+    const res = await call("PUT", "/api/workouts/cw-run-1/doc", { doc: calmDoc({ title: "Not this one" }), baseRev: 0 });
+    expect(res).toEqual({ status: 422, body: { error: "run_unsupported", message: RUN_MESSAGE, ...WORDS.run } });
+    expect(await rowOf("cw-run-1")).toMatchObject({ origin: null, workoutDoc: null, workoutDocRev: null });
     expect(await stagesOf("cw-run-1")).toHaveLength(2);
   });
 
-  it("a day gone: 409 not_editable cause past, before the document is judged", async () => {
+  it("a run by its stored document (its sport and category say otherwise): 422 run_unsupported, before the draft is judged", async () => {
+    const run = workoutDocSchema.parse({
+      version: 1,
+      title: "Tempo, invented",
+      intent: { summary: "Steady tempo.", goals: [], focus: [], effort: "develop" },
+      source: { kind: "coach" },
+      parts: [{ purpose: "run", format: "intervals", items: [{ kind: "run", target: { durationSec: 1800 }, effort: "threshold" }] }],
+    });
+    await seedWatchShaped("cw-run-2", { category: "strength", sport: "strength", doc: run });
+    const res = await call("PUT", "/api/workouts/cw-run-2/doc", { doc: { not: "a document" }, baseRev: 1 });
+    expect(res).toEqual({ status: 422, body: { error: "run_unsupported", message: RUN_MESSAGE, ...WORDS.run } });
+    expect(await rowOf("cw-run-2")).toMatchObject({ origin: null, workoutDocRev: 1, title: "Legs, invented" });
+    expect(await stagesOf("cw-run-2")).toHaveLength(2);
+  });
+
+  it("a day gone: 422 past_date, with why and instead, before the document is judged", async () => {
     await seedWatchShaped("cw-past-1", { effectiveDate: addDays(today, -1) });
     const res = await call("PUT", "/api/workouts/cw-past-1/doc", { doc: { not: "a document" }, baseRev: 1 });
-    expect(res).toEqual({ status: 409, body: { error: "not_editable", cause: "past", ...WORDS.past } });
+    expect(res).toEqual({ status: 422, body: { error: "past_date", ...WORDS.past } });
+    expect(await rowOf("cw-past-1")).toMatchObject({ origin: null, workoutDocRev: 1 });
   });
 });

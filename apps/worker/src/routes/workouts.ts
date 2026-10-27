@@ -78,13 +78,19 @@ const createSchema = z
   .strict();
 const reviseSchema = z.object({ doc: docField, baseRev: z.number().int().min(0) }).strict();
 
+/** A refusal's why and instead, when it carries them (a refused revise's `revisability`); else nothing. */
+function wordsOf(e: { why?: string; instead?: string }): { why?: string; instead?: string } {
+  return e.why !== undefined && e.instead !== undefined ? { why: e.why, instead: e.instead } : {};
+}
+
 /** A document workout's refusal, as these routes answer it — and the coach's Edit before approve (design-proposals.ts). */
 export function refusal(c: Context<AppContext>, e: unknown): Response {
   if (e instanceof DocInvalidError) return c.json({ error: "invalid_doc", issues: e.issues }, 422);
-  if (e instanceof PastDateError) return c.json({ error: "past_date" }, 422);
+  // A refused revise says why and what to do instead (spec §3: every refusal carries the instead); a create, only the code.
+  if (e instanceof PastDateError) return c.json({ error: "past_date", ...wordsOf(e) }, 422);
   if (e instanceof PlayedOfflineRefusedError) return c.json({ error: "played_offline_refused", why: e.why }, 422);
   if (e instanceof StartedTodayError) return c.json({ error: "started_today", workout: e.workout }, 409);
-  if (e instanceof RunUnsupportedError) return c.json({ error: "run_unsupported", message: "Runs can't be planned in the Studio yet." }, 422);
+  if (e instanceof RunUnsupportedError) return c.json({ error: "run_unsupported", message: "Runs can't be planned in the Studio yet.", ...wordsOf(e) }, 422);
   if (e instanceof DocWorkoutNotFoundError) return c.json({ error: "not_found" }, 404);
   // Why it can't be revised, and what to do instead (workout-editability spec §3): never only a refusal.
   if (e instanceof NotEditableError) return c.json({ error: "not_editable", cause: e.reason, why: e.why, instead: e.instead }, 409);
