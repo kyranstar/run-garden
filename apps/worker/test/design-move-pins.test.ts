@@ -17,6 +17,7 @@ import type { Env } from "../src/env.js";
 import type { Db } from "../src/services/db.js";
 import { createSession, SESSION_COOKIE } from "../src/auth/sessions.js";
 import { coachRoutes, sweepExpiredProposals } from "../src/routes/coach.js";
+import { mySavesRoutes } from "../src/routes/my-saves.js";
 import { forgetAccountLibrary, loadAccountLibrary } from "../src/services/account-library.js";
 import { loadPreferences, savePreferences } from "../src/services/calendar-sync.js";
 import { createDocWorkout } from "../src/services/doc-workouts.js";
@@ -43,10 +44,10 @@ import { designProposalId, proposeWorkout } from "../src/services/design-tools/p
 import { readProposals } from "../src/services/design-tools/read-proposals.js";
 import { isToolErr, type ToolContext, type ToolErr, type ToolOk } from "../src/services/design-tools/types.js";
 import { pinsCardLinesOf, pinsId, pinsLineText, type PinsCardLine } from "../src/services/proposal-kinds.js";
-import { releaseFitStarts } from "../src/services/saves-batches.js";
+import { FIT_STARTED_TTL_MS, releaseFitStarts } from "../src/services/saves-batches.js";
 import { calmDoc } from "./doc-workout-fixture.js";
 import { savedMoveDraft, seedSavedBatch } from "./saves-batch-fixture.js";
-import { makeTestDb, makeTestUser, MAX_LOOP_ITERATIONS, mountRoutes } from "./helpers.js";
+import { isWrite, makeTestDb, makeTestUser, MAX_LOOP_ITERATIONS, mountRoutes } from "./helpers.js";
 
 const { accountState, coachMessages, coachProposals, coachRuns, exercisePrefs, personalMoves, saveBatches } = schema;
 /** A Wednesday morning in UTC. */
@@ -792,6 +793,82 @@ describe("a fit ends with its card (the saves flow redesigned, §12.1)", () => {
     statements = 0;
     await supersedeOlderPlans(db, userId, apart.id, new Date().toISOString());
     expect(statements).toBe(1);
+  });
+
+  /** The owner's side of the saves (`/api/my-saves/*`, the import on): status, answer, statements and writes. */
+  async function saves(method: string, path: string, body?: unknown) {
+    const app = mountRoutes(db, "/api/my-saves", mySavesRoutes);
+    const sqls: string[] = [];
+    watch = (q) => sqls.push(q);
+    statements = 0;
+    const res = await app.request(
+      `/api/my-saves${path}`,
+      { method, headers: { Cookie: cookie, "Content-Type": "application/json" }, ...(body === undefined ? {} : { body: JSON.stringify(body) }) },
+      { ...makeEnv(), SAVES_IMPORT: "1" } as Env,
+    );
+    watch = null;
+    return { status: res.status, json: (await res.json()) as Record<string, any>, total: statements, writes: sqls.filter(isWrite).length };
+  }
+
+  it("a card still pending counts as fitting, however old its fit (final fix wave): GET /open, the list and the page say fitting, /fit is 409 fitting, /dismiss 409 not_open — until it is declined", async () => {
+    const { batchId, a } = await batch();
+    // The fit began two hours ago — past FIT_STARTED_TTL_MS, so the hour alone no longer says fitting.
+    await startFit(batchId, new Date(NOW.getTime() - 2 * FIT_STARTED_TTL_MS).toISOString());
+    const { id } = await proposed({ pin: [a], batchId });
+
+    const open = await saves("GET", "/open");
+    expect(open.json.open).toMatchObject({ id: batchId, fitting: true });
+    // The session, the read: the card's exists rides in it.
+    expect(open.total).toBe(2);
+    const fit = await saves("POST", `/batches/${batchId}/fit`, {});
+    expect(fit.status).toBe(409);
+    expect(fit.json).toEqual({ error: "fitting" });
+    // The session, the restore guard, the fit's read: nothing written.
+    expect(fit.total).toBe(3);
+    expect(fit.writes).toBe(0);
+    const dismiss = await saves("POST", `/batches/${batchId}/dismiss`);
+    expect(dismiss.status).toBe(409);
+    expect(dismiss.json).toEqual({ error: "not_open" });
+    // The session, the restore guard, the write that matched nothing, the batch read.
+    expect(dismiss.total).toBe(4);
+    expect((await saves("GET", `/batches/${batchId}`)).json.batch).toMatchObject({ id: batchId, fitting: true, dismissedAt: null });
+    expect((await saves("GET", "/batches")).json.batches[0]).toMatchObject({ id: batchId, fitting: true });
+
+    // Open is the proposal's status (OPEN_TO_ATHLETE) and the op's own: undecided, or applying (open, as statusOfOps
+    // reads it). Anything else — the op decided, the proposal over — leaves only the hour, which is up.
+    const op = await opOf(id);
+    const states: Array<[status: string, outcome: DesignedPinsOp["outcome"] | undefined, fitting: boolean]> = [
+      ["partially_approved", undefined, true],
+      ["pending", { status: "applying", at: NOW.toISOString() }, true],
+      ["pending", { status: "declined", at: NOW.toISOString() }, false],
+      ["expired", undefined, false],
+      ["superseded", undefined, false],
+    ];
+    for (const [status, outcome, fitting] of states) {
+      await db.update(coachProposals).set({ status, ops: [outcome ? { ...op, outcome } : op] }).where(eq(coachProposals.id, id));
+      expect((await saves("GET", "/open")).json.open, `${status} ${outcome?.status}`).toMatchObject({ id: batchId, fitting });
+    }
+    await db.update(coachProposals).set({ status: "pending", ops: [op] }).where(eq(coachProposals.id, id));
+    // The claim holds it too (`fitClaimSql`): a read that missed the card — made since — changes nothing, its choices
+    // included (both gated writes match no row), and is refused as fitting.
+    const startedAt = await fitOf(batchId);
+    vi.spyOn(db, "all").mockResolvedValueOnce([{ status: "saved", fittedAt: null, fitStartedAt: null, pinsOpen: 0, otherOpen: 0, moves: 2, links: 3, kept: 1 }] as never);
+    const missed = await saves("POST", `/batches/${batchId}/fit`, { choices: { [a]: "skip" } });
+    expect(missed.status).toBe(409);
+    expect(missed.json).toEqual({ error: "fitting" });
+    expect(await fitOf(batchId)).toBe(startedAt);
+    expect((await db.select().from(personalMoves).where(eq(personalMoves.id, a)))[0]!.fitChoice).toBeNull();
+
+    // Declined: the card's fit is released, nothing is fitting, and Fit them in works.
+    const decline = await invoke("POST", `/api/coach/proposals/${id}/decline`, {});
+    expect(decline.json).toMatchObject({ status: "declined" });
+    expect(await fitOf(batchId)).toBeNull();
+    expect((await saves("GET", "/open")).json.open).toMatchObject({ id: batchId, fitting: false });
+    const again = await saves("POST", `/batches/${batchId}/fit`, {});
+    expect(again.status, JSON.stringify(again.json)).toBe(200);
+    // The session, the restore guard, the fit's read, the claim (no choices sent: the stored ones stand).
+    expect(again.total).toBe(4);
+    expect(await fitOf(batchId)).toBe(NOW.toISOString());
   });
 
   it("a fit started after the declined card was made is left as it is", async () => {

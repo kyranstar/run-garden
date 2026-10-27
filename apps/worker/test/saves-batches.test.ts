@@ -297,12 +297,15 @@ describe("assembleBatch", () => {
     expect((await batchOf(second!)).notice).toBe("From your saves: 1 new move (neck), 1 you already had.");
   });
 
-  it("isFitting: true for the hour after a fit starts, false before one starts and after", () => {
+  it("isFitting: true for the hour after a fit starts, false before one starts and after — and true whenever its card is still open", () => {
     expect(FIT_STARTED_TTL_MS).toBe(3_600_000);
-    expect(isFitting(null, at(0))).toBe(false);
-    expect(isFitting(at(0), at(0))).toBe(true);
-    expect(isFitting(at(0), at(0.99))).toBe(true);
-    expect(isFitting(at(0), at(1))).toBe(false);
+    expect(isFitting(null, at(0), false)).toBe(false);
+    expect(isFitting(at(0), at(0), false)).toBe(true);
+    expect(isFitting(at(0), at(0.99), false)).toBe(true);
+    expect(isFitting(at(0), at(1), false)).toBe(false);
+    // A card of the moves in rotation still open naming it (final fix wave): fitting, however old the fit, or none.
+    expect(isFitting(at(0), at(2), true)).toBe(true);
+    expect(isFitting(null, at(0), true)).toBe(true);
   });
 });
 

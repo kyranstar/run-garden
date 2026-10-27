@@ -34,7 +34,7 @@ export interface SaveBatchDto {
   dismissedAt: string | null;
   /** When the latest "Fit them in" started; null until then, and once its run could not start or its card closed. */
   fitStartedAt: string | null;
-  /** The server's reading of the one-hour rule: a fit is under way. */
+  /** The server's reading of a fit under way: begun within the hour, or its card of the moves in rotation still open. */
   fitting: boolean;
 }
 
@@ -191,6 +191,7 @@ export interface OpenSavesBatchDto {
   counts: { new: number; linked: number };
   groups: Array<{ group: MoveGroup; count: number }>;
   line: string;
+  /** As `SaveBatchDto.fitting`: every surface shows "Fitting in…" in place of its button. */
   fitting: boolean;
 }
 

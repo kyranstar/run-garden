@@ -28,12 +28,32 @@ const { savedPosts, savedPostMoves, personalMoves, saveBatches, exerciseProvenan
 /** The most new moves one batch brings (spec §5). Moves the owner already has ride along with their posts. */
 export const BATCH_NEW_MAX = 12;
 
-/** How long a fit that began reads as still at work (spec §12.1); past it, the batch offers "Fit them in" again. */
+/** How long a fit that began reads as still at work (spec §12.1); past it, the batch offers "Fit them in" again —
+ * unless its card is still open (`pinsOpenSql`). */
 export const FIT_STARTED_TTL_MS = 3_600_000;
 
-/** A batch's fit is at work: it began less than `FIT_STARTED_TTL_MS` ago. */
-export function isFitting(fitStartedAt: string | null, now: string): boolean {
-  return fitStartedAt !== null && Date.parse(now) - Date.parse(fitStartedAt) < FIT_STARTED_TTL_MS;
+/**
+ * A batch's fit is at work: it began less than `FIT_STARTED_TTL_MS` ago, or a card of the moves in rotation naming it
+ * is still open (`pinsOpen`, read by `pinsOpenSql` in the same statement as the batch; the final fix wave) — "Fit them
+ * in" never comes back above a card still waiting on the owner, however long it waits.
+ */
+export function isFitting(fitStartedAt: string | null, now: string, pinsOpen: boolean): boolean {
+  return pinsOpen || (fitStartedAt !== null && Date.parse(now) - Date.parse(fitStartedAt) < FIT_STARTED_TTL_MS);
+}
+
+/**
+ * A card of the moves in rotation still open naming the batch over `alias` (a `save_batches` alias), in SQL: a proposal
+ * of the account's, pending or partly approved (design-approve.ts `OPEN_TO_ATHLETE`), holding a `move_pins` op that
+ * names the batch and is undecided (no outcome) or being applied (`applying`: open, as `statusOfOps` reads it). Its
+ * approve marks the batch fitted in; any other ending releases the fit (`releaseFitStarts`). A correlated exists over
+ * the ops as `releaseFitStarts` reads them, for a clause of the statement it is in: no statement of its own.
+ */
+export function pinsOpenSql(alias: string): SQL {
+  const a = sql.raw(alias);
+  return sql`exists (select 1 from coach_proposals pp, json_each(case when json_valid(pp.ops) then pp.ops else '[]' end) po
+    where pp.user_id = ${a}.user_id and pp.status in ('pending', 'partially_approved')
+      and json_extract(po.value, '$.kind') = 'move_pins' and json_extract(po.value, '$.batchId') = ${a}.id
+      and (json_extract(po.value, '$.outcome') is null or json_extract(po.value, '$.outcome.status') = 'applying'))`;
 }
 
 /**
@@ -49,11 +69,12 @@ export function openBatchSql(alias: string): SQL {
       where kl.user_id = ${a}.user_id and kl.batch_id = ${a}.id and kl.status in ('pending','saved')))`;
 }
 
-/** Not fitting at `now` (`isFitting` false), in SQL over a `fit_started_at` column of ISO instants: no fit, or one
- * begun `FIT_STARTED_TTL_MS` or more ago. */
-export function notFittingSql(column: SQL, now: string): SQL {
+/** Not fitting at `now` (`isFitting` false), in SQL over `alias` (a `save_batches` alias; its `fit_started_at` ISO
+ * instants): no fit, or one begun `FIT_STARTED_TTL_MS` or more ago — and no card of it still open (`pinsOpenSql`). */
+export function notFittingSql(alias: string, now: string): SQL {
+  const a = sql.raw(alias);
   const stale = new Date(Date.parse(now) - FIT_STARTED_TTL_MS).toISOString();
-  return sql`(${column} is null or ${column} <= ${stale})`;
+  return sql`((${a}.fit_started_at is null or ${a}.fit_started_at <= ${stale}) and not ${pinsOpenSql(alias)})`;
 }
 
 /**
@@ -65,7 +86,7 @@ export function notFittingSql(column: SQL, now: string): SQL {
  */
 export function fitClaimSql(userId: string, batchId: string, status: "released" | "saved", now: string): SQL {
   return sql`exists (select 1 from save_batches fc where fc.id = ${batchId} and fc.user_id = ${userId} and fc.status = ${status}
-    and fc.fitted_at is null and ${notFittingSql(sql.raw("fc.fit_started_at"), now)}
+    and fc.fitted_at is null and ${notFittingSql("fc", now)}
     and not exists (select 1 from save_batches fo where fo.user_id = fc.user_id and fo.id <> fc.id and ${openBatchSql("fo")}))`;
 }
 

@@ -15,9 +15,10 @@
  *                                                  choices ({moveId: include | skip}; a new move left out is the coach's
  *                                                  call; no `choices` — the one-tap fit — keeps the stored ones) and its
  *                                                  fit started → FitAnswerDto `{batchId, request, moves,
- *                                                  links}`; 409 `fitting` while its fit is at work (the hour), 409
- *                                                  `batch_open` while another batch is open, 409 `already_fitted`, 409
- *                                                  `not_released` (held or superseded), 409 `empty` (every row removed)
+ *                                                  links}`; 409 `fitting` while its fit is at work (the hour, or its
+ *                                                  card of the moves in rotation still open), 409 `batch_open` while
+ *                                                  another batch is open, 409 `already_fitted`, 409 `not_released` (held
+ *                                                  or superseded), 409 `empty` (every row removed)
  *   POST /batches/:id/dismiss                      "not now": put aside, never saved → `{ok}`; 409 `not_open` unless
  *                                                  it is open and not fitting
  *   POST /batches/:id/fit/cancel                   the fit's run could not start: the fit cleared at once → `{ok}`
