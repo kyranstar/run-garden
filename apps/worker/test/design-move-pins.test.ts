@@ -818,18 +818,19 @@ describe("a fit ends with its card (the saves flow redesigned, §12.1)", () => {
 
     const open = await saves("GET", "/open");
     expect(open.json.open).toMatchObject({ id: batchId, fitting: true });
-    // The session, the read: the card's exists rides in it.
+    // The session, the read: the card's exists rides in it (final fix wave, saves flow redesign: unchanged).
     expect(open.total).toBe(2);
     const fit = await saves("POST", `/batches/${batchId}/fit`, {});
     expect(fit.status).toBe(409);
     expect(fit.json).toEqual({ error: "fitting" });
-    // The session, the restore guard, the fit's read: nothing written.
+    // The session, the restore guard, the fit's read: nothing written (final fix wave, saves flow redesign: unchanged).
     expect(fit.total).toBe(3);
     expect(fit.writes).toBe(0);
     const dismiss = await saves("POST", `/batches/${batchId}/dismiss`);
     expect(dismiss.status).toBe(409);
     expect(dismiss.json).toEqual({ error: "not_open" });
-    // The session, the restore guard, the write that matched nothing, the batch read.
+    // The session, the restore guard, the write that matched nothing, the batch read (final fix wave, saves flow
+    // redesign: unchanged).
     expect(dismiss.total).toBe(4);
     expect((await saves("GET", `/batches/${batchId}`)).json.batch).toMatchObject({ id: batchId, fitting: true, dismissedAt: null });
     expect((await saves("GET", "/batches")).json.batches[0]).toMatchObject({ id: batchId, fitting: true });
@@ -866,7 +867,8 @@ describe("a fit ends with its card (the saves flow redesigned, §12.1)", () => {
     expect((await saves("GET", "/open")).json.open).toMatchObject({ id: batchId, fitting: false });
     const again = await saves("POST", `/batches/${batchId}/fit`, {});
     expect(again.status, JSON.stringify(again.json)).toBe(200);
-    // The session, the restore guard, the fit's read, the claim (no choices sent: the stored ones stand).
+    // The session, the restore guard, the fit's read, the claim (no choices sent: the stored ones stand; final fix wave,
+    // saves flow redesign).
     expect(again.total).toBe(4);
     expect(await fitOf(batchId)).toBe(NOW.toISOString());
   });

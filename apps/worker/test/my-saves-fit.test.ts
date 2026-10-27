@@ -237,7 +237,7 @@ describe("GET /open", () => {
     const refused = await fit(batchId);
     expect(refused.status).toBe(409);
     expect(refused.body).toEqual({ error: "empty" });
-    // The session, the restore guard, the fit's read: nothing written.
+    // The session, the restore guard, the fit's read: nothing written (final fix wave, saves flow redesign).
     expect(statements.length).toBe(3);
     expect(writes()).toEqual([]);
     expect(await batchRow(batchId)).toMatchObject({ status: "released", savedAt: null, fitStartedAt: null, dismissedAt: null });
