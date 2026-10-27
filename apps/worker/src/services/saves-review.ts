@@ -648,7 +648,7 @@ export async function readOpenBatch(db: Db, env: Env, userId: string, now: strin
 export type FitOutcome =
   | { kind: "ok"; answer: FitAnswerDto }
   | { kind: "not_found" }
-  | { kind: "conflict"; error: "fitting" | "batch_open" | "already_fitted" | "not_released" };
+  | { kind: "conflict"; error: "fitting" | "batch_open" | "already_fitted" | "not_released" | "empty" };
 
 /** The batch `fitBatch` reads: its state, whether another batch of the account's is open, and what a saved batch holds. */
 interface FitRead {
@@ -659,6 +659,8 @@ interface FitRead {
   /** The batch's active moves (the new moves its save made usable), and its saved links. */
   moves: number;
   links: number;
+  /** Whether it still keeps a row (a link pending or saved). */
+  kept: number;
 }
 
 /**
@@ -669,8 +671,9 @@ interface FitRead {
  *  - a `saved` batch (a re-fit once a fit's card was declined, or a batch saved before): its choices rewritten and its
  *    fit started, in one transaction of 2 — nothing is saved twice.
  * Refused, in order: another account's batch (not found); one already fitted in; one never released (held) or
- * dissolved (superseded); one whose fit is at work (`isFitting`: a second tap never starts a second run); one while
- * another batch is open (`openBatchSql`: a dismissed batch comes back only when no other is open, §12.3).
+ * dissolved (superseded); one every row of which was removed (`empty`, the final fix wave: a fit of nothing; it is no
+ * open batch either); one whose fit is at work (`isFitting`: a second tap never starts a second run); one while another
+ * batch is open (`openBatchSql`: a dismissed batch comes back only when no other is open, §12.3).
  * The read only answers why; the writes themselves claim the fit (`fitClaimSql`, checked again in the transaction, its
  * last write counted): a tap that loses to another between the read and the write — the other's fit started, or the
  * batch saved since — writes nothing, its choices included, and is refused as `fitting`.
@@ -687,13 +690,15 @@ export async function fitBatch(
   const [b] = (await db.all(sql`select b.status as status, b.fitted_at as fittedAt, b.fit_started_at as fitStartedAt,
       exists (select 1 from save_batches o where o.user_id = b.user_id and o.id <> b.id and ${openBatchSql("o")}) as otherOpen,
       (select count(*) from personal_moves m where m.user_id = b.user_id and m.batch_id = b.id and m.status = 'active') as moves,
-      (select count(*) from saved_post_moves l where l.user_id = b.user_id and l.batch_id = b.id and l.status = 'saved') as links
+      (select count(*) from saved_post_moves l where l.user_id = b.user_id and l.batch_id = b.id and l.status = 'saved') as links,
+      exists (select 1 from saved_post_moves k where k.user_id = b.user_id and k.batch_id = b.id and k.status in ('pending','saved')) as kept
     from save_batches b
     where b.id = ${batchId} and b.user_id = ${userId}
     limit 1`)) as FitRead[];
   if (!b) return { kind: "not_found" };
   if (b.fittedAt) return { kind: "conflict", error: "already_fitted" };
   if (b.status !== "released" && b.status !== "saved") return { kind: "conflict", error: "not_released" };
+  if (!Number(b.kept)) return { kind: "conflict", error: "empty" };
   if (isFitting(b.fitStartedAt, now)) return { kind: "conflict", error: "fitting" };
   if (Number(b.otherOpen)) return { kind: "conflict", error: "batch_open" };
   const ok = (moves: number, links: number): FitOutcome => ({ kind: "ok", answer: { batchId, request: FIT_SAVES_REQUEST, moves, links } });

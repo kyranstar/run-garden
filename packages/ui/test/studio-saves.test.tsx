@@ -324,6 +324,29 @@ describe("a batch's page (the saves flow redesigned §3.3)", () => {
     expect(document.querySelector("h1")?.textContent).toBe("1 new move");
   });
 
+  it("no new move: the title says No new moves and Fit these in is there but disabled — a batch of only moves already yours, or one every row of which was removed", async () => {
+    // Only a move already yours (final fix wave, saves flow redesign: never "0 new moves").
+    const calls = serve({ only: ["pm2"] });
+    mount("/studio/saves/b1");
+    await until(() => !!fold(), "Already yours");
+    expect(document.querySelector("h1")?.textContent).toBe("No new moves");
+    expect(document.querySelector(".stu-save-line")).toBeNull();
+    expect(tally()).toBeNull();
+    expect(button("Fit these in")?.disabled).toBe(true);
+    await click(button("Fit these in"), "Fit these in");
+    expect(fitBody(calls)).toBeUndefined();
+    act(() => root?.unmount());
+    host?.remove();
+    root = null;
+    vi.unstubAllGlobals();
+    // Every row removed: nothing left, and the same foot.
+    serve({ rowStatus: "removed" });
+    mount("/studio/saves/b1");
+    await until(() => text().includes("Nothing left in this batch."), "nothing left");
+    expect(document.querySelector("h1")?.textContent).toBe("No new moves");
+    expect(button("Fit these in")?.disabled).toBe(true);
+  });
+
   it("the tally follows the controls: All three on the coach's call → 1 in · 1 out · 1 on the coach's call", async () => {
     serve();
     mount("/studio/saves/b1");

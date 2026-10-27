@@ -62,6 +62,8 @@ describe("the open batch's words (the saves flow redesigned)", () => {
     expect(fitRefusal(new ApiError(409, { error: "batch_open" }))).toBe(OPEN_FIRST_LINE);
     expect(fitRefusal(new ApiError(409, { error: "fitting" }))).toBeNull();
     expect(fitRefusal(new ApiError(409, { error: "already_fitted" }))).toBeNull();
+    // A batch with nothing left in it (final fix wave, saves flow redesign): no words — the read again shows no card.
+    expect(fitRefusal(new ApiError(409, { error: "empty" }))).toBeNull();
     expect(fitRefusal(new ApiError(404, { error: "not_found" }))).toBeNull();
     expect(fitRefusal(new ApiError(500, null))).toBe(FIT_FAILED_LINE);
     expect(fitRefusal(new TypeError("Failed to fetch"))).toBe(FIT_FAILED_LINE);

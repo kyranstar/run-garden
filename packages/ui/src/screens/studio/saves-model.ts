@@ -181,8 +181,9 @@ export function openShown(d: OpenSavesDto | undefined): OpenSavesBatchDto | null
 }
 
 /**
- * A fit refused, in words: another batch open says so. A fit already at work, a batch fitted, gone or never released
- * says nothing — the open batch read again shows what is true (Fitting in…, or no card). Anything else: try again.
+ * A fit refused, in words: another batch open says so. A fit already at work, a batch fitted, gone, never released or
+ * with nothing left in it (`empty`) says nothing — the open batch read again shows what is true (Fitting in…, or no
+ * card). Anything else: try again.
  */
 export function fitRefusal(e: unknown): string | null {
   if (e instanceof ApiError && (e.status === 409 || e.status === 404)) {

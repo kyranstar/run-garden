@@ -215,6 +215,39 @@ describe("GET /open", () => {
     expect((await call("GET", "/open")).body.open.id).toBe(all[0]!.id);
     expect(statements.length).toBe(2);
   });
+
+  it("a batch every row of which was removed is not open: GET /open cuts and reports the next waiting batch; /fit on the emptied one is 409 empty", async () => {
+    const { batchId, p1, p2, a, b } = await seed();
+    // A later post waits for the next batch.
+    await matched("p3", [move("Zorbex calf rock", { regions: ["calves"] })], userId, at(2));
+    for (const [post, position] of [[p1, 0], [p1, 1], [p2, 0]] as const) {
+      expect((await call("POST", `/post-moves/${(await linkAt(post, position)).id}/remove`)).status).toBe(200);
+    }
+
+    const open = await call("GET", "/open");
+    expect(open.status, JSON.stringify(open.body)).toBe(200);
+    // The session, the read, the cut (gate 1, waiting 1, personal moves 1, the batch and its stamps 4), the read again:
+    // the emptied batch opens the gate with no statement of its own (final fix wave, saves flow redesign).
+    expect(statements.length).toBe(10);
+    const next = open.body.open.id as string;
+    expect(next).not.toBe(batchId);
+    expect(open.body.open).toMatchObject({ counts: { new: 1, linked: 0 }, groups: [{ group: "leg", count: 1 }], fitting: false });
+
+    // The emptied batch: refused before anything is saved (a fit of nothing), whatever else is open.
+    const refused = await fit(batchId);
+    expect(refused.status).toBe(409);
+    expect(refused.body).toEqual({ error: "empty" });
+    // The session, the restore guard, the fit's read: nothing written.
+    expect(statements.length).toBe(3);
+    expect(writes()).toEqual([]);
+    expect(await batchRow(batchId)).toMatchObject({ status: "released", savedAt: null, fitStartedAt: null, dismissedAt: null });
+    for (const id of [a, b]) expect(await moveRow(id)).toMatchObject({ status: "pending", fitChoice: null });
+    // With the next one put aside too, still 409 empty; and it is no open batch to put aside.
+    expect((await call("POST", `/batches/${next}/dismiss`)).status).toBe(200);
+    expect((await fit(batchId)).body).toEqual({ error: "empty" });
+    expect((await call("POST", `/batches/${batchId}/dismiss`)).body).toEqual({ error: "not_open" });
+    expect((await call("GET", "/open")).body).toEqual({ open: null });
+  });
 });
 
 // ── POST /batches/:id/fit ────────────────────────────────────────────────────────────────────────────────────────────
@@ -442,7 +475,7 @@ describe("POST /batches/:id/fit: two taps at once", () => {
     const { batchId, a, b } = await seed();
     // The move sheet's Save came first; the fit's read still saw the batch released.
     expect((await call("POST", `/batches/${batchId}/save`)).status).toBe(200);
-    vi.spyOn(db, "all").mockResolvedValueOnce([{ status: "released", fittedAt: null, fitStartedAt: null, otherOpen: 0, moves: 0, links: 0 }]);
+    vi.spyOn(db, "all").mockResolvedValueOnce([{ status: "released", fittedAt: null, fitStartedAt: null, otherOpen: 0, moves: 0, links: 0, kept: 1 }]);
     const res = await fit(batchId, { [a]: "skip", [b]: "include" });
     expect(res.status, JSON.stringify(res.body)).toBe(409);
     expect(res.body).toEqual({ error: "fitting" });
@@ -464,9 +497,11 @@ describe("POST /batches/:id/fit: two taps at once", () => {
     expect(await saveBatch(db, userId, batchId, NOW, { at: NOW, choices: { [a]: "include" } })).toBe("lost");
     await untouched();
     expect(await batchRow(batchId)).toMatchObject({ status: "released", savedAt: null });
-    // No fit at work, but another batch opened since the read.
+    // No fit at work, but another batch opened since the read (open: it keeps a row).
     await db.update(saveBatches).set({ fitStartedAt: null }).where(eq(saveBatches.id, batchId));
+    const p9 = await matched("p9", [move("Zorbex calf rock", { regions: ["calves"] })], userId, at(2));
     await db.insert(saveBatches).values({ id: "other-open", userId, status: "released", createdAt: NOW, releasedAt: NOW });
+    await db.update(savedPostMoves).set({ batchId: "other-open" }).where(eq(savedPostMoves.postId, p9));
     statements.length = 0;
     expect(await saveBatch(db, userId, batchId, NOW, { at: NOW, choices: { [a]: "include" } })).toBe("lost");
     // The batch and its counts 1, the transaction of 6 (every write gated, the last one counted).

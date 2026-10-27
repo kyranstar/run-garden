@@ -145,20 +145,24 @@ describe("assembleBatch", () => {
   });
 
   it("a batch opened between the gate and the write stops the cut: nothing stamped, no batch row, the post still waits", async () => {
+    // Open: released, and it keeps a row (a batch every row of which was removed is not open — the final fix wave).
+    const z = await matched("z", [move("Zorbex neck nod", { regions: ["neck"] })]);
     await db.insert(saveBatches).values({ id: "open", userId, status: "released", createdAt: T0, releasedAt: T0 });
+    await db.update(savedPosts).set({ batchId: "open" }).where(eq(savedPosts.id, z));
+    await db.update(savedPostMoves).set({ batchId: "open" }).where(eq(savedPostMoves.postId, z));
     const a = await matched("a", [move("Zorbex quad shuffle")]);
     // Another request opened it after this one's gate read: the read saw none.
     vi.spyOn(db, "all").mockResolvedValueOnce([] as never);
     const tried = await assembleBatch(db, env(), userId, at(1));
     expect(tried).toBeTruthy();
     expect((await db.select().from(saveBatches)).map((b) => b.id)).toEqual(["open"]);
-    expect(await postBatches()).toEqual({ a: null });
+    expect(await postBatches()).toEqual({ z: "open", a: null });
     expect((await linksOf(await personalIdOf(a, 0))).map((l) => l.batchId)).toEqual([null]);
-    expect((await db.select().from(personalMoves)).map((m) => m.batchId)).toEqual([null]);
+    expect((await db.select().from(personalMoves).where(eq(personalMoves.id, await personalIdOf(a, 0)))).map((m) => m.batchId)).toEqual([null]);
     // Once the open batch is answered, the post is cut as ever.
     await close("open", { dismissedAt: at(2) });
     const id = (await assembleBatch(db, env(), userId, at(3)))!;
-    expect(await postBatches()).toEqual({ a: id });
+    expect(await postBatches()).toEqual({ z: "open", a: id });
   });
 
   it("takes the oldest posts first up to 12 new moves; the rest wait for the next batch", async () => {

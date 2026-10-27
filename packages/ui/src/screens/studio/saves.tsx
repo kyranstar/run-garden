@@ -23,9 +23,10 @@
  * | Include — never its creator or dose. A flagged move keeps "Check this", then the move it looks like: `like {name}`,
  * a tap merging it into that move while the row is the owner's to change. The moves the owner already has fold under
  * one line. Fit these in saves the batch with the choices (Coach sent as nothing) and opens the coach with the fit,
- * which sends the request; while that fit is at work, "Fitting in… open the coach" in its place. A fitted batch reads
- * the same, with no control and no foot. On the list, a batch put aside reads so, and Fit them in brings it back (the
- * coach card's fit: every move on the coach's call).
+ * which sends the request; while that fit is at work, "Fitting in… open the coach" in its place. With no new move (only
+ * moves already yours, or every row removed) the title says "No new moves" and Fit these in is disabled. A fitted batch
+ * reads the same, with no control and no foot. On the list, a batch put aside reads so, and Fit them in brings it back
+ * (the coach card's fit: every move on the coach's call).
  *
  * A name opens the move's sheet: its words, the post (its creator, and a link that opens it apart), the dose as the
  * post gave it and as it would be saved, and — while the row is pending — Edit (a new move, or one of the owner's own),
@@ -439,7 +440,7 @@ export function SaveBatchScreen() {
       <BackBar to={savesHref()} label="Saves" />
       <div className="stu-save-head">
         <h1 ref={title} tabIndex={-1}>
-          {data ? `${n} new ${n === 1 ? "move" : "moves"}` : "From your saves"}
+          {data ? (n === 0 ? "No new moves" : `${n} new ${n === 1 ? "move" : "moves"}`) : "From your saves"}
         </h1>
         {choosing && n > 0 ? (
           <p className="stu-save-line">
@@ -456,7 +457,8 @@ export function SaveBatchScreen() {
       {choosing ? (
         <div className="stu-build-foot stu-save-foot">
           {n > 0 ? <p className="stu-save-tally">{tallyLine(choices, moveIds)}</p> : null}
-          <button type="button" className="btn btn-primary" disabled={pending} onClick={() => fit(batchId, sent)}>
+          {/* No new move (only moves already yours, or nothing left in it): nothing to fit in. */}
+          <button type="button" className="btn btn-primary" disabled={pending || n === 0} onClick={() => fit(batchId, sent)}>
             Fit these in
           </button>
           {line ? (

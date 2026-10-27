@@ -1,10 +1,10 @@
 /**
  * BATCHES (saved-posts import, Task 8; spec §4 calls 8–9, §6; the saves flow redesigned, 2026-10-26: §5, §12.3,
  * §12.4). Matched posts wait, unbatched, until a check finishes; then `assembleBatch` cuts one batch from them — but
- * only while no batch is open (`openBatchSql`: released or saved, neither fitted in nor dismissed), so the owner's own
- * action is the gate and there is one batch to answer at a time. A batch takes the oldest posts first and at most
- * `BATCH_NEW_MAX` new moves; the rest wait for the next one. While `SAVES_HOLD_BATCHES` is "1" a batch is created
- * `held` (the bootstrap's batches wait for the lead's curation).
+ * only while no batch is open (`openBatchSql`: released or saved, neither fitted in nor dismissed, a row still kept),
+ * so the owner's own action is the gate and there is one batch to answer at a time. A batch takes the oldest posts
+ * first and at most `BATCH_NEW_MAX` new moves; the rest wait for the next one. While `SAVES_HOLD_BATCHES` is "1" a
+ * batch is created `held` (the bootstrap's batches wait for the lead's curation).
  *
  * Nothing in a batch is usable until the owner saves it: its new moves stay `pending` and its links `pending`, and
  * `exercise_provenance` (what the Studio's "from your saves", the engine's bonus and the coach's "saved" read) is
@@ -37,12 +37,16 @@ export function isFitting(fitStartedAt: string | null, now: string): boolean {
 }
 
 /**
- * An OPEN batch, over `alias` (a `save_batches` alias): released or saved, neither fitted in nor dismissed (spec §4).
- * While an account has one, no other batch of its is cut (`assembleBatch`) or released (`releaseBatch`).
+ * An OPEN batch, over `alias` (a `save_batches` alias): released or saved, neither fitted in nor dismissed (spec §4),
+ * and still keeping a row (a link `pending` or `saved`; the final fix wave): one every row of which was removed shows
+ * nothing, so it holds nothing up. While an account has one, no other batch of its is cut (`assembleBatch`) or released
+ * (`releaseBatch`). A clause of the statement it is in: no statement of its own.
  */
 export function openBatchSql(alias: string): SQL {
   const a = sql.raw(alias);
-  return sql`(${a}.status in ('released','saved') and ${a}.fitted_at is null and ${a}.dismissed_at is null)`;
+  return sql`(${a}.status in ('released','saved') and ${a}.fitted_at is null and ${a}.dismissed_at is null
+    and exists (select 1 from saved_post_moves kl
+      where kl.user_id = ${a}.user_id and kl.batch_id = ${a}.id and kl.status in ('pending','saved')))`;
 }
 
 /** Not fitting at `now` (`isFitting` false), in SQL over a `fit_started_at` column of ISO instants: no fit, or one

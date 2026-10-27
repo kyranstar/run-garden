@@ -687,8 +687,10 @@ describe("POST /batches and /batches/:id/release", () => {
   });
 
   it("a release while another batch is open is 409 batch_open, and the batch stays held", async () => {
-    // Released a day before NOW, never fitted in nor dismissed: open, however long ago.
+    // Released a day before NOW, never fitted in nor dismissed, a row kept: open, however long ago.
+    const z = await matched("z", [move("Zorbex calf rock")]);
     await db.insert(saveBatches).values({ id: "open", userId, status: "released", createdAt: at(0), releasedAt: at(0) });
+    await db.update(savedPostMoves).set({ batchId: "open" }).where(eq(savedPostMoves.postId, z));
     const c = await matched("c", [move("Zorbex hip circle")]);
     const id = (await call("POST", "/batches", { theme: null, postIds: [c] })).body.batch.id as string;
     const res = await call("POST", `/batches/${id}/release`);

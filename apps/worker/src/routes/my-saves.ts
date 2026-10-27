@@ -16,7 +16,7 @@
  *                                                  call) and its fit started → FitAnswerDto `{batchId, request, moves,
  *                                                  links}`; 409 `fitting` while its fit is at work (the hour), 409
  *                                                  `batch_open` while another batch is open, 409 `already_fitted`, 409
- *                                                  `not_released` (held or superseded)
+ *                                                  `not_released` (held or superseded), 409 `empty` (every row removed)
  *   POST /batches/:id/dismiss                      "not now": put aside, never saved → `{ok}`; 409 `not_open` unless
  *                                                  it is open and not fitting
  *   POST /batches/:id/fit/cancel                   the fit's run could not start: the fit cleared at once → `{ok}`

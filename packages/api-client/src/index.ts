@@ -2624,7 +2624,7 @@ export const api = {
   savesOpen: () => get<import("@rg/saves").OpenSavesDto>("/api/my-saves/open"),
   /** "Fit them in" / "Fit these in": the batch saved with the choices (a new move left out is the coach's call) and its
    * fit started → the request to send the coach with `savesBatchId`. 409 `fitting` | `batch_open` | `already_fitted` |
-   * `not_released`. */
+   * `not_released` | `empty` (every row removed). */
   savesFit: (id: string, choices: Record<string, import("@rg/saves").FitChoice>) =>
     post<import("@rg/saves").FitAnswerDto>(`/api/my-saves/batches/${encodeURIComponent(id)}/fit`, { choices }),
   /** "not now": put aside, nothing saved. 409 `not_open` unless it is open and not fitting. */
