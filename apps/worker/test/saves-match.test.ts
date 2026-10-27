@@ -70,10 +70,11 @@ async function extracted(key: string, moves: ExtractedMove[], over: Partial<type
   return id;
 }
 
-async function personal(name: string, over: Partial<typeof personalMoves.$inferInsert> = {}) {
+/** One of the owner's moves, active unless `over` says; `draft` changes what its record is built from (its load, its dose). */
+async function personal(name: string, over: Partial<typeof personalMoves.$inferInsert> = {}, draft: Partial<ExtractedMove> = {}) {
   const id = `my${name.replace(/[^A-Za-z0-9]/g, "")}abc123`;
   await db.insert(personalMoves).values({
-    id, userId, status: "active", record: toPersonalRecord(id, move(name)), createdAt: NOW, updatedAt: NOW, ...over,
+    id, userId, status: "active", record: toPersonalRecord(id, move(name, draft)), createdAt: NOW, updatedAt: NOW, ...over,
   });
   return id;
 }
@@ -177,6 +178,27 @@ describe("matchMoves", () => {
     const [d] = matchMoves(extraction([move("the zorbex switch")]), EXERCISES, rows);
     expect(d).toMatchObject({ kind: "new", check: true });
     expect(d!.candidates?.map((c) => [c.kind, c.id])).toEqual([["personal", "myZorbexHipSwitchaaaaaa"]]);
+  });
+
+  it("an equal name whose load or dose type differs from the owner's move is new, flagged, like that move, with no candidates", () => {
+    const rows = [
+      { id: "myZorbexShuffleaaaaaa", status: "active", mergedInto: null, name: "Zorbex shuffle", load: "none", doseType: "reps" },
+      { id: "myZorbexHoldbbbbbb", status: "pending", mergedInto: null, name: "Zorbex hold", load: "none", doseType: "reps" },
+    ];
+    const out = matchMoves(
+      extraction([
+        move("Zorbex shuffles", { load: "bodyweight" }),
+        move("zorbex hold", { dose: { text: "30 s", type: "time", range: [20, 40] } }),
+        // Unknown on one side is no difference: an unstated dose type links as before.
+        move("Zorbex shuffle", { dose: { text: "a few" } }),
+      ]),
+      EXERCISES,
+      rows,
+    );
+    expect(out[0]).toEqual({ position: 0, kind: "new", confidence: "high", check: true, draft: expect.anything(), like: "myZorbexShuffleaaaaaa" });
+    expect(out[1]).toEqual({ position: 1, kind: "new", confidence: "high", check: true, draft: expect.anything(), like: "myZorbexHoldbbbbbb" });
+    expect(out[2]).toMatchObject({ kind: "personal", id: "myZorbexShuffleaaaaaa", check: false });
+    expect(out[2]!.like).toBeUndefined();
   });
 
   it("makes two new moves with one normalised name in one post one move", () => {
@@ -403,6 +425,113 @@ describe("matchPost", () => {
     expect(await db.select().from(exerciseProvenance)).toEqual([]);
     expect((await db.select().from(personalMoves)).every((m) => m.status === "pending")).toBe(true);
     expect((await db.select().from(savedPostMoves)).every((l) => l.status === "pending")).toBe(true);
+  });
+
+  it("a new move one qualifying word from an active move of the owner's is created, flagged check this, like that move", async () => {
+    const mine = await personal("Zorbex cobra hold");
+    const id = await extracted("k", [move("Zorbex cobra chest lift"), move("Zorbex quad shuffle")]);
+    const gw = judge({});
+    expect(await matchPost(db, env(), userId, id, NOW, gw.fetchImpl)).toEqual({ newMoves: 2, linked: 0 });
+    // Too few shared words for the judge: the names alone flag it.
+    expect(gw.spy).not.toHaveBeenCalled();
+    const links = await linksOf(id);
+    const created = (await db.select().from(personalMoves)).filter((m) => m.id !== mine);
+    expect(created).toHaveLength(2);
+    expect(links.map((l) => [l.moveKind, l.checkFlag, l.likeMoveId])).toEqual([
+      ["personal", true, mine],
+      ["personal", false, null],
+    ]);
+    expect(links[0]!.moveId).not.toBe(mine);
+    expect(created.every((m) => m.status === "pending")).toBe(true);
+  });
+
+  it("a near move shown twice in one post is one move, and both links are like the owner's", async () => {
+    const mine = await personal("Zorbex cobra hold");
+    const id = await extracted("k", [move("Zorbex cobra chest lift"), move("zorbex cobra chest lifts")]);
+    expect(await matchPost(db, env(), userId, id, NOW, judge({}).fetchImpl)).toEqual({ newMoves: 1, linked: 1 });
+    const links = await linksOf(id);
+    expect(links[1]!.moveId).toBe(links[0]!.moveId);
+    expect(links.map((l) => [l.checkFlag, l.likeMoveId])).toEqual([[true, mine], [true, mine]]);
+  });
+
+  it("a judge's no leaves a near move new, and the names still flag it like the owner's move", async () => {
+    const mine = await personal("Zorbex rotational swing");
+    const id = await extracted("k", [move("Zorbex dynamic rotational swing")]);
+    const gw = judge({ matches: [{ move: 0, id: null }] });
+    expect(await matchPost(db, env(), userId, id, NOW, gw.fetchImpl)).toEqual({ newMoves: 1, linked: 0 });
+    expect(gw.spy).toHaveBeenCalledTimes(1);
+    expect((await linksOf(id)).map((l) => [l.checkFlag, l.likeMoveId])).toEqual([[true, mine]]);
+  });
+
+  it("an equal name with a different load or dose type is never linked: a new move, flagged, like the owner's — the judge not asked", async () => {
+    const shuffle = await personal("Zorbex shuffle");
+    const hold = await personal("Zorbex hold");
+    const id = await extracted("k", [
+      move("Zorbex shuffles", { load: "external", equipment: ["kettlebell"] }),
+      move("zorbex hold", { dose: { text: "30 s", type: "time", range: [20, 40] } }),
+      // The same new move again in the post: one move, both links like the owner's.
+      move("Zorbex shuffle", { load: "external", equipment: ["kettlebell"] }),
+    ]);
+    const gw = judge({ matches: [{ move: 0, id: shuffle }, { move: 1, id: hold }] });
+    expect(await matchPost(db, env(), userId, id, NOW, gw.fetchImpl)).toEqual({ newMoves: 2, linked: 1 });
+    expect(gw.spy).not.toHaveBeenCalled();
+    const links = await linksOf(id);
+    expect(links.map((l) => [l.moveKind, l.checkFlag, l.likeMoveId])).toEqual([
+      ["personal", true, shuffle],
+      ["personal", true, hold],
+      ["personal", true, shuffle],
+    ]);
+    expect(links.map((l) => l.moveId).filter((m) => m === shuffle || m === hold)).toEqual([]);
+    expect(links[2]!.moveId).toBe(links[0]!.moveId);
+    const created = (await db.select().from(personalMoves)).filter((m) => m.status === "pending");
+    expect(created.map((m) => (m.record as { load: string }).load).sort()).toEqual(["external", "none"]);
+  });
+
+  it("an equal name with the same type links as before", async () => {
+    const mine = await personal("Zorbex shuffle");
+    const id = await extracted("k", [move("zorbex shuffles"), move("The Zorbex shuffle", { dose: { text: "a few" } })]);
+    const gw = judge({});
+    expect(await matchPost(db, env(), userId, id, NOW, gw.fetchImpl)).toEqual({ newMoves: 0, linked: 2 });
+    expect(gw.spy).not.toHaveBeenCalled();
+    expect((await linksOf(id)).map((l) => [l.moveId, l.moveKind, l.checkFlag, l.likeMoveId, l.confidence])).toEqual([
+      [mine, "personal", false, null, 1],
+      [mine, "personal", false, null, 1],
+    ]);
+    expect(await db.select().from(personalMoves)).toHaveLength(1);
+  });
+
+  it("a band move read as external links to the owner's like-named move stored as bodyweight: the load its record would store", async () => {
+    const mine = await personal("Zorbex band pull", {}, { load: "bodyweight", equipment: ["band"] });
+    const id = await extracted("k", [move("Zorbex band pulls", { load: "external", equipment: ["band"] })]);
+    expect(await matchPost(db, env(), userId, id, NOW, judge({}).fetchImpl)).toEqual({ newMoves: 0, linked: 1 });
+    expect((await linksOf(id)).map((l) => [l.moveId, l.checkFlag, l.likeMoveId])).toEqual([[mine, false, null]]);
+  });
+
+  it("a pending move (another batch's) is no like target at matching", async () => {
+    await personal("Zorbex cobra hold", { status: "pending", batchId: "otherbatch" });
+    const id = await extracted("k", [move("Zorbex cobra chest lift")]);
+    expect(await matchPost(db, env(), userId, id, NOW, judge({}).fetchImpl)).toEqual({ newMoves: 1, linked: 0 });
+    // The cut flags it, when the two land in one batch or the other is the owner's (saves-batches).
+    expect((await linksOf(id)).map((l) => [l.checkFlag, l.likeMoveId])).toEqual([[false, null]]);
+  });
+
+  it("statements unchanged for a 12-move post", async () => {
+    const nod = await personal("Zorbex neck nod");
+    const cobra = await personal("Zorbex cobra hold");
+    const moves = [
+      move("Zorbex neck nod", { load: "bodyweight" }),
+      move("Zorbex cobra chest lift"),
+      ...Array.from({ length: 9 }, (_, i) => move(`Zorbex variant ${String.fromCharCode(98 + i)} shuffle`)),
+      move("the 90 90 switch"),
+    ];
+    const id = await extracted("k", moves);
+    statements = 0;
+    const out = await matchPost(db, env(), userId, id, NOW, judge({ matches: [{ move: 11, id: HIP_SWITCH.id }] }).fetchImpl);
+    expect(out).toEqual({ newMoves: 11, linked: 1 });
+    // post 1, personal moves 1, judge (reserve 2, credits note 2, settle 1), writes: 2 move inserts + 2 link inserts + the post
+    expect(statements).toBe(12);
+    const links = await linksOf(id);
+    expect(links.map((l) => l.likeMoveId)).toEqual([nod, cobra, ...Array(10).fill(null)]);
   });
 
   it("a 12-move post of new and fuzzy moves takes 12 statements, the judge included (the relay route adds 9: 21 of 45)", async () => {

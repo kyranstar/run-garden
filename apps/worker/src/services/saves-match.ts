@@ -5,7 +5,9 @@
  *     → that library move, high confidence.
  *  2. The same test against the owner's own moves (active, pending or archived; a merged one resolves to the move it was
  *     merged into) → that personal move, high. This is also how the same new move across posts becomes ONE move: the
- *     first post's pending move is there when the second post is matched.
+ *     first post's pending move is there when the second post is matched. A hit whose load or dose type differs from the
+ *     draft's (`sameMoveType`; the load its record would store) is never linked: two load types are never one move. It
+ *     is a new move flagged "check this", like the move it is named as — the judge is not asked about it (spec §6).
  *  3. Otherwise a library move or one of the owner's own (not merged) whose name shares enough words (token overlap
  *     ≥ `FUZZY_MIN`) is a candidate, and
  *  4. one cheap judge call per post (`import_match` spend, reserved and settled) says which candidate, if any, is the
@@ -13,6 +15,10 @@
  *     (fixture mode, no key, the budget, a failed call) → a new move flagged "check this", for the owner to merge in
  *     review.
  *  5. Two new moves with one normalised name in one post are one personal move with two links.
+ *
+ * Step 2b, after the judge (`flagNearDuplicates`): a new move one qualifying word from one of the owner's ACTIVE moves
+ * (`nearDuplicateOf`) is created, flagged "check this", like that move; its links carry it (`like_move_id`). A pending
+ * move of another batch is no target here — the cut holds a batch's new moves to each other (saves-batches.ts).
  *
  * A new move the extraction itself was unsure of (`confidence: "low"`) is flagged "check this" too (spec §4 call 11).
  *
@@ -25,8 +31,8 @@ import { and, eq, sql } from "drizzle-orm";
 import { schema } from "@rg/database";
 import { newId } from "@rg/domain";
 import { EXERCISES, type ExerciseRecord } from "@rg/exercise-library";
-import { extractionSchema, matchMessages, matchVerdictSchema, normalizeMoveName } from "@rg/saves";
-import type { ExtractedMove, Extraction, MatchJudgeItem } from "@rg/saves";
+import { extractionSchema, matchMessages, matchVerdictSchema, nearDuplicateOf, normalizeMoveName, sameMoveType } from "@rg/saves";
+import type { ExtractedMove, Extraction, MatchJudgeItem, NearCandidate, NearMove } from "@rg/saves";
 import type { Env } from "../env.js";
 import { insertBatches, runAtomically, type Db } from "./db.js";
 import { messagesCostMicros } from "./llm-messages.js";
@@ -36,6 +42,7 @@ import { noteGatewayOutcome } from "./ai-credits.js";
 import { extractJson, RETRY_BACKOFF_MS, RETRYABLE_STATUSES } from "./studio-llm.js";
 import { FILTER_MODEL_DEFAULT } from "./saves-filter.js";
 import { buildPersonalRecord, loadPersonalForMatch, newPersonalMoveId, type PersonalMatchRow } from "./personal-moves.js";
+import { repairDraft } from "./personal-records.js";
 
 const { savedPosts, personalMoves, savedPostMoves } = schema;
 
@@ -70,7 +77,7 @@ export interface MatchDecision {
   /** The move linked to (library or personal); absent for a new move until it is written. */
   id?: string;
   confidence: Confidence;
-  /** "Check this" on the review screen: a match the names alone did not settle. */
+  /** "Check this" on the review screen: a match the names alone did not settle, or a new move like one the owner has. */
   check: boolean;
   /** A new move's draft: what its personal record is built from. */
   draft?: ExtractedMove;
@@ -78,6 +85,8 @@ export interface MatchDecision {
   candidates?: MatchCandidate[];
   /** A new move repeating an earlier new move of the same post (step 5): that move's position. */
   sameAs?: number;
+  /** A new move's near-duplicate among the owner's moves (steps 2 and 2b): that move's id, for "like <name>" in review. */
+  like?: string;
 }
 
 export interface MatchOutcome {
@@ -209,6 +218,19 @@ function candidatesFor(move: ExtractedMove, index: LibraryIndex, mine: readonly 
 /** A new move's flag: the extraction itself was unsure of it. */
 const unsure = (draft: ExtractedMove): boolean => draft.confidence === "low";
 
+/** A draft as the near-duplicate rule reads it: its name, the load its record would store (`repairDraft`), its dose type. */
+const nearOfDraft = (draft: ExtractedMove): NearMove => ({
+  name: draft.name,
+  load: repairDraft(draft).draft.load,
+  doseType: draft.dose.type ?? null,
+});
+const nearOfRow = (row: PersonalMatchRow): NearCandidate => ({
+  id: row.id,
+  name: row.name ?? "",
+  load: row.load ?? null,
+  doseType: row.doseType ?? null,
+});
+
 /** Step 5: a new move whose normalised name an earlier new move of the post already has becomes a link to that one. */
 function dedupeNew(decisions: readonly MatchDecision[]): MatchDecision[] {
   const first = new Map<string, number>();
@@ -236,6 +258,7 @@ export function matchMoves(
 ): MatchDecision[] {
   const lib = libraryIndex(library);
   const mine = personalIndex(personal);
+  const byId = new Map(personal.map((r) => [r.id, r]));
   const pool = personalPool(personal);
   return dedupeNew(
     extraction.moves.map((move, position): MatchDecision => {
@@ -243,7 +266,13 @@ export function matchMoves(
       const libraryId = firstHit(keys, lib.byKey);
       if (libraryId) return { position, kind: "library", id: libraryId, confidence: "high", check: false };
       const personalId = firstHit(keys, mine);
-      if (personalId) return { position, kind: "personal", id: personalId, confidence: "high", check: false };
+      if (personalId) {
+        const hit = byId.get(personalId);
+        if (hit && !sameMoveType(nearOfDraft(move), nearOfRow(hit))) {
+          return { position, kind: "new", confidence: move.confidence, check: true, draft: move, like: personalId };
+        }
+        return { position, kind: "personal", id: personalId, confidence: "high", check: false };
+      }
       const candidates = candidatesFor(move, lib, pool);
       if (candidates.length) return { position, kind: "new", confidence: "low", check: true, draft: move, candidates };
       return { position, kind: "new", confidence: move.confidence, check: unsure(move), draft: move };
@@ -271,6 +300,20 @@ export function applyVerdicts(
       return { position: d.position, kind: "new", confidence: d.draft.confidence, check: unsure(d.draft), draft: d.draft };
     }),
   );
+}
+
+/**
+ * Step 2b, after the judge: each new move not already like another (step 2) and not repeating one of the post is held to
+ * the owner's ACTIVE moves (`nearDuplicateOf`); a hit flags it "check this", like that move. A repeat's link takes its
+ * first's like when it is written.
+ */
+export function flagNearDuplicates(decisions: readonly MatchDecision[], personal: readonly PersonalMatchRow[]): MatchDecision[] {
+  const active = personal.filter((r) => r.status === "active" && r.name).map(nearOfRow);
+  return decisions.map((d) => {
+    if (d.kind !== "new" || !d.draft || d.like !== undefined || d.sameAs !== undefined) return d;
+    const hit = nearDuplicateOf(nearOfDraft(d.draft), active);
+    return hit ? { ...d, check: true, like: hit.id } : d;
+  });
 }
 
 /** What the judge is asked: each undecided move once (a repeat in the same post takes its first's answer). */
@@ -421,9 +464,10 @@ async function askJudge(
 
 /**
  * Match an `extracted` post's moves and write the outcome as pending; the post becomes `matched`. Any other status is
- * left alone (a re-run, a resubmit) and writes nothing. D1 statements: the post 1, personal moves 1, the judge 0 or 5,
- * then one transaction: new moves (10 a statement) + links (8 a statement) + the post — at most 12 moves, so ≤ 5. A
- * 12-move post with a judge call is ≤ 12 in all.
+ * left alone (a re-run, a resubmit) and writes nothing. D1 statements: the post 1, personal moves 1 (read once: the
+ * names, the candidates and the near-duplicates all come from it), the judge 0 or 5, then one transaction: new moves
+ * (10 a statement) + links (7 a statement) + the post — at most 12 moves, so ≤ 5. A 12-move post with a judge call is
+ * ≤ 12 in all.
  */
 export async function matchPost(
   db: Db,
@@ -459,7 +503,8 @@ export async function matchPost(
   const parsed = extractionSchema.safeParse(post.extraction);
   if (!parsed.success) return fail(["extraction: the stored extraction does not match the format"], 0);
 
-  let decisions = matchMoves(parsed.data, EXERCISES, await loadPersonalForMatch(db, userId));
+  const personal = await loadPersonalForMatch(db, userId);
+  let decisions = matchMoves(parsed.data, EXERCISES, personal);
   const items = judgeItems(decisions);
   let judgeCost = 0;
   if (items.length) {
@@ -467,6 +512,7 @@ export async function matchPost(
     judgeCost = judged.costMicros;
     decisions = applyVerdicts(decisions, judged.verdicts);
   }
+  decisions = flagNearDuplicates(decisions, personal);
 
   // New moves first: each record is built and checked before anything is written.
   const newIds = new Map<number, string>();
@@ -488,19 +534,25 @@ export async function matchPost(
   }
   if (issues.length) return fail(issues.slice(0, 12), judgeCost);
 
-  const linkRows: (typeof savedPostMoves.$inferInsert)[] = decisions.map((d) => ({
-    id: newId(),
-    userId,
-    postId,
-    position: d.position,
-    moveId: d.kind === "new" ? newIds.get(d.sameAs ?? d.position)! : d.id!,
-    moveKind: d.kind === "library" ? "library" : "personal",
-    batchId: null,
-    confidence: CONFIDENCE_VALUE[d.confidence],
-    checkFlag: d.check || repaired.has(d.position),
-    status: "pending",
-    createdAt: now,
-  }));
+  const byPosition = new Map(decisions.map((d) => [d.position, d]));
+  const linkRows: (typeof savedPostMoves.$inferInsert)[] = decisions.map((d) => {
+    // A repeat in the post is the same new move: its link is like what its first's is.
+    const likeMoveId = d.like ?? (d.sameAs !== undefined ? byPosition.get(d.sameAs)?.like : undefined) ?? null;
+    return {
+      id: newId(),
+      userId,
+      postId,
+      position: d.position,
+      moveId: d.kind === "new" ? newIds.get(d.sameAs ?? d.position)! : d.id!,
+      moveKind: d.kind === "library" ? "library" : "personal",
+      batchId: null,
+      confidence: CONFIDENCE_VALUE[d.confidence],
+      checkFlag: d.check || repaired.has(d.position) || likeMoveId !== null,
+      status: "pending",
+      likeMoveId,
+      createdAt: now,
+    };
+  });
   // A move or link already there (the same post matched before) is kept as it stands: an import never rewrites a
   // personal move, edited by the owner or not; later posts only add links.
   await runAtomically(db, [
