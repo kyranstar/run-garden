@@ -453,9 +453,11 @@ export const CREATE_AT_TIME_COST = 1 + DAY_READS + 1 + 4;
 /** A new workout placed at the athlete's window, before the rows its day's collision pass moves: its key's read, its
  * day, the restore check, the batch (programme, row, revision) and the pass's two reads. */
 export const CREATE_PLACED_BASE = 1 + DAY_READS + 1 + 3 + 2;
-/** A revision, before the rows its day's collision pass moves: the row, its day, the restore check, the update and its
- * revision, the read after, the pass's two reads, and whether the watch holds an older copy (two). */
-export const REVISE_BASE = 1 + DAY_READS + 1 + 2 + 1 + 2 + 2;
+/** A revision, before the rows its day's collision pass moves: the row, its day, the restore check, the update, an
+ * adopted row's stage rows' delete and the revision, the read after, the pass's two reads, and whether the watch holds
+ * an older copy (two — adopting a row on the watch, the stamp its copy is held under is read instead: the copy it now
+ * holds answers the question with no read). */
+export const REVISE_BASE = 1 + DAY_READS + 1 + 3 + 1 + 2 + 2;
 /**
  * A DESIGNED RUN (§8 §3, `createDesignedRun`): its key's read, its day, the athlete's running (one read), the restore
  * check, the batch's programme, row and revision — and its stage rows' inserts (`stageInsertCount`), a pinned time's

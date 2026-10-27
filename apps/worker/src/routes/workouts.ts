@@ -86,7 +86,8 @@ export function refusal(c: Context<AppContext>, e: unknown): Response {
   if (e instanceof StartedTodayError) return c.json({ error: "started_today", workout: e.workout }, 409);
   if (e instanceof RunUnsupportedError) return c.json({ error: "run_unsupported", message: "Runs can't be planned in the Studio yet." }, 422);
   if (e instanceof DocWorkoutNotFoundError) return c.json({ error: "not_found" }, 404);
-  if (e instanceof NotEditableError) return c.json({ error: "not_editable" }, 409);
+  // Why it can't be revised, and what to do instead (workout-editability spec §3): never only a refusal.
+  if (e instanceof NotEditableError) return c.json({ error: "not_editable", cause: e.reason, why: e.why, instead: e.instead }, 409);
   if (e instanceof StaleRevisionError) return c.json({ error: "stale_revision", rev: e.rev }, 409);
   if (e instanceof RestoreInProgressError) return c.json({ error: "restore_in_progress" }, 423);
   throw e;

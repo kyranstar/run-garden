@@ -18,26 +18,45 @@
  * revision row, in the same batch (`workout-doc-store.ts`), labelled by the row's origin unless a server caller says
  * otherwise (the client never labels its own revision).
  *
- * REVISING ONE (`reviseDocWorkout`). Only a document workout's own document, and only while it is still to be done:
- * a programme's session (the engine builds it), a completed, skipped or missed row, and a session already started are
- * `NotEditableError`; a base revision that is not the row's current one is `StaleRevisionError` — never a silent
- * overwrite, and the update itself re-checks both, so a write that lands in between still wins. The same document
- * again is no new revision. `watchHasOlder`: the watch holds (or is being sent) a copy built from another revision —
- * the athlete is offered "Send the new version". A new length runs the day's collision pass (a pinned time stays); the
- * answer carries the row's date and time as they then are.
+ * REVISING ONE (`reviseDocWorkout`). Any planned workout is revisable unless there is a clear reason (workout-editability
+ * spec §3, `revisability` in @rg/domain): its day has passed, it is resolved or under way, it is race day or a rest day,
+ * a programme's session (the engine builds it), or a run — each `NotEditableError` with its reason, why and what to do
+ * instead; a base revision that is not the row's current one is `StaleRevisionError` — never a silent overwrite, and the
+ * update itself re-checks them, so a write that lands in between still wins. A revisable row whose origin is not
+ * app-authored — a coach session or a COROS-plan import, whose truth was its stage rows — is ADOPTED in the same atomic
+ * write: it becomes a Studio document workout (`adoptionColumns`), its stage rows deleted, its plan and its watch address
+ * kept. The same document again is no new revision. `watchHasOlder`: the watch holds (or is being sent) a copy built
+ * from another revision, or a copy the app did not push from a build (an adopted row's) — the athlete is offered "Send
+ * the new version". A new length runs the day's collision pass (a pinned time stays); the answer carries the row's date
+ * and time as they then are.
  *
  * Every user-scoped; a write is refused while a restore is replacing the account (`RestoreInProgressError`).
  */
 import type { RunWire } from "@rg/domain";
-import { and, eq, inArray, isNull, ne, notExists, notInArray, or, sql } from "drizzle-orm";
-import { corosWriteJobs, exercisePrefs, performedSessions, plannedWorkouts, programs, scheduleOverrides, sessionBuilds, userConditions, workoutTemplates } from "@rg/database";
+import { and, eq, exists, inArray, isNull, ne, notExists, notInArray, or, sql } from "drizzle-orm";
+import {
+  corosWriteJobs,
+  exercisePrefs,
+  performedSessions,
+  plannedWorkoutStages,
+  plannedWorkouts,
+  programs,
+  scheduleOverrides,
+  sessionBuilds,
+  userConditions,
+  workoutTemplates,
+} from "@rg/database";
 import {
   addDays,
   DOC_ORIGINS,
   docOriginRow,
   newId,
   parseStoredWorkoutDoc,
+  revisability,
+  watchAddressOf,
   workoutDocSchema,
+  type Revisability,
+  type RevisabilityReason,
   type UserPreferences,
   type WorkoutDoc,
 } from "@rg/domain";
@@ -47,6 +66,7 @@ import { deriveDoc, makeLibraryIndex, QUICK_START_KINDS, validateWorkoutDoc, typ
 import { sha256Hex } from "../auth/crypto.js";
 import { libraryForDocs, loadAccountLibrary } from "./account-library.js";
 import { restoreInProgress } from "./account-state.js";
+import { recordedStampFor } from "./coros-stamp.js";
 import { runAtomically, type Db } from "./db.js";
 import { judgeDoc } from "./doc-build.js";
 import { separateDayCollisions, windowTimeFor } from "./day-placement.js";
@@ -142,10 +162,19 @@ export class DocWorkoutNotFoundError extends Error {
   }
 }
 
-/** Not a document workout, or no longer to be done (resolved, or under way). */
+/**
+ * A workout that cannot be revised (workout-editability spec §3): `revisability`'s reason, what the athlete reads
+ * (`why`), and what they — or the coach — can do about it (`instead`).
+ */
 export class NotEditableError extends Error {
-  constructor() {
+  readonly reason: RevisabilityReason;
+  readonly why: string;
+  readonly instead: string;
+  constructor(r: Extract<Revisability, { ok: false }>) {
     super("not_editable");
+    this.reason = r.reason;
+    this.why = r.why;
+    this.instead = r.instead;
   }
 }
 
@@ -567,11 +596,27 @@ export async function createDocWorkout(
   return { workout: dtoOf({ ...row, effectiveTime: time }, doc, derived.estimatedMinutes), warnings };
 }
 
+/** A push the lane has claimed: on its way to the watch this moment (a queued one is only cancelled). */
+const PUSH_UNDER_WAY = ["claimed", "in_progress", "verifying"] as const;
+
+/**
+ * What the watch holds of a row beside a copy pushed from a session build, as the read after a revise sees it: the name
+ * of a copy an adopted row took over (`watchCopyName`), and whether a coach create the lane has already claimed is on
+ * its way (a queued one is superseded at claim once the row is app-authored, coros-write-cloud.ts; a claimed one can
+ * still land the old session — spec §3, M8).
+ */
+interface HeldCopy {
+  watchCopyName: string | null;
+  createInFlight: boolean;
+}
+
 /**
  * The watch holds — or is being sent — a copy of this row built from a revision other than `rev` (a document build
- * names its revision, `fromDoc.rev`).
+ * names its revision, `fromDoc.rev`), or a copy the app did not push from a build at all (`HeldCopy`): either is older
+ * than the document now stored. The held copy is read with the row after the write, so it costs no statement here.
  */
-async function watchHoldsOlder(db: Db, workoutId: string, rev: number | null): Promise<boolean> {
+async function watchHoldsOlder(db: Db, workoutId: string, rev: number | null, held: HeldCopy): Promise<boolean> {
+  if (held.watchCopyName !== null || held.createInFlight) return true;
   const sent = await sentBuildIdOf(db, workoutId);
   if (!sent) return false;
   const [build] = await db
@@ -582,10 +627,79 @@ async function watchHoldsOlder(db: Db, workoutId: string, rev: number | null): P
   return (build?.rev ?? null) !== rev;
 }
 
+/** The fields `revisability` reads of a row, and its stored document's text. */
+type RevisableRow = Pick<
+  typeof plannedWorkouts.$inferSelect,
+  "origin" | "category" | "sport" | "completionState" | "contentState" | "effectiveDate"
+> & { workoutDoc: string | null };
+
 /**
- * `PUT /api/workouts/:id/doc`: a new revision of a document workout (see the header). `calendarChanged`: its title,
- * category or booked length moved — what its event shows. Throws `DocWorkoutNotFoundError`, `NotEditableError`,
- * `StaleRevisionError`, `DocInvalidError`, `RestoreInProgressError`.
+ * `revisability` of a row as read: its stored document, when there is one, says whether it is a run — derived in the
+ * account's library, as `validated` derives one (one statement, once a request: the revise reads it anyway).
+ */
+async function revisabilityOf(db: Db, userId: string, row: RevisableRow, today: string): Promise<Revisability> {
+  const stored = parseStoredWorkoutDoc(row.workoutDoc);
+  const isRun = stored ? deriveDoc(stored, (await loadAccountLibrary(db, userId)).all).discipline === "run" : null;
+  return revisability(
+    {
+      origin: row.origin,
+      category: row.category,
+      sport: row.sport,
+      completionState: row.completionState,
+      contentState: row.contentState,
+      effectiveDate: row.effectiveDate,
+      hasDoc: stored !== null,
+      isRun,
+    },
+    today,
+  );
+}
+
+/** What an adopted row becomes: a Studio document workout. */
+const ADOPTED_ORIGIN = "studio" satisfies (typeof DOC_ORIGINS)[number];
+
+/**
+ * ADOPTION (workout-editability spec §3): the columns a revise writes, in the same UPDATE as the document, when it takes
+ * over a revisable row whose origin is not app-authored — a coach session or a COROS-plan import, whose truth was its
+ * stage rows, `structured_json` and the copy on the watch. It becomes a Studio document workout: origin `studio`; every
+ * content column `createDocWorkout` writes as null cleared (its stage rows are deleted in the same batch); its fingerprint
+ * set as `createDocWorkout` sets it, to its origin. Its plan and its watch address are not touched: an adopted row stays
+ * in its plan, and the copy on the watch now belongs to it, held under `copyName` — never over a name already recorded.
+ */
+function adoptionColumns(copyName: string | null) {
+  return {
+    origin: ADOPTED_ORIGIN,
+    structuredJson: null,
+    stageSummary: null,
+    expectedDistanceMeters: null,
+    qualitySubtype: null,
+    sourceEstimatedDurationSeconds: null,
+    durationEstimate: null,
+    sourceVersion: null,
+    sourceContentFingerprint: ADOPTED_ORIGIN,
+    watchCopyName: sql<string | null>`coalesce(${plannedWorkouts.watchCopyName}, ${copyName})`,
+  };
+}
+
+/**
+ * The program name the watch holds an adopted row's copy under (spec §4) — only for a row with a watch address, as the
+ * unpush reads one (`unpushInsertIfOurs`): with none, nothing on the watch is this row's to name. The stamp the app last
+ * wrote for a coach row (`recordedStampFor`), else the row's title: an imported row's title is the wire's own name.
+ */
+async function heldCopyName(
+  db: Db,
+  userId: string,
+  row: Pick<typeof plannedWorkouts.$inferSelect, "id" | "title" | "sourceWorkoutId" | "sourceIdInPlan" | "sourceProgramId" | "lastVerifiedCorosDate">,
+): Promise<string | null> {
+  if (!watchAddressOf(row)) return null;
+  return (await recordedStampFor(db, userId, row.id)) ?? row.title;
+}
+
+/**
+ * `PUT /api/workouts/:id/doc`: a new revision of a workout's document, adopting a watch-shaped row (see the header).
+ * `calendarChanged`: its title, category or booked length moved — what its event shows. Throws
+ * `DocWorkoutNotFoundError`, `NotEditableError`, `StaleRevisionError`, `DocInvalidError`, `RunUnsupportedError`,
+ * `RestoreInProgressError`.
  */
 export async function reviseDocWorkout(
   db: Db,
@@ -608,20 +722,31 @@ export async function reviseDocWorkout(
       contentState: pw.contentState,
       completionState: pw.completionState,
       workoutDocRev: pw.workoutDocRev,
+      workoutDoc: sql<string | null>`${pw.workoutDoc}`,
       calendarBlockDurationSeconds: pw.calendarBlockDurationSeconds,
       archivedAt: pw.archivedAt,
+      sourceWorkoutId: pw.sourceWorkoutId,
+      sourceIdInPlan: pw.sourceIdInPlan,
+      sourceProgramId: pw.sourceProgramId,
+      lastVerifiedCorosDate: pw.lastVerifiedCorosDate,
+      watchCopyName: pw.watchCopyName,
     })
     .from(pw)
     .where(and(eq(pw.id, workoutId), eq(pw.userId, userId)))
     .limit(1);
   if (!row || row.archivedAt) throw new DocWorkoutNotFoundError();
-  const frozen = (FROZEN_STATES as readonly string[]).includes(row.completionState);
-  const underWay = (LOCKED_CONTENT as readonly (string | null)[]).includes(row.contentState);
-  if (!docOriginRow(row) || frozen || underWay) throw new NotEditableError();
+  // Refused before the document is judged: the row decides (its day, its state, its kind), never the draft.
+  const verdict = await revisabilityOf(db, userId, row, ctx.today);
+  if (!verdict.ok) throw new NotEditableError(verdict);
   if ((row.workoutDocRev ?? 0) !== input.baseRev) throw new StaleRevisionError(row.workoutDocRev ?? null);
 
   const { doc, derived, warnings } = await validated(db, userId, input.doc, { date: row.effectiveDate, today: ctx.today, workoutId });
   if (await restoreInProgress(db, userId)) throw new RestoreInProgressError();
+  // Adopted (a coach session, a COROS-plan import): decided by this read — the update's guard still holds its revision,
+  // and every write that could change its origin moves the revision on. The same document again adopts it too: the
+  // revise is a taking-over, not only an edit. The name its copy is held under is read now, before the batch.
+  const adopting = verdict.adopts;
+  const copyName = adopting && row.watchCopyName === null ? await heldCopyName(db, userId, row) : null;
 
   // Its length is the document's own; the calendar books the rounded block (I4).
   const seconds = derived.estimatedMinutes * 60;
@@ -639,6 +764,7 @@ export async function reviseDocWorkout(
         calendarBlockDurationSeconds: booked,
         // The event shows the title and the length: a written one is asked to update.
         calendarSyncState: sql`case when ${pw.calendarSyncState} = 'synced' and (${pw.title} is not ${doc.title} or ${pw.calendarBlockDurationSeconds} is not ${booked} or ${pw.category} is not ${derived.category}) then 'pending' else ${pw.calendarSyncState} end`,
+        ...(adopting ? adoptionColumns(copyName) : {}),
         updatedAt: ctx.now,
       })
       .where(
@@ -646,23 +772,63 @@ export async function reviseDocWorkout(
           eq(pw.id, workoutId),
           eq(pw.userId, userId),
           isNull(pw.archivedAt),
-          inArray(pw.origin, [...DOC_ORIGINS]),
+          // Never a programme's session (the engine builds it). Any other origin — NULL included, which `NOT IN` alone
+          // would refuse (NULL NOT IN (…) is NULL in SQLite: spec M2) — takes the revise.
+          or(isNull(pw.origin), notInArray(pw.origin, ["program", "on_demand"])),
           sql`coalesce(${pw.workoutDocRev}, 0) = ${input.baseRev}`,
           notInArray(pw.completionState, [...FROZEN_STATES]),
           or(isNull(pw.contentState), notInArray(pw.contentState, [...LOCKED_CONTENT])),
         ),
       ),
+    // An adopted row's stage rows described the session it was: its document is its content now. Only once the update
+    // above has landed (the row is a document workout as this statement reads it): an update its guard refused leaves
+    // the row watch-shaped, and its stage rows are still its truth. Never a statement for a row not being adopted.
+    ...(adopting
+      ? [
+          db
+            .delete(plannedWorkoutStages)
+            .where(
+              and(
+                eq(plannedWorkoutStages.workoutId, workoutId),
+                exists(db.select({ id: pw.id }).from(pw).where(and(eq(pw.id, workoutId), eq(pw.userId, userId), inArray(pw.origin, [...DOC_ORIGINS])))),
+              ),
+            ),
+        ]
+      : []),
     revisionInsert(db, { userId, workoutId, sourceKind: source.sourceKind ?? "athlete_edit", sourceRef: source.sourceRef ?? null, now: ctx.now }),
   ]);
   const [after] = await db
-    .select({ workoutDoc: pw.workoutDoc, workoutDocRev: pw.workoutDocRev })
+    .select({
+      workoutDoc: pw.workoutDoc,
+      workoutDocRev: pw.workoutDocRev,
+      origin: pw.origin,
+      category: pw.category,
+      sport: pw.sport,
+      completionState: pw.completionState,
+      contentState: pw.contentState,
+      effectiveDate: pw.effectiveDate,
+      archivedAt: pw.archivedAt,
+      watchCopyName: pw.watchCopyName,
+      createInFlight: sql<number>`exists (select 1 from ${corosWriteJobs} where ${and(
+        eq(corosWriteJobs.userId, userId),
+        eq(corosWriteJobs.workoutId, workoutId),
+        eq(corosWriteJobs.kind, "coach_create_workout"),
+        inArray(corosWriteJobs.status, [...PUSH_UNDER_WAY]),
+      )})`,
+    })
     .from(pw)
     .where(and(eq(pw.id, workoutId), eq(pw.userId, userId)))
     .limit(1);
-  if (!after || after.workoutDoc !== text) {
-    // Another write landed between the read and this one: say what stopped this one.
-    if (after && (after.workoutDocRev ?? 0) !== input.baseRev) throw new StaleRevisionError(after.workoutDocRev ?? null);
-    throw new NotEditableError();
+  if (!after || after.workoutDoc !== text || (adopting && !docOriginRow(after))) {
+    // Another write landed between the read and this one: say what stopped this one. The row gone is not found; a base
+    // moved on is stale; else the row, read again as it now is, says why it can no longer be revised. One that still
+    // reads revisable lost a pure race (its guard met a state that has since moved back, or an adoption that did not
+    // land): stale, so the caller reads it again — never a reason that is not the row's.
+    if (!after || after.archivedAt) throw new DocWorkoutNotFoundError();
+    if ((after.workoutDocRev ?? 0) !== input.baseRev) throw new StaleRevisionError(after.workoutDocRev ?? null);
+    const now = await revisabilityOf(db, userId, after, ctx.today);
+    if (!now.ok) throw new NotEditableError(now);
+    throw new StaleRevisionError(after.workoutDocRev ?? null);
   }
   // A new length can overlap the day's other plans: the collision pass (a pinned time stays), and the time it leaves.
   const moved = booked !== row.calendarBlockDurationSeconds
@@ -672,6 +838,7 @@ export async function reviseDocWorkout(
   const workout = dtoOf(
     {
       ...row,
+      origin: after.origin,
       effectiveTime: moved.find((m) => m.workoutId === workoutId)?.to ?? row.effectiveTime,
       title: doc.title,
       category: derived.category,
@@ -682,11 +849,9 @@ export async function reviseDocWorkout(
     derived.estimatedMinutes,
   );
   const calendarChanged = row.title !== doc.title || row.calendarBlockDurationSeconds !== booked || row.category !== derived.category;
-  return { workout, rev, watchHasOlder: await watchHoldsOlder(db, workoutId, rev), warnings, calendarChanged };
+  const held = { watchCopyName: after.watchCopyName, createInFlight: Boolean(after.createInFlight) };
+  return { workout, rev, watchHasOlder: await watchHoldsOlder(db, workoutId, rev, held), warnings, calendarChanged };
 }
-
-/** A push the lane has claimed: on its way to the watch this moment (a queued one is only cancelled). */
-const PUSH_UNDER_WAY = ["claimed", "in_progress", "verifying"] as const;
 
 /**
  * `DELETE /api/workouts/:id`: a Studio or template workout never started — no session saved or begun, nothing on its

@@ -474,6 +474,20 @@ describe("POST /api/workouts with the draft's clientId: a retry never makes a se
 });
 
 describe("PUT /api/workouts/:id/doc", () => {
+  /** A refusal's cause, why and instead (workout-editability spec §3's table, verbatim). */
+  const REFUSED = {
+    completed: { cause: "resolved", why: "It's already done.", instead: "Propose a new workout." },
+    skipped: { cause: "resolved", why: "It was skipped.", instead: "Propose a new workout." },
+    missed: { cause: "resolved", why: "It was missed.", instead: "Propose a new workout." },
+    under_way: { cause: "under_way", why: "It's under way.", instead: "Propose one for later." },
+    programme: {
+      cause: "programme",
+      why: "It's a programme's session: the programme builds it on the day.",
+      instead:
+        "Put moves in its pool with pin_moves, change the programme with change_programme, or propose a new workout for that day and skip the slot with adjust_plan.",
+    },
+  } as const;
+
   async function created(date = addDays(today, 1), doc: WorkoutDoc = calmDoc()): Promise<string> {
     const res = await call("POST", "/api/workouts", { date, doc });
     expect(res.status).toBe(201);
@@ -569,28 +583,28 @@ describe("PUT /api/workouts/:id/doc", () => {
       ]);
     });
 
-    it("the workout resolved: 409 not_editable, its document and its fields kept", async () => {
+    it("the workout resolved: 409 not_editable (resolved), its document and its fields kept", async () => {
       const id = await created(today);
       armed(() => sqlite().prepare("update planned_workouts set completion_state = 'completed' where id = ?").run(id));
       const res = await call("PUT", `/api/workouts/${id}/doc`, { doc: calmDoc({ title: "Too late" }), baseRev: 1 });
-      expect(res).toEqual({ status: 409, body: { error: "not_editable" } });
+      expect(res).toEqual({ status: 409, body: { error: "not_editable", ...REFUSED.completed } });
       expect(await rowOf(id)).toMatchObject({ title: "Hips and back", workoutDocRev: 1, completionState: "completed" });
       expect(await revisionsOf(id)).toHaveLength(1);
     });
 
-    it("the session started: 409 not_editable, its document and its fields kept", async () => {
+    it("the session started: 409 not_editable (under_way), its document and its fields kept", async () => {
       const id = await created(today);
       armed(() => sqlite().prepare("update planned_workouts set content_state = 'started' where id = ?").run(id));
       const res = await call("PUT", `/api/workouts/${id}/doc`, { doc: calmDoc({ title: "Mid-way" }), baseRev: 1 });
-      expect(res).toEqual({ status: 409, body: { error: "not_editable" } });
+      expect(res).toEqual({ status: 409, body: { error: "not_editable", ...REFUSED.under_way } });
       expect(await rowOf(id)).toMatchObject({ title: "Hips and back", workoutDocRev: 1 });
     });
 
-    it("the row no longer a document workout: 409 not_editable, its fields kept", async () => {
+    it("the row made a programme's session: 409 not_editable (programme), its fields kept", async () => {
       const id = await created(today);
       armed(() => sqlite().prepare("update planned_workouts set origin = 'program' where id = ?").run(id));
       const res = await call("PUT", `/api/workouts/${id}/doc`, { doc: calmDoc({ title: "Not mine" }), baseRev: 1 });
-      expect(res).toEqual({ status: 409, body: { error: "not_editable" } });
+      expect(res).toEqual({ status: 409, body: { error: "not_editable", ...REFUSED.programme } });
       expect(await rowOf(id)).toMatchObject({ title: "Hips and back", workoutDocRev: 1 });
     });
   });
@@ -601,16 +615,16 @@ describe("PUT /api/workouts/:id/doc", () => {
 
     it("a programme's session", async () => {
       await seedProgramRow("slot-2", addDays(today, 1));
-      expect((await call("PUT", "/api/workouts/slot-2/doc", { doc: broken(), baseRev: 1 })).body).toEqual({ error: "not_editable" });
+      expect((await call("PUT", "/api/workouts/slot-2/doc", { doc: broken(), baseRev: 1 })).body).toEqual({ error: "not_editable", ...REFUSED.programme });
     });
 
     it("a completed workout, and a session under way", async () => {
       const done = await created(today);
       await db.update(plannedWorkouts).set({ completionState: "completed" }).where(eq(plannedWorkouts.id, done));
-      expect((await call("PUT", `/api/workouts/${done}/doc`, { doc: broken(), baseRev: 1 })).body).toEqual({ error: "not_editable" });
+      expect((await call("PUT", `/api/workouts/${done}/doc`, { doc: broken(), baseRev: 1 })).body).toEqual({ error: "not_editable", ...REFUSED.completed });
       const going = await created(today);
       await db.update(plannedWorkouts).set({ contentState: "started" }).where(eq(plannedWorkouts.id, going));
-      expect((await call("PUT", `/api/workouts/${going}/doc`, { doc: broken(), baseRev: 1 })).body).toEqual({ error: "not_editable" });
+      expect((await call("PUT", `/api/workouts/${going}/doc`, { doc: broken(), baseRev: 1 })).body).toEqual({ error: "not_editable", ...REFUSED.under_way });
     });
 
     it("a stale base", async () => {
@@ -620,28 +634,28 @@ describe("PUT /api/workouts/:id/doc", () => {
     });
   });
 
-  it("409 not_editable for a programme's own session", async () => {
+  it("409 not_editable (programme) for a programme's own session, with why and what to do instead", async () => {
     await seedProgramRow("slot-1", addDays(today, 1));
     const res = await call("PUT", "/api/workouts/slot-1/doc", { doc: calmDoc({ title: "Mine now" }), baseRev: 1 });
     expect(res.status).toBe(409);
-    expect(res.body).toEqual({ error: "not_editable" });
+    expect(res.body).toEqual({ error: "not_editable", ...REFUSED.programme });
     expect((await rowOf("slot-1")).title).toBe("Mobility");
   });
 
-  it.each(["completed", "skipped", "missed"] as const)("409 not_editable for a %s workout", async (state) => {
+  it.each(["completed", "skipped", "missed"] as const)("409 not_editable (resolved) for a %s workout, its why following the state", async (state) => {
     const id = await created(today);
     await db.update(plannedWorkouts).set({ completionState: state }).where(eq(plannedWorkouts.id, id));
     const res = await call("PUT", `/api/workouts/${id}/doc`, { doc: calmDoc({ title: "Too late" }), baseRev: 1 });
     expect(res.status).toBe(409);
-    expect(res.body).toEqual({ error: "not_editable" });
+    expect(res.body).toEqual({ error: "not_editable", ...REFUSED[state] });
     expect((await rowOf(id)).workoutDocRev).toBe(1);
     expect(await revisionsOf(id)).toHaveLength(1);
   });
 
-  it("409 not_editable once the session has started", async () => {
+  it("409 not_editable (under_way) once the session has started", async () => {
     const id = await created(today);
     await db.update(plannedWorkouts).set({ contentState: "started" }).where(eq(plannedWorkouts.id, id));
-    expect((await call("PUT", `/api/workouts/${id}/doc`, { doc: calmDoc({ title: "Mid-way" }), baseRev: 1 })).body).toEqual({ error: "not_editable" });
+    expect((await call("PUT", `/api/workouts/${id}/doc`, { doc: calmDoc({ title: "Mid-way" }), baseRev: 1 })).body).toEqual({ error: "not_editable", ...REFUSED.under_way });
   });
 
   it("404 for another user's workout, an archived one, or none", async () => {
