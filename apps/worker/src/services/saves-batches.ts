@@ -1,8 +1,10 @@
 /**
- * BATCHES (saved-posts import, Task 8; spec §4 calls 8–9, §6). Matched posts wait, unbatched, until a check finishes;
- * then `assembleBatch` gathers them into one batch — at most one released per `BATCH_GAP_MS`, so the coach brings the
- * saves up at most once a day and a week's saves after a gap arrive as one batch with one notice. While
- * `SAVES_HOLD_BATCHES` is "1" a batch is created `held` (the bootstrap's batches wait for the lead's curation).
+ * BATCHES (saved-posts import, Task 8; spec §4 calls 8–9, §6; the saves flow redesigned, 2026-10-26: §5, §12.3,
+ * §12.4). Matched posts wait, unbatched, until a check finishes; then `assembleBatch` cuts one batch from them — but
+ * only while no batch is open (`openBatchSql`: released or saved, neither fitted in nor dismissed), so the owner's own
+ * action is the gate and there is one batch to answer at a time. A batch takes the oldest posts first and at most
+ * `BATCH_NEW_MAX` new moves; the rest wait for the next one. While `SAVES_HOLD_BATCHES` is "1" a batch is created
+ * `held` (the bootstrap's batches wait for the lead's curation).
  *
  * Nothing in a batch is usable until the owner saves it: its new moves stay `pending` and its links `pending`, and
  * `exercise_provenance` (what the Studio's "from your saves", the engine's bonus and the coach's "saved" read) is
@@ -12,17 +14,37 @@ import { and, eq, getTableColumns, isNull, sql, type SQL } from "drizzle-orm";
 import { schema } from "@rg/database";
 import { newId, todayInZone } from "@rg/domain";
 import type { ExerciseRecord } from "@rg/exercise-library";
-import { batchNotice, type SaveBatchInsightDto } from "@rg/saves";
+import { batchNotice, nearDuplicateOf, type NearCandidate, type SaveBatchInsightDto } from "@rg/saves";
 import type { Env } from "../env.js";
 import { forgetAccountLibrary } from "./account-library.js";
 import { SAVED_POST_SOURCE } from "./coach-memory.js";
 import { runAtomically, type Db } from "./db.js";
 import { EARLIEST_ZONE, liveMemoryWhere } from "./memory-core.js";
+import { loadPersonalForMatch } from "./personal-moves.js";
 
 const { savedPosts, savedPostMoves, personalMoves, saveBatches, exerciseProvenance, coachMemory } = schema;
 
-/** The least time between two released batches. */
-export const BATCH_GAP_MS = 20 * 3_600_000;
+/** The most new moves one batch brings (spec §5). Moves the owner already has ride along with their posts. */
+export const BATCH_NEW_MAX = 12;
+
+/** How long a fit that began reads as still at work (spec §12.1); past it, the batch offers "Fit them in" again. */
+export const FIT_STARTED_TTL_MS = 3_600_000;
+
+/** A batch's fit is at work: it began less than `FIT_STARTED_TTL_MS` ago. */
+export function isFitting(fitStartedAt: string | null, now: string): boolean {
+  return fitStartedAt !== null && Date.parse(now) - Date.parse(fitStartedAt) < FIT_STARTED_TTL_MS;
+}
+
+/**
+ * An OPEN batch, over `alias` (a `save_batches` alias): released or saved, neither fitted in nor dismissed (spec §4).
+ * While an account has one, no other batch of its is cut (`assembleBatch`) or released (`releaseBatch`).
+ */
+export function openBatchSql(alias: string): SQL {
+  const a = sql.raw(alias);
+  return sql`(${a}.status in ('released','saved') and ${a}.fitted_at is null and ${a}.dismissed_at is null)`;
+}
+
+const textOrNull = (v: unknown): string | null => (typeof v === "string" ? v : null);
 
 const parseList = (raw: unknown): string[] => {
   if (Array.isArray(raw)) return raw.filter((x): x is string => typeof x === "string");
@@ -36,11 +58,12 @@ const parseList = (raw: unknown): string[] => {
 };
 
 /**
- * The batch's notice from its moves, as `batchNotice` words it: a move is new when it is a personal move this batch
- * brings — its `batch_id` this batch's, or (a batch being assembled, before the stamp) a pending move no batch brought
- * yet — and not merged; one the owner already had otherwise (the library's, a personal move saved before, or a pending
- * one an earlier batch brought). The review's own rule (`BORN_HERE`, saves-review.ts), so the notice and the page agree.
- * Each move counts once.
+ * The batch's notice from its moves, as `batchNotice` words it: a move is new when it is a personal move, not merged,
+ * that this batch brought (its `batch_id` this batch's) or that is still `pending` — not yet the owner's, whichever
+ * batch brought it (spec §12.3: a pending move an earlier, dismissed batch brought is new again here, never "had"; and
+ * a batch being assembled, before the stamp, reads its pending moves as new). One the owner already had otherwise (the
+ * library's, a personal move saved before). The review's own rule (`NEW_IN_BATCH`, saves-review.ts), so the notice and
+ * the page agree. Each move counts once.
  */
 export function noticeOf(
   rows: readonly {
@@ -58,9 +81,7 @@ export function noticeOf(
   for (const r of rows) {
     if (!r.moveId) continue;
     const born =
-      r.moveKind === "personal" &&
-      r.moveStatus !== "merged" &&
-      (r.moveBatchId === batchId || (r.moveBatchId === null && r.moveStatus === "pending"));
+      r.moveKind === "personal" && r.moveStatus !== "merged" && (r.moveBatchId === batchId || r.moveStatus === "pending");
     if (born) {
       if (!fresh.has(r.moveId)) {
         fresh.set(r.moveId, {
@@ -74,18 +95,26 @@ export function noticeOf(
 }
 
 /**
- * Gather the account's matched, unbatched posts into a new batch. Null — and nothing written — when a batch was
- * released less than `BATCH_GAP_MS` ago, or no waiting post brought a move. A released batch carries its notice; a held
- * one gets it on release. The batch is stamped on its posts, their pending links and the pending personal moves those
- * links made; the batch row itself is written only if a post took it (two finishes at once make one batch).
- * D1 statements: the gate 1, the waiting moves 1, then one transaction of 4. ≤ 6.
+ * Cut the account's next batch from its matched, unbatched posts (spec §5). Null — and nothing written — while a
+ * batch is open (`openBatchSql`), or when the posts it would take bring no new move (posts of only moves the owner has
+ * wait, to ride with the next new one). The posts are taken in the order they came in (first seen, then id) while the
+ * new moves they bring number at most `BATCH_NEW_MAX` — a new move is a pending personal move, counted once however
+ * many posts show it; the oldest post is always taken, whole — and the rest wait for the next batch. A pending move an
+ * earlier, dismissed batch brought is new here too (`noticeOf`).
+ *
+ * Near-duplicates are flagged at the cut (spec §12.4): each new move, in the posts' order, is held to the account's
+ * active personal moves and then to the batch's earlier new moves (`nearDuplicateOf`); a hit marks the move's pending
+ * links of this batch `check_flag`, with `like_move_id` the move it is like — every hit in ONE statement.
+ *
+ * A released batch carries its notice; a held one gets it on release. The batch is stamped on the posts it took, their
+ * pending links and the pending personal moves those links made that no batch brought yet; the batch row itself is
+ * written only if a post took it (two finishes at once make one batch).
+ * D1 statements: the gate 1, the waiting rows 1, the account's personal moves 1, then one transaction of 4 — and 1
+ * more in it when the cut flags a near-duplicate. 7, or 8.
  */
 export async function assembleBatch(db: Db, env: Env, userId: string, now: string): Promise<string | null> {
-  const [last] = await db
-    .select({ at: sql<string | null>`max(${saveBatches.releasedAt})` })
-    .from(saveBatches)
-    .where(eq(saveBatches.userId, userId));
-  if (last?.at && Date.parse(now) - Date.parse(last.at) < BATCH_GAP_MS) return null;
+  const open = await db.all(sql`select 1 from save_batches o where o.user_id = ${userId} and ${openBatchSql("o")} limit 1`);
+  if (open.length) return null;
 
   const waiting = await db
     .select({
@@ -94,6 +123,9 @@ export async function assembleBatch(db: Db, env: Env, userId: string, now: strin
       moveKind: savedPostMoves.moveKind,
       moveStatus: personalMoves.status,
       moveBatchId: personalMoves.batchId,
+      name: sql<unknown>`json_extract(${personalMoves.record}, '$.name')`,
+      load: sql<unknown>`json_extract(${personalMoves.record}, '$.load')`,
+      doseType: sql<unknown>`json_extract(${personalMoves.record}, '$.dose.type')`,
       regions: sql<unknown>`json_extract(${personalMoves.record}, '$.regions')`,
       contraction: sql<unknown>`json_extract(${personalMoves.record}, '$.contraction')`,
     })
@@ -103,12 +135,44 @@ export async function assembleBatch(db: Db, env: Env, userId: string, now: strin
       and(eq(savedPostMoves.postId, savedPosts.id), eq(savedPostMoves.userId, userId), eq(savedPostMoves.status, "pending")),
     )
     .leftJoin(personalMoves, and(eq(personalMoves.id, savedPostMoves.moveId), eq(personalMoves.userId, userId)))
-    .where(and(eq(savedPosts.userId, userId), eq(savedPosts.status, "matched"), isNull(savedPosts.batchId)));
-  if (!waiting.some((r) => r.moveId)) return null;
+    .where(and(eq(savedPosts.userId, userId), eq(savedPosts.status, "matched"), isNull(savedPosts.batchId)))
+    .orderBy(savedPosts.firstSeenAt, savedPosts.id, savedPostMoves.position);
+
+  // Each post's new moves, the posts in the order they came in.
+  const byPost = new Map<string, Map<string, NearCandidate>>();
+  for (const r of waiting) {
+    let own = byPost.get(r.postId);
+    if (!own) byPost.set(r.postId, (own = new Map()));
+    if (r.moveId && r.moveKind === "personal" && r.moveStatus === "pending" && !own.has(r.moveId)) {
+      own.set(r.moveId, { id: r.moveId, name: textOrNull(r.name) ?? "", load: textOrNull(r.load), doseType: textOrNull(r.doseType) });
+    }
+  }
+  const taken = new Set<string>();
+  const fresh = new Map<string, NearCandidate>();
+  for (const [postId, own] of byPost) {
+    let added = 0;
+    for (const m of own.keys()) if (!fresh.has(m)) added += 1;
+    if (taken.size > 0 && fresh.size + added > BATCH_NEW_MAX) break;
+    taken.add(postId);
+    for (const [m, c] of own) if (!fresh.has(m)) fresh.set(m, c);
+  }
+  if (fresh.size === 0) return null;
+
+  // The account's active moves first (a tie keeps the one the owner has), then each new move as it comes.
+  const against: NearCandidate[] = (await loadPersonalForMatch(db, userId))
+    .filter((r) => r.status === "active" && r.name)
+    .map((r) => ({ id: r.id, name: r.name!, load: r.load ?? null, doseType: r.doseType ?? null }));
+  const marks = new Map<string, string>();
+  for (const m of fresh.values()) {
+    if (!m.name) continue;
+    const hit = nearDuplicateOf(m, against);
+    if (hit && hit.id !== m.id) marks.set(m.id, hit.id);
+    against.push(m);
+  }
 
   const id = newId();
   const held = env.SAVES_HOLD_BATCHES === "1";
-  const postIds = JSON.stringify([...new Set(waiting.map((r) => r.postId))]);
+  const postIds = JSON.stringify([...taken]);
   const batch: typeof saveBatches.$inferInsert = {
     id,
     userId,
@@ -118,7 +182,7 @@ export async function assembleBatch(db: Db, env: Env, userId: string, now: strin
     releasedAt: held ? null : now,
     savedAt: null,
     fittedAt: null,
-    notice: held ? null : noticeOf(waiting, id),
+    notice: held ? null : noticeOf(waiting.filter((r) => taken.has(r.postId)), id),
   };
   // `INSERT … SELECT <row> WHERE <a post took the batch>`: every column in the table's order (none is generated),
   // through its own mapping.
@@ -164,8 +228,25 @@ export async function assembleBatch(db: Db, env: Env, userId: string, now: strin
       .select(
         sql`SELECT ${sql.join(values, sql`, `)} WHERE EXISTS (SELECT 1 FROM ${savedPosts} WHERE ${savedPosts.userId} = ${userId} AND ${savedPosts.batchId} = ${id})`,
       ),
+    // The near-duplicates, as one map (move → the move it is like): its keys pick the links, its values fill them.
+    ...(marks.size ? [likeWrite(db, userId, id, JSON.stringify(Object.fromEntries(marks)))] : []),
   ]);
   return id;
+}
+
+/** Mark the batch's pending links to each move `marks` (JSON `{ moveId: likeMoveId }`) names: check this, like that. */
+function likeWrite(db: Db, userId: string, batchId: string, marks: string) {
+  return db
+    .update(savedPostMoves)
+    .set({ checkFlag: true, likeMoveId: sql`(SELECT value FROM json_each(${marks}) WHERE key = ${savedPostMoves.moveId})` })
+    .where(
+      and(
+        eq(savedPostMoves.userId, userId),
+        eq(savedPostMoves.batchId, batchId),
+        eq(savedPostMoves.status, "pending"),
+        sql`${savedPostMoves.moveId} IN (SELECT key FROM json_each(${marks}))`,
+      ),
+    );
 }
 
 /** The import's own key space in `exercise_provenance`: never a curated link's `<code>#<index>`. */
@@ -221,8 +302,6 @@ export function insightsJsonSql(userId: string, keptPosts: SQL, max: number): SQ
 /** One insight of a batch's post, as `insightsJsonSql` reads it (the batch page's shape): its text and creator a model's. */
 export type BatchInsight = SaveBatchInsightDto;
 
-const textOrNull = (v: unknown): string | null => (typeof v === "string" ? v : null);
-
 /** `insightsJsonSql`'s value, read and put in the posts' order; [] when it doesn't read. */
 export function insightsOf(raw: unknown): BatchInsight[] {
   let list: unknown = raw;
@@ -276,9 +355,9 @@ function insightWrites(db: Db, userId: string, kept: SQL, now: string) {
 
 /**
  * The owner's "Save these":
- *  - the pending personal moves a kept (pending) link of the batch names become `active` — one the owner removed or
- *    re-matched away (no kept link names it) stays pending and is never offered; a pending move an earlier, unsaved
- *    batch brought is activated when this batch keeps a link to it;
+ *  - the pending personal moves a kept (pending) link of the batch names become `active`, and this batch's — one the
+ *    owner removed or re-matched away (no kept link names it) stays pending and is never offered; a pending move an
+ *    earlier, unsaved batch brought is activated when this batch keeps a link to it, and belongs to this batch since;
  *  - each kept link is written to `exercise_provenance` (`exercise_id` = the move, `source_type` = the post's source,
  *    `source_key` = "imp:" + the post's key + "#" + position, url, creator, and its `note`: the post's purpose for the
  *    move, `noteAt`) unless the account already links that move to that post (a curated link stays exactly as it is,
@@ -320,7 +399,7 @@ export async function saveBatch(
 
   // In order: the moves and the links are read while the links are still pending; the links are marked last.
   await runAtomically(db, [
-    db.update(personalMoves).set({ status: "active", updatedAt: now }).where(movesToKeep),
+    db.update(personalMoves).set({ status: "active", batchId, updatedAt: now }).where(movesToKeep),
     // One row per kept link, except where the account already links the move to the post (`existing`) or an earlier
     // position of the same post shows the same move (`twin`). The aliased tables are named by their alias inside their
     // subquery, so the unaliased names there are the outer row's.

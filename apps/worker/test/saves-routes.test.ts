@@ -330,19 +330,25 @@ describe("POST /checks", () => {
     await post("/checks", { checkId, phase: "finish", found: 2 });
     expect((await db.select().from(saveChecks))[0]).toMatchObject({ found: 2 });
   });
-  it("a finish gathers the matched posts into a released batch, within 4 + 6 statements; a start never does", async () => {
+  it("a finish gathers the matched posts into a released batch, within 4 + 7 statements; a start never does", async () => {
     const id = await seedPost("m", { status: "matched", updatedAt: "2026-10-22T00:00:00.000Z" });
-    await db.insert(schema.savedPostMoves).values({
-      id: "spm1", userId, postId: id, position: 0, moveId: "hip9090", moveKind: "library", confidence: 1, status: "pending",
-      createdAt: "2026-10-22T00:00:00.000Z",
+    const at = "2026-10-22T00:00:00.000Z";
+    // A batch is cut only when a post brings a new move: the library's 90/90 rides with a pending one.
+    await db.insert(schema.personalMoves).values({
+      id: "myZorbexQuadShuffle1", userId, status: "pending", record: { name: "Zorbex quad shuffle", regions: ["hips"], contraction: ["isotonic"], load: "none", dose: { type: "reps", range: [6, 10] } },
+      createdAt: at, updatedAt: at,
     });
+    await db.insert(schema.savedPostMoves).values([
+      { id: "spm1", userId, postId: id, position: 0, moveId: "hip9090", moveKind: "library", confidence: 1, status: "pending", createdAt: at },
+      { id: "spm2", userId, postId: id, position: 1, moveId: "myZorbexQuadShuffle1", moveKind: "personal", confidence: 1, status: "pending", createdAt: at },
+    ]);
     await post("/checks", { checkId, phase: "start" });
     expect(await db.select().from(schema.saveBatches)).toEqual([]);
     const fin = await post("/checks", { checkId, phase: "finish", found: 1 });
     expect(fin.body).toEqual({ ok: true });
-    expect(fin.cost).toBeLessThanOrEqual(4 + 6);
+    expect(fin.cost).toBeLessThanOrEqual(4 + 7);
     const [batch] = await db.select().from(schema.saveBatches);
-    expect(batch).toMatchObject({ userId, status: "released", notice: "From your saves: 1 move you already had." });
+    expect(batch).toMatchObject({ userId, status: "released", notice: "From your saves: 1 new move (hip), 1 you already had." });
     expect((await db.select().from(savedPosts))[0]!.batchId).toBe(batch!.id);
   });
 });

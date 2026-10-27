@@ -3,10 +3,11 @@
  * brought, and the owner's word on it before anything is used:
  *
  *  - the batches (`listBatches`) and one batch's rows (`batchDetail`): each link of a post to a move — a NEW move (a
- *    personal move this batch brought, saved or not) or one LINKED to a move the owner already had (the library's, or a
- *    personal move another batch brought), "check this" where the match or the reading was unsure, the dose as the post
- *    gave it — the list's counts and the page's labels by one rule; and the insights of its kept posts (spec §17: what
- *    they say about when, why or how often, which Save keeps in the coach's memory);
+ *    personal move this batch brought, saved or not, or one still pending whichever batch brought it) or one LINKED to
+ *    a move the owner already had (the library's, or a personal move saved before), "check this" where the match or the
+ *    reading was unsure, the dose as the post gave it — the list's counts and the page's labels by one rule; and the
+ *    insights of its kept posts (spec §17: what they say about when, why or how often, which Save keeps in the coach's
+ *    memory);
  *  - an edit of a personal move (`editPersonalMove`), held to the library's own validation (`validatePersonalRecord`);
  *  - a re-match (`rematchLink`): "Same as…" repoints the link to a library move or an active personal move, and a pending
  *    move it leaves (named by no other pending link of the account) is merged into it; "Not this move" makes the post's
@@ -16,8 +17,8 @@
  *  - Remove (`removeLink`): the row is left out of the save, and its move — if no kept row names it — stays pending,
  *    never used;
  *  - the bootstrap's themed held batches (`createHeldBatch`, gathering posts out of the held batch a check made in hold
- *    mode) and their release (`releaseBatch`: worded as `assembleBatch` words a batch, and — the cadence — never within
- *    `BATCH_GAP_MS` of the last release). Save is `saveBatch` (saves-batches.ts).
+ *    mode) and their release (`releaseBatch`: worded as `assembleBatch` words a batch, and — one batch at a time —
+ *    never while another batch of the account's is open). Save is `saveBatch` (saves-batches.ts).
  *
  * Every row a write touches must be the account's and pending; a batch, row or move of another account is not found.
  * A write that changes a move the account's library holds (an active move edited, a merge) forgets this request's read
@@ -36,11 +37,11 @@ import { forgetAccountLibrary, loadAccountLibrary } from "./account-library.js";
 import { runAtomically, type Db } from "./db.js";
 import { buildPersonalRecord } from "./personal-moves.js";
 import { validatePersonalRecord } from "./personal-records.js";
-import { BATCH_GAP_MS, INSIGHTS_PER_BATCH, insightsJsonSql, insightsOf, noticeOf } from "./saves-batches.js";
+import { INSIGHTS_PER_BATCH, insightsJsonSql, insightsOf, noticeOf, openBatchSql } from "./saves-batches.js";
 
 const { savedPosts, savedPostMoves, personalMoves, saveBatches } = schema;
 
-/** The most batches the list returns (one is released a day at most). */
+/** The most batches the list returns (one is open at a time, and a batch holds at most 12 new moves). */
 export const BATCH_LIST_LIMIT = 60;
 
 const publicMove = makeLibraryIndex(EXERCISES);
@@ -61,26 +62,28 @@ interface BatchRead {
 }
 
 /**
- * A row's move is NEW to its batch when it is a personal move the batch brought (`personal_moves.batch_id` is the
- * batch's), whatever its status now — so a saved batch still shows the moves it brought as new — and not merged since
- * (a merged move reads as its target). Anything else — the library's, a move another batch brought — is LINKED. The
- * list's counts and the page's labels use this one rule. SQL over `l` (the link) and `pm` (its personal move).
+ * A row's move is NEW to its batch when it is a personal move, not merged since (a merged move reads as its target),
+ * that the batch brought (`personal_moves.batch_id` is the batch's) — whatever its status now, so a saved batch still
+ * shows the moves it brought as new — or that is still `pending`, whichever batch brought it: not yet the owner's, so
+ * never "already yours" (spec §12.3: a pending move an earlier, dismissed batch brought is new again in a later one).
+ * Anything else — the library's, a personal move saved before — is LINKED. The list's counts, the page's labels and
+ * the notice (`noticeOf`) use this one rule. SQL over `l` (the link) and `pm` (its personal move).
  */
-const BORN_HERE = sql`(l.move_kind = 'personal' and coalesce(pm.batch_id = l.batch_id and pm.status <> 'merged', 0))`;
+export const NEW_IN_BATCH = sql`(l.move_kind = 'personal' and coalesce(pm.status <> 'merged' and (pm.batch_id = l.batch_id or pm.status = 'pending'), 0))`;
 
 /**
  * The batch's columns and its counts, for a select over `save_batches b`: NEW is each distinct move of a kept row
- * (pending or saved) that the batch brought (`BORN_HERE`), LINKED each distinct other move of a kept row, REMOVED the
- * rows taken out.
+ * (pending or saved) that is new to the batch (`NEW_IN_BATCH`), LINKED each distinct other move of a kept row, REMOVED
+ * the rows taken out.
  */
 const BATCH_COLUMNS = sql`b.id as id, b.status as status, b.notice as notice, b.theme as theme, b.created_at as createdAt,
   b.released_at as releasedAt, b.saved_at as savedAt, b.fitted_at as fittedAt,
   (select count(distinct l.move_id) from saved_post_moves l
      left join personal_moves pm on pm.id = l.move_id and pm.user_id = l.user_id
-     where l.user_id = b.user_id and l.batch_id = b.id and l.status <> 'removed' and ${BORN_HERE}) as fresh,
+     where l.user_id = b.user_id and l.batch_id = b.id and l.status <> 'removed' and ${NEW_IN_BATCH}) as fresh,
   (select count(distinct l.move_id) from saved_post_moves l
      left join personal_moves pm on pm.id = l.move_id and pm.user_id = l.user_id
-     where l.user_id = b.user_id and l.batch_id = b.id and l.status <> 'removed' and not ${BORN_HERE}) as linked,
+     where l.user_id = b.user_id and l.batch_id = b.id and l.status <> 'removed' and not ${NEW_IN_BATCH}) as linked,
   (select count(*) from saved_post_moves l where l.user_id = b.user_id and l.batch_id = b.id and l.status = 'removed') as removed`;
 
 function batchOf(r: BatchRead): SaveBatchDto {
@@ -127,7 +130,7 @@ interface RowRead {
   nameEvidence: string | null;
   doseEvidence: string | null;
   moveStatus: string | null;
-  /** The move is one this batch brought (`BORN_HERE`): 1 or 0. */
+  /** The move is new to this batch (`NEW_IN_BATCH`): 1 or 0. */
   born: number;
   /** A pending, active or archived personal move's record, as stored (JSON text). */
   record: string | null;
@@ -160,7 +163,7 @@ export async function batchDetail(db: Db, userId: string, batchId: string): Prom
       json_extract(p.extraction, '$.moves[' || l.position || '].confidence') as seenConfidence,
       json_extract(p.extraction, '$.moves[' || l.position || '].evidence.name') as nameEvidence,
       json_extract(p.extraction, '$.moves[' || l.position || '].evidence.dose') as doseEvidence,
-      pm.status as moveStatus, ${BORN_HERE} as born,
+      pm.status as moveStatus, ${NEW_IN_BATCH} as born,
       case when pm.status in ('pending', 'active', 'archived') then pm.record end as record
     from saved_post_moves l
       join saved_posts p on p.id = l.post_id and p.user_id = l.user_id
@@ -468,9 +471,9 @@ export async function createHeldBatch(
   return readBatch(db, userId, id);
 }
 
-/** The batch (with its counts), the account's last release, and each of its kept rows' moves, as `noticeOf` reads them. */
+/** The batch with its counts, whether another batch is open, and its kept rows' moves as `noticeOf` reads them. */
 interface ReleaseRead extends BatchRead {
-  lastRelease: string | null;
+  otherOpen: number;
   moveId: string | null;
   moveKind: string | null;
   moveStatus: string | null;
@@ -481,19 +484,18 @@ interface ReleaseRead extends BatchRead {
 
 /**
  * Release a held batch: released now, with its notice worded from its kept rows (as `assembleBatch` words one) — but
- * never within `BATCH_GAP_MS` of the account's last release (the cadence: at most one batch released per 20 h, so the
- * coach brings the saves up at most once a day), and never with no row to show ("nothing_to_release": every row was
- * removed — "0 moves you already had" says nothing). D1 statements: the batch with its rows' moves and the last release
- * 1, the write 1.
+ * never while another batch of the account's is open ("batch_open", `openBatchSql`: one batch at a time, spec §5), and
+ * never with no row to show ("nothing_to_release": every row was removed — "0 moves you already had" says nothing).
+ * D1 statements: the batch with its rows' moves and whether another batch is open 1, the write 1.
  */
 export async function releaseBatch(
   db: Db,
   userId: string,
   batchId: string,
   now: string,
-): Promise<SaveBatchDto | "not_found" | "conflict" | "too_soon" | "nothing_to_release"> {
+): Promise<SaveBatchDto | "not_found" | "conflict" | "batch_open" | "nothing_to_release"> {
   const rows = (await db.all(sql`select ${BATCH_COLUMNS},
-      (select max(r.released_at) from save_batches r where r.user_id = b.user_id) as lastRelease,
+      exists (select 1 from save_batches o where o.user_id = b.user_id and o.id <> b.id and ${openBatchSql("o")}) as otherOpen,
       l.move_id as moveId, l.move_kind as moveKind, pm.status as moveStatus, pm.batch_id as moveBatchId,
       json_extract(pm.record, '$.regions') as regions, json_extract(pm.record, '$.contraction') as contraction
     from save_batches b
@@ -503,7 +505,7 @@ export async function releaseBatch(
   const first = rows[0];
   if (!first) return "not_found";
   if (first.status !== "held") return "conflict";
-  if (first.lastRelease && Date.parse(now) - Date.parse(first.lastRelease) < BATCH_GAP_MS) return "too_soon";
+  if (Number(first.otherOpen)) return "batch_open";
   if (!rows.some((r) => r.moveId)) return "nothing_to_release";
   const notice = noticeOf(rows, batchId);
   await db

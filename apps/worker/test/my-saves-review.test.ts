@@ -140,6 +140,8 @@ afterEach(() => {
 describe("GET /batches", () => {
   it("lists released and saved batches, newest first; held ones only with ?held=1; each with its counts — 2 statements", async () => {
     const { batchId } = await seed();
+    // Dismissed ("Not now"): no batch is open, so the next one can be cut.
+    await db.update(saveBatches).set({ dismissedAt: at(2) }).where(eq(saveBatches.id, batchId));
     await matched("c", [move("Zorbex hip circle")], userId, at(2));
     const held = (await assembleBatch(db, { ...matchEnv, SAVES_HOLD_BATCHES: "1" } as Env, userId, at(30)))!;
 
@@ -189,9 +191,13 @@ describe("GET /batches", () => {
     expect({ new: distinct("new"), linked: distinct("linked") }).toEqual({ new: 1, linked: 1 });
   });
 
-  it("a pending move another batch brought reads as linked here, on the page and in the counts alike", async () => {
+  it("a move another batch brought reads as new here while pending (§12.3), and linked once it is the owner's — on the page and in the counts alike", async () => {
     const { batchId, neck } = await seed();
     await db.update(personalMoves).set({ batchId: "an-earlier-batch" }).where(eq(personalMoves.id, neck));
+    const pending = await call("GET", `/batches/${batchId}`);
+    expect((pending.body.rows as any[]).find((r) => r.move.id === neck).move).toMatchObject({ kind: "new", name: "Zorbex neck nod" });
+    expect(pending.body.batch.counts).toEqual({ new: 2, linked: 1, removed: 0 });
+    await db.update(personalMoves).set({ status: "active" }).where(eq(personalMoves.id, neck));
     const page = await call("GET", `/batches/${batchId}`);
     expect((page.body.rows as any[]).find((r) => r.move.id === neck).move).toMatchObject({ kind: "linked", linkedName: "Zorbex neck nod" });
     expect(page.body.batch.counts).toEqual({ new: 1, linked: 2, removed: 0 });
@@ -651,16 +657,17 @@ describe("POST /batches and /batches/:id/release", () => {
     expect((await call("POST", "/batches", { theme: null, postIds: many.slice(0, 100) })).status).toBe(409);
   });
 
-  it("release words a pending move an earlier, unsaved batch brought as one the owner had — as the page counts it (final review M1)", async () => {
+  it("release words a pending move an earlier, unsaved batch brought as new — as the page counts it (§12.3; final review M1)", async () => {
     const { batchId: first } = await seed();
-    await db.update(saveBatches).set({ releasedAt: at(-30) }).where(eq(saveBatches.id, first));
+    // "Not now": the first batch is closed, its quad shuffle still pending (never the owner's).
+    await db.update(saveBatches).set({ dismissedAt: at(2) }).where(eq(saveBatches.id, first));
     // A later post shows the first batch's (unsaved) quad shuffle again.
     const c = await matched("c", [move("Zorbex quad shuffles")]);
     const id = (await call("POST", "/batches", { theme: null, postIds: [c] })).body.batch.id as string;
-    expect((await call("GET", `/batches/${id}`)).body.batch.counts).toMatchObject({ new: 0, linked: 1 });
+    expect((await call("GET", `/batches/${id}`)).body.batch.counts).toMatchObject({ new: 1, linked: 0 });
     const released = await call("POST", `/batches/${id}/release`);
     expect(released.status, JSON.stringify(released.body)).toBe(200);
-    expect(released.body.batch.notice).toBe("From your saves: 1 move you already had.");
+    expect(released.body.batch.notice).toBe("From your saves: 1 new move (hip).");
   });
 
   it("a held batch whose rows were all removed is never released: 409 nothing_to_release, nothing written (final review M2)", async () => {
@@ -674,15 +681,19 @@ describe("POST /batches and /batches/:id/release", () => {
     expect(await batchRow(id)).toMatchObject({ status: "held", releasedAt: null, notice: null });
   });
 
-  it("a release within 20 h of the last is 409 too_soon, and the batch stays held", async () => {
-    await db.insert(saveBatches).values({ id: "recent", userId, status: "released", createdAt: at(0), releasedAt: new Date(Date.parse(NOW) - 2 * 3_600_000).toISOString() });
+  it("a release while another batch is open is 409 batch_open, and the batch stays held", async () => {
+    // Released a day before NOW, never fitted in nor dismissed: open, however long ago.
+    await db.insert(saveBatches).values({ id: "open", userId, status: "released", createdAt: at(0), releasedAt: at(0) });
     const c = await matched("c", [move("Zorbex hip circle")]);
     const id = (await call("POST", "/batches", { theme: null, postIds: [c] })).body.batch.id as string;
     const res = await call("POST", `/batches/${id}/release`);
     expect(res.status).toBe(409);
-    expect(res.body).toEqual({ error: "too_soon" });
+    expect(res.body).toEqual({ error: "batch_open" });
     expect(statements.filter(isWrite)).toEqual([]);
     expect(await batchRow(id)).toMatchObject({ status: "held", releasedAt: null, notice: null });
+    // Dismissed, the other batch is no longer open: the release goes through.
+    await db.update(saveBatches).set({ dismissedAt: at(1) }).where(eq(saveBatches.id, "open"));
+    expect((await call("POST", `/batches/${id}/release`)).status).toBe(200);
   });
 });
 

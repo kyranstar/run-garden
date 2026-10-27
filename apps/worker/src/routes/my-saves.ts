@@ -18,9 +18,9 @@
  *   POST /post-moves/:id/remove                    the row is left out of the save
  *   POST /batches {theme, postIds}                 the bootstrap: a themed held batch of those posts' rows (in no batch, or
  *                                                  in a held one) → 201; at most 100 posts
- *   POST /batches/:id/release                      a held batch released, with its notice → `{batch}`; 409 `too_soon`
- *                                                  within 20 h of the account's last release, 409 `nothing_to_release`
- *                                                  when every row was removed
+ *   POST /batches/:id/release                      a held batch released, with its notice → `{batch}`; 409
+ *                                                  `batch_open` while another batch of the account's is open (one at a
+ *                                                  time), 409 `nothing_to_release` when every row was removed
  *
  * 404 `not_found` for a batch, row or move that isn't this account's (and for a re-match target that is neither a
  * library move nor an active move of the account's); 409 for a row that is no longer pending, a release of a batch that
@@ -91,7 +91,7 @@ mySavesRoutes.post("/batches/:id/release", async (c) => {
   const out = await releaseBatch(c.get("db"), c.get("userId"), c.req.param("id"), nowInstant());
   if (out === "not_found") return c.json(notFound, 404);
   if (out === "conflict") return c.json({ error: "not_held" }, 409);
-  if (out === "too_soon") return c.json({ error: "too_soon" }, 409);
+  if (out === "batch_open") return c.json({ error: "batch_open" }, 409);
   if (out === "nothing_to_release") return c.json({ error: "nothing_to_release" }, 409);
   return c.json({ batch: out });
 });

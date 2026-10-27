@@ -19,12 +19,15 @@ const { personalMoves } = schema;
 
 /**
  * What matching needs of a personal move: never the record itself. `patterns` and `regions` are the record's lists as
- * JSON text, parsed only for a move offered to the judge.
+ * JSON text, parsed only for a move offered to the judge; `load` and `doseType` (the record's `load` and `dose.type`)
+ * are what tells two like-named moves apart (`nearDuplicateOf`, `sameMoveType`).
  */
 export type PersonalMatchRow = Pick<PersonalMoveRow, "id" | "status" | "mergedInto"> & {
   name: string | null;
   patterns?: string | null;
   regions?: string | null;
+  load?: string | null;
+  doseType?: string | null;
 };
 
 /** The account's personal moves, every status, for matching. ONE statement; the fields are read out of the record by SQLite. */
@@ -37,6 +40,8 @@ export async function loadPersonalForMatch(db: Db, userId: string): Promise<Pers
       name: sql<string | null>`json_extract(${personalMoves.record}, '$.name')`,
       patterns: sql<string | null>`json_extract(${personalMoves.record}, '$.patterns')`,
       regions: sql<string | null>`json_extract(${personalMoves.record}, '$.regions')`,
+      load: sql<string | null>`json_extract(${personalMoves.record}, '$.load')`,
+      doseType: sql<string | null>`json_extract(${personalMoves.record}, '$.dose.type')`,
     })
     .from(personalMoves)
     .where(eq(personalMoves.userId, userId));

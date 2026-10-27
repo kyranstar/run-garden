@@ -34,7 +34,7 @@ async function body<T extends z.ZodTypeAny>(c: { req: { json: () => Promise<unkn
   return schemaOf.safeParse(raw);
 }
 
-/** A check's start and finish. A finish then gathers the matched posts into a batch (at most one released per 20 h). */
+/** A check's start and finish. A finish then cuts the next batch (none while one is open; at most 12 new moves). */
 savesRoutes.post("/checks", async (c) => {
   const parsed = await body(c, checkReportSchema);
   if (!parsed.success) return c.json({ error: "invalid", issues: parsed.error.issues }, 422);
