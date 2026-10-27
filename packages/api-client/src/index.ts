@@ -2623,10 +2623,11 @@ export const api = {
   /** The open batch, `{ open: null }` when none (with none open and new moves waiting, the server cuts the next first). */
   savesOpen: () => get<import("@rg/saves").OpenSavesDto>("/api/my-saves/open"),
   /** "Fit them in" / "Fit these in": the batch saved with the choices (a new move left out is the coach's call) and its
-   * fit started → the request to send the coach with `savesBatchId`. 409 `fitting` | `batch_open` | `already_fitted` |
-   * `not_released` | `empty` (every row removed). */
-  savesFit: (id: string, choices: Record<string, import("@rg/saves").FitChoice>) =>
-    post<import("@rg/saves").FitAnswerDto>(`/api/my-saves/batches/${encodeURIComponent(id)}/fit`, { choices }),
+   * fit started → the request to send the coach with `savesBatchId`. `choices` undefined (the one-tap fit) sends no
+   * choices key, so what the owner chose on the page stands; the page sends its whole set. 409 `fitting` | `batch_open`
+   * | `already_fitted` | `not_released` | `empty` (every row removed). */
+  savesFit: (id: string, choices?: Record<string, import("@rg/saves").FitChoice>) =>
+    post<import("@rg/saves").FitAnswerDto>(`/api/my-saves/batches/${encodeURIComponent(id)}/fit`, choices === undefined ? {} : { choices }),
   /** "not now": put aside, nothing saved. 409 `not_open` unless it is open and not fitting. */
   savesDismiss: (id: string) => post<{ ok: boolean }>(`/api/my-saves/batches/${encodeURIComponent(id)}/dismiss`),
   /** A fit whose run could not start: the fit cleared at once ("Fit them in" back). Only after the app's own fit. */

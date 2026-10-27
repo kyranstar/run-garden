@@ -126,7 +126,9 @@ function serve(o: Serve = {}): Call[] {
       if (method === "POST" && path === "/api/my-saves/batches/b1/fit") {
         if (o.fit) return o.fit.clone();
         batch = { ...batch, status: "saved", savedAt: "2026-10-24T12:00:00.000Z", dismissedAt: null, fitStartedAt: "2026-10-24T12:00:00.000Z", fitting: true };
-        rows = rows.map((r) => (r.status === "pending" ? { ...r, status: "saved", move: { ...r.move, choice: body.choices[r.move.id] ?? null } } : r));
+        // No choices key (the one-tap fit) keeps the stored ones; a set rewrites them.
+        const chosen = (r: SaveBatchRowDto) => (body.choices ? (body.choices[r.move.id] ?? null) : r.move.choice);
+        rows = rows.map((r) => (r.status === "pending" ? { ...r, status: "saved", move: { ...r.move, choice: chosen(r) } } : r));
         return json({ batchId: "b1", request: FIT_SAVES_REQUEST, moves: 3, links: 5 });
       }
       const rematch = /^\/api\/my-saves\/post-moves\/([^/]+)\/(rematch|remove)$/.exec(path);
@@ -723,8 +725,8 @@ describe("the batches", () => {
     expect(item.textContent).toContain("Put aside");
     await click(button("Fit them in", item), "Fit them in");
     await until(() => opener.open.mock.calls.length === 1, "the coach opened");
-    // The same fit as the coach's card: every move on the coach's call.
-    expect(fitBody(calls)).toEqual({ choices: {} });
+    // The same fit as the coach's card: no choices key — what the owner chose on the page stands.
+    expect(fitBody(calls)).toEqual({});
     expect(opener.open).toHaveBeenCalledWith({ fit: { batchId: "b1", request: FIT_SAVES_REQUEST }, seeing: null });
   });
 

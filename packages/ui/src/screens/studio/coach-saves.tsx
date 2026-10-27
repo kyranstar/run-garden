@@ -9,8 +9,9 @@
  *   …whatever conversation is open, under it
  *
  *  - The line is the server's (`savesCardLine`), drawn as the coach's words.
- *  - **Fit them in** fits the batch with every new move on the coach's call (`/fit` with `{}`), then the conversation
- *    sends the request with the batch (`savesBatchId`) — the current conversation, never a new one.
+ *  - **Fit them in** fits the batch with no choices sent (`/fit` with `{}`: what the owner chose on the batch page
+ *    stands, every other new move on the coach's call), then the conversation sends the request with the batch
+ *    (`savesBatchId`) — the current conversation, never a new one.
  *  - **Choose first** opens the batch page; its Fit these in comes back here with the fit.
  *  - **not now** asks first (a sheet: where to find it again, and OK); OK puts it aside. Closing that sheet any other way
  *    puts nothing aside.
@@ -65,10 +66,11 @@ export function cancelFit(qc: QueryClient, batchId: string): void {
 }
 
 /**
- * "Fit them in" with every new move on the coach's call (`/fit` with `{}`) — or the batch page's "Fit these in" with
- * the owner's choices — then `then(batchId, request)`: the conversation's send, or the coach opened with the fit. While
- * it is out, `pending`; refused, `line` (`fitRefusal`) and the batch read again (what is true: Fitting in…, or fitted).
- * A fit the server refused is never cancelled: nothing of it started.
+ * "Fit them in" with no choices (`/fit` with `{}`: the choices stored on the batch page stand, every other new move on
+ * the coach's call) — or the batch page's "Fit these in" with the owner's whole set, which rewrites them — then
+ * `then(batchId, request)`: the conversation's send, or the coach opened with the fit. While it is out, `pending`;
+ * refused, `line` (`fitRefusal`) and the batch read again (what is true: Fitting in…, or fitted). A fit the server
+ * refused is never cancelled: nothing of it started.
  */
 export function useFitThemIn(then: (batchId: string, request: string) => void): {
   fit: (batchId: string, choices?: Record<string, FitChoice>) => void;
@@ -79,7 +81,7 @@ export function useFitThemIn(then: (batchId: string, request: string) => void): 
   const oneTap = useOneTap();
   const [pending, setPending] = useState(false);
   const [line, setLine] = useState<string | null>(null);
-  const fit = (batchId: string, choices: Record<string, FitChoice> = {}) =>
+  const fit = (batchId: string, choices?: Record<string, FitChoice>) =>
     oneTap(async () => {
       setPending(true);
       setLine(null);

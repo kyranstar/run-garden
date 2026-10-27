@@ -101,6 +101,12 @@ describe("fitSchema", () => {
     expect(fitSchema.safeParse({ choices: { gobletSquat: "skip" } }).success).toBe(false);
     expect(fitSchema.safeParse({ choices: {}, extra: 1 }).success).toBe(false);
   });
+  it("takes no choices at all — the one-tap fit, which keeps the stored ones — but never null or other keys", () => {
+    expect(fitSchema.safeParse({}).data).toEqual({});
+    expect(fitSchema.safeParse({ choices: null }).success).toBe(false);
+    expect(fitSchema.safeParse({ extra: 1 }).success).toBe(false);
+    expect(fitSchema.safeParse(undefined).success).toBe(false);
+  });
   it("holds to 60 choices", () => {
     const many = (n: number) => Object.fromEntries(Array.from({ length: n }, (_, i) => [`myZorbex${i}`, "skip"]));
     expect(fitSchema.safeParse({ choices: many(60) }).success).toBe(true);

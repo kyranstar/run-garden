@@ -26,7 +26,7 @@
  * which sends the request; while that fit is at work, "Fitting in… open the coach" in its place. With no new move (only
  * moves already yours, or every row removed) the title says "No new moves" and Fit these in is disabled. A fitted batch
  * reads the same, with no control and no foot. On the list, a batch put aside reads so, and Fit them in brings it back
- * (the coach card's fit: every move on the coach's call).
+ * (the coach card's fit: no choices sent, so what the owner chose here stands).
  *
  * A name opens the move's sheet: its words, the post (its creator, and a link that opens it apart), the dose as the
  * post gave it and as it would be saved, and — while the row is pending — Edit (a new move, or one of the owner's own),
@@ -150,7 +150,8 @@ export function SavesScreen() {
   );
 }
 
-/** A batch put aside: Fit them in fits it with every new move on the coach's call and opens the coach with the fit. */
+/** A batch put aside: Fit them in fits it with no choices sent (what the owner chose on its page stands) and opens the
+ * coach with the fit. */
 function FitAgain({ batchId }: { batchId: string }) {
   const coach = useCoach();
   const qc = useQueryClient();

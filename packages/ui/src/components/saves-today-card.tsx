@@ -7,8 +7,9 @@
  *   4 more were already yours
  *   [ Fit them in ]
  *
- *  - **Fit them in** fits the batch with every new move on the coach's call and opens the coach with the fit: the
- *    conversation sends the request with its batch. One tap.
+ *  - **Fit them in** fits the batch with no choices sent (what the owner chose on the batch page stands, every other
+ *    new move on the coach's call) and opens the coach with the fit: the conversation sends the request with its
+ *    batch. One tap.
  *  - A tap on the card itself opens the coach (its saves card at the top: Choose first, not now).
  *  - While a fit is at work: "Fitting in… open the coach" in place of the button.
  *  - Nothing without the coach (its sheet isn't in the app) or an open batch.

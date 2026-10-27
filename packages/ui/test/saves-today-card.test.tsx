@@ -132,7 +132,8 @@ describe("the Today card for the open batch", () => {
     await click(button("Fit them in", card()!), "Fit them in");
     await until(() => (coach.open as ReturnType<typeof vi.fn>).mock.calls.length === 1, "the coach opened");
     expect(order).toEqual(["fit", "open"]);
-    expect(calls.find((c) => c.path === "/api/my-saves/batches/b1/fit")!.body).toEqual({ choices: {} });
+    // No choices key: what the owner chose on the batch page stands (final fix wave, saves flow redesign).
+    expect(calls.find((c) => c.path === "/api/my-saves/batches/b1/fit")!.body).toEqual({});
     // Opened seeing nothing: Today's session is no part of a fit (its focus would steer the coach, and a refused one
     // would cancel the fit).
     expect(coach.open).toHaveBeenCalledWith({ fit: { batchId: "b1", request: FIT_SAVES_REQUEST }, seeing: null });

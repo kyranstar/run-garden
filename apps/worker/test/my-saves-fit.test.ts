@@ -16,7 +16,7 @@ import { createSession, SESSION_COOKIE } from "../src/auth/sessions.js";
 import { mySavesRoutes } from "../src/routes/my-saves.js";
 import { savedPostId } from "../src/services/saves-ledger.js";
 import { matchPost } from "../src/services/saves-match.js";
-import { assembleBatch, FIT_STARTED_TTL_MS, saveBatch } from "../src/services/saves-batches.js";
+import { assembleBatch, FIT_STARTED_TTL_MS, saveBatch, skipSetOf } from "../src/services/saves-batches.js";
 import { toPersonalRecord } from "../src/services/personal-records.js";
 import { isWrite, makeTestDb, makeTestUser, mountRoutes } from "./helpers.js";
 
@@ -253,7 +253,7 @@ describe("GET /open", () => {
 // ── POST /batches/:id/fit ────────────────────────────────────────────────────────────────────────────────────────────
 
 describe("POST /batches/:id/fit", () => {
-  it("POST /fit with no choices saves the batch and starts the fit, within the save route's statements + 2", async () => {
+  it("POST /fit with no choices (`{}`, the one-tap fit) saves the batch and starts the fit, within the save route's statements + 2", async () => {
     // The save route's own count, measured on another account's twin batch.
     const other = await otherAccount();
     const twin = await seed({ owner: other.id });
@@ -263,7 +263,8 @@ describe("POST /batches/:id/fit", () => {
     expect(saveStatements).toBe(8);
 
     const { batchId, p1, p2, a, b } = await seed();
-    const res = await fit(batchId);
+    // No choices key at all: on a released batch, nothing is stored yet — the same as `{ choices: {} }`.
+    const res = await call("POST", `/batches/${batchId}/fit`, {});
     expect(res.status, JSON.stringify(res.body)).toBe(200);
     expect(res.body).toEqual({ batchId, request: FIT_SAVES_REQUEST, moves: 2, links: 3 });
     // The save route's 8 (the session, the restore guard, the batch and its counts, one transaction of 5) + 2 (saves-flow
@@ -324,6 +325,41 @@ describe("POST /batches/:id/fit", () => {
     expect(await batchRow(batchId)).toMatchObject({ status: "saved", savedAt: NOW, fitStartedAt: LATER, dismissedAt: null });
     // Nothing is saved twice: the coach's memory holds what the first fit kept.
     expect(await memory()).toHaveLength(remembered);
+  });
+
+  it("a one-tap fit (no choices) of a saved batch keeps the stored choices: the page's Include A / Skip B outlive a declined card and Today's Fit them in, and the run's skip set holds B; the page's own re-fit still rewrites", async () => {
+    const { batchId, a, b } = await seed();
+    // The page: Include A, Skip B.
+    expect((await fit(batchId, { [a]: "include", [b]: "skip" })).status).toBe(200);
+    // The coach's card declined: its fit cleared, Fit them in back.
+    await db.update(saveBatches).set({ fitStartedAt: null }).where(eq(saveBatches.id, batchId));
+    vi.setSystemTime(new Date(LATER));
+
+    // Today's Fit them in: no choices key.
+    const res = await call("POST", `/batches/${batchId}/fit`, {});
+    expect(res.status, JSON.stringify(res.body)).toBe(200);
+    expect(res.body).toEqual({ batchId, request: FIT_SAVES_REQUEST, moves: 2, links: 3 });
+    // The session, the restore guard, the fit's read, a transaction of 1: the claim alone — no choices written (final
+    // fix wave, saves flow redesign).
+    expect(statements.length).toBe(4);
+    expect(writes()).toHaveLength(1);
+    expect(await moveRow(a)).toMatchObject({ fitChoice: "include" });
+    expect(await moveRow(b)).toMatchObject({ fitChoice: "skip" });
+    expect(await batchRow(batchId)).toMatchObject({ status: "saved", fitStartedAt: LATER, dismissedAt: null });
+    // The fit-in run's skip set: B, as the owner chose on the page.
+    expect(await skipSetOf(db, userId, batchId)).toEqual([{ id: b, name: "Zorbex neck nod" }]);
+    // A second tap while that fit is at work: 409 fitting, nothing written.
+    expect((await call("POST", `/batches/${batchId}/fit`, {})).body).toEqual({ error: "fitting" });
+    expect(writes()).toEqual([]);
+
+    // The page's own Fit these in sends its whole set — none at all included — and rewrites (a transaction of 2).
+    await db.update(saveBatches).set({ fitStartedAt: null }).where(eq(saveBatches.id, batchId));
+    const page = await fit(batchId, {});
+    expect(page.status, JSON.stringify(page.body)).toBe(200);
+    expect(statements.length).toBe(5);
+    expect(writes()).toHaveLength(2);
+    for (const id of [a, b]) expect(await moveRow(id)).toMatchObject({ fitChoice: null });
+    expect(await skipSetOf(db, userId, batchId)).toEqual([]);
   });
 
   it("choices that name a removed, merged or foreign move change nothing", async () => {
@@ -401,7 +437,8 @@ describe("POST /batches/:id/fit", () => {
     expect((await moveRow(theirs.a)).status).toBe("pending");
 
     const tooMany = Object.fromEntries(Array.from({ length: 61 }, (_, i) => [`myZorbexMove${i}abcdef`, "include"]));
-    for (const body of [undefined, {}, { choices: { gobletSquat: "include" } }, { choices: { [a]: "maybe" } }, { choices: {}, extra: 1 }, { choices: tooMany }]) {
+    // No body at all is no shape (the app always sends one: `{}` for the one-tap fit).
+    for (const body of [undefined, { extra: 1 }, { choices: null }, { choices: { gobletSquat: "include" } }, { choices: { [a]: "maybe" } }, { choices: {}, extra: 1 }, { choices: tooMany }]) {
       const res = await call("POST", `/batches/${batchId}/fit`, body);
       expect(res.status, JSON.stringify(body)).toBe(422);
       expect(res.body.error).toBe("invalid");

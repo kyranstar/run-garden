@@ -165,11 +165,15 @@ export const createBatchSchema = z
   .object({ theme: z.string().trim().max(60).nullable(), postIds: z.array(z.string().min(1).max(80)).min(1).max(100) })
   .strict();
 
-/** `POST /api/my-saves/batches/:id/fit`: each new move's say, by id (a move left out of `choices` is the coach's call). */
+/**
+ * `POST /api/my-saves/batches/:id/fit`: each new move's say, by id (a move left out of `choices` is the coach's call).
+ * `choices` absent (the one-tap Fit them in: Today, the coach's card, the list) keeps what is stored — the page's own
+ * Fit these in always sends its whole set, `{}` included, which rewrites it.
+ */
 export const fitSchema = z
-  .object({ choices: z.record(z.string().regex(PERSONAL_ID_RE), z.enum(["include", "skip"])) })
+  .object({ choices: z.record(z.string().regex(PERSONAL_ID_RE), z.enum(["include", "skip"])).optional() })
   .strict()
-  .refine((b) => Object.keys(b.choices).length <= 60, { message: "too many choices" });
+  .refine((b) => Object.keys(b.choices ?? {}).length <= 60, { message: "too many choices" });
 export type FitBody = z.infer<typeof fitSchema>;
 
 /** The answer to a fit: the batch, the words to send the coach, and what the fit takes in. */

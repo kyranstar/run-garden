@@ -230,7 +230,8 @@ describe("the open batch in the coach", () => {
     await click(button("Fit them in", card()!), "Fit them in");
     await until(() => runPosts(calls).length === 1, "the run started");
     const fit = calls.find((c) => c.path === "/api/my-saves/batches/b1/fit")!;
-    expect(fit.body).toEqual({ choices: {} });
+    // No choices key: what the owner chose on the batch page stands (final fix wave, saves flow redesign).
+    expect(fit.body).toEqual({});
     expect(calls.indexOf(fit)).toBeLessThan(calls.findIndex((c) => c.path === "/api/coach/runs"));
     // The current conversation, continued — not a new one. No focus: the session the sheet sees is no part of a fit.
     expect(dialog()!.textContent).toContain("Seeing: ");

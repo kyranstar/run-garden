@@ -11,9 +11,10 @@
  *                                                  are about → `{open}` (OpenSavesDto: id, counts, groups, the card's
  *                                                  line, fitting), `{open: null}` when none; with none open and new
  *                                                  moves waiting it cuts the next batch first (never while held)
- *   POST /batches/:id/fit {choices}                "Fit them in" / "Fit these in": the batch saved with the owner's
+ *   POST /batches/:id/fit {choices?}               "Fit them in" / "Fit these in": the batch saved with the owner's
  *                                                  choices ({moveId: include | skip}; a new move left out is the coach's
- *                                                  call) and its fit started → FitAnswerDto `{batchId, request, moves,
+ *                                                  call; no `choices` — the one-tap fit — keeps the stored ones) and its
+ *                                                  fit started → FitAnswerDto `{batchId, request, moves,
  *                                                  links}`; 409 `fitting` while its fit is at work (the hour), 409
  *                                                  `batch_open` while another batch is open, 409 `already_fitted`, 409
  *                                                  `not_released` (held or superseded), 409 `empty` (every row removed)

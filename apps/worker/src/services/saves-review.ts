@@ -666,10 +666,13 @@ interface FitRead {
 /**
  * "Fit them in" (spec §3.2, §4, §12.1, §12.3): the batch saved with the owner's choices (`{ moveId: include | skip }`;
  * a new move left out is the coach's call) and its fit started — the answer is the request the app sends the coach.
+ * `choices` undefined is the one-tap fit (Today, the coach's card, the list: the final fix wave), which keeps what the
+ * owner chose on the page; the page's Fit these in always sends its whole set.
  *  - a `released` batch: `saveBatch` with the choices (the save route's own writes: the moves, the provenance, the
- *    coach's memory), its fit started, no longer put aside;
+ *    coach's memory), its fit started, no longer put aside — nothing is stored yet, so undefined is `{}`;
  *  - a `saved` batch (a re-fit once a fit's card was declined, or a batch saved before): its choices rewritten and its
- *    fit started, in one transaction of 2 — nothing is saved twice.
+ *    fit started, in one transaction of 2 — nothing is saved twice; with `choices` undefined the stored choices stand,
+ *    and the transaction is the claim alone (1).
  * Refused, in order: another account's batch (not found); one already fitted in; one never released (held) or
  * dissolved (superseded); one every row of which was removed (`empty`, the final fix wave: a fit of nothing; it is no
  * open batch either); one whose fit is at work (`isFitting`: a second tap never starts a second run); one while another
@@ -677,14 +680,14 @@ interface FitRead {
  * The read only answers why; the writes themselves claim the fit (`fitClaimSql`, checked again in the transaction, its
  * last write counted): a tap that loses to another between the read and the write — the other's fit started, or the
  * batch saved since — writes nothing, its choices included, and is refused as `fitting`.
- * D1 statements: the batch with whether another is open 1, then `saveBatch` with the choices (7) — or the transaction
- * of 2 for a saved batch.
+ * D1 statements: the batch with whether another is open 1, then `saveBatch` with the choices (7) — or, for a saved
+ * batch, the transaction of 2 (of 1 with `choices` undefined).
  */
 export async function fitBatch(
   db: Db,
   userId: string,
   batchId: string,
-  choices: Record<string, FitChoice>,
+  choices: Record<string, FitChoice> | undefined,
   now: string,
 ): Promise<FitOutcome> {
   const [b] = (await db.all(sql`select b.status as status, b.fitted_at as fittedAt, b.fit_started_at as fitStartedAt,
@@ -706,14 +709,15 @@ export async function fitBatch(
   const lost: FitOutcome = { kind: "conflict", error: "fitting" };
 
   if (b.status === "released") {
-    const saved = await saveBatch(db, userId, batchId, now, { at: now, choices });
+    const saved = await saveBatch(db, userId, batchId, now, { at: now, choices: choices ?? {} });
     if (saved === "lost") return lost;
     return saved ? ok(saved.moves, saved.links) : { kind: "not_found" };
   }
-  // A saved batch: its choices only while the claim holds, then the claim itself (the transaction's last write).
+  // A saved batch: its choices (when sent) only while the claim holds, then the claim itself (the transaction's last
+  // write). Not sent, the stored choices stand.
   const gate = fitClaimSql(userId, batchId, "saved", now);
   const claimed = await runAtomicallyClaim(db, [
-    choicesWrite(db, userId, batchId, choices, gate),
+    ...(choices ? [choicesWrite(db, userId, batchId, choices, gate)] : []),
     db
       .update(saveBatches)
       .set({ fitStartedAt: now, dismissedAt: null })
