@@ -87,7 +87,7 @@ export interface Env {
   SAVES_FILTER_MODEL?: string;
   /** The extraction relay's body cap in bytes (default 20_000_000). */
   SAVES_RELAY_MAX_BYTES?: string;
-  /** Only "1" creates new saves batches `held` (no release, no notice) for the bootstrap's curation; absent: `released` (services/saves-batches.ts). Var. */
+  /** Only "1" creates new saves batches `held` (no release, no notice) for a bootstrap's curation; absent: `released` (services/saves-batches.ts). Unset in production since the saves-flow redesign; the switch remains for a future bootstrap. Var. */
   SAVES_HOLD_BATCHES?: string;
 }
 

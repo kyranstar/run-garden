@@ -92,10 +92,8 @@ COACH_DESIGNER = "1"
 SPOTIFY_CLIENT_ID = "dac97051030e4adcb9e6e223ec01ffc3"
 # The saved-posts import (routes/saves.ts, /api/my-saves): on since the owner's go-live, 2026-10-25 (plan
 # 2026-10-23-saved-posts-import.md Task 19). Only "1" is on; remove it and every saves route is a 404 again. The token's
-# SHA-256 is the secret SAVES_TOKEN_SHA256. SAVES_HOLD_BATCHES holds every new batch for curation (the bootstrap, Task 20);
-# unset it once the starter batches are all released.
+# SHA-256 is the secret SAVES_TOKEN_SHA256. SAVES_HOLD_BATCHES is unset: hold mode is off since the saves-flow redesign; the switch remains for a future bootstrap.
 SAVES_IMPORT = "1"
-SAVES_HOLD_BATCHES = "1"
 
 # ── Staging (inert: no crons, outbound fetch guarded — see docs/STAGING.md) ──
 # vars, d1_databases and triggers are declared in full; nothing here points at
