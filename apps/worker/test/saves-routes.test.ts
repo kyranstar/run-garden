@@ -123,7 +123,8 @@ describe("the origin guard (index.ts)", () => {
     const init = { method: "POST", headers: { Origin: "chrome-extension://abc" } };
     expect((await app.request("/api/saves/known", init, env)).status).toBe(200);
     expect((await app.request("/api/lifeos/plan", init, env)).status).toBe(403);
-  });
+    // The dynamic import of index.js takes 3–5 s cold: its own timeout, not the 5 s default.
+  }, 15_000);
 });
 
 describe("POST /known", () => {

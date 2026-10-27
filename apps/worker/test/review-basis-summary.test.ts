@@ -12,7 +12,7 @@
  *  - the graduation basis identical to `graduationSessions` over the whole history;
  *  - its cost flat from 0 to 1,000 sessions: the same statements, and a bounded number of rows handed to the Worker.
  */
-import { beforeAll, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeAll, describe, expect, it, vi } from "vitest";
 import { eq } from "drizzle-orm";
 import { adaptiveConfigSchema, addDays, newId, startOfIsoWeek, type UserPreferences } from "@rg/domain";
 import { schema } from "@rg/database";
@@ -247,6 +247,8 @@ describe("the graduation basis from the database equals graduationSessions over 
 });
 
 describe("its cost does not grow with the history (ruling 2b-R11)", () => {
+  afterEach(() => vi.useRealTimers());
+
   it("the same statements, and a bounded number of rows, at 0, 100, 400 and 1,000 sessions", async () => {
     const statements: string[] = [];
     let rows = 0;
@@ -266,6 +268,8 @@ describe("its cost does not grow with the history (ruling 2b-R11)", () => {
       ).flat();
     const day = addDays(last, 2);
     const noon = `${day}T19:00:00.000Z`;
+    vi.useFakeTimers({ toFake: ["Date"] });
+    vi.setSystemTime(new Date(noon));
     const measured: Array<{ n: number; statements: number; rows: number; ms: number }> = [];
     for (const n of [0, 100, 400, 1000]) {
       const { userId, prefs } = await makeTestUser(cost);
@@ -289,6 +293,8 @@ describe("its cost does not grow with the history (ruling 2b-R11)", () => {
     // lift has its newest few sessions (by 400 here), more history adds none.
     // Within 10 %: which sessions fall inside the newest weeks shifts with the runner's time zone (CI is UTC), by a
     // few tens of rows either way at every size, so a fixed margin flaked; growth with the history would be far larger.
+    // The clock is held at the test's own noon (above): the bound also flaked at 00:07 local (252 > 236), when "now"
+    // sat on the other side of midnight from the history's newest weeks.
     expect(thousand.rows).toBeLessThanOrEqual(Math.ceil(four.rows * 1.1));
     expect(thousand.rows).toBeLessThan(600);
   });
