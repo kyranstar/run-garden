@@ -189,6 +189,7 @@ describe("the batch page's words and rows (the saves flow redesigned §3.3)", ()
         batch({ status: "saved", fittedAt: "2026-10-24T11:00:00.000Z" }),
         batch({ status: "held" }),
         batch({ status: "superseded" }),
+        batch({ status: "saved", counts: { new: 0, linked: 0 } }),
       ]),
     ).toBe(3);
   });

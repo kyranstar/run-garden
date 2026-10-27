@@ -835,12 +835,14 @@ describe("a fit ends with its card (the saves flow redesigned, §12.1)", () => {
     expect((await saves("GET", `/batches/${batchId}`)).json.batch).toMatchObject({ id: batchId, fitting: true, dismissedAt: null });
     expect((await saves("GET", "/batches")).json.batches[0]).toMatchObject({ id: batchId, fitting: true });
 
-    // Open is the proposal's status (OPEN_TO_ATHLETE) and the op's own: undecided, or applying (open, as statusOfOps
-    // reads it). Anything else — the op decided, the proposal over — leaves only the hour, which is up.
+    // Open is the proposal's status (OPEN_TO_ATHLETE) and the op's own: not yet applied, declined or superseded —
+    // undecided, applying, or refused (a refused op the athlete can still approve: open, as statusOfOps and decidable
+    // read it). Anything else — the op decided, the proposal over — leaves only the hour, which is up.
     const op = await opOf(id);
     const states: Array<[status: string, outcome: DesignedPinsOp["outcome"] | undefined, fitting: boolean]> = [
       ["partially_approved", undefined, true],
       ["pending", { status: "applying", at: NOW.toISOString() }, true],
+      ["pending", { status: "refused", at: NOW.toISOString(), error: "library_unreadable", why: "the library could not be read" }, true],
       ["pending", { status: "declined", at: NOW.toISOString() }, false],
       ["expired", undefined, false],
       ["superseded", undefined, false],

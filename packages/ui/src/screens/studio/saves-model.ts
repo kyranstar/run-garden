@@ -63,9 +63,10 @@ export const canFit = (b: SaveBatchDto): boolean => !b.fittedAt && !b.fitting &&
  * fit in (the server answers `empty`), so the list offers it no Fit them in. */
 export const keepsRows = (b: SaveBatchDto): boolean => b.counts.new + b.counts.linked > 0;
 
-/** How many batches wait for the owner: released or saved, and not fitted in yet (put aside too). */
+/** How many batches wait for the owner: released or saved, not fitted in yet (put aside too), and still keeping a row —
+ * an emptied batch can be neither fitted (`empty`) nor put aside, so it is not waiting. */
 export const waitingBatches = (batches: readonly SaveBatchDto[]): number =>
-  batches.filter((b) => !b.fittedAt && (b.status === "released" || b.status === "saved")).length;
+  batches.filter((b) => !b.fittedAt && (b.status === "released" || b.status === "saved") && keepsRows(b)).length;
 
 // ── The batch page: one row per new move (the saves flow redesigned §3.3) ──────────────────────────────────────────
 

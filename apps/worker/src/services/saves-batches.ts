@@ -44,7 +44,8 @@ export function isFitting(fitStartedAt: string | null, now: string, pinsOpen: bo
 /**
  * A card of the moves in rotation still open naming the batch over `alias` (a `save_batches` alias), in SQL: a proposal
  * of the account's, pending or partly approved (design-approve.ts `OPEN_TO_ATHLETE`), holding a `move_pins` op that
- * names the batch and is undecided (no outcome) or being applied (`applying`: open, as `statusOfOps` reads it). Its
+ * names the batch and is not yet decided — no outcome, or one that is not applied, declined or superseded (`applying`,
+ * and a refused op the athlete can still approve: open, as `statusOfOps` and `decidable` read them). Its
  * approve marks the batch fitted in; any other ending releases the fit (`releaseFitStarts`). A correlated exists over
  * the ops as `releaseFitStarts` reads them, for a clause of the statement it is in: no statement of its own.
  */
@@ -53,7 +54,7 @@ export function pinsOpenSql(alias: string): SQL {
   return sql`exists (select 1 from coach_proposals pp, json_each(case when json_valid(pp.ops) then pp.ops else '[]' end) po
     where pp.user_id = ${a}.user_id and pp.status in ('pending', 'partially_approved')
       and json_extract(po.value, '$.kind') = 'move_pins' and json_extract(po.value, '$.batchId') = ${a}.id
-      and (json_extract(po.value, '$.outcome') is null or json_extract(po.value, '$.outcome.status') = 'applying'))`;
+      and coalesce(json_extract(po.value, '$.outcome.status'), '') not in ('applied', 'declined', 'superseded'))`;
 }
 
 /**
