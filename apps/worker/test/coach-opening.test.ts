@@ -9,9 +9,9 @@
  * The review before the session. Either is old news once the athlete has asked the coach anything since it arrived, and
  * gives way to the next once this device has shown it (`?seen=`). Synthetic data only.
  */
-import { beforeEach, describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { schema } from "@rg/database";
-import { addDays, newId, nowInstant, startOfIsoWeek, todayInZone, type UserPreferences } from "@rg/domain";
+import { addDays, newId, nowInstant, startOfIsoWeek, type UserPreferences } from "@rg/domain";
 import type { Env } from "../src/env.js";
 import type { Db } from "../src/services/db.js";
 import { makeCoachNudgesRoutes } from "../src/routes/coach-nudges.js";
@@ -30,7 +30,7 @@ import {
 } from "../src/services/coach-opening-line.js";
 import { savePreferences } from "../src/services/calendar-sync.js";
 import { createSession, SESSION_COOKIE } from "../src/auth/sessions.js";
-import { isWrite, makeTestDb, makeTestUser, mountRoutes } from "./helpers.js";
+import { isWrite, makeTestDb, makeTestUser, mountRoutes, pinMiddayToday } from "./helpers.js";
 
 const weekday = (date: string) => new Date(`${date}T12:00:00Z`).toLocaleDateString("en-US", { weekday: "long", timeZone: "UTC" });
 
@@ -171,11 +171,13 @@ let prefs: UserPreferences;
 let today: string;
 let statements: string[];
 
+afterEach(() => vi.useRealTimers());
+
 beforeEach(async () => {
+  today = pinMiddayToday();
   statements = [];
   db = makeTestDb({ boundVariableCap: 100, onStatement: (sql) => statements.push(sql) });
   ({ userId, prefs } = await makeTestUser(db));
-  today = todayInZone(prefs.timezone);
 });
 
 const iso = (msAgo: number) => new Date(Date.now() - msAgo).toISOString();

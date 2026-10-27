@@ -2,14 +2,14 @@
  * `GET /api/plan/today` reads only what it shows of a slot's builds (audit 2a M6): the three view fields, the version,
  * the lock and the build's date — never the whole stored payload (100+ KB each) — and only the account's own builds.
  */
-import { beforeEach, describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { schema } from "@rg/database";
 import { nowInstant, todayInZone, type UserPreferences } from "@rg/domain";
 import type { Env } from "../src/env.js";
 import type { Db } from "../src/services/db.js";
 import { planRoutes } from "../src/routes/plan.js";
 import { createSession, SESSION_COOKIE } from "../src/auth/sessions.js";
-import { makeTestDb, makeTestUser, mountRoutes } from "./helpers.js";
+import { makeTestDb, makeTestUser, mountRoutes, pinMiddayToday } from "./helpers.js";
 
 const env = { APP_URL: "https://app.test", FIXTURE_MODE: "0" } as unknown as Env;
 
@@ -19,7 +19,10 @@ let userId: string;
 let prefs: UserPreferences;
 let cookie: string;
 
+afterEach(() => vi.useRealTimers());
+
 beforeEach(async () => {
+  pinMiddayToday();
   statements = [];
   db = makeTestDb({ boundVariableCap: 100, onStatement: (sql) => statements.push(sql) });
   ({ userId, prefs } = await makeTestUser(db));

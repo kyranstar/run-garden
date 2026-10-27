@@ -4,7 +4,8 @@ import { readdirSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import { Hono } from "hono";
 import { schema } from "@rg/database";
-import { newId, nowInstant, DEFAULT_USER_PREFERENCES, type UserPreferences } from "@rg/domain";
+import { newId, nowInstant, todayInZone, DEFAULT_USER_PREFERENCES, type UserPreferences } from "@rg/domain";
+import { vi } from "vitest";
 import type { AppContext } from "../src/auth/middleware.js";
 import type { Db } from "../src/services/db.js";
 import { forgetAccountLibrary } from "../src/services/account-library.js";
@@ -272,4 +273,17 @@ export async function everyPage<P extends { nextCursor?: string | null }>(
     return !page.nextCursor;
   }, { what: "paging", ...opts });
   return pages;
+}
+
+/**
+ * Hold the clock at midday on today's real calendar day in `timezone` (12:00 PDT / 11:00 PST), so a suite that
+ * places things "on today" cannot straddle the zone's midnight, or the gap between its local day and UTC's, mid-run.
+ * Only `Date` is faked (timers stay real). Call first in a top-level `beforeEach`, with
+ * `afterEach(() => vi.useRealTimers())`; returns today's date in the zone.
+ */
+export function pinMiddayToday(timezone = "America/Los_Angeles"): string {
+  const day = todayInZone(timezone);
+  vi.useFakeTimers({ toFake: ["Date"] });
+  vi.setSystemTime(new Date(`${day}T19:00:00Z`));
+  return todayInZone(timezone);
 }

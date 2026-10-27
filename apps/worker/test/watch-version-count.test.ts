@@ -6,9 +6,9 @@
  * "Older on watch" (`content_stale`, `routes/plan.ts`) consider a divergence only on a session in the plan, not done,
  * missed or skipped, its day today or later — and not while a write for it is on its way.
  */
-import { beforeEach, describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { schema } from "@rg/database";
-import { addDays, newId, nowInstant, todayInZone, type UserPreferences } from "@rg/domain";
+import { addDays, newId, nowInstant, type UserPreferences } from "@rg/domain";
 import { eq } from "drizzle-orm";
 import type { Env } from "../src/env.js";
 import type { Db } from "../src/services/db.js";
@@ -18,7 +18,7 @@ import { createSession, SESSION_COOKIE } from "../src/auth/sessions.js";
 import { hourly } from "../src/index.js";
 import { leaveContentClaims, recordIntent } from "../src/services/sync-intents.js";
 import { computeSyncStatus } from "../src/services/sync-status.js";
-import { connectTestCoros, makeTestDb, makeTestUser, mountRoutes } from "./helpers.js";
+import { connectTestCoros, makeTestDb, makeTestUser, mountRoutes, pinMiddayToday } from "./helpers.js";
 
 function makeEnv(): Env {
   return {
@@ -47,7 +47,10 @@ let prefs: UserPreferences;
 let cookie: string;
 let today: string;
 
+afterEach(() => vi.useRealTimers());
+
 beforeEach(async () => {
+  today = pinMiddayToday();
   counting = false;
   statements = 0;
   db = makeTestDb({ boundVariableCap: 100, onStatement: () => void (counting && statements++) });
@@ -56,7 +59,6 @@ beforeEach(async () => {
   prefs = user.prefs;
   await connectTestCoros(db, userId);
   cookie = `${SESSION_COOKIE}=${await createSession(db, userId)}`;
-  today = todayInZone(prefs.timezone);
 });
 
 /** A session COROS holds on its day (an imported one unless `origin` says the app built it). */

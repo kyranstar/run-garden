@@ -4,17 +4,17 @@
  * the engine, and Start re-gates it with the day's reading — a move the day's check now closes swaps to its first
  * passing alternate (shown before anything locks), or Start refuses with the issues. Route tests on the real today.
  */
-import { beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { eq, sql } from "drizzle-orm";
 import { schema } from "@rg/database";
-import { addDays, NO_EQUIPMENT_PLACE, nowInstant, todayInZone, workoutDocSchema, type UserPreferences, type WorkoutDoc } from "@rg/domain";
+import { addDays, NO_EQUIPMENT_PLACE, nowInstant, workoutDocSchema, type UserPreferences, type WorkoutDoc } from "@rg/domain";
 import { EXERCISES, hasEquipment, isPlyometric, NO_EQUIPMENT_GEAR } from "@rg/exercise-library";
 import { deriveDoc, playerStepsFromDoc } from "@rg/workout";
 import type { Db } from "../src/services/db.js";
 import { GatedError, lockCurrentBuild } from "../src/services/session-build.js";
 import { savePerformedSession } from "../src/services/session-save.js";
 import { applyMove } from "../src/services/jobs.js";
-import { makeTestDb, makeTestUser, mountRoutes } from "./helpers.js";
+import { makeTestDb, makeTestUser, mountRoutes, pinMiddayToday } from "./helpers.js";
 import { planRoutes } from "../src/routes/plan.js";
 import { createSession, SESSION_COOKIE } from "../src/auth/sessions.js";
 import { activateTmj, calmDoc, clientFor, landingsDoc, type Reply } from "./doc-workout-fixture.js";
@@ -36,11 +36,13 @@ let prefs: UserPreferences;
 let today: string;
 let call: (method: string, path: string, body?: unknown) => Promise<Reply>;
 
+afterEach(() => vi.useRealTimers());
+
 beforeEach(async () => {
+  today = pinMiddayToday();
   statements = [];
   db = makeTestDb({ boundVariableCap: 100, onStatement: (s) => statements.push(s) });
   ({ userId, prefs } = await makeTestUser(db));
-  today = todayInZone(prefs.timezone);
   call = await clientFor(db, userId);
 });
 
@@ -58,8 +60,11 @@ async function create(doc: WorkoutDoc, date = today): Promise<string> {
  * 5 or more, review M1): the tests written while a flare alone didn't close one say "feeling off" too.
  */
 const check = async (value: number, feelingOff = false) => {
+  // The pinned clock stands still, and a build is judged against the check by their stamps: a second either side.
+  vi.advanceTimersByTime(1_000);
   const res = await call("POST", "/api/conditions/checks", { profileId: "tmj", value, feelingOff });
   expect(res.status).toBe(200);
+  vi.advanceTimersByTime(1_000);
 };
 
 /** Save the started session as the player's review does: one move's two sets. Answers the activity's discipline. */

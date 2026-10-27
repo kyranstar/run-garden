@@ -7,14 +7,14 @@
  * reconcile once its day is over and the outbox has had its reach (a week) to deliver, and is never asked about or
  * missed. (Fix round 1: a quick start's ref names a quick start the app makes; a template is one of the account's.)
  */
-import { beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { eq } from "drizzle-orm";
 import { schema } from "@rg/database";
-import { addDays, newId, nowInstant, todayInZone, type UserPreferences, type WorkoutDoc } from "@rg/domain";
+import { addDays, newId, nowInstant, type UserPreferences, type WorkoutDoc } from "@rg/domain";
 import type { Db } from "../src/services/db.js";
 import { PLAYED_OFFLINE_CALENDAR_STATE, PLAYED_OFFLINE_DAYS_BACK } from "../src/services/doc-workouts.js";
 import { reconcileCompletionStates } from "../src/services/reconcile-daily.js";
-import { makeTestDb, makeTestUser } from "./helpers.js";
+import { makeTestDb, makeTestUser, pinMiddayToday } from "./helpers.js";
 import { activateTmj, calmDoc, clientFor, landingsDoc, type Reply } from "./doc-workout-fixture.js";
 
 const { plannedWorkouts, performedSessions, workoutTemplates } = schema;
@@ -34,11 +34,13 @@ let prefs: UserPreferences;
 let today: string;
 let call: (method: string, path: string, body?: unknown) => Promise<Reply>;
 
+afterEach(() => vi.useRealTimers());
+
 beforeEach(async () => {
+  today = pinMiddayToday();
   calendar.syncs = 0;
   db = makeTestDb({ boundVariableCap: 100 });
   ({ userId, prefs } = await makeTestUser(db));
-  today = todayInZone(prefs.timezone);
   call = await clientFor(db, userId);
   // The account's template "t1" (a template's document is based on it).
   await db.insert(workoutTemplates).values({ id: "t1", userId, name: "Mine", doc: JSON.stringify(calmDoc()), createdAt: nowInstant(), updatedAt: nowInstant() });

@@ -5,10 +5,10 @@
  * one's id resolves to its target; a pending one is nowhere. The engine plans only from active moves the athlete pinned.
  * Synthetic data only.
  */
-import { beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { eq, sql } from "drizzle-orm";
 import { schema } from "@rg/database";
-import { nowInstant, todayInZone, workoutDocSchema, type WorkoutDoc } from "@rg/domain";
+import { nowInstant, workoutDocSchema, type WorkoutDoc } from "@rg/domain";
 import { EXERCISES, PROFILE_IDS } from "@rg/exercise-library";
 import { personalMoveId, type ExtractedMove } from "@rg/saves";
 import { deriveDoc, makeLibraryIndex } from "@rg/workout";
@@ -27,7 +27,7 @@ import type { ToolContext, ToolOk } from "../src/services/design-tools/types.js"
 import { loadEngineContext } from "../src/services/engine-inputs.js";
 import { toPersonalRecord } from "../src/services/personal-records.js";
 import { engineDataFor } from "../src/services/session-build.js";
-import { makeTestDb, makeTestUser } from "./helpers.js";
+import { makeTestDb, makeTestUser, pinMiddayToday } from "./helpers.js";
 import { activateTmj, clientFor, type Reply } from "./doc-workout-fixture.js";
 
 const { personalMoves, exercisePrefs } = schema;
@@ -68,12 +68,14 @@ let userId: string;
 let today: string;
 let call: (method: string, path: string, body?: unknown) => Promise<Reply>;
 
+afterEach(() => vi.useRealTimers());
+
 beforeEach(async () => {
+  today = pinMiddayToday();
   statements = [];
   db = makeTestDb({ boundVariableCap: 100, onStatement: (s) => statements.push(s) });
   let prefs;
   ({ userId, prefs } = await makeTestUser(db));
-  today = todayInZone(prefs.timezone);
   call = await clientFor(db, userId);
 });
 

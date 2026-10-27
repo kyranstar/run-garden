@@ -6,7 +6,7 @@
  * weekAdherence denominator, and evening credit reads the run's real start
  * hour. All input-side — the simulation's transition function is untouched.
  */
-import { describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { and, eq, isNull } from "drizzle-orm";
 import { schema } from "@rg/database";
 import { addDays, isAdventureSport, newId, nowInstant, todayInZone } from "@rg/domain";
@@ -18,7 +18,12 @@ import {
   ensureGarden,
   resimulateFrom,
 } from "../src/services/garden-sync.js";
-import { makeTestDb, makeTestUser } from "./helpers.js";
+import { makeTestDb, makeTestUser, pinMiddayToday } from "./helpers.js";
+
+beforeEach(() => {
+  pinMiddayToday();
+});
+afterEach(() => vi.useRealTimers());
 
 async function insertPlan(
   db: Db,

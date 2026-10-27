@@ -12,7 +12,7 @@
  *
  * Synthetic fixtures only.
  */
-import { afterEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { createHash } from "node:crypto";
 import { and, eq } from "drizzle-orm";
 import { schema } from "@rg/database";
@@ -22,7 +22,7 @@ import { RUN_PACE_WIRE } from "@rg/coros";
 import { mockCorosServer, type MockCorosServer } from "../../../packages/coros/test/mock-coros-server.js";
 import { renormalizingCoros } from "../../../packages/coros/test/renormalizing-coros.js";
 import { connectCoros } from "../src/services/coros-connection.js";
-import { executeCloudJobs } from "../src/services/coros-write-cloud.js";
+import { executeCloudJobs as executeCloudJobsAt } from "../src/services/coros-write-cloud.js";
 import { applyOps } from "../src/services/coach-apply.js";
 import { savePreferences } from "../src/services/calendar-sync.js";
 import { importPlanSnapshot } from "../src/services/import-plan.js";
@@ -31,16 +31,49 @@ import { stampName } from "../src/services/coros-stamp.js";
 import {
   convergeDivergedContent,
   countDivergedContent,
-  healOutdatedPaceEncoding,
+  healOutdatedPaceEncoding as healOutdatedPaceEncodingAt,
 } from "../src/services/content-converge.js";
-import { hourly } from "../src/index.js";
+import { hourly as hourlyAt } from "../src/index.js";
 import type { Env } from "../src/env.js";
 import type { Db } from "../src/services/db.js";
-import { makeTestDb, makeTestUser } from "./helpers.js";
+import { makeTestDb, makeTestUser, pinMiddayToday } from "./helpers.js";
+
+beforeEach(() => {
+  pinMiddayToday();
+});
 
 afterEach(() => {
   vi.unstubAllGlobals();
+  vi.useRealTimers();
 });
+
+// The pinned clock stands still, and the heal orders a row's verified writes by their stamps (a strict "later
+// wins"): each step below runs a second after the last, as it does in real life.
+const tick = () => vi.advanceTimersByTime(1_000);
+const executeCloudJobs: typeof executeCloudJobsAt = async (...args) => {
+  tick();
+  try {
+    return await executeCloudJobsAt(...args);
+  } finally {
+    tick();
+  }
+};
+const healOutdatedPaceEncoding: typeof healOutdatedPaceEncodingAt = async (...args) => {
+  tick();
+  try {
+    return await healOutdatedPaceEncodingAt(...args);
+  } finally {
+    tick();
+  }
+};
+const hourly: typeof hourlyAt = async (...args) => {
+  tick();
+  try {
+    return await hourlyAt(...args);
+  } finally {
+    tick();
+  }
+};
 
 const TEST_KEY = Buffer.alloc(32, 7).toString("base64");
 const THRESHOLD = 289;

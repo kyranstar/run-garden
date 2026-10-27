@@ -15,7 +15,7 @@
  *
  * Mounts `planRoutes` the same way sync-routes.test.ts mounts `syncRoutes`.
  */
-import { beforeEach, describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { eq } from "drizzle-orm";
 import { schema } from "@rg/database";
 import { addDays, newId, nowInstant, startOfIsoWeek, todayInZone } from "@rg/domain";
@@ -26,7 +26,7 @@ import { planRoutes } from "../src/routes/plan.js";
 import { applyJobResult, applyMove, emitPendingWork } from "../src/services/jobs.js";
 import { openIntentFor } from "../src/services/sync-intents.js";
 import { createSession, SESSION_COOKIE } from "../src/auth/sessions.js";
-import { cloneTestDb, makeTestDb, makeTestUser, mountRoutes, connectTestCoros } from "./helpers.js";
+import { cloneTestDb, makeTestDb, makeTestUser, mountRoutes, connectTestCoros, pinMiddayToday } from "./helpers.js";
 import { WEEK_NAMING_CASES, datedPlans } from "../../../packages/domain/test/week-naming-cases.js";
 
 const { activities, corosWriteJobs, plannedWorkouts, scheduleOverrides, workoutCompletionMatches } = schema;
@@ -96,7 +96,10 @@ async function insertWorkout(
   return workoutId;
 }
 
+afterEach(() => vi.useRealTimers());
+
 beforeEach(async () => {
+  pinMiddayToday();
   db = makeTestDb();
   const user = await makeTestUser(db, { corosWritesEnabled: true });
   userId = user.userId;

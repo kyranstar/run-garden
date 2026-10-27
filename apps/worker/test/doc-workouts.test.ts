@@ -3,17 +3,17 @@
  * `PUT /api/workouts/:id/doc`, the one path the Studio and the coach's approvals share. Route tests use the real today
  * (the routes do), with dates relative to it. Synthetic data only.
  */
-import { beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { and, eq } from "drizzle-orm";
 import { schema } from "@rg/database";
-import { addDays, nowInstant, todayInZone, type UserPreferences, type WorkoutDoc } from "@rg/domain";
+import { addDays, nowInstant, type UserPreferences, type WorkoutDoc } from "@rg/domain";
 import { EXERCISES } from "@rg/exercise-library";
 import { deriveDoc } from "@rg/workout";
 import type { Db } from "../src/services/db.js";
 import { lockCurrentBuild, pushJobId } from "../src/services/session-build.js";
 import { CALENDAR_OPS_PER_REQUEST } from "../src/services/calendar-sync.js";
 import { createDocWorkout, studioProgramId } from "../src/services/doc-workouts.js";
-import { isWrite, makeTestDb, makeTestUser } from "./helpers.js";
+import { isWrite, makeTestDb, makeTestUser, pinMiddayToday } from "./helpers.js";
 import { activateTmj, calmDoc, clientFor, landingsDoc, type Reply } from "./doc-workout-fixture.js";
 
 const { plannedWorkouts, programs, workoutDocRevisions, exercisePrefs, corosWriteJobs, sessionBuilds, performedSessions, performedSets } = schema;
@@ -38,7 +38,10 @@ let call: (method: string, path: string, body?: unknown) => Promise<Reply>;
 /** Runs just before each statement the application executes (a test arms it to land a concurrent write there). */
 let beforeStatement: ((sql: string) => void) | null;
 
+afterEach(() => vi.useRealTimers());
+
 beforeEach(async () => {
+  today = pinMiddayToday();
   statements = [];
   calendar.syncs = [];
   beforeStatement = null;
@@ -50,7 +53,6 @@ beforeEach(async () => {
     },
   });
   ({ userId, prefs } = await makeTestUser(db));
-  today = todayInZone(prefs.timezone);
   call = await clientFor(db, userId);
 });
 

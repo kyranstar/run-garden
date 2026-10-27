@@ -6,7 +6,7 @@
  * made). A hotel room's workout raises no gear warning at "No equipment"; a goblet squat still does.
  * Synthetic data only: the made-up athletes of design-read-fixture.ts (its clock for the coach; the real today for a save).
  */
-import { beforeAll, describe, expect, it } from "vitest";
+import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import { eq, sql } from "drizzle-orm";
 import { schema } from "@rg/database";
 import { newId, NO_EQUIPMENT_PLACE, todayInZone } from "@rg/domain";
@@ -20,7 +20,12 @@ import { loadPreferences } from "../src/services/calendar-sync.js";
 import { loadEngineContext } from "../src/services/engine-inputs.js";
 import { NOW, seedRichAthlete, TODAY } from "./design-read-fixture.js";
 import { clientFor } from "./doc-workout-fixture.js";
-import { makeTestDb } from "./helpers.js";
+import { makeTestDb, pinMiddayToday } from "./helpers.js";
+
+beforeEach(() => {
+  pinMiddayToday();
+});
+afterEach(() => vi.useRealTimers());
 
 let db: Db;
 /** The Garage is its default (marked so, and the profile's choice): mat, dumbbells, bench, band — no kettlebell. */

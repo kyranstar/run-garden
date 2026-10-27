@@ -9,17 +9,17 @@
  * Gated with every other run route (a 404 with the coach designer off), and within the free plan's budget: pinned.
  * Synthetic data only.
  */
-import { beforeEach, describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { sql } from "drizzle-orm";
 import { schema } from "@rg/database";
-import { addDays, todayInZone } from "@rg/domain";
+import { addDays } from "@rg/domain";
 import type { Env } from "../src/env.js";
 import type { Db } from "../src/services/db.js";
 import { createSession, SESSION_COOKIE } from "../src/auth/sessions.js";
 import { makeCoachRunRoutes } from "../src/routes/coach-runs.js";
 import { CURRENT_RUN_EVENTS, CURRENT_RUN_STATEMENTS, currentRun, newRunState, ROUTE_OVERHEAD, type RunDeps } from "../src/services/coach-runs.js";
 import { designProposalId } from "../src/services/design-tools/propose.js";
-import { makeTestDb, makeTestUser, mountRoutes } from "./helpers.js";
+import { makeTestDb, makeTestUser, mountRoutes, pinMiddayToday } from "./helpers.js";
 
 function makeEnv(extra: Partial<Env> = {}): Env {
   return {
@@ -54,11 +54,13 @@ let statements = 0;
 /** The athlete's today, by their own zone (the proposals' days are relative to it: no date here goes stale). */
 let today: string;
 
+afterEach(() => vi.useRealTimers());
+
 beforeEach(async () => {
+  today = pinMiddayToday();
   db = makeTestDb({ boundVariableCap: 100, onStatement: () => (statements += 1) });
   let prefs;
   ({ userId, prefs } = await makeTestUser(db));
-  today = todayInZone(prefs.timezone);
   cookie = `${SESSION_COOKIE}=${await createSession(db, userId)}`;
 });
 
