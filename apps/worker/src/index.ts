@@ -284,6 +284,10 @@ export const serveAsset: Handler<AppContext> = async (c) => {
   }
   return res;
 };
+
+// The desktop bridge was deleted (844aa0ec); a stale poller still asks /api/devices/bridge/jobs/claim — 410 Gone, empty.
+export const bridgeGone: Handler<AppContext> = (c) => c.body(null, 410);
+app.all("/api/devices/*", bridgeGone);
 app.all("*", serveAsset);
 
 // ── Cron ─────────────────────────────────────────────────────────────────────
