@@ -440,6 +440,13 @@ export async function executeCloudJobs(
               corosSyncState: "synced",
               lastVerifiedCorosDate: spec.happenDay,
               ...(wireFp ? { sourceContentFingerprint: wireFp } : {}),
+              // ADOPTED WHILE THIS CREATE WAS IN FLIGHT (workout-editability spec §3, M8). The row was a coach session
+              // when this job was claimed (an app-authored one is superseded above), and a revise has since made it a
+              // Studio document workout: the copy just landed is the old session, now the row's old copy — held under
+              // this stamp, which Send, Remove and a plan archive take off by (`adoptedCopyUnpush`). Judged as the row
+              // stands at this write, never by the row read at claim; never over a name already held; a coach session
+              // still a coach session (NULL origin) records none — its stamp proves its copy.
+              watchCopyName: sql<string | null>`case when ${inArray(plannedWorkouts.origin, [...APP_AUTHORED_ORIGINS])} then coalesce(${plannedWorkouts.watchCopyName}, ${spec.name}) else ${plannedWorkouts.watchCopyName} end`,
               // The COROS address the create landed at — this is what makes
               // the session MOVABLE on the watch later (the move executor
               // needs sourcePlanId:idInPlan).
@@ -1066,6 +1073,11 @@ export async function executeCloudJobs(
           // superseded — so Send queues it afresh. Only now, never at enqueue:
           // until the delete verifies the copy is still on the watch, and the
           // import must keep recognising its stamp.
+          //
+          // AN ADOPTED ROW'S OLD COPY, GONE (workout-editability spec §4): the name the row held it under goes with it,
+          // so the row no longer reads older on watch for it. Only that name — a delete of any other copy leaves it —
+          // and only now: a delete refused or failed leaves the copy on the watch, and the name with it.
+          const heldCopy = job.workout?.watchCopyName === spec.name;
           if (rowsCopy) {
             await db
               .update(plannedWorkouts)
@@ -1073,9 +1085,17 @@ export async function executeCloudJobs(
                 corosSyncState: "calendar_only",
                 lastVerifiedCorosDate: "",
                 ...(program ? { sourceWorkoutId: spec.workoutId, sourceIdInPlan: null, sourceProgramId: null } : {}),
+                ...(heldCopy ? { watchCopyName: null } : {}),
                 updatedAt: done,
               })
               .where(eq(plannedWorkouts.id, spec.workoutId));
+          } else if (heldCopy) {
+            // Addressed by its own payload (an imported session's copy, or one the row's newest send has replaced):
+            // the row's address is another copy's, or none, and stays as it is.
+            await db
+              .update(plannedWorkouts)
+              .set({ watchCopyName: null, updatedAt: done })
+              .where(and(eq(plannedWorkouts.id, spec.workoutId), eq(plannedWorkouts.watchCopyName, spec.name)));
           }
           if (program) {
             await db

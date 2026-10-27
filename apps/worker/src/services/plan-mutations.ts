@@ -97,7 +97,9 @@ export function settleWatchJobsOnArchiveStatements(db: Db, userId: string, worko
  * mutation, on the watch too). An IMPORTED COROS session is never touched on
  * the watch: it has no stamp, so `enqueueUnpushIfOurs` declines, and the
  * archived row keeps its sourceWorkoutId so future imports update it in place
- * without resurrecting it into the visible plan. No-op (removed: false) for a
+ * without resurrecting it into the visible plan — unless a revise adopted it
+ * (workout-editability §4): its old copy is then the row's, and comes off
+ * (`adoptedCopyUnpush`). No-op (removed: false) for a
  * missing, foreign or already-archived row.
  *
  * `archiveReason` records WHY the row left (default `user_removed`, a hand
@@ -178,6 +180,12 @@ export async function enqueueUnpushIfOurs(
   now: string,
   prefs: UserPreferences,
 ): Promise<void> {
+  // AN ADOPTED ROW'S OLD COPY comes off (workout-editability §4): the copy it held when a revise took it over, beside —
+  // never instead of — a build it has sent since. That old copy is the very one the stamp path below would address for
+  // an adopted coach session (its recorded stamp is the name it is held under), so with it queued the stamp path is not
+  // taken: one copy, one delete.
+  const copy = adoptedCopyUnpush(db, userId, w, now, prefs);
+  if (copy) await copy.insert;
   // A SENT PROGRAMME SLOT comes off through its sent build's unpush (`unpush:<buildId>`), writes on or off — the job
   // Take off and a move queue, and the one the client's targeted drain runs in a request of its own (ruling 3-R11,
   // re-review 3-B NEW-1). The address path below queued `<id>-unpush`, which that drain does not take, so a removed
@@ -187,9 +195,58 @@ export async function enqueueUnpushIfOurs(
     await enqueueProgramUnpush(db, userId, w, now, prefs);
     return;
   }
+  if (copy) return;
   // (A coach row has no build to owe it on; that gap is older than this and stays as it was.)
   const unpush = await unpushInsertIfOurs(db, userId, w, now, prefs);
   if (unpush) await unpush.insert;
+}
+
+/**
+ * THE OLD COPY AN ADOPTED ROW HOLDS (workout-editability spec §4): a revise that took over a coach session or a
+ * COROS-plan session kept its watch address and recorded the program name the watch holds the copy under
+ * (`watch_copy_name`). That copy is the row's to take off — the Studio's Send replaces it, Remove and a plan archive
+ * remove it — by the same stamp-checked delete the coach lane uses for its own sessions, addressed where the row
+ * records it and proven by that name (for an imported session no stamp of ours proves it: its wire title does, which
+ * is what the name holds). Its insert, as a statement for the caller (`{ insert }`, as `unpushInsertIfOurs` answers),
+ * or null when there is nothing to take off: not an app-authored row, no name held, no address — or the athlete's
+ * COROS writes off. Then nothing is queued and nothing is owed: the name stays on the row, so the copy stays accounted
+ * for (the row reads older on watch) until the watch-sync project takes it off. No read: the row carries all of it.
+ * The verified delete clears the name (`coros-write-cloud.ts`).
+ */
+export function adoptedCopyUnpush(
+  db: Db,
+  userId: string,
+  row: typeof plannedWorkouts.$inferSelect,
+  now: string,
+  prefs: Pick<UserPreferences, "corosWritesEnabled">,
+) {
+  if (!prefs.corosWritesEnabled || !appAuthoredRow(row) || !row.watchCopyName) return null;
+  const address = watchAddressOf(row);
+  if (!address) return null;
+  const insert = db
+    .insert(corosWriteJobs)
+    .values({
+      id: `${row.id}-unpush-copy`,
+      userId,
+      workoutId: row.id,
+      kind: "coach_delete_workout",
+      expectedContentFingerprint: "",
+      originalDate: row.effectiveDate,
+      destinationDate: row.effectiveDate,
+      payload: {
+        workoutId: row.id,
+        happenDay: address.happenDay,
+        name: row.watchCopyName,
+        idInPlan: address.idInPlan,
+        programId: address.programId,
+        corosPlanId: address.corosPlanId,
+      },
+      requestedAt: now,
+      status: "queued",
+      updatedAt: now,
+    })
+    .onConflictDoNothing();
+  return { insert };
 }
 
 /**

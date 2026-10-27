@@ -2016,7 +2016,12 @@ const SESSION_WINDOW = 24;
 const ARCHIVE_SLICE_MAX = 36;
 /** A watch unpush at its most (`enqueueUnpushIfOurs`): the stamp read, the create job read, the insert. */
 const UNPUSH_COST = 3;
-/** A programme slot's way off the watch, at its most — never a coach plan's row, counted for safety. */
+/**
+ * An app-authored row's way off the watch, at its most (`enqueueUnpushIfOurs`): an adopted row's old copy (one insert,
+ * `adoptedCopyUnpush`), the sent build's two reads, then its programme unpush (the sent build read again, the queued
+ * push superseded, the push read, the unpush inserted or queued afresh, the build unlocked) — 1 + 2 + 2 + 5. A coach
+ * plan holds such a row once a revise adopted one of its sessions (workout-editability §4); a programme slot never.
+ */
 const PROGRAMME_UNPUSH_COST = 10;
 /** `resolveRaceConflict` at its most: the conflict's read and its write — keep "settings": the row's demotion, its coach plan's read and that plan's race moved (`setCoachPlanRace`'s three). */
 const RACE_CONFLICT_COST = 6;

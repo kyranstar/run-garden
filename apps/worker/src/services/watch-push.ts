@@ -54,6 +54,7 @@ import type { Db } from "./db.js";
 import { libraryFor, loadAccountLibrary, PUBLIC_LIBRARY } from "./account-library.js";
 import { corosKeyOf } from "./coros-exercise-map.js";
 import { freeStamp, STAMP_SEPARATOR, stampName, takenStampsOn } from "./coros-stamp.js";
+import { adoptedCopyUnpush } from "./plan-mutations.js";
 import { exerciseNameMap } from "./exercise-catalog.js";
 import { dayValidateCtx, snapshotErrors } from "./doc-build.js";
 import {
@@ -816,6 +817,15 @@ export async function sendToWatch(
   const id = pushJobId(build.buildId);
   if (payload === null) return { ...session, watch: { state: "sending" } };
   const valid = programSessionPushJobSchema.parse(payload);
+  // SEND REPLACES AN ADOPTED WORKOUT'S OLD COPY (workout-editability spec §4): a coach session or a COROS-plan session a
+  // revise took over keeps the copy the watch held of it (`watch_copy_name`). Its stamp-checked delete is queued first,
+  // in this request — one statement, only for such a row — so the lane, which runs a user's jobs in request order
+  // under one lock, takes it off as the new build goes on. The sheet's targeted drain takes only the push
+  // (`claimNextJob`'s `watchOnly`): the new build then goes on at once, and the old copy comes off on the lane's next
+  // pass, addressed by its own payload (the row by then holds the new copy's address); the row reads older on watch
+  // until it has. Writes are on here (`slotRefusal`), so the delete is always queued.
+  const copy = adoptedCopyUnpush(db, userId, row, ctx.now, ctx.prefs);
+  if (copy) await copy.insert;
   const inserted = await db
     .insert(corosWriteJobs)
     .values({
