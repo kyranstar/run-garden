@@ -180,7 +180,7 @@ describe("matchMoves", () => {
     expect(d!.candidates?.map((c) => [c.kind, c.id])).toEqual([["personal", "myZorbexHipSwitchaaaaaa"]]);
   });
 
-  it("an equal name whose load or dose type differs from the owner's move is new, flagged, like that move, with no candidates", () => {
+  it("an equal name whose load or dose type differs from the owner's move is new and flagged, with no candidates — like it only when it is active", () => {
     const rows = [
       { id: "myZorbexShuffleaaaaaa", status: "active", mergedInto: null, name: "Zorbex shuffle", load: "none", doseType: "reps" },
       { id: "myZorbexHoldbbbbbb", status: "pending", mergedInto: null, name: "Zorbex hold", load: "none", doseType: "reps" },
@@ -196,7 +196,9 @@ describe("matchMoves", () => {
       rows,
     );
     expect(out[0]).toEqual({ position: 0, kind: "new", confidence: "high", check: true, draft: expect.anything(), like: "myZorbexShuffleaaaaaa" });
-    expect(out[1]).toEqual({ position: 1, kind: "new", confidence: "high", check: true, draft: expect.anything(), like: "myZorbexHoldbbbbbb" });
+    // A pending move (another batch's) is no like target: the cut flags the pair when they meet.
+    expect(out[1]).toEqual({ position: 1, kind: "new", confidence: "high", check: true, draft: expect.anything() });
+    expect(out[1]).not.toHaveProperty("like");
     expect(out[2]).toMatchObject({ kind: "personal", id: "myZorbexShuffleaaaaaa", check: false });
     expect(out[2]!.like).toBeUndefined();
   });
@@ -498,6 +500,42 @@ describe("matchPost", () => {
       [mine, "personal", false, null, 1],
     ]);
     expect(await db.select().from(personalMoves)).toHaveLength(1);
+  });
+
+  it("an active move of a different type and a pending move of the same type, one name: the post links to the pending one", async () => {
+    await personal("Zorbex shuffle", {}, { load: "external", equipment: ["kettlebell"] });
+    const pending = await personal("Zorbex shuffles", { status: "pending", batchId: "otherbatch" });
+    const id = await extracted("k", [move("zorbex shuffle")]);
+    expect(await matchPost(db, env(), userId, id, NOW, judge({}).fetchImpl)).toEqual({ newMoves: 0, linked: 1 });
+    expect((await linksOf(id)).map((l) => [l.moveId, l.moveKind, l.checkFlag, l.likeMoveId])).toEqual([[pending, "personal", false, null]]);
+  });
+
+  it("two active moves with one name and different types: each draft links to its own type", async () => {
+    const plain = await personal("Zorbex shuffle");
+    const loaded = await personal("Zorbex shuffles", {}, { load: "external", equipment: ["kettlebell"] });
+    const a = await extracted("a", [move("Zorbex Shuffle", { load: "external", equipment: ["kettlebell"] })]);
+    const b = await extracted("b", [move("zorbex shuffles")]);
+    expect(await matchPost(db, env(), userId, a, NOW, judge({}).fetchImpl)).toEqual({ newMoves: 0, linked: 1 });
+    expect(await matchPost(db, env(), userId, b, NOW, judge({}).fetchImpl)).toEqual({ newMoves: 0, linked: 1 });
+    expect((await linksOf(a)).map((l) => [l.moveId, l.checkFlag, l.likeMoveId])).toEqual([[loaded, false, null]]);
+    expect((await linksOf(b)).map((l) => [l.moveId, l.checkFlag, l.likeMoveId])).toEqual([[plain, false, null]]);
+    expect(await db.select().from(personalMoves)).toHaveLength(2);
+  });
+
+  it("an equal name of a different type on a pending or archived move: a new move, flagged, like nothing", async () => {
+    await personal("Zorbex shuffle", { status: "pending", batchId: "otherbatch" });
+    await personal("Zorbex hold", { status: "archived" });
+    const id = await extracted("k", [
+      move("Zorbex shuffle", { load: "external", equipment: ["kettlebell"] }),
+      move("zorbex hold", { dose: { text: "30 s", type: "time", range: [20, 40] } }),
+    ]);
+    const gw = judge({});
+    expect(await matchPost(db, env(), userId, id, NOW, gw.fetchImpl)).toEqual({ newMoves: 2, linked: 0 });
+    expect(gw.spy).not.toHaveBeenCalled();
+    expect((await linksOf(id)).map((l) => [l.moveKind, l.checkFlag, l.likeMoveId])).toEqual([
+      ["personal", true, null],
+      ["personal", true, null],
+    ]);
   });
 
   it("a band move read as external links to the owner's like-named move stored as bodyweight: the load its record would store", async () => {

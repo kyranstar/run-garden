@@ -5,9 +5,11 @@
  *     → that library move, high confidence.
  *  2. The same test against the owner's own moves (active, pending or archived; a merged one resolves to the move it was
  *     merged into) → that personal move, high. This is also how the same new move across posts becomes ONE move: the
- *     first post's pending move is there when the second post is matched. A hit whose load or dose type differs from the
- *     draft's (`sameMoveType`; the load its record would store) is never linked: two load types are never one move. It
- *     is a new move flagged "check this", like the move it is named as — the judge is not asked about it (spec §6).
+ *     first post's pending move is there when the second post is matched. A name may name several of the owner's moves
+ *     (one name, two load types): the move links to the first, active before pending before archived, whose load and
+ *     dose type agree with the draft's (`sameMoveType`; the load its record would store) — two load types are never one
+ *     move. When none agrees it is a new move flagged "check this", like the first ACTIVE one of them (a pending or
+ *     archived one is no like target: the owner does not have it in use) — the judge is not asked about it (spec §6).
  *  3. Otherwise a library move or one of the owner's own (not merged) whose name shares enough words (token overlap
  *     ≥ `FUZZY_MIN`) is a candidate, and
  *  4. one cheap judge call per post (`import_match` spend, reserved and settled) says which candidate, if any, is the
@@ -85,7 +87,7 @@ export interface MatchDecision {
   candidates?: MatchCandidate[];
   /** A new move repeating an earlier new move of the same post (step 5): that move's position. */
   sameAs?: number;
-  /** A new move's near-duplicate among the owner's moves (steps 2 and 2b): that move's id, for "like <name>" in review. */
+  /** A new move's near-duplicate among the owner's ACTIVE moves (steps 2 and 2b): that move's id, for "like <name>" in review. */
   like?: string;
 }
 
@@ -137,8 +139,11 @@ function libraryIndex(library: readonly ExerciseRecord[]): LibraryIndex {
 
 const STATUS_RANK: Readonly<Record<string, number>> = { active: 0, pending: 1, archived: 2, merged: 3 };
 
-/** The owner's moves by normalised name → the id a link should name (a merged move's target). */
-function personalIndex(rows: readonly PersonalMatchRow[]): Map<string, string> {
+/**
+ * The owner's moves by normalised name → every id a link may name (a merged move's target), each once: active rows first,
+ * then pending, archived and merged ones, otherwise in the order read.
+ */
+function personalIndex(rows: readonly PersonalMatchRow[]): Map<string, string[]> {
   const byId = new Map(rows.map((r) => [r.id, r]));
   const resolve = (row: PersonalMatchRow): string | null => {
     let at: PersonalMatchRow | undefined = row;
@@ -148,13 +153,15 @@ function personalIndex(rows: readonly PersonalMatchRow[]): Map<string, string> {
     }
     return at && at.status in STATUS_RANK && at.status !== "merged" ? at.id : null;
   };
-  const out = new Map<string, string>();
+  const out = new Map<string, string[]>();
   const ordered = rows.filter((r) => r.status in STATUS_RANK).sort((a, b) => STATUS_RANK[a.status]! - STATUS_RANK[b.status]!);
   for (const row of ordered) {
     const key = row.name ? normalizeMoveName(row.name) : "";
-    if (!key || out.has(key)) continue;
-    const id = resolve(row);
-    if (id) out.set(key, id);
+    const id = key ? resolve(row) : null;
+    if (!id) continue;
+    const ids = out.get(key);
+    if (!ids) out.set(key, [id]);
+    else if (!ids.includes(id)) ids.push(id);
   }
   return out;
 }
@@ -165,6 +172,13 @@ const firstHit = (keys: readonly string[], index: ReadonlyMap<string, string>): 
     if (id) return id;
   }
   return undefined;
+};
+
+/** Every id the keys name in `personalIndex`, each once: the name's first, then each alias's. */
+const allHits = (keys: readonly string[], index: ReadonlyMap<string, readonly string[]>): string[] => {
+  const out: string[] = [];
+  for (const k of keys) for (const id of index.get(k) ?? []) if (!out.includes(id)) out.push(id);
+  return out;
 };
 
 /** A move that may be offered to the judge: its words, and the candidate it would be (its score filled in when offered). */
@@ -265,13 +279,13 @@ export function matchMoves(
       const keys = [move.name, ...move.aliases].map(normalizeMoveName).filter(Boolean);
       const libraryId = firstHit(keys, lib.byKey);
       if (libraryId) return { position, kind: "library", id: libraryId, confidence: "high", check: false };
-      const personalId = firstHit(keys, mine);
-      if (personalId) {
-        const hit = byId.get(personalId);
-        if (hit && !sameMoveType(nearOfDraft(move), nearOfRow(hit))) {
-          return { position, kind: "new", confidence: move.confidence, check: true, draft: move, like: personalId };
-        }
-        return { position, kind: "personal", id: personalId, confidence: "high", check: false };
+      const hits = allHits(keys, mine).flatMap((id) => byId.get(id) ?? []);
+      if (hits.length) {
+        const near = nearOfDraft(move);
+        const same = hits.find((row) => sameMoveType(near, nearOfRow(row)));
+        if (same) return { position, kind: "personal", id: same.id, confidence: "high", check: false };
+        const like = hits.find((row) => row.status === "active")?.id;
+        return { position, kind: "new", confidence: move.confidence, check: true, draft: move, ...(like ? { like } : {}) };
       }
       const candidates = candidatesFor(move, lib, pool);
       if (candidates.length) return { position, kind: "new", confidence: "low", check: true, draft: move, candidates };
@@ -305,7 +319,8 @@ export function applyVerdicts(
 /**
  * Step 2b, after the judge: each new move not already like another (step 2) and not repeating one of the post is held to
  * the owner's ACTIVE moves (`nearDuplicateOf`); a hit flags it "check this", like that move. A repeat's link takes its
- * first's like when it is written.
+ * first's like when it is written. (A step-2 move named as only a pending or archived move of another type is held here
+ * too: it has no like yet.)
  */
 export function flagNearDuplicates(decisions: readonly MatchDecision[], personal: readonly PersonalMatchRow[]): MatchDecision[] {
   const active = personal.filter((r) => r.status === "active" && r.name).map(nearOfRow);
