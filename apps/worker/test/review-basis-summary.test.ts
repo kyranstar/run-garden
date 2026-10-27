@@ -252,7 +252,8 @@ describe("its cost does not grow with the history (ruling 2b-R11)", () => {
   it("the same statements, and a bounded number of rows, at 0, 100, 400 and 1,000 sessions", async () => {
     const statements: string[] = [];
     let rows = 0;
-    const cost = makeTestDb({ boundVariableCap: 100, onStatement: (q) => statements.push(q), onRows: (_q, n) => (rows += n) });
+    // One database per size, so every size's program can carry the same id (programs.id is a primary key).
+    const costDb = () => makeTestDb({ boundVariableCap: 100, onStatement: (q) => statements.push(q), onRows: (_q, n) => (rows += n) });
     const world = WORLDS[0]!;
     const base = seededHistory(world.data, world.renamed, "review-basis|cost", 100).sessions;
     const last = base[base.length - 1]!.date;
@@ -271,10 +272,13 @@ describe("its cost does not grow with the history (ruling 2b-R11)", () => {
     vi.useFakeTimers({ toFake: ["Date"] });
     vi.setSystemTime(new Date(noon));
     const measured: Array<{ n: number; statements: number; rows: number; ms: number }> = [];
+    const builtMoves: string[][] = [];
     for (const n of [0, 100, 400, 1000]) {
+      const cost = costDb();
       const { userId, prefs } = await makeTestUser(cost);
       await writeHistory(cost, userId, copies(n), `cost${n}`);
-      const workoutId = await startedSlot(cost, userId, prefs, day, noon);
+      const { workoutId, moves } = await startedSlot(cost, userId, prefs, day, noon);
+      builtMoves.push(moves);
       // Once to warm SQLite's statement cache and the library index, then measured.
       await reviewBasis(cost, userId, workoutId, { today: day, unit: "lb" });
       statements.length = 0;
@@ -284,6 +288,12 @@ describe("its cost does not grow with the history (ruling 2b-R11)", () => {
       measured.push({ n, statements: statements.length, rows, ms: Math.round(performance.now() - t0) });
     }
     console.log(`review-basis cost: ${measured.map((m) => `${m.n} sessions → ${m.statements} statements, ${m.rows} rows, ${m.ms} ms`).join("; ")}`);
+    // Precondition: the sizes with a history (100, 400, 1,000) built the same session (the builder seeds on the program
+    // id, fixed below; with none the builder has nothing to lean on and builds another), so the rows measured below
+    // grow with the history alone, never with a different build.
+    expect(builtMoves[1]!.length).toBeGreaterThan(0);
+    expect(builtMoves[2]).toEqual(builtMoves[1]);
+    expect(builtMoves[3]).toEqual(builtMoves[1]);
     const [none, hundred, four, thousand] = measured as [(typeof measured)[0], (typeof measured)[0], (typeof measured)[0], (typeof measured)[0]];
     // The statements: the same from the first session on (with none, the by-id reads have nothing to read).
     expect(four.statements).toBe(hundred.statements);
@@ -291,18 +301,19 @@ describe("its cost does not grow with the history (ruling 2b-R11)", () => {
     expect(hundred.statements - none.statements).toBeLessThanOrEqual(4);
     // The rows the Worker maps: what the newest weeks and each lift's newest sessions hold, not the history — once each
     // lift has its newest few sessions (by 400 here), more history adds none.
-    // Within 10 %: which sessions fall inside the newest weeks shifts with the runner's time zone (CI is UTC), by a
-    // few tens of rows either way at every size, so a fixed margin flaked; growth with the history would be far larger.
-    // The clock is held at the test's own noon (above): the bound also flaked at 00:07 local (252 > 236), when "now"
-    // sat on the other side of midnight from the history's newest weeks.
+    // Within 10 %, with the same session built at every size. The row counts were once random: `startedSlot` gave each
+    // program a fresh random id, which seeds the builder, so each size built a different session (the 252 > 236 CI
+    // failure at 00:07 was one such draw, not the hour). The program id is now fixed; growth with the history would
+    // be far larger than the margin. The clock is also held at the test's own noon, as the sibling suites do.
     expect(thousand.rows).toBeLessThanOrEqual(Math.ceil(four.rows * 1.1));
     expect(thousand.rows).toBeLessThan(600);
   });
 });
 
 /** A program slot on `day`, built and started (the review basis is asked for at Start). */
-async function startedSlot(db: Db, userId: string, prefs: UserPreferences, day: string, noon: string): Promise<string> {
-  const programId = newId();
+async function startedSlot(db: Db, userId: string, prefs: UserPreferences, day: string, noon: string): Promise<{ workoutId: string; moves: string[] }> {
+  // Fixed, not newId(): the builder's seed includes the program id, and a random one built a different session per run.
+  const programId = "cost-program";
   await db.insert(schema.programs).values({
     id: programId, userId, kind: "adaptive", name: "Program", status: "active", disciplines: ["yoga", "strength"],
     startDate: null, endDate: null, raceDate: null, source: null,
@@ -318,5 +329,5 @@ async function startedSlot(db: Db, userId: string, prefs: UserPreferences, day: 
   });
   const built = await buildSession(db, userId, id, { overrides: { mode: "build" }, checks: { tmj: { pre: 1, feelingOff: false } } }, { today: day, now: noon, prefs });
   await startSession(db, userId, id, built.build!.buildId, noon);
-  return id;
+  return { workoutId: id, moves: Object.keys(built.build!.exercises).sort() };
 }
