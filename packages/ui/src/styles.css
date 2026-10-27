@@ -11706,6 +11706,102 @@ a.stu-tpl-open:focus-visible::before {
   font-size: var(--text-xs);
   color: var(--ink-soft);
 }
+/* ── The open batch of saved moves (the saves flow redesigned §3.1–§3.2) ──────────────────────────────────────────
+   The coach sheet's chip (coach-saves.tsx), the saves card first in the conversation, and Today's card
+   (saves-today-card.tsx). Every one in the coach's own green; nothing on them but the words and the controls. */
+/* On the narrowest phone its words wrap, never the header's ✕ off the edge. */
+.coach-saves-chip {
+  gap: var(--space-3);
+  text-align: left;
+}
+.coach-saves-dot {
+  flex: none;
+  width: 0.5rem;
+  height: 0.5rem;
+  border-radius: var(--radius-round);
+  background: var(--green);
+}
+/* Above whatever conversation is open: a card of its own, the coach's line in it, the controls under the line. */
+.coach-saves {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-5);
+  min-width: 0;
+  padding: var(--space-5);
+  border: 1px solid color-mix(in srgb, var(--green) 45%, var(--border));
+  border-radius: var(--radius);
+  background: var(--bg-raised);
+  scroll-margin-top: var(--space-4);
+}
+.coach-saves:focus {
+  outline: none;
+}
+.coach-saves:focus-visible {
+  outline: 2px solid var(--focus);
+  outline-offset: -2px;
+}
+/* The controls line up with the line's words, past the coach's mark (`.coach-msg-mark`'s 1.75rem, then its gap). */
+.coach-saves-actions,
+.coach-saves-fitting,
+.coach-saves > .coach-saves-line {
+  margin: 0;
+  padding-left: calc(var(--space-7) + var(--space-2) + var(--space-4));
+}
+.coach-saves-actions {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: var(--space-4);
+}
+.coach-saves-fitting,
+.saves-today-line,
+.coach-saves-line {
+  font-size: var(--text-sm);
+  color: var(--ink-soft);
+}
+.coach-saves-line {
+  margin: 0;
+}
+.coach-saves-aside {
+  margin: 0;
+  font-size: var(--text-sm);
+}
+/* Today: the card at the top while a batch is open. Its words are one button (the coach opens), Fit them in the other. */
+.dock-panel.saves-today {
+  border-color: color-mix(in srgb, var(--green) 45%, var(--border));
+}
+.saves-today-open {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: var(--space-2);
+  width: 100%;
+  min-height: var(--tap);
+  margin: 0;
+  padding: 0;
+  border: 0;
+  background: none;
+  color: var(--ink);
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+.saves-today-head {
+  font-size: var(--text-md);
+  font-weight: var(--weight-medium);
+  line-height: 1.3;
+}
+.saves-today-sub {
+  font-size: var(--text-sm);
+  color: var(--ink-soft);
+}
+.saves-today .btn-primary,
+.saves-today-fitting {
+  align-self: flex-start;
+}
+.saves-today-line {
+  margin: 0;
+}
 /* The box, pinned under the conversation: what the coach sees, the field and its round send button. */
 .coach-convo-foot {
   display: flex;

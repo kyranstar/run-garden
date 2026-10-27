@@ -1,12 +1,13 @@
 /**
  * "FROM YOUR SAVES" — what the review screen draws from (saves.tsx): a batch's facts, which rows show and what each
- * row's sheet offers, the edit form and the patch it sends (only what changed), and a refused write in plain words.
+ * row's sheet offers, the edit form and the patch it sends (only what changed), and a refused write in plain words; and
+ * the open batch's words on Today and in the coach (saves-today-card.tsx, coach-saves.tsx).
  * Pure: no React, no network.
  */
 import { ApiError } from "@rg/api-client";
 import { dayLabel } from "@rg/domain";
 import { DOSE_TYPES, PROFILES, type Dose, type DoseType, type ExerciseRecord } from "@rg/exercise-library";
-import type { PersonalMovePatch, SaveBatchDto, SaveBatchRowDto } from "@rg/saves";
+import type { OpenSavesBatchDto, OpenSavesDto, PersonalMovePatch, SaveBatchDto, SaveBatchRowDto } from "@rg/saves";
 
 /** The batches (`/studio/saves`), or one batch's rows. */
 export const savesHref = (batchId?: string): string => (batchId ? `/studio/saves/${encodeURIComponent(batchId)}` : "/studio/saves");
@@ -66,6 +67,51 @@ export const canFit = (b: SaveBatchDto): boolean => b.status === "saved" && !b.f
 /** How many batches wait for the owner (final review I2): released and not saved, or saved and not fitted in. */
 export const waitingBatches = (batches: readonly SaveBatchDto[]): number =>
   batches.filter((b) => b.status === "released" || canFit(b)).length;
+
+// ── The open batch: the Today card, the coach's chip and its saves card (the saves flow redesigned §3.1–§3.2) ──────────
+
+/** Every surface, while a fit is at work, in place of its button (spec §12.1). */
+export const FITTING_LINE = "Fitting in… open the coach";
+/** A fit refused while another batch is open (409 `batch_open`). */
+export const OPEN_FIRST_LINE = "finish the batch that is open first";
+/** "not now"'s sheet, said before anything is put aside. */
+export const PUT_ASIDE_LINE = "Put aside. Find it again under Settings → Saves (or the Studio tab), where Fit them in brings it back.";
+/** A fit that did not go through for any other reason. */
+export const FIT_FAILED_LINE = "Couldn't fit them in. Try again.";
+/** "not now"'s OK that did not go through. */
+export const DISMISS_FAILED_LINE = "Couldn't put it aside. Try again.";
+
+type OpenCounts = { new: number; linked: number };
+const moveWord = (n: number): string => (n === 1 ? "move" : "moves");
+
+/** Today's headline: "9 new moves from your saves"; with no new move, "3 saved moves you already have". */
+export const todayHeadline = (c: OpenCounts): string =>
+  c.new > 0 ? `${c.new} new ${moveWord(c.new)} from your saves` : `${c.linked} saved ${moveWord(c.linked)} you already have`;
+
+/** Under it, only beside new moves: "4 more were already yours" ("1 more was already yours"). */
+export const todaySubline = (c: OpenCounts): string | null =>
+  c.new === 0 || c.linked === 0 ? null : c.linked === 1 ? "1 more was already yours" : `${c.linked} more were already yours`;
+
+/** The coach sheet's chip: "9 new saved moves"; with no new move, "3 saved moves". */
+export const savesChipLabel = (c: OpenCounts): string =>
+  c.new > 0 ? `${c.new} new saved ${moveWord(c.new)}` : `${c.linked} saved ${moveWord(c.linked)}`;
+
+/** The open batch a surface draws: none open, or one with nothing left in it (every row removed: 0 and 0), is none. */
+export function openShown(d: OpenSavesDto | undefined): OpenSavesBatchDto | null {
+  const open = d?.open ?? null;
+  return open && (open.counts.new > 0 || open.counts.linked > 0) ? open : null;
+}
+
+/**
+ * A fit refused, in words: another batch open says so. A fit already at work, a batch fitted, gone or never released
+ * says nothing — the open batch read again shows what is true (Fitting in…, or no card). Anything else: try again.
+ */
+export function fitRefusal(e: unknown): string | null {
+  if (e instanceof ApiError && (e.status === 409 || e.status === 404)) {
+    return e.status === 409 && (e.body as { error?: unknown } | null)?.error === "batch_open" ? OPEN_FIRST_LINE : null;
+  }
+  return FIT_FAILED_LINE;
+}
 
 // ── The edit form ────────────────────────────────────────────────────────────────────────────────────────────────────
 

@@ -5,6 +5,8 @@
  *
  *  - It holds the coach's one conversation (coach-conversation.tsx): the opening screen for a new one, else the turns,
  *    and the box.
+ *  - Its header holds the open batch's chip while a batch of saved moves is open (coach-saves.tsx): a tap brings the
+ *    conversation's saves card into view.
  *  - Its menu (⋯) holds "New conversation": the conversation shown is left — the opening screen, and the next send
  *    starts a new one — and it stays left across opens (kept on this device). Nothing to leave, or the coach at work:
  *    not offered.
@@ -25,7 +27,8 @@ import { CoachOpenContext, CoachSeeingContext, SeeingRegistry, type CoachOpener 
 import { CoachBoundary } from "./coach-boundary.js";
 import { CoachConversation } from "./coach-conversation.js";
 import { CONVERSATION_QUERY, readLeftConversation, turnsShown, writeLeftConversation } from "./coach-conversation-model.js";
-import type { CoachFocus, CoachOpenArgs } from "./coach-focus.js";
+import type { CoachFit, CoachFocus, CoachOpenArgs } from "./coach-focus.js";
+import { CoachSavesChip } from "./coach-saves.js";
 import { readConversation, readCurrent } from "./coach-tolerance.js";
 import { COACH_CURRENT_QUERY, currentRetry } from "./run-keeper.js";
 import { isLive } from "./run-model.js";
@@ -46,6 +49,9 @@ export interface CoachOpened {
    * registers — a screen still loading its data registers a moment after the tap.
    */
   named: boolean;
+  /** A fit of saved moves the server took before the sheet opened: sent once, with its batch, as the conversation
+   * settles. */
+  fit: CoachFit | null;
 }
 
 /**
@@ -67,7 +73,7 @@ export function CoachSheetProvider({ children, loopDeps }: { children: ReactNode
       // Named (even as null) wins; otherwise what the screen shows now — and then.
       const named = args.seeing !== undefined;
       const seeing = named ? (args.seeing ?? null) : registry.current;
-      setOpened((o) => ({ args: { request: args.request ?? null, seeing, named }, key: (o?.key ?? 0) + 1 }));
+      setOpened((o) => ({ args: { request: args.request ?? null, seeing, named, fit: args.fit ?? null }, key: (o?.key ?? 0) + 1 }));
     },
     [registry],
   );
@@ -142,6 +148,8 @@ export function CoachSheet({
         <div className="row-between sheet-head">
           <h2 id={titleId}>{COACH_SHEET_TITLE}</h2>
           <span className="coach-sheet-tools">
+            {/* An open batch of saved moves: a tap brings its card into view, here (the saves flow redesigned §3.1). */}
+            <CoachSavesChip />
             <SheetMenu
               canLeave={canLeave}
               onNewConversation={() => {
@@ -162,6 +170,7 @@ export function CoachSheet({
             ctx={ctx}
             loopDeps={loopDeps}
             request={epoch === 0 ? args.request : null}
+            fit={epoch === 0 ? args.fit : null}
             seeing={args.seeing}
             followSeen={!args.named}
             left={left}

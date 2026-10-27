@@ -229,7 +229,9 @@ export function PlanCard({ card, closed = false }: { card: PlanCardInput; closed
   const reread = () => qc.invalidateQueries({ queryKey: designProposalQuery(card.proposalId) });
   const after = async () => {
     await reread();
-    for (const key of ["plan", "plan-week", "today", "coach-state", "coach-plans", "garden"]) void qc.invalidateQueries({ queryKey: [key] });
+    // The saves too: a pins card closing ends its batch's fit either way — approved, it is fitted in; declined, Fit them
+    // in comes back (the saves flow redesigned §12.1).
+    for (const key of ["plan", "plan-week", "today", "coach-state", "coach-plans", "garden", "saves"]) void qc.invalidateQueries({ queryKey: [key] });
     void qc.invalidateQueries({ queryKey: COACH_CURRENT_QUERY });
     void qc.invalidateQueries({ queryKey: CONVERSATION_QUERY });
   };

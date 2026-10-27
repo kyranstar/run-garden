@@ -2484,6 +2484,8 @@ export const SAVES_STATUS_QUERY = ["saves-status"] as const;
 /** "From your saves": the batches (`GET /api/my-saves/batches`), and one batch's rows under its id. */
 export const SAVES_BATCHES_QUERY = ["saves", "batches"] as const;
 export const savesBatchQuery = (id: string) => ["saves", "batch", id] as const;
+/** The open batch the Today card, the coach's chip and its saves card are about (`GET /api/my-saves/open`). */
+export const OPEN_SAVES_QUERY = ["saves", "open"] as const;
 
 export const api = {
   me: () => get<MeResponse>("/api/auth/me"),
@@ -2617,6 +2619,18 @@ export const api = {
   /** Release a held batch, with its notice. */
   savesReleaseBatch: (id: string) =>
     post<{ batch: import("@rg/saves").SaveBatchDto }>(`/api/my-saves/batches/${encodeURIComponent(id)}/release`),
+  // The one path (the saves flow redesigned, 2026-10-26: the Today card, the coach's chip and saves card, the batch page).
+  /** The open batch, `{ open: null }` when none (with none open and new moves waiting, the server cuts the next first). */
+  savesOpen: () => get<import("@rg/saves").OpenSavesDto>("/api/my-saves/open"),
+  /** "Fit them in" / "Fit these in": the batch saved with the choices (a new move left out is the coach's call) and its
+   * fit started → the request to send the coach with `savesBatchId`. 409 `fitting` | `batch_open` | `already_fitted` |
+   * `not_released`. */
+  savesFit: (id: string, choices: Record<string, import("@rg/saves").FitChoice>) =>
+    post<import("@rg/saves").FitAnswerDto>(`/api/my-saves/batches/${encodeURIComponent(id)}/fit`, { choices }),
+  /** "not now": put aside, nothing saved. 409 `not_open` unless it is open and not fitting. */
+  savesDismiss: (id: string) => post<{ ok: boolean }>(`/api/my-saves/batches/${encodeURIComponent(id)}/dismiss`),
+  /** A fit whose run could not start: the fit cleared at once ("Fit them in" back). Only after the app's own fit. */
+  savesFitCancel: (id: string) => post<{ ok: boolean }>(`/api/my-saves/batches/${encodeURIComponent(id)}/fit/cancel`),
   /** The rolling week's AI spend against the cap. */
   coachSpend: () => get<CoachSpendDto>("/api/coach/spend"),
   coachMemoryDelete: (id: string) =>

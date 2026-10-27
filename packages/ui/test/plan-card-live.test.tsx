@@ -144,6 +144,24 @@ describe("the plan card", () => {
     expect(calls.filter((c) => c.method === "POST").map((c) => [c.path, c.body])).toEqual([["/api/coach/proposals/dp-run-1/decline", { opIds: ["plan"] }]]);
   });
 
+  it("a decision reads the saves again: a pins card closing ends its fit, approved or not (the saves flow redesigned §12.1)", async () => {
+    let state = read("pending");
+    serve({
+      "GET /api/coach/proposals/dp-run-1": () => state,
+      "POST /api/coach/proposals/dp-run-1/decline": () => {
+        state = read("declined", { status: "declined", at: "x" });
+        return { ok: true, status: "declined", declined: ["plan"], settled: [] };
+      },
+    });
+    await mount(card());
+    const spy = vi.spyOn(client!, "invalidateQueries");
+    await until(() => !!button("Not now") && !button("Not now")!.disabled, "Not now");
+    await click(button("Not now"), "Not now");
+    await until(() => text().includes("Not added"), "not added");
+    const keys = spy.mock.calls.map((c) => JSON.stringify((c[0] as { queryKey?: unknown } | undefined)?.queryKey));
+    expect(keys).toContain(JSON.stringify(["saves"]));
+  });
+
   it("a plan already part added says so and offers to finish — never Not now", async () => {
     serve({ "GET /api/coach/proposals/dp-run-1": () => read("pending", { status: "applying", at: "x", progress: { step: "sessions", done: 3 } }) });
     await mount(card());

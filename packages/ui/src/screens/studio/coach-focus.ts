@@ -31,11 +31,19 @@ export interface CoachFocus extends CoachRunFocus {
 /**
  * What opens the coach sheet (`useCoach().open`, the new shape): the words to write in the box (the athlete's to send),
  * and what the athlete is looking at — its "Seeing" hint. `seeing` absent: what the screen registered
- * (`useCoachSeeing`); null: nothing.
+ * (`useCoachSeeing`); null: nothing. `fit`: a fit of saved moves the server has just started (Today's Fit them in, the
+ * batch page's Fit these in — the saves flow redesigned §3.1): the conversation sends its request with its batch, once.
  */
 export interface CoachOpenArgs {
   request?: string | null;
   seeing?: CoachFocus | null;
+  fit?: CoachFit;
+}
+
+/** A fit the server took (`/fit` answered): the words to send the coach and the batch they fit. */
+export interface CoachFit {
+  batchId: string;
+  request: string;
 }
 
 /** What the server is told: the kind and the id, nothing the screen made up. */

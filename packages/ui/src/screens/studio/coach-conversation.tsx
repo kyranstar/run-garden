@@ -51,8 +51,9 @@ import {
   turnStopLine,
   type ProvisionalTurn,
 } from "./coach-conversation-model.js";
-import { focusOfWire, focusRefusal, type CoachFocus } from "./coach-focus.js";
+import { focusOfWire, focusRefusal, type CoachFit, type CoachFocus } from "./coach-focus.js";
 import { CoachOpening, CoachSays } from "./coach-opening.js";
+import { cancelFit, CoachSavesCard, useOpenSaves } from "./coach-saves.js";
 import { readConversation, readCurrent } from "./coach-tolerance.js";
 import type { StudioCtx } from "./model.js";
 import { PlanCard } from "./plan-card.js";
@@ -66,6 +67,7 @@ import {
   isLive,
   isNotAvailable,
   NOT_AVAILABLE_LINE,
+  OVER_STATUSES,
   STILL_WORKING_LINE,
   WEEK_USED_UP_LINE,
   weekBudgetOf,
@@ -98,6 +100,9 @@ export interface CoachConversationProps {
   followSeen?: boolean;
   /** The conversation the athlete left ("New conversation"): not shown, and a send starts a new one. */
   left?: string | null;
+  /** A fit of saved moves the server took as the sheet opened (Today's Fit them in): sent once, with its batch, when the
+   * conversation has settled. */
+  fit?: CoachFit | null;
 }
 
 /** The coach's words, as paragraphs (an answer may hold a few). */
@@ -109,7 +114,7 @@ function paragraphs(text: string) {
     .map((p, i) => <p key={i}>{p}</p>);
 }
 
-export function CoachConversation({ ctx, loopDeps, request = null, seeing: seenAtOpen = null, followSeen = false, left = null }: CoachConversationProps) {
+export function CoachConversation({ ctx, loopDeps, request = null, seeing: seenAtOpen = null, followSeen = false, left = null, fit = null }: CoachConversationProps) {
   const qc = useQueryClient();
   const conv = useQuery({ queryKey: CONVERSATION_QUERY, queryFn: readConversation, retry: currentRetry, staleTime: 0 });
   // The current run: a live one the conversation doesn't hold (an older client's), the suggestions still open, and a
@@ -117,6 +122,8 @@ export function CoachConversation({ ctx, loopDeps, request = null, seeing: seenA
   const current = useQuery({ queryKey: COACH_CURRENT_QUERY, queryFn: readCurrent, retry: currentRetry, staleTime: 0 });
   const spend = useQuery({ queryKey: COACH_SPEND_QUERY, queryFn: api.coachSpend, retry: false });
   const budget = weekBudgetOf(spend.data);
+  // The open batch of saved moves (its card draws it): whether its read has answered, for the opening's hold.
+  const { known: savesKnown } = useOpenSaves();
 
   const [draft, setDraft] = useState(() => (request ?? "").slice(0, REQUEST_MAX_CHARS));
   // What it sees: what it was opened with — or, opened with nothing named, what the screen registers (a screen still
@@ -177,18 +184,32 @@ export function CoachConversation({ ctx, loopDeps, request = null, seeing: seenA
   const asked = liveStatus === "waiting_athlete" ? askedOf(snapshot?.events ?? []) : null;
   const answering = asked?.kind === "questions" && asked.questions.length === 1;
 
+  // ── A fit of saved moves (the saves flow redesigned §3.2, §12.1): its request sent with its batch ──
+  /** Words a fit that could not start left in the box: the athlete's to send, never by a stray Return. */
+  const [kept, setKept] = useState<string | null>(null);
+  /** The fit-in run a send here started, until it ends: one that ends with no pins card ends its fit at once. */
+  const [fitRun, setFitRun] = useState<{ runId: string; batchId: string } | null>(null);
+  /** A fit the server took whose run could not start: cancelled at once (Fit them in comes back), the words kept. */
+  const fitNotStarted = (batchId: string, words: string) => {
+    const said = words.slice(0, REQUEST_MAX_CHARS);
+    setDraft(said);
+    setKept(said);
+    cancelFit(qc, batchId);
+  };
+
   const oneTap = useOneTap();
   const start = useMutation({
     networkMode: "always",
-    mutationFn: (words: string) => {
+    mutationFn: (v: { words: string; savesBatchId?: string }) => {
       const conversationId = conversationToSend({ read: conv.data, readFailed: conv.isError, created, left });
       return api.coachRunCreate({
-        request: words,
+        request: v.words,
         ...(conversationId !== undefined ? { conversationId } : {}),
         ...(seeing ? { focus: focusOfWire(seeing) } : {}),
+        ...(v.savesBatchId ? { savesBatchId: v.savesBatchId } : {}),
       });
     },
-    onSuccess: (res, words) => {
+    onSuccess: (res, { words, savesBatchId }) => {
       setLine(null);
       setBudgetLine(null);
       if (res.conversationId) setCreated(res.conversationId);
@@ -208,8 +229,13 @@ export function CoachConversation({ ctx, loopDeps, request = null, seeing: seenA
       // A turn sent may have asked what a "needs you" chip offers (review-3 I1): the chips are read again now, though no
       // opening shows them — the next opening never shows a stale one first.
       void qc.invalidateQueries({ queryKey: NUDGES_QUERY, refetchType: "all" });
+      // A fit: the run already there answered (one run at a time) — the fit can't start; else its run is watched.
+      if (savesBatchId) {
+        if (res.existing) fitNotStarted(savesBatchId, words);
+        else setFitRun({ runId: res.run.id, batchId: savesBatchId });
+      }
     },
-    onError: (e) => {
+    onError: (e, { words, savesBatchId }) => {
       // The week can't pay for it (§2.11): a fact, in the ink a status is — the words kept.
       const refused = weekBudgetRefusal(e);
       setBudgetLine(refused);
@@ -221,6 +247,7 @@ export function CoachConversation({ ctx, loopDeps, request = null, seeing: seenA
       } else if (focusLine) setLine(focusLine);
       else if (isNotAvailable(e)) setUnavailable(true);
       else setLine(COULDNT_REACH_LINE);
+      if (savesBatchId) fitNotStarted(savesBatchId, words);
     },
   });
   const answer = useMutation({
@@ -246,20 +273,51 @@ export function CoachConversation({ ctx, loopDeps, request = null, seeing: seenA
   const usedUp = budget?.usedUp === true;
   const busy = start.isPending || answer.isPending;
   const canSend = draft.trim() !== "" && !busy && !usedUp && (!working || answering);
-  const send = (words: string) => {
+  /**
+   * The athlete's words, sent: a new run, or the answer to the one question the run waits on. `savesBatchId`: a fit's
+   * request (its `/fit` answered) — never an answer; when its run can't start here (a send out, the week used up, the
+   * coach at work), the fit is cancelled and the words wait in the box.
+   */
+  const send = (words: string, opts: { savesBatchId?: string } = {}) => {
     const said = words.trim();
-    if (!said || busy || usedUp) return;
+    const fitId = opts.savesBatchId;
+    if (!said) return;
+    if (fitId && (busy || usedUp || working)) return fitNotStarted(fitId, said);
+    if (busy || usedUp) return;
     if (working) {
       if (answering && liveId) void oneTap(() => answer.mutateAsync({ runId: liveId, words: said }));
       return;
     }
-    void oneTap(() => start.mutateAsync(said));
+    let out = false;
+    oneTap(() => {
+      out = true;
+      return start.mutateAsync(fitId ? { words: said, savesBatchId: fitId } : { words: said });
+    });
+    // A tap still out took it: a fit dropped so is a fit that can't start.
+    if (!out && fitId) fitNotStarted(fitId, said);
   };
 
   // ── The focus ──
   const boxRef = useRef<HTMLTextAreaElement>(null);
   const scroller = useRef<HTMLDivElement | null>(null);
   const settled = conv.isFetchedAfterMount || conv.isError;
+  // The fit the sheet was opened with: sent once, as soon as the conversation is known (what it continues, a run at
+  // work). A ref, so a second effect run (StrictMode) never sends it twice.
+  const fitSent = useRef(false);
+  useEffect(() => {
+    if (!fit || fitSent.current || !settled) return;
+    fitSent.current = true;
+    send(fit.request, { savesBatchId: fit.batchId });
+  });
+  // The fit-in run sent here, over (the conversation's own read says so, with its cards): no pins card came of it — it
+  // answered in words, stopped, failed — so its fit ends now, not an hour later. A card's own ending is the server's.
+  useEffect(() => {
+    if (!fitRun) return;
+    const t = conv.data?.turns.find((x) => x.runId === fitRun.runId);
+    if (!t || !OVER_STATUSES.includes(t.status)) return;
+    setFitRun(null);
+    if (!t.cards.some((c) => c.kind === "pins")) cancelFit(qc, fitRun.batchId);
+  }, [fitRun, conv.data, qc]);
   /** The box takes the focus once: as the sheet opens on nothing to show yet, or with words written for the athlete. */
   const focusDecided = useRef(false);
   useEffect(() => {
@@ -319,8 +377,9 @@ export function CoachConversation({ ctx, loopDeps, request = null, seeing: seenA
   const opening = settled && turns.length === 0;
   const alsoOpen = current.isFetchedAfterMount ? (current.data?.alsoOpen ?? []) : [];
   // The opening draws once this read has answered since the sheet opened, or failed (after its retries): "Also waiting"
-  // never arrives late. (Offline the conversation's own read hasn't answered either, and no opening is drawn.)
-  const alsoKnown = current.isFetchedAfterMount;
+  // never arrives late. (Offline the conversation's own read hasn't answered either, and no opening is drawn.) The open
+  // batch's read too: its card, above the opening, never lands late over a chip.
+  const alsoKnown = current.isFetchedAfterMount && savesKnown;
   const existingLive = existing !== null && existing.runId === liveId && working;
   const placeholder = working && answering ? BOX_PLACEHOLDER_ANSWER : boxPlaceholder(turns.length);
   const lastIndex = turns.length - 1;
@@ -328,6 +387,10 @@ export function CoachConversation({ ctx, loopDeps, request = null, seeing: seenA
     <>
       <div ref={setScroller} className="sheet-body scroller coach-convo-scroll" onScroll={anchor.onScroll} onPointerDownCapture={anchor.onInteract} onKeyDownCapture={anchor.onInteract}>
         <div className="coach-convo">
+          {/* The open batch of saved moves, above whatever conversation is open (the saves flow redesigned §3.2). */}
+          <CoachBoundary quiet>
+            <CoachSavesCard busy={busy || working || usedUp} onFit={(id, r) => send(r, { savesBatchId: id })} />
+          </CoachBoundary>
           {opening ? (
             <CoachBoundary>
               <CoachOpening ctx={ctx} seeing={seeing} alsoOpen={alsoOpen} alsoKnown={alsoKnown} busy={busy || usedUp} onAsk={send} />
@@ -412,7 +475,7 @@ export function CoachConversation({ ctx, loopDeps, request = null, seeing: seenA
             // The ✕ goes with the line: the focus to the box, never to the page.
             boxRef.current?.focus();
           }}
-          held={request !== null && draft === request.slice(0, REQUEST_MAX_CHARS)}
+          held={(request !== null && draft === request.slice(0, REQUEST_MAX_CHARS)) || (kept !== null && draft === kept)}
         />
       </div>
     </>
