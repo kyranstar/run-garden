@@ -8,13 +8,17 @@
 import { act, createElement } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { MemoryRouter } from "react-router-dom";
+import "fake-indexeddb/auto";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { FIT_SAVES_REQUEST, type OpenSavesBatchDto } from "@rg/saves";
 import { SavesTodayCard } from "../src/components/saves-today-card.js";
-import { CoachOpenContext, type CoachOpener } from "../src/screens/studio/coach-ask.js";
+import { CoachOpenContext, useCoachSeeing, type CoachOpener } from "../src/screens/studio/coach-ask.js";
+import { workoutFocus } from "../src/screens/studio/coach-focus.js";
+import { CoachSheetProvider } from "../src/screens/studio/coach-sheet.js";
 import { FITTING_LINE, OPEN_FIRST_LINE } from "../src/screens/studio/saves-model.js";
-import { button, click, json, serve, settle, until, type Call, type Routes } from "./coach-live-harness.js";
+import { button, click, dialog, json, quietLoop, run, serve, settle, until, type Call, type Routes } from "./coach-live-harness.js";
+import { primedClient, TODAY, todayDto } from "./studio-fixtures.js";
 
 (globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
 
@@ -129,9 +133,47 @@ describe("the Today card for the open batch", () => {
     await until(() => (coach.open as ReturnType<typeof vi.fn>).mock.calls.length === 1, "the coach opened");
     expect(order).toEqual(["fit", "open"]);
     expect(calls.find((c) => c.path === "/api/my-saves/batches/b1/fit")!.body).toEqual({ choices: {} });
-    expect(coach.open).toHaveBeenCalledWith({ fit: { batchId: "b1", request: FIT_SAVES_REQUEST } });
+    // Opened seeing nothing: Today's session is no part of a fit (its focus would steer the coach, and a refused one
+    // would cancel the fit).
+    expect(coach.open).toHaveBeenCalledWith({ fit: { batchId: "b1", request: FIT_SAVES_REQUEST }, seeing: null });
     // Nothing cancelled here: the coach's conversation says whether its run started.
     expect(calls.some((c) => c.path.endsWith("/fit/cancel"))).toBe(false);
+  });
+
+  it("in the app, the fit's run carries no focus — not Today's session, though Today registers it", async () => {
+    const calls = server(OPEN, {
+      "POST /api/my-saves/batches/b1/fit": { batchId: "b1", request: FIT_SAVES_REQUEST, moves: 9, links: 13 },
+      "GET /api/coach/runs/current": { run: null },
+      "GET /api/coach/conversation": { id: null, startedAt: null, turns: [] },
+      "GET /api/coach/nudges": { nudges: [] },
+      "GET /api/templates": { templates: [] },
+      "GET /api/objectives": { objectives: [] },
+      "POST /api/coach/runs": (body: { request: string }) => json({ run: run({ id: "run-f", request: body.request }), existing: false, conversationId: "run-f" }),
+    });
+    const session = workoutFocus({ id: "w1", title: "Easy run", effectiveDate: TODAY, workoutSeconds: 2400, calendarSeconds: 2400, category: "easy", sport: "run" });
+    function Today() {
+      useCoachSeeing(session);
+      return createElement(SavesTodayCard);
+    }
+    host = document.createElement("div");
+    document.body.appendChild(host);
+    root = createRoot(host);
+    act(() =>
+      root!.render(
+        createElement(
+          QueryClientProvider,
+          { client: primedClient({ today: todayDto(null) }) },
+          createElement(MemoryRouter, null, createElement(CoachSheetProvider, { loopDeps: quietLoop(() => run()) }, createElement(Today))),
+        ),
+      ),
+    );
+    await until(() => !!card(), "the card");
+    await click(button("Fit them in", card()!), "Fit them in");
+    await until(() => calls.some((c) => c.method === "POST" && c.path === "/api/coach/runs"), "the run started");
+    const body = calls.find((c) => c.method === "POST" && c.path === "/api/coach/runs")!.body;
+    expect(body).toMatchObject({ request: FIT_SAVES_REQUEST, savesBatchId: "b1" });
+    expect(body).not.toHaveProperty("focus");
+    expect(dialog()!.textContent).not.toContain("Seeing:");
   });
 
   it("a tap on the card opens the coach", async () => {

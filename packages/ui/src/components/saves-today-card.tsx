@@ -20,7 +20,8 @@ import { FITTING_LINE, todayHeadline, todaySubline } from "../screens/studio/sav
 export function SavesTodayCard() {
   const coach = useCoach();
   const { open } = useOpenSaves(coach !== null);
-  const { fit, pending, line } = useFitThemIn((batchId, request) => coach?.open({ fit: { batchId, request } }));
+  // Seeing nothing: Today's session is no part of a fit (its focus would steer the coach toward it).
+  const { fit, pending, line } = useFitThemIn((batchId, request) => coach?.open({ fit: { batchId, request }, seeing: null }));
   if (!coach || !open) return null;
   const sub = todaySubline(open.counts);
   return (

@@ -23,7 +23,8 @@ import { QueryClientProvider, type QueryClient } from "@tanstack/react-query";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { CoachConversationDto, CoachConversationTurnDto, CoachRunDto } from "@rg/api-client";
 import { FIT_SAVES_REQUEST, type OpenSavesBatchDto } from "@rg/saves";
-import { useCoach } from "../src/screens/studio/coach-ask.js";
+import { useCoach, useCoachSeeing } from "../src/screens/studio/coach-ask.js";
+import { workoutFocus } from "../src/screens/studio/coach-focus.js";
 import { CoachSheetProvider } from "../src/screens/studio/coach-sheet.js";
 import { FITTING_LINE, OPEN_FIRST_LINE, PUT_ASIDE_LINE } from "../src/screens/studio/saves-model.js";
 import type { LoopDeps } from "../src/screens/studio/use-coach-run.js";
@@ -63,8 +64,12 @@ const turn = (over: Partial<CoachConversationTurnDto> = {}): CoachConversationTu
 const conversation = (turns: CoachConversationTurnDto[]): CoachConversationDto => ({ id: turns[0]?.runId ?? null, startedAt: turns[0]?.at ?? null, turns });
 const ONE_TURN = conversation([turn()]);
 
-/** A screen with the nav's Coach button and Today's Fit them in (the coach opened with the fit). */
+const SESSION = workoutFocus({ id: "w1", title: "Easy run", effectiveDate: TODAY, workoutSeconds: 2400, calendarSeconds: 2400, category: "easy", sport: "run" });
+
+/** A screen that registers today's session, with the nav's Coach button and Today's Fit them in (the coach opened with
+ * the fit). */
 function Screen() {
+  useCoachSeeing(SESSION);
   const coach = useCoach();
   return createElement(
     "div",
@@ -227,7 +232,8 @@ describe("the open batch in the coach", () => {
     const fit = calls.find((c) => c.path === "/api/my-saves/batches/b1/fit")!;
     expect(fit.body).toEqual({ choices: {} });
     expect(calls.indexOf(fit)).toBeLessThan(calls.findIndex((c) => c.path === "/api/coach/runs"));
-    // The current conversation, continued — not a new one.
+    // The current conversation, continued — not a new one. No focus: the session the sheet sees is no part of a fit.
+    expect(dialog()!.textContent).toContain("Seeing: ");
     expect(runPosts(calls)[0]).toEqual({ request: FIT_SAVES_REQUEST, conversationId: "run-1", savesBatchId: "b1" });
     // The card says it is fitting; nothing cancelled.
     await until(() => !!card()?.textContent?.includes(FITTING_LINE), "fitting");

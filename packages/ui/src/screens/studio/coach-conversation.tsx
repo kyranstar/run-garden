@@ -205,7 +205,9 @@ export function CoachConversation({ ctx, loopDeps, request = null, seeing: seenA
       return api.coachRunCreate({
         request: v.words,
         ...(conversationId !== undefined ? { conversationId } : {}),
-        ...(seeing ? { focus: focusOfWire(seeing) } : {}),
+        // A fit carries its batch and never a focus: what the sheet sees is no part of it (and a refused focus would
+        // cancel the fit).
+        ...(seeing && !v.savesBatchId ? { focus: focusOfWire(seeing) } : {}),
         ...(v.savesBatchId ? { savesBatchId: v.savesBatchId } : {}),
       });
     },
