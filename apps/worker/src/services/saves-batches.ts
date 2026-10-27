@@ -108,7 +108,10 @@ export function noticeOf(
  *
  * A released batch carries its notice; a held one gets it on release. The batch is stamped on the posts it took, their
  * pending links and the pending personal moves those links made that no batch brought yet; the batch row itself is
- * written only if a post took it (two finishes at once make one batch).
+ * written only if a post took it (two finishes at once make one batch). The gate holds inside the transaction too: the
+ * posts are stamped only while still no batch is open, and every later write follows the posts' stamp, so a batch
+ * another request opened since the gate's read stops the cut whole — nothing is stamped, and the posts wait. The id
+ * returned is the one it tried to write, not proof a batch exists: a caller that needs the open batch re-reads it.
  * D1 statements: the gate 1, the waiting rows 1, the account's personal moves 1, then one transaction of 4 — and 1
  * more in it when the cut flags a near-duplicate. 7, or 8.
  */
@@ -199,6 +202,7 @@ export async function assembleBatch(db: Db, env: Env, userId: string, now: strin
           eq(savedPosts.status, "matched"),
           isNull(savedPosts.batchId),
           sql`${savedPosts.id} IN (SELECT value FROM json_each(${postIds}))`,
+          sql`NOT EXISTS (SELECT 1 FROM save_batches o WHERE o.user_id = ${userId} AND ${openBatchSql("o")})`,
         ),
       ),
     db

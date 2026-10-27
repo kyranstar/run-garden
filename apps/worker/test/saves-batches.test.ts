@@ -135,11 +135,30 @@ describe("assembleBatch", () => {
     expect(await postBatches()).toEqual({ a: first, b: second });
     // The second is open now; dismissed ("Not now"), it opens the gate as well.
     await matched("c", [move("Zorbex calf rock", { regions: ["calves"] })], userId, at(205));
+    writes = 0;
     expect(await assembleBatch(db, env(), userId, at(206))).toBeNull();
+    expect(writes).toBe(0);
     await close(second, { dismissedAt: at(207) });
     const third = (await assembleBatch(db, env(), userId, at(208)))!;
     expect(third).toBeTruthy();
     expect(await postBatches()).toEqual({ a: first, b: second, c: third });
+  });
+
+  it("a batch opened between the gate and the write stops the cut: nothing stamped, no batch row, the post still waits", async () => {
+    await db.insert(saveBatches).values({ id: "open", userId, status: "released", createdAt: T0, releasedAt: T0 });
+    const a = await matched("a", [move("Zorbex quad shuffle")]);
+    // Another request opened it after this one's gate read: the read saw none.
+    vi.spyOn(db, "all").mockResolvedValueOnce([] as never);
+    const tried = await assembleBatch(db, env(), userId, at(1));
+    expect(tried).toBeTruthy();
+    expect((await db.select().from(saveBatches)).map((b) => b.id)).toEqual(["open"]);
+    expect(await postBatches()).toEqual({ a: null });
+    expect((await linksOf(await personalIdOf(a, 0))).map((l) => l.batchId)).toEqual([null]);
+    expect((await db.select().from(personalMoves)).map((m) => m.batchId)).toEqual([null]);
+    // Once the open batch is answered, the post is cut as ever.
+    await close("open", { dismissedAt: at(2) });
+    const id = (await assembleBatch(db, env(), userId, at(3)))!;
+    expect(await postBatches()).toEqual({ a: id });
   });
 
   it("takes the oldest posts first up to 12 new moves; the rest wait for the next batch", async () => {
@@ -217,6 +236,21 @@ describe("assembleBatch", () => {
     expect(await linksOf(lift)).toEqual([expect.objectContaining({ batchId: id, checkFlag: true, likeMoveId: hold })]);
     expect(await linksOf(dynamic)).toEqual([expect.objectContaining({ batchId: id, checkFlag: true, likeMoveId: swing })]);
     expect(await linksOf(swing)).toEqual([expect.objectContaining({ batchId: id, checkFlag: false, likeMoveId: null })]);
+  });
+
+  it("a mark at the cut touches only this batch's links: an earlier batch's link to the same move stays as it was", async () => {
+    const p1 = await matched("p1", [move("Zorbex rotational swing")], userId, at(0));
+    const swing = await personalIdOf(p1, 0);
+    const first = (await assembleBatch(db, env(), userId, at(1)))!;
+    await close(first, { dismissedAt: at(2) });
+    // Since then the owner has a like move, and a later post shows the (still pending) swing again.
+    const dynamic = await ownMove("Zorbex dynamic rotational swing", "active");
+    const p2 = await matched("p2", [move("Zorbex rotational swings")], userId, at(3));
+    expect(await personalIdOf(p2, 0)).toBe(swing);
+    const second = (await assembleBatch(db, env(), userId, at(4)))!;
+    const links = Object.fromEntries((await linksOf(swing)).map((l) => [l.postId, l]));
+    expect(links[p2]).toMatchObject({ batchId: second, checkFlag: true, likeMoveId: dynamic });
+    expect(links[p1]).toMatchObject({ batchId: first, checkFlag: false, likeMoveId: null });
   });
 
   it("holds the batch while SAVES_HOLD_BATCHES is on: no release, no notice yet", async () => {

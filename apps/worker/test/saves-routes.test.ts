@@ -346,6 +346,8 @@ describe("POST /checks", () => {
     expect(await db.select().from(schema.saveBatches)).toEqual([]);
     const fin = await post("/checks", { checkId, phase: "finish", found: 1 });
     expect(fin.body).toEqual({ ok: true });
+    // The route's own 4 + assembleBatch's 7 (gate, waiting, personal moves, the batch and its stamps 4): the saves-flow
+    // redesign added the personal-moves read (near-duplicates at the cut) to the 6 it was.
     expect(fin.cost).toBeLessThanOrEqual(4 + 7);
     const [batch] = await db.select().from(schema.saveBatches);
     expect(batch).toMatchObject({ userId, status: "released", notice: "From your saves: 1 new move (hip), 1 you already had." });
