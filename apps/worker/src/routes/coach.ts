@@ -59,7 +59,8 @@ import {
 } from "../services/coach-wake.js";
 import { chunkIds, type Db } from "../services/db.js";
 import { plannedRowColumns } from "../services/planned-columns.js";
-import { isDesignedProposal } from "../services/proposal-kinds.js";
+import { isDesignedProposal, isMovePinsOp } from "../services/proposal-kinds.js";
+import { releaseFitStarts } from "../services/saves-batches.js";
 import { expiryOfClaims, SWEEP_REJUDGES } from "../services/design-approve.js";
 import { studioPlanEnd, studioPlanRetired } from "../services/studio-push.js";
 import { approveDesigned, declineDesigned, designedDraft, designedLines } from "./design-proposals.js";
@@ -123,7 +124,10 @@ export async function sweepStaleQuestions(db: Db, userId: string, now: string): 
  * A designed proposal's claims (Task 8b's recovery rule, design-approve.ts `expiryOfClaims`): one an approve is applying
  * now is never expired under it; one whose approve died is judged again on the plan first — made, recorded applied; not,
  * released — SWEEP_REJUDGES a sweep (REJUDGE_COST each), the rest waiting for the next. Its expiry is guarded by the ops
- * it read too: a claim written between the read and the write wins. A thread proposal holds no claim: nothing changes. */
+ * it read too: a claim written between the read and the write wins. A thread proposal holds no claim: nothing changes.
+ *
+ * A card of the moves in rotation naming a saves batch, expired, releases that batch's fit (saves-batches.ts
+ * `releaseFitStarts`, the saves flow redesigned §12.1): one statement for every such card the sweep expired, after them. */
 export async function sweepExpiredProposals(db: Db, userId: string, today: string): Promise<number> {
   const runLive = sql`exists (select 1 from ${coachRuns} r where r.user_id = ${userId} and r.parent_id is null
     and ${coachProposals.id} = ${designProposalId("")} || r.id
@@ -141,6 +145,8 @@ export async function sweepExpiredProposals(db: Db, userId: string, today: strin
   const now = nowInstant();
   const room = { rejudges: SWEEP_REJUDGES };
   let expired = 0;
+  /** The expired cards whose moves in rotation name a saves batch. */
+  const fits: string[] = [];
   for (const p of stale) {
     // A plan part-applied is never expired under the athlete: its next approve finishes it (§8 §4).
     if (structuralStarted(p.ops)) continue;
@@ -160,9 +166,12 @@ export async function sweepExpiredProposals(db: Db, userId: string, today: strin
       .returning({ id: coachProposals.id });
     if (changed.length === 0) continue;
     expired += 1;
+    if (Array.isArray(p.ops) && p.ops.some((o) => isMovePinsOp(o) && !!o.batchId)) fits.push(p.id);
     if (claims.replayFrom !== null) await recordReplayFrom(db, userId, claims.replayFrom).catch(() => undefined);
     if (p.status === "pending") await receipt(db, userId, `Expired — the moment passed: ${p.title}`, p.id);
   }
+  // Never an error once the expiries are written: past FIT_STARTED_TTL_MS a fit reads as over anyway.
+  await releaseFitStarts(db, userId, fits).catch(() => undefined);
   return expired;
 }
 

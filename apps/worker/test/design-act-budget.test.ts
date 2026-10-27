@@ -271,9 +271,9 @@ describe("each act tool's declared statement cost is the most it runs", () => {
     const main = await runRow(rich.userId);
     await measured("propose_workout", { doc: calmDoc(), target: { kind: "new", date: TODAY } }, rich.userId, main);
     expect(await most("finish", [{ input: { summary: "Done." }, run: main }, { input: { summary: "Done." } }, { input: { summary: "" } }])).toBe(1);
-    // Its own read; it declares one more — the loop's, once its proposal is made pending: the older plans' days it
-    // covers superseded (Task 7).
-    expect(tool("finish").statementCost).toBe(2);
+    // Its own read; it declares two more — the loop's, once its proposal is made pending: the older plans' days it
+    // covers superseded (Task 7), and a superseded saves card's fit released (the saves flow redesigned §12.1: was 2).
+    expect(tool("finish").statementCost).toBe(3);
   });
 
   it("adjust_plan: the athlete with the session, the proposal and the restore marker in one read, then one write — refusals and replays read only", async () => {
@@ -340,8 +340,9 @@ describe("each act tool's declared statement cost is the most it runs", () => {
 
   it("propose_workout fits a model step's tool room three times over, and every act tool fits the loop's per-tool cap", () => {
     const room = STEP_BUDGET - ROUTE_OVERHEAD - MODEL_STEP_FIXED;
-    // 28 since fix wave 3A round 2 (A-M3): a stop's proposal reserves its read and write twice over.
-    expect(room).toBe(28);
+    // 28 since fix wave 3A round 2 (A-M3): a stop's proposal reserves its read and write twice over; 27 since the saves
+    // flow redesigned (§12.1): its supersede may release a superseded saves card's fit, one statement more.
+    expect(room).toBe(27);
     // With its reviewer (Task 6) a draft pauses the run: no call after it runs in the same step.
     expect(tool("propose_workout").statementCost * 3).toBeLessThanOrEqual(room);
     for (const t of ACT_TOOLS) expect(t.statementCost, t.name).toBeLessThanOrEqual(MAX_TOOL_STATEMENT_COST);

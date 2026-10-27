@@ -375,8 +375,9 @@ describe("every request within the budget", () => {
     const step = await measured("POST", `/${id}/step`);
     expect(step.body.status).toBe("finished");
     expect(step.cost).toBeLessThanOrEqual(BUDGET);
-    // The step's end reserve is a stop's proposal (five, since round 2's read-again): a finish's write uses one of it.
-    expect(step.cost).toBe(BUDGET - 4);
+    // The step's end reserve is a stop's proposal (five, since round 2's read-again; six since the saves flow redesigned
+    // §12.1, its supersede's fit release): a finish's write uses one of it.
+    expect(step.cost).toBe(BUDGET - 5);
     const [p] = await db.select().from(schema.coachProposals).where(eq(schema.coachProposals.id, proposalId));
     expect(p!.status).toBe("rehearsal");
   });
@@ -419,11 +420,32 @@ describe("every request within the budget", () => {
     expect(step.status).toBe(200);
     expect(step.body.status).toBe("cancelled");
     expect(step.cost).toBeLessThanOrEqual(BUDGET);
-    // A finish's write and a lost claim's spend use two of the end reserve; a stop's proposal, the larger, the whole of it
-    // (the stop's worst case below).
-    expect(step.cost).toBe(BUDGET - 3);
+    // A finish's write and a lost claim's spend use two of the end reserve (six since the saves flow redesigned §12.1); a
+    // stop's proposal, the larger, the whole of it (the stop's worst case below).
+    expect(step.cost).toBe(BUDGET - 4);
     expect(step.body.events.length).toBeLessThanOrEqual(EVENTS_PER_INSERT);
   });
+
+  /**
+   * The stop's whole reserve (the saves flow redesigned §12.1): an older card of the moves in rotation, pending, naming a
+   * saved batch whose fit began before the card was made — and the `move_pins` op the stopping proposal holds beside its
+   * reviewed workout, naming the same move, so its supersede releases that fit (one statement more). Synthetic ids.
+   */
+  async function fittingPinsCard(runId: string) {
+    const batchId = `batch-${runId}`;
+    const ago = (ms: number) => new Date(Date.now() - ms).toISOString();
+    const pins = (id: string) => ({
+      kind: "move_pins", id, pin: ["zorbexHipCircle"], unpin: [], batchId, why: "w", title: "t", summary: "s", lines: [],
+      date: "2999-01-01", toolUseId: `u-${id}`, at: ago(0),
+    });
+    await db.insert(schema.saveBatches).values({ id: batchId, userId, status: "saved", createdAt: ago(300_000), savedAt: ago(120_000), fitStartedAt: ago(120_000) });
+    await db.insert(schema.coachProposals).values({
+      id: `older-${runId}`, userId, title: "t", evidence: "", rationale: "", flags: [], ops: [pins(`pins-older-${runId}`)],
+      status: "pending", expiresAt: "2999-01-01", createdAt: ago(60_000),
+    });
+    const fitOf = async () => (await db.select().from(schema.saveBatches).where(eq(schema.saveBatches.id, batchId)))[0]!.fitStartedAt;
+    return { op: pins(`pins-${runId}`), fitOf };
+  }
 
   it("the stop's worst case (fix wave 3A, A2): tools fill the room, their results take the state past its cap, and the run stops proposing its reviewed draft — exactly the budget", async () => {
     const room = BUDGET - ROUTE_OVERHEAD - MODEL_STEP_FIXED;
@@ -457,6 +479,7 @@ describe("every request within the budget", () => {
       toolUseId: "u",
       at: today,
     };
+    const card = await fittingPinsCard(id);
     await db.insert(schema.coachProposals).values({
       id: `dp-${id}`,
       userId,
@@ -464,7 +487,7 @@ describe("every request within the budget", () => {
       evidence: "",
       rationale: "",
       flags: [],
-      ops: [op],
+      ops: [op, card.op],
       status: "unreviewed",
       expiresAt: "2999-01-01",
       createdAt: new Date().toISOString(),
@@ -478,8 +501,10 @@ describe("every request within the budget", () => {
       "Suggested what had been reviewed before the stop.",
     ]);
     // Every tool ran (the room), then the run's write, the proposal read, its write (which lost to a late verdict), the
-    // read again, the write again, the older plans superseded, the lines: the step's end reserve spent whole.
+    // read again, the write again, the older plans superseded, the superseded saves card's fit released (the saves flow
+    // redesigned §12.1), the lines: the step's end reserve spent whole.
     expect(step.cost).toBe(BUDGET);
+    expect(await card.fitOf()).toBeNull();
     const [p] = await db.select().from(schema.coachProposals).where(eq(schema.coachProposals.id, `dp-${id}`));
     expect(p!.status).toBe("pending");
   });
@@ -521,6 +546,7 @@ describe("every request within the budget", () => {
       toolUseId: "u",
       at: new Date().toISOString(),
     };
+    const card = await fittingPinsCard(id);
     await db.insert(schema.coachProposals).values({
       id: `dp-${id}`,
       userId,
@@ -528,7 +554,7 @@ describe("every request within the budget", () => {
       evidence: "",
       rationale: "",
       flags: [],
-      ops: [op],
+      ops: [op, card.op],
       status: "unreviewed",
       expiresAt: "2999-01-01",
       createdAt: new Date().toISOString(),
@@ -543,8 +569,10 @@ describe("every request within the budget", () => {
       "Suggested what had been reviewed before the stop.",
     ]);
     // The route's two, the tree, the claim, the standing read, every queued call (the room), the run's write, the
-    // proposal read, its write (lost), the read again, the write again, the older plans superseded, the lines.
+    // proposal read, its write (lost), the read again, the write again, the older plans superseded, the superseded saves
+    // card's fit released (the saves flow redesigned §12.1), the lines.
     expect(step.cost).toBe(BUDGET);
+    expect(await card.fitOf()).toBeNull();
     const [p] = await db.select().from(schema.coachProposals).where(eq(schema.coachProposals.id, `dp-${id}`));
     expect(p!.status).toBe("pending");
   });

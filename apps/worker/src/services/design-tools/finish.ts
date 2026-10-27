@@ -17,9 +17,10 @@
  * Review comes before the athlete sees anything (spec §5): the loop's finish makes the main run's proposal `pending`
  * only when every workout in it carries its review; one that still has an unreviewed workout stays `unreviewed` —
  * never listed — and the line says it is kept back. A change to a session already on the plan (adjust_plan, Task 8b)
- * is never reviewed: the rule counts the designed workouts only, so a proposal of changes alone is the athlete's too. One statement: the proposal — and its cost declares one more, the
+ * is never reviewed: the rule counts the designed workouts only, so a proposal of changes alone is the athlete's too. One statement: the proposal — and its cost declares two more, the
  * loop's own once the proposal is made pending: the older plans' days it covers superseded (design-orchestrate.ts
- * `supersedeOlderPlans`).
+ * `supersedeOlderPlans`), and — when that supersedes a card of the moves in rotation naming a saves batch — the batch's
+ * fit released (the saves flow redesigned §12.1: 3, was 2).
  */
 import { and, eq } from "drizzle-orm";
 import { z } from "zod";
@@ -59,7 +60,7 @@ export const finish: DesignTool = {
     },
     additionalProperties: false,
   },
-  statementCost: 2,
+  statementCost: 3,
   cpuWeight: 0.1,
   roles: ["main", "designer"],
   control: "finish",

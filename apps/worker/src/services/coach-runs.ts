@@ -282,13 +282,16 @@ const BASE_FIXED = 4;
 /** Reserved: the spend added to a run whose claim a cancel took (the run write then matched nothing). */
 const LOST_CLAIM_WRITE = 1;
 /** Reserved: the proposal's one write when its run finishes — a rehearsal's marked, or a reviewed one made pending. (The
- * older plans' days a pending one covers, superseded after it, are on finish's own declared cost.) */
+ * older plans' days a pending one covers, superseded after it — and a superseded saves card's fit released — are on
+ * finish's own declared cost.) */
 const FINISH_WRITE = 1;
 /** Reserved: a main run that stops — any way but a cancel, even after its tools ran (its state grew past the cap) —
  * proposes what was reviewed (fix wave 3A, A2): the proposal read and its write — read and written once more when the
  * write lost to a verdict landing between the two (round 2, A-M3: design-review.ts PROMOTE_TRIES) — and the older
- * plans' days it covers superseded. */
-const STOP_PROPOSE = 2 * PROMOTE_TRIES + 1;
+ * plans' days it covers superseded, then — when that superseded a card of the moves in rotation naming a saves batch —
+ * the batch's fit released (design-orchestrate.ts `supersedeOlderPlans`; the saves flow redesigned §12.1: + 1, was
+ * 2 * PROMOTE_TRIES + 1). */
+const STOP_PROPOSE = 2 * PROMOTE_TRIES + 2;
 /** What a step's end may spend beyond its own writes: a finish's proposal write and a lost claim's spend can land in
  * one step (a cancel taking the claim while the tools ran), while a stop that proposes never meets either — it is
  * written under the claim it holds, and finishes nothing — so the larger of the two is reserved. */
@@ -1357,11 +1360,12 @@ const TAKEOVERS = sql.raw(
 
 /**
  * What one tree's expiry spends at most (`expireTree`): the expiry; the proposal read and its write, both once more
- * when the write lost to a late verdict (design-review.ts PROMOTE_TRIES); the older plans superseded — or, nothing
- * proposed, the close; and the lines. The sweep spends its read, a claim taken back when there is one, and this per
- * tree it expires (a counting test pins it); a step, an answer or a create spends it once.
+ * when the write lost to a late verdict (design-review.ts PROMOTE_TRIES); the older plans superseded and a superseded
+ * saves card's fit released (design-orchestrate.ts `supersedeOlderPlans`; the saves flow redesigned §12.1: + 1, was
+ * 7) — or, nothing proposed, the close; and the lines. The sweep spends its read, a claim taken back when there is
+ * one, and this per tree it expires (a counting test pins it); a step, an answer or a create spends it once.
  */
-export const EXPIRE_TREE_STATEMENTS = 1 + 2 * PROMOTE_TRIES + 1 + 1;
+export const EXPIRE_TREE_STATEMENTS = 1 + 2 * PROMOTE_TRIES + 2 + 1;
 
 /**
  * Expire a run's live tree, past its window or left under a run that is over, with the main run's plain line. Guarded:
@@ -2248,7 +2252,7 @@ export async function runStep(
     // The main run stopped — this step ended it, any way but a cancel (a cancel takes the claim, so nothing here is
     // written): it proposes what it has (spec §2; fix wave 3A, A2), under the finish's own guard, with why it stopped —
     // a set what was reviewed, the rest left out — and its next line says what came of it. STOP_PROPOSE: the proposal
-    // read and, when it proposes, its write and the older plans' days it covers superseded.
+    // read and, when it proposes, its write and the older plans' days it covers superseded (with a saves card's fit).
     if (!isLive(root.status) && root.status !== "finished" && root.status !== "cancelled") {
       mainLines.push(proposedLine(root, await proposeWhatItHas(db, userId, root, stoppedNote(root.error), endAt), LINES.proposed));
     } else if (end.withWhatItHas && due === root) {
@@ -2284,7 +2288,7 @@ const okStep = (result: StepResult): StepOutcome => ({ kind: "ok", result });
  * named, one version of a redone workout), or the run's reviewed draft (design-review.ts `promoteWithWhatItHas`); with
  * `today` (an expiry), a workout whose day has passed is left out. Made pending, the older plans' days it covers are
  * superseded. Answers whether it proposed. At most STOP_PROPOSE statements: the proposal read and its write (each once
- * more when the write lost to a late verdict) and the supersede (one when nothing is proposed).
+ * more when the write lost to a late verdict) and the supersede with its fit release (one when nothing is proposed).
  */
 async function proposeWhatItHas(db: Db, userId: string, root: RunNode, note: string, at: string, today?: string): Promise<boolean> {
   const proposalId = designProposalId(root.id);
@@ -3043,9 +3047,10 @@ async function runTools(
  * A run's proposal at its finish (the finish tool's, or a finish in words): a rehearsal's marked a rehearsal — never
  * one the athlete could act on, or see in a list; a main run's made `pending` — the only status the app lists — when
  * every workout in it carries its review and none is under way (review comes before the athlete sees anything, spec
- * §5), the older plans' days it covers then superseded. FINISH_WRITE, and the supersede on finish's declared cost (the
- * finish in words calls no tool: it has the whole tool room). Answers what became of it: `pending`, `rehearsal`, or
- * `kept` (nothing written: a designer's, or one the guard keeps back).
+ * §5), the older plans' days it covers then superseded. FINISH_WRITE, and the supersede (with a superseded saves
+ * card's fit release) on finish's declared cost (the finish in words calls no tool: it has the whole tool room).
+ * Answers what became of it: `pending`, `rehearsal`, or `kept` (nothing written: a designer's, or one the guard keeps
+ * back).
  */
 async function closeProposalAtFinish(s: StepCtx, proposalId: string): Promise<"pending" | "rehearsal" | "kept"> {
   // Only while the run is still live and held by this step, in the same statement (fix wave 3A, A11): a cancel that
@@ -3091,7 +3096,8 @@ async function closeProposalAtFinish(s: StepCtx, proposalId: string): Promise<"p
  * finish would (fix wave 3A, A3), its words the run's last line: a designer's kept as its finish line (`final`, which
  * its set's outcome quotes); a main run's proposal made pending through the finish's own guard — or, kept back by it
  * (a review left under way, a workout unreviewed), what was reviewed proposed once the end is written, as a stop does
- * (`withWhatItHas`). No tool ran this step: at most the guard's write, the supersede, and a stop's proposal.
+ * (`withWhatItHas`). No tool ran this step: at most the guard's write, the supersede and its fit release, and a stop's
+ * proposal.
  */
 async function finishInWords(s: StepCtx, said: string, spent: number, o: { lastTurn?: boolean } = {}): Promise<StepEnd> {
   const { state, run } = s;

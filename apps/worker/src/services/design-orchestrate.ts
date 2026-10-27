@@ -56,6 +56,7 @@ import { untrusted } from "./design-tools/read-common.js";
 import { clipProse } from "./design-prose.js";
 import type { RunScope, SetBrief, SetRound } from "./design-tools/types.js";
 import { isDocWorkoutOp, isPlanAdjustOp, opIdOf, type PlanAdjustOp } from "./proposal-kinds.js";
+import { releaseFitStarts } from "./saves-batches.js";
 
 // ── The set's shape ─────────────────────────────────────────────────────────────────────────────────────────────────
 
@@ -644,8 +645,10 @@ export { SAME_SESSION_MINUTES };
  * approved) and older than the new one, the new one pending; approved, declined or decided in part meanwhile, it is
  * left alone. A set's suggestion is never a focus (the create refuses it, design-focus.ts).
  *
- * ONE statement: each row's ops are read as that row is written, so an outcome written meanwhile is never lost.
- * Answers how many proposals it changed.
+ * ONE statement: each row's ops are read as that row is written, so an outcome written meanwhile is never lost — and
+ * one more when a card of the moves in rotation naming a saves batch is among what it superseded: that batch's fit is
+ * released (saves-batches.ts `releaseFitStarts`, the saves flow redesigned §12.1), so it comes back with "Fit them in"
+ * unless a newer fit began since the card was made. Answers how many proposals it changed.
  */
 export async function supersedeOlderPlans(
   db: Db,
@@ -699,8 +702,12 @@ export async function supersedeOlderPlans(
     WHERE user_id = ${userId} AND id <> ${proposalId} AND status IN ('pending', 'partially_approved') AND json_valid(ops)
       AND created_at < (SELECT created_at FROM coach_proposals WHERE id = ${proposalId} AND user_id = ${userId})
       AND (${isFocused} OR EXISTS (SELECT 1 FROM json_each(coach_proposals.ops) o WHERE ${covered(sql`o.value`)}))
-    RETURNING id
-  `)) as Array<{ id: string }>;
+    RETURNING id, EXISTS (SELECT 1 FROM json_each(coach_proposals.ops) o WHERE json_extract(o.value, '$.kind') = 'move_pins'
+      AND json_extract(o.value, '$.batchId') IS NOT NULL AND json_extract(o.value, '$.outcome.status') = 'superseded') AS pins
+  `)) as Array<{ id: string; pins: unknown }>;
+  // The row as written (RETURNING reads it after its SET): its moves in rotation, naming a batch, superseded. Never an
+  // error once the supersede is written: past FIT_STARTED_TTL_MS the fit reads as over anyway.
+  await releaseFitStarts(db, userId, rows.filter((r) => Number(r.pins) === 1).map((r) => r.id)).catch(() => undefined);
   return rows.length;
 }
 

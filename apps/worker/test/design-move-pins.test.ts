@@ -16,7 +16,7 @@ import { addDays, newId } from "@rg/domain";
 import type { Env } from "../src/env.js";
 import type { Db } from "../src/services/db.js";
 import { createSession, SESSION_COOKIE } from "../src/auth/sessions.js";
-import { coachRoutes } from "../src/routes/coach.js";
+import { coachRoutes, sweepExpiredProposals } from "../src/routes/coach.js";
 import { forgetAccountLibrary, loadAccountLibrary } from "../src/services/account-library.js";
 import { loadPreferences, savePreferences } from "../src/services/calendar-sync.js";
 import { createDocWorkout } from "../src/services/doc-workouts.js";
@@ -26,6 +26,7 @@ import { markUntrusted, PROMPT_TOOL_NAMES, roleBlock, SHARED_PROMPT } from "../s
 import {
   APPLYING_STALE_MS,
   APPROVE_FIXED,
+  DECLINE_COST,
   MOVE_PINS_FIXED,
   movePinsCostOf,
   REQUEST_BUDGET,
@@ -41,6 +42,7 @@ import { designProposalId, proposeWorkout } from "../src/services/design-tools/p
 import { readProposals } from "../src/services/design-tools/read-proposals.js";
 import { isToolErr, type ToolContext, type ToolErr, type ToolOk } from "../src/services/design-tools/types.js";
 import { pinsId } from "../src/services/proposal-kinds.js";
+import { releaseFitStarts } from "../src/services/saves-batches.js";
 import { calmDoc } from "./doc-workout-fixture.js";
 import { savedMoveDraft, seedSavedBatch } from "./saves-batch-fixture.js";
 import { makeTestDb, makeTestUser, MAX_LOOP_ITERATIONS, mountRoutes } from "./helpers.js";
@@ -529,6 +531,112 @@ describe("approving the moves in rotation", () => {
     expect(await pinnedIds()).toEqual([]);
     expect(await fittedAt(batchId)).toBeNull();
     expect((await opOf(id)).outcome?.status).toBe("declined");
+  });
+});
+
+describe("a fit ends with its card (the saves flow redesigned, §12.1)", () => {
+  /** A fit begun a minute before the card was made. */
+  const FIT_AT = new Date(NOW.getTime() - 60_000).toISOString();
+  /** After the card (made at NOW) was: a newer fit's. */
+  const LATER = new Date(NOW.getTime() + 30_000).toISOString();
+  const fitOf = async (batchId: string) => (await db.select().from(saveBatches).where(eq(saveBatches.id, batchId)))[0]!.fitStartedAt;
+  const startFit = (batchId: string, at = FIT_AT) => db.update(saveBatches).set({ fitStartedAt: at }).where(eq(saveBatches.id, batchId));
+
+  it("approved: fitted_at set and the fit cleared", async () => {
+    const { batchId, a } = await batch();
+    await startFit(batchId);
+    const { id } = await proposed({ pin: [a], batchId });
+    const { costs } = await approveAll(id);
+    expect(await fittedAt(batchId)).toBe(NOW.toISOString());
+    expect(await fitOf(batchId)).toBeNull();
+    // In the batch's own write: no statement more.
+    expect(costs).toEqual([APPROVE_FIXED + MOVE_PINS_FIXED + 1]);
+  });
+
+  it("Not now (decline): the fit cleared, fitted_at null — the card comes back; the decline within DECLINE_COST (7)", async () => {
+    const { batchId, a } = await batch();
+    await startFit(batchId);
+    const { id } = await proposed({ pin: [a], batchId });
+    const decline = await invoke("POST", `/api/coach/proposals/${id}/decline`, { opIds: [pinsId(id.slice(3))] });
+    expect(decline.status).toBe(200);
+    expect(decline.json).toMatchObject({ status: "declined", declined: [pinsId(id.slice(3))] });
+    expect(await fitOf(batchId)).toBeNull();
+    expect(await fittedAt(batchId)).toBeNull();
+    expect(DECLINE_COST).toBe(7);
+    // The session and its restore check, the proposal, the write, the receipt and the release (no workout: no plan read).
+    expect(decline.total).toBe(6);
+    expect(decline.total).toBeLessThanOrEqual(DECLINE_COST);
+    // The release with no proposal to read: no statement at all.
+    statements = 0;
+    await releaseFitStarts(db, userId, []);
+    expect(statements).toBe(0);
+  });
+
+  it("Not now beside a revised workout: the most a decline spends — the plan read, the receipt and the release — is DECLINE_COST exactly", async () => {
+    const prefs = await loadPreferences(db, userId);
+    const made = await createDocWorkout(db, userId, { date: addDays(TODAY, 3), doc: calmDoc({ title: "Mine" }) }, { today: TODAY, now: NOW.toISOString(), prefs });
+    const { a, batchId } = await batch();
+    await startFit(batchId);
+    const ctx = await mainRun();
+    const drafted = await proposeWorkout.run(ctx, { doc: calmDoc({ title: "Mine, calmer" }), target: { kind: "revise", workoutId: made.workout.id, baseRev: 1 } });
+    if (isToolErr(drafted)) throw new Error(`propose refused: ${drafted.error} — ${drafted.why}`);
+    ok((await pins(ctx, { pin: [a], batchId })).res);
+    const id = designProposalId(ctx.run.id);
+    const [p] = await db.select().from(coachProposals).where(eq(coachProposals.id, id));
+    const review = { scores: { intent: 4 }, notes: { intent: "Clear." }, mustFix: [], improvements: [], rounds: 1, changes: [] };
+    await db.update(coachProposals).set({ status: "pending", ops: (p!.ops as DesignedOp[]).map((o) => (o.kind === "doc_workout" ? { ...o, review } : o)) }).where(eq(coachProposals.id, id));
+    const decline = await invoke("POST", `/api/coach/proposals/${id}/decline`, {});
+    expect(decline.json).toMatchObject({ status: "declined" });
+    expect(await fitOf(batchId)).toBeNull();
+    expect(decline.total).toBe(DECLINE_COST);
+  });
+
+  it("expired by the sweep: the fit cleared", async () => {
+    const { batchId, a } = await batch();
+    await startFit(batchId);
+    const { id } = await proposed({ pin: [a], batchId });
+    await db.update(coachProposals).set({ expiresAt: addDays(TODAY, -1) }).where(eq(coachProposals.id, id));
+    expect(await sweepExpiredProposals(db, userId, TODAY)).toBe(1);
+    expect((await proposalOf(id)).status).toBe("expired");
+    expect(await fitOf(batchId)).toBeNull();
+    expect(await fittedAt(batchId)).toBeNull();
+  });
+
+  it("superseded by a newer pins card naming the same move: the old card's fit cleared only when the fit started before it was made", async () => {
+    for (const before of [true, false]) {
+      vi.setSystemTime(NOW);
+      const { batchId, a } = await batch();
+      if (before) await startFit(batchId);
+      const older = await proposed({ pin: [a], batchId });
+      if (!before) await startFit(batchId, LATER);
+      vi.setSystemTime(new Date(NOW.getTime() + 60_000));
+      const newer = await proposed({ pin: [a], batchId });
+      statements = 0;
+      await supersedeOlderPlans(db, userId, newer.id, new Date().toISOString());
+      // The supersede, then the release: it superseded a card of the moves in rotation naming a batch.
+      expect(statements, `before: ${before}`).toBe(2);
+      expect((await opOf(older.id)).outcome?.status).toBe("superseded");
+      expect((await proposalOf(older.id)).status).toBe("superseded");
+      expect(await fitOf(batchId), `before: ${before}`).toBe(before ? null : LATER);
+      expect(await fittedAt(batchId)).toBeNull();
+    }
+    // A supersede that leaves every card of the moves in rotation alone runs no release.
+    vi.setSystemTime(new Date(NOW.getTime() + 120_000));
+    const apart = await proposed({ pin: ["deadBug"] });
+    statements = 0;
+    await supersedeOlderPlans(db, userId, apart.id, new Date().toISOString());
+    expect(statements).toBe(1);
+  });
+
+  it("a fit started after the declined card was made is left as it is", async () => {
+    const { batchId, a } = await batch();
+    const { id } = await proposed({ pin: [a], batchId });
+    await startFit(batchId, LATER);
+    vi.setSystemTime(new Date(NOW.getTime() + 60_000));
+    const decline = await invoke("POST", `/api/coach/proposals/${id}/decline`, {});
+    expect(decline.json).toMatchObject({ status: "declined" });
+    expect(await fitOf(batchId)).toBe(LATER);
+    expect(await fittedAt(batchId)).toBeNull();
   });
 });
 

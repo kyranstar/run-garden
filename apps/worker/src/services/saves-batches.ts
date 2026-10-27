@@ -64,6 +64,26 @@ export function fitClaimSql(userId: string, batchId: string, status: "released" 
     and not exists (select 1 from save_batches fo where fo.user_id = fc.user_id and fo.id <> fc.id and ${openBatchSql("fo")}))`;
 }
 
+/**
+ * A fit ends with its card (spec §12.1): approved, the card's batch is marked fitted in (design-approve.ts, the same
+ * write clearing `fit_started_at`); any other ending — its `move_pins` op declined or superseded, or the whole proposal
+ * declined, superseded, expired or cancelled — clears the batch's fit, so it comes back with "Fit them in" (a decline
+ * means "not like that", not "never"). Of the proposals `proposalIds` names, each one ended so whose `move_pins` op
+ * names a batch of the account's, not fitted in, whose fit began no later than the proposal was made (a fit started
+ * after it is a newer fit's, never this card's). ONE statement, run only when `proposalIds` names one; callers run it
+ * after their own write, never as an error once that is written: past `FIT_STARTED_TTL_MS` the fit reads as over anyway.
+ */
+export async function releaseFitStarts(db: Db, userId: string, proposalIds: readonly string[]): Promise<void> {
+  if (proposalIds.length === 0) return;
+  await db.run(sql`update save_batches set fit_started_at = null
+    where user_id = ${userId} and fitted_at is null and fit_started_at is not null
+      and exists (select 1 from coach_proposals p, json_each(case when json_valid(p.ops) then p.ops else '[]' end) o
+        where p.user_id = ${userId} and p.id in (select value from json_each(${JSON.stringify(proposalIds)}))
+          and json_extract(o.value, '$.kind') = 'move_pins' and json_extract(o.value, '$.batchId') = save_batches.id
+          and (json_extract(o.value, '$.outcome.status') in ('declined', 'superseded') or p.status in ('declined', 'superseded', 'expired', 'cancelled'))
+          and save_batches.fit_started_at <= p.created_at)`);
+}
+
 const textOrNull = (v: unknown): string | null => (typeof v === "string" ? v : null);
 
 /** A JSON list of strings as SQLite hands it over (a list, or its text); [] when it isn't one. */

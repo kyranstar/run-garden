@@ -127,13 +127,15 @@
  * account's library and the named moves' pins are read (one statement), each move the library no longer offers —
  * archived since — is skipped with a line, an unpin of a move not in rotation is a line, and the rest are written in
  * one upsert a MOVE_PINS_PER ids (`exercise_prefs.pinned`), guarded by the proposal as this request last wrote it; then
- * the batch, still the athlete's and saved, is marked fitted in (`fitted_at`) — however many moves were pinned, none
- * among them (a lines-only card closes its batch): it was considered. A move the athlete set aside since
- * (`exercise_prefs.excluded`) is skipped with a line too: the engine leaves it out whatever its pin. It is CLAIMED first
- * (`applying`, under the same guard as every write), as a programme change is: a decline then answers it in flight,
- * another approve within APPLYING_STALE_MS too, and past it the claim is simply taken over — the write is the same again,
- * so nothing is released. The request's library is seeded again with the pins written (`reseedAccountLibrary`), so a
- * later read in the request — a workout's day, the receipt — pays nothing. It is refused only when the library can't be
+ * the batch, still the athlete's and saved, is marked fitted in (`fitted_at`, its fit — `fit_started_at` — cleared in the
+ * same write) — however many moves were pinned, none among them (a lines-only card closes its batch): it was considered.
+ * Declined, the card's batch is no longer fitting (saves-batches.ts `releaseFitStarts`): it comes back with "Fit them
+ * in". A move the athlete set aside since (`exercise_prefs.excluded`) is skipped with a line too: the engine leaves it
+ * out whatever its pin. It is CLAIMED first (`applying`, under the same guard as every write), as a programme change
+ * is: a decline then answers it in flight, another approve within APPLYING_STALE_MS too, and past it the claim is
+ * simply taken over — the write is the same again, so nothing is released. The request's library is seeded again with
+ * the pins written (`reseedAccountLibrary`), so a later read in the request — a workout's day, the receipt — pays
+ * nothing. It is refused only when the library can't be
  * read or the batch is another account's — never for a skip — and stays open. Its cost is MOVE_PINS_FIXED and one a
  * MOVE_PINS_PER ids (`movePinsCostOf`).
  *
@@ -197,6 +199,7 @@ import {
 } from "./proposal-kinds.js";
 import { placeSlotsWithin, RETRACT_COST } from "./program-slots.js";
 import { updateProgram } from "./programs.js";
+import { releaseFitStarts } from "./saves-batches.js";
 import { FROZEN_STATES } from "./workout-doc-store.js";
 
 // ── Shapes ──────────────────────────────────────────────────────────────────────────────────────────────────────────
@@ -433,9 +436,11 @@ export const APPROVE_FIXED = 7;
 /**
  * A decline: the session and its restore check, the proposal, the plan read, the write, and the receipt — or the
  * garden's replay for a claimed skip it found made (the recovery rule), never both: a change found made leaves the
- * proposal approved in part, never declined, so no "Left as planned" is written.
+ * proposal approved in part, never declined, so no "Left as planned" is written — and, when it declined the moves in
+ * rotation naming a saves batch, the batch's fit released (saves-batches.ts `releaseFitStarts`, the saves flow
+ * redesigned §12.1: 6 before it).
  */
-export const DECLINE_COST = 6;
+export const DECLINE_COST = 7;
 /**
  * The day a new workout or a revision is judged for (`docDayContext`): the place (two when the place it names is gone),
  * the profiles and the set-aside moves, the history (at most five reads) and the day's checks. (Its library, the
@@ -1522,7 +1527,8 @@ async function applyMovePins(
   if (writes.length > 0) await reseedAccountLibrary(db, userId, row?.library, new Map(writes.map(([id, on]) => [id, on === 1])));
   if (g.batchId) {
     if (row?.batch === "saved") {
-      await db.run(sql`update save_batches set fitted_at = ${now} where id = ${g.batchId} and user_id = ${userId} and status = 'saved' and ${asRead}`);
+      // Fitted in, and so no longer fitting (spec §12.1): one write.
+      await db.run(sql`update save_batches set fitted_at = ${now}, fit_started_at = null where id = ${g.batchId} and user_id = ${userId} and status = 'saved' and ${asRead}`);
     } else lines.push("Its saves batch is no longer saved — not marked fitted in");
   }
   return { status: "applied", at: now, pinned, unpinned, lines };
@@ -1830,6 +1836,8 @@ export async function declineDesignOps(
   const plan = workouts.length > 0 || stale.length > 0 ? await readPlan(db, userId, p.id, workouts, [], stale) : null;
   const outcomes = new Map<string, OpOutcome | PlanOpOutcome>();
   let replayFrom: string | null = null;
+  // The moves in rotation declined, naming a saves batch: its fit is released once the outcomes are written.
+  let release = false;
   for (const op of todo) {
     const made = plan && isDocWorkoutOp(op) ? madeOf(op as DesignedOp, plan, now) : null;
     const change = isPlanAdjustOp(op) ? (op as DesignedPlanOp) : null;
@@ -1844,6 +1852,7 @@ export async function declineDesignOps(
     } else {
       outcomes.set(opIdOf(op), { status: "declined", at: now, ...(reason ? { reason } : {}) });
       declined.push(opIdOf(op));
+      if (isMovePinsOp(op) && op.batchId) release = true;
     }
   }
   const next = withOutcomes(p.ops, outcomes);
@@ -1851,6 +1860,8 @@ export async function declineDesignOps(
   await writeOps(db, userId, p, next, status, now);
   // Never an error once the outcomes are written (the approve's own rule).
   if (replayFrom !== null) await recordReplayFrom(db, userId, replayFrom).catch(() => undefined);
+  // "Not now" on the card: its batch comes back with "Fit them in" (spec §12.1).
+  if (release) await releaseFitStarts(db, userId, [p.id]).catch(() => undefined);
   // Closed by this decline: "Left as planned", and when a newer plan took some of it, how much.
   if (status === "declined" || status === "superseded") {
     const ops = allDesignedOps(next);
