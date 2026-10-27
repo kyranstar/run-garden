@@ -240,8 +240,9 @@ describe("pin_moves: the coach keeps a saved move in rotation", () => {
       batchId,
       why: WORDS.why,
       title: WORDS.title,
-      // With a batch the card counts (the saves flow redesigned, §3.5): the neck nod, on the coach's call, waits.
-      summary: `Two join the rotation. ${B.name} waits.`,
+      // With a batch the card counts its new moves (the saves flow redesigned, §3.5; review round 1): the hip circle joins
+      // — the goblet squat, the athlete's already, is no joining — and the neck nod, on the coach's call, waits.
+      summary: ONE_JOINS,
       lines: storedFor(batchId),
       date: TODAY,
       toolUseId: ctx.toolUseId,
@@ -371,6 +372,29 @@ describe("pin_moves: the coach keeps a saved move in rotation", () => {
     expect(stored.map(pinsLineText).slice(0, 2)).toEqual([`${B.name}: Opens the neck.`, `${A.name}: Opens the hips.`]);
   });
 
+  it("a leading copy goes only with its separator: a name opening an ordinary sentence stays whole (review round 1)", async () => {
+    const { batchId, a, b } = await batch();
+    const ctx = await mainRun();
+    const cases: Array<[moveId: string, written: string, stored: string]> = [
+      // A possessive, and the name as a sentence's subject: no separator, so no copy.
+      [a, `${A.name}'s slow circles suit Thursdays.`, `${A.name}'s slow circles suit Thursdays.`],
+      [a, `${A.name} variations help your hips.`, `${A.name} variations help your hips.`],
+      // A copy, with its id and separator, in each form the model writes.
+      [b, `${B.name} (${b}): opens the neck.`, "Opens the neck."],
+      [b, `${B.name}: opens the neck.`, "Opens the neck."],
+      [b, `${B.name} – (${b}) – opens the neck.`, "Opens the neck."],
+      [b, `${b} — opens the neck.`, "Opens the neck."],
+      // An id is never a word: no "(id)" is left to read back as a second name.
+      [b, `${B.name} (${b}) opens the neck.`, "Opens the neck."],
+      // Written twice with no separator: kept (rare — the schema says never to write the name).
+      [b, `${B.name} ${B.name} opens the neck.`, `${B.name} ${B.name} opens the neck.`],
+      // A hyphen joining a word is no separator.
+      ["gobletSquat", `${GOBLET.name}-style depth on Mondays.`, `${GOBLET.name}-style depth on Mondays.`],
+    ];
+    ok((await pins(ctx, { pin: [a, b], batchId, lines: cases.map(([moveId, text]) => ({ moveId, text })) })).res);
+    expect((await opOf(designProposalId(ctx.run.id))).lines.map((l) => l.text)).toEqual(cases.map(([, , stored]) => stored));
+  });
+
   it("include is pinned, always: a card leaving an included move out is refused include_left_out, naming it", async () => {
     const seeded = await seedSavedBatch(db, userId, { savedAt: SAVED_AT, posts: [{ moves: [{ draft: A, choice: "include" }, { draft: B }] }] });
     const [a, b] = seeded.moveIds[0]! as string[];
@@ -381,6 +405,8 @@ describe("pin_moves: the coach keeps a saved move in rotation", () => {
     // A personal move's name is a post's reading: marked.
     expect(`${refused.error}: ${refused.why}`).toBe(`include_left_out: ${markUntrusted("saved post", A.name)} — the athlete chose to include it — pin it, with a line on where it goes.`);
     expect((await pins(ctx, { pin: [b], batchId: seeded.batchId, lines })).res).toMatchObject({ error: "include_left_out" });
+    // Unpinned is left out too (review round 1).
+    expect((await pins(ctx, { pin: [b], unpin: [a], batchId: seeded.batchId, lines })).res).toMatchObject({ error: "include_left_out" });
     expect(await db.select().from(coachProposals)).toEqual([]);
     // Pinned: stored.
     ok((await pins(ctx, { pin: [a], batchId: seeded.batchId, lines: [{ moveId: a!, text: "in rotation: Thursdays." }, lines[1]!] })).res);
@@ -419,6 +445,13 @@ describe("pin_moves: the coach keeps a saved move in rotation", () => {
     const stored = ok((await pins(ctx, { pin: [a], summary: undefined, lines: linesFor(batchId) })).res);
     expect(stored.data).toMatchObject({ batchId });
     expect(await opOf(designProposalId(ctx.run.id))).toMatchObject({ batchId, summary: ONE_JOINS });
+    // The run's batch no longer saved (review round 1): leaving batchId out can't help, so the advice never says to.
+    await db.update(saveBatches).set({ status: "dismissed" }).where(eq(saveBatches.id, batchId));
+    const gone = (await pins({ ...ctx, toolUseId: "toolu_gone" }, { pin: [a], summary: undefined, lines: linesFor(batchId) })).res;
+    if (!isToolErr(gone)) throw new Error("stored a card for a batch no longer saved");
+    expect([gone.error, gone.why]).toEqual(["bad_batch", "This run's saves batch is no longer saved, so no card can close it now."]);
+    expect(gone.fix).not.toContain("leave batchId out");
+    expect(gone.fix).toContain("Finish");
   });
 
   it("with a batch the summary counts: Eight join the rotation. {name} waits.", async () => {
@@ -428,15 +461,20 @@ describe("pin_moves: the coach keeps a saved move in rotation", () => {
     expect(pinsSummaryLine(2, ["Zorbex hip circle", "Zorbex neck nod"])).toBe("Two join the rotation. Two wait.");
     expect(pinsSummaryLine(0, ["Zorbex hip circle", "Zorbex neck nod", "Zorbex calf rock"])).toBe("None join the rotation. Three wait.");
     expect(pinsSummaryLine(13, [])).toBe("13 join the rotation.");
-    const { batchId, a } = await batch();
+    // Nine new moves; the athlete's goblet squat besides.
+    const names = ["hip circle", "neck nod", "calf rock", "wrist roll", "ankle tap", "spine wave", "hip hinge", "rib reach", "toe spread"].map((n) => `Zorbex ${n}`);
+    const seeded = await seedSavedBatch(db, userId, { savedAt: SAVED_AT, posts: [{ moves: [{ library: "gobletSquat" }, ...names.map((n) => ({ draft: savedMoveDraft(n) }))] }] });
+    const [, ...fresh] = seeded.moveIds[0]! as string[];
     const ctx = await mainRun();
-    // Eight pinned, the neck nod on the coach's call left: it waits. The coach's own summary is never stored with a batch.
-    const eight = [a, ...EXERCISES.slice(0, 7).map((e) => e.id)];
-    ok((await pins(ctx, { pin: eight, batchId })).res);
-    expect((await opOf(designProposalId(ctx.run.id))).summary).toBe(`Eight join the rotation. ${B.name} waits.`);
-    // Several left: counted.
+    // Eight pinned with the goblet squat (no joining: the athlete's already), the toe spread on the coach's call left: it
+    // waits. The coach's own summary is never stored with a batch.
+    const last = { moveId: fresh[8]!, text: "left in your library: your feet get enough from running." };
+    ok((await pins(ctx, { pin: [...fresh.slice(0, 8), "gobletSquat"], batchId: seeded.batchId, lines: [last] })).res);
+    expect((await opOf(designProposalId(ctx.run.id))).summary).toBe("Eight join the rotation. Zorbex toe spread waits.");
+    // Several left: counted — the goblet squat alone joins nothing (review round 1).
+    const { batchId } = await batch();
     ok((await pins({ ...ctx, toolUseId: "toolu_two_wait" }, { pin: ["gobletSquat"], batchId })).res);
-    expect((await opOf(designProposalId(ctx.run.id))).summary).toBe("One joins the rotation. Two wait.");
+    expect((await opOf(designProposalId(ctx.run.id))).summary).toBe("None join the rotation. Two wait.");
   });
 
   it("a second call replaces the first; a replay of a call answers what it stored; one already with the athlete is refused", async () => {

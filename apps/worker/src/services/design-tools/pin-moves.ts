@@ -19,8 +19,8 @@
  * card sets the move's name in bold, once, from the account's library. A text that repeats it anyway ("Name (id): …")
  * loses that leading copy and its separator; a personal id elsewhere in it reads as its move's name; and it is clipped
  * after the name is placed — name, ": " and text within PIN_LINE_MAX — at a sentence end wherever one fits. With a batch
- * the card's line counts what it does (`pinsSummaryLine`: "Eight join the rotation. Name waits."); without one, the
- * coach writes it (`summary`).
+ * the card's line counts its new moves (`pinsSummaryLine`: "Eight join the rotation. Name waits." — pinned, and left on
+ * the coach's call); without one, the coach writes it (`summary`).
  *
  * STORED as one op of kind `move_pins` (proposal-kinds.ts `MovePinsOp`) in the main run's proposal, as change_programme
  * stores its own: the moves, the batch, the card's words — its title, its line, a line a placement and a line a saved
@@ -88,31 +88,40 @@ function namesFor(text: string, find: (id: string) => { name: string } | undefin
   return text.replace(PERSONAL_ID_IN_TEXT, (id) => find(id)?.name ?? id);
 }
 
-/** What may follow a leading copy of the move: a separator, gone with it ("Name: …", "id — …", "Name (id), …"). */
-const LEAD_SEPARATOR = /^[:\-–—,.;]\s*/;
+/** After a leading copy of the move: spaces, then perhaps a separator — ":", "–", "—", ",", ".", ";", or "-" before a
+ * space (never a hyphen joining a word: "Plank-style") — then spaces. */
+const AFTER_COPY = /^\s*(?:([:–—,.;]|-(?=\s)))?\s*/;
 /** A letter or a digit: after a leading copy, one makes it a longer word ("Zorbex neck nods"), never a copy. */
 const WORD_CHAR = /^[\p{L}\p{N}]/u;
 
 /**
- * A move's line as stored (§3.5): any leading copy of its name, of "(id)" or of the id — in any order, in any case —
- * gone, with the separator after it; its first letter a capital. Nothing but punctuation left: the text as written.
+ * A move's line as stored (§3.5; review round 1): a leading copy of its name, of "(id)" or of the id, in any case —
+ * "Name: …", "Name (id): …", "Name – (id) – …", "id — …" — gone with the separator after it, and its first letter a
+ * capital. The name is a copy only when a separator follows it, or the "(id)" or id that does: a name opening an
+ * ordinary sentence stays whole ("Plank's hold time goes up.", "Plank variations help your core."), as does a name
+ * written twice with no separator (rare — the schema says never to write it). An id, which is never a word, needs no
+ * separator after it, so no "(id)" is left to read back as a second name. Nothing but punctuation left: the text as
+ * written.
  */
 function lineTextOf(text: string, id: string, name: string): string {
-  const leads = [name, `(${id})`, id].filter((l) => l.length > 0);
-  let t = text.trim();
-  let stripped = false;
-  for (let again = true; again; ) {
-    again = false;
-    for (const lead of leads) {
-      if (t.slice(0, lead.length).toLowerCase() === lead.toLowerCase() && !WORD_CHAR.test(t.slice(lead.length))) {
-        t = t.slice(lead.length).trimStart();
-        stripped = again = true;
-      }
-    }
+  const t = text.trim();
+  // Longest first: an id never stops short at a name that begins it.
+  const copies = [...new Set([name, `(${id})`, id])].filter((c) => c.length > 0).sort((a, b) => b.length - a.length);
+  const copyAt = (i: number): string | undefined =>
+    copies.find((c) => t.slice(i, i + c.length).toLowerCase() === c.toLowerCase() && !WORD_CHAR.test(t.slice(i + c.length)));
+  // Copy after copy, each with what follows it; the text starts after the last copy a separator (or, an id, nothing)
+  // closes.
+  let at = 0;
+  let cut = -1;
+  for (let copy = copyAt(at); copy !== undefined; copy = copyAt(at)) {
+    at += copy.length;
+    const after = AFTER_COPY.exec(t.slice(at))!;
+    at += after[0].length;
+    if (after[1] !== undefined || copy !== name) cut = at;
   }
-  if (stripped) t = t.replace(LEAD_SEPARATOR, "");
-  if (!/[\p{L}\p{N}]/u.test(t)) return text.trim();
-  return t.charAt(0).toUpperCase() + t.slice(1);
+  const rest = cut >= 0 ? t.slice(cut) : t;
+  if (!/[\p{L}\p{N}]/u.test(rest)) return t;
+  return rest.charAt(0).toUpperCase() + rest.slice(1);
 }
 
 const capital = (w: string): string => w.charAt(0).toUpperCase() + w.slice(1);
@@ -256,7 +265,10 @@ export const pinMoves: DesignTool = {
       return refuse("restoring", "The athlete's account is being restored right now.", "Finish, and say the moves can be fitted in once the restore is done.");
     }
     if (batchId && extra.batch !== "saved") {
-      return refuse("bad_batch", `No saved batch of the athlete's has id ${JSON.stringify(batchId)}.`, "Use the batch id read_saves gives, or leave batchId out.");
+      // The run's own batch (none named) is no longer saved: leaving batchId out can't help — this card can't close it.
+      return parsed.batchId
+        ? refuse("bad_batch", `No saved batch of the athlete's has id ${JSON.stringify(batchId)}.`, "Use the batch id read_saves gives, or leave batchId out.")
+        : refuse("bad_batch", "This run's saves batch is no longer saved, so no card can close it now.", "Finish without pin_moves: say in your finish line what you would pin, and the athlete can fit the moves in again.");
     }
     // A move the athlete is offered: the public library and their active moves — never one waiting in a batch not yet
     // saved, an archived or merged one, or one nobody has. A line's move too: the card names it.
@@ -312,7 +324,9 @@ export const pinMoves: DesignTool = {
       const room = Math.max(PIN_LINE_MAX - name.length - 2, PIN_LINE_MAX / 2);
       return { moveId: l.moveId, name, text: clipProse(namesFor(lineTextOf(l.text, l.moveId, name), find), room, { atSentence: true }) };
     });
-    // With a batch, the card's line counts: the moves pinned, and the new ones on the coach's call left waiting.
+    // With a batch, the card's line counts its new moves (review round 1): those pinned join — a pin of a move the athlete
+    // had already is no joining — and those on the coach's call left out wait.
+    const joined = fresh.filter(([id]) => pin.includes(id)).length;
     const waiting = fresh.filter(([id, c]) => c !== "include" && c !== "skip" && !pin.includes(id)).map(([id]) => nameOf(id));
     const at = ctx.now.toISOString();
     const toolUseId = ctx.toolUseId ?? `call-${at}`;
@@ -324,7 +338,7 @@ export const pinMoves: DesignTool = {
       ...(batchId ? { batchId } : {}),
       why: clipProse(parsed.why, WHY_MAX),
       title: clipProse(parsed.title, TITLE_MAX),
-      summary: clipProse(batchId ? pinsSummaryLine(pin.length, waiting) : parsed.summary!, SUMMARY_MAX),
+      summary: clipProse(batchId ? pinsSummaryLine(joined, waiting) : parsed.summary!, SUMMARY_MAX),
       lines,
       date: athlete.today,
       toolUseId,
