@@ -9,9 +9,11 @@ import { eq } from "drizzle-orm";
 import { schema } from "@rg/database";
 import { addDays, nowInstant, workoutDocSchema, type WorkoutDoc } from "@rg/domain";
 import type { Db } from "../src/services/db.js";
+import { createSession, SESSION_COOKIE } from "../src/auth/sessions.js";
+import { planRoutes } from "../src/routes/plan.js";
 import { repairPlannedWorkoutFidelity } from "../src/services/plan-repair.js";
-import { makeTestDb, makeTestUser, pinMiddayToday } from "./helpers.js";
-import { activateTmj, calmDoc, clientFor, landingsDoc, type Reply } from "./doc-workout-fixture.js";
+import { makeTestDb, makeTestUser, mountRoutes, pinMiddayToday } from "./helpers.js";
+import { activateTmj, calmDoc, clientFor, landingsDoc, makeEnv, type Reply } from "./doc-workout-fixture.js";
 
 const { plannedWorkouts, plannedWorkoutStages, workoutDocRevisions, corosWriteJobs } = schema;
 
@@ -344,6 +346,51 @@ describe("a revise adopts a watch-shaped row", () => {
     expect(res.status).toBe(200);
     expect(res.body.watchHasOlder).toBe(true);
     expect(statements.length).toBeLessThanOrEqual(45);
+  });
+});
+
+describe("an adopted row's old copy reaches the owner (spec §4): the Plan and the session sheet say the watch holds it", () => {
+  /** The Plan's reads, as the app asks them. */
+  async function planGet<T>(path: string): Promise<T> {
+    const app = mountRoutes(db, "/api/plan", planRoutes);
+    const cookie = `${SESSION_COOKIE}=${await createSession(db, userId, "test")}`;
+    const res = await app.request(path, { headers: { Cookie: cookie } }, makeEnv());
+    expect(res.status, path).toBe(200);
+    return (await res.json()) as T;
+  }
+  type Row = { id: string; corosSyncView?: string };
+
+  it("says 'older on watch' (content_stale) while the copy's name is held — on Today's list and the sheet's read, with no Send or Keep from here — and not once it clears", async () => {
+    // Adopted by a revise (the Studio's here; a coach approve's is the same write): its address kept, the name recorded.
+    const id = "cw-test-20-0";
+    await seedWatchShaped(id, { ...address("4242", "20", "880020", tomorrow) });
+    await seedCoachCreate(id, `Legs, invented — ${tomorrow}`);
+    expect((await call("PUT", `/api/workouts/${id}/doc`, { doc: calmDoc({ title: "Legs, revised" }), baseRev: 1 })).status).toBe(200);
+    expect(await rowOf(id)).toMatchObject({ origin: "studio", watchCopyName: `Legs, invented — ${tomorrow}`, lastVerifiedCorosDate: tomorrow });
+
+    const sheet = await planGet<{ workout: Row; watchVersion?: unknown }>(`/api/plan/workouts/${id}`);
+    expect(sheet.workout.corosSyncView).toBe("content_stale");
+    // An app-built row: no rewrite or keep from here (the Studio's Send replaces the copy).
+    expect(sheet.watchVersion).toEqual({ send: false, why: "cant_rewrite" });
+    const today = await planGet<{ upcoming: Row[] }>("/api/plan/today");
+    expect(today.upcoming.find((w) => w.id === id)?.corosSyncView).toBe("content_stale");
+
+    // The copy's delete verified (or a read no longer finds it): the name clears, and the row is what it is.
+    await db.update(plannedWorkouts).set({ watchCopyName: null }).where(eq(plannedWorkouts.id, id));
+    const after = await planGet<{ workout: Row; watchVersion?: unknown }>(`/api/plan/workouts/${id}`);
+    expect(after.workout.corosSyncView).toBe("synced");
+    expect(after.watchVersion).toBeUndefined();
+    expect((await planGet<{ upcoming: Row[] }>("/api/plan/today")).upcoming.find((w) => w.id === id)?.corosSyncView).toBe("synced");
+  });
+
+  it("a held name says it only for a session still to run, and only for an app-authored row", async () => {
+    // Its day gone: the copy is a record. A NULL-origin row with a name (none is written for one) says nothing either.
+    const past = "cw-test-21-0";
+    await seedWatchShaped(past, { origin: "studio", watchCopyName: "Legs, invented", ...address("4242", "21", "880021", today), effectiveDate: today, completionState: "completed" });
+    const notOurs = "cw-test-22-0";
+    await seedWatchShaped(notOurs, { watchCopyName: "Legs, invented", ...address("4242", "22", "880022", tomorrow) });
+    expect((await planGet<{ workout: Row }>(`/api/plan/workouts/${past}`)).workout.corosSyncView).toBe("synced");
+    expect((await planGet<{ workout: Row }>(`/api/plan/workouts/${notOurs}`)).workout.corosSyncView).toBe("synced");
   });
 });
 

@@ -322,7 +322,9 @@ export function deriveWorkoutSync(v: {
   lastVerifiedCorosDate: string;
   /** An open `content` intent on a session still to run (`stillToRun`): an
    * approved ease rewrote this session after COROS was last given it, and the
-   * athlete can still do something about it. A verified rewrite closes it. */
+   * athlete can still do something about it. A verified rewrite closes it.
+   * Also an adopted row's copy still held (`watch_copy_name`, routes/plan.ts):
+   * the watch has the version the revise replaced until its delete verifies. */
   hasOpenContentIntent: boolean;
   /** The athlete chose the watch's version and the next COROS read takes it
    * (watch-version.ts `TAKE_WATCH_COPY`): the two still differ until then. */

@@ -432,7 +432,10 @@ async function loadWorkoutViews(
       lastVerifiedCorosDate: w.lastVerifiedCorosDate,
       // "Older on watch" only while the athlete can still do something about it: an OPEN claim on a session still to
       // run (the account line's rule, `watchEarlierVersions`). A past or finished session's watch copy is a record.
-      hasOpenContentIntent: claims.open.has(w.id) && stillToRun(w, today),
+      // An adopted row (workout-editability spec §4) holds the copy the watch had of it under `watch_copy_name` until
+      // that copy's delete verifies (or a read no longer finds it): the watch has the older version — said by the
+      // app-built row's own line (no Send or Keep from here: the Studio's Send replaces it). Read off the row: no statement.
+      hasOpenContentIntent: (claims.open.has(w.id) || (appAuthoredRow(w) && w.watchCopyName !== null)) && stillToRun(w, today),
       // The athlete chose the watch's version; the next COROS read takes it (watch-version.ts) — said only while the
       // session is still to run: a past or finished one falls back to its own view (a read may never come for it).
       takingWatchCopy: takesWatchCopy(w.sourceContentFingerprint) && stillToRun(w, today),

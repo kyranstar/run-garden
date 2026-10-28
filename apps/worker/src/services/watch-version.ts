@@ -11,7 +11,9 @@
  *     the watch was last confirmed on is the session's own), and no watch write for it on its way (that is "sending").
  *     A past or finished session's watch copy is a record: its claim is left open and simply not counted, so a session
  *     that comes back (unskipped, moved on, healed back into the plan) says "Older on watch" again. The list also
- *     leaves out a claim the athlete left as it is (an app-built session, `LEFT_PATH`) — its row still says so.
+ *     leaves out a claim the athlete left as it is (an app-built session, `LEFT_PATH`) — its row still says so — and
+ *     an adopted row's copy still held (`watch_copy_name`, workout-editability §4), which its row says until the
+ *     Studio's Send takes it off.
  *  2. WHAT THE ATHLETE CAN DO. Send the app's version (watch-version-send.ts: the content rewrite the convergence
  *     backfill and an approved ease queue, when one can reach the row); keep the watch's (`keepWatchVersion`: the app
  *     takes the watch's copy — the claim released as a converged rewrite releases it, and the next COROS read rewrites
