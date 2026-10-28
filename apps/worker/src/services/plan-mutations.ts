@@ -4,7 +4,7 @@ import { appAuthoredRow, newId, watchAddressOf, type ArchiveReason, type UserPre
 import { chunkIds, type Db } from "./db.js";
 import { recordedStampFor } from "./coros-stamp.js";
 import { openIntentFor, recordIntent, resolveIntent, type IntentSource } from "./sync-intents.js";
-import { enqueueProgramUnpush } from "./watch-push.js";
+import { unpushBuild } from "./watch-push.js";
 import { sentBuildIdOf } from "./session-build.js";
 import { reopenedDocColumns } from "./workout-doc-store.js";
 
@@ -179,6 +179,8 @@ export async function enqueueUnpushIfOurs(
   w: typeof plannedWorkouts.$inferSelect,
   now: string,
   prefs: UserPreferences,
+  /** The row's sent build when the caller knows it (the mirror: none, when the row has no live push); read otherwise. */
+  known?: { sent: string | null },
 ): Promise<void> {
   // AN ADOPTED ROW'S OLD COPY comes off (workout-editability §4): the copy it held when a revise took it over, beside —
   // never instead of — a build it has sent since. That old copy is the very one the stamp path below would address for
@@ -191,8 +193,9 @@ export async function enqueueUnpushIfOurs(
   // re-review 3-B NEW-1). The address path below queued `<id>-unpush`, which that drain does not take, so a removed
   // copy waited for the hourly lane. Writes off: the unpush is recorded as owed on the sent build, as a Take off or a
   // move with writes off records it, and `runOwedUnpushes` queues it when writes come back on (re-review C-3a).
-  if (appAuthoredRow(w) && (await sentBuildIdOf(db, w.id))) {
-    await enqueueProgramUnpush(db, userId, w, now, prefs);
+  const sent = appAuthoredRow(w) ? (known ? known.sent : await sentBuildIdOf(db, w.id)) : null;
+  if (sent) {
+    await unpushBuild(db, userId, w, sent, now, prefs);
     return;
   }
   if (copy) return;

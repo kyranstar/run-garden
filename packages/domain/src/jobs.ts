@@ -227,9 +227,16 @@ export const programSessionPushJobSchema = z
     /** The stamp: program name AND ownership proof, ≤ WATCH_STAMP_MAX. */
     name: z.string().min(1).max(WATCH_STAMP_MAX),
     session: programWatchSessionSchema,
-    /** Executor-side retry counter (transient failures requeue, cap 3). */
     /** A provisional copy: pushed ahead of its day by the mirror, replaced on every change. */
     provisional: z.boolean().optional(),
+    /**
+     * The document revision the pushed build was made from — on the mirror's pushes (`mirror.ts`), so its current-copy
+     * test reads the copy's revision off the job. Absent from a Send's push and an engine build's.
+     */
+    fromDocRev: z.number().int().min(0).optional(),
+    /** The mirror's re-queues of this push after it failed for good (M3: a backoff, a cap of three). */
+    mirrorRetries: z.number().int().min(0).optional(),
+    /** Executor-side retry counter (transient failures requeue, cap 3). */
     attempts: z.number().int().min(0).optional(),
     /**
      * Written at verify: the fingerprints of what the read-back found. `structure` is `wire` without the program's

@@ -470,7 +470,7 @@ async function planDeps(db: Db, userId: string, build: WatchBuild): Promise<{ ca
 }
 
 /** The step count does not depend on the catalog, so a refusal needs no catalog read. */
-const NO_CATALOG: WatchPlanDeps = { catalogIdByKey: new Map(), keyOf: () => null };
+export const NO_CATALOG: WatchPlanDeps = { catalogIdByKey: new Map(), keyOf: () => null };
 
 /**
  * Why Send is not offered for this slot now, or null when it is (ruling 3-R2: Start's preconditions — today, the
@@ -628,6 +628,9 @@ async function programNameOf(db: Db, row: WorkoutRow): Promise<string> {
   return program?.name?.trim() || row.title;
 }
 
+/** What a push is made from: a build's id, its steps and moves — a day's build, or a provisional copy's record. */
+export type PushableBuild = WatchBuild & Pick<BuildPayload, "buildId">;
+
 /**
  * The push's payload for a build on its slot's day: the steps resolved against today's catalog, and the stamp.
  *
@@ -636,28 +639,35 @@ async function programNameOf(db: Db, row: WorkoutRow): Promise<string> {
  * instead of writing a second one under a new name (a program renamed since would otherwise change it). So a build
  * whose push was queued before keeps that push's stamp for its day — unless another session holds it now (only a
  * push that was taken off or never ran gives its stamp up); then, as at a first Send, the day's free stamp.
+ *
+ * `opts.taken` is the day's taken stamps when the caller has read them (the mirror reads them with its own jobs read);
+ * `opts.provisional` and `opts.fromDocRev` mark a mirror push (watch mirrors the plan §3.2): a provisional copy, and the
+ * document revision the build was made from, which the mirror's current-copy test reads off the job.
  */
-async function pushPayloadFor(
+export async function pushPayloadFor(
   db: Db,
   userId: string,
   row: WorkoutRow,
-  build: BuildPayload,
+  build: PushableBuild,
   /** The build's push as the caller read it (null: none); read here when not given. */
   known?: Awaited<ReturnType<typeof jobById>>,
+  opts: { taken?: ReadonlySet<string>; provisional?: boolean; fromDocRev?: number | null } = {},
 ): Promise<{ payload: ProgramSessionPushJob; plan: WatchPlan; catalog: Map<string, string> }> {
   const { catalog, deps } = await planDeps(db, userId, build);
   const plan = watchStepsFromBuild(build, deps);
-  const taken = await takenStampsOn(db, userId, row.effectiveDate, { jobId: pushJobId(build.buildId) });
+  const taken = opts.taken ?? (await takenStampsOn(db, userId, row.effectiveDate, { jobId: pushJobId(build.buildId) }));
   const earlier = known !== undefined ? known : await jobById(db, pushJobId(build.buildId));
   const prior = earlier ? programSessionPushJobSchema.safeParse(earlier.payload) : null;
   const fixed = prior?.success && prior.data.happenDay === row.effectiveDate && !taken.has(prior.data.name) ? prior.data.name : null;
   const stamp = fixed ?? programStamp(await programNameOf(db, row), row.effectiveDate, taken);
-  const payload = {
+  const payload: ProgramSessionPushJob = {
     workoutId: row.id,
     buildId: build.buildId,
     happenDay: row.effectiveDate,
     name: stamp,
     session: { kind: "program_watch" as const, title: row.title, steps: plan.steps },
+    ...(opts.provisional ? { provisional: true } : {}),
+    ...(typeof opts.fromDocRev === "number" ? { fromDocRev: opts.fromDocRev } : {}),
   };
   return { payload, plan, catalog };
 }
@@ -830,6 +840,33 @@ export async function sendToWatch(
   // until it has. Writes are on here (`slotRefusal`), so the delete is always queued.
   const copy = adoptedCopyUnpush(db, userId, row, ctx.now, ctx.prefs);
   if (copy) await copy.insert;
+  if (!(await queuePushJob(db, userId, row, build.buildId, build.inputsHash, valid, ctx.now))) {
+    // Neither inserted nor queued afresh — another request changed the push since `prepare` read it. "Sending" is
+    // the answer only while that push is on its way; anything else is a 409, never a silent 200.
+    const push = await jobById(db, id);
+    if (!push || !isInFlight(push.status)) throw new WatchUnavailableError("already_sent");
+  }
+  // The session `lockCurrentBuild` answered with is the slot as it now stands; the push just queued is `sending`.
+  return { ...session, watch: { state: "sending" } };
+}
+
+/**
+ * Queue `push:<buildId>` with `payload` (already parsed by `programSessionPushJobSchema`): inserted — or, when the build
+ * was sent before (a failed push, one whose copy was taken off, one a restore neutralised), queued afresh: the steps
+ * from today's catalog, the stamp the payload carries, the retry count reset, the old observation gone. True when the
+ * push is now queued by this call; false when it was neither (another request holds it: in flight or verified). One
+ * statement, two when the build was sent before. Send's and the mirror's one writer of a program push.
+ */
+export async function queuePushJob(
+  db: Db,
+  userId: string,
+  row: Pick<WorkoutRow, "id" | "effectiveDate">,
+  buildId: string,
+  inputsHash: string,
+  payload: ProgramSessionPushJob,
+  now: string,
+): Promise<boolean> {
+  const id = pushJobId(buildId);
   const inserted = await db
     .insert(corosWriteJobs)
     .values({
@@ -837,45 +874,34 @@ export async function sendToWatch(
       userId,
       workoutId: row.id,
       kind: "program_session_push",
-      expectedContentFingerprint: build.inputsHash,
+      expectedContentFingerprint: inputsHash,
       originalDate: row.effectiveDate,
       destinationDate: row.effectiveDate,
-      payload: valid as unknown as Record<string, unknown>,
-      requestedAt: ctx.now,
+      payload: payload as unknown as Record<string, unknown>,
+      requestedAt: now,
       status: "queued",
-      updatedAt: ctx.now,
+      updatedAt: now,
     })
     .onConflictDoNothing()
     .returning({ id: corosWriteJobs.id });
-  if (inserted.length === 0) {
-    // The build was sent before: a failed push, one whose copy was taken off (superseded), or one a restore
-    // neutralised. Queued afresh — the steps from today's catalog, the stamp kept, the retry count reset, the old
-    // observation gone.
-    const requeued = await db
-      .update(corosWriteJobs)
-      .set({
-        status: "queued",
-        claimedByDeviceId: null,
-        claimedAt: null,
-        verifiedAt: null,
-        completedAt: null,
-        lastErrorCategory: null,
-        lastErrorDetail: null,
-        payload: valid as unknown as Record<string, unknown>,
-        requestedAt: ctx.now,
-        updatedAt: ctx.now,
-      })
-      .where(and(eq(corosWriteJobs.id, id), inArray(corosWriteJobs.status, [...REQUEUEABLE_PUSH])))
-      .returning({ id: corosWriteJobs.id });
-    if (requeued.length === 0) {
-      // Neither inserted nor queued afresh — another request changed the push since `prepare` read it. "Sending" is
-      // the answer only while that push is on its way; anything else is a 409, never a silent 200.
-      const push = await jobById(db, id);
-      if (!push || !isInFlight(push.status)) throw new WatchUnavailableError("already_sent");
-    }
-  }
-  // The session `lockCurrentBuild` answered with is the slot as it now stands; the push just queued is `sending`.
-  return { ...session, watch: { state: "sending" } };
+  if (inserted.length > 0) return true;
+  const requeued = await db
+    .update(corosWriteJobs)
+    .set({
+      status: "queued",
+      claimedByDeviceId: null,
+      claimedAt: null,
+      verifiedAt: null,
+      completedAt: null,
+      lastErrorCategory: null,
+      lastErrorDetail: null,
+      payload: payload as unknown as Record<string, unknown>,
+      requestedAt: now,
+      updatedAt: now,
+    })
+    .where(and(eq(corosWriteJobs.id, id), inArray(corosWriteJobs.status, [...REQUEUEABLE_PUSH])))
+    .returning({ id: corosWriteJobs.id });
+  return requeued.length > 0;
 }
 
 /**

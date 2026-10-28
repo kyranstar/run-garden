@@ -1650,6 +1650,30 @@ export async function makeProvisionalRecord(
   rev: number,
   ctx: BuildCtx,
 ): Promise<{ buildId: string; version: number; stored: StoredBuild }> {
+  const record = await prepareProvisionalRecord(db, userId, row, doc, rev, ctx);
+  return { buildId: record.buildId, version: await record.insert(), stored: record.stored };
+}
+
+/** A provisional copy's record made and not yet stored: its id, what it holds, and its one insert (answers the version). */
+export interface PreparedProvisionalRecord {
+  buildId: string;
+  stored: StoredBuild;
+  insert(): Promise<number>;
+}
+
+/**
+ * `makeProvisionalRecord` in two halves: the reads and the materialisation now — so the mirror can judge what the record
+ * would push (its steps, its stamp) before anything is written — and the insert when the caller is ready. Throws
+ * `DocTooLargeRefusal` before anything is written.
+ */
+export async function prepareProvisionalRecord(
+  db: Db,
+  userId: string,
+  row: SlotRow,
+  doc: WorkoutDoc,
+  rev: number,
+  ctx: BuildCtx,
+): Promise<PreparedProvisionalRecord> {
   const date = row.effectiveDate;
   const context = await loadDocEngineContext(db, userId, doc.setting?.placeId, ctx.prefs);
   const jumpsDone = await docJumpsDone(db, userId, doc, context, ctx.today);
@@ -1660,23 +1684,26 @@ export async function makeProvisionalRecord(
   const judge = docValidateCtx(context, checks, date, ctx.today, jumpsDone);
   const stored = docStoredBuild({ doc, swaps: [], blocked: [] }, { date, context, checks, judge, version, inputsHash, rev, now: ctx.now });
   const id = newId();
-  const below = sql`(select min(coalesce(min(${sessionBuilds.version}), 0), 0) - 1 from ${sessionBuilds} where ${sessionBuilds.workoutId} = ${row.id})`;
-  const [made] = await db
-    .insert(sessionBuilds)
-    .values({
-      id,
-      userId,
-      workoutId: row.id,
-      version: below,
-      engineVersion: version,
-      inputsHash,
-      payload: { ...stored, kind: PROVISIONAL_KIND } as unknown as Record<string, unknown>,
-      workoutDoc: docText,
-      lockedAt: null,
-      createdAt: ctx.now,
-    })
-    .returning({ version: sessionBuilds.version });
-  return { buildId: id, version: made!.version, stored };
+  const insert = async (): Promise<number> => {
+    const below = sql`(select min(coalesce(min(${sessionBuilds.version}), 0), 0) - 1 from ${sessionBuilds} where ${sessionBuilds.workoutId} = ${row.id})`;
+    const [made] = await db
+      .insert(sessionBuilds)
+      .values({
+        id,
+        userId,
+        workoutId: row.id,
+        version: below,
+        engineVersion: version,
+        inputsHash,
+        payload: { ...stored, kind: PROVISIONAL_KIND } as unknown as Record<string, unknown>,
+        workoutDoc: docText,
+        lockedAt: null,
+        createdAt: ctx.now,
+      })
+      .returning({ version: sessionBuilds.version });
+    return made!.version;
+  };
+  return { buildId: id, stored, insert };
 }
 
 /**

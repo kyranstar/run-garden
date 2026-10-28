@@ -32,3 +32,12 @@ describe("programSessionPushJobSchema provisional", () => {
     expect(programSessionPushJobSchema.parse(payload()).provisional).toBeUndefined();
   });
 });
+
+describe("programSessionPushJobSchema mirror fields", () => {
+  it("carries the revision a mirror push was made from and its re-queue count; both optional", () => {
+    const parsed = programSessionPushJobSchema.parse(payload({ provisional: true, fromDocRev: 3, mirrorRetries: 1 }));
+    expect(parsed).toMatchObject({ fromDocRev: 3, mirrorRetries: 1 });
+    expect(programSessionPushJobSchema.parse(payload())).not.toHaveProperty("fromDocRev");
+    expect(programSessionPushJobSchema.safeParse(payload({ fromDocRev: -1 })).success).toBe(false);
+  });
+});
