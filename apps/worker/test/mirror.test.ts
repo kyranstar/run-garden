@@ -41,15 +41,24 @@ vi.mock("../src/services/calendar-sync.js", async (importOriginal) => ({
   ...(await importOriginal<typeof import("../src/services/calendar-sync.js")>()),
   syncCalendar: vi.fn(async () => ({})),
 }));
-/** A session whose copy cannot be made: `pushPayloadFor` throws for it (an unexpected error, as a failed read would). */
-const broken = vi.hoisted(() => ({ workoutId: null as string | null }));
+/**
+ * Sessions whose copy goes wrong: `prepare` — `pushPayloadFor` throws while the copy is prepared (as a failed read would);
+ * `write` — `queuePushJob` throws while it is written (as a failed D1 write would); `raced` — `queuePushJob` finds the
+ * build's push taken by another request between the mirror's read and its write (answers false).
+ */
+const broken = vi.hoisted(() => ({ prepare: null as string | null, write: null as string | null, raced: null as string | null }));
 vi.mock("../src/services/watch-push.js", async (importOriginal) => {
   const real = await importOriginal<typeof import("../src/services/watch-push.js")>();
   const pushPayloadFor: typeof real.pushPayloadFor = async (...args) => {
-    if (broken.workoutId !== null && args[2].id === broken.workoutId) throw new Error(`the catalog read failed ${"x".repeat(200)}`);
+    if (broken.prepare !== null && args[2].id === broken.prepare) throw new Error(`the catalog read failed ${"x".repeat(200)}`);
     return real.pushPayloadFor(...args);
   };
-  return { ...real, pushPayloadFor };
+  const queuePushJob: typeof real.queuePushJob = async (...args) => {
+    if (broken.write !== null && args[2].id === broken.write) throw new Error("D1_ERROR: the write failed");
+    if (broken.raced !== null && args[2].id === broken.raced) return false;
+    return real.queuePushJob(...args);
+  };
+  return { ...real, pushPayloadFor, queuePushJob };
 });
 
 let db: Db;
@@ -74,7 +83,7 @@ async function setup(): Promise<void> {
 beforeEach(async () => {
   vi.useFakeTimers({ toFake: ["Date"] });
   vi.setSystemTime(new Date(NOON));
-  broken.workoutId = null;
+  Object.assign(broken, { prepare: null, write: null, raced: null });
   await setup();
 });
 afterEach(() => {
@@ -497,29 +506,76 @@ describe("mirrorSweep", () => {
     expect((await intentOf(id))!.resolvedAt).toBeNull();
   });
 
-  it("making a copy that throws is remembered on the mark for its revision and day: it never stalls the account", async () => {
+  it("an error while the copy is prepared is remembered — nothing written — and tried again after its backoff, not before: a transient one heals", async () => {
     const bad = await seedDocRow(addDays(DAY, 1));
     const next = await seedDocRow(addDays(DAY, 2));
-    broken.workoutId = bad;
+    broken.prepare = bad;
     expect(await mirrorSweep(db, switchOn(), userId, prefs, ctx(), { cap: 1 })).toEqual({ queued: 0, skipped: { error: 1 } });
     const mark = await intentOf(bad);
     expect(mark).toMatchObject({ resolvedAt: NOON });
-    const memory = mark!.payload as { refused: string; rev: number; day: string; message: string };
-    expect(memory).toMatchObject({ refused: "error", rev: 1, day: addDays(DAY, 1) });
+    const memory = mark!.payload as { refused: string; rev: number; day: string; message: string; at: string; count: number };
+    expect(memory).toMatchObject({ refused: "error", rev: 1, day: addDays(DAY, 1), at: NOON, count: 1 });
     expect(memory.message.startsWith("Error: the catalog read failed")).toBe(true);
     expect(memory.message).toHaveLength(120);
     expect(await recordsOf(bad)).toHaveLength(0);
     expect(await jobsOf(bad)).toHaveLength(0);
-    // The next run passes it by and pushes the next session.
+    // It never holds the window up: the next run pushes the next session.
     const second = await mirrorSweep(db, switchOn(), userId, prefs, ctx(), { cap: 1 });
     expect(second.queued).toBe(1);
     expect(second.skipped.error).toBe(1);
     expect(await recordsOf(next)).toHaveLength(1);
-    // A new revision is tried afresh.
-    broken.workoutId = null;
-    await revise(bad);
-    expect((await mirrorSweep(db, switchOn(), userId, prefs, ctx(), { cap: 1 })).queued).toBe(1);
+    // Not before its first backoff; then tried again — the failure was transient, and the copy is made.
+    broken.prepare = null;
+    const sweepAt = (now: string) => mirrorSweep(db, switchOn(), userId, prefs, ctx({ now }), { cap: 1 });
+    expect(await sweepAt(after(MIRROR_RETRY_BACKOFF_MS[0] - 1000))).toEqual({ queued: 0, skipped: { error: 1, current: 1 } });
+    expect(await recordsOf(bad)).toHaveLength(0);
+    expect((await sweepAt(after(MIRROR_RETRY_BACKOFF_MS[0]))).queued).toBe(1);
     expect(await recordsOf(bad)).toHaveLength(1);
+    expect((await jobsOf(bad)).map((j) => j.kind)).toEqual(["program_session_push"]);
+  });
+
+  it("a persistent error: tried after 1 h, 6 h and 24 h, then left (gave_up) — until a revision, which is tried afresh", async () => {
+    const bad = await seedDocRow(addDays(DAY, 3));
+    broken.prepare = bad;
+    let at = NOON;
+    const sweepAt = (now: string) => mirrorSweep(db, switchOn(), userId, prefs, ctx({ now }), { cap: 1 });
+    expect(await sweepAt(at)).toEqual({ queued: 0, skipped: { error: 1 } });
+    for (const [n, wait] of MIRROR_RETRY_BACKOFF_MS.entries()) {
+      const due = new Date(Date.parse(at) + wait).toISOString();
+      expect(await sweepAt(new Date(Date.parse(due) - 1000).toISOString())).toEqual({ queued: 0, skipped: { error: 1 } });
+      expect(await sweepAt(due)).toEqual({ queued: 0, skipped: { error: 1 } });
+      expect((await intentOf(bad))!.payload).toMatchObject({ refused: "error", at: due, count: n + 2 });
+      at = due;
+    }
+    expect(await sweepAt(new Date(Date.parse(at) + 30 * 86_400_000).toISOString())).toEqual({ queued: 0, skipped: { gave_up: 1 } });
+    expect(await recordsOf(bad)).toHaveLength(0);
+    expect(await jobsOf(bad)).toHaveLength(0);
+    broken.prepare = null;
+    await revise(bad);
+    expect((await sweepAt(at)).queued).toBe(1);
+    expect(await recordsOf(bad)).toHaveLength(1);
+  });
+
+  it("a throw while the copy is written propagates — nothing remembered, the mark kept — and the next run makes it again: one delete, one push", async () => {
+    const day = addDays(DAY, 3);
+    const id = await seedDocRow(day);
+    await queue(id);
+    const [first] = await recordsOf(id);
+    await verifyByHand(id, first!.id, day);
+    await revise(id);
+    broken.write = id;
+    await expect(mirrorSweep(db, switchOn(), userId, prefs, ctx(), { cap: 1 })).rejects.toThrow("D1_ERROR");
+    // The delete was queued before the push failed; the mark is still open and holds no memory.
+    expect((await jobsOf(id)).map((j) => j.id)).toEqual([`push:${first!.id}`, `unpush:${first!.id}`]);
+    expect(await intentOf(id)).toMatchObject({ resolvedAt: null, payload: {} });
+    broken.write = null;
+    expect((await mirrorSweep(db, switchOn(), userId, prefs, ctx(), { cap: 1 })).queued).toBe(1);
+    const [newest] = await recordsOf(id);
+    expect((await jobsOf(id)).map((j) => j.id)).toEqual([`push:${first!.id}`, `unpush:${first!.id}`, `push:${newest!.id}`]);
+    expect(await jobOf(`${id}-unpush`)).toBeUndefined();
+    expect(await sentBuildIdOf(db, id)).toBe(newest!.id);
+    expect((await intentOf(id))!.resolvedAt).toBe(NOON);
+    expect((await mirrorSweep(db, switchOn(), userId, prefs, ctx(), { cap: 1 })).queued).toBe(0);
   });
 });
 
@@ -647,6 +703,14 @@ describe("queueReplacement", () => {
       expect(b!.lockedAt).toBeNull();
       expect(await sentBuildIdOf(db, id)).toBe(record!.id);
     }
+  });
+
+  it("the build's push taken by another request between the read and the write: already_pushed, and the lock stays — that push is the build's", async () => {
+    const { id, buildId } = await builtToday();
+    broken.raced = id;
+    expect(await queueReplacement(db, switchOn(), userId, await rowOf(db, id), buildId, ctx())).toBe("skipped:already_pushed");
+    const [b] = await db.select().from(sessionBuilds).where(eq(sessionBuilds.id, buildId));
+    expect(b!.lockedAt).toBe(NOON);
   });
 });
 

@@ -33,6 +33,7 @@ import {
   programSessionPushJobSchema,
   STAMPING_JOB_KINDS,
   watchAddressOf,
+  type ProgramSessionPushJob,
   type WatchAddressFields,
 } from "@rg/domain";
 import { watchPushEnabled, type Env } from "../env.js";
@@ -78,7 +79,7 @@ export type MirrorSkip =
   | "gave_up"
   /** The build's own push is on its way or verified already (`queueReplacement`): nothing to queue. */
   | "already_pushed"
-  /** Making the copy threw (`mirrorSweep`): remembered for the revision and day, so it never stalls the account. */
+  /** Preparing the copy threw: remembered on the backoff ladder, so it never stalls the account. */
   | "error";
 
 export type MirrorAnswer = "queued" | `skipped:${MirrorSkip}`;
@@ -103,16 +104,21 @@ export interface PushRow {
 export type MirrorRow = typeof plannedWorkouts.$inferSelect;
 
 /**
- * What the mirror remembers of a session it could not push for a reason only making the copy shows (too long for the
- * watch, a document that does not parse, an unexpected error — its message's first 120 characters) — on its owed mark's
+ * What the mirror remembers of a session it could not push for a reason only making the copy shows — on its owed mark's
  * payload, for that revision and day, so the sweep does not make the record again every run, and one session never holds
  * the window up. A new owed mark, a revision or a move forgets it.
+ *  - `too_long`, `not_document`: for good (for that revision and day).
+ *  - `error` (an unexpected throw while the copy was prepared; its message's first 120 characters): for a while — `at`
+ *    the last one, `count` how many in a row — on MIRROR_RETRY_BACKOFF_MS (1 h, 6 h, 24 h, then `gave_up`), so a
+ *    transient failure heals and a persistent one cannot stall the account.
  */
 export interface MirrorMemory {
   refused: "too_long" | "not_document" | "error";
   rev: number | null;
   day: string;
   message?: string;
+  at?: string;
+  count?: number;
 }
 
 // Spelled out, never derived from session-build.ts's constants at load: that module will import this one (Task 5), and
@@ -193,7 +199,24 @@ async function remember(db: Db, userId: string, workoutId: string, now: string, 
 function memoryOf(payload: unknown): MirrorMemory | null {
   const m = payload as Partial<MirrorMemory> | null;
   if (!m || (m.refused !== "too_long" && m.refused !== "not_document" && m.refused !== "error") || typeof m.day !== "string") return null;
-  return { refused: m.refused, rev: typeof m.rev === "number" ? m.rev : null, day: m.day };
+  return {
+    refused: m.refused,
+    rev: typeof m.rev === "number" ? m.rev : null,
+    day: m.day,
+    ...(typeof m.at === "string" ? { at: m.at } : {}),
+    ...(typeof m.count === "number" ? { count: m.count } : {}),
+  };
+}
+
+/** The memory of this row's revision and day, if `memory` is one (a revision or a move forgets it). */
+const memoryFor = (memory: MirrorMemory | null | undefined, row: Pick<MirrorRow, "workoutDocRev" | "effectiveDate">): MirrorMemory | null =>
+  memory && memory.rev === row.workoutDocRev && memory.day === row.effectiveDate ? memory : null;
+
+/** An unexpected throw while the copy was prepared, remembered: the next in a row counts up from the row's last one. */
+function errorMemory(e: unknown, row: Pick<MirrorRow, "workoutDocRev" | "effectiveDate">, previous: MirrorMemory | null | undefined, now: string): MirrorMemory {
+  const last = memoryFor(previous, row);
+  const message = (e instanceof Error ? `${e.name}: ${e.message}` : String(e)).slice(0, 120);
+  return { refused: "error", rev: row.workoutDocRev, day: row.effectiveDate, message, at: now, count: last?.refused === "error" ? (last.count ?? 1) + 1 : 1 };
 }
 
 // ── The jobs the mirror reads ────────────────────────────────────────────────────────────────────────────────────
@@ -303,15 +326,24 @@ function rowRefusal(row: MirrorRow, env: Env, ctx: BuildCtx): MirrorSkip | null 
 }
 
 /**
- * What the mirror does for this row now, from the row, its pushes and its memory (pure): a refusal; the re-queue of its
- * failed push (M3: same revision and day, its backoff over, fewer than three re-queues — a push a restore neutralised
- * likewise, under the stamp it may have landed a copy with); or a new copy.
+ * What the mirror does for this row now, from the row, its pushes and its memory (pure): a refusal (a remembered error
+ * only until its backoff is over); the re-queue of its failed push (M3: same revision and day, its backoff over, fewer
+ * than three re-queues — a push a restore neutralised likewise, under the stamp it may have landed a copy with); or a new
+ * copy.
  */
 function verdictOf(row: MirrorRow, pushes: readonly PushRow[], env: Env, ctx: BuildCtx, memory: MirrorMemory | null): Verdict {
   const refused = rowRefusal(row, env, ctx);
   if (refused) return { skip: refused };
   if (currentCopy(row, pushes, ctx.today)) return { skip: "current" };
-  if (memory && memory.rev === row.workoutDocRev && memory.day === row.effectiveDate) return { skip: memory.refused };
+  const known = memoryFor(memory, row);
+  if (known?.refused === "error") {
+    // An error while the copy was prepared: tried again once its backoff is over; after three, left (`gave_up`).
+    const wait = MIRROR_RETRY_BACKOFF_MS[(known.count ?? 1) - 1];
+    if (wait === undefined) return { skip: "gave_up" };
+    if (Date.parse(known.at ?? "") + wait > Date.parse(ctx.now)) return { skip: "error" };
+  } else if (known) {
+    return { skip: known.refused };
+  }
   const failed = pushes
     .filter((p) => isOneOf(RETRYABLE, p.status) && p.happenDay === row.effectiveDate && (p.fromDocRev === null || p.fromDocRev === row.workoutDocRev))
     .sort((a, b) => b.updatedAt.localeCompare(a.updatedAt))[0];
@@ -365,46 +397,45 @@ interface NextCopy {
 }
 
 /**
- * THE PREVIOUS COPY'S DELETE, THEN THE NEW PUSH (one copy per session). Nothing is written when the build cannot go to
- * the watch (`too_long`: more steps than it holds, or none). Then the payload (the steps against today's catalog, the
- * day's free stamp), the previous copy's delete — an adopted row's held copy and the sent build's unpush (or, for a push
- * still queued, its supersede), never the address path: a copy whose build lost its sent mark has its delete already —
- * the record, the lock, the push. The lock comes first, so the lane never claims the push before its build is the sent
- * one; when the push cannot be queued (another request has it on its way or verified) the lock is taken back and the
- * answer is `already_pushed`.
+ * THE NEW COPY'S PAYLOAD, nothing written: `too_long` when the build cannot go to the watch (more steps than it holds,
+ * or none); else the steps against today's catalog and the day's free stamp, checked as Send checks them (a payload the
+ * lane would fail as malformed is never queued).
  */
-async function replaceCopy(
-  db: Db,
-  userId: string,
-  row: MirrorRow,
-  next: NextCopy,
-  ctx: BuildCtx,
-): Promise<"queued" | "skipped:too_long" | "skipped:already_pushed"> {
+async function prepareCopy(db: Db, userId: string, row: MirrorRow, next: NextCopy): Promise<ProgramSessionPushJob | "skipped:too_long"> {
   if (watchStepsFromBuild(next.build, NO_CATALOG).refusal) return "skipped:too_long";
   const made = await pushPayloadFor(db, userId, row, next.build, next.earlier, {
     ...(next.taken ? { taken: next.taken } : {}),
     provisional: next.provisional,
     fromDocRev: next.fromDocRev,
   });
-  // As Send checks it: a payload the lane would fail as malformed is never queued (nor anything before it written).
-  const payload = programSessionPushJobSchema.parse(made.payload);
+  return programSessionPushJobSchema.parse(made.payload);
+}
+
+/**
+ * THE PREVIOUS COPY'S DELETE, THEN THE NEW PUSH (one copy per session): the previous copy's delete — an adopted row's
+ * held copy and the sent build's unpush (or, for a push still queued, its supersede), never the address path: a copy
+ * whose build lost its sent mark has its delete already — then the record, the lock, the push. The lock comes first, so
+ * the lane never claims the push before its build is the sent one. When the push cannot be queued (another request has
+ * the build's own push on its way or verified) the answer is `already_pushed`, and the lock stays: that live push is the
+ * build's, and its build is sent.
+ */
+async function writeCopy(
+  db: Db,
+  userId: string,
+  row: MirrorRow,
+  next: NextCopy,
+  payload: ProgramSessionPushJob,
+  ctx: BuildCtx,
+): Promise<"queued" | "skipped:already_pushed"> {
   await enqueueUnpushIfOurs(db, userId, row, ctx.now, ctx.prefs, { sent: next.sent, addressPath: false });
   await next.store?.();
-  const locked = next.lock
-    ? await db
-        .update(sessionBuilds)
-        .set({ lockedAt: ctx.now })
-        .where(and(eq(sessionBuilds.id, next.build.buildId), isNull(sessionBuilds.lockedAt)))
-        .returning({ id: sessionBuilds.id })
-    : [];
-  if (await queuePushJob(db, userId, row, next.build.buildId, next.inputsHash, payload, ctx.now)) return "queued";
-  if (locked.length > 0) {
+  if (next.lock) {
     await db
       .update(sessionBuilds)
-      .set({ lockedAt: null })
-      .where(and(eq(sessionBuilds.id, next.build.buildId), eq(sessionBuilds.lockedAt, ctx.now)));
+      .set({ lockedAt: ctx.now })
+      .where(and(eq(sessionBuilds.id, next.build.buildId), isNull(sessionBuilds.lockedAt)));
   }
-  return "skipped:already_pushed";
+  return (await queuePushJob(db, userId, row, next.build.buildId, next.inputsHash, payload, ctx.now)) ? "queued" : "skipped:already_pushed";
 }
 
 /**
@@ -414,6 +445,11 @@ async function replaceCopy(
  * nothing; a failed push of this revision and day is re-queued on its backoff (M3) rather than replaced; else the record
  * is made (`prepareProvisionalRecord`), and — unless it is too long for the watch, when nothing is written — the
  * previous copy's delete is queued, the record stored, and `push:<recordId>` queued with `provisional: true`.
+ *
+ * TWO PHASES. The preparation (the reads, the record made, the payload, its check) writes nothing: a throw there is
+ * remembered on the row's mark (`error`, on the backoff ladder) and answered `skipped:error`. The writes (the delete, the
+ * record, the push) are not caught: a throw there propagates, and nothing is remembered — the next run finds the copy
+ * not current and makes it again (the delete already queued is not queued twice).
  *
  * The owed mark is resolved whatever the answer, except with the switch or the writes off or a restore running (they
  * keep it open, so the catch-up finds it). `known` is what the sweep has read already (the jobs, the mark, the restore)
@@ -458,21 +494,20 @@ export async function queueProvisionalPush(
   if ("retry" in verdict) return finish((await requeueFailed(db, verdict.retry, ctx.now)) ? "queued" : "skipped:current");
 
   const rev = row.workoutDocRev!;
-  const memory = (why: MirrorMemory["refused"]): MirrorMemory => ({ refused: why, rev, day: row.effectiveDate });
-  const doc = parseStoredWorkoutDoc(row.workoutDoc);
-  if (!doc || isRunDoc(doc)) return finish("skipped:not_document", memory("not_document"));
-  let record: Awaited<ReturnType<typeof prepareProvisionalRecord>>;
-  try {
-    record = await prepareProvisionalRecord(db, userId, row, doc, rev, ctx);
-  } catch (e) {
-    if (e instanceof DocTooLargeRefusal) return finish("skipped:too_long", memory("too_long"));
-    throw e;
-  }
-  const answer = await replaceCopy(
-    db,
-    userId,
-    row,
-    {
+  const memory = (why: "too_long" | "not_document"): MirrorMemory => ({ refused: why, rev, day: row.effectiveDate });
+
+  // The preparation: nothing written.
+  const prepare = async (): Promise<{ next: NextCopy; payload: ProgramSessionPushJob } | { refused: "too_long" | "not_document" }> => {
+    const doc = parseStoredWorkoutDoc(row.workoutDoc);
+    if (!doc || isRunDoc(doc)) return { refused: "not_document" };
+    let record: Awaited<ReturnType<typeof prepareProvisionalRecord>>;
+    try {
+      record = await prepareProvisionalRecord(db, userId, row, doc, rev, ctx);
+    } catch (e) {
+      if (e instanceof DocTooLargeRefusal) return { refused: "too_long" };
+      throw e;
+    }
+    const next: NextCopy = {
       build: { buildId: record.buildId, ...record.stored.build },
       inputsHash: record.stored.build.inputsHash,
       provisional: true,
@@ -482,10 +517,21 @@ export async function queueProvisionalPush(
       sent: sentOf(jobs, row),
       store: record.insert,
       lock: false,
-    },
-    ctx,
-  );
-  return answer === "skipped:too_long" ? finish(answer, memory("too_long")) : finish(answer);
+    };
+    const payload = await prepareCopy(db, userId, row, next);
+    return payload === "skipped:too_long" ? { refused: "too_long" } : { next, payload };
+  };
+  let prepared: Awaited<ReturnType<typeof prepare>>;
+  try {
+    prepared = await prepare();
+  } catch (e) {
+    const remembered = errorMemory(e, row, known.memory, ctx.now);
+    console.error(`mirror: ${row.id} not mirrored (error ${remembered.count}) — ${remembered.message}`);
+    return finish("skipped:error", remembered);
+  }
+  if ("refused" in prepared) return finish(`skipped:${prepared.refused}`, memory(prepared.refused));
+  // The writes: a throw propagates (see above).
+  return finish(await writeCopy(db, userId, row, prepared.next, prepared.payload, ctx));
 }
 
 /**
@@ -497,7 +543,9 @@ export async function queueProvisionalPush(
  * Task 5 routes the lock through `lockProven`'s preconditions. Here: the row's own refusals (`rowRefusal`: the switch,
  * the writes, kept off, not a document workout, resolved or under way or archived, a day gone, beyond the window), a
  * restore running, `current` when the build is the sent copy already, `already_pushed` when its own push is on its way
- * or verified (nothing written, nothing locked), `too_long`. Throws when the build is not this row's.
+ * or verified (nothing written, nothing locked; if another request queues it between that read and the write, the
+ * answer is the same, the delete queued and the build locked — the push is the build's), `too_long`. Throws when the
+ * build is not this row's.
  */
 export async function queueReplacement(db: Db, env: Env, userId: string, row: MirrorRow, newBuildId: string, ctx: BuildCtx): Promise<MirrorAnswer> {
   const refused = rowRefusal(row, env, ctx);
@@ -515,21 +563,17 @@ export async function queueReplacement(db: Db, env: Env, userId: string, row: Mi
   const own = jobs.find((j) => j.id === pushJobId(b.id));
   if (own && (isOneOf(IN_FLIGHT, own.status) || own.status === "verified")) return "skipped:already_pushed";
   const stored = b.payload as unknown as StoredBuild;
-  return replaceCopy(
-    db,
-    userId,
-    row,
-    {
-      build: { buildId: b.id, ...stored.build },
-      inputsHash: b.inputsHash,
-      provisional: isProvisionalBuild(b),
-      fromDocRev: stored.build.fromDoc?.rev ?? null,
-      taken: takenOn(jobs, row.effectiveDate, pushJobId(b.id)),
-      sent,
-      lock: b.version > 0,
-    },
-    ctx,
-  );
+  const next: NextCopy = {
+    build: { buildId: b.id, ...stored.build },
+    inputsHash: b.inputsHash,
+    provisional: isProvisionalBuild(b),
+    fromDocRev: stored.build.fromDoc?.rev ?? null,
+    taken: takenOn(jobs, row.effectiveDate, pushJobId(b.id)),
+    sent,
+    lock: b.version > 0,
+  };
+  const payload = await prepareCopy(db, userId, row, next);
+  return payload === "skipped:too_long" ? payload : writeCopy(db, userId, row, next, payload, ctx);
 }
 
 // ── The sweep ────────────────────────────────────────────────────────────────────────────────────────────────────
@@ -543,8 +587,8 @@ const SWEEP_ROWS = 60;
  * judged (`verdictOf`) with no statement of its own; the first that needs a copy gets ONE `queueProvisionalPush` (or
  * its failed push's re-queue) — `opts.cap` attempts a run, one by design (A5). The owed marks of the sessions it will
  * never push (kept off, resolved, beyond the window, current, …) are resolved together, in one statement, with the one
- * it pushed. A restore running (read with the candidates): nothing written. Making a copy that throws is remembered on
- * the row's mark (`error`, for its revision and day), so one session cannot stall the account every hour. Writes off or
+ * it pushed. A restore running (read with the candidates): nothing written. Preparing a copy that throws is remembered on
+ * the row's mark (`error`, on the backoff ladder), so one session cannot stall the account every hour. Writes off or
  * the switch off: nothing read, nothing queued, the marks kept. ≤ 15 statements for one record, a replacement included.
  */
 export async function mirrorSweep(
@@ -622,16 +666,11 @@ export async function mirrorSweep(
     // `opts.cap` heavy attempts a run (the budget: one), queued or not: the rest wait for the next run.
     if (attempts >= opts.cap) continue;
     attempts += 1;
-    try {
-      const answer = await queueProvisionalPush(db, env, userId, c.row, runCtx, { jobs, owed, memory, restoring: false, settle });
-      if (answer === "queued") queued += 1;
-      else count(answer.slice("skipped:".length));
-    } catch (e) {
-      const message = (e instanceof Error ? `${e.name}: ${e.message}` : String(e)).slice(0, 120);
-      console.error(`mirror sweep: ${c.row.id} not mirrored — ${message}`);
-      await remember(db, userId, c.row.id, ctx.now, { refused: "error", rev: c.row.workoutDocRev, day: c.row.effectiveDate, message });
-      count("error");
-    }
+    // A throw while the copy is prepared is remembered by `queueProvisionalPush` itself (`error`); one while it is
+    // written propagates — the owed marks stay open, and the next run makes the copy again.
+    const answer = await queueProvisionalPush(db, env, userId, c.row, runCtx, { jobs, owed, memory, restoring: false, settle });
+    if (answer === "queued") queued += 1;
+    else count(answer.slice("skipped:".length));
   }
   await resolveOwed(db, userId, settle, ctx.now);
   return { queued, skipped };
