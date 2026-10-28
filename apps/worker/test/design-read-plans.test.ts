@@ -7,7 +7,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { and, eq } from "drizzle-orm";
 import { schema } from "@rg/database";
-import { addDays, newId } from "@rg/domain";
+import { addDays, newId, REVISABILITY_WORDS } from "@rg/domain";
 import type { Env } from "../src/env.js";
 import type { Db } from "../src/services/db.js";
 import { loadNonCoachPlanEntries } from "../src/services/coach-plans.js";
@@ -84,6 +84,18 @@ const ok = (res: ToolOk | ToolErr): ToolOk & { data: { plans: Array<Record<strin
   if (isToolErr(res)) throw new Error(`refused: ${res.error} — ${res.why}`);
   return res as ToolOk & { data: { plans: Array<Record<string, any>> } };
 };
+
+describe("read_plans: editability", () => {
+  it("each next session reads revisable, and a coach session says what it is", async () => {
+    await block(rich.userId, { id: "cp-rev", name: "Rev block", start: day(2), end: day(-26) });
+    const id = await session(rich.userId, "cp-rev", day(-1), { category: "strength" });
+    await db.update(schema.plannedWorkouts).set({ origin: null, sport: "strength", id: "cw-next" }).where(eq(schema.plannedWorkouts.id, id));
+    await session(rich.userId, "cp-rev", day(-2), { category: "easy" });
+    const p = ok((await read()).res).data.plans.find((x) => x.id === "cp-rev")!;
+    expect(p.next[0]).toMatchObject({ id: "cw-next", origin: "coach session", revisable: true });
+    expect(p.next[1].revisable).toEqual({ no: REVISABILITY_WORDS.run.why, instead: REVISABILITY_WORDS.run.instead });
+  });
+});
 
 describe("read_plans", () => {
   it("is a read tool for every role, offered right after read_plan, one statement, small to describe", () => {
@@ -427,9 +439,11 @@ describe("read_plans", () => {
     const r = ok(res);
     expect(count).toBe(1);
     expect(Buffer.byteLength(JSON.stringify({ provenance: r.provenance, missing: r.missing, data: r.data }))).toBeLessThanOrEqual(RESULT_BUDGET_BYTES);
-    // Every plan is named or counted; each one shown keeps its first shape week, the rest counted.
+    // Every plan is named or counted (morePlans counts any plan left out, the fixture's own beside the eight; each next
+    // session now carries its `revisable`, so the room is a plan tighter); each one shown keeps its first shape week.
     const shown = r.data.plans.filter((p) => String(p.id).startsWith("cp-big-"));
-    expect(shown.length + ((r.data as { morePlans?: number }).morePlans ?? 0)).toBe(8);
+    const named = r.data.plans.length;
+    expect(named + ((r.data as { morePlans?: number }).morePlans ?? 0)).toBe(9);
     expect(shown.length).toBeGreaterThanOrEqual(6);
     for (const big of shown) {
       expect(big.shapeWeeks.length + big.moreShapeWeeks).toBe(30);

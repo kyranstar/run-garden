@@ -53,7 +53,8 @@ import {
   untrusted,
   type Untrusted,
 } from "./read-common.js";
-import { hasPassed, INTENT_SQL, ORIGIN_WORDS, PASSED_WORDS, planClock, STATUS_WORDS } from "./read-plan.js";
+import { hasPassed, INTENT_SQL, listRevisable, nullOriginWords, ORIGIN_WORDS, PASSED_WORDS, planClock, revisableWords, STATUS_WORDS } from "./read-plan.js";
+import { revisabilityIn } from "../doc-workouts.js";
 import { doneEntries, doneTerms, knownMove, sessionsWhere } from "./read-sessions.js";
 
 const pw = plannedWorkouts;
@@ -67,7 +68,8 @@ const listInput = z
 
 export const listWorkouts: DesignTool = {
   name: "list_workouts",
-  description: "Document workouts (past and planned) between two dates, newest first, with their intent; q searches titles and intents.",
+  description:
+    "Document workouts (past and planned) between two dates, newest first, with their intent; q searches titles and intents. Each says if it is revisable (a run is told by sport and category here).",
   inputSchema: {
     type: "object",
     properties: {
@@ -104,6 +106,9 @@ export const listWorkouts: DesignTool = {
         intent: INTENT_SQL,
         state: pw.completionState,
         category: pw.category,
+        sport: pw.sport,
+        content: pw.contentState,
+        source: pw.sourceWorkoutId,
         origin: pw.origin,
         rev: pw.workoutDocRev,
         seconds: MINUTES,
@@ -130,6 +135,7 @@ export const listWorkouts: DesignTool = {
       limit,
       render: (r) => {
         const passed = hasPassed(r, clock);
+        const originWords = r.origin ? (ORIGIN_WORDS[r.origin] ?? r.origin) : nullOriginWords(r.id, r.source);
         const minutes = typeof r.seconds === "number" && r.seconds > 0 ? Math.round(r.seconds / 60) : null;
         return {
           id: r.id,
@@ -139,8 +145,9 @@ export const listWorkouts: DesignTool = {
           ...(passed ? { plannedMinutes: minutes } : { minutes }),
           status: STATUS_WORDS[r.state] ?? r.state,
           ...(passed ? { passed: PASSED_WORDS } : {}),
-          ...(r.origin ? { origin: ORIGIN_WORDS[r.origin] ?? r.origin } : {}),
+          ...(originWords ? { origin: originWords } : {}),
           rev: r.rev,
+          revisable: listRevisable({ ...r, hasDoc: true }, clock.today),
           title: untrusted(r.title),
           intent: untrusted(typeof r.intent === "string" ? r.intent : ""),
         };
@@ -316,7 +323,7 @@ const notFound = (id: string) =>
 export const getWorkout: DesignTool = {
   name: "get_workout",
   description:
-    "One planned workout by id (its document, revision, minutes, what was done, feedback), or a suggestion by proposalId and opId (its document, minutes, review, how it ended). Build on one: basedOn { kind: proposal, id: proposalId }.",
+    "One planned workout by id (document, rev, minutes, what was done, feedback, whether revisable), or a suggestion by proposalId and opId (its document, minutes, review, how it ended). Build on one: basedOn { kind: proposal, id: proposalId }.",
   inputSchema: {
     type: "object",
     properties: {
@@ -334,14 +341,14 @@ export const getWorkout: DesignTool = {
     if (isErr(p)) return p;
     if (p.id === undefined) return suggestion(ctx, p.proposalId!, p.opId!);
     const { athlete, extra } = await readAthlete(ctx.db, ctx.userId, ctx.now, {
-      row: sql`(select json_object('date', ${pw.effectiveDate}, 'time', ${pw.effectiveTime}, 'state', ${pw.completionState}, 'category', ${pw.category}, 'origin', ${pw.origin},
+      row: sql`(select json_object('date', ${pw.effectiveDate}, 'time', ${pw.effectiveTime}, 'state', ${pw.completionState}, 'category', ${pw.category}, 'sport', ${pw.sport}, 'origin', ${pw.origin}, 'source', ${pw.sourceWorkoutId},
           'content', ${pw.contentState}, 'rev', ${pw.workoutDocRev}, 'doc', ${pw.workoutDoc})
           from ${pw} where ${pw.id} = ${p.id} and ${pw.userId} = ${ctx.userId} and ${pw.archivedAt} is null)`,
       library: personalMovesSql(ctx.userId),
     });
     // The account's library, with the athlete: a document's own moves (one of the athlete's included) read by it.
     const library = await accountLibraryFrom(ctx.db, ctx.userId, extra.library);
-    const row = parsedJson(extra.row) as { date?: string; time?: string; state?: string; category?: string; origin?: string | null; content?: string | null; rev?: number | null; doc?: string | null } | null;
+    const row = parsedJson(extra.row) as { date?: string; time?: string; state?: string; category?: string; sport?: string | null; source?: string | null; origin?: string | null; content?: string | null; rev?: number | null; doc?: string | null } | null;
     if (!row || typeof row.date !== "string") return notFound(p.id);
 
     const scope = sessionsWhere(ctx.userId, sql`${performedSessions.workoutId} = ${p.id}`);
@@ -376,6 +383,7 @@ export const getWorkout: DesignTool = {
     if (!doc) {
       missing.push(row.doc ? "the stored document does not read" : row.content === "outline" ? "no document: an outline built on its day" : "no document");
     }
+    const originWords = row.origin ? (ORIGIN_WORDS[row.origin] ?? row.origin) : nullOriginWords(p.id, row.source ?? null);
     const derived = doc ? deriveDoc(doc, library.all) : null;
     return answer({
       source: "the workout's row and document, logged sessions and the athlete's feedback",
@@ -388,8 +396,15 @@ export const getWorkout: DesignTool = {
         time: row.time,
         status: STATUS_WORDS[row.state ?? ""] ?? row.state,
         ...(hasPassed({ date: row.date, time: row.time ?? null, state: row.state ?? null, category: row.category ?? null }, planClock(athlete, ctx.now)) ? { passed: PASSED_WORDS } : {}),
-        ...(row.origin ? { origin: ORIGIN_WORDS[row.origin] ?? row.origin } : {}),
+        ...(originWords ? { origin: originWords } : {}),
         rev: row.rev ?? null,
+        revisable: revisableWords(
+          revisabilityIn(
+            { origin: row.origin ?? null, category: row.category ?? null, sport: row.sport ?? null, completionState: row.state ?? null, contentState: row.content ?? null, effectiveDate: row.date, workoutDoc: row.doc ?? null },
+            athlete.today,
+            library.all,
+          ),
+        ),
         derived: derived ? { minutes: derived.estimatedMinutes, discipline: derived.discipline, category: derived.category, mode: derived.mode } : null,
         actuals,
         feedback,

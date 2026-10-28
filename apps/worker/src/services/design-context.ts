@@ -59,7 +59,7 @@ import {
   providerConnections,
   sleepRecords,
 } from "@rg/database";
-import { EFFORT_LEVELS, addDays, clipWords, coachSettings, dayLabel, goodForOf, isoWeekday, todayInZone, type MusicShortcut, type ProfileDto, type RunWire, type UserPreferences } from "@rg/domain";
+import { EFFORT_LEVELS, addDays, clipWords, revisability, coachSettings, dayLabel, goodForOf, isoWeekday, todayInZone, type MusicShortcut, type ProfileDto, type RunWire, type UserPreferences } from "@rg/domain";
 import {
   EQUIPMENT,
   EXERCISES,
@@ -91,7 +91,7 @@ import { CONTEXT_TURNS, conversationBlock, conversationRows, type TurnRow } from
 import { runningFactsOf, runningLine, runWeeksSql, thresholdSql, watchLine, type RunningFacts } from "./designed-runs.js";
 import { FOCUS_LINES, SHARED_PROMPT, markUntrusted, roleBlock, type ReviewRubric, type UntrustedSource } from "./design-prompt.js";
 import { dayWords, distanceWords, minutesOf, paceWords, parsedArray, parsedJson, plural, readTagged, relativeDay } from "./design-tools/read-common.js";
-import { planTerm } from "./design-tools/read-plan.js";
+import { nullOriginWords, planTerm } from "./design-tools/read-plan.js";
 import { SAVES_INSIGHTS_MAX, SAVES_MOVES_MAX, savedBatchOf, savedMovesOf, savesBatchSql, type SavedBatch, type SavedChoice } from "./design-tools/read-saves.js";
 import { activitiesAround, activityRows, doneEntries, doneTerms, sessionsWhere, setRows, type DoneCtx } from "./design-tools/read-sessions.js";
 import type { SystemBlock } from "./llm-messages.js";
@@ -319,6 +319,9 @@ interface Reads {
     origin: string | null;
     state: string;
     seconds: number;
+    content: string | null;
+    source: string | null;
+    hasDoc: boolean;
   }>;
   answers: Array<{ questionId: string; n: number; last: string | null }>;
   history: Array<{ kind: string; recent: number; last: string | null }>;
@@ -484,6 +487,9 @@ async function read(
         sport: plannedWorkouts.sport,
         origin: plannedWorkouts.origin,
         state: plannedWorkouts.completionState,
+        content: plannedWorkouts.contentState,
+        source: plannedWorkouts.sourceWorkoutId,
+        hasDoc: sql<boolean>`${plannedWorkouts.workoutDoc} is not null`,
         seconds: sql<number>`coalesce(${plannedWorkouts.sourceEstimatedDurationSeconds}, ${plannedWorkouts.fallbackEstimatedDurationSeconds}, ${plannedWorkouts.calendarBlockDurationSeconds})`,
       })
       .from(plannedWorkouts)
@@ -720,9 +726,28 @@ const STATE_WORDS: Record<string, string> = { completed: "done", skipped: "skipp
  * only scheduled once its time has gone by (`now`, the athlete's "HH:MM" today; fix wave 13, A1) — how it stands.
  */
 function planItem(w: Reads["plan"][number], clock?: { today: string; time: string }): string {
+  return `${planItemBare(w, clock)}${clock ? revisableMark(w, clock.today) : ""}`;
+}
+
+/** `planItem` without its revisability marker. */
+function planItemBare(w: Reads["plan"][number], clock?: { today: string; time: string }): string {
   const gone = clock && w.state === "scheduled" && w.category !== "rest" && (w.date < clock.today || (w.date === clock.today && w.time < clock.time));
   if (gone) return `${planItemWords(w)} — its time passed, nothing logged`;
   return planItemWords(w);
+}
+
+/**
+ * Whether a row still ahead can be revised, said at the end of its line: ", revisable", or the reason and what to do
+ * instead (the same table the read tools carry). A row done, skipped or missed says so already; none here. Whether it is
+ * a run comes from its sport and category (the opening context holds no documents).
+ */
+function revisableMark(w: Reads["plan"][number], today: string): string {
+  if (STATE_WORDS[w.state]) return "";
+  const v = revisability(
+    { origin: w.origin, category: w.category, sport: w.sport, completionState: w.state, contentState: w.content, effectiveDate: w.date, hasDoc: w.hasDoc, isRun: null },
+    today,
+  );
+  return v.ok ? ", revisable" : `, not revisable (${v.reason.replace("_", " ")}) — ${v.instead.replace(/\.$/, "")}`;
 }
 
 function planItemWords(w: Reads["plan"][number]): string {
@@ -738,7 +763,7 @@ function planItemWords(w: Reads["plan"][number]): string {
             : w.category === "cross_training"
               ? "cross-training"
               : w.sport;
-  const origin = w.origin ? ORIGIN_WORDS[w.origin] : undefined;
+  const origin = w.origin ? ORIGIN_WORDS[w.origin] : nullOriginWords(w.id, w.source);
   const minutes = w.seconds > 0 ? ` (about ${Math.round(w.seconds / 60)} min)` : "";
   const state = STATE_WORDS[w.state];
   return `${w.time} ${what}${origin ? `, ${origin}` : ""}${minutes}${state ? ` — ${state}` : ""}`;
@@ -953,7 +978,7 @@ function aroundSection(around: NonNullable<Reads["around"]>, date: string, today
     const plan = around.plan
       .filter((p) => p.date === day)
       .sort((a, b) => `${a.time} ${a.id}`.localeCompare(`${b.time} ${b.id}`))
-      .map((p) => planItem(p as unknown as Reads["plan"][number], { today, time }));
+      .map((p) => planItem(planRow(p), { today, time }));
     const done = around.done.filter((e) => (e.entry as { date?: string }).date === day).reverse().map(doneShort);
     const doneWords = day > today ? "— (to come)" : done.length ? done.join("; ") : "nothing logged";
     lines.push(`- ${dayWords(day, today)}${day === date ? " (the draft's day)" : ""} — planned: ${plan.length ? plan.join("; ") : "nothing"} · done: ${doneWords}`);
@@ -980,8 +1005,8 @@ const figure = (n: number): string => String(Math.round(n * 10) / 10);
 
 /** A plan row in the header's own words, its state always said ("— scheduled" when nothing else is). */
 function planWithState(w: Reads["plan"][number], clock: { today: string; time: string }): string {
-  const words = planItem(w, clock);
-  return words !== planItemWords(w) || STATE_WORDS[w.state] ? words : `${words} — scheduled`;
+  const words = planItemBare(w, clock);
+  return `${words !== planItemWords(w) || STATE_WORDS[w.state] ? words : `${words} — scheduled`}${revisableMark(w, clock.today)}`;
 }
 
 const planRow = (row: Record<string, unknown>): Reads["plan"][number] => ({
@@ -994,6 +1019,9 @@ const planRow = (row: Record<string, unknown>): Reads["plan"][number] => ({
   origin: str(row.origin),
   state: String(row.state ?? "scheduled"),
   seconds: num(row.seconds) ?? 0,
+  content: str(row.content),
+  source: str(row.source),
+  hasDoc: row.hasDoc === true || row.hasDoc === 1,
 });
 
 function workoutLines(id: string, rows: Map<string, Array<Record<string, unknown>>>, clock: { today: string; time: string }): string[] {

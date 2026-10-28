@@ -5,10 +5,10 @@
  * availability index, the request as data). A made-up athlete; every date is relative to a fixed clock.
  */
 import { readFileSync } from "node:fs";
-import { eq } from "drizzle-orm";
+import { and, eq } from "drizzle-orm";
 import { beforeEach, describe, expect, it } from "vitest";
 import { schema } from "@rg/database";
-import { newId, workoutDocSchema, type WorkoutDoc } from "@rg/domain";
+import { newId, REVISABILITY_WORDS, workoutDocSchema, type WorkoutDoc } from "@rg/domain";
 import { EQUIPMENT, EQUIPMENT_IDS, EXERCISES, isPlyometric, libraryLine, TMJ, usedValues, type ConditionProfile, type DescribedRule, type HistorySession } from "@rg/exercise-library";
 import { FORMAT_OF_PART, validateWorkoutDoc } from "@rg/workout";
 import type { Env } from "../src/env.js";
@@ -733,6 +733,15 @@ describe("fix wave 13 — what the opening context gives, so the coach needn't f
       proposal({ id: "d3", status: "declined", title: "Old", ops: [designed("2026-03-09", { outcome: { status: "declined", at: "2026-03-10T06:00:00.000Z", reason: "No" } })] }),
     ]);
     expect(indexOf((await build()).header)).toMatch(/- proposals in 30 d: \d+ \(last [^)]+\); today: 2 declined \(1 with a reason — read_proposals\)/);
+  });
+
+  it("editability: a NULL-origin row says what it is and whether it can be revised; a programme session says why not and what to do instead", async () => {
+    await planned({ date: TODAY, time: "19:00", category: "strength", sport: "strength", origin: null });
+    await db.update(schema.plannedWorkouts).set({ id: "cw-evening" }).where(and(eq(schema.plannedWorkouts.effectiveDate, TODAY), eq(schema.plannedWorkouts.effectiveTime, "19:00")));
+    await planned({ date: TODAY, time: "20:00", category: "strength", sport: "strength", origin: "program" });
+    const line = (await build()).header.split("\n").find((l) => l.startsWith("Today's plan:"))!;
+    expect(line).toContain("19:00 strength, coach session (about 45 min), revisable");
+    expect(line).toContain(`20:00 strength, programme session (about 45 min), not revisable (programme) — ${REVISABILITY_WORDS.programme.instead.replace(/\.$/, "")}`);
   });
 
   it("A1: today's plan says a session gone by with nothing logged", async () => {

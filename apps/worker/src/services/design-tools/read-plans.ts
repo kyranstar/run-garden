@@ -36,7 +36,7 @@ import { STUDIO_PLAN_RETIRED } from "../studio-push.js";
 import { utf8Bytes } from "../utf8.js";
 import type { DesignTool } from "./types.js";
 import { answer, dayWords, isErr, parseInput, parsedArray, parsedJson, plural, READ_ROLES, readAthlete, RESULT_BUDGET_BYTES, untrusted } from "./read-common.js";
-import { ORIGIN_WORDS } from "./read-plan.js";
+import { listRevisable, nullOriginWords, ORIGIN_WORDS } from "./read-plan.js";
 import { DAY_SHORT } from "./change-programme.js";
 
 /** A block that ended this many days ago or less is still listed. */
@@ -66,9 +66,9 @@ function whatOf(category: string, sport: string): string {
 /** The next sessions of a plan (its id an SQL expression), still scheduled and not archived, from a day before the UTC
  * day on (the athlete's today is filtered after the read): a JSON array. */
 const nextSql = (userId: string, planId: SQL, from: string) => sql`(select json_group_array(json_object('id', n.id, 'date', n.d,
-    'time', n.t, 'title', n.title, 'category', n.category, 'sport', n.sport, 'origin', n.origin, 'seconds', n.seconds)) from (
+    'time', n.t, 'title', n.title, 'category', n.category, 'sport', n.sport, 'origin', n.origin, 'seconds', n.seconds, 'state', n.state, 'content', n.content, 'source', n.source, 'hasDoc', n.hasDoc)) from (
       select ${pw.id} as id, ${pw.effectiveDate} as d, ${pw.effectiveTime} as t, ${pw.title} as title, ${pw.category} as category, ${pw.sport} as sport,
-        ${pw.origin} as origin, coalesce(${pw.sourceEstimatedDurationSeconds}, ${pw.fallbackEstimatedDurationSeconds}) as seconds
+        ${pw.origin} as origin, ${pw.completionState} as state, ${pw.contentState} as content, ${pw.sourceWorkoutId} as source, ${pw.workoutDoc} is not null as hasDoc, coalesce(${pw.sourceEstimatedDurationSeconds}, ${pw.fallbackEstimatedDurationSeconds}) as seconds
       from ${pw} where ${pw.userId} = ${userId} and ${pw.planId} = ${planId} and ${pw.archivedAt} is null
         and ${pw.completionState} = 'scheduled' and ${pw.effectiveDate} >= ${from}
       order by ${pw.effectiveDate}, ${pw.effectiveTime}, ${pw.id} limit ${NEXT_SESSIONS + 5}) n)`;
@@ -192,6 +192,7 @@ function planOf(r: Row, today: string, room: Room, caring: readonly Caring[], li
     .slice(0, room.next)
     .map((n) => {
       const origin = typeof n.origin === "string" ? n.origin : null;
+      const originWords = origin ? ORIGIN_WORDS[origin] : nullOriginWords(String(n.id), typeof n.source === "string" ? n.source : null);
       return {
         id: n.id,
         date: n.date,
@@ -199,7 +200,11 @@ function planOf(r: Row, today: string, room: Room, caring: readonly Caring[], li
         time: n.time,
         what: whatOf(String(n.category ?? ""), String(n.sport ?? "")),
         minutes: typeof n.seconds === "number" && n.seconds > 0 ? Math.round(n.seconds / 60) : null,
-        ...(origin && ORIGIN_WORDS[origin] ? { origin: ORIGIN_WORDS[origin] } : {}),
+        ...(originWords ? { origin: originWords } : {}),
+        revisable: listRevisable(
+          { origin, category: typeof n.category === "string" ? n.category : null, sport: typeof n.sport === "string" ? n.sport : null, state: typeof n.state === "string" ? n.state : null, content: typeof n.content === "string" ? n.content : null, date: String(n.date), hasDoc: n.hasDoc === 1 },
+          today,
+        ),
         title: untrusted(typeof n.title === "string" ? n.title : ""),
       };
     });

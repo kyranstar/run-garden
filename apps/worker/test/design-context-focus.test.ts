@@ -11,7 +11,7 @@
 import { beforeAll, describe, expect, it } from "vitest";
 import { and, eq } from "drizzle-orm";
 import { schema } from "@rg/database";
-import { newId } from "@rg/domain";
+import { newId, REVISABILITY_WORDS } from "@rg/domain";
 import { EXERCISES } from "@rg/exercise-library";
 import type { Env } from "../src/env.js";
 import type { Db } from "../src/services/db.js";
@@ -72,7 +72,7 @@ describe("the block, kind by kind", () => {
   it("workout: its title, day, time, minutes, kind, state and its document's intent — the title and intent marked as the athlete's", async () => {
     const { header: h } = await header({ kind: "workout", id: me.todayDocId });
     const b = block(h);
-    expect(b).toContain(`The athlete asked from: a planned workout (id ${me.todayDocId}) — Wed 13 May · today, 18:00 strength, Studio workout (about 40 min) — scheduled.`);
+    expect(b).toContain(`The athlete asked from: a planned workout (id ${me.todayDocId}) — Wed 13 May · today, 18:00 strength, Studio workout (about 40 min) — scheduled, revisable.`);
     expect(b).toContain(`- Its title: ${athlete("Strong hips, easy back")}`);
     expect(b).toContain(`- What it is for: ${athlete("Wake the glutes, then load the squat; finish by opening the hips.")}`);
     expect(b).toContain("- Its document is at rev 2: get_workout reads it whole.");
@@ -90,8 +90,8 @@ describe("the block, kind by kind", () => {
   it("day: the plan's rows that day, each with its id and words, the titles marked", async () => {
     const b = block((await header({ kind: "day", id: TODAY })).header);
     expect(b).toContain("The athlete asked from: a day on the plan — Wed 13 May · today.");
-    expect(b).toContain(`- id ${me.outlineToday}: 07:00 strength, programme session (about 35 min) — its time passed, nothing logged; titled ${athlete("Strength")}`);
-    expect(b).toContain(`- id ${me.todayDocId}: 18:00 strength, Studio workout (about 40 min) — scheduled; titled ${athlete("Strong hips, easy back")}`);
+    expect(b).toContain(`- id ${me.outlineToday}: 07:00 strength, programme session (about 35 min) — its time passed, nothing logged, not revisable (programme) — ${REVISABILITY_WORDS.programme.instead.replace(/\.$/, "")}; titled ${athlete("Strength")}`);
+    expect(b).toContain(`- id ${me.todayDocId}: 18:00 strength, Studio workout (about 40 min) — scheduled, revisable; titled ${athlete("Strong hips, easy back")}`);
     expect(b).toContain(FOCUS_LINES.day);
     // A day with nothing on it says so (day(-1) holds nothing: the fixture plans every second and third day).
     expect(block((await header({ kind: "day", id: day(-1) })).header)).toContain("- nothing planned");

@@ -10,7 +10,7 @@
 import { sql, type SQL } from "drizzle-orm";
 import { z } from "zod";
 import { plannedWorkouts, programBlocks, programs } from "@rg/database";
-import { dayRangeLabel, daysBetween } from "@rg/domain";
+import { dayRangeLabel, daysBetween, revisability, type Revisability } from "@rg/domain";
 import type { DesignTool } from "./types.js";
 import {
   byBytes,
@@ -49,7 +49,7 @@ export function planTerm(userId: string, where: SQL, limit?: number): SQL {
   const rows = sql`select 'p' as t, json_object('id', ${pw.id}, 'date', ${pw.effectiveDate}, 'time', ${pw.effectiveTime}, 'title', ${pw.title},
       'category', ${pw.category}, 'subtype', ${pw.qualitySubtype}, 'sport', ${pw.sport}, 'origin', ${pw.origin}, 'state', ${pw.completionState},
       'content', ${pw.contentState}, 'seconds', coalesce(${pw.sourceEstimatedDurationSeconds}, ${pw.fallbackEstimatedDurationSeconds}, ${pw.calendarBlockDurationSeconds}),
-      'intent', ${INTENT_SQL}, 'rev', ${pw.workoutDocRev}) as j
+      'intent', ${INTENT_SQL}, 'rev', ${pw.workoutDocRev}, 'hasDoc', ${pw.workoutDoc} is not null, 'source', ${pw.sourceWorkoutId}) as j
     from ${pw} where ${pw.userId} = ${userId} and ${pw.archivedAt} is null and (${where})
     order by ${pw.effectiveDate}, ${pw.effectiveTime}, ${pw.id}`;
   return limit !== undefined ? sql`select t, j from (${rows} limit ${limit})` : sql`select t, j from (${rows})`;
@@ -64,6 +64,37 @@ export const ORIGIN_WORDS: Record<string, string> = {
   coach: "coach session",
   coros: "watch plan",
 };
+/**
+ * A NULL origin read as what it is: a coach session (a `cw-` id) or a watch plan session (a watch address in
+ * `source_workout_id`, "<plan>:<n>"); else nothing.
+ */
+export function nullOriginWords(id: string | null, source: string | null): string | undefined {
+  if (id?.startsWith("cw-")) return "coach session";
+  if (source && /^\d+:\d+$/.test(source)) return "watch plan session";
+  return undefined;
+}
+
+/** `revisability`'s answer as the coach reads it: `true`, or why not and what to do instead. */
+export function revisableWords(v: Revisability): true | { no: string; instead: string } {
+  return v.ok ? true : { no: v.why, instead: v.instead };
+}
+
+/**
+ * A planned row's `revisable` as a LIST reads it: whether it is a run comes from `sport`/`category` (no document is
+ * parsed per row; `get_workout` reads it from the document).
+ */
+export function listRevisable(
+  r: { origin: string | null; category: string | null; sport: string | null; state: string | null; content: string | null; date: string; hasDoc: boolean },
+  today: string,
+): true | { no: string; instead: string } {
+  return revisableWords(
+    revisability(
+      { origin: r.origin, category: r.category, sport: r.sport, completionState: r.state, contentState: r.content, effectiveDate: r.date, hasDoc: r.hasDoc, isRun: null },
+      today,
+    ),
+  );
+}
+
 export const STATUS_WORDS: Record<string, string> = { scheduled: "scheduled", completed: "done", skipped: "skipped", missed: "missed" };
 
 function whatOf(category: string, subtype: string | null, sport: string): string {
@@ -116,11 +147,18 @@ export function planItem(r: Record<string, unknown>, clock?: PlanClock): Record<
     ...(passed ? { plannedMinutes: minutes } : { minutes }),
   };
   const origin = s("origin");
-  if (origin) item.origin = ORIGIN_WORDS[origin] ?? origin;
+  const originWords = origin ? (ORIGIN_WORDS[origin] ?? origin) : nullOriginWords(s("id"), s("source"));
+  if (originWords) item.origin = originWords;
   item.status = STATUS_WORDS[s("state") ?? ""] ?? s("state");
   if (passed) item.passed = PASSED_WORDS;
   if (s("content")) item.content = s("content");
   if (typeof r.rev === "number") item.rev = r.rev;
+  if (clock && date) {
+    item.revisable = listRevisable(
+      { origin, category: s("category"), sport: s("sport"), state: s("state"), content: s("content"), date, hasDoc: r.hasDoc === true },
+      clock.today,
+    );
+  }
   item.title = untrusted(s("title") ?? "");
   const intent = untrustedOrNull(r.intent);
   if (intent) item.intent = intent;

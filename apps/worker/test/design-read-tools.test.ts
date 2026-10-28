@@ -6,7 +6,7 @@
 import { beforeAll, describe, expect, it } from "vitest";
 import { eq } from "drizzle-orm";
 import { schema } from "@rg/database";
-import { newId, workoutDocSchema } from "@rg/domain";
+import { newId, REVISABILITY_WORDS, workoutDocSchema } from "@rg/domain";
 import { EXERCISES, FACET_VALUES, hasEquipment, TMJ, usedValues } from "@rg/exercise-library";
 import { searchLibraryTool } from "../src/services/design-tools/read-library.js";
 import type { Env } from "../src/env.js";
@@ -410,6 +410,77 @@ describe("read_plan", () => {
     await db.delete(schema.plannedWorkouts).where(eq(schema.plannedWorkouts.id, early));
     const all = await ok("read_plan", { from: day(10), to: TODAY, limit: 50 });
     expect(all.data.workouts.map((w: { id: string }) => w.id)).not.toContain(rich.archivedDocId);
+  });
+});
+
+/** A future planned row of the rich athlete's, as given (invented data, on the fixed clock). */
+async function planRow(o: { id?: string; date?: string; origin?: string | null; category?: string; sport?: string; state?: string; source?: string; doc?: unknown }): Promise<string> {
+  const id = o.id ?? newId();
+  const date = o.date ?? day(-2);
+  await db.insert(schema.plannedWorkouts).values({
+    id, userId: rich.userId, planId: "coros-plan", sourceWorkoutId: o.source ?? id, title: "Edit me", category: o.category ?? "strength", sport: o.sport ?? "strength",
+    originalPlanDate: date, lastVerifiedCorosDate: date, effectiveDate: date, effectiveTime: "08:00", sourceContentFingerprint: "fp", calendarBlockDurationSeconds: 1800,
+    completionState: o.state ?? "scheduled", origin: o.origin ?? null, workoutDoc: o.doc ? JSON.stringify(o.doc) : null, workoutDocRev: o.doc ? 1 : null,
+    createdAt: at(day(1)), updatedAt: at(day(1)),
+  });
+  return id;
+}
+const removeRow = (id: string) => db.delete(schema.plannedWorkouts).where(eq(schema.plannedWorkouts.id, id));
+
+describe("editability: the reads say whether a workout can be revised, and if not what to do instead", () => {
+  it("read_plan: a coach session reads revisable: true and origin 'coach session'; a watch-plan session too, with its own word; a programme session says why not and what instead", async () => {
+    const coach = await planRow({ id: "cw-editability", date: day(-2) });
+    const watch = await planRow({ date: day(-3), source: "4411:7" });
+    const bare = await planRow({ date: day(-4) });
+    const { data } = await ok("read_plan", { from: day(-2), to: day(-4), limit: 50 });
+    const by = (id: string) => data.workouts.find((w: { id: string }) => w.id === id);
+    expect(by(coach)).toMatchObject({ origin: "coach session", revisable: true });
+    expect(by(watch)).toMatchObject({ origin: "watch plan session", revisable: true });
+    // A NULL origin that is neither: no origin word, as before.
+    expect(by(bare).origin).toBeUndefined();
+    expect(by(bare).revisable).toBe(true);
+    const programme = (await ok("read_plan", { from: TODAY, to: TODAY })).data.workouts[0];
+    expect(programme).toMatchObject({ origin: "programme session", revisable: { no: REVISABILITY_WORDS.programme.why, instead: REVISABILITY_WORDS.programme.instead } });
+    // A run is told by its category here (a list holds no documents).
+    const run = (await ok("read_plan", { from: TODAY, to: day(-6) })).data.workouts.find((w: { what: string }) => w.what === "run, easy");
+    expect(run.revisable).toEqual({ no: REVISABILITY_WORDS.run.why, instead: REVISABILITY_WORDS.run.instead });
+    for (const id of [coach, watch, bare]) await removeRow(id);
+  });
+
+  it("list_workouts: each document workout reads revisable; one whose day has gone says why not", async () => {
+    const { data } = await ok("list_workouts", { from: day(30), to: day(-30) });
+    const today = data.workouts.find((w: { id: string }) => w.id === rich.todayDocId);
+    expect(today.revisable).toBe(true);
+    const past = data.workouts.find((w: { id: string }) => w.id === rich.pastDocId);
+    expect(past.revisable).toEqual({ no: REVISABILITY_WORDS.past.why, instead: REVISABILITY_WORDS.past.instead });
+    expect(data.workouts.every((w: { revisable: unknown }) => w.revisable !== undefined)).toBe(true);
+  });
+
+  it("get_workout: a resolved row reads revisable: { no: 'It's already done.', instead: 'Propose a new workout.' }; an open Studio row reads true; a document that is a run says why not", async () => {
+    const doc = studioDoc();
+    const done = await planRow({ origin: "studio", date: TODAY, state: "completed", doc });
+    expect((await ok("get_workout", { id: done })).data.revisable).toEqual({ no: "It's already done.", instead: "Propose a new workout." });
+    const open = await planRow({ origin: "studio", doc });
+    expect((await ok("get_workout", { id: open })).data.revisable).toBe(true);
+    const adopted = await planRow({ id: "cw-get", doc });
+    expect((await ok("get_workout", { id: adopted })).data).toMatchObject({ origin: "coach session", revisable: true });
+    const runDoc = workoutDocSchema.parse({
+      version: 1, title: "Easy miles", intent: { summary: "Easy.", goals: ["aerobic-base"], focus: [], effort: "maintain" },
+      parts: [{ purpose: "run", format: "steady", items: [{ kind: "run", effort: "easy", target: { durationSec: 1800 } }] }], source: { kind: "studio" },
+    });
+    // A strength row by its columns: the document is what says it is a run.
+    const run = await planRow({ origin: "studio", doc: runDoc });
+    expect((await ok("get_workout", { id: run })).data.revisable).toEqual({ no: REVISABILITY_WORDS.run.why, instead: REVISABILITY_WORDS.run.instead });
+    for (const id of [done, open, adopted, run]) await removeRow(id);
+  });
+
+  it("the tool descriptions say so, and stay small", () => {
+    for (const name of ["list_workouts", "get_workout"]) {
+      const d = READ_TOOLS.find((t) => t.name === name)!.description;
+      expect(d, name).toMatch(/revisable/);
+      expect(d.length, name).toBeLessThanOrEqual(240);
+    }
+    expect(READ_TOOLS.find((t) => t.name === "list_workouts")!.description).toMatch(/sport and category/);
   });
 });
 
