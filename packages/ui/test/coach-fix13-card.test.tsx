@@ -193,6 +193,28 @@ describe("what it is for, and why each move (D1, D3)", () => {
     expect([...moves[1]!.querySelectorAll(".coach-pc-alt")].map((a) => a.textContent)).toEqual(["or Hip thrust — heavier, but needs a bench", "or Single-leg bridge"]);
   });
 
+  it("a move with an id links to its Studio page — the move and an alternate; one without is plain text", async () => {
+    const linked = line("op-a", {
+      detail: ["Cat-cow 1 × 8", "Glute bridge 2 × 12", "Free hold 30 s"],
+      detailIds: ["catCow", "my bridge/2", null],
+      whys: [null, "Wakes the glutes.", null],
+      alternates: [[], [{ id: "hipThrust", name: "Hip thrust", why: "needs a bench" }, { name: "Single-leg bridge", why: null }], []],
+    });
+    serve(pending([linked]));
+    mount();
+    await until(() => text().includes("Workout op-a"), "the card");
+    await click(button("Workout op-a"), "the title");
+    const moves = [...document.querySelectorAll(".coach-pc-moves > li")];
+    expect(moves[0]!.querySelector("a")?.getAttribute("href")).toBe("/studio/move/catCow");
+    expect(moves[1]!.querySelector(".coach-pc-move > a")?.getAttribute("href")).toBe(`/studio/move/${encodeURIComponent("my bridge/2")}`);
+    const alts = [...moves[1]!.querySelectorAll(".coach-pc-alt")];
+    expect(alts.map((x) => x.textContent)).toEqual(["or Hip thrust — needs a bench", "or Single-leg bridge"]);
+    expect(alts[0]!.querySelector("a")?.getAttribute("href")).toBe("/studio/move/hipThrust");
+    expect(alts[1]!.querySelector("a")).toBeNull();
+    expect(moves[2]!.querySelector("a")).toBeNull();
+    expect(moves[2]!.textContent).toBe("Free hold 30 s");
+  });
+
   it("an older server's line — no intent, whys or alternates — shows the moves as before, nothing undefined", async () => {
     serve(pending([line("op-a")]));
     mount();

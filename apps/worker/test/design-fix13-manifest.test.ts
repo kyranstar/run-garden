@@ -134,7 +134,8 @@ describe("a line says what the workout is for and why each move (§2.8; 13d D1, 
     expect(line!.intent).toBe("Open your hips, then load them gently.");
     expect(line!.detail).toHaveLength(3);
     expect(line!.whys).toEqual(["Wakes your glutes before loading.", null, null]);
-    expect(line!.alternates).toEqual([[], [], [{ name: "Goblet squat", why: "More load than your back wants today." }]]);
+    expect(line!.alternates).toEqual([[], [], [{ id: "gobletSquat", name: "Goblet squat", why: "More load than your back wants today." }]]);
+    expect(line!.detailIds).toEqual(["bridge", null, "deadBug"]);
   });
 
   it("a now design says so (§2.6): the card reads it as now", () => {

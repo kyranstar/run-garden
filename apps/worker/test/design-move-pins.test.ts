@@ -897,7 +897,7 @@ describe("every reader tolerates the moves in rotation", () => {
     expect(cards.map((c) => [c.kind, c.opId, c.title, c.summary])).toEqual([["pins", pinsId(ctx.run.id), WORDS.title, ONE_JOINS]]);
     // Each line its move's name once, then its text: as text for a plain reader, apart for the card to set the name in bold.
     expect(cards[0]!.lines).toEqual(storedFor(batchId).map((l) => (l.name ? `${l.name}: ${l.text}` : l.text)));
-    expect(cards[0]!.pinLines).toEqual(storedFor(batchId).map((l) => ({ name: l.name ?? null, text: l.text })));
+    expect(cards[0]!.pinLines).toEqual(storedFor(batchId).map((l) => ({ ...(l.moveId ? { moveId: l.moveId } : {}), name: l.name ?? null, text: l.text })));
     const block = conversationBlock(await conversationRows(db, userId, namedConversationSql(userId, ctx.run.id), { limit: 6 }), NOW)!;
     expect(block).toContain(
       `Suggested moves for the engine's pool (id ${designProposalId(ctx.run.id)}): ${markUntrusted("main coach", WORDS.title)} · ${markUntrusted("main coach", ONE_JOINS)} — still open`,

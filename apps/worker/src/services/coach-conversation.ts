@@ -60,7 +60,7 @@ export interface ConversationCard {
   lines?: string[];
   /** The moves in rotation's lines, as the card draws them (the saves flow redesigned, §3.5): a move's name, set in bold
    * once, and the text — null for a general line or one stored before the redesign (a plain string). */
-  pinLines?: Array<{ name: string | null; text: string }>;
+  pinLines?: Array<{ moveId?: string; name: string | null; text: string }>;
   /** A programme change's op (§8 §5): what its card approves and declines — a proposal may hold one a programme; the
    * moves in rotation's too. */
   opId?: string;
@@ -326,7 +326,7 @@ export function cardsOf(scopeText: string | null, p: ProposalBrief | null, today
         title: str(o.planTitle) ?? "Moves for your programme",
         summary: str(o.planSummary) ?? "",
         lines: lines.map(pinsLineText),
-        pinLines: lines.map((l) => ({ name: l.name ?? null, text: l.text })),
+        pinLines: lines.map((l) => ({ ...(l.moveId ? { moveId: l.moveId } : {}), name: l.name ?? null, text: l.text })),
         ...(str(o.opId) ? { opId: str(o.opId)! } : {}),
       };
     });

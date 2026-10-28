@@ -101,6 +101,9 @@ export interface DocWorkoutLine {
   parts: string[];
   /** Each move with its dose: "Glute bridge 2 × 12". */
   detail: string[];
+  /** Each move's library id (its own or the athlete's), parallel to `detail`, null where it has none (free text, a rest);
+   * absent when no move has one — the card links the name to its Studio page. */
+  detailIds?: Array<string | null>;
   /** What the workout is for, in one sentence: the document's intent summary, in the athlete's words (`athleteText`;
    * Task 13's fix wave, §2.8 — the card's line under the title, 13d D1); null when it has none. */
   intent: string | null;
@@ -108,7 +111,7 @@ export interface DocWorkoutLine {
   whys: Array<string | null>;
   /** The moves the coach weighed instead of each one, parallel to `detail` — each its name and why ([] where none; 13d
    * D3: what the coach weighed, one tap down). */
-  alternates: Array<Array<{ name: string; why: string | null }>>;
+  alternates: Array<Array<{ id?: string; name: string; why: string | null }>>;
   /** A "now" design (§2.6): placed at the moment of the approve, never a time gone by — the card reads it as now. */
   atNow?: true;
   /** The review's mean score (1–5; `reviewMeanOf`); null when there is none to average. */
@@ -243,9 +246,17 @@ function itemWhy(it: WorkoutItem): string | null {
 }
 
 /** The moves weighed instead of a move: each by its library name, with its why in the athlete's words. */
-function itemAlternates(it: WorkoutItem, find: LibraryIndex): Array<{ name: string; why: string | null }> {
+function itemAlternates(it: WorkoutItem, find: LibraryIndex): Array<{ id?: string; name: string; why: string | null }> {
   if (it.kind !== "exercise" || !it.alternates) return [];
-  return it.alternates.map((a) => ({ name: find(a.libraryId)?.name ?? athleteText(a.libraryId), why: a.why ? athleteText(a.why) : null }));
+  return it.alternates.map((a) => {
+    const known = find(a.libraryId);
+    return { ...(known ? { id: a.libraryId } : {}), name: known?.name ?? athleteText(a.libraryId), why: a.why ? athleteText(a.why) : null };
+  });
+}
+
+/** The id of the move a line names, when the account's library knows it (else null: free text, a rest, an unknown id). */
+function itemId(it: WorkoutItem, find: LibraryIndex): string | null {
+  return it.kind === "exercise" && find(it.libraryId) ? it.libraryId : null;
 }
 
 /** What an applied op wrote, as a line says it; null for any other outcome (or an applied one recorded without it). */
@@ -387,6 +398,7 @@ export function docWorkoutLines(
       place: placeName(doc.setting?.placeId),
       parts: doc.parts.map(partLine),
       detail: items.map((it) => itemLine(it, find)),
+      ...(items.some((it) => itemId(it, find)) ? { detailIds: items.map((it) => itemId(it, find)) } : {}),
       intent: doc.intent.summary ? athleteText(doc.intent.summary) : null,
       whys: items.map(itemWhy),
       alternates: items.map((it) => itemAlternates(it, find)),

@@ -25,6 +25,7 @@
  */
 import { useEffect, useId, useRef, useState } from "react";
 import { Link } from "react-router-dom";
+import { moveHref } from "./screen.js";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import {
   api,
@@ -594,7 +595,7 @@ function WorkoutItem({
           {line.detail.length > 0 && !line.run ? (
             <ul className="coach-pc-moves">
               {line.detail.map((d, i) => (
-                <MoveItem key={i} move={d} why={line.whys?.[i] ?? null} alternates={line.alternates?.[i] ?? []} />
+                <MoveItem key={i} move={d} id={line.detailIds?.[i] ?? null} why={line.whys?.[i] ?? null} alternates={line.alternates?.[i] ?? []} />
               ))}
             </ul>
           ) : null}
@@ -613,17 +614,22 @@ function WorkoutItem({
  * A move as the expanded workout says it (D1, D3): its name and dose; under it, why it is there; and the moves the coach
  * weighed instead, "or <name> — <why>".
  */
-function MoveItem({ move, why, alternates }: { move: string; why: string | null; alternates: readonly DesignAlternateDto[] }) {
-  if (!why && alternates.length === 0) return <li>{move}</li>;
+function MoveItem({ move, id, why, alternates }: { move: string; id: string | null; why: string | null; alternates: readonly DesignAlternateDto[] }) {
+  const named = id ? <Link to={moveHref(id, "")}>{move}</Link> : move;
+  if (!why && alternates.length === 0) return <li>{named}</li>;
   return (
     <li>
-      <span className="coach-pc-move">{move}</span>
+      <span className="coach-pc-move">{named}</span>
       {why ? <span className="coach-pc-move-why">{why}</span> : null}
-      {alternates.map((a, i) => (
-        <span key={i} className="coach-pc-alt">
-          {a.why ? `or ${a.name} — ${a.why}` : `or ${a.name}`}
-        </span>
-      ))}
+      {alternates.map((a, i) => {
+        const alt = a.id ? <Link to={moveHref(a.id, "")}>{a.name}</Link> : a.name;
+        return (
+          <span key={i} className="coach-pc-alt">
+            or {alt}
+            {a.why ? ` — ${a.why}` : ""}
+          </span>
+        );
+      })}
     </li>
   );
 }

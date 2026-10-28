@@ -31,6 +31,7 @@
  */
 import { useEffect, useId, useRef, useState } from "react";
 import { Link } from "react-router-dom";
+import { moveHref } from "./screen.js";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import {
   api,
@@ -142,15 +143,16 @@ type CardLine = Pick<DesignPlanLineDto | DesignProgrammeLineDto | DesignPinsLine
 /** A line as the card draws it: a move's name, in bold, once, then its text (the moves in rotation's, §3.5) — or its text. */
 interface DrawnLine {
   name: string | null;
+  moveId?: string;
   text: string;
 }
-const drawn = (l: string | DesignPinsCardLineDto): DrawnLine => (typeof l === "string" ? { name: null, text: l } : { name: l.name ?? null, text: l.text });
+const drawn = (l: string | DesignPinsCardLineDto): DrawnLine => (typeof l === "string" ? { name: null, text: l } : { name: l.name ?? null, ...(l.moveId ? { moveId: l.moveId } : {}), text: l.text });
 
 /** One drawn line: every text the coach or a post wrote is data, rendered as text. */
 function lineItem(l: DrawnLine, i: number) {
   return (
     <li key={i}>
-      {l.name ? <strong>{l.name}</strong> : null}
+      {l.name ? <strong>{l.moveId ? <Link to={moveHref(l.moveId, "")}>{l.name}</Link> : l.name}</strong> : null}
       {l.name ? " " : null}
       {l.text}
     </li>

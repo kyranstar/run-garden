@@ -163,6 +163,20 @@ describe("the moves-in-rotation card", () => {
     expect(shown()).toEqual(want);
   });
 
+  it("a line with a move links its name to the move's Studio page; a line without one is bold text, no link", async () => {
+    serve({ "GET /api/coach/proposals/dp-run-3": () => read("pending") });
+    await mount(card({ pinLines: [{ moveId: "my Zorbex/1", ...PIN_LINES[0]! }, PIN_LINES[1]!] }));
+    await until(() => document.querySelectorAll(".coach-plan-lines li").length === 2, "the lines");
+    const lis = [...document.querySelectorAll(".coach-plan-lines li")];
+    const a = lis[0]!.querySelector("strong > a");
+    expect(a?.textContent).toBe("Zorbex hip circle");
+    expect(a?.getAttribute("href")).toBe(`/studio/move/${encodeURIComponent("my Zorbex/1")}`);
+    expect(lis[1]!.querySelector("a")).toBeNull();
+    // The conversation's own read keeps the id.
+    const dto = { id: "c1", startedAt: "x", turns: [{ runId: "r1", at: "x", words: "w", status: "finished", line: null, cards: [card({ pinLines: [{ moveId: "m1", name: "A", text: "t" }, { name: "B", text: "u" }] })], question: null }] };
+    expect(toConversation(dto).turns[0]!.cards[0]!.pinLines).toEqual([{ moveId: "m1", name: "A", text: "t" }, { name: "B", text: "u" }]);
+  });
+
   it("an older turn's, closed: one line of what came of it, its lines one tap down", async () => {
     serve({ "GET /api/coach/proposals/dp-run-3": () => read("approved", { status: "applied", at: "x", pinned: ["myZorbexHipCircle1"], unpinned: [], lines: [] }) });
     await mount(card({ status: "approved" }), true);

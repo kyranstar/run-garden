@@ -732,6 +732,8 @@ export interface DesignLineDto {
   parts: string[];
   /** Each move with its dose: "Glute bridge 2 × 12". */
   detail: string[];
+  /** Each move's library id, parallel to `detail` (null where it has none); absent when no move has one. */
+  detailIds?: Array<string | null>;
   reviewMean: number | null;
   /** The review of the version held, as the card's expanded line shows it (Task 9); null when there is none. */
   review: DesignLineReviewDto | null;
@@ -795,6 +797,8 @@ export interface DesignRunDto {
 
 /** A move the coach weighed instead of one in the workout, and why it was the other choice. */
 export interface DesignAlternateDto {
+  /** The move's id, when the library knows it (the card links its name to its Studio page). */
+  id?: string;
   name: string;
   why: string | null;
 }
@@ -1460,7 +1464,7 @@ export interface CoachConversationCardDto {
   lines?: string[];
   /** The moves in rotation's lines as the card draws them (the saves flow redesigned, §3.5): a move's name in bold, once,
    * then the text — the name null for a general line or one stored before the redesign. Absent from an older server. */
-  pinLines?: Array<{ name: string | null; text: string }>;
+  pinLines?: Array<{ moveId?: string; name: string | null; text: string }>;
   /** A programme change's op (§8 §5), or the moves in rotation's: what the card approves and declines. */
   opId?: string;
   /** A designed run's (§8 §3): a workout card whose body is a run — its steps, paces and the watch line (its line's `run`). */

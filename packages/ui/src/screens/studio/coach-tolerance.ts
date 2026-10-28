@@ -177,7 +177,7 @@ const toAlternates = (v: unknown): DesignAlternateDto[] =>
   list(v).flatMap((x) => {
     const a = record(x);
     const name = words(a?.name);
-    return name ? [{ name, why: words(a!.why) }] : [];
+    return name ? [{ ...(typeof a!.id === "string" && a!.id ? { id: a!.id } : {}), name, why: words(a!.why) }] : [];
   });
 
 function toLine(v: unknown): DesignLineDto | null {
@@ -203,6 +203,8 @@ function toLine(v: unknown): DesignLineDto | null {
     place: text(l.place),
     parts: texts(l.parts),
     detail,
+    // A move's id where it has one (a string); the card links its name. Absent when no line has one.
+    ...(Array.isArray(l.detailIds) && l.detailIds.some((x) => typeof x === "string" && x) ? { detailIds: detail.map((_, i) => (typeof (l.detailIds as unknown[])[i] === "string" && (l.detailIds as string[])[i] ? (l.detailIds as string[])[i]! : null)) } : {}),
     intent: words(l.intent),
     whys: detail.map((_, i) => words(whys[i])),
     alternates: detail.map((_, i) => toAlternates(alternates[i])),
@@ -441,7 +443,7 @@ function toCard(v: unknown): CoachConversationCardDto | null {
       ? {
           pinLines: c.pinLines.flatMap((x) => {
             const l = record(x);
-            return l && typeof l.text === "string" ? [{ name: typeof l.name === "string" && l.name ? l.name : null, text: l.text }] : [];
+            return l && typeof l.text === "string" ? [{ ...(typeof l.moveId === "string" && l.moveId ? { moveId: l.moveId } : {}), name: typeof l.name === "string" && l.name ? l.name : null, text: l.text }] : [];
           }),
         }
       : {}),
