@@ -879,7 +879,7 @@ export function refusalWords(r: { error: string; cause?: string; why?: string })
         case "race":
           return wordsOf(r.cause, r.why);
         case "resolved":
-          return r.why?.trim() || wordsOf("resolved", "");
+          return r.why?.trim() || "It's already done.";
         default:
           return "It can't change now.";
       }
@@ -888,11 +888,10 @@ export function refusalWords(r: { error: string; cause?: string; why?: string })
   }
 }
 
-/** The table's why for a cause: the server's own when it sent one, else the table's (a resolved one by its state). */
-function wordsOf(cause: "programme" | "resolved" | "under_way" | "rest" | "race", why: string | undefined): string {
+/** The table's why for a cause: the server's own when it sent one, else the table's. */
+function wordsOf(cause: "programme" | "under_way" | "rest" | "race", why: string | undefined): string {
   if (why?.trim()) return why.trim();
-  const w = REVISABILITY_WORDS[cause].why;
-  return typeof w === "function" ? w("completed") : w;
+  return REVISABILITY_WORDS[cause].why as string;
 }
 
 /** Codes whose words say it all: the why (the server's words, about this op) adds to the others. */

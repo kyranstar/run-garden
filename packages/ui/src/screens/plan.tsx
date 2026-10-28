@@ -39,6 +39,9 @@ import { ThreadCoachCards } from "./thread-coach-cards.js";
 import { askable, displayCompletionState, focusAfterRemove, jumpWeeksOf, WeekView, weekPlan } from "./week-view.js";
 import { useCorosReadNow } from "./use-coros-read.js";
 import { CorosCheck } from "./coros-check.js";
+import { features } from "../features.js";
+import { addTargetHref, editableWorkout } from "./studio/add-model.js";
+import type { BuilderArrival } from "./studio/templates-model.js";
 import { isOneOff, SessionSheet } from "../components/session-sheet.js";
 import { WatchVersion } from "../components/watch-version.js";
 import { isAppSession } from "../components/today-program.js";
@@ -225,7 +228,10 @@ export function RunWorkoutDetail({
   const displayTitle = humanizeWorkoutTitle(w.title, w.category, w.qualitySubtype);
   const canMove = completion === "scheduled" && w.category !== "rest";
   const canRemove = w.completionState !== "completed";
+  // A coach or watch session the Studio may change (revisability): Edit in Studio adopts it into a document workout.
+  const canEdit = features.studio && editableWorkout(w, today);
   const hasActions =
+    canEdit ||
     canMove ||
     asks ||
     canSyncToCoros ||
@@ -291,6 +297,11 @@ export function RunWorkoutDetail({
         <button className="btn" disabled={unskip.isPending} onClick={() => unskip.mutate()}>
           Un-skip
         </button>
+      ) : null}
+      {canEdit ? (
+        <Link className="btn" to={addTargetHref({ kind: "workout", id: w.id })} state={{ from: "plan" } satisfies BuilderArrival}>
+          Edit in Studio
+        </Link>
       ) : null}
       {canRemove ? (
         <button

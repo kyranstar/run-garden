@@ -925,6 +925,18 @@ describe("WorkoutDetail branches on origin", () => {
     }
   });
 
+  it("a NULL-origin coach session with a document opens the watch-shaped sheet, which offers Edit in Studio; a programme session's sheet does not", async () => {
+    const coach = slot({ id: "cw-1", title: "Coach lift", origin: null, contentState: null, programId: null, hasDoc: true } as Partial<WorkoutDto>);
+    mount(session(), { detail: true, w: coach });
+    await until(() => body().includes("Coach lift"), "the workout sheet");
+    expect(button("Edit in Studio")?.getAttribute("href")).toBe("/studio/build/workout/cw-1");
+    act(() => root?.unmount());
+    host?.remove();
+    mount(session(), { detail: true });
+    await until(() => body().includes("Supported row"), "the session sheet");
+    expect(button("Edit in Studio")).toBeUndefined();
+  });
+
   it("a run keeps the workout sheet", async () => {
     const run = slot({ id: "run-1", title: "Threshold 5x5", category: "quality", sport: "run", origin: null, contentState: null, programId: null });
     const { calls } = mount(session(), { detail: true, w: run });

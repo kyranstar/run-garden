@@ -141,6 +141,35 @@ describe("POST /api/plan/workouts/:id/remove", () => {
  * it does when the coach removes it; an imported COROS session never does. The
  * DTO says which, so the dialog can tell the athlete before they confirm.
  */
+describe("the workout DTO's hasDoc", () => {
+  it("is true for a row with a stored document and false without, on the detail route", async () => {
+    const date = addDays(todayInZone(prefs.timezone), 3);
+    const base = {
+      userId,
+      planId: "p",
+      sourceProgramId: "9001",
+      sourceContentFingerprint: "0123456789abcdef",
+      title: "Strength",
+      category: "strength",
+      sport: "strength",
+      originalPlanDate: date,
+      lastVerifiedCorosDate: date,
+      effectiveDate: date,
+      effectiveTime: "07:00",
+      calendarBlockDurationSeconds: 1800,
+      corosSyncState: "calendar_only" as const,
+      completionState: "scheduled" as const,
+      createdAt: nowInstant(),
+      updatedAt: nowInstant(),
+    };
+    await db.insert(plannedWorkouts).values({ ...base, id: "cw-with", sourceWorkoutId: "cw-with", sourceIdInPlan: "1", workoutDoc: JSON.stringify({ any: "document" }) });
+    await db.insert(plannedWorkouts).values({ ...base, id: "cw-without", sourceWorkoutId: "cw-without", sourceIdInPlan: "2" });
+    const one = async (id: string) => ((await (await client().get(`/api/plan/workouts/${id}`)).json()) as { workout: { hasDoc?: boolean } }).workout.hasDoc;
+    expect(await one("cw-with")).toBe(true);
+    expect(await one("cw-without")).toBe(false);
+  });
+});
+
 describe("POST /api/plan/workouts/:id/remove — the watch", () => {
   async function insertAddressed(id: string, opts: { appPushed: boolean }): Promise<string> {
     const date = addDays(todayInZone(prefs.timezone), 3);

@@ -480,6 +480,9 @@ async function loadWorkoutViews(
  */
 const appMadeRow = (w: Pick<PlannedRow, "id" | "origin">): boolean => appAuthoredRow({ origin: w.origin ?? null }) || w.id.startsWith("cw-");
 
+/** The row's columns without its document, and `hasDoc` — whether one is stored — read in the same statement. */
+const planRowColumns = () => ({ ...plannedRowColumns(), hasDoc: sql<number>`${plannedWorkouts.workoutDoc} is not null` });
+
 function workoutDto(
   w: PlannedRow,
   view?: WorkoutView,
@@ -554,7 +557,7 @@ function workoutDto(
     completionState: w.completionState,
     archived: !!w.archivedAt,
     // A Studio document is stored on the row (the UI's revisability reads it with the rest).
-    hasDoc: (w as { workoutDoc?: unknown }).workoutDoc != null,
+    hasDoc: !!(w as { hasDoc?: unknown; workoutDoc?: unknown }).hasDoc || (w as { workoutDoc?: unknown }).workoutDoc != null,
     // Where the row came from and how far its content has got (Phase 2a).
     // `programId` only for the app's own rows, whose plan id IS the program's.
     origin: w.origin ?? null,
@@ -748,7 +751,7 @@ planRoutes.get("/today", async (c) => {
   ] = await Promise.all([
     exerciseNameMap(db),
     db
-      .select(plannedRowColumns())
+      .select(planRowColumns())
       .from(plannedWorkouts)
       .where(
         and(
@@ -764,7 +767,7 @@ planRoutes.get("/today", async (c) => {
       .orderBy(asc(plannedWorkouts.effectiveDate), asc(plannedWorkouts.effectiveTime))
       .limit(8),
     db
-      .select(plannedRowColumns())
+      .select(planRowColumns())
       .from(plannedWorkouts)
       .where(
         and(
@@ -780,7 +783,7 @@ planRoutes.get("/today", async (c) => {
       .orderBy(desc(plannedWorkouts.effectiveDate))
       .limit(3),
     db
-      .select(plannedRowColumns())
+      .select(planRowColumns())
       .from(plannedWorkouts)
       .where(
         and(
@@ -814,7 +817,7 @@ planRoutes.get("/today", async (c) => {
     db.select().from(gardenState).where(eq(gardenState.userId, userId)).limit(1),
     recentGardenEvents(db, userId, 6),
     db
-      .select(plannedRowColumns())
+      .select(planRowColumns())
       .from(plannedWorkouts)
       .where(
         and(
@@ -836,7 +839,7 @@ planRoutes.get("/today", async (c) => {
     // The streak band's 12 ISO weeks (homeConsistency) — all disciplines,
     // archived rows excluded like every other read here.
     db
-      .select(plannedRowColumns())
+      .select(planRowColumns())
       .from(plannedWorkouts)
       .where(
         and(
@@ -858,7 +861,7 @@ planRoutes.get("/today", async (c) => {
     // Today card lists them all, not only the next. Builds only exist for the
     // app's own rows, so any other row comes back with a null build.
     db
-      .select({ w: plannedRowColumns(), ...todayBuildFields })
+      .select({ w: planRowColumns(), ...todayBuildFields })
       .from(plannedWorkouts)
       .leftJoin(sessionBuilds, and(eq(sessionBuilds.workoutId, plannedWorkouts.id), eq(sessionBuilds.userId, plannedWorkouts.userId)))
       .where(
@@ -945,7 +948,7 @@ planRoutes.get("/workouts", async (c) => {
   const start = c.req.query("start") ?? addDays(today, -56);
   const end = c.req.query("end") ?? addDays(today, 7 * prefs.mirrorWeeksAhead);
   const rows = await db
-    .select(plannedRowColumns())
+    .select(planRowColumns())
     .from(plannedWorkouts)
     .where(
       and(
@@ -1103,7 +1106,7 @@ planRoutes.get("/week", async (c) => {
   const [rows, catalog, presence, coachPlanRows, historyRows, acts, latestCoachMsg, raceMismatch, nonCoach] =
     await Promise.all([
       db
-        .select(plannedRowColumns())
+        .select(planRowColumns())
         .from(plannedWorkouts)
         .where(
           and(
@@ -1122,7 +1125,7 @@ planRoutes.get("/week", async (c) => {
       db.select().from(coachPlans).where(eq(coachPlans.userId, userId)),
       // 4-week adherence source (all disciplines), trend against the 4 prior.
       db
-        .select(plannedRowColumns())
+        .select(planRowColumns())
         .from(plannedWorkouts)
         .where(
           and(
