@@ -18,8 +18,9 @@
  * (`WATCH_PUSH_ENABLED`): nothing is read and nothing is queued; the owed marks stay open, so the sweep catches up when
  * they come back on.
  *
- * Every write here is a no-op during a restore (B2): `restoreInProgress` before the record, and the owed marks are
- * resolved by an UPDATE that itself refuses while a restore runs.
+ * Every write here is a no-op during a restore (B2): `restoreInProgress` before the record (the sweep reads it with its
+ * candidates, at its start, as the lane does a run), and the owed marks are resolved by an UPDATE that itself refuses
+ * while a restore runs.
  */
 import { and, asc, eq, gte, inArray, isNotNull, isNull, lte, notInArray, or, sql, type SQL } from "drizzle-orm";
 import { accountState, corosWriteJobs, plannedWorkouts, sessionBuilds, syncIntents } from "@rg/database";
@@ -42,9 +43,10 @@ import { enqueueUnpushIfOurs } from "./plan-mutations.js";
 import {
   DocTooLargeRefusal,
   isProvisionalBuild,
+  pickSentBuild,
   prepareProvisionalRecord,
+  provisionalRecord,
   pushJobId,
-  sentBuildIdOf,
   type BuildCtx,
   type StoredBuild,
 } from "./session-build.js";
@@ -73,7 +75,11 @@ export type MirrorSkip =
   /** A failed push waiting out its backoff (M3). */
   | "backoff"
   /** A push that failed after its three re-queues: the mirror leaves it (the sheet's Retry stays the athlete's). */
-  | "gave_up";
+  | "gave_up"
+  /** The build's own push is on its way or verified already (`queueReplacement`): nothing to queue. */
+  | "already_pushed"
+  /** Making the copy threw (`mirrorSweep`): remembered for the revision and day, so it never stalls the account. */
+  | "error";
 
 export type MirrorAnswer = "queued" | `skipped:${MirrorSkip}`;
 
@@ -97,21 +103,24 @@ export interface PushRow {
 export type MirrorRow = typeof plannedWorkouts.$inferSelect;
 
 /**
- * What the mirror remembers of a session it could not push for a reason only the record shows (too long for the watch, a
- * document that does not parse) — on its owed mark's payload, for that revision and day, so the sweep does not make the
- * record again every run, and a session too long never holds the window up. A new owed mark, a revision or a move forgets it.
+ * What the mirror remembers of a session it could not push for a reason only making the copy shows (too long for the
+ * watch, a document that does not parse, an unexpected error — its message's first 120 characters) — on its owed mark's
+ * payload, for that revision and day, so the sweep does not make the record again every run, and one session never holds
+ * the window up. A new owed mark, a revision or a move forgets it.
  */
-interface MirrorMemory {
-  refused: "too_long" | "not_document";
+export interface MirrorMemory {
+  refused: "too_long" | "not_document" | "error";
   rev: number | null;
   day: string;
+  message?: string;
 }
 
 // Spelled out, never derived from session-build.ts's constants at load: that module will import this one (Task 5), and
 // a cycle can leave an imported constant uninitialised while this module loads.
 const SETTLED = ["superseded", "cancelled", "restored"] as const;
 const IN_FLIGHT = ["queued", "claimed", "in_progress", "verifying"] as const;
-const FAILED = ["failed", "needs_attention"] as const;
+/** A push the mirror re-queues on its backoff (M3): failed for good, or neutralised by a restore (its stamp kept). */
+const RETRYABLE = ["failed", "needs_attention", "restored"] as const;
 const isOneOf = (list: readonly string[], status: string): boolean => list.includes(status);
 
 /**
@@ -148,9 +157,12 @@ export async function markMirrorOwed(db: Db, userId: string, workoutId: string, 
     .onConflictDoUpdate({ target: syncIntents.id, set: { resolvedAt: null, createdAt: now, payload: {} } });
 }
 
-/** No restore is running for the account: the guard every owed-mark write carries in its own WHERE. */
-const notRestoring = (userId: string): SQL =>
-  sql`not exists (select 1 from ${accountState} where ${accountState.userId} = ${userId} and coalesce(${accountState.restoreId}, '') <> '')`;
+/** A restore is running for the account (`restoreInProgress`, in SQL). */
+const restoring = (userId: string): SQL =>
+  sql`exists (select 1 from ${accountState} where ${accountState.userId} = ${userId} and coalesce(${accountState.restoreId}, '') <> '')`;
+
+/** No restore is running: the guard every owed-mark write carries in its own WHERE. */
+const notRestoring = (userId: string): SQL => sql`not ${restoring(userId)}`;
 
 /** Resolve these owed marks — only those marked before `now` (a later mark is a later change) — in one statement. */
 async function resolveOwed(db: Db, userId: string, workoutIds: readonly string[], now: string): Promise<void> {
@@ -180,27 +192,33 @@ async function remember(db: Db, userId: string, workoutId: string, now: string, 
 
 function memoryOf(payload: unknown): MirrorMemory | null {
   const m = payload as Partial<MirrorMemory> | null;
-  if (!m || (m.refused !== "too_long" && m.refused !== "not_document") || typeof m.day !== "string") return null;
+  if (!m || (m.refused !== "too_long" && m.refused !== "not_document" && m.refused !== "error") || typeof m.day !== "string") return null;
   return { refused: m.refused, rev: typeof m.rev === "number" ? m.rev : null, day: m.day };
 }
 
 // ── The jobs the mirror reads ────────────────────────────────────────────────────────────────────────────────────
 
-/** A stamping job, as the mirror reads it: a row's pushes for the current-copy test, a day's stamps for the new one. */
+/**
+ * A stamping job, as the mirror reads it: a row's pushes for the current-copy test, a day's stamps for the new one, and —
+ * for a program push — its build as `sentBuildIdOf` judges one (so the sent copy is known with no read of its own).
+ */
 export interface MirrorJob extends PushRow {
   workoutId: string;
   kind: string;
   name: string | null;
+  /** The pushed build: its version, lock, provisional mark and day; null when it is not a program push's, or gone. */
+  build: { version: number; lockedAt: string | null; marked: boolean; date: string | null } | null;
 }
 
 const payloadField = <T>(path: string) => sql<T>`json_extract(${corosWriteJobs.payload}, ${path})`;
 
 /**
- * ONE READ for both the current-copy test and the new copy's stamp: every stamping job of the account (both lanes) whose
- * stamp is not spent (`takenStampsOn`'s rule), within `scope` — the row's own pushes, and the jobs on the days a new copy
- * may take a stamp on.
+ * ONE READ for the current-copy test, the sent copy and the new copy's stamp: every stamping job of the account (both
+ * lanes) whose stamp is not spent (`takenStampsOn`'s rule), within `scope` — the row's own pushes, and the jobs on the days
+ * a new copy may take a stamp on — each program push beside its build (`push:<buildId>`).
  */
 async function mirrorJobs(db: Db, userId: string, scope: SQL): Promise<MirrorJob[]> {
+  const sb = sessionBuilds;
   const rows = await db
     .select({
       id: corosWriteJobs.id,
@@ -214,8 +232,14 @@ async function mirrorJobs(db: Db, userId: string, scope: SQL): Promise<MirrorJob
       retries: payloadField<number | null>("$.mirrorRetries"),
       verifiedAt: corosWriteJobs.verifiedAt,
       updatedAt: corosWriteJobs.updatedAt,
+      buildId: sb.id,
+      buildVersion: sb.version,
+      buildLockedAt: sb.lockedAt,
+      buildMarked: sql<number | null>`${provisionalRecord()}`,
+      buildDate: sql<string | null>`json_extract(${sb.payload}, '$.build.date')`,
     })
     .from(corosWriteJobs)
+    .leftJoin(sb, and(eq(corosWriteJobs.kind, "program_session_push"), eq(sb.id, sql`substr(${corosWriteJobs.id}, ${pushJobId("").length + 1})`)))
     .where(
       and(
         eq(corosWriteJobs.userId, userId),
@@ -224,18 +248,31 @@ async function mirrorJobs(db: Db, userId: string, scope: SQL): Promise<MirrorJob
         scope,
       ),
     );
-  return rows.map((r) => ({
+  return rows.map(({ buildId, buildVersion, buildLockedAt, buildMarked, buildDate, ...r }) => ({
     ...r,
     happenDay: r.happenDay ?? "",
     provisional: Boolean(r.provisional),
     fromDocRev: typeof r.fromDocRev === "number" ? r.fromDocRev : null,
     retries: typeof r.retries === "number" ? r.retries : 0,
+    build: buildId !== null && buildVersion !== null ? { version: buildVersion, lockedAt: buildLockedAt, marked: Boolean(buildMarked), date: buildDate } : null,
   }));
 }
 
-/** The row's own program pushes, settled ones aside. */
-const pushesOf = (jobs: readonly MirrorJob[], workoutId: string): PushRow[] =>
-  jobs.filter((j) => j.workoutId === workoutId && j.kind === "program_session_push" && !isOneOf(SETTLED, j.status));
+/** The row's own program pushes (a spent one is not read; `currentCopy` sets the settled ones aside). */
+const pushesOf = (jobs: readonly MirrorJob[], workoutId: string): MirrorJob[] =>
+  jobs.filter((j) => j.workoutId === workoutId && j.kind === "program_session_push");
+
+/**
+ * `sentBuildIdOf` from the jobs already read: the row's builds that are locked or provisional and whose push is live,
+ * chosen by `pickSentBuild` — the same candidates and the same choice, no statement.
+ */
+function sentOf(jobs: readonly MirrorJob[], row: Pick<MirrorRow, "id" | "effectiveDate">): string | null {
+  return pickSentBuild(
+    pushesOf(jobs, row.id)
+      .filter((j) => !isOneOf(SETTLED, j.status) && j.build !== null && (j.build.lockedAt !== null || j.build.marked))
+      .map((j) => ({ id: j.id.slice(pushJobId("").length), version: j.build!.version, lockedAt: j.build!.lockedAt, date: j.build!.date, day: row.effectiveDate })),
+  );
+}
 
 /** `takenStampsOn` from the jobs already read: the stamps held on `day`, `exceptId` aside. */
 function takenOn(jobs: readonly MirrorJob[], day: string, exceptId: string): Set<string> {
@@ -267,7 +304,8 @@ function rowRefusal(row: MirrorRow, env: Env, ctx: BuildCtx): MirrorSkip | null 
 
 /**
  * What the mirror does for this row now, from the row, its pushes and its memory (pure): a refusal; the re-queue of its
- * failed push (M3: same revision and day, its backoff over, fewer than three re-queues); or a new copy.
+ * failed push (M3: same revision and day, its backoff over, fewer than three re-queues — a push a restore neutralised
+ * likewise, under the stamp it may have landed a copy with); or a new copy.
  */
 function verdictOf(row: MirrorRow, pushes: readonly PushRow[], env: Env, ctx: BuildCtx, memory: MirrorMemory | null): Verdict {
   const refused = rowRefusal(row, env, ctx);
@@ -275,7 +313,7 @@ function verdictOf(row: MirrorRow, pushes: readonly PushRow[], env: Env, ctx: Bu
   if (currentCopy(row, pushes, ctx.today)) return { skip: "current" };
   if (memory && memory.rev === row.workoutDocRev && memory.day === row.effectiveDate) return { skip: memory.refused };
   const failed = pushes
-    .filter((p) => isOneOf(FAILED, p.status) && p.happenDay === row.effectiveDate && (p.fromDocRev === null || p.fromDocRev === row.workoutDocRev))
+    .filter((p) => isOneOf(RETRYABLE, p.status) && p.happenDay === row.effectiveDate && (p.fromDocRev === null || p.fromDocRev === row.workoutDocRev))
     .sort((a, b) => b.updatedAt.localeCompare(a.updatedAt))[0];
   if (failed) {
     const wait = MIRROR_RETRY_BACKOFF_MS[failed.retries];
@@ -286,7 +324,7 @@ function verdictOf(row: MirrorRow, pushes: readonly PushRow[], env: Env, ctx: Bu
   return { push: true };
 }
 
-/** The failed push queued afresh (M3): the same job, payload and stamp; the executor's retries reset, the re-queue counted. */
+/** The failed (or restored) push queued afresh (M3): the same job, payload and stamp; the executor's retries reset, the re-queue counted. */
 async function requeueFailed(db: Db, push: PushRow, now: string): Promise<boolean> {
   const done = await db
     .update(corosWriteJobs)
@@ -302,7 +340,7 @@ async function requeueFailed(db: Db, push: PushRow, now: string): Promise<boolea
       requestedAt: now,
       updatedAt: now,
     })
-    .where(and(eq(corosWriteJobs.id, push.id), inArray(corosWriteJobs.status, [...FAILED])))
+    .where(and(eq(corosWriteJobs.id, push.id), inArray(corosWriteJobs.status, [...RETRYABLE])))
     .returning({ id: corosWriteJobs.id });
   return done.length > 0;
 }
@@ -318,8 +356,8 @@ interface NextCopy {
   taken?: ReadonlySet<string>;
   /** The build's push as the caller knows it (null: none); read by `pushPayloadFor` otherwise. */
   earlier?: null;
-  /** The row's sent build when the caller knows it (none: the row has no live push); read otherwise. */
-  sent?: string | null;
+  /** The row's sent build (`sentOf`): its copy is the one deleted. */
+  sent: string | null;
   /** The record's insert, made after the previous copy's delete is queued (a provisional record not yet stored). */
   store?: () => Promise<unknown>;
   /** A day's build is locked as Send locks it (the watch holds what was played); a provisional record never is. */
@@ -329,10 +367,19 @@ interface NextCopy {
 /**
  * THE PREVIOUS COPY'S DELETE, THEN THE NEW PUSH (one copy per session). Nothing is written when the build cannot go to
  * the watch (`too_long`: more steps than it holds, or none). Then the payload (the steps against today's catalog, the
- * day's free stamp), the previous copy's delete (`enqueueUnpushIfOurs`: an adopted row's held copy, the sent build's
- * unpush — or, for a push still queued, its supersede), the record, the lock, the push.
+ * day's free stamp), the previous copy's delete — an adopted row's held copy and the sent build's unpush (or, for a push
+ * still queued, its supersede), never the address path: a copy whose build lost its sent mark has its delete already —
+ * the record, the lock, the push. The lock comes first, so the lane never claims the push before its build is the sent
+ * one; when the push cannot be queued (another request has it on its way or verified) the lock is taken back and the
+ * answer is `already_pushed`.
  */
-async function replaceCopy(db: Db, userId: string, row: MirrorRow, next: NextCopy, ctx: BuildCtx): Promise<"queued" | "skipped:too_long"> {
+async function replaceCopy(
+  db: Db,
+  userId: string,
+  row: MirrorRow,
+  next: NextCopy,
+  ctx: BuildCtx,
+): Promise<"queued" | "skipped:too_long" | "skipped:already_pushed"> {
   if (watchStepsFromBuild(next.build, NO_CATALOG).refusal) return "skipped:too_long";
   const made = await pushPayloadFor(db, userId, row, next.build, next.earlier, {
     ...(next.taken ? { taken: next.taken } : {}),
@@ -341,16 +388,23 @@ async function replaceCopy(db: Db, userId: string, row: MirrorRow, next: NextCop
   });
   // As Send checks it: a payload the lane would fail as malformed is never queued (nor anything before it written).
   const payload = programSessionPushJobSchema.parse(made.payload);
-  await enqueueUnpushIfOurs(db, userId, row, ctx.now, ctx.prefs, next.sent !== undefined ? { sent: next.sent } : undefined);
+  await enqueueUnpushIfOurs(db, userId, row, ctx.now, ctx.prefs, { sent: next.sent, addressPath: false });
   await next.store?.();
-  if (next.lock) {
+  const locked = next.lock
+    ? await db
+        .update(sessionBuilds)
+        .set({ lockedAt: ctx.now })
+        .where(and(eq(sessionBuilds.id, next.build.buildId), isNull(sessionBuilds.lockedAt)))
+        .returning({ id: sessionBuilds.id })
+    : [];
+  if (await queuePushJob(db, userId, row, next.build.buildId, next.inputsHash, payload, ctx.now)) return "queued";
+  if (locked.length > 0) {
     await db
       .update(sessionBuilds)
-      .set({ lockedAt: ctx.now })
-      .where(and(eq(sessionBuilds.id, next.build.buildId), isNull(sessionBuilds.lockedAt)));
+      .set({ lockedAt: null })
+      .where(and(eq(sessionBuilds.id, next.build.buildId), eq(sessionBuilds.lockedAt, ctx.now)));
   }
-  await queuePushJob(db, userId, row, next.build.buildId, next.inputsHash, payload, ctx.now);
-  return "queued";
+  return "skipped:already_pushed";
 }
 
 /**
@@ -362,8 +416,9 @@ async function replaceCopy(db: Db, userId: string, row: MirrorRow, next: NextCop
  * previous copy's delete is queued, the record stored, and `push:<recordId>` queued with `provisional: true`.
  *
  * The owed mark is resolved whatever the answer, except with the switch or the writes off or a restore running (they
- * keep it open, so the catch-up finds it). `known` is what the sweep has read already (the jobs, the mark): nothing is
- * read twice. At most 12 statements for a first copy; a replacement adds the previous copy's delete (`unpushBuild`).
+ * keep it open, so the catch-up finds it). `known` is what the sweep has read already (the jobs, the mark, the restore)
+ * and how it settles the marks (`settle`: together, at its end): nothing is read twice. 11 statements for a first copy;
+ * a replacement adds the previous copy's delete (`unpushBuild`, 4).
  */
 export async function queueProvisionalPush(
   db: Db,
@@ -371,12 +426,23 @@ export async function queueProvisionalPush(
   userId: string,
   row: MirrorRow,
   ctx: BuildCtx,
-  known: { jobs?: readonly MirrorJob[]; owed?: boolean; memory?: MirrorMemory | null } = {},
+  known: {
+    jobs?: readonly MirrorJob[];
+    /** False: the row has no open mark (nothing to resolve). */
+    owed?: boolean;
+    memory?: MirrorMemory | null;
+    /** False: the caller has just read that no restore is running. */
+    restoring?: false;
+    /** The caller resolves the marks together: the row's id is added here instead of resolved now. */
+    settle?: string[];
+  } = {},
 ): Promise<MirrorAnswer> {
   const finish = async (answer: MirrorAnswer, memory?: MirrorMemory): Promise<MirrorAnswer> => {
     if (answer === "skipped:switch_off" || answer === "skipped:writes_off" || answer === "skipped:restoring") return answer;
     if (memory) await remember(db, userId, row.id, ctx.now, memory);
-    else if (known.owed !== false) await resolveOwed(db, userId, [row.id], ctx.now);
+    else if (known.owed === false) return answer;
+    else if (known.settle) known.settle.push(row.id);
+    else await resolveOwed(db, userId, [row.id], ctx.now);
     return answer;
   };
   const refused = rowRefusal(row, env, ctx);
@@ -387,7 +453,7 @@ export async function queueProvisionalPush(
   const pushes = pushesOf(jobs, row.id);
   const verdict = verdictOf(row, pushes, env, ctx, known.memory ?? null);
   if ("skip" in verdict) return finish(`skipped:${verdict.skip}`);
-  if (await restoreInProgress(db, userId)) return "skipped:restoring";
+  if (known.restoring !== false && (await restoreInProgress(db, userId))) return "skipped:restoring";
   // Re-queued — or, when another request changed the push since it was read (queued or claimed it), on its way already.
   if ("retry" in verdict) return finish((await requeueFailed(db, verdict.retry, ctx.now)) ? "queued" : "skipped:current");
 
@@ -413,27 +479,29 @@ export async function queueProvisionalPush(
       fromDocRev: rev,
       taken: takenOn(jobs, row.effectiveDate, pushJobId(record.buildId)),
       earlier: null,
-      // No live push: nothing is sent (`sentBuildIdOf` names only a build with one), so it is not read again.
-      ...(pushes.length === 0 ? { sent: null } : {}),
+      sent: sentOf(jobs, row),
       store: record.insert,
       lock: false,
     },
     ctx,
   );
-  return answer === "queued" ? finish(answer) : finish(answer, memory("too_long"));
+  return answer === "skipped:too_long" ? finish(answer, memory("too_long")) : finish(answer);
 }
 
 /**
  * REPLACE THE COPY ON THE WATCH WITH `newBuildId` (§3.3; Task 5 calls it with a day's build): the current sent copy's
- * delete (`enqueueUnpushIfOurs`: the sent build's unpush — a queued push superseded — or an adopted row's held copy), then
- * the new build's push, the build locked first when it is a day's build (a provisional record never is). Refused with
- * the switch or the writes off, kept off, a restore running, a build too long for the watch; `current` when the build
- * is the sent copy already. Throws when the build is not this row's.
+ * delete (the sent build's unpush — a queued push superseded — or an adopted row's held copy), then the new build's push,
+ * the build locked first when it is a day's build (a provisional record never is).
+ *
+ * THE CALLER PROVES THE BUILD IS THE ROW'S CURRENT DAY BUILD (today, inputs current, pre-check answered, not blocked);
+ * Task 5 routes the lock through `lockProven`'s preconditions. Here: the row's own refusals (`rowRefusal`: the switch,
+ * the writes, kept off, not a document workout, resolved or under way or archived, a day gone, beyond the window), a
+ * restore running, `current` when the build is the sent copy already, `already_pushed` when its own push is on its way
+ * or verified (nothing written, nothing locked), `too_long`. Throws when the build is not this row's.
  */
 export async function queueReplacement(db: Db, env: Env, userId: string, row: MirrorRow, newBuildId: string, ctx: BuildCtx): Promise<MirrorAnswer> {
-  if (!watchPushEnabled(env)) return "skipped:switch_off";
-  if (!ctx.prefs.corosWritesEnabled) return "skipped:writes_off";
-  if (row.watchOff) return "skipped:kept_off";
+  const refused = rowRefusal(row, env, ctx);
+  if (refused) return `skipped:${refused}`;
   if (await restoreInProgress(db, userId)) return "skipped:restoring";
   const [b] = await db
     .select()
@@ -441,7 +509,11 @@ export async function queueReplacement(db: Db, env: Env, userId: string, row: Mi
     .where(and(eq(sessionBuilds.id, newBuildId), eq(sessionBuilds.userId, userId), eq(sessionBuilds.workoutId, row.id)))
     .limit(1);
   if (!b) throw new Error(`queueReplacement: build ${newBuildId} is not this session's`);
-  if ((await sentBuildIdOf(db, row.id)) === b.id) return "skipped:current";
+  const jobs = await mirrorJobs(db, userId, or(eq(corosWriteJobs.workoutId, row.id), sql`json_extract(${corosWriteJobs.payload}, '$.happenDay') = ${row.effectiveDate}`)!);
+  const sent = sentOf(jobs, row);
+  if (sent === b.id) return "skipped:current";
+  const own = jobs.find((j) => j.id === pushJobId(b.id));
+  if (own && (isOneOf(IN_FLIGHT, own.status) || own.status === "verified")) return "skipped:already_pushed";
   const stored = b.payload as unknown as StoredBuild;
   return replaceCopy(
     db,
@@ -452,6 +524,8 @@ export async function queueReplacement(db: Db, env: Env, userId: string, row: Mi
       inputsHash: b.inputsHash,
       provisional: isProvisionalBuild(b),
       fromDocRev: stored.build.fromDoc?.rev ?? null,
+      taken: takenOn(jobs, row.effectiveDate, pushJobId(b.id)),
+      sent,
       lock: b.version > 0,
     },
     ctx,
@@ -468,8 +542,10 @@ const SWEEP_ROWS = 60;
  * the window's document workouts (today … today + 28, scheduled, not archived, not kept off, soonest first): each
  * judged (`verdictOf`) with no statement of its own; the first that needs a copy gets ONE `queueProvisionalPush` (or
  * its failed push's re-queue) — `opts.cap` attempts a run, one by design (A5). The owed marks of the sessions it will
- * never push (kept off, resolved, beyond the window, current, …) are resolved together, in one statement. Writes off or
- * the switch off: nothing read, nothing queued, the marks kept. ≤ 15 statements for one record.
+ * never push (kept off, resolved, beyond the window, current, …) are resolved together, in one statement, with the one
+ * it pushed. A restore running (read with the candidates): nothing written. Making a copy that throws is remembered on
+ * the row's mark (`error`, for its revision and day), so one session cannot stall the account every hour. Writes off or
+ * the switch off: nothing read, nothing queued, the marks kept. ≤ 15 statements for one record, a replacement included.
  */
 export async function mirrorSweep(
   db: Db,
@@ -499,13 +575,21 @@ export async function mirrorSweep(
   );
   const open = and(sql`${syncIntents.id} is not null`, isNull(syncIntents.resolvedAt));
   const candidates = await db
-    .select({ row: pw, intentResolvedAt: syncIntents.resolvedAt, intentId: syncIntents.id, intentPayload: syncIntents.payload })
+    .select({
+      row: pw,
+      intentResolvedAt: syncIntents.resolvedAt,
+      intentId: syncIntents.id,
+      intentPayload: syncIntents.payload,
+      // A restore running (B2), read with the candidates: the run writes nothing then.
+      restoring: sql<number>`${restoring(userId)}`,
+    })
     .from(pw)
     .leftJoin(syncIntents, owedMark)
     .where(and(eq(pw.userId, userId), or(open, inWindow)))
     .orderBy(sql`case when ${open} then 0 else 1 end`, asc(pw.effectiveDate), asc(pw.effectiveTime), asc(pw.id))
     .limit(SWEEP_ROWS);
   if (candidates.length === 0) return { queued: 0, skipped: {} };
+  if (candidates[0]!.restoring) return { queued: 0, skipped: { restoring: 1 } };
   const jobs = await mirrorJobs(
     db,
     userId,
@@ -538,9 +622,16 @@ export async function mirrorSweep(
     // `opts.cap` heavy attempts a run (the budget: one), queued or not: the rest wait for the next run.
     if (attempts >= opts.cap) continue;
     attempts += 1;
-    const answer = await queueProvisionalPush(db, env, userId, c.row, runCtx, { jobs, owed, memory });
-    if (answer === "queued") queued += 1;
-    else count(answer.slice("skipped:".length));
+    try {
+      const answer = await queueProvisionalPush(db, env, userId, c.row, runCtx, { jobs, owed, memory, restoring: false, settle });
+      if (answer === "queued") queued += 1;
+      else count(answer.slice("skipped:".length));
+    } catch (e) {
+      const message = (e instanceof Error ? `${e.name}: ${e.message}` : String(e)).slice(0, 120);
+      console.error(`mirror sweep: ${c.row.id} not mirrored — ${message}`);
+      await remember(db, userId, c.row.id, ctx.now, { refused: "error", rev: c.row.workoutDocRev, day: c.row.effectiveDate, message });
+      count("error");
+    }
   }
   await resolveOwed(db, userId, settle, ctx.now);
   return { queued, skipped };

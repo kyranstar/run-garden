@@ -1989,11 +1989,28 @@ export async function sentBuildIdOf(db: Db, workoutId: string): Promise<string |
       ),
     );
   const live = new Set(pushes.map((j) => j.id));
-  const rank = (b: (typeof candidates)[number]): number => (b.lockedAt === null ? 2 : b.date === b.day ? 0 : 1);
-  const [sent] = candidates
-    .filter((b) => live.has(pushJobId(b.id)))
-    // Locked: the newest version first; provisional: the newest record, the lowest version, first.
-    .sort((a, b) => rank(a) - rank(b) || (a.lockedAt !== null ? b.version - a.version : a.version - b.version));
+  return pickSentBuild(candidates.filter((b) => live.has(pushJobId(b.id))));
+}
+
+/** A build that may be the sent one: locked, or a provisional copy's record — with its day and the slot's. */
+export interface SentCandidate {
+  id: string;
+  version: number;
+  lockedAt: string | null;
+  /** The day it was built for (`$.build.date`). */
+  date: string | null;
+  /** The slot's day now. */
+  day: string | null;
+}
+
+/**
+ * `sentBuildIdOf`'s choice among the candidates whose push is live (pure; the mirror reads them with its own jobs read):
+ * the day's build (locked, built for the slot's day), then any other locked build (the newest), then the newest
+ * provisional record (the lowest version).
+ */
+export function pickSentBuild(live: readonly SentCandidate[]): string | null {
+  const rank = (b: SentCandidate): number => (b.lockedAt === null ? 2 : b.date === b.day ? 0 : 1);
+  const [sent] = [...live].sort((a, b) => rank(a) - rank(b) || (a.lockedAt !== null ? b.version - a.version : a.version - b.version));
   return sent?.id ?? null;
 }
 

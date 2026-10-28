@@ -179,8 +179,16 @@ export async function enqueueUnpushIfOurs(
   w: typeof plannedWorkouts.$inferSelect,
   now: string,
   prefs: UserPreferences,
-  /** The row's sent build when the caller knows it (the mirror: none, when the row has no live push); read otherwise. */
-  known?: { sent: string | null },
+  opts: {
+    /** The row's sent build when the caller has read it (the mirror, with its own jobs read); read here otherwise. */
+    sent?: string | null;
+    /**
+     * False: no `<id>-unpush` by the row's address and recorded stamp — the mirror's previous-copy delete is the adopted
+     * copy's and the sent build's only. A copy whose build lost its sent mark already has its `unpush:<buildId>` (taken
+     * off, owed and run, or deleted when the change was made), and a second delete of it would only spend that id.
+     */
+    addressPath?: boolean;
+  } = {},
 ): Promise<void> {
   // AN ADOPTED ROW'S OLD COPY comes off (workout-editability §4): the copy it held when a revise took it over, beside —
   // never instead of — a build it has sent since. That old copy is the very one the stamp path below would address for
@@ -193,12 +201,12 @@ export async function enqueueUnpushIfOurs(
   // re-review 3-B NEW-1). The address path below queued `<id>-unpush`, which that drain does not take, so a removed
   // copy waited for the hourly lane. Writes off: the unpush is recorded as owed on the sent build, as a Take off or a
   // move with writes off records it, and `runOwedUnpushes` queues it when writes come back on (re-review C-3a).
-  const sent = appAuthoredRow(w) ? (known ? known.sent : await sentBuildIdOf(db, w.id)) : null;
+  const sent = appAuthoredRow(w) ? (opts.sent !== undefined ? opts.sent : await sentBuildIdOf(db, w.id)) : null;
   if (sent) {
     await unpushBuild(db, userId, w, sent, now, prefs);
     return;
   }
-  if (copy) return;
+  if (copy || opts.addressPath === false) return;
   // (A coach row has no build to owe it on; that gap is older than this and stays as it was.)
   const unpush = await unpushInsertIfOurs(db, userId, w, now, prefs);
   if (unpush) await unpush.insert;

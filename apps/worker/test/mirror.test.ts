@@ -41,6 +41,16 @@ vi.mock("../src/services/calendar-sync.js", async (importOriginal) => ({
   ...(await importOriginal<typeof import("../src/services/calendar-sync.js")>()),
   syncCalendar: vi.fn(async () => ({})),
 }));
+/** A session whose copy cannot be made: `pushPayloadFor` throws for it (an unexpected error, as a failed read would). */
+const broken = vi.hoisted(() => ({ workoutId: null as string | null }));
+vi.mock("../src/services/watch-push.js", async (importOriginal) => {
+  const real = await importOriginal<typeof import("../src/services/watch-push.js")>();
+  const pushPayloadFor: typeof real.pushPayloadFor = async (...args) => {
+    if (broken.workoutId !== null && args[2].id === broken.workoutId) throw new Error(`the catalog read failed ${"x".repeat(200)}`);
+    return real.pushPayloadFor(...args);
+  };
+  return { ...real, pushPayloadFor };
+});
 
 let db: Db;
 let userId: string;
@@ -64,6 +74,7 @@ async function setup(): Promise<void> {
 beforeEach(async () => {
   vi.useFakeTimers({ toFake: ["Date"] });
   vi.setSystemTime(new Date(NOON));
+  broken.workoutId = null;
   await setup();
 });
 afterEach(() => {
@@ -127,11 +138,11 @@ const storedProgram = (name: string) => (server.state.schedule.programs ?? []).f
 const ourPrograms = (title: string) => (server.state.schedule.programs ?? []).filter((p) => String(p.name).startsWith(title));
 
 /** The provisional copy's push verified, the row holding its address — as the lane leaves them. */
-async function verifyByHand(workoutId: string, buildId: string, day: string): Promise<void> {
+async function verifyByHand(workoutId: string, buildId: string, day: string, idInPlan = "41"): Promise<void> {
   await db.update(corosWriteJobs).set({ status: "verified", verifiedAt: NOON }).where(eq(corosWriteJobs.id, `push:${buildId}`));
   await db
     .update(plannedWorkouts)
-    .set({ sourceWorkoutId: "900:41", sourceIdInPlan: "41", sourceProgramId: "77", lastVerifiedCorosDate: day, corosSyncState: "synced" })
+    .set({ sourceWorkoutId: `900:${idInPlan}`, sourceIdInPlan: idInPlan, sourceProgramId: "77", lastVerifiedCorosDate: day, corosSyncState: "synced" })
     .where(eq(plannedWorkouts.id, workoutId));
 }
 
@@ -211,7 +222,7 @@ describe("queueProvisionalPush", () => {
     statements = [];
     expect(await queueProvisionalPush(db, switchOn(), userId, row, ctx())).toBe("queued");
     console.info(`[budget] queueProvisionalPush, replacing a verified copy: ${statements.length} D1`);
-    expect(statements.length).toBeLessThanOrEqual(16);
+    expect(statements.length).toBeLessThanOrEqual(14);
     const records = await recordsOf(id);
     expect(records.map((r) => r.version)).toEqual([-2, -1]);
     const second = records[0]!;
@@ -222,7 +233,7 @@ describe("queueProvisionalPush", () => {
     const unpush = await jobOf(`unpush:${first!.id}`);
     expect(unpush).toMatchObject({ kind: "coach_delete_workout", status: "queued" });
     expect(unpush!.payload).toMatchObject({ workoutId: id, happenDay: day, name: firstName, idInPlan: "41", programId: "77", corosPlanId: "900" });
-    expect((await jobsOf(id)).map((j) => j.id).slice(-2)).toEqual([`unpush:${first!.id}`, `push:${second.id}`]);
+    expect((await jobsOf(id)).map((j) => j.id)).toEqual([`push:${first!.id}`, `unpush:${first!.id}`, `push:${second.id}`]);
     // The old copy still holds its stamp until its delete verifies: the new one takes the day's next.
     expect(await pushPayload(second.id)).toMatchObject({ provisional: true, fromDocRev: 2, name: `Hips and back — ${day} (2)` });
     expect((await jobOf(`push:${first!.id}`))!.status).toBe("verified");
@@ -439,6 +450,77 @@ describe("mirrorSweep", () => {
     expect(await jobOf(`unpush:${first!.id}`)).toMatchObject({ status: "queued" });
     expect(await pushPayload(second!.id)).toMatchObject({ happenDay: addDays(DAY, 5), fromDocRev: 1 });
   });
+
+  it("the old copy's delete queued when the change was made, then the sweep: one delete and one push — never a second delete by the address", async () => {
+    const day = addDays(DAY, 3);
+    const id = await seedDocRow(day);
+    await queue(id);
+    const [first] = await recordsOf(id);
+    await verifyByHand(id, first!.id, day);
+    // The change's own cheap writes (M2; the hooks are Task 6's): the revision, its old copy's delete, the owed mark.
+    await revise(id);
+    await enqueueUnpushIfOurs(db, userId, await rowOf(db, id), NOON, prefs);
+    expect(await jobOf(`unpush:${first!.id}`)).toMatchObject({ status: "queued" });
+    expect(await sentBuildIdOf(db, id)).toBeNull();
+    expect((await mirrorSweep(db, switchOn(), userId, prefs, ctx(), { cap: 1 })).queued).toBe(1);
+    const [second] = await recordsOf(id);
+    expect((await jobsOf(id)).map((j) => j.id)).toEqual([`push:${first!.id}`, `unpush:${first!.id}`, `push:${second!.id}`]);
+    expect(await jobOf(`${id}-unpush`)).toBeUndefined();
+  });
+
+  it("replacing a verified copy, with owed marks to settle: within 15 statements", async () => {
+    const day = addDays(DAY, 3);
+    const id = await seedDocRow(day);
+    await queue(id);
+    const [first] = await recordsOf(id);
+    await verifyByHand(id, first!.id, day);
+    await revise(id);
+    const kept = await seedDocRow(addDays(DAY, 1), { watchOff: true });
+    await markMirrorOwed(db, userId, kept, NOON);
+    statements = [];
+    expect((await mirrorSweep(db, switchOn(), userId, prefs, ctx(), { cap: 1 })).queued).toBe(1);
+    console.info(`[budget] mirrorSweep, replacing a verified copy (two owed marks settled): ${statements.length} D1 (${statements.filter(isWrite).length} writes)`);
+    expect(statements.length).toBeLessThanOrEqual(15);
+    const [second] = await recordsOf(id);
+    expect((await jobsOf(id)).map((j) => j.id)).toEqual([`push:${first!.id}`, `unpush:${first!.id}`, `push:${second!.id}`]);
+    for (const w of [id, kept]) expect((await intentOf(w))!.resolvedAt).toBe(NOON);
+  });
+
+  it("a restore running: the sweep writes nothing, the marks kept", async () => {
+    const id = await seedDocRow(addDays(DAY, 1));
+    await markMirrorOwed(db, userId, id, NOON);
+    await db.insert(schema.accountState).values({ userId, restoreId: "restore-1", restoreStartedAt: NOON, updatedAt: NOON } as typeof schema.accountState.$inferInsert);
+    statements = [];
+    expect(await mirrorSweep(db, switchOn(), userId, prefs, ctx(), { cap: 1 })).toEqual({ queued: 0, skipped: { restoring: 1 } });
+    expect(statements.filter(isWrite)).toHaveLength(0);
+    expect(await recordsOf(id)).toHaveLength(0);
+    expect((await intentOf(id))!.resolvedAt).toBeNull();
+  });
+
+  it("making a copy that throws is remembered on the mark for its revision and day: it never stalls the account", async () => {
+    const bad = await seedDocRow(addDays(DAY, 1));
+    const next = await seedDocRow(addDays(DAY, 2));
+    broken.workoutId = bad;
+    expect(await mirrorSweep(db, switchOn(), userId, prefs, ctx(), { cap: 1 })).toEqual({ queued: 0, skipped: { error: 1 } });
+    const mark = await intentOf(bad);
+    expect(mark).toMatchObject({ resolvedAt: NOON });
+    const memory = mark!.payload as { refused: string; rev: number; day: string; message: string };
+    expect(memory).toMatchObject({ refused: "error", rev: 1, day: addDays(DAY, 1) });
+    expect(memory.message.startsWith("Error: the catalog read failed")).toBe(true);
+    expect(memory.message).toHaveLength(120);
+    expect(await recordsOf(bad)).toHaveLength(0);
+    expect(await jobsOf(bad)).toHaveLength(0);
+    // The next run passes it by and pushes the next session.
+    const second = await mirrorSweep(db, switchOn(), userId, prefs, ctx(), { cap: 1 });
+    expect(second.queued).toBe(1);
+    expect(second.skipped.error).toBe(1);
+    expect(await recordsOf(next)).toHaveLength(1);
+    // A new revision is tried afresh.
+    broken.workoutId = null;
+    await revise(bad);
+    expect((await mirrorSweep(db, switchOn(), userId, prefs, ctx(), { cap: 1 })).queued).toBe(1);
+    expect(await recordsOf(bad)).toHaveLength(1);
+  });
 });
 
 describe("a push that failed for good (M3)", () => {
@@ -486,6 +568,23 @@ describe("a push that failed for good (M3)", () => {
   });
 });
 
+describe("a push a restore neutralised", () => {
+  it("is re-queued as a failed one is — the same push and stamp, after the backoff — never a new copy under a new stamp", async () => {
+    const id = await seedDocRow(addDays(DAY, 2));
+    await queue(id);
+    const [record] = await recordsOf(id);
+    const pushId = `push:${record!.id}`;
+    const name = (await pushPayload(record!.id)).name;
+    await db.update(corosWriteJobs).set({ status: "restored", updatedAt: NOON }).where(eq(corosWriteJobs.id, pushId));
+    const sweepAt = (now: string) => mirrorSweep(db, switchOn(), userId, prefs, ctx({ now }), { cap: 1 });
+    expect(await sweepAt(after(MIRROR_RETRY_BACKOFF_MS[0] - 1000))).toMatchObject({ queued: 0, skipped: { backoff: 1 } });
+    expect((await sweepAt(after(MIRROR_RETRY_BACKOFF_MS[0]))).queued).toBe(1);
+    expect(await jobOf(pushId)).toMatchObject({ status: "queued" });
+    expect(await pushPayload(record!.id)).toMatchObject({ name, mirrorRetries: 1 });
+    expect(await recordsOf(id)).toHaveLength(1);
+  });
+});
+
 describe("queueReplacement", () => {
   it("the day's build replaces the provisional copy: the copy's delete, the day build locked, its push", async () => {
     const id = await seedDocRow(DAY);
@@ -503,6 +602,51 @@ describe("queueReplacement", () => {
     expect(await sentBuildIdOf(db, id)).toBe(day.buildId);
     // Asked again: it is the copy already.
     expect(await queueReplacement(db, switchOn(), userId, await rowOf(db, id), day.buildId, ctx())).toBe("skipped:current");
+  });
+
+  /** A document row of today with its day's build made, nothing sent. */
+  async function builtToday(over: Partial<typeof plannedWorkouts.$inferInsert> = {}): Promise<{ id: string; buildId: string }> {
+    const id = await seedDocRow(DAY);
+    const day = (await buildSession(db, userId, id, { checks: { tmj: { pre: 2, feelingOff: false } } }, ctx())).build!;
+    if (Object.keys(over).length > 0) await db.update(plannedWorkouts).set(over).where(eq(plannedWorkouts.id, id));
+    return { id, buildId: day.buildId };
+  }
+
+  it("refuses what the row refuses — resolved, under way, a day gone, not a document — writing nothing, locking nothing", async () => {
+    const cases: Array<[Partial<typeof plannedWorkouts.$inferInsert>, string, Partial<{ today: string }>]> = [
+      [{ completionState: "skipped" }, "skipped:resolved", {}],
+      [{ contentState: "started" }, "skipped:resolved", {}],
+      [{ archivedAt: NOON }, "skipped:resolved", {}],
+      [{}, "skipped:past", { today: TOMORROW }],
+      [{ origin: "program" }, "skipped:not_document", {}],
+      [{ watchOff: true }, "skipped:kept_off", {}],
+    ];
+    for (const [over, answer, when] of cases) {
+      const { id, buildId } = await builtToday(over);
+      expect(await queueReplacement(db, switchOn(), userId, await rowOf(db, id), buildId, ctx(when))).toBe(answer);
+      expect(await jobsOf(id)).toHaveLength(0);
+      const [b] = await db.select().from(sessionBuilds).where(eq(sessionBuilds.id, buildId));
+      expect(b!.lockedAt).toBeNull();
+    }
+  });
+
+  it("the build's own push on its way or verified already: already_pushed — no delete, no lock", async () => {
+    for (const [n, status] of ["verified", "claimed"].entries()) {
+      const { id, buildId } = await builtToday();
+      await queue(id);
+      const [record] = await recordsOf(id);
+      await verifyByHand(id, record!.id, DAY, `5${n}`);
+      // The day build's push exists (taken off since, or another request queued it), its build not the sent one.
+      await db.insert(corosWriteJobs).values({
+        id: `push:${buildId}`, userId, workoutId: id, kind: "program_session_push", expectedContentFingerprint: "h",
+        originalDate: DAY, destinationDate: DAY, payload: {}, requestedAt: NOON, status, updatedAt: NOON,
+      });
+      expect(await queueReplacement(db, switchOn(), userId, await rowOf(db, id), buildId, ctx())).toBe("skipped:already_pushed");
+      expect(await jobOf(`unpush:${record!.id}`)).toBeUndefined();
+      const [b] = await db.select().from(sessionBuilds).where(eq(sessionBuilds.id, buildId));
+      expect(b!.lockedAt).toBeNull();
+      expect(await sentBuildIdOf(db, id)).toBe(record!.id);
+    }
   });
 });
 
@@ -591,17 +735,23 @@ describe("driven through the lane (the mock COROS)", () => {
     expect(ourPrograms("Hips and back")).toHaveLength(1);
     for (const id of [today, tomorrow]) expect((await intentOf(id))!.resolvedAt).toBeNull();
 
-    // On again: the owed delete is queued; the sweep takes the soonest first, one a run.
+    // On again: the owed delete is queued; the sweep takes the soonest first, one a run — and that copy's delete is the
+    // owed one, never a second.
     await emitPendingWork(db, userId, { corosWritesEnabled: true });
     expect(await jobOf(`unpush:${first!.id}`)).toMatchObject({ status: "queued" });
     expect((await mirrorSweep(db, switchOn(), userId, prefs, ctx(), { cap: 1 })).queued).toBe(1);
+    const [secondToday] = await recordsOf(today);
     expect(await recordsOf(today)).toHaveLength(2);
+    expect((await jobsOf(today)).map((j) => j.id)).toEqual([`push:${first!.id}`, `unpush:${first!.id}`, `push:${secondToday!.id}`]);
+    expect(await jobsOf(tomorrow)).toHaveLength(0);
     expect(await recordsOf(tomorrow)).toHaveLength(0);
     await executeCloudJobs(db, switchOn(), userId, prefs, { fetchImpl: server.fetchImpl });
     expect(ourPrograms("Hips and back")).toHaveLength(1);
     expect((await mirrorSweep(db, switchOn(), userId, prefs, ctx(), { cap: 1 })).queued).toBe(1);
     const [tomorrowRecord] = await recordsOf(tomorrow);
     expect((await jobOf(`push:${tomorrowRecord!.id}`))!.status).toBe("queued");
+    expect((await jobsOf(tomorrow)).map((j) => j.id)).toEqual([`push:${tomorrowRecord!.id}`]);
+    expect((await jobsOf(today)).map((j) => j.id)).toEqual([`push:${first!.id}`, `unpush:${first!.id}`, `push:${secondToday!.id}`]);
     // Nothing more to do — and nothing twice.
     expect((await mirrorSweep(db, switchOn(), userId, prefs, ctx(), { cap: 1 })).queued).toBe(0);
     for (const id of [today, tomorrow]) expect((await intentOf(id))!.resolvedAt).toBe(NOON);
