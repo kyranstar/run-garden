@@ -2364,6 +2364,8 @@ export interface LibraryItemDto {
     }>;
     best: { w: Weight | null; reps: number | null; secs: number | null } | null;
   };
+  /** The upcoming scheduled workouts whose document already holds this move (absent from an older worker). */
+  scheduled?: Array<{ id: string; date: string; time: string; title: string }>;
 }
 
 function libraryQueryString(q: LibraryQuery): string {

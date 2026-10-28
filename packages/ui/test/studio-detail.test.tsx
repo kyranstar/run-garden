@@ -9,6 +9,7 @@ import { renderToStaticMarkup } from "react-dom/server";
 import { describe, expect, it } from "vitest";
 import { EXERCISES, GLOSSARY, PROFILES, type ExerciseRecord } from "@rg/exercise-library";
 import { bestLine, MoveDetail, MoveDetailBody, type MoveDetailBodyProps } from "../src/screens/studio/move-detail.js";
+import { planDayHref } from "../src/screens/studio/run-model.js";
 import { emptyStudioCtx, type StudioCtx } from "../src/screens/studio/model.js";
 import { renderAt, staticRouter, text, TODAY } from "./studio-fixtures.js";
 
@@ -111,6 +112,28 @@ describe("Easier and harder", () => {
   it("a move with neither has no such section", () => {
     const lone = EXERCISES.find((r) => !r.easier.length && !r.harder.length)!;
     expect(headings(body({ rec: lone }))).not.toContain("Easier and harder");
+  });
+});
+
+describe("On your plan", () => {
+  const scheduled = [
+    { id: "w-1", date: "2026-10-28", time: "09:00", title: "Strength A" },
+    { id: "w-2", date: "2026-10-30", time: "18:30", title: "Mobility <b>" },
+  ];
+
+  it("one link per scheduled workout, to its sheet on the Plan, after your history", () => {
+    const html = body({ rec: rec("tempoSquat"), scheduled });
+    expect(headings(html).slice(-2)).toEqual(["Your history", "On your plan"]);
+    const sec = html.slice(html.indexOf(">On your plan</h3>"));
+    const hrefs = [...sec.matchAll(/<a [^>]*href="([^"]*)"/g)].map((m) => m[1]!.replace(/&amp;/g, "&"));
+    expect(hrefs).toEqual([planDayHref("w-1", "2026-10-28"), planDayHref("w-2", "2026-10-30")]);
+    expect(text(sec)).toContain("Wed 9 AM — Strength A");
+    expect(sec).toContain("Mobility &lt;b&gt;");
+  });
+
+  it("nothing scheduled: no section", () => {
+    expect(headings(body({ rec: rec("tempoSquat"), scheduled: [] }))).not.toContain("On your plan");
+    expect(headings(body({ rec: rec("tempoSquat") }))).not.toContain("On your plan");
   });
 });
 

@@ -35,6 +35,7 @@
  */
 import { useEffect, useId, useRef, type ReactNode, type RefObject } from "react";
 import { Link } from "react-router-dom";
+import { dayAndTime, planDayHref } from "./run-model.js";
 import type { ExerciseRecord } from "@rg/exercise-library";
 import { formatWeightIn, secondsText, type WeightUnit } from "@rg/domain";
 import type { LibraryItemDto, PersonalMoveDto } from "@rg/api-client";
@@ -161,10 +162,12 @@ export interface MoveDetailBodyProps {
   own?: PersonalMoveDto | null;
   /** A library move's links to saved posts (the move's own read: `provenance`) — any move that has them (final review I5). */
   links?: readonly SavedLink[];
+  /** The upcoming scheduled workouts that already hold this move (the move's own read: `scheduled`). */
+  scheduled?: readonly { id: string; date: string; time: string; title: string }[];
 }
 
 /** Everything under the name, in the spec's order. */
-export function MoveDetailBody({ rec, ctx, today, say, onSay, sayError, best, weightUnit, moveLink, find = PUBLIC_LIBRARY.find, own = null, links = [] }: MoveDetailBodyProps) {
+export function MoveDetailBody({ rec, ctx, today, say, onSay, sayError, best, weightUnit, moveLink, find = PUBLIC_LIBRARY.find, own = null, links = [], scheduled = [] }: MoveDetailBodyProps) {
   const t = rec.text;
   const fit = fitOf(rec, ctx);
   const gear = gearLine(rec);
@@ -298,6 +301,19 @@ export function MoveDetailBody({ rec, ctx, today, say, onSay, sayError, best, we
           </p>
         ) : null}
       </Section>
+      {scheduled.length > 0 ? (
+        <Section title="On your plan">
+          <ul className="stu-ladder">
+            {scheduled.map((w) => (
+              <li key={w.id}>
+                <Link to={planDayHref(w.id, w.date)} className="stu-ladder-link">
+                  {dayAndTime(w.date, w.time)} — {w.title}
+                </Link>
+              </li>
+            ))}
+          </ul>
+        </Section>
+      ) : null}
     </div>
   );
 }
@@ -340,6 +356,7 @@ export function MoveDetail({ rec, ctx, today, wide, onClose, onAdd, moveLink, ad
       find={account.find}
       own={own}
       links={item.data?.provenance ?? []}
+      scheduled={item.data?.scheduled ?? []}
     />
   );
   const foot = (

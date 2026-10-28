@@ -402,11 +402,12 @@ describe("the owner's own moves: GET /api/library/personal", () => {
     statements.length = 0;
     const item = await library("GET", `/${archived}`);
     expect(item.status).toBe(200);
-    // The session, the account's library, then its prefs, links and history beside the profiles — for any id.
-    expect(statements.length).toBe(6);
+    // The session, the account's library, then its prefs, links and history beside the profiles, the athlete's
+    // timezone and the scheduled workouts that hold the move — for any id.
+    expect(statements.length).toBe(8);
     statements.length = 0;
     expect((await library("GET", "/gobletSquat")).status).toBe(200);
-    expect(statements.length).toBe(6);
+    expect(statements.length).toBe(8);
     expect(item.body).toMatchObject({ id: archived, name: "Wall Angel Hold" });
     expect((await library("GET", "/myNotAMove000000")).status).toBe(404);
   });

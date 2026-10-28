@@ -32,8 +32,8 @@
  * "Unlocks": a move the default place's gear cannot do now, that the gear would make doable, that the athlete has not
  * set aside and that no switched-on profile rules out.
  */
-import { and, asc, eq, inArray, ne, sql } from "drizzle-orm";
-import { exercisePrefs, exerciseProvenance, performedSessions, performedSets } from "@rg/database";
+import { and, asc, eq, gte, inArray, isNull, ne, sql } from "drizzle-orm";
+import { exercisePrefs, exerciseProvenance, performedSessions, performedSets, plannedWorkouts } from "@rg/database";
 import { addDays, todayInZone, toKg, type Weight } from "@rg/domain";
 import {
   bestDay,
@@ -152,6 +152,37 @@ export interface BestSet {
   secs: number | null;
 }
 
+export interface ScheduledWithMove {
+  id: string;
+  date: string;
+  time: string;
+  title: string;
+}
+
+/** Most upcoming workouts a move's page lists. */
+const SCHEDULED_LIMIT = 12;
+
+/**
+ * The account's upcoming scheduled workouts whose document holds the move, in ONE statement. `json_tree` walks
+ * every level of the parts, so an exercise nested in a superset counts. The document itself is never selected.
+ */
+async function scheduledWith(db: Db, userId: string, moveId: string, today: string): Promise<ScheduledWithMove[]> {
+  return db
+    .select({ id: plannedWorkouts.id, date: plannedWorkouts.effectiveDate, time: plannedWorkouts.effectiveTime, title: plannedWorkouts.title })
+    .from(plannedWorkouts)
+    .where(
+      and(
+        eq(plannedWorkouts.userId, userId),
+        gte(plannedWorkouts.effectiveDate, today),
+        isNull(plannedWorkouts.archivedAt),
+        eq(plannedWorkouts.completionState, "scheduled"),
+        sql`exists (select 1 from json_tree(${plannedWorkouts.workoutDoc}, '$.parts') t where t.key = 'libraryId' and t.value = ${moveId})`,
+      ),
+    )
+    .orderBy(asc(plannedWorkouts.effectiveDate), asc(plannedWorkouts.effectiveTime), asc(plannedWorkouts.id))
+    .limit(SCHEDULED_LIMIT);
+}
+
 export interface LibraryItem {
   id: string;
   name: string;
@@ -180,6 +211,8 @@ export interface LibraryItem {
    */
   provenance: Array<{ sourceType: string; url: string | null; creator: string | null; note: string | null }>;
   history: { last: HistoryEntryView[]; best: BestSet | null };
+  /** The upcoming scheduled workouts whose document already holds this move (soonest first, at most 12). */
+  scheduled: ScheduledWithMove[];
 }
 
 export class LibraryItemNotFoundError extends Error {
@@ -508,7 +541,7 @@ export async function libraryItem(db: Db, userId: string, id: string): Promise<L
   // A move by its own id (an old one is not this read's), the public library's or the account's own.
   const ex = find(id);
   if (!ex || ex.id !== id) throw new LibraryItemNotFoundError();
-  const [active, [pref], provenance, entries] = await Promise.all([
+  const [active, [pref], provenance, entries, scheduled] = await Promise.all([
     activeProfileIds(db, userId),
     db.select().from(exercisePrefs).where(and(eq(exercisePrefs.userId, userId), eq(exercisePrefs.exerciseId, id))).limit(1),
     db
@@ -517,6 +550,7 @@ export async function libraryItem(db: Db, userId: string, id: string): Promise<L
       .where(and(eq(exerciseProvenance.userId, userId), eq(exerciseProvenance.exerciseId, id)))
       .orderBy(asc(exerciseProvenance.createdAt), asc(exerciseProvenance.id)),
     entriesOf(db, userId, ex),
+    loadPreferences(db, userId).then((p) => scheduledWith(db, userId, id, todayInZone(p.timezone))),
   ]);
   const profiles = active.map(profileById);
   const { conditions: notes, ...text } = ex.text;
@@ -549,6 +583,7 @@ export async function libraryItem(db: Db, userId: string, id: string): Promise<L
     saved: provenance.length > 0,
     provenance,
     history: { last: entries.slice(0, 5), best: bestOf(ex, entries) },
+    scheduled,
   };
 }
 

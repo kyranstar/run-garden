@@ -612,6 +612,56 @@ describe("GET /api/library/:id", () => {
     expect(body.history.best).toEqual({ w: { v: 12, u: "kg" }, reps: 8, secs: null });
   });
 
+  describe("scheduled: the upcoming workouts whose document holds the move", () => {
+    const docOf = (...items: unknown[]) => JSON.stringify({ parts: [{ name: "Main", items }] });
+    const ex = (libraryId: string) => ({ kind: "exercise", libraryId });
+    let n = 0;
+    const plan = async (o: { date: string; time?: string; title?: string; doc: string | null; state?: string; archived?: boolean; owner?: string }) => {
+      const id = `pw-${++n}`;
+      await db.insert(schema.plannedWorkouts).values({
+        id, userId: o.owner ?? userId, planId: "p", sourceWorkoutId: id, title: o.title ?? "Strength", category: "strength", sport: "strength",
+        originalPlanDate: o.date, lastVerifiedCorosDate: "", effectiveDate: o.date, effectiveTime: o.time ?? "09:00",
+        sourceContentFingerprint: "f", calendarBlockDurationSeconds: 1800, completionState: o.state ?? "scheduled",
+        archivedAt: o.archived ? NOW : null, workoutDoc: o.doc, createdAt: NOW, updatedAt: NOW,
+      });
+      return id;
+    };
+    const scheduledOf = async (id: string) => (await item(id) as unknown as { scheduled: Array<{ id: string; date: string; time: string; title: string }> }).scheduled;
+
+    it("lists id, date, time and title, soonest first; a superset's nested move counts; past, archived, done, other and move-less ones do not", async () => {
+      const { todayInZone, addDays: add } = await import("@rg/domain");
+      const today = todayInZone(prefs.timezone);
+      const later = await plan({ date: add(today, 3), time: "18:30", title: "Legs", doc: docOf(ex("tempoSquat")) });
+      const sooner = await plan({ date: today, time: "07:00", title: "Morning", doc: docOf(ex("bridge"), ex("tempoSquat")) });
+      const nested = await plan({ date: add(today, 1), title: "Pairs", doc: docOf({ kind: "superset", items: [ex("bridge"), ex("tempoSquat")] }) });
+      await plan({ date: add(today, -1), doc: docOf(ex("tempoSquat")) });
+      await plan({ date: add(today, 2), doc: docOf(ex("tempoSquat")), archived: true });
+      await plan({ date: add(today, 2), doc: docOf(ex("tempoSquat")), state: "completed" });
+      await plan({ date: add(today, 2), doc: docOf(ex("bridge")) });
+      await plan({ date: add(today, 2), doc: null });
+      await plan({ date: add(today, 2), doc: docOf(ex("tempoSquat")), owner: (await makeTestUser(db)).userId });
+      expect(await scheduledOf("tempoSquat")).toEqual([
+        { id: sooner, date: today, time: "07:00", title: "Morning" },
+        { id: nested, date: add(today, 1), time: "09:00", title: "Pairs" },
+        { id: later, date: add(today, 3), time: "18:30", title: "Legs" },
+      ]);
+      expect(await scheduledOf("gobletSquat")).toEqual([]);
+    });
+
+    it("is at most twelve, reads the plan in ONE statement without the document, and writes nothing", async () => {
+      const { todayInZone, addDays: add } = await import("@rg/domain");
+      const today = todayInZone(prefs.timezone);
+      for (let i = 0; i < 14; i++) await plan({ date: add(today, i), doc: docOf(ex("tempoSquat")) });
+      statements.length = 0;
+      expect(await scheduledOf("tempoSquat")).toHaveLength(12);
+      expect(statements.length).toBeLessThanOrEqual(45);
+      expect(statements.filter(isWrite)).toEqual([]);
+      const reads = statements.filter((s) => /planned_workouts/i.test(s));
+      expect(reads).toHaveLength(1);
+      expect(reads[0]!).not.toMatch(/select[^]*"workout_doc"[^]*from "planned_workouts"/i);
+    });
+  });
+
   it("404 for a move the library does not have", async () => {
     const res = await call("GET", "/api/library/noSuchMove");
     expect(res.status).toBe(404);
