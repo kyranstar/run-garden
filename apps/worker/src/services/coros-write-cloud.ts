@@ -1024,11 +1024,20 @@ export async function executeCloudJobs(
         // a later send replaced) the payload's address is the copy's, and the
         // row is left exactly as it is.
         const program = job.workout !== null && appAuthoredRow(job.workout);
-        const rowsCopy =
-          !program ||
-          (await recordedStampFor(db, userId, spec.workoutId)) === spec.name ||
-          // …or that copy under the name the athlete gave it in the COROS app (audit 3-A life L-5).
-          (await renamedCopyOfRow(db, userId, spec.workoutId)) === spec.name;
+        // The copy an adopted row took over (workout-editability spec §4), under the name the row holds it by.
+        const heldCopy = job.workout?.watchCopyName === spec.name;
+        let rowsCopy = !program;
+        if (!rowsCopy) {
+          const recorded = await recordedStampFor(db, userId, spec.workoutId);
+          rowsCopy =
+            recorded === spec.name ||
+            // …or the held copy of an adopted row nothing of the app's has stamped since: a COROS-plan session's copy
+            // carries no stamp of ours (its wire title is the held name), and until a push records one the row's address
+            // is that copy's — so it is reset as a coach row's is, and addressed where the row holds the copy now.
+            (heldCopy && recorded === null) ||
+            // …or that copy under the name the athlete gave it in the COROS app (audit 3-A life L-5).
+            (await renamedCopyOfRow(db, userId, spec.workoutId)) === spec.name;
+        }
         // WHERE COROS HOLDS IT NOW, not where it stood when the unpush was
         // queued (audit 1, coach finding 1). A move that was already in flight
         // when the session was removed lands first — the lock serialises them —
@@ -1077,7 +1086,6 @@ export async function executeCloudJobs(
           // AN ADOPTED ROW'S OLD COPY, GONE (workout-editability spec §4): the name the row held it under goes with it,
           // so the row no longer reads older on watch for it. Only that name — a delete of any other copy leaves it —
           // and only now: a delete refused or failed leaves the copy on the watch, and the name with it.
-          const heldCopy = job.workout?.watchCopyName === spec.name;
           if (rowsCopy) {
             await db
               .update(plannedWorkouts)

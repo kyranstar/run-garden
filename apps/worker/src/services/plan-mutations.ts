@@ -201,6 +201,10 @@ export async function enqueueUnpushIfOurs(
   if (unpush) await unpush.insert;
 }
 
+/** The one delete of an adopted row's old copy (`adoptedCopyUnpush`): its id, which the import reads as "in flight". */
+export const ADOPTED_COPY_JOB_SUFFIX = "-unpush-copy";
+export const adoptedCopyJobId = (workoutId: string): string => `${workoutId}${ADOPTED_COPY_JOB_SUFFIX}`;
+
 /**
  * THE OLD COPY AN ADOPTED ROW HOLDS (workout-editability spec §4): a revise that took over a coach session or a
  * COROS-plan session kept its watch address and recorded the program name the watch holds the copy under
@@ -226,7 +230,7 @@ export function adoptedCopyUnpush(
   const insert = db
     .insert(corosWriteJobs)
     .values({
-      id: `${row.id}-unpush-copy`,
+      id: adoptedCopyJobId(row.id),
       userId,
       workoutId: row.id,
       kind: "coach_delete_workout",

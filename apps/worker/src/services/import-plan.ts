@@ -1,4 +1,4 @@
-import { and, eq, gte, inArray, isNull, ne, sql } from "drizzle-orm";
+import { and, eq, gte, inArray, isNull, ne, notExists, sql } from "drizzle-orm";
 import {
   calendarEventSuppressions,
   corosWriteJobs,
@@ -12,6 +12,7 @@ import {
 import {
   addDays,
   appAuthoredRow,
+  coachDeleteWorkoutJobSchema,
   COACH_STAMPING_JOB_KINDS,
   newId,
   nowInstant,
@@ -29,7 +30,7 @@ import { classifyWorkout, estimateDuration, summarizeStages } from "@rg/scheduli
 import type { SourcePlannedWorkout, TrainingPlanInfo } from "@rg/providers";
 import { isSpikeStamp } from "@rg/coros";
 import { isRuntimeLimit } from "./runtime-limit.js";
-import { insertBatches, runAtomically, type AtomicStatement, type Db } from "./db.js";
+import { chunkIds, insertBatches, runAtomically, type AtomicStatement, type Db } from "./db.js";
 import { separateDayCollisions, windowTimeFor } from "./day-placement.js";
 import { loadOwnProgramNames, unstampTitle } from "./coros-stamp.js";
 import { openMoveIntents, resolveIntent } from "./sync-intents.js";
@@ -38,6 +39,7 @@ import { dismissSyncNotesOf, postSyncNote } from "./sync-notes.js";
 import { reconcileWorkout } from "./reconcile.js";
 import { SETTLED_PUSH, sentBuildIdOf } from "./session-build.js";
 import { queueUnpush, unpushJobId } from "./watch-push.js";
+import { ADOPTED_COPY_JOB_SUFFIX, adoptedCopyJobId } from "./plan-mutations.js";
 import { docForStages, newRowDocColumns, revisionInserts, updateDocColumns } from "./workout-doc-store.js";
 import { plannedRowColumns, type PlannedRow } from "./planned-columns.js";
 
@@ -502,6 +504,22 @@ export async function importPlanSnapshot(
       ),
     );
   const pendingJobByWorkout = new Map(pendingJobs.map((j) => [j.workoutId, j]));
+  /**
+   * AN ADOPTED ROW'S OLD COPY, ON ITS WAY OFF (workout-editability spec §4): the one delete of the copy a revise took
+   * over with the row (`adoptedCopyUnpush` — Send, Remove or a plan archive queued it), in flight. By the row (the name
+   * it holds stays while its delete runs) and by the address the delete aims at, `${corosPlanId}:${idInPlan}` — the
+   * row's own when it was queued. From the jobs just read: no statement.
+   */
+  const copyDeleteInFlight = new Set<string>();
+  const copyLeavingAt = new Map<string, { workoutId: string; name: string }>();
+  for (const job of pendingJobs) {
+    if (job.kind !== "coach_delete_workout" || job.id !== adoptedCopyJobId(job.workoutId)) continue;
+    copyDeleteInFlight.add(job.workoutId);
+    const parsed = coachDeleteWorkoutJobSchema.safeParse(job.payload);
+    if (parsed.success) {
+      copyLeavingAt.set(`${parsed.data.corosPlanId}:${parsed.data.idInPlan}`, { workoutId: job.workoutId, name: parsed.data.name });
+    }
+  }
 
   // Bulk-loaded once — never queried per row inside the loop below.
   const intentByWorkout = new Map(
@@ -785,9 +803,19 @@ export async function importPlanSnapshot(
       pushed !== undefined && atAddress.some((w) => appAuthoredRow(w) && verifiedPushOf.get(w.id)?.payload.name === src.title);
     const ours = pushed !== undefined && !recordedHere && stampCarriers.get(src.title) === 1 ? pushed : undefined;
     const stampIsOurs = recordedHere || ours !== undefined;
+    // AN ADOPTED ROW'S OLD COPY (workout-editability spec §4, A1). A revise that took over a coach session or a COROS-plan
+    // session kept its address and the name the watch holds that copy under (`watch_copy_name`: the coach's stamp, or the
+    // wire's own title). No push of the app's put the copy there, so the stamp rule never let the row claim it: it read
+    // as a new workout — the session twice for a coach row, and for a COROS-plan row (its plan is this wire workout's) an
+    // insert `planned_workouts_source_unique` refused every read. The row claims it by that name, at its address. A
+    // verified push's claim wins over a held name's at one address: the stamp is the app's own proof, the name only what
+    // the copy was called. A copy renamed in the COROS app carries neither and is NOT claimed — it reads as a new workout,
+    // as a renamed coach copy always has (for a COROS-plan row once the row lets go of the address, below).
+    const claimsByPush = (w: StoredWorkout): boolean => appAuthoredRow(w) && verifiedPushOf.get(w.id)?.payload.name === src.title;
+    const pushClaims = atAddress.some(claimsByPush);
     const claimants = renamedCopyOf ? [renamedCopyOf] : atAddress.filter((w) =>
       appAuthoredRow(w)
-        ? verifiedPushOf.get(w.id)?.payload.name === src.title
+        ? claimsByPush(w) || (!pushClaims && w.watchCopyName !== null && w.watchCopyName === src.title)
         : !stampIsOurs ||
           ownCoachStamps.has(`${w.id}\n${src.title}`) ||
           (w.sourceProgramId !== null && w.sourceProgramId === src.sourceProgramId),
@@ -977,6 +1005,16 @@ export async function importPlanSnapshot(
       continue;
     }
 
+    // AN ADOPTED ROW'S OLD COPY AFTER ITS NEW VERSION WENT ON (spec §4). Send queues the old copy's delete before the
+    // push, and the sheet's drain runs the push first: verified, it moves the row's address to the new copy. The old copy
+    // then sits at an address no row holds, under the name its delete takes it off by. It is still the row's, on its way
+    // off the watch: no new row (the session twice), nothing written; the delete's verify clears the name.
+    const leaving = current ? undefined : copyLeavingAt.get(src.sourceWorkoutId);
+    if (leaving && leaving.name === src.title) {
+      stats.unchanged += 1;
+      continue;
+    }
+
     const moved = !current && atAddress.length === 0 ? ownCopyMoved(src) : undefined;
     if (moved) {
       // The coach session's own copy, at the address COROS gave it (`ownCopyMoved`): the row follows it.
@@ -1000,6 +1038,18 @@ export async function importPlanSnapshot(
 
     if (!current) {
       // New workout from COROS.
+      const planId = planRowsBySourceId.get(src.sourcePlanId)!.id;
+      // …BUT NEVER AN INSERT THE UNIQUE INDEX MUST REFUSE (workout-editability spec §4). An app-authored row of this very
+      // plan holding the address is an adopted COROS-plan session whose old copy this is not — renamed in the COROS app,
+      // or the slot recycled once the copy left. `planned_workouts_source_unique` would refuse the insert every read
+      // (`failedWrites`; past `IMPORT_ROW_RETRIES`, the read). The workout stays out of the app, as a recycled slot's new
+      // occupant does, until that row lets go of the address — its copy's delete, or rule 8's second full read without
+      // it — and then reads as new. (No other app-authored row is filed under a COROS plan: a programme's and a Studio
+      // workout's plan is their own.)
+      if (atAddress.some((w) => appAuthoredRow(w) && w.planId === planId)) {
+        stats.skippedForeignWorkouts += 1;
+        continue;
+      }
       const id = newId();
       // The athlete's window. Whether this session can actually HAVE it — or
       // has to queue up behind what already occupies the day — is settled once
@@ -1015,7 +1065,7 @@ export async function importPlanSnapshot(
         write: db.insert(plannedWorkouts).values({
           id,
           userId: input.userId,
-          planId: planRowsBySourceId.get(src.sourcePlanId)!.id,
+          planId,
           sourceWorkoutId: src.sourceWorkoutId,
           sourceProgramId: src.sourceProgramId ?? null,
           sourceIdInPlan: src.sourceIdInPlan ?? null,
@@ -1392,6 +1442,50 @@ export async function importPlanSnapshot(
       .update(corosWriteJobs)
       .set({ payload: kept as unknown as Record<string, unknown>, updatedAt: now })
       .where(eq(corosWriteJobs.id, push.jobId));
+  }
+
+  // AN ADOPTED ROW'S OLD COPY IS HELD ONLY WHILE A READ CAN FIND IT (workout-editability spec §4). `watch_copy_name` says
+  // the watch holds the row's old copy under that name: the row reads older on watch, and Send, Remove and a plan archive
+  // take the copy off by it. A FULL read whose window holds the row's address, with no workout there under the name,
+  // proves the copy gone — deleted in the COROS app, or renamed there (it then reads as new, above) — and the name goes:
+  // one statement for every such row (a chunk per `IN_ARRAY_CHUNK` ids). Never on a short read (ruling 3-R16: a copy
+  // moved further out is only outside the window), never for a row whose COROS plan this read did not hold, and never
+  // while the copy's delete is in flight: the absence is then the delete's own doing, and its verify clears the name
+  // (`coros-write-cloud.ts`) — judged again in the statement, as the jobs stand at the write. A row the app has pushed
+  // since holds its new copy's address: the old copy's delete was queued with that push (Send), so with none in flight
+  // it has run its course — verified (the name went with it) or failed for good, when the copy, if it is still there, is
+  // a COROS workout like any other — and the name goes too. Only the name: the address is rule 8's below.
+  if (input.fullSchedule) {
+    const servedUnder = new Set(admitted.map((src) => `${src.sourceWorkoutId}\n${src.title}`));
+    const copiesGone = existing.flatMap((w) => {
+      if (!appAuthoredRow(w) || w.watchCopyName === null || copyDeleteInFlight.has(w.id)) return [];
+      const address = watchAddressOf(w);
+      if (!address || address.happenDay < input.rangeStart || address.happenDay > input.rangeEnd) return [];
+      if (!admittedPlanIds.has(address.corosPlanId)) return [];
+      return servedUnder.has(`${w.sourceWorkoutId}\n${w.watchCopyName}`) ? [] : [w.id];
+    });
+    for (const ids of chunkIds(copiesGone)) {
+      await db
+        .update(plannedWorkouts)
+        .set({ watchCopyName: null, updatedAt: now })
+        .where(
+          and(
+            eq(plannedWorkouts.userId, input.userId),
+            inArray(plannedWorkouts.id, ids),
+            notExists(
+              db
+                .select({ one: sql`1` })
+                .from(corosWriteJobs)
+                .where(
+                  and(
+                    eq(corosWriteJobs.id, sql`${plannedWorkouts.id} || ${ADOPTED_COPY_JOB_SUFFIX}`),
+                    inArray(corosWriteJobs.status, ["queued", "claimed", "in_progress", "verifying"]),
+                  ),
+                ),
+            ),
+          ),
+        );
+    }
   }
 
   // ── Rule 8: workouts that disappeared upstream (double-read confirmation) ──
