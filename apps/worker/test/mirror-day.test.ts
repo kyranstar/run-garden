@@ -15,11 +15,14 @@ import { and, eq, lt } from "drizzle-orm";
 import { schema } from "@rg/database";
 import { programSessionPushJobSchema, type UserPreferences, type WorkoutDoc } from "@rg/domain";
 import type { Db } from "../src/services/db.js";
+// First of the worker's modules: the mirror binds the mocked watch-push below (the import cycle session-build ↔ mirror ↔
+// watch-push would otherwise hand it the original while the mock is still being made).
+import { mirrorOnDayBuild, queueProvisionalPush } from "../src/services/mirror.js";
 import { createSession, SESSION_COOKIE } from "../src/auth/sessions.js";
 import { sessionRoutes } from "../src/routes/sessions.js";
 import { executeCloudJobs } from "../src/services/coros-write-cloud.js";
+import { savePreferences } from "../src/services/calendar-sync.js";
 import { buildSession, recordCheck, sentBuildIdOf, type BuildCtx, type CheckAnswer } from "../src/services/session-build.js";
-import { mirrorOnDayBuild, queueProvisionalPush } from "../src/services/mirror.js";
 import { sendToWatch } from "../src/services/watch-push.js";
 import { mockCorosServer, type MockCorosServer } from "../../../packages/coros/test/mock-coros-server.js";
 import { isWrite, makeTestDb, makeTestUser, mountRoutes } from "./helpers.js";
@@ -33,6 +36,16 @@ vi.mock("../src/services/calendar-sync.js", async (importOriginal) => ({
   ...(await importOriginal<typeof import("../src/services/calendar-sync.js")>()),
   syncCalendar: vi.fn(async () => ({})),
 }));
+/** A session whose copy's payload throws while the mirror makes it (as a failed read would): `pushPayloadFor`. */
+const broken = vi.hoisted(() => ({ payload: null as string | null }));
+vi.mock("../src/services/watch-push.js", async (importOriginal) => {
+  const real = await importOriginal<typeof import("../src/services/watch-push.js")>();
+  const pushPayloadFor: typeof real.pushPayloadFor = async (...args) => {
+    if (broken.payload !== null && args[2].id === broken.payload) throw new Error("D1_ERROR: the catalog read failed");
+    return real.pushPayloadFor(...args);
+  };
+  return { ...real, pushPayloadFor };
+});
 
 let db: Db;
 let userId: string;
@@ -45,6 +58,7 @@ let seq = 0;
 beforeEach(async () => {
   vi.useFakeTimers({ toFake: ["Date"] });
   vi.setSystemTime(new Date(NOON));
+  broken.payload = null;
   statements = [];
   db = makeTestDb({ boundVariableCap: 100, onStatement: (s) => statements.push(s) });
   ({ userId, prefs } = await makeTestUser(db, { corosWritesEnabled: true }));
@@ -102,6 +116,25 @@ async function provisionalCopy(id: string, run = true): Promise<{ recordId: stri
 /** The day's build as the sheet makes it (the build route: the env passed, so the mirror follows it). */
 const build = (id: string, checks?: Record<string, CheckAnswer>, now = NOON) =>
   buildSession(db, userId, id, checks ? { checks } : {}, ctx(now));
+
+/** A session route as the app calls it (`env`: the switch on), counted as one invocation: its D1 and its fetches. */
+async function route(method: "POST", path: string, body: unknown, now = NOON) {
+  vi.setSystemTime(new Date(now));
+  const cookie = `${SESSION_COOKIE}=${await createSession(db, userId, "test")}`;
+  const lane = counting(server);
+  vi.stubGlobal("fetch", lane.fetchImpl);
+  statements = [];
+  try {
+    const res = await mountRoutes(db, "/api/sessions", sessionRoutes).request(
+      `/api/sessions/${path}`,
+      { method, headers: { Cookie: cookie, "Content-Type": "application/json" }, body: JSON.stringify(body) },
+      switchOn(),
+    );
+    return { status: res.status, body: (await res.json()) as Record<string, any>, d1: statements.length, fetches: lane.calls() };
+  } finally {
+    vi.unstubAllGlobals();
+  }
+}
 
 describe("the day's build of a document workout whose provisional copy is on the watch", () => {
   it("the same steps: handed over in D1 — the day build locked, a verified push:<day> under the copy's stamp, the provisional push settled — and no COROS write", async () => {
@@ -188,12 +221,15 @@ describe("the day's build of a document workout whose provisional copy is on the
 
   it("the day build made before the provisional push ran (Review Focus 2): that push is superseded and the day build pushed — no delete", async () => {
     const id = await seedDocRow();
-    const { recordId } = await provisionalCopy(id, false);
+    const { recordId, name } = await provisionalCopy(id, false);
+    expect(name).toBe(`Hips and back — ${DAY}`);
     const day = (await build(id, calm)).build!;
     expect((await jobOf(`push:${recordId}`))!.status).toBe("superseded");
     expect(await jobOf(`unpush:${recordId}`)).toBeUndefined();
     expect((await buildOf(recordId)).payload).not.toHaveProperty("kind");
     expect(await jobOf(`push:${day.buildId}`)).toMatchObject({ status: "queued" });
+    // The push that never ran held its stamp for nothing: the day build takes it — no " (2)" beside a copy not there.
+    expect((await pushPayload(day.buildId)).name).toBe(name);
     expect((await buildOf(day.buildId)).lockedAt).toBe(NOON);
     expect(await sentBuildIdOf(db, id)).toBe(day.buildId);
     // Driven through the lane: the day's build is the one copy on the watch.
@@ -254,16 +290,29 @@ describe("every later change on the day (owner §10.1)", () => {
     expect(ourPrograms("Legs and landings").map((p) => p.name)).toEqual([(await pushPayload(third.build!.buildId)).name]);
   });
 
-  it("a later build whose steps are the same: nothing is queued, and the sent build stays", async () => {
+  it("a later build whose steps are the same: the sent lock moves to it in D1 (A9) — the copy's stamp kept, nothing queued, no fetch", async () => {
     const id = await seedDocRow();
-    await provisionalCopy(id);
+    const { name } = await provisionalCopy(id);
     const first = (await build(id, calm)).build!;
-    const count = (await jobsOf(id)).length;
+    const observed = (await pushPayload(first.buildId)).observed;
+    expect(observed).toBeDefined();
     // Another reading that closes nothing of a calm workout: a new build, the same steps.
-    const second = await build(id, { tmj: { pre: 3, feelingOff: false } }, after(60_000));
-    expect(second.build!.buildId).toBe(first.buildId);
-    expect(await jobsOf(id)).toHaveLength(count);
-    expect(await sentBuildIdOf(db, id)).toBe(first.buildId);
+    const later = await route("POST", `${id}/build`, { checks: { tmj: { pre: 3, feelingOff: false } } }, after(60_000));
+    expect(later.status).toBe(200);
+    expect(later.fetches).toBe(0);
+    const second = later.body.build as { buildId: string; version: number };
+    expect(second.buildId).not.toBe(first.buildId);
+    expect(second.version).toBeGreaterThan(first.version);
+    // The sheet and Start now hold the newest build, which is the one on the watch.
+    expect(later.body).toMatchObject({ locked: true, watch: { state: "on_watch" } });
+    expect((await buildOf(second.buildId)).lockedAt).toBe(after(60_000));
+    expect((await buildOf(first.buildId)).lockedAt).toBeNull();
+    expect(await jobOf(`push:${second.buildId}`)).toMatchObject({ status: "verified" });
+    expect(await pushPayload(second.buildId)).toMatchObject({ buildId: second.buildId, name, observed, fromDocRev: 1 });
+    expect((await jobOf(`push:${first.buildId}`))!.status).toBe("superseded");
+    expect((await jobsOf(id)).filter((j) => j.status === "queued")).toEqual([]);
+    expect(await sentBuildIdOf(db, id)).toBe(second.buildId);
+    expect(ourPrograms("Hips and back").map((p) => p.name)).toEqual([name]);
   });
 });
 
@@ -289,22 +338,9 @@ describe("an engine slot on its day", () => {
 describe("the build request that moves the watch (Workers Free: ≤ 45 statements + fetches a request)", () => {
   /** POST …/build as the sheet sends it — the route, its env, its watch state — counted as one invocation. */
   async function buildRoute(id: string, checks: Record<string, CheckAnswer>, now = NOON) {
-    vi.setSystemTime(new Date(now));
-    const cookie = `${SESSION_COOKIE}=${await createSession(db, userId, "test")}`;
-    const lane = counting(server);
-    vi.stubGlobal("fetch", lane.fetchImpl);
-    statements = [];
-    try {
-      const res = await mountRoutes(db, "/api/sessions", sessionRoutes).request(
-        `/api/sessions/${id}/build`,
-        { method: "POST", headers: { Cookie: cookie, "Content-Type": "application/json" }, body: JSON.stringify({ checks }) },
-        switchOn(),
-      );
-      expect(res.status).toBe(200);
-      return { body: (await res.json()) as { build: { buildId: string }; watch: { state: string } }, d1: statements.length, fetches: lane.calls() };
-    } finally {
-      vi.unstubAllGlobals();
-    }
+    const res = await route("POST", `${id}/build`, { checks }, now);
+    expect(res.status).toBe(200);
+    return res;
   }
   const report = (what: string, m: { d1: number; fetches: number }) => {
     console.info(`[budget] POST …/build, ${what}: ${m.d1} D1 + ${m.fetches} COROS`);
@@ -366,6 +402,57 @@ describe("the build request that moves the watch (Workers Free: ≤ 45 statement
     expect(await jobOf(`unpush:${recordId}`)).toMatchObject({ status: "queued" });
     expect(await jobOf(`push:${body.session.build.buildId}`)).toMatchObject({ status: "queued" });
     expect(statements.length).toBeLessThanOrEqual(45);
+  });
+});
+
+describe("what the watch's lock still holds (the switch and the athlete's writes on)", () => {
+  it("a STARTED session: a build is refused 409 locked, the started build kept", async () => {
+    const id = await seedDocRow();
+    await provisionalCopy(id);
+    const day = (await build(id, calm)).build!;
+    const started = await route("POST", `${id}/start`, { buildId: day.buildId }, after(1_000));
+    expect(started.status).toBe(200);
+    expect(started.body).toMatchObject({ contentState: "started", locked: true });
+    const again = await route("POST", `${id}/build`, { checks: flare }, after(2_000));
+    expect(again.status).toBe(409);
+    expect(again.body).toMatchObject({ error: "locked", session: { build: { buildId: day.buildId } } });
+    expect((await jobsOf(id)).filter((j) => j.status === "queued")).toEqual([]);
+  });
+
+  it("a sent session with the athlete's COROS writes OFF: a build is refused 409 locked — nothing could replace the copy", async () => {
+    const id = await seedDocRow(landingsDoc());
+    await provisionalCopy(id);
+    const day = (await build(id, calm)).build!;
+    expect((await buildOf(day.buildId)).lockedAt).toBe(NOON);
+    await savePreferences(db, userId, { ...prefs, corosWritesEnabled: false });
+    const again = await route("POST", `${id}/build`, { checks: flare }, after(1_000));
+    expect(again.status).toBe(409);
+    expect(again.body).toMatchObject({ error: "locked", session: { build: { buildId: day.buildId } } });
+    expect(await sentBuildIdOf(db, id)).toBe(day.buildId);
+  });
+});
+
+describe("a mirror that throws", () => {
+  it("leaves the build request 200 with the build stored — logged, nothing locked or queued — and the copy follows on the next build", async () => {
+    const id = await seedDocRow(landingsDoc());
+    const { recordId } = await provisionalCopy(id);
+    const logged = vi.spyOn(console, "error").mockImplementation(() => undefined);
+    broken.payload = id;
+    const res = await route("POST", `${id}/build`, { checks: flare });
+    expect(res.status).toBe(200);
+    const made = res.body.build as { buildId: string; version: number };
+    expect(made.version).toBeGreaterThan(0);
+    expect((await buildOf(made.buildId)).lockedAt).toBeNull();
+    expect((await jobsOf(id)).map((j) => [j.id, j.status])).toEqual([[`push:${recordId}`, "verified"]]);
+    expect(logged.mock.calls.some((c) => String(c[0]).includes(id) && String(c[0]).includes("the catalog read failed"))).toBe(true);
+    // Opened again, the build found current: the mirror runs again, and this time replaces the copy.
+    broken.payload = null;
+    logged.mockRestore();
+    const again = await route("POST", `${id}/build`, {}, after(1_000));
+    expect(again.status).toBe(200);
+    expect(again.body.build.buildId).toBe(made.buildId);
+    expect(await jobOf(`unpush:${recordId}`)).toMatchObject({ status: "queued" });
+    expect(await jobOf(`push:${made.buildId}`)).toMatchObject({ status: "queued" });
   });
 });
 

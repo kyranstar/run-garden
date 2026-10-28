@@ -110,10 +110,10 @@ export type MirrorSkip =
   | "not_day_build"
   /** The day's pre-check is not answered yet: the copy stays as it is until it is. */
   | "precheck"
+  /** The day's reading closes a move no alternate stands in for (`lockRefusal`): the copy stays (`queueReplacement`). */
+  | "blocked"
   /** No longer the build the day shows, or the slot no longer holds it to be locked (`lockRefusal`, `lockForWatch`). */
   | "stale"
-  /** The steps the watch holds already: the sent build stays (§3.3, a later build with nothing new for the watch). */
-  | "same"
   /** The copy is on the wire this moment, with the same steps: handed over by the next build once it has verified. */
   | "in_flight";
 
@@ -587,14 +587,17 @@ const rowScope = (row: Pick<MirrorRow, "id" | "effectiveDate">): SQL =>
  * push superseded — or an adopted row's held copy), then the new build's push; a day's build locked first, under
  * `lockProven`'s preconditions (`lockForWatch`; a provisional record never is).
  *
- * THE CALLER PROVES THE REST OF A DAY BUILD'S PRECONDITIONS (made with the day's inputs as they hash now, the pre-check
- * answered, not blocked: `mirrorOnDayBuild` asks `lockRefusal` and `checksAnswered`). Here: the row's own refusals — a
- * day's build `dayRowRefusal` (the switch, the writes, kept off, a session the mirror holds on its day — an engine slot
- * among them — resolved or under way or archived, its day), a provisional record `rowRefusal` (… not a document
- * workout, a day gone, beyond the window) — a restore running, `current` when the build is the sent copy already,
- * `already_pushed` when its own push is on its way or verified (nothing written, nothing locked; if another request
- * queues it between that read and the write, the answer is the same, the delete queued and the build locked — the push
- * is the build's), `stale` when the lock is refused (nothing written), `too_long`. Throws when the build is not this
+ * In order: the row's own refusals — a day's build `dayRowRefusal` (the switch, the writes, kept off, a session the
+ * mirror holds on its day — an engine slot among them — resolved or under way or archived, its day), a provisional
+ * record `rowRefusal` (… not a document workout, a day gone, beyond the window); for a day's build, `lockProven`'s
+ * preconditions as far as the build itself says them — the pre-check answered (`checksAnswered`, the account's active
+ * profiles read: `precheck`) and not blocked (`lockRefusal`: `blocked`) — so it never locks a build the day's check
+ * has not cleared; a restore running; `current` when the build is the sent copy already, `already_pushed` when its own
+ * push is on its way or verified (nothing written, nothing locked; if another request queues it between that read and
+ * the write, the answer is the same, the delete queued and the build locked — the push is the build's), `stale` when the
+ * lock is refused (`lockForWatch`: no longer the slot's newest day build, the slot not built; nothing written),
+ * `too_long`. That the build is the one the day's inputs make NOW is the build commit's to prove (it holds the inputs):
+ * the day's own path is `mirrorOnDayBuild`, which calls `replaceCopy` with that proof. Throws when the build is not this
  * row's.
  */
 export async function queueReplacement(db: Db, env: Env, userId: string, row: MirrorRow, newBuildId: string, ctx: BuildCtx): Promise<MirrorAnswer> {
@@ -606,6 +609,12 @@ export async function queueReplacement(db: Db, env: Env, userId: string, row: Mi
   if (!b) throw new Error(`queueReplacement: build ${newBuildId} is not this session's`);
   const refused = b.version > 0 ? dayRowRefusal(row, env, ctx) : rowRefusal(row, env, ctx);
   if (refused) return `skipped:${refused}`;
+  if (b.version > 0) {
+    const stored = b.payload as unknown as StoredBuild;
+    if (!checksAnswered(await activeProfilesOf(db, userId), stored.build.params.checks)) return "skipped:precheck";
+    const unlockable = lockRefusal(b, b.id, { inputsHash: b.inputsHash, version: b.engineVersion });
+    if (unlockable) return `skipped:${unlockable}`;
+  }
   if (await restoreInProgress(db, userId)) return "skipped:restoring";
   return replaceCopy(db, userId, row, b, await mirrorJobs(db, userId, rowScope(row)), ctx);
 }
@@ -617,13 +626,18 @@ async function replaceCopy(db: Db, userId: string, row: MirrorRow, b: SessionBui
   const own = jobs.find((j) => j.id === pushJobId(b.id));
   if (own && (isOneOf(IN_FLIGHT, own.status) || own.status === "verified")) return "skipped:already_pushed";
   const stored = b.payload as unknown as StoredBuild;
+  // The sent copy's push still queued never ran: `writeCopy` supersedes it (the copy's delete) before the new push is
+  // queued, and the lane runs the account's jobs in order, so its stamp is the new copy's to take — never " (2)" beside a
+  // copy that is not there.
+  const sentPush = sent === null ? undefined : jobs.find((j) => j.id === pushJobId(sent));
+  const stamps = sentPush?.status === "queued" ? jobs.filter((j) => j !== sentPush) : jobs;
   const next: NextCopy = {
     build: { buildId: b.id, ...stored.build },
     version: b.version,
     inputsHash: b.inputsHash,
     provisional: isProvisionalBuild(b),
     fromDocRev: stored.build.fromDoc?.rev ?? null,
-    taken: takenOn(jobs, row.effectiveDate, pushJobId(b.id)),
+    taken: takenOn(stamps, row.effectiveDate, pushJobId(b.id)),
     // A build never pushed has no stamp of its own to keep: no read for it.
     ...(own ? {} : { earlier: null }),
     sent,
@@ -704,9 +718,9 @@ export function sameWatchSteps(a: readonly ProgramWatchStep[], b: readonly Progr
  *  - none → the build pushed (`pushing`; an adopted row's held copy deleted first — `replacing` then);
  *  - else the build's watch steps, resolved as the copy's were (`watchStepsAsSent`), compared with the copy's
  *    (`sameWatchSteps`; never `pushDigest`, never COROS's fingerprints):
- *     · the same, and the copy is a provisional one verified on the watch at the row's address → HANDED OVER in D1, no
- *       COROS write (`handOver`);
- *     · the same, and the copy is a day build's (a later build with nothing new for the watch) → `same`: it stays;
+ *     · the same, and the copy verified on the watch at the row's address → HANDED OVER in D1, no COROS write
+ *       (`handOver`) — from the provisional copy, or from an earlier day build (a later build with nothing new for the
+ *       watch: the sent lock moves to the newest build, A9, so the sheet and Start play what the row now holds);
  *     · the same, its push on the wire this moment → `in_flight` (handed over by a later build once it verifies);
  *     · the same but never landed (queued, failed, gone from the watch), or different → REPLACED (`replaceCopy`): the
  *       copy's delete — a push that never ran superseded instead (`pushing`, Review Focus 2) — and the build's push, the
@@ -745,8 +759,6 @@ export async function mirrorOnDayBuild(
   if (held && copy?.success) {
     const same = sameWatchSteps((await watchStepsAsSent(db, userId, stored.build, copy.data)).steps, copy.data.session.steps);
     if (same) {
-      const provisional = held.build?.marked === true;
-      if (!provisional) return "skipped:same";
       const address = watchAddressOf(row);
       const landed = held.status === "verified" && copy.data.happenDay === row.effectiveDate && address?.happenDay === row.effectiveDate;
       if (landed) return handOver(db, userId, row, dayBuild, held, copy.data, ctx);
@@ -761,13 +773,15 @@ export async function mirrorOnDayBuild(
 }
 
 /**
- * THE HAND-OVER (A3): the provisional copy on the watch is the day's build step for step, so the day's build takes it
- * over in D1, with no COROS write, in the only order that keeps one stamp claimed throughout (the import's
- * `pushByStamp`, `verifiedPushOf` by the latest verification; the delete executor supersedes verified pushes by name):
+ * THE HAND-OVER (A3, A9): the copy on the watch — the provisional copy, or an earlier day build's — is the day's build
+ * step for step, so the day's build takes it over in D1, with no COROS write, in the only order that keeps one stamp
+ * claimed throughout (the import's `pushByStamp`, `verifiedPushOf` by the latest verification; the delete executor
+ * supersedes verified pushes by name):
  *  1. the day's build locked (`lockForWatch`: still the slot's newest day build, the slot built, no restore running);
  *  2. `push:<dayBuild>` written `verified` — the copy's payload, its `buildId` and revision the day build's, never
  *     provisional — so it carries the copy's stamp, its day, what its push observed (and noticed), and a rename;
- *  3. the provisional record's marker cleared (`unlockSentBuild`): it is no longer the copy on the watch;
+ *  3. the copy's build let go (`unlockSentBuild`): a provisional record's marker cleared, an earlier day build unlocked
+ *     (`$.unsentAt`) — it is no longer the copy on the watch;
  *  4. its push settled (`superseded`).
  * Four statements. A lock refused writes nothing (`stale`); a day push another request has on its way or verified
  * meanwhile stops before the copy is let go (`already_pushed`: that push is the build's).

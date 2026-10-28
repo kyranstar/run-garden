@@ -1333,14 +1333,24 @@ function watchLocksOf(row: SlotRow, builds: readonly BuildRow[], ctx: BuildCtx):
  * with the day's inputs as they hash now, for these profiles. When the mirror locked it (a hand-over, a replacement, a
  * push), the slot shows it now — the newest locked build — so the response's build and lock are made again from the
  * slot's builds as they now stand (one read). Never a preview's; without the env, nothing.
+ *
+ * THE BUILD IS NEVER THE MIRROR'S CASUALTY: it is stored before the mirror runs, so a throw in the mirror (a read, the
+ * payload, a write) is logged with the workout and the build is answered as stored — the copy follows on a later build
+ * of the day (the sheet's next open finds the build current and asks the mirror again), never a 500 on every reopen.
  */
 async function mirrorDay(db: Db, userId: string, s: BuildStore, row: SlotRow, build: BuildRow, outcome: BuildOutcome, ctx: BuildCtx): Promise<BuildOutcome> {
   if (s.preview || !ctx.env) return outcome;
-  const answer = await mirrorOnDayBuild(db, ctx.env, userId, row, build, ctx, {
-    profiles: s.extras.profiles.map((p) => p.profileId),
-    inputsHash: build.inputsHash,
-    version: build.engineVersion,
-  });
+  let answer: Awaited<ReturnType<typeof mirrorOnDayBuild>>;
+  try {
+    answer = await mirrorOnDayBuild(db, ctx.env, userId, row, build, ctx, {
+      profiles: s.extras.profiles.map((p) => p.profileId),
+      inputsHash: build.inputsHash,
+      version: build.engineVersion,
+    });
+  } catch (e) {
+    console.error(`mirror: ${row.id} day build ${build.id} not mirrored — ${e instanceof Error ? `${e.name}: ${e.message}` : String(e)}`);
+    return outcome;
+  }
   if (answer !== "handed_over" && answer !== "replacing" && answer !== "pushing") return outcome;
   const builds = await loadBuilds(db, userId, row.id);
   const shown = currentBuild(row, builds, ctx.today);

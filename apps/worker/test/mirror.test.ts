@@ -30,7 +30,7 @@ import {
 } from "../src/services/mirror.js";
 import { mockCorosServer, type MockCorosServer } from "../../../packages/coros/test/mock-coros-server.js";
 import { isWrite, makeTestDb, makeTestUser } from "./helpers.js";
-import { calmDoc } from "./doc-workout-fixture.js";
+import { calmDoc, landingsDoc } from "./doc-workout-fixture.js";
 import { connectMock, counting, DAY, makeEnv, NOON, rowOf, seedCatalog, seedProgram, seedSlot, seedTmj, switchOn, TOMORROW } from "./watch-push-fixture.js";
 
 const { corosWriteJobs, plannedWorkouts, sessionBuilds, syncIntents } = schema;
@@ -681,6 +681,21 @@ describe("queueReplacement", () => {
     for (const [over, answer, when] of cases) {
       const { id, buildId } = await builtToday(over);
       expect(await queueReplacement(db, switchOn(), userId, await rowOf(db, id), buildId, ctx(when))).toBe(answer);
+      expect(await jobsOf(id)).toHaveLength(0);
+      const [b] = await db.select().from(sessionBuilds).where(eq(sessionBuilds.id, buildId));
+      expect(b!.lockedAt).toBeNull();
+    }
+  });
+
+  it("a day build the day's check has not cleared — unanswered, or blocked — is refused (precheck, blocked): nothing written, nothing locked", async () => {
+    const unchecked = await seedDocRow(DAY);
+    const open = (await buildSession(db, userId, unchecked, {}, ctx())).build!;
+    expect(await queueReplacement(db, switchOn(), userId, await rowOf(db, unchecked), open.buildId, ctx())).toBe("skipped:precheck");
+    const closed = await seedDocRow(DAY, {}, landingsDoc({ alternates: false }));
+    const gated = (await buildSession(db, userId, closed, { checks: { tmj: { pre: 6, feelingOff: true } } }, ctx())).build!;
+    expect(gated.fromDoc!.blocked).not.toEqual([]);
+    expect(await queueReplacement(db, switchOn(), userId, await rowOf(db, closed), gated.buildId, ctx())).toBe("skipped:blocked");
+    for (const [id, buildId] of [[unchecked, open.buildId], [closed, gated.buildId]] as const) {
       expect(await jobsOf(id)).toHaveLength(0);
       const [b] = await db.select().from(sessionBuilds).where(eq(sessionBuilds.id, buildId));
       expect(b!.lockedAt).toBeNull();
