@@ -13,6 +13,7 @@ import type { Env } from "../src/env.js";
 import type { Db } from "../src/services/db.js";
 import { buildDesignContext } from "../src/services/design-context.js";
 import { READ_TOOLS } from "../src/services/design-tools/index.js";
+import { sqlFlag } from "../src/services/design-tools/read-plan.js";
 import type { ReadOk } from "../src/services/design-tools/read-common.js";
 import { isToolErr, type ToolErr, type ToolOk, type ToolRole } from "../src/services/design-tools/types.js";
 import { LIKE_WORDS_MAX, likeWordPatterns } from "../src/services/like-pattern.js";
@@ -472,6 +473,10 @@ describe("editability: the reads say whether a workout can be revised, and if no
     const run = await planRow({ origin: "studio", doc: runDoc });
     expect((await ok("get_workout", { id: run })).data.revisable).toEqual({ no: REVISABILITY_WORDS.run.why, instead: REVISABILITY_WORDS.run.instead });
     for (const id of [done, open, adopted, run]) await removeRow(id);
+  });
+
+  it("a SQL boolean from json_object (integer 1) reads as true: the has-document flag reaches revisability", () => {
+    expect([sqlFlag(1), sqlFlag(true), sqlFlag(0), sqlFlag(null)]).toEqual([true, true, false, false]);
   });
 
   it("the tool descriptions say so, and stay small", () => {

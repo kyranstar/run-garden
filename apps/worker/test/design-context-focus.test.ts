@@ -11,7 +11,7 @@
 import { beforeAll, describe, expect, it } from "vitest";
 import { and, eq } from "drizzle-orm";
 import { schema } from "@rg/database";
-import { newId, REVISABILITY_WORDS } from "@rg/domain";
+import { newId } from "@rg/domain";
 import { EXERCISES } from "@rg/exercise-library";
 import type { Env } from "../src/env.js";
 import type { Db } from "../src/services/db.js";
@@ -90,7 +90,7 @@ describe("the block, kind by kind", () => {
   it("day: the plan's rows that day, each with its id and words, the titles marked", async () => {
     const b = block((await header({ kind: "day", id: TODAY })).header);
     expect(b).toContain("The athlete asked from: a day on the plan — Wed 13 May · today.");
-    expect(b).toContain(`- id ${me.outlineToday}: 07:00 strength, programme session (about 35 min) — its time passed, nothing logged, not revisable (programme) — ${REVISABILITY_WORDS.programme.instead.replace(/\.$/, "")}; titled ${athlete("Strength")}`);
+    expect(b).toContain(`- id ${me.outlineToday}: 07:00 strength, programme session (about 35 min) — its time passed, nothing logged, not revisable (programme) — pin_moves, change_programme, or a new workout; titled ${athlete("Strength")}`);
     expect(b).toContain(`- id ${me.todayDocId}: 18:00 strength, Studio workout (about 40 min) — scheduled, revisable; titled ${athlete("Strong hips, easy back")}`);
     expect(b).toContain(FOCUS_LINES.day);
     // A day with nothing on it says so (day(-1) holds nothing: the fixture plans every second and third day).

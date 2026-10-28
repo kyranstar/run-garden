@@ -74,6 +74,9 @@ export function nullOriginWords(id: string | null, source: string | null): strin
   return undefined;
 }
 
+/** A SQL boolean as json_object returns it (integer 1/0), or a real boolean. */
+export const sqlFlag = (v: unknown): boolean => v === true || v === 1;
+
 /** `revisability`'s answer as the coach reads it: `true`, or why not and what to do instead. */
 export function revisableWords(v: Revisability): true | { no: string; instead: string } {
   return v.ok ? true : { no: v.why, instead: v.instead };
@@ -155,7 +158,7 @@ export function planItem(r: Record<string, unknown>, clock?: PlanClock): Record<
   if (typeof r.rev === "number") item.rev = r.rev;
   if (clock && date) {
     item.revisable = listRevisable(
-      { origin, category: s("category"), sport: s("sport"), state: s("state"), content: s("content"), date, hasDoc: r.hasDoc === true },
+      { origin, category: s("category"), sport: s("sport"), state: s("state"), content: s("content"), date, hasDoc: sqlFlag(r.hasDoc) },
       clock.today,
     );
   }

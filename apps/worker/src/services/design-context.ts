@@ -59,7 +59,7 @@ import {
   providerConnections,
   sleepRecords,
 } from "@rg/database";
-import { EFFORT_LEVELS, addDays, clipWords, revisability, coachSettings, dayLabel, goodForOf, isoWeekday, todayInZone, type MusicShortcut, type ProfileDto, type RunWire, type UserPreferences } from "@rg/domain";
+import { EFFORT_LEVELS, addDays, clipWords, revisability, type RevisabilityReason, coachSettings, dayLabel, goodForOf, isoWeekday, todayInZone, type MusicShortcut, type ProfileDto, type RunWire, type UserPreferences } from "@rg/domain";
 import {
   EQUIPMENT,
   EXERCISES,
@@ -91,7 +91,7 @@ import { CONTEXT_TURNS, conversationBlock, conversationRows, type TurnRow } from
 import { runningFactsOf, runningLine, runWeeksSql, thresholdSql, watchLine, type RunningFacts } from "./designed-runs.js";
 import { FOCUS_LINES, SHARED_PROMPT, markUntrusted, roleBlock, type ReviewRubric, type UntrustedSource } from "./design-prompt.js";
 import { dayWords, distanceWords, minutesOf, paceWords, parsedArray, parsedJson, plural, readTagged, relativeDay } from "./design-tools/read-common.js";
-import { nullOriginWords, planTerm } from "./design-tools/read-plan.js";
+import { nullOriginWords, planTerm, sqlFlag } from "./design-tools/read-plan.js";
 import { SAVES_INSIGHTS_MAX, SAVES_MOVES_MAX, savedBatchOf, savedMovesOf, savesBatchSql, type SavedBatch, type SavedChoice } from "./design-tools/read-saves.js";
 import { activitiesAround, activityRows, doneEntries, doneTerms, sessionsWhere, setRows, type DoneCtx } from "./design-tools/read-sessions.js";
 import type { SystemBlock } from "./llm-messages.js";
@@ -736,6 +736,17 @@ function planItemBare(w: Reads["plan"][number], clock?: { today: string; time: s
   return planItemWords(w);
 }
 
+/** What to do instead, short, per reason: the opening line's own words (the read tools carry the table's full ones). */
+const SHORT_INSTEAD: Record<RevisabilityReason, string> = {
+  programme: "pin_moves, change_programme, or a new workout",
+  resolved: "propose a new workout",
+  under_way: "propose one for later",
+  run: "adjust_plan, or a new run",
+  rest: "a new workout for that day",
+  race: "design around it",
+  past: "propose for today or later",
+};
+
 /**
  * Whether a row still ahead can be revised, said at the end of its line: ", revisable", or the reason and what to do
  * instead (the same table the read tools carry). A row done, skipped or missed says so already; none here. Whether it is
@@ -747,7 +758,7 @@ function revisableMark(w: Reads["plan"][number], today: string): string {
     { origin: w.origin, category: w.category, sport: w.sport, completionState: w.state, contentState: w.content, effectiveDate: w.date, hasDoc: w.hasDoc, isRun: null },
     today,
   );
-  return v.ok ? ", revisable" : `, not revisable (${v.reason.replace("_", " ")}) — ${v.instead.replace(/\.$/, "")}`;
+  return v.ok ? ", revisable" : `, not revisable (${v.reason.replace("_", " ")}) — ${SHORT_INSTEAD[v.reason]}`;
 }
 
 function planItemWords(w: Reads["plan"][number]): string {
@@ -1021,7 +1032,7 @@ const planRow = (row: Record<string, unknown>): Reads["plan"][number] => ({
   seconds: num(row.seconds) ?? 0,
   content: str(row.content),
   source: str(row.source),
-  hasDoc: row.hasDoc === true || row.hasDoc === 1,
+  hasDoc: sqlFlag(row.hasDoc),
 });
 
 function workoutLines(id: string, rows: Map<string, Array<Record<string, unknown>>>, clock: { today: string; time: string }): string[] {
