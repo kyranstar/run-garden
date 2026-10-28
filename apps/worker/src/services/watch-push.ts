@@ -59,6 +59,7 @@ import { exerciseNameMap } from "./exercise-catalog.js";
 import { dayValidateCtx, snapshotErrors } from "./doc-build.js";
 import {
   activeProfilesOf,
+  checksAnswered,
   loadSession,
   loadSlot,
   lockCurrentBuild,
@@ -473,6 +474,18 @@ async function planDeps(db: Db, userId: string, build: WatchBuild): Promise<{ ca
 export const NO_CATALOG: WatchPlanDeps = { catalogIdByKey: new Map(), keyOf: () => null };
 
 /**
+ * THE STEPS `build` WOULD GO TO THE WATCH AS, resolved as `sent` was (the watch mirrors the plan §3.3): against the
+ * catalog the sent payload itself carries (`ownCatalog`: each catalog step's id → its T-code), the moves keyed in the
+ * account's library — so they compare with `sent.session.steps` step for step, and with no catalog read (`libraryFor`:
+ * one statement only for a build holding one of the athlete's own moves, and none when this request has read it).
+ */
+export async function watchStepsAsSent(db: Db, userId: string, build: WatchBuild, sent: ProgramSessionPushJob): Promise<WatchPlan> {
+  const library = await libraryFor(db, userId, Object.keys(build.exercises));
+  const all = library === PUBLIC_LIBRARY ? undefined : library.all;
+  return watchStepsFromBuild(build, { catalogIdByKey: catalogIdsByKey(ownCatalog(sent)), keyOf: (id) => corosKeyOf(id, all) });
+}
+
+/**
  * Why Send is not offered for this slot now, or null when it is (ruling 3-R2: Start's preconditions — today, the
  * current build, the pre-check answered, not done — plus COROS writes on and connected; then nothing of this build
  * may be on its way off the watch, and the build must fit the watch).
@@ -522,7 +535,7 @@ async function buildRefusal(
   if (!build || build.version <= 0 || build.date !== row.effectiveDate || (row.contentState !== "built" && row.contentState !== "started")) {
     return "not_built";
   }
-  if (profiles.some((p) => !checks[p])) return "precheck";
+  if (!checksAnswered(profiles, checks)) return "precheck";
   if (docOriginRow(row) && (await gatedSnapshot(db, row, build.buildId, profiles, checks))) return "gated";
   const unpush = await jobById(db, unpushJobId(build.buildId));
   if (unpush && isInFlight(unpush.status)) return "taking_off";
@@ -801,7 +814,9 @@ export async function sendToWatch(
       payload = null;
       return;
     }
-    const made = await pushPayloadFor(db, userId, slot, build!, earlier);
+    // The revision the build was made from (a document's; none for an engine build): the mirror's current-copy test
+    // reads it off the job, a day's push as a provisional one (mirror.ts `currentCopy`). The digest does not cover it.
+    const made = await pushPayloadFor(db, userId, slot, build!, earlier, { fromDocRev: build!.fromDoc?.rev ?? null });
     if (opts.digest !== undefined && (await pushDigest(made.payload)) !== opts.digest) {
       throw new StalePreviewError(await previewOf(made.payload, made.catalog, made.plan.refusal, ctx.prefs.weightUnit));
     }

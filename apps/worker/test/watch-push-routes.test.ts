@@ -19,6 +19,7 @@ import type { Db } from "../src/services/db.js";
 import { sessionRoutes } from "../src/routes/sessions.js";
 import { createSession, SESSION_COOKIE } from "../src/auth/sessions.js";
 import { savePreferences, syncCalendar } from "../src/services/calendar-sync.js";
+import { buildSession } from "../src/services/session-build.js";
 import { programStamp } from "../src/services/watch-push.js";
 import { connectTestCoros, makeTestDb, makeTestUser, mountRoutes } from "./helpers.js";
 import {
@@ -182,8 +183,10 @@ describe("POST send-to-watch — refusals write nothing", () => {
 
   it("409 stale with the fresh session when the day's inputs no longer make the named build", async () => {
     const { workoutId, buildId } = await builtSlot();
-    // Another answer to the pre-check since the build: the build the athlete saw is not the day's any more.
-    await call("POST", `${workoutId}/build`, { body: { checks: { tmj: { pre: 7, feelingOff: false } } } });
+    // Another answer to the pre-check since the build: the build the athlete saw is not the day's any more. (Made where
+    // the mirror does not follow it: the build route's day build now goes to the watch on its own, the watch mirrors the
+    // plan §3.3 — mirror-day.test.ts — and Send's refusal of a stale build is what this pins.)
+    await buildSession(db, userId, workoutId, { checks: { tmj: { pre: 7, feelingOff: false } } }, { today: DAY, now: NOON, prefs });
     const res = await send(workoutId, buildId);
     expect(res.status).toBe(409);
     const body = (await res.json()) as { error: string; session: { build: { buildId: string }; watch: unknown } };

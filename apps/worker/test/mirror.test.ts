@@ -667,13 +667,15 @@ describe("queueReplacement", () => {
     return { id, buildId: day.buildId };
   }
 
-  it("refuses what the row refuses — resolved, under way, a day gone, not a document — writing nothing, locking nothing", async () => {
+  it("refuses what the row refuses — resolved, under way, a day gone, not the app's — writing nothing, locking nothing", async () => {
+    // A day's build of an engine slot is the mirror's too (§3.3: pushed on its day, mirror-day.test.ts); a session that
+    // is not the app's (the coach's, origin null) mirrors in its own lane.
     const cases: Array<[Partial<typeof plannedWorkouts.$inferInsert>, string, Partial<{ today: string }>]> = [
       [{ completionState: "skipped" }, "skipped:resolved", {}],
       [{ contentState: "started" }, "skipped:resolved", {}],
       [{ archivedAt: NOON }, "skipped:resolved", {}],
       [{}, "skipped:past", { today: TOMORROW }],
-      [{ origin: "program" }, "skipped:not_document", {}],
+      [{ origin: null }, "skipped:not_mirrored", {}],
       [{ watchOff: true }, "skipped:kept_off", {}],
     ];
     for (const [over, answer, when] of cases) {

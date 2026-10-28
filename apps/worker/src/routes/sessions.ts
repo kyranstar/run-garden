@@ -209,7 +209,8 @@ sessionRoutes.post("/:workoutId/build", async (c) => {
   const today = todayInZone(prefs.timezone);
   const now = nowInstant();
   try {
-    const { session, calendarChanged } = await buildSessionOutcome(db, userId, c.req.param("workoutId"), parsed.data, { today, now, prefs });
+    // With the env, the day's build goes to the mirror (the watch mirrors the plan §3.3): handed over, replaced or pushed.
+    const { session, calendarChanged } = await buildSessionOutcome(db, userId, c.req.param("workoutId"), parsed.data, { today, now, prefs, env: c.env });
     // A new build of the day renames and resizes the row: the calendar picks it up through the existing
     // reconciler. A stored build returned unchanged (or a preview) changed nothing it shows.
     if (calendarChanged) waitUntilSafe(c, syncCalendar(db, c.env, userId));
@@ -247,7 +248,7 @@ sessionRoutes.post("/:workoutId/start", async (c) => {
   const parsed = startSchema.safeParse(await c.req.json().catch(() => null));
   if (!parsed.success) return c.json({ error: "invalid_start", issues: parsed.error.issues }, 422);
   try {
-    const { session, calendarChanged } = await startSessionOutcome(db, userId, c.req.param("workoutId"), parsed.data.buildId, nowInstant());
+    const { session, calendarChanged } = await startSessionOutcome(db, userId, c.req.param("workoutId"), parsed.data.buildId, nowInstant(), c.env);
     // An outline again took the build's title and length as Start locked it (U4): the calendar picks that up.
     if (calendarChanged) waitUntilSafe(c, syncCalendar(db, c.env, userId));
     return c.json(await withWatch(c, session));

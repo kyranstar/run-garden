@@ -13,6 +13,12 @@
  *    locked build (409 `locked`). Start locks the latest build of the day. (One thing of a locked build does change: a
  *    document build sent to the watch loses, as it starts, the ⇄ options the day's reading now keeps out —
  *    `$.build.fromDoc.slots` alone, written in place.)
+ *  - THE WATCH FOLLOWS THE DAY (the watch mirrors the plan §3.3; owner §10.1: "the watch should always be replaced"). A
+ *    request that carries the worker's env (`BuildCtx.env`: the build and Start routes') hands a day's build — stored, or
+ *    found current — to the mirror (`mirrorOnDayBuild`), which, once the pre-check is answered, hands the copy on the
+ *    watch over to it, replaces the copy, or pushes it, locking it as Send does. A build locked only for the watch (the
+ *    slot `built`, neither started nor done) does not hold the day while the mirror follows the slot: a change on the
+ *    day builds the next version past it (`watchLocksOf`), and the mirror replaces the copy when the steps differ.
  *  - Today → a build, versioned per workout (1, 2, …). The day's choices persist: a request that leaves out
  *    `overrides` or `swaps` keeps the stored ones; new overrides drop the swaps (their slots may mean something
  *    else now). A build writes its block changes to `program_blocks` and the row's title, discipline (§9.2: a core
@@ -39,8 +45,18 @@
  *
  * Every writer here is a no-op while a restore is replacing the account (ruling B2).
  */
-import { and, eq, gte, inArray, isNotNull, isNull, ne, notExists, notInArray, or, sql, type SQL } from "drizzle-orm";
-import { conditionChecks, corosWriteJobs, exercisePrefs, performedSessions, plannedWorkouts, programs, sessionBuilds, userConditions } from "@rg/database";
+import { and, eq, exists, gt, gte, inArray, isNotNull, isNull, ne, notExists, notInArray, or, sql, type SQL } from "drizzle-orm";
+import {
+  accountState,
+  conditionChecks,
+  corosWriteJobs,
+  exercisePrefs,
+  performedSessions,
+  plannedWorkouts,
+  programs,
+  sessionBuilds,
+  userConditions,
+} from "@rg/database";
 import {
   appAuthoredRow,
   docOriginRow,
@@ -89,6 +105,7 @@ import {
   type Target,
 } from "@rg/session-engine";
 import { sha256Hex } from "../auth/crypto.js";
+import type { Env } from "../env.js";
 import { loadAccountLibrary, PUBLIC_LIBRARY, type AccountLibrary } from "./account-library.js";
 import { restoreInProgress } from "./account-state.js";
 import { loadPreferences } from "./calendar-sync.js";
@@ -120,6 +137,7 @@ import {
 import { NO_EQUIPMENT } from "./default-place.js";
 import { docSlotKeys, DocTooLargeError, makeLibraryIndex, type DocIssue, type ValidateCtx } from "@rg/workout";
 import { doneCleanlyOf, doneStats } from "./library-view.js";
+import { mirrorFollowsDay, mirrorOnDayBuild } from "./mirror.js";
 
 /**
  * Bump when the engine's behaviour or the stored build's shape changes: a stored build from an older version then no
@@ -750,12 +768,18 @@ const lockedOf = (row: SlotRow, builds: readonly BuildRow[]): boolean =>
   row.contentState === "started" || row.contentState === "done" || builds.some((b) => b.lockedAt !== null);
 
 /**
- * The build a slot shows: the locked one; else the latest made for the slot's current day — a day's build
- * (version ≥ 1) for today or a day gone, the preview (version 0) for a day ahead.
+ * The build a slot shows: the locked one (the newest, when a build locked for the watch and the one replacing it are
+ * both locked a moment); else the day's (`dayBuildOf`).
  */
 function currentBuild(row: SlotRow, builds: readonly BuildRow[], today: string): BuildRow | null {
-  const locked = builds.find((b) => b.lockedAt !== null);
-  if (locked) return locked;
+  return builds.find((b) => b.lockedAt !== null) ?? dayBuildOf(row, builds, today);
+}
+
+/**
+ * The latest build made for the slot's current day, locked or not — a day's build (version ≥ 1) for today or a day
+ * gone, the preview (version 0) for a day ahead. `builds` newest first (`loadBuilds`).
+ */
+function dayBuildOf(row: SlotRow, builds: readonly BuildRow[], today: string): BuildRow | null {
   const ahead = row.effectiveDate > today;
   return builds.find((b) => (ahead ? b.version === 0 : b.version > 0) && storedOf(b).build.date === row.effectiveDate) ?? null;
 }
@@ -771,6 +795,13 @@ export async function activeProfilesOf(db: Db, userId: string): Promise<string[]
 
 const answeredOnly = (checks: Record<string, CheckAnswer>): Record<string, CheckAnswer> =>
   Object.fromEntries(Object.entries(checks).filter(([, a]) => isAnswer(a.pre, a.feelingOff)));
+
+/**
+ * THE PRE-CHECK IS ANSWERED: every active profile has an answer among `checks` (a slot's checks, or a build's
+ * `params.checks`, hold only answered profiles). What Send asks (`precheck`) and what the mirror waits for on the day.
+ */
+export const checksAnswered = (profiles: readonly string[], checks: Readonly<Record<string, CheckAnswer>>): boolean =>
+  profiles.every((p) => checks[p] !== undefined);
 
 type CheckRow = typeof conditionChecks.$inferSelect;
 
@@ -1069,7 +1100,17 @@ function rowChange(row: SlotRow, next: ReturnType<typeof builtRowContent>): { re
   return { resized, calendarChanged: resized || next.title !== row.title || next.category !== row.category };
 }
 
-export type BuildCtx = { today: string; now: string; prefs: UserPreferences };
+export type BuildCtx = {
+  today: string;
+  now: string;
+  prefs: UserPreferences;
+  /**
+   * The worker's env, when the request may move the watch (the build and Start routes): a day's build then goes to the
+   * mirror (`mirrorDay`), and a lock held only for the watch does not refuse a build of the day (`watchLocksOf`).
+   * Without it nothing here touches the watch.
+   */
+  env?: Env;
+};
 
 /** Everything a build of a slot on its day reads, and the hash over it. */
 interface DayInputs {
@@ -1244,11 +1285,13 @@ async function reuseStored(db: Db, userId: string, s: BuildStore, previous: Buil
   const { row, builds, preview, checks, hidden, extras } = s;
   const rebuilt = !preview && row.contentState !== "built";
   if (s.preChecks.length === 0 && !rebuilt) {
-    return { session: respond(row, builds, ctx.today, preview ? {} : checks, hidden, extras), calendarChanged: false };
+    return mirrorDay(db, userId, s, row, previous, { session: respond(row, builds, ctx.today, preview ? {} : checks, hidden, extras), calendarChanged: false }, ctx);
   }
   const refused = await beginWrite(db, userId, s, ctx);
   if (refused) return refused;
-  if (!rebuilt) return { session: respond(row, builds, ctx.today, preview ? {} : checks, hidden, extras), calendarChanged: false };
+  if (!rebuilt) {
+    return mirrorDay(db, userId, s, row, previous, { session: respond(row, builds, ctx.today, preview ? {} : checks, hidden, extras), calendarChanged: false }, ctx);
+  }
   const { changes, resized, calendarChanged } = builtChanges(s, storedOf(previous), ctx.now);
   const updated = await db
     .update(plannedWorkouts)
@@ -1266,7 +1309,43 @@ async function reuseStored(db: Db, userId: string, s: BuildStore, previous: Buil
     return { session: await readResponse(db, userId, await loadSlot(db, userId, row.id), ctx.today), calendarChanged: false };
   }
   if (resized) await separateDayCollisions(db, userId, [row.effectiveDate], ctx.prefs, { from: ctx.today, now: ctx.now });
-  return { session: respond({ ...row, ...changes }, builds, ctx.today, checks, hidden, extras), calendarChanged };
+  const held = { ...row, ...changes };
+  return mirrorDay(db, userId, s, held, previous, { session: respond(held, builds, ctx.today, checks, hidden, extras), calendarChanged }, ctx);
+}
+
+/**
+ * THE LOCKS A BUILD OF THE DAY MAY BE STORED PAST (the watch mirrors the plan §3.3; owner §10.1): none needed when nothing
+ * is locked (`[]`); the slot's locked builds when they are locked only for the watch — the slot of today, `built` (Start
+ * owns a started or done slot's lock), and the mirror following it with this request's env (`mirrorFollowsDay`: the
+ * switch and the athlete's writes on, not kept off, a session it holds) — for the mirror then replaces the copy with the
+ * new build when its steps differ; else null: the lock holds the day, and the build is refused (`SessionLockedError`).
+ */
+function watchLocksOf(row: SlotRow, builds: readonly BuildRow[], ctx: BuildCtx): string[] | null {
+  const locks = builds.filter((b) => b.lockedAt !== null).map((b) => b.id);
+  if (locks.length === 0) return [];
+  if (!ctx.env || row.contentState !== "built" || !mirrorFollowsDay(row, ctx.env, ctx)) return null;
+  return locks;
+}
+
+/**
+ * THE WATCH FOLLOWS THE DAY'S BUILD (the watch mirrors the plan §3.3): a day's build just stored, or found current, by a
+ * request carrying the worker's env goes to the mirror (`mirrorOnDayBuild`) with what the commit proved of it — made
+ * with the day's inputs as they hash now, for these profiles. When the mirror locked it (a hand-over, a replacement, a
+ * push), the slot shows it now — the newest locked build — so the response's build and lock are made again from the
+ * slot's builds as they now stand (one read). Never a preview's; without the env, nothing.
+ */
+async function mirrorDay(db: Db, userId: string, s: BuildStore, row: SlotRow, build: BuildRow, outcome: BuildOutcome, ctx: BuildCtx): Promise<BuildOutcome> {
+  if (s.preview || !ctx.env) return outcome;
+  const answer = await mirrorOnDayBuild(db, ctx.env, userId, row, build, ctx, {
+    profiles: s.extras.profiles.map((p) => p.profileId),
+    inputsHash: build.inputsHash,
+    version: build.engineVersion,
+  });
+  if (answer !== "handed_over" && answer !== "replacing" && answer !== "pushing") return outcome;
+  const builds = await loadBuilds(db, userId, row.id);
+  const shown = currentBuild(row, builds, ctx.today);
+  const payload = shown ? toPayload(shown, s.hidden) : null;
+  return { ...outcome, session: { ...outcome.session, locked: lockedOf(row, builds), build: payload?.build ?? null, view: payload?.view ?? null } };
 }
 
 /**
@@ -1300,6 +1379,9 @@ async function storeBuild(
   const payload = w.stored as unknown as Record<string, unknown>;
   const fields = { engineVersion: w.engineVersion, inputsHash: w.inputsHash, payload, workoutDoc: w.workoutDoc };
   const locked = builds.filter((b) => b.lockedAt !== null);
+  // The locks this build is stored past: the watch's, as the request found them (`watchLocksOf`) — any lock taken since
+  // (a Start) refuses it, as any lock did before.
+  const past = s.preview ? [] : (watchLocksOf(row, builds, ctx) ?? []);
   if (s.preview) {
     const existing = builds.find((b) => b.version === 0);
     const written: BuildRow = existing
@@ -1330,7 +1412,7 @@ async function storeBuild(
   if (!race.some((b) => b.id === written.id)) {
     return { session: await readResponse(db, userId, await loadSlot(db, userId, workoutId), ctx.today), calendarChanged: false };
   }
-  if (race.some((b) => b.lockedAt !== null)) return refuse();
+  if (race.some((b) => b.lockedAt !== null && !past.includes(b.id))) return refuse();
 
   const { changes, resized, calendarChanged } = builtChanges(s, w.stored, ctx.now);
   const updated = await db
@@ -1345,7 +1427,13 @@ async function storeBuild(
           db
             .select({ id: sessionBuilds.id })
             .from(sessionBuilds)
-            .where(and(eq(sessionBuilds.workoutId, workoutId), isNotNull(sessionBuilds.lockedAt))),
+            .where(
+              and(
+                eq(sessionBuilds.workoutId, workoutId),
+                isNotNull(sessionBuilds.lockedAt),
+                ...(past.length > 0 ? [notInArray(sessionBuilds.id, past)] : []),
+              ),
+            ),
         ),
       ),
     )
@@ -1354,12 +1442,13 @@ async function storeBuild(
   // A longer session can now overlap the day's other plans: the same retime placement and coach edits use.
   if (resized) await separateDayCollisions(db, userId, [row.effectiveDate], ctx.prefs, { from: ctx.today, now: ctx.now });
   await pruneBuilds(db, workoutId, written.id);
-  return {
-    session: respond({ ...row, ...changes }, [written, ...locked], ctx.today, s.checks, hidden, extras),
+  const held = { ...row, ...changes };
+  return mirrorDay(db, userId, s, held, written, {
+    session: respond(held, [written, ...locked], ctx.today, s.checks, hidden, extras),
     // The calendar shows the row's title, discipline and booked length; a build that keeps all three (a swap, a
     // check that keeps the theme) leaves the event to the half-hourly reconcile (ruling 2a-R8).
     calendarChanged,
-  };
+  }, ctx);
 }
 
 /** An engine build's row content: `<program> · <theme>`, its discipline (§9.2) and its booked length. */
@@ -1766,15 +1855,87 @@ async function lockDocBuild(
   opts: LockOptions,
 ): Promise<LockOutcome> {
   const inputs = await docDayInputs(db, userId, row, builds, {}, ctx);
-  if (current.id !== buildId || current.inputsHash !== inputs.inputsHash || current.engineVersion !== inputs.version) {
+  const refused = lockRefusal(current, buildId, inputs);
+  if (refused === "stale") {
     const fresh = await commitDocBuild(db, userId, row, builds, inputs, ctx);
     const blocked = fresh.session.build?.fromDoc?.blocked ?? [];
     if (blocked.length > 0) throw new GatedError(blocked);
     throw new StaleBuildError(fresh.session, fresh.calendarChanged);
   }
-  const blocked = storedOf(current).build.fromDoc?.blocked ?? [];
-  if (blocked.length > 0) throw new GatedError(blocked);
+  if (refused === "blocked") throw new GatedError(storedOf(current).build.fromDoc?.blocked ?? []);
   return lockProven(db, userId, row, builds, current, ctx, opts, { profiles: inputs.context.activeProfiles, checks: inputs.checks, contentOf: () => null });
+}
+
+/**
+ * LOCK'S PRECONDITIONS ON THE BUILD — Start's, Send's and the mirror's (pure; `lockProven` locks only a build that
+ * passes them): `stale` when `current` (the day's build the slot shows) is not `buildId`, or not the build the day's
+ * inputs make now (`inputs`: their hash and the builder's version, as the caller derived them); `blocked` when it is a
+ * document build the day's reading keeps a move of that no alternate stands in for. Stale is answered first, as Start
+ * answers it. The day itself (today, built) is the caller's to check.
+ */
+export function lockRefusal(
+  current: BuildRow | null,
+  buildId: string,
+  inputs: { inputsHash: string; version: string },
+): "stale" | "blocked" | null {
+  if (!current || current.id !== buildId || current.inputsHash !== inputs.inputsHash || current.engineVersion !== inputs.version) return "stale";
+  return (storedOf(current).build.fromDoc?.blocked.length ?? 0) > 0 ? "blocked" : null;
+}
+
+/**
+ * THE WATCH'S LOCK OF A DAY'S BUILD (the watch mirrors the plan §3.3) — `lockProven`'s lock for the mirror, Send's lock
+ * without the route: the caller has asked `lockRefusal` (the build the day's inputs make now, not blocked) and the
+ * pre-check; the rest of `lockProven`'s preconditions are asserted in this one statement, so nothing read before it can
+ * have gone stale: the slot is on `today`, `built` (neither started nor done: Start owns that lock), scheduled and not
+ * archived; the build is a day's build (version ≥ 1) for that day and the slot's newest (a later change made a newer one,
+ * which is the one to lock); no restore is running (audit M10). Locked already: kept as it is. Nothing is pruned (the
+ * build's own store pruned the rest) and the row is not touched. True when the build is locked. One statement.
+ */
+export async function lockForWatch(
+  db: Db,
+  userId: string,
+  workoutId: string,
+  build: Pick<BuildRow, "id" | "version">,
+  ctx: { today: string; now: string },
+): Promise<boolean> {
+  const sb = sessionBuilds;
+  const pw = plannedWorkouts;
+  const locked = await db
+    .update(sb)
+    .set({ lockedAt: sql`coalesce(${sb.lockedAt}, ${ctx.now})` })
+    .where(
+      and(
+        eq(sb.id, build.id),
+        eq(sb.userId, userId),
+        eq(sb.workoutId, workoutId),
+        gt(sb.version, 0),
+        sql`json_extract(${sb.payload}, '$.build.date') = ${ctx.today}`,
+        sql`not exists (select 1 from session_builds as later where later.workout_id = ${workoutId} and later.version > ${build.version})`,
+        exists(
+          db
+            .select({ id: pw.id })
+            .from(pw)
+            .where(
+              and(
+                eq(pw.id, workoutId),
+                eq(pw.userId, userId),
+                eq(pw.effectiveDate, ctx.today),
+                eq(pw.contentState, "built"),
+                eq(pw.completionState, "scheduled"),
+                isNull(pw.archivedAt),
+              ),
+            ),
+        ),
+        notExists(
+          db
+            .select({ userId: accountState.userId })
+            .from(accountState)
+            .where(and(eq(accountState.userId, userId), sql`coalesce(${accountState.restoreId}, '') <> ''`)),
+        ),
+      ),
+    )
+    .returning({ id: sb.id });
+  return locked.length > 0;
 }
 
 /**
@@ -1818,7 +1979,10 @@ export async function buildSessionOutcome(
 ): Promise<BuildOutcome> {
   const row = await loadSlot(db, userId, workoutId);
   const builds = await loadBuilds(db, userId, workoutId);
-  if (lockedOf(row, builds)) throw new SessionLockedError(await readResponse(db, userId, row, ctx.today, builds));
+  // Locked: refused — unless the lock is only the watch's and the mirror follows the slot (`watchLocksOf`, §3.3).
+  if (lockedOf(row, builds) && watchLocksOf(row, builds, ctx) === null) {
+    throw new SessionLockedError(await readResponse(db, userId, row, ctx.today, builds));
+  }
   if (row.effectiveDate < ctx.today) throw new NotTodayError(row.effectiveDate, ctx.today);
   if (await restoreInProgress(db, userId)) return { session: await readResponse(db, userId, row, ctx.today, builds), calendarChanged: false };
   if (docOriginRow(row)) return commitDocBuild(db, userId, row, builds, await docDayInputs(db, userId, row, builds, req, ctx), ctx);
@@ -1855,8 +2019,10 @@ export async function startSessionOutcome(
   workoutId: string,
   buildId: string,
   now: string,
+  /** The worker's env (the Start route's): a fresh build Start makes goes to the mirror (§3.3, `BuildCtx.env`). */
+  env?: Env,
 ): Promise<{ session: SessionResponse; calendarChanged: boolean }> {
-  return lockCurrentBuild(db, userId, workoutId, buildId, now, { as: "start" });
+  return lockCurrentBuild(db, userId, workoutId, buildId, now, { as: "start", ...(env ? { env } : {}) });
 }
 
 /** Start's or Send's lock (`lockCurrentBuild`). */
@@ -1869,6 +2035,8 @@ export interface LockOptions {
    * written, so a refusal thrown here locks nothing. Not asked of a build that was locked already.
    */
   beforeLock?: (v: { row: SlotRow; build: BuildPayload; profiles: readonly string[]; checks: Record<string, CheckAnswer> }) => Promise<void>;
+  /** The worker's env: a fresh build made here (the inputs moved on) goes to the mirror (`BuildCtx.env`). */
+  env?: Env;
 }
 
 export interface LockOutcome {
@@ -1933,10 +2101,11 @@ export async function lockCurrentBuild(
   if (!current) throw new NotBuiltError();
   if (await restoreInProgress(db, userId)) return unchanged(readResponse(db, userId, row, today, builds));
 
-  const ctx: BuildCtx = { today, now, prefs };
+  const ctx: BuildCtx = { today, now, prefs, ...(opts.env ? { env: opts.env } : {}) };
   if (docOriginRow(row)) return lockDocBuild(db, userId, row, builds, current, buildId, ctx, opts);
   const inputs = await dayInputs(db, userId, row, builds, {}, ctx);
-  if (current.id !== buildId || current.inputsHash !== inputs.inputsHash || current.engineVersion !== inputs.version) {
+  // An engine build is never blocked: its preconditions are the build the day's inputs make now.
+  if (lockRefusal(current, buildId, inputs)) {
     const fresh = await commitBuild(db, userId, row, builds, inputs, ctx);
     throw new StaleBuildError(fresh.session, fresh.calendarChanged);
   }
