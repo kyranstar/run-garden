@@ -112,6 +112,23 @@ async function proposal(mainRunId: string) {
   return p ? { ...p, ops: p.ops as DocWorkoutOp[] } : undefined;
 }
 
+/**
+ * A session of the coach's own plan as `coach-apply.ts` writes one (origin NULL, a `cw-` id, a stage row its truth), tomorrow
+ * unless told: its document copy at revision 1, or none. Invented ids and titles.
+ */
+async function coachSession(o: { doc: object | null; category?: string; sport?: string; date?: string }): Promise<string> {
+  const id = `cw-${newId().slice(0, 10)}`;
+  const date = o.date ?? day(-1);
+  await db.insert(schema.plannedWorkouts).values({
+    id, userId: rich.userId, planId: "coach-plan-invented", sourceWorkoutId: id, title: "Coach legs, invented", category: o.category ?? "strength",
+    sport: o.sport ?? "strength", originalPlanDate: date, lastVerifiedCorosDate: "", effectiveDate: date, effectiveTime: "07:00",
+    sourceContentFingerprint: "coach-invented-fp", calendarBlockDurationSeconds: 1800, stageSummary: "Bridge 2×12", completionState: "scheduled",
+    origin: null, workoutDoc: o.doc ? JSON.stringify(o.doc) : null, workoutDocRev: o.doc ? 1 : null, createdAt: at(day(1)), updatedAt: at(day(1)),
+  });
+  await db.insert(schema.plannedWorkoutStages).values({ id: `${id}:0`, workoutId: id, parentStageId: null, ord: 0, kind: "work", repeatCount: 2, durationType: "none", label: "Bridge", reps: 12 });
+  return id;
+}
+
 // ── The day a document is checked for ───────────────────────────────────────────────────────────────────────────────
 
 describe("the day's reading — one rule for the opening context and the validator", () => {
@@ -614,6 +631,18 @@ describe("propose_workout", () => {
     expect(JSON.stringify(op.doc)).not.toContain("untrusted");
   });
 
+  it("propose_workout revise of a NULL-origin coach session is accepted: with its document copy, or with none from rev 0 (the approve adopts it)", async () => {
+    // The coach's own plan sessions (origin NULL, `cw-` ids) — their stage rows were their truth; a revise adopts them.
+    const withDoc = await coachSession({ doc: studioDoc({ title: "Coach legs, invented" }) });
+    const bare = await coachSession({ doc: null });
+    const first = await run();
+    expect(ok((await call("propose_workout", ctxOf(first), { doc: studioDoc({ title: "Coach legs, calmer" }), target: { kind: "revise", workoutId: withDoc, baseRev: 1 } })).result).data).toMatchObject({ stored: true });
+    expect((await proposal(first.id))!.ops[0]).toMatchObject({ target: { kind: "revise", workoutId: withDoc, baseRev: 1 }, date: day(-1), time: "07:00" });
+    const second = await run();
+    expect(ok((await call("propose_workout", ctxOf(second), { doc: studioDoc({ title: "Coach legs, written" }), target: { kind: "revise", workoutId: bare, baseRev: 0 } })).result).data).toMatchObject({ stored: true });
+    expect((await proposal(second.id))!.ops[0]).toMatchObject({ target: { kind: "revise", workoutId: bare, baseRev: 0 }, date: day(-1) });
+  });
+
   describe("refuses, teachably", () => {
     const refused = async (r: Awaited<ReturnType<typeof run>>, input: unknown) => {
       const { result, writes } = await call("propose_workout", ctxOf(r), input);
@@ -644,7 +673,8 @@ describe("propose_workout", () => {
       });
       const gone = await refused(r, { doc: studioDoc(), target: { kind: "revise", workoutId: missed, baseRev: 1 } });
       expect(gone.error).toBe("past_date");
-      expect(gone.why).toContain(day(2));
+      expect(gone.why).toBe(`Its day has passed: ${day(2)} is before today (${TODAY}).`);
+      expect(gone.fix).toBe("Propose for today or later.");
     });
 
     it("a stale base revision, saying the current one", async () => {
@@ -654,23 +684,39 @@ describe("propose_workout", () => {
       expect(e.fix).toMatch(/get_workout/);
     });
 
-    it("a programme's session, a resolved workout, one under way, an archived or unknown one", async () => {
+    it("a row that can't be revised, with its why and what to do instead as the fix (spec §3's table): a programme's session, a resolved workout, one under way, a rest day, race day; a run; an archived or unknown one", async () => {
       const r = await run();
-      const programme = await refused(r, { doc: studioDoc(), target: { kind: "revise", workoutId: rich.outlineToday, baseRev: 0 } });
-      expect(programme.error).toBe("not_editable");
-      expect(programme.why).toMatch(/programme/);
-      const done = await refused(r, { doc: studioDoc(), target: { kind: "revise", workoutId: rich.pastDocId, baseRev: 1 } });
-      expect(done.error).toBe("not_editable");
-      expect(done.why).toMatch(/completed/);
-      const underWay = newId();
-      await db.insert(schema.plannedWorkouts).values({
-        id: underWay, userId: rich.userId, planId: `studio-${rich.userId}`, sourceWorkoutId: underWay, title: "Under way", category: "strength", sport: "strength",
-        originalPlanDate: TODAY, lastVerifiedCorosDate: TODAY, effectiveDate: TODAY, effectiveTime: "12:00", sourceContentFingerprint: "studio",
-        calendarBlockDurationSeconds: 1800,
-        completionState: "scheduled", origin: "studio", contentState: "started", workoutDoc: JSON.stringify(studioDoc()), workoutDocRev: 1,
-        createdAt: at(day(1)), updatedAt: at(day(1)),
+      const revise = (workoutId: string, baseRev = 1) => refused(r, { doc: studioDoc(), target: { kind: "revise", workoutId, baseRev } });
+      expect(await revise(rich.outlineToday, 0)).toEqual({
+        error: "not_editable",
+        why: "It's a programme's session: the programme builds it on the day.",
+        fix: "Put moves in its pool with pin_moves, change the programme with change_programme, or propose a new workout for that day and skip the slot with adjust_plan.",
       });
-      expect((await refused(r, { doc: studioDoc(), target: { kind: "revise", workoutId: underWay, baseRev: 1 } })).why).toMatch(/under way/);
+      const studioRow = async (set: Partial<typeof schema.plannedWorkouts.$inferInsert>) => {
+        const id = newId();
+        await db.insert(schema.plannedWorkouts).values({
+          id, userId: rich.userId, planId: `studio-${rich.userId}`, sourceWorkoutId: id, title: "Invented", category: "strength", sport: "strength",
+          originalPlanDate: TODAY, lastVerifiedCorosDate: TODAY, effectiveDate: TODAY, effectiveTime: "12:00", sourceContentFingerprint: "studio",
+          calendarBlockDurationSeconds: 1800, completionState: "scheduled", origin: "studio", contentState: "outline", workoutDoc: JSON.stringify(studioDoc()),
+          workoutDocRev: 1, createdAt: at(day(1)), updatedAt: at(day(1)), ...set,
+        });
+        return id;
+      };
+      expect(await revise(await studioRow({ completionState: "completed" }))).toEqual({ error: "not_editable", why: "It's already done.", fix: "Propose a new workout." });
+      expect(await revise(await studioRow({ completionState: "skipped" }))).toEqual({ error: "not_editable", why: "It was skipped.", fix: "Propose a new workout." });
+      expect(await revise(await studioRow({ contentState: "started" }))).toEqual({ error: "not_editable", why: "It's under way.", fix: "Propose one for later." });
+      // A coach session that is a rest day or race day: the coach's plan rows, not revised.
+      expect(await revise(await coachSession({ category: "rest", sport: "run", doc: null }), 0)).toEqual({ error: "not_editable", why: "It's a rest day.", fix: "Propose a new workout for that day." });
+      expect(await revise(await coachSession({ category: "race", sport: "run", doc: null }), 0)).toEqual({ error: "not_editable", why: "It's race day.", fix: "Leave it; design around it." });
+      // A planned run is re-planned, not revised: its own code, with the way to change it.
+      expect(await revise(await coachSession({ category: "easy", sport: "run", doc: null }), 0)).toEqual({
+        error: "run_unsupported",
+        why: "It's a run: runs are re-planned, not revised.",
+        fix: "adjust_plan changes its length or eases it; propose a new run to replace it.",
+      });
+      // Done on a day gone: the day decides first.
+      const done = await revise(rich.pastDocId);
+      expect([done.error, done.fix]).toEqual(["past_date", "Propose for today or later."]);
       expect((await refused(r, { doc: studioDoc(), target: { kind: "revise", workoutId: rich.archivedDocId, baseRev: 1 } })).error).toBe("not_found");
       expect((await refused(r, { doc: studioDoc(), target: { kind: "revise", workoutId: "no-such", baseRev: 1 } })).error).toBe("not_found");
       // Another athlete's workout is not found either.

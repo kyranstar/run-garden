@@ -11,14 +11,17 @@
  *    (the op's `time` too), else the propose-time clock rounded up as the approve rounds (round 2, I2: the supersede
  *    then reads a session, never the whole day); a time already gone by is dropped, never refused (Task 13's fix wave,
  *    R1);
- *  - a revision of a workout that isn't there (`not_found`: unknown, archived, another athlete's), that can't change
- *    (`not_editable`: a programme's session — the programme's engine builds it — a completed, skipped or missed one, one
- *    under way), or from a stale base (`stale_base`, saying the current revision);
+ *  - a revision of a workout that isn't there (`not_found`: unknown, archived, another athlete's), that can't be revised
+ *    — `revisability` (@rg/domain; workout-editability spec §3, §5), the Studio's own predicate: its day gone
+ *    (`past_date`), a run (`run_unsupported`: runs are re-planned), else `not_editable` — a programme's session, a resolved
+ *    one, one under way, a rest day or race day — each with its why and, as the fix, what to do instead — or from a stale
+ *    base (`stale_base`, saying the current revision). Any other planned workout is revisable: a coach or watch-plan
+ *    session (origin NULL) too, which the approve's revise adopts as a Studio document workout;
  *  - any error the validator raises for the day (`invalid_workout`): an unknown exercise, a condition's refusal, a
  *    malformed document. A move the day closes is refused even in a revision whose alternate the day allows: a
  *    proposal states what will be played, so the designer swaps it in this revision (the Studio's save lets the
  *    alternate stand in; a proposal never leans on that);
- *  - a run as a revision of a Studio or template workout (`run_unsupported`: designed runs, §8 §3 — a new run is
+ *  - a run as a revision of a planned workout (`run_unsupported`: designed runs, §8 §3 — a new run is
  *    judged as a run, with the athlete's running read in the athlete's statement), and an objective or key result id
  *    that isn't the athlete's (`unknown_objective`) — validate_workout refuses both the same way (act-common.ts);
  *  - a proposal already with the athlete (`proposal_pending`: the main run's finish made it pending; "call finish");
@@ -82,10 +85,9 @@
 import { sql } from "drizzle-orm";
 import { z } from "zod";
 import { accountState, coachProposals, plannedWorkouts } from "@rg/database";
-import { docOriginRow, parseStoredWorkoutDoc, type WorkoutDoc } from "@rg/domain";
+import { parseStoredWorkoutDoc, type Revisability, type WorkoutDoc } from "@rg/domain";
 import type { DocIssue } from "@rg/workout";
-import { LOCKED_CONTENT } from "../doc-workouts.js";
-import { FROZEN_STATES } from "../workout-doc-store.js";
+import { revisabilityIn } from "../doc-workouts.js";
 import {
   applyDrop,
   countedRounds,
@@ -258,6 +260,9 @@ interface TargetRow {
   date: string;
   time: string;
   origin: string | null;
+  /** Its kind and discipline as the plan holds them (`revisability`'s rest, race, and a run with no document). */
+  category: string;
+  sport: string;
   completion: string;
   content: string | null;
   rev: number | null;
@@ -352,8 +357,9 @@ export const proposeWorkout: DesignTool = {
         restoring: sql`(select ${accountState.restoreId} from ${accountState} where ${accountState.userId} = ${ctx.userId})`,
         targetRow:
           p.target.kind === "revise"
-            ? sql`(select json_object('date', ${pw.effectiveDate}, 'time', ${pw.effectiveTime}, 'origin', ${pw.origin}, 'completion', ${pw.completionState},
-                'content', ${pw.contentState}, 'rev', ${pw.workoutDocRev}, 'archived', ${pw.archivedAt}, 'doc', ${pw.workoutDoc})
+            ? sql`(select json_object('date', ${pw.effectiveDate}, 'time', ${pw.effectiveTime}, 'origin', ${pw.origin}, 'category', ${pw.category},
+                'sport', ${pw.sport}, 'completion', ${pw.completionState}, 'content', ${pw.contentState}, 'rev', ${pw.workoutDocRev},
+                'archived', ${pw.archivedAt}, 'doc', ${pw.workoutDoc})
                 from ${pw} where ${pw.id} = ${p.target.workoutId} and ${pw.userId} = ${ctx.userId})`
             : sql`null`,
         replaced: p.replaces !== undefined ? replacedSql(ctx.userId, p.replaces) : sql`null`,
@@ -465,8 +471,14 @@ export const proposeWorkout: DesignTool = {
       if (!row || row.archived) {
         return refuse("not_found", `No workout of the athlete's has id ${JSON.stringify(p.target.workoutId)}.`, "Use an id from list_workouts or read_plan, or propose a new workout.");
       }
-      const editable = whyNotEditable(row);
-      if (editable) return refuse("not_editable", editable, "Propose a new workout instead, or leave this one as it is.");
+      // The Studio's own predicate (workout-editability §5): its document's discipline derived in the account's library,
+      // read with the athlete — no statement.
+      const verdict = revisabilityIn(
+        { origin: row.origin, category: row.category, sport: row.sport, completionState: row.completion, contentState: row.content, effectiveDate: row.date, workoutDoc: row.doc },
+        today,
+        a.library.all,
+      );
+      if (!verdict.ok) return notRevisable(verdict, row.date, today);
       if ((row.rev ?? 0) !== p.target.baseRev) {
         return refuse(
           "stale_base",
@@ -474,7 +486,6 @@ export const proposeWorkout: DesignTool = {
           "Read it again with get_workout, revise from that revision, and propose again.",
         );
       }
-      if (row.date < today) return refuse("past_date", `That workout is on ${row.date}, before today (${today}).`, "Propose a new workout for today or later instead.");
       const workoutId = p.target.workoutId;
       // A set's redo may revise what the first version it replaces revises: that op stands only until this one is
       // reviewed (design-orchestrate.ts), so it never takes the workout from it.
@@ -728,16 +739,14 @@ function reviewingAnswer(
   };
 }
 
-/** Why a workout can't be revised, or null when it can (doc-workouts.ts `reviseDocWorkout`'s own rules). */
-function whyNotEditable(row: TargetRow): string | null {
-  if (!docOriginRow(row)) {
-    return row.origin === "program"
-      ? "It is a programme's session: the programme's engine designs it, so its content can't be proposed."
-      : "It isn't a Studio or template workout, so its content can't be proposed.";
-  }
-  if ((FROZEN_STATES as readonly string[]).includes(row.completion)) return `It is already ${row.completion}.`;
-  if ((LOCKED_CONTENT as readonly (string | null)[]).includes(row.content)) return "Its session is already under way.";
-  return null;
+/**
+ * A workout `revisability` refuses, as the tool's refusal (spec §3's codes, as `reviseDocWorkout` throws them): its day
+ * gone `past_date` (naming the day), a run `run_unsupported`, any other reason `not_editable` — each with its why, and
+ * what to do instead as the fix.
+ */
+function notRevisable(r: Extract<Revisability, { ok: false }>, date: string, today: string): ToolErr {
+  if (r.reason === "past") return refuse("past_date", `${r.why.replace(/\.$/, "")}: ${date} is before today (${today}).`, r.instead);
+  return refuse(r.reason === "run" ? "run_unsupported" : "not_editable", r.why, r.instead);
 }
 
 /**

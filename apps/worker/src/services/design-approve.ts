@@ -14,10 +14,11 @@
  * (`coach`), or the athlete who edited the coach's draft (`athlete_edit`) — and for which op (`approvalRef`).
  *
  * FATAL ONLY WHEN WRONG, OP BY OP. An op the server refuses today is refused with its reason, and the others still
- * apply: a day gone (`past_date`), a base changed since the coach read it (`stale_revision`), a resolved row or a
- * programme's session (`not_editable`, with its `cause`), a workout removed since (`not_found`), a hard rule the day now
- * refuses or a move the library no longer has (`invalid_doc`, with the validator's errors), a run as a revision of a Studio
- * workout (`run_unsupported`; a new designed run is written to the coach lane and queued to the watch: §8 §3, below),
+ * apply: a day gone (`past_date`), a base changed since the coach read it (`stale_revision`), a row `revisability`
+ * refuses (@rg/domain, workout-editability spec §3: `not_editable` with its `cause` — the reason — its `why` and what to
+ * do `instead`; a day gone and a run keep their own codes, with theirs), a workout removed since (`not_found`), a hard
+ * rule the day now refuses or a move the library no longer has (`invalid_doc`, with the validator's errors), a run as a
+ * revision (`run_unsupported`; a new designed run is written to the coach lane and queued to the watch: §8 §3, below),
  * a restore under way (`restore_in_progress`), and the coach's time for today gone by — or no time left today for an
  * untimed one (`past_time`; fix wave 3B, B-I1). Each `why` is plain words; the codes are for the UI to word. A refused op
  * stays open: the day can change, and the athlete can edit it.
@@ -146,7 +147,19 @@
  */
 import { and, eq, sql, type SQL } from "drizzle-orm";
 import { coachMessages, coachProposals, plannedWorkouts, scheduleOverrides, workoutDocRevisions } from "@rg/database";
-import { addDays, appAuthoredRow, dayLabel, docOriginRow, humanizeWorkoutTitle, isRunDoc, newId, workoutDocSchema, type WorkoutDoc } from "@rg/domain";
+import {
+  addDays,
+  appAuthoredRow,
+  dayLabel,
+  docOriginRow,
+  humanizeWorkoutTitle,
+  isRunDoc,
+  newId,
+  REVISABILITY_WORDS,
+  workoutDocSchema,
+  type RevisabilityReason,
+  type WorkoutDoc,
+} from "@rg/domain";
 import { EXERCISES, type ExerciseRecord } from "@rg/exercise-library";
 import { deriveDoc, makeLibraryIndex, startEditing, toProposable, type DocDerived, type DocIssue } from "@rg/workout";
 import type { Db } from "./db.js";
@@ -160,7 +173,6 @@ import {
   DocInvalidError,
   DocWorkoutNotFoundError,
   keyedRowId,
-  LOCKED_CONTENT,
   NotEditableError,
   PastDateError,
   reviseDocWorkout,
@@ -200,7 +212,6 @@ import {
 import { placeSlotsWithin, RETRACT_COST } from "./program-slots.js";
 import { updateProgram } from "./programs.js";
 import { releaseFitStarts } from "./saves-batches.js";
-import { FROZEN_STATES } from "./workout-doc-store.js";
 
 // ── Shapes ──────────────────────────────────────────────────────────────────────────────────────────────────────────
 
@@ -229,9 +240,13 @@ export type RefusalCode =
   /** The moves in rotation (Task 18): the saves batch it names is another account's — nothing written. */
   | "bad_batch";
 
-/** Why a planned workout can't change (`not_editable`), as the Studio's own rules say it — and, for a change's length,
- * that a Studio workout's is its document's (`studio`). */
-export type NotEditableCause = "programme" | "studio" | "completed" | "skipped" | "missed" | "under_way" | "unknown";
+/**
+ * Why a planned workout can't change (`not_editable`): `revisability`'s reason (@rg/domain; workout-editability spec §3) —
+ * a day gone and a run have their own codes (`past_date`, `run_unsupported`) — or, for a change's ease, length or
+ * remove, `studio`: the workout is REVISABLE, a document workout, so it is changed by revising it, never here; `unknown`:
+ * the applier's own miss (its why says what).
+ */
+export type NotEditableCause = Exclude<RevisabilityReason, "past" | "run"> | "studio" | "unknown";
 
 /** A validator's issue, as an answer carries it. */
 export type IssueOut = Pick<DocIssue, "path" | "code" | "message" | "severity"> & { fix?: string };
@@ -248,7 +263,7 @@ export interface Written {
 /** How an op ended (see the module comment). Absent while it is the athlete's to decide. */
 export type OpOutcome =
   | { status: "applied"; at: string; workoutId: string; rev: number | null; written: Written; edited?: true; moved?: true }
-  | { status: "refused"; at: string; error: RefusalCode; why: string; cause?: NotEditableCause; issues?: IssueOut[] }
+  | { status: "refused"; at: string; error: RefusalCode; why: string; cause?: NotEditableCause; instead?: string; issues?: IssueOut[] }
   | { status: "declined"; at: string; reason?: string }
   /** A newer plan of the coach's covers its day (Task 7, design-orchestrate.ts `supersedeOlderPlans`): decided, never
    * approved after. */
@@ -775,25 +790,24 @@ const writtenOf = (w: DocWorkoutDto): Written => ({ date: w.date, time: w.time, 
 const movedFrom = (target: Extract<DocWorkoutTarget, { kind: "new" }>, date: string, time: string | null): boolean =>
   date !== target.date || (time ?? null) !== (target.time ?? null);
 
-/** Why a planned workout can't change, by the Studio's own rules (doc-workouts.ts `reviseDocWorkout`). */
-function notEditableCause(row: RowState | undefined): NotEditableCause {
-  if (!row) return "unknown";
-  if (!docOriginRow({ origin: row.origin })) return "programme";
-  const c = row.dto.completionState;
-  if ((FROZEN_STATES as readonly string[]).includes(c)) return c as "completed" | "skipped" | "missed";
-  if ((LOCKED_CONTENT as readonly string[]).includes(row.dto.contentState)) return "under_way";
-  return "unknown";
-}
-
-const NOT_EDITABLE_WHY: Record<NotEditableCause, string> = {
-  programme: "It's a programme's session: the programme plans it.",
-  studio: "It's a Studio workout: its document sets its length.",
-  completed: "It's done already.",
-  skipped: "It was skipped.",
-  missed: "It was missed.",
-  under_way: "It's under way.",
-  unknown: "It can't change now.",
+/** Each cause's words — why, and what to do instead: a reason's are `revisability`'s (spec §3's table, verbatim; a
+ * resolved one's why follows its completion state). */
+const NOT_EDITABLE_WORDS: Record<NotEditableCause, { why: string | ((state: string) => string); instead: string }> = {
+  programme: REVISABILITY_WORDS.programme,
+  resolved: REVISABILITY_WORDS.resolved,
+  under_way: REVISABILITY_WORDS.under_way,
+  rest: REVISABILITY_WORDS.rest,
+  race: REVISABILITY_WORDS.race,
+  // Revisable: a document workout is changed by revising it — its document sets its length.
+  studio: { why: "It's a Studio workout: its document sets its length.", instead: "Revise it with propose_workout's revise target." },
+  unknown: { why: "It can't change now.", instead: "Read the plan again and propose what still fits." },
 };
+
+/** A `not_editable` refusal for `cause`, in its words (a resolved one's why by its completion state, `state`). */
+function notEditable(cause: NotEditableCause, state = ""): Omit<Refused, "opId"> {
+  const w = NOT_EDITABLE_WORDS[cause];
+  return { error: "not_editable", cause, why: typeof w.why === "function" ? w.why(state) : w.why, instead: w.instead };
+}
 
 // ── Approve ─────────────────────────────────────────────────────────────────────────────────────────────────────────
 
@@ -820,6 +834,8 @@ export interface Refused {
   error: RefusalCode;
   why: string;
   cause?: NotEditableCause;
+  /** What to do instead (`revisability`'s, for a row it refuses): every `not_editable` carries one. */
+  instead?: string;
   issues?: IssueOut[];
 }
 
@@ -946,24 +962,25 @@ function planVerdict(
           : undefined
       : whyNotActionable({ archivedAt: null, completionState: row.dto.completionState, effectiveDate: row.dto.date }, today);
   if (why !== undefined) {
-    const cause: NotEditableCause | null =
+    // The applier's words as `revisability`'s reasons: done, skipped or missed is resolved (in its state's words); a day
+    // gone is past_date; anything else is the applier's own.
+    const state =
       why === NOT_ACTIONABLE.done || why === "is completed"
         ? "completed"
         : why === NOT_ACTIONABLE.skipped
           ? "skipped"
           : why === NOT_ACTIONABLE.missed || why === "is missed"
             ? "missed"
-            : why === NOT_ACTIONABLE.past
-              ? null
-              : "unknown";
-    return { refusal: cause ? { error: "not_editable", cause, why: NOT_EDITABLE_WHY[cause] } : { error: "past_date", why: `${dayLabel(row.dto.date)} has passed.` } };
+            : null;
+    if (state) return { refusal: notEditable("resolved", state) };
+    return { refusal: why === NOT_ACTIONABLE.past ? { error: "past_date", why: `${dayLabel(row.dto.date)} has passed.` } : notEditable("unknown") };
   }
   if (c.kind === "move" && c.toDate < today) return { refusal: { error: "past_date", why: `${dayLabel(c.toDate)} has passed.` } };
   if (c.kind !== "adjust" && c.kind !== "restore" && row.dto.category === "race") return { refusal: { error: "race", why: "It's the athlete's race: it stays where it is." } };
-  // A session its build decides is never re-timed (ruling 3-R13), eased or removed (the new shape §5).
+  // A session its build decides is never re-timed (ruling 3-R13), eased or removed (the new shape §5): a programme's
+  // session (`programme`), or a document workout (`studio`: revisable — it is changed by revising it).
   if ((c.kind === "adjust" || c.kind === "ease" || c.kind === "remove") && appAuthoredRow({ origin: row.origin })) {
-    const cause: NotEditableCause = docOriginRow({ origin: row.origin }) ? "studio" : "programme";
-    return { refusal: { error: "not_editable", cause, why: NOT_EDITABLE_WHY[cause] } };
+    return { refusal: notEditable(docOriginRow({ origin: row.origin }) ? "studio" : "programme") };
   }
   if (effectThere(c, row, op.retime)) return { made: beforeOf(row), replayFrom: null };
   // A move to today never lands at a past time (the polish round, 1): its time asked for, or the one it keeps (the
@@ -1184,7 +1201,7 @@ export async function approveDesignOps(
         // A re-timed length whose session changed since the card has its own code (review-L minor 5), its words the same.
         const said = missed.shift();
         const refusal: Omit<Refused, "opId"> =
-          said === RETIME_CHANGED ? { error: "changed_since_suggested", why: applierWhy(said) } : { error: "not_editable", cause: "unknown", why: applierWhy(said) };
+          said === RETIME_CHANGED ? { error: "changed_since_suggested", why: applierWhy(said) } : { ...notEditable("unknown"), why: applierWhy(said) };
         refused.push({ opId: c.id, ...refusal });
         outcomes.set(c.id, { status: "refused", at: ctx.now, ...refusal });
       }
@@ -1597,9 +1614,9 @@ async function applyOp(
       const made = await createDocWorkout(db, userId, { date, time, doc, clientId: approvalKey(proposalId, opId) }, ctx, source);
       return { applied: { workout: made.workout, warnings: made.warnings.map(issueOut), ...(edited ? { edited: true } : {}), ...(moved ? { moved: true } : {}) } };
     }
-    if (!row || row.archived) return refusalOf(new DocWorkoutNotFoundError(), date, row);
+    if (!row || row.archived) return refusalOf(new DocWorkoutNotFoundError(), date);
     date = row.dto.date;
-    if (date < ctx.today) return refusalOf(new PastDateError(), date, row);
+    if (date < ctx.today) return refusalOf(new PastDateError(), date);
     const revised = await reviseDocWorkout(db, userId, target.workoutId, { doc, baseRev: target.baseRev }, ctx, source);
     return {
       applied: {
@@ -1616,25 +1633,30 @@ async function applyOp(
       const made = madeOf(op, again, ctx.now);
       if (made) return { applied: appliedOf(op, made, again) };
     }
-    return refusalOf(e, date, row);
+    return refusalOf(e, date);
   }
 }
 
-/** The Studio's refusal as an op's: its code and why, in plain words; anything else is thrown on. */
-function refusalOf(e: unknown, date: string, row: RowState | undefined): { refusal: Omit<Refused, "opId">; error: Error } {
+/**
+ * The Studio's refusal as an op's: its code and why, in plain words — and what to do instead — anything else is thrown
+ * on. A refusal `revisability` decided carries its own reason and words (doc-workouts.ts `notRevisable`); a day gone
+ * found before the revise, a new workout's, or a draft that is a run carries none, and is said here (a day gone in the
+ * table's instead: what `revisability` says of a row whose day has passed).
+ */
+function refusalOf(e: unknown, date: string): { refusal: Omit<Refused, "opId">; error: Error } {
   const r = ((): Omit<Refused, "opId"> | null => {
-    if (e instanceof PastDateError) return { error: "past_date", why: `${dayLabel(date)} has passed.` };
+    if (e instanceof PastDateError) return { error: "past_date", why: e.why ?? `${dayLabel(date)} has passed.`, instead: e.instead ?? REVISABILITY_WORDS.past.instead };
     if (e instanceof StaleRevisionError) return { error: "stale_revision", why: "It changed after the coach read it." };
-    if (e instanceof NotEditableError) {
-      const cause = notEditableCause(row);
-      return { error: "not_editable", cause, why: NOT_EDITABLE_WHY[cause] };
-    }
+    // (A day gone and a run are never thrown as this: `notRevisable`.)
+    if (e instanceof NotEditableError) return { error: "not_editable", cause: e.reason === "past" || e.reason === "run" ? "unknown" : e.reason, why: e.why, instead: e.instead };
     if (e instanceof DocWorkoutNotFoundError) return { error: "not_found", why: "It's no longer in the plan." };
     if (e instanceof DocInvalidError) {
       const errors = e.issues.filter((i) => i.severity === "error");
       return { error: "invalid_doc", why: `The day now refuses it: ${errors[0]?.message ?? "it no longer passes the day's rules"}`, issues: errors.slice(0, 10).map(issueOut) };
     }
-    if (e instanceof RunUnsupportedError) return { error: "run_unsupported", why: "A run is suggested as a new workout, not as a change to a Studio one." };
+    if (e instanceof RunUnsupportedError) {
+      return { error: "run_unsupported", why: e.why ?? "A run is suggested as a new workout, not as a change to a Studio one.", instead: e.instead ?? "Propose the run as a new workout." };
+    }
     if (e instanceof RestoreInProgressError) return { error: "restore_in_progress", why: "The account is being restored." };
     return null;
   })();

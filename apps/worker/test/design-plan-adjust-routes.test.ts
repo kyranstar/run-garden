@@ -238,7 +238,13 @@ describe("POST /api/coach/proposals/:id/approve with changes", () => {
     expect(res.status).toBe(200);
     expect((res.json.changed as Array<{ opId: string }>).map((c) => c.opId)).toEqual([planAdjustId("w-1-07:00"), planAdjustId("w-4-07:00")]);
     expect(res.json.refused).toEqual([
-      { opId: planAdjustId("w-2-07:00"), error: "not_editable", cause: "unknown", why: "This session follows the watch's version until the next sync — change it after that." },
+      {
+        opId: planAdjustId("w-2-07:00"),
+        error: "not_editable",
+        cause: "unknown",
+        why: "This session follows the watch's version until the next sync — change it after that.",
+        instead: "Read the plan again and propose what still fits.",
+      },
     ]);
     expect(res.json.remaining).toEqual([]);
     expect(res.total).toBeLessThanOrEqual(APPROVE_FIXED + PLAN_BATCH_FIXED + SKIP_COST + (ADJUST_COST + 1) + (MOVE_COST + 1 + 1));

@@ -14,7 +14,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { and, eq, inArray } from "drizzle-orm";
 import { schema } from "@rg/database";
-import { newId, parseStoredWorkoutDoc, type UserPreferences } from "@rg/domain";
+import { newId, parseStoredWorkoutDoc, workoutDocSchema, type UserPreferences } from "@rg/domain";
 import type { Env } from "../src/env.js";
 import type { Db } from "../src/services/db.js";
 import { loadPreferences } from "../src/services/calendar-sync.js";
@@ -142,21 +142,33 @@ async function planned(o: {
   origin?: string | null;
   title?: string;
   minutes?: number;
-  doc?: boolean;
+  /** A document: a Studio one (strength), or — `"run"` — a run's, as the thread coach's own run carries. */
+  doc?: boolean | "run";
   state?: string;
   userId?: string;
 }): Promise<string> {
   const id = `pw-${newId().slice(0, 10)}`;
+  const doc = o.doc === "run" ? runDoc(o.title ?? "Coach run", o.minutes ?? 45) : o.doc ? studioDoc({ title: o.title ?? "Coach session" }) : null;
   await db.insert(plannedWorkouts).values({
     id, userId: o.userId ?? rich.userId, planId: o.origin === "coach" ? "adhoc-run-x" : "coros-plan", sourceWorkoutId: id, title: o.title ?? "Easy run",
     category: o.category ?? "easy", sport: "run", originalPlanDate: o.date, lastVerifiedCorosDate: o.date, effectiveDate: o.date,
     effectiveTime: o.time ?? "18:00", sourceContentFingerprint: "fp", sourceEstimatedDurationSeconds: (o.minutes ?? 45) * 60,
     calendarBlockDurationSeconds: (o.minutes ?? 45) * 60, completionState: o.state ?? "scheduled", origin: o.origin ?? null,
-    workoutDoc: o.doc ? JSON.stringify(studioDoc({ title: o.title ?? "Coach session" })) : null, workoutDocRev: o.doc ? 1 : null,
+    workoutDoc: doc ? JSON.stringify(doc) : null, workoutDocRev: doc ? 1 : null,
     createdAt: NOW.toISOString(), updatedAt: NOW.toISOString(),
   });
   return id;
 }
+
+/** A steady easy run's document, `minutes` long (invented). */
+const runDoc = (title: string, minutes: number) =>
+  workoutDocSchema.parse({
+    version: 1,
+    title,
+    intent: { summary: "Easy aerobic running.", goals: ["aerobic-base"], focus: [], effort: "maintain" },
+    parts: [{ purpose: "run", format: "steady", items: [{ kind: "run", target: { durationSec: minutes * 60 }, effort: "easy" }] }],
+    source: { kind: "coach" },
+  });
 
 /** A watch-plan run three days on (the fixture's), 45 minutes, no document. */
 async function watchRun(): Promise<string> {
@@ -301,9 +313,11 @@ describe("adjust_plan: a change to a session already on the plan, into the run's
     expect(await proposalOf(designProposalId(r.id))).toBeUndefined();
   });
 
-  it("refuses to re-time a Studio or template workout: it is revised", async () => {
+  it("refuses to re-time a revisable workout — a Studio or template one, or a coach session that isn't a run: it is revised", async () => {
     const r = await mainRun();
-    for (const id of [rich.todayDocId, await planned({ date: day(-7), origin: "template", doc: true })]) {
+    // Its document says what it is (strength), whatever its watch-plan columns say (a run): the document decides.
+    const coachStrength = await planned({ date: day(-6), category: "strength", doc: true });
+    for (const id of [rich.todayDocId, await planned({ date: day(-7), origin: "template", doc: true }), coachStrength]) {
       const e = refused((await adjust(r, shorten(id))).res);
       expect(e.error).toBe("revise_instead");
       expect(e.fix).toBe("Revise it with propose_workout's revise target.");
@@ -457,7 +471,7 @@ describe("adjust_plan: a change to a session already on the plan, into the run's
       await keepWatch(run);
       const before = await rowOf(run);
       const res = await approve(id);
-      expect(res.refused).toEqual([{ opId: planAdjustId(run), error: "not_editable", cause: "unknown", why: FOLLOWS }]);
+      expect(res.refused).toEqual([{ opId: planAdjustId(run), error: "not_editable", cause: "unknown", why: FOLLOWS, instead: "Read the plan again and propose what still fits." }]);
       const after = await rowOf(run);
       expect(after.calendarBlockDurationSeconds).toBe(before.calendarBlockDurationSeconds);
       expect(after.sourceContentFingerprint).toBe(MARK);
@@ -557,7 +571,8 @@ describe("approve: each change through the thread coach's own applier", () => {
   });
 
   it("shortens the thread coach's own session with a document: the length changed and its revision written, by the coach for this proposal", async () => {
-    const own = await planned({ date: day(-1), origin: "coach", doc: true, title: "Hill strides", minutes: 50 });
+    // A run: a session that isn't a run is revisable, so it is revised, never re-timed (workout-editability §5).
+    const own = await planned({ date: day(-1), origin: "coach", doc: "run", title: "Hill strides", minutes: 50 });
     const { id } = await proposal({ changes: [shorten(own, 30)] });
     await approve(id);
     const row = await rowOf(own);
@@ -583,12 +598,12 @@ describe("approve: each change through the thread coach's own applier", () => {
     await db.update(plannedWorkouts).set({ completionState: "completed" }).where(eq(plannedWorkouts.id, rich.outlineToday));
     const res = await approve(id);
     expect(res.status).toBe("partially_approved");
-    expect(res.refused).toEqual([{ opId: planAdjustId(rich.outlineToday), error: "not_editable", cause: "completed", why: "It's done already." }]);
+    expect(res.refused).toEqual([{ opId: planAdjustId(rich.outlineToday), error: "not_editable", cause: "resolved", why: "It's already done.", instead: "Propose a new workout." }]);
     expect(res.changed.map((c) => c.opId)).toEqual([planAdjustId(run)]);
     expect(res.applied).toHaveLength(1);
     expect(await rowOf(rich.outlineToday)).toMatchObject({ completionState: "completed", sanctionedBy: null });
     const op = (await proposalOf(id))!.ops.find((o) => o.kind === "plan_adjust" && o.op.workoutId === rich.outlineToday)!;
-    expect(op.outcome).toMatchObject({ status: "refused", error: "not_editable", cause: "completed" });
+    expect(op.outcome).toMatchObject({ status: "refused", error: "not_editable", cause: "resolved", instead: "Propose a new workout." });
   });
 
   it("refuses at approval a move whose day has passed, and a change of a session archived since", async () => {
@@ -644,7 +659,7 @@ describe("approve: each change through the thread coach's own applier", () => {
     const prog = await nextProgramme();
     await planned({ date: day(-3), time: "18:00", title: "Second run" });
     await planned({ date: day(-3), time: "18:00", title: "Third run" });
-    const own = await planned({ date: day(-3), time: "18:00", origin: "coach", doc: true, title: "Coach strides" });
+    const own = await planned({ date: day(-3), time: "18:00", origin: "coach", doc: "run", title: "Coach strides" });
     const measured: Record<string, number> = {};
     for (const [kind, input] of [
       ["skip", skip(rich.outlineToday)],
@@ -686,7 +701,15 @@ describe("approve: judged again before the applier runs, and planned within the 
     await storedAs(b.id, race, { kind: "skip", reason: "Rest." });
     const c = await proposal({ changes: [skip(await planned({ date: day(-1) }))] });
     await storedAs(c.id, race, { kind: "move", toDate: day(-6) });
-    expect((await approve(a.id)).refused).toEqual([{ opId: planAdjustId(prog), error: "not_editable", cause: "programme", why: "It's a programme's session: the programme plans it." }]);
+    expect((await approve(a.id)).refused).toEqual([
+      {
+        opId: planAdjustId(prog),
+        error: "not_editable",
+        cause: "programme",
+        why: "It's a programme's session: the programme builds it on the day.",
+        instead: "Put moves in its pool with pin_moves, change the programme with change_programme, or propose a new workout for that day and skip the slot with adjust_plan.",
+      },
+    ]);
     expect((await approve(b.id)).refused).toEqual([{ opId: planAdjustId(race), error: "race", why: "It's the athlete's race: it stays where it is." }]);
     expect((await approve(c.id)).refused.map((r) => r.error)).toEqual(["race"]);
     expect(await rowOf(race)).toMatchObject({ completionState: "scheduled", effectiveDate: day(-5) });

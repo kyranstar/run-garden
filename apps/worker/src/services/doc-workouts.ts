@@ -65,7 +65,7 @@ import { EXERCISES, PROFILES, isDoneCleanly, isProfileId, type ConditionProfile,
 import { Hist, type HistorySession, type HistorySummary } from "@rg/session-engine";
 import { deriveDoc, makeLibraryIndex, QUICK_START_KINDS, validateWorkoutDoc, type DocDerived, type DocIssue, type ValidateCtx } from "@rg/workout";
 import { sha256Hex } from "../auth/crypto.js";
-import { libraryForDocs, loadAccountLibrary } from "./account-library.js";
+import { libraryForDocs, loadAccountLibrary, type AccountLibrary } from "./account-library.js";
 import { restoreInProgress } from "./account-state.js";
 import { recordedStampFor } from "./coros-stamp.js";
 import { runAtomically, type Db } from "./db.js";
@@ -657,19 +657,24 @@ async function watchHoldsOlder(db: Db, workoutId: string, rev: number | null, he
   return (build?.rev ?? null) !== rev;
 }
 
-/** The fields `revisability` reads of a row, and its stored document's text. */
-type RevisableRow = Pick<
-  typeof plannedWorkouts.$inferSelect,
-  "origin" | "category" | "sport" | "completionState" | "contentState" | "effectiveDate"
-> & { workoutDoc: string | null };
+/** The fields `revisability` reads of a row (as the planned row's columns), and its stored document's text. */
+export interface RevisableRow {
+  origin: string | null;
+  category: string | null;
+  sport: string | null;
+  completionState: string | null;
+  contentState: string | null;
+  effectiveDate: string;
+  workoutDoc: string | null;
+}
 
 /**
- * `revisability` of a row as read: its stored document, when there is one, says whether it is a run — derived in the
- * account's library, as `validated` derives one (one statement, once a request: the revise reads it anyway).
+ * `revisability` of a row as read, in the account's library (`all`): its stored document, when there is one, says
+ * whether it is a run — derived as `validated` derives one. The one reading of a row for the Studio's revise and the
+ * coach's tools alike (propose_workout, adjust_plan: each holds the library already, read with the athlete).
  */
-async function revisabilityOf(db: Db, userId: string, row: RevisableRow, today: string): Promise<Revisability> {
+export function revisabilityIn(row: RevisableRow, today: string, all: AccountLibrary["all"]): Revisability {
   const stored = parseStoredWorkoutDoc(row.workoutDoc);
-  const isRun = stored ? deriveDoc(stored, (await loadAccountLibrary(db, userId)).all).discipline === "run" : null;
   return revisability(
     {
       origin: row.origin,
@@ -679,10 +684,19 @@ async function revisabilityOf(db: Db, userId: string, row: RevisableRow, today: 
       contentState: row.contentState,
       effectiveDate: row.effectiveDate,
       hasDoc: stored !== null,
-      isRun,
+      isRun: stored ? deriveDoc(stored, all).discipline === "run" : null,
     },
     today,
   );
+}
+
+/**
+ * `revisabilityIn` for a row the revise reads: the account's library only for a row with a document (one statement,
+ * once a request: the revise reads it anyway).
+ */
+async function revisabilityOf(db: Db, userId: string, row: RevisableRow, today: string): Promise<Revisability> {
+  const all = row.workoutDoc !== null ? (await loadAccountLibrary(db, userId)).all : [];
+  return revisabilityIn(row, today, all);
 }
 
 /** What an adopted row becomes: a Studio document workout. */

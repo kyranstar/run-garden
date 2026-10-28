@@ -392,29 +392,59 @@ describe("approve: judged again for its day, by the server's rules", () => {
       [opIds[1], "past_date"],
     ]);
     expect(res.refused.map((r) => r.why)).toEqual(["Thu 14 May has passed.", "Wed 13 May has passed."]);
+    expect(res.refused.map((r) => r.instead)).toEqual(["Propose for today or later.", "Propose for today or later."]);
     expect(res.applied.map((a) => a.opId)).toEqual([opIds[2]]);
     expect((await rowOf(rich.todayDocId)).workoutDocRev).toBe(2);
   });
 
-  it("a resolved row is refused: the Studio's own not_editable", async () => {
+  it("a resolved row is refused: the Studio's own not_editable, its cause the reason, with why and what to do instead", async () => {
     const { id, opIds } = await designed([{ doc: calmDoc({ title: "Wednesday" }), target: { kind: "revise", workoutId: rich.todayDocId, baseRev: 2 } }]);
     await db.update(plannedWorkouts).set({ completionState: "completed" }).where(eq(plannedWorkouts.id, rich.todayDocId));
     const res = await approve(id);
     expect(res.status).toBe("pending");
-    expect(res.refused).toEqual([{ opId: opIds[0], error: "not_editable", cause: "completed", why: "It's done already." }]);
+    expect(res.refused).toEqual([{ opId: opIds[0], error: "not_editable", cause: "resolved", why: "It's already done.", instead: "Propose a new workout." }]);
+    expect((await opOf(id, opIds[0]!)).outcome).toMatchObject({ status: "refused", error: "not_editable", cause: "resolved", instead: "Propose a new workout." });
     expect((await proposalOf(id))!.status).toBe("pending");
     // Nothing applied, nothing approved: no receipt.
     expect(await receipts()).toEqual([]);
-    // Each cause in its own words, as the Studio's own rules find it.
+    // Each reason in its own words (spec §3's table), as the Studio's own rules find it.
     const causeOf = async (set: Partial<typeof plannedWorkouts.$inferInsert>) => {
-      await db.update(plannedWorkouts).set({ completionState: "scheduled", contentState: null, origin: "studio", ...set }).where(eq(plannedWorkouts.id, rich.todayDocId));
+      await db.update(plannedWorkouts).set({ completionState: "scheduled", contentState: null, origin: "studio", category: "strength", ...set }).where(eq(plannedWorkouts.id, rich.todayDocId));
       const r = (await approve(id)).refused[0]!;
-      return [r.cause, r.why];
+      return [r.error, r.cause, r.why, r.instead];
     };
-    expect(await causeOf({ completionState: "skipped" })).toEqual(["skipped", "It was skipped."]);
-    expect(await causeOf({ completionState: "missed" })).toEqual(["missed", "It was missed."]);
-    expect(await causeOf({ contentState: "started" })).toEqual(["under_way", "It's under way."]);
-    expect(await causeOf({ origin: "program" })).toEqual(["programme", "It's a programme's session: the programme plans it."]);
+    expect(await causeOf({ completionState: "skipped" })).toEqual(["not_editable", "resolved", "It was skipped.", "Propose a new workout."]);
+    expect(await causeOf({ completionState: "missed" })).toEqual(["not_editable", "resolved", "It was missed.", "Propose a new workout."]);
+    expect(await causeOf({ contentState: "started" })).toEqual(["not_editable", "under_way", "It's under way.", "Propose one for later."]);
+    expect(await causeOf({ category: "rest" })).toEqual(["not_editable", "rest", "It's a rest day.", "Propose a new workout for that day."]);
+    expect(await causeOf({ origin: "program" })).toEqual([
+      "not_editable",
+      "programme",
+      "It's a programme's session: the programme builds it on the day.",
+      "Put moves in its pool with pin_moves, change the programme with change_programme, or propose a new workout for that day and skip the slot with adjust_plan.",
+    ]);
+  });
+
+  it("approve adopts a NULL-origin coach session the coach revised: a Studio document workout now, its stage rows gone, its plan kept", async () => {
+    // The coach's own plan session (origin NULL, a `cw-` id): its stage rows were its truth, its document a derived copy.
+    const coach = `cw-${newId().slice(0, 10)}`;
+    await db.insert(plannedWorkouts).values({
+      id: coach, userId: rich.userId, planId: "coach-plan-invented", sourceWorkoutId: coach, title: "Coach legs, invented", category: "strength", sport: "strength",
+      originalPlanDate: tomorrow, lastVerifiedCorosDate: "", effectiveDate: tomorrow, effectiveTime: "07:00", sourceContentFingerprint: "coach-invented-fp",
+      calendarBlockDurationSeconds: 1800, stageSummary: "Bridge 2×12", structuredJson: { exercises: [{ name: "Bridge", sets: 2, reps: 12 }] },
+      completionState: "scheduled", origin: null, workoutDoc: JSON.stringify(studioDoc({ title: "Coach legs, invented" })), workoutDocRev: 1,
+      createdAt: NOW.toISOString(), updatedAt: NOW.toISOString(),
+    });
+    await db.insert(schema.plannedWorkoutStages).values({ id: `${coach}:0`, workoutId: coach, parentStageId: null, ord: 0, kind: "work", repeatCount: 2, durationType: "none", label: "Bridge", reps: 12 });
+    const { id, opIds } = await designed([{ doc: calmDoc({ title: "Coach legs, calmer" }), target: { kind: "revise", workoutId: coach, baseRev: 1 } }]);
+    const res = await approve(id);
+    expect(res.refused).toEqual([]);
+    expect(res.applied.map((a) => [a.opId, a.workout.id, a.workout.origin, a.workout.docRev])).toEqual([[opIds[0], coach, "studio", 2]]);
+    expect(await rowOf(coach)).toMatchObject({ origin: "studio", planId: "coach-plan-invented", title: "Coach legs, calmer", workoutDocRev: 2, stageSummary: null, structuredJson: null });
+    expect(await db.select().from(schema.plannedWorkoutStages).where(eq(schema.plannedWorkoutStages.workoutId, coach))).toEqual([]);
+    const rev2 = (await revisionsOf(coach)).find((r) => r.rev === 2)!;
+    expect([rev2.sourceKind, rev2.sourceRef]).toEqual(["coach", approvalRef(id, opIds[0]!)]);
+    expect((await proposalOf(id))!.status).toBe("approved");
   });
 
   it("a workout removed since is refused not_found", async () => {

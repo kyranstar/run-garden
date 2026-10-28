@@ -10,10 +10,11 @@
  * check's own `easedRun`: EASE_SHARE of it — by TIME when the run is on the watch (`runOnWatch`: the wire carries no
  * distance), by distance only off it; the thread coach's `ease` carrying the eased session), SWAP (a run for an easier
  * kind: an easy or a recovery run, never longer than it, the same `ease`, its op marked `verb: "swap"`), REMOVE (off the plan entirely, the athlete's own
- * remove: not rest) and RESTORE (a skipped session still to come put back, the athlete's own un-skip). A session its
- * build decides is never eased, swapped or removed (a programme session is skipped or moved: `programme_session`; a Studio
- * or template workout revised: `revise_instead`), a race stays (`race_day`), an ease or a swap is a run's and easier
- * (`not_a_run`, `not_easier`), a restore a skip's (`not_skipped`).
+ * remove: not rest) and RESTORE (a skipped session still to come put back, the athlete's own un-skip). A revisable
+ * workout (`revisability`, @rg/domain: the Studio's own predicate — a Studio or template workout, or a coach or
+ * watch-plan session that isn't a run, rest or race) is revised, never eased, swapped, re-timed or removed here
+ * (`revise_instead`); a programme session is skipped or moved (`programme_session`), a race stays (`race_day`), an ease or
+ * a swap is a run's and easier (`not_a_run`, `not_easier`), a restore a skip's (`not_skipped`).
  *
  * ONE op per session per proposal, of kind `plan_adjust` (proposal-kinds.ts `PlanAdjustOp`): the thread coach's op,
  * the coach's `why` (model-written: data, marked wherever it is shown back to a model), advisory `issues`, and the session
@@ -25,8 +26,8 @@
  *  - a session that isn't the athlete's or is off the plan (`not_found`), or can't change by coach-apply's own rule —
  *    done, skipped, missed, its day gone, under way (`not_changeable`; `whyNotActionable`, the applier's words);
  *  - a length for a session its build decides (ruling 3-R13): a programme or on-demand session is skipped or moved,
- *    never re-timed (`programme_session`: skip it and propose the shorter workout — for a set, brief it); a Studio or
- *    template workout is revised (`revise_instead`);
+ *    never re-timed (`programme_session`: skip it and propose the shorter workout — for a set, brief it); a revisable
+ *    workout is revised (`revise_instead`);
  *  - the athlete's race skipped or moved (`race_day`: the thread coach's `never_skip_race`, and the applier refuses to
  *    move a race);
  *  - a session, or a move's day, past the run's reach (`beyond_horizon`: a set's plan read, design-context.ts
@@ -49,15 +50,17 @@
  * The change's words reach the model marked: a session's name is an import's, a skip's reason the model's own.
  *
  * Two statements: the athlete with the session, the proposal, the restore marker and the week's sanctioned skips in one
- * read, and the proposal's guarded upsert (propose_workout's own: never a pending proposal, never one another write
- * changed meanwhile).
+ * read — and, for an ease, a swap, a remove or a length of a session with a document, the account's library its
+ * document's discipline is derived in (`revisability`'s run) — and the proposal's guarded upsert (propose_workout's own:
+ * never a pending proposal, never one another write changed meanwhile).
  */
 import { sql } from "drizzle-orm";
 import { z } from "zod";
 import { accountState, coachProposals, corosWriteJobs, plannedWorkouts, plannedWorkoutStages, programs } from "@rg/database";
-import { addDays, appAuthoredRow, coachOpSchema, dayLabel, docOriginRow, hasWatchAddress, humanizeWorkoutTitle } from "@rg/domain";
+import { addDays, appAuthoredRow, coachOpSchema, dayLabel, docOriginRow, hasWatchAddress, humanizeWorkoutTitle, type Revisability } from "@rg/domain";
 import type { ConditionProfile } from "@rg/exercise-library";
 import { runWireOf } from "../../env.js";
+import { accountLibraryFrom, personalMovesSql } from "../account-library.js";
 import { retimeOfRow, type RetimeExpectation, type RetimeStageFields } from "../adjust-retime.js";
 import { easedRun, runOnWatch } from "../body-check.js";
 import { FOLLOWS_WATCH_VERSION, NOT_ACTIONABLE, whyNotActionable } from "../coach-apply.js";
@@ -65,6 +68,7 @@ import { thresholdSql } from "../designed-runs.js";
 import { horizonDays } from "../design-context.js";
 import { clockIn, todayLeadRefusal } from "../design-time.js";
 import { OPEN_PROPOSAL_STATUSES } from "../design-review.js";
+import { revisabilityIn } from "../doc-workouts.js";
 import { describeChange, isDocWorkoutOp, isPlanAdjustOp, planAdjustId, type PlanAdjustOp, type PlanChange, type PlanRowSnapshot } from "../proposal-kinds.js";
 import { capInWords, isErr, mainRunIdOf, parseAct, prose } from "./act-common.js";
 import { clipProse } from "../design-prose.js";
@@ -121,6 +125,8 @@ interface Row {
   subtype: string | null;
   origin: string | null;
   completion: string;
+  /** Under way or done in the app (`revisability`'s under_way). */
+  content?: string | null;
   archived: string | null;
   sourceSec: number | null;
   fallbackSec: number | null;
@@ -204,8 +210,22 @@ function lastDay(ctx: ToolContext, today: string): string {
 
 const ordinal = (n: number): string => `${n}${n % 100 >= 11 && n % 100 <= 13 ? "th" : ["th", "st", "nd", "rd"][n % 10] ?? "th"}`;
 
-/** Why this change can't be made to this session, by the applier's and the thread coach's own rules; null when it can. */
-function refusalOf(ctx: ToolContext, row: Row | null, c: z.output<typeof change>, today: string, workoutId: string, clock: { minutes: number }): ToolErr | null {
+/** The changes a revisable workout never takes here: it is revised (`revise_instead`). */
+const REVISED_NOT: ReadonlySet<string> = new Set(["ease", "swap", "remove", "adjust"]);
+
+/**
+ * Why this change can't be made to this session, by the applier's and the thread coach's own rules — and, for the
+ * changes a revisable workout never takes, `revisability`'s (`verdict`: read for those alone) — null when it can.
+ */
+function refusalOf(
+  ctx: ToolContext,
+  row: Row | null,
+  c: z.output<typeof change>,
+  today: string,
+  workoutId: string,
+  clock: { minutes: number },
+  verdict: Revisability | null,
+): ToolErr | null {
   if (!row || row.archived) {
     return refuse("not_found", `No planned session of the athlete's has id ${JSON.stringify(workoutId)}.`, "Use an id from read_plan.");
   }
@@ -225,13 +245,15 @@ function refusalOf(ctx: ToolContext, row: Row | null, c: z.output<typeof change>
   if (row.date > last) {
     return refuse("beyond_horizon", `That session is on ${row.date}, past the plan this run reads (to ${last}).`, `Change a session up to ${last} — read_plan lists them.`);
   }
-  // The thread coach's single-session changes (the new shape §5): a session the app builds is its build's — a programme
-  // session is skipped or moved, a Studio or template workout revised — and the race stays.
+  // The thread coach's single-session changes (the new shape §5): a revisable workout is revised (`revisability`: a
+  // Studio or template workout, or a coach or watch-plan session that isn't a run, rest or race — the revise adopts it),
+  // a programme session (its reason, `programme`: its origin) skipped or moved — and the race stays. A document workout
+  // that can't be revised just now (under way) is still its document's.
+  const revised = verdict?.ok === true || docOriginRow({ origin: row.origin });
   if (c.kind === "ease" || c.kind === "swap" || c.kind === "remove") {
+    if (revised) return refuse("revise_instead", `That workout is revised, not ${c.kind === "remove" ? "removed" : "eased"} here: its document is what changes.`, reviseIt(ctx));
     if (appAuthoredRow({ origin: row.origin })) {
-      return docOriginRow({ origin: row.origin })
-        ? refuse("revise_instead", `A Studio or template workout is the athlete's document: it isn't ${c.kind === "remove" ? "removed" : "eased"} here.`, reviseIt(ctx))
-        : refuse("programme_session", `A programme session is skipped or moved, never ${c.kind === "remove" ? "removed" : "eased or swapped"}.`, c.kind === "remove" ? "Skip it with adjust_plan instead." : shorterWorkout(ctx));
+      return refuse("programme_session", `A programme session is skipped or moved, never ${c.kind === "remove" ? "removed" : "eased or swapped"}.`, c.kind === "remove" ? "Skip it with adjust_plan instead." : shorterWorkout(ctx));
     }
     if (row.category === "race") return refuse("race_day", `${dayLabel(row.date)} holds the athlete's race: it stays as it is.`, "Leave the race on the plan and design around it.");
   }
@@ -260,12 +282,9 @@ function refusalOf(ctx: ToolContext, row: Row | null, c: z.output<typeof change>
     return refuse("race_day", "A race can't be moved: its day is the race's.", "Leave the race where it is and design around it.");
   }
   if (c.kind === "adjust") {
-    // Ruling 3-R13: a session the app builds has its build's length.
-    if (appAuthoredRow({ origin: row.origin })) {
-      return docOriginRow({ origin: row.origin })
-        ? refuse("revise_instead", "A Studio or template workout's length is its document's.", reviseIt(ctx))
-        : refuse("programme_session", "A programme session can't be re-timed.", shorterWorkout(ctx));
-    }
+    // Ruling 3-R13: a session the app builds has its build's length — and a revisable workout's is its document's.
+    if (revised) return refuse("revise_instead", "That workout's length is its document's: it is revised, not re-timed here.", reviseIt(ctx));
+    if (appAuthoredRow({ origin: row.origin })) return refuse("programme_session", "A programme session can't be re-timed.", shorterWorkout(ctx));
     if (minutesOf(row) === c.durationMinutes) {
       return refuse("no_change", `That session is already ${c.durationMinutes} min.`, "Leave it as it is, or choose another length.");
     }
@@ -292,6 +311,20 @@ function refusalOf(ctx: ToolContext, row: Row | null, c: z.output<typeof change>
     }
   }
   return null;
+}
+
+/**
+ * `revisability` of the session as read (doc-workouts.ts `revisabilityIn`, the Studio's own reading): a document's
+ * discipline derived in the account's library, read with it (`raw`: personalMovesSql's column, there for a session with a
+ * document) — no statement.
+ */
+async function revisabilityOfRow(ctx: ToolContext, row: Row, today: string, raw: unknown): Promise<Revisability> {
+  const all = row.doc ? (await accountLibraryFrom(ctx.db, ctx.userId, raw)).all : [];
+  return revisabilityIn(
+    { origin: row.origin, category: row.category, sport: row.sport ?? null, completionState: row.completion, contentState: row.content ?? null, effectiveDate: row.date, workoutDoc: row.doc ?? null },
+    today,
+    all,
+  );
 }
 
 /**
@@ -491,7 +524,7 @@ export const adjustPlan: DesignTool = {
     const pw = plannedWorkouts;
     const { athlete, extra } = await readAthlete(ctx.db, ctx.userId, ctx.now, {
       row: sql`(select json_object('id', ${pw.id}, 'date', ${pw.effectiveDate}, 'time', ${pw.effectiveTime}, 'title', ${pw.title},
-          'category', ${pw.category}, 'subtype', ${pw.qualitySubtype}, 'origin', ${pw.origin}, 'completion', ${pw.completionState},
+          'category', ${pw.category}, 'subtype', ${pw.qualitySubtype}, 'origin', ${pw.origin}, 'completion', ${pw.completionState}, 'content', ${pw.contentState},
           'archived', ${pw.archivedAt}, 'sourceSec', ${pw.sourceEstimatedDurationSeconds}, 'fallbackSec', ${pw.fallbackEstimatedDurationSeconds},
           'swid', ${pw.sourceWorkoutId}, 'sidp', ${pw.sourceIdInPlan}, 'spid', ${pw.sourceProgramId}, 'lvd', ${pw.lastVerifiedCorosDate},
           'sport', ${pw.sport}, 'meters', ${pw.expectedDistanceMeters}, 'blockSec', ${pw.calendarBlockDurationSeconds}, 'sync', ${pw.corosSyncState},
@@ -513,6 +546,14 @@ export const adjustPlan: DesignTool = {
       // the UTC day's week and a day more either side hold it); counted below as the dossier counts it.
       sanctioned: sql`(select json_group_array(${pw.resolutionDate}) from ${pw} where ${pw.userId} = ${ctx.userId}
         and ${pw.sanctionedBy} = 'coach' and ${pw.completionState} in ('skipped', 'missed') and ${pw.resolutionDate} >= ${addDays(ctx.now.toISOString().slice(0, 10), -8)})`,
+      // A change a revisable workout never takes: whether the session is one (`revisability`) reads its document's
+      // discipline, derived in the account's library — read here, in the same statement, for a session with a document.
+      ...(REVISED_NOT.has(p.change.kind)
+        ? {
+            library: sql`case when exists (select 1 from ${pw} where ${pw.id} = ${p.workoutId} and ${pw.userId} = ${ctx.userId} and ${pw.workoutDoc} is not null)
+              then ${personalMovesSql(ctx.userId)} end`,
+          }
+        : {}),
     });
     const opsText = typeof extra.propOps === "string" ? extra.propOps : null;
     const all = ((opsText ? parsedJson(opsText) : null) as unknown[] | null) ?? [];
@@ -536,7 +577,8 @@ export const adjustPlan: DesignTool = {
       return refuse("restoring", "The athlete's account is being restored right now.", "Finish, and say the change can be asked for again once the restore is done.");
     }
     const row = parsedJson(extra.row) as Row | null;
-    const refused = refusalOf(ctx, row, p.change, athlete.today, p.workoutId, clockIn(athlete.tz, ctx.now));
+    const verdict = row && !row.archived && REVISED_NOT.has(p.change.kind) ? await revisabilityOfRow(ctx, row, athlete.today, extra.library) : null;
+    const refused = refusalOf(ctx, row, p.change, athlete.today, p.workoutId, clockIn(athlete.tz, ctx.now), verdict);
     if (refused) return refused;
     if (all.some((o) => isDocWorkoutOp(o) && (o as DocWorkoutOp).target.kind === "revise" && (o as DocWorkoutOp & { target: { workoutId: string } }).target.workoutId === p.workoutId)) {
       return refuse("target_taken", "A workout of this proposal already revises that session.", "Change the revision instead, or leave the session as it is.");

@@ -241,11 +241,13 @@ describe("adjust_plan: ease, swap, remove and restore, into the run's one propos
     expect(SHARED_PROMPT).toMatch(/ease it \(easy, about 70% of it\) or swap it for an easier run; remove it \(off the plan, not rest\); or put a skipped one back/);
   });
 
-  it("refused, each in words, writing nothing: a programme session, a Studio workout, a race, no run, no easier, no skip", async () => {
+  it("refused, each in words, writing nothing: a programme session, a revisable workout (Studio, or a coach session not a run), a race, no run, no easier, no skip", async () => {
     const r = await mainRun();
     const prog = await programmeSession();
     const race = await planned({ date: day(-4), category: "race", title: "Race" });
+    // A coach session that isn't a run is revisable (workout-editability §5): it is revised, not eased or removed here.
     const strength = await planned({ date: day(-1), category: "strength", sport: "strength", title: "Strength" });
+    const rest = await planned({ date: day(-1), category: "rest", title: "Rest" });
     const easy = await planned({ date: day(-1), category: "easy", title: "Easy run", minutes: 40 });
     const scheduled = await planned({ date: day(-1), category: "easy", title: "Easy run" });
     const pastSkip = await planned({ date: day(2), state: "skipped" });
@@ -257,7 +259,9 @@ describe("adjust_plan: ease, swap, remove and restore, into the run's one propos
       ["remove a Studio workout", change(rich.todayDocId, { kind: "remove" }), "revise_instead"],
       ["ease a race", change(race, { kind: "ease" }), "race_day"],
       ["remove a race", change(race, { kind: "remove" }), "race_day"],
-      ["ease a strength session", change(strength, { kind: "ease" }), "not_a_run"],
+      ["ease a coach strength session", change(strength, { kind: "ease" }), "revise_instead"],
+      ["remove a coach strength session", change(strength, { kind: "remove" }), "revise_instead"],
+      ["ease a rest day", change(rest, { kind: "ease" }), "not_a_run"],
       ["ease to no shorter", change(easy, { kind: "ease", durationMinutes: 40 }), "not_easier"],
       ["swap to no easier", change(easy, { kind: "swap", to: "easy", durationMinutes: 30 }), "not_easier"],
       ["restore one not skipped", change(scheduled, { kind: "restore" }), "not_skipped"],
@@ -313,7 +317,7 @@ describe("approve, op by op, through the thread coach's appliers", () => {
     await db.update(plannedWorkouts).set({ completionState: "completed" }).where(eq(plannedWorkouts.id, easeMe));
     await db.update(plannedWorkouts).set({ completionState: "scheduled" }).where(eq(plannedWorkouts.id, restoreMe));
     const res = await approve(id);
-    expect(res.refused).toEqual([expect.objectContaining({ opId: planAdjustId(easeMe), error: "not_editable", cause: "completed" })]);
+    expect(res.refused).toEqual([expect.objectContaining({ opId: planAdjustId(easeMe), error: "not_editable", cause: "resolved", why: "It's already done.", instead: "Propose a new workout." })]);
     expect(res.changed.map((c) => c.workoutId)).toEqual([restoreMe]);
     expect(await rowOf(easeMe)).toMatchObject({ title: "Tempo run" });
   });
@@ -336,7 +340,14 @@ describe("approve, op by op, through the thread coach's appliers", () => {
       ["remove", removeMe],
       ["ease", easeMe],
     ]);
-    expect(res.refused).toEqual([expect.objectContaining({ opId: planAdjustId(becameProgramme), error: "not_editable", cause: "programme" })]);
+    expect(res.refused).toEqual([
+      expect.objectContaining({
+        opId: planAdjustId(becameProgramme),
+        error: "not_editable",
+        cause: "programme",
+        instead: "Put moves in its pool with pin_moves, change the programme with change_programme, or propose a new workout for that day and skip the slot with adjust_plan.",
+      }),
+    ]);
     // Made: nothing of the plan written for them — and the programme's session is left as it is.
     expect(statements.filter((s) => /^\s*update\s+"?planned_workouts/i.test(s))).toEqual([]);
     expect(await rowOf(becameProgramme)).toMatchObject({ title: "Tempo run" });

@@ -689,15 +689,20 @@ export interface DesignWrittenDto {
   minutes: number;
 }
 
-/** Why a planned workout can't change (`not_editable`) — `studio`: a change's length refused for a Studio workout. */
-export type DesignNotEditableCause = "programme" | "studio" | "completed" | "skipped" | "missed" | "under_way" | "unknown";
+/**
+ * Why a planned workout can't change (`not_editable`): the server's `revisability` reason (`resolved` — done, skipped or
+ * missed; a day gone and a run have their own codes), `studio` — a change's ease, length or remove refused for a document
+ * workout: it is revisable, changed by revising it — or `unknown`, the plan's own miss.
+ */
+export type DesignNotEditableCause = "programme" | "resolved" | "under_way" | "rest" | "race" | "studio" | "unknown";
 
 /** How the athlete decided one designed workout; null while it is theirs to decide. */
 export type DesignOutcomeDto =
   /** In the plan: as written; `edited` — the athlete's version of the draft; `moved` — on a day or time they chose. */
   | { status: "applied"; at: string; workoutId: string; rev: number | null; written: DesignWrittenDto; edited?: true; moved?: true }
-  /** The server refused it at approval (still open): its code, plain words, and for `not_editable` its cause. */
-  | { status: "refused"; at: string; error: string; why: string; cause?: DesignNotEditableCause; issues?: DocIssueDto[] }
+  /** The server refused it at approval (still open): its code, plain words, for `not_editable` its cause, and what to do
+   * instead (every `not_editable` carries one; a day gone and a run's refusal of a revision do too). */
+  | { status: "refused"; at: string; error: string; why: string; cause?: DesignNotEditableCause; instead?: string; issues?: DocIssueDto[] }
   | { status: "declined"; at: string; reason?: string }
   /** A newer plan of the coach's covers its day. */
   | { status: "superseded"; at: string; reason: string; by: string };
@@ -993,7 +998,7 @@ export interface DesignApproveResponse {
   applied: Array<{ opId: string; workout: DocWorkoutDto; warnings: DocIssueDto[]; edited?: true; moved?: true; watchHasOlder?: true }>;
   /** The changes to sessions already on the plan this request applied (Task 8b), each with how it stood before. */
   changed: Array<{ opId: string; change: DesignChangeLineDto["kind"]; workoutId: string; before: DesignChangeBeforeDto }>;
-  refused: Array<{ opId: string; error: string; why: string; cause?: DesignNotEditableCause; issues?: DocIssueDto[] }>;
+  refused: Array<{ opId: string; error: string; why: string; cause?: DesignNotEditableCause; instead?: string; issues?: DocIssueDto[] }>;
   /** Decided before: nothing done. */
   settled: Array<{ opId: string; outcome: "applied" | "declined" | "superseded"; workoutId?: string }>;
   remaining: string[];
