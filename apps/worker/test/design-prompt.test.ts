@@ -270,7 +270,11 @@ describe("3A-B — the prompt agrees with the code", () => {
   it("B10: the revise path, in one line of the main block — a programme session points at adjust_plan (Task 8b)", () => {
     // A template's workout is revised as a Studio one is (round 2, B-M6).
     expect(roleBlock("main")).toContain(
-      "a Studio or template workout is revised with target revise from get_workout's rev; a programme session's content isn't yours to edit: skip or move it with adjust_plan, and design beside it.",
+      "a workout whose revisable is true is revised with propose_workout (target revise, from get_workout's rev); one whose revisable says no: take its instead; a programme session's content isn't yours to edit: skip or move it with adjust_plan, and design beside it.",
+    );
+    expect(SHARED_PROMPT).toContain("A refusal is never the end of a fit: take the refusal's or the read's instead (pin_moves puts the moves in the pool; a new workout places them), then finish.");
+    expect(SHARED_PROMPT.split("\n").find((l) => l.startsWith("- adjust_plan:"))).toContain("revisable is true");
+    expect(SHARED_PROMPT).toContain("its revisable says so and names what to do instead"
     );
     expect([SHARED_PROMPT, ...ROLES.map((r) => roleBlock(r))].join(" ")).not.toMatch(/edited yet|isn't editable yet/);
   });
