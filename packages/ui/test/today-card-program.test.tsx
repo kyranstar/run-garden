@@ -213,8 +213,14 @@ describe("a sent session on Today (Phase 3 Task 8; approved mocks §2 'Today · 
     const run = { ...slot({ id: "run-1", title: "Easy Run", category: "easy", sport: "run", origin: null, contentState: null, programId: null, effectiveTime: "07:00" }) };
     const payload = { ...todayPayload(run), todaySessions: [{ workout: run, build: null }, { workout: slot(), build: null, onWatch: true }] };
     const { card } = await renderCard(payload);
-    const line = card.querySelector(".today-session")!;
-    expect(line.querySelector(".today-session-text .today-on-watch")?.textContent).toBe("On your watch");
+    // The marker lands a render after the card's title on a slow runner (CI, 2026-10-28): wait for it as renderCard waits.
+    const marker = () => card.querySelector(".today-session .today-session-text .today-on-watch");
+    for (let i = 0; i < 300 && !marker(); i += 1) {
+      await act(async () => {
+        await new Promise((r) => setTimeout(r, 10));
+      });
+    }
+    expect(marker()?.textContent).toBe("On your watch");
   });
 
   it("not on the watch, or the switch off (false, or a payload from before Phase 3): nothing about the watch — beside done, neither", async () => {
