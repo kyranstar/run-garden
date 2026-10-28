@@ -12,9 +12,11 @@
  * kind: an easy or a recovery run, never longer than it, the same `ease`, its op marked `verb: "swap"`), REMOVE (off the plan entirely, the athlete's own
  * remove: not rest) and RESTORE (a skipped session still to come put back, the athlete's own un-skip). A revisable
  * workout (`revisability`, @rg/domain: the Studio's own predicate — a Studio or template workout, or a coach or
- * watch-plan session that isn't a run, rest or race) is revised, never eased, swapped, re-timed or removed here
- * (`revise_instead`); a programme session is skipped or moved (`programme_session`), a race stays (`race_day`), an ease or
- * a swap is a run's and easier (`not_a_run`, `not_easier`), a restore a skip's (`not_skipped`).
+ * watch-plan session that isn't a run, rest or race) is revised, never eased, swapped or re-timed here
+ * (`revise_instead`); a remove takes a session off the plan, which revising can't, so only the athlete's own document
+ * workout (a Studio or template one, `docOriginRow`) is refused it — skipped or revised instead — and a coach or
+ * watch-plan session is removed; a programme session is skipped or moved (`programme_session`), a race stays
+ * (`race_day`), an ease or a swap is a run's and easier (`not_a_run`, `not_easier`), a restore a skip's (`not_skipped`).
  *
  * ONE op per session per proposal, of kind `plan_adjust` (proposal-kinds.ts `PlanAdjustOp`): the thread coach's op,
  * the coach's `why` (model-written: data, marked wherever it is shown back to a model), advisory `issues`, and the session
@@ -50,7 +52,7 @@
  * The change's words reach the model marked: a session's name is an import's, a skip's reason the model's own.
  *
  * Two statements: the athlete with the session, the proposal, the restore marker and the week's sanctioned skips in one
- * read — and, for an ease, a swap, a remove or a length of a session with a document, the account's library its
+ * read — and, for an ease, a swap or a length of a session with a document, the account's library its
  * document's discipline is derived in (`revisability`'s run) — and the proposal's guarded upsert (propose_workout's own:
  * never a pending proposal, never one another write changed meanwhile).
  */
@@ -201,6 +203,11 @@ const shorterWorkout = (ctx: ToolContext): string =>
 /** For a set the main coach briefs a Studio workout's replacement; for now or later today it revises it. */
 const reviseIt = (ctx: ToolContext): string =>
   isSet(ctx) ? "Brief its replacement in plan_set: a designer revises the workout itself." : "Revise it with propose_workout's revise target.";
+/** A Studio or template workout isn't removed here: it is skipped — or revised, as above. */
+const skipOrReviseIt = (ctx: ToolContext): string => {
+  const revise = reviseIt(ctx);
+  return `Skip it with adjust_plan, or ${revise.charAt(0).toLowerCase()}${revise.slice(1)}`;
+};
 
 /** The last day a change may touch (a session, or a move's day): a set's plan read; now and later today, today plus seven
  * days — a request may name another day (the review's fix round, 4). */
@@ -210,8 +217,9 @@ function lastDay(ctx: ToolContext, today: string): string {
 
 const ordinal = (n: number): string => `${n}${n % 100 >= 11 && n % 100 <= 13 ? "th" : ["th", "st", "nd", "rd"][n % 10] ?? "th"}`;
 
-/** The changes a revisable workout never takes here: it is revised (`revise_instead`). */
-const REVISED_NOT: ReadonlySet<string> = new Set(["ease", "swap", "remove", "adjust"]);
+/** The changes a revisable workout never takes here: it is revised (`revise_instead`). A remove isn't one: revising
+ * can't take a session off the plan, so only a document workout of the athlete's is refused it (`docOriginRow`). */
+const REVISED_NOT: ReadonlySet<string> = new Set(["ease", "swap", "adjust"]);
 
 /**
  * Why this change can't be made to this session, by the applier's and the thread coach's own rules — and, for the
@@ -248,10 +256,14 @@ function refusalOf(
   // The thread coach's single-session changes (the new shape §5): a revisable workout is revised (`revisability`: a
   // Studio or template workout, or a coach or watch-plan session that isn't a run, rest or race — the revise adopts it),
   // a programme session (its reason, `programme`: its origin) skipped or moved — and the race stays. A document workout
-  // that can't be revised just now (under way) is still its document's.
-  const revised = verdict?.ok === true || docOriginRow({ origin: row.origin });
+  // that can't be revised just now (under way) is still its document's. A remove takes a session off the plan, which no
+  // revise does: only the athlete's own document workout (`docOriginRow`) is refused it, as before the adoption — a
+  // coach or watch-plan session, revisable or not, is removed (the approve's `planVerdict` lets it).
+  const revised = (c.kind !== "remove" && verdict?.ok === true) || docOriginRow({ origin: row.origin });
   if (c.kind === "ease" || c.kind === "swap" || c.kind === "remove") {
-    if (revised) return refuse("revise_instead", `That workout is revised, not ${c.kind === "remove" ? "removed" : "eased"} here: its document is what changes.`, reviseIt(ctx));
+    if (revised) {
+      return refuse("revise_instead", `That workout is revised, not ${c.kind === "remove" ? "removed" : "eased"} here: its document is what changes.`, c.kind === "remove" ? skipOrReviseIt(ctx) : reviseIt(ctx));
+    }
     if (appAuthoredRow({ origin: row.origin })) {
       return refuse("programme_session", `A programme session is skipped or moved, never ${c.kind === "remove" ? "removed" : "eased or swapped"}.`, c.kind === "remove" ? "Skip it with adjust_plan instead." : shorterWorkout(ctx));
     }

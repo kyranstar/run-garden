@@ -38,7 +38,7 @@ import { adjustPlan, EASE_SHARE } from "../src/services/design-tools/adjust-plan
 import { designProposalId } from "../src/services/design-tools/propose.js";
 import { isToolErr, type RunScope, type ToolContext, type ToolErr, type ToolOk } from "../src/services/design-tools/types.js";
 import { planAdjustId, type PlanAdjustOp } from "../src/services/proposal-kinds.js";
-import { day, NOW, seedRichAthlete, TODAY } from "./design-read-fixture.js";
+import { day, NOW, seedRichAthlete, studioDoc, TODAY } from "./design-read-fixture.js";
 import { makeTestDb } from "./helpers.js";
 
 const { coachProposals, plannedWorkouts } = schema;
@@ -101,6 +101,10 @@ const rowOf = async (id: string) => (await db.select().from(plannedWorkouts).whe
  * last saw it, `synced`) unless `sync` says otherwise; `distanceStage`: the plan prescribes it by one distance stage. */
 async function planned(o: {
   date: string;
+  /** Its id (and source workout id): the coach's own plan session's is `cw-…`. */
+  id?: string;
+  /** A document at revision 1 (a coach session's, `studioDoc`). */
+  doc?: boolean;
   category?: string;
   origin?: string | null;
   title?: string;
@@ -111,13 +115,14 @@ async function planned(o: {
   sync?: string;
   distanceStage?: boolean;
 }): Promise<string> {
-  const id = `pw-${newId().slice(0, 10)}`;
+  const id = o.id ?? `pw-${newId().slice(0, 10)}`;
   await db.insert(plannedWorkouts).values({
     id, userId: rich.userId, planId: "coros-plan", sourceWorkoutId: id, title: o.title ?? "Tempo run", category: o.category ?? "quality",
     sport: o.sport ?? "run", originalPlanDate: o.date, lastVerifiedCorosDate: o.date, effectiveDate: o.date, effectiveTime: "18:00",
     sourceContentFingerprint: "fp", sourceEstimatedDurationSeconds: (o.minutes ?? 50) * 60, calendarBlockDurationSeconds: (o.minutes ?? 50) * 60,
     expectedDistanceMeters: o.meters ?? null, completionState: o.state ?? "scheduled", origin: o.origin ?? null, corosSyncState: o.sync ?? "synced",
     ...(o.state === "skipped" ? { resolutionDate: TODAY, sanctionedBy: "coach" } : {}),
+    ...(o.doc ? { workoutDoc: JSON.stringify(studioDoc({ title: o.title ?? "Coach session" })), workoutDocRev: 1 } : {}),
     createdAt: NOW.toISOString(), updatedAt: NOW.toISOString(),
   });
   if (o.distanceStage) {
@@ -241,11 +246,12 @@ describe("adjust_plan: ease, swap, remove and restore, into the run's one propos
     expect(SHARED_PROMPT).toMatch(/ease it \(easy, about 70% of it\) or swap it for an easier run; remove it \(off the plan, not rest\); or put a skipped one back/);
   });
 
-  it("refused, each in words, writing nothing: a programme session, a revisable workout (Studio, or a coach session not a run), a race, no run, no easier, no skip", async () => {
+  it("refused, each in words, writing nothing: a programme session, a revisable workout eased (Studio, or a coach session not a run), a Studio one removed, a race, no run, no easier, no skip", async () => {
     const r = await mainRun();
     const prog = await programmeSession();
     const race = await planned({ date: day(-4), category: "race", title: "Race" });
-    // A coach session that isn't a run is revisable (workout-editability §5): it is revised, not eased or removed here.
+    // A coach session that isn't a run is revisable (workout-editability §5): it is revised, not eased here — its remove
+    // applies (below): revising can't take a session off the plan.
     const strength = await planned({ date: day(-1), category: "strength", sport: "strength", title: "Strength" });
     const rest = await planned({ date: day(-1), category: "rest", title: "Rest" });
     const easy = await planned({ date: day(-1), category: "easy", title: "Easy run", minutes: 40 });
@@ -260,7 +266,6 @@ describe("adjust_plan: ease, swap, remove and restore, into the run's one propos
       ["ease a race", change(race, { kind: "ease" }), "race_day"],
       ["remove a race", change(race, { kind: "remove" }), "race_day"],
       ["ease a coach strength session", change(strength, { kind: "ease" }), "revise_instead"],
-      ["remove a coach strength session", change(strength, { kind: "remove" }), "revise_instead"],
       ["ease a rest day", change(rest, { kind: "ease" }), "not_a_run"],
       ["ease to no shorter", change(easy, { kind: "ease", durationMinutes: 40 }), "not_easier"],
       ["swap to no easier", change(easy, { kind: "swap", to: "easy", durationMinutes: 30 }), "not_easier"],
@@ -273,6 +278,38 @@ describe("adjust_plan: ease, swap, remove and restore, into the run's one propos
       expect(e.fix.length, what).toBeGreaterThan(0);
     }
     expect(await proposalOf(designProposalId(r.id))).toBeUndefined();
+  });
+
+  it("a Studio workout's remove points at the skip as well as the revise — for a set, at the skip and the brief", async () => {
+    const now = refused((await adjust(await mainRun(), change(rich.todayDocId, { kind: "remove" }))).res);
+    expect(now).toMatchObject({ error: "revise_instead", fix: "Skip it with adjust_plan, or revise it with propose_workout's revise target." });
+    const set = refused((await adjust(await mainRun({ kind: "week" }), change(rich.todayDocId, { kind: "remove" }))).res);
+    expect(set).toMatchObject({ error: "revise_instead", fix: "Skip it with adjust_plan, or brief its replacement in plan_set: a designer revises the workout itself." });
+  });
+
+  it("a coach session (origin NULL, revisable) is removed or skipped through adjust_plan — revising can't take it off the plan — and the approve applies both", async () => {
+    // The coach's own plan sessions (`cw-…`), strength with a document: revisable, and still the coach's to take off.
+    const removeMe = await planned({ id: `cw-pp-${newId().slice(0, 6)}-0`, date: day(-1), category: "strength", sport: "strength", title: "Legs, invented", doc: true });
+    const skipMe = await planned({ id: `cw-pp-${newId().slice(0, 6)}-1`, date: day(-3), category: "strength", sport: "strength", title: "Core, invented", doc: true });
+    const r = await mainRun();
+    const removed = await adjust(r, change(removeMe, { kind: "remove" }));
+    expect(removed.count).toBeLessThanOrEqual(adjustPlan.statementCost);
+    ok(removed.res);
+    ok((await adjust(r, change(skipMe, { kind: "skip", reason: "A heavy week: rest the legs." }))).res);
+    expect((await planOps(designProposalId(r.id))).map((o) => o.op)).toEqual([
+      { kind: "remove", workoutId: removeMe },
+      expect.objectContaining({ kind: "skip", workoutId: skipMe }),
+    ]);
+    const id = designProposalId(r.id);
+    await db.update(coachProposals).set({ status: "pending" }).where(eq(coachProposals.id, id));
+    const res = await approve(id);
+    expect(res.refused).toEqual([]);
+    expect(res.changed.map((c) => [c.change, c.workoutId])).toEqual([
+      ["remove", removeMe],
+      ["skip", skipMe],
+    ]);
+    expect(await rowOf(removeMe)).toMatchObject({ archiveReason: "user_removed" });
+    expect(await rowOf(skipMe)).toMatchObject({ completionState: "skipped", archivedAt: null });
   });
 });
 
