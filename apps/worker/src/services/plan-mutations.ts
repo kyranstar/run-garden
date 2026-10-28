@@ -1,12 +1,13 @@
-import { and, eq, inArray, type SQL } from "drizzle-orm";
+import { and, eq, inArray, isNull, notInArray, type SQL } from "drizzle-orm";
 import { calendarEventSuppressions, corosWriteJobs, plannedWorkouts, scheduleOverrides } from "@rg/database";
-import { appAuthoredRow, newId, watchAddressOf, type ArchiveReason, type UserPreferences } from "@rg/domain";
+import { appAuthoredRow, docOriginRow, newId, watchAddressOf, type ArchiveReason, type UserPreferences } from "@rg/domain";
 import { chunkIds, type Db } from "./db.js";
 import { recordedStampFor } from "./coros-stamp.js";
 import { openIntentFor, recordIntent, resolveIntent, type IntentSource } from "./sync-intents.js";
 import { unpushBuild } from "./watch-push.js";
 import { sentBuildIdOf } from "./session-build.js";
-import { reopenedDocColumns } from "./workout-doc-store.js";
+import { markMirrorOwed } from "./mirror-owed.js";
+import { FROZEN_STATES, reopenedDocColumns } from "./workout-doc-store.js";
 
 /**
  * The athlete's own plan mutations, as services — so the coach's ops and the
@@ -178,7 +179,7 @@ export async function enqueueUnpushIfOurs(
   userId: string,
   w: typeof plannedWorkouts.$inferSelect,
   now: string,
-  prefs: UserPreferences,
+  prefs: Pick<UserPreferences, "corosWritesEnabled">,
   opts: {
     /** The row's sent build when the caller has read it (the mirror, with its own jobs read); read here otherwise. */
     sent?: string | null;
@@ -276,7 +277,7 @@ export async function unpushInsertIfOurs(
   userId: string,
   w: typeof plannedWorkouts.$inferSelect,
   now: string,
-  prefs: UserPreferences,
+  prefs: Pick<UserPreferences, "corosWritesEnabled">,
 ) {
   if (!prefs.corosWritesEnabled) return null;
   // ADDRESS, NOT SYNC STATE. This gate used to read `corosSyncState !==
@@ -325,6 +326,45 @@ export async function unpushInsertIfOurs(
   return { insert };
 }
 
+/**
+ * SKIP A SESSION — the one writer of a skip, the Plan's and the coach's alike (the watch mirrors the plan §3.4; owner
+ * §10.2: "if I skip it it should remove it"). The row is resolved `skipped` on `today` — only a session still to resolve
+ * (scheduled, or unresolved: the Plan's "did this happen? — Skip it"), never one done, skipped or missed already, nor one
+ * removed — and the coach's skip is sanctioned (`sanctionedBy`: the garden reads it as agreed rest). Then, for a session
+ * the app built whose day is today or ahead, its copy comes off the watch, even ahead of its day (`enqueueUnpushIfOurs`:
+ * the adopted row's held copy, the sent build's unpush — or, for a push still queued, its supersede — never the address
+ * path): the cheap writes alone (M2). A day gone (the Plan's "did this happen? — Skip it") leaves its copy: the watch's
+ * history, as a missed session's is. With the athlete's COROS writes off the delete is owed on the sent build and runs when they come back on. A
+ * session the app did not build (the coach's own, a COROS-plan import) keeps its lane: nothing more. `source` says who
+ * skipped (the Plan, the coach), as `unskipWorkout`'s does. `skipped`: whether the row was skipped now. Statements: the
+ * write; for an app-built session, its delete at its most — the held copy's insert, its sent build found (two), the push
+ * superseded and read, the unpush queued (two) and the build unlocked (8: design-approve.ts `SKIP_UNPUSH_COST`).
+ */
+export async function skipWorkout(
+  db: Db,
+  userId: string,
+  workoutId: string,
+  opts: { now: string; today: string; source: "app" | "coach"; sanctionedBy?: "coach"; prefs: Pick<UserPreferences, "corosWritesEnabled"> },
+): Promise<{ skipped: boolean }> {
+  const [w] = await db
+    .update(plannedWorkouts)
+    .set({ completionState: "skipped", resolutionDate: opts.today, ...(opts.sanctionedBy ? { sanctionedBy: opts.sanctionedBy } : {}), updatedAt: opts.now })
+    .where(
+      and(
+        eq(plannedWorkouts.id, workoutId),
+        eq(plannedWorkouts.userId, userId),
+        isNull(plannedWorkouts.archivedAt),
+        notInArray(plannedWorkouts.completionState, [...FROZEN_STATES]),
+      ),
+    )
+    .returning();
+  if (!w) return { skipped: false };
+  // The row as written: its address and copy name are as they were (a skip touches neither), and `unpushBuild` keeps
+  // only a done session's copy.
+  if (appAuthoredRow(w) && w.effectiveDate >= opts.today) await enqueueUnpushIfOurs(db, userId, w, opts.now, opts.prefs, { addressPath: false });
+  return { skipped: true };
+}
+
 export interface UnskipResult {
   restored: boolean;
   resolvedOn: string | null;
@@ -336,13 +376,16 @@ export interface UnskipResult {
  * workout has moved on and isn't "un-skippable"). Back to scheduled, the
  * skip's resolutionDate and sanction cleared, and a `restore` override
  * recorded. `resolvedOn` is the date the skip fed the garden sim — the caller
- * resimulates from it so the garden forgets the miss.
+ * resimulates from it so the garden forgets the miss. A document workout whose
+ * day is `today` or ahead is marked owed for the watch (the watch mirrors the
+ * plan §3.4: the skip took its copy off, and the drain or the sweep puts it
+ * back) — one statement more.
  */
 export async function unskipWorkout(
   db: Db,
   userId: string,
   workoutId: string,
-  opts: { now: string; source: "app" | "coach" },
+  opts: { now: string; today: string; source: "app" | "coach" },
 ): Promise<UnskipResult> {
   const [w] = await db
     .select()
@@ -374,5 +417,6 @@ export async function unskipWorkout(
     source: opts.source,
     createdAt: now,
   });
+  if (docOriginRow(w) && w.effectiveDate >= opts.today) await markMirrorOwed(db, userId, w.id, now);
   return { restored: true, resolvedOn };
 }

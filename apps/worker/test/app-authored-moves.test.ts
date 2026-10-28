@@ -184,3 +184,32 @@ describe("moving an app-authored session with no watch address", () => {
     expect(await emitPendingWork(db, userId, { corosWritesEnabled: true })).toBe(0);
   });
 });
+
+/**
+ * THE WATCH MIRRORS THE PLAN (§3.4, builder check A4): a document workout's move still queues no COROS move (its copy is
+ * never re-dated in place) — it is marked owed for its new day, and the mirror's drain or sweep makes the copy there
+ * (mirror-hooks.test.ts drives the delete and the new copy). An engine slot keeps its rule: nothing ahead of its day.
+ */
+describe("a move keeps the watch in step (the watch mirrors the plan)", () => {
+  const owedMark = async (id: string) =>
+    (await db.select().from(schema.syncIntents).where(eq(schema.syncIntents.id, `mirror-${id}`)))[0];
+
+  it.each(["studio", "template"] as const)("origin %s, to another day: marked owed for the watch, no COROS job", async (origin) => {
+    await seedAppRow("doc-a", addDays(today, 2), origin);
+    await applyMove(db, { userId, workoutId: "doc-a", toDate: addDays(today, 4), toTime: "07:00", source: "calendar_edit", corosWritesEnabled: true });
+    expect(await owedMark("doc-a")).toMatchObject({ kind: "mirror", targetId: "doc-a", resolvedAt: null });
+    expect(await jobsFor("doc-a")).toEqual([]);
+    // Not a move intent: the catch-up pass has nothing to emit, and the sync status counts nothing.
+    expect(await openIntentFor(db, userId, "doc-a", "move")).toBeNull();
+    expect(await computeSyncStatus(db, userId, prefs)).toMatchObject({ issueCount: 0, pendingCount: 0 });
+  });
+
+  it("an engine slot's move, or a time-only change, marks nothing", async () => {
+    await seedAppRow("slot-g", addDays(today, 2), "program");
+    await applyMove(db, { userId, workoutId: "slot-g", toDate: addDays(today, 3), toTime: "07:00", source: "app", corosWritesEnabled: true });
+    expect(await owedMark("slot-g")).toBeUndefined();
+    await seedAppRow("doc-b", addDays(today, 2), "studio");
+    await applyMove(db, { userId, workoutId: "doc-b", toDate: addDays(today, 2), toTime: "19:00", source: "app", corosWritesEnabled: true });
+    expect(await owedMark("doc-b")).toBeUndefined();
+  });
+});

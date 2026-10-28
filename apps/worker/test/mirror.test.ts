@@ -703,21 +703,27 @@ describe("queueReplacement", () => {
   });
 
   it("the build's own push on its way or verified already: already_pushed — no delete, no lock", async () => {
+    // The provisional copies first: once the day's check is answered, a session of today is sent none (M1).
+    const sessions: Array<{ id: string; recordId: string; status: string }> = [];
     for (const [n, status] of ["verified", "claimed"].entries()) {
-      const { id, buildId } = await builtToday();
+      const id = await seedDocRow(DAY);
       await queue(id);
       const [record] = await recordsOf(id);
       await verifyByHand(id, record!.id, DAY, `5${n}`);
+      sessions.push({ id, recordId: record!.id, status });
+    }
+    for (const { id, recordId, status } of sessions) {
+      const buildId = (await buildSession(db, userId, id, { checks: { tmj: { pre: 2, feelingOff: false } } }, ctx())).build!.buildId;
       // The day build's push exists (taken off since, or another request queued it), its build not the sent one.
       await db.insert(corosWriteJobs).values({
         id: `push:${buildId}`, userId, workoutId: id, kind: "program_session_push", expectedContentFingerprint: "h",
         originalDate: DAY, destinationDate: DAY, payload: {}, requestedAt: NOON, status, updatedAt: NOON,
       });
       expect(await queueReplacement(db, switchOn(), userId, await rowOf(db, id), buildId, ctx())).toBe("skipped:already_pushed");
-      expect(await jobOf(`unpush:${record!.id}`)).toBeUndefined();
+      expect(await jobOf(`unpush:${recordId}`)).toBeUndefined();
       const [b] = await db.select().from(sessionBuilds).where(eq(sessionBuilds.id, buildId));
       expect(b!.lockedAt).toBeNull();
-      expect(await sentBuildIdOf(db, id)).toBe(record!.id);
+      expect(await sentBuildIdOf(db, id)).toBe(recordId);
     }
   });
 

@@ -49,6 +49,7 @@ import {
   removeFromPlan,
   settleWatchJobsOnArchive,
   settleWatchJobsOnArchiveStatements,
+  skipWorkout,
   unskipWorkout,
 } from "./plan-mutations.js";
 import { resolveRaceConflict } from "./race-conflict.js";
@@ -1506,11 +1507,9 @@ export async function applyOps(
           out.missed.push(`a session it skips ${found.why}, so it was left as it was`);
           break;
         }
-        // Coach-sanctioned: the garden treats it as agreed rest (spec §1).
-        await db
-          .update(plannedWorkouts)
-          .set({ completionState: "skipped", resolutionDate: today, sanctionedBy: "coach", updatedAt: now })
-          .where(and(eq(plannedWorkouts.id, op.workoutId), eq(plannedWorkouts.userId, userId)));
+        // Coach-sanctioned: the garden treats it as agreed rest (spec §1). The athlete's own skip's writer (`skipWorkout`):
+        // a session the app built has its copy taken off the watch too (the watch mirrors the plan, owner §10.2).
+        await skipWorkout(db, userId, op.workoutId, { now, today, source: "coach", sanctionedBy: "coach", prefs });
         noteResim(today);
         out.updated.push(op.workoutId);
         break;
@@ -1565,7 +1564,7 @@ export async function applyOps(
           )
           .limit(1);
         const res = row
-          ? await unskipWorkout(db, userId, op.workoutId, { now, source: "coach" })
+          ? await unskipWorkout(db, userId, op.workoutId, { now, today, source: "coach" })
           : { restored: false, resolvedOn: null };
         if (!res.restored) {
           // ALREADY BACK ON THE PLAN — a re-apply (audit 1, coach finding 7)

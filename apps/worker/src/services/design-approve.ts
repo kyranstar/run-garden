@@ -462,17 +462,25 @@ export const DECLINE_COST = 7;
  * account's, comes with the plan read: `readPlan`.)
  */
 const DAY_READS = 2 + 2 + 5 + 1;
-/** A new workout at a time asked for: its key's read, its day, the restore check, and the batch (the Studio programme,
- * the row, its revision, the pinned time). A pinned time is never moved: no collision pass. */
-export const CREATE_AT_TIME_COST = 1 + DAY_READS + 1 + 4;
+/** A new workout at a time asked for: its key's read, its day, the restore check, the batch (the Studio programme,
+ * the row, its revision, the pinned time) and its mark owed for the watch (the watch mirrors the plan, M2). A pinned
+ * time is never moved: no collision pass. */
+export const CREATE_AT_TIME_COST = 1 + DAY_READS + 1 + 4 + 1;
 /** A new workout placed at the athlete's window, before the rows its day's collision pass moves: its key's read, its
- * day, the restore check, the batch (programme, row, revision) and the pass's two reads. */
-export const CREATE_PLACED_BASE = 1 + DAY_READS + 1 + 3 + 2;
+ * day, the restore check, the batch (programme, row, revision), its mark owed for the watch, and the pass's two reads. */
+export const CREATE_PLACED_BASE = 1 + DAY_READS + 1 + 3 + 1 + 2;
+/**
+ * The watch's part of a revision (the watch mirrors the plan §3.4, M2), at its most: the sent build found (two) and —
+ * the copy on the watch now older — its delete (an adopted row's held copy's insert; the sent push superseded and read,
+ * the unpush queued (two), the build unlocked: 6) and the row's mark owed. The same document again (no adoption) only
+ * asks whether the watch holds an older copy: the sent build found and its revision read (3). Adopting a row on the
+ * watch reads the stamp its copy is held under, and it has no build (the find, the held copy's delete, the mark: 4).
+ */
+const REVISE_WATCH = 2 + 6 + 1;
 /** A revision, before the rows its day's collision pass moves: the row, its day, the restore check, the update, an
- * adopted row's stage rows' delete and the revision, the read after, the pass's two reads, and whether the watch holds
- * an older copy (two — adopting a row on the watch, the stamp its copy is held under is read instead: the copy it now
- * holds answers the question with no read). */
-export const REVISE_BASE = 1 + DAY_READS + 1 + 3 + 1 + 2 + 2;
+ * adopted row's stage rows' delete and the revision, the read after, the pass's two reads, and the watch's part
+ * (`REVISE_WATCH`). */
+export const REVISE_BASE = 1 + DAY_READS + 1 + 3 + 1 + 2 + REVISE_WATCH;
 /**
  * A DESIGNED RUN (§8 §3, `createDesignedRun`): its key's read, its day, the athlete's running (one read), the restore
  * check, the batch's programme, row and revision — and its stage rows' inserts (`stageInsertCount`), a pinned time's
@@ -495,8 +503,14 @@ const PLAN_MAX = 10;
  * put on record (a skip resolves its day), and whether a watch job waits for the client (a move).
  */
 export const PLAN_BATCH_FIXED = 1 + 1 + 1 + 1 + 1 + 2 + 1 + 1;
-/** A skip: the applier's read of the session and its write. */
+/** A skip: the applier's read of the session and its write (`skipWorkout`). */
 export const SKIP_COST = 2;
+/**
+ * A skip of a session the app built: its copy comes off the watch too (the watch mirrors the plan, owner §10.2;
+ * `skipWorkout`) — at its most an adopted row's held copy's insert, its sent build found (two), the push superseded and
+ * read, the unpush queued (two) and the build unlocked. Counted by the session's origin, which the plan read holds.
+ */
+export const SKIP_UNPUSH_COST = 1 + 2 + 2 + 2 + 1;
 /** A length alone (a session the rule doesn't re-time, `retime` null): the read, and the write with its document's revision
  * — before the rows its day's collision pass moves. */
 export const ADJUST_COST = 3;
@@ -510,12 +524,13 @@ export const ADJUST_COST = 3;
 export const RETIME_COST = 2 + 2 + 1 + 2 + 1 + 4;
 /**
  * A move: the read, and `applyMove` at its most — the row, its override, its intent (two), its write and its audit (6),
- * and a programme session's own way off its old day: the intent resolved, its sent build found (two), the copy taken off
- * the watch (the push superseded, read, the unpush queued — two — and the build unlocked) and its programme's name read
- * (9; a COROS row's own branch — the device read twice and its move job, two — costs 4) — before the rows its new day's
- * collision pass moves, itself among them.
+ * and an app session's own way off its old day: the intent resolved, its sent build found (two), the copy taken off the
+ * watch (the push superseded, read, the unpush queued — two — and the build unlocked), and a programme's name read (9)
+ * or — a document workout (the watch mirrors the plan §3.4, A4) — an adopted row's held copy's delete and the mark owed
+ * for its new day (10; a COROS row's own branch — the device read twice and its move job, two — costs 4) — before the
+ * rows its new day's collision pass moves, itself among them.
  */
-export const MOVE_COST = 1 + 6 + 9;
+export const MOVE_COST = 1 + 6 + 10;
 /**
  * The thread coach's single-session changes (the new shape §5), each the most its applier runs (design-plan-powers.test.ts
  * measures them under it). An ease (a swap is one): the read (1), the row and its revision (2), its stage rows' delete and
@@ -524,11 +539,11 @@ export const MOVE_COST = 1 + 6 + 9;
  * collision pass moves. A remove: the read and the athlete's own remove at its most — the row read and archived (2), its
  * queued watch writes settled, its suppression (2), its intent (2), an open move intent read and closed (2), its unpush
  * (the stamp, the create job, the insert: 3). A restore: the read, and the athlete's own un-skip — the row read, written
- * and its override (3); a re-apply reads the last override instead.
+ * and its override, and a document workout's mark owed for the watch (4); a re-apply reads the last override instead.
  */
 export const EASE_COST = 1 + 2 + 2 + 2 + 4;
 export const REMOVE_COST = 1 + 2 + 2 + 2 + 2 + 3;
-export const RESTORE_COST = 1 + 3;
+export const RESTORE_COST = 1 + 4;
 /**
  * A whole plan change's own part of a request (§8 §5), beside its chunk: its claim's write, its release should the applier
  * throw (reserved), and whether a watch job waits for the client (the sessions' creates). The chunk itself spends what it
@@ -575,11 +590,19 @@ export function calendarOpsFitting(left: number): number {
   return Math.min(CALENDAR_OPS_PER_REQUEST, Math.floor((left - CALENDAR_STEP_FIXED) / CALENDAR_STEP_PER_OP));
 }
 
-/** What a change costs, by the sessions the day it lands on already holds (`dayRows`, this request's own included). */
-export function planOpCostOf(op: Pick<PlanAdjustOp, "op"> & { retime?: PlanAdjustOp["retime"] }, dayRows: number): number {
+/**
+ * What a change costs, by the sessions the day it lands on already holds (`dayRows`, this request's own included) — and,
+ * for a skip, by the session's origin (`row`, the plan read's): one the app built has its copy taken off the watch too.
+ * With no row, the most it can cost.
+ */
+export function planOpCostOf(
+  op: Pick<PlanAdjustOp, "op"> & { retime?: PlanAdjustOp["retime"] },
+  dayRows: number,
+  row?: { origin: string | null },
+): number {
   switch (op.op.kind) {
     case "skip":
-      return SKIP_COST;
+      return SKIP_COST + (row && !appAuthoredRow(row) ? 0 : SKIP_UNPUSH_COST);
     case "adjust":
       // Re-timed by the rule (its claim and rewrite included, the mark's lift too); else the length alone — on a row
       // taking the watch's version too, which writes nothing more (review A4: the card's "the watch keeps its copy").
@@ -1146,7 +1169,7 @@ export async function approveDesignOps(
     }
     // The day whose collision pass the change may move sessions on: a move's new one, a length's or an ease's own.
     const day = c.op.kind === "move" ? c.op.toDate : c.op.kind === "adjust" || c.op.kind === "ease" ? row?.dto.date : undefined;
-    const cost = (batch.length === 0 ? PLAN_BATCH_FIXED - (replayCounted ? 1 : 0) : 0) + opCostOf(c, rowsOn(day));
+    const cost = (batch.length === 0 ? PLAN_BATCH_FIXED - (replayCounted ? 1 : 0) : 0) + planOpCostOf(c, rowsOn(day), row);
     if (!first && cost > left) {
       remaining.push(...changes.slice(i).map((x) => x.id));
       full = true;

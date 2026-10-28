@@ -32,6 +32,7 @@ import {
   planOpCostOf,
   REJUDGE_COST,
   SKIP_COST,
+  SKIP_UNPUSH_COST,
   statusOfOps,
   UnknownOpError,
   type AnyDesignedOp,
@@ -675,10 +676,15 @@ describe("approve: each change through the thread coach's own applier", () => {
     expect(measured.skip).toBeLessThanOrEqual(PLAN_BATCH_FIXED + planOpCostOf({ op: { kind: "skip", workoutId: "w" } } as PlanAdjustOp, 0));
     expect(measured.adjust).toBeLessThanOrEqual(PLAN_BATCH_FIXED + planOpCostOf({ op: { kind: "adjust", workoutId: "w", durationMinutes: 60 } } as PlanAdjustOp, dayRows));
     expect(measured.move).toBeLessThanOrEqual(PLAN_BATCH_FIXED + planOpCostOf({ op: { kind: "move", workoutId: "w", toDate: day(-3) } } as PlanAdjustOp, dayRows));
-    expect([SKIP_COST, ADJUST_COST, MOVE_COST]).toEqual([2, 3, 16]);
+    expect([SKIP_COST, ADJUST_COST, MOVE_COST]).toEqual([2, 3, 17]);
+    // A skip of a session the app built takes its copy off the watch too (the watch mirrors the plan, owner §10.2):
+    // counted by the session's origin, the most it can cost when none is known.
+    expect(SKIP_UNPUSH_COST).toBe(8);
+    expect(planOpCostOf({ op: { kind: "skip", workoutId: "w" } } as PlanAdjustOp, 4, { origin: null })).toBe(SKIP_COST);
+    expect(planOpCostOf({ op: { kind: "skip", workoutId: "w" } } as PlanAdjustOp, 4, { origin: "studio" })).toBe(SKIP_COST + SKIP_UNPUSH_COST);
     expect(planOpCostOf({ op: { kind: "adjust", workoutId: "w", durationMinutes: 1 } } as PlanAdjustOp, 4)).toBe(ADJUST_COST + 4);
     expect(planOpCostOf({ op: { kind: "move", workoutId: "w", toDate: TODAY } } as PlanAdjustOp, 4)).toBe(MOVE_COST + 4 + 1);
-    expect(planOpCostOf({ op: { kind: "skip", workoutId: "w" } } as PlanAdjustOp, 4)).toBe(SKIP_COST);
+    expect(planOpCostOf({ op: { kind: "skip", workoutId: "w" } } as PlanAdjustOp, 4)).toBe(SKIP_COST + SKIP_UNPUSH_COST);
     // The approve plans by one function: a change costs through it as a workout does.
     expect(opCostOf({ op: { kind: "move", workoutId: "w", toDate: TODAY } } as PlanAdjustOp, 4)).toBe(MOVE_COST + 4 + 1);
   });

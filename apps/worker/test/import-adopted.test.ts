@@ -167,10 +167,15 @@ async function nativeOnWatch(name = NATIVE): Promise<string> {
   return row!.id;
 }
 
-/** The athlete (or the coach) revises it: adopted, a Studio document workout holding the old copy. */
-async function adopt(id: string, title = "Hips, mine") {
+/**
+ * The athlete (or the coach) revises it: adopted, a Studio document workout holding the old copy. With the athlete's
+ * writes on, the adoption queues the old copy's delete at once (the watch mirrors the plan §3.5); `held` adopts with them
+ * off, so no delete is in flight and the import's own rules for the name are what is judged.
+ */
+async function adopt(id: string, title = "Hips, mine", opts: { held?: boolean } = {}) {
   const row = await rowOf(db, id);
-  const revised = await reviseDocWorkout(db, userId, id, { doc: calmDoc({ title }), baseRev: row.workoutDocRev ?? 0 }, ctx());
+  const writes = opts.held ? { ...prefs, corosWritesEnabled: false } : prefs;
+  const revised = await reviseDocWorkout(db, userId, id, { doc: calmDoc({ title }), baseRev: row.workoutDocRev ?? 0 }, { ...ctx(), prefs: writes });
   tick();
   return revised;
 }
@@ -295,7 +300,7 @@ describe("after the push lands and the old copy is still on the wire", () => {
 describe("the name holds only while a read can find the copy", () => {
   it("the copy gone from the wire: watch_copy_name cleared — by a full read, never a short one", async () => {
     const id = await nativeOnWatch();
-    await adopt(id, "Strength B, mine");
+    await adopt(id, "Strength B, mine", { held: true });
     const adopted = await rowOf(db, id);
     deletedInCoros(NATIVE);
 
@@ -324,7 +329,7 @@ describe("the name holds only while a read can find the copy", () => {
 
   it("a delete queued while the read runs: the name stays — the statement judges the jobs as they stand at the write", async () => {
     const id = await nativeOnWatch();
-    await adopt(id, "Strength B, mine");
+    await adopt(id, "Strength B, mine", { held: true });
     deletedInCoros(NATIVE);
     midRead.act = async () => {
       await adoptedCopyUnpush(db, userId, await rowOf(db, id), nowInstant(), prefs)!.insert;
@@ -341,7 +346,7 @@ describe("a copy renamed in the COROS app is not claimed (the limit: it reads as
   it("a coach row's: a new workout under its new name, and the row's name cleared", async () => {
     const { id, stamp } = await coachOnWatch();
     await importFromCoros();
-    await adopt(id);
+    await adopt(id, undefined, { held: true });
     programsNamed(stamp)[0]!.name = "Renamed by the athlete";
 
     const stats = await importFromCoros();
@@ -352,7 +357,7 @@ describe("a copy renamed in the COROS app is not claimed (the limit: it reads as
 
   it("a watch-plan row's: never an insert the unique index refuses — a new workout once the row lets go of the address", async () => {
     const id = await nativeOnWatch();
-    await adopt(id, "Strength B, mine");
+    await adopt(id, "Strength B, mine", { held: true });
     const adopted = await rowOf(db, id);
     programsNamed(NATIVE)[0]!.name = "Renamed by the athlete";
     const warned = vi.spyOn(console, "warn");

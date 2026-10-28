@@ -186,9 +186,10 @@ describe("POST /api/coach/proposals/:id/approve with changes", () => {
       chunks.push([...(res.json.changed as Array<{ opId: string }>).map((c) => c.opId), ...(res.json.applied as Array<{ opId: string }>).map((a) => a.opId)]);
       remaining = res.json.remaining as string[];
     }
-    // Pinned (measured 24, 28, 30, 20, 19, 19): the three changes, then the workouts two a request while their days' sessions
-    // let them fit, one alone where its day now holds two (day 5 holds the session moved onto it).
-    expect(chunks).toEqual([changes, opIds.slice(0, 2), opIds.slice(2, 4), opIds.slice(4, 5), opIds.slice(5, 6), opIds.slice(6)]);
+    // Pinned (measured 25, 18, 19, 18, 18, 21, 20, 20): the three changes, then the workouts one a request — each costs
+    // its day's sessions, itself and its mark owed for the watch (the watch mirrors the plan, M2), so two never fit
+    // beside the approve's own where their days hold a session.
+    expect(chunks).toEqual([changes, ...opIds.map((o) => [o])]);
     for (const cost of costs) expect(cost).toBeLessThanOrEqual(REQUEST_BUDGET);
     // The changes go first, together: their declared costs fit one request with the approve's own.
     expect(chunks[0]).toEqual(changes);

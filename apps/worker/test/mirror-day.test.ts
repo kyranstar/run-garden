@@ -351,12 +351,13 @@ describe("the build request that moves the watch (Workers Free: ≤ 45 statement
   it("a hand-over, a replacement, a later change replaced, an engine slot pushed: each within the budget, the watch state answered", async () => {
     const same = await seedDocRow();
     await provisionalCopy(same);
+    // Both provisional copies before the day's first check: once it is answered, a session of today is sent none (M1).
+    const swapped = await seedDocRow(landingsDoc());
+    await provisionalCopy(swapped);
     const handed = await buildRoute(same, calm);
     report("the hand-over", handed);
     expect(handed.body.watch).toMatchObject({ state: "on_watch" });
 
-    const swapped = await seedDocRow(landingsDoc());
-    await provisionalCopy(swapped);
     const replaced = await buildRoute(swapped, flare);
     report("a replacement", replaced);
     expect(replaced.body.watch).toMatchObject({ state: "sending" });

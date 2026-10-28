@@ -12,10 +12,11 @@ import type { Db } from "../src/services/db.js";
 import { createSession, SESSION_COOKIE } from "../src/auth/sessions.js";
 import { planRoutes } from "../src/routes/plan.js";
 import { repairPlannedWorkoutFidelity } from "../src/services/plan-repair.js";
+import { loadPreferences, savePreferences } from "../src/services/calendar-sync.js";
 import { makeTestDb, makeTestUser, mountRoutes, pinMiddayToday } from "./helpers.js";
 import { activateTmj, calmDoc, clientFor, landingsDoc, makeEnv, type Reply } from "./doc-workout-fixture.js";
 
-const { plannedWorkouts, plannedWorkoutStages, workoutDocRevisions, corosWriteJobs } = schema;
+const { plannedWorkouts, plannedWorkoutStages, workoutDocRevisions, corosWriteJobs, syncIntents } = schema;
 
 // The route hands the calendar one bounded sync step through waitUntil: not under test here.
 vi.mock("../src/services/calendar-sync.js", async (importOriginal) => ({
@@ -334,6 +335,26 @@ describe("a revise adopts a watch-shaped row", () => {
       expect(await rowOf(id)).toMatchObject({ ...sentinel, origin, title: "Revised, invented", workoutDocRev: 2 });
       expect(await stagesOf(id)).toHaveLength(1);
     }
+  });
+
+  it("with the athlete's COROS writes on, the held copy's delete is queued at once and the row marked owed for the watch (the watch mirrors the plan §3.5)", async () => {
+    await savePreferences(db, userId, { ...(await loadPreferences(db, userId)), corosWritesEnabled: true });
+    await activateTmj(db, userId);
+    const id = "cw-test-13-0";
+    const stamp = `Legs and landings — ${tomorrow}`;
+    await seedWatchShaped(id, { doc: landingsDoc(), ...address("4242", "13", "880013", tomorrow) });
+    await seedCoachCreate(id, stamp);
+    statements.length = 0;
+    const res = await call("PUT", `/api/workouts/${id}/doc`, { doc: landingsDoc({ reps: 10 }), baseRev: 1 });
+    expect(res.status).toBe(200);
+    expect(statements.length).toBeLessThanOrEqual(45);
+    const [held] = await db.select().from(corosWriteJobs).where(eq(corosWriteJobs.id, `${id}-unpush-copy`));
+    expect(held).toMatchObject({ kind: "coach_delete_workout", status: "queued", workoutId: id });
+    expect(held!.payload).toMatchObject({ name: stamp, happenDay: tomorrow, idInPlan: "13", programId: "880013", corosPlanId: "4242" });
+    const [mark] = await db.select().from(syncIntents).where(eq(syncIntents.id, `mirror-${id}`));
+    expect(mark).toMatchObject({ kind: "mirror", resolvedAt: null });
+    // Until that delete verifies, the watch still holds the old copy: the answer says so.
+    expect(res.body.watchHasOlder).toBe(true);
   });
 
   it("adopting a row on the watch stays within the statement budget (≤ 45), with history on the account", async () => {

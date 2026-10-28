@@ -70,7 +70,7 @@ import { loadPreferences, restoreCalendarEvent, savePreferences, syncCalendar } 
 import { chunkIds, type Db } from "../services/db.js";
 import { applyMove } from "../services/jobs.js";
 import { provisionalRecord } from "../services/session-build.js";
-import { removeFromPlan, unskipWorkout } from "../services/plan-mutations.js";
+import { removeFromPlan, skipWorkout, unskipWorkout } from "../services/plan-mutations.js";
 import { gardenSees, recentGardenEvents, REQUEST_GARDEN_STEP, resimulateFrom } from "../services/garden-sync.js";
 import {
   contentClaims,
@@ -1639,16 +1639,17 @@ planRoutes.post("/workouts/:id/move", async (c) => {
   }
 });
 
+/**
+ * Skip a session (`skipWorkout`, the coach's skip's writer too): resolved on today — and a session the app built has its
+ * copy taken off the watch, even ahead of its day (the watch mirrors the plan, owner §10.2).
+ */
 planRoutes.post("/workouts/:id/skip", async (c) => {
   const db = c.get("db");
   const userId = c.get("userId");
   const prefs = await loadPreferences(db, userId);
   const today = todayInZone(prefs.timezone);
   const now = nowInstant();
-  await db
-    .update(plannedWorkouts)
-    .set({ completionState: "skipped", resolutionDate: today, updatedAt: now })
-    .where(and(eq(plannedWorkouts.id, c.req.param("id")), eq(plannedWorkouts.userId, userId)));
+  await skipWorkout(db, userId, c.req.param("id"), { now, today, source: "app", prefs });
   await resimulateFrom(db, userId, today, prefs, new Date(), REQUEST_GARDEN_STEP).catch(() => undefined);
   return c.json({ ok: true });
 });
@@ -1664,10 +1665,10 @@ planRoutes.post("/workouts/:id/skip", async (c) => {
 planRoutes.post("/workouts/:id/unskip", async (c) => {
   const db = c.get("db");
   const userId = c.get("userId");
-  const res = await unskipWorkout(db, userId, c.req.param("id"), { now: nowInstant(), source: "app" });
+  const prefs = await loadPreferences(db, userId);
+  const res = await unskipWorkout(db, userId, c.req.param("id"), { now: nowInstant(), today: todayInZone(prefs.timezone), source: "app" });
   if (res.reason === "not_found") return c.json({ error: "not_found" }, 404);
   if (res.reason === "not_skipped") return c.json({ error: "not_skipped" }, 422);
-  const prefs = await loadPreferences(db, userId);
   await resimulateFrom(db, userId, res.resolvedOn!, prefs, new Date(), REQUEST_GARDEN_STEP).catch(() => undefined);
   return c.json({ ok: true });
 });

@@ -872,6 +872,31 @@ export async function slotChecks(
   return resolveChecks(await dayCheckRows(db, userId, date), workoutId, date, today, active);
 }
 
+/**
+ * THE SLOT'S PRE-CHECK IS ANSWERED ON `date` (the watch mirrors the plan, builder check M1): `checksAnswered` over the
+ * slot's checks (`slotChecks`) for the account's active profiles, in ONE read — the active profiles beside their check
+ * rows of that day. Null when the account has no active profile: there is no check to answer, and nothing gates.
+ */
+export async function slotPrechecked(db: Db, userId: string, workoutId: string, date: string, today: string): Promise<boolean | null> {
+  const rows = await db
+    .select({ profileId: userConditions.profileId, check: conditionChecks })
+    .from(userConditions)
+    .leftJoin(
+      conditionChecks,
+      and(
+        eq(conditionChecks.userId, userConditions.userId),
+        eq(conditionChecks.profileId, userConditions.profileId),
+        eq(conditionChecks.localDate, date),
+        inArray(conditionChecks.kind, ["pre", "daily"]),
+      ),
+    )
+    .where(and(eq(userConditions.userId, userId), eq(userConditions.active, true)));
+  const active = [...new Set(rows.map((r) => r.profileId).filter(isProfileId))].sort();
+  if (active.length === 0) return null;
+  const checks = resolveChecks(rows.flatMap((r) => (r.check ? [r.check] : [])), workoutId, date, today, active);
+  return checksAnswered(active, checks);
+}
+
 /** Moves never offered as alternatives: 👎-rated (ruling 2a-R1) and "not for me". */
 function hiddenFrom(prefs: { ratings: Readonly<Record<string, number>>; excluded: readonly string[] }): Set<string> {
   return new Set([...Object.entries(prefs.ratings).filter(([, r]) => r < 0).map(([id]) => id), ...prefs.excluded]);

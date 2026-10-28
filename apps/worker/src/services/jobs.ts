@@ -10,6 +10,7 @@ import {
 } from "@rg/database";
 import {
   appAuthoredRow,
+  docOriginRow,
   isStudioJobKind,
   newId,
   nowInstant,
@@ -25,6 +26,8 @@ import { openIntentFor, openMoveIntents, recordIntent, resolveIntent } from "./s
 import { keepsMark, watchCopyBase } from "./watch-copy-marker.js";
 import { postSyncNote } from "./sync-notes.js";
 import { enqueueProgramUnpush, runOwedUnpushes } from "./watch-push.js";
+import { enqueueUnpushIfOurs } from "./plan-mutations.js";
+import { markMirrorOwed } from "./mirror-owed.js";
 
 /**
  * COROS write-job lifecycle. Jobs are the only path to COROS mutations:
@@ -175,9 +178,18 @@ export async function applyMove(db: Db, req: MoveRequest): Promise<MoveOutcome> 
     // pushed one gets its stamp-proven unpush) and unlocks the sent build, so
     // the new day builds as any moved slot does; with nothing sent it is the
     // calendar's move alone.
+    //
+    // A DOCUMENT WORKOUT'S COPY FOLLOWS IT (the watch mirrors the plan §3.4, builder check A4): its old copy comes off —
+    // the sent build's, and an adopted row's held copy, which a move never took off before — and the row is marked owed
+    // once it stands on its new day (below), so the drain or the sweep puts a provisional copy there (M2: the cheap
+    // writes here, the record there). An engine slot keeps its rule: nothing ahead of its day.
     await resolveIntent(db, intentId, now);
     if (fromDate !== req.toDate) {
-      await enqueueProgramUnpush(db, req.userId, workout, now, { corosWritesEnabled: req.corosWritesEnabled });
+      if (docOriginRow(workout)) {
+        await enqueueUnpushIfOurs(db, req.userId, workout, now, { corosWritesEnabled: req.corosWritesEnabled }, { addressPath: false });
+      } else {
+        await enqueueProgramUnpush(db, req.userId, workout, now, { corosWritesEnabled: req.corosWritesEnabled });
+      }
       corosSyncState = "calendar_only";
     } else {
       // A time-only change: COROS has no time of day, so the watch copy (if any) is still right.
@@ -235,6 +247,8 @@ export async function applyMove(db: Db, req: MoveRequest): Promise<MoveOutcome> 
       updatedAt: now,
     })
     .where(eq(plannedWorkouts.id, workout.id));
+  // Marked once the row stands on its new day: a sweep that read it before the move does not settle the mark.
+  if (fromDate !== req.toDate && docOriginRow(workout)) await markMirrorOwed(db, req.userId, workout.id, now);
 
   await db.insert(auditEvents).values({
     id: newId(),

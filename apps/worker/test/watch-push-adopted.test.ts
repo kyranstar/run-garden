@@ -105,9 +105,10 @@ async function coachOnWatch(title = "Hips, coached"): Promise<{ id: string; stam
 }
 
 /** The athlete (or the coach) revises it: adopted, a Studio document workout holding the old copy. */
-async function adopt(id: string, title = "Hips, mine") {
+/** Adopted by a revise — with the athlete's writes as `prefs` says (on, by default: the old copy's delete is queued at once). */
+async function adopt(id: string, title = "Hips, mine", adoptPrefs: UserPreferences = prefs) {
   const row = await rowOf(db, id);
-  return reviseDocWorkout(db, userId, id, { doc: calmDoc({ title }), baseRev: row.workoutDocRev ?? 0 }, ctx());
+  return reviseDocWorkout(db, userId, id, { doc: calmDoc({ title }), baseRev: row.workoutDocRev ?? 0 }, ctx(adoptPrefs));
 }
 
 /** Today's build of the adopted workout, the pre-check answered, sent. */
@@ -303,7 +304,9 @@ describe("a create the lane claimed before the adoption (M8)", () => {
 describe("COROS writes off", () => {
   it("Remove queues no delete, and the name keeps the copy accounted for", async () => {
     const { id, stamp } = await coachOnWatch();
-    await adopt(id);
+    // Adopted with writes off too (with them on, the adoption queues the old copy's delete: the watch mirrors the plan).
+    await adopt(id, undefined, writesOff());
+    expect(await deletesOf(id)).toEqual([]);
     await removeFromPlan(db, userId, id, { now: nowInstant(), source: "remove_from_plan", prefs: writesOff() });
     expect((await rowOf(db, id)).archivedAt).not.toBeNull();
     expect(await deletesOf(id)).toEqual([]);
@@ -318,7 +321,7 @@ describe("COROS writes off", () => {
       endDate: "2026-11-06", stampPrefix: "Invented block", createdAt: NOON, updatedAt: NOON,
     });
     await db.update(plannedWorkouts).set({ planId: "cp-invented-2" }).where(eq(plannedWorkouts.id, id));
-    await adopt(id);
+    await adopt(id, undefined, writesOff());
     await applyOps(db, userId, writesOff(), "p-retire-off", [{ kind: "retirePlan", planId: "cp-invented-2" } as never]);
     expect((await rowOf(db, id)).archivedAt).not.toBeNull();
     expect(await deletesOf(id)).toEqual([]);

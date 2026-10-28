@@ -3,7 +3,7 @@ import { eq } from "drizzle-orm";
 import { schema } from "@rg/database";
 import { addDays, nowInstant, todayInZone } from "@rg/domain";
 import { applyOps } from "../src/services/coach-apply.js";
-import { removeFromPlan, unskipWorkout } from "../src/services/plan-mutations.js";
+import { removeFromPlan, skipWorkout, unskipWorkout } from "../src/services/plan-mutations.js";
 import { openIntentFor, recordIntent } from "../src/services/sync-intents.js";
 import { makeTestDb, makeTestUser } from "./helpers.js";
 
@@ -140,7 +140,7 @@ describe("unskipWorkout", () => {
     await db.update(schema.plannedWorkouts)
       .set({ completionState: "skipped", resolutionDate: today, sanctionedBy: "coach" })
       .where(eq(schema.plannedWorkouts.id, "w1"));
-    const out = await unskipWorkout(db, userId, "w1", { now: nowInstant(), source: "coach" });
+    const out = await unskipWorkout(db, userId, "w1", { now: nowInstant(), today, source: "coach" });
     expect(out).toEqual({ restored: true, resolvedOn: today });
     const [w] = await db.select().from(schema.plannedWorkouts).where(eq(schema.plannedWorkouts.id, "w1"));
     expect([w!.completionState, w!.resolutionDate, w!.sanctionedBy]).toEqual(["scheduled", null, null]);
@@ -151,7 +151,7 @@ describe("unskipWorkout", () => {
     const db = makeTestDb();
     const { userId, prefs } = await makeTestUser(db);
     await seed(db, userId, "w1", todayInZone(prefs.timezone));
-    expect(await unskipWorkout(db, userId, "w1", { now: nowInstant(), source: "app" }))
+    expect(await unskipWorkout(db, userId, "w1", { now: nowInstant(), today: todayInZone(prefs.timezone), source: "app" }))
       .toEqual({ restored: false, resolvedOn: null, reason: "not_skipped" });
   });
   /**
@@ -181,7 +181,7 @@ describe("unskipWorkout", () => {
     await db.update(schema.plannedWorkouts)
       .set({ completionState: "skipped", resolutionDate: today })
       .where(eq(schema.plannedWorkouts.id, "overdue"));
-    expect(await unskipWorkout(db, userId, "overdue", { now: nowInstant(), source: "app" }))
+    expect(await unskipWorkout(db, userId, "overdue", { now: nowInstant(), today, source: "app" }))
       .toEqual({ restored: true, resolvedOn: today });
 
     // No resolution date: it counted on its own day.
@@ -189,7 +189,69 @@ describe("unskipWorkout", () => {
     await db.update(schema.plannedWorkouts)
       .set({ completionState: "skipped", resolutionDate: null })
       .where(eq(schema.plannedWorkouts.id, "bare"));
-    expect(await unskipWorkout(db, userId, "bare", { now: nowInstant(), source: "app" }))
+    expect(await unskipWorkout(db, userId, "bare", { now: nowInstant(), today, source: "app" }))
       .toEqual({ restored: true, resolvedOn: today });
+  });
+});
+
+/**
+ * THE ONE WRITER OF A SKIP (the watch mirrors the plan §3.4; owner §10.2): the Plan's and the coach's skip alike. A session
+ * the app built has its copy taken off the watch (mirror-hooks.test.ts drives it through the lane); one the app did not
+ * build keeps its lane. Only a session still to resolve is skipped.
+ */
+describe("skipWorkout", () => {
+  it("skips a scheduled or an unresolved session on today — sanctioned when the coach says so — never one done or gone", async () => {
+    const db = makeTestDb();
+    const { userId, prefs } = await makeTestUser(db);
+    const today = todayInZone(prefs.timezone);
+    const now = nowInstant();
+    await seed(db, userId, "s1", addDays(today, 2));
+    await seed(db, userId, "s2", addDays(today, -1));
+    await db.update(schema.plannedWorkouts).set({ completionState: "unresolved" }).where(eq(schema.plannedWorkouts.id, "s2"));
+    await seed(db, userId, "s3", addDays(today, -2));
+    await db.update(schema.plannedWorkouts).set({ completionState: "completed" }).where(eq(schema.plannedWorkouts.id, "s3"));
+    await seed(db, userId, "s4", addDays(today, 3));
+    await db.update(schema.plannedWorkouts).set({ archivedAt: now }).where(eq(schema.plannedWorkouts.id, "s4"));
+
+    expect(await skipWorkout(db, userId, "s1", { now, today, source: "coach", sanctionedBy: "coach", prefs })).toEqual({ skipped: true });
+    expect(await skipWorkout(db, userId, "s2", { now, today, source: "app", prefs })).toEqual({ skipped: true });
+    expect(await skipWorkout(db, userId, "s3", { now, today, source: "app", prefs })).toEqual({ skipped: false });
+    expect(await skipWorkout(db, userId, "s4", { now, today, source: "app", prefs })).toEqual({ skipped: false });
+    const rows = new Map((await db.select().from(schema.plannedWorkouts)).map((w) => [w.id, w]));
+    expect(rows.get("s1")).toMatchObject({ completionState: "skipped", resolutionDate: today, sanctionedBy: "coach" });
+    expect(rows.get("s2")).toMatchObject({ completionState: "skipped", resolutionDate: today, sanctionedBy: null });
+    expect(rows.get("s3")).toMatchObject({ completionState: "completed", resolutionDate: null });
+    expect(rows.get("s4")!.completionState).toBe("scheduled");
+  });
+
+  it("a session the app did not build keeps its copy (its own lane): no watch job, writes on or off", async () => {
+    const db = makeTestDb();
+    const { userId, prefs } = await makeTestUser(db, { corosWritesEnabled: true });
+    const today = todayInZone(prefs.timezone);
+    await seed(db, userId, "coach-1", addDays(today, 2));
+    await db.insert(schema.corosWriteJobs).values({
+      id: "coach-1-push", userId, workoutId: "coach-1", kind: "coach_create_workout", expectedContentFingerprint: "fp",
+      originalDate: addDays(today, 2), destinationDate: addDays(today, 2),
+      payload: { workoutId: "coach-1", happenDay: addDays(today, 2), name: "Easy 40 — invented", session: {} },
+      requestedAt: nowInstant(), status: "verified", verifiedAt: nowInstant(), updatedAt: nowInstant(),
+    });
+    expect(await skipWorkout(db, userId, "coach-1", { now: nowInstant(), today, source: "coach", sanctionedBy: "coach", prefs })).toEqual({ skipped: true });
+    expect((await db.select().from(schema.corosWriteJobs)).map((j) => j.id)).toEqual(["coach-1-push"]);
+  });
+});
+
+describe("unskipWorkout and the watch", () => {
+  it("a document workout of today or ahead is marked owed for the watch; one whose day is gone is not", async () => {
+    const db = makeTestDb();
+    const { userId, prefs } = await makeTestUser(db);
+    const today = todayInZone(prefs.timezone);
+    for (const [id, date] of [["d-today", today], ["d-ahead", addDays(today, 3)], ["d-gone", addDays(today, -1)]] as const) {
+      await seed(db, userId, id, date);
+      await db.update(schema.plannedWorkouts).set({ origin: "studio", completionState: "skipped", resolutionDate: today }).where(eq(schema.plannedWorkouts.id, id));
+      expect((await unskipWorkout(db, userId, id, { now: nowInstant(), today, source: "app" })).restored).toBe(true);
+    }
+    const marks = await db.select().from(schema.syncIntents).where(eq(schema.syncIntents.kind, "mirror"));
+    expect(marks.map((m) => m.targetId).sort()).toEqual(["d-ahead", "d-today"]);
+    expect(marks.every((m) => m.resolvedAt === null)).toBe(true);
   });
 });

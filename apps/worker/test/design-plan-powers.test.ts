@@ -411,7 +411,7 @@ describe("approve, op by op, through the thread coach's appliers", () => {
     expect(measured.remove).toBeLessThanOrEqual(cost({ kind: "remove", workoutId: "w" }));
     expect(measured.restore).toBeLessThanOrEqual(cost({ kind: "restore", workoutId: "w" }));
     // Each its applier's most (design-approve.ts): an ease's watch convergence and a remove's unpush aren't reached here.
-    expect({ EASE_COST, REMOVE_COST, RESTORE_COST }).toEqual({ EASE_COST: 11, REMOVE_COST: 12, RESTORE_COST: 4 });
+    expect({ EASE_COST, REMOVE_COST, RESTORE_COST }).toEqual({ EASE_COST: 11, REMOVE_COST: 12, RESTORE_COST: 5 });
   });
 
   it("at their most: an ease converging the watch's copy, a remove taking the app's own copy back off — each within its cost", async () => {

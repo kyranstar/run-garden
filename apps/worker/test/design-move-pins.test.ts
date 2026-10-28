@@ -684,10 +684,11 @@ describe("approving the moves in rotation", () => {
     expect(res.json).toMatchObject({ status: "approved", remaining: [] });
     expect(res.json.applied).toHaveLength(1);
     // Within what it declares — the day holds the workout alone (the revision's own session): REVISE_BASE + 1 — and
-    // measured exactly: the pins' 11 as above, and the revision's own 10. (With `forgetAccountLibrary` in the re-seed's
-    // place, the pins alone measured 12: the receipt read the library again.)
+    // measured exactly: the pins' 11 as above, and the revision's own 11 (its mark owed for the watch among them: the
+    // watch mirrors the plan, M2). (With `forgetAccountLibrary` in the re-seed's place, the pins alone measured 12: the
+    // receipt read the library again.)
     expect(res.total).toBeLessThanOrEqual(APPROVE_FIXED + MOVE_PINS_FIXED + 1 + REVISE_BASE + 1);
-    expect(res.total).toBe(APPROVE_FIXED + MOVE_PINS_FIXED + 1 + 10);
+    expect(res.total).toBe(APPROVE_FIXED + MOVE_PINS_FIXED + 1 + 11);
   });
 
   it("Not now declines it; nothing pinned, the batch not marked", async () => {

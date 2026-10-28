@@ -18,6 +18,10 @@
  * (`WATCH_PUSH_ENABLED`): nothing is read and nothing is queued; the owed marks stay open, so the sweep catches up when
  * they come back on.
  *
+ * TODAY'S PROVISIONAL PUSH (M1): a session of today whose pre-check is answered is never sent a provisional copy — an
+ * ungated one, where the day's reading may close a move — and waits for the day's gated build, which `mirrorOnDayBuild`
+ * pushes on the next build (the sheet's open, Start); with no answer yet, the provisional copy goes as for any day.
+ *
  * ON THE DAY (§3.3; owner §10.1; builder check A3, M1) the copy follows the day's build (`mirrorOnDayBuild`, called by
  * the build commit once a day's build is stored or found current): its watch steps compared with the copy's — the same
  * → handed over in D1 (no COROS write); different → the copy's delete and the build's push; blocked → the copy stays —
@@ -49,6 +53,7 @@ import type { Db } from "./db.js";
 import { restoreInProgress } from "./account-state.js";
 import { SPENT_STAMP_STATUSES } from "./coros-stamp.js";
 import { enqueueUnpushIfOurs } from "./plan-mutations.js";
+import { mirrorIntentId } from "./mirror-owed.js";
 import {
   activeProfilesOf,
   checksAnswered,
@@ -60,6 +65,7 @@ import {
   prepareProvisionalRecord,
   provisionalRecord,
   pushJobId,
+  slotPrechecked,
   type BuildCtx,
   type StoredBuild,
 } from "./session-build.js";
@@ -73,14 +79,14 @@ import {
   type PushableBuild,
 } from "./watch-push.js";
 
+// The owed mark lives in a leaf module (the hooks take it from there, mirror-owed.ts); the mirror's callers find it here.
+export { markMirrorOwed, mirrorIntentId } from "./mirror-owed.js";
+
 /** The mirror's window: today … today + 28 days (§3.2). */
 export const MIRROR_WINDOW_DAYS = 28;
 
 /** A failed push's re-queues (M3): after 1 h, then 6 h, then 24 h; a fourth failure stops. */
 export const MIRROR_RETRY_BACKOFF_MS = [3_600_000, 21_600_000, 86_400_000] as const;
-
-/** The one owed mark a workout has: `sync_intents.id`. */
-export const mirrorIntentId = (workoutId: string): string => `mirror-${workoutId}`;
 
 export type MirrorSkip =
   | "switch_off"
@@ -101,6 +107,8 @@ export type MirrorSkip =
   | "already_pushed"
   /** Preparing the copy threw: remembered on the backoff ladder, so it never stalls the account. */
   | "error"
+  /** A session of today whose pre-check is answered: the day's gated build is its copy, on its next build (M1). */
+  | "today_checked"
   // ── On the day (`mirrorOnDayBuild`, `queueReplacement` of a day's build) ──
   /** A day's build of a row whose day is ahead. */
   | "not_today"
@@ -143,12 +151,14 @@ export type MirrorRow = typeof plannedWorkouts.$inferSelect;
  * payload, for that revision and day, so the sweep does not make the record again every run, and one session never holds
  * the window up. A new owed mark, a revision or a move forgets it.
  *  - `too_long`, `not_document`: for good (for that revision and day).
+ *  - `today_checked` (M1): for that revision and today — the day's build is the copy, pushed on its next build; a session
+ *    of today judged so is not judged again by every sweep that day (it would spend the run's one attempt each hour).
  *  - `error` (an unexpected throw while the copy was prepared; its message's first 120 characters): for a while — `at`
  *    the last one, `count` how many in a row — on MIRROR_RETRY_BACKOFF_MS (1 h, 6 h, 24 h, then `gave_up`), so a
  *    transient failure heals and a persistent one cannot stall the account.
  */
 export interface MirrorMemory {
-  refused: "too_long" | "not_document" | "error";
+  refused: "too_long" | "not_document" | "error" | "today_checked";
   rev: number | null;
   day: string;
   message?: string;
@@ -186,18 +196,6 @@ export function currentCopy(row: Pick<MirrorRow, "effectiveDate" | "workoutDocRe
   });
 }
 
-/**
- * Mark the workout's copy owed (M2): one INSERT into `sync_intents` (`mirror-<workoutId>`, kind `mirror`). Idempotent:
- * marked again while open, it stays one open mark (its time refreshed, so a sweep that read the row before it does not
- * resolve it); marked again after the mirror resolved it, it is open again. `coros_sync_state` is not touched.
- */
-export async function markMirrorOwed(db: Db, userId: string, workoutId: string, now: string): Promise<void> {
-  await db
-    .insert(syncIntents)
-    .values({ id: mirrorIntentId(workoutId), userId, targetKind: "workout", targetId: workoutId, kind: "mirror", payload: {}, source: "mirror", createdAt: now })
-    .onConflictDoUpdate({ target: syncIntents.id, set: { resolvedAt: null, createdAt: now, payload: {} } });
-}
-
 /** A restore is running for the account (`restoreInProgress`, in SQL). */
 const restoring = (userId: string): SQL =>
   sql`exists (select 1 from ${accountState} where ${accountState.userId} = ${userId} and coalesce(${accountState.restoreId}, '') <> '')`;
@@ -233,7 +231,9 @@ async function remember(db: Db, userId: string, workoutId: string, now: string, 
 
 function memoryOf(payload: unknown): MirrorMemory | null {
   const m = payload as Partial<MirrorMemory> | null;
-  if (!m || (m.refused !== "too_long" && m.refused !== "not_document" && m.refused !== "error") || typeof m.day !== "string") return null;
+  if (!m || (m.refused !== "too_long" && m.refused !== "not_document" && m.refused !== "error" && m.refused !== "today_checked") || typeof m.day !== "string") {
+    return null;
+  }
   return {
     refused: m.refused,
     rev: typeof m.rev === "number" ? m.rev : null,
@@ -480,9 +480,11 @@ async function writeCopy(
  * QUEUE THE ROW'S PROVISIONAL COPY (§3.2): the refusals first, in this order — the switch (`switch_off`), the writes
  * (`writes_off`), kept off, not a document workout (or a run, a rest day, a race), resolved (done, skipped, missed, under
  * way, archived), a day gone (`past`), beyond the window, and a copy already current (A7) — then, a restore running,
- * nothing; a failed push of this revision and day is re-queued on its backoff (M3) rather than replaced; else the record
- * is made (`prepareProvisionalRecord`), and — unless it is too long for the watch, when nothing is written — the
- * previous copy's delete is queued, the record stored, and `push:<recordId>` queued with `provisional: true`.
+ * nothing; a session of today whose pre-check is answered, nothing either (`today_checked`, M1: the day's gated build
+ * is its copy, on its next build); a failed push of this revision and day is re-queued on its backoff (M3) rather than
+ * replaced; else the record is made (`prepareProvisionalRecord`), and — unless it is too long for the watch, when
+ * nothing is written — the previous copy's delete is queued, the record stored, and `push:<recordId>` queued with
+ * `provisional: true`.
  *
  * TWO PHASES. The preparation (the reads, the record made, the payload, its check) writes nothing: a throw there is
  * remembered on the row's mark (`error`, on the backoff ladder) and answered `skipped:error`. The writes (the delete, the
@@ -492,7 +494,7 @@ async function writeCopy(
  * The owed mark is resolved whatever the answer, except with the switch or the writes off or a restore running (they
  * keep it open, so the catch-up finds it). `known` is what the sweep has read already (the jobs, the mark, the restore)
  * and how it settles the marks (`settle`: together, at its end): nothing is read twice. 11 statements for a first copy;
- * a replacement adds the previous copy's delete (`unpushBuild`, 4).
+ * a replacement adds the previous copy's delete (`unpushBuild`, 4); a session of today adds the pre-check's read (1).
  */
 export async function queueProvisionalPush(
   db: Db,
@@ -528,6 +530,13 @@ export async function queueProvisionalPush(
   const verdict = verdictOf(row, pushes, env, ctx, known.memory ?? null);
   if ("skip" in verdict) return finish(`skipped:${verdict.skip}`);
   if (known.restoring !== false && (await restoreInProgress(db, userId))) return "skipped:restoring";
+  // Today, the pre-check answered (M1): the day's gated build is the copy — never an ungated provisional one, made or
+  // re-queued (a failed day build's push is re-queued still). Remembered for this revision and day, so the sweep does
+  // not spend its run on it again; the next build of the day pushes it (`mirrorOnDayBuild`). One read, for today only.
+  const provisionalNext = "push" in verdict || verdict.retry.provisional;
+  if (provisionalNext && row.effectiveDate === ctx.today && (await slotPrechecked(db, userId, row.id, row.effectiveDate, ctx.today)) === true) {
+    return finish("skipped:today_checked", { refused: "today_checked", rev: row.workoutDocRev, day: row.effectiveDate });
+  }
   // Re-queued — or, when another request changed the push since it was read (queued or claimed it), on its way already.
   if ("retry" in verdict) return finish((await requeueFailed(db, verdict.retry, ctx.now)) ? "queued" : "skipped:current");
 

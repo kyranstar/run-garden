@@ -10,8 +10,9 @@
  * exactly as the app's own sessions are written (a programme's slot, `program-slots.ts`): origin `studio` — or
  * `template` when the document is based on one — hung from the account's own Studio programme (`studioProgramId`,
  * the per-user programme the one-workout-system spec §9.3 hangs on-demand sessions from); its own id as its source;
- * `calendar_only` with no watch address, so the reconciler books its event and nothing but the athlete's Send puts it
- * on the watch (`appAuthoredRow`); an outline until its day's build. Its title is the document's; its discipline,
+ * `calendar_only` with no watch address, so the reconciler books its event, and the watch mirror puts it on the watch
+ * (it is marked owed, and the drain or the sweep makes its provisional copy — never for one started at once); an
+ * outline until its day's build. Its title is the document's; its discipline,
  * category and booked length are derived (`deriveDoc`, the length rounded up to five minutes as a built slot's is); its
  * time is the one asked for — pinned, as a time the athlete picks is (a `time_change` override: the collision pass never
  * moves it) — else the athlete's window, then the day's collision pass. The document is stored at revision 1 with its
@@ -28,13 +29,15 @@
  * document workout (`adoptionColumns`), its stage rows deleted, its plan and its watch address kept. The same document
  * again is no new revision (and still adopts). `watchHasOlder`: the watch holds (or is being sent) a copy built
  * from another revision, or a copy the app did not push from a build (an adopted row's) — the athlete is offered "Send
- * the new version". A new length runs the day's collision pass (a pinned time stays); the answer carries the row's date
- * and time as they then are.
+ * the new version". A new revision or an adoption takes the older copy off the watch (its delete queued: the sent
+ * build's, the adopted copy by its name) and marks the row owed, so the mirror's drain or sweep sends the new one. A
+ * new length runs the day's collision pass (a pinned time stays); the answer carries the row's date and time as they
+ * then are.
  *
  * Every user-scoped; a write is refused while a restore is replacing the account (`RestoreInProgressError`).
  */
 import type { RunWire } from "@rg/domain";
-import { and, eq, exists, inArray, isNull, ne, notExists, notInArray, or, sql } from "drizzle-orm";
+import { and, eq, exists, getTableColumns, inArray, isNull, ne, notExists, notInArray, or, sql } from "drizzle-orm";
 import {
   corosWriteJobs,
   exercisePrefs,
@@ -75,7 +78,8 @@ import { placeOrDefault } from "./default-place.js";
 import { loadBuildHistory } from "./engine-inputs.js";
 import { RestoreInProgressError } from "./programs.js";
 import { bookedSeconds, pushJobId, sentBuildIdOf, slotChecks } from "./session-build.js";
-import { removeFromPlan } from "./plan-mutations.js";
+import { enqueueUnpushIfOurs, removeFromPlan } from "./plan-mutations.js";
+import { markMirrorOwed } from "./mirror-owed.js";
 import { FROZEN_STATES, newRowDocColumns, revisionInsert, storedDocText, updateDocColumns, type DocSourceKind } from "./workout-doc-store.js";
 
 /** The account's own Studio programme: what every document workout hangs from (its `plan_id`). */
@@ -616,6 +620,9 @@ export async function createDocWorkout(
     if (made) return made;
     throw e;
   }
+  // ON THE WATCH (the watch mirrors the plan §3.2, M2): marked owed, and the drain or the sweep makes its provisional
+  // copy. Never a workout started at once (Start now, played offline: M5) — it is played on the phone.
+  if (!input.startNow && !input.playedOffline) await markMirrorOwed(db, userId, id, ctx.now);
 
   // A time asked for stands; the athlete's window gives way to what the day already holds, as a placed slot's does.
   let time = row.effectiveTime;
@@ -643,12 +650,14 @@ interface HeldCopy {
 /**
  * The watch holds — or is being sent — a copy of this row built from a revision other than `rev` (a document build
  * names its revision, `fromDoc.rev`), or a copy the app did not push from a build at all (`HeldCopy`): either is older
- * than the document now stored. The held copy is read with the row after the write, so it costs no statement here.
+ * than the document now stored. The held copy is read with the row after the write, and the sent build by the caller
+ * (`sent`), so they cost no statement here; a sent build is older with no read when the revision just `changed` (it
+ * was made from an earlier one), else its revision is read.
  */
-async function watchHoldsOlder(db: Db, workoutId: string, rev: number | null, held: HeldCopy): Promise<boolean> {
+async function watchHoldsOlder(db: Db, rev: number | null, held: HeldCopy, sent: string | null, changed: boolean): Promise<boolean> {
   if (held.watchCopyName !== null || held.createInFlight) return true;
-  const sent = await sentBuildIdOf(db, workoutId);
   if (!sent) return false;
+  if (changed) return true;
   const [build] = await db
     .select({ rev: sql<number | null>`json_extract(${sessionBuilds.payload}, '$.build.fromDoc.rev')` })
     .from(sessionBuilds)
@@ -844,18 +853,10 @@ export async function reviseDocWorkout(
       : []),
     revisionInsert(db, { userId, workoutId, sourceKind: source.sourceKind ?? "athlete_edit", sourceRef: source.sourceRef ?? null, now: ctx.now }),
   ]);
-  const [after] = await db
+  // The whole row, as it now stands: what the watch's hooks below read (its address, its held copy's name).
+  const [read] = await db
     .select({
-      workoutDoc: pw.workoutDoc,
-      workoutDocRev: pw.workoutDocRev,
-      origin: pw.origin,
-      category: pw.category,
-      sport: pw.sport,
-      completionState: pw.completionState,
-      contentState: pw.contentState,
-      effectiveDate: pw.effectiveDate,
-      archivedAt: pw.archivedAt,
-      watchCopyName: pw.watchCopyName,
+      ...getTableColumns(pw),
       createInFlight: sql<number>`exists (select 1 from ${corosWriteJobs} where ${and(
         eq(corosWriteJobs.userId, userId),
         eq(corosWriteJobs.workoutId, workoutId),
@@ -866,17 +867,18 @@ export async function reviseDocWorkout(
     .from(pw)
     .where(and(eq(pw.id, workoutId), eq(pw.userId, userId)))
     .limit(1);
-  if (!after || after.workoutDoc !== text || (adopting && !docOriginRow(after))) {
+  if (!read || read.workoutDoc !== text || (adopting && !docOriginRow(read))) {
     // Another write landed between the read and this one: say what stopped this one. The row gone is not found; a base
     // moved on is stale; else the row, read again as it now is, says why it can no longer be revised. One that still
     // reads revisable lost a pure race (its guard met a state that has since moved back, or an adoption that did not
     // land): stale, so the caller reads it again — never a reason that is not the row's.
-    if (!after || after.archivedAt) throw new DocWorkoutNotFoundError();
-    if ((after.workoutDocRev ?? 0) !== input.baseRev) throw new StaleRevisionError(after.workoutDocRev ?? null);
-    const now = await revisabilityOf(db, userId, after, ctx.today);
+    if (!read || read.archivedAt) throw new DocWorkoutNotFoundError();
+    if ((read.workoutDocRev ?? 0) !== input.baseRev) throw new StaleRevisionError(read.workoutDocRev ?? null);
+    const now = await revisabilityOf(db, userId, read, ctx.today);
     if (!now.ok) throw notRevisable(now);
-    throw new StaleRevisionError(after.workoutDocRev ?? null);
+    throw new StaleRevisionError(read.workoutDocRev ?? null);
   }
+  const { createInFlight, ...after } = read;
   // A new length can overlap the day's other plans: the collision pass (a pinned time stays), and the time it leaves.
   const moved = booked !== row.calendarBlockDurationSeconds
     ? await separateDayCollisions(db, userId, [row.effectiveDate], ctx.prefs, { from: ctx.today, now: ctx.now })
@@ -896,8 +898,19 @@ export async function reviseDocWorkout(
     derived.estimatedMinutes,
   );
   const calendarChanged = row.title !== doc.title || row.calendarBlockDurationSeconds !== booked || row.category !== derived.category;
-  const held = { watchCopyName: after.watchCopyName, createInFlight: Boolean(after.createInFlight) };
-  return { workout, rev, watchHasOlder: await watchHoldsOlder(db, workoutId, rev, held), warnings, calendarChanged };
+  // THE WATCH FOLLOWS (the watch mirrors the plan §3.4, §3.5; M2): a new revision — or an adoption, even of the same
+  // document — makes the copy on the watch an older one: its delete is queued (the sent build's unpush, an adopted row's
+  // held copy by its name, never the address path) and the row marked owed, so the drain or the sweep makes the new
+  // copy. The same document again, not adopting, changes nothing there. The sent build is read once, for both.
+  const changed = adopting || rev !== row.workoutDocRev;
+  const held = { watchCopyName: after.watchCopyName, createInFlight: Boolean(createInFlight) };
+  const sent = changed || (held.watchCopyName === null && !held.createInFlight) ? await sentBuildIdOf(db, workoutId) : null;
+  const watchHasOlder = await watchHoldsOlder(db, rev, held, sent, changed);
+  if (changed) {
+    await enqueueUnpushIfOurs(db, userId, after, ctx.now, ctx.prefs, { sent, addressPath: false });
+    await markMirrorOwed(db, userId, workoutId, ctx.now);
+  }
+  return { workout, rev, watchHasOlder, warnings, calendarChanged };
 }
 
 /**

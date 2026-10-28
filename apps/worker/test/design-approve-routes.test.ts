@@ -196,9 +196,11 @@ describe("POST /api/coach/proposals/:id/approve", () => {
       chunks.push((res.json.applied as Array<{ opId: string }>).map((a) => a.opId));
       remaining = res.json.remaining as string[];
     }
-    // Pinned: each placed workout costs its day's sessions (one on most days, two on every third) plus itself, so two
-    // fit a request where both days hold one, and one alone where its day holds two.
-    expect(chunks).toEqual([opIds.slice(0, 2), opIds.slice(2, 3), opIds.slice(3, 5), opIds.slice(5, 6), opIds.slice(6)]);
+    // Pinned (measured 22, 22, 21, 21, 22, 23, 23): each placed workout costs its day's sessions (one on most days, two on
+    // every third) plus itself and its mark owed for the watch (the watch mirrors the plan, M2) — 20 where its day holds
+    // one — so two never fit beside the approve's own (2 × 20 > 45 − 7): one a request. (Before the mark, two fit where
+    // both days held one.)
+    expect(chunks).toEqual(opIds.map((o) => [o]));
     for (const cost of costs) expect(cost).toBeLessThanOrEqual(REQUEST_BUDGET);
     const p = await proposalOf(id);
     expect(p.status).toBe("approved");
