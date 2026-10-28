@@ -79,8 +79,13 @@ const BEFORE = { tools: 34_935, shared: 20_450, main: 4_586 };
  * REBASED 2026-10-26 (saves flow redesign): the integration paragraph says how the athlete's choices work (include, skip,
  * coach), never both of a near-duplicate pair, and a line's moveId; read_saves' Reading line names a fit-in run's own
  * batch (shared 25,164 → 25,659) — measured 13,810; held with 440 characters (~126 tokens) of headroom.
+ * REBASED 2026-10-27 (workout editability: any planned workout is revisable unless there is a clear reason, with a
+ * path forward): reads carry `revisable` and a refusal its `instead` — list_workouts' and get_workout's descriptions
+ * say so (tools 41,455 → 41,538); the guidance rewritten — adjust_plan's acting line, the fatal line and the
+ * integration paragraph's "A refusal is never the end of a fit" (shared 25,659 → 25,962), the main block's revise line
+ * (6,667 → 6,738) — measured 14,267; held with 33 characters of headroom (the mandated wording is not trimmed).
  */
-const GROWTH_MAX_CHARS = 14_250;
+const GROWTH_MAX_CHARS = 14_300;
 
 const toolsSent = () => JSON.stringify(allTools().map((t) => ({ name: t.name, description: t.description, input_schema: t.inputSchema })));
 

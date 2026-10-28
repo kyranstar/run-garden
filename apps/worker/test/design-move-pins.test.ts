@@ -972,11 +972,14 @@ describe("the prompt", () => {
       "When the athlete asks to fit in moves from their saves, place them inside what they already do — revise the one workout this run holds (to revise several, plan_set with a brief per workout naming it), put a move in the pool the engine plans from with pin_moves (a core lift stays; other moves become eligible), change the programme only if the week needs it — rather than adding sessions. Respect the week's load, their objectives and their conditions. One line per placement saying why. Ask at most two questions first, only when the answer changes the plan.";
     const selectivity =
       "Not every saved move belongs. Take the ones that serve the athlete's objectives, conditions and the week's load; leave the rest in their library and say in one line each why. When a post says when or why to do a move, carry that into the notes of the workout you revise, so the reason travels with the session.";
+    // AMENDED 2026-10-27 (workout editability, §7): a refusal never ends a fit — the refusal's or the read's instead.
+    const refusal =
+      "A refusal is never the end of a fit: take the refusal's or the read's instead (pin_moves puts the moves in the pool; a new workout places them), then finish.";
     const close = "Finish by closing the batch: pin_moves with its batchId, even with no moves.";
     // AMENDED 2026-10-26 (saves flow redesign, §3.4, §12.4): the athlete's choices per move, near-duplicates, a line's moveId.
     const choices =
       "When the athlete chose first, read_saves says so per move (choice): include — pin it, always, with a line on where it goes; skip — leave it out: no pin, no line, never in a workout; coach — your call, as above. Two moves like each other are near-duplicates: never pin both — keep the one the athlete already has, else the clearer of the two, and say so in its line. A line about one move carries its moveId and says where it goes and why; the card shows the name.";
-    expect(SHARED_PROMPT).toContain(`${guidance} ${selectivity} ${close} ${choices}`);
+    expect(SHARED_PROMPT).toContain(`${guidance} ${selectivity} ${refusal} ${close} ${choices}`);
     expect(SHARED_PROMPT).not.toContain("in rotation");
     // What a pin does, in the acting line and the tool's description alike (coach-context audit I1a).
     expect(acting).toContain("- pin_moves: the main coach's — put moves in the pool the engine plans from (pin: a core lift stays; other moves become eligible) or take them out (unpin), as one card.");

@@ -33,8 +33,12 @@ let prefs: UserPreferences;
 let today: string;
 let statements: string[];
 
-/** A select that reads the document column (a write that names it — the import's own revisions — is not a read). */
-const readsDoc = (q: string) => /^\s*select\b/i.test(q) && /"workout_doc"/.test(q);
+/**
+ * A select that reads the document's BYTES: the column selected, or json_extract'ed (a write that names it — the import's
+ * own revisions — is not a read). Its `"workout_doc" is not null` flag (the Plan's and Today's `hasDoc`, routes/plan.ts
+ * `planRowColumns`) yields an integer and materialises nothing, so it is not one (workout editability, final review).
+ */
+const readsDoc = (q: string) => /^\s*select\b/i.test(q) && /"workout_doc"(?!\s+is\s+not\s+null\b)/i.test(q);
 
 beforeEach(async () => {
   statements = [];
@@ -98,6 +102,15 @@ describe("the hot reads", () => {
     const dossier = await buildDossier(db, userId, prefs, today);
     expect(dossier).toBeTruthy();
     expect(statements.filter(readsDoc)).toEqual([]);
+  });
+
+  it("the check itself: the hasDoc flag is not a read of the document; its column selected or json_extract'ed still is", () => {
+    expect(readsDoc('select "id", "workout_doc" is not null from "planned_workouts"')).toBe(false);
+    expect(readsDoc('select "planned_workouts"."id", "planned_workouts"."workout_doc" is not null from "planned_workouts"')).toBe(false);
+    expect(readsDoc('select "id", "workout_doc", "workout_doc_rev" from "planned_workouts"')).toBe(true);
+    expect(readsDoc('select "id", "workout_doc" is not null, "workout_doc" from "planned_workouts"')).toBe(true);
+    expect(readsDoc(`select json_extract("planned_workouts"."workout_doc", '$.title') from "planned_workouts"`)).toBe(true);
+    expect(readsDoc('update "planned_workouts" set "workout_doc" = ?')).toBe(false);
   });
 
   it("any full-row read still works on a malformed document: the column is text, parsed only by parseStoredWorkoutDoc", async () => {
