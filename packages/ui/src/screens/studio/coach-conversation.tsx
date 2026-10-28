@@ -169,9 +169,9 @@ export function CoachConversation({ ctx, loopDeps, request = null, seeing: seenA
   const working = liveId !== null && liveStatus !== null && isLive(liveStatus);
 
   // A run over: the conversation read again (its line, its cards), the current run, the suggestions, the spend — and the
-  // open batch (workout editability §7): a fit's run that ends with no proposal hands its batch back on the server, so
-  // Fit them in is back the moment the coach answers, in a sheet that sent the fit or one opened on its run since (the
-  // run's read names no batch, so every run's end reads it again: one read).
+  // open batch (workout editability §7): a fit's run that ends without its own open pins card naming the batch hands its
+  // batch back on the server, so Fit them in is back the moment the coach answers, in a sheet that sent the fit or one
+  // opened on its run since (the run's read names no batch, so every run's end reads it again: one read).
   const over = liveId !== null && liveStatus !== null && !isLive(liveStatus);
   useEffect(() => {
     if (!over) return;

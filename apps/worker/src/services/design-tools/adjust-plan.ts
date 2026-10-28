@@ -257,8 +257,9 @@ function refusalOf(
   // Studio or template workout, or a coach or watch-plan session that isn't a run, rest or race — the revise adopts it),
   // a programme session (its reason, `programme`: its origin) skipped or moved — and the race stays. A document workout
   // that can't be revised just now (under way) is still its document's. A remove takes a session off the plan, which no
-  // revise does: only the athlete's own document workout (`docOriginRow`) is refused it, as before the adoption — a
-  // coach or watch-plan session, revisable or not, is removed (the approve's `planVerdict` lets it).
+  // revise does: only the athlete's own document workout (`docOriginRow`) is refused it here, as before the adoption — a
+  // coach or watch-plan session's remove is never refused for being revisable (a race still stays, below; the approve's
+  // `planVerdict` lets the rest).
   const revised = (c.kind !== "remove" && verdict?.ok === true) || docOriginRow({ origin: row.origin });
   if (c.kind === "ease" || c.kind === "swap" || c.kind === "remove") {
     if (revised) {

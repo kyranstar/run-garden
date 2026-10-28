@@ -176,7 +176,8 @@ describe("a fit run that ends hands its batch back unless its card naming the ba
     await runStep(db, env, runId, a.userId, at(1), deps); // draft, reviewer started
     const [reviewer] = await db.select().from(schema.coachRuns).where(eq(schema.coachRuns.parentId, runId));
     expect(reviewer!.status).toBe("active");
-    // The main run over already (its end handed its fit back then); a fit begun since, under the run's own stamp.
+    // The main run over already, set here directly (its own end, which hands a fit back, is not what is under test): the
+    // batch still holds the run's fit, and a cancel of what was left live under it must not hand that back.
     await db.update(schema.coachRuns).set({ status: "finished", finishedAt: at(2).toISOString() }).where(eq(schema.coachRuns.id, runId));
     await cancelRun(db, a.userId, runId, at(30));
     expect((await runOf(db, reviewer!.id)).status).toBe("cancelled");

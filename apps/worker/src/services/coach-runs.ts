@@ -1420,7 +1420,8 @@ export const EXPIRE_TREE_STATEMENTS = 1 + 2 * PROMOTE_TRIES + 2 + 1 + 1;
  * the run itself. A main run that expires proposes what was reviewed (fix wave 3A, A2), a workout whose day has passed
  * (in the athlete's zone) left out — what a set's designers did read with its proposal, whatever `nodes` holds (round 2,
  * A-I1: the sweep and a create hold only the live runs); with nothing to propose, its design proposal still unreviewed
- * is closed with it: nothing half-made is ever shown — and a fit's run hands its batch back (workout editability §7).
+ * is closed with it: nothing half-made is ever shown. Proposed or not, a fit's main run then hands its batch back
+ * unless its card naming the batch is open (`releaseRunFit`, workout editability §7).
  * Its lines say it expired, and what came of the proposal — one line for a run whose day has passed and whose later
  * days' workouts are proposed (round 2, A-M7). At most
  * EXPIRE_TREE_STATEMENTS; one when the run itself did not expire.
