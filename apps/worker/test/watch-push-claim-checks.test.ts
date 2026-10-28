@@ -7,11 +7,16 @@
  * superseded with no wire call, and its build unlocked unless the slot is started or done (Start owns that lock). A
  * started slot of today still pushes.
  *
+ * A provisional copy (the watch mirrors the plan §3.2, builder check A2) goes ahead of its day: its push is superseded
+ * only once its day is gone, and never re-gated by the day's reading (a preview was never gated). A session kept off
+ * the watch (`watch_off`, §3.6) supersedes any push at claim — a provisional record's marker cleared, a day's build
+ * unlocked.
+ *
  * An unpush owed while writes are off (a sent copy's slot moved, or taken off) is recorded on the sent build, which
  * stays locked; it is queued when writes come back on (the Settings toggle's catch-up pass), so no copy is stranded.
  */
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { eq } from "drizzle-orm";
+import { and, eq, lt } from "drizzle-orm";
 import { schema } from "@rg/database";
 import { addDays, programSessionPushJobSchema, type UserPreferences } from "@rg/domain";
 import type { Db } from "../src/services/db.js";
@@ -19,12 +24,13 @@ import { executeCloudJobs } from "../src/services/coros-write-cloud.js";
 import { applyMove, emitPendingWork } from "../src/services/jobs.js";
 import { removeFromPlan } from "../src/services/plan-mutations.js";
 import { createDocWorkout } from "../src/services/doc-workouts.js";
-import { buildSession, loadSession, recordCheck } from "../src/services/session-build.js";
-import { sendToWatch, takeOffWatch, watchStateOf } from "../src/services/watch-push.js";
+import { buildSession, isProvisionalBuild, loadSession, recordCheck, sentBuildIdOf } from "../src/services/session-build.js";
+import { queueProvisionalPush } from "../src/services/mirror.js";
+import { gatedAtClaim, sendToWatch, takeOffWatch, watchStateOf } from "../src/services/watch-push.js";
 import { mockCorosServer, type MockCorosServer } from "../../../packages/coros/test/mock-coros-server.js";
 import { makeTestDb, makeTestUser } from "./helpers.js";
 import { calmDoc, landingsDoc } from "./doc-workout-fixture.js";
-import { buildToday, connectMock, DAY, NOON, rowOf, seedCatalog, seedProgram, seedSlot, seedTmj, switchOn } from "./watch-push-fixture.js";
+import { buildToday, connectMock, DAY, NOON, rowOf, seedCatalog, seedProgram, seedSlot, seedTmj, switchOn, TOMORROW } from "./watch-push-fixture.js";
 
 const { corosWriteJobs, plannedWorkouts, sessionBuilds } = schema;
 
@@ -68,6 +74,18 @@ async function sent(): Promise<{ workoutId: string; buildId: string }> {
   return { workoutId, buildId };
 }
 
+/**
+ * A document workout on `day` and its provisional copy's push, queued by the mirror (`queueProvisionalPush`: a record of
+ * a negative version, never locked, and its `program_session_push` with `provisional: true`).
+ */
+async function mirrored(day: string): Promise<{ workoutId: string; buildId: string }> {
+  const { workout } = await createDocWorkout(db, userId, { date: day, time: "18:00", doc: calmDoc() }, ctx());
+  expect(await queueProvisionalPush(db, switchOn(), userId, await rowOf(db, workout.id), ctx())).toBe("queued");
+  const [record] = await db.select().from(sessionBuilds).where(and(eq(sessionBuilds.workoutId, workout.id), lt(sessionBuilds.version, 0)));
+  expect(programSessionPushJobSchema.parse((await jobOf(`push:${record!.id}`))!.payload)).toMatchObject({ provisional: true, happenDay: day });
+  return { workoutId: workout.id, buildId: record!.id };
+}
+
 /** The lane claimed the push and wrote nothing: superseded, no COROS write. */
 async function supersededUnwritten(buildId: string, run: () => Promise<unknown>) {
   const writes = server.counts.scheduleWrites;
@@ -76,7 +94,7 @@ async function supersededUnwritten(buildId: string, run: () => Promise<unknown>)
   expect(server.counts.scheduleWrites - writes).toBe(0);
 }
 
-describe("not the athlete's today (L-2)", () => {
+describe("a day gone, or not provisional (L-2; the mirror A2)", () => {
   it("sent at 23:50, claimed at 00:15: superseded, nothing written, the build unlocked", async () => {
     const { workoutId, buildId } = await sent();
     vi.setSystemTime(new Date(`${addDays(DAY, 1)}T07:15:00.000Z`)); // 00:15 the next day, Los Angeles
@@ -93,6 +111,84 @@ describe("not the athlete's today (L-2)", () => {
     vi.setSystemTime(new Date(`${addDays(DAY, 1)}T07:15:00.000Z`));
     await supersededUnwritten(buildId, () => lane());
     expect((await buildOf(buildId)).lockedAt).not.toBeNull();
+  });
+
+  it("a non-provisional push for tomorrow is still superseded: a day's build goes on its day only", async () => {
+    const { workoutId, buildId } = await sent();
+    // The slot and its push a day ahead (no route queues this: Send answers not_today — the claim holds the rule too).
+    await db.update(plannedWorkouts).set({ effectiveDate: TOMORROW }).where(eq(plannedWorkouts.id, workoutId));
+    const payload = programSessionPushJobSchema.parse((await jobOf(`push:${buildId}`))!.payload);
+    expect(payload.provisional).toBeUndefined();
+    await db.update(corosWriteJobs).set({ payload: { ...payload, happenDay: TOMORROW } }).where(eq(corosWriteJobs.id, `push:${buildId}`));
+    await supersededUnwritten(buildId, () => lane());
+    expect((await buildOf(buildId)).lockedAt).toBeNull();
+  });
+
+  it("a provisional push for tomorrow is claimed and verifies; the row gets the address", async () => {
+    const { workoutId, buildId } = await mirrored(TOMORROW);
+    await lane();
+    const push = await jobOf(`push:${buildId}`);
+    expect(push!.status).toBe("verified");
+    const stamp = programSessionPushJobSchema.parse(push!.payload).name;
+    expect(stamp).toBe(`Hips and back — ${TOMORROW}`);
+    expect(copiesNamed(stamp)).toBe(1);
+    const row = await rowOf(db, workoutId);
+    expect(row).toMatchObject({ effectiveDate: TOMORROW, lastVerifiedCorosDate: TOMORROW, corosSyncState: "synced" });
+    expect(row.sourceIdInPlan).not.toBeNull();
+    expect(row.sourceWorkoutId).toMatch(new RegExp(`^\\d+:${row.sourceIdInPlan}$`));
+    // The record is still the copy on the watch: never locked, its marker kept, nothing queued to take it off.
+    const record = await buildOf(buildId);
+    expect(record.lockedAt).toBeNull();
+    expect(isProvisionalBuild(record)).toBe(true);
+    expect(await sentBuildIdOf(db, workoutId)).toBe(buildId);
+    expect(await jobOf(`unpush:${buildId}`)).toBeUndefined();
+  });
+
+  it("a provisional push for yesterday is superseded: nothing written, the record's marker cleared", async () => {
+    const { workoutId, buildId } = await mirrored(DAY);
+    vi.setSystemTime(new Date(`${TOMORROW}T07:15:00.000Z`)); // 00:15 the next day, Los Angeles
+    await supersededUnwritten(buildId, () => lane());
+    const record = await buildOf(buildId);
+    expect(record.lockedAt).toBeNull();
+    expect(isProvisionalBuild(record)).toBe(false);
+    expect(await sentBuildIdOf(db, workoutId)).toBeNull();
+  });
+
+  it("gatedAtClaim is not consulted for a provisional push: a preview was never gated", async () => {
+    // Today's session, its copy queued before the check: the record's snapshot holds a jump with nothing to stand in for
+    // it, and the jaw flares before the lane runs. Judged as a day's build is (`gatedAtClaim`), the jump is closed — a
+    // day's build would be superseded here. (A flare, not a check left unanswered: since 2026-10-23 an unanswered check
+    // closes no jump, so it gates nothing either way.)
+    const { workoutId, buildId } = await mirrored(DAY);
+    await db.update(sessionBuilds).set({ workoutDoc: JSON.stringify(landingsDoc({ alternates: false })) }).where(eq(sessionBuilds.id, buildId));
+    expect(await gatedAtClaim(db, userId, await rowOf(db, workoutId), buildId, DAY)).toBe(false);
+    await recordCheck(db, userId, { profileId: "tmj", value: 6, feelingOff: true }, { today: DAY, now: "2026-10-09T19:05:00.000Z" });
+    expect(await gatedAtClaim(db, userId, await rowOf(db, workoutId), buildId, DAY)).toBe(true);
+    await lane();
+    expect((await jobOf(`push:${buildId}`))!.status).toBe("verified");
+    expect(copiesNamed(programSessionPushJobSchema.parse((await jobOf(`push:${buildId}`))!.payload).name)).toBe(1);
+  });
+});
+
+describe("kept off the watch (§3.6: watch_off honoured at claim)", () => {
+  it.each([
+    ["today", DAY],
+    ["tomorrow", TOMORROW],
+  ])("a provisional push for %s: superseded, nothing written, the record's marker cleared", async (_, day) => {
+    const { workoutId, buildId } = await mirrored(day);
+    await db.update(plannedWorkouts).set({ watchOff: true }).where(eq(plannedWorkouts.id, workoutId));
+    await supersededUnwritten(buildId, () => lane());
+    const record = await buildOf(buildId);
+    expect(record.lockedAt).toBeNull();
+    expect(isProvisionalBuild(record)).toBe(false);
+    expect(await sentBuildIdOf(db, workoutId)).toBeNull();
+  });
+
+  it("a day's build sent: superseded, nothing written, the build unlocked", async () => {
+    const { workoutId, buildId } = await sent();
+    await db.update(plannedWorkouts).set({ watchOff: true }).where(eq(plannedWorkouts.id, workoutId));
+    await supersededUnwritten(buildId, () => lane());
+    expect((await buildOf(buildId)).lockedAt).toBeNull();
   });
 });
 

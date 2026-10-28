@@ -17,10 +17,12 @@
  *  - Only a push that may still hold a copy names a stamp: never a superseded, cancelled or restored one.
  *  - A program row claims a wire workout only by its own stamp: a recycled address is someone else's workout.
  *  - Take off watch: the unpush verified resets the address and supersedes the push; Send queues it afresh.
+ *  - A mirror job (a programme row's push or unpush) is never verified by sight (the watch mirrors the plan, M7): a
+ *    copy seen on a queued push's day is not that push's work.
  */
 import { createHash } from "node:crypto";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { and, eq } from "drizzle-orm";
+import { and, eq, lt } from "drizzle-orm";
 import { schema } from "@rg/database";
 import { adaptiveConfigSchema, addDays, programSessionPushJobSchema, type UserPreferences } from "@rg/domain";
 import { COROS_LOCALE_URL, CorosClient, createWorkout } from "@rg/coros";
@@ -34,6 +36,9 @@ import { importPlanSnapshot } from "../src/services/import-plan.js";
 import { applyMove, emitPendingWork } from "../src/services/jobs.js";
 import { removeFromPlan } from "../src/services/plan-mutations.js";
 import { buildSession, loadSession } from "../src/services/session-build.js";
+import { createDocWorkout } from "../src/services/doc-workouts.js";
+import { queueProvisionalPush } from "../src/services/mirror.js";
+import { calmDoc } from "./doc-workout-fixture.js";
 import { activeSyncNotes, postSyncNote } from "../src/services/sync-notes.js";
 import { syncRoutes } from "../src/routes/sync.js";
 import { createSession, SESSION_COOKIE } from "../src/auth/sessions.js";
@@ -1007,5 +1012,44 @@ describe("a sent copy renamed in the COROS app (audit 3-A life L-5)", () => {
     await takeOffWatch(db, userId, workoutId, ctx());
     await lane();
     expect(programsNamed(RENAMED)).toHaveLength(1);
+  });
+});
+
+describe("a mirror job is never verified by sight (M7)", () => {
+  beforeEach(() => setup());
+
+  const recordsOf = (workoutId: string) =>
+    db.select().from(sessionBuilds).where(and(eq(sessionBuilds.workoutId, workoutId), lt(sessionBuilds.version, 0))).orderBy(sessionBuilds.version);
+
+  it("a COROS-side move onto a queued mirror push's day does not verify it", async () => {
+    const LATER = addDays(DAY, 2);
+    const LATEST = addDays(DAY, 3);
+    // A Studio workout two days ahead, its provisional copy on the watch.
+    const { workout } = await createDocWorkout(db, userId, { date: LATER, time: "18:00", doc: calmDoc() }, ctx());
+    const id = workout.id;
+    expect(await queueProvisionalPush(db, switchOn(), userId, await rowOf(db, id), ctx())).toBe("queued");
+    await lane();
+    const [first] = await recordsOf(id);
+    expect((await jobOf(`push:${first!.id}`))!.status).toBe("verified");
+    const stamp = programSessionPushJobSchema.parse((await jobOf(`push:${first!.id}`))!.payload).name;
+    expect((await rowOf(db, id)).lastVerifiedCorosDate).toBe(LATER);
+
+    // Moved a day later in the app: the old copy's delete is queued, then the mirror's push for the new day.
+    await applyMove(db, { userId, workoutId: id, toDate: LATEST, toTime: "18:00", source: "app", corosWritesEnabled: true });
+    expect(await queueProvisionalPush(db, switchOn(), userId, await rowOf(db, id), ctx())).toBe("queued");
+    const [second] = await recordsOf(id);
+    expect(second!.version).toBe(-2);
+    expect(await jobOf(`unpush:${first!.id}`)).toMatchObject({ status: "queued", destinationDate: LATER });
+    expect(await jobOf(`push:${second!.id}`)).toMatchObject({ status: "queued", destinationDate: LATEST });
+
+    // Before the lane runs, the athlete moves the old copy in the COROS app onto that very day.
+    entityOf(programOn(stamp)!).happenDay = Number(localDateToCorosDay(LATEST));
+    await importFromCoros();
+
+    // Neither job ran, so neither is verified: the push still owes the new copy, the delete still owes the old one's removal.
+    expect((await jobOf(`push:${second!.id}`))!.status).toBe("queued");
+    expect((await jobOf(`unpush:${first!.id}`))!.status).toBe("queued");
+    // The row followed the copy it holds, as a sent session's does.
+    expect(await rowOf(db, id)).toMatchObject({ effectiveDate: LATEST, lastVerifiedCorosDate: LATEST, archivedAt: null });
   });
 });

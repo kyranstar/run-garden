@@ -6,9 +6,8 @@
  * finds the sessions whose copy is not current (`currentCopy`, A7) and queues ONE a run, soonest first, inside the
  * window; a push that failed for good is re-queued on a backoff, three times at most (M3). Writes off: nothing.
  *
- * The executor's claim does not yet take a provisional push AHEAD of its day (Task 4 lifts that): every test that drives
- * the lane to a verified copy dates its session TODAY (the fixture's `DAY`), or moves the clock to the session's day
- * before the lane runs.
+ * The executor's claim takes a provisional push ahead of its day (A2: only a day gone supersedes it), so the lane drives
+ * a copy two days ahead to the watch as readily as today's.
  */
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { and, eq, lt } from "drizzle-orm";
@@ -716,8 +715,8 @@ describe("queueReplacement", () => {
 
 describe("driven through the lane (the mock COROS)", () => {
   it("a revision during a claimed push (Review Focus 1): the old push verifies, the sweep replaces it — one copy at the end", async () => {
-    // Today: the claim does not take a provisional push ahead of its day until Task 4.
-    const id = await seedDocRow(DAY);
+    // Two days ahead: the claim takes a provisional push ahead of its day (A2).
+    const id = await seedDocRow(addDays(DAY, 2));
     expect(await queue(id)).toBe("queued");
     const [first] = await recordsOf(id);
     const firstName = (await pushPayload(first!.id)).name;
@@ -752,7 +751,7 @@ describe("driven through the lane (the mock COROS)", () => {
   });
 
   it("a revision queued while the old push is on the wire: the lane queues the old copy's delete as it verifies — one copy at the end", async () => {
-    const id = await seedDocRow(DAY);
+    const id = await seedDocRow(addDays(DAY, 2));
     await queue(id);
     const [first] = await recordsOf(id);
     const fetches = counting(server, async (url, init) => {
@@ -819,11 +818,10 @@ describe("driven through the lane (the mock COROS)", () => {
     // Nothing more to do — and nothing twice.
     expect((await mirrorSweep(db, switchOn(), userId, prefs, ctx(), { cap: 1 })).queued).toBe(0);
     for (const id of [today, tomorrow]) expect((await intentOf(id))!.resolvedAt).toBe(NOON);
-    // Tomorrow, its push runs on its day (the claim takes a provisional push ahead of its day only from Task 4).
-    vi.setSystemTime(new Date(`${TOMORROW}T19:00:00.000Z`));
+    // Tomorrow's push runs today: a provisional copy goes ahead of its day (A2).
     await executeCloudJobs(db, switchOn(), userId, prefs, { fetchImpl: server.fetchImpl });
     expect((await jobOf(`push:${tomorrowRecord!.id}`))!.status).toBe("verified");
     expect(ourPrograms("Hips and back")).toHaveLength(2);
-    expect((await mirrorSweep(db, switchOn(), userId, prefs, ctx({ today: TOMORROW, now: `${TOMORROW}T19:00:00.000Z` }), { cap: 1 })).queued).toBe(0);
+    expect((await mirrorSweep(db, switchOn(), userId, prefs, ctx(), { cap: 1 })).queued).toBe(0);
   });
 });

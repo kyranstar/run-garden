@@ -505,6 +505,22 @@ export async function importPlanSnapshot(
     );
   const pendingJobByWorkout = new Map(pendingJobs.map((j) => [j.workoutId, j]));
   /**
+   * THE JOBS A READ MAY VERIFY BY SIGHT (`reconcileWorkout`: COROS shows the copy on the job's destination day). Never a
+   * programme row's push or unpush — `program_session_push`, `unpush:<buildId>`, an adopted copy's delete (the watch
+   * mirrors the plan, M7): only their own run proves them. With a mirror push queued for the day an app move took the
+   * session to, the athlete moving the OLD copy onto that day in the COROS app showed "the copy on the push's day" — and
+   * the read marked a push verified that never ran, or the old copy's delete done while the copy stayed on the watch.
+   */
+  const mirrorJob = (j: (typeof pendingJobs)[number]): boolean => {
+    const row = existingById.get(j.workoutId);
+    if (!row || !appAuthoredRow(row)) return false;
+    return (
+      j.kind === "program_session_push" ||
+      (j.kind === "coach_delete_workout" && (j.id.startsWith(unpushJobId("")) || j.id === adoptedCopyJobId(j.workoutId)))
+    );
+  };
+  const verifiableJobByWorkout = new Map(pendingJobs.filter((j) => !mirrorJob(j)).map((j) => [j.workoutId, j]));
+  /**
    * AN ADOPTED ROW'S OLD COPY, ON ITS WAY OFF (workout-editability spec §4): the one delete of the copy a revise took
    * over with the row (`adoptedCopyUnpush` — Send, Remove or a plan archive queued it), in flight. By the row (the name
    * it holds stays while its delete runs) and by the address the delete aims at, `${corosPlanId}:${idInPlan}` — the
@@ -1159,6 +1175,7 @@ export async function importPlanSnapshot(
     }
 
     const pendingJob = pendingJobByWorkout.get(current.id);
+    const verifiableJob = verifiableJobByWorkout.get(current.id);
     const corosDate = src.date;
 
     const action = reconcileWorkout({
@@ -1167,8 +1184,8 @@ export async function importPlanSnapshot(
       lastVerifiedCorosDate: current.lastVerifiedCorosDate,
       observedDate: corosDate,
       openIntent: intentByWorkout.get(current.id) ?? null,
-      pendingJob: pendingJob
-        ? { id: pendingJob.id, destinationDate: pendingJob.destinationDate }
+      pendingJob: verifiableJob
+        ? { id: verifiableJob.id, destinationDate: verifiableJob.destinationDate }
         : null,
     });
 

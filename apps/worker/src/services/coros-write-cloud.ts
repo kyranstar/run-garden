@@ -581,9 +581,11 @@ export async function executeCloudJobs(
         executed += 1;
         continue;
       } else if (job.kind === "program_session_push") {
-        // TODAY'S PROGRAM SESSION, SENT (Phase 3, spec §4.3). The same create+verify
-        // core as a coach create, reporting onto the slot's row; the payload
-        // carries the resolved steps, so what was previewed is what is written.
+        // TODAY'S PROGRAM SESSION, SENT (Phase 3, spec §4.3) — or a document workout's
+        // PROVISIONAL COPY, pushed ahead of its day by the mirror (the watch mirrors
+        // the plan §3.2). The same create+verify core as a coach create, reporting
+        // onto the slot's row; the payload carries the resolved steps, so what was
+        // previewed is what is written.
         const parsed = programSessionPushJobSchema.safeParse(job.payload);
         if (!parsed.success) {
           await db
@@ -619,20 +621,30 @@ export async function executeCloudJobs(
         // with no wire call — it would land on a day gone, or write what the
         // athlete has resolved, or write at all — and its build is unlocked so
         // the slot builds and starts as any other, unless the slot is started or
-        // done (Start owns that lock). A started slot of today still pushes.
+        // done (Start owns that lock). A started slot of today still pushes. A
+        // provisional copy's record is never locked: its marker is cleared instead
+        // (`unlockSentBuild`), so it is no longer the copy on the watch.
         const resolved =
           row.contentState === "done" ||
           row.completionState === "completed" ||
           row.completionState === "skipped" ||
           row.completionState === "missed";
-        // Nor what the day now keeps out of a document workout: Send judged its build with the reading of the tap, and a
-        // reading that has risen since closes a move of it, as Retry and Start would judge it (`gatedAtClaim`; an engine
-        // build has no such gate). The slot then builds again with the day's swap.
+        const today = todayInZone(prefs.timezone);
+        // A day gone: a day's build goes on its day only (`not_today`); a provisional copy goes ahead of its day, so
+        // only a day before today supersedes it (A2).
+        const dayGone = spec.provisional ? spec.happenDay < today : spec.happenDay !== today;
         if (
-          spec.happenDay !== todayInZone(prefs.timezone) ||
+          dayGone ||
           resolved ||
+          // Kept off: the athlete took the session off the watch (`watch_off`, §3.6) after this push was queued.
+          row.watchOff ||
           !prefs.corosWritesEnabled ||
-          (await gatedAtClaim(db, userId, row, spec.buildId, spec.happenDay))
+          // Nor what the day now keeps out of a document workout: Send judged its build with the reading of the tap, and
+          // a reading that has risen since closes a move of it, as Retry and Start would judge it (`gatedAtClaim`; an
+          // engine build has no such gate). The slot then builds again with the day's swap. Never a provisional copy:
+          // it is the document as the preview shows it, never gated, and a day ahead has no reading to judge it by (A2)
+          // — the day's own build replaces it once that day's check is answered.
+          (!spec.provisional && (await gatedAtClaim(db, userId, row, spec.buildId, spec.happenDay)))
         ) {
           const now = nowInstant();
           await db.update(corosWriteJobs).set({ status: "superseded", updatedAt: now }).where(eq(corosWriteJobs.id, job.id));
@@ -664,7 +676,7 @@ export async function executeCloudJobs(
           catalog,
           // Explicit, never the executor's own clock default (the observation
           // span is anchored on it).
-          today: todayInZone(prefs.timezone),
+          today,
           log: () => undefined,
         });
         const done = nowInstant();
