@@ -34,6 +34,7 @@ import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import {
   api,
   ApiError,
+  OPEN_SAVES_QUERY,
   type CoachConversationCardDto,
   type CoachConversationTurnDto,
   type CoachRunDto,
@@ -168,7 +169,10 @@ export function CoachConversation({ ctx, loopDeps, request = null, seeing: seenA
   const liveStatus = snapshot?.status ?? liveTurn?.status ?? null;
   const working = liveId !== null && liveStatus !== null && isLive(liveStatus);
 
-  // A run over: the conversation read again (its line, its cards), the current run, the suggestions, the spend.
+  // A run over: the conversation read again (its line, its cards), the current run, the suggestions, the spend — and the
+  // open batch (workout editability §7): a fit's run that ends with no proposal hands its batch back on the server, so
+  // Fit them in is back the moment the coach answers, in a sheet that sent the fit or one opened on its run since (the
+  // run's read names no batch, so every run's end reads it again: one read).
   const over = liveId !== null && liveStatus !== null && !isLive(liveStatus);
   useEffect(() => {
     if (!over) return;
@@ -176,6 +180,7 @@ export function CoachConversation({ ctx, loopDeps, request = null, seeing: seenA
     void qc.invalidateQueries({ queryKey: COACH_CURRENT_QUERY });
     void qc.invalidateQueries({ queryKey: ["coach-design-proposal"] });
     void qc.invalidateQueries({ queryKey: COACH_SPEND_QUERY });
+    void qc.invalidateQueries({ queryKey: OPEN_SAVES_QUERY });
   }, [over, liveId, qc]);
 
   // A run that ended in words (an answer, the new shape §5): the coach's words at once, whole — the conversation's read

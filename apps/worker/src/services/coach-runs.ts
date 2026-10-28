@@ -72,7 +72,7 @@ import { designProposalId } from "./design-tools/propose.js";
 import { athleteText, clipProse } from "./design-prose.js";
 import { sharedAthlete } from "./design-tools/read-common.js";
 import { askedAnswerRows, insertAnswers, undoUntil } from "./design-tools/record-answer.js";
-import { skipSetOf } from "./saves-batches.js";
+import { releaseFitForBatch, skipSetOf } from "./saves-batches.js";
 import {
   isToolErr,
   type DesignTool,
@@ -1398,8 +1398,10 @@ const TAKEOVERS = sql.raw(
  * What one tree's expiry spends at most (`expireTree`): the expiry; the proposal read and its write, both once more
  * when the write lost to a late verdict (design-review.ts PROMOTE_TRIES); the older plans superseded and a superseded
  * saves card's fit released (design-orchestrate.ts `supersedeOlderPlans`; the saves flow redesigned §12.1: + 1, was
- * 7) — or, nothing proposed, the close; and the lines. The sweep spends its read, a claim taken back when there is
- * one, and this per tree it expires (a counting test pins it); a step, an answer or a create spends it once.
+ * 7) — or, nothing proposed (its reads and lost writes at most), the close and a fit run's batch handed back
+ * (`releaseRunFit`, workout editability §7: in the same room); and the lines. The sweep spends its read, a claim taken
+ * back when there is one, and this per tree it expires (a counting test pins it); a step, an answer or a create spends
+ * it once.
  */
 export const EXPIRE_TREE_STATEMENTS = 1 + 2 * PROMOTE_TRIES + 2 + 1;
 
@@ -1410,8 +1412,9 @@ export const EXPIRE_TREE_STATEMENTS = 1 + 2 * PROMOTE_TRIES + 2 + 1;
  * the run itself. A main run that expires proposes what was reviewed (fix wave 3A, A2), a workout whose day has passed
  * (in the athlete's zone) left out — what a set's designers did read with its proposal, whatever `nodes` holds (round 2,
  * A-I1: the sweep and a create hold only the live runs); with nothing to propose, its design proposal still unreviewed
- * is closed with it: nothing half-made is ever shown. Its lines say it expired, and what came of the proposal — one line
- * for a run whose day has passed and whose later days' workouts are proposed (round 2, A-M7). At most
+ * is closed with it: nothing half-made is ever shown — and a fit's run hands its batch back (workout editability §7).
+ * Its lines say it expired, and what came of the proposal — one line for a run whose day has passed and whose later
+ * days' workouts are proposed (round 2, A-M7). At most
  * EXPIRE_TREE_STATEMENTS; one when the run itself did not expire.
  */
 async function expireTree(
@@ -1452,7 +1455,11 @@ async function expireTree(
   if (!took || root.parentId !== null) return { took, events: [] };
   const today = localDate(root.settings?.timezone || "UTC", now);
   const proposed = await proposeWhatItHas(db, userId, root, STOPPED_NOTES.expired!, at, today);
-  if (!proposed) await closeUnreviewed(db, userId, designProposalId(root.id), "expired", at);
+  if (!proposed) {
+    await closeUnreviewed(db, userId, designProposalId(root.id), "expired", at);
+    // Nothing proposed: a fit's main run hands its batch back (workout editability §7).
+    await releaseRunFit(db, userId, root);
+  }
   const lines: NewEvent[] =
     proposed && windowIsADay(root.settings)
       ? [{ kind: "note", summary: LINES.expiredDayLater, payload: { proposalId: designProposalId(root.id) } }]
@@ -1675,9 +1682,10 @@ function preferencesOf(text: string | null): UserPreferences {
 // ── Cancel ──────────────────────────────────────────────────────────────
 
 /** Cancel the run and every live run under it, and close its design proposal if it is still unreviewed (nothing
- * half-made is ever shown). A step in flight keeps only its spend (it writes under its claim, which this takes, and adds
- * its spend itself); a step that DIED holding a claim (stale) never will, so its spend is added here, as a takeover
- * would (fix wave 3A, A12). Idempotent: a run that is over comes back as it is. */
+ * half-made is ever shown); a fit's run hands its batch back (workout editability §7). A step in flight keeps only its
+ * spend (it writes under its claim, which this takes, and adds its spend itself); a step that DIED holding a claim
+ * (stale) never will, so its spend is added here, as a takeover would (fix wave 3A, A12). Idempotent: a run that is
+ * over comes back as it is. */
 export async function cancelRun(db: Db, userId: string, runId: string, now: Date): Promise<{ run: CoachRunDto } | null> {
   const { root, nodes } = await loadTree(db, userId, runId);
   if (!root) return null;
@@ -1706,6 +1714,9 @@ export async function cancelRun(db: Db, userId: string, runId: string, now: Date
     Object.assign(n, { status: "cancelled", finishedAt: at, updatedAt: at, ...(row ? { costUsd: Number(row.costUsd ?? 0) } : {}) });
   }
   await closeUnreviewed(db, userId, designProposalId(root.id), "cancelled", at);
+  // The main run cancelled here (not one over already, a sub-run left live under it): a fit's hands its batch back
+  // (workout editability §7) — unless its proposal is open, which the statement itself checks.
+  if (cancelled.some((r) => r.id === root.id)) await releaseRunFit(db, userId, root);
   await appendEvents(db, userId, root.id, [{ kind: "note", summary: "Cancelled." }], at);
   return { run: runDto(root, nodes) };
 }
@@ -2289,12 +2300,19 @@ export async function runStep(
     // written): it proposes what it has (spec §2; fix wave 3A, A2), under the finish's own guard, with why it stopped —
     // a set what was reviewed, the rest left out — and its next line says what came of it. STOP_PROPOSE: the proposal
     // read and, when it proposes, its write and the older plans' days it covers superseded (with a saves card's fit).
+    let proposed = false;
     if (!isLive(root.status) && root.status !== "finished" && root.status !== "cancelled") {
-      mainLines.push(proposedLine(root, await proposeWhatItHas(db, userId, root, stoppedNote(root.error), endAt), LINES.proposed));
+      proposed = await proposeWhatItHas(db, userId, root, stoppedNote(root.error), endAt);
+      mainLines.push(proposedLine(root, proposed, LINES.proposed));
     } else if (end.withWhatItHas && due === root) {
       // A main run that ended in words, its proposal kept back by the finish's guard: what was reviewed (fix wave 3A, A3).
-      mainLines.push(proposedLine(root, await proposeWhatItHas(db, userId, root, end.withWhatItHas, endAt), LINES.proposedAtEnd));
+      proposed = await proposeWhatItHas(db, userId, root, end.withWhatItHas, endAt);
+      mainLines.push(proposedLine(root, proposed, LINES.proposedAtEnd));
     }
+    // A fit's main run over with no proposal — none from this step, none on the run, none from what it had — hands its
+    // batch back (workout editability §7). One statement, in the room a proposal's write would have taken (FINISH_WRITE,
+    // or STOP_PROPOSE's, which spends it all only when it proposed).
+    if (!isLive(root.status) && !proposed && !end.proposalId && !due.proposalId && !root.proposalId) await releaseRunFit(db, userId, root);
   } else {
     // A cancel took the claim while the tools ran: what they did is on the trail below, the cancel's status stands.
     due.status = await addSpend(db, due.id, end.costMicros);
@@ -2336,6 +2354,19 @@ async function proposeWhatItHas(db: Db, userId: string, root: RunNode, note: str
   // rehearsal: never pending, it supersedes nothing of the athlete's — no statement for it.
   if (!root.settings?.rehearsal) await supersedeOlderPlans(db, userId, proposalId, at, followUpOf(root.settings?.focus, root.request), followUpReason(root.request));
   return true;
+}
+
+/**
+ * A fit ends when its run ends (workout editability §7): a main run that fits a saves batch (`savesBatchId` — a set's
+ * designers carry it too, but the fit is the main run's), over with no proposal, hands the batch back
+ * (saves-batches.ts `releaseFitForBatch`: one statement, which itself keeps the fit while the run's proposal is open).
+ * Callers run it once the run's end is written and "propose what it has" had its chance — never when that proposed,
+ * nor when the end carries a proposal — and never as an error. No statement for any other run.
+ */
+async function releaseRunFit(db: Db, userId: string, root: RunNode): Promise<void> {
+  const batchId = root.role === "main" && root.parentId === null ? root.settings?.savesBatchId : undefined;
+  if (!batchId) return;
+  await releaseFitForBatch(db, userId, batchId, root.createdAt, designProposalId(root.id)).catch(() => undefined);
 }
 
 /** The line after a stop's — or a finish in words' — own: `line` (what was proposed), or that nothing was. */

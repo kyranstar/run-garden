@@ -111,6 +111,23 @@ export async function releaseFitStarts(db: Db, userId: string, proposalIds: read
           and save_batches.fit_started_at <= p.created_at)`);
 }
 
+/**
+ * A fit ends when its run ends (workout editability §7): the main run of a fit (`savesBatchId` in its settings) that is
+ * over with no proposal — it answered in words, stopped, was cancelled or expired — hands its batch back, so "Fit them
+ * in" is there the moment the coach answers, not `FIT_STARTED_TTL_MS` later. The batch's fit cleared: still the
+ * account's, not fitted in, and begun no later than the run was made (`fitBatch` stamps the batch before the app
+ * creates the run, so a fit stamped after it is a newer fit's, never this run's) — and only while no proposal of the run's
+ * is open to the athlete (`runProposalId`, the run's design proposal, pending or partly approved: its card holds the fit,
+ * and its own ending releases it, `releaseFitStarts`). The check and the write are ONE statement; callers run it after
+ * the run's end is written, never as an error once that is: past `FIT_STARTED_TTL_MS` the fit reads as over anyway.
+ */
+export async function releaseFitForBatch(db: Db, userId: string, batchId: string, runCreatedAt: string, runProposalId: string): Promise<void> {
+  await db.run(sql`update save_batches set fit_started_at = null
+    where id = ${batchId} and user_id = ${userId} and fitted_at is null and fit_started_at is not null and fit_started_at <= ${runCreatedAt}
+      and not exists (select 1 from coach_proposals p where p.id = ${runProposalId} and p.user_id = ${userId}
+        and p.status in ('pending', 'partially_approved'))`);
+}
+
 const textOrNull = (v: unknown): string | null => (typeof v === "string" ? v : null);
 
 /** A JSON list of strings as SQLite hands it over (a list, or its text); [] when it isn't one. */

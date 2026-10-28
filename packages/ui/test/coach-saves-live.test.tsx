@@ -12,6 +12,8 @@
  *  - Opened with a fit (Today's Fit them in), the conversation sends it once it has settled.
  *  - "not now" asks first; OK puts it aside; closing the sheet any other way puts nothing aside.
  *  - While fitting, every button gives way to "Fitting in… open the coach".
+ *  - A run's end reads the open batch again: a fit's run that ended with no proposal handed it back on the server
+ *    (workout editability §7), so Fit them in is back at once — in a sheet that never sent the fit too.
  *
  * The server is a stubbed fetch; the step loop a stand-in. Synthetic data only.
  */
@@ -413,5 +415,26 @@ describe("a fit the coach was opened with (Today's Fit them in)", () => {
       host!.remove();
       root = null;
     }
+  });
+});
+
+describe("a fit run's end (workout editability §7)", () => {
+  it("a fit run's end re-reads the open batch: the server handed it back, so Fit them in is there at once — even in a sheet that never sent the fit", async () => {
+    // The sheet opened on the fit's run at work (sent from a sheet since closed): this one has no fit of its own to end.
+    // A run id of its own (a run's step is held across the tab by its id).
+    let status: CoachRunDto["status"] = "active";
+    let conv = conversation([turn(), turn({ runId: "run-fit-over", words: FIT_SAVES_REQUEST, status: "active", line: null })]);
+    const loop = drivenLoop(() => run({ id: "run-fit-over", request: FIT_SAVES_REQUEST, status }));
+    const { calls, state } = server({ open: { ...OPEN, fitting: true }, conv: () => conv });
+    mountSheet(loop.deps);
+    await openCoach();
+    await until(() => !!card()?.textContent?.includes(FITTING_LINE), "Fitting in… on the card");
+    // The run ends in words: its end, on the server, handed the batch back.
+    status = "finished";
+    state.open = { ...OPEN, fitting: false };
+    conv = conversation([turn(), turn({ runId: "run-fit-over", words: FIT_SAVES_REQUEST, status: "finished", line: "Those moves are in your week already." })]);
+    await loop.answer({ status: "finished", nextDue: null, events: [] });
+    await until(() => !!card() && !!button("Fit them in", card()!), "Fit them in back on the card");
+    expect(posted(calls, "/api/my-saves/batches/b1/fit/cancel")).toBe(0);
   });
 });
