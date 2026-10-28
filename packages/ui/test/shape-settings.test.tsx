@@ -88,6 +88,8 @@ function worker(prefs: Partial<UserPreferences> = {}) {
       if (path === "/api/coros/status") return json({ connected: true, email: "sam@example.test", lastSyncAt: null, lastErrorCategory: null });
       if (path === "/api/garden") return json({ restMode: { active: false, until: null } });
       if (path === "/api/calendar/calendars") return json({ calendars: [] });
+      // Feature off (the real worker answers 404), so the Saves card never renders; settings-saves.test.tsx covers the card.
+      if (path === "/api/my-saves/status" && method === "GET") return json({ error: "not_found" }, 404);
       return json({});
     }),
   );
