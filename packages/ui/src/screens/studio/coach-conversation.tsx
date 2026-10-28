@@ -71,7 +71,6 @@ import {
   isLive,
   isNotAvailable,
   NOT_AVAILABLE_LINE,
-  OVER_STATUSES,
   STILL_WORKING_LINE,
   WEEK_USED_UP_LINE,
   weekBudgetOf,
@@ -194,8 +193,8 @@ export function CoachConversation({ ctx, loopDeps, request = null, seeing: seenA
   const answering = asked?.kind === "questions" && asked.questions.length === 1;
 
   // ── A fit of saved moves (the saves flow redesigned §3.2, §12.1): its request sent with its batch ──
-  /** The fit-in run a send here started, until it ends: one that ends with no pins card ends its fit at once. */
-  const [fitRun, setFitRun] = useState<{ runId: string; batchId: string } | null>(null);
+  // Its run's end is the server's to settle (workout editability §7): a fit run over without its card naming the batch
+  // open hands the batch back as its end is written, and the run's end here reads the open batch again (above).
   /**
    * A fit the server took whose run could not start: cancelled at once, so the card's Fit them in comes back. Its words
    * are never left in the box (the final fix wave): sent from there, they would carry no batch — the box keeps only
@@ -237,11 +236,8 @@ export function CoachConversation({ ctx, loopDeps, request = null, seeing: seenA
       // A turn sent may have asked what a "needs you" chip offers (review-3 I1): the chips are read again now, though no
       // opening shows them — the next opening never shows a stale one first.
       void qc.invalidateQueries({ queryKey: NUDGES_QUERY, refetchType: "all" });
-      // A fit: the run already there answered (one run at a time) — the fit can't start; else its run is watched.
-      if (savesBatchId) {
-        if (res.existing) fitNotStarted(savesBatchId);
-        else setFitRun({ runId: res.run.id, batchId: savesBatchId });
-      }
+      // A fit: the run already there answered (one run at a time) — the fit can't start.
+      if (savesBatchId && res.existing) fitNotStarted(savesBatchId);
     },
     onError: (e, { savesBatchId }) => {
       // The week can't pay for it (§2.11): a fact, in the ink a status is — the words kept.
@@ -319,15 +315,6 @@ export function CoachConversation({ ctx, loopDeps, request = null, seeing: seenA
     fitSent.current = true;
     send(fit.request, { savesBatchId: fit.batchId });
   });
-  // The fit-in run sent here, over (the conversation's own read says so, with its cards): no pins card came of it — it
-  // answered in words, stopped, failed — so its fit ends now, not an hour later. A card's own ending is the server's.
-  useEffect(() => {
-    if (!fitRun) return;
-    const t = conv.data?.turns.find((x) => x.runId === fitRun.runId);
-    if (!t || !OVER_STATUSES.includes(t.status)) return;
-    setFitRun(null);
-    if (!t.cards.some((c) => c.kind === "pins")) cancelFit(qc, fitRun.batchId);
-  }, [fitRun, conv.data, qc]);
   /** The box takes the focus once: as the sheet opens on nothing to show yet, or with words written for the athlete. */
   const focusDecided = useRef(false);
   useEffect(() => {

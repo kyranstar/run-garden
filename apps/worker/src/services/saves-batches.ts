@@ -47,12 +47,14 @@ export function isFitting(fitStartedAt: string | null, now: string, pinsOpen: bo
  * names the batch and is not yet decided — no outcome, or one that is not applied, declined or superseded (`applying`,
  * and a refused op the athlete can still approve: open, as `statusOfOps` and `decidable` read them). Its
  * approve marks the batch fitted in; any other ending releases the fit (`releaseFitStarts`). A correlated exists over
- * the ops as `releaseFitStarts` reads them, for a clause of the statement it is in: no statement of its own.
+ * the ops as `releaseFitStarts` reads them, for a clause of the statement it is in: no statement of its own. With
+ * `proposalId`, that proposal's card only (`releaseFitForBatch`: the card of the run that ended).
  */
-export function pinsOpenSql(alias: string): SQL {
+export function pinsOpenSql(alias: string, proposalId?: string): SQL {
   const a = sql.raw(alias);
+  const only = proposalId === undefined ? sql.raw("") : sql` and pp.id = ${proposalId}`;
   return sql`exists (select 1 from coach_proposals pp, json_each(case when json_valid(pp.ops) then pp.ops else '[]' end) po
-    where pp.user_id = ${a}.user_id and pp.status in ('pending', 'partially_approved')
+    where pp.user_id = ${a}.user_id${only} and pp.status in ('pending', 'partially_approved')
       and json_extract(po.value, '$.kind') = 'move_pins' and json_extract(po.value, '$.batchId') = ${a}.id
       and coalesce(json_extract(po.value, '$.outcome.status'), '') not in ('applied', 'declined', 'superseded'))`;
 }
@@ -113,19 +115,20 @@ export async function releaseFitStarts(db: Db, userId: string, proposalIds: read
 
 /**
  * A fit ends when its run ends (workout editability §7): the main run of a fit (`savesBatchId` in its settings) that is
- * over with no proposal — it answered in words, stopped, was cancelled or expired — hands its batch back, so "Fit them
- * in" is there the moment the coach answers, not `FIT_STARTED_TTL_MS` later. The batch's fit cleared: still the
- * account's, not fitted in, and begun no later than the run was made (`fitBatch` stamps the batch before the app
- * creates the run, so a fit stamped after it is a newer fit's, never this run's) — and only while no proposal of the run's
- * is open to the athlete (`runProposalId`, the run's design proposal, pending or partly approved: its card holds the fit,
- * and its own ending releases it, `releaseFitStarts`). The check and the write are ONE statement; callers run it after
- * the run's end is written, never as an error once that is: past `FIT_STARTED_TTL_MS` the fit reads as over anyway.
+ * over — it answered in words, proposed, stopped, was cancelled or expired — hands its batch back unless its card of the
+ * moves in rotation naming the batch is open, so "Fit them in" is there the moment the coach answers, not
+ * `FIT_STARTED_TTL_MS` later. The batch's fit cleared: still the account's, not fitted in, and begun no later than the
+ * run was made (`fitBatch` stamps the batch before the app creates the run, so a fit stamped after it is a newer fit's,
+ * never this run's) — and only while the run's design proposal (`runProposalId`) holds no open `move_pins` op naming the
+ * batch (`pinsOpenSql` over that proposal alone): that card is what keeps a fit — its approve marks the batch fitted in,
+ * any other ending releases it (`releaseFitStarts`) — while a proposal of workouts alone, or one never shown (kept back
+ * unreviewed), never marks the batch, so it holds nothing up. The check and the write are ONE statement; callers run it
+ * after the run's end is written, never as an error once that is: past `FIT_STARTED_TTL_MS` the fit reads as over anyway.
  */
 export async function releaseFitForBatch(db: Db, userId: string, batchId: string, runCreatedAt: string, runProposalId: string): Promise<void> {
   await db.run(sql`update save_batches set fit_started_at = null
     where id = ${batchId} and user_id = ${userId} and fitted_at is null and fit_started_at is not null and fit_started_at <= ${runCreatedAt}
-      and not exists (select 1 from coach_proposals p where p.id = ${runProposalId} and p.user_id = ${userId}
-        and p.status in ('pending', 'partially_approved'))`);
+      and not ${pinsOpenSql("save_batches", runProposalId)}`);
 }
 
 const textOrNull = (v: unknown): string | null => (typeof v === "string" ? v : null);

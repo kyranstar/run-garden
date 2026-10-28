@@ -12,8 +12,9 @@
  *  - Opened with a fit (Today's Fit them in), the conversation sends it once it has settled.
  *  - "not now" asks first; OK puts it aside; closing the sheet any other way puts nothing aside.
  *  - While fitting, every button gives way to "Fitting in… open the coach".
- *  - A run's end reads the open batch again: a fit's run that ended with no proposal handed it back on the server
- *    (workout editability §7), so Fit them in is back at once — in a sheet that never sent the fit too.
+ *  - A run's end reads the open batch again and cancels nothing: a fit's run that ended without its card naming the
+ *    batch open handed it back on the server (workout editability §7), so Fit them in is back at once — in a sheet that
+ *    never sent the fit too.
  *
  * The server is a stubbed fetch; the step loop a stand-in. Synthetic data only.
  */
@@ -382,7 +383,7 @@ describe("a fit the coach was opened with (Today's Fit them in)", () => {
     expect(box()!.value).toBe("");
   });
 
-  it("a fit-in run that ends without its card cancels the fit (no hour of Fitting in…); one that ends with it doesn't", async () => {
+  it("a fit-in run sent here that ends — without its card or with it — cancels nothing (its end is the server's, §7) and reads the open batch again", async () => {
     const PINS = { kind: "pins" as const, proposalId: "dp-pins", title: "Moves in rotation", summary: "Eight join", status: "pending" };
     // Two runs of their own (a run's step is held across the tab by its id).
     for (const [runId, cards] of [["run-words", []], ["run-pins", [PINS]]] as const) {
@@ -405,12 +406,14 @@ describe("a fit the coach was opened with (Today's Fit them in)", () => {
       await until(() => runPosts(calls).length === 1, "the run started");
       await settle(30);
       expect(posted(calls, "/api/my-saves/batches/b1/fit/cancel")).toBe(0);
+      const reads = calls.filter((c) => c.method === "GET" && c.path === "/api/my-saves/open").length;
       status = "finished";
       conv = conversation([turn(), turn({ runId, words: FIT_SAVES_REQUEST, status: "finished", line: "Done.", cards: [...cards] })]);
       await loop.answer({ status: "finished", nextDue: null, events: [] });
       await until(() => !!dialog()!.querySelector(`[data-turn-reply='${runId}']`), "the run over");
+      await until(() => calls.filter((c) => c.method === "GET" && c.path === "/api/my-saves/open").length > reads, "the open batch read again");
       await settle(50);
-      expect(posted(calls, "/api/my-saves/batches/b1/fit/cancel"), runId).toBe(cards.length === 0 ? 1 : 0);
+      expect(posted(calls, "/api/my-saves/batches/b1/fit/cancel"), runId).toBe(0);
       act(() => root!.unmount());
       host!.remove();
       root = null;

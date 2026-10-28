@@ -296,7 +296,10 @@ const FINISH_WRITE = 1;
 const STOP_PROPOSE = 2 * PROMOTE_TRIES + 2;
 /** What a step's end may spend beyond its own writes: a finish's proposal write and a lost claim's spend can land in
  * one step (a cancel taking the claim while the tools ran), while a stop that proposes never meets either — it is
- * written under the claim it holds, and finishes nothing — so the larger of the two is reserved. */
+ * written under the claim it holds, and finishes nothing — so the larger of the two is reserved. A fit's main run that
+ * ends hands its batch back in one statement more (`releaseRunFit`, workout editability §7), only once its end is
+ * written — so never beside a lost claim's spend: a finish's write and it are two; a stop that proposed nothing, its
+ * reads and lost writes (at most 2 * PROMOTE_TRIES) and it, within STOP_PROPOSE; a stop that proposed, none. */
 const END_RESERVE = Math.max(LOST_CLAIM_WRITE + FINISH_WRITE, STOP_PROPOSE);
 /** The standing read before a step's tools run — the restore marker and whether the claim is still the step's, in one
  * statement (fix wave 3A, A11): after the model call in a model step, before the queued calls in a step of them. */
@@ -1715,7 +1718,7 @@ export async function cancelRun(db: Db, userId: string, runId: string, now: Date
   }
   await closeUnreviewed(db, userId, designProposalId(root.id), "cancelled", at);
   // The main run cancelled here (not one over already, a sub-run left live under it): a fit's hands its batch back
-  // (workout editability §7) — unless its proposal is open, which the statement itself checks.
+  // (workout editability §7) — unless its card naming the batch is open, which the statement itself checks.
   if (cancelled.some((r) => r.id === root.id)) await releaseRunFit(db, userId, root);
   await appendEvents(db, userId, root.id, [{ kind: "note", summary: "Cancelled." }], at);
   return { run: runDto(root, nodes) };
@@ -2309,10 +2312,12 @@ export async function runStep(
       proposed = await proposeWhatItHas(db, userId, root, end.withWhatItHas, endAt);
       mainLines.push(proposedLine(root, proposed, LINES.proposedAtEnd));
     }
-    // A fit's main run over with no proposal — none from this step, none on the run, none from what it had — hands its
-    // batch back (workout editability §7). One statement, in the room a proposal's write would have taken (FINISH_WRITE,
-    // or STOP_PROPOSE's, which spends it all only when it proposed).
-    if (!isLive(root.status) && !proposed && !end.proposalId && !due.proposalId && !root.proposalId) await releaseRunFit(db, userId, root);
+    // A fit's main run over hands its batch back unless its card of the moves in rotation naming it is open — the
+    // statement's own check (workout editability §7): a finish in words, or one whose proposal is workouts alone or kept
+    // back unreviewed. One statement: a finish spends it beside its proposal's one write (FINISH_WRITE), within
+    // END_RESERVE; a stop's within STOP_PROPOSE when it proposed nothing — never after "propose what it has" proposed,
+    // which spends STOP_PROPOSE whole.
+    if (!isLive(root.status) && !proposed) await releaseRunFit(db, userId, root);
   } else {
     // A cancel took the claim while the tools ran: what they did is on the trail below, the cancel's status stands.
     due.status = await addSpend(db, due.id, end.costMicros);
@@ -2358,10 +2363,10 @@ async function proposeWhatItHas(db: Db, userId: string, root: RunNode, note: str
 
 /**
  * A fit ends when its run ends (workout editability §7): a main run that fits a saves batch (`savesBatchId` — a set's
- * designers carry it too, but the fit is the main run's), over with no proposal, hands the batch back
- * (saves-batches.ts `releaseFitForBatch`: one statement, which itself keeps the fit while the run's proposal is open).
- * Callers run it once the run's end is written and "propose what it has" had its chance — never when that proposed,
- * nor when the end carries a proposal — and never as an error. No statement for any other run.
+ * designers carry it too, but the fit is the main run's), over, hands the batch back (saves-batches.ts
+ * `releaseFitForBatch`: one statement, which itself keeps the fit while the run's card of the moves in rotation naming
+ * the batch is open). Callers run it once the run's end is written and "propose what it has" had its chance — never
+ * when that proposed (its statements are spent) — and never as an error. No statement for any other run.
  */
 async function releaseRunFit(db: Db, userId: string, root: RunNode): Promise<void> {
   const batchId = root.role === "main" && root.parentId === null ? root.settings?.savesBatchId : undefined;
