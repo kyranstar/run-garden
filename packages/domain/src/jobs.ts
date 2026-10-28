@@ -228,6 +228,8 @@ export const programSessionPushJobSchema = z
     name: z.string().min(1).max(WATCH_STAMP_MAX),
     session: programWatchSessionSchema,
     /** Executor-side retry counter (transient failures requeue, cap 3). */
+    /** A provisional copy: pushed ahead of its day by the mirror, replaced on every change. */
+    provisional: z.boolean().optional(),
     attempts: z.number().int().min(0).optional(),
     /**
      * Written at verify: the fingerprints of what the read-back found. `structure` is `wire` without the program's

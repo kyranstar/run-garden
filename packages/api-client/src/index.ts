@@ -143,6 +143,8 @@ export const put = <T>(path: string, body?: unknown) =>
 
 export interface WorkoutDto {
   id: string;
+  /** Kept off the watch by the athlete: the mirror makes no copy until cleared. Absent from an older server. */
+  watchOff?: boolean;
   /**
    * Where the row came from: program | on_demand | studio | template for the app's own sessions (studio and template
    * rows are document workouts, played from their document); null for rows not yet labelled.
@@ -1999,7 +2001,16 @@ export type WatchUnavailableReason =
  * "Couldn't send" with Retry; `off_watch` (removed in COROS) and `unavailable` → nothing to send.
  */
 export interface WatchStateDto {
-  state: "unavailable" | "ready" | "sending" | "on_watch" | "failed" | "off_watch";
+  state:
+    | "unavailable"
+    | "ready"
+    | "sending"
+    | "on_watch"
+    | "failed"
+    | "off_watch"
+    | "updating"
+    | "kept_off"
+    | "closed_by_check";
   reason?: WatchUnavailableReason;
 }
 

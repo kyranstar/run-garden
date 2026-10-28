@@ -112,6 +112,8 @@ export const plannedWorkouts = sqliteTable(
      * The program name the watch holds a copy of this row under when the app did not push that copy (set when a coach or watch-plan session is adopted into a Studio document; cleared when the copy is gone).
      */
     watchCopyName: text("watch_copy_name"),
+    /** Kept off the watch by the athlete: the mirror makes no copy until cleared. */
+    watchOff: integer("watch_off", { mode: "boolean" }).notNull().default(false),
     createdAt: text("created_at").notNull(),
     updatedAt: text("updated_at").notNull(),
   },
