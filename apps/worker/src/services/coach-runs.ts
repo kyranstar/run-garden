@@ -311,8 +311,13 @@ export const MODEL_STEP_FIXED = PENDING_STEP_FIXED + 5;
 /** The most one tool may declare: what a step of queued calls has room for. A tool above it is a registry bug, and
  * its call is answered with an error rather than queued forever. */
 export const MAX_TOOL_STATEMENT_COST = STEP_BUDGET - ROUTE_OVERHEAD - PENDING_STEP_FIXED;
-/** What the opening context may spend (Task 3's `buildDesignContext` is pinned against it). */
-export const CONTEXT_STATEMENT_BUDGET = STEP_BUDGET - ROUTE_OVERHEAD - BASE_FIXED - LOST_CLAIM_WRITE;
+/**
+ * What the opening context may spend (Task 3's `buildDesignContext` is pinned against it) — one less since workout
+ * editability §7: a context step that fails ends its run, whose "propose what it has" reads its proposal (none yet: the
+ * slot LOST_CLAIM_WRITE reserves, never spent beside it once the end is written), and a fit's main run then hands its
+ * batch back (`releaseRunFit`) — one statement more, so a failed context step stays within STEP_BUDGET on paper.
+ */
+export const CONTEXT_STATEMENT_BUDGET = STEP_BUDGET - ROUTE_OVERHEAD - BASE_FIXED - LOST_CLAIM_WRITE - 1;
 
 /** Tool calls run in one step at most (CPU; and it keeps a step's events to one insert). This is how many one request
  * runs, never what the model is told: every call of a turn (MAX_TOOL_CALLS_PER_TURN) still runs before its next turn,
