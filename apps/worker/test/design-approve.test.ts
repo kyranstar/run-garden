@@ -792,6 +792,8 @@ describe("manifest lines", () => {
       place: "Garage",
       parts: ["Activation", "Main", "Cool-down · Flow"],
       detail: ["Glute bridge 2 × 12", "Goblet squat 3 × 8 · 35 lb", "Band row 3 × 12", "Couch stretch 45 s each side"],
+      // Each move's library id, parallel to the detail (the card links its name to its Studio page).
+      detailIds: ["bridge", "gobletSquat", "bandRow", "couchStretch"],
       // What it is for, and each move's why and the moves weighed instead, parallel to the detail (Task 13's fix wave, §2.8).
       intent: "Wake the glutes, then load the squat; finish by opening the hips.",
       whys: ["Activation before loading.", "Week 3 of 5 — up one rep.", "Upper back, untrained for 6 days.", null],

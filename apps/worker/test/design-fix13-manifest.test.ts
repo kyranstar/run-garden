@@ -138,6 +138,18 @@ describe("a line says what the workout is for and why each move (§2.8; 13d D1, 
     expect(line!.detailIds).toEqual(["bridge", null, "deadBug"]);
   });
 
+  it("an id the library does not know yields no detailIds (all null: key absent) and no alternate id", () => {
+    const doc = workoutDocSchema.parse({
+      ...whyDoc(),
+      parts: [{ purpose: "main", format: "straight", items: [{ kind: "exercise", libraryId: "noSuchMoveXyz", dose: { sets: 1, reps: 5 }, alternates: [{ libraryId: "alsoUnknownAbc", why: "A stand-in." }] }, { kind: "rest", seconds: 30 }] }],
+    });
+    const [line] = docWorkoutLines([op({ doc })], place, CLOCK);
+    expect(line!.detail).toHaveLength(2);
+    expect("detailIds" in line!).toBe(false);
+    expect(line!.alternates[0]).toHaveLength(1);
+    expect("id" in line!.alternates[0]![0]!).toBe(false);
+  });
+
   it("a now design says so (§2.6): the card reads it as now", () => {
     const [now, timed] = docWorkoutLines(
       [op({ target: { kind: "new", date: "2026-10-16", atNow: true } as DesignedOp["target"] }), op({ toolUseId: "toolu_2", by: { runId: "run-d2", role: "designer" } })],
