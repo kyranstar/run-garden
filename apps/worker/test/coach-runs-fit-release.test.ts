@@ -5,10 +5,9 @@
  * workouts alone, stopped, was cancelled, or expired — hands its batch back at once, in one statement, rather than
  * reading "Fitting in…" for FIT_STARTED_TTL_MS:
  *
- *  - in the run's own end write (finished; failed), after "propose what it has" had its chance — never after it
- *    proposed (its statements are spent);
+ *  - in the run's own end write (finished; failed; stopped), after "propose what it has" had its chance;
  *  - in `cancelRun`, for the main run it cancelled;
- *  - in the expiry (`expireTree`: the sweep's, a step's, an answer's, a create's), when nothing was proposed — within
+ *  - in the expiry (`expireTree`: the sweep's, a step's, an answer's, a create's), proposed or not — within
  *    EXPIRE_TREE_STATEMENTS, counted.
  *
  * Never a newer fit's (one stamped after the run was made), never a batch a plain run never named, never a batch fitted
@@ -216,7 +215,7 @@ describe("a fit run that ends hands its batch back unless its card naming the ba
     expect(await fitOf(db, batchId)).toBeNull();
   });
 
-  it("expired by the sweep proposing what it has: the expiry's statements are spent, so the fit is left as it is", async () => {
+  it("expired by the sweep proposing workouts alone: released — nothing of that card marks the batch", async () => {
     const db = makeTestDb({ boundVariableCap: 100 });
     const a = await seedRichAthlete(db);
     const batchId = await savedBatch(db, a.userId);
@@ -227,10 +226,67 @@ describe("a fit run that ends hands its batch back unless its card naming the ba
     await sweepCoachRuns(db, env, a.userId, new Date(NOW.getTime() + 25 * 3_600_000), scripted([]).deps, { maxSteps: 0 });
     expect((await runOf(db, runId)).status).toBe("expired");
     expect((await proposalOf(db, runId))!.status).toBe("pending");
+    expect(await fitOf(db, batchId)).toBeNull();
+  });
+
+  it("expired by the sweep proposing a card naming the batch, its first write lost and an older card superseded: kept — the tree at exactly EXPIRE_TREE_STATEMENTS (9)", async () => {
+    let statements = 0;
+    let injecting = false;
+    let raceOn: string | null = null;
+    const db: Db = makeTestDb({
+      boundVariableCap: 100,
+      onStatement: (text) => {
+        if (injecting) return;
+        statements += 1;
+        if (raceOn && text.includes("SET status = 'pending', ops =")) {
+          // A late verdict lands between the promote's read and its write: it reads again (A-M3).
+          injecting = true;
+          (db as unknown as { $client: { prepare: (s: string) => { run: (...a: unknown[]) => unknown } } }).$client
+            .prepare("UPDATE coach_proposals SET ops = json_set(ops, '$[0].review.note', 'late') WHERE id = ?")
+            .run(raceOn);
+          injecting = false;
+          raceOn = null;
+        }
+      },
+    });
+    const a = await seedRichAthlete(db);
+    const batchId = await savedBatch(db, a.userId);
+    const runId = await fitRun(db, a.userId, batchId);
+    const { deps } = scripted([t(propose("Calm hips", day(-1))), t(submit(verdict(4))), t(ask())]);
+    expect(await drive(db, a.userId, runId, deps)).toBe("waiting_athlete");
+    // Beside its reviewed workout, the run's card of the moves in rotation naming its batch (a day still ahead) — and an
+    // older card, pending, pinning the same move for another batch whose fit began before it: superseded, its fit
+    // released (supersedeOlderPlans). Synthetic ids.
+    const pins = (id: string, batch: string) => ({
+      kind: "move_pins", id, pin: ["gobletSquat"], unpin: [], batchId: batch, why: "w", title: "t", summary: "s", lines: [],
+      date: "2999-01-01", toolUseId: `u-${id}`, at: at(-30).toISOString(),
+    });
+    const [row] = await db.select().from(schema.coachProposals).where(eq(schema.coachProposals.id, designProposalId(runId)));
+    await db
+      .update(schema.coachProposals)
+      .set({ ops: [...(row!.ops as unknown[]), pins(`pins-${runId}`, batchId)] })
+      .where(eq(schema.coachProposals.id, designProposalId(runId)));
+    const other = "batch-fr-older";
+    await db.insert(schema.saveBatches).values({ id: other, userId: a.userId, status: "saved", createdAt: at(-90).toISOString(), savedAt: at(-90).toISOString(), fitStartedAt: at(-60).toISOString() });
+    await db.insert(schema.coachProposals).values({
+      id: "older-card", userId: a.userId, title: "t", evidence: "", rationale: "", flags: [], ops: [pins("pins-older", other)],
+      status: "pending", expiresAt: "2999-01-01", createdAt: at(-30).toISOString(),
+    });
+    raceOn = designProposalId(runId);
+    statements = 0;
+    const swept = await sweepCoachRuns(db, env, a.userId, new Date(NOW.getTime() + 25 * 3_600_000), scripted([]).deps, { maxSteps: 0 });
+    expect(swept).toMatchObject({ expired: 1 });
+    expect(raceOn).toBeNull();
+    // The read; the expiry, the proposal read, the write that lost, the read again, the write, the older plans
+    // superseded, the superseded card's fit released, the fit's own release (its card open: nothing written), the lines.
+    expect(EXPIRE_TREE_STATEMENTS).toBe(9);
+    expect(statements).toBe(1 + EXPIRE_TREE_STATEMENTS);
+    expect((await proposalOf(db, runId))!.status).toBe("pending");
+    expect(await fitOf(db, other)).toBeNull();
     expect(await fitOf(db, batchId)).toBe(FIT_AT);
   });
 
-  it("expired with nothing proposed, its promote losing both tries: the release keeps the tree at its declared cost — the sweep's read, then exactly EXPIRE_TREE_STATEMENTS (8)", async () => {
+  it("expired with nothing proposed, its promote losing both tries: the close and the release — the sweep's read, then EXPIRE_TREE_STATEMENTS less the supersede's fit release it never reaches", async () => {
     let statements = 0;
     let injecting = false;
     let races = 0;
@@ -264,8 +320,7 @@ describe("a fit run that ends hands its batch back unless its card naming the ba
     expect(races).toBe(2);
     // The read; the expiry, the proposal read, the write that lost, the read again, the write that lost, the close, the
     // release, the lines.
-    expect(EXPIRE_TREE_STATEMENTS).toBe(8);
-    expect(statements).toBe(1 + EXPIRE_TREE_STATEMENTS);
+    expect(statements).toBe(1 + EXPIRE_TREE_STATEMENTS - 1);
     expect((await proposalOf(db, runId))!.status).toBe("expired");
     expect(await fitOf(db, batchId)).toBeNull();
   });

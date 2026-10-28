@@ -339,13 +339,15 @@ describe("each act tool's declared statement cost is the most it runs", () => {
     expect(refused.count).toBe(1);
   });
 
-  it("propose_workout fits a model step's tool room three times over, and every act tool fits the loop's per-tool cap", () => {
+  it("propose_workout fits a model step's tool room twice over, and every act tool fits the loop's per-tool cap", () => {
     const room = STEP_BUDGET - ROUTE_OVERHEAD - MODEL_STEP_FIXED;
     // 28 since fix wave 3A round 2 (A-M3): a stop's proposal reserves its read and write twice over; 27 since the saves
-    // flow redesigned (§12.1): its supersede may release a superseded saves card's fit, one statement more.
-    expect(room).toBe(27);
-    // With its reviewer (Task 6) a draft pauses the run: no call after it runs in the same step.
-    expect(tool("propose_workout").statementCost * 3).toBeLessThanOrEqual(room);
+    // flow redesigned (§12.1): its supersede may release a superseded saves card's fit, one statement more; 26 since
+    // workout editability §7: a fit's main run hands its own batch back as it stops.
+    expect(room).toBe(26);
+    // With its reviewer (Task 6) a draft pauses the run: no call after it runs in the same step — so twice over (three
+    // times, 27, no longer fits since §7) is room to spare.
+    expect(tool("propose_workout").statementCost * 2).toBeLessThanOrEqual(room);
     for (const t of ACT_TOOLS) expect(t.statementCost, t.name).toBeLessThanOrEqual(MAX_TOOL_STATEMENT_COST);
   });
 });

@@ -377,8 +377,9 @@ describe("every request within the budget", () => {
     expect(step.body.status).toBe("finished");
     expect(step.cost).toBeLessThanOrEqual(BUDGET);
     // The step's end reserve is a stop's proposal (five, since round 2's read-again; six since the saves flow redesigned
-    // §12.1, its supersede's fit release): a finish's write uses one of it.
-    expect(step.cost).toBe(BUDGET - 5);
+    // §12.1, its supersede's fit release; seven since workout editability §7, a fit's own batch handed back): a finish's
+    // write uses one of it.
+    expect(step.cost).toBe(BUDGET - 6);
     const [p] = await db.select().from(schema.coachProposals).where(eq(schema.coachProposals.id, proposalId));
     expect(p!.status).toBe("rehearsal");
   });
@@ -421,9 +422,9 @@ describe("every request within the budget", () => {
     expect(step.status).toBe(200);
     expect(step.body.status).toBe("cancelled");
     expect(step.cost).toBeLessThanOrEqual(BUDGET);
-    // A finish's write and a lost claim's spend use two of the end reserve (six since the saves flow redesigned §12.1); a
-    // stop's proposal, the larger, the whole of it (the stop's worst case below).
-    expect(step.cost).toBe(BUDGET - 4);
+    // A finish's write and a lost claim's spend use two of the end reserve (seven since workout editability §7); a stop's
+    // proposal, the larger, the whole of it (the stop's worst case below).
+    expect(step.cost).toBe(BUDGET - 5);
     expect(step.body.events.length).toBeLessThanOrEqual(EVENTS_PER_INSERT);
   });
 
@@ -448,6 +449,20 @@ describe("every request within the budget", () => {
     return { op: pins(`pins-${runId}`), fitOf };
   }
 
+  /**
+   * The stop's last statement (workout editability §7): the run a fit's — a saved batch of its own, its fit begun before
+   * the run was made — so its stop hands that batch back (its card names another batch). Synthetic ids.
+   */
+  let fits = 0;
+  async function fitRunCreate() {
+    const batchId = `fit-batch-${++fits}`;
+    const ago = new Date(Date.now() - 60_000).toISOString();
+    await db.insert(schema.saveBatches).values({ id: batchId, userId, status: "saved", createdAt: ago, savedAt: ago, fitStartedAt: ago });
+    const id = (await call("POST", "", { scope: { kind: "now" }, savesBatchId: batchId })).body.run.id as string;
+    const fitOf = async () => (await db.select().from(schema.saveBatches).where(eq(schema.saveBatches.id, batchId)))[0]!.fitStartedAt;
+    return { id, fitOf };
+  }
+
   it("the stop's worst case (fix wave 3A, A2): tools fill the room, their results take the state past its cap, and the run stops proposing its reviewed draft — exactly the budget", async () => {
     const room = BUDGET - ROUTE_OVERHEAD - MODEL_STEP_FIXED;
     const n = MAX_TOOL_CALLS_PER_STEP - 1;
@@ -461,7 +476,8 @@ describe("every request within the budget", () => {
       },
     }));
     turns = [answer(costs.map((_, i) => use(`t${i}`)))];
-    const id = (await call("POST", "", { scope: { kind: "now" } })).body.run.id as string;
+    const fit = await fitRunCreate();
+    const id = fit.id;
     await call("POST", `/${id}/step`); // context
     const [row] = await db.select().from(schema.coachRuns).where(eq(schema.coachRuns.id, id));
     const state = JSON.parse(row!.state!) as { messages: Array<{ content: Array<{ text: string }> }> };
@@ -503,9 +519,11 @@ describe("every request within the budget", () => {
     ]);
     // Every tool ran (the room), then the run's write, the proposal read, its write (which lost to a late verdict), the
     // read again, the write again, the older plans superseded, the superseded saves card's fit released (the saves flow
-    // redesigned §12.1), the lines: the step's end reserve spent whole.
+    // redesigned §12.1), the fit's own batch handed back (workout editability §7), the lines: the step's end reserve
+    // spent whole.
     expect(step.cost).toBe(BUDGET);
     expect(await card.fitOf()).toBeNull();
+    expect(await fit.fitOf()).toBeNull();
     const [p] = await db.select().from(schema.coachProposals).where(eq(schema.coachProposals.id, `dp-${id}`));
     expect(p!.status).toBe("pending");
   });
@@ -522,7 +540,8 @@ describe("every request within the budget", () => {
         return { data: { rows: "r".repeat(7_800) }, summary: `q${i}` };
       },
     }));
-    const id = (await call("POST", "", { scope: { kind: "now" } })).body.run.id as string;
+    const fit = await fitRunCreate();
+    const id = fit.id;
     await call("POST", `/${id}/step`); // context
     // The model asked for the calls in a step that was left; they wait, queued, in a state near its cap.
     const [row] = await db.select().from(schema.coachRuns).where(eq(schema.coachRuns.id, id));
@@ -571,9 +590,11 @@ describe("every request within the budget", () => {
     ]);
     // The route's two, the tree, the claim, the standing read, every queued call (the room), the run's write, the
     // proposal read, its write (lost), the read again, the write again, the older plans superseded, the superseded saves
-    // card's fit released (the saves flow redesigned §12.1), the lines.
+    // card's fit released (the saves flow redesigned §12.1), the fit's own batch handed back (workout editability §7),
+    // the lines.
     expect(step.cost).toBe(BUDGET);
     expect(await card.fitOf()).toBeNull();
+    expect(await fit.fitOf()).toBeNull();
     const [p] = await db.select().from(schema.coachProposals).where(eq(schema.coachProposals.id, `dp-${id}`));
     expect(p!.status).toBe("pending");
   });

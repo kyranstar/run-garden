@@ -396,7 +396,7 @@ describe("a finish that died after making its proposal pending (A17)", () => {
 // ── Round 2, A-M8: the sweep's expiries, counted ──────────────────────────
 
 describe("the sweep expiring an athlete's two live trees (round 2, A-M8)", () => {
-  it("their own and a rehearsal's, both past their window: one read, then each tree at most its declared cost — the athlete's at it exactly", async () => {
+  it("their own and a rehearsal's, both past their window: one read, then each tree at most its declared cost — the athlete's at it but for the fit releases it never needs", async () => {
     let statements = 0;
     let injecting = false;
     let race: string | null = null;
@@ -434,10 +434,11 @@ describe("the sweep expiring an athlete's two live trees (round 2, A-M8)", () =>
     // The sweep's read; the athlete's tree — the expiry, the proposal read, the write that lost, the read again, the
     // write, the older plans superseded, the line — at its declared cost; the rehearsal's — the expiry, the proposal read
     // and its write (proposed as production's is, and still a rehearsal: it supersedes nothing), the line. The declared
-    // cost holds one more since the saves flow redesigned (§12.1: was 7) — a superseded saves card's fit released —
-    // which this tree, superseding no such card, never spends.
-    expect(EXPIRE_TREE_STATEMENTS).toBe(8);
-    expect(statements).toBe(1 + (EXPIRE_TREE_STATEMENTS - 1) + 4);
+    // cost holds one more since the saves flow redesigned (§12.1: was 7) — a superseded saves card's fit released — and
+    // one more since workout editability §7 (was 8) — a fit's own batch handed back — neither of which this tree, superseding
+    // no such card and fitting no batch, spends (a fit's tree at it exactly: coach-runs-fit-release.test.ts).
+    expect(EXPIRE_TREE_STATEMENTS).toBe(9);
+    expect(statements).toBe(1 + (EXPIRE_TREE_STATEMENTS - 2) + 4);
     expect((await proposal(db, mine))!).toMatchObject({ status: "pending" });
     expect((await proposal(db, rehearsal))!.status).toBe("rehearsal");
     for (const id of [mine, rehearsal]) expect((await run(db, id)).status).toBe("expired");
