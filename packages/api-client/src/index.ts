@@ -217,6 +217,8 @@ export interface WorkoutDto {
   syncAction?: SyncAction;
   completionState: CompletionState;
   archived: boolean;
+  /** A Studio document is stored on the row. Absent from an older server. */
+  hasDoc?: boolean;
   /**
    * A lift/mobility session's prescription, one line per movement, already
    * formatted (`formatExercise`) and already name-resolved server-side.

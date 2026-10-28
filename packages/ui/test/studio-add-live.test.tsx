@@ -12,7 +12,7 @@ import { MemoryRouter, useLocation } from "react-router-dom";
 import { onlineManager, QueryClientProvider } from "@tanstack/react-query";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { TemplateDto, WorkoutDto } from "@rg/api-client";
-import type { WorkoutDoc } from "@rg/domain";
+import { REVISABILITY_WORDS, type WorkoutDoc } from "@rg/domain";
 import { EXERCISES } from "@rg/exercise-library";
 import { edit, newDoc, startEditing, type DraftDoc } from "@rg/workout";
 import { StudioScreen } from "../src/screens/studio/screen.js";
@@ -127,7 +127,7 @@ interface Server {
   docs?: Array<{ doc: WorkoutDoc; rev: number }>;
   /** PUT /api/workouts/:id/doc answers, in turn (the last one repeats): a refusal, "hang" (never answers), or OK with
    * what the server says of it. */
-  revise?: Array<number | "hang" | "held" | { error: string; status: number } | { watchHasOlder?: boolean; warnings?: unknown[] }>;
+  revise?: Array<number | "hang" | "held" | { error: string; status: number; words?: { why: string; instead: string } } | { watchHasOlder?: boolean; warnings?: unknown[] }>;
   /** PUT /api/templates/:id answers, in turn (the last one repeats): `stale` (409 stale_revision), else OK. */
   tplPut?: Array<"stale" | "ok">;
 }
@@ -164,7 +164,7 @@ function serve(s: Server = {}): Call[] {
         const a = s.revise?.[Math.min(revised++, (s.revise?.length ?? 1) - 1)];
         if (a === "hang") return new Promise<Response>(() => undefined);
         if (a === "held") return new Promise<Response>((r) => (releaseHeld = () => r(json({ workout: { ...planned({ id: doc[1]! }), date: "2026-10-15", time: "18:00", title: body.doc.title, intentSummary: "", docRev: body.baseRev + 1, minutes: 20 }, rev: body.baseRev + 1, watchHasOlder: false, warnings: [] }))));
-        if (a && typeof a === "object" && "error" in a) return json({ error: a.error, rev: rev + 1 }, a.status);
+        if (a && typeof a === "object" && "error" in a) return json({ error: a.error, rev: rev + 1, ...a.words }, a.status);
         const said = a && typeof a === "object" ? a : {};
         const w = planned({ id: doc[1]! });
         return json({
@@ -432,6 +432,17 @@ describe("to a planned workout", () => {
     const puts = calls.filter((c) => c.method === "PUT").map((c) => (c.body as { baseRev: number; doc: WorkoutDoc }));
     expect(puts.map((p) => p.baseRev)).toEqual([3, 5]);
     expect(puts[1]!.doc.title).toBe("Strength day, edited");
+  });
+
+  it("a programme session's 409 shows its why and instead", async () => {
+    const words = { why: REVISABILITY_WORDS.programme.why as string, instead: REVISABILITY_WORDS.programme.instead };
+    serve({ workouts: [planned({ id: "w1" })], docs: [{ doc: storedDoc("Strength day"), rev: 1 }], revise: [{ error: "not_editable", status: 409, words }] });
+    await openAdd("goblet", "Goblet squat");
+    await until(() => !!offered("To a planned workout"), "the planned workout");
+    await click(option("To a planned workout"), "the planned choice");
+    await click(addButton(), "Add");
+    await until(() => !!sheet()?.querySelector('[role="alert"]'), "the refusal");
+    expect(sheet()!.querySelector('[role="alert"]')!.textContent).toBe(`${words.why} ${words.instead}`);
   });
 
   it("refused (no longer editable): says why in the sheet; nothing is confirmed", async () => {

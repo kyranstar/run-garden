@@ -11,7 +11,7 @@
  *   rejectionText     why an Add did nothing, in plain words.
  *   addTargetHref     where Open goes: the builder, on the thing the move went into (spec §2's routes).
  */
-import { docOriginRow, type WorkoutDoc } from "@rg/domain";
+import { revisability, type WorkoutDoc } from "@rg/domain";
 import { label, type ExerciseRecord } from "@rg/exercise-library";
 import { itemFor, newDoc, placementFor, startEditing, tryEdit, type DraftDoc, type Rejection } from "@rg/workout";
 import type { WorkoutDto } from "@rg/api-client";
@@ -45,23 +45,27 @@ export function addMove(
 /** A new workout to put the move into: warm-up, main and cool-down, as the builder starts one (spec §8). */
 export const freshDoc = (): DraftDoc => newDoc("structured", { title: "New workout", source: { kind: "studio" } });
 
-const FROZEN: readonly string[] = ["completed", "skipped", "missed"];
-const UNDER_WAY: readonly string[] = ["started", "done"];
-
 /**
- * A planned workout the Studio may change: a document workout (`DOC_ORIGINS` — the Studio's, a template's), today or
- * later, not done, skipped or missed, and not under way. The server's own rule for `PUT /api/workouts/:id/doc`; a
- * programme's session is never one.
+ * A planned workout the Studio may change: any revisable one (`revisability`, workout-editability spec §3) — a Studio or
+ * template workout, or a coach or watch session the revise adopts into a document — today or later, not resolved,
+ * under way, a rest day, a race, a programme's session or a run.
  */
 export function editableWorkout(w: WorkoutDto, today: string): boolean {
-  return (
-    docOriginRow({ origin: w.origin ?? null }) &&
-    !w.archived &&
-    w.effectiveDate >= today &&
-    !FROZEN.includes(w.completionState) &&
-    !UNDER_WAY.includes(w.contentState ?? "")
-  );
+  return !w.archived && revisability(rowOf(w), today).ok;
 }
+
+/** The row as `revisability` reads it: the list carries no document, so sport and category decide a run. */
+export const rowOf = (w: WorkoutDto) => ({
+  origin: w.origin ?? null,
+  category: w.category ?? null,
+  sport: w.sport ?? null,
+  completionState: w.completionState ?? null,
+  contentState: w.contentState ?? null,
+  effectiveDate: w.effectiveDate,
+  archived: w.archived,
+  hasDoc: w.hasDoc ?? false,
+  isRun: null,
+});
 
 /** The planned workouts the sheet offers, soonest first. */
 export function editableWorkouts(workouts: readonly WorkoutDto[], today: string): WorkoutDto[] {

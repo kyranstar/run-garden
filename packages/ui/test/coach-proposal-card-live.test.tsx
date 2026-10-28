@@ -24,6 +24,7 @@ import { MemoryRouter } from "react-router-dom";
 import { QueryClientProvider } from "@tanstack/react-query";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { DESIGN_APPLYING_STALE_MS, type DesignApproveResponse, type DesignChangeLineDto, type DesignLineDto } from "@rg/api-client";
+import { REVISABILITY_WORDS } from "@rg/domain";
 import { ProposalCard } from "../src/screens/studio/proposal-card.js";
 import { primedClient } from "./studio-fixtures.js";
 
@@ -252,7 +253,7 @@ describe("a designed suggestion's card", () => {
             line("op-b", { outcome: { status: "refused", at: "", error: "past_date", why: "Wed 14 Oct has passed." } }),
             line("op-c", { outcome: { status: "refused", at: "", error: "invalid_doc", why: "The day now refuses it: tuck jumps are closed today." } }),
           ],
-          [change("adj-1", { outcome: { status: "refused", at: "", error: "not_editable", cause: "programme", why: "It's a programme's session." } })],
+          [change("adj-1", { outcome: { status: "refused", at: "", error: "not_editable", cause: "programme", why: REVISABILITY_WORDS.programme.why as string, instead: REVISABILITY_WORDS.programme.instead } })],
           "partially_approved",
         ),
       ],
@@ -266,7 +267,7 @@ describe("a designed suggestion's card", () => {
     expect(text()).toContain("Not added: The day doesn't allow it now: tuck jumps are closed today.");
     expect(text()).not.toContain("The day now refuses it");
     // A change refused is left as planned, never "not added" (fix round, M7; fix wave 3B, M8).
-    expect(text()).toContain("Left as planned: It's a programme's session: the programme plans it.");
+    expect(text()).toContain(`Left as planned: ${REVISABILITY_WORDS.programme.why} ${REVISABILITY_WORDS.programme.instead}`);
     // Open again: the three refused ones are chosen; the applied one is not offered.
     expect(boxes()).toHaveLength(3);
     expect(button("Approve")).not.toBeNull();

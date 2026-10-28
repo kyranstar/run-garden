@@ -1591,6 +1591,12 @@ describe("a document workout in the sheet (Stage 2 whole-branch review)", () => 
     expect(body()).toContain('back to "today"');
   });
 
+  it("a coach session (NULL origin, cw- id, with a document) today or later is editable in the session sheet", async () => {
+    mount(docSession(), { w: docRow({ id: "cw-1", origin: null, hasDoc: true } as Partial<WorkoutDto>) });
+    await until(() => !!button("Edit in Studio"), "Edit in Studio");
+    expect(button("Edit in Studio")!.getAttribute("href")).toBe("/studio/build/workout/cw-1");
+  });
+
   it("offers no Edit in Studio for what the Studio may not change: a programme session, one under way, one done, the Studio off", async () => {
     mount(session(), { w: slot() });
     await until(() => body().includes("Goblet squat"), "the build");

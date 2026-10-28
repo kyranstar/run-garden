@@ -163,7 +163,14 @@ describe("the planned workouts the sheet offers", () => {
     expect(editableWorkout(workout({ origin: "program", programId: "p1" }), TODAY)).toBe(false);
     expect(editableWorkout(workout({ origin: "on_demand" }), TODAY)).toBe(false);
     expect(editableWorkout(workout({ origin: null, category: "easy" }), TODAY)).toBe(false);
-    expect(editableWorkout(workout({ origin: undefined }), TODAY)).toBe(false);
+  });
+
+  it("a coach or watch session (no origin) that is not a run, rest or race is: the revise adopts it into a document", () => {
+    expect(editableWorkout(workout({ origin: null, id: "cw-1", hasDoc: true } as Partial<WorkoutDto>), TODAY)).toBe(true);
+    expect(editableWorkout(workout({ origin: undefined }), TODAY)).toBe(true);
+    expect(editableWorkout(workout({ origin: null, category: "rest" }), TODAY)).toBe(false);
+    expect(editableWorkout(workout({ origin: null, category: "race" }), TODAY)).toBe(false);
+    expect(editableWorkout(workout({ origin: null, sport: "run", category: "tempo" }), TODAY)).toBe(false);
   });
 
   it("nor one done, skipped, missed, under way, past or archived", () => {

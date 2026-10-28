@@ -97,8 +97,10 @@ const LOCAL_UNDO = "Couldn't undo it on this device.";
 export function writeErrorText(e: unknown, undoing = false): string {
   if (e instanceof Refused) return e.message;
   if (e instanceof ApiError) {
-    const body = (e.body ?? {}) as { error?: string; issues?: DocIssueDto[] };
+    const body = (e.body ?? {}) as { error?: string; issues?: DocIssueDto[]; why?: string; instead?: string };
     if (e.status === 409 && body.error === "stale_revision") return undoing ? "It changed since, so it can't be undone here." : "This workout changed elsewhere. Try again.";
+    // The server's words for why, and what to do instead (revisability), when the refusal carries them.
+    if (e.status === 409 && body.error === "not_editable" && body.why?.trim()) return [body.why.trim(), body.instead?.trim()].filter(Boolean).join(" ");
     if (e.status === 409) return "This workout can't be changed now.";
     if (e.status === 422 && body.error === "invalid_doc") {
       return body.issues?.find((i) => i.severity === "error")?.message ?? "That move can't go in this workout.";

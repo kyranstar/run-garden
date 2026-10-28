@@ -7,7 +7,7 @@
 import { describe, expect, it } from "vitest";
 import type { WorkoutDto } from "@rg/api-client";
 import type { WorkoutDoc, WorkoutDose } from "@rg/domain";
-import { DEFAULT_SCHEDULING_PREFERENCES, itemSchema, partSchema, secondsText, workoutDocSchema } from "@rg/domain";
+import { DEFAULT_SCHEDULING_PREFERENCES, itemSchema, REVISABILITY_WORDS, partSchema, secondsText, workoutDocSchema } from "@rg/domain";
 import { EXERCISES, NO_EQUIPMENT_GEAR, PROFILES } from "@rg/exercise-library";
 import { edit, newDoc, startEditing, suggestedItem, undo, type DraftDoc, type EditAction } from "@rg/workout";
 import {
@@ -556,6 +556,13 @@ describe("a refusal says what to do next (Stage 2 whole-branch review M8)", () =
     const { ApiError } = await import("@rg/api-client");
     const err = (status: number, body: unknown) => new ApiError(status, body as never);
     expect(refusalText(err(409, { error: "not_today" }), "start")).toBe("This workout isn't today's — schedule it for today to start it.");
+    // A refusal carrying the server's words says them: the why, then what to do instead.
+    expect(refusalText(err(409, { error: "not_editable", cause: "programme", why: REVISABILITY_WORDS.programme.why, instead: REVISABILITY_WORDS.programme.instead }), "save")).toBe(
+      `${REVISABILITY_WORDS.programme.why} ${REVISABILITY_WORDS.programme.instead}`,
+    );
+    expect(refusalText(err(422, { error: "past_date", why: REVISABILITY_WORDS.past.why as string, instead: REVISABILITY_WORDS.past.instead }), "save")).toBe("Its day has passed. Propose for today or later.");
+    // No words in the body: the generic text stays.
+    expect(refusalText(err(409, { error: "not_editable" }), "save")).toBe("This workout can't be changed now — it's under way or done. Save it as a template to change a copy.");
     expect(refusalText(err(422, { error: "past_date" }), "schedule")).toBe("That day has passed — pick today or a later day.");
     expect(refusalText(err(409, { error: "stale_revision" }), "save")).toBe("This workout changed elsewhere — reload it to see the new version.");
     expect(refusalText(new TypeError("Failed to fetch"), "start")).toBe("Starting needs a connection — try again once you're online.");

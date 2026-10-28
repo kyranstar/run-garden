@@ -3,6 +3,7 @@
  * loop's decisions, what stopped a run, ways to train now, and the plan's refusals in plain words. Synthetic data only.
  */
 import { describe, expect, it } from "vitest";
+import { REVISABILITY_WORDS } from "@rg/domain";
 import { ApiError, type CoachRunDto, type CoachRunEventDto, type TodayResponse } from "@rg/api-client";
 import {
   askedOf,
@@ -279,7 +280,7 @@ describe("the plan's refusals, in plain words", () => {
   it("words each code, and the causes of not_editable", () => {
     expect(refusalWords({ error: "past_date" })).toBe("Its day has passed.");
     expect(refusalWords({ error: "stale_revision" })).toBe("That workout changed after the coach read it.");
-    expect(refusalWords({ error: "not_editable", cause: "programme" })).toBe("It's a programme's session: the programme plans it.");
+    expect(refusalWords({ error: "not_editable", cause: "programme" })).toBe(REVISABILITY_WORDS.programme.why);
     expect(refusalWords({ error: "not_editable", cause: "studio" })).toBe("Its length comes from the Studio: edit the workout there.");
     expect(refusalWords({ error: "not_editable", cause: "completed" })).toBe("It's done already.");
     expect(refusalWords({ error: "race" })).toBe("A race day stays as it is.");
@@ -315,6 +316,27 @@ describe("the plan's refusals, in plain words", () => {
       lead: "It can't change now.",
       detail: "It was changed on the watch.",
     });
+  });
+
+  it("each cause is the table's words, and what to do instead follows the why (spec §3)", () => {
+    const resolved = REVISABILITY_WORDS.resolved.why as (s: string) => string;
+    for (const cause of ["programme", "under_way", "rest", "race"] as const) {
+      const w = REVISABILITY_WORDS[cause];
+      expect(refusalWords({ error: "not_editable", cause })).toBe(w.why);
+      expect(refusedLine({ error: "not_editable", cause, why: w.why as string, instead: w.instead })).toEqual({ lead: w.why, detail: w.instead });
+    }
+    expect(refusedLine({ error: "not_editable", cause: "resolved", why: resolved("skipped"), instead: REVISABILITY_WORDS.resolved.instead })).toEqual({
+      lead: "It was skipped.",
+      detail: "Propose a new workout.",
+    });
+    expect(refusalWords({ error: "not_editable", cause: "resolved" })).toBe("It's already done.");
+  });
+
+  it("an old stored cause (completed, skipped, missed) still shows its word", () => {
+    expect(refusalWords({ error: "not_editable", cause: "completed" })).toBe("It's done already.");
+    expect(refusalWords({ error: "not_editable", cause: "skipped" })).toBe("It was skipped.");
+    expect(refusalWords({ error: "not_editable", cause: "missed" })).toBe("It was missed.");
+    expect(refusedLine({ error: "not_editable", cause: "missed", why: "That session is missed." })).toEqual({ lead: "It was missed.", detail: null });
   });
 
   it("a workout's day on the Plan: its week, its sheet open", () => {

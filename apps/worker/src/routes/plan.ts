@@ -553,6 +553,8 @@ function workoutDto(
     ...(view?.watchVersionLeft ? { watchVersionLeft: true } : {}),
     completionState: w.completionState,
     archived: !!w.archivedAt,
+    // A Studio document is stored on the row (the UI's revisability reads it with the rest).
+    hasDoc: (w as { workoutDoc?: unknown }).workoutDoc != null,
     // Where the row came from and how far its content has got (Phase 2a).
     // `programId` only for the app's own rows, whose plan id IS the program's.
     origin: w.origin ?? null,

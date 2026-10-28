@@ -111,9 +111,11 @@ const DECIDED_TEXT: Record<"applied" | "declined" | "superseded", string> = {
 /** Why a write did not happen, in plain words. */
 export function refusalText(e: unknown, what: "start" | "schedule" | "save"): string {
   if (e instanceof ApiError) {
-    const body = (e.body ?? {}) as { error?: string; issues?: DocIssueDto[]; message?: string };
+    const body = (e.body ?? {}) as { error?: string; issues?: DocIssueDto[]; message?: string; why?: string; instead?: string };
     const issue = body.issues?.find((i) => i.severity === "error")?.message;
     if (body.error === "invalid_doc" || body.error === "gated" || body.error === "too_large") return issue ?? "This workout can't be used as it is — change it, then try again.";
+    // A refusal that carries the server's words (revisability's why and what to do instead): said as sent.
+    if ((body.error === "not_editable" || body.error === "past_date" || body.error === "run_unsupported") && body.why?.trim()) return [body.why.trim(), body.instead?.trim()].filter(Boolean).join(" ");
     if (body.error === "run_unsupported") return body.message ?? "Runs can't be planned in the Studio yet.";
     if (body.error === "past_date") return "That day has passed — pick today or a later day.";
     // A time today gone by, or none left (a coach's draft approved with the athlete's edit: Part S's 422).

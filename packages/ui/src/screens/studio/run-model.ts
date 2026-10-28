@@ -27,7 +27,7 @@ import {
   type DesignChangeBeforeDto,
   type DesignChangeLineDto,
 } from "@rg/api-client";
-import { dayLabel, todayInZone } from "@rg/domain";
+import { dayLabel, REVISABILITY_WORDS, todayInZone } from "@rg/domain";
 import { formatTime, weekdayShort } from "../../components.js";
 import { kindWords } from "../settings/coach-memory-model.js";
 
@@ -836,7 +836,7 @@ export function appliedChangeLine(kind: DesignChangeLineDto["kind"], before: Pic
 // ── Approval ────────────────────────────────────────────────────────────────
 
 /** Why the plan refused a workout or a change at approval (Task 8's codes, Task 8b's `race` and cause `studio`). */
-export function refusalWords(r: { error: string; cause?: string }): string {
+export function refusalWords(r: { error: string; cause?: string; why?: string }): string {
   switch (r.error) {
     case "past_date":
       return "Its day has passed.";
@@ -862,9 +862,9 @@ export function refusalWords(r: { error: string; cause?: string }): string {
     case "changed_since_suggested":
       return "This session changed since the coach suggested it — ask again.";
     case "not_editable":
+      // The server's why for a cause is the table's words (`REVISABILITY_WORDS`); the stored causes of proposals
+      // decided before the table (completed, skipped, missed) keep their own.
       switch (r.cause) {
-        case "programme":
-          return "It's a programme's session: the programme plans it.";
         case "studio":
           return "Its length comes from the Studio: edit the workout there.";
         case "completed":
@@ -873,14 +873,26 @@ export function refusalWords(r: { error: string; cause?: string }): string {
           return "It was skipped.";
         case "missed":
           return "It was missed.";
+        case "programme":
         case "under_way":
-          return "It's under way.";
+        case "rest":
+        case "race":
+          return wordsOf(r.cause, r.why);
+        case "resolved":
+          return r.why?.trim() || wordsOf("resolved", "");
         default:
           return "It can't change now.";
       }
     default:
       return "The plan couldn't take it.";
   }
+}
+
+/** The table's why for a cause: the server's own when it sent one, else the table's (a resolved one by its state). */
+function wordsOf(cause: "programme" | "resolved" | "under_way" | "rest" | "race", why: string | undefined): string {
+  if (why?.trim()) return why.trim();
+  const w = REVISABILITY_WORDS[cause].why;
+  return typeof w === "function" ? w("completed") : w;
 }
 
 /** Codes whose words say it all: the why (the server's words, about this op) adds to the others. */
@@ -890,7 +902,7 @@ const SAID_BY_CODE = new Set(["past_date", "past_time", "no_time_today", "stale_
 const DAY_REFUSES = /^The day now refuses it:\s*/;
 
 /** The refused op's line: its code's words, and the server's own why where it adds something (rendered as text). */
-export function refusedLine(r: { error: string; why: string; cause?: string }): { lead: string; detail: string | null } {
+export function refusedLine(r: { error: string; why: string; cause?: string; instead?: string }): { lead: string; detail: string | null } {
   const why = r.why.trim();
   // Said once: "The day doesn't allow it now: <the rule>" — never the day's words twice (fix round, M7).
   if (r.error === "invalid_doc" && DAY_REFUSES.test(why)) {
@@ -900,7 +912,11 @@ export function refusedLine(r: { error: string; why: string; cause?: string }): 
   const lead = refusalWords(r);
   // A cause the words name says it all too (the server's why for it is the same thing, shorter).
   const named = r.error === "not_editable" && !!r.cause && r.cause !== "unknown";
-  return { lead, detail: SAID_BY_CODE.has(r.error) || named || why.length === 0 || why === lead ? null : why };
+  const said = SAID_BY_CODE.has(r.error) || named || why.length === 0 || why === lead;
+  // What to do instead follows the why, one short line (the server sends it with every not_editable refusal).
+  const instead = r.instead?.trim() ?? "";
+  const detail = [said ? "" : why, instead].filter(Boolean).join(" ");
+  return { lead, detail: detail || null };
 }
 
 /** "Thu 6 PM" — a day and, when set, a time; a day or a time that can't be read is left out. */

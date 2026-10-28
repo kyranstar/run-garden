@@ -37,7 +37,7 @@ import {
   type SessionOverrides,
   type WorkoutDto,
 } from "@rg/api-client";
-import { docOriginRow, doseText, newId, type DoseStep, type DoseTarget } from "@rg/domain";
+import { docOriginRow, doseText, newId, revisability, type DoseStep, type DoseTarget } from "@rg/domain";
 import { APP_BUILT_CHOICE, WatchVersion } from "./watch-version.js";
 import { EXERCISES, isProfileId, label as vocab, PROFILES } from "@rg/exercise-library";
 import { effortAdvice } from "@rg/workout";
@@ -52,7 +52,7 @@ import { MoveSheet } from "../screens/move-sheet.js";
 import { CheckScale, checkWord, conditionChipLabel, FeelingOffToggle } from "./condition-check-sheet.js";
 import { keepStarted } from "./start-session.js";
 import { ExerciseHowto, type HowtoTarget } from "./exercise-howto.js";
-import { addTargetHref, editableWorkout } from "../screens/studio/add-model.js";
+import { addTargetHref, editableWorkout, rowOf } from "../screens/studio/add-model.js";
 import type { BuilderArrival } from "../screens/studio/templates-model.js";
 import { refusalText } from "../screens/studio/use-build-flows.js";
 import { focusAfterRemove } from "../screens/week-view.js";
@@ -262,12 +262,17 @@ export function SessionSheet({ w, today, onClose }: { w: WorkoutDto; today: stri
   // Opened from Today's row (its link says so) or from Plan: the Studio's way back returns there.
   const cameFrom = (useLocation().state as { from?: string } | null)?.from === "today" ? "today" : "plan";
   const editable = features.studio && editableWorkout(w, today);
-  // A Studio workout done with — done, or its day passed — can't change, but it can be the start of another (CUJ B2).
+  // A document workout (or one a revise would adopt) done with — resolved, its day passed, or played through — can't
+  // change, but it can be the start of another (CUJ B2). Read from the predicate's reason; a programme's own session,
+  // a rest day and a race are not workouts to start another from.
+  const closed = features.studio && !editable ? revisability(rowOf(w), today) : null;
   const doneWith =
-    features.studio &&
-    docOriginRow({ origin: w.origin ?? null }) &&
-    !editable &&
-    (w.completionState === "completed" || w.contentState === "done" || w.effectiveDate < today);
+    !!closed &&
+    !closed.ok &&
+    (closed.reason === "resolved" || closed.reason === "past" || (closed.reason === "under_way" && w.contentState === "done")) &&
+    w.category !== "rest" &&
+    w.category !== "race" &&
+    (docOriginRow({ origin: w.origin ?? null }) || (w.origin !== "program" && w.origin !== "on_demand"));
   const [removing, setRemoving] = useState(false);
   const remove = useMutation({
     mutationFn: () => api.deleteWorkout(w.id),
