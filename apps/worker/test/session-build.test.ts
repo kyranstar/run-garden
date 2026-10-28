@@ -6,7 +6,7 @@
  * use the real today, because the routes do.
  */
 import { beforeEach, describe, expect, it, vi } from "vitest";
-import { and, eq } from "drizzle-orm";
+import { and, eq, sql } from "drizzle-orm";
 import { schema } from "@rg/database";
 import { EXERCISES, isPlyometric } from "@rg/exercise-library";
 import {
@@ -18,6 +18,7 @@ import {
   todayInZone,
   type AdaptiveConfig,
   type UserPreferences,
+  type WorkoutDoc,
 } from "@rg/domain";
 import type { Db } from "../src/services/db.js";
 import type { Env } from "../src/env.js";
@@ -26,10 +27,14 @@ import {
   buildSession,
   buildSessionOutcome,
   composeBuild,
+  isProvisionalBuild,
   loadSession,
+  makeProvisionalRecord,
   NotBuiltError,
   NotTodayError,
+  pushJobId,
   recordCheck,
+  sentBuildIdOf,
   sessionCurrency,
   SessionLockedError,
   SessionNotFoundError,
@@ -46,6 +51,7 @@ import { applyMove } from "../src/services/jobs.js";
 import { conditionRoutes, sessionRoutes } from "../src/routes/sessions.js";
 import { createSession, SESSION_COOKIE } from "../src/auth/sessions.js";
 import { isWrite, makeTestDb, makeTestUser, mountRoutes } from "./helpers.js";
+import { calmDoc } from "./doc-workout-fixture.js";
 
 const {
   plannedWorkouts,
@@ -58,6 +64,7 @@ const {
   performedSessions,
   performedSets,
   accountState,
+  corosWriteJobs,
 } = schema;
 
 // Each test builds a few whole sessions (a few ms each on a quiet machine); a busy one can stretch that.
@@ -1447,5 +1454,202 @@ describe("moving a run reads no program (U8, W12: the no-program account's guard
     statements.length = 0;
     await applyMove(db, { userId, workoutId: id, toDate: addDays(TODAY, 1), toTime: "18:00", source: "app", corosWritesEnabled: false });
     expect(statements.filter((q) => /from "programs"/i.test(q))).toHaveLength(1);
+  });
+});
+
+// ── The watch mirrors the plan: a provisional copy's record (design §3.2; builder check A1) ───────────────────────────
+
+describe("provisional records", () => {
+  /** A Studio workout as the Studio stores one: its document at revision `rev`, an outline until its day. */
+  async function seedDocRow(date: string, doc: WorkoutDoc = calmDoc(), rev = 1): Promise<string> {
+    const id = `studio-${date}`;
+    await db.insert(plannedWorkouts).values({
+      id, userId, planId: programId, sourceWorkoutId: id, title: doc.title, category: "strength", sport: "strength",
+      originalPlanDate: date, lastVerifiedCorosDate: "", effectiveDate: date, effectiveTime: "18:00", sourceContentFingerprint: "studio",
+      calendarBlockDurationSeconds: 1800, fallbackEstimatedDurationSeconds: 1800, corosSyncState: "calendar_only",
+      completionState: "scheduled", origin: "studio", contentState: "outline", workoutDoc: JSON.stringify(doc), workoutDocRev: rev,
+      createdAt: NOW, updatedAt: NOW,
+    });
+    return id;
+  }
+
+  /** A provisional record of the row's document as it stands (`rev` as given). */
+  const provisional = async (workoutId: string, rev = 1, over: Partial<{ today: string; now: string }> = {}) =>
+    makeProvisionalRecord(db, userId, await rowOf(workoutId), calmDoc(), rev, ctx(over));
+
+  /** The build's `program_session_push` at `status`, as Send or the mirror queues it. */
+  async function pushOf(buildId: string, workoutId: string, status: string): Promise<void> {
+    await db.insert(corosWriteJobs).values({
+      id: pushJobId(buildId), userId, workoutId, kind: "program_session_push", expectedContentFingerprint: "h",
+      originalDate: TODAY, destinationDate: TODAY, payload: {}, requestedAt: NOW, status, updatedAt: NOW,
+    });
+  }
+  const setPush = (buildId: string, status: string) => db.update(corosWriteJobs).set({ status }).where(eq(corosWriteJobs.id, pushJobId(buildId)));
+
+  const payloadOf = (b: { payload: unknown }) => b.payload as { kind?: string; build: { date: string; fromDoc: { rev: number | null } } };
+
+  it("a provisional record has version −1, then −2, never locked, carries fromDoc.rev and kind — a new record each time, never the stored one", async () => {
+    const day = addDays(TODAY, 3);
+    const id = await seedDocRow(day);
+    const row = await rowOf(id);
+    statements.length = 0;
+    const first = await makeProvisionalRecord(db, userId, row, calmDoc(), 1, ctx());
+    // The mirror's budget (Task 3): the place, profiles and library reads, and ONE write — the version is taken in it.
+    expect(statements.filter(isWrite)).toHaveLength(1);
+    expect(statements.length).toBeLessThanOrEqual(6);
+    const second = await provisional(id, 2, { now: LATER });
+    // The same document and revision again: still a new record, never the stored one reused or overwritten.
+    const third = await provisional(id, 2, { now: LATER });
+    const stored = await buildsOf(id);
+    expect(stored.map((b) => [b.id, b.version, b.lockedAt])).toEqual([
+      [third.buildId, -3, null],
+      [second.buildId, -2, null],
+      [first.buildId, -1, null],
+    ]);
+    expect(new Set([first.buildId, second.buildId, third.buildId]).size).toBe(3);
+    for (const b of stored) {
+      expect(payloadOf(b).kind).toBe("provisional");
+      expect(payloadOf(b).build.date).toBe(day);
+      expect(isProvisionalBuild(b)).toBe(true);
+      // Its snapshot is the document it was made from.
+      expect(JSON.parse(b.workoutDoc!)).toEqual(calmDoc());
+    }
+    expect(stored.map((b) => payloadOf(b).build.fromDoc.rev)).toEqual([2, 2, 1]);
+    expect(stored[2]!.createdAt).toBe(NOW);
+    expect(stored[1]!.createdAt).toBe(LATER);
+    // What it answers is what it stored, the marker aside.
+    const { kind, ...rest } = stored[2]!.payload as Record<string, unknown>;
+    expect(kind).toBe("provisional");
+    expect(rest).toEqual(first.stored);
+
+    // The marker is the payload's and the version's together: neither alone makes a provisional record.
+    expect(isProvisionalBuild({ version: 0, payload: { kind: "provisional" } })).toBe(false);
+    expect(isProvisionalBuild({ version: -1, payload: { build: {} } })).toBe(false);
+  });
+
+  it("is materialised as the sheet's preview is — the same steps and inputs hash, no reading — even on its day with the check answered", async () => {
+    const ahead = addDays(TODAY, 2);
+    const id = await seedDocRow(ahead);
+    const record = await provisional(id);
+    const preview = (await buildSession(db, userId, id, {}, ctx())).build!;
+    expect(preview.version).toBe(0);
+    expect(record.stored.build.steps).toEqual(preview.steps);
+    expect(record.stored.build.inputsHash).toBe(preview.inputsHash);
+    expect(record.stored.build.fromDoc).toEqual({ ...preview.fromDoc, rev: 1 });
+    const [row] = (await buildsOf(id)).filter((b) => b.version < 0);
+    expect(row!.inputsHash).toBe(preview.inputsHash);
+    expect(row!.engineVersion).toBe(preview.engineVersion);
+
+    // Today, the day's check answered: the record still reads no reading (the day's own build is gated, §3.3).
+    await activateTmj();
+    await recordCheck(db, userId, { profileId: "tmj", value: 6, feelingOff: true }, ctx());
+    const today = await seedDocRow(TODAY);
+    const onTheDay = await provisional(today);
+    expect(onTheDay.stored.build.params.checks).toEqual({});
+    expect(onTheDay.stored.build.fromDoc).toMatchObject({ swaps: [], blocked: [] });
+    // Nothing recorded, nothing on the row.
+    expect((await rowOf(today)).contentState).toBe("outline");
+  });
+
+  it("pruneBuilds spares it: a preview, the day's build and Start each keep every provisional record", async () => {
+    const day = addDays(TODAY, 1);
+    const id = await seedDocRow(day);
+    const a = await provisional(id);
+    const b = await provisional(id, 1, { now: LATER });
+    const ids = () => buildsOf(id).then((bs) => bs.filter((x) => x.version < 0).map((x) => x.id).sort());
+    const both = [a.buildId, b.buildId].sort();
+
+    await buildSession(db, userId, id, {}, ctx());
+    await buildSession(db, userId, id, {}, ctx({ now: LATER }));
+    expect(await ids()).toEqual(both);
+
+    // Its day: the day's build, built again, then started.
+    const onDay = { today: day, now: `${day}T19:00:00.000Z` };
+    const built = await buildSession(db, userId, id, {}, ctx(onDay));
+    expect(built.build!.version).toBe(1);
+    expect(await ids()).toEqual(both);
+    const started = await startSession(db, userId, id, built.build!.buildId, onDay.now);
+    expect(started).toMatchObject({ contentState: "started", locked: true, build: { buildId: built.build!.buildId } });
+    expect(await ids()).toEqual(both);
+    // Never locked by Start, the marker kept.
+    for (const x of (await buildsOf(id)).filter((y) => y.version < 0)) {
+      expect(x.lockedAt).toBeNull();
+      expect(isProvisionalBuild(x)).toBe(true);
+    }
+  });
+
+  it("currentBuild, POST /build and the sheet's preview ignore it (a day build is still made)", async () => {
+    const day = addDays(TODAY, 2);
+    const id = await seedDocRow(day);
+    const record = await provisional(id);
+
+    // Ahead: nothing to show yet, nothing locked — the record is no preview.
+    expect(await loadSession(db, userId, id, TODAY)).toMatchObject({ build: null, locked: false, contentState: "outline" });
+    expect(await sessionCurrency(db, userId, id, ctx())).toMatchObject({ buildId: null, current: false, locked: false });
+    const preview = await buildSession(db, userId, id, {}, ctx());
+    expect(preview.build).toMatchObject({ version: 0 });
+    expect(preview.build!.buildId).not.toBe(record.buildId);
+    expect(preview.locked).toBe(false);
+
+    // Its day, on an account with no profiles (the day's inputs hash as the record's: a version ≥ 1 reader that took it
+    // would reuse it) — the day's own build is made, version 1, and shown.
+    const onDay = ctx({ today: day, now: `${day}T19:00:00.000Z` });
+    const built = await buildSession(db, userId, id, {}, onDay);
+    expect(built.build).toMatchObject({ version: 1, date: day });
+    expect(built.build!.inputsHash).toBe(record.stored.build.inputsHash);
+    expect(built.build!.buildId).not.toBe(record.buildId);
+    expect(built).toMatchObject({ contentState: "built", locked: false });
+    expect((await loadSession(db, userId, id, day)).build!.buildId).toBe(built.build!.buildId);
+    // Built again with the same inputs: the day's build, stored — never the record.
+    expect((await buildSession(db, userId, id, {}, onDay)).build!.buildId).toBe(built.build!.buildId);
+    expect(await sessionCurrency(db, userId, id, onDay)).toMatchObject({ buildId: built.build!.buildId, current: true, locked: false });
+
+    // The record itself is as it was made.
+    const [kept] = (await buildsOf(id)).filter((b) => b.id === record.buildId);
+    expect(kept).toMatchObject({ version: -1, lockedAt: null });
+    expect(payloadOf(kept!).kind).toBe("provisional");
+  });
+
+  it("sentBuildIdOf answers the provisional record when only its push is live, and the day build when both are — in two reads", async () => {
+    const id = await seedDocRow(TODAY);
+    const record = await provisional(id);
+    statements.length = 0;
+    expect(await sentBuildIdOf(db, id)).toBeNull(); // made, not pushed
+    expect(statements).toHaveLength(2);
+
+    await pushOf(record.buildId, id, "queued");
+    statements.length = 0;
+    expect(await sentBuildIdOf(db, id)).toBe(record.buildId);
+    expect(statements).toHaveLength(2);
+    for (const settled of ["superseded", "cancelled", "restored"]) {
+      await setPush(record.buildId, settled);
+      expect(await sentBuildIdOf(db, id)).toBeNull();
+    }
+    await setPush(record.buildId, "verified");
+    expect(await sentBuildIdOf(db, id)).toBe(record.buildId);
+
+    // The day's build, made and not sent: the record is still the copy on the watch.
+    const day = await buildSession(db, userId, id, {}, ctx());
+    expect(await sentBuildIdOf(db, id)).toBe(record.buildId);
+    // Sent (locked, its push queued): the day's build wins over the record, whatever order the rows are read in.
+    await db.update(sessionBuilds).set({ lockedAt: NOW }).where(eq(sessionBuilds.id, day.build!.buildId));
+    expect(await sentBuildIdOf(db, id)).toBe(record.buildId); // locked, never pushed: not sent
+    await pushOf(day.build!.buildId, id, "queued");
+    statements.length = 0;
+    expect(await sentBuildIdOf(db, id)).toBe(day.build!.buildId);
+    expect(statements).toHaveLength(2);
+    await setPush(day.build!.buildId, "failed"); // a failed push still names its build: Retry sends it
+    expect(await sentBuildIdOf(db, id)).toBe(day.build!.buildId);
+
+    // Its push settled: the record again — and of two live records, the newest.
+    await setPush(day.build!.buildId, "superseded");
+    expect(await sentBuildIdOf(db, id)).toBe(record.buildId);
+    const newer = await provisional(id, 1, { now: LATER });
+    await pushOf(newer.buildId, id, "queued");
+    expect(await sentBuildIdOf(db, id)).toBe(newer.buildId);
+
+    // A record that lost its marker (its copy taken off) is no candidate, its push live or not.
+    await db.update(sessionBuilds).set({ payload: sql`json_remove(${sessionBuilds.payload}, '$.kind')` }).where(eq(sessionBuilds.id, newer.buildId));
+    expect(await sentBuildIdOf(db, id)).toBe(record.buildId);
   });
 });

@@ -12,12 +12,24 @@ import { schema } from "@rg/database";
 import { buildProgramWatchProgram } from "@rg/coros";
 import type { Step } from "@rg/session-engine";
 import type { Db } from "../src/services/db.js";
-import { buildSession, type BuildPayload } from "../src/services/session-build.js";
+import { buildSession, isProvisionalBuild, makeProvisionalRecord, sentBuildIdOf, type BuildPayload } from "../src/services/session-build.js";
 import { exerciseNameMap } from "../src/services/exercise-catalog.js";
 import { corosKeyOf } from "../src/services/coros-exercise-map.js";
-import { catalogIdsByKey, pushDigest, sendToWatch, StalePreviewError, watchPreview, watchStepsFromBuild, type WatchPlanDeps } from "../src/services/watch-push.js";
+import {
+  catalogIdsByKey,
+  pushDigest,
+  runOwedUnpushes,
+  sendToWatch,
+  StalePreviewError,
+  takeOffWatch,
+  unlockSentBuild,
+  watchPreview,
+  watchStepsFromBuild,
+  type WatchPlanDeps,
+} from "../src/services/watch-push.js";
 import { connectTestCoros, makeTestDb, makeTestUser } from "./helpers.js";
-import { buildToday, DAY, NOON, PROGRAM_NAME, seedCatalog, seedSlot, seedTmj, switchOn } from "./watch-push-fixture.js";
+import { buildToday, DAY, NOON, PROGRAM_NAME, rowOf, seedCatalog, seedSlot, seedTmj, switchOn } from "./watch-push-fixture.js";
+import { calmDoc } from "./doc-workout-fixture.js";
 
 vi.setConfig({ testTimeout: 60_000 });
 vi.mock("../src/services/calendar-sync.js", async (importOriginal) => ({
@@ -29,11 +41,13 @@ let db: Db;
 let userId: string;
 let prefs: UserPreferences;
 let programId: string;
+let statements: string[] = [];
 
 beforeEach(async () => {
   vi.useFakeTimers({ toFake: ["Date"] });
   vi.setSystemTime(new Date(NOON));
-  db = makeTestDb({ boundVariableCap: 100 });
+  statements = [];
+  db = makeTestDb({ boundVariableCap: 100, onStatement: (q) => statements.push(q) });
   ({ userId, prefs } = await makeTestUser(db, { corosWritesEnabled: true }));
   await connectTestCoros(db, userId);
   await seedTmj(db, userId);
@@ -238,5 +252,101 @@ describe("a one-sided set on the watch (W-1)", () => {
     expect(fewestOneSided).toBeGreaterThanOrEqual(1); // every build carries the case W-1 is about
     expect(most).toBeLessThanOrEqual(CAP_BOUND);
     expect(CAP_BOUND).toBeLessThan(200);
+  });
+});
+
+describe("a provisional copy's record (the watch mirrors the plan §3.2, A1)", () => {
+  const LATER = `${DAY}T19:30:00.000Z`;
+
+  /** Today's Studio workout, its document's provisional copy on the watch: the push verified, the row holding the address. */
+  async function provisionalOnWatch(): Promise<{ workoutId: string; buildId: string }> {
+    const workoutId = "studio-on-watch";
+    const doc = calmDoc();
+    await db.insert(schema.plannedWorkouts).values({
+      id: workoutId, userId, planId: programId, sourceWorkoutId: workoutId, title: doc.title, category: "strength", sport: "strength",
+      originalPlanDate: DAY, lastVerifiedCorosDate: "", effectiveDate: DAY, effectiveTime: "18:00", sourceContentFingerprint: "studio",
+      calendarBlockDurationSeconds: 1800, fallbackEstimatedDurationSeconds: 1800, corosSyncState: "calendar_only",
+      completionState: "scheduled", origin: "studio", contentState: "outline", workoutDoc: JSON.stringify(doc), workoutDocRev: 1,
+      createdAt: NOON, updatedAt: NOON,
+    });
+    const record = await makeProvisionalRecord(db, userId, await rowOf(db, workoutId), doc, 1, { today: DAY, now: NOON, prefs });
+    const { deps } = await realDeps();
+    const steps = watchStepsFromBuild(record.stored.build, deps).steps;
+    await db.insert(schema.corosWriteJobs).values({
+      id: `push:${record.buildId}`, userId, workoutId, kind: "program_session_push", expectedContentFingerprint: record.stored.build.inputsHash,
+      originalDate: DAY, destinationDate: DAY,
+      payload: { workoutId, buildId: record.buildId, happenDay: DAY, name: `${doc.title} — ${DAY}`, session: { kind: "program_watch", title: doc.title, steps }, provisional: true },
+      requestedAt: NOON, status: "verified", verifiedAt: NOON, completedAt: NOON, updatedAt: NOON,
+    });
+    await db
+      .update(schema.plannedWorkouts)
+      .set({ sourceWorkoutId: "4242:7", sourceIdInPlan: "7", sourceProgramId: "991", lastVerifiedCorosDate: DAY, corosSyncState: "synced" })
+      .where(eq(schema.plannedWorkouts.id, workoutId));
+    return { workoutId, buildId: record.buildId };
+  }
+
+  const recordOf = async (buildId: string) => (await db.select().from(schema.sessionBuilds).where(eq(schema.sessionBuilds.id, buildId)))[0]!;
+  const payloadOf = async (buildId: string) => (await recordOf(buildId)).payload as Record<string, unknown>;
+  const jobOf = async (id: string) => (await db.select().from(schema.corosWriteJobs).where(eq(schema.corosWriteJobs.id, id)))[0];
+
+  it("unlockSentBuild on a provisional record clears its kind, leaves locked_at null — one statement; a started or done slot keeps it", async () => {
+    const { workoutId, buildId } = await provisionalOnWatch();
+    expect(await sentBuildIdOf(db, workoutId)).toBe(buildId);
+
+    for (const contentState of ["started", "done"] as const) {
+      await unlockSentBuild(db, { contentState }, buildId, LATER);
+      expect(isProvisionalBuild(await recordOf(buildId))).toBe(true);
+    }
+
+    const row = await rowOf(db, workoutId);
+    statements = [];
+    await unlockSentBuild(db, row, buildId, LATER);
+    expect(statements).toHaveLength(1);
+    const after = await recordOf(buildId);
+    expect(after.lockedAt).toBeNull();
+    expect(after.version).toBe(-1);
+    expect(after.payload).not.toHaveProperty("kind");
+    // Never an un-sent mark: it was never locked (`$.unsentAt` is a sent day build's).
+    expect(after.payload).not.toHaveProperty("unsentAt");
+    expect(isProvisionalBuild(after)).toBe(false);
+    // No longer the copy on the watch, though its push is still verified until the delete lands.
+    expect((await jobOf(`push:${buildId}`))!.status).toBe("verified");
+    expect(await sentBuildIdOf(db, workoutId)).toBeNull();
+    // Again: nothing to clear, nothing changes.
+    await unlockSentBuild(db, await rowOf(db, workoutId), buildId, LATER);
+    expect(await recordOf(buildId)).toEqual(after);
+  });
+
+  it("a locked build's unlock is as before: unlocked, `$.unsentAt` written", async () => {
+    const workoutId = await seedSlot(db, userId, programId, DAY);
+    const built = (await buildToday(db, userId, prefs, workoutId)).build!;
+    await sendToWatch(db, switchOn(), userId, workoutId, built.buildId, { today: DAY, now: NOON, prefs });
+    expect((await recordOf(built.buildId)).lockedAt).toBe(NOON);
+    await unlockSentBuild(db, await rowOf(db, workoutId), built.buildId, LATER);
+    const after = await recordOf(built.buildId);
+    expect(after.lockedAt).toBeNull();
+    expect(after.payload).toMatchObject({ unsentAt: LATER });
+    expect(after.payload).not.toHaveProperty("kind");
+  });
+
+  it("taken off with COROS writes off, the unpush is owed on the record (its marker kept); writes back on, it is queued and the marker cleared", async () => {
+    const { workoutId, buildId } = await provisionalOnWatch();
+    const writesOff = { ...prefs, corosWritesEnabled: false };
+    await takeOffWatch(db, userId, workoutId, { today: DAY, now: NOON, prefs: writesOff });
+    expect(await jobOf(`unpush:${buildId}`)).toBeUndefined();
+    const owed = await payloadOf(buildId);
+    expect(owed).toMatchObject({ kind: "provisional", unpushOwedAt: NOON });
+    // Still accounted for: the copy is on the watch until its delete is queued.
+    expect(await sentBuildIdOf(db, workoutId)).toBe(buildId);
+
+    expect(await runOwedUnpushes(db, userId, LATER)).toBe(1);
+    expect(await jobOf(`unpush:${buildId}`)).toMatchObject({ kind: "coach_delete_workout", status: "queued" });
+    const after = await recordOf(buildId);
+    expect(after.payload).not.toHaveProperty("kind");
+    expect(after.payload).not.toHaveProperty("unpushOwedAt");
+    expect(after.lockedAt).toBeNull();
+    expect(await sentBuildIdOf(db, workoutId)).toBeNull();
+    // Owed once.
+    expect(await runOwedUnpushes(db, userId, LATER)).toBe(0);
   });
 });

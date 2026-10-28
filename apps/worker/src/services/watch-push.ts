@@ -22,7 +22,7 @@
  *  - A rest adds onto the step before it (at most 900 s); a leading rest has no
  *    step to hang on and is dropped.
  */
-import { and, eq, inArray, isNotNull, ne, sql } from "drizzle-orm";
+import { and, eq, inArray, isNotNull, ne, or, sql } from "drizzle-orm";
 import { corosWriteJobs, plannedWorkouts, programs, providerConnections, sessionBuilds } from "@rg/database";
 import {
   canonicalJson,
@@ -62,6 +62,8 @@ import {
   loadSession,
   loadSlot,
   lockCurrentBuild,
+  provisionalRecord,
+  PROVISIONAL_KIND_PATH,
   pushJobId,
   RestoringError,
   sentBuildIdOf,
@@ -506,7 +508,9 @@ async function slotRefusal(
 
 /**
  * The refusals the build answers: current and built for the day, the pre-check answered, nothing coming off, fits —
- * and a document workout's build re-gated with the day's reading (`gatedSnapshot`), whichever Send this is.
+ * and a document workout's build re-gated with the day's reading (`gatedSnapshot`), whichever Send this is. Never a
+ * preview (version 0) nor a provisional copy's record (a negative version): the athlete's Send is the day's build's, on
+ * its day; a provisional copy goes to the watch by the mirror's own path.
  */
 async function buildRefusal(
   db: Db,
@@ -515,7 +519,7 @@ async function buildRefusal(
   profiles: readonly string[],
   checks: Readonly<Record<string, CheckAnswer>>,
 ): Promise<WatchUnavailable | null> {
-  if (!build || build.version === 0 || build.date !== row.effectiveDate || (row.contentState !== "built" && row.contentState !== "started")) {
+  if (!build || build.version <= 0 || build.date !== row.effectiveDate || (row.contentState !== "built" && row.contentState !== "started")) {
     return "not_built";
   }
   if (profiles.some((p) => !checks[p])) return "precheck";
@@ -907,10 +911,12 @@ export async function unpushBuild(
   const resolved = row.contentState === "done" || row.completionState === "completed";
   if (!resolved && push?.status === "verified" && address && parsed?.success) {
     if (!prefs.corosWritesEnabled) {
+      // Owed on the sent build — locked, or a provisional copy's record (the watch mirrors the plan, A1), which keeps
+      // its marker as a sent build keeps its lock.
       await db
         .update(sessionBuilds)
         .set({ payload: sql`json_set(${sessionBuilds.payload}, ${UNPUSH_OWED_AT_PATH}, ${now})` })
-        .where(and(eq(sessionBuilds.id, buildId), isNotNull(sessionBuilds.lockedAt)));
+        .where(and(eq(sessionBuilds.id, buildId), or(isNotNull(sessionBuilds.lockedAt), provisionalRecord())));
       return;
     }
     await queueUnpush(db, userId, buildId, {
@@ -927,13 +933,20 @@ export async function unpushBuild(
   await unlockSentBuild(db, row, buildId, now);
 }
 
-/** The sent build unlocked (`$.unsentAt`), so the slot builds again — unless it is started or done (Start owns it). */
+/**
+ * The sent build unlocked (`$.unsentAt`), so the slot builds again — unless it is started or done (Start owns it). A
+ * provisional copy's record (the watch mirrors the plan, A1) was never locked: it loses its marker instead (`$.kind`),
+ * so it is no longer the copy on the watch. One statement either way.
+ */
 export async function unlockSentBuild(db: Db, row: Pick<WorkoutRow, "contentState">, buildId: string, now: string): Promise<void> {
   if (row.contentState === "started" || row.contentState === "done") return;
   await db
     .update(sessionBuilds)
-    .set({ lockedAt: null, payload: sql`json_set(${sessionBuilds.payload}, ${UNSENT_AT_PATH}, ${now})` })
-    .where(and(eq(sessionBuilds.id, buildId), isNotNull(sessionBuilds.lockedAt)));
+    .set({
+      lockedAt: null,
+      payload: sql`case when ${provisionalRecord()} then json_remove(${sessionBuilds.payload}, ${PROVISIONAL_KIND_PATH}) else json_set(${sessionBuilds.payload}, ${UNSENT_AT_PATH}, ${now}) end`,
+    })
+    .where(and(eq(sessionBuilds.id, buildId), or(isNotNull(sessionBuilds.lockedAt), provisionalRecord())));
 }
 
 /** A sent build whose copy's unpush is owed — recorded while the athlete's COROS writes were off (`unpushBuild`). */
@@ -951,7 +964,8 @@ export async function runOwedUnpushes(db: Db, userId: string, now: string): Prom
     .where(
       and(
         eq(sessionBuilds.userId, userId),
-        isNotNull(sessionBuilds.lockedAt),
+        // A sent build: locked, or a provisional copy's record (A1).
+        or(isNotNull(sessionBuilds.lockedAt), provisionalRecord()),
         sql`json_extract(${sessionBuilds.payload}, ${UNPUSH_OWED_AT_PATH}) is not null`,
       ),
     );

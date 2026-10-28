@@ -10,7 +10,7 @@
  *    activity, saved once; the slot done; one activity, one match; the garden counts it once.
  */
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { and, eq, isNull } from "drizzle-orm";
+import { and, eq, isNull, sql } from "drizzle-orm";
 import { schema } from "@rg/database";
 import {
   adaptiveConfigSchema,
@@ -35,9 +35,9 @@ import { sessionRoutes } from "../src/routes/sessions.js";
 import { ingestActivities } from "../src/services/completion.js";
 import { corosKeyOf } from "../src/services/coros-exercise-map.js";
 import { buildDayInput } from "../src/services/garden-sync.js";
-import { buildSession, pushJobId, startSession, type BuildPayload } from "../src/services/session-build.js";
+import { buildSession, makeProvisionalRecord, pushJobId, startSession, type BuildPayload } from "../src/services/session-build.js";
 import { savePerformedSession, setRows } from "../src/services/session-save.js";
-import { mappedAsSent, movesAsSent, pairWatchSets, watchReviewBasis, type WatchReviewEntry } from "../src/services/session-watch-review.js";
+import { mappedAsSent, movesAsSent, pairWatchSets, watchReviewBasis, watchReviewOffers, type WatchReviewEntry } from "../src/services/session-watch-review.js";
 import { PENDING_HASH, upsertWatchSession } from "../src/services/watch-sets.js";
 import { EXERCISES } from "@rg/exercise-library";
 import { sendToWatch, watchStepMoves } from "../src/services/watch-push.js";
@@ -45,6 +45,7 @@ import { slotId } from "../src/services/program-slots.js";
 import { connectTestCoros, D1_BIND_LIMIT, makeTestDb, makeTestUser, mountRoutes } from "./helpers.js";
 import { buildToday, DAY, makeEnv, NOON, seedCatalog, seedTmj, switchOn, TOMORROW } from "./watch-push-fixture.js";
 import { detailOf, item } from "./watch-sets-fixture.js";
+import { calmDoc } from "./doc-workout-fixture.js";
 
 const { accountState, activities, performedSessions, performedSets, plannedWorkouts, programs, sessionBuilds, workoutCompletionMatches } = schema;
 
@@ -592,6 +593,49 @@ describe("watchReviewBasis — when the review is offered", () => {
     await db.update(plannedWorkouts).set({ effectiveDate: moved }).where(eq(plannedWorkouts.id, s.workoutId));
     expect((await watchReviewBasis(db, userId, s.workoutId, ctx(moved))).buildId).toBe(s.build.buildId);
     expect((await watchReviewBasis(db, userId, s.workoutId, ctx("2026-10-12"))).buildId).toBe(s.build.buildId);
+  });
+
+  it("a provisional copy the watch did (the watch mirrors the plan, A1) — nothing locked, its push live: offered, its record the basis", async () => {
+    // A Studio workout whose document's copy the mirror pushed ahead of its day; the athlete did it from the watch
+    // without opening the app, so no day build was ever made or locked.
+    const workoutId = "studio-review";
+    const doc = calmDoc();
+    await db.insert(plannedWorkouts).values({
+      id: workoutId, userId, planId: PROGRAM, sourceWorkoutId: workoutId, title: doc.title, category: "strength", sport: "strength",
+      originalPlanDate: DAY, lastVerifiedCorosDate: "", effectiveDate: DAY, effectiveTime: "18:00", sourceContentFingerprint: "studio",
+      calendarBlockDurationSeconds: 1800, fallbackEstimatedDurationSeconds: 1800, corosSyncState: "calendar_only",
+      completionState: "scheduled", origin: "studio", contentState: "outline", workoutDoc: JSON.stringify(doc), workoutDocRev: 1,
+      createdAt: NOON, updatedAt: NOON,
+    });
+    const [slot] = await db.select().from(plannedWorkouts).where(eq(plannedWorkouts.id, workoutId));
+    const record = await makeProvisionalRecord(db, userId, slot!, doc, 1, { today: DAY, now: NOON, prefs });
+    await db.insert(schema.corosWriteJobs).values({
+      id: pushJobId(record.buildId), userId, workoutId, kind: "program_session_push", expectedContentFingerprint: "h",
+      originalDate: DAY, destinationDate: DAY, payload: {}, requestedAt: NOON, status: "verified", verifiedAt: NOON, updatedAt: NOON,
+    });
+    await watchDone({ workoutId, build: { ...record.stored.build, buildId: record.buildId, version: -1 } as BuildPayload });
+    expect((await watchReviewBasis(db, userId, workoutId, ctx())).buildId).toBe(record.buildId);
+    expect((await watchReviewOffers(db, userId, DAY)).map((o) => [o.workoutId, o.date])).toEqual([[workoutId, DAY]]);
+
+    // Its push settled (never landed): no copy was on the watch, so there is nothing to review.
+    await db.update(schema.corosWriteJobs).set({ status: "superseded" }).where(eq(schema.corosWriteJobs.id, pushJobId(record.buildId)));
+    await expect(watchReviewBasis(db, userId, workoutId, ctx())).rejects.toThrow();
+    expect(await watchReviewOffers(db, userId, DAY)).toEqual([]);
+    await db.update(schema.corosWriteJobs).set({ status: "verified" }).where(eq(schema.corosWriteJobs.id, pushJobId(record.buildId)));
+
+    // Its marker cleared (taken off): not the copy on the watch any more.
+    await db.update(sessionBuilds).set({ payload: sql`json_remove(${sessionBuilds.payload}, '$.kind')` }).where(eq(sessionBuilds.id, record.buildId));
+    await expect(watchReviewBasis(db, userId, workoutId, ctx())).rejects.toThrow();
+
+    // A locked day build is the session's over any copy: the review is of it.
+    await db.update(sessionBuilds).set({ payload: sql`json_set(${sessionBuilds.payload}, '$.kind', 'provisional')` }).where(eq(sessionBuilds.id, record.buildId));
+    const dayBuild = "day-build-review";
+    await db.insert(sessionBuilds).values({
+      id: dayBuild, userId, workoutId, version: 1, engineVersion: record.stored.build.engineVersion, inputsHash: "h2",
+      payload: record.stored as unknown as Record<string, unknown>, workoutDoc: JSON.stringify(doc), lockedAt: NOON, createdAt: NOON,
+    });
+    expect((await watchReviewBasis(db, userId, workoutId, ctx())).buildId).toBe(dayBuild);
+    expect((await watchReviewOffers(db, userId, DAY)).map((o) => o.workoutId)).toEqual([workoutId]);
   });
 
   const refused = async (workoutId: string, today = DAY) => {

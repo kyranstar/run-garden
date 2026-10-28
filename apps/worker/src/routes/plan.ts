@@ -69,6 +69,7 @@ import { waitUntilSafe } from "../services/wait-until.js";
 import { loadPreferences, restoreCalendarEvent, savePreferences, syncCalendar } from "../services/calendar-sync.js";
 import { chunkIds, type Db } from "../services/db.js";
 import { applyMove } from "../services/jobs.js";
+import { provisionalRecord } from "../services/session-build.js";
 import { removeFromPlan, unskipWorkout } from "../services/plan-mutations.js";
 import { gardenSees, recentGardenEvents, REQUEST_GARDEN_STEP, resimulateFrom } from "../services/garden-sync.js";
 import {
@@ -636,8 +637,11 @@ function groupTodaySessions(
 ): Array<{
   row: PlannedRow;
   build: { mode: string; theme: string | null; minutes: number; place?: string; lead?: SessionLead } | null;
-  /** The slot's locked build — Start's, or Send's (Phase 3): the one a push can name. */
-  lockedBuildId: string | null;
+  /**
+   * The builds a push can name for the watch: the slot's locked build — Start's, or Send's (Phase 3) — and its
+   * provisional copies' records (the watch mirrors the plan, A1).
+   */
+  watchBuildIds: string[];
 }> {
   const byId = new Map<string, { row: PlannedRow; builds: TodayBuildFields[] }>();
   for (const { w, ...b } of rows) {
@@ -650,9 +654,11 @@ function groupTodaySessions(
     const current =
       sorted.find((b) => b.buildLockedAt !== null) ??
       sorted.find((b) => Number(b.buildVersion) > 0 && b.buildDate === today);
+    const locked = sorted.find((b) => b.buildLockedAt !== null)?.buildId;
+    const provisional = sorted.filter((b) => Number(b.buildProvisional) === 1).map((b) => b.buildId!);
     return {
       row,
-      lockedBuildId: sorted.find((b) => b.buildLockedAt !== null)?.buildId ?? null,
+      watchBuildIds: [...(locked ? [locked] : []), ...provisional],
       build:
         current && current.mode !== null && current.minutes !== null
           ? {
@@ -671,20 +677,21 @@ function groupTodaySessions(
 
 /**
  * TODAY'S SESSIONS ON THE WATCH (Phase 3; approved mocks §2 "Today · a sent session"): the slots whose locked build's
- * push verified and whose row holds the copy's address — the sheet's `on_watch`. Nothing while the switch is off, and
- * no read at all unless a slot of the day has a locked build and an address: then one read of the jobs, by id.
+ * push — or a provisional copy's (the watch mirrors the plan, A1) — verified and whose row holds the copy's address —
+ * the sheet's `on_watch`. Nothing while the switch is off, and no read at all unless a slot of the day has such a build
+ * and an address: then one read of the jobs, by id.
  */
 async function sessionsOnWatch(
   db: Db,
   env: Env,
   userId: string,
-  sessions: ReadonlyArray<{ row: PlannedRow; lockedBuildId: string | null }>,
+  sessions: ReadonlyArray<{ row: PlannedRow; watchBuildIds: readonly string[] }>,
 ): Promise<Set<string>> {
   if (!watchPushEnabled(env)) return new Set();
-  const addressed = sessions.filter((s) => s.lockedBuildId !== null && watchAddressOf(s.row) !== null);
+  const addressed = sessions.filter((s) => s.watchBuildIds.length > 0 && watchAddressOf(s.row) !== null);
   if (addressed.length === 0) return new Set();
   const verified = new Set<string>();
-  for (const ids of chunkIds(addressed.map((s) => `push:${s.lockedBuildId}`))) {
+  for (const ids of chunkIds(addressed.flatMap((s) => s.watchBuildIds.map((id) => `push:${id}`)))) {
     const rows = await db
       .select({ id: corosWriteJobs.id })
       .from(corosWriteJobs)
@@ -698,18 +705,19 @@ async function sessionsOnWatch(
       );
     for (const r of rows) verified.add(r.id);
   }
-  return new Set(addressed.filter((s) => verified.has(`push:${s.lockedBuildId}`)).map((s) => s.row.id));
+  return new Set(addressed.filter((s) => s.watchBuildIds.some((id) => verified.has(`push:${id}`))).map((s) => s.row.id));
 }
 
 /**
- * What Today reads of each build (audit M6): the version, the lock, the day it was built for, and the view fields it
- * shows (mode, theme, minutes, place, and the line of moves the build stored as `view.lead`) — taken from the stored
- * payload in SQL, never the payload itself (100+ KB a build).
+ * What Today reads of each build (audit M6): the version, the lock, whether it is a provisional copy's record, the day
+ * it was built for, and the view fields it shows (mode, theme, minutes, place, and the line of moves the build stored
+ * as `view.lead`) — taken from the stored payload in SQL, never the payload itself (100+ KB a build).
  */
 const todayBuildFields = {
   buildId: sessionBuilds.id,
   buildVersion: sessionBuilds.version,
   buildLockedAt: sessionBuilds.lockedAt,
+  buildProvisional: sql<number | null>`${provisionalRecord()}`,
   buildDate: sql<string | null>`json_extract(${sessionBuilds.payload}, '$.build.date')`,
   mode: sql<string | null>`json_extract(${sessionBuilds.payload}, '$.view.mode')`,
   theme: sql<string | null>`json_extract(${sessionBuilds.payload}, '$.view.theme.name')`,
@@ -722,6 +730,8 @@ type TodayBuildFields = {
   buildId: string | null;
   buildVersion: number | null;
   buildLockedAt: string | null;
+  /** 1 for a provisional copy's record (`provisionalRecord`): only "on the watch" reads it, never the day's build. */
+  buildProvisional: number | null;
   buildDate: string | null;
   mode: string | null;
   theme: string | null;

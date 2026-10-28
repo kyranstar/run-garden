@@ -60,7 +60,7 @@ import { exerciseDisplayName } from "./logged-sets.js";
 import { gardenChangeStatement } from "./garden-sync.js";
 import { corosKeyOf, libraryIdsByKey } from "./coros-exercise-map.js";
 import { claimUserLock, releaseUserLock } from "./locks.js";
-import { pushJobId, SessionNotFoundError, SETTLED_PUSH, type BuildPayload } from "./session-build.js";
+import { liveProvisionalRecord, pushJobId, SessionNotFoundError, SETTLED_PUSH, type BuildPayload } from "./session-build.js";
 import {
   claimMergeLocks,
   InvalidSaveError,
@@ -294,8 +294,16 @@ async function reviewSlot(db: Db, userId: string, workoutId: string): Promise<Sl
 }
 
 /**
- * The slot's watch activity and locked build, in ONE read: the active match the import made (`REVIEWED_MATCHES`) to a
- * COROS activity, and the slot's locked build with the day it was built for. Null when either is missing.
+ * The build a watch session of the slot played: its locked build (the newest) — else the provisional copy the mirror
+ * put on the watch (the watch mirrors the plan, A1: never locked; its marker kept and its push live), the newest.
+ */
+const sessionBuild = () => or(isNotNull(sessionBuilds.lockedAt), liveProvisionalRecord());
+const sessionBuildFirst = [asc(sql`${sessionBuilds.lockedAt} is null`), desc(sql`abs(${sessionBuilds.version})`)] as const;
+
+/**
+ * The slot's watch activity and the build it played (`sessionBuild`), in ONE read: the active match the import made
+ * (`REVIEWED_MATCHES`) to a COROS activity, and the slot's locked build — or its provisional copy on the watch — with
+ * the day it was built for. Null when either is missing.
  */
 async function reviewedOf(db: Db, userId: string, slot: SlotRow): Promise<Reviewed | null> {
   const [row] = await db
@@ -311,7 +319,7 @@ async function reviewedOf(db: Db, userId: string, slot: SlotRow): Promise<Review
     })
     .from(workoutCompletionMatches)
     .innerJoin(activities, and(eq(activities.id, workoutCompletionMatches.activityId), eq(activities.userId, userId)))
-    .innerJoin(sessionBuilds, and(eq(sessionBuilds.workoutId, slot.id), eq(sessionBuilds.userId, userId), isNotNull(sessionBuilds.lockedAt)))
+    .innerJoin(sessionBuilds, and(eq(sessionBuilds.workoutId, slot.id), eq(sessionBuilds.userId, userId), sessionBuild()))
     .where(
       and(
         eq(workoutCompletionMatches.workoutId, slot.id),
@@ -320,7 +328,7 @@ async function reviewedOf(db: Db, userId: string, slot: SlotRow): Promise<Review
         isNotNull(activities.corosActivityId),
       ),
     )
-    .orderBy(desc(sessionBuilds.version))
+    .orderBy(...sessionBuildFirst)
     .limit(1);
   if (!row || !row.corosActivityId || typeof row.buildDate !== "string" || !isLocalDate(row.buildDate)) return null;
   return {
@@ -496,8 +504,9 @@ export interface WatchReviewOffer {
 
 /**
  * TODAY'S "LOG YOUR SESSION" (spec §5): the slots whose review is offered today — the session's day today or
- * yesterday — in ONE read, no UNION: the slot, its active import match to a COROS activity, its locked build, and
- * none of its (or its activity's) app or review sessions saved. A sent build COROS moved takes the slot's day.
+ * yesterday — in ONE read, no UNION: the slot, its active import match to a COROS activity, its locked build (or its
+ * provisional copy on the watch, `sessionBuild`), and none of its (or its activity's) app or review sessions saved. A
+ * sent build COROS moved takes the slot's day.
  */
 export async function watchReviewOffers(db: Db, userId: string, today: string): Promise<WatchReviewOffer[]> {
   const yesterday = addDays(today, -1);
@@ -523,7 +532,7 @@ export async function watchReviewOffers(db: Db, userId: string, today: string): 
       ),
     )
     .innerJoin(activities, and(eq(activities.id, workoutCompletionMatches.activityId), isNotNull(activities.corosActivityId)))
-    .innerJoin(sessionBuilds, and(eq(sessionBuilds.workoutId, plannedWorkouts.id), eq(sessionBuilds.userId, userId), isNotNull(sessionBuilds.lockedAt)))
+    .innerJoin(sessionBuilds, and(eq(sessionBuilds.workoutId, plannedWorkouts.id), eq(sessionBuilds.userId, userId), sessionBuild()))
     .leftJoin(programs, eq(programs.id, plannedWorkouts.planId))
     .where(
       and(
@@ -534,7 +543,8 @@ export async function watchReviewOffers(db: Db, userId: string, today: string): 
         sql`not exists (select 1 from ${performedSessions} where ${performedSessions.userId} = ${userId} and (${performedSessions.workoutId} = ${plannedWorkouts.id} or ${performedSessions.activityId} = ${activities.id}) and ${performedSessions.source} in ('app', 'watch_review') and ${performedSessions.payloadHash} <> ${PENDING_HASH})`,
       ),
     )
-    .orderBy(asc(plannedWorkouts.effectiveDate), asc(plannedWorkouts.effectiveTime));
+    // A slot's first row is the build its review is of (`sessionBuildFirst`), as `reviewedOf` takes it.
+    .orderBy(asc(plannedWorkouts.effectiveDate), asc(plannedWorkouts.effectiveTime), ...sessionBuildFirst);
   const seen = new Set<string>();
   const out: WatchReviewOffer[] = [];
   for (const r of rows) {

@@ -21,6 +21,11 @@
  *  - A day ahead → a PREVIEW: version 0, overwritten by the next preview, never lockable; the row, the block and
  *    the checks are left alone (the session is built for real on its day).
  *  - A day gone → 409 `not_today` (the sheet offers "Move to today", the existing move verb).
+ *  - A PROVISIONAL COPY'S RECORD (the watch mirrors the plan §3.2; builder check A1): a document workout's copy pushed
+ *    to the watch ahead of its day is a build of its own — a negative version (−1, −2, … per workout), never locked,
+ *    `kind: "provisional"` in its payload (`makeProvisionalRecord`). It is none of the slot's builds: the loader, the
+ *    finders, `storeBuild` and `pruneBuilds` never see or touch it, so the sheet, Start and the day's build go on as
+ *    before. Only the readers that mean "on the watch" know it (`sentBuildIdOf`, and `provisionalRecord()` elsewhere).
  *  - DETERMINISM (§7.2): the engine is a pure function of its inputs and the seed is the date + program id, so a
  *    request whose inputs hash matches the stored build returns that build and writes nothing. The hash is taken
  *    over the block as stored AFTER the build, so the block a first build starts does not make the next identical
@@ -34,7 +39,7 @@
  *
  * Every writer here is a no-op while a restore is replacing the account (ruling B2).
  */
-import { and, eq, inArray, isNotNull, isNull, ne, notExists, notInArray, or, sql, type SQL } from "drizzle-orm";
+import { and, eq, gte, inArray, isNotNull, isNull, ne, notExists, notInArray, or, sql, type SQL } from "drizzle-orm";
 import { conditionChecks, corosWriteJobs, exercisePrefs, performedSessions, plannedWorkouts, programs, sessionBuilds, userConditions } from "@rg/database";
 import {
   appAuthoredRow,
@@ -101,7 +106,17 @@ import {
 import { conditionView, isAnswer, latestReading, type ConditionView } from "./condition-views.js";
 import type { WatchState } from "./watch-push.js";
 import { docForBuild, storedDocText } from "./workout-doc-store.js";
-import { dayValidateCtx, DOC_BUILD_VERSION, gateDoc, materializeDocBuild, slotsForDay, snapshotErrors, type DocBuildInfo, type DocSlot } from "./doc-build.js";
+import {
+  dayValidateCtx,
+  DOC_BUILD_VERSION,
+  gateDoc,
+  materializeDocBuild,
+  slotsForDay,
+  snapshotErrors,
+  type DocBuildInfo,
+  type DocSlot,
+  type GatedDoc,
+} from "./doc-build.js";
 import { NO_EQUIPMENT } from "./default-place.js";
 import { docSlotKeys, DocTooLargeError, makeLibraryIndex, type DocIssue, type ValidateCtx } from "@rg/workout";
 import { doneCleanlyOf, doneStats } from "./library-view.js";
@@ -308,7 +323,7 @@ interface SheetExtras {
 }
 
 /** What `session_builds.payload` holds. */
-interface StoredBuild {
+export interface StoredBuild {
   build: Omit<BuildPayload, "buildId" | "version">;
   view: SessionView;
 }
@@ -697,14 +712,38 @@ export async function loadSlot(db: Db, userId: string, workoutId: string): Promi
   return row;
 }
 
-/** The slot's builds, newest version first. */
+/**
+ * The slot's builds, newest version first — never a provisional copy's record (a negative version): every reader of
+ * these (`currentBuild`, both `previous` finds, `reuseStored`, `storeBuild`, the lock) means the slot's own preview
+ * and day builds, and "any locked build" or "the latest version" must never be one made for the watch.
+ */
 export async function loadBuilds(db: Db, userId: string, workoutId: string): Promise<BuildRow[]> {
   const rows = await db
     .select()
     .from(sessionBuilds)
-    .where(and(eq(sessionBuilds.workoutId, workoutId), eq(sessionBuilds.userId, userId)));
+    .where(and(eq(sessionBuilds.workoutId, workoutId), eq(sessionBuilds.userId, userId), gte(sessionBuilds.version, 0)));
   return rows.sort((a, b) => b.version - a.version);
 }
+
+/** A provisional copy's record says so in its payload, beside its build: `$.kind`. */
+export const PROVISIONAL_KIND = "provisional";
+export const PROVISIONAL_KIND_PATH = "$.kind";
+
+/** A provisional copy's record: a negative version AND the marker (one taken off the watch has lost its marker). */
+export function isProvisionalBuild(b: Pick<BuildRow, "version" | "payload">): boolean {
+  return b.version < 0 && (b.payload as { kind?: unknown } | null)?.kind === PROVISIONAL_KIND;
+}
+
+/** `isProvisionalBuild` in SQL, over `session_builds` as the query names it. */
+export const provisionalRecord = (): SQL =>
+  sql`(${sessionBuilds.version} < 0 and json_extract(${sessionBuilds.payload}, ${PROVISIONAL_KIND_PATH}) = ${PROVISIONAL_KIND})`;
+
+/**
+ * A provisional record whose push still holds a copy on the watch, or will put one there (`sentBuildIdOf`'s live push):
+ * what the readers of "the copy on the watch" in SQL (the quick review, key-result measures) take beside a locked build.
+ */
+export const liveProvisionalRecord = (): SQL =>
+  sql`(${provisionalRecord()} and exists (select 1 from ${corosWriteJobs} where ${corosWriteJobs.id} = ${pushJobId("")} || ${sessionBuilds.id} and ${corosWriteJobs.kind} = 'program_session_push' and ${corosWriteJobs.status} not in (${sql.raw(SETTLED_PUSH.map((s) => `'${s}'`).join(", "))})))`;
 
 const storedOf = (b: BuildRow): StoredBuild => b.payload as unknown as StoredBuild;
 const lockedOf = (row: SlotRow, builds: readonly BuildRow[]): boolean =>
@@ -987,11 +1026,16 @@ async function recordPreChecks(
 export const UNSTARTED_AT_PATH = "$.unstartedAt";
 const neverStarted = () => sql`json_extract(${sessionBuilds.payload}, ${UNSTARTED_AT_PATH}) is null`;
 
-/** Keep one unlocked build per workout — `keep` — plus any locked one, and any started once (ruling 2b-R19). */
+/**
+ * Keep one unlocked build per workout — `keep` — plus any locked one, and any started once (ruling 2b-R19); never a
+ * provisional copy's record (a negative version: the watch's, not the slot's).
+ */
 async function pruneBuilds(db: Db, workoutId: string, keep: string): Promise<void> {
   await db
     .delete(sessionBuilds)
-    .where(and(eq(sessionBuilds.workoutId, workoutId), ne(sessionBuilds.id, keep), isNull(sessionBuilds.lockedAt), neverStarted()));
+    .where(
+      and(eq(sessionBuilds.workoutId, workoutId), ne(sessionBuilds.id, keep), isNull(sessionBuilds.lockedAt), neverStarted(), gte(sessionBuilds.version, 0)),
+    );
 }
 
 /** Planned seconds as the calendar books them: rounded up to 5 minutes. */
@@ -1482,24 +1526,75 @@ async function docDayInputs(db: Db, userId: string, row: SlotRow, builds: readon
   const doc = parseStoredWorkoutDoc(row.workoutDoc);
   if (!doc) throw new NoDocumentError();
   const { context, checks, preChecks } = await docDay(db, userId, row, req, ctx, doc.setting?.placeId);
-  // One statement, only when an option could be a jump: what the frontier and the one-new-jump rule read.
-  const library = context.library;
-  const jumpsDone = docHoldsJump(doc, library.all)
-    ? doneCleanlyOf(await doneStats(db, userId, ctx.today, ctx.today, library.all), context.activeProfiles.filter(isProfileId).map((id) => PROFILES[id]), jumpIdsOf(library.all))
-    : new Set<string>();
+  const jumpsDone = await docJumpsDone(db, userId, doc, context, ctx.today);
   const version = await docBuildVersion();
   const rev = row.workoutDocRev ?? null;
-  const inputsHash = await sha256Hex(
+  const inputsHash = await docInputsHash({ version, date, docText: row.workoutDoc, rev, checks, context, jumpsDone });
+  return { date, preview, previous, doc, rev, context, checks, preChecks, jumpsDone, version, inputsHash };
+}
+
+/** The jumps done cleanly (`DocDayInputs.jumpsDone`): one statement, only when an option of `doc` could be a jump. */
+async function docJumpsDone(db: Db, userId: string, doc: WorkoutDoc, context: EngineContext, today: string): Promise<ReadonlySet<string>> {
+  const library = context.library;
+  if (!docHoldsJump(doc, library.all)) return new Set<string>();
+  return doneCleanlyOf(await doneStats(db, userId, today, today, library.all), context.activeProfiles.filter(isProfileId).map((id) => PROFILES[id]), jumpIdsOf(library.all));
+}
+
+/** The hash over a document build's inputs: a day's build's, a preview's, and a provisional copy's record's. */
+function docInputsHash(x: {
+  version: string;
+  date: string;
+  docText: string | null;
+  rev: number | null;
+  checks: Record<string, CheckAnswer>;
+  context: EngineContext;
+  jumpsDone: ReadonlySet<string>;
+}): Promise<string> {
+  const { context } = x;
+  return sha256Hex(
     JSON.stringify(
       canonical({
-        engine: version, date, doc: row.workoutDoc, rev, checks, profiles: context.activeProfiles, location: context.location, unit: context.unit,
-        jumpsDone: [...jumpsDone].sort(),
+        engine: x.version, date: x.date, doc: x.docText, rev: x.rev, checks: x.checks, profiles: context.activeProfiles, location: context.location, unit: context.unit,
+        jumpsDone: [...x.jumpsDone].sort(),
         // The account's personal moves, which a document's moves resolve in (none: hashed as before there were any).
-        ...(library.personalHash ? { personal: library.personalHash } : {}),
+        ...(context.library.personalHash ? { personal: context.library.personalHash } : {}),
       }),
     ),
   );
-  return { date, preview, previous, doc, rev, context, checks, preChecks, jumpsDone, version, inputsHash };
+}
+
+/**
+ * A document build as stored: `gated` materialised for `date` with `checks` (a preview's and a provisional record's:
+ * none), its document facts and its line of moves. Pure. Throws `DocTooLargeRefusal`.
+ */
+function docStoredBuild(
+  gated: GatedDoc,
+  x: { date: string; context: EngineContext; checks: Record<string, CheckAnswer>; judge: ValidateCtx; version: string; inputsHash: string; rev: number | null; now: string },
+): StoredBuild {
+  let made: ReturnType<typeof materializeDocBuild>;
+  try {
+    made = materializeDocBuild(gated.doc, {
+      date: x.date, location: viewLocationOf(x.context.location), checks: x.checks, library: x.context.library.all, offered: x.context.library.offered, judge: x.judge,
+    });
+  } catch (e) {
+    // Too large to build (`playerStepsFromDoc` checks the bound before making a step) — today, ahead, or grown past it
+    // by the day's swap: refused with the issue, nothing materialised, never a 500.
+    if (e instanceof DocTooLargeError) throw new DocTooLargeRefusal([tooLargeIssue(e.message)]);
+    throw e;
+  }
+  const facts = docFacts(gated.doc);
+  return {
+    build: {
+      engineVersion: x.version,
+      inputsHash: x.inputsHash,
+      builtAt: x.now,
+      blockRef: null,
+      ...made.build,
+      fromDoc: { rev: x.rev, swaps: gated.swaps, blocked: gated.blocked, slots: made.slots, ...facts },
+    },
+    // Today's line of moves says each dose as the builder does.
+    view: { ...made.view, lead: sessionLead(made.build, 2, facts.doses) },
+  };
 }
 
 /**
@@ -1529,35 +1624,59 @@ async function commitDocBuild(
   if (previous && previous.inputsHash === inputsHash && previous.engineVersion === version) return reuseStored(db, userId, s, previous, ctx);
 
   const judge = docValidateCtx(context, checks, date, ctx.today, inputs.jumpsDone);
-  const gated = preview ? { doc, swaps: [], blocked: [] } : gateDoc(doc, judge);
-  let made: ReturnType<typeof materializeDocBuild>;
-  try {
-    made = materializeDocBuild(gated.doc, {
-      date, location: viewLocationOf(context.location), checks: preview ? {} : checks, library: context.library.all, offered: context.library.offered, judge,
-    });
-  } catch (e) {
-    // Too large to build (`playerStepsFromDoc` checks the bound before making a step) — today, ahead, or grown past it
-    // by the day's swap: refused with the issue, nothing materialised, never a 500.
-    if (e instanceof DocTooLargeError) throw new DocTooLargeRefusal([tooLargeIssue(e.message)]);
-    throw e;
-  }
+  const gated: GatedDoc = preview ? { doc, swaps: [], blocked: [] } : gateDoc(doc, judge);
+  const stored = docStoredBuild(gated, { date, context, checks: preview ? {} : checks, judge, version, inputsHash, rev, now: ctx.now });
   const refused = await beginWrite(db, userId, s, ctx);
   if (refused) return refused;
-  const facts = docFacts(gated.doc);
-  const stored: StoredBuild = {
-    build: {
-      engineVersion: version,
-      inputsHash,
-      builtAt: ctx.now,
-      blockRef: null,
-      ...made.build,
-      fromDoc: { rev, swaps: gated.swaps, blocked: gated.blocked, slots: made.slots, ...facts },
-    },
-    // Today's line of moves says each dose as the builder does.
-    view: { ...made.view, lead: sessionLead(made.build, 2, facts.doses) },
-  };
   // The snapshot is the document as played: the day's swaps made, the row's own document untouched.
   return storeBuild(db, userId, s, { engineVersion: version, inputsHash, stored, workoutDoc: storedDocText(gated.doc) }, ctx);
+}
+
+/**
+ * A PROVISIONAL COPY'S RECORD (the watch mirrors the plan §3.2; builder check A1): `doc` at revision `rev`,
+ * materialised for the row's day exactly as the sheet's preview is — no reading (checks `{}`), nothing gated, the
+ * preview's inputs hash — and stored as a NEW `session_builds` row: version one below the workout's lowest (−1, then
+ * −2, …; one statement, so two records never take one version), `kind: "provisional"` beside its build in the payload,
+ * `fromDoc.rev`, the document as its snapshot, never locked. Never reused and never overwritten: a newer revision or
+ * day makes a new record (the record of a queued push stays what it pushed). Nothing else is written — not the row,
+ * not the checks. Reads the place, the profiles and (for a document with a jump) the jumps done; the caller has checked
+ * that no restore is running. Throws `DocTooLargeRefusal`.
+ */
+export async function makeProvisionalRecord(
+  db: Db,
+  userId: string,
+  row: SlotRow,
+  doc: WorkoutDoc,
+  rev: number,
+  ctx: BuildCtx,
+): Promise<{ buildId: string; version: number; stored: StoredBuild }> {
+  const date = row.effectiveDate;
+  const context = await loadDocEngineContext(db, userId, doc.setting?.placeId, ctx.prefs);
+  const jumpsDone = await docJumpsDone(db, userId, doc, context, ctx.today);
+  const version = await docBuildVersion();
+  const checks: Record<string, CheckAnswer> = {};
+  const docText = storedDocText(doc);
+  const inputsHash = await docInputsHash({ version, date, docText, rev, checks, context, jumpsDone });
+  const judge = docValidateCtx(context, checks, date, ctx.today, jumpsDone);
+  const stored = docStoredBuild({ doc, swaps: [], blocked: [] }, { date, context, checks, judge, version, inputsHash, rev, now: ctx.now });
+  const id = newId();
+  const below = sql`(select min(coalesce(min(${sessionBuilds.version}), 0), 0) - 1 from ${sessionBuilds} where ${sessionBuilds.workoutId} = ${row.id})`;
+  const [made] = await db
+    .insert(sessionBuilds)
+    .values({
+      id,
+      userId,
+      workoutId: row.id,
+      version: below,
+      engineVersion: version,
+      inputsHash,
+      payload: { ...stored, kind: PROVISIONAL_KIND } as unknown as Record<string, unknown>,
+      workoutDoc: docText,
+      lockedAt: null,
+      createdAt: ctx.now,
+    })
+    .returning({ version: sessionBuilds.version });
+  return { buildId: id, version: made!.version, stored };
 }
 
 /**
@@ -1808,15 +1927,27 @@ export const pushJobId = (buildId: string): string => `push:${buildId}`;
 export const SETTLED_PUSH = ["superseded", "cancelled", "restored"] as const;
 
 /**
- * The slot's locked build that a non-superseded `program_session_push` names — the build that was sent; null when
- * none was sent (Phase 3). A failed push still names its build: Retry sends that build again.
+ * The build whose copy is on the watch, or on its way: the slot's locked build — or a provisional copy's record (the
+ * watch mirrors the plan, A1) — that a non-settled `program_session_push` names; null when none (Phase 3). A failed
+ * push still names its build: Retry sends that build again.
+ *
+ * DETERMINISTIC, whatever order the rows are read in: the day's build (locked, built for the slot's day) wins, then any
+ * other locked build (the newest), then the newest provisional record — the two can both be live (`unlockSentBuild`
+ * spares a started or done slot). Two reads, one when nothing is locked or provisional.
  */
 export async function sentBuildIdOf(db: Db, workoutId: string): Promise<string | null> {
-  const locked = await db
-    .select({ id: sessionBuilds.id })
+  const candidates = await db
+    .select({
+      id: sessionBuilds.id,
+      version: sessionBuilds.version,
+      lockedAt: sessionBuilds.lockedAt,
+      date: sql<string | null>`json_extract(${sessionBuilds.payload}, '$.build.date')`,
+      day: plannedWorkouts.effectiveDate,
+    })
     .from(sessionBuilds)
-    .where(and(eq(sessionBuilds.workoutId, workoutId), isNotNull(sessionBuilds.lockedAt)));
-  if (locked.length === 0) return null;
+    .leftJoin(plannedWorkouts, eq(plannedWorkouts.id, sessionBuilds.workoutId))
+    .where(and(eq(sessionBuilds.workoutId, workoutId), or(isNotNull(sessionBuilds.lockedAt), provisionalRecord())));
+  if (candidates.length === 0) return null;
   const pushes = await db
     .select({ id: corosWriteJobs.id })
     .from(corosWriteJobs)
@@ -1824,13 +1955,18 @@ export async function sentBuildIdOf(db: Db, workoutId: string): Promise<string |
       and(
         inArray(
           corosWriteJobs.id,
-          locked.map((b) => pushJobId(b.id)),
+          candidates.map((b) => pushJobId(b.id)),
         ),
         eq(corosWriteJobs.kind, "program_session_push"),
         notInArray(corosWriteJobs.status, [...SETTLED_PUSH]),
       ),
     );
-  const sent = locked.find((b) => pushes.some((j) => j.id === pushJobId(b.id)));
+  const live = new Set(pushes.map((j) => j.id));
+  const rank = (b: (typeof candidates)[number]): number => (b.lockedAt === null ? 2 : b.date === b.day ? 0 : 1);
+  const [sent] = candidates
+    .filter((b) => live.has(pushJobId(b.id)))
+    // Locked: the newest version first; provisional: the newest record, the lowest version, first.
+    .sort((a, b) => rank(a) - rank(b) || (a.lockedAt !== null ? b.version - a.version : a.version - b.version));
   return sent?.id ?? null;
 }
 

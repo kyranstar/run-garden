@@ -13,9 +13,11 @@ import type { Env } from "../src/env.js";
 import type { Db } from "../src/services/db.js";
 import { planRoutes } from "../src/routes/plan.js";
 import { createSession, SESSION_COOKIE } from "../src/auth/sessions.js";
-import { sendToWatch, takeOffWatch } from "../src/services/watch-push.js";
+import { sendToWatch, takeOffWatch, unlockSentBuild } from "../src/services/watch-push.js";
+import { makeProvisionalRecord, pushJobId } from "../src/services/session-build.js";
 import { connectTestCoros, makeTestDb, makeTestUser, mountRoutes } from "./helpers.js";
-import { buildToday, DAY, makeEnv, NOON, seedCatalog, seedProgram, seedSlot, seedTmj, switchOn } from "./watch-push-fixture.js";
+import { buildToday, DAY, makeEnv, NOON, rowOf, seedCatalog, seedProgram, seedSlot, seedTmj, switchOn } from "./watch-push-fixture.js";
+import { calmDoc } from "./doc-workout-fixture.js";
 
 const { corosWriteJobs, plannedWorkouts } = schema;
 
@@ -52,7 +54,7 @@ afterEach(() => {
 const ctx = () => ({ today: DAY, now: NOON, prefs });
 
 type TodayBody = {
-  todaySessions: Array<{ workout: { id: string }; onWatch?: boolean }>;
+  todaySessions: Array<{ workout: { id: string }; build: unknown; onWatch?: boolean }>;
 };
 
 async function getToday(env: Env = switchOn()): Promise<{ body: TodayBody; d1: number }> {
@@ -113,6 +115,37 @@ describe("GET /today — onWatch (Task 8)", () => {
     expect(onWatchOf((await getToday()).body, b.workoutId)).toBe(true);
     await takeOffWatch(db, userId, b.workoutId, ctx());
     expect(onWatchOf((await getToday()).body, b.workoutId)).toBe(false);
+  });
+
+  it("a provisional copy (the watch mirrors the plan, A1) whose push verified, the row holding the address: on the watch — nothing locked", async () => {
+    // A Studio workout of today, its document's provisional copy pushed ahead of its day.
+    const workoutId = "studio-today";
+    const doc = calmDoc();
+    await db.insert(plannedWorkouts).values({
+      id: workoutId, userId, planId: programId, sourceWorkoutId: workoutId, title: doc.title, category: "strength", sport: "strength",
+      originalPlanDate: DAY, lastVerifiedCorosDate: "", effectiveDate: DAY, effectiveTime: "18:00", sourceContentFingerprint: "studio",
+      calendarBlockDurationSeconds: 1800, fallbackEstimatedDurationSeconds: 1800, corosSyncState: "calendar_only",
+      completionState: "scheduled", origin: "studio", contentState: "outline", workoutDoc: JSON.stringify(doc), workoutDocRev: 1,
+      createdAt: NOON, updatedAt: NOON,
+    });
+    const record = await makeProvisionalRecord(db, userId, await rowOf(db, workoutId), doc, 1, ctx());
+    await db.insert(corosWriteJobs).values({
+      id: pushJobId(record.buildId), userId, workoutId, kind: "program_session_push", expectedContentFingerprint: record.stored.build.inputsHash,
+      originalDate: DAY, destinationDate: DAY, payload: {}, requestedAt: NOON, status: "queued", updatedAt: NOON,
+    });
+    expect(onWatchOf((await getToday()).body, workoutId)).toBe(false); // queued: not on the watch yet
+    await landed(workoutId, record.buildId);
+    const { body, d1 } = await getToday();
+    expect(onWatchOf(body, workoutId)).toBe(true);
+    // Today shows no build for it: the record is no day's build.
+    expect(body.todaySessions.find((s) => s.workout.id === workoutId)!.build).toBeNull();
+    console.info(`[budget] GET /today with a provisional copy on the watch: ${d1} D1 + 0 COROS = ${d1}`);
+    expect(d1).toBeLessThanOrEqual(BUDGET);
+    expect(onWatchOf((await getToday(makeEnv())).body, workoutId)).toBe(false);
+
+    // Taken off (its marker cleared): no longer, though its push stays verified until the delete lands.
+    await unlockSentBuild(db, await rowOf(db, workoutId), record.buildId, NOON);
+    expect(onWatchOf((await getToday()).body, workoutId)).toBe(false);
   });
 
   it("a day with no sent session reads nothing for onWatch: the switch on adds one statement, Today's review offers (Task 9)", async () => {

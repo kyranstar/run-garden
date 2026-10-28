@@ -11,6 +11,7 @@
  * Synthetic data only: a wall-sit-like hold series, squat sets typed in lb and kg, synthetic runs. Fixed dates.
  */
 import { beforeEach, describe, expect, it } from "vitest";
+import { eq, sql } from "drizzle-orm";
 import { schema } from "@rg/database";
 import { EXERCISES, makeEngineData } from "@rg/exercise-library";
 import { Recorder, Review, Swapping, toPerformedSave, type Live, type RecorderMeta, type Step } from "@rg/session-engine";
@@ -30,7 +31,7 @@ import { updateProfile } from "../src/services/profile.js";
 import { setRows } from "../src/services/session-save.js";
 import { isWrite, makeTestDb, makeTestUser } from "./helpers.js";
 
-const { activities, dailyHealth, performedSessions, performedSets, plannedWorkouts, sessionBuilds, workoutCompletionMatches } = schema;
+const { activities, corosWriteJobs, dailyHealth, performedSessions, performedSets, plannedWorkouts, sessionBuilds, workoutCompletionMatches } = schema;
 
 const TODAY = "2026-10-10";
 const T0 = "2026-10-10T12:00:00.000Z";
@@ -429,6 +430,30 @@ describe("hold_max", () => {
     const plannedId = await planned(day(11), doc([hold("wallSit", 60, true)]));
     await sets(await session(day(11), { source: "watch", workoutId: plannedId }), "wallSit", [{ seconds: 70 }]);
     expect(await measure(WALL_SIT)).toMatchObject({ current: 70, evidence: "sparse", sampleSize: 2 });
+  });
+
+  it("…or by its provisional copy (the watch mirrors the plan, A1) while that copy's push is live — never one locked or settled", async () => {
+    const id = await planned(day(12));
+    // The record the mirror makes ahead of the day: a negative version, never locked, its marker in the payload.
+    const record = await build(id, { steps: [{ kind: "timed", exerciseId: "wallSit", seconds: 30 }], version: -1, locked: false });
+    await db.update(sessionBuilds).set({ payload: sql`json_set(${sessionBuilds.payload}, '$.kind', 'provisional')` }).where(eq(sessionBuilds.id, record));
+    await sets(await session(day(12), { source: "watch", workoutId: id }), "wallSit", [{ seconds: 45 }]);
+    // Never pushed: nothing on the watch prescribed it.
+    expect(await measure(WALL_SIT)).toMatchObject({ current: 45, evidence: "capped" });
+    const push = (status: string) =>
+      db.insert(corosWriteJobs).values({
+        id: `push:${record}`, userId, workoutId: id, kind: "program_session_push", expectedContentFingerprint: "h",
+        originalDate: day(12), destinationDate: day(12), payload: {}, requestedAt: T0, status, updatedAt: T0,
+      }).onConflictDoUpdate({ target: corosWriteJobs.id, set: { status } });
+    await push("verified");
+    expect(await measure(WALL_SIT)).toMatchObject({ current: 45, evidence: "sparse" });
+    await push("superseded");
+    expect(await measure(WALL_SIT)).toMatchObject({ current: 45, evidence: "capped" });
+
+    // A locked build of the workout is what was played, over the copy.
+    await push("verified");
+    await build(id, { steps: [{ kind: "timed", exerciseId: "wallSit", seconds: 60 }], version: 1 });
+    expect(await measure(WALL_SIT)).toMatchObject({ current: 45, evidence: "capped" });
   });
 
   it("reads only the window, this account's done sets, and sessions that are written", async () => {

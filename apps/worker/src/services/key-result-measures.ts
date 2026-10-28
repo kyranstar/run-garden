@@ -89,6 +89,7 @@ import { makeLibraryIndex } from "@rg/workout";
 import { libraryFor } from "./account-library.js";
 import type { Db } from "./db.js";
 import { sessionPerActivity } from "./logged-sets.js";
+import { liveProvisionalRecord, provisionalRecord } from "./session-build.js";
 import { PENDING_HASH } from "./watch-sets.js";
 
 /** Points that show capacity (or runs, or days) before a current value is `measured` rather than `sparse`. */
@@ -482,13 +483,15 @@ async function loggedSets(
         .values()) as SetValues[];
       return rows.map(([sessionId, entryIndex, setIndex, side, exerciseId, reps, seconds, kg]) => ({ sessionId, entryIndex, setIndex, side, exerciseId, reps, seconds, kg }));
     })(),
-    // The builds those sessions played: an app session's own, a watch session's workout's locked ones.
+    // The builds those sessions played: an app session's own, a watch session's workout's locked ones — or the
+    // provisional copy the mirror put on the watch (the watch mirrors the plan, A1: never locked, its push live).
     db
       .select({
         id: sessionBuilds.id,
         workoutId: sessionBuilds.workoutId,
         version: sessionBuilds.version,
         lockedAt: sessionBuilds.lockedAt,
+        provisional: sql<number>`${provisionalRecord()}`,
         items: documentItems(sessionBuilds.workoutDoc, moves),
         steps: buildSteps(moves),
         options: slotOptions(moves),
@@ -507,7 +510,7 @@ async function loggedSets(
                 .where(and(inWindow, isNotNull(performedSessions.buildId), loggedTheMoves)),
             ),
             and(
-              isNotNull(sessionBuilds.lockedAt),
+              or(isNotNull(sessionBuilds.lockedAt), liveProvisionalRecord()),
               inArray(
                 sessionBuilds.workoutId,
                 db
@@ -542,12 +545,15 @@ async function loggedSets(
     [...sessionPerActivity(sessionRows).values(), ...sessionRows.filter((s) => !s.activityId)].map((s) => [s.id, s]),
   );
   const builds = new Map(buildRows.map((b) => [b.id, b]));
-  // A watch session played what was sent: its workout's latest locked build.
+  // A watch session played what was sent: its workout's latest locked build — else its newest provisional copy (the
+  // lowest version) whose push is live.
   const sent = new Map<string, (typeof buildRows)[number]>();
+  const ahead = (b: (typeof buildRows)[number], held: (typeof buildRows)[number]): boolean =>
+    held.lockedAt === null ? b.lockedAt !== null || b.version < held.version : b.lockedAt !== null && b.version > held.version;
   for (const b of buildRows) {
-    if (b.lockedAt === null) continue;
+    if (b.lockedAt === null && Number(b.provisional) !== 1) continue;
     const held = sent.get(b.workoutId);
-    if (!held || b.version > held.version) sent.set(b.workoutId, b);
+    if (!held || ahead(b, held)) sent.set(b.workoutId, b);
   }
   const plannedItems = new Map(plannedRows.map((r) => [r.id, parsedList(r.items, isItem)]));
   const prescribed = new Map<string, Prescribed>();
