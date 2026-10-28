@@ -1554,7 +1554,8 @@ function docSession(over: Partial<SessionDto> = {}): SessionDto {
     ...over,
   } as Partial<SessionDto>);
 }
-const docRow = (over: Partial<WorkoutDto> = {}) => slot({ id: SLOT, origin: "studio", programId: null, title: "Leg day", ...over });
+/** A document workout as the server sends one: `hasDoc` (a stored document) with it. */
+const docRow = (over: Partial<WorkoutDto> = {}) => slot({ id: SLOT, origin: "studio", programId: null, title: "Leg day", hasDoc: true, ...over } as Partial<WorkoutDto>);
 
 describe("a document workout in the sheet (Stage 2 whole-branch review)", () => {
   let studioWas = false;
@@ -1607,6 +1608,19 @@ describe("a document workout in the sheet (Stage 2 whole-branch review)", () => 
     mount(docSession(), { w: docRow({ id: "cw-1", origin: null, hasDoc: true } as Partial<WorkoutDto>) });
     await until(() => !!button("Edit in Studio"), "Edit in Studio");
     expect(button("Edit in Studio")!.getAttribute("href")).toBe("/studio/build/workout/cw-1");
+  });
+
+  it("offers no Edit in Studio for a revisable coach session with no document, in either sheet — the builder opens a stored one (D1)", async () => {
+    // The session sheet (Today's card), then the watch-shaped sheet (the Plan's row): revisable, and nothing to open.
+    mount(docSession(), { w: docRow({ origin: null, hasDoc: false } as Partial<WorkoutDto>) });
+    await until(() => body().includes("Goblet squat"), "the build");
+    expect(button("Edit in Studio")).toBeUndefined();
+    act(() => root?.unmount());
+    host?.remove();
+    const coach = slot({ id: "cw-3", title: "Coach lift", origin: null, contentState: null, programId: null, hasDoc: false } as Partial<WorkoutDto>);
+    mount(session(), { detail: true, w: coach });
+    await until(() => body().includes("Coach lift") && body().includes("Remove from plan"), "the workout sheet");
+    expect(button("Edit in Studio")).toBeUndefined();
   });
 
   it("offers no Edit in Studio for what the Studio may not change: a programme session, one under way, one done, the Studio off", async () => {

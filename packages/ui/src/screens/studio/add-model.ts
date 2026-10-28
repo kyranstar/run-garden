@@ -48,10 +48,11 @@ export const freshDoc = (): DraftDoc => newDoc("structured", { title: "New worko
 /**
  * A planned workout the Studio may change: any revisable one (`revisability`, workout-editability spec §3) — a Studio or
  * template workout, or a coach or watch session the revise adopts into a document — today or later, not resolved,
- * under way, a rest day, a race, a programme's session or a run.
+ * under way, a rest day, a race, a programme's session or a run; and one with a document to open (`hasDoc`): the
+ * builder edits a stored document, so a revisable row with none is not sent there (the coach revises one from rev 0).
  */
 export function editableWorkout(w: WorkoutDto, today: string): boolean {
-  return !w.archived && revisability(rowOf(w), today).ok;
+  return !w.archived && w.hasDoc === true && revisability(rowOf(w), today).ok;
 }
 
 /** The row as `revisability` reads it: the list carries no document, so sport and category decide a run. */

@@ -147,6 +147,8 @@ function workout(over: Partial<WorkoutDto>): WorkoutDto {
     origin: "studio",
     contentState: "outline",
     programId: "studio-u1",
+    // A document workout as the server sends one: a stored document (`hasDoc`).
+    hasDoc: true,
     ...over,
   } as WorkoutDto;
 }
@@ -171,6 +173,12 @@ describe("the planned workouts the sheet offers", () => {
     expect(editableWorkout(workout({ origin: null, category: "rest" }), TODAY)).toBe(false);
     expect(editableWorkout(workout({ origin: null, category: "race" }), TODAY)).toBe(false);
     expect(editableWorkout(workout({ origin: null, sport: "run", category: "tempo" }), TODAY)).toBe(false);
+  });
+
+  it("nor one with no document to open, revisable as it is (D1: the builder edits a stored document)", () => {
+    expect(editableWorkout(workout({ origin: null, id: "cw-2", hasDoc: false } as Partial<WorkoutDto>), TODAY)).toBe(false);
+    expect(editableWorkout(workout({ origin: null, id: "cw-3", hasDoc: undefined } as Partial<WorkoutDto>), TODAY)).toBe(false);
+    expect(editableWorkouts([workout({ id: "with" }), workout({ id: "without", origin: null, hasDoc: false } as Partial<WorkoutDto>)], TODAY).map((w) => w.id)).toEqual(["with"]);
   });
 
   it("nor one done, skipped, missed, under way, past or archived", () => {

@@ -86,6 +86,8 @@ function planned(over: Partial<WorkoutDto>): WorkoutDto {
     origin: "studio",
     contentState: "outline",
     programId: "studio-u1",
+    // A document workout as the server sends one: a stored document (`hasDoc`).
+    hasDoc: true,
     ...over,
   } as WorkoutDto;
 }
