@@ -863,13 +863,15 @@ export function SessionSheet({ w, today, onClose }: { w: WorkoutDto; today: stri
         <AskCoach focus={workoutFocus(w)} wrap="session-ask-row" />
         {/* The watch holds an earlier version of this session (the owner, 2026-10-19): said, and left as it is if the
             athlete wants. Nothing from here replaces an app-built session's earlier copy, and no read takes its content
-            from the wire, so there is neither a send nor a keep. */}
+            from the wire, so there is neither a send nor a keep — except an adopted session's old copy, which its own
+            Send replaces: said so, with nothing to leave (workout-editability §4). */}
         <WatchVersion
           workoutId={w.id}
           show={w.corosSyncView === "content_stale"}
           choice={APP_BUILT_CHOICE}
           appBuilt
           left={!!w.watchVersionLeft}
+          replaceable={!!w.watchHoldsOldCopy}
         />
         {notKept ? (
           <Banner kind="warn">

@@ -187,6 +187,9 @@ export interface WorkoutDto {
   /** The athlete left the watch's earlier version of this app-built session as it is: the row still says so
    * (`corosSyncView` `content_stale`), the account line no longer counts it. */
   watchVersionLeft?: true;
+  /** An adopted session (a coach or watch-plan one taken into the Studio) still to run whose old copy the watch holds:
+   * its own Send replaces that copy (`corosSyncView` `content_stale` until then). Absent otherwise. */
+  watchHoldsOldCopy?: true;
   /** Derived per-workout view (sync-transparency Task 10) — `corosSyncState`'s
    * vocabulary plus `content_stale`, the one value only a derivation can
    * produce (see `WorkoutSyncView`). Computed fresh from the open content

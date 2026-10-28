@@ -364,6 +364,18 @@ describe("the session's sheet", () => {
     expect(host!.querySelector(".watch-version-actions")).toBeNull();
   });
 
+  it("an adopted session whose old copy the watch holds says its own Send replaces it — no can't-replace, no Leave", async () => {
+    const calls = stubFetch({ "/api/sync/notes": () => json({ notes: [] }) });
+    const adopted = run({ id: "cw-9-0", title: "Legs, revised", category: "strength", sport: "strength", origin: "studio", contentState: "outline", programId: null, hasDoc: true, watchHoldsOldCopy: true });
+    mount(createElement(SessionSheet, { w: adopted, today: TODAY, onClose: () => undefined }));
+    await act(async () => undefined);
+    expect(host!.querySelector(".watch-version-says")!.textContent).toBe("Your watch has an earlier version of this session. Send it to your watch to replace it.");
+    expect(host!.textContent).not.toContain("can't replace");
+    expect(buttons()).not.toContain("Leave the watch as it is");
+    expect(host!.querySelector(".watch-version-actions")).toBeNull();
+    expect(calls.filter((c) => c.path.includes("/watch-version/"))).toEqual([]);
+  });
+
   it("an app-built session the watch holds as it is says nothing of it", async () => {
     stubFetch({ "/api/sync/notes": () => json({ notes: [] }) });
     const slot = run({ id: "slot-2", title: "Strength B", category: "strength", sport: "strength", origin: "program", contentState: "outline", programId: "p1", corosSyncView: "synced", syncAction: undefined });

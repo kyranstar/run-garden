@@ -358,7 +358,7 @@ describe("an adopted row's old copy reaches the owner (spec §4): the Plan and t
     expect(res.status, path).toBe(200);
     return (await res.json()) as T;
   }
-  type Row = { id: string; corosSyncView?: string };
+  type Row = { id: string; corosSyncView?: string; watchHoldsOldCopy?: true };
 
   it("says 'older on watch' (content_stale) while the copy's name is held — on Today's list and the sheet's read, with no Send or Keep from here — and not once it clears", async () => {
     // Adopted by a revise (the Studio's here; a coach approve's is the same write): its address kept, the name recorded.
@@ -370,15 +370,18 @@ describe("an adopted row's old copy reaches the owner (spec §4): the Plan and t
 
     const sheet = await planGet<{ workout: Row; watchVersion?: unknown }>(`/api/plan/workouts/${id}`);
     expect(sheet.workout.corosSyncView).toBe("content_stale");
+    // Before its Send: the sheet is told the row's own Send replaces the copy (not "can't replace", no Leave).
+    expect(sheet.workout.watchHoldsOldCopy).toBe(true);
     // An app-built row: no rewrite or keep from here (the Studio's Send replaces the copy).
     expect(sheet.watchVersion).toEqual({ send: false, why: "cant_rewrite" });
     const today = await planGet<{ upcoming: Row[] }>("/api/plan/today");
-    expect(today.upcoming.find((w) => w.id === id)?.corosSyncView).toBe("content_stale");
+    expect(today.upcoming.find((w) => w.id === id)).toMatchObject({ corosSyncView: "content_stale", watchHoldsOldCopy: true });
 
     // The copy's delete verified (or a read no longer finds it): the name clears, and the row is what it is.
     await db.update(plannedWorkouts).set({ watchCopyName: null }).where(eq(plannedWorkouts.id, id));
     const after = await planGet<{ workout: Row; watchVersion?: unknown }>(`/api/plan/workouts/${id}`);
     expect(after.workout.corosSyncView).toBe("synced");
+    expect(after.workout).not.toHaveProperty("watchHoldsOldCopy");
     expect(after.watchVersion).toBeUndefined();
     expect((await planGet<{ upcoming: Row[] }>("/api/plan/today")).upcoming.find((w) => w.id === id)?.corosSyncView).toBe("synced");
   });
@@ -389,8 +392,11 @@ describe("an adopted row's old copy reaches the owner (spec §4): the Plan and t
     await seedWatchShaped(past, { origin: "studio", watchCopyName: "Legs, invented", ...address("4242", "21", "880021", today), effectiveDate: today, completionState: "completed" });
     const notOurs = "cw-test-22-0";
     await seedWatchShaped(notOurs, { watchCopyName: "Legs, invented", ...address("4242", "22", "880022", tomorrow) });
-    expect((await planGet<{ workout: Row }>(`/api/plan/workouts/${past}`)).workout.corosSyncView).toBe("synced");
-    expect((await planGet<{ workout: Row }>(`/api/plan/workouts/${notOurs}`)).workout.corosSyncView).toBe("synced");
+    for (const id of [past, notOurs]) {
+      const { workout } = await planGet<{ workout: Row }>(`/api/plan/workouts/${id}`);
+      expect(workout.corosSyncView, id).toBe("synced");
+      expect(workout, id).not.toHaveProperty("watchHoldsOldCopy");
+    }
   });
 });
 

@@ -10,7 +10,9 @@
  *    says it until then;
  *  - an app-built session (a programme's, an on-demand one, a Studio or template workout), whose earlier copy nothing
  *    from here replaces and whose content no read takes from the wire, offers "Leave the watch as it is" alone: the
- *    account line stops counting it, and this sentence stays, quietly.
+ *    account line stops counting it, and this sentence stays, quietly;
+ *  - an adopted one (a coach or watch-plan session taken into the Studio, `replaceable`), whose old copy its own Send
+ *    replaces, says so and offers nothing here: there is nothing to leave, and the Send is the sheet's own.
  *
  * Every press says what it did in the block's own place, holding its height, with the focus on that line — the row's
  * view changes under it (and the sheet lets this block tell the story), so nothing below moves and the focus is never
@@ -63,6 +65,7 @@ export function WatchVersion({
   choice,
   appBuilt = false,
   left = false,
+  replaceable = false,
   settingsLink,
   onDone,
 }: {
@@ -74,6 +77,8 @@ export function WatchVersion({
   appBuilt?: boolean;
   /** An app-built session already left as it is. */
   left?: boolean;
+  /** An adopted session whose old copy its own Send replaces (`watchHoldsOldCopy`): said so, with no Leave. */
+  replaceable?: boolean;
   /** The screen's own Settings link, beside a line that sends the athlete there. */
   settingsLink?: ReactNode;
   /** A press went through: the block tells the story from here. */
@@ -111,10 +116,18 @@ export function WatchVersion({
 
   if (!show && !done) return null;
   const busy = send.isPending || keep.isPending || leave.isPending;
-  const why = appBuilt ? (left ? null : watchVersionWhy("cant_rewrite", true)) : choice && !choice.send ? watchVersionWhy(choice.why) : null;
+  const why = replaceable
+    ? "Send it to your watch to replace it."
+    : appBuilt
+      ? left
+        ? null
+        : watchVersionWhy("cant_rewrite", true)
+      : choice && !choice.send
+        ? watchVersionWhy(choice.why)
+        : null;
   const toSettings = !appBuilt && (choice?.why === "writes_off" || choice?.why === "not_connected");
   const failed = send.error ?? keep.error ?? leave.error;
-  const buttons = done ? null : appBuilt ? (
+  const buttons = done || replaceable ? null : appBuilt ? (
     left ? null : (
       <button className="btn btn-wrap" disabled={busy} aria-busy={leave.isPending} onClick={() => leave.mutate()}>
         Leave the watch as it is
@@ -138,7 +151,7 @@ export function WatchVersion({
         Your watch has an earlier version of this session.
         {why ? ` ${why}` : null}
         {why && toSettings && settingsLink ? <> {settingsLink}</> : null}
-        {appBuilt && left && !done ? " You've left it as it is." : null}
+        {appBuilt && left && !replaceable && !done ? " You've left it as it is." : null}
       </p>
       {buttons || done ? (
         <div className="btn-row watch-version-actions" ref={actionsRef} style={done && hold ? { minHeight: hold } : undefined}>

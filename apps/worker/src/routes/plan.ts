@@ -144,6 +144,9 @@ interface WorkoutView {
   /** The athlete left the watch's earlier version of this app-built session as it is (watch-version.ts
    * `leaveWatchVersion`): the row still says so; the account line no longer counts it. */
   watchVersionLeft?: boolean;
+  /** An adopted row still to run whose old copy the watch holds (`watch_copy_name`, workout-editability §4): its own
+   * Send replaces that copy, so the sheet says so — never "can't replace", never "Leave". */
+  watchHoldsOldCopy?: boolean;
 }
 
 /**
@@ -426,6 +429,8 @@ async function loadWorkoutViews(
   const today = todayLocal ?? todayInZone(prefs.timezone);
   for (const w of workouts) {
     const contentRewritten = contentStale.has(w.id);
+    // An adopted row still to run whose old copy the watch holds (`watch_copy_name`): read off the row, no statement.
+    const heldCopy = appAuthoredRow(w) && w.watchCopyName !== null && stillToRun(w, today);
     const coverage = watchCoverageOfRow(w, contentRewritten, stagesByWorkout.get(w.id) ?? [], runWire);
     const corosSyncView = deriveWorkoutSync({
       effectiveDate: w.effectiveDate,
@@ -433,9 +438,9 @@ async function loadWorkoutViews(
       // "Older on watch" only while the athlete can still do something about it: an OPEN claim on a session still to
       // run (the account line's rule, `watchEarlierVersions`). A past or finished session's watch copy is a record.
       // An adopted row (workout-editability spec §4) holds the copy the watch had of it under `watch_copy_name` until
-      // that copy's delete verifies (or a read no longer finds it): the watch has the older version — said by the
-      // app-built row's own line (no Send or Keep from here: the Studio's Send replaces it). Read off the row: no statement.
-      hasOpenContentIntent: (claims.open.has(w.id) || (appAuthoredRow(w) && w.watchCopyName !== null)) && stillToRun(w, today),
+      // that copy's delete verifies (or a read no longer finds it): the watch has the older version — said on its row
+      // with what replaces it (`watchHoldsOldCopy`: its own Send; no rewrite or Keep from here).
+      hasOpenContentIntent: (claims.open.has(w.id) || heldCopy) && stillToRun(w, today),
       // The athlete chose the watch's version; the next COROS read takes it (watch-version.ts) — said only while the
       // session is still to run: a past or finished one falls back to its own view (a read may never come for it).
       takingWatchCopy: takesWatchCopy(w.sourceContentFingerprint) && stillToRun(w, today),
@@ -468,6 +473,7 @@ async function loadWorkoutViews(
       ...(action ? { syncAction: action } : {}),
       ...(appPushed ? { appPushed: true } : {}),
       ...(claims.left.has(w.id) ? { watchVersionLeft: true } : {}),
+      ...(heldCopy ? { watchHoldsOldCopy: true } : {}),
     });
   }
   return map;
@@ -557,6 +563,9 @@ function workoutDto(
     ...(view?.appPushed ? { appPushed: true } : {}),
     // The athlete left the watch's earlier version of this app-built session as it is (`leaveWatchVersion`).
     ...(view?.watchVersionLeft ? { watchVersionLeft: true } : {}),
+    // An adopted row's old copy is still on the watch, and its own Send replaces it (workout-editability §4). Absent
+    // otherwise: every other payload is what it was.
+    ...(view?.watchHoldsOldCopy ? { watchHoldsOldCopy: true } : {}),
     completionState: w.completionState,
     archived: !!w.archivedAt,
     // A Studio document is stored on the row (the UI's revisability reads it with the rest).
