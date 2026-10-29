@@ -44,6 +44,7 @@ import {
   type DesignPlanLineDto,
   type DesignProgrammeLineDto,
 } from "@rg/api-client";
+import { followApproved } from "../../components/watch-catch-up.js";
 import { CONVERSATION_QUERY } from "./coach-conversation-model.js";
 import { readProposal } from "./coach-tolerance.js";
 import { decisionError, designProposalQuery } from "./proposal-card.js";
@@ -241,7 +242,11 @@ export function PlanCard({ card, closed = false }: { card: PlanCardInput; closed
   const approve = useMutation({
     networkMode: "always",
     mutationFn: () => approvePlanUntilDone((body) => api.coachDesignApprove(card.proposalId, body), reread, opIds),
-    onSuccess: (answers) => setBusyLine(answers.some((a) => (a.inFlight ?? []).length > 0) ? w.inFlight : null),
+    onSuccess: (answers) => {
+      setBusyLine(answers.some((a) => (a.inFlight ?? []).length > 0) ? w.inFlight : null);
+      // The watch follows what it changed (the watch mirrors the plan §3.3; M1).
+      followApproved(answers, () => qc.fetchQuery({ queryKey: ["today"], queryFn: api.today, staleTime: 0 }));
+    },
     onSettled: after,
   });
   const decline = useMutation({

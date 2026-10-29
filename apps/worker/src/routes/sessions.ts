@@ -4,7 +4,7 @@
  *
  *   GET    /api/sessions/:workoutId          the slot, its current build (or none), its day's checks, the lock
  *   GET    /api/sessions/:workoutId/state    {workoutId, contentState}: the slot's state alone (Today's Continue check)
- *   GET    /api/sessions/:workoutId/current  {buildId, current, locked}: is that build still the day's? (no build made)
+ *   GET    /api/sessions/:workoutId/current  {buildId, current, locked, lockedBy}: is that build still the day's? (no build made)
  *   GET    /api/sessions/:workoutId/review-basis  what the review reads of the history, fetched at Start (a read)
  *   POST   /api/sessions/:workoutId/build    {checks?, overrides?, swaps?} → build, or the stored build when the
  *                                            inputs are unchanged; a day ahead is a preview
@@ -15,6 +15,8 @@
  *   POST   /api/sessions/:workoutId/keep-off-watch  Keep off my watch: the copy off, `watch_off` set (the mirror leaves it off)
  *   POST   /api/sessions/:workoutId/put-on-watch    Put on my watch: `watch_off` cleared, the session owed to the mirror
  *   POST   /api/sessions/:workoutId/take-off-watch  for ONE RELEASE (an older client's Take off): answers as keep-off-watch
+ *   POST   /api/sessions/:workoutId/retry-watch     Retry: the session's failed push queued again now (a provisional copy's
+ *                                                  as it was; a day build's as Send's Retry), no digest
  *   GET    /api/sessions/:workoutId/watch-review    the quick review after a watch session: its basis (Phase 3)
  *   PUT    /api/sessions/performed/:id       a performed session from the player's outbox, saved exactly once (the app's,
  *                                            or a watch review — `source: "watch_review"`)
@@ -74,6 +76,7 @@ import {
 import {
   keepOffWatch,
   putOnWatch,
+  retryWatch,
   sendToWatch,
   StalePreviewError,
   watchPreview,
@@ -182,7 +185,9 @@ sessionRoutes.get("/:workoutId/current", async (c) => {
   const userId = c.get("userId");
   const prefs = await loadPreferences(db, userId);
   try {
-    return c.json(await sessionCurrency(db, userId, c.req.param("workoutId"), { today: todayInZone(prefs.timezone), now: nowInstant(), prefs }));
+    // With the env: a lock held only for the watch, while the mirror follows the slot, is current only while the day's
+    // inputs still make its build (`sessionCurrency`).
+    return c.json(await sessionCurrency(db, userId, c.req.param("workoutId"), { today: todayInZone(prefs.timezone), now: nowInstant(), prefs, env: c.env }));
   } catch (e) {
     return refusal(c, e);
   }
@@ -380,6 +385,30 @@ sessionRoutes.post("/:workoutId/put-on-watch", async (c) => {
     const session = await putOnWatch(db, userId, c.req.param("workoutId"), { today: todayInZone(prefs.timezone), now: nowInstant(), prefs });
     return c.json(await withWatch(c, session));
   } catch (e) {
+    return refusal(c, e);
+  }
+});
+
+/**
+ * RETRY (the watch mirrors the plan §3.9, M6): the session's failed push queued again now — a provisional copy's as it
+ * was (its stamp kept), a day build's as Send's Retry (`retryWatch`). No body, no digest; nothing failed → the session as
+ * it stands. 409 `{error: reason}` as Send's (`writes_off`, `not_connected`, `done`, `not_today`, `gated`, …), `stale`
+ * with the fresh session; 423 while a restore runs. No lane runs in this request (ruling 3-R11): the client drains.
+ */
+sessionRoutes.post("/:workoutId/retry-watch", async (c) => {
+  const off = switchedOff(c);
+  if (off) return off;
+  const db = c.get("db");
+  const userId = c.get("userId");
+  const prefs = await loadPreferences(db, userId);
+  try {
+    const session = await retryWatch(db, c.env, userId, c.req.param("workoutId"), { today: todayInZone(prefs.timezone), now: nowInstant(), prefs });
+    return c.json(await withWatch(c, session));
+  } catch (e) {
+    if (e instanceof WatchUnavailableError) return c.json({ error: e.reason }, 409);
+    if (e instanceof StalePreviewError) return c.json({ error: "stale_preview", preview: e.preview }, 409);
+    if (e instanceof StaleBuildError) return c.json({ error: "stale", session: await withWatch(c, e.session) }, 409);
+    if (e instanceof RestoringError) return c.json({ error: "restore_in_progress" }, 423);
     return refusal(c, e);
   }
 });

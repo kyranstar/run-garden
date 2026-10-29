@@ -439,3 +439,44 @@ describe("a retired studio plan's rows kept on the watch (whole-branch review, s
     expect((await planWith([{ days: -3, address: true }, { days: 2, address: true }], true)).issueCount).toBe(1);
   });
 });
+
+/**
+ * THE ACCOUNT LINE WHILE THE WATCH CATCHES UP (the watch mirrors the plan §3.9): "N sessions updating on your watch" —
+ * how many sessions have a watch job on its way (a push of their copy, a delete of an old one), counted once each; a
+ * coach job, an address-path delete and a settled job are not the watch catching up. ONE COUNT.
+ */
+describe("watchUpdatingCount", () => {
+  it("counts sessions with a watch job on its way — a replacement's delete and push are one session — and nothing else, in one statement", async () => {
+    let statements = 0;
+    const db = makeTestDb({ onStatement: () => (statements += 1) });
+    const { userId, prefs } = await makeTestUser(db, { corosWritesEnabled: true });
+    await connectTestCoros(db, userId);
+    const at = nowInstant();
+    const job = (id: string, workoutId: string, kind: string, status = "queued") => ({
+      id, userId, workoutId, kind, expectedContentFingerprint: "", originalDate: "2026-10-30", destinationDate: "2026-10-30",
+      payload: { workoutId }, requestedAt: at, status, updatedAt: at,
+    });
+    expect((await computeSyncStatus(db, userId, prefs)).watchUpdatingCount).toBe(0);
+    const { userId: other } = await makeTestUser(db, {});
+    for (const row of [
+      // One session replaced: its old copy's delete and its new copy's push.
+      job("unpush:b1", "w1", "coach_delete_workout"),
+      job("push:b2", "w1", "program_session_push"),
+      // A second session's provisional push, being written now; a third's held copy's delete (adopted).
+      job("push:b3", "w2", "program_session_push", "in_progress"),
+      job("w3-unpush-copy", "w3", "coach_delete_workout", "claimed"),
+      // Not the watch catching up: a coach job, an address-path delete, a verified push, a failed one, another account's.
+      job("coach-1", "w4", "coach_create_workout"),
+      job("w5-unpush", "w5", "coach_delete_workout"),
+      job("push:b6", "w6", "program_session_push", "verified"),
+      job("push:b7", "w7", "program_session_push", "failed"),
+      { ...job("push:b8", "w8", "program_session_push"), userId: other },
+    ])
+      await db.insert(schema.corosWriteJobs).values(row);
+    statements = 0;
+    const { watchUpdatingSessions } = await import("../src/services/sync-status.js");
+    expect(await watchUpdatingSessions(db, userId)).toBe(3);
+    expect(statements).toBe(1);
+    expect((await computeSyncStatus(db, userId, prefs)).watchUpdatingCount).toBe(3);
+  });
+});

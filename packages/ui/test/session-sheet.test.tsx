@@ -701,6 +701,21 @@ describe("a day ahead, a day gone, a started session", () => {
     expect(button(/^Start/)).toBeUndefined();
   });
 
+  it("a day ahead, its provisional copy on the watch (the watch mirrors the plan §3.2): the status line says so — still no pre-check, no Start", async () => {
+    features.player = true;
+    const tomorrow = "2026-10-06";
+    const ahead = session({ date: tomorrow, contentState: "outline", checks: {}, watch: { state: "on_watch" } });
+    mount(session({ date: tomorrow, contentState: "outline", checks: {}, build: null, view: null, watch: { state: "on_watch" } }), {
+      w: slot({ effectiveDate: tomorrow, contentState: "outline" }),
+      afterBuild: () => ahead,
+    });
+    await until(() => body().includes("Supported row"), "the preview");
+    expect(document.querySelector('.sheet-foot [role="status"]')!.textContent).toBe("On your watch");
+    expect(button("What's on your watch")).toBeTruthy();
+    expect(body()).not.toContain("right now");
+    expect(button(/^Start/)).toBeUndefined();
+  });
+
   it("a day gone: Move to today, and nothing is built", async () => {
     const { calls } = mount(session({ date: "2026-10-03", contentState: "outline", checks: {}, build: null, view: null }), {
       w: slot({ effectiveDate: "2026-10-03", contentState: "outline" }),
@@ -987,45 +1002,50 @@ describe("a one-off's sheet says One-off where a programme session names its pro
   });
 });
 
-// ── The watch (Phase 3 Task 8; approved mocks §1–2) ─────────────────────────
+// ── The watch: a status, not buttons (the watch mirrors the plan §3.9) ─────────────────────────
 
-describe("the watch in the session sheet's foot (Phase 3 Task 8)", () => {
+describe("the watch line is a status (the watch mirrors the plan §3.9)", () => {
   const PREVIEW = {
     buildId: "b1",
     stamp: "Garden program — 2026-10-05",
     steps: [
       { name: "Goblet Squat", freeText: false, target: { kind: "reps", reps: 6 }, grams: 13608, load: { v: 30, u: "lb" }, overview: "Knees track over your toes.", restSeconds: 0 },
-      { name: "Supported row", freeText: true, target: { kind: "reps", reps: 10 }, grams: 9072, load: { v: 20, u: "lb" }, overview: "left side", restSeconds: 0 },
-      { name: "Supported row", freeText: true, target: { kind: "reps", reps: 10 }, grams: 9072, load: { v: 20, u: "lb" }, overview: "right side", restSeconds: 75 },
+      { name: "Supported row", freeText: true, target: { kind: "reps", reps: 10 }, grams: 9072, load: { v: 20, u: "lb" }, overview: "left side", restSeconds: 75 },
     ],
-    freeText: 2,
+    freeText: 1,
     refusal: null,
     digest: "d-first",
   };
   const answer = (b: unknown, status = 200) => new Response(JSON.stringify(b), { status, headers: { "Content-Type": "application/json" } });
   const watchCalls = (calls: Call[]) => calls.filter((c) => /watch/.test(c.path)).map((c) => `${c.method} ${c.path.replace(`/api/sessions/${SLOT}`, "…")}`);
+  /** Nothing of the old buttons: no Send, no Take off, no Keep or Leave of the watch's version. */
+  const OLD_BUTTONS = /Send to watch|Take off watch|Leave the watch|Keep the watch's version|Send this version|Send the new version/;
+  const label = () => document.querySelector('.sheet-foot [role="status"]')?.textContent ?? null;
 
-  /** The watch routes as the worker answers them: Send queues (sending), the drain runs it, the GET shows the result. */
-  function watchRoutes(
-    opts: { preview?: unknown; afterSend?: SessionDto; afterDrain?: SessionDto; afterTakeOff?: SessionDto; send?: (c: Call) => Response | undefined } = {},
-  ) {
+  /** The watch routes as the worker answers them: each write answers its state, the drain runs it, the GET shows it. */
+  function watchRoutes(opts: { afterKeepOff?: SessionDto; afterPutOn?: SessionDto; afterRetry?: SessionDto; afterDrain?: SessionDto; keepOff?: () => Response | undefined } = {}) {
     return (c: Call, set: (next: SessionDto) => void): Response | undefined => {
-      if (c.path === `/api/sessions/${SLOT}/watch-preview`) return answer(opts.preview ?? PREVIEW);
-      if (c.path === `/api/sessions/${SLOT}/send-to-watch`) {
-        const own = opts.send?.(c);
+      if (c.path === `/api/sessions/${SLOT}/watch-preview`) return answer(PREVIEW);
+      if (c.path === `/api/sessions/${SLOT}/keep-off-watch`) {
+        const own = opts.keepOff?.();
         if (own) return own;
-        const next = opts.afterSend ?? session({ locked: true, watch: { state: "sending" } });
+        const next = opts.afterKeepOff ?? session({ watch: { state: "kept_off" } });
+        set(next);
+        return answer(next);
+      }
+      if (c.path === `/api/sessions/${SLOT}/put-on-watch`) {
+        const next = opts.afterPutOn ?? session({ watch: { state: "updating" } });
+        set(next);
+        return answer(next);
+      }
+      if (c.path === `/api/sessions/${SLOT}/retry-watch`) {
+        const next = opts.afterRetry ?? session({ watch: { state: "sending" } });
         set(next);
         return answer(next);
       }
       if (c.path === "/api/sessions/watch/drain") {
         if (opts.afterDrain) set(opts.afterDrain);
         return answer({ ran: true, pending: 0 });
-      }
-      if (c.path === `/api/sessions/${SLOT}/take-off-watch`) {
-        const next = opts.afterTakeOff ?? session({ watch: { state: "ready" } });
-        set(next);
-        return answer(next);
       }
       return undefined;
     };
@@ -1035,277 +1055,244 @@ describe("the watch in the session sheet's foot (Phase 3 Task 8)", () => {
     features.player = true;
     mount(session({ watch: null }));
     await until(() => body().includes("Supported row"), "the moves");
-    expect(button(/Send to watch/)).toBeUndefined();
     expect(document.querySelector(".watch-state")).toBeNull();
+    expect(button(OLD_BUTTONS)).toBeUndefined();
   });
 
-  it("ready: Send to watch sits beside Start; it opens the preview, and Send posts {buildId, digest} then asks for the drain", async () => {
+  it("each state says itself, verbatim — and none offers Send, Take off, Keep or Leave", async () => {
     features.player = true;
-    const { calls } = mount(session({ watch: { state: "ready" } }), {
-      route: watchRoutes({ afterDrain: session({ locked: true, watch: { state: "on_watch" } }) }),
-    });
-    await until(() => !!button(/Send to watch/), "Send to watch");
-    // Start stays the primary; Send to watch is a plain button beside it, Move and Skip on the row below.
-    const rows = [...document.querySelectorAll(".sheet-foot .btn-row")].map((r) =>
-      [...r.querySelectorAll("button")].map((b) => b.textContent?.replace(/\s+/g, " ").trim()),
-    );
-    expect(rows).toEqual([
-      ["Start · 30 min", "Send to watch"],
-      ["Move", "Skip"],
-    ]);
-    expect(button(/Send to watch/)!.className).toBe("btn");
-    await click(/Send to watch/);
-    await until(() => body().includes("Garden program — 2026-10-05"), "the preview");
-    await click("Send");
-    await until(() => body().includes("On your watch"), "the state after the drain");
-    expect(calls.find((c) => c.path.endsWith("/send-to-watch"))!.body).toEqual({ buildId: "b1", digest: "d-first" });
-    expect(watchCalls(calls)).toEqual(["GET …/watch-preview", "POST …/send-to-watch", "POST /api/sessions/watch/drain"]);
-    // The preview closed with the send.
-    expect(body()).not.toContain("Garden program — 2026-10-05");
-  });
-
-  it("sending: Sending… in the foot — and a sent session keeps Start, Move and Skip", async () => {
-    features.player = true;
-    mount(session({ locked: true, watch: { state: "sending" } }));
-    await until(() => body().includes("Sending…"), "Sending…");
-    expect(button("Start · 30 min")).toBeTruthy();
-    expect(button("Move")).toBeTruthy();
-    expect(button("Skip")).toBeTruthy();
-    expect(button(/Send to watch/)).toBeUndefined();
-    // Its build is the watch's: no chip rebuilds it.
-    expect(document.querySelectorAll(".session-chips button")).toHaveLength(0);
-  });
-
-  it("failed: Couldn't send + Retry; Retry previews first and posts that preview's digest", async () => {
-    features.player = true;
-    const { calls } = mount(session({ locked: true, watch: { state: "failed" } }), {
-      route: watchRoutes({ preview: { ...PREVIEW, digest: "d-retry" } }),
-    });
-    await until(() => body().includes("Couldn't send"), "Couldn't send");
-    await click("Retry");
-    await until(() => body().includes("Garden program — 2026-10-05"), "the preview");
-    expect(calls.some((c) => c.path.endsWith("/send-to-watch"))).toBe(false);
-    await click("Send");
-    await until(() => calls.some((c) => c.path.endsWith("/send-to-watch")), "the send");
-    expect(calls.find((c) => c.path.endsWith("/send-to-watch"))!.body).toEqual({ buildId: "b1", digest: "d-retry" });
-  });
-
-  it("on_watch: On your watch + Take off watch, which asks first; then the drain", async () => {
-    features.player = true;
-    const { calls } = mount(session({ locked: true, watch: { state: "on_watch" } }), { route: watchRoutes() });
-    await until(() => body().includes("On your watch"), "On your watch");
-    await click("Take off watch");
-    expect(body()).toContain("Take this session off your watch?");
-    expect(body()).toContain("It stays in the app.");
-    expect(calls.some((c) => c.path.endsWith("/take-off-watch"))).toBe(false);
-    const confirm = [...document.querySelectorAll<HTMLButtonElement>(".btn-danger")].find((b) => b.textContent === "Take off watch")!;
-    await act(async () => confirm.click());
-    await until(() => !!button(/Send to watch/), "ready again");
-    expect(watchCalls(calls)).toEqual(["POST …/take-off-watch", "POST /api/sessions/watch/drain"]);
-  });
-
-  it("off_watch and any other unavailable reason: nothing about the watch", async () => {
-    features.player = true;
-    for (const watch of [{ state: "off_watch" }, { state: "unavailable", reason: "precheck" }, { state: "unavailable", reason: "writes_off" }]) {
-      mount(session({ watch } as Partial<SessionDto>));
-      await until(() => body().includes("Supported row"), "the moves");
-      expect(button(/Send to watch/)).toBeUndefined();
-      expect(document.querySelector(".watch-state")).toBeNull();
+    const cases: Array<[SessionDto["watch"], string]> = [
+      [{ state: "on_watch" }, "On your watch"],
+      [{ state: "updating" }, "Updating your watch…"],
+      [{ state: "sending" }, "Sending to your watch…"],
+      [{ state: "failed" }, "Couldn't reach COROS — retrying"],
+      [{ state: "kept_off" }, "Kept off your watch"],
+      [{ state: "closed_by_check" }, "Closed by today's check"],
+      [{ state: "off_watch" }, "Not on your watch: removed in the COROS app"],
+      [{ state: "unavailable", reason: "too_long" }, "Not on your watch: too long for the watch"],
+      [{ state: "unavailable", reason: "writes_off" }, "Not on your watch: COROS updates are off in Settings"],
+      [{ state: "unavailable", reason: "not_connected" }, "Not on your watch: COROS isn't connected"],
+      [{ state: "unavailable", reason: "not_today" }, "Not on your watch: it goes on nearer the day"],
+      [{ state: "unavailable", reason: "precheck" }, "Not on your watch: it goes on after today's check"],
+    ];
+    for (const [watch, words] of cases) {
+      mount(session({ watch }));
+      await until(() => label() === words, `"${words}"`);
+      expect(button(OLD_BUTTONS)).toBeUndefined();
       act(() => root?.unmount());
       host?.remove();
     }
   });
 
-  it("too long: Send to watch opens the preview, whose foot says Too long for the watch — no Send", async () => {
+  it("each state's one action: Keep off on a copy on its way or on the watch; Retry on a failed push; Put on when kept off; else none", async () => {
     features.player = true;
-    const tooLong = { ...PREVIEW, refusal: "too_long" };
-    const { calls } = mount(session({ watch: { state: "unavailable", reason: "too_long" } }), { route: watchRoutes({ preview: tooLong }) });
-    await until(() => !!button(/Send to watch/), "Send to watch");
-    await click(/Send to watch/);
-    await until(() => body().includes("Too long for the watch"), "the refusal");
-    expect(button("Send")).toBeUndefined();
-    expect(body()).toContain("Goblet Squat");
-    expect(calls.some((c) => c.path.endsWith("/send-to-watch"))).toBe(false);
+    const cases: Array<[SessionDto["watch"], string[]]> = [
+      [{ state: "on_watch" }, ["What's on your watch", "Keep off my watch"]],
+      [{ state: "updating" }, ["Keep off my watch"]],
+      [{ state: "sending" }, ["Keep off my watch"]],
+      [{ state: "failed" }, ["Retry"]],
+      [{ state: "kept_off" }, ["Put on my watch"]],
+      [{ state: "closed_by_check" }, []],
+      [{ state: "unavailable", reason: "too_long" }, []],
+      [{ state: "off_watch" }, []],
+    ];
+    for (const [watch, actions] of cases) {
+      mount(session({ watch }), { route: (c) => (c.path === "/api/sessions/watch/drain" ? answer({ ran: false, pending: 0 }) : undefined) });
+      await until(() => body().includes("Supported row") && !!label(), "the watch line");
+      const row = document.querySelector(".sheet-foot .watch-state")!;
+      expect([...row.querySelectorAll("button")].map((b) => b.textContent), JSON.stringify(watch)).toEqual(actions);
+      // The session's own actions stay below it, whatever the watch says.
+      expect([button("Start · 30 min"), button("Move"), button("Skip")].every(Boolean)).toBe(true);
+      act(() => root?.unmount());
+      host?.remove();
+    }
   });
 
-  it("409 stale: the fresh session replaces the sheet's, as Start's does", async () => {
+  it("updating says the lag: an old copy's delete can wait for the hourly", async () => {
     features.player = true;
-    const fresh = session({ build: { ...session().build!, buildId: "b2" }, watch: { state: "ready" } });
-    mount(session({ watch: { state: "ready" } }), {
-      route: watchRoutes({ send: () => answer({ error: "stale", session: { ...fresh, view: { ...fresh.view!, minutes: 45 } } }, 409) }),
-    });
-    await until(() => !!button(/Send to watch/), "Send to watch");
-    await click(/Send to watch/);
-    await until(() => !!button("Send"), "the preview");
-    await click("Send");
-    await until(() => !!button("Start · 45 min"), "the fresh session");
-    expect(body()).not.toContain("Garden program — 2026-10-05");
+    mount(session({ watch: { state: "updating" } }), { route: (c) => (c.path === "/api/sessions/watch/drain" ? answer({ ran: false, pending: 1 }) : undefined) });
+    await until(() => label() === "Updating your watch…", "updating");
+    expect(body()).toContain("An old copy can take up to an hour to come off.");
   });
 
-  const confirmTakeOff = async () => {
-    const confirm = [...document.querySelectorAll<HTMLButtonElement>(".btn-danger")].find((b) => b.textContent === "Take off watch")!;
+  it("Keep off my watch asks first, then keeps it off — the drain runs, the line says Kept off with Put on my watch, focused", async () => {
+    features.player = true;
+    const { calls } = mount(session({ locked: true, lockedBy: "watch", watch: { state: "on_watch" } }), { route: watchRoutes() });
+    await until(() => label() === "On your watch", "On your watch");
+    await click("Keep off my watch");
+    expect(body()).toContain("Keep this session off your watch?");
+    expect(body()).toContain("It comes off your watch and stays in the app. Put it back on any time.");
+    expect(calls.some((c) => c.path.endsWith("/keep-off-watch"))).toBe(false);
+    const confirm = [...document.querySelectorAll<HTMLButtonElement>(".btn-danger")].find((b) => b.textContent === "Keep off my watch")!;
     await act(async () => confirm.click());
-  };
-
-  it("sending: Take off watch too (owner, 2026-10-09) — it asks first, then the queued push is superseded and Send is offered again", async () => {
-    features.player = true;
-    const { calls } = mount(session({ locked: true, watch: { state: "sending" } }), { route: watchRoutes() });
-    await until(() => body().includes("Sending…"), "Sending…");
-    await click("Take off watch");
-    expect(body()).toContain("Take this session off your watch?");
-    expect(calls.some((c) => c.path.endsWith("/take-off-watch"))).toBe(false);
-    await confirmTakeOff();
-    await until(() => !!button(/Send to watch/), "ready again");
-    expect(body()).not.toContain("Sending…");
-    // Opened on Sending…: the drain at once (the watch catching up, the watch mirrors the plan §3.7); then Take off's.
-    expect(watchCalls(calls)).toEqual(["POST /api/sessions/watch/drain", "POST …/take-off-watch", "POST /api/sessions/watch/drain"]);
+    await until(() => label() === "Kept off your watch", "kept off");
+    await until(() => document.activeElement === button("Put on my watch"), "focus on Put on my watch");
+    expect(watchCalls(calls).slice(-2)).toEqual(["POST …/keep-off-watch", "POST /api/sessions/watch/drain"]);
   });
 
-  it("a failed Take off says so, and the confirm stays open to try again (audit 3-B UI-3)", async () => {
+  it("a failed Keep off says so, and the confirm stays open to try again (audit 3-B UI-3)", async () => {
     features.player = true;
     let offline = true;
     const routes = watchRoutes();
-    const { calls } = mount(session({ locked: true, watch: { state: "on_watch" } }), {
+    mount(session({ watch: { state: "on_watch" } }), {
       route: (c, set) => {
-        if (c.path.endsWith("/take-off-watch") && offline) throw new TypeError("Failed to fetch");
+        if (c.path.endsWith("/keep-off-watch") && offline) throw new TypeError("Failed to fetch");
         return routes(c, set);
       },
     });
-    await until(() => body().includes("On your watch"), "On your watch");
-    // The press pinned the confirm's frame (below lg its height is held): the line is brought into view in its body.
-    const shown: Element[] = [];
-    Element.prototype.scrollIntoView = function (this: Element) {
-      shown.push(this);
-    };
-    await click("Take off watch");
-    await confirmTakeOff();
+    await until(() => label() === "On your watch", "On your watch");
+    await click("Keep off my watch");
+    const confirm = () => [...document.querySelectorAll<HTMLButtonElement>(".btn-danger")].find((b) => b.textContent === "Keep off my watch")!;
+    await act(async () => confirm().click());
     await until(() => body().includes("Couldn't take it off — try again."), "the failure");
-    expect(body()).toContain("Take this session off your watch?");
-    // In the explanation's place: one line in one line's room (the press held the frame).
-    expect(body()).not.toContain("It stays in the app.");
-    expect(document.querySelector(".confirm-error")?.getAttribute("role")).toBe("alert");
-    expect(shown).toContain(document.querySelector(".confirm-error"));
-    delete (Element.prototype as { scrollIntoView?: unknown }).scrollIntoView;
-    // Tried again, it goes through: the confirm closes, Send is offered again.
+    expect(body()).toContain("Keep this session off your watch?");
     offline = false;
-    await confirmTakeOff();
-    await until(() => !!button(/Send to watch/), "ready again");
-    expect(body()).not.toContain("Take this session off your watch?");
-    expect(body()).not.toContain("Couldn't take it off");
-    expect(watchCalls(calls).filter((c) => c.endsWith("/take-off-watch"))).toHaveLength(2);
+    await act(async () => confirm().click());
+    await until(() => label() === "Kept off your watch", "kept off");
+    expect(body()).not.toContain("Keep this session off your watch?");
   });
 
-  it("a skipped session still on the watch: On your watch + Take off watch beside Un-skip (audit 3-B UI-12)", async () => {
+  it("Put on my watch, today: put on, then today's build asked for (its day build goes on, M1) — then the drain chain", async () => {
     features.player = true;
-    const { calls } = mount(session({ locked: true, watch: { state: "on_watch" } }), {
-      w: slot({ completionState: "skipped" }),
-      route: watchRoutes({ afterTakeOff: session({ watch: { state: "unavailable", reason: "taking_off" } }) }),
+    const { calls } = mount(session({ watch: { state: "kept_off" } }), {
+      route: watchRoutes({ afterDrain: session({ locked: true, lockedBy: "watch", watch: { state: "on_watch" } }) }),
     });
-    await until(() => body().includes("On your watch") && !!button("Un-skip"), "the skipped sheet");
-    expect(button("Start · 30 min")).toBeUndefined();
-    expect(button("Move")).toBeUndefined();
-    await click("Take off watch");
-    await confirmTakeOff();
-    await until(() => !body().includes("On your watch"), "taken off");
-    expect(button("Un-skip")).toBeTruthy();
-    expect(watchCalls(calls)).toEqual(["POST …/take-off-watch", "POST /api/sessions/watch/drain"]);
+    await until(() => label() === "Kept off your watch", "kept off");
+    const before = builds(calls).length;
+    await click("Put on my watch");
+    await until(() => label() === "On your watch", "on the watch after the chain");
+    const after = calls.slice(calls.findIndex((c) => c.path.endsWith("/put-on-watch"))).filter((c) => c.path.startsWith("/api/sessions/"));
+    expect(after.map((c) => `${c.method} ${c.path.replace(`/api/sessions/${SLOT}`, "…")}`).slice(0, 4)).toEqual([
+      "POST …/put-on-watch",
+      "GET …",
+      "POST …/build",
+      "POST /api/sessions/watch/drain",
+    ]);
+    expect(builds(calls).length).toBe(before + 1);
   });
 
-  const sheetDialog = () => [...document.querySelectorAll<HTMLElement>('[role="dialog"]')].find((d) => d.textContent?.includes("Supported row"));
-
-  it("after Send, focus is in the sheet — on the new state's Take off watch, not lost to the page (audit 3-B UI-4)", async () => {
+  it("Put on my watch, a day ahead: no build asked for (its copy is the drain's) — the drain chain alone", async () => {
     features.player = true;
-    mount(session({ watch: { state: "ready" } }), { route: watchRoutes() });
-    await until(() => !!button(/Send to watch/), "Send to watch");
-    const opener = button(/Send to watch/) as HTMLButtonElement;
-    opener.focus();
-    await act(async () => opener.click());
-    await until(() => document.activeElement === button("Send"), "Send focused");
-    await click("Send");
-    await until(() => body().includes("Sending…") && !body().includes("Garden program — 2026-10-05"), "Sending…");
-    await until(() => document.activeElement === button("Take off watch"), "focus on Take off watch");
-    expect(sheetDialog()!.contains(document.activeElement)).toBe(true);
-  });
-
-  it("after Take off, focus goes to Send to watch — or, with nothing about the watch left to act on, the sheet (audit 3-B UI-4)", async () => {
-    features.player = true;
-    mount(session({ locked: true, watch: { state: "on_watch" } }), { route: watchRoutes() });
-    await until(() => body().includes("On your watch"), "On your watch");
-    (button("Take off watch") as HTMLButtonElement).focus();
-    await click("Take off watch");
-    await confirmTakeOff();
-    await until(() => document.activeElement === button(/Send to watch/), "focus on Send to watch");
-    act(() => root?.unmount());
-    host?.remove();
-
-    mount(session({ locked: true, watch: { state: "on_watch" } }), {
-      route: watchRoutes({ afterTakeOff: session({ watch: { state: "unavailable", reason: "taking_off" } }) }),
+    const tomorrow = "2026-10-06";
+    const ahead = session({ date: tomorrow, contentState: "outline", checks: {}, watch: { state: "kept_off" } });
+    const { calls } = mount(ahead, {
+      w: slot({ effectiveDate: tomorrow, contentState: "outline" }),
+      afterBuild: () => ahead,
+      route: watchRoutes({ afterPutOn: { ...ahead, watch: { state: "updating" } } }),
     });
-    await until(() => body().includes("On your watch"), "On your watch");
-    (button("Take off watch") as HTMLButtonElement).focus();
-    await click("Take off watch");
-    await confirmTakeOff();
-    await until(() => !body().includes("On your watch") && !body().includes("Take this session off"), "taken off");
-    await until(() => document.activeElement === sheetDialog(), "focus on the sheet");
+    await until(() => label() === "Kept off your watch", "kept off");
+    const before = builds(calls).length;
+    await click("Put on my watch");
+    await until(() => calls.some((c) => c.path === "/api/sessions/watch/drain"), "the drain");
+    expect(builds(calls).length).toBe(before);
+    expect(watchCalls(calls)).toEqual(["POST …/put-on-watch", "POST /api/sessions/watch/drain"]);
   });
 
-  it("the watch's state is announced: one status region in the foot, kept from Send to watch through Sending… to On your watch (audit 3-B UI-10)", async () => {
+  it("Retry on a failed push queues that push again (retry-watch, no preview, no digest) — never Send — then the drain", async () => {
     features.player = true;
-    // The drain answers when the test says so: "Sending…" first, then the push has run.
-    let release: () => void = () => undefined;
-    const routes = watchRoutes();
-    mount(session({ watch: { state: "ready" } }), {
-      route: (c, set) => {
-        if (c.path !== "/api/sessions/watch/drain") return routes(c, set);
-        return new Promise<Response>((resolve) => {
-          release = () => {
-            set(session({ locked: true, watch: { state: "on_watch" } }));
-            resolve(new Response(JSON.stringify({ ran: true, pending: 0 }), { status: 200, headers: { "Content-Type": "application/json" } }));
-          };
-        }) as unknown as Response;
-      },
-    });
-    await until(() => !!button(/Send to watch/), "Send to watch");
+    const { calls } = mount(session({ watch: { state: "failed" } }), { route: watchRoutes() });
+    await until(() => label() === "Couldn't reach COROS — retrying", "failed");
+    await click("Retry");
+    await until(() => label() === "Sending to your watch…", "sending again");
+    expect(watchCalls(calls).slice(0, 2)).toEqual(["POST …/retry-watch", "POST /api/sessions/watch/drain"]);
+    expect(calls.some((c) => c.path.endsWith("/send-to-watch") || c.path.endsWith("/watch-preview"))).toBe(false);
+    expect(calls.find((c) => c.path.endsWith("/retry-watch"))!.body).toEqual({});
+  });
+
+  it("What's on your watch: the copy's steps, read-only — no Send", async () => {
+    features.player = true;
+    mount(session({ watch: { state: "on_watch" } }), { route: watchRoutes() });
+    await until(() => label() === "On your watch", "On your watch");
+    await click("What's on your watch");
+    await until(() => body().includes("Garden program — 2026-10-05"), "the preview");
+    expect(body()).toContain("Goblet Squat");
+    expect(button("Send")).toBeUndefined();
+  });
+
+  it("one status region in the foot, kept from state to state (audit 3-B UI-10)", async () => {
+    features.player = true;
+    mount(session({ watch: { state: "on_watch" } }), { route: watchRoutes() });
+    await until(() => label() === "On your watch", "On your watch");
     const status = () => document.querySelectorAll('.sheet-foot [role="status"]');
     expect(status()).toHaveLength(1);
     const region = status()[0]!;
-    expect(region.textContent).toBe("");
-    // Nothing to see while there is nothing to say: the empty region takes no room.
-    expect(region.closest(".watch-state")!.classList.contains("visually-hidden")).toBe(true);
-    await click(/Send to watch/);
-    await until(() => !!button("Send"), "the preview");
-    await click("Send");
-    await until(() => body().includes("Sending…"), "Sending…");
-    expect(status()[0]).toBe(region);
-    expect(region.textContent).toBe("Sending…");
-    expect(region.contains(button("Take off watch")!)).toBe(false);
-    await act(async () => release());
-    await until(() => body().includes("On your watch"), "On your watch");
+    await click("Keep off my watch");
+    await act(async () => [...document.querySelectorAll<HTMLButtonElement>(".btn-danger")].find((b) => b.textContent === "Keep off my watch")!.click());
+    await until(() => region.textContent === "Kept off your watch", "kept off, in the same region");
     expect(status()).toHaveLength(1);
     expect(status()[0]).toBe(region);
-    expect(region.textContent).toBe("On your watch");
+    expect(region.contains(button("Put on my watch")!)).toBe(false);
+  });
+
+  it("SENT IS NOT STARTED: a build locked only for the watch stays changeable — the re-check, the choices, ⇄ — and is built on open", async () => {
+    features.player = true;
+    const sent = session({ locked: true, lockedBy: "watch", watch: { state: "on_watch" } });
+    const { calls } = mount(sent, { afterBuild: () => sent });
+    await until(() => body().includes("Supported row") && builds(calls).length === 1, "the sheet, built on open");
+    // The reading reopens the pre-check; the chips pick; ⇄ swaps.
+    expect(document.querySelector("button.session-reading")).not.toBeNull();
+    expect(document.querySelectorAll(".session-chips button").length).toBeGreaterThan(0);
+    expect(document.querySelector('[aria-label^="Swap"]') ?? button(/⇄|Swap/)).toBeTruthy();
+    expect([button("Start · 30 min"), button("Move"), button("Skip")].every(Boolean)).toBe(true);
+  });
+
+  it("…and a started one stays read-only: no re-check, no choices, no build on open", async () => {
+    features.player = true;
+    const started = session({ contentState: "started", locked: true, lockedBy: "started", watch: { state: "on_watch" } });
+    const { calls } = mount(started);
+    await until(() => body().includes("Supported row"), "the moves");
+    expect(document.querySelector("button.session-reading")).toBeNull();
+    expect(document.querySelectorAll(".session-chips button")).toHaveLength(0);
+    expect(builds(calls)).toHaveLength(0);
+  });
+
+  it("a build that sends the day's copy (updating or sending) runs the drain chain at once", async () => {
+    features.player = true;
+    const { calls } = mount(session({ watch: { state: "on_watch" } }), {
+      afterBuild: () => session({ locked: true, lockedBy: "watch", watch: { state: "updating" } }),
+      route: (c) => (c.path === "/api/sessions/watch/drain" ? answer({ ran: true, pending: 0 }) : undefined),
+    });
+    await until(() => calls.some((c) => c.path === "/api/sessions/watch/drain"), "the drain after the build");
+    expect(calls.findIndex((c) => c.path.endsWith("/build"))).toBeLessThan(calls.findIndex((c) => c.path === "/api/sessions/watch/drain"));
+  });
+
+  it("a skipped session whose copy is coming off says so, with nothing to press beside Un-skip", async () => {
+    features.player = true;
+    for (const watch of [{ state: "updating" }, { state: "on_watch" }] as const) {
+      mount(session({ watch }), { w: slot({ completionState: "skipped" }), route: (c) => (c.path === "/api/sessions/watch/drain" ? answer({ ran: false, pending: 0 }) : undefined) });
+      await until(() => !!button("Un-skip") && !!label(), "the skipped sheet");
+      expect(button("Keep off my watch")).toBeUndefined();
+      expect(button("Start · 30 min")).toBeUndefined();
+      act(() => root?.unmount());
+      host?.remove();
+    }
+    // Nothing on the watch, nothing coming off: nothing about the watch, as before (2a-R15).
+    mount(session({ watch: { state: "unavailable", reason: "not_today" } }), { w: slot({ completionState: "skipped" }) });
+    await until(() => !!button("Un-skip") && body().includes("Supported row"), "the skipped sheet, loaded");
+    expect(document.querySelector(".watch-state")).toBeNull();
   });
 
   it("opened while the watch is catching up (updating): the drain chain at once — one job a request until none is left — then the session read again", async () => {
     features.player = true;
     let left = 2;
-    const { calls } = mount(session({ locked: true, watch: { state: "updating" } }), {
+    const { calls } = mount(session({ locked: true, lockedBy: "watch", watch: { state: "updating" } }), {
+      afterBuild: () => session({ locked: true, lockedBy: "watch", watch: { state: "updating" } }),
       route: (c, set) => {
         if (c.path !== "/api/sessions/watch/drain") return undefined;
         left -= 1;
-        if (left === 0) set(session({ locked: true, watch: { state: "on_watch" } }));
-        return answer({ ran: true, pending: left });
+        if (left <= 0) set(session({ locked: true, lockedBy: "watch", watch: { state: "on_watch" } }));
+        return answer({ ran: true, pending: Math.max(left, 0) });
       },
     });
-    await until(() => body().includes("On your watch"), "the state after the chain");
-    expect(watchCalls(calls)).toEqual(["POST /api/sessions/watch/drain", "POST /api/sessions/watch/drain"]);
+    await until(() => label() === "On your watch", "the state after the chain");
+    expect(watchCalls(calls).slice(0, 2)).toEqual(["POST /api/sessions/watch/drain", "POST /api/sessions/watch/drain"]);
   });
 
-  it("opened with nothing waiting (ready, on the watch): no drain", async () => {
+  it("opened with nothing waiting (on the watch, kept off, not on it): no drain", async () => {
     features.player = true;
-    for (const watch of [{ state: "ready" }, { state: "on_watch" }] as const) {
-      const { calls } = mount(session({ locked: watch.state === "on_watch", watch }));
-      await until(() => !!button(/Send to watch|Take off watch/), "the watch's control");
+    for (const watch of [{ state: "on_watch" }, { state: "kept_off" }, { state: "unavailable", reason: "too_long" }] as const) {
+      const { calls } = mount(session({ watch }));
+      await until(() => !!label(), "the watch line");
       await act(async () => {
         await new Promise((r) => setTimeout(r, 20));
       });
@@ -1335,16 +1322,27 @@ describe("the watch in the session sheet's foot (Phase 3 Task 8)", () => {
     await until(() => drained(unskipping.calls) === 1, "the drain after the un-skip");
   });
 
-  it("a skipped session not on the watch: nothing about the watch, as before (2a-R15)", async () => {
+  it("Move to today: the moved session's day build is asked for (M1), then the drain chain", async () => {
     features.player = true;
-    for (const watch of [{ state: "ready" }, { state: "sending" }, { state: "failed" }]) {
-      mount(session({ watch } as Partial<SessionDto>), { w: slot({ completionState: "skipped" }) });
-      await until(() => !!button("Un-skip") && body().includes("Supported row"), "the skipped sheet, loaded");
-      expect(document.querySelector(".watch-state")).toBeNull();
-      expect(button(/Send to watch|Take off watch|Retry/)).toBeUndefined();
-      act(() => root?.unmount());
-      host?.remove();
-    }
+    const gone = "2026-10-03";
+    const { calls } = mount(session({ date: gone, contentState: "outline", checks: {}, build: null, view: null, watch: { state: "unavailable", reason: "not_today" } }), {
+      w: slot({ effectiveDate: gone, contentState: "outline" }),
+      route: (c, set) => {
+        if (c.path === "/api/plan/workouts/" + SLOT + "/move") {
+          // Moved onto today, whose check is answered: the session the next read finds.
+          set(session({ watch: { state: "updating" } }));
+          return answer({ workoutId: SLOT, corosSyncState: "calendar_only" });
+        }
+        if (c.path === "/api/sessions/watch/drain") return answer({ ran: false, pending: 0 });
+        return undefined;
+      },
+    });
+    await until(() => !!button("Move to today"), "the move offer");
+    await click("Move to today");
+    await until(() => builds(calls).length >= 1 && calls.some((c) => c.path === "/api/sessions/watch/drain"), "the build, then the drain", 400);
+    const moved = calls.findIndex((c) => c.path.endsWith("/move"));
+    expect(moved).toBeLessThan(calls.findIndex((c) => c.path.endsWith("/build")));
+    expect(calls.findIndex((c) => c.path.endsWith("/build"))).toBeLessThan(calls.findIndex((c) => c.path === "/api/sessions/watch/drain"));
   });
 });
 
@@ -1418,36 +1416,31 @@ describe("while Sending…, the sheet reads again on a backoff and then stops (a
   it("opened on Sending…: reads at 4, 8, 16, 31, 61 s and each minute to about five minutes — one drain, ≈30 s in — then none", async () => {
     features.player = true;
     const { calls } = mount(session({ locked: true, watch: { state: "sending" } }), { route: stuck });
-    await loaded("Sending…");
+    await loaded("Sending to your watch…");
     const seen = await timeline(calls, 15 * 60);
     expect(seen.reads).toEqual([4, 8, 16, 31, 61, 121, 181, 241, 301]);
     expect(seen.drains).toEqual([31]);
     // Still Sending… (the hourly lane runs the push): it says so, and reads no more.
-    expect(body()).toContain("Sending…");
+    expect(body()).toContain("Sending to your watch…");
   });
 
-  it("after Send: the drain at once, then the same backoff — two drains in all", async () => {
+  it("after Retry: the drain at once, then the same backoff — two drains in all", async () => {
     features.player = true;
     const routes = (c: Call, set: (next: SessionDto) => void): Response | undefined => {
-      if (c.path.endsWith("/watch-preview")) {
-        return json({ buildId: "b1", stamp: "Garden program — 2026-10-05", steps: [], freeText: 0, refusal: null, digest: "d" });
-      }
-      if (c.path.endsWith("/send-to-watch")) {
+      if (c.path.endsWith("/retry-watch")) {
         const next = session({ locked: true, watch: { state: "sending" } });
         set(next);
         return json(next);
       }
       return stuck(c);
     };
-    const { calls } = mount(session({ watch: { state: "ready" } }), { route: routes });
-    await loaded("Send to watch");
-    await click(/Send to watch/);
-    await until(() => !!button("Send"), "the preview");
+    const { calls } = mount(session({ locked: true, watch: { state: "failed" } }), { route: routes });
+    await loaded("Couldn't reach COROS — retrying");
     const t0 = clock.now;
     expect(drains(calls)).toBe(0);
-    await click("Send");
+    await click("Retry");
     await settle();
-    // The drain at once (in Send's own tap), and its read.
+    // The drain at once (in Retry's own tap), and its read.
     expect(drains(calls)).toBe(1);
     const seen = await timeline(calls, 15 * 60, t0);
     expect(seen.drains).toEqual([31]);
@@ -1464,7 +1457,7 @@ describe("while Sending…, the sheet reads again on a backoff and then stops (a
         return stuck(c);
       },
     });
-    await loaded("Sending…");
+    await loaded("Sending to your watch…");
     const seen = await timeline(calls, 10 * 60);
     expect(seen.reads).toEqual([4, 8]);
     expect(seen.drains).toEqual([]);
@@ -1474,7 +1467,7 @@ describe("while Sending…, the sheet reads again on a backoff and then stops (a
   it("reads nothing while the page is hidden or after the sheet closes", async () => {
     features.player = true;
     const { calls } = mount(session({ locked: true, watch: { state: "sending" } }), { route: stuck });
-    await loaded("Sending…");
+    await loaded("Sending to your watch…");
     Object.defineProperty(document, "visibilityState", { configurable: true, get: () => "hidden" });
     try {
       const hidden = await timeline(calls, 10 * 60);
@@ -1487,7 +1480,7 @@ describe("while Sending…, the sheet reads again on a backoff and then stops (a
 
     // Closed while Sending… (the sheet is unmounted): nothing more, from the first read on.
     const again = mount(session({ locked: true, watch: { state: "sending" } }), { route: stuck });
-    await loaded("Sending…");
+    await loaded("Sending to your watch…");
     act(() => root?.unmount());
     root = null;
     expect(await timeline(again.calls, 10 * 60)).toEqual({ reads: [], drains: [] });
@@ -1497,7 +1490,7 @@ describe("while Sending…, the sheet reads again on a backoff and then stops (a
     features.player = true;
     const app = { refetchOnWindowFocus: false, staleTime: 15_000 };
     const { calls } = mount(session({ locked: true, watch: { state: "sending" } }), { route: stuck, queries: app });
-    await loaded("Sending…");
+    await loaded("Sending to your watch…");
     await timeline(calls, 10 * 60);
     later(10 * 60_000);
     const before = reads(calls);

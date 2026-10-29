@@ -999,6 +999,7 @@ describe("Start (Review Focus 3)", () => {
       date: TODAY,
       contentState: "outline",
       locked: false,
+      lockedBy: null,
       // The planned workout's own title and kind: what a device that keeps nothing of it names the session by.
       title: "Mobility",
       origin: "program",
@@ -1148,7 +1149,7 @@ describe("is the stored build still current? (GET /api/sessions/:id/current — 
     const id = await seedSlot(TODAY);
     const built = await buildSession(db, userId, id, {}, ctx());
     statements.length = 0;
-    expect(await sessionCurrency(db, userId, id, ctx())).toEqual({ workoutId: id, buildId: built.build!.buildId, current: true, locked: false });
+    expect(await sessionCurrency(db, userId, id, ctx())).toEqual({ workoutId: id, buildId: built.build!.buildId, current: true, locked: false, lockedBy: null });
     expect(statements.filter(isWrite)).toEqual([]);
   });
 
@@ -1170,7 +1171,7 @@ describe("is the stored build still current? (GET /api/sessions/:id/current — 
 
   it("no build yet, a day gone, or a slot moved away and back (an outline again): not current", async () => {
     const id = await seedSlot(TODAY);
-    expect(await sessionCurrency(db, userId, id, ctx())).toEqual({ workoutId: id, buildId: null, current: false, locked: false });
+    expect(await sessionCurrency(db, userId, id, ctx())).toEqual({ workoutId: id, buildId: null, current: false, locked: false, lockedBy: null });
     const built = await buildSession(db, userId, id, {}, ctx());
     await db.update(plannedWorkouts).set({ contentState: "outline" }).where(eq(plannedWorkouts.id, id));
     expect(await sessionCurrency(db, userId, id, ctx())).toMatchObject({ buildId: built.build!.buildId, current: false });
@@ -1184,7 +1185,7 @@ describe("is the stored build still current? (GET /api/sessions/:id/current — 
     const built = await buildSession(db, userId, id, {}, ctx());
     await startSession(db, userId, id, built.build!.buildId, NOW);
     await recordCheck(db, userId, { profileId: "tmj", value: 9, feelingOff: true }, ctx({ now: LATER }));
-    expect(await sessionCurrency(db, userId, id, ctx({ now: LATER }))).toEqual({ workoutId: id, buildId: built.build!.buildId, current: true, locked: true });
+    expect(await sessionCurrency(db, userId, id, ctx({ now: LATER }))).toEqual({ workoutId: id, buildId: built.build!.buildId, current: true, locked: true, lockedBy: "started" });
 
     const ahead = await seedSlot(addDays(TODAY, 2));
     const preview = await buildSession(db, userId, ahead, {}, ctx());
@@ -1195,6 +1196,43 @@ describe("is the stored build still current? (GET /api/sessions/:id/current — 
     const other = await makeTestUser(db);
     const theirs = await seedSlot(TODAY, { owner: other.userId, program: await seedProgram(other.userId) });
     await expect(sessionCurrency(db, userId, theirs, ctx())).rejects.toThrow("not_found");
+  });
+
+  /**
+   * SENT IS NOT STARTED (the watch mirrors the plan §3.3; Task 5's `watchLocksOf`): every answered pre-check now locks the
+   * day's build for the watch, so a lock held ONLY for the watch — while the mirror follows the slot (the switch and the
+   * writes on) — is current only while the day's inputs still make its build; the sheet then builds again past it. A
+   * lock that holds the day (started; or the mirror not following: no env, the writes off) is current as it is.
+   */
+  it("a build locked only for the watch: current while the day's inputs make it, not after a new reading — when the mirror follows", async () => {
+    await activateTmj();
+    const id = await seedSlot(TODAY);
+    const built = await buildSession(db, userId, id, { checks: { tmj: { pre: 2, feelingOff: false } } }, ctx());
+    // Locked as Send (or the mirror's push) locks it: the slot stays built.
+    await db.update(sessionBuilds).set({ lockedAt: NOW }).where(eq(sessionBuilds.id, built.build!.buildId));
+    const follows = { ...ctx({ now: LATER }), prefs: { ...prefs, corosWritesEnabled: true }, env: { WATCH_PUSH_ENABLED: "1" } as Env };
+    expect(await sessionCurrency(db, userId, id, follows)).toEqual({ workoutId: id, buildId: built.build!.buildId, current: true, locked: true, lockedBy: "watch" });
+    await recordCheck(db, userId, { profileId: "tmj", value: 6, feelingOff: true }, ctx({ now: LATER }));
+    expect(await sessionCurrency(db, userId, id, follows)).toMatchObject({ buildId: built.build!.buildId, current: false, lockedBy: "watch" });
+    // The lock holds the day where the mirror does not follow: no env (as before the mirror), or the writes off.
+    expect(await sessionCurrency(db, userId, id, ctx({ now: LATER }))).toMatchObject({ current: true, lockedBy: "watch" });
+    expect(await sessionCurrency(db, userId, id, { ...follows, prefs: { ...prefs, corosWritesEnabled: false } })).toMatchObject({ current: true });
+  });
+});
+
+describe("who holds the lock (`lockedBy`: sent is not started — the watch mirrors the plan §3.3)", () => {
+  it("built: null; locked for the watch (the slot built): watch — `locked` still true for Start and the save; started or done: started", async () => {
+    const id = await seedSlot(TODAY);
+    const built = await buildSession(db, userId, id, {}, ctx());
+    expect(built).toMatchObject({ locked: false, lockedBy: null });
+    await db.update(sessionBuilds).set({ lockedAt: NOW }).where(eq(sessionBuilds.id, built.build!.buildId));
+    expect(await loadSession(db, userId, id, TODAY)).toMatchObject({ contentState: "built", locked: true, lockedBy: "watch" });
+    const other = await seedSlot(addDays(TODAY, 0), { program: await seedProgram(userId) });
+    const its = await buildSession(db, userId, other, {}, ctx());
+    const started = await startSession(db, userId, other, its.build!.buildId, NOW);
+    expect(started).toMatchObject({ contentState: "started", locked: true, lockedBy: "started" });
+    await db.update(plannedWorkouts).set({ contentState: "done" }).where(eq(plannedWorkouts.id, other));
+    expect(await loadSession(db, userId, other, TODAY)).toMatchObject({ locked: true, lockedBy: "started" });
   });
 });
 
@@ -1264,10 +1302,10 @@ describe("the routes", () => {
   it("GET …/current: 200 with whether the shown build is current; 404 for a slot that is not this user's", async () => {
     const id = await seedSlot(today);
     const none = await call("GET", `/api/sessions/${id}/current`);
-    expect([none.status, await none.json()]).toEqual([200, { workoutId: id, buildId: null, current: false, locked: false }]);
+    expect([none.status, await none.json()]).toEqual([200, { workoutId: id, buildId: null, current: false, locked: false, lockedBy: null }]);
     const built = (await (await call("POST", `/api/sessions/${id}/build`, {})).json()) as SessionResponse;
     const now = await call("GET", `/api/sessions/${id}/current`);
-    expect(await now.json()).toEqual({ workoutId: id, buildId: built.build!.buildId, current: true, locked: false });
+    expect(await now.json()).toEqual({ workoutId: id, buildId: built.build!.buildId, current: true, locked: false, lockedBy: null });
     expect((await call("GET", `/api/sessions/slot-nobody/current`)).status).toBe(404);
   });
 

@@ -32,6 +32,7 @@
 import { useEffect, useId, useRef, useState, type ReactNode } from "react";
 import { Link, useLocation } from "react-router-dom";
 import { useQuery, useQueryClient, type QueryClient } from "@tanstack/react-query";
+import { watchFollows } from "../../components/watch-catch-up.js";
 import { api, ApiError, type DocIssueDto, type TemplateDto } from "@rg/api-client";
 import { addDays, type WorkoutDoc } from "@rg/domain";
 import { EXERCISES, type ExerciseRecord } from "@rg/exercise-library";
@@ -122,6 +123,8 @@ export interface AddDeps {
   qc: QueryClient;
   /** What the target's moves resolve in: the account's `all` (the sheet's). The bundled library when absent. */
   library?: readonly ExerciseRecord[];
+  /** The athlete's today: a workout of today goes to the watch as the day's build (`watchFollows`). */
+  today?: string;
 }
 
 /** A step on this device that failed: said as this device's, not as a connection's. */
@@ -185,7 +188,14 @@ export async function addTo(target: AddTarget, rec: ExerciseRecord, deps: AddDep
         void deps.qc.invalidateQueries({ queryKey: ["today"] });
         void deps.qc.invalidateQueries({ queryKey: ["session", target.id] });
       };
+      // The watch follows the change (the watch mirrors the plan §3.3, §3.7): today's workout as the day's build, any
+      // other day's copy by the drain chain — then the plan reads what it changed.
+      const follow = (w: { date: string }) =>
+        void (w.date === deps.today ? watchFollows([target.id]) : api.drainWatchUntilIdle()).then(({ ran }) => {
+          if (ran > 0) refresh();
+        });
       refresh();
+      follow(done.saved.workout);
       return {
         text: addedText(done.r.part, done.saved.workout.title),
         href,
@@ -194,7 +204,8 @@ export async function addTo(target: AddTarget, rec: ExerciseRecord, deps: AddDep
         undo: async () => {
           const back = await api.reviseWorkoutDoc(target.id, original, done.saved.rev ?? 0);
           refresh();
-          // The watch may hold the copy with the move (sent after the Add): the line says so, with Send.
+          follow(back.workout);
+          // The watch may hold the copy with the move: the app replaces it (the line says it is updating).
           return back.watchHasOlder ? { watch: { workoutId: target.id, minutes: back.workout.minutes } } : {};
         },
       };
@@ -342,7 +353,7 @@ export function AddSheet({ rec, ctx, today, onClose, onAdded, drafts, onLeaveWhi
     const patience = setTimeout(() => {
       if (live.current) setStuck(true);
     }, SAVE_PATIENCE.ms);
-    const writing = addTo(target, rec, { drafts: { load, save, clear }, qc, library: all });
+    const writing = addTo(target, rec, { drafts: { load, save, clear }, qc, library: all, today });
     inFlight.current = writing;
     try {
       const done = await writing;
@@ -490,63 +501,48 @@ export interface Added extends AddDone {
    * done / undoing / undone — as they say.
    */
   phase: "saving" | "failed" | "done" | "undoing" | "undone";
-  /** The version on offer to the watch, once its Send was taken. */
-  sent?: boolean;
-  /**
-   * After Undo: the Add's own version was sent to the watch before it was undone, so the watch holds the copy with the
-   * move. Only then does the line say so — the server's `watchHasOlder` compares revisions, not what is in them.
-   */
-  addSent?: boolean;
   error?: string;
 }
 
-/** The words of the line, by phase — and, when the watch holds another copy, what it holds. */
+/**
+ * The words of the line, by phase — and, when the watch holds another copy, that the app is replacing it (the watch
+ * mirrors the plan §3.4: no Send — the session's sheet says where its watch stands).
+ */
 function lineWords(a: Added): string {
   if (a.phase === "saving") return "Still saving…";
   if (a.phase === "failed") return "";
-  if (a.phase === "undone") {
-    if (!a.watch) return "Undone.";
-    if (a.sent) return "Undone. Sending this version to your watch.";
-    // Only what the line knows: the Add's version went to the watch — else just that the watch's copy is another one.
-    return a.addSent ? `Undone. Your watch has the copy with ${a.rec.name}.` : "Undone. Your watch has an older version.";
-  }
-  if (!a.watch) return a.text;
-  return `${a.text} ${a.sent ? "Sending the new version to your watch." : "Your watch has the older version."}`;
+  if (a.phase === "undone") return a.watch ? "Undone. Updating your watch." : "Undone.";
+  return a.watch ? `${a.text} Updating your watch.` : a.text;
 }
 
 /**
  * The quiet confirmation line: where the move went, with Open and Undo — and, when the watch holds another copy of the
- * workout, a Send (the session's own: its preview, then the push). Its words and the server's costs are one status
- * region, always mounted where the line can show (the page, the detail's foot), so they are announced as they change;
- * empty, it takes no room. A failure is an alert. After Undo, or once the new version is on its way, the button that
- * was pressed is gone and focus rests on the line's words (only when it had nowhere else to be).
+ * workout, that the app is updating it. Its words and the server's costs are one status region, always mounted where
+ * the line can show (the page, the detail's foot), so they are announced as they change; empty, it takes no room. A
+ * failure is an alert. After Undo, the button that was pressed is gone and focus rests on the line's words (only when
+ * it had nowhere else to be).
  */
 export function AddedLine({
   added,
   onUndo,
   onDismiss,
-  onSendWatch,
 }: {
   added: Added | null;
   onUndo: () => void;
   onDismiss: () => void;
-  /** Open the watch preview for the workout, to send the version it now holds in the app. */
-  onSendWatch?: (workoutId: string) => void;
 }) {
   const said = useRef<HTMLDivElement>(null);
   const phase = added?.phase;
-  const sent = added?.sent;
   // Open hands the builder its way back: the search, or the move, the Add was made from.
   const here = useLocation();
   const backTo: BuilderArrival = { from: { href: `${here.pathname}${here.search}` } };
   useEffect(() => {
-    // The pressed button went (Undo, Send): focus rests on the line rather than falling to the page — and only then;
-    // focus the athlete moved elsewhere stays where they put it.
+    // The pressed button went (Undo): focus rests on the line rather than falling to the page — and only then; focus the
+    // athlete moved elsewhere stays where they put it.
     const a = document.activeElement;
-    if ((phase === "undone" || sent) && (!a || a === document.body)) said.current?.focus({ preventScroll: true });
-  }, [phase, sent]);
+    if (phase === "undone" && (!a || a === document.body)) said.current?.focus({ preventScroll: true });
+  }, [phase]);
   const acting = added && (added.phase === "done" || added.phase === "undoing");
-  const sendable = added && added.watch && !added.sent && (added.phase === "done" || added.phase === "undone") && onSendWatch;
   return (
     <div className={`stu-added${added ? " stu-added--on" : ""}`}>
       <div ref={said} className="stu-added-said" role="status" tabIndex={-1}>
@@ -573,11 +569,6 @@ export function AddedLine({
       {added && added.phase !== "saving" ? (
         <button type="button" className="stu-added-x tap-pad" aria-label="Dismiss" onClick={onDismiss}>
           <IconClose />
-        </button>
-      ) : null}
-      {sendable ? (
-        <button type="button" className="btn btn-small stu-added-send" onClick={() => onSendWatch(added.watch!.workoutId)}>
-          {added.phase === "undone" ? "Send this version" : "Send the new version"}
         </button>
       ) : null}
       {added?.error ? (

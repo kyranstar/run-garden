@@ -636,8 +636,8 @@ describe("before the draft has been read (review: Add must not overwrite a draft
   });
 });
 
-describe("the watch holds the older version (review: watchHasOlder, spec §10)", () => {
-  it("the line says so, with the server's costs, and Send the new version goes through the session's own preview and Send", async () => {
+describe("the watch holds the older version (review: watchHasOlder, spec §10; the watch mirrors the plan §3.4)", () => {
+  it("the line says the app is updating it, with the server's costs — no Send — and the drain chain runs after the Add", async () => {
     const warning = { path: "parts[1].items[1]", code: "balance", message: "Two squats in a row load the knees twice.", severity: "warning" };
     const calls = serve({ workouts: [planned({ id: "w1" })], docs: [{ doc: storedDoc("Strength day"), rev: 3 }], revise: [{ watchHasOlder: true, warnings: [warning] }] });
     await openAdd("goblet", "Goblet squat");
@@ -645,15 +645,11 @@ describe("the watch holds the older version (review: watchHasOlder, spec §10)",
     await click(option("To a planned workout"), "the planned choice");
     await click(addButton(), "Add");
     await until(() => !!line(), "the line");
-    expect(line()!.querySelector(".stu-added-text")!.textContent).toBe("Added to Main in “Strength day”. Your watch has the older version.");
+    expect(line()!.querySelector(".stu-added-text")!.textContent).toBe("Added to Main in “Strength day”. Updating your watch.");
     expect(line()!.querySelector(".stu-added-notes")!.textContent).toBe("Two squats in a row load the knees twice.");
-    await click([...line()!.querySelectorAll("button")].find((b) => b.textContent === "Send the new version"), "Send the new version");
-    await until(() => !!host!.querySelector(".watch-send"), "the watch preview");
-    await click(host!.querySelector(".watch-send"), "Send");
-    expect(calls.find((c) => c.method === "POST" && c.path === "/api/sessions/w1/send-to-watch")?.body).toEqual({ buildId: "b9", digest: "d9" });
-    await until(() => line()?.textContent?.includes("Sending the new version to your watch.") ?? false, "sending");
-    expect(calls.some((c) => c.path === "/api/sessions/watch/drain")).toBe(true);
-    expect([...line()!.querySelectorAll("button")].some((b) => b.textContent === "Send the new version")).toBe(false);
+    expect([...line()!.querySelectorAll("button")].some((b) => /^Send/.test(b.textContent ?? ""))).toBe(false);
+    await until(() => calls.some((c) => c.path === "/api/sessions/watch/drain"), "the drain after the Add");
+    expect(calls.some((c) => c.path.endsWith("/send-to-watch"))).toBe(false);
   });
 
   it("no older copy: nothing about the watch", async () => {
@@ -731,22 +727,6 @@ describe("a template's Undo (review)", () => {
 // ── Fix round 2 ────────────────────────────────────────────────────────────
 
 describe("fix round 2: the watch, the line, the wait, the draft row", () => {
-  it("after Send the new version, focus rests on the line's words, not the page", async () => {
-    serve({ workouts: [planned({ id: "w1" })], docs: [{ doc: storedDoc("Strength day"), rev: 3 }], revise: [{ watchHasOlder: true }] });
-    await openAdd("goblet", "Goblet squat");
-    await until(() => !!offered("To a planned workout"), "the planned workout");
-    await click(option("To a planned workout"), "the planned choice");
-    await click(addButton(), "Add");
-    await until(() => !!line(), "the line");
-    const send = [...line()!.querySelectorAll<HTMLButtonElement>("button")].find((b) => b.textContent === "Send the new version")!;
-    send.focus();
-    await click(send, "Send the new version");
-    await until(() => !!host!.querySelector(".watch-send"), "the watch preview");
-    await click(host!.querySelector(".watch-send"), "Send");
-    await until(() => line()?.textContent?.includes("Sending the new version") ?? false, "sending");
-    expect(document.activeElement).toBe(line()!.querySelector(".stu-added-said"));
-  });
-
   it("the server's costs are inside the status region, so they are announced with the words", async () => {
     const warning = { path: "parts[1]", code: "balance", message: "Two squats in a row load the knees twice.", severity: "warning" };
     serve({ workouts: [planned({ id: "w1" })], docs: [{ doc: storedDoc("Strength day"), rev: 3 }], revise: [{ warnings: [warning] }] });
@@ -758,8 +738,7 @@ describe("fix round 2: the watch, the line, the wait, the draft row", () => {
     expect(line()!.querySelector('[role="status"] .stu-added-notes')?.textContent).toBe("Two squats in a row load the knees twice.");
   });
 
-  it("Undo carries what the server says of the watch — and claims the copy there has the move only when the Add's version was sent", async () => {
-    // Round 3: `watchHasOlder` compares revisions, not content — after an unsent Add it is true both ways.
+  it("Undo carries what the server says of the watch: the app is updating it — no Send", async () => {
     serve({ workouts: [planned({ id: "w1" })], docs: [{ doc: storedDoc("Strength day"), rev: 3 }], revise: [{ watchHasOlder: true }, { watchHasOlder: true }] });
     await openAdd("goblet", "Goblet squat");
     await until(() => !!offered("To a planned workout"), "the planned workout");
@@ -768,26 +747,8 @@ describe("fix round 2: the watch, the line, the wait, the draft row", () => {
     await until(() => !!line(), "the line");
     await click([...line()!.querySelectorAll("button")].find((b) => b.textContent === "Undo"), "Undo");
     await until(() => line()?.textContent?.includes("Undone.") ?? false, "Undone");
-    expect(line()!.querySelector(".stu-added-text")!.textContent).toBe("Undone. Your watch has an older version.");
-    expect(line()!.textContent).not.toContain("copy with");
-    expect([...line()!.querySelectorAll("button")].some((b) => b.textContent === "Send this version")).toBe(true);
-  });
-
-  it("Undo after the Add's version went to the watch: the watch has the copy with the move, with Send", async () => {
-    serve({ workouts: [planned({ id: "w1" })], docs: [{ doc: storedDoc("Strength day"), rev: 3 }], revise: [{ watchHasOlder: true }, { watchHasOlder: true }] });
-    await openAdd("goblet", "Goblet squat");
-    await until(() => !!offered("To a planned workout"), "the planned workout");
-    await click(option("To a planned workout"), "the planned choice");
-    await click(addButton(), "Add");
-    await until(() => !!line(), "the line");
-    await click([...line()!.querySelectorAll("button")].find((b) => b.textContent === "Send the new version"), "Send the new version");
-    await until(() => !!host!.querySelector(".watch-send"), "the watch preview");
-    await click(host!.querySelector(".watch-send"), "Send");
-    await until(() => line()?.textContent?.includes("Sending the new version") ?? false, "sending");
-    await click([...line()!.querySelectorAll("button")].find((b) => b.textContent === "Undo"), "Undo");
-    await until(() => line()?.textContent?.includes("Undone.") ?? false, "Undone");
-    expect(line()!.querySelector(".stu-added-text")!.textContent).toBe("Undone. Your watch has the copy with Goblet squat.");
-    expect([...line()!.querySelectorAll("button")].some((b) => b.textContent === "Send this version")).toBe(true);
+    expect(line()!.querySelector(".stu-added-text")!.textContent).toBe("Undone. Updating your watch.");
+    expect([...line()!.querySelectorAll("button")].some((b) => /^Send/.test(b.textContent ?? ""))).toBe(false);
   });
 
   it("✕ and Escape wait for a write only so long: past the wait the sheet may close, and the page keeps the answer", async () => {

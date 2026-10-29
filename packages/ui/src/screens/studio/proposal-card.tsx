@@ -38,6 +38,7 @@ import {
   type DesignContextRowDto,
   type DesignLineDto,
 } from "@rg/api-client";
+import { followApproved } from "../../components/watch-catch-up.js";
 import { features } from "../../features.js";
 import { editDraftHref } from "./build-model.js";
 import { CONVERSATION_QUERY } from "./coach-conversation-model.js";
@@ -279,6 +280,8 @@ export function ProposalCard({
     // Met in flight (a 200's `inFlight`, or the 409 that named every one): being changed — never failed.
     onSuccess: (answers) => {
       meeting("approve", answers.flatMap((a) => a.inFlight ?? []));
+      // The watch follows what it changed (the watch mirrors the plan §3.3; M1).
+      followApproved(answers, () => qc.fetchQuery({ queryKey: ["today"], queryFn: api.today, staleTime: 0 }));
       decided.current = answers.flatMap((a) => [...a.applied.map((x) => x.opId), ...a.changed.map((x) => x.opId), ...a.refused.map((x) => x.opId)])[0] ?? null;
     },
     onSettled: async () => {

@@ -186,8 +186,9 @@ export interface WorkoutDto {
    * never-pushed and already-unpushed sessions — whose watch copy a remove
    * leaves alone. */
   appPushed?: boolean;
-  /** The athlete left the watch's earlier version of this app-built session as it is: the row still says so
-   * (`corosSyncView` `content_stale`), the account line no longer counts it. */
+  /** The athlete left the watch's earlier version of this session as it is: the row still says so (`corosSyncView`
+   * `content_stale`), the account line no longer counts it. Never on an app-built session (the mirror replaces its
+   * copy; Leave is gone for it — the watch mirrors the plan §3.6). */
   watchVersionLeft?: true;
   /** An adopted session (a coach or watch-plan one taken into the Studio) still to run whose old copy the watch holds:
    * its own Send replaces that copy (`corosSyncView` `content_stale` until then). Absent otherwise. */
@@ -1685,6 +1686,11 @@ export interface SyncStatusDto {
   contentStaleCount?: number;
   /** Those sessions, soonest first: the line lists them, each opening its sheet. */
   contentStaleSessions?: Array<{ workoutId: string; date: string; title: string }>;
+  /**
+   * Sessions with a watch job on its way — a push of their copy, a delete of an old one (the watch mirrors the plan
+   * §3.9): the line says "N sessions updating on your watch" while there are any. Absent from an older server.
+   */
+  watchUpdatingCount?: number;
   lastCorosReadAt: string | null;
   writesEnabled: boolean;
   registered: boolean;
@@ -1948,7 +1954,14 @@ export interface SessionDto {
   workoutId: string;
   date: string;
   contentState: "outline" | "built" | "started" | "done";
+  /** Any build locked, or the slot started or done: what Start and the player read. */
   locked: boolean;
+  /**
+   * Who holds the lock (the watch mirrors the plan §3.3): `started` — started or done, what it plays never changes;
+   * `watch` — a build locked only for the watch (sent, not started), which the day's next change builds past, so the
+   * sheet keeps it changeable (re-check, choices, ⇄); null — nothing locked. Absent from an older server: `locked` alone.
+   */
+  lockedBy?: "started" | "watch" | null;
   /**
    * The planned workout's own title, and its kind (`origin`): what the player names the session by on a device that
    * keeps nothing of it. Absent from a session read before them (a cached answer).
@@ -1999,8 +2012,11 @@ export type WatchUnavailableReason =
   | "gated";
 
 /**
- * `ready` → Send to watch; `sending` → "Sending…"; `on_watch` → "On your watch" with Take off watch; `failed` →
- * "Couldn't send" with Retry; `off_watch` (removed in COROS) and `unavailable` → nothing to send.
+ * THE SHEET'S WATCH LINE — a status, never a Send (the watch mirrors the plan §3.9): `on_watch` → "On your watch";
+ * `updating` → "Updating your watch…" (a delete or a replacement on its way, or a copy owed); `sending` → "Sending to
+ * your watch…" (a first copy going on); `failed` → "Couldn't reach COROS — retrying" with Retry; `kept_off` → "Kept off
+ * your watch" with Put on my watch; `closed_by_check` → today's check closed it; `unavailable` → "Not on your watch:
+ * <reason>"; `off_watch` → removed in the COROS app; `ready` → nothing on the watch, nothing owed.
  */
 export interface WatchStateDto {
   state:
@@ -2952,6 +2968,12 @@ export const api = {
   /** Put on my watch: the session is the mirror's again, which puts its copy on the watch; idempotent. */
   putOnWatch: (workoutId: string) => post<SessionDto>(`/api/sessions/${encodeURIComponent(workoutId)}/put-on-watch`, {}),
   /**
+   * Retry (the watch mirrors the plan §3.9, M6): the session's failed push queued again now — a provisional copy's as it
+   * was, a day build's as Send's Retry. No digest. 409 `{error: reason}` as Send's; nothing failed → the session as it
+   * stands. Follow with the drain.
+   */
+  retryWatch: (workoutId: string) => post<SessionDto>(`/api/sessions/${encodeURIComponent(workoutId)}/retry-watch`, {}),
+  /**
    * Run ONE queued watch job now, in a request of its own — a push, a delete, or the mirror's one record: Send, Keep off
    * and the plan's changes only queue (ruling 3-R11, the Workers Free budget). `{ran, pending}`; 404 while the switch
    * is off. After a change, `drainWatchUntilIdle` asks until nothing is left.
@@ -3050,6 +3072,8 @@ export interface SessionCurrencyDto {
   buildId: string | null;
   current: boolean;
   locked: boolean;
+  /** Who holds the lock (`SessionDto.lockedBy`). */
+  lockedBy?: "started" | "watch" | null;
 }
 
 /** What a save says beside the session (worker: services/session-save.ts `SaveNote`). */

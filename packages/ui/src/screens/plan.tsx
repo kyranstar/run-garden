@@ -44,6 +44,7 @@ import { addTargetHref, editableWorkout } from "./studio/add-model.js";
 import type { BuilderArrival } from "./studio/templates-model.js";
 import { isOneOff, SessionSheet } from "../components/session-sheet.js";
 import { WatchVersion } from "../components/watch-version.js";
+import { watchFollowsChange } from "../components/watch-catch-up.js";
 import { isAppSession } from "../components/today-program.js";
 import { AskCoach, useCoachSeeing } from "./studio/coach-ask.js";
 import { workoutFocus } from "./studio/coach-focus.js";
@@ -596,6 +597,9 @@ export function usePlanCoach() {
     onSuccess: () => {
       invalidate();
       for (const k of ["plan", "plan-week", "today", "garden"]) void qc.invalidateQueries({ queryKey: [k] });
+      // The watch follows what it changed (the watch mirrors the plan §3.3; M1): the thread's approve does not say which
+      // sessions it touched, so today's app sessions are asked for their day build, then the drain chain runs.
+      void watchFollowsChange("all", () => qc.fetchQuery({ queryKey: ["today"], queryFn: api.today, staleTime: 0 }));
     },
   });
   const decline = useMutation({
@@ -723,7 +727,7 @@ export function retirePlan(v: { id: string; source: "coach" | "studio" }): Promi
 export function retireRefusalText(e: unknown): string {
   if (!(e instanceof ApiError)) return "Retiring needs a connection.";
   const code = (e.body as { error?: string } | null)?.error;
-  if (code === "writes_disabled") return "Writing to COROS is switched off. Turn on “Write date changes back to COROS” in Settings, then retire it.";
+  if (code === "writes_disabled") return "Writing to COROS is switched off. Turn on “Keep my watch in sync with the plan” in Settings, then retire it.";
   if (code === "plan_completed") return "This plan is already over.";
   if (code === "already_retired") return "This plan is already retired.";
   if (code === "not_current") return "A newer plan has replaced this one.";

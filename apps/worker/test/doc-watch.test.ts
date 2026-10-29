@@ -114,8 +114,9 @@ describe("a document workout's watch paths re-gate with the day's reading", () =
     const retry = await call("POST", `${workoutId}/send-to-watch`, { buildId, digest: "no-preview" });
     expect(retry).toEqual({ status: 409, body: { error: "gated" } });
     expect((await pushOf(buildId))!.status).toBe("failed");
-    // The sheet says why Send is not offered: gated, not "Couldn't send" with a Retry that would be refused.
-    expect((await call("GET", workoutId)).body.watch).toEqual({ state: "unavailable", reason: "gated" });
+    // The sheet says why: today's check closed it (the watch mirrors the plan §3.9) — not "Couldn't reach COROS" with a
+    // Retry that would be refused.
+    expect((await call("GET", workoutId)).body.watch).toEqual({ state: "closed_by_check" });
   });
 
   it("a failed push the day closed, with COROS writes since turned off: the sheet gives Retry's own reason, in Retry's order", async () => {
@@ -142,7 +143,7 @@ describe("a document workout's watch paths re-gate with the day's reading", () =
     const { workoutId, buildId } = await builtDoc();
     await startSession(db, userId, workoutId, buildId, NOON);
     await flare();
-    expect((await call("GET", workoutId)).body.watch).toEqual({ state: "unavailable", reason: "gated" });
+    expect((await call("GET", workoutId)).body.watch).toEqual({ state: "closed_by_check" });
     const refused = await send(workoutId, buildId);
     expect(refused).toEqual({ status: 409, body: { error: "gated" } });
     expect(await pushOf(buildId)).toBeUndefined();

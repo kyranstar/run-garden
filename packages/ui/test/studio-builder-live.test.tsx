@@ -1017,24 +1017,21 @@ describe("the footer, after an edit", () => {
     expect(text()).not.toContain("as a template.");
   });
 
-  it("…but the watch's offer stays until the new version is sent or the workout is saved again", async () => {
-    serve({ docs: [{ doc: storedDoc("Thursday lift"), rev: 3 }], planned: [plannedRow("w1", "2026-10-15")], watchHasOlder: true });
+  it("a save whose watch copy is older says the app is updating it — no Send (the watch mirrors the plan §3.4) — and the watch follows: today's build asked for, then the drain", async () => {
+    const calls = serve({ docs: [{ doc: storedDoc("Thursday lift"), rev: 3 }], planned: [plannedRow("w1", "2026-10-15")], watchHasOlder: true });
     mount("/studio/build/workout/w1");
     await until(() => titleField()?.value === "Thursday lift", "the workout");
     await click(effort("develop"), "Develop");
     await click(button("Save changes"), "Save changes");
-    await until(() => !!button("Send the new version"), "the offer");
-    expect(document.querySelector(".stu-build-status")!.textContent).toContain("Saved. Your watch has the older version.");
-    // An edit: "Saved." is no longer true and goes; the watch still holds the older copy, and the offer stays.
+    await until(() => text().includes("Saved."), "Saved.");
+    expect(document.querySelector(".stu-build-status-text")!.textContent).toBe("Saved. Updating your watch.");
+    expect(button("Send the new version")).toBeNull();
+    // The saved workout is today's (the stub's answer): its session read for its day build, then the drain chain.
+    await until(() => calls.some((c) => c.path === "/api/sessions/watch/drain"), "the drain after the save");
+    expect(calls.some((c) => c.method === "GET" && c.path === "/api/sessions/w1")).toBe(true);
+    // An edit: the line goes — the session's own sheet says where its watch stands.
     await click(effort("maintain"), "Maintain");
-    expect(text()).not.toContain("Saved.");
-    expect(document.querySelector(".stu-build-status-text")!.textContent).toBe("Your watch has the older version.");
-    expect(button("Send the new version")).not.toBeNull();
-    // Saved again: the save's own line, and its own word on the watch.
-    await click(effort("peak"), "Peak");
-    await click(button("Save changes"), "Save changes");
-    await until(() => text().includes("Saved."), "Saved. again");
-    expect(document.querySelector(".stu-build-status-text")!.textContent).toBe("Saved. Your watch has the older version.");
+    expect(text()).not.toContain("Updating your watch.");
   });
 });
 

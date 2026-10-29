@@ -287,7 +287,15 @@ export interface SessionResponse {
   workoutId: string;
   date: string;
   contentState: "outline" | "built" | "started" | "done";
+  /** Any build of the slot is locked, or it is started or done: what Start, the player and the save read. */
   locked: boolean;
+  /**
+   * WHO HOLDS THE LOCK (the watch mirrors the plan §3.3; Task 5's `watchLocksOf`): `started` — the slot is started or
+   * done, and what it plays never changes; `watch` — a build locked only for the watch (the slot `built`), which the
+   * day's next change builds past while the mirror follows the slot, so the sheet treats the session as changeable
+   * (re-check, choices, ⇄); null — nothing locked.
+   */
+  lockedBy: "started" | "watch" | null;
   /**
    * The planned workout's own title, and its kind (`origin`: a programme's slot, a Studio or template workout): what
    * the player names the session by on a device that keeps nothing of it, where this read is all it has.
@@ -767,6 +775,10 @@ const storedOf = (b: BuildRow): StoredBuild => b.payload as unknown as StoredBui
 const lockedOf = (row: SlotRow, builds: readonly BuildRow[]): boolean =>
   row.contentState === "started" || row.contentState === "done" || builds.some((b) => b.lockedAt !== null);
 
+/** `SessionResponse.lockedBy`: the slot started or done (`started`), else a build locked for the watch (`watch`), else null. */
+const lockedByOf = (row: SlotRow, builds: readonly BuildRow[]): SessionResponse["lockedBy"] =>
+  row.contentState === "started" || row.contentState === "done" ? "started" : builds.some((b) => b.lockedAt !== null) ? "watch" : null;
+
 /**
  * The build a slot shows: the locked one (the newest, when a build locked for the watch and the one replacing it are
  * both locked a moment); else the day's (`dayBuildOf`).
@@ -978,6 +990,7 @@ function respond(
     date: row.effectiveDate,
     contentState: contentStateOf(row),
     locked: lockedOf(row, builds),
+    lockedBy: lockedByOf(row, builds),
     title: row.title,
     origin: row.origin ?? null,
     checks,
@@ -1380,7 +1393,10 @@ async function mirrorDay(db: Db, userId: string, s: BuildStore, row: SlotRow, bu
   const builds = await loadBuilds(db, userId, row.id);
   const shown = currentBuild(row, builds, ctx.today);
   const payload = shown ? toPayload(shown, s.hidden) : null;
-  return { ...outcome, session: { ...outcome.session, locked: lockedOf(row, builds), build: payload?.build ?? null, view: payload?.view ?? null } };
+  return {
+    ...outcome,
+    session: { ...outcome.session, locked: lockedOf(row, builds), lockedBy: lockedByOf(row, builds), build: payload?.build ?? null, view: payload?.view ?? null },
+  };
 }
 
 /**
@@ -2291,18 +2307,26 @@ export interface SessionCurrency {
    */
   current: boolean;
   locked: boolean;
+  /** Who holds the lock (`SessionResponse.lockedBy`). */
+  lockedBy: SessionResponse["lockedBy"];
 }
 
 /**
  * Is the slot's build still current? Reads the day's inputs and hashes them, exactly as Start does — never composes
  * a build and never writes, so opening the sheet need not POST a build every time. Throws `SessionNotFoundError`.
+ *
+ * A LOCK THAT HOLDS THE DAY — the slot started or done, or a build locked for the watch while the mirror does not
+ * follow the slot (`watchLocksOf` null: the switch or the writes off, kept off) — is current as it is: nothing rebuilds
+ * it. A lock held ONLY FOR THE WATCH while the mirror follows the slot (the watch mirrors the plan §3.3) is no answer of
+ * its own: a change on the day builds past it, so its build is current only while the day's inputs still make it.
+ * (`ctx.env`, the route's, says whether the mirror follows; without it, a watch lock holds as before.)
  */
 export async function sessionCurrency(db: Db, userId: string, workoutId: string, ctx: BuildCtx): Promise<SessionCurrency> {
   const row = await loadSlot(db, userId, workoutId);
   const builds = await loadBuilds(db, userId, workoutId);
   const shown = currentBuild(row, builds, ctx.today);
-  const out = { workoutId, buildId: shown?.id ?? null, locked: lockedOf(row, builds) };
-  if (out.locked) return { ...out, current: shown !== null };
+  const out = { workoutId, buildId: shown?.id ?? null, locked: lockedOf(row, builds), lockedBy: lockedByOf(row, builds) };
+  if (out.locked && (out.lockedBy === "started" || watchLocksOf(row, builds, ctx) === null)) return { ...out, current: shown !== null };
   if (!shown || row.effectiveDate < ctx.today) return { ...out, current: false };
   // A slot moved away and back is an outline again: its stored build needs a build request to be the row's again.
   if (shown.version > 0 && row.contentState !== "built") return { ...out, current: false };

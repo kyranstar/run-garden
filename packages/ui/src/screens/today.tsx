@@ -115,6 +115,8 @@ export function SyncPanel({ quietWhenHealthy = false }: { quietWhenHealthy?: boo
     quietWhenHealthy &&
     (status.data.state === "in_sync" || cloudHealthy) &&
     (status.data.contentStaleCount ?? 0) === 0 &&
+    // The watch catching up is said while it lasts (the watch mirrors the plan §3.9), the plan page's line too.
+    (status.data.watchUpdatingCount ?? 0) === 0 &&
     (notes.data?.notes ?? []).length === 0
   ) {
     return null;

@@ -434,3 +434,78 @@ describe("POST /api/sessions/watch/drain — one watch job a request, and what i
     expect((await pushesOf(next)).map((j) => j.status)).toEqual(["verified"]);
   });
 });
+
+/**
+ * THE WATCH LINE AND RETRY (the watch mirrors the plan §3.9, M6). The watch state every session response carries reads
+ * the row's watch jobs on their way in ONE statement before anything else (kept off reads none); Retry of a failed
+ * provisional push re-queues that push in one UPDATE and runs no lane; Retry of a day build's push is Send's Retry.
+ */
+describe("the watch line and Retry (the watch mirrors the plan §3.9)", () => {
+  async function docRowAhead(id: string, date = addDays(DAY, 2)): Promise<string> {
+    const doc = calmDoc();
+    await db.insert(schema.plannedWorkouts).values({
+      id, userId, planId: programId, sourceWorkoutId: id, title: doc.title, category: "strength", sport: "strength",
+      originalPlanDate: date, lastVerifiedCorosDate: "", effectiveDate: date, effectiveTime: "18:00", sourceContentFingerprint: "studio",
+      calendarBlockDurationSeconds: 1800, fallbackEstimatedDurationSeconds: 1800, corosSyncState: "calendar_only",
+      completionState: "scheduled", origin: "studio", contentState: "outline", workoutDoc: JSON.stringify(doc), workoutDocRev: 1,
+      createdAt: NOON, updatedAt: NOON,
+    });
+    return id;
+  }
+  const pushOfRow = async (workoutId: string) =>
+    (await db.select().from(corosWriteJobs).where(and(eq(corosWriteJobs.workoutId, workoutId), eq(corosWriteJobs.kind, "program_session_push"))))[0]!;
+
+  it("watchStateOf, statement by statement: kept off 0; a job on its way 1; a copy on the watch 4; owed ahead 3", async () => {
+    const { watchStateOf } = await import("../src/services/watch-push.js");
+    const { loadSession } = await import("../src/services/session-build.js");
+    const stateOf = async (id: string) => {
+      const row = await rowOf(db, id);
+      const session = await loadSession(db, userId, id, DAY);
+      statements = 0;
+      const state = await watchStateOf(db, switchOn(), userId, row, session, prefs);
+      return { state, statements };
+    };
+    const owed = await docRowAhead("studio-owed");
+    const owedState = await stateOf(owed);
+    console.info(`[budget] watchStateOf, owed ahead (nothing on the watch): ${owedState.statements} D1`);
+    expect(owedState).toEqual({ state: { state: "updating" }, statements: 3 });
+
+    expect(await queueProvisionalPush(db, switchOn(), userId, await rowOf(db, owed), ctx())).toBe("queued");
+    expect(await stateOf(owed)).toEqual({ state: { state: "sending" }, statements: 1 });
+
+    await executeCloudJobs(db, switchOn(), userId, prefs, { fetchImpl: server.fetchImpl });
+    expect((await pushOfRow(owed)).status).toBe("verified");
+    const on = await stateOf(owed);
+    console.info(`[budget] watchStateOf, a copy on the watch: ${on.statements} D1`);
+    expect(on).toEqual({ state: { state: "on_watch" }, statements: 4 });
+
+    await db.update(schema.plannedWorkouts).set({ watchOff: true }).where(eq(schema.plannedWorkouts.id, owed));
+    expect(await stateOf(owed)).toEqual({ state: { state: "kept_off" }, statements: 0 });
+  });
+
+  it("Retry of a failed provisional push: within the budget, one UPDATE re-queues it, no lane of its own", async () => {
+    const id = await docRowAhead("studio-retry");
+    expect(await queueProvisionalPush(db, switchOn(), userId, await rowOf(db, id), ctx())).toBe("queued");
+    const push = await pushOfRow(id);
+    await db.update(corosWriteJobs).set({ status: "failed" }).where(eq(corosWriteJobs.id, push.id));
+    const m = await invoke("POST", `${id}/retry-watch`, {});
+    report("Retry (a failed provisional push)", m);
+    expect(m.res.status).toBe(200);
+    expect(m.fetches).toBe(0);
+    expect(m.waitUntil).toBe(0);
+    expect((await jobOf(push.id))!.status).toBe("queued");
+    expect(m.total).toBeLessThanOrEqual(BUDGET);
+  });
+
+  it("Retry of a failed day build's push (Send's Retry): within the budget", async () => {
+    const { workoutId, buildId } = await builtSlot();
+    await sendToWatch(db, switchOn(), userId, workoutId, buildId, ctx());
+    await db.update(corosWriteJobs).set({ status: "failed" }).where(eq(corosWriteJobs.id, `push:${buildId}`));
+    const m = await invoke("POST", `${workoutId}/retry-watch`, {});
+    report("Retry (a failed day build's push)", m);
+    expect(m.res.status).toBe(200);
+    expect(m.fetches).toBe(0);
+    expect((await jobOf(`push:${buildId}`))!.status).toBe("queued");
+    expect(m.total).toBeLessThanOrEqual(BUDGET);
+  });
+});

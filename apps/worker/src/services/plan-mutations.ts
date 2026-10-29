@@ -7,6 +7,7 @@ import { openIntentFor, recordIntent, resolveIntent, type IntentSource } from ".
 import { unpushBuild } from "./watch-push.js";
 import { sentBuildIdOf } from "./session-build.js";
 import { markMirrorOwed } from "./mirror-owed.js";
+import { ADOPTED_COPY_JOB_SUFFIX } from "./watch-jobs.js";
 import { FROZEN_STATES, reopenedDocColumns } from "./workout-doc-store.js";
 
 /**
@@ -213,8 +214,8 @@ export async function enqueueUnpushIfOurs(
   if (unpush) await unpush.insert;
 }
 
-/** The one delete of an adopted row's old copy (`adoptedCopyUnpush`): its id, which the import reads as "in flight". */
-export const ADOPTED_COPY_JOB_SUFFIX = "-unpush-copy";
+// The one delete of an adopted row's old copy (`adoptedCopyUnpush`): its id's suffix lives with the watch's jobs (a leaf).
+export { ADOPTED_COPY_JOB_SUFFIX };
 export const adoptedCopyJobId = (workoutId: string): string => `${workoutId}${ADOPTED_COPY_JOB_SUFFIX}`;
 
 /**

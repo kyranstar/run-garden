@@ -224,6 +224,9 @@ describe("the agents partition the vocabulary", () => {
       { ...ok, view: "content_stale" },
       { ...ok, watchCopyDiffers: true },
       { ...ok, view: "taking_watch_copy" },
+      { ...ok, view: "syncing", write: "sending", mirror: "on" },
+      { ...ok, view: "sync_issue", write: "failed", mirror: "on" },
+      { ...ok, mirror: "kept_off" },
     ];
     const seen = new Map<SyncActionCode, string>();
     for (const s of situations) {
@@ -250,7 +253,51 @@ describe("the agents partition the vocabulary", () => {
       "watch_keeps_old_copy",
       "watch_copy_differs",
       "taking_watch_copy",
+      "watch_updating",
+      "watch_retrying",
+      "kept_off_watch",
     ];
     expect([...seen.keys()].sort()).toEqual([...CODES].sort());
+  });
+});
+
+/**
+ * A SESSION THE APP KEEPS ON THE WATCH BY ITSELF (the watch mirrors the plan §3.9): its words are the session sheet's,
+ * from the write on its way — never the stored date state a move leaves (`calendar_only`) — and the move lane's retry is
+ * never offered: it is not how a mirrored session's copy goes on.
+ */
+describe("a session the mirror keeps on the watch", () => {
+  const mirrored: SyncSituation = { ...ok, mirror: "on" };
+
+  it("a push or a delete on its way: updating, by the app; without the connection, the athlete reconnects", () => {
+    for (const write of ["sending", "unpushing"] as const) {
+      expect(syncAction({ ...mirrored, view: "syncing", write })).toEqual({ agent: "app", code: "watch_updating" });
+    }
+    expect(syncAction({ ...mirrored, view: "waiting_for_device", write: "sending", connected: false })).toEqual({
+      agent: "athlete",
+      code: "connect_coros",
+      control: "settings",
+    });
+  });
+
+  it("moved (calendar_only) with nothing on its way, or owed: nothing to say — never retry_write; on the watch: silent", () => {
+    expect(syncAction({ ...mirrored, view: "calendar_only" })).toBeNull();
+    expect(syncAction({ ...mirrored, view: "content_stale" })).toBeNull();
+    expect(syncAction(mirrored)).toBeNull();
+  });
+
+  it("its push failed: the app retries (the mirror's backoff) — no control; the setting or the connection first", () => {
+    expect(syncAction({ ...mirrored, view: "sync_issue", write: "failed" })).toEqual({ agent: "app", code: "watch_retrying" });
+    expect(syncAction({ ...mirrored, view: "sync_issue", write: "failed", writesEnabled: false })).toEqual({
+      agent: "athlete",
+      code: "enable_coros_writes",
+      control: "settings",
+    });
+    expect(syncAction({ ...mirrored, view: "calendar_only", connected: false })).toMatchObject({ code: "connect_coros" });
+  });
+
+  it("kept off: said, by nobody; a day gone: silent", () => {
+    expect(syncAction({ ...ok, view: "calendar_only", mirror: "kept_off" })).toEqual({ agent: "nobody", code: "kept_off_watch" });
+    expect(syncAction({ ...mirrored, view: "syncing", write: "sending", settled: true })).toBeNull();
   });
 });

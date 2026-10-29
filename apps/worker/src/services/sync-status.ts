@@ -1,4 +1,4 @@
-import { and, desc, eq, gte, inArray, isNull, ne, notInArray } from "drizzle-orm";
+import { and, desc, eq, gte, inArray, isNull, ne, notInArray, sql } from "drizzle-orm";
 import {
   corosWriteJobs,
   plannedWorkouts,
@@ -10,6 +10,7 @@ import { todayInZone, type LocalDate, type UserPreferences, type WorkoutSyncView
 import { openMoveIntents } from "./sync-intents.js";
 import { SETTLED_COMPLETION_STATES, watchEarlierVersions, type WatchEarlierVersion } from "./watch-version.js";
 import { studioPlanRetired } from "./studio-push.js";
+import { WATCH_JOB_UNDERWAY, watchJobCondition } from "./watch-jobs.js";
 import type { Db } from "./db.js";
 
 /** Legacy constant — last consumers (device routes) die in Phase C Task 4. */
@@ -126,6 +127,14 @@ export interface SyncStatus {
   contentStaleCount: number;
   /** Those sessions, soonest first — the line lists them, each opening its sheet. */
   contentStaleSessions: WatchEarlierVersion[];
+  /**
+   * THE WATCH CATCHING UP (the watch mirrors the plan §3.9): how many sessions have a watch job on its way — a push of
+   * their copy, or a delete of an old one (`watchJobCondition`) — so the line says "N sessions updating on your watch"
+   * while it does, and nothing of it once the jobs have run. ONE COUNT (`watchUpdatingSessions`). What `contentStale…`
+   * counted of the app's own sessions is now this: the mirror replaces their copies (their claims resolve as the new copy
+   * verifies, and they are left out of that list); the coach's sessions keep their own line there.
+   */
+  watchUpdatingCount: number;
   lastCorosReadAt: string | null;
   writesEnabled: boolean;
   registered: boolean;
@@ -150,6 +159,7 @@ export async function computeSyncStatus(
     failedCoachWrites,
     studioPlanRows,
     corosConnRows,
+    watchUpdating,
   ] =
     await Promise.all([
       cloudPresence(db, userId),
@@ -218,6 +228,7 @@ export async function computeSyncStatus(
         .from(providerConnections)
         .where(and(eq(providerConnections.userId, userId), eq(providerConnections.provider, "coros")))
         .limit(1),
+      watchUpdatingSessions(db, userId),
     ]);
 
   const openIntentTargets = new Set(openIntents.map((i) => i.targetId));
@@ -272,10 +283,24 @@ export async function computeSyncStatus(
     issueCount,
     contentStaleCount: contentStaleSessions.length,
     contentStaleSessions,
+    watchUpdatingCount: watchUpdating,
     lastCorosReadAt: corosConn?.lastSyncAt ?? null,
     writesEnabled: prefs.corosWritesEnabled,
     registered: presence.registered,
   };
+}
+
+/**
+ * How many sessions have a watch job on its way (`watchJobCondition`, `WATCH_JOB_UNDERWAY`): a program push — a
+ * provisional copy's too — or a delete of a copy (`unpush:<buildId>`, `<id>-unpush-copy`). A replacement is two jobs of
+ * one session: counted once. ONE COUNT.
+ */
+export async function watchUpdatingSessions(db: Db, userId: string): Promise<number> {
+  const [row] = await db
+    .select({ n: sql<number>`count(distinct ${corosWriteJobs.workoutId})` })
+    .from(corosWriteJobs)
+    .where(and(eq(corosWriteJobs.userId, userId), inArray(corosWriteJobs.status, [...WATCH_JOB_UNDERWAY]), watchJobCondition()));
+  return Number(row?.n ?? 0);
 }
 
 /**

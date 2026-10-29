@@ -9,6 +9,8 @@ import {
   Spinner,
   useRevealInView,
 } from "../components.js";
+import { isAppSession } from "../components/today-program.js";
+import { watchFollowsChange } from "../components/watch-catch-up.js";
 
 /**
  * The rescheduling transaction: at most three recommendations with one short
@@ -56,8 +58,14 @@ export function MoveSheet({
   const move = useMutation({
     mutationFn: ({ date, time }: { date: string; time: string }) => api.move(workout.id, date, time),
     onSuccess: (res, vars) => {
-      const stateText =
-        res.corosSyncState === "synced"
+      // An app-built session the watch mirrors (the watch mirrors the plan §3.4): its copy follows by itself — never "not
+      // auto-updated" — the old copy's delete on its way when the move queued one. With COROS writes off, as before.
+      const mirrored = isAppSession(workout) && syncStatus.data?.state !== "not_synced";
+      const stateText = mirrored
+        ? res.watchDrain
+          ? "Updating your watch"
+          : "Your watch follows the plan"
+        : res.corosSyncState === "synced"
           ? "COROS synced"
           : res.corosSyncState === "syncing"
             ? "Syncing to COROS"
@@ -69,6 +77,9 @@ export function MoveSheet({
       setResult(`Moved to ${formatDayShort(vars.date)} · ${stateText}`);
       void qc.invalidateQueries({ queryKey: ["today"] });
       void qc.invalidateQueries({ queryKey: ["plan"] });
+      // Moved onto today: its copy goes on as the day's build once its check is answered (M1) — asked for, then the chain
+      // (another day's is the drain's, which the move's own answer started).
+      if (isAppSession(workout)) void watchFollowsChange([workout.id], () => qc.fetchQuery({ queryKey: ["today"], queryFn: api.today, staleTime: 0 }));
     },
   });
 

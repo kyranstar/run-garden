@@ -12,6 +12,8 @@
  *    sheet shows it, as Start's does.
  *  - "Too long for the watch" takes Send's place at the foot (owner call 8); the steps stay listed.
  *  - Send takes the focus once the steps are in, so Enter sends; Escape closes, as every sheet does.
+ *  - READ-ONLY (`readOnly`, the watch mirrors the plan §3.9, M6): "What's on your watch" — the copy the watch holds, the
+ *    same steps, no Send. The session sheet opens it from "On your watch"; the app keeps the copy in step by itself.
  */
 import { useEffect, useRef, useState } from "react";
 import { useMutation, useQuery } from "@tanstack/react-query";
@@ -40,6 +42,7 @@ export function watchTargetText(step: Pick<WatchPreviewStepDto, "target" | "gram
 export function WatchPreviewSheet({
   workoutId,
   minutes,
+  readOnly = false,
   onClose,
   onSent,
   onStale,
@@ -48,11 +51,13 @@ export function WatchPreviewSheet({
   workoutId: string;
   /** The session's length, beside the step count. */
   minutes: number | null;
+  /** "What's on your watch": the copy's steps, and no Send (M6). */
+  readOnly?: boolean;
   onClose: () => void;
   /** Send was taken: the session as it now stands (its push queued). */
-  onSent: (session: SessionDto) => void;
+  onSent?: (session: SessionDto) => void;
   /** 409 `stale`: the day's inputs moved on — the fresh session, to show instead. */
-  onStale: (session: SessionDto) => void;
+  onStale?: (session: SessionDto) => void;
   /** Any other refusal (the slot changed under the sheet): the sheet reads the session again. */
   onRefused?: () => void;
 }) {
@@ -72,11 +77,11 @@ export function WatchPreviewSheet({
   const send = useMutation({
     mutationFn: (p: WatchPreviewDto) => api.sendToWatch(workoutId, p.buildId, p.digest),
     onMutate: () => setFailed(false),
-    onSuccess: (next) => onSent(next),
+    onSuccess: (next) => onSent?.(next),
     onError: (err) => {
       const body = err instanceof ApiError ? (err.body as { error?: string; preview?: WatchPreviewDto; session?: SessionDto } | null) : null;
       if (body?.error === "stale_preview" && body.preview) setSwapped(body.preview);
-      else if (body?.error === "stale" && body.session) onStale(body.session);
+      else if (body?.error === "stale" && body.session) onStale?.(body.session);
       else if (err instanceof ApiError && err.status === 409) onRefused?.();
       else setFailed(true);
     },
@@ -84,7 +89,7 @@ export function WatchPreviewSheet({
 
   // Send takes the focus once the steps are in: Enter sends (the dialog itself held it while loading).
   const sendRef = useRef<HTMLButtonElement>(null);
-  const canSend = !!preview && preview.refusal === null;
+  const canSend = !readOnly && !!preview && preview.refusal === null;
   useEffect(() => {
     if (canSend) sendRef.current?.focus();
   }, [canSend, preview?.digest]);
@@ -144,7 +149,7 @@ export function WatchPreviewSheet({
     );
 
   return (
-    <Sheet open onClose={onClose} title={preview?.stamp ?? "Send to watch"} footer={foot}>
+    <Sheet open onClose={onClose} title={preview?.stamp ?? (readOnly ? "What's on your watch" : "Send to watch")} footer={foot}>
       <div className="stack watch-preview">{body}</div>
     </Sheet>
   );

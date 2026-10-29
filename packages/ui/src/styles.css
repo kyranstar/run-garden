@@ -2593,6 +2593,16 @@ button.session-chip {
 .watch-state-label--muted {
   color: var(--ink-soft);
 }
+/* "What's on your watch" (the watch mirrors the plan §3.9, M6): beside "On your watch", the row's action at its end. */
+.watch-state-link {
+  margin-right: auto;
+  min-height: var(--tap);
+}
+/* "Updating your watch…" says its lag (a delete can wait for the hourly) on a line of its own, quietly. */
+.watch-state-hint {
+  flex: 1 1 100%;
+  color: var(--ink-soft);
+}
 /* Couldn't send, Too long for the watch: a state to act on, never colour alone (the icon and the words). */
 .watch-state--warn {
   background: var(--warn-soft);

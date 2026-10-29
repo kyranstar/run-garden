@@ -63,6 +63,7 @@ import { conditionWord, DEFAULT_GARDEN_CONFIG, type GardenSnapshot } from "@rg/g
 import { proposeReschedules, summarizeStageRows } from "@rg/scheduling";
 import type { AppContext } from "../auth/middleware.js";
 import { runWireOf, watchPushEnabled, type Env } from "../env.js";
+import { mirroredKind } from "../services/mirror-rules.js";
 import { requireUser } from "../auth/middleware.js";
 import { googleCalendarClient } from "../services/google-calendar.js";
 import { waitUntilSafe } from "../services/wait-until.js";
@@ -323,6 +324,11 @@ async function loadWorkoutViews(
   todayLocal?: string,
   /** The run wire in force (§8 phase 2): what the watch will show of a designed run. v1 when absent. */
   runWire: RunWire = "v1",
+  /**
+   * The watch push switch is on (`WATCH_PUSH_ENABLED`): an app-built session the mirror holds (`mirroredKind`) is then
+   * said in the mirror's words — from the write on its way, never `coros_sync_state` (the watch mirrors the plan §3.9).
+   */
+  watchMirror = false,
 ): Promise<Map<string, WorkoutView>> {
   const map = new Map<string, WorkoutView>();
   if (workouts.length === 0) return map;
@@ -466,6 +472,9 @@ async function loadWorkoutViews(
       // and nothing is going to be sent for it. Same rule the content
       // convergence backfill applies when it picks rows.
       settled: w.completionState !== "scheduled" || w.effectiveDate < today,
+      // The app keeps it on the watch by itself (the watch mirrors the plan §3.9): its words follow the job on its way,
+      // and the move lane's retry is never offered for it.
+      ...(watchMirror && mirroredKind(w) ? { mirror: w.watchOff ? ("kept_off" as const) : ("on" as const) } : {}),
     });
     const appPushed =
       prefs.corosWritesEnabled && pushedIds.has(w.id) && watchAddressOf(w) !== null;
@@ -474,7 +483,8 @@ async function loadWorkoutViews(
       ...(coverage ? { watchCoverage: coverage } : {}),
       ...(action ? { syncAction: action } : {}),
       ...(appPushed ? { appPushed: true } : {}),
-      ...(claims.left.has(w.id) ? { watchVersionLeft: true } : {}),
+      // Leave is gone for an app-built session (the mirror replaces its copy, §3.6, A8): a pre-mirror mark says nothing.
+      ...(claims.left.has(w.id) && !appAuthoredRow(w) ? { watchVersionLeft: true } : {}),
       ...(heldCopy ? { watchHoldsOldCopy: true } : {}),
     });
   }
@@ -910,7 +920,7 @@ planRoutes.get("/today", async (c) => {
   // Presence was already fetched above — threaded through, not re-queried.
   const syncViewSource = new Map<string, PlannedRow>();
   for (const w of [...upcoming, ...unresolved, ...attention, ...todaySessionRows.map((t) => t.row)]) syncViewSource.set(w.id, w);
-  const syncViews = await loadWorkoutViews(db, userId, [...syncViewSource.values()], prefs, presence, today, runWireOf(c.env));
+  const syncViews = await loadWorkoutViews(db, userId, [...syncViewSource.values()], prefs, presence, today, runWireOf(c.env), watchPushEnabled(c.env));
 
   return c.json({
     today,
@@ -997,7 +1007,7 @@ planRoutes.get("/workouts", async (c) => {
   const primary = [...plans].sort(
     (a, b) => (countByPlanId.get(b.id) ?? 0) - (countByPlanId.get(a.id) ?? 0),
   )[0];
-  const syncViews = await loadWorkoutViews(db, c.get("userId"), rows, prefs, undefined, today, runWireOf(c.env));
+  const syncViews = await loadWorkoutViews(db, c.get("userId"), rows, prefs, undefined, today, runWireOf(c.env), watchPushEnabled(c.env));
   return c.json({
     today,
     plan: primary ? { name: primary.name, startDate: primary.startDate, endDate: primary.endDate } : null,
@@ -1223,7 +1233,7 @@ planRoutes.get("/week", async (c) => {
   // sync views (need `rows`; presence threaded, not re-queried) and this
   // week's coach shape (needs `covering`).
   const [syncViews, coveringWeekShapeRows] = await Promise.all([
-    loadWorkoutViews(db, userId, rows, prefs, presence, today, runWireOf(c.env)),
+    loadWorkoutViews(db, userId, rows, prefs, presence, today, runWireOf(c.env), watchPushEnabled(c.env)),
     covering
       ? db
           .select()
@@ -1364,6 +1374,7 @@ planRoutes.get("/workouts/:id", async (c) => {
     presence,
     todayInZone(prefs.timezone),
     runWireOf(c.env),
+    watchPushEnabled(c.env),
   );
   const catalog = await exerciseNameMap(db);
   const stages = (

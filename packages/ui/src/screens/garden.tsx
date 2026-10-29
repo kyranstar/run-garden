@@ -667,6 +667,16 @@ export function gardenAttention(d: { needsAttention: WorkoutDto[]; unresolved: W
 }
 
 /** The one sentence. The link appends "↓"; nothing else restates the count. */
+/**
+ * A session on Today's page updating on the watch (the watch mirrors the plan §3.9): its row's `syncAction` says the
+ * mirror's `watch_updating` — a push or a delete of its copy on its way. What Today drains for on open (Task 8's trigger,
+ * narrowed: never for a coach job or any other COROS write, which a watch drain would not run).
+ */
+export function watchUpdatingOnToday(t: Pick<TodayResponse, "todaySessions" | "upcoming"> & { nextWorkout?: WorkoutDto | null }): boolean {
+  const rows = [...(t.todaySessions ?? []).map((s) => s.workout), ...(t.upcoming ?? []), ...(t.nextWorkout ? [t.nextWorkout] : [])];
+  return rows.some((w) => w.syncAction?.code === "watch_updating");
+}
+
 export function attentionPhrase(count: number): string {
   return count === 1 ? "1 workout needs attention" : `${count} workouts need attention`;
 }
@@ -1067,10 +1077,12 @@ export function GardenScreen() {
   // …each read ahead (audit 3-B UI-9): the service worker keeps the answer, so "Log your session" opens offline too —
   // Today itself comes from its cache — and online the sheet opens on it. Nothing is read while nothing is offered.
   const qc = useQueryClient();
-  // Opened with watch writes waiting (the watch mirrors the plan §3.7): the app drains them now, one a request, rather
-  // than leave them to the hourly's one an hour; then Today reads again what they changed. Decided once, on the first
+  // Opened while a session on the page is updating on the watch (the watch mirrors the plan §3.7, §3.9: its row's
+  // `watch_updating` — a push or a delete of its copy on its way): the app drains them now, one a request, rather than
+  // leave them to the hourly's one an hour; then Today reads again what they changed. Not for any other COROS write (a
+  // coach job is the coach drain's), so Today never asks a drain that would run nothing. Decided once, on the first
   // answer (`useWatchCatchUp`).
-  useWatchCatchUp(today.data === undefined ? undefined : (today.data.sync?.pendingCorosJobs ?? 0) > 0, () => {
+  useWatchCatchUp(today.data === undefined ? undefined : watchUpdatingOnToday(today.data), () => {
     for (const k of ["today", "plan", "plan-week"]) void qc.invalidateQueries({ queryKey: [k] });
   });
   const offered = watchReviews.map((o) => o.workoutId).join(" ");

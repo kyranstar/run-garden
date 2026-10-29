@@ -86,7 +86,16 @@ export type SyncActionCode =
   | "watch_copy_differs"
   /** The athlete chose the watch's version of this session; Run Garden takes it
    * at the next COROS read (`taking_watch_copy`). Nothing for anyone to do. */
-  | "taking_watch_copy";
+  | "taking_watch_copy"
+  // ── a session the app keeps on the watch by itself (the watch mirrors the plan §3.9) ──
+  /** A push of its copy, or a delete of an old one, is on its way — said as the session sheet says it: "Updating your
+   * watch…". */
+  | "watch_updating"
+  /** Its push failed; the app queues it again on its own backoff (and the sheet's Retry now): "Couldn't reach COROS —
+   * retrying". */
+  | "watch_retrying"
+  /** The athlete keeps it off the watch (Keep off my watch): "Kept off your watch". */
+  | "kept_off_watch";
 
 export interface SyncAction {
   agent: SyncActor;
@@ -144,6 +153,13 @@ export interface SyncSituation {
    * the convergence backfill applies.
    */
   settled: boolean;
+  /**
+   * The app keeps this session on the watch by itself (the watch mirrors the plan §3.9: an app-built session the mirror
+   * holds): `on`, or `kept_off` by the athlete. Its words are the session sheet's — from the write on its way, never a
+   * date the stored state remembers — and no retry control is ever offered: the move lane's retry is not how its copy
+   * goes on (the mirror's drain and sweep are, and the sheet's own Retry). Absent for every other row.
+   */
+  mirror?: "on" | "kept_off";
 }
 
 /**
@@ -205,6 +221,7 @@ function coverageAction(coverage: WatchCoverageView): SyncAction | null {
  */
 export function syncAction(s: SyncSituation): SyncAction | null {
   if (s.settled) return null;
+  if (s.mirror) return mirrorAction(s);
 
   // The athlete chose the watch's version: the next COROS read brings it in. A receipt, never a warning.
   if (s.view === "taking_watch_copy") return { agent: "app", code: "taking_watch_copy" };
@@ -274,4 +291,22 @@ export function syncAction(s: SyncSituation): SyncAction | null {
   // Everything crosses, the date agrees, nothing is pending — but coverage is
   // `partial`, which is the pace-target case and the app's own to close.
   return s.coverage ? coverageAction(s.coverage) : null;
+}
+
+/**
+ * A SESSION THE APP KEEPS ON THE WATCH (the watch mirrors the plan §3.9), in the session sheet's words: kept off; a
+ * write on its way (waiting on the connection when there is none); its copy there (nothing to say); what keeps any write
+ * from happening (the connection, the setting); its push failed (the app tries again on its own); else nothing — its
+ * copy is owed, goes on on its day, or cannot be held, and its sheet says which.
+ */
+function mirrorAction(s: SyncSituation): SyncAction | null {
+  if (s.mirror === "kept_off") return { agent: "nobody", code: "kept_off_watch" };
+  if (s.write === "sending" || s.write === "unpushing" || s.view === "syncing" || s.view === "waiting_for_device") {
+    return s.connected ? { agent: "app", code: "watch_updating" } : { agent: "athlete", code: "connect_coros", control: "settings" };
+  }
+  if (s.view === "synced") return null;
+  if (!s.connected) return { agent: "athlete", code: "connect_coros", control: "settings" };
+  if (!s.writesEnabled) return { agent: "athlete", code: "enable_coros_writes", control: "settings" };
+  if (s.write === "failed" || s.view === "sync_issue") return { agent: "app", code: "watch_retrying" };
+  return null;
 }

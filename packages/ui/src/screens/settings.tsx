@@ -1222,20 +1222,24 @@ export function CorosConnectSection({ prefs }: { prefs?: UserPreferences } = {})
 }
 
 
-/** COROS's one switch: a move made here goes back to the watch's calendar too. A real switch; a tap saves it. */
+/**
+ * COROS's one switch — the watch mirrors the plan (§3.6): on, the app keeps the watch in step with the plan by itself
+ * (sessions go on as the plan changes; a move, a skip, a change follows), and COROS's own sessions stay the athlete's.
+ * A real switch; a tap saves it.
+ */
 function CorosWritesRow({ prefs }: { prefs: UserPreferences }) {
   const writes = useSettingSwitch("corosWritesEnabled", prefs, ["plan", "today"]);
   return (
     <div className="setting-row">
       <div>
-        <div>Write date changes back to COROS</div>
-        <small>A workout moved here moves on your watch too.</small>
+        <div>Keep my watch in sync with the plan</div>
+        <small>{"Sessions go to your watch as the plan changes; COROS's own sessions stay yours."}</small>
       </div>
       <button
         type="button"
         role="switch"
         aria-checked={writes.on}
-        aria-label="Write date changes back to COROS"
+        aria-label="Keep my watch in sync with the plan"
         className="program-switch"
         disabled={writes.busy}
         onClick={writes.flip}

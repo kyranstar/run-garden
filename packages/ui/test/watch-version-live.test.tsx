@@ -172,6 +172,23 @@ describe("the account line", () => {
   });
 });
 
+describe("the plan page's quiet line while the watch catches up (the watch mirrors the plan §3.9)", () => {
+  it("speaks while sessions are updating on the watch, and is quiet again once they have run", async () => {
+    const quiet: SyncStatusDto = { ...STATUS, contentStaleCount: 0, contentStaleSessions: [] };
+    stubFetch({ "/api/sync/status": () => json({ ...quiet, watchUpdatingCount: 2 }), "/api/sync/notes": () => json({ notes: [] }) });
+    mount(createElement(SyncPanel, { quietWhenHealthy: true }));
+    await settle();
+    expect(host!.textContent).toContain("2 sessions updating on your watch");
+    act(() => root?.unmount());
+    host?.remove();
+
+    stubFetch({ "/api/sync/status": () => json({ ...quiet, watchUpdatingCount: 0 }), "/api/sync/notes": () => json({ notes: [] }) });
+    mount(createElement(SyncPanel, { quietWhenHealthy: true }));
+    await settle();
+    expect(host!.textContent).toBe("");
+  });
+});
+
 describe("the session's sheet", () => {
   const sheetWithLine = (w = run()) =>
     createElement(
@@ -319,61 +336,33 @@ describe("the session's sheet", () => {
     expect(host!.querySelector(".watch-version")).toBeNull();
   });
 
-  it("an app-built session's sheet says it and offers to leave the watch as it is — no keep it can't make true, no read of its own", async () => {
-    const calls = stubFetch({
-      "/api/sync/notes": () => json({ notes: [] }),
-      "/api/plan/workouts/slot-1/watch-version/leave": () => json({ ok: true }),
-    });
-    const slot = run({ id: "slot-1", title: "Strength A", category: "strength", sport: "strength", origin: "program", contentState: "outline", programId: "p1" });
-    mount(createElement(SessionSheet, { w: slot, today: TODAY, onClose: () => undefined }));
-    await act(async () => undefined);
-    expect(host!.querySelector(".watch-version-says")!.textContent).toBe(
-      "Your watch has an earlier version of this session. Run Garden can't replace the copy already on your watch.",
-    );
-    expect(buttons()).toContain("Leave the watch as it is");
-    expect(buttons()).not.toContain("Keep the watch's version");
-    expect(buttons()).not.toContain("Send this version to the watch");
-    expect(calls.filter((c) => c.path.startsWith("/api/plan/workouts/"))).toEqual([]);
-    await act(async () => button("Leave the watch as it is").click());
-    await settle(5);
-    expect(calls).toContainEqual({ method: "POST", path: "/api/plan/workouts/slot-1/watch-version/leave" });
-    expect(host!.querySelector(".watch-version-done")!.textContent).toBe("Left as it is. It isn't counted any more.");
-  });
-
-  it("a sheet older than the session, refused leaving it as it is, says why in words", async () => {
-    stubFetch({
-      "/api/sync/notes": () => json({ notes: [] }),
-      "/api/plan/workouts/slot-4/watch-version/leave": () => json({ error: "not_app_built" }, 409),
-    });
-    const slot = run({ id: "slot-4", title: "Strength D", category: "strength", sport: "strength", origin: "program", contentState: "outline", programId: "p1" });
-    mount(createElement(SessionSheet, { w: slot, today: TODAY, onClose: () => undefined }));
-    await act(async () => undefined);
-    await act(async () => button("Leave the watch as it is").click());
-    await settle(5);
-    expect(host!.querySelector('.watch-version-error[role="alert"]')!.textContent).toBe(
-      "This session can't be left as it is. Keep the watch's version instead.",
-    );
-  });
-
-  it("an app-built session left as it is still says so, quietly, with nothing to press", async () => {
-    stubFetch({ "/api/sync/notes": () => json({ notes: [] }) });
-    const slot = run({ id: "slot-3", title: "Strength C", category: "strength", sport: "strength", origin: "program", contentState: "outline", programId: "p1", watchVersionLeft: true });
-    mount(createElement(SessionSheet, { w: slot, today: TODAY, onClose: () => undefined }));
-    await act(async () => undefined);
-    expect(host!.querySelector(".watch-version-says")!.textContent).toBe("Your watch has an earlier version of this session. You've left it as it is.");
-    expect(host!.querySelector(".watch-version-actions")).toBeNull();
-  });
-
-  it("an adopted session whose old copy the watch holds says its own Send replaces it — no can't-replace, no Leave", async () => {
+  it("an app-built session's sheet never says an earlier version on the watch — no Leave, no Send, no Keep: the app replaces its copy (the watch mirrors the plan §3.6)", async () => {
     const calls = stubFetch({ "/api/sync/notes": () => json({ notes: [] }) });
-    const adopted = run({ id: "cw-9-0", title: "Legs, revised", category: "strength", sport: "strength", origin: "studio", contentState: "outline", programId: null, hasDoc: true, watchHoldsOldCopy: true });
-    mount(createElement(SessionSheet, { w: adopted, today: TODAY, onClose: () => undefined }));
-    await act(async () => undefined);
-    expect(host!.querySelector(".watch-version-says")!.textContent).toBe("Your watch has an earlier version of this session. Send it to your watch to replace it.");
-    expect(host!.textContent).not.toContain("can't replace");
-    expect(buttons()).not.toContain("Leave the watch as it is");
+    // Old marks and flags a pre-mirror server may still carry: a LEFT mark, an adopted row's held copy.
+    for (const over of [{}, { watchVersionLeft: true as const }, { origin: "studio", hasDoc: true, watchHoldsOldCopy: true as const }]) {
+      const slot = run({ id: "slot-1", title: "Strength A", category: "strength", sport: "strength", origin: "program", contentState: "outline", programId: "p1", ...over });
+      mount(createElement(SessionSheet, { w: slot, today: TODAY, onClose: () => undefined }));
+      await act(async () => undefined);
+      expect(host!.querySelector(".watch-version")).toBeNull();
+      expect(host!.textContent).not.toContain("earlier version");
+      expect(buttons()).not.toContain("Leave the watch as it is");
+      expect(buttons()).not.toContain("Keep the watch's version");
+      expect(buttons()).not.toContain("Send this version to the watch");
+      expect(calls.filter((c) => c.path.includes("/watch-version"))).toEqual([]);
+      act(() => root?.unmount());
+      host?.remove();
+    }
+  });
+
+  it("a sheet whose read answers `mirrored` (an app-built session) says it is replaced, and offers nothing", async () => {
+    stubFetch(detailAnswers({ send: false, why: "mirrored" }));
+    mount(createElement(RunWorkoutDetail, { w: run(), today: TODAY, corosWritesEnabled: true, onClose: () => undefined }));
+    await settle();
+    expect(host!.querySelector(".watch-version-says")!.textContent).toBe(
+      "Your watch has an earlier version of this session. Run Garden replaces it on your watch by itself.",
+    );
+    expect(buttons()).not.toContain("Keep the watch's version");
     expect(host!.querySelector(".watch-version-actions")).toBeNull();
-    expect(calls.filter((c) => c.path.includes("/watch-version/"))).toEqual([]);
   });
 
   it("an app-built session the watch holds as it is says nothing of it", async () => {

@@ -14,14 +14,17 @@
  *  - Start (and Continue) belong to the player, which arrives in 2b: hidden behind `features.player` until then.
  *  - "Don't show again" on a swap writes the move's prefs (`PUT /api/library/:id/prefs`, 2c): left out until then.
  *
- * THE WATCH (Phase 3 Task 8; approved mocks §1–2, owner call 7: the state sits in the pinned foot). `session.watch` is
- * null while the switch is off, and then nothing about the watch renders. `ready` → Send to watch beside Start, which
- * opens the preview (watch-preview-sheet.tsx); `sending` → "Sending…"; `on_watch` → "On your watch" with Take off
- * watch, which asks first; `failed` → "Couldn't send" with Retry, which previews first. A session too long for the
- * watch still offers Send to watch: its preview says so where Send would be (owner call 8). A sent session's build is
- * the watch's — read-only — but Start, Move and Skip stay (Move takes it off the watch). Send and Take off only queue
- * (ruling 3-R11): right after either, the sheet asks for the drain (a request of its own that runs the job) and then
- * reads the session, and reads it again on a backoff while it is "Sending…" (`WATCH_POLL_S`), for about five minutes.
+ * THE WATCH IS A STATUS, NOT BUTTONS (the watch mirrors the plan §3.9; owner call 7: the state sits in the pinned foot).
+ * The app keeps the watch in step by itself, so the foot says where it stands — "On your watch" (with "What's on your
+ * watch", the read-only preview of the copy), "Updating your watch…", "Sending to your watch…", "Couldn't reach COROS —
+ * retrying" (with Retry), "Not on your watch: <why>", "Kept off your watch" (with Put on my watch), "Closed by today's
+ * check" — and offers "Keep off my watch" on a session on its way to the watch or on it, which asks first. No Send, no
+ * Keep or Leave. `session.watch` is null while the switch is off, and then nothing about the watch renders.
+ *
+ * SENT IS NOT STARTED (`lockedBy`): a build locked only for the watch stays changeable — the re-check, the choices, ⇄,
+ * Move and Skip — and the day's next build replaces the copy; only a started or done session is read-only. Every watch
+ * write only queues (ruling 3-R11): right after it, the sheet runs the drain chain (one job a request) and reads the
+ * session, and reads it again on a backoff while it is "Sending…" (`WATCH_POLL_S`), for about five minutes.
  */
 import { useEffect, useRef, useState, type ReactNode } from "react";
 import { Link, useLocation, useNavigate } from "react-router-dom";
@@ -38,8 +41,7 @@ import {
   type WorkoutDto,
 } from "@rg/api-client";
 import { docOriginRow, doseText, newId, revisability, type DoseStep, type DoseTarget } from "@rg/domain";
-import { APP_BUILT_CHOICE, WatchVersion } from "./watch-version.js";
-import { useWatchCatchUp } from "./watch-catch-up.js";
+import { useWatchCatchUp, watchFollows } from "./watch-catch-up.js";
 import { EXERCISES, isProfileId, label as vocab, PROFILES } from "@rg/exercise-library";
 import { effortAdvice } from "@rg/workout";
 import { Banner, CompletionPill, ConfirmDialog, EmptyState, formatDayLong, formatTime, Sheet, Spinner } from "../components.js";
@@ -186,8 +188,52 @@ function useSendingPoll(sending: boolean, read: () => void, drain: () => Promise
     };
   }, [sending]);
 }
-/** The watch states of a SENT build (its push queued, running, failed or verified). */
-const SENT_STATES: ReadonlyArray<string> = ["sending", "on_watch", "failed", "off_watch"];
+/** The watch states of a SENT build (its push queued, running, failed or verified) — read only from an older server. */
+const SENT_STATES: ReadonlyArray<string> = ["sending", "on_watch", "failed", "off_watch", "updating"];
+/** The watch catching up with the session: a write on its way, or a copy owed — the drain chain runs it now. */
+const CATCHING_UP: ReadonlyArray<string> = ["updating", "sending"];
+
+/** Why a session is not on the watch (`watch.reason`), after "Not on your watch: ". */
+const NOT_ON_WATCH: Readonly<Record<string, string>> = {
+  not_today: "it goes on nearer the day",
+  not_built: "it goes on once it's built",
+  precheck: "it goes on after today's check",
+  writes_off: "COROS updates are off in Settings",
+  not_connected: "COROS isn't connected",
+  too_long: "too long for the watch",
+  empty: "nothing in it the watch can run",
+  taking_off: "its old copy is coming off",
+  gated: "closed by today's check",
+  done: "it's done",
+  already_sent: "it's on your watch already",
+};
+
+/**
+ * THE WATCH LINE'S WORDS (the watch mirrors the plan §3.9), one per state, and its tone: a status the athlete reads,
+ * never a button to press.
+ */
+export function watchLine(watch: { state: string; reason?: string }): { said: string; tone: "ok" | "muted" | "warn" | "plain"; busy: boolean } {
+  switch (watch.state) {
+    case "on_watch":
+      return { said: "On your watch", tone: "ok", busy: false };
+    case "updating":
+      return { said: "Updating your watch…", tone: "muted", busy: true };
+    case "sending":
+      return { said: "Sending to your watch…", tone: "muted", busy: true };
+    case "failed":
+      return { said: "Couldn't reach COROS — retrying", tone: "warn", busy: false };
+    case "kept_off":
+      return { said: "Kept off your watch", tone: "plain", busy: false };
+    case "closed_by_check":
+      return { said: "Closed by today's check", tone: "warn", busy: false };
+    case "off_watch":
+      return { said: "Not on your watch: removed in the COROS app", tone: "plain", busy: false };
+    default: {
+      const why = watch.reason ? NOT_ON_WATCH[watch.reason] : undefined;
+      return { said: why ? `Not on your watch: ${why}` : "Not on your watch", tone: "plain", busy: false };
+    }
+  }
+}
 
 /**
  * The day's go-Recover line for a document built for today above Recover (CUJ re-walk §2.6): the builder's own words
@@ -360,6 +406,10 @@ export function SessionSheet({ w, today, onClose }: { w: WorkoutDto; today: stri
     onSuccess: (next) => {
       const before = qc.getQueryData<SessionDto>(key);
       qc.setQueryData(key, next);
+      // The day's build went to the watch (the watch mirrors the plan §3.3: handed over, replaced or pushed): its job runs
+      // now, one a request, rather than wait for the "Sending…" poll's one drain.
+      const catching = CATCHING_UP.includes(next.watch?.state ?? "");
+      if (catching && next.watch?.state !== before?.watch?.state) drainThenRead();
       // A new build renames and resizes the row; so does a stored build adopted by an outline row (the row's state
       // changes, 2a UI re-review U5). The stored build returned unchanged changed nothing.
       if (
@@ -434,17 +484,23 @@ export function SessionSheet({ w, today, onClose }: { w: WorkoutDto; today: stri
     onSuccess: () => {
       refreshPlan();
       void qc.invalidateQueries({ queryKey: key });
+      // Moved onto today: its copy goes on as the day's build once its check is answered (M1) — asked for, then the chain.
+      void watchFollows([w.id]).then(({ ran }) => {
+        if (ran > 0) drainThenRead();
+      });
     },
   });
-  // The watch (Phase 3). Send (in the preview) and Take off only QUEUE (ruling 3-R11): the drain runs the jobs, one a
-  // request (`drainThenRead`), then the session says how it went. A drain that fails is no error to show — the hourly
-  // lane runs the job, and the sheet keeps "Sending…" until it has (reading again on a backoff, `useSendingPoll`).
+  // The watch (the watch mirrors the plan §3.9). Keep off, Put on and Retry only QUEUE (ruling 3-R11): the drain runs the
+  // jobs, one a request (`drainThenRead`), then the session says how it went. A drain that fails is no error to show —
+  // the hourly lane runs the job, and the sheet keeps its status until it has (reading again on a backoff while
+  // "Sending…", `useSendingPoll`).
+  /** The read-only preview of the copy on the watch ("What's on your watch", M6). */
   const [previewing, setPreviewing] = useState(false);
-  const [confirmingTakeOff, setConfirmingTakeOff] = useState(false);
+  const [confirmingKeepOff, setConfirmingKeepOff] = useState(false);
   /**
-   * After Send or Take off, the control that opened the dialog is gone — replaced by the new state's row — so the
-   * dialog's own focus restore lands nowhere (on <body>, outside the modal; audit 3-B UI-4). Once the sheet shows the
-   * state the write answered, focus goes to that state's control (Take off watch, Retry, Send to watch), else the sheet.
+   * After a watch write, the control that was pressed is gone — replaced by the new state's row — so the dialog's own
+   * focus restore lands nowhere (on <body>, outside the modal; audit 3-B UI-4). Once the sheet shows the state the write
+   * answered, focus goes to that state's control (Put on my watch, Keep off my watch, Retry), else the sheet.
    */
   const refocusWatchOn = useRef<string | null>(null);
   const watchControl = useRef<HTMLButtonElement>(null);
@@ -454,34 +510,53 @@ export function SessionSheet({ w, today, onClose }: { w: WorkoutDto; today: stri
     refreshPlan();
     drainThenRead();
   };
-  const takeOff = useMutation({
-    mutationFn: () => api.takeOffWatch(w.id),
+  const keepOff = useMutation({
+    mutationFn: () => api.keepOffWatch(w.id),
     onSuccess: (next) => {
-      setConfirmingTakeOff(false);
+      setConfirmingKeepOff(false);
       afterWatchWrite(next);
     },
     // Offline, or refused: the confirm stays open and says so (audit 3-B UI-3) — never closed as if it went through.
     onError: () => void qc.invalidateQueries({ queryKey: key }),
   });
-  const askTakeOff = () => {
-    takeOff.reset();
-    setConfirmingTakeOff(true);
+  const askKeepOff = () => {
+    keepOff.reset();
+    setConfirmingKeepOff(true);
   };
+  const putOn = useMutation({
+    mutationFn: () => api.putOnWatch(w.id),
+    onSuccess: (next) => {
+      refocusWatchOn.current = next.watch?.state ?? "none";
+      qc.setQueryData(key, next);
+      refreshPlan();
+      // Today's session with its check answered goes on as the day's build (M1): its build is asked for, then the chain.
+      // Any other day's copy is the drain's (or the sweep's) to make.
+      void (w.effectiveDate === today ? watchFollows([w.id]) : api.drainWatchUntilIdle()).then(() => {
+        void qc.invalidateQueries({ queryKey: key });
+        refreshPlan();
+      });
+    },
+    onError: () => void qc.invalidateQueries({ queryKey: key }),
+  });
+  /** Retry (M6): the failed push queued again now — a provisional copy's as it was, a day build's as Send's Retry. */
+  const retry = useMutation({
+    mutationFn: () => api.retryWatch(w.id),
+    onSuccess: afterWatchWrite,
+    onError: () => void qc.invalidateQueries({ queryKey: key }),
+  });
   useSendingPoll(
     session.data?.watch?.state === "sending",
     () => void qc.invalidateQueries({ queryKey: key }),
     // The one more drain (a chain: one job a request, while any is left): what it ran shows on Today and Plan too.
     () => api.drainWatchUntilIdle().finally(refreshPlan),
   );
-  const takeOffButton = (
-    <button ref={watchControl} type="button" className="btn" disabled={takeOff.isPending} onClick={askTakeOff}>
-      Take off watch
-    </button>
-  );
 
   const s = session.data;
   const date = s?.date ?? w.effectiveDate;
-  const locked = !!s && (s.locked || s.contentState === "started" || s.contentState === "done");
+  // SENT IS NOT STARTED (the watch mirrors the plan §3.3): a build locked only for the watch (`lockedBy: "watch"`) keeps
+  // the session changeable — the day's next build replaces the copy — so only a started or done one is locked here. An
+  // older server says `locked` alone, which holds as it did.
+  const locked = !!s && (s.contentState === "started" || s.contentState === "done" || (s.locked && s.lockedBy !== "watch"));
   const past = date < today;
   const ahead = date > today;
   // Skipped is not today's to-do (ruling 2a-R15): nothing is asked or built until it is un-skipped.
@@ -611,20 +686,19 @@ export function SessionSheet({ w, today, onClose }: { w: WorkoutDto; today: stri
   const gatedToday = (s?.build?.fromDoc?.blocked.length ?? 0) > 0;
   // A started session keeps Continue while its save would be taken: its build's day and the day after (ruling 2b-R16).
   const canContinue = features.player && !skipped && s?.contentState === "started" && continuable(s.build?.date ?? date, today);
-  // SENT TO THE WATCH (Phase 3): Send locks the build and the slot stays built. The build is the watch's, so nothing
-  // rebuilds it — but the session is still today's to do: Start plays that very build, Move takes it off the watch,
-  // Skip leaves the watch alone. Sent is what the session's watch says, never the lock alone (audit 3-B UI-13): a
-  // locked build still built is also a Start whose two writes split, or one sent before the switch went off — and
-  // that sheet stays read-only, as it was before the watch.
+  // SENT TO THE WATCH, FROM AN OLDER SERVER (no `lockedBy`): the build locked and the slot built, the watch saying it
+  // was sent — Start, Move and Skip stay. A locked build still built is also a Start whose two writes split, or one sent
+  // before the switch went off — and that sheet stays read-only, as it was before the watch (audit 3-B UI-13).
   const watch = s?.watch ?? null;
   const sentHere = !!s && s.locked && s.contentState === "built" && !!watch && SENT_STATES.includes(watch.state);
   // Nothing about the watch on a done session (its copy is the session the athlete did, and stays). A skipped one offers
-  // Un-skip and nothing else (2a-R15) — unless its copy is still on the watch, which Skip leaves alone: then it says so,
-  // with Take off watch (audit 3-B UI-12).
+  // Un-skip and nothing else (2a-R15) — its copy coming off (or one still on the watch) is said, with nothing to press.
   const watchShown =
-    !!s && !!watch && s.contentState !== "done" && w.completionState !== "completed" && (!skipped || watch.state === "on_watch");
-  const offersSend =
-    watchShown && showBuild && (watch!.state === "ready" || (watch!.state === "unavailable" && watch!.reason === "too_long"));
+    !!s &&
+    !!watch &&
+    s.contentState !== "done" &&
+    w.completionState !== "completed" &&
+    (!skipped || watch.state === "on_watch" || CATCHING_UP.includes(watch.state));
   // The pinned foot holds the sheet's actions — and is left out when there are none (loading, or a started or done
   // session without the player), rather than drawn as an empty band (audit 2a-UI M6).
   const actions: React.ReactNode[] = [];
@@ -660,8 +734,7 @@ export function SessionSheet({ w, today, onClose }: { w: WorkoutDto; today: stri
           Start · {view!.minutes} min
         </button>
       );
-      // Beside Send to watch on a row of its own when the watch is offered; first among the actions otherwise.
-      if (!offersSend) actions.push(startButton);
+      actions.push(startButton);
     }
     if (canContinue) {
       actions.push(
@@ -703,68 +776,62 @@ export function SessionSheet({ w, today, onClose }: { w: WorkoutDto; today: stri
       );
     }
   }
-  // The watch's state, in the foot where Send to watch was tapped (owner call 7), each with its one action. "Sending…"
-  // offers Take off too (owner, 2026-10-09): a push that cannot run for a while (COROS unreachable) is stopped there,
-  // the queued push superseded — not only by Move.
+  // The watch's state, in the foot (owner call 7): a status, each with at most its one action — Keep off my watch on a
+  // session on its way to the watch or on it (asked first), Retry on a failed push, Put on my watch on one kept off —
+  // and "What's on your watch", the copy's read-only preview, beside "On your watch" (M6).
   //
-  // ONE STATUS REGION, KEPT (audit 3-B UI-10): from Send to watch through Sending… to On your watch or Couldn't send, the
-  // row and its `role="status"` label are the same nodes, so the outcome the athlete waits for is announced — a live
-  // region added with its words already in it often is not. While there is nothing to say (Send to watch offered) the
-  // row is there, empty and visually hidden. The action sits beside the label, outside the region.
-  const watchLive = watchShown && (offersSend || ["sending", "on_watch", "failed"].includes(watch!.state));
+  // ONE STATUS REGION, KEPT (audit 3-B UI-10): from one state to the next the row and its `role="status"` label are the
+  // same nodes, so the outcome the athlete waits for is announced — a live region added with its words already in it
+  // often is not. The actions sit beside the label, outside the region.
   let watchRow: React.ReactNode = null;
-  if (watchLive) {
+  if (watchShown) {
     const state = watch!.state;
-    const said =
-      state === "sending" ? (
-        <>
-          <span className="watch-spin" aria-hidden="true" />
-          Sending…
-        </>
-      ) : state === "on_watch" ? (
-        <>
-          <IconWatch size={16} />
-          On your watch
-        </>
-      ) : state === "failed" ? (
-        <>
-          <IconAlert size={16} />
-          Couldn't send
-        </>
-      ) : null;
-    const tone = state === "sending" ? " watch-state-label--muted" : state === "on_watch" ? " watch-state-label--ok" : "";
+    const line = watchLine(watch!);
+    const icon = line.busy ? (
+      <span className="watch-spin" aria-hidden="true" />
+    ) : state === "on_watch" ? (
+      <IconWatch size={16} />
+    ) : line.tone === "warn" ? (
+      <IconAlert size={16} />
+    ) : null;
+    const tone = line.tone === "muted" ? " watch-state-label--muted" : line.tone === "ok" ? " watch-state-label--ok" : "";
+    // Keep off is not offered on a skipped session (its copy comes off with the skip) — nor a done one (its copy stays).
+    const keepsOff = !skipped && (state === "on_watch" || CATCHING_UP.includes(state));
     watchRow = (
-      <div key="watch" className={!said ? "watch-state visually-hidden" : state === "failed" ? "watch-state watch-state--warn" : "watch-state"}>
+      <div key="watch" className={line.tone === "warn" ? "watch-state watch-state--warn" : "watch-state"}>
         <span role="status" className={`watch-state-label${tone}`}>
-          {said}
+          {icon}
+          {line.said}
         </span>
-        {state === "sending" || state === "on_watch" ? (
-          takeOffButton
-        ) : state === "failed" ? (
-          <button ref={watchControl} type="button" className="btn btn-small" onClick={() => setPreviewing(true)}>
-            Retry
+        {state === "on_watch" ? (
+          <button type="button" className="linklike watch-state-link" onClick={() => setPreviewing(true)}>
+            {"What's on your watch"}
           </button>
         ) : null}
+        {keepsOff ? (
+          <button ref={watchControl} type="button" className="btn btn-small" disabled={keepOff.isPending} onClick={askKeepOff}>
+            Keep off my watch
+          </button>
+        ) : state === "failed" && !skipped ? (
+          <button ref={watchControl} type="button" className="btn btn-small" disabled={retry.isPending} onClick={() => retry.mutate()}>
+            Retry
+          </button>
+        ) : state === "kept_off" ? (
+          <button ref={watchControl} type="button" className="btn btn-small" disabled={putOn.isPending} onClick={() => putOn.mutate()}>
+            Put on my watch
+          </button>
+        ) : null}
+        {/* Deletes can land after the push and wait for the hourly: the line stays until every job of it has run. */}
+        {state === "updating" ? <small className="watch-state-hint">An old copy can take up to an hour to come off.</small> : null}
       </div>
     );
   }
   const footRows: React.ReactNode[] = [];
   if (watchRow) footRows.push(watchRow);
-  if (offersSend) {
-    footRows.push(
-      <div key="send" className="btn-row btn-row--split">
-        {startButton}
-        <button ref={watchControl} type="button" className="btn" onClick={() => setPreviewing(true)}>
-          <IconWatch size={16} />
-          Send to watch
-        </button>
-      </div>,
-    );
-  }
   if (actions.length > 0) footRows.push(<div key="actions" className="btn-row">{actions}</div>);
   // One column, top to bottom as drawn: the sheet's foot stacks its children in reverse (styles.css `.sheet-foot`).
   // Without the watch in it, the action row sits straight in the foot, as it did before the watch (audit 3-B UI-2).
-  const footer = watchLive ? <div className="session-foot">{footRows}</div> : (footRows[0] ?? null);
+  const footer = watchRow ? <div className="session-foot">{footRows}</div> : (footRows[0] ?? null);
 
   let body: React.ReactNode;
   if (session.isLoading) body = <Spinner label="Loading the session" />;
@@ -880,18 +947,6 @@ export function SessionSheet({ w, today, onClose }: { w: WorkoutDto; today: stri
         </p>
         {/* A modal sheet hides the nav, so it keeps its own small Ask, seeing the workout (the integrated review, I3). */}
         <AskCoach focus={workoutFocus(w)} wrap="session-ask-row" />
-        {/* The watch holds an earlier version of this session (the owner, 2026-10-19): said, and left as it is if the
-            athlete wants. Nothing from here replaces an app-built session's earlier copy, and no read takes its content
-            from the wire, so there is neither a send nor a keep — except an adopted session's old copy, which its own
-            Send replaces: said so, with nothing to leave (workout-editability §4). */}
-        <WatchVersion
-          workoutId={w.id}
-          show={w.corosSyncView === "content_stale"}
-          choice={APP_BUILT_CHOICE}
-          appBuilt
-          left={!!w.watchVersionLeft}
-          replaceable={!!w.watchHoldsOldCopy}
-        />
         {notKept ? (
           <Banner kind="warn">
             This session isn't being kept on this device. It plays while you're online, and a reload starts it again.
@@ -959,36 +1014,18 @@ export function SessionSheet({ w, today, onClose }: { w: WorkoutDto; today: stri
         This session was saved on another device. What this device kept of it won't be saved.
       </ConfirmDialog>
       <ConfirmDialog
-        open={confirmingTakeOff}
-        onClose={() => setConfirmingTakeOff(false)}
-        title="Take this session off your watch?"
-        confirmLabel="Take off watch"
-        busy={takeOff.isPending}
-        onConfirm={() => takeOff.mutate()}
-        error={takeOff.isError ? "Couldn't take it off — try again." : null}
+        open={confirmingKeepOff}
+        onClose={() => setConfirmingKeepOff(false)}
+        title="Keep this session off your watch?"
+        confirmLabel="Keep off my watch"
+        busy={keepOff.isPending}
+        onConfirm={() => keepOff.mutate()}
+        error={keepOff.isError ? "Couldn't take it off — try again." : null}
       >
-        It stays in the app.
+        It comes off your watch and stays in the app. Put it back on any time.
       </ConfirmDialog>
       {previewing && s ? (
-        <WatchPreviewSheet
-          workoutId={w.id}
-          minutes={view?.minutes ?? null}
-          onClose={() => setPreviewing(false)}
-          onSent={(next) => {
-            setPreviewing(false);
-            afterWatchWrite(next);
-          }}
-          onStale={(next) => {
-            // The day's inputs moved on since this build (as Start's 409): the fresh session, to send again.
-            setPreviewing(false);
-            qc.setQueryData(key, next);
-            refreshPlan();
-          }}
-          onRefused={() => {
-            setPreviewing(false);
-            void qc.invalidateQueries({ queryKey: key });
-          }}
-        />
+        <WatchPreviewSheet workoutId={w.id} minutes={view?.minutes ?? null} readOnly onClose={() => setPreviewing(false)} />
       ) : null}
       {picker && view && s ? (
         <ChoiceSheet

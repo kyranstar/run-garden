@@ -381,11 +381,26 @@ describe("the watch catches up while Today is open (the watch mirrors the plan �
     }
   };
 
-  it("opened with watch writes waiting: the drain chain, once (the stub's drain runs nothing, so one request)", async () => {
-    await renderCard({ ...todayPayload(slot()), sync: { pendingCorosJobs: 2, corosConnected: true, corosWritesEnabled: true, calendarConnected: true } });
+  it("opened with a session on the page updating on the watch (its row's watch_updating): the drain chain, once (the stub's drain runs nothing, so one request)", async () => {
+    const updating = slot({ syncAction: { agent: "app", code: "watch_updating" } });
+    await renderCard({ ...todayPayload(updating), sync: { pendingCorosJobs: 2, corosConnected: true, corosWritesEnabled: true, calendarConnected: true } });
     for (let i = 0; i < 50 && drains() === 0; i += 1) await settle(1);
     await settle();
     expect(drains()).toBe(1);
+  });
+
+  it("a session ahead on the page updating (upcoming) drains too; nothing updating — whatever else COROS has queued — no drain (Task 8's trigger, narrowed)", async () => {
+    const ahead = slot({ id: "slot-ahead", effectiveDate: "2026-10-12", syncAction: { agent: "app", code: "watch_updating" } });
+    await renderCard({ ...todayPayload(slot()), upcoming: [slot(), ahead] });
+    for (let i = 0; i < 50 && drains() === 0; i += 1) await settle(1);
+    await settle();
+    expect(drains()).toBe(1);
+  });
+
+  it("opened with nothing updating — a coach write queued (pendingCorosJobs) is no watch drain's: no drain", async () => {
+    await renderCard({ ...todayPayload(slot()), sync: { pendingCorosJobs: 2, corosConnected: true, corosWritesEnabled: true, calendarConnected: true } });
+    await settle();
+    expect(drains()).toBe(0);
   });
 
   it("opened with nothing waiting: no drain", async () => {

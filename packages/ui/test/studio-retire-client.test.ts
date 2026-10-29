@@ -67,7 +67,7 @@ describe("why a Retire did not happen", () => {
   const refused = (status: number, error: string) => new ApiError(status, { error });
   it("names the Settings switch when writing to COROS is off", () => {
     expect(retireRefusalText(refused(412, "writes_disabled"))).toBe(
-      "Writing to COROS is switched off. Turn on “Write date changes back to COROS” in Settings, then retire it.",
+      "Writing to COROS is switched off. Turn on “Keep my watch in sync with the plan” in Settings, then retire it.",
     );
   });
   it("says what else stood in the way, plainly", () => {

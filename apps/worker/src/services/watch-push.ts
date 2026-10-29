@@ -56,6 +56,8 @@ import { corosKeyOf } from "./coros-exercise-map.js";
 import { freeStamp, STAMP_SEPARATOR, stampName, takenStampsOn } from "./coros-stamp.js";
 import { adoptedCopyUnpush, enqueueUnpushIfOurs } from "./plan-mutations.js";
 import { markMirrorOwed, resolveMirrorOwed } from "./mirror-owed.js";
+import { dayRowRefusal, rowRefusal } from "./mirror-rules.js";
+import { WATCH_JOB_UNDERWAY, watchJobCondition } from "./watch-jobs.js";
 import { exerciseNameMap } from "./exercise-catalog.js";
 import { dayValidateCtx, snapshotErrors } from "./doc-build.js";
 import {
@@ -368,8 +370,19 @@ export type WatchUnavailable =
    */
   | "gated";
 
+/**
+ * THE SHEET'S WATCH LINE (the watch mirrors the plan §3.9): a status, never a Send.
+ *  - `kept_off`: the athlete keeps it off (`watch_off`, §3.6) — "Kept off your watch", with Put on.
+ *  - `updating`: the watch is being brought in step with it — a delete of its copy on its way, a push replacing a copy
+ *    the row holds, or nothing on the watch yet while the mirror owes it one (the drain or the sweep makes it).
+ *  - `sending`: its copy going on where there was none (a first push, a Retry).
+ *  - `failed`: the push failed; the sweep re-queues it on its backoff, and Retry re-queues it now.
+ *  - `closed_by_check`: today's reading keeps a move out that no alternate stands in for — the day's build cannot go.
+ *  - `on_watch`: its copy is on the watch; `off_watch`: removed in the COROS app (a session the mirror does not hold now).
+ *  - `unavailable`: not on the watch, and why (`reason`); `ready`: nothing on it and nothing owed (no reason to give).
+ */
 export interface WatchState {
-  state: "unavailable" | "ready" | "sending" | "on_watch" | "failed" | "off_watch";
+  state: "unavailable" | "ready" | "sending" | "on_watch" | "failed" | "off_watch" | "updating" | "kept_off" | "closed_by_check";
   reason?: WatchUnavailable;
 }
 
@@ -597,11 +610,49 @@ async function copyLeftOnWatch(db: Db, buildId: string) {
 }
 
 /**
- * What the sheet shows about the watch. A sent build: its push queued or running → `sending`; failed → `failed`;
- * verified with the copy's address on the row → `on_watch`, without one (removed in COROS) → `off_watch`. Not sent:
- * `ready`, or `unavailable` with the reason — except the shown build's copy left on the watch (`copyLeftOnWatch`),
- * which shows as its verified push does, so the sheet offers Take off (queueing its removal again) and never a Send
- * that could queue nothing. Asked only while the switch is on (the routes answer null otherwise).
+ * The row's watch jobs on their way (`watchJobCondition`, `WATCH_JOB_UNDERWAY`): a program push (a provisional copy's
+ * too) or a copy's delete (`unpush:<buildId>`, an adopted row's `<id>-unpush-copy`). ONE read.
+ */
+async function watchJobsUnderway(db: Db, userId: string, workoutId: string): Promise<Array<{ id: string; kind: string }>> {
+  return db
+    .select({ id: corosWriteJobs.id, kind: corosWriteJobs.kind })
+    .from(corosWriteJobs)
+    .where(
+      and(
+        eq(corosWriteJobs.userId, userId),
+        eq(corosWriteJobs.workoutId, workoutId),
+        inArray(corosWriteJobs.status, [...WATCH_JOB_UNDERWAY]),
+        watchJobCondition(),
+      ),
+    );
+}
+
+/** Today's day build shown, blocked by the day's reading (`fromDoc.blocked`): it cannot go to the watch (§3.3). */
+const blockedToday = (row: WorkoutRow, session: SessionResponse, today: string): boolean => {
+  const b = session.build;
+  return !!b && b.version > 0 && b.date === today && row.effectiveDate === today && (b.fromDoc?.blocked.length ?? 0) > 0;
+};
+
+/** Send's refusal as the sheet says it: a move the day's reading keeps out is the day's check closing it. */
+const unavailable = (reason: WatchUnavailable): WatchState => (reason === "gated" ? { state: "closed_by_check" } : { state: "unavailable", reason });
+
+/**
+ * WHAT THE SHEET SAYS ABOUT THE WATCH (the watch mirrors the plan §3.9), in order:
+ *  1. kept off (`watch_off`) → `kept_off` (a done session's copy stays, and is said as it is);
+ *  2. a watch job of the row on its way (one read) → a delete, or a push replacing the copy the row holds: `updating`;
+ *     a push where the row holds none: `sending`;
+ *  3. the sent build (`sentBuildIdOf`): its push failed → `failed` (Retry) — unless the day's reading has closed what it
+ *     holds, which Retry would refuse: `closed_by_check`, or Retry's own reason in Retry's order; verified → today's day
+ *     build blocked by the reading: `closed_by_check`; else the row holding the copy's address: `on_watch`; without one
+ *     (removed in COROS): `updating` for a document workout the mirror holds (it puts the copy back, §3.8), else
+ *     `off_watch`.
+ *     Nothing sent, but the shown build's copy left on the watch (`copyLeftOnWatch`): as its verified push;
+ *  4. nothing on the watch, nothing on its way: Send's own refusal where one stands (`unavailable` with the reason; a move
+ *     the reading keeps out: `closed_by_check`) — except what a provisional copy does not wait on (its day, the day's
+ *     build, the day's check: `OWED_ANYWAY`, M1), which is owed (`updating`) unless the copy would not fit the watch —
+ *     else `updating` while the mirror holds the session (it owes the copy: the drain, the sweep, or the day's next build
+ *     makes it), else `ready`.
+ * Asked only while the switch is on (the routes answer null otherwise).
  */
 export async function watchStateOf(
   db: Db,
@@ -612,6 +663,17 @@ export async function watchStateOf(
   prefs: UserPreferences,
 ): Promise<WatchState> {
   if (!watchPushEnabled(env)) return { state: "unavailable", reason: "writes_off" };
+  const today = todayOf(prefs);
+  const done = row.contentState === "done" || row.completionState === "completed";
+  if (row.watchOff && !done) return { state: "kept_off" };
+  const underway = await watchJobsUnderway(db, userId, row.id);
+  if (underway.some((j) => j.kind !== "program_session_push")) return { state: "updating" };
+  if (underway.length > 0) return { state: watchAddressOf(row) ? "updating" : "sending" };
+  const rules = { today, prefs };
+  // The mirror puts this session on ahead of its day (a document workout in the window: its provisional copy), or holds
+  // its day's build on it today.
+  const provisional = rowRefusal(row, env, rules) === null;
+  const holds = provisional || dayRowRefusal(row, env, rules) === null;
   const sent = await sentBuildIdOf(db, row.id);
   if (sent) {
     const push = await jobById(db, pushJobId(sent));
@@ -620,14 +682,37 @@ export async function watchStateOf(
     // checks in Retry's order (the slot's, then the build's, the gate among them), so the two never disagree.
     const retry = push !== null && !isInFlight(push.status) && push.status !== "verified";
     if (retry && docOriginRow(row) && (await gatedSnapshot(db, row, sent, session.profiles.map((p) => p.profileId), session.checks))) {
-      return { state: "unavailable", reason: (await unavailableReason(db, userId, row, session, prefs, todayOf(prefs))) ?? "gated" };
+      return unavailable((await unavailableReason(db, userId, row, session, prefs, today)) ?? "gated");
     }
+    if (push?.status === "verified") return onTheWatch(row, session, today, provisional);
     if (push) return stateOfPush(push.status, row);
   } else if (session.build && (await copyLeftOnWatch(db, session.build.buildId))) {
-    return stateOfPush("verified", row);
+    return onTheWatch(row, session, today, provisional);
   }
-  const reason = await unavailableReason(db, userId, row, session, prefs, todayOf(prefs));
-  return reason ? { state: "unavailable", reason } : { state: "ready" };
+  const reason = await unavailableReason(db, userId, row, session, prefs, today);
+  // A document workout the mirror puts on as a provisional copy waits for no day, no day's build and no check (M1: with
+  // no answer yet, the provisional copy goes): it is owed — unless the copy itself would not fit, as the shown build
+  // (the preview a day ahead, materialised as the copy is) says.
+  if (reason && provisional && OWED_ANYWAY.includes(reason)) {
+    const fits = session.build ? watchStepsFromBuild(session.build, NO_CATALOG).refusal : null;
+    return fits ? unavailable(fits) : { state: "updating" };
+  }
+  if (reason) return unavailable(reason);
+  return holds ? { state: "updating" } : { state: "ready" };
+}
+
+/** Send's refusals a provisional copy does not wait on: its day, the day's build, the day's check (§3.2, M1). */
+const OWED_ANYWAY: readonly WatchUnavailable[] = ["not_today", "not_built", "precheck"];
+
+/**
+ * A copy on the watch (a verified push): the day's check closing today's build, the copy there, or gone from it — put
+ * back by the mirror for a document workout it holds (`putsBack`: the sweep's re-push, §3.8; today's day build by the
+ * build commit or the hourly), so `updating`; an engine slot's copy is not put back (as the import leaves it): `off_watch`.
+ */
+function onTheWatch(row: WorkoutRow, session: SessionResponse, today: string, putsBack: boolean): WatchState {
+  if (blockedToday(row, session, today)) return { state: "closed_by_check" };
+  if (watchAddressOf(row)) return { state: "on_watch" };
+  return putsBack ? { state: "updating" } : { state: "off_watch" };
 }
 
 const todayOf = (prefs: UserPreferences): string => todayInZone(prefs.timezone);
@@ -877,6 +962,59 @@ export async function sendToWatch(
   }
   // The session `lockCurrentBuild` answered with is the slot as it now stands; the push just queued is `sending`.
   return { ...session, watch: { state: "sending" } };
+}
+
+/** A failed push the athlete's Retry queues again: failed for good, or left needing attention. */
+const RETRYABLE_PUSH = ["failed", "needs_attention"] as const;
+
+/**
+ * RETRY (the watch mirrors the plan §3.9, M6): the session's failed push queued again now, with no digest — the sweep's
+ * backoff (MIRROR_RETRY_BACKOFF_MS) not waited out. `POST /api/sessions/:workoutId/retry-watch`.
+ *  - A PROVISIONAL COPY's push (the sent build is its record — ahead of the day, or today's before the day's build): the
+ *    same job re-queued, its payload and stamp kept (a failed push may have landed a copy under that stamp, which the
+ *    lane's `already_present` then finds), the executor's tries and the mirror's re-queues reset: this is the athlete's
+ *    new act. Never a Send of the day's build (that was `StaleBuildError` every time: the sent build is not the one the
+ *    sheet shows). Refused as the mirror refuses the row (`rowRefusal`): writes off or the switch off → `writes_off`,
+ *    resolved → `done`, a day gone → `not_today`; COROS not connected → `not_connected`.
+ *  - A DAY BUILD's push: Send's Retry (`sendToWatch` on the sent build): the payload made again, re-gated by the day's
+ *    reading, the stamp kept.
+ *  - Nothing failed (nothing sent, or its push on its way or verified): the session as it stands; nothing written.
+ * No lane runs here (ruling 3-R11): the client follows up with the drain. Throws as Send does.
+ *
+ * Statements, the provisional path: the slot, the sent build (two), its push, the connection, the re-queue (one UPDATE),
+ * then the session — and the route's watch state.
+ */
+export async function retryWatch(db: Db, env: Env, userId: string, workoutId: string, ctx: BuildCtx): Promise<SessionResponse> {
+  if (!watchPushEnabled(env)) throw new WatchUnavailableError("writes_off");
+  const row = await loadSlot(db, userId, workoutId);
+  const sent = await sentBuildIdOf(db, row.id);
+  const push = sent ? await jobById(db, pushJobId(sent)) : null;
+  if (!sent || !push || !(RETRYABLE_PUSH as readonly string[]).includes(push.status)) return loadSession(db, userId, workoutId, ctx.today);
+  const parsed = programSessionPushJobSchema.safeParse(push.payload);
+  if (!parsed.success || parsed.data.provisional !== true) return sendToWatch(db, env, userId, workoutId, sent, ctx);
+  const refused = rowRefusal(row, env, ctx);
+  if (refused === "switch_off" || refused === "writes_off") throw new WatchUnavailableError("writes_off");
+  if (refused === "resolved") throw new WatchUnavailableError("done");
+  if (refused === "past" || refused === "beyond_window") throw new WatchUnavailableError("not_today");
+  // Kept off (Put on is the way back) or no longer a document workout: nothing to retry.
+  if (refused) return loadSession(db, userId, workoutId, ctx.today);
+  if (!(await corosConnected(db, userId))) throw new WatchUnavailableError("not_connected");
+  await db
+    .update(corosWriteJobs)
+    .set({
+      status: "queued",
+      claimedByDeviceId: null,
+      claimedAt: null,
+      verifiedAt: null,
+      completedAt: null,
+      lastErrorCategory: null,
+      lastErrorDetail: null,
+      payload: sql`json_remove(${corosWriteJobs.payload}, '$.attempts', '$.mirrorRetries')`,
+      requestedAt: ctx.now,
+      updatedAt: ctx.now,
+    })
+    .where(and(eq(corosWriteJobs.id, push.id), inArray(corosWriteJobs.status, [...RETRYABLE_PUSH])));
+  return loadSession(db, userId, workoutId, ctx.today);
 }
 
 /**

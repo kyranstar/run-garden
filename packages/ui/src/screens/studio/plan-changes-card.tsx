@@ -14,6 +14,7 @@
 import { useEffect, useId, useRef, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { api, type CoachConversationCardDto } from "@rg/api-client";
+import { followApproved } from "../../components/watch-catch-up.js";
 import { CONVERSATION_QUERY } from "./coach-conversation-model.js";
 import { readProposal } from "./coach-tolerance.js";
 import { approveUntilDone, designProposalQuery, isOpen, LEFT_AS_PLANNED, ProposalCard } from "./proposal-card.js";
@@ -60,6 +61,8 @@ export function PlanChangesCard({ card, today = null }: { card: Pick<CoachConver
       // button it was pressed on is gone).
       if (answers.some((a) => a.refused.length > 0)) setCloser(true);
       else setToOutcome(true);
+      // The watch follows what it changed (the watch mirrors the plan §3.3; M1).
+      followApproved(answers, () => qc.fetchQuery({ queryKey: ["today"], queryFn: api.today, staleTime: 0 }));
     },
     onSettled: async () => {
       await reread();

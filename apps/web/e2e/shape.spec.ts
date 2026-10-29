@@ -129,5 +129,5 @@ test("Settings: five groups", async ({ page }) => {
   const groups = page.locator(".settings-group > h2");
   await expect(groups).toHaveText(["Connections", "Training", "Coach & AI", "Garden", "Data & account"], { timeout: 15_000 });
   await expect(page.getByRole("heading", { level: 3, name: "COROS" })).toBeVisible();
-  await expect(page.getByRole("switch", { name: "Write date changes back to COROS" })).toBeVisible();
+  await expect(page.getByRole("switch", { name: "Keep my watch in sync with the plan" })).toBeVisible();
 });

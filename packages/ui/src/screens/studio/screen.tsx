@@ -44,7 +44,6 @@ import { isPersonalId } from "@rg/saves";
 import { accountTodayGuess, settling } from "../../components.js";
 import { useAccountLibrary, type AccountLibraryRead } from "../../library/account-library.js";
 import { SearchField } from "../../components/search-field.js";
-import { WatchPreviewSheet } from "../../components/watch-preview-sheet.js";
 import { IconFilters } from "../../icons.js";
 import { AddedLine, AddSheet, writeErrorText, type Added } from "./add-sheet.js";
 import { FilterControls, FiltersSheet } from "./filters-sheet.js";
@@ -325,9 +324,8 @@ export function StudioScreen() {
     const settle = (next: Partial<Added>) => setAdded((cur) => (cur?.n === a.n ? { ...cur, ...next } : cur));
     try {
       const back = await a.undo();
-      // Whether the watch holds another copy is the server's word on the undone workout; that the copy has the move in
-      // it is known only when the Add's own version was sent (`a.sent`, kept as `addSent`).
-      settle({ phase: "undone", error: undefined, watch: back?.watch, sent: false, addSent: a.sent === true });
+      // Whether the watch holds another copy is the server's word on the undone workout: the app replaces it by itself.
+      settle({ phase: "undone", error: undefined, watch: back?.watch });
     } catch (e) {
       settle({ phase: "done", error: writeErrorText(e, true) });
     }
@@ -335,16 +333,6 @@ export function StudioScreen() {
   const dismiss = () => {
     if (added) focusNext.current = { to: "add", id: added.rec.id, from: added.from };
     setAdded(null);
-  };
-  // "Send the new version": the session's own Send — its watch preview, then the push — for the workout added to.
-  const [sendingWatch, setSendingWatch] = useState<{ n: number; workoutId: string; minutes: number } | null>(null);
-  const sendWatch = (workoutId: string) => {
-    if (added?.watch?.workoutId === workoutId) setSendingWatch({ n: added.n, workoutId, minutes: added.watch.minutes });
-  };
-  const watchWritten = (workoutId: string) => {
-    void qc.invalidateQueries({ queryKey: ["session", workoutId] });
-    void qc.invalidateQueries({ queryKey: ["plan"] });
-    void qc.invalidateQueries({ queryKey: ["today"] });
   };
   // The line shows where the Add was made: in the detail's foot while that move is open, else on the page.
   const inDetail = !!added && added.from === "detail" && openRec?.id === added.rec.id;
@@ -423,7 +411,7 @@ export function StudioScreen() {
       onClose={closeMove}
       onAdd={addFromDetail}
       moveLink={moveLink}
-      added={<AddedLine added={inDetail ? added : null} onUndo={() => void undo()} onDismiss={dismiss} onSendWatch={sendWatch} />}
+      added={<AddedLine added={inDetail ? added : null} onUndo={() => void undo()} onDismiss={dismiss} />}
     />
   ) : null;
   return (
@@ -537,32 +525,7 @@ export function StudioScreen() {
           }}
         />
       ) : null}
-      <AddedLine added={inDetail ? null : added} onUndo={() => void undo()} onDismiss={dismiss} onSendWatch={sendWatch} />
-      {sendingWatch ? (
-        <WatchPreviewSheet
-          workoutId={sendingWatch.workoutId}
-          minutes={sendingWatch.minutes}
-          onClose={() => setSendingWatch(null)}
-          onSent={() => {
-            const { n, workoutId } = sendingWatch;
-            setSendingWatch(null);
-            // Send's button goes with the send; the line puts focus on its words (`AddedLine`), never the page.
-            setAdded((cur) => (cur?.n === n ? { ...cur, sent: true } : cur));
-            // As the session sheet does after a Send: run the queued push, then read again what it changed.
-            watchWritten(workoutId);
-            // One watch job a request, while any is left (a replacement is a delete and a push).
-            void api.drainWatchUntilIdle().then(() => watchWritten(workoutId));
-          }}
-          onStale={() => {
-            setSendingWatch(null);
-            watchWritten(sendingWatch.workoutId);
-          }}
-          onRefused={() => {
-            setSendingWatch(null);
-            watchWritten(sendingWatch.workoutId);
-          }}
-        />
-      ) : null}
+      <AddedLine added={inDetail ? null : added} onUndo={() => void undo()} onDismiss={dismiss} />
     </div>
   );
 }

@@ -77,7 +77,6 @@ import {
 import { accountTodayGuess, ConfirmDialog, EmptyState, formatDayShort, formatTime, Spinner } from "../../components.js";
 import { checkWord, ConditionCheckSheet } from "../../components/condition-check-sheet.js";
 import { Tooltip } from "../../components/tooltip.js";
-import { WatchPreviewSheet } from "../../components/watch-preview-sheet.js";
 import { features } from "../../features.js";
 import { IconAlert, IconBack, IconChevron, IconClose, IconInfo, IconMore, IconPlus, IconRedo, IconUndo } from "../../icons.js";
 import { useStudioDraft } from "../../studio-drafts.js";
@@ -257,10 +256,10 @@ function Builder({ source }: { source: BuildSource }) {
       if (next.key === "new") void drafts.save(editor.doc).catch(() => undefined);
       // An edit moves on from what the footer said of the last state: a refusal, a build shown before it locked, the
       // offer to undo a removal, "Saved." (A start under way, and a started session this device could not keep, stay;
-      // an edit that says something of its own — "Removed …" — says it after this.) The watch's offer stays: the
-      // saved version is still newer than the watch's copy, until it is sent or the workout is saved again.
+      // an edit that says something of its own — "Removed …" — says it after this.) The watch's line goes with it: the
+      // app replaces the copy by itself (the watch mirrors the plan §3.4), and the session's sheet says where it stands.
       setFlow((f) => (f.step === "busy" || f.step === "notKept" ? f : IDLE));
-      setStatus((s) => (s?.watch && !s.sent ? { text: "", watch: s.watch } : null));
+      setStatus(null);
     },
     [drafts, setLoaded],
   );
@@ -334,7 +333,6 @@ function Builder({ source }: { source: BuildSource }) {
   const [stale, setStale] = useState(false);
   const [saving, setSaving] = useState(false);
   const [flow, setFlow] = useState<Flow>({ step: "idle" });
-  const [sendingWatch, setSendingWatch] = useState<{ workoutId: string; minutes: number } | null>(null);
   const root = useRef<HTMLDivElement>(null);
   // Start now turned into the offer to continue today's (I3): focus is on Continue it, never left on the page (N3).
   useEffect(() => {
@@ -764,9 +762,8 @@ function Builder({ source }: { source: BuildSource }) {
           {status ? (
             <>
               <span className="stu-build-status-text" tabIndex={-1}>
-                {status.watch
-                  ? [status.text, status.sent ? "Sending the new version to your watch." : "Your watch has the older version."].filter(Boolean).join(" ")
-                  : status.text}
+                {/* The watch holds the older copy: the app replaces it by itself (the watch mirrors the plan §3.4) — said, no Send. */}
+                {status.watch ? [status.text, "Updating your watch."].filter(Boolean).join(" ") : status.text}
               </span>
               {status.undoAt !== undefined ? (
                 <button
@@ -788,11 +785,6 @@ function Builder({ source }: { source: BuildSource }) {
               {status.asNew ? (
                 <button type="button" className="btn btn-small" onClick={scheduleAsNew}>
                   Schedule it as a new workout
-                </button>
-              ) : null}
-              {status.watch && !status.sent ? (
-                <button type="button" className="btn btn-small" onClick={() => setSendingWatch(status.watch!)}>
-                  Send the new version
                 </button>
               ) : null}
               {status.notes ? (
@@ -990,34 +982,6 @@ function Builder({ source }: { source: BuildSource }) {
           onClose={() => setAsking(null)}
           onSkip={asking?.offered ? () => skipCheck(asked.id) : undefined}
           keepOffline={asking?.then === "start" && startsHere}
-        />
-      ) : null}
-      {sendingWatch ? (
-        <WatchPreviewSheet
-          workoutId={sendingWatch.workoutId}
-          minutes={sendingWatch.minutes}
-          onClose={() => setSendingWatch(null)}
-          onSent={() => {
-            const id = sendingWatch.workoutId;
-            setSendingWatch(null);
-            setStatus((cur) => (cur?.watch?.workoutId === id ? { ...cur, sent: true } : cur));
-            // As the session sheet does after a Send: run the queued push, then read again what it changed.
-            const written = () => {
-              void qc.invalidateQueries({ queryKey: ["session", id] });
-              refreshPlan();
-            };
-            written();
-            // One watch job a request, while any is left (a replacement is a delete and a push).
-            void api.drainWatchUntilIdle().then(written);
-          }}
-          onStale={() => {
-            setSendingWatch(null);
-            void qc.invalidateQueries({ queryKey: ["session", sendingWatch.workoutId] });
-          }}
-          onRefused={() => {
-            setSendingWatch(null);
-            void qc.invalidateQueries({ queryKey: ["session", sendingWatch.workoutId] });
-          }}
         />
       ) : null}
       <ConfirmDialog open={freshAsk} onClose={() => setFreshAsk(false)} title="Start a new workout?" confirmLabel="Start new" onConfirm={startOver}>

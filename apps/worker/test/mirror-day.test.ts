@@ -470,7 +470,8 @@ describe("the build request that moves the watch (Workers Free: ≤ 45 statement
 
     const replaced = await buildRoute(swapped, flare);
     report("a replacement", replaced);
-    expect(replaced.body.watch).toMatchObject({ state: "sending" });
+    // The copy's delete and the new push on their way: the watch is being updated (the watch mirrors the plan §3.9).
+    expect(replaced.body.watch).toMatchObject({ state: "updating" });
 
     // The replacement lands; then the jaw eases — the copy on the watch is replaced again: its delete and the push.
     vi.setSystemTime(new Date(after(30_000)));
@@ -480,7 +481,7 @@ describe("the build request that moves the watch (Workers Free: ≤ 45 statement
     report("a later change on the day, replaced", later);
     expect(await jobOf(`unpush:${replaced.body.build.buildId}`)).toMatchObject({ status: "queued" });
     expect(await jobOf(`push:${later.body.build.buildId}`)).toMatchObject({ status: "queued" });
-    expect(later.body.watch).toMatchObject({ state: "sending" });
+    expect(later.body.watch).toMatchObject({ state: "updating" });
 
     const slot = await seedSlot(db, userId, programId, DAY);
     const pushed = await buildRoute(slot, calm, after(120_000));
@@ -509,7 +510,7 @@ describe("the build request that moves the watch (Workers Free: ≤ 45 statement
     const body = (await res.json()) as { error: string; session: { build: { buildId: string; steps: Array<{ kind: string; exerciseId: string | null }> }; locked: boolean; watch: { state: string } } };
     expect(body.error).toBe("stale");
     expect(movesOf(body.session.build.steps)).toEqual(["tempoSquat", "bwSplitSquat"]);
-    expect(body.session).toMatchObject({ locked: true, watch: { state: "sending" } });
+    expect(body.session).toMatchObject({ locked: true, lockedBy: "watch", watch: { state: "updating" } });
     expect(await jobOf(`unpush:${recordId}`)).toMatchObject({ status: "queued" });
     expect(await jobOf(`push:${body.session.build.buildId}`)).toMatchObject({ status: "queued" });
     expect(statements.length).toBeLessThanOrEqual(45);

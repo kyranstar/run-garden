@@ -555,6 +555,13 @@ export function syncActionCopy(action: SyncAction): { says: string; todo: string
       };
     case "taking_watch_copy":
       return { says: "Run Garden will take the watch's version at the next sync.", todo: null };
+    // A session the app keeps on the watch by itself (the watch mirrors the plan §3.9): the session sheet's own words.
+    case "watch_updating":
+      return { says: "Updating your watch…", todo: null };
+    case "watch_retrying":
+      return { says: "Couldn't reach COROS — retrying", todo: null };
+    case "kept_off_watch":
+      return { says: "Kept off your watch", todo: null };
   }
 }
 
@@ -734,6 +741,10 @@ export function SyncStatusLine({
   // COROS expired the sleep connection (audit C2): five weeks with only Settings saying so. Where a clean sync would
   // read, this does — anything louder about COROS itself still leads.
   const sleepLine = status.sleepNeedsReconnect ? "Sleep sync stopped — reconnect in Settings" : null;
+  // THE WATCH CATCHING UP (the watch mirrors the plan §3.9): while sessions have a push or a delete on its way, the line
+  // says how many — and nothing of it once the jobs have run (a delete can wait for the hourly; the line stays till then).
+  const updating = status.watchUpdatingCount ?? 0;
+  const updatingLine = updating > 0 ? `${updating} session${updating === 1 ? "" : "s"} updating on your watch` : null;
   const line = (() => {
     // Cloud-direct COROS (spec §5): the connection's health outranks Mac
     // presence — "synced X ago" or an honest error, never a Mac mystery.
@@ -752,10 +763,12 @@ export function SyncStatusLine({
         return `${status.issueCount} change${status.issueCount === 1 ? "" : "s"} couldn't sync`;
       }
       if (sleepLine) return sleepLine;
+      if (updatingLine) return updatingLine;
       if (contentStale > 0) return staleLine;
       return `Synced with COROS${status.cloud.lastSyncAt ? ` · ${relativeTime(status.cloud.lastSyncAt)}` : " · first sync pending"}`;
     }
     if (sleepLine && status.state === "in_sync") return sleepLine;
+    if (updatingLine && (status.state === "in_sync" || status.state === "syncing")) return updatingLine;
     if (contentStale > 0 && status.state === "in_sync") return staleLine;
     switch (status.state) {
       case "in_sync":

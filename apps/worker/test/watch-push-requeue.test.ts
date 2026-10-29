@@ -105,21 +105,22 @@ describe("a push the restore neutralised (L-7, L-9)", () => {
 });
 
 describe("an unpush the restore neutralised", () => {
-  it("the copy shows on the watch (not ready to send), and Take off requeues its removal", async () => {
+  it("the session stays kept off, and Take off (Keep off, for one release) requeues its copy's removal", async () => {
     const { workoutId, buildId, stamp } = await onWatch();
     expect((await call("POST", `${workoutId}/take-off-watch`, {})).status).toBe(200);
     expect((await jobOf(`unpush:${buildId}`))!.status).toBe("queued");
     await neutralise(`unpush:${buildId}`);
     expect(await lockedAt(buildId)).toBeNull();
-    expect(await watchOf(workoutId)).toEqual({ state: "on_watch" });
+    // Take off is Keep off now (the watch mirrors the plan §3.6): the line says the athlete's choice first (§3.9).
+    expect(await watchOf(workoutId)).toEqual({ state: "kept_off" });
 
     const res = await call("POST", `${workoutId}/take-off-watch`, {});
     expect(res.status).toBe(200);
     expect((await jobOf(`unpush:${buildId}`))!.status).toBe("queued");
-    expect(((await res.json()) as { watch: unknown }).watch).toEqual({ state: "unavailable", reason: "taking_off" });
+    expect(((await res.json()) as { watch: unknown }).watch).toEqual({ state: "kept_off" });
     await lane();
     expect(copiesNamed(stamp)).toBe(0);
-    expect(await watchOf(workoutId)).toEqual({ state: "ready" });
+    expect(await watchOf(workoutId)).toEqual({ state: "kept_off" });
   });
 
   it("of a started slot (its build stays locked): Take off requeues it too", async () => {

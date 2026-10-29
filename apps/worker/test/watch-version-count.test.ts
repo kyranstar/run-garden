@@ -35,8 +35,11 @@ function makeEnv(): Env {
   };
 }
 
-/** `GET /api/sync/status` on an account with a COROS connection and no studio plan, measured on e7fc4a6. */
-const STATUS_STATEMENTS = 12;
+/**
+ * `GET /api/sync/status` on an account with a COROS connection and no studio plan, measured on e7fc4a6 (12) — plus the
+ * one COUNT of sessions updating on the watch (the watch mirrors the plan §3.9, `watchUpdatingSessions`): 13.
+ */
+const STATUS_STATEMENTS = 13;
 
 let db: Db;
 /** Statements the app runs while `counting` (the cost pin). */

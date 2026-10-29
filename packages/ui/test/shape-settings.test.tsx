@@ -145,7 +145,10 @@ describe("five groups", () => {
     worker();
     await mount();
     const coros = [...group("Connections").querySelectorAll<HTMLElement>(".card")][1]!;
-    expect(words(coros)).toContain("Write date changes back to COROS");
+    // The switch's row says what it does now (the watch mirrors the plan §3.6): the watch kept in step with the plan.
+    expect(words(coros)).toContain("Keep my watch in sync with the plan");
+    expect(words(coros)).toContain("Sessions go to your watch as the plan changes; COROS's own sessions stay yours.");
+    expect(words(coros)).not.toContain("Write date changes back to COROS");
     expect(words(coros)).toContain("Sleep from COROS");
     expect(words(coros)).toContain("History");
   });
@@ -208,7 +211,7 @@ describe("saving as you go, with real switches", () => {
     await mount();
     const ai = host!.querySelector<HTMLButtonElement>('[role="switch"][aria-label="Activity reads and the week\'s story"]')!;
     expect(ai.getAttribute("aria-checked")).toBe("true");
-    const writes = host!.querySelector<HTMLButtonElement>('[role="switch"][aria-label="Write date changes back to COROS"]')!;
+    const writes = host!.querySelector<HTMLButtonElement>('[role="switch"][aria-label="Keep my watch in sync with the plan"]')!;
     expect(writes.getAttribute("aria-checked")).toBe("false");
     await act(async () => writes.click());
     await until(() => calls.some((c) => c.method === "PUT"), "the save");
@@ -358,7 +361,7 @@ describe("switches hold their place (the integrated review, minors)", () => {
     worker({ corosWritesEnabled: false });
     await mount();
     ctl.holdPuts = true;
-    const writes = field<HTMLButtonElement>('[role="switch"][aria-label="Write date changes back to COROS"]');
+    const writes = field<HTMLButtonElement>('[role="switch"][aria-label="Keep my watch in sync with the plan"]');
     await act(async () => writes.click());
     await act(async () => {
       await new Promise((r) => setTimeout(r, 30));
@@ -372,7 +375,7 @@ describe("switches hold their place (the integrated review, minors)", () => {
     worker({ corosWritesEnabled: false });
     await mount();
     ctl.holdGets = true;
-    const writes = field<HTMLButtonElement>('[role="switch"][aria-label="Write date changes back to COROS"]');
+    const writes = field<HTMLButtonElement>('[role="switch"][aria-label="Keep my watch in sync with the plan"]');
     await act(async () => writes.click());
     await act(async () => {
       await new Promise((r) => setTimeout(r, 30));

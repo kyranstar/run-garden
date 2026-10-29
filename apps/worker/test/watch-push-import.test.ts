@@ -461,7 +461,9 @@ describe("(h) Take off watch, then Send again", () => {
     const row = await rowOf(db, workoutId);
     expect(row).toMatchObject({ sourceWorkoutId: workoutId, sourceIdInPlan: null, sourceProgramId: null, lastVerifiedCorosDate: "" });
     expect((await jobOf(`push:${buildId}`))!.status).toBe("superseded");
-    expect(await watchOf(workoutId)).toEqual({ state: "ready" });
+    // Taken off by the bare service (no route calls it now; the route's Take off is Keep off): not kept off, so today's
+    // session is owed to the mirror again — the day's next build puts it back (the watch mirrors the plan §3.9).
+    expect(await watchOf(workoutId)).toEqual({ state: "updating" });
 
     await sendToWatch(db, switchOn(), userId, workoutId, buildId, ctx());
     expect((await jobOf(`push:${buildId}`))!.status).toBe("queued");
@@ -505,7 +507,7 @@ describe("Take off while Sending…", () => {
     const writes = server.counts.scheduleWrites;
     await lane();
     expect(server.counts.scheduleWrites).toBe(writes);
-    expect(await watchOf(workoutId)).toEqual({ state: "ready" });
+    expect(await watchOf(workoutId)).toEqual({ state: "updating" });
   });
 
   it("a push claimed by a lane that has not written yet: superseded when it runs, no COROS write", async () => {
@@ -519,7 +521,7 @@ describe("Take off while Sending…", () => {
     await lane();
     expect((await jobOf(`push:${buildId}`))!.status).toBe("superseded");
     expect(server.counts.scheduleWrites).toBe(writes);
-    expect(await watchOf(workoutId)).toEqual({ state: "ready" });
+    expect(await watchOf(workoutId)).toEqual({ state: "updating" });
   });
 
   it("a push whose write is in flight: the copy lands, its unpush is queued as it verifies, the next drain takes it off", async () => {
@@ -541,7 +543,7 @@ describe("Take off while Sending…", () => {
     expect((await jobOf(`push:${buildId}`))!.status).toBe("superseded");
     expect(programOn(stamp)).toBeUndefined();
     expect(await rowOf(db, workoutId)).toMatchObject({ sourceWorkoutId: workoutId, sourceIdInPlan: null, lastVerifiedCorosDate: "" });
-    expect(await watchOf(workoutId)).toEqual({ state: "ready" });
+    expect(await watchOf(workoutId)).toEqual({ state: "updating" });
   });
 });
 
@@ -899,7 +901,7 @@ describe("a sent copy renamed in the COROS app (audit 3-A life L-5)", () => {
     expect(programsNamed(RENAMED)).toEqual([]);
     expect(await rowOf(db, workoutId)).toMatchObject({ sourceWorkoutId: workoutId, sourceIdInPlan: null, lastVerifiedCorosDate: "" });
     expect((await jobOf(`push:${buildId}`))!.status).toBe("superseded");
-    expect(await watchOf(workoutId)).toEqual({ state: "ready" });
+    expect(await watchOf(workoutId)).toEqual({ state: "updating" });
   });
 
   it("not the copy: another program id at the address (a recycled slot) — never claimed, and the slot's copy is gone", async () => {
@@ -994,7 +996,7 @@ describe("a sent copy renamed in the COROS app (audit 3-A life L-5)", () => {
     await lane();
     expect((await jobOf(`unpush:${buildId}`))!.status).toBe("verified");
     expect(programsNamed(stamp)).toEqual([]);
-    expect(await watchOf(workoutId)).toEqual({ state: "ready" });
+    expect(await watchOf(workoutId)).toEqual({ state: "updating" });
   });
 
   it("the renamed copy deleted and a workout of the same name added elsewhere that day: the name is dropped, Take off leaves it", async () => {

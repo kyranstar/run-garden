@@ -893,7 +893,7 @@ export async function pushStudioPlan(
     healed: 0,
   };
 
-  // "Write date changes back to COROS" is the only switch claiming to stop
+  // "Keep my watch in sync with the plan" (once "Write date changes back to COROS") is the only switch claiming to stop
   // writes — studio pushes must obey it too (audit#2 #14). Direct table read:
   // loadPreferences lives in calendar-sync, which is an import cycle from
   // here (see UndoStudioAdoptionResult's doc note).
@@ -1735,7 +1735,7 @@ export async function studioPlanRetired(db: Db, userId: string, planId: string):
   return row !== undefined;
 }
 
-/** Whether the account lets the app write to COROS ("Write date changes back to COROS"). One statement. */
+/** Whether the account lets the app write to COROS ("Keep my watch in sync with the plan"). One statement. */
 async function corosWritesOn(db: Db, userId: string): Promise<boolean> {
   const [row] = await db.select({ prefs: userPreferences.prefs }).from(userPreferences).where(eq(userPreferences.userId, userId)).limit(1);
   return (row?.prefs as { corosWritesEnabled?: boolean } | undefined)?.corosWritesEnabled === true;

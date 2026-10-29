@@ -7,12 +7,12 @@
  *  - "Send this version to the watch", only when a content rewrite can reach it — else one line saying why, and with
  *    COROS updates off or COROS not connected what to do first ("…, then send it from here");
  *  - "Keep the watch's version": Run Garden takes the watch's copy at the next COROS read — said at once, and the row
- *    says it until then;
- *  - an app-built session (a programme's, an on-demand one, a Studio or template workout), whose earlier copy nothing
- *    from here replaces and whose content no read takes from the wire, offers "Leave the watch as it is" alone: the
- *    account line stops counting it, and this sentence stays, quietly;
- *  - an adopted one (a coach or watch-plan session taken into the Studio, `replaceable`), whose old copy its own Send
- *    replaces, says so and offers nothing here: there is nothing to leave, and the Send is the sheet's own.
+ *    says it until then.
+ *
+ * An app-built session (a programme's, an on-demand one, a Studio or template workout, an adopted one) never comes
+ * here: the app keeps its copy in step by itself (the watch mirrors the plan §3.6, A8), and its sheet's watch line says
+ * so — no Send, no Keep, no Leave. A sheet whose read answers `mirrored` (such a session) says it is replaced, and offers
+ * nothing.
  *
  * Every press says what it did in the block's own place, holding its height, with the focus on that line — the row's
  * view changes under it (and the sheet lets this block tell the story), so nothing below moves and the focus is never
@@ -25,14 +25,13 @@ import { api, ApiError, type WatchVersionDto } from "@rg/api-client";
 
 type Why = WatchVersionDto["why"];
 
-/** An app-built session: never rewritten from here (ruling 3-R13), and never taken from the wire. */
-export const APP_BUILT_CHOICE: WatchVersionDto = { send: false, why: "cant_rewrite" };
-
 /** Why the app's version can't be sent, in one line: what is true, and what to do first when the athlete can. */
-export function watchVersionWhy(why: Why, appBuilt = false): string | null {
+export function watchVersionWhy(why: Why): string | null {
   switch (why) {
     case "cant_rewrite":
-      return appBuilt ? "Run Garden can't replace the copy already on your watch." : "Run Garden can't rewrite this one on your watch.";
+      return "Run Garden can't rewrite this one on your watch.";
+    case "mirrored":
+      return "Run Garden replaces it on your watch by itself.";
     case "writes_off":
       return "Turn on COROS updates in Settings, then send it from here.";
     case "not_connected":
@@ -43,42 +42,31 @@ export function watchVersionWhy(why: Why, appBuilt = false): string | null {
 }
 
 /** What a refused or failed press says: the server's reason in the same words, else that it didn't get through. */
-export function watchVersionFailure(err: unknown, appBuilt = false): string {
+export function watchVersionFailure(err: unknown): string {
   const code = err instanceof ApiError ? (err.body as { error?: string } | null)?.error : undefined;
   if (code === "nothing_to_send") return "There's nothing to send for this one any more.";
-  if (code === "app_built") return watchVersionWhy("cant_rewrite", true)!;
-  // A sheet older than the session: it isn't one the app built, so its watch's version can be kept instead.
-  if (code === "not_app_built") return "This session can't be left as it is. Keep the watch's version instead.";
-  return watchVersionWhy(code as Why, appBuilt) ?? "That didn't go through — try again.";
+  if (code === "app_built") return watchVersionWhy("mirrored")!;
+  return watchVersionWhy(code as Why) ?? "That didn't go through — try again.";
 }
 
 /** What each press did, said where its buttons were. */
 const DONE = {
   send: "Sending this version to your watch.",
   keep: "Run Garden will take the watch's version at the next sync.",
-  leave: "Left as it is. It isn't counted any more.",
 } as const;
 
 export function WatchVersion({
   workoutId,
   show,
   choice,
-  appBuilt = false,
-  left = false,
-  replaceable = false,
   settingsLink,
   onDone,
 }: {
   workoutId: string;
   /** The row's view says the watch has an earlier version (`content_stale`). */
   show: boolean;
-  /** What can be done (the sheet's read; `APP_BUILT_CHOICE` for an app-built one); undefined while it is out. */
+  /** What can be done (the sheet's read); undefined while it is out. */
   choice: WatchVersionDto | undefined;
-  appBuilt?: boolean;
-  /** An app-built session already left as it is. */
-  left?: boolean;
-  /** An adopted session whose old copy its own Send replaces (`watchHoldsOldCopy`): said so, with no Leave. */
-  replaceable?: boolean;
   /** The screen's own Settings link, beside a line that sends the athlete there. */
   settingsLink?: ReactNode;
   /** A press went through: the block tells the story from here. */
@@ -109,31 +97,17 @@ export function WatchVersion({
       void api.readNow().then(settled, () => undefined);
     },
   });
-  const leave = useMutation({ mutationFn: () => api.leaveWatchVersion(workoutId), onSuccess: finish("leave") });
   useEffect(() => {
     if (done) doneRef.current?.focus({ preventScroll: true });
   }, [done]);
 
   if (!show && !done) return null;
-  const busy = send.isPending || keep.isPending || leave.isPending;
-  const why = replaceable
-    ? "Send it to your watch to replace it."
-    : appBuilt
-      ? left
-        ? null
-        : watchVersionWhy("cant_rewrite", true)
-      : choice && !choice.send
-        ? watchVersionWhy(choice.why)
-        : null;
-  const toSettings = !appBuilt && (choice?.why === "writes_off" || choice?.why === "not_connected");
-  const failed = send.error ?? keep.error ?? leave.error;
-  const buttons = done || replaceable ? null : appBuilt ? (
-    left ? null : (
-      <button className="btn btn-wrap" disabled={busy} aria-busy={leave.isPending} onClick={() => leave.mutate()}>
-        Leave the watch as it is
-      </button>
-    )
-  ) : choice ? (
+  const busy = send.isPending || keep.isPending;
+  const why = choice && !choice.send ? watchVersionWhy(choice.why) : null;
+  const toSettings = choice?.why === "writes_off" || choice?.why === "not_connected";
+  const failed = send.error ?? keep.error;
+  // A session the app keeps in step by itself (`mirrored`): its copy is replaced; nothing to press here.
+  const buttons = done || choice?.why === "mirrored" ? null : choice ? (
     <>
       {choice.send ? (
         <button className="btn btn-wrap" disabled={busy} aria-busy={send.isPending} onClick={() => send.mutate()}>
@@ -151,7 +125,6 @@ export function WatchVersion({
         Your watch has an earlier version of this session.
         {why ? ` ${why}` : null}
         {why && toSettings && settingsLink ? <> {settingsLink}</> : null}
-        {appBuilt && left && !replaceable && !done ? " You've left it as it is." : null}
       </p>
       {buttons || done ? (
         <div className="btn-row watch-version-actions" ref={actionsRef} style={done && hold ? { minHeight: hold } : undefined}>
@@ -166,7 +139,7 @@ export function WatchVersion({
       ) : null}
       {failed && !done ? (
         <p className="watch-version-error" role="alert">
-          {watchVersionFailure(failed, appBuilt)}
+          {watchVersionFailure(failed)}
         </p>
       ) : null}
     </div>

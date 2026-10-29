@@ -90,9 +90,9 @@ describe("Retire… in the plan sheet", () => {
     act(() => button("Retire…").click());
     act(() => button("Retire the plan").click());
     expect(button("Retire the plan").disabled).toBe(true);
-    await act(async () => answer("Writing to COROS is switched off. Turn on “Write date changes back to COROS” in Settings, then retire it."));
+    await act(async () => answer("Writing to COROS is switched off. Turn on “Keep my watch in sync with the plan” in Settings, then retire it."));
     expect(document.querySelector('[role="alert"]')?.textContent).toBe(
-      "Writing to COROS is switched off. Turn on “Write date changes back to COROS” in Settings, then retire it.",
+      "Writing to COROS is switched off. Turn on “Keep my watch in sync with the plan” in Settings, then retire it.",
     );
     expect(document.body.textContent).toContain("Retire this plan?");
     expect(button("Retire the plan").disabled).toBe(false);

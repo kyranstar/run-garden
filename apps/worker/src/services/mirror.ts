@@ -36,7 +36,6 @@ import { and, asc, desc, eq, gt, gte, inArray, isNotNull, isNull, lte, notInArra
 import { accountState, corosWriteJobs, plannedWorkouts, sessionBuilds, syncIntents } from "@rg/database";
 import {
   addDays,
-  appAuthoredRow,
   docOriginRow,
   DOC_ORIGINS,
   isRunDoc,
@@ -54,6 +53,7 @@ import { restoreInProgress } from "./account-state.js";
 import { SPENT_STAMP_STATUSES } from "./coros-stamp.js";
 import { enqueueUnpushIfOurs } from "./plan-mutations.js";
 import { mirrorIntentId } from "./mirror-owed.js";
+import { dayRowRefusal, MIRROR_WINDOW_DAYS, rowRefusal, type MirrorRow as RulesRow } from "./mirror-rules.js";
 import {
   activeProfilesOf,
   checksAnswered,
@@ -83,8 +83,8 @@ import {
 // The owed mark lives in a leaf module (the hooks take it from there, mirror-owed.ts); the mirror's callers find it here.
 export { markMirrorOwed, mirrorIntentId } from "./mirror-owed.js";
 
-/** The mirror's window: today … today + 28 days (§3.2). */
-export const MIRROR_WINDOW_DAYS = 28;
+// The window and the row's own refusals live in a leaf (mirror-rules.ts): the sheet's watch state asks them too.
+export { MIRROR_WINDOW_DAYS } from "./mirror-rules.js";
 
 /** A failed push's re-queues (M3): after 1 h, then 6 h, then 24 h; a fourth failure stops. */
 export const MIRROR_RETRY_BACKOFF_MS = [3_600_000, 21_600_000, 86_400_000] as const;
@@ -154,7 +154,7 @@ export interface PushRow {
 }
 
 /** The row fields the current-copy test reads. */
-export type MirrorRow = typeof plannedWorkouts.$inferSelect;
+export type MirrorRow = RulesRow;
 
 /**
  * What the mirror remembers of a session it could not push for a reason only making the copy shows — on its owed mark's
@@ -370,25 +370,6 @@ function takenOn(jobs: readonly MirrorJob[], day: string, exceptId: string): Set
 // ── The verdict ──────────────────────────────────────────────────────────────────────────────────────────────────
 
 type Verdict = { skip: MirrorSkip } | { retry: PushRow } | { push: true };
-
-/** The refusals the row alone answers (no read): the switch, the writes, kept off, not a document, resolved, the window. */
-function rowRefusal(row: MirrorRow, env: Env, ctx: BuildCtx): MirrorSkip | null {
-  if (!watchPushEnabled(env)) return "switch_off";
-  if (!ctx.prefs.corosWritesEnabled) return "writes_off";
-  if (row.watchOff) return "kept_off";
-  // A run is never a document workout's (the Studio refuses one), nor a rest day or a race; a designed run is the coach
-  // lane's (origin null) and mirrors there.
-  if (!docOriginRow(row) || row.workoutDoc === null || row.workoutDocRev === null || row.sport === "run" || row.category === "rest" || row.category === "race") {
-    return "not_document";
-  }
-  // Done, skipped, missed or under way: the copy stays as it is (a done session's is what the athlete did).
-  if (row.archivedAt !== null || row.completionState !== "scheduled" || row.contentState === "started" || row.contentState === "done") {
-    return "resolved";
-  }
-  if (row.effectiveDate < ctx.today) return "past";
-  if (row.effectiveDate > addDays(ctx.today, MIRROR_WINDOW_DAYS)) return "beyond_window";
-  return null;
-}
 
 /**
  * What the mirror does for this row now, from the row, its pushes and its memory (pure): a refusal (a remembered error
@@ -704,30 +685,6 @@ export type DayAnswer =
   /** The day's reading closes a move no alternate stands in for: the copy stays, nothing queued. */
   | "blocked"
   | `skipped:${MirrorSkip}`;
-
-// Spelled out (doc-workouts.ts imports this module's importer): a workout started at once — Start now, played offline.
-const STARTED_AT_ONCE = ["app_only", "app_only_offline"] as const;
-
-/**
- * The refusals the row alone answers for its day's build (no read): the switch, the writes, kept off; not a session the
- * mirror holds on its day (`not_mirrored`: not the app's — the coach's sessions and designed runs mirror in their own
- * lane — a run, a rest day, a race, or a workout started at once, M5); done, skipped, missed, under way or archived
- * (`resolved`); a day other than today. A document workout and an engine slot alike.
- */
-function dayRowRefusal(row: MirrorRow, env: Env, ctx: BuildCtx): MirrorSkip | null {
-  if (!watchPushEnabled(env)) return "switch_off";
-  if (!ctx.prefs.corosWritesEnabled) return "writes_off";
-  if (row.watchOff) return "kept_off";
-  if (!appAuthoredRow(row) || row.sport === "run" || row.category === "rest" || row.category === "race" || isOneOf(STARTED_AT_ONCE, row.calendarSyncState)) {
-    return "not_mirrored";
-  }
-  if (row.archivedAt !== null || row.completionState !== "scheduled" || row.contentState === "started" || row.contentState === "done") {
-    return "resolved";
-  }
-  if (row.effectiveDate < ctx.today) return "past";
-  if (row.effectiveDate > ctx.today) return "not_today";
-  return null;
-}
 
 /**
  * The mirror follows this row's day (`dayRowRefusal` refuses nothing): a change on the day may build past a lock held

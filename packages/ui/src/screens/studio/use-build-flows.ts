@@ -20,6 +20,7 @@ import type { CheckReading } from "@rg/exercise-library";
 import { startEditing, toProposable, type EditorState } from "@rg/workout";
 import { formatDayShort, formatTime } from "../../components.js";
 import { keepStarted } from "../../components/start-session.js";
+import { watchFollows } from "../../components/watch-catch-up.js";
 import type { AccountLibrary } from "../../library/account-library.js";
 import { saveBuild } from "../../offline/builds.js";
 import { offlineDb } from "../../offline/idb.js";
@@ -70,10 +71,8 @@ export interface Status {
   /** Undo the removal: offered until the next edit (every edit clears it), at this depth of the history. */
   undoAt?: number;
   link?: { to: string; label: string };
-  /** The watch holds an older copy of the workout: its Send (the preview, then the push) is offered. */
+  /** The watch holds an older copy of the workout, which the app replaces by itself (the watch mirrors the plan §3.4): said. */
   watch?: { workoutId: string; minutes: number };
-  /** That Send was taken. */
-  sent?: boolean;
   /** What the server judged that this page did not say already (a cost it could see, the frontier with its flags). */
   notes?: string[];
   /** A coach's draft that can't be approved: the athlete's edits are kept, and scheduling them as a new workout offered. */
@@ -325,6 +324,16 @@ export function useBuildFlows({
       },
     };
   };
+
+  /**
+   * THE WATCH FOLLOWS A SAVED CHANGE (the watch mirrors the plan §3.3, §3.7; M1): a workout of today goes on as the day's
+   * build (`watchFollows`: its build asked for, then the drain chain); any other day's copy is made and sent by the drain
+   * chain now (the revise queued the old copy's delete and marked it owed). Then the plan reads what it changed.
+   */
+  const watchFollow = (w: Pick<DocWorkoutDto, "id" | "date">) =>
+    void (w.date === today ? watchFollows([w.id]) : api.drainWatchUntilIdle()).then(({ ran }) => {
+      if (ran > 0) refreshPlan();
+    });
 
   /** A planned workout this page made (or saved): the builder is on it now, at its own address. */
   const adopt = (w: DocWorkoutDto, sent: WorkoutDoc) => {
@@ -696,6 +705,7 @@ export function useBuildFlows({
     }
     refreshPlan();
     adopt(made.workout, doc);
+    watchFollow(made.workout);
     setScheduling(false);
     setStatus(
       when
@@ -721,6 +731,7 @@ export function useBuildFlows({
       const res = await api.createWorkout({ date: when, ...(time ? { time } : {}), doc, clientId: once.clientId });
       once.landed();
       refreshPlan();
+      watchFollow(res.workout);
       if (source.kind === "template") {
         void api
           .useTemplate(source.id)
@@ -804,6 +815,7 @@ export function useBuildFlows({
       if (live.current) setLoaded({ ...live.current, baseline: d, rev: res.rev });
       setStale(false);
       refreshPlan();
+      watchFollow(res.workout);
       void qc.invalidateQueries({ queryKey: workoutDocQuery(id) });
       setStatus({ text: "Saved.", notes: newNotes(res.warnings), ...(res.watchHasOlder ? { watch: { workoutId: id, minutes: res.workout.minutes } } : {}) });
       focusStatus();

@@ -1,4 +1,4 @@
-import { and, desc, eq, inArray, isNotNull, like, lt, ne, notInArray, or, sql, type SQL } from "drizzle-orm";
+import { and, desc, eq, inArray, isNotNull, lt, ne, notInArray, or, sql, type SQL } from "drizzle-orm";
 import {
   auditEvents,
   backfillState,
@@ -26,7 +26,8 @@ import { openIntentFor, openMoveIntents, recordIntent, resolveIntent } from "./s
 import { keepsMark, watchCopyBase } from "./watch-copy-marker.js";
 import { postSyncNote } from "./sync-notes.js";
 import { enqueueProgramUnpush, runOwedUnpushes } from "./watch-push.js";
-import { ADOPTED_COPY_JOB_SUFFIX, enqueueUnpushIfOurs } from "./plan-mutations.js";
+import { enqueueUnpushIfOurs } from "./plan-mutations.js";
+import { watchJobCondition } from "./watch-jobs.js";
 import { markMirrorOwed } from "./mirror-owed.js";
 
 /**
@@ -345,21 +346,8 @@ export async function emitPendingWork(
   return emitted;
 }
 
-/**
- * THE WATCH'S OWN JOBS (the targeted drain's, ruling 3-R11; the watch mirrors the plan §3.7): a program push
- * (`push:<buildId>` — a day build's, or a provisional copy's, `provisional: true`, the same kind), a sent build's delete
- * (`unpush:<buildId>`) and an adopted row's held copy's delete (`<id>-unpush-copy`). Not a coach job, nor an
- * address-path delete (`<id>-unpush`): those are the lanes'. One SQL condition on `coros_write_jobs`.
- */
-export function watchJobCondition(): SQL {
-  return or(
-    eq(corosWriteJobs.kind, "program_session_push"),
-    and(
-      eq(corosWriteJobs.kind, "coach_delete_workout"),
-      or(like(corosWriteJobs.id, "unpush:%"), like(corosWriteJobs.id, `%${ADOPTED_COPY_JOB_SUFFIX}`)),
-    ),
-  )!;
-}
+// The watch's own jobs, as SQL: a leaf (watch-jobs.ts), shared with the sheet's watch state and the account line.
+export { watchJobCondition } from "./watch-jobs.js";
 
 /** How many of the account's watch jobs (`watchJobCondition`) are queued — what is left to drain. ONE COUNT. */
 export async function queuedWatchJobs(db: Db, userId: string): Promise<number> {
