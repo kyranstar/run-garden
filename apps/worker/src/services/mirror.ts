@@ -32,7 +32,7 @@
  * while a restore runs; a day's build is locked by an UPDATE that refuses while one runs (`lockForWatch`) before
  * anything else is written.
  */
-import { and, asc, eq, gte, inArray, isNotNull, isNull, lte, notInArray, or, sql, type SQL } from "drizzle-orm";
+import { and, asc, desc, eq, gt, gte, inArray, isNotNull, isNull, lte, notInArray, or, sql, type SQL } from "drizzle-orm";
 import { accountState, corosWriteJobs, plannedWorkouts, sessionBuilds, syncIntents } from "@rg/database";
 import {
   addDays,
@@ -73,6 +73,7 @@ import {
   NO_CATALOG,
   pushPayloadFor,
   queuePushJob,
+  queueUnpush,
   unlockSentBuild,
   watchStepsAsSent,
   watchStepsFromBuild,
@@ -143,6 +144,12 @@ export interface PushRow {
   retries: number;
   /** The import saw its copy changed in the COROS app (`noticed` on its payload, §3.8): the app's version goes back. */
   noticed?: boolean;
+  /**
+   * Its copy's delete (`unpush:<buildId>`) has been queued and not settled — on its way, run, or given up: a changed copy
+   * whose delete is queued is the mirror's in hand (its replacement follows, or the delete failed for good and the copy
+   * stays the athlete's, as the import told them), so it is not judged again.
+   */
+  unpushed?: boolean;
 }
 
 /** The row fields the current-copy test reads. */
@@ -185,7 +192,8 @@ const isOneOf = (list: readonly string[], status: string): boolean => list.inclu
  *    verified copy's address still names the old day until its delete verifies;
  *  - verified, but the address cleared (the import found the copy gone, §3.8) → not current, so it is pushed again;
  *  - verified, but changed in the COROS app (the import's `noticed`, §3.8) → not current, so the app's copy replaces it
- *    (its replacement on its way, or landed, is current);
+ *    (its replacement on its way, or landed, is current; so is the changed copy once its delete is queued — a day
+ *    build's copy is put back after its delete, under the same push, A6);
  *  - a copy moved in the COROS app that the row followed (the stamp keeps the old date, the address the new) → current.
  * A push that does not say its revision (a day's build sent before the mirror) is judged by its day alone. A day gone
  * owes no copy: current.
@@ -197,7 +205,7 @@ export function currentCopy(row: Pick<MirrorRow, "effectiveDate" | "workoutDocRe
     if (isOneOf(SETTLED, p.status)) return false;
     if (p.fromDocRev !== null && p.fromDocRev !== row.workoutDocRev) return false;
     if (isOneOf(IN_FLIGHT, p.status)) return p.happenDay === row.effectiveDate;
-    return p.status === "verified" && p.noticed !== true && address !== null && address.happenDay === row.effectiveDate;
+    return p.status === "verified" && (p.noticed !== true || p.unpushed === true) && address !== null && address.happenDay === row.effectiveDate;
   });
 }
 
@@ -277,6 +285,11 @@ export interface MirrorJob extends PushRow {
 
 const payloadField = <T>(path: string) => sql<T>`json_extract(${corosWriteJobs.payload}, ${path})`;
 
+/** In SQL, for a push's job id (`push:<buildId>`): its copy's delete (`unpush:<buildId>`) is queued and not settled. */
+const unpushQueued = (pushId: SQL): SQL =>
+  sql`exists (select 1 from coros_write_jobs as unpush where unpush.id = 'unpush:' || substr(${pushId}, ${pushJobId("").length + 1})
+    and unpush.status not in (${sql.join(SETTLED.map((x) => sql`${x}`), sql`, `)}))`;
+
 /**
  * ONE READ for the current-copy test, the sent copy and the new copy's stamp: every stamping job of the account (both
  * lanes) whose stamp is not spent (`takenStampsOn`'s rule), within `scope` — the row's own pushes, and the jobs on the days
@@ -297,6 +310,7 @@ async function mirrorJobs(db: Db, userId: string, scope: SQL, opts: { payloads?:
       fromDocRev: payloadField<number | null>("$.fromDocRev"),
       retries: payloadField<number | null>("$.mirrorRetries"),
       noticed: sql<number>`json_extract(${corosWriteJobs.payload}, '$.noticed') is not null`,
+      unpushed: sql<number>`${unpushQueued(sql`${corosWriteJobs.id}`)}`,
       verifiedAt: corosWriteJobs.verifiedAt,
       updatedAt: corosWriteJobs.updatedAt,
       buildId: sb.id,
@@ -323,6 +337,7 @@ async function mirrorJobs(db: Db, userId: string, scope: SQL, opts: { payloads?:
     fromDocRev: typeof r.fromDocRev === "number" ? r.fromDocRev : null,
     retries: typeof r.retries === "number" ? r.retries : 0,
     noticed: Boolean(r.noticed),
+    unpushed: Boolean(r.unpushed),
     build: buildId !== null && buildVersion !== null ? { version: buildVersion, lockedAt: buildLockedAt, marked: Boolean(buildMarked), date: buildDate } : null,
   }));
 }
@@ -542,6 +557,15 @@ export async function queueProvisionalPush(
   // not spend its run on it again; the next build of the day pushes it (`mirrorOnDayBuild`). One read, for today only.
   const provisionalNext = "push" in verdict || verdict.retry.provisional;
   if (provisionalNext && row.effectiveDate === ctx.today && (await slotPrechecked(db, userId, row.id, row.effectiveDate, ctx.today)) === true) {
+    // …unless the copy is the day's own build already — locked for the watch, of this revision — gone from the watch or
+    // changed there (§3.8): the day's path puts it back now (`mirrorOnDayBuild`: its push again, or the changed copy's
+    // delete first), so the hourly restores today's copy with the app closed (one read for the build). Anything else
+    // that path answers is remembered as today's check, as before.
+    const dayBuild = await lockedDayBuild(db, userId, row, ctx.today);
+    if (dayBuild) {
+      const answer = await mirrorOnDayBuild(db, env, userId, row, dayBuild, ctx, { inputsHash: dayBuild.inputsHash, version: dayBuild.engineVersion });
+      if (answer === "pushing" || answer === "replacing") return finish("queued");
+    }
     return finish("skipped:today_checked", { refused: "today_checked", rev: row.workoutDocRev, day: row.effectiveDate });
   }
   // Re-queued — or, when another request changed the push since it was read (queued or claimed it), on its way already.
@@ -730,11 +754,14 @@ export function sameWatchSteps(a: readonly ProgramWatchStep[], b: readonly Progr
  *  - the pre-check unanswered (`checksAnswered`) → `precheck`: the copy stays as it is (a provisional copy, M1);
  *  - `lockProven`'s preconditions (`lockRefusal`): `blocked` — the day's reading closes a move no alternate stands in
  *    for: the copy stays, nothing queued — or `stale`;
- *  - the copy on the watch (`sentOf`): this build's already → `current`; this build's own push live → `already_pushed`;
+ *  - the copy on the watch (`sentOf`): this build's already → `current` — unless, for a document workout, it is no
+ *    longer current (`restoreDayCopy`, §3.8: gone from the watch → its push again; changed there → its delete first);
+ *    this build's own push live → `already_pushed`;
  *  - none → the build pushed (`pushing`; an adopted row's held copy deleted first — `replacing` then);
  *  - else the build's watch steps, resolved as the copy's were (`watchStepsAsSent`), compared with the copy's
  *    (`sameWatchSteps`; never `pushDigest`, never COROS's fingerprints):
- *     · the same, and the copy verified on the watch at the row's address → HANDED OVER in D1, no COROS write
+ *     · the same, and the copy verified on the watch at the row's address (a document workout's not changed in the
+ *       COROS app) → HANDED OVER in D1, no COROS write
  *       (`handOver`) — from the provisional copy, or from an earlier day build (a later build with nothing new for the
  *       watch: the sent lock moves to the newest build, A9, so the sheet and Start play what the row now holds);
  *     · the same, its push on the wire this moment → `in_flight` (handed over by a later build once it verifies);
@@ -767,7 +794,7 @@ export async function mirrorOnDayBuild(
 
   const jobs = await mirrorJobs(db, userId, rowScope(row), { payloads: true });
   const sent = sentOf(jobs, row);
-  if (sent === dayBuild.id) return "skipped:current";
+  if (sent === dayBuild.id) return restoreDayCopy(db, userId, row, dayBuild, jobs, ctx);
   const own = jobs.find((j) => j.id === pushJobId(dayBuild.id));
   if (own && (isOneOf(IN_FLIGHT, own.status) || own.status === "verified")) return "skipped:already_pushed";
   const held = sent === null ? undefined : jobs.find((j) => j.id === pushJobId(sent));
@@ -776,7 +803,10 @@ export async function mirrorOnDayBuild(
     const same = sameWatchSteps((await watchStepsAsSent(db, userId, stored.build, copy.data)).steps, copy.data.session.steps);
     if (same) {
       const address = watchAddressOf(row);
-      const landed = held.status === "verified" && copy.data.happenDay === row.effectiveDate && address?.happenDay === row.effectiveDate;
+      // A document workout's copy changed in the COROS app (the import's `noticed`, §3.8) is not handed over: the app's
+      // version replaces it. (An engine slot's is, as before: the mirror never mends one.)
+      const changed = docOriginRow(row) && held.noticed === true;
+      const landed = held.status === "verified" && !changed && copy.data.happenDay === row.effectiveDate && address?.happenDay === row.effectiveDate;
       if (landed) return handOver(db, userId, row, dayBuild, held, copy.data, ctx);
       if (isOneOf(IN_FLIGHT, held.status) && held.status !== "queued") return "skipped:in_flight";
     }
@@ -786,6 +816,82 @@ export async function mirrorOnDayBuild(
   // Nothing on the watch to take off: no copy, or one whose push never ran (superseded) — unless an adopted row's.
   const deleted = (held !== undefined && held.status !== "queued") || row.watchCopyName !== null;
   return deleted ? "replacing" : "pushing";
+}
+
+/**
+ * TODAY'S COPY IS THE DAY'S BUILD, BUT NOT CURRENT (the watch mirrors the plan §3.8, A7): a document workout's day build
+ * is the copy on the watch (`sentOf`), its push verified for this revision — and the copy is gone from the watch (rule 8
+ * cleared the address) or changed in the COROS app (the import's `noticed`). The app is the truth:
+ *  - GONE (the address cleared — an address on another day proves nothing gone, and is left): the push is settled
+ *    (`superseded`, only while still verified) and queued again for the same build
+ *    (`replaceCopy`: the build's lock kept, `lockForWatch` coalescing it; the stamp its own again, spent once settled;
+ *    nothing to delete) → `pushing`.
+ *  - CHANGED, still on the watch at the row's address: its delete (`unpush:<buildId>`, under the name COROS holds it by
+ *    and its address), the push left verified — its stamp stays claimed until the delete verifies (A6), when the delete
+ *    executor settles it by name — and the build left locked, so the next pass (the sweep, or the next build) finds the
+ *    locked build with no live push and pushes it again (`replaceCopy`). Never a fresh stamp on the still-verified job.
+ *    → `replacing`. While the delete is queued the copy counts as current (`currentCopy`), so nothing is queued twice.
+ * Anything else — an engine slot (the mirror never mends one), a push not verified (a failed one is the sweep's re-queue,
+ * M3), another revision, a copy current — `current`, as before. Two writes for a gone copy's settle and lock, one or two
+ * for its push; one or two for a changed copy's delete.
+ */
+async function restoreDayCopy(
+  db: Db,
+  userId: string,
+  row: MirrorRow,
+  dayBuild: SessionBuildRow,
+  jobs: readonly MirrorJob[],
+  ctx: BuildCtx,
+): Promise<DayAnswer> {
+  const own = jobs.find((j) => j.id === pushJobId(dayBuild.id));
+  if (!docOriginRow(row) || !own || own.status !== "verified" || (own.fromDocRev !== null && own.fromDocRev !== row.workoutDocRev)) return "skipped:current";
+  if (currentCopy(row, [own], ctx.today)) return "skipped:current";
+  const address = watchAddressOf(row);
+  if (address !== null && address.happenDay === row.effectiveDate) {
+    const copy = programSessionPushJobSchema.safeParse(own.payload);
+    if (!copy.success) return "skipped:current";
+    await queueUnpush(
+      db,
+      userId,
+      dayBuild.id,
+      {
+        workoutId: row.id,
+        happenDay: address.happenDay,
+        // A copy the athlete renamed in the COROS app is held under its new name (audit 3-A life L-5).
+        name: copy.data.renamed ?? copy.data.name,
+        idInPlan: address.idInPlan,
+        programId: address.programId,
+        corosPlanId: address.corosPlanId,
+      },
+      ctx.now,
+    );
+    return "replacing";
+  }
+  // Settled only when the copy is proven gone (the address cleared): a copy whose address names another day may be there.
+  if (address !== null) return "skipped:current";
+  await db
+    .update(corosWriteJobs)
+    .set({ status: "superseded", updatedAt: ctx.now })
+    .where(and(eq(corosWriteJobs.id, own.id), eq(corosWriteJobs.status, "verified")));
+  const settled = jobs.map((j) => (j.id === own.id ? { ...j, status: "superseded" } : j));
+  const answer = await replaceCopy(db, userId, row, dayBuild, settled, ctx);
+  return answer === "queued" ? "pushing" : answer;
+}
+
+/**
+ * The row's day build of `today` locked for the watch, of the row's document revision — the newest such (one read), or
+ * null: the copy the day's path keeps on the watch (`mirrorOnDayBuild`), which the sweep asks to put back (§3.8).
+ */
+async function lockedDayBuild(db: Db, userId: string, row: MirrorRow, today: string): Promise<SessionBuildRow | null> {
+  const sb = sessionBuilds;
+  const [b] = await db
+    .select()
+    .from(sb)
+    .where(and(eq(sb.userId, userId), eq(sb.workoutId, row.id), gt(sb.version, 0), isNotNull(sb.lockedAt), sql`json_extract(${sb.payload}, '$.build.date') = ${today}`))
+    .orderBy(desc(sb.version))
+    .limit(1);
+  if (!b || (b.payload as unknown as StoredBuild).build.fromDoc?.rev !== row.workoutDocRev) return null;
+  return b;
 }
 
 /**
@@ -905,8 +1011,8 @@ function inWindowCondition(today: string, horizon: string): SQL {
  * sweep rather than on a watch job. ONE bounded read (LIMIT 1, nothing read back but a row's existence): an OPEN owed
  * mark (on a row the sweep reads: the mark of a row gone is never its), or a window document workout
  * (`inWindowCondition`, not under way or done, with a revision) WITH NO CURRENT COPY — `currentCopy` in SQL: no push of
- * its revision (or none said) that is on its way for its day, or verified (and not seen changed in the COROS app) with
- * the row holding a COROS address on its day — and NOT REMEMBERED refused for its revision and day (too long, not a
+ * its revision (or none said) that is on its way for its day, or verified (and not seen changed in the COROS app, or its
+ * delete queued) with the row holding a COROS address on its day — and NOT REMEMBERED refused for its revision and day (too long, not a
  * document, today's check answered, an error past its backoff ladder; an error still on the ladder waits out its backoff
  * in the sweep, and is not read here).
  *
@@ -929,11 +1035,13 @@ export async function mirrorNeedsRun(db: Db, userId: string, today: string): Pro
     and ${j.kind} = 'program_session_push'
     and (${field("$.fromDocRev")} is null or ${field("$.fromDocRev")} = ${pw.workoutDocRev})
     and ((${j.status} in (${sql.join(IN_FLIGHT.map((x) => sql`${x}`), sql`, `)}) and ${field("$.happenDay")} = ${pw.effectiveDate})
-      or (${j.status} = 'verified' and ${field("$.noticed")} is null and ${address} and ${pw.lastVerifiedCorosDate} = ${pw.effectiveDate})))`;
-  // Refused for good for this revision and day — or an error past its backoff ladder (`gave_up`, `verdictOf`).
-  const remembered = sql`(${si.id} is not null and ${mark("$.rev")} = ${pw.workoutDocRev} and ${mark("$.day")} = ${pw.effectiveDate}
+      or (${j.status} = 'verified' and (${field("$.noticed")} is null or ${unpushQueued(sql`${j.id}`)}) and ${address}
+        and ${pw.lastVerifiedCorosDate} = ${pw.effectiveDate})))`;
+  // Refused for good for this revision and day — or an error past its backoff ladder (`gave_up`, `verdictOf`). A mark that
+  // remembers nothing (`{}`: settled, or marked again) compares NULL here, which `not` would keep NULL — no row: so 0.
+  const remembered = sql`coalesce((${si.id} is not null and ${mark("$.rev")} = ${pw.workoutDocRev} and ${mark("$.day")} = ${pw.effectiveDate}
     and (${mark("$.refused")} in ('too_long', 'not_document', 'today_checked')
-      or (${mark("$.refused")} = 'error' and coalesce(${mark("$.count")}, 1) > ${MIRROR_RETRY_BACKOFF_MS.length})))`;
+      or (${mark("$.refused")} = 'error' and coalesce(${mark("$.count")}, 1) > ${MIRROR_RETRY_BACKOFF_MS.length}))), 0)`;
   const uncovered = and(
     inWindowCondition(today, addDays(today, MIRROR_WINDOW_DAYS)),
     isNotNull(pw.workoutDocRev),

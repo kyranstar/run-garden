@@ -185,6 +185,22 @@ describe("mirrorNeedsRun — is there work for the sweep? (one read)", () => {
     expect(await mirrorNeedsRun(db, userId, DAY), "the address cleared").toBe(true);
   });
 
+  it("a row whose owed mark was settled (nothing remembered on it), its copy then gone from the watch: true", async () => {
+    const id = await seedDocRow(addDays(DAY, 2));
+    await markMirrorOwed(db, userId, id, NOON);
+    await queued(id);
+    const [push] = await pushesOf(id);
+    await db.update(corosWriteJobs).set({ status: "verified", verifiedAt: NOON }).where(eq(corosWriteJobs.id, push!.id));
+    await db
+      .update(plannedWorkouts)
+      .set({ sourceWorkoutId: "900:41", sourceIdInPlan: "41", sourceProgramId: "77", lastVerifiedCorosDate: addDays(DAY, 2) })
+      .where(eq(plannedWorkouts.id, id));
+    expect(await mirrorNeedsRun(db, userId, DAY), "on the watch, the mark settled").toBe(false);
+    await db.update(plannedWorkouts).set({ sourceWorkoutId: id, sourceIdInPlan: null, sourceProgramId: null, lastVerifiedCorosDate: "" }).where(eq(plannedWorkouts.id, id));
+    // The settled mark's empty memory is no refusal (a NULL in SQL must not read as "remembered").
+    expect(await mirrorNeedsRun(db, userId, DAY), "gone, the mark settled").toBe(true);
+  });
+
   it("a verified copy the import saw changed in the COROS app (`noticed` on its push): true — the sweep replaces it", async () => {
     const id = await seedDocRow(addDays(DAY, 2));
     await queued(id);

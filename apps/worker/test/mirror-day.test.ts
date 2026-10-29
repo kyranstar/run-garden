@@ -17,7 +17,7 @@ import { programSessionPushJobSchema, type UserPreferences, type WorkoutDoc } fr
 import type { Db } from "../src/services/db.js";
 // First of the worker's modules: the mirror binds the mocked watch-push below (the import cycle session-build ↔ mirror ↔
 // watch-push would otherwise hand it the original while the mock is still being made).
-import { mirrorOnDayBuild, queueProvisionalPush } from "../src/services/mirror.js";
+import { markMirrorOwed, mirrorOnDayBuild, mirrorSweep, queueProvisionalPush } from "../src/services/mirror.js";
 import { createSession, SESSION_COOKIE } from "../src/auth/sessions.js";
 import { sessionRoutes } from "../src/routes/sessions.js";
 import { executeCloudJobs } from "../src/services/coros-write-cloud.js";
@@ -313,6 +313,98 @@ describe("every later change on the day (owner §10.1)", () => {
     expect((await jobsOf(id)).filter((j) => j.status === "queued")).toEqual([]);
     expect(await sentBuildIdOf(db, id)).toBe(second.buildId);
     expect(ourPrograms("Hips and back").map((p) => p.name)).toEqual([name]);
+  });
+});
+
+describe("a copy gone from the watch or changed there, on its day (the watch mirrors the plan §3.8)", () => {
+  /** What the import writes when it sees the copy changed in the COROS app: `noticed` on the copy's verified push. */
+  async function noticedChanged(jobId: string): Promise<void> {
+    const job = await jobOf(jobId);
+    await db
+      .update(corosWriteJobs)
+      .set({ payload: { ...(job!.payload as Record<string, unknown>), noticed: { wire: "changed-wire", text: "changed-text" } } })
+      .where(eq(corosWriteJobs.id, jobId));
+  }
+  /** What rule 8 writes after two full reads without the copy: the address cleared. */
+  const addressCleared = (id: string) =>
+    db
+      .update(plannedWorkouts)
+      .set({ sourceWorkoutId: id, sourceIdInPlan: null, sourceProgramId: null, lastVerifiedCorosDate: "", corosSyncState: "calendar_only" })
+      .where(eq(plannedWorkouts.id, id));
+  /** Today's build, checked, pushed by the mirror and driven to the watch: the day's build is the copy. */
+  async function dayCopy(id: string): Promise<string> {
+    const day = (await build(id, calm)).build!;
+    expect((await jobOf(`push:${day.buildId}`))!.status).toBe("queued");
+    await executeCloudJobs(db, switchOn(), userId, prefs, { fetchImpl: server.fetchImpl });
+    expect((await jobOf(`push:${day.buildId}`))!.status).toBe("verified");
+    expect((await rowOf(db, id)).lastVerifiedCorosDate).toBe(DAY);
+    return day.buildId;
+  }
+
+  it("a provisional copy changed in the COROS app, then the day's build with the same steps: replaced (the copy's delete, the build's push) — never handed over", async () => {
+    const id = await seedDocRow();
+    const { recordId, name } = await provisionalCopy(id);
+    await noticedChanged(`push:${recordId}`);
+    // The day build made with no env (the mirror did not run), then the day's path asked.
+    const made = (await buildSession(db, userId, id, { checks: calm }, { today: DAY, now: NOON, prefs })).build!;
+    const dayBuild = await buildOf(made.buildId);
+    const answer = await mirrorOnDayBuild(db, switchOn(), userId, await rowOf(db, id), dayBuild, ctx(), {
+      profiles: ["tmj"], inputsHash: dayBuild.inputsHash, version: dayBuild.engineVersion,
+    });
+    expect(answer).toBe("replacing");
+    expect((await buildOf(made.buildId)).lockedAt).toBe(NOON);
+    expect((await jobsOf(id)).map((j) => [j.id, j.status])).toEqual([
+      [`push:${recordId}`, "verified"],
+      [`unpush:${recordId}`, "queued"],
+      [`push:${made.buildId}`, "queued"],
+    ]);
+    expect((await jobOf(`unpush:${recordId}`))!.payload).toMatchObject({ name });
+    await executeCloudJobs(db, switchOn(), userId, prefs, { fetchImpl: server.fetchImpl });
+    expect(ourPrograms("Hips and back")).toHaveLength(1);
+  });
+
+  it("the day's build the copy, gone from the watch: the sweep (the pre-check answered) queues its push again — one job, the build kept locked, its own stamp — within 15 statements", async () => {
+    const id = await seedDocRow();
+    const buildId = await dayCopy(id);
+    const stamp = (await pushPayload(buildId)).name;
+    await addressCleared(id);
+    await markMirrorOwed(db, userId, id, NOON);
+    statements = [];
+    const swept = await mirrorSweep(db, switchOn(), userId, prefs, { today: DAY, now: NOON, prefs }, { cap: 1 });
+    console.info(`[budget] the sweep puts today's day build back: ${statements.length} D1 (${statements.filter(isWrite).length} writes)`);
+    expect(swept).toMatchObject({ queued: 1, attempted: 1 });
+    expect(statements.length).toBeLessThanOrEqual(15);
+    expect((await jobsOf(id)).map((j) => [j.id, j.status])).toEqual([[`push:${buildId}`, "queued"]]);
+    expect((await buildOf(buildId)).lockedAt).toBe(NOON);
+    expect((await pushPayload(buildId)).name).toBe(stamp);
+    await executeCloudJobs(db, switchOn(), userId, prefs, { fetchImpl: server.fetchImpl });
+    expect(ourPrograms("Hips and back").map((p) => p.name)).toEqual([stamp]);
+  });
+
+  it("the day's build the copy, changed in the COROS app: the sweep queues its delete (the push left verified, the build locked) — within 15 statements — and nothing more while it is queued", async () => {
+    const id = await seedDocRow();
+    const buildId = await dayCopy(id);
+    await noticedChanged(`push:${buildId}`);
+    await markMirrorOwed(db, userId, id, NOON);
+    statements = [];
+    const swept = await mirrorSweep(db, switchOn(), userId, prefs, { today: DAY, now: NOON, prefs }, { cap: 1 });
+    console.info(`[budget] the sweep takes today's changed copy off: ${statements.length} D1 (${statements.filter(isWrite).length} writes)`);
+    expect(swept).toMatchObject({ queued: 1, attempted: 1 });
+    expect(statements.length).toBeLessThanOrEqual(15);
+    expect((await jobsOf(id)).map((j) => [j.id, j.status])).toEqual([[`push:${buildId}`, "verified"], [`unpush:${buildId}`, "queued"]]);
+    expect((await buildOf(buildId)).lockedAt).toBe(NOON);
+    expect(await mirrorSweep(db, switchOn(), userId, prefs, { today: DAY, now: NOON, prefs }, { cap: 1 })).toMatchObject({ queued: 0, attempted: 0 });
+    // The build commit meanwhile: nothing twice.
+    await build(id);
+    expect((await jobsOf(id)).map((j) => [j.id, j.status])).toEqual([[`push:${buildId}`, "verified"], [`unpush:${buildId}`, "queued"]]);
+  });
+
+  it("an engine slot's day build, its copy gone from the watch: the build commit queues nothing (the mirror never mends one)", async () => {
+    const id = await seedSlot(db, userId, programId, DAY);
+    const buildId = await dayCopy(id);
+    await addressCleared(id);
+    await build(id);
+    expect((await jobsOf(id)).map((j) => [j.id, j.status])).toEqual([[`push:${buildId}`, "verified"]]);
   });
 });
 
