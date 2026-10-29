@@ -1086,13 +1086,14 @@ describe("the watch line is a status (the watch mirrors the plan §3.9)", () => 
     }
   });
 
-  it("each state's one action: Keep off on a copy on its way or on the watch; Retry on a failed push; Put on when kept off; else none", async () => {
+  it("each state's actions: Keep off on a copy on its way or on the watch; Retry and Keep off on a failed push; Put on when kept off; else none", async () => {
     features.player = true;
     const cases: Array<[SessionDto["watch"], string[]]> = [
       [{ state: "on_watch" }, ["What's on your watch", "Keep off my watch"]],
       [{ state: "updating" }, ["Keep off my watch"]],
       [{ state: "sending" }, ["Keep off my watch"]],
-      [{ state: "failed" }, ["Retry"]],
+      [{ state: "failed" }, ["Retry", "Keep off my watch"]],
+      [{ state: "failed", retrying: false }, ["Retry", "Keep off my watch"]],
       [{ state: "kept_off" }, ["Put on my watch"]],
       [{ state: "closed_by_check" }, []],
       [{ state: "unavailable", reason: "too_long" }, []],
@@ -1199,6 +1200,26 @@ describe("the watch line is a status (the watch mirrors the plan §3.9)", () => 
     expect(watchCalls(calls).slice(0, 2)).toEqual(["POST …/retry-watch", "POST /api/sessions/watch/drain"]);
     expect(calls.some((c) => c.path.endsWith("/send-to-watch") || c.path.endsWith("/watch-preview"))).toBe(false);
     expect(calls.find((c) => c.path.endsWith("/retry-watch"))!.body).toEqual({});
+  });
+
+  it("a failed push offers Keep off beside Retry, on both wordings — the sweep may keep re-queuing it for hours: Keep off asks first, then keeps it off", async () => {
+    features.player = true;
+    for (const [watch, words] of [
+      [{ state: "failed", retrying: true }, "Couldn't reach COROS — retrying"],
+      [{ state: "failed", retrying: false }, "Couldn't reach COROS"],
+    ] as const) {
+      const { calls } = mount(session({ watch }), { route: watchRoutes() });
+      await until(() => label() === words, words);
+      expect(button("Retry")).toBeTruthy();
+      await click("Keep off my watch");
+      expect(body()).toContain("Keep this session off your watch?");
+      expect(calls.some((c) => c.path.endsWith("/keep-off-watch"))).toBe(false);
+      await act(async () => [...document.querySelectorAll<HTMLButtonElement>(".btn-danger")].find((b) => b.textContent === "Keep off my watch")!.click());
+      await until(() => label() === "Kept off your watch", "kept off");
+      expect(calls.some((c) => c.path.endsWith("/retry-watch"))).toBe(false);
+      act(() => root?.unmount());
+      host?.remove();
+    }
   });
 
   it("a failed push nothing will retry: Couldn't reach COROS, with Retry all the same", async () => {

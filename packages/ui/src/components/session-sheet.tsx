@@ -794,9 +794,10 @@ export function SessionSheet({ w, today, onClose }: { w: WorkoutDto; today: stri
       );
     }
   }
-  // The watch's state, in the foot (owner call 7): a status, each with at most its one action — Keep off my watch on a
-  // session on its way to the watch or on it (asked first), Retry on a failed push, Put on my watch on one kept off —
-  // and "What's on your watch", the copy's read-only preview, beside "On your watch" (M6).
+  // The watch's state, in the foot (owner call 7): a status, with its action — Keep off my watch on a session on its way
+  // to the watch or on it (asked first), Retry on a failed push and Keep off beside it (the sweep may keep re-queuing a
+  // failed push for hours: the athlete can still keep it off), Put on my watch on one kept off — and "What's on your
+  // watch", the copy's read-only preview, beside "On your watch" (M6).
   //
   // ONE STATUS REGION, KEPT (audit 3-B UI-10): from one state to the next the row and its `role="status"` label are the
   // same nodes, so the outcome the athlete waits for is announced — a live region added with its words already in it
@@ -831,9 +832,15 @@ export function SessionSheet({ w, today, onClose }: { w: WorkoutDto; today: stri
             Keep off my watch
           </button>
         ) : state === "failed" && !skipped ? (
-          <button ref={watchControl} type="button" className="btn btn-small" disabled={retry.isPending} onClick={() => retry.mutate()}>
-            Retry
-          </button>
+          <>
+            <button ref={watchControl} type="button" className="btn btn-small" disabled={retry.isPending} onClick={() => retry.mutate()}>
+              Retry
+            </button>
+            {/* Both failed wordings: `keepOffWatch` takes a failed sent push off as it takes any (final review Minor 6). */}
+            <button type="button" className="btn btn-small" disabled={keepOff.isPending} onClick={askKeepOff}>
+              Keep off my watch
+            </button>
+          </>
         ) : state === "kept_off" ? (
           <button ref={watchControl} type="button" className="btn btn-small" disabled={putOn.isPending} onClick={() => putOn.mutate()}>
             Put on my watch
