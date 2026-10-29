@@ -17,7 +17,7 @@ import { programSessionPushJobSchema, type UserPreferences, type WorkoutDoc } fr
 import type { Db } from "../src/services/db.js";
 // First of the worker's modules: the mirror binds the mocked watch-push below (the import cycle session-build ↔ mirror ↔
 // watch-push would otherwise hand it the original while the mock is still being made).
-import { markMirrorOwed, mirrorOnDayBuild, mirrorSweep, queueProvisionalPush } from "../src/services/mirror.js";
+import { markMirrorOwed, MIRROR_RETRY_BACKOFF_MS, mirrorNeedsRun, mirrorOnDayBuild, mirrorSweep, queueProvisionalPush } from "../src/services/mirror.js";
 import { createSession, SESSION_COOKIE } from "../src/auth/sessions.js";
 import { sessionRoutes } from "../src/routes/sessions.js";
 import { executeCloudJobs } from "../src/services/coros-write-cloud.js";
@@ -207,6 +207,42 @@ describe("the day's build of a document workout whose provisional copy is on the
     expect(payload).toMatchObject({ buildId: day.buildId, happenDay: DAY, name: `${name} (2)`, fromDocRev: 1 });
     expect(payload.provisional).toBeUndefined();
     expect(await sentBuildIdOf(db, id)).toBe(day.buildId);
+  });
+
+  it("a gated swap during a COROS outage (final review Important 1): the copy's delete fails for good while the day build lands — the sweep queues that delete again after its backoff, and one copy is left", async () => {
+    const id = await seedDocRow(landingsDoc());
+    const { recordId, name } = await provisionalCopy(id);
+    const day = (await build(id, flare)).build!;
+    expect(await jobOf(`unpush:${recordId}`)).toMatchObject({ status: "queued" });
+    // The outage: the drains land the day build, then spend the old copy's delete's three tries.
+    const deletesFail: typeof fetch = (async (input: string | URL | Request, init?: RequestInit) => {
+      const url = new URL(typeof input === "string" ? input : input instanceof URL ? input.href : input.url);
+      if (url.pathname === "/training/schedule/update" && (JSON.parse(String(init?.body)) as { versionObjects?: Array<{ status?: number }> }).versionObjects?.[0]?.status === 3) {
+        throw new TypeError("fetch failed");
+      }
+      return server.fetchImpl(input, init);
+    }) as typeof fetch;
+    vi.setSystemTime(new Date(after(60_000)));
+    for (let i = 0; i < 4; i += 1) await executeCloudJobs(db, switchOn(), userId, prefs, { fetchImpl: deletesFail, cap: 1, watchOnly: true });
+    expect((await jobOf(`push:${day.buildId}`))!.status).toBe("verified");
+    expect((await jobOf(`unpush:${recordId}`))!.status).toBe("failed");
+    expect(ourPrograms("Legs and landings")).toHaveLength(2);
+    expect(await mirrorNeedsRun(db, userId, DAY)).toBe(true);
+
+    const sweep = (now: string) => mirrorSweep(db, switchOn(), userId, prefs, { today: DAY, now, prefs }, { cap: 1 });
+    expect((await sweep(after(60_000 + MIRROR_RETRY_BACKOFF_MS[0] - 1000))).queued).toBe(0);
+    expect((await sweep(after(60_000 + MIRROR_RETRY_BACKOFF_MS[0]))).queued).toBe(1);
+    expect(await jobOf(`unpush:${recordId}`)).toMatchObject({ status: "queued" });
+    expect((await jobOf(`unpush:${recordId}`))!.payload).toMatchObject({ name, mirrorRetries: 1 });
+    // The day build stays the copy on the watch, locked: nothing else is queued for the row.
+    expect(await sentBuildIdOf(db, id)).toBe(day.buildId);
+    expect((await jobsOf(id)).filter((j) => j.status === "queued").map((j) => j.id)).toEqual([`unpush:${recordId}`]);
+
+    vi.setSystemTime(new Date(after(60_000 + MIRROR_RETRY_BACKOFF_MS[0] + 60_000)));
+    await executeCloudJobs(db, switchOn(), userId, prefs, { fetchImpl: server.fetchImpl });
+    expect((await jobOf(`unpush:${recordId}`))!.status).toBe("verified");
+    expect(ourPrograms("Legs and landings").map((p) => p.name)).toEqual([(await pushPayload(day.buildId)).name]);
+    expect(await mirrorNeedsRun(db, userId, DAY)).toBe(false);
   });
 
   it("blocked (no alternate stands in): the copy stays, nothing is queued, nothing locked", async () => {

@@ -285,6 +285,11 @@ export const coachDeleteWorkoutJobSchema = z
     corosPlanId: z.string().min(1),
     /** Executor-side retry counter (transient failures requeue, cap 3). */
     attempts: z.number().int().min(0).optional(),
+    /**
+     * The mirror sweep's re-queues of a replaced copy's delete (`unpush:<buildId>`) that failed for good or a restore
+     * neutralised (the watch mirrors the plan, final review Important 1): its 1 h / 6 h / 24 h ladder, a cap of three.
+     */
+    mirrorRetries: z.number().int().min(0).optional(),
   })
   .strict();
 export type CoachDeleteWorkoutJob = z.infer<typeof coachDeleteWorkoutJobSchema>;

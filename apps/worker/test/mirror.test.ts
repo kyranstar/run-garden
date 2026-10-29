@@ -24,11 +24,13 @@ import {
   markMirrorOwed,
   MIRROR_RETRY_BACKOFF_MS,
   MIRROR_WINDOW_DAYS,
+  mirrorNeedsRun,
   mirrorSweep,
   queueProvisionalPush,
   queueReplacement,
   type PushRow,
 } from "../src/services/mirror.js";
+import { keepOffWatch } from "../src/services/watch-push.js";
 import { mockCorosServer, type MockCorosServer } from "../../../packages/coros/test/mock-coros-server.js";
 import { isWrite, makeTestDb, makeTestUser } from "./helpers.js";
 import { calmDoc, landingsDoc } from "./doc-workout-fixture.js";
@@ -885,5 +887,205 @@ describe("driven through the lane (the mock COROS)", () => {
     expect((await jobOf(`push:${tomorrowRecord!.id}`))!.status).toBe("verified");
     expect(ourPrograms("Hips and back")).toHaveLength(2);
     expect((await mirrorSweep(db, switchOn(), userId, prefs, ctx(), { cap: 1 })).queued).toBe(0);
+  });
+});
+
+/**
+ * A REPLACED COPY WHOSE DELETE FAILED FOR GOOD (final review Important 1). A revise, a move or a day's replacement queues
+ * the old copy's delete (`unpush:A`) and the new copy's push (`push:B`); a COROS outage can spend the delete's three
+ * tries while the push lands, and then the watch holds A and B. The sweep heals it: a verified push of the row that is
+ * no longer its copy on the watch (its build let go — or the row kept off, skipped, removed) whose delete failed for
+ * good (a bare error, not a refusal), needs attention, or was neutralised by a restore, has that same delete queued
+ * again — its own job, address and stamp (the name COROS holds it by), never a new stamp on a verified job (A6) — on the
+ * M3 ladder (1 h, 6 h, 24 h, then left), counted on the delete (`mirrorRetries`).
+ */
+describe("a replaced copy whose delete failed for good (final review Important 1)", () => {
+  const D = addDays(DAY, 2);
+  const unpushPayload = async (buildId: string) => (await jobOf(`unpush:${buildId}`))!.payload as Record<string, unknown>;
+  /** COROS's deletes failing at the network (a short outage); everything else goes through. */
+  const deletesFail: typeof fetch = (async (input: string | URL | Request, init?: RequestInit) => {
+    const url = new URL(typeof input === "string" ? input : input instanceof URL ? input.href : input.url);
+    if (url.pathname === "/training/schedule/update") {
+      const body = JSON.parse(String(init?.body)) as { versionObjects?: Array<{ status?: number }> };
+      if (body.versionObjects?.[0]?.status === 3) throw new TypeError("fetch failed");
+    }
+    return server.fetchImpl(input, init);
+  }) as typeof fetch;
+
+  /** A copy on the watch (A), revised: its delete and the new copy's push queued by the sweep; B verified by hand. */
+  async function replaced(): Promise<{ id: string; a: string; b: string; stampA: string }> {
+    const id = await seedDocRow(D);
+    await queue(id);
+    const [a] = await recordsOf(id);
+    await verifyByHand(id, a!.id, D, "41");
+    const stampA = (await pushPayload(a!.id)).name;
+    await revise(id);
+    expect((await mirrorSweep(db, switchOn(), userId, prefs, ctx(), { cap: 1 })).queued).toBe(1);
+    const [b] = await recordsOf(id);
+    expect(await jobOf(`unpush:${a!.id}`)).toMatchObject({ status: "queued" });
+    await verifyByHand(id, b!.id, D, "42");
+    expect(await sentBuildIdOf(db, id)).toBe(b!.id);
+    return { id, a: a!.id, b: b!.id, stampA };
+  }
+  /** The executor's last failure of the delete: failed for good, its own tries spent, `updatedAt` = when. */
+  const failDelete = async (buildId: string, at: string, category = "error") =>
+    db
+      .update(corosWriteJobs)
+      .set({ status: "failed", lastErrorCategory: category, updatedAt: at, payload: { ...(await unpushPayload(buildId)), attempts: 2 } })
+      .where(eq(corosWriteJobs.id, `unpush:${buildId}`));
+  const sweepAt = (now: string) => mirrorSweep(db, switchOn(), userId, prefs, ctx({ now }), { cap: 1 });
+
+  it("driven through the lane: the delete fails three times while the new copy lands — the next sweep after its backoff queues A's delete again under A's stamp, and one copy is left", async () => {
+    const id = await seedDocRow(D);
+    expect(await queue(id)).toBe("queued");
+    const [a] = await recordsOf(id);
+    await executeCloudJobs(db, switchOn(), userId, prefs, { fetchImpl: server.fetchImpl, cap: 1 });
+    expect((await jobOf(`push:${a!.id}`))!.status).toBe("verified");
+    const stampA = (await pushPayload(a!.id)).name;
+    await revise(id);
+    expect((await mirrorSweep(db, switchOn(), userId, prefs, ctx(), { cap: 1 })).queued).toBe(1);
+    const [b] = await recordsOf(id);
+    const addressA = await unpushPayload(a!.id);
+
+    // The outage: the chain's drains (one job each, pushes first) land B, then spend A's delete's three tries.
+    vi.setSystemTime(new Date(after(60_000)));
+    const drain = () => executeCloudJobs(db, switchOn(), userId, prefs, { fetchImpl: deletesFail, cap: 1, watchOnly: true });
+    expect(await drain()).toEqual({ executed: 1 });
+    expect((await jobOf(`push:${b!.id}`))!.status).toBe("verified");
+    expect(await drain()).toEqual({ executed: 1, retried: 1 });
+    expect(await drain()).toEqual({ executed: 1, retried: 1 });
+    expect(await drain()).toEqual({ executed: 1 });
+    expect((await jobOf(`unpush:${a!.id}`))!.status).toBe("failed");
+    expect(ourPrograms("Hips and back")).toHaveLength(2);
+    expect(await mirrorNeedsRun(db, userId, DAY)).toBe(true);
+
+    // Not before its backoff (B is current: nothing else to do).
+    expect(await sweepAt(after(60_000 + MIRROR_RETRY_BACKOFF_MS[0] - 1000))).toEqual({ queued: 0, attempted: 0, skipped: { current: 1 } });
+    expect((await jobOf(`unpush:${a!.id}`))!.status).toBe("failed");
+    statements = [];
+    expect(await sweepAt(after(60_000 + MIRROR_RETRY_BACKOFF_MS[0]))).toEqual({ queued: 1, attempted: 1, skipped: {} });
+    console.info(`[budget] mirrorSweep, a stranded copy's delete queued again: ${statements.length} D1 (${statements.filter(isWrite).length} writes)`);
+    expect(statements.length).toBeLessThanOrEqual(15);
+    const again = await jobOf(`unpush:${a!.id}`);
+    expect(again).toMatchObject({ status: "queued", kind: "coach_delete_workout", lastErrorCategory: null });
+    const { attempts, mirrorRetries, ...kept } = again!.payload as Record<string, unknown>;
+    expect(attempts).toBeUndefined();
+    expect(mirrorRetries).toBe(1);
+    const { attempts: _a, ...was } = addressA;
+    expect(kept).toEqual({ ...was, name: stampA });
+    // The verified push of A is left as it is (A6): its stamp stays claimed until the delete verifies.
+    expect((await jobOf(`push:${a!.id}`))!.status).toBe("verified");
+    expect(await mirrorNeedsRun(db, userId, DAY)).toBe(false);
+
+    // COROS back: the delete verifies; B alone is on the watch, and stays.
+    vi.setSystemTime(new Date(after(60_000 + MIRROR_RETRY_BACKOFF_MS[0] + 60_000)));
+    await executeCloudJobs(db, switchOn(), userId, prefs, { fetchImpl: server.fetchImpl });
+    expect((await jobOf(`unpush:${a!.id}`))!.status).toBe("verified");
+    expect((await jobOf(`push:${a!.id}`))!.status).toBe("superseded");
+    expect(storedProgram(stampA)).toBeUndefined();
+    expect(storedProgram((await pushPayload(b!.id)).name)).toBeDefined();
+    expect(ourPrograms("Hips and back")).toHaveLength(1);
+    expect(await mirrorNeedsRun(db, userId, DAY)).toBe(false);
+    expect((await sweepAt(after(60_000 + 2 * MIRROR_RETRY_BACKOFF_MS[2]))).queued).toBe(0);
+  });
+
+  it("on the ladder: after 1 h, 6 h and 24 h — never before — then left; mirrorNeedsRun says so while it is on it", async () => {
+    const { a, stampA } = await replaced();
+    let failedAt = NOON;
+    await failDelete(a, failedAt);
+    for (let n = 0; n < MIRROR_RETRY_BACKOFF_MS.length; n++) {
+      const wait = MIRROR_RETRY_BACKOFF_MS[n]!;
+      expect(await mirrorNeedsRun(db, userId, DAY)).toBe(true);
+      expect((await sweepAt(new Date(Date.parse(failedAt) + wait - 1000).toISOString())).queued).toBe(0);
+      expect((await jobOf(`unpush:${a}`))!.status).toBe("failed");
+      const due = new Date(Date.parse(failedAt) + wait).toISOString();
+      expect((await sweepAt(due)).queued).toBe(1);
+      expect(await jobOf(`unpush:${a}`)).toMatchObject({ status: "queued", requestedAt: due });
+      expect(await unpushPayload(a)).toMatchObject({ name: stampA, idInPlan: "41", mirrorRetries: n + 1 });
+      failedAt = new Date(Date.parse(due) + 60_000).toISOString();
+      await failDelete(a, failedAt);
+    }
+    // Three re-queues spent: left, however long it waits — and nothing for the sweep to run on.
+    expect((await sweepAt(new Date(Date.parse(failedAt) + 30 * 86_400_000).toISOString())).queued).toBe(0);
+    expect((await jobOf(`unpush:${a}`))!.status).toBe("failed");
+    expect(await mirrorNeedsRun(db, userId, DAY)).toBe(false);
+  });
+
+  it("never the live copy, a delete still on its way, a refusal, or a copy of a day gone", async () => {
+    const later = after(2 * MIRROR_RETRY_BACKOFF_MS[2]);
+    // The live copy: B is the copy on the watch; a failed delete of B (as a changed copy's) is not the sweep's to repeat.
+    const live = await replaced();
+    await db.update(corosWriteJobs).set({ status: "verified", verifiedAt: NOON, completedAt: NOON }).where(eq(corosWriteJobs.id, `unpush:${live.a}`));
+    await db.insert(corosWriteJobs).values({
+      id: `unpush:${live.b}`, userId, workoutId: live.id, kind: "coach_delete_workout", expectedContentFingerprint: "", originalDate: D, destinationDate: D,
+      payload: { workoutId: live.id, happenDay: D, name: "x", idInPlan: "42", programId: "77", corosPlanId: "900" }, requestedAt: after(1000),
+      status: "failed", lastErrorCategory: "error", updatedAt: NOON,
+    });
+    expect(await mirrorNeedsRun(db, userId, DAY)).toBe(false);
+    expect((await sweepAt(later)).queued).toBe(0);
+    expect((await jobOf(`unpush:${live.b}`))!.status).toBe("failed");
+    await db.delete(corosWriteJobs).where(eq(corosWriteJobs.userId, userId));
+    await db.delete(plannedWorkouts).where(eq(plannedWorkouts.id, live.id));
+
+    // A delete still on its way (queued, or claimed by the lane): left to the lane.
+    for (const status of ["queued", "claimed"]) {
+      const { id, a } = await replaced();
+      await db.update(corosWriteJobs).set({ status, updatedAt: NOON }).where(eq(corosWriteJobs.id, `unpush:${a}`));
+      expect(await mirrorNeedsRun(db, userId, DAY)).toBe(false);
+      expect((await sweepAt(later)).queued).toBe(0);
+      expect(await jobOf(`unpush:${a}`)).toMatchObject({ status, requestedAt: NOON });
+      await db.delete(plannedWorkouts).where(eq(plannedWorkouts.id, id));
+    }
+
+    // A refusal (the copy edited, renamed or moved in COROS, or ambiguous): the lane's verdict, never repeated.
+    const refused = await replaced();
+    await failDelete(refused.a, NOON, "stamp_mismatch");
+    expect(await mirrorNeedsRun(db, userId, DAY)).toBe(false);
+    expect((await sweepAt(later)).queued).toBe(0);
+    expect((await jobOf(`unpush:${refused.a}`))!.status).toBe("failed");
+    await db.delete(plannedWorkouts).where(eq(plannedWorkouts.id, refused.id));
+
+    // A copy on a day gone: nothing owes it a delete now.
+    const gone = await replaced();
+    await failDelete(gone.a, NOON);
+    const past = addDays(DAY, 3);
+    expect(await mirrorNeedsRun(db, userId, past)).toBe(false);
+    expect((await mirrorSweep(db, switchOn(), userId, prefs, ctx({ today: past, now: later }), { cap: 1 })).queued).toBe(0);
+    expect((await jobOf(`unpush:${gone.a}`))!.status).toBe("failed");
+  });
+
+  it("a full window beside a stranded copy: the sweep's reads stay within D1's 100 bound variables, and the stranded delete goes first", async () => {
+    const { a } = await replaced();
+    await failDelete(a, NOON);
+    // More window sessions than a run reads (60), every one owing a copy.
+    for (let i = 0; i < 62; i += 1) await seedDocRow(addDays(DAY, 1 + (i % MIRROR_WINDOW_DAYS)));
+    const run = await sweepAt(after(MIRROR_RETRY_BACKOFF_MS[0]));
+    expect(run).toMatchObject({ queued: 1, attempted: 1 });
+    expect(await jobOf(`unpush:${a}`)).toMatchObject({ status: "queued" });
+    // The next run makes the soonest window session's copy, as before.
+    expect(await sweepAt(after(MIRROR_RETRY_BACKOFF_MS[0] + 1000))).toMatchObject({ queued: 1, attempted: 1 });
+  });
+
+  it("a restore that cancelled Keep off's delete: the delete is queued again after the backoff, the session still kept off and nothing pushed", async () => {
+    const id = await seedDocRow(D);
+    await queue(id);
+    const [a] = await recordsOf(id);
+    await verifyByHand(id, a!.id, D, "41");
+    const stampA = (await pushPayload(a!.id)).name;
+    await keepOffWatch(db, userId, id, ctx());
+    expect(await jobOf(`unpush:${a!.id}`)).toMatchObject({ status: "queued" });
+    // The account restored from a file taken while the delete waited: neutralised (B3), the copy still on the watch.
+    await db.update(corosWriteJobs).set({ status: "restored", completedAt: NOON, updatedAt: NOON }).where(eq(corosWriteJobs.id, `unpush:${a!.id}`));
+    expect(await mirrorNeedsRun(db, userId, DAY)).toBe(true);
+    expect((await sweepAt(after(MIRROR_RETRY_BACKOFF_MS[0] - 1000))).queued).toBe(0);
+    expect((await sweepAt(after(MIRROR_RETRY_BACKOFF_MS[0]))).queued).toBe(1);
+    expect(await jobOf(`unpush:${a!.id}`)).toMatchObject({ status: "queued" });
+    expect(await unpushPayload(a!.id)).toMatchObject({ name: stampA, mirrorRetries: 1 });
+    expect((await rowOf(db, id)).watchOff).toBe(true);
+    expect((await jobsOf(id)).map((j) => [j.id, j.status])).toEqual([
+      [`push:${a!.id}`, "verified"],
+      [`unpush:${a!.id}`, "queued"],
+    ]);
+    expect(await recordsOf(id)).toHaveLength(1);
   });
 });

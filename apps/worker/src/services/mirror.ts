@@ -14,7 +14,9 @@
  *
  * THE SWEEP (§3.7, A5) is the hourly's one heavy step: one record a run, the owed sessions first, then the window's,
  * soonest day first, for each the current-copy test (`currentCopy`, A7). A push that failed for good is re-queued on
- * MIRROR_RETRY_BACKOFF_MS, three times at most (M3). Writes off (`prefs.corosWritesEnabled`) or the switch off
+ * MIRROR_RETRY_BACKOFF_MS, three times at most (M3). A replaced copy left on the watch — its delete failed for good, or
+ * neutralised by a restore — has that delete queued again on the same ladder (`strandedCopyOf`, final review
+ * Important 1), so one copy per session holds after a COROS outage too. Writes off (`prefs.corosWritesEnabled`) or the switch off
  * (`WATCH_PUSH_ENABLED`): nothing is read and nothing is queued; the owed marks stay open, so the sweep catches up when
  * they come back on.
  *
@@ -87,6 +89,7 @@ import {
   queuePushJob,
   queueUnpush,
   unlockSentBuild,
+  unpushJobId,
   watchStepsAsSent,
   watchStepsFromBuild,
   type PushableBuild,
@@ -254,13 +257,56 @@ export interface MirrorJob extends PushRow {
   workoutId: string;
   kind: string;
   name: string | null;
+  /** The name the athlete gave the copy in the COROS app (`$.renamed`, the import's record): the name COROS holds it by. */
+  renamed: string | null;
+  /** For a program push, its copy's delete (`unpush:<buildId>`) if there is one — what `strandedCopyOf` reads. */
+  copyDelete: CopyDelete | null;
   /** The pushed build: its version, lock, provisional mark and day; null when it is not a program push's, or gone. */
   build: { version: number; lockedAt: string | null; marked: boolean; date: string | null } | null;
   /** The job's payload, when the read asked for it (`mirrorJobs`' `payloads`: the day's comparison reads the copy's). */
   payload?: unknown;
 }
 
+/** A program push's own delete (`unpush:<buildId>`), as the stranded-copy rule reads it (`strandedCopyOf`). */
+export interface CopyDelete {
+  status: string;
+  requestedAt: string;
+  /** When the job last changed: for a failed delete, when it failed. */
+  updatedAt: string;
+  /** Why it failed (`last_error_category`): a bare `error` is transient, a refusal is the lane's verdict. */
+  error: string | null;
+  /** The sweep's re-queues of it (`$.mirrorRetries`). */
+  retries: number;
+  /** The day the copy it deletes sits on. */
+  happenDay: string;
+}
+
 const payloadField = <T>(path: string) => sql<T>`json_extract(${corosWriteJobs.payload}, ${path})`;
+
+/**
+ * The length of `push:` (`pushJobId`), which `unpush:` replaces: a push's job id to its build id. Spelled out, never
+ * called at load: session-build.ts imports this module, and the cycle can leave its export unset while this one loads.
+ */
+const PUSH_PREFIX = "push:".length;
+
+/** In SQL, for a program push (its job id): its copy's delete as `CopyDelete`'s JSON, or null — one sub-select. */
+const copyDeleteOf = (pushId: SQL): SQL =>
+  sql`(select json_object('status', d.status, 'requestedAt', d.requested_at, 'updatedAt', d.updated_at, 'error', d.last_error_category,
+    'retries', json_extract(d.payload, '$.mirrorRetries'), 'happenDay', json_extract(d.payload, '$.happenDay'))
+    from coros_write_jobs as d where d.id = 'unpush:' || substr(${pushId}, ${PUSH_PREFIX + 1}))`;
+
+function parseCopyDelete(raw: unknown): CopyDelete | null {
+  const v = (typeof raw === "string" ? JSON.parse(raw) : raw) as Record<string, unknown> | null;
+  if (!v || typeof v.status !== "string") return null;
+  return {
+    status: v.status,
+    requestedAt: typeof v.requestedAt === "string" ? v.requestedAt : "",
+    updatedAt: typeof v.updatedAt === "string" ? v.updatedAt : "",
+    error: typeof v.error === "string" ? v.error : null,
+    retries: typeof v.retries === "number" ? v.retries : 0,
+    happenDay: typeof v.happenDay === "string" ? v.happenDay : "",
+  };
+}
 
 /**
  * In SQL, for a push (`push:<buildId>`, its job id and verification time): its copy's delete (`unpush:<buildId>`) was
@@ -286,6 +332,8 @@ async function mirrorJobs(db: Db, userId: string, scope: SQL, opts: { payloads?:
       status: corosWriteJobs.status,
       happenDay: payloadField<string | null>("$.happenDay"),
       name: payloadField<string | null>("$.name"),
+      renamed: payloadField<string | null>("$.renamed"),
+      copyDelete: sql<string | null>`case when ${corosWriteJobs.kind} = 'program_session_push' then ${copyDeleteOf(sql`${corosWriteJobs.id}`)} end`,
       provisional: payloadField<number | null>("$.provisional"),
       fromDocRev: payloadField<number | null>("$.fromDocRev"),
       retries: payloadField<number | null>("$.mirrorRetries"),
@@ -309,9 +357,11 @@ async function mirrorJobs(db: Db, userId: string, scope: SQL, opts: { payloads?:
         scope,
       ),
     );
-  return rows.map(({ buildId, buildVersion, buildLockedAt, buildMarked, buildDate, payload, ...r }) => ({
+  return rows.map(({ buildId, buildVersion, buildLockedAt, buildMarked, buildDate, payload, copyDelete, ...r }) => ({
     ...r,
     ...(opts.payloads ? { payload: typeof payload === "string" ? JSON.parse(payload) : payload } : {}),
+    renamed: typeof r.renamed === "string" ? r.renamed : null,
+    copyDelete: copyDelete === null || copyDelete === undefined ? null : parseCopyDelete(copyDelete),
     happenDay: r.happenDay ?? "",
     provisional: Boolean(r.provisional),
     fromDocRev: typeof r.fromDocRev === "number" ? r.fromDocRev : null,
@@ -397,6 +447,118 @@ async function requeueFailed(db: Db, push: PushRow, now: string): Promise<boolea
     .where(and(eq(corosWriteJobs.id, push.id), inArray(corosWriteJobs.status, [...RETRYABLE])))
     .returning({ id: corosWriteJobs.id });
   return done.length > 0;
+}
+
+// ── A replaced copy left on the watch (final review Important 1) ─────────────────────────────────────────────────
+
+/**
+ * A delete the sweep queues again: failed for good on a bare error (its three tries spent in an outage) — never a
+ * refusal (`stamp_mismatch`, `ambiguous`: the copy edited, renamed or moved in COROS — the lane's verdict, for the
+ * athlete to settle) — left needing attention, or neutralised by a restore (B3: it removed nothing).
+ */
+const redeletable = (d: Pick<CopyDelete, "status" | "error">): boolean =>
+  d.status === "needs_attention" || d.status === "restored" || (d.status === "failed" && (d.error === null || d.error === "error"));
+
+/**
+ * THIS PUSH'S COPY IS NO LONGER THE ROW'S ON THE WATCH: its build let go — neither locked (a day build Send or the
+ * mirror locked) nor a provisional record still marked (`unlockSentBuild` lets go of the old copy whenever its delete is
+ * queued: a replacement, a move, a skip, Keep off, a removal), or gone — or the row kept off, skipped or removed. The
+ * row's sent build (`sentOf`) is always locked or marked, so its copy — the live one — is never this.
+ */
+const notTheRowsCopy = (row: MirrorRow, push: MirrorJob): boolean =>
+  push.build === null ||
+  (push.build.lockedAt === null && !push.build.marked) ||
+  row.watchOff ||
+  row.archivedAt !== null ||
+  row.completionState === "skipped";
+
+/** A row whose copies the stranded rule may delete: not under way or done, completed or missed (a done session's copy stays). */
+const strandable = (row: MirrorRow): boolean =>
+  (row.completionState === "scheduled" || row.completionState === "skipped") && row.contentState !== "started" && row.contentState !== "done";
+
+/**
+ * A REPLACED COPY LEFT ON THE WATCH, ITS DELETE DUE AGAIN (final review Important 1; spec §3.2 "one copy per session",
+ * §3.7). A revise, a move or a day's replacement queues the old copy's delete (`unpush:A`) and the new copy's push; a
+ * COROS outage can spend the delete's three tries while the push lands (or a restore neutralise it, as it can Keep
+ * off's), and nothing else ever queues that delete again — the watch would hold both copies. So: a verified program
+ * push of the row whose copy is not the row's any more (`notTheRowsCopy`), of a row that is not under way or done, whose
+ * own delete — requested since it verified (this copy's, not an earlier copy's of the same build) — is `redeletable`,
+ * for a day not gone, with re-queues left on the M3 ladder (MIRROR_RETRY_BACKOFF_MS: 1 h, 6 h, 24 h after it last
+ * failed, then left) and its backoff over. Pure: the first such push, or null. A delete still on its way is the lane's
+ * and is never this; nor is the live copy (a changed copy's delete that failed for good stays the athlete's, as the import
+ * told them).
+ */
+export function strandedCopyOf(row: MirrorRow, pushes: readonly MirrorJob[], ctx: Pick<BuildCtx, "today" | "now">): MirrorJob | null {
+  if (!strandable(row)) return null;
+  for (const p of pushes) {
+    const d = p.copyDelete;
+    if (p.kind !== "program_session_push" || p.status !== "verified" || !d || p.verifiedAt === null) continue;
+    if (d.requestedAt < p.verifiedAt || !redeletable(d) || d.happenDay < ctx.today || !notTheRowsCopy(row, p)) continue;
+    if (!requeuesLeft(d.retries)) continue;
+    if (Date.parse(d.updatedAt) + MIRROR_RETRY_BACKOFF_MS[d.retries]! > Date.parse(ctx.now)) continue;
+    return p;
+  }
+  return null;
+}
+
+/**
+ * THE STRANDED COPY'S DELETE QUEUED AGAIN (`strandedCopyOf`): the same job (`unpush:<buildId>`), with its own address —
+ * the three it was queued with, where the copy sits — and the name COROS holds the copy by now (the push's rename, else
+ * its stamp: the push itself is left verified, so its stamp stays claimed until the delete verifies and settles it, A6;
+ * never a new stamp on it). The executor's tries reset (`$.attempts`), the sweep's re-queue counted (`$.mirrorRetries`).
+ * One UPDATE, only while it is still `redeletable` and no restore runs (another request may have queued it meanwhile).
+ */
+async function requeueStrandedDelete(db: Db, userId: string, push: MirrorJob, now: string): Promise<boolean> {
+  const d = push.copyDelete!;
+  const name = push.renamed ?? push.name;
+  const base = sql`json_set(json_remove(${corosWriteJobs.payload}, '$.attempts'), '$.mirrorRetries', ${d.retries + 1})`;
+  const done = await db
+    .update(corosWriteJobs)
+    .set({
+      status: "queued",
+      claimedByDeviceId: null,
+      claimedAt: null,
+      verifiedAt: null,
+      completedAt: null,
+      lastErrorCategory: null,
+      lastErrorDetail: null,
+      payload: name ? sql`json_set(${base}, '$.name', ${name})` : base,
+      requestedAt: now,
+      updatedAt: now,
+    })
+    .where(
+      and(
+        eq(corosWriteJobs.id, unpushJobId(push.id.slice(PUSH_PREFIX))),
+        eq(corosWriteJobs.userId, userId),
+        or(
+          inArray(corosWriteJobs.status, ["needs_attention", "restored"]),
+          and(eq(corosWriteJobs.status, "failed"), sql`coalesce(${corosWriteJobs.lastErrorCategory}, 'error') = 'error'`),
+        ),
+        notRestoring(userId),
+      ),
+    )
+    .returning({ id: corosWriteJobs.id });
+  return done.length > 0;
+}
+
+/**
+ * `strandedCopyOf` in SQL, on the `planned_workouts` row in scope: what `mirrorNeedsRun` and the sweep's candidates ask
+ * (the backoff aside — a delete waiting it out answers yes here, and the sweep leaves it, as a failed push's does).
+ */
+function strandedCopySql(userId: string, today: string): SQL {
+  const pw = plannedWorkouts;
+  const sb = sessionBuilds;
+  return sql`(coalesce(${pw.contentState}, '') not in ('started', 'done') and ${pw.completionState} in ('scheduled', 'skipped')
+    and exists (select 1 from coros_write_jobs as p
+      join coros_write_jobs as d on d.id = 'unpush:' || substr(p.id, ${PUSH_PREFIX + 1})
+      left join ${sb} on ${sb.id} = substr(p.id, ${PUSH_PREFIX + 1})
+      where p.user_id = ${userId} and p.workout_id = ${pw.id} and p.kind = 'program_session_push' and p.status = 'verified'
+        and d.requested_at >= p.verified_at
+        and (d.status in ('needs_attention', 'restored') or (d.status = 'failed' and coalesce(d.last_error_category, 'error') = 'error'))
+        and coalesce(json_extract(d.payload, '$.mirrorRetries'), 0) < ${MIRROR_RETRY_BACKOFF_MS.length}
+        and json_extract(d.payload, '$.happenDay') >= ${today}
+        and (${sb.id} is null or (${sb.lockedAt} is null and not coalesce(${provisionalRecord()}, 0))
+          or ${pw.watchOff} = 1 or ${pw.archivedAt} is not null or ${pw.completionState} = 'skipped')))`;
 }
 
 // ── The copy replaced ────────────────────────────────────────────────────────────────────────────────────────────
@@ -899,8 +1061,9 @@ async function handOver(
 const SWEEP_ROWS = 60;
 
 /**
- * What a sweep did: `queued` copies (a record and its push, or a failed push re-queued); `attempted` — the sessions it
- * worked on (`queueProvisionalPush`, at most `opts.cap`), whatever the answer: the run's heavy step when > 0 (A5);
+ * What a sweep did: `queued` copies (a record and its push, or a failed push re-queued) and stranded copies' deletes
+ * queued again (`strandedCopyOf`); `attempted` — the sessions it worked on (`queueProvisionalPush`, or a stranded copy's
+ * delete; at most `opts.cap`), whatever the answer: the run's heavy step when > 0 (A5);
  * a sweep that attempted nothing only read — the caller's watch drain may still run in the same invocation; `skipped`,
  * the sessions it left, by reason.
  */
@@ -957,7 +1120,8 @@ function inWindowCondition(today: string, horizon: string): SQL {
  * its revision (or none said) that is on its way for its day, or verified (and not seen changed in the COROS app, or its
  * delete queued) with the row holding a COROS address on its day — and NOT REMEMBERED refused for its revision and day (too long, not a
  * document, today's check answered, an error past its backoff ladder; an error still on the ladder waits out its backoff
- * in the sweep, and is not read here).
+ * in the sweep, and is not read here) — or a replaced copy left on the watch whose delete the sweep will queue again
+ * (`strandedCopySql`: re-queues left on its ladder; one waiting out its backoff answers yes, and the sweep leaves it).
  *
  * Never "no" when the sweep would make a copy (every condition here is one the sweep's verdict holds too), but "yes"
  * for some sessions it will leave — a failed push waiting out its backoff or given up on: the sweep then attempts
@@ -996,16 +1160,18 @@ export async function mirrorNeedsRun(db: Db, userId: string, today: string): Pro
     .select({ id: pw.id })
     .from(pw)
     .leftJoin(si, and(eq(si.id, sql`'mirror-' || ${pw.id}`), eq(si.userId, userId)))
-    .where(and(eq(pw.userId, userId), or(and(sql`${si.id} is not null`, isNull(si.resolvedAt)), uncovered)))
+    .where(and(eq(pw.userId, userId), or(and(sql`${si.id} is not null`, isNull(si.resolvedAt)), uncovered, strandedCopySql(userId, today))))
     .limit(1);
   return rows.length > 0;
 }
 
 /**
  * THE MIRROR SWEEP (§3.7, A5): the hourly's heavy step. The owed sessions first (an open mark, soonest day first), then
- * the window's document workouts (today … today + 28, scheduled, not archived, not kept off, soonest first): each
- * judged (`verdictOf`) with no statement of its own; the first that needs a copy gets ONE `queueProvisionalPush` (or
- * its failed push's re-queue) — `opts.cap` attempts a run, one by design (A5). The owed marks of the sessions it will
+ * the rows with a replaced copy left on the watch (`strandedCopySql`, whatever the row), then the window's document
+ * workouts (today … today + 28, scheduled, not archived, not kept off, soonest first): each judged with no statement of
+ * its own — a stranded copy whose delete is due again first (`strandedCopyOf`: that delete queued again, one UPDATE),
+ * else `verdictOf`; the first that needs work gets it — ONE `queueProvisionalPush` (or its failed push's re-queue), or
+ * the stranded copy's delete — `opts.cap` attempts a run, one by design (A5). The owed marks of the sessions it will
  * never push (kept off, resolved, beyond the window, current, …) are resolved together, in one statement, with the one
  * it pushed. A restore running (read with the candidates): nothing written. Preparing a copy that throws is remembered on
  * the row's mark (`error`, on the backoff ladder), so one session cannot stall the account every hour. Writes off or
@@ -1028,6 +1194,8 @@ export async function mirrorSweep(
   // `rowRefusal`'s rules, as far as SQL says them: what it would refuse is not read at all, unless it is owed.
   const inWindow = inWindowCondition(ctx.today, horizon);
   const open = and(sql`${syncIntents.id} is not null`, isNull(syncIntents.resolvedAt));
+  // A replaced copy left on the watch (Important 1): read whatever the row (kept off, skipped, removed, an engine slot).
+  const stranded = strandedCopySql(userId, ctx.today);
   const candidates = await db
     .select({
       row: pw,
@@ -1039,8 +1207,8 @@ export async function mirrorSweep(
     })
     .from(pw)
     .leftJoin(syncIntents, owedMark)
-    .where(and(eq(pw.userId, userId), or(open, inWindow)))
-    .orderBy(sql`case when ${open} then 0 else 1 end`, asc(pw.effectiveDate), asc(pw.effectiveTime), asc(pw.id))
+    .where(and(eq(pw.userId, userId), or(open, inWindow, stranded)))
+    .orderBy(sql`case when ${open} then 0 when ${stranded} then 1 else 2 end`, asc(pw.effectiveDate), asc(pw.effectiveTime), asc(pw.id))
     .limit(SWEEP_ROWS);
   if (candidates.length === 0) return { queued: 0, attempted: 0, skipped: {} };
   if (candidates[0]!.restoring) return { queued: 0, attempted: 0, skipped: { restoring: 1 } };
@@ -1067,7 +1235,18 @@ export async function mirrorSweep(
   for (const c of candidates) {
     const owed = c.intentId !== null && c.intentResolvedAt === null;
     const memory = c.intentId !== null ? memoryOf(c.intentPayload) : null;
-    const verdict = verdictOf(c.row, pushesOf(jobs, c.row.id), env, runCtx, memory);
+    const pushes = pushesOf(jobs, c.row.id);
+    // A REPLACED COPY LEFT ON THE WATCH (Important 1): its delete queued again — the run's one attempt, one UPDATE. The
+    // owed mark stays as it is (the row's own copy may be owed still: a later run makes it).
+    const stranded = strandedCopyOf(c.row, pushes, runCtx);
+    if (stranded) {
+      if (attempts >= opts.cap) continue;
+      attempts += 1;
+      if (await requeueStrandedDelete(db, userId, stranded, ctx.now)) queued += 1;
+      else count("current");
+      continue;
+    }
+    const verdict = verdictOf(c.row, pushes, env, runCtx, memory);
     if ("skip" in verdict) {
       count(verdict.skip);
       if (owed) settle.push(c.row.id);
