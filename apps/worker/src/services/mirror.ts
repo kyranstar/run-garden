@@ -145,9 +145,10 @@ export interface PushRow {
   /** The import saw its copy changed in the COROS app (`noticed` on its payload, §3.8): the app's version goes back. */
   noticed?: boolean;
   /**
-   * Its copy's delete (`unpush:<buildId>`) has been queued and not settled — on its way, run, or given up: a changed copy
-   * whose delete is queued is the mirror's in hand (its replacement follows, or the delete failed for good and the copy
-   * stays the athlete's, as the import told them), so it is not judged again.
+   * Its copy's delete (`unpush:<buildId>`) was requested after this push verified, and is not settled — on its way, run,
+   * or given up: a changed copy whose delete is queued is the mirror's in hand (its replacement follows, or the delete
+   * failed for good and the copy stays the athlete's, as the import told them), so it is not judged again. A delete of
+   * an earlier copy of the same build (put back since, or taken off and sent again) is not this copy's.
    */
   unpushed?: boolean;
 }
@@ -285,10 +286,13 @@ export interface MirrorJob extends PushRow {
 
 const payloadField = <T>(path: string) => sql<T>`json_extract(${corosWriteJobs.payload}, ${path})`;
 
-/** In SQL, for a push's job id (`push:<buildId>`): its copy's delete (`unpush:<buildId>`) is queued and not settled. */
-const unpushQueued = (pushId: SQL): SQL =>
+/**
+ * In SQL, for a push (`push:<buildId>`, its job id and verification time): its copy's delete (`unpush:<buildId>`) was
+ * requested since the push verified — this copy's, not an earlier copy's of the same build — and is not settled.
+ */
+const unpushQueued = (pushId: SQL, pushVerifiedAt: SQL): SQL =>
   sql`exists (select 1 from coros_write_jobs as unpush where unpush.id = 'unpush:' || substr(${pushId}, ${pushJobId("").length + 1})
-    and unpush.status not in (${sql.join(SETTLED.map((x) => sql`${x}`), sql`, `)}))`;
+    and unpush.requested_at >= ${pushVerifiedAt} and unpush.status not in (${sql.join(SETTLED.map((x) => sql`${x}`), sql`, `)}))`;
 
 /**
  * ONE READ for the current-copy test, the sent copy and the new copy's stamp: every stamping job of the account (both
@@ -310,7 +314,7 @@ async function mirrorJobs(db: Db, userId: string, scope: SQL, opts: { payloads?:
       fromDocRev: payloadField<number | null>("$.fromDocRev"),
       retries: payloadField<number | null>("$.mirrorRetries"),
       noticed: sql<number>`json_extract(${corosWriteJobs.payload}, '$.noticed') is not null`,
-      unpushed: sql<number>`${unpushQueued(sql`${corosWriteJobs.id}`)}`,
+      unpushed: sql<number>`${unpushQueued(sql`${corosWriteJobs.id}`, sql`${corosWriteJobs.verifiedAt}`)}`,
       verifiedAt: corosWriteJobs.verifiedAt,
       updatedAt: corosWriteJobs.updatedAt,
       buildId: sb.id,
@@ -831,9 +835,11 @@ export async function mirrorOnDayBuild(
  *    executor settles it by name — and the build left locked, so the next pass (the sweep, or the next build) finds the
  *    locked build with no live push and pushes it again (`replaceCopy`). Never a fresh stamp on the still-verified job.
  *    → `replacing`. While the delete is queued the copy counts as current (`currentCopy`), so nothing is queued twice.
- * Anything else — an engine slot (the mirror never mends one), a push not verified (a failed one is the sweep's re-queue,
- * M3), another revision, a copy current — `current`, as before. Two writes for a gone copy's settle and lock, one or two
- * for its push; one or two for a changed copy's delete.
+ * Both write only after the build's lock is asserted (`lockForWatch`, coalescing it; B2: a restore running, or the build
+ * no longer the slot's newest, refuses it — `stale`, nothing written). Anything else — an engine slot (the mirror never
+ * mends one), a push not verified (a failed one is the sweep's re-queue, M3), another revision, a copy current —
+ * `current`, as before. A gone copy: the lock, the settle, `replaceCopy`'s lock and push; a changed copy: the lock and
+ * its delete.
  */
 async function restoreDayCopy(
   db: Db,
@@ -847,7 +853,13 @@ async function restoreDayCopy(
   if (!docOriginRow(row) || !own || own.status !== "verified" || (own.fromDocRev !== null && own.fromDocRev !== row.workoutDocRev)) return "skipped:current";
   if (currentCopy(row, [own], ctx.today)) return "skipped:current";
   const address = watchAddressOf(row);
-  if (address !== null && address.happenDay === row.effectiveDate) {
+  const changedThere = address !== null && address.happenDay === row.effectiveDate;
+  // Settled only when the copy is proven gone (the address cleared): a copy whose address names another day may be there.
+  if (!changedThere && address !== null) return "skipped:current";
+  // The build's lock asserted first, as every mirror write is (B2): it coalesces the lock it holds, and refuses — nothing
+  // written — while a restore runs, or once the build is no longer the slot's newest, the slot not built.
+  if (!(await lockForWatch(db, userId, row.id, dayBuild, ctx))) return "skipped:stale";
+  if (changedThere) {
     const copy = programSessionPushJobSchema.safeParse(own.payload);
     if (!copy.success) return "skipped:current";
     await queueUnpush(
@@ -867,8 +879,6 @@ async function restoreDayCopy(
     );
     return "replacing";
   }
-  // Settled only when the copy is proven gone (the address cleared): a copy whose address names another day may be there.
-  if (address !== null) return "skipped:current";
   await db
     .update(corosWriteJobs)
     .set({ status: "superseded", updatedAt: ctx.now })
@@ -1035,7 +1045,7 @@ export async function mirrorNeedsRun(db: Db, userId: string, today: string): Pro
     and ${j.kind} = 'program_session_push'
     and (${field("$.fromDocRev")} is null or ${field("$.fromDocRev")} = ${pw.workoutDocRev})
     and ((${j.status} in (${sql.join(IN_FLIGHT.map((x) => sql`${x}`), sql`, `)}) and ${field("$.happenDay")} = ${pw.effectiveDate})
-      or (${j.status} = 'verified' and (${field("$.noticed")} is null or ${unpushQueued(sql`${j.id}`)}) and ${address}
+      or (${j.status} = 'verified' and (${field("$.noticed")} is null or ${unpushQueued(sql`${j.id}`, sql`${j.verifiedAt}`)}) and ${address}
         and ${pw.lastVerifiedCorosDate} = ${pw.effectiveDate})))`;
   // Refused for good for this revision and day — or an error past its backoff ladder (`gave_up`, `verdictOf`). A mark that
   // remembers nothing (`{}`: settled, or marked again) compares NULL here, which `not` would keep NULL — no row: so 0.

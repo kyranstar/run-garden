@@ -1300,6 +1300,44 @@ describe("the mirror puts back a copy the watch lost or changed (the watch mirro
     expect((await jobsOf(id)).sort()).toEqual([[`push:${buildId}`, "verified"], [`unpush:${buildId}`, "verified"]]);
   });
 
+  it("today's day build changed twice in COROS: the second change is put back too", async () => {
+    const { id, buildId, stamp } = await sentToday();
+    const stepOf = () => programOn(stamp)!.exercises!.find((e) => e.isGroup !== true && Number(e.exerciseType) !== 0)!;
+    const sets = Number(stepOf().sets ?? 1);
+    await readNow();
+    // The first change, put back: the delete, then the same build again.
+    stepOf().sets = sets + 2;
+    await readNow();
+    await commit(id);
+    aMinuteLater();
+    await lane();
+    await commit(id);
+    aMinuteLater();
+    await lane();
+    await readNow();
+    expect((await jobsOf(id)).sort()).toEqual([[`push:${buildId}`, "verified"], [`unpush:${buildId}`, "verified"]]);
+    expect(Number(stepOf().sets)).toBe(sets);
+    expect((await notesOf(id)).map((n) => n.kind)).toEqual(["watch_copy_changed"]);
+
+    // The second change the same day: told, owed — and put back the same way (the first delete is not this copy's).
+    aMinuteLater();
+    stepOf().sets = sets + 4;
+    await readNow();
+    expect((await notesOf(id)).map((n) => n.kind)).toEqual(["watch_copy_changed", "watch_copy_changed"]);
+    expect((await owedOf(id))!.resolvedAt).toBeNull();
+    expect(await mirrorTakesTurn(db, switchOn(), userId, prefs, ctx())).toBe(true);
+    expect((await jobOf(`unpush:${buildId}`))!.status).toBe("queued");
+    expect((await jobOf(`push:${buildId}`))!.status).toBe("verified");
+    aMinuteLater();
+    await lane();
+    expect(programOn(stamp)).toBeUndefined();
+    expect(await mirrorTakesTurn(db, switchOn(), userId, prefs, ctx())).toBe(true);
+    aMinuteLater();
+    await lane();
+    expect(ours()).toHaveLength(1);
+    expect(Number(stepOf().sets)).toBe(sets);
+  });
+
   it("today, its copy the day's sent build, changed in COROS: the hourly sweep alone replaces it — the delete, then the push", async () => {
     const { id, buildId, stamp } = await sentToday();
     await readNow();

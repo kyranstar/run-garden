@@ -399,6 +399,24 @@ describe("a copy gone from the watch or changed there, on its day (the watch mir
     expect((await jobsOf(id)).map((j) => [j.id, j.status])).toEqual([[`push:${buildId}`, "verified"], [`unpush:${buildId}`, "queued"]]);
   });
 
+  it("during a restore the day path writes nothing: a gone copy's push is not settled, a changed copy's delete not queued", async () => {
+    const gone = await seedDocRow();
+    const goneBuild = await dayCopy(gone);
+    await addressCleared(gone);
+    const changed = await seedDocRow();
+    const changedBuild = await dayCopy(changed);
+    await noticedChanged(`push:${changedBuild}`);
+    await db.insert(schema.accountState).values({ userId, restoreId: "restore-1", restoreStartedAt: NOON, updatedAt: NOON } as typeof schema.accountState.$inferInsert);
+    for (const [id, buildId] of [[gone, goneBuild], [changed, changedBuild]] as const) {
+      const dayBuild = await buildOf(buildId);
+      const answer = await mirrorOnDayBuild(db, switchOn(), userId, await rowOf(db, id), dayBuild, ctx(), {
+        profiles: ["tmj"], inputsHash: dayBuild.inputsHash, version: dayBuild.engineVersion,
+      });
+      expect(answer).toMatch(/^skipped:/);
+      expect((await jobsOf(id)).map((j) => [j.id, j.status])).toEqual([[`push:${buildId}`, "verified"]]);
+    }
+  });
+
   it("an engine slot's day build, its copy gone from the watch: the build commit queues nothing (the mirror never mends one)", async () => {
     const id = await seedSlot(db, userId, programId, DAY);
     const buildId = await dayCopy(id);
