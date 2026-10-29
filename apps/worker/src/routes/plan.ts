@@ -142,8 +142,9 @@ interface WorkoutView {
    * COROS session, a never-pushed one, or one already unpushed.
    */
   appPushed?: boolean;
-  /** The athlete left the watch's earlier version of this app-built session as it is (watch-version.ts
-   * `leaveWatchVersion`): the row still says so; the account line no longer counts it. */
+  /** The athlete left the watch's earlier version of this app-built session as it is, before the mirror retired Leave
+   * (watch-version.ts `leaveWatchVersion`, §3.6): the row still says so until the mirror's verified push resolves the
+   * claim; the account line counts no app-built session. */
   watchVersionLeft?: boolean;
   /** An adopted row still to run whose old copy the watch holds (`watch_copy_name`, workout-editability §4): its own
    * Send replaces that copy, so the sheet says so — never "can't replace", never "Leave". */
@@ -1851,8 +1852,8 @@ planRoutes.post("/workouts/:id/restore-calendar", async (c) => {
  * drains it (`POST /api/coach/drain`); a rewrite already on its way is the answer (idempotent). `keep`: the app takes
  * the watch's version — the claim released, its still-queued rewrite superseded, the row marked for the next COROS read
  * to rewrite from the wire, nothing written to the watch (`keepWatchVersion`); 409 `app_built` for a session the app
- * built, whose content no read takes from the wire. `leave`: that app-built session's earlier copy is left as it is —
- * the row still says so, the account line stops counting it (`leaveWatchVersion`); 409 `not_app_built` for any other.
+ * built, whose content no read takes from the wire. `leave` is retired (the watch mirrors the plan §3.6): 409 `gone` for
+ * a session the app built — the mirror replaces its copy — and `not_app_built` for any other (`leaveWatchVersion`).
  * Both idempotent.
  */
 planRoutes.post("/workouts/:id/watch-version/send", async (c) => {
@@ -1898,9 +1899,8 @@ planRoutes.post("/workouts/:id/watch-version/leave", async (c) => {
     .where(and(eq(plannedWorkouts.id, c.req.param("id")), eq(plannedWorkouts.userId, userId)))
     .limit(1);
   if (!w) return c.json({ error: "not_found" }, 404);
-  const left = await leaveWatchVersion(db, userId, w, nowInstant());
-  if ("error" in left) return c.json({ error: left.error }, 409);
-  return c.json({ ok: true });
+  // Retired under the mirror (§3.6): `gone` for a session the app built, `not_app_built` for any other.
+  return c.json({ error: leaveWatchVersion(w).error }, 409);
 });
 
 /** Retry a failed COROS write. */

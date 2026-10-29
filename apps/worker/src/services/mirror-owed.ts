@@ -4,6 +4,7 @@
  * copy. A leaf: the hooks in the shared services (doc-workouts, jobs, plan-mutations) take it without the mirror's own
  * imports (session-build, watch-push), which would close an import cycle through them.
  */
+import { and, eq, isNull } from "drizzle-orm";
 import { syncIntents } from "@rg/database";
 import type { Db } from "./db.js";
 
@@ -21,4 +22,15 @@ export async function markMirrorOwed(db: Db, userId: string, workoutId: string, 
     .insert(syncIntents)
     .values({ id: mirrorIntentId(workoutId), userId, targetKind: "workout", targetId: workoutId, kind: "mirror", payload: {}, source: "mirror", createdAt: now })
     .onConflictDoUpdate({ target: syncIntents.id, set: { resolvedAt: null, createdAt: now, payload: {} } });
+}
+
+/**
+ * Resolve the workout's owed mark, if it is open — the athlete kept the session off the watch (`keepOffWatch`), so
+ * nothing is owed to the mirror for it. One UPDATE. Its memory (`payload`) is left as it is: a later mark forgets it.
+ */
+export async function resolveMirrorOwed(db: Db, userId: string, workoutId: string, now: string): Promise<void> {
+  await db
+    .update(syncIntents)
+    .set({ resolvedAt: now })
+    .where(and(eq(syncIntents.id, mirrorIntentId(workoutId)), eq(syncIntents.userId, userId), isNull(syncIntents.resolvedAt)));
 }

@@ -1699,11 +1699,13 @@ export interface SyncStatusDto {
  * What the athlete can do about a session's earlier version on the watch (`GET /api/plan/workouts/:id`'s
  * `watchVersion`, present only on a row whose view is `content_stale`): send the app's version when a rewrite can
  * reach it, else why not (`writes_off` and `not_connected` only once a rewrite could: then it is sendable from here).
- * Keeping the watch's version — the app takes it — is always possible but for an app-built session, left as it is.
+ * Keeping the watch's version — the app takes it — is always possible but for an app-built session, whose copy the
+ * mirror replaces.
  */
 export interface WatchVersionDto {
   send: boolean;
-  why?: "writes_off" | "not_connected" | "cant_rewrite";
+  /** `mirrored`: a session the app built — the mirror replaces its copy (the watch mirrors the plan §3.6). */
+  why?: "writes_off" | "not_connected" | "cant_rewrite" | "mirrored";
 }
 
 export type SyncNoteKind =
@@ -2892,8 +2894,18 @@ export const api = {
    */
   sendToWatch: (workoutId: string, buildId: string, digest: string) =>
     post<SessionDto>(`/api/sessions/${encodeURIComponent(workoutId)}/send-to-watch`, { buildId, digest }),
-  /** Take the sent session off the watch (or stop it reaching it); idempotent. */
+  /**
+   * Take the sent session off the watch (or stop it reaching it); idempotent. The server answers it as Keep off for one
+   * release (the copy off AND kept off) — call `keepOffWatch`.
+   */
   takeOffWatch: (workoutId: string) => post<SessionDto>(`/api/sessions/${encodeURIComponent(workoutId)}/take-off-watch`, {}),
+  /**
+   * Keep off my watch (the watch mirrors the plan §3.6): the copy comes off and the session stays off until Put on;
+   * idempotent. 409 `{error: "done"}` for a session done or otherwise resolved (its copy stays). Follow with the drain.
+   */
+  keepOffWatch: (workoutId: string) => post<SessionDto>(`/api/sessions/${encodeURIComponent(workoutId)}/keep-off-watch`, {}),
+  /** Put on my watch: the session is the mirror's again, which puts its copy on the watch; idempotent. */
+  putOnWatch: (workoutId: string) => post<SessionDto>(`/api/sessions/${encodeURIComponent(workoutId)}/put-on-watch`, {}),
   /**
    * Run the queued push or unpush now, in a request of its own: Send and Take off only queue (ruling 3-R11, the
    * Workers Free budget). Call it right after either answers 200, then read the session for the state. Runs at most

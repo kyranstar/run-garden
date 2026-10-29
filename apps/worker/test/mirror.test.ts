@@ -17,6 +17,7 @@ import type { Db } from "../src/services/db.js";
 import { executeCloudJobs } from "../src/services/coros-write-cloud.js";
 import { emitPendingWork } from "../src/services/jobs.js";
 import { enqueueUnpushIfOurs } from "../src/services/plan-mutations.js";
+import { recordIntent } from "../src/services/sync-intents.js";
 import { buildSession, isProvisionalBuild, sentBuildIdOf } from "../src/services/session-build.js";
 import {
   currentCopy,
@@ -794,6 +795,35 @@ describe("driven through the lane (the mock COROS)", () => {
     const [second] = await recordsOf(id);
     expect(storedProgram((await pushPayload(second!.id)).name)).toBeDefined();
     expect((await mirrorSweep(db, switchOn(), userId, prefs, ctx(), { cap: 1 })).queued).toBe(0);
+  });
+
+  it("a verified mirror push closes the row's open content claims — no lingering 'Older on watch'; another row's stays open", async () => {
+    const id = await seedDocRow(addDays(DAY, 2));
+    const other = await seedDocRow(addDays(DAY, 3));
+    for (const w of [id, other]) await recordIntent(db, { userId, targetKind: "workout", targetId: w, kind: "content", source: "coach_ease" });
+    const claimsOf = (w: string) => db.select().from(syncIntents).where(and(eq(syncIntents.targetId, w), eq(syncIntents.kind, "content")));
+    expect(await queue(id)).toBe("queued");
+    const [record] = await recordsOf(id);
+    await executeCloudJobs(db, switchOn(), userId, prefs, { fetchImpl: server.fetchImpl, cap: 1 });
+    expect((await jobOf(`push:${record!.id}`))!.status).toBe("verified");
+    expect((await claimsOf(id)).map((c) => c.resolvedAt)).toEqual([NOON]);
+    expect((await claimsOf(other)).map((c) => c.resolvedAt)).toEqual([null]);
+  });
+
+  it("kept off while its push is on the wire (Keep off's first write landed, the copy not yet let go): the verify queues the copy's delete", async () => {
+    const id = await seedDocRow(addDays(DAY, 2));
+    expect(await queue(id)).toBe("queued");
+    const [record] = await recordsOf(id);
+    const fetches = counting(server, async (url, init) => {
+      if (url.pathname !== "/training/schedule/update") return;
+      const body = JSON.parse(String(init?.body)) as { versionObjects?: Array<{ status?: number }> };
+      if (body.versionObjects?.[0]?.status !== 1) return;
+      await db.update(plannedWorkouts).set({ watchOff: true }).where(eq(plannedWorkouts.id, id));
+    });
+    await executeCloudJobs(db, switchOn(), userId, prefs, { fetchImpl: fetches.fetchImpl, cap: 1 });
+    expect((await jobOf(`push:${record!.id}`))!.status).toBe("verified");
+    expect(await jobOf(`unpush:${record!.id}`)).toMatchObject({ kind: "coach_delete_workout", status: "queued" });
+    expect(await sentBuildIdOf(db, id)).toBeNull();
   });
 
   it("switch off then on (Review Focus 3): nothing pushed while off, the owed delete recorded; back on, the sweep catches up one a run, soonest first, no duplicates", async () => {

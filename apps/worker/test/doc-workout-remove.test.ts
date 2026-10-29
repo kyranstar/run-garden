@@ -14,6 +14,7 @@ import type { Db } from "../src/services/db.js";
 import { encryptSecret } from "../src/auth/crypto.js";
 import { loadPreferences, savePreferences, syncCalendar } from "../src/services/calendar-sync.js";
 import { reconcileCompletionStates } from "../src/services/reconcile-daily.js";
+import { queueProvisionalPush } from "../src/services/mirror.js";
 import { makeTestDb, makeTestUser } from "./helpers.js";
 import { calmDoc, clientFor, type Reply } from "./doc-workout-fixture.js";
 
@@ -214,6 +215,18 @@ describe("DELETE /api/workouts/:id: a Studio workout never started", () => {
     for (const id of [begun, done, saved, sending, "slot-1", theirs.body.workout.id]) {
       expect((await db.select().from(plannedWorkouts).where(and(eq(plannedWorkouts.id, id))))[0]!.archivedAt, id).toBeNull();
     }
+  });
+  it("a provisional copy on its way to the watch never stops it (`sending` is a day push's): a claimed one is left to the lane's claim", async () => {
+    const id = await made({ date: addDays(today, 2) });
+    const watchCtx = { today, now: nowInstant(), prefs: { ...prefs, corosWritesEnabled: true } };
+    expect(await queueProvisionalPush(db, { ...calendarEnv(), WATCH_PUSH_ENABLED: "1" }, userId, await rowOf(id), watchCtx)).toBe("queued");
+    const [push] = await db.select().from(corosWriteJobs).where(eq(corosWriteJobs.workoutId, id));
+    expect(push!.id).toMatch(/^push:/);
+    await db.update(corosWriteJobs).set({ status: "claimed", claimedAt: nowInstant() }).where(eq(corosWriteJobs.id, push!.id));
+    expect(await call("DELETE", `/api/workouts/${id}`)).toEqual({ status: 200, body: { ok: true } });
+    expect((await rowOf(id)).archivedAt).not.toBeNull();
+    // The lane's claim reads the row archived and supersedes it — or, landed, its verify queues the copy's delete.
+    expect((await db.select().from(corosWriteJobs).where(eq(corosWriteJobs.id, push!.id)))[0]!.status).toBe("claimed");
   });
 });
 

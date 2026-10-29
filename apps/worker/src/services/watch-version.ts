@@ -10,22 +10,23 @@
  *     done, missed or skipped, its day today or later in the athlete's zone), on the watch on the app's day (the date
  *     the watch was last confirmed on is the session's own), and no watch write for it on its way (that is "sending").
  *     A past or finished session's watch copy is a record: its claim is left open and simply not counted, so a session
- *     that comes back (unskipped, moved on, healed back into the plan) says "Older on watch" again. The list also
- *     leaves out a claim the athlete left as it is (an app-built session, `LEFT_PATH`) — its row still says so — and
- *     an adopted row's copy still held (`watch_copy_name`, workout-editability §4), which its row says until the
- *     Studio's Send takes it off.
+ *     that comes back (unskipped, moved on, healed back into the plan) says "Older on watch" again. The list leaves out
+ *     every session the app built (a programme's, an on-demand one, a Studio or template workout — adopted ones among
+ *     them, whose held copy its row says until it comes off): the watch mirrors the plan (design 2026-10-28 §3.6,
+ *     builder check A8), so the mirror replaces its copy, and that copy's verified push resolves its claims
+ *     (coros-write-cloud.ts). A Leave mark (`LEFT_PATH`) written before the mirror means nothing now and is not read.
  *  2. WHAT THE ATHLETE CAN DO. Send the app's version (watch-version-send.ts: the content rewrite the convergence
- *     backfill and an approved ease queue, when one can reach the row); keep the watch's (`keepWatchVersion`: the app
- *     takes the watch's copy — the claim released as a converged rewrite releases it, and the next COROS read rewrites
- *     the row from the wire); or, for a session the app built — whose content no read ever takes from the wire, and
- *     whose earlier copy no rewrite from here replaces — leave the watch as it is (`leaveWatchVersion`).
+ *     backfill and an approved ease queue, when one can reach the row); or keep the watch's (`keepWatchVersion`: the
+ *     app takes the watch's copy — the claim released as a converged rewrite releases it, and the next COROS read
+ *     rewrites the row from the wire). A session the app built is the mirror's: neither, and its Leave is retired
+ *     (`leaveWatchVersion`: `gone`).
  *
  * The reads here import nothing that writes to the watch: `sync-status.ts` reads the list on every 30 s poll.
  */
-import { and, asc, eq, gte, inArray, isNull, not, notExists, notInArray } from "drizzle-orm";
+import { and, asc, eq, gte, inArray, isNull, notExists, notInArray, or } from "drizzle-orm";
 import { corosWriteJobs, plannedWorkouts, syncIntents } from "@rg/database";
-import { appAuthoredRow, humanizeWorkoutTitle } from "@rg/domain";
-import { leaveContentClaims, leftAsItIs, releaseContentClaims } from "./sync-intents.js";
+import { APP_AUTHORED_ORIGINS, appAuthoredRow, humanizeWorkoutTitle } from "@rg/domain";
+import { releaseContentClaims } from "./sync-intents.js";
 import { markedFingerprint } from "./watch-copy-marker.js";
 import type { Db } from "./db.js";
 
@@ -60,8 +61,8 @@ export interface WatchEarlierVersion {
 
 /**
  * THE ACCOUNT LINE'S SESSIONS, soonest first — every row whose view is `content_stale` (`deriveWorkoutSync`: on the
- * watch on its day, nothing on its way, an open claim on a session still to run), less those the athlete left as they
- * are. One statement.
+ * watch on its day, nothing on its way, an open claim on a session still to run), less those the app built: the mirror
+ * replaces their copies (a Leave mark from before it is not read). One statement.
  */
 export async function watchEarlierVersions(db: Db, userId: string, today: string): Promise<WatchEarlierVersion[]> {
   const pw = plannedWorkouts;
@@ -82,8 +83,9 @@ export async function watchEarlierVersions(db: Db, userId: string, today: string
         eq(syncIntents.kind, "content"),
         isNull(syncIntents.resolvedAt),
         isNull(syncIntents.supersededBy),
-        not(leftAsItIs()),
         eq(pw.userId, userId),
+        // Not a session the app built (the coach's own and COROS's have no origin): those are the mirror's.
+        or(isNull(pw.origin), notInArray(pw.origin, [...APP_AUTHORED_ORIGINS])),
         isNull(pw.archivedAt),
         notInArray(pw.completionState, [...SETTLED_COMPLETION_STATES]),
         gte(pw.effectiveDate, today),
@@ -143,7 +145,7 @@ export type KeepOutcome = { kept: number } | { error: "app_built" };
  * wire: title, stages, sport, and its lift or mobility structure dropped then, not before — until the read, nothing of
  * the app's copy is lost. Until then a row still to run says so (`taking_watch_copy`). Nothing is
  * written to the watch. An app-built session is refused (`app_built`): no read ever takes its content from the wire,
- * so its Keep could not be true — it is left as it is instead (`leaveWatchVersion`). Idempotent: with no open claim,
+ * so its Keep could not be true — the mirror replaces its copy instead. Idempotent: with no open claim,
  * one read and nothing written.
  */
 export async function keepWatchVersion(db: Db, userId: string, row: WorkoutRow, now: string): Promise<KeepOutcome> {
@@ -169,18 +171,14 @@ export async function keepWatchVersion(db: Db, userId: string, row: WorkoutRow, 
   return { kept: ids.length };
 }
 
-export type LeaveOutcome = { left: number } | { error: "not_app_built" };
+export type LeaveOutcome = { error: "gone" | "not_app_built" };
 
 /**
- * LEAVE THE WATCH AS IT IS — an app-built session only (a programme's, an on-demand one, a Studio or template
- * workout), whose earlier copy no rewrite from here replaces and whose content no read takes from the wire. The claim
- * stays open, so the row keeps saying the watch has an earlier version ("Older on watch" is true); it is marked left
- * (`LEFT_PATH`) and the account line stops counting it. Nothing else is written. Any other session is refused
- * (`not_app_built`): its Keep takes the watch's version. Idempotent.
+ * LEAVE THE WATCH AS IT IS — RETIRED (the watch mirrors the plan §3.6, builder check A8). It was an app-built session's
+ * choice (a programme's, an on-demand one, a Studio or template workout): leave its earlier copy and stop counting it.
+ * The mirror now replaces that copy and its verified push resolves the claim, so there is nothing to leave: `gone`. Any
+ * other session is refused as before (`not_app_built`): its Keep takes the watch's version. Nothing is read or written.
  */
-export async function leaveWatchVersion(db: Db, userId: string, row: WorkoutRow, now: string): Promise<LeaveOutcome> {
-  if (!appAuthoredRow(row)) return { error: "not_app_built" };
-  const ids = await openClaimIds(db, userId, row.id);
-  if (ids.length > 0) await leaveContentClaims(db, userId, row.id, now);
-  return { left: ids.length };
+export function leaveWatchVersion(row: WorkoutRow): LeaveOutcome {
+  return appAuthoredRow(row) ? { error: "gone" } : { error: "not_app_built" };
 }

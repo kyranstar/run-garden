@@ -12,9 +12,10 @@ import type { Db } from "./db.js";
 
 /**
  * Why the app's version can't be sent from here: watch updates off, COROS not connected (each then sendable once
- * changed: the plan for the row is a rewrite), or no rewrite can reach it at all.
+ * changed: the plan for the row is a rewrite), no rewrite can reach it at all — or the session is the app's own, whose
+ * copy the mirror replaces (`mirrored`: the watch mirrors the plan §3.6).
  */
-export type WatchVersionWhy = "writes_off" | "not_connected" | "cant_rewrite";
+export type WatchVersionWhy = "writes_off" | "not_connected" | "cant_rewrite" | "mirrored";
 
 /** What the athlete can do about a session's earlier version on the watch, besides keeping the watch's. */
 export interface WatchVersionChoice {
@@ -41,13 +42,13 @@ function blockedForNow(ctx: SendCtx): WatchVersionWhy | null {
 
 /**
  * CAN THE APP'S VERSION BE SENT? Only when a content rewrite can reach the row: a session the app did not build (an
- * app-built one's earlier copy no rewrite from here replaces, ruling 3-R13), and the convergence backfill's own plan
- * for it a rewrite — read in dry run, so what is offered and what Send queues cannot disagree; an unpush is not a send
- * and is never offered. Then watch updates on and COROS connected — said after the plan, so "then send it from here"
- * is true.
+ * app-built one is the mirror's — its copy is replaced, never rewritten from here: `mirrored`, §3.6; ruling 3-R13), and
+ * the convergence backfill's own plan for it a rewrite — read in dry run, so what is offered and what Send queues
+ * cannot disagree; an unpush is not a send and is never offered. Then watch updates on and COROS connected — said after
+ * the plan, so "then send it from here" is true.
  */
 export async function watchVersionChoice(db: Db, userId: string, row: WorkoutRow, ctx: SendCtx): Promise<WatchVersionChoice> {
-  if (appAuthoredRow(row)) return { send: false, why: "cant_rewrite" };
+  if (appAuthoredRow(row)) return { send: false, why: "mirrored" };
   const plan = await convergeDivergedContent(db, userId, {
     dryRun: true,
     workoutIds: [row.id],

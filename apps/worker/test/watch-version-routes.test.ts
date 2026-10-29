@@ -210,13 +210,13 @@ describe("GET /api/plan/workouts/:id — what can be done about the watch's earl
     expect((await detail(bare, bare.workoutId)).watchVersion).toEqual({ send: false, why: "cant_rewrite" });
   });
 
-  it("an app-built session reaches the watch only by its own Send — never a rewrite from here", async () => {
+  it("an app-built session is mirrored — the mirror replaces its copy — never a rewrite from here", async () => {
     const a = await easedAndFailed();
     await a.db.update(schema.plannedWorkouts).set({ origin: "program" }).where(eq(schema.plannedWorkouts.id, a.workoutId));
-    expect((await detail(a, a.workoutId)).watchVersion).toEqual({ send: false, why: "cant_rewrite" });
+    expect((await detail(a, a.workoutId)).watchVersion).toEqual({ send: false, why: "mirrored" });
     // Whatever else is true: the reason is the app-built session's, never a setting that would not change it.
     await a.db.update(schema.providerConnections).set({ status: "disconnected" });
-    expect((await detail(a, a.workoutId)).watchVersion).toEqual({ send: false, why: "cant_rewrite" });
+    expect((await detail(a, a.workoutId)).watchVersion).toEqual({ send: false, why: "mirrored" });
   });
 
   it("says nothing on a row with no earlier version, and pays nothing for it", async () => {
@@ -731,43 +731,30 @@ describe("POST /api/plan/workouts/:id/watch-version/keep", () => {
   });
 });
 
-describe("POST /api/plan/workouts/:id/watch-version/leave — an app-built session's earlier copy, left as it is", () => {
-  it("stops counting it; the row still says the watch has an earlier version, and says it was left", async () => {
+describe("POST /api/plan/workouts/:id/watch-version/leave — retired: the mirror replaces an app-built session's copy", () => {
+  it("an app-built session: 409 gone, nothing written; its claim stays as it was, and the account line never counts it", async () => {
     const a = await easedAndFailed();
     await a.db.update(schema.plannedWorkouts).set({ origin: "program" }).where(eq(schema.plannedWorkouts.id, a.workoutId));
-    expect((await computeSyncStatus(a.db, a.userId, a.prefs)).contentStaleCount).toBe(1);
-    const [before] = await a.db.select().from(schema.plannedWorkouts).where(eq(schema.plannedWorkouts.id, a.workoutId));
+    expect((await computeSyncStatus(a.db, a.userId, a.prefs)).contentStaleCount, "an app row's claim is not the account line's").toBe(0);
     const { value: res, statements, writes } = await a.count(() => request(a, `/api/plan/workouts/${a.workoutId}/watch-version/leave`, "POST"));
-    expect(res.status).toBe(200);
+    expect(res.status).toBe(409);
+    expect(await res.json()).toEqual({ error: "gone" });
+    expect(writes).toEqual([]);
     expect(statements).toBeLessThanOrEqual(45);
-    for (const sql of writes) expect(sql).toMatch(/^\s*update "sync_intents"/i);
-    const [after] = await a.db.select().from(schema.plannedWorkouts).where(eq(schema.plannedWorkouts.id, a.workoutId));
-    expect(after).toEqual(before);
     const [intent] = await a.db
       .select()
       .from(schema.syncIntents)
       .where(and(eq(schema.syncIntents.targetId, a.workoutId), eq(schema.syncIntents.kind, "content")));
-    expect(intent!.resolvedAt, "still open: the two still differ").toBeNull();
+    expect(intent!.resolvedAt).toBeNull();
+    expect(intent!.payload, "never marked left").not.toHaveProperty("left");
     expect((await computeSyncStatus(a.db, a.userId, a.prefs)).contentStaleCount).toBe(0);
-    const d = (await detail(a, a.workoutId)) as Awaited<ReturnType<typeof detail>> & { workout: { watchVersionLeft?: boolean } };
-    expect(d.workout.corosSyncView, "the pill stays true").toBe("content_stale");
-    expect(d.workout.watchVersionLeft).toBe(true);
   });
 
-  it("is for an app-built session only: any other's Keep takes the watch's version", async () => {
+  it("any other session's is refused as before (not_app_built): its Keep takes the watch's version, and the line still counts it", async () => {
     const a = await easedAndFailed();
     const res = await request(a, `/api/plan/workouts/${a.workoutId}/watch-version/leave`, "POST");
     expect(res.status).toBe(409);
     expect(await res.json()).toEqual({ error: "not_app_built" });
-    expect((await computeSyncStatus(a.db, a.userId, a.prefs)).contentStaleCount).toBe(1);
-  });
-
-  it("a new change to the session counts again", async () => {
-    const a = await easedAndFailed();
-    await a.db.update(schema.plannedWorkouts).set({ origin: "program" }).where(eq(schema.plannedWorkouts.id, a.workoutId));
-    expect((await request(a, `/api/plan/workouts/${a.workoutId}/watch-version/leave`, "POST")).status).toBe(200);
-    expect((await computeSyncStatus(a.db, a.userId, a.prefs)).contentStaleCount).toBe(0);
-    await recordIntent(a.db, { userId: a.userId, targetKind: "workout", targetId: a.workoutId, kind: "content", source: "coach_ease" });
     expect((await computeSyncStatus(a.db, a.userId, a.prefs)).contentStaleCount).toBe(1);
   });
 });

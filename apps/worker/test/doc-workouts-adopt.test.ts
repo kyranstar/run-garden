@@ -393,8 +393,8 @@ describe("an adopted row's old copy reaches the owner (spec §4): the Plan and t
     expect(sheet.workout.corosSyncView).toBe("content_stale");
     // Before its Send: the sheet is told the row's own Send replaces the copy (not "can't replace", no Leave).
     expect(sheet.workout.watchHoldsOldCopy).toBe(true);
-    // An app-built row: no rewrite or keep from here (the Studio's Send replaces the copy).
-    expect(sheet.watchVersion).toEqual({ send: false, why: "cant_rewrite" });
+    // An app-built row: no rewrite or keep from here (the mirror replaces the copy).
+    expect(sheet.watchVersion).toEqual({ send: false, why: "mirrored" });
     const today = await planGet<{ upcoming: Row[] }>("/api/plan/today");
     expect(today.upcoming.find((w) => w.id === id)).toMatchObject({ corosSyncView: "content_stale", watchHoldsOldCopy: true });
 

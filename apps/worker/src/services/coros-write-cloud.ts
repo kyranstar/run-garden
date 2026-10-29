@@ -46,7 +46,7 @@ import { applyJobResult, claimNextJob } from "./jobs.js";
 import { bridgeJobPayload } from "./studio-push.js";
 import { claimUserLock, releaseUserLock } from "./locks.js";
 import { exerciseNameMap } from "./exercise-catalog.js";
-import { openIntentFor, resolveIntent } from "./sync-intents.js";
+import { openIntentFor, releaseContentClaims, resolveIntent } from "./sync-intents.js";
 import { enqueueUnpushIfOurs } from "./plan-mutations.js";
 import { sentBuildIdOf } from "./session-build.js";
 import { recordedStampFor, renamedCopyOfRow, SPENT_STAMP_STATUSES } from "./coros-stamp.js";
@@ -723,13 +723,23 @@ export async function executeCloudJobs(
               payload: { ...kept, ...observed },
             })
             .where(eq(corosWriteJobs.id, job.id));
-          // MOVED OR REMOVED WHILE THE PUSH RAN (Review Focus 3). The move or the
-          // archive could not cancel a claimed push and had no address to unpush
-          // by; now the copy is recorded, so its unpush is queued at once.
+          // THE WATCH HOLDS THE APP'S VERSION NOW (the watch mirrors the plan §3.6, builder check A8): the row's open
+          // content claims are resolved, so "Older on watch" never lingers behind a copy the mirror has replaced. A
+          // program push (provisional or a day's build) carries the session the app built, and `already_present` here
+          // is this push's own stamp — an earlier attempt of the same build — never an older version. One statement.
+          await releaseContentClaims(db, userId, spec.workoutId, done);
+          // MOVED, REMOVED OR KEPT OFF WHILE THE PUSH RAN (Review Focus 3; §3.6). The
+          // move, the archive or Keep off could not cancel a claimed push and had no
+          // address to unpush by; now the copy is recorded, so its unpush is queued at
+          // once. Kept off is read as its own: Keep off writes `watch_off` before it lets
+          // the build go, so a verify between the two still takes the copy off.
           const [landed] = await db.select().from(plannedWorkouts).where(eq(plannedWorkouts.id, spec.workoutId)).limit(1);
           if (
             landed &&
-            (landed.archivedAt || landed.effectiveDate !== spec.happenDay || (await sentBuildIdOf(db, landed.id)) !== spec.buildId)
+            (landed.archivedAt ||
+              landed.watchOff ||
+              landed.effectiveDate !== spec.happenDay ||
+              (await sentBuildIdOf(db, landed.id)) !== spec.buildId)
           ) {
             await unpushBuild(db, userId, landed, spec.buildId, done, prefs);
           }

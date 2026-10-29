@@ -22,7 +22,7 @@
  *  - A rest adds onto the step before it (at most 900 s); a leading rest has no
  *    step to hang on and is dropped.
  */
-import { and, eq, inArray, isNotNull, ne, or, sql } from "drizzle-orm";
+import { and, eq, inArray, isNotNull, isNull, ne, notInArray, or, sql } from "drizzle-orm";
 import { corosWriteJobs, plannedWorkouts, programs, providerConnections, sessionBuilds } from "@rg/database";
 import {
   canonicalJson,
@@ -54,7 +54,8 @@ import type { Db } from "./db.js";
 import { libraryFor, loadAccountLibrary, PUBLIC_LIBRARY } from "./account-library.js";
 import { corosKeyOf } from "./coros-exercise-map.js";
 import { freeStamp, STAMP_SEPARATOR, stampName, takenStampsOn } from "./coros-stamp.js";
-import { adoptedCopyUnpush } from "./plan-mutations.js";
+import { adoptedCopyUnpush, enqueueUnpushIfOurs } from "./plan-mutations.js";
+import { markMirrorOwed, resolveMirrorOwed } from "./mirror-owed.js";
 import { exerciseNameMap } from "./exercise-catalog.js";
 import { dayValidateCtx, snapshotErrors } from "./doc-build.js";
 import {
@@ -1095,9 +1096,11 @@ export async function enqueueProgramUnpush(
 }
 
 /**
- * `POST /api/sessions/:workoutId/take-off-watch`: `enqueueProgramUnpush` for the slot — or, with nothing sent, for
- * the shown build's copy left on the watch (`copyLeftOnWatch`: taken off before, but its unpush failed for good or a
- * restore neutralised it), whose removal is queued again (audit 3-A L-7). A no-op when neither holds.
+ * TAKE OFF, the copy alone: `enqueueProgramUnpush` for the slot — or, with nothing sent, for the shown build's copy
+ * left on the watch (`copyLeftOnWatch`: taken off before, but its unpush failed for good or a restore neutralised it),
+ * whose removal is queued again (audit 3-A L-7). A no-op when neither holds. No route runs it any more: under the
+ * mirror a copy taken off and not kept off is put straight back, so `take-off-watch` answers as Keep off
+ * (`keepOffWatch`, which takes the copy off the same way and sets `watch_off`).
  */
 export async function takeOffWatch(db: Db, userId: string, workoutId: string, ctx: BuildCtx): Promise<SessionResponse> {
   const row = await loadSlot(db, userId, workoutId);
@@ -1112,4 +1115,85 @@ export async function takeOffWatch(db: Db, userId: string, workoutId: string, ct
   // Its build is unlocked already (a locked one with a verified push would be the sent build): the session stands.
   await unpushBuild(db, userId, row, shown, ctx.now, ctx.prefs);
   return session;
+}
+
+/** A session whose copy stays as it is — done, or resolved otherwise (skipped, missed): never kept off (§3.6). */
+const KEEP_OFF_REFUSED = ["completed", "skipped", "missed"] as const;
+const resolvedSlot = (row: Pick<WorkoutRow, "contentState" | "completionState">): boolean =>
+  row.contentState === "done" || (KEEP_OFF_REFUSED as readonly string[]).includes(row.completionState);
+
+/**
+ * KEEP OFF MY WATCH (the watch mirrors the plan §3.6; builder check A8, M4) — `POST /api/sessions/:workoutId/keep-off-watch`,
+ * and for one release `take-off-watch` (an older client's Take off). An app-built session only (`loadSlot`: the coach's
+ * sessions keep their own lane, M4). Refused for a session done, or resolved otherwise (`WatchUnavailableError("done")`):
+ * a done session's copy is the session the athlete did, and it stays. In order:
+ *  1. `watch_off = 1`, which the mirror honours (the sweep, the drain, the lane's claim) — written first, so a push the
+ *     lane verifies from here on finds the row kept off and queues the copy's delete itself (coros-write-cloud.ts) — still
+ *     not resolved in its own WHERE, the row as written read back;
+ *  2. the copy off, as Take off takes it off, from that row: an adopted row's held copy and the sent build's unpush — a
+ *     push still queued superseded instead — the build let go (a provisional record's marker cleared, a day build
+ *     unlocked), never the address path (`enqueueUnpushIfOurs`, `addressPath: false`); with nothing sent, the shown
+ *     build's copy left on the watch has its removal queued again (`copyLeftOnWatch`, as `takeOffWatch`);
+ *  3. any other program push of the row still queued superseded and its build let go (the claim would supersede it). A
+ *     CLAIMED push is the lane's: its claim finds the row kept off (and its build no longer the sent one) and supersedes
+ *     it — or, landed, its verify queues the delete. Never refused `sending`;
+ *  4. the row's owed mark resolved (`resolveMirrorOwed`).
+ * With the athlete's COROS writes off the delete is owed on the sent build, as Take off owes it (`unpushBuild`).
+ * Idempotent. Statements: the slot, the write, the sent build (two), the delete at its most (held copy, supersede, push
+ * read, unpush, unlock: five), the straggler supersede, the mark, then the session.
+ */
+export async function keepOffWatch(db: Db, userId: string, workoutId: string, ctx: BuildCtx): Promise<SessionResponse> {
+  const slot = await loadSlot(db, userId, workoutId);
+  if (resolvedSlot(slot)) throw new WatchUnavailableError("done");
+  const pw = plannedWorkouts;
+  const [row] = await db
+    .update(pw)
+    .set({ watchOff: true, updatedAt: ctx.now })
+    .where(
+      and(
+        eq(pw.id, slot.id),
+        eq(pw.userId, userId),
+        or(isNull(pw.contentState), ne(pw.contentState, "done")),
+        notInArray(pw.completionState, [...KEEP_OFF_REFUSED]),
+      ),
+    )
+    .returning();
+  if (!row) throw new WatchUnavailableError("done");
+  const sent = await sentBuildIdOf(db, row.id);
+  await enqueueUnpushIfOurs(db, userId, row, ctx.now, ctx.prefs, { sent, addressPath: false });
+  const stragglers = await db
+    .update(corosWriteJobs)
+    .set({ status: "superseded", updatedAt: ctx.now })
+    .where(
+      and(
+        eq(corosWriteJobs.userId, userId),
+        eq(corosWriteJobs.workoutId, row.id),
+        eq(corosWriteJobs.kind, "program_session_push"),
+        eq(corosWriteJobs.status, "queued"),
+      ),
+    )
+    .returning({ id: corosWriteJobs.id });
+  for (const j of stragglers) await unlockSentBuild(db, row, j.id.slice(pushJobId("").length), ctx.now);
+  await resolveMirrorOwed(db, userId, row.id, ctx.now);
+  const session = await loadSession(db, userId, workoutId, ctx.today);
+  const shown = session.build?.buildId;
+  // Its build is unlocked already (a locked one with a verified push would be the sent build): the session stands.
+  if (!sent && shown && (await copyLeftOnWatch(db, shown))) await unpushBuild(db, userId, row, shown, ctx.now, ctx.prefs);
+  return session;
+}
+
+/**
+ * PUT ON MY WATCH (§3.6) — `POST /api/sessions/:workoutId/put-on-watch`: `watch_off` cleared and the session owed to the
+ * mirror again (`markMirrorOwed`), so the drain or the sweep makes its copy — on its day, the day's next build
+ * (`mirrorOnDayBuild`). Nothing is queued here (M2). An app-built session (`loadSlot`); idempotent. Statements: the slot,
+ * the write, the mark, then the session.
+ */
+export async function putOnWatch(db: Db, userId: string, workoutId: string, ctx: BuildCtx): Promise<SessionResponse> {
+  const row = await loadSlot(db, userId, workoutId);
+  await db
+    .update(plannedWorkouts)
+    .set({ watchOff: false, updatedAt: ctx.now })
+    .where(and(eq(plannedWorkouts.id, row.id), eq(plannedWorkouts.userId, userId)));
+  await markMirrorOwed(db, userId, row.id, ctx.now);
+  return loadSession(db, userId, workoutId, ctx.today);
 }

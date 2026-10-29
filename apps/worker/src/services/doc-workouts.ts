@@ -215,7 +215,7 @@ function notRevisable(r: Extract<Revisability, { ok: false }>): Error {
 /**
  * Why a workout can't be removed (`DELETE /api/workouts/:id`): not a Studio or template workout (a programme's session
  * goes through the programme), under way or done (`started`, `done`: a session was saved or begun), or on its way to
- * the watch this moment (`sending`: a push the lane has claimed).
+ * the watch this moment (`sending`: a day build's push the lane has claimed — never a provisional copy's).
  */
 export class NotRemovableError extends Error {
   constructor(public readonly reason: "not_studio" | "started" | "done" | "sending") {
@@ -914,8 +914,8 @@ export async function reviseDocWorkout(
 }
 
 /**
- * `DELETE /api/workouts/:id`: a Studio or template workout never started — no session saved or begun, nothing on its
- * way to the watch this moment — removed as the Plan page's Remove removes one (`removeFromPlan`): archived, its
+ * `DELETE /api/workouts/:id`: a Studio or template workout never started — no session saved or begun, no day build on
+ * its way to the watch this moment — removed as the Plan page's Remove removes one (`removeFromPlan`): archived, its
  * calendar event taken off (the next sync deletes it, and it is never booked again), its queued watch work cancelled,
  * a copy already on the watch taken off. Gone, so nothing reads it as missed. Throws `DocWorkoutNotFoundError` (not
  * this account's, or removed already), `NotRemovableError`, `RestoreInProgressError`.
@@ -937,10 +937,17 @@ export async function removeDocWorkout(db: Db, userId: string, workoutId: string
     .where(and(eq(performedSessions.userId, userId), eq(performedSessions.workoutId, workoutId)))
     .limit(1);
   if (saved) throw new NotRemovableError("done");
+  // A day's build on the wire this moment refuses (`sending`), as it always has. A provisional copy's push (the watch
+  // mirrors the plan, A1) never does: one still queued is superseded by the archive, and one the lane has claimed is the
+  // lane's — its claim finds the row archived and supersedes it, or, landed, its verify queues the copy's delete.
   const sent = await sentBuildIdOf(db, workoutId);
   if (sent) {
-    const [push] = await db.select({ status: corosWriteJobs.status }).from(corosWriteJobs).where(eq(corosWriteJobs.id, pushJobId(sent))).limit(1);
-    if (push && (PUSH_UNDER_WAY as readonly string[]).includes(push.status)) throw new NotRemovableError("sending");
+    const [push] = await db
+      .select({ status: corosWriteJobs.status, provisional: sql<number | null>`json_extract(${corosWriteJobs.payload}, '$.provisional')` })
+      .from(corosWriteJobs)
+      .where(eq(corosWriteJobs.id, pushJobId(sent)))
+      .limit(1);
+    if (push && !push.provisional && (PUSH_UNDER_WAY as readonly string[]).includes(push.status)) throw new NotRemovableError("sending");
   }
   if (await restoreInProgress(db, userId)) throw new RestoreInProgressError();
   // Only while it is still as judged: a session begun or saved between the reads and this write keeps it.

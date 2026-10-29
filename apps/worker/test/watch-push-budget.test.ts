@@ -172,6 +172,28 @@ describe("Take off", () => {
   });
 });
 
+describe("Keep off / Put on (the watch mirrors the plan §3.6)", () => {
+  it("Keep off a verified copy, then Put on: each within the budget, and neither runs a lane of its own", async () => {
+    const { workoutId, buildId } = await builtSlot();
+    await sendToWatch(db, switchOn(), userId, workoutId, buildId, ctx());
+    await executeCloudJobs(db, switchOn(), userId, prefs, { fetchImpl: server.fetchImpl });
+    expect((await jobOf(`push:${buildId}`))!.status).toBe("verified");
+    const off = await invoke("POST", `${workoutId}/keep-off-watch`, {});
+    report("Keep off (a verified copy)", off);
+    expect(off.res.status).toBe(200);
+    expect(off.waitUntil).toBe(0);
+    expect(off.fetches).toBe(0);
+    expect((await jobOf(`unpush:${buildId}`))!.status).toBe("queued");
+    expect(off.total).toBeLessThanOrEqual(BUDGET);
+    const on = await invoke("POST", `${workoutId}/put-on-watch`, {});
+    report("Put on", on);
+    expect(on.res.status).toBe(200);
+    expect(on.waitUntil).toBe(0);
+    expect(on.fetches).toBe(0);
+    expect(on.total).toBeLessThanOrEqual(BUDGET);
+  });
+});
+
 describe("POST /api/sessions/watch/drain", () => {
   it("404 while the switch is off", async () => {
     const m = await invoke("POST", "watch/drain", {}, makeEnv());

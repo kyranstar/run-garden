@@ -12,7 +12,9 @@
  *   POST   /api/sessions/:workoutId/unstart  the player's Discard: back to built, the build unlocked; idempotent
  *   GET    /api/sessions/:workoutId/watch-preview   the steps as the watch will hold them (Phase 3)
  *   POST   /api/sessions/:workoutId/send-to-watch   {buildId, digest} → lock the build (it stays `built`), queue its push
- *   POST   /api/sessions/:workoutId/take-off-watch  supersede a queued push, or queue the unpush of a pushed one
+ *   POST   /api/sessions/:workoutId/keep-off-watch  Keep off my watch: the copy off, `watch_off` set (the mirror leaves it off)
+ *   POST   /api/sessions/:workoutId/put-on-watch    Put on my watch: `watch_off` cleared, the session owed to the mirror
+ *   POST   /api/sessions/:workoutId/take-off-watch  for ONE RELEASE (an older client's Take off): answers as keep-off-watch
  *   GET    /api/sessions/:workoutId/watch-review    the quick review after a watch session: its basis (Phase 3)
  *   PUT    /api/sessions/performed/:id       a performed session from the player's outbox, saved exactly once (the app's,
  *                                            or a watch review — `source: "watch_review"`)
@@ -36,7 +38,8 @@
  * watch routes answer 404, and a PUT of a watch review (`source: "watch_review"`) answers 422, as every session but the
  * app's own did before Phase 3 (audit 3-B S-5). Send answers 409 with the reason it is not offered (`not_today`, `not_built`, `done`,
  * `precheck`, `writes_off`, `not_connected`, `too_long`, `empty`, `taking_off`, `already_sent`), `stale` with the
- * fresh session, or `stale_preview` with the fresh preview (the payload is not the one the athlete was shown).
+ * fresh session, or `stale_preview` with the fresh preview (the payload is not the one the athlete was shown). Keep off
+ * answers 409 `done` for a session done or otherwise resolved (its copy stays).
  */
 import { Hono, type Context } from "hono";
 import { z, type ZodError } from "zod";
@@ -68,7 +71,15 @@ import {
   unstartSession,
   type SessionResponse,
 } from "../services/session-build.js";
-import { sendToWatch, StalePreviewError, takeOffWatch, watchPreview, watchStateOf, WatchUnavailableError } from "../services/watch-push.js";
+import {
+  keepOffWatch,
+  putOnWatch,
+  sendToWatch,
+  StalePreviewError,
+  watchPreview,
+  watchStateOf,
+  WatchUnavailableError,
+} from "../services/watch-push.js";
 import { executeCloudJobs } from "../services/coros-write-cloud.js";
 import { InvalidSaveError, savePerformedSession } from "../services/session-save.js";
 import { reviewBasis } from "../services/session-review-basis.js";
@@ -324,17 +335,47 @@ sessionRoutes.post("/:workoutId/send-to-watch", async (c) => {
 });
 
 /**
- * Take the sent session off the watch (or stop it reaching it); its build is unlocked at once. Idempotent. No lane
- * runs in this request either (ruling 3-R11): the client follows up with the drain.
+ * KEEP OFF MY WATCH (the watch mirrors the plan §3.6): the session's copy comes off the watch (or never reaches it) and
+ * the row is kept off (`watch_off`), which the mirror honours until Put on (`keepOffWatch`). 409 `done` for a session
+ * done or otherwise resolved: its copy stays. Idempotent. No lane runs in this request (ruling 3-R11): the client
+ * follows up with the drain.
  */
-sessionRoutes.post("/:workoutId/take-off-watch", async (c) => {
+async function keepOff(c: Context<AppContext>): Promise<Response> {
   const off = switchedOff(c);
   if (off) return off;
   const db = c.get("db");
   const userId = c.get("userId");
   const prefs = await loadPreferences(db, userId);
   try {
-    const session = await takeOffWatch(db, userId, c.req.param("workoutId"), { today: todayInZone(prefs.timezone), now: nowInstant(), prefs });
+    const session = await keepOffWatch(db, userId, c.req.param("workoutId")!, { today: todayInZone(prefs.timezone), now: nowInstant(), prefs });
+    return c.json(await withWatch(c, session));
+  } catch (e) {
+    if (e instanceof WatchUnavailableError) return c.json({ error: e.reason }, 409);
+    return refusal(c, e);
+  }
+}
+
+sessionRoutes.post("/:workoutId/keep-off-watch", keepOff);
+
+/**
+ * The old Take off, kept for ONE RELEASE so a client cached from before Keep off still works (its PWA precache): it
+ * answers as Keep off — the copy off AND kept off, since the mirror would otherwise put it straight back. Retire it in
+ * the release after the one that ships Keep off.
+ */
+sessionRoutes.post("/:workoutId/take-off-watch", keepOff);
+
+/**
+ * PUT ON MY WATCH (§3.6): `watch_off` cleared and the session owed to the mirror again (`putOnWatch`) — the drain or the
+ * sweep makes its copy; nothing is queued here. Idempotent.
+ */
+sessionRoutes.post("/:workoutId/put-on-watch", async (c) => {
+  const off = switchedOff(c);
+  if (off) return off;
+  const db = c.get("db");
+  const userId = c.get("userId");
+  const prefs = await loadPreferences(db, userId);
+  try {
+    const session = await putOnWatch(db, userId, c.req.param("workoutId"), { today: todayInZone(prefs.timezone), now: nowInstant(), prefs });
     return c.json(await withWatch(c, session));
   } catch (e) {
     return refusal(c, e);

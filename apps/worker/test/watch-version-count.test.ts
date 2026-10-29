@@ -158,9 +158,9 @@ describe("what the account line counts", () => {
     expect(open.filter((i) => i.resolvedAt === null).map((i) => i.targetId).sort()).toEqual([...ids].sort());
   });
 
-  it("one rule with the row: the line lists exactly the rows whose sheet says \"Older on watch\", less those left as they are", async () => {
-    const cases: Array<{ name: string; id: string; listed: boolean; view: string | undefined; left?: boolean }> = [];
-    const add = async (name: string, o: Parameters<typeof session>[0], then: (id: string) => Promise<void>, expect: { listed: boolean; view: string | undefined; left?: boolean }) => {
+  it("one rule with the row: the line lists exactly the rows whose sheet says \"Older on watch\", less those the app built (the mirror replaces their copies)", async () => {
+    const cases: Array<{ name: string; id: string; listed: boolean; view: string | undefined; appBuilt?: boolean }> = [];
+    const add = async (name: string, o: Parameters<typeof session>[0], then: (id: string) => Promise<void>, expect: { listed: boolean; view: string | undefined; appBuilt?: boolean }) => {
       const id = await session({ title: name, ...o });
       await then(id);
       cases.push({ name, id, ...expect });
@@ -184,7 +184,10 @@ describe("what the account line counts", () => {
         originalDate: addDays(today, 6), destinationDate: addDays(today, 7), requestedAt: nowInstant(), updatedAt: nowInstant(),
       });
     }, { listed: false, view: "sync_issue" });
-    await add("ahead, app-built, left as it is", { date: addDays(today, 8), origin: "program" }, async (id) => { await claim(id); await leaveContentClaims(db, userId, id, nowInstant()); }, { listed: false, view: "content_stale", left: true });
+    // The mirror replaces an app-built session's copy (and its verified push closes the claim): never the line's, and a
+    // Leave mark from before the mirror means nothing either way.
+    await add("ahead, app-built", { date: addDays(today, 8), origin: "studio" }, claimed, { listed: false, view: "content_stale", appBuilt: true });
+    await add("ahead, app-built, left as it is", { date: addDays(today, 8), origin: "program" }, async (id) => { await claim(id); await leaveContentClaims(db, userId, id, nowInstant()); }, { listed: false, view: "content_stale", appBuilt: true });
     await add("ahead, no claim", { date: addDays(today, 9) }, async () => undefined, { listed: false, view: "synced" });
 
     const listed = new Set((await computeSyncStatus(db, userId, prefs)).contentStaleSessions.map((s) => s.workoutId));
@@ -192,8 +195,8 @@ describe("what the account line counts", () => {
     for (const c of cases) {
       expect(listed.has(c.id), `${c.name}: listed`).toBe(c.listed);
       expect(v.get(c.id), `${c.name}: its view`).toBe(c.view);
-      // The rule itself, whatever the case: listed ⇔ "Older on watch" and not left.
-      expect(listed.has(c.id), `${c.name}: the line and the row agree`).toBe(v.get(c.id) === "content_stale" && !c.left);
+      // The rule itself, whatever the case: listed ⇔ "Older on watch" and not app-built.
+      expect(listed.has(c.id), `${c.name}: the line and the row agree`).toBe(v.get(c.id) === "content_stale" && !c.appBuilt);
     }
   });
 
@@ -250,6 +253,19 @@ describe("what the account line counts", () => {
     expect(v.get(yesterday)).not.toBe("content_stale");
     expect(v.get(unanswered)).not.toBe("content_stale");
     expect(v.get(todayUnanswered)).toBe("content_stale");
+  });
+
+  it("never an app-built session's claim, left or not — and a coach session's left mark (none is written so) is ignored too", async () => {
+    const coach = await session({ date: addDays(today, 2), title: "Hills 6x1" });
+    const studio = await session({ date: addDays(today, 3), origin: "studio" });
+    const programme = await session({ date: addDays(today, 4), origin: "program" });
+    const onDemand = await session({ date: addDays(today, 5), origin: "on_demand" });
+    for (const id of [coach, studio, programme, onDemand]) await claim(id);
+    await leaveContentClaims(db, userId, programme, nowInstant());
+    await leaveContentClaims(db, userId, coach, nowInstant());
+    const status = await computeSyncStatus(db, userId, prefs);
+    expect(status.contentStaleSessions.map((s) => s.workoutId)).toEqual([coach]);
+    expect(status.contentStaleCount).toBe(1);
   });
 
   it("names a session once, however many open claims it carries", async () => {

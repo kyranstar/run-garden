@@ -5,23 +5,28 @@
  *   GET  /api/sessions/:workoutId/watch-preview   the steps as the watch will hold them, read off the wire program
  *   POST /api/sessions/:workoutId/send-to-watch   {buildId, digest} → lock the build (content stays `built`), queue push:<buildId>
  *   POST /api/sessions/:workoutId/take-off-watch  supersede a queued push, or queue unpush:<buildId> for a pushed one
+ *                                                 (for one release: Keep off, below)
+ *   POST /api/sessions/:workoutId/keep-off-watch  the copy off, and `watch_off` set: the mirror leaves the session off
+ *   POST /api/sessions/:workoutId/put-on-watch    `watch_off` cleared, the session owed to the mirror again
  *
  * The switch (`WATCH_PUSH_ENABLED`, a Worker var, only "1" is on) off: every watch route is 404 and every session
  * response carries `watch: null`. On: Send has Start's preconditions plus writes on and COROS connected; every refusal
  * writes no job and locks no build.
  */
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { and, eq } from "drizzle-orm";
+import { and, eq, lt } from "drizzle-orm";
 import { schema } from "@rg/database";
-import { adaptiveConfigSchema, newId, programSessionPushJobSchema, type UserPreferences } from "@rg/domain";
+import { adaptiveConfigSchema, addDays, newId, programSessionPushJobSchema, type UserPreferences } from "@rg/domain";
 import type { Env } from "../src/env.js";
 import type { Db } from "../src/services/db.js";
 import { sessionRoutes } from "../src/routes/sessions.js";
 import { createSession, SESSION_COOKIE } from "../src/auth/sessions.js";
 import { savePreferences, syncCalendar } from "../src/services/calendar-sync.js";
-import { buildSession } from "../src/services/session-build.js";
+import { buildSession, isProvisionalBuild, sentBuildIdOf } from "../src/services/session-build.js";
+import { markMirrorOwed, mirrorSweep, queueProvisionalPush } from "../src/services/mirror.js";
 import { programStamp } from "../src/services/watch-push.js";
 import { connectTestCoros, makeTestDb, makeTestUser, mountRoutes } from "./helpers.js";
+import { calmDoc } from "./doc-workout-fixture.js";
 import {
   buildToday,
   DAY,
@@ -37,7 +42,7 @@ import {
   TOMORROW,
 } from "./watch-push-fixture.js";
 
-const { corosWriteJobs, sessionBuilds, plannedWorkouts } = schema;
+const { corosWriteJobs, sessionBuilds, plannedWorkouts, syncIntents } = schema;
 
 vi.setConfig({ testTimeout: 30_000 });
 vi.mock("../src/services/calendar-sync.js", async (importOriginal) => ({
@@ -396,5 +401,150 @@ describe("POST take-off-watch", () => {
     expect(
       await db.select().from(sessionBuilds).where(and(eq(sessionBuilds.workoutId, workoutId), eq(sessionBuilds.userId, userId))),
     ).toHaveLength(1);
+  });
+});
+
+describe("Keep off my watch / Put on my watch (the watch mirrors the plan §3.6; builder check A8, M4)", () => {
+  let seq = 0;
+  /** A Studio workout as the Studio stores one: its document at revision 1, an outline until its day. */
+  async function seedDocRow(date: string, over: Partial<typeof plannedWorkouts.$inferInsert> = {}): Promise<string> {
+    const doc = calmDoc();
+    const id = over.id ?? `studio-${date}-${(seq += 1)}`;
+    await db.insert(plannedWorkouts).values({
+      id, userId, planId: programId, sourceWorkoutId: id, title: doc.title, category: "strength", sport: "strength",
+      originalPlanDate: date, lastVerifiedCorosDate: "", effectiveDate: date, effectiveTime: "18:00", sourceContentFingerprint: "studio",
+      calendarBlockDurationSeconds: 1800, fallbackEstimatedDurationSeconds: 1800, corosSyncState: "calendar_only",
+      completionState: "scheduled", origin: "studio", contentState: "outline", workoutDoc: JSON.stringify(doc), workoutDocRev: 1,
+      createdAt: NOON, updatedAt: NOON, ...over,
+    });
+    return id;
+  }
+  const mirrorCtx = () => ({ today: DAY, now: NOON, prefs });
+  const queue = async (id: string) => queueProvisionalPush(db, switchOn(), userId, await rowOf(db, id), mirrorCtx());
+  const sweep = () => mirrorSweep(db, switchOn(), userId, prefs, mirrorCtx(), { cap: 1 });
+  const recordsOf = (id: string) =>
+    db.select().from(sessionBuilds).where(and(eq(sessionBuilds.workoutId, id), lt(sessionBuilds.version, 0))).orderBy(sessionBuilds.version);
+  const markOf = async (id: string) => (await db.select().from(syncIntents).where(eq(syncIntents.id, `mirror-${id}`)))[0];
+  const keepOff = (id: string, opts: { who?: string } = {}) => call("POST", `${id}/keep-off-watch`, { ...opts, body: {} });
+  const putOn = (id: string, opts: { who?: string } = {}) => call("POST", `${id}/put-on-watch`, { ...opts, body: {} });
+
+  it("keep-off takes the copy off and sets watch_off; the sweep and the drain skip the row; put-on clears it and the push comes back", async () => {
+    const day = addDays(DAY, 2);
+    const id = await seedDocRow(day);
+    expect(await queue(id)).toBe("queued");
+    const [record] = await recordsOf(id);
+    const stamp = programSessionPushJobSchema.parse((await jobsOf(id))[0]!.payload).name;
+    // The lane put the provisional copy on the watch; a later change marked the session owed.
+    await db.update(corosWriteJobs).set({ status: "verified", verifiedAt: NOON }).where(eq(corosWriteJobs.id, `push:${record!.id}`));
+    await db
+      .update(plannedWorkouts)
+      .set({ sourceWorkoutId: "4738:91", sourceIdInPlan: "91", sourceProgramId: "91", lastVerifiedCorosDate: day, corosSyncState: "synced" })
+      .where(eq(plannedWorkouts.id, id));
+    await markMirrorOwed(db, userId, id, NOON);
+
+    const res = await keepOff(id);
+    expect(res.status).toBe(200);
+    expect(await res.json()).toMatchObject({ workoutId: id, watch: expect.anything() });
+    expect((await rowOf(db, id)).watchOff).toBe(true);
+    const [unpush] = await db.select().from(corosWriteJobs).where(eq(corosWriteJobs.id, `unpush:${record!.id}`));
+    expect(unpush).toMatchObject({ kind: "coach_delete_workout", status: "queued", workoutId: id });
+    expect(unpush!.payload).toEqual({ workoutId: id, happenDay: day, name: stamp, idInPlan: "91", programId: "91", corosPlanId: "4738" });
+    // No longer the copy on the watch (its record's marker cleared), and nothing owed to the mirror.
+    expect(isProvisionalBuild((await recordsOf(id))[0]!)).toBe(false);
+    expect(await sentBuildIdOf(db, id)).toBeNull();
+    expect((await markOf(id))!.resolvedAt).toBe(NOON);
+
+    // The mirror honours it: the drain's queue answers kept off, and the sweep pushes nothing — even owed.
+    expect(await queue(id)).toBe("skipped:kept_off");
+    await markMirrorOwed(db, userId, id, NOON);
+    expect((await sweep()).queued).toBe(0);
+    expect(await recordsOf(id)).toHaveLength(1);
+    expect((await jobsOf(id)).map((j) => j.id).sort()).toEqual([`push:${record!.id}`, `unpush:${record!.id}`].sort());
+
+    // The delete verified, as the lane leaves it: the copy gone, its push superseded, the address reset.
+    await db.update(corosWriteJobs).set({ status: "verified" }).where(eq(corosWriteJobs.id, `unpush:${record!.id}`));
+    await db.update(corosWriteJobs).set({ status: "superseded" }).where(eq(corosWriteJobs.id, `push:${record!.id}`));
+    await db
+      .update(plannedWorkouts)
+      .set({ sourceWorkoutId: id, sourceIdInPlan: null, sourceProgramId: null, lastVerifiedCorosDate: "", corosSyncState: "calendar_only" })
+      .where(eq(plannedWorkouts.id, id));
+
+    const on = await putOn(id);
+    expect(on.status).toBe(200);
+    expect(await on.json()).toMatchObject({ workoutId: id, watch: expect.anything() });
+    expect((await rowOf(db, id)).watchOff).toBe(false);
+    expect((await markOf(id))!.resolvedAt, "owed to the mirror again").toBeNull();
+    expect((await sweep()).queued).toBe(1);
+    const [second] = await recordsOf(id);
+    expect(second!.version).toBe(-2);
+    expect(isProvisionalBuild(second!)).toBe(true);
+    const [push] = await db.select().from(corosWriteJobs).where(eq(corosWriteJobs.id, `push:${second!.id}`));
+    expect(push).toMatchObject({ kind: "program_session_push", status: "queued" });
+    expect(programSessionPushJobSchema.parse(push!.payload)).toMatchObject({ provisional: true, happenDay: day });
+  });
+
+  it("keep-off refused on a done session (409 done): nothing written, its copy stays; 404 for another account's", async () => {
+    const done = await seedDocRow(DAY, { contentState: "done" });
+    const completed = await seedDocRow(addDays(DAY, -1), { completionState: "completed" });
+    for (const id of [done, completed]) {
+      const res = await keepOff(id);
+      expect(res.status).toBe(409);
+      expect(await res.json()).toEqual({ error: "done" });
+      expect((await rowOf(db, id)).watchOff).toBe(false);
+      expect(await jobsOf(id)).toEqual([]);
+    }
+    const ahead = await seedDocRow(addDays(DAY, 2));
+    const { userId: other } = await makeTestUser(db, {});
+    expect((await keepOff(ahead, { who: other })).status).toBe(404);
+    expect((await putOn(ahead, { who: other })).status).toBe(404);
+    expect((await rowOf(db, ahead)).watchOff).toBe(false);
+  });
+
+  it("with a provisional push on its way: a queued one superseded and its record's marker cleared, a claimed one left to the lane — never refused `sending`", async () => {
+    const queued = await seedDocRow(addDays(DAY, 2));
+    const claimed = await seedDocRow(addDays(DAY, 3));
+    expect(await queue(queued)).toBe("queued");
+    expect(await queue(claimed)).toBe("queued");
+    const [q] = await recordsOf(queued);
+    const [c] = await recordsOf(claimed);
+    await db.update(corosWriteJobs).set({ status: "claimed", claimedAt: NOON }).where(eq(corosWriteJobs.id, `push:${c!.id}`));
+
+    expect((await keepOff(queued)).status).toBe(200);
+    expect((await jobsOf(queued)).map((j) => [j.id, j.status])).toEqual([[`push:${q!.id}`, "superseded"]]);
+    expect(isProvisionalBuild((await recordsOf(queued))[0]!)).toBe(false);
+
+    // The claim's own checks supersede it (kept off; no longer the sent copy) — or, landed, its verify queues the delete.
+    expect((await keepOff(claimed)).status).toBe(200);
+    expect((await jobsOf(claimed)).map((j) => [j.id, j.status])).toEqual([[`push:${c!.id}`, "claimed"]]);
+    expect(isProvisionalBuild((await recordsOf(claimed))[0]!)).toBe(false);
+    expect(await sentBuildIdOf(db, claimed)).toBeNull();
+    expect((await rowOf(db, claimed)).watchOff).toBe(true);
+  });
+
+  it("on the day: kept off, the day's next build leaves it off (no re-push); put on, the next build pushes it", async () => {
+    const workoutId = await seedSlot(db, userId, programId, DAY);
+    const checks = { tmj: { pre: 2, feelingOff: false } };
+    const build = () => call("POST", `${workoutId}/build`, { body: { checks } });
+    const live = async () => (await jobsOf(workoutId)).filter((j) => j.kind === "program_session_push" && j.status === "queued");
+    expect((await build()).status).toBe(200);
+    expect(await live(), "the mirror follows the day's build").toHaveLength(1);
+
+    expect((await keepOff(workoutId)).status).toBe(200);
+    expect(await live()).toEqual([]);
+    expect((await build()).status).toBe(200);
+    expect(await live(), "kept off: the day's build is not pushed again").toEqual([]);
+
+    expect((await putOn(workoutId)).status).toBe(200);
+    expect((await build()).status).toBe(200);
+    expect(await live()).toHaveLength(1);
+  });
+
+  it("take-off-watch answers as Keep off for one release (an older client's Take off)", async () => {
+    const { workoutId, buildId } = await builtSlot();
+    await send(workoutId, buildId);
+    const res = await takeOff(workoutId);
+    expect(res.status).toBe(200);
+    expect((await rowOf(db, workoutId)).watchOff).toBe(true);
+    expect((await jobsOf(workoutId)).map((j) => [j.id, j.status])).toEqual([[`push:${buildId}`, "superseded"]]);
   });
 });
