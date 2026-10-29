@@ -2,7 +2,7 @@
  * THE APP DRAINS THE WATCH ONE JOB A REQUEST (ruling 3-R11; the watch mirrors the plan §3.7, A5). `POST
  * /api/sessions/watch/drain` runs one watch job — a push, a delete, or the mirror's one record — and answers what is
  * left (`{ran, pending}`); `drainWatchUntilIdle` asks again while something is left, at most six requests, and stops
- * at the first that ran nothing or failed. A move or remove of an app-built session answers `watchDrain`, and the client
+ * at the first that ran nothing, failed, or re-queued its job after a COROS blip (`retried`). A move or remove of an app-built session answers `watchDrain`, and the client
  * runs that chain; without the flag no drain is sent. Chains never overlap: a second waits for the first.
  */
 import { afterEach, describe, expect, it, vi } from "vitest";
@@ -71,6 +71,12 @@ describe("drainWatchUntilIdle — the client chains drains, one job a request", 
   it("stops when a request ran nothing though jobs are left (another invocation holds them, or none can run now)", async () => {
     const calls = stubWorker({}, [{ ran: false, pending: 2 }, { ran: true, pending: 0 }]);
     expect(await drainWatchUntilIdle()).toEqual({ ran: 0, pending: 2 });
+    expect(drainsIn(calls)).toBe(1);
+  });
+
+  it("stops when the job it ran was re-queued after a COROS blip (retried): the executor's tries are not burned in seconds", async () => {
+    const calls = stubWorker({}, [{ ran: true, pending: 2, retried: true }, { ran: true, pending: 1 }, { ran: true, pending: 0 }]);
+    expect(await drainWatchUntilIdle()).toEqual({ ran: 1, pending: 2 });
     expect(drainsIn(calls)).toBe(1);
   });
 

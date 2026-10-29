@@ -312,7 +312,15 @@ export async function executeCloudJobs(
     /** Claim only these kinds — the coach drain (`COACH_DRAIN_KINDS`, ruling 3-R11). */
     onlyKinds?: readonly string[];
   } = {},
-): Promise<{ executed: number }> {
+): Promise<{
+  executed: number;
+  /**
+   * How many of the jobs run were a watch job — a program push, or a delete (`coach_delete_workout`) — re-queued after a
+   * transient failure (a try of its three spent, so another run tries again). Absent when none was: the drain answers
+   * `retried` on it, and the client's chain stops rather than spend the job's tries in seconds (Important 1 (b)).
+   */
+  retried?: number;
+}> {
   const cap = opts.cap ?? 3;
   const fetchImpl = opts.fetchImpl ?? fetch;
   // A restore is replacing the account (B2): no queued change reaches the
@@ -326,6 +334,8 @@ export async function executeCloudJobs(
   if (!lock) return { executed: 0 };
 
   let executed = 0;
+  /** Watch jobs re-queued after a transient failure (`retried`). */
+  let retried = 0;
   /** Set when the invocation hits a runtime ceiling — see `isRuntimeLimit`. */
   let outOfBudget = false;
   try {
@@ -760,6 +770,7 @@ export async function executeCloudJobs(
           console.error(
             `program push ${retryable && attempts < 3 ? "retrying" : "FAILED"} (attempt ${attempts}): ${result.reason ?? ""}`,
           );
+          if (!isRuntimeLimit(result.error) && retryable && attempts < 3) retried += 1;
           await db
             .update(corosWriteJobs)
             .set(
@@ -1180,6 +1191,7 @@ export async function executeCloudJobs(
           console.error(
             `coach unpush ${retryable && attempts < 3 ? "retrying" : "FAILED"} (${spec.name}, attempt ${attempts}): ${result.refused ?? ""} ${result.error ?? ""}`,
           );
+          if (retryable && attempts < 3) retried += 1;
           await db
             .update(corosWriteJobs)
             .set(
@@ -1245,7 +1257,7 @@ export async function executeCloudJobs(
   } finally {
     await releaseUserLock(db, userId, "coros_write", lock).catch(() => undefined);
   }
-  return { executed };
+  return retried > 0 ? { executed, retried } : { executed };
 }
 
 /** True when the user has a live cloud connection — the emit path uses this

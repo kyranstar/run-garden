@@ -2481,6 +2481,12 @@ export interface ProgressDto {
 export interface WatchDrainDto {
   ran: boolean;
   pending: number;
+  /**
+   * The job that ran was re-queued after a transient COROS failure (one of its three tries spent): asking again at once
+   * would only spend the rest, so the chain stops — the hourly or the next open resumes. Absent otherwise (an older
+   * server never says it).
+   */
+  retried?: boolean;
 }
 
 /** Most drain requests one chain sends (`drainWatchUntilIdle`); the hourly lane runs whatever is left. */
@@ -2493,7 +2499,8 @@ let watchDrainTail: Promise<unknown> = Promise.resolve();
  * RUN THE WATCH'S QUEUED JOBS, ONE A REQUEST (ruling 3-R11; the watch mirrors the plan §3.7, A5): each drain request is
  * its own invocation and does one watch job — a push, a delete, or the mirror's one record — and answers what is left.
  * Asks again while something is (`pending > 0`), at most `max` requests; stops at the first that ran nothing (another
- * invocation has the work, or none can run now) or failed (offline, the switch off: 404). Never rejects: it resolves
+ * invocation has the work, or none can run now), failed (offline, the switch off: 404), or re-queued its job after a
+ * COROS blip (`retried`: a chain seconds apart would spend the job's three tries in one outage). Never rejects: it resolves
  * with how many ran and what was left at the last answer. A chain started while another runs waits for it, so the two
  * never contend for the account's write lock. The hourly lane runs whatever a chain leaves.
  */
@@ -2511,7 +2518,7 @@ export function drainWatchUntilIdle(max = WATCH_DRAIN_MAX): Promise<{ ran: numbe
       pending = typeof answer.pending === "number" ? answer.pending : 0;
       if (!answer.ran) break;
       ran += 1;
-      if (pending === 0) break;
+      if (pending === 0 || answer.retried === true) break;
     }
     return { ran, pending };
   };

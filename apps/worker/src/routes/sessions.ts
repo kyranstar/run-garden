@@ -439,7 +439,9 @@ sessionRoutes.get("/:workoutId/watch-review", async (c) => {
  * of other kinds are left to the lanes that run them. The app calls it after every change that queues watch work and
  * again while `pending` (the account's queued watch jobs, one COUNT) is above 0 (`drainWatchUntilIdle`). A sweep that
  * throws is logged and answered `{ran: false}` with nothing drained (the request's room may be spent). 404 while the
- * switch is off. `{ran, pending}`.
+ * switch is off. `{ran, pending}` — and `retried: true` when the job that ran was re-queued after a transient COROS
+ * failure (a push's or a delete's try spent): the client's chain stops there, so a short outage never burns a job's
+ * three tries in seconds; the hourly or the next open resumes (the watch mirrors the plan, final review Important 1).
  */
 sessionRoutes.post("/watch/drain", async (c) => {
   const off = switchedOff(c);
@@ -456,8 +458,13 @@ sessionRoutes.post("/watch/drain", async (c) => {
     console.error(`watch drain: the mirror sweep failed — ${e instanceof Error ? e.message : "unknown"}`);
     return c.json({ ran: false, pending: await queuedWatchJobs(db, userId) });
   }
-  if (!ran) ran = (await executeCloudJobs(db, c.env, userId, prefs, { cap: 1, watchOnly: true })).executed > 0;
-  return c.json({ ran, pending: await queuedWatchJobs(db, userId) });
+  let retried = false;
+  if (!ran) {
+    const drained = await executeCloudJobs(db, c.env, userId, prefs, { cap: 1, watchOnly: true });
+    ran = drained.executed > 0;
+    retried = (drained.retried ?? 0) > 0;
+  }
+  return c.json({ ran, pending: await queuedWatchJobs(db, userId), ...(retried ? { retried: true } : {}) });
 });
 
 /**

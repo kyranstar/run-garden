@@ -55,6 +55,8 @@ let programId: string;
 let server: MockCorosServer;
 let statements = 0;
 let fetches = 0;
+/** COROS's schedule writes failing at the network (a short outage): the lane re-queues the job for another try. */
+let outage = false;
 
 beforeEach(async () => {
   vi.useFakeTimers({ toFake: ["Date"] });
@@ -67,8 +69,11 @@ beforeEach(async () => {
   programId = await seedProgram(db, userId);
   server = mockCorosServer({ baseMonday: "2026-10-12" });
   await connectMock(db, userId, server);
+  outage = false;
   vi.stubGlobal("fetch", (async (input: string | URL | Request, init?: RequestInit) => {
     fetches += 1;
+    const url = new URL(typeof input === "string" ? input : input instanceof URL ? input.href : input.url);
+    if (outage && url.pathname === "/training/schedule/update") throw new TypeError("fetch failed");
     return server.fetchImpl(input, init);
   }) as typeof fetch);
 });
@@ -285,6 +290,32 @@ describe("POST /api/sessions/watch/drain", () => {
     expect(await m.res.json()).toEqual({ ran: true, pending: 1 });
     expect((await jobOf("coach-1-push"))!.status).toBe("queued");
     expect([(await jobOf(`push:${a.buildId}`))!.status, (await jobOf(`push:${b.buildId}`))!.status]).toEqual(["verified", "queued"]);
+  });
+
+  it("a job re-queued after a COROS blip answers retried: true (the client's chain stops on it) — a push and a delete alike, within the budget", async () => {
+    const { workoutId, buildId } = await builtSlot();
+    await sendToWatch(db, switchOn(), userId, workoutId, buildId, ctx());
+    outage = true;
+    const push = await invoke("POST", "watch/drain", {});
+    report("drain, one push re-queued after a blip", push);
+    expect(push.res.status).toBe(200);
+    expect(await push.res.json()).toEqual({ ran: true, pending: 1, retried: true });
+    expect((await jobOf(`push:${buildId}`))!.status).toBe("queued");
+    expect(push.total).toBeLessThanOrEqual(BUDGET);
+    outage = false;
+    expect(await (await invoke("POST", "watch/drain", {})).res.json()).toEqual({ ran: true, pending: 0 });
+    expect((await jobOf(`push:${buildId}`))!.status).toBe("verified");
+
+    await invoke("POST", `${workoutId}/keep-off-watch`, {});
+    outage = true;
+    const del = await invoke("POST", "watch/drain", {});
+    report("drain, one delete re-queued after a blip", del);
+    expect(await del.res.json()).toEqual({ ran: true, pending: 1, retried: true });
+    expect(del.total).toBeLessThanOrEqual(BUDGET);
+    expect(await (await invoke("POST", "watch/drain", {})).res.json()).toEqual({ ran: true, pending: 1, retried: true });
+    // The executor's third try fails it for good: nothing re-queued, so no `retried` (the sweep's ladder takes it from here).
+    expect(await (await invoke("POST", "watch/drain", {})).res.json()).toEqual({ ran: true, pending: 0 });
+    expect((await jobOf(`unpush:${buildId}`))!.status).toBe("failed");
   });
 
   it("never runs another user's job", async () => {
