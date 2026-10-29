@@ -10,7 +10,9 @@
  *    records the new wire fingerprint, and a change against what the push OBSERVED posts one "Changed in COROS" note.
  *  - A move in COROS is adopted (the existing date adoption); the build stays locked; the note only informs (3-R15).
  *  - Absent for two FULL reads: the address is cleared and one "Removed from your watch" note posted. Never archived.
- *    A short read proves nothing (3-R16).
+ *    A short read proves nothing (3-R16). A document workout still ahead and not kept off is the mirror's to put back
+ *    (the watch mirrors the plan §3.8): no note, the row owed, and the sweep pushes it once; changed in COROS, it keeps
+ *    its one note and the sweep replaces the copy with the app's.
  *  - A copy the row never learned about (the executor died between write and record) — its stamp's ONLY carrier, on
  *    a full read — is attached to its slot, or unpushed (insert-only) when its slot is gone or holds another build.
  *    Never a new row. A second carrier is the athlete's own workout.
@@ -37,7 +39,7 @@ import { applyMove, emitPendingWork } from "../src/services/jobs.js";
 import { removeFromPlan } from "../src/services/plan-mutations.js";
 import { buildSession, loadSession } from "../src/services/session-build.js";
 import { createDocWorkout } from "../src/services/doc-workouts.js";
-import { queueProvisionalPush } from "../src/services/mirror.js";
+import { mirrorSweep, queueProvisionalPush } from "../src/services/mirror.js";
 import { calmDoc } from "./doc-workout-fixture.js";
 import { activeSyncNotes, postSyncNote } from "../src/services/sync-notes.js";
 import { syncRoutes } from "../src/routes/sync.js";
@@ -50,7 +52,7 @@ import {
   connectMock, DAY, makeEnv, NOON, PROGRAM_NAME, rowOf, seedCatalog, seedProgram, seedSlot, seedTmj, switchOn, TOMORROW,
 } from "./watch-push-fixture.js";
 
-const { corosWriteJobs, plannedWorkouts, providerConnections, sessionBuilds } = schema;
+const { corosWriteJobs, plannedWorkouts, providerConnections, sessionBuilds, syncIntents } = schema;
 
 vi.setConfig({ testTimeout: 30_000 });
 vi.mock("../src/services/calendar-sync.js", async (importOriginal) => ({
@@ -351,7 +353,7 @@ describe("the import and a sent session", () => {
     expect(await watchOf(workoutId)).toEqual({ state: "on_watch" });
   });
 
-  it("(e) deleted on COROS (Review Focus 2): after two FULL reads the address is cleared and one note posted — never archived, nothing queued", async () => {
+  it("(e) deleted on COROS (Review Focus 2): after two FULL reads the address is cleared and one note posted — never archived, nothing queued, not the mirror's (an engine slot)", async () => {
     const { workoutId, stamp } = await pushed();
     const address = (await rowOf(db, workoutId)).sourceWorkoutId;
     const program = programOn(stamp)!;
@@ -374,6 +376,8 @@ describe("the import and a sent session", () => {
     expect(await notesOf(workoutId)).toHaveLength(1);
     expect(await watchOf(workoutId)).toEqual({ state: "off_watch" });
     expect((await db.select().from(corosWriteJobs).where(eq(corosWriteJobs.workoutId, workoutId))).map((j) => [j.id, j.status])).toEqual(jobsBefore);
+    // An engine slot is no document workout: the mirror never puts it back, so it is never marked owed (§3.8).
+    expect(await db.select().from(syncIntents).where(eq(syncIntents.id, `mirror-${workoutId}`))).toEqual([]);
   });
 
   it("(f) a copy the row never learned about is attached to its slot by its stamp — never a new row", async () => {
@@ -1051,5 +1055,168 @@ describe("a mirror job is never verified by sight (M7)", () => {
     expect((await jobOf(`unpush:${first!.id}`))!.status).toBe("queued");
     // The row followed the copy it holds, as a sent session's does.
     expect(await rowOf(db, id)).toMatchObject({ effectiveDate: LATEST, lastVerifiedCorosDate: LATEST, archivedAt: null });
+  });
+});
+
+describe("the mirror puts back a copy the watch lost or changed (the watch mirrors the plan §3.8, A7)", () => {
+  beforeEach(() => setup());
+
+  const LATER = addDays(DAY, 2);
+  const recordsOf = (workoutId: string) =>
+    db.select().from(sessionBuilds).where(and(eq(sessionBuilds.workoutId, workoutId), lt(sessionBuilds.version, 0))).orderBy(sessionBuilds.version);
+  const jobsOf = async (workoutId: string) =>
+    (await db.select().from(corosWriteJobs).where(eq(corosWriteJobs.workoutId, workoutId)).orderBy(corosWriteJobs.requestedAt)).map((j) => [j.id, j.status]);
+  const owedOf = async (workoutId: string) => (await db.select().from(syncIntents).where(eq(syncIntents.id, `mirror-${workoutId}`)))[0];
+  const sweep = () => mirrorSweep(db, switchOn(), userId, prefs, ctx(), { cap: 1 });
+  const ours = () => (server.state.schedule.programs ?? []).filter((p) => String(p.name).startsWith("Hips and back"));
+  const aMinuteLater = () => vi.setSystemTime(new Date(Date.now() + 60_000));
+
+  /** A Studio workout two days ahead, its provisional copy on the (mock) watch, as the drain and the lane leave it. */
+  async function mirrored(): Promise<{ id: string; buildId: string; stamp: string }> {
+    const { workout } = await createDocWorkout(db, userId, { date: LATER, time: "18:00", doc: calmDoc() }, ctx());
+    expect(await queueProvisionalPush(db, switchOn(), userId, await rowOf(db, workout.id), ctx())).toBe("queued");
+    await lane();
+    const [record] = await recordsOf(workout.id);
+    expect((await jobOf(`push:${record!.id}`))!.status).toBe("verified");
+    expect((await rowOf(db, workout.id)).lastVerifiedCorosDate).toBe(LATER);
+    expect((await owedOf(workout.id))!.resolvedAt).not.toBeNull();
+    return { id: workout.id, buildId: record!.id, stamp: programSessionPushJobSchema.parse((await jobOf(`push:${record!.id}`))!.payload).name };
+  }
+
+  function deletedInCoros(stamp: string) {
+    const program = programOn(stamp)!;
+    server.state.schedule.entities = server.state.schedule.entities!.filter((e) => String(e.idInPlan) !== String(program.idInPlan));
+    server.state.schedule.programs = server.state.schedule.programs!.filter((p) => p !== program);
+  }
+
+  it("deleted on the watch, re-pushed once (Review Focus 5): two full reads clear the address with no note; the sweep queues one push; a read between queues nothing more", async () => {
+    const { id, buildId, stamp } = await mirrored();
+    deletedInCoros(stamp);
+
+    await readNow();
+    expect(await rowOf(db, id)).toMatchObject({ lastVerifiedCorosDate: LATER, missingReads: 1 });
+    await readNow();
+    const row = await rowOf(db, id);
+    expect(row).toMatchObject({ archivedAt: null, lastVerifiedCorosDate: "", corosSyncState: "calendar_only", sourceWorkoutId: id, missingReads: 0 });
+    // The mirror will put it back: no "Removed from your watch"; the push stays verified (the cleared address makes the
+    // copy uncovered, A7) and the row is owed, so the next drain or sweep takes it first.
+    expect(await notesOf(id)).toEqual([]);
+    expect((await jobOf(`push:${buildId}`))!.status).toBe("verified");
+    expect((await owedOf(id))!.resolvedAt).toBeNull();
+
+    // A read before the sweep: nothing queued, nothing told.
+    const before = await jobsOf(id);
+    await readNow();
+    expect(await jobsOf(id)).toEqual(before);
+    expect(await notesOf(id)).toEqual([]);
+
+    // The sweep: exactly one push — no delete (the copy is gone, and the row holds no address to delete by).
+    expect(await sweep()).toMatchObject({ queued: 1, attempted: 1 });
+    // The newest record first (−2: a provisional record's version counts down).
+    const [second] = await recordsOf(id);
+    expect(second!.version).toBe(-2);
+    expect(await jobsOf(id)).toEqual([...before, [`push:${second!.id}`, "queued"]]);
+    expect((await owedOf(id))!.resolvedAt).not.toBeNull();
+
+    // A read while the push waits, and the sweep again: nothing more.
+    await readNow();
+    expect((await sweep()).queued).toBe(0);
+    expect(await jobsOf(id)).toEqual([...before, [`push:${second!.id}`, "queued"]]);
+    expect(await notesOf(id)).toEqual([]);
+
+    // The lane puts the copy back; the next read finds it, and it stays one.
+    aMinuteLater();
+    await lane();
+    expect((await jobOf(`push:${second!.id}`))!.status).toBe("verified");
+    expect(ours()).toHaveLength(1);
+    await readNow();
+    expect(await rowOf(db, id)).toMatchObject({ effectiveDate: LATER, lastVerifiedCorosDate: LATER, archivedAt: null });
+    expect((await sweep()).queued).toBe(0);
+    expect(await notesOf(id)).toEqual([]);
+    expect(ours()).toHaveLength(1);
+  });
+
+  it("changed in COROS: one note, the row owed, and the sweep replaces the copy with the app's — one copy at the end", async () => {
+    const { id, buildId, stamp } = await mirrored();
+    const before = await contentOf(id);
+    await readNow();
+    expect(await notesOf(id)).toEqual([]);
+    const step = programOn(stamp)!.exercises!.find((e) => e.isGroup !== true && Number(e.exerciseType) !== 0)!;
+    step.sets = Number(step.sets ?? 1) + 2;
+
+    await readNow();
+    expect((await notesOf(id)).map((n) => n.kind)).toEqual(["watch_copy_changed"]);
+    expect((await owedOf(id))!.resolvedAt).toBeNull();
+    await readNow();
+    expect((await notesOf(id)).map((n) => n.kind)).toEqual(["watch_copy_changed"]);
+    // The app keeps its version (the import never rewrites it).
+    expect(await contentOf(id)).toEqual(before);
+
+    // The sweep replaces it: the changed copy's delete, then the app's copy.
+    expect((await sweep()).queued).toBe(1);
+    // The newest record first (−2: a provisional record's version counts down).
+    const [second] = await recordsOf(id);
+    expect(second!.version).toBe(-2);
+    expect(await jobOf(`unpush:${buildId}`)).toMatchObject({ status: "queued" });
+    expect(await jobOf(`push:${second!.id}`)).toMatchObject({ status: "queued" });
+    expect((await owedOf(id))!.resolvedAt).not.toBeNull();
+    expect((await sweep()).queued).toBe(0);
+
+    aMinuteLater();
+    await lane();
+    expect((await jobOf(`unpush:${buildId}`))!.status).toBe("verified");
+    expect((await jobOf(`push:${second!.id}`))!.status).toBe("verified");
+    expect(programOn(stamp)).toBeUndefined();
+    expect(ours()).toHaveLength(1);
+    await readNow();
+    expect(await rowOf(db, id)).toMatchObject({ lastVerifiedCorosDate: LATER, archivedAt: null });
+    expect((await notesOf(id)).map((n) => n.kind)).toEqual(["watch_copy_changed"]);
+    expect((await sweep()).queued).toBe(0);
+    expect(ours()).toHaveLength(1);
+  });
+
+  it("a kept-off row whose copy is deleted on the watch: the note posted, not owed, never re-pushed", async () => {
+    const { id, stamp } = await mirrored();
+    // Kept off (the flag as Keep off writes it; its delete not yet run when the athlete deletes the copy themselves).
+    await db.update(plannedWorkouts).set({ watchOff: true }).where(eq(plannedWorkouts.id, id));
+    deletedInCoros(stamp);
+    await readNow();
+    await readNow();
+    expect(await rowOf(db, id)).toMatchObject({ lastVerifiedCorosDate: "", corosSyncState: "calendar_only" });
+    expect((await notesOf(id)).map((n) => n.kind)).toEqual(["watch_copy_removed"]);
+    expect((await owedOf(id))!.resolvedAt).not.toBeNull();
+    const before = await jobsOf(id);
+    expect((await sweep()).queued).toBe(0);
+    expect(await jobsOf(id)).toEqual(before);
+  });
+
+  it("today, its copy the day's sent build: deleted on the watch → the note posted, not owed (the day's copy follows the day's build)", async () => {
+    const { workout } = await createDocWorkout(db, userId, { date: DAY, time: "18:00", doc: calmDoc() }, ctx());
+    const id = workout.id;
+    const { buildId, stamp } = await send(id, DAY);
+    expect(programSessionPushJobSchema.parse((await jobOf(`push:${buildId}`))!.payload).provisional).toBeUndefined();
+    expect((await rowOf(db, id)).lastVerifiedCorosDate).toBe(DAY);
+    // The add's owed mark settled, as the sweep settles it once the copy is on the watch.
+    await db.update(syncIntents).set({ resolvedAt: NOON }).where(eq(syncIntents.id, `mirror-${id}`));
+    deletedInCoros(stamp);
+    await readNow();
+    await readNow();
+    expect(await rowOf(db, id)).toMatchObject({ lastVerifiedCorosDate: "", corosSyncState: "calendar_only" });
+    expect((await notesOf(id)).map((n) => n.kind)).toEqual(["watch_copy_removed"]);
+    expect((await owedOf(id))!.resolvedAt).toBe(NOON);
+  });
+
+  it("a kept-off row changed in COROS: the note only — not owed, never replaced", async () => {
+    const { id, stamp } = await mirrored();
+    await readNow();
+    await db.update(plannedWorkouts).set({ watchOff: true }).where(eq(plannedWorkouts.id, id));
+    const step = programOn(stamp)!.exercises!.find((e) => e.isGroup !== true && Number(e.exerciseType) !== 0)!;
+    step.sets = Number(step.sets ?? 1) + 2;
+    await readNow();
+    expect((await notesOf(id)).map((n) => n.kind)).toEqual(["watch_copy_changed"]);
+    expect((await owedOf(id))!.resolvedAt).not.toBeNull();
+    const before = await jobsOf(id);
+    expect((await sweep()).queued).toBe(0);
+    expect(await jobsOf(id)).toEqual(before);
   });
 });

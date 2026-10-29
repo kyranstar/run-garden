@@ -367,10 +367,13 @@ describe("a copy renamed in the COROS app is not claimed (the limit: it reads as
       expect(warned).not.toHaveBeenCalled();
       expect(await rowOf(db, id)).toMatchObject({ watchCopyName: null, sourceWorkoutId: adopted.sourceWorkoutId });
 
-      // Rule 8: the second full read without its copy lets go of the address (and says so once)…
+      // Rule 8: the second full read without its copy lets go of the address — and, the row a document workout still to
+      // come, owes it to the watch mirror rather than saying it is gone (the watch mirrors the plan §3.8): the sweep puts
+      // the app's copy on the watch…
       expect((await importFromCoros()).failedWrites).toBe(0);
       expect(await rowOf(db, id)).toMatchObject({ sourceWorkoutId: id, lastVerifiedCorosDate: "", title: "Strength B, mine" });
-      expect((await activeSyncNotes(db, userId)).filter((n) => n.workoutId === id).map((n) => n.kind)).toEqual(["watch_copy_removed"]);
+      expect((await activeSyncNotes(db, userId)).filter((n) => n.workoutId === id)).toEqual([]);
+      expect((await db.select().from(schema.syncIntents).where(eq(schema.syncIntents.id, `mirror-${id}`)))[0]).toMatchObject({ resolvedAt: null });
 
       // …and the renamed copy is a COROS workout like any other.
       expect(await importFromCoros()).toMatchObject({ created: 1, failedWrites: 0 });

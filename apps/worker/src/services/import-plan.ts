@@ -14,6 +14,7 @@ import {
   appAuthoredRow,
   coachDeleteWorkoutJobSchema,
   COACH_STAMPING_JOB_KINDS,
+  docOriginRow,
   newId,
   nowInstant,
   programSessionPushJobSchema,
@@ -36,6 +37,7 @@ import { loadOwnProgramNames, unstampTitle } from "./coros-stamp.js";
 import { openMoveIntents, resolveIntent } from "./sync-intents.js";
 import { adoptsWatchCopy, watchCopyBase } from "./watch-copy-marker.js";
 import { dismissSyncNotesOf, postSyncNote } from "./sync-notes.js";
+import { markMirrorOwed } from "./mirror-owed.js";
 import { reconcileWorkout } from "./reconcile.js";
 import { SETTLED_PUSH, sentBuildIdOf } from "./session-build.js";
 import { queueUnpush, unpushJobId } from "./watch-push.js";
@@ -140,6 +142,37 @@ function appAuthoredSession(w: { origin: string | null }): boolean {
 }
 
 /**
+ * THE WATCH MIRROR PUTS THIS ROW'S COPY BACK (the watch mirrors the plan §3.8, builder check A7): a document workout
+ * still to come — not kept off the watch, not under way or done — is one the mirror owes a copy (`mirror.ts`
+ * `rowRefusal`, as far as the row says it: the switch, the writes and the window only delay it). Its copy gone from the
+ * watch (rule 8 clears the address, and `currentCopy` reads the copy as uncovered) or changed in the COROS app (the
+ * push's `noticed`, which `currentCopy` reads as not current), the sweep pushes the app's version again; the import marks
+ * the row owed so the next drain or sweep takes it first. Not on its day when the copy is the day's build (`verified`,
+ * the row's verified push, not provisional): the day's copy follows the day's build (`mirrorOnDayBuild`), which takes a
+ * sent day build for the copy on the watch and pushes nothing until the next build. An engine slot, a kept-off row, a
+ * day gone, today's sent build: the athlete is told, and nothing sends it again on its own.
+ */
+function sweepPutsBack(
+  w: Pick<StoredWorkout, "origin" | "workoutDocRev" | "watchOff" | "effectiveDate" | "archivedAt" | "completionState" | "contentState" | "sport" | "category">,
+  today: string,
+  verified: Pick<ProgramSessionPushJob, "provisional"> | undefined,
+): boolean {
+  const owed =
+    docOriginRow(w) &&
+    w.workoutDocRev !== null &&
+    !w.watchOff &&
+    w.archivedAt === null &&
+    w.completionState === "scheduled" &&
+    w.contentState !== "started" &&
+    w.contentState !== "done" &&
+    w.sport !== "run" &&
+    w.category !== "rest" &&
+    w.category !== "race";
+  if (!owed || w.effectiveDate < today) return false;
+  return w.effectiveDate > today || verified === undefined || verified.provisional === true;
+}
+
+/**
  * WHICH stored row is this wire workout, given that its address may be claimed
  * by several (`existingByAddress` above)?
  *
@@ -216,6 +249,7 @@ export async function importPlanSnapshot(
   prefs: UserPreferences,
 ): Promise<ImportStats> {
   const now = nowInstant();
+  const today = todayInZone(prefs.timezone);
   const stats: ImportStats = {
     planId: "",
     created: 0,
@@ -1302,6 +1336,12 @@ export async function importPlanSnapshot(
             .update(corosWriteJobs)
             .set({ payload: { ...push.payload, noticed: seen } as unknown as Record<string, unknown>, updatedAt: now })
             .where(eq(corosWriteJobs.id, push.jobId));
+          // A document workout still to come: the app is the truth, and the mirror's sweep replaces the copy on its next
+          // pass (§3.8) — `noticed` makes the copy not current (`currentCopy`), the owed mark puts it first in line. One
+          // statement, on the one read that tells the athlete.
+          if (sweepPutsBack({ ...current, ...(updates as Partial<StoredWorkout>) }, today, push.payload)) {
+            await markMirrorOwed(db, input.userId, current.id, now);
+          }
         }
       }
     } else if (src.contentFingerprint !== current.sourceContentFingerprint && contentIntentIds.has(current.id)) {
@@ -1516,6 +1556,13 @@ export async function importPlanSnapshot(
       // (ruling 3-R16, audit 3-A life L-6): between them the read covers today+7
       // at most, and a copy the athlete moved further out in COROS is simply
       // outside the window — two hourly reads told them it was gone.
+      // A DOCUMENT WORKOUT STILL TO COME is the watch mirror's to put back (the
+      // watch mirrors the plan §3.8, A7; `sweepPutsBack` — on its day, unless
+      // its copy is the day's sent build): the address is cleared all the same
+      // and its push left verified — the sweep's `currentCopy` reads the
+      // cleared address as no copy, and pushes it again — but the athlete is
+      // not told it is gone (it is about to come back): the row is marked owed
+      // instead, one statement for the note's one.
       if (seenProgramRows.has(w.id) || w.archivedAt || w.completionState !== "scheduled") continue;
       if (!input.fullSchedule) continue;
       const address = watchAddressOf(w);
@@ -1534,7 +1581,8 @@ export async function importPlanSnapshot(
             updatedAt: now,
           })
           .where(eq(plannedWorkouts.id, w.id));
-        await postSyncNote(db, { userId: input.userId, workoutId: w.id, kind: "watch_copy_removed", payload: { date: address.happenDay } });
+        if (sweepPutsBack(w, today, verifiedPushOf.get(w.id)?.payload)) await markMirrorOwed(db, input.userId, w.id, now);
+        else await postSyncNote(db, { userId: input.userId, workoutId: w.id, kind: "watch_copy_removed", payload: { date: address.happenDay } });
       } else {
         await db.update(plannedWorkouts).set({ missingReads: reads, updatedAt: now }).where(eq(plannedWorkouts.id, w.id));
       }
@@ -1712,7 +1760,6 @@ export async function importPlanSnapshot(
   // never sees. `day-placement.ts` owns the rule; it touches a day only when
   // that day's calendar blocks actually collide, and re-derives the same times
   // from the same set, so it cannot churn the athlete's calendar hourly.
-  const today = todayInZone(prefs.timezone);
   const windowDates: string[] = [];
   for (let d = input.rangeStart < today ? today : input.rangeStart; d <= input.rangeEnd; d = addDays(d, 1)) {
     windowDates.push(d);

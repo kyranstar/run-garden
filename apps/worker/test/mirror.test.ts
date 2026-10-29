@@ -358,6 +358,13 @@ describe("currentCopy (A7)", () => {
     expect(currentCopy(row({ sourceWorkoutId: "studio-1", sourceIdInPlan: null }), [push()], DAY)).toBe(false);
   });
 
+  it("verified, but the import saw it changed in the COROS app (`noticed`) → not current, so the app's copy replaces it (§3.8)", () => {
+    expect(currentCopy(row(), [push({ noticed: true })], DAY)).toBe(false);
+    // Its replacement on its way, or landed: current.
+    expect(currentCopy(row(), [push({ noticed: true }), push({ id: "push:c", status: "queued", verifiedAt: null })], DAY)).toBe(true);
+    expect(currentCopy(row(), [push({ noticed: true }), push({ id: "push:c" })], DAY)).toBe(true);
+  });
+
   it("the copy moved in the COROS app and the row followed it (its stamp keeps the old date) → current", () => {
     const followed = addDays(day, 1);
     expect(currentCopy(row({ effectiveDate: followed, lastVerifiedCorosDate: followed }), [push()], DAY)).toBe(true);

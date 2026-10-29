@@ -184,6 +184,22 @@ describe("mirrorNeedsRun — is there work for the sweep? (one read)", () => {
     await db.update(plannedWorkouts).set({ sourceWorkoutId: id, sourceIdInPlan: null, sourceProgramId: null, lastVerifiedCorosDate: "" }).where(eq(plannedWorkouts.id, id));
     expect(await mirrorNeedsRun(db, userId, DAY), "the address cleared").toBe(true);
   });
+
+  it("a verified copy the import saw changed in the COROS app (`noticed` on its push): true — the sweep replaces it", async () => {
+    const id = await seedDocRow(addDays(DAY, 2));
+    await queued(id);
+    const [push] = await pushesOf(id);
+    await db.update(corosWriteJobs).set({ status: "verified", verifiedAt: NOON }).where(eq(corosWriteJobs.id, push!.id));
+    await db
+      .update(plannedWorkouts)
+      .set({ sourceWorkoutId: "900:41", sourceIdInPlan: "41", sourceProgramId: "77", lastVerifiedCorosDate: addDays(DAY, 2) })
+      .where(eq(plannedWorkouts.id, id));
+    expect(await mirrorNeedsRun(db, userId, DAY), "verified, as pushed").toBe(false);
+    const payload = { ...(push!.payload as Record<string, unknown>), noticed: { wire: "w2", text: "t2" } };
+    await db.update(corosWriteJobs).set({ payload }).where(eq(corosWriteJobs.id, push!.id));
+    expect(await mirrorNeedsRun(db, userId, DAY), "changed in COROS").toBe(true);
+    expect(await mirrorSweep(db, switchOn(), userId, prefs, ctx(), { cap: 1 })).toMatchObject({ queued: 1 });
+  });
 });
 
 describe("the hourly runs the sweep OR the drain — never two watch jobs in one invocation", () => {

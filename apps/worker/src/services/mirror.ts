@@ -141,6 +141,8 @@ export interface PushRow {
   updatedAt: string;
   /** The mirror's re-queues of it after it failed (M3). */
   retries: number;
+  /** The import saw its copy changed in the COROS app (`noticed` on its payload, §3.8): the app's version goes back. */
+  noticed?: boolean;
 }
 
 /** The row fields the current-copy test reads. */
@@ -176,11 +178,14 @@ const isOneOf = (list: readonly string[], status: string): boolean => list.inclu
 
 /**
  * IS THE COPY ON THE WATCH THE SESSION AS IT STANDS? (A7) Pure. A push (not settled) for the row's document revision
- * and the row's day that is on its way, or verified with the row still holding a COROS address on its day. So:
+ * and the row's day that is on its way, or verified — and not seen changed in the COROS app — with the row still holding
+ * a COROS address on its day. So:
  *  - another revision → not current (the copy is the old one);
  *  - the same revision on another day (a move in the app) → not current: an in-flight push is for the old day, and a
  *    verified copy's address still names the old day until its delete verifies;
  *  - verified, but the address cleared (the import found the copy gone, §3.8) → not current, so it is pushed again;
+ *  - verified, but changed in the COROS app (the import's `noticed`, §3.8) → not current, so the app's copy replaces it
+ *    (its replacement on its way, or landed, is current);
  *  - a copy moved in the COROS app that the row followed (the stamp keeps the old date, the address the new) → current.
  * A push that does not say its revision (a day's build sent before the mirror) is judged by its day alone. A day gone
  * owes no copy: current.
@@ -192,7 +197,7 @@ export function currentCopy(row: Pick<MirrorRow, "effectiveDate" | "workoutDocRe
     if (isOneOf(SETTLED, p.status)) return false;
     if (p.fromDocRev !== null && p.fromDocRev !== row.workoutDocRev) return false;
     if (isOneOf(IN_FLIGHT, p.status)) return p.happenDay === row.effectiveDate;
-    return p.status === "verified" && address !== null && address.happenDay === row.effectiveDate;
+    return p.status === "verified" && p.noticed !== true && address !== null && address.happenDay === row.effectiveDate;
   });
 }
 
@@ -291,6 +296,7 @@ async function mirrorJobs(db: Db, userId: string, scope: SQL, opts: { payloads?:
       provisional: payloadField<number | null>("$.provisional"),
       fromDocRev: payloadField<number | null>("$.fromDocRev"),
       retries: payloadField<number | null>("$.mirrorRetries"),
+      noticed: sql<number>`json_extract(${corosWriteJobs.payload}, '$.noticed') is not null`,
       verifiedAt: corosWriteJobs.verifiedAt,
       updatedAt: corosWriteJobs.updatedAt,
       buildId: sb.id,
@@ -316,6 +322,7 @@ async function mirrorJobs(db: Db, userId: string, scope: SQL, opts: { payloads?:
     provisional: Boolean(r.provisional),
     fromDocRev: typeof r.fromDocRev === "number" ? r.fromDocRev : null,
     retries: typeof r.retries === "number" ? r.retries : 0,
+    noticed: Boolean(r.noticed),
     build: buildId !== null && buildVersion !== null ? { version: buildVersion, lockedAt: buildLockedAt, marked: Boolean(buildMarked), date: buildDate } : null,
   }));
 }
@@ -898,9 +905,10 @@ function inWindowCondition(today: string, horizon: string): SQL {
  * sweep rather than on a watch job. ONE bounded read (LIMIT 1, nothing read back but a row's existence): an OPEN owed
  * mark (on a row the sweep reads: the mark of a row gone is never its), or a window document workout
  * (`inWindowCondition`, not under way or done, with a revision) WITH NO CURRENT COPY — `currentCopy` in SQL: no push of
- * its revision (or none said) that is on its way for its day, or verified with the row holding a COROS address on its
- * day — and NOT REMEMBERED refused for its revision and day (too long, not a document, today's check answered, an error
- * past its backoff ladder; an error still on the ladder waits out its backoff in the sweep, and is not read here).
+ * its revision (or none said) that is on its way for its day, or verified (and not seen changed in the COROS app) with
+ * the row holding a COROS address on its day — and NOT REMEMBERED refused for its revision and day (too long, not a
+ * document, today's check answered, an error past its backoff ladder; an error still on the ladder waits out its backoff
+ * in the sweep, and is not read here).
  *
  * Never "no" when the sweep would make a copy (every condition here is one the sweep's verdict holds too), but "yes"
  * for some sessions it will leave — a failed push waiting out its backoff or given up on: the sweep then attempts
@@ -921,7 +929,7 @@ export async function mirrorNeedsRun(db: Db, userId: string, today: string): Pro
     and ${j.kind} = 'program_session_push'
     and (${field("$.fromDocRev")} is null or ${field("$.fromDocRev")} = ${pw.workoutDocRev})
     and ((${j.status} in (${sql.join(IN_FLIGHT.map((x) => sql`${x}`), sql`, `)}) and ${field("$.happenDay")} = ${pw.effectiveDate})
-      or (${j.status} = 'verified' and ${address} and ${pw.lastVerifiedCorosDate} = ${pw.effectiveDate})))`;
+      or (${j.status} = 'verified' and ${field("$.noticed")} is null and ${address} and ${pw.lastVerifiedCorosDate} = ${pw.effectiveDate})))`;
   // Refused for good for this revision and day — or an error past its backoff ladder (`gave_up`, `verdictOf`).
   const remembered = sql`(${si.id} is not null and ${mark("$.rev")} = ${pw.workoutDocRev} and ${mark("$.day")} = ${pw.effectiveDate}
     and (${mark("$.refused")} in ('too_long', 'not_document', 'today_checked')
