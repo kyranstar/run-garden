@@ -3,7 +3,7 @@ import { activities, activitySourceLinks, providerConnections } from "@rg/databa
 import { addDays, nowInstant, todayInZone, type UserPreferences } from "@rg/domain";
 import { buildSnapshot, loadNameResolver } from "@rg/coros";
 import type { NameResolver } from "@rg/providers";
-import { fixtureModeEnabled, type Env } from "../env.js";
+import { fixtureModeEnabled, watchPushEnabled, type Env } from "../env.js";
 import { chunkIds, type Db } from "./db.js";
 import { corosClient, touchCorosSync } from "./coros-connection.js";
 import { ingestActivities } from "./completion.js";
@@ -212,6 +212,8 @@ export async function corosReadNow(
           rangeStart,
           rangeEnd,
           fullSchedule: fullScheduleDue,
+          // The mirror puts a lost or changed copy back only with the switch on (and the athlete's writes): `sweepPutsBack`.
+          watchPush: watchPushEnabled(env),
           source: "bridge",
         },
         prefs,

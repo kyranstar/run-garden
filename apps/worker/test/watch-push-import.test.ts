@@ -1092,6 +1092,31 @@ describe("the mirror puts back a copy the watch lost or changed (the watch mirro
     server.state.schedule.programs = server.state.schedule.programs!.filter((p) => p !== program);
   }
 
+  it("deleted on the watch with the athlete's COROS writes off, or the switch off: told as before — 'Removed from your watch', nothing owed", async () => {
+    // Nothing will put it back while they stay off (the sweep waits for writes and the switch), so the athlete is told.
+    const fullRead = async (env = switchOn(), p = prefs) => {
+      const [conn] = await db.select().from(providerConnections).where(eq(providerConnections.userId, userId));
+      const meta = { ...((conn!.meta ?? {}) as Record<string, unknown>) };
+      delete meta.lastFullScheduleAt;
+      await db.update(providerConnections).set({ meta }).where(eq(providerConnections.id, conn!.id));
+      expect((await corosReadNow(db, env, userId, p, { force: true, fetchImpl: readFetch() })).status).toBe("ok");
+    };
+    const cases: Array<[string, Parameters<typeof fullRead>]> = [
+      ["writes off", [switchOn(), { ...prefs, corosWritesEnabled: false }]],
+      ["the switch off", [makeEnv(), prefs]],
+    ];
+    for (const [why, read] of cases) {
+      const { id, stamp } = await mirrored();
+      deletedInCoros(stamp);
+      await fullRead(...read);
+      await fullRead(...read);
+      expect(await rowOf(db, id), why).toMatchObject({ lastVerifiedCorosDate: "", corosSyncState: "calendar_only" });
+      expect((await notesOf(id)).map((n) => n.kind), why).toEqual(["watch_copy_removed"]);
+      expect((await owedOf(id))!.resolvedAt, why).not.toBeNull();
+      await db.update(plannedWorkouts).set({ archivedAt: NOON }).where(eq(plannedWorkouts.id, id));
+    }
+  });
+
   it("deleted on the watch, re-pushed once (Review Focus 5): two full reads clear the address with no note; the sweep queues one push; a read between queues nothing more", async () => {
     const { id, buildId, stamp } = await mirrored();
     deletedInCoros(stamp);

@@ -117,7 +117,8 @@ async function importFromCoros(span: "full" | "short" = "full") {
     db,
     {
       userId, plan: { sourcePlanId: n.planId, name: "Container" }, workouts: n.workouts, rangeStart: addDays(DAY, -7),
-      rangeEnd: addDays(DAY, 30), fullSchedule: span === "full", source: "fixture",
+      // The watch switch on, as the cron's read passes it (`watchPushEnabled`): the mirror may put a lost copy back.
+      rangeEnd: addDays(DAY, 30), fullSchedule: span === "full", watchPush: true, source: "fixture",
     },
     prefs,
   );

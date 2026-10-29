@@ -65,6 +65,11 @@ export interface ImportInput {
    * Absent = a short read.
    */
   fullSchedule?: boolean;
+  /**
+   * The watch switch is on (`WATCH_PUSH_ENABLED`): with the athlete's COROS writes, what lets the mirror put a lost or
+   * changed copy back (`sweepPutsBack`). Absent = off: the athlete is told the copy is gone, as before the mirror.
+   */
+  watchPush?: boolean;
   source: "bridge" | "fixture" | "official";
 }
 
@@ -148,14 +153,17 @@ function appAuthoredSession(w: { origin: string | null }): boolean {
  * gone from the watch (rule 8 clears the address, and `currentCopy` reads the copy as uncovered) or changed in the COROS
  * app (the push's `noticed`, which `currentCopy` reads as not current), the mirror pushes the app's version again — the
  * sweep, or on its day the day's path (`mirrorOnDayBuild`, which the sweep asks too when the copy is the day's build);
- * the import marks the row owed so the next drain or sweep takes it first. An engine slot, a kept-off row, a day gone:
- * the athlete is told, and nothing sends it again on its own.
+ * the import marks the row owed so the next drain or sweep takes it first. An engine slot, a kept-off row, a day gone
+ * — or the athlete's COROS writes off, or the watch switch off (`mirrorOn` false: the sweep queues nothing then, so
+ * nothing would put it back, final review Minor 7): the athlete is told, and nothing sends it again on its own.
  */
 function sweepPutsBack(
   w: Pick<StoredWorkout, "origin" | "workoutDocRev" | "watchOff" | "effectiveDate" | "archivedAt" | "completionState" | "contentState" | "sport" | "category">,
   today: string,
+  mirrorOn: boolean,
 ): boolean {
   return (
+    mirrorOn &&
     docOriginRow(w) &&
     w.workoutDocRev !== null &&
     !w.watchOff &&
@@ -248,6 +256,8 @@ export async function importPlanSnapshot(
 ): Promise<ImportStats> {
   const now = nowInstant();
   const today = todayInZone(prefs.timezone);
+  // The mirror writes to the watch (`sweepPutsBack`): the athlete's COROS writes on and the watch switch on.
+  const mirrorOn = prefs.corosWritesEnabled && input.watchPush === true;
   const stats: ImportStats = {
     planId: "",
     created: 0,
@@ -1337,7 +1347,7 @@ export async function importPlanSnapshot(
           // A document workout still to come: the app is the truth, and the mirror's sweep replaces the copy on its next
           // pass (§3.8) — `noticed` makes the copy not current (`currentCopy`), the owed mark puts it first in line. One
           // statement, on the one read that tells the athlete.
-          if (sweepPutsBack({ ...current, ...(updates as Partial<StoredWorkout>) }, today)) {
+          if (sweepPutsBack({ ...current, ...(updates as Partial<StoredWorkout>) }, today, mirrorOn)) {
             await markMirrorOwed(db, input.userId, current.id, now);
           }
         }
@@ -1579,7 +1589,7 @@ export async function importPlanSnapshot(
             updatedAt: now,
           })
           .where(eq(plannedWorkouts.id, w.id));
-        if (sweepPutsBack(w, today)) await markMirrorOwed(db, input.userId, w.id, now);
+        if (sweepPutsBack(w, today, mirrorOn)) await markMirrorOwed(db, input.userId, w.id, now);
         else await postSyncNote(db, { userId: input.userId, workoutId: w.id, kind: "watch_copy_removed", payload: { date: address.happenDay } });
       } else {
         await db.update(plannedWorkouts).set({ missingReads: reads, updatedAt: now }).where(eq(plannedWorkouts.id, w.id));
