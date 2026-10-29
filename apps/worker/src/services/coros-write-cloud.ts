@@ -727,6 +727,8 @@ export async function executeCloudJobs(
           // content claims are resolved, so "Older on watch" never lingers behind a copy the mirror has replaced. A
           // program push (provisional or a day's build) carries the session the app built, and `already_present` here
           // is this push's own stamp — an earlier attempt of the same build — never an older version. One statement.
+          // A claim opened by a revise while this push ran is safe to resolve too: the revise marked the session owed,
+          // and the mirror queues the replacement for the new revision (mirror.ts `currentCopy`).
           await releaseContentClaims(db, userId, spec.workoutId, done);
           // MOVED, REMOVED OR KEPT OFF WHILE THE PUSH RAN (Review Focus 3; §3.6). The
           // move, the archive or Keep off could not cancel a claimed push and had no

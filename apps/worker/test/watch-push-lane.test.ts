@@ -16,7 +16,7 @@ import { corosProgramFingerprint, corosStructureFingerprint, programTextFingerpr
 import type { Db } from "../src/services/db.js";
 import { executeCloudJobs } from "../src/services/coros-write-cloud.js";
 import { buildSession } from "../src/services/session-build.js";
-import { sendToWatch } from "../src/services/watch-push.js";
+import { keepOffWatch, sendToWatch } from "../src/services/watch-push.js";
 import { mockCorosServer, type MockCorosServer } from "../../../packages/coros/test/mock-coros-server.js";
 import { renormalizingCoros } from "../../../packages/coros/test/renormalizing-coros.js";
 import { makeTestDb, makeTestUser } from "./helpers.js";
@@ -213,6 +213,51 @@ describe("the slot moved while the push ran (Review Focus 3)", () => {
     await executeCloudJobs(db, makeEnv(), userId, prefs, { fetchImpl: server.fetchImpl });
     expect((await jobOf(`unpush:${buildId}`))!.status).toBe("verified");
     expect(storedProgram(name)).toBeUndefined();
+  });
+});
+
+describe("Keep off, then Send: an explicit Send puts the session back on the watch (§3.6)", () => {
+  beforeEach(() => setup());
+  const unpushesOf = async (workoutId: string) =>
+    (await db.select().from(corosWriteJobs).where(eq(corosWriteJobs.workoutId, workoutId))).filter((j) => j.kind === "coach_delete_workout");
+
+  it("kept off before its push ran, then Send: watch_off cleared, the push verifies through the lane, and the copy stays", async () => {
+    const { workoutId, buildId } = await sent();
+    await keepOffWatch(db, userId, workoutId, ctx());
+    expect((await rowOf(db, workoutId)).watchOff).toBe(true);
+    expect((await jobOf(`push:${buildId}`))!.status).toBe("superseded");
+
+    await sendToWatch(db, switchOn(), userId, workoutId, buildId, ctx());
+    expect((await rowOf(db, workoutId)).watchOff).toBe(false);
+    expect((await jobOf(`push:${buildId}`))!.status).toBe("queued");
+    await executeCloudJobs(db, switchOn(), userId, prefs, { fetchImpl: server.fetchImpl });
+    const push = await jobOf(`push:${buildId}`);
+    expect(push!.status, "never dropped at claim").toBe("verified");
+    expect(storedProgram(programSessionPushJobSchema.parse(push!.payload).name), "the copy stays on the watch").toBeDefined();
+    expect(await unpushesOf(workoutId)).toEqual([]);
+  });
+
+  it("kept off after it verified and its delete ran, then Send: the same build goes on again, and stays", async () => {
+    const { workoutId, buildId } = await sent();
+    await executeCloudJobs(db, switchOn(), userId, prefs, { fetchImpl: server.fetchImpl });
+    const name = programSessionPushJobSchema.parse((await jobOf(`push:${buildId}`))!.payload).name;
+    expect(storedProgram(name)).toBeDefined();
+    await keepOffWatch(db, userId, workoutId, ctx());
+    vi.setSystemTime(new Date(Date.parse(NOON) + 60_000));
+    await executeCloudJobs(db, switchOn(), userId, prefs, { fetchImpl: server.fetchImpl });
+    expect((await jobOf(`unpush:${buildId}`))!.status).toBe("verified");
+    expect(storedProgram(name), "taken off").toBeUndefined();
+
+    vi.setSystemTime(new Date(Date.parse(NOON) + 120_000));
+    const later = { ...ctx(), now: new Date(Date.parse(NOON) + 120_000).toISOString() };
+    await sendToWatch(db, switchOn(), userId, workoutId, buildId, later);
+    expect((await rowOf(db, workoutId)).watchOff).toBe(false);
+    await executeCloudJobs(db, switchOn(), userId, prefs, { fetchImpl: server.fetchImpl });
+    const push = await jobOf(`push:${buildId}`);
+    expect(push!.status).toBe("verified");
+    expect(storedProgram(programSessionPushJobSchema.parse(push!.payload).name), "back on the watch, and kept").toBeDefined();
+    // The one delete is the Keep off's, run already: nothing more is queued for the copy Send put on.
+    expect((await unpushesOf(workoutId)).map((j) => j.status)).toEqual(["verified"]);
   });
 });
 

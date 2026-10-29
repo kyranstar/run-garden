@@ -770,6 +770,9 @@ export async function watchPreview(db: Db, env: Env, userId: string, workoutId: 
  * THE PREVIEW IS WHAT IS SENT (audit W-2 / W-8): `opts.digest` is the digest of the preview the athlete saw (the
  * route requires it). The payload made here must have that digest, else `StalePreviewError` with the fresh preview,
  * before anything is written. A no-op Send (the push already queued, running or verified) checks nothing.
+ *
+ * A SESSION KEPT OFF (`watch_off`, §3.6) is put back on by Send, as by Put on: the mark is cleared before the push is
+ * queued (one statement more, only for such a row).
  */
 export async function sendToWatch(
   db: Db,
@@ -845,6 +848,16 @@ export async function sendToWatch(
   }
   const build = session.build!;
   const id = pushJobId(build.buildId);
+  // AN EXPLICIT SEND PUTS IT ON THE WATCH (the watch mirrors the plan §3.6): a session kept off (`watch_off`) is the
+  // athlete's to have on the watch again — cleared before the push is queued (or the push still running is kept), so
+  // the lane's claim does not drop it and its verify does not take the copy off (coros-write-cloud.ts). After every
+  // refusal above, so a refused Send writes nothing here. One statement, only for a row kept off; Retry likewise.
+  if (row.watchOff) {
+    await db
+      .update(plannedWorkouts)
+      .set({ watchOff: false, updatedAt: ctx.now })
+      .where(and(eq(plannedWorkouts.id, row.id), eq(plannedWorkouts.userId, userId)));
+  }
   if (payload === null) return { ...session, watch: { state: "sending" } };
   const valid = programSessionPushJobSchema.parse(payload);
   // SEND REPLACES AN ADOPTED WORKOUT'S OLD COPY (workout-editability spec §4): a coach session or a COROS-plan session a
@@ -1138,6 +1151,7 @@ const resolvedSlot = (row: Pick<WorkoutRow, "contentState" | "completionState">)
  *     CLAIMED push is the lane's: its claim finds the row kept off (and its build no longer the sent one) and supersedes
  *     it — or, landed, its verify queues the delete. Never refused `sending`;
  *  4. the row's owed mark resolved (`resolveMirrorOwed`).
+ * Put on (`putOnWatch`) clears the mark, and so does an explicit Send (`sendToWatch`, its Retry too) before it queues.
  * With the athlete's COROS writes off the delete is owed on the sent build, as Take off owes it (`unpushBuild`).
  * Idempotent. Statements: the slot, the write, the sent build (two), the delete at its most (held copy, supersede, push
  * read, unpush, unlock: five), the straggler supersede, the mark, then the session.

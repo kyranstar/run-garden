@@ -192,6 +192,18 @@ describe("Keep off / Put on (the watch mirrors the plan §3.6)", () => {
     expect(on.fetches).toBe(0);
     expect(on.total).toBeLessThanOrEqual(BUDGET);
   });
+
+  it("Send after Keep off (the push never ran): watch_off cleared before the push is queued — one statement more, within the budget", async () => {
+    const { workoutId, buildId } = await builtSlot();
+    await sendToWatch(db, switchOn(), userId, workoutId, buildId, ctx());
+    expect((await invoke("POST", `${workoutId}/keep-off-watch`, {})).res.status).toBe(200);
+    const m = await invoke("POST", `${workoutId}/send-to-watch`, { buildId, digest: await digestOf(workoutId) });
+    report("Send (a session kept off)", m);
+    expect(m.res.status).toBe(200);
+    expect(m.fetches).toBe(0);
+    expect((await jobOf(`push:${buildId}`))!.status).toBe("queued");
+    expect(m.total).toBeLessThanOrEqual(BUDGET);
+  });
 });
 
 describe("POST /api/sessions/watch/drain", () => {
