@@ -79,6 +79,8 @@ describe("the account line while the watch catches up", () => {
   it("a mirrored session's row action speaks the sheet's words — nothing for the athlete to do", () => {
     expect(syncActionCopy({ agent: "app", code: "watch_updating" })).toEqual({ says: "Updating your watch…", todo: null });
     expect(syncActionCopy({ agent: "app", code: "watch_retrying" })).toEqual({ says: "Couldn't reach COROS — retrying", todo: null });
+    // Nothing will queue it again: said without "retrying", and the session's Retry is the athlete's.
+    expect(syncActionCopy({ agent: "athlete", code: "watch_failed" })).toEqual({ says: "Couldn't reach COROS", todo: "Open the session and tap Retry." });
     expect(syncActionCopy({ agent: "nobody", code: "kept_off_watch" })).toEqual({ says: "Kept off your watch", todo: null });
   });
 });

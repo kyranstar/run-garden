@@ -8,7 +8,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { eq } from "drizzle-orm";
 import { schema } from "@rg/database";
-import type { UserPreferences } from "@rg/domain";
+import { addDays, type UserPreferences } from "@rg/domain";
 import type { Env } from "../src/env.js";
 import type { Db } from "../src/services/db.js";
 import { planRoutes } from "../src/routes/plan.js";
@@ -19,7 +19,9 @@ import { queueProvisionalPush } from "../src/services/mirror.js";
 import { DAY, makeEnv, NOON, rowOf, seedProgram, switchOn } from "./watch-push-fixture.js";
 
 const { corosWriteJobs, plannedWorkouts, syncIntents } = schema;
-const AHEAD = "2026-10-12";
+const AHEAD = addDays(DAY, 3);
+/** The day it was moved from (before the move, the copy's verified day). */
+const BEFORE = addDays(DAY, 1);
 
 let db: Db;
 let userId: string;
@@ -43,7 +45,7 @@ async function seedMoved(id: string, over: Partial<typeof plannedWorkouts.$infer
   const doc = calmDoc();
   await db.insert(plannedWorkouts).values({
     id, userId, planId: programId, sourceWorkoutId: id, title: doc.title, category: "strength", sport: "strength",
-    originalPlanDate: "2026-10-10", lastVerifiedCorosDate: "2026-10-10", effectiveDate: AHEAD, effectiveTime: "18:00",
+    originalPlanDate: BEFORE, lastVerifiedCorosDate: BEFORE, effectiveDate: AHEAD, effectiveTime: "18:00",
     sourceContentFingerprint: "studio", calendarBlockDurationSeconds: 1800, fallbackEstimatedDurationSeconds: 1800,
     corosSyncState: "calendar_only", completionState: "scheduled", origin: "studio", contentState: "outline",
     workoutDoc: JSON.stringify(doc), workoutDocRev: 1, createdAt: NOON, updatedAt: NOON, ...over,
@@ -80,11 +82,20 @@ describe("a mirrored session's row (the watch mirrors the plan §3.9)", () => {
     expect((await rowView(id)).syncAction).toEqual({ agent: "app", code: "watch_updating" });
   });
 
-  it("its push failed: watch_retrying (the mirror's backoff; the sheet's Retry) — never the move lane's retry control", async () => {
+  it("its push failed and the sweep will queue it again (its day and revision, re-queues left): watch_retrying — never the move lane's retry control", async () => {
     const id = await seedMoved("studio-failed");
     await db.insert(corosWriteJobs).values(job("push:b3", id, "program_session_push", "failed"));
     const row = await rowView(id);
     expect(row.syncAction).toEqual({ agent: "app", code: "watch_retrying" });
+  });
+
+  it("its push failed and nothing will queue it again — another day's push, or three re-queues spent: watch_failed (the session's Retry)", async () => {
+    const stale = await seedMoved("studio-failed-stale");
+    await db.insert(corosWriteJobs).values({ ...job("push:b4", stale, "program_session_push", "failed"), payload: { workoutId: stale, happenDay: BEFORE, name: "x" } });
+    expect((await rowView(stale)).syncAction).toEqual({ agent: "athlete", code: "watch_failed" });
+    const spent = await seedMoved("studio-failed-spent");
+    await db.insert(corosWriteJobs).values({ ...job("push:b5", spent, "program_session_push", "failed"), payload: { workoutId: spent, happenDay: AHEAD, name: "x", mirrorRetries: 3 } });
+    expect((await rowView(spent)).syncAction).toEqual({ agent: "athlete", code: "watch_failed" });
   });
 
   it("kept off: kept_off_watch, by nobody", async () => {

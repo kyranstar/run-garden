@@ -666,7 +666,6 @@ export function gardenAttention(d: { needsAttention: WorkoutDto[]; unresolved: W
   return { mismatched, unresolved, count: mismatched.length + unresolved.length };
 }
 
-/** The one sentence. The link appends "↓"; nothing else restates the count. */
 /**
  * A session on Today's page updating on the watch (the watch mirrors the plan §3.9): its row's `syncAction` says the
  * mirror's `watch_updating` — a push or a delete of its copy on its way. What Today drains for on open (Task 8's trigger,
@@ -677,6 +676,7 @@ export function watchUpdatingOnToday(t: Pick<TodayResponse, "todaySessions" | "u
   return rows.some((w) => w.syncAction?.code === "watch_updating");
 }
 
+/** The one sentence. The link appends "↓"; nothing else restates the count. */
 export function attentionPhrase(count: number): string {
   return count === 1 ? "1 workout needs attention" : `${count} workouts need attention`;
 }

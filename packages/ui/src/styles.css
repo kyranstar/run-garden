@@ -2603,6 +2603,11 @@ button.session-chip {
   flex: 1 1 100%;
   color: var(--ink-soft);
 }
+/* A refused Retry says why, on a line of its own under the state (the confirm's "couldn't" ink, `.confirm-error`). */
+.watch-state-error {
+  flex: 1 1 100%;
+  margin: 0;
+}
 /* Couldn't send, Too long for the watch: a state to act on, never colour alone (the icon and the words). */
 .watch-state--warn {
   background: var(--warn-soft);

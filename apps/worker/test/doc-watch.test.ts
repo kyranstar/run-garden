@@ -134,7 +134,8 @@ describe("a document workout's watch paths re-gate with the day's reading", () =
     const { workoutId, buildId } = await builtDoc();
     expect((await send(workoutId, buildId)).status).toBe(200);
     await db.update(corosWriteJobs).set({ status: "failed" }).where(eq(corosWriteJobs.id, `push:${buildId}`));
-    expect((await call("GET", workoutId)).body.watch).toEqual({ state: "failed" });
+    // The sweep queues a document workout's failed push of its day and revision again by itself (M3): retrying.
+    expect((await call("GET", workoutId)).body.watch).toEqual({ state: "failed", retrying: true });
     expect((await send(workoutId, buildId)).status).toBe(200);
     expect((await pushOf(buildId))!.status).toBe("queued");
   });

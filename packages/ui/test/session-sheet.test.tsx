@@ -1065,7 +1065,9 @@ describe("the watch line is a status (the watch mirrors the plan §3.9)", () => 
       [{ state: "on_watch" }, "On your watch"],
       [{ state: "updating" }, "Updating your watch…"],
       [{ state: "sending" }, "Sending to your watch…"],
-      [{ state: "failed" }, "Couldn't reach COROS — retrying"],
+      [{ state: "failed", retrying: true }, "Couldn't reach COROS — retrying"],
+      // Nothing will queue it again (the sweep's own rules): never "retrying".
+      [{ state: "failed", retrying: false }, "Couldn't reach COROS"],
       [{ state: "kept_off" }, "Kept off your watch"],
       [{ state: "closed_by_check" }, "Closed by today's check"],
       [{ state: "off_watch" }, "Not on your watch: removed in the COROS app"],
@@ -1197,6 +1199,31 @@ describe("the watch line is a status (the watch mirrors the plan §3.9)", () => 
     expect(watchCalls(calls).slice(0, 2)).toEqual(["POST …/retry-watch", "POST /api/sessions/watch/drain"]);
     expect(calls.some((c) => c.path.endsWith("/send-to-watch") || c.path.endsWith("/watch-preview"))).toBe(false);
     expect(calls.find((c) => c.path.endsWith("/retry-watch"))!.body).toEqual({});
+  });
+
+  it("a failed push nothing will retry: Couldn't reach COROS, with Retry all the same", async () => {
+    features.player = true;
+    mount(session({ watch: { state: "failed", retrying: false } }), { route: watchRoutes() });
+    await until(() => label() === "Couldn't reach COROS", "failed, not retrying");
+    expect(button("Retry")).toBeTruthy();
+  });
+
+  it("a refused Retry says why under the line when the line stays (no connection, writes off) — the 409's own words", async () => {
+    features.player = true;
+    for (const [error, words] of [
+      ["not_connected", "COROS isn't connected — reconnect it in Settings, then try again."],
+      ["writes_off", "COROS updates are off in Settings — turn them on, then try again."],
+    ] as const) {
+      mount(session({ watch: { state: "failed", retrying: false } }), {
+        route: (c) => (c.path.endsWith("/retry-watch") ? answer({ error }, 409) : undefined),
+      });
+      await until(() => label() === "Couldn't reach COROS", "failed");
+      await click("Retry");
+      await until(() => !!document.querySelector('.sheet-foot .watch-state [role="alert"]'), "the refusal");
+      expect(document.querySelector('.sheet-foot .watch-state [role="alert"]')!.textContent).toBe(words);
+      act(() => root?.unmount());
+      host?.remove();
+    }
   });
 
   it("What's on your watch: the copy's steps, read-only — no Send", async () => {

@@ -193,6 +193,20 @@ const SENT_STATES: ReadonlyArray<string> = ["sending", "on_watch", "failed", "of
 /** The watch catching up with the session: a write on its way, or a copy owed — the drain chain runs it now. */
 const CATCHING_UP: ReadonlyArray<string> = ["updating", "sending"];
 
+/** Why Retry was refused, in a line under the watch's state (the 409's own reason; no connection; anything else). */
+export function retryRefusal(e: unknown): string {
+  if (e instanceof ApiError) {
+    const code = (e.body as { error?: string } | null)?.error;
+    if (code === "not_connected") return "COROS isn't connected — reconnect it in Settings, then try again.";
+    if (code === "writes_off") return "COROS updates are off in Settings — turn them on, then try again.";
+    if (code === "gated") return "Today's check keeps a move of it out, so it can't go to your watch.";
+    if (code === "not_today") return "Its day has gone, so it won't go to your watch.";
+    if (code === "done") return "It's done, so its copy stays as it is.";
+    return "Couldn't queue it again — try again in a moment.";
+  }
+  return "Retrying needs a connection — try again once you're online.";
+}
+
 /** Why a session is not on the watch (`watch.reason`), after "Not on your watch: ". */
 const NOT_ON_WATCH: Readonly<Record<string, string>> = {
   not_today: "it goes on nearer the day",
@@ -212,7 +226,7 @@ const NOT_ON_WATCH: Readonly<Record<string, string>> = {
  * THE WATCH LINE'S WORDS (the watch mirrors the plan §3.9), one per state, and its tone: a status the athlete reads,
  * never a button to press.
  */
-export function watchLine(watch: { state: string; reason?: string }): { said: string; tone: "ok" | "muted" | "warn" | "plain"; busy: boolean } {
+export function watchLine(watch: { state: string; reason?: string; retrying?: boolean }): { said: string; tone: "ok" | "muted" | "warn" | "plain"; busy: boolean } {
   switch (watch.state) {
     case "on_watch":
       return { said: "On your watch", tone: "ok", busy: false };
@@ -221,7 +235,9 @@ export function watchLine(watch: { state: string; reason?: string }): { said: st
     case "sending":
       return { said: "Sending to your watch…", tone: "muted", busy: true };
     case "failed":
-      return { said: "Couldn't reach COROS — retrying", tone: "warn", busy: false };
+      // "retrying" only when the app will queue it again by itself (the mirror's sweep, by its own rules); an older server
+      // does not say, and said it as retrying.
+      return { said: watch.retrying === false ? "Couldn't reach COROS" : "Couldn't reach COROS — retrying", tone: "warn", busy: false };
     case "kept_off":
       return { said: "Kept off your watch", tone: "plain", busy: false };
     case "closed_by_check":
@@ -542,6 +558,8 @@ export function SessionSheet({ w, today, onClose }: { w: WorkoutDto; today: stri
   const retry = useMutation({
     mutationFn: () => api.retryWatch(w.id),
     onSuccess: afterWatchWrite,
+    // Refused (or offline): the session is read again — a refusal that changes the line (today's check closing it) says
+    // itself there; one that leaves it at "Couldn't reach COROS" is said under it (`retryRefusal`).
     onError: () => void qc.invalidateQueries({ queryKey: key }),
   });
   useSendingPoll(
@@ -823,6 +841,11 @@ export function SessionSheet({ w, today, onClose }: { w: WorkoutDto; today: stri
         ) : null}
         {/* Deletes can land after the push and wait for the hourly: the line stays until every job of it has run. */}
         {state === "updating" ? <small className="watch-state-hint">An old copy can take up to an hour to come off.</small> : null}
+        {state === "failed" && retry.isError ? (
+          <p className="confirm-error watch-state-error" role="alert">
+            {retryRefusal(retry.error)}
+          </p>
+        ) : null}
       </div>
     );
   }

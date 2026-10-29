@@ -560,6 +560,8 @@ export function syncActionCopy(action: SyncAction): { says: string; todo: string
       return { says: "Updating your watch…", todo: null };
     case "watch_retrying":
       return { says: "Couldn't reach COROS — retrying", todo: null };
+    case "watch_failed":
+      return { says: "Couldn't reach COROS", todo: "Open the session and tap Retry." };
     case "kept_off_watch":
       return { says: "Kept off your watch", todo: null };
   }

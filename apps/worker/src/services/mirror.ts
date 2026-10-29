@@ -53,7 +53,19 @@ import { restoreInProgress } from "./account-state.js";
 import { SPENT_STAMP_STATUSES } from "./coros-stamp.js";
 import { enqueueUnpushIfOurs } from "./plan-mutations.js";
 import { mirrorIntentId } from "./mirror-owed.js";
-import { dayRowRefusal, MIRROR_WINDOW_DAYS, rowRefusal, type MirrorRow as RulesRow } from "./mirror-rules.js";
+import {
+  dayRowRefusal,
+  errorsGaveUp,
+  memoryFor,
+  memoryOf,
+  MIRROR_RETRY_BACKOFF_MS,
+  MIRROR_WINDOW_DAYS,
+  pushOfRowNow,
+  requeuesLeft,
+  rowRefusal,
+  type MirrorMemory,
+  type MirrorRow as RulesRow,
+} from "./mirror-rules.js";
 import {
   activeProfilesOf,
   checksAnswered,
@@ -86,8 +98,10 @@ export { markMirrorOwed, mirrorIntentId } from "./mirror-owed.js";
 // The window and the row's own refusals live in a leaf (mirror-rules.ts): the sheet's watch state asks them too.
 export { MIRROR_WINDOW_DAYS } from "./mirror-rules.js";
 
-/** A failed push's re-queues (M3): after 1 h, then 6 h, then 24 h; a fourth failure stops. */
-export const MIRROR_RETRY_BACKOFF_MS = [3_600_000, 21_600_000, 86_400_000] as const;
+// The re-queue ladder (M3) and the memory of a row's refusals live in the leaf too: the sheet's watch state says whether
+// the sweep will try again (`sweepRequeues`, `errorsGaveUp`) by the very rules it acts on.
+export { MIRROR_RETRY_BACKOFF_MS } from "./mirror-rules.js";
+export type { MirrorMemory } from "./mirror-rules.js";
 
 export type MirrorSkip =
   | "switch_off"
@@ -156,26 +170,6 @@ export interface PushRow {
 /** The row fields the current-copy test reads. */
 export type MirrorRow = RulesRow;
 
-/**
- * What the mirror remembers of a session it could not push for a reason only making the copy shows — on its owed mark's
- * payload, for that revision and day, so the sweep does not make the record again every run, and one session never holds
- * the window up. A new owed mark, a revision or a move forgets it.
- *  - `too_long`, `not_document`: for good (for that revision and day).
- *  - `today_checked` (M1): for that revision and today — the day's build is the copy, pushed on its next build; a session
- *    of today judged so is not judged again by every sweep that day (it would spend the run's one attempt each hour).
- *  - `error` (an unexpected throw while the copy was prepared; its message's first 120 characters): for a while — `at`
- *    the last one, `count` how many in a row — on MIRROR_RETRY_BACKOFF_MS (1 h, 6 h, 24 h, then `gave_up`), so a
- *    transient failure heals and a persistent one cannot stall the account.
- */
-export interface MirrorMemory {
-  refused: "too_long" | "not_document" | "error" | "today_checked";
-  rev: number | null;
-  day: string;
-  message?: string;
-  at?: string;
-  count?: number;
-}
-
 // Spelled out, never derived from session-build.ts's constants at load: that module will import this one (Task 5), and
 // a cycle can leave an imported constant uninitialised while this module loads.
 const SETTLED = ["superseded", "cancelled", "restored"] as const;
@@ -242,24 +236,6 @@ async function remember(db: Db, userId: string, workoutId: string, now: string, 
     .values({ id: mirrorIntentId(workoutId), userId, targetKind: "workout", targetId: workoutId, kind: "mirror", payload, source: "mirror", createdAt: now, resolvedAt: now })
     .onConflictDoUpdate({ target: syncIntents.id, set: { resolvedAt: now, payload }, setWhere: lte(syncIntents.createdAt, now) });
 }
-
-function memoryOf(payload: unknown): MirrorMemory | null {
-  const m = payload as Partial<MirrorMemory> | null;
-  if (!m || (m.refused !== "too_long" && m.refused !== "not_document" && m.refused !== "error" && m.refused !== "today_checked") || typeof m.day !== "string") {
-    return null;
-  }
-  return {
-    refused: m.refused,
-    rev: typeof m.rev === "number" ? m.rev : null,
-    day: m.day,
-    ...(typeof m.at === "string" ? { at: m.at } : {}),
-    ...(typeof m.count === "number" ? { count: m.count } : {}),
-  };
-}
-
-/** The memory of this row's revision and day, if `memory` is one (a revision or a move forgets it). */
-const memoryFor = (memory: MirrorMemory | null | undefined, row: Pick<MirrorRow, "workoutDocRev" | "effectiveDate">): MirrorMemory | null =>
-  memory && memory.rev === row.workoutDocRev && memory.day === row.effectiveDate ? memory : null;
 
 /** An unexpected throw while the copy was prepared, remembered: the next in a row counts up from the row's last one. */
 function errorMemory(e: unknown, row: Pick<MirrorRow, "workoutDocRev" | "effectiveDate">, previous: MirrorMemory | null | undefined, now: string): MirrorMemory {
@@ -384,18 +360,18 @@ function verdictOf(row: MirrorRow, pushes: readonly PushRow[], env: Env, ctx: Bu
   const known = memoryFor(memory, row);
   if (known?.refused === "error") {
     // An error while the copy was prepared: tried again once its backoff is over; after three, left (`gave_up`).
-    const wait = MIRROR_RETRY_BACKOFF_MS[(known.count ?? 1) - 1];
-    if (wait === undefined) return { skip: "gave_up" };
+    if (errorsGaveUp(known, row)) return { skip: "gave_up" };
+    const wait = MIRROR_RETRY_BACKOFF_MS[(known.count ?? 1) - 1]!;
     if (Date.parse(known.at ?? "") + wait > Date.parse(ctx.now)) return { skip: "error" };
   } else if (known) {
     return { skip: known.refused };
   }
   const failed = pushes
-    .filter((p) => isOneOf(RETRYABLE, p.status) && p.happenDay === row.effectiveDate && (p.fromDocRev === null || p.fromDocRev === row.workoutDocRev))
+    .filter((p) => isOneOf(RETRYABLE, p.status) && pushOfRowNow(p, row))
     .sort((a, b) => b.updatedAt.localeCompare(a.updatedAt))[0];
   if (failed) {
-    const wait = MIRROR_RETRY_BACKOFF_MS[failed.retries];
-    if (wait === undefined) return { skip: "gave_up" };
+    if (!requeuesLeft(failed.retries)) return { skip: "gave_up" };
+    const wait = MIRROR_RETRY_BACKOFF_MS[failed.retries]!;
     if (Date.parse(failed.updatedAt) + wait > Date.parse(ctx.now)) return { skip: "backoff" };
     return { retry: failed };
   }

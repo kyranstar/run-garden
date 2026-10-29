@@ -492,7 +492,8 @@ describe("(h) Take off watch, then Send again", () => {
 
 /**
  * TAKE OFF WHILE "SENDING…" (owner decision 2026-10-09: the sheet offers Take off on Sending… too). Whatever stage the
- * push is at when the athlete taps it, nothing is left on the watch and the slot ends `ready`: a queued push is
+ * push is at when the athlete taps it, nothing is left on the watch and the slot ends owed to the mirror again (`updating`:
+ * the bare service sets no `watch_off`, so the day's next build puts it back — the watch mirrors the plan §3.9): a queued push is
  * superseded at once; one claimed by a lane that has not written yet is superseded when it runs (its build is no longer
  * the sent one), with no wire call; one whose write is in flight lands, and its unpush is queued as it verifies — the
  * next drain takes the copy off.
@@ -500,7 +501,7 @@ describe("(h) Take off watch, then Send again", () => {
 describe("Take off while Sending…", () => {
   beforeEach(() => setup());
 
-  it("a queued push: superseded at once, no COROS write, the slot ready", async () => {
+  it("a queued push: superseded at once, no COROS write, the slot owed to the mirror again (updating)", async () => {
     const { workoutId, buildId } = await pushed({ run: false });
     await takeOffWatch(db, userId, workoutId, ctx());
     expect((await jobOf(`push:${buildId}`))!.status).toBe("superseded");
@@ -890,7 +891,7 @@ describe("a sent copy renamed in the COROS app (audit 3-A life L-5)", () => {
     expect(payload).toMatchObject({ name: stamp, renamed: RENAMED });
   });
 
-  it("Take off after the rename: the unpush addresses the copy by its new name; it comes off, the slot is ready", async () => {
+  it("Take off after the rename: the unpush addresses the copy by its new name; it comes off, the slot owed to the mirror again (updating)", async () => {
     const { workoutId, buildId, stamp } = await pushed();
     programOn(stamp)!.name = RENAMED;
     await readNow();

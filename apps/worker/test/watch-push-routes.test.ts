@@ -22,8 +22,8 @@ import type { Db } from "../src/services/db.js";
 import { sessionRoutes } from "../src/routes/sessions.js";
 import { createSession, SESSION_COOKIE } from "../src/auth/sessions.js";
 import { savePreferences, syncCalendar } from "../src/services/calendar-sync.js";
-import { buildSession, isProvisionalBuild, sentBuildIdOf } from "../src/services/session-build.js";
-import { markMirrorOwed, mirrorSweep, queueProvisionalPush } from "../src/services/mirror.js";
+import { buildSession, isProvisionalBuild, recordCheck, sentBuildIdOf } from "../src/services/session-build.js";
+import { markMirrorOwed, MIRROR_RETRY_BACKOFF_MS, mirrorSweep, queueProvisionalPush } from "../src/services/mirror.js";
 import { programStamp } from "../src/services/watch-push.js";
 import { connectTestCoros, makeTestDb, makeTestUser, mountRoutes } from "./helpers.js";
 import { calmDoc, landingsDoc } from "./doc-workout-fixture.js";
@@ -692,12 +692,69 @@ describe("the watch line is a status (the watch mirrors the plan §3.9)", () => 
     expect(await watchOf(id)).toEqual({ state: "unavailable", reason: "too_long" });
   });
 
-  it("a failed push: failed (Retry) — the sweep re-queues it on its backoff, Retry now", async () => {
-    const id = await seedDocRow(addDays(DAY, 2));
+  /** A provisional copy's push, failed for good — `retries` of the mirror's re-queues spent. */
+  async function failedCopy(day: string, retries = 0): Promise<{ id: string; pushId: string }> {
+    const id = await seedDocRow(day);
     expect(await queue(id)).toBe("queued");
-    const record = await recordOf(id);
-    await db.update(corosWriteJobs).set({ status: "failed" }).where(eq(corosWriteJobs.id, `push:${record.id}`));
-    expect(await watchOf(id)).toEqual({ state: "failed" });
+    const pushId = `push:${(await recordOf(id)).id}`;
+    const [job] = await jobsOf(id);
+    await db
+      .update(corosWriteJobs)
+      .set({ status: "failed", payload: { ...(job!.payload as object), ...(retries > 0 ? { mirrorRetries: retries } : {}) } })
+      .where(eq(corosWriteJobs.id, pushId));
+    return { id, pushId };
+  }
+
+  it("a failed push the sweep will queue again (a document workout's, its day and revision, re-queues left): failed, retrying", async () => {
+    const { id } = await failedCopy(addDays(DAY, 2));
+    expect(await watchOf(id)).toEqual({ state: "failed", retrying: true });
+    const twice = await failedCopy(addDays(DAY, 3), 2);
+    expect(await watchOf(twice.id), "two re-queues spent: one left").toEqual({ state: "failed", retrying: true });
+  });
+
+  it("…and one nothing will queue again: not retrying — re-queued three times, another revision, another day, the writes off", async () => {
+    const gaveUp = await failedCopy(addDays(DAY, 2), 3);
+    expect(await watchOf(gaveUp.id)).toEqual({ state: "failed", retrying: false });
+
+    const revised = await failedCopy(addDays(DAY, 3));
+    await db.update(plannedWorkouts).set({ workoutDocRev: 2 }).where(eq(plannedWorkouts.id, revised.id));
+    expect(await watchOf(revised.id), "the push is the old revision's").toEqual({ state: "failed", retrying: false });
+
+    const moved = await failedCopy(addDays(DAY, 4));
+    await db.update(plannedWorkouts).set({ effectiveDate: addDays(DAY, 5) }).where(eq(plannedWorkouts.id, moved.id));
+    expect(await watchOf(moved.id), "the push is the old day's").toEqual({ state: "failed", retrying: false });
+
+    const off = await failedCopy(addDays(DAY, 6));
+    await savePreferences(db, userId, { ...prefs, corosWritesEnabled: false });
+    expect(await watchOf(off.id), "the sweep queues nothing with the writes off").toEqual({ state: "failed", retrying: false });
+    await savePreferences(db, userId, { ...prefs, corosWritesEnabled: true });
+  });
+
+  it("an engine slot's failed day build push: not retrying (the sweep re-queues only a document workout's)", async () => {
+    const { workoutId, buildId } = await builtSlot();
+    expect((await send(workoutId, buildId)).status).toBe(200);
+    await db.update(corosWriteJobs).set({ status: "failed" }).where(eq(corosWriteJobs.id, `push:${buildId}`));
+    expect(await watchOf(workoutId)).toEqual({ state: "failed", retrying: false });
+  });
+
+  it("owed, but the sweep's error ladder ran out making the copy: failed, not retrying — never 'Updating your watch…' for ever; Retry marks it owed again", async () => {
+    const id = await seedDocRow(addDays(DAY, 3));
+    // The ladder (MIRROR_RETRY_BACKOFF_MS): a first throw, then a try after each of its three waits — the fourth gives up.
+    const gaveUp = { refused: "error", rev: 1, day: addDays(DAY, 3), message: "Error: x", at: NOON, count: MIRROR_RETRY_BACKOFF_MS.length + 1 };
+    await db.insert(syncIntents).values({
+      id: `mirror-${id}`, userId, targetKind: "workout", targetId: id, kind: "mirror", payload: gaveUp, source: "mirror", createdAt: NOON, resolvedAt: NOON,
+    });
+    expect(await watchOf(id)).toEqual({ state: "failed", retrying: false });
+    // One throw fewer: the ladder has a rung left — still owed.
+    await db.update(syncIntents).set({ payload: { ...gaveUp, count: MIRROR_RETRY_BACKOFF_MS.length } }).where(eq(syncIntents.id, `mirror-${id}`));
+    expect(await watchOf(id)).toEqual({ state: "updating" });
+    // Gave up again, then Retry: the mark is open again and its memory forgotten — owed, and the drain makes the copy.
+    await db.update(syncIntents).set({ payload: gaveUp }).where(eq(syncIntents.id, `mirror-${id}`));
+    const res = await call("POST", `${id}/retry-watch`, { body: {} });
+    expect(res.status).toBe(200);
+    expect(((await res.json()) as { watch: unknown }).watch).toEqual({ state: "updating" });
+    const [mark] = await db.select().from(syncIntents).where(eq(syncIntents.id, `mirror-${id}`));
+    expect(mark).toMatchObject({ resolvedAt: null, payload: {} });
   });
 
   it("today's check closes a move no alternate stands in for: closed_by_check — the provisional copy on the watch stays, Send still 409 gated", async () => {
@@ -760,7 +817,7 @@ describe("POST retry-watch", () => {
 
   it("a failed provisional push: that push queued again — payload and stamp kept, tries and re-queues reset — no other job, nothing locked", async () => {
     const { id, pushId, before } = await failedProvisional(addDays(DAY, 2));
-    // Today's day build exists too: Retry never sends it (it is not the sent build).
+    // A day ahead holds no day build (its sheet shows a preview at most); today's case, with one shown, is the next test.
     const res = await retry(id);
     expect(res.status).toBe(200);
     expect(await res.json()).toMatchObject({ workoutId: id, watch: { state: "sending" } });
@@ -772,11 +829,38 @@ describe("POST retry-watch", () => {
     expect(await lockedOf(id)).toEqual([]);
   });
 
-  it("today's failed provisional push (before the day's build): re-queued, not StaleBuildError", async () => {
+  it("today's failed provisional push, a day build shown that differs from its record (M6): re-queued — never a Send of the shown build (StaleBuildError)", async () => {
     const { id, pushId } = await failedProvisional(DAY);
+    // The sheet opened before today's check: the day's build made (no env, so the mirror leaves it), and shown.
+    const shown = (await buildSession(db, userId, id, {}, { today: DAY, now: NOON, prefs })).build!;
+    expect(shown.version).toBeGreaterThan(0);
+    expect(`push:${shown.buildId}`).not.toBe(pushId);
     const res = await retry(id);
     expect(res.status).toBe(200);
+    expect(((await res.json()) as { build: { buildId: string } }).build.buildId).toBe(shown.buildId);
     expect((await jobsOf(id)).map((j) => [j.id, j.status])).toEqual([[pushId, "queued"]]);
+  });
+
+  it("today's failed provisional push, Retry after today's check closed a move (the sheet opened before it): 409 gated, nothing queued", async () => {
+    const id = `studio-retry-gated`;
+    const doc = landingsDoc({ alternates: false });
+    await db.insert(plannedWorkouts).values({
+      id, userId, planId: programId, sourceWorkoutId: id, title: doc.title, category: "strength", sport: "strength",
+      originalPlanDate: DAY, lastVerifiedCorosDate: "", effectiveDate: DAY, effectiveTime: "18:00", sourceContentFingerprint: "studio",
+      calendarBlockDurationSeconds: 1800, fallbackEstimatedDurationSeconds: 1800, corosSyncState: "calendar_only",
+      completionState: "scheduled", origin: "studio", contentState: "outline", workoutDoc: JSON.stringify(doc), workoutDocRev: 1,
+      createdAt: NOON, updatedAt: NOON,
+    });
+    // No answer yet: the provisional copy goes (M1); its push fails.
+    expect(await queueProvisionalPush(db, switchOn(), userId, await rowOf(db, id), { today: DAY, now: NOON, prefs })).toBe("queued");
+    const [push] = await jobsOf(id);
+    await db.update(corosWriteJobs).set({ status: "failed" }).where(eq(corosWriteJobs.id, push!.id));
+    // Today's check: the jaw flares and the athlete feels off — the jump the copy holds is closed, no alternate.
+    await recordCheck(db, userId, { profileId: "tmj", value: 6, feelingOff: true }, { today: DAY, now: NOON });
+    const res = await retry(id);
+    expect(res.status).toBe(409);
+    expect(await res.json()).toEqual({ error: "gated" });
+    expect((await jobsOf(id)).map((j) => [j.id, j.status])).toEqual([[push!.id, "failed"]]);
   });
 
   it("a failed day build's push: Send's Retry — the same push queued afresh", async () => {
@@ -789,7 +873,7 @@ describe("POST retry-watch", () => {
     expect((await jobsOf(workoutId)).map((j) => [j.id, j.status])).toEqual([[`push:${buildId}`, "queued"]]);
   });
 
-  it("nothing failed (on its way, or nothing sent): the session as it stands, nothing written", async () => {
+  it("nothing failed (on its way, or nothing sent): the session as it stands, nothing queued", async () => {
     const id = await seedDocRow(addDays(DAY, 2));
     expect(await queueProvisionalPush(db, switchOn(), userId, await rowOf(db, id), { today: DAY, now: NOON, prefs })).toBe("queued");
     const before = await jobsOf(id);

@@ -94,6 +94,9 @@ export type SyncActionCode =
   /** Its push failed; the app queues it again on its own backoff (and the sheet's Retry now): "Couldn't reach COROS —
    * retrying". */
   | "watch_retrying"
+  /** Its push failed and nothing will queue it again by itself (an engine slot's day build, another day or revision,
+   * re-queued three times): "Couldn't reach COROS" — the session's own Retry. */
+  | "watch_failed"
   /** The athlete keeps it off the watch (Keep off my watch): "Kept off your watch". */
   | "kept_off_watch";
 
@@ -160,6 +163,11 @@ export interface SyncSituation {
    * goes on (the mirror's drain and sweep are, and the sheet's own Retry). Absent for every other row.
    */
   mirror?: "on" | "kept_off";
+  /**
+   * A mirrored session's failed push the app will queue again by itself (the mirror's sweep, by its own rules: a
+   * document workout's push of its day and revision with re-queues left). Absent or false: nothing will.
+   */
+  retrying?: boolean;
 }
 
 /**
@@ -307,6 +315,8 @@ function mirrorAction(s: SyncSituation): SyncAction | null {
   if (s.view === "synced") return null;
   if (!s.connected) return { agent: "athlete", code: "connect_coros", control: "settings" };
   if (!s.writesEnabled) return { agent: "athlete", code: "enable_coros_writes", control: "settings" };
-  if (s.write === "failed" || s.view === "sync_issue") return { agent: "app", code: "watch_retrying" };
+  if (s.write === "failed" || s.view === "sync_issue") {
+    return s.retrying ? { agent: "app", code: "watch_retrying" } : { agent: "athlete", code: "watch_failed" };
+  }
   return null;
 }

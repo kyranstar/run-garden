@@ -2014,7 +2014,8 @@ export type WatchUnavailableReason =
 /**
  * THE SHEET'S WATCH LINE — a status, never a Send (the watch mirrors the plan §3.9): `on_watch` → "On your watch";
  * `updating` → "Updating your watch…" (a delete or a replacement on its way, or a copy owed); `sending` → "Sending to
- * your watch…" (a first copy going on); `failed` → "Couldn't reach COROS — retrying" with Retry; `kept_off` → "Kept off
+ * your watch…" (a first copy going on); `failed` → "Couldn't reach COROS — retrying" (or, `retrying: false`, "Couldn't
+ * reach COROS") with Retry; `kept_off` → "Kept off
  * your watch" with Put on my watch; `closed_by_check` → today's check closed it; `unavailable` → "Not on your watch:
  * <reason>"; `off_watch` → removed in the COROS app; `ready` → nothing on the watch, nothing owed.
  */
@@ -2030,6 +2031,11 @@ export interface WatchStateDto {
     | "kept_off"
     | "closed_by_check";
   reason?: WatchUnavailableReason;
+  /**
+   * `failed` only: the app will queue the push again by itself ("Couldn't reach COROS — retrying"), or nothing will
+   * ("Couldn't reach COROS"); Retry either way. Absent from an older server: retrying.
+   */
+  retrying?: boolean;
 }
 
 /** One step as the watch will show it, read off the wire program (the preview IS the wire). */

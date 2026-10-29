@@ -225,6 +225,7 @@ describe("the agents partition the vocabulary", () => {
       { ...ok, watchCopyDiffers: true },
       { ...ok, view: "taking_watch_copy" },
       { ...ok, view: "syncing", write: "sending", mirror: "on" },
+      { ...ok, view: "sync_issue", write: "failed", mirror: "on", retrying: true },
       { ...ok, view: "sync_issue", write: "failed", mirror: "on" },
       { ...ok, mirror: "kept_off" },
     ];
@@ -255,6 +256,7 @@ describe("the agents partition the vocabulary", () => {
       "taking_watch_copy",
       "watch_updating",
       "watch_retrying",
+      "watch_failed",
       "kept_off_watch",
     ];
     expect([...seen.keys()].sort()).toEqual([...CODES].sort());
@@ -286,8 +288,11 @@ describe("a session the mirror keeps on the watch", () => {
     expect(syncAction(mirrored)).toBeNull();
   });
 
-  it("its push failed: the app retries (the mirror's backoff) — no control; the setting or the connection first", () => {
-    expect(syncAction({ ...mirrored, view: "sync_issue", write: "failed" })).toEqual({ agent: "app", code: "watch_retrying" });
+  it("its push failed: the app retries (the mirror's backoff) when it will — else the session's own Retry; no control; the setting or the connection first", () => {
+    expect(syncAction({ ...mirrored, view: "sync_issue", write: "failed", retrying: true })).toEqual({ agent: "app", code: "watch_retrying" });
+    // Nothing will queue it again (an engine slot's day build, another day or revision, three re-queues spent).
+    expect(syncAction({ ...mirrored, view: "sync_issue", write: "failed", retrying: false })).toEqual({ agent: "athlete", code: "watch_failed" });
+    expect(syncAction({ ...mirrored, view: "sync_issue", write: "failed" })).toEqual({ agent: "athlete", code: "watch_failed" });
     expect(syncAction({ ...mirrored, view: "sync_issue", write: "failed", writesEnabled: false })).toEqual({
       agent: "athlete",
       code: "enable_coros_writes",
