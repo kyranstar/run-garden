@@ -550,10 +550,8 @@ export function StudioScreen() {
             setAdded((cur) => (cur?.n === n ? { ...cur, sent: true } : cur));
             // As the session sheet does after a Send: run the queued push, then read again what it changed.
             watchWritten(workoutId);
-            void api
-              .drainWatch()
-              .catch(() => undefined)
-              .finally(() => watchWritten(workoutId));
+            // One watch job a request, while any is left (a replacement is a delete and a push).
+            void api.drainWatchUntilIdle().then(() => watchWritten(workoutId));
           }}
           onStale={() => {
             setSendingWatch(null);

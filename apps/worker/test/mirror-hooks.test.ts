@@ -409,7 +409,7 @@ describe("the athlete's COROS writes off", () => {
       expect(await sentBuildIdOf(db, id)).toBe(record);
     }
     // The sweep: nothing read, nothing queued, the marks kept.
-    expect(await sweep(off)).toEqual({ queued: 0, skipped: { writes_off: 1 } });
+    expect(await sweep(off)).toEqual({ queued: 0, attempted: 0, skipped: { writes_off: 1 } });
     for (const id of [made, revised, moved, skipped]) expect(await owed(id), id).toBe(true);
 
     // Switched on in Settings: the owed deletes are queued at once (`emitPendingWork`), the copies by the sweep.

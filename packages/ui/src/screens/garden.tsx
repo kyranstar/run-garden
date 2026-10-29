@@ -53,6 +53,7 @@ import { useUnits } from "../use-units.js";
 import { AskCoach, useCoachSeeing } from "./studio/coach-ask.js";
 import { dayFocus, workoutFocus } from "./studio/coach-focus.js";
 import { BodyCheck } from "./today/body-check.js";
+import { useWatchCatchUp } from "../components/watch-catch-up.js";
 import {
   CATEGORY_ORDER,
   DisciplineNudges,
@@ -1066,6 +1067,12 @@ export function GardenScreen() {
   // …each read ahead (audit 3-B UI-9): the service worker keeps the answer, so "Log your session" opens offline too —
   // Today itself comes from its cache — and online the sheet opens on it. Nothing is read while nothing is offered.
   const qc = useQueryClient();
+  // Opened with watch writes waiting (the watch mirrors the plan §3.7): the app drains them now, one a request, rather
+  // than leave them to the hourly's one an hour; then Today reads again what they changed. Decided once, on the first
+  // answer (`useWatchCatchUp`).
+  useWatchCatchUp(today.data === undefined ? undefined : (today.data.sync?.pendingCorosJobs ?? 0) > 0, () => {
+    for (const k of ["today", "plan", "plan-week"]) void qc.invalidateQueries({ queryKey: [k] });
+  });
   const offered = watchReviews.map((o) => o.workoutId).join(" ");
   useEffect(() => {
     for (const id of offered ? offered.split(" ") : []) void qc.prefetchQuery(watchReviewQuery(id));

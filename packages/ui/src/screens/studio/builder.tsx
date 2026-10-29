@@ -1007,10 +1007,8 @@ function Builder({ source }: { source: BuildSource }) {
               refreshPlan();
             };
             written();
-            void api
-              .drainWatch()
-              .catch(() => undefined)
-              .finally(written);
+            // One watch job a request, while any is left (a replacement is a delete and a push).
+            void api.drainWatchUntilIdle().then(written);
           }}
           onStale={() => {
             setSendingWatch(null);

@@ -10,9 +10,9 @@
  * Each figure is printed (`[budget]`) for the audit report.
  */
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { eq } from "drizzle-orm";
+import { and, eq, lt } from "drizzle-orm";
 import { schema } from "@rg/database";
-import type { UserPreferences } from "@rg/domain";
+import { addDays, workoutDocSchema, type UserPreferences, type WorkoutDoc } from "@rg/domain";
 import type { Env } from "../src/env.js";
 import type { Db } from "../src/services/db.js";
 import { sessionRoutes } from "../src/routes/sessions.js";
@@ -20,9 +20,11 @@ import { createSession, SESSION_COOKIE } from "../src/auth/sessions.js";
 import { executeCloudJobs } from "../src/services/coros-write-cloud.js";
 import { buildSession } from "../src/services/session-build.js";
 import { sendToWatch } from "../src/services/watch-push.js";
+import { markMirrorOwed, queueProvisionalPush } from "../src/services/mirror.js";
 import { mockCorosServer, type MockCorosServer } from "../../../packages/coros/test/mock-coros-server.js";
 import { makeTestDb, makeTestUser, mountRoutes } from "./helpers.js";
-import { connectMock, DAY, makeEnv, NOON, seedCatalog, seedProgram, seedSlot, seedTmj, switchOn } from "./watch-push-fixture.js";
+import { calmDoc } from "./doc-workout-fixture.js";
+import { connectMock, DAY, makeEnv, NOON, rowOf, seedCatalog, seedProgram, seedSlot, seedTmj, switchOn } from "./watch-push-fixture.js";
 
 const { corosWriteJobs } = schema;
 
@@ -218,7 +220,7 @@ describe("POST /api/sessions/watch/drain", () => {
     const m = await invoke("POST", "watch/drain", {});
     report("drain, one push (typical)", m);
     expect(m.res.status).toBe(200);
-    expect(await m.res.json()).toEqual({ executed: 1 });
+    expect(await m.res.json()).toEqual({ ran: true, pending: 0 });
     expect((await jobOf(`push:${buildId}`))!.status).toBe("verified");
     expect(m.total).toBeLessThanOrEqual(BUDGET);
   });
@@ -267,7 +269,8 @@ describe("POST /api/sessions/watch/drain", () => {
     await sendToWatch(db, switchOn(), userId, a.workoutId, a.buildId, ctx());
     await sendToWatch(db, switchOn(), userId, b.workoutId, b.buildId, ctx());
     const m = await invoke("POST", "watch/drain", {});
-    expect(await m.res.json()).toEqual({ executed: 1 });
+    // One ran; the other push is what is left — the coach job is no watch job, so it is not counted.
+    expect(await m.res.json()).toEqual({ ran: true, pending: 1 });
     expect((await jobOf("coach-1-push"))!.status).toBe("queued");
     expect([(await jobOf(`push:${a.buildId}`))!.status, (await jobOf(`push:${b.buildId}`))!.status]).toEqual(["verified", "queued"]);
   });
@@ -283,7 +286,122 @@ describe("POST /api/sessions/watch/drain", () => {
       switchOn(),
     );
     expect(res.status).toBe(200);
-    expect(await res.json()).toEqual({ executed: 0 });
+    expect(await res.json()).toEqual({ ran: false, pending: 0 });
     expect((await jobOf(`push:${buildId}`))!.status).toBe("queued");
+  });
+});
+
+describe("POST /api/sessions/watch/drain — one watch job a request, and what is left (the watch mirrors the plan §3.7, A5)", () => {
+  let seq = 0;
+  /** A Studio workout as the Studio stores one: its document at revision 1, an outline until its day. */
+  async function seedDocRow(date: string, doc: WorkoutDoc = calmDoc()): Promise<string> {
+    const id = `studio-${date}-${(seq += 1)}`;
+    await db.insert(schema.plannedWorkouts).values({
+      id, userId, planId: programId, sourceWorkoutId: id, title: doc.title, category: "strength", sport: "strength",
+      originalPlanDate: date, lastVerifiedCorosDate: "", effectiveDate: date, effectiveTime: "18:00", sourceContentFingerprint: "studio",
+      calendarBlockDurationSeconds: 1800, fallbackEstimatedDurationSeconds: 1800, corosSyncState: "calendar_only",
+      completionState: "scheduled", origin: "studio", contentState: "outline", workoutDoc: JSON.stringify(doc), workoutDocRev: 1,
+      createdAt: NOON, updatedAt: NOON,
+    });
+    return id;
+  }
+  /** Far more work steps than the watch holds: remembered too long for its revision and day. */
+  const longDoc = (): WorkoutDoc =>
+    workoutDocSchema.parse({
+      ...calmDoc(),
+      title: "Very long",
+      parts: [{ purpose: "main", format: "straight", items: Array.from({ length: 11 }, (_, i) => ({ kind: "exercise", libraryId: ["bridge", "deadBug"][i % 2], dose: { sets: 20, reps: 5, restSec: 10 } })) }],
+    });
+  const queueCopy = async (id: string) => expect(await queueProvisionalPush(db, switchOn(), userId, await rowOf(db, id), ctx())).toBe("queued");
+  const pushesOf = async (id: string) => (await db.select().from(corosWriteJobs).where(eq(corosWriteJobs.workoutId, id))).filter((j) => j.kind === "program_session_push");
+  const recordsOf = (id: string) => db.select().from(schema.sessionBuilds).where(and(eq(schema.sessionBuilds.workoutId, id), lt(schema.sessionBuilds.version, 0)));
+  const queuedCount = async () => (await db.select().from(corosWriteJobs).where(eq(corosWriteJobs.userId, userId))).filter((j) => j.status === "queued").length;
+
+  it("drain answers pending=N and runs one: provisional pushes and an adopted copy's delete are watch jobs; a coach job and an address-path delete are not", async () => {
+    const a = await seedDocRow(addDays(DAY, 2));
+    const b = await seedDocRow(addDays(DAY, 3));
+    await queueCopy(a);
+    await queueCopy(b);
+    // b's push queued after a's (the claim takes the oldest first).
+    await db.update(corosWriteJobs).set({ requestedAt: "2026-10-09T19:30:00.000Z" }).where(eq(corosWriteJobs.id, (await pushesOf(b))[0]!.id));
+    const later = "2026-10-09T20:00:00.000Z";
+    const del = (id: string, workoutId: string) => ({
+      id, userId, workoutId, kind: "coach_delete_workout", expectedContentFingerprint: "", originalDate: addDays(DAY, 4), destinationDate: addDays(DAY, 4),
+      payload: { workoutId, happenDay: addDays(DAY, 4), name: "Old copy", idInPlan: "7", programId: "7", corosPlanId: "900" }, requestedAt: later, status: "queued", updatedAt: later,
+    });
+    await db.insert(corosWriteJobs).values([del(`${a}-unpush-copy`, a), del(`${b}-unpush`, b)]);
+    await db.insert(corosWriteJobs).values({
+      id: "coach-2-push", userId, workoutId: b, kind: "coach_create_workout", expectedContentFingerprint: "fp", originalDate: DAY, destinationDate: DAY,
+      requestedAt: later, status: "queued", updatedAt: later, payload: { workoutId: b, happenDay: DAY, name: "Easy", session: { category: "easy", title: "Easy", durationMinutes: 30 } },
+    });
+    expect(await queuedCount()).toBe(5);
+
+    const m = await invoke("POST", "watch/drain", {});
+    report("drain, one provisional push (pending counted)", m);
+    expect(m.res.status).toBe(200);
+    // Ran one (the oldest: a's push); left: b's push and a's held copy's delete — the coach job and `-unpush` are not the drain's.
+    expect(await m.res.json()).toEqual({ ran: true, pending: 2 });
+    expect([...(await pushesOf(a)), ...(await pushesOf(b))].map((j) => j.status)).toEqual(["verified", "queued"]);
+    expect(await queuedCount()).toBe(4);
+    expect(m.total).toBeLessThanOrEqual(BUDGET);
+
+    // The next runs b's push, then the held copy's delete (`<id>-unpush-copy`, a watch job the drain claims): then none.
+    expect(await (await invoke("POST", "watch/drain", {})).res.json()).toEqual({ ran: true, pending: 1 });
+    expect(await (await invoke("POST", "watch/drain", {})).res.json()).toEqual({ ran: true, pending: 0 });
+    expect((await jobOf(`${a}-unpush-copy`))!.status).not.toBe("queued");
+    expect(await (await invoke("POST", "watch/drain", {})).res.json()).toEqual({ ran: false, pending: 0 });
+    expect((await jobOf(`${b}-unpush`))!.status).toBe("queued");
+    expect((await jobOf("coach-2-push"))!.status).toBe("queued");
+  });
+
+  it("two mirror jobs never run in one request: an owed session's record (the sweep's one step) is the request's job — the queued push waits for the next", async () => {
+    const queuedFirst = await seedDocRow(addDays(DAY, 3));
+    await queueCopy(queuedFirst);
+    const owed = await seedDocRow(addDays(DAY, 2));
+    await markMirrorOwed(db, userId, owed, NOON);
+
+    const swept = await invoke("POST", "watch/drain", {});
+    report("drain, the sweep's one record (an owed session)", swept);
+    expect(swept.res.status).toBe(200);
+    expect(await swept.res.json()).toEqual({ ran: true, pending: 2 });
+    expect(swept.fetches).toBe(0);
+    expect(await recordsOf(owed)).toHaveLength(1);
+    expect((await pushesOf(queuedFirst)).map((j) => j.status)).toEqual(["queued"]);
+    expect(swept.total).toBeLessThanOrEqual(BUDGET);
+
+    const ran = await invoke("POST", "watch/drain", {});
+    report("drain, one push (nothing owed: the mirror's one read first)", ran);
+    expect(await ran.res.json()).toEqual({ ran: true, pending: 1 });
+    expect(ran.total).toBeLessThanOrEqual(BUDGET);
+    expect(await (await invoke("POST", "watch/drain", {})).res.json()).toEqual({ ran: true, pending: 0 });
+    expect([...(await pushesOf(owed)), ...(await pushesOf(queuedFirst))].map((j) => j.status)).toEqual(["verified", "verified"]);
+  });
+
+  it("a sweep with nothing to make never holds the drain up: a push waiting out its backoff — the queued push still runs, within the budget", async () => {
+    const failing = await seedDocRow(addDays(DAY, 1));
+    await queueCopy(failing);
+    const [failed] = await pushesOf(failing);
+    await db.update(corosWriteJobs).set({ status: "failed", updatedAt: NOON }).where(eq(corosWriteJobs.id, failed!.id));
+    const next = await seedDocRow(addDays(DAY, 2));
+    await queueCopy(next);
+
+    const m = await invoke("POST", "watch/drain", {});
+    report("drain, one push after a sweep with nothing to make (the worst path)", m);
+    expect(await m.res.json()).toEqual({ ran: true, pending: 0 });
+    expect((await pushesOf(next)).map((j) => j.status)).toEqual(["verified"]);
+    expect((await pushesOf(failing)).map((j) => j.status)).toEqual(["failed"]);
+    expect(m.total).toBeLessThanOrEqual(BUDGET);
+  });
+
+  it("a session too long for the watch is judged once (the request's job), then the drain runs", async () => {
+    await seedDocRow(addDays(DAY, 1), longDoc());
+    const next = await seedDocRow(addDays(DAY, 2));
+    await queueCopy(next);
+    const judged = await invoke("POST", "watch/drain", {});
+    report("drain, the sweep judging a session too long", judged);
+    expect(await judged.res.json()).toEqual({ ran: true, pending: 1 });
+    expect(judged.total).toBeLessThanOrEqual(BUDGET);
+    expect(await (await invoke("POST", "watch/drain", {})).res.json()).toEqual({ ran: true, pending: 0 });
+    expect((await pushesOf(next)).map((j) => j.status)).toEqual(["verified"]);
   });
 });

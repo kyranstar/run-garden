@@ -78,6 +78,13 @@ export function MoveSheet({
       setResult("Workout skipped — later workouts stay where they are.");
       void qc.invalidateQueries({ queryKey: ["today"] });
       void qc.invalidateQueries({ queryKey: ["plan"] });
+      // A skipped session's copy comes off the watch, one job a request (the watch mirrors the plan §3.4); the move's
+      // own answer starts its chain (`api.move`).
+      void api.drainWatchUntilIdle().then(({ ran }) => {
+        if (ran === 0) return;
+        void qc.invalidateQueries({ queryKey: ["today"] });
+        void qc.invalidateQueries({ queryKey: ["plan"] });
+      });
     },
   });
 

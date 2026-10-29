@@ -1020,7 +1020,7 @@ describe("the watch in the session sheet's foot (Phase 3 Task 8)", () => {
       }
       if (c.path === "/api/sessions/watch/drain") {
         if (opts.afterDrain) set(opts.afterDrain);
-        return answer({ executed: 1 });
+        return answer({ ran: true, pending: 0 });
       }
       if (c.path === `/api/sessions/${SLOT}/take-off-watch`) {
         const next = opts.afterTakeOff ?? session({ watch: { state: "ready" } });
@@ -1157,7 +1157,8 @@ describe("the watch in the session sheet's foot (Phase 3 Task 8)", () => {
     await confirmTakeOff();
     await until(() => !!button(/Send to watch/), "ready again");
     expect(body()).not.toContain("Sending…");
-    expect(watchCalls(calls)).toEqual(["POST …/take-off-watch", "POST /api/sessions/watch/drain"]);
+    // Opened on Sending…: the drain at once (the watch catching up, the watch mirrors the plan §3.7); then Take off's.
+    expect(watchCalls(calls)).toEqual(["POST /api/sessions/watch/drain", "POST …/take-off-watch", "POST /api/sessions/watch/drain"]);
   });
 
   it("a failed Take off says so, and the confirm stays open to try again (audit 3-B UI-3)", async () => {
@@ -1259,7 +1260,7 @@ describe("the watch in the session sheet's foot (Phase 3 Task 8)", () => {
         return new Promise<Response>((resolve) => {
           release = () => {
             set(session({ locked: true, watch: { state: "on_watch" } }));
-            resolve(new Response(JSON.stringify({ executed: 1 }), { status: 200, headers: { "Content-Type": "application/json" } }));
+            resolve(new Response(JSON.stringify({ ran: true, pending: 0 }), { status: 200, headers: { "Content-Type": "application/json" } }));
           };
         }) as unknown as Response;
       },
@@ -1283,6 +1284,55 @@ describe("the watch in the session sheet's foot (Phase 3 Task 8)", () => {
     expect(status()).toHaveLength(1);
     expect(status()[0]).toBe(region);
     expect(region.textContent).toBe("On your watch");
+  });
+
+  it("opened while the watch is catching up (updating): the drain chain at once — one job a request until none is left — then the session read again", async () => {
+    features.player = true;
+    let left = 2;
+    const { calls } = mount(session({ locked: true, watch: { state: "updating" } }), {
+      route: (c, set) => {
+        if (c.path !== "/api/sessions/watch/drain") return undefined;
+        left -= 1;
+        if (left === 0) set(session({ locked: true, watch: { state: "on_watch" } }));
+        return answer({ ran: true, pending: left });
+      },
+    });
+    await until(() => body().includes("On your watch"), "the state after the chain");
+    expect(watchCalls(calls)).toEqual(["POST /api/sessions/watch/drain", "POST /api/sessions/watch/drain"]);
+  });
+
+  it("opened with nothing waiting (ready, on the watch): no drain", async () => {
+    features.player = true;
+    for (const watch of [{ state: "ready" }, { state: "on_watch" }] as const) {
+      const { calls } = mount(session({ locked: watch.state === "on_watch", watch }));
+      await until(() => !!button(/Send to watch|Take off watch/), "the watch's control");
+      await act(async () => {
+        await new Promise((r) => setTimeout(r, 20));
+      });
+      expect(watchCalls(calls)).toEqual([]);
+      act(() => root?.unmount());
+      host?.remove();
+    }
+  });
+
+  it("a skip, and an un-skip, run the drain chain after them: the copy comes off the watch, and goes back on", async () => {
+    features.player = true;
+    const drained = (calls: Call[]) => calls.filter((c) => c.path === "/api/sessions/watch/drain").length;
+    const skipping = mount(session(), { route: watchRoutes() });
+    await until(() => !!button("Skip"), "Skip");
+    await click("Skip");
+    await until(() => drained(skipping.calls) === 1, "the drain after the skip");
+    expect(skipping.calls.findIndex((c) => c.path.endsWith("/skip"))).toBeLessThan(skipping.calls.findIndex((c) => c.path === "/api/sessions/watch/drain"));
+    act(() => root?.unmount());
+    host?.remove();
+
+    const unskipping = mount(session({ contentState: "outline", checks: {}, build: null, view: null }), {
+      w: slot({ contentState: "outline", completionState: "skipped" }),
+      route: watchRoutes(),
+    });
+    await until(() => !!button("Un-skip"), "Un-skip");
+    await click("Un-skip");
+    await until(() => drained(unskipping.calls) === 1, "the drain after the un-skip");
   });
 
   it("a skipped session not on the watch: nothing about the watch, as before (2a-R15)", async () => {
@@ -1343,7 +1393,7 @@ describe("while Sending…, the sheet reads again on a backoff and then stops (a
   const drains = (calls: Call[]) => calls.filter((c) => c.path === "/api/sessions/watch/drain").length;
   const json = (b: unknown) => new Response(JSON.stringify(b), { status: 200, headers: { "Content-Type": "application/json" } });
   /** The drain runs nothing (COROS unreachable, the job backing off): the push stays queued. */
-  const stuck = (c: Call): Response | undefined => (c.path === "/api/sessions/watch/drain" ? json({ executed: 0 }) : undefined);
+  const stuck = (c: Call): Response | undefined => (c.path === "/api/sessions/watch/drain" ? json({ ran: false, pending: 1 }) : undefined);
 
   async function loaded(what: string) {
     await until(() => body().includes(what), what);

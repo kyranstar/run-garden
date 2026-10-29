@@ -81,6 +81,8 @@ import {
   WatchUnavailableError,
 } from "../services/watch-push.js";
 import { executeCloudJobs } from "../services/coros-write-cloud.js";
+import { queuedWatchJobs } from "../services/jobs.js";
+import { mirrorTakesTurn } from "../services/mirror.js";
 import { InvalidSaveError, savePerformedSession } from "../services/session-save.js";
 import { reviewBasis } from "../services/session-review-basis.js";
 import { watchReviewBasis } from "../services/session-watch-review.js";
@@ -400,10 +402,14 @@ sessionRoutes.get("/:workoutId/watch-review", async (c) => {
 });
 
 /**
- * `POST /api/sessions/watch/drain`: run at most ONE of this user's queued watch jobs — a push or an unpush — in a
- * request of its own (ruling 3-R11: Send and Take off run no lane, and one push fits a Workers Free invocation with
- * room to spare). The sheet calls it right after Send and Take off, then reads the session for the state. Coach work
- * and older jobs of other kinds are left to the lanes that run them. 404 while the switch is off. `{executed}`.
+ * `POST /api/sessions/watch/drain`: ONE watch job in a request of its own (ruling 3-R11; the watch mirrors the plan
+ * §3.7, A5 — a push drain measures ≈31–34 of the invocation's 45, the mirror's record ≤15: never two). The mirror's turn
+ * first (`mirrorTakesTurn`: a session owed, or a window session whose copy is not current — the sweep makes its one
+ * record and queues its push); when it had nothing to make, the oldest of this user's queued watch jobs (a push — a
+ * provisional copy's too — a sent build's unpush, an adopted row's held copy's delete) runs. Coach work and older jobs
+ * of other kinds are left to the lanes that run them. The app calls it after every change that queues watch work and
+ * again while `pending` (the account's queued watch jobs, one COUNT) is above 0 (`drainWatchUntilIdle`). 404 while the
+ * switch is off. `{ran, pending}`.
  */
 sessionRoutes.post("/watch/drain", async (c) => {
   const off = switchedOff(c);
@@ -411,8 +417,9 @@ sessionRoutes.post("/watch/drain", async (c) => {
   const db = c.get("db");
   const userId = c.get("userId");
   const prefs = await loadPreferences(db, userId);
-  const { executed } = await executeCloudJobs(db, c.env, userId, prefs, { cap: 1, watchOnly: true });
-  return c.json({ executed });
+  let ran = await mirrorTakesTurn(db, c.env, userId, prefs, { today: todayInZone(prefs.timezone), now: nowInstant(), prefs });
+  if (!ran) ran = (await executeCloudJobs(db, c.env, userId, prefs, { cap: 1, watchOnly: true })).executed > 0;
+  return c.json({ ran, pending: await queuedWatchJobs(db, userId) });
 });
 
 /**

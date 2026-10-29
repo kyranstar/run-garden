@@ -26,7 +26,7 @@ import { openIntentFor, openMoveIntents, recordIntent, resolveIntent } from "./s
 import { keepsMark, watchCopyBase } from "./watch-copy-marker.js";
 import { postSyncNote } from "./sync-notes.js";
 import { enqueueProgramUnpush, runOwedUnpushes } from "./watch-push.js";
-import { enqueueUnpushIfOurs } from "./plan-mutations.js";
+import { ADOPTED_COPY_JOB_SUFFIX, enqueueUnpushIfOurs } from "./plan-mutations.js";
 import { markMirrorOwed } from "./mirror-owed.js";
 
 /**
@@ -346,6 +346,31 @@ export async function emitPendingWork(
 }
 
 /**
+ * THE WATCH'S OWN JOBS (the targeted drain's, ruling 3-R11; the watch mirrors the plan §3.7): a program push
+ * (`push:<buildId>` — a day build's, or a provisional copy's, `provisional: true`, the same kind), a sent build's delete
+ * (`unpush:<buildId>`) and an adopted row's held copy's delete (`<id>-unpush-copy`). Not a coach job, nor an
+ * address-path delete (`<id>-unpush`): those are the lanes'. One SQL condition on `coros_write_jobs`.
+ */
+export function watchJobCondition(): SQL {
+  return or(
+    eq(corosWriteJobs.kind, "program_session_push"),
+    and(
+      eq(corosWriteJobs.kind, "coach_delete_workout"),
+      or(like(corosWriteJobs.id, "unpush:%"), like(corosWriteJobs.id, `%${ADOPTED_COPY_JOB_SUFFIX}`)),
+    ),
+  )!;
+}
+
+/** How many of the account's watch jobs (`watchJobCondition`) are queued — what is left to drain. ONE COUNT. */
+export async function queuedWatchJobs(db: Db, userId: string): Promise<number> {
+  const [row] = await db
+    .select({ n: sql<number>`count(*)` })
+    .from(corosWriteJobs)
+    .where(and(eq(corosWriteJobs.userId, userId), eq(corosWriteJobs.status, "queued"), watchJobCondition()));
+  return Number(row?.n ?? 0);
+}
+
+/**
  * Revert stale claims, then hand the oldest queued job to the device.
  *
  * `workout` is null for the Plan Studio kinds: they act on a `studio_plan_pushes`
@@ -359,9 +384,9 @@ export async function claimNextJob(
   opts: {
     excludeKinds?: readonly string[];
     /**
-     * Only the watch's own jobs: a program push (`push:<buildId>`) or its unpush (`unpush:<buildId>`) — the targeted
-     * drain the session sheet calls after Send and Take off (ruling 3-R11). Nothing else is claimed, so an older
-     * queued coach job never takes the drain's one slot.
+     * Only the watch's own jobs (`watchJobCondition`): a program push — a provisional copy's too — a sent build's
+     * unpush, an adopted row's held copy's delete — the targeted drain the app calls after a watch change (ruling
+     * 3-R11), the pushes first. Nothing else is claimed, so an older queued coach job never takes the drain's one slot.
      */
     watchOnly?: boolean;
     /**
@@ -402,17 +427,12 @@ export async function claimNextJob(
         eq(corosWriteJobs.status, "queued"),
         ...(opts.excludeKinds?.length ? [notInArray(corosWriteJobs.kind, [...opts.excludeKinds])] : []),
         ...(opts.onlyKinds ? [inArray(corosWriteJobs.kind, [...opts.onlyKinds])] : []),
-        ...(opts.watchOnly
-          ? [
-              or(
-                eq(corosWriteJobs.kind, "program_session_push"),
-                and(eq(corosWriteJobs.kind, "coach_delete_workout"), like(corosWriteJobs.id, "unpush:%")),
-              ),
-            ]
-          : []),
+        ...(opts.watchOnly ? [watchJobCondition()] : []),
       ),
     )
-    .orderBy(corosWriteJobs.requestedAt)
+    // The targeted drain puts a new copy on before it takes an old one off (either order is safe, A6): a replacement's
+    // push runs in the first request, the old copy's delete in the next — the watch never goes without the session.
+    .orderBy(...(opts.watchOnly ? [sql`case when ${corosWriteJobs.kind} = 'program_session_push' then 0 else 1 end`] : []), corosWriteJobs.requestedAt)
     .limit(1);
   const job = queued[0];
   if (!job) return null;

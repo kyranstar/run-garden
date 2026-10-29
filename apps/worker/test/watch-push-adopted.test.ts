@@ -167,7 +167,7 @@ describe("Send on the day replaces the old copy", () => {
     expect(after.sourceWorkoutId).not.toBe(before.sourceWorkoutId);
   });
 
-  it("the sheet's targeted drain puts the new build on first; the old copy comes off on the lane's next pass, the row keeping the new copy's address", async () => {
+  it("the sheet's targeted drain puts the new build on first; the old copy comes off in its next request, the row keeping the new copy's address", async () => {
     const { id, stamp } = await coachOnWatch();
     const before = await rowOf(db, id);
     await adopt(id);
@@ -183,7 +183,8 @@ describe("Send on the day replaces the old copy", () => {
     expect(programsNamed(stamp)).toHaveLength(1);
     expect(pushed.watchCopyName).toBe(stamp);
 
-    await lane();
+    // The held copy's delete (`<id>-unpush-copy`) is a watch job too (the watch mirrors the plan §3.7): the drain's next.
+    await lane({ cap: 1, watchOnly: true });
     expect((await jobOf(`${id}-unpush-copy`))!.status).toBe("verified");
     expect(programsNamed(stamp)).toHaveLength(0);
     expect(programsNamed(sent)).toHaveLength(1);

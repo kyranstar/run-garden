@@ -254,7 +254,7 @@ describe("after the push lands and the old copy is still on the wire", () => {
     await importFromCoros();
     await adopt(id);
     const buildId = await buildAndSend(id);
-    // The sheet's targeted drain: the new build goes on first, the old copy's delete waits for the lane.
+    // The sheet's targeted drain: the new build goes on first; the old copy's delete is its next request's (or the lane's).
     await lane({ cap: 1, watchOnly: true });
     expect((await jobOf(`push:${buildId}`))!.status).toBe("verified");
     expect((await jobOf(`${id}-unpush-copy`))!.status).toBe("queued");

@@ -403,7 +403,7 @@ describe("mirrorSweep", () => {
     expect(await recordsOf(later)).toHaveLength(1);
     // Every copy current: nothing more, however often it runs.
     const idle = await mirrorSweep(db, switchOn(), userId, prefs, ctx(), { cap: 1 });
-    expect(idle).toEqual({ queued: 0, skipped: { current: 3 } });
+    expect(idle).toEqual({ queued: 0, attempted: 0, skipped: { current: 3 } });
     for (const id of [far, kept, resolved, missed, rest, race, engine]) {
       expect(await recordsOf(id)).toHaveLength(0);
       expect(await jobsOf(id)).toHaveLength(0);
@@ -440,8 +440,8 @@ describe("mirrorSweep", () => {
   it("writes off: queues nothing and reads nothing", async () => {
     await seedDocRow(addDays(DAY, 1));
     statements = [];
-    expect(await mirrorSweep(db, switchOn(), userId, writesOff(), ctx({ prefs: writesOff() }), { cap: 1 })).toEqual({ queued: 0, skipped: { writes_off: 1 } });
-    expect(await mirrorSweep(db, makeEnv(), userId, prefs, ctx(), { cap: 1 })).toEqual({ queued: 0, skipped: { switch_off: 1 } });
+    expect(await mirrorSweep(db, switchOn(), userId, writesOff(), ctx({ prefs: writesOff() }), { cap: 1 })).toEqual({ queued: 0, attempted: 0, skipped: { writes_off: 1 } });
+    expect(await mirrorSweep(db, makeEnv(), userId, prefs, ctx(), { cap: 1 })).toEqual({ queued: 0, attempted: 0, skipped: { switch_off: 1 } });
     expect(statements).toHaveLength(0);
   });
 
@@ -500,7 +500,7 @@ describe("mirrorSweep", () => {
     await markMirrorOwed(db, userId, id, NOON);
     await db.insert(schema.accountState).values({ userId, restoreId: "restore-1", restoreStartedAt: NOON, updatedAt: NOON } as typeof schema.accountState.$inferInsert);
     statements = [];
-    expect(await mirrorSweep(db, switchOn(), userId, prefs, ctx(), { cap: 1 })).toEqual({ queued: 0, skipped: { restoring: 1 } });
+    expect(await mirrorSweep(db, switchOn(), userId, prefs, ctx(), { cap: 1 })).toEqual({ queued: 0, attempted: 0, skipped: { restoring: 1 } });
     expect(statements.filter(isWrite)).toHaveLength(0);
     expect(await recordsOf(id)).toHaveLength(0);
     expect((await intentOf(id))!.resolvedAt).toBeNull();
@@ -510,7 +510,8 @@ describe("mirrorSweep", () => {
     const bad = await seedDocRow(addDays(DAY, 1));
     const next = await seedDocRow(addDays(DAY, 2));
     broken.prepare = bad;
-    expect(await mirrorSweep(db, switchOn(), userId, prefs, ctx(), { cap: 1 })).toEqual({ queued: 0, skipped: { error: 1 } });
+    // An attempt (the run's heavy step), answered `error`.
+    expect(await mirrorSweep(db, switchOn(), userId, prefs, ctx(), { cap: 1 })).toEqual({ queued: 0, attempted: 1, skipped: { error: 1 } });
     const mark = await intentOf(bad);
     expect(mark).toMatchObject({ resolvedAt: NOON });
     const memory = mark!.payload as { refused: string; rev: number; day: string; message: string; at: string; count: number };
@@ -527,7 +528,8 @@ describe("mirrorSweep", () => {
     // Not before its first backoff; then tried again — the failure was transient, and the copy is made.
     broken.prepare = null;
     const sweepAt = (now: string) => mirrorSweep(db, switchOn(), userId, prefs, ctx({ now }), { cap: 1 });
-    expect(await sweepAt(after(MIRROR_RETRY_BACKOFF_MS[0] - 1000))).toEqual({ queued: 0, skipped: { error: 1, current: 1 } });
+    // Waiting out its backoff is no attempt: the sweep only read.
+    expect(await sweepAt(after(MIRROR_RETRY_BACKOFF_MS[0] - 1000))).toEqual({ queued: 0, attempted: 0, skipped: { error: 1, current: 1 } });
     expect(await recordsOf(bad)).toHaveLength(0);
     expect((await sweepAt(after(MIRROR_RETRY_BACKOFF_MS[0]))).queued).toBe(1);
     expect(await recordsOf(bad)).toHaveLength(1);
@@ -539,15 +541,15 @@ describe("mirrorSweep", () => {
     broken.prepare = bad;
     let at = NOON;
     const sweepAt = (now: string) => mirrorSweep(db, switchOn(), userId, prefs, ctx({ now }), { cap: 1 });
-    expect(await sweepAt(at)).toEqual({ queued: 0, skipped: { error: 1 } });
+    expect(await sweepAt(at)).toEqual({ queued: 0, attempted: 1, skipped: { error: 1 } });
     for (const [n, wait] of MIRROR_RETRY_BACKOFF_MS.entries()) {
       const due = new Date(Date.parse(at) + wait).toISOString();
-      expect(await sweepAt(new Date(Date.parse(due) - 1000).toISOString())).toEqual({ queued: 0, skipped: { error: 1 } });
-      expect(await sweepAt(due)).toEqual({ queued: 0, skipped: { error: 1 } });
+      expect(await sweepAt(new Date(Date.parse(due) - 1000).toISOString())).toEqual({ queued: 0, attempted: 0, skipped: { error: 1 } });
+      expect(await sweepAt(due)).toEqual({ queued: 0, attempted: 1, skipped: { error: 1 } });
       expect((await intentOf(bad))!.payload).toMatchObject({ refused: "error", at: due, count: n + 2 });
       at = due;
     }
-    expect(await sweepAt(new Date(Date.parse(at) + 30 * 86_400_000).toISOString())).toEqual({ queued: 0, skipped: { gave_up: 1 } });
+    expect(await sweepAt(new Date(Date.parse(at) + 30 * 86_400_000).toISOString())).toEqual({ queued: 0, attempted: 0, skipped: { gave_up: 1 } });
     expect(await recordsOf(bad)).toHaveLength(0);
     expect(await jobsOf(bad)).toHaveLength(0);
     broken.prepare = null;

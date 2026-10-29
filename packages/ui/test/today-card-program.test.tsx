@@ -369,3 +369,28 @@ describe("Log your session (Phase 3 Task 10; approved mocks §3)", () => {
     expect(titles).toContain("Log your session");
   });
 });
+
+describe("the watch catches up while Today is open (the watch mirrors the plan §3.7, A5)", () => {
+  const drains = () =>
+    (globalThis.fetch as unknown as { mock: { calls: Array<[string, RequestInit?]> } }).mock.calls.filter(([url]) => url === "/api/sessions/watch/drain").length;
+  const settle = async (passes = 30) => {
+    for (let i = 0; i < passes; i += 1) {
+      await act(async () => {
+        await new Promise((r) => setTimeout(r, 10));
+      });
+    }
+  };
+
+  it("opened with watch writes waiting: the drain chain, once (the stub's drain runs nothing, so one request)", async () => {
+    await renderCard({ ...todayPayload(slot()), sync: { pendingCorosJobs: 2, corosConnected: true, corosWritesEnabled: true, calendarConnected: true } });
+    for (let i = 0; i < 50 && drains() === 0; i += 1) await settle(1);
+    await settle();
+    expect(drains()).toBe(1);
+  });
+
+  it("opened with nothing waiting: no drain", async () => {
+    await renderCard(todayPayload(slot()));
+    await settle();
+    expect(drains()).toBe(0);
+  });
+});

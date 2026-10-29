@@ -2454,13 +2454,58 @@ export interface ProgressDto {
 
 // ── Endpoints ────────────────────────────────────────────────────────────────
 
+/** `POST /api/sessions/watch/drain`: whether a watch job ran (a push, a delete, or the mirror's one record), and how
+ * many of the account's watch jobs are still queued. */
+export interface WatchDrainDto {
+  ran: boolean;
+  pending: number;
+}
+
+/** Most drain requests one chain sends (`drainWatchUntilIdle`); the hourly lane runs whatever is left. */
+export const WATCH_DRAIN_MAX = 6;
+
+/** The chain running now, if any: a second waits for it (never two drains of this tab in flight at once). */
+let watchDrainTail: Promise<unknown> = Promise.resolve();
+
 /**
- * A move or remove of a programme session queues its watch copy's take-off and leaves running it to a request of its
- * own (ruling 3-R11: the free plan's per-request budget) — `watchDrain` in the answer. Fire that drain and move on;
- * the hourly lane runs it anyway if this one never lands.
+ * RUN THE WATCH'S QUEUED JOBS, ONE A REQUEST (ruling 3-R11; the watch mirrors the plan §3.7, A5): each drain request is
+ * its own invocation and does one watch job — a push, a delete, or the mirror's one record — and answers what is left.
+ * Asks again while something is (`pending > 0`), at most `max` requests; stops at the first that ran nothing (another
+ * invocation has the work, or none can run now) or failed (offline, the switch off: 404). Never rejects: it resolves
+ * with how many ran and what was left at the last answer. A chain started while another runs waits for it, so the two
+ * never contend for the account's write lock. The hourly lane runs whatever a chain leaves.
+ */
+export function drainWatchUntilIdle(max = WATCH_DRAIN_MAX): Promise<{ ran: number; pending: number }> {
+  const chain = async (): Promise<{ ran: number; pending: number }> => {
+    let ran = 0;
+    let pending = 0;
+    for (let i = 0; i < max; i++) {
+      let answer: Partial<WatchDrainDto>;
+      try {
+        answer = await post<Partial<WatchDrainDto>>("/api/sessions/watch/drain", {});
+      } catch {
+        break;
+      }
+      pending = typeof answer.pending === "number" ? answer.pending : 0;
+      if (!answer.ran) break;
+      ran += 1;
+      if (pending === 0) break;
+    }
+    return { ran, pending };
+  };
+  const run = watchDrainTail.then(chain, chain);
+  watchDrainTail = run.catch(() => undefined);
+  return run;
+}
+
+/**
+ * A move or remove of an app-built session queues its watch work (the old copy's take-off; for a document workout its
+ * new copy, made by the next drain) and leaves running it to requests of their own (ruling 3-R11: the free plan's
+ * per-request budget) — `watchDrain` in the answer. Fire the chain and move on (one request when one job is all there
+ * is); the hourly lane runs it anyway if this one never lands.
  */
 function drainedWatch<T extends { watchDrain?: boolean }>(res: T): T {
-  if (res.watchDrain) void post<{ executed: number }>("/api/sessions/watch/drain", {}).catch(() => undefined);
+  if (res.watchDrain) void drainWatchUntilIdle();
   return res;
 }
 
@@ -2907,11 +2952,13 @@ export const api = {
   /** Put on my watch: the session is the mirror's again, which puts its copy on the watch; idempotent. */
   putOnWatch: (workoutId: string) => post<SessionDto>(`/api/sessions/${encodeURIComponent(workoutId)}/put-on-watch`, {}),
   /**
-   * Run the queued push or unpush now, in a request of its own: Send and Take off only queue (ruling 3-R11, the
-   * Workers Free budget). Call it right after either answers 200, then read the session for the state. Runs at most
-   * one of this athlete's watch jobs; 404 while the switch is off.
+   * Run ONE queued watch job now, in a request of its own — a push, a delete, or the mirror's one record: Send, Keep off
+   * and the plan's changes only queue (ruling 3-R11, the Workers Free budget). `{ran, pending}`; 404 while the switch
+   * is off. After a change, `drainWatchUntilIdle` asks until nothing is left.
    */
-  drainWatch: () => post<{ executed: number }>("/api/sessions/watch/drain", {}),
+  drainWatch: () => post<WatchDrainDto>("/api/sessions/watch/drain", {}),
+  /** The chain (`drainWatchUntilIdle`): one watch job a request while any is left, at most six; never rejects. */
+  drainWatchUntilIdle: (max?: number) => drainWatchUntilIdle(max),
   recordCheck: (body: { profileId: string; value: number | null; feelingOff?: boolean }) =>
     post<{ check: SavedConditionCheckDto | null }>("/api/conditions/checks", body),
   /** Whether the build the slot shows is still the day's (Start would lock it as it is); never builds. */

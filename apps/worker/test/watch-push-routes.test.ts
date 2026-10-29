@@ -404,6 +404,33 @@ describe("POST take-off-watch", () => {
   });
 });
 
+describe("POST watch/drain — what is left to drain (`pending`, the watch mirrors the plan §3.7)", () => {
+  it("drain answers pending=N: this account's queued watch jobs — program pushes (provisional too), `unpush:` and `-unpush-copy` deletes — and nothing else; ran is false when no job could run", async () => {
+    const job = (id: string, kind: string, over: Partial<typeof corosWriteJobs.$inferInsert> = {}) => ({
+      id, userId, workoutId: "w-any", kind, expectedContentFingerprint: "", originalDate: TOMORROW, destinationDate: TOMORROW,
+      payload: { workoutId: "w-any", happenDay: TOMORROW, name: `x — ${TOMORROW}` }, requestedAt: NOON, status: "queued", updatedAt: NOON, ...over,
+    });
+    const { userId: other } = await makeTestUser(db, {});
+    for (const row of [
+      job("push:b1", "program_session_push"),
+      job("push:b2", "program_session_push", { payload: { workoutId: "w-any", happenDay: TOMORROW, name: "y", provisional: true } }),
+      job("unpush:b0", "coach_delete_workout"),
+      job("w-any-unpush-copy", "coach_delete_workout"),
+      // Not the drain's: an address-path delete, a coach create, a push already verified or claimed, another account's.
+      job("w-any-unpush", "coach_delete_workout"),
+      job("coach-x", "coach_create_workout"),
+      job("push:b3", "program_session_push", { status: "verified" }),
+      job("push:b4", "program_session_push", { status: "claimed", claimedAt: NOON }),
+      job("push:o1", "program_session_push", { userId: other }),
+    ])
+      await db.insert(corosWriteJobs).values(row);
+    // The account's COROS connection holds no credentials here: nothing can run, and what is left is said.
+    const res = await call("POST", "watch/drain", { body: {} });
+    expect(res.status).toBe(200);
+    expect(await res.json()).toEqual({ ran: false, pending: 4 });
+  });
+});
+
 describe("Keep off my watch / Put on my watch (the watch mirrors the plan §3.6; builder check A8, M4)", () => {
   let seq = 0;
   /** A Studio workout as the Studio stores one: its document at revision 1, an outline until its day. */

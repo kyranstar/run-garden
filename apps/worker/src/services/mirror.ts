@@ -843,6 +843,104 @@ async function handOver(
 const SWEEP_ROWS = 60;
 
 /**
+ * What a sweep did: `queued` copies (a record and its push, or a failed push re-queued); `attempted` — the sessions it
+ * worked on (`queueProvisionalPush`, at most `opts.cap`), whatever the answer: the run's heavy step when > 0 (A5);
+ * a sweep that attempted nothing only read — the caller's watch drain may still run in the same invocation; `skipped`,
+ * the sessions it left, by reason.
+ */
+export interface MirrorSweepResult {
+  queued: number;
+  attempted: number;
+  skipped: Record<string, number>;
+}
+
+/**
+ * THE MIRROR'S TURN AT AN INVOCATION'S ONE WATCH JOB (§3.7, A5). The hourly and the app's drain request each have room
+ * for one watch job — a push drain measures ≈31–34 of the 45 an invocation may spend, an unpush 29, the sweep's record
+ * ≤15 — never two. With the switch and the writes on and work found (`mirrorNeedsRun`, one read), the sweep makes its
+ * one attempt. True when it attempted (the invocation's watch job is spent: no drain after it); false when there was
+ * nothing to make, or no work found — the caller drains one job as before (the reads, at most four statements, fit
+ * beside it). A failed `mirrorNeedsRun` read is logged and answers false (the drain is never held up by it); a throw
+ * from the sweep propagates — it may have spent the invocation's room.
+ */
+export async function mirrorTakesTurn(db: Db, env: Env, userId: string, prefs: BuildCtx["prefs"], ctx: BuildCtx): Promise<boolean> {
+  if (!watchPushEnabled(env) || !prefs.corosWritesEnabled) return false;
+  const needed = await mirrorNeedsRun(db, userId, ctx.today).catch((e: unknown) => {
+    console.error(`mirror: the work read failed — ${e instanceof Error ? e.message : "unknown"}`);
+    return false;
+  });
+  if (!needed) return false;
+  return (await mirrorSweep(db, env, userId, prefs, ctx, { cap: 1 })).attempted > 0;
+}
+
+/**
+ * `rowRefusal`'s rules, as far as SQL says them, on `planned_workouts`: a document workout (studio, template) still to
+ * run in the window (today … `horizon`), not kept off, not a run, a rest day or a race. The sweep reads these rows (and
+ * the owed ones); `mirrorNeedsRun` asks the same of them.
+ */
+function inWindowCondition(today: string, horizon: string): SQL {
+  const pw = plannedWorkouts;
+  return and(
+    isNull(pw.archivedAt),
+    eq(pw.completionState, "scheduled"),
+    inArray(pw.origin, [...DOC_ORIGINS]),
+    isNotNull(pw.workoutDoc),
+    eq(pw.watchOff, false),
+    gte(pw.effectiveDate, today),
+    lte(pw.effectiveDate, horizon),
+    sql`coalesce(${pw.sport}, '') <> 'run'`,
+    sql`coalesce(${pw.category}, '') not in ('rest', 'race')`,
+  )!;
+}
+
+/**
+ * IS THERE WORK FOR THE SWEEP? (§3.7, A5) — what the hourly and the app's drain ask before they spend a run on the
+ * sweep rather than on a watch job. ONE bounded read (LIMIT 1, nothing read back but a row's existence): an OPEN owed
+ * mark (on a row the sweep reads: the mark of a row gone is never its), or a window document workout
+ * (`inWindowCondition`, not under way or done, with a revision) WITH NO CURRENT COPY — `currentCopy` in SQL: no push of
+ * its revision (or none said) that is on its way for its day, or verified with the row holding a COROS address on its
+ * day — and NOT REMEMBERED refused for its revision and day (too long, not a document, today's check answered; a
+ * remembered error waits out its backoff in the sweep, and is not read here).
+ *
+ * Never "no" when the sweep would make a copy (every condition here is one the sweep's verdict holds too), but "yes"
+ * for some sessions it will leave — a failed push waiting out its backoff, one it gave up on: the sweep then attempts
+ * nothing, and its caller drains a job as before (`MirrorSweepResult.attempted`). The switch and the writes are the
+ * caller's to check first.
+ */
+export async function mirrorNeedsRun(db: Db, userId: string, today: string): Promise<boolean> {
+  const pw = plannedWorkouts;
+  const si = syncIntents;
+  const j = corosWriteJobs;
+  const field = (path: string) => sql`json_extract(${j.payload}, ${path})`;
+  const mark = (path: string) => sql`json_extract(${si.payload}, ${path})`;
+  // `watchAddressOf`, exactly: "<digits>:<digits>", an id in the plan, a program id, a verified day.
+  const address = sql`(${pw.sourceWorkoutId} glob '[0-9]*:[0-9]*' and ${pw.sourceWorkoutId} not glob '*[^0-9:]*'
+    and length(${pw.sourceWorkoutId}) - length(replace(${pw.sourceWorkoutId}, ':', '')) = 1
+    and coalesce(${pw.sourceIdInPlan}, '') <> '' and coalesce(${pw.sourceProgramId}, '') <> '' and coalesce(${pw.lastVerifiedCorosDate}, '') <> '')`;
+  const current = sql`exists (select 1 from ${j} where ${j.userId} = ${userId} and ${j.workoutId} = ${pw.id}
+    and ${j.kind} = 'program_session_push'
+    and (${field("$.fromDocRev")} is null or ${field("$.fromDocRev")} = ${pw.workoutDocRev})
+    and ((${j.status} in (${sql.join(IN_FLIGHT.map((x) => sql`${x}`), sql`, `)}) and ${field("$.happenDay")} = ${pw.effectiveDate})
+      or (${j.status} = 'verified' and ${address} and ${pw.lastVerifiedCorosDate} = ${pw.effectiveDate})))`;
+  const remembered = sql`(${si.id} is not null and ${mark("$.refused")} in ('too_long', 'not_document', 'today_checked')
+    and ${mark("$.rev")} = ${pw.workoutDocRev} and ${mark("$.day")} = ${pw.effectiveDate})`;
+  const uncovered = and(
+    inWindowCondition(today, addDays(today, MIRROR_WINDOW_DAYS)),
+    isNotNull(pw.workoutDocRev),
+    sql`coalesce(${pw.contentState}, '') not in ('started', 'done')`,
+    sql`not ${current}`,
+    sql`not ${remembered}`,
+  );
+  const rows = await db
+    .select({ id: pw.id })
+    .from(pw)
+    .leftJoin(si, and(eq(si.id, sql`'mirror-' || ${pw.id}`), eq(si.userId, userId)))
+    .where(and(eq(pw.userId, userId), or(and(sql`${si.id} is not null`, isNull(si.resolvedAt)), uncovered)))
+    .limit(1);
+  return rows.length > 0;
+}
+
+/**
  * THE MIRROR SWEEP (§3.7, A5): the hourly's heavy step. The owed sessions first (an open mark, soonest day first), then
  * the window's document workouts (today … today + 28, scheduled, not archived, not kept off, soonest first): each
  * judged (`verdictOf`) with no statement of its own; the first that needs a copy gets ONE `queueProvisionalPush` (or
@@ -859,25 +957,15 @@ export async function mirrorSweep(
   prefs: BuildCtx["prefs"],
   ctx: BuildCtx,
   opts: { cap: number },
-): Promise<{ queued: number; skipped: Record<string, number> }> {
-  if (!watchPushEnabled(env)) return { queued: 0, skipped: { switch_off: 1 } };
-  if (!prefs.corosWritesEnabled) return { queued: 0, skipped: { writes_off: 1 } };
+): Promise<MirrorSweepResult> {
+  if (!watchPushEnabled(env)) return { queued: 0, attempted: 0, skipped: { switch_off: 1 } };
+  if (!prefs.corosWritesEnabled) return { queued: 0, attempted: 0, skipped: { writes_off: 1 } };
   const runCtx: BuildCtx = { ...ctx, prefs };
   const horizon = addDays(ctx.today, MIRROR_WINDOW_DAYS);
   const pw = plannedWorkouts;
   const owedMark = and(eq(syncIntents.id, sql`'mirror-' || ${pw.id}`), eq(syncIntents.userId, userId));
   // `rowRefusal`'s rules, as far as SQL says them: what it would refuse is not read at all, unless it is owed.
-  const inWindow = and(
-    isNull(pw.archivedAt),
-    eq(pw.completionState, "scheduled"),
-    inArray(pw.origin, [...DOC_ORIGINS]),
-    isNotNull(pw.workoutDoc),
-    eq(pw.watchOff, false),
-    gte(pw.effectiveDate, ctx.today),
-    lte(pw.effectiveDate, horizon),
-    sql`coalesce(${pw.sport}, '') <> 'run'`,
-    sql`coalesce(${pw.category}, '') not in ('rest', 'race')`,
-  );
+  const inWindow = inWindowCondition(ctx.today, horizon);
   const open = and(sql`${syncIntents.id} is not null`, isNull(syncIntents.resolvedAt));
   const candidates = await db
     .select({
@@ -893,8 +981,8 @@ export async function mirrorSweep(
     .where(and(eq(pw.userId, userId), or(open, inWindow)))
     .orderBy(sql`case when ${open} then 0 else 1 end`, asc(pw.effectiveDate), asc(pw.effectiveTime), asc(pw.id))
     .limit(SWEEP_ROWS);
-  if (candidates.length === 0) return { queued: 0, skipped: {} };
-  if (candidates[0]!.restoring) return { queued: 0, skipped: { restoring: 1 } };
+  if (candidates.length === 0) return { queued: 0, attempted: 0, skipped: {} };
+  if (candidates[0]!.restoring) return { queued: 0, attempted: 0, skipped: { restoring: 1 } };
   const jobs = await mirrorJobs(
     db,
     userId,
@@ -934,5 +1022,5 @@ export async function mirrorSweep(
     else count(answer.slice("skipped:".length));
   }
   await resolveOwed(db, userId, settle, ctx.now);
-  return { queued, skipped };
+  return { queued, attempted: attempts, skipped };
 }

@@ -39,6 +39,7 @@ import {
 } from "@rg/api-client";
 import { docOriginRow, doseText, newId, revisability, type DoseStep, type DoseTarget } from "@rg/domain";
 import { APP_BUILT_CHOICE, WatchVersion } from "./watch-version.js";
+import { useWatchCatchUp } from "./watch-catch-up.js";
 import { EXERCISES, isProfileId, label as vocab, PROFILES } from "@rg/exercise-library";
 import { effortAdvice } from "@rg/workout";
 import { Banner, CompletionPill, ConfirmDialog, EmptyState, formatDayLong, formatTime, Sheet, Spinner } from "../components.js";
@@ -285,6 +286,11 @@ export function SessionSheet({ w, today, onClose }: { w: WorkoutDto; today: stri
       // on. Its card goes when the read answers. The dialogs closing after this leave the focus where it is.
       for (const k of PLAN_QUERIES) void qc.invalidateQueries({ queryKey: [k] });
       setTimeout(() => focusAfterRemove(w.effectiveDate, w.id), 0);
+      // Its copy comes off the watch in requests of their own (the watch mirrors the plan §3.7); the plan is read again
+      // only if one ran.
+      void api.drainWatchUntilIdle().then(({ ran }) => {
+        if (ran > 0) for (const k of PLAN_QUERIES) void qc.invalidateQueries({ queryKey: [k] });
+      });
     },
   });
   // Saved once (re-review N4): the button gives way to the line, which takes focus (N3); a retry whose answer was lost
@@ -333,6 +339,22 @@ export function SessionSheet({ w, today, onClose }: { w: WorkoutDto; today: stri
   const refreshPlan = () => {
     for (const k of ["today", "plan", "plan-week", "programs"]) void qc.invalidateQueries({ queryKey: [k] });
   };
+  /**
+   * THE WATCH FOLLOWS (the watch mirrors the plan §3.7, A5): a change that queues watch work — Send, Retry, Keep off,
+   * Put on, Remove, a skip or an un-skip (a move's own answer starts it, `api.move`) — runs no lane of its own; the
+   * drain does one job a request, and the chain asks until nothing is left. Then the session and the plan say how it
+   * went. A drain that fails is no error to show: the hourly lane runs the rest.
+   */
+  const drainThenRead = () =>
+    void api.drainWatchUntilIdle().then(() => {
+      void qc.invalidateQueries({ queryKey: key });
+      refreshPlan();
+    });
+  // Opened while the watch is catching up with this session: drain what is waiting now.
+  useWatchCatchUp(session.data === undefined ? undefined : ["updating", "sending"].includes(session.data.watch?.state ?? ""), () => {
+    void qc.invalidateQueries({ queryKey: key });
+    refreshPlan();
+  });
   const build = useMutation({
     mutationFn: (body: BuildSessionRequest) => api.buildSession(w.id, body),
     onSuccess: (next) => {
@@ -393,6 +415,7 @@ export function SessionSheet({ w, today, onClose }: { w: WorkoutDto; today: stri
     onSuccess: () => {
       refreshPlan();
       onClose();
+      drainThenRead();
     },
   });
   const unskip = useMutation({
@@ -402,6 +425,8 @@ export function SessionSheet({ w, today, onClose }: { w: WorkoutDto; today: stri
       // Completion feeds the garden, as the run sheet's Un-skip does.
       void qc.invalidateQueries({ queryKey: ["garden"] });
       void qc.invalidateQueries({ queryKey: key });
+      // Back on the plan, back on the watch: the mirror's copy is made and sent by the drain.
+      drainThenRead();
     },
   });
   const moveToToday = useMutation({
@@ -411,9 +436,9 @@ export function SessionSheet({ w, today, onClose }: { w: WorkoutDto; today: stri
       void qc.invalidateQueries({ queryKey: key });
     },
   });
-  // The watch (Phase 3). Send (in the preview) and Take off only QUEUE (ruling 3-R11): the drain runs the job in a
-  // request of its own, then the session says how it went. A drain that fails is no error to show — the hourly lane
-  // runs the job, and the sheet keeps "Sending…" until it has (reading again on a backoff, `useSendingPoll`).
+  // The watch (Phase 3). Send (in the preview) and Take off only QUEUE (ruling 3-R11): the drain runs the jobs, one a
+  // request (`drainThenRead`), then the session says how it went. A drain that fails is no error to show — the hourly
+  // lane runs the job, and the sheet keeps "Sending…" until it has (reading again on a backoff, `useSendingPoll`).
   const [previewing, setPreviewing] = useState(false);
   const [confirmingTakeOff, setConfirmingTakeOff] = useState(false);
   /**
@@ -427,13 +452,7 @@ export function SessionSheet({ w, today, onClose }: { w: WorkoutDto; today: stri
     refocusWatchOn.current = next.watch?.state ?? "none";
     qc.setQueryData(key, next);
     refreshPlan();
-    void api
-      .drainWatch()
-      .catch(() => undefined)
-      .finally(() => {
-        void qc.invalidateQueries({ queryKey: key });
-        refreshPlan();
-      });
+    drainThenRead();
   };
   const takeOff = useMutation({
     mutationFn: () => api.takeOffWatch(w.id),
@@ -451,8 +470,8 @@ export function SessionSheet({ w, today, onClose }: { w: WorkoutDto; today: stri
   useSendingPoll(
     session.data?.watch?.state === "sending",
     () => void qc.invalidateQueries({ queryKey: key }),
-    // The one more drain: what it ran shows on Today and Plan too ("On your watch").
-    () => api.drainWatch().finally(refreshPlan),
+    // The one more drain (a chain: one job a request, while any is left): what it ran shows on Today and Plan too.
+    () => api.drainWatchUntilIdle().finally(refreshPlan),
   );
   const takeOffButton = (
     <button ref={watchControl} type="button" className="btn" disabled={takeOff.isPending} onClick={askTakeOff}>

@@ -61,6 +61,7 @@ import { processCoachReads } from "./services/coach-reads.js";
 import { corosSweepAccount } from "./services/coros-read.js";
 import { corosMcpSleepSweep } from "./services/coros-mcp.js";
 import { executeCloudJobs } from "./services/coros-write-cloud.js";
+import { mirrorTakesTurn } from "./services/mirror.js";
 import { healOutdatedPaceEncoding } from "./services/content-converge.js";
 import { purgeExpiredSessions, createSession, sessionCookie } from "./auth/sessions.js";
 import { purgeExpiredStates } from "./auth/google.js";
@@ -374,7 +375,7 @@ async function corosHalfHour(db: Db, env: Env, userId: string): Promise<void> {
 }
 
 /** The step an hourly run spent its budget on, in its run row's stats (`heavyStep`); null when none had work. */
-export type HourlyHeavyStep = "garden" | "coach_read" | "coros_write" | "coach_run" | "doc_backfill";
+export type HourlyHeavyStep = "garden" | "coach_read" | "mirror" | "coros_write" | "coach_run" | "doc_backfill";
 
 /** Thrown between steps of a per-user cron loop when a restore began for
  * that account while the loop was working on it (ruling B9). */
@@ -431,9 +432,9 @@ export async function hourly(db: Db, env: Env): Promise<void> {
       await sweepUserProposals(db, userId, prefs.timezone).catch(() => undefined);
       await stillOurs();
       // ONE HEAVY STEP PER ACCOUNT PER INVOCATION (cron reliability, part 2): the garden's walk of more than a
-      // day, a coach read, a COROS write. Right after new activities all three used to land in one invocation —
-      // three to seven times a steady one's CPU, on the free plan's 10 ms — and a killed run did none of them, so
-      // the next did all three again. Now the rest waits for the next run: nothing is dropped, only deferred.
+      // day, a coach read, the mirror's record, a COROS write. Right after new activities all three used to land in
+      // one invocation — three to seven times a steady one's CPU, on the free plan's 10 ms — and a killed run did none
+      // of them, so the next did all three again. Now the rest waits for the next run: nothing is dropped, only deferred.
       let heavyStep: HourlyHeavyStep | null = garden.simulatedDays > 1 ? "garden" : null;
       // Why the drain read nothing, when something held it back — on the run row, never silent (audit C1).
       let coachReadsSkipped: string | null = null;
@@ -453,10 +454,24 @@ export async function hourly(db: Db, env: Env): Promise<void> {
           console.error(`pace heal failed: ${e instanceof Error ? e.message : "unknown"}`),
         );
         await stillOurs();
-        // Cloud-direct writes (spec §4): queued watch updates execute here when a cloud connection exists — the
-        // Mac is no longer in the loop. One a run; each route that queues one drains it in its own request.
-        const jobs = await executeCloudJobs(db, env, userId, prefs, { cap: 1 }).catch(() => null);
-        if (jobs && jobs.executed > 0) heavyStep = "coros_write";
+        // THE WATCH MIRRORS THE PLAN (§3.7, A5): the sweep OR one COROS write, never both — a push measures ≈31–34 of
+        // the invocation's 45, the sweep's record ≤15. The sweep's turn when a session is owed or a window session's
+        // copy is not current (one read): it makes ONE record and queues its push, which a later run (or the app's
+        // drain) executes. A sweep that finds nothing to make spends no turn, so a session it leaves (a push backing off,
+        // one too long for the watch) never holds the writes up. A throw from the sweep may have spent the room: no write.
+        const today = todayInZone(prefs.timezone);
+        const mirrored = await mirrorTakesTurn(db, env, userId, prefs, { today, now: nowInstant(), prefs }).catch((e: unknown) => {
+          console.error(`mirror sweep failed: ${e instanceof Error ? e.message : "unknown"}`);
+          return true;
+        });
+        if (mirrored) heavyStep = "mirror";
+        else {
+          await stillOurs();
+          // Cloud-direct writes (spec §4): queued watch updates execute here when a cloud connection exists — the
+          // Mac is no longer in the loop. One a run; each route that queues one drains it in its own request.
+          const jobs = await executeCloudJobs(db, env, userId, prefs, { cap: 1 }).catch(() => null);
+          if (jobs && jobs.executed > 0) heavyStep = "coros_write";
+        }
       }
       if (coachDesignerEnabled(env)) {
         await stillOurs();

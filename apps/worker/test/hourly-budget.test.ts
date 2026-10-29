@@ -9,6 +9,11 @@
  *
  * Timings are printed, never asserted here: node runs this several times faster than workerd. The bounds the fixes
  * pin are counts, in their own suites.
+ *
+ * THE WATCH MIRRORS THE PLAN (§3.7, A5): the mirror's turn (`mirrorTakesTurn`: one read, then the sweep's one record)
+ * and the COROS write (`executeCloudJobs`, one job) share the run's one watch slot — a push drain measures ≈31–34 of an
+ * invocation's 45, the sweep's record ≤15: never both. The last test prints a run with the sweep as its heavy step and
+ * the run after it, with the drain; it asserts only that each ran alone.
  */
 import { performance } from "node:perf_hooks";
 import { afterEach, describe, expect, it, vi } from "vitest";
@@ -139,6 +144,10 @@ vi.mock("../src/services/coach-reads.js", async (orig) => {
     enqueueCoachReads: meter.wrap("enqueueCoachReads", real.enqueueCoachReads),
   };
 });
+vi.mock("../src/services/mirror.js", async (orig) => {
+  const real = await orig<typeof import("../src/services/mirror.js")>();
+  return { ...real, mirrorTakesTurn: meter.wrap("mirrorTakesTurn", real.mirrorTakesTurn) };
+});
 vi.mock("../src/services/coros-write-cloud.js", async (orig) => {
   const real = await orig<typeof import("../src/services/coros-write-cloud.js")>();
   return { ...real, executeCloudJobs: meter.wrap("executeCloudJobs", real.executeCloudJobs) };
@@ -159,7 +168,10 @@ vi.mock("../src/services/health-ingest.js", async (orig) => {
 
 import { hourly } from "../src/index.js";
 import { corosReadSweep } from "../src/services/coros-read.js";
+import { savePreferences } from "../src/services/calendar-sync.js";
+import { markMirrorOwed } from "../src/services/mirror.js";
 import { addDays, startOfIsoWeek, todayInZone } from "@rg/domain";
+import { calmDoc } from "./doc-workout-fixture.js";
 
 afterEach(() => {
   vi.unstubAllGlobals();
@@ -408,5 +420,65 @@ describe("hourly() per step on a realistic account", () => {
       ].join("\n\n"),
     );
     expect(runs.length).toBe(5);
+  });
+
+  it("prints the hourly with the mirror sweep as its heavy step, and the run after it with the drain — never both in one (A5)", { timeout: 120_000 }, async () => {
+    // A first account warms every path; the second is measured. The switch on, writes on, the garden caught up and
+    // nothing else queued: then a Studio workout added for two days ahead (owed to the mirror).
+    let sweepRun: Awaited<ReturnType<typeof measureHourly>> | null = null;
+    let drainRun: Awaited<ReturnType<typeof measureHourly>> | null = null;
+    const heavy: string[] = [];
+    for (const pass of ["cold", "warm"] as const) {
+      const db = hookedDb();
+      const acct = await seedRealisticAccount(db, { newActivities: false });
+      const env = { ...acct.env, WATCH_PUSH_ENABLED: "1" };
+      await savePreferences(db, acct.userId, { ...acct.prefs, corosWritesEnabled: true });
+      vi.stubGlobal("fetch", acct.fetchImpl);
+      meter.fetches = () => acct.fetches.coros + acct.fetches.llm;
+      const lastHeavy = async () => {
+        const [run] = await db.select().from(schema.syncRuns).where(eq(schema.syncRuns.userId, acct.userId)).orderBy(desc(schema.syncRuns.startedAt), desc(schema.syncRuns.id)).limit(1);
+        return (run?.stats as { heavyStep?: string | null } | null)?.heavyStep ?? null;
+      };
+      for (let i = 0; i < 6; i++) {
+        await hourly(db, env);
+        if ((await lastHeavy()) === null) break;
+      }
+      const today = todayInZone(acct.prefs.timezone);
+      const day = addDays(today, 2);
+      const id = `studio-${day}`;
+      const doc = calmDoc();
+      const now = new Date().toISOString();
+      await db.insert(schema.plannedWorkouts).values({
+        id, userId: acct.userId, planId: "studio", sourceWorkoutId: id, title: doc.title, category: "strength", sport: "strength",
+        originalPlanDate: day, lastVerifiedCorosDate: "", effectiveDate: day, effectiveTime: "18:00", sourceContentFingerprint: "studio",
+        calendarBlockDurationSeconds: 1800, fallbackEstimatedDurationSeconds: 1800, corosSyncState: "calendar_only",
+        completionState: "scheduled", origin: "studio", contentState: "outline", workoutDoc: JSON.stringify(doc), workoutDocRev: 1,
+        createdAt: now, updatedAt: now,
+      });
+      await markMirrorOwed(db, acct.userId, id, now);
+      const swept = await measureHourly(() => hourly(db, env));
+      heavy.push(`${pass}: ${await lastHeavy()}`);
+      const drained = await measureHourly(() => hourly(db, env));
+      heavy.push(`${pass}: ${await lastHeavy()}`);
+      if (pass === "warm") {
+        sweepRun = swept;
+        drainRun = drained;
+      }
+    }
+    console.log(
+      [
+        `heavy steps: ${heavy.join(", ")}`,
+        table("── hourly() with the mirror sweep as its heavy step (an owed Studio workout; warm) ──", sweepRun!.steps, sweepRun!.total),
+        table("── the hourly after it: the drain runs the push (warm) ──", drainRun!.steps, drainRun!.total),
+      ].join("\n\n"),
+    );
+    expect(heavy).toEqual(["cold: mirror", "cold: coros_write", "warm: mirror", "warm: coros_write"]);
+    const step = (m: typeof sweepRun, name: string) => m!.steps.find((x) => x.name === name);
+    // The sweep's run: its turn (one read, the record ≤ 15) and no COROS write; the drain's: one read, then the write.
+    expect(step(sweepRun, "executeCloudJobs")).toBeUndefined();
+    expect(step(sweepRun, "mirrorTakesTurn")!.statements).toBeLessThanOrEqual(16);
+    expect(sweepRun!.total.fetches).toBe(0);
+    expect(step(drainRun, "mirrorTakesTurn")!.statements).toBe(1);
+    expect(step(drainRun, "executeCloudJobs")!.fetches).toBeGreaterThan(0);
   });
 });
