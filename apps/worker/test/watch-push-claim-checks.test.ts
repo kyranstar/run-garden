@@ -64,6 +64,8 @@ beforeEach(async () => {
 afterEach(() => vi.useRealTimers());
 
 const ctx = () => ({ today: DAY, now: NOON, prefs });
+/** An instant `ms` after NOON (the fixture clock). */
+const after = (ms: number): string => new Date(Date.parse(NOON) + ms).toISOString();
 const writesOff = (): UserPreferences => ({ ...prefs, corosWritesEnabled: false });
 const lane = (p: UserPreferences = prefs) => executeCloudJobs(db, switchOn(), userId, p, { fetchImpl: server.fetchImpl });
 const jobOf = async (id: string) => (await db.select().from(corosWriteJobs).where(eq(corosWriteJobs.id, id)))[0];
@@ -166,7 +168,7 @@ describe("a day gone, or not provisional (L-2; the mirror A2)", () => {
     const { workoutId, buildId } = await mirrored(DAY);
     await db.update(sessionBuilds).set({ workoutDoc: JSON.stringify(landingsDoc({ alternates: false })) }).where(eq(sessionBuilds.id, buildId));
     expect(await gatedAtClaim(db, userId, await rowOf(db, workoutId), buildId, DAY)).toBe(false);
-    await recordCheck(db, userId, { profileId: "tmj", value: 6, feelingOff: true }, { today: DAY, now: "2026-10-09T19:05:00.000Z" });
+    await recordCheck(db, userId, { profileId: "tmj", value: 6, feelingOff: true }, { today: DAY, now: after(5 * 60_000) });
     expect(await gatedAtClaim(db, userId, await rowOf(db, workoutId), buildId, DAY)).toBe(true);
     await supersededUnwritten(buildId, () => lane());
     const record = await buildOf(buildId);
@@ -178,7 +180,7 @@ describe("a day gone, or not provisional (L-2; the mirror A2)", () => {
   it("…and still calm at claim: today's provisional copy is written, as any push", async () => {
     const { workoutId, buildId } = await mirrored(DAY);
     await db.update(sessionBuilds).set({ workoutDoc: JSON.stringify(landingsDoc({ alternates: false })) }).where(eq(sessionBuilds.id, buildId));
-    await recordCheck(db, userId, { profileId: "tmj", value: 1, feelingOff: false }, { today: DAY, now: "2026-10-09T19:05:00.000Z" });
+    await recordCheck(db, userId, { profileId: "tmj", value: 1, feelingOff: false }, { today: DAY, now: after(5 * 60_000) });
     expect(await gatedAtClaim(db, userId, await rowOf(db, workoutId), buildId, DAY)).toBe(false);
     await lane();
     expect((await jobOf(`push:${buildId}`))!.status).toBe("verified");
@@ -188,12 +190,12 @@ describe("a day gone, or not provisional (L-2; the mirror A2)", () => {
     // A day ahead has no reading of its own (A2): today's flare says nothing about it, and the claim reads no check.
     // Today's copy, queued a moment later (before the check), is claimed second.
     const ahead = await mirrored(TOMORROW);
-    vi.setSystemTime(new Date("2026-10-09T19:01:00.000Z"));
+    vi.setSystemTime(new Date(after(60_000)));
     const today = await mirrored(DAY);
     for (const { buildId } of [ahead, today]) {
       await db.update(sessionBuilds).set({ workoutDoc: JSON.stringify(landingsDoc({ alternates: false })) }).where(eq(sessionBuilds.id, buildId));
     }
-    await recordCheck(db, userId, { profileId: "tmj", value: 6, feelingOff: true }, { today: DAY, now: "2026-10-09T19:05:00.000Z" });
+    await recordCheck(db, userId, { profileId: "tmj", value: 6, feelingOff: true }, { today: DAY, now: after(5 * 60_000) });
     const gateReads = (sql: string) => /from "(user_conditions|condition_checks)"/.test(sql);
     const one = () => executeCloudJobs(db, switchOn(), userId, prefs, { fetchImpl: server.fetchImpl, cap: 1 });
     statements = [];
