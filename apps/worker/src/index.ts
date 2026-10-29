@@ -438,6 +438,8 @@ export async function hourly(db: Db, env: Env): Promise<void> {
       let heavyStep: HourlyHeavyStep | null = garden.simulatedDays > 1 ? "garden" : null;
       // Why the drain read nothing, when something held it back — on the run row, never silent (audit C1).
       let coachReadsSkipped: string | null = null;
+      // A mirror sweep that threw, on the run row (never silent): its message's first 120 characters.
+      let mirrorError: string | null = null;
       if (heavyStep === null) {
         // Perception catch-up: drains reads a dropped waitUntil missed — one a run. The half-hourly sweep drains
         // the backlog after each ingest.
@@ -458,11 +460,14 @@ export async function hourly(db: Db, env: Env): Promise<void> {
         // the invocation's 45, the sweep's record ≤15. The sweep's turn when a session is owed or a window session's
         // copy is not current (one read): it makes ONE record and queues its push, which a later run (or the app's
         // drain) executes. A sweep that finds nothing to make spends no turn, so a session it leaves (a push backing off,
-        // one too long for the watch) never holds the writes up. A throw from the sweep may have spent the room: no write.
+        // one too long for the watch) never holds the writes up. A sweep that throws is recorded on the run row and
+        // spends no turn either: the write still runs (the cron's invocation has no 45 ceiling to protect), so a sweep
+        // failing every hour can never hold the watch's writes up.
         const today = todayInZone(prefs.timezone);
         const mirrored = await mirrorTakesTurn(db, env, userId, prefs, { today, now: nowInstant(), prefs }).catch((e: unknown) => {
-          console.error(`mirror sweep failed: ${e instanceof Error ? e.message : "unknown"}`);
-          return true;
+          mirrorError = (e instanceof Error ? `${e.name}: ${e.message}` : String(e)).slice(0, 120);
+          console.error(`mirror sweep failed: ${mirrorError}`);
+          return false;
         });
         if (mirrored) heavyStep = "mirror";
         else {
@@ -498,7 +503,13 @@ export async function hourly(db: Db, env: Env): Promise<void> {
         });
         if (docs && docs.scanned > 0) heavyStep = "doc_backfill";
       }
-      await finishSyncRun(db, runId, "ok", { ...rec, ...garden, heavyStep, ...(coachReadsSkipped ? { coachReadsSkipped } : {}) });
+      await finishSyncRun(db, runId, "ok", {
+        ...rec,
+        ...garden,
+        heavyStep,
+        ...(coachReadsSkipped ? { coachReadsSkipped } : {}),
+        ...(mirrorError ? { mirrorError } : {}),
+      });
     } catch (e) {
       if (e instanceof RestoreBegan) await dropSyncRun(db, runId);
       else await finishSyncRun(db, runId, "error");

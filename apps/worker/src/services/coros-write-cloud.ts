@@ -304,7 +304,10 @@ export async function executeCloudJobs(
   opts: {
     cap?: number;
     fetchImpl?: typeof fetch;
-    /** Claim only a program push or its unpush — the session sheet's targeted drain (ruling 3-R11). */
+    /**
+     * Claim only the watch's own jobs (`watchJobCondition`, pushes first): a program push (a provisional copy's too), a
+     * sent build's unpush, an adopted row's held copy's delete — the app's targeted drain (ruling 3-R11).
+     */
     watchOnly?: boolean;
     /** Claim only these kinds — the coach drain (`COACH_DRAIN_KINDS`, ruling 3-R11). */
     onlyKinds?: readonly string[];

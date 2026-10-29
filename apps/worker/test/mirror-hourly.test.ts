@@ -13,9 +13,11 @@ import { and, eq, lt } from "drizzle-orm";
 import { schema } from "@rg/database";
 import { addDays, workoutDocSchema, type UserPreferences, type WorkoutDoc } from "@rg/domain";
 import type { Db } from "../src/services/db.js";
+// The mirror before the rest (the watch-push mock below: session-build ↔ mirror ↔ watch-push is a cycle).
+import { markMirrorOwed, MIRROR_RETRY_BACKOFF_MS, MIRROR_WINDOW_DAYS, mirrorNeedsRun, mirrorSweep, queueProvisionalPush } from "../src/services/mirror.js";
 import { hourly } from "../src/index.js";
+import { savePreferences } from "../src/services/calendar-sync.js";
 import { advanceGarden, ensureGarden } from "../src/services/garden-sync.js";
-import { markMirrorOwed, MIRROR_WINDOW_DAYS, mirrorNeedsRun, mirrorSweep, queueProvisionalPush } from "../src/services/mirror.js";
 import { mockCorosServer, type MockCorosServer } from "../../../packages/coros/test/mock-coros-server.js";
 import { makeTestDb, makeTestUser } from "./helpers.js";
 import { calmDoc } from "./doc-workout-fixture.js";
@@ -28,6 +30,16 @@ vi.mock("../src/services/calendar-sync.js", async (importOriginal) => ({
   ...(await importOriginal<typeof import("../src/services/calendar-sync.js")>()),
   syncCalendar: vi.fn(async () => ({})),
 }));
+/** A session whose copy's push throws as it is written (as a failed D1 write would): the sweep's write phase propagates. */
+const broken = vi.hoisted(() => ({ write: null as string | null }));
+vi.mock("../src/services/watch-push.js", async (importOriginal) => {
+  const real = await importOriginal<typeof import("../src/services/watch-push.js")>();
+  const queuePushJob: typeof real.queuePushJob = async (...args) => {
+    if (broken.write !== null && args[2].id === broken.write) throw new Error("D1_ERROR: the write failed");
+    return real.queuePushJob(...args);
+  };
+  return { ...real, queuePushJob };
+});
 
 let db: Db;
 let userId: string;
@@ -41,6 +53,7 @@ let seq = 0;
 beforeEach(async () => {
   vi.useFakeTimers({ toFake: ["Date"] });
   vi.setSystemTime(new Date(NOON));
+  broken.write = null;
   statements = [];
   db = makeTestDb({ boundVariableCap: 100, onStatement: (s) => statements.push(s) });
   ({ userId, prefs } = await makeTestUser(db, { corosWritesEnabled: true }));
@@ -92,11 +105,12 @@ const statusesOf = async (id: string) => (await pushesOf(id)).map((j) => j.statu
 const reconcileRuns = () => db.select().from(syncRuns).where(and(eq(syncRuns.userId, userId), eq(syncRuns.kind, "reconcile")));
 
 /** One hourly invocation (the clock is pinned, so its run row is told apart by id): its run row's status and heavy step. */
-async function hourlyRun(env = switchOn()): Promise<{ status: string; heavyStep: string | null }> {
+async function hourlyRun(env = switchOn()): Promise<{ status: string; heavyStep: string | null; mirrorError: string | null }> {
   const seen = new Set((await reconcileRuns()).map((r) => r.id));
   await hourly(db, env);
   const run = (await reconcileRuns()).find((r) => !seen.has(r.id))!;
-  return { status: run.status, heavyStep: (run.stats as { heavyStep?: string | null } | null)?.heavyStep ?? null };
+  const stats = run.stats as { heavyStep?: string | null; mirrorError?: string } | null;
+  return { status: run.status, heavyStep: stats?.heavyStep ?? null, mirrorError: stats?.mirrorError ?? null };
 }
 
 /** One hourly invocation: its heavy step, the records it made, the COROS writes it sent. */
@@ -142,6 +156,19 @@ describe("mirrorNeedsRun — is there work for the sweep? (one read)", () => {
     expect(await mirrorNeedsRun(db, userId, DAY)).toBe(true);
     expect(await mirrorSweep(db, switchOn(), userId, prefs, ctx(), { cap: 1 })).toMatchObject({ queued: 0, attempted: 1, skipped: { too_long: 1 } });
     expect(await mirrorNeedsRun(db, userId, DAY)).toBe(false);
+  });
+
+  it("an error past its backoff ladder (given up for its revision and day): false — before then, true", async () => {
+    const id = await seedDocRow(addDays(DAY, 1));
+    const memory = (count: number) => ({ refused: "error", rev: 1, day: addDays(DAY, 1), message: "Error: x", at: NOON, count });
+    await db.insert(schema.syncIntents).values({
+      id: `mirror-${id}`, userId, targetKind: "workout", targetId: id, kind: "mirror", payload: memory(MIRROR_RETRY_BACKOFF_MS.length),
+      source: "mirror", createdAt: NOON, resolvedAt: NOON,
+    });
+    expect(await mirrorNeedsRun(db, userId, DAY), "still on the ladder: the sweep tries it again after its backoff").toBe(true);
+    await db.update(schema.syncIntents).set({ payload: memory(MIRROR_RETRY_BACKOFF_MS.length + 1) }).where(eq(schema.syncIntents.id, `mirror-${id}`));
+    expect(await mirrorNeedsRun(db, userId, DAY), "given up").toBe(false);
+    expect(await mirrorSweep(db, switchOn(), userId, prefs, ctx(), { cap: 1 })).toMatchObject({ attempted: 0, skipped: { gave_up: 1 } });
   });
 
   it("a verified copy whose row lost its address (the copy went missing on the watch): true", async () => {
@@ -231,10 +258,31 @@ describe("the hourly runs the sweep OR the drain — never two watch jobs in one
     expect(await recordsOf(long)).toHaveLength(0);
   });
 
-  it("writes off, or the switch off: no mirror read at all — the drain runs as before", async () => {
+  it("a sweep that throws while writing: the hourly still drains one job, and records the error on the run row", async () => {
+    const b = await seedDocRow(addDays(DAY, 3));
+    await queued(b);
+    const a = await seedDocRow(addDays(DAY, 2));
+    await markMirrorOwed(db, userId, a, NOON);
+    broken.write = a;
+
+    const run = await hourlyRun();
+    expect(run).toEqual({ status: "ok", heavyStep: "coros_write", mirrorError: "Error: D1_ERROR: the write failed" });
+    expect(await statusesOf(b)).toEqual(["verified"]);
+    expect(await statusesOf(a)).toEqual([]);
+
+    // Healed: the next run makes A's copy (its mark still open — a write-phase throw remembers nothing).
+    broken.write = null;
+    expect(await hour()).toEqual({ heavyStep: "mirror", records: 1, writes: 0 });
+    expect(await statusesOf(a)).toEqual(["queued"]);
+  });
+
+  it("the switch off, or writes off: no mirror turn — the drain runs as before", async () => {
     const a = await seedDocRow(addDays(DAY, 2));
     await markMirrorOwed(db, userId, a, NOON);
     expect((await hourlyRun(switchOn({ WATCH_PUSH_ENABLED: undefined }))).heavyStep).not.toBe("mirror");
+    expect(await recordsOf(a)).toHaveLength(0);
+    await savePreferences(db, userId, { ...prefs, corosWritesEnabled: false });
+    expect((await hourlyRun()).heavyStep).not.toBe("mirror");
     expect(await recordsOf(a)).toHaveLength(0);
   });
 });

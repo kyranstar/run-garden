@@ -15,12 +15,13 @@ import { schema } from "@rg/database";
 import { addDays, workoutDocSchema, type UserPreferences, type WorkoutDoc } from "@rg/domain";
 import type { Env } from "../src/env.js";
 import type { Db } from "../src/services/db.js";
+// The mirror before the rest (the watch-push mock below: session-build ↔ mirror ↔ watch-push is a cycle).
+import { markMirrorOwed, queueProvisionalPush } from "../src/services/mirror.js";
 import { sessionRoutes } from "../src/routes/sessions.js";
 import { createSession, SESSION_COOKIE } from "../src/auth/sessions.js";
 import { executeCloudJobs } from "../src/services/coros-write-cloud.js";
 import { buildSession } from "../src/services/session-build.js";
 import { sendToWatch } from "../src/services/watch-push.js";
-import { markMirrorOwed, queueProvisionalPush } from "../src/services/mirror.js";
 import { mockCorosServer, type MockCorosServer } from "../../../packages/coros/test/mock-coros-server.js";
 import { makeTestDb, makeTestUser, mountRoutes } from "./helpers.js";
 import { calmDoc } from "./doc-workout-fixture.js";
@@ -33,6 +34,16 @@ vi.mock("../src/services/calendar-sync.js", async (importOriginal) => ({
   ...(await importOriginal<typeof import("../src/services/calendar-sync.js")>()),
   syncCalendar: vi.fn(async () => ({})),
 }));
+/** A session whose copy's push throws as it is written (as a failed D1 write would): the sweep's write phase propagates. */
+const broken = vi.hoisted(() => ({ write: null as string | null }));
+vi.mock("../src/services/watch-push.js", async (importOriginal) => {
+  const real = await importOriginal<typeof import("../src/services/watch-push.js")>();
+  const queuePushJob: typeof real.queuePushJob = async (...args) => {
+    if (broken.write !== null && args[2].id === broken.write) throw new Error("D1_ERROR: the write failed");
+    return real.queuePushJob(...args);
+  };
+  return { ...real, queuePushJob };
+});
 
 /** The ceiling: D1 statements + COROS fetches in one invocation (ruling 3-R11). */
 const BUDGET = 45;
@@ -48,6 +59,7 @@ let fetches = 0;
 beforeEach(async () => {
   vi.useFakeTimers({ toFake: ["Date"] });
   vi.setSystemTime(new Date(NOON));
+  broken.write = null;
   db = makeTestDb({ boundVariableCap: 100, onStatement: () => (statements += 1) });
   ({ userId, prefs } = await makeTestUser(db, { corosWritesEnabled: true }));
   await seedTmj(db, userId);
@@ -390,6 +402,23 @@ describe("POST /api/sessions/watch/drain — one watch job a request, and what i
     expect(await m.res.json()).toEqual({ ran: true, pending: 0 });
     expect((await pushesOf(next)).map((j) => j.status)).toEqual(["verified"]);
     expect((await pushesOf(failing)).map((j) => j.status)).toEqual(["failed"]);
+    expect(m.total).toBeLessThanOrEqual(BUDGET);
+  });
+
+  it("a sweep that throws while writing: 200 {ran: false} — nothing drained in that request (its room may be spent)", async () => {
+    const waiting = await seedDocRow(addDays(DAY, 3));
+    await queueCopy(waiting);
+    const owed = await seedDocRow(addDays(DAY, 2));
+    await markMirrorOwed(db, userId, owed, NOON);
+    broken.write = owed;
+
+    const m = await invoke("POST", "watch/drain", {});
+    report("drain, the sweep throwing at its last write (nothing drained)", m);
+    expect(m.res.status).toBe(200);
+    expect(await m.res.json()).toEqual({ ran: false, pending: 1 });
+    expect(m.fetches).toBe(0);
+    expect((await pushesOf(waiting)).map((j) => j.status)).toEqual(["queued"]);
+    expect(await pushesOf(owed)).toEqual([]);
     expect(m.total).toBeLessThanOrEqual(BUDGET);
   });
 

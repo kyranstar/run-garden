@@ -899,11 +899,11 @@ function inWindowCondition(today: string, horizon: string): SQL {
  * mark (on a row the sweep reads: the mark of a row gone is never its), or a window document workout
  * (`inWindowCondition`, not under way or done, with a revision) WITH NO CURRENT COPY — `currentCopy` in SQL: no push of
  * its revision (or none said) that is on its way for its day, or verified with the row holding a COROS address on its
- * day — and NOT REMEMBERED refused for its revision and day (too long, not a document, today's check answered; a
- * remembered error waits out its backoff in the sweep, and is not read here).
+ * day — and NOT REMEMBERED refused for its revision and day (too long, not a document, today's check answered, an error
+ * past its backoff ladder; an error still on the ladder waits out its backoff in the sweep, and is not read here).
  *
  * Never "no" when the sweep would make a copy (every condition here is one the sweep's verdict holds too), but "yes"
- * for some sessions it will leave — a failed push waiting out its backoff, one it gave up on: the sweep then attempts
+ * for some sessions it will leave — a failed push waiting out its backoff or given up on: the sweep then attempts
  * nothing, and its caller drains a job as before (`MirrorSweepResult.attempted`). The switch and the writes are the
  * caller's to check first.
  */
@@ -922,8 +922,10 @@ export async function mirrorNeedsRun(db: Db, userId: string, today: string): Pro
     and (${field("$.fromDocRev")} is null or ${field("$.fromDocRev")} = ${pw.workoutDocRev})
     and ((${j.status} in (${sql.join(IN_FLIGHT.map((x) => sql`${x}`), sql`, `)}) and ${field("$.happenDay")} = ${pw.effectiveDate})
       or (${j.status} = 'verified' and ${address} and ${pw.lastVerifiedCorosDate} = ${pw.effectiveDate})))`;
-  const remembered = sql`(${si.id} is not null and ${mark("$.refused")} in ('too_long', 'not_document', 'today_checked')
-    and ${mark("$.rev")} = ${pw.workoutDocRev} and ${mark("$.day")} = ${pw.effectiveDate})`;
+  // Refused for good for this revision and day — or an error past its backoff ladder (`gave_up`, `verdictOf`).
+  const remembered = sql`(${si.id} is not null and ${mark("$.rev")} = ${pw.workoutDocRev} and ${mark("$.day")} = ${pw.effectiveDate}
+    and (${mark("$.refused")} in ('too_long', 'not_document', 'today_checked')
+      or (${mark("$.refused")} = 'error' and coalesce(${mark("$.count")}, 1) > ${MIRROR_RETRY_BACKOFF_MS.length})))`;
   const uncovered = and(
     inWindowCondition(today, addDays(today, MIRROR_WINDOW_DAYS)),
     isNotNull(pw.workoutDocRev),

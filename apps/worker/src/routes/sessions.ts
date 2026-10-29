@@ -408,7 +408,8 @@ sessionRoutes.get("/:workoutId/watch-review", async (c) => {
  * record and queues its push); when it had nothing to make, the oldest of this user's queued watch jobs (a push — a
  * provisional copy's too — a sent build's unpush, an adopted row's held copy's delete) runs. Coach work and older jobs
  * of other kinds are left to the lanes that run them. The app calls it after every change that queues watch work and
- * again while `pending` (the account's queued watch jobs, one COUNT) is above 0 (`drainWatchUntilIdle`). 404 while the
+ * again while `pending` (the account's queued watch jobs, one COUNT) is above 0 (`drainWatchUntilIdle`). A sweep that
+ * throws is logged and answered `{ran: false}` with nothing drained (the request's room may be spent). 404 while the
  * switch is off. `{ran, pending}`.
  */
 sessionRoutes.post("/watch/drain", async (c) => {
@@ -417,7 +418,15 @@ sessionRoutes.post("/watch/drain", async (c) => {
   const db = c.get("db");
   const userId = c.get("userId");
   const prefs = await loadPreferences(db, userId);
-  let ran = await mirrorTakesTurn(db, c.env, userId, prefs, { today: todayInZone(prefs.timezone), now: nowInstant(), prefs });
+  let ran: boolean;
+  try {
+    ran = await mirrorTakesTurn(db, c.env, userId, prefs, { today: todayInZone(prefs.timezone), now: nowInstant(), prefs });
+  } catch (e) {
+    // The sweep threw — perhaps at its last write, with most of the room spent: no job runs in this request (a push
+    // drain on top would break 45). Nothing ran; the client stops its chain, and the hourly drains (and records it).
+    console.error(`watch drain: the mirror sweep failed — ${e instanceof Error ? e.message : "unknown"}`);
+    return c.json({ ran: false, pending: await queuedWatchJobs(db, userId) });
+  }
   if (!ran) ran = (await executeCloudJobs(db, c.env, userId, prefs, { cap: 1, watchOnly: true })).executed > 0;
   return c.json({ ran, pending: await queuedWatchJobs(db, userId) });
 });
