@@ -654,10 +654,12 @@ export async function executeCloudJobs(
           !prefs.corosWritesEnabled ||
           // Nor what the day now keeps out of a document workout: Send judged its build with the reading of the tap, and
           // a reading that has risen since closes a move of it, as Retry and Start would judge it (`gatedAtClaim`; an
-          // engine build has no such gate). The slot then builds again with the day's swap. Never a provisional copy:
-          // it is the document as the preview shows it, never gated, and a day ahead has no reading to judge it by (A2)
-          // — the day's own build replaces it once that day's check is answered.
-          (!spec.provisional && (await gatedAtClaim(db, userId, row, spec.buildId, spec.happenDay)))
+          // engine build has no such gate). The slot then builds again with the day's swap. A provisional copy for a day
+          // ahead never: it is the document as the preview shows it, and a day ahead has no reading to judge it by (A2) —
+          // no read is spent on it. A provisional copy of TODAY is judged as Retry judges it (final review Minor 3): one
+          // queued before the check and claimed after a reading that closes one of its moves is superseded, and the
+          // day's own gated build goes instead (the sweep remembers today's check, `today_checked`).
+          ((!spec.provisional || spec.happenDay === today) && (await gatedAtClaim(db, userId, row, spec.buildId, spec.happenDay)))
         ) {
           const now = nowInstant();
           await db.update(corosWriteJobs).set({ status: "superseded", updatedAt: now }).where(eq(corosWriteJobs.id, job.id));

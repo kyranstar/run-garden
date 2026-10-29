@@ -397,6 +397,22 @@ describe("POST /api/sessions/watch/drain — one watch job a request, and what i
     expect((await jobOf("coach-2-push"))!.status).toBe("queued");
   });
 
+  it("today's provisional push: the claim re-gates it with the day's reading (final review Minor 3) — within the budget; a day ahead reads no check", async () => {
+    const today = await seedDocRow(DAY);
+    await queueCopy(today);
+    const m = await invoke("POST", "watch/drain", {});
+    report("drain, today's provisional push (the claim's gate read)", m);
+    expect(await m.res.json()).toEqual({ ran: true, pending: 0 });
+    expect((await pushesOf(today)).map((j) => j.status)).toEqual(["verified"]);
+    expect(m.total).toBeLessThanOrEqual(BUDGET);
+    const ahead = await seedDocRow(addDays(DAY, 2));
+    await queueCopy(ahead);
+    const a = await invoke("POST", "watch/drain", {});
+    report("drain, a day-ahead provisional push (no gate read)", a);
+    expect((await pushesOf(ahead)).map((j) => j.status)).toEqual(["verified"]);
+    expect(a.d1).toBeLessThan(m.d1);
+  });
+
   it("two mirror jobs never run in one request: an owed session's record (the sweep's one step) is the request's job — the queued push waits for the next", async () => {
     const queuedFirst = await seedDocRow(addDays(DAY, 3));
     await queueCopy(queuedFirst);

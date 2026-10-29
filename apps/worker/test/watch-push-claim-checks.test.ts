@@ -8,7 +8,9 @@
  * started slot of today still pushes.
  *
  * A provisional copy (the watch mirrors the plan §3.2, builder check A2) goes ahead of its day: its push is superseded
- * only once its day is gone, and never re-gated by the day's reading (a preview was never gated). A session kept off
+ * only once its day is gone. A day ahead has no reading to judge it by, so it is never re-gated; a copy of TODAY is
+ * re-gated by the day's reading as Retry re-gates it (final review Minor 3): a reading that closed one of its moves
+ * since it was queued supersedes it, and the day's own build goes instead. A session kept off
  * the watch (`watch_off`, §3.6) supersedes any push at claim — a provisional record's marker cleared, a day's build
  * unlocked.
  *
@@ -45,11 +47,13 @@ let userId: string;
 let prefs: UserPreferences;
 let programId: string;
 let server: MockCorosServer;
+let statements: string[] = [];
 
 beforeEach(async () => {
   vi.useFakeTimers({ toFake: ["Date"] });
   vi.setSystemTime(new Date(NOON));
-  db = makeTestDb({ boundVariableCap: 100 });
+  statements = [];
+  db = makeTestDb({ boundVariableCap: 100, onStatement: (s) => statements.push(s) });
   ({ userId, prefs } = await makeTestUser(db, { corosWritesEnabled: true }));
   await seedTmj(db, userId);
   await seedCatalog(db);
@@ -154,19 +158,53 @@ describe("a day gone, or not provisional (L-2; the mirror A2)", () => {
     expect(await sentBuildIdOf(db, workoutId)).toBeNull();
   });
 
-  it("gatedAtClaim is not consulted for a provisional push: a preview was never gated", async () => {
+  it("a provisional push of TODAY is re-gated at claim, as Retry is: queued before the check, claimed after a reading that closes a move — superseded, nothing written, the record's marker cleared", async () => {
     // Today's session, its copy queued before the check: the record's snapshot holds a jump with nothing to stand in for
-    // it, and the jaw flares before the lane runs. Judged as a day's build is (`gatedAtClaim`), the jump is closed — a
-    // day's build would be superseded here. (A flare, not a check left unanswered: since 2026-10-23 an unanswered check
-    // closes no jump, so it gates nothing either way.)
+    // it, and the jaw flares before the lane runs. Judged as Retry judges it (`gatedAtClaim`), the jump is closed: the
+    // copy waits for the day's build (the sweep remembers today's check). (A flare, not a check left unanswered: since
+    // 2026-10-23 an unanswered check closes no jump, so a copy queued and claimed before the check still goes.)
     const { workoutId, buildId } = await mirrored(DAY);
     await db.update(sessionBuilds).set({ workoutDoc: JSON.stringify(landingsDoc({ alternates: false })) }).where(eq(sessionBuilds.id, buildId));
     expect(await gatedAtClaim(db, userId, await rowOf(db, workoutId), buildId, DAY)).toBe(false);
     await recordCheck(db, userId, { profileId: "tmj", value: 6, feelingOff: true }, { today: DAY, now: "2026-10-09T19:05:00.000Z" });
     expect(await gatedAtClaim(db, userId, await rowOf(db, workoutId), buildId, DAY)).toBe(true);
+    await supersededUnwritten(buildId, () => lane());
+    const record = await buildOf(buildId);
+    expect(record.lockedAt).toBeNull();
+    expect(isProvisionalBuild(record)).toBe(false);
+    expect(await sentBuildIdOf(db, workoutId)).toBeNull();
+  });
+
+  it("…and still calm at claim: today's provisional copy is written, as any push", async () => {
+    const { workoutId, buildId } = await mirrored(DAY);
+    await db.update(sessionBuilds).set({ workoutDoc: JSON.stringify(landingsDoc({ alternates: false })) }).where(eq(sessionBuilds.id, buildId));
+    await recordCheck(db, userId, { profileId: "tmj", value: 1, feelingOff: false }, { today: DAY, now: "2026-10-09T19:05:00.000Z" });
+    expect(await gatedAtClaim(db, userId, await rowOf(db, workoutId), buildId, DAY)).toBe(false);
     await lane();
     expect((await jobOf(`push:${buildId}`))!.status).toBe("verified");
-    expect(copiesNamed(programSessionPushJobSchema.parse((await jobOf(`push:${buildId}`))!.payload).name)).toBe(1);
+  });
+
+  it("a provisional push for a day ahead is never re-gated: no reading is read at claim (no extra statement), whatever today's says", async () => {
+    // A day ahead has no reading of its own (A2): today's flare says nothing about it, and the claim reads no check.
+    // Today's copy, queued a moment later (before the check), is claimed second.
+    const ahead = await mirrored(TOMORROW);
+    vi.setSystemTime(new Date("2026-10-09T19:01:00.000Z"));
+    const today = await mirrored(DAY);
+    for (const { buildId } of [ahead, today]) {
+      await db.update(sessionBuilds).set({ workoutDoc: JSON.stringify(landingsDoc({ alternates: false })) }).where(eq(sessionBuilds.id, buildId));
+    }
+    await recordCheck(db, userId, { profileId: "tmj", value: 6, feelingOff: true }, { today: DAY, now: "2026-10-09T19:05:00.000Z" });
+    const gateReads = (sql: string) => /from "(user_conditions|condition_checks)"/.test(sql);
+    const one = () => executeCloudJobs(db, switchOn(), userId, prefs, { fetchImpl: server.fetchImpl, cap: 1 });
+    statements = [];
+    await one();
+    expect((await jobOf(`push:${ahead.buildId}`))!.status).toBe("verified");
+    expect(statements.filter(gateReads)).toEqual([]);
+    // Today's, by contrast, reads the day's profiles and checks at claim (the gate) — and the flare closes it.
+    statements = [];
+    await one();
+    expect((await jobOf(`push:${today.buildId}`))!.status).toBe("superseded");
+    expect(statements.filter(gateReads).length).toBeGreaterThan(0);
   });
 });
 
