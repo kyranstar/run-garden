@@ -65,6 +65,7 @@ import {
   pushOfRowNow,
   requeuesLeft,
   rowRefusal,
+  STARTED_AT_ONCE,
   type MirrorMemory,
   type MirrorRow as RulesRow,
 } from "./mirror-rules.js";
@@ -130,7 +131,10 @@ export type MirrorSkip =
   // ── On the day (`mirrorOnDayBuild`, `queueReplacement` of a day's build) ──
   /** A day's build of a row whose day is ahead. */
   | "not_today"
-  /** A session the mirror does not hold on its day: not the app's, a run, a rest day, a race, or started at once (M5). */
+  /**
+   * A session the mirror does not hold: on its day, not the app's, a run, a rest day or a race; any day, a workout
+   * started at once (M5: Start now, played offline — `rowRefusal` refuses its provisional copy too).
+   */
   | "not_mirrored"
   /** Not the row's day build (a preview, a provisional record, another day's, another row's). */
   | "not_day_build"
@@ -1094,8 +1098,8 @@ export async function mirrorTakesTurn(db: Db, env: Env, userId: string, prefs: B
 
 /**
  * `rowRefusal`'s rules, as far as SQL says them, on `planned_workouts`: a document workout (studio, template) still to
- * run in the window (today … `horizon`), not kept off, not a run, a rest day or a race. The sweep reads these rows (and
- * the owed ones); `mirrorNeedsRun` asks the same of them.
+ * run in the window (today … `horizon`), not kept off, not a run, a rest day or a race, not started at once (M5: Start
+ * now, played offline). The sweep reads these rows (and the owed ones); `mirrorNeedsRun` asks the same of them.
  */
 function inWindowCondition(today: string, horizon: string): SQL {
   const pw = plannedWorkouts;
@@ -1109,6 +1113,7 @@ function inWindowCondition(today: string, horizon: string): SQL {
     lte(pw.effectiveDate, horizon),
     sql`coalesce(${pw.sport}, '') <> 'run'`,
     sql`coalesce(${pw.category}, '') not in ('rest', 'race')`,
+    notInArray(pw.calendarSyncState, [...STARTED_AT_ONCE]),
   )!;
 }
 

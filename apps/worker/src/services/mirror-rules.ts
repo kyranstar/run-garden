@@ -110,8 +110,9 @@ export type MirrorRowRefusal =
 /** The ctx the rules read: the athlete's writes and today. */
 type RuleCtx = Pick<BuildCtx, "today"> & { prefs: Pick<BuildCtx["prefs"], "corosWritesEnabled"> };
 
-// Spelled out (doc-workouts.ts imports the mirror's importer): a workout started at once — Start now, played offline.
-const STARTED_AT_ONCE: readonly string[] = ["app_only", "app_only_offline"];
+// Spelled out (doc-workouts.ts imports the mirror's importer): a workout started at once — Start now, played offline
+// (`calendar_sync_state`, doc-workouts.ts `STARTED_AT_ONCE_STATES`). The sweep's SQL reads it too (mirror.ts).
+export const STARTED_AT_ONCE: readonly string[] = ["app_only", "app_only_offline"];
 
 /**
  * A session of a kind the mirror holds (§3.1): the app's own (`appAuthoredRow`: a programme's slot, an on-demand session,
@@ -128,7 +129,9 @@ const resolvedRow = (row: RuleRow): boolean =>
 /**
  * A PROVISIONAL COPY'S refusals (§3.2): the switch, the writes, kept off, not a document workout (a run is never one —
  * the Studio refuses it — nor a rest day or a race; a designed run is the coach lane's, origin null, and mirrors there),
- * resolved, a day gone, beyond the window. (A read without the document is judged by its revision.)
+ * a workout started at once (`not_mirrored`, M5: Start now, played offline — it is played on the phone, even when the
+ * app closed before Start), resolved, a day gone, beyond the window. (A read without the document is judged by its
+ * revision.)
  */
 export function rowRefusal(row: RuleRow, env: Env, ctx: RuleCtx): MirrorRowRefusal | null {
   if (!watchPushEnabled(env)) return "switch_off";
@@ -137,6 +140,7 @@ export function rowRefusal(row: RuleRow, env: Env, ctx: RuleCtx): MirrorRowRefus
   if (!docOriginRow(row) || row.workoutDoc === null || row.workoutDocRev === null || row.sport === "run" || row.category === "rest" || row.category === "race") {
     return "not_document";
   }
+  if (STARTED_AT_ONCE.includes(row.calendarSyncState)) return "not_mirrored";
   if (resolvedRow(row)) return "resolved";
   if (row.effectiveDate < ctx.today) return "past";
   if (row.effectiveDate > addDays(ctx.today, MIRROR_WINDOW_DAYS)) return "beyond_window";

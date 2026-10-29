@@ -56,7 +56,7 @@ import { corosKeyOf } from "./coros-exercise-map.js";
 import { freeStamp, STAMP_SEPARATOR, stampName, takenStampsOn } from "./coros-stamp.js";
 import { adoptedCopyUnpush, enqueueUnpushIfOurs } from "./plan-mutations.js";
 import { markMirrorOwed, mirrorIntentId, resolveMirrorOwed } from "./mirror-owed.js";
-import { dayRowRefusal, errorsGaveUp, memoryOf, pushOfRowNow, requeuesLeft, rowRefusal, type MirrorMemory } from "./mirror-rules.js";
+import { dayRowRefusal, errorsGaveUp, memoryOf, pushOfRowNow, requeuesLeft, rowRefusal, STARTED_AT_ONCE, type MirrorMemory } from "./mirror-rules.js";
 import { WATCH_JOB_UNDERWAY, watchJobCondition } from "./watch-jobs.js";
 import { exerciseNameMap } from "./exercise-catalog.js";
 import { dayValidateCtx, snapshotErrors } from "./doc-build.js";
@@ -670,7 +670,8 @@ const unavailable = (reason: WatchUnavailable): WatchState => (reason === "gated
  *     (removed in COROS): `updating` for a document workout the mirror holds (it puts the copy back, §3.8), else
  *     `off_watch`.
  *     Nothing sent, but the shown build's copy left on the watch (`copyLeftOnWatch`): as its verified push;
- *  4. nothing on the watch, nothing on its way: Send's own refusal where one stands (`unavailable` with the reason; a move
+ *  4. nothing on the watch, nothing on its way: a workout started at once (M5, never mirrored) → `ready` ("Not on your
+ *     watch"); else Send's own refusal where one stands (`unavailable` with the reason; a move
  *     the reading keeps out: `closed_by_check`) — except what a provisional copy does not wait on (its day, the day's
  *     build, the day's check: `OWED_ANYWAY`, M1), which is owed (`updating`) unless the copy would not fit the watch, or
  *     the sweep's error ladder ran out making it (`failed`, not retrying; one read of its memory) —
@@ -713,6 +714,9 @@ export async function watchStateOf(
   } else if (session.build && (await copyLeftOnWatch(db, session.build.buildId))) {
     return onTheWatch(row, session, today, provisional);
   }
+  // A workout started at once (Start now, played offline: M5) is played on the phone and never mirrored: nothing will
+  // put it on, so it is said plainly ("Not on your watch") — never as a wait for its day, its build or its check.
+  if (STARTED_AT_ONCE.includes(row.calendarSyncState)) return { state: "ready" };
   const reason = await unavailableReason(db, userId, row, session, prefs, today);
   // A document workout the mirror puts on as a provisional copy waits for no day, no day's build and no check (M1: with
   // no answer yet, the provisional copy goes): it is owed — unless the copy itself would not fit, as the shown build

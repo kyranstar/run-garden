@@ -18,7 +18,7 @@ import { executeCloudJobs } from "../src/services/coros-write-cloud.js";
 import { emitPendingWork } from "../src/services/jobs.js";
 import { enqueueUnpushIfOurs } from "../src/services/plan-mutations.js";
 import { recordIntent } from "../src/services/sync-intents.js";
-import { buildSession, isProvisionalBuild, sentBuildIdOf } from "../src/services/session-build.js";
+import { buildSession, isProvisionalBuild, loadSession, sentBuildIdOf } from "../src/services/session-build.js";
 import {
   currentCopy,
   markMirrorOwed,
@@ -30,7 +30,7 @@ import {
   queueReplacement,
   type PushRow,
 } from "../src/services/mirror.js";
-import { keepOffWatch } from "../src/services/watch-push.js";
+import { keepOffWatch, watchStateOf } from "../src/services/watch-push.js";
 import { mockCorosServer, type MockCorosServer } from "../../../packages/coros/test/mock-coros-server.js";
 import { isWrite, makeTestDb, makeTestUser } from "./helpers.js";
 import { calmDoc, landingsDoc } from "./doc-workout-fixture.js";
@@ -417,6 +417,29 @@ describe("mirrorSweep", () => {
       expect(await recordsOf(id)).toHaveLength(0);
       expect(await jobsOf(id)).toHaveLength(0);
     }
+  });
+
+  it("a workout started at once (Start now, played offline: M5) is never given a provisional copy — abandoned before Start, owed or not", async () => {
+    const startNow = await seedDocRow(DAY, { calendarSyncState: "app_only" });
+    const offline = await seedDocRow(DAY, { calendarSyncState: "app_only_offline" });
+    await markMirrorOwed(db, userId, offline, NOON);
+    expect(await mirrorNeedsRun(db, userId, DAY), "the window's never read it; the owed one is only settled").toBe(true);
+    const run = await mirrorSweep(db, switchOn(), userId, prefs, ctx(), { cap: 1 });
+    expect(run).toEqual({ queued: 0, attempted: 0, skipped: { not_mirrored: 1 } });
+    expect((await intentOf(offline))!.resolvedAt).toBe(NOON);
+    expect(await mirrorNeedsRun(db, userId, DAY)).toBe(false);
+    expect(await queue(startNow)).toBe("skipped:not_mirrored");
+    for (const id of [startNow, offline]) {
+      expect(await recordsOf(id)).toHaveLength(0);
+      expect(await jobsOf(id)).toHaveLength(0);
+    }
+    // The sheet says it plainly ("Not on your watch"): never "Updating your watch…", nor a wait for its check or build.
+    const sheet = async (checks?: Record<string, { pre: number; feelingOff: boolean }>) => {
+      const session = checks ? await buildSession(db, userId, startNow, { checks }, ctx()) : await loadSession(db, userId, startNow, DAY);
+      return watchStateOf(db, switchOn(), userId, await rowOf(db, startNow), session, prefs);
+    };
+    expect(await sheet()).toEqual({ state: "ready" });
+    expect(await sheet({ tmj: { pre: 2, feelingOff: false } })).toEqual({ state: "ready" });
   });
 
   it("an owed session goes before the window's sooner ones", async () => {
