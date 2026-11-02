@@ -17,6 +17,7 @@ import { fixtureModeEnabled, type Env } from "../env.js";
 import { llmBudgetStatus } from "./llm.js";
 import { noteGatewayOutcome } from "./ai-credits.js";
 import type { Db } from "./db.js";
+import { MODEL_PRICES, messagesCostMicros } from "./llm-messages.js";
 
 /**
  * Plan Studio's two-tier LLM service (plan-studio-design §3).
@@ -840,6 +841,12 @@ function findUnknownOriginId(plan: LiftingPlan, catalogIds: Set<string>): string
  * `llm_usage` row shape, byte-for-byte the same columns llm.ts writes
  * (no new discriminator column was added to the table — `kind` already
  * existed and just gained two new string values, see product.ts).
+ *
+ * Priced by the model that ran when the price table knows it (llm-messages.ts
+ * `MODEL_PRICES`; this surface sends no cache markers, so every input token is
+ * uncached): a tier's flat rate would keep billing a cheaper model at Opus 5's
+ * $5 / $25, and `/coach/spend` would never show the saving. The tier's rate
+ * stands only for a model the table doesn't list.
  */
 export async function recordUsage(
   db: Db,
@@ -852,7 +859,9 @@ export async function recordUsage(
 ): Promise<void> {
   const inputMicros = tier === "strong" ? STRONG_INPUT_MICROS_PER_TOKEN : EDIT_INPUT_MICROS_PER_TOKEN;
   const outputMicros = tier === "strong" ? STRONG_OUTPUT_MICROS_PER_TOKEN : EDIT_OUTPUT_MICROS_PER_TOKEN;
-  const costMicros = Math.ceil(chat.inputTokens * inputMicros + chat.outputTokens * outputMicros);
+  const costMicros = MODEL_PRICES[model]
+    ? messagesCostMicros(model, { inputTokens: chat.inputTokens, cacheReadTokens: 0, cacheWriteTokens: 0, outputTokens: chat.outputTokens })
+    : Math.ceil(chat.inputTokens * inputMicros + chat.outputTokens * outputMicros);
   await db.insert(llmUsage).values({
     id: newId(),
     userId,

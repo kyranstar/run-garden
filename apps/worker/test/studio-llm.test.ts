@@ -557,6 +557,18 @@ describe("generatePlan — success, prompts, and usage rows", () => {
     expect(rows[0]!.model).toBe("anthropic/claude-opus-5-custom");
   });
 
+  it("prices the usage row by the model that ran when the price table lists it, else at the tier's rate", async () => {
+    const listed = scriptedFetch([{ body: chatBody(VALID_GENERATED_PLAN) }]);
+    await generatePlan(makeEnv({ AI_STUDIO_MODEL_STRONG: "anthropic/claude-opus-5.5" }), db, userId, brief(), CATALOG, listed.fetchImpl);
+    const unlisted = scriptedFetch([{ body: chatBody(VALID_GENERATED_PLAN) }]);
+    await generatePlan(makeEnv({ AI_STUDIO_MODEL_STRONG: "anthropic/claude-opus-5-custom" }), db, userId, brief(), CATALOG, unlisted.fetchImpl);
+
+    const rows = await db.select().from(llmUsage);
+    const cost = (model: string) => rows.find((r) => r.model === model)!.costMicros;
+    expect(cost("anthropic/claude-opus-5.5")).toBe(100 * 4 + 200 * 20); // Opus 5.5: $4 / $20 per 1M
+    expect(cost("anthropic/claude-opus-5-custom")).toBe(100 * 5 + 200 * 25); // the strong tier's $5 / $25
+  });
+
   it("retries exactly once on invalid JSON, succeeding on the corrected second attempt", async () => {
     const env = makeEnv();
     const { fetchImpl, calls } = scriptedFetch([
