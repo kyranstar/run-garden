@@ -27,6 +27,17 @@ export function loopbackUrl(raw: string | undefined): string | null {
   }
 }
 
+/**
+ * The gateway's routing for a model, spread into every gateway request body (both surfaces parse
+ * `providerOptions.gateway.order`: free schema probe, 2026-11-02). A Claude model asks for Anthropic first: the
+ * account's own Anthropic key on the gateway (BYOK, funded by the Claude plan's monthly API credits) pays only for
+ * requests Anthropic serves, and a Claude model alone may be routed to Bedrock or Vertex instead. `order`, not `only`:
+ * those stay as fallbacks, on the gateway's credits, when Anthropic is down. Any other model: nothing.
+ */
+export function gatewayRouting(model: string): { providerOptions?: { gateway: { order: string[] } } } {
+  return model.startsWith("anthropic/") ? { providerOptions: { gateway: { order: ["anthropic"] } } } : {};
+}
+
 export function wakeGateway(env: Env): WakeGateway {
   if (fixtureModeEnabled(env)) {
     const recorded = loopbackUrl(env.FIXTURE_MODEL_URL);

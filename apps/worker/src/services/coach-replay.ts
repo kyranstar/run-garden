@@ -71,6 +71,7 @@ import { allTools } from "./design-tools/index.js";
 import { designProposalId } from "./design-tools/propose.js";
 import type { DesignTool } from "./design-tools/types.js";
 import { athleteText, clipProse } from "./design-prose.js";
+import { gatewayRouting } from "./gateway-route.js";
 import { devBudgetStatus, DEV_BUDGET, REPLAY_USAGE_KIND, RESERVATION_MARK } from "./llm.js";
 import {
   designModel,
@@ -397,7 +398,7 @@ export function replayRequest(state: RunState, cut: number, tools: DesignTool[],
   });
   // `open` ends with the messages' `]}`: the newest message goes on after the others.
   const head = `${open.slice(0, -2)}${sent.length > 1 ? "," : ""}`;
-  const close = JSON.stringify({ ...(settings.effort ? { output_config: { effort: settings.effort } } : {}), stream: true });
+  const close = JSON.stringify({ ...(settings.effort ? { output_config: { effort: settings.effort } } : {}), ...gatewayRouting(model), stream: true });
   return { model, maxTokens: settings.maxTokens, head, newest: sent.at(-1)!, tail: `],${close.slice(1)}`, headBytes: utf8Bytes(head) };
 }
 

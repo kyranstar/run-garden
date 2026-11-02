@@ -18,6 +18,7 @@ import { llmBudgetStatus } from "./llm.js";
 import { noteGatewayOutcome } from "./ai-credits.js";
 import type { Db } from "./db.js";
 import { MODEL_PRICES, messagesCostMicros } from "./llm-messages.js";
+import { gatewayRouting } from "./gateway-route.js";
 
 /**
  * Plan Studio's two-tier LLM service (plan-studio-design §3).
@@ -642,6 +643,7 @@ export async function chatCompletion(
           body: JSON.stringify({
             model,
             max_tokens: maxTokens,
+            ...gatewayRouting(model),
             messages,
             // Streaming is load-bearing, not cosmetic: a buffered completion
             // must finish inside the gateway's own response window, and a

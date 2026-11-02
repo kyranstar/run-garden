@@ -252,7 +252,7 @@ afterEach(() => {
 // ─────────────────────────────────────────────────────────────────────────
 
 describe("callMessages — the request", () => {
-  it("posts the Messages body: system blocks with their cache breakpoint, tools, messages, effort, streaming", async () => {
+  it("posts the Messages body: system blocks with their cache breakpoint, tools, messages, effort, Anthropic first, streaming", async () => {
     const { fetchImpl, calls } = scriptedFetch([{ json: messageJson() }]);
     const result = await callMessages(makeEnv(), request({ effort: "high" }), fetchImpl);
     expect(result.ok).toBe(true);
@@ -269,11 +269,19 @@ describe("callMessages — the request", () => {
       tools: TOOLS,
       messages: MESSAGES,
       output_config: { effort: "high" },
+      // The account's own Anthropic key (BYOK: the Claude plan's API credits) pays only when Anthropic serves the call.
+      providerOptions: { gateway: { order: ["anthropic"] } },
       stream: true,
     });
     // The breakpoint is where the caller put it — and only there.
     const system = call.body.system as SystemBlock[];
     expect(system.map((b) => b.cache_control ?? null)).toEqual([null, { type: "ephemeral" }, null]);
+  });
+
+  it("asks for Anthropic first only for a Claude model: any other model's body carries no routing", async () => {
+    const { fetchImpl, calls } = scriptedFetch([{ json: messageJson() }]);
+    await callMessages(makeEnv(), request({ model: "google/gemini-3.6-flash" }), fetchImpl);
+    expect(calls[0]!.body).not.toHaveProperty("providerOptions");
   });
 
   it("sends no output_config without an effort, and no tools key for an empty tool list", async () => {

@@ -4,6 +4,7 @@ import { fingerprint, newId, nowInstant, type UserPreferences } from "@rg/domain
 import type { Env } from "../env.js";
 import type { Db } from "./db.js";
 import { restoreInProgress } from "./account-state.js";
+import { gatewayRouting } from "./gateway-route.js";
 
 /**
  * The only place the app talks to an LLM. Routed through the Vercel AI Gateway
@@ -323,6 +324,7 @@ export async function generateWeeklyReview(
         body: JSON.stringify({
           model,
           max_tokens: MAX_OUTPUT_TOKENS,
+          ...gatewayRouting(model),
           messages: [
             { role: "system", content: system },
             {

@@ -14,6 +14,7 @@ import { llmUsage } from "@rg/database";
 import { keywordGoodFor, MUSIC_GOOD_FOR, newId, nowInstant, type MusicGoodFor } from "@rg/domain";
 import { fixtureModeEnabled, type Env } from "../env.js";
 import type { Db } from "./db.js";
+import { gatewayRouting } from "./gateway-route.js";
 import { llmBudgetStatus, WEEKLY_REVIEW_MODEL } from "./llm.js";
 
 export const MUSIC_TAGS_USAGE_KIND = "music_tags";
@@ -107,7 +108,7 @@ export async function tagPlaylists(
       method: "POST",
       signal: controller.signal,
       headers: { Authorization: `Bearer ${env.AI_GATEWAY_API_KEY}`, "Content-Type": "application/json" },
-      body: JSON.stringify({ model, max_tokens: MAX_OUTPUT_TOKENS, messages: musicTagsMessages(playlists) }),
+      body: JSON.stringify({ model, max_tokens: MAX_OUTPUT_TOKENS, ...gatewayRouting(model), messages: musicTagsMessages(playlists) }),
     });
     if (!res.ok) {
       console.warn(JSON.stringify({ level: "warn", msg: "music tags: ai gateway error", status: res.status, model }));

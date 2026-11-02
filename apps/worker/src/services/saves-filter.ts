@@ -6,7 +6,7 @@ import type { FilterVerdict, PostSubmit, SaveErrorCode, SavePostStatus } from "@
 import type { Env } from "../env.js";
 import type { Db } from "./db.js";
 import { messagesCostMicros } from "./llm-messages.js";
-import { wakeGateway } from "./gateway-route.js";
+import { gatewayRouting, wakeGateway } from "./gateway-route.js";
 import { IMPORT_KINDS, reserveImport, settleImport } from "./saves-budget.js";
 import { noteGatewayOutcome } from "./ai-credits.js";
 import { extractJson, RETRY_BACKOFF_MS, RETRYABLE_STATUSES } from "./studio-llm.js";
@@ -247,6 +247,7 @@ async function askModel(
   const body = JSON.stringify({
     model,
     max_tokens: FILTER_MAX_TOKENS,
+    ...gatewayRouting(model),
     messages: [
       { role: "system", content: system },
       {

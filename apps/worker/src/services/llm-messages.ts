@@ -1,6 +1,6 @@
 import { fixtureModeEnabled, type Env } from "../env.js";
 import { OUT_OF_CREDITS_REASON } from "./ai-credits.js";
-import { wakeGateway } from "./gateway-route.js";
+import { gatewayRouting, wakeGateway } from "./gateway-route.js";
 
 /**
  * THE COACH DESIGNER'S MODEL CLIENT — the AI gateway's native Messages endpoint (Stage 3 spec §2).
@@ -298,6 +298,7 @@ export async function callMessages(
     ...(req.tools.length > 0 ? { tools: req.tools } : {}),
     messages: req.messages,
     ...(req.effort ? { output_config: { effort: req.effort } } : {}),
+    ...gatewayRouting(model),
     stream: true,
   });
   return post(gateway.env, env, model, body, req.maxTokens, fetchImpl);
