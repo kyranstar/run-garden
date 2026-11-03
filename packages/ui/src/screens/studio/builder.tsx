@@ -57,7 +57,7 @@ import { Fragment, useCallback, useEffect, useId, useMemo, useRef, useState } fr
 import { Link, Navigate, useLocation, useNavigate } from "react-router-dom";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { api, ApiError, type ConditionCheckDto, type DesignDraftResponse, type DocIssueDto, type SessionDto, type WorkoutDto } from "@rg/api-client";
-import { addDays, EFFORT_LEVELS, GOAL_LABELS, type WorkoutDoc } from "@rg/domain";
+import { addDays, appAuthoredRow, EFFORT_LEVELS, GOAL_LABELS, type WorkoutDoc } from "@rg/domain";
 import { GLOSSARY, label, type CheckReading, type ExerciseRecord } from "@rg/exercise-library";
 import {
   HISTORY_LIMIT,
@@ -228,7 +228,10 @@ function Builder({ source }: { source: BuildSource }) {
     const r = stored.data;
     // Do it again: a copy, as a new workout — nothing saved yet, so nothing to be "changed since".
     if (source.kind === "again") return r?.doc ? { key, editor: startEditing(r.doc), baseline: null, rev: null, row: null } : null;
-    return r?.doc ? { key, editor: startEditing(r.doc), baseline: r.doc, rev: r.rev, row: null } : null;
+    if (!r?.doc) return null;
+    // A coach or watch-plan session (its origin not the app's): Start takes it into the Studio before it builds.
+    const adopts = r.origin !== undefined && !appAuthoredRow({ origin: r.origin });
+    return { key, editor: startEditing(r.doc), baseline: r.doc, rev: r.rev, row: null, ...(adopts ? { adopts: true as const } : {}) };
   };
   // Opened in the first render when its read is already here (the device's draft, a cached template), else once it is.
   const [loaded, setLoadedState] = useState<Loaded | null>(opened);

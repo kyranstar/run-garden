@@ -235,6 +235,22 @@ describe("a revise adopts a watch-shaped row", () => {
     expect(await revisionsOf(id)).toHaveLength(1);
   });
 
+  it("the doc read says the row's origin, so the Studio's Start knows to take a watch-plan session over before it builds", async () => {
+    const id = "imp-test-start";
+    await seedWatchShaped(id, { planId: "coros-plan-invented", effectiveDate: today, ...address("5150", "7", "990007", today) });
+    const opened = await call("GET", `/api/workouts/${id}/doc`);
+    expect(opened.status).toBe(200);
+    expect(opened.body).toMatchObject({ origin: null, rev: 1 });
+    // Not the app's own session yet: nothing builds it (the 404 the Studio's Start met).
+    expect((await call("POST", `/api/sessions/${id}/build`, {})).status).toBe(404);
+    // Start sends the document as it was opened: that adopts the row, and its build follows.
+    expect((await call("PUT", `/api/workouts/${id}/doc`, { doc: opened.body.doc, baseRev: 1 })).status).toBe(200);
+    expect((await call("GET", `/api/workouts/${id}/doc`)).body).toMatchObject({ origin: "studio", rev: 1 });
+    const built = await call("POST", `/api/sessions/${id}/build`, {});
+    expect(built.status).toBe(200);
+    expect(built.body.build?.buildId).toEqual(expect.any(String));
+  });
+
   it("a watch copy name already recorded is never overwritten", async () => {
     const id = "cw-test-4-0";
     await seedWatchShaped(id, { ...address("4242", "8", "880003", tomorrow), watchCopyName: "Held, invented" });

@@ -121,8 +121,8 @@ function plannedRow(id: string, date = TODAY): WorkoutDto {
 }
 
 interface Server {
-  /** GET /api/workouts/:id/doc, in turn (the last repeats). */
-  docs?: Array<{ doc: WorkoutDoc; rev: number }>;
+  /** GET /api/workouts/:id/doc, in turn (the last repeats); its origin a Studio workout's unless said. */
+  docs?: Array<{ doc: WorkoutDoc; rev: number; origin?: string | null }>;
   /** PUT /api/workouts/:id/doc, in turn: an error, or OK. */
   revise?: Array<{ error: string; status: number } | "ok">;
   planned?: WorkoutDto[];
@@ -171,7 +171,7 @@ function serve(s: Server = {}): Call[] {
       if (doc && method === "GET") {
         const d = s.docs?.[Math.min(docRead++, (s.docs?.length ?? 1) - 1)];
         if (!d) return json({ error: "not_found" }, 404);
-        return json({ doc: d.doc, derived: { estimatedMinutes: 20, discipline: "strength", category: "strength", mode: "consistent", watchStepCount: 4 }, rev: d.rev });
+        return json({ doc: d.doc, derived: { estimatedMinutes: 20, discipline: "strength", category: "strength", mode: "consistent", watchStepCount: 4 }, rev: d.rev, origin: d.origin === undefined ? "studio" : d.origin });
       }
       if (doc && method === "PUT") {
         const a = s.revise?.[Math.min(revised++, (s.revise?.length ?? 1) - 1)] ?? "ok";
@@ -584,6 +584,34 @@ describe("Start now", () => {
       "/api/sessions/w-new/build",
       "/api/sessions/w-new/start",
     ]);
+  });
+
+  it("a watch-plan or coach session opened as it is: Start takes it into the Studio first (its document sent as opened), then builds and starts it", async () => {
+    // Origin NULL: no session of the app's, so the server builds nothing for it (404) until a revise adopts it.
+    const calls = serve({ docs: [{ doc: storedDoc("Thursday lift"), rev: 1, origin: null }], planned: [{ ...plannedRow("w1"), origin: null } as WorkoutDto] });
+    mount("/studio/build/workout/w1");
+    await until(() => titleField()?.value === "Thursday lift" && !!startButton() && !startButton()!.disabled, "the workout");
+    await click(startButton(), "Start now");
+    await until(() => text().includes("the player"), "the player");
+    expect(where).toBe("/session/w1");
+    expect(calls.filter((c) => c.method !== "GET").map((c) => `${c.method} ${c.path}`)).toEqual([
+      "PUT /api/workouts/w1/doc",
+      "POST /api/sessions/w1/build",
+      "POST /api/sessions/w1/start",
+    ]);
+    const put = calls.find((c) => c.method === "PUT")!.body as { doc: WorkoutDoc; baseRev: number };
+    expect(put.baseRev).toBe(1);
+    expect(put.doc.title).toBe("Thursday lift");
+    expect(ids(put.doc, "main")).toEqual(["gobletSquat"]);
+  });
+
+  it("a Studio workout opened as it is: Start sends no revise — only the build and the start", async () => {
+    const calls = serve({ docs: [{ doc: storedDoc("Thursday lift"), rev: 3 }], planned: [plannedRow("w1")] });
+    mount("/studio/build/workout/w1");
+    await until(() => titleField()?.value === "Thursday lift" && !!startButton() && !startButton()!.disabled, "the workout");
+    await click(startButton(), "Start now");
+    await until(() => text().includes("the player"), "the player");
+    expect(calls.filter((c) => c.method !== "GET").map((c) => `${c.method} ${c.path}`)).toEqual(["POST /api/sessions/w1/build", "POST /api/sessions/w1/start"]);
   });
 
   it("a build the day's reading changed is shown before it locks, and starts only when the athlete says so", async () => {

@@ -176,7 +176,9 @@ workoutRoutes.get("/:id/doc", async (c) => {
   if (!doc) return c.json({ doc: null, reason: row.workoutDoc === null || row.workoutDoc === undefined ? "missing" : "invalid" });
   // Derived in the account's library when it holds one of the athlete's own moves (one statement more, then).
   const library = await libraryForDocs(c.get("db"), c.get("userId"), [doc]);
-  return c.json({ doc, derived: deriveDoc(doc, library.all), rev: row.workoutDocRev ?? null });
+  // Its origin: a coach or watch-plan session (NULL) is no session of the app's until a revise adopts it, so the
+  // Studio's Start sends its document first (the session routes build only the app's own rows: `appAuthoredRow`).
+  return c.json({ doc, derived: deriveDoc(doc, library.all), rev: row.workoutDocRev ?? null, origin: row.origin ?? null });
 });
 
 workoutRoutes.get("/", async (c) => {

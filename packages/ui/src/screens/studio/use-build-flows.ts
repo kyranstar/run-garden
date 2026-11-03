@@ -51,6 +51,18 @@ export interface Loaded {
   row: { date: string; time: string } | null;
   /** A template's version as opened (its `updatedAt`): its save is written on that version, or refused. */
   base?: string;
+  /**
+   * A planned workout the app did not author (a coach or watch-plan session: `appAuthoredRow` false). The server builds
+   * only the app's own sessions, so until a revise adopts it into the Studio, Start sends its document first — changed
+   * or not (the same document again adopts it, at the same revision). Cleared once a revise lands.
+   */
+  adopts?: true;
+}
+
+/** The loaded workout once a revise landed: its document saved at `rev`, and the row the Studio's own now. */
+function revisedTo(cur: Loaded, doc: WorkoutDoc, rev: number | null): Loaded {
+  const { adopts: _adopted, ...rest } = cur;
+  return { ...rest, baseline: doc, rev };
 }
 
 export type Flow =
@@ -438,9 +450,11 @@ export function useBuildFlows({
       let fresh: string[] = heldNotes.current.splice(0);
       if (cur.key.startsWith("workout:")) {
         id = cur.key.slice("workout:".length);
-        if (dirtyOf(cur)) {
+        // Its changes saved first — and a coach or watch-plan session's document sent even unchanged, which takes it
+        // into the Studio: without that the server has no session of the app's to build (404).
+        if (dirtyOf(cur) || cur.adopts) {
           const res = await api.reviseWorkoutDoc(id, doc0, cur.rev ?? 0);
-          setLoaded({ ...live.current!, baseline: doc0, rev: res.rev });
+          setLoaded(revisedTo(live.current!, doc0, res.rev));
           fresh = newNotes(res.warnings) ?? [];
         }
       } else {
@@ -812,7 +826,7 @@ export function useBuildFlows({
     setSaving(true);
     try {
       const res = await api.reviseWorkoutDoc(id, d, cur.rev ?? 0);
-      if (live.current) setLoaded({ ...live.current, baseline: d, rev: res.rev });
+      if (live.current) setLoaded(revisedTo(live.current, d, res.rev));
       setStale(false);
       refreshPlan();
       watchFollow(res.workout);

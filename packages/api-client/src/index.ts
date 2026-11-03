@@ -650,7 +650,16 @@ export interface CoachPlansResponse {
 
 /** `GET /api/workouts/:id/doc`: a row's document and what is derived from it, or why there is none. */
 export type WorkoutDocResponse =
-  | { doc: WorkoutDoc; derived: { estimatedMinutes: number; discipline: string; category: string; mode: string; watchStepCount: number } & Record<string, unknown>; rev: number | null }
+  | {
+      doc: WorkoutDoc;
+      derived: { estimatedMinutes: number; discipline: string; category: string; mode: string; watchStepCount: number } & Record<string, unknown>;
+      rev: number | null;
+      /**
+       * The row's origin. One the app did not author (`appAuthoredRow` false: a coach or watch-plan session, NULL) has
+       * no session the app can build until a revise adopts it — the Studio's Start sends its document first.
+       */
+      origin: string | null;
+    }
   | { doc: null; reason: "missing" | "invalid" };
 
 /** One issue `validateWorkoutDoc` raises on a workout document: an error blocks, a warning is a cost shown. */
