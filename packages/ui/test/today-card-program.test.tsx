@@ -204,6 +204,12 @@ describe("a sent session on Today (Phase 3 Task 8; approved mocks §2 'Today · 
 
   it("heading the card: On your watch beside Start", async () => {
     const { card } = await renderCard(sentPayload(true));
+    // The actions land a render after the card's title on a slow runner (CI, 2026-11-04), as the marker below does.
+    for (let i = 0; i < 300 && !card.querySelector(".today-actions .today-on-watch"); i += 1) {
+      await act(async () => {
+        await new Promise((r) => setTimeout(r, 10));
+      });
+    }
     const actions = card.querySelector(".today-actions")!;
     expect(actions.querySelector(".today-play")?.textContent).toBe("Start");
     expect(actions.querySelector(".today-on-watch")?.textContent).toBe("On your watch");
