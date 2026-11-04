@@ -437,6 +437,41 @@ describe("an adopted row's old copy reaches the owner (spec §4): the Plan and t
   });
 });
 
+describe("the workout sheet's read names each move's library move, so the sheet can explain it (2026-11-04)", () => {
+  async function planGet<T>(path: string): Promise<T> {
+    const app = mountRoutes(db, "/api/plan", planRoutes);
+    const cookie = `${SESSION_COOKIE}=${await createSession(db, userId, "test")}`;
+    const res = await app.request(path, { headers: { Cookie: cookie } }, makeEnv());
+    expect(res.status, path).toBe(200);
+    return (await res.json()) as T;
+  }
+  type Read = { workout: { exercises?: Array<{ name: string; moveId?: string }> }; stages: Array<{ label: string | null; moveId?: string }> };
+
+  it("a coach line and a COROS step resolve to the library's move; a name the library doesn't hold resolves to none", async () => {
+    const id = "cw-test-30-0";
+    await seedWatchShaped(id, {
+      structuredJson: { exercises: [{ name: "Goblet squat", sets: 3, reps: 8 }, { name: "Skier hops, invented", sets: 3, reps: 8 }] },
+    });
+    const { workout, stages } = await planGet<Read>(`/api/plan/workouts/${id}`);
+    expect(workout.exercises?.map((e) => [e.name, e.moveId ?? null])).toEqual([
+      ["Goblet squat", "gobletSquat"],
+      ["Skier hops, invented", null],
+    ]);
+    expect(stages.find((s) => s.label === "Dead Bug")?.moveId).toBe("deadBug");
+    // The same lines reach the week's list too (Today's and the Plan's rows carry them).
+    const today = await planGet<{ upcoming: Array<{ id: string; exercises?: Array<{ moveId?: string }> }> }>("/api/plan/today");
+    expect(today.upcoming.find((w) => w.id === id)?.exercises?.[0]?.moveId).toBe("gobletSquat");
+  });
+
+  it("a run's step labels are no moves", async () => {
+    const id = "cw-test-31-0";
+    await seedWatchShaped(id, { sport: "run", category: "easy", structuredJson: null, doc: null });
+    const { stages } = await planGet<Read>(`/api/plan/workouts/${id}`);
+    expect(stages.map((s) => s.label)).toEqual(["Bridge", "Dead Bug"]);
+    expect(stages.some((s) => "moveId" in s)).toBe(false);
+  });
+});
+
 describe("a row that cannot be revised says why, and what to do instead", () => {
   it("a programme session: 409 not_editable cause programme with the spec's why and instead", async () => {
     await seedWatchShaped("slot-test-1", { origin: "program", planId: "prog-invented", stages: 0 });

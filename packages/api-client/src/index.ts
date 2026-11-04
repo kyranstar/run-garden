@@ -233,7 +233,13 @@ export interface WorkoutDto {
    * can never be written to the watch. Absent for runs and rest days, and
    * for any route that hasn't opted into loading it.
    */
-  exercises?: Array<{ name: string; line: string; onWatch: boolean }>;
+  exercises?: Array<{
+    name: string;
+    line: string;
+    onWatch: boolean;
+    /** The library move the name resolves to, when it is one: the sheet explains the move. Absent from an older server. */
+    moveId?: string;
+  }>;
   /** Set when the exercise list is a CIRCUIT cycled this many times. */
   exerciseRounds?: number;
 }

@@ -33,16 +33,31 @@ function Silhouette({ view }: { view: BodyView }) {
 }
 
 /** The figure itself (body-figure.ts): the front and the back side by side, every area tinted by its level in each
- * view it is drawn in, over a quiet silhouette; the quiet area's edge dashed. */
-export function BodyFigure({ areas, quiet }: { areas: readonly BodyAreaExposure[]; quiet: BodyArea | null }) {
+ * view it is drawn in, over a quiet silhouette; the quiet area's edge dashed. Another surface (a move's card) names the
+ * figure in its own words (`label`) and says what an area's hover says, or nothing (`areaTitle` → null). */
+export function BodyFigure({
+  areas,
+  quiet,
+  label,
+  areaTitle,
+}: {
+  areas: readonly BodyAreaExposure[];
+  quiet: BodyArea | null;
+  label?: string;
+  areaTitle?: (a: BodyAreaExposure) => string | null;
+}) {
   return (
-    <svg className="body-figure" viewBox={`${FIGURE_BOX.x} ${FIGURE_BOX.y} ${FIGURE_BOX.w} ${FIGURE_BOX.h}`} role="img" aria-label={figureLabel(areas)}>
+    <svg className="body-figure" viewBox={`${FIGURE_BOX.x} ${FIGURE_BOX.y} ${FIGURE_BOX.w} ${FIGURE_BOX.h}`} role="img" aria-label={label ?? figureLabel(areas)}>
       {BODY_VIEWS.map((v) => (
         <Silhouette key={v} view={v} />
       ))}
       {areas.map((a) => (
         <g key={a.area} className={`body-area body-lvl-${a.level}${quiet === a.area ? " is-quiet" : ""}`} data-area={a.area}>
-          <title>{`${AREA_LABEL[a.area]} · ${LEVEL_WORD[a.level].toLowerCase()}`}</title>
+          {areaTitle ? (
+            areaTitle(a) !== null ? <title>{areaTitle(a)}</title> : null
+          ) : (
+            <title>{`${AREA_LABEL[a.area]} · ${LEVEL_WORD[a.level].toLowerCase()}`}</title>
+          )}
           {BODY_VIEWS.map((v) => {
             const paths = FIGURE[a.area][v];
             return paths ? (

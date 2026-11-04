@@ -55,6 +55,7 @@ import { MoveSheet } from "../screens/move-sheet.js";
 import { CheckScale, checkWord, conditionChipLabel, FeelingOffToggle } from "./condition-check-sheet.js";
 import { keepStarted } from "./start-session.js";
 import { ExerciseHowto, type HowtoTarget } from "./exercise-howto.js";
+import { MoveCard } from "./move-card.js";
 import { addTargetHref, editableWorkout, rowOf } from "../screens/studio/add-model.js";
 import type { BuilderArrival } from "../screens/studio/templates-model.js";
 import { refusalText } from "../screens/studio/use-build-flows.js";
@@ -319,7 +320,22 @@ function itemDose(s: SessionDto, item: SessionItemDto): { text: string; up: bool
   };
 }
 
-export function SessionSheet({ w, today, onClose }: { w: WorkoutDto; today: string; onClose: () => void }) {
+export function SessionSheet({
+  w,
+  today,
+  onClose,
+  autoStart = false,
+}: {
+  w: WorkoutDto;
+  today: string;
+  onClose: () => void;
+  /**
+   * Start was already pressed (the run sheet's, which took the session into the Studio): once today's build is here and
+   * nothing waits on the athlete, it starts — no second press. A pre-check is asked first; a move today's check keeps
+   * out, or a swap it made, is shown with the Start button instead.
+   */
+  autoStart?: boolean;
+}) {
   const qc = useQueryClient();
   const navigate = useNavigate();
   // Opened from Today's row (its link says so) or from Plan: the Studio's way back returns there.
@@ -702,6 +718,17 @@ export function SessionSheet({ w, today, onClose }: { w: WorkoutDto; today: stri
   const canPlay = features.player && date === today && !past && !skipped;
   // Today's check keeps a move out that no alternate stands in for: Start waits, and the sheet says why (CUJ B3).
   const gatedToday = (s?.build?.fromDoc?.blocked.length ?? 0) > 0;
+  // Start pressed before this sheet opened (`autoStart`): once, when the build it asked for is here and Start could be
+  // pressed — never over a pre-check, a move kept out, or a swap the athlete hasn't seen.
+  const autoStarted = useRef(false);
+  useEffect(() => {
+    if (!autoStart || autoStarted.current || !s?.build || !view || preCheck) return;
+    if (!canPlay || !build.isSuccess || build.isPending || start.isPending) return;
+    if (locked) return;
+    autoStarted.current = true;
+    if (gatedToday || (s.build.fromDoc?.swaps.length ?? 0) > 0) return;
+    start.mutate(s.build.buildId);
+  });
   // A started session keeps Continue while its save would be taken: its build's day and the day after (ruling 2b-R16).
   const canContinue = features.player && !skipped && s?.contentState === "started" && continuable(s.build?.date ?? date, today);
   // SENT TO THE WATCH, FROM AN OLDER SERVER (no `lockedBy`): the build locked and the slot built, the watch saying it
@@ -1226,7 +1253,14 @@ function BuiltSession({
                   <div key={item.slotKey} className="session-move">
                     <span className="session-move-n">{item.group ?? ""}</span>{" "}
                     <span className="session-move-text">
-                      <b>{name}</b>
+                      {/* A mouse's hover explains the move where it is named; the ⓘ beside it opens the full how-to. */}
+                      {ex ? (
+                        <MoveCard mode="hover" move={ex} dose={dose.text} why={item.why.length ? item.why.join(" · ") : null}>
+                          <b>{name}</b>
+                        </MoveCard>
+                      ) : (
+                        <b>{name}</b>
+                      )}
                       {item.isNew ? (
                         <>
                           {" "}

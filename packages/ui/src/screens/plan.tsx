@@ -48,6 +48,11 @@ import { watchFollowsChange } from "../components/watch-catch-up.js";
 import { isAppSession } from "../components/today-program.js";
 import { AskCoach, useCoachSeeing } from "./studio/coach-ask.js";
 import { workoutFocus } from "./studio/coach-focus.js";
+import { MoveCard } from "../components/move-card.js";
+import { PUBLIC_LIBRARY } from "../library/account-library.js";
+import { cuePlayer } from "../player/cue-player.js";
+import { requestPersistentStorage } from "../offline/live.js";
+import { refusalText } from "./studio/use-build-flows.js";
 
 /**
  * What "Remove from plan" does, said before the athlete confirms. A session the
@@ -93,11 +98,32 @@ export function WorkoutDetail(props: {
   corosWritesEnabled: boolean;
   onClose: () => void;
 }) {
-  return isAppSession(props.w) ? (
-    <SessionSheet w={props.w} today={props.today} onClose={props.onClose} />
+  // Start on the run sheet took a coach or watch-plan session into the Studio: the row it is now (the plan's read may
+  // not have caught up yet), played from the session sheet — which builds it and starts it on its own.
+  const [adopted, setAdopted] = useState<WorkoutDto | null>(null);
+  const mine = adopted?.id === props.w.id ? adopted : null;
+  const w = mine && !isAppSession(props.w) ? mine : props.w;
+  return isAppSession(w) ? (
+    <SessionSheet w={w} today={props.today} onClose={props.onClose} autoStart={!!mine} />
   ) : (
-    <RunWorkoutDetail {...props} />
+    <RunWorkoutDetail {...props} onAdopted={setAdopted} />
   );
+}
+
+/** A workout with no document can't be taken into the Studio, so it can't be started from the sheet. */
+class NoDocToStart extends Error {}
+
+/**
+ * START FROM THE SHEET (the owner, 2026-11-04: "start the workout just from the workout details popup rather than
+ * forcing us to click edit in studio"). The server builds only the app's own sessions, so a coach or watch-plan session
+ * is first taken into the Studio — its own document sent back unchanged, which adopts the row at the same revision, as
+ * the Studio's Start does (16889cea) — and then read again as the app session it now is.
+ */
+export async function adoptToStart(id: string): Promise<WorkoutDto> {
+  const r = await api.workoutDoc(id);
+  if (!r.doc) throw new NoDocToStart();
+  await api.reviseWorkoutDoc(id, r.doc, r.rev ?? 0);
+  return (await api.workout(id)).workout;
 }
 
 /** The sync actions `WatchVersion` says for a row whose watch has an earlier version, in its own words. */
@@ -109,11 +135,14 @@ export function RunWorkoutDetail({
   today,
   corosWritesEnabled,
   onClose,
+  onAdopted,
 }: {
   w: WorkoutDto;
   today: string;
   corosWritesEnabled: boolean;
   onClose: () => void;
+  /** Start took the session into the Studio: the row as it is now, to play from the session sheet. */
+  onAdopted?: (w: WorkoutDto) => void;
 }) {
   const qc = useQueryClient();
   const units = useUnits();
@@ -182,6 +211,18 @@ export function RunWorkoutDetail({
       setTimeout(() => focusAfterRemove(w.effectiveDate, w.id), 0);
     },
   });
+  /** Why Start didn't go through, said above the actions until the next press. */
+  const [startError, setStartError] = useState<string | null>(null);
+  const begin = useMutation({
+    mutationFn: () => adoptToStart(w.id),
+    onSuccess: (next) => {
+      invalidate();
+      void qc.invalidateQueries({ queryKey: ["session", w.id] });
+      onAdopted?.(next);
+    },
+    onError: (e) =>
+      setStartError(e instanceof NoDocToStart ? "This workout can't be started here — open it in the Studio." : refusalText(e, "start")),
+  });
 
   const stages = (detail.data?.stages ?? []) as Array<Record<string, unknown>>;
   const match = detail.data?.match as { activity?: Record<string, unknown> } | null | undefined;
@@ -231,7 +272,10 @@ export function RunWorkoutDetail({
   const canRemove = w.completionState !== "completed";
   // A coach or watch session the Studio may change (revisability): Edit in Studio adopts it into a document workout.
   const canEdit = features.studio && editableWorkout(w, today);
+  // …and today's can be started from here: taken into the Studio, then built and played (`adoptToStart`).
+  const canStart = canEdit && features.player && w.effectiveDate === today && !!onAdopted;
   const hasActions =
+    canStart ||
     canEdit ||
     canMove ||
     asks ||
@@ -257,8 +301,23 @@ export function RunWorkoutDetail({
      between, which is what "belongs to its trigger" fails to mean. */
   const footer = hasActions ? (
     <div className="btn-row">
+      {canStart ? (
+        <button
+          className="btn btn-primary"
+          disabled={begin.isPending}
+          onClick={() => {
+            // Inside the tap: audio unlocks only in a gesture, and storage is asked to persist (as the session sheet's Start).
+            cuePlayer.unlock();
+            void requestPersistentStorage();
+            setStartError(null);
+            begin.mutate();
+          }}
+        >
+          {begin.isPending ? "Starting…" : "Start"}
+        </button>
+      ) : null}
       {canMove ? (
-        <button className="btn btn-primary" onClick={() => setMoving(true)}>
+        <button className={canStart ? "btn" : "btn btn-primary"} onClick={() => setMoving(true)}>
           Move
         </button>
       ) : null}
@@ -334,6 +393,11 @@ export function RunWorkoutDetail({
         </p>
         {/* A modal sheet hides the nav, so it keeps its own small Ask, seeing the workout (the integrated review, I3). */}
         <AskCoach focus={workoutFocus(w)} wrap="session-ask-row" />
+        {startError ? (
+          <p className="session-refused" role="alert">
+            {startError}
+          </p>
+        ) : null}
         <SyncNotesStack
           notes={workoutNotes}
           onDismiss={(id) => dismissNote.mutate(id)}
@@ -411,7 +475,7 @@ export function RunWorkoutDetail({
               {/* Index-keyed: two identical lines in one circuit are real. */}
               {w.exercises!.map((e, ei) => (
                 <li key={`${ei}-${e.line}`}>
-                  {e.line}
+                  <ExerciseLine name={e.name} line={e.line} moveId={e.moveId} />
                   {e.onWatch ? null : (
                     /* Per-movement, and careful about what it claims: the
                        session is app-only because it is a lift, not because
@@ -493,6 +557,28 @@ export function RunWorkoutDetail({
         {removeConfirmCopy(displayTitle, !!w.appPushed)}
       </ConfirmDialog>
     </Sheet>
+  );
+}
+
+/**
+ * One prescribed movement's line, its name explaining the move (a card: what it is, why, how, the key tips) when the
+ * name is a library move's (`moveId`, resolved by the server). The line reads exactly as it did: the name, then the
+ * dose and the coach's cue.
+ */
+export function ExerciseLine({ name, line, moveId }: { name: string; line: string; moveId?: string }) {
+  const move = moveId ? PUBLIC_LIBRARY.find(moveId) : undefined;
+  if (!move) return <>{line}</>;
+  if (!line.startsWith(name)) return <MoveCard move={move}>{line}</MoveCard>;
+  const rest = line.slice(name.length);
+  // The dose alone for the card's corner: the line's cue follows " — ".
+  const dose = rest.split(" — ")[0]!.trim();
+  return (
+    <>
+      <MoveCard move={move} dose={dose || null}>
+        {name}
+      </MoveCard>
+      {rest}
+    </>
   );
 }
 

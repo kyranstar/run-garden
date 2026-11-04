@@ -57,7 +57,8 @@ function parts(html: string): Array<{ name: string; ghost: boolean; suggested: s
         name: text(/<span class="stu-part-name eyebrow">(?:<span class="term-wrap"><button[^>]*>)?([^<]+)/.exec(body)?.[1] ?? ""),
         ghost: chunk.startsWith(" stu-part--ghost"),
         suggested: [...body.matchAll(/aria-label="Add ([^"]+)"/g)].map((m) => text(m[1]!)),
-        items: [...body.matchAll(/<span class="stu-item-name">([^<]+)/g)].map((m) => text(m[1]!)),
+        // A library move's name explains itself (move-card.tsx): its own word, inside the hover's span or the button.
+        items: [...body.matchAll(/<span class="stu-item-name">(?:<span class="move-hover">|<span class="move-term-wrap"><button[^>]*>)?([^<]+)/g)].map((m) => text(m[1]!)),
       };
     });
 }

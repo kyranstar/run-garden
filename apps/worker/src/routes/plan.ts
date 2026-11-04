@@ -92,7 +92,7 @@ import { todayConditions } from "../services/condition-views.js";
 import { watchReviewOffers } from "../services/session-watch-review.js";
 import { plannedRowColumns, type PlannedRow } from "../services/planned-columns.js";
 import { DESIGNED_RUN_SEED } from "../services/designed-runs.js";
-import { reopenedDocColumns } from "../services/workout-doc-store.js";
+import { reopenedDocColumns, resolveLibraryName } from "../services/workout-doc-store.js";
 
 export const planRoutes = new Hono<AppContext>();
 planRoutes.use("*", requireUser);
@@ -631,21 +631,33 @@ function workoutDto(
  * shape in the column (studio exercises, coach exercises, junk) — a session
  * detail must never fail to render because an old row is shaped oddly. A
  * prescribed load reads in the athlete's unit, the kilos kept beside pounds
- * ("@ 44 lb (20 kg)"), as the Studio card, the charts and the dossier read it. */
+ * ("@ 44 lb (20 kg)"), as the Studio card, the charts and the dossier read it.
+ * `moveId`: the library move the name resolves to (the document converter's
+ * own rule, `resolveLibraryName`), so the sheet can explain the move; absent
+ * when the name is no library move's. */
 function exercisesDto(
   structured: { exercises?: unknown[]; rounds?: number } | null,
   unit?: WeightUnit,
-): { exercises?: Array<{ name: string; line: string; onWatch: boolean }>; exerciseRounds?: number } {
+): { exercises?: Array<{ name: string; line: string; onWatch: boolean; moveId?: string }>; exerciseRounds?: number } {
   const raw = structured?.exercises;
   if (!Array.isArray(raw) || raw.length === 0) return {};
+  const withMove = (name: string) => {
+    const moveId = resolveLibraryName(name);
+    return moveId ? { moveId } : {};
+  };
   const exercises = raw.flatMap((e) => {
     const parsed = coachExerciseSchema.safeParse(e);
     if (!parsed.success) {
       const name = (e as { name?: unknown })?.name;
-      return typeof name === "string" ? [{ name, line: name, onWatch: false }] : [];
+      return typeof name === "string" ? [{ name, line: name, onWatch: false, ...withMove(name) }] : [];
     }
     return [
-      { name: parsed.data.name, line: formatExercise(parsed.data, unit), onWatch: !!parsed.data.originId },
+      {
+        name: parsed.data.name,
+        line: formatExercise(parsed.data, unit),
+        onWatch: !!parsed.data.originId,
+        ...withMove(parsed.data.name),
+      },
     ];
   });
   if (exercises.length === 0) return {};
@@ -1411,11 +1423,14 @@ planRoutes.get("/workouts/:id", async (c) => {
       .from(plannedWorkoutStages)
       .where(eq(plannedWorkoutStages.workoutId, w.id))
       .orderBy(asc(plannedWorkoutStages.ord))
-  ).map((s) => ({
-    ...s,
+  ).map((s) => {
     // Stage labels for imported strength work are catalog codes — resolve.
-    label: s.label ? resolveCodesInText(s.label, catalog) : s.label,
-  }));
+    const label = s.label ? resolveCodesInText(s.label, catalog) : s.label;
+    // A lift or mobility step's move in the library (COROS's English name → its T-code → the library's move, or the
+    // library's own name), so the sheet can explain it. A run's labels are no moves.
+    const moveId = label && w.sport !== "run" && s.kind !== "repeat" ? resolveLibraryName(label) : null;
+    return { ...s, label, ...(moveId ? { moveId } : {}) };
+  });
   const match = (
     await db
       .select()

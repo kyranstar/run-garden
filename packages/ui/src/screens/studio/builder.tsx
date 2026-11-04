@@ -111,6 +111,7 @@ import {
   type Note,
 } from "./build-model.js";
 import { CommitField, ItemSheet, itemName } from "./item-sheet.js";
+import { MoveCard } from "../../components/move-card.js";
 import { MovePicker } from "./move-picker.js";
 import { GoalsSheet } from "./goals-sheet.js";
 import { formatLine, PartMenu } from "./part-menu.js";
@@ -1141,7 +1142,15 @@ function PartBlock({
             const body = (
               <>
                 <span className="stu-item-name">
-                  {itemName(it, rec)}
+                  {/* The move explained where it is named: a mouse's hover on a row that opens the item sheet on a tap; a
+                      tap of its own on a read-only row, which opens nothing. */}
+                  {rec && it.kind === "exercise" ? (
+                    <MoveCard mode={readOnly ? "button" : "hover"} move={rec} dose={dose || null} why={it.why ?? null}>
+                      {itemName(it, rec)}
+                    </MoveCard>
+                  ) : (
+                    itemName(it, rec)
+                  )}
                   {flagged(i) ? (
                     readOnly ? (
                       <span className="stu-item-flag stu-item-flag--note">

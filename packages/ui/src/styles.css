@@ -812,6 +812,8 @@ h1,
 .session-new,
 .wstep-free,
 .howto-head,
+.move-card-label,
+.move-card-works dt,
 .settings-subhead {
   font-size: var(--text-2xs);
   font-weight: var(--weight-medium);
@@ -9663,6 +9665,149 @@ a.stu-qs:hover {
 .term-pop b {
   display: block;
   margin-bottom: var(--space-1);
+  color: var(--ink);
+  font-weight: var(--weight-medium);
+}
+
+/* A move, explained where it is named (move-card.tsx): the name is a quiet dotted underline, like a term; the card is
+   fixed to the viewport and placed by measurement, so a sheet's scrolling body never clips it. Above the tab bar (40)
+   and above a sheet's content (its backdrop's stacking context, 60). */
+.move-term-wrap {
+  display: inline;
+}
+.move-term {
+  display: inline;
+  margin: 0;
+  padding: 0;
+  border: 0;
+  border-radius: var(--radius-xs);
+  background: none;
+  color: inherit;
+  font: inherit;
+  text-align: inherit;
+  text-decoration: underline dotted;
+  text-decoration-color: var(--ink-faint);
+  text-decoration-thickness: 1px;
+  text-underline-offset: 0.25em;
+  cursor: pointer;
+}
+.move-term:hover {
+  text-decoration-color: currentColor;
+}
+.move-term[aria-expanded="true"] {
+  color: var(--green-ink);
+  text-decoration-color: currentColor;
+}
+@media (hover: hover) {
+  .move-hover {
+    text-decoration: underline dotted;
+    text-decoration-color: var(--ink-faint);
+    text-decoration-thickness: 1px;
+    text-underline-offset: 0.25em;
+  }
+}
+.move-card {
+  position: fixed;
+  top: 0;
+  left: 0;
+  z-index: 70;
+  display: grid;
+  gap: var(--space-4);
+  width: min(22rem, calc(100vw - 24px));
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  padding: var(--space-5) var(--space-6);
+  border: 1px solid var(--border-strong);
+  border-radius: var(--radius-md);
+  background: var(--bg-raised);
+  box-shadow: var(--shadow-md);
+  color: var(--ink-soft);
+  font-size: var(--text-sm);
+  font-weight: var(--weight-regular);
+  font-style: normal;
+  line-height: 1.45;
+  text-align: left;
+  text-transform: none;
+  letter-spacing: normal;
+  white-space: normal;
+  overflow-wrap: anywhere;
+  cursor: auto;
+}
+/* Wider where there is room, so a five-step move and its tips fit without scrolling inside the card. */
+@media (min-width: 900px) {
+  .move-card {
+    width: 30rem;
+  }
+}
+.move-card p {
+  margin: 0;
+}
+.move-card-top {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: var(--space-4);
+}
+.move-card-name {
+  color: var(--ink);
+  font-size: var(--text-md);
+  font-weight: var(--weight-medium);
+}
+.move-card-dose {
+  flex: none;
+  color: var(--ink-soft);
+  font-size: var(--text-xs);
+  white-space: nowrap;
+}
+.move-card-summary {
+  color: var(--ink);
+}
+.move-card-body {
+  display: flex;
+  align-items: center;
+  gap: var(--space-5);
+}
+.move-card-figure {
+  flex: 0 0 auto;
+  width: 5rem;
+  aspect-ratio: 188 / 244;
+}
+/* "Front" and "Back" at this size are specks; the figure's name says it. */
+.move-card-figure .body-cap {
+  display: none;
+}
+.move-card-works {
+  display: grid;
+  grid-template-columns: auto 1fr;
+  gap: var(--space-2) var(--space-4);
+  margin: 0;
+  font-size: var(--text-xs);
+}
+/* Rank 2's label (the shared eyebrow rule above) — only its box here. */
+.move-card-works dt,
+.move-card-label {
+  margin: 0;
+}
+.move-card-works dt {
+  padding-top: 0.1em;
+}
+.move-card-works dd {
+  margin: 0;
+  color: var(--ink);
+}
+.move-card-section {
+  display: grid;
+  gap: var(--space-2);
+}
+.move-card-steps,
+.move-card-tips {
+  display: grid;
+  gap: var(--space-1);
+  margin: 0;
+  padding-left: 1.2em;
+  line-height: 1.4;
+}
+.move-card-tip-word {
   color: var(--ink);
   font-weight: var(--weight-medium);
 }

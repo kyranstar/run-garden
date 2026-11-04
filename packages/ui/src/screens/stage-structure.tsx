@@ -1,6 +1,8 @@
 import type { ReactNode, Ref } from "react";
 import { formatStageDuration } from "@rg/domain";
 import { formatDistance, formatPace, type Units } from "../components.js";
+import { MoveCard } from "../components/move-card.js";
+import { PUBLIC_LIBRARY } from "../library/account-library.js";
 
 /**
  * A structured workout's "Full structure" — the interval tree, not a flat
@@ -120,6 +122,22 @@ function describeStage(stage: StageRow, units: Units): string {
   ].join("");
 }
 
+/**
+ * A leaf's line, its label explaining the move (a card: what it is, why, how, the key tips) when the label names a
+ * library move — `moveId`, resolved by the workout-detail route. The text is `describeStage`'s, unchanged.
+ */
+function LeafText({ stage, units }: { stage: StageRow; units: Units }) {
+  const label = str(stage.label);
+  const moveId = str(stage.moveId);
+  const move = label && moveId ? PUBLIC_LIBRARY.find(moveId) : undefined;
+  if (!label || !move) return <>{describeStage(stage, units)}</>;
+  return (
+    <>
+      {describeStage({ ...stage, label: null }, units)} (<MoveCard move={move}>{label}</MoveCard>)
+    </>
+  );
+}
+
 /** The multiplier, said twice: once for the eye, once for the ear. */
 function Multiplier({ count, steps }: { count: number; steps: number }) {
   return (
@@ -152,7 +170,11 @@ function StageItems({ nodes, units }: { nodes: StageNode[]; units: Units }) {
         const id = String(node.stage.id);
         const isRepeat = node.stage.kind === "repeat";
         if (!isRepeat) {
-          return <Step key={id}>{describeStage(node.stage, units)}</Step>;
+          return (
+            <Step key={id}>
+              <LeafText stage={node.stage} units={units} />
+            </Step>
+          );
         }
         // A repeat that repeats once is a wrapper around nothing: its stages
         // are simply the workout's stages.
@@ -174,7 +196,7 @@ function StageItems({ nodes, units }: { nodes: StageNode[]; units: Units }) {
           // "before or after" to get wrong.
           return (
             <Step key={id} mult={<Multiplier count={node.count} steps={1} />}>
-              {describeStage(only.stage, units)}
+              <LeafText stage={only.stage} units={units} />
             </Step>
           );
         }

@@ -2097,3 +2097,118 @@ describe("a dialog closing gives the focus back only while it is still the dialo
     }
   });
 });
+
+/**
+ * START FROM THE WORKOUT SHEET (the owner, 2026-11-04: "start the workout just from the workout details popup rather
+ * than forcing us to click edit in studio"). A coach or watch-plan session (NULL origin) today, with a document: Start
+ * on its sheet sends its document back unchanged (which takes it into the Studio), reads the row again, and plays it
+ * from the session sheet — built and started with no second press.
+ */
+describe("Start on the workout sheet of a coach or watch-plan session", () => {
+  let studioWas = false;
+  beforeEach(() => {
+    studioWas = features.studio;
+    features.studio = true;
+    features.player = true;
+  });
+  afterEach(() => {
+    features.studio = studioWas;
+  });
+
+  const DOC = { version: 1, title: "Leg day", intent: { summary: "Legs.", goals: [], focus: [], effort: "develop" }, parts: [], source: { kind: "coach" } };
+  const coachRow = (over: Partial<WorkoutDto> = {}) =>
+    slot({
+      id: SLOT,
+      origin: null,
+      programId: null,
+      contentState: null,
+      title: "Leg day",
+      hasDoc: true,
+      exercises: [{ name: "Goblet squat", line: "Goblet squat 3×8", onWatch: true, moveId: "gobletSquat" }],
+      ...over,
+    } as Partial<WorkoutDto>);
+
+  /** The doc routes, and the row read again — the Studio's own once the revise has landed. */
+  function adoption(opts: { put?: (body: unknown) => Response } = {}) {
+    let adopted = false;
+    const json = (b: unknown, status = 200) => new Response(JSON.stringify(b), { status, headers: { "Content-Type": "application/json" } });
+    return (call: Call): Response | undefined => {
+      if (call.path === `/api/workouts/${SLOT}/doc` && call.method === "GET") return json({ doc: DOC, derived: { estimatedMinutes: 25 }, rev: null, origin: null });
+      if (call.path === `/api/workouts/${SLOT}/doc` && call.method === "PUT") {
+        if (opts.put) return opts.put(call.body);
+        adopted = true;
+        return json({ workout: { id: SLOT }, rev: 1, watchHasOlder: false, warnings: [] });
+      }
+      if (call.path === `/api/plan/workouts/${SLOT}`) {
+        return json({ workout: adopted ? coachRow({ origin: "studio", contentState: "outline" }) : coachRow(), stages: [], match: null });
+      }
+      return undefined;
+    };
+  }
+
+  it("takes it into the Studio, builds it and opens the player — one press", async () => {
+    vi.stubGlobal("indexedDB", new IDBFactory());
+    const { calls } = mount(docSession(), { w: coachRow(), detail: true, route: adoption() });
+    await until(() => !!button("Start"), "Start on the workout sheet");
+    // Its moves are explained where they are named, on the sheet that offers Start.
+    expect(document.querySelector("button.move-term")?.textContent).toBe("Goblet squat");
+    expect(button("Edit in Studio")).toBeTruthy();
+    expect(calls.some((c) => c.path.startsWith("/api/sessions/"))).toBe(false);
+    await click("Start");
+    await until(() => body().includes("the player"), "the player route", 400);
+    const put = calls.find((c) => c.path === `/api/workouts/${SLOT}/doc` && c.method === "PUT");
+    expect(put?.body).toEqual({ doc: DOC, baseRev: 0 });
+    const order = calls.map((c) => `${c.method} ${c.path}`);
+    const at = (p: string) => order.findIndex((o) => o === p);
+    expect(at(`PUT /api/workouts/${SLOT}/doc`)).toBeGreaterThan(at(`GET /api/workouts/${SLOT}/doc`));
+    expect(at(`POST /api/sessions/${SLOT}/build`)).toBeGreaterThan(at(`PUT /api/workouts/${SLOT}/doc`));
+    expect(at(`POST /api/sessions/${SLOT}/start`)).toBeGreaterThan(at(`POST /api/sessions/${SLOT}/build`));
+    expect(calls.find((c) => c.path.endsWith("/start"))?.body).toEqual({ buildId: docSession().build!.buildId });
+  }, 15_000);
+
+  it("a swap today's check made waits for the athlete's own Start, shown with the build", async () => {
+    const base = docSession();
+    const swapped = docSession({
+      build: { ...base.build!, fromDoc: { ...base.build!.fromDoc!, swaps: [{ path: "parts[1].items[0]", from: "goblet", to: "boxSquat", reason: "Knee is up today" }] } },
+    } as Partial<SessionDto>);
+    const { calls } = mount(swapped, { w: coachRow(), detail: true, route: adoption(), afterBuild: () => swapped });
+    await until(() => !!button("Start"), "Start on the workout sheet");
+    await click("Start");
+    await until(() => !!button(/^Start · \d+ min$/), "the session sheet's own Start", 400);
+    expect(body()).toContain("Knee is up today");
+    expect(calls.some((c) => c.path.endsWith("/start"))).toBe(false);
+    expect(body()).not.toContain("the player");
+  }, 15_000);
+
+  it("a refusal is said on the sheet, and nothing is built", async () => {
+    const json = (b: unknown, status = 200) => new Response(JSON.stringify(b), { status, headers: { "Content-Type": "application/json" } });
+    const { calls } = mount(docSession(), {
+      w: coachRow(),
+      detail: true,
+      route: adoption({ put: () => json({ error: "stale_revision" }, 409) }),
+    });
+    await until(() => !!button("Start"), "Start on the workout sheet");
+    await click("Start");
+    await until(() => body().includes("This workout changed elsewhere"), "the refusal");
+    expect(calls.some((c) => c.path.startsWith("/api/sessions/"))).toBe(false);
+    expect(button("Start")).toBeTruthy();
+  });
+
+  it("is offered only for today's: another day's session, a run, or one with no document has none", async () => {
+    mount(docSession(), { w: coachRow({ effectiveDate: "2026-10-06" }), detail: true, route: adoption() });
+    await until(() => !!button("Edit in Studio"), "the sheet");
+    expect(button("Start")).toBeUndefined();
+    act(() => root?.unmount());
+    host?.remove();
+
+    mount(docSession(), { w: coachRow({ sport: "run", category: "easy", exercises: undefined }), detail: true, route: adoption() });
+    await until(() => !!button("Remove from plan"), "the sheet");
+    expect(button("Start")).toBeUndefined();
+    act(() => root?.unmount());
+    host?.remove();
+
+    mount(docSession(), { w: coachRow({ hasDoc: false }), detail: true, route: adoption() });
+    await until(() => !!button("Remove from plan"), "the sheet");
+    expect(button("Start")).toBeUndefined();
+  });
+});

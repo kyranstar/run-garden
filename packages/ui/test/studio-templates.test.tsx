@@ -185,7 +185,8 @@ describe("a quick start in the builder", () => {
     const made = quickStartFor("hip_opener", { ...emptyStudioCtx, today: TODAY, place: { name: "Home", equipment: ["mat", "kettlebell", "dumbbells", "bench", "chair", "band", "wall"] } }, TODAY);
     if (!("doc" in made)) throw new Error(made.reason);
     expect(html).toContain(`value="${made.doc.title}"`);
-    const names = [...html.matchAll(/<span class="stu-item-name">([^<]*)/g)].map((m) => m[1]);
+    // A library move's name explains itself (move-card.tsx): its own word, inside the hover's span or the button.
+    const names = [...html.matchAll(/<span class="stu-item-name">(?:<span class="move-hover">|<span class="move-term-wrap"><button[^>]*>)?([^<]*)/g)].map((m) => m[1]);
     const want = made.doc.parts.flatMap((p) => p.items.map((i) => (i.kind === "exercise" ? EXERCISES.find((r) => r.id === i.libraryId)!.name : "")));
     expect(names).toEqual(want);
     expect(names.length).toBeGreaterThan(1);
