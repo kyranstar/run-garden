@@ -199,7 +199,7 @@ describe("Save keeps a post's insights in the coach's memory", () => {
     await saveBatch(db, userId, batchId, NOW);
     const few = statements.length;
     // The batch and its counts, then one transaction of 5: the moves, the links, the memory, the links marked, the batch.
-    expect(few).toBe(6);
+    expect(few).toBe(7); // REBASED 2026-11-05 (import trail): + the stage's trail event
 
     const big = "batch-600";
     await db.insert(saveBatches).values({ id: big, userId, status: "released", createdAt: T0, releasedAt: T0 });
@@ -217,7 +217,7 @@ describe("Save keeps a post's insights in the coach's memory", () => {
     statements.length = 0;
     expect(await saveBatch(db, userId, big, NOW)).toEqual({ moves: 0, links: 600 });
     expect(statements.length).toBe(few);
-    expect(statements.filter(isWrite).length).toBe(5);
+    expect(statements.filter(isWrite).length).toBe(6); // REBASED 2026-11-05 (import trail): + the save's trail event
     const fresh = (await bodies()).filter((x) => x.startsWith("Insight "));
     expect(fresh).toHaveLength(20);
     expect(fresh.sort()).toEqual(
@@ -241,7 +241,7 @@ describe("an insight that only restates a dose or a move is not kept", () => {
     expect(page.body.insights).toEqual([{ postId: a, url: "https://example.com/p/a", creator: "coach_a", text: guidance }]);
     statements.length = 0;
     await saveBatch(db, userId, batchId, NOW);
-    expect(statements.length).toBe(6);
+    expect(statements.length).toBe(7); // REBASED 2026-11-05 (import trail): + the stage's trail event
     expect(await bodies()).toEqual([guidance]);
   });
 

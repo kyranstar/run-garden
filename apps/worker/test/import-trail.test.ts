@@ -6,7 +6,7 @@ import { beforeEach, describe, expect, it } from "vitest";
 import { schema } from "@rg/database";
 import type { Db } from "../src/services/db.js";
 import { runAtomically } from "../src/services/db.js";
-import { BLOB_MAX, EVENT_DETAIL_MAX, promptVersionStatement, SUMMARY_MAX, trailStatements } from "../src/services/import-trail.js";
+import { batchTrailStatement, BLOB_MAX, EVENT_DETAIL_MAX, promptVersionStatement, SUMMARY_MAX, trailStatements } from "../src/services/import-trail.js";
 import { makeTestDb, makeTestUser } from "./helpers.js";
 
 const { importEvents, importBlobs, promptVersions } = schema;
@@ -85,5 +85,25 @@ describe("promptVersionStatement", () => {
     await runAtomically(db, [promptVersionStatement(db, "filter-1", "filter", "system one", AT)]);
     await runAtomically(db, [promptVersionStatement(db, "filter-1", "filter", "system two", "2026-11-06T00:00:00.000Z")]);
     expect(await db.select().from(promptVersions)).toEqual([{ version: "filter-1", kind: "filter", systemText: "system one", firstUsedAt: AT }]);
+  });
+});
+
+describe("batchTrailStatement", () => {
+  it("writes one event for every post of a batch, in one statement, and none for another batch's", async () => {
+    const { savedPosts } = schema;
+    const base = { userId, source: "s", url: "https://example.com/p", firstSeenAt: AT, status: "matched", updatedAt: AT };
+    await db.insert(savedPosts).values([
+      { ...base, id: "p1", sourceKey: "k1", batchId: "b1" },
+      { ...base, id: "p2", sourceKey: "k2", batchId: "b1" },
+      { ...base, id: "p3", sourceKey: "k3", batchId: "b2" },
+    ]);
+    await runAtomically(db, [batchTrailStatement(db, userId, "b1", { stage: "batch", status: "info", summary: "Joined a batch", detail: { batchId: "b1" } }, AT)]);
+    const rows = await db.select().from(importEvents);
+    expect(rows.map((r) => [r.postId, r.stage, r.batchId, r.summary]).sort()).toEqual([
+      ["p1", "batch", "b1", "Joined a batch"],
+      ["p2", "batch", "b1", "Joined a batch"],
+    ]);
+    expect(rows[0]!.detail).toEqual({ batchId: "b1" });
+    expect(new Set(rows.map((r) => r.id)).size).toBe(2);
   });
 });

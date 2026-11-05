@@ -20,6 +20,7 @@ import { forgetAccountLibrary } from "./account-library.js";
 import type { SavesSkip } from "./design-tools/types.js";
 import { SAVED_POST_SOURCE } from "./coach-memory.js";
 import { runAtomically, runAtomicallyClaim, type Db } from "./db.js";
+import { batchTrailStatement } from "./import-trail.js";
 import { EARLIEST_ZONE, liveMemoryWhere } from "./memory-core.js";
 import { loadPersonalForMatch } from "./personal-moves.js";
 
@@ -322,6 +323,8 @@ export async function assembleBatch(db: Db, env: Env, userId: string, now: strin
       ),
     // The near-duplicates, as one map (move → the move it is like): its keys pick the links, its values fill them.
     ...(marks.size ? [likeWrite(db, userId, id, JSON.stringify(Object.fromEntries(marks)))] : []),
+    // Each post's trail: it joined this batch (design 2026-11-05 §4).
+    batchTrailStatement(db, userId, id, { stage: "batch", status: "info", summary: "Joined a batch of saved moves (oldest waiting first)", detail: { batchId: id } }, now),
   ]);
   return id;
 }
@@ -585,9 +588,15 @@ export async function saveBatch(db: Db, userId: string, batchId: string, now: st
     db.update(savedPostMoves).set({ status: "saved" }).where(keptLinks),
   ] as const;
   const thisBatch = and(eq(saveBatches.id, batchId), eq(saveBatches.userId, userId));
+  // Each post's trail: saved, its new moves now the athlete's; and, by Fit them in, the owner's choice (design §4).
+  const trail = [
+    batchTrailStatement(db, userId, batchId, { stage: "save", status: "ok", summary: "Saved: its new moves joined your library", detail: { batchId } }, now),
+    ...(fit ? [batchTrailStatement(db, userId, batchId, { stage: "choice", source: "owner", status: "info", summary: "You chose Fit them in", detail: { batchId } }, now)] : []),
+  ];
   if (fit && gate) {
     const claimed = await runAtomicallyClaim(db, [
       ...statements,
+      ...trail,
       db
         .update(saveBatches)
         .set({ status: "saved", savedAt: now, fitStartedAt: fit.at, dismissedAt: null })
@@ -596,7 +605,7 @@ export async function saveBatch(db: Db, userId: string, batchId: string, now: st
     ]);
     if (!claimed) return "lost";
   } else {
-    await runAtomically(db, [...statements, db.update(saveBatches).set({ status: "saved", savedAt: now }).where(thisBatch)]);
+    await runAtomically(db, [...statements, ...trail, db.update(saveBatches).set({ status: "saved", savedAt: now }).where(thisBatch)]);
   }
   // Its moves are the library's now: a later read in this request reads them.
   forgetAccountLibrary(db, userId);

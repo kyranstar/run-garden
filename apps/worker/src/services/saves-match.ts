@@ -33,10 +33,11 @@ import { and, eq, sql } from "drizzle-orm";
 import { schema } from "@rg/database";
 import { newId } from "@rg/domain";
 import { EXERCISES, type ExerciseRecord } from "@rg/exercise-library";
-import { extractionSchema, matchMessages, matchVerdictSchema, nearDuplicateOf, normalizeMoveName, sameMoveType } from "@rg/saves";
+import { extractionSchema, MATCH_PROMPT_VERSION, matchMessages, matchVerdictSchema, nearDuplicateOf, normalizeMoveName, sameMoveType } from "@rg/saves";
 import type { ExtractedMove, Extraction, MatchJudgeItem, NearCandidate, NearMove } from "@rg/saves";
 import type { Env } from "../env.js";
 import { insertBatches, runAtomically, type Db } from "./db.js";
+import { promptVersionStatement, trailStatements, type TrailEventInput } from "./import-trail.js";
 import { messagesCostMicros } from "./llm-messages.js";
 import { gatewayRouting, wakeGateway } from "./gateway-route.js";
 import { IMPORT_KINDS, reserveImport, settleImport } from "./saves-budget.js";
@@ -361,10 +362,10 @@ export async function judgeMatches(
   items: readonly MatchJudgeItem[],
   fetchImpl: typeof fetch,
   spend: { db: Db; userId: string; now: string },
-): Promise<{ verdicts: Map<number, string | null> | null; costMicros: number }> {
-  if (items.length === 0) return { verdicts: new Map(), costMicros: 0 };
+): Promise<{ verdicts: Map<number, string | null> | null; costMicros: number; call: JudgeCall }> {
+  if (items.length === 0) return { verdicts: new Map(), costMicros: 0, call: { status: "not_needed" } };
   const gateway = wakeGateway(env);
-  if (gateway.kind !== "model") return { verdicts: null, costMicros: 0 };
+  if (gateway.kind !== "model") return { verdicts: null, costMicros: 0, call: { status: "unavailable" } };
   const { db, userId, now } = spend;
   const model = env.SAVES_FILTER_MODEL || MATCH_MODEL_DEFAULT;
   const { system, userText } = matchMessages(items);
@@ -374,24 +375,50 @@ export async function judgeMatches(
   const reservation = await reserveImport(
     db, userId, IMPORT_KINDS.match, model, price(MATCH_MAX_TOKENS), price(MATCH_TYPICAL_OUTPUT_TOKENS), new Date(now),
   );
-  if (!reservation.ok) return { verdicts: null, costMicros: 0 };
+  if (!reservation.ok) return { verdicts: null, costMicros: 0, call: { status: "budget" } };
 
   let settled = false;
   try {
+    const started = Date.now();
     const result = await askJudge(gateway.env, fetchImpl, model, system, userText);
+    const latencyMs = Date.now() - started;
     // A 402 records out-of-credits (the owner's banner); a call that worked clears it; any other failure says nothing.
     await noteGatewayOutcome(db, userId, result.ok ? { ok: true } : { ok: false, reason: result.reason });
-    if (!result.ok) return { verdicts: null, costMicros: 0 };
+    if (!result.ok) {
+      return { verdicts: null, costMicros: 0, call: { status: "failed", model, usageId: reservation.usageId, latencyMs, failure: result.reason, system } };
+    }
     const cost = messagesCostMicros(model, {
       inputTokens: result.inputTokens, cacheReadTokens: 0, cacheWriteTokens: 0, outputTokens: result.outputTokens,
     });
     await settleImport(db, reservation.usageId, { model, inputTokens: result.inputTokens, outputTokens: result.outputTokens, costMicros: cost });
     settled = true;
-    return { verdicts: parseVerdicts(result.content, items), costMicros: cost };
+    const verdicts = parseVerdicts(result.content, items);
+    return {
+      verdicts,
+      costMicros: cost,
+      call: {
+        status: verdicts ? "asked" : "failed", model, usageId: reservation.usageId, latencyMs, raw: result.content,
+        inputTokens: result.inputTokens, outputTokens: result.outputTokens, costMicros: cost, system,
+      },
+    };
   } finally {
     // A throw (or a failed call) must not leave the reservation at its worst case: it settles to nothing spent.
     if (!settled) await settleImport(db, reservation.usageId, null);
   }
+}
+
+/** How the judge's call went, for the trail: asked (it answered), failed, the budget, no model, or not needed. */
+export interface JudgeCall {
+  status: "asked" | "failed" | "budget" | "unavailable" | "not_needed";
+  model?: string;
+  usageId?: string;
+  latencyMs?: number;
+  raw?: string;
+  inputTokens?: number;
+  outputTokens?: number;
+  costMicros?: number;
+  failure?: string;
+  system?: string;
 }
 
 /** The judge's answers by move position; an id the move was not offered counts as "none". Null when the reply isn't the format. */
@@ -490,6 +517,84 @@ async function askJudge(
  * (10 a statement) + links (7 a statement) + the post — at most 12 moves, so ≤ 5. A 12-move post with a judge call is
  * ≤ 12 in all.
  */
+/**
+ * The check and match stages' events (design 2026-11-05 §4): each new move's repairs and dose origin; each move's
+ * outcome, how it was settled (its name, the judge, or new), the candidates the judge was offered and its answer.
+ */
+function matchTrail(
+  extraction: Extraction,
+  byNames: readonly MatchDecision[],
+  final: readonly MatchDecision[],
+  links: readonly { position: number; moveId: string; moveKind: string; checkFlag?: boolean; likeMoveId?: string | null }[],
+  checked: readonly { position: number; name: string; repairs: string[]; doseOrigin: string; evidence: unknown; confidence: string }[],
+  judged: { verdicts: ReadonlyMap<number, string | null> | null; call: JudgeCall },
+  items: readonly MatchJudgeItem[],
+  personal: readonly PersonalMatchRow[],
+): TrailEventInput[] {
+  const asked = new Set(items.map((i) => i.position));
+  const names = new Map(personal.map((r) => [r.id, r.name]));
+  const linkAt = new Map(links.map((l) => [l.position, l]));
+  const finalAt = new Map(final.map((d) => [d.position, d]));
+  let undecided = 0;
+  const moves = byNames.map((before) => {
+    const after = finalAt.get(before.position) ?? before;
+    const link = linkAt.get(before.position);
+    const firstAsked = asked.has(before.position) ? before.position : before.sameAs;
+    const wasAsked = firstAsked !== undefined && asked.has(firstAsked);
+    const answer = wasAsked && judged.verdicts?.has(firstAsked!) ? (judged.verdicts.get(firstAsked!) ?? null) : null;
+    if (wasAsked && judged.call.status !== "asked") undecided++;
+    const by = before.kind !== "new" ? "name" : after.kind !== "new" ? "judge" : "new";
+    const like = after.like ?? link?.likeMoveId ?? null;
+    return {
+      position: before.position,
+      name: extraction.moves[before.position]?.name ?? "",
+      outcome: after.kind === "new" ? "new" : after.kind,
+      moveId: link?.moveId ?? after.id ?? null,
+      by,
+      confidence: after.confidence,
+      candidates: (before.candidates ?? []).map((c) => ({ id: c.id, name: c.name, score: c.score, kind: c.kind })),
+      judge: wasAsked ? judged.call.status : "not_needed",
+      judgeAnswer: answer,
+      like: like ? { id: like, name: names.get(like) ?? null } : null,
+      check: link?.checkFlag ?? after.check,
+    };
+  });
+  const count = (o: string) => moves.filter((m) => m.outcome === o).length;
+  const parts = [
+    count("new") ? `${count("new")} new` : "",
+    count("personal") ? `${count("personal")} already yours` : "",
+    count("library") ? `${count("library")} from the library` : "",
+  ].filter(Boolean);
+  const call = judged.call;
+  const usedJudge = call.status === "asked" || call.status === "failed";
+  const repairsMade = checked.some((c) => c.repairs.length > 0);
+  return [
+    {
+      stage: "check",
+      source: "worker",
+      status: repairsMade ? "warn" : "ok",
+      summary: repairsMade
+        ? `${checked.filter((c) => c.repairs.length).length} reading${checked.filter((c) => c.repairs.length).length === 1 ? "" : "s"} corrected to pass the library's rules`
+        : "The reading checks out",
+      detail: { moves: checked },
+    },
+    {
+      stage: "match",
+      source: usedJudge ? "gateway" : "worker",
+      status: undecided ? "warn" : "ok",
+      summary: `${moves.length} move${moves.length === 1 ? "" : "s"}: ${parts.join(", ")}${undecided ? ` — the matcher couldn't decide ${undecided}` : ""}`,
+      detail: { moves, judge: call.status, ...(call.failure ? { failure: call.failure } : {}) },
+      ...(usedJudge
+        ? {
+            model: call.model, usageId: call.usageId, latencyMs: call.latencyMs, promptVersion: MATCH_PROMPT_VERSION,
+            ...(call.costMicros !== undefined ? { costMicros: call.costMicros } : {}),
+          }
+        : {}),
+      ...(call.raw !== undefined ? { blobs: [{ kind: "raw_reply" as const, text: call.raw }] } : {}),
+    },
+  ];
+}
+
 export async function matchPost(
   db: Db,
   env: Env,
@@ -526,10 +631,13 @@ export async function matchPost(
 
   const personal = await loadPersonalForMatch(db, userId);
   let decisions = matchMoves(parsed.data, EXERCISES, personal);
+  /** What the names alone decided, before the judge: the trail says how each move was settled. */
+  const byNames = decisions;
   const items = judgeItems(decisions);
   let judgeCost = 0;
+  let judged: Awaited<ReturnType<typeof judgeMatches>> = { verdicts: new Map(), costMicros: 0, call: { status: "not_needed" } };
   if (items.length) {
-    const judged = await judgeMatches(env, items, fetchImpl, { db, userId, now });
+    judged = await judgeMatches(env, items, fetchImpl, { db, userId, now });
     judgeCost = judged.costMicros;
     decisions = applyVerdicts(decisions, judged.verdicts);
   }
@@ -541,6 +649,8 @@ export async function matchPost(
   const issues: string[] = [];
   /** Positions whose record was repaired to pass the library's rules: flagged to check, whatever the match said. */
   const repaired = new Set<number>();
+  /** Each new move's reading as checked: what repair changed and where its dose came from (the trail's check stage). */
+  const checked: { position: number; name: string; repairs: string[]; doseOrigin: string; evidence: unknown; confidence: string }[] = [];
   for (const d of decisions) {
     if (d.kind !== "new" || !d.draft || d.sameAs !== undefined) continue;
     const id = newPersonalMoveId(userId, postId, d.position, d.draft.name);
@@ -550,6 +660,10 @@ export async function matchPost(
       continue;
     }
     if (built.repairs.length) repaired.add(d.position);
+    checked.push({
+      position: d.position, name: d.draft.name, repairs: built.repairs, doseOrigin: built.doseOrigin,
+      evidence: d.draft.evidence, confidence: d.draft.confidence,
+    });
     newIds.set(d.position, id);
     moveRows.push({ id, userId, status: "pending", mergedInto: null, batchId: null, record: built.record, editedByOwner: false, createdAt: now, updatedAt: now });
   }
@@ -576,9 +690,14 @@ export async function matchPost(
   });
   // A move or link already there (the same post matched before) is kept as it stands: an import never rewrites a
   // personal move, edited by the owner or not; later posts only add links.
+  const trail = matchTrail(parsed.data, byNames, decisions, linkRows, checked, judged, items, personal);
   await runAtomically(db, [
     ...insertBatches(moveRows).map((rows) => db.insert(personalMoves).values(rows).onConflictDoNothing()),
     ...insertBatches(linkRows).map((rows) => db.insert(savedPostMoves).values(rows).onConflictDoNothing()),
+    ...trailStatements(db, userId, postId, trail, now),
+    ...(judged.call.status === "asked" || judged.call.status === "failed"
+      ? judged.call.system ? [promptVersionStatement(db, MATCH_PROMPT_VERSION, "match", judged.call.system, now)] : []
+      : []),
     db
       .update(savedPosts)
       .set({ status: "matched", lastErrorCode: null, lastError: null, costMicros: sql`${savedPosts.costMicros} + ${judgeCost}`, updatedAt: now })

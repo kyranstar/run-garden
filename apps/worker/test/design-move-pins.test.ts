@@ -872,7 +872,7 @@ describe("a fit ends with its card (the saves flow redesigned, §12.1)", () => {
     expect(again.status, JSON.stringify(again.json)).toBe(200);
     // The session, the restore guard, the fit's read, the claim (no choices sent: the stored ones stand; final fix wave,
     // saves flow redesign).
-    expect(again.total).toBe(4);
+    expect(again.total).toBe(5); // REBASED 2026-11-05 (import trail): + the stage's trail event
     expect(await fitOf(batchId)).toBe(NOW.toISOString());
   });
 

@@ -206,7 +206,7 @@ describe("GET /open", () => {
     expect(res.status, JSON.stringify(res.body)).toBe(200);
     // The session, the read, the cut (gate 1, waiting 1, personal moves 1, the batch and its stamps 4), the read again
     // (saves-flow redesign).
-    expect(statements.length).toBe(10);
+    expect(statements.length).toBe(11); // REBASED 2026-11-05 (import trail): + the stage's trail event
     const all = await db.select().from(saveBatches);
     expect(all).toHaveLength(1);
     expect(all[0]).toMatchObject({ status: "released", releasedAt: NOW });
@@ -228,7 +228,7 @@ describe("GET /open", () => {
     expect(open.status, JSON.stringify(open.body)).toBe(200);
     // The session, the read, the cut (gate 1, waiting 1, personal moves 1, the batch and its stamps 4), the read again:
     // the emptied batch opens the gate with no statement of its own (final fix wave, saves flow redesign).
-    expect(statements.length).toBe(10);
+    expect(statements.length).toBe(11); // REBASED 2026-11-05 (import trail): + the stage's trail event
     const next = open.body.open.id as string;
     expect(next).not.toBe(batchId);
     expect(open.body.open).toMatchObject({ counts: { new: 1, linked: 0 }, groups: [{ group: "leg", count: 1 }], fitting: false });
@@ -260,7 +260,7 @@ describe("POST /batches/:id/fit", () => {
     const saved = await call("POST", `/batches/${twin.batchId}/save`, undefined, { as: other.cookie });
     expect(saved.body).toEqual({ moves: 2, links: 3 });
     const saveStatements = statements.length;
-    expect(saveStatements).toBe(8);
+    expect(saveStatements).toBe(9); // REBASED 2026-11-05 (import trail): + the stage's trail event
 
     const { batchId, p1, p2, a, b } = await seed();
     // No choices key at all: on a released batch, nothing is stored yet — the same as `{ choices: {} }`.
@@ -269,8 +269,8 @@ describe("POST /batches/:id/fit", () => {
     expect(res.body).toEqual({ batchId, request: FIT_SAVES_REQUEST, moves: 2, links: 3 });
     // The save route's 8 (the session, the restore guard, the batch and its counts, one transaction of 5) + 2 (saves-flow
     // redesign): the fit's read (the batch, and whether another is open) and the choices, inside the save's transaction.
-    expect(statements.length).toBe(saveStatements + 2);
-    expect(statements.length).toBe(10);
+    expect(statements.length).toBe(saveStatements + 3); // REBASED 2026-11-05 (import trail): + the owner's choice on each post's trail
+    expect(statements.length).toBe(12); // REBASED 2026-11-05 (import trail)
     for (const id of [a, b]) expect(await moveRow(id)).toMatchObject({ status: "active", batchId, fitChoice: null });
     for (const [post, position] of [[p1, 0], [p1, 1], [p2, 0]] as const) expect((await linkAt(post, position)).status).toBe("saved");
     expect(await batchRow(batchId)).toMatchObject({ status: "saved", savedAt: NOW, fitStartedAt: NOW, dismissedAt: null, fittedAt: null });
@@ -318,8 +318,8 @@ describe("POST /batches/:id/fit", () => {
     expect(again.body).toEqual({ batchId, request: FIT_SAVES_REQUEST, moves: 2, links: 3 });
     // The session, the restore guard, the fit's read (with what the saved batch holds), one transaction of 2: the
     // choices, the fit's start (saves-flow redesign).
-    expect(statements.length).toBe(5);
-    expect(writes()).toHaveLength(2);
+    expect(statements.length).toBe(6); // REBASED 2026-11-05 (import trail): + the stage's trail event
+    expect(writes()).toHaveLength(3);
     expect(await moveRow(a)).toMatchObject({ fitChoice: "skip" });
     expect(await moveRow(b)).toMatchObject({ fitChoice: null });
     expect(await batchRow(batchId)).toMatchObject({ status: "saved", savedAt: NOW, fitStartedAt: LATER, dismissedAt: null });
@@ -341,8 +341,8 @@ describe("POST /batches/:id/fit", () => {
     expect(res.body).toEqual({ batchId, request: FIT_SAVES_REQUEST, moves: 2, links: 3 });
     // The session, the restore guard, the fit's read, a transaction of 1: the claim alone — no choices written (final
     // fix wave, saves flow redesign).
-    expect(statements.length).toBe(4);
-    expect(writes()).toHaveLength(1);
+    expect(statements.length).toBe(5); // REBASED 2026-11-05 (import trail): + the stage's trail event
+    expect(writes()).toHaveLength(2);
     expect(await moveRow(a)).toMatchObject({ fitChoice: "include" });
     expect(await moveRow(b)).toMatchObject({ fitChoice: "skip" });
     expect(await batchRow(batchId)).toMatchObject({ status: "saved", fitStartedAt: LATER, dismissedAt: null });
@@ -356,8 +356,8 @@ describe("POST /batches/:id/fit", () => {
     await db.update(saveBatches).set({ fitStartedAt: null }).where(eq(saveBatches.id, batchId));
     const page = await fit(batchId, {});
     expect(page.status, JSON.stringify(page.body)).toBe(200);
-    expect(statements.length).toBe(5);
-    expect(writes()).toHaveLength(2);
+    expect(statements.length).toBe(6); // REBASED 2026-11-05 (import trail): + the choice on each post's trail
+    expect(writes()).toHaveLength(3);
     for (const id of [a, b]) expect(await moveRow(id)).toMatchObject({ fitChoice: null });
     expect(await skipSetOf(db, userId, batchId)).toEqual([]);
   });
@@ -542,7 +542,7 @@ describe("POST /batches/:id/fit: two taps at once", () => {
     statements.length = 0;
     expect(await saveBatch(db, userId, batchId, NOW, { at: NOW, choices: { [a]: "include" } })).toBe("lost");
     // The batch and its counts 1, the transaction of 6 (every write gated, the last one counted).
-    expect(statements.length).toBe(7);
+    expect(statements.length).toBe(9); // REBASED 2026-11-05 (import trail): + the save's and the choice's trail events
     await untouched();
     expect(await batchRow(batchId)).toMatchObject({ status: "released", savedAt: null, fitStartedAt: null });
   });
@@ -559,7 +559,7 @@ describe("POST /batches/:id/dismiss and /fit/cancel", () => {
     expect(res.status, JSON.stringify(res.body)).toBe(200);
     expect(res.body).toEqual({ ok: true });
     // The session, the restore guard, the write.
-    expect(statements.length).toBe(3);
+    expect(statements.length).toBe(4); // REBASED 2026-11-05 (import trail): + the stage's trail event
     expect(await batchRow(batchId)).toMatchObject({ status: "released", dismissedAt: NOW, savedAt: null, fitStartedAt: null });
     // Never saved: its moves and links stay pending, nothing reaches the library, the provenance or the coach's memory.
     for (const id of [a, b]) expect((await moveRow(id)).status).toBe("pending");
@@ -621,7 +621,7 @@ describe("POST /batches/:id/dismiss and /fit/cancel", () => {
     expect((await call("GET", "/open")).body).toEqual({ open: null });
     vi.setSystemTime(new Date(LATER));
     expect((await fit(batchId)).status).toBe(200);
-    expect(statements.length).toBe(5);
+    expect(statements.length).toBe(6); // REBASED 2026-11-05 (import trail): + the stage's trail event
     expect(await batchRow(batchId)).toMatchObject({ status: "saved", dismissedAt: null, fitStartedAt: LATER });
 
     // A fitted batch keeps its fit: nothing to cancel.

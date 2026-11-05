@@ -98,7 +98,7 @@ describe("assembleBatch", () => {
     const id = await assembleBatch(db, env(), userId, at(1));
     expect(id).toBeTruthy();
     // gate 1, waiting 1, personal moves 1, the batch and its stamps 4
-    expect(statements).toBe(7);
+    expect(statements).toBe(8); // REBASED 2026-11-05 (import trail): + the stage's trail event
     const records = (await db.select().from(personalMoves)).map((m) => m.record as ExerciseRecord);
     expect(records).toHaveLength(2);
     expect(await batchOf(id!)).toMatchObject({
@@ -236,7 +236,7 @@ describe("assembleBatch", () => {
     statements = 0;
     const id = (await assembleBatch(db, env(), userId, at(2)))!;
     // gate 1, waiting 1, personal moves 1, the batch and its stamps 4, the near-duplicate marks 1
-    expect(statements).toBe(8);
+    expect(statements).toBe(9); // REBASED 2026-11-05 (import trail): + the stage's trail event
     expect(await linksOf(lift)).toEqual([expect.objectContaining({ batchId: id, checkFlag: true, likeMoveId: hold })]);
     expect(await linksOf(dynamic)).toEqual([expect.objectContaining({ batchId: id, checkFlag: true, likeMoveId: swing })]);
     expect(await linksOf(swing)).toEqual([expect.objectContaining({ batchId: id, checkFlag: false, likeMoveId: null })]);
@@ -332,7 +332,7 @@ describe("saveBatch", () => {
     statements = 0;
     expect(await saveBatch(db, userId, id, at(2))).toEqual({ moves: 1, links: 3 });
     // The batch and its counts, then one transaction of 5 (the insights kept in memory, spec §17).
-    expect(statements).toBe(6);
+    expect(statements).toBe(7); // REBASED 2026-11-05 (import trail): + the stage's trail event
     const [pm] = await db.select().from(personalMoves);
     expect(pm).toMatchObject({ status: "active", updatedAt: at(2) });
     expect((await db.select().from(savedPostMoves)).every((l) => l.status === "saved")).toBe(true);
@@ -463,7 +463,7 @@ describe("saveBatch", () => {
     for (const chunk of insertBatches(links)) await db.insert(savedPostMoves).values(chunk);
     statements = 0;
     expect(await saveBatch(db, userId, batchId, at(1))).toEqual({ moves: 0, links: 600 });
-    expect(statements).toBe(6);
+    expect(statements).toBe(7); // REBASED 2026-11-05 (import trail): + the stage's trail event
     expect(await db.select().from(exerciseProvenance)).toHaveLength(600);
   });
 });

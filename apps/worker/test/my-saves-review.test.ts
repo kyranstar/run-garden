@@ -542,7 +542,7 @@ describe("remove and save", () => {
     expect(small.status).toBe(200);
     const few = statements.length;
     // The session, the restore guard, the batch and its counts, one transaction of 5 (the insights kept in memory, spec §17).
-    expect(few).toBe(8);
+    expect(few).toBe(9); // REBASED 2026-11-05 (import trail): + the stage's trail event
 
     const big = "batch-600";
     await db.insert(saveBatches).values({ id: big, userId, status: "released", createdAt: T0, releasedAt: T0 });

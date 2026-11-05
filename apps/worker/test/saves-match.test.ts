@@ -222,6 +222,47 @@ describe("matchMoves", () => {
   });
 });
 
+describe("matchPost writes its trail (import trail, 2026-11-05)", () => {
+  const eventsOf = async (postId: string) => {
+    const rows = await db.select().from(schema.importEvents).where(eq(schema.importEvents.postId, postId));
+    return Object.fromEntries(rows.map((r) => [r.stage, r]));
+  };
+  it("a check event (each new move's repairs and dose origin) and a match event (each move's outcome and why)", async () => {
+    const id = await extracted("t1", [move("90/90 Hip Switch"), move("Zorbex quad shuffle", { dose: { text: "slowly" } })]);
+    await matchPost(db, env(), userId, id, NOW, judge({ matches: [] }).fetchImpl);
+    const { check, match } = await eventsOf(id);
+    expect(check).toMatchObject({ source: "worker", stage: "check" });
+    expect((check!.detail as any).moves).toEqual([
+      expect.objectContaining({ position: 1, name: "Zorbex quad shuffle", doseOrigin: "default", repairs: expect.any(Array) }),
+    ]);
+    expect(match).toMatchObject({ source: "worker", status: "ok", summary: "2 moves: 1 new, 1 from the library" });
+    expect((match!.detail as any).moves).toEqual([
+      expect.objectContaining({ position: 0, outcome: "library", moveId: HIP_SWITCH.id, by: "name", judge: "not_needed", confidence: "high" }),
+      expect.objectContaining({ position: 1, outcome: "new", by: "new", judge: "not_needed" }),
+    ]);
+  });
+  it("a judged move: the candidates it was offered, the judge's answer and raw reply, the prompt version", async () => {
+    const id = await extracted("t2", [move("the 90 90 switch")]);
+    await matchPost(db, env(), userId, id, NOW, judge({ matches: [{ move: 0, id: HIP_SWITCH.id }] }).fetchImpl);
+    const { match } = await eventsOf(id);
+    expect(match).toMatchObject({ source: "gateway", promptVersion: "match-2", status: "ok" });
+    const [m] = (match!.detail as any).moves;
+    expect(m).toMatchObject({ outcome: "library", moveId: HIP_SWITCH.id, by: "judge", judge: "asked", judgeAnswer: HIP_SWITCH.id, check: true });
+    expect(m.candidates.map((c: { id: string }) => c.id)).toContain(HIP_SWITCH.id);
+    const blobs = await db.select().from(schema.importBlobs).where(eq(schema.importBlobs.eventId, match!.id));
+    expect(blobs.map((b) => b.kind)).toEqual(["raw_reply"]);
+    expect((await db.select().from(schema.promptVersions)).map((v) => v.version)).toContain("match-2");
+  });
+  it("a judge that failed is a warning on the match event; the move stays new and flagged", async () => {
+    const id = await extracted("t3", [move("the 90 90 switch")]);
+    await matchPost(db, env(), userId, id, NOW, judge({}, { status: 500 }).fetchImpl);
+    const { match } = await eventsOf(id);
+    expect(match).toMatchObject({ status: "warn" });
+    expect(match!.summary).toMatch(/the matcher couldn't decide 1/);
+    expect((match!.detail as any).moves[0]).toMatchObject({ outcome: "new", judge: "failed", judgeAnswer: null, check: true });
+  });
+});
+
 describe("matchPost", () => {
   it("Review Focus 3: three spellings end on the one library move; the fuzzy one through the judge, checked", async () => {
     const id = await extracted("rf3", [move("90/90 Hip Switch"), move("90-90 hip switches"), move("the 90 90 switch")]);
@@ -586,12 +627,12 @@ describe("matchPost", () => {
     const out = await matchPost(db, env(), userId, id, NOW, judge({ matches: [{ move: 11, id: HIP_SWITCH.id }] }).fetchImpl);
     expect(out).toEqual({ newMoves: 11, linked: 1 });
     // post 1, personal moves 1, judge (reserve 2, credits note 2, settle 1), writes: 2 move inserts + 2 link inserts + the post
-    expect(statements).toBe(12);
+    expect(statements).toBe(15); // REBASED 2026-11-05 (import trail): + the check and match events (one insert), the judge's raw reply, the prompt version
     const links = await linksOf(id);
     expect(links.map((l) => l.likeMoveId)).toEqual([nod, cobra, ...Array(10).fill(null)]);
   });
 
-  it("a 12-move post of new and fuzzy moves takes 12 statements, the judge included (the relay route adds 9: 21 of 45)", async () => {
+  it("a 12-move post of new and fuzzy moves takes 15 statements, the judge included (the relay route adds 12: 27 of 45)", async () => {
     const moves = [
       ...Array.from({ length: 11 }, (_, i) => move(`Zorbex variant ${String.fromCharCode(97 + i)} shuffle`)),
       move("the 90 90 switch"),
@@ -601,6 +642,6 @@ describe("matchPost", () => {
     const out = await matchPost(db, env(), userId, id, NOW, judge({ matches: [{ move: 11, id: HIP_SWITCH.id }] }).fetchImpl);
     expect(out).toEqual({ newMoves: 11, linked: 1 });
     // post 1, personal moves 1, judge (reserve 2, credits note 2, settle 1), writes: 2 move inserts + 2 link inserts + the post
-    expect(statements).toBe(12);
+    expect(statements).toBe(15); // REBASED 2026-11-05 (import trail): + the events, the judge's raw reply, the prompt version (the relay route adds 12: 27 of 45)
   });
 });

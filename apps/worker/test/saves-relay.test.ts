@@ -475,7 +475,7 @@ describe("POST /api/saves/posts/:key/extract", () => {
     // reserve 2 (spend, insert) + claim 1 + out-of-credits note 2 (restore check, clear) + settle 1 + outcome 1;
     // matchPost for one new move and no judge: post 1, personal moves 1, the move, its link and the post 3
     // REBASED 2026-11-05 (import trail): the outcome's batch adds the attempt's event, its raw reply and the prompt as sent — 3.
-    expect(statements).toBe(7 + 3 + 5);
+    expect(statements).toBe(7 + 3 + 6); // matchPost's 5 + its trail events (import trail)
     await seed("k");
     const gw = gateway(GOOD);
     vi.stubGlobal("fetch", gw.fetchImpl);
@@ -484,7 +484,7 @@ describe("POST /api/saves/posts/:key/extract", () => {
       expect(res.status).toBe(200);
       expect(json).toMatchObject({ status: "matched", moves: 1 });
       expect(gw.seen).toHaveLength(1);
-      expect(cost).toBeLessThanOrEqual(7 + 3 + 2 + 5); // the relay's 7 + its trail 3 (import trail) + the bearer guard's user and restore lookups + matchPost's 5
+      expect(cost).toBeLessThanOrEqual(7 + 3 + 2 + 6); // the relay's 7 + its trail 3 (import trail) + the bearer guard's user and restore lookups + matchPost's 5
     } finally {
       vi.unstubAllGlobals();
     }
@@ -496,7 +496,7 @@ describe("POST /api/saves/posts/:key/extract", () => {
     expect(res.status).toBe(200);
     expect(json.status).toBe("matched");
     // auth 2 + claim 1 + outcome 1 + its trail 2 (the event, the prompt as sent; import trail) + matchPost's 5
-    expect(cost).toBeLessThanOrEqual(11);
+    expect(cost).toBeLessThanOrEqual(12); // + matchPost's trail events (import trail)
   });
 
   it("stays within 45 statements at its worst: 12 moves, a judge call, every move new", async () => {
@@ -519,7 +519,7 @@ describe("POST /api/saves/posts/:key/extract", () => {
       expect((await db.select().from(llmUsage)).map((r) => r.kind).sort()).toEqual([IMPORT_KINDS.extract, IMPORT_KINDS.match]);
       // 9 (auth 2 + relay 7) + matchPost: post 1, personal moves 1, judge 5, moves 2, links 2, post 1
       expect(cost).toBeLessThanOrEqual(45);
-      expect(cost).toBeLessThanOrEqual(9 + 13 + 2); // REBASED 2026-11-05 (import trail): + the attempt's event and prompt
+      expect(cost).toBeLessThanOrEqual(9 + 13 + 2 + 3); // REBASED 2026-11-05 (import trail): + the attempt's event and prompt, matchPost's events, judge reply, prompt version — 27 of 45
     } finally {
       vi.unstubAllGlobals();
     }

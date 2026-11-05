@@ -152,7 +152,7 @@ describe("POST /posts", () => {
     const { res, body, cost } = await post("/posts", submit("p1"));
     expect(res.status).toBe(200);
     expect(body).toEqual({ status: "queued", verdict: "maybe", reason: "fixture mode: not asked" });
-    expect(cost).toBeLessThanOrEqual(8);
+    expect(cost).toBeLessThanOrEqual(9); // REBASED 2026-11-05 (import trail): + the stage's trail event
     const rows = await db.select().from(savedPosts);
     expect(rows).toHaveLength(1);
     expect(rows[0]).toMatchObject({ userId, source: SRC, sourceKey: "p1", status: "queued", creatorHandle: "someone" });
@@ -188,7 +188,7 @@ describe("POST /posts with the model (filter)", () => {
     vi.stubGlobal("fetch", answer('{"verdict":"not","reason":"a recipe"}'));
     const { body, cost } = await post("/posts", submit("m1"), auth, await live());
     expect(body).toEqual({ status: "filtered_out", verdict: "not", reason: "a recipe" });
-    expect(cost).toBeLessThanOrEqual(15);
+    expect(cost).toBeLessThanOrEqual(16); // REBASED 2026-11-05 (import trail): + the stage's trail event
   });
   it("makes ONE model call and ONE usage row for two simultaneous submits of a new key", async () => {
     const fetchMock = answer('{"verdict":"training","reason":"drills"}');

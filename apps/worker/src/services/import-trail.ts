@@ -6,12 +6,13 @@
  * Bounds never fail a stage: a summary is one line of at most SUMMARY_MAX; a detail past EVENT_DETAIL_MAX keeps a head
  * and moves whole into a `detail` blob; a blob past BLOB_MAX is cut there and marked `cut`.
  */
+import { sql } from "drizzle-orm";
 import { newId } from "@rg/domain";
 import { schema } from "@rg/database";
 import type { BlobKind, ImportStage, TrailSource, TrailStatus } from "@rg/saves";
 import { insertBatches, type AtomicStatement, type Db } from "./db.js";
 
-const { importEvents, importBlobs, promptVersions } = schema;
+const { importEvents, importBlobs, promptVersions, savedPosts } = schema;
 
 export const SUMMARY_MAX = 300;
 export const EVENT_DETAIL_MAX = 64_000;
@@ -105,4 +106,25 @@ export function trailStatements(db: Db, userId: string, postId: string, events: 
 /** A prompt version's system text, written on its first use and never again (insert-or-ignore). */
 export function promptVersionStatement(db: Db, version: string, kind: string, systemText: string, at: string): AtomicStatement {
   return db.insert(promptVersions).values({ version, kind, systemText, firstUsedAt: at }).onConflictDoNothing();
+}
+
+/**
+ * One event for EVERY post of a batch, in one set-based statement (a batch may hold dozens of posts, and its routes
+ * have a statement budget): the batch-level stages — cut into a batch, saved, the owner's choices, put aside.
+ */
+export function batchTrailStatement(
+  db: Db,
+  userId: string,
+  batchId: string,
+  e: Pick<TrailEventInput, "stage" | "status" | "summary" | "detail"> & { source?: TrailEventInput["source"] },
+  at: string,
+): AtomicStatement {
+  const detail = e.detail === undefined ? null : JSON.stringify(e.detail);
+  return db
+    .insert(importEvents)
+    .select(
+      sql`SELECT lower(hex(randomblob(16))), ${userId}, ${savedPosts.id}, ${batchId}, NULL, ${e.stage}, ${e.source ?? "worker"},
+        ${e.status}, ${summaryLine(e.summary)}, ${detail}, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, 0, ${at}
+        FROM ${savedPosts} WHERE ${savedPosts.userId} = ${userId} AND ${savedPosts.batchId} = ${batchId}`,
+    );
 }

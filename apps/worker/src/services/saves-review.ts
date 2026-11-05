@@ -41,6 +41,7 @@ import { makeLibraryIndex } from "@rg/workout";
 import type { Env } from "../env.js";
 import { forgetAccountLibrary, loadAccountLibrary } from "./account-library.js";
 import { runAtomically, runAtomicallyClaim, type Db } from "./db.js";
+import { batchTrailStatement } from "./import-trail.js";
 import { buildPersonalRecord } from "./personal-moves.js";
 import { validatePersonalRecord } from "./personal-records.js";
 import {
@@ -728,8 +729,13 @@ export async function fitBatch(
   // A saved batch: its choices (when sent) only while the claim holds, then the claim itself (the transaction's last
   // write). Not sent, the stored choices stand.
   const gate = fitClaimSql(userId, batchId, "saved", now);
+  const picked = choices ? Object.values(choices) : [];
+  const said = picked.length
+    ? ` — ${picked.filter((c) => c === "include").length} in, ${picked.filter((c) => c === "skip").length} out, the rest the coach's call`
+    : "";
   const claimed = await runAtomicallyClaim(db, [
     ...(choices ? [choicesWrite(db, userId, batchId, choices, gate)] : []),
+    batchTrailStatement(db, userId, batchId, { stage: "choice", source: "owner", status: "info", summary: `You chose Fit them in${said}`, detail: { batchId, choices: choices ?? null } }, now),
     db
       .update(saveBatches)
       .set({ fitStartedAt: now, dismissedAt: null })
@@ -768,7 +774,11 @@ export async function dismissBatch(db: Db, userId: string, batchId: string, now:
       ),
     )
     .returning({ id: saveBatches.id });
-  if (done.length) return "ok";
+  if (done.length) {
+    // Each post's trail: the owner put the batch aside (design 2026-11-05 §4).
+    await runAtomically(db, [batchTrailStatement(db, userId, batchId, { stage: "choice", source: "owner", status: "info", summary: "Put aside for now", detail: { batchId } }, now)]);
+    return "ok";
+  }
   return (await batchExists(db, userId, batchId)) ? "conflict" : "not_found";
 }
 

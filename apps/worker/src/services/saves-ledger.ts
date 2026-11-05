@@ -6,6 +6,7 @@ import { failureWords } from "@rg/saves";
 import { nowInstant } from "@rg/domain";
 import { sha256Hex } from "../auth/crypto.js";
 import { runAtomically, type Db } from "./db.js";
+import { trailStatements } from "./import-trail.js";
 import { importSpend } from "./saves-budget.js";
 import { CLAIM_STALE_MS } from "./saves-filter.js";
 
@@ -41,7 +42,7 @@ export async function savedPostId(userId: string, source: string, key: string): 
  */
 export async function upsertPost(db: Db, userId: string, p: PostSubmit, now: string): Promise<SavedPostRow> {
   const id = await savedPostId(userId, p.source, p.key);
-  await db
+  const inserted = await db
     .insert(savedPosts)
     .values({
       id,
@@ -63,7 +64,21 @@ export async function upsertPost(db: Db, userId: string, p: PostSubmit, now: str
       seeded: !!p.seed,
       updatedAt: now,
     })
-    .onConflictDoNothing({ target: [savedPosts.userId, savedPosts.source, savedPosts.sourceKey] });
+    .onConflictDoNothing({ target: [savedPosts.userId, savedPosts.source, savedPosts.sourceKey] })
+    .returning({ id: savedPosts.id });
+  // A new post's first trail step (design 2026-11-05 §4); a repeat submit is no step at all.
+  if (inserted.length > 0) {
+    await runAtomically(
+      db,
+      trailStatements(db, userId, id, [
+        {
+          stage: "submit", source: "extension", status: "ok",
+          summary: p.seed ? `Brought in with the first import: ${p.seed.reason}` : "Found by the extension",
+          detail: { source: p.source, mediaType: p.mediaType, captionChars: p.caption.length, hashtags: p.hashtags.length, cover: !!p.cover },
+        },
+      ], now),
+    );
+  }
   const [row] = await db.select().from(savedPosts).where(eq(savedPosts.id, id)).limit(1);
   if (!row) throw new Error("saved post vanished after upsert");
   return row;
