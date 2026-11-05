@@ -19,7 +19,11 @@ export const FILTER_MODEL_DEFAULT = "google/gemini-3.1-flash-lite";
 export const TRAINING_WORDS: readonly string[] = [
   "workout", "sets", "reps", "mobility", "stretch", "drill", "exercise", "routine", "warm up", "hold", "rounds",
 ];
-export const FILTER_MAX_TOKENS = 120;
+/**
+ * Room for the verdict and any reasoning the model does first: output is billed only as written, and a reply cut at
+ * the cap failed to parse and read as a paid "maybe" (audit 2026-11-05; the owner's rule: never truncate a reasonable call).
+ */
+export const FILTER_MAX_TOKENS = 1_000;
 /** A creator's earlier decided posts that must agree before the creator alone decides. */
 export const CREATOR_MIN_POSTS = 3;
 /** A claim older than this is a worker that died mid-filter; the post may be claimed again. */
@@ -121,7 +125,8 @@ export async function filterPost(
       ),
     )
     .groupBy(effective);
-  const only = history.length === 1 ? history[0]! : null;
+  // Posts with no handle are no one creator: they never decide each other (audit 2026-11-05).
+  const only = post.creatorHandle && history.length === 1 ? history[0]! : null;
   if (only && Number(only.n) >= CREATOR_MIN_POSTS && (only.verdict === "training" || only.verdict === "not")) {
     const verdict = only.verdict;
     return finish(
@@ -141,7 +146,7 @@ export async function filterPost(
   if (gateway.kind === "canned") {
     return finish(db, post, { status: "queued", verdict: "maybe", stage: "model", reason: "fixture mode: not asked" }, now);
   }
-  const failed = (code: SaveErrorCode): Promise<FilterOutcome> =>
+  const failed = (code: SaveErrorCode, costMicros = 0): Promise<FilterOutcome> =>
     finish(
       db,
       post,
@@ -149,6 +154,7 @@ export async function filterPost(
         ? { status: "queued", verdict: "maybe", stage: "keyword", reason: "model unavailable; a training word in the caption" }
         : { status: "seen", errorCode: code },
       now,
+      costMicros,
     );
   if (gateway.kind === "no_key") return failed("model_failed");
 
@@ -202,6 +208,8 @@ export async function filterPost(
     });
     settled = true;
     const verdict = parseVerdict(result.content);
+    // A reply that isn't the format is the model failing, never a verdict: retried next check (audit 2026-11-05).
+    if (!verdict) return await failed("model_failed", cost);
     return await finish(
       db,
       post,
@@ -220,14 +228,14 @@ export async function filterPost(
   }
 }
 
-function parseVerdict(content: string): FilterVerdict {
+function parseVerdict(content: string): FilterVerdict | null {
   const raw = extractJson(content);
   const lenient =
     raw && typeof raw === "object" && typeof (raw as { reason?: unknown }).reason === "string"
       ? { ...(raw as object), reason: (raw as { reason: string }).reason.slice(0, 160) }
       : raw;
   const parsed = filterVerdictSchema.safeParse(lenient);
-  return parsed.success ? parsed.data : { verdict: "maybe", reason: "unclear" };
+  return parsed.success ? parsed.data : null;
 }
 
 /**

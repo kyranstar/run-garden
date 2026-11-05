@@ -10,7 +10,7 @@ import type { Env } from "../src/env.js";
 import type { Db } from "../src/services/db.js";
 import { overridePost } from "../src/services/saves-ledger.js";
 import { loadOutOfCredits } from "../src/services/ai-credits.js";
-import { FILTER_MODEL_DEFAULT, filterPost, TRAINING_WORDS } from "../src/services/saves-filter.js";
+import { FILTER_MAX_TOKENS, FILTER_MODEL_DEFAULT, filterPost, TRAINING_WORDS } from "../src/services/saves-filter.js";
 import { IMPORT_BUDGET_MICROS, IMPORT_KINDS } from "../src/services/saves-budget.js";
 import { savedPostId } from "../src/services/saves-ledger.js";
 import { makeTestDb, makeTestUser } from "./helpers.js";
@@ -94,9 +94,35 @@ describe("filterPost", () => {
     expect([a.status, b.status]).toEqual(["queued", "queued"]);
   });
 
-  it("queues malformed JSON as 'maybe' with reason 'unclear'", async () => {
-    const out = await filterPost(db, env(), userId, await seen("p"), NOW, gateway("sorry, no json here").fetchImpl);
-    expect(out).toMatchObject({ status: "queued", verdict: "maybe", reason: "unclear", stage: "model" });
+  it("a reply that doesn't parse is a failure, retried next check — never a paid 'maybe' that looks like a verdict (audit filter bug)", async () => {
+    const row = await seen("p", { caption: "a synthetic caption about nothing", hashtags: [] });
+    const out = await filterPost(db, env(), userId, row, NOW, gateway("sorry, no json here").fetchImpl);
+    expect(out).toMatchObject({ status: "seen", errorCode: "model_failed" });
+    expect(await reload(row.id)).toMatchObject({ status: "seen", lastErrorCode: "model_failed", filterVerdict: null });
+    // The call was made and paid for: it is settled at its cost, not left at the worst case.
+    const [usage] = await db.select().from(llmUsage);
+    expect(usage!.requestFingerprint).toBeNull();
+    expect(usage!.outputTokens).toBe(30);
+  });
+
+  it("a reply that doesn't parse still lets a caption with a training word through, as a model failure does", async () => {
+    const out = await filterPost(db, env(), userId, await seen("p", { caption: "my mobility routine" }), NOW, gateway("no json").fetchImpl);
+    expect(out).toMatchObject({ status: "queued", verdict: "maybe", stage: "keyword" });
+  });
+
+  it("asks for room to answer: 1,000 output tokens, never cut short (owner rule: never truncate a reasonable call)", async () => {
+    const gw = gateway('{"verdict":"training","reason":"drills"}');
+    await filterPost(db, env(), userId, await seen("p"), NOW, gw.fetchImpl);
+    expect(FILTER_MAX_TOKENS).toBe(1000);
+    expect(gw.calls[0].body.max_tokens).toBe(1000);
+  });
+
+  it("never lets posts with no creator handle decide each other by the creator rule", async () => {
+    for (const k of ["a", "b", "c"]) await seen(k, { creatorHandle: "", status: "filtered_out", filterVerdict: "not", filterStage: "model" });
+    const gw = gateway('{"verdict":"training","reason":"drills"}');
+    const out = await filterPost(db, env(), userId, await seen("new", { creatorHandle: "" }), NOW, gw.fetchImpl);
+    expect(out.stage).toBe("model");
+    expect(gw.spy).toHaveBeenCalledTimes(1);
   });
 
   it("reads a fenced JSON answer", async () => {
@@ -135,7 +161,7 @@ describe("filterPost", () => {
     const body = gw.calls[0].body;
     expect(gw.calls[0].url).toBe("https://gw.test/v1/chat/completions");
     expect(body.model).toBe(FILTER_MODEL_DEFAULT);
-    expect(body.max_tokens).toBe(120);
+    expect(body.max_tokens).toBe(FILTER_MAX_TOKENS);
     const [system, user] = body.messages;
     expect(system.role).toBe("system");
     expect(system.content).not.toContain("IGNORE");

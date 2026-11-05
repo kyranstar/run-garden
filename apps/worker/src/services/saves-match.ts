@@ -55,7 +55,8 @@ export const MAX_CANDIDATES = 3;
 /** The judge is the filter's small model (`SAVES_FILTER_MODEL` overrides both). */
 export const MATCH_MODEL_DEFAULT = FILTER_MODEL_DEFAULT;
 /** A reply names at most 12 moves in a few words each. */
-export const MATCH_MAX_TOKENS = 300;
+/** Room to answer for every move with headroom (the owner's rule: never truncate a reasonable call; billed as written). */
+export const MATCH_MAX_TOKENS = 2_000;
 const MATCH_TYPICAL_OUTPUT_TOKENS = 60;
 const CALL_TIMEOUT_MS = 30_000;
 /** `saved_post_moves.confidence` is a number; these are what each word stores. */

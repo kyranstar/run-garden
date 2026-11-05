@@ -247,6 +247,13 @@ describe("matchPost", () => {
     expect(JSON.stringify(gw.calls[0].messages)).not.toContain("move 1");
   });
 
+  it("the judge has room to answer: 2,000 output tokens (owner rule: never truncate a reasonable call)", async () => {
+    const id = await extracted("k", [move("the 90 90 switch")]);
+    const gw = judge({ matches: [{ move: 0, id: HIP_SWITCH.id }] });
+    await matchPost(db, env(), userId, id, NOW, gw.fetchImpl);
+    expect(gw.calls[0].max_tokens).toBe(2000);
+  });
+
   it("the judge's spend is reserved and settled under import_match, and lands on the post", async () => {
     const id = await extracted("k", [move("the 90 90 switch")]);
     await matchPost(db, env(), userId, id, NOW, judge({ matches: [{ move: 0, id: HIP_SWITCH.id }] }).fetchImpl);
