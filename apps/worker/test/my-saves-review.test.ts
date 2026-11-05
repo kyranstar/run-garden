@@ -300,7 +300,7 @@ describe("PUT /moves/:id", () => {
     expect(await moveRow(quad)).toEqual(before);
   });
 
-  it("changes only what is sent, keeps the id, marks the move edited — 4 statements", async () => {
+  it("changes only what is sent, keeps the id, marks the move edited — 6 statements (a correction and its trail, import trail)", async () => {
     const { quad } = await seed();
     const before = (await moveRow(quad))!.record as ExerciseRecord;
     const profile = Object.values(PROFILES)[0]!;
@@ -311,7 +311,7 @@ describe("PUT /moves/:id", () => {
     });
     expect(res.status, JSON.stringify(res.body)).toBe(200);
     // The session, the restore guard, the move, its write.
-    expect(statements.length).toBe(4);
+    expect(statements.length).toBe(6); // REBASED 2026-11-05 (import trail): + a correction and an event on each post
     const row = (await moveRow(quad))!;
     const rec = row.record as ExerciseRecord;
     expect(row).toMatchObject({ editedByOwner: true, updatedAt: NOW, status: "pending" });
@@ -365,7 +365,7 @@ describe("POST /post-moves/:id/rematch", () => {
     const res = await call("POST", `/post-moves/${link.id}/rematch`, { to: "gobletSquat" });
     expect(res.status, JSON.stringify(res.body)).toBe(200);
     // The session, the restore guard, the link with all it needs, then one transaction: the link and the merge.
-    expect(statements.length).toBe(5);
+    expect(statements.length).toBe(7); // REBASED 2026-11-05 (import trail): + an event and the link's correction
     expect(await linkAt(b, 1)).toMatchObject({ moveId: "gobletSquat", moveKind: "library", checkFlag: false, status: "pending" });
     expect(await moveRow(neck)).toMatchObject({ status: "merged", mergedInto: "gobletSquat", updatedAt: NOW });
   });
@@ -376,7 +376,7 @@ describe("POST /post-moves/:id/rematch", () => {
     const res = await call("POST", `/post-moves/${link.id}/rematch`, { to: null });
     expect(res.status, JSON.stringify(res.body)).toBe(200);
     // The session, the restore guard, the link with the post's reading, then one transaction: the move and the link.
-    expect(statements.length).toBe(5);
+    expect(statements.length).toBe(7); // REBASED 2026-11-05 (import trail): + an event and the link's correction
     const now = await linkAt(a, 1);
     expect(res.body).toEqual({ ok: true, move: { id: now.moveId, kind: "personal" } });
     expect(isPersonalId(now.moveId)).toBe(true);
@@ -435,7 +435,7 @@ describe("POST /post-moves/:id/rematch", () => {
     const { a, b, quad } = await seed();
     expect((await call("POST", `/post-moves/${(await linkAt(a, 0)).id}/rematch`, { to: "gobletSquat" })).status).toBe(200);
     // No merge: the session, the restore guard, the link, its write.
-    expect(statements.length).toBe(4);
+    expect(statements.length).toBe(6); // REBASED 2026-11-05 (import trail): + an event and the link's correction
     expect((await linkAt(a, 0)).moveId).toBe("gobletSquat");
     expect((await linkAt(b, 0)).moveId).toBe(quad);
     expect(await moveRow(quad)).toMatchObject({ status: "pending", mergedInto: null });
@@ -447,7 +447,7 @@ describe("POST /post-moves/:id/rematch", () => {
     expect(res.status, JSON.stringify(res.body)).toBe(200);
     expect(res.body).toEqual({ ok: true, move: { id: quad, kind: "personal" } });
     // The session, the restore guard, the link with all it needs, then one transaction: the link and the merge.
-    expect(statements.length).toBe(5);
+    expect(statements.length).toBe(7); // REBASED 2026-11-05 (import trail): + an event and the link's correction
     expect(await linkAt(b, 1)).toMatchObject({ moveId: quad, moveKind: "personal", checkFlag: false, status: "pending" });
     expect(await moveRow(neck)).toMatchObject({ status: "merged", mergedInto: quad, updatedAt: NOW });
     expect(await moveRow(quad)).toMatchObject({ status: "pending", mergedInto: null });
@@ -506,7 +506,7 @@ describe("remove and save", () => {
     const res = await call("POST", `/post-moves/${gone}/remove`);
     expect(res.status).toBe(200);
     // The session, the restore guard, the write.
-    expect(statements.length).toBe(3);
+    expect(statements.length).toBe(4); // REBASED 2026-11-05 (import trail): + an event on the post
     expect((await linkAt(b, 1)).status).toBe("removed");
     expect((await call("POST", `/post-moves/${gone}/remove`)).status).toBe(409);
     // Refused: the write matched nothing, then the row is read to say why.

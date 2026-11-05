@@ -12,7 +12,7 @@ import { schema } from "@rg/database";
 import type { BlobKind, ImportStage, TrailSource, TrailStatus } from "@rg/saves";
 import { insertBatches, type AtomicStatement, type Db } from "./db.js";
 
-const { importEvents, importBlobs, promptVersions, savedPosts } = schema;
+const { importEvents, importBlobs, promptVersions, savedPosts, savedPostMoves, importCorrections } = schema;
 
 export const SUMMARY_MAX = 300;
 export const EVENT_DETAIL_MAX = 64_000;
@@ -127,4 +127,45 @@ export function batchTrailStatement(
         ${e.status}, ${summaryLine(e.summary)}, ${detail}, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, 0, ${at}
         FROM ${savedPosts} WHERE ${savedPosts.userId} = ${userId} AND ${savedPosts.batchId} = ${batchId}`,
     );
+}
+
+/** One event on EVERY post a move came from (its links), in one set-based statement: the owner's edit of a move. */
+export function moveTrailStatement(
+  db: Db,
+  userId: string,
+  moveId: string,
+  e: Pick<TrailEventInput, "stage" | "status" | "summary" | "detail"> & { source?: TrailEventInput["source"] },
+  at: string,
+): AtomicStatement {
+  const detail = e.detail === undefined ? null : JSON.stringify(e.detail);
+  return db
+    .insert(importEvents)
+    .select(
+      sql`SELECT lower(hex(randomblob(16))), ${userId}, post_id, NULL, ${moveId}, ${e.stage}, ${e.source ?? "owner"},
+        ${e.status}, ${summaryLine(e.summary)}, ${detail}, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, 0, ${at}
+        FROM (SELECT DISTINCT ${savedPostMoves.postId} AS post_id FROM ${savedPostMoves}
+          WHERE ${savedPostMoves.userId} = ${userId} AND ${savedPostMoves.moveId} = ${moveId})`,
+    );
+}
+
+export interface CorrectionInput {
+  target: "move" | "link" | "insight" | "reading";
+  targetId: string;
+  field: string;
+  before: unknown;
+  after: unknown;
+  why: string;
+  basis: "evidence" | "owner";
+  by: "coach" | "owner";
+  evidence?: unknown;
+  proposalId?: string;
+}
+
+/** Correction rows (design 2026-11-05 §6.1): every change to imported data, with before, after, why and basis. */
+export function correctionStatements(db: Db, userId: string, rows: readonly CorrectionInput[], at: string): AtomicStatement[] {
+  const values = rows.map((r) => ({
+    id: newId(), userId, target: r.target, targetId: r.targetId, field: r.field, before: r.before ?? null, after: r.after ?? null,
+    why: r.why, basis: r.basis, evidence: r.evidence ?? null, by: r.by, proposalId: r.proposalId ?? null, at,
+  }));
+  return insertBatches(values).map((chunk) => db.insert(importCorrections).values(chunk));
 }

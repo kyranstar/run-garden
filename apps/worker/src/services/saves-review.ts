@@ -30,7 +30,7 @@
  */
 import { and, eq, isNull, sql } from "drizzle-orm";
 import { schema } from "@rg/database";
-import { newId } from "@rg/domain";
+import { newId, nowInstant } from "@rg/domain";
 import { EXERCISES, type ExerciseRecord } from "@rg/exercise-library";
 import {
   extractedMoveSchema, FIT_SAVES_REQUEST, groupCounts, isPersonalId, personalMoveId, savesCardLine,
@@ -41,7 +41,7 @@ import { makeLibraryIndex } from "@rg/workout";
 import type { Env } from "../env.js";
 import { forgetAccountLibrary, loadAccountLibrary } from "./account-library.js";
 import { runAtomically, runAtomicallyClaim, type Db } from "./db.js";
-import { batchTrailStatement } from "./import-trail.js";
+import { batchTrailStatement, correctionStatements, moveTrailStatement, trailStatements } from "./import-trail.js";
 import { buildPersonalRecord } from "./personal-moves.js";
 import { validatePersonalRecord } from "./personal-records.js";
 import {
@@ -315,10 +315,25 @@ export async function editPersonalMove(db: Db, userId: string, id: string, patch
   const next = applyPatch({ ...rec, id }, patch);
   const problems = validatePersonalRecord(next);
   if (problems.length) return { kind: "invalid", issues: problems.map((p) => (p.startsWith(`${id}: `) ? p.slice(id.length + 2) : p)) };
-  await db
-    .update(personalMoves)
-    .set({ record: next, editedByOwner: true, updatedAt: now })
-    .where(and(eq(personalMoves.id, id), eq(personalMoves.userId, userId), eq(personalMoves.status, row.status)));
+  // What the edit changed, field by field: a correction each (basis "owner"), and an event on each post the move came
+  // from — the record's history is never just an overwrite (design 2026-11-05 §6.1).
+  const before = rec as unknown as Record<string, unknown>;
+  const after = next as unknown as Record<string, unknown>;
+  const changed = Object.keys(after).filter((k) => k !== "id" && JSON.stringify(before[k]) !== JSON.stringify(after[k]));
+  if (changed.length === 0) return { kind: "ok", record: next };
+  await runAtomically(db, [
+    db
+      .update(personalMoves)
+      .set({ record: next, editedByOwner: true, updatedAt: now })
+      .where(and(eq(personalMoves.id, id), eq(personalMoves.userId, userId), eq(personalMoves.status, row.status))),
+    ...correctionStatements(
+      db,
+      userId,
+      changed.map((field) => ({ target: "move" as const, targetId: id, field, before: before[field], after: after[field], why: "You edited it", basis: "owner" as const, by: "owner" as const })),
+      now,
+    ),
+    moveTrailStatement(db, userId, id, { stage: "choice", status: "info", summary: `You edited ${next.name}: ${changed.join(", ")}`, detail: { fields: changed } }, now),
+  ]);
   if (row.status === "active") forgetAccountLibrary(db, userId);
   return { kind: "ok", record: next };
 }
@@ -397,6 +412,7 @@ export async function rematchLink(db: Db, userId: string, linkId: string, to: st
     const built = buildPersonalRecord(id, draft.data);
     if (!built.ok) return { kind: "invalid", issues: built.issues };
     await runAtomically(db, [
+      ...rematchTrail(db, userId, link, linkId, draft.data.name, null, now),
       db.insert(personalMoves).values({
         id, userId, status: "pending", mergedInto: null, batchId: link.batchId, record: built.record, editedByOwner: false, createdAt: now, updatedAt: now,
       }),
@@ -417,7 +433,16 @@ export async function rematchLink(db: Db, userId: string, linkId: string, to: st
   if (!target) return { kind: "target_not_found" };
   if (target.id === link.moveId) return { kind: "conflict", error: "same_move" };
   const merge = ownPending && Number(link.others) === 0;
+  const named = (() => {
+    try {
+      const d = link.draft ? (JSON.parse(link.draft) as { name?: unknown }) : null;
+      return typeof d?.name === "string" ? d.name : "this move";
+    } catch {
+      return "this move";
+    }
+  })();
   await runAtomically(db, [
+    ...rematchTrail(db, userId, link, linkId, named, target.id, now),
     db.update(savedPostMoves).set({ moveId: target.id, moveKind: target.kind, checkFlag: false, likeMoveId: null }).where(pendingLink),
     ...(merge
       ? [
@@ -433,14 +458,47 @@ export async function rematchLink(db: Db, userId: string, linkId: string, to: st
   return { kind: "ok", moveId: target.id, moveKind: target.kind };
 }
 
+/** The owner's re-match on the post's trail: an event, and a correction of the link (before, after, basis "owner"). */
+function rematchTrail(
+  db: Db,
+  userId: string,
+  link: { postId: string; position: number; moveId: string },
+  linkId: string,
+  name: string,
+  to: string | null,
+  now: string,
+) {
+  return [
+    ...trailStatements(db, userId, link.postId, [
+      {
+        stage: "choice", source: "owner", status: "info", moveId: to ?? undefined,
+        summary: to ? `You said ${name} is the same as another move` : `You said ${name} is not that move — it's a new move of its own`,
+        detail: { position: link.position, from: link.moveId, to },
+      },
+    ], now),
+    ...correctionStatements(db, userId, [
+      { target: "link", targetId: linkId, field: "move", before: link.moveId, after: to ?? "a new move of its own", why: "You re-matched it", basis: "owner", by: "owner" },
+    ], now),
+  ];
+}
+
 /** Take a pending row out of the batch: it is left out of the save. D1 statements: 1 (2 when it can't be). */
 export async function removeLink(db: Db, userId: string, linkId: string): Promise<"ok" | "not_found" | "conflict"> {
   const done = await db
     .update(savedPostMoves)
     .set({ status: "removed" })
     .where(and(eq(savedPostMoves.id, linkId), eq(savedPostMoves.userId, userId), eq(savedPostMoves.status, "pending")))
-    .returning({ id: savedPostMoves.id });
-  if (done.length) return "ok";
+    .returning({ id: savedPostMoves.id, postId: savedPostMoves.postId, position: savedPostMoves.position });
+  if (done.length) {
+    // The post's trail: the owner took this move out (its name read from the post's reading, in the statement).
+    const [l] = done;
+    await db.run(sql`INSERT INTO import_events (id, user_id, post_id, stage, source, status, summary, detail, rebuilt, at)
+      SELECT lower(hex(randomblob(16))), ${userId}, ${l!.postId}, 'choice', 'owner', 'info',
+        'You removed ' || coalesce(json_extract(p.extraction, '$.moves[' || cast(${l!.position} as integer) || '].name'), 'a move') || ' from the batch',
+        ${JSON.stringify({ position: l!.position })}, 0, ${nowInstant()}
+      FROM saved_posts p WHERE p.id = ${l!.postId} AND p.user_id = ${userId}`);
+    return "ok";
+  }
   const [row] = await db
     .select({ id: savedPostMoves.id })
     .from(savedPostMoves)
