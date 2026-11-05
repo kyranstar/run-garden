@@ -13,11 +13,20 @@ const DEFAULT_RANGE: Readonly<Record<DoseType, readonly [number, number]>> = {
   reps: [8, 12], time: [20, 40], breaths: [5, 8], carry: [20, 40],
 };
 
-const span = (low: string, high: string | undefined, scale = 1): [number, number] => [Number(low) * scale, Number(high ?? low) * scale];
+const span = (low: string, high: string | undefined, scale = 1): [number, number] => [
+  Math.round(Number(low) * scale),
+  Math.round(Number(high ?? low) * scale),
+];
 const SETS_BY_COUNT = /\b(\d+)\s*[x×]\s*(\d+)(?:\s*[-–]\s*(\d+))?(?![\d\s]*(?:sec|s\b|min|kg|lb|m\b))/i;
 const COUNTED = /\b(\d+)(?:\s*(?:-|–|to)\s*(\d+))?\s*(?:[a-z]+\s+)?(?:reps?|repetitions?|circles?|reaches|sweeps?|lifts?|raises?|swings?)\b/i;
-const SECONDS = /\b(\d+)(?:\s*(?:-|–|to)\s*(\d+))?\s*(?:seconds?|secs?|s)\b/i;
-const MINUTES = /\b(\d+)(?:\s*(?:-|–|to)\s*(\d+))?\s*(?:minutes?|mins?)\b/i;
+// A clock's number may follow an "x" ("2x30s") and may be a decimal ("1.5 min"): a word boundary before it found
+// neither, so "2x30s" lost its 30 s and "1.5 min" read as 5 minutes (audit 2026-11-05, bug 3).
+const SECONDS = /(?<![\d.])(\d+(?:\.\d+)?)(?:\s*(?:-|–|to)\s*(\d+(?:\.\d+)?))?\s*(?:seconds?|secs?|s)\b/i;
+const MINUTES = /(?<![\d.])(\d+(?:\.\d+)?)(?:\s*(?:-|–|to)\s*(\d+(?:\.\d+)?))?\s*(?:minutes?|mins?)\b/i;
+/** "1:30": minutes and seconds on a clock. */
+const CLOCK = /(?<![\d.:])(\d{1,2}):([0-5]\d)(?![\d:])/;
+/** "10 each side", "8/side", "6-8 per leg": a count with no unit, per side. */
+const PER_SIDE = /(?<![\d.])(\d+)(?:\s*(?:-|–|to)\s*(\d+))?\s*(?:each|per|a|\/)\s*(?:side|leg|arm|foot|way)s?\b/i;
 const BREATHS = /\b(\d+)(?:\s*(?:-|–|to)\s*(\d+))?\s*(?:[a-z]+\s+)?breaths?\b/i;
 const SETS = /\b(\d+)(?:\s*(?:-|–|to)\s*(\d+))?\s*(?:sets?|rounds?)\b/i;
 const SETS_TIMES = /\b(\d+)\s*[x×]\s*\d/i;
@@ -35,14 +44,28 @@ export function doseFromText(text: string): { type?: DoseType; range?: [number, 
   const sets = setsWords ? { sets: span(setsWords[1]!, setsWords[2]) } : {};
   const counted = COUNTED.exec(text);
   if (counted) return { type: "reps", range: span(counted[1]!, counted[2]), ...sets };
+  const clock = CLOCK.exec(text);
+  if (clock) {
+    const secs = Number(clock[1]) * 60 + Number(clock[2]);
+    return { type: "time", range: [secs, secs], ...sets };
+  }
   const seconds = SECONDS.exec(text);
   if (seconds) return { type: "time", range: span(seconds[1]!, seconds[2]), ...sets };
   const minutes = MINUTES.exec(text);
   if (minutes) return { type: "time", range: span(minutes[1]!, minutes[2], 60), ...sets };
   const breaths = BREATHS.exec(text);
   if (breaths) return { type: "breaths", range: span(breaths[1]!, breaths[2]), ...sets };
+  // A side's count names no unit: like "3 x 15", it counts whatever the move counts.
+  const perSide = PER_SIDE.exec(text);
+  if (perSide) return { range: span(perSide[1]!, perSide[2]), ...sets };
   return { ...(/\bhold\b/i.test(text) ? { type: "time" as const } : {}), ...sets };
 }
+
+/**
+ * Where a record's dose numbers came from: the reading's own range (`reading`), the dose's words (`post`), or the
+ * plain default no post stated (`default`) — so a default is never shown or used as the creator's prescription.
+ */
+export type DoseOrigin = "reading" | "post" | "default";
 
 /**
  * How a draft counts: as it says, else as its dose's words say, else a carry by its seconds, a hold or relaxed stretch by
@@ -59,20 +82,30 @@ function doseTypeOf(draft: ExtractedMove): DoseType {
   return draft.load === "external" ? "carry" : "time";
 }
 
-function doseOf(draft: ExtractedMove): Dose {
+function doseWithOrigin(draft: ExtractedMove): { dose: Dose; origin: DoseOrigin } {
   const type = doseTypeOf(draft);
   const said = doseFromText(draft.dose.text);
   // The words' numbers only where they speak of the same thing: seconds for a timed carry, not a count for a hold. Words
   // that name no unit count whatever the move counts.
   const saidFits = said.type === undefined || said.type === type || (said.type === "time" && type === "carry");
   const sets = draft.dose.sets ?? said.sets;
+  const fromWords = saidFits ? said.range : undefined;
+  const origin: DoseOrigin = draft.dose.range ? "reading" : fromWords ? "post" : "default";
   return {
-    type,
-    range: draft.dose.range ?? (saidFits ? said.range : undefined) ?? DEFAULT_RANGE[type],
-    ...(sets ? { sets } : {}),
-    ...(draft.dose.secsPerRep ? { secsPerRep: draft.dose.secsPerRep } : {}),
+    dose: {
+      type,
+      range: draft.dose.range ?? fromWords ?? DEFAULT_RANGE[type],
+      ...(sets ? { sets } : {}),
+      ...(draft.dose.secsPerRep ? { secsPerRep: draft.dose.secsPerRep } : {}),
+    },
+    origin,
   };
 }
+
+const doseOf = (draft: ExtractedMove): Dose => doseWithOrigin(draft).dose;
+
+/** Where the dose `toPersonalRecord` builds for this draft takes its numbers from. */
+export const doseOriginOf = (draft: ExtractedMove): DoseOrigin => doseWithOrigin(draft).origin;
 
 /** The draft's steps, ending with the other side when a one-sided move's words never get there. */
 function stepsOf(draft: ExtractedMove): string[] {

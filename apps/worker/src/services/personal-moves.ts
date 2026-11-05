@@ -13,7 +13,7 @@ import type { PersonalMoveRow } from "@rg/database";
 import { moveProblems, type ExerciseRecord } from "@rg/exercise-library";
 import { personalMoveId, type ExtractedMove } from "@rg/saves";
 import type { Db } from "./db.js";
-import { toPersonalRecord, validatePersonalRecord, repairDraft } from "./personal-records.js";
+import { doseOriginOf, toPersonalRecord, validatePersonalRecord, repairDraft, type DoseOrigin } from "./personal-records.js";
 
 const { personalMoves } = schema;
 
@@ -62,7 +62,7 @@ export const newPersonalMoveId = (userId: string, postId: string, position: numb
 export function buildPersonalRecord(
   id: string,
   draft: ExtractedMove,
-): { ok: true; record: ExerciseRecord; repairs: string[] } | { ok: false; issues: string[] } {
+): { ok: true; record: ExerciseRecord; repairs: string[]; doseOrigin: DoseOrigin } | { ok: false; issues: string[] } {
   const repaired = repairDraft(draft);
   let record: ExerciseRecord;
   try {
@@ -73,7 +73,7 @@ export function buildPersonalRecord(
   const problems = validatePersonalRecord(record);
   if (problems.length) return { ok: false, issues: problems.map((p) => safeIssue(id, p)) };
   // What repair couldn't settle isn't worth refusing a paid reading over: it flags the move "check this" with the repairs.
-  return { ok: true, record, repairs: [...repaired.repairs, ...moveProblems(record)] };
+  return { ok: true, record, repairs: [...repaired.repairs, ...moveProblems(record)], doseOrigin: doseOriginOf(repaired.draft) };
 }
 
 /**

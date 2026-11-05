@@ -221,6 +221,30 @@ describe("a reading can't make the audit's mistakes", () => {
     expect(doseFromText("As prescribed")).toEqual({});
   });
 
+  it("reads a stated dose whole: decimals, NxMs, m:ss, a side's count (audit bug 3)", () => {
+    expect(doseFromText("1.5 min")).toEqual({ type: "time", range: [90, 90] });
+    expect(doseFromText("0.5 min")).toEqual({ type: "time", range: [30, 30] });
+    expect(doseFromText("1-1.5 minutes")).toEqual({ type: "time", range: [60, 90] });
+    expect(doseFromText("2x30s")).toEqual({ type: "time", range: [30, 30], sets: [2, 2] });
+    expect(doseFromText("3x45 sec")).toEqual({ type: "time", range: [45, 45], sets: [3, 3] });
+    expect(doseFromText("1:30 hold")).toEqual({ type: "time", range: [90, 90] });
+    expect(doseFromText("10 each side")).toEqual({ range: [10, 10] });
+    expect(doseFromText("8/side")).toEqual({ range: [8, 8] });
+    expect(doseFromText("6-8 per leg")).toEqual({ range: [6, 8] });
+    expect(doseFromText("45-60s")).toEqual({ type: "time", range: [45, 60] });
+  });
+
+  it("a record's dose knows where it came from: the reading's numbers, the post's words, or the default (audit bug 3)", () => {
+    const from = (dose: ExtractedMove["dose"]) => {
+      const built = buildPersonalRecord(id, move({ dose }));
+      if (!built.ok) throw new Error(built.issues.join("; "));
+      return built.doseOrigin;
+    };
+    expect(from({ text: "3 x 15", range: [15, 15] })).toBe("reading");
+    expect(from({ text: "2x30s" })).toBe("post");
+    expect(from({ text: "slowly, with control" })).toBe("default");
+  });
+
   it("the words reach the record: the stated range, not 8-12; a stated hold on the clock, with or without a weight", () => {
     expect(toPersonalRecord(id, move({ dose: { text: "10-15 reps" } })).dose).toEqual({ type: "reps", range: [10, 15] });
     // The model's own range still wins over its words.
