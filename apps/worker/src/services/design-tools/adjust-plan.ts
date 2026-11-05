@@ -68,6 +68,7 @@ import { easedRun, runOnWatch } from "../body-check.js";
 import { FOLLOWS_WATCH_VERSION, NOT_ACTIONABLE, whyNotActionable } from "../coach-apply.js";
 import { thresholdSql } from "../designed-runs.js";
 import { horizonDays } from "../design-context.js";
+import { COACH_REACH_DAYS } from "../design-limits.js";
 import { clockIn, todayLeadRefusal } from "../design-time.js";
 import { OPEN_PROPOSAL_STATUSES } from "../design-review.js";
 import { revisabilityIn } from "../doc-workouts.js";
@@ -209,9 +210,11 @@ const skipOrReviseIt = (ctx: ToolContext): string => {
   return `Skip it with adjust_plan, or ${revise.charAt(0).toLowerCase()}${revise.slice(1)}`;
 };
 
-/** The last day a change may touch (a session, or a move's day): a set's plan read; now and later today, today plus seven
- * days — a request may name another day (the review's fix round, 4). */
+/** The last day a change may touch (a session, or a move's day): an auto run's reach (COACH_REACH_DAYS: the request names
+ * its days); a week's or the next N's plan read; now and later today, today plus seven days — a request may name another
+ * day (the review's fix round, 4). */
 function lastDay(ctx: ToolContext, today: string): string {
+  if (ctx.run.scope.kind === "auto") return addDays(today, COACH_REACH_DAYS - 1);
   return isSet(ctx) ? addDays(today, horizonDays(ctx.run.scope.kind, ctx.run.scope.n ?? 3) - 1) : addDays(today, 7);
 }
 

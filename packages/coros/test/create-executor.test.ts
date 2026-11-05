@@ -878,6 +878,32 @@ describe("deleteWorkout — guarded, triple-addressed removal", () => {
     expect(JSON.stringify(result)).not.toContain("My Own Lifting Day");
   });
 
+  // An adopted COROS-plan session's old copy is recorded by COROS's own program id (`watchAddressOf`: the import's
+  // `sourceProgramId`), never the address's program number: the same program at the address under another name is the
+  // same workout edited — never "already gone" (prod 2026-11-04: two such deletes verified and the copies stayed).
+  it("refuses with stamp_mismatch when the recorded address holds the recorded COROS program under another name", async () => {
+    const { server, client } = await setup();
+    seedPushed(server, { idInPlan: "21", date, name: "Renamed in the COROS app" });
+    const writesBefore = server.counts.scheduleWrites;
+
+    const result = await deleteWorkout(client, target({ programId: "sv-program-21" }), { today: TODAY });
+
+    expect(result).toMatchObject({ ok: false, refused: "stamp_mismatch" });
+    expect(server.counts.scheduleWrites).toBe(writesBefore);
+    expect(JSON.stringify(result)).not.toContain("Renamed in the COROS app");
+  });
+
+  it("says what the read held when nothing carries the stamp", async () => {
+    const { server, client } = await setup();
+    seedPushed(server, { idInPlan: "22", date, name: "Someone else's" });
+
+    const result = await deleteWorkout(client, target(), { today: TODAY });
+
+    expect(result).toMatchObject({ ok: false, refused: "not_found" });
+    expect(result.error).toMatch(/on the day/);
+    expect(JSON.stringify(result)).not.toContain("Someone else's");
+  });
+
   it("refuses with ambiguous when another workout shares the delete triple", async () => {
     const { server, client } = await setup();
     seedPushed(server, { idInPlan: "21", date, name: NAME });

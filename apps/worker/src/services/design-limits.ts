@@ -26,8 +26,17 @@ export const RUN_LIMITS: Readonly<Record<"main" | "designer" | "reviewer", { max
   reviewer: { maxCalls: REVIEWER_MAX_CALLS, effort: "high", maxTokens: 16_000 },
 };
 
-/** The most workouts one set plans (a week, or the next N whatever N is: design-orchestrate.ts). */
-export const SET_MAX_WORKOUTS = 7;
+/** The most workouts one set plans (a week, the next N whatever N is, or an auto run's several: design-orchestrate.ts).
+ * Twelve, not seven (2026-11-04): "fix every broken session ahead" held eight, and a set that can't hold the request
+ * does part of it. Twelve designers' rows are 96 bound values — inside D1's 100 for the one insert that starts them. */
+export const SET_MAX_WORKOUTS = 12;
+
+/**
+ * How far ahead an auto run's changes and sets reach, in days from today (today included): any session on the plan in
+ * the next eight weeks. A request names its own days — "Tue 10 and Wed 11", "every broken one ahead" — and a reach of
+ * a week turned "fix as many as possible" into one fixed and "ask again Thursday" for the rest (prod 2026-11-04).
+ */
+export const COACH_REACH_DAYS = 56;
 
 /** Rounds of redo a set's main coach may ask for after its first plan: plan_set once more, for specific keys. */
 export const SET_REDO_ROUNDS = 1;

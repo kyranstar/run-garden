@@ -70,7 +70,7 @@ async function prefsCall(method: "GET" | "PUT", body?: unknown, env: Env = ON, w
   return { status: res.status, body: (await res.json().catch(() => null)) as Record<string, any>, cost: statements };
 }
 
-const DEFAULTS = { defaultScope: "now", nextN: 3, trainingTimes: [], ceilingsUsd: { day: 1.5, set: 6 } };
+const DEFAULTS = { defaultScope: "now", nextN: 3, trainingTimes: [], ceilingsUsd: { day: 1.5, set: 10 } };
 
 describe("inert unless the coach designer is on", () => {
   it("GET and PUT are a 404 with the flag off, signed in or not; on, they sign in first", async () => {
@@ -109,7 +109,7 @@ describe("read and write", () => {
     const put = await prefsCall("PUT", { defaultScope: "week", nextN: 5, trainingTimes: ["18:30", "07:00"], ceilingsUsd: { day: 1 } });
     expect(put.status).toBe(200);
     expect(put.body.coach).toEqual({ defaultScope: "week", nextN: 5, trainingTimes: ["18:30", "07:00"], ceilingsUsd: { day: 1 } });
-    expect(put.body.settings).toEqual({ defaultScope: "week", nextN: 5, trainingTimes: ["07:00", "18:30"], ceilingsUsd: { day: 1, set: 6 } });
+    expect(put.body.settings).toEqual({ defaultScope: "week", nextN: 5, trainingTimes: ["07:00", "18:30"], ceilingsUsd: { day: 1, set: 10 } });
     // The session and the restore marker, then one write that answers what it wrote.
     expect(put.cost).toBe(3);
     const prefs = await loadPreferences(db, userId);
@@ -134,11 +134,11 @@ describe("read and write", () => {
 
   it("lowering a limit works; raising one past its default is refused in plain words, and nothing is written", async () => {
     expect((await prefsCall("PUT", { ceilingsUsd: { day: 0.75, set: 3.5 } })).body.settings.ceilingsUsd).toEqual({ day: 0.75, set: 3.5 });
-    for (const raised of [{ day: 1.51 }, { set: 6.5 }, { day: 20 }]) {
+    for (const raised of [{ day: 1.51 }, { set: 10.5 }, { day: 20 }]) {
       const refused = await prefsCall("PUT", { ceilingsUsd: raised });
       expect(refused.status).toBe(400);
       expect(refused.body.error).toBe("invalid_coach_settings");
-      expect(refused.body.issues[0].message).toMatch(/^at most \$(1\.50|6\.00): a limit can be lowered, never raised$/);
+      expect(refused.body.issues[0].message).toMatch(/^at most \$(1\.50|10\.00): a limit can be lowered, never raised$/);
     }
     expect((await loadPreferences(db, userId)).coach).toEqual({ ceilingsUsd: { day: 0.75, set: 3.5 } });
   });
@@ -292,7 +292,7 @@ describe("a create honours the settings", () => {
 
   it("the defaults are the settings' own: $1.50 for one workout, $6 for a set", () => {
     // An auto run starts at one workout's; plan_set raises it to a set's (coach-auto.test.ts).
-    expect(RUN_CEILING_MICROS).toEqual({ now: 1_500_000, later_today: 1_500_000, week: 6_000_000, next_n: 6_000_000, auto: 1_500_000 });
+    expect(RUN_CEILING_MICROS).toEqual({ now: 1_500_000, later_today: 1_500_000, week: 10_000_000, next_n: 10_000_000, auto: 1_500_000 });
   });
 
   it("the preferred training times reach the main coach's scope for later today and a set; none set, the line is as before", async () => {

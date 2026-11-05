@@ -84,8 +84,12 @@ const BEFORE = { tools: 34_935, shared: 20_450, main: 4_586 };
  * say so (tools 41,455 → 41,538); the guidance rewritten — adjust_plan's acting line, the fatal line and the
  * integration paragraph's "A refusal is never the end of a fit" (shared 25,659 → 25,962), the main block's revise line
  * (6,667 → 6,738) — measured 14,267; held with 33 characters of headroom (the mandated wording is not trimmed).
+ * REBASED 2026-11-04 (one request, every part: prod's "fix as many as possible" fixed one and said "ask again Thursday"):
+ * the main block's several-parts rule (main 6,738 → 7,183 with the reach in the scope line's words), plan_set's
+ * description and guide line naming revisions on any day in reach, the intent question's title clause (shared 25,962 →
+ * 26,024; tools 41,538 → 41,643) — measured 14,879; held with 121 characters of headroom.
  */
-const GROWTH_MAX_CHARS = 14_300;
+const GROWTH_MAX_CHARS = 15_000;
 
 const toolsSent = () => JSON.stringify(allTools().map((t) => ({ name: t.name, description: t.description, input_schema: t.inputSchema })));
 

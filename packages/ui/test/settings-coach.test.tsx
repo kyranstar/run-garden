@@ -174,9 +174,9 @@ describe("Settings → Coach & AI (the new shape: no time frame up front, one sp
   it("the defaults: the full limits for one request and the model — no 'Start with', no 'Next workouts'", () => {
     const markup = view(dto());
     expect(markup).toContain('value="1.50"');
-    expect(markup).toContain('value="6.00"');
+    expect(markup).toContain('value="10.00"');
     expect(markup).toMatch(/max="1.5"/);
-    expect(markup).toMatch(/max="6"/);
+    expect(markup).toMatch(/max="10"/);
     expect(text(markup)).toContain("Model Claude Opus 5.5");
     expect(markup).not.toContain("anthropic/");
     expect(text(markup)).not.toMatch(/Start with|Next workouts|Later today|Next 7 days/);
@@ -213,7 +213,7 @@ describe("Settings → Coach & AI (the new shape: no time frame up front, one sp
 
   it("a limit typed past its default is refused in plain words; lower is fine", () => {
     expect(readLimit("day", "1.51")).toEqual({ why: "At most $1.50." });
-    expect(readLimit("set", "$7")).toEqual({ why: "At most $6.00." });
+    expect(readLimit("set", "$11")).toEqual({ why: "At most $10.00." });
     expect(readLimit("day", "0.10")).toEqual({ why: "At least $0.25." });
     expect(readLimit("day", "lots")).toEqual({ why: "A dollar amount, like 1.25." });
     expect(readLimit("day", "")).toEqual({ why: "A dollar amount, like 1.25." });

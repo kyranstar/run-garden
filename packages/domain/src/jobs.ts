@@ -290,6 +290,11 @@ export const coachDeleteWorkoutJobSchema = z
      * neutralised (the watch mirrors the plan, final review Important 1): its 1 h / 6 h / 24 h ladder, a cap of three.
      */
     mirrorRetries: z.number().int().min(0).optional(),
+    /**
+     * A read's re-sends of an adopted row's old-copy delete (`<id>-unpush-copy`) whose copy COROS went on serving after
+     * the lane verified it gone (import-plan.ts `COPY_DELETE_REQUEUES`; prod 2026-11-04).
+     */
+    requeues: z.number().int().min(0).optional(),
   })
   .strict();
 export type CoachDeleteWorkoutJob = z.infer<typeof coachDeleteWorkoutJobSchema>;

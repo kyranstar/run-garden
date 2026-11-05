@@ -49,7 +49,7 @@ import { addDays, dayLabel, daysBetween } from "@rg/domain";
 import type { Db } from "./db.js";
 import { horizonDays } from "./design-context.js";
 import { covers, openOp, SAME_SESSION_MINUTES } from "./design-cover.js";
-import { SET_MAX_WORKOUTS } from "./design-limits.js";
+import { COACH_REACH_DAYS, SET_MAX_WORKOUTS } from "./design-limits.js";
 import { applyDrop, meanScore, pastDayLine, PROMOTE_TRIES, PROMOTED_STATUS, proposalFields, reviewRunning, withLines, writePromoted } from "./design-review.js";
 import type { DocWorkoutOp } from "./design-tools/propose.js";
 import { untrusted } from "./design-tools/read-common.js";
@@ -77,7 +77,8 @@ export const setLimit = (scope: RunScope): number => (scope.kind === "next_n" ? 
 /** The last day a set's workouts may fall on: this week's last day (an auto run's set is a week's: the new shape §5), or
  * the end of the next N's horizon (the plan the main coach was shown reaches that far: design-context.ts `horizonDays`). */
 export function setLastDay(scope: RunScope, today: string): string {
-  const days = scope.kind === "week" || scope.kind === "auto" ? 7 : horizonDays("next_n", scope.n ?? 3);
+  // An auto run's set reaches as far as its changes (COACH_REACH_DAYS): the athlete's words name the days, not a week.
+  const days = scope.kind === "auto" ? COACH_REACH_DAYS : scope.kind === "week" ? 7 : horizonDays("next_n", scope.n ?? 3);
   return addDays(today, days - 1);
 }
 

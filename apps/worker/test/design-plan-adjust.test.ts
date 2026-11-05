@@ -42,6 +42,7 @@ import {
 } from "../src/services/design-approve.js";
 import { planChangeLines } from "../src/services/design-manifest.js";
 import { supersedeOlderPlans } from "../src/services/design-orchestrate.js";
+import { COACH_REACH_DAYS } from "../src/services/design-limits.js";
 import { proposalFields } from "../src/services/design-review.js";
 import { adjustPlan, SANCTIONED_REST_PER_ROLLING_WEEK } from "../src/services/design-tools/adjust-plan.js";
 import { buildDossier } from "../src/services/coach-context.js";
@@ -1259,6 +1260,10 @@ describe("fix round 4: caps", () => {
     expect(e.why).toBe(`That session is on ${day(-21)}, past the plan this run reads (to ${day(-7)}).`);
     ok((await adjust(await mainRun({ kind: "next_n", n: 14 }), skip(far))).res);
     expect(refused((await adjust(await mainRun({ kind: "week" }), skip(far))).res).error).toBe("beyond_horizon");
+    // An auto run reaches eight weeks (COACH_REACH_DAYS): the request names its days (prod 2026-11-04).
+    ok((await adjust(await mainRun({ kind: "auto" }), skip(far))).res);
+    const past = await planned({ date: day(-COACH_REACH_DAYS) });
+    expect(refused((await adjust(await mainRun({ kind: "auto" }), skip(past))).res).error).toBe("beyond_horizon");
   });
 
   it("a declined or superseded change is settled without the plan read reading its session", async () => {

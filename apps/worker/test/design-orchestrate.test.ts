@@ -23,7 +23,7 @@ import type { Env } from "../src/env.js";
 import type { Db } from "../src/services/db.js";
 import { cancelRun, createRun, DOCUMENT_ANSWER_BYTES, getRun, LIVE_STATUSES, ROUTE_OVERHEAD, runStep, STEP_BUDGET, type RunDeps } from "../src/services/coach-runs.js";
 import { designContextBuilder } from "../src/services/design-context.js";
-import { DESIGNER_CEILING_MICROS, SET_MAX_WORKOUTS } from "../src/services/design-limits.js";
+import { COACH_REACH_DAYS, DESIGNER_CEILING_MICROS, SET_MAX_WORKOUTS } from "../src/services/design-limits.js";
 import { PROMPT_TOOL_NAMES, REVIEW_DIMENSIONS, roleBlock, SHARED_PROMPT } from "../src/services/design-prompt.js";
 import { STOPPED_NOTES } from "../src/services/design-review.js";
 import { redoKept, SUPERSEDED_REASON, supersedeOlderPlans } from "../src/services/design-orchestrate.js";
@@ -958,12 +958,29 @@ describe("plan_set's checks", () => {
 
     const many = refusal(await tool("plan_set").run(ctx, { briefs: Array.from({ length: SET_MAX_WORKOUTS + 1 }, (_, i) => brief(`k${i}`, addDays(TODAY, i % 7), { sameDayWhy: "A short second session." })) }));
     expect(many.error).toBe("invalid_input");
-    expect(SET_MAX_WORKOUTS).toBe(7);
+    expect(SET_MAX_WORKOUTS).toBe(12);
 
     const b = await athlete();
     const next = await ctxFor(b.userId, { kind: "next_n", n: 2 });
     const tooMany = refusal(await tool("plan_set").run(next.ctx, { briefs: [brief("a", THU), brief("b", SAT), brief("c", MON)] }));
     expect(tooMany.why).toContain("at most 2");
+  });
+
+  // Prod 2026-11-04: "fix as many as possible" — three broken sessions, two of them past a week out — was refused for
+  // those two, and the coach fixed one and said "ask again Thursday". An auto run's set reaches as far as its changes.
+  it("an auto run's set reaches eight weeks: a brief five weeks out stands, one past the reach is refused", async () => {
+    const a = await athlete();
+    const { ctx, started } = await ctxFor(a.userId, { kind: "auto" });
+    const far = addDays(TODAY, 35);
+    const ok = await tool("plan_set").run(ctx, { briefs: [brief("thu", THU), brief("five", far)] });
+    expect(isToolErr(ok), JSON.stringify(ok)).toBe(false);
+    expect(started).toHaveLength(2);
+
+    const { ctx: again } = await ctxFor(a.userId, { kind: "auto" });
+    const past = addDays(TODAY, COACH_REACH_DAYS);
+    const err = refusal(await tool("plan_set").run(again, { briefs: [brief("past", past)] }));
+    expect(err.error).toBe("invalid_briefs");
+    expect(err.why).toContain(`is after the furthest day this run reaches (${addDays(TODAY, COACH_REACH_DAYS - 1)})`);
   });
 
   it("a doubled date, or a programme day, is accepted with its reason — and every brief needs its key once", async () => {
@@ -1398,7 +1415,8 @@ describe("the prompt says how a set works", () => {
     // REBASED 2026-10-19 for the owner's voice (the coach's last words, in the main block): measured 1,620 without its
     // turns — the same cap as design-prompt.test.ts's and design-fix13's; REBASED 2026-10-25 (saved-posts fix wave:
     // pin_moves among the scope's choices) — measured 1,653.25 without its turns.
-    expect(roleBlock("main").length / 4).toBeLessThanOrEqual(1770);
+    // REBASED 2026-11-04 (a request with several parts gets every part in one run: the main block's rule — prod 2026-11-04) — measured 1,782.25 without its turns.
+    expect(roleBlock("main").length / 4).toBeLessThanOrEqual(1830);
   });
 });
 

@@ -1,4 +1,4 @@
-import { and, eq, gte, inArray, isNull, ne, notExists, sql } from "drizzle-orm";
+import { and, eq, gte, inArray, isNull, ne, notExists, or, sql } from "drizzle-orm";
 import {
   calendarEventSuppressions,
   corosWriteJobs,
@@ -104,6 +104,35 @@ export interface ImportStats {
 
 /** A planned row as the import reads it: without its workout document, which the import never reads. */
 type StoredWorkout = PlannedRow;
+
+/** An adopted row's old-copy delete the lane settled (`copyStuckAt` in the import). */
+interface StuckCopy {
+  jobId: string;
+  workoutId: string;
+  /** As read — and `queued` once this read sends it again. */
+  status: "verified" | "failed" | "queued";
+  payload: Record<string, unknown>;
+  name: string;
+  programId: string;
+  requestedAt: string;
+  /** Times a read found the copy still served after its delete settled and sent the delete again. */
+  requeues: number;
+  /** A failed delete's refusal (`stamp_mismatch`: the copy was not where the delete looked — moved in COROS, say). */
+  category: string | null;
+  /** The day the delete looked for the copy on. */
+  happenDay: string;
+  /** The name the adopted row holds the copy under, as the read found the row. */
+  watchCopyName: string | null;
+  /** What the lane recorded of the delete: a refusal's category, or what its verify saw. */
+  detail: string | null;
+}
+
+/**
+ * How many times a read sends an adopted row's old-copy delete again when COROS still serves the copy after the lane
+ * verified it gone (prod 2026-11-04). Past this the delete is failed `still_on_watch`, the row keeps the name (its sheet
+ * says an older copy is on the watch), and nothing sends it again on its own.
+ */
+export const COPY_DELETE_REQUEUES = 2;
 
 /**
  * WHEN ARE TWO ROWS THE SAME SESSION? The one answer — used by the mirror
@@ -536,15 +565,26 @@ export async function importPlanSnapshot(
     healingBlocked.add(workoutId);
   }
 
-  const pendingJobs = await db
+  // The jobs in flight — and, in the same statement, every adopted row's old-copy delete the lane has settled
+  // (`copyStuckAt` below): a read's statements are budgeted.
+  const PENDING_JOB_STATUSES = ["queued", "claimed", "in_progress", "verifying"];
+  const readJobs = await db
     .select()
     .from(corosWriteJobs)
     .where(
       and(
         eq(corosWriteJobs.userId, input.userId),
-        inArray(corosWriteJobs.status, ["queued", "claimed", "in_progress", "verifying"]),
+        or(
+          inArray(corosWriteJobs.status, PENDING_JOB_STATUSES),
+          and(
+            eq(corosWriteJobs.kind, "coach_delete_workout"),
+            inArray(corosWriteJobs.status, ["verified", "failed"]),
+            sql`${corosWriteJobs.id} like ${`%${ADOPTED_COPY_JOB_SUFFIX}`}`,
+          ),
+        ),
       ),
     );
+  const pendingJobs = readJobs.filter((j) => PENDING_JOB_STATUSES.includes(j.status));
   const pendingJobByWorkout = new Map(pendingJobs.map((j) => [j.workoutId, j]));
   /**
    * THE JOBS A READ MAY VERIFY BY SIGHT (`reconcileWorkout`: COROS shows the copy on the job's destination day). Never a
@@ -578,6 +618,55 @@ export async function importPlanSnapshot(
       copyLeavingAt.set(`${parsed.data.corosPlanId}:${parsed.data.idInPlan}`, { workoutId: job.workoutId, name: parsed.data.name });
     }
   }
+  /**
+   * AN ADOPTED ROW'S OLD COPY STILL ON THE WIRE AFTER ITS DELETE SETTLED (prod 2026-11-04). The lane's delete of the
+   * copy is the row's to finish, and its verdict is not the last word: both of the first two live ones (COROS-plan
+   * sessions a coach revise took over) settled `verified`, the name was cleared — and COROS went on serving each copy,
+   * the very program at the very address, for hours. With no delete in flight (`copyLeavingAt`) and the row's address
+   * moved to its new copy, nothing claimed it: each read made it a NEW row, the session twice on the plan. So a settled
+   * delete — verified, or failed — keeps a claim on what it was sent to take off, by the copy's identity: its address,
+   * the name it was held under, and its program (COROS's own program id for an imported session, the address's program
+   * number for a copy of ours) — a recycled slot holds another program, a renamed copy another name. Only a LIVE adopted
+   * row's: once the athlete removed the row that took the session over, what is left of it — the old copy, a duplicate
+   * row of it — is theirs to keep, and nothing here archives it or deletes it from the watch. One claim per address,
+   * the newest job's. From the read of the jobs above: no statement.
+   */
+  const copyStuckAt = new Map<string, StuckCopy>();
+  for (const job of readJobs) {
+    if (job.kind !== "coach_delete_workout" || (job.status !== "verified" && job.status !== "failed")) continue;
+    if (job.id !== adoptedCopyJobId(job.workoutId)) continue;
+    const row = existingById.get(job.workoutId);
+    if (!row || !appAuthoredRow(row) || row.archivedAt) continue;
+    const parsed = coachDeleteWorkoutJobSchema.safeParse(job.payload);
+    if (!parsed.success) continue;
+    const raw = job.payload as { requeues?: unknown };
+    const address = `${parsed.data.corosPlanId}:${parsed.data.idInPlan}`;
+    const held = copyStuckAt.get(address);
+    if (held && held.requestedAt >= job.requestedAt) continue;
+    copyStuckAt.set(address, {
+      jobId: job.id,
+      workoutId: job.workoutId,
+      status: job.status === "failed" ? "failed" : "verified",
+      payload: job.payload as Record<string, unknown>,
+      name: parsed.data.name,
+      programId: parsed.data.programId,
+      requestedAt: job.requestedAt,
+      requeues: typeof raw.requeues === "number" ? raw.requeues : 0,
+      category: job.lastErrorCategory ?? null,
+      happenDay: parsed.data.happenDay,
+      watchCopyName: row.watchCopyName,
+      detail: job.lastErrorCategory ?? job.lastErrorDetail ?? null,
+    });
+  }
+  /** The settled delete whose copy this wire workout is — its address, its name and its program — or none. */
+  const stuckCopyOf = (src: (typeof admitted)[number]): StuckCopy | undefined => {
+    const held = copyStuckAt.get(src.sourceWorkoutId);
+    if (!held || held.name !== src.title) return undefined;
+    const programs = [src.sourceProgramId, src.planProgramId].filter((p): p is string => typeof p === "string" && p !== "");
+    return programs.includes(held.programId) ? held : undefined;
+  };
+  /** Adopted rows whose old copy this read found still served after its delete settled: the name stays on them. */
+  const copyStillServed = new Set<string>();
 
   // Bulk-loaded once — never queried per row inside the loop below.
   const intentByWorkout = new Map(
@@ -1073,6 +1162,72 @@ export async function importPlanSnapshot(
       continue;
     }
 
+    // …AND STILL THERE ONCE ITS DELETE SETTLED (`copyStuckAt`; prod 2026-11-04). The same copy — its address, name and
+    // program — is still the adopted row's: never a new row. A row this read's predecessors already made of it (a
+    // COROS-plan row created after the delete was queued: the session twice) is that copy too, and leaves the plan as
+    // a hand removal does — the athlete replaced it — so no presence heal brings it back. The row that took it over
+    // keeps the name, so it reads older on watch; a verified delete is sent again, a few times at most, while the copy
+    // is today's or later (a past day's copy stays where it is — the session is over).
+    const stuck = stuckCopyOf(src);
+    // (A duplicate already done, skipped or missed keeps its history: it is read as any row is.)
+    const duplicateOfStuck =
+      !!current &&
+      !appAuthoredRow(current) &&
+      current.id !== (stuck?.workoutId ?? "") &&
+      current.createdAt > (stuck?.requestedAt ?? "￿") &&
+      (current.archivedAt !== null || current.completionState === "scheduled");
+    if (stuck && (!current || duplicateOfStuck)) {
+      if (current && !current.archivedAt) {
+        await db
+          .update(plannedWorkouts)
+          .set({ archivedAt: now, updatedAt: now, archiveReason: "user_removed" })
+          .where(and(eq(plannedWorkouts.id, current.id), isNull(plannedWorkouts.archivedAt)));
+        await db.insert(calendarEventSuppressions).values({ id: newId(), workoutId: current.id, eventId: null, reason: "user_removed", createdAt: now });
+        current.archivedAt = now;
+        current.archiveReason = "user_removed";
+        stats.dedupedMirrors += 1;
+      }
+      copyStillServed.add(stuck.workoutId);
+      if (src.date >= today && stuck.watchCopyName === null) {
+        await db
+          .update(plannedWorkouts)
+          .set({ watchCopyName: stuck.name, updatedAt: now })
+          .where(and(eq(plannedWorkouts.id, stuck.workoutId), isNull(plannedWorkouts.watchCopyName)));
+        stuck.watchCopyName = stuck.name;
+      }
+      // A verified delete whose copy is still here — or one refused because the copy was not on the day it looked (the
+      // athlete moved it in COROS: the same program, the same name, another day) — goes again, for the day it is on now.
+      const movedAway = stuck.status === "failed" && stuck.category === "stamp_mismatch" && src.date !== stuck.happenDay;
+      if ((stuck.status === "verified" || movedAway) && src.date >= today && prefs.corosWritesEnabled) {
+        const again = stuck.requeues < COPY_DELETE_REQUEUES;
+        const said = movedAway
+          ? `on the watch on ${src.date}, not ${stuck.happenDay} where its delete looked`
+          : `still on the watch after its delete was verified${stuck.detail ? ` (${stuck.detail})` : ""}`;
+        await db
+          .update(corosWriteJobs)
+          .set(
+            again
+              ? {
+                  status: "queued",
+                  claimedByDeviceId: null,
+                  claimedAt: null,
+                  verifiedAt: null,
+                  completedAt: null,
+                  payload: { ...stuck.payload, happenDay: src.date, attempts: 0, requeues: stuck.requeues + 1 },
+                  lastErrorCategory: null,
+                  lastErrorDetail: said,
+                  updatedAt: now,
+                }
+              : { status: "failed", lastErrorCategory: "still_on_watch", lastErrorDetail: said, completedAt: now, updatedAt: now },
+          )
+          .where(and(eq(corosWriteJobs.id, stuck.jobId), eq(corosWriteJobs.status, stuck.status)));
+        // Once per job per read: a second carrier of the same address (none should exist) changes nothing more.
+        stuck.status = again ? "queued" : "failed";
+      }
+      stats.unchanged += 1;
+      continue;
+    }
+
     const moved = !current && atAddress.length === 0 ? ownCopyMoved(src) : undefined;
     if (moved) {
       // The coach session's own copy, at the address COROS gave it (`ownCopyMoved`): the row follows it.
@@ -1523,7 +1678,8 @@ export async function importPlanSnapshot(
   if (input.fullSchedule) {
     const servedUnder = new Set(admitted.map((src) => `${src.sourceWorkoutId}\n${src.title}`));
     const copiesGone = existing.flatMap((w) => {
-      if (!appAuthoredRow(w) || w.watchCopyName === null || copyDeleteInFlight.has(w.id)) return [];
+      // (A copy this read found still served after its delete settled is still there, wherever the row's address is.)
+      if (!appAuthoredRow(w) || w.watchCopyName === null || copyDeleteInFlight.has(w.id) || copyStillServed.has(w.id)) return [];
       const address = watchAddressOf(w);
       if (!address || address.happenDay < input.rangeStart || address.happenDay > input.rangeEnd) return [];
       if (!admittedPlanIds.has(address.corosPlanId)) return [];

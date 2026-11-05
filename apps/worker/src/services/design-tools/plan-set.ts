@@ -1,11 +1,13 @@
 /**
  * plan_set(briefs[]) — the main coach plans a set: one brief per workout, each started as a designer sub-run (Stage 3
- * spec §4, §6; principles §6.9; design-orchestrate.ts holds the mechanism). Main only, for a week or the next N only:
- * for now or later today the main coach designs the one workout itself.
+ * spec §4, §6; principles §6.9; design-orchestrate.ts holds the mechanism). Main only, for a week, the next N, or an
+ * auto run's several (any day of its reach, COACH_REACH_DAYS): for now or later today the main coach designs the one
+ * workout itself.
  *
  * A brief is `{ key, date, time?, purpose, emphasis, constraints, why, sameDayWhy?, note? }`. Refused, teachably and with
  * every problem at once, writing nothing:
- *  - a date before today in the athlete's zone, or after the scope's last day (this week's, or the next N's horizon);
+ *  - a date before today in the athlete's zone, or after the scope's last day (this week's, the next N's horizon, or an
+ *    auto run's reach);
  *  - more briefs than the set holds (SET_MAX_WORKOUTS, or N), or a key used twice;
  *  - a second brief on a date without `sameDayWhy`, and a date that holds a programme session or a session already
  *    done, skipped or missed (read from the plan) without one — with it, the brief stands and its designer is told why.
@@ -104,7 +106,7 @@ function skippedIn(briefs: ReadonlyArray<z.infer<typeof brief>>, skip: readonly 
 export const planSet: DesignTool = {
   name: "plan_set",
   description:
-    "The main coach, for a week, the next few workouts or more than one workout: one brief per workout. Each brief starts a designer; this run waits, and the result says what each produced or why it was left out. Once more at most, with briefs for keys to redo, each with a note.",
+    "The main coach, for a week, the next few workouts or more than one workout — new ones, or revisions of workouts already planned (the brief names each), on any day the run reaches: one brief per workout. Each brief starts a designer; this run waits, and the result says what each produced or why it was left out. Once more at most, with briefs for keys to redo, each with a note.",
   inputSchema: {
     type: "object",
     properties: {
@@ -202,7 +204,8 @@ export const planSet: DesignTool = {
         if (b.note) problems.push(`"${b.key}": a note is a redo's (plan_set's second call) — say it in why or constraints`);
       }
     }
-    const scopeEnd = ctx.run.scope.kind === "next_n" ? "the set's last day" : "the last of the next 7 days";
+    const scopeEnd =
+      ctx.run.scope.kind === "next_n" ? "the set's last day" : ctx.run.scope.kind === "auto" ? "the furthest day this run reaches" : "the last of the next 7 days";
     // The dates already briefed: on a redo, the first plan's other workouts that still stand (one dropped or left out
     // holds no day).
     const held: SetBrief[] = redo ? (first?.briefs ?? []).filter((b) => !p.briefs.some((r) => r.key === b.key) && firstOpOf(b.key)) : [];

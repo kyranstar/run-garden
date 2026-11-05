@@ -1629,7 +1629,7 @@ describe("creating a run", () => {
     const week = await createRun(db, userId, { scope: { kind: "next_n", n: 3 }, rehearsal: true }, at(2));
     const weekState = JSON.parse((await runRow(week.run.id)).state!) as { settings: Record<string, unknown> };
     expect(weekState.settings).toMatchObject({
-      ceilingMicros: 6_000_000,
+      ceilingMicros: 10_000_000,
       rehearsal: true,
       window: { kind: "until", at: at(2 + COACH_RUN_SET_WINDOW_HOURS * 3600).toISOString() },
     });

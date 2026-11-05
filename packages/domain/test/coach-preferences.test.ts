@@ -1,7 +1,7 @@
 /**
  * SETTINGS → COACH (Stage 3 Task 10): the coach designer's settings, stored as `coach` in the user's preferences.
  *
- *  - Every field is optional; an absent one is its default (scope now, three workouts, no times, $1.50 and $6).
+ *  - Every field is optional; an absent one is its default (scope now, three workouts, no times, $1.50 and $10).
  *  - A limit may be lowered, never raised past its default, and never below the floor.
  *  - A stored value that no longer reads is no settings at all: the defaults — never a failure of the preferences it
  *    sits in (the timezone, the units and everything else still read).
@@ -24,10 +24,10 @@ describe("the coach's settings", () => {
       defaultScope: "now",
       nextN: 3,
       trainingTimes: [],
-      ceilingsUsd: { day: 1.5, set: 6 },
+      ceilingsUsd: { day: 1.5, set: 10 },
     });
     expect(COACH_NEXT_N).toEqual({ min: 1, max: 7, default: 3 });
-    expect(COACH_CEILING_DEFAULTS_USD).toEqual({ day: 1.5, set: 6 });
+    expect(COACH_CEILING_DEFAULTS_USD).toEqual({ day: 1.5, set: 10 });
   });
 
   it("read what the athlete set, field by field", () => {
@@ -38,9 +38,9 @@ describe("the coach's settings", () => {
 
   it("a limit may be lowered, never raised past its default, and not below the floor", () => {
     expect(coachPreferencesSchema.safeParse({ ceilingsUsd: { day: 1 } }).success).toBe(true);
-    expect(coachPreferencesSchema.safeParse({ ceilingsUsd: { day: 1.5, set: 6 } }).success).toBe(true);
+    expect(coachPreferencesSchema.safeParse({ ceilingsUsd: { day: 1.5, set: 10 } }).success).toBe(true);
     expect(coachPreferencesSchema.safeParse({ ceilingsUsd: { day: 1.51 } }).success).toBe(false);
-    expect(coachPreferencesSchema.safeParse({ ceilingsUsd: { set: 6.01 } }).success).toBe(false);
+    expect(coachPreferencesSchema.safeParse({ ceilingsUsd: { set: 10.01 } }).success).toBe(false);
     expect(coachPreferencesSchema.safeParse({ ceilingsUsd: { day: COACH_CEILING_MIN_USD } }).success).toBe(true);
     expect(coachPreferencesSchema.safeParse({ ceilingsUsd: { day: COACH_CEILING_MIN_USD - 0.01 } }).success).toBe(false);
     expect(coachPreferencesSchema.safeParse({ ceilingsUsd: { day: 1.005 } }).success).toBe(false);

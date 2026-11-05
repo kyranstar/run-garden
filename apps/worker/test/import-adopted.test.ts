@@ -32,7 +32,7 @@ import { applyOps } from "../src/services/coach-apply.js";
 import { executeCloudJobs } from "../src/services/coros-write-cloud.js";
 import { reviseDocWorkout } from "../src/services/doc-workouts.js";
 import { exerciseNameMap } from "../src/services/exercise-catalog.js";
-import { importPlanSnapshot } from "../src/services/import-plan.js";
+import { COPY_DELETE_REQUEUES, importPlanSnapshot } from "../src/services/import-plan.js";
 import { adoptedCopyUnpush, removeFromPlan } from "../src/services/plan-mutations.js";
 import { buildSession, recordCheck } from "../src/services/session-build.js";
 import { activeSyncNotes } from "../src/services/sync-notes.js";
@@ -412,5 +412,129 @@ describe("the lane's delete of an adopted watch-plan row's copy", () => {
     expect((await jobOf(`${id}-unpush-copy`))!.status).toBe("verified");
     expect(programsNamed(NATIVE)).toHaveLength(0);
     expect(await rowOf(db, id)).toMatchObject({ watchCopyName: null, sourceWorkoutId: id, lastVerifiedCorosDate: "" });
+  });
+});
+
+/** The copy COROS holds under `name` — its program and its placement — kept to be put back. */
+function copyOf(name: string) {
+  const [program] = programsNamed(name);
+  const entity = server.state.schedule.entities!.find((e) => String(e.idInPlan) === String(program!.idInPlan));
+  return structuredClone({ program: program!, entity: entity! });
+}
+/** COROS serves the copy again after the lane's delete was verified (prod 2026-11-04): the same program, the same address. */
+function servedAgain(copy: ReturnType<typeof copyOf>) {
+  server.state.schedule.programs = [...(server.state.schedule.programs ?? []), structuredClone(copy.program)];
+  server.state.schedule.entities = [...(server.state.schedule.entities ?? []), structuredClone(copy.entity)];
+}
+
+describe("an adopted row's old copy still served after its delete verified (prod 2026-11-04)", () => {
+  /** A watch-plan session adopted and sent: the new copy on, the old one's delete verified, the old copy back on the wire. */
+  async function verifiedButBack() {
+    const id = await nativeOnWatch();
+    await adopt(id, "Strength B, mine");
+    await buildAndSend(id);
+    await lane({ cap: 1, watchOnly: true });
+    const old = copyOf(NATIVE);
+    await lane();
+    expect((await jobOf(`${id}-unpush-copy`))!.status).toBe("verified");
+    expect(programsNamed(NATIVE)).toHaveLength(0);
+    expect((await rowOf(db, id)).watchCopyName).toBeNull();
+    servedAgain(old);
+    return { id, old };
+  }
+
+  it("is still the row's: no new row, the name back on the row, its delete sent again — a few times, then failed still_on_watch", async () => {
+    const { id, old } = await verifiedButBack();
+    const pushedAddress = (await rowOf(db, id)).sourceWorkoutId;
+
+    const first = await importFromCoros();
+    expect(first).toMatchObject({ created: 0, failedWrites: 0 });
+    expect(await rowsTitled(NATIVE)).toEqual([]);
+    expect(await rowOf(db, id)).toMatchObject({ watchCopyName: NATIVE, sourceWorkoutId: pushedAddress });
+    const again = (await jobOf(`${id}-unpush-copy`))!;
+    expect(again).toMatchObject({ status: "queued" });
+    expect(again.payload).toMatchObject({ requeues: 1, name: NATIVE });
+    expect(again.lastErrorDetail).toMatch(/still on the watch/);
+
+    // The lane takes it off again, and COROS puts it back again — up to the cap…
+    for (let n = 2; n <= COPY_DELETE_REQUEUES; n++) {
+      await lane();
+      expect(programsNamed(NATIVE)).toHaveLength(0);
+      servedAgain(old);
+      expect((await importFromCoros()).created).toBe(0);
+      expect((await jobOf(`${id}-unpush-copy`))!.payload).toMatchObject({ requeues: n });
+    }
+    await lane();
+    servedAgain(old);
+    // …then the delete is failed for good, and the row keeps the name: its sheet says an older copy is on the watch.
+    expect((await importFromCoros()).created).toBe(0);
+    expect(await jobOf(`${id}-unpush-copy`)).toMatchObject({ status: "failed", lastErrorCategory: "still_on_watch" });
+    expect((await rowOf(db, id)).watchCopyName).toBe(NATIVE);
+
+    // A full read finds it still there: the name stays, nothing is sent again, and still no new row.
+    expect((await importFromCoros()).created).toBe(0);
+    expect(await jobOf(`${id}-unpush-copy`)).toMatchObject({ status: "failed", lastErrorCategory: "still_on_watch" });
+    expect(await rowOf(db, id)).toMatchObject({ watchCopyName: NATIVE });
+    expect(await rowsTitled(NATIVE)).toEqual([]);
+  });
+
+  it("a duplicate an earlier read already made of it leaves the plan as a removal — and stays out", async () => {
+    const { id } = await verifiedButBack();
+    // The read before this fix: the settled delete not consulted, the copy imported as a new workout.
+    await db.update(corosWriteJobs).set({ status: "superseded" }).where(eq(corosWriteJobs.id, `${id}-unpush-copy`));
+    expect((await importFromCoros()).created).toBe(1);
+    const [dup] = await rowsTitled(NATIVE);
+    expect(dup).toMatchObject({ origin: null, archivedAt: null });
+    await db.update(corosWriteJobs).set({ status: "verified" }).where(eq(corosWriteJobs.id, `${id}-unpush-copy`));
+
+    expect(await importFromCoros()).toMatchObject({ created: 0, failedWrites: 0 });
+    expect(await rowOf(db, dup!.id)).toMatchObject({ archiveReason: "user_removed", archivedAt: expect.any(String) });
+    expect((await jobOf(`${id}-unpush-copy`))!.status).toBe("queued");
+    expect((await rowOf(db, id)).watchCopyName).toBe(NATIVE);
+
+    // Presence never heals it back, and nothing new is made of the copy.
+    expect(await importFromCoros()).toMatchObject({ created: 0, unarchived: 0 });
+    expect((await rowOf(db, dup!.id)).archivedAt).not.toBeNull();
+  });
+
+  it("once the athlete removed the row that took it over, the copy is theirs: no claim, nothing archived, nothing sent again", async () => {
+    const { id } = await verifiedButBack();
+    await removeFromPlan(db, userId, id, { now: nowInstant(), source: "remove_from_plan", prefs });
+    await lane();
+
+    expect((await importFromCoros()).created).toBe(1);
+    const [theirs] = await rowsTitled(NATIVE);
+    expect(theirs).toMatchObject({ origin: null, archivedAt: null });
+    expect((await jobOf(`${id}-unpush-copy`))!.status).toBe("verified");
+    expect(programsNamed(NATIVE)).toHaveLength(1);
+  });
+
+  it("a delete refused because the copy moved to another day goes again, for the day it is on now", async () => {
+    const { id } = await verifiedButBack();
+    // The lane looked on its day and found the program elsewhere: refused, terminal — the copy moved in COROS.
+    await db
+      .update(corosWriteJobs)
+      .set({ status: "failed", lastErrorCategory: "stamp_mismatch" })
+      .where(eq(corosWriteJobs.id, `${id}-unpush-copy`));
+    movedInCoros(NATIVE, TOMORROW);
+
+    expect((await importFromCoros()).created).toBe(0);
+    const again = (await jobOf(`${id}-unpush-copy`))!;
+    expect(again).toMatchObject({ status: "queued" });
+    expect(again.payload).toMatchObject({ happenDay: TOMORROW, requeues: 1 });
+    await lane();
+    expect((await jobOf(`${id}-unpush-copy`))!.status).toBe("verified");
+    expect(programsNamed(NATIVE)).toHaveLength(0);
+  });
+
+  it("another workout at the freed address — another program, or another name — is a COROS workout like any other", async () => {
+    const { id, old } = await verifiedButBack();
+    server.state.schedule.programs = server.state.schedule.programs!.filter((p) => p.name !== NATIVE);
+    const recycled = structuredClone(old);
+    recycled.program.id = "999000111222333444";
+    server.state.schedule.programs!.push(recycled.program);
+    expect((await importFromCoros()).created).toBe(1);
+    expect((await jobOf(`${id}-unpush-copy`))!.status).toBe("verified");
+    expect((await rowOf(db, id)).watchCopyName).toBeNull();
   });
 });

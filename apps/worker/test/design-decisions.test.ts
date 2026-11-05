@@ -112,7 +112,7 @@ describe("the prompt's criteria, each in its role's block", () => {
 
   it("11. no stale 'Plan ahead'; when to remember, with a stated preference among the examples", () => {
     expect([SHARED_PROMPT, main, others].join("\n")).not.toContain("Plan ahead");
-    expect(main).toContain("A request bigger than the scope — a week asked for from Now — gets what the scope allows, and your last line says they can ask for the rest.");
+    expect(main).toContain("A request bigger than a scope the athlete chose — a week asked for from Now — gets what the scope allows, and your last line says they can ask for the rest.");
     expect(line("remember")).toContain('a lasting preference the athlete states ("I prefer distance targets", "no runs before work"), a standing limit, a pattern that holds across sessions');
   });
 

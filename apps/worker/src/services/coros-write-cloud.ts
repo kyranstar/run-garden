@@ -1182,7 +1182,15 @@ export async function executeCloudJobs(
           }
           await db
             .update(corosWriteJobs)
-            .set({ status: "verified", verifiedAt: done, completedAt: done, updatedAt: done })
+            // How it verified, on the record (prod 2026-11-04: two adopted copies' deletes verified and the copies stayed):
+            // a delete sent and its absence read back, or nothing found to delete — with what the read held.
+            .set({
+              status: "verified",
+              verifiedAt: done,
+              completedAt: done,
+              lastErrorDetail: result.ok ? `deleted (result ${result.code ?? "-"})` : `already gone: ${result.error ?? "not found"}`,
+              updatedAt: done,
+            })
             .where(eq(corosWriteJobs.id, job.id));
         } else {
           // Refusals (ambiguous stamp, drifted address) are terminal — the

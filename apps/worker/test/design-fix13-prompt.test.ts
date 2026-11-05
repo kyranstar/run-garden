@@ -93,7 +93,10 @@ describe("the main coach's block", () => {
 
   it("13c R7: a request bigger than the scope gets what the scope allows, and the rest is theirs to ask for", () => {
     // 2026-10-18, decision guidance: "Plan ahead" was a button the new shape retired — the athlete asks in the conversation.
-    expect(main).toContain("A request bigger than the scope — a week asked for from Now — gets what the scope allows, and your last line says they can ask for the rest.");
+    expect(main).toContain("A request bigger than a scope the athlete chose — a week asked for from Now — gets what the scope allows, and your last line says they can ask for the rest.");
+    // A request with several parts, when the scope is the coach's: every part, in this run (prod 2026-11-04).
+    expect(main).toContain("gets every part in this run, as one suggestion");
+    expect(main).toContain("Never do part and tell them to ask for the rest");
   });
 
   it("13c R1: Now leaves the time out unless the athlete named one", () => {
@@ -152,7 +155,8 @@ describe("compact (the cached prefix grew 3k tokens since the pre-live audit)", 
     // propose_plan, a plan's timed sessions, a programme's settings) — measured 1,488 — and 2026-10-19 for the owner's
     // voice (the coach's last words) — measured 1,634; REBASED 2026-10-25 (saved-posts fix wave: pin_moves among the
     // scope's choices) — measured 1,666.75, ≥ 100 tokens headroom; the others hold at 1,300.
-    const caps = { main: 1770, designer: 1300, reviewer: 1300 } as const;
+    // REBASED 2026-11-04 (a request with several parts gets every part in one run: the main block's rule — prod 2026-11-04) — measured 1,795.75.
+    const caps = { main: 1830, designer: 1300, reviewer: 1300 } as const;
     for (const role of ["main", "designer", "reviewer"] as const) expect(roleBlock(role, RUN_LIMITS[role].maxCalls).length / 4, role).toBeLessThanOrEqual(caps[role]);
     // A run's reviewer (§8 §3): the block with the run rubric in place of the workout one — its own cached prefix.
     expect(roleBlock("reviewer", RUN_LIMITS.reviewer.maxCalls, "run").length / 4).toBeLessThanOrEqual(1300);

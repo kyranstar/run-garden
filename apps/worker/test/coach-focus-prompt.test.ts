@@ -26,7 +26,7 @@ describe("the focus lines", () => {
         "They asked from an objective: they most likely want a workout that serves it, or a test that measures it. Name it in intent.objectiveIds; read_objectives says where each measure stands.",
       move: "They asked from a move in the library: they most likely want it in a workout, or to know where it fits. Build around it when it fits the day; when a rule or the place stands in the way, say why and offer the closest move that fits.",
       proposal:
-        "They asked from your open suggestion: they want to change it. Propose the changed workout with propose_workout — the same day unless they asked otherwise, keeping what they didn't ask to change — and it replaces that suggestion once it is ready.",
+        "They asked from your open suggestion: they want to change it. Propose the changed workout with propose_workout — the same day unless they asked otherwise, keeping what they didn't ask to change — and it replaces that suggestion once it is ready. It replaces the WHOLE suggestion: any change of it to the plan they didn't ask to drop (a skip, a move) is made again with adjust_plan, or it is lost.",
     });
   });
 

@@ -81,7 +81,7 @@ import { runWireOf, type Env } from "../env.js";
 import { latestReading, readingsOfDay } from "./condition-views.js";
 import type { Db } from "./db.js";
 // The role caps from the module with no imports (the step loop imports this one: it never imports the loop back).
-import { RUN_LIMITS } from "./design-limits.js";
+import { COACH_REACH_DAYS, RUN_LIMITS } from "./design-limits.js";
 import { LATER_LEAD_MIN } from "./design-time.js";
 import { memoryCore } from "./memory-core.js";
 import { SAVED_POST_SOURCE } from "./coach-memory.js";
@@ -862,7 +862,7 @@ function scopeWords(kind: ScopeKind, n: number, r: Reads, time: string, end: str
       return `the next ${n} workouts — ${n} new ones around what is planned, not the next ${n} planned sessions — from today (the plan is read through ${end}), planned as a set${setTimes}`;
     case "auto":
       // The new shape §5: no time frame up front. The usual times are what "a sensible time" is read from.
-      return `yours to choose from the request — an answer in words, one workout (right now: today with no time; otherwise a time that suits — their usual times: weekday mornings ${p.weekdayMorningTime}, weekday evenings ${p.weekdayEveningTime}, weekend mornings ${p.weekendMorningTime}${preferred}), changes to the plan, or a set of workouts from ${r.today} to ${addDays(r.today, 6)} with plan_set (the plan is read through ${end})`;
+      return `yours to choose from the request — an answer in words, one workout (right now: today with no time; otherwise a time that suits — their usual times: weekday mornings ${p.weekdayMorningTime}, weekday evenings ${p.weekdayEveningTime}, weekend mornings ${p.weekendMorningTime}${preferred}), changes to the plan, or a set of workouts with plan_set — any of these together, as many as the request asks, on any day from ${r.today} to ${addDays(r.today, COACH_REACH_DAYS - 1)} (the plan below is read through ${end}; read_plan reads further)`;
   }
 }
 

@@ -18,8 +18,9 @@ const ROLES = ["main", "designer", "reviewer"] as const;
  * design-fix13-prompt.test.ts's 1,540 — measured 1,488 — and again 2026-10-19 for the owner's voice (the coach's last
  * words: brisk, one next step, no apologies, not the card) — measured 1,634 with its turns; REBASED 2026-10-25 (saved-posts
  * fix wave: "fit saved moves in with pin_moves" among the scope's choices) — measured 1,666.75 with its turns, ≥ 100
- * tokens headroom as design-fix13-prompt.test.ts's; the others hold at 1,500. */
-const ROLE_CAP = { main: 1770, designer: 1500, reviewer: 1500 } as const;
+ * tokens headroom as design-fix13-prompt.test.ts's; REBASED 2026-11-04 (a request with several parts gets every part in one run: the main block's rule — prod 2026-11-04) — measured 1,795.75 with its turns; the
+ * others hold at 1,500. */
+const ROLE_CAP = { main: 1830, designer: 1500, reviewer: 1500 } as const;
 // With a run's reviewer block too (§8 §3: a reviewer's block holds its draft's rubric).
 const ALL_TEXT = [SHARED_PROMPT, ...ROLES.map((r) => roleBlock(r)), roleBlock("reviewer", undefined, "run")].join("\n");
 

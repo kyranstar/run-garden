@@ -2245,10 +2245,14 @@ export async function deleteWorkout(
     }
     if (matches.length === 0) {
       // Drift vs. already-gone: is the recorded address occupied by something?
+      // The recorded program is the address's program number for a copy of ours, and COROS's own program id for a
+      // session imported from a COROS plan (an adopted row's old copy, `watchAddressOf`): either at the address is the
+      // same workout, its name not what we hold.
       const atAddress = before.entities.find(
         (e) =>
           String(e.idInPlan) === target.idInPlan &&
-          String(e.planProgramId ?? e.idInPlan) === target.programId,
+          (String(e.planProgramId ?? e.idInPlan) === target.programId ||
+            programsFor(before, e).some((p) => p.id != null && String(p.id) === target.programId)),
       );
       if (atAddress) {
         return {
@@ -2259,7 +2263,14 @@ export async function deleteWorkout(
             ` stamp on ${date} — it was edited, renamed or moved in COROS; refusing to delete it`,
         };
       }
-      return { ok: false, refused: "not_found" };
+      // What the read held, for the job's record: an "already gone" that was wrong is otherwise undiagnosable.
+      const onDay = before.entities.filter((e) => corosDayToLocalDate(e.happenDay) === date).length;
+      const sameId = before.entities.filter((e) => String(e.idInPlan) === target.idInPlan).length;
+      return {
+        ok: false,
+        refused: "not_found",
+        error: `nothing named as recorded on ${date} (${onDay} on the day in plan ${target.planId}, ${sameId} at idInPlan ${target.idInPlan})`,
+      };
     }
 
     const foreignBefore = unstampedPlacements(before, isOurs).length;

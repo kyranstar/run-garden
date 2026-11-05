@@ -37,8 +37,10 @@ export const COACH_NEXT_N = { min: 1, max: 7, default: 3 } as const;
 /** Preferred training times, at most (later today and a set's days are timed around them). */
 export const COACH_TRAINING_TIMES_MAX = 3;
 /** A run's spending limit until the athlete lowers it — and the most it may be: $1.50 for one workout (now, later
- * today), $6 for a set (this week, the next workouts). The worker's `RUN_CEILING_MICROS` is these. */
-export const COACH_CEILING_DEFAULTS_USD = { day: 1.5, set: 6 } as const;
+ * today), $10 for a set (this week, the next workouts, several workouts asked for at once — up to twelve reviewed
+ * designs at about $0.70 each, 2026-11-04; it was $6, which held seven). The worker's `RUN_CEILING_MICROS` is these; the
+ * rolling week's guard (`LLM_BUDGET`) still bounds them all. */
+export const COACH_CEILING_DEFAULTS_USD = { day: 1.5, set: 10 } as const;
 /** The least a limit may be set to. */
 export const COACH_CEILING_MIN_USD = 0.25;
 

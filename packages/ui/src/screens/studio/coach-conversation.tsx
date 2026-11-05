@@ -505,13 +505,18 @@ function TurnReply({ turn, latest, today, timeZone }: { turn: CoachConversationT
  * one closed is one line of what came of it, its card one tap down. Each in its own boundary.
  */
 function TurnCards({ cards, latest, today }: { cards: readonly CoachConversationCardDto[]; latest: boolean; today: string | null }) {
-  const changesOf = new Set(cards.filter((c) => c.kind === "plan_changes").map((c) => c.proposalId));
+  // ONE REQUEST, ONE DECISION (2026-11-04): a workout and the changes that make way for it ("instead of the gym session" —
+  // its skip) are one card, its Approve both — every one still its own line with its own checkbox. Two cards let the
+  // athlete approve the workout and never see the skip beside it: the gym session stayed on the plan (prod 2026-10-27).
+  // A turn of changes alone keeps its own card ("3 changes to your week", Approve all).
+  const withWorkout = new Set(cards.filter((c) => c.kind === "workout").map((c) => c.proposalId));
   return (
     <>
       {cards.map((card) => {
+        if (card.kind === "plan_changes" && withWorkout.has(card.proposalId)) return null;
         // A programme change's card is one a programme (§8 §5): its op tells two apart (the moves in rotation's too).
         const key = `${card.kind}:${card.proposalId}${card.opId ? `:${card.opId}` : ""}`;
-        const part = card.kind === "plan_changes" ? "changes" : card.kind === "workout" && changesOf.has(card.proposalId) ? "workouts" : undefined;
+        const part = card.kind === "plan_changes" ? "changes" : undefined;
         let body;
         // A whole plan (§8 §5): its own card, closed as one line of what came of it when an older turn's is done — a
         // programme change's and the moves in rotation's (saved-posts import, Task 18) the same card in their own words.

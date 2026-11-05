@@ -494,12 +494,12 @@ describe("the run's figures", () => {
   it("a set carries its estimate once planned, and its ceiling — dollars, for the run view", async () => {
     const id = await run({ status: "active", scope: { kind: "week" }, estimateMicros: 4_234_567 });
     const res = await current();
-    expect(res.body.run).toMatchObject({ id, estimateUsd: 4.234567, ceilingUsd: 6 });
+    expect(res.body.run).toMatchObject({ id, estimateUsd: 4.234567, ceilingUsd: 10 });
   });
 
   it("before its plan a set has no estimate; a run for now has its own ceiling", async () => {
     const id = await run({ status: "active", scope: { kind: "week" } });
-    expect((await current()).body.run).toMatchObject({ id, estimateUsd: null, ceilingUsd: 6 });
+    expect((await current()).body.run).toMatchObject({ id, estimateUsd: null, ceilingUsd: 10 });
     await db.delete(schema.coachRuns);
     const now = await run({ status: "active" });
     expect((await current()).body.run).toMatchObject({ id: now, estimateUsd: null, ceilingUsd: 1.5 });
@@ -508,13 +508,13 @@ describe("the run's figures", () => {
   it("a new run's answer carries its ceiling", async () => {
     const app = mountRoutes(db, "/api/coach/runs", makeCoachRunRoutes(deps));
     const res = await app.request("/api/coach/runs", { method: "POST", headers: { Cookie: cookie, "content-type": "application/json" }, body: JSON.stringify({ scope: { kind: "week" } }) }, ON);
-    expect(((await res.json()) as { run: unknown }).run).toMatchObject({ status: "active", estimateUsd: null, ceilingUsd: 6 });
+    expect(((await res.json()) as { run: unknown }).run).toMatchObject({ status: "active", estimateUsd: null, ceilingUsd: 10 });
   });
 
   it("a run's own read carries them too", async () => {
     const id = await run({ status: "waiting_set", scope: { kind: "next_n", n: 3 }, estimateMicros: 2_500_000 });
     const app = mountRoutes(db, "/api/coach/runs", makeCoachRunRoutes(deps));
     const res = await app.request(`/api/coach/runs/${id}?afterSeq=0`, { headers: { Cookie: cookie } }, ON);
-    expect(((await res.json()) as { run: unknown }).run).toMatchObject({ estimateUsd: 2.5, ceilingUsd: 6 });
+    expect(((await res.json()) as { run: unknown }).run).toMatchObject({ estimateUsd: 2.5, ceilingUsd: 10 });
   });
 });

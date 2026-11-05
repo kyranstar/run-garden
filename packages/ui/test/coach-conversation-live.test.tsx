@@ -623,31 +623,38 @@ describe("cards", () => {
     expect(dialog()!.textContent).toContain("On your plan for");
   });
 
-  it("changes to the plan: Approve all sends the changes only, by their ids — never the workout beside them", async () => {
+  // ONE REQUEST, ONE DECISION (prod 2026-10-27: the home workout approved, the gym session's skip beside it never seen).
+  it("a workout and the changes beside it are one card: one Approve decides them all", async () => {
     let approved: any = null;
     const read = { id: "dp-run-4", status: "pending", resolvedAt: null, lines: [line("w")], changes: [change("c1"), change("c2")] };
     const cards = [
       { kind: "workout" as const, proposalId: "dp-run-4", title: "Easy legs", summary: "Today · 6 PM · 24 min", status: "pending" },
       { kind: "plan_changes" as const, proposalId: "dp-run-4", title: "Changes to your plan", summary: "2 changes to your week", status: "pending" },
     ];
-    server(conversation([turn({ runId: "run-4", line: "Two lighter days.", cards })]), {
+    server(conversation([turn({ runId: "run-4", line: "Two lighter days, and one easy session.", cards })]), {
       "GET /api/coach/proposals/dp-run-4": () => json(read),
       "POST /api/coach/proposals/dp-run-4/approve": (body: any) => {
         approved = body;
-        return json({ ok: true, status: "partially_approved", applied: [], changed: [], refused: [], settled: [], remaining: [] });
+        return json({ ok: true, status: "approved", applied: [], changed: [], refused: [], settled: [], remaining: [] });
       },
     });
     mount();
     await openCoach();
-    await until(() => !!dialog()!.querySelector(".coach-changes"), "the changes card");
-    const card = dialog()!.querySelector<HTMLElement>(".coach-changes")!;
-    await until(() => !!button("Approve all", card) && !button("Approve all", card)!.disabled, "Approve all ready");
-    await click(button("Approve all", card), "Approve all");
+    await until(() => !!dialog()!.querySelector(".coach-pc") && dialog()!.querySelector(".coach-pc")!.textContent!.includes("Session c2 — skipped"), "the one card");
+    // No second card for the changes: they are lines of the workout's card.
+    expect(dialog()!.querySelector(".coach-changes")).toBeNull();
+    expect(dialog()!.querySelectorAll(".coach-pc")).toHaveLength(1);
+    const card = dialog()!.querySelector<HTMLElement>(".coach-pc")!;
+    expect(card.textContent).toContain("Session c1 — skipped");
+    expect(card.textContent).toContain("Workout w");
+    await until(() => !!button("Approve", card) && !button("Approve", card)!.disabled, "Approve ready");
+    await click(button("Approve", card), "Approve");
     await until(() => approved !== null, "the approve");
-    expect(approved).toEqual({ opIds: ["c1", "c2"] });
+    // The whole suggestion: the workout and both changes.
+    expect(approved).toEqual({});
   });
 
-  it("changes to the plan: how many, Approve all (the changes only, by their ids) and Look closer", async () => {
+  it("…each still its own line: one left out, Approve names the rest by their ids", async () => {
     let approved: any = null;
     const read = { id: "dp-run-4", status: "pending", resolvedAt: null, lines: [line("w")], changes: [change("c1"), change("c2")] };
     const cards = [
@@ -663,18 +670,35 @@ describe("cards", () => {
     });
     mount();
     await openCoach();
+    await until(() => !!dialog()!.querySelector('.coach-pc input[type="checkbox"]'), "the card's lines");
+    const card = dialog()!.querySelector<HTMLElement>(".coach-pc")!;
+    const leftOut = [...card.querySelectorAll<HTMLLabelElement>(".coach-pc-pick")].find((l) => l.textContent === "Include: Session c2 — skipped")?.querySelector("input") ?? null;
+    expect(leftOut).not.toBeNull();
+    await click(leftOut, "leave the second change out");
+    await until(() => !!button("Approve 2", card), "Approve 2");
+    await click(button("Approve 2", card), "Approve 2");
+    await until(() => approved !== null, "the approve");
+    expect(approved).toEqual({ opIds: ["c1", "w"] });
+  });
+
+  it("changes alone keep their own card: how many, Approve all (by their ids) and Look closer", async () => {
+    let approved: any = null;
+    const read = { id: "dp-run-5", status: "pending", resolvedAt: null, lines: [], changes: [change("c1"), change("c2")] };
+    const cards = [{ kind: "plan_changes" as const, proposalId: "dp-run-5", title: "Changes to your plan", summary: "2 changes to your week", status: "pending" }];
+    server(conversation([turn({ runId: "run-5", line: "Two lighter days.", cards })]), {
+      "GET /api/coach/proposals/dp-run-5": () => json(read),
+      "POST /api/coach/proposals/dp-run-5/approve": (body: any) => {
+        approved = body;
+        return json({ ok: true, status: "approved", applied: [], changed: [], refused: [], settled: [], remaining: [] });
+      },
+    });
+    mount();
+    await openCoach();
     await until(() => !!dialog()!.querySelector(".coach-changes"), "the changes card");
     const card = dialog()!.querySelector<HTMLElement>(".coach-changes")!;
     expect(card.textContent).toContain("2 changes to your week");
-    // The workout's card holds the workout alone; the changes are this card's.
-    await until(() => !!dialog()!.querySelector(".coach-pc"), "the workout's card");
-    expect(dialog()!.querySelector(".coach-pc")!.textContent).not.toContain("Session c1");
     await until(() => !!button("Approve all", card) && !button("Approve all", card)!.disabled, "Approve all ready");
-    await click(button("Look closer", card), "Look closer");
-    await until(() => card.textContent!.includes("Session c1 — skipped") && card.textContent!.includes("Session c2 — skipped"), "the changes, each");
-    // Looked at closer, each change's own card decides them: its Approve names the changes, never the whole suggestion.
-    expect(button("Approve all", card)).toBeNull();
-    await click(button("Approve", card), "Approve");
+    await click(button("Approve all", card), "Approve all");
     await until(() => approved !== null, "the approve");
     expect(approved).toEqual({ opIds: ["c1", "c2"] });
   });
