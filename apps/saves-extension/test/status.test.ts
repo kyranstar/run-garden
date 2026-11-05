@@ -12,6 +12,8 @@ const post = (over: Partial<PostRowDto> = {}): PostRowDto => ({
   creator: { handle: "someone" },
   status: "matched",
   reason: null,
+  errorCode: null,
+  error: null,
   updatedAt: "2026-10-23T09:00:00.000Z",
   ...over,
 });
@@ -143,6 +145,15 @@ describe("popupModel posts and actions", () => {
     expect(byKey.ka).toMatchObject({ actions: ["process_anyway"], status: "filtered out", reason: "not a workout", creator: "someone", url: "https://example.com/p/k1" });
     expect(byKey.kb!.actions).toEqual(["retry"]);
     expect(byKey.kc!.actions).toEqual([]);
+  });
+
+  it("a failed post's row says why it failed, not why the filter kept it (audit bug 2)", () => {
+    const m = model({
+      status: status({
+        posts: [post({ id: "b", key: "kb", status: "failed", reason: "training (first capture)", errorCode: "media_failed", error: "The video wouldn't download" })],
+      }),
+    });
+    expect(m.posts[0]).toMatchObject({ status: "failed", reason: "The video wouldn't download" });
   });
 
   it("the top-level actions are Check now plus the post actions on offer", () => {

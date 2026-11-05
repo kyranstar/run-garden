@@ -212,7 +212,7 @@ export async function relayExtract(
       console.warn(JSON.stringify({ level: "warn", msg: "saves relay: matching failed", detail: String(e).slice(0, 200) }));
       await db
         .update(savedPosts)
-        .set({ status: "failed", lastErrorCode: "unknown", updatedAt: nowIso })
+        .set({ status: "failed", lastErrorCode: "unknown", lastError: "matching failed", updatedAt: nowIso })
         .where(and(eq(savedPosts.id, post.id), eq(savedPosts.userId, userId), eq(savedPosts.status, "extracted")))
         .catch(() => undefined);
       return { ok: false, code: "unknown" };
@@ -403,6 +403,6 @@ function issueText(i: ZodIssue): string {
 export async function markTooLarge(db: Db, userId: string, postId: string, now: string): Promise<void> {
   await db
     .update(savedPosts)
-    .set({ status: "failed", lastErrorCode: "too_large", extractAttempts: sql`${savedPosts.extractAttempts} + 1`, updatedAt: now })
+    .set({ status: "failed", lastErrorCode: "too_large", lastError: null, extractAttempts: sql`${savedPosts.extractAttempts} + 1`, updatedAt: now })
     .where(and(eq(savedPosts.id, postId), eq(savedPosts.userId, userId), inArray(savedPosts.status, ["queued", "failed"])));
 }

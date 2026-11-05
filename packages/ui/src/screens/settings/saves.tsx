@@ -58,7 +58,11 @@ function PostRow({ post, busy, onProcess }: { post: PostRowDto; busy: boolean; o
         <b>{creatorOf(post)}</b>
         <small>
           {STATUS_WORD[post.status]}
-          {post.reason ? ` · ${post.reason}` : ""}
+          {/* A failed post says why it failed, never the screening's reason for keeping it (audit 2026-11-05, bug 2). */}
+          {(() => {
+            const why = post.status === "failed" ? (post.error ?? post.reason) : post.reason;
+            return why ? ` · ${why}` : "";
+          })()}
         </small>
         {href ? (
           <a className="stu-saved-link" href={href} target="_blank" rel="noopener noreferrer">

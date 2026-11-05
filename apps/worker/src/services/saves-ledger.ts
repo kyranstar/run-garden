@@ -2,6 +2,7 @@ import { and, asc, desc, eq, gte, inArray, isNotNull, isNull, lt, or, sql } from
 import { schema } from "@rg/database";
 import type { SavedPostRow } from "@rg/database";
 import type { CheckReport, PostSubmit, SaveErrorCode, SavesStatusDto, WorkItem } from "@rg/saves";
+import { failureWords } from "@rg/saves";
 import { nowInstant } from "@rg/domain";
 import { sha256Hex } from "../auth/crypto.js";
 import type { Db } from "./db.js";
@@ -111,7 +112,7 @@ export async function workList(
   // `failed`/`unknown`, so the owner's retry can requeue it instead of it reading "extracting" forever.
   await db
     .update(savedPosts)
-    .set({ status: "failed", lastErrorCode: "unknown", updatedAt: now })
+    .set({ status: "failed", lastErrorCode: "unknown", lastError: "the reading that held it never finished", updatedAt: now })
     .where(
       and(
         eq(savedPosts.userId, userId),
@@ -187,8 +188,8 @@ export async function markFetchFailed(
     .update(savedPosts)
     .set(
       code === "gone"
-        ? { status: "failed", lastErrorCode: "gone", updatedAt: now }
-        : { status: "failed", lastErrorCode: code, extractAttempts: sql`${savedPosts.extractAttempts} + 1`, updatedAt: now },
+        ? { status: "failed", lastErrorCode: "gone", lastError: null, updatedAt: now }
+        : { status: "failed", lastErrorCode: code, lastError: null, extractAttempts: sql`${savedPosts.extractAttempts} + 1`, updatedAt: now },
     )
     .where(and(eq(savedPosts.id, id), eq(savedPosts.userId, userId), waiting))
     .returning({ id: savedPosts.id });
@@ -289,7 +290,9 @@ export async function savesStatus(db: Db, userId: string, now: string): Promise<
       url: p.url ?? "",
       creator: { handle: p.creatorHandle ?? "", ...(p.creatorName ? { name: p.creatorName } : {}) },
       status: p.status as SavesStatusDto["posts"][number]["status"],
-      reason: p.filterReason ?? p.lastError,
+      reason: p.filterReason,
+      errorCode: p.status === "failed" ? ((p.lastErrorCode as SaveErrorCode | null) ?? "unknown") : null,
+      error: p.status === "failed" ? failureWords(p.lastErrorCode ?? "unknown", p.lastError) : null,
       updatedAt: p.updatedAt,
     })),
     spend,

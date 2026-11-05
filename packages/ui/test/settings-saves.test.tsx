@@ -21,8 +21,8 @@ const status = (over: Partial<SavesStatusDto> = {}): SavesStatusDto => ({
   totals: { moves: 12, posts: 5 },
   checks: [],
   posts: [
-    { id: "p1", key: "k1", url: "https://example.com/p/k1", creator: { handle: "someone", name: "Some One" }, status: "filtered_out", reason: "not a workout", updatedAt: "2026-10-22T00:00:00.000Z" },
-    { id: "p2", key: "k2", url: "https://example.com/p/k2", creator: { handle: "other" }, status: "failed", reason: "media failed", updatedAt: "2026-10-22T00:00:00.000Z" },
+    { id: "p1", key: "k1", url: "https://example.com/p/k1", creator: { handle: "someone", name: "Some One" }, status: "filtered_out", reason: "not a workout", errorCode: null, error: null, updatedAt: "2026-10-22T00:00:00.000Z" },
+    { id: "p2", key: "k2", url: "https://example.com/p/k2", creator: { handle: "other" }, status: "failed", reason: "training (first capture)", errorCode: "media_failed", error: "The video wouldn't download", updatedAt: "2026-10-22T00:00:00.000Z" },
   ],
   spend: { spentMicros: 0, capMicros: 5_000_000 },
   ...over,
@@ -114,8 +114,16 @@ describe("SavesSection", () => {
     expect(document.body.textContent).toContain("not a workout");
   });
 
+  it("a failed post's row says why it failed, not why the filter kept it (audit bug 2)", async () => {
+    await mount({ status: 200, body: status() });
+    await flush();
+    await act(async () => { (host.querySelector("button.place-row") as HTMLButtonElement).click(); });
+    expect(document.body.textContent).toContain("The video wouldn't download");
+    expect(document.body.textContent).not.toContain("training (first capture)");
+  });
+
   it("Open post is a fingertip's target (the shared saved-link class, its min-height the --tap token) and a link only to a web page (final review M6)", async () => {
-    const odd = { id: "p3", key: "k3", url: "javascript:alert(1)", creator: { handle: "odd" }, status: "matched" as const, reason: null, updatedAt: "2026-10-22T00:00:00.000Z" };
+    const odd = { id: "p3", key: "k3", url: "javascript:alert(1)", creator: { handle: "odd" }, status: "matched" as const, reason: null, errorCode: null, error: null, updatedAt: "2026-10-22T00:00:00.000Z" };
     await mount({ status: 200, body: status({ posts: [...status().posts, odd] }) });
     await flush();
     await act(async () => { (host.querySelector("button.place-row") as HTMLButtonElement).click(); });

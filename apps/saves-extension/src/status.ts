@@ -140,7 +140,7 @@ export function popupModel(input: PopupInput): PopupModel {
       url: p.url,
       creator: p.creator.name ?? p.creator.handle,
       status: p.status.replace(/_/g, " "),
-      reason: p.reason,
+      reason: p.status === "failed" ? (p.error ?? p.reason) : p.reason,
       actions: postActions(p.status),
     }))
     // Posts that want a hand first; the rest keep the app's order (newest first).

@@ -5,3 +5,4 @@ export * from "./breakdown.js";
 export * from "./prompts.js";
 export * from "./review.js";
 export * from "./insights.js";
+export * from "./trail.js";

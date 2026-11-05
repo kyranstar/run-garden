@@ -146,7 +146,12 @@ export interface PostRowDto {
   url: string;
   creator: { handle: string; name?: string };
   status: SavePostStatus;
+  /** The screening's reason (why the post was kept or filtered out). */
   reason: string | null;
+  /** A failed post's code, else null (import trail, 2026-11-05). */
+  errorCode: SaveErrorCode | null;
+  /** A failed post's failure in plain words (`failureWords`), else null: never the screening's reason. */
+  error: string | null;
   updatedAt: string;
 }
 /** One item of `GET /work`: `filter` = resubmit the post to `/posts` (the filter runs again); `extract` = fetch its media. */

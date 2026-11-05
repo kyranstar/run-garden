@@ -369,8 +369,24 @@ describe("GET /status", () => {
     expect(body.state).toBe("paused_budget");
     expect(body.checks).toHaveLength(1);
     expect(body.posts).toEqual([
-      { id: await savedPostId(userId, SRC, "p1"), key: "p1", url: "https://example.com/p/p1", creator: { handle: "" }, status: "queued", reason: null, updatedAt: "2026-10-01T00:00:00.000Z" },
+      { id: await savedPostId(userId, SRC, "p1"), key: "p1", url: "https://example.com/p/p1", creator: { handle: "" }, status: "queued", reason: null, errorCode: null, error: null, updatedAt: "2026-10-01T00:00:00.000Z" },
     ]);
+  });
+  it("a failed post says why it failed — never the filter's verdict as its reason (audit bug 2)", async () => {
+    await seedPost("f1", { status: "failed", filterReason: "training (first capture)", lastErrorCode: "media_failed", lastError: null });
+    await seedPost("ok1", { status: "queued", filterReason: "a mobility routine" });
+    const { body } = await call("/status");
+    const byKey = Object.fromEntries((body.posts as Array<{ key: string }>).map((p) => [p.key, p]));
+    expect(byKey.f1).toMatchObject({ status: "failed", reason: "training (first capture)", errorCode: "media_failed", error: "The video wouldn't download" });
+    expect(byKey.ok1).toMatchObject({ reason: "a mobility routine", errorCode: null, error: null });
+  });
+  it("a fetch failure's words match its code: no stale text from an earlier failure (audit bug 5)", async () => {
+    const id = await seedPost("g1", { status: "failed", lastErrorCode: "model_failed", lastError: "moves.0.name: is required" });
+    await post(`/posts/g1/failed?source=${SRC}`, { code: "gone" });
+    const [row] = await db.select().from(savedPosts).where(eqId(id));
+    expect(row).toMatchObject({ status: "failed", lastErrorCode: "gone", lastError: null });
+    const { body } = await call("/status");
+    expect(body.posts.find((p: { key: string }) => p.key === "g1")).toMatchObject({ errorCode: "gone", error: "The post is gone" });
   });
   it("counts the moves and posts the owner saved, and dates the last import by its batch, not its check", async () => {
     const a = await seedPost("a", { status: "matched" });
