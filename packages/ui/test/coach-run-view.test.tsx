@@ -53,6 +53,14 @@ function view(r: CoachRunDto, events: CoachRunEventDto[] = trail, o: { inFlight?
   return { html, words: text(html) };
 }
 
+describe("a trail line's detail (import trail §6.4)", () => {
+  it("a long value shows its preview and a Show all — the rest is one tap away, never cut for good", () => {
+    const long = "word ".repeat(400).trim();
+    const { html } = view(run({ status: "finished" }), [ev(1, "tool_result", "Searched the library", { tool: "search_library", input: { query: long }, ok: true })]);
+    expect(html).toContain("Show all");
+  });
+});
+
 describe("the run view in the conversation (quiet)", () => {
   it("an answer that lands while the run is still at work is no trail line: it is the coach's words, the turn's own", () => {
     const answer = "Up fifteen seconds in two weeks, held clean each time.";

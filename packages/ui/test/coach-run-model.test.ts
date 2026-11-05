@@ -152,6 +152,41 @@ describe("the trail", () => {
     for (const s of sections) for (const r of s.rows) expect(r.value).not.toMatch(/[{}"]/);
   });
 
+  it("what came back includes what the coach was given: a read's moves by name (import trail §6.4)", () => {
+    const [line] = runLines([
+      ev(1, "tool_result", "Read 2 moves from your saves, 2 new", {
+        tool: "read_saves", input: { offset: 0 }, ok: true, provenance: { source: "your saves" }, missing: ["3 more routines not shown for room"],
+        data: { batch: { id: "b1" }, moves: [{ id: "myZorbexNod1", name: "Zorbex nod", new: true }, { id: "myZorbexTilt1", name: "Zorbex tilt", new: true }], routines: [], insights: [] },
+      }),
+    ]);
+    const back = Object.fromEntries(detailOf(line!).find((s) => s.title === "Came back")!.rows.map((r) => [r.key, r.value]));
+    expect(back.Moves).toBe("Zorbex nod, Zorbex tilt");
+  });
+
+  it("a long value keeps a preview and its whole text behind Show all; 'In full' is never cut", () => {
+    const long = "word ".repeat(400).trim();
+    const [line] = runLines([
+      ev(1, "tool_result", "Searched the library", { tool: "search_library", input: { query: long }, ok: true }),
+      ev(2, "note", "The coach said more", { text: long }),
+    ]);
+    const rows = line ? detailOf(line).flatMap((s) => s.rows) : [];
+    const searched = rows.find((r) => r.key === "Searched for")!;
+    expect(searched.value.length).toBe(DETAIL_VALUE_MAX);
+    expect(searched.full).toBe(long);
+    const [, noteLine] = runLines([ev(1, "tool_result", "x", { tool: "t", ok: true }), ev(2, "note", "The coach said more", { text: long })]);
+    const inFull = (noteLine ? detailOf(noteLine) : detailOf(line!)).flatMap((s) => s.rows).find((r) => r.key === "In full");
+    expect(inFull?.value).toBe(long);
+  });
+
+  it("a payload too long to keep reads in words — never a cut head of JSON (Review Focus 5)", () => {
+    for (const input of [{ truncated: true, head: '{"pin":["myZorbex' }, { tooLong: true, chars: 20_000 }]) {
+      const [line] = runLines([ev(1, "tool_result", "Pinned moves", { tool: "pin_moves", input, ok: true })]);
+      const rows = detailOf(line!).flatMap((s) => s.rows);
+      expect(rows).toContainEqual({ key: "Detail", value: "Too long to show here" });
+      for (const r of rows) expect(r.value).not.toMatch(/[{}"]/);
+    }
+  });
+
   it("one tap down holds no internal words: no ids, revisions or kinds; where it read from, in the athlete's words", () => {
     const [line] = runLines([
       ev(1, "draft", "Draft — “Hips”: 20 min — sent for review", {
@@ -213,11 +248,11 @@ describe("the trail", () => {
     expect(fullRows.some((r) => r.key === "Mean")).toBe(true);
   });
 
-  it("marked text reads as its text; a truncated payload says what it holds", () => {
+  it("marked text reads as its text; a payload too long to keep says so in words", () => {
     const [line] = runLines([ev(1, "tool_result", "Read history", { tool: "read_history", input: { note: { text: "my knee", untrusted: true } }, ok: true })]);
     expect(detailOf(line!)[0]!.rows).toEqual([{ key: "Note", value: "my knee" }]);
     const [cut] = runLines([ev(2, "draft", "A draft", { tool: "propose_workout", input: { truncated: true, head: '{"doc":' } })]);
-    expect(detailOf(cut!)[0]!.rows).toEqual([{ key: "Detail", value: '{"doc":' }]);
+    expect(detailOf(cut!)[0]!.rows).toEqual([{ key: "Detail", value: "Too long to show here" }]); // never its cut JSON (import trail, audit 2026-11-05)
   });
 });
 

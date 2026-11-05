@@ -408,7 +408,7 @@ function LineItem({ line, undo, undoing }: { line: RunLine; undo: (() => void) |
                 {s.rows.map((r, j) => (
                   <div key={j} className="coach-detail-row">
                     <dt>{r.key}</dt>
-                    <dd>{r.value}</dd>
+                    <dd>{r.full ? <ShowAll preview={r.value} full={r.full} /> : r.value}</dd>
                   </div>
                 ))}
               </dl>
@@ -417,6 +417,19 @@ function LineItem({ line, undo, undoing }: { line: RunLine; undo: (() => void) |
         </div>
       ) : null}
     </li>
+  );
+}
+
+/** A value's preview, and its whole text one tap away: nothing in a trail is cut for good (import trail §6.4). */
+export function ShowAll({ preview, full }: { preview: string; full: string }) {
+  const [open, setOpen] = useState(false);
+  return (
+    <>
+      <span className="coach-detail-value">{open ? full : preview}</span>{" "}
+      <button type="button" className="linklike coach-detail-more tap-pad" aria-expanded={open} onClick={() => setOpen((v) => !v)}>
+        {open ? "Show less" : "Show all"}
+      </button>
+    </>
   );
 }
 

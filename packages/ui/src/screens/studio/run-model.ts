@@ -454,47 +454,65 @@ export function keyWords(key: string): string {
   return spaced.charAt(0).toUpperCase() + spaced.slice(1);
 }
 
-/** A value in words: text as it is (marked untrusted text too), numbers, yes/no, lists and small objects inline. */
-export function valueWords(v: unknown, depth = 0): string {
+/**
+ * A value in words: text as it is (marked untrusted text too), numbers, yes/no, lists and small objects inline. Cut at
+ * `max` (a row's preview); `Infinity` gives the whole of it (the row's Show all).
+ */
+export function valueWords(v: unknown, depth = 0, max = DETAIL_VALUE_MAX): string {
+  const cut = (s: string) => clip(s, max);
   if (v === null || v === undefined) return "—";
   // A whole value that is a day reads as one ("Fri 16 Oct", fix wave 3B, B-I3); a date inside words is theirs.
   if (isDay(v)) return dayLabel(v);
-  if (typeof v === "string") return clip(v.replace(/\s+/g, " ").trim());
+  if (typeof v === "string") return cut(v.replace(/\s+/g, " ").trim());
   if (typeof v === "number") return Number.isInteger(v) ? String(v) : String(Math.round(v * 100) / 100);
   if (typeof v === "boolean") return v ? "yes" : "no";
   if (Array.isArray(v)) {
     if (v.length === 0) return "none";
-    return clip(v.map((x) => valueWords(x, depth + 1)).join(", "));
+    return cut(v.map((x) => valueWords(x, depth + 1, max)).join(", "));
   }
   const o = record(v);
-  if (!o) return clip(String(v));
+  if (!o) return cut(String(v));
+  // A payload too long to keep, old (`truncated`) or new (`tooLong`): in words, never its cut JSON (import trail §6.4).
+  if (o.tooLong === true || (o.truncated === true && typeof o.head === "string")) return TOO_LONG;
   // Marked text ({ text, untrusted }) is its text.
-  if (typeof o.text === "string" && Object.keys(o).every((k) => k === "text" || k === "untrusted")) return clip(o.text);
+  if (typeof o.text === "string" && Object.keys(o).every((k) => k === "text" || k === "untrusted")) return cut(o.text);
   // A named thing reads as its name.
-  for (const k of ["title", "name", "label", "summary"]) if (typeof o[k] === "string") return clip(o[k] as string);
+  for (const k of ["title", "name", "label", "summary"]) if (typeof o[k] === "string") return cut(o[k] as string);
   if (depth >= 2) return "…";
-  return clip(
+  return cut(
     Object.entries(o)
       .filter(([k]) => !QUIET_KEYS.has(k))
-      .map(([k, x]) => `${keyWords(k).toLowerCase()} ${valueWords(x, depth + 1)}`)
+      .map(([k, x]) => `${keyWords(k).toLowerCase()} ${valueWords(x, depth + 1, max)}`)
       .join(" · "),
   );
 }
 
+/** What a value too long to keep reads as (an event payload past its cap). */
+export const TOO_LONG = "Too long to show here";
+
 export interface DetailRow {
   key: string;
   value: string;
+  /** The whole value, when `value` is a cut preview of it: behind the row's Show all (import trail §6.4). */
+  full?: string;
+}
+
+/** A row: its preview, and its whole text when the preview had to cut it. */
+export function wordRow(key: string, v: unknown): DetailRow {
+  const value = valueWords(v);
+  const full = valueWords(v, 0, Infinity);
+  return full !== value ? { key, value, full } : { key, value };
 }
 
 /** An object's entries as rows, quiet keys left out, at most DETAIL_ROWS_MAX. */
 export function rowsOf(v: unknown): DetailRow[] {
   const o = record(v);
-  if (!o) return v === undefined || v === null ? [] : [{ key: "Detail", value: valueWords(v) }];
-  if ("truncated" in o && typeof o.head === "string") return [{ key: "Detail", value: clip(o.head) }];
+  if (!o) return v === undefined || v === null ? [] : [wordRow("Detail", v)];
+  if (o.tooLong === true || (o.truncated === true && typeof o.head === "string")) return [{ key: "Detail", value: TOO_LONG }];
   return Object.entries(o)
     .filter(([k, x]) => !QUIET_KEYS.has(k) && x !== undefined)
     .slice(0, DETAIL_ROWS_MAX)
-    .map(([k, x]) => ({ key: keyWords(k), value: valueWords(x) }));
+    .map(([k, x]) => wordRow(keyWords(k), x));
 }
 
 export interface DetailSection {
@@ -657,7 +675,10 @@ export function detailOf(line: RunLine): DetailSection[] {
       back.push(...rowsOf(Object.fromEntries(Object.entries(receipt).filter(([k]) => k !== "scores"))));
     } else if (p.receipt !== undefined) back.push(...rowsOf(p.receipt));
     if (p.answers !== undefined) back.push({ key: "Your answer", value: valueWords(p.answers) });
-    if (p.text !== undefined) back.push({ key: "In full", value: valueWords(p.text) });
+    // What the tool gave the coach (import trail §6.4): a read's moves by name, and the rest in words.
+    if (p.data !== undefined && p.data !== null) back.push(...rowsOf(p.data));
+    // "In full" is the whole text: a preview shorter than the line it expands hid the rest (audit 2026-11-05).
+    if (p.text !== undefined) back.push({ key: "In full", value: valueWords(p.text, 0, Infinity) });
     if (Array.isArray(p.set)) {
       const rows = setRows(p.set);
       if (rows.length > 0) out.push({ title: "The set", rows });
