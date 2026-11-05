@@ -43,7 +43,10 @@ export interface SaveBatchDto {
 export const FIT_SAVES_REQUEST = "Fit the new moves from my saves into my training.";
 
 /** A reason a row says "Check this" (`SaveBatchRowDto.move.checkWhy`). `reading_fixed`: the import changed or questioned what the model read. */
-export type CheckWhy = "low_confidence" | "inferred_name" | "inferred_dose" | "near_duplicate" | "reading_fixed";
+export type CheckWhy =
+  | "low_confidence" | "inferred_name" | "inferred_dose" | "near_duplicate" | "reading_fixed"
+  /** Import trail (2026-11-05): the judge never answered; the judge (not the names) said it's the same; no dose was stated. */
+  | "matcher_undecided" | "judged" | "default_dose";
 
 export interface SaveBatchesDto {
   batches: SaveBatchDto[];

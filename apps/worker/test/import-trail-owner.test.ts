@@ -7,7 +7,7 @@ import { beforeEach, describe, expect, it } from "vitest";
 import { eq } from "drizzle-orm";
 import { schema } from "@rg/database";
 import type { Db } from "../src/services/db.js";
-import { editPersonalMove, rematchLink, removeLink } from "../src/services/saves-review.js";
+import { batchDetail, editPersonalMove, rematchLink, removeLink } from "../src/services/saves-review.js";
 import { savedMoveDraft, seedSavedBatch } from "./saves-batch-fixture.js";
 import { makeTestDb, makeTestUser } from "./helpers.js";
 
@@ -67,5 +67,23 @@ describe("the owner's changes on the trail", () => {
     expect(await db.select().from(importCorrections)).toEqual([
       expect.objectContaining({ target: "link", targetId: first.id, field: "move", before: first.moveId, after: "gobletSquat", basis: "owner", by: "owner" }),
     ]);
+  });
+});
+
+describe("\"Check this\" says what matching recorded (audit bug 4)", () => {
+  it("a judge that never answered, a repaired reading and a default dose each read as what they were — not low confidence", async () => {
+    const seeded = await seedSavedBatch(db, userId, { savedAt: NOW, status: "released", posts: [{ moves: [{ draft: savedMoveDraft("Zorbex nod") }] }] });
+    const [postId] = seeded.postIds;
+    await db.update(savedPostMoves).set({ checkFlag: true }).where(eq(savedPostMoves.postId, postId!));
+    await db.insert(importEvents).values([
+      { id: "m1", userId, postId: postId!, stage: "match", source: "worker", status: "warn", summary: "s", at: NOW,
+        detail: { moves: [{ position: 0, outcome: "new", by: "new", judge: "failed", check: true }] } },
+      { id: "c1", userId, postId: postId!, stage: "check", source: "worker", status: "warn", summary: "s", at: NOW,
+        detail: { moves: [{ position: 0, repairs: ["laterality: a sided position reads as one-sided"], doseOrigin: "default" }] } },
+    ]);
+    const detail = await batchDetail(db, userId, seeded.batchId, NOW);
+    const row = detail!.rows.find((r) => r.post && r.position === 0)!;
+    expect(row.move.checkWhy).toEqual(expect.arrayContaining(["matcher_undecided", "reading_fixed", "default_dose"]));
+    expect(row.move.checkWhy).not.toContain("low_confidence");
   });
 });

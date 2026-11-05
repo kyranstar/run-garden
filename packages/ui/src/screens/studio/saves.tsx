@@ -708,6 +708,9 @@ const CHECK_WHY_WORDS: Readonly<Record<CheckWhy, string>> = {
   inferred_dose: "Dose inferred",
   near_duplicate: "Looks like another move",
   reading_fixed: "Reading corrected",
+  matcher_undecided: "Matcher couldn't decide",
+  judged: "Matched by judgement",
+  default_dose: "No dose stated",
 };
 
 /**

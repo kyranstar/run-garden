@@ -149,6 +149,9 @@ interface RowRead {
   confidence: number | null;
   /** The reading's own confidence in the move, and whether the post said its name and dose. */
   seenConfidence: string | null;
+  /** The post's match and check events' per-move entries (JSON text), when the trail has them (import trail). */
+  matchMoves?: string | null;
+  checkMoves?: string | null;
   nameEvidence: string | null;
   doseEvidence: string | null;
   moveStatus: string | null;
@@ -201,7 +204,11 @@ export async function batchDetail(db: Db, userId: string, batchId: string, now: 
       json_extract(p.extraction, '$.moves[' || l.position || '].purpose') as purpose,
       l.like_move_id as likeId,
       (select json_extract(lm.record, '$.name') from personal_moves lm where lm.id = l.like_move_id and lm.user_id = l.user_id) as likeName,
-      pm.fit_choice as choice
+      pm.fit_choice as choice,
+      (select json_extract(e.detail, '$.moves') from import_events e
+        where e.user_id = l.user_id and e.post_id = l.post_id and e.stage = 'match' order by e.at desc limit 1) as matchMoves,
+      (select json_extract(e.detail, '$.moves') from import_events e
+        where e.user_id = l.user_id and e.post_id = l.post_id and e.stage = 'check' order by e.at desc limit 1) as checkMoves
     from saved_post_moves l
       join saved_posts p on p.id = l.post_id and p.user_id = l.user_id
       left join personal_moves pm on pm.id = l.move_id and pm.user_id = l.user_id and l.move_kind = 'personal'
@@ -262,7 +269,37 @@ export async function batchDetail(db: Db, userId: string, batchId: string, now: 
  * or the reading was unsure of the move (`confidence: "low"`), what the post never said — its name, its dose — the
  * reading inferred (`evidence`), and a move that looks like another (the cut's near-duplicate, spec §12.4).
  */
+/** This row's entry among a stage's per-move entries (JSON text), by its position. */
+function entryAt(raw: string | null | undefined, position: number): Record<string, unknown> | null {
+  if (!raw) return null;
+  try {
+    const list: unknown = JSON.parse(raw);
+    if (!Array.isArray(list)) return null;
+    const hit = list.find((m) => m && typeof m === "object" && (m as { position?: unknown }).position === position);
+    return (hit as Record<string, unknown> | undefined) ?? null;
+  } catch {
+    return null;
+  }
+}
+
 function checkWhyOf(r: RowRead): CheckWhy[] {
+  // What matching recorded, when the trail has it (design 2026-11-05 §9; audit bug 4): the reasons as they were, never
+  // rebuilt by guessing — a judge that never answered is not "low confidence", a medium reading is not low.
+  const matched = entryAt(r.matchMoves, r.position);
+  if (matched) {
+    const checked = entryAt(r.checkMoves, r.position);
+    const out: CheckWhy[] = [];
+    const judge = matched.judge;
+    if (judge === "failed" || judge === "budget" || judge === "unavailable") out.push("matcher_undecided");
+    if (matched.by === "judge") out.push("judged");
+    if (r.seenConfidence === "low") out.push("low_confidence");
+    if (r.nameEvidence === "inferred") out.push("inferred_name");
+    if (r.doseEvidence === "inferred") out.push("inferred_dose");
+    if (checked?.doseOrigin === "default") out.push("default_dose");
+    if (Array.isArray(checked?.repairs) && checked.repairs.length > 0) out.push("reading_fixed");
+    if (r.likeId) out.push("near_duplicate");
+    if (out.length > 0) return out;
+  }
   const out: CheckWhy[] = [];
   if ((r.confidence !== null && Number(r.confidence) < 1) || r.seenConfidence === "low") out.push("low_confidence");
   if (r.nameEvidence === "inferred") out.push("inferred_name");
