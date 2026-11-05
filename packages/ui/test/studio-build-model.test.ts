@@ -150,7 +150,7 @@ describe("the notes, and what they block", () => {
     expect(err.part).toBe(1);
     expect(err.item).toBe(0);
     expect(err.message).toBe("Half-kneeling one-arm press isn't allowed with today's Jaw / head check at 3.");
-    expect(err.fix).toEqual({ action: { type: "swapItem", part: 1, item: 0, libraryId: "floorPress" }, label: "Swap in Floor press" });
+    expect(err.fix).toEqual({ action: { type: "swapItem", part: 1, item: 0, libraryId: "floorPress" }, label: "Swap in One-arm floor press" });
     expect(err.check).toBeNull();
     expect(j.blocked).toBe(err.message);
     // Errors come first.
@@ -514,7 +514,7 @@ describe("a planned workout that can't change", () => {
     const none = judgeDraft(d, buildCtxOf({ ...tmjCtx(3), place: { name: "Home", equipment: ["mat"] } }, TODAY), null);
     expect(none.notes.map((n) => n.message)).toEqual([
       "Half-kneeling one-arm press needs kettlebell or dumbbells, which this place doesn't have.",
-      "Floor press needs kettlebell or dumbbells, which this place doesn't have.",
+      "One-arm floor press needs kettlebell or dumbbells, which this place doesn't have.",
     ]);
     expect(none.checks).toEqual([]);
     expect(none.blocked).toBeNull();

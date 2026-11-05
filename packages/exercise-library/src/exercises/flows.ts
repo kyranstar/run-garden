@@ -158,7 +158,7 @@ export const FLOWS = defineExercises([
     conditions: { tmj: { clench: 0, neckLoad: 0, faceDown: false } },
     difficulty: 1,
     contraction: ["isotonic"],
-    muscles: { primary: ["hip-flexors", "thoracic-extensors", "hamstrings"], secondary: ["lats", "obliques", "soleus"] },
+    muscles: { primary: ["hamstrings", "thoracic-extensors", "lats"], secondary: ["adductors", "obliques", "soleus"] },
     purposes: ["mobility", "warmup"],
     tags: [],
     themes: ["gentleMobility", "deskUnwind"],

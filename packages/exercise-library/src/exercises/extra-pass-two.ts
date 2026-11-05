@@ -53,7 +53,7 @@ export const EXTRA_PASS_TWO = defineExercises([
     position: "quadruped",
     laterality: "alternating",
     load: "bodyweight",
-    dose: { type: "reps", range: [6, 10], sets: [2, 3], restSec: 60 },
+    dose: { type: "reps", range: [3, 5], sets: [2, 3], restSec: 60, secsPerRep: 6 },
     conditions: { tmj: { clench: 2, neckLoad: 1, faceDown: false } },
     difficulty: 4,
     tags: [],
@@ -68,10 +68,10 @@ export const EXTRA_PASS_TWO = defineExercises([
         "Take a high plank with the hands under the shoulders and the feet a little wider than hip-width."
       ],
       steps: [
-        "Shift your weight onto one hand without letting the hips turn.",
-        "With the free hand, reach beneath your chest, grab the weight and pull it over to the far side.",
+        "Shift your weight onto the hand next to the weight without letting the hips turn.",
+        "With the free hand, reach beneath your chest, grab the weight and pull it across to the free hand's side.",
         "Put the hand back down, settle the plank and do one push-up.",
-        "Drag the weight back with the other hand; each drag is one rep."
+        "Drag the weight back with the other hand and push up again; count reps per side."
       ],
       focus: [
         "Hips stay level, as if balancing a glass on the low back.",
@@ -228,7 +228,7 @@ export const EXTRA_PASS_TWO = defineExercises([
         "Lower with control.",
         "Finish the reps, then switch sides."
       ],
-      focus: ["The lift comes from the glute, not from arching the low back.", "Small lifts are enough."],
+      focus: ["The lift comes from the glute, not from arching the low back.", "Small lifts are enough.", "Front knee comfortable: bring the heel closer to the hips if it complains."],
       mistakes: ["Rolling the hips open to get the leg higher.", "Arching the low back.", "Sinking into the hands."],
       breathing: "Exhale as you lift, inhale as you lower.",
       conditions: { tmj: "Effort in the hip can creep into the jaw; keep the lifts small and the face soft." },

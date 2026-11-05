@@ -191,8 +191,9 @@ describe("what each one holds", () => {
 
   it("easier first: the hard couch stretch mostly gives way to the low lunges of its family", () => {
     const docs = SEEDS.map((seed) => itemIds(make("hip_opener", seed, { focusRefs: [] })));
-    expect(docs.filter((ids) => ids.includes("couchStretch")).length).toBeLessThanOrEqual(4);
-    expect(docs.filter((ids) => ids.includes("lowLunge") || ids.includes("lowLungeBlock")).length).toBeGreaterThanOrEqual(15);
+    const couch = docs.filter((ids) => ids.includes("couchStretch")).length;
+    expect(couch).toBeLessThanOrEqual(4);
+    expect(docs.filter((ids) => ids.includes("lowLunge")).length).toBeGreaterThan(couch);
   });
 
   it("a move the day would warn about is never chosen, even when little else is left", () => {

@@ -3,44 +3,8 @@ import { defineExercises } from "../define.js";
 
 export const CORE_CARRY = defineExercises([
   {
-    id: "bridgeBlock",
-    name: "Bridge · block between knees",
-    family: "bridge",
-    patterns: ["hinge"],
-    regions: ["glutes", "hamstrings"],
-    roles: ["activation", "accessory"],
-    equipment: { all: ["yoga-block"] },
-    position: "supine",
-    laterality: "bilateral",
-    load: "none",
-    dose: { type: "reps", range: [10, 15], secsPerRep: 4 },
-    conditions: { tmj: { clench: 0, neckLoad: 0, faceDown: false } },
-    difficulty: 1,
-    contraction: ["isotonic", "isometric"],
-    muscles: { primary: ["glute-max"], secondary: ["hamstrings", "adductors", "glute-med"] },
-    purposes: ["activation", "strength"],
-    tags: ["glute-activation"],
-    themes: ["posteriorChain", "hipsPosture"],
-    providers: { coros: { key: "T1132", confidence: "close", method: "curated" } }, // COROS: Lie on Your Back Glute Bridge; ours squeezes a block
-    harder: ["singleLegBridge"],
-    text: {
-      summary: "Squeeze a block between the knees, lift the hips, pause, and lower slowly.",
-      setup: ["Lie on your back, knees bent, feet hip-width and flat.", "Place the block between the knees."],
-      steps: [
-        "Lightly squeeze the block.",
-        "Press through the heels and lift the hips until knees, hips, and shoulders line up.",
-        "Pause for a breath at the top.",
-        "Lower slowly, one segment at a time."
-      ],
-      focus: ["Glutes do the lifting.", "Ribs stay down at the top."],
-      mistakes: ["Arching the low back to get higher.", "Pushing the head into the floor."],
-      breathing: "Exhale as you lift, inhale as you lower.",
-      conditions: { tmj: "Glutes work; the jaw doesn't. Keep the back of the head resting lightly." },
-      why: "Restores glute support after sitting and gives the pelvis a stable reset."
-    }
-  },
-  {
     id: "bridge",
+    legacyIds: ["bridgeBlock"],
     name: "Glute bridge",
     family: "bridge",
     patterns: ["hinge"],
@@ -52,16 +16,16 @@ export const CORE_CARRY = defineExercises([
     dose: { type: "reps", range: [10, 15], secsPerRep: 4 },
     conditions: { tmj: { clench: 0, neckLoad: 0, faceDown: false } },
     difficulty: 1,
-    contraction: ["isotonic"],
+    contraction: ["isotonic", "isometric"],
     muscles: { primary: ["glute-max"], secondary: ["hamstrings", "glute-med"] },
     purposes: ["activation", "strength"],
     tags: ["glute-activation"],
-    themes: ["posteriorChain"],
+    themes: ["posteriorChain", "hipsPosture"],
     providers: { coros: { key: "T1132", confidence: "exact", method: "curated" } }, // COROS: Lie on Your Back Glute Bridge (the name computes to Hip Thrust through an alias)
     harder: ["singleLegBridge"],
     text: {
       summary: "Lift the hips from the floor with the glutes, pause, and lower slowly.",
-      setup: ["Lie on your back, knees bent, feet hip-width and flat.", "Optionally hold a folded towel between the knees."],
+      setup: ["Lie on your back, knees bent, feet hip-width and flat.", "Optionally hold a folded towel or a block between the knees and squeeze it lightly."],
       steps: [
         "Press through the heels and lift the hips.",
         "Stop when knees, hips, and shoulders line up.",
@@ -76,59 +40,26 @@ export const CORE_CARRY = defineExercises([
     }
   },
   {
-    id: "plankBlock",
-    name: "Incline plank on block",
-    family: "plank",
-    patterns: ["anti-extend"],
-    regions: ["core"],
-    roles: ["accessory", "activation"],
-    equipment: { all: ["yoga-block"] },
-    position: "quadruped",
-    laterality: "bilateral",
-    load: "bodyweight",
-    dose: { type: "time", range: [20, 45] },
-    conditions: { tmj: { clench: 1, neckLoad: 0, faceDown: false } },
-    difficulty: 1,
-    contraction: ["isometric"],
-    muscles: { primary: ["transverse-abdominis", "rectus-abdominis"], secondary: ["obliques", "serratus-anterior", "deltoids"] },
-    purposes: ["strength"],
-    tags: [],
-    themes: [],
-    text: {
-      summary: "Hands on a yoga block, body in one long line, breathing slowly.",
-      setup: ["Place the block on its tallest setting.", "Hands on the block under the shoulders, feet back."],
-      steps: [
-        "Walk the feet back until the body forms a straight line.",
-        "Press the block away and tuck the ribs slightly.",
-        "Hold, breathing slowly.",
-        "Stop before you start bracing hard or clenching."
-      ],
-      focus: ["Quiet face, strong ribs.", "A straight line from head to heels."],
-      mistakes: ["Letting the hips sag.", "Holding the breath."],
-      breathing: "Slow nasal breathing — if you can't breathe easily, it's too hard.",
-      conditions: { tmj: "Planks invite clenching; keep the tongue up and teeth apart, and end the hold if the jaw tightens." },
-      why: "Builds trunk endurance without max-effort bracing."
-    }
-  },
-  {
     id: "inclinePlank",
+    legacyIds: ["plankBlock"],
     name: "Incline plank",
     family: "plank",
     patterns: ["anti-extend"],
     regions: ["core"],
     roles: ["accessory", "activation"],
     equipment: { oneOf: ["bench", "chair"] },
-    position: "quadruped",
+    position: "standing",
     laterality: "bilateral",
     load: "bodyweight",
-    dose: { type: "time", range: [20, 45] },
+    dose: { type: "time", range: [20, 45], sets: [2, 3], restSec: 30 },
     conditions: { tmj: { clench: 1, neckLoad: 0, faceDown: false } },
     difficulty: 1,
     contraction: ["isometric"],
     muscles: { primary: ["transverse-abdominis", "rectus-abdominis"], secondary: ["obliques", "serratus-anterior", "deltoids"] },
-    purposes: ["strength"],
+    purposes: ["strength", "activation"],
     tags: [],
     themes: [],
+    harder: ["plankPelvicTilts"],
     text: {
       summary: "Hands on a bench or sturdy chair, body in one long line, breathing slowly.",
       setup: ["Brace the chair against a wall so it can't slide.", "Hands on the edge under the shoulders."],
@@ -163,6 +94,8 @@ export const CORE_CARRY = defineExercises([
     purposes: ["strength"],
     tags: [],
     themes: ["carryDay"],
+    harder: ["sidePlank"],
+    easier: ["wallSidePlank"],
     providers: { coros: { key: "T1185", confidence: "close", method: "curated" } }, // COROS: Side Plank: ours is the short lever
     text: {
       summary: "On your side with knees bent, lift the hips into a straight line and hold.",
@@ -195,7 +128,7 @@ export const CORE_CARRY = defineExercises([
     difficulty: 2,
     contraction: ["isometric", "isotonic"],
     muscles: { primary: ["transverse-abdominis", "rectus-abdominis"], secondary: ["obliques", "hip-flexors"] },
-    purposes: ["strength"],
+    purposes: ["strength", "activation"],
     tags: ["core-stability"],
     themes: [],
     providers: { coros: { key: "T1243", confidence: "exact", method: "curated" } }, // COROS: Dead Bug
@@ -283,7 +216,7 @@ export const CORE_CARRY = defineExercises([
       mistakes: ["Shrugging the loaded shoulder.", "Leaning away from the weight.", "Gripping so hard the jaw clenches."],
       breathing: "Keep breathing through the nose; don't hold your breath to brace.",
       conditions: { tmj: "Grip effort travels to the jaw — grip only as hard as you need and keep the teeth apart." },
-      why: "Builds core and shoulder depression, useful for desk-tight traps."
+      why: "Trains the trunk to stay upright against a one-sided load, with the shoulder held low and steady."
     }
   },
   {
@@ -343,7 +276,7 @@ export const CORE_CARRY = defineExercises([
     providers: { coros: { key: "T1310", confidence: "exact", method: "curated" } }, // COROS: Farmer's Walk
     text: {
       summary: "Walk tall holding a dumbbell in each hand, shoulders down and back.",
-      setup: ["Pick up a dumbbell in each hand with a hinge.", "Stand tall with the arms long."],
+      setup: ["Pick up a dumbbell in each hand with a hinge; the weight shown is per hand.", "Stand tall with the arms long."],
       steps: [
         "Walk slowly with short, even steps.",
         "Keep the shoulders away from the ears.",

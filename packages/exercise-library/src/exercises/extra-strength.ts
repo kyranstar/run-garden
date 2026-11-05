@@ -67,7 +67,7 @@ export const EXTRA_STRENGTH = defineExercises([
     text: {
       summary: "Back foot on a bench or chair, lower straight down on the front leg and stand back up.",
       setup: [
-        "Stand a long stride in front of a bench or sturdy chair and rest the top of the back foot on the seat.",
+        "Stand a long stride in front of a bench or sturdy chair and rest the top of the back foot on the seat; brace a chair against a wall so it can't slide.",
         "Keep a wall or a second chair within reach for balance."
       ],
       steps: [
@@ -243,7 +243,7 @@ export const EXTRA_STRENGTH = defineExercises([
     id: "suitcaseDeadlift",
     name: "Suitcase deadlift",
     family: "deadlift",
-    patterns: ["hinge"],
+    patterns: ["hinge", "anti-lateral"],
     regions: ["hamstrings", "glutes", "core"],
     roles: ["core", "accessory"],
     equipment: { oneOf: ["kettlebell", "dumbbells"] },
@@ -323,7 +323,7 @@ export const EXTRA_STRENGTH = defineExercises([
     patterns: ["pull-h"],
     regions: ["upper-back", "lats", "arms"],
     roles: ["core", "accessory"],
-    equipment: { all: ["towel"] },
+    equipment: { all: ["towel", "wall"] },
     position: "standing",
     laterality: "bilateral",
     load: "bodyweight",
@@ -363,7 +363,7 @@ export const EXTRA_STRENGTH = defineExercises([
     patterns: ["pull-h"],
     regions: ["upper-back", "lats", "arms"],
     roles: ["core", "accessory"],
-    equipment: { all: ["bench"] },
+    equipment: { all: ["chair"] },
     position: "supine",
     laterality: "bilateral",
     load: "bodyweight",
@@ -379,7 +379,7 @@ export const EXTRA_STRENGTH = defineExercises([
     text: {
       summary: "Lie under a sturdy table, grip its edge and pull your chest up to it.",
       setup: [
-        "Use a heavy, stable table that can't tip — test it first — or at the gym a bar set about hip height in a rack.",
+        "Use a heavy table with its legs close to the edge, never a folding or pedestal table; lean hard on the edge to test it can't tip. At the gym, use a bar set about hip height in a rack.",
         "Lie underneath with the edge above your chest and grip it shoulder-width; knees bent and feet flat to start."
       ],
       steps: [

@@ -83,7 +83,7 @@ export const ATHLETIC = defineExercises([
     id: "pogoHop",
     name: "Pogo hops",
     family: "pogo",
-    patterns: ["squat"],
+    patterns: ["calf-raise"],
     regions: ["calves", "ankles", "feet"],
     roles: ["accessory"],
     position: "standing",
@@ -120,7 +120,7 @@ export const ATHLETIC = defineExercises([
     id: "lineHopForwardBack",
     name: "Line hops · forward and back",
     family: "lineHop",
-    patterns: ["squat"],
+    patterns: ["calf-raise"],
     regions: ["calves", "ankles"],
     roles: ["accessory"],
     position: "standing",
@@ -139,7 +139,7 @@ export const ATHLETIC = defineExercises([
     text: {
       summary: "Quick two-footed hops forward and back over a line on the floor.",
       setup: [
-        "Use a line on the floor: a floor seam, a crack in the pavement, or a rolled towel.",
+        "Use a line on the floor: a floor seam, a crack in the pavement, or a strip of tape.",
         "Stand just behind it, feet together, knees soft."
       ],
       steps: [
@@ -159,7 +159,7 @@ export const ATHLETIC = defineExercises([
     id: "lineHopLateral",
     name: "Line hops · side to side",
     family: "lineHop",
-    patterns: ["squat"],
+    patterns: ["calf-raise"],
     regions: ["calves", "ankles"],
     roles: ["accessory"],
     position: "standing",
@@ -177,7 +177,7 @@ export const ATHLETIC = defineExercises([
     harder: ["skaterBoundLow"],
     text: {
       summary: "Quick two-footed hops sideways over a line and back, light and low.",
-      setup: ["Stand beside a line on the floor, such as a floor seam or a rolled towel, feet together.", "Knees soft, arms relaxed."],
+      setup: ["Stand beside a line on the floor, such as a floor seam or a strip of tape, feet together.", "Knees soft, arms relaxed."],
       steps: [
         "Hop sideways over the line, landing lightly on the balls of both feet.",
         "Hop straight back across it.",
@@ -253,7 +253,7 @@ export const ATHLETIC = defineExercises([
         "Push off sideways and land on the free foot.",
         "Sink into the landing: hip back, knee over the toes.",
         "Hold still for two seconds without touching the free foot down.",
-        "Bound back the way you came and stick it again."
+        "Bound back the way you came and stick it again; the reps count per leg."
       ],
       focus: ["Quiet, balanced landings.", "Go only as far as you can stick."],
       mistakes: ["Bounding farther than you can control.", "The knee collapsing inward.", "Wobbling into the next bound without a stick."],
@@ -287,7 +287,7 @@ export const ATHLETIC = defineExercises([
       steps: [
         "Hop sideways over the line, landing on the same foot.",
         "Sink into the landing and hold still for two seconds.",
-        "Hop back across and stick it again.",
+        "Hop back across and stick it again; each landing is one rep.",
         "Finish the reps, then switch legs."
       ],
       focus: ["Small hops you can stick.", "Ankle, knee and hip stack over the foot."],
@@ -480,7 +480,7 @@ export const ATHLETIC = defineExercises([
       ],
       steps: [
         "Shift your weight over one foot and lift the other just off the floor.",
-        "Hold for three to five slow breaths with the knees level.",
+        "Hold for two or three slow breaths with the knees level.",
         "Set the foot down, shift across, and lift the opposite foot.",
         "Keep alternating until the time is up, then slide up the wall to finish."
       ],
@@ -544,7 +544,7 @@ export const ATHLETIC = defineExercises([
     purposes: ["strength"],
     tags: ["eccentric-emphasis", "ski"],
     themes: ["posteriorChain", "skiPrep"],
-    easier: ["hamstringBridgeChair"],
+    easier: ["hamstringSlideOut", "hamstringBridgeChair"],
     text: {
       summary: "Kneeling with the heels anchored, lower the body forward slowly, then push back up.",
       setup: [
@@ -565,7 +565,7 @@ export const ATHLETIC = defineExercises([
       ],
       breathing: "Breathe out slowly as you lower, and in at the bottom.",
       conditions: { tmj: "Hard, slow lowering invites a clench: teeth apart, tongue up, and end the set the moment you notice gritting." },
-      why: "Builds hamstring strength at long lengths, which helps protect the knees when skiing and sprinting."
+      why: "Builds hamstring strength at long lengths, which guards against hamstring strains when sprinting and steadies the knee when skiing."
     }
   },
   {
@@ -578,7 +578,7 @@ export const ATHLETIC = defineExercises([
     position: "standing",
     laterality: "unilateral",
     load: "bodyweight",
-    dose: { type: "reps", range: [6, 10], sets: [2, 3], restSec: 45, secsPerRep: 4 },
+    dose: { type: "reps", range: [6, 10], sets: [2, 3], restSec: 45, secsPerRep: 6 },
     conditions: { tmj: { clench: 1, neckLoad: 0, faceDown: false } },
     difficulty: 2,
     contraction: ["isotonic"],
@@ -665,7 +665,7 @@ export const ATHLETIC = defineExercises([
       summary: "On a low step, slowly lower the free heel to tap the floor, then stand tall.",
       setup: [
         "Stand on one leg on a low, stable step or the bottom stair, the other foot hanging just off the front edge.",
-        "Fingertips on a wall or rail for balance."
+        "Fingertips on a wall or rail for balance. No step? On flat floor, reach the free heel forward and tap it as far out as you can control."
       ],
       steps: [
         "Bend the standing knee and lower slowly, about three seconds, until the free heel lightly taps the floor.",
@@ -702,7 +702,7 @@ export const ATHLETIC = defineExercises([
     easier: ["wallPallofHold"],
     harder: ["bandPallofPress"],
     text: {
-      summary: "Kneel side-on to a band anchor, press the band out, and hold without turning.",
+      summary: "Half-kneel side-on to a band, knee nearest it down; press out and hold without turning.",
       setup: [
         "Anchor a band at chest height and kneel side-on to it, the knee nearer the anchor down and the other foot forward.",
         "Hold the band at the middle of the chest, far enough from the anchor that it's taut."

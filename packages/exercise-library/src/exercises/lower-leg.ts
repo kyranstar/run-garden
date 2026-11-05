@@ -161,7 +161,7 @@ export const LOWER_LEG = defineExercises([
     // single-leg raise) load the big calf muscle instead of this one. Its family offers them as other versions.
     harder: ["bentKneeHeelDrop"],
     text: {
-      summary: "Knees softly bent and kept bent, rise onto the balls of both feet, then lower slowly.",
+      summary: "Knees bent about 30–45° and held there, rise onto the balls of both feet, lower slowly.",
       setup: [
         "Stand with the feet hip-width apart, fingertips on a wall or a chair back.",
         "Bend both knees about 30–45°, as if starting to sit, and keep that bend throughout."

@@ -1376,7 +1376,7 @@ async function seedBusySeason(db: Db, uid: string, today: string): Promise<void>
   const T0 = at(today);
   const MOVES: Array<{ id: string; seconds?: number; perSide?: boolean }> = [
     { id: "gobletSquat" }, { id: "bandRow" }, { id: "deadBug" }, { id: "wallSit", seconds: 45 }, { id: "sidePlank", seconds: 30, perSide: true }, { id: "calfRaise" },
-    { id: "chinTuck" }, { id: "catCow" }, { id: "plankBlock", seconds: 40 },
+    { id: "chinTuck" }, { id: "catCow" }, { id: "inclinePlank", seconds: 40 },
   ];
   await db.insert(schema.athleteProfiles).values({
     id: newId(), userId: uid, updatedAt: T0,

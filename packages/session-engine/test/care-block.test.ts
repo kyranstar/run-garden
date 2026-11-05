@@ -38,7 +38,7 @@ describe("the care pool holds each kind the review supports", () => {
     expect(pool.filter(longBreathing).map(e => e.id)).toContain("downRegulationFlow");
   });
   test("jaw exercise stays", () => {
-    has(["jawOpen", "lateralExcursion", "jawIsoOpen", "jawIsoLateral", "goldfishOpening"]);
+    has(["jawOpen", "lateralExcursion", "jawIsoOpen", "jawIsoLateral"]);
   });
   test("the block keeps its size", () => {
     expect(TMJ.care!.block).toMatchObject({

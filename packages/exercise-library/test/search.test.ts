@@ -114,24 +114,24 @@ describe("searchLibrary", () => {
   });
 
   test("the athlete's lean breaks ties after the fit, never across tiers", () => {
-    // "bridge": the name-word tier holds several bridges, in name order.
-    const plain = searchLibrary(EXERCISES, "bridge").map(e => e.id);
-    const tier2 = plain.filter(id => textTier(EXERCISES.find(e => e.id === id)!, "bridge") === 2);
+    // "plank": the name-word tier holds several planks, in name order.
+    const plain = searchLibrary(EXERCISES, "plank").map(e => e.id);
+    const tier2 = plain.filter(id => textTier(EXERCISES.find(e => e.id === id)!, "plank") === 2);
     expect(tier2.length).toBeGreaterThan(2);
     const start = plain.indexOf(tier2[0]!);
     const lastOf2 = tier2.at(-1)!;
     const lean = (ids: string[]) => (id: string) => (ids.includes(id) ? 1 : 0);
     // A lean lifts the last of the tier to its head, and no further.
-    expect(searchLibrary(EXERCISES, "bridge", {}, { boost: lean([lastOf2]) }).map(e => e.id)[start]).toBe(lastOf2);
-    expect(searchLibrary(EXERCISES, "bridge", {}, { boost: lean([lastOf2]) })[0]!.id).toBe(plain[0]);
+    expect(searchLibrary(EXERCISES, "plank", {}, { boost: lean([lastOf2]) }).map(e => e.id)[start]).toBe(lastOf2);
+    expect(searchLibrary(EXERCISES, "plank", {}, { boost: lean([lastOf2]) })[0]!.id).toBe(plain[0]);
     // A lean never beats a better fit.
     const fit = (e: (typeof EXERCISES)[number]) => (e.id === lastOf2 ? 1 : 0);
-    expect(searchLibrary(EXERCISES, "bridge", {}, { boost: lean([lastOf2]), fit }).map(e => e.id)[start]).not.toBe(lastOf2);
+    expect(searchLibrary(EXERCISES, "plank", {}, { boost: lean([lastOf2]), fit }).map(e => e.id)[start]).not.toBe(lastOf2);
     // Nor a better tier: the very last result, leaned on, stays behind every better tier.
     const tail = plain.at(-1)!;
-    const tailTier = textTier(EXERCISES.find(e => e.id === tail)!, "bridge")!;
-    const firstOfTail = plain.findIndex(id => textTier(EXERCISES.find(e => e.id === id)!, "bridge") === tailTier);
-    expect(searchLibrary(EXERCISES, "bridge", {}, { boost: lean([tail]) }).map(e => e.id).indexOf(tail)).toBe(firstOfTail);
+    const tailTier = textTier(EXERCISES.find(e => e.id === tail)!, "plank")!;
+    const firstOfTail = plain.findIndex(id => textTier(EXERCISES.find(e => e.id === id)!, "plank") === tailTier);
+    expect(searchLibrary(EXERCISES, "plank", {}, { boost: lean([tail]) }).map(e => e.id).indexOf(tail)).toBe(firstOfTail);
   });
 
   test("words match in any order, and through muscle, region, purpose and gear labels", () => {

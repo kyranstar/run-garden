@@ -21,7 +21,7 @@ export const BREATH_DOWNSHIFT = defineExercises([
     purposes: ["recovery", "condition-care"],
     themes: ["jawReset"],
     text: {
-      summary: "Settle the jaw into its rest position and slow the exhale.",
+      summary: "Tongue up, lips closed, teeth apart; breathe in through the nose for 4, out for 6–8.",
       setup: [
         "Sit tall with your back supported and feet flat.",
         "Let your hands rest on your thighs and drop your shoulders."
@@ -58,7 +58,7 @@ export const BREATH_DOWNSHIFT = defineExercises([
     position: "seated",
     laterality: "bilateral",
     load: "none",
-    dose: { type: "breaths", range: [5, 8] },
+    dose: { type: "breaths", range: [5, 8], secsPerRep: 15 },
     conditions: { tmj: { clench: 0, neckLoad: 0, faceDown: false } },
     difficulty: 1,
     tags: [],
@@ -67,7 +67,7 @@ export const BREATH_DOWNSHIFT = defineExercises([
     purposes: ["recovery", "condition-care"],
     themes: ["jawReset"],
     text: {
-      summary: "Two quick inhales through the nose, then one long, slow exhale.",
+      summary: "A full breath in through the nose, a short sip on top, then one long, slow exhale.",
       setup: ["Sit or stand comfortably with your shoulders relaxed.", "Tongue resting on the palate, lips closed."],
       steps: [
         "Inhale through the nose until the lungs feel mostly full.",
@@ -132,7 +132,7 @@ export const BREATH_DOWNSHIFT = defineExercises([
     family: "rest",
     patterns: ["breathe"],
     regions: ["low-back", "hips"],
-    roles: ["cooldown", "downshift"],
+    roles: ["cooldown"],
     position: "supine",
     laterality: "bilateral",
     load: "none",
@@ -145,7 +145,7 @@ export const BREATH_DOWNSHIFT = defineExercises([
     purposes: ["recovery", "cooldown"],
     themes: ["gentleMobility", "jawReset"],
     text: {
-      summary: "Lie back with knees bent or legs up and let the floor hold you.",
+      summary: "Lie back, knees bent and resting together or legs up a wall, and let the floor hold you.",
       setup: [
         "Lie on your back with knees bent and feet wide, knees resting together — or legs up a wall.",
         "Place a folded towel under your head if your chin pokes up."
@@ -189,7 +189,7 @@ export const BREATH_DOWNSHIFT = defineExercises([
         "Soften the eyes and forehead.",
         "Let the temples and the muscles in front of the ears relax.",
         "Relax the throat and drop the shoulders.",
-        "Take three slow breaths holding that position."
+        "Take three to five slow breaths holding that position."
       ],
       focus: ["Teeth apart is the goal — notice if they drift together.", "Remember what this feels like for the next hour."],
       mistakes: ["Opening the mouth wide instead of just parting the teeth.", "Rushing through it."],

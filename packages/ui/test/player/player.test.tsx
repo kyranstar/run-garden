@@ -277,14 +277,14 @@ describe("⇄ mid-session", () => {
     await toFirstSet();
     await click("Swap");
     await until(() => !!document.querySelector('[role="dialog"]'), "the swap list");
-    expect(text()).toContain("Supported split squat");
+    expect(text()).toContain("Weighted split squat");
     // Every Use is a full-size button: 44px tall (styles.css `.choice-move > .btn`), never the 36px small one.
     const uses = [...document.querySelectorAll<HTMLButtonElement>('[role="dialog"] button')].filter((b) => b.textContent === "Use");
     expect(uses.length).toBeGreaterThan(0);
     for (const u of uses) expect([...u.classList]).toEqual(["btn"]);
     await click("Use");
     await until(() => !document.querySelector('[role="dialog"]'), "the list closed");
-    expect(text()).toContain("Supported split squat");
+    expect(text()).toContain("Weighted split squat");
     expect(text()).toContain("3 of 9");
     await click("Swap");
     await until(() => !!document.querySelector('[role="dialog"]'), "the swap list again");

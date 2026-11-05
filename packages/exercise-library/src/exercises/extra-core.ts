@@ -113,7 +113,7 @@ export const EXTRA_CORE = defineExercises([
         "Relax, then turn around before switching sides."
       ],
       focus: ["Moderate pressure, steady breathing.", "The trunk stays still while the arms push."],
-      mistakes: ["Turning the chest toward the wall.", "Pushing so hard the breath stops."],
+      mistakes: ["Letting the push turn the chest away from the wall.", "Pushing so hard the breath stops."],
       breathing: "Slow nasal breathing through the hold.",
       conditions: { tmj: "Keep the teeth apart; if you notice bracing, ease the push." },
       why: "Anti-rotation training with no equipment at all."
@@ -143,7 +143,7 @@ export const EXTRA_CORE = defineExercises([
       setup: ["Stand tall, feet hip-width, knees soft.", "Hold a light kettlebell by the handle in front of the hips."],
       steps: [
         "Hand the bell from one hand to the other behind your back.",
-        "Bring it round to the front and hand it across again.",
+        "Bring it round to the front and hand it across again; one full circle is one rep.",
         "Keep the hips still and the torso tall as the bell circles.",
         "Do the reps circling one way, then the same number circling the opposite way."
       ],
@@ -178,8 +178,8 @@ export const EXTRA_CORE = defineExercises([
     text: {
       summary: "Side plank with the top knee on a bench, lifting the hips with the inner thigh.",
       setup: [
-        "Lie on your side next to a bench or sturdy chair, forearm under the shoulder.",
-        "Rest the inside of the top knee on the seat; the bottom leg stays bent underneath."
+        "Set a bench or sturdy chair against a wall so it can't slide, then lie on your side next to it, forearm under the shoulder.",
+        "Rest the inside of the top knee on the seat; the bottom leg stays bent underneath, touching the floor lightly without pushing."
       ],
       steps: [
         "Press the top knee down into the seat and lift the hips until the body is straight.",
@@ -217,9 +217,9 @@ export const EXTRA_CORE = defineExercises([
     themes: ["carryDay"],
     harder: ["sidePlankKnees"],
     text: {
-      summary: "Forearm on a wall, feet stepped out, hold the body in a straight line.",
+      summary: "Side-on to a wall, forearm on it, feet stepped out: hold the body in one straight line.",
       setup: [
-        "Stand side-on to a wall and place the forearm on it at shoulder height, elbow under the shoulder.",
+        "Stand side-on to a wall and place the forearm on it, elbow about level with the shoulder.",
         "Step the feet out from the wall, together, so the body leans into the forearm."
       ],
       steps: [
@@ -339,7 +339,7 @@ export const EXTRA_CORE = defineExercises([
     text: {
       summary: "Hold one weight at the shoulder in the rack position and walk tall without leaning.",
       setup: [
-        "Use both hands to bring the weight up to the rack position: handle in the palm, bell resting on the outside of the forearm, wrist straight.",
+        "Use both hands to bring the weight up to the rack position, wrist straight: a kettlebell sits with the handle in the palm and the bell on the outside of the forearm; a dumbbell rests one end on the shoulder.",
         "Tuck the elbow against the ribs and stand tall."
       ],
       steps: [
@@ -384,7 +384,7 @@ export const EXTRA_CORE = defineExercises([
       ],
       steps: [
         "Tuck the tailbone under, gently rounding the low back.",
-        "Let the pelvis return to a slight arch without the hips sagging.",
+        "Let the pelvis return to neutral, without the hips sagging; that's one rep.",
         "Move slowly between the two.",
         "Keep the chest, shoulders, and head still throughout."
       ],

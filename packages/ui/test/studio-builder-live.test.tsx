@@ -396,8 +396,8 @@ describe("an error", () => {
     const why = "Half-kneeling one-arm press isn't allowed with today's Jaw / head check at 3.";
     expect(document.getElementById(startButton()!.getAttribute("aria-describedby")!)!.textContent).toBe(why);
 
-    await click(button("Swap in Floor press"), "Fix");
-    expect(partsShown()[1]).toEqual(["Main", ["Floor press"]]);
+    await click(button("Swap in One-arm floor press"), "Fix");
+    expect(partsShown()[1]).toEqual(["Main", ["One-arm floor press"]]);
     expect(startButton()!.disabled).toBe(false);
     expect(text()).not.toContain(why);
   });
@@ -813,10 +813,10 @@ describe("focus", () => {
     await draftStore().save(d());
     serve();
     mount("/studio/build/new", { library: libraryDto({ tmj: true }), today: todayDto({ value: 3 }) });
-    await until(() => !!button("Swap in Floor press"), "the Fix");
-    await press(button("Swap in Floor press"), "Fix");
+    await until(() => !!button("Swap in One-arm floor press"), "the Fix");
+    await press(button("Swap in One-arm floor press"), "Fix");
     expect(document.activeElement).toBe(atRow(1, 0));
-    expect(atRow(1, 0)!.textContent).toContain("Floor press");
+    expect(atRow(1, 0)!.textContent).toContain("One-arm floor press");
 
     act(() => root?.unmount());
     host?.remove();
@@ -826,8 +826,8 @@ describe("focus", () => {
     await until(() => !!atRow(1, 0), "the row");
     await click(atRow(1, 0), "the row");
     const sheet = () => [...document.querySelectorAll<HTMLElement>('[role="dialog"]')][0]!;
-    await press(button("Swap in Floor press", sheet()), "Fix in the sheet");
-    expect(sheet().querySelector("h2")!.textContent).toBe("Floor press");
+    await press(button("Swap in One-arm floor press", sheet()), "Fix in the sheet");
+    expect(sheet().querySelector("h2")!.textContent).toBe("One-arm floor press");
     expect(document.activeElement).not.toBe(document.body);
     expect(sheet().contains(document.activeElement)).toBe(true);
   });
@@ -950,7 +950,7 @@ describe("a planned workout that can't change, judged by today", () => {
     mount("/studio/build/workout/w1", { library: libraryDto({ tmj: true }), today: todayDto({ value: 3 }) });
     await until(() => text().includes("This workout is under way, so it can't be changed."), "the line");
     await until(() => text().includes("Half-kneeling one-arm press isn't allowed with today's Jaw / head check at 3."), "the note");
-    expect(button("Swap in Floor press")).toBeNull();
+    expect(button("Swap in One-arm floor press")).toBeNull();
     expect(document.querySelector(".stu-note-actions")).toBeNull();
     expect(text()).not.toContain("Fix the note above to start.");
     expect(startButton()).toBeNull();
@@ -996,7 +996,7 @@ describe("a planned workout that can't change, judged by today", () => {
     // The press and its alternate both want gear this place lacks: two notes, both listed, and the count says two.
     expect(listedNotes().map((n) => n.querySelector(".stu-note-text")!.textContent)).toEqual([
       "Note: Half-kneeling one-arm press needs kettlebell or dumbbells, which this place doesn't have.",
-      "Note: Floor press needs kettlebell or dumbbells, which this place doesn't have.",
+      "Note: One-arm floor press needs kettlebell or dumbbells, which this place doesn't have.",
     ]);
     expect(document.querySelector(".stu-sum-count")!.textContent).toBe("2 notes");
     expect(document.querySelectorAll(".stu-sum .stu-note").length).toBe(2);
@@ -1585,7 +1585,7 @@ describe("the place chip on a quick start (CUJ re-walk §2.3)", () => {
   };
   const namesOf = (doc: WorkoutDoc) => doc.parts.flatMap((p) => p.items.map((i) => (i.kind === "exercise" ? EXERCISES.find((r) => r.id === i.libraryId)!.name : "")));
   const madeAt = (placeId?: string) => {
-    const made = quickStartFor("hip_opener", ctxAt(placeId), TODAY);
+    const made = quickStartFor("desk_reset", ctxAt(placeId), TODAY);
     if (!("doc" in made)) throw new Error(made.reason);
     return made.doc;
   };
@@ -1597,10 +1597,10 @@ describe("the place chip on a quick start (CUJ re-walk §2.3)", () => {
   };
 
   it("not edited since it was made: made again at the new place — what it says matches what it would be, built there", async () => {
-    // The precondition that makes this a test: the hip opener at Home is not the hip opener with no equipment.
+    // The precondition that makes this a test: the desk reset at Home is not the desk reset with no equipment.
     expect(namesOf(madeAt("none"))).not.toEqual(namesOf(madeAt()));
     const calls = serve();
-    mount("/studio/build/quick/hip_opener", { places: twoPlacesDto(BAND_ONLY) });
+    mount("/studio/build/quick/desk_reset", { places: twoPlacesDto(BAND_ONLY) });
     await until(() => shown().length > 0, "the quick start");
     expect(shown()).toEqual(namesOf(madeAt()));
     await pick("No equipment");
@@ -1619,7 +1619,7 @@ describe("the place chip on a quick start (CUJ re-walk §2.3)", () => {
 
   it("edited: kept as it is at the new place — its notes say what the place lacks", async () => {
     serve();
-    mount("/studio/build/quick/hip_opener", { places: twoPlacesDto(BAND_ONLY) });
+    mount("/studio/build/quick/desk_reset", { places: twoPlacesDto(BAND_ONLY) });
     await until(() => shown().length > 0, "the quick start");
     await click(effort("develop"), "Develop");
     const before = shown();

@@ -25,7 +25,7 @@ export const UPPER = defineExercises([
     text: {
       summary: "One hand supported on a bench or chair, row the weight toward your hip.",
       setup: [
-        "Place one hand on a bench, chair, or your thigh; stagger the feet.",
+        "Stagger the feet, the supported side forward, then hinge at the hips with a flat back and place that hand on a bench, chair, or your thigh.",
         "Hold the weight in the other hand, arm long."
       ],
       steps: [
@@ -35,7 +35,7 @@ export const UPPER = defineExercises([
         "Finish the reps, then switch sides."
       ],
       focus: ["The shoulder blade moves; the neck doesn't hike.", "Elbow travels toward the hip, not straight up."],
-      mistakes: ["Shrugging the shoulder to the ear.", "Twisting the torso to swing the weight."],
+      mistakes: ["Shrugging the shoulder to the ear.", "Twisting the torso to swing the weight.", "Rounding the back."],
       breathing: "Exhale as you row, inhale as you lower.",
       conditions: { tmj: "Keep the head in line with the spine and the teeth apart — rows invite a shrug-and-clench." },
       why: "Strengthens the mid-back so the neck does less postural work."
@@ -53,7 +53,7 @@ export const UPPER = defineExercises([
     laterality: "bilateral",
     load: "external",
     dose: { type: "reps", range: [8, 12], sets: [2, 4], restSec: 60, startKg: 10 },
-    conditions: { tmj: { clench: 0, neckLoad: 0, faceDown: false } },
+    conditions: { tmj: { clench: 1, neckLoad: 0, faceDown: false } },
     difficulty: 2,
     contraction: ["isotonic"],
     muscles: { primary: ["rhomboids", "middle-traps", "lats"], secondary: ["biceps", "deltoids"] },
@@ -75,8 +75,8 @@ export const UPPER = defineExercises([
       focus: ["Chest stays on the pad.", "Neck stays long, looking at the floor."],
       mistakes: ["Lifting the chest off the pad to heave the weight.", "Craning the head up."],
       breathing: "Exhale as you row.",
-      conditions: { tmj: "The bench removes the need to brace, so there's nothing for the jaw to do." },
-      why: "The bench takes away all bracing, so the mid-back works without the jaw joining in."
+      conditions: { tmj: "The bench does the balancing; grip only as hard as you need and keep the teeth apart." },
+      why: "The bench takes over the balance and low-back work, so the effort goes to the mid-back."
     }
   },
   {
@@ -121,7 +121,7 @@ export const UPPER = defineExercises([
     family: "scapular",
     patterns: ["pull-h"],
     regions: ["upper-back", "shoulders"],
-    roles: ["core", "accessory", "activation"],
+    roles: ["accessory", "activation"],
     position: "prone",
     laterality: "bilateral",
     load: "bodyweight",
@@ -166,10 +166,11 @@ export const UPPER = defineExercises([
     conditions: { tmj: { clench: 0, neckLoad: 0, faceDown: false } },
     difficulty: 1,
     contraction: ["isotonic"],
-    muscles: { primary: ["middle-traps", "rhomboids"], secondary: ["deltoids", "rotator-cuff", "lower-traps"] },
+    muscles: { primary: ["deltoids", "middle-traps", "rhomboids"], secondary: ["rotator-cuff", "lower-traps"] },
     purposes: ["activation"],
     tags: ["desk-relief", "posture"],
     themes: ["upperBackNeck", "deskUnwind"],
+    easier: ["doorOpeners"],
     text: {
       summary: "Hold a band at shoulder height and pull it apart until it touches your chest.",
       setup: ["Stand tall holding a light band with both hands, shoulder-width, arms straight in front.", "Shoulders down."],
@@ -201,14 +202,14 @@ export const UPPER = defineExercises([
     conditions: { tmj: { clench: 0, neckLoad: 0, faceDown: false } },
     difficulty: 1,
     contraction: ["isotonic"],
-    muscles: { primary: ["rotator-cuff", "middle-traps"], secondary: ["deltoids", "lower-traps", "rhomboids"] },
+    muscles: { primary: ["deltoids", "rotator-cuff", "middle-traps"], secondary: ["lower-traps", "rhomboids"] },
     purposes: ["activation", "strength"],
     tags: ["desk-relief", "posture"],
     themes: ["upperBackNeck", "deskUnwind"],
     providers: { coros: { key: "T1352", confidence: "close", method: "curated" } }, // COROS: Face Pull: the cable lift; ours is a band
     text: {
       summary: "Anchor a band at head height and pull it toward your face, elbows high.",
-      setup: ["Anchor the band at about head height (door anchor or post).", "Hold the ends with palms facing down."],
+      setup: ["Anchor the band at about head height (door anchor in a closed door, or a sturdy post).", "Hold the ends with palms facing down and step back until the band is taut, arms straight in front."],
       steps: [
         "Pull the band toward your face, elbows high and wide.",
         "Finish with the hands beside the ears, rotating the knuckles back.",
@@ -237,7 +238,7 @@ export const UPPER = defineExercises([
     conditions: { tmj: { clench: 0, neckLoad: 0, faceDown: false } },
     difficulty: 2,
     contraction: ["isotonic"],
-    muscles: { primary: ["rotator-cuff", "middle-traps"], secondary: ["deltoids", "lower-traps", "rhomboids"] },
+    muscles: { primary: ["deltoids", "rotator-cuff", "middle-traps"], secondary: ["lower-traps", "rhomboids"] },
     purposes: ["activation", "strength"],
     tags: ["desk-relief", "posture"],
     themes: ["upperBackNeck", "deskUnwind"],
@@ -260,7 +261,7 @@ export const UPPER = defineExercises([
   },
   {
     id: "floorPress",
-    name: "Floor press",
+    name: "One-arm floor press",
     family: "press",
     patterns: ["push-h"],
     regions: ["chest", "shoulders", "arms"],
@@ -277,6 +278,7 @@ export const UPPER = defineExercises([
     purposes: ["strength"],
     tags: [],
     themes: [],
+    harder: ["oneArmBenchPress"],
     providers: { coros: { key: "T1316", confidence: "close", method: "curated" } }, // COROS: Floor Press: implement unknown; ours is one arm at a time
     text: {
       summary: "Lying on your back, press the weight up with one arm; the floor limits the range.",
@@ -294,7 +296,7 @@ export const UPPER = defineExercises([
       mistakes: ["Letting the elbow flare straight out.", "Bouncing the elbow off the floor."],
       breathing: "Exhale as you press.",
       conditions: { tmj: "Head rests on the floor — no need to push it down or brace the face." },
-      why: "Builds shoulder stability with the floor protecting range."
+      why: "Builds one-arm pressing strength, with the floor limiting how far the shoulder travels."
     }
   },
   {
@@ -428,11 +430,11 @@ export const UPPER = defineExercises([
         "Lower slowly to the shoulder.",
         "Finish the reps, then switch sides."
       ],
-      focus: ["Ribs stay down — no leaning back.", "Head moves 'through the window' at the top."],
+      focus: ["Ribs stay down — no leaning back.", "Head stays tall; the biceps finishes beside the ear."],
       mistakes: ["Arching the low back.", "Pushing the head forward to make room."],
       breathing: "Exhale as you press.",
       conditions: {
-        tmj: "Overhead pressing loads the neck and invites clenching; keep it light and only do it on calm-jaw days."
+        tmj: "Breathe out through the press and keep the jaw soft, teeth apart."
       },
       why: "Builds overhead strength and trunk control with a stable base."
     }

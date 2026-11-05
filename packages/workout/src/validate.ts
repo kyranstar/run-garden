@@ -970,7 +970,7 @@ export function validateWorkoutDoc(input: unknown, ctx: ValidateCtx): DocIssue[]
     } else if (rec.dose.type === "carry" && dose.reps !== undefined && dose.holdSec === undefined && dose.carryM === undefined) {
       // A library carry's range is seconds: a timed carry.
       const { reps: _r, ...rest } = dose;
-      add({ path, code: "dose_mismatch", message: `${name} is carried for time, not counted in reps.`, fix: JSON.stringify({ ...rest, ...ownAmount(rec) }), severity: "warning" });
+      add({ path, code: "dose_mismatch", message: `${name} is done for time, not counted in reps.`, fix: JSON.stringify({ ...rest, ...ownAmount(rec) }), severity: "warning" });
     } else if (rec.dose.type === "breaths" && dose.reps !== undefined && dose.breaths === undefined) {
       const { reps: _r, ...rest } = dose;
       add({ path, code: "dose_mismatch", message: `${name} is counted in breaths, not reps.`, fix: JSON.stringify({ ...rest, ...ownAmount(rec) }), severity: "warning" });

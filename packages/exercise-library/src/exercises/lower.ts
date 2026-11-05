@@ -92,7 +92,7 @@ export const LOWER = defineExercises([
     position: "standing",
     laterality: "bilateral",
     load: "bodyweight",
-    dose: { type: "reps", range: [8, 15], sets: [2, 3], restSec: 45 },
+    dose: { type: "reps", range: [8, 15], sets: [2, 3], restSec: 45, secsPerRep: 5 },
     conditions: { tmj: { clench: 0, neckLoad: 0, faceDown: false } },
     difficulty: 2,
     contraction: ["isotonic", "eccentric"],
@@ -120,7 +120,7 @@ export const LOWER = defineExercises([
   },
   {
     id: "splitSquat",
-    name: "Supported split squat",
+    name: "Weighted split squat",
     family: "splitSquat",
     patterns: ["lunge"],
     regions: ["quads", "glutes"],
@@ -142,7 +142,7 @@ export const LOWER = defineExercises([
       summary: "Staggered stance with a weight at your chest; lower straight down and rise.",
       setup: [
         "Take a long staggered stance, back heel up.",
-        "Hold the weight goblet-style; keep a chair, wall, or block beside you for balance."
+        "Hold the weight at your chest with one hand, or both if you're steady; rest the free hand on a chair or wall beside you for balance."
       ],
       steps: [
         "Lower straight down until the back knee is just above the floor.",
@@ -154,7 +154,7 @@ export const LOWER = defineExercises([
       mistakes: ["Letting the front knee cave in.", "Taking too short a stance."],
       breathing: "Inhale down, exhale up.",
       conditions: { tmj: "Balance support is there so you don't have to brace the jaw to stay steady." },
-      why: "Builds hips and legs while reducing bracing and neck tension."
+      why: "Builds hips and legs one side at a time, with a hand free to steady you instead of bracing."
     }
   },
   {
@@ -175,6 +175,7 @@ export const LOWER = defineExercises([
     purposes: ["strength"],
     tags: ["single-leg"],
     themes: ["hipsPosture", "athleticBase"],
+    easier: ["splitSquatHold"],
     harder: ["splitSquat"],
     text: {
       summary: "Staggered stance, lower straight down slowly, then rise — support nearby for balance.",
@@ -251,7 +252,7 @@ export const LOWER = defineExercises([
     harder: ["rdl"],
     text: {
       summary: "Hinge to the weight between your feet, stand tall, and set it down quietly.",
-      setup: ["Stand with the weight between your feet, mid-foot.", "Feet hip-width."],
+      setup: ["Stand with a kettlebell between your feet at mid-foot, or a dumbbell stood on its end there.", "Feet hip-width."],
       steps: [
         "Push the hips back and bend the knees to grip the weight with a long spine.",
         "Pull the shoulders down and take the slack out.",
@@ -289,11 +290,11 @@ export const LOWER = defineExercises([
     providers: { coros: { key: "T1305", confidence: "exact", method: "curated" } }, // COROS: Dumbbell Romanian Deadlift (T1287 is the barbell one)
     easier: ["deadlift"],
     text: {
-      summary: "Hold the weight, soften the knees, and hinge to mid-shin before standing tall.",
-      setup: ["Stand holding the weight in front of your thighs.", "Soften the knees slightly."],
+      summary: "Hold the weight, soften the knees, and hinge until the hamstrings pull, then stand tall.",
+      setup: ["Pick the weight up and stand, feet hip-width, holding it in front of your thighs: a kettlebell in both hands, or a dumbbell in each (log the weight per hand).", "Soften the knees slightly."],
       steps: [
         "Push the hips back, sliding the weight down the thighs.",
-        "Stop at mid-shin or when the back would start to round.",
+        "Stop when the hamstrings pull strongly or the back would start to round, usually just below the knee.",
         "Drive the hips forward to stand.",
         "Repeat slowly."
       ],

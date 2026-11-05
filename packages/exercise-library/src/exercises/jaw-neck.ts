@@ -20,6 +20,7 @@ export const JAW_NECK = defineExercises([
     muscles: { primary: ["deep-neck-flexors"], secondary: ["suboccipitals"] },
     purposes: ["condition-care", "activation"],
     themes: ["jawReset", "upperBackNeck", "deskUnwind"],
+    harder: ["chinNodHold"],
     text: {
       summary: "Slide your head straight back, as if making a double chin, then release.",
       setup: ["Sit tall with your back supported, eyes level.", "Rest the tongue on the palate, teeth apart."],
@@ -38,6 +39,7 @@ export const JAW_NECK = defineExercises([
   },
   {
     id: "jawOpen",
+    legacyIds: ["goldfishOpening"],
     name: "Controlled jaw opening",
     family: "jawMobility",
     patterns: ["mobility"],
@@ -66,7 +68,8 @@ export const JAW_NECK = defineExercises([
       ],
       focus: [
         "A straight path — watch in a mirror so the chin doesn't drift sideways.",
-        "Small, smooth range beats a big forced one."
+        "Small, smooth range beats a big forced one.",
+        "For feedback, rest a fingertip just in front of one ear to feel the joint glide; it only feels, it never presses."
       ],
       mistakes: [
         "Letting the tongue drop to open wider.",
@@ -81,7 +84,7 @@ export const JAW_NECK = defineExercises([
   {
     id: "lateralExcursion",
     name: "Side-to-side jaw glides",
-    family: "jawMobility",
+    family: "jawLateral",
     patterns: ["mobility"],
     regions: ["jaw"],
     roles: ["jaw-care"],
@@ -96,6 +99,7 @@ export const JAW_NECK = defineExercises([
     muscles: { primary: ["pterygoids"], secondary: ["temporalis", "masseter"] },
     purposes: ["condition-care", "mobility"],
     themes: ["jawReset"],
+    harder: ["jawIsoLateral"],
     text: {
       summary: "With teeth slightly apart, glide the lower jaw gently side to side.",
       setup: [
@@ -162,7 +166,7 @@ export const JAW_NECK = defineExercises([
     position: "seated",
     laterality: "bilateral",
     load: "none",
-    dose: { type: "time", range: [120, 180] },
+    dose: { type: "time", range: [180, 240] },
     conditions: { tmj: { clench: 0, neckLoad: 0, faceDown: false } },
     difficulty: 1,
     tags: [],
@@ -171,7 +175,7 @@ export const JAW_NECK = defineExercises([
     purposes: ["condition-care", "mobility"],
     themes: ["jawReset"],
     text: {
-      summary: "Six gentle jaw and neck exercises, six reps each — a classic TMJ routine.",
+      summary: "6 each: tongue rest, opening, resisted opening, neck nods, chin tucks, shoulder squeezes.",
       setup: ["Sit tall in front of a mirror if you have one.", "Move slowly; nothing should hurt."],
       steps: [
         "Tongue rest: tongue on the palate, breathe through the nose (6 breaths).",
@@ -208,7 +212,7 @@ export const JAW_NECK = defineExercises([
     themes: ["jawReset"],
     easier: ["jawOpen"],
     text: {
-      summary: "Open the mouth slightly against light finger pressure under the chin and hold.",
+      summary: "Open slightly against light finger pressure under the chin; hold 5 seconds, then relax.",
       setup: ["Sit tall with the tongue on the palate.", "Rest one or two fingers under the chin."],
       steps: [
         "Open the mouth a little, until the teeth are about a finger-width apart.",
@@ -357,7 +361,7 @@ export const JAW_NECK = defineExercises([
     purposes: ["stretch", "condition-care"],
     themes: ["deskUnwind", "upperBackNeck", "jawReset"],
     text: {
-      summary: "Turn the nose toward the armpit and let the head drop gently forward.",
+      summary: "Anchor one hand, turn away from it, and drop your nose toward the free-side armpit.",
       setup: [
         "Sit tall and anchor one hand under the thigh or on the seat.",
         "Turn your head about 45° away from the anchored side."
@@ -394,7 +398,7 @@ export const JAW_NECK = defineExercises([
     purposes: ["stretch", "condition-care"],
     themes: ["upperBackNeck", "jawReset"],
     text: {
-      summary: "Tilt away, turn slightly back toward the stretched side, and lift the chin a touch.",
+      summary: "Hand on one collarbone: tilt your head away, turn your face toward it, lift the chin.",
       setup: ["Sit tall with the shoulders relaxed.", "Place one hand flat on the collarbone on the side you're stretching."],
       steps: [
         "Tilt the head gently away from the hand.",
@@ -474,7 +478,7 @@ export const JAW_NECK = defineExercises([
       ],
       steps: [
         "Step the same-side foot forward.",
-        "Gently turn the chest away from the arm until you feel a stretch across the front of the shoulder.",
+        "Gently turn the chest away from the arm until you feel a stretch across the chest.",
         "Hold and breathe.",
         "Step back out and switch sides."
       ],
@@ -556,7 +560,7 @@ export const JAW_NECK = defineExercises([
       ],
       focus: [
         "Light pressure — the jaw is sensitive.",
-        "Stay on the muscle, below the cheekbone and in front of the ear, not on the joint."
+        "Stay on the muscle, below the cheekbone and well forward of the ear; the joint sits right in front of the ear."
       ],
       mistakes: ["Using a hard ball with heavy pressure.", "Clenching against the ball."],
       breathing: "Slow nasal breathing.",

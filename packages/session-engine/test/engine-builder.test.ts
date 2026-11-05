@@ -60,6 +60,13 @@ test("core lifts: 2 in consistent, 2–3 in build, none in recovery; labelled wi
   }
 });
 
+test("a breath with a pause after it takes as long as the move says; a plain one, six seconds", () => {
+  const sigh = data.exercises.find((e) => e.id === "physiologicalSigh")!;
+  expect(sigh.dose.type).toBe("breaths");
+  expect(Builder.windowSeconds(sigh, null)).toBe(100);
+  expect(Builder.windowSeconds({ ...sigh, dose: { type: "breaths", range: [5, 8] } }, null)).toBe(40);
+});
+
 test("the same inputs always give the same plan; different days vary", () => {
   expect(JSON.stringify(Builder.build(data, input()))).toBe(JSON.stringify(Builder.build(data, input())));
   const days = ["2026-09-22", "2026-09-23", "2026-09-24", "2026-09-25", "2026-09-26", "2026-09-27", "2026-09-28"];

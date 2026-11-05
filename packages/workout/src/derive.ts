@@ -291,7 +291,7 @@ function itemWork(rec: ExerciseRecord | undefined, dose: ExerciseDose, perSide: 
   let perSetSec: number;
   let repsPerSet: number | null = null;
   if (holdSec !== undefined) perSetSec = holdSec;
-  else if (breaths !== undefined) perSetSec = breaths * SECS_PER_BREATH;
+  else if (breaths !== undefined) perSetSec = breaths * (rec?.dose.secsPerRep ?? SECS_PER_BREATH);
   else if (carryM !== undefined) perSetSec = carryM;
   else {
     repsPerSet = reps ?? 0;

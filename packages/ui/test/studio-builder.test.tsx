@@ -155,7 +155,7 @@ describe("errors block, with their reason and a Fix", () => {
     expect(html.indexOf("stu-note stu-note--error")).toBeLessThan(html.indexOf('class="stu-sum-body"'));
     const note = html.slice(html.indexOf("stu-note stu-note--error"));
     expect(note).toContain(why);
-    expect(note).toMatch(/<button[^>]*>Swap in Floor press<\/button>/);
+    expect(note).toMatch(/<button[^>]*>Swap in One-arm floor press<\/button>/);
     expect(html).toContain("<span class=\"visually-hidden\">To fix: </span>");
     expect(html).toContain(", needs a fix");
   });

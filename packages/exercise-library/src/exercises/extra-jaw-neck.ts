@@ -3,47 +3,9 @@ import { defineExercises } from "../define.js";
 
 export const EXTRA_JAW_NECK = defineExercises([
   {
-    id: "goldfishOpening",
-    name: "Goldfish opening",
-    family: "jawMobility",
-    patterns: ["mobility"],
-    regions: ["jaw"],
-    roles: ["jaw-care"],
-    position: "seated",
-    laterality: "bilateral",
-    load: "none",
-    dose: { type: "reps", range: [6, 8], secsPerRep: 5 },
-    conditions: { tmj: { clench: 0, neckLoad: 0, faceDown: false } },
-    difficulty: 1,
-    tags: [],
-    contraction: ["isotonic"],
-    muscles: { primary: ["suprahyoids"], secondary: ["pterygoids", "masseter", "temporalis"] },
-    purposes: ["condition-care", "mobility"],
-    themes: ["jawReset"],
-    easier: ["jawOpen"],
-    text: {
-      summary: "Tongue up, fingers on joint and chin; lower and lift the jaw slowly and evenly.",
-      setup: [
-        "Sit tall with the tip of the tongue resting on the palate behind the front teeth.",
-        "Rest one fingertip lightly just in front of one ear, over the jaw joint, and another on the chin."
-      ],
-      steps: [
-        "Let the lower jaw drop a little way, feeling the joint glide under your finger.",
-        "Close slowly until the teeth are just apart.",
-        "Keep the openings small for the first few reps.",
-        "If everything stays smooth and quiet, let the last few openings go a little wider while the tongue stays up."
-      ],
-      focus: ["Even, unhurried movement.", "The finger on the joint only feels; it never presses."],
-      mistakes: ["Opening wide straight away.", "Letting the chin drift to one side.", "Pressing on the joint."],
-      breathing: "Breathe quietly through the nose.",
-      conditions: { tmj: "Stop short of any click, catch, or pain; a smaller range is the right range today." },
-      why: "A classic TMJ exercise that builds smooth, controlled opening while you feel what the joint is doing."
-    }
-  },
-  {
     id: "jawIsoLateral",
     name: "Side-to-side jaw isometrics",
-    family: "jawIsometric",
+    family: "jawLateral",
     patterns: ["mobility"],
     regions: ["jaw"],
     roles: ["jaw-care"],
@@ -60,7 +22,7 @@ export const EXTRA_JAW_NECK = defineExercises([
     themes: ["jawReset"],
     easier: ["lateralExcursion"],
     text: {
-      summary: "Press the jaw gently sideways into your hand, which doesn't let it move, and hold.",
+      summary: "Press the jaw gently sideways into your hand, which holds it still; hold 5 seconds.",
       setup: [
         "Sit tall, tongue on the palate, teeth a few millimetres apart.",
         "Rest the palm or fingers against the side of the lower jaw, below the cheekbone and away from the joint."
@@ -69,7 +31,7 @@ export const EXTRA_JAW_NECK = defineExercises([
         "Gently push the jaw toward your hand while the hand holds it still.",
         "Hold for about 5 seconds at light effort.",
         "Relax completely for a breath.",
-        "Repeat; the timer then moves you to the other side."
+        "Repeat for the reps, then switch hands and press the other way."
       ],
       focus: [
         "About a quarter of your strength — this is control, not strength.",
@@ -84,7 +46,7 @@ export const EXTRA_JAW_NECK = defineExercises([
   {
     id: "jawIsoClose",
     name: "Gentle resisted closing",
-    family: "jawIsometric",
+    family: "jawClosing",
     patterns: ["mobility"],
     regions: ["jaw"],
     roles: ["jaw-care"],
@@ -172,7 +134,7 @@ export const EXTRA_JAW_NECK = defineExercises([
     position: "seated",
     laterality: "alternating",
     load: "none",
-    dose: { type: "reps", range: [5, 8], secsPerRep: 5 },
+    dose: { type: "reps", range: [5, 8], secsPerRep: 6 },
     conditions: { tmj: { clench: 0, neckLoad: 0, faceDown: false } },
     difficulty: 1,
     tags: ["desk-relief"],
@@ -188,7 +150,7 @@ export const EXTRA_JAW_NECK = defineExercises([
       ],
       steps: [
         "Turn the head slowly to look over one shoulder, as far as it goes smoothly.",
-        "Pause for a breath at the end of the easy range.",
+        "Pause for a moment at the end of the easy range.",
         "Turn back through the middle and look over the opposite shoulder.",
         "Keep alternating at the same slow pace."
       ],
@@ -268,7 +230,8 @@ export const EXTRA_JAW_NECK = defineExercises([
       ],
       focus: [
         "Grip only the muscle — you're holding a rope, not pressing into the neck.",
-        "Light pressure, about 3 or 4 out of 10."
+        "Light pressure, about 3 or 4 out of 10.",
+        "Stop at once if you feel dizzy, tingling, or a pulse under your fingers."
       ],
       mistakes: [
         "Pressing inward toward the windpipe.",
@@ -277,7 +240,7 @@ export const EXTRA_JAW_NECK = defineExercises([
       ],
       breathing: "Slow nasal breathing with long exhales.",
       conditions: {
-        tmj: "Let the jaw hang slightly open. Stop at once if you feel dizzy, tingling, or a pulse under your fingers."
+        tmj: "Let the jaw hang slightly open while you hold."
       },
       why: "Jaw and head tension often comes with a tight SCM; a light hold is a gentle way to ease it."
     }
@@ -418,13 +381,13 @@ export const EXTRA_JAW_NECK = defineExercises([
     purposes: ["mobility", "stretch"],
     themes: ["deskUnwind", "gentleMobility"],
     text: {
-      summary: "Foot on a chair, turn gently and breathe into the space beside the shoulder blade.",
+      summary: "Foot on a chair, towel in the hip crease; turn toward that knee and breathe out slowly.",
       setup: [
-        "Stand beside a sturdy chair, put one foot on the seat, and wedge a folded towel deep in the crease between that thigh and your lower ribs.",
+        "Stand beside a sturdy chair, put the nearer foot on the seat, and wedge a folded towel deep in the crease between that thigh and your lower ribs.",
         "Rest the same-side forearm on a desk, a counter, or the raised knee, and hold the chair seat with the other hand."
       ],
       steps: [
-        "Pull up gently on the chair and turn the breastbone toward the raised knee until you feel a mild stretch between the shoulder blade and spine.",
+        "Pull up gently on the chair and turn the breastbone toward the raised knee until you feel a mild stretch between the spine and the shoulder blade on the chair-hand side.",
         "Exhale softly for 5–10 seconds, letting the lower ribs sink into the towel.",
         "Pause for a few seconds with the lips closed and the tongue on the palate.",
         "Inhale through the nose for 3–5 seconds and feel the upper back widen; keep cycling until the timer moves you to the other side."

@@ -250,7 +250,7 @@ describe("dose_mismatch", () => {
   it("reps on a carry (timed) or a breathing record (counted in breaths) are warnings, fixed to the record's own amount", () => {
     const [carry] = only(check(one(ex("farmerCarry", { sets: 2, reps: 10 }))), "dose_mismatch");
     expect(carry).toMatchObject({ path: `${P0}.dose`, code: "dose_mismatch", severity: "warning" });
-    expect(carry!.message).toMatch(/carried for time/);
+    expect(carry!.message).toMatch(/done for time/);
     expect(JSON.parse(carry!.fix!)).toEqual({ sets: 2, holdSec: 45 });
     const [breaths] = only(check(one(ex("physiologicalSigh", { sets: 1, reps: 6 }), "recover", "holds")), "dose_mismatch");
     expect(breaths).toMatchObject({ code: "dose_mismatch", severity: "warning" });
@@ -1014,7 +1014,10 @@ describe("the engine's own builds validate", () => {
           const at = `parts[${pi}].items[${ii}]`;
           if (refuses(it.libraryId)) engineRefusesUnanswered.push(`${at}.libraryId`);
           const ahead = [UNANSWERED, { ...UNANSWERED, feelingOff: true }, { ...UNANSWERED, pre: TMJ.check.max }];
-          if (ahead.some((r) => refuses(it.libraryId, r))) engineRefusesItems.push(`${at}.libraryId`);
+          // A recovery day takes a face-down move and only a flare day leaves it out: a refusal the validator raises on
+          // the day itself (`condition_flare`), not ahead of it, since it would otherwise pend every such move.
+          const flareOnly = plan.mode === "recovery" && !recordFlareSafe(TMJ, data.exercises.find((e) => e.id === it.libraryId)!);
+          if (!flareOnly && ahead.some((r) => refuses(it.libraryId, r))) engineRefusesItems.push(`${at}.libraryId`);
           (it.alternates ?? []).forEach((a, ai) => {
             if (refuses(a.libraryId)) engineRefusesUnanswered.push(`${at}.alternates[${ai}].libraryId`);
           });

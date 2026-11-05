@@ -12,8 +12,8 @@ export const EXTRA_MOBILITY = defineExercises([
     position: "seated",
     laterality: "unilateral",
     load: "none",
-    dose: { type: "time", range: [20, 30] },
-    conditions: { tmj: { clench: 0, neckLoad: 0, faceDown: false } },
+    dose: { type: "time", range: [30, 45] },
+    conditions: { tmj: { clench: 1, neckLoad: 0, faceDown: false } },
     difficulty: 2,
     tags: ["hip-opening", "posture"],
     contraction: ["isometric"],
@@ -32,7 +32,7 @@ export const EXTRA_MOBILITY = defineExercises([
         "Hold, staying tall the whole time.",
         "Lower the arms and ease out before switching sides."
       ],
-      focus: ["Chest tall and hips square.", "Arms at shoulder height, shoulders down."],
+      focus: ["Chest tall and hips square.", "Arms at shoulder height, shoulders down.", "Front knee comfortable: bring the heel closer to the hips if it complains."],
       mistakes: [
         "Slumping as the arms tire.",
         "Twisting the hips to make the stretch easier.",
@@ -55,7 +55,7 @@ export const EXTRA_MOBILITY = defineExercises([
     laterality: "unilateral",
     load: "none",
     dose: { type: "time", range: [45, 60] },
-    conditions: { tmj: { clench: 0, neckLoad: 0, faceDown: false } },
+    conditions: { tmj: { clench: 1, neckLoad: 0, faceDown: false } },
     difficulty: 3,
     tags: ["desk-relief", "hip-opening"],
     contraction: ["isometric"],
@@ -108,7 +108,7 @@ export const EXTRA_MOBILITY = defineExercises([
       summary: "Lay one shin across a bench or chair seat and hinge forward to stretch the outer hip.",
       setup: [
         "Stand facing a bench or sturdy chair.",
-        "Lift one leg and rest the shin across the seat, knee out to the side and ankle toward the far edge."
+        "Lift one leg and lay the shin across the seat, knee out to one side and ankle to the other, roughly parallel to the seat's front edge."
       ],
       steps: [
         "Step the standing foot back a little and square the hips.",
@@ -172,9 +172,9 @@ export const EXTRA_MOBILITY = defineExercises([
     roles: ["warmup", "mobility"],
     equipment: { all: ["wall"] },
     position: "half-kneeling",
-    laterality: "alternating",
+    laterality: "unilateral",
     load: "none",
-    dose: { type: "reps", range: [5, 8], secsPerRep: 5 },
+    dose: { type: "reps", range: [5, 8], secsPerRep: 6 },
     conditions: { tmj: { clench: 0, neckLoad: 0, faceDown: false } },
     difficulty: 1,
     tags: ["desk-relief", "thoracic", "rotational"],
@@ -183,19 +183,19 @@ export const EXTRA_MOBILITY = defineExercises([
     purposes: ["warmup", "mobility"],
     themes: ["deskUnwind", "gentleMobility"],
     text: {
-      summary: "Half-kneel beside a wall and turn the chest toward and away from it, hips still.",
+      summary: "Side-on to a wall, far knee down, near knee up against it; turn the chest both ways.",
       setup: [
-        "Half-kneel side-on to a wall with the down knee nearest it, lightly touching the wall.",
+        "Half-kneel side-on to a wall: the knee further from the wall is down, and the front knee, nearest the wall, touches it.",
         "Cross the arms over the chest, or rest the fingertips behind the head without pulling."
       ],
       steps: [
         "Turn the chest toward the wall as far as it goes smoothly.",
-        "Turn back through the middle and away from the wall.",
+        "Turn back through the middle and away from the wall, keeping the front knee touching it; that's one rep.",
         "Keep the hips square and the pelvis still.",
-        "Keep alternating at an even pace."
+        "Finish the reps, then turn to face the other way, with the other knee in front against the wall, and repeat."
       ],
       focus: ["The turn comes from the ribs and upper back.", "The head turns with the chest, not ahead of it."],
-      mistakes: ["Letting the hips swing with the turn.", "Pulling on the head.", "Rushing to the end range."],
+      mistakes: ["Letting the front knee come off the wall as the hips swing.", "Pulling on the head.", "Rushing to the end range."],
       breathing: "Exhale as you turn, inhale through the middle.",
       conditions: { tmj: "Keep the jaw soft and the teeth apart as you rotate." },
       why: "Restores upper-back rotation, with the wall keeping the hips honest."
@@ -249,8 +249,8 @@ export const EXTRA_MOBILITY = defineExercises([
     laterality: "unilateral",
     load: "none",
     dose: { type: "reps", range: [5, 8], secsPerRep: 5 },
-    conditions: { tmj: { clench: 0, neckLoad: 0, faceDown: false } },
-    difficulty: 2,
+    conditions: { tmj: { clench: 1, neckLoad: 0, faceDown: false } },
+    difficulty: 3,
     tags: [],
     contraction: ["isotonic", "isometric"],
     muscles: { primary: ["glute-min-tfl"], secondary: ["glute-med", "adductors"] },
@@ -273,47 +273,9 @@ export const EXTRA_MOBILITY = defineExercises([
       mistakes: ["Tipping the torso to fake the lift.", "Grinding through a cramp instead of lowering."],
       breathing: "Exhale as you lift, inhale as you lower.",
       conditions: {
-        tmj: "Effort in the hip can travel to the jaw; if it does, just press the foot toward lifting without leaving the floor."
+        tmj: "Effort in the hip can travel to the jaw; if it does, try the lift without letting the foot leave the floor."
       },
       why: "Strengthens hip rotation at the end of its range instead of only stretching it."
-    }
-  },
-  {
-    id: "wallHipTurns",
-    name: "Wall split-stance hip turns",
-    family: "hipRotation",
-    patterns: ["mobility", "rotate"],
-    regions: ["hips"],
-    roles: ["warmup", "mobility"],
-    equipment: { all: ["wall"] },
-    position: "standing",
-    laterality: "unilateral",
-    load: "none",
-    dose: { type: "reps", range: [6, 8], secsPerRep: 5 },
-    conditions: { tmj: { clench: 0, neckLoad: 0, faceDown: false } },
-    difficulty: 2,
-    tags: [],
-    contraction: ["isotonic"],
-    muscles: { primary: ["glute-min-tfl", "deep-hip-rotators"], secondary: ["hip-flexors"] },
-    purposes: ["warmup", "mobility"],
-    themes: ["hipsPosture"],
-    text: {
-      summary: "Split stance, back shin on a wall: turn slowly toward the wall to rotate the front hip.",
-      setup: [
-        "Stand in a split stance right beside a wall, with the outside of the back leg against it.",
-        "Bend the back knee toward 90° so the back shin rests on the wall; hands on the hips."
-      ],
-      steps: [
-        "Hinge forward slightly from the hips.",
-        "Turn the chest and pelvis slowly toward the wall; the pinned back shin lets the front hip rotate.",
-        "Return to the start with the same control.",
-        "Repeat, then switch sides."
-      ],
-      focus: ["Slow, active reps rather than long holds.", "The front knee stays in line with the front foot."],
-      mistakes: ["Turning only the shoulders.", "Letting the front knee cave in.", "Rushing."],
-      breathing: "Exhale as you turn, inhale as you come back.",
-      conditions: { tmj: "Keep the jaw relaxed through the turn; the work is in the hips." },
-      why: "Trains inward hip rotation, a range that sitting tends to steal."
     }
   },
   {
@@ -327,7 +289,7 @@ export const EXTRA_MOBILITY = defineExercises([
     position: "standing",
     laterality: "bilateral",
     load: "none",
-    dose: { type: "reps", range: [2, 3], secsPerRep: 30 },
+    dose: { type: "reps", range: [2, 3], secsPerRep: 45 },
     conditions: { tmj: { clench: 0, neckLoad: 0, faceDown: false } },
     difficulty: 1,
     tags: [],
@@ -417,7 +379,7 @@ export const EXTRA_MOBILITY = defineExercises([
     text: {
       summary: "Hold a towel or band wide and sweep it overhead and back with straight arms.",
       setup: [
-        "Stand tall holding a towel or light band with a wide overhand grip, arms straight in front of the hips.",
+        "Stand tall holding a long towel or light band with a wide overhand grip, arms straight in front of the hips.",
         "Ribs down, chin level."
       ],
       steps: [

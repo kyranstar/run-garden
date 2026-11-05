@@ -54,7 +54,7 @@ describe("activation wakes the main part's prime movers before they load", () =>
     // Even a harder glute activation outranks an easier hinge drill that wakes both prime movers (no warm-up part here
     // to take the drill).
     const noWarmup = docOf([part("activation", "straight", []), part("main", "straight", [ex("rdl")])]);
-    expect(ids(suggest(noWarmup, 0, { excluded: ["activePigeonLegLift", "bridgeBlock", "bridge"] }))[0]).toBe("singleLegBridge");
+    expect(ids(suggest(noWarmup, 0, { excluded: ["activePigeonLegLift", "bridge"] }))[0]).toBe("singleLegBridge");
   });
 
   it("with work to wake, never drifts to a focus area", () => {
@@ -75,7 +75,7 @@ describe("activation wakes the main part's prime movers before they load", () =>
     expect(s.length).toBeGreaterThan(0);
     const stabilisers = new Set(["rotator-cuff", "serratus-anterior", "lower-traps"]);
     expect(s.some((x) => rec(x.libraryId).muscles.primary.some((m) => stabilisers.has(m)))).toBe(true);
-    expect(s.some((x) => /^wakes the (rotator cuff|serratus|lower traps) before (Floor press|Push-up)$/.test(x.reason))).toBe(true);
+    expect(s.some((x) => /^wakes the (rotator cuff|serratus|lower traps) before (One-arm floor press|Push-up)$/.test(x.reason))).toBe(true);
   });
 });
 
@@ -130,7 +130,7 @@ describe("a warm-up raises the temperature: never a passive move, nor a stretch 
     const all = (doc: WorkoutDoc) => [...suggest(doc, 0), ...suggest(doc, 0, { recentIds: ids(suggest(doc, 0)) })];
     expect(all(squat).some((x) => rec(x.libraryId).regions.includes("ankles"))).toBe(true);
     const press = docOf([part("warmup", "flow", []), part("main", "straight", [ex("floorPress")])]);
-    expect(all(press).some((x) => rec(x.libraryId).regions.some((g) => g === "thoracic") && /^warms the .*(upper spine|shoulders).* for Floor press$/.test(x.reason))).toBe(true);
+    expect(all(press).some((x) => rec(x.libraryId).regions.some((g) => g === "thoracic") && /^warms the .*(upper spine|shoulders).* for One-arm floor press$/.test(x.reason))).toBe(true);
   });
 });
 
@@ -382,11 +382,11 @@ describe("the athlete's lists and the place", () => {
     // A move anywhere else in the document — an item or an alternate — is not offered again.
     const elsewhere = docOf([
       part("activation", "straight", []),
-      part("main", "straight", [ex("rdl"), { ...ex("bridgeBlock", { reps: 10 }), alternates: [{ libraryId: "bridge" }] } as WorkoutItem]),
+      part("main", "straight", [ex("rdl"), { ...ex("singleLegBridge", { reps: 10 }), alternates: [{ libraryId: "bridge" }] } as WorkoutItem]),
     ]);
     const offered = ids(suggest(elsewhere, 0));
     expect(offered.length).toBeGreaterThan(0);
-    expect(offered).not.toContain("bridgeBlock");
+    expect(offered).not.toContain("singleLegBridge");
     expect(offered).not.toContain("bridge");
     expect(ids(suggest(HINGE_DAY, 2))).not.toContain("rdl");
   });
@@ -409,7 +409,7 @@ describe("the athlete's lists and the place", () => {
   });
 
   it("pins: of two glute bridges that fit alike, the pinned one comes first", () => {
-    for (const pin of ["bridge", "bridgeBlock"]) expect(ids(suggest(HINGE_DAY, 1, { pinned: [pin] }))[0]).toBe(pin);
+    for (const pin of ["bridge", "singleLegBridge"]) expect(ids(suggest(HINGE_DAY, 1, { pinned: [pin] }))[0]).toBe(pin);
   });
 
   it("variety: one per family, and different reasons before any repeats", () => {

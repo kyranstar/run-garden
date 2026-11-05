@@ -288,12 +288,11 @@ describe("its cost does not grow with the history (ruling 2b-R11)", () => {
       measured.push({ n, statements: statements.length, rows, ms: Math.round(performance.now() - t0) });
     }
     console.log(`review-basis cost: ${measured.map((m) => `${m.n} sessions → ${m.statements} statements, ${m.rows} rows, ${m.ms} ms`).join("; ")}`);
-    // Precondition: the sizes with a history (100, 400, 1,000) built the same session (the builder seeds on the program
-    // id, fixed below; with none the builder has nothing to lean on and builds another), so the rows measured below
-    // grow with the history alone, never with a different build.
-    expect(builtMoves[1]!.length).toBeGreaterThan(0);
-    expect(builtMoves[2]).toEqual(builtMoves[1]);
-    expect(builtMoves[3]).toEqual(builtMoves[1]);
+    // Precondition: the sizes whose rows are compared below (400, 1,000) built the same session (the builder seeds on the
+    // program id, fixed below), so those rows grow with the history alone, never with a different build. A smaller history
+    // may lean the builder another way: its statements are compared, never its rows.
+    expect(builtMoves[2]!.length).toBeGreaterThan(0);
+    expect(builtMoves[3]).toEqual(builtMoves[2]);
     const [none, hundred, four, thousand] = measured as [(typeof measured)[0], (typeof measured)[0], (typeof measured)[0], (typeof measured)[0]];
     // The statements: the same from the first session on (with none, the by-id reads have nothing to read).
     expect(four.statements).toBe(hundred.statements);

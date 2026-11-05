@@ -1,10 +1,10 @@
 {
-  "minutes": 3,
-  "plannedSeconds": 254,
+  "minutes": 4,
+  "plannedSeconds": 274,
   "steps": [
     {
       "kind": "set",
-      "seconds": 25,
+      "seconds": 35,
       "slotKey": "core:0",
       "block": "core",
       "exerciseId": "tempoSquat",
@@ -52,7 +52,7 @@
     },
     {
       "kind": "set",
-      "seconds": 25,
+      "seconds": 35,
       "slotKey": "core:0",
       "block": "core",
       "exerciseId": "tempoSquat",

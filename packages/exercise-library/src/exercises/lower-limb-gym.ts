@@ -143,7 +143,7 @@ export const LOWER_LIMB_GYM = defineExercises([
         "Ease the top hip forward a little to deepen it; hold and breathe.",
         "Let go slowly, then turn over to switch legs."
       ],
-      focus: ["Top knee level with the bottom one, not lifted.", "The pelvis tips forward a little; the back doesn't arch."],
+      focus: ["Top knee level with the bottom one, not lifted.", "Tailbone tucks a little as the top hip eases forward; the back doesn't arch."],
       mistakes: ["Arching the low back to reach the foot.", "Letting the top knee float up toward the ceiling.", "Pulling into pain at the knee."],
       breathing: "Slow breaths, letting the thigh soften on each breath out.",
       conditions: {
@@ -163,7 +163,7 @@ export const LOWER_LIMB_GYM = defineExercises([
     position: "quadruped",
     laterality: "unilateral",
     load: "none",
-    dose: { type: "reps", range: [8, 12], secsPerRep: 4 },
+    dose: { type: "reps", range: [8, 12], secsPerRep: 7 },
     conditions: { tmj: { clench: 0, neckLoad: 0, faceDown: false } },
     difficulty: 1,
     tags: ["hip-opening"],
@@ -401,7 +401,7 @@ export const LOWER_LIMB_GYM = defineExercises([
     patterns: ["pull-v"],
     regions: ["lats", "upper-back", "arms"],
     roles: ["accessory"],
-    equipment: { all: ["pull-up-bar"] },
+    equipment: { all: ["pull-up-bar"], oneOf: ["bench", "chair"] },
     position: "hanging",
     laterality: "bilateral",
     load: "bodyweight",
@@ -416,7 +416,7 @@ export const LOWER_LIMB_GYM = defineExercises([
     text: {
       summary: "Step up to the top of a pull-up, then lower yourself slowly until the arms are straight.",
       setup: [
-        "Put a sturdy step or bench under the bar, high enough that you can stand with your chin over the bar.",
+        "Put a sturdy step, bench or chair under the bar, ideally high enough to stand with your chin over the bar; if it falls short, jump lightly to the top.",
         "Grip the bar a little wider than the shoulders, palms facing away."
       ],
       steps: [

@@ -1,8 +1,8 @@
 // Controlled vocabularies for exercise records. Library validation rejects anything else.
 
 /**
- * Movement patterns. `calf-raise` lifts the heels, `toe-raise` lifts the toes (a tibialis raise): opposite movements, so
- * each its own pattern (they pair in a superset), and neither a squat.
+ * Movement patterns. `calf-raise` lifts the heels (a raise, or a pogo-style hop off the ankles), `toe-raise` lifts the
+ * toes (a tibialis raise): opposite movements, so each its own pattern (they pair in a superset), and neither a squat.
  */
 export const PATTERNS = [
   "squat", "hinge", "lunge", "push-h", "push-v", "pull-h", "pull-v", "carry", "rotate", "anti-rotate", "anti-extend",

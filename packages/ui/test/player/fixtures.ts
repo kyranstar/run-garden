@@ -112,7 +112,7 @@ export function build(over: Partial<SessionBuildDto> = {}): SessionBuildDto {
       "core:0": [
         {
           id: "splitSquat",
-          name: "Supported split squat",
+          name: "Weighted split squat",
           reasons: ["Swapped in"],
           steps: splitSquatSteps(),
           moveKey: "squat|glutes,quads",
@@ -136,7 +136,7 @@ export const PLANNED_WHY = "Kinder on the knees.";
 /** The planned alternate for the squat: the split squat, with the document's why. */
 export const plannedSplitSquat = (): Alternative => ({
   id: "splitSquat",
-  name: "Supported split squat",
+  name: "Weighted split squat",
   reasons: [PLANNED_WHY],
   steps: splitSquatSteps(),
   moveKey: "splitSquat|glutes,quads",

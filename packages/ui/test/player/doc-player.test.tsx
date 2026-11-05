@@ -196,7 +196,7 @@ describe("a document workout's items, played", () => {
     await click("Swap");
     await until(() => !!document.querySelector('[role="dialog"]'), "the swap list");
     await click("Use");
-    await until(() => document.querySelector("h1.player-name")!.textContent === "Supported split squat", "the alternate");
+    await until(() => document.querySelector("h1.player-name")!.textContent === "Weighted split squat", "the alternate");
     expect(document.querySelector(".player-cue")).toBeNull();
     // The summary is the move's own: the alternate's now.
     expect(underName()!.textContent).toBe(summaryOf("splitSquat"));
@@ -496,7 +496,7 @@ describe("a document workout's items, played", () => {
     await click("Swap");
     await until(() => !!document.querySelector('[role="dialog"]'), "the swap list");
     const first = document.querySelector('[role="dialog"] .choice-move');
-    expect(first!.textContent).toContain("Supported split squat");
+    expect(first!.textContent).toContain("Weighted split squat");
     expect(first!.textContent).toContain(PLANNED_WHY);
   });
 

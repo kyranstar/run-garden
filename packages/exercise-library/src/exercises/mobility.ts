@@ -97,7 +97,7 @@ export const MOBILITY = defineExercises([
       summary: "Lie back over a yoga block placed under the upper back and let the chest open.",
       setup: [
         "Sit with the block behind you, on its lowest setting to start.",
-        "Lie back so the block sits under the shoulder blades, not the low back."
+        "Lie back with knees bent and feet flat so the block sits under the shoulder blades, not the low back."
       ],
       steps: [
         "Support the head with your hands or a second prop if it doesn't reach the floor comfortably.",
@@ -105,11 +105,11 @@ export const MOBILITY = defineExercises([
         "Keep the chin gently tucked.",
         "Breathe into the ribs and stay."
       ],
-      focus: ["Mild chest opening only.", "The low back stays comfortable — move the block higher if it isn't."],
+      focus: ["Mild chest opening only.", "The low back stays comfortable — slide the block further up the back if it isn't."],
       mistakes: ["Placing the block under the low back.", "Letting the head hang so the neck compresses."],
       breathing: "Slow breaths into the front and sides of the ribs.",
       conditions: { tmj: "Keep the chin slightly tucked and the jaw soft so the front of the neck doesn't pull on it." },
-      why: "Opens a desk-rounded upper back so the jaw and neck stop compensating."
+      why: "Eases a desk-rounded upper back while the neck and jaw rest."
     }
   },
   {
@@ -133,7 +133,7 @@ export const MOBILITY = defineExercises([
     themes: ["deskUnwind", "gentleMobility"],
     text: {
       summary: "Lie back over a firmly rolled towel across the upper back and breathe into the chest.",
-      setup: ["Roll a towel firmly into a log.", "Lie back so it runs across the upper back under the shoulder blades."],
+      setup: ["Roll a towel firmly into a log.", "Lie back with knees bent and feet flat so it runs across the upper back under the shoulder blades."],
       steps: [
         "Support your head with your hands if needed.",
         "Let the arms rest out to the sides.",
@@ -144,7 +144,7 @@ export const MOBILITY = defineExercises([
       mistakes: ["Towel under the low back.", "Letting the head drop back so the neck compresses."],
       breathing: "Slow breaths into the front and sides of the ribs.",
       conditions: { tmj: "Chin slightly tucked, jaw soft." },
-      why: "Opens a desk-rounded upper back so the jaw and neck stop compensating."
+      why: "Eases a desk-rounded upper back while the neck and jaw rest."
     }
   },
   {
@@ -204,57 +204,20 @@ export const MOBILITY = defineExercises([
       setup: ["Start on hands and knees, hips over knees.", "Shift your weight onto one hand."],
       steps: [
         "Slide the free arm under your body, palm up, toward the opposite side.",
-        "Let the shoulder and side of the head come toward the floor as far as is comfortable.",
+        "Let the shoulder and temple come toward the floor as far as is comfortable.",
         "Unwind and reach the same arm up toward the ceiling.",
         "Repeat, then switch sides."
       ],
       focus: ["Turn from the ribs, not from the neck.", "Hips stay stacked over the knees."],
       mistakes: ["Twisting from the low back.", "Forcing the head to the floor."],
       breathing: "Exhale as you thread under, inhale as you open.",
-      conditions: { tmj: "Keep the jaw and face soft; rest the head lightly if it touches the floor." },
+      conditions: { tmj: "Keep the jaw and face soft; if your head reaches the floor, rest the temple lightly, never the jaw or cheek." },
       why: "Improves thoracic rotation that desk posture usually steals."
     }
   },
   {
-    id: "lowLungeBlock",
-    name: "Low lunge · hands on block",
-    family: "hipFlexorStretch",
-    patterns: ["mobility"],
-    regions: ["hips"],
-    roles: ["mobility", "stretch"],
-    equipment: { all: ["yoga-block"] },
-    position: "half-kneeling",
-    laterality: "unilateral",
-    load: "none",
-    dose: { type: "time", range: [45, 60] },
-    conditions: { tmj: { clench: 0, neckLoad: 0, faceDown: false } },
-    difficulty: 1,
-    tags: ["desk-relief", "hip-opening"],
-    contraction: ["isometric"],
-    muscles: { primary: ["hip-flexors"], secondary: ["quads"] },
-    purposes: ["stretch", "mobility"],
-    themes: ["deskUnwind", "hipsPosture", "gentleMobility"],
-    text: {
-      summary: "Back knee down, hands on a block, and ease the hips forward to open the front hip.",
-      setup: [
-        "Kneel on one knee with the other foot forward (pad the back knee if needed).",
-        "Set the block beside the front foot for your hands."
-      ],
-      steps: [
-        "Rest the hands on the block so the chest can stay long.",
-        "Gently tuck the pelvis, as if pointing the tailbone down.",
-        "Ease the hips forward until you feel the front of the back hip open.",
-        "Hold and breathe, then switch sides."
-      ],
-      focus: ["Tuck the pelvis first; the stretch comes from that, not from lunging deep.", "Chest long, neck long."],
-      mistakes: ["Arching the low back to go deeper.", "Craning the neck forward to look at the floor."],
-      breathing: "Slow nasal breathing; soften into it on the exhale.",
-      conditions: { tmj: "The block lets the chest stay tall so the head and jaw don't get dragged forward." },
-      why: "Opens hip flexors tightened by sitting without dragging the head and jaw into tension."
-    }
-  },
-  {
     id: "lowLunge",
+    legacyIds: ["lowLungeBlock"],
     name: "Low lunge · hands on front thigh",
     family: "hipFlexorStretch",
     patterns: ["mobility"],
@@ -271,11 +234,12 @@ export const MOBILITY = defineExercises([
     muscles: { primary: ["hip-flexors"], secondary: ["quads"] },
     purposes: ["stretch", "mobility"],
     themes: ["deskUnwind", "hipsPosture", "gentleMobility"],
+    harder: ["couchStretch"],
     text: {
-      summary: "Back knee down, hands on the front thigh, and ease the hips forward.",
+      summary: "Back knee down, hands on the front thigh; ease the hips forward to stretch the back hip.",
       setup: [
         "Kneel on one knee with the other foot forward (pad the back knee if needed).",
-        "Rest both hands on the front thigh."
+        "Rest both hands on the front thigh, or on a block beside the front foot if balance is hard."
       ],
       steps: [
         "Stand the chest tall.",
@@ -321,7 +285,7 @@ export const MOBILITY = defineExercises([
       focus: ["Armpits reach long.", "Hips stay high — this isn't child's pose."],
       mistakes: ["Sinking the low back instead of the chest.", "Hanging the head so the neck crunches."],
       breathing: "Breathe into the back and sides of the ribs.",
-      conditions: { tmj: "Let the head hang neutrally with the teeth apart." },
+      conditions: { tmj: "Keep the head in line with the arms and the teeth apart." },
       why: "Opens lats and chest, which often feed neck tension."
     }
   },
@@ -360,42 +324,8 @@ export const MOBILITY = defineExercises([
     }
   },
   {
-    id: "blockSideBend",
-    name: "Supported side bend",
-    family: "sideBend",
-    patterns: ["mobility"],
-    regions: ["core", "lats"],
-    roles: ["mobility", "stretch"],
-    equipment: { all: ["yoga-block"] },
-    position: "seated",
-    laterality: "unilateral",
-    load: "none",
-    dose: { type: "time", range: [30, 45] },
-    conditions: { tmj: { clench: 0, neckLoad: 0, faceDown: false } },
-    difficulty: 1,
-    tags: [],
-    contraction: ["passive"],
-    muscles: { primary: ["lats", "obliques"], secondary: ["quadratus-lumborum"] },
-    purposes: ["stretch", "mobility"],
-    themes: ["gentleMobility"],
-    text: {
-      summary: "Seated, one hand on a block, reach the other arm overhead and lean into a side bend.",
-      setup: ["Sit cross-legged or kneel.", "Place the block beside one hip."],
-      steps: [
-        "Rest one hand on the block.",
-        "Reach the other arm up and over toward the block side.",
-        "Breathe into the open side of the ribs.",
-        "Come back up slowly and switch sides."
-      ],
-      focus: ["Length through the ribs, not a crunch.", "Both sit bones stay down."],
-      mistakes: ["Collapsing onto the block.", "Letting the head drop toward the shoulder."],
-      breathing: "Inhale into the stretched side.",
-      conditions: { tmj: "Keep the head in line with the spine and the jaw loose." },
-      why: "Relieves side-body compression that can pull on the neck."
-    }
-  },
-  {
     id: "seatedSideBend",
+    legacyIds: ["blockSideBend"],
     name: "Seated side bend",
     family: "sideBend",
     patterns: ["mobility"],
@@ -414,7 +344,7 @@ export const MOBILITY = defineExercises([
     themes: ["gentleMobility"],
     text: {
       summary: "Seated, one hand on the floor, reach the other arm overhead into a side bend.",
-      setup: ["Sit cross-legged.", "Place one hand on the floor beside you."],
+      setup: ["Sit cross-legged.", "Place one hand on the floor beside you, or on a block if the floor feels far."],
       steps: [
         "Reach the other arm up and over.",
         "Lean toward the grounded hand.",
@@ -425,7 +355,7 @@ export const MOBILITY = defineExercises([
       mistakes: ["Collapsing into the grounded arm.", "Twisting instead of bending sideways."],
       breathing: "Inhale into the stretched side.",
       conditions: { tmj: "Head in line with the spine, jaw loose." },
-      why: "Relieves side-body compression that can pull on the neck."
+      why: "Lengthens the lats and the side of the ribs, which long sitting leaves stiff."
     }
   },
   {
@@ -514,6 +444,7 @@ export const MOBILITY = defineExercises([
     muscles: { primary: ["hamstrings", "glute-max"], secondary: ["erector-spinae"] },
     purposes: ["warmup", "activation"],
     themes: ["posteriorChain", "hipsPosture"],
+    easier: ["seatedHipHinge"],
     text: {
       summary: "Hands on hips, push the hips back with a long spine, then stand tall.",
       setup: ["Stand with feet hip-width, knees soft.", "Hands on the hip creases."],
@@ -549,7 +480,7 @@ export const MOBILITY = defineExercises([
     purposes: ["warmup", "mobility"],
     themes: ["hipsPosture", "deskUnwind", "gentleMobility"],
     text: {
-      summary: "Lunge, drop the inside elbow toward the foot, then rotate and reach to the ceiling.",
+      summary: "Long lunge: drop the front-leg-side elbow inside that foot, then reach that arm up.",
       setup: [
         "Step into a long lunge, back knee down if you like.",
         "Place the same-side hand as the back leg on the floor inside the front foot."
@@ -557,8 +488,8 @@ export const MOBILITY = defineExercises([
       steps: [
         "Drop the other elbow toward the inside of the front foot.",
         "Rotate open and reach that arm to the ceiling, eyes following the hand only as far as comfortable.",
-        "Return the hand to the floor.",
-        "Repeat, then switch sides."
+        "Return the hand to the floor, then push the hips back and straighten the front leg for a breath.",
+        "Shift forward into the lunge and repeat, then switch sides."
       ],
       focus: ["Turn from the upper back.", "The back leg stays long."],
       mistakes: ["Rushing the rotation.", "Forcing the head to follow past comfort."],
@@ -569,6 +500,7 @@ export const MOBILITY = defineExercises([
   },
   {
     id: "hip9090",
+    legacyIds: ["wallHipTurns"],
     name: "90/90 hip switches",
     family: "hipRotation",
     patterns: ["mobility", "rotate"],
@@ -585,14 +517,15 @@ export const MOBILITY = defineExercises([
     muscles: { primary: ["deep-hip-rotators", "glute-min-tfl"], secondary: ["glute-med", "adductors"] },
     purposes: ["warmup", "mobility"],
     themes: ["hipsPosture", "gentleMobility", "deskUnwind"],
+    harder: ["hip9090Lift"],
     text: {
       summary: "Seated with both knees bent to 90°, rotate the knees from one side to the other.",
       setup: [
-        "Sit with both knees bent about 90°, one leg in front, one to the side.",
+        "Sit with the feet wider than the hips and both knees bent about 90°, one leg in front, one to the side.",
         "Hands behind you on the floor for support."
       ],
       steps: [
-        "Lift both knees and rotate them to the other side.",
+        "Keep the heels planted, lift both knees and rotate them to the other side.",
         "Settle into the new 90/90 position with a tall chest.",
         "Rotate back.",
         "Keep alternating smoothly."
@@ -636,7 +569,7 @@ export const MOBILITY = defineExercises([
       mistakes: ["Letting the arch collapse.", "Lifting the heel to reach the wall."],
       breathing: "Easy breathing.",
       conditions: { tmj: "No effort in the face at all." },
-      why: "Ankle mobility makes squats and lunges more upright, which keeps the head and jaw stacked."
+      why: "Freer ankles let the knee travel forward, so squats and lunges stay more upright."
     }
   },
 ]);
