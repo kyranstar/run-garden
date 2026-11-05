@@ -370,7 +370,15 @@ export const STATE_LAST_CALL_BYTES = 260_000;
 /** One answer (the assistant turn) at most; a bigger one is not stored and ends the run. */
 export const ANSWER_MAX_BYTES = 64_000;
 /** One event's payload at most, and one summary line. */
-const EVENT_PAYLOAD_MAX_CHARS = 4_000;
+/**
+ * An event payload's cap. 4,000 cut an ordinary eight-move pins card's input into `{truncated, head}`, which the trail
+ * then showed as raw JSON (audit 2026-11-05). The trail keeps a tool's result data too (§6.4), so it has room for it.
+ */
+export const EVENT_PAYLOAD_MAX_CHARS = 16_000;
+/** A tool call's input kept in its event: room for a pins card's lines or a draft's parts. */
+const EVENT_INPUT_MAX_CHARS = 8_000;
+/** A whole event's payload: its input and its data, each bounded on its own, fit together. */
+const EVENT_ROW_MAX_CHARS = EVENT_PAYLOAD_MAX_CHARS + EVENT_INPUT_MAX_CHARS + 2_000;
 const SUMMARY_MAX_CHARS = 300;
 /** Events one insert writes (5 + 3 bound values each: 65 of D1's 100). A step makes at most MAX_TOOL_CALLS_PER_STEP
  * tool events plus four more (the model's words, a control or stop line, a cap, the clock), so always one insert. */
@@ -999,16 +1007,41 @@ const line = (text: string, max = SUMMARY_MAX_CHARS): string => {
 /** An event's payload as stored: bounded, then its call's usage added (round 2, Minor 5); null for none. */
 function payloadText(e: NewEvent): string | null {
   if (e.payload === undefined && !e.usage) return null;
-  const p = e.payload === undefined ? undefined : bounded(e.payload);
+  const p = e.payload === undefined ? undefined : bounded(e.payload, EVENT_ROW_MAX_CHARS);
   if (!e.usage) return JSON.stringify(p);
   const o = p && typeof p === "object" && !Array.isArray(p) ? (p as Record<string, unknown>) : p === undefined ? {} : { value: p };
   return JSON.stringify({ ...o, usage: e.usage });
 }
 
-function bounded(value: unknown, max = EVENT_PAYLOAD_MAX_CHARS): unknown {
+/**
+ * A value as an event keeps it: whole up to `max`, else only how big it was — never a cut head of JSON, which the
+ * trail could only show as raw JSON (design 2026-11-05 §6.4; the run view says "Too long to show here").
+ */
+export function bounded(value: unknown, max = EVENT_PAYLOAD_MAX_CHARS): unknown {
   if (value === undefined) return undefined;
   const text = JSON.stringify(value) ?? "null";
-  return text.length <= max ? value : { truncated: true, head: text.slice(0, max) };
+  return text.length <= max ? value : { tooLong: true, chars: text.length };
+}
+
+/**
+ * A finished tool call's event payload: the call's input, how it went, where its data came from and what was missing,
+ * its receipt, and its data — what the coach was given, bounded — so the trail can show what the coach read (§6.4).
+ */
+export function toolResultPayload(
+  tool: string,
+  input: unknown,
+  result: { data?: unknown; provenance?: unknown; missing?: string[]; receipt?: Record<string, unknown> },
+  ok: boolean,
+): Record<string, unknown> {
+  return {
+    tool,
+    input: bounded(input, EVENT_INPUT_MAX_CHARS),
+    ok,
+    provenance: result.provenance,
+    missing: result.missing,
+    ...(result.receipt ? { receipt: result.receipt } : {}),
+    ...(result.data !== undefined ? { data: bounded(result.data, EVENT_PAYLOAD_MAX_CHARS - 2_000) } : {}),
+  };
 }
 
 /**
@@ -2077,7 +2110,7 @@ function refusedLine(tool: string, refusal: ToolErr, input?: unknown): NewEvent 
     kind: "note",
     summary: shown ?? "",
     ...(shown ? {} : { quiet: true as const }),
-    payload: { tool, ...(input === undefined ? {} : { input: bounded(input, 1_500) }), ok: false, error: refusal.error, refusal: { error: refusal.error, why: refusal.why, fix: refusal.fix } },
+    payload: { tool, ...(input === undefined ? {} : { input: bounded(input, EVENT_INPUT_MAX_CHARS) }), ok: false, error: refusal.error, refusal: { error: refusal.error, why: refusal.why, fix: refusal.fix } },
   };
 }
 
@@ -3050,7 +3083,7 @@ async function runTools(
       events.push({
         kind: state.awaitingReview.round > 1 ? "revision" : "draft",
         summary: result.summary ?? "A draft, sent for review.",
-        payload: { tool: call.name, input: bounded(input, 1_500), ...(result.receipt ? { receipt: result.receipt } : {}) },
+        payload: { tool: call.name, input: bounded(input, EVENT_INPUT_MAX_CHARS), ...(result.receipt ? { receipt: result.receipt } : {}) },
       });
       // The calls queued after it never run before the review is read — a finish least of all: each is answered now,
       // and their answers go back with the review, in the model's order, as one message.
@@ -3073,7 +3106,7 @@ async function runTools(
       events.push({
         kind: "tool_result",
         summary: result.summary ?? "Planned the set.",
-        payload: { tool: call.name, input: bounded(input, 1_500), ok: true, ...(result.receipt ? { receipt: result.receipt } : {}) },
+        payload: { tool: call.name, input: bounded(input, EVENT_INPUT_MAX_CHARS), ok: true, ...(result.receipt ? { receipt: result.receipt } : {}) },
       });
       // As after a draft: the calls queued after it never run before the set is in, and are answered now.
       state.awaitingAt = state.results.length;
@@ -3114,7 +3147,7 @@ async function runTools(
         ? {
             kind: "tool_result",
             summary: result.summary ?? `Used ${label(call.name)}`,
-            payload: { tool: call.name, input: bounded(input, 1_500), ok, provenance: result.provenance, missing: result.missing, ...(result.receipt ? { receipt: result.receipt } : {}) },
+            payload: toolResultPayload(call.name, input, result, ok),
           }
         : refusedLine(call.name, result, input),
     );
