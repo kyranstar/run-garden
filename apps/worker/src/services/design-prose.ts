@@ -104,8 +104,11 @@ function moveName(token: string): string | null {
  * camelCase field names split into words, "validator" as "the app's checks", "coros" as "watch", backticks dropped,
  * "the athlete's" as "your". Plain prose passes unchanged.
  */
-export function athleteText(text: string): string {
+export function athleteText(text: string, ownNames?: ReadonlyMap<string, string>): string {
   return text
+    // The athlete's own moves by name (`ownNames`, when the caller has the account's library), else plainly theirs:
+    // split as a field name, "myZorbexNeckNod3k9x2a" read as garble (audit 2026-11-05).
+    .replace(/\bmy[A-Z][A-Za-z0-9]{1,60}\b/g, (id) => ownNames?.get(id) ?? "one of your saved moves")
     .replace(/`([^`\n]{1,80})`/g, "$1")
     .replace(DOC_PATH, (path, at: number, all: string) => fit(pathWords(path), at, all))
     .replace(/\bcoros:[A-Za-z0-9_-]+/g, (id, at: number, all: string) => fit(moveName(id) ?? "a watch move", at, all))

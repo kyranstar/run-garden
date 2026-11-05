@@ -116,3 +116,12 @@ describe("athleteText", () => {
     expect(athleteText("At parts[2] the order is odd")).toBe("At a part the order is odd");
   });
 });
+
+describe("athleteText names the athlete's own moves (import trail, audit 2026-11-05)", () => {
+  it("a personal move id reads as its name when known, else as one of their saved moves — never split into garble", () => {
+    expect(athleteText("Pinned myZorbexNeckNod3k9x2a for Thursday.")).toBe("Pinned one of your saved moves for Thursday.");
+    expect(athleteText("Pinned myZorbexNeckNod3k9x2a for Thursday.", new Map([["myZorbexNeckNod3k9x2a", "Zorbex neck nod"]]))).toBe(
+      "Pinned Zorbex neck nod for Thursday.",
+    );
+  });
+});
