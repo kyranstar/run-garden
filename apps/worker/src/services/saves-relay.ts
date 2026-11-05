@@ -1,11 +1,12 @@
 import { and, eq, inArray, lt, or, sql } from "drizzle-orm";
 import type { ZodIssue } from "zod";
-import { PROFILES } from "@rg/exercise-library";
+import { EXERCISES, PROFILES } from "@rg/exercise-library";
 import { schema } from "@rg/database";
-import { extractionSchema } from "@rg/saves";
-import type { Extraction, SaveErrorCode } from "@rg/saves";
+import { EXTRACT_PROMPT_VERSION, extractionSchema, extractSystemText, extractUserText, promptSha } from "@rg/saves";
+import type { Extraction, PostSubmit, SaveErrorCode } from "@rg/saves";
 import type { Env } from "../env.js";
-import type { Db } from "./db.js";
+import { runAtomically, type Db } from "./db.js";
+import { promptVersionStatement, trailStatements, type TrailEventInput } from "./import-trail.js";
 import { messagesCostMicros } from "./llm-messages.js";
 import { wakeGateway } from "./gateway-route.js";
 import { IMPORT_KINDS, reserveImport, settleImport } from "./saves-budget.js";
@@ -88,6 +89,36 @@ export type RelayResult =
   /** `status` is set when the request itself was wrong (404 no such post, 409 not in a state to extract). */
   | { ok: false; code: SaveErrorCode; issues?: string[]; status?: 404 | 409 };
 
+/** The library's names, as the extension sends them with each reading (rebuilding the prompt as sent). */
+const LIBRARY_NAMES = EXERCISES.map((e) => e.name);
+/** The most retry issues a request may name, and the most of each kept (the relay's own issue lines are shorter). */
+const RETRY_ISSUES_MAX = 12;
+const RETRY_ISSUE_CHARS = 300;
+
+/** What the extension says about the prompt it sent: its version, its text's hash, and the issues it retried with. */
+export function readPromptHeaders(req: Request): { version: string | null; sha: string | null; retryIssues: string[] | undefined } {
+  const version = req.headers.get("x-saves-prompt-version");
+  const sha = req.headers.get("x-saves-prompt-sha");
+  let retryIssues: string[] | undefined;
+  const raw = req.headers.get("x-saves-retry-issues");
+  if (raw) {
+    try {
+      const list: unknown = JSON.parse(decodeURIComponent(raw));
+      if (Array.isArray(list)) {
+        const kept = list.filter((x): x is string => typeof x === "string").slice(0, RETRY_ISSUES_MAX).map((x) => x.slice(0, RETRY_ISSUE_CHARS));
+        if (kept.length) retryIssues = kept;
+      }
+    } catch {
+      retryIssues = undefined;
+    }
+  }
+  return {
+    version: version && /^[a-z0-9._-]{1,40}$/i.test(version) ? version : null,
+    sha: sha && /^[0-9a-f]{64}$/.test(sha) ? sha : null,
+    retryIssues,
+  };
+}
+
 /** A response model is accepted when the allowlist names it (the gateway may drop the provider prefix). */
 const modelAllowed = (m: string): boolean => EXTRACT_MODELS.some((x) => x === m || x.endsWith(`/${m}`));
 
@@ -144,13 +175,16 @@ export async function relayExtract(
   if (!asked.ok) return { ok: false, code: asked.status === 413 ? "too_large" : "unknown", issues: [asked.error] };
   const { model, maxTokens, length } = asked;
   const nowIso = now.toISOString();
+  const prompt = readPromptHeaders(req);
+  /** The claimed attempt and the post's words: the prompt as sent is rebuilt from them (design 2026-11-05 §6.1). */
+  let claimed: { attempt: number; userText: string; sha: string } | null = null;
 
   const gateway = wakeGateway(env);
   if (gateway.kind === "no_key") return { ok: false, code: "model_failed" };
 
   const claim = async (): Promise<boolean> => {
     const stale = new Date(now.getTime() - RELAY_CLAIM_STALE_MS).toISOString();
-    const claimed = await db
+    const rows = await db
       .update(savedPosts)
       // The attempt is counted here, so a post that crashes every time (before any outcome is written) still runs out.
       .set({ status: "extracting", updatedAt: nowIso, extractAttempts: sql`${savedPosts.extractAttempts} + 1` })
@@ -168,8 +202,28 @@ export async function relayExtract(
           ),
         ),
       )
-      .returning({ id: savedPosts.id });
-    return claimed.length > 0;
+      .returning({
+        attempt: savedPosts.extractAttempts,
+        caption: savedPosts.caption,
+        hashtags: savedPosts.hashtags,
+        creatorHandle: savedPosts.creatorHandle,
+        creatorName: savedPosts.creatorName,
+        mediaType: savedPosts.mediaType,
+      });
+    const row = rows[0];
+    if (!row) return false;
+    const userText = extractUserText({
+      post: {
+        caption: row.caption ?? "",
+        hashtags: row.hashtags ?? [],
+        creator: { handle: row.creatorHandle ?? "", ...(row.creatorName ? { name: row.creatorName } : {}) },
+        mediaType: (row.mediaType as PostSubmit["mediaType"]) ?? "video",
+      },
+      libraryNames: LIBRARY_NAMES,
+      retryIssues: prompt.retryIssues,
+    });
+    claimed = { attempt: row.attempt, userText, sha: await promptSha(userText) };
+    return true;
   };
   const refusal = async (): Promise<RelayResult> => {
     const [row] = await db
@@ -185,8 +239,9 @@ export async function relayExtract(
   const finish = (
     out: { extraction: Extraction } | { code: SaveErrorCode; why?: string[] },
     costMicros: number,
-  ): Promise<unknown> =>
-    db
+    call?: RelayCall,
+  ): Promise<unknown> => {
+    const update = db
       .update(savedPosts)
       .set({
         status: "extraction" in out ? "extracted" : "failed",
@@ -196,6 +251,14 @@ export async function relayExtract(
         updatedAt: nowIso,
       })
       .where(and(eq(savedPosts.id, post.id), eq(savedPosts.userId, userId), eq(savedPosts.status, "extracting")));
+    // The attempt's trail with its outcome (design 2026-11-05 §4): the call's facts, the raw reply, the prompt as sent.
+    const event = extractEvent(out, costMicros, call, claimed, prompt, model, length);
+    return runAtomically(db, [
+      update,
+      ...trailStatements(db, userId, post.id, [event], nowIso),
+      ...(call && prompt.version === EXTRACT_PROMPT_VERSION ? [promptVersionStatement(db, EXTRACT_PROMPT_VERSION, "extract", extractSystemText(), nowIso)] : []),
+    ]);
+  };
 
   /**
    * After the extraction is stored, its moves are matched (saves-match.ts): the post becomes `matched`, or `failed`
@@ -243,24 +306,31 @@ export async function relayExtract(
   const reservation = await reserveImport(db, userId, IMPORT_KINDS.extract, model, worst, typical, now);
   if (!reservation.ok) {
     // The post waits `queued` with the reason, and its `updatedAt` moves it behind other work in `/work`.
-    await db
-      .update(savedPosts)
-      .set({ lastErrorCode: reservation.reason, updatedAt: nowIso })
-      .where(and(eq(savedPosts.id, post.id), eq(savedPosts.userId, userId), eq(savedPosts.status, "queued")));
+    await runAtomically(db, [
+      db
+        .update(savedPosts)
+        .set({ lastErrorCode: reservation.reason, updatedAt: nowIso })
+        .where(and(eq(savedPosts.id, post.id), eq(savedPosts.userId, userId), eq(savedPosts.status, "queued"))),
+      ...trailStatements(db, userId, post.id, [
+        { stage: "extract", source: "worker", status: "warn", summary: "Waiting for the import budget", detail: { code: reservation.reason } },
+      ], nowIso),
+    ]);
     return { ok: false, code: reservation.reason };
   }
 
   let settled = false;
   try {
     if (!(await claim())) return await refusal();
+    const started = Date.now();
     const call = await callGateway(gateway.env, fetchImpl, req, model, length);
+    const latencyMs = Date.now() - started;
     // A 402 records out-of-credits (the owner's banner); a call that worked clears it; any other failure says nothing.
     await noteGatewayOutcome(db, userId, call.ok ? { ok: true } : { ok: false, reason: call.reason });
     if (!call.ok) {
       await settleImport(db, reservation.usageId, null);
       settled = true;
       const code: SaveErrorCode = call.reason === "gateway_413" ? "too_large" : "model_failed";
-      await finish({ code, why: [call.reason] }, 0);
+      await finish({ code, why: [call.reason] }, 0, { usageId: reservation.usageId, latencyMs, failure: call.reason });
       return { ok: false, code };
     }
     // A reply from an unlisted model is priced as that model (the table's ceiling when unknown), never as the one asked for.
@@ -274,23 +344,27 @@ export async function relayExtract(
       model: call.model ?? model, inputTokens: call.inputTokens, outputTokens: call.outputTokens, costMicros: cost,
     });
     settled = true;
+    const facts: RelayCall = {
+      usageId: reservation.usageId, latencyMs, model: call.model ?? model, raw: call.content,
+      inputTokens: call.inputTokens, outputTokens: call.outputTokens, finishReason: call.finishReason,
+    };
     if (call.model && !modelAllowed(call.model)) {
       console.warn(JSON.stringify({ level: "warn", msg: "saves relay: reply from a model outside the allowlist", requested: model, got: call.model }));
-      await finish({ code: "model_failed", why: ["the reply came from a model that is not allowed"] }, cost);
+      await finish({ code: "model_failed", why: ["the reply came from a model that is not allowed"] }, cost, facts);
       return { ok: false, code: "model_failed", issues: ["the reply came from a model that is not allowed"] };
     }
     if (call.finishReason === "length") {
       // Cut off at the output limit: not a JSON problem, and a retry at the same length would be cut the same way.
       const issues = [`the reply was cut off at the output limit (${call.outputTokens} tokens): write less — shorter steps, cues and condition notes, no aliases`];
-      await finish({ code: "model_failed", why: issues }, cost);
+      await finish({ code: "model_failed", why: issues }, cost, facts);
       return { ok: false, code: "model_failed", issues };
     }
     const parsed = parseExtraction(call.content);
     if (!parsed.ok) {
-      await finish({ code: "model_failed", why: parsed.issues }, cost);
+      await finish({ code: "model_failed", why: parsed.issues }, cost, facts);
       return { ok: false, code: "model_failed", issues: parsed.issues };
     }
-    await finish({ extraction: parsed.extraction }, cost);
+    await finish({ extraction: parsed.extraction }, cost, facts);
     return await matched(parsed.extraction);
   } catch (e) {
     console.warn(JSON.stringify({ level: "warn", msg: "saves relay: failed", detail: String(e).slice(0, 200) }));
@@ -302,6 +376,74 @@ export async function relayExtract(
     // A throw must not leave the reservation at its worst case: it settles to nothing spent.
     if (!settled) await settleImport(db, reservation.usageId, null);
   }
+}
+
+/** One relay call's facts for the trail: its usage row, time, model, raw reply and tokens, or why it failed. */
+interface RelayCall {
+  usageId: string;
+  latencyMs: number;
+  model?: string;
+  raw?: string;
+  inputTokens?: number;
+  outputTokens?: number;
+  finishReason?: string | null;
+  failure?: string;
+}
+
+const KIND_WORDS: Record<Extraction["kind"], string> = {
+  routine: "a routine", single_move: "single move", tips: "tips", not_training: "not training",
+};
+
+/** The extract stage's event for one attempt (design 2026-11-05 §4). */
+function extractEvent(
+  out: { extraction: Extraction } | { code: SaveErrorCode; why?: string[] },
+  costMicros: number,
+  call: RelayCall | undefined,
+  claimed: { attempt: number; userText: string; sha: string } | null,
+  prompt: { version: string | null; sha: string | null },
+  asked: string,
+  bytes: number,
+): TrailEventInput {
+  const asSent = prompt.sha === null || !claimed ? null : prompt.sha === claimed.sha;
+  const older = asSent === false;
+  let summary: string;
+  if ("extraction" in out) {
+    const n = out.extraction.moves.length;
+    summary = `Read ${n} move${n === 1 ? "" : "s"} (${KIND_WORDS[out.extraction.kind]})`;
+  } else if (call?.failure) {
+    summary = call.failure.startsWith("gateway_") && /^\d+$/.test(call.failure.slice(8))
+      ? `The model gateway answered ${call.failure.slice(8)}`
+      : `The model couldn't be reached (${call.failure})`;
+  } else if (call?.finishReason === "length") {
+    summary = `The reply was cut off at the output limit (${call.outputTokens ?? 0} tokens)`;
+  } else {
+    summary = `The reply didn't match the format: ${out.why?.[0] ?? "unreadable"}`;
+  }
+  if (older) summary = `${summary} — the extension sent a different prompt (an older extension)`;
+  const failed = !("extraction" in out);
+  return {
+    stage: "extract",
+    source: call ? "gateway" : "worker",
+    status: failed ? "fail" : older ? "warn" : "ok",
+    summary,
+    detail: {
+      ...("extraction" in out ? { kind: out.extraction.kind, moves: out.extraction.moves.length } : { code: out.code, issues: out.why ?? [] }),
+      finishReason: call?.finishReason ?? null,
+      ...(call?.inputTokens !== undefined ? { tokens: { in: call.inputTokens, out: call.outputTokens ?? 0 } } : {}),
+      promptSha: claimed?.sha ?? null,
+      promptShaSent: prompt.sha,
+      asSent,
+      videoSeen: null,
+      bytes,
+    },
+    ...(claimed ? { attempt: claimed.attempt } : {}),
+    ...(call ? { usageId: call.usageId, latencyMs: call.latencyMs, model: call.model ?? asked, costMicros } : {}),
+    ...(prompt.version ? { promptVersion: prompt.version } : {}),
+    blobs: [
+      ...(call?.raw !== undefined ? [{ kind: "raw_reply" as const, text: call.raw }] : []),
+      ...(claimed ? [{ kind: "prompt_user" as const, text: claimed.userText }] : []),
+    ],
+  };
 }
 
 function parseExtraction(content: string): { ok: true; extraction: Extraction } | { ok: false; issues: string[] } {

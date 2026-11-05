@@ -286,6 +286,7 @@ export async function runCheck(deps: CheckDeps): Promise<CheckSummary> {
         const sha = await promptSha(extractUserText({ post: toSubmit(post, entry.source), libraryNames: LIBRARY_NAMES, retryIssues }));
         const answer = await app.extract(entry.source, entry.key, body, {
           model: config.model, maxTokens: config.maxTokens, promptVersion: EXTRACT_PROMPT_VERSION, promptSha: sha,
+          ...(retryIssues?.length ? { retryIssues } : {}),
         });
         if (answer.ok) {
           s.extracted++;

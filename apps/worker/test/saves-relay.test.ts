@@ -6,7 +6,8 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 import { eq } from "drizzle-orm";
 import { schema } from "@rg/database";
 import { PROFILES } from "@rg/exercise-library";
-import { extractionSchema } from "@rg/saves";
+import { EXERCISES } from "@rg/exercise-library";
+import { EXTRACT_PROMPT_VERSION, extractionSchema, extractUserText, promptSha } from "@rg/saves";
 import type { Env } from "../src/env.js";
 import type { Db } from "../src/services/db.js";
 import { sha256Hex } from "../src/auth/crypto.js";
@@ -102,6 +103,80 @@ beforeEach(async () => {
 
 const run = async (id: string, text: string, gw: ReturnType<typeof gateway>, e: Env = env()) =>
   relayExtract(db, e, userId, { id }, request(text), new Date(NOW), gw.fetchImpl);
+
+describe("relayExtract writes its trail (import trail, 2026-11-05)", () => {
+  const post = { caption: "a synthetic caption", hashtags: ["one"], creator: { handle: "someone" }, mediaType: "video" as const };
+  const seeded = (key: string) => seed(key, { caption: post.caption, hashtags: post.hashtags, creatorHandle: "someone", mediaType: "video" });
+  const userText = (retryIssues?: string[]) => extractUserText({ post, libraryNames: EXERCISES.map((e) => e.name), retryIssues });
+  const trailOf = async (id: string) =>
+    (await db.select().from(schema.importEvents).where(eq(schema.importEvents.postId, id))).filter((e) => e.stage === "extract");
+  const blobsOf = async (eventId: string) =>
+    Object.fromEntries((await db.select().from(schema.importBlobs).where(eq(schema.importBlobs.eventId, eventId))).map((b) => [b.kind, b.text]));
+
+  it("a good reading: one extract event — the call's facts, the raw reply, the prompt as sent and that it matched", async () => {
+    const id = await seeded("k");
+    const sha = await promptSha(userText());
+    await relayExtract(db, env(), userId, { id }, request(bodyText(), { "x-saves-prompt-version": EXTRACT_PROMPT_VERSION, "x-saves-prompt-sha": sha }), new Date(NOW), gateway(GOOD).fetchImpl);
+    const [e, ...more] = await trailOf(id);
+    expect(more).toEqual([]);
+    const [usage] = await db.select().from(llmUsage);
+    expect(e).toMatchObject({
+      source: "gateway", status: "ok", attempt: 1, model: MODEL, promptVersion: EXTRACT_PROMPT_VERSION, usageId: usage!.id,
+      summary: "Read 1 move (single move)",
+      detail: expect.objectContaining({ asSent: true, promptSha: sha, promptShaSent: sha, finishReason: null }),
+    });
+    const blobs = await blobsOf(e!.id);
+    expect(JSON.parse(blobs.raw_reply!)).toEqual(GOOD);
+    expect(blobs.prompt_user).toBe(userText());
+    expect((await db.select().from(schema.promptVersions)).map((v) => v.version)).toEqual([EXTRACT_PROMPT_VERSION]);
+  });
+
+  it("a retry rebuilds its prompt with the issues it was sent; a prompt the extension built differently is a warning", async () => {
+    const id = await seeded("k");
+    const issues = ["moves.0.name: is required"];
+    const sha = await promptSha(userText(issues));
+    await relayExtract(db, env(), userId, { id }, request(bodyText(), {
+      "x-saves-prompt-version": EXTRACT_PROMPT_VERSION, "x-saves-prompt-sha": sha, "x-saves-retry-issues": encodeURIComponent(JSON.stringify(issues)),
+    }), new Date(NOW), gateway(GOOD).fetchImpl);
+    expect((await trailOf(id))[0]!.detail).toMatchObject({ asSent: true });
+
+    const other = await seeded("k2");
+    await relayExtract(db, env(), userId, { id: other }, request(bodyText(), { "x-saves-prompt-version": "extract-3", "x-saves-prompt-sha": "0".repeat(64) }), new Date(NOW), gateway(GOOD).fetchImpl);
+    const [w] = await trailOf(other);
+    expect(w).toMatchObject({ status: "warn", promptVersion: "extract-3", detail: expect.objectContaining({ asSent: false }) });
+    expect(w!.summary).toMatch(/older extension/);
+  });
+
+  it("each attempt is its own event with its own raw reply; a failed one says why", async () => {
+    const id = await seeded("k");
+    await run(id, bodyText(), gateway({ kind: "routine", summary: "s", themes: [], moves: [{ name: "" }] }));
+    await db.update(savedPosts).set({ status: "queued" }).where(eq(savedPosts.id, id));
+    await run(id, bodyText(), gateway(GOOD));
+    const events = (await trailOf(id)).sort((a, b) => (a.attempt ?? 0) - (b.attempt ?? 0));
+    expect(events.map((e) => [e.attempt, e.status])).toEqual([[1, "fail"], [2, "ok"]]);
+    expect(events[0]!.summary).toMatch(/^The reply didn't match the format/);
+    expect(events[0]!.detail).toMatchObject({ issues: expect.arrayContaining([expect.any(String)]) });
+    expect(Object.keys(await blobsOf(events[0]!.id)).sort()).toEqual(["prompt_user", "raw_reply"]);
+  });
+
+  it("a gateway error is a failed event with the status and no raw reply", async () => {
+    const id = await seeded("k");
+    await run(id, bodyText(), gateway(GOOD, { status: 503 }));
+    const [e] = await trailOf(id);
+    expect(e).toMatchObject({ status: "fail", summary: "The model gateway answered 503" });
+    expect(Object.keys(await blobsOf(e!.id))).toEqual(["prompt_user"]);
+  });
+
+  it("a budget refusal is a warn event and no call", async () => {
+    await db.insert(llmUsage).values({
+      id: "spent", userId, kind: IMPORT_KINDS.extract, model: "m", inputTokens: 1, outputTokens: 1, costMicros: 5_000_000, cacheHit: false, createdAt: NOW,
+    });
+    const id = await seeded("k");
+    await run(id, bodyText(), gateway(GOOD));
+    const [e] = await trailOf(id);
+    expect(e).toMatchObject({ status: "warn", summary: "Waiting for the import budget" });
+  });
+});
 
 describe("relayExtract", () => {
   it("passes the body to the gateway byte-identical, as a half-duplex stream, with the key", async () => {
@@ -399,7 +474,8 @@ describe("POST /api/saves/posts/:key/extract", () => {
     await run(own, bodyText(), gateway(GOOD));
     // reserve 2 (spend, insert) + claim 1 + out-of-credits note 2 (restore check, clear) + settle 1 + outcome 1;
     // matchPost for one new move and no judge: post 1, personal moves 1, the move, its link and the post 3
-    expect(statements).toBe(7 + 5);
+    // REBASED 2026-11-05 (import trail): the outcome's batch adds the attempt's event, its raw reply and the prompt as sent — 3.
+    expect(statements).toBe(7 + 3 + 5);
     await seed("k");
     const gw = gateway(GOOD);
     vi.stubGlobal("fetch", gw.fetchImpl);
@@ -408,7 +484,7 @@ describe("POST /api/saves/posts/:key/extract", () => {
       expect(res.status).toBe(200);
       expect(json).toMatchObject({ status: "matched", moves: 1 });
       expect(gw.seen).toHaveLength(1);
-      expect(cost).toBeLessThanOrEqual(7 + 2 + 5); // the relay's 7 + the bearer guard's user and restore lookups + matchPost's 5
+      expect(cost).toBeLessThanOrEqual(7 + 3 + 2 + 5); // the relay's 7 + its trail 3 (import trail) + the bearer guard's user and restore lookups + matchPost's 5
     } finally {
       vi.unstubAllGlobals();
     }
@@ -419,8 +495,8 @@ describe("POST /api/saves/posts/:key/extract", () => {
     const { res, json, cost } = await route("k", bodyText(), {}, `?source=${SRC}`, await routeEnv({ FIXTURE_MODE: "1" }));
     expect(res.status).toBe(200);
     expect(json.status).toBe("matched");
-    // auth 2 + claim 1 + outcome 1 + matchPost's 5 (post, personal moves, the move, its link, the post)
-    expect(cost).toBeLessThanOrEqual(9);
+    // auth 2 + claim 1 + outcome 1 + its trail 2 (the event, the prompt as sent; import trail) + matchPost's 5
+    expect(cost).toBeLessThanOrEqual(11);
   });
 
   it("stays within 45 statements at its worst: 12 moves, a judge call, every move new", async () => {
@@ -443,7 +519,7 @@ describe("POST /api/saves/posts/:key/extract", () => {
       expect((await db.select().from(llmUsage)).map((r) => r.kind).sort()).toEqual([IMPORT_KINDS.extract, IMPORT_KINDS.match]);
       // 9 (auth 2 + relay 7) + matchPost: post 1, personal moves 1, judge 5, moves 2, links 2, post 1
       expect(cost).toBeLessThanOrEqual(45);
-      expect(cost).toBeLessThanOrEqual(9 + 13);
+      expect(cost).toBeLessThanOrEqual(9 + 13 + 2); // REBASED 2026-11-05 (import trail): + the attempt's event and prompt
     } finally {
       vi.unstubAllGlobals();
     }

@@ -55,6 +55,9 @@ describe("the app client", () => {
     await client.extract("instagram", "k", "{}", { model: "m", maxTokens: 10, promptVersion: "extract-4", promptSha: "ab12" });
     expect(header(calls[0]!.init, "x-saves-prompt-version")).toBe("extract-4");
     expect(header(calls[0]!.init, "x-saves-prompt-sha")).toBe("ab12");
+    expect(header(calls[0]!.init, "x-saves-retry-issues")).toBeNull();
+    await client.extract("instagram", "k", "{}", { model: "m", maxTokens: 10, promptVersion: "extract-4", promptSha: "ab12", retryIssues: ["moves.0.name: is required"] });
+    expect(JSON.parse(decodeURIComponent(header(calls[1]!.init, "x-saves-retry-issues")!))).toEqual(["moves.0.name: is required"]);
   });
 
   it("reads the relay's coded refusals by their error, whatever the status", async () => {

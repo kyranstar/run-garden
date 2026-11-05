@@ -26,6 +26,8 @@ export interface ExtractOpts {
   maxTokens: number;
   promptVersion?: string;
   promptSha?: string;
+  /** The issues this call retries with (our own schema's words): the app rebuilds the prompt as sent from them. */
+  retryIssues?: string[];
 }
 
 /** Why a post could not be sent at all (`POST /posts/:key/failed`). */
@@ -113,7 +115,7 @@ export function createAppClient(opts: { appUrl: string; token: string; fetchImpl
       return Array.isArray(body.keys) ? (body.keys as WorkItem[]) : [];
     },
 
-    async extract(source, key, payload, { model, maxTokens, promptVersion, promptSha }) {
+    async extract(source, key, payload, { model, maxTokens, promptVersion, promptSha, retryIssues }) {
       const res = await call(
         `/api/saves/posts/${encodeURIComponent(key)}/extract?source=${encodeURIComponent(source)}`,
         {
@@ -124,6 +126,7 @@ export function createAppClient(opts: { appUrl: string; token: string; fetchImpl
             "x-saves-max-tokens": String(maxTokens),
             ...(promptVersion ? { "x-saves-prompt-version": promptVersion } : {}),
             ...(promptSha ? { "x-saves-prompt-sha": promptSha } : {}),
+            ...(retryIssues?.length ? { "x-saves-retry-issues": encodeURIComponent(JSON.stringify(retryIssues)) } : {}),
           },
           body: payload,
         },
