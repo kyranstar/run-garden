@@ -1,4 +1,4 @@
-import { LoginNeededError, PostGoneError, ReaderError } from "./errors.js";
+import { FeedChangedError, LoginNeededError, PostGoneError, ReaderError } from "./errors.js";
 
 export { LoginNeededError };
 
@@ -62,7 +62,12 @@ export function classifyPageResponse(raw: RawPageResponse, what: "feed" | "post"
   // A single post the site will not give (deleted, made private, an id it refuses) is gone; a rate limit is not.
   if (what === "post" && raw.status >= 400 && raw.status < 500 && raw.status !== 429) throw new PostGoneError();
   if (raw.status < 200 || raw.status >= 300) throw new ReaderError(`Instagram answered ${raw.status}`);
-  if (raw.contentType.includes("text/html") || raw.text.trimStart().startsWith("<")) throw new LoginNeededError();
+  // A page of HTML instead of data: a login page asks for a login; any other page (an interstitial, a new layout) is the
+  // site changing — read as a login, it sent the owner to log in to a session that was fine (audit 2026-11-05, bug 7).
+  if (raw.contentType.includes("text/html") || raw.text.trimStart().startsWith("<")) {
+    if (/loginForm|name=["']?username|\/accounts\/login/i.test(raw.text)) throw new LoginNeededError();
+    throw new FeedChangedError("Instagram sent a page instead of the saved list");
+  }
   if (body === undefined) throw new ReaderError("Instagram sent something unreadable");
   return body;
 }

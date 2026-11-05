@@ -1,6 +1,6 @@
 import { describe, expect, it, vi } from "vitest";
 import { classifyPageResponse, createPageReader, IG_APP_ID, type RawPageResponse, type TabsAdapter } from "../src/page-reader.js";
-import { LoginNeededError, PostGoneError, ReaderError } from "../src/errors.js";
+import { FeedChangedError, LoginNeededError, PostGoneError, ReaderError } from "../src/errors.js";
 
 const raw = (over: Partial<RawPageResponse> = {}): RawPageResponse => ({
   status: 200,
@@ -16,12 +16,16 @@ describe("classifyPageResponse", () => {
     expect(classifyPageResponse(raw(), "feed")).toEqual({ items: [], status: "ok" });
   });
 
-  it("reads 401, 403, a login redirect, an HTML page and a login_required body as LoginNeededError", () => {
+  it("reads an HTML page with no login form on it as the site changing, not a login (audit bug 7)", () => {
+    expect(() => classifyPageResponse(raw({ contentType: "text/html; charset=utf-8", text: "<!DOCTYPE html><html><body>Something new</body></html>" }), "feed")).toThrow(FeedChangedError);
+  });
+
+  it("reads 401, 403, a login redirect, an HTML login page and a login_required body as LoginNeededError", () => {
     for (const r of [
       raw({ status: 401 }),
       raw({ status: 403 }),
       raw({ redirected: true, finalUrl: "https://www.instagram.com/accounts/login/?next=%2F" }),
-      raw({ contentType: "text/html; charset=utf-8", text: "<!DOCTYPE html><html></html>" }),
+      raw({ contentType: "text/html; charset=utf-8", text: '<!DOCTYPE html><html><form id="loginForm"><input name="username"></form></html>' }),
       raw({ status: 400, text: '{"message":"login_required","status":"fail"}' }),
       raw({ text: '{"require_login":true,"status":"fail"}' }),
     ]) {
