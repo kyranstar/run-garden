@@ -39,6 +39,7 @@ import type { OutboxApi } from "../offline/outbox.js";
 import type { UnstartApi } from "../offline/unstarts.js";
 import { cuePlayer, type Cue, type CuePlayer } from "../player/cue-player.js";
 import { calmSession, planCues } from "../player/cues.js";
+import { eachSide, eachSideOnTimer, setMetric } from "../player/dose-words.js";
 import { hintDue, hintSeen } from "../player/sound-hint.js";
 import { readSound, soundFor, writeSound, type StoredSound } from "../player/sound-settings.js";
 import { SoundSettings } from "../components/sound-settings.js";
@@ -1086,9 +1087,8 @@ const rangeOf = (t: Partial<Target>): string | null =>
 
 function doseLine(step: Step, ex: SessionExerciseDto | undefined): string {
   const t = step.target ?? {};
-  const each = ex?.laterality === "unilateral" ? " each side" : "";
-  if (step.kind === "timed") return `${step.seconds} s${each}`;
-  const reps = t.reps != null ? `${t.reps}${each}` : "";
+  if (step.kind === "timed") return `${step.seconds} s${eachSideOnTimer(ex)}`;
+  const reps = t.reps != null ? `${t.reps}${eachSide(ex)}` : "";
   const w = t.w ? ` @ ${formatWeight(t.w)}` : "";
   return `${reps}${w}`.trim();
 }
@@ -1241,8 +1241,8 @@ function StepBody({
   const howto = <HowtoLine text={summaryOf(exercise)} />;
   if (step.kind === "set") {
     const t = step.target ?? {};
-    const each = exercise?.laterality === "unilateral" ? " each side" : "";
-    const metric = exercise?.dose.type === "time" ? "s" : "reps";
+    const each = eachSide(exercise);
+    const metric = setMetric(exercise, t);
     return (
       <>
         <span className="eyebrow player-eyebrow">{eyebrow(step, careLabel, exercise, part)}</span>

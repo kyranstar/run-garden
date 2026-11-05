@@ -308,6 +308,9 @@ export function isOneOff(w: { planId?: string }): boolean {
   return w.planId?.startsWith("adhoc-") ?? false;
 }
 
+/** A move done on both sides, a side at a time or alternating. A move the build doesn't name has none to speak of. */
+const isSided = (ex: { laterality: string } | undefined): boolean => !!ex && ex.laterality !== "bilateral";
+
 function itemDose(s: SessionDto, item: SessionItemDto): { text: string; up: boolean } {
   const build = s.build!;
   const target = (build.targets[item.exerciseId] as DoseTarget | undefined) ?? null;
@@ -315,7 +318,7 @@ function itemDose(s: SessionDto, item: SessionItemDto): { text: string; up: bool
   // A document build says each dose as the builder does ("4 × 5–8"), never the steps' "4 sets".
   const own = build.fromDoc?.doses?.[item.slotKey];
   return {
-    text: own ?? doseText({ sets: item.sets, steps, target, perSide: build.exercises[item.exerciseId]?.laterality === "unilateral" }),
+    text: own ?? doseText({ sets: item.sets, steps, target, perSide: isSided(build.exercises[item.exerciseId]) }),
     up: target?.action === "up",
   };
 }

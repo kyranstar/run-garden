@@ -89,12 +89,20 @@ describe("sessionLead", () => {
     });
   });
 
+  it("a counted set of a sided move says each side; a timer says it only when it runs per side", () => {
+    const set: DoseStep = { slotKey: "a", kind: "set", seconds: 30, side: null, setCount: 2 };
+    expect(doseText({ sets: 2, steps: [set], target: { lo: 6, hi: 10, type: "reps", w: null, reps: 6, secs: null, action: "hold" }, perSide: true })).toBe("2 × 6 each side");
+    const window: DoseStep = { slotKey: "a", kind: "timed", seconds: 60, side: null, setCount: 1 };
+    // An alternating move's one window holds both sides.
+    expect(doseText({ sets: 1, steps: [window], target: null, perSide: true })).toBe("1 min");
+  });
+
   it("a session with no core lift leads with its first moves", () => {
     const yoga = { ...build, items: [build.items[0]!, build.items[3]!] };
     expect(sessionLead(yoga)).toEqual({
       moves: [
         { name: "Cat-cow", dose: "50 s", up: false },
-        { name: "Bird dog", dose: "2 × 6", up: false },
+        { name: "Bird dog", dose: "2 × 6 each side", up: false },
       ],
       more: 0,
     });

@@ -16,7 +16,7 @@
  * entry (20 deep), and an empty title or summary is rejected, so a field cleared mid-typing would be refused.
  */
 import { PART_PURPOSES, doseSchema, itemSchema, partSchema, workoutDocSchema, type WorkoutDoc, type WorkoutDose, type WorkoutItem, type WorkoutPart } from "@rg/domain";
-import { isPlyometric, type ExerciseRecord, type Purpose } from "@rg/exercise-library";
+import { countsPerSide, isPlyometric, type ExerciseRecord, type Purpose } from "@rg/exercise-library";
 import { makeLibraryIndex } from "./derive.js";
 
 type PartPurpose = WorkoutPart["purpose"];
@@ -122,7 +122,7 @@ export function doseFor(rec: ExerciseRecord, purpose: PartPurpose): WorkoutDose 
   return {
     sets,
     ...amount,
-    ...(rec.laterality !== "bilateral" ? { perSide: true } : {}),
+    ...(countsPerSide(rec) ? { perSide: true } : {}),
     ...(sets > 1 && rec.dose.restSec !== undefined ? { restSec: rec.dose.restSec } : {}),
   };
 }

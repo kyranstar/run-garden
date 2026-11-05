@@ -313,7 +313,9 @@ function windows(slot: Slot & { item: Move }, ctx: Ctx, extra: { setIndex: numbe
     ...more,
   });
   const fixed = slot.item.kind === "exercise" ? slot.item.side : undefined;
-  if (slot.item.dose.perSide && fixed === undefined) return [one({ side: "Left" }), one({ side: "Right", log: logged })];
+  // An alternating move's one window already holds both sides (`Builder.windowSeconds` counts them): no Left and Right.
+  const alternating = slot.rec?.laterality === "alternating";
+  if (slot.item.dose.perSide && fixed === undefined && !alternating) return [one({ side: "Left" }), one({ side: "Right", log: logged })];
   return [one({ side: fixed === "left" ? "Left" : fixed === "right" ? "Right" : null, log: logged })];
 }
 

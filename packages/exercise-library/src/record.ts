@@ -7,11 +7,12 @@ import type {
 
 export interface Dose {
   type: DoseType;
-  /** [low, high]: reps, seconds, breaths, or carry seconds. */
+  /** [low, high]: reps, seconds, breaths, or seconds under a weight (`carry`: walked with or held, the timed type that takes a load). */
   range: readonly [number, number];
   /** [min, max] working sets. */
   sets?: readonly [number, number];
   restSec?: number;
+  /** Seconds one rep takes, or one breath on a breaths dose (a breath with a pause after it takes longer than a plain one). */
   secsPerRep?: number;
   /** Starting weight in kg when there's no history. */
   startKg?: number;
@@ -87,6 +88,13 @@ export interface ExerciseRecord {
   conditions: Readonly<Record<string, Attrs>>;
   providers?: { coros?: CorosMapping };
 }
+
+/**
+ * Whether a move's dose counts per side: a one-sided move's always does (its seconds run per side too); an alternating
+ * move's does when it's counted (8 each way in one set), not on a clock, whose one window holds both sides.
+ */
+export const countsPerSide = (ex: Pick<ExerciseRecord, "laterality" | "dose">): boolean =>
+  ex.laterality === "unilateral" || (ex.laterality === "alternating" && ex.dose.type !== "time" && ex.dose.type !== "carry");
 
 /** A jump, hop, bound or landing (validation requires `contraction` on every record; a hand-made one without it isn't). */
 export const isPlyometric = (ex: Pick<ExerciseRecord, "contraction">): boolean =>

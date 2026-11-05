@@ -37,7 +37,9 @@ const weightText = (w: Weight | null): string => (w ? ` @ ${w.v} ${w.u}` : "");
 
 /**
  * One move's dose: "3 × 6 @ 30 lb", "3 × 10 @ 12.5 kg each side", "3 × 30 s", "40 s each side", "2 × 40 s".
- * `steps` are the move's own (its slot's, rests excluded); `perSide` = a one-sided move.
+ * `steps` are the move's own (its slot's, rests excluded); `perSide` = a move done on both sides, whether a side at a
+ * time or alternating. Its counted sets say "each side". A timer says it only when it really runs per side (a Left and
+ * a Right window): an alternating move's one window holds both sides.
  */
 export function doseText(input: { sets: number; steps: readonly DoseStep[]; target: DoseTarget | null; perSide: boolean }): string {
   const { sets, steps, target, perSide } = input;
@@ -61,7 +63,7 @@ export function doseText(input: { sets: number; steps: readonly DoseStep[]; targ
   const sided = timed.some((s) => s.side !== null);
   const rounds = sided ? Math.max(1, Math.round(timed.length / 2)) : timed.length;
   const seconds = timed[0]!.seconds;
-  return `${rounds > 1 ? `${rounds} × ` : ""}${secondsText(seconds)}${sided || perSide ? " each side" : ""}`;
+  return `${rounds > 1 ? `${rounds} × ` : ""}${secondsText(seconds)}${sided ? " each side" : ""}`;
 }
 
 /** The slice of a build `sessionLead` reads. */
@@ -99,7 +101,7 @@ export function sessionLead(build: LeadBuild, max = 2, doses?: Readonly<Record<s
           sets: item.sets,
           steps: build.steps.filter((s) => s.slotKey === item.slotKey && s.kind !== "rest"),
           target,
-          perSide: ex.laterality === "unilateral",
+          perSide: ex.laterality !== "bilateral",
         }),
       up: target?.action === "up",
     });
