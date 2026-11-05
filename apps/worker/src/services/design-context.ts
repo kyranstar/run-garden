@@ -105,16 +105,19 @@ import { SLEEP_RECONNECT_WORDS, sleepConnectionStatusSql, sleepNeedsReconnect } 
  * declines and a reviewer's draft day among them: fix wave 13) — and for a reviewer whose draft is found, one more: the
  * days around the draft's (I9); for a main run asked from something the athlete was looking at (coach everywhere, A1),
  * one more: its focus's facts — none for a library move, which the bundled library holds (one for a personal move: its
- * own row, a pending one's record); and for a main run that is a later
+ * own row, a pending one's record); and for any run that is part of a later
  * turn of a conversation (the new shape §5: `conversation`, the conversation to read — none for its first turn), one
- * more: the turns before it (coach-conversation.ts `conversationRows`). A main run's saves batch (Task 17) rides in the
- * counts statement: none more. */
+ * more: the turns before it (coach-conversation.ts `conversationRows`) — a reviewer's and a set designer's too since
+ * 2026-11-05, so a reviewer judges a draft against what the athlete said a turn earlier. A main run's saves batch
+ * (Task 17) rides in the counts statement: none more. */
 export function contextStatements(role: DesignRun["role"], focus?: RunFocus | null, conversation?: string | null): number {
-  if (role === "reviewer") return 12;
-  if (role !== "main") return 11;
-  return 11 + (focus && focusReadInContext(focus) ? 1 : 0) + (conversation ? 1 : 0);
+  const turns = conversation ? 1 : 0;
+  if (role === "reviewer") return 12 + turns;
+  if (role !== "main") return 11 + turns;
+  return 11 + (focus && focusReadInContext(focus) ? 1 : 0) + turns;
 }
-/** The most one build runs (the step loop budgets for it): a main run's with a focus and a conversation. */
+/** The most one build runs (the step loop budgets for it): a main run's with a focus and a conversation, or a reviewer's
+ * with a conversation. */
 export const DESIGN_CONTEXT_STATEMENTS = 13;
 
 /**
@@ -166,9 +169,13 @@ export interface DesignRun {
   /** What the athlete was looking at when they asked (coach everywhere, A1; design-focus.ts): read for a main run only
    * — a sub-run's is never read. */
   focus?: RunFocus | null;
-  /** A main run's conversation (the new shape §5): its turns before this one are read — none when the run is the
-   * conversation's first (its id the run's own). */
+  /** The conversation the run's turn is part of (the new shape §5): its turns before this one are read — none when the
+   * turn is the conversation's first (its id the turn's own). A main run's own; a sub-run's, its main run's (2026-11-05:
+   * a reviewer judges against what the athlete said before, as the designer heard it). */
   conversationId?: string | null;
+  /** A sub-run's turn: its main run's id — the run whose request the turn is, never read as one of the turns before it.
+   * A main run's turn is its own id. */
+  turnId?: string | null;
   /** A fit-in main run's batch (the saves flow, §12.1): the saves section reads that saved batch — whatever its age,
    * fitted in or not — and in full, whatever the request. */
   savesBatchId?: string | null;
@@ -448,7 +455,8 @@ async function read(
   horizonEnd: (today: string) => string,
   run: Pick<DesignRun, "id" | "role" | "savesBatchId">,
   focus: RunFocus | null = null,
-  conversation: string | null = null,
+  /** The conversation to read, and the turn this run is part of (left out of it). */
+  conversation: { id: string; turn: string } | null = null,
 ): Promise<Reads> {
   const { profile, prefs } = await loadProfileWithPreferences(db, userId);
   const tz = zoneOrUtc(profile.timezone);
@@ -465,7 +473,7 @@ async function read(
   const isMain = run.role !== "designer" && run.role !== "reviewer";
 
   const [conversationTurns, focusRows, checks, objectiveRows, memory, plan, answers, history, countRows] = await Promise.all([
-    conversation ? conversationRows(db, userId, sql`${conversation}`, { limit: CONTEXT_TURNS, exclude: run.id }) : null,
+    conversation ? conversationRows(db, userId, sql`${conversation.id}`, { limit: CONTEXT_TURNS, exclude: conversation.turn }) : null,
     focus ? focusRead(db, userId, focus) : null,
     db
       .select({ id: conditionChecks.id, profileId: conditionChecks.profileId, value: conditionChecks.value, feelingOff: conditionChecks.feelingOff, at: conditionChecks.at })
@@ -1378,8 +1386,10 @@ function header(r: Reads, run: DesignRun, role: Role, scope: { kind: ScopeKind; 
     const b = BRIEF_SOURCES[role];
     parts.push(`${b.label}\n${markUntrusted(b.from, run.brief)}`);
   }
-  // The conversation so far (the new shape §5): what this request may answer to — "make it 10 minutes", "evening".
-  const conversation = role === "main" && r.conversation ? conversationBlock(r.conversation, now) : null;
+  // The conversation so far (the new shape §5): what this request may answer to — "make it 10 minutes", "evening". A
+  // sub-run's too (2026-11-05): "the gym today" said a turn before binds its designer and its reviewer as it does the
+  // main coach. Only the main coach names a suggestion to replace.
+  const conversation = r.conversation ? conversationBlock(r.conversation, now, { replaces: role === "main" }) : null;
   if (conversation) parts.push(conversation);
   if (role === "main" && r.focus) parts.push(focusSection(r.focus, r, time));
   // What came in from the athlete's saves (Task 17), last before the request: what "Fit these in" asks about.
@@ -1415,8 +1425,10 @@ export async function buildDesignContext(db: Db, env: Env, userId: string, run: 
   const role: Role = run.role === "designer" || run.role === "reviewer" ? run.role : "main";
   // A main run's focus only (A1): a sub-run's is never read.
   const focus = role === "main" && run.focus ? run.focus : null;
-  // A later turn's conversation (the new shape §5): a first turn's id is its own, and has none before it.
-  const conversation = role === "main" && run.conversationId && run.conversationId !== run.id ? run.conversationId : null;
+  // A later turn's conversation (the new shape §5): a first turn's id is its own, and has none before it. A sub-run's
+  // turn is its main run's (2026-11-05).
+  const turn = role === "main" ? run.id : (run.turnId ?? null);
+  const conversation = run.conversationId && turn && run.conversationId !== turn ? { id: run.conversationId, turn } : null;
   const r = await read(db, userId, now, (today) => addDays(today, horizonDays(scope.kind, scope.n) - 1), run, focus, conversation);
   return {
     system: [

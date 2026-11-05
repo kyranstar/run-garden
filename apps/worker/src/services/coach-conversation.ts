@@ -514,9 +514,10 @@ function turnLines(row: TurnRow, today: string, clock: Intl.DateTimeFormat): str
 /**
  * The conversation so far, for a later turn's opening message (see the module comment): `rows` newest first, as
  * `conversationRows` reads them. Null when there is none. Never past CONVERSATION_BLOCK_MAX_CHARS: the oldest turns are
- * left out first.
+ * left out first. `replaces: false` for a sub-run (2026-11-05: a designer's or a reviewer's opening carries it too):
+ * only the main coach names a suggestion its own replaces.
  */
-export function conversationBlock(rows: readonly TurnRow[], now: Date): string | null {
+export function conversationBlock(rows: readonly TurnRow[], now: Date, o: { replaces?: boolean } = {}): string | null {
   if (rows.length === 0) return null;
   const today = todayOf(rows[0]!.prefs, now);
   const clock = new Intl.DateTimeFormat("en-GB", {
@@ -528,8 +529,9 @@ export function conversationBlock(rows: readonly TurnRow[], now: Date): string |
     minute: "2-digit",
     hourCycle: "h23",
   });
-  const head =
-    "The conversation so far — the turns before this request, oldest first. The athlete's words and the coach's own are marked as data. To change a suggestion still open, name its id in propose_workout's replaces.";
+  const head = `The conversation so far — the turns before this request, oldest first. The athlete's words and the coach's own are marked as data.${
+    o.replaces === false ? "" : " To change a suggestion still open, name its id in propose_workout's replaces."
+  }`;
   let turns = [...rows].reverse().map((r) => turnLines(r, today, clock).join("\n"));
   const size = (ts: string[]) => [head, ...ts].join("\n").length;
   // One turn always fits (each of its lines is clipped: about 2,500 characters at most), so the block is never cut —

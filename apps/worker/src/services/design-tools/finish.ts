@@ -11,6 +11,13 @@
  * `clipProse`: its last sentence end inside LINE_MAX, else a word and "…"), and the loop keeps the whole text in the
  * event's payload. The schema states the cap in words.
  *
+ * NOT WITH A MUST-FIX OPEN (2026-11-05, the owner's "hard checks + guard"): in production a draft finished with an open
+ * must-fix and two rounds left. While the workout this run holds has must-fix items its review listed, review rounds
+ * remain, and no amend has answered them, finish is refused — teachably, using no round (design-review.ts
+ * `openMustFix`): revise it, fix the text with an amend, or, if a must-fix can't be met, amend and say why in the change
+ * note (the review's changes show it to the athlete). A run's last call is never refused for it (`ctx.lastTurn`): a last
+ * turn always ends.
+ *
  * A SET'S DESIGNER'S LINE IS INTERNAL (M3): its `summary` is optional and only the main coach reads it (the loop keeps it
  * as the designer's `final`, which its set's outcome quotes); the trail shows the workout it designed, by its title.
  *
@@ -25,10 +32,10 @@
 import { and, eq } from "drizzle-orm";
 import { z } from "zod";
 import { coachProposals } from "@rg/database";
-import type { DesignTool } from "./types.js";
+import type { DesignTool, ToolErr } from "./types.js";
 import { capInWords, isErr, mainRunIdOf, parseAct } from "./act-common.js";
 import { refuse } from "./read-common.js";
-import { reviewRunning } from "../design-review.js";
+import { openMustFix, reviewRunning } from "../design-review.js";
 import { athleteText, clipProse } from "../design-prose.js";
 import { designProposalId, type DocWorkoutOp } from "./propose.js";
 import { isDocWorkoutOp, isMovePinsOp, isPlanAdjustOp, isPlanStructureOp, isProgrammeChangeOp } from "../proposal-kinds.js";
@@ -44,6 +51,17 @@ const input = z.object({ summary: z.string().trim().min(1).optional() }).strict(
 
 /** A set's designer's line on the trail: the workout it designed, by its title (M3). */
 export const designedLine = (title: string | null): string => (title ? `Designed “${title}”.` : "Finished without a workout.");
+
+const counted = (n: number, one: string, many: string): string => `${n} ${n === 1 ? one : many}`;
+
+/** The guard's refusal (2026-11-05): teachable, using no round — what is open, and the three ways on. */
+function mustFixOpen(items: number, roundsLeft: number): ToolErr {
+  return refuse(
+    "must_fix_open",
+    `Your reviewed draft still has ${counted(items, "must-fix item", "must-fix items")} from its review, and ${counted(roundsLeft, "round of revision is", "rounds of revision are")} left: it isn't ready to suggest.`,
+    "Revise it (propose_workout with a changeNote), or fix the text with amend: true; or, if a must-fix can't be met, amend and say why in its changeNote. Then finish. This used no round.",
+  );
+}
 
 export const finish: DesignTool = {
   name: "finish",
@@ -89,6 +107,11 @@ export const finish: DesignTool = {
     const pins = all.filter(isMovePinsOp).length;
     const own = designer ? ops.find((o) => o.by?.runId === ctx.run.id) : undefined;
     const mine = row && (ctx.run.role === "main" ? all.length > 0 : !!own);
+    // THE MUST-FIX GUARD (2026-11-05): the workout this run holds, its must-fix items open with rounds left — never on the
+    // run's last turn, which always ends (`lastTurn`), and never once the proposal is the athlete's or closed.
+    const held = ops.find((o) => o.by?.runId === ctx.run.id);
+    const open = held && !ctx.lastTurn && (row?.status === "unreviewed" || row?.status === "rehearsal") ? openMustFix(held) : null;
+    if (open) return mustFixOpen(open.items.length, open.roundsLeft);
     // A designer's line is its workout's title (M3); the main coach's, its own words clipped where the athlete reads them.
     // The athlete's words first (round 2, I1: a library id, a tool name, "validator" as the athlete says them), then the cut.
     const lineOf = (room: number): string => (designer ? designedLine(own?.doc.title ?? null) : clipProse(athleteText(said), room));

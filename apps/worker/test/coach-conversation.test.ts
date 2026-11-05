@@ -426,7 +426,9 @@ describe("the opening context: the conversation so far", () => {
     expect(contextStatements("main", null, null)).toBe(11);
     expect(contextStatements("main", null, "c1")).toBe(12);
     expect(contextStatements("main", { kind: "day", id: TODAY }, "c1")).toBe(13);
-    expect(contextStatements("designer", null, "c1")).toBe(11);
+    // A sub-run of a later turn reads it too since 2026-11-05 (its reviewer judged a home session a turn after "the gym
+    // today"): design-must-fix-guard.test.ts.
+    expect(contextStatements("designer", null, "c1")).toBe(12);
     const first = await createRun(db, userId, { scope: { kind: "now" }, request: "Something calm." }, NOW);
     const ctxRun = (id: string, conversationId: string) => ({ id, role: "main" as const, scope: { kind: "now" }, request: "x", parentId: null, conversationId });
     statements = 0;

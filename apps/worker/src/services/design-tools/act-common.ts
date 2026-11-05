@@ -28,7 +28,10 @@
  *    error's code. Some fixes are the tool layer's (`judge`): an unknown move's points at search_library, and a gated
  *    move's stand-in — today's or a day ahead's — is offered only from its own family, none when nothing of it passes;
  *    today, with no check answered, the main coach may ask for one. So is one advisory note: a test whose move its key
- *    result's measure doesn't read (`test_unmeasured`, the measures read in the athlete's statement).
+ *    result's measure doesn't read (`test_unmeasured`, the measures read in the athlete's statement). And two hard checks
+ *    (draft-checks.ts, 2026-11-05) — a working move on an area the athlete called sore today (`sore_area_loaded`, today's
+ *    soreness read in the athlete's statement by its caller), a title the work doesn't bear out (`title_not_content`):
+ *    advisory here, must-fix for the reviewer unless the draft explains them.
  */
 import { sql, type SQL } from "drizzle-orm";
 import { z } from "zod";
@@ -38,6 +41,7 @@ import {
   BASED_ON_KINDS,
   EFFORT_LEVELS,
   GOAL_IDS,
+  isRunDoc,
   itemSchema,
   PART_FORMATS,
   PART_PURPOSES,
@@ -62,6 +66,7 @@ import { isPersonalId } from "@rg/saves";
 import { markUntrusted } from "../design-prompt.js";
 import { parsedArray, readAthlete, refuse, untrusted, type Athlete, type Untrusted } from "./read-common.js";
 import { measureWords } from "./read-objectives.js";
+import { soreAreaNotes, titleNotes, type HardNoteCode, type SoreArea } from "./draft-checks.js";
 import type { SavesSkip, ToolContext, ToolErr } from "./types.js";
 
 // ── Input ───────────────────────────────────────────────────────────────────────────────────────────────────────────
@@ -644,9 +649,12 @@ export function freeTextRefusal(doc: unknown, base: WorkoutDoc | null): ToolErr 
 
 // ── Judging ─────────────────────────────────────────────────────────────────────────────────────────────────────────
 
-/** An issue as the coach's tools raise it: the validator's (`DocIssue`), or the tool layer's own advisory — a test whose
- * move its key result's measure doesn't read (`test_unmeasured`: fix wave 3A round 2, B-M10). */
-export type CoachIssue = Omit<DocIssue, "code"> & { code: DocIssue["code"] | "test_unmeasured" };
+/** An issue's code as the coach's tools raise it: the validator's, or the tool layer's own — a test whose move its key
+ * result's measure doesn't read (`test_unmeasured`: fix wave 3A round 2, B-M10), and the two hard checks (draft-checks.ts,
+ * 2026-11-05): a working move on an area the athlete called sore today, a title the work doesn't bear out. */
+export type CoachIssueCode = DocIssue["code"] | "test_unmeasured" | HardNoteCode;
+/** An issue as the coach's tools raise it: the validator's (`DocIssue`), or the tool layer's own advisory. */
+export type CoachIssue = Omit<DocIssue, "code"> & { code: CoachIssueCode };
 
 export interface Judged {
   /** The document as the schema reads it; null when it doesn't. */
@@ -677,15 +685,22 @@ export function noCheckToday(vctx: ValidateCtx): boolean {
 /**
  * The validator's verdict, and what is derived from the document when it can be built — with the tool layer's own fixes
  * (`coachFix`) and, given the athlete's key results (`keyResults`: each one's measure by id, read with the athlete), its
- * own advisory notes (`testNotes`).
+ * own advisory notes (`testNotes`). Two more come first among the warnings, as they matter most (draft-checks.ts,
+ * 2026-11-05): a title the work doesn't bear out, and — given the areas the athlete called sore today (`sore`:
+ * record-answer.ts `soreAreasOf`, read with the athlete) — a working move that loads one. A run is neither's.
  */
-export function judge(raw: unknown, vctx: ValidateCtx, o: { keyResults?: ReadonlyMap<string, KeyResultMeasure | null> } = {}): Judged {
+export function judge(
+  raw: unknown,
+  vctx: ValidateCtx,
+  o: { keyResults?: ReadonlyMap<string, KeyResultMeasure | null>; sore?: readonly SoreArea[] } = {},
+): Judged {
   const noCheck = noCheckToday(vctx);
   const find = makeLibraryIndex(vctx.library);
-  const issues: CoachIssue[] = [...validateWorkoutDoc(raw, vctx).map((i) => coachFix(i, raw, noCheck, find)), ...testNotes(raw, o.keyResults, find)];
+  const parsed = workoutDocSchema.safeParse(raw);
+  const hard = parsed.success && !isRunDoc(parsed.data) ? [...soreAreaNotes(parsed.data, o.sore ?? [], find), ...titleNotes(parsed.data, find)] : [];
+  const issues: CoachIssue[] = [...hard, ...validateWorkoutDoc(raw, vctx).map((i) => coachFix(i, raw, noCheck, find)), ...testNotes(raw, o.keyResults, find)];
   const errors = issues.filter((i) => i.severity === "error");
   const warnings = issues.filter((i) => i.severity === "warning");
-  const parsed = workoutDocSchema.safeParse(raw);
   const buildable = parsed.success && !errors.some((e) => e.code === "bounds" || e.code === "too_large");
   return { doc: parsed.success ? parsed.data : null, errors, warnings, derived: buildable ? deriveDoc(parsed.data!, vctx.library) : null, own: ownMoveIssue(raw, find) };
 }

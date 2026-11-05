@@ -351,9 +351,9 @@ describe("3A round 2 — the prompt's remaining words", () => {
 
   // Audit C4 (prod): "glutes, legs, and back are really sore" — the draft "Upper-back pull & core, legs off" passed
   // review at 4.3/5 with no must-fix item.
-  it("C4: loading an area the athlete called sore today is must-fix, on either rubric — and a bare \"back\" is both", () => {
+  it("C4: loading an area the athlete called sore today is must-fix, on either rubric — and a bare \"back\" is both; never an accepted cost (2026-11-05)", () => {
     const line =
-      'Also must-fix: a move that loads an area the athlete called sore today — in the request, a check-in or a recorded answer — beyond easy circulation or gentle range; a bare "back" is the upper and the low back both.';
+      'Also must-fix: a move that loads an area the athlete called sore today — in the request, a check-in or a recorded answer — beyond easy circulation or gentle range; a bare "back" is the upper and the low back both — never an accepted cost.';
     expect(roleBlock("reviewer")).toContain(line);
     expect(roleBlock("reviewer", undefined, "run")).toContain(line);
   });

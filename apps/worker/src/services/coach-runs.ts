@@ -703,9 +703,12 @@ export interface ContextRun {
   rubric?: "run";
   /** A main run's focus (A1): what the athlete asked from, read into its opening context. */
   focus?: RunFocus;
-  /** A main run's conversation (the new shape §5): its turns before this one are read into its opening context — none
-   * when it is the conversation's first (its id the run's own). */
+  /** The conversation its turn is part of (the new shape §5): its turns before this one are read into its opening
+   * context — none when it is the conversation's first (its id the turn's own). A main run's own; a sub-run's, its main
+   * run's (2026-11-05: a reviewer and a set's designer read it too). */
   conversationId?: string;
+  /** A sub-run's turn: its main run's id (left out of the turns before it). */
+  turnId?: string;
   /** A fit-in main run's batch (the saves flow, §12.1): its opening context reads it, whatever its age, in full. */
   savesBatchId?: string;
 }
@@ -2604,8 +2607,12 @@ async function contextStep(s: StepCtx): Promise<StepEnd> {
     // What the athlete asked from (A1): only a main run's state holds one (`newRunState`), and the context reads a main
     // run's alone.
     ...(s.state.settings.focus ? { focus: s.state.settings.focus } : {}),
-    // Its conversation (the new shape §5): only a main run's state holds one.
+    // Its conversation (the new shape §5): a main run's state holds one; a sub-run's is its main run's, the turn it is part
+    // of (2026-11-05: a reviewer judges against what the athlete said before, as the main coach heard it).
     ...(s.state.settings.conversationId && s.run.role === "main" ? { conversationId: s.state.settings.conversationId } : {}),
+    ...(s.run.role !== "main" && s.root.settings?.conversationId && s.root.settings.conversationId !== s.root.id
+      ? { conversationId: s.root.settings.conversationId, turnId: s.root.id }
+      : {}),
     // The batch a fit-in run fits (the saves flow, §12.1): the context reads a main run's alone.
     ...(s.state.settings.savesBatchId && s.run.role === "main" ? { savesBatchId: s.state.settings.savesBatchId } : {}),
   };
@@ -2962,6 +2969,8 @@ async function runTools(
     ...(state.reviewOf ? { reviewOf: state.reviewOf } : {}),
     ...(run.role === "main" ? { set: setHooks(s) } : {}),
     ...(state.replaces ? { replaces: state.replaces } : {}),
+    // The run's last call (2026-11-05): finish's must-fix guard lets it end — a last turn never traps a run.
+    ...(state.lastCall !== null ? { lastTurn: true as const } : {}),
     // The athlete, read once for the step's read tools that need nothing beside them.
     athlete: sharedAthlete(s.db, s.userId, s.now),
   };

@@ -31,7 +31,8 @@
  *     are answered "not run" at the pause (the loop), so nothing — a finish least of all — runs before the review is
  *     read.
  *  5. THE PROPOSAL KEEPS THE BEST-SCORING VERSION that passed every hard check: the mean of the dimension scores;
- *     ties go to the later version; a version whose review couldn't be read never beats one with a score. A later
+ *     ties go to the later version; a version whose review couldn't be read never beats one with a score; and a
+ *     revision that clears the held version's must-fix items wins whatever its mean (2026-11-05, `laterWins`). A later
  *     draft is held apart (`candidate`) while its review runs, so the version the op holds is always the best so far.
  *     The op's `review` is what the athlete sees: the kept version's review (or the note), how many drafts were
  *     reviewed, and what changed between them (the designer's change notes, and why a revision wasn't kept).
@@ -60,6 +61,7 @@ import { REVIEWER_MAX_CALLS } from "./design-limits.js";
 import { markUntrusted, REVIEW_DIMENSIONS, reviewDimensions, type ReviewRubric } from "./design-prompt.js";
 import type { DocWorkoutOp, DraftVersion, ReviewRound } from "./design-tools/propose.js";
 import { capInWords, PROSE_CEILING, proseTooLong } from "./design-tools/act-common.js";
+import { isHardNote } from "./design-tools/draft-checks.js";
 import { refuse, untrusted } from "./design-tools/read-common.js";
 import type { DesignReview, DesignTool, DraftForReview, OpReview, ToolErr, ToolOk } from "./design-tools/types.js";
 import type { MessageParam, ToolResultBlock, ToolUseBlock } from "./llm-messages.js";
@@ -317,11 +319,39 @@ function athleteReview(op: DocWorkoutOp): OpReview | null {
     : { scores: {}, notes: {}, mustFix: [], improvements: [], rounds, changes, note: held.note ?? NOTE_NOT_DONE };
 }
 
-/** The version `held` beats `later` only with a score `later` lacks, or a higher one: ties go to the later. */
+/**
+ * The version `held` beats `later` only with a score `later` lacks, or a higher one: ties go to the later. Except
+ * (2026-11-05): a reviewed revision that CLEARS the held version's must-fix items — its own review lists none, the held
+ * one's some — wins whatever its mean. In production a revision that fixed its must-fix scored a lower mean, the flawed
+ * round was kept, and the finish line said it was fixed. The reviewer of each round is independent, so "cleared" is read
+ * from the revision's own review: no must-fix left.
+ */
 function laterWins(later: ReviewRound, held: ReviewRound | undefined): boolean {
   if (!held || held.status !== "reviewed" || !held.review) return true;
   if (later.status !== "reviewed" || !later.review) return false;
+  if (clears(later.review, held.review)) return true;
   return rawMean(later.review) >= rawMean(held.review);
+}
+
+/** Whether a revision's review clears the held version's must-fix items: it has none left, the held one had some. */
+const clears = (later: DesignReview, held: DesignReview): boolean => held.mustFix.length > 0 && later.mustFix.length === 0;
+
+/**
+ * The must-fix items still open on the version an op holds, while revision rounds remain (finish.ts's guard,
+ * 2026-11-05): its review lists some, the version was reviewed (not left to the validator's view), REVIEW_ROUNDS are
+ * not spent — and no amend of that version since its review answered them (a text fix, or a change note saying why a
+ * must-fix can't be met: the review's changes show it). Null when nothing is open.
+ */
+export function openMustFix(op: DocWorkoutOp): { items: string[]; roundsLeft: number } | null {
+  const items = op.review?.mustFix ?? [];
+  if (items.length === 0) return null;
+  const log = op.reviewLog ?? [];
+  const held = log.find((r) => r.toolUseId === op.toolUseId);
+  if (!held || held.status !== "reviewed") return null;
+  const roundsLeft = REVIEW_ROUNDS - countedRounds(log);
+  if (roundsLeft <= 0) return null;
+  if (log.some((r) => r.status === "amended" && r.round === held.round)) return null;
+  return { items, roundsLeft };
 }
 
 /** A candidate draft promoted to the version the op holds. */
@@ -703,6 +733,10 @@ function keptLines(op: DocWorkoutOp, toolUseId: string): string[] {
   if (entry.kept) {
     if (entry.status !== "reviewed") return ["Kept the revision — neither review could be read."];
     if (typeof against.mean !== "number") return ["Kept the revision."];
+    // Kept below the held version's score: it cleared that version's must-fix items (`laterWins`, 2026-11-05).
+    if (typeof entry.mean === "number" && entry.mean < against.mean) {
+      return [`Kept the revision — it fixes what round ${against.round}'s review asked for, though it scored ${fmt(entry.mean)} against ${fmt(against.mean)}.`];
+    }
     // A tie goes to the revision: said as one, never "4.6 against 4.6" (13c, the run view).
     return [
       fmt(entry.mean) === fmt(against.mean)
@@ -790,6 +824,16 @@ export const submitReview: DesignTool = {
     const rubric = draft ? reviewRubricOf(draft.doc) : asked;
     const review = rubric === asked ? parsed : parseReview(raw, rubric);
     if ("error" in review) return review;
+    // Soreness is never an accepted cost (2026-11-05): a draft that loads an area the athlete called sore today
+    // (draft-checks.ts) never has its recovery kept "as they asked" — one repair, as any review that can't be read.
+    const soreAt = draft?.issues.some((i) => i.code === "sore_area_loaded") ? (review.accepted ?? []).findIndex((a) => a.dimension === "recovery") : -1;
+    if (soreAt >= 0) {
+      return refuse(
+        "invalid_review",
+        `The review can't be read: accepted.${soreAt}.dimension: soreness is never an accepted cost — this draft loads an area the athlete called sore today.`,
+        "Call submit_review again without that accepted item: score recovery honestly, and list a must-fix unless the draft explains the load.",
+      );
+    }
     const next = op ? applyVerdict(op, of.toolUseId, { review }) : null;
     const receipt = {
       round: of.round,
@@ -925,11 +969,15 @@ export function reviewPacket(o: { round: number; draft: DraftForReview; records:
     ...(o.brief ? [`The main coach's brief for this workout:\n${markUntrusted("main coach", o.brief)}`] : []),
   ];
   // A message naming one of the athlete's own moves is marked: the name is a saved post's reading.
-  const issues = d.issues.map((i) => `- ${i.path} (${i.code}): ${typeof i.message === "string" ? i.message : markUntrusted("saved post", i.message.text)}`);
+  const line = (i: DraftForReview["issues"][number]) => `- ${i.path} (${i.code}): ${typeof i.message === "string" ? i.message : markUntrusted("saved post", i.message.text)}`;
+  const issues = d.issues.filter((i) => !isHardNote(i.code)).map(line);
+  // The two hard checks (draft-checks.ts, 2026-11-05) are no cost to accept: must-fix unless the draft explains them.
+  const hard = d.issues.filter((i) => isHardNote(i.code)).map(line);
   const validator = [
     "# The validator's view (the app's own check, for that day)",
     "Errors: none — a draft with an error is refused before it is reviewed.",
     issues.length > 0 ? `Advisory notes (costs the designer may accept with a reason):\n${issues.join("\n")}` : "Advisory notes: none.",
+    ...(hard.length > 0 ? [`Must-fix unless the draft explains them (soreness is never an accepted cost):\n${hard.join("\n")}`] : []),
     `Derived from the document: ${JSON.stringify(d.derived)}`,
   ].map(noBrackets);
 

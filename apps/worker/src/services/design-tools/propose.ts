@@ -77,7 +77,8 @@
  * alone), a later draft replaces the earlier and nothing is reviewed: the proposal never becomes pending.
  *
  * Nine statements at most: the athlete (with the gear, set-aside moves, recent sessions' ids, the focus areas, the
- * objectives' and key results' ids, the target row, the proposal and the restore marker), the moves done cleanly, the
+ * objectives' and key results' ids, the target row, the proposal, the restore marker and today's soreness — the
+ * draft checks', draft-checks.ts), the moves done cleanly, the
  * recent sessions (four), one write — an upsert guarded by the ops it read and by the status it was written with, so a
  * write that raced another is refused rather than lost, and a proposal made pending meanwhile is never moved back to
  * unreviewed — the reviewer sub-run's insert, and, when the reviewer can't be started, the round dropped.
@@ -136,6 +137,7 @@ import {
 import { dateField, DATE_SCHEMA, parsedJson, refuse } from "./read-common.js";
 import { isDocWorkoutOp, isPlanAdjustOp } from "../proposal-kinds.js";
 import { clockIn, laterTodayRefusal, NOW_ROUND_MIN, pastTime, slotAtOrAfter } from "../design-time.js";
+import { soreAnswersSql, soreAreasOf } from "./record-answer.js";
 
 /** The one proposal of a main run's design. */
 export const designProposalId = (mainRunId: string): string => `dp-${mainRunId}`;
@@ -363,6 +365,8 @@ export const proposeWorkout: DesignTool = {
                 from ${pw} where ${pw.id} = ${p.target.workoutId} and ${pw.userId} = ${ctx.userId})`
             : sql`null`,
         replaced: p.replaces !== undefined ? replacedSql(ctx.userId, p.replaces) : sql`null`,
+        // Today's soreness (draft-checks.ts, 2026-11-05): what a working move must not load.
+        sore: soreAnswersSql(ctx.userId, ctx.now),
       },
     });
     if (isErr(a)) return a;
@@ -508,7 +512,7 @@ export const proposeWorkout: DesignTool = {
     const skipped = skippedRefusal(doc, ctx.run.savesSkip);
     if (skipped) return skipped;
     const vctx = await docValidateCtx(ctx, a, date);
-    const judged = judge(doc, vctx, { keyResults: a.keyResultMeasures });
+    const judged = judge(doc, vctx, { keyResults: a.keyResultMeasures, sore: soreAreasOf(a.extra.sore, { today, date, focusAreas: a.focusAreas }) });
     if (judged.errors.length > 0 || !judged.doc || !judged.derived) {
       return refuse("invalid_workout", errorsLine(judged.errors, judged.own), invalidFix(judged.errors, date === today, noCheckToday(vctx)));
     }
@@ -884,7 +888,8 @@ async function amendDraft(
   const skipped = skippedRefusal(o.doc, ctx.run.savesSkip);
   if (skipped) return skipped;
   const vctx = await docValidateCtx(ctx, o.a, kept.date);
-  const judged = judge(o.doc, vctx, { keyResults: o.a.keyResultMeasures });
+  const sore = soreAreasOf(o.a.extra.sore, { today: o.today, date: kept.date, focusAreas: o.a.focusAreas });
+  const judged = judge(o.doc, vctx, { keyResults: o.a.keyResultMeasures, sore });
   if (judged.errors.length > 0 || !judged.doc || !judged.derived) {
     return refuse("invalid_workout", errorsLine(judged.errors, judged.own), invalidFix(judged.errors, kept.date === o.today, noCheckToday(vctx)));
   }

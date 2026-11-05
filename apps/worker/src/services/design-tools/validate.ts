@@ -12,8 +12,9 @@
  * free-text moves that workout's document already holds, unchanged), an objective or key result id that isn't the
  * athlete's (`idsRefusal`), and a run as a revision of one (`runUnsupported`; designed runs, §8 §3 — a new run is judged
  * as a run, with the athlete's running read in the athlete's statement). A focus-area id stands for its refs (`withFocusRefs`).
- * Six statements at most: the athlete (with the gear, the set-aside moves, the recent sessions' ids and the revised
- * workout's document), the moves done cleanly, and the recent sessions (four).
+ * Six statements at most: the athlete (with the gear, the set-aside moves, the recent sessions' ids, the revised
+ * workout's document and today's soreness — draft-checks.ts's notes), the moves done cleanly, and the recent sessions
+ * (four).
  */
 import { and, eq, isNull, sql } from "drizzle-orm";
 import { z } from "zod";
@@ -45,6 +46,7 @@ import {
   WORKOUT_DOC_JSON_SCHEMA,
 } from "./act-common.js";
 import { dateField, DATE_SCHEMA, refuse } from "./read-common.js";
+import { soreAnswersSql, soreAreasOf } from "./record-answer.js";
 
 const input = z.object({ doc: objectField, date: dateField, workoutId: z.string().min(1).max(120).optional() }).strict();
 
@@ -78,6 +80,8 @@ export const validateWorkout: DesignTool = {
       extras: {
         ...(p.workoutId ? { baseDoc: sql`(select ${pw.workoutDoc} from ${pw} where ${and(eq(pw.id, p.workoutId), eq(pw.userId, ctx.userId), isNull(pw.archivedAt))})` } : {}),
         ...(run ? runCtxExtra(ctx, p.date) : {}),
+        // Today's soreness (draft-checks.ts, 2026-11-05): what a working move must not load.
+        sore: soreAnswersSql(ctx.userId, ctx.now),
       },
     });
     if (isErr(a)) return a;
@@ -91,7 +95,10 @@ export const validateWorkout: DesignTool = {
     if (free) return free;
     const ids = idsRefusal(doc, a);
     if (ids) return ids;
-    const judged = judge(doc, await docValidateCtx(ctx, a, p.date), { keyResults: a.keyResultMeasures });
+    const judged = judge(doc, await docValidateCtx(ctx, a, p.date), {
+      keyResults: a.keyResultMeasures,
+      sore: soreAreasOf(a.extra.sore, { today, date: p.date, focusAreas: a.focusAreas }),
+    });
     const minutes = judged.derived?.estimatedMinutes;
     const notes = judged.warnings.length ? `, ${judged.warnings.length} note${judged.warnings.length === 1 ? "" : "s"}` : "";
     return {

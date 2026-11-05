@@ -4,6 +4,7 @@ import type { DocIssue } from "@rg/workout";
 import type { Env } from "../../env.js";
 import type { Db } from "../db.js";
 import type { Athlete } from "./read-common.js";
+import type { CoachIssueCode } from "./act-common.js";
 
 /**
  * THE COACH DESIGNER'S TOOL CONTRACT (Stage 3 spec §4; principles §6.2). The step loop (coach-runs.ts) takes the tool
@@ -87,6 +88,11 @@ export interface ToolContext {
    * run's state.
    */
   replaces?: string;
+  /**
+   * The run's last call (its step or state cap reached: the loop sets it). A tool that would refuse only to ask for
+   * more work — finish's must-fix guard — lets the run end instead: a last turn never traps a run.
+   */
+  lastTurn?: true;
   /**
    * The athlete as `readAthlete` reads them with no extras, read once for the step's calls (the loop sets it:
    * read-common.ts `sharedAthlete`): a read tool that needs nothing beside the athlete takes them from here
@@ -240,9 +246,9 @@ export interface DraftForReview {
   /** The validated document. */
   doc: WorkoutDoc;
   /** The validator's advisory issues, as the op keeps them (errors never reach review: they refuse the draft) — and the
-   * tool layer's own (act-common.ts `CoachIssue`: a test whose move its measure doesn't read) — a message naming one of
-   * the athlete's own moves marked (act-common.ts `issueOut`). */
-  issues: Array<Pick<DocIssue, "path" | "fix"> & { code: DocIssue["code"] | "test_unmeasured"; message: string | { untrusted: true; text: string } }>;
+   * tool layer's own (act-common.ts `CoachIssue`: a test whose move its measure doesn't read; the two hard checks of
+   * draft-checks.ts) — a message naming one of the athlete's own moves marked (act-common.ts `issueOut`). */
+  issues: Array<Pick<DocIssue, "path" | "fix"> & { code: CoachIssueCode; message: string | { untrusted: true; text: string } }>;
   derived: Record<string, unknown>;
   changeNote?: string;
 }

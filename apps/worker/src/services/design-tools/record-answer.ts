@@ -21,14 +21,15 @@
  * { handle }` takes them back (`undoRecordedAnswers`). A replayed call writes the same ids, so nothing doubles. Two
  * statements: the athlete (with the run's request and the focus areas), then one insert.
  */
-import { and, eq, sql } from "drizzle-orm";
+import { and, eq, sql, type SQL } from "drizzle-orm";
 import { z } from "zod";
 import { athleteAnswers, athleteProfiles, coachRuns } from "@rg/database";
 import { addDays } from "@rg/domain";
-import { MUSCLES, REGIONS } from "@rg/exercise-library";
+import { isProfileId, label as vocab, MUSCLES, profileById, REGIONS } from "@rg/exercise-library";
 import type { Db } from "../db.js";
 import type { DesignTool } from "./types.js";
 import { isErr, parseAct } from "./act-common.js";
+import type { SoreArea } from "./draft-checks.js";
 import { parsedArray, readAthlete, refuse } from "./read-common.js";
 
 /**
@@ -361,6 +362,58 @@ export function askedAnswerRows(o: {
     });
   });
   return { handle, rows };
+}
+
+// ── Today's soreness, as the draft checks read it (draft-checks.ts `sore_area_loaded`, 2026-11-05) ─────────────────
+
+/**
+ * The soreness answers that may be the athlete's today, as one subquery of the athlete's statement (`readDocAthlete`'s
+ * extras: no statement more): every source's — the request's, an asked question's, the body check's — dated the UTC day
+ * either side of now, so today's in any timezone is among them (`soreAreasOf` keeps today's alone).
+ */
+export function soreAnswersSql(userId: string, now: Date): SQL {
+  const a = athleteAnswers;
+  const utcDay = now.toISOString().slice(0, 10);
+  return sql`(select json_group_array(json_object('kind', ${a.subjectKind}, 'id', ${a.subjectId}, 'text', coalesce(${a.text}, ${a.valueChoice}), 'date', ${a.localDate}))
+    from ${a} where ${a.userId} = ${userId} and ${a.questionId} = 'soreness' and ${a.subjectId} is not null
+      and ${a.localDate} between ${addDays(utcDay, -1)} and ${addDays(utcDay, 1)})`;
+}
+
+const lower = (id: string): string => vocab(id).toLowerCase();
+
+/**
+ * The areas the athlete called sore TODAY (`soreAnswersSql`'s rows), for a draft on `date` — none past soreness's
+ * freshness (`freshThrough`: today and the two days after). Each in the athlete's words: a bare "back" (the back areas
+ * record_answer keeps for it, audit C4) is "back", upper and low; a region or a muscle by its library name; a focus area
+ * by its areas' names (never its label: that is the athlete's free text); a condition by its check's name, standing for
+ * the regions its care targets (body-check.ts's rule). Areas said in the same words are one; in the order first said.
+ */
+export function soreAreasOf(raw: unknown, o: { today: string; date: string; focusAreas: ReadonlyMap<string, readonly string[]> }): SoreArea[] {
+  if (o.date < o.today || o.date > freshThrough("soreness", o.today)) return [];
+  const out: Array<{ words: string; regions: string[]; muscles: string[] }> = [];
+  const add = (words: string, refs: readonly string[]) => {
+    let area = out.find((x) => x.words === words);
+    if (!area) out.push((area = { words, regions: [], muscles: [] }));
+    for (const ref of refs) {
+      const into = REGION_SET.has(ref) ? area.regions : MUSCLE_SET.has(ref) ? area.muscles : null;
+      if (into && !into.includes(ref)) into.push(ref);
+    }
+  };
+  for (const r of parsedArray(raw)) {
+    const x = r as { kind?: unknown; id?: unknown; text?: unknown; date?: unknown } | null;
+    if (!x || x.date !== o.today || typeof x.id !== "string") continue;
+    const id = x.id;
+    if (x.kind === "region" && REGION_SET.has(id)) add(BACK_AREAS.has(id) && typeof x.text === "string" && bareBack(x.text) ? "back" : lower(id), [id]);
+    else if (x.kind === "muscle" && MUSCLE_SET.has(id)) add(lower(id), [id]);
+    else if (x.kind === "focus_area") {
+      const refs = (o.focusAreas.get(id) ?? []).filter((ref) => REGION_SET.has(ref) || MUSCLE_SET.has(ref));
+      if (refs.length > 0) add(refs.map(lower).join(" and "), refs);
+    } else if (x.kind === "condition" && isProfileId(id)) {
+      const regions = Object.keys(profileById(id).care?.coverageTargets?.regions ?? {});
+      if (regions.length > 0) add(profileById(id).check.label.toLowerCase(), regions);
+    }
+  }
+  return out;
 }
 
 /**

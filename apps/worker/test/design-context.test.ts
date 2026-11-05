@@ -511,8 +511,10 @@ describe("the budget", () => {
     expect(contextStatements("main")).toBe(11);
     expect(contextStatements("designer")).toBe(11);
     expect(contextStatements("reviewer")).toBe(12);
-    // A main run with a focus and a conversation to read (the new shape §5): one more each.
+    // A main run with a focus and a conversation to read (the new shape §5): one more each — and since 2026-11-05 a
+    // reviewer of a later turn, with the conversation: the same most.
     expect(DESIGN_CONTEXT_STATEMENTS).toBe(13);
+    expect(contextStatements("reviewer", null, "c1")).toBe(DESIGN_CONTEXT_STATEMENTS);
     expect(DESIGN_CONTEXT_STATEMENTS).toBeLessThanOrEqual(20);
   });
 
