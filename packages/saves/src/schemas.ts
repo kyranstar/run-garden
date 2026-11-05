@@ -37,9 +37,31 @@ export const postSubmitSchema = z
       .object({ status: z.enum(["queued", "filtered_out"]), reason: z.string().max(160) })
       .strict()
       .optional(),
+    /** What the extension fetched to send this post (import trail, 2026-11-05): the post's read event. */
+    readFacts: z
+      .object({
+        via: z.enum(["saved_list", "pasted"]),
+        extVersion: z.string().max(20),
+        coverSent: z.boolean(),
+        mediaCount: z.number().int().min(0).max(50),
+        page: z.number().int().min(0).max(100).optional(),
+      })
+      .strict()
+      .optional(),
   })
   .strict();
 export type PostSubmit = z.infer<typeof postSubmitSchema>;
+
+/** `POST /api/saves/read-failed`: a read that failed before the app had the post (or before any post: a login). */
+export const readFailedSchema = z
+  .object({
+    source: z.string().regex(SAVE_SOURCE_RE),
+    key: z.string().min(1).max(64).optional(),
+    code: z.enum(SAVE_ERROR_CODES),
+    message: z.string().max(300),
+  })
+  .strict();
+export type ReadFailed = z.infer<typeof readFailedSchema>;
 
 export const filterVerdictSchema = z
   .object({ verdict: z.enum(["training", "maybe", "not"]), reason: z.string().max(160) })

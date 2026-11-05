@@ -6,12 +6,12 @@
  */
 import { Hono } from "hono";
 import { z } from "zod";
-import { checkReportSchema, postSubmitSchema, SAVE_SOURCE_RE } from "@rg/saves";
+import { checkReportSchema, postSubmitSchema, readFailedSchema, SAVE_SOURCE_RE } from "@rg/saves";
 import { nowInstant } from "@rg/domain";
 import type { AppContext } from "../auth/middleware.js";
 import { bearerGuard } from "../auth/token.js";
 import { savesImportEnabled } from "../env.js";
-import { freshKeys, KNOWN_MAX_KEYS, markFetchFailed, overridePost, recordCheck, savedPostId, savesStatus, upsertPost, workList } from "../services/saves-ledger.js";
+import { freshKeys, KNOWN_MAX_KEYS, markFetchFailed, overridePost, recordCheck, recordReadFailed, savedPostId, savesStatus, upsertPost, workList } from "../services/saves-ledger.js";
 import { filterPost } from "../services/saves-filter.js";
 import { markTooLarge, readRelayRequest, relayExtract } from "../services/saves-relay.js";
 import { assembleBatch } from "../services/saves-batches.js";
@@ -41,6 +41,14 @@ savesRoutes.post("/checks", async (c) => {
   const now = nowInstant();
   await recordCheck(c.get("db"), c.get("userId"), parsed.data, now);
   if (parsed.data.phase === "finish") await assembleBatch(c.get("db"), c.env, c.get("userId"), now);
+  return c.json({ ok: true });
+});
+
+/** A read that failed before the app had the post: on the post's trail, or the source's (import trail). */
+savesRoutes.post("/read-failed", async (c) => {
+  const parsed = await body(c, readFailedSchema);
+  if (!parsed.success) return c.json({ error: "invalid", issues: parsed.error.issues }, 422);
+  await recordReadFailed(c.get("db"), c.get("userId"), parsed.data, nowInstant());
   return c.json({ ok: true });
 });
 

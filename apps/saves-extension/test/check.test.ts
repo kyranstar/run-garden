@@ -24,6 +24,7 @@ class FakeApp implements AppClient {
   extracts: { key: string; body: string; opts: { model: string; maxTokens: number } }[] = [];
   reports: CheckReport[] = [];
   failedReports: { key: string; code: string }[] = [];
+  readFailures: { source: string; key?: string; code: string; message: string }[] = [];
   workItems: WorkItem[] = [];
   /** The popup's calls; a check never makes them. */
   status(): Promise<never> {
@@ -79,6 +80,9 @@ class FakeApp implements AppClient {
     if (answer.ok) Object.assign(row, { status: "matched", code: null });
     else Object.assign(row, { status: "failed", code: answer.code });
     return answer;
+  }
+  async reportReadFailed(r: { source: string; key?: string; code: string; message: string }) {
+    this.readFailures.push(r);
   }
   async reportFailed(_source: string, key: string, code: "gone" | "media_failed" | "too_large") {
     this.log.push(`failed:${key}:${code}`);
@@ -172,6 +176,7 @@ describe("runCheck", () => {
     expect(reel.opts).toEqual({
       model: DEFAULT_CONFIG.model, maxTokens: DEFAULT_CONFIG.maxTokens,
       promptVersion: EXTRACT_PROMPT_VERSION, promptSha: await promptSha(bodyText(reel.body)),
+      readFacts: { variantWidth: 480, bytes: new TextEncoder().encode(reel.body).length, byLink: false, images: 0 },
     });
     expect(reel.body).toContain("data:video/mp4;base64,AQIDBAUG");
     expect((deps.fetchImpl as ReturnType<typeof mediaFetch>).urls).toContain(`https://synthetic.cdninstagram.com/${a}-480.mp4`);
@@ -274,6 +279,14 @@ describe("runCheck", () => {
     expect(app.submits).toEqual([]);
     expect(app.log).not.toContain("work");
     expect(app.finish).toMatchObject({ phase: "finish", error: { code: "login_needed" } });
+    // The trail's read: the failure is told to the app, once, on the source's own trail (import trail).
+    expect(app.readFailures).toEqual([{ source: "instagram", code: "login_needed", message: "Instagram wants a login" }]);
+  });
+
+  it("each submit says what was read for it (via, the extension's version, the cover, the media count)", async () => {
+    const app = new FakeApp();
+    await runCheck(makeDeps(app, fakeReader([[media(code(1), "video")]])));
+    expect(app.submits[0]!.readFacts).toEqual({ via: "saved_list", extVersion: DEFAULT_CONFIG.extVersion, coverSent: true, mediaCount: 1 });
   });
 
   it("a login error on a later page submits nothing from the pages before it (the next check reads them again)", async () => {
@@ -530,6 +543,7 @@ describe("runCheck", () => {
       const summary = await runCheck(deps);
       expect(app.extracts.map((x) => x.key)).toEqual([code(2)]);
       expect(app.failedReports).toEqual([{ key: code(1), code: "media_failed" }]);
+      expect(app.readFailures).toEqual([expect.objectContaining({ source: "instagram", key: code(1), code: "media_failed" })]);
       expect(summary).toMatchObject({ extracted: 1, failed: 1, error: null });
       expect(await deps.queue.size()).toBe(0);
     });

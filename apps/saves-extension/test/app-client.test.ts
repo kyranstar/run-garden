@@ -58,6 +58,17 @@ describe("the app client", () => {
     expect(header(calls[0]!.init, "x-saves-retry-issues")).toBeNull();
     await client.extract("instagram", "k", "{}", { model: "m", maxTokens: 10, promptVersion: "extract-4", promptSha: "ab12", retryIssues: ["moves.0.name: is required"] });
     expect(JSON.parse(decodeURIComponent(header(calls[1]!.init, "x-saves-retry-issues")!))).toEqual(["moves.0.name: is required"]);
+    await client.extract("instagram", "k", "{}", { model: "m", maxTokens: 10, readFacts: { variantWidth: 480, bytes: 9, byLink: false, images: 0 } });
+    expect(JSON.parse(decodeURIComponent(header(calls[2]!.init, "x-saves-read-facts")!))).toEqual({ variantWidth: 480, bytes: 9, byLink: false, images: 0 });
+  });
+
+  it("tells the app a read failed, and never throws for it (best effort)", async () => {
+    const { calls, client } = recorder(() => json(200, { ok: true }));
+    await client.reportReadFailed({ source: "instagram", code: "login_needed", message: "login page" });
+    expect(calls[0]!.url).toBe("https://app.example.com/api/saves/read-failed");
+    expect(JSON.parse(String(calls[0]!.init.body))).toEqual({ source: "instagram", code: "login_needed", message: "login page" });
+    const down = recorder(() => { throw new Error("offline"); });
+    await expect(down.client.reportReadFailed({ source: "instagram", code: "unknown", message: "x" })).resolves.toBeUndefined();
   });
 
   it("reads the relay's coded refusals by their error, whatever the status", async () => {

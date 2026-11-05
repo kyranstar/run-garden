@@ -1,7 +1,7 @@
 import { and, asc, desc, eq, gte, inArray, isNotNull, isNull, lt, ne, or, sql } from "drizzle-orm";
 import { schema } from "@rg/database";
 import type { SavedPostRow } from "@rg/database";
-import type { CheckReport, PostSubmit, SaveErrorCode, SavesStatusDto, WorkItem } from "@rg/saves";
+import type { CheckReport, PostSubmit, ReadFailed, SaveErrorCode, SavesStatusDto, TrailSource, WorkItem } from "@rg/saves";
 import { failureWords } from "@rg/saves";
 import { nowInstant } from "@rg/domain";
 import { sha256Hex } from "../auth/crypto.js";
@@ -62,6 +62,7 @@ export async function upsertPost(db: Db, userId: string, p: PostSubmit, now: str
       filterReason: p.seed?.reason ?? null,
       filterStage: p.seed ? "seed" : null,
       seeded: !!p.seed,
+      origin: p.readFacts ? (p.readFacts.via === "pasted" ? "pasted" : "saved") : null,
       updatedAt: now,
     })
     .onConflictDoNothing({ target: [savedPosts.userId, savedPosts.source, savedPosts.sourceKey] })
@@ -71,6 +72,13 @@ export async function upsertPost(db: Db, userId: string, p: PostSubmit, now: str
     await runAtomically(
       db,
       trailStatements(db, userId, id, [
+        ...(p.readFacts
+          ? [{
+              stage: "read" as const, source: siteSource(p.source), status: "ok" as const,
+              summary: p.readFacts.via === "pasted" ? "Read from a pasted link" : "Read from your saved list",
+              detail: p.readFacts,
+            }]
+          : []),
         {
           stage: "submit", source: "extension", status: "ok",
           summary: p.seed ? `Brought in with the first import: ${p.seed.reason}` : "Found by the extension",
@@ -82,6 +90,30 @@ export async function upsertPost(db: Db, userId: string, p: PostSubmit, now: str
   const [row] = await db.select().from(savedPosts).where(eq(savedPosts.id, id)).limit(1);
   if (!row) throw new Error("saved post vanished after upsert");
   return row;
+}
+
+/** The site a source reads, as the trail names it; anything else is the extension's own doing. */
+export const siteSource = (source: string): TrailSource => (source === "instagram" || source === "youtube" ? source : "extension");
+
+/**
+ * A read that failed before the app had the post (design 2026-11-05 §6.2): a failed `read` event on the post when the
+ * app knows it, else on the source's own trail (`ext:<source>`), where the health row finds a login or a changed site.
+ * Two statements.
+ */
+export async function recordReadFailed(db: Db, userId: string, r: ReadFailed, now: string): Promise<void> {
+  let postId = `ext:${r.source}`;
+  if (r.key) {
+    const id = await savedPostId(userId, r.source, r.key);
+    const [row] = await db.select({ id: savedPosts.id }).from(savedPosts).where(and(eq(savedPosts.id, id), eq(savedPosts.userId, userId))).limit(1);
+    if (row) postId = row.id;
+  }
+  const words = failureWords(r.code, null) ?? "The read failed";
+  await runAtomically(
+    db,
+    trailStatements(db, userId, postId, [
+      { stage: "read", source: siteSource(r.source), status: "fail", summary: r.message ? `${words}: ${r.message}` : words, detail: { code: r.code, message: r.message, key: r.key ?? null } },
+    ], now),
+  );
 }
 
 /** Of `keys`, the ones this account has no row for, in input order. One statement (the keys travel as one JSON bind). */

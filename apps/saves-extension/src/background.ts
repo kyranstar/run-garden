@@ -37,7 +37,7 @@ async function check(): Promise<CheckNowResponse> {
       queue: new ExtQueue(chromeStore),
       store: chromeStore,
       now: Date.now,
-      config: { ...DEFAULT_CONFIG, ...(settings.maxPages ? { maxPages: settings.maxPages } : {}) },
+      config: { ...DEFAULT_CONFIG, extVersion: chrome.runtime.getManifest().version, ...(settings.maxPages ? { maxPages: settings.maxPages } : {}) },
       pause,
     });
     await chromeStore.set("lastCheck", summary);

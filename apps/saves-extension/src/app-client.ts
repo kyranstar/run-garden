@@ -28,6 +28,16 @@ export interface ExtractOpts {
   promptSha?: string;
   /** The issues this call retries with (our own schema's words): the app rebuilds the prompt as sent from them. */
   retryIssues?: string[];
+  /** What was fetched for this call (import trail): the video's size sent, its bytes, whether by link, the images. */
+  readFacts?: { variantWidth: number | null; bytes: number; byLink: boolean; images: number };
+}
+
+/** A read that failed before the app had the post (or before any post: a login): `POST /api/saves/read-failed`. */
+export interface ReadFailure {
+  source: string;
+  key?: string;
+  code: SaveErrorCode;
+  message: string;
 }
 
 /** Why a post could not be sent at all (`POST /posts/:key/failed`). */
@@ -43,6 +53,8 @@ export interface AppClient {
   extract(source: string, key: string, body: string, opts: ExtractOpts): Promise<ExtractAnswer>;
   /** Tells the app a post could not be sent, so its work list stops handing it out first. A 404/409 is nothing to do. */
   reportFailed(source: string, key: string, code: FetchFailure): Promise<void>;
+  /** Tells the app a read failed, for its trail and health; best effort: never throws. */
+  reportReadFailed(r: ReadFailure): Promise<void>;
   /** The import's status, as the popup shows it. */
   status(): Promise<SavesStatusDto>;
   /** The owner's word on one post (the popup's Process anyway and Retry). */
@@ -115,7 +127,7 @@ export function createAppClient(opts: { appUrl: string; token: string; fetchImpl
       return Array.isArray(body.keys) ? (body.keys as WorkItem[]) : [];
     },
 
-    async extract(source, key, payload, { model, maxTokens, promptVersion, promptSha, retryIssues }) {
+    async extract(source, key, payload, { model, maxTokens, promptVersion, promptSha, retryIssues, readFacts }) {
       const res = await call(
         `/api/saves/posts/${encodeURIComponent(key)}/extract?source=${encodeURIComponent(source)}`,
         {
@@ -127,6 +139,7 @@ export function createAppClient(opts: { appUrl: string; token: string; fetchImpl
             ...(promptVersion ? { "x-saves-prompt-version": promptVersion } : {}),
             ...(promptSha ? { "x-saves-prompt-sha": promptSha } : {}),
             ...(retryIssues?.length ? { "x-saves-retry-issues": encodeURIComponent(JSON.stringify(retryIssues)) } : {}),
+            ...(readFacts ? { "x-saves-read-facts": encodeURIComponent(JSON.stringify(readFacts)) } : {}),
           },
           body: payload,
         },
@@ -151,6 +164,14 @@ export function createAppClient(opts: { appUrl: string; token: string; fetchImpl
       const res = await postJson(`/api/saves/posts/${encodeURIComponent(key)}/failed?source=${encodeURIComponent(source)}`, { code });
       if (res.status === 404 || res.status === 409) return; // unknown, or no longer waiting: nothing to mark
       await expectOk(res);
+    },
+
+    async reportReadFailed(r) {
+      try {
+        await postJson("/api/saves/read-failed", { source: r.source, ...(r.key ? { key: r.key } : {}), code: r.code, message: r.message.slice(0, 300) });
+      } catch {
+        // The trail misses one failed read; the check's own error still says it.
+      }
     },
 
     async status() {

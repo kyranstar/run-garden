@@ -371,6 +371,26 @@ describe("POST /checks", () => {
   });
 });
 
+describe("the read on the trail (import trail, 2026-11-05)", () => {
+  const eventsOf = async (postId: string) => db.select().from(schema.importEvents).where(eq(schema.importEvents.postId, postId));
+  it("a submit's read facts become the post's read event, and its origin", async () => {
+    const readFacts = { via: "pasted", extVersion: "0.2.0", coverSent: true, mediaCount: 1 };
+    await post("/posts", submit("rf1", { readFacts }));
+    const id = await savedPostId(userId, SRC, "rf1");
+    const read = (await eventsOf(id)).find((e) => e.stage === "read");
+    expect(read).toMatchObject({ status: "ok", summary: "Read from a pasted link", detail: readFacts });
+    expect((await db.select().from(savedPosts).where(eqId(id)))[0]!.origin).toBe("pasted");
+  });
+  it("POST /read-failed: a known post gets a failed read event; an unknown one lands on the source's own trail", async () => {
+    const id = await seedPost("known");
+    expect((await post("/read-failed", { source: SRC, key: "known", code: "media_failed", message: "the CDN said 403" })).res.status).toBe(200);
+    expect((await eventsOf(id)).find((e) => e.stage === "read")).toMatchObject({ status: "fail", summary: "The video wouldn't download: the CDN said 403" });
+    expect((await post("/read-failed", { source: SRC, code: "login_needed", message: "a login page" })).res.status).toBe(200);
+    expect((await eventsOf(`ext:${SRC}`)).map((e) => [e.stage, e.status])).toEqual([["read", "fail"]]);
+    expect((await post("/read-failed", { source: SRC, code: "nope", message: "x" })).res.status).toBe(422);
+  });
+});
+
 describe("GET /status", () => {
   it("is idle with nothing, and reads the latest check and posts, within 6 statements", async () => {
     const idle = await call("/status");

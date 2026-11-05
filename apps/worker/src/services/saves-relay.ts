@@ -119,6 +119,21 @@ export function readPromptHeaders(req: Request): { version: string | null; sha: 
   };
 }
 
+/** What the extension fetched for this call (`x-saves-read-facts`, URI-encoded JSON ≤ 1 KB): kept on the attempt's event. */
+export function readFactsHeader(req: Request): Record<string, unknown> | null {
+  const raw = req.headers.get("x-saves-read-facts");
+  if (!raw || raw.length > 1_024) return null;
+  try {
+    const v: unknown = JSON.parse(decodeURIComponent(raw));
+    if (!v || typeof v !== "object" || Array.isArray(v)) return null;
+    const o = v as Record<string, unknown>;
+    const n = (x: unknown) => (typeof x === "number" && Number.isFinite(x) ? x : null);
+    return { variantWidth: n(o.variantWidth), bytes: n(o.bytes), byLink: o.byLink === true, images: n(o.images) };
+  } catch {
+    return null;
+  }
+}
+
 /** A response model is accepted when the allowlist names it (the gateway may drop the provider prefix). */
 const modelAllowed = (m: string): boolean => EXTRACT_MODELS.some((x) => x === m || x.endsWith(`/${m}`));
 
@@ -176,6 +191,7 @@ export async function relayExtract(
   const { model, maxTokens, length } = asked;
   const nowIso = now.toISOString();
   const prompt = readPromptHeaders(req);
+  const readFacts = readFactsHeader(req);
   /** The claimed attempt and the post's words: the prompt as sent is rebuilt from them (design 2026-11-05 §6.1). */
   let claimed: { attempt: number; userText: string; sha: string } | null = null;
 
@@ -253,6 +269,7 @@ export async function relayExtract(
       .where(and(eq(savedPosts.id, post.id), eq(savedPosts.userId, userId), eq(savedPosts.status, "extracting")));
     // The attempt's trail with its outcome (design 2026-11-05 §4): the call's facts, the raw reply, the prompt as sent.
     const event = extractEvent(out, costMicros, call, claimed, prompt, model, length);
+    if (readFacts) event.detail = { ...(event.detail as object), readFacts };
     return runAtomically(db, [
       update,
       ...trailStatements(db, userId, post.id, [event], nowIso),

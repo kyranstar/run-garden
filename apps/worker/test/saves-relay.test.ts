@@ -167,6 +167,13 @@ describe("relayExtract writes its trail (import trail, 2026-11-05)", () => {
     expect(Object.keys(await blobsOf(e!.id))).toEqual(["prompt_user"]);
   });
 
+  it("the extension's read facts for the call land on the attempt's event", async () => {
+    const id = await seeded("rf");
+    const facts = { variantWidth: 480, bytes: 1234, byLink: false, images: 0 };
+    await relayExtract(db, env(), userId, { id }, request(bodyText(), { "x-saves-read-facts": encodeURIComponent(JSON.stringify(facts)) }), new Date(NOW), gateway(GOOD).fetchImpl);
+    expect((await trailOf(id))[0]!.detail).toMatchObject({ readFacts: facts });
+  });
+
   it("a budget refusal is a warn event and no call", async () => {
     await db.insert(llmUsage).values({
       id: "spent", userId, kind: IMPORT_KINDS.extract, model: "m", inputTokens: 1, outputTokens: 1, costMicros: 5_000_000, cacheHit: false, createdAt: NOW,

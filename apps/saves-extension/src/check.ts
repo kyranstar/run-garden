@@ -23,6 +23,8 @@ export interface CheckConfig {
    * 4.5 MB has been reported) until probe R2 measures it; a 413 naming the Worker's own cap lowers it for the check.
    */
   maxBodyBytes: number;
+  /** The extension's version, on each submit's read facts (the trail says which extension read a post). */
+  extVersion: string;
 }
 
 export const DEFAULT_CONFIG: CheckConfig = {
@@ -36,6 +38,7 @@ export const DEFAULT_CONFIG: CheckConfig = {
   // Just under the relay's own cap (RELAY_MAX_BYTES, 20 MB). The gateway's limit is learned from its 413 at run time
   // (probe R2): the 4.5 MB guess this held before (2026-10-25) refused 32 of the first 38 videos before sending anything.
   maxBodyBytes: 19_500_000,
+  extVersion: "dev",
 };
 
 /** The library's own move names, sent with each post so the model reuses them for the same move. */
@@ -106,6 +109,8 @@ const COVER_MAX_BASE64 = 400_000;
 interface SubmitPayload {
   post: PostSubmit;
   coverUrl: string | null;
+  /** The post's media (a video counts one, and each image): its read facts (absent from an older queue entry). */
+  mediaCount?: number;
 }
 
 /** UTF-8 length without copying the string. */
@@ -180,7 +185,9 @@ export async function runCheck(deps: CheckDeps): Promise<CheckSummary> {
 
   /** Queue a post's submit. One the app's schema would refuse is counted as failed instead (it could never pass). */
   async function enqueueSubmit(post: FeedPost, source: string): Promise<void> {
-    const payload: SubmitPayload = { post: toSubmit(post, source), coverUrl: post.coverUrl };
+    const payload: SubmitPayload = {
+      post: toSubmit(post, source), coverUrl: post.coverUrl, mediaCount: post.images.length + (post.videoVariants.length ? 1 : 0),
+    };
     if (!postSubmitSchema.safeParse(payload.post).success) {
       handled.add(post.key);
       return postFailed();
@@ -189,13 +196,16 @@ export async function runCheck(deps: CheckDeps): Promise<CheckSummary> {
   }
 
   async function withCover(payload: SubmitPayload): Promise<PostSubmit> {
-    if (!payload.coverUrl) return payload.post;
+    const facts = (coverSent: boolean): NonNullable<PostSubmit["readFacts"]> => ({
+      via: "saved_list", extVersion: config.extVersion, coverSent, mediaCount: payload.mediaCount ?? 0,
+    });
+    if (!payload.coverUrl) return { ...payload.post, readFacts: facts(false) };
     try {
       const cover = await fetchAsBase64(payload.coverUrl, deps.fetchImpl, "image/jpeg");
-      if (!COVER_MIMES.has(cover.mime) || cover.base64.length > COVER_MAX_BASE64) return payload.post;
-      return { ...payload.post, cover: { mime: cover.mime as "image/jpeg", base64: cover.base64 } };
+      if (!COVER_MIMES.has(cover.mime) || cover.base64.length > COVER_MAX_BASE64) return { ...payload.post, readFacts: facts(false) };
+      return { ...payload.post, cover: { mime: cover.mime as "image/jpeg", base64: cover.base64 }, readFacts: facts(true) };
     } catch {
-      return payload.post; // the filter reads the caption without it
+      return { ...payload.post, readFacts: facts(false) }; // the filter reads the caption without it
     }
   }
 
@@ -287,6 +297,7 @@ export async function runCheck(deps: CheckDeps): Promise<CheckSummary> {
         const answer = await app.extract(entry.source, entry.key, body, {
           model: config.model, maxTokens: config.maxTokens, promptVersion: EXTRACT_PROMPT_VERSION, promptSha: sha,
           ...(retryIssues?.length ? { retryIssues } : {}),
+          readFacts: { variantWidth: variant?.width ?? null, bytes: utf8Length(body), byLink, images: images.length },
         });
         if (answer.ok) {
           s.extracted++;
@@ -325,7 +336,10 @@ export async function runCheck(deps: CheckDeps): Promise<CheckSummary> {
         return postFailed();
       }
     } catch (e) {
-      if (e instanceof MediaError) return fetchFailed(entry.source, entry.key, "media_failed");
+      if (e instanceof MediaError) {
+        await app.reportReadFailed({ source: entry.source, key: entry.key, code: "media_failed", message: e.message });
+        return fetchFailed(entry.source, entry.key, "media_failed");
+      }
       throw e;
     }
   }
@@ -462,6 +476,10 @@ export async function runCheck(deps: CheckDeps): Promise<CheckSummary> {
   } catch (e) {
     const err = e instanceof CheckError ? e : new CheckError("unknown", e instanceof Error ? e.message : String(e));
     s.error = { code: err.code, message: err.message };
+    // The site's own failures reach the app's trail and health (import trail); an unreachable app can't be told.
+    if (err.code === "login_needed" || err.code === "feed_changed" || e instanceof ReaderError) {
+      await app.reportReadFailed({ source: config.source, code: err.code, message: err.message });
+    }
   }
 
   s.finishedAt = iso();
