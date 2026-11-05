@@ -5,7 +5,7 @@
 import { describe, expect, it } from "vitest";
 import { workoutDocSchema, type WorkoutDoc } from "@rg/domain";
 import { EXERCISES, type ExerciseRecord } from "@rg/exercise-library";
-import { playerStepsFromDoc } from "../src/index.js";
+import { playerStepsFromDoc, validateWorkoutDoc } from "../src/index.js";
 import { doseFor } from "../src/editor.js";
 
 const rec = (id: string): ExerciseRecord => EXERCISES.find((e) => e.id === id)!;
@@ -33,6 +33,35 @@ describe("doseFor: the dose a library move starts with", () => {
 
   it("a symmetric move has no sides", () => {
     expect(doseFor(rec("catCow"), "warmup").perSide).toBeUndefined();
+  });
+});
+
+describe("a saved workout that names a retired move", () => {
+  const doc = workoutDocSchema.parse({
+    version: 1,
+    title: "Posterior chain",
+    intent: { summary: "Saved before the audit.", goals: ["strength"], focus: [], effort: "maintain" },
+    parts: [
+      { purpose: "warmup", format: "straight", items: [{ kind: "exercise", libraryId: "wallHipTurns", dose: { sets: 1, reps: 6, perSide: true }, cue: "Turn from the hip, not the low back." }] },
+      { purpose: "cooldown", format: "holds", items: [{ kind: "exercise", libraryId: "lowLungeBlock", dose: { holdSec: 50, perSide: true } }] },
+    ],
+    source: { kind: "coach" },
+  });
+
+  it("plays its survivor, on both sides, with the coach's own dose and cue", () => {
+    const steps = worked(doc);
+    expect(steps.filter((s) => s.slotKey.startsWith("prep")).map((s) => s.exerciseId)).toEqual(["hip9090"]);
+    expect(steps.filter((s) => s.block === "cooldown").map((s) => [s.exerciseId, s.side, s.seconds])).toEqual([
+      ["lowLunge", "Left", 50],
+      ["lowLunge", "Right", 50],
+    ]);
+    expect(steps[0]).toMatchObject({ kind: "set", target: { reps: 6 } });
+  });
+
+  it("isn't refused: the document validator only offers the current id", () => {
+    const issues = validateWorkoutDoc(doc, { library: EXERCISES, activeProfiles: [], excluded: [] });
+    expect(issues.filter((i) => i.severity === "error")).toEqual([]);
+    expect(issues.filter((i) => i.code === "legacy_id").map((i) => i.fix)).toEqual(["hip9090", "lowLunge"]);
   });
 });
 
