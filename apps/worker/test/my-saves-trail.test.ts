@@ -39,6 +39,16 @@ const submit = (key: string) => ({
   hashtags: [], mediaType: "video" as const, readFacts: { via: "saved_list" as const, extVersion: "0.2.0", coverSent: false, mediaCount: 1 },
 });
 
+describe("GET /health", () => {
+  it("answers the seven lights and the worst line, in at most 5 statements", async () => {
+    const { res, body, cost } = await get("/health");
+    expect(res.status).toBe(200);
+    expect(cost).toBeLessThanOrEqual(5);
+    expect(body.lights.map((l: { light: string }) => l.light)).toEqual(["instagram", "youtube", "screening", "reader", "matching", "coach", "budget"]);
+    expect(body.worst).toBeNull();
+  });
+});
+
 describe("GET /posts/:id/trail", () => {
   it("a post walked through the stages: its account, then its events oldest first with their blobs, in at most 6 statements", async () => {
     const row = await upsertPost(db, userId, submit("k1"), NOW);

@@ -2712,6 +2712,8 @@ export const api = {
     request<CoachPreferencesDto>("/api/coach/preferences", { method: "PUT", body: JSON.stringify(coach) }),
   /** Settings -> Saves: what the saved-posts import did (404 while the feature is off). */
   savesStatus: () => get<import("@rg/saves").SavesStatusDto>("/api/my-saves/status"),
+  /** The import's health row: one light per stage and source (import trail). */
+  savesHealth: () => get<import("@rg/saves").ImportHealthDto>("/api/my-saves/health"),
   /** One saved post's trail: its account, then every step oldest first (import trail; 404 another account's). */
   saveTrail: (postId: string) => get<import("@rg/saves").ImportTrailDto>(`/api/my-saves/posts/${encodeURIComponent(postId)}/trail`),
   /** One blob of a trail: a raw reply, the prompt as sent, a transcript. */

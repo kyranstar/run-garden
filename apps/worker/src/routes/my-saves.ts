@@ -62,6 +62,7 @@ import {
 const overrideSchema = z.object({ action: z.enum(["process", "skip", "reference"]) }).strict();
 
 import { readBlob, readPostTrail } from "../services/import-trail-read.js";
+import { importHealth } from "../services/import-health.js";
 
 export const mySavesRoutes = new Hono<AppContext>();
 
@@ -85,6 +86,9 @@ mySavesRoutes.post("/posts/:id/override", async (c) => {
 
 const body = async (c: { req: { json: () => Promise<unknown> } }): Promise<unknown> => c.req.json().catch(() => undefined);
 const notFound = { error: "not_found" } as const;
+
+/** The health row: one light per stage and source (import trail, design 2026-11-05 §6.5). */
+mySavesRoutes.get("/health", async (c) => c.json(await importHealth(c.get("db"), c.get("userId"), new Date(nowInstant()))));
 
 // One post's trail and a blob's text (import trail, design 2026-11-05 §6.3): the owner's only.
 mySavesRoutes.get("/posts/:id/trail", async (c) => {

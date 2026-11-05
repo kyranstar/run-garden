@@ -20,6 +20,8 @@ const knownSchema = z
   .object({ source: z.string().regex(SAVE_SOURCE_RE), keys: z.array(z.string().min(1).max(64)).max(KNOWN_MAX_KEYS) })
   .strict();
 
+import { importHealth } from "../services/import-health.js";
+
 export const savesRoutes = new Hono<AppContext>();
 
 savesRoutes.use("*", async (c, next) => {
@@ -43,6 +45,9 @@ savesRoutes.post("/checks", async (c) => {
   if (parsed.data.phase === "finish") await assembleBatch(c.get("db"), c.env, c.get("userId"), now);
   return c.json({ ok: true });
 });
+
+/** The popup's health row (import trail, design 2026-11-05 §6.5). */
+savesRoutes.get("/health", async (c) => c.json(await importHealth(c.get("db"), c.get("userId"), new Date(nowInstant()))));
 
 /** A read that failed before the app had the post: on the post's trail, or the source's (import trail). */
 savesRoutes.post("/read-failed", async (c) => {

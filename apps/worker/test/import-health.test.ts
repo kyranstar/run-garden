@@ -1,0 +1,76 @@
+/** The health row (design 2026-11-05 §3.2, §6.5): one light per stage and source, from the trail, the checks and the budget. */
+import { beforeEach, describe, expect, it } from "vitest";
+import { schema } from "@rg/database";
+import type { HealthLight } from "@rg/saves";
+import type { Db } from "../src/services/db.js";
+import { importHealth } from "../src/services/import-health.js";
+import { makeTestDb, makeTestUser } from "./helpers.js";
+
+const NOW = new Date("2026-11-05T12:00:00.000Z");
+const at = (hoursAgo: number) => new Date(NOW.getTime() - hoursAgo * 3_600_000).toISOString();
+let db: Db;
+let userId: string;
+let n = 0;
+
+beforeEach(async () => {
+  db = makeTestDb();
+  ({ userId } = await makeTestUser(db));
+});
+
+async function event(stage: string, status: string, hoursAgo: number, over: Record<string, unknown> = {}) {
+  await db.insert(schema.importEvents).values({
+    id: `e${++n}`, userId, postId: `p${n}`, stage, source: stage === "read" ? "instagram" : "gateway", status, summary: `${stage} ${status}`,
+    at: at(hoursAgo), ...over,
+  });
+}
+const lightOf = async (light: HealthLight) => (await importHealth(db, userId, NOW)).lights.find((l) => l.light === light)!;
+
+describe("importHealth", () => {
+  it("grey with nothing in the window — never green for a source never used (Review Focus 4)", async () => {
+    const h = await importHealth(db, userId, NOW);
+    expect(h.lights.map((l) => [l.light, l.color])).toEqual([
+      ["instagram", "grey"], ["youtube", "grey"], ["screening", "grey"], ["reader", "grey"], ["matching", "grey"], ["coach", "grey"], ["budget", "green"],
+    ]);
+    expect(h.worst).toBeNull();
+  });
+  it("green when the recent steps went well", async () => {
+    for (let i = 0; i < 5; i++) await event("extract", "ok", 10 + i);
+    expect(await lightOf("reader")).toMatchObject({ color: "green", line: null, failures: [] });
+  });
+  it("red by ratio: at least half of at least four attempts failed", async () => {
+    await event("extract", "fail", 1); await event("extract", "fail", 2); await event("extract", "ok", 3); await event("extract", "fail", 4);
+    const reader = await lightOf("reader");
+    expect(reader).toMatchObject({ color: "red", line: "Reader: 3 of 4 failed" });
+    expect(reader.failures).toHaveLength(3);
+    expect((await importHealth(db, userId, NOW)).worst).toBe("Reader: 3 of 4 failed");
+  });
+  it("red by cause: the last attempt failed for the whole stage (a login, the gateway refusing the key)", async () => {
+    await event("read", "ok", 5);
+    await event("read", "fail", 1, { detail: { code: "login_needed" }, summary: "Instagram wants you to log in again" });
+    expect(await lightOf("instagram")).toMatchObject({ color: "red", line: "Instagram wants you to log in again" });
+    await event("extract", "fail", 1, { detail: { failure: "gateway_402" }, summary: "The model gateway answered 402" });
+    expect((await lightOf("reader")).color).toBe("red");
+  });
+  it("yellow: a failure or a warning among the latest steps, not enough to be red", async () => {
+    for (let i = 0; i < 6; i++) await event("screen", "ok", 10 + i);
+    await event("screen", "warn", 1, { summary: "Waiting for the import budget" });
+    expect(await lightOf("screening")).toMatchObject({ color: "yellow", line: "Waiting for the import budget" });
+  });
+  it("steps outside seven days are not counted", async () => {
+    await event("extract", "fail", 24 * 8);
+    expect((await lightOf("reader")).color).toBe("grey");
+  });
+  it("budget: yellow past 80%, red at the cap", async () => {
+    const spend = (micros: number) => db.insert(schema.llmUsage).values({
+      id: `u${++n}`, userId, kind: "import_extract", model: "m", inputTokens: 1, outputTokens: 1, costMicros: micros, cacheHit: false, createdAt: at(1),
+    });
+    await spend(4_250_000);
+    expect(await lightOf("budget")).toMatchObject({ color: "yellow", line: "Budget: $4.25 of $5.00 this month" });
+    await spend(800_000);
+    expect((await lightOf("budget")).color).toBe("red");
+  });
+  it("Instagram: yellow when checks have run but none in two days", async () => {
+    await db.insert(schema.saveChecks).values({ id: "c1", userId, startedAt: at(60), finishedAt: at(60) });
+    expect(await lightOf("instagram")).toMatchObject({ color: "yellow", line: "Instagram: no check in 2 days" });
+  });
+});

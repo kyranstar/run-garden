@@ -101,3 +101,21 @@ export interface ImportBlobDto {
   text: string;
   cut: boolean;
 }
+
+/** The health row's lights, in the order the row shows them (design 2026-11-05 §3.2, §6.5). */
+export const HEALTH_LIGHTS = ["instagram", "youtube", "screening", "reader", "matching", "coach", "budget"] as const;
+export type HealthLight = (typeof HEALTH_LIGHTS)[number];
+export type HealthColor = "green" | "yellow" | "red" | "grey";
+export interface HealthLightDto {
+  light: HealthLight;
+  color: HealthColor;
+  /** One line when it isn't green ("Reader: 3 of 4 readings failed"), else null. */
+  line: string | null;
+  /** Its recent failures, newest first: the post (null for one before any post, like a login), what, when, why. */
+  failures: { postId: string | null; title: string; at: string; why: string }[];
+}
+export interface ImportHealthDto {
+  lights: HealthLightDto[];
+  /** The reddest light's line, or null when every light is green or grey. */
+  worst: string | null;
+}

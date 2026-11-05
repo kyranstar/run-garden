@@ -391,6 +391,14 @@ describe("the read on the trail (import trail, 2026-11-05)", () => {
   });
 });
 
+describe("GET /health (the popup's row)", () => {
+  it("answers the lights behind the token", async () => {
+    const { res, body } = await call("/health");
+    expect(res.status).toBe(200);
+    expect(body.lights).toHaveLength(7);
+  });
+});
+
 describe("GET /status", () => {
   it("is idle with nothing, and reads the latest check and posts, within 6 statements", async () => {
     const idle = await call("/status");
