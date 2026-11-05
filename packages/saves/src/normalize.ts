@@ -2,10 +2,15 @@ import { asciiFold } from "./ids.js";
 
 const STOP = new Set(["the", "a", "an", "with", "your"]);
 
+/**
+ * A plural's singular. "-es" goes only where the singular has no "e" of its own (presses, crunches, pushes, boxes);
+ * everywhere else a final "s" goes (raises, releases, poses, squeezes, lunges), unless the word isn't a plural (press,
+ * cross, torus, abs). Stripping "-es" after any "s" or "z" read "raises" as "rais" (audit 2026-11-05, bug 1).
+ */
 const singular = (w: string): string => {
-  if (w.length > 3 && w.endsWith("es") && /(?:ch|sh|x|s|z)es$/.test(w)) return w.slice(0, -2);
-  if (w.length > 2 && w.endsWith("s") && !w.endsWith("ss")) return w.slice(0, -1);
-  return w;
+  if (w.length <= 3 || w.endsWith("ss") || w.endsWith("us") || !w.endsWith("s")) return w;
+  if (/(?:ch|sh|x|ss)es$/.test(w)) return w.slice(0, -2);
+  return w.slice(0, -1);
 };
 
 /** A move name in a form that spellings of the same move share. */

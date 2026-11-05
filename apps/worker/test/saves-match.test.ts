@@ -128,6 +128,12 @@ describe("matchMoves", () => {
     ]);
   });
 
+  it("matches a plural to the library's singular by name — 'Calf raises' is the library's Calf raise (audit bug 1)", () => {
+    const calfRaise = EXERCISES.find((e) => e.name === "Calf raise")!;
+    const [d] = matchMoves(extraction([move("Calf raises")]), EXERCISES, []);
+    expect(d).toMatchObject({ kind: "library", id: calfRaise.id, confidence: "high" });
+  });
+
   it("matches by an alias too", () => {
     const [d] = matchMoves(extraction([move("Seated windmill knees", { aliases: ["90 90 hip switch"] })]), EXERCISES, []);
     expect(d).toMatchObject({ kind: "library", id: HIP_SWITCH.id, confidence: "high" });

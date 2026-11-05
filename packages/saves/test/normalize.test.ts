@@ -13,6 +13,30 @@ describe("normalizeMoveName", () => {
     expect(normalizeMoveName("A Glute Bridges")).toBe("glute bridge");
     expect(normalizeMoveName("Lunges")).toBe("lunge");
   });
+  it("reads a plural as its singular, whatever letter the singular ends on (audit bug 1)", () => {
+    const same: Array<[string, string]> = [
+      ["Calf raises", "Calf raise"],
+      ["Rib releases", "Rib release"],
+      ["Child's poses", "Child's pose"],
+      ["Glute squeezes", "Glute squeeze"],
+      ["Hip circles", "Hip circle"],
+      ["Box jumps", "Box jump"],
+      ["Bench presses", "Bench press"],
+      ["Pushes", "Push"],
+      ["Boxes", "Box"],
+      ["Crunches", "Crunch"],
+      ["Lateral raises", "Lateral raise"],
+    ];
+    for (const [plural, singular] of same) expect(normalizeMoveName(plural), plural).toBe(normalizeMoveName(singular));
+    expect(normalizeMoveName("Calf raises")).toBe("calf raise");
+    expect(normalizeMoveName("Rib releases")).toBe("rib release");
+  });
+  it("keeps the s of a word that isn't a plural", () => {
+    expect(normalizeMoveName("Bench press")).toBe("bench press");
+    expect(normalizeMoveName("Cross crawl")).toBe("cross crawl");
+    expect(normalizeMoveName("Abs roll")).toBe("abs roll");
+    expect(normalizeMoveName("Zorbex torus hold")).toBe("zorbex torus hold");
+  });
 });
 
 describe("nearDuplicateOf", () => {
