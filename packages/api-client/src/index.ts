@@ -2712,6 +2712,10 @@ export const api = {
     request<CoachPreferencesDto>("/api/coach/preferences", { method: "PUT", body: JSON.stringify(coach) }),
   /** Settings -> Saves: what the saved-posts import did (404 while the feature is off). */
   savesStatus: () => get<import("@rg/saves").SavesStatusDto>("/api/my-saves/status"),
+  /** One saved post's trail: its account, then every step oldest first (import trail; 404 another account's). */
+  saveTrail: (postId: string) => get<import("@rg/saves").ImportTrailDto>(`/api/my-saves/posts/${encodeURIComponent(postId)}/trail`),
+  /** One blob of a trail: a raw reply, the prompt as sent, a transcript. */
+  saveBlob: (blobId: string) => get<import("@rg/saves").ImportBlobDto>(`/api/my-saves/blobs/${encodeURIComponent(blobId)}`),
   /** The owner's word on one saved post: process anyway (also Retry), skip, or keep as a reference. */
   savesOverride: (id: string, action: "process" | "skip" | "reference") =>
     post<{ ok: boolean }>(`/api/my-saves/posts/${encodeURIComponent(id)}/override`, { action }),

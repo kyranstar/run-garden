@@ -64,3 +64,40 @@ export interface TrailEventDto {
   blobs: { id: string; kind: BlobKind; chars: number }[];
   at: string;
 }
+
+/** One post's trail, as the owner reads it (`GET /api/my-saves/posts/:id/trail`; design 2026-11-05 §3.4). */
+export interface ImportTrailDto {
+  post: {
+    id: string;
+    source: string;
+    url: string | null;
+    title: string | null;
+    creator: { handle: string; name?: string };
+    mediaType: string | null;
+    postedAt: string | null;
+    firstSeenAt: string;
+    status: string;
+    origin: "saved" | "pasted" | null;
+    durationSec: number | null;
+    videoSeen: boolean | null;
+  };
+  /** The account (level 1): what the post is, its moves and how each came out, and one health word. */
+  account: {
+    kind: string | null;
+    summary: string | null;
+    moves: { position: number; name: string; outcome: "new" | "yours" | "library"; moveId: string | null; purpose: string | null }[];
+    health: { status: TrailStatus; line: string };
+  };
+  /** Oldest first. */
+  events: TrailEventDto[];
+  /** The post came before the trail: its events were built from what was kept (§6.6). */
+  rebuilt: boolean;
+}
+
+/** One blob's text (`GET /api/my-saves/blobs/:id`). */
+export interface ImportBlobDto {
+  id: string;
+  kind: BlobKind;
+  text: string;
+  cut: boolean;
+}

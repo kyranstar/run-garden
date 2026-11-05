@@ -61,6 +61,8 @@ import {
 
 const overrideSchema = z.object({ action: z.enum(["process", "skip", "reference"]) }).strict();
 
+import { readBlob, readPostTrail } from "../services/import-trail-read.js";
+
 export const mySavesRoutes = new Hono<AppContext>();
 
 mySavesRoutes.use("*", async (c, next) => {
@@ -83,6 +85,16 @@ mySavesRoutes.post("/posts/:id/override", async (c) => {
 
 const body = async (c: { req: { json: () => Promise<unknown> } }): Promise<unknown> => c.req.json().catch(() => undefined);
 const notFound = { error: "not_found" } as const;
+
+// One post's trail and a blob's text (import trail, design 2026-11-05 §6.3): the owner's only.
+mySavesRoutes.get("/posts/:id/trail", async (c) => {
+  const trail = await readPostTrail(c.get("db"), c.get("userId"), c.req.param("id"));
+  return trail ? c.json(trail) : c.json({ error: "not_found" }, 404);
+});
+mySavesRoutes.get("/blobs/:id", async (c) => {
+  const blob = await readBlob(c.get("db"), c.get("userId"), c.req.param("id"));
+  return blob ? c.json(blob) : c.json({ error: "not_found" }, 404);
+});
 
 mySavesRoutes.get("/open", async (c) => c.json(await readOpenBatch(c.get("db"), c.env, c.get("userId"), nowInstant())));
 
