@@ -139,7 +139,7 @@ export const EXTRA_CORE = defineExercises([
     tags: [],
     themes: ["carryDay"],
     text: {
-      summary: "Pass a kettlebell around your waist from hand to hand, standing tall and still.",
+      summary: "Standing tall, pass a kettlebell hand to hand around your waist, one way then the other.",
       setup: ["Stand tall, feet hip-width, knees soft.", "Hold a light kettlebell by the handle in front of the hips."],
       steps: [
         "Hand the bell from one hand to the other behind your back.",

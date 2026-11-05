@@ -276,7 +276,6 @@ const mid = (r: readonly [number, number]): number => Math.round((r[0] + r[1]) /
 /** One exercise item's work over its rounds; `lift` decides the rest a dose that names none is assumed to take. */
 function itemWork(rec: ExerciseRecord | undefined, dose: ExerciseDose, perSide: boolean, rounds: number, lift: boolean): Work {
   const sets = dose.sets ?? rec?.dose.sets?.[0] ?? 1;
-  const sides = perSide ? 2 : 1;
   let holdSec = dose.holdSec;
   let breaths = dose.breaths;
   let carryM = dose.carryM;
@@ -288,6 +287,9 @@ function itemWork(rec: ExerciseRecord | undefined, dose: ExerciseDose, perSide: 
     else if (r.type === "carry") carryM = mid(r.range);
     else reps = mid(r.range);
   }
+  // An alternating move on a clock plays one window that holds both sides: the hold is the whole of it.
+  const oneWindow = rec?.laterality === "alternating" && (holdSec !== undefined || carryM !== undefined);
+  const sides = perSide && !oneWindow ? 2 : 1;
   let perSetSec: number;
   let repsPerSet: number | null = null;
   if (holdSec !== undefined) perSetSec = holdSec;
@@ -348,7 +350,7 @@ export function deriveDoc(doc: WorkoutDoc, library: readonly ExerciseRecord[]): 
         if (rec && liftMove && LIFT_PARTS.has(part.purpose)) lift = true;
         const w = itemWork(rec, item.dose, perSide, rounds, liftMove);
         addWork(t, rec, w, axis);
-        steps += (item.dose.sets ?? rec?.dose.sets?.[0] ?? 1) * rounds * (perSide ? 2 : 1);
+        steps += (item.dose.sets ?? rec?.dose.sets?.[0] ?? 1) * rounds * (perSide && rec?.laterality !== "alternating" ? 2 : 1);
         if (rec) {
           for (const e of rec.equipment.all) all.add(e);
           if (rec.equipment.oneOf.length > 0) {
@@ -431,7 +433,8 @@ export function stepsToWatch(doc: WorkoutDoc, library: readonly ExerciseRecord[]
       if (item.kind !== "exercise") continue;
       const rec = find(item.libraryId);
       if (!rec) continue;
-      const perSide = item.dose.perSide === true && item.side === undefined;
+      // An alternating move is one step on the watch, as in the app (`watch-push`'s `sidesOf`).
+      const perSide = item.dose.perSide === true && item.side === undefined && rec.laterality !== "alternating";
       steps += (item.dose.sets ?? rec.dose.sets?.[0] ?? 1) * rounds * (perSide ? 2 : 1);
     }
   }

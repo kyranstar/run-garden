@@ -4,7 +4,7 @@
  * field and a refusal would lock the move against all its other edits (the import repairs or flags it instead).
  */
 import { describe, expect, test } from "vitest";
-import { EXERCISES, PROFILES, THEMES, countsPerSide, moveProblems, saysOtherSide, saysToChangeSides, validateRecord, type ExerciseRecord } from "../src/index.js";
+import { EXERCISES, PROFILES, THEMES, countsPerSide, moveProblems, saysAlternating, saysOtherSide, saysToChangeSides, validateRecord, type ExerciseRecord } from "../src/index.js";
 
 const rec = (id: string): ExerciseRecord => EXERCISES.find((e) => e.id === id)!;
 const withText = (r: ExerciseRecord, text: Partial<ExerciseRecord["text"]>): ExerciseRecord => ({ ...r, text: { ...r.text, ...text } });
@@ -27,6 +27,16 @@ describe("the rules", () => {
     expect(saysOtherSide("Repeat on the opposite side.")).toBe(true);
     // A foot each side of a door is no change of sides.
     expect(saysToChangeSides("Stand with a foot each side of the door.")).toBe(false);
+  });
+
+  test("an alternating move's line says the sides take turns: it plays as one exercise, so nothing else on screen will", () => {
+    expect(moveProblems(withText(rec("deadBug"), { summary: "On your back, slowly lower opposite arm and leg." }))).toContainEqual(expect.stringMatching(/summary doesn't say the sides take turns/));
+    for (const line of ["Lower one leg, alternating.", "Glide the jaw side to side.", "Turn to one shoulder, then the other.", "Hop from one foot to the other."]) {
+      expect(saysAlternating(line), line).toBe(true);
+    }
+    // A leg that stays straight is no turn taken.
+    expect(saysAlternating("Sit into one leg with the other straight.")).toBe(false);
+    expect(EXERCISES.filter((e) => e.laterality === "alternating").length).toBeGreaterThan(0);
   });
 
   test("half-kneeling beside something: the card line says which knee is down, the owner's example", () => {

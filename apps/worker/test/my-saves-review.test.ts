@@ -44,7 +44,7 @@ const ratings = Object.fromEntries(
 const move = (name: string, over: Partial<ExtractedMove> = {}): ExtractedMove => ({
   name, aliases: [], summary: `${name}, slow and even.`, steps: ["Start.", "Finish."], cues: [], mistakes: [], purpose: "mobility",
   dose: { text: "8 each side", type: "reps", range: [6, 10] }, patterns: ["mobility"], regions: ["hips"], equipment: [], position: "seated",
-  laterality: "alternating", load: "none", contraction: ["isotonic"], difficulty: 2, conditions: ratings,
+  laterality: "bilateral", load: "none", contraction: ["isotonic"], difficulty: 2, conditions: ratings,
   evidence: { name: "stated", dose: "inferred", steps: "stated" }, confidence: "high", ...over,
 });
 const extraction = (moves: ExtractedMove[]): Extraction => ({ kind: "routine", summary: "s", themes: [], moves });

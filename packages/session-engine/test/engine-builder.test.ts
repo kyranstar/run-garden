@@ -65,6 +65,8 @@ test("a breath with a pause after it takes as long as the move says; a plain one
   expect(sigh.dose.type).toBe("breaths");
   expect(Builder.windowSeconds(sigh, null)).toBe(100);
   expect(Builder.windowSeconds({ ...sigh, dose: { type: "breaths", range: [5, 8] } }, null)).toBe(40);
+  // Breaths per side, alternating: one window holds both sides, as an alternating move's reps do.
+  expect(Builder.windowSeconds({ ...sigh, laterality: "alternating", dose: { type: "breaths", range: [3, 5], secsPerRep: 8 } }, null)).toBe(65);
 });
 
 test("the same inputs always give the same plan; different days vary", () => {

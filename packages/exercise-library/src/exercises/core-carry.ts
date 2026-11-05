@@ -133,7 +133,7 @@ export const CORE_CARRY = defineExercises([
     themes: [],
     providers: { coros: { key: "T1243", confidence: "exact", method: "curated" } }, // COROS: Dead Bug
     text: {
-      summary: "On your back, slowly lower opposite arm and leg while the low back stays heavy.",
+      summary: "On your back, slowly lower opposite arm and leg, alternating, low back staying heavy.",
       setup: ["Lie on your back, arms reaching to the ceiling.", "Knees bent 90° above the hips."],
       steps: [
         "Exhale and slowly lower one arm overhead and the opposite leg toward the floor.",
@@ -168,7 +168,7 @@ export const CORE_CARRY = defineExercises([
     themes: ["athleticBase"],
     providers: { coros: { key: "T1150", confidence: "exact", method: "curated" } }, // COROS: Bird Dog
     text: {
-      summary: "On hands and knees, reach one arm and the opposite leg long without twisting.",
+      summary: "On hands and knees, reach one arm and the opposite leg long, alternating, no twist.",
       setup: ["Hands under shoulders, knees under hips.", "Imagine a cup of water balanced on your low back."],
       steps: [
         "Slowly reach one arm forward and the opposite leg back.",

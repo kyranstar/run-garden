@@ -7,7 +7,7 @@ import type { ExtractedMove, PostSubmit } from "./schemas.js";
 // never in the system message, and the instructions say to treat it as data.
 
 export const FILTER_PROMPT_VERSION = "filter-1";
-export const EXTRACT_PROMPT_VERSION = "extract-4";
+export const EXTRACT_PROMPT_VERSION = "extract-5";
 export const MATCH_PROMPT_VERSION = "match-2";
 
 const OPEN = "<post-data>";
@@ -140,7 +140,8 @@ function extractSystem(): string {
       'evidence:{name,dose,steps each "stated" or "inferred"}, confidence:"high"|"medium"|"low"}.',
     "summary: one plain line, the only instruction on screen during the move, so it must get someone into the right position. " +
       "State any lopsided setup outright: which knee, foot or hand, relative to what (the wall, the anchor, the weight). " +
-      'Example: "Side-on to a wall, far knee down, near knee up against it; turn the chest both ways."',
+      'Example: "Side-on to a wall, far knee down, near knee up against it; turn the chest both ways." ' +
+      'An alternating move says so here, in words like "alternating", "side to side" or "then the other": the app plays it as one exercise and nothing else on screen will.',
     "steps: start from the setup, say where each limb goes, say what counts as one rep, and for a unilateral move end by doing the other side. " +
       'Never leave a "which": no "the other one" or "the inside arm" without saying which.',
     `patterns: ${PATTERNS.join(", ")}.`,
@@ -150,7 +151,7 @@ function extractSystem(): string {
     `position: ${POSITIONS.join(", ")}.`,
     `laterality: ${LATERALITY.join(", ")}. This decides whether the app ever asks for the other side. ` +
       "unilateral: one side, then the other, with a change of setup; use it for anything half-kneeling, side-lying, staggered, side-on to something, a stretch on one limb, or one limb working at a time. " +
-      "alternating: the sides swap rep by rep inside one continuous set with no change of setup (a dead bug). " +
+      "alternating: the sides swap inside one continuous set with no change of setup, rep by rep (a dead bug) or a few breaths at a time (lying still, one knee to the opposite elbow, then the other). It plays as one exercise on one timer, never as two sides. " +
       "bilateral: symmetric, or both sides at once.",
     `load: ${LOADS.join(", ")}. external: a weight the athlete logs (kettlebell, dumbbells, barbell, cable, machine). ` +
       "bodyweight: effortful work with no logged weight, band work included. none: mobility, stretches, release, breathing.",

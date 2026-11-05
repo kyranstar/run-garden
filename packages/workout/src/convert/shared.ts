@@ -102,11 +102,17 @@ export const OPEN_BLOCK_NAME = "Your choice of movements";
 
 /**
  * The dose a library move plays. A source that names a one-sided move and doesn't mention its sides still means both: a
- * timed window would otherwise run one side only. Without a library, the dose as given.
+ * timed window would otherwise run one side only. A hold on an alternating move is one window that holds both sides, so
+ * it's never "each side", whatever the source said. Without a library, the dose as given.
  */
 export function withSides(dose: WorkoutDose, id: string, library: LibraryIndex | undefined): WorkoutDose {
   const record = library?.(id);
-  return record && countsPerSide(record) ? { ...dose, perSide: true } : dose;
+  if (!record) return dose;
+  if (record.laterality === "alternating" && (dose.holdSec !== undefined || dose.carryM !== undefined)) {
+    const { perSide: _bothInOne, ...oneWindow } = dose;
+    return oneWindow;
+  }
+  return countsPerSide(record) ? { ...dose, perSide: true } : dose;
 }
 
 /** "each side", "per side", "/side" — how a note says the work is per side (the push path writes "each side"). */

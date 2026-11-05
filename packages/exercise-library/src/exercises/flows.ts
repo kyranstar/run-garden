@@ -58,7 +58,7 @@ export const FLOWS = defineExercises([
     tags: ["desk-relief", "thoracic"],
     themes: ["deskUnwind", "gentleMobility", "upperBackNeck"],
     text: {
-      summary: "Cat-cow, thread the needle and an open reach, flowing slowly on all fours.",
+      summary: "On all fours, flow through cat-cow, thread the needle and an open reach, alternating arms.",
       setup: ["Start on all fours, hands under the shoulders and knees under the hips."],
       steps: [
         "Round and then arch the spine slowly a few times, starting each move from the upper back.",

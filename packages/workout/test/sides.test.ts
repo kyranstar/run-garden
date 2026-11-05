@@ -5,7 +5,8 @@
 import { describe, expect, it } from "vitest";
 import { workoutDocSchema, type WorkoutDoc } from "@rg/domain";
 import { EXERCISES, type ExerciseRecord } from "@rg/exercise-library";
-import { playerStepsFromDoc, validateWorkoutDoc } from "../src/index.js";
+import { deriveDoc, makeLibraryIndex, playerStepsFromDoc, stepsToWatch, validateWorkoutDoc } from "../src/index.js";
+import { withSides } from "../src/convert/shared.js";
 import { doseFor } from "../src/editor.js";
 
 const rec = (id: string): ExerciseRecord => EXERCISES.find((e) => e.id === id)!;
@@ -59,7 +60,7 @@ describe("a saved workout that names a retired move", () => {
   });
 
   it("isn't refused: the document validator only offers the current id", () => {
-    const issues = validateWorkoutDoc(doc, { library: EXERCISES, activeProfiles: [], excluded: [] });
+    const issues = validateWorkoutDoc(doc, { library: EXERCISES, activeProfiles: [], day: null, excluded: [] });
     expect(issues.filter((i) => i.severity === "error")).toEqual([]);
     expect(issues.filter((i) => i.code === "legacy_id").map((i) => i.fix)).toEqual(["hip9090", "lowLunge"]);
   });
@@ -75,5 +76,36 @@ describe("playing a held part", () => {
     expect(steps.map((s) => s.side)).toEqual([null]);
     // Five each way at six seconds a rep: one window of a minute, not a minute a side.
     expect(steps[0]!.seconds).toBe(60);
+  });
+
+  it("an alternating breathing drill is one exercise, its timer long enough for the breaths on both sides", () => {
+    const drill: ExerciseRecord = { ...rec("deadBug"), id: "crossConnect", legacyIds: [], laterality: "alternating", load: "none", dose: { type: "breaths", range: [3, 5], secsPerRep: 8 } };
+    const doc = holds("crossConnect", { breaths: 4, perSide: true });
+    const steps = playerStepsFromDoc(doc, [...EXERCISES, drill]).filter((s) => s.kind !== "rest");
+    expect(steps.map((s) => [s.side, s.seconds])).toEqual([[null, 65]]);
+    expect(stepsToWatch(doc, [...EXERCISES, drill])).toBe(1);
+  });
+});
+
+describe("a hold on an alternating move", () => {
+  const library = makeLibraryIndex(EXERCISES);
+
+  it("isn't \"each side\" when a source says so: one window holds both", () => {
+    expect(withSides({ holdSec: 40, perSide: true }, "thoracicFlow", library)).toEqual({ holdSec: 40 });
+    expect(withSides({ holdSec: 30, perSide: true }, "deadBug", library)).toEqual({ holdSec: 30 });
+  });
+
+  it("still counts per side when it's counted, and a one-sided hold still runs on both", () => {
+    expect(withSides({ reps: 8 }, "deadBug", library)).toEqual({ reps: 8, perSide: true });
+    expect(withSides({ holdSec: 30 }, "figureFour", library)).toEqual({ holdSec: 30, perSide: true });
+  });
+
+  it("is timed once and sent once, even in a document saved with perSide", () => {
+    const once = deriveDoc(holds("thoracicFlow", { holdSec: 60 }), EXERCISES);
+    const flagged = deriveDoc(holds("thoracicFlow", { holdSec: 60, perSide: true }), EXERCISES);
+    expect(flagged.estimatedMinutes).toBe(once.estimatedMinutes);
+    expect(stepsToWatch(holds("thoracicFlow", { holdSec: 60, perSide: true }), EXERCISES)).toBe(1);
+    // A one-sided hold is still two.
+    expect(stepsToWatch(holds("figureFour", { holdSec: 30, perSide: true }), EXERCISES)).toBe(2);
   });
 });

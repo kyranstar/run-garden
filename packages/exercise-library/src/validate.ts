@@ -43,6 +43,9 @@ export const isSidedPosition = (position: string): boolean => SIDED_POSITIONS.ha
 export const saysToChangeSides = (text: string): boolean => SAYS_SWITCH.test(text);
 /** Whether the words get the athlete to the other side at all. */
 export const saysOtherSide = (text: string): boolean => SAYS_OTHER_SIDE.test(text);
+const SAYS_ALTERNATING = /\balternat\w*|\bside to side\b|\bback and forth\b|\bleft and right\b|\b(?:to|then) the other\b/i;
+/** Whether a move's line says its sides take turns: it plays as one exercise, so nothing else on screen will. */
+export const saysAlternating = (summary: string): boolean => SAYS_ALTERNATING.test(summary);
 const SAYS_HOLD = /\bhold\b[^.;]*?\b(\d+)(?:\s*[–-]\s*\d+)?\s*(?:seconds?|secs?)\b/i;
 const BESIDE_SOMETHING = /\b(?:side-on|beside|alongside|next to)\b/i;
 /** A rep with no stated tempo, as the engine plans a self-paced set. */
@@ -62,6 +65,7 @@ export function moveProblems(ex: Pick<ExerciseRecord, "position" | "laterality" 
   }
   if (ex.laterality === "bilateral" && SAYS_SWITCH.test(said)) out.push("the text says to change sides, but the move is bilateral");
   if (ex.laterality === "unilateral" && !SAYS_OTHER_SIDE.test(said)) out.push("the move is unilateral, but the text never says to do the other side");
+  if (ex.laterality === "alternating" && !saysAlternating(ex.text.summary)) out.push("the move is alternating, but its summary doesn't say the sides take turns");
   if (ex.position === "half-kneeling" && BESIDE_SOMETHING.test(said) && !/\bknee\b/i.test(ex.text.summary)) {
     out.push("half-kneeling beside something: the summary must say which knee is down");
   }

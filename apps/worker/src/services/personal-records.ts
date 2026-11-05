@@ -1,5 +1,5 @@
 import {
-  PROFILES, PROFILE_IDS, THEMES, defineExercises, isSidedPosition, saysOtherSide, saysToChangeSides, validateRecord,
+  PROFILES, PROFILE_IDS, THEMES, defineExercises, isSidedPosition, saysAlternating, saysOtherSide, saysToChangeSides, validateRecord,
   type Dose, type DoseType, type ExerciseRecord, type Purpose, type Role,
  LOAD_IMPLEMENTS } from "@rg/exercise-library";
 import { PERSONAL_ID_RE, type ExtractedMove } from "@rg/saves";
@@ -78,6 +78,12 @@ function doseOf(draft: ExtractedMove): Dose {
 function stepsOf(draft: ExtractedMove): string[] {
   const said = [draft.summary, ...draft.steps].join(" ");
   return draft.laterality === "unilateral" && draft.steps.length > 0 && !saysOtherSide(said) ? [...draft.steps, "Repeat on the other side."] : draft.steps;
+}
+
+/** The draft's line, saying so when an alternating move's words don't: it plays as one exercise, with no Left or Right to tell. */
+function summaryOf(draft: ExtractedMove): string {
+  if (draft.laterality !== "alternating" || saysAlternating(draft.summary)) return draft.summary;
+  return `${draft.summary.trim().replace(/[.;,:]+$/, "")}, alternating sides.`;
 }
 
 type Pattern = ExtractedMove["patterns"][number];
@@ -209,7 +215,7 @@ export function toPersonalRecord(id: string, draft: ExtractedMove): ExerciseReco
     purposes,
     themes: [],
     text: {
-      summary: draft.summary,
+      summary: summaryOf(draft),
       setup: [],
       steps: stepsOf(draft),
       focus: draft.cues,

@@ -50,14 +50,16 @@ describe("buildExtractBody", () => {
       "insights: guidance the post gives about when, why, how often or who it suits — never a dose (sets, reps, seconds) and never a description of one move (that is the move's summary); at most 5 of <=200 chars; empty when none.",
     );
     expect(system).toContain("purpose (<=160: what the post says this move is for, or when to do it)");
-    expect(EXTRACT_PROMPT_VERSION).toBe("extract-4");
+    expect(EXTRACT_PROMPT_VERSION).toBe("extract-5");
   });
   it("defines every field the audit found read wrong, not just its vocabulary", () => {
     const system: string = JSON.parse(buildExtractBody(args)).messages[0].content;
     expect(system).toContain("summary (<=90)");
     expect(system).toMatch(/State any lopsided setup outright: which knee, foot or hand, relative to what/);
     expect(system).toMatch(/unilateral: one side, then the other, with a change of setup; use it for anything half-kneeling/);
-    expect(system).toMatch(/alternating: the sides swap rep by rep/);
+    expect(system).toMatch(/alternating: the sides swap inside one continuous set/);
+    expect(system).toMatch(/It plays as one exercise on one timer, never as two sides/);
+    expect(system).toMatch(/An alternating move says so here/);
     expect(system).toMatch(/carry: a weight walked with or held for time, in SECONDS, never metres/);
     expect(system).toMatch(/Whenever the post states a number, put it in range and sets/);
     expect(system).toMatch(/per side for a unilateral or alternating move/);

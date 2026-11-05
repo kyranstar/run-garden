@@ -1,6 +1,6 @@
 /** A personal move's record: built from an extracted move, then checked by the library's own validation (personal mode). */
 import { describe, expect, it } from "vitest";
-import { PROFILE_IDS } from "@rg/exercise-library";
+import { PROFILE_IDS, moveProblems } from "@rg/exercise-library";
 import { personalMoveId, type ExtractedMove } from "@rg/saves";
 import { buildPersonalRecord } from "../src/services/personal-moves.js";
 import { doseFromText, PURPOSE_RULES, repairDraft, toPersonalRecord, validatePersonalRecord } from "../src/services/personal-records.js";
@@ -168,6 +168,16 @@ describe("a reading can't make the audit's mistakes", () => {
     expect(steps.at(-1)).toBe("Repeat on the other side.");
     const said = ["Row the weight.", "Finish the reps, then switch sides."];
     expect(toPersonalRecord(id, move({ laterality: "unilateral", steps: said })).text.steps).toEqual(said);
+  });
+
+  it("an alternating move's line says the sides take turns, without saying it twice", () => {
+    const line = (summary: string, laterality: "alternating" | "bilateral" = "alternating") => toPersonalRecord(id, move({ laterality, summary })).text.summary;
+    expect(line("On your back, lower opposite arm and leg.")).toBe("On your back, lower opposite arm and leg, alternating sides.");
+    expect(line("Glide the jaw side to side.")).toBe("Glide the jaw side to side.");
+    expect(line("Stand tall and breathe.", "bilateral")).toBe("Stand tall and breathe.");
+    // So the import has nothing left to flag about it.
+    const record = toPersonalRecord(id, move({ laterality: "alternating", summary: "On your back, lower opposite arm and leg." }));
+    expect(moveProblems(record).filter((p) => /take turns/.test(p))).toEqual([]);
   });
 
   it("no stated type: a hold or relaxed stretch runs on the clock, never 8-12 reps", () => {

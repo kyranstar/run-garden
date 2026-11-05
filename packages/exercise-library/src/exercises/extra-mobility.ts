@@ -339,7 +339,7 @@ export const EXTRA_MOBILITY = defineExercises([
     purposes: ["mobility", "warmup", "strength"],
     themes: ["hipsPosture", "skiPrep", "athleticBase"],
     text: {
-      summary: "From a wide stance, sit into one leg with the other straight, then shift across.",
+      summary: "Feet wide, sit into one leg with the other straight, then shift across and alternate.",
       setup: [
         "Stand with the feet wide, toes turned slightly out.",
         "Clasp the hands in front of the chest, or hold a chair back for balance."

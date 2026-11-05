@@ -62,7 +62,7 @@ export const EXTRA_PASS_TWO = defineExercises([
     purposes: ["strength"],
     themes: ["fullBody", "carryDay"],
     text: {
-      summary: "From a high plank beside a weight, drag it under you to the other side, then push up.",
+      summary: "In a high plank, drag a weight under you to the other side, push up, then alternate.",
       setup: [
         "Set a light kettlebell or dumbbell on the floor just beside one hand.",
         "Take a high plank with the hands under the shoulders and the feet a little wider than hip-width."

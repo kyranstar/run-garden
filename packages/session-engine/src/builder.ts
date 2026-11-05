@@ -82,8 +82,10 @@ function windowSeconds(ex: ExerciseRecord, target: Partial<Target> | null): numb
   const d = ex.dose;
   if (d.type === "time") return target && target.secs ? target.secs : round5(mid(d.range));
   if (d.type === "carry") return target && target.secs ? target.secs : d.range[1];
-  if (d.type === "breaths") return round5(mid(d.range) * (d.secsPerRep || 6));
-  const reps = Math.round(mid(d.range)) * (ex.laterality === "alternating" ? 2 : 1);
+  // An alternating move's one window holds both sides: its count is per side, so the window is twice as long.
+  const sides = ex.laterality === "alternating" ? 2 : 1;
+  if (d.type === "breaths") return round5(mid(d.range) * sides * (d.secsPerRep || 6));
+  const reps = Math.round(mid(d.range)) * sides;
   return Math.max(30, round5(reps * (d.secsPerRep || 4)));
 }
 

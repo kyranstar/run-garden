@@ -143,7 +143,7 @@ export const EXTRA_JAW_NECK = defineExercises([
     purposes: ["warmup", "mobility", "condition-care"],
     themes: ["deskUnwind", "upperBackNeck", "jawReset"],
     text: {
-      summary: "Sit tall and slowly turn to look over each shoulder, keeping the chin level.",
+      summary: "Sit tall and slowly turn to look over one shoulder, then the other, chin level.",
       setup: [
         "Sit tall with the head stacked over the shoulders and a very slight chin tuck.",
         "Tongue on the palate, teeth apart."

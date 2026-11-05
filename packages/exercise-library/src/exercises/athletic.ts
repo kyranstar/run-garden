@@ -247,7 +247,7 @@ export const ATHLETIC = defineExercises([
     themes: ["skiPrep", "athleticBase"],
     easier: ["skaterBoundLow"],
     text: {
-      summary: "Bound sideways onto one leg and stick the landing for two seconds.",
+      summary: "Bound side to side, landing on one leg and sticking it for two seconds each time.",
       setup: ["Stand on one leg, knee soft, with room to bound a long stride sideways.", "Start with short bounds and lengthen them only while you can stick them."],
       steps: [
         "Push off sideways and land on the free foot.",
