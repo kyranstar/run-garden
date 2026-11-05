@@ -29,7 +29,7 @@
  *
  * The run goes on when the sheet closes: the app's run keeper steps it on any screen.
  */
-import { Fragment, useEffect, useId, useLayoutEffect, useMemo, useRef, useState, type RefObject } from "react";
+import { Fragment, useEffect, useId, useLayoutEffect, useMemo, useRef, useState, type ReactNode, type RefObject } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import {
   api,
@@ -110,12 +110,43 @@ export interface CoachConversationProps {
 }
 
 /** The coach's words, as paragraphs (an answer may hold a few). */
-function paragraphs(text: string) {
+/** `**words**` as strong, the rest as it is — the only emphasis the coach writes (React elements, never HTML). */
+function inline(text: string): ReactNode[] {
+  return text.split(/\*\*(.+?)\*\*/g).map((part, i) => (i % 2 === 1 ? <strong key={i}>{part}</strong> : part));
+}
+
+/** The coach's words: blank lines part paragraphs, and a paragraph of "- " lines is a list (prod 2026-11-04: an answer
+ * in bullets read as raw "- **…**"). */
+export function paragraphs(text: string) {
   return text
     .split(/\n\s*\n/)
     .map((p) => p.trim())
     .filter(Boolean)
-    .map((p, i) => <p key={i}>{p}</p>);
+    .flatMap((p, i) => {
+      const lines = p.split("\n").map((l) => l.trim()).filter(Boolean);
+      const items = lines.filter((l) => /^[-•]\s+/.test(l));
+      if (items.length > 0 && items.length === lines.length) {
+        return [
+          <ul key={i} className="coach-said-list">
+            {items.map((l, j) => (
+              <li key={j}>{inline(l.replace(/^[-•]\s+/, ""))}</li>
+            ))}
+          </ul>,
+        ];
+      }
+      // A lead-in line with its list below it, no blank line between: the line, then the list.
+      if (items.length > 0 && lines.slice(1).every((l) => /^[-•]\s+/.test(l))) {
+        return [
+          <p key={`${i}-p`}>{inline(lines[0]!)}</p>,
+          <ul key={`${i}-l`} className="coach-said-list">
+            {lines.slice(1).map((l, j) => (
+              <li key={j}>{inline(l.replace(/^[-•]\s+/, ""))}</li>
+            ))}
+          </ul>,
+        ];
+      }
+      return [<p key={i}>{inline(p)}</p>];
+    });
 }
 
 export function CoachConversation({ ctx, loopDeps, request = null, seeing: seenAtOpen = null, followSeen = false, left = null, fit = null }: CoachConversationProps) {

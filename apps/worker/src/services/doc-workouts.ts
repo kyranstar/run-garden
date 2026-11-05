@@ -70,7 +70,7 @@ import { deriveDoc, makeLibraryIndex, QUICK_START_KINDS, validateWorkoutDoc, typ
 import { sha256Hex } from "../auth/crypto.js";
 import { libraryForDocs, loadAccountLibrary, type AccountLibrary } from "./account-library.js";
 import { restoreInProgress } from "./account-state.js";
-import { recordedStampFor } from "./coros-stamp.js";
+import { loadOwnProgramNames, recordedStampFor } from "./coros-stamp.js";
 import { runAtomically, type Db } from "./db.js";
 import { judgeDoc } from "./doc-build.js";
 import { separateDayCollisions, windowTimeFor } from "./day-placement.js";
@@ -737,15 +737,24 @@ function adoptionColumns(copyName: string | null) {
 /**
  * The program name the watch holds an adopted row's copy under (spec §4) — only for a row with a watch address, as the
  * unpush reads one (`unpushInsertIfOurs`): with none, nothing on the watch is this row's to name. The stamp the app last
- * wrote for a coach row (`recordedStampFor`), else the row's title: an imported row's title is the wire's own name.
+ * wrote for a coach row (`recordedStampFor`); for a COROS-plan session the app's own Studio push sent, that push's
+ * stamped name (its row's title is the name without the stamp); else the row's title — the wire's own name.
  */
 async function heldCopyName(
   db: Db,
   userId: string,
   row: Pick<typeof plannedWorkouts.$inferSelect, "id" | "title" | "sourceWorkoutId" | "sourceIdInPlan" | "sourceProgramId" | "lastVerifiedCorosDate">,
 ): Promise<string | null> {
-  if (!watchAddressOf(row)) return null;
-  return (await recordedStampFor(db, userId, row.id)) ?? row.title;
+  const address = watchAddressOf(row);
+  if (!address) return null;
+  const recorded = await recordedStampFor(db, userId, row.id);
+  if (recorded) return recorded;
+  // A COROS-plan session the app's own Studio push put on the watch (prod 2026-11-04: the "W12 …" block of August) is held
+  // under that push's stamped name — "W12 Wed - … — wk 12" — while its row shows the title without it (the import's
+  // `unstampTitle`): the copy's delete is proven by its WIRE name, so that is the name kept. One read, on its day.
+  const own = await loadOwnProgramNames(db, userId, { start: address.happenDay, end: address.happenDay });
+  for (const [name, title] of own) if (title === row.title) return name;
+  return row.title;
 }
 
 /**

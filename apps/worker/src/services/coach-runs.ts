@@ -357,10 +357,16 @@ const RETRY_BACKOFF_SECONDS = 10;
 
 /** One tool result as the model sees it, at most. Tools are compact by contract; this is the backstop. */
 export const TOOL_RESULT_MAX_BYTES = 8_000;
-/** The whole stored state, at most (D1 allows a 2 MB row; this keeps every step's read and write small). */
-export const STATE_MAX_BYTES = 200_000;
-/** Past this, the next model call is the run's last. */
-export const STATE_LAST_CALL_BYTES = 150_000;
+/** The whole stored state, at most (D1 allows a 2 MB row; this keeps every step's read and write small — ~2 ms of CPU
+ * to parse, count and stringify at the cap, coach-runs-bench.test.ts). */
+export const STATE_MAX_BYTES = 320_000;
+/**
+ * Past this, the next model call is the run's last. 260 KB, not 150 (prod 2026-11-05): the stored state carries the
+ * ~39 KB system block and the opening message (~25 KB) before the first turn, and a turn adds ~14 KB, so 150 KB ended
+ * runs after 6–7 of their 12 turns — three fit-ins stopped before closing their batch, and 9 of 21 runs finished past
+ * 110 KB. This lets a run use its turns.
+ */
+export const STATE_LAST_CALL_BYTES = 260_000;
 /** One answer (the assistant turn) at most; a bigger one is not stored and ends the run. */
 export const ANSWER_MAX_BYTES = 64_000;
 /** One event's payload at most, and one summary line. */
@@ -2123,7 +2129,7 @@ export function endedLine(
 
 /** Told to the model on its last call, in the newest (not yet sent) user message (fix wave 3A, A3: never an invitation
  * to answer in words, which would end the run with nothing shown). */
-export const LAST_TURN_NOTE = `This is your last turn in this run. Call finish now, with one plain line for the athlete — ${capInWords(FINISH_LINE_MAX)}.`;
+export const LAST_TURN_NOTE = `This is your last turn in this run. Call finish now, with one plain line for the athlete — ${capInWords(FINISH_LINE_MAX)}. Fitting saved moves in: call pin_moves with the batch's id in this same turn first, so the batch is closed.`;
 
 /** A finish's own words as the loop keeps them where only a model or the record reads them — a designer's `final`, the
  * whole line in the event's payload: at most this (characters; finish never refuses for length: §2.1). */

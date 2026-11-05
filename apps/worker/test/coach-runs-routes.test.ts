@@ -20,6 +20,7 @@ import {
   MODEL_STEP_FIXED,
   PENDING_STEP_FIXED,
   ROUTE_OVERHEAD,
+  STATE_MAX_BYTES,
   STEP_BUDGET,
   type ContextBuilder,
   type RunDeps,
@@ -481,7 +482,7 @@ describe("every request within the budget", () => {
     await call("POST", `/${id}/step`); // context
     const [row] = await db.select().from(schema.coachRuns).where(eq(schema.coachRuns.id, id));
     const state = JSON.parse(row!.state!) as { messages: Array<{ content: Array<{ text: string }> }> };
-    state.messages[0]!.content[0]!.text += "p".repeat(185_000);
+    state.messages[0]!.content[0]!.text += "p".repeat(STATE_MAX_BYTES - 15_000);
     await db.update(schema.coachRuns).set({ state: JSON.stringify(state) }).where(eq(schema.coachRuns.id, id));
     const today = new Date().toISOString().slice(0, 10);
     const op = {
@@ -547,9 +548,9 @@ describe("every request within the budget", () => {
     const [row] = await db.select().from(schema.coachRuns).where(eq(schema.coachRuns.id, id));
     const state = JSON.parse(row!.state!) as { messages: unknown[]; pending: unknown[]; calls: number };
     const uses = costs.map((_, i) => ({ type: "tool_use", id: `toolu_q${i}`, name: `q${i}`, input: {} }));
-    // Near enough the cap that the step's results (MAX_TOOL_CALLS_PER_STEP of them, ~7.8 KB each) take it past: 165 KB
-    // since a step runs five (it was 150 KB when a step ran eight).
-    (state.messages[0] as { content: Array<{ text: string }> }).content[0]!.text += "p".repeat(165_000);
+    // Near enough the cap that the step's results (MAX_TOOL_CALLS_PER_STEP of them, ~7.8 KB each) take it past: the cap less
+    // 35 KB since a step runs five (it was 150 KB of 200 when a step ran eight).
+    (state.messages[0] as { content: Array<{ text: string }> }).content[0]!.text += "p".repeat(STATE_MAX_BYTES - 35_000);
     state.messages.push({ role: "assistant", content: uses });
     state.pending = uses.map((u) => ({ id: u.id, name: u.name, input: {} }));
     state.calls = 1;

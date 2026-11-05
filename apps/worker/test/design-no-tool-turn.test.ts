@@ -222,7 +222,7 @@ describe("the main run: a turn with no tool", () => {
 
   it("the last-turn note says to call finish, with one plain line — never to say what is missing instead", () => {
     // With the line's cap in words (Task 13's fix wave, §2.1).
-    expect(LAST_TURN_NOTE).toBe("This is your last turn in this run. Call finish now, with one plain line for the athlete — at most about 45 words (300 characters).");
+    expect(LAST_TURN_NOTE).toBe("This is your last turn in this run. Call finish now, with one plain line for the athlete — at most about 45 words (300 characters). Fitting saved moves in: call pin_moves with the batch's id in this same turn first, so the batch is closed.");
     expect(LAST_TURN_NOTE).not.toMatch(/missing/);
   });
 });

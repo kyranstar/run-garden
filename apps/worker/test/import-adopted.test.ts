@@ -427,6 +427,140 @@ function servedAgain(copy: ReturnType<typeof copyOf>) {
   server.state.schedule.entities = [...(server.state.schedule.entities ?? []), structuredClone(copy.entity)];
 }
 
+/**
+ * THE PROD SHAPE (2026-11-04): a COROS-plan session the app's own Studio push sent in August. COROS holds it as
+ * "<title> — wk 12" (the push's stamp, recorded on its `create_scheduled_workout` job); the import shows the row as
+ * "<title>". The adoption recorded the row's title as the copy's name, so the delete found nothing named so and
+ * settled "already gone" while the copy stayed, and the copy came back as a new row.
+ */
+describe("a COROS-plan session the app's own Studio push sent: held by its stamped wire name", () => {
+  const TITLE = "W12 Wed - Hinge Invented";
+  const WIRE = `${TITLE} — wk 12`;
+
+  it("the import shows the title, the adoption holds the wire name, and the delete takes the copy off: no duplicate", async () => {
+    const client = new CorosClient({ region: "us", fetchImpl: server.fetchImpl, logger: () => undefined });
+    await client.loginWithHash(server.email, createHash("md5").update(server.password, "utf8").digest("hex"));
+    await db.insert(corosWriteJobs).values({
+      id: "studio-push-w12", userId, workoutId: "studio-session-w12", kind: "create_scheduled_workout", expectedContentFingerprint: "",
+      originalDate: DAY, destinationDate: DAY, payload: { name: WIRE, session: { title: TITLE } }, requestedAt: nowInstant(),
+      status: "verified", verifiedAt: nowInstant(), completedAt: nowInstant(), updatedAt: nowInstant(),
+    });
+    const created = await createWorkout(
+      client,
+      { happenDay: String(localDateToCorosDay(DAY)), name: WIRE, session: coachSessionSchema.parse(liftAdd("Unused").session) },
+      { catalog: await exerciseNameMap(db), today: DAY },
+    );
+    expect(created.ok).toBe(true);
+    await importFromCoros();
+    const [row] = await rowsTitled(TITLE);
+    expect(row).toMatchObject({ origin: null, title: TITLE });
+
+    await adopt(row!.id, "Hinge, rebuilt");
+    expect((await rowOf(db, row!.id)).watchCopyName).toBe(WIRE);
+    expect((await jobOf(`${row!.id}-unpush-copy`))!.payload).toMatchObject({ name: WIRE });
+
+    await buildAndSend(row!.id);
+    await lane({ cap: 1, watchOnly: true });
+    expect(await importFromCoros()).toMatchObject({ created: 0, failedWrites: 0 });
+    await lane();
+    expect((await jobOf(`${row!.id}-unpush-copy`))!.status).toBe("verified");
+    expect(programsNamed(WIRE)).toHaveLength(0);
+    expect((await importFromCoros()).created).toBe(0);
+    expect(await rowsTitled(TITLE)).toEqual([]);
+  });
+
+  it("an adoption made before this fix (the row's title held): the next read claims the copy and sends its delete with the wire name", async () => {
+    const client = new CorosClient({ region: "us", fetchImpl: server.fetchImpl, logger: () => undefined });
+    await client.loginWithHash(server.email, createHash("md5").update(server.password, "utf8").digest("hex"));
+    await db.insert(corosWriteJobs).values({
+      id: "studio-push-w12", userId, workoutId: "studio-session-w12", kind: "create_scheduled_workout", expectedContentFingerprint: "",
+      originalDate: DAY, destinationDate: DAY, payload: { name: WIRE, session: { title: TITLE } }, requestedAt: nowInstant(),
+      status: "verified", verifiedAt: nowInstant(), completedAt: nowInstant(), updatedAt: nowInstant(),
+    });
+    const created = await createWorkout(
+      client,
+      { happenDay: String(localDateToCorosDay(DAY)), name: WIRE, session: coachSessionSchema.parse(liftAdd("Unused").session) },
+      { catalog: await exerciseNameMap(db), today: DAY },
+    );
+    expect(created.ok).toBe(true);
+    await importFromCoros();
+    const [row] = await rowsTitled(TITLE);
+    await adopt(row!.id, "Hinge, rebuilt");
+    // As prod's adoption wrote it: the row's title, not the wire name.
+    await db.update(plannedWorkouts).set({ watchCopyName: TITLE }).where(eq(plannedWorkouts.id, row!.id));
+    await db
+      .update(corosWriteJobs)
+      .set({ payload: { ...((await jobOf(`${row!.id}-unpush-copy`))!.payload as object), name: TITLE } })
+      .where(eq(corosWriteJobs.id, `${row!.id}-unpush-copy`));
+
+    await buildAndSend(row!.id);
+    await lane({ cap: 1, watchOnly: true });
+    // The read before the delete: still the row's copy by its shown title — no new row.
+    expect(await importFromCoros()).toMatchObject({ created: 0, failedWrites: 0 });
+    // The delete looks for the title and finds the same program at the address under its wire name: refused, never
+    // "already gone" (as the lane said in prod before 2026-11-05) — and the copy stays.
+    await lane();
+    expect(await jobOf(`${row!.id}-unpush-copy`)).toMatchObject({ status: "failed", lastErrorCategory: "stamp_mismatch" });
+    expect(programsNamed(WIRE)).toHaveLength(1);
+
+    // The next read: still no new row; the delete goes again, under the wire name — and this time takes the copy off.
+    expect((await importFromCoros()).created).toBe(0);
+    const again = (await jobOf(`${row!.id}-unpush-copy`))!;
+    expect(again).toMatchObject({ status: "queued" });
+    expect(again.payload).toMatchObject({ name: WIRE, requeues: 1 });
+    expect((await rowOf(db, row!.id)).watchCopyName).toBe(WIRE);
+    await lane();
+    expect((await jobOf(`${row!.id}-unpush-copy`))!.lastErrorDetail).toMatch(/^deleted/);
+    expect(programsNamed(WIRE)).toHaveLength(0);
+    expect((await importFromCoros()).created).toBe(0);
+    expect(await rowsTitled(TITLE)).toEqual([]);
+  });
+
+  it("prod as it stands: the delete settled verified under the title, a duplicate made of the copy — retired, and the delete sent under the wire name", async () => {
+    const client = new CorosClient({ region: "us", fetchImpl: server.fetchImpl, logger: () => undefined });
+    await client.loginWithHash(server.email, createHash("md5").update(server.password, "utf8").digest("hex"));
+    await db.insert(corosWriteJobs).values({
+      id: "studio-push-w12", userId, workoutId: "studio-session-w12", kind: "create_scheduled_workout", expectedContentFingerprint: "",
+      originalDate: DAY, destinationDate: DAY, payload: { name: WIRE, session: { title: TITLE } }, requestedAt: nowInstant(),
+      status: "verified", verifiedAt: nowInstant(), completedAt: nowInstant(), updatedAt: nowInstant(),
+    });
+    expect(
+      (
+        await createWorkout(
+          client,
+          { happenDay: String(localDateToCorosDay(DAY)), name: WIRE, session: coachSessionSchema.parse(liftAdd("Unused").session) },
+          { catalog: await exerciseNameMap(db), today: DAY },
+        )
+      ).ok,
+    ).toBe(true);
+    await importFromCoros();
+    const [row] = await rowsTitled(TITLE);
+    await adopt(row!.id, "Hinge, rebuilt");
+    await buildAndSend(row!.id);
+    await lane({ cap: 1, watchOnly: true });
+    // As prod holds it: the delete verified under the title ("already gone"), the name cleared, the copy still there…
+    const job = (await jobOf(`${row!.id}-unpush-copy`))!;
+    await db
+      .update(corosWriteJobs)
+      .set({ status: "verified", verifiedAt: nowInstant(), completedAt: nowInstant(), payload: { ...(job.payload as object), name: TITLE } })
+      .where(eq(corosWriteJobs.id, job.id));
+    await db.update(plannedWorkouts).set({ watchCopyName: null }).where(eq(plannedWorkouts.id, row!.id));
+    // …and a read before this fix made it a new row (the job not consulted).
+    await db.update(corosWriteJobs).set({ status: "superseded" }).where(eq(corosWriteJobs.id, job.id));
+    expect((await importFromCoros()).created).toBe(1);
+    const [dup] = await rowsTitled(TITLE);
+    await db.update(corosWriteJobs).set({ status: "verified" }).where(eq(corosWriteJobs.id, job.id));
+
+    expect(await importFromCoros()).toMatchObject({ created: 0, failedWrites: 0 });
+    expect(await rowOf(db, dup!.id)).toMatchObject({ archiveReason: "user_removed" });
+    expect((await jobOf(job.id))!.payload).toMatchObject({ name: WIRE, requeues: 1 });
+    expect((await rowOf(db, row!.id)).watchCopyName).toBe(WIRE);
+    await lane();
+    expect((await jobOf(job.id))!).toMatchObject({ status: "verified" });
+    expect(programsNamed(WIRE)).toHaveLength(0);
+  });
+});
+
 describe("an adopted row's old copy still served after its delete verified (prod 2026-11-04)", () => {
   /** A watch-plan session adopted and sent: the new copy on, the old one's delete verified, the old copy back on the wire. */
   async function verifiedButBack() {

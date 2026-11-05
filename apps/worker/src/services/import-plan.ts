@@ -658,10 +658,21 @@ export async function importPlanSnapshot(
       detail: job.lastErrorCategory ?? job.lastErrorDetail ?? null,
     });
   }
+  /**
+   * A NAME AN ADOPTED ROW HOLDS ITS OLD COPY BY is the copy's own: its wire name, or the title this import shows that
+   * copy under — our own stamp taken off (`unstampTitle`). The second is not hypothetical (prod 2026-11-04): the
+   * athlete's COROS-plan sessions were sent by the app's own Studio push in August, so COROS holds them as
+   * "W12 Wed - … — wk 12" while their rows read "W12 Wed - …", and an adoption recorded the row's title. Its delete,
+   * proven by name, found nothing named so and settled "already gone" while the copy stayed; and no claim by name
+   * matched, so the copy came back as a new row. Matched either way here; a delete this read sends again carries the
+   * wire name.
+   */
+  const heldNameIs = (held: string | null, src: (typeof admitted)[number]): boolean =>
+    held !== null && (held === src.title || held === unstampTitle(src.title, ownProgramNames));
   /** The settled delete whose copy this wire workout is — its address, its name and its program — or none. */
   const stuckCopyOf = (src: (typeof admitted)[number]): StuckCopy | undefined => {
     const held = copyStuckAt.get(src.sourceWorkoutId);
-    if (!held || held.name !== src.title) return undefined;
+    if (!held || !heldNameIs(held.name, src)) return undefined;
     const programs = [src.sourceProgramId, src.planProgramId].filter((p): p is string => typeof p === "string" && p !== "");
     return programs.includes(held.programId) ? held : undefined;
   };
@@ -962,7 +973,7 @@ export async function importPlanSnapshot(
     const pushClaims = atAddress.some(claimsByPush);
     const claimants = renamedCopyOf ? [renamedCopyOf] : atAddress.filter((w) =>
       appAuthoredRow(w)
-        ? claimsByPush(w) || (!pushClaims && w.watchCopyName !== null && w.watchCopyName === src.title)
+        ? claimsByPush(w) || (!pushClaims && heldNameIs(w.watchCopyName, src))
         : !stampIsOurs ||
           ownCoachStamps.has(`${w.id}\n${src.title}`) ||
           (w.sourceProgramId !== null && w.sourceProgramId === src.sourceProgramId),
@@ -1157,7 +1168,7 @@ export async function importPlanSnapshot(
     // then sits at an address no row holds, under the name its delete takes it off by. It is still the row's, on its way
     // off the watch: no new row (the session twice), nothing written; the delete's verify clears the name.
     const leaving = current ? undefined : copyLeavingAt.get(src.sourceWorkoutId);
-    if (leaving && leaving.name === src.title) {
+    if (leaving && heldNameIs(leaving.name, src)) {
       stats.unchanged += 1;
       continue;
     }
@@ -1188,20 +1199,23 @@ export async function importPlanSnapshot(
         stats.dedupedMirrors += 1;
       }
       copyStillServed.add(stuck.workoutId);
-      if (src.date >= today && stuck.watchCopyName === null) {
+      if (src.date >= today && stuck.watchCopyName !== src.title) {
         await db
           .update(plannedWorkouts)
-          .set({ watchCopyName: stuck.name, updatedAt: now })
-          .where(and(eq(plannedWorkouts.id, stuck.workoutId), isNull(plannedWorkouts.watchCopyName)));
-        stuck.watchCopyName = stuck.name;
+          .set({ watchCopyName: src.title, updatedAt: now })
+          .where(and(eq(plannedWorkouts.id, stuck.workoutId), or(isNull(plannedWorkouts.watchCopyName), eq(plannedWorkouts.watchCopyName, stuck.name))));
+        stuck.watchCopyName = src.title;
       }
       // A verified delete whose copy is still here — or one refused because the copy was not on the day it looked (the
       // athlete moved it in COROS: the same program, the same name, another day) — goes again, for the day it is on now.
-      const movedAway = stuck.status === "failed" && stuck.category === "stamp_mismatch" && src.date !== stuck.happenDay;
+      // (Or sought under the title the row shows rather than its wire name — the adoption's name before 2026-11-05.)
+      const movedAway = stuck.status === "failed" && stuck.category === "stamp_mismatch" && (src.date !== stuck.happenDay || stuck.name !== src.title);
       if ((stuck.status === "verified" || movedAway) && src.date >= today && prefs.corosWritesEnabled) {
         const again = stuck.requeues < COPY_DELETE_REQUEUES;
         const said = movedAway
-          ? `on the watch on ${src.date}, not ${stuck.happenDay} where its delete looked`
+          ? src.date !== stuck.happenDay
+            ? `on the watch on ${src.date}, not ${stuck.happenDay} where its delete looked`
+            : "on the watch under its wire name, not the name its delete looked for"
           : `still on the watch after its delete was verified${stuck.detail ? ` (${stuck.detail})` : ""}`;
         await db
           .update(corosWriteJobs)
@@ -1213,7 +1227,7 @@ export async function importPlanSnapshot(
                   claimedAt: null,
                   verifiedAt: null,
                   completedAt: null,
-                  payload: { ...stuck.payload, happenDay: src.date, attempts: 0, requeues: stuck.requeues + 1 },
+                  payload: { ...stuck.payload, name: src.title, happenDay: src.date, attempts: 0, requeues: stuck.requeues + 1 },
                   lastErrorCategory: null,
                   lastErrorDetail: said,
                   updatedAt: now,
@@ -1676,7 +1690,10 @@ export async function importPlanSnapshot(
   // it has run its course — verified (the name went with it) or failed for good, when the copy, if it is still there, is
   // a COROS workout like any other — and the name goes too. Only the name: the address is rule 8's below.
   if (input.fullSchedule) {
-    const servedUnder = new Set(admitted.map((src) => `${src.sourceWorkoutId}\n${src.title}`));
+    // Under its wire name, or the title the import shows it by (`heldNameIs`).
+    const servedUnder = new Set(
+      admitted.flatMap((src) => [`${src.sourceWorkoutId}\n${src.title}`, `${src.sourceWorkoutId}\n${unstampTitle(src.title, ownProgramNames)}`]),
+    );
     const copiesGone = existing.flatMap((w) => {
       // (A copy this read found still served after its delete settled is still there, wherever the row's address is.)
       if (!appAuthoredRow(w) || w.watchCopyName === null || copyDeleteInFlight.has(w.id) || copyStillServed.has(w.id)) return [];

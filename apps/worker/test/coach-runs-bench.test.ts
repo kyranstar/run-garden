@@ -2,7 +2,7 @@
  * A STEP'S STATE CPU (Stage 3 Task 2, fix round 1, item 15). Every step reads its run's state (JSON.parse of up to
  * STATE_MAX_BYTES), measures it, and writes it back once (one JSON.stringify, one byte count). On the Workers free
  * plan a request has 10 ms of CPU, and the model call's own stream parsing comes on top, so this must stay well under
- * it at a nearly full state (150–200 KB).
+ * it at a nearly full state (260–320 KB).
  *
  * Timed like session-build-bench.test.ts: a fixed calibration loop before and after, the p50 scaled to the reference
  * machine (`× reference / calibration`); a runner far from the reference, or CI, prints and skips with the reason.
@@ -49,7 +49,7 @@ function nearlyFullState(): { state: RunState; text: string } {
     { type: "text", text: "profile summary ".repeat(200), cache_control: { type: "ephemeral" } },
   ];
   state.messages = [{ role: "user", content: [{ type: "text", text: "Scope: one workout, to do now.\n".repeat(40) }] }];
-  for (let turn = 0; JSON.stringify(state).length < 185_000; turn++) {
+  for (let turn = 0; JSON.stringify(state).length < 300_000; turn++) {
     const ids = [0, 1, 2].map((k) => `toolu_${turn}_${k}`);
     state.messages.push({
       role: "assistant",
@@ -101,7 +101,7 @@ beforeAll(() => {
 const scaled = (ms: number) => ms * (REFERENCE_CALIBRATION_MS / (calibration || REFERENCE_CALIBRATION_MS));
 
 describe("a step's state CPU at a nearly full state", () => {
-  it("the fixture is the size the bound is about (150–200 KB)", () => {
+  it("the fixture is the size the bound is about (260–320 KB)", () => {
     expect(size).toBeGreaterThanOrEqual(STATE_LAST_CALL_BYTES);
     expect(size).toBeLessThanOrEqual(STATE_MAX_BYTES);
   });

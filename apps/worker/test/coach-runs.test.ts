@@ -1070,7 +1070,7 @@ describe("the step cap and the state cap", () => {
   it("never stores a history above the state cap: a near-full run gets its last call, then stops", async () => {
     // Results just under the per-result limit fill the history quickly.
     const big = readTool("read_history", 0, { rows: "z".repeat(TOOL_RESULT_MAX_BYTES - 500) });
-    const turns = Array.from({ length: 60 }, () => toolTurn(use("read_history"), use("read_history"), use("read_history")));
+    const turns = Array.from({ length: 60 }, () => toolTurn(...Array.from({ length: 6 }, () => use("read_history"))));
     const model = scriptedModel(turns);
     const runId = await newMainRun();
     let max = 0;
