@@ -1,5 +1,5 @@
 import { EXERCISES } from "@rg/exercise-library";
-import { buildExtractBody, postSubmitSchema } from "@rg/saves";
+import { buildExtractBody, EXTRACT_PROMPT_VERSION, extractUserText, postSubmitSchema, promptSha } from "@rg/saves";
 import type { CheckReport, PostSubmit, SaveErrorCode } from "@rg/saves";
 import type { AppClient, FetchFailure } from "./app-client.js";
 import { AppRefusedError, AppUnreachableError, CheckError, LoginNeededError, MediaError, PostGoneError, ReaderError } from "./errors.js";
@@ -282,7 +282,11 @@ export async function runCheck(deps: CheckDeps): Promise<CheckSummary> {
           }
           return fetchFailed(entry.source, entry.key, "too_large");
         }
-        const answer = await app.extract(entry.source, entry.key, body, { model: config.model, maxTokens: config.maxTokens });
+        // The prompt as sent, named for the app's trail: the relay streams the body unread (import trail, 2026-11-05).
+        const sha = await promptSha(extractUserText({ post: toSubmit(post, entry.source), libraryNames: LIBRARY_NAMES, retryIssues }));
+        const answer = await app.extract(entry.source, entry.key, body, {
+          model: config.model, maxTokens: config.maxTokens, promptVersion: EXTRACT_PROMPT_VERSION, promptSha: sha,
+        });
         if (answer.ok) {
           s.extracted++;
           return;

@@ -125,7 +125,8 @@ export interface ExtractBodyArgs {
   videoUrl?: string;
 }
 
-function extractSystem(): string {
+/** The reading's system message, as `buildExtractBody` sends it (the prompt registry stores it per version). */
+export function extractSystemText(): string {
   return [
     "You read a saved social video post (its caption, its video or images) and list the exercise moves it teaches, for a personal training app.",
     DATA_RULE,
@@ -167,9 +168,12 @@ function extractSystem(): string {
   ].join("\n");
 }
 
-/** The gateway JSON body as a string, with "model" as the first key. */
-export function buildExtractBody(args: ExtractBodyArgs): string {
-  const text = [
+/**
+ * The reading's user text, as `buildExtractBody` puts it in its text part. The Worker rebuilds it from the stored post
+ * to keep the prompt as sent on the trail, and checks the extension's hash of it (the relay never reads the body).
+ */
+export function extractUserText(args: Pick<ExtractBodyArgs, "post" | "libraryNames" | "retryIssues">): string {
+  return [
     "Extract the moves from this saved post.",
     DATA_RULE,
     dataBlock(args.post),
@@ -183,6 +187,17 @@ export function buildExtractBody(args: ExtractBodyArgs): string {
   ]
     .filter(Boolean)
     .join("\n\n");
+}
+
+/** The hex SHA-256 of a prompt's text: how the extension names the prompt it sent. */
+export async function promptSha(text: string): Promise<string> {
+  const digest = await crypto.subtle.digest("SHA-256", new TextEncoder().encode(text));
+  return [...new Uint8Array(digest)].map((b) => b.toString(16).padStart(2, "0")).join("");
+}
+
+/** The gateway JSON body as a string, with "model" as the first key. */
+export function buildExtractBody(args: ExtractBodyArgs): string {
+  const text = extractUserText(args);
   const content: unknown[] = [{ type: "text", text }];
   if (args.video) {
     content.push({
@@ -200,7 +215,7 @@ export function buildExtractBody(args: ExtractBodyArgs): string {
     model: args.model,
     max_tokens: args.maxTokens,
     messages: [
-      { role: "system", content: extractSystem() },
+      { role: "system", content: extractSystemText() },
       { role: "user", content },
     ],
   });

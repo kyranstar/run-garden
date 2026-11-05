@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { EXERCISES } from "@rg/exercise-library";
-import type { CheckReport, PostSubmit, WorkItem } from "@rg/saves";
+import { EXTRACT_PROMPT_VERSION, promptSha, type CheckReport, type PostSubmit, type WorkItem } from "@rg/saves";
 import { DEFAULT_CONFIG, runCheck, singleFlight, type CheckDeps } from "../src/check.js";
 import type { AppClient, ExtractAnswer, SubmitAnswer } from "../src/app-client.js";
 import { AppUnreachableError, LoginNeededError, ReaderError } from "../src/errors.js";
@@ -169,7 +169,10 @@ describe("runCheck", () => {
     // The relay body: model first, the 480 px variant as the video.
     const reel = app.extracts.find((x) => x.key === a)!;
     expect(Object.keys(JSON.parse(reel.body))[0]).toBe("model");
-    expect(reel.opts).toEqual({ model: DEFAULT_CONFIG.model, maxTokens: DEFAULT_CONFIG.maxTokens });
+    expect(reel.opts).toEqual({
+      model: DEFAULT_CONFIG.model, maxTokens: DEFAULT_CONFIG.maxTokens,
+      promptVersion: EXTRACT_PROMPT_VERSION, promptSha: await promptSha(bodyText(reel.body)),
+    });
     expect(reel.body).toContain("data:video/mp4;base64,AQIDBAUG");
     expect((deps.fetchImpl as ReturnType<typeof mediaFetch>).urls).toContain(`https://synthetic.cdninstagram.com/${a}-480.mp4`);
     expect(app.finish).toMatchObject({ phase: "finish", found: 5, fresh: 3, filtered: 1, extracted: 2, failed: 0 });

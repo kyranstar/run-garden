@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 import {
-  buildExtractBody, EXTRACT_PROMPT_VERSION, FILTER_PROMPT_VERSION, filterMessages, MATCH_PROMPT_VERSION, matchMessages,
-  type MatchJudgeItem,
+  buildExtractBody, EXTRACT_PROMPT_VERSION, extractSystemText, extractUserText, FILTER_PROMPT_VERSION, filterMessages,
+  MATCH_PROMPT_VERSION, matchMessages, promptSha, type MatchJudgeItem,
 } from "../src/index.js";
 
 const post = {
@@ -12,6 +12,17 @@ const args = {
   model: "m1", post, video: { mime: "video/mp4", base64: "QUJD" }, images: [{ mime: "image/jpeg", base64: "REVG" }],
   libraryNames: ["Glute bridge"], maxTokens: 2000,
 };
+
+describe("the prompt as sent (import trail, 2026-11-05)", () => {
+  it("buildExtractBody's text part is extractUserText for the same post, and its system message extractSystemText", () => {
+    const j = JSON.parse(buildExtractBody({ ...args, retryIssues: ["bad steps"] }));
+    expect(j.messages.at(-1).content[0].text).toBe(extractUserText({ post, libraryNames: ["Glute bridge"], retryIssues: ["bad steps"] }));
+    expect(j.messages[0].content).toBe(extractSystemText());
+  });
+  it("promptSha is the hex sha-256 of the text", async () => {
+    expect(await promptSha("abc")).toBe("ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad");
+  });
+});
 
 describe("buildExtractBody", () => {
   it("starts with the model key and parses", () => {

@@ -46,6 +46,15 @@ describe("the app client", () => {
     expect(header(call!.init, "x-saves-model")).toBe("google/gemini-3.6-flash");
     expect(header(call!.init, "x-saves-max-tokens")).toBe("4000");
     expect(header(call!.init, "content-type")).toBe("application/json");
+    // No prompt facts given: no prompt headers.
+    expect(header(call!.init, "x-saves-prompt-sha")).toBeNull();
+  });
+
+  it("names the prompt it sent: its version and the hash of its text part (import trail)", async () => {
+    const { calls, client } = recorder(() => json(200, { status: "matched" }));
+    await client.extract("instagram", "k", "{}", { model: "m", maxTokens: 10, promptVersion: "extract-4", promptSha: "ab12" });
+    expect(header(calls[0]!.init, "x-saves-prompt-version")).toBe("extract-4");
+    expect(header(calls[0]!.init, "x-saves-prompt-sha")).toBe("ab12");
   });
 
   it("reads the relay's coded refusals by their error, whatever the status", async () => {

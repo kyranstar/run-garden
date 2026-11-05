@@ -20,6 +20,14 @@ export type ExtractAnswer =
   | { ok: true }
   | { ok: false; code: SaveErrorCode | "not_found" | "conflict"; issues?: string[]; maxBytes?: number };
 
+/** What the relay is told about a call: the model, its output cap, and the prompt it carries (version and text hash). */
+export interface ExtractOpts {
+  model: string;
+  maxTokens: number;
+  promptVersion?: string;
+  promptSha?: string;
+}
+
 /** Why a post could not be sent at all (`POST /posts/:key/failed`). */
 export type FetchFailure = "gone" | "media_failed" | "too_large";
 
@@ -30,7 +38,7 @@ export interface AppClient {
   submitPost(post: PostSubmit): Promise<SubmitAnswer>;
   work(): Promise<WorkItem[]>;
   /** `body` is the gateway JSON (`buildExtractBody`), sent as a string so the request carries a Content-Length. */
-  extract(source: string, key: string, body: string, opts: { model: string; maxTokens: number }): Promise<ExtractAnswer>;
+  extract(source: string, key: string, body: string, opts: ExtractOpts): Promise<ExtractAnswer>;
   /** Tells the app a post could not be sent, so its work list stops handing it out first. A 404/409 is nothing to do. */
   reportFailed(source: string, key: string, code: FetchFailure): Promise<void>;
   /** The import's status, as the popup shows it. */
@@ -105,12 +113,18 @@ export function createAppClient(opts: { appUrl: string; token: string; fetchImpl
       return Array.isArray(body.keys) ? (body.keys as WorkItem[]) : [];
     },
 
-    async extract(source, key, payload, { model, maxTokens }) {
+    async extract(source, key, payload, { model, maxTokens, promptVersion, promptSha }) {
       const res = await call(
         `/api/saves/posts/${encodeURIComponent(key)}/extract?source=${encodeURIComponent(source)}`,
         {
           method: "POST",
-          headers: { "content-type": "application/json", "x-saves-model": model, "x-saves-max-tokens": String(maxTokens) },
+          headers: {
+            "content-type": "application/json",
+            "x-saves-model": model,
+            "x-saves-max-tokens": String(maxTokens),
+            ...(promptVersion ? { "x-saves-prompt-version": promptVersion } : {}),
+            ...(promptSha ? { "x-saves-prompt-sha": promptSha } : {}),
+          },
           body: payload,
         },
         RELAY_TIMEOUT_MS,
