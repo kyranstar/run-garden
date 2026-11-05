@@ -32,6 +32,14 @@ export const savedPosts = sqliteTable(
     costMicros: integer("cost_micros").notNull().default(0),
     batchId: text("batch_id"),
     seeded: integer("seeded", { mode: "boolean" }).notNull().default(false),
+    /** Migration 0034: how the post came (`saved` from the saved list, `pasted` as a link); null before the trail. */
+    origin: text("origin").$type<"saved" | "pasted">(),
+    /** Migration 0034: a video's title (YouTube); null when the source has none. */
+    title: text("title"),
+    /** Migration 0034: the video's length in seconds, when known. */
+    durationSec: integer("duration_sec"),
+    /** Migration 0034: whether the reader watched the video (null: not known, or not a video read by link). */
+    videoSeen: integer("video_seen", { mode: "boolean" }),
     updatedAt: text("updated_at").notNull(),
   },
   (t) => [
@@ -123,6 +131,84 @@ export const savedPostMoves = sqliteTable(
   ],
 );
 
+/**
+ * THE IMPORT TRAIL (migration 0034; design 2026-11-05 §6.1). One row per thing a stage of a post did, written by that
+ * stage with its state change. `detail` is JSON (≤ 64,000 chars); bigger pieces are `import_blobs`.
+ */
+export const importEvents = sqliteTable(
+  "import_events",
+  {
+    id: text("id").primaryKey(),
+    userId: text("user_id").notNull(),
+    postId: text("post_id").notNull(),
+    batchId: text("batch_id"),
+    moveId: text("move_id"),
+    stage: text("stage").notNull(),
+    source: text("source").notNull(),
+    status: text("status").notNull(),
+    summary: text("summary").notNull(),
+    detail: text("detail", { mode: "json" }).$type<unknown>(),
+    usageId: text("usage_id"),
+    model: text("model"),
+    promptVersion: text("prompt_version"),
+    costMicros: integer("cost_micros"),
+    latencyMs: integer("latency_ms"),
+    attempt: integer("attempt"),
+    runId: text("run_id"),
+    proposalId: text("proposal_id"),
+    rebuilt: integer("rebuilt", { mode: "boolean" }).notNull().default(false),
+    at: text("at").notNull(),
+  },
+  (t) => [index("import_events_post_idx").on(t.userId, t.postId, t.at), index("import_events_stage_idx").on(t.userId, t.stage, t.at)],
+);
+
+/** A large piece an event points to: a model's raw reply, the prompt as sent, a transcript (≤ 1,000,000 chars; `cut` past that). */
+export const importBlobs = sqliteTable(
+  "import_blobs",
+  {
+    id: text("id").primaryKey(),
+    userId: text("user_id").notNull(),
+    postId: text("post_id").notNull(),
+    eventId: text("event_id"),
+    kind: text("kind").notNull(),
+    text: text("text").notNull(),
+    cut: integer("cut", { mode: "boolean" }).notNull().default(false),
+    at: text("at").notNull(),
+  },
+  (t) => [index("import_blobs_post_idx").on(t.userId, t.postId)],
+);
+
+/** Each prompt version's system text, written once on first use: every trail can show the prompt it ran under. Not per user. */
+export const promptVersions = sqliteTable("prompt_versions", {
+  version: text("version").primaryKey(),
+  kind: text("kind").notNull(),
+  systemText: text("system_text").notNull(),
+  firstUsedAt: text("first_used_at").notNull(),
+});
+
+/** One change to imported data, by the coach (approved) or the owner: before, after, why, and on what basis. */
+export const importCorrections = sqliteTable(
+  "import_corrections",
+  {
+    id: text("id").primaryKey(),
+    userId: text("user_id").notNull(),
+    target: text("target").$type<"move" | "link" | "insight" | "reading">().notNull(),
+    targetId: text("target_id").notNull(),
+    field: text("field").notNull(),
+    before: text("before", { mode: "json" }).$type<unknown>(),
+    after: text("after", { mode: "json" }).$type<unknown>(),
+    why: text("why").notNull(),
+    basis: text("basis").$type<"evidence" | "owner">().notNull(),
+    evidence: text("evidence", { mode: "json" }).$type<unknown>(),
+    by: text("by").$type<"coach" | "owner">().notNull(),
+    proposalId: text("proposal_id"),
+    at: text("at").notNull(),
+  },
+  (t) => [index("import_corrections_target_idx").on(t.userId, t.target, t.targetId)],
+);
+
+export type ImportEventRow = typeof importEvents.$inferSelect;
+export type ImportBlobRow = typeof importBlobs.$inferSelect;
 export type SavedPostRow = typeof savedPosts.$inferSelect;
 export type PersonalMoveRow = typeof personalMoves.$inferSelect;
 export type SaveBatchRow = typeof saveBatches.$inferSelect;

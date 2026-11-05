@@ -65,6 +65,10 @@ import {
   exercisePrefs,
   exerciseProvenance,
   personalMoves,
+  importBlobs,
+  importCorrections,
+  importEvents,
+  promptVersions,
   saveBatches,
   saveChecks,
   savedPostMoves,
@@ -220,6 +224,10 @@ const ENTRIES: ReadonlyArray<readonly [SQLiteTable, TableScope]> = [
   [saveBatches, USER],
   [personalMoves, USER],
   [savedPostMoves, USER],
+  // the import trail (0034): what each stage of a post did, its large pieces, and every correction — the owner's data
+  [importEvents, USER],
+  [importBlobs, USER],
+  [importCorrections, USER],
 
   // children — reached only through a parent's ids
   [trainingPlanVersions, child("training_plans", "plan_id")],
@@ -244,6 +252,7 @@ const ENTRIES: ReadonlyArray<readonly [SQLiteTable, TableScope]> = [
   [gardenSpecies, excluded("global catalog shared by every account")],
   [corosExercises, excluded("global COROS exercise catalog shared by every account")],
   [schemaVersions, excluded("app component versions, not account data")],
+  [promptVersions, excluded("each prompt version's system text, the app's own words, shared by every account")],
   [
     accountState,
     excluded("this environment's restore marker and post-restore flags — bookkeeping, never data to carry; delete-all removes it"),

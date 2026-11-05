@@ -31,3 +31,36 @@ export function failureWords(code: SaveErrorCode | string | null, raw: string | 
       return first ? `Something went wrong: ${first}` : "Something went wrong";
   }
 }
+
+/** The stages of a post's path, in pipeline order (the trail sheet's sections follow it). */
+export const IMPORT_STAGES = [
+  "read", "submit", "screen", "extract", "check", "match", "batch", "choice", "save", "coach", "correction",
+] as const;
+export type ImportStage = (typeof IMPORT_STAGES)[number];
+/** How a stage's step went: `skip` is a stage that had nothing to do; `info` a step that is neither a pass nor a fail. */
+export type TrailStatus = "ok" | "warn" | "fail" | "skip" | "info";
+/** Who did the step: a site, the model gateway, the app, the coach, the owner, the extension. */
+export type TrailSource = "instagram" | "youtube" | "gateway" | "worker" | "coach" | "owner" | "extension";
+export type BlobKind = "raw_reply" | "prompt_user" | "transcript" | "speech" | "read_facts" | "detail";
+
+/** One step of a post's trail, as the owner's trail route gives it. Text written by a model or a stranger is data. */
+export interface TrailEventDto {
+  id: string;
+  stage: ImportStage;
+  source: TrailSource;
+  status: TrailStatus;
+  summary: string;
+  detail: unknown;
+  moveId: string | null;
+  model: string | null;
+  promptVersion: string | null;
+  costMicros: number | null;
+  latencyMs: number | null;
+  attempt: number | null;
+  runId: string | null;
+  proposalId: string | null;
+  /** Built from stored columns for a post imported before the trail (§6.6), not written by the stage. */
+  rebuilt: boolean;
+  blobs: { id: string; kind: BlobKind; chars: number }[];
+  at: string;
+}
