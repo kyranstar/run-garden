@@ -53,6 +53,54 @@ beforeEach(async () => {
   ({ userId } = await makeTestUser(db));
 });
 
+describe("filterPost writes its trail (import trail, 2026-11-05)", () => {
+  const trailOf = async (postId: string) => db.select().from(schema.importEvents).where(eq(schema.importEvents.postId, postId));
+  it("a model's verdict: one screen event with the verdict, the call's facts, its raw reply and the prompt version", async () => {
+    const row = await seen("p");
+    const content = '{"verdict":"not","reason":"a recipe"}';
+    await filterPost(db, env(), userId, row, NOW, gateway(content).fetchImpl);
+    const [e, ...more] = await trailOf(row.id);
+    expect(more).toEqual([]);
+    const [usage] = await db.select().from(llmUsage);
+    expect(e).toMatchObject({
+      stage: "screen", source: "gateway", status: "ok", summary: "Not training: a recipe", model: FILTER_MODEL_DEFAULT,
+      promptVersion: "filter-1", usageId: usage!.id, costMicros: usage!.costMicros,
+      detail: { verdict: "not", reason: "a recipe", stage: "model", tokens: { in: 300, out: 30 } },
+    });
+    expect(e!.latencyMs).toBeGreaterThanOrEqual(0);
+    const blobs = await db.select().from(schema.importBlobs).where(eq(schema.importBlobs.eventId, e!.id));
+    expect(blobs.map((b) => [b.kind, b.text])).toEqual([["raw_reply", content]]);
+    const [version] = await db.select().from(schema.promptVersions);
+    expect(version).toMatchObject({ version: "filter-1", kind: "filter" });
+    expect(version!.systemText).toContain("You triage a saved social video post");
+  });
+  it("a creator decision: one screen event from the app, no call, no blob", async () => {
+    for (const k of ["a", "b", "c"]) await seen(k, { status: "queued", filterVerdict: "training", filterStage: "model" });
+    const row = await seen("new");
+    await filterPost(db, env(), userId, row, NOW, gateway("{}").fetchImpl);
+    const [e] = await trailOf(row.id);
+    expect(e).toMatchObject({ stage: "screen", source: "worker", status: "ok", summary: expect.stringMatching(/^Kept: 3 earlier posts/), usageId: null });
+    expect(await db.select().from(schema.importBlobs)).toEqual([]);
+  });
+  it("a reply that doesn't parse: a failed screen event that keeps the raw reply", async () => {
+    const row = await seen("p", { caption: "nothing", hashtags: [] });
+    await filterPost(db, env(), userId, row, NOW, gateway("no json").fetchImpl);
+    const [e] = await trailOf(row.id);
+    expect(e).toMatchObject({ stage: "screen", status: "fail", summary: "Screening's reply didn't work; it will be tried again" });
+    expect((await db.select().from(schema.importBlobs)).map((b) => b.text)).toEqual(["no json"]);
+  });
+  it("a budget pause: a warn event, no call", async () => {
+    await db.insert(llmUsage).values({
+      id: "spent", userId, kind: IMPORT_KINDS.extract, model: "m", inputTokens: 1, outputTokens: 1,
+      costMicros: IMPORT_BUDGET_MICROS, cacheHit: false, createdAt: NOW,
+    });
+    const row = await seen("p", { caption: "nothing", hashtags: [] });
+    await filterPost(db, env(), userId, row, NOW, gateway("{}").fetchImpl);
+    const [e] = await trailOf(row.id);
+    expect(e).toMatchObject({ stage: "screen", status: "warn", summary: "Waiting for the import budget" });
+  });
+});
+
 describe("filterPost", () => {
   it("lets a creator with 3 earlier training posts through without a model call", async () => {
     for (const k of ["a", "b", "c"]) await seen(k, { status: "queued", filterVerdict: "training", filterStage: "model" });

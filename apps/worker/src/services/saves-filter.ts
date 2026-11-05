@@ -1,10 +1,11 @@
 import { and, eq, isNull, lt, ne, or, sql } from "drizzle-orm";
 import { schema } from "@rg/database";
 import type { SavedPostRow } from "@rg/database";
-import { filterMessages, filterVerdictSchema } from "@rg/saves";
+import { FILTER_PROMPT_VERSION, filterMessages, filterVerdictSchema } from "@rg/saves";
 import type { FilterVerdict, PostSubmit, SaveErrorCode, SavePostStatus } from "@rg/saves";
 import type { Env } from "../env.js";
-import type { Db } from "./db.js";
+import { runAtomically, type Db } from "./db.js";
+import { promptVersionStatement, trailStatements, type TrailEventInput } from "./import-trail.js";
 import { messagesCostMicros } from "./llm-messages.js";
 import { gatewayRouting, wakeGateway } from "./gateway-route.js";
 import { IMPORT_KINDS, reserveImport, settleImport } from "./saves-budget.js";
@@ -54,9 +55,64 @@ function estimateInputTokens(texts: string[], cover: PostSubmit["cover"]): numbe
   return Math.ceil(texts.reduce((n, t) => n + t.length, 0) / 3) + (cover ? Math.ceil(cover.base64.length / 4) : 0);
 }
 
-async function finish(db: Db, row: SavedPostRow, out: FilterOutcome, now: string, costMicros = 0): Promise<FilterOutcome> {
+/** The model call behind a verdict, for the trail: its facts, its raw reply (null when none came back), the prompt it ran. */
+interface ScreenCall {
+  model: string;
+  usageId: string;
+  latencyMs: number;
+  inputTokens?: number;
+  outputTokens?: number;
+  raw: string | null;
+  /** Why the call failed (`gateway_<status>`, `llm_error`), when it did. */
+  failure?: string;
+  system: string;
+}
+
+/** The screen stage's one trail event (design 2026-11-05 §4): what was decided and why, and the call behind it. */
+function screenEvent(out: FilterOutcome, costMicros: number, call?: ScreenCall): TrailEventInput {
+  const summary =
+    out.status === "queued"
+      ? `Kept: ${out.reason ?? "worth reading"}`
+      : out.status === "filtered_out"
+        ? `Not training: ${out.reason ?? ""}`.trim()
+        : out.errorCode === "budget_paused"
+          ? "Waiting for the import budget"
+          : call?.raw !== undefined && call.raw !== null
+            ? "Screening's reply didn't work; it will be tried again"
+            : `Screening couldn't ask the model${call?.failure ? ` (${call.failure})` : ""}; it will be tried again`;
+  const status = out.status === "seen" ? (out.errorCode === "budget_paused" ? "warn" : "fail") : out.stage === "keyword" ? "warn" : "ok";
+  return {
+    stage: "screen",
+    source: call ? "gateway" : "worker",
+    status,
+    summary,
+    detail: {
+      verdict: out.verdict ?? null,
+      reason: out.reason ?? null,
+      stage: out.stage ?? null,
+      ...(out.errorCode ? { errorCode: out.errorCode } : {}),
+      ...(call?.failure ? { failure: call.failure } : {}),
+      ...(call?.inputTokens !== undefined ? { tokens: { in: call.inputTokens, out: call.outputTokens ?? 0 } } : {}),
+    },
+    ...(call
+      ? { model: call.model, usageId: call.usageId, latencyMs: call.latencyMs, promptVersion: FILTER_PROMPT_VERSION, costMicros }
+      : {}),
+    ...(call?.raw ? { blobs: [{ kind: "raw_reply" as const, text: call.raw }] } : {}),
+  };
+}
+
+async function finish(
+  db: Db,
+  row: SavedPostRow,
+  out: FilterOutcome,
+  now: string,
+  costMicros = 0,
+  call?: ScreenCall,
+): Promise<FilterOutcome> {
   const stays = out.status === "seen";
-  await db
+  // The outcome and its trail in one batch (design 2026-11-05 §6.2). The post is this request's by its claim, so the
+  // guarded update lands; the event is written beside it.
+  const update = db
     .update(savedPosts)
     .set({
       status: out.status,
@@ -69,6 +125,11 @@ async function finish(db: Db, row: SavedPostRow, out: FilterOutcome, now: string
       updatedAt: now,
     })
     .where(and(eq(savedPosts.id, row.id), eq(savedPosts.status, "seen")));
+  await runAtomically(db, [
+    update,
+    ...trailStatements(db, row.userId, row.id, [screenEvent(out, costMicros, call)], now),
+    ...(call ? [promptVersionStatement(db, FILTER_PROMPT_VERSION, "filter", call.system, now)] : []),
+  ]);
   return out;
 }
 
@@ -146,7 +207,7 @@ export async function filterPost(
   if (gateway.kind === "canned") {
     return finish(db, post, { status: "queued", verdict: "maybe", stage: "model", reason: "fixture mode: not asked" }, now);
   }
-  const failed = (code: SaveErrorCode, costMicros = 0): Promise<FilterOutcome> =>
+  const failed = (code: SaveErrorCode, costMicros = 0, call?: ScreenCall): Promise<FilterOutcome> =>
     finish(
       db,
       post,
@@ -155,6 +216,7 @@ export async function filterPost(
         : { status: "seen", errorCode: code },
       now,
       costMicros,
+      call,
     );
   if (gateway.kind === "no_key") return failed("model_failed");
 
@@ -193,10 +255,14 @@ export async function filterPost(
 
   let settled = false;
   try {
+    const started = Date.now();
     const result = await askModel(gateway.env, fetchImpl, model, system, userText, post.cover);
+    const latencyMs = Date.now() - started;
     // A 402 records out-of-credits (the owner's banner); a call that worked clears it; any other failure says nothing.
     await noteGatewayOutcome(db, userId, result.ok ? { ok: true } : { ok: false, reason: result.reason });
-    if (!result.ok) return await failed("model_failed");
+    if (!result.ok) {
+      return await failed("model_failed", 0, { model, usageId: reservation.usageId, latencyMs, raw: null, failure: result.reason, system });
+    }
     const cost = messagesCostMicros(model, {
       inputTokens: result.inputTokens,
       cacheReadTokens: 0,
@@ -209,7 +275,10 @@ export async function filterPost(
     settled = true;
     const verdict = parseVerdict(result.content);
     // A reply that isn't the format is the model failing, never a verdict: retried next check (audit 2026-11-05).
-    if (!verdict) return await failed("model_failed", cost);
+    const call: ScreenCall = {
+      model, usageId: reservation.usageId, latencyMs, inputTokens: result.inputTokens, outputTokens: result.outputTokens, raw: result.content, system,
+    };
+    if (!verdict) return await failed("model_failed", cost, call);
     return await finish(
       db,
       post,
@@ -221,6 +290,7 @@ export async function filterPost(
       },
       now,
       cost,
+      call,
     );
   } finally {
     // A throw (or a failed call) must not leave the reservation at its worst case: it settles to nothing spent.

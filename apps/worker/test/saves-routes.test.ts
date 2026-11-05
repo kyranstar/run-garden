@@ -183,11 +183,12 @@ describe("POST /posts with the model (filter)", () => {
     vi.fn(async () => new Response(JSON.stringify({ choices: [{ message: { content } }], usage: { prompt_tokens: 100, completion_tokens: 20 } }), { status: 200 }));
   afterEach(() => vi.unstubAllGlobals());
 
-  it("filters out a 'not' within 12 statements (2 auth, 2 ledger, claim, creator history, reserve 2, settle, credits note 2, outcome; the model call excluded)", async () => {
+  // REBASED 2026-11-05 (import trail): the outcome's batch adds its screen event, its raw reply blob and the prompt version — 15.
+  it("filters out a 'not' within 15 statements (2 auth, 2 ledger, claim, creator history, reserve 2, settle, credits note 2, outcome + its trail 4; the model call excluded)", async () => {
     vi.stubGlobal("fetch", answer('{"verdict":"not","reason":"a recipe"}'));
     const { body, cost } = await post("/posts", submit("m1"), auth, await live());
     expect(body).toEqual({ status: "filtered_out", verdict: "not", reason: "a recipe" });
-    expect(cost).toBeLessThanOrEqual(12);
+    expect(cost).toBeLessThanOrEqual(15);
   });
   it("makes ONE model call and ONE usage row for two simultaneous submits of a new key", async () => {
     const fetchMock = answer('{"verdict":"training","reason":"drills"}');
