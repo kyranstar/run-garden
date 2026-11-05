@@ -140,6 +140,24 @@ describe("planned-to-completed matching", () => {
     expect(matches[0]!.method).toBe("scored");
   });
 
+  // An app programme's session (owner, 2026-11-05): its own copy completes it; a scored guess never does — and the
+  // activity it would have taken stays free for another workout it fits.
+  it("a link-only workout takes its own linked copy, never a scored guess", () => {
+    const act = singleSourceActivity(corosSrc(), "act-link-only");
+    expect(matchActivities([{ workout: workout({ id: "slot" }), linkOnly: true }], [{ activity: act }])).toEqual([]);
+    const both = matchActivities(
+      [{ workout: workout({ id: "slot" }), linkOnly: true }, { workout: workout({ id: "planned" }) }],
+      [{ activity: act }],
+    );
+    expect(both).toHaveLength(1);
+    expect(both[0]).toMatchObject({ workoutId: "planned" });
+    const linked = matchActivities(
+      [{ workout: workout({ id: "slot" }), corosProgramId: "9000000000000011", linkOnly: true }],
+      [{ activity: act, corosProgramId: "9000000000000011" }],
+    );
+    expect(linked[0]).toMatchObject({ workoutId: "slot", method: "coros_plan_link" });
+  });
+
   it("scores the sport point for a yoga workout against a yoga activity", () => {
     const act: NormalizedActivity = {
       id: "act-7",

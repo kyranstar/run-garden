@@ -1347,13 +1347,16 @@ describe("ruling 2b-R5: the app's session supersedes an automatic match, never a
     expect(await rowOf(tomorrow)).toMatchObject({ completionState: "scheduled" });
   });
 
-  it("a watch-only session still completes an open program slot (R5 leaves the matcher to it)", async () => {
+  // The owner's ruling (2026-11-05): a programme's sessions are the app's — prod's jaw-care slots were marked done by a
+  // 3-minute "Yoga" and an unrelated 29-minute "Strength". A watch-only session is extra training, never a guess at a slot.
+  it("a watch-only session never completes an open program slot by a guess: the slot stays open, the activity unplanned", async () => {
     const tomorrow = await strengthSlot(TOMORROW);
     await ingestActivities(db, {
       userId,
       sources: [watchCopy({ providerActivityId: "lbl-strength-2", startTime: "2026-10-07T19:06:00Z", startTimeLocal: "2026-10-07T12:06:00", contentFingerprint: "fp-2" })],
     });
-    expect(await rowOf(tomorrow)).toMatchObject({ completionState: "completed" });
+    expect(await rowOf(tomorrow)).toMatchObject({ completionState: "scheduled" });
+    expect((await active()).filter(([w]) => w === tomorrow)).toEqual([]);
   });
 });
 

@@ -17,6 +17,13 @@ export interface MatchableWorkout {
   workout: PlannedWorkout;
   /** COROS program id (server id) used for explicit linkage. */
   corosProgramId?: string;
+  /**
+   * Completed by its own copy only — the explicit COROS link (pass 1) — never by a scored guess (pass 2). An app
+   * programme's session is the app's: its save completes it, and a watch activity only when it is that session's own
+   * copy (owner, 2026-11-05: "Jaw care" stays in the app, and a 3-minute "Yoga" or an unrelated 29-minute "Strength"
+   * the watch recorded must never mark it done).
+   */
+  linkOnly?: boolean;
 }
 
 export function scoreWorkoutActivity(
@@ -156,7 +163,7 @@ export function matchActivities(
   for (const { activity } of activities) {
     if (usedActivities.has(activity.id)) continue;
     for (const mw of workouts) {
-      if (usedWorkouts.has(mw.workout.id)) continue;
+      if (usedWorkouts.has(mw.workout.id) || mw.linkOnly) continue;
       const cand = scoreWorkoutActivity(mw.workout, activity);
       if (cand) scored.push(cand);
     }
