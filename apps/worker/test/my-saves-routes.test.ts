@@ -90,6 +90,18 @@ describe("/api/my-saves", () => {
     expect((await rowOf(b)).status).toBe("reference_only");
   });
 
+  it("skipping a matched post takes its pending links out of its batch, so Save writes none of them (audit bug 10)", async () => {
+    const a = await seedPost(userId, "a", "matched");
+    const link = (id: string, position: number, status: "pending" | "saved") => ({
+      id, userId, postId: a, position, moveId: `zorbexMove${position}`, moveKind: "library" as const, batchId: "b1", confidence: 1, status,
+      createdAt: NOW,
+    });
+    await db.insert(schema.savedPostMoves).values([link("l0", 0, "pending"), link("l1", 1, "saved")]);
+    expect((await override(a, { action: "skip" })).status).toBe(200);
+    const links = await db.select().from(schema.savedPostMoves).where(eq(schema.savedPostMoves.postId, a));
+    expect(Object.fromEntries(links.map((l) => [l.id, l.status]))).toEqual({ l0: "removed", l1: "saved" });
+  });
+
   it("another user's post is 404 and untouched", async () => {
     const other = (await makeTestUser(db)).userId;
     const id = await seedPost(other, "a", "filtered_out");

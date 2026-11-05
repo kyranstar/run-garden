@@ -284,7 +284,11 @@ export function matchMoves(
       if (hits.length) {
         const near = nearOfDraft(move);
         const same = hits.find((row) => sameMoveType(near, nearOfRow(row)));
-        if (same) return { position, kind: "personal", id: same.id, confidence: "high", check: false };
+        // An archived move is one the owner put away: a name alone never links a new post to it blind (audit 2026-11-05).
+        if (same) {
+          const archived = same.status === "archived";
+          return { position, kind: "personal", id: same.id, confidence: archived ? "medium" : "high", check: archived };
+        }
         const like = hits.find((row) => row.status === "active")?.id;
         return { position, kind: "new", confidence: move.confidence, check: true, draft: move, ...(like ? { like } : {}) };
       }

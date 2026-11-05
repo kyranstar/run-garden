@@ -134,6 +134,14 @@ const bodyText = (body: string): string => {
 };
 
 describe("runCheck", () => {
+  it("counts a submit the app's filter couldn't decide (seen, with an error code) as failed (audit bug 6)", async () => {
+    const app = new FakeApp();
+    const [a] = [1].map(code);
+    app.verdict = () => ({ status: "seen", errorCode: "model_failed" });
+    const summary = await runCheck(makeDeps(app, fakeReader([[media(a!, "video")]])));
+    expect(summary).toMatchObject({ submitted: 1, failed: 1, extracted: 0 });
+  });
+
   it("reports its start, asks /known per page, submits fresh posts newest last with a cover, extracts the queued, reports the counts", async () => {
     const app = new FakeApp();
     const [a, b, c, d, e] = [1, 2, 3, 4, 5].map(code);

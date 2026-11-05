@@ -152,7 +152,13 @@ describe("matchMoves", () => {
     expect(d!.candidates ?? []).toEqual([]);
   });
 
-  it("matches the owner's own moves (active, pending, archived) by name, high", () => {
+  it("an archived move of the owner's is matched only at medium, flagged to check — never linked blind (audit bug 8)", () => {
+    const rows = [{ id: "myOldThingcccccc", status: "archived", mergedInto: null, name: "Old thing" }];
+    const [d] = matchMoves(extraction([move("The old thing")]), EXERCISES, rows);
+    expect(d).toMatchObject({ kind: "personal", id: "myOldThingcccccc", confidence: "medium", check: true });
+  });
+
+  it("matches the owner's own moves (active, pending high; archived medium) by name", () => {
     const rows = [
       { id: "myZorbexShuffleaaaaaa", status: "active", mergedInto: null, name: "Zorbex shuffle" },
       { id: "myPendingThingbbbbbb", status: "pending", mergedInto: null, name: "Pending thing" },
@@ -162,7 +168,7 @@ describe("matchMoves", () => {
     expect(out.map((d) => [d.kind, d.id, d.confidence])).toEqual([
       ["personal", "myZorbexShuffleaaaaaa", "high"],
       ["personal", "myPendingThingbbbbbb", "high"],
-      ["personal", "myOldThingcccccc", "high"],
+      ["personal", "myOldThingcccccc", "medium"],
     ]);
   });
 

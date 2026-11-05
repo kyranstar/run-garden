@@ -216,6 +216,10 @@ export async function runCheck(deps: CheckDeps): Promise<CheckSummary> {
     s.submitted++;
     handled.add(entry.key);
     if (answer.status === "filtered_out") s.filtered++;
+    // The app's filter couldn't decide (its model failed, or the budget): the post waits as seen and is retried, but this
+    // check sent nothing it could use — a failure, not a silent success (audit 2026-11-05, bug 6). "busy" is another
+    // request holding it.
+    if (answer.status === "seen" && answer.errorCode && answer.errorCode !== "busy") postFailed();
     if (answer.status === "queued") await queue.push({ kind: "extract", source: entry.source, key: entry.key });
   }
 

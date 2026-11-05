@@ -1,11 +1,11 @@
-import { and, asc, desc, eq, gte, inArray, isNotNull, isNull, lt, or, sql } from "drizzle-orm";
+import { and, asc, desc, eq, gte, inArray, isNotNull, isNull, lt, ne, or, sql } from "drizzle-orm";
 import { schema } from "@rg/database";
 import type { SavedPostRow } from "@rg/database";
 import type { CheckReport, PostSubmit, SaveErrorCode, SavesStatusDto, WorkItem } from "@rg/saves";
 import { failureWords } from "@rg/saves";
 import { nowInstant } from "@rg/domain";
 import { sha256Hex } from "../auth/crypto.js";
-import type { Db } from "./db.js";
+import { runAtomically, type Db } from "./db.js";
 import { importSpend } from "./saves-budget.js";
 import { CLAIM_STALE_MS } from "./saves-filter.js";
 
@@ -138,7 +138,15 @@ export async function workList(
         isNotNull(savedPosts.url),
         or(
           isFilter,
-          and(eq(savedPosts.status, "queued"), isNull(savedPosts.extraction)),
+          // A post the budget refused waits off the list until a typical reading fits again: handing it out meant
+          // downloading its video every check for nothing (audit 2026-11-05, bug 6).
+          and(
+            eq(savedPosts.status, "queued"),
+            isNull(savedPosts.extraction),
+            spentMicros + EXTRACT_ROOM_MICROS <= capMicros
+              ? undefined
+              : or(isNull(savedPosts.lastErrorCode), ne(savedPosts.lastErrorCode, "budget_paused")),
+          ),
           and(eq(savedPosts.status, "extracting"), lt(savedPosts.updatedAt, relayStale), lt(savedPosts.extractAttempts, MAX_EXTRACT_ATTEMPTS)),
           and(
             eq(savedPosts.status, "failed"),
@@ -154,6 +162,9 @@ export async function workList(
     r.url ? [{ source: r.source, key: r.key, url: r.url, action: r.status === "seen" ? ("filter" as const) : ("extract" as const) }] : [],
   );
 }
+
+/** The import budget a typical reading needs free before a post the budget refused is handed out again. */
+export const EXTRACT_ROOM_MICROS = 50_000;
 
 /** Why the extension could not send a post, before any relay call. */
 export type FetchFailure = "gone" | "media_failed" | "too_large";
@@ -344,9 +355,20 @@ export async function overridePost(
       .returning({ id: savedPosts.id });
     return requeued.length > 0 ? "ok" : "conflict";
   }
-  await db
+  const status = db
     .update(savedPosts)
     .set({ status: action === "skip" ? "skipped_by_owner" : "reference_only", updatedAt: now })
     .where(where);
+  // A skipped post leaves its batch: its pending links go, so Save writes none of them (audit 2026-11-05, bug 10). A
+  // reference keeps its links.
+  if (action === "skip") {
+    await runAtomically(db, [
+      status,
+      db
+        .update(savedPostMoves)
+        .set({ status: "removed" })
+        .where(and(eq(savedPostMoves.userId, userId), eq(savedPostMoves.postId, row.id), eq(savedPostMoves.status, "pending"))),
+    ]);
+  } else await status;
   return "ok";
 }

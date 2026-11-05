@@ -389,20 +389,25 @@ export function insightRowsSql(userId: string, keptPosts: SQL): SQL {
  * aggregate's order.
  */
 export function insightsJsonSql(userId: string, keptPosts: SQL, max: number): SQL {
+  // Read past `max`: `keepInsight` drops some after the read, and the cap must count only the kept ones — capping first
+  // let ten dose-only insights crowd out ten good ones (audit 2026-11-05, bug 12). `insightsOf(raw, max)` caps.
   return sql`(select json_group_array(json_array(ins_i.post_id, ins_i.url, ins_i.creator, ins_i.body, ins_i.seen, ins_i.idx, json(ins_i.sums))) from (
-      select * from (${insightRowsSql(userId, keptPosts)}) where nth = 1 order by seen, post_id, idx limit ${max}) ins_i)`;
+      select * from (${insightRowsSql(userId, keptPosts)}) where nth = 1 order by seen, post_id, idx limit ${max * INSIGHTS_READ_FACTOR}) ins_i)`;
 }
+
+/** How far past its cap `insightsJsonSql` reads, so the cap counts insights `keepInsight` kept. */
+const INSIGHTS_READ_FACTOR = 3;
 
 /** One insight of a batch's post, as `insightsJsonSql` reads it (the batch page's shape): its text and creator a model's. */
 export type BatchInsight = SaveBatchInsightDto;
 
 /** `insightsJsonSql`'s value, put in the posts' order, keeping only what `keepInsight` does (no restated dose or move description); [] when it doesn't read. */
-export function insightsOf(raw: unknown): BatchInsight[] {
-  return survivorsOf(raw).map(({ postId, url, creator, text }) => ({ postId, url, creator, text }));
+export function insightsOf(raw: unknown, max: number = Infinity): BatchInsight[] {
+  return survivorsOf(raw, max).map(({ postId, url, creator, text }) => ({ postId, url, creator, text }));
 }
 
 /** `insightsOf`'s survivors with their place in their post (`idx`), which Save's memory ids are made of. */
-function survivorsOf(raw: unknown): Array<BatchInsight & { seen: string; idx: number }> {
+function survivorsOf(raw: unknown, max: number = Infinity): Array<BatchInsight & { seen: string; idx: number }> {
   let list: unknown = raw;
   if (typeof raw === "string") {
     try {
@@ -420,7 +425,7 @@ function survivorsOf(raw: unknown): Array<BatchInsight & { seen: string; idx: nu
       : [];
   });
   const cmp = (a: string, b: string) => (a < b ? -1 : a > b ? 1 : 0);
-  return rows.sort((a, b) => cmp(a.seen, b.seen) || cmp(a.postId, b.postId) || a.idx - b.idx);
+  return rows.sort((a, b) => cmp(a.seen, b.seen) || cmp(a.postId, b.postId) || a.idx - b.idx).slice(0, max);
 }
 
 /**
@@ -576,7 +581,7 @@ export async function saveBatch(db: Db, userId: string, batchId: string, now: st
       )
       .onConflictDoNothing(),
     // While the links are still pending: they say which posts were kept.
-    insightWrites(db, userId, survivorsOf(batch.insights), now),
+    insightWrites(db, userId, survivorsOf(batch.insights, INSIGHTS_PER_BATCH), now),
     db.update(savedPostMoves).set({ status: "saved" }).where(keptLinks),
   ] as const;
   const thisBatch = and(eq(saveBatches.id, batchId), eq(saveBatches.userId, userId));

@@ -244,6 +244,17 @@ describe("an insight that only restates a dose or a move is not kept", () => {
     expect(statements.length).toBe(6);
     expect(await bodies()).toEqual([guidance]);
   });
+
+  it("the cap counts only kept insights: ten dose-only ones first never crowd out ten good ones after them (audit bug 12)", async () => {
+    for (let i = 0; i < 6; i++) {
+      const insights = [0, 1, 2, 3, 4].map((n) => (i < 2 ? `${i * 5 + n + 2} sets of 10 reps` : `Do drill ${i}-${n} before an easy run.`));
+      await matched(`n${i}`, [move("Zorbex quad shuffle", QUAD_PURPOSE)], insights, at(i / 100));
+    }
+    const batchId = (await assembleBatch(db, matchEnv, userId, at(1)))!;
+    const page = await call("GET", `/batches/${batchId}`);
+    expect(page.body.insights).toHaveLength(20);
+    expect(page.body.insights.every((x: { text: string }) => x.text.startsWith("Do drill"))).toBe(true);
+  });
 });
 
 // ── The coach finds them; the core holds them only when pinned ───────────────────────────────────────────────────────

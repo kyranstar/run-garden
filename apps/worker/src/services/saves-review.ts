@@ -182,7 +182,7 @@ export async function batchDetail(db: Db, userId: string, batchId: string, now: 
     from save_batches b where b.id = ${batchId} and b.user_id = ${userId} limit 1`)) as Array<BatchRead & { insights: unknown }>;
   if (!head) return null;
   const batch = batchOf(head, now);
-  const insights = insightsOf(head.insights);
+  const insights = insightsOf(head.insights, INSIGHTS_PER_BATCH);
   // The post's reading of each move is read out by SQLite: the extraction is never handed over whole.
   const reads = (await db.all(sql`select l.id as postMoveId, l.position as position, l.status as status, l.move_id as moveId,
       l.move_kind as moveKind, l.check_flag as checkFlag, p.url as url,

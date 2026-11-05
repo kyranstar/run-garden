@@ -250,6 +250,20 @@ describe("GET /work", () => {
     });
     expect((await call("/work")).body.keys).toEqual([]);
   });
+  it("a queued post the budget refused waits off the list until a typical reading fits — no download every check (audit bug 6)", async () => {
+    await seedPost("qb", { status: "queued", lastErrorCode: "budget_paused" });
+    await seedPost("q0", { status: "queued" });
+    const spend = (micros: number) =>
+      db.insert(schema.llmUsage).values({
+        id: `spent${micros}`, userId, kind: "import_extract", model: "m", inputTokens: 1, outputTokens: 1,
+        costMicros: micros, cacheHit: false, createdAt: new Date().toISOString(),
+      });
+    await spend(4_990_000);
+    expect((await call("/work")).body.keys.map((k: { key: string }) => k.key)).toEqual(["q0"]);
+    await db.delete(schema.llmUsage);
+    await spend(1_000_000);
+    expect((await call("/work")).body.keys.map((k: { key: string }) => k.key).sort()).toEqual(["q0", "qb"]);
+  });
   it("hands out at most 20", async () => {
     for (let i = 0; i < 25; i++) await seedPost(`q${i}`);
     expect((await call("/work")).body.keys).toHaveLength(20);
