@@ -7,8 +7,8 @@ import type { ExtractedMove, PostSubmit } from "./schemas.js";
 // never in the system message, and the instructions say to treat it as data.
 
 export const FILTER_PROMPT_VERSION = "filter-1";
-export const EXTRACT_PROMPT_VERSION = "extract-3";
-export const MATCH_PROMPT_VERSION = "match-1";
+export const EXTRACT_PROMPT_VERSION = "extract-4";
+export const MATCH_PROMPT_VERSION = "match-2";
 
 const OPEN = "<post-data>";
 const CLOSE = "</post-data>";
@@ -75,8 +75,9 @@ export function matchMessages(items: readonly MatchJudgeItem[]): { system: strin
     DATA_RULE,
     "Each move comes with candidate moves whose names are close: the owner's own (listed with the move, inside the " +
       "data) and the library's (listed after the data). A candidate is the same move only when it is the same exercise " +
-      "done the same way, whatever it is called. A variation (another position, other equipment, another direction or " +
-      "movement) is not the same move.",
+      "done the same way, whatever it is called. A variation (another position, another direction or movement, or " +
+      "equipment that changes the work, such as a load) is not the same move. A prop that only rests the hands or adds " +
+      "comfort or balance (a block, a towel, a pad, a chair to hold) does not make it a different move.",
     'Reply with JSON only: {"matches":[{"move":<move number>,"id":"<one of that move\'s candidate ids>"|null}]}, one ' +
       "entry per move. Use null when no candidate is the same move, or when unsure.",
   ].join("\n");
@@ -132,19 +133,31 @@ function extractSystem(): string {
     '{"kind":"routine"|"single_move"|"tips"|"not_training","summary":"<=300 chars","themes":["<=5 short words"],' +
       '"moves":[Move, ... at most 12],"routine":{"rounds":n,"restSec":n,"order":[move indexes]} (optional),' +
       '"insights":["<=5 of <=200 chars"]}',
-    "Move = {name (<=80), aliases[<=5], summary (<=160), steps[<=8 of <=200], cues[<=6 of <=160], mistakes[<=5 of <=160], " +
+    "Move = {name (<=80), aliases[<=5], summary (<=90), steps[<=8 of <=200], cues[<=6 of <=160], mistakes[<=5 of <=160], " +
       "purpose (<=160: what the post says this move is for, or when to do it), " +
-      "dose:{text (<=80), type?, range?:[low,high], sets?:[min,max]}, patterns[], regions[], equipment[], " +
+      "dose:{text (<=80), type?, range?:[low,high], sets?:[min,max], secsPerRep?}, patterns[], regions[], equipment[], equipmentOneOf?[], " +
       "position, laterality, load, contraction[], difficulty (whole number 1 to 5), conditions, corosHint? (<=60), " +
       'evidence:{name,dose,steps each "stated" or "inferred"}, confidence:"high"|"medium"|"low"}.',
+    "summary: one plain line, the only instruction on screen during the move, so it must get someone into the right position. " +
+      "State any lopsided setup outright: which knee, foot or hand, relative to what (the wall, the anchor, the weight). " +
+      'Example: "Side-on to a wall, far knee down, near knee up against it; turn the chest both ways."',
+    "steps: start from the setup, say where each limb goes, say what counts as one rep, and for a unilateral move end by doing the other side. " +
+      'Never leave a "which": no "the other one" or "the inside arm" without saying which.',
     `patterns: ${PATTERNS.join(", ")}.`,
     `regions: ${REGIONS.join(", ")}.`,
-    `equipment: ${EQUIPMENT_IDS.join(", ")} (empty when none).`,
+    `equipment: ${EQUIPMENT_IDS.join(", ")} (empty when none). Only what the move cannot be done without: every item listed is required. ` +
+      "A prop offered for comfort or balance (a pad, a towel, a wall to touch) is not equipment. When any one of several will do (a bench or a chair), list them in equipmentOneOf instead.",
     `position: ${POSITIONS.join(", ")}.`,
-    `laterality: ${LATERALITY.join(", ")}.`,
-    `load: ${LOADS.join(", ")}.`,
-    `contraction: ${CONTRACTIONS.join(", ")}.`,
-    `dose type: ${DOSE_TYPES.join(", ")}.`,
+    `laterality: ${LATERALITY.join(", ")}. This decides whether the app ever asks for the other side. ` +
+      "unilateral: one side, then the other, with a change of setup; use it for anything half-kneeling, side-lying, staggered, side-on to something, a stretch on one limb, or one limb working at a time. " +
+      "alternating: the sides swap rep by rep inside one continuous set with no change of setup (a dead bug). " +
+      "bilateral: symmetric, or both sides at once.",
+    `load: ${LOADS.join(", ")}. external: a weight the athlete logs (kettlebell, dumbbells, barbell, cable, machine). ` +
+      "bodyweight: effortful work with no logged weight, band work included. none: mobility, stretches, release, breathing.",
+    `contraction: ${CONTRACTIONS.join(", ")}. isometric for holding still, passive for a relaxed stretch or release, plyometric for anything that leaves the floor.`,
+    `dose type: ${DOSE_TYPES.join(", ")}. reps: counted movements. time: holds, stretches and flows with no weight, in seconds. breaths: counted in breaths. carry: a weight walked with or held for time, in SECONDS, never metres. ` +
+      "dose range is [low, high] in that unit, per side for a unilateral or alternating move. Whenever the post states a number, put it in range and sets as well as text. " +
+      "secsPerRep: the seconds one rep takes, when it is slow or has a hold or pause in it (a 10 second hold is at least 10).",
     "conditions: an object with one entry for every profile below, each {attrs:{...}, note:\"<=160 chars\"}:",
     profileGuide(),
     "insights: guidance the post gives about when, why, how often or who it suits — never a dose (sets, reps, seconds) and never a description of one move (that is the move's summary); at most 5 of <=200 chars; empty when none.",

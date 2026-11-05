@@ -267,6 +267,8 @@ function checkWhyOf(r: RowRead): CheckWhy[] {
   if (r.nameEvidence === "inferred") out.push("inferred_name");
   if (r.doseEvidence === "inferred") out.push("inferred_dose");
   if (r.likeId) out.push("near_duplicate");
+  // Flagged, and none of the above: the import itself changed or questioned the reading (`buildPersonalRecord`'s repairs).
+  if (out.length === 0) out.push("reading_fixed");
   return out;
 }
 
@@ -280,6 +282,7 @@ export function applyPatch(rec: ExerciseRecord, p: PersonalMovePatch): ExerciseR
   return {
     ...rec,
     ...(p.name !== undefined ? { name: p.name } : {}),
+    ...(p.laterality !== undefined ? { laterality: p.laterality } : {}),
     ...(p.dose ? { dose: p.dose } : {}),
     ...(p.conditions ? { conditions: { ...rec.conditions, ...p.conditions } } : {}),
     text: {

@@ -563,6 +563,25 @@ describe("ruling: with the library, a legacy id is the move it now is; an id the
 
 // ── Engine builds ─────────────────────────────────────────────────────────────────────────────────────────────────
 
+describe("a source that names a one-sided move and forgets its sides", () => {
+  const library = makeLibraryIndex(EXERCISES);
+  const coachDose = (name: string, extra: Record<string, unknown>) => {
+    const { session, raw } = coach({ category: "strength", title: "Hips", durationMinutes: 20, lift: { exercises: [{ name, sets: 1, ...extra }] } });
+    const { doc } = docFromCoachSession(session, { resolveName: (n: string) => n, raw, library })!;
+    return (doc.parts[0]!.items[0] as { dose: { perSide?: boolean } }).dose;
+  };
+
+  it("still plays both sides: a one-sided move, or an alternating move that's counted", () => {
+    expect(coachDose("figureFour", { holdSeconds: 30 }).perSide).toBe(true);
+    expect(coachDose("deadBug", { reps: 8 }).perSide).toBe(true);
+  });
+
+  it("gives no sides to a symmetric move, nor to an alternating one on a clock", () => {
+    expect(coachDose("catCow", { reps: 8 }).perSide).toBeUndefined();
+    expect(coachDose("thoracicFlow", { holdSeconds: 90 }).perSide).toBeUndefined();
+  });
+});
+
 describe("docFromBuild", () => {
   const builds = seededBuilds(50);
 

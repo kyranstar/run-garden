@@ -7,7 +7,7 @@
  * why the document cannot hold it. A clipped text keeps its whole original in `kept`.
  */
 import { formatWeight, parseWeight, toKg, type Weight, type WorkoutDose, type WorkoutItem } from "@rg/domain";
-import type { ExerciseRecord } from "@rg/exercise-library";
+import { countsPerSide, type ExerciseRecord } from "@rg/exercise-library";
 
 /** Something a source carried that the document cannot say, kept beside it. */
 export interface KeptEntry {
@@ -99,6 +99,15 @@ export function openBlock(name: string, seconds: number): WorkoutItem {
 
 /** The open block's name when a source names no movements. */
 export const OPEN_BLOCK_NAME = "Your choice of movements";
+
+/**
+ * The dose a library move plays. A source that names a one-sided move and doesn't mention its sides still means both: a
+ * timed window would otherwise run one side only. Without a library, the dose as given.
+ */
+export function withSides(dose: WorkoutDose, id: string, library: LibraryIndex | undefined): WorkoutDose {
+  const record = library?.(id);
+  return record && countsPerSide(record) ? { ...dose, perSide: true } : dose;
+}
 
 /** "each side", "per side", "/side" — how a note says the work is per side (the push path writes "each side"). */
 export const PER_SIDE_WORDS = /\b(?:each|per) side\b|\/side\b/i;

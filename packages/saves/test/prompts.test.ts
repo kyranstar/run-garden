@@ -50,7 +50,20 @@ describe("buildExtractBody", () => {
       "insights: guidance the post gives about when, why, how often or who it suits — never a dose (sets, reps, seconds) and never a description of one move (that is the move's summary); at most 5 of <=200 chars; empty when none.",
     );
     expect(system).toContain("purpose (<=160: what the post says this move is for, or when to do it)");
-    expect(EXTRACT_PROMPT_VERSION).toBe("extract-3");
+    expect(EXTRACT_PROMPT_VERSION).toBe("extract-4");
+  });
+  it("defines every field the audit found read wrong, not just its vocabulary", () => {
+    const system: string = JSON.parse(buildExtractBody(args)).messages[0].content;
+    expect(system).toContain("summary (<=90)");
+    expect(system).toMatch(/State any lopsided setup outright: which knee, foot or hand, relative to what/);
+    expect(system).toMatch(/unilateral: one side, then the other, with a change of setup; use it for anything half-kneeling/);
+    expect(system).toMatch(/alternating: the sides swap rep by rep/);
+    expect(system).toMatch(/carry: a weight walked with or held for time, in SECONDS, never metres/);
+    expect(system).toMatch(/Whenever the post states a number, put it in range and sets/);
+    expect(system).toMatch(/per side for a unilateral or alternating move/);
+    expect(system).toMatch(/secsPerRep: the seconds one rep takes/);
+    expect(system).toMatch(/Only what the move cannot be done without/);
+    expect(system).toMatch(/list them in equipmentOneOf/);
   });
   it("carries the video by link when asked, with no inline bytes", () => {
     const url = ["ht", "tps://synthetic.cdninstagram.com/v/post.mp4?sig=1"].join("");
@@ -105,6 +118,14 @@ describe("filterMessages", () => {
     expect(f.userText).toContain("<post-data>");
     expect(f.userText).toContain("zz-caption-zz");
     expect(FILTER_PROMPT_VERSION).toBeTruthy();
+  });
+});
+
+describe("what makes a duplicate", () => {
+  it("a prop that only rests the hands is the same move; a load or another position is not", () => {
+    const { system } = matchMessages([]);
+    expect(system).toMatch(/A prop that only rests the hands or adds comfort or balance .* does not make it a different move/);
+    expect(system).toMatch(/A variation \(another position, another direction or movement/);
   });
 });
 

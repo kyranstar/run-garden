@@ -67,11 +67,19 @@ export const extractedMoveSchema = z
     mistakes: z.array(z.string().max(160)).max(5),
     purpose: z.string().max(160),
     dose: z
-      .object({ text: z.string().max(80), type: z.enum(DOSE_TYPES).optional(), range: range.optional(), sets: range.optional() })
+      .object({
+        text: z.string().max(80),
+        type: z.enum(DOSE_TYPES).optional(),
+        range: range.optional(),
+        sets: range.optional(),
+        secsPerRep: z.number().min(0).max(60).optional(),
+      })
       .strict(),
     patterns: z.array(z.enum(PATTERNS)),
     regions: z.array(z.enum(REGIONS)),
     equipment: z.array(z.enum(EQUIPMENT_IDS)),
+    /** Any one of these will do (a bench or a chair); `equipment` is what the move can't be done without. */
+    equipmentOneOf: z.array(z.enum(EQUIPMENT_IDS)).optional(),
     position: z.enum(POSITIONS),
     laterality: z.enum(LATERALITY),
     load: z.enum(LOADS),

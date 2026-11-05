@@ -116,6 +116,32 @@ export function soreAreaNotes(doc: WorkoutDoc, sore: readonly SoreArea[], find: 
   });
 }
 
+// ── one_side_only ───────────────────────────────────────────────────────────────────────────────────────────────────
+
+/**
+ * A one-sided move the draft gives no sides and no chosen side: a timed window runs once, so the other side never comes.
+ * The coach's own note, not the document's rule: the document validator's issues rule moves out of quick starts and
+ * suggestions, and the owner may turn a move's sides off in the Studio on purpose.
+ */
+export function oneSidedNotes(doc: WorkoutDoc, find: Find): CoachIssue[] {
+  return doc.parts.flatMap((part, p) =>
+    part.items.flatMap((item, i): CoachIssue[] => {
+      if (item.kind !== "exercise" || item.dose.perSide || item.side !== undefined) return [];
+      const rec = find(item.libraryId);
+      if (rec?.laterality !== "unilateral") return [];
+      return [
+        {
+          path: `parts[${p}].items[${i}].dose`,
+          code: "one_side_only",
+          message: `${rec.name} is done a side at a time, and this plays only one side.`,
+          fix: "Set perSide: true so it plays both sides, or set side if one side is the point.",
+          severity: "warning",
+        },
+      ];
+    }),
+  );
+}
+
 // ── title_not_content ───────────────────────────────────────────────────────────────────────────────────────────────
 
 /**

@@ -1,5 +1,5 @@
 import { z } from "zod";
-import { DOSE_TYPES, PROFILE_IDS, type ExerciseRecord } from "@rg/exercise-library";
+import { DOSE_TYPES, LATERALITY, PROFILE_IDS, type ExerciseRecord } from "@rg/exercise-library";
 import { PERSONAL_ID_RE } from "./ids.js";
 import type { MoveGroup } from "./breakdown.js";
 
@@ -42,8 +42,8 @@ export interface SaveBatchDto {
  * saves section for it). */
 export const FIT_SAVES_REQUEST = "Fit the new moves from my saves into my training.";
 
-/** A reason a row says "Check this" (`SaveBatchRowDto.move.checkWhy`). */
-export type CheckWhy = "low_confidence" | "inferred_name" | "inferred_dose" | "near_duplicate";
+/** A reason a row says "Check this" (`SaveBatchRowDto.move.checkWhy`). `reading_fixed`: the import changed or questioned what the model read. */
+export type CheckWhy = "low_confidence" | "inferred_name" | "inferred_dose" | "near_duplicate" | "reading_fixed";
 
 export interface SaveBatchesDto {
   batches: SaveBatchDto[];
@@ -123,6 +123,7 @@ const line = (max: number) => z.string().max(max);
 export const personalMovePatchSchema = z
   .object({
     name: z.string().trim().min(1).max(80).optional(),
+    laterality: z.enum(LATERALITY).optional(),
     text: z
       .object({
         summary: line(160).optional(),

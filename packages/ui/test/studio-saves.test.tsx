@@ -765,6 +765,7 @@ describe("the edit form", () => {
   it("patchOf sends only what changed: lines trimmed, blank lines dropped, a profile's note or rating by itself", () => {
     const form = formOf(QUAD);
     expect(patchOf(QUAD, form)).toBeNull();
+    expect(patchOf(QUAD, { ...form, laterality: QUAD.laterality === "unilateral" ? "bilateral" : "unilateral" })).toEqual({ laterality: QUAD.laterality === "unilateral" ? "bilateral" : "unilateral" });
     const profile = Object.keys(QUAD.conditions)[0]!;
     const attr = Object.keys(QUAD.conditions[profile]!)[0]!;
     const next = {

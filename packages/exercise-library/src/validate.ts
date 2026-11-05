@@ -32,6 +32,49 @@ const JUMP_TAGS = ["elastic", "landing"] as const;
  */
 export const JUMP_TAG_EXEMPT: readonly string[] = [];
 
+/** Setups that are lopsided by nature: the other side means resetting the body, so a move in one is always `unilateral`. */
+const SIDED_POSITIONS: ReadonlySet<string> = new Set(["half-kneeling", "side-lying"]);
+const SWITCHING = "(?:switch(?:ing)?|swap(?:ping)?|chang(?:e|ing))";
+const SAYS_SWITCH = new RegExp(`\\b${SWITCHING} (?:sides?|legs?|arms?|hands?|knees?)\\b|\\bthe other (?:side|leg|arm)\\b`, "i");
+const SAYS_OTHER_SIDE = new RegExp(`\\b(?:other|opposite) (?:side|leg|arm|hand|foot|hip|shoulder|knee|way)\\b|\\b${SWITCHING}\\b|\\beach (?:side|leg|arm|way)\\b|\\bboth sides\\b|\\bper (?:side|leg|arm)\\b`, "i");
+/** A lopsided setup: an import reads a move in one as `unilateral`, whatever the reading said. */
+export const isSidedPosition = (position: string): boolean => SIDED_POSITIONS.has(position);
+/** Whether the words tell the athlete to change sides. */
+export const saysToChangeSides = (text: string): boolean => SAYS_SWITCH.test(text);
+/** Whether the words get the athlete to the other side at all. */
+export const saysOtherSide = (text: string): boolean => SAYS_OTHER_SIDE.test(text);
+const SAYS_HOLD = /\bhold\b[^.;]*?\b(\d+)(?:\s*[–-]\s*\d+)?\s*(?:seconds?|secs?)\b/i;
+const BESIDE_SOMETHING = /\b(?:side-on|beside|alongside|next to)\b/i;
+/** A rep with no stated tempo, as the engine plans a self-paced set. */
+const PLANNED_SECS_PER_REP = 3;
+
+/**
+ * Whether the athlete could do this move from its record: the mistakes the 2026-11-05 audit found by hand, as rules. Each
+ * is a plain line with no id. The public library must answer none (`validateRecord`). An owner's own move is built to
+ * answer none where the fix is plain, and flagged "check this" where it isn't, never refused: the owner's edit form can't
+ * reach some of these fields, and a refusal there would lock the move against every other edit.
+ */
+export function moveProblems(ex: Pick<ExerciseRecord, "position" | "laterality" | "contraction" | "dose" | "text">): string[] {
+  const out: string[] = [];
+  const said = [ex.text.summary, ...ex.text.setup, ...ex.text.steps].join(" ");
+  if (SIDED_POSITIONS.has(ex.position) && ex.laterality !== "unilateral") {
+    out.push(`a ${ex.position} setup is one-sided, so it must be unilateral or the other side is never trained`);
+  }
+  if (ex.laterality === "bilateral" && SAYS_SWITCH.test(said)) out.push("the text says to change sides, but the move is bilateral");
+  if (ex.laterality === "unilateral" && !SAYS_OTHER_SIDE.test(said)) out.push("the move is unilateral, but the text never says to do the other side");
+  if (ex.position === "half-kneeling" && BESIDE_SOMETHING.test(said) && !/\bknee\b/i.test(ex.text.summary)) {
+    out.push("half-kneeling beside something: the summary must say which knee is down");
+  }
+  if (ex.dose.type === "reps" && ex.contraction.length > 0 && ex.contraction.every(c => c === "passive")) {
+    out.push("a relaxed hold is timed: a passive move can't be counted in reps");
+  }
+  const hold = ex.dose.type === "reps" ? SAYS_HOLD.exec(said) : null;
+  if (hold && Number(hold[1]) > (ex.dose.secsPerRep ?? PLANNED_SECS_PER_REP)) {
+    out.push(`the text holds each rep for ${hold[1]} seconds, more than dose.secsPerRep allows`);
+  }
+  return out;
+}
+
 export interface ValidateOptions {
   /** Location presets to check coverage at (default: the library's presets; `[]` skips coverage). */
   presets?: readonly LocationPreset[];
@@ -167,6 +210,10 @@ export function validateRecord(ex: ExerciseRecord, ctx: RecordContext): string[]
   // Provenance is private (spec §3.1): never a sources field, a link, or a creator handle. A personal record lives in
   // the owner's own account, not the public repository, so its text may name anything.
   if (personal) return errors;
+  // Read safely: a malformed record has already said what it lacks above.
+  if (ex.text && Array.isArray(ex.text.setup) && Array.isArray(ex.text.steps) && Array.isArray(ex.contraction) && ex.dose) {
+    for (const problem of moveProblems(ex)) err(id, problem);
+  }
   if ("sources" in ex) err(id, "sources are private and never part of the library");
   if (PROVENANCE.test(JSON.stringify(ex))) err(id, "carries a link or a handle (provenance stays private)");
   return errors;

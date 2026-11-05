@@ -2,7 +2,8 @@
 import { describe, expect, it } from "vitest";
 import { PROFILE_IDS } from "@rg/exercise-library";
 import { personalMoveId, type ExtractedMove } from "@rg/saves";
-import { PURPOSE_RULES, repairDraft, toPersonalRecord, validatePersonalRecord } from "../src/services/personal-records.js";
+import { buildPersonalRecord } from "../src/services/personal-moves.js";
+import { doseFromText, PURPOSE_RULES, repairDraft, toPersonalRecord, validatePersonalRecord } from "../src/services/personal-records.js";
 
 const move = (over: Partial<ExtractedMove> = {}): ExtractedMove => ({
   name: "Dumbbell Row",
@@ -139,6 +140,113 @@ describe("repairDraft", () => {
   it("leaves a loaded move with its implement, and a bodyweight move, alone", () => {
     expect(repairDraft(move({ load: "external", equipment: ["kettlebell"] }))).toEqual({ draft: move({ load: "external", equipment: ["kettlebell"] }), repairs: [] });
     expect(repairDraft(move({ load: "bodyweight", equipment: [] })).repairs).toEqual([]);
+  });
+});
+
+describe("a reading can't make the audit's mistakes", () => {
+  const noWords = { dose: { text: "" } };
+  const held = { ...noWords, contraction: ["passive" as const], load: "none" as const, equipment: [], patterns: ["mobility" as const] };
+
+  it("a lopsided setup plays both sides, whatever the reading said", () => {
+    for (const laterality of ["bilateral", "alternating"] as const) {
+      const { draft, repairs } = repairDraft(move({ position: "half-kneeling", laterality, load: "bodyweight", equipment: [] }));
+      expect(draft.laterality).toBe("unilateral");
+      expect(repairs).toEqual([expect.stringContaining("half-kneeling")]);
+    }
+    expect(repairDraft(move({ position: "side-lying", laterality: "bilateral", load: "bodyweight", equipment: [] })).draft.laterality).toBe("unilateral");
+  });
+
+  it("steps that change sides make a bilateral reading one-sided; a symmetric move stays as it is", () => {
+    const sided = repairDraft(move({ steps: ["Row the weight.", "Finish the reps, then switch sides."] }));
+    expect(sided.draft.laterality).toBe("unilateral");
+    expect(sided.repairs).toHaveLength(1);
+    expect(repairDraft(move()).repairs).toEqual([]);
+  });
+
+  it("a one-sided move's steps reach the other side, without a second line when they already do", () => {
+    const steps = toPersonalRecord(id, move({ laterality: "unilateral" })).text.steps;
+    expect(steps.at(-1)).toBe("Repeat on the other side.");
+    const said = ["Row the weight.", "Finish the reps, then switch sides."];
+    expect(toPersonalRecord(id, move({ laterality: "unilateral", steps: said })).text.steps).toEqual(said);
+  });
+
+  it("no stated type: a hold or relaxed stretch runs on the clock, never 8-12 reps", () => {
+    expect(toPersonalRecord(id, move(held)).dose).toEqual({ type: "time", range: [20, 40] });
+    expect(toPersonalRecord(id, move({ ...held, contraction: ["isometric"] })).dose.type).toBe("time");
+    expect(toPersonalRecord(id, move({ ...noWords, patterns: ["carry"] })).dose.type).toBe("carry");
+    expect(toPersonalRecord(id, move(noWords)).dose).toEqual({ type: "reps", range: [8, 12] });
+    // A logged weight on a clock is a carry, the timed type that takes a load: validation refuses `time` on one.
+    const loaded = toPersonalRecord(id, move({ ...noWords, contraction: ["isometric"] }));
+    expect(loaded.dose).toEqual({ type: "carry", range: [20, 40] });
+    expect(validatePersonalRecord(loaded)).toEqual([]);
+    const stated = repairDraft(move({ contraction: ["isometric"], dose: { text: "", type: "time", range: [20, 30] } }));
+    expect(stated.draft.dose.type).toBe("carry");
+    expect(stated.repairs).toEqual([expect.stringContaining("stored as carry")]);
+    expect(validatePersonalRecord(toPersonalRecord(id, stated.draft))).toEqual([]);
+  });
+
+  it("a dose given only in words keeps the post's numbers instead of the default (the live moves' own words)", () => {
+    expect(doseFromText("10-15 reps")).toEqual({ type: "reps", range: [10, 15] });
+    expect(doseFromText("6-10 reps per side")).toEqual({ type: "reps", range: [6, 10] });
+    expect(doseFromText("8-10 circles")).toEqual({ type: "reps", range: [8, 10] });
+    expect(doseFromText("2–3 sets of 8–12 reps per side")).toEqual({ type: "reps", range: [8, 12], sets: [2, 3] });
+    expect(doseFromText("8 reps × 3 sets")).toEqual({ type: "reps", range: [8, 8], sets: [3, 3] });
+    // No unit named: the numbers count whatever the move counts, reps for a row and seconds for a stretch.
+    expect(doseFromText("3 x 15")).toEqual({ range: [15, 15], sets: [3, 3] });
+    expect(toPersonalRecord(id, move({ dose: { text: "3 x 15" } })).dose).toEqual({ type: "reps", range: [15, 15], sets: [3, 3] });
+    expect(toPersonalRecord(id, move({ ...held, dose: { text: "3 x 15" } })).dose).toEqual({ type: "time", range: [15, 15], sets: [3, 3] });
+    // "x" before a stated unit: its sets still count, and a weight is no count of anything.
+    expect(doseFromText("3 x 30 s")).toEqual({ type: "time", range: [30, 30], sets: [3, 3] });
+    expect(doseFromText("3 x 20 kg")).toEqual({ sets: [3, 3] });
+    expect(doseFromText("15 sec × 3 sets")).toEqual({ type: "time", range: [15, 15], sets: [3, 3] });
+    expect(doseFromText("30-60 seconds per foot")).toEqual({ type: "time", range: [30, 60] });
+    expect(doseFromText("2 min")).toEqual({ type: "time", range: [120, 120] });
+    expect(doseFromText("3-5 deep breaths per side")).toEqual({ type: "breaths", range: [3, 5] });
+    expect(doseFromText("Perform 2-3 sets per leg")).toEqual({ sets: [2, 3] });
+    expect(doseFromText("3-5 rounds of exhale holds")).toEqual({ sets: [3, 5] });
+    expect(doseFromText("Hold stretch position")).toEqual({ type: "time" });
+    // A number with another unit says nothing about the dose.
+    expect(doseFromText("8–10 kg kettlebell")).toEqual({});
+    expect(doseFromText("Daily for 7 days")).toEqual({});
+    expect(doseFromText("As prescribed")).toEqual({});
+  });
+
+  it("the words reach the record: the stated range, not 8-12; a stated hold on the clock, with or without a weight", () => {
+    expect(toPersonalRecord(id, move({ dose: { text: "10-15 reps" } })).dose).toEqual({ type: "reps", range: [10, 15] });
+    // The model's own range still wins over its words.
+    expect(toPersonalRecord(id, move({ dose: { text: "10-15 reps", range: [6, 8] } })).dose.range).toEqual([6, 8]);
+    // Seconds of a stated type: a timed carry takes them; a count asked for by type doesn't take a number of seconds.
+    expect(toPersonalRecord(id, move({ dose: { text: "30 seconds", type: "carry" } })).dose).toEqual({ type: "carry", range: [30, 30] });
+    expect(toPersonalRecord(id, move({ dose: { text: "30 seconds", type: "reps" } })).dose).toEqual({ type: "reps", range: [8, 12] });
+    const loadedHold = toPersonalRecord(id, move({ dose: { text: "Hold stretch under load" }, contraction: ["passive", "isotonic"] }));
+    expect(loadedHold.dose).toEqual({ type: "carry", range: [20, 40] });
+    expect(validatePersonalRecord(loadedHold)).toEqual([]);
+    expect(toPersonalRecord(id, move({ ...held, dose: { text: "Hold stretch position" } })).dose).toEqual({ type: "time", range: [20, 40] });
+  });
+
+  it("reps a post never stated for a relaxed hold become time; reps it did state stay, and get flagged", () => {
+    const inferred = repairDraft(move({ ...held, dose: { text: "", type: "reps", range: [8, 12] } }));
+    expect(inferred.draft.dose).toEqual({ text: "", type: "time" });
+    expect(inferred.repairs).toEqual([expect.stringContaining("relaxed hold")]);
+    const stated = move({ ...held, dose: { text: "10 reps", type: "reps", range: [10, 10] }, evidence: { name: "stated", dose: "stated", steps: "stated" } });
+    expect(repairDraft(stated).draft.dose.type).toBe("reps");
+    const built = buildPersonalRecord(id, stated);
+    expect(built.ok && built.repairs).toEqual([expect.stringContaining("relaxed hold")]);
+  });
+
+  it("a slow rep's tempo and any-one-of gear reach the record", () => {
+    const rec = toPersonalRecord(id, move({ dose: { text: "5 slow", type: "reps", range: [5, 5], secsPerRep: 10 }, equipment: [], equipmentOneOf: ["bench", "chair"], load: "bodyweight" }));
+    expect(rec.dose.secsPerRep).toBe(10);
+    expect(rec.equipment).toEqual({ all: [], oneOf: ["bench", "chair"] });
+    // Any-one-of gear can carry the weight: it stays a logged load.
+    expect(repairDraft(move({ equipment: [], equipmentOneOf: ["kettlebell", "dumbbells"] })).draft.load).toBe("external");
+  });
+
+  it("what repair can't settle flags the move and never loses the paid reading", () => {
+    const vague = move({ position: "half-kneeling", laterality: "unilateral", load: "bodyweight", equipment: [], summary: "Half-kneel beside a wall and turn.", steps: ["Turn.", "Change sides."] });
+    const built = buildPersonalRecord(id, vague);
+    expect(built.ok).toBe(true);
+    expect(built.ok && built.repairs).toEqual([expect.stringContaining("which knee")]);
   });
 });
 

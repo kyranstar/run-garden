@@ -21,7 +21,7 @@ import { EXERCISES } from "@rg/exercise-library";
 import { makeLibraryIndex } from "@rg/workout";
 import type { Env } from "../src/env.js";
 import type { Db } from "../src/services/db.js";
-import { soreAreaNotes, titleNotes, TITLE_SHARE_MIN, type SoreArea } from "../src/services/design-tools/draft-checks.js";
+import { oneSidedNotes, soreAreaNotes, titleNotes, TITLE_SHARE_MIN, type SoreArea } from "../src/services/design-tools/draft-checks.js";
 import { soreAreasOf } from "../src/services/design-tools/record-answer.js";
 import { ACT_TOOLS } from "../src/services/design-tools/index.js";
 import { designProposalId, type DocWorkoutOp } from "../src/services/design-tools/propose.js";
@@ -43,6 +43,25 @@ function doc(o: { title?: string; summary?: string; parts: Array<{ purpose: stri
     source: { kind: "coach" },
   });
 }
+
+describe("one_side_only: a one-sided move the draft gives no sides", () => {
+  const draft = (dose: Record<string, unknown>, extra: Record<string, unknown> = {}) =>
+    doc({ parts: [{ purpose: "cooldown", format: "holds", items: [{ kind: "exercise", libraryId: "figureFour", dose, ...extra }] }] });
+
+  it("names the move and asks for both sides", () => {
+    const [note, ...rest] = oneSidedNotes(draft({ holdSec: 30 }), find);
+    expect(rest).toEqual([]);
+    expect(note).toMatchObject({ code: "one_side_only", path: "parts[0].items[0].dose", severity: "warning" });
+    expect(note!.message).toContain(name("figureFour"));
+  });
+
+  it("is quiet with sides, with a chosen side, and on a symmetric or alternating move", () => {
+    expect(oneSidedNotes(draft({ holdSec: 30, perSide: true }), find)).toEqual([]);
+    expect(oneSidedNotes(draft({ holdSec: 30 }, { side: "left" }), find)).toEqual([]);
+    const others = doc({ parts: [{ purpose: "main", items: [ex("catCow"), ex("deadBug")] }] });
+    expect(oneSidedNotes(others, find)).toEqual([]);
+  });
+});
 
 /** "glutes, legs, and back are really sore" as record_answer keeps a bare back: both backs, said as "back". */
 const BACK: SoreArea = { words: "back", regions: ["upper-back", "low-back"], muscles: [] };

@@ -66,7 +66,7 @@ import { isPersonalId } from "@rg/saves";
 import { markUntrusted } from "../design-prompt.js";
 import { parsedArray, readAthlete, refuse, untrusted, type Athlete, type Untrusted } from "./read-common.js";
 import { measureWords } from "./read-objectives.js";
-import { soreAreaNotes, titleNotes, type HardNoteCode, type SoreArea } from "./draft-checks.js";
+import { oneSidedNotes, soreAreaNotes, titleNotes, type HardNoteCode, type SoreArea } from "./draft-checks.js";
 import type { SavesSkip, ToolContext, ToolErr } from "./types.js";
 
 // ── Input ───────────────────────────────────────────────────────────────────────────────────────────────────────────
@@ -652,7 +652,7 @@ export function freeTextRefusal(doc: unknown, base: WorkoutDoc | null): ToolErr 
 /** An issue's code as the coach's tools raise it: the validator's, or the tool layer's own — a test whose move its key
  * result's measure doesn't read (`test_unmeasured`: fix wave 3A round 2, B-M10), and the two hard checks (draft-checks.ts,
  * 2026-11-05): a working move on an area the athlete called sore today, a title the work doesn't bear out. */
-export type CoachIssueCode = DocIssue["code"] | "test_unmeasured" | HardNoteCode;
+export type CoachIssueCode = DocIssue["code"] | "test_unmeasured" | "one_side_only" | HardNoteCode;
 /** An issue as the coach's tools raise it: the validator's (`DocIssue`), or the tool layer's own advisory. */
 export type CoachIssue = Omit<DocIssue, "code"> & { code: CoachIssueCode };
 
@@ -697,7 +697,7 @@ export function judge(
   const noCheck = noCheckToday(vctx);
   const find = makeLibraryIndex(vctx.library);
   const parsed = workoutDocSchema.safeParse(raw);
-  const hard = parsed.success && !isRunDoc(parsed.data) ? [...soreAreaNotes(parsed.data, o.sore ?? [], find), ...titleNotes(parsed.data, find)] : [];
+  const hard = parsed.success && !isRunDoc(parsed.data) ? [...soreAreaNotes(parsed.data, o.sore ?? [], find), ...titleNotes(parsed.data, find), ...oneSidedNotes(parsed.data, find)] : [];
   const issues: CoachIssue[] = [...hard, ...validateWorkoutDoc(raw, vctx).map((i) => coachFix(i, raw, noCheck, find)), ...testNotes(raw, o.keyResults, find)];
   const errors = issues.filter((i) => i.severity === "error");
   const warnings = issues.filter((i) => i.severity === "warning");

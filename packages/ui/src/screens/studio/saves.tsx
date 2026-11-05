@@ -59,7 +59,7 @@ import { doseLine } from "./model.js";
 import { postHref } from "./move-detail.js";
 import { dotted } from "./move-row.js";
 import {
-  attrWord, batchDay, batchFacts, canFit, DOSE_TYPES, DOSE_WORD, FITTING_LINE, formOf, keepsRows, pageRowsOf, patchOf, pendingLinksOf,
+  attrWord, batchDay, batchFacts, canFit, DOSE_TYPES, DOSE_WORD, FITTING_LINE, formOf, keepsRows, LATERALITY, pageRowsOf, patchOf, pendingLinksOf, SIDES_WORD,
   rowActions, savesHref, tallyLine, writeError,
   type MoveForm, type OwnedRow, type PageRow,
 } from "./saves-model.js";
@@ -707,6 +707,7 @@ const CHECK_WHY_WORDS: Readonly<Record<CheckWhy, string>> = {
   inferred_name: "Name inferred",
   inferred_dose: "Dose inferred",
   near_duplicate: "Looks like another move",
+  reading_fixed: "Reading corrected",
 };
 
 /**
@@ -843,6 +844,16 @@ function EditForm({
       {lines("steps", "Steps")}
       {lines("focus", "Focus")}
       {lines("mistakes", "Common mistakes")}
+      <label className="stu-field-row">
+        <span>Sides</span>
+        <select className="stu-select" value={form.laterality} onChange={(e) => set({ laterality: e.target.value as MoveForm["laterality"] })}>
+          {LATERALITY.map((l) => (
+            <option key={l} value={l}>
+              {SIDES_WORD[l]}
+            </option>
+          ))}
+        </select>
+      </label>
       <fieldset className="stu-save-set">
         <legend className="eyebrow">Dose</legend>
         <div className="stu-part-fields">

@@ -28,7 +28,7 @@ import type { CoachExercise, CoachRunBlock, CoachSession, WeightUnit, WorkoutDoc
 import { formatWeightIn, parseWeight, toKg } from "@rg/domain";
 import { runBlockRoles } from "@rg/coros";
 import {
-  bounded, currentId, kg2, loadOfKg, MAX_LOAD_KG, MAX_TYPED, openBlock, OPEN_BLOCK_NAME, within,
+  bounded, currentId, kg2, loadOfKg, MAX_LOAD_KG, MAX_TYPED, openBlock, OPEN_BLOCK_NAME, withSides, within,
   type Converted, type KeptEntry, type LibraryIndex,
 } from "./shared.js";
 
@@ -166,7 +166,7 @@ function exerciseItem(e: CoachExercise, i: number, meta: CoachMeta, raw: unknown
   const cue = e.note ? bounded(e.note, 160, kept, at, "note") : undefined;
   const resolved = meta.resolveName(e.name);
   const libraryId = resolved ? currentId(resolved, meta.library, kept, at, "libraryId") : null;
-  if (libraryId) return { kind: "exercise", libraryId, dose, ...(cue ? { cue } : {}) };
+  if (libraryId) return { kind: "exercise", libraryId, dose: withSides(dose, libraryId, meta.library), ...(cue ? { cue } : {}) };
   return { kind: "free_exercise", name: bounded(e.name, 80, kept, at, "name"), dose, ...(cue ? { cue } : {}) };
 }
 

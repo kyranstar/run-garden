@@ -7,7 +7,7 @@
  */
 import { ApiError } from "@rg/api-client";
 import { dayLabel } from "@rg/domain";
-import { DOSE_TYPES, PROFILES, type Dose, type DoseType, type ExerciseRecord } from "@rg/exercise-library";
+import { DOSE_TYPES, LATERALITY, PROFILES, type Dose, type DoseType, type ExerciseRecord, type Laterality } from "@rg/exercise-library";
 import { numberWord, type FitChoice, type OpenSavesBatchDto, type OpenSavesDto, type PersonalMovePatch, type SaveBatchDto, type SaveBatchRowDto } from "@rg/saves";
 
 /** The batches (`/studio/saves`), or one batch's rows. */
@@ -207,8 +207,10 @@ export const isFitBatchGone = (e: unknown): boolean =>
 
 // ── The edit form ────────────────────────────────────────────────────────────────────────────────────────────────────
 
-export const DOSE_WORD: Readonly<Record<DoseType, string>> = { reps: "Reps", time: "Seconds", breaths: "Breaths", carry: "Carry seconds" };
-export { DOSE_TYPES };
+export const DOSE_WORD: Readonly<Record<DoseType, string>> = { reps: "Reps", time: "Seconds", breaths: "Breaths", carry: "Seconds with a weight" };
+/** How a move uses its two sides, as the edit form says it: this decides whether the app ever asks for the other side. */
+export const SIDES_WORD: Readonly<Record<Laterality, string>> = { bilateral: "Both sides together", unilateral: "One side, then the other", alternating: "Alternating sides" };
+export { DOSE_TYPES, LATERALITY };
 
 /** An attribute's name in words: "neckLoad" → "Neck load". */
 export const attrWord = (key: string): string => {
@@ -223,6 +225,7 @@ export interface MoveForm {
   steps: string;
   focus: string;
   mistakes: string;
+  laterality: Laterality;
   doseType: DoseType;
   low: string;
   high: string;
@@ -243,6 +246,7 @@ export function formOf(rec: ExerciseRecord): MoveForm {
     steps: rec.text.steps.join("\n"),
     focus: rec.text.focus.join("\n"),
     mistakes: rec.text.mistakes.join("\n"),
+    laterality: rec.laterality,
     doseType: rec.dose.type,
     low: String(rec.dose.range[0]),
     high: String(rec.dose.range[1]),
@@ -288,6 +292,7 @@ export function patchOf(rec: ExerciseRecord, f: MoveForm): PersonalMovePatch | n
   const patch: PersonalMovePatch = {};
   const text: NonNullable<PersonalMovePatch["text"]> = {};
   if (f.name.trim() !== rec.name) patch.name = f.name.trim();
+  if (f.laterality !== rec.laterality) patch.laterality = f.laterality;
   if (f.summary.trim() !== rec.text.summary) text.summary = f.summary.trim();
   for (const key of ["steps", "focus", "mistakes"] as const) {
     const lines = linesOf(f[key]);

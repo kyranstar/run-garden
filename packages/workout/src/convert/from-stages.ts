@@ -39,7 +39,7 @@
 import type { PlannedStage, WorkoutDoc, WorkoutDose, WorkoutItem, WorkoutPart } from "@rg/domain";
 import { RUN_EFFORTS } from "@rg/domain";
 import {
-  bounded, currentId, ECCENTRIC_WORDS, loadOfKg, MAX_LOAD_KG, openBlock, OPEN_BLOCK_NAME, PER_SIDE_WORDS, within,
+  bounded, currentId, ECCENTRIC_WORDS, loadOfKg, MAX_LOAD_KG, openBlock, OPEN_BLOCK_NAME, PER_SIDE_WORDS, withSides, within,
   type Converted, type KeptEntry, type LibraryIndex,
 } from "./shared.js";
 
@@ -393,7 +393,7 @@ function moveItem(ctx: Ctx, s: PlannedStage, sets: number | undefined): WorkoutI
   const cue = s.note !== undefined ? bounded(s.note, 160, ctx.kept, at(s), "note") : undefined;
   if (libraryId) {
     keep(ctx, s, "label", "a mapped move is named by the library; this is COROS's name for it");
-    return { kind: "exercise", libraryId, dose, ...(cue !== undefined ? { cue } : {}) };
+    return { kind: "exercise", libraryId, dose: withSides(dose, libraryId, ctx.meta.library), ...(cue !== undefined ? { cue } : {}) };
   }
   if (!s.label) keep(ctx, s, "label", "the step had no name", s.label ?? null);
   const name = s.label ? bounded(s.label, 80, ctx.kept, at(s), "label") : "Exercise";

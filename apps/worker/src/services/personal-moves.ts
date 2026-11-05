@@ -10,7 +10,7 @@
 import { eq, sql } from "drizzle-orm";
 import { schema } from "@rg/database";
 import type { PersonalMoveRow } from "@rg/database";
-import type { ExerciseRecord } from "@rg/exercise-library";
+import { moveProblems, type ExerciseRecord } from "@rg/exercise-library";
 import { personalMoveId, type ExtractedMove } from "@rg/saves";
 import type { Db } from "./db.js";
 import { toPersonalRecord, validatePersonalRecord, repairDraft } from "./personal-records.js";
@@ -72,7 +72,8 @@ export function buildPersonalRecord(
   }
   const problems = validatePersonalRecord(record);
   if (problems.length) return { ok: false, issues: problems.map((p) => safeIssue(id, p)) };
-  return { ok: true, record, repairs: repaired.repairs };
+  // What repair couldn't settle isn't worth refusing a paid reading over: it flags the move "check this" with the repairs.
+  return { ok: true, record, repairs: [...repaired.repairs, ...moveProblems(record)] };
 }
 
 /**
