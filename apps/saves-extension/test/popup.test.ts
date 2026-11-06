@@ -194,3 +194,44 @@ describe("a YouTube post's row (final audit G10)", () => {
     expect(messages).toContainEqual({ type: "override", key: "Zx9_-QaB3cD", source: "youtube", action: "process" });
   });
 });
+
+describe("the popup's field across a re-render (final audit G18)", () => {
+  const settle = async () => {
+    for (let i = 0; i < 8; i++) await new Promise((r) => setTimeout(r, 0));
+  };
+  const field = () => root().querySelector("input") as HTMLInputElement;
+  const add = () => root().querySelector("form button") as HTMLButtonElement;
+  const checkNow = () => [...root().querySelectorAll("button")].find((b) => b.textContent === "Check now")!;
+
+  it("keeps what's typed, the focus and the caret while the status is read again", async () => {
+    await open();
+    field().value = "youtu.be/Zx9_-QaB3cD";
+    field().dispatchEvent(new Event("input"));
+    field().focus();
+    field().setSelectionRange(3, 5);
+    checkNow().click();
+    await settle();
+    expect(field().value).toBe("youtu.be/Zx9_-QaB3cD");
+    expect(document.activeElement).toBe(field());
+    expect([field().selectionStart, field().selectionEnd]).toEqual([3, 5]);
+  });
+
+  it("Add stays disabled until the add settles, whatever re-renders meanwhile", async () => {
+    await open({}, { "add-link": new Promise(() => undefined) });
+    field().value = ["ht", "tps://www.", "you", "tube.com/watch?v=Zx9_-QaB3cD"].join("");
+    add().click();
+    await settle();
+    checkNow().click();
+    await settle();
+    expect(add().disabled).toBe(true);
+  });
+
+  it("takes a bare youtu.be link (no browser URL check), and an empty Add does nothing", async () => {
+    await open();
+    expect((root().querySelector("form") as HTMLFormElement).noValidate).toBe(true);
+    add().click();
+    await settle();
+    expect(messages.filter((m) => (m as { type: string }).type === "add-link")).toEqual([]);
+    expect(root().textContent).not.toContain("Only YouTube and Instagram links for now.");
+  });
+});

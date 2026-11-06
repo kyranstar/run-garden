@@ -40,8 +40,6 @@ const ask = <T>(message: unknown): Promise<T> => chrome.runtime.sendMessage(mess
 let note = "";
 /** The field's last answer, and the trail it can open (an already-imported link's). */
 let linkNote: { line: string; href: string | null } | null = null;
-/** What the field holds between re-reads (a re-read never wipes what the owner is typing). */
-let draft: string | null = null;
 let last: StatusResponse | null = null;
 /** While a check runs, the popup re-reads the status every few seconds so a reopened popup shows it moving. */
 const REFRESH_MS = 5_000;
@@ -73,11 +71,13 @@ async function checkNow(b: HTMLButtonElement): Promise<void> {
   await load();
 }
 
-async function addLink(url: string): Promise<void> {
+/** Sends a link to the background and says how it went; true when it was taken (or is already in). */
+async function addLink(url: string): Promise<boolean> {
   const link = normalizeLink(url);
   if (!link) {
     linkNote = { line: LINK_REFUSED, href: null };
-    return load();
+    await load();
+    return false;
   }
   let answer: AddLinkResponse;
   try {
@@ -86,8 +86,8 @@ async function addLink(url: string): Promise<void> {
     answer = { ok: false, message: "The extension did not answer" };
   }
   linkNote = { line: addAnswerLine(answer), href: answer.ok && "known" in answer ? linkTrailHref(last?.appUrl, answer.known.postId) : null };
-  if (answer.ok) draft = "";
   await load();
+  return answer.ok;
 }
 
 async function linkAction(l: PopupLink): Promise<void> {
@@ -99,24 +99,41 @@ async function linkAction(l: PopupLink): Promise<void> {
 }
 
 /** The field at the top: paste and Add (Enter too); on a YouTube video, filled with it and reading "Import this video". */
+/**
+ * The field at the top: paste and Add (Enter too); on a YouTube video, filled with it and reading "Import this video".
+ * Built ONCE and kept in place (final audit G18): the status's re-reads redraw what is under it, never the field, so
+ * what is typed, the focus and the caret survive; Add stays disabled until its add settles.
+ */
+let form: HTMLFormElement | null = null;
+let body: HTMLElement | null = null;
 function linkField(): HTMLFormElement {
-  const form = el("form", undefined, "link-field");
+  if (form) return form;
+  const f = el("form", undefined, "link-field");
+  f.noValidate = true; // a bare youtu.be/… is a link the app takes, not one the browser's URL check does
   const input = el("input");
   input.type = "url";
   input.placeholder = "Paste a YouTube or Instagram link";
   input.setAttribute("aria-label", "Paste a YouTube or Instagram link");
   const video = last?.activeVideo ?? null;
-  input.value = draft ?? video ?? "";
-  input.addEventListener("input", () => (draft = input.value));
-  const submit = el("button", video && (draft === null || draft === video) ? "Import this video" : "Add");
+  input.value = video ?? "";
+  const submit = el("button", video ? "Import this video" : "Add");
   submit.type = "submit";
-  form.append(input, submit);
-  form.addEventListener("submit", (e) => {
-    e.preventDefault();
-    submit.disabled = true;
-    void addLink(input.value);
+  input.addEventListener("input", () => {
+    if (!submit.disabled) submit.textContent = video && input.value === video ? "Import this video" : "Add";
   });
-  return form;
+  f.append(input, submit);
+  f.addEventListener("submit", (e) => {
+    e.preventDefault();
+    if (submit.disabled || !input.value.trim()) return; // an empty Add does nothing
+    submit.disabled = true;
+    void addLink(input.value).then((added) => {
+      if (added) input.value = "";
+      submit.disabled = false;
+      submit.textContent = "Add";
+    });
+  });
+  form = f;
+  return f;
 }
 
 /** The recent links: title, a word or two of where it stands, its trail, and Retry / Import anyway. */
@@ -216,7 +233,6 @@ function lightPanel(l: PopupLight): HTMLElement {
 function render(m: PopupModel): void {
   const frag = document.createDocumentFragment();
   const problem = m.headline !== "Up to date" && !m.checking;
-  frag.append(linkField());
   if (linkNote) {
     const said = el("p", undefined, "meta link-note");
     said.append(el("span", linkNote.line));
@@ -279,7 +295,12 @@ function render(m: PopupModel): void {
     frag.append(list);
   }
 
-  root.replaceChildren(frag);
+  // The field stays where it is; only what is under it is drawn again (final audit G18).
+  const field = linkField();
+  if (field.parentElement !== root) root.prepend(field);
+  body ??= el("div", undefined, "popup-body");
+  if (body.parentElement !== root) root.append(body);
+  body.replaceChildren(frag);
 }
 
 void load();
