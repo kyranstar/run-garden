@@ -301,6 +301,8 @@ export interface SessionResponse {
   workoutId: string;
   date: string;
   contentState: "outline" | "built" | "started" | "done";
+  /** Whether it's been resolved: the row's own, so a sheet needn't take it from a row the page read before. */
+  completionState: string;
   /** Any build of the slot is locked, or it is started or done: what Start, the player and the save read. */
   locked: boolean;
   /**
@@ -1043,6 +1045,7 @@ function respond(
     workoutId: row.id,
     date: row.effectiveDate,
     contentState: contentStateOf(row),
+    completionState: row.completionState,
     locked: lockedOf(row, builds),
     lockedBy: lockedByOf(row, builds),
     title: row.title,

@@ -3,14 +3,16 @@ import type { PlanStopResponse, PlanSummaryDto } from "@rg/api-client";
 /**
  * What a plan's sheet says of the plan (plans with a purpose §4.3): what it is for, how it ends, the longer brief the
  * coach acts on (one tap down in the sheet) and the day it is paused until. Pure shaping from the plan's summary. A
- * blank purpose or brief is none: the sheet draws no line for it.
+ * blank purpose or brief is none: the sheet draws no line for it. A stopped plan has neither an ending ahead of it nor a
+ * pause: whatever its row still holds, it says neither.
  */
-export function planSheetWords(plan: PlanSummaryDto): { purpose: string | null; ending: string; brief: string | null; pausedUntil: string | null } {
+export function planSheetWords(plan: PlanSummaryDto): { purpose: string | null; ending: string | null; brief: string | null; pausedUntil: string | null } {
+  const stopped = plan.status === "retired";
   return {
     purpose: plan.purpose?.trim() || null,
-    ending: ENDINGS[plan.onEnd],
+    ending: stopped ? null : ENDINGS[plan.onEnd],
     brief: plan.brief?.trim() || null,
-    pausedUntil: plan.pausedUntil,
+    pausedUntil: stopped ? null : plan.pausedUntil,
   };
 }
 

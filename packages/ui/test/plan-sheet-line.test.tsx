@@ -806,6 +806,21 @@ describe("the Plan routes a line's sheet", () => {
     for (let i = 0; i < n; i += 1) await act(async () => void (await new Promise((r) => setTimeout(r, 5))));
   };
 
+  it("a line's Stop reads the plans again: the sheet's words about how it ends go with it", async () => {
+    const stopped = vi.spyOn(api, "coachPlanRetire").mockResolvedValue({ ok: true });
+    const named: PlanSummaryDto = { id: "plan-r1", kind: "coach", name: "Running", purpose: null, brief: null, onEnd: "ask", pausedUntil: null, objectiveIds: [], status: "active", lineKey: running.key, listedAs: null, course: null, prompt: null };
+    mountPlan("/plan?line=run:r1", { summaries: [named] });
+    await settle();
+    const asked = () => (fetch as unknown as { mock: { calls: Array<[string]> } }).mock.calls.filter(([u]) => u === "/api/plans").length;
+    const before = asked();
+    await act(async () => button("Stop this plan…").click());
+    await settle();
+    await act(async () => button("Stop the plan").click());
+    await settle();
+    expect(stopped).toHaveBeenCalled();
+    expect(asked()).toBeGreaterThan(before);
+  });
+
   describe("the plans read reaches the list", () => {
     const course: PlanSummaryDto = { id: "c1", kind: "course", name: "Evening practice", purpose: null, brief: null, onEnd: "continue", pausedUntil: null, objectiveIds: [], status: "active", lineKey: null, listedAs: "c1", course: { session: 3, of: 10 }, prompt: null };
     const named: PlanSummaryDto = { ...course, id: "plan-r1", kind: "coach", name: "Autumn build", lineKey: running.key, listedAs: null, course: null };

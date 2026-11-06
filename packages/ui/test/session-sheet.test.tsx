@@ -2314,6 +2314,50 @@ describe("a course's session offers Mark done, and nothing else does (plans with
     expect(drains()).toBe(1);
   });
 
+  describe("whether it's completed is the session's to say, not a row the page read before", () => {
+    const past = "2026-10-03";
+    const open = () => session({ date: past, contentState: "outline", build: null, view: null, checks: {}, profiles: [], completionState: "unresolved", course: { markDone: "offer", held: null } });
+    const markedPast = () => ({ ...markedSession(), date: past, completionState: "completed" as const });
+
+    it("undone on a day gone with the row still saying completed: no pill beside Mark done", async () => {
+      mount(markedPast(), { w: slot({ effectiveDate: past, completionState: "completed" }), route: markRoute((done) => (done ? markedPast() : open())) });
+      await until(() => !!button("Undo"), "Undo");
+      await click("Undo");
+      await until(() => !!button("Mark done"), "Mark done");
+      expect(document.querySelector(".session-status .pill")).toBeNull();
+      expect(body()).toContain("Nothing was built for this day.");
+    });
+
+    it("the watch's line comes back with it", async () => {
+      const onWatch = { state: "on_watch" } as SessionDto["watch"];
+      mount({ ...open(), watch: onWatch }, { w: slot({ effectiveDate: past, completionState: "completed" }) });
+      await until(() => !!button("Mark done"), "Mark done");
+      expect(body()).toContain("On your watch");
+    });
+
+    it("a read that says completed wins over a row that doesn't", async () => {
+      const done = () => session({ contentState: "outline", build: null, view: null, checks: {}, profiles: [], completionState: "completed", course: { markDone: null, held: null } });
+      mount(done(), { w: slot({ completionState: "scheduled" }), afterBuild: done });
+      await until(() => !!document.querySelector(".session-status .pill"), "the pill");
+      expect(body()).not.toContain("can't be set up");
+    });
+
+    it("a read from before it said so falls back on the row", async () => {
+      const older = () => session({ contentState: "outline", build: null, view: null, checks: {}, profiles: [] });
+      mount(older(), { w: slot({ completionState: "completed" }), afterBuild: older });
+      await until(() => !!document.querySelector(".session-status .pill"), "the pill");
+    });
+
+    it("what reads the row by itself hears of it: one outside the page's window keeps its own read", async () => {
+      const { qc } = mount(session(offered), { route: markRoute((done) => (done ? markedSession() : session(offered))) });
+      qc.setQueryData(["workout", SLOT], { workout: slot() });
+      await until(() => !!button("Mark done"), "Mark done");
+      await click("Mark done");
+      await until(() => body().includes("Marked done"), "the mark said");
+      expect(qc.getQueryState(["workout", SLOT])?.isInvalidated).toBe(true);
+    });
+  });
+
   it("a session already marked isn't built on opening: nothing is asked of a session that's over", async () => {
     const { calls } = mount(markedSession());
     await until(() => body().includes("Marked done"), "the mark said");

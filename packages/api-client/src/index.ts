@@ -2048,6 +2048,8 @@ export interface SessionDto {
   workoutId: string;
   date: string;
   contentState: "outline" | "built" | "started" | "done";
+  /** Whether it's been resolved, as of this read. Absent from an older server, or a session read before it. */
+  completionState?: CompletionState;
   /** Any build locked, or the slot started or done: what Start and the player read. */
   locked: boolean;
   /**

@@ -446,12 +446,28 @@ describe("a course in Your plans (plans with a purpose): a row of its own, and a
       await until(() => document.querySelector(".plan-past")?.textContent?.includes("Evening practice") === true, "the row under Past plans");
     });
 
-    it("stopped, there's no Stop to press again, though the list hasn't said so yet", async () => {
-      await openSheet(summary(), () => asJson({ more: false }), summary());
+    it("stopped, there's no Stop to press again and no word of how it would have gone on, though the list hasn't said so yet", async () => {
+      await openSheet(summary({ pausedUntil: "2026-12-01" }), () => asJson({ more: false }), summary({ pausedUntil: "2026-12-01" }));
+      expect(text()).toContain("Continues on its own");
+      expect(text()).toContain("Paused until");
       await press("Stop this plan…");
       await press("Stop the plan");
       await until(() => text().includes("Stopped."), "the line");
       expect(control("Stop this plan…")).toBeUndefined();
+      expect(text()).not.toContain("Continues on its own");
+      expect(text()).not.toContain("Paused until");
+    });
+
+    it("a stopped one read from the list says neither either, a pause left on it or not", async () => {
+      await openSheet(summary({ status: "retired", pausedUntil: "2026-12-01" }));
+      const dialog = document.querySelector("[role=dialog]")!;
+      expect(dialog.textContent).toContain("Stopped");
+      expect(dialog.textContent).toContain("A made-up practice.");
+      expect(dialog.textContent).not.toContain("Continues on its own");
+      expect(dialog.textContent).not.toContain("Paused until");
+      expect(dialog.querySelector(".plan-words-line")).toBeNull();
+      await press("How it works");
+      expect(dialog.textContent).toContain("Keep the order.");
     });
 
     it("stops early on `waiting`, and says what's still on its way", async () => {

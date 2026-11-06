@@ -158,15 +158,17 @@ function PlanWords({ plan, canChange }: { plan: PlanSummaryDto; canChange: boole
   return (
     <div className="stack plan-words">
       {words.purpose ? <p className="plan-words-purpose">{words.purpose}</p> : null}
-      <div className="row plan-words-line">
-        <span className="faint plan-words-ending">{words.ending}</span>
-        {words.pausedUntil ? <span className="faint num">Paused until {formatShortDate(words.pausedUntil)}</span> : null}
-        {canChange && coach ? (
-          <button type="button" className="btn btn-small" onClick={() => coach.open({ request: changePlanRequest(plan.name) })}>
-            Change
-          </button>
-        ) : null}
-      </div>
+      {words.ending || words.pausedUntil || (canChange && coach) ? (
+        <div className="row plan-words-line">
+          {words.ending ? <span className="faint plan-words-ending">{words.ending}</span> : null}
+          {words.pausedUntil ? <span className="faint num">Paused until {formatShortDate(words.pausedUntil)}</span> : null}
+          {canChange && coach ? (
+            <button type="button" className="btn btn-small" onClick={() => coach.open({ request: changePlanRequest(plan.name) })}>
+              Change
+            </button>
+          ) : null}
+        </div>
+      ) : null}
       {words.brief ? (
         <>
           <button type="button" className="btn btn-small plan-words-more" aria-expanded={open} aria-controls={`plan-words-brief-${plan.id}`} onClick={() => setOpen(!open)}>
@@ -595,7 +597,7 @@ function stoppedWords(n: number): string {
 const STOP_FAILED = "That didn't go through — try again.";
 
 /** What a stop reads again: the plans and lines, the phases' details, the week, the coach's view and its chips. */
-const STOP_READS = [["coach-plans"], ["plan-detail"], ["plan"], ["plan-week"], ["coach-state"], [...NUDGES_QUERY]];
+const STOP_READS = [["coach-plans"], ["plans"], ["plan-detail"], ["plan"], ["plan-week"], ["coach-state"], [...NUDGES_QUERY]];
 
 /** A line sheet's "Stop this plan" (`useStopLine`), held by `LineSheet` and drawn by the sheet it shows. */
 export type LineStop = ReturnType<typeof useStopLine>;
@@ -737,8 +739,8 @@ function useStopLine(today: string | null, refresh?: StopRefresh) {
   };
 }
 
-/** What a course's stop reads again, beside what any stop does: its own summary, and Today, which its session may have left. */
-const COURSE_STOP_READS = [...STOP_READS, ["plans"], ["today"]];
+/** What a course's stop reads again, beside what any stop does: Today, which its session may have left. */
+const COURSE_STOP_READS = [...STOP_READS, ["today"]];
 
 /**
  * A COURSE'S SHEET (plans with a purpose §4.2; the one new sheet, kept to what's on the plan sheet): where it has got to, what it
@@ -805,7 +807,8 @@ export function CourseSheet({ plan, onClose }: { plan: PlanSummaryDto; onClose: 
         ) : state ? (
           <p className="faint num">{state}</p>
         ) : null}
-        <PlanWords plan={plan} canChange={!stopped} />
+        {/* Stopped here, it's stopped, whatever the plans read says until it's read again. */}
+        <PlanWords plan={stopped ? { ...plan, status: "retired" } : plan} canChange={!stopped} />
       </div>
       <ConfirmDialog
         open={asking}

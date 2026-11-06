@@ -81,7 +81,7 @@ import { sha256Hex } from "../auth/crypto.js";
 import { libraryFor, libraryForDocs } from "./account-library.js";
 import { restoreInProgress } from "./account-state.js";
 import { ROLLING_WINDOW_DAYS } from "./backfill.js";
-import { courseNumberOnCompletion } from "./course-number.js";
+import { courseNumberOnCompletion, markGivesWay } from "./course-number.js";
 import { chunkIds, insertBatches, runAtomically, type AtomicStatement, type Db } from "./db.js";
 import { loadEngineContext, loadProgramState } from "./engine-inputs.js";
 import { gardenChangeStatement, REQUEST_GARDEN_STEP, resimulateFrom } from "./garden-sync.js";
@@ -885,8 +885,8 @@ async function write(
       .update(plannedWorkouts)
       .set(
         match.matched
-          ? { completionState: "completed", resolutionDate: p.localDate, contentState: "done", category: discipline, sport: discipline, ...courseNumberOnCompletion(), updatedAt: now }
-          : { contentState: "done", updatedAt: now },
+          ? { completionState: "completed", resolutionDate: p.localDate, contentState: "done", category: discipline, sport: discipline, ...courseNumberOnCompletion(), ...markGivesWay(), updatedAt: now }
+          : { contentState: "done", ...markGivesWay(), updatedAt: now },
       )
       .where(and(eq(plannedWorkouts.id, slot.id), eq(plannedWorkouts.userId, userId))),
   );

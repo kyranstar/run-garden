@@ -30,18 +30,22 @@ vi.mock("../src/services/account-state.js", async (importOriginal) => {
   };
 });
 
-import { and, eq } from "drizzle-orm";
+import { and, eq, isNull } from "drizzle-orm";
 import { schema } from "@rg/database";
 import { addDays, courseConfigSchema, newId, todayInZone, type CourseConfig, type SourceActivity, type UserPreferences } from "@rg/domain";
 import { createSession, SESSION_COOKIE } from "../src/auth/sessions.js";
 import type { Env } from "../src/env.js";
 import { homeConsistency, planRoutes } from "../src/routes/plan.js";
+import { planRoutes as plansRoutes } from "../src/routes/plans.js";
 import { sessionRoutes } from "../src/routes/sessions.js";
 import { ingestActivities } from "../src/services/completion.js";
+import { executeCloudJobs } from "../src/services/coros-write-cloud.js";
+import { finishCoursesPartWay } from "../src/services/course-plans.js";
 import { writeCourseSession, writeCourseSessionsDue } from "../src/services/course-sessions.js";
 import { MARK_DONE_REPLAY_MAX_DAYS } from "../src/services/cron-limits.js";
 import type { Db } from "../src/services/db.js";
 import { advanceGarden, buildDayInput, ensureGarden, REQUEST_GARDEN_STEP } from "../src/services/garden-sync.js";
+import { mirrorSweep, queueProvisionalPush } from "../src/services/mirror.js";
 import { mirrorIntentId } from "../src/services/mirror-owed.js";
 import { listPlans } from "../src/services/plan-registry.js";
 import { loadPreferences, savePreferences } from "../src/services/calendar-sync.js";
@@ -49,11 +53,14 @@ import { courseSessionsDone, placeSlots, slotId } from "../src/services/program-
 import { reconcileCompletionStates } from "../src/services/reconcile-daily.js";
 import { reviewBasis } from "../src/services/session-review-basis.js";
 import { buildSessionOutcome, type BuildCtx } from "../src/services/session-build.js";
+import { savePerformedSession } from "../src/services/session-save.js";
 import { cloneTestDb, isWrite, makeTestDb, makeTestUser, mountRoutes } from "./helpers.js";
 import { INTRO_COURSE } from "./course-fixture.js";
 import { makeRealisticEnv, seedRealisticAccount } from "./realistic-account.js";
+import { connectMock, seedCatalog, switchOn } from "./watch-push-fixture.js";
+import { mockCorosServer } from "../../../packages/coros/test/mock-coros-server.js";
 
-const { accountState, activities, gardenDayInputs, performedSessions, plannedWorkouts, programs, syncIntents, workoutCompletionMatches, workoutDocRevisions } = schema;
+const { accountState, activities, corosWriteJobs, gardenDayInputs, performedSessions, plannedWorkouts, programs, sessionBuilds, syncIntents, workoutCompletionMatches, workoutDocRevisions } = schema;
 
 /** A Monday. */
 const MON = "2026-10-05";
@@ -310,14 +317,14 @@ describe("marking a session done", () => {
 
     it("played through, though its row says nothing yet", async () => {
       const p = await seedCourse();
-      await refused(await written(p, MON, 1, "scheduled", { contentState: "done" }), true, "under_way");
+      await refused(await written(p, MON, 1, "scheduled", { contentState: "done" }), true, "saved");
     });
 
     it("a performed session saved against it", async () => {
       const p = await seedCourse();
       const id = await outline(p, MON);
       await db.insert(performedSessions).values({ id: newId(), userId, workoutId: id, source: "app", localDate: MON, movesDone: [], payloadHash: "h", createdAt: NOW, updatedAt: NOW });
-      await refused(id, true, "under_way");
+      await refused(id, true, "saved");
     });
 
     it("built isn't under way", async () => {
@@ -388,7 +395,7 @@ describe("marking a session done", () => {
       const cases: Array<[string, (id: string) => (d: Db) => void, Record<string, unknown>]> = [
         ["started", (id) => setRow(id, { contentState: "started" }), { status: 409, error: "under_way" }],
         ["matched", matchIt, { status: 409, error: "matched" }],
-        ["saved", saveIt, { status: 409, error: "under_way" }],
+        ["saved", saveIt, { status: 409, error: "saved" }],
         ["a restore begun", () => restoreIt, { status: 423 }],
         ["removed", (id) => setRow(id, { archivedAt: NOW, archiveReason: "user_removed" }), { status: 404 }],
         ["moved ahead", (id) => setRow(id, { effectiveDate: addDays(MON, 3) }), { status: 409, error: "ahead" }],
@@ -410,7 +417,7 @@ describe("marking a session done", () => {
     describe("an undo", () => {
       const cases: Array<[string, (id: string) => (d: Db) => void, Record<string, unknown>]> = [
         ["matched since", matchIt, { ok: false, status: 409, error: "matched" }],
-        ["saved since", saveIt, { ok: false, status: 409, error: "under_way" }],
+        ["saved since", saveIt, { ok: false, status: 409, error: "saved" }],
         ["started since", (id) => setRow(id, { contentState: "started" }), { ok: false, status: 409, error: "under_way" }],
         ["a restore begun", () => restoreIt, { ok: false, status: 423 }],
         ["removed", (id) => setRow(id, { archivedAt: NOW, archiveReason: "user_removed" }), { ok: false, status: 404 }],
@@ -748,7 +755,7 @@ describe("undoing it", () => {
       const p = await seedCourse();
       const id = await outline(p, MON, "completed", { ...asDone, courseSession: 1, resolutionDate: MON });
       await db.insert(performedSessions).values({ id: newId(), userId, workoutId: id, source: "app", localDate: MON, movesDone: [], payloadHash: "h", createdAt: NOW, updatedAt: NOW });
-      await refused(id, false, "under_way");
+      await refused(id, false, "saved");
       const started = await outline(p, addDays(MON, -1), "completed", { ...asDone, courseSession: 2, resolutionDate: addDays(MON, -1), contentState: "started" });
       await refused(started, false, "under_way");
     });
@@ -773,6 +780,244 @@ describe("undoing it", () => {
       expect(again.status).toBe(200);
       expect(writes().filter((s) => !/"sessions"/.test(s))).toEqual([]);
       expect(await row(id)).toEqual(before);
+    });
+  });
+});
+
+describe("an undo after a stop (R42): what the stop said goes on being true", () => {
+  const plansReq = async (path: string) => {
+    const headers = { Cookie: await cookieFor(), "content-type": "application/json" };
+    const res = await mountRoutes(db, "/api/plans", plansRoutes).request(`/api/plans${path}`, { method: "POST", headers }, ENV);
+    return (await res.json()) as { more?: boolean; waiting?: boolean };
+  };
+  const stopAll = async (p: string) => {
+    for (let i = 0; i < 40; i += 1) {
+      const step = await plansReq(`/${p}/stop`);
+      if (!step.more || step.waiting) return;
+    }
+    throw new Error("the stop never ended");
+  };
+  const planOf = async (id: string) => (await db.select().from(programs).where(eq(programs.id, id)))[0]!;
+  const finishing = async (id: string) => ((await planOf(id)).config as { finishing?: string }).finishing;
+  const pushesOf = async (id: string) => (await db.select().from(corosWriteJobs).where(eq(corosWriteJobs.workoutId, id))).filter((j) => j.kind === "program_session_push");
+  const owed = async (id: string) => {
+    const [mark] = await db.select().from(syncIntents).where(eq(syncIntents.id, mirrorIntentId(id)));
+    return mark !== undefined && mark.resolvedAt === null;
+  };
+
+  /** The watch on: writes on, connected, its catalog there. */
+  async function watchOn() {
+    ({ userId, prefs } = await makeTestUser(db, { corosWritesEnabled: true }));
+    ctx = { today: MON, now: NOW, prefs };
+    await seedCatalog(db);
+    const server = mockCorosServer({ baseMonday: "2026-10-12" });
+    await connectMock(db, userId, server);
+    return {
+      server,
+      sweep: () => mirrorSweep(db, switchOn(), userId, prefs, ctx, { cap: 1 }),
+      lane: () => executeCloudJobs(db, switchOn(), userId, prefs, { fetchImpl: server.fetchImpl }),
+    };
+  }
+
+  it("an outline marked today, the stop run to its end, then undone: the marker's back, the hour takes it, and it never reads as missed", async () => {
+    const p = await placed();
+    const id = slotId(p, MON);
+    await mark(id, true);
+    await stopAll(p);
+    expect(await finishing(p)).toBeUndefined();
+    expect((await row(id)).archivedAt).toBeNull();
+
+    expect((await mark(id, false)).status).toBe(200);
+    expect(await finishing(p)).toBe("stop");
+    expect((await planOf(p)).status).toBe("retired");
+    expect(await row(id)).toMatchObject({ completionState: "unresolved", archivedAt: null, sanctionedBy: null, courseSession: null, resolutionDate: null });
+    expect(await owed(id)).toBe(false);
+
+    expect(await finishCoursesPartWay(db, AT)).toEqual({ finished: 1, failed: 0 });
+    expect(await row(id)).toMatchObject({ archiveReason: "program_replaced" });
+    expect(await finishing(p)).toBeUndefined();
+
+    // Eight days on, reconcile has nothing to miss, and the garden nothing to debit.
+    const later = new Date("2026-10-13T19:00:00.000Z");
+    vi.setSystemTime(later);
+    await reconcileCompletionStates(db, userId, prefs, later);
+    await reconcileCompletionStates(db, userId, prefs, later);
+    expect((await row(id)).completionState).not.toBe("missed");
+    expect((await buildDayInput(db, userId, "2026-10-13", prefs)).missedRuns).toEqual([]);
+  });
+
+  it("a written one: nothing owed, and no push queued by the sweep, the lane or a day's build, before the hour takes it", async () => {
+    const { sweep, lane, server } = await watchOn();
+    const p = await placed();
+    const id = slotId(p, MON);
+    await writeCourseSession(db, userId, await row(id), ctx);
+    await mark(id, true);
+    await stopAll(p);
+    expect((await row(id)).origin).toBe("studio");
+    await db.update(syncIntents).set({ resolvedAt: NOW }).where(eq(syncIntents.id, mirrorIntentId(id)));
+
+    expect((await mark(id, false)).status).toBe(200);
+    expect(await finishing(p)).toBe("stop");
+    expect(await owed(id)).toBe(false);
+
+    // The window's read finds a document workout with no mark at all, and the sheet's own build hands the day's to the mirror.
+    await sweep();
+    await lane();
+    await buildSessionOutcome(db, userId, id, {}, { ...ctx, env: switchOn() });
+    await lane();
+    expect(await pushesOf(id)).toEqual([]);
+    expect((server.state.schedule.programs ?? []).filter((x) => String(x.name).startsWith("Intro"))).toEqual([]);
+
+    expect(await finishCoursesPartWay(db, AT)).toEqual({ finished: 1, failed: 0 });
+    expect(await row(id)).toMatchObject({ archiveReason: "program_replaced" });
+    expect(await finishing(p)).toBeUndefined();
+    await sweep();
+    expect(await pushesOf(id)).toEqual([]);
+  });
+
+  it("an owed mark left open from before gives nothing either: the sweep settles it", async () => {
+    const { sweep } = await watchOn();
+    const p = await placed();
+    const id = slotId(p, MON);
+    await writeCourseSession(db, userId, await row(id), ctx);
+    expect(await owed(id)).toBe(true);
+    await mark(id, true);
+    await stopAll(p);
+    await mark(id, false);
+    await sweep();
+    expect(await pushesOf(id)).toEqual([]);
+    expect(await owed(id)).toBe(false);
+  });
+
+  it("a copy already on the watch comes off with it, as the confirm said", async () => {
+    const { lane } = await watchOn();
+    const p = await placed();
+    const id = slotId(p, MON);
+    await writeCourseSession(db, userId, await row(id), ctx);
+    expect(await queueProvisionalPush(db, switchOn(), userId, await row(id), ctx)).toBe("queued");
+    await lane();
+    const [record] = await db.select().from(sessionBuilds).where(eq(sessionBuilds.workoutId, id));
+    await mark(id, true);
+    await stopAll(p);
+    await mark(id, false);
+    await finishCoursesPartWay(db, AT);
+    expect(await row(id)).toMatchObject({ archiveReason: "program_replaced" });
+    const [unpush] = await db.select().from(corosWriteJobs).where(eq(corosWriteJobs.id, `unpush:${record!.id}`));
+    expect(unpush).toMatchObject({ status: "queued" });
+    expect(await finishing(p)).toBeUndefined();
+  });
+
+  it("marked again before the hour, it stays: the step finds nothing and the marker clears", async () => {
+    const p = await placed();
+    const id = slotId(p, MON);
+    await mark(id, true);
+    await stopAll(p);
+    await mark(id, false);
+    await mark(id, true);
+    await finishCoursesPartWay(db, AT);
+    expect(await row(id)).toMatchObject({ ...asDone, archivedAt: null });
+    expect(await finishing(p)).toBeUndefined();
+  });
+
+  describe("a day gone stays as it was: that row was open at the stop", () => {
+    it.each([
+      ["an outline", (p: string, date: string) => outline(p, date, "completed", { ...asDone, courseSession: 1, resolutionDate: date })],
+      ["a written one", (p: string, date: string) => written(p, date, 1, "completed", { ...asDone, resolutionDate: date })],
+    ])("%s", async (_, seed) => {
+      const p = await seedCourse({}, { status: "retired" });
+      const date = addDays(MON, -3);
+      const id = await seed(p, date);
+      expect((await mark(id, false)).status).toBe(200);
+      expect(await finishing(p)).toBeUndefined();
+      expect(await owed(id)).toBe(false);
+      expect(await row(id)).toMatchObject({ completionState: "unresolved", archivedAt: null });
+      expect(await finishCoursesPartWay(db, AT)).toEqual({ finished: 0, failed: 0 });
+      expect((await row(id)).archivedAt).toBeNull();
+    });
+  });
+
+  it("a plan still running arms nothing, and its session goes back as it did", async () => {
+    const p = await placed();
+    const id = slotId(p, MON);
+    await mark(id, true);
+    await mark(id, false);
+    expect(await finishing(p)).toBeUndefined();
+    expect((await row(id)).completionState).toBe("scheduled");
+    expect((await finishCoursesPartWay(db, AT)).finished).toBe(0);
+  });
+
+  it("a paused one neither: a pause isn't a stop", async () => {
+    const p = await placed({}, { pausedUntil: addDays(MON, 2) });
+    const id = await outline(p, MON, "completed", { ...asDone, courseSession: 1, resolutionDate: MON, id: "paused-row" });
+    await mark(id, false);
+    expect(await finishing(p)).toBeUndefined();
+    expect((await row(id)).completionState).toBe("scheduled");
+  });
+
+  it("the marker goes on another account's plan never, and only on this row's plan", async () => {
+    const p = await seedCourse({}, { status: "retired" });
+    const other = await seedCourse({}, { status: "retired" });
+    const id = await outline(p, MON, "completed", { ...asDone, courseSession: 1, resolutionDate: MON });
+    await mark(id, false);
+    expect(await finishing(p)).toBe("stop");
+    expect(await finishing(other)).toBeUndefined();
+  });
+
+  describe("all of it lands or none: in the write's own batch", () => {
+    /** The undo, with `land` landing just before the batch's first write. */
+    async function racing(id: string, land: (d: Db) => void) {
+      const { markSessionDone } = await import("../src/services/mark-done.js");
+      let landed = false;
+      const clone: Db = cloneTestDb(db, {
+        onStatement: (s) => {
+          if (landed || !isWrite(s)) return;
+          landed = true;
+          land(clone);
+        },
+      });
+      const out = await markSessionDone(clone, userId, id, false, { today: MON, now: NOW, prefs });
+      return { out, clone };
+    }
+    const configOn = async (d: Db, p: string) => (await d.select().from(programs).where(eq(programs.id, p)))[0]!.config as { finishing?: string };
+    const started = (id: string) => (d: Db) => (d.update(plannedWorkouts).set({ contentState: "started" }).where(eq(plannedWorkouts.id, id)) as unknown as { run(): void }).run();
+
+    it("the guard refusing the row arms nothing", async () => {
+      const p = await seedCourse({}, { status: "retired" });
+      const id = await outline(p, MON, "completed", { ...asDone, courseSession: 1, resolutionDate: MON });
+      const { out, clone } = await racing(id, started(id));
+      expect(out).toMatchObject({ ok: false, status: 409, error: "under_way" });
+      expect((await configOn(clone, p)).finishing).toBeUndefined();
+    });
+
+    it("nor marks anything owed", async () => {
+      const p = await seedCourse();
+      const id = await written(p, MON, 1, "completed", { ...asDone, resolutionDate: MON });
+      const { out, clone } = await racing(id, started(id));
+      expect(out).toMatchObject({ ok: false, status: 409, error: "under_way" });
+      expect(await clone.select().from(syncIntents).where(eq(syncIntents.id, mirrorIntentId(id)))).toEqual([]);
+    });
+
+    it("a stop landing just before the batch is read as the batch runs: armed, nothing owed", async () => {
+      const p = await seedCourse();
+      const id = await written(p, MON, 1, "completed", { ...asDone, resolutionDate: MON });
+      const stop = (d: Db) => (d.update(programs).set({ status: "retired" }).where(eq(programs.id, p)) as unknown as { run(): void }).run();
+      const { out, clone } = await racing(id, stop);
+      expect(out).toMatchObject({ ok: true });
+      expect((await configOn(clone, p)).finishing).toBe("stop");
+      expect(await clone.select().from(syncIntents).where(eq(syncIntents.id, mirrorIntentId(id)))).toEqual([]);
+    });
+
+    it("a write that fails takes the marker with it", async () => {
+      const p = await seedCourse({}, { status: "retired" });
+      const id = await outline(p, MON, "completed", { ...asDone, courseSession: 1, resolutionDate: MON });
+      const { markSessionDone } = await import("../src/services/mark-done.js");
+      const clone: Db = cloneTestDb(db, {
+        onStatement: (s) => {
+          if (/^update "planned_workouts"/.test(s)) throw new Error("the row's write failed");
+        },
+      });
+      await expect(markSessionDone(clone, userId, id, false, { today: MON, now: NOW, prefs })).rejects.toThrow("the row's write failed");
+      expect((await configOn(clone, p)).finishing).toBeUndefined();
     });
   });
 });
@@ -924,9 +1169,104 @@ describe("the garden", () => {
         ENV,
       );
       expect(res.status).toBe(200);
-      expect(await row(id)).toMatchObject({ completionState: "completed", sanctionedBy: null });
+      expect(await row(id)).toMatchObject({ completionState: "completed", sanctionedBy: null, courseSession: 1 });
       expect((await input(MON)).completedRuns).toHaveLength(1);
       await refused(id, false, "matched");
+    });
+
+    describe("a marked outline keeps the number it took, whatever completes it again", () => {
+      const linkManually = async (id: string) => {
+        const activityId = newId();
+        await db.insert(activities).values({
+          id: activityId, userId, corosActivityId: `c-${activityId}`, source: "coros", startTime: `${MON}T19:30:00Z`, startTimeLocal: `${MON}T12:30:00`, timezone: "America/Los_Angeles",
+          sport: "yoga", durationSeconds: 600, sourceMergeConfidence: 1, createdAt: NOW, updatedAt: NOW,
+        });
+        const res = await mountRoutes(db, "/api/plan", planRoutes).request(
+          `/api/plan/workouts/${id}/match`,
+          { method: "POST", headers: { Cookie: await cookieFor(), "content-type": "application/json" }, body: JSON.stringify({ activityId }) },
+          ENV,
+        );
+        expect(res.status).toBe(200);
+      };
+
+      it("a manual link, with n past it: it doesn't take the next number, which counts itself", async () => {
+        const p = await seedCourse();
+        const first = await outline(p, addDays(MON, -3));
+        const second = await outline(p, addDays(MON, -2));
+        await mark(first, true);
+        await mark(second, true);
+        expect([(await row(first)).courseSession, (await row(second)).courseSession]).toEqual([1, 2]);
+        await linkManually(first);
+        expect((await row(first)).courseSession).toBe(1);
+        expect(await courseSessionsDone(db, userId, p)).toBe(2);
+      });
+
+      it("its own activity arriving by the sync", async () => {
+        const p = await seedCourse();
+        const earlier = await outline(p, addDays(MON, -2));
+        const id = await outline(p, MON, "scheduled", { sourceProgramId: "program-9" });
+        await mark(earlier, true);
+        await mark(id, true);
+        expect((await row(id)).courseSession).toBe(2);
+        await ingestActivities(db, { userId, sources: [linked("a-13")] });
+        expect(await row(id)).toMatchObject({ sanctionedBy: null, courseSession: 2 });
+        expect(await courseSessionsDone(db, userId, p)).toBe(2);
+      });
+
+      it("one reopened and completed again takes the number it has then: that isn't this", async () => {
+        const p = await seedCourse();
+        const first = await outline(p, addDays(MON, -3));
+        const second = await outline(p, addDays(MON, -2));
+        await mark(first, true);
+        await mark(second, true);
+        await mark(first, false);
+        await linkManually(first);
+        expect((await row(first)).courseSession).toBe(2);
+      });
+    });
+
+    describe("a save takes over from the mark too", () => {
+      const performedId = "3f2a1b0c-9d8e-4f7a-8b6c-5d4e3f2a1b0d";
+      const save = (id: string) =>
+        savePerformedSession(
+          db,
+          userId,
+          performedId,
+          {
+            id: performedId, source: "app", sourceRef: null, workoutId: id, buildId: null, localDate: MON,
+            startedAt: NOW, endedAt: NOW, seconds: 600, plannedSeconds: 660, minutes: 11, mode: "recovery",
+            theme: null, locationId: null, blockRef: null, blockNumber: null, completed: true,
+            stepsTotal: 1, stepsDone: 1,
+            movesDone: [{ exerciseId: "legsUp", seconds: 600 }], note: null, newMove: null,
+            entries: [{ exerciseId: "legsUp", implement: null, format: "holds", perSide: false, sets: [{ setIndex: 0, reps: null, seconds: 600, load: null }] }],
+            checks: [], review: {},
+          },
+          { now: NOW, prefs },
+        );
+      const openMatches = async (id: string) =>
+        (await db.select().from(workoutCompletionMatches).where(and(eq(workoutCompletionMatches.workoutId, id), isNull(workoutCompletionMatches.undoneAt)))).map((m) => m.method);
+
+      it("the mark goes in the save's write, and a linked activity after it finds nothing open: one live match", async () => {
+        const p = await seedCourse();
+        const id = await written(p, MON, 1, "scheduled", { sourceProgramId: "program-9" });
+        await mark(id, true);
+        expect((await save(id)).status).toBe("saved");
+        expect(await row(id)).toMatchObject({ completionState: "completed", contentState: "done", sanctionedBy: null, courseSession: 1 });
+        expect(await openMatches(id)).toEqual(["app_session"]);
+        await ingestActivities(db, { userId, sources: [linked("a-14")] });
+        expect(await openMatches(id)).toEqual(["app_session"]);
+        await refused(id, false, "matched");
+      });
+
+      it("a save that couldn't take the slot's match still played it: the mark goes all the same", async () => {
+        const p = await seedCourse();
+        const id = await written(p, MON, 1, "completed", { ...asDone, resolutionDate: MON });
+        await linkOpen(id);
+        const saved = await save(id);
+        expect(saved.status).toBe("saved");
+        expect(saved).toMatchObject({ matched: false });
+        expect(await row(id)).toMatchObject({ contentState: "done", sanctionedBy: null });
+      });
     });
 
     it("a session completed any other way isn't open to it: the activity stays extra training", async () => {
@@ -951,8 +1291,18 @@ describe("what the session read says (no statement of its own)", () => {
   const read = async (id: string) => {
     const res = await mountRoutes(db, "/api/sessions", sessionRoutes).request(`/api/sessions/${id}`, { headers: { Cookie: await cookieFor() } }, ENV);
     expect(res.status).toBe(200);
-    return (await res.json()) as { course?: { markDone: string | null; held: string | null }; origin: string; build: unknown };
+    return (await res.json()) as { course?: { markDone: string | null; held: string | null }; origin: string; build: unknown; completionState?: string };
   };
+
+  it("the read says the row's completion, which a sheet can't take from a row the page read before", async () => {
+    const p = await seedCourse();
+    const id = await outline(p, addDays(MON, -2), "unresolved");
+    expect((await read(id)).completionState).toBe("unresolved");
+    await mark(id, true);
+    expect((await read(id)).completionState).toBe("completed");
+    await mark(id, false);
+    expect((await read(id)).completionState).toBe("unresolved");
+  });
 
   it("an outline of today that a pause holds offers it, and says why", async () => {
     const p = await seedCourse({}, { pausedUntil: addDays(MON, 2) });
@@ -1064,6 +1414,29 @@ describe("within a request's budget, on a realistic account", () => {
     expect(MARK_DONE_REPLAY_MAX_DAYS).toBe(2);
   });
 
+  it("an undo on a stopped plan's own day, an outline and a written session", { timeout: 120_000 }, async () => {
+    const account = await seedRealisticAccount(db);
+    userId = account.userId;
+    prefs = await loadPreferences(db, userId);
+    await advanceGarden(db, userId, prefs, new Date(), { maxResimDays: 200, maxWalkDays: 200 });
+    const env = { ...makeRealisticEnv(), WATCH_PUSH_ENABLED: "1" } as Env;
+    const today = todayInZone(prefs.timezone);
+    const p = await seedCourse({}, { status: "retired" });
+    const marked = { ...asDone, courseSession: 1, resolutionDate: today };
+    const ids = [await outline(p, today, "completed", { ...marked, id: "stopped-outline" }), await written(p, today, 1, "completed", marked)];
+    const cookie = await cookieFor();
+    const costs: number[] = [];
+    for (const id of ids) {
+      let spent = 0;
+      const run = cloneTestDb(db, { boundVariableCap: 100, onStatement: () => (spent += 1) });
+      const res = await mountRoutes(run, "/api/plan", planRoutes).request(`/api/plan/workouts/${id}/mark-done`, { method: "POST", headers: { Cookie: cookie, "content-type": "application/json" }, body: JSON.stringify({ done: false }) }, env);
+      expect(res.status).toBe(200);
+      costs.push(spent);
+    }
+    console.log(`mark-done, undo on a stopped plan's own day (outline, written): ${costs.join(", ")}`);
+    expect(Math.max(...costs), costs.join(",")).toBeLessThanOrEqual(45);
+  });
+
   it("on a Sunday, when the last checkpoint is furthest", { timeout: 120_000 }, async () => {
     vi.setSystemTime(new Date("2026-10-11T19:00:00.000Z"));
     const costs = await sweep();
@@ -1098,5 +1471,66 @@ describe("what it costs of its own, by equality", () => {
     });
     await markSessionDone(racing, userId, id, true, { today: MON, now: NOW, prefs });
     expect(spent).toBe(3);
+  });
+
+  describe("the service's own statements", () => {
+    const counted = async (id: string, done: boolean) => {
+      const { markSessionDone } = await import("../src/services/mark-done.js");
+      let spent = 0;
+      const clone = cloneTestDb(db, { onStatement: () => (spent += 1) });
+      const out = await markSessionDone(clone, userId, id, done, { today: MON, now: NOW, prefs });
+      expect(out).toMatchObject({ ok: true });
+      return spent;
+    };
+    const asMarked = (date: string) => ({ ...asDone, courseSession: 1, resolutionDate: date });
+
+    it("a mark: the read and the write", async () => {
+      const p = await seedCourse();
+      expect(await counted(await outline(p, MON), true)).toBe(2);
+    });
+
+    it("an undo of a day gone: the read and the write", async () => {
+      const p = await seedCourse({}, { status: "retired" });
+      const date = addDays(MON, -2);
+      expect(await counted(await outline(p, date, "completed", asMarked(date)), false)).toBe(2);
+    });
+
+    it("an undo of today's outline: the read, the marker's write and the row's, whether the plan runs or not", async () => {
+      const running = await seedCourse();
+      expect(await counted(await outline(running, MON, "completed", asMarked(MON)), false)).toBe(3);
+      const stopped = await seedCourse({}, { status: "retired" });
+      expect(await counted(await outline(stopped, MON, "completed", asMarked(MON)), false)).toBe(3);
+    });
+
+    it("an undo of today's written session: the owed mark's write as well", async () => {
+      const running = await seedCourse();
+      expect(await counted(await written(running, MON, 1, "completed", asMarked(MON)), false)).toBe(4);
+      const stopped = await seedCourse({}, { status: "retired" });
+      expect(await counted(await written(stopped, MON, 1, "completed", asMarked(MON)), false)).toBe(4);
+    });
+  });
+});
+
+describe("a refusal says what's true", () => {
+  it("a session already saved isn't under way", async () => {
+    const p = await seedCourse();
+    const done = await written(p, MON, 1, "scheduled", { contentState: "done" });
+    const res = await mark(done, true);
+    expect(res.body.error).toBe("saved");
+    expect(res.body.why).toBe("It's been played and saved, so it stays as it is.");
+  });
+
+  it("one started is", async () => {
+    const p = await seedCourse();
+    const res = await mark(await written(p, MON, 1, "scheduled", { contentState: "started" }), true);
+    expect(res.body.error).toBe("under_way");
+    expect(res.body.why).toBe("It's under way. Finish it or discard it first.");
+  });
+
+  it("saved beats started: a save is the later word", async () => {
+    const p = await seedCourse();
+    const id = await outline(p, MON, "scheduled", { contentState: "started" });
+    await db.insert(performedSessions).values({ id: newId(), userId, workoutId: id, source: "app", localDate: MON, movesDone: [], payloadHash: "h", createdAt: NOW, updatedAt: NOW });
+    expect((await mark(id, true)).body.error).toBe("saved");
   });
 });

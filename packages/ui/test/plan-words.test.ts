@@ -35,6 +35,14 @@ describe("planSheetWords", () => {
     });
     expect(planSheetWords(plan({ purpose: "   ", brief: "" }))).toMatchObject({ purpose: null, brief: null });
   });
+  it("a stopped plan says neither how it ends nor that it's paused: it has done both", () => {
+    expect(planSheetWords(plan({ status: "retired", onEnd: "continue", pausedUntil: "2026-12-01", purpose: "Keep the habit", brief: "Ten sessions." }))).toEqual({
+      purpose: "Keep the habit",
+      ending: null,
+      brief: "Ten sessions.",
+      pausedUntil: null,
+    });
+  });
 });
 
 describe("changePlanRequest", () => {

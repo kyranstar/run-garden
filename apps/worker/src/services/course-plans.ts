@@ -41,7 +41,8 @@
  * step a request runs (`finishCoursesPartWay`, `COURSE_FINISH_BUDGET`). Nothing else is stored: each step reads what's still
  * there. Once cleared, a retry changes nothing: a stop reads nothing more, and a start only runs the pass, as the hourly does, so
  * a Studio session with that ref added since stays where it was put. Stopping a start part way leaves what it hadn't reached in
- * the bucket: those were never the plan's.
+ * the bucket: those were never the plan's. One thing sets "stop" again on a stopped plan: Mark done undone on a session's own day
+ * (`mark-done.ts`), which puts a session the stop had left back on it to be taken off.
  *
  * WHAT THE ANSWER SAYS. `more`: something's left. `waiting` as well: all that's left is a day's build on the wire this moment
  * (`workoutsOnTheWire`, what a removal refuses as `sending`), so a resend can't help; the client stops, and the hourly pass takes

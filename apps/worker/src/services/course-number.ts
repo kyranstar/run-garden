@@ -12,7 +12,8 @@
  * one column of that UPDATE, read against the row as it was: no statement more, no bound value, and nothing that can land
  * apart from the completion. Its number is the plan's sessions done, plus one, as the write's is. On anything but an
  * outline of a course it leaves the column as it is, so a written session keeps the number it was written as, and an
- * adaptive slot or a workout the coach filed keeps none.
+ * adaptive slot or a workout the coach filed keeps none. So it does on a row already completed: a session marked done and
+ * then linked has its number, and that count already includes it.
  *
  * WHAT MARK DONE OFFERS (`markDoneOffer`, `mark-done.ts` has the rest) is here too, because the session's read says it, and
  * that read reads nothing more for it.
@@ -30,15 +31,16 @@ export const MARK_DONE_DAYS_BACK = 7;
 export function courseNumberOnCompletion(): { courseSession: SQL } {
   const pw = plannedWorkouts;
   return {
-    courseSession: sql`case when ${pw.origin} = 'program' and exists (select 1 from programs p where p.id = ${pw.planId} and p.user_id = ${pw.userId} and p.kind = 'course')
+    courseSession: sql`case when ${pw.origin} = 'program' and ${pw.completionState} <> 'completed' and exists (select 1 from programs p where p.id = ${pw.planId} and p.user_id = ${pw.userId} and p.kind = 'course')
       then (select count(*) + 1 from planned_workouts done where done.user_id = ${pw.userId} and done.plan_id = ${pw.planId} and done.course_session is not null and done.completion_state = 'completed')
       else ${pw.courseSession} end`,
   };
 }
 
 /**
- * Evidence takes over from the athlete's word: spread in a write that links an activity, so a session marked done and then
- * linked is the activity's, and no longer the athlete's to undo. Anyone else's sanction stands. No bound value.
+ * Evidence takes over from the athlete's word: spread in a write that links an activity or saves a session, so a session marked
+ * done and then linked or played is theirs, no longer the athlete's to undo, and no longer open to an activity of its own
+ * (`ingestActivities`). Anyone else's sanction stands. No bound value.
  */
 export function markGivesWay(): { sanctionedBy: SQL } {
   const pw = plannedWorkouts;

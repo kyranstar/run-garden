@@ -14,7 +14,7 @@ import { buildDossier } from "../src/services/coach-context.js";
 import { savePreferences } from "../src/services/calendar-sync.js";
 import { loadNonCoachPlanEntries } from "../src/services/coach-plans.js";
 import { createSession, SESSION_COOKIE } from "../src/auth/sessions.js";
-import { makeTestDb, makeTestUser, mountRoutes } from "./helpers.js";
+import { cloneTestDb, makeTestDb, makeTestUser, mountRoutes } from "./helpers.js";
 
 function makeEnv(): Env {
   return {
@@ -327,8 +327,8 @@ describe("coach routes", () => {
   });
 
   describe("a rename and the plan a block belongs to", () => {
-    const block = (id: string, programId: string | null, owner = userId) =>
-      db.insert(schema.coachPlans).values({ id, userId: owner, discipline: "run", name: `Block ${id}`, status: "active", startDate: "2026-11-02", endDate: "2026-11-29", stampPrefix: id, programId, createdAt: nowInstant(), updatedAt: nowInstant() });
+    const block = (id: string, programId: string | null, owner = userId, status = "active") =>
+      db.insert(schema.coachPlans).values({ id, userId: owner, discipline: "run", name: `Block ${id}`, status, startDate: "2026-11-02", endDate: "2026-11-29", stampPrefix: id, programId, createdAt: nowInstant(), updatedAt: nowInstant() });
     const plan = (id: string, name: string, owner = userId) =>
       db.insert(schema.programs).values({ id, userId: owner, kind: "coach", name, status: "active", disciplines: ["run"], startDate: null, endDate: null, raceDate: null, source: null, config: {}, onEnd: "ask", createdAt: nowInstant(), updatedAt: nowInstant(), archivedAt: null });
     const nameOf = async (id: string) => (await db.select({ name: schema.programs.name }).from(schema.programs).where(eq(schema.programs.id, id)))[0]!.name;
@@ -346,6 +346,36 @@ describe("coach routes", () => {
       await block("b", "p-two");
       await client().post("/api/coach/plans/a/rename", { name: "Base again" });
       expect(await nameOf("p-two")).toBe("Running");
+    });
+
+    it("a retired sibling is no block of it, as the list has it: a one-phase line, and the rename follows", async () => {
+      await plan("p-left", "Running");
+      await block("gone", "p-left", userId, "retired");
+      await block("live", "p-left");
+      await client().post("/api/coach/plans/live/rename", { name: "Autumn Half" });
+      expect(await nameOf("p-left")).toBe("Autumn Half");
+    });
+
+    it("the retired block's own rename doesn't name the plan its live sibling goes by", async () => {
+      await plan("p-kept", "Kept");
+      await block("old", "p-kept", userId, "retired");
+      await block("now", "p-kept");
+      await client().post("/api/coach/plans/old/rename", { name: "Old name" });
+      expect(await nameOf("p-kept")).toBe("Kept");
+    });
+
+    it("the two writes land together: a failure in the plan's leaves the block as it was", async () => {
+      await plan("p-whole", "Block whole");
+      await block("whole", "p-whole");
+      const clone = cloneTestDb(db, {
+        onStatement: (s) => {
+          if (/^update "programs"/.test(s)) throw new Error("the plan's write failed");
+        },
+      });
+      const res = await mountRoutes(clone, "/api/coach", coachRoutes).request("/api/coach/plans/whole/rename", { method: "POST", headers: { Cookie: cookie, "Content-Type": "application/json" }, body: JSON.stringify({ name: "Half way" }) }, makeEnv());
+      expect(res.status).toBe(500);
+      const [left] = await clone.select({ name: schema.coachPlans.name }).from(schema.coachPlans).where(eq(schema.coachPlans.id, "whole"));
+      expect(left!.name).toBe("Block whole");
     });
 
     it("no plan yet: nothing else changes, not even a plan with the same blocks' count", async () => {

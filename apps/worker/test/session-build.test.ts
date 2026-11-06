@@ -1025,6 +1025,7 @@ describe("Start (Review Focus 3)", () => {
       workoutId: id,
       date: TODAY,
       contentState: "outline",
+      completionState: "scheduled",
       locked: false,
       lockedBy: null,
       // The planned workout's own title and kind: what a device that keeps nothing of it names the session by.

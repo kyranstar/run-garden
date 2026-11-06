@@ -555,8 +555,10 @@ export function SessionSheet({
     mutationFn: (done: boolean) => api.markDone(w.id, done),
     onSuccess: (_, done) => {
       refreshPlan();
-      // The garden credits it, and its plan's count moves.
+      // The garden credits it, and its plan's count moves. A session past the page's window is read by its id, so nothing else
+      // tells that read.
       for (const k of ["garden", "plans"]) void qc.invalidateQueries({ queryKey: [k] });
+      void qc.invalidateQueries({ queryKey: ["workout", w.id] });
       void qc.invalidateQueries({ queryKey: key });
       // Undone on its day, it's owed on the watch again: the drain makes its copy, as an un-skip's does.
       if (!done) drainThenRead();
@@ -649,6 +651,8 @@ export function SessionSheet({
   // Marked done, as skipped is: over, so nothing is asked or built unless it's undone. Read from the session, not `w`, which
   // the page reads again only after this sheet has moved on.
   const marked = s?.course?.markDone === "marked";
+  // The same goes for completed, either way. A read from before it said so leaves it to `w`.
+  const completed = (s?.completionState ?? w.completionState) === "completed";
   // A plan holding it: there's nothing for a pre-check's answer to build.
   const heldByPlan = !!s?.course?.held;
   const changeable = !!s && !locked && !skipped && !marked && !heldByPlan && !past && !ahead;
@@ -803,7 +807,7 @@ export function SessionSheet({
     !!s &&
     !!watch &&
     s.contentState !== "done" &&
-    w.completionState !== "completed" &&
+    !completed &&
     !marked &&
     (!skipped || watch.state === "on_watch" || CATCHING_UP.includes(watch.state));
   // The pinned foot holds the sheet's actions — and is left out when there are none (loading, or a started or done
@@ -1036,7 +1040,7 @@ export function SessionSheet({
     // A day gone is never built (audit 2a-UI I2): a plain line, never a spinner for a build that will not start. Nor is one
     // already done, and one answered with no build says why: only a build in flight is a spinner.
     body =
-      w.completionState === "completed" ? (
+      completed ? (
         <p className="session-status">
           <CompletionPill state="completed" />
         </p>
