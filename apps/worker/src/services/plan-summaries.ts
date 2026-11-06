@@ -1,5 +1,5 @@
 import { z } from "zod";
-import { courseConfigSchema, defaultOnEnd, isLocalDate, planOnEndSchema, PLAN_BRIEF_MAX, PLAN_OBJECTIVES_MAX, PLAN_PURPOSE_MAX, type PlanOnEnd, type ProgramKind, type TrainingLine } from "@rg/domain";
+import { courseConfigSchema, defaultOnEnd, isLocalDate, planOnEndSchema, planPrompt, PLAN_BRIEF_MAX, PLAN_OBJECTIVES_MAX, PLAN_PURPOSE_MAX, type PlanOnEnd, type ProgramKind, type TrainingLine } from "@rg/domain";
 import { courseDefinition } from "@rg/workout";
 
 /**
@@ -13,7 +13,8 @@ import { courseDefinition } from "@rg/workout";
  *  - `course`: where a course has got to, all from its definition and the sessions done (read with the row: `courseDone`): its
  *    `sessionLabel` while it counts them, then its own words for what comes after (`afterLabel`), so no screen has to know a
  *    course's numbers or words; null for any other kind, and with a definition gone or settings that don't read.
- *  - `prompt` stays null until the plan's next-step prompt is built.
+ *  - `prompt`: what the one rule (`planPrompt`, @rg/domain) says of the plan today, the same the chip reads: the tappable line the row shows,
+ *    or null. Its last session comes with the row (`lastSessionDate`, computed in the same read: `planLastDaySql`), never stored.
  */
 
 /** The kinds that are plans. */
@@ -80,6 +81,15 @@ export interface PlanRow {
   config: unknown;
   /** A course's own sessions done (`courseSessionsDone`); null for any other kind. */
   courseDone: number | null;
+  /** A coach or COROS plan's last day, worked out with the row (`planLastDaySql`); null for any other kind, or with none. */
+  lastSessionDate: string | null;
+}
+
+/** A training line's sport for a plan whose `programs.disciplines` speak "run", "strength" and "yoga"; null when it has not one of them. */
+const LINE_DISCIPLINE = { run: "run", strength: "lift", yoga: "mobility" } as const;
+function lineDisciplineOf(disciplines: readonly string[]): "run" | "lift" | "mobility" | null {
+  const own = disciplines.length === 1 ? LINE_DISCIPLINE[disciplines[0] as keyof typeof LINE_DISCIPLINE] : undefined;
+  return own ?? null;
 }
 
 /** Where a course plan has got to. */
@@ -100,23 +110,29 @@ export function lineKeysByPlan(lines: readonly TrainingLine[]): Map<string, stri
   return out;
 }
 
-export function planSummaryOf(row: PlanRow, lineKeys: ReadonlyMap<string, string>): PlanSummaryDto {
+export function planSummaryOf(row: PlanRow, lineKeys: ReadonlyMap<string, string>, today: string): PlanSummaryDto {
   const kind = row.kind as ProgramKind;
   const studioPlanId = typeof row.source?.studioPlanId === "string" ? row.source.studioPlanId : null;
   const onEnd = planOnEndSchema.safeParse(row.onEnd);
+  const ending: PlanOnEnd = onEnd.success ? onEnd.data : defaultOnEnd(kind, row.disciplines);
+  const status = row.status === "retired" || row.status === "archived" ? "retired" : "active";
   return {
     id: row.id,
     kind,
     name: row.name,
     purpose: row.purpose,
     brief: row.brief,
-    onEnd: onEnd.success ? onEnd.data : defaultOnEnd(kind, row.disciplines),
+    onEnd: ending,
     pausedUntil: row.pausedUntil,
     objectiveIds: row.objectiveIds ?? [],
-    status: row.status === "retired" || row.status === "archived" ? "retired" : "active",
+    status,
     lineKey: lineKeys.get(row.id) ?? null,
     listedAs: kind === "coach" ? studioPlanId : kind === "adaptive" || kind === "course" ? row.id : null,
     course: courseLabel(row),
-    prompt: null,
+    // Until a plan can hold a draft for its ending (Piece 5), none is ready.
+    prompt: planPrompt(
+      { kind, onEnd: ending, status, pausedUntil: row.pausedUntil, name: row.name, discipline: lineDisciplineOf(row.disciplines), lastSessionDate: row.lastSessionDate, hasDraft: false },
+      today,
+    ),
   };
 }

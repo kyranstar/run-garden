@@ -10,11 +10,11 @@ import { addDays, linesOf, newId, nowInstant, todayInZone, type LineBlock } from
 import type { Db } from "../src/services/db.js";
 import {
   consumeTriggers,
-  endingLine,
   evaluateTriggers,
   pendingTriggers,
 } from "../src/services/coach-triggers.js";
 import { readNudges } from "../src/services/coach-nudges.js";
+import { endingPlan } from "../src/services/plan-ending.js";
 import { makeTestDb, makeTestUser } from "./helpers.js";
 
 async function seedSleep(db: Db, userId: string, today: string, hoursPerNight: number[]) {
@@ -133,6 +133,23 @@ describe("coach triggers", () => {
       expect(await evaluateTriggers(db, userId, prefs, today)).not.toContain("plan_ending");
     });
 
+    it("reads the plan's own ending, as the chip does: a plan that finishes, or is paused, or is stopped, doesn't fire", async () => {
+      for (const [over, why] of [
+        [{ onEnd: "finish" }, "finish"],
+        [{ onEnd: "ask", pausedUntil: "9999-12-31" }, "paused"],
+        [{ onEnd: "ask", status: "retired" }, "stopped"],
+      ] as const) {
+        const db = makeTestDb();
+        const { userId, prefs } = await makeTestUser(db);
+        const today = todayInZone(prefs.timezone);
+        await db.insert(schema.programs).values({ id: "pr", userId, kind: "coach", name: "P", status: "active", disciplines: ["run"], config: {}, createdAt: nowInstant(), updatedAt: nowInstant(), ...over });
+        await block(db, userId, "cp-x", addDays(today, -20), addDays(today, 5));
+        await db.update(schema.coachPlans).set({ programId: "pr" }).where(eq(schema.coachPlans.id, "cp-x"));
+        expect(await evaluateTriggers(db, userId, prefs, today), why).not.toContain("plan_ending");
+        expect((await readNudges(db, userId, prefs, today, new Date())).map((n) => n.id), why).not.toContain("ending:cp-x");
+      }
+    });
+
     it("stays quiet for a phase that has ended (its status not yet flipped by the hourly sweep)", async () => {
       const db = makeTestDb();
       const { userId, prefs } = await makeTestUser(db);
@@ -157,7 +174,7 @@ describe("coach triggers", () => {
       expect(await evaluateTriggers(db2, u2.userId, u2.prefs, today)).toContain("plan_ending");
     });
 
-    it("one rule with the chips (endingLine): two lines ending, both pick the soonest — never the first by start", async () => {
+    it("one rule with the chips (planPrompt, endingPlan): two lines ending, both pick the soonest — never the first by start", async () => {
       const db = makeTestDb();
       const { userId, prefs } = await makeTestUser(db);
       const today = todayInZone(prefs.timezone);
@@ -171,7 +188,7 @@ describe("coach triggers", () => {
       expect(row!.evidence).toMatchObject({ planId: "cp-lift", endDate: addDays(today, 10) });
     });
 
-    it("endingLine: the soonest line ending within 21 days, today or later, with its last phase", () => {
+    it("endingPlan: the soonest line ending within 21 days, today or later, with its last phase", () => {
       const today = "2026-10-20";
       const b = (id: string, discipline: LineBlock["discipline"], startDate: string, endDate: string): LineBlock => ({ id, discipline, status: "active", name: id, startDate, endDate });
       const lines = linesOf(
@@ -184,12 +201,12 @@ describe("coach triggers", () => {
         ],
         today,
       );
-      expect(endingLine(lines, today)).toMatchObject({ line: { discipline: "lift", endDate: "2026-11-05" }, last: { id: "lift-b" } });
+      expect(endingPlan(lines, new Map(), today)).toMatchObject({ line: { discipline: "lift", endDate: "2026-11-05" }, last: { id: "lift-b" } });
       // 22 days out is past the window; 21 is in it; yesterday is ended.
-      expect(endingLine(linesOf([b("far", "run", "2026-09-01", "2026-11-11")], today), today)).toBeUndefined();
-      expect(endingLine(linesOf([b("edge", "run", "2026-09-01", "2026-11-10")], today), today)?.last.id).toBe("edge");
-      expect(endingLine(linesOf([b("ended", "run", "2026-09-01", "2026-10-19")], today), today)).toBeUndefined();
-      expect(endingLine(linesOf([b("today", "run", "2026-09-01", today)], today), today)?.last.id).toBe("today");
+      expect(endingPlan(linesOf([b("far", "run", "2026-09-01", "2026-11-11")], today), new Map(), today)).toBeUndefined();
+      expect(endingPlan(linesOf([b("edge", "run", "2026-09-01", "2026-11-10")], today), new Map(), today)?.last.id).toBe("edge");
+      expect(endingPlan(linesOf([b("ended", "run", "2026-09-01", "2026-10-19")], today), new Map(), today)).toBeUndefined();
+      expect(endingPlan(linesOf([b("today", "run", "2026-09-01", today)], today), new Map(), today)?.last.id).toBe("today");
     });
   });
 

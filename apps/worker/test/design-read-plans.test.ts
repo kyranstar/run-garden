@@ -455,6 +455,50 @@ describe("read_plans", () => {
     expect(JSON.stringify(data).split(EXTEND_LINE)).toHaveLength(2);
   });
 
+  it("a stopped plan is not offered as continuable: its blocks say it is stopped whatever their own status, its line says so, and no line left to continue means nothing said of continuing", async () => {
+    // The plan's row is retired (the athlete stopped it); a block of it still reads completed and another still running.
+    await planRow(rich.userId, { id: "pr-stopped", kind: "coach", name: "Zorbex plan", onEnd: "ask" });
+    await db.update(schema.programs).set({ status: "retired" }).where(eq(schema.programs.id, "pr-stopped"));
+    await block(rich.userId, { id: "cp-s1", name: "Stopped one", status: "completed", start: day(40), end: day(21) });
+    await block(rich.userId, { id: "cp-s2", name: "Stopped two", start: day(20), end: day(-12) });
+    await db.update(schema.coachPlans).set({ programId: "pr-stopped" }).where(sql`${schema.coachPlans.id} in ('cp-s1', 'cp-s2')`);
+    const { res, count } = await read();
+    expect(count).toBe(1);
+    const data = ok(res).data as { plans: Array<Record<string, any>>; lines: Array<Record<string, any>>; continueLine?: string; extendLine?: string };
+    const byId = new Map(data.plans.map((p) => [p.id, p]));
+    for (const id of ["cp-s1", "cp-s2"]) expect(byId.get(id), id).toMatchObject({ coachMayChange: false, why: STOPPED });
+    expect(data.lines).toHaveLength(1);
+    expect(data.lines[0]).toMatchObject({ stopped: true, planId: "pr-stopped" });
+    // Nothing on it to continue or extend, so nothing said of either.
+    expect(data).not.toHaveProperty("continueLine");
+    expect(data).not.toHaveProperty("extendLine");
+    expect(JSON.stringify(data)).not.toContain("continuesPlanId");
+  });
+
+  it("an archived plan's blocks are stopped too", async () => {
+    await planRow(rich.userId, { id: "pr-archived", kind: "coach", onEnd: "ask" });
+    await db.update(schema.programs).set({ status: "archived" }).where(eq(schema.programs.id, "pr-archived"));
+    await block(rich.userId, { id: "cp-a", name: "Archived one", start: day(20), end: day(-12) });
+    await db.update(schema.coachPlans).set({ programId: "pr-archived" }).where(eq(schema.coachPlans.id, "cp-a"));
+    const data = ok((await read()).res).data as { plans: Array<Record<string, any>>; lines: Array<Record<string, any>> };
+    expect(data.plans.find((p) => p.id === "cp-a")).toMatchObject({ coachMayChange: false, why: STOPPED });
+    expect(data.lines[0]).toMatchObject({ stopped: true });
+  });
+
+  it("a running plan's line beside a stopped one is still continued, said once, and its own entry doesn't say stopped", async () => {
+    await planRow(rich.userId, { id: "pr-stopped", kind: "coach", onEnd: "ask" });
+    await db.update(schema.programs).set({ status: "retired" }).where(eq(schema.programs.id, "pr-stopped"));
+    await planRow(rich.userId, { id: "pr-live", kind: "coach", disciplines: ["strength"], onEnd: "continue" });
+    await block(rich.userId, { id: "cp-s", name: "Stopped one", start: day(20), end: day(-12) });
+    await block(rich.userId, { id: "cp-l", name: "Live one", start: day(20), end: day(-12), discipline: "lift" });
+    await db.update(schema.coachPlans).set({ programId: "pr-stopped" }).where(eq(schema.coachPlans.id, "cp-s"));
+    await db.update(schema.coachPlans).set({ programId: "pr-live" }).where(eq(schema.coachPlans.id, "cp-l"));
+    const data = ok((await read()).res).data as { plans: Array<Record<string, any>>; lines: Array<Record<string, any>>; continueLine?: string };
+    expect(data.lines.map((l) => [l.planId, l.stopped ?? false])).toEqual(expect.arrayContaining([["pr-stopped", true], ["pr-live", false]]));
+    expect(data.continueLine).toBe(CONTINUE_LINE);
+    expect(data.plans.find((p) => p.id === "cp-l")).toMatchObject({ coachMayChange: true });
+  });
+
   it("an owner-shaped account (the CPU bench's, step 8): one running line of four phases, its last the taper; the Studio plan; no bucket — one statement, within the budget", async () => {
     const owner = await seedOwnerPlans(db, rich.userId);
     const { res, count } = await read();

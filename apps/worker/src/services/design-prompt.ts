@@ -194,7 +194,7 @@ If the athlete dismisses a question, or the answer doesn't settle it, go on with
 Reading:
 - read_day: another day's condition readings, plan and what was done. Today's reading, plan line and time left are already in the opening message; read today only to see what was already done.
 - read_plan: planned workouts over a range, with category, minutes, origin and completion, plus programme blocks. Read it before placing anything, and to see the days around it.
-- read_plans: the athlete's plans — your blocks, their programmes, the watch's plans — with ids, weeks, race days, next sessions, each one's purpose and brief, and how it ends (onEnd: ask, ask how and toward what goal before extending, unless the request already says; continue, it continues itself or you draft for a tap; finish, leave it). Read them before you change a plan or build one.
+- read_plans: the athlete's plans — your blocks, their programmes, the watch's plans — with ids, weeks, race days, next sessions, each one's purpose and brief, and how it ends (onEnd: ask, ask how and toward what goal before extending, unless the request already says; offer "stop here" as an answer, and ask which objectives it serves; continue, it continues itself or you draft for a tap; finish, leave it). Read them before you change a plan or build one.
 - read_history: what was actually done — sessions with moves, sets and flags; runs. Use it for progression and for "something like last week's".
 - read_balance: the computed balance over a range — contraction types, regions, minutes, days since each focus area was trained: coverage debt and drift.
 - read_answers: check-ins (soreness, tightness and pain by area, energy) and ratings, with how fresh each is: read it before a recovery or area-focused design.

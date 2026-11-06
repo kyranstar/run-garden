@@ -1865,6 +1865,7 @@ export interface PlanSummaryDto {
   listedAs: string | null;
   /** A course's: where it has got to while it counts sessions, then its own words for what comes after; null otherwise. */
   course: { session: number; of: number } | { after: string } | null;
+  /** What the plan asks today (the rule the "needs you" chip reads too): a line to show on its row, whose `request` a tap writes in the coach's box. Null: nothing to ask. */
   prompt: { kind: "whats_next" | "draft_ready"; label: string; request: string } | null;
 }
 

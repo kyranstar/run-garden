@@ -1,4 +1,4 @@
-import { and, desc, eq, gte, inArray, isNull, lte, sql } from "drizzle-orm";
+import { and, desc, eq, getTableColumns, gte, inArray, isNull, lte, sql } from "drizzle-orm";
 import {
   activities,
   coachMessages,
@@ -8,11 +8,13 @@ import {
   coachTriggers,
   dailyHealth,
   plannedWorkouts,
+  programs,
   sleepRecords,
 } from "@rg/database";
-import { addDays, linesOf, newId, nowInstant, type LineBlock, type LocalDate, type TrainingLine, type UserPreferences } from "@rg/domain";
+import { addDays, linesOf, newId, nowInstant, type LocalDate, type UserPreferences } from "@rg/domain";
 import { chunkIds, type Db } from "./db.js";
-import { isLoosePlan, lastPhaseOf, lineBlockOf } from "./coach-plans.js";
+import { isLoosePlan, lineBlockOf } from "./coach-plans.js";
+import { endingPlan, factsOf, planFactColumns, type PlanFacts } from "./plan-ending.js";
 
 /**
  * The coach's free layer (spec §1): six deterministic rules that MARK — a
@@ -35,21 +37,8 @@ export const REFIRE_WINDOW_MS = 72 * 3600 * 1000;
 const SLEEP_DEFICIT_HOURS = 6;
 const HRV_Z_THRESHOLD = -1;
 export const FIRM_HORIZON_DAYS = 14;
-export const PLAN_ENDING_DAYS = 21;
 const RACE_WINDOW_DAYS = 14;
 export const COMEBACK_GAP_DAYS = 7;
-
-/**
- * The line "Plan what comes after" is about (training lines §3.7) — ONE rule for the chips (coach-nudges) and the
- * dormant `plan_ending`: of the lines whose end (their last phase's) is today or later and within PLAN_ENDING_DAYS, the
- * soonest to end, with its last phase. A phase another follows on from is no end; one already ended is past asking.
- */
-export function endingLine(lines: readonly TrainingLine[], today: LocalDate): { line: TrainingLine; last: LineBlock } | undefined {
-  const line = lines
-    .filter((l) => l.endDate >= today && l.endDate <= addDays(today, PLAN_ENDING_DAYS))
-    .sort((a, b) => (a.endDate < b.endDate ? -1 : a.endDate > b.endDate ? 1 : 0))[0];
-  return line ? { line, last: lastPhaseOf(line) } : undefined;
-}
 
 export interface PendingTrigger {
   id: string;
@@ -190,9 +179,11 @@ export async function evaluateTriggers(
     }
   }
 
+  // The running blocks, each with its plan's ending in the same statement (`planFactColumns`).
   const plans = await db
-    .select()
+    .select({ ...getTableColumns(coachPlans), ...planFactColumns(userId) })
     .from(coachPlans)
+    .leftJoin(programs, and(eq(programs.id, coachPlans.programId), eq(programs.userId, userId)))
     .where(and(eq(coachPlans.userId, userId), eq(coachPlans.status, "active")));
 
   // plan_horizon — firm detail runs out inside 14 days while shape weeks wait. The detail is the plan's firm weeks AND
@@ -224,13 +215,17 @@ export async function evaluateTriggers(
     }
   }
 
-  // plan_ending — the chips' own rule (`endingLine`): a training LINE's last
-  // phase ending within 21 days, today or later, the soonest (training lines
-  // §3.7). A loose-session bucket is permanently "ending" (its end date is its
-  // last one-off), and waking the coach to plan what comes after a bucket is
-  // nonsense.
+  // plan_ending — the chips' own rule (`endingPlan`, which asks `planPrompt`): a training LINE's plan ending within 21
+  // days, today or later, the soonest (training lines §3.7), if it asks or continues, is running and isn't paused. A
+  // loose-session bucket is permanently "ending" (its end date is its last one-off), and waking the coach to plan what
+  // comes after a bucket is nonsense.
   if (!blocked.has("plan_ending")) {
-    const ending = endingLine(linesOf(plans.filter((p) => !isLoosePlan(p)).map(lineBlockOf), today), today);
+    const facts = new Map<string, PlanFacts>();
+    for (const p of plans) {
+      const f = factsOf(p);
+      if (p.programId && f) facts.set(p.programId, f);
+    }
+    const ending = endingPlan(linesOf(plans.filter((p) => !isLoosePlan(p)).map(lineBlockOf), today), facts, today);
     if (ending) {
       fired.push({
         kind: "plan_ending",

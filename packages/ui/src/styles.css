@@ -7597,6 +7597,20 @@ a.place-row {
   font-size: var(--text-xs);
   color: var(--ink-soft);
 }
+/* A plan asking what comes next: one tappable line under its live row, in the row's own padding. */
+.plan-row-prompt {
+  display: block;
+  width: 100%;
+  min-height: var(--tap);
+  padding: 0 var(--space-6) var(--space-4);
+  border: 0;
+  background: none;
+  text-align: left;
+  font: inherit;
+  font-size: var(--text-sm);
+  color: var(--accent);
+  cursor: pointer;
+}
 /* Past plans: one tap down, closed by default; the summary is a tap target as .sync-stale's is. */
 .plan-past {
   margin-top: var(--space-3);

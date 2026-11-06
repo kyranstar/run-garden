@@ -668,3 +668,76 @@ describe("the Plan screen keeps no coach window of its own", () => {
     expect(body).not.toContain("<RaceStrip units={units} />\n        <WeeklyBrief");
   });
 });
+
+describe("a plan's row asks what comes next (plans with a purpose §4): the line the rule gives, tapped to open the coach", () => {
+  const today = "2026-08-11";
+  const WORDS = { kind: "whats_next" as const, label: "Plan what comes after my running plan", request: "Plan what comes after my running plan — it ends in 12 days." };
+  const summary = (over: Partial<PlanSummaryDto> = {}): PlanSummaryDto => ({
+    id: "cp1", kind: "coach", name: "Fall Half Block", purpose: null, brief: null, onEnd: "ask", pausedUntil: null, objectiveIds: [], status: "active",
+    lineKey: null, listedAs: null, course: null, prompt: WORDS, ...over,
+  });
+  let host: HTMLDivElement | null = null;
+  let root: Root | null = null;
+  afterEach(() => {
+    act(() => root?.unmount());
+    host?.remove();
+    host = root = null;
+    vi.unstubAllGlobals();
+  });
+  function mount(summaries: PlanSummaryDto[], coach: CoachOpener | null, over: Partial<Parameters<typeof YourPlans>[0]> = {}) {
+    host = document.createElement("div");
+    document.body.appendChild(host);
+    root = createRoot(host);
+    act(() => root!.render(wrap(createElement(YourPlans, { plans: [runPlan], programs: undefined, today, onOpenPlan: noop, onOpenLine: noop, summaries, ...over }), coach)));
+  }
+  const prompts = () => [...document.querySelectorAll<HTMLButtonElement>(".plan-row-prompt")];
+
+  it("shows the label as its own line under the row, and a tap opens the coach with the chip's request written, spending nothing", () => {
+    const fetched = vi.fn();
+    vi.stubGlobal("fetch", fetched);
+    const open = vi.fn();
+    mount([summary()], { open });
+    expect(prompts().map((b) => b.textContent)).toEqual([WORDS.label]);
+    // A line of its own, never inside the row's own button (a button in a button is not a button).
+    expect(prompts()[0]!.closest(".plan-row")).toBeNull();
+    expect(document.querySelectorAll("li")).toHaveLength(1);
+    act(() => prompts()[0]!.click());
+    expect(open).toHaveBeenCalledTimes(1);
+    expect(open).toHaveBeenCalledWith({ request: WORDS.request });
+    expect(fetched).not.toHaveBeenCalled();
+  });
+
+  it("a plan whose rule says nothing has no line; nor does a row with the coach off", () => {
+    mount([summary({ prompt: null })], { open: noop });
+    expect(prompts()).toEqual([]);
+    act(() => root!.unmount());
+    host!.remove();
+    mount([summary()], null);
+    expect(prompts()).toEqual([]);
+    expect(document.body.textContent).toContain("Fall Half Block");
+  });
+
+  it("a draft ready is offered the same way, with its own words", () => {
+    const open = vi.fn();
+    mount([summary({ prompt: { kind: "draft_ready", label: "Review the draft for my running plan", request: "Review the draft for my running plan." } })], { open });
+    act(() => prompts()[0]!.click());
+    expect(open).toHaveBeenCalledWith({ request: "Review the draft for my running plan." });
+  });
+
+  it("only a live row asks: one under Past plans never does", () => {
+    mount([summary()], { open: noop }, { plans: [{ ...runPlan, endDate: "2026-08-01" }] });
+    expect(prompts()).toEqual([]);
+  });
+
+  it("a training line's row takes its plan's line by the line's key", () => {
+    const line: TrainingLineDto = {
+      key: "run:r1", discipline: "run", name: "Running", currentPhaseId: "r1", startDate: "2026-07-13", endDate: "2026-08-23", goalRaceDate: null, ended: false,
+      phases: [{ id: "r1", discipline: "run", status: "active", name: "Base", startDate: "2026-07-13", endDate: "2026-08-23", planRaceDate: null, futureSessions: 0 }],
+    };
+    const open = vi.fn();
+    mount([summary({ id: "plan-r1", lineKey: line.key })], { open }, { plans: [], lines: [line] });
+    expect(prompts()).toHaveLength(1);
+    act(() => prompts()[0]!.click());
+    expect(open).toHaveBeenCalledWith({ request: WORDS.request });
+  });
+});

@@ -20,7 +20,9 @@
  * extended or wound down through its last phase (`extendLine`, EXTEND_LINE).
  *
  * A block that may not change says what may, in `why` (as propose_plan's refusal does, `endedRefusal`): one the athlete
- * stopped stays stopped (STOPPED); one that ended while its line goes on names the phase it goes on in and, for an
+ * stopped stays stopped (STOPPED) — whether its own status says so or its plan's row does (`planStopped`), and a line of a
+ * stopped plan says `stopped` and is neither continued nor extended (continueLine and extendLine are said only while some
+ * line is not stopped), so the coach is not offered a continuation (`continuesPlanId`) the plan would refuse; one that ended while its line goes on names the phase it goes on in and, for an
  * extend or a wind-down, the line's last phase; one whose line has ended is continued by a next phase (CONTINUE_LINE).
  *
  * WHAT A PLAN IS FOR AND HOW IT ENDS (plans with a purpose §4.3): every plan and every line carries `purpose` and `brief`
@@ -86,7 +88,7 @@ const nextSql = (userId: string, planId: SQL, from: string) => sql`(select json_
 /** A plan's registry row as one JSON object (or null when there is none), found by `where` (a condition on `programs`
  * aliased `pr`): what the plan is for and how it ends. A scalar subselect, so the read stays one statement. */
 const planSql = (userId: string, where: SQL) => sql`json((select json_object('id', pr.id, 'kind', pr.kind, 'purpose', pr.purpose, 'brief', pr.brief,
-    'onEnd', pr.on_end, 'pausedUntil', pr.paused_until,
+    'onEnd', pr.on_end, 'pausedUntil', pr.paused_until, 'status', pr.status,
     'objectiveIds', json(case when json_valid(pr.objective_ids) then (select json_group_array(ol.value) from json_each(pr.objective_ids) ol
       where exists (select 1 from ${objectives} ob where ob.user_id = pr.user_id and ob.id = ol.value and ob.status in ('active', 'paused'))) end))
   from ${programs} pr where pr.user_id = ${userId} and ${where} limit 1))`;
@@ -120,13 +122,21 @@ export const STOPPED = {
   fix: "Leave it stopped: propose a new plan (createPlan) only if the athlete asks for one.",
 } as const;
 
+/** Whether a plan's registry row (as `planSql` gives it) is retired or archived: the athlete stopped it, so it is not continued. */
+function planStopped(raw: unknown): boolean {
+  const status = (parsedJson(raw) as { status?: unknown } | null)?.status;
+  return status === "retired" || status === "archived";
+}
+
 /** Why the coach may not change a plan's structure, in its words. `lineOf`: each block's line, by its id. */
 function whyNot(r: Row, today: string, lineOf: ReadonlyMap<string, TrainingLine>): string | null {
   if (r.kind === "watch") return "a watch plan: move, skip or ease its sessions with adjust_plan; its structure is the watch's";
   if (r.kind === "programme") return "the athlete's own programme: its settings change with change_programme; skip or move one session with adjust_plan";
   if (r.kind === "course") return "a course: a fixed sequence, each session written on its day. Ease its next session or pause it with change_plan (its planId); skip or move one session with adjust_plan";
   if (r.kind === "studio") return "the athlete's Studio plan: its structure is the Studio's; skip or move one of its sessions with adjust_plan, revise one with propose_workout";
-  if (r.status === "retired") return `${STOPPED.why} ${STOPPED.fix}`;
+  // Stopped: the block's own status, or its plan's (a stop retires the plan's row once its last block is, so a block
+  // that reads completed or running under a retired plan is stopped all the same).
+  if (r.status === "retired" || planStopped(r.plan)) return `${STOPPED.why} ${STOPPED.fix}`;
   // Changeable while it runs: active, or a draft of the coach's (as propose_plan takes them) whose last day is ahead.
   const running = r.status === "active" || r.status === "draft";
   const ended = r.end !== null && planEnded(r.end, today);
@@ -365,11 +375,14 @@ export const readPlans: DesignTool = {
         last: lastPhaseOf(l).id,
         goalRace: l.goalRaceDate,
         ...planFieldsOf(l.programId ? planRowOf.get(l.programId) : null, "coach", [DISCIPLINE_WORD[l.discipline] ?? "run"], room),
+        // A line of a plan the athlete stopped says so, and is neither continued nor extended.
+        ...(l.programId && planStopped(planRowOf.get(l.programId)) ? { stopped: true } : {}),
       }));
       // Said once beside the lines (and weighed with them): how to continue a line — the chip's flow ("Plan what comes
       // after my running plan") reads it while the line's last phase still runs, before anything has ended — and that a
-      // line is extended or wound down through its last phase ("Extend my running plan", while the line is live).
-      return lines.length > 0 ? { lines, continueLine: CONTINUE_LINE, extendLine: EXTEND_LINE } : { lines };
+      // line is extended or wound down through its last phase ("Extend my running plan", while the line is live). Said
+      // only while some line is not stopped: a stopped plan has nothing to continue.
+      return lines.some((l) => !("stopped" in l)) ? { lines, continueLine: CONTINUE_LINE, extendLine: EXTEND_LINE } : { lines };
     };
     // The coach's own running blocks first (the ones it may work on), then the others as read.
     const mayNot = (r: Row) => Number(whyNot(r, today, lineOf) !== null);

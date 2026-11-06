@@ -1,10 +1,11 @@
 import { and, desc, eq, gte, inArray, isNull, lte, sql } from "drizzle-orm";
-import { activities, coachPlans, coachPlanWeeks, coachReads, coachRuns, plannedWorkouts, weeklyReviews, workoutCompletionMatches } from "@rg/database";
+import { activities, coachPlans, coachPlanWeeks, coachReads, coachRuns, plannedWorkouts, programs, weeklyReviews, workoutCompletionMatches } from "@rg/database";
 import { addDays, lineSentenceName, linesOf, QUALITY_SUBTYPE_LABELS, startOfIsoWeek, type LocalDate, type QualitySubtype, type UserPreferences } from "@rg/domain";
 import { chunkIds, type Db } from "./db.js";
 import { isLoosePlan, lineBlockOf } from "./coach-plans.js";
 import { reviewOpening, sessionDays, sessionOpening, type CoachOpeningLine, type FinishedSession } from "./coach-opening-line.js";
-import { COMEBACK_GAP_DAYS, endingLine, FIRM_HORIZON_DAYS, REFIRE_WINDOW_MS } from "./coach-triggers.js";
+import { COMEBACK_GAP_DAYS, FIRM_HORIZON_DAYS, REFIRE_WINDOW_MS } from "./coach-triggers.js";
+import { endingPlan, factsOf, planFactColumns, type PlanFacts } from "./plan-ending.js";
 import { UNRESOLVED_AFTER_DAYS } from "./reconcile-daily.js";
 import { driftCoveredBy, driftNudge, driftsOf, readStandFacts, type Drift } from "./where-you-stand.js";
 
@@ -28,8 +29,10 @@ import { driftCoveredBy, driftNudge, driftsOf, readStandFacts, type Drift } from
  *   3. a plan's next outline week starting within 14 days — "Fill in next week of my running plan" (the outline is what
  *      the coach fills in; nothing else will now), whichever phase of its training line holds it;
  *   4. a race within 21 days (Settings' race day, else a running plan's) — "Get me ready for race day";
- *   5. a training line's last phase ending within 21 days, today or later — "Plan what comes after my running plan" (a
- *      phase another follows on from is no end: training lines §3.7).
+ *   5. a plan ending — "Plan what comes after my running plan" — by the one rule (`planPrompt`, @rg/domain, which the
+ *      plan's row in Your Plans reads too): its last session, or its last outline week, 0 to 21 days ahead (a phase
+ *      another follows on from is no end: training lines §3.7), the plan running and not paused, and ending by asking or
+ *      by continuing. A plan that finishes, a course and a programme never ask.
  * The pressing first: what just happened, then what the plan needs to keep going, then what is coming. A plan is named
  * by its training line (@rg/domain `linesOf` over the active blocks, `lineSentenceName`) — a line of one phase too.
  *
@@ -227,8 +230,11 @@ export async function readCoachOpening(
         endDate: coachPlans.endDate,
         raceDate: coachPlans.raceDate,
         programId: coachPlans.programId,
+        // Its plan's ending, in the same statement: what the rule that decides step 5 reads (`planPrompt`).
+        ...planFactColumns(userId),
       })
       .from(coachPlans)
+      .leftJoin(programs, and(eq(programs.id, coachPlans.programId), eq(programs.userId, userId)))
       .where(and(eq(coachPlans.userId, userId), eq(coachPlans.status, "active"))),
     // Last week's review, written by Monday's cron (its narrative already paid for).
     db
@@ -340,13 +346,16 @@ export async function readCoachOpening(
     });
   }
 
-  // 5. A line ending — its last phase, no next phase following on — the soonest (plan_ending's own rule); its chip
-  // that last phase's.
-  const ending = endingLine(lines, today);
-  if (ending) {
-    const label = `Plan what comes after ${lineSentenceName(ending.line.discipline)}`;
-    found.push({ id: `ending:${ending.last.id}`, label, request: `${label} — it ends ${inDays(daysBetween(today, ending.line.endDate))}.` });
+  // 5. A plan ending — the rule every plan's ending goes through (`planPrompt`, @rg/domain; the plan's row in Your Plans
+  // reads it too): its last session within 21 days, no next phase or outline week following on, running, not paused, and
+  // asking or continuing. The soonest of them (plan_ending's own rule); its chip that line's last phase's.
+  const facts = new Map<string, PlanFacts>();
+  for (const p of blocks) {
+    const f = factsOf(p);
+    if (p.programId && f) facts.set(p.programId, f);
   }
+  const ending = endingPlan(lines, facts, today);
+  if (ending) found.push({ id: `ending:${ending.last.id}`, label: ending.prompt.label, request: ending.prompt.request });
 
   // The opening's own line: the review first, then the newest session still news — each with the moment after which an
   // ask of the athlete's makes it old news. One this device has shown gives way to the next.

@@ -14,7 +14,7 @@
 import { beforeEach, describe, expect, it } from "vitest";
 import { eq } from "drizzle-orm";
 import { schema } from "@rg/database";
-import { addDays, newId, nowInstant, todayInZone, type UserPreferences } from "@rg/domain";
+import { addDays, newId, nowInstant, startOfIsoWeek, todayInZone, type UserPreferences } from "@rg/domain";
 import type { Env } from "../src/env.js";
 import type { Db } from "../src/services/db.js";
 import { makeCoachNudgesRoutes } from "../src/routes/coach-nudges.js";
@@ -115,8 +115,10 @@ async function seedPlan(o: {
   discipline?: string;
   raceDate?: string | null;
   status?: string;
+  programId?: string | null;
 }): Promise<void> {
   await db.insert(schema.coachPlans).values({
+    programId: o.programId ?? null,
     id: o.id,
     userId,
     discipline: o.discipline ?? "run",
@@ -339,6 +341,84 @@ describe("a race within 21 days", () => {
     expect(await nudges()).toEqual([]);
     await setRace(addDays(today, -1));
     expect(await nudges()).toEqual([]);
+  });
+});
+
+/** A plan's registry row (what a line's blocks point at), with made-up words. */
+async function seedProgram(id: string, over: Partial<typeof schema.programs.$inferInsert> = {}): Promise<void> {
+  await db.insert(schema.programs).values({
+    id,
+    userId,
+    kind: "coach",
+    name: `Plan ${id}`,
+    status: "active",
+    disciplines: ["run"],
+    config: {},
+    onEnd: "ask",
+    createdAt: nowInstant(),
+    updatedAt: nowInstant(),
+    ...over,
+  });
+}
+
+describe("one rule for when a plan asks what's next (plans with a purpose §4): the chip reads the plan's own ending", () => {
+  const WORDS = (days: number) => ({ id: "ending:cp1", label: "Plan what comes after my running plan", request: `Plan what comes after my running plan — it ends in ${days} days.` });
+
+  it("a plan that asks, a plan that continues: the chip; a plan that finishes, a paused one and a stopped one: none", async () => {
+    for (const [onEnd, expected] of [["ask", [WORDS(12)]], ["continue", [WORDS(12)]], ["finish", []]] as const) {
+      await db.delete(schema.coachPlans);
+      await db.delete(schema.programs);
+      await seedProgram("pr1", { onEnd });
+      await seedPlan({ id: "cp1", name: "block", endDate: addDays(today, 12), programId: "pr1" });
+      expect(await nudges(), onEnd).toEqual(expected);
+    }
+    await db.delete(schema.programs);
+    await seedProgram("pr1", { onEnd: "ask", pausedUntil: addDays(today, 3) });
+    expect(await nudges(), "paused").toEqual([]);
+    await db.delete(schema.programs);
+    await seedProgram("pr1", { onEnd: "ask", pausedUntil: addDays(today, -1) });
+    expect(await nudges(), "pause over").toEqual([WORDS(12)]);
+    await db.delete(schema.programs);
+    await seedProgram("pr1", { onEnd: "ask", status: "retired" });
+    expect(await nudges(), "stopped").toEqual([]);
+  });
+
+  it("a block with no plan row yet takes its sport's own ending: running asks, lifting continues (both prompt)", async () => {
+    await seedPlan({ id: "cp1", name: "block", endDate: addDays(today, 12) });
+    expect(await nudges()).toEqual([WORDS(12)]);
+  });
+
+  it("an outline week past the last block's end means the plan isn't ending (R10)", async () => {
+    await seedProgram("pr1");
+    await seedPlan({ id: "cp1", name: "block", endDate: addDays(today, 12), programId: "pr1" });
+    await seedWeek("cp1", addDays(startOfIsoWeek(today), 7 * 6), "shape");
+    expect(await nudges()).toEqual([]);
+  });
+
+  it("an outline week inside the block's span changes nothing", async () => {
+    await seedProgram("pr1");
+    await seedPlan({ id: "cp1", name: "block", endDate: addDays(today, 12), programId: "pr1" });
+    await seedWeek("cp1", addDays(today, 3), "shape");
+    expect(ids(await nudges())).toContain("ending:cp1");
+  });
+
+  it("a session filed under the plan's own id past the blocks' end means it isn't ending", async () => {
+    await seedProgram("pr1");
+    await seedPlan({ id: "cp1", name: "block", endDate: addDays(today, 12), programId: "pr1" });
+    await db.insert(schema.plannedWorkouts).values({
+      id: "late", userId, planId: "pr1", sourceWorkoutId: "src-late", title: "T", category: "easy", sport: "run",
+      originalPlanDate: addDays(today, 40), lastVerifiedCorosDate: addDays(today, 40), effectiveDate: addDays(today, 40), effectiveTime: "07:00",
+      completionState: "scheduled", sourceContentFingerprint: "fp", calendarBlockDurationSeconds: 3600, createdAt: nowInstant(), updatedAt: nowInstant(),
+    });
+    expect(await nudges()).toEqual([]);
+  });
+
+  it("the soonest of two plans that ask comes first, the other's chip waits for it to be answered", async () => {
+    await seedProgram("pr-run");
+    await seedProgram("pr-lift", { disciplines: ["strength"], onEnd: "continue" });
+    await seedPlan({ id: "cp-run", name: "a", endDate: addDays(today, 15), programId: "pr-run" });
+    await seedPlan({ id: "cp-lift", name: "b", discipline: "lift", endDate: addDays(today, 10), programId: "pr-lift" });
+    expect(ids(await nudges())).toEqual(["ending:cp-lift"]);
   });
 });
 
