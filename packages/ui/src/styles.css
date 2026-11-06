@@ -14219,6 +14219,12 @@ button.coach-cite:focus-visible {
   font-weight: var(--weight-medium);
   color: var(--ink-soft);
 }
+/* A quote's moment in the video (audit 2026-11-06, I11): beside the quote, its own line. */
+.trail-video-at {
+  display: inline-block;
+  color: var(--green-ink);
+  font-size: var(--text-xs);
+}
 .trail-video .btn {
   margin-left: var(--space-2);
 }

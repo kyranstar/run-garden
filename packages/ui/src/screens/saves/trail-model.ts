@@ -17,7 +17,8 @@
  * is key: value lines, never JSON; an id is a move's name where the trail knows it. Every text here came from a stage,
  * a model or a stranger's post: the sheet draws it as text, never as markup. Pure: no React, no network.
  */
-import { clock, failureWords, IMPORT_STAGES, priceWords, transcriptSegments, WAITING_FOR_EXTENSION, type BlobKind, type ImportStage, type ImportTrailDto, type TrailEventDto, type TrailStatus } from "@rg/saves";
+import { clock, failureWords, IMPORT_STAGES, normalizeLink, priceWords, transcriptSegments, WAITING_FOR_EXTENSION, type BlobKind, type ImportStage, type ImportTrailDto, type TrailEventDto, type TrailStatus } from "@rg/saves";
+import { postHref } from "../../post-link.js";
 import { formatTime } from "../../components.js";
 import { DETAIL_VALUE_MAX, keyWords, type DetailRow } from "../studio/run-model.js";
 import { dayOf } from "../studio/saves-model.js";
@@ -32,6 +33,8 @@ export type TrailRow = Pick<DetailRow, "key" | "value"> & {
   struck?: boolean;
   /** The quote a review card's chip opened the trail at (import trail phase 3, §3.3): marked, and scrolled into view. */
   focus?: boolean;
+  /** A heard or said quote's moment in the video: "Open the video at 1:12" (audit 2026-11-06, I11). */
+  link?: { href: string; label: string };
 };
 
 /** A group of rows under an optional heading (the coach trail's `DetailSection`). */
@@ -800,8 +803,22 @@ const QUOTE_CHECK: Readonly<Record<string, string>> = {
   not_found: "the reader quoted words that aren't in the post",
 };
 
+/**
+ * A YouTube video's link at a moment (audit 2026-11-06, I11), made as a pasted link is — the video's id from the stored
+ * link through `normalizeLink`, so a stored link that isn't a video's makes none — then checked as a web page's. Null
+ * for any other post.
+ */
+function videoAt(post: ImportTrailDto["post"]): ((at: number) => string | null) | null {
+  const video = post.url ? normalizeLink(post.url) : null;
+  if (!video || video.source !== "youtube") return null;
+  return (at) => postHref(`${video.url}&t=${Math.max(0, Math.floor(at))}s`);
+}
+
+/** Quotes whose time is a moment the video has: words the transcript holds (said), or the reader heard. */
+const TIMED_FROM: ReadonlySet<string> = new Set(["transcript", "speech"]);
+
 /** When the post says to use a move or not, why, and its quotes with how each checked out (§5.5–5.6): a stranger's words. */
-function postSays(m: ImportTrailDto["account"]["moves"][number], focusQuote?: number): TrailRow[] {
+function postSays(m: ImportTrailDto["account"]["moves"][number], focusQuote?: number, video: ((at: number) => string | null) | null = null): TrailRow[] {
   const cases = (list: { text: string; evidence: string }[] | undefined) =>
     (list ?? []).map((c) => (c.evidence === "inferred" ? `${c.text.trim()} (the reader's guess)` : c.text.trim())).join("; ");
   const rows: TrailRow[] = [];
@@ -812,7 +829,14 @@ function postSays(m: ImportTrailDto["account"]["moves"][number], focusQuote?: nu
     const key = `${QUOTE_FIELD[q.field] ?? keyWords(q.field)}${typeof q.at === "number" ? ` · ${clock(q.at)}` : ""}`;
     const check = q.check ? QUOTE_CHECK[q.check] : null;
     const row = rowOf(key, `“${q.text.trim()}”${check ? ` — ${check}` : ""}`);
-    rows.push({ ...row, ...(q.check === "not_found" ? { struck: true } : {}), ...(i === focusQuote ? { focus: true } : {}) });
+    // Said or heard at a time: the video at that moment (never a quote not in the post, nor text on screen).
+    const href = video && typeof q.at === "number" && TIMED_FROM.has(q.from) && q.check !== "not_found" ? video(q.at) : null;
+    rows.push({
+      ...row,
+      ...(q.check === "not_found" ? { struck: true } : {}),
+      ...(i === focusQuote ? { focus: true } : {}),
+      ...(href ? { link: { href, label: `Open the video at ${clock(q.at!)}` } } : {}),
+    });
   }
   return rows;
 }
@@ -823,7 +847,7 @@ export function moveDetail(dto: ImportTrailDto, position: number, focusQuote?: n
   const ctx = ctxOf(dto);
   const move = dto.account.moves.find((m) => m.position === position);
   const out: TrailDetail[] = [];
-  const said = move ? postSays(move, focusQuote) : [];
+  const said = move ? postSays(move, focusQuote, videoAt(dto.post)) : [];
   if (said.length) out.push({ title: POST_SAYS, rows: said });
   for (const stage of ["check", "match"] as const) {
     const e = [...dto.events].reverse().find((x) => x.stage === stage && movesOf(x).some((m) => m.position === position));
