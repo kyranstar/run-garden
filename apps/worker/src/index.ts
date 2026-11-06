@@ -71,6 +71,7 @@ import { parseCoachNoticesSeed, seedCoachNotices } from "./services/fixture-coac
 import { seedTrainingLine } from "./services/fixture-training-line.js";
 import { seedWatchVersions } from "./services/fixture-watch-version.js";
 import { accountsRestoring, restoreInProgress } from "./services/account-state.js";
+import { backfillPlanRegistry } from "./services/plan-registry.js";
 import { placeSlotsForAllPrograms } from "./services/program-slots.js";
 
 const app = new Hono<AppContext>();
@@ -390,6 +391,15 @@ async function dropSyncRun(db: Db, runId: string): Promise<void> {
 export async function hourly(db: Db, env: Env): Promise<void> {
   await closeStrandedSyncRuns(db).catch(() => undefined);
   await sweepStaleSuppressions(db).catch(() => undefined);
+  // Every plan gets its row in the registry (plans with a purpose): a few statements an account, what doesn't fit
+  // waits for the next hour, and a failure stops nothing.
+  for (const userId of await allUserIds(db)) {
+    try {
+      await backfillPlanRegistry(db, userId, todayInZone((await loadPreferences(db, userId)).timezone));
+    } catch (e) {
+      console.error(`plan registry backfill failed: ${e instanceof Error ? e.name : "unknown"}`);
+    }
+  }
   // Adaptive programs keep their weeks filled as the days roll on (Phase 2a). FIRST of the per-user work, and
   // cheap: an invocation that dies later on a CPU or subrequest ceiling (the garden, the coach, the COROS
   // writes) has still placed the week (audit 2a-model M8). Its own pass over every program; it skips a
