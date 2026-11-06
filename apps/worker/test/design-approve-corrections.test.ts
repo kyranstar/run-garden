@@ -294,8 +294,8 @@ describe("a correction approved", () => {
     expect((await fixesOf(older))[0]!.outcome).toMatchObject({ status: "superseded", by: newer });
   });
 
-  // REBASED 2026-11-06 (the controller's fix pass, B): CORRECTIONS_PER_REQUEST (4) a request — the Worker's CPU, measured
-  // (design-cpu-bench 5c), not the statements, is what ten in one request passed — so ten take three requests, each
+  // REBASED 2026-11-06 (the controller's fix pass, B): CORRECTIONS_PER_REQUEST (3) a request — the Worker's CPU, measured
+  // (design-cpu-bench 5c), not the statements, is what ten in one request passed — so ten take four requests, each
   // within the statement budget, as the client asks for what remains.
   it("ten corrections, CORRECTIONS_PER_REQUEST a request, each request within the Workers budget", async () => {
     const b = await batch();
@@ -319,7 +319,7 @@ describe("a correction approved", () => {
       if (res.json.remaining.length === 0) break;
       res = await approve(id, { opIds: res.json.remaining });
     }
-    expect(counts).toEqual([CORRECTIONS_PER_REQUEST, CORRECTIONS_PER_REQUEST, 10 - 2 * CORRECTIONS_PER_REQUEST]);
+    expect(counts).toEqual([CORRECTIONS_PER_REQUEST, CORRECTIONS_PER_REQUEST, CORRECTIONS_PER_REQUEST, 10 - 3 * CORRECTIONS_PER_REQUEST]);
     expect(res.json.status).toBe("approved");
     expect(APPROVE_FIXED + CORRECTIONS_FIXED + ops.slice(0, CORRECTIONS_PER_REQUEST).reduce((n, o) => n + correctionCostOf(o), 0)).toBeLessThanOrEqual(REQUEST_BUDGET);
     expect(await rows()).toHaveLength(10);
@@ -431,7 +431,7 @@ describe("approve's CPU with corrections at the caps (the controller's fix pass,
     }
     binds = null;
     expect(corrected).toBe(10);
-    expect(requests).toBe(3);
+    expect(requests).toBe(4);
   });
 });
 
