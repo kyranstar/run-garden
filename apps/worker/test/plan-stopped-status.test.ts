@@ -389,6 +389,78 @@ describe("the registry's backfill corrects a row out of step, and nothing else",
     expect(statements.filter((s) => s.startsWith('update "programs" set "status"'))).toEqual([]);
   });
 
+  describe("a line is stopped only when its last-ending block was (R38)", () => {
+    /** A next phase naming the plan, as propose_plan's refusal tells the coach to. */
+    const continuing = (planId: string) =>
+      applyStructuralChunk(db, {
+        userId,
+        proposalId: "p-next",
+        opIndex: 0,
+        op: { kind: "createPlan", discipline: "run", name: "Next phase", continuesPlanId: planId, startDate: week(0), endDate: week(2, 6), firmSessions: [], shapeWeeks: [] } as unknown as CoachOp,
+        progress: null,
+        budget: 40,
+        now: AT,
+        prefs,
+      });
+
+    it("a phase retired early, and the rest ran to its end: nobody stopped the plan, so it stays running and can be continued", async () => {
+      await plan("line");
+      await block("early", "line", week(-6), week(-4), "retired");
+      await block("rest", "line", week(-3), week(-1, 6), "completed");
+      await backfill();
+      expect(await statusOf("line")).toBe("active");
+      expect((await continuing("line")).status).not.toBe("refused");
+      expect((await db.select().from(coachPlans).where(eq(coachPlans.name, "Next phase")))[0]!.programId).toBe("line");
+    });
+
+    it("the same with the rest still marked active, a day past its end, before the hourly sweep flips it", async () => {
+      await plan("line");
+      await block("early", "line", week(-6), week(-4), "retired");
+      await block("rest", "line", week(-3), week(-1, 6));
+      await backfill();
+      expect(await statusOf("line")).toBe("active");
+    });
+
+    it("a line whose last block really was stopped is corrected", async () => {
+      await plan("line");
+      await block("only", "line", week(-1), week(1), "retired");
+      await backfill();
+      expect(await statusOf("line")).toBe("retired");
+    });
+
+    it("a line stopped, with an earlier phase that ran to its end, is corrected too", async () => {
+      await plan("line");
+      await block("ran", "line", week(-6), week(-3), "completed");
+      await block("stopped", "line", week(-2), week(2), "retired");
+      await backfill();
+      expect(await statusOf("line")).toBe("retired");
+      expect((await continuing("line")).status).toBe("refused");
+    });
+
+    it("two blocks ending on one day: both have to have been stopped", async () => {
+      await plan("tied");
+      await block("t1", "tied", week(-3), week(-1), "retired");
+      await block("t2", "tied", week(-2), week(-1), "completed");
+      await plan("both");
+      await block("b1", "both", week(-3), week(-1), "retired");
+      await block("b2", "both", week(-2), week(-1), "retired");
+      await backfill();
+      expect(await statusOf("tied")).toBe("active");
+      expect(await statusOf("both")).toBe("retired");
+    });
+
+    it("its last-ending block stopped, and another still running beside it: it's still running", async () => {
+      await plan("line");
+      await block("beside", "line", week(-1), week(1));
+      await block("later", "line", week(0), week(3), "retired");
+      statements.length = 0;
+      await backfill();
+      expect(await statusOf("line")).toBe("active");
+      // Not even tried.
+      expect(statements.filter((s) => s.startsWith('update "programs" set "status"'))).toEqual([]);
+    });
+  });
+
   it("a line that simply ran to its end isn't stopped: ended is computed, and nobody ended this one", async () => {
     await plan("finished");
     await block("f1", "finished", week(-6), week(-4, 6), "completed");

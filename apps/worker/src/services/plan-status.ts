@@ -7,8 +7,8 @@
  * status.
  *
  * It says nothing about whether anyone stopped the plan. That's the caller's to know: each path here is someone stopping it,
- * and the registry's backfill looks for that itself, because a line that simply ran to its end matches the same condition and
- * isn't stopped.
+ * and the registry's backfill looks for that itself (its last-ending block retired), because a line that simply ran to its end
+ * matches the same condition and isn't stopped.
  */
 import { and, eq, sql } from "drizzle-orm";
 import { programs } from "@rg/database";

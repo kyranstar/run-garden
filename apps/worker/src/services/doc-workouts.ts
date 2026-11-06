@@ -79,7 +79,7 @@ import { sha256Hex } from "../auth/crypto.js";
 import { libraryForDocs, loadAccountLibrary, type AccountLibrary } from "./account-library.js";
 import { restoreInProgress } from "./account-state.js";
 import { loadOwnProgramNames, recordedStampFor } from "./coros-stamp.js";
-import { runAtomically, type Db } from "./db.js";
+import { chunkIds, runAtomically, type Db } from "./db.js";
 import { judgeDoc } from "./doc-build.js";
 import { separateDayCollisions, windowTimeFor } from "./day-placement.js";
 import { placeOrDefault } from "./default-place.js";
@@ -1041,6 +1041,31 @@ export async function removeDocWorkout(
   });
   if (!removed.removed) throw new NotRemovableError("started");
   return { effectiveDate: removed.effectiveDate! };
+}
+
+/**
+ * Which of these rows have a day's build on the wire this moment: what `removeDocWorkout` refuses as `sending`, asked of them all
+ * in one read (a statement per 80), so a caller taking several off can tell them from the free ones before it spends anything. A
+ * provisional copy's push isn't one, as there. The removal still looks for itself: one can go on the wire after this read.
+ */
+export async function workoutsOnTheWire(db: Db, userId: string, workoutIds: readonly string[]): Promise<Set<string>> {
+  const onWire = new Set<string>();
+  for (const batch of chunkIds([...workoutIds], 80)) {
+    const rows = await db
+      .select({ workoutId: corosWriteJobs.workoutId })
+      .from(corosWriteJobs)
+      .where(
+        and(
+          eq(corosWriteJobs.userId, userId),
+          inArray(corosWriteJobs.workoutId, batch),
+          eq(corosWriteJobs.kind, "program_session_push"),
+          inArray(corosWriteJobs.status, [...PUSH_UNDER_WAY]),
+          sql`coalesce(json_extract(${corosWriteJobs.payload}, '$.provisional'), 0) = 0`,
+        ),
+      );
+    for (const r of rows) if (r.workoutId) onWire.add(r.workoutId);
+  }
+  return onWire;
 }
 
 /**

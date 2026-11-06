@@ -27,9 +27,10 @@ import { DISCIPLINE_WORD, isPlanKind, lineKeysByPlan, planPatchSchema, planSumma
  * order of cost until the budget is spent, the lines last. What doesn't fit waits for the next hour. A restore
  * replacing the account stops it at once, and nothing is written.
  *
- * It also corrects a coach plan whose row says running though it was stopped (ruling R31; since then every stop writes the row
- * itself, `plan-status.ts`). The evidence has to be real: a block retired and none left to run, or the Studio's own retired
- * mark. A line that simply ran to its end has neither, and ended is computed, not stored.
+ * It also corrects a coach plan whose row says running though it was stopped (rulings R31, R38; since then every stop writes the
+ * row itself, `plan-status.ts`). The evidence has to be real: its last-ending block retired and none left to run, or the Studio's
+ * own retired mark. A line that ran to its end isn't stopped, though a phase of it was retired early: ended is computed, not
+ * stored, and marked stopped it could never be continued.
  *
  * THE READ AND THE EDIT: `listPlans` answers the plans in two reads (the plans, the blocks), and `applyPlanPatch` is
  * the one write of a plan's purpose, brief, ending, pause, objectives and a course's easing. The route calls it, and
@@ -82,7 +83,9 @@ export async function backfillPlanRegistry(db: Db, userId: string, today: string
   for (const p of existing) {
     if (p.kind !== "coach" || p.status !== "active" || left < 1) continue;
     const blocks = coachRows.filter((b) => b.programId === p.id);
-    if (!blocks.some((b) => b.status === "retired") || blocks.some((b) => b.status !== "retired" && b.endDate >= today)) continue;
+    const lastEnd = blocks.reduce((latest, b) => (b.endDate > latest ? b.endDate : latest), "");
+    const endedStopped = blocks.length > 0 && blocks.filter((b) => b.endDate === lastEnd).every((b) => b.status === "retired");
+    if (!endedStopped || blocks.some((b) => b.status !== "retired" && b.endDate >= today)) continue;
     await planStoppedIfNoBlockLeft(db, { userId, today, now }, { plan: p.id });
     left -= 1;
   }

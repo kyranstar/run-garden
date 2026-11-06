@@ -7,7 +7,8 @@
  * without being written (a number and no document) among them. A revival keeps the plan's own words and any easing asked for,
  * a pause from before the stop doesn't outlive it, and it writes a `program_versions` row saying what changed. A new plan
  * takes an id from the account and the course, so two racing first starts make one row. Running, it stands as it is: other
- * days or another time are refused (`course_running`), since answering 200 and ignoring them would be false.
+ * days or another time are refused (`course_running`), since answering 200 and ignoring them would be false: its days change by
+ * stopping it and starting it again.
  *
  * WHAT'S ALREADY PLANNED (`finishStart`). Sessions from before courses existed sit in the Studio's bucket as document workouts.
  * One is a session of this course when its document's `source.ref` says `<course>-course:<n>`. Each comes to one of:
@@ -43,8 +44,10 @@
  * the bucket: those were never the plan's.
  *
  * WHAT THE ANSWER SAYS. `more`: something's left. `waiting` as well: all that's left is a day's build on the wire this moment
- * (`NotRemovableError`'s `sending`), so a resend can't help; the client stops, and the hourly pass takes it once it lands. A row
- * on the wire holds up nothing behind it, as it spends only its reads (`RETRACT_WRITTEN_READS`).
+ * (`workoutsOnTheWire`, what a removal refuses as `sending`), so a resend can't help; the client stops, and the hourly pass takes
+ * it once it lands. A step's limit counts free rows only: it reads which are on the wire first, in one statement however many,
+ * and tries none of them, so they never hide a free one (R38). Only a row that goes on the wire after that read spends anything,
+ * its reads (`RETRACT_WRITTEN_READS`).
  *
  * A restore in progress: `restore_in_progress` before anything is written, or `RestoreInProgressError` from a removal once a
  * restore has begun part way. The hourly pass skips such an account, and that isn't a failure.
@@ -57,7 +60,7 @@ import { restoreInProgress } from "./account-state.js";
 import { STILL_TO_DO } from "./course-sessions.js";
 import { COURSE_FINISH_BUDGET, COURSE_FINISHES_PER_PASS } from "./cron-limits.js";
 import { chunkIds, runAtomically, type Db } from "./db.js";
-import { DocWorkoutNotFoundError, LOCKED_CONTENT, NotRemovableError, removeDocWorkout } from "./doc-workouts.js";
+import { DocWorkoutNotFoundError, LOCKED_CONTENT, NotRemovableError, removeDocWorkout, workoutsOnTheWire } from "./doc-workouts.js";
 import { removeFromPlan } from "./plan-mutations.js";
 import { planVersionInsert } from "./plan-registry.js";
 import { placeSlotsWithin, RETRACT_COST, RETRACT_WRITTEN_COST, RETRACT_WRITTEN_READS, RUNNING_PASS_MIN, STOPPED_PASS_MIN } from "./program-slots.js";
@@ -67,6 +70,9 @@ import { FROZEN_STATES } from "./workout-doc-store.js";
 type ProgramRow = typeof programs.$inferSelect;
 
 const pw = plannedWorkouts;
+
+/** What a start naming other days or another time on a running course is told: how they do change. */
+export const COURSE_RUNNING_WHY = "This course is already running on other days or at another time. Stop it and start it again with the new ones: it carries on from the sessions done.";
 
 /** Who a session taken off is recorded as, and why it left: the header's WHY. */
 const BY_THE_PLAN = { source: "program_replace", archiveReason: "program_replaced" } as const;
@@ -199,12 +205,15 @@ function takeIn(db: Db, userId: string, planId: string, course: string, ids: rea
 }
 
 /**
- * Take these off in turn, as many as `room` holds, the first whatever it costs. One on the wire, or begun since the read, spends
- * only its reads, so it holds up nothing behind it. `unreached`: room ran out. `raced`: begun or saved since the read.
+ * Take these off in turn, the ones not on the wire, as many as `room` holds, the first whatever it costs (the header's WHAT THE
+ * ANSWER SAYS). `sending`: on the wire, as read, or by the time its removal looked. `unreached`: a free row room ran out for.
+ * `raced`: begun or saved since the read.
  */
 async function removeInTurn(db: Db, userId: string, rows: ReadonlyArray<{ id: string }>, { today, now, prefs }: PlanCtx, room: number) {
-  const out = { room, unreached: false, raced: false, sending: 0 };
-  for (const [i, r] of rows.entries()) {
+  if (rows.length === 0) return { room, unreached: false, raced: false, sending: 0 };
+  const onWire = await workoutsOnTheWire(db, userId, rows.map((r) => r.id));
+  const out = { room: room - 1, unreached: false, raced: false, sending: onWire.size };
+  for (const [i, r] of rows.filter((x) => !onWire.has(x.id)).entries()) {
     if (i > 0 && RETRACT_WRITTEN_COST > out.room) {
       out.unreached = true;
       break;

@@ -12,9 +12,10 @@
  *
  * DUE (`courseSessionDue`) means the row is live and still to do (scheduled; or unresolved, as a link undone on its own day
  * leaves it), its effective date is today in the athlete's zone (so a slot moved off today isn't and one moved onto it is),
- * and its plan is running and not paused. A pause writes nothing: an outline that survived its retraction (moved in,
- * re-timed) stays an outline. So does a stopped course's, and one whose definition is gone. A session written before the
- * pause came is `program-slots.ts`'s (rule 6): it comes off.
+ * and its plan is running, not paused and not part way through a start (`config.finishing`, `course-plans.ts`, R38). A pause
+ * writes nothing: an outline that survived its retraction (moved in, re-timed) stays an outline. So does a stopped course's, one
+ * whose definition is gone, and one whose start is still taking a session off that same day, which it would be written beside. A
+ * session written before the pause came is `program-slots.ts`'s (rule 6): it comes off.
  *
  * THE WRITE (`writeDue`). The document is judged for its day (`judgeDoc`, with what the validator reads when only its errors
  * matter, since there's no one to show a warning to, and with any answer the opening request sent); an error writes
@@ -107,10 +108,11 @@ export const STILL_TO_DO = ["scheduled", "unresolved"];
 /** Whether an outline of this plan is due today (the header's DUE). */
 export function courseSessionDue(
   row: Pick<SlotRow, "archivedAt" | "completionState" | "effectiveDate">,
-  program: Pick<ProgramRow, "status" | "pausedUntil">,
+  program: Pick<ProgramRow, "status" | "pausedUntil" | "config">,
   today: string,
 ): boolean {
-  return row.archivedAt === null && STILL_TO_DO.includes(row.completionState) && row.effectiveDate === today && program.status === "active" && !pausedOn(program.pausedUntil, today);
+  const finishing = (program.config as { finishing?: unknown } | null)?.finishing;
+  return row.archivedAt === null && STILL_TO_DO.includes(row.completionState) && row.effectiveDate === today && program.status === "active" && !pausedOn(program.pausedUntil, today) && finishing === undefined;
 }
 
 /**
@@ -122,6 +124,7 @@ function stillDue(o: { workoutId: string; userId: string; today: string; n: numb
     where w.id = ${o.workoutId} and w.user_id = ${o.userId} and w.origin = 'program' and coalesce(w.content_state, 'outline') = 'outline' and w.archived_at is null
       and w.completion_state in ('scheduled', 'unresolved') and w.effective_date = ${o.today}
       and p.kind = 'course' and p.status = 'active' and (p.paused_until is null or p.paused_until < ${o.today})
+      and json_extract(p.config, '$.finishing') is null
       and coalesce(json_extract(p.config, '$.easeNext'), 0) = ${o.eased ? 1 : 0}
       and (select count(*) from planned_workouts d where d.user_id = w.user_id and d.plan_id = w.plan_id and d.course_session is not null and d.completion_state = 'completed') = ${o.n - 1}
       and not exists (select 1 from account_state a where a.user_id = w.user_id and coalesce(a.restore_id, '') <> ''))`;
@@ -323,6 +326,7 @@ export async function writeCourseSessionsDue(db: Db, at: Date = new Date()): Pro
       and(
         eq(programs.kind, "course"),
         eq(programs.status, "active"),
+        sql`json_extract(${programs.config}, '$.finishing') is null`,
         eq(pw.origin, "program"),
         or(isNull(pw.contentState), eq(pw.contentState, "outline")),
         isNull(pw.archivedAt),

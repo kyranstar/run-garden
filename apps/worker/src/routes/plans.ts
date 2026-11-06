@@ -16,8 +16,10 @@
  * hourly pass's.
  *
  * A START is idempotent per course, since a course has one plan. An unknown course or days and a time `courseConfigSchema`
- * refuses are 422, and other days or another time on a course already running are 409 `course_running`: answering 200 and
- * ignoring them would be false. A definition says nothing of a limit on sessions a week, so none is held to.
+ * refuses are 422, and other days or another time on a course already running are 409 `course_running`, saying how to change
+ * them: answering 200 and ignoring them would be false. Stop and start is the one way, since a revival takes the new days and its
+ * number goes on; changing them in place would also have to re-place the outlines. A definition says nothing of a limit on
+ * sessions a week, so none is held to.
  *
  * A STOP IS ONE ROUTE, AND NOT A SECOND WAY TO STOP ANYTHING. Each kind stops as it always has, by the code that has always
  * stopped it, and this only finds it from the plan's id:
@@ -42,7 +44,7 @@ import type { AppContext } from "../auth/middleware.js";
 import { requireUser } from "../auth/middleware.js";
 import { restoreInProgress } from "../services/account-state.js";
 import { loadPreferences } from "../services/calendar-sync.js";
-import { startCourse, stopCourse } from "../services/course-plans.js";
+import { COURSE_RUNNING_WHY, startCourse, stopCourse } from "../services/course-plans.js";
 import { REQUEST_BUDGET } from "../services/design-approve.js";
 import { applyPlanPatch, listPlans } from "../services/plan-registry.js";
 import { planStoppedIfNoBlockLeft } from "../services/plan-status.js";
@@ -110,7 +112,7 @@ planRoutes.post("/courses", async (c) => {
     const started = await startCourse(db, userId, parsed.data, { today, now: nowInstant(), prefs }, REQUEST_BUDGET - COURSE_START_FIXED);
     if (!started.ok) {
       if (started.error === "restore_in_progress") return c.json({ error: "restore_in_progress" }, 423);
-      if (started.error === "course_running") return c.json({ error: "course_running" }, 409);
+      if (started.error === "course_running") return c.json({ error: "course_running", why: COURSE_RUNNING_WHY }, 409);
       return c.json({ error: "invalid_plan", issues: [{ path: ["course"], message: "no such course" }] }, 422);
     }
     const plan = (await listPlans(db, userId, today)).find((p) => p.id === started.planId);
