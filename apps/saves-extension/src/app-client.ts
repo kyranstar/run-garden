@@ -1,5 +1,5 @@
 import { SAVE_ERROR_CODES } from "@rg/saves";
-import type { CheckReport, PostSubmit, SaveErrorCode, SavePostStatus, SavesStatusDto, WorkItem } from "@rg/saves";
+import type { CheckReport, ImportHealthDto, PostSubmit, SaveErrorCode, SavePostStatus, SavesStatusDto, WorkItem } from "@rg/saves";
 import { AppRefusedError, AppUnreachableError } from "./errors.js";
 
 // The app's token routes (`/api/saves/*`). The token travels only in the Authorization header: never in a URL, a log
@@ -57,6 +57,8 @@ export interface AppClient {
   reportReadFailed(r: ReadFailure): Promise<void>;
   /** The import's status, as the popup shows it. */
   status(): Promise<SavesStatusDto>;
+  /** The import's health row: one light per stage and source (import trail). */
+  health(): Promise<ImportHealthDto>;
   /** The owner's word on one post (the popup's Process anyway and Retry). */
   override(source: string, key: string, action: "process" | "skip" | "reference"): Promise<void>;
 }
@@ -178,8 +180,23 @@ export function createAppClient(opts: { appUrl: string; token: string; fetchImpl
       return (await expectOk(await call("/api/saves/status", { method: "GET" }))) as unknown as SavesStatusDto;
     },
 
+    async health() {
+      return (await expectOk(await call("/api/saves/health", { method: "GET" }))) as unknown as ImportHealthDto;
+    },
+
     async override(source, key, action) {
       await expectOk(await postJson(`/api/saves/posts/${encodeURIComponent(key)}/override?source=${encodeURIComponent(source)}`, { action }));
     },
   };
+}
+
+/**
+ * What the popup reads: the status and the health row, side by side — one round trip each. The status is the popup's
+ * own (its failure is the popup's error); a health that can't be read (an older app, a blip) is left out, never in the
+ * way of the status.
+ */
+export async function statusAndHealth(app: Pick<AppClient, "status" | "health">): Promise<{ status: SavesStatusDto; health: ImportHealthDto | null }> {
+  const [status, health] = await Promise.allSettled([app.status(), app.health()]);
+  if (status.status === "rejected") throw status.reason;
+  return { status: status.value, health: health.status === "fulfilled" ? health.value : null };
 }

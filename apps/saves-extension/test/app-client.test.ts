@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { createAppClient } from "../src/app-client.js";
+import { createAppClient, statusAndHealth } from "../src/app-client.js";
 import { AppRefusedError, AppUnreachableError } from "../src/errors.js";
 
 const TOKEN = "tok-synthetic-0123456789";
@@ -149,6 +149,29 @@ describe("the app client: status and override", () => {
     expect(calls[0]!.url).toBe("https://app.example.com/api/saves/status");
     expect(calls[0]!.init.method).toBe("GET");
     expect(header(calls[0]!.init, "authorization")).toBe(`Bearer ${TOKEN}`);
+  });
+
+  it("reads the health row with GET /api/saves/health, the token only in the header (import trail)", async () => {
+    const { calls, client } = recorder(() => json(200, { lights: [], worst: null }));
+    expect(await client.health()).toEqual({ lights: [], worst: null });
+    expect(calls).toHaveLength(1);
+    expect(calls[0]!.url).toBe("https://app.example.com/api/saves/health");
+    expect(calls[0]!.init.method).toBe("GET");
+    expect(header(calls[0]!.init, "authorization")).toBe(`Bearer ${TOKEN}`);
+  });
+
+  it("the popup's status and health are one round trip each, side by side; a health that can't be read leaves the status", async () => {
+    const { calls, client } = recorder((url) => (url.endsWith("/status") ? json(200, { state: "ok", posts: [] }) : json(200, { lights: [], worst: null })));
+    const both = await statusAndHealth(client);
+    expect(both).toEqual({ status: { state: "ok", posts: [] }, health: { lights: [], worst: null } });
+    expect(calls.map((c) => c.url).sort()).toEqual(["https://app.example.com/api/saves/health", "https://app.example.com/api/saves/status"]);
+
+    const older = recorder((url) => (url.endsWith("/status") ? json(200, { state: "ok", posts: [] }) : json(404, { error: "not_found" })));
+    expect(await statusAndHealth(older.client)).toEqual({ status: { state: "ok", posts: [] }, health: null });
+    expect(older.calls).toHaveLength(2);
+
+    const down = recorder(() => json(502, {}));
+    await expect(statusAndHealth(down.client)).rejects.toBeInstanceOf(AppUnreachableError);
   });
 
   it("posts an override to the key's route with the source in the query, the token only in the header", async () => {

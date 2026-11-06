@@ -1,8 +1,8 @@
 import type { CheckNowResponse, OverrideResponse, StatusResponse } from "./background.js";
-import { CHECKING, popupModel, safeHref, type PopupAction, type PopupModel } from "./status.js";
+import { CHECKING, popupModel, safeHref, type PopupAction, type PopupLight, type PopupModel } from "./status.js";
 
 // Renders popupModel with plain DOM (text is always set with textContent). The popup holds no token and calls no app
-// route itself: it asks the background, which calls the token routes.
+// route itself: it asks the background, which calls the token routes. A post's trail opens in the app.
 
 const root = document.getElementById("root") as HTMLElement;
 
@@ -22,6 +22,16 @@ function button(label: string, onClick: (b: HTMLButtonElement) => void, quiet = 
   return b;
 }
 
+/** A link that opens apart: only to an address the model checked (`safeHref`, `appHref`). */
+function link(text: string, href: string | null, className?: string): HTMLElement {
+  if (!href) return el("span", text, className);
+  const a = el("a", text, className);
+  a.href = href;
+  a.target = "_blank";
+  a.rel = "noopener noreferrer";
+  return a;
+}
+
 const ask = <T>(message: unknown): Promise<T> => chrome.runtime.sendMessage(message) as Promise<T>;
 
 let note = "";
@@ -34,7 +44,7 @@ async function load(): Promise<void> {
   try {
     answer = await ask<StatusResponse>({ type: "status" });
   } catch {
-    answer = { status: null, appError: "the extension did not answer", queueSize: 0, nextCheckAt: null, checking: false };
+    answer = { status: null, appError: "the extension did not answer", queueSize: 0, nextCheckAt: null, checking: false, health: null, appUrl: null };
   }
   const m = popupModel({ ...answer, now: Date.now() });
   render(m);
@@ -64,10 +74,77 @@ async function override(key: string): Promise<void> {
   await load();
 }
 
+/** The light whose failures are open (kept across re-reads while the popup is open). */
+let openLight: string | null = null;
+
+/**
+ * The health row: seven lights (a glyph and a word as well as a colour), the worst one's line, and each light's
+ * failures under the row, one open at a time — toggled in place, so the live region doesn't read the popup again.
+ */
+function healthRow(m: PopupModel): DocumentFragment {
+  const frag = document.createDocumentFragment();
+  if (!m.lights.length) return frag;
+  const row = el("div", undefined, "lights");
+  row.setAttribute("role", "group");
+  row.setAttribute("aria-label", "Import health");
+  const panels: Array<{ light: PopupLight; button: HTMLButtonElement; panel: HTMLElement }> = [];
+  const show = () => {
+    for (const p of panels) {
+      p.button.setAttribute("aria-expanded", String(openLight === p.light.light));
+      p.panel.hidden = openLight !== p.light.light;
+    }
+  };
+  for (const l of m.lights) {
+    const b = el("button", undefined, `light light--${l.color}`);
+    b.type = "button";
+    const mark = el("span", l.mark, "mark");
+    mark.setAttribute("aria-hidden", "true");
+    b.append(mark, el("span", l.label), el("span", `: ${l.word}`, "visually-hidden"));
+    const panel = lightPanel(l);
+    panel.id = `light-${l.light}`;
+    b.setAttribute("aria-controls", panel.id);
+    b.addEventListener("click", () => {
+      openLight = openLight === l.light ? null : l.light;
+      show();
+    });
+    row.append(b);
+    panels.push({ light: l, button: b, panel });
+  }
+  frag.append(row);
+  if (m.healthLine) frag.append(el("p", m.healthLine, "health-line"));
+  for (const p of panels) frag.append(p.panel);
+  show();
+  return frag;
+}
+
+function lightPanel(l: PopupLight): HTMLElement {
+  const panel = el("div", undefined, "light-panel");
+  if (l.failures.length === 0) {
+    panel.append(el("p", l.line ?? (l.color === "grey" ? "Nothing to judge in the last 7 days." : "Nothing failed in the last 7 days."), "meta"));
+    return panel;
+  }
+  if (l.line) panel.append(el("p", l.line, "meta"));
+  const list = el("ul");
+  for (const f of l.failures) {
+    const li = el("li", undefined, "row");
+    const line = el("div", undefined, "line");
+    line.append(link(f.title, f.href), el("span", f.when, "meta"), el("span", f.why, "reason"));
+    li.append(line);
+    if (f.retryKey) {
+      const key = f.retryKey;
+      li.append(button("Retry", (b) => { b.disabled = true; void override(key); }, true));
+    }
+    list.append(li);
+  }
+  panel.append(list);
+  return panel;
+}
+
 function render(m: PopupModel): void {
   const frag = document.createDocumentFragment();
   const problem = m.headline !== "Up to date" && !m.checking;
   frag.append(el("h1", m.headline, problem ? "problem" : undefined));
+  frag.append(healthRow(m));
   if (m.detail) frag.append(el("p", m.detail, "meta"));
   if (note) frag.append(el("p", note, "meta"));
   frag.append(el("p", [`Last check ${m.lastCheck}`, `Next ${m.nextCheck}`, m.queue].filter(Boolean).join(" · "), "meta"));
@@ -107,14 +184,10 @@ function render(m: PopupModel): void {
     for (const p of m.posts) {
       const li = el("li", undefined, "row");
       const line = el("div", undefined, "line");
-      const link = el("a", p.creator);
-      const href = safeHref(p.url);
-      if (href) {
-        link.href = href;
-        link.target = "_blank";
-        link.rel = "noopener noreferrer";
-      }
-      line.append(link, el("span", p.status, "meta"));
+      // The creator opens the post's trail in the app; the post itself is a link of its own.
+      const post = safeHref(p.url);
+      line.append(link(p.creator, p.trailHref ?? post), el("span", p.status, "meta"));
+      if (p.trailHref && post) line.append(link("Open post", post, "quiet-link"));
       if (p.reason) line.append(el("span", p.reason, "reason"));
       li.append(line);
       for (const a of p.actions) li.append(button(LABELS[a], (b) => { b.disabled = true; void override(p.key); }, true));

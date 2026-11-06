@@ -12,39 +12,17 @@
 import { useId, useState } from "react";
 import { useMutation, useQueryClient } from "@tanstack/react-query";
 import { api, ApiError, SAVES_HEALTH_QUERY, SAVES_STATUS_QUERY } from "@rg/api-client";
-import type { HealthColor, HealthLight, HealthLightDto, ImportHealthDto } from "@rg/saves";
+import { HEALTH_LABELS, HEALTH_MARKS, type HealthLight, type HealthLightDto, type ImportHealthDto } from "@rg/saves";
 import { TrailSheet } from "./trail-sheet.js";
 import { whenWords } from "./trail-model.js";
 
-/** The lights' labels, as the worker's lines name them ("Reader: 3 of 4 failed"). */
-export const HEALTH_LABELS: Readonly<Record<HealthLight, string>> = {
-  instagram: "Instagram",
-  youtube: "YouTube",
-  screening: "Screening",
-  reader: "Reader",
-  matching: "Matching",
-  coach: "Coach",
-  budget: "Budget",
-};
-
-/** A colour's glyph and word: the light reads the same without its colour. */
-export const HEALTH_MARKS: Readonly<Record<HealthColor, { mark: string; word: string }>> = {
-  green: { mark: "✓", word: "working" },
-  yellow: { mark: "!", word: "needs a look" },
-  red: { mark: "✕", word: "failing" },
-  grey: { mark: "–", word: "nothing to judge yet" },
-};
+// The labels, the glyphs and words, and the red rule are the popup's too: one copy, in @rg/saves.
+export { HEALTH_LABELS, HEALTH_MARKS, redLine } from "@rg/saves";
 
 /** The row's read: an answer the shape of the health's, else nothing (an older Worker, the feature off). */
 export function healthOf(data: unknown): ImportHealthDto | null {
   const d = data as Partial<ImportHealthDto> | null | undefined;
   return d && Array.isArray(d.lights) ? (d as ImportHealthDto) : null;
-}
-
-/** While any light is red, the line a headline says in place of "all is well": the worst light's. Else null. */
-export function redLine(health: ImportHealthDto | null | undefined): string | null {
-  if (!health?.lights.some((l) => l.color === "red")) return null;
-  return health.worst ?? "Something in the import needs a look";
 }
 
 export function HealthRow({ health, compact = false }: { health: ImportHealthDto; compact?: boolean }) {

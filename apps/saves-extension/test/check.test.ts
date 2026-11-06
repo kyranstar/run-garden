@@ -30,6 +30,9 @@ class FakeApp implements AppClient {
   status(): Promise<never> {
     throw new Error("a check never reads the status");
   }
+  health(): Promise<never> {
+    throw new Error("a check never reads the health");
+  }
   override(): Promise<void> {
     throw new Error("a check never overrides a post");
   }

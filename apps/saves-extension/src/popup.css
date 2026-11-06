@@ -8,6 +8,7 @@
   --accent: #2f6b4f;
   --accent-text: #ffffff;
   --warn: #9a4a1c;
+  --danger: #a3332a;
   font: 14px/1.4 system-ui, sans-serif;
 }
 @media (prefers-color-scheme: dark) {
@@ -20,6 +21,7 @@
     --accent: #7cc4a0;
     --accent-text: #10201a;
     --warn: #e0a070;
+    --danger: #f08a7e;
   }
 }
 
@@ -48,3 +50,38 @@ button {
 button.quiet { background: transparent; color: var(--accent); }
 button:disabled { opacity: 0.6; cursor: default; }
 button:focus-visible, a:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+/* The health row (import trail): small labelled lights, each a glyph and a word as well as its colour. */
+.lights { display: flex; flex-wrap: wrap; gap: 0 0.25rem; margin: 0.25rem 0 0.25rem; }
+button.light {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.25rem;
+  margin: 0;
+  padding: 0 0.5rem;
+  font-size: 0.85rem;
+  border: 1px solid var(--line);
+  border-radius: 999px;
+  background: var(--surface);
+  color: var(--text);
+}
+button.light[aria-expanded="true"] { border-color: var(--text); }
+button.light .mark { font-weight: 700; }
+.light--green .mark { color: var(--accent); }
+.light--yellow .mark { color: var(--warn); }
+.light--red { border-color: var(--danger); }
+.light--red .mark { color: var(--danger); }
+.light--grey .mark { color: var(--muted); }
+.health-line { margin: 0 0 0.5rem; }
+.light-panel { margin: 0 0 0.5rem; }
+.quiet-link { color: var(--muted); }
+.visually-hidden {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  margin: -1px;
+  padding: 0;
+  overflow: hidden;
+  clip: rect(0 0 0 0);
+  white-space: nowrap;
+  border: 0;
+}

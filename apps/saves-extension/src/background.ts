@@ -1,11 +1,11 @@
-import { createAppClient } from "./app-client.js";
+import { createAppClient, statusAndHealth } from "./app-client.js";
 import { DEFAULT_CONFIG, runCheck, singleFlight, type CheckSummary } from "./check.js";
 import { chromeTabs, createPageReader } from "./page-reader.js";
 import { chromeStore, ExtQueue } from "./queue.js";
 import { loadSettings } from "./settings.js";
 import { SOURCE } from "./feed.js";
 import { isPostKey, NOT_CONFIGURED } from "./status.js";
-import type { SavesStatusDto } from "@rg/saves";
+import type { ImportHealthDto, SavesStatusDto } from "@rg/saves";
 
 // The service worker: a check every 6 hours (each delayed 0–30 min, so checks never land on the same minute), and one
 // on the popup's "Check now". Checks are single-flight: an alarm during a long check, or a second "Check now", joins
@@ -84,23 +84,30 @@ export interface StatusResponse {
   nextCheckAt: number | null;
   /** A check is running in this service worker right now. */
   checking: boolean;
+  /** The health row (import trail), read beside the status; null when it couldn't be. */
+  health: ImportHealthDto | null;
+  /** The app URL the options saved: the popup links each post to its trail there. */
+  appUrl: string | null;
 }
 export type OverrideResponse = { ok: true } | { ok: false; message: string };
 
 const messageOf = (e: unknown, fallback: string): string => (e instanceof Error ? e.message : fallback);
 
-/** What the popup shows: the app's status (or why it could not be read), the local queue, and the next alarm. */
+/**
+ * What the popup shows: the app's status (or why it could not be read) and its health row — one call each, side by
+ * side — the local queue, and the next alarm.
+ */
 async function popupStatus(): Promise<StatusResponse> {
   const nextCheckAt = (await chrome.alarms.get(JITTERED))?.scheduledTime ?? (await chrome.alarms.get(ALARM))?.scheduledTime ?? null;
   const queueSize = await new ExtQueue(chromeStore).size();
   const settings = await loadSettings(chromeStore);
-  if (!settings) return { status: null, appError: NOT_CONFIGURED, queueSize, nextCheckAt, checking };
+  if (!settings) return { status: null, appError: NOT_CONFIGURED, queueSize, nextCheckAt, checking, health: null, appUrl: null };
   try {
-    const status = await createAppClient({ appUrl: settings.appUrl, token: settings.token, fetchImpl }).status();
+    const { status, health } = await statusAndHealth(createAppClient({ appUrl: settings.appUrl, token: settings.token, fetchImpl }));
     const last = (await chromeStore.get("lastCheck")) as CheckSummary | undefined;
-    return { status, appError: last?.error?.message ?? null, queueSize, nextCheckAt, checking };
+    return { status, appError: last?.error?.message ?? null, queueSize, nextCheckAt, checking, health, appUrl: settings.appUrl };
   } catch (e) {
-    return { status: null, appError: messageOf(e, "App unreachable"), queueSize, nextCheckAt, checking };
+    return { status: null, appError: messageOf(e, "App unreachable"), queueSize, nextCheckAt, checking, health: null, appUrl: settings.appUrl };
   }
 }
 
@@ -123,7 +130,9 @@ chrome.runtime.onMessage.addListener((message: unknown, sender, sendResponse) =>
     return true; // the answer comes asynchronously
   }
   if (m?.type === "status") {
-    popupStatus().then(sendResponse, (e: unknown) => sendResponse({ status: null, appError: messageOf(e, "App unreachable"), queueSize: 0, nextCheckAt: null, checking }));
+    popupStatus().then(sendResponse, (e: unknown) =>
+      sendResponse({ status: null, appError: messageOf(e, "App unreachable"), queueSize: 0, nextCheckAt: null, checking, health: null, appUrl: null } satisfies StatusResponse),
+    );
     return true;
   }
   if (m?.type === "override" && isPostKey(m.key) && (m.action === "process" || m.action === "skip" || m.action === "reference")) {

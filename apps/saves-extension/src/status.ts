@@ -1,7 +1,11 @@
-import type { SavePostStatus, SavesStatusDto } from "@rg/saves";
+import { HEALTH_LABELS, HEALTH_MARKS, redLine } from "@rg/saves";
+import type { HealthColor, HealthLight, ImportHealthDto, SavePostStatus, SavesStatusDto } from "@rg/saves";
 
 // The popup's view of the import, as plain data: pure, so it is tested without a browser. The headline is the
-// pipeline's health (the app's state); one post's trouble shows on that post's row, never in the headline.
+// pipeline's health (the app's state); one post's trouble shows on that post's row, never in the headline — but while a
+// health light is red the headline is never "Up to date" (audit 2026-11-05, bug 7). Under it, the health row (design
+// 2026-11-05 §3.2): seven lights, the worst one's line, each light's failures one tap down. Every post opens its trail
+// in the app (`/studio/saves/posts/:id`).
 
 export type PopupAction = "check_now" | "process_anyway" | "retry" | "options";
 
@@ -13,6 +17,26 @@ export function safeHref(url: string): string | null {
   return url.startsWith("https://") ? url : null;
 }
 
+/**
+ * A page of the app, at the app URL the options saved: an https origin, or a local http one (a dev build) — else null.
+ * The popup's links into the app (a post's trail) are built only through here.
+ */
+export function appHref(appUrl: string | null | undefined, path: string): string | null {
+  if (!appUrl) return null;
+  let url: URL;
+  try {
+    url = new URL(appUrl);
+  } catch {
+    return null;
+  }
+  const local = url.hostname === "localhost" || url.hostname === "127.0.0.1";
+  if (url.protocol !== "https:" && !(local && url.protocol === "http:")) return null;
+  return `${url.origin}${path}`;
+}
+
+/** A post's trail in the app: the batches with that post's sheet open. */
+const trailPath = (postId: string): string => `/studio/saves/posts/${encodeURIComponent(postId)}`;
+
 /** A post key as the app's routes take it: 1 to 64 characters of the shortcode alphabet. */
 export function isPostKey(key: unknown): key is string {
   return typeof key === "string" && /^[A-Za-z0-9_-]{1,64}$/.test(key);
@@ -22,10 +46,32 @@ export interface PopupPost {
   id: string;
   key: string;
   url: string;
+  /** Its trail in the app, else null (no app URL saved). */
+  trailHref: string | null;
   creator: string;
   status: string;
   reason: string | null;
   actions: PopupAction[];
+}
+
+/** One of a light's failures: the post, when, why; its trail in the app; the key Retry names, when the popup can. */
+export interface PopupFailure {
+  title: string;
+  when: string;
+  why: string;
+  href: string | null;
+  retryKey: string | null;
+}
+
+/** One light of the health row: its label, colour, glyph and word (never colour alone), its line, its failures. */
+export interface PopupLight {
+  light: HealthLight;
+  label: string;
+  color: HealthColor;
+  mark: string;
+  word: string;
+  line: string | null;
+  failures: PopupFailure[];
 }
 
 export interface PopupCheck {
@@ -49,6 +95,10 @@ export interface PopupModel {
   posts: PopupPost[];
   spend: string;
   actions: PopupAction[];
+  /** The health row, in its order; empty when the health could not be read. */
+  lights: PopupLight[];
+  /** The worst light's line while one isn't green, else "". */
+  healthLine: string;
 }
 
 export interface PopupInput {
@@ -59,6 +109,10 @@ export interface PopupInput {
   now: number;
   /** The background's word that a check is running in it right now (absent from an older background). */
   checking?: boolean;
+  /** The health row's read (`GET /api/saves/health`): null when it could not be read. */
+  health?: ImportHealthDto | null;
+  /** The app URL the options saved: the popup's links into the app. */
+  appUrl?: string | null;
 }
 
 /**
@@ -126,18 +180,46 @@ function headlineOf(input: PopupInput): string {
   const { status } = input;
   if (!status) return "App unreachable";
   if (isChecking(input)) return CHECKING;
+  // A red light: never "Up to date" (nor "No check yet", which says nothing is wrong) — the worst light's line.
+  const red = redLine(input.health);
+  if (red && (status.state === "ok" || status.state === "idle")) return red;
   if (status.state !== "error") return HEADLINES[status.state];
   return `Error: ${input.appError ?? status.checks[0]?.errorCode ?? "the last check failed"}`;
+}
+
+/** The health row's lights, each with its failures; a failure's Retry only for a post the popup lists with Retry or
+ * Process anyway (it names posts by their key). */
+function lightsOf(input: PopupInput, posts: readonly { id: string; key: string; actions: PopupAction[] }[]): PopupLight[] {
+  const health = input.health;
+  if (!health || !Array.isArray(health.lights)) return [];
+  const retryable = new Map(posts.filter((p) => p.actions.length > 0).map((p) => [p.id, p.key]));
+  return health.lights.map((l) => ({
+    light: l.light,
+    label: HEALTH_LABELS[l.light] ?? l.light,
+    color: l.color,
+    mark: HEALTH_MARKS[l.color]?.mark ?? "–",
+    word: HEALTH_MARKS[l.color]?.word ?? "",
+    line: l.line,
+    failures: l.failures.map((f) => ({
+      title: f.title,
+      when: ago(f.at, input.now),
+      why: f.why,
+      href: f.postId ? appHref(input.appUrl, trailPath(f.postId)) : null,
+      retryKey: f.postId ? (retryable.get(f.postId) ?? null) : null,
+    })),
+  }));
 }
 
 export function popupModel(input: PopupInput): PopupModel {
   const { status, now } = input;
   const checking = isChecking(input);
+  const all = (status?.posts ?? []).map((p) => ({ id: p.id, key: p.key, actions: postActions(p.status) }));
   const posts: PopupPost[] = (status?.posts ?? [])
     .map((p) => ({
       id: p.id,
       key: p.key,
       url: p.url,
+      trailHref: appHref(input.appUrl, trailPath(p.id)),
       creator: p.creator.name ?? p.creator.handle,
       status: p.status.replace(/_/g, " "),
       reason: p.status === "failed" ? (p.error ?? p.reason) : p.reason,
@@ -172,5 +254,7 @@ export function popupModel(input: PopupInput): PopupModel {
     posts,
     spend: status ? `${dollars(status.spend.spentMicros)} of ${dollars(status.spend.capMicros)} this month` : "",
     actions,
+    lights: status ? lightsOf(input, all) : [],
+    healthLine: status ? (input.health?.worst ?? "") : "",
   };
 }

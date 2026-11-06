@@ -119,3 +119,31 @@ export interface ImportHealthDto {
   /** The reddest light's line, or null when every light is green or grey. */
   worst: string | null;
 }
+
+/** The lights' labels, as the row shows them wherever it is drawn (the app, the popup) and the Worker's lines say them. */
+export const HEALTH_LABELS: Readonly<Record<HealthLight, string>> = {
+  instagram: "Instagram",
+  youtube: "YouTube",
+  screening: "Screening",
+  reader: "Reader",
+  matching: "Matching",
+  coach: "Coach",
+  budget: "Budget",
+};
+
+/** A colour's glyph and word: a light reads the same without its colour, and grey (nothing to judge) is never green. */
+export const HEALTH_MARKS: Readonly<Record<HealthColor, { mark: string; word: string }>> = {
+  green: { mark: "✓", word: "working" },
+  yellow: { mark: "!", word: "needs a look" },
+  red: { mark: "✕", word: "failing" },
+  grey: { mark: "–", word: "nothing to judge yet" },
+};
+
+/**
+ * While any light is red, what a headline says in place of "all is well" (audit 2026-11-05, bug 7): the worst light's
+ * line. Null while none is red.
+ */
+export function redLine(health: Pick<ImportHealthDto, "lights" | "worst"> | null | undefined): string | null {
+  if (!health?.lights.some((l) => l.color === "red")) return null;
+  return health.worst ?? "Something in the import needs a look";
+}

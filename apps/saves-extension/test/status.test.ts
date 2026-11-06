@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
-import type { PostRowDto, SavesStatusDto } from "@rg/saves";
-import { CHECK_DIED, CHECKING, NOT_CONFIGURED, isChecking, isPostKey, popupModel, safeHref } from "../src/status.js";
+import { HEALTH_LIGHTS, type HealthColor, type HealthLightDto, type ImportHealthDto, type PostRowDto, type SavesStatusDto } from "@rg/saves";
+import { CHECK_DIED, CHECKING, NOT_CONFIGURED, appHref, isChecking, isPostKey, popupModel, safeHref } from "../src/status.js";
 
 const NOW = Date.parse("2026-10-23T12:00:00.000Z");
 const HOUR = 3_600_000;
@@ -210,5 +210,104 @@ describe("popup render helpers", () => {
     expect(isPostKey("a/b")).toBe(false);
     expect(isPostKey("a".repeat(65))).toBe(false);
     expect(isPostKey(5)).toBe(false);
+  });
+});
+
+// ── The health row (design 2026-11-05 §3.2; plan Task 14) ──
+
+const APP = "https://app.example.com";
+const health = (colors: Partial<Record<HealthLightDto["light"], HealthColor>> = {}, over: Partial<Record<HealthLightDto["light"], Partial<HealthLightDto>>> = {}, worst: string | null = null): ImportHealthDto => ({
+  lights: HEALTH_LIGHTS.map((light) => ({ light, color: colors[light] ?? "green", line: null, failures: [], ...over[light] })),
+  worst,
+});
+const grey = () => health(Object.fromEntries(HEALTH_LIGHTS.map((l) => [l, "grey" as const])));
+const RED = health(
+  { reader: "red" },
+  {
+    reader: {
+      line: "Reader: 3 of 4 failed",
+      failures: [
+        { postId: "b", title: "Zorbex hip flow", at: "2026-10-23T11:00:00.000Z", why: "The reply didn't match the format" },
+        { postId: null, title: "Reader", at: "2026-10-23T10:00:00.000Z", why: "The model gateway answered 402" },
+      ],
+    },
+  },
+  "Reader: 3 of 4 failed",
+);
+
+describe("popupModel's health row", () => {
+  it("seven labelled lights under the headline, each its glyph and word as well as its colour; all green, no line", () => {
+    const m = model({ health: health() });
+    expect(m.lights.map((l) => l.label)).toEqual(["Instagram", "YouTube", "Screening", "Reader", "Matching", "Coach", "Budget"]);
+    expect(m.lights.every((l) => l.color === "green" && l.mark === "✓" && l.word === "working")).toBe(true);
+    expect(m.healthLine).toBe("");
+    expect(m.headline).toBe("Up to date");
+  });
+
+  it("a light that isn't green: the worst line under the row", () => {
+    const m = model({ health: health({ budget: "yellow" }, { budget: { line: "Budget: $4.20 of $5.00 this month" } }, "Budget: $4.20 of $5.00 this month") });
+    expect(m.healthLine).toBe("Budget: $4.20 of $5.00 this month");
+    expect(m.lights.find((l) => l.light === "budget")).toMatchObject({ color: "yellow", mark: "!", word: "needs a look" });
+    // Yellow is no reason to stop saying it is up to date.
+    expect(m.headline).toBe("Up to date");
+  });
+
+  it("the headline never reads Up to date while a light is red (audit bug 7): it says the worst", () => {
+    const m = model({ health: RED });
+    expect(m.headline).toBe("Reader: 3 of 4 failed");
+    expect(m.headline).not.toBe("Up to date");
+    // A red light with no line of its own still keeps the headline from saying all is well.
+    expect(model({ health: health({ instagram: "red" }) }).headline).not.toBe("Up to date");
+    // The states that say what is wrong keep their own words; a running check says so.
+    expect(model({ health: RED, status: status({ state: "login_needed" }) }).headline).toBe("Instagram wants you to log in again");
+    expect(model({ health: RED, checking: true }).headline).toBe(CHECKING);
+  });
+
+  it("no data at all — a new account, a source never used — is grey, never green, and the headline is No check yet (Review Focus 4)", () => {
+    const m = model({ health: grey(), status: status({ state: "idle", lastCheckAt: null }) });
+    expect(m.headline).toBe("No check yet");
+    for (const l of m.lights) {
+      expect(l).toMatchObject({ color: "grey", mark: "–", word: "nothing to judge yet" });
+      expect(l.word).not.toBe("working");
+    }
+    expect(m.healthLine).toBe("");
+  });
+
+  it("each light carries its failures: the post, when, why, a link to its trail in the app, and Retry where the popup can retry it", () => {
+    const m = model({ appUrl: APP, health: RED, status: status({ posts: [post({ id: "b", key: "kb", status: "failed", errorCode: "model_failed", error: "The reader's reply didn't work" })] }) });
+    const reader = m.lights.find((l) => l.light === "reader")!;
+    expect(reader.line).toBe("Reader: 3 of 4 failed");
+    expect(reader.failures).toEqual([
+      { title: "Zorbex hip flow", when: "1 h ago", why: "The reply didn't match the format", href: "https://app.example.com/studio/saves/posts/b", retryKey: "kb" },
+      { title: "Reader", when: "2 h ago", why: "The model gateway answered 402", href: null, retryKey: null },
+    ]);
+  });
+
+  it("no health read (an older app, a failed call): no lights, nothing said, the headline as before", () => {
+    const m = model({ health: null });
+    expect(m.lights).toEqual([]);
+    expect(m.healthLine).toBe("");
+    expect(m.headline).toBe("Up to date");
+  });
+});
+
+describe("a post row opens its trail in the app", () => {
+  it("links to <appUrl>/studio/saves/posts/<id>", () => {
+    const m = model({ appUrl: APP, status: status({ posts: [post({ id: "p/1" })] }) });
+    expect(m.posts[0]!.trailHref).toBe("https://app.example.com/studio/saves/posts/p%2F1");
+    // The post itself is still a link of its own.
+    expect(m.posts[0]!.url).toBe("https://example.com/p/k1");
+  });
+
+  it("no app URL: no trail link", () => {
+    expect(model({ status: status({ posts: [post()] }) }).posts[0]!.trailHref).toBeNull();
+  });
+
+  it("appHref links only to the app's https origin (or a local http one)", () => {
+    expect(appHref("https://app.example.com/", "/studio/saves")).toBe("https://app.example.com/studio/saves");
+    expect(appHref("http://localhost:8787", "/studio/saves")).toBe("http://localhost:8787/studio/saves");
+    expect(appHref("http://app.example.com", "/studio/saves")).toBeNull();
+    expect(appHref("javascript:alert(1)", "/x")).toBeNull();
+    expect(appHref(null, "/x")).toBeNull();
   });
 });
