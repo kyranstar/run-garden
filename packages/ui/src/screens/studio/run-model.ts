@@ -677,6 +677,7 @@ export function detailOf(line: RunLine): DetailSection[] {
     if (p.answers !== undefined) back.push({ key: "Your answer", value: valueWords(p.answers) });
     // What the tool gave the coach (import trail §6.4): a read's moves by name, and the rest in words.
     if (p.data !== undefined && p.data !== null) back.push(...rowsOf(p.data));
+    if (p.cutForModel === true) back.push({ key: "Cut for the coach", value: "The coach saw only its first 8 KB" });
     // "In full" is the whole text: a preview shorter than the line it expands hid the rest (audit 2026-11-05).
     if (p.text !== undefined) back.push({ key: "In full", value: valueWords(p.text, 0, Infinity) });
     if (Array.isArray(p.set)) {

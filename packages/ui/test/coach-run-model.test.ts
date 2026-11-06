@@ -178,6 +178,12 @@ describe("the trail", () => {
     expect(inFull?.value).toBe(long);
   });
 
+  it("data the coach saw cut says so in its detail (final review)", () => {
+    const [line] = runLines([ev(1, "tool_result", "Read the plan", { tool: "read_plan", ok: true, data: { rows: "z" }, cutForModel: true })]);
+    const back = detailOf(line!).find((s) => s.title === "Came back")!.rows;
+    expect(back).toContainEqual({ key: "Cut for the coach", value: "The coach saw only its first 8 KB" });
+  });
+
   it("a payload too long to keep reads in words — never a cut head of JSON (Review Focus 5)", () => {
     for (const input of [{ truncated: true, head: '{"pin":["myZorbex' }, { tooLong: true, chars: 20_000 }]) {
       const [line] = runLines([ev(1, "tool_result", "Pinned moves", { tool: "pin_moves", input, ok: true })]);

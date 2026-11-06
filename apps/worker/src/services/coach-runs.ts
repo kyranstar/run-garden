@@ -1041,6 +1041,11 @@ export function toolResultPayload(
     missing: result.missing,
     ...(result.receipt ? { receipt: result.receipt } : {}),
     ...(result.data !== undefined ? { data: bounded(result.data, EVENT_PAYLOAD_MAX_CHARS - 2_000) } : {}),
+    // The trail never shows more than the coach was given without saying so: past TOOL_RESULT_MAX_BYTES the model saw
+    // the result cut (`capResult`; final review, 2026-11-05).
+    ...(result.data !== undefined && new TextEncoder().encode(JSON.stringify(result.data) ?? "").length > TOOL_RESULT_MAX_BYTES
+      ? { cutForModel: true }
+      : {}),
   };
 }
 

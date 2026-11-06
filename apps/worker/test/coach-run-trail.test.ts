@@ -12,6 +12,11 @@ describe("toolResultPayload", () => {
     const p = toolResultPayload("read_saves", { offset: 0 }, { data, provenance: { source: "your saves", asOf: "x" }, missing: ["3 more"] }, true);
     expect(p).toMatchObject({ tool: "read_saves", ok: true, input: { offset: 0 }, data, missing: ["3 more"] });
   });
+  it("data bigger than the coach was given says so: the coach saw it cut at 8 KB (final review)", () => {
+    const big = { rows: "z".repeat(9_000) };
+    expect(toolResultPayload("read_plan", {}, { data: big }, true)).toMatchObject({ data: big, cutForModel: true });
+    expect(toolResultPayload("read_plan", {}, { data: { rows: "small" } }, true).cutForModel).toBeUndefined();
+  });
   it("an input up to 8,000 characters is kept whole", () => {
     const input = { lines: "x".repeat(7_000) };
     expect(toolResultPayload("pin_moves", input, { data: null }, true).input).toEqual(input);
