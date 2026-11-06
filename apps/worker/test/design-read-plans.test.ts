@@ -5,7 +5,7 @@
  * statement. Synthetic data only, on the rich fixture's fixed clock (today Wed 13 May 2026).
  */
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { and, eq } from "drizzle-orm";
+import { and, eq, sql } from "drizzle-orm";
 import { schema } from "@rg/database";
 import { addDays, newId, REVISABILITY_WORDS } from "@rg/domain";
 import type { Env } from "../src/env.js";
@@ -157,6 +157,29 @@ describe("read_plans: what each plan is for and how it ends", () => {
     }
     const r = ok((await read()).res);
     expect(Buffer.byteLength(JSON.stringify({ provenance: r.provenance, missing: r.missing, data: r.data }))).toBeLessThanOrEqual(RESULT_BUDGET_BYTES);
+    // The briefs really were cut (at a word, with an ellipsis), not the answer merely small.
+    const cut = r.data.plans.filter((p) => String(p.id).startsWith("cp-long-"));
+    expect(cut.length).toBeGreaterThan(0);
+    for (const p of cut) {
+      expect(p.brief.text.length).toBeLessThan(("A long brief for the size test. ".repeat(30)).trim().length);
+      expect(p.brief.text.endsWith("…")).toBe(true);
+    }
+  });
+
+  it("the Studio plan reads the registry row that holds its id; with no row, or a row whose source is not JSON, it says null and its default — the read never fails", async () => {
+    await studio(rich.userId, { id: "studio-reg", name: "Full Body Strength", start: "2026-05-04", weeks: 8, createdAt: at(day(12)), pushes: ["verified"] });
+    await planRow(rich.userId, { id: "container-zx", kind: "coach", disciplines: ["strength"], purpose: "Zorbex lift", brief: "Lift twice a week.", onEnd: "finish", objectiveIds: ["o-9"] });
+    await db.update(schema.programs).set({ source: { studioPlanId: "studio-reg" } }).where(eq(schema.programs.id, "container-zx"));
+    await planRow(rich.userId, { id: "junk-source", kind: "coach", purpose: "Not the Studio's" });
+    await db.run(sql`update programs set source = 'not json' where id = 'junk-source'`);
+    const found = ok((await read()).res).data.plans.find((x) => x.kind === "Studio plan")!;
+    expect(found).toMatchObject({ purpose: { untrusted: true, text: "Zorbex lift" }, brief: { untrusted: true, text: "Lift twice a week." }, onEnd: "finish", pausedUntil: null, objectiveIds: ["o-9"] });
+
+    await db.delete(schema.programs).where(eq(schema.programs.id, "container-zx"));
+    const { res, count } = await read();
+    expect(count).toBe(1);
+    const bare = ok(res).data.plans.find((x) => x.kind === "Studio plan")!;
+    expect(bare).toMatchObject({ purpose: null, brief: null, onEnd: "continue", pausedUntil: null, objectiveIds: [] });
   });
 });
 

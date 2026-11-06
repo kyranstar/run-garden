@@ -319,7 +319,7 @@ export const readPlans: DesignTool = {
       // statuses and whether the athlete retired it.
       studio: sql`(select json_object('id', s.id, 'name', case when json_valid(s.plan) then json_extract(s.plan, '$.name') end,
           'brief', case when json_valid(s.brief) then json(s.brief) end, 'createdAt', s.created_at,
-          'plan', ${planSql(ctx.userId, sql`json_extract(pr.source, '$.studioPlanId') = s.id`)},
+          'plan', ${planSql(ctx.userId, sql`json_valid(pr.source) and json_extract(pr.source, '$.studioPlanId') = s.id`)},
           'pushes', json((select json_group_array(p.status) from ${studioPlanPushes} p where p.plan_id = s.id)),
           'retired', exists (select 1 from ${auditEvents} a where a.user_id = ${ctx.userId} and a.kind = ${STUDIO_PLAN_RETIRED}
             and json_extract(a.detail, '$.studioPlanId') = s.id)) from (

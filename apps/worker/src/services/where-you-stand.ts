@@ -171,7 +171,7 @@ const PLAN_KIND_LIST = sql.raw(PLAN_KINDS.map((k) => `'${k}'`).join(", "));
 /** Plans read, at most (the block shows PLANS_LISTED of them and counts the rest). */
 const PLANS_READ = 30;
 
-const SPORT_DISCIPLINE: Record<string, Discipline> ={ run: "runs", strength: "strength", yoga: "yoga" };
+const SPORT_DISCIPLINE: Record<string, Discipline> = { run: "runs", strength: "strength", yoga: "yoga" };
 
 export type StandRows = Record<string, unknown>;
 
