@@ -62,11 +62,10 @@ These are failure paths in the code. How many have bitten real data outside the 
 | `brief` | New. What the next sessions must respect: the rules, the progression, what it's working toward. At most 1,000 characters. Intent, never facts the app can compute |
 | `kind` | Exists. Who makes its sessions (§3.1) |
 | `on_end` | New. `ask`, `continue` or `finish` (§4) |
-| `parent_id` | New. A phase's plan (§3.2); null for a plan |
 | `paused_until` | New. Optional date: until then it makes no new sessions (§4.4) |
 | `objective_ids` | New. Optional: the objectives it serves, so "is this working?" has numbers to read and the dialogue has goals to offer (§4.1). A statement of intent; each session's own `intent.objectiveIds` stays its own |
 | `disciplines` | Exists. A plan can hold several sports |
-| `status` | Exists. `active` or `stopped` are the only states anything writes. Ended is computed |
+| `status` | Exists. `active` or `retired` (stopped) are the only states anything writes. Ended is computed |
 | `config` | Exists. Kind-specific settings (days and minutes for the engine; course and days for a course) |
 
 **Computed from the sessions, never stored:** start, end, weeks, week n of m, progress, adherence, whether it has ended, next session, race.
@@ -83,9 +82,9 @@ These are failure paths in the code. How many have bitten real data outside the 
 ### 3.2 Phases
 
 A training line today is worked out at read time, so it has no identity and nowhere to hold a purpose. It becomes stored:
-- A coach block is a `programs` row with the same id as its `coach_plans` row, and `parent_id` naming its plan.
-- A plan is the parent row: what the list shows, what holds the purpose and brief, and what Stop acts on.
-- Sessions keep their `plan_id` (the block's), so no session row is rewritten. "The plan of a session" is its `plan_id`'s parent, else itself.
+- A coach block stays a `coach_plans` row, as a phase, and gains `program_id` naming its plan. It gets no `programs` row of its own: that would copy its name and status, which is the drift this design removes.
+- A plan is the `programs` row: what the list shows, what holds the purpose and brief, and what Stop acts on.
+- Sessions keep their `plan_id` (the block's), so no session row is rewritten. "The plan of a session" is its block's `program_id`, else its `plan_id`.
 - A new block joins a plan only when its proposal says so. `propose_plan`'s `createPlan` must name the plan it continues, or give a new plan's name and purpose. Dates decide nothing: two plans of one sport can have different purposes.
 - Backfill: today's `linesOf` result is written as parents, once. The date rule isn't used after that.
 
@@ -277,7 +276,7 @@ Failing test first, then mutate each guard, per the principles §9.
 - A check-in two days after a TRE session that sets the halving by itself.
 
 **My calls, for the owner to check**
-- `programs` as the registry and `parent_id` for phases, instead of re-pointing sessions. It's the only shape that rewrites no session row.
+- `programs` as the registry, and `coach_plans.program_id` for phases, instead of re-pointing sessions or mirroring blocks into `programs`. It rewrites no session row and copies nothing.
 - A stored plan link, replacing derived lines (the training-lines design's listed veto option), because a plan's purpose needs a home.
 - 21 days as the "ending" horizon, kept from today's chip.
 - Asks-first as guidance plus an eval, not a code gate.
