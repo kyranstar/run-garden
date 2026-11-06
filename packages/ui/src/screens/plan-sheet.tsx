@@ -138,11 +138,14 @@ function PlanRace({ planId, race, firstDay, canChange }: { planId: string; race:
 }
 
 /**
- * A plan's summary, read once for every sheet (`["plans"]`, `GET /api/plans`). Absent — an older server, or not read
- * yet — is no words: the sheets draw nothing of it and offer no Change. The list reads the same, for its courses and its names.
+ * A plan's summary, read once for every sheet (`["plans"]`, `GET /api/plans`). Absent — an older server, not read yet, or a read
+ * that failed — is no words: the sheets draw nothing of it and offer no Change. The list reads the same, for its courses and its
+ * names. So an empty answer here never means "no plans", and nothing says so: this read tries again as any read of the app does
+ * (it's in no gate, so its tries hold no paint), the next thing drawn that needs it reads it again, and a later read failing
+ * keeps what the last one said.
  */
 export function usePlanSummaries(): readonly PlanSummaryDto[] {
-  const q = useQuery<PlansResponse>({ queryKey: ["plans"], queryFn: () => api.plans(), staleTime: 60_000, retry: false });
+  const q = useQuery<PlansResponse>({ queryKey: ["plans"], queryFn: () => api.plans(), staleTime: 60_000 });
   return q.data?.plans ?? [];
 }
 

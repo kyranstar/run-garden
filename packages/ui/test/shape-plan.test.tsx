@@ -329,10 +329,32 @@ describe("a course in Your plans (plans with a purpose): a row of its own, and a
       expect(rowsOf(listed([summary({ id: "coros-1", kind: "coros_import", name: "Their name for it", listedAs: null, course: null })], { plans: [coros] }))).toEqual(["Their name for it Running plan · From COROS · week 5 of 12"]);
     });
 
-    it("the list sorts by the name it shows", () => {
-      const later = { ...runPlan, id: "p-later", name: "Zebra" };
-      const { live } = planEntries([later, { ...runPlan, id: "p-sooner", name: "Mango" }], [], undefined, today, [coach({ id: "x", name: "Aardvark", listedAs: "p-later" })]);
-      expect(live.map((e) => (e.kind === "plan" ? e.plan.id : ""))).toEqual(["p-later", "p-sooner"]);
+    it("rows starting the same day hold their order when the plan's names land: a row takes its new name where it stands", () => {
+      const zebra = { ...runPlan, id: "p-zebra", name: "Zebra" };
+      const mango = { ...runPlan, id: "p-mango", name: "Mango" };
+      const order = (summaries: PlanSummaryDto[]) => planEntries([zebra, mango], [], undefined, today, summaries).live.map((e) => (e.kind === "plan" ? e.plan.id : ""));
+      expect(order([])).toEqual(["p-mango", "p-zebra"]);
+      expect(order([coach({ id: "x", name: "Aardvark", listedAs: "p-zebra" })])).toEqual(["p-mango", "p-zebra"]);
+    });
+
+    it("rows ending the same day hold theirs too, under Past plans", () => {
+      const over = { ...runPlan, startDate: "2026-06-01", endDate: "2026-07-01" };
+      const order = (summaries: PlanSummaryDto[]) => planEntries([{ ...over, id: "p-zebra", name: "Zebra" }, { ...over, id: "p-mango", name: "Mango" }], [], undefined, today, summaries).past.map((e) => (e.kind === "plan" ? e.plan.id : ""));
+      expect(order([])).toEqual(["p-mango", "p-zebra"]);
+      expect(order([coach({ id: "x", name: "Aardvark", listedAs: "p-zebra" })])).toEqual(["p-mango", "p-zebra"]);
+    });
+
+    it("a one-phase line with no plan is called by its block, a many-phase one by its sport", () => {
+      const one: TrainingLineDto = { ...line, key: "run:r1", phases: [phases[0]!], endDate: phases[0]!.endDate };
+      expect(rowsOf(listed([], { lines: [one] }))[0]).toMatch(/^Base /);
+      expect(rowsOf(listed([], { lines: [line] }))[0]).toMatch(/^Running /);
+    });
+
+    it("two lines starting the same day hold theirs: each by its own name, its sport or its one phase's", () => {
+      const lift: TrainingLineDto = { ...line, key: "lift:l1", discipline: "lift", name: "Lifting", phases: phases.map((p) => ({ ...p, id: `l-${p.id}`, discipline: "lift" as const })) };
+      const order = (summaries: PlanSummaryDto[]) => planEntries([], [], [line, lift], today, summaries).live.map((e) => (e.kind === "line" ? e.line.key : ""));
+      expect(order([])).toEqual(["lift:l1", "run:r1"]);
+      expect(order([coach({ id: "a", name: "Zoo", lineKey: "lift:l1" }), coach({ id: "b", name: "Autumn build", lineKey: "run:r1" })])).toEqual(["lift:l1", "run:r1"]);
     });
   });
 

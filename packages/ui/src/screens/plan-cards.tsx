@@ -111,18 +111,21 @@ function planOf(e: PlanEntry, summaries: readonly PlanSummaryDto[]): PlanSummary
   return summaries.find((s) => s.id === id || s.listedAs === id);
 }
 
-/** What a row is called: its plan's own name when one matches. Without one, a program or plan by its name; a one-phase line by
- * its block's name (as a block's row is); a many-phase line by its sport ("Running"), so its title never changes with the phase
- * it is in. */
-const entryName = (e: PlanEntry, summaries: readonly PlanSummaryDto[]): string =>
-  planOf(e, summaries)?.name ??
-  (e.kind === "line" ? (e.line.phases.length === 1 ? e.line.phases[0]!.name : e.line.name) : e.kind === "plan" ? e.plan.name : e.kind === "program" ? e.program.name : e.plan.name);
+/** A row's name of its own, whatever the plans read has said: a program or plan by its name; a one-phase line by its block's name
+ * (as a block's row is); a many-phase line by its sport ("Running"), so its title never changes with the phase it is in. */
+const ownName = (e: PlanEntry): string =>
+  e.kind === "line" ? (e.line.phases.length === 1 ? e.line.phases[0]!.name : e.line.name) : e.kind === "program" ? e.program.name : e.plan.name;
+
+/** What a row is called: its plan's own name when one matches, else its own. */
+const entryName = (e: PlanEntry, summaries: readonly PlanSummaryDto[]): string => planOf(e, summaries)?.name ?? ownName(e);
 
 /**
  * The list's order. Live: programs first, then courses, then lines and Studio / COROS plans as they start. Past: ended lines
  * and plans and completed blocks, the latest end first, then stopped courses, which carry no dates; retired blocks are absent.
+ * Rows that tie go by their own names, never the plans read's, so a row takes its plan's name where it stands when the read lands.
  * Blocks a line holds are the line's row, not their own; a payload without `lines` falls back to the coach's blocks as rows.
- * `summaries`: `GET /api/plans`, where a course's row comes from and any row's name (none: an older server, or not read yet).
+ * `summaries`: `GET /api/plans`, where a course's row comes from and any row's name (none: an older server, not read yet, or a
+ * read that failed).
  */
 export function planEntries(
   plans: readonly CoachPlanDto[],
@@ -142,7 +145,7 @@ export function planEntries(
   ];
   const isPast = (e: PlanEntry): boolean =>
     planEnded(entryEnd(e), today) || (e.kind === "plan" && e.plan.status === "completed");
-  const byName = (a: PlanEntry, b: PlanEntry) => entryName(a, summaries).localeCompare(entryName(b, summaries));
+  const byName = (a: PlanEntry, b: PlanEntry) => ownName(a).localeCompare(ownName(b));
   const live = candidates
     .filter((e) => !isPast(e))
     .sort((a, b) => entryStart(a).localeCompare(entryStart(b)) || byName(a, b));
@@ -184,7 +187,7 @@ export function YourPlans({
   today: string;
   onOpenPlan: (id: string) => void;
   onOpenLine: (key: string) => void;
-  /** `GET /api/plans`: the courses' rows, and any row's name (`planOf`). Absent: none, and rows read as they always have. */
+  /** `GET /api/plans`: the courses' rows, and any row's name (`planOf`). None (not read, or failed): rows read as they always have. */
   summaries?: readonly PlanSummaryDto[];
 }) {
   const coach = useCoach();

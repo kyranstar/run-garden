@@ -878,7 +878,7 @@ export function PlanScreen() {
   const coach = usePlanCoach();
   const coachPlans = useQuery({ queryKey: ["coach-plans"], queryFn: api.coachPlans });
   // The plans as plans (`GET /api/plans`): the courses' rows in the list, and every row's name. Not in the gate: a row landing
-  // late is better than a page held for it, and an older server's none reads as it always has.
+  // late is better than a page held for it, and none (an older server's, or a read that failed) reads as it always has.
   const planSummaries = usePlanSummaries();
   // The adaptive programs (Phase 2a): in the gate, so a row never lands after the week above it. One attempt: a failure
   // shows the page without them at once rather than holding every account's first paint for retries.

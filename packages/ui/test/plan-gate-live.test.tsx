@@ -77,7 +77,7 @@ const WEEK = {
 };
 
 /** The Plan at `/plan?workout=<the slot>`, every read answered but the programmes', which fail every time. */
-function mountOnTheSession() {
+function mountOnTheSession({ plansFail = false } = {}) {
   const calls: string[] = [];
   vi.stubGlobal(
     "fetch",
@@ -85,6 +85,7 @@ function mountOnTheSession() {
       const path = url.replace(/\?.*$/, "");
       calls.push(path);
       if (path === "/api/programs") return json({ error: "internal" }, 500);
+      if (plansFail && path === "/api/plans") return json({ error: "internal" }, 500);
       if (path === "/api/plan/week") return json(WEEK);
       if (path === "/api/plan/workouts") return json({ today: TODAY, workouts: [slot], plan: null });
       if (path === "/api/coach/plans") return json({ plans: [] });
@@ -132,5 +133,20 @@ describe("the Plan's first paint, after a read has failed (2026-10-19)", () => {
     expect(reads).toBeLessThanOrEqual(4);
     await settle(20);
     expect(calls.filter((c) => c === "/api/programs").length).toBe(reads);
+  });
+
+  it("the plans read failing holds no paint and says nothing of having no plans: the week is there, and it's tried three times, no more", async () => {
+    const { calls } = mountOnTheSession({ plansFail: true });
+    // Drawn before any answer from it can have come.
+    await settle(5);
+    expect(host!.textContent).not.toContain("Loading plan");
+    await settle();
+    expect(host!.textContent).toContain("Your plans");
+    expect(host!.textContent).not.toContain("Nothing planned yet");
+    const reads = calls.filter((c) => c === "/api/plans").length;
+    // The page's own read with its two retries; and, as the sheet asks for nothing of it, no more.
+    expect(reads).toBe(3);
+    await settle(20);
+    expect(calls.filter((c) => c === "/api/plans").length).toBe(reads);
   });
 });
