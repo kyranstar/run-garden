@@ -122,15 +122,15 @@ now). Pasted links join the same batches. What changes is what the coach gives b
 recommendation the owner weighs. The card:
 
 > **Nine moves from four posts. I'd add five, leave four.**
-> Two fill the hip work your plan has lacked since October; three slot into Thursday's post-run mobility. Two of
-> the four repeat what you already do, one needs a cable stack, one post's claims don't hold up.
+> Two fill the hip work your plan has been short of; three slot into the week's post-run mobility. Two of the four
+> repeat what you already do, one needs a cable stack, one post's claims don't hold up.
 >
 > **In**
-> **90/90 lift-off** · Thu post-run mobility · 2×6 per side — she pitches it for runners whose hips stiffen after
-> easy runs ⟨said 1:12⟩; it serves *hip mobility*.
+> **Zorbex hip lift** · Thu post-run mobility · 2×6 per side — the creator pitches it for runners whose hips stiffen
+> after easy runs ⟨said 1:12⟩; it serves *hip mobility*.
 > …
 > **Left out**
-> **Couch stretch variant** — you already do the stronger version Mondays.
+> **Zorbex long-lunge stretch** — you already do a stronger version.
 > …
 > [Approve] [Decline]   · How the coach made this
 

@@ -31,7 +31,7 @@ not planned-versus-done or objective progress, so it cannot weigh an import agai
 - **Failed posts** read `failed · training (first capture)`: the filter's positive verdict shown as the failure's
   reason (§4, bug 2). The real cause is not shown anywhere.
 - **The filter works on junk**: recipes, travel vlogs, memes and TV synopses were filtered out with clear reasons.
-- **Spend** this month: $2.75 of the $5 cap.
+- **Spend** this month was well inside the $5 cap.
 
 ## 3. Stage by stage: kept, thrown away, clipped
 

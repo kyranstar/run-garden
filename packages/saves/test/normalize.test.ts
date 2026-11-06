@@ -16,7 +16,7 @@ describe("normalizeMoveName", () => {
   it("reads a plural as its singular, whatever letter the singular ends on (audit bug 1)", () => {
     const same: Array<[string, string]> = [
       ["Calf raises", "Calf raise"],
-      ["Rib releases", "Rib release"],
+      ["Zorbex releases", "Zorbex release"],
       ["Child's poses", "Child's pose"],
       ["Glute squeezes", "Glute squeeze"],
       ["Hip circles", "Hip circle"],
@@ -29,7 +29,7 @@ describe("normalizeMoveName", () => {
     ];
     for (const [plural, singular] of same) expect(normalizeMoveName(plural), plural).toBe(normalizeMoveName(singular));
     expect(normalizeMoveName("Calf raises")).toBe("calf raise");
-    expect(normalizeMoveName("Rib releases")).toBe("rib release");
+    expect(normalizeMoveName("Zorbex releases")).toBe("zorbex release");
   });
   it("keeps the s of a word that isn't a plural", () => {
     expect(normalizeMoveName("Bench press")).toBe("bench press");
