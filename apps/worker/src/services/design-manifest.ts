@@ -43,6 +43,8 @@ import { accountLibraryFrom, personalMovesSql, PUBLIC_LIBRARY, type AccountLibra
 import type { Db } from "./db.js";
 import { defaultFromRow, defaultPlaceSql } from "./default-place.js";
 import type {
+  CorrectionOutcome,
+  DesignedCorrectionOp,
   DesignedOp,
   DesignedPinsOp,
   DesignedPlanOp,
@@ -65,6 +67,7 @@ import {
   changeVerb,
   describeChange,
   isDocWorkoutOp,
+  isImportCorrectionOp,
   isMovePinsOp,
   isPlanAdjustOp,
   isPlanStructureOp,
@@ -72,6 +75,7 @@ import {
   opIdOf,
   pinsCardLinesOf,
   type ChangeVerb,
+  type ImportCorrectionOp,
   type PinsCardLine,
 } from "./proposal-kinds.js";
 
@@ -526,6 +530,35 @@ export function pinsLines(ops: readonly unknown[]): PinsLine[] {
     pin: g.pin,
     unpin: g.unpin,
     issues: [],
+    outcome: g.outcome ?? null,
+  }));
+}
+
+/** A correction to imported data as the card shows it (import trail phase 3): what it corrects, its line, the coach's
+ * why and basis, its cites as chips, and how it stands. */
+export interface CorrectionLine {
+  opId: string;
+  target: ImportCorrectionOp["target"];
+  field: string;
+  name: string;
+  line: string;
+  why: string;
+  basis: ImportCorrectionOp["basis"];
+  cites: ImportCorrectionOp["cites"];
+  outcome: CorrectionOutcome | null;
+}
+
+/** Each correction's line, in the proposal's order. */
+export function correctionLines(ops: readonly unknown[]): CorrectionLine[] {
+  return (ops.filter(isImportCorrectionOp) as DesignedCorrectionOp[]).map((g) => ({
+    opId: g.id,
+    target: g.target,
+    field: g.field,
+    name: g.name,
+    line: g.line,
+    why: g.why,
+    basis: g.basis,
+    cites: Array.isArray(g.cites) ? g.cites : [],
     outcome: g.outcome ?? null,
   }));
 }

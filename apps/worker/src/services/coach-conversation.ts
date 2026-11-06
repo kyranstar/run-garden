@@ -28,7 +28,8 @@ import { markUntrusted } from "./design-prompt.js";
 import { clipProse } from "./design-prose.js";
 import { CHECK_ASKED } from "./design-tools/ask.js";
 import { designProposalId } from "./design-tools/propose.js";
-import { PINS_LINES_MAX, pinsCardLinesOf, pinsLineText, PLAN_LINES_MAX } from "./proposal-kinds.js";
+import { isPersonalId } from "@rg/saves";
+import { PINS_LINES_MAX, pinsCardLinesOf, pinsLineText, PLAN_LINES_MAX, type PinsCardLine } from "./proposal-kinds.js";
 
 /** A conversation goes quiet after this long with no new ask: the next ask (naming none) starts a new one. */
 export const CONVERSATION_QUIET_HOURS = 18;
@@ -46,7 +47,7 @@ export const CONVERSATION_ID = /^[A-Za-z0-9_-]{1,100}$/;
 export interface ConversationCard {
   /** `programme` (§8 §5): a change to a programme's settings, approved with one tap — one card a programme; `pins`
    * (saved-posts import, Task 18): the moves in rotation the coach would change, approved with one tap. */
-  kind: "workout" | "plan_changes" | "set" | "plan" | "programme" | "pins";
+  kind: "workout" | "plan_changes" | "set" | "plan" | "programme" | "pins" | "corrections";
   proposalId: string;
   title: string;
   /** One line: "Today · Now · 24 min · Maintain", "3 changes to your week", "3 workouts · Wed 13 – Fri 15 May",
@@ -60,7 +61,7 @@ export interface ConversationCard {
   lines?: string[];
   /** The moves in rotation's lines, as the card draws them (the saves flow redesigned, §3.5): a move's name, set in bold
    * once, and the text — null for a general line or one stored before the redesign (a plain string). */
-  pinLines?: Array<{ moveId?: string; name: string | null; text: string }>;
+  pinLines?: Array<{ moveId?: string; name: string | null; text: string } & Pick<PinsCardLine, "decision" | "where" | "dose" | "cites" | "post">>;
   /** A programme change's op (§8 §5): what its card approves and declines — a proposal may hold one a programme; the
    * moves in rotation's too. */
   opId?: string;
@@ -101,7 +102,7 @@ export interface ConversationDto {
 
 /** A proposal's op in brief, as `turnsSql` reads it. */
 interface OpBrief {
-  kind: "doc_workout" | "plan_adjust" | "plan_structure" | "programme_change" | "move_pins";
+  kind: "doc_workout" | "plan_adjust" | "plan_structure" | "programme_change" | "move_pins" | "import_correction";
   date: string | null;
   time: string | null;
   atNow: number | null;
@@ -121,8 +122,12 @@ interface OpBrief {
   planTitle?: string | null;
   planSummary?: string | null;
   lines?: unknown;
-  /** A programme change's op id (§8 §5), and the moves in rotation's. */
+  /** A programme change's op id (§8 §5), and the moves in rotation's — and a correction's (import trail phase 3). */
   opId?: string | null;
+  /** The moves in rotation's and a correction's why (phase 3): the coach's own words, carried into later turns. */
+  why?: string | null;
+  /** A correction's line, as the card shows it. */
+  fixLine?: string | null;
 }
 
 interface ProposalBrief {
@@ -205,7 +210,9 @@ export async function conversationRows(db: Db, userId: string, conversation: SQL
           'by', ${op("$.by.role")}, 'change', ${op("$.op.kind")}, 'row', ${op("$.row.title")},
           'outcome', ${op("$.outcome.status")}, 'reason', ${op("$.outcome.reason")}, 'discipline', ${op("$.derived.discipline")},
           'planTitle', ${op("$.title")}, 'planSummary', ${op("$.summary")}, 'lines', json(CASE WHEN ${op("$.kind")} IN ('plan_structure', 'programme_change', 'move_pins') THEN ${op("$.lines")} END),
-          'opId', CASE WHEN ${op("$.kind")} IN ('programme_change', 'move_pins') THEN ${op("$.id")} END))
+          'opId', CASE WHEN ${op("$.kind")} IN ('programme_change', 'move_pins', 'import_correction') THEN ${op("$.id")} END,
+          'why', CASE WHEN ${op("$.kind")} IN ('move_pins', 'import_correction') THEN ${op("$.why")} END,
+          'fixLine', CASE WHEN ${op("$.kind")} = 'import_correction' THEN ${op("$.line")} END))
         FROM json_each(CASE WHEN json_valid(p.ops) THEN p.ops ELSE '[]' END) o WHERE ${op("$.kind")} IN ('doc_workout', 'plan_adjust', 'plan_structure', 'programme_change', 'move_pins', 'import_correction'))))
         FROM coach_proposals p WHERE p.id = ${DESIGNED_PREFIX} || r.id AND p.user_id = r.user_id) AS proposal,
       (SELECT up.prefs FROM user_preferences up WHERE up.user_id = ${userId}) AS prefs
@@ -326,10 +333,33 @@ export function cardsOf(scopeText: string | null, p: ProposalBrief | null, today
         title: str(o.planTitle) ?? "Moves for your programme",
         summary: str(o.planSummary) ?? "",
         lines: lines.map(pinsLineText),
-        pinLines: lines.map((l) => ({ ...(l.moveId ? { moveId: l.moveId } : {}), name: l.name ?? null, text: l.text })),
+        pinLines: lines.map((l) => ({
+          ...(l.moveId ? { moveId: l.moveId } : {}),
+          name: l.name ?? null,
+          text: l.text,
+          // The coach's review (import trail phase 3): what the card does with the move, where, the dose, its cites, its post.
+          ...(l.decision ? { decision: l.decision } : {}),
+          ...(l.where ? { where: l.where } : {}),
+          ...(l.dose ? { dose: l.dose } : {}),
+          ...(l.cites?.length ? { cites: l.cites } : {}),
+          ...(l.post ? { post: l.post } : {}),
+        })),
         ...(str(o.opId) ? { opId: str(o.opId)! } : {}),
       };
     });
+  // Corrections to imported data (import trail phase 3): beside a pins card they ride it (its Approve approves them); alone,
+  // a card of their own.
+  const fixes = p.ops.filter((o) => o.kind === "import_correction");
+  const corrections: ConversationCard[] =
+    fixes.length === 0 || pins.length > 0
+      ? []
+      : [{
+          kind: "corrections",
+          ...base,
+          title: fixes.length === 1 ? "A correction to your saves" : "Corrections to your saves",
+          summary: plural(fixes.length, "correction"),
+          lines: fixes.flatMap((f) => (str(f.fixLine) ? [str(f.fixLine)!] : [])),
+        }];
   const changesCard = (): ConversationCard[] => {
     if (changes.length === 0) return [];
     const inWeek = changes.every((c) => !c.date || c.date <= addDays(today, 6));
@@ -338,7 +368,7 @@ export function cardsOf(scopeText: string | null, p: ProposalBrief | null, today
   if (workouts.length > 0 && isSet(scopeText, p)) {
     const days = workouts.flatMap((w) => (w.date ? [w.date] : [])).sort();
     const what = `${plural(workouts.length, "workout")}${changes.length > 0 ? ` and ${plural(changes.length, "change")}` : ""}`;
-    return [{ kind: "set", ...base, title: p.title || "Your week", summary: days.length > 0 ? `${what} · ${dayRangeLabel(days[0]!, days.at(-1)!)}` : what }, ...plans, ...programmes, ...pins];
+    return [{ kind: "set", ...base, title: p.title || "Your week", summary: days.length > 0 ? `${what} · ${dayRangeLabel(days[0]!, days.at(-1)!)}` : what }, ...plans, ...programmes, ...pins, ...corrections];
   }
   return [
     ...workouts.map((w): ConversationCard => ({
@@ -352,6 +382,7 @@ export function cardsOf(scopeText: string | null, p: ProposalBrief | null, today
     ...plans,
     ...programmes,
     ...pins,
+    ...corrections,
   ];
 }
 
@@ -456,6 +487,47 @@ function whenWords(clock: Intl.DateTimeFormat, at: string): string {
   return `${dayLabel(`${p.year}-${p.month}-${p.day}`)}, ${p.hour}:${p.minute}`;
 }
 
+/** A pins card's lines, the most characters at their full words; past it, a line names its move alone. */
+const PINS_BRIEF_FULL_CHARS = 4_800;
+/** A line's words in the block, at most. */
+const PIN_TEXT_BRIEF = 100;
+const WHY_BRIEF = 300;
+
+/** A pins line in brief, as the next turn and read_proposals read it: "in Name: where · dose · words [q1.1, history]". */
+export function pinsLineBrief(l: PinsCardLine, o: { name?: string; words?: string } = {}): string {
+  const words = o.words ?? [l.where, l.dose, clipProse(l.text, PIN_TEXT_BRIEF)].filter(Boolean).join(" · ");
+  const name = o.name ?? l.name;
+  const cites = l.cites?.length ? ` [${l.cites.map((c) => c.id).join(", ")}]` : "";
+  return `${l.decision ? `${l.decision} ` : ""}${name ? `${name}: ` : ""}${words}${cites}`;
+}
+
+/** A pins card's lines and why, for the block: each line (the move's name marked as a post's reading when it is the
+ * athlete's own; the coach's words marked as its own), then the why; past PINS_BRIEF_FULL_CHARS a line names its move. */
+function pinsCardBrief(g: OpBrief | undefined): string[] {
+  const lines = pinsCardLinesOf(typeof g?.lines === "string" ? parsed(g.lines) : g?.lines).slice(0, PINS_LINES_MAX);
+  const out: string[] = [];
+  let used = 0;
+  for (const l of lines) {
+    const name = l.name ? (l.moveId && isPersonalId(l.moveId) ? markUntrusted("saved post", l.name) : l.name) : undefined;
+    const words = [l.where, l.dose, clipProse(l.text, PIN_TEXT_BRIEF)].filter(Boolean).join(" · ");
+    const full = `    - ${pinsLineBrief(l, { ...(name ? { name } : {}), words: markUntrusted("main coach", words) })}`;
+    const short = `    - ${l.decision ? `${l.decision} ` : ""}${name ?? markUntrusted("main coach", clipProse(l.text, 40))}`;
+    const line = used + full.length <= PINS_BRIEF_FULL_CHARS ? full : short;
+    used += line.length + 1;
+    out.push(line);
+  }
+  const why = str(g?.why);
+  if (why) out.push(`    Why: ${markUntrusted("main coach", clipProse(why, WHY_BRIEF))}`);
+  return out;
+}
+
+/** A suggestion's corrections, for the block: each its line (the coach's words, marked) and how it stands. */
+function correctionsBrief(ops: readonly OpBrief[], status: string): string[] {
+  return ops
+    .filter((o) => o.kind === "import_correction" && str(o.fixLine))
+    .map((o) => `    - Correction: ${markUntrusted("main coach", clipProse(str(o.fixLine)!, LINE_MAX))} — ${o.outcome === "applying" ? "being applied" : standing(status, o.outcome, o.reason)}`);
+}
+
 /** One turn, as the opening message carries it. */
 function turnLines(row: TurnRow, today: string, clock: Intl.DateTimeFormat): string[] {
   const time = whenWords(clock, row.createdAt);
@@ -487,6 +559,11 @@ function turnLines(row: TurnRow, today: string, clock: Intl.DateTimeFormat): str
       out.push(
         `  Suggested moves for the engine's pool (id ${card.proposalId}): ${title} · ${markUntrusted("main coach", clipProse(card.summary, TITLE_MAX))} — ${g?.outcome === "applying" ? "being applied" : standing(card.status, g?.outcome, g?.reason)}`,
       );
+      // Its lines and why (import trail phase 3, §3.3): "why did you leave X out?" reaches a coach that has its reason.
+      out.push(...pinsCardBrief(g), ...correctionsBrief(p!.ops, card.status));
+    } else if (card.kind === "corrections") {
+      out.push(`  Suggested ${card.summary} to the athlete's saves (id ${card.proposalId}) — ${standing(card.status)}`);
+      out.push(...correctionsBrief(p!.ops, card.status));
     } else if (card.kind === "plan") {
       // A whole plan (§8 §5): its title and line are the coach's words; how it stands is its op's.
       const plan = p!.ops.find((o) => o.kind === "plan_structure");
