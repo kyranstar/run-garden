@@ -11,7 +11,7 @@
  */
 import { and, eq, sql, type SQL } from "drizzle-orm";
 import { schema } from "@rg/database";
-import { extractionSchema, normalizeMoveName, type Extraction } from "@rg/saves";
+import { extractionSchema, normalizeMoveName, priceWords, type Extraction } from "@rg/saves";
 import type { Db } from "./db.js";
 import { runAtomicallyClaim } from "./db.js";
 import { summaryLine } from "./import-trail.js";
@@ -62,9 +62,6 @@ export function readingCostOf(p: {
   const textChars = (p.caption?.length ?? 0) + (p.videoInfo?.captions ? (p.videoInfo.transcriptChars ?? 0) : 0);
   return typicalReadingMicros(EXTRACT_MODEL_DEFAULT, { source: p.source, mediaType: p.mediaType, durationSec: p.durationSec, textChars });
 }
-
-/** A price in the owner's words: "about $0.02", or "under $0.01". */
-export const priceWords = (micros: number): string => (micros < 5_000 ? "under $0.01" : `about $${(micros / 1_000_000).toFixed(2)}`);
 
 /**
  * The owner's Read it again: the post goes back to the queue — its attempts and last error cleared, its reading KEPT

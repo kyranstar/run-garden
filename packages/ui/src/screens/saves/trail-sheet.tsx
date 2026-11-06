@@ -39,8 +39,10 @@ import {
   type TrailDetail,
   type TrailRow,
   type TrailStep,
+  readAgainLabel,
   watchLabel,
 } from "./trail-model.js";
+import { WAITING_FOR_EXTENSION } from "@rg/saves";
 
 /** The sheet's title before the trail is read. */
 export const TRAIL_TITLE = "Saved post";
@@ -153,7 +155,7 @@ function Account({ dto, lines, href, focus }: { dto: ImportTrailDto; lines: Acco
         ))}
       </ol>
       {rest("rebuilt").map((l) => (
-        <RebuiltLine key={l.key} line={l} />
+        <RebuiltLine key={l.key} line={l} postId={dto.post.id} />
       ))}
     </section>
   );
@@ -230,10 +232,26 @@ function ScreenLine({ line, postId }: { line: AccountLine; postId: string }) {
   );
 }
 
-/** A post from before the trail: a short label on the page; what it means one tap down (principles §7). */
-function RebuiltLine({ line }: { line: AccountLine }) {
+/**
+ * A post from before the trail: a short label on the page, what it means one tap down (principles §7) — and beside it
+ * Read it again with its price, or, once asked, that it waits for the computer's extension (phase 5a).
+ */
+function RebuiltLine({ line, postId }: { line: AccountLine; postId: string }) {
   const [open, setOpen] = useState(false);
   const id = useId();
+  const qc = useQueryClient();
+  const again = useMutation({
+    mutationFn: () => api.savesReadAgain(postId),
+    onSuccess: () => qc.invalidateQueries({ queryKey: saveTrailQuery(postId) }),
+  });
+  // A paid one-tap ask that didn't go through says why, and stays to tap again (as Watch it too does).
+  const failed = again.isError
+    ? again.error instanceof ApiError
+      ? again.error.status === 409
+        ? "It can't be read again just now — its moves may be in a batch you're fitting in."
+        : "The app couldn't take it just now — try again."
+      : "Couldn't reach the app — try again."
+    : null;
   return (
     <div className="trail-rebuilt">
       <button type="button" className="linklike tap-pad coach-run-fold trail-rebuilt-open" aria-expanded={open} aria-controls={id} onClick={() => setOpen((v) => !v)}>
@@ -242,6 +260,17 @@ function RebuiltLine({ line }: { line: AccountLine }) {
           <IconChevron size={14} />
         </span>
       </button>
+      {line.again ? (
+        <button type="button" className="btn btn-small" disabled={again.isPending} onClick={() => again.mutate()}>
+          {readAgainLabel(line.again.costMicros)}
+        </button>
+      ) : null}
+      {line.waiting ? <span className="coach-run-note trail-rebuilt-waiting">{WAITING_FOR_EXTENSION}</span> : null}
+      {failed ? (
+        <span className="trail-video-failed" role="alert">
+          {failed}
+        </span>
+      ) : null}
       <p id={id} className="coach-run-note trail-rebuilt-more" hidden={!open}>
         {line.more}
       </p>

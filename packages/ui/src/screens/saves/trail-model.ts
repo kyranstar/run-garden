@@ -17,7 +17,7 @@
  * is key: value lines, never JSON; an id is a move's name where the trail knows it. Every text here came from a stage,
  * a model or a stranger's post: the sheet draws it as text, never as markup. Pure: no React, no network.
  */
-import { clock, failureWords, IMPORT_STAGES, transcriptSegments, WAITING_FOR_EXTENSION, type BlobKind, type ImportStage, type ImportTrailDto, type TrailEventDto, type TrailStatus } from "@rg/saves";
+import { clock, failureWords, IMPORT_STAGES, priceWords, transcriptSegments, WAITING_FOR_EXTENSION, type BlobKind, type ImportStage, type ImportTrailDto, type TrailEventDto, type TrailStatus } from "@rg/saves";
 import { formatTime } from "../../components.js";
 import { DETAIL_VALUE_MAX, keyWords, type DetailRow } from "../studio/run-model.js";
 import { dayOf } from "../studio/saves-model.js";
@@ -48,6 +48,10 @@ export interface AccountLine {
   more?: string;
   /** A filtered post's line offers Import anyway (the controller's addition 3). */
   importAnyway?: boolean;
+  /** The rebuilt label offers Read it again, with what a reading typically costs (phase 5a). */
+  again?: { costMicros: number | null };
+  /** Read it again was asked: it waits for the computer's extension. */
+  waiting?: true;
   /** A second line: what the reader says a move is for. */
   sub?: string | null;
   /** The health word's status (its mark). */
@@ -72,6 +76,11 @@ export function watchLabel(costMicros: number | null): string {
   return costMicros === null ? "Watch it too" : `Watch it too (about $${(costMicros / 1_000_000).toFixed(2)})`;
 }
 export const TRANSCRIPT_ONLY_LINE = "Read from the transcript only (over 20 minutes)";
+
+/** The button that reads an old post again under the current prompt, with its price (phase 5a). */
+export function readAgainLabel(costMicros: number | null): string {
+  return costMicros === null ? "Read it again" : `Read it again (${priceWords(costMicros)})`;
+}
 
 /** A raw piece of a step, listed by what it is and its size; its text is read when opened. */
 export interface TrailBlob {
@@ -248,6 +257,10 @@ const LABELS: Readonly<Record<string, string>> = {
   post: "The post",
   edited: "Edited",
   note: "Note",
+  // A re-read (phase 5a).
+  reread: "Read again",
+  kept: "Kept",
+  missing: "Not in it",
 };
 const label = (k: string, stage?: ImportStage): string => (k === "stage" && stage === "screen" ? "Decided by" : (LABELS[k] ?? keyWords(k)));
 
@@ -261,13 +274,14 @@ const VALUE_WORDS: Readonly<Record<string, Readonly<Record<string, string>>>> = 
   chaptersFrom: { player: "the player bar", description: "the description" },
   doseOrigin: { post: "the post", reading: "the reader's reading", default: "a default — the post gave none" },
   outcome: { new: "a new move", personal: "already yours", yours: "already yours", library: "from the library" },
-  by: { name: "its name", judge: "the judge", fuzzy: "a close name", new: "no match" },
+  by: { name: "its name", judge: "the judge", fuzzy: "a close name", new: "no match", kept: "kept as it was — the post already linked it" },
   judge: { asked: "asked", not_needed: "not needed", failed: "its call failed", budget: "not asked: the import budget" },
   evidence: { stated: "stated", inferred: "the reader's guess" },
   target: { move: "the move", reading: "the post's reading", insight: "an insight", link: "the match" },
   basis: { evidence: "the evidence", owner: "your word" },
   now: { saved: "saved to your library", pending: "waiting for you", removed: "left out" },
   post: { skipped: "you skipped it", reference: "you kept it as a reference", "read anyway": "you had it read anyway" },
+  kept: { earlier: "the earlier reading: this one didn't line up with the moves it had" },
 };
 /** The owner's in or out on a move. */
 const CHOICE_WORDS: Readonly<Record<string, string>> = { include: "in", skip: "left out" };
@@ -452,6 +466,13 @@ function field(k: string, v: unknown, ctx: Ctx): string {
               })
               .join("\n")
         : inline(v, ctx);
+    case "reread": {
+      const r = record(v);
+      if (!r) return inline(v, ctx);
+      const kept = typeof r.kept === "number" ? r.kept : 0;
+      const added = Array.isArray(r.added) ? r.added.length : 0;
+      return `lined up with the ${plural(kept, "move")} it had${added ? `; ${num(added)} new` : ""}`;
+    }
     case "captured":
     case "posted":
       return typeof v === "string" ? dayOf(v) || "—" : inline(v, ctx);
@@ -661,7 +682,14 @@ export function trailAccount(dto: ImportTrailDto): AccountLine[] {
   for (const e of dto.events) if (e.stage === "correction") out.push({ key: `correction-${e.id}`, kind: "correction", text: e.summary, status: e.status });
 
   out.push({ key: "health", kind: "health", text: account.health.line, status: account.health.status });
-  if (dto.rebuilt) out.push({ key: "rebuilt", kind: "rebuilt", text: REBUILT_LABEL, more: REBUILT_MORE });
+  if (dto.rebuilt) {
+    // Read it again sits with the rebuilt label (phase 5a): offered with its price, or asked and waiting.
+    const again = post.readAgain;
+    out.push({
+      key: "rebuilt", kind: "rebuilt", text: REBUILT_LABEL, more: REBUILT_MORE,
+      ...(again?.asked ? { waiting: true as const } : again?.offer ? { again: { costMicros: again.costMicros } } : {}),
+    });
+  }
   return out;
 }
 

@@ -36,6 +36,9 @@ export function failureWords(code: SaveErrorCode | string | null, raw: string | 
   }
 }
 
+/** A reading's price in the owner's words, said before a paid tap (Read it again): "about $0.02", or "under $0.01". */
+export const priceWords = (micros: number): string => (micros < 5_000 ? "under $0.01" : `about $${(micros / 1_000_000).toFixed(2)}`);
+
 /** The stages of a post's path, in pipeline order (the trail sheet's sections follow it). */
 export const IMPORT_STAGES = [
   "read", "submit", "screen", "extract", "check", "match", "batch", "choice", "save", "coach", "correction",

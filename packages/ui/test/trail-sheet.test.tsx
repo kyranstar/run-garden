@@ -69,6 +69,7 @@ async function mount(trail: ImportTrailDto | null = TRAIL(), focus?: { position:
       if (url === "/api/my-saves/posts/p1/trail") return trail ? json(trail) : json({ error: "not_found" }, 404);
       if (url === "/api/my-saves/posts/p1/watch") return json({ ok: true });
       if (url === "/api/my-saves/posts/p1/override") return json({ ok: true });
+      if (url === "/api/my-saves/posts/p1/read-again") return json({ ok: true });
       const blob = /^\/api\/my-saves\/blobs\/(.+)$/.exec(url);
       if (blob && BLOBS[blob[1]!]) return json(BLOBS[blob[1]!]);
       return json({ error: "not_found" }, 404);
@@ -324,5 +325,37 @@ describe("a filtered post's top line (the controller's addition 3)", () => {
     await flush();
     expect(dialog().textContent).toContain("It has moved on since — it isn't filtered out now.");
     expect(button("Import anyway").disabled).toBe(false);
+  });
+});
+
+describe("Read it again (phase 5a)", () => {
+  const OLD = (readAgain: ImportTrailDto["post"]["readAgain"], status = "matched") => {
+    const t = TRAIL({ rebuilt: true, events: [ev("rebuilt:screen", "screen", { rebuilt: true, summary: "Kept: a hip routine" })] });
+    t.post = { ...t.post, status, readAgain };
+    return t;
+  };
+  it("sits with the rebuilt label, says its price, and the tap asks the app", async () => {
+    await mount(OLD({ offer: true, asked: false, costMicros: 11_400 }));
+    const again = button("Read it again");
+    expect(again.textContent).toBe("Read it again (about $0.01)");
+    expect(again.className).toContain("btn");
+    expect(again.closest(".trail-rebuilt")).not.toBeNull();
+    await click(again);
+    await flush();
+    expect(calls).toContain("/api/my-saves/posts/p1/read-again");
+  });
+  it("asked, it waits for the computer's extension", async () => {
+    await mount(OLD({ offer: false, asked: true, costMicros: 11_400 }, "queued"));
+    expect(button("Read it again")).toBeUndefined();
+    expect((dialog().querySelector(".trail-rebuilt") as HTMLElement).textContent).toContain("Waiting for your computer's extension");
+  });
+  it("one that doesn't go through says why, and the button stays", async () => {
+    await mount(OLD({ offer: true, asked: false, costMicros: 11_400 }));
+    const orig = vi.mocked(fetch).getMockImplementation()!;
+    vi.mocked(fetch).mockImplementation(async (u: string | URL | Request, r?: RequestInit) => (String(u).endsWith("/read-again") ? json({ error: "not_readable" }, 409) : orig(u as string, r)));
+    await click(button("Read it again"));
+    await flush();
+    expect(dialog().textContent).toContain("It can't be read again just now — its moves may be in a batch you're fitting in.");
+    expect(button("Read it again").disabled).toBe(false);
   });
 });

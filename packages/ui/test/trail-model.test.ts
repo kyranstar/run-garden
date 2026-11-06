@@ -6,7 +6,7 @@
  */
 import { describe, expect, it } from "vitest";
 import type { ImportTrailDto, TrailEventDto } from "@rg/saves";
-import { blobLabel, moveDetail, trailAccount, trailSections, type TrailRow } from "../src/screens/saves/trail-model.js";
+import { blobLabel, moveDetail, readAgainLabel, trailAccount, trailSections, type TrailRow } from "../src/screens/saves/trail-model.js";
 
 // Midday UTC: the same calendar day on any device's clock.
 const AT = "2026-11-03T12:00:00.000Z";
@@ -558,5 +558,41 @@ describe("a filtered post says why at the top, with Import anyway (the controlle
   it("a post that isn't filtered out has no such line", () => {
     const read = trail({ events: [ev("screen", { summary: "Kept: a routine", detail: { verdict: "training", reason: "a routine", stage: "model" } })] });
     expect(trailAccount(read).some((l) => l.kind === "screen")).toBe(false);
+  });
+});
+
+describe("Read it again on an old post's trail (phase 5a)", () => {
+  const old = (readAgain: ImportTrailDto["post"]["readAgain"], status = "matched") =>
+    trail({ rebuilt: true, events: [ev("screen", { rebuilt: true, summary: "Kept: a hip routine" })] }, { readAgain, status });
+  it("is offered beside the rebuilt label, its price said before the tap", () => {
+    const line = trailAccount(old({ offer: true, asked: false, costMicros: 11_400 })).find((l) => l.kind === "rebuilt")!;
+    expect(line.again).toEqual({ costMicros: 11_400 });
+    expect(line.waiting).toBeUndefined();
+    expect(readAgainLabel(11_400)).toBe("Read it again (about $0.01)");
+    expect(readAgainLabel(3_000)).toBe("Read it again (under $0.01)");
+    expect(readAgainLabel(null)).toBe("Read it again");
+  });
+  it("asked, it waits for the computer's extension; not offered, nothing", () => {
+    expect(trailAccount(old({ offer: false, asked: true, costMicros: 11_400 }, "queued")).find((l) => l.kind === "rebuilt")).toMatchObject({ waiting: true });
+    const none = trailAccount(old(null)).find((l) => l.kind === "rebuilt")!;
+    expect(none.again).toBeUndefined();
+    expect(none.waiting).toBeUndefined();
+  });
+  it("a re-read's steps say what they did, in words: lined up, kept as linked, or the earlier reading kept and why", () => {
+    const dto = trail({
+      events: [
+        ev("extract", { summary: "Read 3 moves (a routine) — read again, lined up with the 2 moves it had", detail: { kind: "routine", moves: 3, reread: { kept: 2, added: [2] } } }),
+        ev("match", { detail: { moves: [{ position: 0, name: "Zorbex hip lift", outcome: "personal", moveId: "myZorbexHipLift1a2b", by: "kept", check: false }] } }),
+      ],
+    });
+    const rows = allRows(dto).map((r) => [r.key, r.value]);
+    expect(rows).toContainEqual(["Read again", "lined up with the 2 moves it had; 1 new"]);
+    expect(rows).toContainEqual(["Matched by", "kept as it was — the post already linked it"]);
+    const declined = trail({
+      events: [ev("extract", { status: "warn", detail: { kind: "routine", moves: 2, kept: "earlier", missing: ["Zorbex knee sways"] } })],
+    });
+    const words = allRows(declined).map((r) => [r.key, r.value]);
+    expect(words).toContainEqual(["Kept", "the earlier reading: this one didn't line up with the moves it had"]);
+    expect(words).toContainEqual(["Not in it", "Zorbex knee sways"]);
   });
 });
