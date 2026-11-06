@@ -89,10 +89,12 @@ const BEFORE = { tools: 34_935, shared: 20_450, main: 4_586 };
  * description and guide line naming revisions on any day in reach, the intent question's title clause (shared 25,962 →
  * 26,024; tools 41,538 → 41,643) — measured 14,879; held with 121 characters of headroom.
  * REBASED 2026-11-05 (ball release): the "Release" principle, what every design needs to know about self-release, and
- * the library's new role in the tools' vocabulary (shared 26,483; tools 41,670; main 7,183) — measured 15,365; held with
- * 35 characters of headroom.
+ * the library's new role in the tools' vocabulary (shared 26,483; tools 41,670; main 7,183) — measured 15,365.
+ * REBASED 2026-11-06 (where you stand, on top of the ball release): the shared prompt names the block, notices a drift
+ * kindly and explains a coach read, and remember's drift and checkBack (shared 26,913; tools 41,968; main 7,183) —
+ * measured 16,093; held with 457 characters (≥ 100 tokens) of headroom.
  */
-const GROWTH_MAX_CHARS = 15_400;
+const GROWTH_MAX_CHARS = 16_550;
 
 const toolsSent = () => JSON.stringify(allTools().map((t) => ({ name: t.name, description: t.description, input_schema: t.inputSchema })));
 
