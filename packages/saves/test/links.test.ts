@@ -176,3 +176,27 @@ describe("links pasted on several lines into a one-line field (audit 2026-11-06,
     expect(normalizeLinks(`${watch}${other} ${S}www.${IG}/p/${code}/`).links.map((l) => l.key)).toEqual([id, "Yt0000000ab", code]);
   });
 });
+
+describe("pasted text, harder cases (review, 2026-11-06)", () => {
+  it("links glued with no scheme between them are each taken", async () => {
+    const { normalizeLinks } = await import("../src/index.js");
+    expect(normalizeLinks(`${SHORT}/${id}${SHORT}/Yt0000000ab`).links.map((l) => l.key)).toEqual([id, "Yt0000000ab"]);
+    expect(normalizeLinks(`${SHORT}/${id}www.${IG}/p/${code}/`).links.map((l) => l.key)).toEqual([id, code]);
+  });
+
+  it("only a playlist, a channel or a profile is 'not playlists or channels'; a malformed link is simply not one the app takes", async () => {
+    const { linkRefusal, LINK_NOT_SINGLE } = await import("../src/index.js");
+    expect(linkRefusal(`${S}www.${YT}/c/zorbex`)).toBe(LINK_NOT_SINGLE);
+    expect(linkRefusal(`${S}www.${YT}/user/zorbex`)).toBe(LINK_NOT_SINGLE);
+    expect(linkRefusal(`${S}www.${YT}/watch?v=short`)).toBe(LINK_REFUSED);
+    expect(linkRefusal(`${S}${SHORT}/`)).toBe(LINK_REFUSED);
+    expect(linkRefusal(`${S}www.${IG}/stories/zorbex/123/`)).toBe(LINK_REFUSED);
+  });
+
+  it("past five, with some refused too: both are said", async () => {
+    const { normalizeLinks, pastedLine } = await import("../src/index.js");
+    const ids = Array.from({ length: 6 }, (_, i) => `Zorbex${i}vid0`.slice(0, 11));
+    const out = normalizeLinks(`${ids.map((v) => `${S}${SHORT}/${v}`).join(" ")} ${S}www.${YT}/playlist?list=PLzorbex`);
+    expect(pastedLine(out)).toBe("Took the first 5 of 7 — 5 links at a time; single videos and posts only, not playlists or channels.");
+  });
+});

@@ -89,3 +89,16 @@ describe("the coach's saves card lists the pasted links the open batch doesn't h
     expect(host.textContent).toContain("Three new moves came in from your saves.");
   });
 });
+
+describe("links that will never join a batch (review, 2026-11-06)", () => {
+  it("not training, failed, or matched with no moves: not listed under the batch", async () => {
+    await mount([
+      link(1, { state: "not_training", words: "Not training", moves: null, action: "import_anyway" }),
+      link(2, { state: "failed", words: "Failed: x", moves: null, action: "retry" }),
+      link(3, { state: "moves", words: "No moves", moves: 0 }),
+      link(4, { postId: null, state: "reading", words: "Reading" }),
+    ]);
+    const rows = [...section()!.querySelectorAll("li")].map((li) => li.querySelector(".coach-saves-link-title")!.textContent);
+    expect(rows).toEqual(["Zorbex flow 4"]);
+  });
+});

@@ -234,7 +234,7 @@ describe("the token, tested (audit 2026-11-06, I1: Options said Saved without as
   it("asks the app's cheapest token route, and says plainly how it went", async () => {
     const ok = recorder(() => json(200, { links: [] }));
     expect(await checkToken(ok.client)).toEqual({ state: "ok", line: "Saved — the app took the token." });
-    expect(ok.calls.map((c) => [c.url, c.init.method])).toEqual([["https://app.example.com/api/saves/links", "GET"]]);
+    expect(ok.calls.map((c) => [c.url, c.init.method])).toEqual([[`${APP}api/saves/links`, "GET"]]);
     expect(await checkToken(recorder(() => json(401, { error: "unauthenticated" })).client)).toEqual({
       state: "refused", line: "The app refused this token — nothing was saved. Paste it again.",
     });

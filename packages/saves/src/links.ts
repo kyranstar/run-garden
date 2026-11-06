@@ -49,8 +49,14 @@ function pieces(input: string): string[] {
   const words = !/\s/.test(text)
     ? [text]
     : [...text.matchAll(/(?:https?:\/\/|www\.|youtu\.be\/|(?:m\.)?youtube\.com\/|instagram\.com\/)[^\s<>"']+/gi)].map((m) => m[0]);
-  return words.flatMap((w) => w.split(/(?=https?:\/\/)/i)).map((w) => w.replace(/[).,;!?\]]+$/, "")).filter(Boolean);
+  return words.flatMap((w) => w.split(GLUED)).map((w) => w.replace(/[).,;!?\]]+$/, "")).filter(Boolean);
 }
+
+/**
+ * Where a glued link starts: a scheme, or a bare host the app takes not right after `//` or a dot (so a link's own
+ * `https://www.` and `m.youtube.com` stay whole; review, 2026-11-06).
+ */
+const GLUED = /(?=https?:\/\/)|(?<!\/\/|\.)(?=(?:www\.|m\.)?(?:youtu\.be|youtube\.com|instagram\.com)\/)/i;
 
 /** What one paste holds (audit 2026-11-06, I4): each link the app takes, once, in order, at most `LINKS_AT_ONCE`. */
 export interface PastedLinks {
@@ -90,14 +96,31 @@ export function linkRefusal(input: string): string {
   return all.some((p) => refusalOf(p) === LINK_NOT_SINGLE) ? LINK_NOT_SINGLE : LINK_REFUSED;
 }
 
+/** Instagram's own first path segments: never a profile. */
+const IG_PAGES = new Set(["p", "reel", "reels", "stories", "explore", "accounts", "direct", "tv"]);
+
+/**
+ * Why one piece isn't taken: a playlist, a channel (`/@…`, `/channel/…`, `/c/…`, `/user/…`) or an Instagram profile is
+ * "not playlists or channels"; anything else — another site, a malformed or cut-off link — is not a link the app takes
+ * (review, 2026-11-06: a bad video id read as a playlist).
+ */
 function refusalOf(piece: string): string {
-  let host: string;
+  let u: URL;
   try {
-    host = new URL(/^[a-z][a-z0-9+.-]*:/i.test(piece) ? piece : `https://${piece}`).hostname.toLowerCase();
+    u = new URL(/^[a-z][a-z0-9+.-]*:/i.test(piece) ? piece : `https://${piece}`);
   } catch {
     return LINK_REFUSED;
   }
-  return host === "youtu.be" || YT_HOSTS.has(host) || IG_HOSTS.has(host) ? LINK_NOT_SINGLE : LINK_REFUSED;
+  const host = u.hostname.toLowerCase();
+  const parts = u.pathname.split("/").filter(Boolean);
+  const first = parts[0] ?? "";
+  if (YT_HOSTS.has(host)) {
+    const many = first === "playlist" || first.startsWith("@") || ["channel", "c", "user"].includes(first);
+    const list = first === "watch" && u.searchParams.has("list") && !u.searchParams.get("v");
+    return many || list ? LINK_NOT_SINGLE : LINK_REFUSED;
+  }
+  if (IG_HOSTS.has(host)) return parts.length === 1 && !IG_PAGES.has(first.toLowerCase()) ? LINK_NOT_SINGLE : LINK_REFUSED;
+  return LINK_REFUSED;
 }
 
 /** The words for "and why": "single videos and posts only, not playlists or channels". */
@@ -110,10 +133,10 @@ const lowered = (words: string): string => words.charAt(0).toLowerCase() + words
  */
 export function pastedLine(p: PastedLinks): string | null {
   const total = p.links.length + p.cut + p.refused.length;
-  if (p.cut > 0) return `Took the first ${p.links.length} of ${total} — ${LINKS_AT_ONCE} links at a time.`;
+  const why = [...new Set(p.refused)].map(lowered);
+  if (p.cut > 0) return `Took the first ${p.links.length} of ${total} — ${[`${LINKS_AT_ONCE} links at a time`, ...why].join("; ")}.`;
   if (p.refused.length === 0 || p.links.length === 0) return null;
-  const why = [...new Set(p.refused)].map(lowered).join("; ");
-  return `Took ${p.links.length} of ${total} — ${why}.`;
+  return `Took ${p.links.length} of ${total} — ${why.join("; ")}.`;
 }
 
 function normalizeOne(text: string): NormalLink | null {

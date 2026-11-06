@@ -147,3 +147,10 @@ describe("the Reader light counts readings, not steps (review, 2026-11-06)", () 
     expect((await lightOf("reader")).color).toBe("green");
   });
 });
+
+describe("a saved-list post's read failure is no pasted link (review, 2026-11-06)", () => {
+  it("an Instagram failure with a key but no link row offers no link: Retry would make it a pasted post", async () => {
+    await recordReadFailed(db, userId, { source: "instagram", key: "ZorbexPost1", code: "media_failed", message: "The video wouldn't download" }, at(1));
+    expect((await lightOf("instagram")).failures[0]).toMatchObject({ postId: null, retryLink: null });
+  });
+});

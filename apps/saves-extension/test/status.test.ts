@@ -284,13 +284,16 @@ describe("popupModel's health row", () => {
   });
 
   it("each light carries its failures: the post, when, why, a link to its trail in the app, and Retry where the popup can retry it", () => {
+    // A post's failure retries by the post, never by pasting a link (audit 2026-11-06, I3).
+    const noLink = { retryLink: null };
     const m = model({ appUrl: APP, health: RED, status: status({ posts: [post({ id: "b", key: "kb", status: "failed", errorCode: "model_failed", error: "The reader's reply didn't work" })] }) });
     const reader = m.lights.find((l) => l.light === "reader")!;
     expect(reader.line).toBe("Reader: 3 of 4 failed");
-    expect(reader.failures).toEqual([
-      { title: "Zorbex hip flow", when: "1 h ago", why: "The reply didn't match the format", href: "https://app.example.com/studio/saves/posts/b", retryKey: "kb", retrySource: null, retryLink: null },
-      { title: "Reader", when: "2 h ago", why: "The model gateway answered 402", href: null, retryKey: null, retrySource: null, retryLink: null },
+    expect(reader.failures).toMatchObject([
+      { title: "Zorbex hip flow", when: "1 h ago", why: "The reply didn't match the format", href: "https://app.example.com/studio/saves/posts/b", retryKey: "kb", retrySource: null },
+      { title: "Reader", when: "2 h ago", why: "The model gateway answered 402", href: null, retryKey: null, retrySource: null },
     ]);
+    expect(reader.failures.map((f) => f.retryLink)).toEqual([noLink.retryLink, noLink.retryLink]);
   });
 
   it("no health read (an older app, a failed call): no lights, nothing said, the headline as before", () => {

@@ -324,7 +324,11 @@ export function CoachConversation({ ctx, loopDeps, request = null, seeing: seenA
 
   const usedUp = budget?.usedUp === true;
   const busy = start.isPending || answer.isPending;
-  const canSend = draft.trim() !== "" && !busy && !usedUp && (!working || answering);
+  // Links typed by the owner go to the link route (audit 2026-11-06, I5): they cost the coach nothing, so the week's
+  // budget never holds them — never the sheet's own words, never an answer while the coach works.
+  const typedByOwner = !(request !== null && draft === request.slice(0, REQUEST_MAX_CHARS));
+  const linkSend = typedByOwner && !working && linksOnly(draft);
+  const canSend = draft.trim() !== "" && (linkSend || (!busy && !usedUp && (!working || answering)));
   /**
    * The athlete's words, sent: a new run, or the answer to the one question the run waits on. `savesBatchId`: a fit's
    * request (its `/fit` answered) — never an answer; when its run can't start here (a send out, the week used up, the
@@ -568,10 +572,8 @@ export function CoachConversation({ ctx, loopDeps, request = null, seeing: seenA
           placeholder={placeholder}
           canSend={canSend}
           onSend={() => {
-            // Only links, typed by the owner — never the sheet's own words (an action's request), never an answer to the
-            // coach's question while it works: to the link route, not a run (audit 2026-11-06, I5).
-            const typed = !(request !== null && draft === request.slice(0, REQUEST_MAX_CHARS));
-            if (typed && !working && linksOnly(draft)) {
+            // Only links, typed by the owner: to the link route, not a run (audit 2026-11-06, I5).
+            if (linkSend) {
               pastedLinks.paste(draft.trim());
               setDraft("");
               return;

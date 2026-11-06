@@ -814,8 +814,6 @@ function videoAt(post: ImportTrailDto["post"]): ((at: number) => string | null) 
   return (at) => postHref(`${video.url}&t=${Math.max(0, Math.floor(at))}s`);
 }
 
-/** Quotes whose time is a moment the video has: words the transcript holds (said), or the reader heard. */
-const TIMED_FROM: ReadonlySet<string> = new Set(["transcript", "speech"]);
 
 /** When the post says to use a move or not, why, and its quotes with how each checked out (§5.5–5.6): a stranger's words. */
 function postSays(m: ImportTrailDto["account"]["moves"][number], focusQuote?: number, video: ((at: number) => string | null) | null = null): TrailRow[] {
@@ -829,8 +827,9 @@ function postSays(m: ImportTrailDto["account"]["moves"][number], focusQuote?: nu
     const key = `${QUOTE_FIELD[q.field] ?? keyWords(q.field)}${typeof q.at === "number" ? ` · ${clock(q.at)}` : ""}`;
     const check = q.check ? QUOTE_CHECK[q.check] : null;
     const row = rowOf(key, `“${q.text.trim()}”${check ? ` — ${check}` : ""}`);
-    // Said or heard at a time: the video at that moment (never a quote not in the post, nor text on screen).
-    const href = video && typeof q.at === "number" && TIMED_FROM.has(q.from) && q.check !== "not_found" ? video(q.at) : null;
+    // Said at a time — words the check found in the transcript near it: the video at that moment. A heard quote's time is
+    // the reader's own and never checked; a quote not in the post or on screen has no moment to trust (review, 2026-11-06).
+    const href = video && typeof q.at === "number" && q.from === "transcript" && q.check === "verified" ? video(q.at) : null;
     rows.push({
       ...row,
       ...(q.check === "not_found" ? { struck: true } : {}),

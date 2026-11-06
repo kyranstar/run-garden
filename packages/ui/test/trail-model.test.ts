@@ -629,9 +629,9 @@ describe("a heard or said quote with a time, on a YouTube video (audit 2026-11-0
   it("its row opens the video at that moment, the link made from the video's own id", () => {
     const rows = said({ source: "youtube", url: watch });
     expect(rows[0]!.link).toEqual({ href: `${watch}&t=72s`, label: "Open the video at 1:12" });
-    expect(rows[1]!.link).toEqual({ href: `${watch}&t=5s`, label: "Open the video at 0:05" });
-    // No time, not found, or text on screen: no link.
-    expect(rows.slice(2).map((r) => r.link)).toEqual([undefined, undefined, undefined]);
+    // A heard quote's time is the reader's own, never checked (review, 2026-11-06): no link. No time, not found, or text
+    // on screen: none either.
+    expect(rows.slice(1).map((r) => r.link)).toEqual([undefined, undefined, undefined, undefined]);
   });
 
   it("an Instagram post, or a stored link that isn't a YouTube video's, makes none", () => {

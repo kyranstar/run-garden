@@ -200,7 +200,9 @@ describe("a held video whose read failed waits a check's pace too (final audit G
 
 describe("a playlist or a channel pasted (audit 2026-11-06, I4)", () => {
   it("is refused for what it is, by either route", async () => {
-    const env = { SAVES_IMPORT: "1", SAVES_TOKEN_SHA256: await sha256Hex(TOKEN), ALLOWED_GOOGLE_EMAIL: `runner-${userId}@example.com` } as unknown as Env;
+    // The owner is the test user, by the email it was made with.
+    const [owner] = await db.select({ email: schema.users.email }).from(schema.users).where(eq(schema.users.id, userId));
+    const env = { SAVES_IMPORT: "1", SAVES_TOKEN_SHA256: await sha256Hex(TOKEN), ALLOWED_GOOGLE_EMAIL: owner!.email } as unknown as Env;
     const playlist = `${S}www.${["you", "tube.com"].join("")}/playlist?list=PLzorbex`;
     const body = JSON.stringify({ url: playlist });
     const mine = await mountRoutes(db, "/api/my-saves", mySavesRoutes).request("/api/my-saves/links", { method: "POST", body, headers: { Cookie: cookie, "Content-Type": "application/json" } }, env);

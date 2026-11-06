@@ -12,7 +12,7 @@
 import { useId, useState } from "react";
 import { useMutation, useQueryClient } from "@tanstack/react-query";
 import { api, ApiError, SAVES_HEALTH_QUERY, SAVES_LINKS_QUERY, SAVES_STATUS_QUERY } from "@rg/api-client";
-import { HEALTH_LABELS, HEALTH_MARKS, type HealthLight, type HealthLightDto, type ImportHealthDto } from "@rg/saves";
+import { alreadyInLine, HEALTH_LABELS, HEALTH_MARKS, type HealthLight, type HealthLightDto, type ImportHealthDto } from "@rg/saves";
 import { TrailSheet } from "./trail-sheet.js";
 import { whenWords } from "./trail-model.js";
 
@@ -97,9 +97,10 @@ function Failure({ failure: f, onTrail }: { failure: HealthLightDto["failures"][
     },
   });
   const target = f.postId ? { postId: f.postId } : f.retryLink ? { link: f.retryLink } : null;
-  // Moving again already, or read since: nothing to retry.
+  // Moving again already, or read since: nothing to retry. A link pasted again whose post is in already says so.
+  const known = again.data && typeof again.data === "object" && (again.data as { state?: unknown }).state === "known" ? (again.data as { firstSeenAt?: unknown }).firstSeenAt : null;
   const said = again.isSuccess
-    ? "Sent to be read again"
+    ? typeof known === "string" ? alreadyInLine(known) : "Sent to be read again"
     : again.error instanceof ApiError && again.error.status === 409
       ? "Nothing to retry now"
       : again.isError

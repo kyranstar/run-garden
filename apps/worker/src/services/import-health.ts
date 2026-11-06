@@ -56,8 +56,9 @@ function stageWide(s: { code: string | null; failure: string | null; summary: st
 const dollars = (micros: number): string => `$${(micros / 1_000_000).toFixed(2)}`;
 
 /**
- * A read that failed before its post: its link — the pasted link's row, else the link its key makes (a video the app
- * handed out) — checked as any pasted link is (`normalizeLink`); null for anything else (a post's failure, a login).
+ * A read that failed before its post: its link — the pasted link's row, else, for a video, the link its key makes (one
+ * the app handed out) — checked as any pasted link is (`normalizeLink`); null for anything else (a post's failure, a
+ * login, a saved-list post's read: pasting it would make it a pasted post; review, 2026-11-06).
  */
 function linkOf(s: { postId: string; linkUrl: string | null; linkKey: unknown }): string | null {
   if (!s.postId.startsWith("ext:")) return null;
@@ -65,7 +66,7 @@ function linkOf(s: { postId: string; linkUrl: string | null; linkKey: unknown })
   const fromRow = s.linkUrl ? normalizeLink(s.linkUrl) : null;
   if (fromRow) return fromRow.url;
   if (typeof s.linkKey !== "string") return null;
-  const made = source === "youtube" ? normalizeLink(`youtu.be/${s.linkKey}`) : source === "instagram" ? normalizeLink(`instagram.com/p/${s.linkKey}/`) : null;
+  const made = source === "youtube" ? normalizeLink(`youtu.be/${s.linkKey}`) : null;
   return made && made.key === s.linkKey ? made.url : null;
 }
 

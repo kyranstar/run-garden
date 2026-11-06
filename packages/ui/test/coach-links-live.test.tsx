@@ -16,6 +16,7 @@ import type { CoachConversationDto } from "@rg/api-client";
 import type { LinkDto } from "@rg/saves";
 import { useCoach } from "../src/screens/studio/coach-ask.js";
 import { CoachSheetProvider } from "../src/screens/studio/coach-sheet.js";
+import { stillMoving, type PastedTurn } from "../src/screens/studio/coach-links.js";
 import { click, dialog, json, quietLoop, run, serve, settle, text, type, until, type Call } from "./coach-live-harness.js";
 import { libraryDto, placesDto, primedClient, profileDto, TODAY, todayDto } from "./studio-fixtures.js";
 
@@ -72,8 +73,9 @@ function mount(request?: string) {
   );
 }
 
-function server(): Call[] {
+function server(more: Record<string, unknown> = {}): Call[] {
   return serve({
+    ...more,
     "GET /api/my-saves/open": { open: null },
     "GET /api/coach/runs/current": { run: null },
     "GET /api/coach/conversation": ONE_TURN,
@@ -152,5 +154,28 @@ describe("a link pasted into the coach's box", () => {
     await click(send(), "Send");
     await settle(10);
     expect(posts(calls, "/api/my-saves/links")).toEqual([]);
+  });
+});
+
+describe("the coach's pasted links, settled (review, 2026-11-06)", () => {
+  const turn = (settled: boolean): PastedTurn => ({ id: 1, words: yt(A), rows: [{ source: "youtube", key: A, url: yt(A), words: "Waiting", settled }], note: null });
+  it("a link is on its way until the link list says where it ended: then the list is read no more", () => {
+    expect(stillMoving([turn(false)], undefined)).toBe(true);
+    expect(stillMoving([turn(false)], [waiting(A)])).toBe(true);
+    expect(stillMoving([turn(false)], [{ ...waiting(A), state: "moves", words: "2 moves", moves: 2 }])).toBe(false);
+    expect(stillMoving([turn(false)], [{ ...waiting(A), state: "failed", words: "Failed: x" }])).toBe(false);
+    expect(stillMoving([turn(true)], [waiting(A)])).toBe(false);
+  });
+
+  it("links go in even when the week's coach budget is used up: they cost the coach nothing", async () => {
+    const calls = server({ "GET /api/coach/spend": { spentMicros: 5_000_000, cutoffMicros: 5_000_000 } });
+    mount();
+    await openCoach();
+    await until(() => text().includes("This week's AI budget is used up."), "the budget line");
+    await type(box()!, yt(A));
+    expect(send()!.disabled).toBe(false);
+    await click(send(), "Send");
+    await until(() => posts(calls, "/api/my-saves/links").length === 1, "the link sent");
+    expect(posts(calls, "/api/coach/runs")).toEqual([]);
   });
 });

@@ -48,14 +48,32 @@ export interface PastedTurn {
 /** How often the link list is read again while a pasted link is on its way. */
 const RECHECK_MS = 30_000;
 
+/** Where a link's path ends: its post matched, not training, failed or skipped. */
+const ENDED: ReadonlySet<string> = new Set(["moves", "not_training", "failed", "skipped"]);
+
+/**
+ * A pasted link is still on its way: its answer wasn't final (already in, refused) and the link list doesn't yet say it
+ * ended — so the list is read again only while one is (review, 2026-11-06: it was read every 30 s for good).
+ */
+export function stillMoving(turns: readonly PastedTurn[], links: readonly LinkDto[] | undefined): boolean {
+  const state = new Map((links ?? []).map((l) => [`${l.source}:${l.key}`, l.state]));
+  return turns.some((t) => t.rows.some((r) => !r.settled && !ENDED.has(state.get(`${r.source}:${r.key}`) ?? "")));
+}
+
 let seq = 0;
 
 /** The links pasted in this sheet, and the paste itself. */
 export function useCoachLinks(): { turns: PastedTurn[]; paste: (text: string) => void } {
   const qc = useQueryClient();
   const [turns, setTurns] = useState<PastedTurn[]>([]);
-  const moving = turns.some((t) => t.rows.some((r) => !r.settled));
-  const live = useQuery({ queryKey: SAVES_LINKS_QUERY, queryFn: api.savesLinks, retry: false, enabled: moving, refetchInterval: moving ? RECHECK_MS : false });
+  const unsettled = turns.some((t) => t.rows.some((r) => !r.settled));
+  const live = useQuery({
+    queryKey: SAVES_LINKS_QUERY,
+    queryFn: api.savesLinks,
+    retry: false,
+    enabled: unsettled,
+    refetchInterval: (q) => (stillMoving(turns, q.state.data?.links) ? RECHECK_MS : false),
+  });
   const byKey = new Map((live.data?.links ?? []).map((l: LinkDto) => [`${l.source}:${l.key}`, l.words]));
   const shown = turns.map((t) => ({ ...t, rows: t.rows.map((r) => (r.settled ? r : { ...r, words: byKey.get(`${r.source}:${r.key}`) ?? r.words })) }));
 

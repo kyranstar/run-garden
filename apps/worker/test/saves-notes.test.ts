@@ -326,13 +326,16 @@ describe("a move's note on its link", () => {
     // A link Save wrote names its post and the move's place in it; a curated one neither (audit 2026-11-06, I10).
     const [postA, postB] = [await savedPostId(userId, SRC, "a"), await savedPostId(userId, SRC, "b")];
     const item = await library(`/${HIP_SWITCH.id}`);
-    expect(item.body.provenance).toEqual([
-      { sourceType: SRC, url: "https://example.com/curated", creator: "Curated Coach", note: null, postId: null, position: null },
-      { sourceType: SRC, url: "https://example.com/p/a", creator: "coach_a", note: HIP_PURPOSE, postId: postA, position: 1 },
+    expect(item.body.provenance).toMatchObject([
+      { sourceType: SRC, url: "https://example.com/curated", creator: "Curated Coach", note: null },
+      { sourceType: SRC, url: "https://example.com/p/a", creator: "coach_a", note: HIP_PURPOSE },
     ]);
+    expect(item.body.provenance.map((l: any) => [l.postId, l.position])).toEqual([[null, null], [postA, 1]]);
     const mine = await library("/personal");
-    expect(mine.body.moves.find((m: any) => m.record.id === quad).links).toEqual([{ url: "https://example.com/p/a", creator: "coach_a", note: QUAD_PURPOSE, postId: postA, position: expect.any(Number) }]);
-    expect(mine.body.moves.find((m: any) => m.record.id === neck).links).toEqual([{ url: "https://example.com/p/b", creator: "coach_b", note: null, postId: postB, position: expect.any(Number) }]);
+    expect(mine.body.moves.find((m: any) => m.record.id === quad).links).toMatchObject([{ url: "https://example.com/p/a", creator: "coach_a", note: QUAD_PURPOSE }]);
+    expect(mine.body.moves.find((m: any) => m.record.id === neck).links).toMatchObject([{ url: "https://example.com/p/b", creator: "coach_b", note: null }]);
+    expect(mine.body.moves.find((m: any) => m.record.id === quad).links[0].postId).toBe(postA);
+    expect(mine.body.moves.find((m: any) => m.record.id === neck).links[0].postId).toBe(postB);
 
     // The coach's: get_exercise, the note marked as text from outside.
     const ex = await readTool("get_exercise", { id: quad });

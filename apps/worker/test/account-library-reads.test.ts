@@ -378,11 +378,12 @@ describe("the owner's own moves: GET /api/library/personal", () => {
     expect(moves.map((m) => m.record.id)).not.toContain(pending);
     expect(moves.map((m) => m.record.id)).not.toContain(merged);
     // A move merged into it brings its link along.
-    expect(moves.find((m) => m.record.id === active)!.links).toEqual([
-      // A curated link names no post (audit 2026-11-06, I10: a link Save wrote does).
-      { url: "https://example.com/p/1", creator: "Example Coach 1", note: null, postId: null, position: null },
-      { url: "https://example.com/p/2", creator: "Example Coach 2", note: null, postId: null, position: null },
+    expect(moves.find((m) => m.record.id === active)!.links).toMatchObject([
+      { url: "https://example.com/p/1", creator: "Example Coach 1", note: null },
+      { url: "https://example.com/p/2", creator: "Example Coach 2", note: null },
     ]);
+    // A curated link names no post (audit 2026-11-06, I10: a link Save wrote does).
+    expect(moves.find((m) => m.record.id === active)!.links.map((l) => [l.postId, l.position])).toEqual([[null, null], [null, null]]);
     expect(moves.find((m) => m.record.id === archived)).toMatchObject({ record: { name: "Prone Y Raise Hold" }, links: [{ url: "https://example.com/p/3", creator: "Example Coach 3" }] });
     // The merged move, with the move that answers for it (Task 15: the device resolves it as the Worker does).
     expect(res.body.merged).toEqual([{ id: merged, into: active }]);

@@ -186,15 +186,20 @@ const LINKS_SHOWN = 3;
 /** Moves matched that no batch holds yet: they wait for the next one (a batch is cut only when none is open). */
 const waitsForNext = (l: LinkDto): boolean => l.state === "moves" && (l.moves ?? 0) > 0 && !l.batchId;
 
+/** On its way still: being read, screened or read for its moves. */
+const IN_FLIGHT: ReadonlySet<string> = new Set(["waiting", "reading", "screening", "reading_moves"]);
+
 /**
  * The pasted links the open batch doesn't hold (audit 2026-11-06, I6): the newest few, each its title (a stranger's
  * words, or the link: text, wrapping) and where it stands — its trail one tap down once the app has its post — and how
- * many more wait for the next batch. Links in a batch (this one or an earlier one) and skipped ones are not listed.
+ * many more wait for the next batch. Only links on their way to a batch are listed.
  */
 function PastedLinks() {
   const q = useQuery({ queryKey: SAVES_LINKS_QUERY, queryFn: api.savesLinks, retry: false });
   const [trail, setTrail] = useState<string | null>(null);
-  const pending = (q.data?.links ?? []).filter((l) => !l.batchId && l.state !== "skipped");
+  // Only links on their way to a batch: one that ended elsewhere (not training, failed, no moves) never joins one —
+  // Settings and the health row hold those, with Retry (review, 2026-11-06).
+  const pending = (q.data?.links ?? []).filter((l) => !l.batchId && (IN_FLIGHT.has(l.state) || waitsForNext(l)));
   if (pending.length === 0) return null;
   const shown = pending.slice(0, LINKS_SHOWN);
   const more = pending.slice(LINKS_SHOWN).filter(waitsForNext).length;
