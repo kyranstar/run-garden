@@ -111,15 +111,18 @@ describe("the coach's review card", () => {
     serve({ "GET /api/coach/proposals/dp-run-7": () => read() });
     const challenge = vi.fn();
     await mount(card(), (n) => createElement(CoachReplyContext.Provider, { value: { challenge } }, n));
-    await until(() => document.querySelectorAll(".coach-challenge").length === 2, "Challenge on each line");
-    await click(document.querySelectorAll(".coach-challenge")[1] as HTMLButtonElement, "Challenge the nod");
+    // The move lines' own Challenge (a correction row has one too, and may render in the same pass).
+    const MOVE_CHALLENGE = ".coach-review-line:not(.coach-review-fix) .coach-challenge";
+    await until(() => document.querySelectorAll(MOVE_CHALLENGE).length === 2, "Challenge on each line");
+    await click(document.querySelectorAll(MOVE_CHALLENGE)[1] as HTMLButtonElement, "Challenge the nod");
     expect(challenge).toHaveBeenCalledWith("About Zorbex neck nod: ");
   });
 
   it("outside a conversation there is no Challenge", async () => {
     serve({ "GET /api/coach/proposals/dp-run-7": () => read() });
     await mount(card());
-    await until(() => document.querySelectorAll(".coach-review-line").length === 2, "lines");
+    // The move lines, not counting the correction row (it shares the class and may render in the same pass).
+    await until(() => document.querySelectorAll(".coach-review-line:not(.coach-review-fix)").length === 2, "lines");
     expect(document.querySelectorAll(".coach-challenge")).toHaveLength(0);
   });
 
