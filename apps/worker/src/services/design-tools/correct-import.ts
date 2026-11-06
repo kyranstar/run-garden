@@ -14,7 +14,8 @@
  * (`bad_field`, "not the same" on a link to a personal move among them); a target that isn't the athlete's, is a
  * library move, archived or merged, or a position or index the post doesn't hold (`not_a_target`); a value its shape or
  * the library's validation refuses (`bad_after`); the value it already has (`same_value`); a target the run never read
- * (`not_read`), evidence with no cite (`uncited`) or a cite it never read (`unknown_cite`); more than CORRECTIONS_MAX
+ * (`not_read`), evidence with no cite (`uncited`) or a cite it never read (`unknown_cite`); plyometric taken from a move
+ * whose name says it jumps (`still_a_jump`), or — on evidence — from one whose own words do (`owner_only`); more than CORRECTIONS_MAX
  * (`too_many`); a proposal already with the athlete or closed; a restore under way. A second call for the same field
  * replaces the first; a replay answers what it stored.
  *
@@ -25,6 +26,7 @@ import { sql } from "drizzle-orm";
 import { z } from "zod";
 import { accountState, coachProposals, coachRuns } from "@rg/database";
 import { makeLibraryIndex } from "@rg/workout";
+import { plyometricWord } from "@rg/exercise-library";
 import { accountLibraryFrom, personalMovesSql } from "../account-library.js";
 import { OPEN_PROPOSAL_STATUSES } from "../design-review.js";
 import { clipProse } from "../design-prose.js";
@@ -175,6 +177,19 @@ export const correctImport: DesignTool = {
         ctx.run.savesBatchId ? "basis owner is the athlete's own word — this run fits their saves in; they haven't said anything about it." : "basis owner is the athlete's own word — this run answers no message of theirs.",
         "Give basis evidence with the cites you read — or, if only the athlete can say, ask them with ask_athlete.",
       );
+    }
+    // A jump stays a jump (the safety review of S2, I6): a move whose name says it jumps is read as one whatever its
+    // contraction (account-library.ts), so taking plyometric away is refused — its name is what to correct; one whose own
+    // words say it jumps loses it only on the athlete's word, never on a post's say-so.
+    if (target === "move" && parsed.field === "contraction" && state!.kind === "move" && Array.isArray(after.value) && !(after.value as string[]).includes("plyometric")) {
+      const rec = state!.record;
+      if (plyometricWord(rec.name)) {
+        return refuse("still_a_jump", "Its name says it jumps: the condition rules read it as a jump whatever its contraction says.", "If it isn't a jump, correct its name first (on the athlete's word, basis owner); its contraction can follow in a later suggestion.");
+      }
+      const words = [rec.text?.summary ?? "", ...(Array.isArray(rec.text?.steps) ? rec.text.steps : [])].join(" ");
+      if (parsed.basis !== "owner" && plyometricWord("", words)) {
+        return refuse("owner_only", "Its own words say it jumps: only the athlete's word takes the jump away.", "Leave it a jump — or, if the athlete says it isn't one, give basis owner.");
+      }
     }
     // Evidence: the run read the target, and cites what it read.
     const reads = savesReadsOf(extra.reads);

@@ -412,3 +412,24 @@ describe("documents holding personal moves", () => {
     expect(again.exercises[id].name).toBe("Wall Angel Glide");
   });
 });
+
+// The safety review of S2 (I6): a move stored before the build-time check, its name saying it jumps and its contraction
+// not, is read as a jump — the gates see it as one — whatever the reading wrote, and however it was stored.
+describe("a stored move whose name says it jumps is read as a jump (the safety review, I6)", () => {
+  it("its contraction reads plyometric, so the jump gate keeps it out of a Recover day; a move whose name doesn't jump is as stored", async () => {
+    const hops = await addMove("Zorbex pogo hops", "active", { draft: { patterns: ["calf-raise"], regions: ["calves"] } });
+    const calm = await addMove("Zorbex wall angel", "active");
+    // Stored as the reader wrote it, before the build-time check: isotonic.
+    expect(((await db.select().from(personalMoves).where(eq(personalMoves.id, hops)))[0]!.record as { contraction: string[] }).contraction).toEqual(["isotonic"]);
+    forgetAccountLibrary(db, userId);
+    const lib = await loadAccountLibrary(db, userId);
+    expect(lib.all.find((m) => m.id === hops)!.contraction).toEqual(["plyometric"]);
+    expect(lib.offered.find((m) => m.id === hops)!.contraction).toEqual(["plyometric"]);
+    expect(lib.all.find((m) => m.id === calm)!.contraction).toEqual(["isotonic"]);
+    await activateTmj(db, userId);
+    const recover = workoutDocSchema.parse({ ...docOf(hops), intent: { summary: "Easy.", goals: [], focus: [], effort: "recover" }, parts: [{ purpose: "main", format: "flow", items: [{ kind: "exercise", libraryId: hops, dose: { reps: 10 } }] }] });
+    const res = await create(recover);
+    expect(res.status).toBe(422);
+    expect(JSON.stringify(res.body)).toContain("condition_gate");
+  });
+});

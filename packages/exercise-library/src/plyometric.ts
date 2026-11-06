@@ -8,8 +8,12 @@
  *    or "landing" there is the move;
  *  - in a move's own words (its summary and steps), only the plain ones (`TEXT_WORDS`): "skip this if…" or "land the hips
  *    softly" is no jump;
- *  - a word taken back is no jump: a negation ("no", "not", "non", "never", "without", "don't", "zero", "low-impact")
- *    takes back the two words after it — "No-jump burpee", "step back, don't jump", "without jumping".
+ *  - a word taken back is no jump: a negation ("no", "not", "non", "never", "without", "don't", "zero", "low-impact",
+ *    "avoid", "instead", "rather", "shouldn't") takes back the three words after it — "No-jump burpee", "step back, don't
+ *    jump", "no need to jump", "without jumping" — five after "don't let" ("don't let your hips jump up"); "-free" takes
+ *    back the word before it ("Hop-free calf raise");
+ *  - and what only looks like one (the safety review, I5): a yoga bind ("Bound angle", "Half-bound lotus"), and a burpee
+ *    whose name steps or walks out ("Step-out burpee", "Burpee (step back, no jump)").
  *
  * The public library is its test bed (test/plyometric-words.test.ts): every plyometric record's name says so, and no
  * other record's does. Pure.
@@ -41,10 +45,18 @@ const TEXT_WORDS: ReadonlySet<string> = new Set([
   "plyometric", "plyometrics",
 ]);
 
-/** Words that take back the two after them. */
-const NEGATIONS: ReadonlySet<string> = new Set(["no", "not", "non", "never", "without", "dont", "zero"]);
-/** How many words a negation takes back. */
-const NEGATED_SPAN = 2;
+/** Words that take back the words after them. */
+const NEGATIONS: ReadonlySet<string> = new Set(["no", "not", "non", "never", "without", "dont", "zero", "avoid", "avoiding", "instead", "rather", "shouldnt"]);
+/** How many words a negation takes back — and "don't let", reaching past its subject ("don't let your hips jump"). */
+const NEGATED_SPAN = 3;
+const LET_SPAN = 5;
+/** Words after a word that take it back ("hop-free"). */
+const TAKES_BACK_BEFORE: ReadonlySet<string> = new Set(["free", "less"]);
+/** A yoga bind: "bound" before these (or after "half" / "full") is no bound. */
+const BIND_AFTER: ReadonlySet<string> = new Set(["angle", "side", "lotus", "twist", "triangle", "hands", "extended", "squat"]);
+const BIND_BEFORE: ReadonlySet<string> = new Set(["half", "full", "fully"]);
+/** A burpee whose name has one of these steps or walks: no jump. */
+const STEPPED: ReadonlySet<string> = new Set(["step", "stepout", "stepback", "walk", "walkout"]);
 
 /** Lower-case words, an apostrophe dropped ("don't" → "dont"), "low impact" read as one negation. */
 function words(text: string): string[] {
@@ -52,12 +64,17 @@ function words(text: string): string[] {
   return w.map((x, i) => (x === "low" && w[i + 1] === "impact" ? "no" : x));
 }
 
-/** Indexes a negation takes back. */
+/** Indexes a negation takes back, and words that only look like a jump. */
 function takenBack(w: readonly string[]): Set<number> {
   const out = new Set<number>();
+  const stepped = w.some((x) => STEPPED.has(x));
   w.forEach((x, i) => {
+    if (TAKES_BACK_BEFORE.has(x) && i > 0) out.add(i - 1);
+    if ((x === "bound" || x === "bounds") && (BIND_AFTER.has(w[i + 1] ?? "") || BIND_BEFORE.has(w[i - 1] ?? ""))) out.add(i);
+    if ((x === "burpee" || x === "burpees") && stepped) out.add(i);
     if (!NEGATIONS.has(x)) return;
-    for (let k = 1; k <= NEGATED_SPAN; k++) out.add(i + k);
+    const span = x === "dont" && w[i + 1] === "let" ? LET_SPAN : NEGATED_SPAN;
+    for (let k = 1; k <= span; k++) out.add(i + k);
   });
   return out;
 }

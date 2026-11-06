@@ -45,6 +45,23 @@ describe("plyometricWord — the words that say a move jumps", () => {
     expect(plyometricWord("Zorbex squat", "Without jumping, rise onto the toes.")).toBeNull();
   });
 
+  // The safety review of S2/S3 (I5): words that look like a jump and aren't one.
+  it("a yoga bind, a step-out burpee and a word a suffix takes back are no jump", () => {
+    for (const name of ["Bound angle pose", "Reclined bound angle", "Half-bound lotus", "Bound side angle", "Hop-free calf raise", "Jump-free squat", "Step-out burpee", "Step-back burpees", "Walk-out burpee", "Burpee (step back, no jump)"]) {
+      expect(plyometricWord(name), name).toBeNull();
+    }
+    // A burpee and a bound otherwise still are.
+    expect(plyometricWord("Burpee")).toBe("burpee");
+    expect(plyometricWord("Lateral bounds")).toBe("bounds");
+  });
+
+  it("a move's own words that take the jump back: avoid, instead of, rather than, no need to, shouldn't, don't let … jump", () => {
+    for (const text of ["Step back instead of jumping.", "Avoid jumping.", "No need to jump.", "Rather than jump, step through.", "You shouldn't hop.", "Don't let your hips jump up."]) {
+      expect(plyometricWord("Zorbex squat", text), text).toBeNull();
+    }
+    expect(plyometricWord("Zorbex squat", "Squat low, then jump up.")).toBe("jump");
+  });
+
   it("the public library: every plyometric record's name says so, and no other record's does", () => {
     for (const ex of EXERCISES) {
       expect(plyometricWord(ex.name) !== null, `${ex.id} (${ex.name})`).toBe(isPlyometric(ex));

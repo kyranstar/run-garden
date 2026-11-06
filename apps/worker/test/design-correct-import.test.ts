@@ -399,3 +399,37 @@ describe("correct_import: the fields the condition gates read, and retire (the s
     for (const f of ["contraction", "conditions", "regions", "patterns", "retire"]) expect(field, f).toContain(f);
   });
 });
+
+// The safety review of S2 (I6): the jump rule isn't undone by a correction on a post's say-so.
+describe("correct_import: taking a jump's plyometric away (the safety review, I6)", () => {
+  async function jumps() {
+    const seeded = await seedSavedBatch(db, userId, {
+      savedAt: SAVED_AT,
+      posts: [{ moves: [
+        { draft: savedMoveDraft("Zorbex box jump", { contraction: ["plyometric"], patterns: ["squat"], regions: ["quads"] }) },
+        { draft: savedMoveDraft("Zorbex squat flow", { summary: "Squat low, then jump up.", contraction: ["plyometric"], patterns: ["squat"], regions: ["quads"] }) },
+      ] }],
+    });
+    const [named, worded] = seeded.moveIds[0]!;
+    return { named: named!, worded: worded! };
+  }
+
+  it("a move whose name says it jumps stays a jump whatever is said: its name is what to correct", async () => {
+    const j = await jumps();
+    const ctx = await mainRun({ request: "That box jump is really a step-up, I'm sure." });
+    await readSavesInRun(db, ctx);
+    for (const basis of ["evidence", "owner"] as const) {
+      const r = refused((await correct({ ...ctx, toolUseId: `toolu_${basis}` }, { target: "move", targetId: j.named, field: "contraction", after: ["isotonic"], basis, cites: basis === "owner" ? [] : ["history"] })).res);
+      expect(r.error).toBe("still_a_jump");
+      expect(r.fix).toContain("name");
+    }
+  });
+
+  it("one whose own words say it jumps: only the athlete's word takes it away, never the evidence", async () => {
+    const j = await jumps();
+    const ctx = await mainRun({ request: "It's a slow squat, not a jump — I'm sure." });
+    await readSavesInRun(db, ctx);
+    expect(refused((await correct(ctx, { target: "move", targetId: j.worded, field: "contraction", after: ["isotonic"], cites: ["history"] })).res).error).toBe("owner_only");
+    ok((await correct({ ...ctx, toolUseId: "toolu_owner" }, { target: "move", targetId: j.worded, field: "contraction", after: ["isotonic"], basis: "owner", cites: [] })).res);
+  });
+});

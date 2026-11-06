@@ -26,7 +26,7 @@
 import { and, asc, eq, inArray, sql, type SQL } from "drizzle-orm";
 import { schema } from "@rg/database";
 import type { WorkoutDoc } from "@rg/domain";
-import { EXERCISES, type ExerciseRecord } from "@rg/exercise-library";
+import { EXERCISES, plyometricWord, type ExerciseRecord } from "@rg/exercise-library";
 import { isPersonalId } from "@rg/saves";
 import { makeLibraryIndex } from "@rg/workout";
 import { sha256Hex } from "../auth/crypto.js";
@@ -300,5 +300,9 @@ function recordOf(row: Row, merged: readonly string[]): ExerciseRecord | null {
     return null;
   }
   const own = Array.isArray(rec.legacyIds) ? rec.legacyIds.filter((id) => typeof id === "string" && isPersonalId(id)) : [];
-  return { ...rec, id: row.id, legacyIds: [...new Set([...own, ...merged])] };
+  // A move whose name says it jumps is read as a jump (the safety review of S2, I6): one stored before the build-time
+  // check (personal-moves.ts `asJump`), or corrected since, still meets the jump gates. Its name is the athlete's to
+  // change; nothing else takes the jump back.
+  const jump = Array.isArray(rec.contraction) && !rec.contraction.includes("plyometric") && plyometricWord(rec.name) !== null;
+  return { ...rec, id: row.id, legacyIds: [...new Set([...own, ...merged])], ...(jump ? { contraction: ["plyometric"] } : {}) };
 }
