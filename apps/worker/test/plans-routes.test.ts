@@ -226,14 +226,37 @@ describe("PATCH /api/plans/:id", () => {
     expect((await call("PATCH", "/api/plans/plan-a", { name: "Renamed" })).status).toBe(422);
   });
 
-  it("applyPlanPatch lands the row and its version as two writes in one batch, and says what changed", async () => {
-    const writes: string[] = [];
-    const rec = makeTestDb({ boundVariableCap: 100, onStatement: (s) => isWrite(s) && writes.push(s) });
+  it("applyPlanPatch lands the row and its version inside ONE transaction, and says what changed", async () => {
+    let inTx = false;
+    let txCalls = 0;
+    const writes: Array<{ inTx: boolean }> = [];
+    const rec = makeTestDb({ boundVariableCap: 100, onStatement: (s) => isWrite(s) && writes.push({ inTx }) });
     const { userId: u } = await makeTestUser(rec);
     await rec.insert(programs).values({ id: "p", userId: u, kind: "coach", name: "P", status: "active", disciplines: [], config: {}, createdAt: NOW, updatedAt: NOW });
+    const handle = rec as unknown as { transaction: (run: () => void) => void };
+    const real = handle.transaction.bind(rec);
+    handle.transaction = (run) => {
+      txCalls += 1;
+      real(() => {
+        inTx = true;
+        try {
+          run();
+        } finally {
+          inTx = false;
+        }
+      });
+    };
     writes.length = 0;
     expect(await applyPlanPatch(rec, u, "p", { purpose: "Hello" }, NOW)).toEqual({ ok: true, changed: ["purpose"] });
-    expect(writes.length).toBe(2);
+    expect(txCalls).toBe(1);
+    expect(writes).toEqual([{ inTx: true }, { inTx: true }]);
     expect(await applyPlanPatch(rec, u, "nope", { purpose: "Hello" }, NOW)).toEqual({ ok: false, error: "not_found" });
+  });
+
+  it("an archived plan is not a plan: 404, and nothing is written", async () => {
+    await plan("old", "coach", { archivedAt: NOW });
+    expect((await call("PATCH", "/api/plans/old", { purpose: "Back" })).status).toBe(404);
+    expect((await rowOf("old")).purpose).toBeNull();
+    expect(await db.select().from(programVersions)).toEqual([]);
   });
 });

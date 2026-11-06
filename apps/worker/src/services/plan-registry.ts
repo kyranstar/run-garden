@@ -214,7 +214,8 @@ export async function applyPlanPatch(db: Db, userId: string, id: string, patch: 
 
   if (await restoreInProgress(db, userId)) return { ok: false, error: "restore_in_progress" };
   const [row] = await db.select().from(programs).where(and(eq(programs.id, id), eq(programs.userId, userId))).limit(1);
-  if (!row || !isPlanKind(row.kind)) return { ok: false, error: "not_found" };
+  // An archived row is no plan: the list leaves it out, so an edit of it would answer with nothing to show.
+  if (!row || row.archivedAt !== null || !isPlanKind(row.kind)) return { ok: false, error: "not_found" };
   const kind = row.kind as ProgramKind;
 
   if (p.onEnd !== undefined && !onEndAllowed(kind, p.onEnd)) return invalid("onEnd", `a ${kind} plan cannot end by "${p.onEnd}"`);
