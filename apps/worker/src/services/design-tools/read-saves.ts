@@ -432,7 +432,10 @@ export const readSaves: DesignTool = {
   // Measured (design-cpu-bench.test.ts 8.read_saves: 40 posts, 120 links, 36 moves): 0.97–1.09 ms scaled p50 on a loaded
   // runner (Task 17). Re-measured on a quiet tree (the fix wave, 2026-10-25; 1-minute load 1.9–2.1 on 8 cores, scale
   // ×0.93–×1.07): 0.54, 0.49 and 0.47 ms scaled p50 — declared at the highest, rounded up to the tenth, as its peers are.
-  cpuWeight: 0.6,
+  // REBASED 2026-11-06 (coach review, phase 3): the page's evidence — twelve moves' readings at extract-6's widest (eight
+  // 200-character quotes, four use-when and skip-when cases, a why), parsed and fitted — measured 1.22 ms scaled p50
+  // (calibration ×0.93, 1-minute load 10.7 on 8 cores); declared at the tenth above.
+  cpuWeight: 1.3,
   roles: READ_ROLES,
   async run(ctx, raw) {
     const p = parseInput(input, raw, "optionally batchId, limit and offset");
@@ -608,6 +611,7 @@ export const readSaves: DesignTool = {
       saves: {
         batch: batch.id,
         moves: keptRead.map((x) => [...x.first]),
+        posts: [...new Set(shown.flatMap((m) => m.links.map((l) => l.post)))],
         quotes: Object.fromEntries(keptRead.flatMap((x) => x.refs).map(([id, r]) => [id, [r.postId, r.position, r.quote, r.check, r.from, r.at]])),
       },
     };

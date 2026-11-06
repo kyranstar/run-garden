@@ -47,6 +47,7 @@ import { pinsCardLinesOf, pinsId, pinsLineText, type PinsCardLine } from "../src
 import { FIT_STARTED_TTL_MS, releaseFitStarts } from "../src/services/saves-batches.js";
 import { calmDoc } from "./doc-workout-fixture.js";
 import { savedMoveDraft, seedSavedBatch } from "./saves-batch-fixture.js";
+import { readSavesInRun } from "./saves-read-fixture.js";
 import { isWrite, makeTestDb, makeTestUser, MAX_LOOP_ITERATIONS, mountRoutes } from "./helpers.js";
 
 const { accountState, coachMessages, coachProposals, coachRuns, exercisePrefs, personalMoves, saveBatches } = schema;
@@ -162,7 +163,23 @@ const storedFor = (batchId: unknown): PinsCardLine[] =>
 /** The summary a batch's card stores (`pinsSummaryLine`), WORDS's ignored. */
 const ONE_JOINS = `One joins the rotation. ${B.name} waits.`;
 
+/** The batches each run has read (import trail phase 3: a line about a saved move needs a read_saves page that covered it). */
+const readBy = new Set<string>();
+/** read_saves in the run, every page of the batch, as a real fit reads before pin_moves; a batch it can't read is left. */
+async function readAll(ctx: ToolContext, batchId: string): Promise<void> {
+  if (readBy.has(`${ctx.run.id}:${batchId}`)) return;
+  readBy.add(`${ctx.run.id}:${batchId}`);
+  for (let offset = 0, pages = 0; pages < 6; pages++) {
+    const r = await readSavesInRun(db, ctx, offset ? { batchId, offset } : { batchId }).catch(() => null);
+    const next = (r?.missing ?? []).map((m) => /pass offset: (\d+)/.exec(m)?.[1]).find(Boolean);
+    if (!next) return;
+    offset = Number(next);
+  }
+}
+
 async function pins(ctx: ToolContext, input: Record<string, unknown>): Promise<{ res: ToolOk | ToolErr; count: number }> {
+  const batchId = typeof input.batchId === "string" ? input.batchId : ctx.run.savesBatchId;
+  if (batchId) await readAll(ctx, batchId);
   statements = 0;
   const res = await tool().run(ctx, { ...WORDS, lines: linesFor(input.batchId), ...input });
   return { res, count: statements };
@@ -336,7 +353,9 @@ describe("pin_moves: the coach keeps a saved move in rotation", () => {
     const { res, count } = await pins(ctx, { pin: [a, b], batchId: seeded.batchId, lines: [...lines, { moveId: c!, text: "left in your library: your calves get enough from running." }] });
     ok(res);
     expect(count).toBe(2);
-    expect((await opOf(designProposalId(ctx.run.id))).lines).toEqual([
+    // (Each line's decision, dose, cites and first post since 2026-11-06: import trail phase 3, design-pins-evidence.test.ts.)
+    const keyed = (l: PinsCardLine) => ({ moveId: l.moveId, name: l.name, text: l.text });
+    expect((await opOf(designProposalId(ctx.run.id))).lines.map(keyed)).toEqual([
       { moveId: b, name: "Zorbex neck nod", text: "Pinned: your neck care lacks a nod." },
       { moveId: c, name: "Zorbex calf rock", text: "Left in your library: your calves get enough from running." },
     ]);
@@ -364,9 +383,10 @@ describe("pin_moves: the coach keeps a saved move in rotation", () => {
     ];
     ok((await pins(ctx, { pin: [a, b, l], batchId, lines })).res);
     const stored = (await opOf(designProposalId(ctx.run.id))).lines;
-    expect(stored[0]).toEqual({ moveId: b, name: B.name, text: "Opens the neck." });
-    expect(stored[1]).toEqual({ moveId: a, name: A.name, text: "Opens the hips." });
-    expect(stored[2]).toEqual({ moveId: "gobletSquat", name: GOBLET.name, text: "Your strength days lack a squat." });
+    // (Each line's decision, dose, cites and first post since 2026-11-06: import trail phase 3, design-pins-evidence.test.ts.)
+    expect(stored[0]).toMatchObject({ moveId: b, name: B.name, text: "Opens the neck." });
+    expect(stored[1]).toMatchObject({ moveId: a, name: A.name, text: "Opens the hips." });
+    expect(stored[2]).toMatchObject({ moveId: "gobletSquat", name: GOBLET.name, text: "Your strength days lack a squat." });
     expect(stored[3]!.name).toBe(LONG.name);
     expect(stored[3]!.name!.length + 2 + stored[3]!.text.length).toBeLessThanOrEqual(PIN_LINE_MAX);
     expect(stored[3]!.text).toMatch(/^It opens the side of the ribs\. .*ribs\.$/);

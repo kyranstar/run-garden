@@ -109,6 +109,7 @@ import { seedLongHistory, words } from "./long-history-fixture.js";
 import { activateTmj, calmDoc } from "./doc-workout-fixture.js";
 import { makeTestDb, makeTestUser, MAX_LOOP_ITERATIONS, mountRoutes } from "./helpers.js";
 import { longBatchPosts, seedSavedBatch } from "./saves-batch-fixture.js";
+import { readSavesInRun } from "./saves-read-fixture.js";
 
 const ON_CI = process.env.CI === "true";
 /** The calibration loop's median on the reference machine (session-build-bench.test.ts: Apple silicon, Node 21). */
@@ -851,13 +852,29 @@ beforeAll(async () => {
       const personal = [...new Set(moveIds.flat().filter((id): id is string => typeof id === "string" && id.startsWith("my")))];
       const toPin = [...personal, ...EXERCISES.slice(24).map((e) => e.id)].slice(0, 20);
       const toUnpin = EXERCISES.slice(24).map((e) => e.id).filter((id) => !toPin.includes(id)).slice(0, 20);
-      await measureTool("pin_moves", images.get("saves")!, ctx, {
+      // Since 2026-11-06 (coach review, phase 3): a line about a saved move rests on a read_saves page of the run that
+      // covered it, and cites what it read — so the run has read every page of the batch (its trail holds the receipts:
+      // the call reads them back), and each of the twelve lines carries eight cites, seven of its move's quotes and history.
+      const readAll = open(images.get("saves")!);
+      for (let offset = 0, pages = 0; pages < 20; pages++) {
+        const r = await readSavesInRun(readAll.db, ctx(readAll), offset ? { offset } : {});
+        const next = (r.missing ?? []).map((m) => /pass offset: (\d+)/.exec(m)?.[1]).find(Boolean);
+        if (!next) break;
+        offset = Number(next);
+      }
+      images.set("savesRead", imageOf(readAll.db));
+      readAll.close();
+      await measureTool("pin_moves", images.get("savesRead")!, ctx, {
         pin: toPin,
         unpin: toUnpin,
         batchId,
         title: words(4, 60),
         summary: words(5, 120),
-        lines: Array.from({ length: 20 }, (_, i) => (personal[i] ? { moveId: personal[i], text: words(i, PIN_LINE_MAX) } : { text: words(i, PIN_LINE_MAX) })),
+        lines: Array.from({ length: 20 }, (_, i) =>
+          personal[i]
+            ? { moveId: personal[i], where: words(i, 80), text: words(i, PIN_LINE_MAX), cites: [...Array.from({ length: 7 }, (_, k) => `q${i + 1}.${k + 1}`), "history"] }
+            : { text: words(i, PIN_LINE_MAX) },
+        ),
         why: words(6, 300),
       });
     }

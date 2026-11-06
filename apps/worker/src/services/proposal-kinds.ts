@@ -8,6 +8,7 @@
  */
 import { dayLabel, describeOps, type AdaptiveConfig, type CoachOp } from "@rg/domain";
 import type { RetimeExpectation } from "./adjust-retime.js";
+import type { CiteRef } from "./saves-evidence.js";
 
 /** The thread coach's ops a designed proposal may carry as a change to the plan (Task 8b; ruling I6), and since the new
  * shape §5 its proven single-session ones too: ease (a swap for an easier kind is an ease, its `verb` "swap"), remove
@@ -169,16 +170,50 @@ export interface PinsCardLine {
   moveId?: string;
   name?: string;
   text: string;
+  /**
+   * Since the coach's review (import trail phase 3, §8.3, §14.1): what the card does with the move — `in` (pinned here,
+   * in a workout this suggestion holds, or in rotation already) or `out` — the tool's own, never contradicting the card;
+   * where it goes, in the coach's words; the dose it will run with (the tool's: the revised item's, a dose correction's
+   * in this suggestion, else the record's — an `in` line's only); its cites as the chips the card draws; and the move's
+   * first post in the batch (its name opens that post's trail at the move). A line stored before holds none of them.
+   */
+  decision?: "in" | "out";
+  where?: string;
+  dose?: string;
+  cites?: CiteRef[];
+  post?: { id: string; position: number };
+}
+
+const CITE_KINDS = new Set(["quote", "history", "goal", "inferred"]);
+
+/** A stored cite that reads: an id, a kind, a label (a quote's with its post, position and index). */
+function citeOf(c: unknown): CiteRef | null {
+  const o = c && typeof c === "object" ? (c as Record<string, unknown>) : null;
+  if (!o || typeof o.id !== "string" || typeof o.kind !== "string" || !CITE_KINDS.has(o.kind) || typeof o.label !== "string") return null;
+  if (o.kind === "quote" && (typeof o.postId !== "string" || typeof o.position !== "number" || typeof o.quote !== "number")) return null;
+  return o as unknown as CiteRef;
 }
 
 /** A `move_pins` op's lines as stored, whatever their age: a plain string (before the saves flow redesign) is its text;
- * an object keeps its move and name when they are texts; anything without a text is dropped. */
+ * an object keeps its move and name when they are texts, and (phase 3) its decision, where, dose, readable cites and
+ * first post; anything without a text is dropped. */
 export function pinsCardLinesOf(raw: unknown): PinsCardLine[] {
   return (Array.isArray(raw) ? raw : []).flatMap((l): PinsCardLine[] => {
     if (typeof l === "string") return l.trim() ? [{ text: l }] : [];
     const o = l && typeof l === "object" ? (l as Record<string, unknown>) : null;
     if (!o || typeof o.text !== "string" || !o.text.trim()) return [];
-    return [{ ...(typeof o.moveId === "string" && o.moveId ? { moveId: o.moveId } : {}), ...(typeof o.name === "string" && o.name ? { name: o.name } : {}), text: o.text }];
+    const cites = Array.isArray(o.cites) ? o.cites.flatMap((c) => citeOf(c) ?? []) : [];
+    const post = o.post && typeof o.post === "object" ? (o.post as Record<string, unknown>) : null;
+    return [{
+      ...(typeof o.moveId === "string" && o.moveId ? { moveId: o.moveId } : {}),
+      ...(typeof o.name === "string" && o.name ? { name: o.name } : {}),
+      text: o.text,
+      ...(o.decision === "in" || o.decision === "out" ? { decision: o.decision } : {}),
+      ...(typeof o.where === "string" && o.where ? { where: o.where } : {}),
+      ...(typeof o.dose === "string" && o.dose ? { dose: o.dose } : {}),
+      ...(cites.length ? { cites } : {}),
+      ...(post && typeof post.id === "string" && typeof post.position === "number" ? { post: { id: post.id, position: post.position } } : {}),
+    }];
   });
 }
 
@@ -212,6 +247,9 @@ export interface MovePinsOp {
   lines: PinsCardLine[];
   /** The day it was proposed: today (the readers that list what is still open read an op's day). */
   date: string;
+  /** When the run first read each of the batch's posts its read_saves pages covered (import trail phase 3): the post's
+   * trail says so when the card is shown. */
+  read?: Array<[postId: string, at: string]>;
   toolUseId: string;
   replaces?: string[];
   at: string;

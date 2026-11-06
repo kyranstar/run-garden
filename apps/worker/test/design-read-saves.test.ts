@@ -508,6 +508,8 @@ describe("read_saves: each claim's evidence (import trail phase 3, §8.1)", () =
       saves: {
         batch: batchId,
         moves: [[moveIds[0]![0], postIds[0], 0], [moveIds[1]![0], postIds[1], 0], ["gobletSquat", postIds[0], 1]],
+        // Every post a shown move's links named: when the run read each (pin_moves keeps it for the trail).
+        posts: [postIds[0], postIds[1]],
         quotes: {
           "q1.1": [postIds[0], 0, 0, "verified", "transcript", 72],
           "q1.2": [postIds[0], 0, 1, "in_speech", "speech", 12],

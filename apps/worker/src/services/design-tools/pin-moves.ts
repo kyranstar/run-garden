@@ -38,13 +38,25 @@
  * move on the coach's call unaccounted for (`incomplete`); a proposal already with the athlete (`proposal_pending`) or
  * closed; a restore under way (`restoring`). A personal move's name in a refusal is a post's reading: marked.
  *
+ * A LINE CITES ITS EVIDENCE (import trail phase 3; design 2026-11-05 §8.3, §14.1–14.2). A line about a move says `in` or
+ * `out` — what the card does: pinned here, in a workout this suggestion holds, or left in rotation, else out; a decision
+ * the card contradicts is refused (`in_not_placed`, `out_but_placed`) and one left unwritten is the tool's — where it
+ * goes (the coach's words), the dose it runs with after the card (the revised item's, a dose correction's in this
+ * suggestion, else the record's: an `in` line's only; a coach dose whose numbers differ is `dose_mismatch`), and its cites
+ * — quote ids the run read (read_saves' receipts on its trail, `saves-reads.ts`), `history`, `goal:<id>`,
+ * `inferred:<field>` — stored as the chips the card draws (a heard quote is ⟨heard⟩, never ⟨said⟩). Refused too: a line
+ * about a move of the batch no read_saves page of the run covered (`not_read`, naming it), a cite it never read
+ * (`unknown_cite`), and a line that says what the post or its creator says with no quote cited (`uncited_claim`). The op
+ * keeps when the run first read each post (`read`): the post's trail says so when the card is shown.
+ *
  * Statements: the athlete with the account's library, the moves set aside (and the batch's included moves set aside),
- * the proposal, the restore marker, the batch and its new moves with the athlete's choices (one read); the proposal's
- * guarded upsert.
+ * the proposal, the restore marker, the batch and its new moves with the athlete's choices, the run's reads of the batch,
+ * its saved links' moves and the lines' moves in rotation (one read); the proposal's guarded upsert.
  */
 import { sql } from "drizzle-orm";
 import { z } from "zod";
 import { accountState, coachProposals, exercisePrefs, personalMoves, saveBatches } from "@rg/database";
+import { doseSummary, type WorkoutDose } from "@rg/domain";
 import { isPersonalId, numberWord } from "@rg/saves";
 import { makeLibraryIndex } from "@rg/workout";
 import { accountLibraryFrom, personalMovesSql } from "../account-library.js";
@@ -52,9 +64,11 @@ import { markUntrusted } from "../design-prompt.js";
 import { OPEN_PROPOSAL_STATUSES } from "../design-review.js";
 import { clipProse } from "../design-prose.js";
 import { isMovePinsOp, PINS_LINES_MAX, PINS_MAX, pinsId, type MovePinsOp, type PinsCardLine } from "../proposal-kinds.js";
+import { claimsThePost, doseNumbers, doseWords, parseCite, QUOTE_ID_RE, quoteLabel, type CiteRef } from "../saves-evidence.js";
 import { capInWords, isErr, mainRunIdOf, parseAct, prose } from "./act-common.js";
 import { designProposalId, upsertProposal } from "./propose.js";
-import { parsedJson, plural, readAthlete, refuse } from "./read-common.js";
+import { parsedArray, parsedJson, plural, readAthlete, refuse } from "./read-common.js";
+import { savesReadsOf, savesReadsSql, type SavesReads } from "./saves-reads.js";
 import type { DesignTool, ToolOk } from "./types.js";
 
 const TITLE_MAX = 60;
@@ -63,6 +77,12 @@ const SUMMARY_MAX = 120;
  * two-sentence line mid-sentence). */
 export const PIN_LINE_MAX = 280;
 const WHY_MAX = 300;
+/** Where a move goes, in the coach's words ("joins your mobility rotation", "in Thursday's mobility, revised here"). */
+const WHERE_MAX = 80;
+/** A dose as the coach may write it (the card shows the tool's own). */
+const DOSE_MAX = 40;
+/** The cites one line carries, at most. */
+export const CITES_MAX = 8;
 
 const moveId = z.string().min(1).max(80);
 const moveIds = z.array(moveId).max(PINS_MAX);
@@ -74,7 +94,21 @@ const input = z
     batchId: z.string().min(1).max(200).optional(),
     title: prose(TITLE_MAX),
     summary: prose(SUMMARY_MAX).optional(),
-    lines: z.array(z.object({ moveId: moveId.optional(), text: prose(PIN_LINE_MAX) }).strict()).min(1).max(PINS_LINES_MAX),
+    lines: z
+      .array(
+        z
+          .object({
+            moveId: moveId.optional(),
+            decision: z.enum(["in", "out"]).optional(),
+            where: prose(WHERE_MAX).optional(),
+            dose: prose(DOSE_MAX).optional(),
+            text: prose(PIN_LINE_MAX),
+            cites: z.array(z.string().min(1).max(100)).max(CITES_MAX).optional(),
+          })
+          .strict(),
+      )
+      .min(1)
+      .max(PINS_LINES_MAX),
     why: prose(WHY_MAX),
   })
   .strict();
@@ -149,6 +183,52 @@ function batchMovesOf(raw: unknown): Array<[string, string | null]> {
   });
 }
 
+const decided = (op: unknown): boolean => ["applied", "declined", "superseded"].includes(String((op as { outcome?: { status?: unknown } }).outcome?.status));
+
+/** The moves the suggestion's open workouts hold, each with the item's dose (the last workout's, when two hold it): a
+ * line's dose is the item's (§14.1). */
+function workoutDosesOf(ops: readonly unknown[]): Map<string, WorkoutDose> {
+  const out = new Map<string, WorkoutDose>();
+  for (const op of ops) {
+    const o = op as { kind?: unknown; doc?: { parts?: unknown } };
+    if (o?.kind !== "doc_workout" || decided(op) || !Array.isArray(o.doc?.parts)) continue;
+    for (const part of o.doc!.parts as Array<{ items?: unknown }>) {
+      for (const item of Array.isArray(part?.items) ? (part.items as Array<{ kind?: unknown; libraryId?: unknown; dose?: unknown }>) : []) {
+        if (item?.kind === "exercise" && typeof item.libraryId === "string" && item.dose && typeof item.dose === "object") out.set(item.libraryId, item.dose as WorkoutDose);
+      }
+    }
+  }
+  return out;
+}
+
+/** The dose corrections the suggestion holds, still open, by move (correct_import's `after`): the dose a line shows. */
+function doseFixesOf(ops: readonly unknown[]): Map<string, Parameters<typeof doseWords>[0]> {
+  const out = new Map<string, Parameters<typeof doseWords>[0]>();
+  for (const op of ops) {
+    const o = op as { kind?: unknown; target?: unknown; targetId?: unknown; field?: unknown; after?: { type?: unknown; range?: unknown } };
+    if (o?.kind !== "import_correction" || o.target !== "move" || o.field !== "dose" || typeof o.targetId !== "string" || decided(op)) continue;
+    if (o.after && typeof o.after.type === "string" && Array.isArray(o.after.range)) out.set(o.targetId, o.after as Parameters<typeof doseWords>[0]);
+  }
+  return out;
+}
+
+/** A cite as the card draws it (saves-evidence.ts `CiteRef`): a quote's chip and where it opens; the reader's guess opens
+ * the line's move at its first post. */
+function citeRefOf(id: string, reads: SavesReads, moveId: string | undefined): CiteRef | null {
+  const p = parseCite(id);
+  if (!p) return null;
+  if (p.kind === "quote") {
+    const r = reads.quotes.get(id);
+    return r ? { id, kind: "quote", label: quoteLabel(r), postId: r.postId, position: r.position, quote: r.quote } : null;
+  }
+  if (p.kind === "history") return { id: "history", kind: "history", label: "your history" };
+  if (p.kind === "goal") return { id, kind: "goal", label: "your goal", goalId: p.goalId };
+  const first = moveId ? reads.moves.get(moveId) : undefined;
+  return { id, kind: "inferred", label: "reader's guess", field: p.field, ...(first ? { postId: first.postId, position: first.position } : {}) };
+}
+
+const sameNumbers = (a: readonly number[], b: readonly number[]): boolean => a.length === b.length && a.every((n, i) => n === b[i]);
+
 /** What a stored change answers: the moves, never the coach's own words back. */
 function storedAnswer(proposalId: string, op: MovePinsOp, o: { replaced?: boolean } = {}): ToolOk {
   return {
@@ -185,7 +265,16 @@ export const pinMoves: DesignTool = {
           type: "object",
           properties: {
             moveId: { type: "string", description: "The move it is about: the card names it, so never write the name." },
-            text: { type: "string", description: `${capInWords(PIN_LINE_MAX)}.` },
+            decision: { type: "string", enum: ["in", "out"], description: "in: pinned here, in a workout here, or in rotation already; out: none of those." },
+            where: { type: "string", description: `Where it goes: the workout this suggestion revises, or the rotation it joins; ${capInWords(WHERE_MAX)}.` },
+            dose: { type: "string", description: "Leave out: the card shows the dose it runs with." },
+            text: { type: "string", description: `Why, in a sentence: ${capInWords(PIN_LINE_MAX)}.` },
+            cites: {
+              type: "array",
+              items: { type: "string" },
+              maxItems: CITES_MAX,
+              description: "What it rests on: read_saves' quote ids (q1.2), history, goal:<id>, inferred:<field>. A claim about what the post says needs its quote.",
+            },
           },
           required: ["text"],
           additionalProperties: false,
@@ -199,7 +288,9 @@ export const pinMoves: DesignTool = {
     additionalProperties: false,
   },
   statementCost: 2,
-  cpuWeight: 0.5,
+  // REBASED 2026-11-06 (coach review, phase 3): twelve lines' eight cites each resolved against the run's read receipts
+  // (every page of a 40-post batch) — measured 0.55 ms scaled p50 (calibration ×0.93, load 10.7 on 8 cores).
+  cpuWeight: 0.6,
   roles: ["main"],
   async run(ctx, raw) {
     const parsed = parseAct(input, raw, "pin and/or unpin (move ids), batchId when fitting in a saves batch, and the card's title, lines and why (its summary without a batch)");
@@ -248,6 +339,19 @@ export const pinMoves: DesignTool = {
               ${batchId ? sql`or ${exercisePrefs.exerciseId} in (select ${personalMoves.id} from ${personalMoves} where ${personalMoves.userId} = ${ctx.userId}
                 and ${personalMoves.batchId} = ${batchId} and ${personalMoves.fitChoice} = 'include')` : sql``}))`
           : sql`null`,
+      // What the run read of the batch (import trail phase 3, §8.3): its read_saves receipts — and the moves the batch's
+      // saved links name (a merged one as the move it went into): a line about one of them needs a page that covered it.
+      reads: batchId ? savesReadsSql(ctx.userId, mainRunId, batchId) : sql`null`,
+      batchLinks: batchId
+        ? sql`(select json_group_array(distinct coalesce(case when pl_m.status = 'merged' then pl_m.merged_into end, pl_l.move_id))
+            from saved_post_moves pl_l left join personal_moves pl_m on pl_m.user_id = pl_l.user_id and pl_m.id = pl_l.move_id
+            where pl_l.user_id = ${ctx.userId} and pl_l.batch_id = ${batchId} and pl_l.status = 'saved')`
+        : sql`null`,
+      // The lines' moves already in rotation: a line may say in for one the card leaves pinned.
+      pinnedNow: lineIds.length
+        ? sql`(select json_group_array(${exercisePrefs.exerciseId}) from ${exercisePrefs} where ${exercisePrefs.userId} = ${ctx.userId}
+            and ${exercisePrefs.pinned} = 1 and ${exercisePrefs.exerciseId} in (select value from json_each(${JSON.stringify(lineIds)})))`
+        : sql`null`,
     });
     const library = await accountLibraryFrom(ctx.db, ctx.userId, extra.library);
     const opsText = typeof extra.propOps === "string" ? extra.propOps : null;
@@ -318,14 +422,103 @@ export const pinMoves: DesignTool = {
       );
     }
 
+    // THE EVIDENCE (import trail phase 3; design 2026-11-05 §8.3, §14.1–14.2). A line about a move of the batch rests on a
+    // read_saves page that covered it; every cite is one the run read; a line that says what the post or its creator says
+    // cites a quote; in or out is what the card does; a dose is the one the move runs with.
+    const reads: SavesReads = batchId ? savesReadsOf(extra.reads) : { moves: new Map(), quotes: new Map(), readAt: new Map() };
+    const inBatch = new Set(parsedArray(extra.batchLinks).filter((x): x is string => typeof x === "string"));
+    const unread = lineIds.filter((id) => inBatch.has(id) && !reads.moves.has(id));
+    if (unread.length > 0) {
+      return refuse(
+        "not_read",
+        `${named(unread)}: no read_saves page of this run covered ${unread.length === 1 ? "it" : "them"} — a line about a saved move rests on its evidence.`,
+        "Call read_saves for this batch (the offset its last page gave reaches the rest), then pin_moves again.",
+      );
+    }
+    for (const [i, l] of parsed.lines.entries()) {
+      for (const c of l.cites ?? []) {
+        if (!citeRefOf(c, reads, l.moveId)) {
+          return refuse(
+            "unknown_cite",
+            `lines.${i}: ${JSON.stringify(c)} isn't a cite this run read.`,
+            "Cite a quote id read_saves gave (q1.2), history, goal:<objective id>, or inferred:<field> — name, dose, steps, purpose, useWhen, skipWhen or why.",
+          );
+        }
+      }
+      if (claimsThePost(l.text) && !(l.cites ?? []).some((c) => QUOTE_ID_RE.test(c))) {
+        return refuse(
+          "uncited_claim",
+          `lines.${i}: ${JSON.stringify(clipProse(l.text, 120))} says what the post or its creator says, with no quote cited.`,
+          "Cite the quote ids read_saves gave — or, when the post never says it, say it was the reader's guess and cite inferred:<field>.",
+        );
+      }
+    }
+    const inWorkout = workoutDosesOf(all);
+    const doseFixes = doseFixesOf(all);
+    const pinnedNow = new Set(parsedArray(extra.pinnedNow).filter((x): x is string => typeof x === "string"));
+    /** What the card does with a move: in (pinned here, in a workout here, or in rotation already and not unpinned), else out. */
+    const decisionOf = (id: string): "in" | "out" => (pin.includes(id) || inWorkout.has(id) || (pinnedNow.has(id) && !unpin.includes(id)) ? "in" : "out");
+    /** The dose it runs with after the card: a revised item's, a dose correction's here, else the record's. */
+    const doseOf = (id: string): string | null => {
+      const item = inWorkout.get(id);
+      if (item) return doseSummary(item);
+      const fix = doseFixes.get(id);
+      if (fix) return doseWords(fix);
+      const rec = find(id);
+      return rec ? doseWords(rec.dose) : null;
+    };
+    for (const l of parsed.lines) {
+      if (!l.moveId) continue;
+      const decision = decisionOf(l.moveId);
+      if (l.decision === "in" && decision === "out") {
+        return refuse("in_not_placed", `${named([l.moveId])}'s line says in, but nothing in this card puts it anywhere.`, "Pin it, or put it in the workout this suggestion revises — or say out.");
+      }
+      if (l.decision === "out" && decision === "in") {
+        return refuse(
+          "out_but_placed",
+          `${named([l.moveId])}'s line says out, but this card ${pin.includes(l.moveId) ? "pins it" : inWorkout.has(l.moveId) ? "puts it in a workout" : "leaves it in rotation"}.`,
+          "Say in — or take it out of pin, the workout, or the rotation (unpin).",
+        );
+      }
+      const dose = decision === "in" ? doseOf(l.moveId) : null;
+      if (l.dose && dose && !sameNumbers(doseNumbers(l.dose), doseNumbers(dose))) {
+        return refuse(
+          "dose_mismatch",
+          `${named([l.moveId])} runs at ${dose} after this card, not ${JSON.stringify(l.dose)}.`,
+          "Leave dose out — the card shows the dose it runs with — or, when its record's dose is wrong, propose correct_import with the post's dose first.",
+        );
+      }
+    }
+
     // A line a move: its name from the library, once; the coach's text without a copy of it, clipped after the name is
     // placed — at a sentence end wherever one fits (§3.5). A name past half the cap (never: names are 80 at most) keeps
-    // half the cap for its text.
+    // half the cap for its text. Its decision, where, dose, cites (the chips) and first post (phase 3).
+    const citesOf = (l: (typeof parsed.lines)[number]): CiteRef[] => {
+      const seen = new Set<string>();
+      return (l.cites ?? []).flatMap((c) => {
+        if (seen.has(c)) return [];
+        seen.add(c);
+        return citeRefOf(c, reads, l.moveId) ?? [];
+      });
+    };
     const lines = parsed.lines.map((l): PinsCardLine => {
-      if (!l.moveId) return { text: clipProse(namesFor(l.text, find), PIN_LINE_MAX, { atSentence: true }) };
+      const cites = citesOf(l);
+      if (!l.moveId) return { text: clipProse(namesFor(l.text, find), PIN_LINE_MAX, { atSentence: true }), ...(cites.length ? { cites } : {}) };
       const name = nameOf(l.moveId);
       const room = Math.max(PIN_LINE_MAX - name.length - 2, PIN_LINE_MAX / 2);
-      return { moveId: l.moveId, name, text: clipProse(namesFor(lineTextOf(l.text, l.moveId, name), find), room, { atSentence: true }) };
+      const decision = decisionOf(l.moveId);
+      const dose = decision === "in" ? doseOf(l.moveId) : null;
+      const first = reads.moves.get(l.moveId);
+      return {
+        moveId: l.moveId,
+        name,
+        text: clipProse(namesFor(lineTextOf(l.text, l.moveId, name), find), room, { atSentence: true }),
+        decision,
+        ...(l.where ? { where: clipProse(l.where, WHERE_MAX) } : {}),
+        ...(dose ? { dose } : {}),
+        ...(cites.length ? { cites } : {}),
+        ...(first ? { post: { id: first.postId, position: first.position } } : {}),
+      };
     });
     // With a batch, the card's line counts its new moves (review round 1): those pinned join — a pin of a move the athlete
     // had already is no joining — and those on the coach's call left out wait.
@@ -344,6 +537,7 @@ export const pinMoves: DesignTool = {
       summary: clipProse(batchId ? pinsSummaryLine(joined, waiting) : parsed.summary!, SUMMARY_MAX),
       lines,
       date: athlete.today,
+      ...(reads.readAt.size > 0 ? { read: [...reads.readAt] } : {}),
       toolUseId,
       ...(held ? { replaces: [...(held.replaces ?? []), held.toolUseId] } : {}),
       at,

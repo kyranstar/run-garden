@@ -93,8 +93,11 @@ const BEFORE = { tools: 34_935, shared: 20_450, main: 4_586 };
  * REBASED 2026-11-06 (where you stand, on top of the ball release): the shared prompt names the block, notices a drift
  * kindly and explains a coach read, and remember's drift and checkBack (shared 26,913; tools 41,968; main 7,183) —
  * measured 16,093; held with 457 characters (≥ 100 tokens) of headroom.
+ * REBASED 2026-11-06 (coach review, phase 3, Tasks 2–3): read_saves' description names the dose, the posts' evidence
+ * and the quote ids to cite, and corrections; pin_moves' lines gain decision, where, dose and cites, each described
+ * (tools 41,968 → 42,585) — measured 16,710; held with 390 characters (~111 tokens) of headroom.
  */
-const GROWTH_MAX_CHARS = 16_550;
+const GROWTH_MAX_CHARS = 17_100;
 
 const toolsSent = () => JSON.stringify(allTools().map((t) => ({ name: t.name, description: t.description, input_schema: t.inputSchema })));
 
