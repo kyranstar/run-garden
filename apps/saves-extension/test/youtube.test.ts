@@ -99,6 +99,10 @@ describe("pickCapture and captureSegments", () => {
       { url: "/api/timedtext?v=x&lang=en&kind=asr&fmt=json3", text: json3([{ tStartMs: 0, segs: [{ utf8: "hello" }] }]) },
     ];
     expect(pickCapture(captures, { languageCode: "en", kind: "asr", name: "en" })).toBe(captures[2]!.text);
+    // Only this video's (final audit G14): an ad's or the next video's captions are never its transcript.
+    const other = [{ url: "/api/timedtext?v=AAAAAAAAAAA&lang=en&kind=asr&fmt=json3", text: "x" }, { url: `/api/timedtext?v=${vid}&lang=en&kind=asr`, text: "mine" }];
+    expect(pickCapture(other, { languageCode: "en", kind: "asr", name: "en" }, vid)).toBe("mine");
+    expect(pickCapture([other[0]!], { languageCode: "en", kind: "asr", name: "en" }, vid)).toBeNull();
     expect(pickCapture([captures[0]!], { languageCode: "en", kind: null, name: "en" })).toBe(captures[0]!.text);
     expect(pickCapture([], { languageCode: "en", kind: null, name: "en" })).toBeNull();
   });

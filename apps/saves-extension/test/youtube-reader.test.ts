@@ -1,7 +1,8 @@
 import { describe, expect, it } from "vitest";
 import {
-  captionsInPage, installCaptionCapture, readPlayerInPage, readYoutube, transcriptPanelInPage, type YoutubeTabs,
+  captionsInPage, closeLeftoverTabs, installCaptionCapture, readPlayerInPage, readYoutube, transcriptPanelInPage, type YoutubeTabs,
 } from "../src/youtube-reader.js";
+import { memoryStore } from "./fixtures.js";
 
 // The page reader's order and bounds, against a fake browser: real YouTube can't run in a test (every parser it uses is
 // tested in youtube.test.ts). Synthetic answers; a fake video id built here.
@@ -20,6 +21,8 @@ interface Script {
   captions?: () => { url: string; text: string }[];
   panel?: () => { time: string; text: string }[];
   hang?: boolean;
+  /** The page never finishes loading. */
+  hangLoad?: boolean;
 }
 
 function fakeTabs(script: Script) {
@@ -33,11 +36,15 @@ function fakeTabs(script: Script) {
     async mute() {
       calls.push("mute");
     },
-    async run(_id, func, _args, world) {
+    async loaded() {
+      calls.push("loaded");
+      if (script.hangLoad) await new Promise(() => undefined);
+    },
+    async run(_id, func, args, world) {
       const f = func as unknown;
       const name =
         f === installCaptionCapture ? "capture" : f === readPlayerInPage ? "player" : f === captionsInPage ? "captions" : f === transcriptPanelInPage ? "panel" : "other";
-      calls.push(`${name}:${world}`);
+      calls.push(`${name}:${world}${name === "capture" ? `:${(args as unknown[])[0]}` : ""}`);
       if (script.hang && name === "player") return new Promise(() => undefined) as never;
       if (name === "player") return (script.player?.() ?? { player: playerJson(), markers: null }) as never;
       if (name === "captions") return (script.captions?.() ?? []) as never;
@@ -60,7 +67,7 @@ function fakeTabs(script: Script) {
 
 describe("readYoutube", () => {
   it("installs the capture in the page before asking the player for captions, reads them, and closes the tab", async () => {
-    const { tabs, calls, deps } = fakeTabs({ captions: () => [{ url: "/api/timedtext?lang=en&kind=asr&fmt=json3", text: json3 }] });
+    const { tabs, calls, deps } = fakeTabs({ captions: () => [{ url: `/api/timedtext?v=${vid}&lang=en&kind=asr&fmt=json3`, text: json3 }] });
     const out = await readYoutube(tabs, vid, deps);
     expect(out).toMatchObject({
       ok: true,
@@ -68,8 +75,8 @@ describe("readYoutube", () => {
       transcript: { via: "captured", track: { languageCode: "en", kind: "asr" }, segments: [[0, "zorbex one"], [4, "zorbex two"]] },
       chapters: { from: "description", list: [{ start: 0, title: "a" }, { start: 30, title: "b" }, { start: 60, title: "c" }] },
     });
-    expect(calls.indexOf("capture:MAIN")).toBeGreaterThan(-1);
-    expect(calls.indexOf("capture:MAIN")).toBeLessThan(calls.indexOf("captions:MAIN"));
+    expect(calls.indexOf(`capture:MAIN:${vid}`)).toBeGreaterThan(-1);
+    expect(calls.indexOf(`capture:MAIN:${vid}`)).toBeLessThan(calls.indexOf("captions:MAIN"));
     expect(calls[0]).toMatch(/^open .*watch\?v=/);
     expect(calls.at(-1)).toBe("close 7");
     expect(calls).toContain("mute");
@@ -125,5 +132,32 @@ describe("the page scripts are self-contained (they run in the page, from their 
   it.each([installCaptionCapture, readPlayerInPage, captionsInPage, transcriptPanelInPage])("%o names nothing of this module", (fn) => {
     const src = fn.toString();
     expect(src).not.toMatch(/\bimport\(|\brequire\(|\b__vite|\bparsePlayer\b|\bpickTrack\b|\bYT_ORIGIN\b/);
+  });
+});
+
+describe("the reader tab and its captions (final audit G14, G15)", () => {
+  it("the capture keeps only this video's captions; the tab is muted at once, before its page loads", async () => {
+    const { tabs, calls, deps } = fakeTabs({});
+    await readYoutube(tabs, vid, deps);
+    expect(calls).toContain(`capture:MAIN:${vid}`);
+    expect(calls.indexOf("mute")).toBeLessThan(calls.indexOf("loaded"));
+  });
+
+  it("a page that never loads still ends at the cap with its tab closed", async () => {
+    const { tabs, calls } = fakeTabs({ hangLoad: true });
+    const out = await readYoutube(tabs, vid, { now: Date.now, sleep: (ms) => new Promise((r) => setTimeout(r, Math.min(ms, 5))), capMs: 50 });
+    expect(out).toEqual({ ok: false, code: "unknown", message: "YouTube took too long" });
+    expect(calls.at(-1)).toBe("close 7");
+  });
+
+  it("tabs a dead read left open are closed when the extension starts", async () => {
+    const store = memoryStore();
+    await store.set("readerTabs", [11, 12]);
+    const closed: number[] = [];
+    await closeLeftoverTabs(store, async (id) => {
+      closed.push(id);
+    });
+    expect(closed).toEqual([11, 12]);
+    expect(await store.get("readerTabs")).toEqual([]);
   });
 });

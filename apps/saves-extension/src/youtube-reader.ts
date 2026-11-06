@@ -1,4 +1,5 @@
 import type { Chapter, SaveErrorCode, Segment } from "@rg/saves";
+import type { KvStore } from "./queue.js";
 import {
   captureSegments, chaptersFromDescription, chaptersFromMarkers, panelSegments, parsePlayer, pickCapture, pickTrack, PLAYER_DIDNT_LOAD,
   watchUrl, type CaptionTrack, type YoutubeMeta,
@@ -12,9 +13,11 @@ import {
 
 /** The browser's tabs and scripts, behind a seam so the read can be tested without Chrome. */
 export interface YoutubeTabs {
-  /** Opens a background tab on `url`; resolves with its id once it has loaded (or a load wait has passed). */
+  /** Opens a background tab on `url`; resolves with its id at once (final audit G15: it is muted before it loads). */
   open(url: string): Promise<number>;
   mute(id: number): Promise<void>;
+  /** Resolves once the tab has loaded, or after a load wait. */
+  loaded(id: number): Promise<void>;
   /** Runs a self-contained function in the tab's page; its result, or null when the page gave none. */
   run<A extends unknown[], R>(id: number, func: (...args: A) => R | Promise<R>, args: A, world: "MAIN" | "ISOLATED"): Promise<R | null>;
   close(id: number): Promise<void>;
@@ -53,9 +56,11 @@ export async function readYoutube(tabs: YoutubeTabs, id: string, deps: YoutubeRe
   let timer: ReturnType<typeof setTimeout> | undefined;
   const work = async (): Promise<YoutubeRead> => {
     tab = await tabs.open(watchUrl(id));
+    // Muted at once, before its page loads; the load wait is inside the cap (final audit G15).
     await tabs.mute(tab);
-    // The capture first: the player's captions request must find the wrappers already in place.
-    await tabs.run(tab, installCaptionCapture, [], "MAIN");
+    await tabs.loaded(tab);
+    // The capture first: the player's captions request must find the wrappers already in place. Only this video's.
+    await tabs.run(tab, installCaptionCapture, [id], "MAIN");
 
     let meta: YoutubeMeta | null = null;
     let markers: string | null = null;
@@ -82,7 +87,7 @@ export async function readYoutube(tabs: YoutubeTabs, id: string, deps: YoutubeRe
     const track = pickTrack(meta.tracks);
     if (track && left() > 0) {
       const captures = (await tabs.run(tab, captionsInPage, [track.languageCode, track.kind, Math.min(CAPTIONS_WAIT_MS, left())], "MAIN")) ?? [];
-      const text = pickCapture(captures, track);
+      const text = pickCapture(captures, track, id);
       const segments = text ? captureSegments(text) : [];
       if (segments.length) transcript = { track, segments, via: "captured" };
       else if (left() > 0) {
@@ -106,14 +111,24 @@ export async function readYoutube(tabs: YoutubeTabs, id: string, deps: YoutubeRe
 // --- Page scripts. Each runs INSIDE the YouTube tab from its own source (chrome.scripting), so it may use only its
 // arguments and the page's globals — never anything else from this module.
 
-/** Wraps XMLHttpRequest and fetch so each `/api/timedtext` answer the player gets is kept in `window.__rgCaptured`. */
-export function installCaptionCapture(): void {
+/**
+ * Wraps XMLHttpRequest and fetch so each `/api/timedtext` answer the player gets for `videoId` is kept in
+ * `window.__rgCaptured` — never an ad's or the next video's (final audit G14).
+ */
+export function installCaptionCapture(videoId: string): void {
   const w = window as unknown as { __rgCaptured?: { url: string; text: string }[] };
   if (w.__rgCaptured) return;
   const kept: { url: string; text: string }[] = [];
   w.__rgCaptured = kept;
   const keep = (url: string, text: string) => {
-    if (url.indexOf("/api/timedtext") >= 0 && text) kept.push({ url, text });
+    if (url.indexOf("/api/timedtext") < 0 || !text) return;
+    let v: string | null = null;
+    try {
+      v = new URL(url, location.href).searchParams.get("v");
+    } catch {
+      v = null;
+    }
+    if (v === videoId) kept.push({ url, text });
   };
   const proto = XMLHttpRequest.prototype as unknown as {
     open: (this: XMLHttpRequest & { __rgUrl?: string }, ...a: unknown[]) => void;
@@ -237,22 +252,43 @@ function loaded(tabId: number): Promise<void> {
   });
 }
 
-export function chromeYoutubeTabs(): YoutubeTabs {
+/** Where the reader's open tabs are kept, so one a dead read left (a killed service worker) is closed at startup. */
+const READER_TABS = "readerTabs";
+
+/** Close the tabs a dead read left open (the extension's start), and forget them (final audit G15). */
+export async function closeLeftoverTabs(store: KvStore, closeTab: (id: number) => Promise<void>): Promise<void> {
+  const raw = await store.get(READER_TABS);
+  const ids = Array.isArray(raw) ? raw.filter((x): x is number => typeof x === "number") : [];
+  for (const id of ids) await closeTab(id).catch(() => undefined);
+  await store.set(READER_TABS, []);
+}
+
+async function remember(store: KvStore, id: number, keep: boolean): Promise<void> {
+  const raw = await store.get(READER_TABS);
+  const ids = Array.isArray(raw) ? raw.filter((x): x is number => typeof x === "number" && x !== id) : [];
+  await store.set(READER_TABS, keep ? [...ids, id] : ids);
+}
+
+export function chromeYoutubeTabs(store: KvStore): YoutubeTabs {
   return {
     async open(url) {
       const created = await chrome.tabs.create({ url, active: false });
       if (created.id === undefined) throw new Error("Could not open a YouTube tab");
-      await loaded(created.id);
+      await remember(store, created.id, true);
       return created.id;
     },
     async mute(id) {
       await chrome.tabs.update(id, { muted: true }).catch(() => undefined);
+    },
+    loaded(id) {
+      return loaded(id);
     },
     async run(id, func, args, world) {
       const [first] = await chrome.scripting.executeScript({ target: { tabId: id }, world, func: func as never, args: args as never });
       return (first?.result ?? null) as never;
     },
     async close(id) {
+      await remember(store, id, false);
       await chrome.tabs.remove(id);
     },
   };

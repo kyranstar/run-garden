@@ -123,8 +123,7 @@ export function pickTrack(tracks: readonly CaptionTrack[]): CaptionTrack | null 
 }
 
 /** Of the captions the player fetched, the one for `track` (its language and kind), else the first that holds anything. */
-export function pickCapture(captures: readonly { url: string; text: string }[], track: CaptionTrack): string | null {
-  const full = captures.filter((c) => c.text.trim().length > 0);
+export function pickCapture(captures: readonly { url: string; text: string }[], track: CaptionTrack, videoId?: string): string | null {
   const params = (url: string) => {
     try {
       return new URL(url, YT_ORIGIN).searchParams;
@@ -132,6 +131,8 @@ export function pickCapture(captures: readonly { url: string; text: string }[], 
       return new URLSearchParams();
     }
   };
+  // Only this video's (final audit G14): a pre-roll ad's or the next video's captions are never its transcript.
+  const full = captures.filter((c) => c.text.trim().length > 0 && (videoId === undefined || params(c.url).get("v") === videoId));
   const match = full.find((c) => {
     const p = params(c.url);
     const l = p.get("lang") ?? p.get("tlang");

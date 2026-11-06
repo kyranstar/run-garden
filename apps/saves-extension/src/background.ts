@@ -5,7 +5,7 @@ import { parseMediaInfo } from "./feed.js";
 import { LinkQueue, runLinks, sendPastedInstagram, type LinksSummary } from "./links.js";
 import { chromeTabs, createPageReader } from "./page-reader.js";
 import { shortcodeToPk } from "./shortcode.js";
-import { chromeYoutubeTabs, readYoutube } from "./youtube-reader.js";
+import { chromeYoutubeTabs, closeLeftoverTabs, readYoutube } from "./youtube-reader.js";
 import { chromeStore, ExtQueue } from "./queue.js";
 import { loadSettings } from "./settings.js";
 import { SOURCE } from "./feed.js";
@@ -72,7 +72,7 @@ async function links(): Promise<LinksSummary | null> {
       app,
       queue: new LinkQueue(chromeStore),
       now: Date.now,
-      youtube: (id) => readYoutube(chromeYoutubeTabs(), id, { now: Date.now, sleep: (ms) => new Promise((r) => setTimeout(r, ms)) }),
+      youtube: (id) => readYoutube(chromeYoutubeTabs(chromeStore), id, { now: Date.now, sleep: (ms) => new Promise((r) => setTimeout(r, ms)) }),
       async instagram(key) {
         // One post read from the owner's Instagram tab, then sent (and read for its moves) through the check's queue.
         await pause();
@@ -116,6 +116,8 @@ async function ensureAlarm(): Promise<void> {
 }
 
 chrome.runtime.onInstalled.addListener(() => void ensureAlarm());
+// A new service worker means any read in a tab before it died is over: its tab is closed (final audit G15).
+void closeLeftoverTabs(chromeStore, (id) => chrome.tabs.remove(id)).catch(() => undefined);
 chrome.runtime.onStartup.addListener(() => void ensureAlarm());
 
 chrome.alarms.onAlarm.addListener((alarm) => {
