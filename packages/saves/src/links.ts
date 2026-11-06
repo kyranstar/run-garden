@@ -21,13 +21,27 @@ const IG_HOSTS = new Set(["instagram.com", "www.instagram.com"]);
 const video = (id: string | null | undefined): NormalLink | null =>
   id && VIDEO_ID.test(id) ? { source: "youtube", key: id, url: `https://www.youtube.com/watch?v=${id}` } : null;
 
-/** A pasted link as the app keys it, or null for anything this round doesn't take. Only https (a bare host gets it). */
+/**
+ * A pasted link as the app keys it, or null for anything this round doesn't take. Pasted text may be a share's words
+ * around a link: its first link the app takes is the one (final audit G12). An http link is read as https; a bare host
+ * gets https.
+ */
 export function normalizeLink(input: string): NormalLink | null {
   const text = input.trim();
-  if (!text || /\s/.test(text)) return null;
+  if (!text) return null;
+  if (!/\s/.test(text)) return normalizeOne(text);
+  // Share text: each link-like piece in turn, the first the app takes.
+  for (const m of text.matchAll(/(?:https?:\/\/|www\.|youtu\.be\/|(?:m\.)?youtube\.com\/|instagram\.com\/)[^\s<>"']+/gi)) {
+    const link = normalizeOne(m[0].replace(/[).,;!?\]]+$/, ""));
+    if (link) return link;
+  }
+  return null;
+}
+
+function normalizeOne(text: string): NormalLink | null {
   let u: URL;
   try {
-    u = new URL(/^[a-z][a-z0-9+.-]*:/i.test(text) ? text : `https://${text}`);
+    u = new URL(/^[a-z][a-z0-9+.-]*:/i.test(text) ? text.replace(/^http:/i, "https:") : `https://${text}`);
   } catch {
     return null;
   }
@@ -37,7 +51,7 @@ export function normalizeLink(input: string): NormalLink | null {
   if (host === "youtu.be") return parts.length === 1 ? video(parts[0]) : null;
   if (YT_HOSTS.has(host)) {
     if (parts.length === 1 && parts[0] === "watch") return video(u.searchParams.get("v"));
-    if (parts.length === 2 && parts[0] === "shorts") return video(parts[1]);
+    if (parts.length === 2 && (parts[0] === "shorts" || parts[0] === "live" || parts[0] === "embed")) return video(parts[1]);
     return null;
   }
   if (IG_HOSTS.has(host)) {

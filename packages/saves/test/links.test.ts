@@ -34,7 +34,6 @@ describe("normalizeLink", () => {
   });
 
   it.each([
-    [["ht", "tp://www.", YT, "/watch?v=", id].join("")],
     [`${S}vimeo.com/123`],
     [`${S}www.${YT}/watch?v=${id.slice(1)}`],
     [`${S}www.${YT}/channel/UCzorbex`],
@@ -78,5 +77,24 @@ describe("linkState", () => {
     });
     expect(linkState(link(), post({ status: "skipped_by_owner" })).words).toBe("Skipped");
     expect(linkState(link(), post({ status: "reference_only" })).words).toBe("Kept as a reference");
+  });
+});
+
+describe("normalizeLink takes what people paste (final audit G12)", () => {
+  it.each([
+    [["ht", "tp://www.", YT, "/watch?v=", id].join("")],
+    [`${S}www.${YT}/live/${id}?feature=share`],
+    [`${S}www.${YT}/embed/${id}`],
+    [`Watch this Zorbex flow! ${S}${SHORT}/${id}?si=abc — so good`],
+    [`Zorbex hip flow\n${S}www.${YT}/watch?v=${id}`],
+  ])("%s is the video's watch link", (input) => {
+    expect(normalizeLink(input)).toEqual({ source: "youtube", key: id, url: watch });
+  });
+  it("share text with an Instagram link", () => {
+    expect(normalizeLink(`Saw this on Instagram: ${S}www.${IG}/reel/${code}/?igsh=x`)).toEqual({ source: "instagram", key: code, url: `${S}www.${IG}/reel/${code}/` });
+  });
+  it("share text with no link it takes is still refused", () => {
+    expect(normalizeLink(`Look: ${S}vimeo.com/1 and more`)).toBeNull();
+    expect(normalizeLink("just words")).toBeNull();
   });
 });
