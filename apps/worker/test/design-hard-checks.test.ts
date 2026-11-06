@@ -28,6 +28,7 @@ import { soreAreasOf } from "../src/services/design-tools/record-answer.js";
 import { ACT_TOOLS } from "../src/services/design-tools/index.js";
 import { designProposalId, type DocWorkoutOp } from "../src/services/design-tools/propose.js";
 import { isToolErr, type ToolContext, type ToolErr, type ToolOk } from "../src/services/design-tools/types.js";
+import type { CoachIssueCode } from "../src/services/design-tools/act-common.js";
 import { reviewPacket } from "../src/services/design-review.js";
 import { at, NOW, seedRichAthlete, TODAY } from "./design-read-fixture.js";
 import { makeTestDb } from "./helpers.js";
@@ -344,7 +345,7 @@ describe("the tools raise them: validate_workout and propose_workout, read in th
 });
 
 describe("the reviewer reads them: a title as must-fix unless the draft explains it, soreness as must-fix whatever it says", () => {
-  const packetOf = (issues: Array<{ path: string; code: string; message: string }>) =>
+  const packetOf = (issues: Array<{ path: string; code: CoachIssueCode; message: string }>) =>
     reviewPacket({
       round: 1,
       records: [],
