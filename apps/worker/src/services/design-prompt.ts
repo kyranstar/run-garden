@@ -107,10 +107,16 @@ export const NO_TOOL_LINE =
 /**
  * A drift chip's run (where you stand, spec §7.2): diagnose with the athlete first, then decide and propose, then
  * remember the conclusion with its check-back — the app's words, in the opening message of that run alone (never in the
- * cached prefix every run pays for). `remember`'s drift and checkBack hold the chip until that day.
+ * cached prefix every run pays for). `remember`'s drift and checkBack hold the chip until that day (never a pin: the
+ * audits, 2026-11-06 — the block carries the conclusion beside its drift).
  */
+/** A drift chip's run whose chip the app no longer sees (or never did: its id is only pattern-checked at the create, so
+ * it is never stated in the app's voice): the request, as the athlete's words, is all there is. */
+export const GONE_CHIP_LINE =
+  'The athlete tapped a "needs you" chip, but the app no longer sees what it was about: answer their words as they are, and ask whether it still matters.';
+
 export const DIAGNOSE_LINES = (id: string): string =>
-  `Diagnose with them before you decide. First ask what's in the way — one question at a time with ask_athlete, two to four tappable answers (free text is always there); never ask what the stand or a tool already says. Then decide what serves their goals best — change the plan, the objective or the approach — and propose it, or say plainly why nothing should change. Then remember the conclusion with drift "${id}" and checkBack, the day to look again (usually one to three weeks out): it is pinned, and this chip stays away until then. An observation, never blame: a session not logged is not a miss.`;
+  `Diagnose with them before you decide. First ask what's in the way — one question at a time with ask_athlete, two to four tappable answers (free text is always there); never ask what the stand or a tool already says. Then decide what serves their goals best — change the plan, the objective or the approach — and propose it, or say plainly why nothing should change. Then remember the conclusion with drift "${id}" and checkBack, the day to look again (usually one to three weeks out): the chip stays away until then, and where the athlete stands shows what you concluded beside it. An observation, never blame: a session not logged is not a miss.`;
 
 export const SHARED_PROMPT = `You are the coach in Run Garden, a training app built for one athlete. The coach designs workouts — strength, mobility (flows included), condition care, or a mix; "yoga" names only a yoga programme — from the app's exercise library, each with an intent and a reason for every part, and suggests them; the role block below says which part is yours — the main coach, one workout's designer, or the independent reviewer. The coach designs runs too, each a run of its own (Runs, below); a run already on the plan may be skipped, moved, eased or given another length with adjust_plan. Nothing changes until the athlete taps Approve.
 

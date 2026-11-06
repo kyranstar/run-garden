@@ -11,8 +11,8 @@
  *
  * A DRIFT'S CONCLUSION (where you stand, spec §7.2): `drift` (the chip's id, where-you-stand.ts DRIFT_ID) and
  * `checkBack` (a day after today, within CHECK_BACK_DAYS_MAX) go together: the item is kept with both in its provenance
- * and pinned — while the athlete's live pins leave room under MEMORY_PIN_CAP (the insert decides; the read before it
- * says), else kept unpinned, and the answer says so — and the drift stays held until the check-back day.
+ * — never pinned (the audits, 2026-11-06: a conclusion's pin was held for good, and took the athlete's own pin slots) —
+ * and the drift stays held until the check-back day, the conclusion shown beside it in where the athlete stands.
  *
  * A rehearsal run writes its marked row and NEVER supersedes the athlete's item (it answers that it would have).
  *
@@ -157,7 +157,7 @@ export const remember: DesignTool = {
         description: "Only when replacing an item the athlete confirmed (and then required): the request's own words that change it. Refused anywhere else.",
       },
       drift: { type: "string", description: "The drift this concludes (its id from where the athlete stands, e.g. drift:discipline:strength), with checkBack." },
-      checkBack: { type: "string", description: "With drift: the day to look again, YYYY-MM-DD. The item is pinned and the drift held until then." },
+      checkBack: { type: "string", description: "With drift: the day to look again, YYYY-MM-DD. The drift's chip is held until then." },
     },
     required: ["kind", "body", "confidence"],
     additionalProperties: false,
@@ -185,8 +185,6 @@ export const remember: DesignTool = {
     if (!rootId) return refuse("no_main_run", "This run has no main run to remember for.", "Finish with what you have.");
     const callId = ctx.toolUseId ?? newId();
     const id = `mem:${ctx.run.id}:${callId}`;
-    // The athlete's live pins (the PATCH's own count), for a drift's conclusion: pinned while there is room.
-    const livePins = and(liveMemoryWhere(ctx.userId, todayInZone(EARLIEST_ZONE)), eq(m.pinned, true));
     const { athlete, extra } = await readAthlete(ctx.db, ctx.userId, ctx.now, {
       memUsed: sql`(select count(*) from ${m} where ${m.userId} = ${ctx.userId}
         and case when json_valid(${m.provenance}) then json_extract(${m.provenance}, '$.runId') end = ${rootId})`,
@@ -197,19 +195,15 @@ export const remember: DesignTool = {
             from ${m} where ${m.id} = ${p.replaces} and ${m.userId} = ${ctx.userId})`
         : sql`null`,
       memRequest: sql`(select ${coachRuns.request} from ${coachRuns} where ${coachRuns.id} = ${rootId} and ${coachRuns.userId} = ${ctx.userId})`,
-      memPins: sql`(select count(*) from ${m} where ${livePins})`,
     });
-    const pinRoom = Number(extra.memPins ?? 0) < MEMORY_PIN_CAP;
-    const concludes = p.drift && p.checkBack ? { drift: p.drift, checkBack: p.checkBack, pinned: pinRoom } : null;
+    const concludes = p.drift && p.checkBack ? { drift: p.drift, checkBack: p.checkBack } : null;
     const answerFor = (body: string, kind: string, confidence: string, expires: string | null) => ({
       data: {
         remembered: { id, kind, confidence, body: untrusted(body), ...(expires ? { expires } : {}), ...(concludes ?? {}) },
         ...(p.replaces ? { replaced: p.replaces } : {}),
         ...(ctx.run.rehearsal ? { rehearsal: true } : {}),
       },
-      summary: `Remembered (${CONFIDENCE_WORDS[confidence] ?? confidence}): ${body}${
-        concludes ? (concludes.pinned ? ` — pinned until ${concludes.checkBack}` : ` — not pinned: ${MEMORY_PIN_CAP} are pinned already`) : ""
-      }`,
+      summary: `Remembered (${CONFIDENCE_WORDS[confidence] ?? confidence}): ${body}${concludes ? ` — the chip held until ${concludes.checkBack}` : ""}`,
       receipt: { memoryId: id, kind, confidence, ...(p.replaces ? { replaced: p.replaces } : {}), undo: { handle: memoryHandle(rootId, callId) } },
     });
     const replay = parsedJson(extra.memReplay) as { kind: string; confidence: string; body: string; expires: string | null } | null;
@@ -273,8 +267,7 @@ export const remember: DesignTool = {
           ...(ctx.run.rehearsal ? { rehearsal: true as const } : {}),
           ...(p.drift && p.checkBack ? { drift: p.drift, checkBack: p.checkBack } : {}),
         },
-        // A drift's conclusion is pinned while the athlete's pins leave room (decided in the insert itself).
-        ...(p.drift && p.checkBack ? { pinWithin: livePins } : {}),
+
         // A rehearsal never supersedes the athlete's item.
         ...(p.replaces && !ctx.run.rehearsal ? { replaces: p.replaces } : {}),
       }),

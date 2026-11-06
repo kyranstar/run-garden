@@ -89,7 +89,7 @@ import { FIT_SAVES_REQUEST } from "@rg/saves";
 import { focusReadInContext, type RunFocus } from "./design-focus.js";
 import { CONTEXT_TURNS, conversationBlock, conversationRows, type TurnRow } from "./coach-conversation.js";
 import { runningFactsOf, runningLine, runWeeksSql, thresholdSql, watchLine, type RunningFacts } from "./designed-runs.js";
-import { DIAGNOSE_LINES, FOCUS_LINES, SHARED_PROMPT, markUntrusted, roleBlock, type ReviewRubric, type UntrustedSource } from "./design-prompt.js";
+import { DIAGNOSE_LINES, FOCUS_LINES, GONE_CHIP_LINE, SHARED_PROMPT, markUntrusted, roleBlock, type ReviewRubric, type UntrustedSource } from "./design-prompt.js";
 import { dayWords, distanceWords, minutesOf, paceWords, parsedArray, parsedJson, plural, readTagged, relativeDay } from "./design-tools/read-common.js";
 import { nullOriginWords, planTerm, sqlFlag } from "./design-tools/read-plan.js";
 import { SAVES_INSIGHTS_MAX, SAVES_MOVES_MAX, savedBatchOf, savedMovesOf, savesBatchSql, type SavedBatch, type SavedChoice } from "./design-tools/read-saves.js";
@@ -1362,8 +1362,9 @@ function savesSection(batch: SavedBatch, r: Reads, full: boolean): string | null
 
 /** A drift chip's run (spec §7.2): the chip, what the app sees of it now (its label's words marked), and how to go on. */
 function diagnoseSection(id: string, drift: ReturnType<typeof driftsOf>[number] | null): string {
-  const seen = drift ? `${driftLine(drift).slice(2).replace(` (${id})`, "")}.` : "the app no longer sees it — ask whether it still matters.";
-  return `The athlete tapped a "needs you" chip (${id}): ${seen}\n${DIAGNOSE_LINES(id)}`;
+  // Its id is only pattern-checked at the create: stated only when it is a drift the app sees now (the audits).
+  if (!drift) return GONE_CHIP_LINE;
+  return `The athlete tapped a "needs you" chip (${drift.id}): ${driftLine(drift).slice(2).replace(` (${drift.id})`, "")}.\n${DIAGNOSE_LINES(drift.id)}`;
 }
 
 const BRIEF_SOURCES: Record<DesignRun["role"], { from: UntrustedSource; label: string }> = {

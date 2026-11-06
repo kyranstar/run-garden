@@ -479,7 +479,7 @@ describe("remember", () => {
     expect(recalled.memories[0]).toMatchObject({ id, confidence: "inferred" });
   });
 
-  it("a drift's conclusion (where you stand, §7.2): pinned, its drift and check-back kept with where it came from — and the drift read holds it", async () => {
+  it("a drift's conclusion (where you stand, §7.2): its drift and check-back kept with where it came from, never a pin (the audits: a pin held for good) — and the drift read holds it", async () => {
     const r = await run();
     const c = ctxOf(r);
     const out = ok(
@@ -488,14 +488,16 @@ describe("remember", () => {
     );
     const id = (out.receipt as { memoryId: string }).memoryId;
     const [row] = await db.select().from(schema.coachMemory).where(eq(schema.coachMemory.id, id));
-    expect(row).toMatchObject({ pinned: true, kind: "rule" });
+    expect(row).toMatchObject({ pinned: false, kind: "rule" });
     expect(row!.provenance).toMatchObject({ source: "athlete_words", drift: "drift:discipline:strength", checkBack: day(-14) });
-    expect(out.data).toMatchObject({ remembered: { id, pinned: true, drift: "drift:discipline:strength", checkBack: day(-14) } });
+    expect(out.data).toMatchObject({ remembered: { id, drift: "drift:discipline:strength", checkBack: day(-14) } });
+    expect((out.data as { remembered: Record<string, unknown> }).remembered).not.toHaveProperty("pinned");
+    expect(out.summary).toMatch(/ — the chip held until \d{4}-\d{2}-\d{2}$/);
     const facts = await readStandFacts(db, rich.userId, { today: TODAY, tz: "America/Los_Angeles" });
-    expect(facts.conclusions[0]).toMatchObject({ id, drift: "drift:discipline:strength", checkBack: day(-14) });
+    expect(facts.conclusions[0]).toMatchObject({ id, drift: "drift:discipline:strength", checkBack: day(-14), body: "Lifts on Saturday mornings while work is busy" });
   });
 
-  it("a check-back needs its drift, and a day after today within 8 weeks; past the pin cap it is kept unpinned, and says so", async () => {
+  it("a check-back needs its drift, and a day after today within 8 weeks; conclusions never take the athlete's pin slots", async () => {
     const r = await run();
     const refused = async (input: unknown) => err((await call("remember", ctxOf(r), input)).result);
     const base = { kind: "rule", body: "Lifts on Saturdays", confidence: "stated" };
@@ -504,17 +506,12 @@ describe("remember", () => {
     expect((await refused({ ...base, drift: "drift:discipline:strength", checkBack: TODAY })).error).toBe("check_back_day");
     expect((await refused({ ...base, drift: "drift:discipline:strength", checkBack: day(-57) })).error).toBe("check_back_day");
     expect((await refused({ ...base, drift: "not a drift", checkBack: day(-7) })).error).toBe("invalid_input");
-    for (let i = 0; i < 12; i++) {
-      await db.insert(schema.coachMemory).values({
-        id: `pin-${i}`, userId: rich.userId, kind: "fact", body: `Zorbex fact ${i}`, provenance: { source: "athlete_words", at: NOW.toISOString() },
-        learnedAt: NOW.toISOString(), active: true, pinned: true, confidence: "stated",
-      });
+    const pins = async () => (await db.select().from(schema.coachMemory).where(and(eq(schema.coachMemory.userId, rich.userId), eq(schema.coachMemory.pinned, true)))).length;
+    const before = await pins();
+    for (const drift of ["drift:discipline:strength", "drift:none:yoga", "drift:missed"]) {
+      ok((await call("remember", ctxOf(r), { ...base, body: `Zorbex ${drift}`, drift, checkBack: day(-7) })).result);
     }
-    const out = ok((await call("remember", ctxOf(r), { ...base, drift: "drift:discipline:strength", checkBack: day(-7) })).result);
-    expect(out.data).toMatchObject({ remembered: { pinned: false } });
-    const [row] = await db.select().from(schema.coachMemory).where(eq(schema.coachMemory.id, (out.receipt as { memoryId: string }).memoryId));
-    expect(row!.pinned).toBe(false);
-    expect(out.summary).toMatch(/not pinned: 12 are pinned already/);
+    expect(await pins()).toBe(before);
   });
 
   it("names a smuggled field first, however much else is wrong with the call", async () => {
