@@ -381,7 +381,7 @@ describe("approving a plan change", () => {
     const monday = mondayOf(addDays(TODAY, 7));
     const created = await proposePlan.run(ctx, {
       change: {
-        kind: "createPlan", discipline: "run", name: "Build block", startDate: monday, endDate: addDays(monday, 20),
+        kind: "createPlan", discipline: "run", name: "Build block", newPlan: { name: "Synthetic plan", purpose: "A synthetic purpose" }, startDate: monday, endDate: addDays(monday, 20),
         firmSessions: [{ date: monday, session: { category: "easy", title: "Easy run", durationMinutes: 30, run: { blocks: [{ kind: "duration", value: 30, intensity: "easy" }] } } }],
         shapeWeeks: [0, 1].map((k) => ({ weekStart: addDays(monday, 7 * (k + 1)), volumeTarget: "about 30 km", keySessions: ["long run"] })),
       },
@@ -427,7 +427,7 @@ describe("a plan change beside a whole plan waits for the plan (mixed outcomes)"
     }));
     const made = await proposePlan.run(ctx, {
       change: structure ?? {
-        kind: "createPlan", discipline: "run", name: "Build block", startDate: monday, endDate: addDays(monday, 20), firmSessions,
+        kind: "createPlan", discipline: "run", name: "Build block", newPlan: { name: "Synthetic plan", purpose: "A synthetic purpose" }, startDate: monday, endDate: addDays(monday, 20), firmSessions,
         shapeWeeks: [0, 1].map((k) => ({ weekStart: addDays(monday, 7 * (k + 1)), volumeTarget: "about 30 km", keySessions: ["long run"] })),
       },
       why: "The next phase.",

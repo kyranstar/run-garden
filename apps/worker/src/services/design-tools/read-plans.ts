@@ -13,9 +13,9 @@
  * TRAINING LINES (training lines §3.1, §3.7): the blocks read are grouped as the plan list groups them (@rg/domain
  * `linesOf`): `lines`, each its sport's name and its phases in order (id, name, dates, ended or not), its end, its
  * `last` phase (the one its end is: what "Extend / Wind down my running plan" acts on) and its goal race. Said once
- * beside the lines: a new block starting after at most a week's rest (LINE_MAX_REST_DAYS, seven rest days) from a line's
- * end joins it (`continueLine`, CONTINUE_LINE —
- * the chip's "Plan what comes after my running plan" reads it while the line's last phase still runs), and a line is
+ * beside the lines: a new block joins a plan only when its proposal names that plan (`continueLine`, CONTINUE_LINE —
+ * dates decide nothing; the chip's "Plan what comes after my running plan" reads it while the line's last phase still
+ * runs), and a line is
  * extended or wound down through its last phase (`extendLine`, EXTEND_LINE).
  *
  * A block that may not change says what may, in `why` (as propose_plan's refusal does, `endedRefusal`): one the athlete
@@ -108,7 +108,7 @@ interface Row {
 const KIND_WORDS = { block: "coach block", programme: "programme", watch: "watch plan", studio: "Studio plan" } as const;
 
 /** What an ended block says comes next (training lines §3.7): a next phase, which joins its line. */
-export const CONTINUE_LINE = "To continue a line, propose its next phase starting the day after the line's last phase ends; it joins the line.";
+export const CONTINUE_LINE = "To continue a plan, propose its next phase (createPlan), naming the plan (continuesPlanId); it joins it.";
 /** Which phase a line's Extend and Wind down act on (training lines §3.3): said once beside the lines, as `last` names it. */
 export const EXTEND_LINE = "Extend or wind down a line through its last phase.";
 /** A block the athlete stopped (retired): read_plans' `why` and propose_plan's refusal, in the same words. */

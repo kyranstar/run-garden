@@ -8,12 +8,15 @@ import {
   dailyHealth,
   plannedWorkoutStages,
   plannedWorkouts,
+  programs,
   scheduleOverrides,
 } from "@rg/database";
 import {
   addDays,
   addOpDates,
   appAuthoredRow,
+  defaultOnEnd,
+  onEndAllowed,
   sessionSummaryLine,
   newId,
   humanizeWorkoutTitle,
@@ -37,7 +40,7 @@ import {
   type WorkoutDoc,
 } from "@rg/domain";
 import { runBlockRoles } from "@rg/coros";
-import { chunkIds, chunkedInsert, insertBatches, runAtomically, type Db } from "./db.js";
+import { chunkIds, chunkedInsert, insertBatches, runAtomically, type AtomicStatement, type Db } from "./db.js";
 import { separateDayCollisions, windowTimeFor } from "./day-placement.js";
 import { coachStamp, recordedStampFor, stampName, takenStampsOn, takenStampsOnDays } from "./coros-stamp.js";
 import { applyMove } from "./jobs.js";
@@ -55,6 +58,7 @@ import {
 import { resolveRaceConflict } from "./race-conflict.js";
 import type { RetimeExpectation, RetimeWrite } from "./adjust-retime.js";
 import { isLoosePlan } from "./coach-plans.js";
+import { DISCIPLINE_WORD } from "./plan-summaries.js";
 import {
   docForCoachSession,
   docWithStatedLength,
@@ -1923,7 +1927,8 @@ async function latestThreshold(db: Db, userId: string): Promise<number | null> {
  * from op 0. `applyStructuralChunk` applies ONE structural op a slice at a time, each call within the `budget` it is
  * given, and hands back where it got to (`progress`, JSON the caller stores on the op) until it says `done`:
  *
- *  · `createPlan` — the plan row and its shape weeks; then its sessions, a chunk a call; then a `firm` week row for
+ *  · `createPlan` — the plan row and its shape weeks (and the plan it belongs to: a continued plan read and its sport
+ *    added, or a new plan inserted, in the same batch); then its sessions, a chunk a call; then a `firm` week row for
  *    each week the sessions fill (`plan_horizon` reads them, coach-triggers.ts).
  *  · `firmUp` — the plan read; the sessions in chunks; the week's `firm` row.
  *  · `reshapeWeek`, `windDown` — the plan read; the week(s)' still-scheduled sessions archived a slice at a time; then
@@ -2134,7 +2139,63 @@ async function structuralStep(k: Chunk, op: StructuralOp, p: StructuralProgress,
     case "createPlan": {
       const planId = `cp-${k.proposalId}-${k.opIndex}`;
       if (p.step === "start") {
-        const stmts = [
+        // WHICH PLAN THE BLOCK BELONGS TO (plans with a purpose §3.2), settled in this batch: a plan it continues is read
+        // first (this account's, active, a coach plan's), a new plan is inserted beside the block (its id from the op, so
+        // a re-run finds it), and a block stored before blocks named a plan stays unlinked.
+        const continues = op.continuesPlanId ?? null;
+        const newPlanId = op.newPlan ? `plan-${planId}` : null;
+        const shapeStmts = shapeWeekStatements(k, planId, op.shapeWeeks);
+        // At most: the read, the plan's row or its sport added, the block, its shape weeks.
+        if (!may(k, (continues ? 1 : 0) + (continues || newPlanId ? 1 : 0) + 1 + shapeStmts.length, first)) return { p, stalled: true };
+        const word = DISCIPLINE_WORD[op.discipline];
+        const stmts: AtomicStatement[] = [];
+        if (continues) {
+          const [plan] = await k.db
+            .select({ kind: programs.kind, status: programs.status, disciplines: programs.disciplines })
+            .from(programs)
+            .where(and(eq(programs.id, continues), eq(programs.userId, k.userId), isNull(programs.archivedAt)))
+            .limit(1);
+          k.spent += 1;
+          if (!plan || plan.kind !== "coach" || plan.status !== "active") return { refused: "The plan this block continues isn't there any more, or was stopped, so it wasn't added." };
+          // A block of a sport the plan doesn't list adds it; how the plan ends stays.
+          if (!plan.disciplines.includes(word)) {
+            stmts.push(
+              k.db
+                .update(programs)
+                .set({ disciplines: [...plan.disciplines, word], updatedAt: k.now })
+                .where(and(eq(programs.id, continues), eq(programs.userId, k.userId))),
+            );
+          }
+        }
+        if (op.newPlan && newPlanId) {
+          const disciplines = [word];
+          stmts.push(
+            k.db
+              .insert(programs)
+              .values({
+                id: newPlanId,
+                userId: k.userId,
+                kind: "coach",
+                name: op.newPlan.name,
+                status: "active",
+                disciplines,
+                startDate: op.startDate,
+                endDate: op.endDate,
+                raceDate: op.raceDate ?? null,
+                source: null,
+                config: {},
+                purpose: op.newPlan.purpose,
+                brief: op.newPlan.brief ?? null,
+                onEnd: op.newPlan.onEnd && onEndAllowed("coach", op.newPlan.onEnd) ? op.newPlan.onEnd : defaultOnEnd("coach", disciplines),
+                objectiveIds: op.newPlan.objectiveIds ?? null,
+                createdAt: k.now,
+                updatedAt: k.now,
+                archivedAt: null,
+              })
+              .onConflictDoNothing(),
+          );
+        }
+        stmts.push(
           k.db
             .insert(coachPlans)
             .values({
@@ -2147,13 +2208,13 @@ async function structuralStep(k: Chunk, op: StructuralOp, p: StructuralProgress,
               endDate: op.endDate,
               raceDate: op.raceDate ?? null,
               stampPrefix: op.name,
+              programId: continues ?? newPlanId,
               createdAt: k.now,
               updatedAt: k.now,
             })
             .onConflictDoNothing(),
-          ...shapeWeekStatements(k, planId, op.shapeWeeks),
-        ];
-        if (!may(k, stmts.length, first)) return { p, stalled: true };
+          ...shapeStmts,
+        );
         await runAtomically(k.db, stmts);
         k.spent += stmts.length;
         return { p: { ...p, step: "sessions", done: 0, name: op.name } };

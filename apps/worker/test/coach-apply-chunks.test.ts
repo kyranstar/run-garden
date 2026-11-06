@@ -11,9 +11,10 @@
 import { describe, expect, it } from "vitest";
 import { and, eq, inArray, sql } from "drizzle-orm";
 import { schema } from "@rg/database";
-import { addDays, startOfIsoWeek, todayInZone, type CoachOp, type CoachSession, type UserPreferences } from "@rg/domain";
+import { addDays, linesOf, startOfIsoWeek, todayInZone, type CoachOp, type CoachSession, type UserPreferences } from "@rg/domain";
 import type { Db } from "../src/services/db.js";
 import { applyStructuralChunk, STRUCTURAL_MIN_BUDGET, type StructuralChunkResult, type StructuralProgress } from "../src/services/coach-apply.js";
+import { lineBlockOf } from "../src/services/coach-plans.js";
 import { makeTestDb, makeTestUser } from "./helpers.js";
 
 const NOW = new Date();
@@ -680,5 +681,101 @@ describe("applyStructuralChunk: what it writes", () => {
     const w = await world();
     const r = await chunk(w, { kind: "skip", workoutId: "x" } as CoachOp, null, 45);
     expect(r.status).toBe("refused");
+  });
+});
+
+describe("a new block says which plan it belongs to (plans with a purpose, §3.2)", () => {
+  const block = (w: World, o: Record<string, unknown>): CoachOp =>
+    ({
+      kind: "createPlan",
+      discipline: "run",
+      name: "Next block",
+      startDate: w.monday,
+      endDate: addDays(w.monday, 20),
+      firmSessions: sessionsFrom(w.monday, 3),
+      shapeWeeks: [],
+      ...o,
+    }) as CoachOp;
+  const plan = async (w: World, id: string, o: Record<string, unknown> = {}) => {
+    await w.db.insert(schema.programs).values({
+      id, userId: w.userId, kind: "coach", name: "Synthetic plan", status: "active", disciplines: ["run"], startDate: null, endDate: null, raceDate: null, source: null,
+      config: {}, purpose: null, brief: null, onEnd: "ask", pausedUntil: null, objectiveIds: null, createdAt: NOW.toISOString(), updatedAt: NOW.toISOString(), archivedAt: null, ...o,
+    });
+  };
+  const blocks = (w: World) => w.db.select().from(schema.coachPlans).where(eq(schema.coachPlans.userId, w.userId));
+  const programRows = (w: World) => w.db.select().from(schema.programs).where(eq(schema.programs.userId, w.userId));
+
+  it("continuing a plan links the block to it however far apart, and the line holds both phases", async () => {
+    const w = await world();
+    await plan(w, "plan-a");
+    await w.db.insert(schema.coachPlans).values({
+      id: "cp-old", userId: w.userId, discipline: "run", name: "First block", status: "active", startDate: addDays(w.monday, -400), endDate: addDays(w.monday, -380), raceDate: null,
+      stampPrefix: "First block", programId: "plan-a", createdAt: NOW.toISOString(), updatedAt: NOW.toISOString(),
+    });
+    const calls = await applyAll(w, "p1", block(w, { continuesPlanId: "plan-a" }), 10);
+    expect(calls.at(-1)!.result.status).toBe("done");
+    const rows = await blocks(w);
+    expect(rows.find((r) => r.id === "cp-p1-0")!.programId).toBe("plan-a");
+    const lines = linesOf(rows.map(lineBlockOf), w.today);
+    expect(lines).toHaveLength(1);
+    expect(lines[0]!.phases.map((p) => p.id)).toEqual(["cp-old", "cp-p1-0"]);
+    expect(await programRows(w)).toHaveLength(1);
+  });
+
+  it("a sport the plan doesn't list is added to it in the same batch; its ending stays", async () => {
+    const w = await world();
+    await plan(w, "plan-a", { onEnd: "finish" });
+    await applyAll(w, "p1", block(w, { continuesPlanId: "plan-a", discipline: "lift" }), 10);
+    const [row] = await programRows(w);
+    expect(row!.disciplines).toEqual(["run", "strength"]);
+    expect(row!.onEnd).toBe("finish");
+    // The sport it already lists stays as it was.
+    await applyAll(w, "p2", block(w, { continuesPlanId: "plan-a", discipline: "run" }), 10);
+    expect((await programRows(w))[0]!.disciplines).toEqual(["run", "strength"]);
+  });
+
+  it("a plan that is another account's, stopped, not a coach plan or not there is refused, and no block is written", async () => {
+    const w = await world();
+    const other = await makeTestUser(w.db);
+    await plan(w, "plan-theirs", { userId: other.userId });
+    await plan(w, "plan-stopped", { status: "retired" });
+    await plan(w, "plan-prog", { kind: "adaptive" });
+    for (const id of ["plan-theirs", "plan-stopped", "plan-prog", "plan-nowhere"]) {
+      const calls = await applyAll(w, `p-${id}`, block(w, { continuesPlanId: id }), 45);
+      expect(calls.at(-1)!.result.status, id).toBe("refused");
+    }
+    expect(await blocks(w)).toHaveLength(0);
+  });
+
+  it("a new plan is made with the block: its words, its ending from its sport, the block linked; two adjacent plans of one sport list apart", async () => {
+    const w = await world();
+    await applyAll(w, "pa", block(w, { newPlan: { name: "Plan A", purpose: "First purpose", brief: "Keep it easy.", objectiveIds: ["obj-1"] } }), 10);
+    await applyAll(w, "pb", block(w, { startDate: addDays(w.monday, 21), endDate: addDays(w.monday, 41), firmSessions: [], newPlan: { name: "Plan B", purpose: "Other purpose", onEnd: "finish" } }), 10);
+    const rows = await programRows(w);
+    expect(rows.map((r) => r.id).sort()).toEqual(["plan-cp-pa-0", "plan-cp-pb-0"]);
+    const a = rows.find((r) => r.id === "plan-cp-pa-0")!;
+    expect([a.kind, a.name, a.status, a.disciplines, a.purpose, a.brief, a.onEnd, a.objectiveIds]).toEqual(["coach", "Plan A", "active", ["run"], "First purpose", "Keep it easy.", "ask", ["obj-1"]]);
+    expect(rows.find((r) => r.id === "plan-cp-pb-0")!.onEnd).toBe("finish");
+    const bs = await blocks(w);
+    expect(bs.map((b) => [b.id, b.programId]).sort()).toEqual([["cp-pa-0", "plan-cp-pa-0"], ["cp-pb-0", "plan-cp-pb-0"]]);
+    expect(linesOf(bs.map(lineBlockOf), w.today)).toHaveLength(2);
+  });
+
+  it("re-run, a chunk makes no second plan; every call spends at most what it says", async () => {
+    const w = await world();
+    const op = block(w, { newPlan: { name: "Plan A", purpose: "First purpose" } });
+    for (let round = 0; round < 2; round++) {
+      const calls = await applyAll(w, "p1", op, 10);
+      for (const c of calls) expect(c.counted).toBeLessThanOrEqual(c.result.spent);
+    }
+    expect(await programRows(w)).toHaveLength(1);
+    expect(await blocks(w)).toHaveLength(1);
+  });
+
+  it("an old stored op naming neither leaves the block unlinked, as before", async () => {
+    const w = await world();
+    await applyAll(w, "p1", block(w, {}), 10);
+    expect((await blocks(w))[0]!.programId).toBeNull();
+    expect(await programRows(w)).toHaveLength(0);
   });
 });

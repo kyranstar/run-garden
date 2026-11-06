@@ -900,7 +900,7 @@ beforeAll(async () => {
       const monday = addDays(TODAY, 5);
       const shapeWeeks = [1, 2, 3, 4].map((w) => ({ weekStart: addDays(monday, 7 * w), volumeTarget: words(w, 40), keySessions: [words(w, 60), words(w + 1, 60)] }));
       const plan = (sessions: typeof firmSessions) => ({
-        change: { kind: "createPlan", discipline: "lift", name: "Strength block", startDate: TODAY, endDate: addDays(monday, 34), firmSessions: sessions, shapeWeeks },
+        change: { kind: "createPlan", discipline: "lift", name: "Strength block", newPlan: { name: "Synthetic plan", purpose: "A synthetic purpose" }, startDate: TODAY, endDate: addDays(monday, 34), firmSessions: sessions, shapeWeeks },
         why: words(7, 280),
       });
       const probe = open(images.get("plan-catalog")!);

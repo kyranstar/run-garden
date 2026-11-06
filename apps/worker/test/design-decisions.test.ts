@@ -227,7 +227,7 @@ describe("propose_plan: what the card says of the watch, and what the condition 
   const byDistance = (title: string, category: string, metres: number) => ({ category, title, durationMinutes: 60, run: { blocks: [{ kind: "distance", value: metres, intensity: "easy" }] } });
   const lift = (title: string, names: string[], category = "strength") => ({ category, title, durationMinutes: 30, lift: { exercises: names.map((name) => ({ name, sets: 3, reps: 6 })) } });
   const block = (discipline: "run" | "lift", firmSessions: Array<{ date: string; session: unknown }>, startDate = "2026-05-18") => ({
-    change: { kind: "createPlan", discipline, name: discipline === "run" ? "Run block" : "Strength block", startDate, endDate: "2026-06-07", firmSessions, shapeWeeks: [] },
+    change: { kind: "createPlan", discipline, name: discipline === "run" ? "Run block" : "Strength block", newPlan: { name: "Synthetic plan", purpose: "A synthetic purpose" }, startDate, endDate: "2026-06-07", firmSessions, shapeWeeks: [] },
     why: "A steady block.",
   });
 

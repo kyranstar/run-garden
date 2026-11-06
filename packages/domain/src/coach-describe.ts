@@ -246,8 +246,11 @@ function datedSessionLines(
  *
  * `planned` is optional context (see PlannedRef): without it the lines for
  * id-addressed ops say what the day becomes but not what it was.
+ *
+ * A new block says whose it is: the plan it continues (by its name from `planNames`, else plainly "one of your plans")
+ * or the new plan it starts. A block stored before blocks named a plan says neither.
  */
-export function describeOps(ops: CoachOp[], planned?: ReadonlyMap<string, PlannedRef>): OpLine[] {
+export function describeOps(ops: CoachOp[], planned?: ReadonlyMap<string, PlannedRef>, planNames?: ReadonlyMap<string, string>): OpLine[] {
   const lines: OpLine[] = [];
   for (const op of ops) {
     switch (op.kind) {
@@ -379,11 +382,17 @@ export function describeOps(ops: CoachOp[], planned?: ReadonlyMap<string, Planne
         break;
       }
       case "createPlan": {
+        const belongs = op.continuesPlanId
+          ? `continues ${planNames?.get(op.continuesPlanId) ? JSON.stringify(planNames.get(op.continuesPlanId)) : "one of your plans"}`
+          : op.newPlan
+            ? `starts a new plan, ${JSON.stringify(op.newPlan.name)}`
+            : null;
+        const change = [belongs, op.raceDate ? `race day ${dayLabel(op.raceDate)}` : null].filter((x) => x !== null).join(" · ");
         lines.push({
           date: op.startDate,
-          summary: `New plan: ${op.name} · ${dayLabel(op.startDate)} to ${dayLabel(op.endDate)}`,
+          summary: `${op.continuesPlanId ? "Next phase" : "New plan"}: ${op.name} · ${dayLabel(op.startDate)} to ${dayLabel(op.endDate)}`,
           was: null,
-          change: op.raceDate ? `race day ${dayLabel(op.raceDate)}` : null,
+          change: change === "" ? null : change,
           detail: [],
           kind: op.kind,
         });

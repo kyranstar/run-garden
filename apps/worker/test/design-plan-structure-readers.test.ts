@@ -106,6 +106,7 @@ const tenK = {
   kind: "createPlan",
   discipline: "run",
   name: "10K build",
+  newPlan: { name: "Synthetic plan", purpose: "A synthetic purpose" },
   startDate: "2026-05-18",
   endDate: "2026-06-14",
   raceDate: "2026-06-14",

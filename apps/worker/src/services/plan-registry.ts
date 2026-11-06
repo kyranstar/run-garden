@@ -5,7 +5,7 @@ import { sha256Hex } from "../auth/crypto.js";
 import { restoreInProgress } from "./account-state.js";
 import { isLoosePlan, lineBlockOf, loadNonCoachPlanEntries } from "./coach-plans.js";
 import { runAtomically, type Db } from "./db.js";
-import { isPlanKind, lineKeysByPlan, planPatchSchema, planSummaryOf, PLAN_KINDS, type PlanPatch, type PlanSummaryDto } from "./plan-summaries.js";
+import { DISCIPLINE_WORD, isPlanKind, lineKeysByPlan, planPatchSchema, planSummaryOf, PLAN_KINDS, type PlanPatch, type PlanSummaryDto } from "./plan-summaries.js";
 
 /**
  * THE REGISTRY'S BACKFILL (plans with a purpose, Stage 1): every plan the app already has gets a row in `programs`,
@@ -35,9 +35,6 @@ const STATEMENT_BUDGET = 45;
 const LINK_CHUNK = 90;
 /** The reads that always happen: restore check, plans, registry, and the Studio's and COROS's entries (three at most). */
 const FIXED_READS = 6;
-
-/** `programs.disciplines` speaks "run", "strength" and "yoga"; a coach plan's discipline is "run", "lift" or "mobility". */
-const DISCIPLINE_WORD = { run: "run", lift: "strength", mobility: "yoga" } as const;
 
 /** A line's plan id: its first block's id, which never changes while the line holds that block. */
 function planIdForLine(blockIds: readonly string[]): string {

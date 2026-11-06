@@ -12,7 +12,15 @@
  * replaces the first (a whole plan is one intention, approved with one tap). Never reviewed: the finish makes it the
  * athlete's.
  *
+ * A NEW BLOCK SAYS WHICH PLAN IT BELONGS TO (plans with a purpose §3.2): `continuesPlanId`, a plan of this account's that
+ * is active and the coach's (`programs.id`, as read_plans gives it), or `newPlan` — its name, purpose (200 characters),
+ * brief (1,000) and ending, which comes from the plan's sport (`defaultOnEnd`) when it isn't given. Dates decide
+ * nothing. The apply links the block, and makes the plan, in one batch (coach-apply.ts `structuralStep`).
+ *
  * REFUSED, each teachable, nothing written:
+ *  - a new block naming neither a plan to continue nor a new plan, or both (`plan_unnamed`); a plan to continue that isn't
+ *    this account's, is stopped, or isn't a coach plan (`plan_not_continuable`); a purpose, brief or ending the plan can't
+ *    have (`invalid_input`);
  *  - a role other than the main coach's (`not_for_role`); a kind that isn't a plan's shape (`not_a_plan_change`: one
  *    session is adjust_plan's); a change its schema refuses (`invalid_input`);
  *  - more than MAX_PLAN_SESSIONS sessions (`too_many_sessions`) or sessions over more than MAX_FIRM_WEEKS weeks
@@ -48,9 +56,10 @@
  */
 import { sql } from "drizzle-orm";
 import { z } from "zod";
-import { accountState, coachPlans, coachProposals } from "@rg/database";
-import { addDays, coachOpSchema, dayLabel, daysBetween, describeOps, isoWeekday, LINE_GAP_DAYS, linesOf, planEnded, validateOps, type CoachOp, type LineBlock, type OpLine } from "@rg/domain";
+import { accountState, coachPlans, coachProposals, programs } from "@rg/database";
+import { addDays, coachOpSchema, dayLabel, daysBetween, defaultOnEnd, describeOps, isoWeekday, LINE_GAP_DAYS, linesOf, onEndAllowed, planEnded, validateOps, type CoachOp, type LineBlock, type OpLine } from "@rg/domain";
 import { accountLibraryFrom, personalMovesSql } from "../account-library.js";
+import { DISCIPLINE_WORD } from "../plan-summaries.js";
 import { guardrailCtx } from "../coach-wake.js";
 import { buildExerciseIndex, exerciseNameMap, resolveOpsExercises } from "../exercise-catalog.js";
 import { OPEN_PROPOSAL_STATUSES } from "../design-review.js";
@@ -106,12 +115,18 @@ const DATED = {
 const CHANGE_SCHEMA = {
   type: "object",
   description:
-    "createPlan { discipline: run|lift, name, startDate, endDate, raceDate?, firmSessions, shapeWeeks }; extendPlan { planId, shapeWeeks }; firmUp or reshapeWeek { planId, weekStart, sessions } (a week filled in, or its sessions replaced); windDown { planId, sessions } (easier sessions in place of what is planned in their weeks); retirePlan { planId } (its sessions still to come come off).",
+    "createPlan { discipline: run|lift, name, continuesPlanId (a planId from read_plans) or newPlan { name, purpose, brief?, onEnd? }, startDate, endDate, raceDate?, firmSessions, shapeWeeks }; extendPlan { planId, shapeWeeks }; firmUp or reshapeWeek { planId, weekStart, sessions } (a week filled in, or its sessions replaced); windDown { planId, sessions } (easier sessions in place of what is planned in their weeks); retirePlan { planId } (its sessions still to come come off).",
   properties: {
     kind: { enum: [...PLAN_STRUCTURE_KINDS] },
     planId: { type: "string" },
     discipline: { enum: ["run", "lift"] },
     name: { type: "string" },
+    continuesPlanId: { type: "string" },
+    newPlan: {
+      type: "object",
+      properties: { name: { type: "string" }, purpose: { type: "string" }, brief: { type: "string" }, onEnd: { type: "string" } },
+      required: ["name", "purpose"],
+    },
     startDate: { type: "string" },
     endDate: { type: "string" },
     raceDate: { type: "string" },
@@ -198,9 +213,10 @@ export function lineWords(l: OpLine): string {
   return `${day && !l.summary.includes(day) ? `${day} · ` : ""}${l.summary}${l.change ? ` — ${l.change}` : ""}`;
 }
 
-/** The manifest's lines for a change (the thread coach's own `describeOps`), at most PLAN_LINES_MAX, then "and N more". */
-export function planLines(op: PlanStructureChange): string[] {
-  const all = describeOps([op as CoachOp]).map(lineWords);
+/** The manifest's lines for a change (the thread coach's own `describeOps`), at most PLAN_LINES_MAX, then "and N more".
+ * `planNames`: the plan a new block continues, by its id, so its line says whose it is. */
+export function planLines(op: PlanStructureChange, planNames?: ReadonlyMap<string, string>): string[] {
+  const all = describeOps([op as CoachOp], undefined, planNames).map(lineWords);
   return all.length <= PLAN_LINES_MAX ? all : [...all.slice(0, PLAN_LINES_MAX), `and ${all.length - PLAN_LINES_MAX} more`];
 }
 
@@ -234,6 +250,16 @@ function storedAnswer(proposalId: string, op: PlanStructureOp, o: { replaced?: b
       title: untrusted(op.title),
       summary: untrusted(op.summary),
       lines: op.lines.map(untrusted),
+      ...(op.op.kind === "createPlan" && op.op.newPlan
+        ? {
+            newPlan: {
+              name: untrusted(op.op.newPlan.name),
+              purpose: untrusted(op.op.newPlan.purpose),
+              ...(op.op.newPlan.brief ? { brief: untrusted(op.op.newPlan.brief) } : {}),
+              onEnd: op.op.newPlan.onEnd,
+            },
+          }
+        : {}),
       why: untrusted(op.why),
       issues: op.issues,
       next: "It goes to the athlete as one card — Approve plan or Not now — never reviewed. A second propose_plan replaces it. Call finish when the rest is done.",
@@ -273,7 +299,7 @@ function endedRefusal(plan: PlanRow, kind: PlanStructureChange["kind"], phases: 
   if (!line) return refuse("not_running", `That block ${when}.`, `${CONTINUE_LINE} read_plans lists the lines.`);
   const after = addDays(line.endDate, 1);
   const start = after < today ? today : after;
-  const continueIt = `to continue the line past its end, propose its next phase (createPlan) starting ${start}; it joins the line.`;
+  const continueIt = `to continue the line past its end, propose its next phase (createPlan) starting ${start}; name its plan (continuesPlanId) and it joins the line.`;
   if (!line.ended && (kind === "extendPlan" || kind === "windDown")) {
     const last = lastPhaseOf(line);
     return refuse("not_running", `That block ${when}; its line ends with ${JSON.stringify(last.name)} (${last.id}).`, `Extend or wind down that phase instead — or, ${continueIt}`);
@@ -285,7 +311,7 @@ function endedRefusal(plan: PlanRow, kind: PlanStructureChange["kind"], phases: 
   if (start > addDays(line.endDate, LINE_GAP_DAYS)) {
     return refuse("not_running", `That block ${when}, and its line ended on ${line.endDate}, more than a week ago.`, `What comes next is a line of its own: propose it with createPlan, starting ${today} or later.`);
   }
-  return refuse("not_running", `That block ${when}.`, `To continue its line, propose its next phase (createPlan) starting ${start}; it joins the line.`);
+  return refuse("not_running", `That block ${when}.`, `To continue its line, propose its next phase (createPlan) starting ${start}; name its plan (continuesPlanId) and it joins the line.`);
 }
 
 export const proposePlan: DesignTool = {
@@ -338,6 +364,23 @@ export const proposePlan: DesignTool = {
     }
     const dates = badDates(op);
     if (dates) return refuse("bad_dates", dates, "Fix the dates and call it again.");
+    // A new block belongs to a plan, and says which (plans with a purpose §3.2): dates decide nothing.
+    if (op.kind === "createPlan") {
+      if (!!op.continuesPlanId === !!op.newPlan) {
+        return refuse(
+          "plan_unnamed",
+          op.continuesPlanId ? "The block names both a plan it continues and a new plan." : "The block doesn't say which plan it belongs to.",
+          "Name the plan it continues (continuesPlanId: a planId from read_plans), or give a new plan's name and purpose (newPlan) — one of the two. Two plans of one sport can have different purposes.",
+        );
+      }
+      if (op.newPlan) {
+        if (op.newPlan.onEnd && !onEndAllowed("coach", op.newPlan.onEnd)) {
+          return refuse("invalid_input", `A plan you write can't end by ${JSON.stringify(op.newPlan.onEnd)}.`, "Leave onEnd out, or use ask, continue or finish.");
+        }
+        // Said as it will be kept: the ending the plan's sport defaults to when none is given.
+        op.newPlan.onEnd ??= defaultOnEnd("coach", [DISCIPLINE_WORD[op.discipline]]);
+      }
+    }
 
     const proposalId = designProposalId(mainRunId);
     const planId = "planId" in op ? op.planId : null;
@@ -358,6 +401,12 @@ export const proposePlan: DesignTool = {
             from ${coachPlans} b where b.user_id = ${ctx.userId} and substr(b.id, 1, ${LOOSE_PLAN_ID_PREFIX.length}) <> ${LOOSE_PLAN_ID_PREFIX}
               and b.discipline = (select c.discipline from ${coachPlans} c where c.id = ${planId} and c.user_id = ${ctx.userId}))`
         : sql`null`,
+      // The plan a new block says it continues: this account's registry row, for the check and its name.
+      continues:
+        op.kind === "createPlan" && op.continuesPlanId
+          ? sql`(select json_object('name', ${programs.name}, 'kind', ${programs.kind}, 'status', ${programs.status})
+              from ${programs} where ${programs.id} = ${op.continuesPlanId} and ${programs.userId} = ${ctx.userId} and ${programs.archivedAt} is null)`
+          : sql`null`,
       // A new block's running blocks of its discipline over its span (never a loose bucket of one-offs).
       overlaps:
         op.kind === "createPlan"
@@ -386,6 +435,16 @@ export const proposePlan: DesignTool = {
       return refuse("restoring", "The athlete's account is being restored right now.", "Finish, and say the plan can be asked for again once the restore is done.");
     }
     const plan = (parsedJson(extra.plan) as PlanRow | null) ?? null;
+    const continued = (parsedJson(extra.continues) as { name?: unknown; kind?: unknown; status?: unknown } | null) ?? null;
+    if (op.kind === "createPlan" && op.continuesPlanId) {
+      if (!continued || continued.kind !== "coach" || continued.status !== "active" || typeof continued.name !== "string") {
+        return refuse(
+          "plan_not_continuable",
+          `${JSON.stringify(op.continuesPlanId)} isn't a plan of the athlete's that is still running and yours to continue.`,
+          "Use a planId from read_plans of a coach plan that isn't stopped — or give the block a new plan (newPlan).",
+        );
+      }
+    }
     if (planId !== null) {
       if (!plan || plan.id.startsWith("adhoc-")) {
         return refuse("not_your_block", `${JSON.stringify(planId)} isn't a block of yours: only a plan you wrote can change its shape.`, "Use a plan id read_plans marks coachMayChange — or adjust_plan for one of its sessions.");
@@ -452,7 +511,7 @@ export const proposePlan: DesignTool = {
       ],
       title: words.title,
       summary: words.summary,
-      lines: planLines(op),
+      lines: planLines(op, op.kind === "createPlan" && op.continuesPlanId && typeof continued?.name === "string" ? new Map([[op.continuesPlanId, continued.name]]) : undefined),
       planKey: planId !== null ? `plan:${planId}` : `new:${(op as Extract<PlanStructureChange, { kind: "createPlan" }>).discipline}`,
       date: firstDateOf(op, athlete.today),
       toolUseId,

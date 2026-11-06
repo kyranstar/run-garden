@@ -396,6 +396,18 @@ describe("describeOps — every op kind is described", () => {
     expect(lines[2]!.summary).toBe("Week of Mon 7 Sep — hold, one quality");
     expect(lines[2]!.change).toBe("sketched: long run");
   });
+
+  it("says plainly whose a new block is: the plan it continues by its name, a new plan it starts, or neither for an old op", () => {
+    const base = SAMPLES.createPlan as Record<string, unknown>;
+    const continuing = describeOps([coachOpSchema.parse({ ...base, continuesPlanId: "plan-x" })], undefined, new Map([["plan-x", "Synthetic running"]]))[0]!;
+    expect(continuing.summary).toBe("Next phase: Post-race block · Mon 24 Aug to Fri 20 Nov");
+    expect(continuing.change).toBe('continues "Synthetic running"');
+    expect(describeOps([coachOpSchema.parse({ ...base, continuesPlanId: "plan-x" })])[0]!.change).toBe("continues one of your plans");
+    const starting = describeOps([coachOpSchema.parse({ ...base, newPlan: { name: "Fresh start", purpose: "Be sturdy" } })])[0]!;
+    expect(starting.summary).toBe("New plan: Post-race block · Mon 24 Aug to Fri 20 Nov");
+    expect(starting.change).toBe('starts a new plan, "Fresh start"');
+    expect(describeOps([coachOpSchema.parse(base)])[0]!.change).toBeNull();
+  });
 });
 
 describe("a day and a span, as the athlete reads them (fix wave 3B, B-I3)", () => {

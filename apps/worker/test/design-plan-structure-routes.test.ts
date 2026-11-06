@@ -100,6 +100,7 @@ function createPlan(o: { perWeek: number; weeks?: number; discipline?: "run" | "
     kind: "createPlan",
     discipline: o.discipline ?? "run",
     name: "Base block",
+    newPlan: { name: "Synthetic plan", purpose: "A synthetic purpose" },
     startDate: monday,
     endDate: addDays(monday, 7 * (weeks + 2) - 1),
     firmSessions: sessions,

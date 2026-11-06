@@ -1,5 +1,5 @@
 import { z } from "zod";
-import { defaultOnEnd, isLocalDate, planOnEndSchema, type PlanOnEnd, type ProgramKind, type TrainingLine } from "@rg/domain";
+import { defaultOnEnd, isLocalDate, planOnEndSchema, PLAN_BRIEF_MAX, PLAN_OBJECTIVES_MAX, PLAN_PURPOSE_MAX, type PlanOnEnd, type ProgramKind, type TrainingLine } from "@rg/domain";
 
 /**
  * A PLAN, AS THE APP LISTS IT (plans with a purpose, Stage 1): pure shaping, no reads. The plans are the `programs`
@@ -15,10 +15,13 @@ import { defaultOnEnd, isLocalDate, planOnEndSchema, type PlanOnEnd, type Progra
 /** The kinds that are plans. */
 export const PLAN_KINDS = ["adaptive", "course", "coach", "coros_import"] as const satisfies readonly ProgramKind[];
 
-export const PURPOSE_MAX = 200;
-export const BRIEF_MAX = 1000;
+export const PURPOSE_MAX = PLAN_PURPOSE_MAX;
+export const BRIEF_MAX = PLAN_BRIEF_MAX;
 /** Objectives a plan may serve. */
-export const OBJECTIVES_MAX = 12;
+export const OBJECTIVES_MAX = PLAN_OBJECTIVES_MAX;
+
+/** `programs.disciplines` speaks "run", "strength" and "yoga"; a coach plan's discipline is "run", "lift" or "mobility". */
+export const DISCIPLINE_WORD = { run: "run", lift: "strength", mobility: "yoga" } as const;
 
 /**
  * What an edit may carry. Only the keys sent change; `null` clears a text or a pause. An unknown key is refused, so a

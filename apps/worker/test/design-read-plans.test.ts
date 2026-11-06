@@ -20,7 +20,7 @@ import { at, day, NOW, OTHER_SENTINEL, seedOtherAthlete, seedOwnerPlans, seedRic
 import { isWrite, makeTestDb, makeTestUser } from "./helpers.js";
 
 /** The words read_plans puts where it once said "plan what comes after it as a new plan" (training lines §3.7). */
-const CONTINUE_LINE = "To continue a line, propose its next phase starting the day after the line's last phase ends; it joins the line.";
+const CONTINUE_LINE = "To continue a plan, propose its next phase (createPlan), naming the plan (continuesPlanId); it joins it.";
 /** Beside it: which phase "Extend / Wind down my running plan" means while the line is live (final review, I4). */
 const EXTEND_LINE = "Extend or wind down a line through its last phase.";
 /** A block the athlete stopped, in propose_plan's own words (final review, I2). */

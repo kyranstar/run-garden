@@ -81,6 +81,7 @@ const createPlan = (o: { sessions?: Array<{ date: string; session: unknown }>; s
   kind: "createPlan",
   discipline: "run",
   name: "10K build",
+  newPlan: { name: "Road racing", purpose: "Run a 10K in June" },
   startDate: o.startDate ?? "2026-05-18",
   endDate: "2026-06-14",
   raceDate: "2026-06-14",
@@ -177,7 +178,7 @@ describe("propose_plan: a new block", () => {
     // The thread coach's own manifest lines: the plan, its four sessions, three shape weeks — eight, all shown.
     expect(op.lines).toHaveLength(8);
     // Each line's day said once: a line that names its day goes without the prefix.
-    expect(op.lines[0]).toBe("New plan: 10K build · Mon 18 May to Sun 14 Jun — race day Sun 14 Jun");
+    expect(op.lines[0]).toBe('New plan: 10K build · Mon 18 May to Sun 14 Jun — starts a new plan, "Road racing" · race day Sun 14 Jun');
     expect(op.lines[1]).toBe("Mon 18 May · Easy run · 40 min");
     expect(op.lines[5]).toBe("Week of Mon 25 May — about 32 km — sketched: tempo 25 min · long 13 km");
     // The proposal's row: named by the plan, expiring on its first day.
@@ -249,6 +250,78 @@ describe("propose_plan: a new block", () => {
     const older = await propose(run, { change: createPlan(), why: "First." }, "toolu_first");
     expect(ok(older.res).data.superseded).toBe(true);
     expect(older.writes).toBe(0);
+  });
+});
+
+/** A plan of the registry, for a block to continue. */
+async function plan(id: string, o: { userId?: string; kind?: string; status?: string; disciplines?: string[]; name?: string } = {}) {
+  await db.insert(schema.programs).values({
+    id, userId: o.userId ?? rich.userId, kind: o.kind ?? "coach", name: o.name ?? "Synthetic plan", status: o.status ?? "active", disciplines: o.disciplines ?? ["run"],
+    startDate: null, endDate: null, raceDate: null, source: null, config: {}, purpose: null, brief: null, onEnd: "ask", pausedUntil: null, objectiveIds: null,
+    createdAt: at(day(20)), updatedAt: at(day(20)), archivedAt: null,
+  });
+}
+const naming = (o: Record<string, unknown>) => {
+  const { newPlan: _drop, ...rest } = createPlan();
+  return { ...rest, ...o };
+};
+
+describe("propose_plan: a new block says which plan it belongs to", () => {
+  it("names neither a plan to continue nor a new plan, or both: plan_unnamed, nothing written", async () => {
+    await plan("plan-a");
+    const run = await mainRun();
+    const neither = refused((await propose(run, { change: naming({}), why: "x" })).res);
+    expect(neither.error).toBe("plan_unnamed");
+    const both = refused((await propose(run, { change: naming({ continuesPlanId: "plan-a", newPlan: { name: "N", purpose: "P" } }), why: "x" })).res);
+    expect(both.error).toBe("plan_unnamed");
+    expect(await opsOf(run.id)).toBeUndefined();
+  });
+
+  it("continues a plan of the account's: stored on the op, the manifest says it continues that plan by its name", async () => {
+    await plan("plan-a", { name: "Synthetic running" });
+    const run = await mainRun();
+    const out = ok((await propose(run, { change: naming({ continuesPlanId: "plan-a" }), why: "The next phase." })).res);
+    const op = (await opsOf(run.id))!.ops[0] as PlanStructureOp;
+    expect((op.op as { continuesPlanId?: string }).continuesPlanId).toBe("plan-a");
+    expect(out.data.lines[0].text).toContain('continues "Synthetic running"');
+  });
+
+  it("refuses a plan that is another account's, stopped, not a coach plan or not there: plan_not_continuable", async () => {
+    const other = await makeTestUser(db);
+    await plan("plan-theirs", { userId: other.userId });
+    await plan("plan-stopped", { status: "retired" });
+    await plan("plan-prog", { kind: "adaptive" });
+    const run = await mainRun();
+    for (const id of ["plan-theirs", "plan-stopped", "plan-prog", "plan-nowhere"]) {
+      const err = refused((await propose(run, { change: naming({ continuesPlanId: id }), why: "x" })).res);
+      expect(err.error, id).toBe("plan_not_continuable");
+    }
+    expect(await opsOf(run.id)).toBeUndefined();
+  });
+
+  it("a new plan: its name and purpose come back marked untrusted, its ending defaults from its sport (run asks)", async () => {
+    const run = await mainRun();
+    const out = ok((await propose(run, { change: naming({ newPlan: { name: "Strong base", purpose: "Be sturdy", brief: "Twice a week." } }), why: "x" })).res);
+    expect(out.data.newPlan).toEqual({
+      name: { untrusted: true, text: "Strong base" },
+      purpose: { untrusted: true, text: "Be sturdy" },
+      brief: { untrusted: true, text: "Twice a week." },
+      onEnd: "ask",
+    });
+    const lift = ok((await propose(run, { change: { ...naming({ newPlan: { name: "Strong base", purpose: "Be sturdy" } }), discipline: "lift" }, why: "x" })).res);
+    expect(lift.data.newPlan.onEnd).toBe("continue");
+  });
+
+  it("a purpose over 200 characters or a brief over 1,000 is refused, an ending the plan can't have too", async () => {
+    const run = await mainRun();
+    const long = refused((await propose(run, { change: naming({ newPlan: { name: "N", purpose: "p".repeat(201) } }), why: "x" })).res);
+    expect(long.error).toBe("invalid_input");
+    expect(long.why).toContain("newPlan.purpose");
+    const brief = refused((await propose(run, { change: naming({ newPlan: { name: "N", purpose: "P", brief: "b".repeat(1001) } }), why: "x" })).res);
+    expect(brief.why).toContain("newPlan.brief");
+    const end = refused((await propose(run, { change: naming({ newPlan: { name: "N", purpose: "P", onEnd: "forever" } }), why: "x" })).res);
+    expect(end.error).toBe("invalid_input");
+    ok((await propose(run, { change: naming({ newPlan: { name: "N", purpose: "p".repeat(200), brief: "b".repeat(1000), onEnd: "finish" } }), why: "x" })).res);
   });
 });
 
@@ -394,17 +467,17 @@ describe("propose_plan: refused in words, nothing written", () => {
       expect(err.why, kind).toContain(`ended on ${day(1)}`);
       expect(err.why, kind).toContain(named);
       expect(err.fix, kind).toContain(fix);
-      expect(err.fix, kind).toContain(`propose its next phase (createPlan) starting ${day(-54)}; it joins the line.`);
+      expect(err.fix, kind).toContain(`propose its next phase (createPlan) starting ${day(-54)}; name its plan (continuesPlanId) and it joins the line.`);
     }
   });
 
   describe("the last phase of a line past its end: its next phase from the day after, today at the earliest — joining the line within a week", () => {
     const cases: Array<{ endedDaysAgo: number; fix: string }> = [
-      { endedDaysAgo: 1, fix: `To continue its line, propose its next phase (createPlan) starting ${TODAY}; it joins the line.` },
-      { endedDaysAgo: 3, fix: `To continue its line, propose its next phase (createPlan) starting ${TODAY}; it joins the line.` },
-      { endedDaysAgo: 7, fix: `To continue its line, propose its next phase (createPlan) starting ${TODAY}; it joins the line.` },
+      { endedDaysAgo: 1, fix: `To continue its line, propose its next phase (createPlan) starting ${TODAY}; name its plan (continuesPlanId) and it joins the line.` },
+      { endedDaysAgo: 3, fix: `To continue its line, propose its next phase (createPlan) starting ${TODAY}; name its plan (continuesPlanId) and it joins the line.` },
+      { endedDaysAgo: 7, fix: `To continue its line, propose its next phase (createPlan) starting ${TODAY}; name its plan (continuesPlanId) and it joins the line.` },
       // Seven rest days between its end and today: a full week's rest keeps the line (owner, 2026-10-23).
-      { endedDaysAgo: 8, fix: `To continue its line, propose its next phase (createPlan) starting ${TODAY}; it joins the line.` },
+      { endedDaysAgo: 8, fix: `To continue its line, propose its next phase (createPlan) starting ${TODAY}; name its plan (continuesPlanId) and it joins the line.` },
       { endedDaysAgo: 9, fix: `What comes next is a line of its own: propose it with createPlan, starting ${TODAY} or later.` },
     ];
     for (const c of cases) {
@@ -433,7 +506,7 @@ describe("propose_plan: refused in words, nothing written", () => {
       const err = refused((await propose(run, { change: { kind: "retirePlan", planId: "cp-bridge" }, why: "x" })).res);
       expect(err.error).toBe("not_running");
       expect(err.why).toBe("That block has ended (completed).");
-      expect(err.fix).toBe(`To continue its line, propose its next phase (createPlan) starting ${TODAY}; it joins the line.`);
+      expect(err.fix).toBe(`To continue its line, propose its next phase (createPlan) starting ${TODAY}; name its plan (continuesPlanId) and it joins the line.`);
     });
 
     it("a block ending today is still running: it takes the change", async () => {

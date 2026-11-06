@@ -19,6 +19,11 @@ export const PLAN_ON_END = ["ask", "continue", "finish"] as const;
 export const planOnEndSchema = z.enum(PLAN_ON_END);
 export type PlanOnEnd = z.infer<typeof planOnEndSchema>;
 
+/** What a plan's words may hold: its purpose a sentence, its brief the rules for its next sessions, and its objectives. */
+export const PLAN_PURPOSE_MAX = 200;
+export const PLAN_BRIEF_MAX = 1000;
+export const PLAN_OBJECTIVES_MAX = 12;
+
 const ON_END_ALLOWED: Record<ProgramKind, readonly PlanOnEnd[]> = {
   adaptive: ["continue"],
   course: ["continue", "finish"],

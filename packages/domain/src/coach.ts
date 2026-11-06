@@ -1,5 +1,6 @@
 import { z } from "zod";
 import { formatStageDuration } from "./duration.js";
+import { PLAN_BRIEF_MAX, PLAN_OBJECTIVES_MAX, PLAN_PURPOSE_MAX, planOnEndSchema } from "./program.js";
 import { formatWeightIn, type WeightUnit } from "./weights.js";
 
 /**
@@ -1239,6 +1240,23 @@ export const coachOpSchema = z.discriminatedUnion("kind", [
         runs: "run",
       }),
       name: prose(60),
+      /**
+       * WHICH PLAN THE BLOCK BELONGS TO (plans with a purpose §3.2): the plan it continues (a plan id read_plans gives),
+       * or a new plan's own words. Dates decide nothing. Both are optional here so an old stored proposal still parses;
+       * `propose_plan` refuses a block that names neither, or both.
+       */
+      continuesPlanId: orNull(echoedId.optional()),
+      newPlan: orNull(
+        z
+          .object({
+            name: z.string().trim().min(1).max(60),
+            purpose: z.string().trim().min(1).max(PLAN_PURPOSE_MAX),
+            brief: orNull(z.string().trim().min(1).max(PLAN_BRIEF_MAX).optional()),
+            onEnd: orNull(planOnEndSchema.optional()),
+            objectiveIds: orNull(z.array(z.string().min(1)).max(PLAN_OBJECTIVES_MAX).optional()),
+          })
+          .optional(),
+      ),
       startDate: isoDate,
       endDate: isoDate,
       raceDate: orNull(isoDate.optional()),

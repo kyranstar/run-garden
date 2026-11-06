@@ -56,6 +56,7 @@ async function planned(): Promise<string> {
     kind: "createPlan",
     discipline: "run",
     name: "Base block",
+    newPlan: { name: "Synthetic plan", purpose: "A synthetic purpose" },
     startDate: monday,
     endDate: addDays(monday, 27),
     firmSessions: Array.from({ length: 14 }, (_, n) => ({ date: addDays(monday, n), session: easy(30 + n, `Run ${n + 1}`) })),
