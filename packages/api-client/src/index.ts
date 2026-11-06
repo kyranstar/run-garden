@@ -940,6 +940,8 @@ export interface DesignCiteDto {
 export interface DesignCorrectionLineDto {
   opId: string;
   target: "move" | "reading" | "insight" | "link";
+  /** A move's id, or `<post>:<n>`. */
+  targetId: string;
   field: string;
   name: string;
   line: string;

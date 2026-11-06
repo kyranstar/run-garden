@@ -346,3 +346,34 @@ describe("a correction beside a workout (final review, Important 4)", () => {
     expect(both.total - alone.total).toBeLessThanOrEqual(CORRECTIONS_FIXED + correctionCostOf(fix));
   });
 });
+
+describe("a dose fix that doesn't land under its pins card (final review, Important 1)", () => {
+  it("the pins apply; the trail's approved line states no dose the move doesn't have", async () => {
+    const b = await batch();
+    const ctx = await mainRun();
+    await readSavesInRun(db, ctx);
+    const pinsTool = ACT_TOOLS.find((t) => t.name === "pin_moves")!;
+    const pinned = await pinsTool.run(ctx, {
+      batchId: b.batchId, pin: [b.lift], title: "One in", why: "The lift fills the hip work.",
+      lines: [{ moveId: b.lift, text: "It serves hip mobility.", cites: ["history"] }, { moveId: b.nod, text: "Your care covers it.", cites: ["history"] }, { moveId: b.tuck, text: "Not this week.", cites: ["history"] }],
+    });
+    if (isToolErr(pinned)) throw new Error(pinned.why);
+    const fixed = await ACT_TOOLS.find((t) => t.name === "correct_import")!.run({ ...ctx, toolUseId: "toolu_dose" }, { target: "move", targetId: b.lift, field: "dose", after: DOSE_FIX, why: "The transcript says so.", basis: "evidence", cites: ["history"] });
+    if (isToolErr(fixed)) throw new Error(fixed.why);
+    const id = designProposalId(ctx.run.id);
+    await db.update(coachProposals).set({ status: "pending" }).where(eq(coachProposals.id, id));
+    // The owner changed the dose meanwhile: the fix is refused stale; the pins still apply.
+    const rec = (await recordOf(b.lift)).record as ExerciseRecord;
+    await db.update(personalMoves).set({ record: { ...rec, dose: { type: "reps", range: [5, 5] } } }).where(eq(personalMoves.id, b.lift));
+    const res = await approve(id);
+    expect(res.status, JSON.stringify(res.json)).toBe(200);
+    expect(res.json.refused.map((r: { error: string }) => r.error)).toEqual(["stale"]);
+    const approved = (await db.select().from(importEvents).where(and(eq(importEvents.userId, userId), eq(importEvents.stage, "coach"), eq(importEvents.moveId, b.lift))))
+      .filter((e) => e.summary.startsWith("You approved it"));
+    expect(approved.length).toBeGreaterThan(0);
+    for (const e of approved) {
+      expect(e.summary).not.toContain("30 s, 2 sets");
+      expect((e.detail as { dose: unknown }).dose).toBeNull();
+    }
+  });
+});

@@ -394,6 +394,7 @@ function toCorrectionLine(v: unknown): DesignCorrectionLineDto | null {
   return {
     opId: c.opId,
     target: (["move", "reading", "insight", "link"].includes(String(c.target)) ? c.target : "move") as DesignCorrectionLineDto["target"],
+    targetId: text(c.targetId),
     field: text(c.field),
     name: text(c.name),
     line: c.line,

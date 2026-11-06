@@ -54,9 +54,11 @@ function Chips({ cites, open }: { cites: readonly DesignCiteDto[] | undefined; o
   );
 }
 
-function Line({ line, open }: { line: DesignPinsCardLineDto; open: Open }) {
+function Line({ line, open, unlanded }: { line: DesignPinsCardLineDto; open: Open; unlanded: ReadonlySet<string> }) {
   const reply = useContext(CoachReplyContext);
-  const where = [line.where, line.dose].filter((x): x is string => !!x).join(" · ");
+  // A dose a correction of the suggestion was to set, refused or not made: never shown as the move's (final review I1).
+  const dose = line.moveId && unlanded.has(line.moveId) ? null : line.dose;
+  const where = [line.where, dose].filter((x): x is string => !!x).join(" · ");
   const name = line.name ?? null;
   return (
     <li className="coach-review-line">
@@ -89,9 +91,32 @@ function Line({ line, open }: { line: DesignPinsCardLineDto; open: Open }) {
 }
 
 /** The review: In, then Left out (a line with no decision first, as it came), then the corrections, then the why. */
+/** How a correction ended, in a few words after its line: done, refused (its why), not changed, replaced; nothing while
+ * it is the athlete's to decide. */
+function fixOutcome(c: DesignCorrectionLineDto): { mark: string; after: string } {
+  switch (c.outcome?.status) {
+    case "applied":
+      return { mark: "✓ ", after: "" };
+    case "refused":
+      return { mark: "", after: ` — ${c.outcome.why}` };
+    case "declined":
+      return { mark: "", after: " — not changed" };
+    case "superseded":
+      return { mark: "", after: " — replaced by a newer suggestion" };
+    default:
+      return { mark: "", after: "" };
+  }
+}
+
 export function ReviewLines({ lines, corrections, why }: { lines: readonly DesignPinsCardLineDto[]; corrections: readonly DesignCorrectionLineDto[]; why: string | null }) {
   const [trail, setTrail] = useState<{ postId: string; focus: TrailFocus } | null>(null);
   const open: Open = (postId, focus) => setTrail({ postId, focus });
+  // The moves whose dose fix ended without landing: their lines state no dose.
+  const unlanded = new Set(
+    corrections
+      .filter((c) => c.target === "move" && c.field === "dose" && (c.outcome?.status === "refused" || c.outcome?.status === "declined" || c.outcome?.status === "superseded"))
+      .map((c) => c.targetId),
+  );
   const plain = lines.filter((l) => !l.decision);
   const groups: Array<[string, DesignPinsCardLineDto[]]> = [
     ["In", lines.filter((l) => l.decision === "in")],
@@ -102,7 +127,7 @@ export function ReviewLines({ lines, corrections, why }: { lines: readonly Desig
       {plain.length ? (
         <ul className="coach-plan-lines coach-review-lines">
           {plain.map((l, i) => (
-            <Line key={`p${i}`} line={l} open={open} />
+            <Line key={`p${i}`} line={l} open={open} unlanded={unlanded} />
           ))}
         </ul>
       ) : null}
@@ -112,7 +137,7 @@ export function ReviewLines({ lines, corrections, why }: { lines: readonly Desig
             <h4 className="coach-review-group">{title}</h4>
             <ul className="coach-plan-lines coach-review-lines">
               {list.map((l, i) => (
-                <Line key={`${title}${i}`} line={l} open={open} />
+                <Line key={`${title}${i}`} line={l} open={open} unlanded={unlanded} />
               ))}
             </ul>
           </section>
@@ -122,15 +147,20 @@ export function ReviewLines({ lines, corrections, why }: { lines: readonly Desig
         <section className="coach-review-section">
           <h4 className="coach-review-group">Corrections</h4>
           <ul className="coach-plan-lines coach-review-lines">
-            {corrections.map((c) => (
-              <li key={c.opId} className="coach-review-line coach-review-fix">
-                <p className="coach-review-text">
-                  {c.line}
-                  {c.why ? ` — ${c.why}` : ""}
-                  {c.basis === "owner" ? " (your word)" : ""} <Chips cites={c.cites} open={open} />
-                </p>
-              </li>
-            ))}
+            {corrections.map((c) => {
+              const o = fixOutcome(c);
+              return (
+                <li key={c.opId} className="coach-review-line coach-review-fix">
+                  <p className="coach-review-text">
+                    {o.mark}
+                    {c.line}
+                    {c.why && !o.after ? ` — ${c.why}` : ""}
+                    {c.basis === "owner" ? " (your word)" : ""}
+                    {o.after} <Chips cites={c.cites} open={open} />
+                  </p>
+                </li>
+              );
+            })}
           </ul>
         </section>
       ) : null}

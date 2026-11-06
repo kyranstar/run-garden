@@ -1457,7 +1457,14 @@ export async function approveDesignOps(
     const claimStatus = statusOfOps(allDesignedOps(claimOps));
     const claimedAt = await writeOps(db, userId, current, claimOps, claimStatus, ctx.now);
     current = { ...current, ops: claimOps, status: claimStatus, resolvedAt: claimedAt };
-    const outcome = await applyMovePins(db, userId, g, current, ctx.now);
+    // A line's dose that a correction of this suggestion was to set, and that hasn't landed (refused, declined, replaced,
+    // or not approved yet): the trail's approved line states none (final review I1).
+    const unlanded = new Set(
+      (allDesignedOps(current.ops).filter(isImportCorrectionOp) as DesignedCorrectionOp[])
+        .filter((f) => f.target === "move" && f.field === "dose" && (outcomes.get(f.id) ?? f.outcome)?.status !== "applied")
+        .map((f) => f.targetId),
+    );
+    const outcome = await applyMovePins(db, userId, g, current, ctx.now, unlanded);
     outcomes.set(g.id, outcome);
     if (outcome.status === "applied") pinned.push({ opId: g.id, summary: pinsDoneLine(outcome) });
     else refused.push({ opId: g.id, error: outcome.error, why: outcome.why });
@@ -1596,6 +1603,8 @@ async function applyMovePins(
   g: MovePinsOp,
   current: DesignProposalRow,
   now: string,
+  /** The moves whose dose a correction of the suggestion was to set and that hasn't landed: their lines' dose is not theirs. */
+  unlandedDose: ReadonlySet<string> = new Set(),
 ): Promise<Extract<MovePinsOutcome, { status: "applied" | "refused" }>> {
   const unreadable = { status: "refused" as const, at: now, error: "library_unreadable" as const, why: "The athlete's library couldn't be read just now — try again." };
   let row: { library: unknown; pinned_now: unknown; batch: unknown } | undefined;
@@ -1655,7 +1664,8 @@ async function applyMovePins(
     if (!fitted) lines.push("Its saves batch is no longer saved — not marked fitted in");
     // Fitted in, and so no longer fitting (spec §12.1) — and the coach's decision on each post's trail (import trail phase
     // 3): each line approved on every post of the batch naming its move. One batch, under the same guard.
-    const trail = decisionTrailStatement(db, userId, { proposalId: current.id, runId: current.id.startsWith("dp-") ? current.id.slice(3) : null, pins: [{ batchId: g.batchId, lines: pinsCardLinesOf(g.lines) }], fixes: [] }, "approved", now, asRead);
+    const trailLines = pinsCardLinesOf(g.lines).map((l) => (l.moveId && unlandedDose.has(l.moveId) ? { ...l, dose: undefined } : l));
+    const trail = decisionTrailStatement(db, userId, { proposalId: current.id, runId: current.id.startsWith("dp-") ? current.id.slice(3) : null, pins: [{ batchId: g.batchId, lines: trailLines }], fixes: [] }, "approved", now, asRead);
     await runAtomically(db, [
       ...(trail ? [trail] : []),
       ...(fitted

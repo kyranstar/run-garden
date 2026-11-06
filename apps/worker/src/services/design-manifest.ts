@@ -539,6 +539,7 @@ export function pinsLines(ops: readonly unknown[]): PinsLine[] {
 export interface CorrectionLine {
   opId: string;
   target: ImportCorrectionOp["target"];
+  targetId: string;
   field: string;
   name: string;
   line: string;
@@ -553,6 +554,7 @@ export function correctionLines(ops: readonly unknown[]): CorrectionLine[] {
   return (ops.filter(isImportCorrectionOp) as DesignedCorrectionOp[]).map((g) => ({
     opId: g.id,
     target: g.target,
+    targetId: g.targetId,
     field: g.field,
     name: g.name,
     line: g.line,

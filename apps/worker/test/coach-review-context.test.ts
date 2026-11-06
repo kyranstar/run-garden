@@ -118,7 +118,7 @@ describe("the card's lines and why in the next turn", () => {
     const runId = await turn([]);
     const manifest = (await designedManifest(db, userId, designProposalId(runId), [pins(runId, [LIFT_LINE]), FIX], NOW)) as { corrections?: unknown[] };
     expect(manifest.corrections).toEqual([
-      { opId: FIX.id, target: "move", field: "dose", name: "Zorbex hip lift", line: FIX.line, why: FIX.why, basis: "evidence", cites: FIX.cites, outcome: null },
+      { opId: FIX.id, target: "move", targetId: FIX.targetId, field: "dose", name: "Zorbex hip lift", line: FIX.line, why: FIX.why, basis: "evidence", cites: FIX.cites, outcome: null },
     ]);
   });
 });

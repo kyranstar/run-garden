@@ -40,7 +40,7 @@ const LIFT = {
 };
 const NOD = { moveId: "myZorbexNeckNodAbc123", name: "Zorbex neck nod", text: "Your neck care already covers it.", decision: "out" as const, cites: [HISTORY], post: { id: "post-1", position: 2 } };
 const FIX: DesignCorrectionLineDto = {
-  opId: "fix-move-myZorbexHipLiftAbc123-dose", target: "move", field: "dose", name: "Zorbex hip lift", line: "Dose of Zorbex hip lift: 30 s, 2 sets (was 6–10 reps)",
+  opId: "fix-move-myZorbexHipLiftAbc123-dose", target: "move", targetId: "myZorbexHipLiftAbc123", field: "dose", name: "Zorbex hip lift", line: "Dose of Zorbex hip lift: 30 s, 2 sets (was 6–10 reps)",
   why: "The transcript says two sets of thirty seconds.", basis: "evidence", cites: [SAID], outcome: null,
 };
 const WHY = "The lift fills the hip work your plan lacks; the nod repeats your neck care.";
@@ -151,5 +151,40 @@ describe("the coach's review card", () => {
     await click(button("Approve"), "Approve");
     await until(() => text().includes(CORRECTIONS_WORDS.done), "corrected");
     expect(calls.filter((c) => c.method === "POST").map((c) => c.body)).toEqual([{ opIds: [FIX.opId, "fix-2"] }]);
+  });
+});
+
+describe("a dose fix that didn't land (final review, Important 1)", () => {
+  it("the card says the fix changed since, and the line shows no dose it never got", async () => {
+    const STALE = "It changed since the coach suggested this — ask again.";
+    const lift = { ...LIFT, dose: "30 s, 2 sets" };
+    serve({
+      "GET /api/coach/proposals/dp-run-7": () =>
+        read({
+          status: "partially_approved",
+          pins: [pinsLine({ lines: [lift, NOD], outcome: { status: "applied", at: "x", pinned: [LIFT.moveId], unpinned: [], lines: [] } })],
+          corrections: [{ ...FIX, outcome: { status: "refused", at: "x", error: "stale", why: STALE } }],
+        }),
+    });
+    await mount(card({ status: "partially_approved", pinLines: [lift, NOD] }));
+    await until(() => text().includes("Programme's pool updated"), "the pins applied");
+    const fix = document.querySelector(".coach-review-fix")!;
+    expect(fix.textContent).toContain(STALE);
+    const where = document.querySelector(".coach-review-line .coach-review-where")!;
+    expect(where.textContent).toBe("joins your mobility rotation");
+  });
+
+  it("an applied fix says so; while the card is open its dose shows", async () => {
+    const lift = { ...LIFT, dose: "30 s, 2 sets" };
+    serve({ "GET /api/coach/proposals/dp-run-7": () => read({ pins: [pinsLine({ lines: [lift, NOD] })], corrections: [FIX] }) });
+    await mount(card({ pinLines: [lift, NOD] }));
+    await until(() => !!button("Approve") && !button("Approve")!.disabled, "Approve");
+    expect(document.querySelector(".coach-review-line .coach-review-where")!.textContent).toBe("joins your mobility rotation · 30 s, 2 sets");
+    act(() => root?.unmount());
+    host?.remove();
+    serve({ "GET /api/coach/proposals/dp-run-7": () => read({ status: "approved", corrections: [{ ...FIX, outcome: { status: "applied", at: "x" } }] }) });
+    await mount(card({ status: "approved" }));
+    await until(() => !!document.querySelector(".coach-review-fix"), "the fix");
+    expect(document.querySelector(".coach-review-fix")!.textContent).toContain("✓");
   });
 });
