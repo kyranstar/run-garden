@@ -83,3 +83,20 @@ export const CRON_DOC_BACKFILL_MAX = 5;
  * row failed); a row pushed off the end is tried again once, and set aside again if it still fails.
  */
 export const CRON_DOC_BACKFILL_SKIP_MAX = 50;
+
+/**
+ * How many course sessions the hourly cron writes in one invocation, whatever the accounts and plans (course-sessions.ts).
+ * The pass reads what it needs in one statement, so it spends 1 + this × `COURSE_WRITE_COST` at most. A session is due for
+ * a whole day, so at 24 runs a day this covers far more than the accounts there are, and what doesn't fit waits for the next
+ * hour or for the session being opened, which writes it anyway.
+ */
+export const COURSE_WRITES_PER_PASS = 2;
+
+/**
+ * What one course session's write costs at its dearest in the hourly pass, which holds its plan already (a request reads
+ * it first): the sessions done, the restore's look, the profiles, the library and the day's checks (5), the batch (the
+ * easing, the note, the mark, the flip, the revision: 5), and, for a session longer or shorter than its outline booked, the
+ * day's collision pass (its 2 reads, and 1 for each session it re-times: 3 on a day holding two others). Pinned in
+ * course-sessions.test.ts. An ordinary write, booked as its outline was, with no easing and no condition switched on, is 8.
+ */
+export const COURSE_WRITE_COST = 15;

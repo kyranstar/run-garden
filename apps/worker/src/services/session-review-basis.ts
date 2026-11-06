@@ -21,7 +21,7 @@
  */
 import { and, eq, inArray, sql } from "drizzle-orm";
 import { exercisePrefs, plannedWorkouts, programs } from "@rg/database";
-import { addDays, adaptiveConfigSchema, isLocalDate, startOfIsoWeek, type WeightUnit } from "@rg/domain";
+import { addDays, adaptiveConfigSchema, courseConfigSchema, isLocalDate, startOfIsoWeek, type WeightUnit } from "@rg/domain";
 import type { EngineData, ExerciseRecord } from "@rg/exercise-library";
 import { Hist, Lib, Records, type Block, type HistorySession, type RecordsState } from "@rg/session-engine";
 import { makeLibraryIndex } from "@rg/workout";
@@ -383,6 +383,17 @@ const sliceOf = (ex: ExerciseRecord): ExerciseSlice => {
   return rest;
 };
 
+/**
+ * The sessions a week the session's plan aims for, by its kind: a course's are its days (read as a programme's, its settings
+ * don't parse and it would quietly take the default goal); anything else's are a programme's, whose defaults a Studio
+ * bucket's empty settings take.
+ */
+function weeklyGoalOf(program: { kind: string; config: unknown } | undefined): number {
+  const goal = (n: number | undefined): number => n ?? 4;
+  if (program?.kind === "course") return goal(courseConfigSchema.safeParse(program.config).data?.weekdays.length);
+  return goal(adaptiveConfigSchema.safeParse(program?.config ?? {}).data?.weeklyGoal);
+}
+
 export async function reviewBasis(db: Db, userId: string, workoutId: string, ctx: { today: string; unit: WeightUnit }): Promise<ReviewBasis> {
   const session = await loadSession(db, userId, workoutId, ctx.today);
   const build = session.build;
@@ -394,10 +405,9 @@ export async function reviewBasis(db: Db, userId: string, workoutId: string, ctx
     .limit(1);
   if (!slot) throw new SessionNotFoundError();
   const [program] = slot.planId
-    ? await db.select({ config: programs.config }).from(programs).where(eq(programs.id, slot.planId)).limit(1)
+    ? await db.select({ kind: programs.kind, config: programs.config }).from(programs).where(eq(programs.id, slot.planId)).limit(1)
     : [];
-  const parsed = adaptiveConfigSchema.safeParse(program?.config ?? {});
-  const weeklyGoal = parsed.success ? parsed.data.weeklyGoal : 4;
+  const weeklyGoal = weeklyGoalOf(program);
 
   // The engine's pool as the build's own (`library.engine`: the athlete's pinned moves among it); the account's library,
   // once a request — a build or Start in this request read it already.

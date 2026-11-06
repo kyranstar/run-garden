@@ -755,6 +755,38 @@ describe("the quiet days before a race", () => {
   });
 });
 
+describe("a session completed today under a pause", () => {
+  // Only `completionState` tells a session that's done from a slot a pause may take: it can still be an untouched outline
+  // on its own day, as one linked by hand is (it takes its number and holds no document).
+  const completedToday = async (seed: () => Promise<string>) => {
+    const p = await seed();
+    await placeSlots(db, userId, p, MON, prefs, NOW);
+    const id = slotId(p, MON);
+    await db.update(plannedWorkouts).set({ completionState: "completed", resolutionDate: MON, courseSession: null }).where(eq(plannedWorkouts.id, id));
+    await setPause(p, MON);
+    return { p, id, before: await row(id) };
+  };
+  const kinds = [
+    ["a course", () => seedCourse({ placementWeeksAhead: 1 })],
+    ["an adaptive programme", () => seedProgramme({ weeklyGoal: 2, preferredDays: [0, 4], placementWeeksAhead: 1 })],
+  ] as const;
+
+  it.each(kinds)("survives a slot pass, and the pass never tries to take it: %s", async (_, seed) => {
+    const { p, id, before } = await completedToday(seed);
+    statements.length = 0;
+    const res = await placeSlots(db, userId, p, MON, prefs, NOW);
+    expect(res.archived).toEqual([]);
+    expect(writes()).toEqual([]);
+    expect(await row(id)).toEqual(before);
+  });
+
+  it.each(kinds)("the retraction's own check refuses it too: %s", async (_, seed) => {
+    const { id, before } = await completedToday(seed);
+    expect(await retractSlot(db, userId, { id }, MON, prefs, NOW, { todayToo: true })).toBe(false);
+    expect(await row(id)).toEqual(before);
+  });
+});
+
 describe("a restore", () => {
   const beginRestore = async () => {
     await db.insert(accountState).values({ userId, restoreId: newId(), restoreStartedAt: NOW, updatedAt: NOW });

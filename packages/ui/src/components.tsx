@@ -845,13 +845,15 @@ function syncNoteText(note: SyncNoteDto): string | null {
       return "Removed from your watch";
     case "watch_copy_moved":
       return `Moved to ${formatDayShort(p.newDate as string)} on your watch`;
+    case "course_session_refused":
+      return `“${p.sessionTitle as string}” couldn't be set up for today. It stays on your plan as it is.`;
     default:
       return null;
   }
 }
 
 /** Notes that only inform (Phase 3): nothing to undo, so no Undo. */
-const DISMISS_ONLY = new Set<SyncNoteDto["kind"]>(["watch_copy_changed", "watch_copy_removed", "watch_copy_moved"]);
+const DISMISS_ONLY = new Set<SyncNoteDto["kind"]>(["watch_copy_changed", "watch_copy_removed", "watch_copy_moved", "course_session_refused"]);
 
 /**
  * Dismissible feed of active sync notes (sync-transparency Task 12) —

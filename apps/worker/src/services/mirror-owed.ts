@@ -4,7 +4,7 @@
  * copy. A leaf: the hooks in the shared services (doc-workouts, jobs, plan-mutations) take it without the mirror's own
  * imports (session-build, watch-push), which would close an import cycle through them.
  */
-import { and, eq, isNull } from "drizzle-orm";
+import { and, eq, isNull, sql, type SQL } from "drizzle-orm";
 import { syncIntents } from "@rg/database";
 import type { Db } from "./db.js";
 
@@ -21,6 +21,17 @@ export async function markMirrorOwed(db: Db, userId: string, workoutId: string, 
   await db
     .insert(syncIntents)
     .values({ id: mirrorIntentId(workoutId), userId, targetKind: "workout", targetId: workoutId, kind: "mirror", payload: {}, source: "mirror", createdAt: now })
+    .onConflictDoUpdate({ target: syncIntents.id, set: { resolvedAt: null, createdAt: now, payload: {} } });
+}
+
+/**
+ * `markMirrorOwed` as a statement for a caller's atomic batch, and only while `onlyIf` holds as the batch reaches it: a
+ * write that may find it has nothing to do marks nothing either (a course session's, course-sessions.ts).
+ */
+export function markMirrorOwedIf(db: Db, userId: string, workoutId: string, now: string, onlyIf: SQL) {
+  return db
+    .insert(syncIntents)
+    .select(sql`select ${mirrorIntentId(workoutId)}, ${userId}, 'workout', ${workoutId}, 'mirror', '{}', 'mirror', ${now}, null, null where ${onlyIf}`)
     .onConflictDoUpdate({ target: syncIntents.id, set: { resolvedAt: null, createdAt: now, payload: {} } });
 }
 

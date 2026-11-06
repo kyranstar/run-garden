@@ -47,9 +47,9 @@
  * pins on a session after it's written is unaffected.
  *
  * A course's own sessions are its slots (`origin = 'program'`) and the rows with `course_session` set, the session number
- * a row was written as. On its day a session is written: the row keeps its id, flips to `origin = 'studio'` and takes its
- * number, as a session re-pointed to the course does. A pass reads them, so each counts toward its week and holds its day,
- * and rule 5 never touches them. `source_content_fingerprint` can't mark them, because a verified push overwrites it. A
+ * a row was written as. On its day a session is written (`course-sessions.ts`): the row keeps its id, flips to
+ * `origin = 'studio'` and takes its number, as a session re-pointed to the course does. A pass reads them, so each counts
+ * toward its week and holds its day, and rule 5 never touches them. `source_content_fingerprint` can't mark them, because a verified push overwrites it. A
  * document workout's `content_state` is 'outline' too, so its origin is what says it isn't a slot any more. A workout the
  * coach filed under the plan is neither: it counts toward no week, no slot makes way for it, and it isn't a session done.
  *
@@ -148,7 +148,7 @@ function retracted(r: WorkoutRow): boolean {
 }
 
 /** Whether a plan's pause (`programs.paused_until`, its last day) covers this date. */
-const pausedOn = (pausedUntil: string | null, date: string): boolean => pausedUntil !== null && date <= pausedUntil;
+export const pausedOn = (pausedUntil: string | null, date: string): boolean => pausedUntil !== null && date <= pausedUntil;
 
 /**
  * Rule 3, as the row reads: the only slots an edit may take away — unless the athlete touched them (`TOUCHED`). `todayToo`:

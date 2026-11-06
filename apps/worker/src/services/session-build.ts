@@ -27,6 +27,10 @@
  *  - A day ahead → a PREVIEW: version 0, overwritten by the next preview, never lockable; the row, the block and
  *    the checks are left alone (the session is built for real on its day).
  *  - A day gone → 409 `not_today` (the sheet offers "Move to today", the existing move verb).
+ *  - A COURSE'S OUTLINE IS NEVER THE ENGINE'S (`course-sessions.ts`, plans with a purpose §4.2): a build or a read of today's
+ *    writes it first, and it goes on as a document row. A day ahead previews a document computed from the sessions done
+ *    (`docDayInputs`' `docOverride`), and the row is left alone. One that can't be written (a pause, a refusal, a stopped
+ *    course, a definition gone) answers as it stands: no build, and the sheet is offered no choices (`docExtras`).
  *  - A PROVISIONAL COPY'S RECORD (the watch mirrors the plan §3.2; builder check A1): a document workout's copy pushed
  *    to the watch ahead of its day is a build of its own — a negative version (−1, −2, … per workout), never locked,
  *    `kind: "provisional"` in its payload (`makeProvisionalRecord`). It is none of the slot's builds: the loader, the
@@ -109,6 +113,7 @@ import type { Env } from "../env.js";
 import { loadAccountLibrary, PUBLIC_LIBRARY, type AccountLibrary } from "./account-library.js";
 import { restoreInProgress } from "./account-state.js";
 import { loadPreferences } from "./calendar-sync.js";
+import { courseOf, coursePreviewDoc, openCourseOutline } from "./course-sessions.js";
 import type { Db } from "./db.js";
 import { separateDayCollisions } from "./day-placement.js";
 import {
@@ -116,6 +121,7 @@ import {
   loadDocEngineContext,
   loadEngineContext,
   loadProgramState,
+  PROGRAM_IS_COURSE,
   saveProgramState,
   type BuildHistory,
   type EngineContext,
@@ -971,14 +977,18 @@ function sheetExtras(context: EngineContext): SheetExtras {
   };
 }
 
-/** The sheet's labels and choices for a slot, read fresh (its program gone: no profiles, every mode, nothing to pick). */
-async function loadExtras(db: Db, userId: string, row: SlotRow): Promise<SheetExtras> {
+/**
+ * The sheet's labels and choices for a slot, read fresh (its program gone: no profiles, every mode, nothing to pick; a
+ * course's outline, which no engine plans: as a document workout's, `docExtras`).
+ */
+async function loadExtras(db: Db, userId: string, row: SlotRow, active: readonly string[]): Promise<SheetExtras> {
   try {
     return sheetExtras(await loadEngineContext(db, userId, row.planId, {}));
   } catch (e) {
     if (e instanceof Error && e.message === "program_not_found") {
       return { profiles: [], choices: { modes: ["recovery", "consistent", "build"], themes: [], locations: [] } };
     }
+    if (e instanceof Error && e.message === PROGRAM_IS_COURSE) return docExtras(active);
     throw e;
   }
 }
@@ -1025,13 +1035,17 @@ async function readResponse(db: Db, userId: string, row: SlotRow, today: string,
   const active = await activeProfilesOf(db, userId);
   const checks = await slotChecks(db, userId, row.id, row.effectiveDate, today, active);
   // A document workout reads no programme, and its sheet is offered no choices (`docExtras`).
-  const extras = docOriginRow(row) ? docExtras(active) : await loadExtras(db, userId, row);
+  const extras = docOriginRow(row) ? docExtras(active) : await loadExtras(db, userId, row, active);
   return respond(row, all, today, checks, await hiddenMoves(db, userId), extras);
 }
 
-/** `GET /api/sessions/:workoutId`: the slot, its current build (or none), its day's checks, and the lock. */
+/**
+ * `GET /api/sessions/:workoutId`: the slot, its current build (or none), its day's checks, and the lock. A course's outline
+ * due today is written first (`openCourseOutline`); a row that isn't a programme's reads no programme for it.
+ */
 export async function loadSession(db: Db, userId: string, workoutId: string, today: string): Promise<SessionResponse> {
-  return readResponse(db, userId, await loadSlot(db, userId, workoutId), today);
+  const { row } = await openCourseOutline(db, userId, await loadSlot(db, userId, workoutId), { today });
+  return readResponse(db, userId, row, today);
 }
 
 /**
@@ -1214,6 +1228,8 @@ async function dayInputs(db: Db, userId: string, row: SlotRow, builds: readonly 
     });
   } catch (e) {
     if (e instanceof Error && e.message === "program_not_found") throw new SessionNotFoundError();
+    // A row of a course that isn't an outline, which nothing makes: no document, and it is never the engine's.
+    if (e instanceof Error && e.message === PROGRAM_IS_COURSE) throw new NoDocumentError();
     throw e;
   }
   const asked = req.checks ?? {};
@@ -1673,18 +1689,23 @@ async function docDay(
   };
 }
 
-/** The inputs of a document build of `row` on its day, and their hash. Throws `NoDocumentError`, `UnknownProfileError`. */
-async function docDayInputs(db: Db, userId: string, row: SlotRow, builds: readonly BuildRow[], req: BuildRequest, ctx: BuildCtx): Promise<DocDayInputs> {
+/**
+ * The inputs of a document build of `row` on its day, and their hash. `docOverride`: a document computed for a row that
+ * holds none and isn't given one, a course's session ahead (`coursePreviewDoc`), hashed as the row's own text would be.
+ * Throws `NoDocumentError`, `UnknownProfileError`.
+ */
+async function docDayInputs(db: Db, userId: string, row: SlotRow, builds: readonly BuildRow[], req: BuildRequest, ctx: BuildCtx, docOverride?: WorkoutDoc): Promise<DocDayInputs> {
   const date = row.effectiveDate;
   const preview = date > ctx.today;
   const previous = builds.find((b) => (preview ? b.version === 0 : b.version > 0) && storedOf(b).build.date === date) ?? null;
-  const doc = parseStoredWorkoutDoc(row.workoutDoc);
+  const doc = docOverride ?? parseStoredWorkoutDoc(row.workoutDoc);
   if (!doc) throw new NoDocumentError();
   const { context, checks, preChecks } = await docDay(db, userId, row, req, ctx, doc.setting?.placeId);
   const jumpsDone = await docJumpsDone(db, userId, doc, context, ctx.today);
   const version = await docBuildVersion();
   const rev = row.workoutDocRev ?? null;
-  const inputsHash = await docInputsHash({ version, date, docText: row.workoutDoc, rev, checks, context, jumpsDone });
+  const docText = docOverride ? storedDocText(docOverride) : row.workoutDoc;
+  const inputsHash = await docInputsHash({ version, date, docText, rev, checks, context, jumpsDone });
   return { date, preview, previous, doc, rev, context, checks, preChecks, jumpsDone, version, inputsHash };
 }
 
@@ -2034,7 +2055,8 @@ async function refuseGatedSnapshot(db: Db, userId: string, row: SlotRow, sent: B
 /**
  * `POST /api/sessions/:workoutId/build`, with what it means for the calendar. Throws `SessionNotFoundError`,
  * `SessionLockedError` (carrying the locked session), `NotTodayError`, `UnknownProfileError`, and for a document
- * workout `NoDocumentError` and `DocTooLargeRefusal`.
+ * workout `NoDocumentError` and `DocTooLargeRefusal`. A course's outline never reaches the engine: today's is written and
+ * goes on as a document row, one ahead previews, and one that can't be either answers as it stands, with no build.
  */
 export async function buildSessionOutcome(
   db: Db,
@@ -2043,14 +2065,20 @@ export async function buildSessionOutcome(
   req: BuildRequest,
   ctx: BuildCtx,
 ): Promise<BuildOutcome> {
-  const row = await loadSlot(db, userId, workoutId);
+  const loaded = await loadSlot(db, userId, workoutId);
   const builds = await loadBuilds(db, userId, workoutId);
   // Locked: refused — unless the lock is only the watch's and the mirror follows the slot (`watchLocksOf`, §3.3).
-  if (lockedOf(row, builds) && watchLocksOf(row, builds, ctx) === null) {
-    throw new SessionLockedError(await readResponse(db, userId, row, ctx.today, builds));
+  if (lockedOf(loaded, builds) && watchLocksOf(loaded, builds, ctx) === null) {
+    throw new SessionLockedError(await readResponse(db, userId, loaded, ctx.today, builds));
   }
-  if (row.effectiveDate < ctx.today) throw new NotTodayError(row.effectiveDate, ctx.today);
-  if (await restoreInProgress(db, userId)) return { session: await readResponse(db, userId, row, ctx.today, builds), calendarChanged: false };
+  if (loaded.effectiveDate < ctx.today) throw new NotTodayError(loaded.effectiveDate, ctx.today);
+  if (await restoreInProgress(db, userId)) return { session: await readResponse(db, userId, loaded, ctx.today, builds), calendarChanged: false };
+  const { row, course } = await openCourseOutline(db, userId, loaded, ctx);
+  if (course) {
+    const ahead = row.effectiveDate > ctx.today ? await coursePreviewDoc(db, userId, course) : null;
+    if (!ahead) return { session: await readResponse(db, userId, row, ctx.today, builds), calendarChanged: false };
+    return commitDocBuild(db, userId, row, builds, await docDayInputs(db, userId, row, builds, req, ctx, ahead), ctx);
+  }
   if (docOriginRow(row)) return commitDocBuild(db, userId, row, builds, await docDayInputs(db, userId, row, builds, req, ctx), ctx);
   return commitBuild(db, userId, row, builds, await dayInputs(db, userId, row, builds, req, ctx), ctx);
 }
@@ -2327,6 +2355,18 @@ export interface SessionCurrency {
 }
 
 /**
+ * What a build of the row would be made from now, by what the row is: its document, the engine's inputs, or, for a course's
+ * outline ahead, the document its preview computes (null when its course can't make one). Reads only.
+ */
+async function currencyInputs(db: Db, userId: string, row: SlotRow, builds: readonly BuildRow[], ctx: BuildCtx): Promise<{ inputsHash: string; version: string } | null> {
+  if (docOriginRow(row)) return docDayInputs(db, userId, row, builds, {}, ctx);
+  const course = await courseOf(db, userId, row);
+  if (!course) return dayInputs(db, userId, row, builds, {}, ctx);
+  const ahead = await coursePreviewDoc(db, userId, course);
+  return ahead ? docDayInputs(db, userId, row, builds, {}, ctx, ahead) : null;
+}
+
+/**
  * Is the slot's build still current? Reads the day's inputs and hashes them, exactly as Start does — never composes
  * a build and never writes, so opening the sheet need not POST a build every time. Throws `SessionNotFoundError`.
  *
@@ -2345,8 +2385,8 @@ export async function sessionCurrency(db: Db, userId: string, workoutId: string,
   if (!shown || row.effectiveDate < ctx.today) return { ...out, current: false };
   // A slot moved away and back is an outline again: its stored build needs a build request to be the row's again.
   if (shown.version > 0 && row.contentState !== "built") return { ...out, current: false };
-  const inputs = docOriginRow(row) ? await docDayInputs(db, userId, row, builds, {}, ctx) : await dayInputs(db, userId, row, builds, {}, ctx);
-  return { ...out, current: shown.inputsHash === inputs.inputsHash && shown.engineVersion === inputs.version };
+  const inputs = await currencyInputs(db, userId, row, builds, ctx);
+  return { ...out, current: inputs !== null && shown.inputsHash === inputs.inputsHash && shown.engineVersion === inputs.version };
 }
 
 /**

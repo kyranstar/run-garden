@@ -1768,7 +1768,9 @@ export type SyncNoteKind =
   /** A sent program session's copy was deleted in COROS. Dismiss only (undo answers 422). */
   | "watch_copy_removed"
   /** A sent program session's copy was moved in COROS; the slot followed it. Dismiss only (undo answers 422). */
-  | "watch_copy_moved";
+  | "watch_copy_moved"
+  /** Today's course session couldn't be written, so it stays an outline. Dismiss only (undo answers 422). */
+  | "course_session_refused";
 
 export interface SyncNoteDto {
   id: string;

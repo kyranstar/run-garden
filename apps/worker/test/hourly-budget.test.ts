@@ -112,6 +112,10 @@ vi.mock("../src/services/program-slots.js", async (orig) => {
   const real = await orig<typeof import("../src/services/program-slots.js")>();
   return { ...real, placeSlotsForAllPrograms: meter.wrap("placeSlotsForAllPrograms", real.placeSlotsForAllPrograms) };
 });
+vi.mock("../src/services/course-sessions.js", async (orig) => {
+  const real = await orig<typeof import("../src/services/course-sessions.js")>();
+  return { ...real, writeCourseSessionsDue: meter.wrap("writeCourseSessionsDue", real.writeCourseSessionsDue) };
+});
 vi.mock("../src/services/reconcile-daily.js", async (orig) => {
   const real = await orig<typeof import("../src/services/reconcile-daily.js")>();
   return { ...real, reconcileCompletionStates: meter.wrap("reconcileCompletionStates", real.reconcileCompletionStates) };

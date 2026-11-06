@@ -646,9 +646,14 @@ export async function loadDocEngineContext(db: Db, userId: string, placeId: stri
   return other ? { ...context, location: engineLocationOf(other) } : context;
 }
 
+/** `loadEngineContext` was asked for a course's plan: no session of a course is the engine's. */
+export const PROGRAM_IS_COURSE = "program_is_course";
+
 /**
  * Prefs, saved ids, the place, the unit and the profiles for one build of `programId` (this user's). `null` — a
- * document workout's build, which no programme's settings shape — reads no programme and takes the defaults.
+ * document workout's build, which no programme's settings shape — reads no programme and takes the defaults. A course's
+ * plan throws `PROGRAM_IS_COURSE`: its settings aren't a programme's, and read as one they would quietly build a session with
+ * the defaults, so a reader that reaches here with one fails instead.
  */
 export async function loadEngineContext(
   db: Db,
@@ -659,11 +664,12 @@ export async function loadEngineContext(
   let config = adaptiveConfigSchema.parse({});
   if (programId !== null) {
     const [program] = await db
-      .select({ config: programs.config })
+      .select({ config: programs.config, kind: programs.kind })
       .from(programs)
       .where(and(eq(programs.id, programId), eq(programs.userId, userId)))
       .limit(1);
     if (!program) throw new Error("program_not_found");
+    if (program.kind === "course") throw new Error(PROGRAM_IS_COURSE);
     const parsed = adaptiveConfigSchema.safeParse(program.config);
     if (!parsed.success) console.error(`program ${programId}: stored config does not parse; building with the defaults`);
     if (parsed.success) config = parsed.data;

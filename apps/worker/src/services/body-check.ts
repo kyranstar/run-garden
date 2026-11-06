@@ -25,8 +25,8 @@
  *    the row, its stages, its document's next revision, the app's claim on the content, and the rewrite of the watch's
  *    copy, which the client drains (`coachDrain`, as after an approve). A run works the hips and the legs. Race day is
  *    never eased (`kept: race`).
- *  - A WORKOUT THE COACH OR THE STUDIO DESIGNED (a document workout), or any other session: never changed by itself —
- *    the card offers the coach instead (`ask`).
+ *  - A WORKOUT THE COACH OR THE STUDIO DESIGNED (a document workout), a course's session (written or still an outline,
+ *    which no engine plans), or any other session: never changed by itself — the card offers the coach instead (`ask`).
  * Nothing is ever deleted or moved.
  *
  * UNDO puts the session back as the day had it (`POST /api/today/body/undo`): an engine session is built again with the
@@ -241,7 +241,10 @@ interface Subject {
   row: Pick<
     typeof plannedWorkouts.$inferSelect,
     "id" | "planId" | "origin" | "category" | "sport" | "title" | "effectiveDate" | "completionState" | "contentState"
-  >;
+  > & {
+    /** Its plan's kind (`programs.kind`): a course's outline has `origin = 'program'` and is no engine session. */
+    planKind: string | null;
+  };
   locked: boolean;
   conditions: string[];
   /** An engine session's programme's modes (all of them when it says none). */
@@ -307,6 +310,7 @@ async function loadSubject(db: Db, userId: string, workoutId: string, today: str
         eq(userConditions.userId, userId),
         eq(userConditions.active, true),
       )})`,
+      planKind: sql<string | null>`(select ${programs.kind} from ${programs} where ${and(eq(programs.id, pw.planId), eq(programs.userId, userId))})`,
       modes: sql<string | null>`(select json_extract(${programs.config}, '$.modes') from ${programs} where ${and(eq(programs.id, pw.planId), eq(programs.userId, userId))})`,
       answers: answerRowsSql(userId, workoutId, today),
       record: sql<string | null>`(select ${auditEvents.detail} from ${auditEvents} where ${and(
@@ -346,6 +350,8 @@ function openOf(s: Subject, today: string): boolean {
 type SessionKind = "engine" | "designed" | "run" | "race" | "rest" | "other";
 function kindOf(row: Subject["row"]): SessionKind {
   if (row.category === "rest") return "rest";
+  // A course's outline isn't the engine's and has no mode to take down: it will be a document workout, the coach's to adapt.
+  if (row.origin === "program" && row.planKind === "course") return "designed";
   if (row.origin === "program" || row.origin === "on_demand") return "engine";
   if (docOriginRow(row)) return "designed";
   // A run the plan holds (imported, or one the thread coach put there): the ease op's own ground.

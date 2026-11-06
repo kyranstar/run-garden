@@ -23,6 +23,7 @@ import {
   singleSourceActivity,
   type RawCorosActivityDetail,
 } from "@rg/providers";
+import { courseNumberOnCompletion } from "./course-number.js";
 import { chunkedInsert, type Db } from "./db.js";
 import { plannedRowColumns } from "./planned-columns.js";
 import { isRuntimeLimit } from "./runtime-limit.js";
@@ -728,7 +729,9 @@ export async function ingestActivities(db: Db, input: IngestInput): Promise<Inge
     // 3-minute "Yoga" and an unrelated 29-minute "Strength" marking the jaw-care
     // sessions done. The programme's sessions are the app's: the app's save
     // completes one (above), and a watch activity only when it is the slot's own
-    // copy, linked by its COROS program (`linkOnly`).
+    // copy, linked by its COROS program (`linkOnly`). A course's session once written is no slot any more
+    // (`origin = 'studio'`), and no guess completes it either: its number counts sessions done, so an unrelated activity
+    // would skip a dose. Its `course_session` says what it is; its fingerprint can't, as a verified push overwrites it.
     const appOwned = sql`exists (select 1 from ${performedSessions} where ${performedSessions.activityId} = ${activities.id} and ${performedSessions.source} = 'app')`;
     const displacedByApp = sql`exists (select 1 from workout_completion_matches as undone join workout_completion_matches as app_match on app_match.workout_id = undone.workout_id where undone.activity_id = ${activities.id} and undone.undone_at is not null and app_match.undone_at is null and app_match.method = 'app_session')`;
     const unmatchedActivities = await db
@@ -770,7 +773,7 @@ export async function ingestActivities(db: Db, input: IngestInput): Promise<Inge
         archivedAt: w.archivedAt,
       },
       corosProgramId: w.sourceProgramId ?? undefined,
-      linkOnly: w.origin === "program",
+      linkOnly: w.origin === "program" || w.courseSession !== null,
     }));
 
     const matches = matchActivities(matchables as never, candidates);
@@ -802,6 +805,7 @@ export async function ingestActivities(db: Db, input: IngestInput): Promise<Inge
         .set({
           completionState: "completed",
           resolutionDate: (activityRow.startTimeLocal ?? activityRow.startTime).slice(0, 10),
+          ...courseNumberOnCompletion(),
           updatedAt: now,
         })
         .where(eq(plannedWorkouts.id, m.workoutId));

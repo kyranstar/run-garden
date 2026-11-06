@@ -68,6 +68,7 @@ import { requireUser } from "../auth/middleware.js";
 import { googleCalendarClient } from "../services/google-calendar.js";
 import { waitUntilSafe } from "../services/wait-until.js";
 import { loadPreferences, restoreCalendarEvent, savePreferences, syncCalendar } from "../services/calendar-sync.js";
+import { courseNumberOnCompletion } from "../services/course-number.js";
 import { chunkIds, type Db } from "../services/db.js";
 import { applyMove } from "../services/jobs.js";
 import { provisionalRecord } from "../services/session-build.js";
@@ -1792,6 +1793,7 @@ planRoutes.post("/workouts/:id/match", async (c) => {
     .set({
       completionState: "completed",
       resolutionDate: (a.startTimeLocal ?? a.startTime).slice(0, 10),
+      ...courseNumberOnCompletion(),
       updatedAt: now,
     })
     .where(eq(plannedWorkouts.id, w.id));

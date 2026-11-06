@@ -37,6 +37,14 @@ describe("the watch notes", () => {
     expect(html.match(/aria-label="Dismiss note"/g)).toHaveLength(3);
   });
 
+  it("a course session the day refused says so, and can only be dismissed", () => {
+    const html = render([note("course_session_refused", { sessionTitle: "Evening practice", date: "2026-10-09" })]);
+    expect(html).toContain("couldn&#x27;t be set up for today");
+    expect(html).toContain("Evening practice");
+    expect(html).not.toContain(">Undo<");
+    expect(html.match(/aria-label="Dismiss note"/g)).toHaveLength(1);
+  });
+
   it("leave the other notes' Undo alone", () => {
     expect(render([note("adopted_coros_change", { newDate: "2026-10-11" })])).toContain(">Undo<");
   });

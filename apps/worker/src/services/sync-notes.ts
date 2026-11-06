@@ -16,26 +16,32 @@ export type SyncNoteKind =
    * A sent program session's copy was moved in COROS; the slot followed it (`{ previousDate, newDate }`). Dismiss only
    * (ruling 3-R15): moving a sent session back takes its copy off the watch (3-R3), which no Undo may do.
    */
-  | "watch_copy_moved";
+  | "watch_copy_moved"
+  /** Today's course session couldn't be written: the day refused its document, so it stays an outline (`{ sessionTitle, date }`). Dismiss only. */
+  | "course_session_refused";
 
 /** Note kinds that only inform: there is nothing to undo (the undo route answers 422 `not_undoable`). */
-export const DISMISS_ONLY_NOTE_KINDS: readonly SyncNoteKind[] = ["watch_copy_changed", "watch_copy_removed", "watch_copy_moved"];
+export const DISMISS_ONLY_NOTE_KINDS: readonly SyncNoteKind[] = ["watch_copy_changed", "watch_copy_removed", "watch_copy_moved", "course_session_refused"];
 
+/** Post a note. `id`: the note's own, when something repeats and should say so once (a second post of it writes nothing). */
 export async function postSyncNote(
   db: Db,
-  input: { userId: string; workoutId?: string; kind: SyncNoteKind; payload: Record<string, unknown> },
+  input: { id?: string; userId: string; workoutId?: string; kind: SyncNoteKind; payload: Record<string, unknown> },
 ): Promise<string> {
   const now = nowInstant();
-  const id = newId();
-  await db.insert(syncNotes).values({
-    id,
-    userId: input.userId,
-    workoutId: input.workoutId ?? null,
-    kind: input.kind,
-    payload: input.payload,
-    createdAt: now,
-    expiresAt: new Date(Date.parse(now) + NOTE_TTL_MS).toISOString(),
-  });
+  const id = input.id ?? newId();
+  await db
+    .insert(syncNotes)
+    .values({
+      id,
+      userId: input.userId,
+      workoutId: input.workoutId ?? null,
+      kind: input.kind,
+      payload: input.payload,
+      createdAt: now,
+      expiresAt: new Date(Date.parse(now) + NOTE_TTL_MS).toISOString(),
+    })
+    .onConflictDoNothing();
   return id;
 }
 

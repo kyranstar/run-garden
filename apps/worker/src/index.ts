@@ -74,6 +74,7 @@ import { seedWatchVersions } from "./services/fixture-watch-version.js";
 import { accountsRestoring, restoreInProgress } from "./services/account-state.js";
 import { backfillPlanRegistry } from "./services/plan-registry.js";
 import { placeSlotsForAllPrograms } from "./services/program-slots.js";
+import { writeCourseSessionsDue } from "./services/course-sessions.js";
 
 const app = new Hono<AppContext>();
 
@@ -411,6 +412,9 @@ export async function hourly(db: Db, env: Env): Promise<void> {
   await placeSlotsForAllPrograms(db).catch((e: unknown) =>
     console.error(`slot placement failed: ${e instanceof Error ? e.message : "unknown"}`),
   );
+  // A course's session due today is written, after placement so a pause has already taken what it takes. Its own pass, a
+  // read and at most COURSE_WRITES_PER_PASS writes whatever the accounts: the rest waits for the next run or an open.
+  await writeCourseSessionsDue(db).catch((e: unknown) => console.error(`course session writes failed: ${e instanceof Error ? e.name : "unknown"}`));
   // Coach designer run steps taken in this invocation, across every account (COACH_RUN_SWEEP_MAX).
   let coachRunSteps = 0;
   for (const userId of await allUserIds(db)) {
