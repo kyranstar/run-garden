@@ -14109,6 +14109,11 @@ button.coach-cite:focus-visible {
   color: var(--ink);
   min-height: var(--tap);
 }
+/* A recent link's title: a stranger's words, or the link itself — one long word, so it wraps anywhere. */
+.saves-link-title {
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
 .saves-links-title {
   margin: var(--space-4) 0 var(--space-2);
   font-size: var(--text-sm);

@@ -7,6 +7,9 @@ import { act, createElement } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { MemoryRouter } from "react-router-dom";
+import { readFileSync } from "node:fs";
+import { dirname, resolve } from "node:path";
+import { fileURLToPath } from "node:url";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { HEALTH_LIGHTS, type ImportHealthDto, type ImportTrailDto, type SavesStatusDto } from "@rg/saves";
 import { SavesSection } from "../src/screens/settings/saves.js";
@@ -357,5 +360,21 @@ describe("Settings -> Saves: the field takes a bare link, and an empty Add does 
     });
     await flush();
     expect(sheet.textContent).not.toContain("Only YouTube and Instagram links for now.");
+  });
+});
+
+describe("an unbroken link as a recent link's title (audit 2026-11-06, I12)", () => {
+  it("is drawn in a title that wraps anywhere, so it never runs past the sheet", async () => {
+    await mount({ status: 200, body: status() });
+    await flush();
+    await act(async () => { (host.querySelector("button.place-row") as HTMLButtonElement).click(); });
+    await flush();
+    const titles = [...document.querySelectorAll(".saves-link-title")].map((b) => b.textContent);
+    expect(titles).toEqual(["Zorbex hip flow", LINKS[1]!.url]);
+    // Found from this file (jsdom has its own URL; CI runs vitest from the repo root).
+    const css = readFileSync(resolve(dirname(fileURLToPath(import.meta.url)), "../src/styles.css"), "utf8");
+    const at = css.indexOf(".saves-link-title {");
+    expect(at).toBeGreaterThan(-1);
+    expect(css.slice(at, css.indexOf("}", at))).toMatch(/overflow-wrap:\s*anywhere/);
   });
 });

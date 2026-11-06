@@ -170,7 +170,8 @@ function RecentLinks({ links, busy, onProcess, onTrail }: { links: LinkDto[]; bu
         return (
           <div key={l.id} className="setting-row">
             <span className="place-row-main">
-              <b>{l.title || l.url}</b>
+              {/* A title may be the link itself, one long word: it wraps anywhere (audit 2026-11-06, I12). */}
+              <b className="saves-link-title">{l.title || l.url}</b>
               <small>{l.words}</small>
               {l.postId ? (
                 <span className="stu-saved-links">

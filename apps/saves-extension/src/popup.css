@@ -33,7 +33,10 @@ ul { list-style: none; }
 .meta { color: var(--muted); font-variant-numeric: tabular-nums; }
 .row { padding: 0.375rem 0; border-top: 1px solid var(--line); }
 .row .error, .row .reason { color: var(--warn); }
-.row .line { display: flex; flex-wrap: wrap; gap: 0.25rem 0.5rem; align-items: baseline; }
+.row .line { display: flex; flex-wrap: wrap; gap: 0.25rem 0.5rem; align-items: baseline; min-width: 0; }
+/* A title may be a link (one long word): every piece of a row wraps anywhere (audit 2026-11-06, I12). */
+.row .line > * { min-width: 0; max-width: 100%; overflow-wrap: anywhere; }
+.link-note { overflow-wrap: anywhere; }
 a { color: var(--accent); }
 button {
   min-height: 44px;
