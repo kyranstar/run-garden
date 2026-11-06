@@ -1,5 +1,5 @@
 import { z } from "zod";
-import { LIST_FIELDS } from "./lenient.js";
+import { DROPPED_FIELDS, QUOTE_FIELDS } from "./lenient.js";
 import { TRANSCRIPT_MAX } from "./transcript.js";
 
 export const chapterSchema = z.object({ start: z.number().min(0).max(86_400), title: z.string().max(100) }).strict();
@@ -105,7 +105,6 @@ const stated = z.enum(["stated", "inferred"]);
 
 /** When the post says to use a move, or not (extract-6): the "in what cases" the owner asked for. */
 const caseSchema = z.object({ text: z.string().max(160), evidence: stated }).strict();
-export const QUOTE_FIELDS = ["name", "dose", "purpose", "useWhen", "skipWhen", "steps", "why"] as const;
 export const QUOTE_CHECKS = ["verified", "in_speech", "not_found"] as const;
 export type QuoteCheck = (typeof QUOTE_CHECKS)[number];
 /**
@@ -209,7 +208,7 @@ export const extractionSchema = z
      * library doesn't know, left out so one word can't throw a paid reading away (live finding, 2026-11-05).
      */
     dropped: z
-      .array(z.object({ move: z.number().int().min(0), field: z.enum(LIST_FIELDS), values: z.array(z.string().max(40)).max(20) }).strict())
+      .array(z.object({ move: z.number().int().min(0), field: z.enum(DROPPED_FIELDS), values: z.array(z.string().max(40)).max(60) }).strict())
       .max(150)
       .optional(),
   })

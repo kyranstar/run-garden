@@ -49,3 +49,48 @@ describe("dropUnknownEnums", () => {
     expect(out.dropped).toEqual([]);
   });
 });
+
+describe("dropUnknownEnums: extract-6's optional fields never fail a reading (final review F4)", () => {
+  type M = Record<string, unknown>;
+  const first = (out: ReturnType<typeof dropUnknownEnums>) => (out.value as { moves: M[] }).moves[0]!;
+
+  it("a quote it can't use goes, noted; one it can mend is mended", () => {
+    const out = dropUnknownEnums(reply({
+      quotes: [
+        { field: "cues", text: "keep the ribs down", from: "caption" },
+        { field: "dose", text: "x".repeat(250), from: "transcript", at: "1:05" },
+        { field: "name", text: "the zorbex lift", from: "title" },
+        { field: "why", text: 7, from: "caption" },
+        ...Array.from({ length: 8 }, (_, i) => ({ field: "steps", text: `step ${i}`, from: "caption" })),
+      ],
+    }));
+    const quotes = first(out).quotes as M[];
+    expect(quotes).toHaveLength(8);
+    expect(quotes[0]).toEqual({ field: "dose", text: "x".repeat(200), from: "transcript", at: 65 });
+    expect(quotes[1]).toEqual({ field: "name", text: "the zorbex lift", from: "caption" });
+    expect(out.dropped).toEqual([{ move: 0, field: "quotes", values: ["keep the ribs down", "7", "step 6", "step 7"] }]);
+  });
+
+  it("use-when and skip-when items are mended (their words cut to 160, an unknown evidence a guess), at most 4 kept", () => {
+    const out = dropUnknownEnums(reply({
+      useWhen: [{ text: "u".repeat(200), evidence: "maybe" }, "plain words", { text: 3 }, ...Array.from({ length: 4 }, (_, i) => ({ text: `w${i}`, evidence: "stated" }))],
+      skipWhen: { text: "not a list" },
+      why: "y".repeat(300),
+    }));
+    const m = first(out);
+    expect(m.useWhen).toEqual([
+      { text: "u".repeat(160), evidence: "inferred" }, { text: "plain words", evidence: "inferred" },
+      { text: "w0", evidence: "stated" }, { text: "w1", evidence: "stated" },
+    ]);
+    expect(m.skipWhen).toBeUndefined();
+    expect(m.why).toBe("y".repeat(200));
+    expect(out.dropped).toEqual([{ move: 0, field: "useWhen", values: ["3", "w2", "w3"] }, { move: 0, field: "skipWhen", values: ["not a list"] }]);
+  });
+
+  it("a reading's speech past 4,000 characters is cut there, and an insight with an unknown scope stays with its post", () => {
+    const out = dropUnknownEnums({ moves: [], speech: "s".repeat(4_500), insights: [{ text: "Twice a week", scope: "forever" }, "plain"] });
+    const v = out.value as { speech: string; insights: unknown[] };
+    expect(v.speech).toHaveLength(4_000);
+    expect(v.insights).toEqual([{ text: "Twice a week", scope: "this_routine" }, "plain"]);
+  });
+});

@@ -226,7 +226,7 @@ export function extractSystemText(): string {
     "useWhen and skipWhen: when the post says to use this move, or not to (who it suits, before or after what, a body part or condition it helps or hurts); evidence \"stated\" when the post says it, \"inferred\" when you judged it; empty when the post gives none. " +
       "why: in a line, why the post says to do it; empty when it doesn't say.",
     "quotes: the post's own words that support a move's name, dose, purpose, useWhen, skipWhen, steps or why, copied verbatim, never paraphrased or translated. " +
-      'from "caption" (the caption or description), "transcript" (with at: the seconds shown before the line), "speech" (words you heard in an attached video), "screen" (text shown in the video). ' +
+      'from "caption" (the caption, description, title or a chapter), "transcript" (with at: the line\'s time in seconds — [1:05] is at 65), "speech" (words you heard in an attached video), "screen" (text shown in the video). ' +
       "Never quote words that are not there; leave quotes empty rather than invent one.",
     "speech: for an attached video when no transcript is given, what is said in it, transcribed in its own language (at most 4,000 characters); omit it otherwise.",
     "A transcript may be auto-generated and garbled: read through its errors to what was meant, and mark anything you had to guess \"inferred\".",

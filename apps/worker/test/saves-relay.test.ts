@@ -624,6 +624,16 @@ describe("a reading with one unknown list value is kept (live finding, 2026-11-0
     expect(stored.dropped).toBeUndefined();
   });
 
+  it("a quote it can't use (a field it can't support, a clock for its time) never fails the reading (final review F4)", async () => {
+    const id = await seed("lenient4");
+    const quotes = [{ field: "cues", text: "ribs down", from: "caption" }, { field: "dose", text: "ten each", from: "transcript", at: "0:12" }];
+    const out = await run(id, bodyText(), gateway({ ...GOOD, moves: [{ ...move, quotes }] }));
+    expect(out.ok).toBe(true);
+    const stored = (await reload(id)).extraction as { moves: { quotes: { field: string; at?: number }[] }[]; dropped?: unknown };
+    expect(stored.moves[0]!.quotes.map((q) => [q.field, q.at])).toEqual([["dose", 12]]);
+    expect(stored.dropped).toEqual([{ move: 0, field: "quotes", values: ["ribs down"] }]);
+  });
+
   it("an unknown single-valued field still fails the reading with the schema's words", async () => {
     const id = await seed("lenient3");
     const out = await run(id, bodyText(), gateway({ ...GOOD, moves: [{ ...move, position: "floaty" }] }));
