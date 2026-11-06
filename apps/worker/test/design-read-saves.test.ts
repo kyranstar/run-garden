@@ -659,3 +659,42 @@ describe("read_saves: pages a fit can read (the budgets review, 2026-11-06)", ()
     expect(bytes(forModel(r))).toBeLessThanOrEqual(RESULT_BUDGET_BYTES);
   });
 });
+
+describe("read_saves: a dropped insight stays dropped (the controller's fix pass, D8)", () => {
+  it("another post with the same words never brings it back — whichever copy the coach let go", async () => {
+    for (const which of [0, 1]) {
+      const { userId: uid } = await makeTestUser(db, { timezone: "America/Los_Angeles" });
+      const same = "Twice a week is plenty.";
+      const posts: SavedPostSpec[] = [
+        { moves: [{ draft: A }], insights: [same, "Keep the neck long."] },
+        { moves: [{ draft: B }], insights: [same] },
+      ];
+      const { postIds } = await seedSavedBatch(db, uid, { savedAt: daysAgo(1), posts });
+      // An approved correction let go of one copy (import-corrections.ts: the insight kept, marked dropped).
+      const p = schema.savedPosts;
+      const [row] = await db.select().from(p).where(eq(p.id, postIds[which]!));
+      const extraction = row!.extraction as { insights: unknown[] };
+      extraction.insights[0] = { text: same, scope: "general", dropped: true };
+      await db.update(p).set({ extraction }).where(eq(p.id, postIds[which]!));
+      const r = await ok({}, uid);
+      expect(r.data.insights.map((i: any) => i.text.text), `dropped on post ${which}`).toEqual(["Keep the neck long."]);
+      const [ctxRow] = (await db.all(sql`select ${savesBatchSql(uid, { now: NOW })} as b`)) as Array<{ b: unknown }>;
+      expect(savedBatchOf(ctxRow!.b)!.insights.map((i) => i.text), `the opening context, dropped on post ${which}`).toEqual(["Keep the neck long."]);
+    }
+  });
+});
+
+describe("read_saves: a malformed stored reading (the controller's fix pass, D12)", () => {
+  it("a reading whose fields aren't the shapes they should be reads as no evidence, never failing the page", async () => {
+    const { postIds } = await seedSavedBatch(db, userId, { savedAt: daysAgo(1), posts: twoPosts() });
+    const p = schema.savedPosts;
+    const [row] = await db.select().from(p).where(eq(p.id, postIds[0]!));
+    const extraction = row!.extraction as { moves: Array<Record<string, unknown>> };
+    // Words where a list, an object or a quote list belongs.
+    extraction.moves[0] = { ...extraction.moves[0]!, evidence: "stated", dose: "8 reps", useWhen: "after runs", skipWhen: "never", quotes: "she says so", patterns: "mobility", contraction: "iso" };
+    await db.update(p).set({ extraction }).where(eq(p.id, postIds[0]!));
+    const r = await ok({});
+    expect(r.data.moves.map((m: any) => m.n)).toEqual([1, 2, 3]);
+    expect(r.data.moves[0].links[0].reading).toMatchObject({ stated: [], inferred: [], quotes: [] });
+  });
+});

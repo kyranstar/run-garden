@@ -348,13 +348,18 @@ const CORRECTIONS_READ = 60;
  * first. Its tables go by their own aliases.
  */
 function pageEvidenceSql(userId: string, pairs: ReadonlyArray<readonly [string, number]>, moveIds: readonly string[]): SQL {
-  const f = (k: string) => sql.raw(`json_extract(case when json_valid(ev_p.extraction) then ev_p.extraction end, '$.moves[' || ev_l.position || '].${k}')`);
+  const doc = "case when json_valid(ev_p.extraction) then ev_p.extraction end";
+  const path = (k: string) => `'$.moves[' || ev_l.position || '].${k}'`;
+  const f = (k: string) => sql.raw(`json_extract(${doc}, ${path(k)})`);
+  // A field that should be a list or an object, only when it is one (the controller's fix pass, D12): one malformed
+  // stored reading reads as no evidence, never failing the page.
+  const j = (k: string) => sql.raw(`(case when json_type(${doc}, ${path(k)}) in ('object', 'array') then json(json_extract(${doc}, ${path(k)})) end)`);
   const pairsJson = JSON.stringify(pairs);
   return sql`select
     (select json_group_array(json_array(ev_l.post_id, ev_l.position, ev_l.check_flag,
-        json_object('evidence', json(${f("evidence")}), 'confidence', ${f("confidence")}, 'dose', json(${f("dose")}), 'why', ${f("why")},
-          'useWhen', json(${f("useWhen")}), 'skipWhen', json(${f("skipWhen")}), 'quotes', json(${f("quotes")}),
-          'load', ${f("load")}, 'patterns', json(${f("patterns")}), 'contraction', json(${f("contraction")})),
+        json_object('evidence', ${j("evidence")}, 'confidence', ${f("confidence")}, 'dose', ${j("dose")}, 'why', ${f("why")},
+          'useWhen', ${j("useWhen")}, 'skipWhen', ${j("skipWhen")}, 'quotes', ${j("quotes")},
+          'load', ${f("load")}, 'patterns', ${j("patterns")}, 'contraction', ${j("contraction")}),
         json((select json_array(json_extract(ev_m.value, '$.by'), json_extract(ev_m.value, '$.confidence'))
           from json_each((select ev_e.detail from import_events ev_e where ev_e.user_id = ${userId} and ev_e.post_id = ev_l.post_id
               and ev_e.stage = 'match' and json_valid(ev_e.detail) order by ev_e.at desc, ev_e.rowid desc limit 1), '$.moves') ev_m

@@ -60,13 +60,15 @@ async function batch(owner = userId) {
   return { batchId: seeded.batchId, postId: seeded.postIds[0]!, lift: lift!, nod: nod! };
 }
 
-async function mainRun(): Promise<ToolContext> {
+/** A main run answering the athlete's message (`request`) — or, with `o.fit`, a "Fit them in" run of a batch; with
+ * `o.request: null`, one the athlete didn't ask for in words (an auto run). */
+async function mainRun(o: { request?: string | null; fit?: string } = {}): Promise<ToolContext> {
   const id = `run-${newId()}`;
   await db.insert(coachRuns).values({
-    id, userId, parentId: null, role: "main", scope: { kind: "auto" }, request: "That dose is wrong.", status: "active", state: null, steps: 0, costUsd: 0,
+    id, userId, parentId: null, role: "main", scope: { kind: "auto" }, request: o.request === undefined ? "That dose is wrong." : o.request, status: "active", state: null, steps: 0, costUsd: 0,
     createdAt: NOW.toISOString(), updatedAt: NOW.toISOString(),
   });
-  return { db, env: ENV, userId, run: { id, role: "main", scope: { kind: "auto" }, parentId: null, rehearsal: false }, now: NOW, toolUseId: `toolu_${newId()}` };
+  return { db, env: ENV, userId, run: { id, role: "main", scope: { kind: "auto" }, parentId: null, rehearsal: false, ...(o.fit ? { savesBatchId: o.fit } : {}) }, now: NOW, toolUseId: `toolu_${newId()}` };
 }
 
 const DOSE_FIX = { type: "time", range: [30, 30], sets: [2, 2] };
@@ -180,9 +182,11 @@ describe("correct_import: a correction, proposed with its evidence", () => {
     const b = await batch();
     const ctx = await mainRun();
     await readSavesInRun(db, ctx);
-    const same = ok((await correct(ctx, { target: "link", targetId: `${b.postId}:2`, field: "same_as", after: "deadBug" })).res);
+    // REBASED 2026-11-06 (the controller's fix pass, D5): the lift's quote (q1.1) is no evidence about the nod's or the
+    // squat's link — these cite history.
+    const same = ok((await correct(ctx, { target: "link", targetId: `${b.postId}:2`, field: "same_as", after: "deadBug", cites: ["history"] })).res);
     expect((same.data as { said: { text: string } }).said.text).toBe(`Zorbex neck nod is the same as ${DEAD_BUG.name}`);
-    const notSame = ok((await correct({ ...ctx, toolUseId: "toolu_not" }, { target: "link", targetId: `${b.postId}:1`, field: "not_same", after: null })).res);
+    const notSame = ok((await correct({ ...ctx, toolUseId: "toolu_not" }, { target: "link", targetId: `${b.postId}:1`, field: "not_same", after: null, cites: ["history"] })).res);
     expect((notSame.data as { said: { text: string } }).said.text).toBe(`The post's move isn't the library's ${GOBLET.name} — a move of its own`);
     expect((await fixes(ctx)).map((f) => [f.field, f.before, f.after])).toEqual([["same_as", b.nod, "deadBug"], ["not_same", "gobletSquat", null]]);
     // Not the same on a link to a personal move: nothing of the library's to undo.
@@ -278,5 +282,60 @@ describe("correct_import: a correction, proposed with its evidence", () => {
     await readSavesInRun(db, ctx);
     const r = ok((await correct(ctx, { target: "move", targetId: b.lift, field: "name", after: "Zorbex hip raise" })).res);
     expect((r.data as { said: unknown }).said).toEqual(U("Name of Zorbex hip lift: Zorbex hip raise (was Zorbex hip lift)"));
+  });
+});
+
+describe("correct_import: evidence integrity (the controller's fix pass, D)", () => {
+  it("D6: basis owner is the athlete's own word — in a run answering their message, never a Fit them in run or one they didn't ask in words", async () => {
+    const b = await batch();
+    const owner = { target: "move", targetId: b.lift, field: "dose", after: DOSE_FIX, basis: "owner", cites: [], why: "You said so: two sets of thirty seconds." };
+    for (const ctx of [await mainRun({ request: "Fit my saved moves in.", fit: b.batchId }), await mainRun({ request: null })]) {
+      const r = refused((await correct(ctx, owner)).res);
+      expect(r.error).toBe("not_their_word");
+      expect(r.fix).toContain("basis evidence");
+    }
+    ok((await correct(await mainRun({ request: "No — she says two sets of thirty seconds, I'm sure." }), owner)).res);
+  });
+
+  it("D5: a quote cite is the corrected move's own — another move's is refused", async () => {
+    const posts = [{ moves: [{ draft: LIFT }, { draft: savedMoveDraft("Zorbex calf rock", { regions: ["calves"], quotes: [{ field: "dose" as const, text: "ten slow rocks", at: 5, from: "transcript" as const, check: "verified" as const }] }) }] }];
+    const seeded = await seedSavedBatch(db, userId, { savedAt: SAVED_AT, posts });
+    const [lift, rock] = seeded.moveIds[0]!;
+    const ctx = await mainRun();
+    await readSavesInRun(db, ctx);
+    // The rock is move 2: its quote is q2.1, not the lift's.
+    const r = refused((await correct(ctx, { target: "move", targetId: lift!, field: "dose", after: DOSE_FIX, cites: ["q2.1"] })).res);
+    expect(r.error).toBe("not_its_move");
+    ok((await correct({ ...ctx, toolUseId: "toolu_rock" }, { target: "move", targetId: rock!, field: "dose", after: DOSE_FIX, cites: ["q2.1"] })).res);
+  });
+
+  it("D7: an insight's post is read when its insight was shown — so the insight can be corrected on the evidence, though no page showed its moves", async () => {
+    // Post 0's move is the only one on the first page (limit 1); post 1's insights come with that page.
+    const seeded = await seedSavedBatch(db, userId, {
+      savedAt: SAVED_AT,
+      posts: [{ moves: [{ draft: LIFT }] }, { moves: [{ draft: NOD }], insights: ["Twice a week is plenty.", "Mornings only."] }],
+    });
+    const ctx = await mainRun();
+    await readSavesInRun(db, ctx, { limit: 1 });
+    ok((await correct(ctx, { target: "insight", targetId: `${seeded.postIds[1]}:1`, field: "drop", after: true, cites: ["history"] })).res);
+  });
+});
+
+describe("correct_import: a dose fix keeps what it doesn't say (the controller's fix pass, D11)", () => {
+  it("its rest, its sets and — while it stays reps — its seconds a rep come from the dose it corrects", async () => {
+    const SLOW = savedMoveDraft("Zorbex slow lift", { dose: { text: "2-3 sets of 6-10, 4 s each", type: "reps", range: [6, 10], sets: [2, 3], secsPerRep: 4 } });
+    const seeded = await seedSavedBatch(db, userId, { savedAt: SAVED_AT, posts: [{ moves: [{ draft: SLOW }] }] });
+    const [slow] = seeded.moveIds[0]!;
+    const pm = schema.personalMoves;
+    const [row] = await db.select().from(pm).where(eq(pm.id, slow!));
+    const record = row!.record as { dose: Record<string, unknown> };
+    await db.update(pm).set({ record: { ...record, dose: { ...record.dose, restSec: 60 } } }).where(eq(pm.id, slow!));
+    const ctx = await mainRun();
+    await readSavesInRun(db, ctx);
+    ok((await correct(ctx, { target: "move", targetId: slow!, field: "dose", after: { type: "reps", range: [8, 8] }, cites: ["history"] })).res);
+    expect((await fixes(ctx))[0]!.after).toEqual({ type: "reps", range: [8, 8], sets: [2, 3], secsPerRep: 4, restSec: 60 });
+    // Reps no more: no seconds a rep.
+    ok((await correct({ ...ctx, toolUseId: "toolu_time" }, { target: "move", targetId: slow!, field: "dose", after: { type: "time", range: [30, 30], sets: [2, 2] }, cites: ["history"] })).res);
+    expect((await fixes(ctx))[0]!.after).toEqual({ type: "time", range: [30, 30], sets: [2, 2], restSec: 60 });
   });
 });

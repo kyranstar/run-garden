@@ -187,7 +187,7 @@ export interface PinsCardLine {
   via?: "pin" | "workout" | "rotation";
 }
 
-const CITE_KINDS = new Set(["quote", "history", "goal", "inferred"]);
+const CITE_KINDS = new Set(["quote", "history", "goal", "inferred", "stated"]);
 
 /** A stored cite that reads: an id, a kind, a label (a quote's with its post, position and index). */
 function citeOf(c: unknown): CiteRef | null {

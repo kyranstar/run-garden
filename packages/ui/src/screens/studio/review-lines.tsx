@@ -27,9 +27,9 @@ import { moveHref } from "./screen.js";
 
 type Open = (postId: string, focus: TrailFocus) => void;
 
-/** One chip: a quote's or the reader's guess opens the trail; history and a goal are words. */
+/** One chip: a quote's, the reader's report or guess opens the trail; history and a goal are words. */
 function Chip({ cite, open }: { cite: DesignCiteDto; open: Open }) {
-  const opens = cite.postId !== undefined && cite.position !== undefined && (cite.kind === "quote" || cite.kind === "inferred");
+  const opens = cite.postId !== undefined && cite.position !== undefined && (cite.kind === "quote" || cite.kind === "inferred" || cite.kind === "stated");
   if (!opens) return <span className="coach-cite coach-cite--plain">{cite.label}</span>;
   return (
     <button

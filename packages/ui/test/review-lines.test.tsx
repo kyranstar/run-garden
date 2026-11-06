@@ -188,3 +188,20 @@ describe("a dose fix that didn't land (final review, Important 1)", () => {
     expect(document.querySelector(".coach-review-fix")!.textContent).toContain("✓");
   });
 });
+
+describe("the reader's report (the controller's fix pass, C1)", () => {
+  it("a stated field's chip says the reader's report and opens the post's trail at the move", async () => {
+    Element.prototype.scrollIntoView = vi.fn();
+    const STATED = { id: "stated:steps", kind: "stated" as const, label: "reader's report", field: "steps", postId: "post-1", position: 0 };
+    const lift = { ...LIFT, cites: [STATED] };
+    serve({ "GET /api/coach/proposals/dp-run-7": () => read({ pins: [pinsLine({ lines: [lift, NOD] })] }), "GET /api/my-saves/posts/post-1/trail": () => TRAIL });
+    await mount(card({ pinLines: [lift, NOD] }));
+    await until(() => document.querySelectorAll(".coach-cite").length > 0, "chips");
+    const chip = document.querySelector(".coach-review-line .coach-cite") as HTMLElement;
+    expect(chip.textContent).toBe("reader's report");
+    expect(chip.tagName).toBe("BUTTON");
+    await click(chip as HTMLButtonElement, "the report chip");
+    // The move's account opens: what the post says of it.
+    await until(() => text().includes("What the post says"), "the trail at the move");
+  });
+});

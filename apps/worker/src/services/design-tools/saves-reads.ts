@@ -7,7 +7,7 @@
  */
 import { sql, type SQL } from "drizzle-orm";
 import type { QuoteCheck } from "@rg/saves";
-import { parseCite, quoteLabel, type CiteRef, type QuoteRef } from "../saves-evidence.js";
+import { parseCite, quoteLabel, quoteMoveNo, type CiteRef, type QuoteRef } from "../saves-evidence.js";
 import { parsedArray, parsedJson } from "./read-common.js";
 
 /** The run's read_saves receipts — for `batchId`, or every batch it read — as ONE JSON value: `[[at, receipt]]`, oldest
@@ -21,8 +21,9 @@ export function savesReadsSql(userId: string, mainRunId: string, batchId?: strin
 }
 
 export interface SavesReads {
-  /** Each move a page showed, with its first post. */
-  moves: Map<string, { postId: string; position: number }>;
+  /** Each move a page showed, with its first post, its place in the batch (a quote id's n) and the fields its posts
+   * stated (what stated:<field> may cite). */
+  moves: Map<string, { postId: string; position: number; n: number | null; stated: string[] }>;
   quotes: Map<string, QuoteRef>;
   /** When the run first read each post. */
   readAt: Map<string, string>;
@@ -38,8 +39,12 @@ export function savesReadsOf(raw: unknown): SavesReads {
     const r = (parsedJson(receipt) ?? receipt) as { moves?: unknown; posts?: unknown; quotes?: unknown } | null;
     if (!r || typeof r !== "object") continue;
     for (const m of Array.isArray(r.moves) ? r.moves : []) {
-      const [moveId, postId, position] = Array.isArray(m) ? (m as unknown[]) : [];
-      if (typeof moveId === "string" && typeof postId === "string" && typeof position === "number" && !out.moves.has(moveId)) out.moves.set(moveId, { postId, position });
+      const [moveId, postId, position, n, stated] = Array.isArray(m) ? (m as unknown[]) : [];
+      if (typeof moveId !== "string" || typeof postId !== "string" || typeof position !== "number") continue;
+      const fields = Array.isArray(stated) ? stated.filter((f): f is string => typeof f === "string") : [];
+      const had = out.moves.get(moveId);
+      if (!had) out.moves.set(moveId, { postId, position, n: typeof n === "number" ? n : null, stated: fields });
+      else had.stated = [...new Set([...had.stated, ...fields])];
     }
     for (const postId of Array.isArray(r.posts) ? r.posts : []) {
       if (typeof postId === "string" && typeof at === "string" && !out.readAt.has(postId)) out.readAt.set(postId, at);
@@ -71,5 +76,16 @@ export function citeRefOf(id: string, reads: SavesReads, moveId: string | undefi
   if (p.kind === "history") return { id: "history", kind: "history", label: "your history" };
   if (p.kind === "goal") return { id, kind: "goal", label: "your goal", goalId: p.goalId };
   const first = moveId ? reads.moves.get(moveId) : undefined;
-  return { id, kind: "inferred", label: "reader's guess", field: p.field, ...(first ? { postId: first.postId, position: first.position } : {}) };
+  const at = first ? { postId: first.postId, position: first.position } : {};
+  // The reader's report: a field its posts stated, as the run read them (the controller's fix pass, C1).
+  if (p.kind === "stated") return first?.stated.includes(p.field) ? { id, kind: "stated", label: "reader's report", field: p.field, ...at } : null;
+  return { id, kind: "inferred", label: "reader's guess", field: p.field, ...at };
+}
+
+/** A quote cite on a line about `moveId` that is another move's (the controller's fix pass, D5): that move's place in
+ * the batch — so a chip never vouches for the wrong move. Null when it is the move's own, or can't be told. */
+export function otherMovesQuote(id: string, reads: SavesReads, moveId: string | undefined): number | null {
+  const n = quoteMoveNo(id);
+  const own = moveId ? reads.moves.get(moveId)?.n : null;
+  return n !== null && own !== null && own !== undefined && n !== own ? n : null;
 }

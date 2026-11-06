@@ -64,11 +64,11 @@ import { markUntrusted } from "../design-prompt.js";
 import { OPEN_PROPOSAL_STATUSES } from "../design-review.js";
 import { clipProse } from "../design-prose.js";
 import { isMovePinsOp, PINS_LINES_MAX, PINS_MAX, pinsCardLinesOf, pinsId, type MovePinsOp, type PinsCardLine } from "../proposal-kinds.js";
-import { claimsThePost, doseNumbers, doseWords, QUOTE_ID_RE, type CiteRef } from "../saves-evidence.js";
+import { claimsThePost, doseNumbers, doseWords, parseCite, QUOTE_ID_RE, type CiteRef } from "../saves-evidence.js";
 import { capInWords, isErr, mainRunIdOf, parseAct, prose } from "./act-common.js";
 import { designProposalId, upsertProposal } from "./propose.js";
 import { parsedArray, parsedJson, plural, readAthlete, refuse } from "./read-common.js";
-import { citeRefOf, savesReadsOf, savesReadsSql, type SavesReads } from "./saves-reads.js";
+import { citeRefOf, otherMovesQuote, savesReadsOf, savesReadsSql, type SavesReads } from "./saves-reads.js";
 import type { DesignTool, ToolOk } from "./types.js";
 
 const TITLE_MAX = 60;
@@ -276,7 +276,7 @@ export const pinMoves: DesignTool = {
               type: "array",
               items: { type: "string" },
               maxItems: CITES_MAX,
-              description: "What it rests on: read_saves' quote ids (q1.2), history, goal:<id>, inferred:<field>. A claim about what the post says needs its quote.",
+              description: "What it rests on: this move's quote ids from read_saves (q1.2), history, goal:<id>, stated:<field>, inferred:<field>. A claim about what the post says needs its quote or stated field.",
             },
           },
           required: ["text"],
@@ -445,17 +445,28 @@ export const pinMoves: DesignTool = {
           return refuse(
             "unknown_cite",
             `lines.${i}: ${JSON.stringify(c)} isn't a cite this run read.`,
-            "Cite a quote id read_saves gave (q1.2), history, goal:<objective id>, or inferred:<field> — name, dose, steps, purpose, useWhen, skipWhen or why.",
+            "Cite a quote id read_saves gave (q1.2), history, goal:<objective id>, stated:<field> (a field its reading stated) or inferred:<field> — name, dose, steps, purpose, useWhen, skipWhen or why.",
+          );
+        }
+        // A quote vouches for its own move alone (the controller's fix pass, D5).
+        const other = otherMovesQuote(c, reads, l.moveId);
+        if (other !== null) {
+          return refuse(
+            "not_its_move",
+            `lines.${i}: ${JSON.stringify(c)} is a quote about move ${other} of the batch, not this line's move (move ${reads.moves.get(l.moveId!)!.n}).`,
+            "Cite this move's own quotes (q<its n>.<k>), its stated:<field> or inferred:<field>, or history — or write the line about the move the quote is.",
           );
         }
       }
-      // A quote the reader made that isn't in the post (§5.6) is no evidence for what the post says (final review, I2).
+      // What the post says rests on a quote that is in the post (§5.6: one not in the post is no evidence — final review,
+      // I2), or on a field its reading stated — the reader's report (the controller's fix pass, C1).
       const quoted = (l.cites ?? []).filter((c) => QUOTE_ID_RE.test(c));
-      if (claimsThePost(l.text) && !quoted.some((c) => reads.quotes.get(c)?.check !== "not_found")) {
+      const reported = (l.cites ?? []).some((c) => parseCite(c)?.kind === "stated");
+      if (claimsThePost(l.text) && !reported && !quoted.some((c) => reads.quotes.get(c)?.check !== "not_found")) {
         return refuse(
           "uncited_claim",
           `lines.${i}: ${JSON.stringify(clipProse(l.text, 120))} says what the post or its creator says, with no quote cited${quoted.length ? " that is in the post (a quote marked not in the post is no evidence)" : ""}.`,
-          "Cite the quote ids read_saves gave — or, when the post never says it, say it was the reader's guess and cite inferred:<field>.",
+          "Cite the quote ids read_saves gave, or stated:<field> for a field its reading stated with no quote — or, when the post never says it, say it was the reader's guess and cite inferred:<field>.",
         );
       }
     }

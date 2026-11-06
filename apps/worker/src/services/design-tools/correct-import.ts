@@ -23,7 +23,7 @@
  */
 import { sql } from "drizzle-orm";
 import { z } from "zod";
-import { accountState, coachProposals } from "@rg/database";
+import { accountState, coachProposals, coachRuns } from "@rg/database";
 import { makeLibraryIndex } from "@rg/workout";
 import { accountLibraryFrom, personalMovesSql } from "../account-library.js";
 import { OPEN_PROPOSAL_STATUSES } from "../design-review.js";
@@ -54,7 +54,7 @@ import { capInWords, isErr, mainRunIdOf, parseAct, prose } from "./act-common.js
 import { CITES_MAX, workoutDosesOf } from "./pin-moves.js";
 import { designProposalId, upsertProposal } from "./propose.js";
 import { parsedJson, readAthlete, refuse, untrusted } from "./read-common.js";
-import { citeRefOf, savesReadsOf, savesReadsSql } from "./saves-reads.js";
+import { citeRefOf, otherMovesQuote, savesReadsOf, savesReadsSql } from "./saves-reads.js";
 import type { DesignTool, ToolOk } from "./types.js";
 
 const WHY_MAX = 300;
@@ -84,7 +84,7 @@ function storedAnswer(proposalId: string, op: ImportCorrectionOp, o: { replaced?
 export const correctImport: DesignTool = {
   name: "correct_import",
   description:
-    "The main coach: propose a fix to imported data — a saved move's field, a post's reading of a move (useWhen, skipWhen, why), an insight, a link's match — with why and its basis: evidence (cite it) or the athlete's insistence (owner). Applied on Approve.",
+    "The main coach: propose a fix to imported data — a saved move's field, a post's reading of a move (useWhen, skipWhen, why), an insight, a link's match — with why and its basis: evidence (cite it) or the athlete's insistence in their message (owner). Applied on Approve.",
   inputSchema: {
     type: "object",
     properties: {
@@ -97,7 +97,7 @@ export const correctImport: DesignTool = {
       after: { description: "The new value, in the field's own shape (a dose as {type, range, sets?}; same_as: a move id; drop: true; not_same: null)." },
       why: { type: "string", description: `${capInWords(WHY_MAX)}.` },
       basis: { type: "string", enum: ["evidence", "owner"] },
-      cites: { type: "array", items: { type: "string" }, maxItems: CITES_MAX, description: "Evidence's: read_saves' quote ids, history, inferred:<field>." },
+      cites: { type: "array", items: { type: "string" }, maxItems: CITES_MAX, description: "Evidence's: the move's quote ids from read_saves, history, stated:<field>, inferred:<field>." },
     },
     required: ["target", "targetId", "field", "why", "basis"],
     additionalProperties: false,
@@ -127,6 +127,8 @@ export const correctImport: DesignTool = {
       restoring: sql`(select ${accountState.restoreId} from ${accountState} where ${accountState.userId} = ${ctx.userId})`,
       state: correctionStateSql(ctx.userId, target, parsed.targetId, ctx.now.toISOString().slice(0, 10)),
       reads: savesReadsSql(ctx.userId, mainRunId),
+      // What the athlete asked this run in words (the controller's fix pass, D6): basis owner is their word alone.
+      asked: sql`(select nullif(trim(coalesce(${coachRuns.request}, '')), '') from ${coachRuns} where ${coachRuns.id} = ${mainRunId} and ${coachRuns.userId} = ${ctx.userId})`,
     });
     const library = await accountLibraryFrom(ctx.db, ctx.userId, extra.library);
     const find = makeLibraryIndex(library.all);
@@ -163,6 +165,15 @@ export const correctImport: DesignTool = {
     }
     if (JSON.stringify(after.value) === JSON.stringify(current.value)) return refuse("same_value", `${parsed.field} is already that.`, "Correct only what is wrong; leave the rest.");
 
+    // The athlete's insistence is their word in this conversation (the controller's fix pass, D6): a run answering their
+    // message — never a "Fit them in" run (the app's request, not theirs), nor one they didn't ask in words.
+    if (parsed.basis === "owner" && (ctx.run.savesBatchId || typeof extra.asked !== "string")) {
+      return refuse(
+        "not_their_word",
+        ctx.run.savesBatchId ? "basis owner is the athlete's own word — this run fits their saves in; they haven't said anything about it." : "basis owner is the athlete's own word — this run answers no message of theirs.",
+        "Give basis evidence with the cites you read — or, if only the athlete can say, ask them with ask_athlete.",
+      );
+    }
     // Evidence: the run read the target, and cites what it read.
     const reads = savesReadsOf(extra.reads);
     const link = state!.kind === "post" ? state!.links.find((l) => l.position === ref!.n && l.status === "saved") : undefined;
@@ -175,7 +186,12 @@ export const correctImport: DesignTool = {
     const cites: CiteRef[] = [];
     for (const c of [...new Set(parsed.cites ?? [])]) {
       const r = citeRefOf(c, reads, moveId);
-      if (!r) return refuse("unknown_cite", `${JSON.stringify(c)} isn't a cite this run read.`, "Cite a quote id read_saves gave (q1.2), history, or inferred:<field>.");
+      if (!r) return refuse("unknown_cite", `${JSON.stringify(c)} isn't a cite this run read.`, "Cite a quote id read_saves gave (q1.2), history, stated:<field> or inferred:<field>.");
+      // A quote vouches for its own move alone (the controller's fix pass, D5).
+      const other = otherMovesQuote(c, reads, moveId);
+      if (other !== null) {
+        return refuse("not_its_move", `${JSON.stringify(c)} is a quote about move ${other} of the batch, not the move this corrects.`, "Cite this move's own quotes, stated:<field> or inferred:<field>, or history.");
+      }
       cites.push(r);
     }
     const others = all.filter((o) => isImportCorrectionOp(o) && o.id !== opId).length;

@@ -926,7 +926,8 @@ export interface DesignPinsCardLineDto {
  */
 export interface DesignCiteDto {
   id: string;
-  kind: "quote" | "history" | "goal" | "inferred";
+  /** `stated`: a field the reader says the post states, with no quote — the reader's report (weaker than a quote). */
+  kind: "quote" | "history" | "goal" | "inferred" | "stated";
   label: string;
   postId?: string;
   position?: number;

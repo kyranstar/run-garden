@@ -70,24 +70,33 @@ export type CiteRef =
   | { id: string; kind: "quote"; label: string; postId: string; position: number; quote: number }
   | { id: "history"; kind: "history"; label: "your history" }
   | { id: string; kind: "goal"; label: "your goal"; goalId: string }
-  | { id: string; kind: "inferred"; label: "reader's guess"; field: string; postId?: string; position?: number };
+  | { id: string; kind: "inferred"; label: "reader's guess"; field: string; postId?: string; position?: number }
+  /** A field the reader says the post states, with no quote (most older readings): the reader's report — weaker than a
+   * quote, never a guess (the controller's fix pass, C1). */
+  | { id: string; kind: "stated"; label: "reader's report"; field: string; postId?: string; position?: number };
 
 export type ParsedCite =
   | { kind: "quote"; id: string }
   | { kind: "history"; id: "history" }
   | { kind: "goal"; id: string; goalId: string }
-  | { kind: "inferred"; id: string; field: InferredField };
+  | { kind: "inferred"; id: string; field: InferredField }
+  | { kind: "stated"; id: string; field: InferredField };
 
-/** A cite as the coach writes it: a quote id, `history`, `goal:<id>` or `inferred:<field>` — else null. */
+/** A cite as the coach writes it: a quote id, `history`, `goal:<id>`, `stated:<field>` or `inferred:<field>` — else
+ * null. A goal's id is letters, digits, "_" and "-" alone (the controller's fix pass, D9): it goes into the next turn's
+ * block unmarked. */
 export function parseCite(id: string): ParsedCite | null {
   if (QUOTE_ID_RE.test(id)) return { kind: "quote", id };
   if (id === "history") return { kind: "history", id: "history" };
-  const goal = /^goal:(\S{1,80})$/.exec(id);
+  const goal = /^goal:([A-Za-z0-9_-]{1,80})$/.exec(id);
   if (goal) return { kind: "goal", id, goalId: goal[1]! };
-  const inferred = /^inferred:(\w+)$/.exec(id);
-  if (inferred && (INFERRED_FIELDS as readonly string[]).includes(inferred[1]!)) return { kind: "inferred", id, field: inferred[1] as InferredField };
+  const field = /^(inferred|stated):(\w+)$/.exec(id);
+  if (field && (INFERRED_FIELDS as readonly string[]).includes(field[2]!)) return { kind: field[1] as "inferred" | "stated", id, field: field[2] as InferredField };
   return null;
 }
+
+/** A quote id's move: its place in the batch (`q<n>.<k>`'s n); null for anything else. */
+export const quoteMoveNo = (id: string): number | null => (QUOTE_ID_RE.test(id) ? Number(id.slice(1, id.indexOf("."))) : null);
 
 const SAY = String.raw`(?:says?|said|shows?|showed|recommends?|recommended|suggests?|suggested|claims?|claimed|pitch(?:es|ed)?|calls?|called|argues?|explains?|insists?|swears?|states?)`;
 /** Words that attribute a claim to the post or its creator ("she says", "the caption says", "according to"). */

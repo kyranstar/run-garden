@@ -21,6 +21,7 @@ import { ACT_TOOLS, READ_TOOLS } from "../src/services/design-tools/index.js";
 import { designProposalId } from "../src/services/design-tools/propose.js";
 import { isToolErr, type ToolContext } from "../src/services/design-tools/types.js";
 import { readPostTrail } from "../src/services/import-trail-read.js";
+import { forgetAccountLibrary, loadAccountLibrary } from "../src/services/account-library.js";
 import { CORRECTION_COST, CORRECTIONS_FIXED, CORRECTIONS_PER_REQUEST, correctionCostOf } from "../src/services/import-corrections.js";
 import { correctionId, isImportCorrectionOp, type ImportCorrectionOp } from "../src/services/proposal-kinds.js";
 import { savedMoveDraft, seedSavedBatch } from "./saves-batch-fixture.js";
@@ -143,7 +144,9 @@ describe("a correction approved", () => {
     expect(res.json.status).toBe("approved");
     const move = await recordOf(b.lift);
     expect((move.record as ExerciseRecord).dose).toEqual(DOSE_FIX);
-    expect(move.editedByOwner).toBe(true);
+    // REBASED 2026-11-06 (the controller's fix pass, D10): the coach's correction is no athlete's edit — its ratings stay
+    // the post's reading, unchecked.
+    expect(move.editedByOwner).toBe(false);
     const [row, ...more] = await rows();
     expect(more).toEqual([]);
     expect(row).toMatchObject({
@@ -429,5 +432,18 @@ describe("approve's CPU with corrections at the caps (the controller's fix pass,
     binds = null;
     expect(corrected).toBe(10);
     expect(requests).toBe(3);
+  });
+});
+
+describe("a coach's correction leaves the ratings unchecked (the controller's fix pass, D10)", () => {
+  it("after an approved correction the move's condition ratings still read as the post's, not the athlete's", async () => {
+    const b = await batch();
+    const { id } = await proposed([{ target: "move", targetId: b.lift, field: "dose", after: DOSE_FIX, cites: ["q1.1"] }]);
+    expect((await approve(id)).status).toBe(200);
+    forgetAccountLibrary(db, userId);
+    expect((await loadAccountLibrary(db, userId)).unchecked.has(b.lift)).toBe(true);
+    // get_exercise says so: its ratings are the post's reading, not checked by the athlete.
+    const get = await READ_TOOLS.find((t) => t.name === "get_exercise")!.run((await mainRun()) as ToolContext, { id: b.lift });
+    expect(JSON.stringify(get)).toContain("not checked by the athlete");
   });
 });

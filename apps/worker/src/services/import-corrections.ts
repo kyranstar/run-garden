@@ -244,12 +244,24 @@ export function checkedAfter(target: CorrectionTarget, field: string, after: unk
   const parsed = schema.safeParse(after);
   if (!parsed.success) return { why: parsed.error.issues.map((i) => `${i.path.length ? `after.${i.path.join(".")}` : "after"}: ${i.message}`).join("; ") };
   if (target === "move" && state.kind === "move") {
-    const next = withMoveField(state.record, field as (typeof MOVE_FIELDS)[number], parsed.data);
+    const value = field === "dose" ? mergedDose(state.record.dose as unknown as Record<string, unknown>, parsed.data as Record<string, unknown>) : parsed.data;
+    const next = withMoveField(state.record, field as (typeof MOVE_FIELDS)[number], value);
     const problems = validatePersonalRecord(next).map((p) => p.replace(/^\S+: /, ""));
     if (problems.length) return { why: problems.slice(0, 3).join("; ") };
+    return { value };
   }
   if (target === "insight" && field === "move" && state.kind === "post" && !movesOf(state)[parsed.data as number]) return { why: `the post holds no move at position ${parsed.data}` };
   return { value: parsed.data };
+}
+
+/**
+ * A dose fix over the dose it corrects (the controller's fix pass, D11): what the fix doesn't say is kept — its sets, its
+ * rest, its starting load, and its seconds a rep while it stays reps (a time or a carry has none).
+ */
+export function mergedDose(before: Record<string, unknown> | undefined, after: Record<string, unknown>): Record<string, unknown> {
+  const kept: Record<string, unknown> = { ...(before && typeof before === "object" ? before : {}) };
+  if (after.type !== "reps") delete kept.secsPerRep;
+  return { ...kept, ...after };
 }
 
 const FIELD_WORDS: Readonly<Record<string, string>> = {
@@ -412,7 +424,10 @@ export function judgeCorrection(
         ...log(gate),
         db
           .update(personalMoves)
-          .set({ record: sql`json_set(${personalMoves.record}, ${path}, ${jsonArg(op.after)})`, editedByOwner: true, updatedAt: o.now })
+          // Never `edited_by_owner` (the controller's fix pass, D10): a coach's correction is no athlete's edit, so the
+          // move's condition ratings stay the post's reading — "not checked by the athlete" (account-library `unchecked`).
+          // Nothing an import does rewrites a record (matching only adds links), so it needs no guard of its own.
+          .set({ record: sql`json_set(${personalMoves.record}, ${path}, ${jsonArg(op.after)})`, updatedAt: o.now })
           .where(sql`${personalMoves.userId} = ${userId} AND ${personalMoves.id} = ${op.targetId} AND ${gate} AND ${o.asRead}`)
           .returning({ id: personalMoves.id }),
       ],

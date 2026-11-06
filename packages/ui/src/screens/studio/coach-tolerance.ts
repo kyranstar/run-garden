@@ -330,7 +330,7 @@ function toProgrammeLine(v: unknown): DesignProgrammeLineDto | null {
   };
 }
 
-const CITE_KINDS = new Set(["quote", "history", "goal", "inferred"]);
+const CITE_KINDS = new Set(["quote", "history", "goal", "inferred", "stated"]);
 
 /** A cite as a chip (import trail phase 3): an id, a kind, a label — and, a quote's, where it opens; anything else goes. */
 export function toCites(v: unknown): DesignCiteDto[] {

@@ -300,3 +300,53 @@ describe("a line the suggestion's workouts no longer bear out (final review, Imp
     }
   });
 });
+
+describe("pin_moves: evidence integrity (the controller's fix pass, C1 and D)", () => {
+  it("C1: an older reading has no quotes — a stated field backs a claim as the reader's report (stated:<field>), its own chip; a field it didn't state can't", async () => {
+    const b = await batch();
+    const ctx = await mainRun();
+    await readSavesInRun(db, ctx);
+    // The nod's reading (n 3) stated its name and steps, no quotes: an older reading.
+    const lines = fourLines(b);
+    // Its dose was the reader's guess (inferred): no report to cite.
+    lines[2] = { moveId: b.nod, decision: "out", text: "She says to keep the chin tucked; your neck care covers it.", cites: ["stated:dose"] };
+    const r = refusal((await pins(ctx, { batchId: b.batchId, pin: [b.lift, "gobletSquat"], lines })).res);
+    expect(r.error).toBe("unknown_cite");
+    expect(r.why).toContain('"stated:dose"');
+    lines[2] = { ...lines[2]!, cites: ["stated:steps"] };
+    const stored = (await pins(ctx, { batchId: b.batchId, pin: [b.lift, "gobletSquat"], lines })).res;
+    expect(isToolErr(stored), JSON.stringify(stored)).toBe(false);
+    const op = ((await db.select().from(coachProposals))[0]!.ops as Array<{ kind: string; lines: Array<{ moveId?: string; cites?: unknown[] }> }>).find((o) => o.kind === "move_pins")!;
+    expect(op.lines.find((l) => l.moveId === b.nod)!.cites).toEqual([{ id: "stated:steps", kind: "stated", label: "reader's report", field: "steps", postId: b.postId, position: 2 }]);
+  });
+
+  it("D5: a quote cite is its line's move's — another move's verified quote is refused, naming whose it is", async () => {
+    const b = await batch();
+    const ctx = await mainRun();
+    await readSavesInRun(db, ctx);
+    const lines = fourLines(b);
+    // The hip lift's quote (q1.1) on the calf rock's line (n 4).
+    lines[3] = { ...lines[3]!, text: "She says it's for hips that stiffen.", cites: ["q1.1"] };
+    const r = refusal((await pins(ctx, { batchId: b.batchId, pin: [b.lift, "gobletSquat"], lines })).res);
+    expect(r.error).toBe("not_its_move");
+    expect(r.why).toContain('"q1.1"');
+    expect(r.why).toContain("move 1");
+    // On its own move's line it stands.
+    lines[3] = fourLines(b)[3]!;
+    expect(isToolErr((await pins(ctx, { batchId: b.batchId, pin: [b.lift, "gobletSquat"], lines })).res)).toBe(false);
+  });
+
+  it("D9: a goal cite's id is letters, digits, _ and - only — it goes unmarked into the next turn's block", async () => {
+    const b = await batch();
+    const ctx = await mainRun();
+    await readSavesInRun(db, ctx);
+    for (const cite of ["goal:obj<1>", 'goal:a"b', "goal:x/y", "goal:é"]) {
+      const lines = fourLines(b);
+      lines[1] = { ...lines[1]!, cites: [cite] };
+      expect(refusal((await pins(ctx, { batchId: b.batchId, pin: [b.lift, "gobletSquat"], lines })).res).error, cite).toBe("unknown_cite");
+    }
+    const lines = fourLines(b);
+    lines[1] = { ...lines[1]!, cites: ["goal:obj-1_A"] };
+    expect(isToolErr((await pins(ctx, { batchId: b.batchId, pin: [b.lift, "gobletSquat"], lines })).res)).toBe(false);
+  });
+});
