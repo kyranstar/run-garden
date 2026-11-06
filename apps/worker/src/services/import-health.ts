@@ -3,7 +3,7 @@
  * extension's checks and the import budget. Deterministic.
  *
  * Per light, over the last 7 days and at most its last 20 steps (`info`/`skip` steps don't count; the Reader's are its
- * calls and the check of each reading):
+ * calls and the check of each reading — its attempts, for the ratio and the recent five, are the readings alone):
  *  - red: its last step failed for the whole stage (a login, a changed site, the gateway refusing the key or credits),
  *    or at least half of at least four steps failed;
  *  - yellow: a failure or a warning among its last 5 steps;
@@ -130,11 +130,22 @@ export async function importHealth(db: Db, userId: string, now: Date): Promise<I
         ? { light, color: "yellow", line: "Instagram: no check in 2 days", failures }
         : { light, color: "grey", line: null, failures };
     }
-    const newest = list[0]!;
-    const failed = list.filter((s) => s.status === "fail").length;
+    // The Reader's attempts are its readings (extract steps); each reading's check rides along — warns and fails in the
+    // recent window, but never a second attempt in the ratio (review, 2026-11-06: two steps a reading halved it).
+    const isAttempt = (s: (typeof list)[number]) => light !== "reader" || s.stage === "extract";
+    const attempts = list.filter(isAttempt);
+    const newest = attempts[0] ?? list[0]!;
+    const failed = Math.min(list.filter((s) => s.status === "fail").length, Math.max(attempts.length, 1));
     if (newest.status === "fail" && stageWide(newest)) return { light, color: "red", line: newest.summary, failures };
-    if (list.length >= 4 && failed * 2 >= list.length) return { light, color: "red", line: `${LABEL[light]}: ${failed} of ${list.length} failed`, failures };
-    const troubled = list.slice(0, RECENT).find((s) => s.status === "fail" || s.status === "warn");
+    if (attempts.length >= 4 && failed * 2 >= attempts.length) return { light, color: "red", line: `${LABEL[light]}: ${failed} of ${attempts.length} failed`, failures };
+    const recent: typeof list = [];
+    let seen = 0;
+    // Newest first, a reading's check before its call: up to and including the fifth attempt.
+    for (const s of list) {
+      recent.push(s);
+      if (isAttempt(s) && ++seen === RECENT) break;
+    }
+    const troubled = recent.find((s) => s.status === "fail" || s.status === "warn");
     if (troubled) return { light, color: "yellow", line: troubled.summary, failures };
     if (staleChecks) return { light, color: "yellow", line: "Instagram: no check in 2 days", failures };
     return { light, color: "green", line: null, failures };

@@ -120,3 +120,30 @@ describe("the Reader light reads the check of each reading (audit 2026-11-06, I8
     expect(await lightOf("reader")).toMatchObject({ color: "yellow", line: "2 quotes aren't in the post" });
   });
 });
+
+describe("the Reader light counts readings, not steps (review, 2026-11-06)", () => {
+  it("its ratio is failed readings of readings: a reading's check step is not an attempt", async () => {
+    await event("extract", "fail", 1);
+    await event("extract", "ok", 2);
+    await event("check", "ok", 2, { source: "worker" });
+    await event("extract", "fail", 3);
+    await event("extract", "ok", 4);
+    await event("check", "ok", 4, { source: "worker" });
+    expect(await lightOf("reader")).toMatchObject({ color: "red", line: "Reader: 2 of 4 failed" });
+  });
+
+  it("its recent window is the last five readings, with their checks", async () => {
+    await event("extract", "ok", 20);
+    await event("check", "warn", 20, { source: "worker", summary: "1 quote isn't in the post" });
+    for (let i = 0; i < 3; i++) {
+      await event("extract", "ok", 10 - i);
+      await event("check", "ok", 10 - i, { source: "worker" });
+    }
+    expect(await lightOf("reader")).toMatchObject({ color: "yellow", line: "1 quote isn't in the post" });
+    for (let i = 0; i < 2; i++) {
+      await event("extract", "ok", 5 - i);
+      await event("check", "ok", 5 - i, { source: "worker" });
+    }
+    expect((await lightOf("reader")).color).toBe("green");
+  });
+});

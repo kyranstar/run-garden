@@ -144,14 +144,15 @@ export async function releaseFitForBatch(
   const release = db.update(saveBatches).set({ fitStartedAt: null }).where(releases("save_batches"));
   if (!ended) return void (await release);
   const detail = JSON.stringify({ code: ended.code, runId: ended.runId, batchId, runStatus: ended.runStatus });
-  // Each post of the batch, once — written before the release clears the stamp the gate reads, in one transaction.
+  // Each post of the batch, once — written before the release clears the stamp the gate reads, in one transaction. A
+  // transaction that fails (the trail's insert) never holds the fit: the release alone, again (review, 2026-11-06).
   const steps = db.insert(importEvents).select(sql`
     SELECT lower(hex(randomblob(16))), ${userId}, x.post_id, ${batchId}, NULL, 'coach', 'coach', ${ended.status}, ${ended.summary}, json(${detail}),
       NULL, NULL, NULL, NULL, NULL, NULL, ${ended.runId}, NULL, 0, ${ended.at}
     FROM (SELECT DISTINCT fe_l.post_id AS post_id FROM saved_post_moves fe_l
       WHERE fe_l.user_id = ${userId} AND fe_l.batch_id = ${batchId} AND fe_l.status <> 'removed') x
     WHERE EXISTS (SELECT 1 FROM save_batches fe_b WHERE ${releases("fe_b")})`);
-  await runAtomically(db, [steps, release]);
+  await runAtomically(db, [steps, release]).catch(() => db.update(saveBatches).set({ fitStartedAt: null }).where(releases("save_batches")));
 }
 
 /** How a fit's run ended having proposed nothing: the coach step its batch's posts get (`releaseFitForBatch`). */
@@ -166,13 +167,15 @@ export interface FitEnded {
   at: string;
 }
 
-/** The step's words, by how the fit's run ended having proposed nothing. */
-export function fitEnded(runStatus: string, runId: string, at: string): FitEnded {
-  return runStatus === "finished"
-    ? { status: "warn", code: "fit_unclosed", summary: "Fit them in ended in words — the coach suggested nothing", runId, runStatus, at }
-    : runStatus === "expired"
-      ? { status: "fail", code: "fit_failed", summary: "Fit them in ran out of time before the coach suggested anything", runId, runStatus, at }
-      : { status: "fail", code: "fit_failed", summary: "Fit them in stopped before the coach suggested anything", runId, runStatus, at };
+/**
+ * The step's words, by how the fit's run ended having proposed nothing. An expiry while it waited on the athlete's answer
+ * is a question left unanswered, nothing broken: a warning, never the stage's red (review, 2026-11-06).
+ */
+export function fitEnded(runStatus: string, runId: string, at: string, waitedOnAthlete = false): FitEnded {
+  if (runStatus === "finished") return { status: "warn", code: "fit_unclosed", summary: "Fit them in ended in words — the coach suggested nothing", runId, runStatus, at };
+  if (runStatus === "expired" && waitedOnAthlete) return { status: "warn", code: "fit_unclosed", summary: "Fit them in timed out waiting on your answer", runId, runStatus, at };
+  if (runStatus === "expired") return { status: "fail", code: "fit_failed", summary: "Fit them in ran out of time before the coach suggested anything", runId, runStatus, at };
+  return { status: "fail", code: "fit_failed", summary: "Fit them in stopped before the coach suggested anything", runId, runStatus, at };
 }
 
 const textOrNull = (v: unknown): string | null => (typeof v === "string" ? v : null);
