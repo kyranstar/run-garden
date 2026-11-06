@@ -347,7 +347,8 @@ describe("a restore trusts the file's garden (B4 amended)", () => {
       finish = count();
     });
     expect(finish).toBeGreaterThan(0);
-    expect(finish).toBeLessThanOrEqual(80);
+    // REBASED 2026-11-06 (import trail phase 2): + saved_links' count (finish counts each account table once).
+    expect(finish).toBeLessThanOrEqual(81);
   }, 120_000);
 
   it("the start species' unlock rows keep their ids through the catch-up (NEW-C)", async () => {
