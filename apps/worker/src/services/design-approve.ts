@@ -141,6 +141,17 @@
  * nothing written — it rewrites the brief or ending for a phase that never came. A plan that applied with its change then
  * refused leaves the change refused; asked again it meets the same refusal and writes nothing.
  *
+ * A CHANGE TO THE ATHLETE'S OBJECTIVES AND A CORRECTION TO IMPORTED DATA (audit fixes, E6; import trail phase 3) run after the
+ * plan changes and before the moves in rotation, in that order, each class claimed and read together and each op in one
+ * atomic write (objective-changes.ts, import-corrections.ts).
+ *
+ * A CARD OF SEVERAL KINDS (the merge of plans with a purpose and the coach's review; design-approve-mixed.test.ts measures
+ * it). Every class spends from one `left`, in one order: changes to sessions, whole plans, programmes, plan changes, objectives,
+ * corrections, pins, workouts. The first class that doesn't fit sets `full`, and everything after it waits in `remaining`,
+ * so a later request takes up where this one stopped and each op lands once, in that order. A pause's pass spends its
+ * declared cost (`left -= placeAfterPauseChange`), so what is really left still fits beside it: three statements at the
+ * dearest pass, an objective change's two and one; a correction's six wait for the next request.
+ *
  * THE MOVES IN ROTATION (saved-posts import, Task 18). A `move_pins` op — pin_moves' moves to pin and unpin, and the
  * saves batch it fits in — is applied after the programme changes and before the workouts, so a workout of the same
  * request whose engine build reads the account's pinned moves sees them. It is one short write, never claimed: its
@@ -1457,7 +1468,8 @@ export async function approveDesignOps(
     const waitingOn = structureOps.find((s) => structureStatus(s) !== "applied");
     if (waitingOn) {
       const was = structureStatus(waitingOn);
-      if (remaining.includes(waitingOn.id)) remaining.push(g.id);
+      // (Past this request's PLAN_MAX, the plan comes in a later one: `overflow`.)
+      if (remaining.includes(waitingOn.id) || overflow.includes(waitingOn.id)) remaining.push(g.id);
       else if (inFlight.includes(waitingOn.id)) inFlight.push(g.id);
       else {
         const why = was === "refused" || was === "declined" || was === "superseded" ? PLAN_NOT_ADDED : PLAN_NOT_YET_ADDED;

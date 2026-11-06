@@ -127,7 +127,7 @@ export async function approveDesigned(c: C, p: DesignProposalRow & { expiresAt: 
     const answer = await approveDesignOps(db, userId, p, parsed.data, { today, now: nowInstant(), prefs, runWire: runWireOf(c.env) }, undefined, meter);
     // A change another approve is applying is left to it (Task 8b's recovery rule): 409 only when nothing else was named.
     const { inFlight, ...rest } = answer;
-    const nothingElse = [rest.applied, rest.changed, rest.refused, rest.settled, rest.remaining, rest.planned ?? [], rest.pinned ?? [], rest.corrected ?? []].every((xs) => xs.length === 0);
+    const nothingElse = [rest.applied, rest.changed, rest.refused, rest.settled, rest.remaining, rest.planned ?? [], rest.pinned ?? [], rest.corrected ?? [], rest.objectives ?? []].every((xs) => xs.length === 0);
     if (inFlight && nothingElse) return c.json({ error: "in_flight", opIds: inFlight, ...rest }, 409);
     // The calendar follows the plan, as after a Studio save (Task 9): once the approve is over and this request wrote
     // something, one bounded step in the room its declared costs left — none when the chunk was full (the half-hourly

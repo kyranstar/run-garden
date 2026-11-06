@@ -172,10 +172,17 @@ describe("the block, kind by kind", () => {
         { kind: "doc_workout", target: { kind: "new", date: TODAY, atNow: true, notBefore: "09:45" }, date: TODAY, doc: { title: "Hips, gently" }, derived: { estimatedMinutes: 25 } },
         { kind: "doc_workout", target: { kind: "new", date: day(-2) }, date: day(-2), time: "18:00", doc: { title: "Upper back" }, derived: { estimatedMinutes: 30 }, outcome: { status: "declined", at: NOW.toISOString() } },
         { kind: "plan_adjust", op: { kind: "skip", workoutId: me.outlineToday, reason: null } },
+        // Every kind has its line (the merge of plans with a purpose and the coach's review): none goes unsaid.
+        { kind: "plan_change", id: "pc-1", title: "Base block: new brief", summary: "Ending: Ask me" },
+        { kind: "import_correction", id: "fix-1", line: "Dose of Zorbex hip lift: 30 s", outcome: { status: "applied", at: NOW.toISOString() } },
+        { kind: "objective_change", id: "obj-1", line: "Zorbex wall sit: target 120 s → 90 s" },
       ],
     });
     const b = block((await header({ kind: "proposal", id })).header);
     const designer = (text: string) => markUntrusted("designer run", text);
+    expect(b).toContain(`- a plan change: ${designer("Base block: new brief · Ending: Ask me")} — open`);
+    expect(b).toContain(`- a correction to the saves: ${designer("Dose of Zorbex hip lift: 30 s")} — approved`);
+    expect(b).toContain(`- a change to the objectives: ${designer("Zorbex wall sit: target 120 s → 90 s")} — open`);
     expect(b).toContain(`The athlete asked from: your suggestion (id ${id}), pending — ${designer("Hips, gently")}:`);
     expect(b).toContain(`- Wed 13 May · today, now: ${designer("Hips, gently")} (25 min) — open`);
     expect(b).toContain(`- Fri 15 May · in 2 d, 18:00: ${designer("Upper back")} (30 min) — declined`);

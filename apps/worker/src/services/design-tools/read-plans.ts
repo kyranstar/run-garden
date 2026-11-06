@@ -24,7 +24,8 @@
  * extend or a wind-down, the line's last phase; one whose line has ended is continued by a next phase (CONTINUE_LINE).
  *
  * WHAT A PLAN IS FOR AND HOW IT ENDS (plans with a purpose §4.3): every plan and every line carries `purpose` and `brief`
- * (marked: the athlete's or the coach's words), `onEnd` (ask, continue or finish), `pausedUntil` and `objectiveIds`,
+ * (marked: the athlete's or the coach's words), `onEnd` (ask, continue or finish), `pausedUntil` and `objectiveIds` (those
+ * still active or paused: one done, dropped or gone since it was linked is served no more, and is not said to be),
  * never a missing key: a block's come through its `program_id`, a programme's and a watch plan's from their own
  * `programs` row, the Studio plan's from the row that holds its id; a plan with no row yet (not backfilled) says null,
  * the kind's own ending (`defaultOnEnd`) and []. A plan's `kind` stays the words above; a line's `kind` is its plan's
@@ -38,7 +39,7 @@
  */
 import { sql, type SQL } from "drizzle-orm";
 import { z } from "zod";
-import { auditEvents, coachPlans, coachPlanWeeks, plannedWorkouts, programs, studioPlanPushes, studioPlans, trainingPlans } from "@rg/database";
+import { auditEvents, coachPlans, coachPlanWeeks, objectives, plannedWorkouts, programs, studioPlanPushes, studioPlans, trainingPlans } from "@rg/database";
 import { adaptiveConfigSchema, addDays, clipWords, defaultOnEnd, linesOf, planEnded, planOnEndSchema, type PlanOnEnd, type ProgramKind, type TrainingLine } from "@rg/domain";
 import { lastPhaseOf, lineBlockOf, LOOSE_PLAN_ID_PREFIX, studioPlanEntryOf, studioPlanOnWatch } from "../coach-plans.js";
 import { STUDIO_PLAN_RETIRED } from "../studio-push.js";
@@ -86,7 +87,8 @@ const nextSql = (userId: string, planId: SQL, from: string) => sql`(select json_
  * aliased `pr`): what the plan is for and how it ends. A scalar subselect, so the read stays one statement. */
 const planSql = (userId: string, where: SQL) => sql`json((select json_object('id', pr.id, 'kind', pr.kind, 'purpose', pr.purpose, 'brief', pr.brief,
     'onEnd', pr.on_end, 'pausedUntil', pr.paused_until,
-    'objectiveIds', json(case when json_valid(pr.objective_ids) then pr.objective_ids end))
+    'objectiveIds', json(case when json_valid(pr.objective_ids) then (select json_group_array(ol.value) from json_each(pr.objective_ids) ol
+      where exists (select 1 from ${objectives} ob where ob.user_id = pr.user_id and ob.id = ol.value and ob.status in ('active', 'paused'))) end))
   from ${programs} pr where pr.user_id = ${userId} and ${where} limit 1))`;
 
 interface Row {

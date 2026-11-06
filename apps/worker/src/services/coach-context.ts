@@ -56,7 +56,9 @@ import {
   docWorkoutDates,
   hasDocWorkout,
   isDesignedProposal,
+  isImportCorrectionOp,
   isMovePinsOp,
+  isObjectiveChangeOp,
   isPlanChangeOp,
   isPlanStructureOp,
   isProgrammeChangeOp,
@@ -255,7 +257,7 @@ const appBuiltMark = (w: { origin: string | null }): string => (appAuthoredRow(w
 
 /** A designed proposal in the context's words (Stage 3): its workouts' days still to decide, and its changes to
  * sessions already planned (Task 8b), counted. */
-function designedWords(ops: unknown): string {
+export function designedWords(ops: unknown): string {
   // A whole plan change (§8 §5): its title, the conversation coach's to apply.
   const plan = Array.isArray(ops) ? (ops.find(isPlanStructureOp) as PlanStructureOp | undefined) : undefined;
   if (plan) return `a plan change: ${plan.title}`;
@@ -269,8 +271,14 @@ function designedWords(ops: unknown): string {
   const changes = `${n} change${n === 1 ? " to a session" : "s to sessions"} already planned`;
   // The moves in rotation (saved-posts import, Task 18): named beside the rest, the conversation coach's to apply.
   const pins = Array.isArray(ops) && ops.some(isMovePinsOp) ? "a change to the engine's pool (pins)" : null;
-  if (!hasDocWorkout(ops)) return `a designed proposal: ${[...(n > 0 || !pins ? [changes] : []), ...(pins ? [pins] : [])].join(" and ")}`;
-  return `a designed workout for ${docWorkoutDates(ops).join(", ") || "a day to come"}${n > 0 ? ` and ${changes}` : ""}${pins ? ` and ${pins}` : ""}`;
+  // Corrections to imported data and changes to the athlete's objectives: counted, never their words (as the receipt does).
+  const counted = (is: (op: unknown) => boolean, word: string, where: string): string[] => {
+    const k = Array.isArray(ops) ? ops.filter(is).length : 0;
+    return k > 0 ? [`${k} ${word}${k === 1 ? "" : "s"} to ${where}`] : [];
+  };
+  const also = [...(pins ? [pins] : []), ...counted(isImportCorrectionOp, "correction", "the saves"), ...counted(isObjectiveChangeOp, "change", "the objectives")];
+  if (!hasDocWorkout(ops)) return `a designed proposal: ${[...(n > 0 || also.length === 0 ? [changes] : []), ...also].join(" and ")}`;
+  return `a designed workout for ${docWorkoutDates(ops).join(", ") || "a day to come"}${n > 0 ? ` and ${changes}` : ""}${also.map((a) => ` and ${a}`).join("")}`;
 }
 
 export async function buildDossier(

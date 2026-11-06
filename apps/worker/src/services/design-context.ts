@@ -1293,6 +1293,7 @@ function proposalLines(id: string, rows: Map<string, Array<Record<string, unknow
       outcome?: { status?: unknown } | null;
       title?: unknown;
       summary?: unknown;
+      line?: unknown;
     };
     const outcome = OUTCOME_WORDS[String(op.outcome?.status ?? "")] ?? "open";
     if (op.kind === "doc_workout" && typeof op.date === "string") {
@@ -1313,6 +1314,12 @@ function proposalLines(id: string, rows: Map<string, Array<Record<string, unknow
     } else if (op.kind === "move_pins") {
       // The moves in rotation (saved-posts import, Task 18): its card's words, the coach's own — marked.
       out.push(`- moves for the engine's pool: ${coach(`${String(op.title ?? "")} · ${String(op.summary ?? "")}`)} — ${outcome}`);
+    } else if (op.kind === "import_correction") {
+      // A correction to imported data (import trail phase 3): its line, a post's and the coach's words — marked.
+      out.push(`- a correction to the saves: ${coach(String(op.line ?? ""))} — ${outcome}`);
+    } else if (op.kind === "objective_change") {
+      // A change to the athlete's objectives (audit fixes, E6): its line, before → after — marked.
+      out.push(`- a change to the objectives: ${coach(String(op.line ?? ""))} — ${outcome}`);
     }
   }
   return out;

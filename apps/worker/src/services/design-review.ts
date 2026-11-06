@@ -80,7 +80,9 @@ import {
   isMovePinsOp,
   isPlanChangeOp,
   isProgrammeChangeOp,
+  type ImportCorrectionOp,
   type MovePinsOp,
+  type ObjectiveChangeOp,
   type PlanAdjustOp,
   type PlanChangeOp,
   type PlanStructureOp,
@@ -89,7 +91,7 @@ import {
 import { utf8Bytes } from "./utf8.js";
 
 /** An op of a design's proposal: a designed workout, or a change to a session already on the plan (Task 8b). */
-type DesignOp = DocWorkoutOp | PlanAdjustOp | PlanStructureOp | ProgrammeChangeOp | PlanChangeOp | MovePinsOp;
+type DesignOp = DocWorkoutOp | PlanAdjustOp | PlanStructureOp | ProgrammeChangeOp | PlanChangeOp | MovePinsOp | ImportCorrectionOp | ObjectiveChangeOp;
 
 /** The designed workout run `runId` holds in `ops` (a change belongs to no run: never one). */
 const ofRun = (ops: readonly DesignOp[], runId: string): DocWorkoutOp | undefined =>
@@ -1179,7 +1181,13 @@ const STOPPED_CHANGE = "not reviewed: the coach stopped before its review was in
  * expiry): left out. In the athlete's words (fix wave 3B, B-I3): the day as the app names it, nothing "proposed". */
 export function pastDayLine(ops: readonly DesignOp[]): string {
   const named = (op: DesignOp) =>
-    isPlanStructureOp(op) || isProgrammeChangeOp(op) || isPlanChangeOp(op) || isMovePinsOp(op) ? op.title : isPlanAdjustOp(op) ? describeChange(op).title : (op as DocWorkoutOp).doc.title;
+    isPlanStructureOp(op) || isProgrammeChangeOp(op) || isPlanChangeOp(op) || isMovePinsOp(op) || isObjectiveChangeOp(op)
+      ? op.title
+      : isImportCorrectionOp(op)
+        ? op.name
+        : isPlanAdjustOp(op)
+          ? describeChange(op).title
+          : (op as DocWorkoutOp).doc.title;
   return `Its day passed before it could be suggested, so left out: ${ops.map((op) => `“${named(op)}” (${dayLabel(op.date)})`).join(", ")}.`;
 }
 

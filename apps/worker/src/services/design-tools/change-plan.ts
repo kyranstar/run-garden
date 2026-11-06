@@ -22,7 +22,7 @@
  *
  * REFUSED, each teachable, nothing written: a role other than the main coach's (`not_for_role`); no field given, or one
  * the plan would not take — a text too long, an ending its kind cannot have (`onEndAllowed`: a course or a programme
- * never asks), a pause already over, objectives that are not the athlete's, easing a plan that is no course
+ * never asks), a pause already over, objectives that are not the athlete's or are done or dropped, easing a plan that is no course
  * (`invalid_input`); a plan that isn't the athlete's, or is archived (`not_your_plan`); fields it already has
  * (`no_change`); a proposal already with the athlete (`proposal_pending`) or closed; a restore under way.
  *
@@ -35,6 +35,7 @@ import { accountState, coachPlans, coachProposals, objectives, programs } from "
 import { clipWords, dayLabel, isLocalDate, onEndAllowed, PLAN_ON_END, planOnEndSchema, type PlanOnEnd, type ProgramKind } from "@rg/domain";
 import { OPEN_PROPOSAL_STATUSES } from "../design-review.js";
 import { clipProse } from "../design-prose.js";
+import { LIVE_OBJECTIVE } from "../objective-changes.js";
 import { BRIEF_MAX, isPlanKind, OBJECTIVES_MAX, PURPOSE_MAX } from "../plan-summaries.js";
 import {
   isPlanChangeOp,
@@ -198,7 +199,7 @@ export const changePlan: DesignTool = {
           or (json_valid(pr.source) and json_extract(pr.source, '$.studioPlanId') = ${parsed.planId})
           or pr.id = (select cp.program_id from ${coachPlans} cp where cp.id = ${parsed.planId} and cp.user_id = ${ctx.userId}))
         order by (pr.id = ${parsed.planId}) desc limit 1)`,
-      ownObjectives: sql`(select json_group_array(o.id) from ${objectives} o where o.user_id = ${ctx.userId} and o.id in (${idList(wantedIds)}))`,
+      ownObjectives: sql`(select json_group_array(json_array(o.id, o.status)) from ${objectives} o where o.user_id = ${ctx.userId} and o.id in (${idList(wantedIds)}))`,
       propOps: sql`(select ${coachProposals.ops} from ${coachProposals} where ${coachProposals.id} = ${proposalId} and ${coachProposals.userId} = ${ctx.userId})`,
       propStatus: sql`(select ${coachProposals.status} from ${coachProposals} where ${coachProposals.id} = ${proposalId} and ${coachProposals.userId} = ${ctx.userId})`,
       restoring: sql`(select ${accountState.restoreId} from ${accountState} where ${accountState.userId} = ${ctx.userId})`,
@@ -229,8 +230,13 @@ export const changePlan: DesignTool = {
     }
     if (typeof parsed.pausedUntil === "string" && parsed.pausedUntil < athlete.today) wrong.push(`pausedUntil: a pause cannot end before today (${athlete.today})`);
     if (parsed.easeNext !== undefined && kind !== "course") wrong.push("easeNext: only a course can ease its next session");
-    const own = new Set(parsedArray(extra.ownObjectives).filter((x): x is string => typeof x === "string"));
-    for (const id of wantedIds) if (!own.has(id)) wrong.push(`objectiveIds: ${JSON.stringify(id)} is none of the athlete's objectives`);
+    const own = new Map(parsedArray(extra.ownObjectives).flatMap((x) => (Array.isArray(x) && typeof x[0] === "string" ? [[x[0], String(x[1])] as const] : [])));
+    for (const id of wantedIds) {
+      const status = own.get(id);
+      if (status === undefined) wrong.push(`objectiveIds: ${JSON.stringify(id)} is none of the athlete's objectives`);
+      // Done or dropped: a plan serves it no more (read_plans leaves it out), so it isn't linked anew.
+      else if (!(LIVE_OBJECTIVE as readonly string[]).includes(status)) wrong.push(`objectiveIds: ${JSON.stringify(id)} is ${status}, so a plan can't serve it`);
+    }
     if (wrong.length > 0) return refuse("invalid_input", wrong.join("; "), fix);
 
     const status = typeof extra.propStatus === "string" ? extra.propStatus : null;

@@ -97,9 +97,17 @@ async function planRow(userId: string, o: { id: string; kind: string; name?: str
   });
 }
 
+/** Objectives of the athlete's, for a plan to link: read_plans says only those still active or paused. */
+async function objectivesOf(userId: string, ids: readonly string[], status = "active") {
+  for (const id of ids) await db.insert(schema.objectives).values({ id, userId, title: `Objective ${id}`, status, createdAt: at(day(10)), updatedAt: at(day(10)) });
+}
+
 describe("read_plans: what each plan is for and how it ends", () => {
   it("a block reads its plan's purpose and brief marked untrusted, its ending, pause and objectives; its line carries the same, one statement", async () => {
-    await planRow(rich.userId, { id: "plan-zx", kind: "coach", purpose: "Zorbex steadiness", brief: "Ten sessions, then the floor.", onEnd: "finish", pausedUntil: day(-3), objectiveIds: ["obj-zx"] });
+    await planRow(rich.userId, { id: "plan-zx", kind: "coach", purpose: "Zorbex steadiness", brief: "Ten sessions, then the floor.", onEnd: "finish", pausedUntil: day(-3), objectiveIds: ["obj-zx", "obj-done", "obj-gone"] });
+    // One still served; one done since it was linked; one that is no more. Only the first is said.
+    await objectivesOf(rich.userId, ["obj-zx"]);
+    await objectivesOf(rich.userId, ["obj-done"], "done");
     await block(rich.userId, { id: "cp-zx", name: "Zorbex block", start: day(2), end: day(-26) });
     await db.update(schema.coachPlans).set({ programId: "plan-zx" }).where(eq(schema.coachPlans.id, "cp-zx"));
     const { res, count } = await read();
@@ -132,6 +140,8 @@ describe("read_plans: what each plan is for and how it ends", () => {
   });
 
   it("a programme and a watch plan read their own rows; a row with no ending says its kind's default", async () => {
+    await objectivesOf(rich.userId, ["o-1"]);
+    await objectivesOf(rich.userId, ["o-2"], "paused");
     await db.update(schema.programs).set({ purpose: "Zorbex habit", brief: "Three a week.", objectiveIds: ["o-1", "o-2"] }).where(and(eq(schema.programs.userId, rich.userId), eq(schema.programs.kind, "adaptive")));
     for (const id of ["coros-zx", "coros-bare"]) {
       await db.insert(schema.trainingPlans).values({
@@ -172,6 +182,7 @@ describe("read_plans: what each plan is for and how it ends", () => {
 
   it("the Studio plan reads the registry row that holds its id; with no row, or a row whose source is not JSON, it says null and its default — the read never fails", async () => {
     await studio(rich.userId, { id: "studio-reg", name: "Full Body Strength", start: "2026-05-04", weeks: 8, createdAt: at(day(12)), pushes: ["verified"] });
+    await objectivesOf(rich.userId, ["o-9"]);
     await planRow(rich.userId, { id: "container-zx", kind: "coach", disciplines: ["strength"], purpose: "Zorbex lift", brief: "Lift twice a week.", onEnd: "finish", objectiveIds: ["o-9"] });
     await db.update(schema.programs).set({ source: { studioPlanId: "studio-reg" } }).where(eq(schema.programs.id, "container-zx"));
     await planRow(rich.userId, { id: "junk-source", kind: "coach", purpose: "Not the Studio's" });
