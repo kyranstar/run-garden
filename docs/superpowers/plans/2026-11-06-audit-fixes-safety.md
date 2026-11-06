@@ -17,31 +17,42 @@ designer lines (fix-evidence owns the challenge-answer lines); size pins are re-
 
 ## Tasks
 
-- [ ] **S1 — a sore area is a hard check.** `draft-checks.ts`: a working move (the check's own "work": a working part ×
+- [x] **S1 — a sore area is a hard check.** `draft-checks.ts`: a working move (the check's own "work": a working part ×
   `isWorkingMove`) that loads an area called sore today is an error (`sore_area_loaded`, fatal at validate, propose and
   amend), its fix with no "kept on purpose"; gentle work (warm-up, activation, care, cool-down parts; mobility,
   breathing and release moves) stays allowed. The reviewer's packet and rubric stop calling it "must-fix unless
   explained". The prompt: `record_answer` is a safety step — a sore area named in the request is recorded first; the
   designer's block carries the same rule. Tests: `design-hard-checks.test.ts` (the `valid: true` expectation flips).
-- [ ] **S5 — the first-exposure cap is a cost when the athlete insists.** Prompt progression line and the reviewer's
+- [x] **S5 — the first-exposure cap is a cost when the athlete insists.** Prompt progression line and the reviewer's
   progression question; the reviewer's role and packet name the only two absolute checks. Tests: the packet's line,
   the rubric text, `parseReview` keeping an accepted progression out of must-fix, and the finish guard letting it pass.
-- [ ] **S2 — imported jumps meet the gates.** `@rg/exercise-library` `plyometricWord(name, text?)` (hop, jump, bound,
+- [x] **S2 — imported jumps meet the gates.** `@rg/exercise-library` `plyometricWord(name, text?)` (hop, jump, bound,
   pogo, skip, depth, landing, leap, plyo, burpee; negations taken back). `buildPersonalRecord`: a reading whose words
   say jump and whose contraction doesn't is stored plyometric, with a repair line (the trail's check stage shows it).
   `correct_import`: a move's `contraction`, `conditions` (ratings, merged per profile), `regions`, `patterns`, and
   `retire` (archives a non-move) — the same atomic, gated application. Tests: personal-records, correct-import,
   approve-corrections.
-- [ ] **S3 — free-text items are judged.** `@rg/workout` `validateWorkoutDoc`: a free item named as a library or
+- [x] **S3 — free-text items are judged.** `@rg/workout` `validateWorkoutDoc`: a free item named as a library or
   personal move (loose spelling) meets that move's condition rules; otherwise one whose name sounds like a jump is
   refused on a Recover day, and wherever a profile's gate keeps a jump out (a flare day, feeling off, a day ahead it
   could close). Tests: `validate.test.ts`.
-- [ ] **S4 — adjust_plan carries its load.** `@rg/workout` `runLoadNotes` (validate's own rules, extracted:
+- [x] **S4 — adjust_plan carries its load.** `@rg/workout` `runLoadNotes` (validate's own rules, extracted:
   `run_hard_close`, `run_long_share`, `run_volume_jump`); `adjust_plan` reads the session's day's running in its one
   athlete statement (no statement more) and attaches each breach as an issue beside Approve, for a move, a length or a
   restore. Pins: statement count held at 2; a CPU bench shape for a moved run.
-- [ ] **S6 — the old Plan Studio is unmounted.** Prove no client calls them; unmount `POST /api/studio/generate`,
-  `/edit`, `/push`, `/push/retry`; keep `GET /`, `/history`, `/plans/:id/retire` (the Plan modal's Retire),
-  `/plans/:id/repair-exercise-ids`, `/adoption/:pushId/undo`; remove the dead api-client functions. Ruling lists them.
-- [ ] Review: one fresh opus reviewer on the diff (safety regressions, over-blocking). Fix Critical/Important RED→GREEN.
+- [x] **S6 — the old Plan Studio is unmounted.** Prove no client calls them; unmount `POST /api/studio/generate`,
+  `/edit`, `/push`, `/push/retry`, `/adoption/:pushId/undo` (it re-pushes), and the old screens' reads `GET /`,
+  `/history` (no client calls them either); keep `/plans/:id/retire` (the Plan modal's Retire) and
+  `/plans/:id/repair-exercise-ids` (never touches COROS); remove the dead api-client functions. Ruling lists them.
+- [x] Review: one fresh opus reviewer on the diff (safety regressions, over-blocking) — 0 Critical, 6 Important fixed RED→GREEN (I1 loaded work in a gentle part, I2 propose_plan, I3 tomorrow vs the day after, I4 a 0/1 answer, I5 false jumps, I6 stored jump-named moves), Minors M5, M6, M10 fixed, the rest deferred in the ledger.
 - [ ] Suites in the default TZ and `TZ=UTC`; tsc for all; fetch and rebase.
+
+## As built (rulings in the ledger)
+
+- S1's line, after review: a sore area is loaded by a working move or any weighted move in a working part above Recover;
+  in a gentle context (warm-up, activation, care, cool-down, or a Recover document) only by a weight or a jump; an
+  item's alternates count; refused today and tomorrow, the day after a note; an answer of 0 or 1 is no soreness;
+  propose_plan's sessions today and tomorrow are held to it too.
+- S2, after review: a stored move whose name says it jumps is read as a jump wherever the account library is read (no
+  backfill); correct_import won't take its plyometric away (`still_a_jump`), nor on evidence alone from one whose words
+  say jump (`owner_only`); doc-build-8.
