@@ -280,7 +280,9 @@ describe("pin_moves: the coach keeps a saved move in rotation", () => {
     // No move and no batch: nothing for the card to do (with a batch, a lines-only card closes it — below).
     expect(await refusal({})).toMatch(/^invalid_input: No move to pin or unpin/);
     expect(await refusal({ pin: [], unpin: [] })).toMatch(/^invalid_input: No move to pin or unpin/);
-    expect(await refusal({ pin: EXERCISES.slice(0, 21).map((e) => e.id) })).toMatch(/^invalid_input: /);
+    // REBASED 2026-11-06 (import trail phase 2): a 30-move follow-along is one card — 30 pins and 30 lines (§14.5).
+    expect(await refusal({ pin: EXERCISES.slice(0, 31).map((e) => e.id) })).toMatch(/^invalid_input: /);
+    expect(await refusal({ pin: [a], lines: Array.from({ length: 31 }, () => ({ moveId: a, text: "In rotation." })) })).toMatch(/^invalid_input: /);
     expect(await refusal({ pin: [a], lines: [] })).toMatch(/^invalid_input: /);
     // Lines are objects now (the saves flow redesigned, §3.5): a plain string is refused, as is a line's unknown field.
     expect(await refusal({ pin: [a], lines: ["Zorbex hip circle — in rotation."] })).toMatch(/^invalid_input: /);
@@ -604,6 +606,13 @@ describe("approving the moves in rotation", () => {
     expect(costs[0]!).toBeLessThanOrEqual(REQUEST_BUDGET);
     expect(await pinnedIds()).toEqual(ids.slice(0, 20).sort());
     expect(await fittedAt(batchId)).toBe(NOW.toISOString());
+  });
+
+  it("a 30-move follow-along is one card: 30 pins with a line each are stored (design 2026-11-05 §14.5)", async () => {
+    const ctx = await mainRun();
+    const ids = EXERCISES.slice(0, 30).map((e) => e.id);
+    const stored = ok((await pins(ctx, { pin: ids, lines: ids.map((moveId) => ({ moveId, text: "In rotation." })) })).res);
+    expect((stored.data as { pin: string[] }).pin).toHaveLength(30);
   });
 
   it("a lines-only card with its batch (no move pinned): approved, the batch is marked fitted in and no say on a move is written", async () => {

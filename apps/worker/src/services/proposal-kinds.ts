@@ -154,10 +154,10 @@ export interface ProgrammeChangeOp {
 /** A programme change's op id. */
 export const programmeChangeId = (programId: string): string => `prog-${programId}`;
 
-/** The most moves a `move_pins` op pins, and the most it unpins (saved-posts import, Task 18). */
-export const PINS_MAX = 20;
+/** The most moves a `move_pins` op pins, and the most it unpins (saved-posts import, Task 18): 30 since a 30-move follow-along stays whole (design 2026-11-05 §14.5). */
+export const PINS_MAX = 30;
 /** The most lines a `move_pins` card holds: one a placement, one a saved move left out. */
-export const PINS_LINES_MAX = 20;
+export const PINS_LINES_MAX = 30;
 
 /**
  * A line of a `move_pins` card (the saves flow redesigned, §3.5): about a move (`moveId`), with that move's name as the
