@@ -236,13 +236,26 @@ describe("a reading can't make the audit's mistakes", () => {
 
   it("a record's dose knows where it came from: the reading's numbers, the post's words, or the default (audit bug 3)", () => {
     const from = (dose: ExtractedMove["dose"]) => {
-      const built = buildPersonalRecord(id, move({ dose }));
+      const built = buildPersonalRecord(id, move({ dose, evidence: { name: "stated", dose: "stated", steps: "stated" } }));
       if (!built.ok) throw new Error(built.issues.join("; "));
       return built.doseOrigin;
     };
     expect(from({ text: "3 x 15", range: [15, 15] })).toBe("reading");
     expect(from({ text: "2x30s" })).toBe("post");
     expect(from({ text: "slowly, with control" })).toBe("default");
+  });
+
+  it("a dose the reader inferred is the reader's guess, never the post's (audit 2026-11-06, I9)", () => {
+    const from = (dose: ExtractedMove["dose"], said: "stated" | "inferred") => {
+      const built = buildPersonalRecord(id, move({ dose, evidence: { name: "stated", dose: said, steps: "stated" } }));
+      if (!built.ok) throw new Error(built.issues.join("; "));
+      return built.doseOrigin;
+    };
+    expect(from({ text: "2x30s" }, "inferred")).toBe("reader's guess");
+    expect(from({ text: "3 x 15", range: [15, 15] }, "inferred")).toBe("reader's guess");
+    expect(from({ text: "2x30s" }, "stated")).toBe("post");
+    // No numbers at all is still the default, whoever guessed.
+    expect(from({ text: "slowly, with control" }, "inferred")).toBe("default");
   });
 
   it("the words reach the record: the stated range, not 8-12; a stated hold on the clock, with or without a weight", () => {

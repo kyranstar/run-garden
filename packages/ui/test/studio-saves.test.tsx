@@ -58,7 +58,7 @@ const ROWS: SaveBatchRowDto[] = [
   {
     postMoveId: "pm3", position: 0, status: "pending", post: { url: "javascript:alert(1)", creator: HOSTILE, kind: "single_move" },
     move: {
-      id: NECK.id, name: NECK.name, summary: NECK.text.summary, kind: "new", check: true, checkWhy: ["low_confidence", "inferred_dose", "near_duplicate"], seenDose: "5 slow",
+      id: NECK.id, name: NECK.name, summary: NECK.text.summary, kind: "new", check: true, checkWhy: ["low_confidence", "inferred_dose", "near_duplicate"], seenDose: "5 slow", seenDoseGuess: true,
       purpose: null, like: { id: LANTERN.id, name: LANTERN.name }, choice: null,
     },
     record: NECK,
@@ -579,6 +579,18 @@ describe("a move's sheet", () => {
     expect(sheet).not.toBeNull();
     await click(button("Ask the coach", sheet!) ?? buttons(sheet!).find((b) => b.textContent?.includes("Ask the coach")), "Ask the coach");
     expect(opener.open).toHaveBeenCalledWith({ seeing: { kind: "move", id: NECK.id, label: NECK.name }, request: null });
+  });
+
+  it("a dose the post gave reads 'In the post'; one the reader inferred, 'The reader's guess' (audit 2026-11-06, I9)", async () => {
+    serve();
+    mount("/studio/saves/b1");
+    await until(() => !!rowOf(QUAD.name), "the rows");
+    await openRow(QUAD.name);
+    expect(dialog(QUAD.name)!.textContent).toContain("In the post: 3 x 10");
+    await click(button("Close", dialog(QUAD.name)!), "Close");
+    await openRow(NECK.name);
+    expect(dialog(NECK.name)!.textContent).toContain("The reader's guess: 5 slow");
+    expect(dialog(NECK.name)!.textContent).not.toContain("In the post");
   });
 
   it("shows the post: its creator as text, a link only to a web page, opened apart", async () => {

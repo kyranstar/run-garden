@@ -272,7 +272,7 @@ const VALUE_WORDS: Readonly<Record<string, Readonly<Record<string, string>>>> = 
   finishReason: { stop: "done", length: "cut off at the output limit", content_filter: "stopped by a content filter" },
   via: { saved_list: "your saved list", pasted: "a pasted link", captured: "the player's own captions", panel: "the transcript panel" },
   chaptersFrom: { player: "the player bar", description: "the description" },
-  doseOrigin: { post: "the post", reading: "the reader's reading", default: "a default — the post gave none" },
+  doseOrigin: { post: "the post", reading: "the reader's reading", "reader's guess": "the reader's guess — the post never says", default: "a default — the post gave none" },
   outcome: { new: "a new move", personal: "already yours", yours: "already yours", library: "from the library" },
   by: { name: "its name", judge: "the judge", fuzzy: "a close name", new: "no match", kept: "kept as it was — the post already linked it" },
   judge: { asked: "asked", not_needed: "not needed", failed: "its call failed", budget: "not asked: the import budget" },

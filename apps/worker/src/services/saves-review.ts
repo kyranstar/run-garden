@@ -255,6 +255,8 @@ export async function batchDetail(db: Db, userId: string, batchId: string, now: 
         check: Boolean(r.checkFlag),
         ...(r.checkFlag ? { checkWhy: checkWhyOf(r) } : {}),
         seenDose: text(r.seenDose),
+        // A dose the reader inferred is its guess, never "in the post" (audit 2026-11-06, I9).
+        ...(text(r.seenDose) && r.doseEvidence === "inferred" ? { seenDoseGuess: true } : {}),
         purpose: text(r.purpose),
         ...(r.likeId ? { like: { id: r.likeId, name: text(r.likeName) ?? r.likeId } } : {}),
         choice: fresh ? choiceOf(r.choice) : null,

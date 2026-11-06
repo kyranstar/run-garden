@@ -85,8 +85,10 @@ export interface SaveBatchRowDto {
      * never said the move's name or its dose (the reading's evidence: inferred).
      */
     checkWhy?: CheckWhy[];
-    /** The dose as the post prescribed it ("3 x 10"), beside the stored one. */
+    /** The dose as the reading gave it ("3 x 10"), beside the stored one. */
     seenDose: string | null;
+    /** True when the post never stated that dose — the reader inferred it (audit 2026-11-06, I9). Absent otherwise. */
+    seenDoseGuess?: boolean;
     /** The extraction's `purpose` at the link's position: what the post says the move is for. */
     purpose: string | null;
     /** The move this one looks like (a near-duplicate flagged at the cut): its id and name. Only on a row that has one. */

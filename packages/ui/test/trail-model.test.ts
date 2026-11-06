@@ -596,3 +596,15 @@ describe("Read it again on an old post's trail (phase 5a)", () => {
     expect(words).toContainEqual(["Not in it", "Zorbex knee sways"]);
   });
 });
+
+describe("a dose the reader guessed (audit 2026-11-06, I9)", () => {
+  it("is labelled the reader's guess, never the post", () => {
+    const dto = trail({
+      events: [
+        ev("check", { detail: { moves: [{ position: 0, name: "Zorbex hip lift", repairs: [], doseOrigin: "reader's guess", evidence: { name: "stated", dose: "inferred" }, confidence: "high" }] } }),
+      ],
+    });
+    const rows = moveDetail(dto, 0)[0]!.rows;
+    expect(rows).toContainEqual({ key: "Dose from", value: "the reader's guess — the post never says" });
+  });
+});

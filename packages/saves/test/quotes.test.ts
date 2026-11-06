@@ -136,10 +136,19 @@ describe("quote checks are bounded on a long transcript (final audit G1)", () =>
   });
 });
 
-describe("a quote the video shows on screen (final audit G7)", () => {
-  it("is on_screen — unchecked, never struck, its field not made a guess", () => {
+describe("a quote the video shows on screen (final audit G7; audit 2026-11-06, I9)", () => {
+  it("is on_screen — unchecked and never struck, but a field it alone supports is the reader's guess", () => {
     const out = verifyQuotes(reading([{ field: "dose", text: "3 rounds of 10", from: "screen" }]), { caption: "nothing about it" });
     expect(out.results.map((r) => r.check)).toEqual(["on_screen"]);
+    expect((out.extraction.moves[0] as unknown as { evidence: Record<string, string> }).evidence.dose).toBe("inferred");
+  });
+
+  it("a field a checked quote also supports stays stated", () => {
+    const out = verifyQuotes(
+      reading([{ field: "dose", text: "3 rounds of 10", from: "screen" }, { field: "dose", text: "three rounds", from: "caption" }]),
+      { caption: "Do three rounds, slowly" },
+    );
+    expect(out.results.map((r) => r.check)).toEqual(["on_screen", "verified"]);
     expect((out.extraction.moves[0] as unknown as { evidence: Record<string, string> }).evidence.dose).toBe("stated");
   });
 });

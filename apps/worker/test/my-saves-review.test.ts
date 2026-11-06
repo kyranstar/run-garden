@@ -254,6 +254,22 @@ describe("GET /batches/:id", () => {
     for (const r of rows.slice(0, 3)) expect(r.move.checkWhy).toBeUndefined();
   });
 
+  it("a dose the reader inferred is said to be its guess, never the post's words (audit 2026-11-06, I9)", async () => {
+    const { batchId, b } = await seed();
+    await db.update(savedPosts).set({
+      extraction: extraction([
+        move("Zorbex quad shuffles", { evidence: { name: "stated", dose: "stated", steps: "stated" } }),
+        move("Zorbex neck nod", { regions: ["neck"], evidence: { name: "stated", dose: "inferred", steps: "stated" } }),
+      ]),
+    }).where(eq(savedPosts.id, b));
+    const res = await call("GET", `/batches/${batchId}`);
+    expect(statements.length).toBe(3);
+    const rows = res.body.rows as any[];
+    expect(rows[3].move).toMatchObject({ seenDose: "8 each side", seenDoseGuess: true });
+    expect(rows[2].move).toMatchObject({ seenDose: "8 each side" });
+    expect(rows[2].move.seenDoseGuess).toBeUndefined();
+  });
+
   it("a row linked to one of the owner's own moves names it and carries its record", async () => {
     const { batchId, b } = await seed();
     const lantern = await ownMove("Lantern reach", "active");
