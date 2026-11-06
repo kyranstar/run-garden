@@ -71,26 +71,34 @@ describe("a challenge's answer", () => {
     expect(call).toBeGreaterThan(0);
     expect(point).toBeGreaterThan(call);
     expect(evidence).toBeGreaterThan(point);
-    // A past card's evidence is one read away (E1).
+    // A past card's evidence is one read away (E1); the answer is finished as a challenge's, whole.
     expect(challenge).toContain("read_saves with the move's id");
+    expect(challenge).toContain("finish with challenge: true");
   });
 
-  it("a finish answering the athlete's words keeps the whole answer beside its suggestion, up to ANSWER_MAX", async () => {
+  it("a finish answering the athlete's challenge (challenge: true) keeps the whole answer beside its suggestion, up to ANSWER_MAX", async () => {
     expect(ANSWER.length).toBeGreaterThan(LINE_MAX);
     expect(ANSWER.length).toBeLessThan(ANSWER_MAX);
     const ctx = await runWithCard("Take the hip lift out — my hips are fine.");
-    const r = await finish().run(ctx, { summary: ANSWER });
+    const r = await finish().run(ctx, { summary: ANSWER, challenge: true });
     if (isToolErr(r)) throw new Error(r.why);
     expect(r.summary).toBe(ANSWER);
     expect((r.data as { proposalId?: string }).proposalId).toBe(designProposalId(ctx.run.id));
+    expect(r.receipt).toMatchObject({ final: true, challenge: true });
+    // The schema says when.
+    const summary = (finish().inputSchema.properties as Record<string, { description: string }>).challenge!.description;
+    expect(summary).toMatch(/challenge/i);
   });
 
-  it("a finish on a quick tap (no words) still clips its line at LINE_MAX, at a sentence", async () => {
-    const ctx = await runWithCard(null);
-    const r = await finish().run(ctx, { summary: ANSWER });
-    if (isToolErr(r)) throw new Error(r.why);
-    expect(r.summary!.length).toBeLessThanOrEqual(LINE_MAX);
-    expect(r.summary!.endsWith(".")).toBe(true);
+  it("an ordinary suggestion's line, and a 'challenge' with no words of the athlete's (a quick tap), still clip at LINE_MAX, at a sentence", async () => {
+    for (const [request, input] of [["Something for my hips.", { summary: ANSWER }], [null, { summary: ANSWER, challenge: true }]] as const) {
+      const ctx = await runWithCard(request);
+      const r = await finish().run(ctx, input);
+      if (isToolErr(r)) throw new Error(r.why);
+      expect(r.summary!.length).toBeLessThanOrEqual(LINE_MAX);
+      expect(r.summary!.endsWith(".")).toBe(true);
+      expect(r.receipt).not.toHaveProperty("challenge");
+    }
   });
 
   it("the conversation block carries the newest turn's coach line up to ANSWER_MAX; an older turn's at LINE_MAX", async () => {

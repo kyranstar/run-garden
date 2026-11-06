@@ -48,7 +48,7 @@ export const CONVERSATION_ID = /^[A-Za-z0-9_-]{1,100}$/;
 export interface ConversationCard {
   /** `programme` (§8 §5): a change to a programme's settings, approved with one tap — one card a programme; `pins`
    * (saved-posts import, Task 18): the moves in rotation the coach would change, approved with one tap. */
-  kind: "workout" | "plan_changes" | "set" | "plan" | "programme" | "pins" | "corrections";
+  kind: "workout" | "plan_changes" | "set" | "plan" | "programme" | "pins" | "corrections" | "objectives";
   proposalId: string;
   title: string;
   /** One line: "Today · Now · 24 min · Maintain", "3 changes to your week", "3 workouts · Wed 13 – Fri 15 May",
@@ -105,7 +105,7 @@ export interface ConversationDto {
 
 /** A proposal's op in brief, as `turnsSql` reads it. */
 interface OpBrief {
-  kind: "doc_workout" | "plan_adjust" | "plan_structure" | "programme_change" | "move_pins" | "import_correction";
+  kind: "doc_workout" | "plan_adjust" | "plan_structure" | "programme_change" | "move_pins" | "import_correction" | "objective_change";
   date: string | null;
   time: string | null;
   atNow: number | null;
@@ -217,12 +217,12 @@ export async function conversationRows(db: Db, userId: string, conversation: SQL
           'by', ${op("$.by.role")}, 'change', ${op("$.op.kind")}, 'row', ${op("$.row.title")},
           'outcome', ${op("$.outcome.status")}, 'reason', ${op("$.outcome.reason")}, 'discipline', ${op("$.derived.discipline")},
           'planTitle', ${op("$.title")}, 'planSummary', ${op("$.summary")}, 'lines', json(CASE WHEN ${op("$.kind")} IN ('plan_structure', 'programme_change', 'move_pins') THEN ${op("$.lines")} END),
-          'opId', CASE WHEN ${op("$.kind")} IN ('programme_change', 'move_pins', 'import_correction') THEN ${op("$.id")} END,
-          'why', CASE WHEN ${op("$.kind")} IN ('move_pins', 'import_correction') THEN ${op("$.why")} END,
-          'fixLine', CASE WHEN ${op("$.kind")} = 'import_correction' THEN ${op("$.line")} END,
+          'opId', CASE WHEN ${op("$.kind")} IN ('programme_change', 'move_pins', 'import_correction', 'objective_change') THEN ${op("$.id")} END,
+          'why', CASE WHEN ${op("$.kind")} IN ('move_pins', 'import_correction', 'objective_change') THEN ${op("$.why")} END,
+          'fixLine', CASE WHEN ${op("$.kind")} IN ('import_correction', 'objective_change') THEN ${op("$.line")} END,
           'batchId', CASE WHEN ${op("$.kind")} = 'move_pins' THEN ${op("$.batchId")} END,
           'count', CASE WHEN ${op("$.kind")} = 'move_pins' THEN ${op("$.count")} END))
-        FROM json_each(CASE WHEN json_valid(p.ops) THEN p.ops ELSE '[]' END) o WHERE ${op("$.kind")} IN ('doc_workout', 'plan_adjust', 'plan_structure', 'programme_change', 'move_pins', 'import_correction'))))
+        FROM json_each(CASE WHEN json_valid(p.ops) THEN p.ops ELSE '[]' END) o WHERE ${op("$.kind")} IN ('doc_workout', 'plan_adjust', 'plan_structure', 'programme_change', 'move_pins', 'import_correction', 'objective_change'))))
         FROM coach_proposals p WHERE p.id = ${DESIGNED_PREFIX} || r.id AND p.user_id = r.user_id) AS proposal,
       (SELECT up.prefs FROM user_preferences up WHERE up.user_id = ${userId}) AS prefs
     FROM c, s, coach_runs r
@@ -370,6 +370,18 @@ export function cardsOf(scopeText: string | null, p: ProposalBrief | null, today
           summary: plural(fixes.length, "correction"),
           lines: fixes.flatMap((f) => (str(f.fixLine) ? [str(f.fixLine)!] : [])),
         }];
+  // Changes to the athlete's objectives (audit fixes, E6): a card of their own, each line before → after.
+  const goals = p.ops.filter((o) => o.kind === "objective_change");
+  const objectives: ConversationCard[] =
+    goals.length === 0
+      ? []
+      : [{
+          kind: "objectives",
+          ...base,
+          title: goals.length === 1 ? "A change to your objectives" : "Changes to your objectives",
+          summary: plural(goals.length, "change"),
+          lines: goals.flatMap((g) => (str(g.fixLine) ? [str(g.fixLine)!] : [])),
+        }];
   const changesCard = (): ConversationCard[] => {
     if (changes.length === 0) return [];
     const inWeek = changes.every((c) => !c.date || c.date <= addDays(today, 6));
@@ -378,7 +390,7 @@ export function cardsOf(scopeText: string | null, p: ProposalBrief | null, today
   if (workouts.length > 0 && isSet(scopeText, p)) {
     const days = workouts.flatMap((w) => (w.date ? [w.date] : [])).sort();
     const what = `${plural(workouts.length, "workout")}${changes.length > 0 ? ` and ${plural(changes.length, "change")}` : ""}`;
-    return [{ kind: "set", ...base, title: p.title || "Your week", summary: days.length > 0 ? `${what} · ${dayRangeLabel(days[0]!, days.at(-1)!)}` : what }, ...plans, ...programmes, ...pins, ...corrections];
+    return [{ kind: "set", ...base, title: p.title || "Your week", summary: days.length > 0 ? `${what} · ${dayRangeLabel(days[0]!, days.at(-1)!)}` : what }, ...plans, ...programmes, ...pins, ...corrections, ...objectives];
   }
   return [
     ...workouts.map((w): ConversationCard => ({
@@ -393,6 +405,7 @@ export function cardsOf(scopeText: string | null, p: ProposalBrief | null, today
     ...programmes,
     ...pins,
     ...corrections,
+    ...objectives,
   ];
 }
 
@@ -550,6 +563,17 @@ function correctionsBrief(ops: readonly OpBrief[], status: string): string[] {
     .map((o) => `    - Correction: ${markUntrusted("main coach", clipProse(str(o.fixLine)!, LINE_MAX))} — ${o.outcome === "applying" ? "being applied" : standing(status, o.outcome, o.reason)}`);
 }
 
+/** A suggestion's changes to the athlete's objectives (E6), for the block: each its line and why (the coach's words,
+ * marked) and how it stands. */
+function objectivesBrief(ops: readonly OpBrief[], status: string): string[] {
+  return ops
+    .filter((o) => o.kind === "objective_change" && str(o.fixLine))
+    .map((o) => {
+      const why = str(o.why) ? `; why: ${markUntrusted("main coach", clipProse(str(o.why)!, WHY_BRIEF))}` : "";
+      return `    - ${markUntrusted("main coach", clipProse(str(o.fixLine)!, LINE_MAX))} — ${o.outcome === "applying" ? "being applied" : standing(status, o.outcome, o.reason)}${why}`;
+    });
+}
+
 /** One turn, as the opening message carries it: the coach's line to `lineMax` (the newest turn's, NEWEST_LINE_MAX). */
 function turnLines(row: TurnRow, today: string, clock: Intl.DateTimeFormat, lineMax = LINE_MAX): string[] {
   const time = whenWords(clock, row.createdAt);
@@ -585,6 +609,9 @@ function turnLines(row: TurnRow, today: string, clock: Intl.DateTimeFormat, line
       );
       // Its lines and why (import trail phase 3, §3.3): "why did you leave X out?" reaches a coach that has its reason.
       out.push(...pinsCardBrief(g), ...correctionsBrief(p!.ops, card.status));
+    } else if (card.kind === "objectives") {
+      out.push(`  Suggested ${card.summary} to the athlete's objectives (id ${card.proposalId}) — ${standing(card.status)}`);
+      out.push(...objectivesBrief(p!.ops, card.status));
     } else if (card.kind === "corrections") {
       out.push(`  Suggested ${card.summary} to the athlete's saves (id ${card.proposalId}) — ${standing(card.status)}`);
       out.push(...correctionsBrief(p!.ops, card.status));

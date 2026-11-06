@@ -36,7 +36,7 @@ const workoutOf = (value: SQL) => sql`(CASE json_extract(${value}, '$.kind')
 
 /** `value` (an op's JSON) is a designed workout, a change, a whole plan change, a programme change or the moves in
  * rotation still open: no outcome yet, or refused (one being applied — `applying` — is never covered). */
-export const openOp = (value: SQL): SQL => sql`(json_extract(${value}, '$.kind') IN ('doc_workout', 'plan_adjust', 'plan_structure', 'programme_change', 'move_pins', 'import_correction')
+export const openOp = (value: SQL): SQL => sql`(json_extract(${value}, '$.kind') IN ('doc_workout', 'plan_adjust', 'plan_structure', 'programme_change', 'move_pins', 'import_correction', 'objective_change')
     AND coalesce(json_extract(${value}, '$.outcome.status'), 'open') IN ('open', 'refused'))`;
 
 /**
@@ -60,6 +60,8 @@ export const covers = (newer: SQL, older: SQL): SQL => sql`((${workoutOf(older)}
     OR (json_extract(${older}, '$.kind') = 'move_pins' AND json_extract(${newer}, '$.kind') = 'move_pins'
         AND EXISTS (SELECT 1 FROM ${movesOf(older)} a JOIN ${movesOf(newer)} b ON a.value = b.value))
     OR (json_extract(${older}, '$.kind') = 'import_correction' AND json_extract(${newer}, '$.kind') = 'import_correction'
+        AND json_extract(${older}, '$.id') = json_extract(${newer}, '$.id'))
+    OR (json_extract(${older}, '$.kind') = 'objective_change' AND json_extract(${newer}, '$.kind') = 'objective_change'
         AND json_extract(${older}, '$.id') = json_extract(${newer}, '$.id'))
     OR (json_extract(${older}, '$.kind') = 'doc_workout' AND json_extract(${newer}, '$.kind') = 'doc_workout'
         AND json_extract(${older}, '$.target.kind') = 'new' AND json_extract(${newer}, '$.target.kind') = 'new'

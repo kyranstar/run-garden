@@ -57,7 +57,7 @@ import {
   UnknownOpError,
   type DesignProposalRow,
 } from "../services/design-approve.js";
-import { docWorkoutLines, manifestReads, correctionLines, pinsLines, planChangeLines, planStructureLines, programmeChangeLines, setContextSql } from "../services/design-manifest.js";
+import { docWorkoutLines, manifestReads, correctionLines, objectiveLines, pinsLines, planChangeLines, planStructureLines, programmeChangeLines, setContextSql } from "../services/design-manifest.js";
 import { designProposalId } from "../services/design-tools/propose.js";
 import { dayRowsSql, placedTimes } from "../services/design-placement.js";
 import { clockIn, PastTimeError } from "../services/design-time.js";
@@ -201,11 +201,14 @@ export async function designedManifest(db: Db, userId: string, proposalId: strin
   const pins = pinsLines(all);
   // The corrections to imported data (import trail phase 3): beside the pins card, or alone.
   const corrections = correctionLines(all);
+  // The changes to the athlete's objectives (audit fixes, E6): a card of their own.
+  const objectives = objectiveLines(all);
   const withPlans = {
     ...(plans.length > 0 ? { plans } : {}),
     ...(programmes.length > 0 ? { programmes } : {}),
     ...(pins.length > 0 ? { pins } : {}),
     ...(corrections.length > 0 ? { corrections } : {}),
+    ...(objectives.length > 0 ? { objectives } : {}),
   };
   if (workouts.length === 0) return { lines: [], changes: planChangeLines(all), ...withPlans };
   const prefix = designProposalId("");

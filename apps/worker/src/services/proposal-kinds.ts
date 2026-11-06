@@ -313,6 +313,64 @@ export const correctionId = (target: CorrectionTarget, targetId: string, field: 
 export const isImportCorrectionOp = (op: unknown): op is ImportCorrectionOp =>
   !!op && typeof op === "object" && (op as { kind?: unknown }).kind === "import_correction";
 
+/** What an objective change does (audit fixes 2026-11-06, E6): retarget or re-date a key result (an objective's dates are
+ * its key results'), add a key result, retire an objective (done, or let go) or a key result, add an objective. */
+export const OBJECTIVE_CHANGES = ["retarget", "redate", "add_key_result", "retire", "add_objective"] as const;
+export type ObjectiveChangeKind = (typeof OBJECTIVE_CHANGES)[number];
+
+/** The most objective changes one suggestion holds. */
+export const OBJECTIVE_CHANGES_MAX = 6;
+
+/** A key result as an objective change adds it: the board's own fields, resolved when proposed (its unit and direction
+ * the athlete's for its measure), with its new id. */
+export interface ObjectiveKeyResultDraft {
+  id: string;
+  label: string;
+  measure: Record<string, unknown>;
+  direction: "up" | "down";
+  baseline: number | null;
+  target: number | null;
+  unit: string;
+  dueDate: string | null;
+}
+
+/**
+ * A change to the athlete's objectives inside a designed proposal (audit fixes 2026-11-06, E6;
+ * design-tools/propose-objective.ts): what it changes (`change`, the objective and the key result), the value the
+ * Worker read when it was proposed (`before`: a target, a due day, an objective's status, a retired key result's words,
+ * null for an add) and the one the coach proposes (`after`: a number, a day or null, `done` / `dropped`, null for a
+ * retired key result, the new key result or objective whole, ids made when proposed), why (citing where the athlete
+ * stands, or their word: `basis`), the objective's title and one line, before → after. Applied ONLY at approval, in one
+ * atomic write gated on the value still being `before` (objective-changes.ts): refused `stale` when the athlete changed
+ * it since. Its outcome is its log: read_proposals, the conversation and the thread's receipt read it. `why`, the title
+ * and the line carry the model's and the athlete's words: data, marked wherever they are shown back to a model.
+ */
+export interface ObjectiveChangeOp {
+  kind: "objective_change";
+  /** `objectiveChangeId(change, target)`: one a target a suggestion — a second replaces the first. */
+  id: string;
+  change: ObjectiveChangeKind;
+  objectiveId: string;
+  keyResultId?: string;
+  before: unknown;
+  after: unknown;
+  why: string;
+  basis: "stand" | "owner";
+  /** The objective's title (the athlete's words, or the new one's). */
+  title: string;
+  line: string;
+  date: string;
+  toolUseId: string;
+  replaces?: string[];
+  at: string;
+}
+
+export const objectiveChangeId = (change: ObjectiveChangeKind, target: string): string => `obj-${change}-${target}`;
+
+/** Whether an op is a change to the athlete's objectives (E6). */
+export const isObjectiveChangeOp = (op: unknown): op is ObjectiveChangeOp =>
+  !!op && typeof op === "object" && (op as { kind?: unknown }).kind === "objective_change";
+
 /**
  * Whether a programme setting holds the same value (review-1): care is a set — the settings sheet saves it back as the
  * profiles it doesn't show, then the switched-on ones in the order they were toggled, so the same care can come back
@@ -394,15 +452,17 @@ export const isMovePinsOp = (op: unknown): op is MovePinsOp => kindOf(op) === "m
 /** Whether an op is the coach designer's — a designed workout, a change, a plan change, a programme change or the moves
  * in rotation — never one of the thread coach's. */
 export const isDesignedOp = (op: unknown): boolean =>
-  isDocWorkoutOp(op) || isPlanAdjustOp(op) || isPlanStructureOp(op) || isProgrammeChangeOp(op) || isMovePinsOp(op) || isImportCorrectionOp(op);
+  isDocWorkoutOp(op) || isPlanAdjustOp(op) || isPlanStructureOp(op) || isProgrammeChangeOp(op) || isMovePinsOp(op) || isImportCorrectionOp(op) || isObjectiveChangeOp(op);
 
 /**
  * An op's id: a designed workout's is the run that designed it — each run holds ONE op of its main run's proposal,
  * whatever its target (design-tools/propose.ts), so the run names the op through every revision round; a change's is
  * its own (`planAdjustId`). Approve and decline (Task 8) and a main run's lever over its set (Task 7) name an op by it.
  */
-export function opIdOf(op: { by: { runId: string } } | PlanAdjustOp | PlanStructureOp | ProgrammeChangeOp | MovePinsOp | ImportCorrectionOp): string {
-  return isPlanAdjustOp(op) || isPlanStructureOp(op) || isProgrammeChangeOp(op) || isMovePinsOp(op) || isImportCorrectionOp(op) ? op.id : (op as { by: { runId: string } }).by.runId;
+export function opIdOf(op: { by: { runId: string } } | PlanAdjustOp | PlanStructureOp | ProgrammeChangeOp | MovePinsOp | ImportCorrectionOp | ObjectiveChangeOp): string {
+  return isPlanAdjustOp(op) || isPlanStructureOp(op) || isProgrammeChangeOp(op) || isMovePinsOp(op) || isImportCorrectionOp(op) || isObjectiveChangeOp(op)
+    ? op.id
+    : (op as { by: { runId: string } }).by.runId;
 }
 
 /** Whether a proposal's ops hold a designed workout. */

@@ -851,6 +851,8 @@ export interface DesignProposalReadDto {
   pins?: DesignPinsLineDto[];
   /** Its corrections to imported data (import trail phase 3): beside the pins card, or alone; absent when it holds none. */
   corrections?: DesignCorrectionLineDto[];
+  /** Its changes to the athlete's objectives (audit fixes, E6): a card of their own; absent when it holds none. */
+  objectives?: DesignObjectiveLineDto[];
   /** A set's: the plan's other rows in its date span; absent otherwise. */
   context?: DesignContextRowDto[];
 }
@@ -951,6 +953,26 @@ export interface DesignCorrectionLineDto {
   cites: DesignCiteDto[];
   outcome:
     | { status: "applied"; at: string; lines?: string[] }
+    | { status: "applying"; at: string }
+    | { status: "refused"; at: string; error: string; why: string }
+    | { status: "declined"; at: string; reason?: string }
+    | { status: "superseded"; at: string; reason: string; by: string }
+    | null;
+}
+
+/** A change to the athlete's objectives in a suggestion (audit fixes, E6): what it changes, its line before → after, the
+ * coach's why and basis (where they stand, or the athlete's word), and how it stands — applied only on Approve, refused
+ * `stale` when the athlete changed it since. */
+export interface DesignObjectiveLineDto {
+  opId: string;
+  change: "retarget" | "redate" | "add_key_result" | "retire" | "add_objective";
+  /** The objective's title (the athlete's words, or the new one's). */
+  title: string;
+  line: string;
+  why: string;
+  basis: "stand" | "owner";
+  outcome:
+    | { status: "applied"; at: string }
     | { status: "applying"; at: string }
     | { status: "refused"; at: string; error: string; why: string }
     | { status: "declined"; at: string; reason?: string }
@@ -1089,6 +1111,8 @@ export interface DesignApproveResponse {
   pinned?: Array<{ opId: string; summary: string }>;
   /** The corrections to imported data this request applied (import trail phase 3), each its line. */
   corrected?: Array<{ opId: string; summary: string }>;
+  /** The changes to the athlete's objectives this request applied (audit fixes, E6), each its line. */
+  objectives?: Array<{ opId: string; summary: string }>;
   /**
    * Changes another approve is applying (its claim inside the server's window, Task 8b): never applied twice, never a
    * failure — they are being changed. Only when nothing else was answered is it a 409 `in_flight` naming them (`opIds`).
@@ -1526,7 +1550,7 @@ export interface CoachConversationCardDto {
   /** `plan` (§8 §5): a whole plan — a new block, its extension, a week, a wind-down — approved with one tap; `programme`,
    * a change to a programme's settings, one card a programme; `pins` (saved-posts import, Task 18), the moves the coach
    * would keep in rotation or take out, approved with one tap. */
-  kind: "workout" | "plan_changes" | "set" | "plan" | "programme" | "pins" | "corrections";
+  kind: "workout" | "plan_changes" | "set" | "plan" | "programme" | "pins" | "corrections" | "objectives";
   proposalId: string;
   title: string;
   summary: string;

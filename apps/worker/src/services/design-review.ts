@@ -76,6 +76,7 @@ import {
   isPlanAdjustOp,
   isPlanStructureOp,
   isImportCorrectionOp,
+  isObjectiveChangeOp,
   isMovePinsOp,
   isProgrammeChangeOp,
   type MovePinsOp,
@@ -622,18 +623,22 @@ export function proposalFields(all: readonly unknown[]): { title: string; ration
   const pins = all.filter(isMovePinsOp);
   // Corrections to imported data (import trail phase 3): beside the pins, or alone ("Corrections to your saves").
   const fixes = all.filter(isImportCorrectionOp);
+  // Changes to the athlete's objectives (audit fixes, E6): a card of their own.
+  const goals = all.filter(isObjectiveChangeOp);
   const counted = `${changes.length} plan change${changes.length === 1 ? "" : "s"}`;
   const workouts = ops.length === 0 ? null : ops.length === 1 ? ops[0]!.doc.title : `${ops.length} workouts`;
   const changed = workouts === null ? (changes.length === 0 ? null : changes.length === 1 ? describeChange(changes[0]!).title : counted) : changes.length > 0 ? `${workouts} · ${counted}` : workouts;
   const named = [changed, ...plans.map((p) => p.title), ...programmes.map((g) => g.title), ...pins.map((g) => g.title)].filter((t): t is string => !!t).join(" · ");
-  const title = named || (fixes.length === 0 ? "" : fixes.length === 1 ? "A correction to your saves" : "Corrections to your saves");
+  const title =
+    named ||
+    (fixes.length > 0 ? (fixes.length === 1 ? "A correction to your saves" : "Corrections to your saves") : goals.length > 0 ? (goals.length === 1 ? "A change to your objectives" : "Changes to your objectives") : "");
   const planDays = plans.map((p) => [p.date, addDays(p.at.slice(0, 10), PLAN_EXPIRY_DAYS)].sort()[0]!);
-  const programmeDays = [...programmes, ...pins, ...fixes].map((g) => addDays(g.at.slice(0, 10), PLAN_EXPIRY_DAYS));
+  const programmeDays = [...programmes, ...pins, ...fixes, ...goals].map((g) => addDays(g.at.slice(0, 10), PLAN_EXPIRY_DAYS));
   return {
     title,
     rationale: [
       ...ops.map((o) => o.changeNote ?? o.doc.intent.summary), ...changes.map((c) => c.why), ...plans.map((p) => p.why), ...programmes.map((g) => g.why), ...pins.map((g) => g.why),
-      ...fixes.map((f) => f.why),
+      ...fixes.map((f) => f.why), ...goals.map((g) => g.why),
     ].join(" · ").slice(0, 500),
     expiresAt: [...ops.map((o) => o.date), ...changes.flatMap((c) => (c.op.kind === "move" ? [c.date, c.op.toDate] : [c.date])), ...planDays, ...programmeDays].sort().at(-1)!,
   };

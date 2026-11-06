@@ -113,7 +113,11 @@ const BEFORE = { tools: 34_935, shared: 20_450, main: 4_586 };
 /* REBASED 2026-11-06 (audit fixes, evidence): read_saves' moveIds (a past card's evidence, E1), the challenge order with
  * the call first and read_saves by the move (E2), figures from the opening's computed blocks (E5) — measured 21,846; held
  * with 404 characters (~115 tokens) of headroom. */
-const GROWTH_MAX_CHARS = 22_250;
+/* REBASED 2026-11-06 (audit fixes, evidence, E2/E4/E6/E7): propose_objective — the main coach's change to the athlete's
+ * objectives, its schema (tools 44,501 → 46,227 with pin_moves' headline, its where dropped and finish's challenge flag)
+ * and its Acting and diagnose lines (shared 28,922 → 29,168; main 8,394 → 8,423) — measured 23,847; held with 403
+ * characters (~115 tokens) of headroom. */
+const GROWTH_MAX_CHARS = 24_250;
 
 const toolsSent = () => JSON.stringify(allTools().map((t) => ({ name: t.name, description: t.description, input_schema: t.inputSchema })));
 

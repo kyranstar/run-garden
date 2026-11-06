@@ -152,16 +152,37 @@ export const CORRECTIONS_WORDS: PlanCardWords = {
   link: null,
 };
 
-/** A correction still the athlete's to decide (none yet, refused, or claimed and not finished). */
-const openCorrection = (c: DesignCorrectionLineDto): boolean => !c.outcome || c.outcome.status === "refused" || c.outcome.status === "applying";
+/** The coach's changes to the athlete's objectives (audit fixes, E6): approved together, each one atomic write, done at
+ * once; the board one tap away. */
+export const OBJECTIVES_WORDS: PlanCardWords = {
+  done: "Objectives updated",
+  doing: "Updating your objectives…",
+  part: "It was interrupted — Finish saves it.",
+  inFlight: "It's being saved right now — Finish takes it on from there.",
+  approve: "Approve",
+  finish: "Finish",
+  unfinished: "It isn't done yet — tap again.",
+  declined: "Not changed",
+  superseded: "Replaced by a newer suggestion",
+  refused: "It couldn't be changed.",
+  // The board's own path (objectives.tsx OBJECTIVES_HREF; not imported: the board's screen is heavy for a card).
+  link: { to: "/studio/objectives", label: "See your objectives" },
+};
 
-/** The corrections' outcome, as one card's: all applied; one refused (its why); all declined; all replaced; else open. */
-function correctionsOutcome(cs: readonly DesignCorrectionLineDto[]): CardLine["outcome"] {
+/** An op of a card of corrections or objective changes, as its outcome reads. */
+type OutcomeOnly = { outcome: { status: string; why?: string; lines?: string[] } | null };
+
+/** A correction (or an objective change) still the athlete's to decide (none yet, refused, or claimed and not finished). */
+const openCorrection = (c: OutcomeOnly): boolean => !c.outcome || c.outcome.status === "refused" || c.outcome.status === "applying";
+
+/** The corrections' outcome, as one card's: all applied; one refused (its why); all declined; all replaced; else open.
+ * An objective changes card's the same way (E6). */
+function correctionsOutcome(cs: readonly OutcomeOnly[]): CardLine["outcome"] {
   if (cs.length === 0) return null;
   const st = cs.map((c) => c.outcome?.status ?? null);
   if (st.every((x) => x === "applied")) return { status: "applied" };
   const refused = cs.find((c) => c.outcome?.status === "refused");
-  if (refused && !st.includes(null)) return { status: "refused", why: (refused.outcome as { why: string }).why };
+  if (refused && !st.includes(null)) return { status: "refused", why: refused.outcome!.why ?? "" };
   if (st.every((x) => x === "declined")) return { status: "declined" };
   if (st.every((x) => x === "superseded" || x === "declined")) return { status: "superseded" };
   if (st.includes("applying")) return { status: "applying" };
@@ -262,17 +283,21 @@ export function PlanCard({ card, closed = false }: { card: PlanCardInput; closed
   // a card of their own.
   const fixesOnly = card.kind === "corrections";
   const corrections = pins || fixesOnly ? (read.data?.corrections ?? []) : [];
-  const w = programme ? PROGRAMME_WORDS : pins ? PINS_WORDS : fixesOnly ? CORRECTIONS_WORDS : PLAN_WORDS;
+  // The coach's changes to the athlete's objectives (audit fixes, E6): a card of their own, each before → after.
+  const goalsOnly = card.kind === "objectives";
+  const goals = goalsOnly ? (read.data?.objectives ?? []) : [];
+  const w = programme ? PROGRAMME_WORDS : pins ? PINS_WORDS : fixesOnly ? CORRECTIONS_WORDS : goalsOnly ? OBJECTIVES_WORDS : PLAN_WORDS;
   // A programme change's line is its own op's (a suggestion may change two programmes) — the moves in rotation's too; a
   // plan's, the suggestion's one.
   const own = <T extends { opId: string }>(xs: readonly T[] | undefined): T | null => xs?.find((g) => g.opId === card.opId) ?? (card.opId ? null : (xs?.[0] ?? null));
   const fixesLine: CardLine | null =
     fixesOnly && corrections.length > 0 ? { opId: corrections[0]!.opId, issues: [], lines: corrections.map((c) => c.line), outcome: correctionsOutcome(corrections) } : null;
-  const plan: CardLine | null = programme ? own(read.data?.programmes) : pins ? own(read.data?.pins) : fixesOnly ? fixesLine : (read.data?.plans?.[0] ?? null);
+  const goalsLine: CardLine | null = goalsOnly && goals.length > 0 ? { opId: goals[0]!.opId, issues: [], lines: goals.map((g) => g.line), outcome: correctionsOutcome(goals) } : null;
+  const plan: CardLine | null = programme ? own(read.data?.programmes) : pins ? own(read.data?.pins) : fixesOnly ? fixesLine : goalsOnly ? goalsLine : (read.data?.plans?.[0] ?? null);
   /** The card's own op — and, the moves in rotation's, the corrections that ride it — what its buttons approve and
    * decline, nothing else of the suggestion. */
   const openFixes = corrections.filter(openCorrection).map((c) => c.opId);
-  const opIds = fixesOnly ? openFixes : [plan?.opId ?? card.opId ?? PLAN_OP_ID, ...(pins ? openFixes : [])];
+  const opIds = fixesOnly ? openFixes : goalsOnly ? goals.filter(openCorrection).map((g) => g.opId) : [plan?.opId ?? card.opId ?? PLAN_OP_ID, ...(pins ? openFixes : [])];
   const status = read.data?.status ?? card.status;
   const reread = () => qc.invalidateQueries({ queryKey: designProposalQuery(card.proposalId) });
   const after = async () => {
@@ -367,7 +392,25 @@ export function PlanCard({ card, closed = false }: { card: PlanCardInput; closed
       </h3>
       {card.summary ? <p className={count ? "coach-changes-summary coach-changes-headline" : "coach-changes-summary"}>{card.summary}</p> : null}
       {count ? <p className="coach-changes-count">{count}</p> : null}
-      {reviewed ? (
+      {goalsOnly && goals.length > 0 ? (
+        <ul className="coach-plan-lines coach-objective-changes">
+          {goals.map((g) => (
+            <li key={g.opId} className="coach-objective-change">
+              <p className="coach-objective-line">
+                {g.outcome?.status === "applied" ? "✓ " : ""}
+                {g.line}
+                {g.outcome?.status === "refused" && goals.length > 1 ? ` — ${g.outcome.why}` : ""}
+              </p>
+              {g.why ? (
+                <p className="coach-objective-why">
+                  {g.why}
+                  {g.basis === "owner" ? " (your word)" : ""}
+                </p>
+              ) : null}
+            </li>
+          ))}
+        </ul>
+      ) : reviewed ? (
         <ReviewLines lines={fixesOnly ? [] : reviewLines.length > 0 ? reviewLines : lines.map((l) => ({ ...l, name: l.name ?? undefined }))} corrections={corrections} why={why} />
       ) : lines.length > 0 ? (
         <ul className="coach-plan-lines">{lines.map(lineItem)}</ul>

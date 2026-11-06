@@ -27,6 +27,7 @@ import {
   type DesignCiteDto,
   type DesignContextRowDto,
   type DesignCorrectionLineDto,
+  type DesignObjectiveLineDto,
   type DesignLineDto,
   type DesignPinsCardLineDto,
   type DesignPinsLineDto,
@@ -405,6 +406,37 @@ function toCorrectionLine(v: unknown): DesignCorrectionLineDto | null {
   };
 }
 
+const OBJECTIVE_CHANGE_KINDS: readonly DesignObjectiveLineDto["change"][] = ["retarget", "redate", "add_key_result", "retire", "add_objective"];
+
+/** A change to the athlete's objectives (audit fixes, E6): its id and line or nothing; its texts texts; its outcome by its
+ * status. */
+function toObjectiveLine(v: unknown): DesignObjectiveLineDto | null {
+  const c = record(v);
+  if (!c || typeof c.opId !== "string" || !c.opId || typeof c.line !== "string") return null;
+  const o = record(c.outcome);
+  const outcome: DesignObjectiveLineDto["outcome"] =
+    o?.status === "applied"
+      ? { status: "applied", at: text(o.at) }
+      : o?.status === "applying"
+        ? { status: "applying", at: text(o.at) }
+        : o?.status === "refused"
+          ? { status: "refused", at: text(o.at), error: text(o.error), why: text(o.why) }
+          : o?.status === "declined"
+            ? { status: "declined", at: text(o.at) }
+            : o?.status === "superseded"
+              ? { status: "superseded", at: text(o.at), reason: text(o.reason), by: text(o.by) }
+              : null;
+  return {
+    opId: c.opId,
+    change: (OBJECTIVE_CHANGE_KINDS as readonly string[]).includes(String(c.change)) ? (c.change as DesignObjectiveLineDto["change"]) : "retarget",
+    title: text(c.title),
+    line: c.line,
+    why: text(c.why),
+    basis: c.basis === "owner" ? "owner" : "stand",
+    outcome,
+  };
+}
+
 /** A change to the moves in rotation's line (saved-posts import, Task 18): its id or nothing; its texts texts; its outcome
  * by its status, its own fields read. */
 function toPinsLine(v: unknown): DesignPinsLineDto | null {
@@ -447,6 +479,7 @@ export function toProposal(v: unknown): ProposalRead {
   const programmes = list(r.programmes).map(toProgrammeLine).filter((p): p is DesignProgrammeLineDto => p !== null);
   const pins = list(r.pins).map(toPinsLine).filter((p): p is DesignPinsLineDto => p !== null);
   const corrections = list(r.corrections).map(toCorrectionLine).filter((c): c is DesignCorrectionLineDto => c !== null);
+  const objectives = list(r.objectives).map(toObjectiveLine).filter((c): c is DesignObjectiveLineDto => c !== null);
   const lines = list(r.lines).map(toLine).filter((l): l is DesignLineDto => l !== null);
   const changes = list(r.changes).map(toChange).filter((c): c is DesignChangeLineDto => c !== null);
   const context = list(r.context).map(toContextRow).filter((c): c is DesignContextRowDto => c !== null);
@@ -460,6 +493,7 @@ export function toProposal(v: unknown): ProposalRead {
     ...(r.programmes !== undefined ? { programmes } : {}),
     ...(r.pins !== undefined ? { pins } : {}),
     ...(r.corrections !== undefined ? { corrections } : {}),
+    ...(r.objectives !== undefined ? { objectives } : {}),
     ...(r.context !== undefined ? { context } : {}),
   };
 }

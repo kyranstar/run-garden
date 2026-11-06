@@ -1595,14 +1595,14 @@ export interface OpenProposalDto {
  * the athlete decides in. Never errs on ops that aren't JSON. */
 const OPEN_OP = sql.raw(
   `(p.status IN ('pending', 'partially_approved') AND EXISTS (SELECT 1 FROM json_each(CASE WHEN json_valid(p.ops) THEN p.ops ELSE '[]' END) o ` +
-    `WHERE json_extract(o.value, '$.kind') IN ('doc_workout', 'plan_adjust', 'plan_structure', 'programme_change', 'move_pins', 'import_correction') ` +
+    `WHERE json_extract(o.value, '$.kind') IN ('doc_workout', 'plan_adjust', 'plan_structure', 'programme_change', 'move_pins', 'import_correction', 'objective_change') ` +
     `AND (json_extract(o.value, '$.outcome') IS NULL OR json_extract(o.value, '$.outcome.status') IN ('refused', 'applying'))))`,
 );
 const LIVE_ROOT = sql.raw(`r.status IN (${LIVE_STATUSES.map((s) => `'${s}'`).join(", ")})`);
 /** The days of the joined proposal's ops still open (`OPEN_OP`'s), as a JSON array: the pick keeps those from today on. */
 const OPEN_DAYS = sql.raw(
   `(SELECT json_group_array(json_extract(o.value, '$.date')) FROM json_each(CASE WHEN p.status IN ('pending', 'partially_approved') AND json_valid(p.ops) THEN p.ops ELSE '[]' END) o ` +
-    `WHERE json_extract(o.value, '$.kind') IN ('doc_workout', 'plan_adjust', 'plan_structure', 'programme_change', 'move_pins', 'import_correction') ` +
+    `WHERE json_extract(o.value, '$.kind') IN ('doc_workout', 'plan_adjust', 'plan_structure', 'programme_change', 'move_pins', 'import_correction', 'objective_change') ` +
     `AND (json_extract(o.value, '$.outcome') IS NULL OR json_extract(o.value, '$.outcome.status') IN ('refused', 'applying')))`,
 );
 
@@ -1618,7 +1618,7 @@ const decidedSince = (since: string) => sql`(p.status IN ('approved', 'partially
 
 /** An op of the joined proposal `p` still the athlete's to decide (`OPEN_OP`'s rule for one op `o`). */
 const OPEN_ONE = sql.raw(
-  `json_extract(o.value, '$.kind') IN ('doc_workout', 'plan_adjust', 'plan_structure', 'programme_change', 'move_pins', 'import_correction') ` +
+  `json_extract(o.value, '$.kind') IN ('doc_workout', 'plan_adjust', 'plan_structure', 'programme_change', 'move_pins', 'import_correction', 'objective_change') ` +
     `AND (json_extract(o.value, '$.outcome') IS NULL OR json_extract(o.value, '$.outcome.status') IN ('refused', 'applying'))`,
 );
 
@@ -3157,6 +3157,8 @@ async function runTools(
       // The main coach's line clipped where the athlete reads it (finish.ts, §2.1): its whole text kept in the payload. An
       // answer (the new shape §5: nothing suggested) is its line whole, up to the answer's cap — what the athlete reads.
       const answer = (result.receipt as { answer?: unknown } | undefined)?.answer === true;
+      // A challenge's answer beside a suggestion (audit fixes, E2): kept whole to the answer's cap too.
+      const words = (result.receipt as { challenge?: unknown } | undefined)?.challenge === true;
       const shown = typeof said === "string" ? athleteText(said.trim()) : "";
       const whole = run.role === "main" && !answer && shown && !(result.summary ?? "").startsWith(shown) ? { text: clipProse(shown, FINISH_KEPT_MAX) } : {};
       const payload = { ...(proposalId ? { proposalId } : {}), ...whole, ...(result.receipt ? { receipt: result.receipt } : {}) };
@@ -3164,7 +3166,7 @@ async function runTools(
       events.push({
         kind: run.role === "reviewer" ? "review" : "note",
         summary: result.summary ?? LINES.finished,
-        ...(answer ? { max: ANSWER_MAX } : {}),
+        ...(answer || words ? { max: ANSWER_MAX } : {}),
         ...(Object.keys(payload).length > 0 ? { payload } : {}),
       });
       return { status: "finished", events, proposalId };

@@ -178,6 +178,20 @@ function correctionOf(o: Record<string, unknown>): Record<string, unknown> {
   };
 }
 
+/** A change to the athlete's objectives (audit fixes, E6; propose_objective's): its line, before → after, and why — the
+ * coach's and the athlete's words: marked — its basis, and how it ended: its log. */
+function objectiveOf(o: Record<string, unknown>): Record<string, unknown> {
+  const str = (v: unknown): string | null => (typeof v === "string" && v.length > 0 ? v : null);
+  return {
+    kind: "objective_change",
+    ...(str(o.opId) ? { opId: str(o.opId) } : {}),
+    ...(str(o.fixLine) ? { line: untrusted(str(o.fixLine)!) } : {}),
+    ...(str(o.changeWhy) ? { why: untrusted(str(o.changeWhy)!) } : {}),
+    ...(o.basis === "stand" || o.basis === "owner" ? { basis: o.basis } : {}),
+    ...(o.outcome === "applying" ? { outcome: "being_applied" } : decided(o)),
+  };
+}
+
 export const readProposals: DesignTool = {
   name: "read_proposals",
   description:
@@ -212,7 +226,7 @@ export const readProposals: DesignTool = {
               'minutes', coalesce(${op("$.retime.minutes")}, ${op("$.op.durationMinutes")}), 'skipReason', ${op("$.op.reason")}, 'changeWhy', ${op("$.why")},
               'planTitle', ${op("$.title")}, 'planSummary', ${op("$.summary")}, 'planDone', ${op("$.outcome.summary")}, 'placed', ${op("$.outcome.placed")},
               'lines', json(case when ${op("$.kind")} = 'move_pins' then ${op("$.lines")} end), 'batchId', case when ${op("$.kind")} = 'move_pins' then ${op("$.batchId")} end,
-              'fixLine', case when ${op("$.kind")} = 'import_correction' then ${op("$.line")} end, 'basis', ${op("$.basis")}))
+              'fixLine', case when ${op("$.kind")} in ('import_correction', 'objective_change') then ${op("$.line")} end, 'basis', ${op("$.basis")}))
               from json_each(case when json_valid(${c.ops}) then ${c.ops} else '[]' end) o) as ops
           from ${c} where ${c.userId} = ${ctx.userId} and ${c.status} != 'rehearsal' ${p.status ? sql`and ${c.status} = ${p.status}` : sql``}
             ${at ? sql`and (${c.createdAt}, ${c.id}) <= (${at[0]}, ${at[1]})` : sql``}
@@ -236,7 +250,7 @@ export const readProposals: DesignTool = {
           created: dayOf(localDateOf(athlete.tz, r.createdAt), athlete.today),
           status: r.status,
           resolved: dayOf(localDateOf(athlete.tz, r.resolvedAt), athlete.today),
-          ops: ops.slice(0, OPS_SHOWN).map((o) => (o.kind === "plan_adjust" ? changeOf(o, athlete.today) : o.kind === "plan_structure" ? planOf(o, athlete.today) : o.kind === "programme_change" ? programmeOf(o, athlete.today) : o.kind === "move_pins" ? pinsOf(o, athlete.today) : o.kind === "import_correction" ? correctionOf(o) : {
+          ops: ops.slice(0, OPS_SHOWN).map((o) => (o.kind === "plan_adjust" ? changeOf(o, athlete.today) : o.kind === "plan_structure" ? planOf(o, athlete.today) : o.kind === "programme_change" ? programmeOf(o, athlete.today) : o.kind === "move_pins" ? pinsOf(o, athlete.today) : o.kind === "import_correction" ? correctionOf(o) : o.kind === "objective_change" ? objectiveOf(o) : {
             kind: typeof o.kind === "string" ? o.kind : "unknown",
             ...(typeof o.opId === "string" && ID.test(o.opId) ? { opId: o.opId } : {}),
             ...(typeof o.date === "string" && isLocalDate(o.date) ? { date: o.date, day: dayWords(o.date, athlete.today) } : {}),

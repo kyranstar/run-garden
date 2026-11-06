@@ -45,6 +45,8 @@ import { defaultFromRow, defaultPlaceSql } from "./default-place.js";
 import type {
   CorrectionOutcome,
   DesignedCorrectionOp,
+  DesignedObjectiveOp,
+  ObjectiveChangeOutcome,
   DesignedOp,
   DesignedPinsOp,
   DesignedPlanOp,
@@ -68,6 +70,7 @@ import {
   describeChange,
   isDocWorkoutOp,
   isImportCorrectionOp,
+  isObjectiveChangeOp,
   isMovePinsOp,
   isPlanAdjustOp,
   isPlanStructureOp,
@@ -76,6 +79,7 @@ import {
   pinsCardLinesOf,
   type ChangeVerb,
   type ImportCorrectionOp,
+  type ObjectiveChangeOp,
   type PinsCardLine,
 } from "./proposal-kinds.js";
 
@@ -550,6 +554,31 @@ export interface CorrectionLine {
   basis: ImportCorrectionOp["basis"];
   cites: ImportCorrectionOp["cites"];
   outcome: CorrectionOutcome | null;
+}
+
+/** A change to the athlete's objectives as the card shows it (audit fixes, E6): what it changes, its line before → after,
+ * the coach's why and basis, and how it stands. */
+export interface ObjectiveLine {
+  opId: string;
+  change: ObjectiveChangeOp["change"];
+  title: string;
+  line: string;
+  why: string;
+  basis: ObjectiveChangeOp["basis"];
+  outcome: ObjectiveChangeOutcome | null;
+}
+
+/** Each objective change's line, in the proposal's order. */
+export function objectiveLines(ops: readonly unknown[]): ObjectiveLine[] {
+  return (ops.filter(isObjectiveChangeOp) as DesignedObjectiveOp[]).map((g) => ({
+    opId: g.id,
+    change: g.change,
+    title: g.title,
+    line: g.line,
+    why: g.why,
+    basis: g.basis,
+    outcome: g.outcome ?? null,
+  }));
 }
 
 /** Each correction's line, in the proposal's order. */

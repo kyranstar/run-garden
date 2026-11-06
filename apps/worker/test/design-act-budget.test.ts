@@ -20,12 +20,13 @@ import { isToolErr, type DesignTool, type ReviewHooks, type ToolContext, type To
 import { designProposalId } from "../src/services/design-tools/propose.js";
 import { REVIEW_DIMENSIONS } from "../src/services/design-prompt.js";
 import { at, day, NOW, seedRichAthlete, studioDoc, TODAY } from "./design-read-fixture.js";
+import { createObjective } from "../src/services/objectives.js";
 import { savedMoveDraft, seedSavedBatch } from "./saves-batch-fixture.js";
 import { calmDoc, landingsDoc } from "./doc-workout-fixture.js";
 import { makeTestDb, makeTestUser } from "./helpers.js";
 
 const ENV = {} as Env;
-const ACT_NAMES = ["validate_workout", "ask_athlete", "record_answer", "remember", "propose_workout", "adjust_plan", "propose_plan", "change_programme", "pin_moves", "correct_import", "plan_set", "read_set", "drop_workout", "submit_review", "finish"];
+const ACT_NAMES = ["validate_workout", "ask_athlete", "record_answer", "remember", "propose_workout", "adjust_plan", "propose_plan", "change_programme", "pin_moves", "correct_import", "propose_objective", "plan_set", "read_set", "drop_workout", "submit_review", "finish"];
 
 let db: Db;
 let counting = false;
@@ -93,6 +94,7 @@ describe("the registry", () => {
       change_programme: ["main"],
       pin_moves: ["main"],
       correct_import: ["main"],
+      propose_objective: ["main"],
       plan_set: ["main"],
       read_set: ["main", "designer", "reviewer"],
       drop_workout: ["main"],
@@ -362,6 +364,28 @@ describe("each act tool's declared statement cost is the most it runs", () => {
     expect(n).toBe(2);
     expect(tool("correct_import").statementCost).toBe(2);
     expect((await measured("correct_import", { ...fix, field: "colour" }, rich.userId, await runRow(rich.userId))).count).toBe(0);
+  });
+
+  it("propose_objective: the athlete, the proposal, the restore marker, the objective and the run's words in one read, then one write — refusals read at most (audit fixes, E6)", async () => {
+    const goal = await createObjective(db, rich.userId, { title: "Zorbex budget aim", keyResults: [{ label: "Zorbex budget hold", measure: { kind: "hold_max", libraryIds: ["wallSit"] }, target: 120 }] }, NOW.toISOString());
+    const krId = goal.keyResults[0]!.id;
+    const retarget = { change: "retarget", keyResultId: krId, target: 90, why: "45 s of 120 s with half the time gone.", basis: "stand" };
+    const main = await runRow(rich.userId);
+    const n = await most("propose_objective", [
+      { input: retarget, run: main, toolUseId: "toolu_obj_budget_1" },
+      // A second change of the same key result replaces the first; a replay writes nothing.
+      { input: { ...retarget, target: 100 }, run: main, toolUseId: "toolu_obj_budget_2" },
+      { input: retarget, run: main, toolUseId: "toolu_obj_budget_1" },
+      { input: { change: "add_objective", objective: { title: "Zorbex new aim", keyResults: [{ label: "Zorbex hold", measure: { kind: "hold_max", libraryIds: ["sidePlank"] }, target: 30 }] }, why: "None of 3 aims cover balance.", basis: "stand" }, run: main, toolUseId: "toolu_obj_budget_3" },
+      // Refused: not theirs, the same value, no figure.
+      { input: { ...retarget, keyResultId: "kr-nobody" } },
+      { input: { ...retarget, target: 120 } },
+      { input: { ...retarget, why: "Too hard." } },
+    ]);
+    expect(n).toBe(2);
+    expect(tool("propose_objective").statementCost).toBe(2);
+    // A shape the schema refuses reads nothing.
+    expect((await measured("propose_objective", { ...retarget, change: "rename" }, rich.userId, await runRow(rich.userId))).count).toBe(0);
   });
 
   it("propose_workout fits a model step's tool room twice over, and every act tool fits the loop's per-tool cap", () => {

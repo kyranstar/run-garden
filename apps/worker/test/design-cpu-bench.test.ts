@@ -88,6 +88,7 @@ import { ANSWER_MAX_BYTES, createRun, DOCUMENT_ANSWER_BYTES, noteOnTrail, STATE_
 import { CoachRunStepper } from "../src/services/coach-run-stepper.js";
 import { designContextBuilder } from "../src/services/design-context.js";
 import { REVIEW_DIMENSIONS } from "../src/services/design-prompt.js";
+import { createObjective } from "../src/services/objectives.js";
 import { reviewPacket, standFromOpening, toolRecords, TOOL_RECORDS_MAX_BYTES } from "../src/services/design-review.js";
 import { adjustPlan } from "../src/services/design-tools/adjust-plan.js";
 import { allTools } from "../src/services/design-tools/index.js";
@@ -895,6 +896,18 @@ beforeAll(async () => {
         cites: [...Array.from({ length: 7 }, (_, k) => `q1.${k + 1}`), "history"],
       });
     }
+    // propose_objective (audit fixes, E6) at its heaviest: an objective added with MAX_KEY_RESULTS (10) key results, each
+    // checked as the board checks it (schema, library, unit and direction), beside the rich athlete's objectives.
+    await measureTool("propose_objective", images.get("read12")!, ctx, {
+      change: "add_objective",
+      objective: {
+        title: words(3, 120),
+        why: words(4, 500),
+        keyResults: Array.from({ length: 10 }, (_, i) => ({ label: words(i, 120), measure: { kind: "hold_max", libraryIds: ["wallSit", "sidePlank", "deadBug"] }, target: 30 + i, dueDate: day(-60) })),
+      },
+      why: `${words(5, 260)} 45 s of 120 s.`,
+      basis: "stand",
+    });
     await measureTool("validate_workout", images.get("read12")!, ctx, { doc: docs[0], date: TODAY });
     await measureTool("propose_workout", images.get("read12")!, ctx, { doc: docs[0], target: { kind: "new", date: TODAY }, changeNote: words(6, 180) });
     // propose_plan at its heaviest (§8 §5; the decision guidance's fix round, I1): MAX_PLAN_SESSIONS (24) lift and
@@ -1450,6 +1463,73 @@ beforeAll(async () => {
     });
   }
 
+  // ── 5o: objective changes' approve at the cap (audit fixes, E6) — OBJECTIVE_CHANGES_MAX (6): an objective added with ten
+  // key results, a key result added, three retargeted or re-dated, an objective retired — beside a proposal's at its
+  // why's longest: one request ──
+  {
+    const dbo = makeTestDb();
+    const { userId: uid } = await makeTestUser(dbo, { timezone: TZ });
+    const cookieo = `${SESSION_COOKIE}=${await createSession(dbo, uid)}`;
+    const stamp = new Date().toISOString();
+    const krs = Array.from({ length: 4 }, (_, i) => ({ label: `Zorbex hold ${i}`, measure: { kind: "hold_max", libraryIds: ["wallSit"] }, target: 60 + i, dueDate: addDays(today, 60) }));
+    const legs = await createObjective(dbo, uid, { title: "Zorbex legs", keyResults: krs }, stamp);
+    const spare = await createObjective(dbo, uid, { title: "Zorbex spare", keyResults: [] }, stamp);
+    const runId = `run-${newId()}`;
+    await dbo.insert(schema.coachRuns).values({ id: runId, userId: uid, parentId: null, role: "main", scope: { kind: "auto" }, request: "My goals need a rethink.", status: "active", state: null, steps: 0, costUsd: 0, createdAt: stamp, updatedAt: stamp });
+    const octx = (toolUseId: string): ToolContext => ({ db: dbo, env, userId: uid, run: { id: runId, role: "main", scope: { kind: "auto" }, parentId: null, rehearsal: false }, now: new Date(), toolUseId });
+    const why = `${words(8, 260)} 45 s of 120 s.`;
+    const changes: Array<Record<string, unknown>> = [
+      { change: "add_objective", objective: { title: words(3, 120), keyResults: Array.from({ length: 10 }, (_, i) => ({ label: words(i, 120), measure: { kind: "hold_max", libraryIds: ["wallSit", "sidePlank"] }, target: 30 + i })) } },
+      { change: "add_key_result", objectiveId: legs.id, keyResult: { label: words(2, 120), measure: { kind: "hold_max", libraryIds: ["sidePlank"] }, target: 45 } },
+      { change: "retarget", keyResultId: legs.keyResults[0]!.id, target: 90 },
+      { change: "retarget", keyResultId: legs.keyResults[1]!.id, target: 91 },
+      { change: "redate", keyResultId: legs.keyResults[2]!.id, dueDate: addDays(today, 90) },
+      { change: "retire", objectiveId: spare.id, status: "dropped" },
+    ];
+    for (const [i, c] of changes.entries()) {
+      const r = await allTools().find((t) => t.name === "propose_objective")!.run(octx(`toolu_obj_${i}`), { ...c, why, basis: "stand" });
+      if (isToolErr(r)) throw new Error(`5o: propose_objective refused: ${r.error} — ${r.why}`);
+    }
+    const proposalId = designProposalId(runId);
+    await dbo.update(schema.coachProposals).set({ status: "pending" }).where(and(eq(schema.coachProposals.id, proposalId), eq(schema.coachProposals.userId, uid)));
+    images.set("objectives", imageOf(dbo));
+    clientOf(dbo).close();
+    vi.stubGlobal("fetch", (async () => new Response("{}", { status: 404 })) as typeof fetch);
+    const chunkSamples: Sample[][] = [];
+    const chunkFirst: number[] = [];
+    for (let i = 0; i < WARMUP + RUNS; i++) {
+      const x = open(images.get("objectives")!);
+      let remaining: string[] | null = null;
+      for (let k = 0; remaining === null || remaining.length > 0; k++) {
+        if (k >= MAX_LOOP_ITERATIONS) throw new Error("the objective changes' approve never finished");
+        const pending: Array<Promise<unknown>> = [];
+        const executionCtx = { waitUntil: (pr: Promise<unknown>) => void pending.push(pr), passThroughOnException: () => undefined, props: {} };
+        x.clock.reset();
+        const t = performance.now();
+        const res = await x.coach.request(
+          `/api/coach/proposals/${proposalId}/approve`,
+          { method: "POST", headers: { Cookie: cookieo, "Content-Type": "application/json" }, body: JSON.stringify(remaining ? { opIds: remaining } : {}) },
+          env,
+          executionCtx as never,
+        );
+        await Promise.all(pending);
+        const total = performance.now() - t;
+        const s: Sample = { js: total - x.clock.sqlite(), wire: x.clock.wire(), sqlite: x.clock.sqlite(), statements: x.clock.statements() };
+        if (res.status !== 200) throw new Error(`5o: approve answered ${res.status}: ${await res.text()}`);
+        const body = (await res.json()) as { remaining: string[]; refused: unknown[] };
+        if (body.refused.length) throw new Error(`5o: refused ${JSON.stringify(body.refused)}`);
+        remaining = body.remaining;
+        if (i === 0) chunkFirst[k] = s.js;
+        if (i >= WARMUP) (chunkSamples[k] ??= []).push(s);
+      }
+      x.close();
+    }
+    vi.unstubAllGlobals();
+    chunkSamples.forEach((samples, k) => {
+      shapes.set(`5o.${k + 1}`, { label: `5o. objective changes' approve at the cap, request ${k + 1} of ${chunkSamples.length}`, samples, first: chunkFirst[k]!, budget: 4 });
+    });
+  }
+
   // ── 6: the objectives board over two years ──
   {
     const db6 = makeTestDb();
@@ -1629,7 +1709,7 @@ function unscalable(): string | null {
 const KNOWN_OVER: Readonly<Record<string, { measured: number; ceiling: number; waitsOn: string }>> = {};
 
 /** Shapes measured as a run of requests — the queued calls' steps, the approve's chunks — each `${id}.${k}`. */
-const GROUPS = ["1c", "1d.q", "2a.q", "2d", "5b", "5p", "5c"] as const;
+const GROUPS = ["1c", "1d.q", "2a.q", "2d", "5b", "5p", "5c", "5o"] as const;
 const inGroup = (id: string) => [...shapes.keys()].filter((k) => k.startsWith(`${id}.`));
 
 /** The shape `id` — or, for a group, every request of it — under its budget at p50 and the limit at p95 (scaled); a
@@ -1665,6 +1745,8 @@ describe("the coach designer's requests within the Workers free plan's CPU", () 
     expect(inGroup("5p").length).toBeGreaterThanOrEqual(3);
     // Ten corrections at the caps and their pins card: CORRECTIONS_PER_REQUEST a request, then the pins.
     expect(inGroup("5c").length).toBeGreaterThanOrEqual(2);
+    // OBJECTIVE_CHANGES_MAX objective changes (audit fixes, E6): one request.
+    expect(inGroup("5o").length).toBe(1);
     expect(inGroup("8").map((k) => k.slice(2)).sort()).toEqual(allTools().map((t) => t.name).sort());
   });
 
@@ -1677,7 +1759,7 @@ describe("the coach designer's requests within the Workers free plan's CPU", () 
     }
   });
 
-  for (const id of ["1a", "1b", "1c", "1d", "1d.q", "8z.unknown", "8z.away", "2a", "2a.q", "2b", "2b.q", "2c", "2d", "2e", "3", "4b", "4c", "4d", "5a", "5b", "5p", "5c", "6", "7", "9a", "9b", "9c", "10a", "10b", "11a", "11b", "12", "13a", "13b"]) {
+  for (const id of ["1a", "1b", "1c", "1d", "1d.q", "8z.unknown", "8z.away", "2a", "2a.q", "2b", "2b.q", "2c", "2d", "2e", "3", "4b", "4c", "4d", "5a", "5b", "5p", "5c", "5o", "6", "7", "9a", "9b", "9c", "10a", "10b", "11a", "11b", "12", "13a", "13b"]) {
     const over = KNOWN_OVER[id];
     it(
       over

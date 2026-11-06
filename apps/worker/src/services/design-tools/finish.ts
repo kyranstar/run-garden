@@ -22,9 +22,10 @@
  * as the designer's `final`, which its set's outcome quotes); the trail shows the workout it designed, by its title.
  *
  * A CHALLENGE'S ANSWER IS NEVER CUT (audit fixes 2026-11-06, E2; the owner's rule: never truncate a reasonable model call).
- * A main run answering the athlete's own words — a question, or a challenge to a call, beside a suggestion or not — keeps
- * its line to ANSWER_MAX: the run's request is read in the finish's one statement (a quick tap, an auto run or a "Fit them
- * in" run has no words of theirs, and keeps LINE_MAX).
+ * A main run answering the athlete's challenge to a call — it says so (`challenge: true`), and the run answers the
+ * athlete's own words (its request, read in the finish's one statement; never a quick tap, an auto run or a "Fit them in"
+ * run) — keeps its line to ANSWER_MAX beside a suggestion, and the loop stores it whole (its receipt's `challenge`). An
+ * ordinary suggestion's line keeps LINE_MAX.
  *
  * Review comes before the athlete sees anything (spec §5): the loop's finish makes the main run's proposal `pending`
  * only when every workout in it carries its review; one that still has an unreviewed workout stays `unreviewed` —
@@ -56,7 +57,7 @@ export const LINE_MAX = 300;
 export const ANSWER_MAX = 900;
 const KEPT_BACK = " (Not reviewed yet — kept back until it is.)";
 
-const input = z.object({ summary: z.string().trim().min(1).optional() }).strict();
+const input = z.object({ summary: z.string().trim().min(1).optional(), challenge: z.boolean().optional() }).strict();
 
 /** A set's designer's line on the trail: the workout it designed, by its title (M3). */
 export const designedLine = (title: string | null): string => (title ? `Designed “${title}”.` : "Finished without a workout.");
@@ -82,8 +83,9 @@ export const finish: DesignTool = {
       summary: {
         type: "string",
         minLength: 1,
-        description: `The main coach's line for the athlete: ${capInWords(LINE_MAX)} — a longer one is cut at its last sentence that fits; an answer to their words (a question, or a challenge, beside a suggestion or not), ${capInWords(ANSWER_MAX)}. A set's designer: optional, for the main coach only.`,
+        description: `The main coach's line for the athlete: ${capInWords(LINE_MAX)} — a longer one is cut at its last sentence that fits; an answer to a question, with nothing suggested, or to a challenge (challenge: true), ${capInWords(ANSWER_MAX)}. A set's designer: optional, for the main coach only.`,
       },
+      challenge: { type: "boolean", description: "The main coach: true when this answers the athlete's challenge to a call — kept whole up to the answer's cap." },
     },
     additionalProperties: false,
   },
@@ -149,16 +151,22 @@ export const finish: DesignTool = {
     // Kept back while any workout lacks its review, or has one under way: the loop's finish makes the rest pending
     // (coach-runs.ts, the same guard).
     const unreviewed = row.status === "unreviewed" && (ops.some((o) => !o.review) || reviewRunning(ops));
-    // An answer to the athlete's own words — a challenge's above all — keeps its whole answer (E2): never a "Fit them in"
-    // run's, which answers the app.
-    const room = ctx.run.role === "main" && !ctx.run.savesBatchId && typeof row.asked === "string" ? ANSWER_MAX : LINE_MAX;
+    // A challenge's answer keeps its whole answer (E2): said so, and answering the athlete's own words — never a "Fit them
+    // in" run's, which answers the app.
+    const challenge = ctx.run.role === "main" && p.challenge === true && !ctx.run.savesBatchId && typeof row.asked === "string";
+    const room = challenge ? ANSWER_MAX : LINE_MAX;
     const line = unreviewed && !designer ? `${lineOf(room - KEPT_BACK.length)}${KEPT_BACK}` : lineOf(room);
     // What the proposal is once this finish lands: the loop's finish makes a main run's fully reviewed one pending.
     const promoted = ctx.run.role === "main" && row.status === "unreviewed" && all.length > 0 && ops.every((o) => o.review) && !reviewRunning(ops);
     return {
       data: { proposalId, ...(unreviewed ? { unreviewed: true } : {}) },
       summary: line,
-      receipt: { final: true, proposal: { id: proposalId, status: promoted ? "pending" : row.status, workouts: ops.length, ...(changes > 0 ? { changes } : {}), ...(plans > 0 ? { plans } : {}), ...(programmes > 0 ? { programmes } : {}), ...(pins > 0 ? { pins } : {}) } },
+      receipt: {
+        final: true,
+        // Its line answers the athlete's challenge (E2): the loop keeps it whole to ANSWER_MAX where the athlete reads it.
+        ...(challenge ? { challenge: true } : {}),
+        proposal: { id: proposalId, status: promoted ? "pending" : row.status, workouts: ops.length, ...(changes > 0 ? { changes } : {}), ...(plans > 0 ? { plans } : {}), ...(programmes > 0 ? { programmes } : {}), ...(pins > 0 ? { pins } : {}) },
+      },
     };
   },
 };

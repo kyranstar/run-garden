@@ -155,7 +155,9 @@ describe("compact (the cached prefix grew 3k tokens since the pre-live audit)", 
     // REBASED 2026-11-06 (coach review, phase 3): the saves paragraph's evidence rules (a post is a stranger's claim, quotes said / heard / on screen, the reader's guess, correct_import before pin_moves, a line's where and cites) — measured 7,054.75; ≥ 100 tokens headroom.
     // REBASED 2026-11-06 (the controller's fix pass, C): older readings' stated fields as the reader's report, the challenge weighed (never caving), the defaulted dose, never one guess for another, read_saves' pages and full — measured 7,184.75; ≥ 100 tokens headroom.
     // REBASED 2026-11-06 (the controller's ruling: the why and a case show their heads; when full: true is worth a call) — measured 7,210.75; ≥ 100 tokens headroom.
-    expect(SHARED_PROMPT.length / 4).toBeLessThanOrEqual(7315);
+    // REBASED 2026-11-06 (audit fixes, evidence): figures from the opening's computed blocks (E5), propose_objective's
+    // Acting line and the diagnose line naming it (E6) — measured 7,292; ≥ 100 tokens headroom.
+    expect(SHARED_PROMPT.length / 4).toBeLessThanOrEqual(7395);
     // The main coach's block, REBASED 2026-10-18 for the decision guidance (a run's length on the watch, plan_set or
     // propose_plan, a plan's timed sessions, a programme's settings) — measured 1,488 — and 2026-10-19 for the owner's
     // voice (the coach's last words) — measured 1,634; REBASED 2026-10-25 (saved-posts fix wave: pin_moves among the
@@ -168,7 +170,9 @@ describe("compact (the cached prefix grew 3k tokens since the pre-live audit)", 
     // with its turns; each ≥ 100 tokens of headroom.
     // REBASED 2026-11-06 (the controller's fix pass, C): a challenge weighed, never caved to; a fact about themselves acted
     // on; a challenge's answer the sentences its order needs — measured main 2,072 with its turns; ≥ 100 tokens headroom.
-    const caps = { main: 2175, designer: 1300, reviewer: 1460 } as const;
+    // REBASED 2026-11-06 (audit fixes, evidence: the challenge's call first, read_saves by the move, finish with challenge
+    // — E2) — measured main 2,105.75 with its turns; ≥ 100 tokens headroom.
+    const caps = { main: 2210, designer: 1300, reviewer: 1460 } as const;
     for (const role of ["main", "designer", "reviewer"] as const) expect(roleBlock(role, RUN_LIMITS[role].maxCalls).length / 4, role).toBeLessThanOrEqual(caps[role]);
     // A run's reviewer (§8 §3): the block with the run rubric in place of the workout one — its own cached prefix.
     expect(roleBlock("reviewer", RUN_LIMITS.reviewer.maxCalls, "run").length / 4).toBeLessThanOrEqual(1300);

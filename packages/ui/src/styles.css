@@ -12014,6 +12014,21 @@ a.stu-tpl-open:focus-visible::before {
   font-size: var(--text-xs);
   color: var(--ink-soft);
 }
+/* The coach's changes to the athlete's objectives (audit fixes, E6): each before → after, the why quiet beneath it. */
+.coach-objective-change {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-1);
+}
+.coach-objective-line,
+.coach-objective-why {
+  margin: 0;
+  overflow-wrap: anywhere;
+}
+.coach-objective-why {
+  font-size: var(--text-xs);
+  color: var(--ink-soft);
+}
 .coach-changes-closer .coach-pc {
   padding: 0;
   border: 0;

@@ -189,6 +189,17 @@ describe("R3: the last turn never loses a finished design", () => {
     expect(last.payload).toMatchObject({ proposalId: designProposalId(runId), text: long });
   });
 
+  it("a challenge's answer (finish's challenge: true, the athlete's words) is stored whole up to ANSWER_MAX where the athlete reads it (audit fixes, E2)", async () => {
+    const { userId } = await seedRichAthlete(db);
+    const runId = await nowRun(userId, 2);
+    const long = `${"I'm holding the calm hips session: your holds have been clean all week. ".repeat(8)}Say so if you still want it out.`.slice(0, 600);
+    const { deps } = scripted([t(propose("Calm hips")), t(submit(verdict(4))), t(use("finish", { summary: long, challenge: true }))]);
+    expect((await drive(userId, runId, deps)).at(-1)!.status).toBe("finished");
+    const last = (await trail(runId)).at(-1)!;
+    expect(last.summary).toBe(long);
+    expect(last.payload).toMatchObject({ proposalId: designProposalId(runId), receipt: { final: true, challenge: true } });
+  });
+
   it("a tool refused on the last call ends the run as a finish in words would — the model's words, the proposal promoted — never a stop", async () => {
     const { userId } = await seedRichAthlete(db);
     const runId = await nowRun(userId, 2);

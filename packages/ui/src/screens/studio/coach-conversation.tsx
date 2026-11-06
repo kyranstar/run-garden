@@ -618,7 +618,8 @@ function TurnCards({ cards, latest, today }: { cards: readonly CoachConversation
         let body;
         // A whole plan (§8 §5): its own card, closed as one line of what came of it when an older turn's is done — a
         // programme change's and the moves in rotation's (saved-posts import, Task 18) the same card in their own words.
-        if (card.kind === "plan" || card.kind === "programme" || card.kind === "pins" || card.kind === "corrections") body = <PlanCard card={card} closed={!latest && !cardIsOpen(card)} />;
+        if (card.kind === "plan" || card.kind === "programme" || card.kind === "pins" || card.kind === "corrections" || card.kind === "objectives")
+          body = <PlanCard card={card} closed={!latest && !cardIsOpen(card)} />;
         else if (!latest && !cardIsOpen(card)) body = <ClosedCard card={card} today={today} part={part} />;
         else if (card.kind === "plan_changes") body = <PlanChangesCard card={card} today={today} />;
         // A designed run (§8 §3): the workout card, its body the run's steps and its watch line (the line's `run`).

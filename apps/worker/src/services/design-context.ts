@@ -403,7 +403,7 @@ interface Reads {
 
 /** An op still the athlete's to decide (coach-runs.ts' alsoOpen rule, R2): undecided, refused at approval, or being applied. */
 const OPEN_OP = sql.raw(
-  `json_extract(o.value, '$.kind') IN ('doc_workout', 'plan_adjust', 'plan_structure', 'programme_change', 'move_pins', 'import_correction') ` +
+  `json_extract(o.value, '$.kind') IN ('doc_workout', 'plan_adjust', 'plan_structure', 'programme_change', 'move_pins', 'import_correction', 'objective_change') ` +
     `AND (json_extract(o.value, '$.outcome') IS NULL OR json_extract(o.value, '$.outcome.status') IN ('refused', 'applying'))`,
 );
 

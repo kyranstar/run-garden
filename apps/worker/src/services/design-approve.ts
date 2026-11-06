@@ -202,10 +202,12 @@ import {
   isProgrammeChangeOp,
   isImportCorrectionOp,
   isMovePinsOp,
+  isObjectiveChangeOp,
   pinsCardLinesOf,
   sameSetting,
   type ImportCorrectionOp,
   type MovePinsOp,
+  type ObjectiveChangeOp,
   type PlanAdjustOp,
   type PlanChange,
   type PlanStructureOp,
@@ -217,6 +219,7 @@ import { updateProgram } from "./programs.js";
 import { releaseFitStarts } from "./saves-batches.js";
 import { correctionCostOf, CORRECTIONS_FIXED, CORRECTIONS_PER_REQUEST, correctionsReadSql, correctionStateOf, judgeCorrection } from "./import-corrections.js";
 import { runAtomically, runAtomicallyClaim, type AtomicStatement } from "./db.js";
+import { judgeObjectiveChange, OBJECTIVE_CHANGES_FIXED, objectiveChangeCostOf, objectivesReadSql, objectiveStateOf, STALE_OBJECTIVE_WHY } from "./objective-changes.js";
 import { decisionTrailStatement } from "./coach-trail.js";
 
 // ── Shapes ──────────────────────────────────────────────────────────────────────────────────────────────────────────
@@ -248,7 +251,9 @@ export type RefusalCode =
   /** A correction to imported data (import trail phase 3): what it corrects is gone, or the corrected move or reading
    * doesn't pass the library's rules. */
   | "not_a_target"
-  | "invalid";
+  | "invalid"
+  /** An objective change (audit fixes, E6): the objective holds the most key results already. */
+  | "full";
 
 /**
  * Why a planned workout can't change (`not_editable`): `revisability`'s reason (@rg/domain; workout-editability spec §3) —
@@ -361,11 +366,18 @@ export type CorrectionOutcome =
 /** A correction, as a proposal holds it once the athlete has seen it. */
 export type DesignedCorrectionOp = ImportCorrectionOp & { outcome?: CorrectionOutcome };
 
+/** How a change to the athlete's objectives ended (audit fixes, E6): applied (its op is its log: before, after, why, and
+ * this time), claimed while an approve writes it, or as any op ends (refused `stale` when the athlete changed it since). */
+export type ObjectiveChangeOutcome = { status: "applied"; at: string } | { status: "applying"; at: string } | Exclude<OpOutcome, { status: "applied" }>;
+
+/** An objective change, as a proposal holds it once the athlete has seen it. */
+export type DesignedObjectiveOp = ObjectiveChangeOp & { outcome?: ObjectiveChangeOutcome };
+
 /** Any kind of a designed proposal's ops. */
-export type AnyDesignedOp = DesignedOp | DesignedPlanOp | DesignedStructureOp | DesignedProgrammeOp | DesignedPinsOp | DesignedCorrectionOp;
+export type AnyDesignedOp = DesignedOp | DesignedPlanOp | DesignedStructureOp | DesignedProgrammeOp | DesignedPinsOp | DesignedCorrectionOp | DesignedObjectiveOp;
 
 /** Any op's outcome. */
-type AnyOutcome = OpOutcome | PlanOpOutcome | PlanStructureOutcome | ProgrammeChangeOutcome | MovePinsOutcome | CorrectionOutcome;
+type AnyOutcome = OpOutcome | PlanOpOutcome | PlanStructureOutcome | ProgrammeChangeOutcome | MovePinsOutcome | CorrectionOutcome | ObjectiveChangeOutcome;
 
 export type DesignProposalStatus = "pending" | "partially_approved" | "approved" | "declined" | "superseded";
 
@@ -424,8 +436,8 @@ export function programmeOpsOf(ops: unknown): DesignedProgrammeOp[] {
 /** A whole plan change, a programme change or the moves in rotation that has started (claimed, a part applied): never
  * declined, never expired under the athlete — Approve finishes it. */
 export const planStarted = (op: unknown): boolean =>
-  (isPlanStructureOp(op) || isProgrammeChangeOp(op) || isMovePinsOp(op) || isImportCorrectionOp(op)) &&
-  (op as DesignedStructureOp | DesignedProgrammeOp | DesignedPinsOp | DesignedCorrectionOp).outcome?.status === "applying";
+  (isPlanStructureOp(op) || isProgrammeChangeOp(op) || isMovePinsOp(op) || isImportCorrectionOp(op) || isObjectiveChangeOp(op)) &&
+  (op as DesignedStructureOp | DesignedProgrammeOp | DesignedPinsOp | DesignedCorrectionOp | DesignedObjectiveOp).outcome?.status === "applying";
 
 /** Every op of a designed proposal the athlete decides: its workouts, its changes and its plan changes, in the proposal's
  * order. */
@@ -924,6 +936,8 @@ export interface ApproveAnswer {
   planned?: Planned[];
   /** The corrections to imported data it applied (import trail phase 3): each its line. */
   corrected?: Planned[];
+  /** The changes to the athlete's objectives it applied (audit fixes, E6): each its line, before → after. */
+  objectives?: Planned[];
   /** The changes to the moves in rotation this request applied (Task 18), each in one line. Present only when there are
    * some. */
   pinned?: Planned[];
@@ -1135,7 +1149,7 @@ export async function approveDesignOps(
     const was = op.outcome?.status;
     // A whole plan change or a programme change (§8 §5): its chunks are its applier's own to find done (each retried does
     // nothing twice). The moves in rotation (Task 18) too: written again, the same.
-    if (isPlanStructureOp(op) || isProgrammeChangeOp(op) || isMovePinsOp(op) || isImportCorrectionOp(op)) {
+    if (isPlanStructureOp(op) || isProgrammeChangeOp(op) || isMovePinsOp(op) || isImportCorrectionOp(op) || isObjectiveChangeOp(op)) {
       if (was === "declined" || was === "superseded") settled.push({ opId: op.id, outcome: was });
       else todo.push(op);
       continue;
@@ -1377,6 +1391,55 @@ export async function approveDesignOps(
     if (full) break;
   }
 
+  // THE CHANGES TO THE ATHLETE'S OBJECTIVES (audit fixes, E6), after the programme changes: ONLY here, on the athlete's
+  // tap (principles §2.8). Claimed together (one write), their objectives read together (one statement), then each in ONE
+  // atomic write gated on the value the coach read and on its claim, the state change last (`runAtomicallyClaim`) —
+  // refused `stale` when the athlete changed it since, recorded applied with nothing written when it is already so.
+  const goalOps = todo.filter(isObjectiveChangeOp) as DesignedObjectiveOp[];
+  if (full) remaining.push(...goalOps.map((g) => g.id));
+  const goalBatch: DesignedObjectiveOp[] = [];
+  for (const [i, g] of (full ? [] : goalOps).entries()) {
+    const claim = g.outcome?.status === "applying" ? g.outcome : null;
+    if (claim && claimFresh(claim, ctx.now)) {
+      inFlight.push(g.id);
+      continue;
+    }
+    const cost = (goalBatch.length === 0 ? OBJECTIVE_CHANGES_FIXED : 0) + objectiveChangeCostOf(g);
+    if (!first && cost > left) {
+      remaining.push(...goalOps.slice(i).filter((x) => !inFlight.includes(x.id)).map((x) => x.id));
+      full = true;
+      break;
+    }
+    first = false;
+    left -= cost;
+    goalBatch.push(g);
+  }
+  const goalsChanged: Planned[] = [];
+  if (goalBatch.length > 0) {
+    const claimOps = withOutcomes(current.ops, new Map(goalBatch.map((g) => [g.id, { status: "applying" as const, at: ctx.now }])));
+    const claimStatus = statusOfOps(allDesignedOps(claimOps));
+    const claimedAt = await writeOps(db, userId, current, claimOps, claimStatus, ctx.now);
+    current = { ...current, ops: claimOps, status: claimStatus, resolvedAt: claimedAt };
+    const [states] = (await db.all(objectivesReadSql(userId, goalBatch))) as Array<Record<string, unknown>>;
+    for (const [i, g] of goalBatch.entries()) {
+      const asRead = claimHeld(userId, current.id, current.status, g.id, ctx.now);
+      const verdict = judgeObjectiveChange(db, userId, g, objectiveStateOf(states?.[`s${i}`]), { now: ctx.now, asRead });
+      if (verdict.status === "made") {
+        outcomes.set(g.id, { status: "applied", at: ctx.now });
+        goalsChanged.push({ opId: g.id, summary: g.line });
+      } else if (verdict.status === "refused") {
+        refused.push({ opId: g.id, error: verdict.error, why: verdict.why });
+        outcomes.set(g.id, { status: "refused", at: ctx.now, error: verdict.error, why: verdict.why });
+      } else if ((await runAtomicallyClaim(db, verdict.statements)) > 0) {
+        outcomes.set(g.id, { status: "applied", at: ctx.now });
+        goalsChanged.push({ opId: g.id, summary: g.line });
+      } else {
+        refused.push({ opId: g.id, error: "stale", why: STALE_OBJECTIVE_WHY });
+        outcomes.set(g.id, { status: "refused", at: ctx.now, error: "stale", why: STALE_OBJECTIVE_WHY });
+      }
+    }
+  }
+
   // THE CORRECTIONS TO IMPORTED DATA (import trail phase 3, §8.4), after the programme changes and before the pins: a
   // move's corrected dose is its record's before its pins are written. Claimed together (one write), their targets read
   // together (one statement), then each in ONE atomic write — its row and its trail events gated on the value it
@@ -1511,6 +1574,7 @@ export async function approveDesignOps(
     ...(coachDrain ? { coachDrain: true as const } : {}),
     ...(planned.length > 0 ? { planned } : {}),
     ...(corrected.length > 0 ? { corrected } : {}),
+    ...(goalsChanged.length > 0 ? { objectives: goalsChanged } : {}),
     ...(pinned.length > 0 ? { pinned } : {}),
     ...(inFlight.length > 0 ? { inFlight } : {}),
   };
@@ -1526,7 +1590,7 @@ export async function approveDesignOps(
 
   // One receipt once nothing of the request remains — nor of another applying it (a change in flight: the approve that
   // finishes it writes it) — when it changed something the thread has not been told.
-  const news = applied.length > 0 || changed.length > 0 || planned.length > 0 || pinned.length > 0 || corrected.length > 0 || refused.some((r) => {
+  const news = applied.length > 0 || changed.length > 0 || planned.length > 0 || pinned.length > 0 || corrected.length > 0 || goalsChanged.length > 0 || refused.some((r) => {
     const before = ops.find((o) => opIdOf(o) === r.opId)?.outcome;
     return before?.status !== "refused" || before.error !== r.error;
   });
@@ -1908,8 +1972,17 @@ function approvedReceipt(title: string, ops: readonly AnyDesignedOp[], library: 
   let declined = 0;
   let superseded = 0;
   let fixed = 0;
+  let goals = 0;
   for (const any of ops) {
     if (any.outcome?.status === "superseded") superseded += 1;
+    // A change to the athlete's objectives (E6): counted, its line kept in the op (the thread's coach reads the receipt).
+    if (isObjectiveChangeOp(any)) {
+      const g = (any as DesignedObjectiveOp).outcome;
+      if (g?.status === "applied") goals += 1;
+      else if (g?.status === "refused") not.push(`${any.line} (${g.why})`);
+      else if (g?.status === "declined") declined += 1;
+      continue;
+    }
     // A correction to imported data (phase 3): counted, never its words (a post's reading names the move).
     if (isImportCorrectionOp(any)) {
       const g = (any as DesignedCorrectionOp).outcome;
@@ -1967,8 +2040,9 @@ function approvedReceipt(title: string, ops: readonly AnyDesignedOp[], library: 
     } else if (o?.status === "declined") declined += 1;
   }
   if (fixed > 0) done.push(`${fixed} correction${fixed === 1 ? "" : "s"} to your saves`);
-  // The corrections count as one line of what was done (never their words).
-  const decided = done.length + (fixed > 1 ? fixed - 1 : 0);
+  if (goals > 0) done.push(`${goals} change${goals === 1 ? "" : "s"} to your objectives`);
+  // The corrections count as one line of what was done (never their words); the objective changes too.
+  const decided = done.length + (fixed > 1 ? fixed - 1 : 0) + (goals > 1 ? goals - 1 : 0);
   const count = decided < ops.length ? ` (${decided} of ${ops.length}${decidedWords(declined, superseded)})` : "";
   return `✓ approved — ${title}${count}: ${done.join("; ")}${not.length ? ` · not approved: ${not.join("; ")}` : ""}`;
 }

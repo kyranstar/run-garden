@@ -61,6 +61,7 @@ const TOOL_WORDS: Record<PromptToolName, string> = {
   change_programme: "the programme's settings",
   pin_moves: "your programme's pool",
   correct_import: "a correction to your saves",
+  propose_objective: "a change to your objectives",
   plan_set: "the plan",
   read_set: "the plan",
   drop_workout: "dropping a workout",
