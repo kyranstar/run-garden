@@ -117,7 +117,11 @@ const BEFORE = { tools: 34_935, shared: 20_450, main: 4_586 };
  * objectives, its schema (tools 44,501 → 46,227 with pin_moves' headline, its where dropped and finish's challenge flag)
  * and its Acting and diagnose lines (shared 28,922 → 29,168; main 8,394 → 8,423) — measured 23,847; held with 403
  * characters (~115 tokens) of headroom. */
-const GROWTH_MAX_CHARS = 24_250;
+/* REBASED 2026-11-06 (audit fixes, safety, on fix-evidence's main): a sore area among the hard rules and the fatal ones,
+ * record_answer a safety step, the first exposure's cap a cost when insisted (shared 29,168 → 29,548); correct_import's
+ * description naming contraction, conditions, regions, patterns and retire (tools 46,227 → 46,373) — measured 24,373;
+ * held with 407 characters (~116 tokens) of headroom. */
+const GROWTH_MAX_CHARS = 24_780;
 
 const toolsSent = () => JSON.stringify(allTools().map((t) => ({ name: t.name, description: t.description, input_schema: t.inputSchema })));
 

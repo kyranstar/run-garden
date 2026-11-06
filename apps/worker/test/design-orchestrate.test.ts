@@ -1418,8 +1418,8 @@ describe("the prompt says how a set works", () => {
     // REBASED 2026-11-06 (coach review, phase 3): the saves paragraph's evidence rules (a post is a stranger's claim, quotes said / heard / on screen, the reader's guess, correct_import before pin_moves, a line's where and cites) — measured 7,054.75; ≥ 100 tokens headroom.
     // REBASED 2026-11-06 (the controller's fix pass, C): older readings' stated fields as the reader's report, the challenge weighed (never caving), the defaulted dose, never one guess for another, read_saves' pages and full — measured 7,184.75; ≥ 100 tokens headroom.
     // REBASED 2026-11-06 (the controller's ruling: the why and a case show their heads; when full: true is worth a call) — measured 7,210.75; ≥ 100 tokens headroom.
-    // REBASED 2026-11-06 (audit fixes, safety): a sore area among the hard rules and the fatal ones, record_answer a safety step, the first exposure's cap a cost when insisted (S1, S5) — measured 7,305.75; ≥ 100 tokens headroom.
-    expect(SHARED_PROMPT.length / 4).toBeLessThanOrEqual(7410);
+    // REBASED 2026-11-06 (audit fixes, safety, on fix-evidence's main): a sore area among the hard rules and the fatal ones, record_answer a safety step, the designer's sore-area line, the first exposure's cap a cost when insisted (S1, S5) — measured 7,387; ≥ 100 tokens headroom.
+    expect(SHARED_PROMPT.length / 4).toBeLessThanOrEqual(7490);
     // REBASED 2026-10-19 for the owner's voice (the coach's last words, in the main block): measured 1,620 without its
     // turns — the same cap as design-prompt.test.ts's and design-fix13's; REBASED 2026-10-25 (saved-posts fix wave:
     // pin_moves among the scope's choices) — measured 1,653.25 without its turns.
@@ -1429,7 +1429,9 @@ describe("the prompt says how a set works", () => {
     // 1,994.5 without its turns; ≥ 100 tokens of headroom.
     // REBASED 2026-11-06 (the controller's fix pass, C): a challenge weighed, never caved to — measured 2,058.5 without its
     // turns; ≥ 100 tokens of headroom.
-    expect(roleBlock("main").length / 4).toBeLessThanOrEqual(2160);
+    // REBASED 2026-11-06 (audit fixes, safety, on fix-evidence's main): its challenge lines (E2) measured 2,092.25 without
+    // its turns — under 100 tokens of headroom against 2,160; re-pinned with ≥ 100.
+    expect(roleBlock("main").length / 4).toBeLessThanOrEqual(2195);
   });
 });
 

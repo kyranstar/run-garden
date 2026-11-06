@@ -158,7 +158,8 @@ describe("compact (the cached prefix grew 3k tokens since the pre-live audit)", 
     // REBASED 2026-11-06 (the controller's ruling: the why and a case show their heads; when full: true is worth a call) — measured 7,210.75; ≥ 100 tokens headroom.
     // REBASED 2026-11-06 (audit fixes, evidence): figures from the opening's computed blocks (E5), propose_objective's
     // Acting line and the diagnose line naming it (E6) — measured 7,292; ≥ 100 tokens headroom.
-    expect(SHARED_PROMPT.length / 4).toBeLessThanOrEqual(7395);
+    // REBASED 2026-11-06 (audit fixes, safety, on fix-evidence's main): a sore area among the hard rules and the fatal ones, record_answer a safety step, the designer's sore-area line, the first exposure's cap a cost when insisted (S1, S5) — measured 7,387; ≥ 100 tokens headroom.
+    expect(SHARED_PROMPT.length / 4).toBeLessThanOrEqual(7490);
     // The main coach's block, REBASED 2026-10-18 for the decision guidance (a run's length on the watch, plan_set or
     // propose_plan, a plan's timed sessions, a programme's settings) — measured 1,488 — and 2026-10-19 for the owner's
     // voice (the coach's last words) — measured 1,634; REBASED 2026-10-25 (saved-posts fix wave: pin_moves among the
@@ -173,7 +174,9 @@ describe("compact (the cached prefix grew 3k tokens since the pre-live audit)", 
     // on; a challenge's answer the sentences its order needs — measured main 2,072 with its turns; ≥ 100 tokens headroom.
     // REBASED 2026-11-06 (audit fixes, evidence: the challenge's call first, read_saves by the move, finish with challenge
     // — E2) — measured main 2,105.75 with its turns; ≥ 100 tokens headroom.
-    const caps = { main: 2210, designer: 1300, reviewer: 1460 } as const;
+    // REBASED 2026-11-06 (audit fixes, safety): the reviewer's block names the only two checks no insistence moves (S5) —
+    // measured 1,431.75 with its turns; ≥ 100 tokens headroom. The designer's sore-area line (S1): 328.25, under its cap.
+    const caps = { main: 2210, designer: 1300, reviewer: 1535 } as const;
     for (const role of ["main", "designer", "reviewer"] as const) expect(roleBlock(role, RUN_LIMITS[role].maxCalls).length / 4, role).toBeLessThanOrEqual(caps[role]);
     // A run's reviewer (§8 §3): the block with the run rubric in place of the workout one — its own cached prefix.
     expect(roleBlock("reviewer", RUN_LIMITS.reviewer.maxCalls, "run").length / 4).toBeLessThanOrEqual(1300);
