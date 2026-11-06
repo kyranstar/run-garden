@@ -14,7 +14,7 @@ import { and, eq, getTableColumns, isNull, sql, type SQL } from "drizzle-orm";
 import { schema } from "@rg/database";
 import { newId, todayInZone } from "@rg/domain";
 import type { ExerciseRecord } from "@rg/exercise-library";
-import { batchNotice, keepInsight, nearDuplicateOf, type FitChoice, type NearCandidate, type SaveBatchInsightDto } from "@rg/saves";
+import { batchNotice, INSIGHT_SCOPES, keepInsight, nearDuplicateOf, type FitChoice, type InsightScope, type NearCandidate, type SaveBatchInsightDto } from "@rg/saves";
 import type { Env } from "../env.js";
 import { forgetAccountLibrary } from "./account-library.js";
 import type { SavesSkip } from "./design-tools/types.js";
@@ -375,15 +375,15 @@ function noteAt(): SQL {
  * post's first INSIGHTS_PER_POST places. One rule for what Save keeps, what the batch page shows and what the coach
  * reads. Its tables go by their own aliases (`ins_p`, `ins_j`), so it reads the same inside any select.
  */
-export function insightRowsSql(userId: string, keptPosts: SQL): SQL {
+export function insightRowsSql(userId: string, keptPosts: SQL, o: { scoped?: boolean } = {}): SQL {
   return sql`select ins_p.id as post_id, ins_p.url as url, coalesce(nullif(ins_p.creator_handle, ''), ins_p.creator_name) as creator,
-      ins_p.first_seen_at as seen, ins_j.key as idx, trim(${INSIGHT_TEXT}) as body,
+      ins_p.first_seen_at as seen, ins_j.key as idx, trim(${INSIGHT_TEXT}) as body, ${INSIGHT_SCOPE} as scope, ${INSIGHT_QUOTE} as quote,
       (select json_group_array(json_extract(ins_m.value, '$.summary')) from json_each(${extractionDoc(sql.raw("ins_p.extraction"))}, '$.moves') ins_m
         where json_type(ins_m.value, '$.summary') = 'text') as sums,
       row_number() over (partition by trim(ins_j.value) order by ins_p.first_seen_at, ins_p.id, ins_j.key) as nth
     from saved_posts ins_p, json_each(${extractionDoc(sql.raw("ins_p.extraction"))}, '$.insights') ins_j
     where ins_p.user_id = ${userId} and ins_p.id in (${keptPosts})
-      and ${GENERAL_INSIGHT} and ins_j.key < ${INSIGHTS_PER_POST} and length(trim(${INSIGHT_TEXT})) between 1 and ${MEMORY_BODY_MAX}`;
+      and ${o.scoped ? sql`1` : GENERAL_INSIGHT} and ins_j.key < ${INSIGHTS_PER_POST} and length(trim(${INSIGHT_TEXT})) between 1 and ${MEMORY_BODY_MAX}`;
 }
 
 /**
@@ -397,17 +397,22 @@ const INSIGHT_TEXT = sql.raw(`(case ins_j.type when 'text' then ins_j.value when
  * what Save keeps, what the batch page shows and what the coach reads. A plain text one is general.
  */
 const GENERAL_INSIGHT = sql.raw(`(ins_j.type = 'text' or (ins_j.type = 'object' and json_extract(ins_j.value, '$.scope') = 'general'))`);
+/** An insight's scope (a text one is general) and the passage behind it, when it gives one (extract-6). */
+const INSIGHT_SCOPE = sql.raw(`(case when ins_j.type = 'object' and json_type(ins_j.value, '$.scope') = 'text' then json_extract(ins_j.value, '$.scope') else 'general' end)`);
+const INSIGHT_QUOTE = sql.raw(`(case when ins_j.type = 'object' and json_type(ins_j.value, '$.quote') = 'text' then json_extract(ins_j.value, '$.quote') end)`);
 
 /**
  * `insightRowsSql`'s first `max` distinct insights, in order, as ONE JSON value (a scalar subquery):
  * `[[postId, url, creator, text, seen, index, [the post's move summaries]]]` — sort by `seen`, `postId`, `index` (`insightsOf`) rather than trust an
  * aggregate's order.
  */
-export function insightsJsonSql(userId: string, keptPosts: SQL, max: number): SQL {
+export function insightsJsonSql(userId: string, keptPosts: SQL, max: number, o: { scoped?: boolean } = {}): SQL {
   // Read past `max`: `keepInsight` drops some after the read, and the cap must count only the kept ones — capping first
   // let ten dose-only insights crowd out ten good ones (audit 2026-11-05, bug 12). `insightsOf(raw, max)` caps.
-  return sql`(select json_group_array(json_array(ins_i.post_id, ins_i.url, ins_i.creator, ins_i.body, ins_i.seen, ins_i.idx, json(ins_i.sums))) from (
-      select * from (${insightRowsSql(userId, keptPosts)}) where nth = 1 order by seen, post_id, idx limit ${max * INSIGHTS_READ_FACTOR}) ins_i)`;
+  // `scoped` (the coach's read, import trail phase 3 §8.1): every scope, each with its scope and quote — Save's memory
+  // and the batch page keep the general ones only.
+  return sql`(select json_group_array(json_array(ins_i.post_id, ins_i.url, ins_i.creator, ins_i.body, ins_i.seen, ins_i.idx, json(ins_i.sums), ins_i.scope, ins_i.quote)) from (
+      select * from (${insightRowsSql(userId, keptPosts, o)}) where nth = 1 order by seen, post_id, idx limit ${max * INSIGHTS_READ_FACTOR}) ins_i)`;
 }
 
 /** How far past its cap `insightsJsonSql` reads, so the cap counts insights `keepInsight` kept. */
@@ -421,8 +426,16 @@ export function insightsOf(raw: unknown, max: number = Infinity): BatchInsight[]
   return survivorsOf(raw, max).map(({ postId, url, creator, text }) => ({ postId, url, creator, text }));
 }
 
+/** An insight as the coach reads it (import trail phase 3, §8.1): with its place in its post, its scope and its quote. */
+export type ScopedInsight = BatchInsight & { idx: number; scope: InsightScope; quote: string | null };
+
+/** `insightsJsonSql(…, { scoped: true })`'s value, as `insightsOf` reads it, each with its place, scope and quote. */
+export function scopedInsightsOf(raw: unknown, max: number = Infinity): ScopedInsight[] {
+  return survivorsOf(raw, max).map(({ postId, url, creator, text, idx, scope, quote }) => ({ postId, url, creator, text, idx, scope, quote }));
+}
+
 /** `insightsOf`'s survivors with their place in their post (`idx`), which Save's memory ids are made of. */
-function survivorsOf(raw: unknown, max: number = Infinity): Array<BatchInsight & { seen: string; idx: number }> {
+function survivorsOf(raw: unknown, max: number = Infinity): Array<BatchInsight & { seen: string; idx: number; scope: InsightScope; quote: string | null }> {
   let list: unknown = raw;
   if (typeof raw === "string") {
     try {
@@ -432,11 +445,14 @@ function survivorsOf(raw: unknown, max: number = Infinity): Array<BatchInsight &
     }
   }
   if (!Array.isArray(list)) return [];
-  const rows = list.flatMap((x): Array<BatchInsight & { seen: string; idx: number }> => {
-    const [postId, url, creator, text, seen, idx, sums] = Array.isArray(x) ? (x as unknown[]) : [];
+  const rows = list.flatMap((x): Array<BatchInsight & { seen: string; idx: number; scope: InsightScope; quote: string | null }> => {
+    const [postId, url, creator, text, seen, idx, sums, scope, quote] = Array.isArray(x) ? (x as unknown[]) : [];
     const summaries = Array.isArray(sums) ? sums.filter((v): v is string => typeof v === "string") : [];
     return typeof postId === "string" && typeof text === "string" && keepInsight(text, summaries)
-      ? [{ postId, url: textOrNull(url), creator: textOrNull(creator), text, seen: textOrNull(seen) ?? "", idx: typeof idx === "number" ? idx : 0 }]
+      ? [{
+          postId, url: textOrNull(url), creator: textOrNull(creator), text, seen: textOrNull(seen) ?? "", idx: typeof idx === "number" ? idx : 0,
+          scope: (INSIGHT_SCOPES as readonly unknown[]).includes(scope) ? (scope as InsightScope) : "general", quote: textOrNull(quote),
+        }]
       : [];
   });
   const cmp = (a: string, b: string) => (a < b ? -1 : a > b ? 1 : 0);

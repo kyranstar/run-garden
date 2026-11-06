@@ -17,7 +17,7 @@ import { encodeCursor, MAX_TAGGED_TERMS, readAthlete, readTagged, RESULT_BUDGET_
 import { isToolErr, type DesignTool, type ToolErr, type ToolOk } from "../src/services/design-tools/types.js";
 import { TOOL_RESULT_MAX_BYTES } from "../src/services/coach-runs.js";
 import { at, day, NOW, seedOtherAthlete, seedRichAthlete, studioDoc, TODAY } from "./design-read-fixture.js";
-import { longBatchPosts, seedSavedBatch } from "./saves-batch-fixture.js";
+import { longBatchPosts, savedMoveDraft, seedSavedBatch } from "./saves-batch-fixture.js";
 import { everyPage, isWrite, makeTestDb, makeTestUser } from "./helpers.js";
 
 const ENV = {} as Env;
@@ -37,6 +37,8 @@ let empty: string;
 beforeAll(async () => {
   db = makeTestDb({ boundVariableCap: 100, onStatement: (sql) => counting && statements.push(sql) });
   rich = await seedRichAthlete(db);
+  // A saved batch waiting to be fitted in (import trail phase 3): read_saves reads its page's evidence, its third statement.
+  await seedSavedBatch(db, rich.userId, { savedAt: new Date(NOW.getTime() - 86_400_000).toISOString(), posts: [{ kind: "routine", moves: [{ draft: savedMoveDraft("Zorbex budget move") }, { library: "gobletSquat" }] }] });
   await seedOtherAthlete(db);
   empty = (await makeTestUser(db, { timezone: "America/Los_Angeles" })).userId;
 });

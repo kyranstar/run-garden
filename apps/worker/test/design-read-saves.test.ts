@@ -8,7 +8,7 @@
  * names).
  */
 import { beforeEach, describe, expect, it } from "vitest";
-import { and, eq } from "drizzle-orm";
+import { and, eq, sql } from "drizzle-orm";
 import { schema } from "@rg/database";
 import { EXERCISES } from "@rg/exercise-library";
 import { moveGroup, type ExtractedMove } from "@rg/saves";
@@ -16,6 +16,7 @@ import type { Env } from "../src/env.js";
 import type { Db } from "../src/services/db.js";
 import { PROMPT_TOOL_NAMES, SHARED_PROMPT } from "../src/services/design-prompt.js";
 import { READ_TOOLS } from "../src/services/design-tools/index.js";
+import { savedBatchOf, savesBatchSql } from "../src/services/design-tools/read-saves.js";
 import { plural, RESULT_BUDGET_BYTES, sharedAthlete, type ReadOk } from "../src/services/design-tools/read-common.js";
 import { isToolErr, type ToolContext, type ToolErr } from "../src/services/design-tools/types.js";
 import { savedPostId } from "../src/services/saves-ledger.js";
@@ -60,6 +61,13 @@ async function ok(input: unknown = {}, user = userId): Promise<ReadOk & { data: 
   return r as ReadOk & { data: any };
 }
 
+/** A listed move as it read before phase 3 (its evidence, dose and corrections, and each link's post, match and reading,
+ * are the phase-3 tests' below). */
+const oldShape = (m: any) => {
+  const { n: _n, dose: _dose, corrections: _corrections, ...rest } = m;
+  return { ...rest, links: rest.links.map((l: any) => ({ url: l.url, creator: l.creator, note: l.note })) };
+};
+
 const A = savedMoveDraft("Zorbex hip circle");
 const B = savedMoveDraft("Zorbex neck nod", { regions: ["neck"], summary: "A small nod, chin tucked." });
 
@@ -70,10 +78,11 @@ const twoPosts = (): SavedPostSpec[] => [
 ];
 
 describe("read_saves: the registry", () => {
-  it("is a read tool for every role, two statements at most, a strict schema whose limit is at most 12", () => {
+  it("is a read tool for every role, three statements at most, a strict schema whose limit is at most 12", () => {
     const t = tool();
     expect(t.roles).toEqual(["main", "designer", "reviewer"]);
-    expect(t.statementCost).toBe(2);
+    // REBASED 2026-11-06 (coach review, phase 3): the page's evidence is one statement more (§8.1).
+    expect(t.statementCost).toBe(3);
     expect(t.description.length).toBeLessThanOrEqual(240);
     expect(t.inputSchema).toMatchObject({
       type: "object",
@@ -127,7 +136,7 @@ describe("read_saves", () => {
     expect(r.provenance!.source).toBe("the athlete's saves");
     // Saved Thu 22 Oct, 10:00 in Los Angeles.
     expect(r.data.batch).toEqual({ id: batchId, savedAt: "2026-10-22" });
-    expect(r.data.moves).toEqual([
+    expect(r.data.moves.map(oldShape)).toEqual([
       {
         id: a, name: U("Zorbex hip circle"), summary: U("Zorbex hip circle, slow and even."), new: true, choice: "coach", like: null, pinned: false, groups: "hip", posts: 2,
         links: [
@@ -172,7 +181,7 @@ describe("read_saves", () => {
     expect(r.data.batch.id).toBe(batchId);
     const hip = EXERCISES.find((e) => e.name === "90/90 hip switches")!;
     expect(r.data.moves.map((m: any) => [m.new, m.new ? m.name : m.id])).toEqual([[true, U("Zorbex quad shuffle")], [false, hip.id]]);
-    expect(r.data.moves[0].links).toEqual([{ url: "https://example.com/p/real", creator: U("coach_real"), note: U("mobility") }]);
+    expect(oldShape(r.data.moves[0]).links).toEqual([{ url: "https://example.com/p/real", creator: U("coach_real"), note: U("mobility") }]);
     expect(r.data.routines).toEqual([{ post: U("Hips, then the neck."), order: [r.data.moves[0].id, hip.id] }]);
   });
 
@@ -219,8 +228,12 @@ describe("read_saves", () => {
     const drafts = Array.from({ length: 15 }, (_, i) => ({ draft: savedMoveDraft(`Zorbex move ${String(i).padStart(2, "0")}`, { summary: "Short." }) }));
     await seedSavedBatch(db, userId, { savedAt: daysAgo(1), posts: [{ kind: "single_move", summary: "s", moves: drafts.slice(0, 8) }, { kind: "single_move", summary: "s", moves: drafts.slice(8) }] });
     const r = await ok({});
-    expect(r.data.moves).toHaveLength(12);
-    expect(r.missing).toContain("3 more moves — pass offset: 12");
+    // REBASED 2026-11-06 (coach review, phase 3): each move carries its evidence now (§8.1), so fifteen short moves fill
+    // the page's bytes before the cap of 12 (9 measured) — the page says the offset that reads the rest either way.
+    const shown = r.data.moves.length;
+    expect(shown).toBeGreaterThan(4);
+    expect(shown).toBeLessThanOrEqual(12);
+    expect(r.missing).toContain(`${15 - shown} more moves — pass offset: ${shown}`);
     const four = await ok({ limit: 4 });
     expect(four.data.moves).toHaveLength(4);
     expect(four.missing).toContain("11 more moves — pass offset: 4");
@@ -232,11 +245,19 @@ describe("read_saves", () => {
   it("offset pages the moves in the same order: the page after the first starts where it ended, and says nothing more is left", async () => {
     const drafts = Array.from({ length: 15 }, (_, i) => ({ draft: savedMoveDraft(`Zorbex move ${String(i).padStart(2, "0")}`, { summary: "Short." }) }));
     await seedSavedBatch(db, userId, { savedAt: daysAgo(1), posts: [{ kind: "single_move", summary: "s", moves: drafts }] });
-    const whole = [...(await ok({})).data.moves, ...(await ok({ offset: 12 })).data.moves].map((m: any) => m.name.text);
+    // REBASED 2026-11-06 (coach review, phase 3): a page ends at its bytes or the cap; paged by the offsets each page
+    // gives, the pages are the batch's one order, whole, and the last says nothing more is left.
+    const whole: string[] = [];
+    let last: any = null;
+    for (let offset = 0, pages = 0; pages < 5; pages++) {
+      last = await ok(offset ? { offset } : {});
+      whole.push(...last.data.moves.map((m: any) => m.name.text));
+      const next = (last.missing as string[]).map((m) => /pass offset: (\d+)/.exec(m)?.[1]).find(Boolean);
+      if (!next) break;
+      offset = Number(next);
+    }
     expect(whole).toEqual(drafts.map((d) => d.draft.name));
-    const second = await ok({ offset: 12 });
-    expect(second.data.moves).toHaveLength(3);
-    expect(second.missing!.filter((m) => m.includes("offset"))).toEqual([]);
+    expect(last.missing.filter((m: string) => m.includes("offset"))).toEqual([]);
     // A page in the middle: four from the fifth.
     expect((await ok({ offset: 4, limit: 4 })).data.moves.map((m: any) => m.name.text)).toEqual(drafts.slice(4, 8).map((d) => d.draft.name));
     // Past the end: refused, saying how many there are; two statements still.
@@ -277,7 +298,8 @@ describe("read_saves", () => {
     // +29 B a move at the least — 1,259 B a move here): 6,315 B, 3 of the 12 on the first page, routines in the rest.
     await seedSavedBatch(db, userId, { savedAt: daysAgo(1), posts: longBatchPosts() });
     const r = await ok({});
-    const { summary: _s, ...forModel } = r;
+    // What the model is given: never the line nor the receipt (coach-runs.ts `okResult`).
+    const { summary: _s, receipt: _receipt, ...forModel } = r;
     const text = JSON.stringify(forModel);
     expect(new TextEncoder().encode(text).length).toBeLessThanOrEqual(RESULT_BUDGET_BYTES);
     // What did not fit is said, never cut silently.
@@ -299,11 +321,12 @@ describe("read_saves", () => {
     const removed: SavedPostSpec = { kind: "single_move", insights: ["REMOVED-POST-INSIGHT"], removed: [0], moves: [{ library: "deadBug" }] };
     await seedSavedBatch(db, userId, { savedAt: daysAgo(1), posts: [posts[0]!, removed, posts[1]!, { kind: "single_move", insights: ["A sixth."], moves: [{ library: "deadBug" }] }] });
     const { r, count } = await read({});
-    expect(count).toBe(2);
+    expect(count).toBe(3);
     const a = r as ReadOk & { data: any };
-    expect(a.data.insights).toEqual([
+    expect(a.data.insights.map((i: any) => i.text)).toEqual([
       U("Twice a week is plenty."), U("Before a run, not after."), U("Keep the neck long."), U("Breathe out on the way up."), U("Stop if the jaw clenches."),
     ]);
+    expect(a.data.insights.every((i: any) => i.scope === "general")).toBe(true);
     expect(JSON.stringify(a)).not.toContain("REMOVED-POST-INSIGHT");
     expect(JSON.stringify(a)).not.toContain("A sixth.");
   });
@@ -312,18 +335,18 @@ describe("read_saves", () => {
     const quiet = savedMoveDraft("Zorbex quiet move", { purpose: "" });
     await seedSavedBatch(db, userId, { savedAt: daysAgo(1), posts: [{ kind: "single_move", moves: [{ draft: quiet }] }] });
     const r = await ok({});
-    expect(r.data.moves[0].links).toEqual([{ url: expect.any(String), creator: U("coach_0"), note: null }]);
+    expect(oldShape(r.data.moves[0]).links).toEqual([{ url: expect.any(String), creator: U("coach_0"), note: null }]);
   });
 
-  it("in a step, the athlete is the step's shared read: the batch is one statement more", async () => {
+  it("in a step, the athlete is the step's shared read: the batch and its page's evidence are two statements more", async () => {
     await seedSavedBatch(db, userId, { savedAt: daysAgo(1), posts: twoPosts() });
     const athlete = sharedAthlete(db, userId, NOW);
     await athlete();
     const { r, count } = await read({}, userId, { athlete });
     expect((r as ReadOk & { data: any }).data.moves).toHaveLength(3);
-    expect(count).toBe(1);
-    // Outside a step it reads the athlete too: two, the most.
-    expect((await read({})).count).toBe(2);
+    expect(count).toBe(2);
+    // Outside a step it reads the athlete too: three, the most.
+    expect((await read({})).count).toBe(3);
   });
 
   it("with the run's batch and no batchId, read_saves reads it past the 14-day window; each move's choice and like (the like's name marked when personal)", async () => {
@@ -344,7 +367,7 @@ describe("read_saves", () => {
     const fitIn = { run: { id: "run-saves", role: "main" as const, scope: { kind: "now" as const }, parentId: null, rehearsal: false, savesBatchId: old.batchId, savesSkip: [{ id: b!, name: "Zorbex neck nod" }] } };
 
     const { r, count } = await read({}, userId, fitIn);
-    expect(count).toBe(2);
+    expect(count).toBe(3);
     const data = (r as ReadOk & { data: any }).data;
     expect(data.batch).toEqual({ id: old.batchId, savedAt: "2026-09-24" });
     expect(data.moves.map((m: any) => [m.id, m.new, m.choice, m.like])).toEqual([
@@ -367,5 +390,155 @@ describe("read_saves", () => {
     const r = await ok({});
     expect(r.data.moves.map((m: any) => [m.id, m.new, m.posts])).toEqual([["gobletSquat", false, 1]]);
     expect(r.data.routines[0].order).toEqual(["gobletSquat", "gobletSquat"]);
+  });
+});
+
+describe("read_saves: each claim's evidence (import trail phase 3, §8.1)", () => {
+  const quoted = savedMoveDraft("Zorbex hip lift", {
+    // No range: the record's numbers come from the post's words.
+    dose: { text: "8-10 reps" },
+    purpose: "Opens the hips after easy runs",
+    evidence: { name: "stated", dose: "stated", steps: "inferred", purpose: "stated", useWhen: "stated" },
+    why: "Hips stiffen after easy runs",
+    useWhen: [{ text: "after an easy run", evidence: "stated" }],
+    skipWhen: [{ text: "on a heavy leg day", evidence: "inferred" }],
+    quotes: [
+      { field: "purpose", text: "if your hips get stiff after easy runs", at: 72, from: "transcript", check: "verified" },
+      { field: "useWhen", text: "do it right after the run", at: 12, from: "speech", check: "in_speech" },
+    ],
+  });
+  // No dose at all: the record's is a default.
+  const guessed = savedMoveDraft("Zorbex calf rock", {
+    regions: ["calves"],
+    dose: { text: "" },
+    evidence: { name: "stated", dose: "inferred", steps: "inferred" },
+    confidence: "low",
+    quotes: [{ field: "name", text: "the calf rock", from: "caption", check: "verified" }],
+  });
+  /** Post 0: the hip lift, the goblet squat. Post 1: the calf rock, the hip lift again. */
+  const evidencePosts = (): SavedPostSpec[] => [
+    { kind: "routine", summary: "Hips after a run.", moves: [{ draft: quoted }, { library: "gobletSquat" }] },
+    { kind: "routine", summary: "Calves, then hips.", moves: [{ draft: guessed }, { draft: quoted }] },
+  ];
+
+  it("each move carries its evidence: stated and inferred, quotes with ids and checks, why, use and skip when, the dose and where it came from", async () => {
+    const { postIds, moveIds } = await seedSavedBatch(db, userId, { savedAt: daysAgo(1), posts: evidencePosts() });
+    const [lift] = moveIds[0]!;
+    const [calf] = moveIds[1]!;
+    const r = await ok({});
+    const [m1, m2, m3] = r.data.moves;
+    expect([m1.id, m2.id, m3.id]).toEqual([lift, calf, "gobletSquat"]);
+    expect([m1.n, m2.n, m3.n]).toEqual([1, 2, 3]);
+    expect(m1.dose).toEqual({ record: "8–10 reps", from: "post" });
+    expect(m2.dose.from).toBe("default");
+    expect(m3.dose).toEqual({ record: expect.stringMatching(/reps|s/), from: "library" });
+    expect(m1.links.map((l: any) => [l.post, l.at])).toEqual([[postIds[0], 0], [postIds[1], 1]]);
+    // No match step on its trail (seeded directly): only how it came out.
+    expect(m1.links[0].match).toEqual({ as: "new" });
+    expect(m1.links[0].reading).toEqual({
+      confidence: "high",
+      stated: ["name", "dose", "purpose", "useWhen"],
+      inferred: ["steps"],
+      dose: U("8-10 reps"),
+      why: U("Hips stiffen after easy runs"),
+      useWhen: [{ text: U("after an easy run"), said: true }],
+      skipWhen: [{ text: U("on a heavy leg day"), said: false }],
+      quotes: [
+        { id: "q1.1", field: "purpose", text: U("if your hips get stiff after easy runs"), check: "said", at: "1:12" },
+        { id: "q1.2", field: "useWhen", text: U("do it right after the run"), check: "heard", at: "0:12" },
+      ],
+    });
+    // The second post's reading of the same move: its quotes go on from the first's.
+    expect(m1.links[1].reading.quotes.map((q: any) => q.id)).toEqual(["q1.3", "q1.4"]);
+    expect(m2.links[0].reading.quotes).toEqual([{ id: "q2.1", field: "name", text: U("the calf rock"), check: "in the caption" }]);
+    expect(m3.links[0].match.as).toBe("library");
+    expect(m1.corrections).toBeUndefined();
+  });
+
+  it("the match as its trail recorded it: by name, by the judge, or new, with its confidence and check", async () => {
+    const { postIds } = await seedSavedBatch(db, userId, { savedAt: daysAgo(1), posts: evidencePosts() });
+    await db.insert(schema.importEvents).values({
+      id: "ev-match", userId, postId: postIds[0]!, stage: "match", source: "worker", status: "ok", summary: "2 moves",
+      detail: { moves: [{ position: 0, by: "new", confidence: "high" }, { position: 1, by: "name", confidence: "medium" }] }, rebuilt: false, at: daysAgo(2),
+    });
+    const r = await ok({});
+    expect(r.data.moves[0].links[0].match).toEqual({ as: "new", by: "new", confidence: "high" });
+    expect(r.data.moves[2].links[0].match).toEqual({ as: "library", by: "name", confidence: "medium" });
+  });
+
+  it("corrections so far show on their move, newest first, three at most — and a corrected dose says so", async () => {
+    const { moveIds } = await seedSavedBatch(db, userId, { savedAt: daysAgo(1), posts: evidencePosts() });
+    const [lift] = moveIds[0]!;
+    for (const [i, why] of ["first", "second", "third", "fourth"].entries()) {
+      await db.insert(schema.importCorrections).values({
+        id: `fix-${i}`, userId, target: "move", targetId: lift!, field: i === 3 ? "dose" : "name", before: "x",
+        after: i === 3 ? { type: "time", range: [30, 30], sets: [2, 2] } : `Zorbex hip lift ${i}`, why, basis: "evidence", by: i % 2 ? "owner" : "coach", at: daysAgo(1, `0${i}:00`),
+      });
+    }
+    const r = await ok({});
+    const m = r.data.moves[0];
+    expect(m.corrections).toEqual([
+      { field: "dose", after: U("30 s, 2 sets"), why: U("fourth"), by: "owner", basis: "evidence", at: expect.any(String) },
+      { field: "name", after: U("Zorbex hip lift 2"), why: U("third"), by: "coach", basis: "evidence", at: expect.any(String) },
+      { field: "name", after: U("Zorbex hip lift 1"), why: U("second"), by: "owner", basis: "evidence", at: expect.any(String) },
+    ]);
+    expect(m.dose.from).toBe("edited");
+  });
+
+  it("insights keep their post and scope — a creator's own split too; the opening context's section still reads only the general ones", async () => {
+    const posts = evidencePosts();
+    posts[0]!.insights = [
+      { text: "Day one of the creator's three-day split.", scope: "creator_programme", quote: "this is day one" },
+      "Twice a week is plenty.",
+    ];
+    const { postIds } = await seedSavedBatch(db, userId, { savedAt: daysAgo(1), posts });
+    const r = await ok({});
+    expect(r.data.insights).toEqual([
+      { ref: `${postIds[0]}:0`, text: U("Day one of the creator's three-day split."), scope: "creator_programme", quote: U("this is day one") },
+      { ref: `${postIds[0]}:1`, text: U("Twice a week is plenty."), scope: "general" },
+    ]);
+    const [row] = (await db.all(sql`select ${savesBatchSql(userId, { now: NOW })} as b`)) as Array<{ b: unknown }>;
+    expect(savedBatchOf(row!.b)!.insights.map((i) => i.text)).toEqual(["Twice a week is plenty."]);
+  });
+
+  it("the receipt maps every quote id read to its post, position and check — and each move to its first post", async () => {
+    const { batchId, postIds, moveIds } = await seedSavedBatch(db, userId, { savedAt: daysAgo(1), posts: evidencePosts() });
+    const r = await ok({});
+    expect(r.receipt).toEqual({
+      saves: {
+        batch: batchId,
+        moves: [[moveIds[0]![0], postIds[0], 0], [moveIds[1]![0], postIds[1], 0], ["gobletSquat", postIds[0], 1]],
+        quotes: {
+          "q1.1": [postIds[0], 0, 0, "verified", "transcript", 72],
+          "q1.2": [postIds[0], 0, 1, "in_speech", "speech", 12],
+          "q1.3": [postIds[1], 1, 0, "verified", "transcript", 72],
+          "q1.4": [postIds[1], 1, 1, "in_speech", "speech", 12],
+          "q2.1": [postIds[1], 0, 0, "verified", "caption", null],
+        },
+      },
+    });
+  });
+
+  it("ids are the batch's, stable across pages: the second move read alone is still q2", async () => {
+    await seedSavedBatch(db, userId, { savedAt: daysAgo(1), posts: evidencePosts() });
+    const r = await ok({ offset: 1, limit: 1 });
+    expect(r.data.moves[0].n).toBe(2);
+    expect(r.data.moves[0].links[0].reading.quotes[0].id).toBe("q2.1");
+    expect(Object.keys((r.receipt as any).saves.quotes)).toEqual(["q2.1"]);
+  });
+
+  it("twelve moves each quoted eight times at length: the page shrinks to fit, and says the offset that reads the rest", async () => {
+    const long = (i: number) =>
+      savedMoveDraft(`Zorbex quoted move ${String(i).padStart(2, "0")}`, {
+        quotes: Array.from({ length: 8 }, (_, k) => ({ field: "purpose" as const, text: `${"slow and even ".repeat(14)}${i}-${k}`.slice(0, 200), at: 10 * k, from: "transcript" as const, check: "verified" as const })),
+      });
+    await seedSavedBatch(db, userId, { savedAt: daysAgo(1), posts: [{ kind: "routine", moves: Array.from({ length: 12 }, (_, i) => ({ draft: long(i) })) }] });
+    const r = await ok({});
+    const { summary: _s, receipt: _r, ...forModel } = r;
+    expect(new TextEncoder().encode(JSON.stringify(forModel)).length).toBeLessThanOrEqual(RESULT_BUDGET_BYTES);
+    const shown = r.data.moves.length;
+    expect(shown).toBeGreaterThanOrEqual(1);
+    expect(shown).toBeLessThan(12);
+    expect(r.missing).toContain(`${plural(12 - shown, "more move", "more moves")} — pass offset: ${shown}`);
   });
 });

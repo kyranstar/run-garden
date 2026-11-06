@@ -45,8 +45,9 @@ export interface SavedPostSpec {
   url?: string;
   /** A position whose link the owner removed before saving. */
   removed?: number[];
-  /** What the post says about when, why or how often (the extraction's `insights`, spec §17). */
-  insights?: string[];
+  /** What the post says about when, why or how often (the extraction's `insights`, spec §17): words, or extract-6's
+   * scoped insights. */
+  insights?: Array<string | { text: string; scope: "general" | "this_routine" | "creator_programme"; quote?: string }>;
 }
 
 export interface SeededBatch {
@@ -139,7 +140,24 @@ const INSIGHT_FILLER = "gentle pace until warm, later build volume carefully ";
  * across four routine posts of three, each post with a long link, creator and reading, and five insights of 200
  * characters (spec §17): the most read_saves or the context's section holds.
  */
-export function longBatchPosts(lead = "LONG"): SavedPostSpec[] {
+export function longBatchPosts(lead = "LONG", o: { quoted?: boolean } = {}): SavedPostSpec[] {
+  // `quoted` (import trail phase 3): each move's reading at extract-6's widest too — eight 200-character quotes, four
+  // use-when and four skip-when cases of 160, a why of 200 — the evidence read_saves gives the coach (§8.1).
+  const evidence = (m: number): Partial<ExtractedMove> =>
+    o.quoted
+      ? {
+          why: longText(`${lead}-why-${m}`, 200),
+          useWhen: [0, 1, 2, 3].map((k) => ({ text: longText(`${lead}-use-${m}-${k}`, 160), evidence: "stated" as const })),
+          skipWhen: [0, 1, 2, 3].map((k) => ({ text: longText(`${lead}-skip-${m}-${k}`, 160), evidence: "inferred" as const })),
+          quotes: [0, 1, 2, 3, 4, 5, 6, 7].map((k) => ({
+            field: (["name", "dose", "purpose", "useWhen", "skipWhen", "steps", "why", "dose"] as const)[k]!,
+            text: longText(`${lead}-quote-${m}-${k}`, 200),
+            at: 30 * k,
+            from: k % 2 ? ("transcript" as const) : ("caption" as const),
+            check: k === 7 ? ("not_found" as const) : ("verified" as const),
+          })),
+        }
+      : {};
   return [0, 1, 2, 3].map((p) => ({
     kind: "routine" as const,
     summary: longText(`${lead}-reading-${p}`, 300),
@@ -150,6 +168,7 @@ export function longBatchPosts(lead = "LONG"): SavedPostSpec[] {
       draft: savedMoveDraft(longText(`${lead} move ${p * 3 + m}`, 80), {
         summary: longText(`${lead}-summary-${p * 3 + m}`, 160),
         purpose: longText(`${lead}-purpose-${p * 3 + m}`, 160),
+        ...evidence(p * 3 + m),
       }),
     })),
   }));

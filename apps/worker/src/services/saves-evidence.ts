@@ -11,6 +11,7 @@
  *   that aren't there; the field it supports counts as inferred, §5.6).
  * - Every text here came from a post or the reader: marked (`untrusted`) for the model, drawn as text by the app.
  */
+import type { ExerciseRecord } from "@rg/exercise-library";
 import type { QuoteCheck } from "@rg/saves";
 import { untrusted, untrustedOrNull, type Untrusted } from "./design-tools/read-common.js";
 
@@ -193,4 +194,28 @@ export function readingEvidence(
     },
     refs,
   };
+}
+
+const DOSE_UNIT: Record<ExerciseRecord["dose"]["type"], string> = { reps: "reps", time: "s", breaths: "breaths", carry: "s carried" };
+
+/** A record's dose as a range: "5–8 reps, 2–4 sets", "30–45 s" (the library's words; read-library's `get_exercise` too). */
+export function doseWords(dose: Pick<ExerciseRecord["dose"], "type" | "range" | "sets">): string {
+  const [lo, hi] = dose.range;
+  const sets = dose.sets ? `, ${dose.sets[0] === dose.sets[1] ? dose.sets[0] : `${dose.sets[0]}–${dose.sets[1]}`} sets` : "";
+  return `${lo === hi ? lo : `${lo}–${hi}`} ${DOSE_UNIT[dose.type] ?? dose.type}${sets}`;
+}
+
+const isDose = (v: unknown): v is Pick<ExerciseRecord["dose"], "type" | "range" | "sets"> =>
+  !!v && typeof v === "object" && typeof (v as { type?: unknown }).type === "string" && Array.isArray((v as { range?: unknown }).range) && (v as { range: unknown[] }).range.length === 2;
+
+/** A corrected value in words: a dose as a dose reads, a list joined, a case or an insight by its words, anything else as it is. */
+export function valueWords(value: unknown): string {
+  if (value === null || value === undefined) return "nothing";
+  if (typeof value === "string") return value;
+  if (typeof value === "number" || typeof value === "boolean") return String(value);
+  if (isDose(value)) return doseWords(value);
+  if (Array.isArray(value)) return value.map(valueWords).join("; ");
+  const t = (value as { text?: unknown }).text;
+  if (typeof t === "string") return t;
+  return JSON.stringify(value);
 }

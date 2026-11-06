@@ -830,7 +830,9 @@ beforeAll(async () => {
         summary: words(i, 280),
         moves: [0, 1, 2].map((k) => ({ library: library[(i * 3 + k) % library.length]! })),
       }));
-      const { batchId, moveIds } = await seedSavedBatch(withSaves.db, userId, { savedAt: at(day(1)), posts: [...longBatchPosts(), ...more], pinned: library.slice(0, 6) });
+      // Since 2026-11-06 (coach review, phase 3) its long moves' readings carry extract-6's evidence at its widest (eight
+      // long quotes, four use-when and skip-when cases, a why): read_saves gives it to the coach, a page at a time.
+      const { batchId, moveIds } = await seedSavedBatch(withSaves.db, userId, { savedAt: at(day(1)), posts: [...longBatchPosts("LONG", { quoted: true }), ...more], pinned: library.slice(0, 6) });
       images.set("saves", imageOf(withSaves.db));
       withSaves.close();
       // Once, before timing it: the call reads that batch and lists its moves (as many of its long ones as fit the answer),

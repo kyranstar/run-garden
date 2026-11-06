@@ -60,6 +60,7 @@ import { accountLibraryFrom, personalMovesSql, UNCHECKED_RATINGS } from "../acco
 import { namedFromRow, ownPlaceSql } from "../default-place.js";
 import { doneStats, safetyFor, type DoneStat } from "../library-view.js";
 import { PENDING_HASH } from "../watch-sets.js";
+import { doseWords } from "../saves-evidence.js";
 import type { DesignTool } from "./types.js";
 import { PLACE_WORDS } from "./act-common.js";
 import {
@@ -91,14 +92,6 @@ import { movesOf, sessionRows, sessionsOnce, setRows } from "./read-sessions.js"
 /** Today's fit for the athlete: the library's one rule (`fitToday`, the Studio's list reads it too). */
 const fitFor = (rec: ExerciseRecord, athlete: Pick<Athlete, "profiles" | "readings">) => fitToday(rec, athlete.profiles, athlete.readings);
 
-const DOSE_UNIT: Record<ExerciseRecord["dose"]["type"], string> = { reps: "reps", time: "s", breaths: "breaths", carry: "s carried" };
-
-/** The record's dose as a range: "5–8 reps, 2–4 sets", "30–45 s". */
-function doseWords(dose: ExerciseRecord["dose"]): string {
-  const [lo, hi] = dose.range;
-  const sets = dose.sets ? `, ${dose.sets[0] === dose.sets[1] ? dose.sets[0] : `${dose.sets[0]}–${dose.sets[1]}`} sets` : "";
-  return `${lo === hi ? lo : `${lo}–${hi}`} ${DOSE_UNIT[dose.type]}${sets}`;
-}
 
 // ── The athlete's own marks on moves ────────────────────────────────────────────────────────────────────────────────
 

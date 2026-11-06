@@ -35,8 +35,17 @@
  * says how many moves are left and the offset that reads them (a batch stays readable by id once it is fitted in), and
  * how many routines the cap or the room left out.
  *
- * COST. Two statements: the athlete (the step's shared read, which carries the account's library: `athleteOf`) and the
- * batch with the account's pins. `savesBatchSql` and `savedMovesOf` are the opening context's too (design-context.ts,
+ * THE EVIDENCE (import trail phase 3; design 2026-11-05 §8.1). Each move of the page carries `n` (its place in the batch:
+ * its quotes' ids are `q<n>.<k>`, saves-evidence.ts), the dose its record runs with and where that came from, and the
+ * corrections so far; each link its post's id and the move's position in it (`post`, `at`: correct_import's targets),
+ * the match (new, yours or the library's; by name, the judge or new, with the match step's confidence and check), and
+ * the post's reading as evidence — stated or inferred, the post's dose words, why, when to use it or not, and each
+ * quote with its id and how it checked out (said, in the caption, heard, on screen, not in the post). Insights keep
+ * their post (`ref`) and scope, every scope. The answer's receipt (never the model's) maps each move shown to its first
+ * post and each quote id to where it points: pin_moves and correct_import read it from the run's trail.
+ *
+ * COST. Three statements: the athlete (the step's shared read, which carries the account's library: `athleteOf`), the
+ * batch with the account's pins, and the page's evidence (none when the batch offers no move). `savesBatchSql` and `savedMovesOf` are the opening context's too (design-context.ts,
  * "From the athlete's saves"), so the two say the same moves.
  */
 import { sql, type SQL } from "drizzle-orm";
@@ -46,7 +55,9 @@ import type { ExerciseRecord } from "@rg/exercise-library";
 import { isPersonalId, moveGroup, type FitChoice } from "@rg/saves";
 import { makeLibraryIndex } from "@rg/workout";
 import { loadAccountLibrary, type AccountLibrary } from "../account-library.js";
-import { insightsJsonSql, insightsOf, type BatchInsight } from "../saves-batches.js";
+import { doseOriginOf } from "../personal-records.js";
+import { insightsJsonSql, scopedInsightsOf, type ScopedInsight } from "../saves-batches.js";
+import { doseWords, readingEvidence, valueWords, type QuoteRef, type ReadingEvidence } from "../saves-evidence.js";
 import { utf8Bytes } from "../utf8.js";
 import type { DesignTool } from "./types.js";
 import {
@@ -111,8 +122,9 @@ export interface SavedBatch {
   savedAt: string;
   links: SavedLink[];
   posts: Map<string, SavedPost>;
-  /** The first SAVES_INSIGHTS_MAX insights of its kept posts, in the posts' order (saves-batches.ts `insightsOf`). */
-  insights: BatchInsight[];
+  /** The first SAVES_INSIGHTS_MAX insights of its kept posts, in the posts' order (saves-batches.ts `scopedInsightsOf`):
+   * every scope with `posts` (read_saves'), the general ones only without (the opening context's). */
+  insights: ScopedInsight[];
 }
 
 /** Who decides whether a move of the batch joins (the saves flow, §3.4): the athlete (include, skip), or the coach. */
@@ -129,6 +141,8 @@ export interface SavedMove {
   postIds: string[];
   /** Each post's note on the move (its first link's), beside `postIds`: null with none or unread. */
   notes: Array<string | null>;
+  /** The move's position in each post (its first link's), beside `postIds`. */
+  positions: number[];
 }
 
 /**
@@ -162,7 +176,7 @@ export function savesBatchSql(userId: string, o: { now: Date; batchId?: string; 
         left join saved_posts sv_p on sv_p.user_id = sv_l.user_id and sv_p.id = sv_l.post_id
         left join personal_moves sv_m on sv_m.user_id = sv_l.user_id and sv_m.id = sv_l.move_id
         where sv_l.user_id = ${userId} and sv_l.batch_id = sv_b.id and sv_l.status = 'saved')),
-      'insights', json(${insightsJsonSql(userId, keptPosts, SAVES_INSIGHTS_MAX)})${posts})
+      'insights', json(${insightsJsonSql(userId, keptPosts, SAVES_INSIGHTS_MAX, { scoped: !!o.posts })})${posts})
     from save_batches sv_b where sv_b.user_id = ${userId} and sv_b.status = 'saved' and ${which}
     order by sv_b.saved_at desc, sv_b.id desc limit 1)`;
 }
@@ -190,7 +204,7 @@ export function savedBatchOf(raw: unknown): SavedBatch | null {
       return typeof id === "string" ? [[id, { url: str(url), creator: str(creator), kind: str(kind), summary: str(summary) }]] : [];
     }),
   );
-  return { id: b.id, savedAt: b.savedAt, links, posts, insights: insightsOf(b.insights).slice(0, SAVES_INSIGHTS_MAX) };
+  return { id: b.id, savedAt: b.savedAt, links, posts, insights: scopedInsightsOf(b.insights).slice(0, SAVES_INSIGHTS_MAX) };
 }
 
 /** The links in the order the posts showed them: the posts as they came in, each post's by position. */
@@ -253,7 +267,7 @@ export function savedMovesOf(
       continue;
     }
     let move = byId.get(record.id);
-    if (!move) byId.set(record.id, (move = { record, new: false, choice: "coach", like: null, postIds: [], notes: [] }));
+    if (!move) byId.set(record.id, (move = { record, new: false, choice: "coach", like: null, postIds: [], notes: [], positions: [] }));
     if (l.born) {
       move.new = true;
       // The athlete chose for the batch's own new moves alone: a move they had already stays the coach's call.
@@ -266,6 +280,7 @@ export function savedMovesOf(
     if (!move.postIds.includes(l.postId)) {
       move.postIds.push(l.postId);
       move.notes.push(l.note ?? null);
+      move.positions.push(l.position);
     }
   }
   // New first; each part in the posts' order (the sort is stable).
@@ -278,6 +293,120 @@ const wordsOf = (record: ExerciseRecord, text: string): string | Untrusted => (i
 
 const bytesOf = (value: unknown): number => utf8Bytes(JSON.stringify(value));
 
+// ── The page's evidence (import trail phase 3; design 2026-11-05 §8.1) ──────────────────────────────────────────────
+
+/** One link of the page as its evidence read gives it: the post's reading of the move (the fields the coach weighs and
+ * the dose's origin needs), the link's check flag, and its post's latest match step's word on that position. */
+interface LinkEvidence {
+  check: boolean;
+  reading: unknown;
+  by: string | null;
+  confidence: string | null;
+}
+
+/** A correction so far (`import_corrections`), as the read gives it. */
+interface CorrectionRow {
+  targetId: string;
+  field: string;
+  after: unknown;
+  why: string;
+  by: string;
+  basis: string;
+  at: string;
+}
+
+/** A move's or a link's corrections, newest first, at most. */
+const CORRECTIONS_SHOWN = 3;
+/** How many corrections the read reads for a page at most (newest first): room for three a move. */
+const CORRECTIONS_READ = 60;
+
+/**
+ * The page's evidence, ONE statement: each link of the page (`pairs`: post id and position, as JSON) with its post's
+ * reading of the move — only the fields the coach weighs — its check flag and its post's latest match step's entry for
+ * that position; and the corrections of the page's moves (`moveIds`) and of its links' readings and matches, newest
+ * first. Its tables go by their own aliases.
+ */
+function pageEvidenceSql(userId: string, pairs: ReadonlyArray<readonly [string, number]>, moveIds: readonly string[]): SQL {
+  const f = (k: string) => sql.raw(`json_extract(case when json_valid(ev_p.extraction) then ev_p.extraction end, '$.moves[' || ev_l.position || '].${k}')`);
+  const pairsJson = JSON.stringify(pairs);
+  return sql`select
+    (select json_group_array(json_array(ev_l.post_id, ev_l.position, ev_l.check_flag,
+        json_object('evidence', json(${f("evidence")}), 'confidence', ${f("confidence")}, 'dose', json(${f("dose")}), 'why', ${f("why")},
+          'useWhen', json(${f("useWhen")}), 'skipWhen', json(${f("skipWhen")}), 'quotes', json(${f("quotes")}),
+          'load', ${f("load")}, 'patterns', json(${f("patterns")}), 'contraction', json(${f("contraction")})),
+        json((select json_array(json_extract(ev_m.value, '$.by'), json_extract(ev_m.value, '$.confidence'))
+          from json_each((select ev_e.detail from import_events ev_e where ev_e.user_id = ${userId} and ev_e.post_id = ev_l.post_id
+              and ev_e.stage = 'match' and json_valid(ev_e.detail) order by ev_e.at desc, ev_e.rowid desc limit 1), '$.moves') ev_m
+          where json_extract(ev_m.value, '$.position') = ev_l.position limit 1))))
+      from json_each(${pairsJson}) ev_j
+      join saved_post_moves ev_l on ev_l.user_id = ${userId} and ev_l.post_id = json_extract(ev_j.value, '$[0]') and ev_l.position = json_extract(ev_j.value, '$[1]')
+      join saved_posts ev_p on ev_p.user_id = ev_l.user_id and ev_p.id = ev_l.post_id) as links,
+    (select json_group_array(json_array(ev_c.target_id, ev_c.field, case when json_valid(ev_c.after) then json(ev_c.after) end, ev_c.why, ev_c.by, ev_c.basis, ev_c.at)) from (
+      select * from import_corrections ev_c0 where ev_c0.user_id = ${userId}
+        and ((ev_c0.target = 'move' and ev_c0.target_id in (select value from json_each(${JSON.stringify(moveIds)})))
+          or (ev_c0.target in ('reading', 'link') and ev_c0.target_id in (select json_extract(value, '$[0]') || ':' || json_extract(value, '$[1]') from json_each(${pairsJson}))))
+        order by ev_c0.at desc, ev_c0.id desc limit ${CORRECTIONS_READ}) ev_c) as corrections`;
+}
+
+/** `pageEvidenceSql`'s links, by `<postId>:<position>`. */
+function linkEvidenceOf(raw: unknown): Map<string, LinkEvidence> {
+  const out = new Map<string, LinkEvidence>();
+  for (const x of parsedArray(raw)) {
+    const [postId, position, check, reading, matched] = Array.isArray(x) ? (x as unknown[]) : [];
+    if (typeof postId !== "string" || typeof position !== "number") continue;
+    const [by, confidence] = Array.isArray(matched) ? (matched as unknown[]) : [];
+    out.set(`${postId}:${position}`, { check: check === 1 || check === true, reading, by: str(by), confidence: str(confidence) });
+  }
+  return out;
+}
+
+/** `pageEvidenceSql`'s corrections, by their target's id, newest first. */
+function correctionsOf(raw: unknown): Map<string, CorrectionRow[]> {
+  const out = new Map<string, CorrectionRow[]>();
+  for (const x of parsedArray(raw)) {
+    const [targetId, field, after, why, by, basis, at] = Array.isArray(x) ? (x as unknown[]) : [];
+    if (typeof targetId !== "string" || typeof field !== "string" || typeof why !== "string") continue;
+    const list = out.get(targetId) ?? [];
+    list.push({ targetId, field, after, why, by: str(by) ?? "coach", basis: str(basis) ?? "evidence", at: str(at) ?? "" });
+    out.set(targetId, list);
+  }
+  for (const list of out.values()) list.sort((a, b) => byBytes(b.at, a.at));
+  return out;
+}
+
+/** Where a record's dose came from (§8.1): the library's; a correction's (the owner's edit or an approved fix); for a move
+ * the batch brought, its first post's reading (`doseOriginOf`: the reading's range, the post's words, or a default);
+ * else an earlier post's. */
+type DoseFrom = "post" | "reading" | "default" | "library" | "edited" | "an earlier post";
+function doseFromOf(m: SavedMove, fixes: readonly CorrectionRow[], firstReading: unknown): DoseFrom {
+  if (!isPersonalId(m.record.id)) return "library";
+  if (fixes.some((c) => c.field === "dose")) return "edited";
+  if (!m.new || !firstReading || typeof firstReading !== "object") return "an earlier post";
+  const r = firstReading as Record<string, unknown>;
+  const dose = r.dose && typeof r.dose === "object" ? (r.dose as Record<string, unknown>) : {};
+  try {
+    return doseOriginOf({
+      ...r,
+      dose: { ...dose, text: typeof dose.text === "string" ? dose.text : "" },
+      patterns: Array.isArray(r.patterns) ? r.patterns : [],
+      contraction: Array.isArray(r.contraction) ? r.contraction : [],
+    } as unknown as Parameters<typeof doseOriginOf>[0]);
+  } catch {
+    return "an earlier post";
+  }
+}
+
+/** A correction as the coach reads it: the field, the value it took (in words, marked), why, by whom, on what basis. */
+const correctionOut = (c: CorrectionRow, target?: string) => ({
+  ...(target ? { target } : {}),
+  field: c.field,
+  after: untrusted(valueWords(c.after)),
+  why: untrusted(c.why),
+  by: c.by,
+  basis: c.basis,
+  at: c.at,
+});
+
 /** How the coach closes the batch it read (coach-context audit I2): a pins card naming it, approved, marks it fitted in. */
 const closeLine = (batchId: string): string => `pin_moves({ batchId: ${JSON.stringify(batchId)} }) closes this batch once approved — with the moves you pin, or none`;
 
@@ -288,7 +417,7 @@ const input = z
 export const readSaves: DesignTool = {
   name: "read_saves",
   description:
-    "The athlete's saves: the run's batch, else the newest not yet fitted in (or batchId's). Each move — a saved one by its own id — new or theirs, the athlete's choice, its near-duplicate, pinned or not, its posts' notes; insights; routines.",
+    "The athlete's saves: the run's batch, else the newest unfitted (or batchId's). Each move — a saved one by its own id — new or theirs, choice, pin, dose; its posts' notes and evidence (quote ids to cite); corrections; insights; routines.",
   inputSchema: {
     type: "object",
     properties: {
@@ -298,7 +427,8 @@ export const readSaves: DesignTool = {
     },
     additionalProperties: false,
   },
-  statementCost: 2,
+  // REBASED 2026-11-06 (coach review, phase 3): the page's evidence is one statement more (§8.1).
+  statementCost: 3,
   // Measured (design-cpu-bench.test.ts 8.read_saves: 40 posts, 120 links, 36 moves): 0.97–1.09 ms scaled p50 on a loaded
   // runner (Task 17). Re-measured on a quiet tree (the fix wave, 2026-10-25; 1-minute load 1.9–2.1 on 8 cores, scale
   // ×0.93–×1.07): 0.54, 0.49 and 0.47 ms scaled p50 — declared at the highest, rounded up to the tenth, as its peers are.
@@ -345,22 +475,66 @@ export const readSaves: DesignTool = {
     }
     const postOf = (id: string): SavedPost | undefined => batch.posts.get(id);
 
-    // This page's moves, in the batch's one order.
-    const listed = moves.slice(offset, offset + limit).map((m) => ({
-      id: m.record.id,
-      name: wordsOf(m.record, m.record.name),
-      summary: wordsOf(m.record, m.record.text?.summary ?? ""),
-      new: m.new,
-      choice: m.choice,
-      like: m.like ? { id: m.like.id, name: wordsOf(m.like, m.like.name) } : null,
-      pinned: pins.has(m.record.id),
-      groups: moveGroup(m.record),
-      posts: m.postIds.length,
-      links: m.postIds
-        .slice(0, LINKS_MAX)
-        .map((id, k) => ({ url: postOf(id)?.url ?? null, creator: untrustedOrNull(postOf(id)?.creator), note: untrustedOrNull(m.notes[k]) })),
-      fromPost: untrustedOrNull(postOf(m.postIds[0]!)?.summary),
-    }));
+    // This page's moves, in the batch's one order — and their evidence (§8.1): one statement, for the candidate page
+    // only (the byte fit below may keep fewer).
+    const page = moves.slice(offset, offset + limit);
+    const linksOf = (m: SavedMove) => m.postIds.slice(0, LINKS_MAX).map((id, k) => [id, m.positions[k]!] as const);
+    const ev = page.length
+      ? (((await ctx.db.all(pageEvidenceSql(ctx.userId, page.flatMap(linksOf), page.map((m) => m.record.id)))) as Array<{ links: unknown; corrections: unknown }>)[0] ?? null)
+      : null;
+    const evidence = linkEvidenceOf(ev?.links);
+    const fixesOf = correctionsOf(ev?.corrections);
+    const read = page.map((m, i) => {
+      // The move's place in the batch: its quotes' ids (`q<n>.<k>`), the same on every page.
+      const n = offset + i + 1;
+      const refs: Array<[string, QuoteRef]> = [];
+      const readings: Array<ReadingEvidence | null> = [];
+      let firstReading: unknown = null;
+      for (const [j, [postId, position]] of linksOf(m).entries()) {
+        const e = evidence.get(`${postId}:${position}`);
+        if (j === 0) firstReading = e?.reading ?? null;
+        const r = e ? readingEvidence(e.reading, { moveNo: n, firstK: refs.length + 1, postId, position }) : null;
+        if (r) refs.push(...r.refs);
+        readings.push(r?.evidence ?? null);
+      }
+      const own = fixesOf.get(m.record.id) ?? [];
+      const onLinks = linksOf(m).flatMap(([postId, position]) => fixesOf.get(`${postId}:${position}`) ?? []);
+      const fixes = [...own.map((c) => correctionOut(c)), ...onLinks.map((c) => correctionOut(c, "reading"))]
+        .sort((a, b) => byBytes(b.at, a.at))
+        .slice(0, CORRECTIONS_SHOWN);
+      const as = !isPersonalId(m.record.id) ? "library" : m.new ? "new" : "yours";
+      const entry = {
+        id: m.record.id,
+        n,
+        name: wordsOf(m.record, m.record.name),
+        summary: wordsOf(m.record, m.record.text?.summary ?? ""),
+        new: m.new,
+        choice: m.choice,
+        like: m.like ? { id: m.like.id, name: wordsOf(m.like, m.like.name) } : null,
+        pinned: pins.has(m.record.id),
+        groups: moveGroup(m.record),
+        // The dose the move runs with (its record's), and where that came from.
+        dose: { record: doseWords(m.record.dose), from: doseFromOf(m, own, firstReading) },
+        ...(fixes.length ? { corrections: fixes } : {}),
+        posts: m.postIds.length,
+        links: linksOf(m).map(([postId, position], k) => {
+          const e = evidence.get(`${postId}:${position}`);
+          return {
+            url: postOf(postId)?.url ?? null,
+            creator: untrustedOrNull(postOf(postId)?.creator),
+            note: untrustedOrNull(m.notes[k]),
+            post: postId,
+            at: position,
+            // What the match step said, when its trail has it (a post from before the trail has none).
+            match: { as, ...(e?.by ? { by: e.by } : {}), ...(e?.confidence ? { confidence: e.confidence } : {}), ...(e?.check ? { check: true } : {}) },
+            reading: readings[k] ?? null,
+          };
+        }),
+        fromPost: untrustedOrNull(postOf(m.postIds[0]!)?.summary),
+      };
+      return { entry, refs, first: [m.record.id, m.postIds[0]!, m.positions[0]!] as const };
+    });
+    const listed = read.map((x) => x.entry);
     // The routine posts, as they came in: each its reading and its kept, offered moves in the post's order.
     const byPost = new Map<string, string[]>();
     for (const l of inPostOrder(batch.links)) {
@@ -373,7 +547,9 @@ export const readSaves: DesignTool = {
     }
     const routines = [...byPost].map(([postId, order]) => ({ post: untrustedOrNull(postOf(postId)?.summary), order }));
     // What the kept posts say about when, why or how often (a model's reading): on every page, room kept for them first.
-    const insights = batch.insights.map((i) => untrusted(i.text));
+    // Every scope, each keeping its post (§8.1: a creator's own split is the creator's, not a rule): `ref` names the post
+    // and the insight's place in it, as correct_import's target does.
+    const insights = batch.insights.map((i) => ({ ref: `${i.postId}:${i.idx}`, text: untrusted(i.text), scope: i.scope, ...(i.quote ? { quote: untrusted(i.quote) } : {}) }));
 
     const head = { id: batch.id, savedAt: localDateOf(athlete.tz, batch.savedAt) };
     const fixed = [
@@ -425,12 +601,25 @@ export const readSaves: DesignTool = {
     const shown = listed.slice(0, kept);
     const fresh = shown.filter((m) => m.new).length;
     const when = head.savedAt ? ` (saved ${dayLabel(head.savedAt)})` : "";
-    return answer({
-      source: SOURCE,
-      now: ctx.now,
-      missing,
-      data: { batch: head, moves: shown, routines: routines.slice(0, keptRoutines), insights, next: closeLine(batch.id) },
-      summary: shown.length ? `Read ${plural(shown.length, "move")} from your saves, ${fresh} new${when}` : `Nothing to fit in from your saves${when}`,
-    });
+    // What the run read, for pin_moves and correct_import (never shown to the model): each move shown, its first post,
+    // and each quote id with where it points.
+    const keptRead = read.slice(0, kept);
+    const receipt = {
+      saves: {
+        batch: batch.id,
+        moves: keptRead.map((x) => [...x.first]),
+        quotes: Object.fromEntries(keptRead.flatMap((x) => x.refs).map(([id, r]) => [id, [r.postId, r.position, r.quote, r.check, r.from, r.at]])),
+      },
+    };
+    return {
+      ...answer({
+        source: SOURCE,
+        now: ctx.now,
+        missing,
+        data: { batch: head, moves: shown, routines: routines.slice(0, keptRoutines), insights, next: closeLine(batch.id) },
+        summary: shown.length ? `Read ${plural(shown.length, "move")} from your saves, ${fresh} new${when}` : `Nothing to fit in from your saves${when}`,
+      }),
+      receipt,
+    };
   },
 };
