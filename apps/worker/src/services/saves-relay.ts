@@ -1,9 +1,12 @@
-import { and, eq, inArray, lt, or, sql } from "drizzle-orm";
+import { and, desc, eq, inArray, lt, or, sql } from "drizzle-orm";
 import type { ZodIssue } from "zod";
 import { EXERCISES, PROFILES } from "@rg/exercise-library";
 import { schema } from "@rg/database";
-import { dropUnknownEnums, EXTRACT_PROMPT_VERSION, extractionSchema, extractSystemText, extractUserText, promptSha } from "@rg/saves";
-import type { Extraction, PostSubmit, SaveErrorCode } from "@rg/saves";
+import {
+  buildExtractBody, dropUnknownEnums, EXTRACT_PROMPT_VERSION, extractionSchema, extractSystemText, extractUserText, promptSha,
+  transcriptSegments, verifyQuotes,
+} from "@rg/saves";
+import type { Extraction, PostSubmit, PostWords, SaveErrorCode } from "@rg/saves";
 import type { Env } from "../env.js";
 import { runAtomically, type Db } from "./db.js";
 import { promptVersionStatement, trailStatements, type TrailEventInput } from "./import-trail.js";
@@ -15,7 +18,7 @@ import { extractJson } from "./studio-llm.js";
 import { MAX_EXTRACT_ATTEMPTS, RELAY_CLAIM_STALE_MS, RETRYABLE_ERROR_CODES, siteSource } from "./saves-ledger.js";
 import { matchPost } from "./saves-match.js";
 
-const { savedPosts } = schema;
+const { savedPosts, importBlobs } = schema;
 
 /** The models the extension may ask for (`x-saves-model`). R3's probe sets the real list. */
 export const EXTRACT_MODELS: readonly string[] = ["google/gemini-3.6-flash"];
@@ -23,9 +26,10 @@ export const EXTRACT_MODEL_DEFAULT = "google/gemini-3.6-flash";
 /** The most output tokens a request may ask for (`x-saves-max-tokens`). */
 /**
  * The most output tokens an extraction may ask for. 4,000 cut off 18 of the first 43 live replies (2026-10-26: a routine's
- * moves, each with twelve condition notes, run long) — every one then failed as "not valid JSON" and paid twice.
+ * moves, each with twelve condition notes, run long) — every one then failed as "not valid JSON" and paid twice. 32,000
+ * since extract-6 (design 2026-11-05 §5.4): a 30-move follow-along with its quotes and reasons, with headroom.
  */
-export const EXTRACT_MAX_TOKENS_CAP = 12_000;
+export const EXTRACT_MAX_TOKENS_CAP = 32_000;
 /** The largest request body the relay takes. R2 sets the real value; `SAVES_RELAY_MAX_BYTES` overrides. */
 export const RELAY_MAX_BYTES = 20_000_000;
 /** The model's context window in tokens: a body cannot cost more input than this, whatever its length. */
@@ -166,6 +170,16 @@ export function readRelayRequest(
   return { ok: true, model, maxTokens, length };
 }
 
+/** How a reading's body reaches the gateway: the extension's own, streamed unread; or built here from the stored words. */
+type Send = { kind: "stream"; req: Request; length: number } | { kind: "video" };
+interface ExtractPlan {
+  model: string;
+  maxTokens: number;
+  prompt: { version: string | null; sha: string | null; retryIssues: string[] | undefined };
+  readFacts: Record<string, unknown> | null;
+  send: Send;
+}
+
 /**
  * Relay one extraction request. The body is the gateway JSON the extension built: it is NEVER read, parsed or buffered
  * here — the request's stream goes straight into `fetch` (`duplex: "half"`), so a 20 MB video costs the Worker no
@@ -188,12 +202,87 @@ export async function relayExtract(
 ): Promise<RelayResult> {
   const asked = readRelayRequest(req, env);
   if (!asked.ok) return { ok: false, code: asked.status === 413 ? "too_large" : "unknown", issues: [asked.error] };
-  const { model, maxTokens, length } = asked;
-  const nowIso = now.toISOString();
+  return runExtraction(db, env, userId, post, {
+    model: asked.model, maxTokens: asked.maxTokens, prompt: readPromptHeaders(req), readFacts: readFactsHeader(req),
+    send: { kind: "stream", req, length: asked.length },
+  }, now, fetchImpl);
+}
+
+/** A video is watched (attached by its link) when it is this long or shorter, or when the owner asked (§5.4). */
+export const WATCH_MAX_SEC = 20 * 60;
+/** What a watched second costs in prompt tokens: typically (the video-seen check's yardstick) and at worst (the reservation's). */
+export const VIDEO_TOKENS_PER_SEC = 100;
+export const VIDEO_TOKENS_PER_SEC_WORST = 300;
+
+/** The gateway call's time limit: 120 s, plus 2 s a minute watched, at most 10 minutes (design 2026-11-05 §5.4). */
+export function callTimeoutMs(watchedSec: number | null): number {
+  return Math.min(600_000, CALL_TIMEOUT_MS + 2_000 * Math.ceil((watchedSec ?? 0) / 60));
+}
+
+/** The reading's model and output cap, from the headers alone: a video's body is the Worker's own. */
+export function readVideoRequest(req: Request): { ok: true; model: string; maxTokens: number } | { ok: false; status: 400; error: string } {
+  const model = req.headers.get("x-saves-model") ?? EXTRACT_MODEL_DEFAULT;
+  if (!EXTRACT_MODELS.includes(model)) return { ok: false, status: 400, error: "model_not_allowed" };
+  const rawTokens = req.headers.get("x-saves-max-tokens");
+  const maxTokens = rawTokens === null ? EXTRACT_MAX_TOKENS_CAP : Number(rawTokens);
+  if (!Number.isInteger(maxTokens) || maxTokens < 1 || maxTokens > EXTRACT_MAX_TOKENS_CAP) return { ok: false, status: 400, error: "bad_max_tokens" };
+  return { ok: true, model, maxTokens };
+}
+
+/**
+ * A video's reading (`POST /api/saves/posts/:key/extract-video`; design 2026-11-05 §5.4). There are no media bytes to
+ * relay, so the Worker builds the body itself from the stored words (`extractUserText`, the same builder; "as sent" by
+ * construction) and attaches the video by its link when it is WATCH_MAX_SEC or shorter, or the owner asked (Watch it
+ * too). The reservation and the timeout come from the length. The rest is the relay's: claim, call, settle, finish,
+ * match. D1 statements: the relay's, plus the post read before reserving 1 and its transcript 1.
+ */
+export async function relayVideoExtract(
+  db: Db,
+  env: Env,
+  userId: string,
+  post: { id: string },
+  req: Request,
+  now: Date,
+  fetchImpl: typeof fetch,
+): Promise<RelayResult> {
+  const asked = readVideoRequest(req);
+  if (!asked.ok) return { ok: false, code: "unknown", issues: [asked.error] };
   const prompt = readPromptHeaders(req);
-  const readFacts = readFactsHeader(req);
+  return runExtraction(db, env, userId, post, {
+    model: asked.model, maxTokens: asked.maxTokens, prompt: { version: EXTRACT_PROMPT_VERSION, sha: null, retryIssues: prompt.retryIssues },
+    readFacts: null, send: { kind: "video" },
+  }, now, fetchImpl);
+}
+
+/** A claimed post's words and facts, as the reading is built from them and checked against them. */
+interface ClaimedPost {
+  attempt: number;
+  userText: string;
+  sha: string;
+  words: PostWords;
+  url: string | null;
+}
+
+/** What a watched video must add to the bill, beyond the text's own tokens, to count as seen: half the typical rate. */
+function videoSeenOf(inputTokens: number, textChars: number, durationSec: number): boolean {
+  return inputTokens - Math.ceil(textChars / 4) >= 0.5 * VIDEO_TOKENS_PER_SEC * durationSec;
+}
+
+async function runExtraction(
+  db: Db,
+  env: Env,
+  userId: string,
+  post: { id: string },
+  plan: ExtractPlan,
+  now: Date,
+  fetchImpl: typeof fetch,
+): Promise<RelayResult> {
+  const { model, maxTokens, prompt, readFacts, send } = plan;
+  const nowIso = now.toISOString();
   /** The claimed attempt and the post's words: the prompt as sent is rebuilt from them (design 2026-11-05 §6.1). */
-  let claimed: { attempt: number; userText: string; sha: string } | null = null;
+  let claimed: ClaimedPost | null = null;
+  /** A video's plan: its length, whether it is watched, whether it has a transcript (read before reserving). */
+  let video: { durationSec: number | null; watched: boolean; hasTranscript: boolean; textChars: number } | null = null;
 
   const gateway = wakeGateway(env);
   if (gateway.kind === "no_key") return { ok: false, code: "model_failed" };
@@ -225,20 +314,38 @@ export async function relayExtract(
         creatorHandle: savedPosts.creatorHandle,
         creatorName: savedPosts.creatorName,
         mediaType: savedPosts.mediaType,
+        source: savedPosts.source,
+        url: savedPosts.url,
+        title: savedPosts.title,
+        durationSec: savedPosts.durationSec,
+        videoInfo: savedPosts.videoInfo,
       });
     const row = rows[0];
     if (!row) return false;
-    const userText = extractUserText({
-      post: {
-        caption: row.caption ?? "",
-        hashtags: row.hashtags ?? [],
-        creator: { handle: row.creatorHandle ?? "", ...(row.creatorName ? { name: row.creatorName } : {}) },
-        mediaType: (row.mediaType as PostSubmit["mediaType"]) ?? "video",
-      },
-      libraryNames: LIBRARY_NAMES,
-      retryIssues: prompt.retryIssues,
-    });
-    claimed = { attempt: row.attempt, userText, sha: await promptSha(userText) };
+    const words: PostWords = {
+      caption: row.caption ?? "",
+      hashtags: row.hashtags ?? [],
+      creator: { handle: row.creatorHandle ?? "", ...(row.creatorName ? { name: row.creatorName } : {}) },
+      mediaType: (row.mediaType as PostSubmit["mediaType"]) ?? "video",
+    };
+    if (send.kind === "video") {
+      // The video's words: its title, length and chapters from the post, its transcript from its blob (§5.3).
+      const [blob] = video?.hasTranscript
+        ? await db
+            .select({ text: importBlobs.text })
+            .from(importBlobs)
+            .where(and(eq(importBlobs.userId, userId), eq(importBlobs.postId, post.id), eq(importBlobs.kind, "transcript")))
+            .orderBy(desc(importBlobs.at))
+            .limit(1)
+        : [];
+      const info = row.videoInfo;
+      Object.assign(words, {
+        source: row.source, title: row.title, durationSec: row.durationSec, chapters: info?.chapters ?? [],
+        transcript: blob && info?.captions ? { lang: info.captions.lang, kind: info.captions.kind, text: blob.text, cut: info.transcriptCut } : null,
+      });
+    }
+    const userText = extractUserText({ post: words, libraryNames: LIBRARY_NAMES, retryIssues: prompt.retryIssues });
+    claimed = { attempt: row.attempt, userText, sha: await promptSha(userText), words, url: row.url };
     return true;
   };
   const refusal = async (): Promise<RelayResult> => {
@@ -264,16 +371,18 @@ export async function relayExtract(
         ...("extraction" in out ? { extraction: out.extraction, lastErrorCode: null } : { lastErrorCode: out.code }),
         lastError: "extraction" in out || !out.why?.length ? null : out.why.join(" | ").slice(0, LAST_ERROR_CHARS),
         costMicros: sql`${savedPosts.costMicros} + ${costMicros}`,
+        ...(call?.videoSeen !== undefined && call.videoSeen !== null ? { videoSeen: call.videoSeen } : {}),
         updatedAt: nowIso,
       })
       .where(and(eq(savedPosts.id, post.id), eq(savedPosts.userId, userId), eq(savedPosts.status, "extracting")));
     // The attempt's trail with its outcome (design 2026-11-05 §4): the call's facts, the raw reply, the prompt as sent.
-    const event = extractEvent(out, costMicros, call, claimed, prompt, model, length);
+    const sent = send.kind === "video" && claimed ? { ...prompt, sha: claimed.sha } : prompt;
+    const event = extractEvent(out, costMicros, call, claimed, sent, model, send.kind === "stream" ? send.length : (call?.bytes ?? 0));
     if (readFacts) event.detail = { ...(event.detail as object), readFacts };
     return runAtomically(db, [
       update,
       ...trailStatements(db, userId, post.id, [event], nowIso),
-      ...(call && prompt.version === EXTRACT_PROMPT_VERSION ? [promptVersionStatement(db, EXTRACT_PROMPT_VERSION, "extract", extractSystemText(), nowIso)] : []),
+      ...(call && sent.version === EXTRACT_PROMPT_VERSION ? [promptVersionStatement(db, EXTRACT_PROMPT_VERSION, "extract", extractSystemText(), nowIso)] : []),
     ]);
   };
 
@@ -303,27 +412,67 @@ export async function relayExtract(
     }
   };
 
+  if (send.kind === "video") {
+    // The length, the owner's ask and whether there are words to read decide the reading before anything is spent.
+    const [p] = await db
+      .select({ durationSec: savedPosts.durationSec, watchVideo: savedPosts.watchVideo, videoInfo: savedPosts.videoInfo, caption: savedPosts.caption })
+      .from(savedPosts)
+      .where(and(eq(savedPosts.id, post.id), eq(savedPosts.userId, userId)))
+      .limit(1);
+    if (!p) return { ok: false, code: "unknown", status: 404 };
+    const durationSec = p.durationSec ?? null;
+    const transcriptChars = p.videoInfo?.captions ? (p.videoInfo.transcriptChars ?? 0) : 0;
+    video = {
+      durationSec,
+      watched: p.watchVideo === true || (durationSec !== null && durationSec <= WATCH_MAX_SEC),
+      hasTranscript: transcriptChars > 0,
+      textChars: SYSTEM_CHARS + LIBRARY_CHARS + (p.caption?.length ?? 0) + transcriptChars + TEXT_SLACK_CHARS,
+    };
+  }
+
   if (gateway.kind === "canned") {
     if (!(await claim())) return refusal();
     await finish({ extraction: CANNED_EXTRACTION }, 0);
     return matched(CANNED_EXTRACTION);
   }
 
-  // The worst case takes every body character as a quarter token; a typical reel is far smaller (see the constants).
-  const worst = Math.max(
-    1,
-    messagesCostMicros(model, { inputTokens: Math.min(Math.ceil(length / 4), EXTRACT_CONTEXT_TOKENS), cacheReadTokens: 0, cacheWriteTokens: 0, outputTokens: maxTokens }),
-  );
-  const videoSeconds = ((length * 3) / 4 / VIDEO_BYTES_PER_SECOND);
-  const typical = Math.max(
-    1,
-    messagesCostMicros(model, {
-      inputTokens: TEXT_PROMPT_TOKENS + Math.ceil(videoSeconds * VIDEO_TOKENS_PER_SECOND),
-      cacheReadTokens: 0,
-      cacheWriteTokens: 0,
+  if (video && !video.watched && !video.hasTranscript) {
+    // Nothing to read from words and too long to watch unasked: no call (and no spend) until Watch it too.
+    if (!(await claim())) return refusal();
+    await finish({ code: "no_captions", why: [NO_CAPTIONS_LONG] }, 0);
+    return { ok: false, code: "no_captions" };
+  }
+
+  let worst: number;
+  let typical: number;
+  if (video) {
+    // A URL body's cost is its length's (≈100 tokens a second watched, 300 at worst) and its text's, not its bytes'.
+    const watchedSec = video.watched ? (video.durationSec ?? WATCH_MAX_SEC) : 0;
+    worst = Math.max(1, messagesCostMicros(model, {
+      inputTokens: Math.ceil(video.textChars / 3) + VIDEO_TOKENS_PER_SEC_WORST * watchedSec, cacheReadTokens: 0, cacheWriteTokens: 0, outputTokens: maxTokens,
+    }));
+    typical = Math.max(1, messagesCostMicros(model, {
+      inputTokens: Math.ceil(video.textChars / 4) + VIDEO_TOKENS_PER_SEC * watchedSec, cacheReadTokens: 0, cacheWriteTokens: 0,
       outputTokens: Math.min(maxTokens, TYPICAL_OUTPUT_TOKENS),
-    }),
-  );
+    }));
+  } else {
+    const { length } = send as Extract<Send, { kind: "stream" }>;
+    // The worst case takes every body character as a quarter token; a typical reel is far smaller (see the constants).
+    worst = Math.max(
+      1,
+      messagesCostMicros(model, { inputTokens: Math.min(Math.ceil(length / 4), EXTRACT_CONTEXT_TOKENS), cacheReadTokens: 0, cacheWriteTokens: 0, outputTokens: maxTokens }),
+    );
+    const videoSeconds = ((length * 3) / 4 / VIDEO_BYTES_PER_SECOND);
+    typical = Math.max(
+      1,
+      messagesCostMicros(model, {
+        inputTokens: TEXT_PROMPT_TOKENS + Math.ceil(videoSeconds * VIDEO_TOKENS_PER_SECOND),
+        cacheReadTokens: 0,
+        cacheWriteTokens: 0,
+        outputTokens: Math.min(maxTokens, TYPICAL_OUTPUT_TOKENS),
+      }),
+    );
+  }
   const reservation = await reserveImport(db, userId, IMPORT_KINDS.extract, model, worst, typical, now);
   if (!reservation.ok) {
     // The post waits `queued` with the reason, and its `updatedAt` moves it behind other work in `/work`.
@@ -342,16 +491,31 @@ export async function relayExtract(
   let settled = false;
   try {
     if (!(await claim())) return await refusal();
+    const c = claimed as ClaimedPost | null;
+    let body: { stream: ReadableStream | null; length: number } | { text: string };
+    let timeoutMs = CALL_TIMEOUT_MS;
+    if (send.kind === "video" && c && video) {
+      const text = buildExtractBody({
+        model, post: c.words, images: [], libraryNames: LIBRARY_NAMES, retryIssues: prompt.retryIssues, maxTokens,
+        ...(video.watched && c.url ? { videoUrl: c.url, videoName: "video.mp4" } : {}),
+      });
+      body = { text };
+      timeoutMs = callTimeoutMs(video.watched ? video.durationSec : null);
+    } else {
+      const stream = send as Extract<Send, { kind: "stream" }>;
+      body = { stream: stream.req.body, length: stream.length };
+    }
     const started = Date.now();
-    const call = await callGateway(gateway.env, fetchImpl, req, model, length);
+    const call = await callGateway(gateway.env, fetchImpl, body, model, timeoutMs);
     const latencyMs = Date.now() - started;
+    const bytes = "text" in body ? new TextEncoder().encode(body.text).length : undefined;
     // A 402 records out-of-credits (the owner's banner); a call that worked clears it; any other failure says nothing.
     await noteGatewayOutcome(db, userId, call.ok ? { ok: true } : { ok: false, reason: call.reason });
     if (!call.ok) {
       await settleImport(db, reservation.usageId, null);
       settled = true;
       const code: SaveErrorCode = call.reason === "gateway_413" ? "too_large" : "model_failed";
-      await finish({ code, why: [call.reason] }, 0, { usageId: reservation.usageId, latencyMs, failure: call.reason });
+      await finish({ code, why: [call.reason] }, 0, { usageId: reservation.usageId, latencyMs, failure: call.reason, bytes });
       return { ok: false, code };
     }
     // A reply from an unlisted model is priced as that model (the table's ceiling when unknown), never as the one asked for.
@@ -365,9 +529,14 @@ export async function relayExtract(
       model: call.model ?? model, inputTokens: call.inputTokens, outputTokens: call.outputTokens, costMicros: cost,
     });
     settled = true;
+    // Was the video seen? The gateway's passing of a link is undocumented: the billed tokens say (§5.4).
+    const videoSeen = video && c
+      ? video.watched && video.durationSec ? videoSeenOf(call.inputTokens, extractSystemText().length + c.userText.length, video.durationSec) : null
+      : undefined;
     const facts: RelayCall = {
       usageId: reservation.usageId, latencyMs, model: call.model ?? model, raw: call.content,
-      inputTokens: call.inputTokens, outputTokens: call.outputTokens, finishReason: call.finishReason,
+      inputTokens: call.inputTokens, outputTokens: call.outputTokens, finishReason: call.finishReason, bytes,
+      ...(video ? { watched: video.watched, videoSeen: videoSeen ?? null } : {}),
     };
     if (call.model && !modelAllowed(call.model)) {
       console.warn(JSON.stringify({ level: "warn", msg: "saves relay: reply from a model outside the allowlist", requested: model, got: call.model }));
@@ -380,13 +549,32 @@ export async function relayExtract(
       await finish({ code: "model_failed", why: issues }, cost, facts);
       return { ok: false, code: "model_failed", issues };
     }
+    if (video && videoSeen === false && !video.hasTranscript) {
+      // No captions and the video unseen: whatever came back was read from a title and a description alone.
+      await finish({ code: "no_captions", why: [NOTHING_TO_READ] }, cost, facts);
+      return { ok: false, code: "no_captions" };
+    }
     const parsed = parseExtraction(call.content);
     if (!parsed.ok) {
       await finish({ code: "model_failed", why: parsed.issues }, cost, facts);
       return { ok: false, code: "model_failed", issues: parsed.issues };
     }
-    await finish({ extraction: parsed.extraction }, cost, facts);
-    return await matched(parsed.extraction);
+    // Every quote checked against the words it claims (§5.6); the check replaces any the model wrote.
+    const words = c?.words;
+    const checked = verifyQuotes(parsed.extraction, {
+      caption: words?.caption ?? "",
+      title: words?.title ?? null,
+      chapters: (words?.chapters ?? []).map((ch) => ch.title),
+      transcript: words?.transcript ? transcriptSegments(words.transcript.text) : null,
+      speech: parsed.extraction.speech ?? null,
+    });
+    facts.quotes = {
+      verified: checked.results.filter((r) => r.check === "verified").length,
+      in_speech: checked.results.filter((r) => r.check === "in_speech").length,
+      not_found: checked.results.filter((r) => r.check === "not_found").length,
+    };
+    await finish({ extraction: checked.extraction }, cost, facts);
+    return await matched(checked.extraction);
   } catch (e) {
     console.warn(JSON.stringify({ level: "warn", msg: "saves relay: failed", detail: String(e).slice(0, 200) }));
     if (!settled) await settleImport(db, reservation.usageId, null).catch(() => undefined);
@@ -399,6 +587,15 @@ export async function relayExtract(
   }
 }
 
+/** A long video with no captions: nothing to read until the owner asks for it to be watched. */
+const NO_CAPTIONS_LONG = "No captions, and it's over 20 minutes — Watch it too reads it from the video";
+/** No captions, and the reader couldn't watch it. */
+const NOTHING_TO_READ = "Nothing to read: no captions, and the video couldn't be watched";
+/** The system prompt's and the library names' share of a video reading's text, for its reservation. */
+const SYSTEM_CHARS = extractSystemText().length;
+const LIBRARY_CHARS = EXERCISES.reduce((n, e) => n + e.name.length + 2, 0);
+const TEXT_SLACK_CHARS = 4_000;
+
 /** One relay call's facts for the trail: its usage row, time, model, raw reply and tokens, or why it failed. */
 interface RelayCall {
   usageId: string;
@@ -409,6 +606,13 @@ interface RelayCall {
   outputTokens?: number;
   finishReason?: string | null;
   failure?: string;
+  /** The body's bytes, when the Worker built it (a video's). */
+  bytes?: number;
+  /** A video's reading: whether the video was attached, and whether the bill says it was seen (null: not attached). */
+  watched?: boolean;
+  videoSeen?: boolean | null;
+  /** How the reading's quotes checked out (§5.6). */
+  quotes?: { verified: number; in_speech: number; not_found: number };
 }
 
 const KIND_WORDS: Record<Extraction["kind"], string> = {
@@ -431,6 +635,12 @@ function extractEvent(
   if ("extraction" in out) {
     const n = out.extraction.moves.length;
     summary = `Read ${n} move${n === 1 ? "" : "s"} (${KIND_WORDS[out.extraction.kind]})`;
+    // A video's reading says whether it was watched (§5.4).
+    if (call?.watched === false) summary = `${summary} — from the transcript (over 20 minutes)`;
+    else if (call?.videoSeen === false) summary = `${summary} — the reader couldn't watch the video; it read the transcript only`;
+    else if (call?.videoSeen === true) summary = `${summary} — watched`;
+  } else if (out.code === "no_captions") {
+    summary = out.why?.[0] ?? NOTHING_TO_READ;
   } else if (call?.failure) {
     summary = call.failure.startsWith("gateway_") && /^\d+$/.test(call.failure.slice(8))
       ? `The model gateway answered ${call.failure.slice(8)}`
@@ -445,7 +655,7 @@ function extractEvent(
   return {
     stage: "extract",
     source: call ? "gateway" : "worker",
-    status: failed ? "fail" : older ? "warn" : "ok",
+    status: failed ? "fail" : older || call?.videoSeen === false ? "warn" : "ok",
     summary,
     detail: {
       ...("extraction" in out ? { kind: out.extraction.kind, moves: out.extraction.moves.length } : { code: out.code, issues: out.why ?? [] }),
@@ -454,7 +664,9 @@ function extractEvent(
       promptSha: claimed?.sha ?? null,
       promptShaSent: prompt.sha,
       asSent,
-      videoSeen: null,
+      ...(call?.watched !== undefined ? { watched: call.watched } : {}),
+      videoSeen: call?.videoSeen ?? null,
+      ...(call?.quotes ? { quotes: call.quotes } : {}),
       bytes,
     },
     ...(claimed ? { attempt: claimed.attempt } : {}),
@@ -463,6 +675,8 @@ function extractEvent(
     blobs: [
       ...(call?.raw !== undefined ? [{ kind: "raw_reply" as const, text: call.raw }] : []),
       ...(claimed ? [{ kind: "prompt_user" as const, text: claimed.userText }] : []),
+      // What the reader heard in the video: its own transcription, labelled so (§5.5).
+      ...("extraction" in out && out.extraction.speech ? [{ kind: "speech" as const, text: out.extraction.speech }] : []),
     ],
   };
 }
@@ -488,26 +702,27 @@ function parseExtraction(content: string): { ok: true; extraction: Extraction } 
 async function callGateway(
   env: Env,
   fetchImpl: typeof fetch,
-  req: Request,
+  body: { stream: ReadableStream | null; length: number } | { text: string },
   model: string,
-  length: number,
+  timeoutMs: number,
 ): Promise<
   | { ok: true; content: string; model: string | null; inputTokens: number; outputTokens: number; finishReason: string | null }
   | { ok: false; reason: string }
 > {
   const controller = new AbortController();
-  const timer = setTimeout(() => controller.abort(), CALL_TIMEOUT_MS);
+  const timer = setTimeout(() => controller.abort(), timeoutMs);
+  const length = "text" in body ? body.text.length : body.length;
   try {
     const response = await fetchImpl(`${env.AI_GATEWAY_BASE_URL || "https://ai-gateway.vercel.sh/v1"}/chat/completions`, {
       method: "POST",
       signal: controller.signal,
-      headers: {
-        Authorization: `Bearer ${env.AI_GATEWAY_API_KEY}`,
-        "Content-Type": "application/json",
-        "Content-Length": String(length),
-      },
-      body: req.body,
-      duplex: "half",
+      ...("text" in body
+        ? { headers: { Authorization: `Bearer ${env.AI_GATEWAY_API_KEY}`, "Content-Type": "application/json" }, body: body.text }
+        : {
+            headers: { Authorization: `Bearer ${env.AI_GATEWAY_API_KEY}`, "Content-Type": "application/json", "Content-Length": String(body.length) },
+            body: body.stream,
+            duplex: "half",
+          }),
     } as RequestInit);
     if (!response.ok) {
       const detail = await response.text().catch(() => "");

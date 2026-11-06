@@ -177,6 +177,8 @@ export interface ExtractBodyArgs {
   maxTokens: number;
   /** The video by its link instead of inline bytes (probe R2: when no size of it fits the gateway's body limit). */
   videoUrl?: string;
+  /** The file part's name for a linked video (a YouTube watch link is `video.mp4`); `post.mp4` by default. */
+  videoName?: string;
 }
 
 /** The reading's system message, as `buildExtractBody` sends it (the prompt registry stores it per version). */
@@ -271,7 +273,7 @@ export function buildExtractBody(args: ExtractBodyArgs): string {
     });
   } else if (args.videoUrl) {
     // The gateway fetches a hosted file itself (its docs: "a supported URL"), so the body stays small.
-    content.push({ type: "file", file: { filename: "post.mp4", file_data: args.videoUrl } });
+    content.push({ type: "file", file: { filename: args.videoName ?? "post.mp4", file_data: args.videoUrl } });
   }
   for (const img of args.images) {
     content.push({ type: "image_url", image_url: { url: `data:${img.mime};base64,${img.base64}` } });

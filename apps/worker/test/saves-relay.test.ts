@@ -548,8 +548,9 @@ describe("POST /api/saves/posts/:key/extract", () => {
 
   it("400s max tokens above the cap (12,000), or not a number", async () => {
     await seed("k");
-    expect((await route("k", bodyText(), { "x-saves-max-tokens": "12001" })).res.status).toBe(400);
-    expect((await route("k", bodyText(), { "x-saves-max-tokens": "12000" })).res.status).not.toBe(400);
+    // REBASED 2026-11-06 (import trail phase 2): the cap is 32,000 — a 30-move follow-along with its quotes.
+    expect((await route("k", bodyText(), { "x-saves-max-tokens": "32001" })).res.status).toBe(400);
+    expect((await route("k", bodyText(), { "x-saves-max-tokens": "32000" })).res.status).not.toBe(400);
     expect((await route("k", bodyText(), { "x-saves-max-tokens": "lots" })).res.status).toBe(400);
   });
 

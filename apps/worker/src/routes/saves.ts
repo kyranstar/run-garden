@@ -13,7 +13,7 @@ import { bearerGuard } from "../auth/token.js";
 import { savesImportEnabled } from "../env.js";
 import { freshKeys, KNOWN_MAX_KEYS, markFetchFailed, overridePost, recordCheck, recordReadFailed, savedPostId, savesStatus, upsertPost, workList } from "../services/saves-ledger.js";
 import { filterPost } from "../services/saves-filter.js";
-import { markTooLarge, readRelayRequest, relayExtract } from "../services/saves-relay.js";
+import { markTooLarge, readRelayRequest, readVideoRequest, relayExtract, relayVideoExtract } from "../services/saves-relay.js";
 import { assembleBatch } from "../services/saves-batches.js";
 import { addLink, listLinks } from "../services/saved-links.js";
 
@@ -144,6 +144,27 @@ savesRoutes.post("/posts/:key/override", async (c) => {
 });
 
 savesRoutes.get("/status", async (c) => c.json(await savesStatus(c.get("db"), c.get("userId"), nowInstant())));
+
+/**
+ * A video's reading (design 2026-11-05 §5.4): no media bytes to relay, so the Worker builds the body from the stored
+ * words and asks the gateway itself; the extension's request holds the call open (the headers say the model, the
+ * output cap and any retry issues; no body is read). The answers are the relay's.
+ */
+savesRoutes.post("/posts/:key/extract-video", async (c) => {
+  const source = c.req.query("source") ?? "";
+  if (!SAVE_SOURCE_RE.test(source)) return c.json({ error: "invalid", issues: ["source"] }, 400);
+  const asked = readVideoRequest(c.req.raw);
+  if (!asked.ok) return c.json({ error: asked.error }, asked.status);
+  const userId = c.get("userId");
+  const out = await relayVideoExtract(
+    c.get("db"), c.env, userId, { id: await savedPostId(userId, source, c.req.param("key")) }, c.req.raw, new Date(nowInstant()), fetch,
+  );
+  if (out.ok) return c.json({ status: "matched", moves: out.extraction.moves.length, kind: out.extraction.kind });
+  if (out.status === 404) return c.json({ error: "not_found" }, 404);
+  if (out.status === 409) return c.json({ error: "conflict" }, 409);
+  const http = out.code === "budget_paused" ? 429 : out.code === "no_captions" ? 422 : 502;
+  return c.json({ error: out.code, ...(out.issues ? { issues: out.issues } : {}) }, http);
+});
 
 /**
  * The extraction relay: the body is the gateway JSON the extension built, and this route NEVER reads it (no `c.req.json()`,
