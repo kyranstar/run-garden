@@ -70,6 +70,10 @@ describe("the course's sequence", () => {
   it.each([0, -1, 1.5, Number.NaN])("refuses session %s", (n) => {
     expect(() => treSessionDoc(n)).toThrow();
   });
+
+  it.each([1, 10, 11])("session %i carries no notes: the course's rule is the plan's brief, once", (n) => {
+    expect(treSessionDoc(n)).not.toHaveProperty("notes");
+  });
 });
 
 describe("the course's doses", () => {

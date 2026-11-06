@@ -157,6 +157,7 @@ interface ProgrammeRow {
   status: string;
   config: unknown;
   disciplines: unknown;
+  pausedUntil: string | null;
 }
 
 export const changeProgramme: DesignTool = {
@@ -203,7 +204,7 @@ export const changeProgramme: DesignTool = {
     const proposalId = designProposalId(mainRunId);
     const { athlete, extra } = await readAthlete(ctx.db, ctx.userId, ctx.now, {
       programme: sql`(select json_object('id', ${programs.id}, 'name', ${programs.name}, 'kind', ${programs.kind}, 'status', ${programs.status},
-          'config', json(${programs.config}), 'disciplines', json(${programs.disciplines}))
+          'config', json(${programs.config}), 'disciplines', json(${programs.disciplines}), 'pausedUntil', ${programs.pausedUntil})
         from ${programs} where ${programs.id} = ${parsed.programmeId} and ${programs.userId} = ${ctx.userId})`,
       propOps: sql`(select ${coachProposals.ops} from ${coachProposals} where ${coachProposals.id} = ${proposalId} and ${coachProposals.userId} = ${ctx.userId})`,
       propStatus: sql`(select ${coachProposals.status} from ${coachProposals} where ${coachProposals.id} = ${proposalId} and ${coachProposals.userId} = ${ctx.userId})`,
@@ -268,7 +269,7 @@ export const changeProgramme: DesignTool = {
     const preview = await previewPlacement(
       ctx.db,
       ctx.userId,
-      { id: programme.id, status: programme.status, disciplines: (Array.isArray(programme.disciplines) ? programme.disciplines : parsedJson(programme.disciplines) ?? []) as string[] },
+      { id: programme.id, status: programme.status, disciplines: (Array.isArray(programme.disciplines) ? programme.disciplines : parsedJson(programme.disciplines) ?? []) as string[], pausedUntil: programme.pausedUntil },
       next.data,
       athlete.today,
       athlete.prefs,

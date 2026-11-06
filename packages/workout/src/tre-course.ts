@@ -19,6 +19,8 @@
  *   the cue carries the real stop. They are straight sets, so the player waits for Done.
  * - The folds run on a timer (holds): hands on the floor and head down, nobody can tap Done.
  * - The main part holds only the tremor, no lift: the session counts as mobility.
+ * - Easing a session halves its tremor and nothing else (`easedTremorSec`). The sessions carry no notes: the course's
+ *   rule is said once, in its plan's brief (`courses.ts`), and the 48-hour rule is also in the tremor move's how-to.
  */
 import type { WorkoutDoc, WorkoutDose, WorkoutItem, WorkoutPart } from "@rg/domain";
 
@@ -93,10 +95,6 @@ const floorParts = (tremorSec: number): WorkoutPart[] => [
   },
 ];
 
-const NOTES =
-  "A fixed sequence: keep the order. The whole sequence for the first 10 sessions, then the floor alone is often enough. " +
-  "Up to 3 sessions a week. If you still feel worse after 48 hours, above 6 out of 10, halve the next tremor.";
-
 /** A public video of a practice: what its link says, and where it goes. */
 export interface PracticeVideo {
   label: string;
@@ -104,7 +102,7 @@ export interface PracticeVideo {
 }
 
 /** To watch instead of playing the session here: David Berceli's official instructions, and a follow-along with him. */
-const TRE_VIDEOS: readonly PracticeVideo[] = [
+export const TRE_VIDEOS: readonly PracticeVideo[] = [
   { label: "Full instructions", url: "https://www.youtube.com/watch?v=FeUioDuJjFI" },
   { label: "Follow-along", url: "https://www.youtube.com/watch?v=QoB9wpuO688" },
 ];
@@ -117,13 +115,17 @@ const TRE_SOURCE = /^tre-course:\d+$/;
  */
 export const videosOfSource = (ref: string | undefined): readonly PracticeVideo[] => (ref !== undefined && TRE_SOURCE.test(ref) ? TRE_VIDEOS : []);
 
+/** An eased session's tremor: half of it, never under a minute. */
+export const easedTremorSec = (tremorSec: number): number => Math.max(MINUTE, Math.floor(tremorSec / 2));
+
 /**
  * The document for one session of the course, numbered from 1: the whole sequence through session 10, the floor alone
- * after. Throws for anything but a whole number from 1 up.
+ * after, with its tremor halved when `ease` is set. Throws for anything but a whole number from 1 up.
  */
-export function treSessionDoc(session: number): WorkoutDoc {
+export function treSessionDoc(session: number, { ease = false }: { ease?: boolean } = {}): WorkoutDoc {
   if (!Number.isInteger(session) || session < 1) throw new RangeError(`A TRE session is numbered from 1 (got ${session}).`);
-  const { wallSitSec, tremorSec } = dosesOf(session);
+  const { wallSitSec, tremorSec: fullTremorSec } = dosesOf(session);
+  const tremorSec = ease ? easedTremorSec(fullTremorSec) : fullTremorSec;
   const minutes = tremorSec / MINUTE;
   const whole = session <= TRE_WHOLE_SEQUENCE_SESSIONS;
   const lead = whole ? "Tire the legs and hips, then let them tremor on the floor" : "Straight to the floor: let the legs and hips tremor";
@@ -138,6 +140,5 @@ export function treSessionDoc(session: number): WorkoutDoc {
     },
     parts: whole ? [...standingParts(wallSitSec), ...floorParts(tremorSec)] : floorParts(tremorSec),
     source: { kind: "studio", ref: `tre-course:${session}` },
-    notes: NOTES,
   };
 }
