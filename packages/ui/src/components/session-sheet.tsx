@@ -26,7 +26,7 @@
  * write only queues (ruling 3-R11): right after it, the sheet runs the drain chain (one job a request) and reads the
  * session, and reads it again on a backoff while it is "Sending…" (`WATCH_POLL_S`), for about five minutes.
  */
-import { useEffect, useRef, useState, type ReactNode } from "react";
+import { Fragment, useEffect, useRef, useState, type ReactNode } from "react";
 import { Link, useLocation, useNavigate } from "react-router-dom";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import {
@@ -1005,6 +1005,19 @@ export function SessionSheet({
             reading
           )}
         </p>
+        {s?.videos?.length ? (
+          <p className="session-reason session-videos">
+            Watch instead:{" "}
+            {s.videos.map((v, i) => (
+              <Fragment key={v.url}>
+                {i > 0 ? " · " : null}
+                <a className="stu-saved-link" href={v.url} target="_blank" rel="noopener noreferrer">
+                  {v.label}
+                </a>
+              </Fragment>
+            ))}
+          </p>
+        ) : null}
         {/* A modal sheet hides the nav, so it keeps its own small Ask, seeing the workout (the integrated review, I3). */}
         <AskCoach focus={workoutFocus(w)} wrap="session-ask-row" />
         {notKept ? (

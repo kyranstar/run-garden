@@ -97,6 +97,26 @@ const NOTES =
   "A fixed sequence: keep the order. The whole sequence for the first 10 sessions, then the floor alone is often enough. " +
   "Up to 3 sessions a week. If you still feel worse after 48 hours, above 6 out of 10, halve the next tremor.";
 
+/** A public video of a practice: what its link says, and where it goes. */
+export interface PracticeVideo {
+  label: string;
+  url: string;
+}
+
+/** To watch instead of playing the session here: David Berceli's official instructions, and a follow-along with him. */
+const TRE_VIDEOS: readonly PracticeVideo[] = [
+  { label: "Full instructions", url: "https://www.youtube.com/watch?v=FeUioDuJjFI" },
+  { label: "Follow-along", url: "https://www.youtube.com/watch?v=QoB9wpuO688" },
+];
+
+const TRE_SOURCE = /^tre-course:\d+$/;
+
+/**
+ * The videos for a document with this `source.ref`: read from the ref, not stored in the document, so offering them
+ * revises no planned session (a new revision would take its copy off the watch and send it again).
+ */
+export const videosOfSource = (ref: string | undefined): readonly PracticeVideo[] => (ref !== undefined && TRE_SOURCE.test(ref) ? TRE_VIDEOS : []);
+
 /**
  * The document for one session of the course, numbered from 1: the whole sequence through session 10, the floor alone
  * after. Throws for anything but a whole number from 1 up.

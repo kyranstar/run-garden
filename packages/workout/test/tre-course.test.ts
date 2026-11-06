@@ -15,6 +15,7 @@ import {
   suggestForPart,
   treSessionDoc,
   validateWorkoutDoc,
+  videosOfSource,
   type DayContext,
   type QuickStartKind,
   type SuggestCtx,
@@ -178,6 +179,21 @@ describe("the course in the player", () => {
   it("ends on the five-minute rest, never on the tremor", () => {
     const last = steps[steps.length - 1]!;
     expect([last.exerciseId, last.seconds]).toEqual(["legsUp", 300]);
+  });
+});
+
+describe("the course's videos, to watch instead", () => {
+  const BOTH = [
+    { label: "Full instructions", url: "https://www.youtube.com/watch?v=FeUioDuJjFI" },
+    { label: "Follow-along", url: "https://www.youtube.com/watch?v=QoB9wpuO688" },
+  ];
+
+  it.each([1, 10, 11, 14])("session %i offers both", (n) => {
+    expect(videosOfSource(treSessionDoc(n).source.ref)).toEqual(BOTH);
+  });
+
+  it.each([undefined, "", "quick_start:hip_opener", "tre-course", "tre-courses:1", "not-tre-course:1"])("a source of %s offers none", (ref) => {
+    expect(videosOfSource(ref)).toEqual([]);
   });
 });
 
