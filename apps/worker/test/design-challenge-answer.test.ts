@@ -113,3 +113,22 @@ describe("a challenge's answer", () => {
     expect(older).not.toContain("If you still want it out");
   });
 });
+
+describe("figures from where the athlete stands (audit fixes, E5)", () => {
+  it("the honesty rule takes a figure from the opening message's computed blocks as it does a tool result's", async () => {
+    const { SHARED_PROMPT } = await import("../src/services/design-prompt.js");
+    expect(SHARED_PROMPT).toContain(
+      'A figure inside a reason ("untrained for 6 days") must come from a tool result you read or the opening message\'s computed blocks (where the athlete stands, the index), never an estimate.',
+    );
+  });
+
+  it("the reviewer's packet carries the where-you-stand block handed in, after a line saying whose figures they are", async () => {
+    const { reviewPacket, STAND_LEAD } = await import("../src/services/design-review.js");
+    const { STAND_HEADING } = await import("../src/services/where-you-stand.js");
+    const stand = `${STAND_HEADING}\n- Zorbex hold: 45 s of 90 s by 1 Dec — behind\nNeeds you: nothing the app sees.`;
+    const draft = { proposalId: "dp-x", target: { kind: "new" as const, date: "2026-10-29" }, date: "2026-10-29", doc: (await import("./doc-workout-fixture.js")).calmDoc(), issues: [], derived: {} };
+    const packet = reviewPacket({ round: 1, draft, records: [], stand });
+    expect(packet).toContain(`${STAND_LEAD}\n${stand}`);
+    expect(packet.indexOf(STAND_LEAD)).toBeLessThan(packet.indexOf("# The designer's tool results"));
+  });
+});

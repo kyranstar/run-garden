@@ -48,7 +48,8 @@ import {
 } from "../src/services/design-review.js";
 import { defaultRunDeps, newRunState } from "../src/services/coach-runs.js";
 import { LLM_BUDGET } from "../src/services/llm.js";
-import { promoteWithWhatItHas, submitReview, unavailableWhy } from "../src/services/design-review.js";
+import { promoteWithWhatItHas, STAND_LEAD, submitReview, unavailableWhy } from "../src/services/design-review.js";
+import { STAND_HEADING } from "../src/services/where-you-stand.js";
 import { ANSWER_MAX_BYTES } from "../src/services/coach-runs.js";
 import { allTools } from "../src/services/design-tools/index.js";
 import { designProposalId, type DocWorkoutOp } from "../src/services/design-tools/propose.js";
@@ -541,6 +542,8 @@ describe("what the reviewer is given", () => {
     expect(packet).toContain("The main coach's brief for this workout:\n<untrusted from=\"main coach\">Tuesday: hips, easy ‹/untrusted›.</untrusted>");
     expect(packet).toContain("- parts[0] (mode_above_day): Above ‹today's› mode.");
     expect(packet).toContain("(none: the designer read nothing before proposing)");
+    // No opening block of where the athlete stands handed in: none in the packet (a set's designer's reviewer).
+    expect(packet).not.toContain(STAND_LEAD);
   });
 
   it("the designer's tool results are capped near 24 KB, newest first, and the header says what was left out", () => {
@@ -1061,6 +1064,20 @@ describe("the run around a review", () => {
     expect(reviewed).toMatchObject({ status: "active", nextDue: { runId, role: "main" } });
     // Its packet went into its opening message; it is not kept a second time.
     expect(JSON.parse((await runRow(reviewer!.id)).state!)).not.toHaveProperty("packet");
+  });
+
+  it("the packet carries where the athlete stands, as the designing run's opening held it (audit fixes, E5)", async () => {
+    const a = await athlete();
+    const runId = await newRun(a.userId);
+    const { deps } = scripted([t(propose("Calm hips"))]);
+    for (let i = 0; i < 2; i++) await runStep(db, env, runId, a.userId, new Date(NOW.getTime() + i * 1000), deps); // context, propose
+    const opening = (JSON.parse((await runRow(runId)).state!) as { messages: Array<{ content: Array<{ text?: string }> }> }).messages[0]!.content[0]!.text!;
+    const stand = opening.slice(opening.indexOf(STAND_HEADING)).split("\n\n")[0]!;
+    expect(stand.startsWith(STAND_HEADING)).toBe(true);
+    const [reviewer] = await reviewersOf(runId);
+    const packet = (JSON.parse(reviewer!.state!) as { packet: string }).packet;
+    expect(packet).toContain(STAND_LEAD);
+    expect(packet).toContain(stand);
   });
 
   it("a create while the run waits on its review answers the live run, never a second one", async () => {

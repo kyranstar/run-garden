@@ -110,7 +110,10 @@ const BEFORE = { tools: 34_935, shared: 20_450, main: 4_586 };
 /* REBASED 2026-11-06 (the controller's ruling: read_saves' Reading line says the why and a case show their heads, and
  * when full: true is worth a call — shared 28,739 → 28,843) — measured 21,401; held with 404 characters (~101 tokens)
  * of headroom. */
-const GROWTH_MAX_CHARS = 21_805;
+/* REBASED 2026-11-06 (audit fixes, evidence): read_saves' moveIds (a past card's evidence, E1), the challenge order with
+ * the call first and read_saves by the move (E2), figures from the opening's computed blocks (E5) — measured 21,846; held
+ * with 404 characters (~115 tokens) of headroom. */
+const GROWTH_MAX_CHARS = 22_250;
 
 const toolsSent = () => JSON.stringify(allTools().map((t) => ({ name: t.name, description: t.description, input_schema: t.inputSchema })));
 

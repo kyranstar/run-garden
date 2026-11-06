@@ -58,6 +58,7 @@ import {
   promoteWithWhatItHas,
   resumeAfterReview,
   reviewPacket,
+  standFromOpening,
   reviewRubricOf,
   STOPPED_NOTES,
   submitReviewSchema,
@@ -3369,7 +3370,16 @@ function reviewHooks(s: StepCtx): ReviewHooks {
       // The draft's moves named in the account's library when it holds one of the athlete's own (the proposing call read
       // it with the athlete: found again, no statement).
       const library = (await libraryForDocs(s.db, s.userId, [req.draft.doc])).all;
-      const packet = reviewPacket({ round: req.round, draft: req.draft, records: toolRecords(state.messages, state.results), library, ...(state.brief ? { brief: state.brief } : {}) });
+      // Where the athlete stands, as this run's opening carried it (audit fixes, E5): the main coach designing has it; a
+      // set's designer's opening holds none.
+      const packet = reviewPacket({
+        round: req.round,
+        draft: req.draft,
+        records: toolRecords(state.messages, state.results),
+        library,
+        ...(state.brief ? { brief: state.brief } : {}),
+        stand: standFromOpening(state.messages),
+      });
       const rootSettings = root.settings ?? state.settings;
       const reviewerState = newRunState("reviewer", run.scope, {
         rehearsal: state.settings.rehearsal,

@@ -58,6 +58,7 @@ import { EXERCISES, type ExerciseRecord } from "@rg/exercise-library";
 import { makeLibraryIndex } from "@rg/workout";
 import type { Db } from "./db.js";
 import { REVIEWER_MAX_CALLS } from "./design-limits.js";
+import { STAND_HEADING } from "./where-you-stand.js";
 import { markUntrusted, OPTIONAL_DIMENSIONS, REVIEW_DIMENSIONS, reviewDimensions, type ReviewRubric } from "./design-prompt.js";
 import { isPersonalId } from "@rg/saves";
 import { doseWords } from "./saves-evidence.js";
@@ -981,7 +982,7 @@ function targetWords(d: DraftForReview): string {
  * TOOL_RECORDS_MAX_BYTES with a line saying how many of the least telling calls were left out, and which. Composed by the app: every
  * text in it that came from a model or the athlete is inside a marker, so the context builder places it as it is.
  */
-export function reviewPacket(o: { round: number; draft: DraftForReview; records: ToolRecord[]; brief?: string; library?: readonly ExerciseRecord[] }): string {
+export function reviewPacket(o: { round: number; draft: DraftForReview; records: ToolRecord[]; brief?: string; library?: readonly ExerciseRecord[]; stand?: string | null }): string {
   const d = o.draft;
   const head = [
     "# What to review",
@@ -1037,7 +1038,25 @@ export function reviewPacket(o: { round: number; draft: DraftForReview; records:
     ...(dropped.length > 0 ? [`${dropped.length} call${dropped.length === 1 ? " was" : "s were"} left out to keep this short, the least telling first: ${noBrackets(droppedWords)}.`] : []),
     ...(lines.length > 0 ? lines : ["(none: the designer read nothing before proposing)"]),
   ];
-  return [head.join("\n"), validator.join("\n"), records.join("\n")].join("\n\n");
+  // Where the athlete stands, as the designing run's opening carried it (audit fixes, E5): a figure the draft's whys take
+  // from it is the app's, not invented — the honesty rule allows it, so the reviewer can check it.
+  const stand = o.stand ? [`${STAND_LEAD}\n${o.stand}`] : [];
+  return [head.join("\n"), ...stand, validator.join("\n"), records.join("\n")].join("\n\n");
+}
+
+/** The line before the where-you-stand block in a reviewer's packet. */
+export const STAND_LEAD =
+  "Where the athlete stands — the app's own figures, as the designer's opening message carried them; a figure the draft takes from here is the app's, not invented:";
+
+/** The where-you-stand block of a run's opening message (its first user message), as design-context.ts wrote it — or null:
+ * a set's designer's opening holds none. */
+export function standFromOpening(messages: readonly MessageParam[]): string | null {
+  const first = messages[0];
+  if (!first || first.role !== "user") return null;
+  const text = typeof first.content === "string" ? first.content : first.content.flatMap((b) => (b.type === "text" ? [b.text] : [])).join("\n");
+  const at = text.indexOf(STAND_HEADING);
+  if (at < 0) return null;
+  return text.slice(at).split("\n\n")[0]!.trim();
 }
 
 /**

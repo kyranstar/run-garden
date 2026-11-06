@@ -860,9 +860,12 @@ export function driftLine(d: Drift): string {
 }
 
 /** The block (see the module comment). */
+/** The block's heading: the reviewer's packet finds the block by it in the designing run's opening (audit fixes, E5). */
+export const STAND_HEADING = "# Where you stand (the app's own figures)";
+
 export function standBlock(f: StandFacts, drifts: readonly Drift[]): string {
   return [
-    "# Where you stand (the app's own figures)",
+    STAND_HEADING,
     ...objectiveLines(f),
     ...plannedLines(f),
     ...aheadLines(f),

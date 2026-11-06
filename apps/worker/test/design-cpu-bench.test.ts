@@ -88,7 +88,7 @@ import { ANSWER_MAX_BYTES, createRun, DOCUMENT_ANSWER_BYTES, noteOnTrail, STATE_
 import { CoachRunStepper } from "../src/services/coach-run-stepper.js";
 import { designContextBuilder } from "../src/services/design-context.js";
 import { REVIEW_DIMENSIONS } from "../src/services/design-prompt.js";
-import { reviewPacket, toolRecords, TOOL_RECORDS_MAX_BYTES } from "../src/services/design-review.js";
+import { reviewPacket, standFromOpening, toolRecords, TOOL_RECORDS_MAX_BYTES } from "../src/services/design-review.js";
 import { adjustPlan } from "../src/services/design-tools/adjust-plan.js";
 import { allTools } from "../src/services/design-tools/index.js";
 import { PIN_LINE_MAX } from "../src/services/design-tools/pin-moves.js";
@@ -1066,7 +1066,10 @@ beforeAll(async () => {
     `the reviewer's packet: ${records.length} records (${JSON.stringify(records).length} B) → ${reviewPacket({ round: 1, draft, records }).length} B ` +
       `(records cut near ${TOOL_RECORDS_MAX_BYTES} B)`,
   );
-  await measurePart("4a", "4a. the reviewer's packet (toolRecords + reviewPacket), inside 2b", async () => reviewPacket({ round: 1, draft, records: toolRecords(designer.messages, designer.results) }));
+  // The opening's where-you-stand block too (audit fixes, E5): found in the designer's opening message and carried.
+  await measurePart("4a", "4a. the reviewer's packet (toolRecords + reviewPacket), inside 2b", async () =>
+    reviewPacket({ round: 1, draft, records: toolRecords(designer.messages, designer.results), stand: standFromOpening(designer.messages) }),
+  );
 
   // 4b. The reviewer's opening context (its packet in the header).
   w = await measure("4b", "4b. reviewer context step", images.get("proposed")!, step, { budget: 3 });

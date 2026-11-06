@@ -180,7 +180,8 @@ describe("the prompt text", () => {
   it("carries the review's wording of fix round 1", () => {
     for (const words of [
       "Don't restate what the proposal card computes and prints",
-      "must come from a tool result you read, never an estimate",
+      // REBASED 2026-11-06 (audit fixes, evidence): or the opening message's computed blocks (E5).
+      "must come from a tool result you read or the opening message's computed blocks (where the athlete stands, the index), never an estimate",
       `Ask for the reads you need together in one turn (at most ${MAX_TOOL_CALLS_PER_TURN} a turn) — the app runs them all, one after another, before your next turn, so several reads in one turn cost one model call where the same reads one at a time cost several.`,
       "and what a brief asks this workout to be",
       "the role block below says which part is yours",
