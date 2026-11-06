@@ -223,7 +223,7 @@ A violation surfaces through the existing sync notes, so the athlete sees it, an
 Each stage lands on its own, with CI and Deploy green, run in local time and UTC. Each schema change is additive and asks the owner first. Each deploy takes a D1 Time Travel bookmark first; there's no rollback past the Durable Object, so forward fixes only. A stage with behaviour changes lists them and shows them on real data before landing.
 
 **Stage 1. Plans have a purpose.** It lands in small pieces, in this order:
-1. Migration 0035: the new columns and the `course` kind. `programs` rows for every existing plan (§3.5), idempotent, with parents backfilled. The list reads this registry; the API's shape stays, with new fields optional. The owner approves the purpose and brief seeded for each existing plan: they live in the database, never the repo.
+1. Migration 0036: the new columns and the `course` kind. `programs` rows for every existing plan (§3.5), idempotent, with parents backfilled. The list reads this registry; the API's shape stays, with new fields optional. The owner approves the purpose and brief seeded for each existing plan: they live in the database, never the repo.
 2. Purpose, brief, objectives and `on_end` reach the coach, and show on the plan sheet (§4.3). `plan_set` and `propose_workout` carry a plan id (§3.4), and `createPlan` must name its plan (§3.2).
 3. TRE becomes a `course` plan, written on the day, listed, stoppable, with "Mark done", reading "Session 3 of 10" (§4.2). Pausing (§4.4).
 4. The `ask` dialogue and "What's next?" on the plan's row (§4.1), and `finish` (§4.2).

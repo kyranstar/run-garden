@@ -35,11 +35,13 @@ import { exportAll, restoreAll } from "./restore-driver.js";
 
 const STAMP = "2026-01-01T00:00:00Z";
 
-/** Statements one garden step may spend: D1 allows 1,000 per invocation and
- * the hourly cron shares its budget with other work. */
+/** Statements one garden step may spend. FLAG (final audit G21, 2026-11-06): these garden budgets are Paid's (D1 allows
+ * 1,000 an invocation there); the Workers Free plan allows 50 and the app keeps every request at 45 (principles §8). A
+ * catch-up step measures ~475 statements — over the Free budget, pre-existing, left for its own fix. The restore's
+ * finish below is pinned at Free's 45. */
 const STEP_BUDGET = 800;
 
-/** D1 refuses every statement past this many in one invocation. */
+/** D1 refuses every statement past this many in one invocation (Paid's figure; see the flag above). */
 const INVOCATION_LIMIT = 1000;
 
 function countingDb(): {
@@ -347,7 +349,9 @@ describe("a restore trusts the file's garden (B4 amended)", () => {
       finish = count();
     });
     expect(finish).toBeGreaterThan(0);
-    expect(finish).toBeLessThanOrEqual(80);
+    // The whole finish request within the Free plan's budget (final audit G21): the tables' counts in a few statements,
+    // not one each (81 of them were 86 queries — a real restore failed there).
+    expect(finish).toBeLessThanOrEqual(45);
   }, 120_000);
 
   it("the start species' unlock rows keep their ids through the catch-up (NEW-C)", async () => {

@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import { HEALTH_LIGHTS, type HealthColor, type HealthLightDto, type ImportHealthDto, type PostRowDto, type SavesStatusDto } from "@rg/saves";
-import { CHECK_DIED, CHECKING, NOT_CONFIGURED, appHref, isChecking, isPostKey, popupModel, safeHref } from "../src/status.js";
+import { CHECK_DIED, CHECKING, NOT_CONFIGURED, addAnswerLine, appHref, isChecking, isPostKey, popupLinks, popupModel, safeHref } from "../src/status.js";
+import type { LinkDto } from "@rg/saves";
 
 const NOW = Date.parse("2026-10-23T12:00:00.000Z");
 const HOUR = 3_600_000;
@@ -278,8 +279,8 @@ describe("popupModel's health row", () => {
     const reader = m.lights.find((l) => l.light === "reader")!;
     expect(reader.line).toBe("Reader: 3 of 4 failed");
     expect(reader.failures).toEqual([
-      { title: "Zorbex hip flow", when: "1 h ago", why: "The reply didn't match the format", href: "https://app.example.com/studio/saves/posts/b", retryKey: "kb" },
-      { title: "Reader", when: "2 h ago", why: "The model gateway answered 402", href: null, retryKey: null },
+      { title: "Zorbex hip flow", when: "1 h ago", why: "The reply didn't match the format", href: "https://app.example.com/studio/saves/posts/b", retryKey: "kb", retrySource: null },
+      { title: "Reader", when: "2 h ago", why: "The model gateway answered 402", href: null, retryKey: null, retrySource: null },
     ]);
   });
 
@@ -309,5 +310,42 @@ describe("a post row opens its trail in the app", () => {
     expect(appHref("http://app.example.com", "/studio/saves")).toBeNull();
     expect(appHref("javascript:alert(1)", "/x")).toBeNull();
     expect(appHref(null, "/x")).toBeNull();
+  });
+});
+
+describe("pasted links in the popup (design 2026-11-05 §3.1)", () => {
+  const S = ["ht", "tps://"].join("");
+  const vid = ["Zx", "9_-Qa", "B3cD"].join("");
+  const watch = `${S}www.${["you", "tube.com"].join("")}/watch?v=${vid}`;
+  const app = (over: Partial<LinkDto> = {}): LinkDto => ({
+    id: "l1", source: "youtube", key: vid, url: watch, title: "Zorbex hip flow", addedAt: "2026-11-06T09:00:00.000Z", addedFrom: "extension",
+    postId: "p1", state: "moves", words: "3 moves", moves: 3, action: null, ...over,
+  });
+
+  it("the app's links, each with its words and its trail; one the app hasn't got yet first, from the extension's own queue", () => {
+    const local = [
+      { source: "youtube" as const, key: vid, url: watch, addedAt: "x", error: null },
+      { source: "instagram" as const, key: "ZorbexPost1", url: `${S}example.com/reel/ZorbexPost1/`, addedAt: "x", error: { code: "gone", message: "The post is gone" } },
+    ];
+    const rows = popupLinks([app()], local, "https://app.example.com");
+    expect(rows).toEqual([
+      { title: `${S}example.com/reel/ZorbexPost1/`, words: "Failed: The post is gone", href: null, action: { kind: "add", url: `${S}example.com/reel/ZorbexPost1/`, label: "Retry" } },
+      { title: "Zorbex hip flow", words: "3 moves", href: "https://app.example.com/studio/saves/posts/p1", action: null },
+    ]);
+  });
+
+  it("Retry and Import anyway: a link that failed before the app had it is added again; a post is processed", () => {
+    expect(popupLinks([app({ postId: null, state: "failed", words: "Failed: Age-restricted", action: "retry" })], [], null)[0]!.action).toEqual({ kind: "add", url: watch, label: "Retry" });
+    expect(popupLinks([app({ state: "not_training", words: "Not training", action: "import_anyway" })], [], null)[0]!.action).toEqual({
+      kind: "process", source: "youtube", key: vid, label: "Import anyway",
+    });
+    expect(popupLinks([app({ state: "failed", words: "Failed: x", action: "retry" })], [], null)[0]!.action).toEqual({ kind: "process", source: "youtube", key: vid, label: "Retry" });
+    expect(popupLinks(null, [], null)).toEqual([]);
+  });
+
+  it("the answer to Add, in a line", () => {
+    expect(addAnswerLine({ ok: true, added: true })).toBe("Added — it'll be waiting in the coach.");
+    expect(addAnswerLine({ ok: true, known: { postId: "p1", firstSeenAt: "2026-11-03T15:00:00.000Z" } })).toBe("Already in — imported Tue 3 Nov.");
+    expect(addAnswerLine({ ok: false, message: "Only YouTube and Instagram links for now." })).toBe("Only YouTube and Instagram links for now.");
   });
 });

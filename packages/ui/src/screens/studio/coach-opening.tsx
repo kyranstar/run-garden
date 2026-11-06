@@ -45,7 +45,7 @@ import { IconCoachSmall } from "../../icons.js";
 import { TEMPLATES_QUERY } from "./add-sheet.js";
 import { AlsoWaiting } from "./also-waiting.js";
 import { BUILD_NEW_HREF } from "./build-entry.js";
-import { markOpeningSeen, NUDGES_QUERY, openingChips, openingLine, readOpeningSeen, starterChips, startersBeside } from "./coach-conversation-model.js";
+import { markOpeningSeen, needsKept, NUDGES_QUERY, openingChips, openingLine, readOpeningSeen, starterChips, startersBeside } from "./coach-conversation-model.js";
 import type { CoachFocus } from "./coach-focus.js";
 import type { StudioCtx } from "./model.js";
 import { QuickStarts } from "./quick-starts.js";
@@ -60,8 +60,6 @@ export const OPENING_LOADING = "Loading";
 export const READ_THE_REVIEW = "Read it all";
 
 export { NUDGES_QUERY };
-/** At most this many "needs you" chips, before the starters (the server's own cap, held here too). */
-export const NUDGES_SHOWN = 2;
 
 /** The coach's words, left, with its mark: a line of the conversation (the opening's, a turn's answer). */
 export function CoachSays({ children, turn, focusable = false }: { children: ReactNode; turn?: string; focusable?: boolean }) {
@@ -144,7 +142,7 @@ export function CoachOpening({
     drawn.current = {
       line: nudgeRead.data?.opening?.line ?? openingLine(today.data),
       opening: nudgeRead.data?.opening ?? null,
-      nudges: (nudgeRead.data?.nudges ?? []).slice(0, NUDGES_SHOWN),
+      nudges: needsKept(nudgeRead.data?.nudges ?? []),
       objective: (objectives.data?.objectives ?? []).find((o) => o.status === "active")?.title ?? null,
       offers: today.data?.watchReviews ?? [],
     };

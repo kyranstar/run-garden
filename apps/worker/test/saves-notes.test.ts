@@ -173,6 +173,18 @@ describe("Save keeps a post's insights in the coach's memory", () => {
     expect((await bodies()).filter((x) => x === "Twice a week is plenty for the hips.")).toHaveLength(1);
   });
 
+  it("extract-6's scoped insights: only general ones reach the coach's memory; a routine's or a creator's programme stays with its post", async () => {
+    await matched("a", [move("Zorbex quad shuffle", QUAD_PURPOSE)], [
+      { text: "Twice a week suits runners.", scope: "general", quote: "twice a week" },
+      { text: "Day one is legs, day two is hips.", scope: "creator_programme" },
+      { text: "Rest a minute between rounds of this one.", scope: "this_routine" },
+      "Plain words keep working.",
+    ] as never);
+    const batchId = (await assembleBatch(db, matchEnv, userId, at(1)))!;
+    await saveBatch(db, userId, batchId, NOW);
+    expect((await bodies()).sort()).toEqual(["Plain words keep working.", "Twice a week suits runners."]);
+  });
+
   it("at most 5 a post and 20 a batch, in the posts' order and each post's own; only words — never a blank or a number", async () => {
     // Stored past the schema's 5 (an extraction is read as stored): the first 5 places count.
     const a = await matched("a", [move("Zorbex quad shuffle", QUAD_PURPOSE)], ["Alpha 0"]);

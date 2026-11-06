@@ -20,13 +20,14 @@
  */
 import { useId, useMemo, useState, type ReactNode } from "react";
 import { createPortal } from "react-dom";
-import { useQuery } from "@tanstack/react-query";
+import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { api, ApiError, saveBlobQuery, saveTrailQuery } from "@rg/api-client";
 import type { ImportStage, ImportTrailDto, TrailStatus } from "@rg/saves";
 import { EmptyState, Sheet, Spinner } from "../../components.js";
 import { IconChevron } from "../../icons.js";
 import { postHref } from "../../post-link.js";
 import {
+  blobDisplayText,
   detailBlobRows,
   moveDetail,
   STATUS_MARK,
@@ -38,6 +39,7 @@ import {
   type TrailDetail,
   type TrailRow,
   type TrailStep,
+  watchLabel,
 } from "./trail-model.js";
 
 /** The sheet's title before the trail is read. */
@@ -119,6 +121,9 @@ function Account({ dto, lines, href }: { dto: ImportTrailDto; lines: AccountLine
           {l.text}
         </p>
       ))}
+      {rest("video").map((l) => (
+        <VideoLine key={l.key} line={l} postId={dto.post.id} />
+      ))}
       {moves.length ? (
         <ul className="coach-run-lines trail-moves" aria-label="The moves">
           {moves.map((l) => (
@@ -144,6 +149,42 @@ function Account({ dto, lines, href }: { dto: ImportTrailDto; lines: AccountLine
         </p>
       ))}
     </section>
+  );
+}
+
+/** A video's watching: read from its words only (with Watch it too and its cost), or waiting for the extension. */
+function VideoLine({ line, postId }: { line: AccountLine; postId: string }) {
+  const qc = useQueryClient();
+  const watch = useMutation({
+    mutationFn: () => api.savesWatch(postId),
+    onSuccess: () => qc.invalidateQueries({ queryKey: saveTrailQuery(postId) }),
+  });
+  // A paid one-tap ask that didn't go through says why, and stays to tap again (final audit G19).
+  const failed = watch.isError
+    ? watch.error instanceof ApiError
+      ? watch.error.status === 409
+        ? "It can't be watched now — a move of it may be saved or being fitted in."
+        : "The app couldn't take it just now — try again."
+      : "Couldn't reach the app — try again."
+    : null;
+  return (
+    <p className="trail-note trail-video">
+      {line.text}
+      {line.watch ? (
+        <>
+          {" "}
+          <button type="button" className="btn btn-small" disabled={watch.isPending} onClick={() => watch.mutate()}>
+            {watchLabel(line.watch.costMicros)}
+          </button>
+        </>
+      ) : null}
+      {failed ? (
+        <span className="trail-video-failed" role="alert">
+          {" "}
+          {failed}
+        </span>
+      ) : null}
+    </p>
   );
 }
 
@@ -259,7 +300,11 @@ function Row({ row }: { row: TrailRow }) {
     <div className="coach-detail-row">
       <dt>{row.key}</dt>
       <dd className="trail-value">
-        <span className="trail-value-text">{all && row.full ? row.full : row.value}</span>
+        {row.struck ? (
+          <s className="trail-value-text">{all && row.full ? row.full : row.value}</s>
+        ) : (
+          <span className="trail-value-text">{all && row.full ? row.full : row.value}</span>
+        )}
         {row.full ? (
           <button type="button" className="linklike tap-pad trail-show-all" aria-expanded={all} onClick={() => setAll((v) => !v)}>
             {all ? "Show less" : "Show all"}
@@ -307,11 +352,11 @@ function Raw({ blob, stage, dto }: { blob: TrailBlob; stage: ImportStage; dto: I
         {q.data && !rows ? (
           <>
             <pre className="trail-raw-text" tabIndex={0} aria-label={blob.label}>
-              {q.data.text}
+              {blobDisplayText(blob.kind, q.data.text)}
             </pre>
             {q.data.cut ? <p className="coach-run-note">Cut at a million characters: the rest wasn't kept.</p> : null}
             <div className="trail-raw-foot">
-              <button type="button" className="btn btn-small" onClick={() => void copy(q.data!.text)}>
+              <button type="button" className="btn btn-small" onClick={() => void copy(blobDisplayText(blob.kind, q.data!.text))}>
                 Copy
               </button>
               <span className="coach-run-note" role="status">

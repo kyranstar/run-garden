@@ -1,8 +1,8 @@
 import { and, asc, desc, eq, gte, inArray, isNotNull, isNull, lt, ne, or, sql } from "drizzle-orm";
 import { schema } from "@rg/database";
-import type { SavedPostRow } from "@rg/database";
+import type { SavedPostRow, SavedVideoInfo } from "@rg/database";
 import type { CheckReport, PostSubmit, ReadFailed, SaveErrorCode, SavesStatusDto, TrailSource, WorkItem } from "@rg/saves";
-import { failureWords } from "@rg/saves";
+import { clock, failureWords } from "@rg/saves";
 import { nowInstant } from "@rg/domain";
 import { sha256Hex } from "../auth/crypto.js";
 import { runAtomically, type Db } from "./db.js";
@@ -10,7 +10,7 @@ import { trailStatements } from "./import-trail.js";
 import { importSpend } from "./saves-budget.js";
 import { CLAIM_STALE_MS } from "./saves-filter.js";
 
-const { savedPosts, saveChecks, savedPostMoves, saveBatches } = schema;
+const { savedPosts, saveChecks, savedPostMoves, saveBatches, savedLinks } = schema;
 
 /** A post is extracted this many times at most. */
 export const MAX_EXTRACT_ATTEMPTS = 3;
@@ -62,7 +62,10 @@ export async function upsertPost(db: Db, userId: string, p: PostSubmit, now: str
       filterReason: p.seed?.reason ?? null,
       filterStage: p.seed ? "seed" : null,
       seeded: !!p.seed,
-      origin: p.readFacts ? (p.readFacts.via === "pasted" ? "pasted" : "saved") : null,
+      origin: p.origin ?? (p.readFacts ? (p.readFacts.via === "pasted" ? "pasted" : "saved") : null),
+      title: p.title ?? null,
+      durationSec: p.durationSec ?? null,
+      videoInfo: videoInfoOf(p),
       updatedAt: now,
     })
     .onConflictDoNothing({ target: [savedPosts.userId, savedPosts.source, savedPosts.sourceKey] })
@@ -72,11 +75,13 @@ export async function upsertPost(db: Db, userId: string, p: PostSubmit, now: str
     await runAtomically(
       db,
       trailStatements(db, userId, id, [
-        ...(p.readFacts
+        ...(p.readFacts || p.transcript
           ? [{
               stage: "read" as const, source: siteSource(p.source), status: "ok" as const,
-              summary: p.readFacts.via === "pasted" ? "Read from a pasted link" : "Read from your saved list",
-              detail: p.readFacts,
+              summary: readSummary(p),
+              detail: p.readFacts ?? null,
+              // The transcript is kept whole as a blob, never in the post row (design 2026-11-05 §5.3).
+              ...(p.transcript?.text ? { blobs: [{ kind: "transcript" as const, text: p.transcript.text }] } : {}),
             }]
           : []),
         {
@@ -90,6 +95,32 @@ export async function upsertPost(db: Db, userId: string, p: PostSubmit, now: str
   const [row] = await db.select().from(savedPosts).where(eq(savedPosts.id, id)).limit(1);
   if (!row) throw new Error("saved post vanished after upsert");
   return row;
+}
+
+/** A video's facts beside its words (`saved_posts.video_info`, migration 0035); null for a post that isn't a video page. */
+function videoInfoOf(p: PostSubmit): SavedVideoInfo | null {
+  if (!p.title && !p.chapters && !p.transcript && p.durationSec === undefined) return null;
+  return {
+    chapters: p.chapters ?? [],
+    captions: p.transcript ? { lang: p.transcript.lang, kind: p.transcript.kind } : null,
+    live: p.live ?? false,
+    transcriptChars: p.transcript?.text.length ?? 0,
+    transcriptBytes: p.transcript ? new TextEncoder().encode(p.transcript.text).length : 0,
+    transcriptCut: p.transcript?.cut ?? false,
+  };
+}
+
+/** The read step's line: a video's length, captions and chapters; a post's way in. */
+function readSummary(p: PostSubmit): string {
+  if (p.title || p.transcript || p.durationSec !== undefined) {
+    const parts = [
+      p.durationSec ? clock(p.durationSec) : "",
+      p.transcript ? `${p.transcript.kind === "uploaded" ? "uploaded" : "auto-generated"} captions (${p.transcript.lang})${p.transcript.cut ? ", cut at 400,000 characters" : ""}` : "no captions",
+      p.chapters?.length ? `${p.chapters.length} chapter${p.chapters.length === 1 ? "" : "s"}` : "",
+    ].filter(Boolean);
+    return `Read the video: ${parts.join(", ")}`;
+  }
+  return p.readFacts?.via === "pasted" ? "Read from a pasted link" : "Read from your saved list";
 }
 
 /** The site a source reads, as the trail names it; anything else is the extension's own doing. */
@@ -108,12 +139,23 @@ export async function recordReadFailed(db: Db, userId: string, r: ReadFailed, no
     if (row) postId = row.id;
   }
   const words = failureWords(r.code, null) ?? "The read failed";
-  await runAtomically(
-    db,
-    trailStatements(db, userId, postId, [
+  await runAtomically(db, [
+    // A post waiting to be screened again moves behind the wait (final audit G9): a read that failed for any reason
+    // is never re-opened every 15 minutes.
+    ...(postId !== `ext:${r.source}`
+      ? [db.update(savedPosts).set({ updatedAt: now }).where(and(eq(savedPosts.id, postId), eq(savedPosts.userId, userId), eq(savedPosts.status, "seen")))]
+      : []),
+    // A pasted link that couldn't be read says why where the owner sees it (pasted links, 2026-11-06).
+    ...(r.key
+      ? [db
+          .update(savedLinks)
+          .set({ status: "failed", errorCode: r.code, error: r.message.slice(0, 300) || null, updatedAt: now })
+          .where(and(eq(savedLinks.userId, userId), eq(savedLinks.source, r.source), eq(savedLinks.sourceKey, r.key), eq(savedLinks.status, "waiting")))]
+      : []),
+    ...trailStatements(db, userId, postId, [
       { stage: "read", source: siteSource(r.source), status: "fail", summary: r.message ? `${words}: ${r.message}` : words, detail: { code: r.code, message: r.message, key: r.key ?? null } },
     ], now),
-  );
+  ]);
 }
 
 /** Of `keys`, the ones this account has no row for, in input order. One statement (the keys travel as one JSON bind). */
@@ -151,8 +193,15 @@ export async function workList(
   userId: string,
   now: string = nowInstant(),
   limit: number = WORK_LIMIT,
+  /**
+   * `links`: the caller knows pasted links and videos (`GET /work?v=2`): waiting links come first as `read`, and posts
+   * of every source are listed. Without it (an older extension) the list is as it was — no `read`, no YouTube post,
+   * whose id it would read as an Instagram shortcode. One more statement.
+   */
+  opts: { links?: boolean } = {},
 ): Promise<WorkItem[]> {
   const stale = new Date(new Date(now).getTime() - CLAIM_STALE_MS).toISOString();
+  const rescreen = new Date(new Date(now).getTime() - VIDEO_RESCREEN_MS).toISOString();
   const { spentMicros, capMicros } = await importSpend(db, userId, new Date(now));
   const relayStale = new Date(new Date(now).getTime() - RELAY_CLAIM_STALE_MS).toISOString();
   // A claim whose request died on its last attempt is neither listed nor reclaimable (attempts are spent): give it up as
@@ -182,7 +231,27 @@ export async function workList(
       spentMicros < capMicros ? eq(savedPosts.lastErrorCode, "budget_paused") : undefined,
       and(eq(savedPosts.lastErrorCode, "filtering"), lt(savedPosts.updatedAt, stale)),
     ),
+    // A video's screening is tried again at a check's pace: the 15-minute ask would re-open its page and pay each
+    // time (final review F3). A saved post waits for the 6-hourly check as before.
+    opts.links ? or(ne(savedPosts.source, "youtube"), lt(savedPosts.updatedAt, rescreen)) : undefined,
   );
+  const reads: WorkItem[] = opts.links
+    ? (
+        await db
+          .select({ source: savedLinks.source, key: savedLinks.sourceKey, url: savedLinks.url })
+          .from(savedLinks)
+          .where(
+            and(
+              eq(savedLinks.userId, userId),
+              eq(savedLinks.status, "waiting"),
+              sql`NOT EXISTS (SELECT 1 FROM ${savedPosts} WHERE ${savedPosts.id} = ${savedLinks.id} AND ${savedPosts.userId} = ${userId})`,
+            ),
+          )
+          .orderBy(asc(savedLinks.addedAt), asc(savedLinks.id))
+          .limit(limit)
+      ).map((r) => ({ ...r, action: "read" as const }))
+    : [];
+  if (reads.length >= limit) return reads;
   const rows = await db
     .select({ source: savedPosts.source, key: savedPosts.sourceKey, url: savedPosts.url, status: savedPosts.status })
     .from(savedPosts)
@@ -190,6 +259,7 @@ export async function workList(
       and(
         eq(savedPosts.userId, userId),
         isNotNull(savedPosts.url),
+        opts.links ? undefined : ne(savedPosts.source, "youtube"),
         or(
           isFilter,
           // A post the budget refused waits off the list until a typical reading fits again: handing it out meant
@@ -211,11 +281,17 @@ export async function workList(
       ),
     )
     .orderBy(sql`CASE WHEN ${savedPosts.status} = 'seen' THEN 0 ELSE 1 END`, asc(savedPosts.updatedAt), asc(savedPosts.id))
-    .limit(limit);
-  return rows.flatMap((r) =>
-    r.url ? [{ source: r.source, key: r.key, url: r.url, action: r.status === "seen" ? ("filter" as const) : ("extract" as const) }] : [],
-  );
+    .limit(limit - reads.length);
+  return [
+    ...reads,
+    ...rows.flatMap((r) =>
+      r.url ? [{ source: r.source, key: r.key, url: r.url, action: r.status === "seen" ? ("filter" as const) : ("extract" as const) }] : [],
+    ),
+  ];
 }
+
+/** How long a video the screening couldn't decide waits before it is screened again (a check's period). */
+export const VIDEO_RESCREEN_MS = 6 * 3_600_000;
 
 /** The import budget a typical reading needs free before a post the budget refused is handed out again. */
 export const EXTRACT_ROOM_MICROS = 50_000;
@@ -357,6 +433,7 @@ export async function savesStatus(db: Db, userId: string, now: string): Promise<
     })),
     posts: posts.map((p) => ({
       id: p.id,
+      source: p.source,
       key: p.sourceKey,
       url: p.url ?? "",
       creator: { handle: p.creatorHandle ?? "", ...(p.creatorName ? { name: p.creatorName } : {}) },
@@ -418,6 +495,8 @@ export async function overridePost(
         extractAttempts: 0,
         lastErrorCode: null,
         lastError: null,
+        // A Retry goes back to reading the words: a watched reading that failed is never asked for again unasked (F1).
+        watchVideo: null,
         updatedAt: now,
       })
       .where(and(where, inArray(savedPosts.status, [...PROCESSABLE])))

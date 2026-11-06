@@ -412,7 +412,7 @@ describe("GET /status", () => {
     expect(body.state).toBe("paused_budget");
     expect(body.checks).toHaveLength(1);
     expect(body.posts).toEqual([
-      { id: await savedPostId(userId, SRC, "p1"), key: "p1", url: "https://example.com/p/p1", creator: { handle: "" }, status: "queued", reason: null, errorCode: null, error: null, updatedAt: "2026-10-01T00:00:00.000Z" },
+      { id: await savedPostId(userId, SRC, "p1"), source: SRC, key: "p1", url: "https://example.com/p/p1", creator: { handle: "" }, status: "queued", reason: null, errorCode: null, error: null, updatedAt: "2026-10-01T00:00:00.000Z" },
     ]);
   });
   it("a failed post says why it failed — never the filter's verdict as its reason (audit bug 2)", async () => {
@@ -538,5 +538,72 @@ describe("POST /posts/:key/override (the owner's word, from the popup)", () => {
     expect((await override("a", { action: "skip" }, `?source=${SRC}`, {})).res.status).toBe(401);
     expect((await override("a", { action: "skip" }, `?source=${SRC}`, { Cookie: "rg_session=x" })).res.status).toBe(401);
     expect((await rowOf("a")).status).toBe("filtered_out");
+  });
+});
+
+describe("POST /posts: a pasted YouTube video (phase 2)", () => {
+  // A fake video id and a made-up channel; the watch link assembled at runtime.
+  const vid = ["Zx", "9_-Qa", "B3cD"].join("");
+  const watch = ["ht", "tps://www.", "you", "tube.com/watch?v=", vid].join("");
+  const transcript = { lang: "en", kind: "uploaded" as const, text: "0\tZorbex warm-up begins\n5\tten slow reps each side", cut: false };
+  const video = (over: Record<string, unknown> = {}) => ({
+    source: "youtube", key: vid, url: watch, creator: { handle: "@zorbexcoach", name: "Zorbex Coach" },
+    caption: "A Zorbex hip flow for runners.", hashtags: ["mobility"], mediaType: "video", postedAt: "2026-11-01",
+    origin: "pasted", title: "Zorbex hip flow", durationSec: 754,
+    chapters: [{ start: 0, title: "Intro" }, { start: 60, title: "Flow" }, { start: 300, title: "Cool-down" }],
+    transcript,
+    readFacts: {
+      via: "pasted", extVersion: "0.3.0", coverSent: false, mediaCount: 1,
+      youtube: { captions: { lang: "en", kind: "uploaded" }, segments: 2, transcriptChars: transcript.text.length, chapters: 3, chaptersFrom: "description", via: "captured", ms: 9_000 },
+    },
+    ...over,
+  });
+
+  it("stores the title, length and chapters, the transcript as a blob on its read step, and says what was read", async () => {
+    const { res, cost } = await post("/posts", video());
+    expect(res.status).toBe(200);
+    const [row] = await db.select().from(savedPosts);
+    expect(row).toMatchObject({ source: "youtube", sourceKey: vid, title: "Zorbex hip flow", durationSec: 754, origin: "pasted" });
+    expect(row!.videoInfo).toEqual({
+      chapters: [{ start: 0, title: "Intro" }, { start: 60, title: "Flow" }, { start: 300, title: "Cool-down" }],
+      captions: { lang: "en", kind: "uploaded" }, live: false, transcriptChars: transcript.text.length, transcriptCut: false,
+      transcriptBytes: transcript.text.length,
+    });
+    const events = await db.select().from(schema.importEvents).where(eq(schema.importEvents.postId, row!.id));
+    const read = events.find((e) => e.stage === "read")!;
+    expect(read).toMatchObject({ source: "youtube", status: "ok", summary: "Read the video: 12:34, uploaded captions (en), 3 chapters" });
+    const blobs = await db.select().from(schema.importBlobs).where(eq(schema.importBlobs.eventId, read.id));
+    expect(blobs.map((b) => [b.kind, b.text])).toEqual([["transcript", transcript.text]]);
+    // REBASED 2026-11-06 (import trail phase 2): + the transcript's blob.
+    expect(cost).toBeLessThanOrEqual(10);
+  });
+
+  it("a video with no captions says so, and stores no transcript", async () => {
+    const { transcript: _t, ...rest } = video();
+    await post("/posts", { ...rest, readFacts: { ...rest.readFacts, youtube: { ...rest.readFacts.youtube, captions: null, segments: 0, transcriptChars: 0, via: null } } });
+    const [row] = await db.select().from(savedPosts);
+    expect(row!.videoInfo).toMatchObject({ captions: null, transcriptChars: 0 });
+    const read = (await db.select().from(schema.importEvents)).find((e) => e.stage === "read")!;
+    expect(read.summary).toBe("Read the video: 12:34, no captions, 3 chapters");
+    expect(await db.select().from(schema.importBlobs)).toEqual([]);
+  });
+
+  it("screening is asked with the title, chapters and the transcript's start", async () => {
+    let sent = "";
+    vi.stubGlobal("fetch", vi.fn(async (_u: unknown, init?: RequestInit) => {
+      sent = String(init?.body ?? "");
+      return new Response(JSON.stringify({ choices: [{ message: { content: '{"verdict":"training","reason":"a flow"}' } }], usage: { prompt_tokens: 100, completion_tokens: 20 } }), { status: 200 });
+    }));
+    try {
+      const { body } = await post("/posts", video(), auth, await makeEnv({ FIXTURE_MODE: "0", AI_GATEWAY_API_KEY: "k", AI_GATEWAY_BASE_URL: "https://gw.test/v1" }));
+      expect(body.status).toBe("queued");
+      const user = JSON.parse(sent).messages.find((m: { role: string }) => m.role === "user");
+      const text = JSON.stringify(user);
+      expect(text).toContain("title: Zorbex hip flow");
+      expect(text).toContain("1:00 Flow");
+      expect(text).toContain("Zorbex warm-up begins ten slow reps each side");
+    } finally {
+      vi.unstubAllGlobals();
+    }
   });
 });

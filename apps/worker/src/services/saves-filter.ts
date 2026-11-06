@@ -2,7 +2,7 @@ import { and, eq, isNull, lt, ne, or, sql } from "drizzle-orm";
 import { schema } from "@rg/database";
 import type { SavedPostRow } from "@rg/database";
 import { FILTER_PROMPT_VERSION, filterMessages, filterVerdictSchema } from "@rg/saves";
-import type { FilterVerdict, PostSubmit, SaveErrorCode, SavePostStatus } from "@rg/saves";
+import type { FilterVerdict, PostSubmit, PostWords, SaveErrorCode, SavePostStatus } from "@rg/saves";
 import type { Env } from "../env.js";
 import { runAtomically, type Db } from "./db.js";
 import { promptVersionStatement, trailStatements, type TrailEventInput } from "./import-trail.js";
@@ -43,10 +43,11 @@ export interface FilterOutcome {
   errorCode?: SaveErrorCode | "busy";
 }
 
-type FilterInput = SavedPostRow & { cover?: PostSubmit["cover"] };
+/** The stored row, the submit's cover, and its words when it has more than the row keeps (a video's chapters and transcript). */
+type FilterInput = SavedPostRow & { cover?: PostSubmit["cover"]; words?: PostWords };
 
 const hasTrainingWord = (post: SavedPostRow): boolean => {
-  const text = `${post.caption ?? ""} ${(post.hashtags ?? []).join(" ")}`.toLowerCase();
+  const text = `${post.title ?? ""} ${post.caption ?? ""} ${(post.hashtags ?? []).join(" ")}`.toLowerCase();
   return TRAINING_WORDS.some((w) => text.includes(w));
 };
 
@@ -222,15 +223,17 @@ export async function filterPost(
 
   // The model. `post` is a stored row; the prompt takes the submit's shape.
   const model = env.SAVES_FILTER_MODEL || FILTER_MODEL_DEFAULT;
-  const { system, userText } = filterMessages({
-    source: post.source,
-    key: post.sourceKey,
-    url: post.url ?? "",
-    creator: { handle: post.creatorHandle ?? "", ...(post.creatorName ? { name: post.creatorName } : {}) },
-    caption: post.caption ?? "",
-    hashtags: post.hashtags ?? [],
-    mediaType: (post.mediaType as PostSubmit["mediaType"]) ?? "video",
-  });
+  const { system, userText } = filterMessages(
+    post.words ?? {
+      source: post.source,
+      creator: { handle: post.creatorHandle ?? "", ...(post.creatorName ? { name: post.creatorName } : {}) },
+      caption: post.caption ?? "",
+      hashtags: post.hashtags ?? [],
+      mediaType: (post.mediaType as PostSubmit["mediaType"]) ?? "video",
+      title: post.title,
+      durationSec: post.durationSec,
+    },
+  );
   const worst = Math.max(
     1,
     messagesCostMicros(model, {

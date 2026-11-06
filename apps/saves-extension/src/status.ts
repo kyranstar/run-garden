@@ -1,5 +1,5 @@
-import { HEALTH_LABELS, HEALTH_MARKS, redLine } from "@rg/saves";
-import type { HealthColor, HealthLight, ImportHealthDto, SavePostStatus, SavesStatusDto } from "@rg/saves";
+import { ADDED_LINE, alreadyInLine, HEALTH_LABELS, HEALTH_MARKS, redLine } from "@rg/saves";
+import type { HealthColor, HealthLight, ImportHealthDto, LinkDto, SavePostStatus, SavesStatusDto } from "@rg/saves";
 
 // The popup's view of the import, as plain data: pure, so it is tested without a browser. The headline is the
 // pipeline's health (the app's state); one post's trouble shows on that post's row, never in the headline — but while a
@@ -44,6 +44,8 @@ export function isPostKey(key: unknown): key is string {
 
 export interface PopupPost {
   id: string;
+  /** Its source, which the popup's Retry and Process anyway name (an older app gives none: the feed's). */
+  source: string | null;
   key: string;
   url: string;
   /** Its trail in the app, else null (no app URL saved). */
@@ -61,6 +63,8 @@ export interface PopupFailure {
   why: string;
   href: string | null;
   retryKey: string | null;
+  /** The source Retry names with the key (null: the feed's). */
+  retrySource: string | null;
 }
 
 /** One light of the health row: its label, colour, glyph and word (never colour alone), its line, its failures. */
@@ -189,10 +193,10 @@ function headlineOf(input: PopupInput): string {
 
 /** The health row's lights, each with its failures; a failure's Retry only for a post the popup lists with Retry or
  * Process anyway (it names posts by their key). */
-function lightsOf(input: PopupInput, posts: readonly { id: string; key: string; actions: PopupAction[] }[]): PopupLight[] {
+function lightsOf(input: PopupInput, posts: readonly { id: string; key: string; source?: string | null; actions: PopupAction[] }[]): PopupLight[] {
   const health = input.health;
   if (!health || !Array.isArray(health.lights)) return [];
-  const retryable = new Map(posts.filter((p) => p.actions.length > 0).map((p) => [p.id, p.key]));
+  const retryable = new Map(posts.filter((p) => p.actions.length > 0).map((p) => [p.id, { key: p.key, source: p.source ?? null }]));
   return health.lights.map((l) => ({
     light: l.light,
     label: HEALTH_LABELS[l.light] ?? l.light,
@@ -205,7 +209,8 @@ function lightsOf(input: PopupInput, posts: readonly { id: string; key: string; 
       when: ago(f.at, input.now),
       why: f.why,
       href: f.postId ? appHref(input.appUrl, trailPath(f.postId)) : null,
-      retryKey: f.postId ? (retryable.get(f.postId) ?? null) : null,
+      retryKey: f.postId ? (retryable.get(f.postId)?.key ?? null) : null,
+      retrySource: f.postId ? (retryable.get(f.postId)?.source ?? null) : null,
     })),
   }));
 }
@@ -213,10 +218,11 @@ function lightsOf(input: PopupInput, posts: readonly { id: string; key: string; 
 export function popupModel(input: PopupInput): PopupModel {
   const { status, now } = input;
   const checking = isChecking(input);
-  const all = (status?.posts ?? []).map((p) => ({ id: p.id, key: p.key, actions: postActions(p.status) }));
+  const all = (status?.posts ?? []).map((p) => ({ id: p.id, key: p.key, source: p.source ?? null, actions: postActions(p.status) }));
   const posts: PopupPost[] = (status?.posts ?? [])
     .map((p) => ({
       id: p.id,
+      source: p.source ?? null,
       key: p.key,
       url: p.url,
       trailHref: appHref(input.appUrl, trailPath(p.id)),
@@ -257,4 +263,73 @@ export function popupModel(input: PopupInput): PopupModel {
     lights: status ? lightsOf(input, all) : [],
     healthLine: status ? (input.health?.worst ?? "") : "",
   };
+}
+
+// --- Pasted links (design 2026-11-05 §3.1): the field's answer, and the recent links (the app's, merged with what the
+// extension still holds that the app hasn't got).
+
+/** A link the extension holds until the app has it (links.ts `LocalLink`). */
+export interface PopupLocalLink {
+  source: string;
+  key: string;
+  url: string;
+  error: { code: string; message: string } | null;
+}
+
+/** The background's answer to the field's Add. */
+export type AddLinkAnswer =
+  | { ok: true; added: true }
+  | { ok: true; known: { postId: string; firstSeenAt: string } }
+  | { ok: false; message: string };
+
+export type PopupLinkAction =
+  | { kind: "add"; url: string; label: "Retry" }
+  | { kind: "process"; source: string; key: string; label: "Retry" | "Import anyway" };
+
+export interface PopupLink {
+  /** The video's or post's title (a stranger's words: text), else its link. */
+  title: string;
+  words: string;
+  /** Its trail in the app, once the app has its post. */
+  href: string | null;
+  action: PopupLinkAction | null;
+}
+
+/** The field's answer in a line. */
+export function addAnswerLine(a: AddLinkAnswer): string {
+  if (!a.ok) return a.message;
+  if ("known" in a) return alreadyInLine(a.known.firstSeenAt);
+  return ADDED_LINE;
+}
+
+/** A known link's trail in the app. */
+export const linkTrailHref = (appUrl: string | null | undefined, postId: string): string | null => appHref(appUrl, trailPath(postId));
+
+const MAX_LINKS = 8;
+
+/** The recent links: the ones only the extension holds first (reading, or failed with Retry), then the app's. */
+export function popupLinks(app: readonly LinkDto[] | null, local: readonly PopupLocalLink[], appUrl: string | null | undefined): PopupLink[] {
+  const known = new Set((app ?? []).map((l) => `${l.source}:${l.key}`));
+  const mine: PopupLink[] = local
+    .filter((l) => !known.has(`${l.source}:${l.key}`))
+    .map((l) => ({
+      title: l.url,
+      words: l.error ? `Failed: ${l.error.message}` : "Reading",
+      href: null,
+      action: l.error ? { kind: "add", url: l.url, label: "Retry" } : null,
+    }));
+  const theirs: PopupLink[] = (app ?? []).map((l) => ({
+    title: l.title || l.url,
+    words: l.words,
+    href: l.postId ? appHref(appUrl, trailPath(l.postId)) : null,
+    action:
+      l.action === "import_anyway"
+        ? { kind: "process", source: l.source, key: l.key, label: "Import anyway" }
+        : l.action === "retry"
+          ? l.postId
+            ? { kind: "process", source: l.source, key: l.key, label: "Retry" }
+            : { kind: "add", url: l.url, label: "Retry" }
+          : null,
+  }));
+  return [...mine, ...theirs].slice(0, MAX_LINKS);
 }

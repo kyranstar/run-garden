@@ -635,6 +635,21 @@ describe("matchPost", () => {
     expect(links.map((l) => l.likeMoveId)).toEqual([nod, cobra, ...Array(10).fill(null)]);
   });
 
+  it("a 30-move follow-along of new and fuzzy moves matches whole, judge included, within the budget (design 2026-11-05 §14.5)", async () => {
+    const moves = [
+      ...Array.from({ length: 29 }, (_, i) => move(`Zorbex follow ${String.fromCharCode(97 + (i % 26))}${Math.floor(i / 26)} shuffle`)),
+      move("the 90 90 switch"),
+    ];
+    const id = await extracted("k", moves);
+    statements = 0;
+    const out = await matchPost(db, env(), userId, id, NOW, judge({ matches: [{ move: 29, id: HIP_SWITCH.id }] }).fetchImpl);
+    expect(out).toEqual({ newMoves: 29, linked: 1 });
+    // post 1, personal moves 1, judge 5, writes: 3 move inserts + 5 link inserts + the events + the judge's raw reply +
+    // the prompt version + the post. REBASED 2026-11-06 (import trail phase 2): 30 moves (the relay route adds 12: 31 of 45).
+    expect(statements).toBe(19);
+    expect(await linksOf(id)).toHaveLength(30);
+  });
+
   it("a 12-move post of new and fuzzy moves takes 15 statements, the judge included (the relay route adds 12: 27 of 45)", async () => {
     const moves = [
       ...Array.from({ length: 11 }, (_, i) => move(`Zorbex variant ${String.fromCharCode(97 + i)} shuffle`)),

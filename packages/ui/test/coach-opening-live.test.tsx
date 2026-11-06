@@ -358,6 +358,15 @@ describe("a drift chip (where you stand, spec §7.2): its tap carries its id, so
     expect(runPosts(calls)[0]).not.toHaveProperty("nudge");
   });
 
+  it("three needs-you chips (two and a drift's, the route's most): all three drawn — a race close is never cut (CI 42167336604's smoke)", async () => {
+    const RACE = { id: "race:2026-11-16", label: "Get me ready for race day", request: "My race is in 10 days. Get me ready for race day." };
+    server({ "GET /api/coach/nudges": { nudges: [MISSED, DRIFT, RACE] } });
+    mountSheet();
+    await openCoach();
+    await until(drawn, "the opening drawn");
+    expect(chips().slice(0, 3)).toEqual([MISSED.label, DRIFT.label, RACE.label]);
+  });
+
   it("opened from Today with the chip's ask: sent once, as the conversation settles, with its nudge", async () => {
     const calls = server({ "POST /api/coach/runs": startRun });
     mountSheet();

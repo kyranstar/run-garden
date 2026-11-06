@@ -115,7 +115,7 @@ export const plannedWorkouts = sqliteTable(
     /** Kept off the watch by the athlete: the mirror makes no copy until cleared. */
     watchOff: integer("watch_off", { mode: "boolean" }).notNull().default(false),
     /**
-     * The session number a course wrote this row as (migration 0035); NULL for everything else, a course's outline
+     * The session number a course wrote this row as (migration 0036); NULL for everything else, a course's outline
      * included. It marks the row as the course's own session: placement reads it and the course's count of sessions done
      * counts it. `source_content_fingerprint` can't say so: it holds the upstream copy as last observed, and a verified
      * push overwrites it.

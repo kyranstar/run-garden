@@ -27,6 +27,10 @@ export function failureWords(code: SaveErrorCode | string | null, raw: string | 
       return "Instagram changed something";
     case "app_unreachable":
       return "The app couldn't be reached";
+    case "no_captions":
+      return first ?? "No captions, and the video couldn't be watched";
+    case "unplayable":
+      return first ?? "YouTube won't play it";
     default:
       return first ? `Something went wrong: ${first}` : "Something went wrong";
   }
@@ -80,12 +84,28 @@ export interface ImportTrailDto {
     origin: "saved" | "pasted" | null;
     durationSec: number | null;
     videoSeen: boolean | null;
+    /**
+     * A YouTube video's watching (design 2026-11-05 §5.4), else null: whether it was (or will be) watched, the owner's
+     * Watch it too, whether to offer it (a long video read from its words), and what watching it would cost.
+     */
+    video?: { watched: boolean | null; watchAsked: boolean; offerWatch: boolean; watchCostMicros: number | null } | null;
   };
   /** The account (level 1): what the post is, its moves and how each came out, and one health word. */
   account: {
     kind: string | null;
     summary: string | null;
-    moves: { position: number; name: string; outcome: "new" | "yours" | "library"; moveId: string | null; purpose: string | null }[];
+    moves: {
+      position: number;
+      name: string;
+      outcome: "new" | "yours" | "library";
+      moveId: string | null;
+      purpose: string | null;
+      /** What the post says of the move (extract-6; absent from an earlier reading): a stranger's words, drawn as text. */
+      why?: string | null;
+      useWhen?: { text: string; evidence: "stated" | "inferred" }[];
+      skipWhen?: { text: string; evidence: "stated" | "inferred" }[];
+      quotes?: { field: string; text: string; at?: number; from: string; check?: "verified" | "in_speech" | "on_screen" | "not_found" }[];
+    }[];
     health: { status: TrailStatus; line: string };
   };
   /** Oldest first. */

@@ -377,14 +377,26 @@ function noteAt(): SQL {
  */
 export function insightRowsSql(userId: string, keptPosts: SQL): SQL {
   return sql`select ins_p.id as post_id, ins_p.url as url, coalesce(nullif(ins_p.creator_handle, ''), ins_p.creator_name) as creator,
-      ins_p.first_seen_at as seen, ins_j.key as idx, trim(ins_j.value) as body,
+      ins_p.first_seen_at as seen, ins_j.key as idx, trim(${INSIGHT_TEXT}) as body,
       (select json_group_array(json_extract(ins_m.value, '$.summary')) from json_each(${extractionDoc(sql.raw("ins_p.extraction"))}, '$.moves') ins_m
         where json_type(ins_m.value, '$.summary') = 'text') as sums,
       row_number() over (partition by trim(ins_j.value) order by ins_p.first_seen_at, ins_p.id, ins_j.key) as nth
     from saved_posts ins_p, json_each(${extractionDoc(sql.raw("ins_p.extraction"))}, '$.insights') ins_j
     where ins_p.user_id = ${userId} and ins_p.id in (${keptPosts})
-      and ins_j.type = 'text' and ins_j.key < ${INSIGHTS_PER_POST} and length(trim(ins_j.value)) between 1 and ${MEMORY_BODY_MAX}`;
+      and ${GENERAL_INSIGHT} and ins_j.key < ${INSIGHTS_PER_POST} and length(trim(${INSIGHT_TEXT})) between 1 and ${MEMORY_BODY_MAX}`;
 }
+
+/**
+ * An insight's words: a text value (before extract-6), or an extract-6 insight's `text` (design 2026-11-05 §5.5).
+ * Over `ins_j` (a `json_each` of the insights).
+ */
+const INSIGHT_TEXT = sql.raw(`(case ins_j.type when 'text' then ins_j.value when 'object' then
+  case when json_type(ins_j.value, '$.text') = 'text' then json_extract(ins_j.value, '$.text') end end)`);
+/**
+ * Only a `general` insight leaves its post (§5.5: a creator's own split, saved as a rule, was the bug): one rule for
+ * what Save keeps, what the batch page shows and what the coach reads. A plain text one is general.
+ */
+const GENERAL_INSIGHT = sql.raw(`(ins_j.type = 'text' or (ins_j.type = 'object' and json_extract(ins_j.value, '$.scope') = 'general'))`);
 
 /**
  * `insightRowsSql`'s first `max` distinct insights, in order, as ONE JSON value (a scalar subquery):

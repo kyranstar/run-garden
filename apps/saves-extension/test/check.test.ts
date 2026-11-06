@@ -1,7 +1,8 @@
 import { describe, expect, it } from "vitest";
 import { EXERCISES } from "@rg/exercise-library";
 import { EXTRACT_PROMPT_VERSION, promptSha, type CheckReport, type PostSubmit, type WorkItem } from "@rg/saves";
-import { DEFAULT_CONFIG, runCheck, singleFlight, type CheckDeps } from "../src/check.js";
+import { DEFAULT_CONFIG, enqueuePastedSubmit, runCheck, serialLock, singleFlight, type CheckDeps } from "../src/check.js";
+import { parseMediaInfo } from "../src/feed.js";
 import type { AppClient, ExtractAnswer, SubmitAnswer } from "../src/app-client.js";
 import { AppUnreachableError, LoginNeededError, ReaderError } from "../src/errors.js";
 import { ExtQueue } from "../src/queue.js";
@@ -35,6 +36,15 @@ class FakeApp implements AppClient {
   }
   override(): Promise<void> {
     throw new Error("a check never overrides a post");
+  }
+  addLink(): Promise<never> {
+    throw new Error("a check never adds a link");
+  }
+  links(): Promise<never> {
+    throw new Error("a check never lists links");
+  }
+  extractVideo(): Promise<never> {
+    throw new Error("a check never reads a video: the link runner does");
   }
   extractAnswers: ExtractAnswer[] = [];
   /** Post rows by key; a key never seen counts as queued (a work-list post). */
@@ -86,6 +96,7 @@ class FakeApp implements AppClient {
   }
   async reportReadFailed(r: { source: string; key?: string; code: string; message: string }) {
     this.readFailures.push(r);
+    return true;
   }
   async reportFailed(_source: string, key: string, code: "gone" | "media_failed" | "too_large") {
     this.log.push(`failed:${key}:${code}`);
@@ -139,6 +150,62 @@ const bodyText = (body: string): string => {
   const user = parsed.messages.find((m) => m.role === "user")!.content as { type: string; text?: string }[];
   return user.find((p) => p.type === "text")!.text!;
 };
+
+describe("runCheck in queue mode: a pasted Instagram link (design 2026-11-05 §5.1)", () => {
+  it("sends the pasted post's submit and its reading, with no check report, no feed read and no second read of the post", async () => {
+    const app = new FakeApp();
+    const [a] = [7].map(code);
+    const reader = fakeReader([[]], [media(a!, "video")]);
+    const deps = makeDeps(app, reader, { config: { ...DEFAULT_CONFIG, mode: "queue" } });
+    const post = parseMediaInfo(await reader.readPost(shortcodeToPk(a!)));
+    reader.postReads.length = 0;
+    await enqueuePastedSubmit(deps.queue, post, "instagram");
+    await runCheck({ ...deps, prefetched: [post] });
+    expect(app.reports).toEqual([]);
+    expect(reader.reads).toEqual([]);
+    expect(reader.postReads).toEqual([]);
+    expect(app.submits[0]!.readFacts!.via).toBe("pasted");
+    expect(app.submits[0]!.origin).toBe("pasted");
+    expect(app.log).toContain(`extract:${a}`);
+    expect(app.log).not.toContain("work");
+  });
+
+  it("a check's work list leaves a link to read and a YouTube video to the link runner", async () => {
+    const app = new FakeApp();
+    app.workItems = [
+      { source: "youtube", key: "Zx9_-QaB3cD", url: "https://example.com/v", action: "extract" },
+      { source: "instagram", key: "linkcode", url: "https://example.com/p", action: "read" },
+    ];
+    const reader = fakeReader([[]]);
+    await runCheck(makeDeps(app, reader));
+    expect(app.extracts).toEqual([]);
+    expect(reader.postReads).toEqual([]);
+  });
+
+  it("asks for 32,000 output tokens: a 30-move follow-along with its quotes (design 2026-11-05 §5.4)", () => {
+    expect(DEFAULT_CONFIG.maxTokens).toBe(32_000);
+  });
+});
+
+describe("serialLock", () => {
+  it("runs one task at a time, in the order asked, a failure not blocking the next", async () => {
+    const lock = serialLock();
+    const order: string[] = [];
+    const task = (name: string, ms: number, fail = false) => () =>
+      new Promise<string>((resolve, reject) => {
+        order.push(`start ${name}`);
+        setTimeout(() => {
+          order.push(`end ${name}`);
+          fail ? reject(new Error(name)) : resolve(name);
+        }, ms);
+      });
+    const a = lock(task("a", 20, true));
+    const b = lock(task("b", 1));
+    await expect(a).rejects.toThrow("a");
+    await expect(b).resolves.toBe("b");
+    expect(order).toEqual(["start a", "end a", "start b", "end b"]);
+  });
+});
 
 describe("runCheck", () => {
   it("counts a submit the app's filter couldn't decide (seen, with an error code) as failed (audit bug 6)", async () => {

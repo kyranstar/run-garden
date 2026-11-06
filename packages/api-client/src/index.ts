@@ -2675,6 +2675,8 @@ export const savesBatchQuery = (id: string) => ["saves", "batch", id] as const;
 export const OPEN_SAVES_QUERY = ["saves", "open"] as const;
 /** The import's health row (`GET /api/my-saves/health`): Settings -> Saves and the coach's saves card. */
 export const SAVES_HEALTH_QUERY = ["saves", "health"] as const;
+/** The recent pasted links (`GET /api/my-saves/links`): Settings -> Saves. */
+export const SAVES_LINKS_QUERY = ["saves", "links"] as const;
 /** One saved post's trail (`GET /api/my-saves/posts/:id/trail`), and one of its blobs (`GET /api/my-saves/blobs/:id`). */
 export const saveTrailQuery = (postId: string) => ["saves", "trail", postId] as const;
 export const saveBlobQuery = (blobId: string) => ["saves", "blob", blobId] as const;
@@ -2788,6 +2790,13 @@ export const api = {
   savesStatus: () => get<import("@rg/saves").SavesStatusDto>("/api/my-saves/status"),
   /** The import's health row: one light per stage and source (import trail). */
   savesHealth: () => get<import("@rg/saves").ImportHealthDto>("/api/my-saves/health"),
+  /** The recent pasted links and where each stands (pasted links, 2026-11-06). */
+  savesLinks: () => get<{ links: import("@rg/saves").LinkDto[] }>("/api/my-saves/links"),
+  /** A link pasted in the app: it waits for the computer's extension; one already in answers when (400 for anything else). */
+  savesAddLink: (url: string) =>
+    post<{ state: "added"; link: import("@rg/saves").LinkDto } | { state: "known"; postId: string; firstSeenAt: string }>("/api/my-saves/links", { url }),
+  /** Watch it too: read a long video again, with the video watched (409 when it can't be). */
+  savesWatch: (postId: string) => post<{ ok: boolean }>(`/api/my-saves/posts/${encodeURIComponent(postId)}/watch`),
   /** One saved post's trail: its account, then every step oldest first (import trail; 404 another account's). */
   saveTrail: (postId: string) => get<import("@rg/saves").ImportTrailDto>(`/api/my-saves/posts/${encodeURIComponent(postId)}/trail`),
   /** One blob of a trail: a raw reply, the prompt as sent, a transcript. */

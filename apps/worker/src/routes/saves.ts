@@ -6,15 +6,16 @@
  */
 import { Hono } from "hono";
 import { z } from "zod";
-import { checkReportSchema, postSubmitSchema, readFailedSchema, SAVE_SOURCE_RE } from "@rg/saves";
+import { checkReportSchema, LINK_REFUSED, postSubmitSchema, postWords, readFailedSchema, SAVE_SOURCE_RE } from "@rg/saves";
 import { nowInstant } from "@rg/domain";
 import type { AppContext } from "../auth/middleware.js";
 import { bearerGuard } from "../auth/token.js";
 import { savesImportEnabled } from "../env.js";
 import { freshKeys, KNOWN_MAX_KEYS, markFetchFailed, overridePost, recordCheck, recordReadFailed, savedPostId, savesStatus, upsertPost, workList } from "../services/saves-ledger.js";
 import { filterPost } from "../services/saves-filter.js";
-import { markTooLarge, readRelayRequest, relayExtract } from "../services/saves-relay.js";
+import { markTooLarge, matchStale, readRelayRequest, readVideoRequest, relayExtract, relayVideoExtract } from "../services/saves-relay.js";
 import { assembleBatch } from "../services/saves-batches.js";
+import { addLink, listLinks } from "../services/saved-links.js";
 
 const knownSchema = z
   .object({ source: z.string().regex(SAVE_SOURCE_RE), keys: z.array(z.string().min(1).max(64)).max(KNOWN_MAX_KEYS) })
@@ -78,7 +79,7 @@ savesRoutes.post("/posts", async (c) => {
       ...(row.filterReason ? { reason: row.filterReason } : {}),
     });
   }
-  const out = await filterPost(db, c.env, c.get("userId"), { ...row, cover: parsed.data.cover }, now, fetch);
+  const out = await filterPost(db, c.env, c.get("userId"), { ...row, cover: parsed.data.cover, words: postWords(parsed.data) }, now, fetch);
   return c.json({
     status: out.status,
     ...(out.verdict ? { verdict: out.verdict } : {}),
@@ -87,7 +88,28 @@ savesRoutes.post("/posts", async (c) => {
   });
 });
 
-savesRoutes.get("/work", async (c) => c.json({ keys: await workList(c.get("db"), c.get("userId"), nowInstant()) }));
+/** `?v=2`: the extension knows pasted links and videos (`read` work, YouTube posts); without it, the list an 0.2 extension knows. */
+savesRoutes.get("/work", async (c) => {
+  // A reading cut off after its paid call is finished here, alone (final audit G1b): never read and paid for again.
+  await matchStale(c.get("db"), c.env, c.get("userId"), new Date(nowInstant()), fetch).catch((e: unknown) =>
+    console.warn(JSON.stringify({ level: "warn", msg: "saves: stale re-match failed", detail: String(e).slice(0, 200) })),
+  );
+  return c.json({ keys: await workList(c.get("db"), c.get("userId"), nowInstant(), undefined, { links: c.req.query("v") === "2" }) });
+});
+
+const linkSchema = z.object({ url: z.string().min(1).max(600) }).strict();
+
+/** A link pasted in the popup, told to the app at once so the phone shows it (design 2026-11-05 §6.3). */
+savesRoutes.post("/links", async (c) => {
+  const parsed = await body(c, linkSchema);
+  if (!parsed.success) return c.json({ error: "invalid", issues: parsed.error.issues }, 422);
+  const out = await addLink(c.get("db"), c.get("userId"), parsed.data.url, "extension", nowInstant());
+  if (!out.ok) return c.json({ error: out.error, message: LINK_REFUSED }, 400);
+  return c.json(out.state === "known" ? { state: out.state, postId: out.postId, firstSeenAt: out.firstSeenAt } : { state: out.state, link: out.link });
+});
+
+/** The recent links, for the popup. One statement, and the bearer guard's two. */
+savesRoutes.get("/links", async (c) => c.json({ links: await listLinks(c.get("db"), c.get("userId")) }));
 
 const failedSchema = z.object({ code: z.enum(["gone", "media_failed", "too_large"]) }).strict();
 
@@ -126,6 +148,27 @@ savesRoutes.post("/posts/:key/override", async (c) => {
 });
 
 savesRoutes.get("/status", async (c) => c.json(await savesStatus(c.get("db"), c.get("userId"), nowInstant())));
+
+/**
+ * A video's reading (design 2026-11-05 §5.4): no media bytes to relay, so the Worker builds the body from the stored
+ * words and asks the gateway itself; the extension's request holds the call open (the headers say the model, the
+ * output cap and any retry issues; no body is read). The answers are the relay's.
+ */
+savesRoutes.post("/posts/:key/extract-video", async (c) => {
+  const source = c.req.query("source") ?? "";
+  if (!SAVE_SOURCE_RE.test(source)) return c.json({ error: "invalid", issues: ["source"] }, 400);
+  const asked = readVideoRequest(c.req.raw);
+  if (!asked.ok) return c.json({ error: asked.error }, asked.status);
+  const userId = c.get("userId");
+  const out = await relayVideoExtract(
+    c.get("db"), c.env, userId, { id: await savedPostId(userId, source, c.req.param("key")) }, c.req.raw, new Date(nowInstant()), fetch,
+  );
+  if (out.ok) return c.json({ status: "matched", moves: out.extraction.moves.length, kind: out.extraction.kind });
+  if (out.status === 404) return c.json({ error: "not_found" }, 404);
+  if (out.status === 409) return c.json({ error: "conflict" }, 409);
+  const http = out.code === "budget_paused" ? 429 : out.code === "no_captions" ? 422 : 502;
+  return c.json({ error: out.code, ...(out.issues ? { issues: out.issues } : {}) }, http);
+});
 
 /**
  * The extraction relay: the body is the gateway JSON the extension built, and this route NEVER reads it (no `c.req.json()`,

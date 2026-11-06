@@ -316,3 +316,88 @@ describe("a move's own section (from its account line)", () => {
     expect(d[2]!.rows).toEqual([{ key: "Tue 3 Nov", value: "You edited Zorbex hip lift: name" }]);
   });
 });
+
+describe("a pasted YouTube video's trail (phase 2)", () => {
+  const video = (v: Partial<NonNullable<ImportTrailDto["post"]["video"]>> = {}, post: Partial<ImportTrailDto["post"]> = {}) =>
+    trail({}, {
+      source: "youtube", title: "Zorbex hip flow", durationSec: 2_400, origin: "pasted", ...post,
+      video: { watched: false, watchAsked: false, offerWatch: true, watchCostMicros: 185_625, ...v },
+    });
+
+  it("a long video read from its words says so and offers Watch it too, with its cost", () => {
+    const line = trailAccount(video()).find((l) => l.kind === "video")!;
+    expect(line).toMatchObject({ text: "Read from the transcript only (over 20 minutes)", watch: { costMicros: 185_625 } });
+  });
+
+  it("asked, it waits for the computer's extension; watched, there is no line", () => {
+    expect(trailAccount(video({ watchAsked: true, offerWatch: false, watched: true }, { status: "queued" })).find((l) => l.kind === "video")).toMatchObject({
+      text: "Waiting for your computer's extension",
+    });
+    expect(trailAccount(video({ watched: true, offerWatch: false }, { durationSec: 600 })).some((l) => l.kind === "video")).toBe(false);
+  });
+
+  it("a move's own section says when the post says to use it or not, why, and each quote with how it checked out", () => {
+    const dto = trail();
+    dto.account.moves[0] = {
+      ...dto.account.moves[0]!,
+      why: "Opens stiff hips",
+      useWhen: [{ text: "After easy runs", evidence: "stated" }],
+      skipWhen: [{ text: "With a sore knee", evidence: "inferred" }],
+      quotes: [
+        { field: "dose", text: "ten each side", at: 72, from: "transcript", check: "verified" },
+        { field: "why", text: "keeps the knees happy", from: "speech", check: "in_speech" },
+        { field: "purpose", text: "cures back pain", from: "caption", check: "not_found" },
+      ],
+    };
+    const said = moveDetail(dto, 0).find((d) => d.title === "What the post says")!;
+    expect(said.rows).toEqual([
+      { key: "Why", value: "Opens stiff hips" },
+      { key: "Use when", value: "After easy runs" },
+      { key: "Skip when", value: "With a sore knee (the reader's guess)" },
+      { key: "Dose · 1:12", value: "“ten each side” — in the words" },
+      { key: "Why", value: "“keeps the knees happy” — what the reader heard in the video" },
+      { key: "Purpose", value: "“cures back pain” — the reader quoted words that aren't in the post", struck: true },
+    ]);
+  });
+
+  it("a reading's step says whether the video was watched and how its quotes checked out; the check step what it left out", () => {
+    const dto = trail({
+      events: [
+        ev("extract", { detail: { kind: "routine", moves: 1, watched: false, videoSeen: null, quotes: { verified: 2, in_speech: 1, not_found: 1 } } }),
+        ev("check", { status: "warn", detail: { moves: [], dropped: [{ move: 0, field: "regions", values: ["forearmz"] }] } }),
+        ev("read", { source: "youtube", detail: { via: "pasted", youtube: { captions: { lang: "en", kind: "auto" }, segments: 27, transcriptChars: 900, chapters: 3, chaptersFrom: "description", via: "captured", ms: 8_000 } } }),
+      ],
+    });
+    const rows = (stage: string) => trailSections(dto).find((s) => s.stage === stage)!.steps[0]!.details.flatMap((d) => d.rows);
+    expect(rows("extract")).toEqual(expect.arrayContaining([
+      { key: "Watched", value: "no — over 20 minutes, read from its words" },
+      { key: "Quotes", value: "2 in the words · 1 heard by the reader · 1 not in the post" },
+    ]));
+    expect(rows("check")).toContainEqual({ key: "Left out", value: "Zorbex hip lift: regions — forearmz" });
+    const row = rows("read").find((r) => r.key === "The video")!;
+    const read = row.full ?? row.value;
+    expect(read).toContain("Captions: auto-generated (en)");
+    expect(read).toContain("Transcript from: the player's own captions");
+    expect(read).toContain("Chapters from: the description");
+  });
+});
+
+describe("a quote shown on screen (final audit G7)", () => {
+  it("reads as the screen's, unchecked — never struck, never as heard", () => {
+    const dto = trail();
+    dto.account.moves[0] = { ...dto.account.moves[0]!, quotes: [{ field: "dose", text: "3 rounds of 10", from: "screen", check: "on_screen" }] };
+    const said = moveDetail(dto, 0).find((d) => d.title === "What the post says")!;
+    expect(said.rows).toEqual([{ key: "Dose", value: "“3 rounds of 10” — shown on screen in the video (the app can't check it)" }]);
+    const rows = trailSections(trail({ events: [ev("check", { detail: { moves: [], quotes: { verified: 1, in_speech: 0, on_screen: 2, not_found: 0 } } })] }))
+      .find((s) => s.stage === "check")!.steps[0]!.details.flatMap((d) => d.rows);
+    expect(rows).toContainEqual({ key: "Quotes", value: "1 in the words · 2 shown on screen" });
+  });
+});
+
+describe("a transcript blob as the trail shows it (final audit G20)", () => {
+  it("each line with its [m:ss] clock, never the stored seconds and tab", async () => {
+    const { blobDisplayText } = await import("../src/screens/saves/trail-model.js");
+    expect(blobDisplayText("transcript", "12.3\tZorbex warm-up\n75\tnext move")).toBe("[0:12] Zorbex warm-up\n[1:15] next move");
+    expect(blobDisplayText("raw_reply", "12.3\tkept as is")).toBe("12.3\tkept as is");
+  });
+});

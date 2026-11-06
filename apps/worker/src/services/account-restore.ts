@@ -867,6 +867,9 @@ export type FinishRestoreResult =
  *    events only when no table came back short.
  * Then the marker is cleared.
  */
+/** The tables one count statement holds (each binds the account id once; a child's scope too, through its parent). */
+const COUNTS_PER_STATEMENT = 45;
+
 export async function finishRestore(
   db: Db,
   userId: string,
@@ -878,14 +881,19 @@ export async function finishRestore(
     return { ok: false, status: 409, error: "no_active_restore" };
   }
 
+  // Every table's count in a few statements of scalar subqueries, not one each (final audit G21: 81 tables were 86
+  // queries in one request, past the Workers Free plan's 50). Each table's scope binds the account once; a statement
+  // holds COUNTS_PER_STATEMENT of them, well under D1's 100 bound parameters.
   const counts: Record<string, number> = {};
-  for (const t of restorableTables()) {
-    const [row] = await db
-      .select({ n: count() })
-      // eslint-disable-next-line @typescript-eslint/no-explicit-any
-      .from(t.table as any)
-      .where(scopeWhere(t, userId));
-    counts[t.name] = Number(row?.n ?? 0);
+  const tables = restorableTables();
+  for (let i = 0; i < tables.length; i += COUNTS_PER_STATEMENT) {
+    const chunk = tables.slice(i, i + COUNTS_PER_STATEMENT);
+    const columns = sql.join(
+      chunk.map((t, j) => sql`(select count(*) from ${t.table} where ${scopeWhere(t, userId)}) as ${sql.raw(`c${j}`)}`),
+      sql`, `,
+    );
+    const [row] = (await db.all(sql`select ${columns}`)) as Record<string, unknown>[];
+    chunk.forEach((t, j) => (counts[t.name] = Number(row?.[`c${j}`] ?? 0)));
   }
   const expected = state.restoreExpected ?? {};
   const short: ShortTable[] = [];

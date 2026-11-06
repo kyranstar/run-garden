@@ -23,7 +23,7 @@ export const programs = sqliteTable(
     source: text("source", { mode: "json" }).$type<Record<string, unknown> | null>(),
     /** Validated per kind: `adaptiveConfigSchema` for adaptive programs. */
     config: text("config", { mode: "json" }).$type<Record<string, unknown>>().notNull(),
-    /** What the plan is for, in a line (migration 0035). */
+    /** What the plan is for, in a line (migration 0036). */
     purpose: text("purpose"),
     /** The longer account of it, which the coach reads on request. */
     brief: text("brief"),

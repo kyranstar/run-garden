@@ -179,6 +179,19 @@ describe("assembleBatch", () => {
     expect((await db.select().from(savedPostMoves)).filter((l) => l.batchId === null)).toHaveLength(5);
   });
 
+  it("a long follow-along stays whole: a post with more new moves than the cap is a batch of its own (design 2026-11-05 §14.5)", async () => {
+    const many = (n: number) => Array.from({ length: n }, (_, i) => move(`Zorbex follow ${String.fromCharCode(97 + (i % 26))}${Math.floor(i / 26)} step`));
+    await matched("small", greek(0, 3), userId, at(0));
+    await matched("long", many(20), userId, at(1));
+    await matched("after", greek(3, 2), userId, at(2));
+    const first = (await assembleBatch(db, env(), userId, at(3)))!;
+    expect(await postBatches()).toEqual({ small: first, long: null, after: null });
+    await db.update(saveBatches).set({ dismissedAt: at(4) }).where(eq(saveBatches.id, first));
+    const second = (await assembleBatch(db, env(), userId, at(5)))!;
+    expect(await postBatches()).toEqual({ small: first, long: second, after: null });
+    expect((await db.select().from(personalMoves)).filter((m) => m.batchId === second)).toHaveLength(20);
+  });
+
   it("linked moves ride along and never count toward the cap", async () => {
     await matched("lib", [move("90/90 Hip Switch"), move("90-90 hip switches")], userId, at(0));
     await matched("new", greek(0, 12), userId, at(1));

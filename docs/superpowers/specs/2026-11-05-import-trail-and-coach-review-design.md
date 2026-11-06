@@ -251,6 +251,13 @@ Builder's call: the exact selectors and the captions trigger. The read must be v
 video before the plan's YouTube tasks are called done (the research could not prove the captions trigger works in a
 background tab).
 
+As built (phase 2, 2026-11-06; the live spike of 2026-11-05): fetching a track's link — or the player's own timedtext
+request again — returns an empty body, so step 4 instead wraps the page's XMLHttpRequest and fetch in the MAIN world
+before the player is asked for captions (the module, the track, the subtitles button off and on, a muted moment of
+play) and keeps the player's own answer (json3; the XML formats parse too). Every parser is a pure function
+(`apps/saves-extension/src/youtube.ts`); the page scripts are in `youtube-reader.ts`. The transcript travels as one
+text, a segment a line (`<seconds>\t<words>`), cheap for the Worker to check.
+
 ### 5.3 What the app receives (additive to `postSubmitSchema`)
 `source: "youtube"`, `key` = video id, `url` = canonical watch URL, `creator` = channel, `caption` = description
 (≤ 5,000; YouTube's own cap), `mediaType: "video"`, `postedAt` = publish date, plus optional: `origin`
@@ -267,6 +274,9 @@ as a blob (§6.2), never in the post row.
   video costs ~$0.10 watched at today's prices, an hour ~$0.30, and prices double on 2027-01-01). A longer video is
   read from the transcript and chapters only; its trail says so and the batch row and trail offer **Watch it too**
   (with the estimated cost), which re-reads it with the video.
+- **As built (phase 2):** a YouTube reading carries no media bytes, so the Worker builds its body itself from the
+  stored words (`POST /api/saves/posts/:key/extract-video`, the extension's request holding the call open): the prompt
+  is "as sent" by construction; claim, reservation, settle, finish and matching are the relay's.
 - **Was the video seen?** The gateway's Chat Completions passing a YouTube URL to Gemini is undocumented. After each
   call the Worker compares the billed prompt tokens with the text alone; a watched video adds ~100 tokens a second.
   Under half that, the reading is marked `videoSeen: false`, the trail says "the reader couldn't watch the video; it

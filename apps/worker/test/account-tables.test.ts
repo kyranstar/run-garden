@@ -193,6 +193,7 @@ const NOT_SECRETS: Record<string, string> = {
   "coach_locks.token": "a single-flight lock token (and the table is not exported)",
   "exercise_provenance.source_key": "the import's dedupe key for a saved source (its own id for that move)",
   "saved_posts.source_key": "the post's id on its source site, the import's dedupe key — a public identifier, not a credential",
+  "saved_links.source_key": "a pasted link's video id or post shortcode, as the post will be keyed — a public identifier, not a credential",
 };
 
 describe("secret columns (finding 13)", () => {
@@ -434,5 +435,12 @@ describe("plans with a purpose: new columns survive an export and restore", () =
     expect(after.tables.programs).toEqual(before.tables.programs);
     expect(after.tables.coach_plans).toEqual(before.tables.coach_plans);
     expect(after.tables.planned_workouts).toEqual(before.tables.planned_workouts);
+  });
+});
+
+describe("large columns (final audit G3)", () => {
+  it("a saved post's reading and video facts are paged by bytes: a row can be ~140 KB", async () => {
+    const { largeColumns } = await import("../src/services/account-tables.js");
+    expect([...largeColumns("saved_posts")].sort()).toEqual(["caption", "extraction", "video_info"]);
   });
 });

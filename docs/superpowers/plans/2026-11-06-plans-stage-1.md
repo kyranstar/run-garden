@@ -38,7 +38,7 @@
 ### Task 1: Columns and vocabulary
 
 **Files:**
-- Create: `packages/database/migrations/0035_plans_with_a_purpose.sql`
+- Create: `packages/database/migrations/0036_plans_with_a_purpose.sql`
 - Modify: `packages/database/src/schema/programs.ts`, `packages/database/src/schema/coach.ts`, `packages/database/src/version.ts`, `packages/domain/src/program.ts`
 - Test: `packages/domain/test/program.test.ts`, `apps/worker/test/account-tables.test.ts`
 
@@ -82,7 +82,7 @@ In `account-tables.test.ts`, add an export and restore round trip of a `course` 
 
 - [ ] **Step 2: Run, expect failure:** `pnpm exec vitest run packages/domain/test/program.test.ts apps/worker/test/account-tables.test.ts`. Expected: FAIL, `defaultOnEnd` isn't defined.
 
-- [ ] **Step 3: Implement.** The migration is `ALTER TABLE ... ADD` only: `programs`: `purpose`, `brief`, `on_end`, `paused_until`, `objective_ids` (text); `coach_plans`: `program_id` (text). `SCHEMA_VERSION` becomes `"0035"`.
+- [ ] **Step 3: Implement.** The migration is `ALTER TABLE ... ADD` only: `programs`: `purpose`, `brief`, `on_end`, `paused_until`, `objective_ids` (text); `coach_plans`: `program_id` (text). `SCHEMA_VERSION` becomes `"0036"`.
 
 - [ ] **Step 4: Run, expect pass,** plus `pnpm exec vitest run packages/database` and `pnpm -r typecheck`.
 
@@ -306,7 +306,7 @@ In `courses.test.ts`: TRE's `sessionDoc(5, { ease: true })`'s tremor is 300; eve
 - `writeCourseSession` judges the document with `judgeDoc`, then in one atomic batch: updates the row where `origin = 'program'` (the guard that makes it once only) to `origin: 'studio'`, with the document, revision, title, category, sport and booked length from `deriveDoc`; clears `easeNext`; marks the mirror owed (`markMirrorOwed`). A judge error writes nothing, logs by code only and leaves a sync note.
 - Due means `effectiveDate === today` in the athlete's zone, and today's slot not moved away.
 - `buildSessionOutcome` and `loadSession` call `courseOf` first for `origin === 'program'` rows: today's is written, then continues as a document row. A day ahead answers a preview through `docDayInputs` with a computed document that isn't stored: add its `docOverride` parameter.
-- **A course's own session is marked by `planned_workouts.course_session`,** the session number it was written as (added to migration 0035 in Task 9), set in the same batch as the flip. `source_content_fingerprint` can't be the mark: a verified watch push overwrites it. n counts completed rows with `course_session` set.
+- **A course's own session is marked by `planned_workouts.course_session`,** the session number it was written as (added to migration 0036 in Task 9), set in the same batch as the flip. `source_content_fingerprint` can't be the mark: a verified watch push overwrites it. n counts completed rows with `course_session` set.
 - **A course session never takes a scored guess at matching.** The number counts sessions done, so an unrelated activity completing one would skip a dose. `completion.ts`'s `linkOnly` becomes `w.origin === "program" || w.courseSession !== null`.
 - **A paused plan writes nothing:** an outline due today under a pause stays an outline if it survived the pause's retraction.
 

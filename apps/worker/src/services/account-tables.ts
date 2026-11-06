@@ -71,6 +71,7 @@ import {
   promptVersions,
   saveBatches,
   saveChecks,
+  savedLinks,
   savedPostMoves,
   savedPosts,
   gardenDayInputs,
@@ -225,6 +226,8 @@ const ENTRIES: ReadonlyArray<readonly [SQLiteTable, TableScope]> = [
   [personalMoves, USER],
   [savedPostMoves, USER],
   // the import trail (0034): what each stage of a post did, its large pieces, and every correction — the owner's data
+  // pasted links (0035): a link waiting for the extension to read it — the owner's data
+  [savedLinks, USER],
   [importEvents, USER],
   [importBlobs, USER],
   [importCorrections, USER],
@@ -306,6 +309,9 @@ const LARGE_COLUMNS: Readonly<Record<string, readonly string[]>> = {
   import_blobs: ["text"],
   import_events: ["detail"],
   coach_run_events: ["payload"],
+  // A saved post's reading (up to 30 moves with their quotes: ~130 KB), its video facts and its 5,000-character
+  // description (pasted links, 2026-11-06; final audit G3).
+  saved_posts: ["extraction", "video_info", "caption"],
 };
 
 export function largeColumns(name: string): readonly string[] {

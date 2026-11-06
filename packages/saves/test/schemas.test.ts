@@ -22,7 +22,7 @@ describe("schemas", () => {
     expect(postSubmitSchema.safeParse(post).success).toBe(true);
     expect(postSubmitSchema.safeParse({ ...post, extra: 1 }).success).toBe(false);
     expect(postSubmitSchema.safeParse({ ...post, key: "k".repeat(65) }).success).toBe(false);
-    expect(postSubmitSchema.safeParse({ ...post, caption: "c".repeat(4001) }).success).toBe(false);
+    expect(postSubmitSchema.safeParse({ ...post, caption: "c".repeat(5001) }).success).toBe(false);
     expect(postSubmitSchema.safeParse({ ...post, url: "http://example.com/x" }).success).toBe(false);
     expect(postSubmitSchema.safeParse({ ...post, hashtags: Array(31).fill("a") }).success).toBe(false);
     expect(postSubmitSchema.safeParse({ ...post, source: "Bad Source" }).success).toBe(false);
@@ -67,7 +67,7 @@ describe("schemas", () => {
     const ex = { kind: "routine", summary: "s", themes: ["a"], moves: [move], routine: { rounds: 2, order: [0] } };
     expect(extractionSchema.safeParse(ex).success).toBe(true);
     expect(extractionSchema.safeParse({ ...ex, extra: 1 }).success).toBe(false);
-    expect(extractionSchema.safeParse({ ...ex, moves: Array(13).fill(move) }).success).toBe(false);
+    expect(extractionSchema.safeParse({ ...ex, moves: Array(31).fill(move) }).success).toBe(false);
     expect(extractionSchema.safeParse({ ...ex, themes: Array(6).fill("t") }).success).toBe(false);
     expect(extractionSchema.safeParse({ ...ex, summary: "s".repeat(301) }).success).toBe(false);
   });
@@ -111,5 +111,45 @@ describe("fitSchema", () => {
     const many = (n: number) => Object.fromEntries(Array.from({ length: n }, (_, i) => [`myZorbex${i}`, "skip"]));
     expect(fitSchema.safeParse({ choices: many(60) }).success).toBe(true);
     expect(fitSchema.safeParse({ choices: many(61) }).success).toBe(false);
+  });
+});
+
+describe("schemas: pasted links and YouTube (phase 2)", () => {
+  const video = {
+    ...post, source: "youtube", key: "Zx9_-QaB3cD", mediaType: "video" as const, caption: "d".repeat(5_000), origin: "pasted" as const,
+    title: "Zorbex hip flow", durationSec: 754, chapters: [{ start: 0, title: "Intro" }, { start: 30, title: "Flow" }],
+    transcript: { lang: "en", kind: "auto" as const, text: "0\tzorbex", cut: false }, live: false,
+  };
+  it("takes a video's title, length, chapters and transcript, and a 5,000-character description", () => {
+    expect(postSubmitSchema.safeParse(video).success).toBe(true);
+    expect(postSubmitSchema.safeParse({ ...video, caption: "d".repeat(5_001) }).success).toBe(false);
+    expect(postSubmitSchema.safeParse({ ...video, transcript: { ...video.transcript, text: "x".repeat(400_001) } }).success).toBe(false);
+    expect(postSubmitSchema.safeParse({ ...video, chapters: Array(101).fill({ start: 0, title: "a" }) }).success).toBe(false);
+    expect(postSubmitSchema.safeParse({ ...video, transcript: { ...video.transcript, kind: "robot" } }).success).toBe(false);
+  });
+  it("takes a YouTube read's facts", () => {
+    const readFacts = {
+      via: "pasted", extVersion: "0.3.0", coverSent: false, mediaCount: 1,
+      youtube: { captions: { lang: "en", kind: "auto" }, segments: 27, transcriptChars: 900, chapters: 2, chaptersFrom: "description", via: "captured", ms: 8_000 },
+    };
+    expect(postSubmitSchema.safeParse({ ...video, readFacts }).success).toBe(true);
+    expect(postSubmitSchema.safeParse({ ...video, readFacts: { ...readFacts, youtube: { ...readFacts.youtube, extra: 1 } } }).success).toBe(false);
+  });
+  it("an extract-5 reading (string insights, none of the new fields) still parses", () => {
+    expect(extractionSchema.safeParse({ kind: "single_move", summary: "s", themes: [], moves: [move], insights: ["Do it after easy runs."] }).success).toBe(true);
+  });
+  it("reads extract-6's reasons and quotes, and at most 30 moves", () => {
+    const six = {
+      ...move,
+      useWhen: [{ text: "After easy runs", evidence: "stated" }], skipWhen: [{ text: "With a sore knee", evidence: "inferred" }],
+      why: "Opens the hips", quotes: [{ field: "dose", text: "ten each side", at: 12, from: "transcript" }],
+      evidence: { ...move.evidence, purpose: "stated", useWhen: "stated", skipWhen: "inferred" },
+    };
+    const reading = { kind: "routine", summary: "s", themes: [], moves: [six], speech: "zorbex", insights: [{ text: "Twice a week", scope: "general" }, "plain"] };
+    expect(extractionSchema.safeParse(reading).success).toBe(true);
+    expect(extractionSchema.safeParse({ ...reading, moves: Array(30).fill(six) }).success).toBe(true);
+    expect(extractionSchema.safeParse({ ...reading, moves: Array(31).fill(six) }).success).toBe(false);
+    expect(extractionSchema.safeParse({ ...reading, insights: [{ text: "x", scope: "everyone" }] }).success).toBe(false);
+    expect(extractionSchema.safeParse({ ...reading, moves: [{ ...six, quotes: Array(9).fill(six.quotes[0]) }] }).success).toBe(false);
   });
 });

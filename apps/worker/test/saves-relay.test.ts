@@ -548,8 +548,9 @@ describe("POST /api/saves/posts/:key/extract", () => {
 
   it("400s max tokens above the cap (12,000), or not a number", async () => {
     await seed("k");
-    expect((await route("k", bodyText(), { "x-saves-max-tokens": "12001" })).res.status).toBe(400);
-    expect((await route("k", bodyText(), { "x-saves-max-tokens": "12000" })).res.status).not.toBe(400);
+    // REBASED 2026-11-06 (import trail phase 2): the cap is 32,000 — a 30-move follow-along with its quotes.
+    expect((await route("k", bodyText(), { "x-saves-max-tokens": "32001" })).res.status).toBe(400);
+    expect((await route("k", bodyText(), { "x-saves-max-tokens": "32000" })).res.status).not.toBe(400);
     expect((await route("k", bodyText(), { "x-saves-max-tokens": "lots" })).res.status).toBe(400);
   });
 
@@ -594,5 +595,67 @@ describe("POST /api/saves/posts/:key/extract", () => {
     } finally {
       vi.unstubAllGlobals();
     }
+  });
+});
+
+describe("a reading with one unknown list value is kept (live finding, 2026-11-05)", () => {
+  it("drops the value, stores the reading with what it dropped, notes it on the check step and flags the move", async () => {
+    const id = await seed("lenient");
+    const reply = { ...GOOD, moves: [{ ...move, regions: ["hips", "forearmz"] }] };
+    const out = await run(id, bodyText(), gateway(reply));
+    expect(out.ok).toBe(true);
+    const row = await reload(id);
+    expect(row.status).toBe("matched");
+    const stored = row.extraction as { moves: { regions: string[] }[]; dropped?: unknown };
+    expect(stored.moves[0]!.regions).toEqual(["hips"]);
+    expect(stored.dropped).toEqual([{ move: 0, field: "regions", values: ["forearmz"] }]);
+    const check = (await db.select().from(schema.importEvents).where(eq(schema.importEvents.postId, id))).find((e) => e.stage === "check")!;
+    expect(check.status).toBe("warn");
+    expect(check.summary).toMatch(/1 value the app doesn't know was left out/);
+    expect((check.detail as { dropped: unknown }).dropped).toEqual([{ move: 0, field: "regions", values: ["forearmz"] }]);
+    const [link] = await db.select().from(schema.savedPostMoves).where(eq(schema.savedPostMoves.postId, id));
+    expect(link!.checkFlag).toBe(true);
+  });
+
+  it("a model's own `dropped` is replaced by what the Worker dropped", async () => {
+    const id = await seed("lenient2");
+    await run(id, bodyText(), gateway({ ...GOOD, dropped: [{ move: 0, field: "regions", values: ["made-up"] }] }));
+    const stored = (await reload(id)).extraction as { dropped?: unknown };
+    expect(stored.dropped).toBeUndefined();
+  });
+
+  it("a quote it can't use (a field it can't support, a clock for its time) never fails the reading (final review F4)", async () => {
+    const id = await seed("lenient4");
+    const quotes = [{ field: "cues", text: "ribs down", from: "caption" }, { field: "dose", text: "ten each", from: "transcript", at: "0:12" }];
+    const out = await run(id, bodyText(), gateway({ ...GOOD, moves: [{ ...move, quotes }] }));
+    expect(out.ok).toBe(true);
+    const stored = (await reload(id)).extraction as { moves: { quotes: { field: string; at?: number }[] }[]; dropped?: unknown };
+    expect(stored.moves[0]!.quotes.map((q) => [q.field, q.at])).toEqual([["dose", 12]]);
+    expect(stored.dropped).toEqual([{ move: 0, field: "quotes", values: ["ribs down"] }]);
+  });
+
+  it("a null optional value or an unknown key anywhere is left out quietly — no Check this, no note (final audit G8)", async () => {
+    const id = await seed("lenient5");
+    const reply = {
+      ...GOOD, extra: "x",
+      insights: [{ text: "Twice a week", scope: "general", quote: null }],
+      moves: [{ ...move, why: null, evidence: { ...move.evidence, useWhen: null, why: "stated" }, notes: "extra" }],
+    };
+    const out = await run(id, bodyText(), gateway(reply));
+    expect(out.ok).toBe(true);
+    const stored = (await reload(id)).extraction as { dropped?: unknown; moves: Record<string, unknown>[] };
+    expect(stored.dropped).toBeUndefined();
+    expect(stored.moves[0]!.notes).toBeUndefined();
+    const check = (await db.select().from(schema.importEvents).where(eq(schema.importEvents.postId, id))).find((e) => e.stage === "check")!;
+    expect(check.summary).toBe("The reading checks out");
+    const [link] = await db.select().from(schema.savedPostMoves).where(eq(schema.savedPostMoves.postId, id));
+    expect(link!.checkFlag).toBe(false);
+  });
+
+  it("an unknown single-valued field still fails the reading with the schema's words", async () => {
+    const id = await seed("lenient3");
+    const out = await run(id, bodyText(), gateway({ ...GOOD, moves: [{ ...move, position: "floaty" }] }));
+    expect(out).toMatchObject({ ok: false, code: "model_failed" });
+    expect((out as { issues: string[] }).issues[0]).toMatch(/^moves\.0\.position: must be one of/);
   });
 });

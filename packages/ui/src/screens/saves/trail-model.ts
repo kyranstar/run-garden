@@ -17,7 +17,7 @@
  * is key: value lines, never JSON; an id is a move's name where the trail knows it. Every text here came from a stage,
  * a model or a stranger's post: the sheet draws it as text, never as markup. Pure: no React, no network.
  */
-import { failureWords, IMPORT_STAGES, type BlobKind, type ImportStage, type ImportTrailDto, type TrailEventDto, type TrailStatus } from "@rg/saves";
+import { clock, failureWords, IMPORT_STAGES, transcriptSegments, WAITING_FOR_EXTENSION, type BlobKind, type ImportStage, type ImportTrailDto, type TrailEventDto, type TrailStatus } from "@rg/saves";
 import { formatTime } from "../../components.js";
 import { DETAIL_VALUE_MAX, keyWords, type DetailRow } from "../studio/run-model.js";
 import { dayOf } from "../studio/saves-model.js";
@@ -28,6 +28,8 @@ import { dayOf } from "../studio/saves-model.js";
 export type TrailRow = Pick<DetailRow, "key" | "value"> & {
   /** The whole value, when `value` is its preview: the sheet's "Show all". */
   full?: string;
+  /** Drawn struck through: a quote the reader made that isn't in the post (§5.6). */
+  struck?: boolean;
 };
 
 /** A group of rows under an optional heading (the coach trail's `DetailSection`). */
@@ -38,7 +40,7 @@ export interface TrailDetail {
 
 export interface AccountLine {
   key: string;
-  kind: "from" | "what" | "move" | "coach" | "correction" | "health" | "rebuilt";
+  kind: "from" | "what" | "video" | "move" | "coach" | "correction" | "health" | "rebuilt";
   text: string;
   /** A second line: what the reader says a move is for. */
   sub?: string | null;
@@ -46,7 +48,24 @@ export interface AccountLine {
   status?: TrailStatus;
   /** A move line's place in the post: it opens the move's own section (`moveDetail`). */
   position?: number;
+  /** A video line that offers Watch it too, with what watching would cost (design 2026-11-05 §5.4). */
+  watch?: { costMicros: number | null };
 }
+
+/**
+ * A blob's text as the trail shows it: a transcript's lines with the [m:ss] clock the reader was given (stored as
+ * `<seconds>\t<words>`; final audit G20); anything else as it was kept.
+ */
+export function blobDisplayText(kind: BlobKind, text: string): string {
+  if (kind !== "transcript") return text;
+  return transcriptSegments(text).map(([at, words]) => `[${clock(at)}] ${words}`).join("\n");
+}
+
+/** The button that asks for a long video to be watched, with its typical cost. */
+export function watchLabel(costMicros: number | null): string {
+  return costMicros === null ? "Watch it too" : `Watch it too (about $${(costMicros / 1_000_000).toFixed(2)})`;
+}
+export const TRANSCRIPT_ONLY_LINE = "Read from the transcript only (over 20 minutes)";
 
 /** A raw piece of a step, listed by what it is and its size; its text is read when opened. */
 export interface TrailBlob {
@@ -152,6 +171,16 @@ const LABELS: Readonly<Record<string, string>> = {
   promptShaSent: "Prompt hash (as sent)",
   asSent: "Prompt as the app wrote it",
   videoSeen: "Video seen",
+  watched: "Watched",
+  quotes: "Quotes",
+  dropped: "Left out",
+  youtube: "The video",
+  captions: "Captions",
+  segments: "Transcript lines",
+  transcriptChars: "Transcript",
+  chapters: "Chapters",
+  chaptersFrom: "Chapters from",
+  ms: "Time taken",
   bytes: "Bytes",
   readFacts: "What was sent",
   variantWidth: "Video size",
@@ -199,7 +228,8 @@ const VALUE_WORDS: Readonly<Record<string, Readonly<Record<string, string>>>> = 
   stage: { creator: "the creator rule", keyword: "a training word in the caption", model: "the model", seed: "the first import", owner: "you" },
   kind: { routine: "a routine", single_move: "a single move", tips: "tips", not_training: "not training" },
   finishReason: { stop: "done", length: "cut off at the output limit", content_filter: "stopped by a content filter" },
-  via: { saved_list: "your saved list", pasted: "a pasted link" },
+  via: { saved_list: "your saved list", pasted: "a pasted link", captured: "the player's own captions", panel: "the transcript panel" },
+  chaptersFrom: { player: "the player bar", description: "the description" },
   doseOrigin: { post: "the post", reading: "the reader's reading", default: "a default — the post gave none" },
   outcome: { new: "a new move", personal: "already yours", yours: "already yours", library: "from the library" },
   by: { name: "its name", judge: "the judge", fuzzy: "a close name", new: "no match" },
@@ -322,6 +352,42 @@ function field(k: string, v: unknown, ctx: Ctx): string {
     }
     case "asSent":
       return v === false ? "no — an older extension's prompt" : inline(v, ctx);
+    case "watched":
+      return v === false ? "no — over 20 minutes, read from its words" : inline(v, ctx);
+    case "videoSeen":
+      return v === false ? "no — the reader read the transcript only" : inline(v, ctx);
+    case "quotes": {
+      const q = record(v);
+      if (!q) return inline(v, ctx);
+      const n = (x: unknown) => (typeof x === "number" ? x : 0);
+      const parts = [
+        n(q.verified) ? `${num(n(q.verified))} in the words` : "",
+        n(q.in_speech) ? `${num(n(q.in_speech))} heard by the reader` : "",
+        n(q.on_screen) ? `${num(n(q.on_screen))} shown on screen` : "",
+        n(q.not_found) ? `${num(n(q.not_found))} not in the post` : "",
+      ].filter(Boolean);
+      return parts.length ? parts.join(" · ") : "none";
+    }
+    case "dropped":
+      return Array.isArray(v)
+        ? v
+            .map((x) => {
+              const o = record(x);
+              if (!o) return inline(x, ctx);
+              const at = typeof o.move === "number" ? (ctx.moveAt(o.move) ?? `Move ${o.move + 1}`) : "A move";
+              return `${at}: ${typeof o.field === "string" ? keyWords(o.field).toLowerCase() : "a list"} — ${inline(o.values, ctx)}`;
+            })
+            .join("\n")
+        : inline(v, ctx);
+    case "captions": {
+      const c = record(v);
+      if (!c) return v === null ? "none" : inline(v, ctx);
+      return `${c.kind === "auto" ? "auto-generated" : "uploaded"}${typeof c.lang === "string" ? ` (${c.lang})` : ""}`;
+    }
+    case "transcriptChars":
+      return typeof v === "number" ? plural(v, "character") : inline(v, ctx);
+    case "ms":
+      return typeof v === "number" ? timeWords(v) : inline(v, ctx);
     case "bytes":
       return typeof v === "number" ? bytesWords(v) : inline(v, ctx);
     case "variantWidth":
@@ -387,11 +453,19 @@ function field(k: string, v: unknown, ctx: Ctx): string {
     .filter(([kk, x]) => !QUIET.has(kk) && x !== null && x !== undefined)
     .map(([kk, x]) => {
       const words =
-        k === "evidence" && typeof x === "string" ? (VALUE_WORDS.evidence![x] ?? x) : record(x) || Array.isArray(x) ? inline(x, ctx) : field(kk, x, ctx);
-      return `${label(kk)}: ${words}`;
+        k === "evidence" && typeof x === "string"
+          ? (VALUE_WORDS.evidence![x] ?? x)
+          : WORDED.has(kk) || !(record(x) || Array.isArray(x))
+            ? field(kk, x, ctx)
+            : inline(x, ctx);
+      // A video's own `via` is how its transcript was got, not how the post came.
+      return `${k === "youtube" && kk === "via" ? "Transcript from" : label(kk)}: ${words}`;
     });
   return lines.join("\n") || "—";
 }
+
+/** Objects and lists `field` has its own words for, wherever they sit. */
+const WORDED = new Set(["captions", "quotes", "dropped", "tokens"]);
 
 /** A row: its whole value, or a preview cut at a word with the whole kept for "Show all". */
 export function rowOf(key: string, whole: string): TrailRow {
@@ -488,6 +562,11 @@ export function trailAccount(dto: ImportTrailDto): AccountLine[] {
     day ? (post.origin === "pasted" ? `pasted ${day}` : day) : null,
   ].filter(Boolean);
   out.push({ key: "from", kind: "from", text: from.join(" · ") });
+
+  // A video's watching (design 2026-11-05 §5.4): a long one read from its words offers to be watched; asked, it waits.
+  const video = post.video;
+  if (video?.watchAsked && post.status === "queued") out.push({ key: "video", kind: "video", text: WAITING_FOR_EXTENSION, status: "info" });
+  else if (video?.offerWatch) out.push({ key: "video", kind: "video", text: TRANSCRIPT_ONLY_LINE, status: "info", watch: { costMicros: video.watchCostMicros } });
 
   const kind = account.kind ? (KIND_LINE[account.kind] ?? account.kind) : null;
   const what = kind && account.summary ? `${kind}: ${account.summary}` : (kind ?? account.summary);
@@ -621,12 +700,42 @@ export function detailBlobRows(text: string, stage: ImportStage, dto: ImportTrai
 
 // ── A move's own section ─────────────────────────────────────────────────────
 
+export const POST_SAYS = "What the post says";
+const QUOTE_FIELD: Readonly<Record<string, string>> = {
+  name: "Name", dose: "Dose", purpose: "Purpose", useWhen: "Use when", skipWhen: "Skip when", steps: "Steps", why: "Why",
+};
+const QUOTE_CHECK: Readonly<Record<string, string>> = {
+  verified: "in the words",
+  in_speech: "what the reader heard in the video",
+  on_screen: "shown on screen in the video (the app can't check it)",
+  not_found: "the reader quoted words that aren't in the post",
+};
+
+/** When the post says to use a move or not, why, and its quotes with how each checked out (§5.5–5.6): a stranger's words. */
+function postSays(m: ImportTrailDto["account"]["moves"][number]): TrailRow[] {
+  const cases = (list: { text: string; evidence: string }[] | undefined) =>
+    (list ?? []).map((c) => (c.evidence === "inferred" ? `${c.text.trim()} (the reader's guess)` : c.text.trim())).join("; ");
+  const rows: TrailRow[] = [];
+  if (m.why?.trim()) rows.push(rowOf("Why", m.why.trim()));
+  if (m.useWhen?.length) rows.push(rowOf("Use when", cases(m.useWhen)));
+  if (m.skipWhen?.length) rows.push(rowOf("Skip when", cases(m.skipWhen)));
+  for (const q of m.quotes ?? []) {
+    const key = `${QUOTE_FIELD[q.field] ?? keyWords(q.field)}${typeof q.at === "number" ? ` · ${clock(q.at)}` : ""}`;
+    const check = q.check ? QUOTE_CHECK[q.check] : null;
+    const row = rowOf(key, `“${q.text.trim()}”${check ? ` — ${check}` : ""}`);
+    rows.push(q.check === "not_found" ? { ...row, struck: true } : row);
+  }
+  return rows;
+}
+
 /** Everything the trail says of one move: its check, its match (the latest of each), and each choice, coach step and
  * correction that names it. */
 export function moveDetail(dto: ImportTrailDto, position: number): TrailDetail[] {
   const ctx = ctxOf(dto);
   const move = dto.account.moves.find((m) => m.position === position);
   const out: TrailDetail[] = [];
+  const said = move ? postSays(move) : [];
+  if (said.length) out.push({ title: POST_SAYS, rows: said });
   for (const stage of ["check", "match"] as const) {
     const e = [...dto.events].reverse().find((x) => x.stage === stage && movesOf(x).some((m) => m.position === position));
     const entry = e ? movesOf(e).find((m) => m.position === position) : undefined;

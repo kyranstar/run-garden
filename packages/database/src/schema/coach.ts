@@ -144,7 +144,7 @@ export const coachPlans = sqliteTable("coach_plans", {
   endDate: text("end_date").notNull(),
   raceDate: text("race_date"),
   stampPrefix: text("stamp_prefix").notNull(),
-  /** The `programs` row this plan is the coach's face of (migration 0035); null until linked. */
+  /** The `programs` row this plan is the coach's face of (migration 0036); null until linked. */
   programId: text("program_id"),
   createdAt: text("created_at").notNull(),
   updatedAt: text("updated_at").notNull(),

@@ -4,6 +4,8 @@
  *
  * Settings -> Saves:
  *   GET  /status                                   what the import did
+ *   GET  /links, POST /links {url}                 pasted links: the recent ones; one pasted on the phone
+ *   POST /posts/:id/watch                          Watch it too: read a long video again, watched
  *   POST /posts/:id/override {action}              process anyway, skip, or keep as a reference
  *
  * The one path (the saves flow redesigned, 2026-10-26; services/saves-review.ts; spec §3.2, §4, §12.1, §12.3):
@@ -50,7 +52,7 @@ import { z } from "zod";
 import { nowInstant } from "@rg/domain";
 import type { AppContext } from "../auth/middleware.js";
 import { requireUser } from "../auth/middleware.js";
-import { createBatchSchema, fitSchema, personalMovePatchSchema, rematchSchema } from "@rg/saves";
+import { createBatchSchema, fitSchema, LINK_REFUSED, personalMovePatchSchema, rematchSchema } from "@rg/saves";
 import { savesImportEnabled } from "../env.js";
 import { overridePost, savesStatus } from "../services/saves-ledger.js";
 import { saveBatch } from "../services/saves-batches.js";
@@ -63,6 +65,8 @@ const overrideSchema = z.object({ action: z.enum(["process", "skip", "reference"
 
 import { readBlob, readPostTrail } from "../services/import-trail-read.js";
 import { importHealth } from "../services/import-health.js";
+import { addLink, listLinks } from "../services/saved-links.js";
+import { watchVideo } from "../services/saves-video.js";
 
 export const mySavesRoutes = new Hono<AppContext>();
 
@@ -87,8 +91,30 @@ mySavesRoutes.post("/posts/:id/override", async (c) => {
 const body = async (c: { req: { json: () => Promise<unknown> } }): Promise<unknown> => c.req.json().catch(() => undefined);
 const notFound = { error: "not_found" } as const;
 
+const linkSchema = z.object({ url: z.string().min(1).max(600) }).strict();
+
+/** A link pasted in the app (design 2026-11-05 §15.2): it waits for the computer's extension, which reads it within ~15 minutes. */
+mySavesRoutes.post("/links", async (c) => {
+  const parsed = linkSchema.safeParse(await c.req.json().catch(() => undefined));
+  if (!parsed.success) return c.json({ error: "invalid" }, 422);
+  const out = await addLink(c.get("db"), c.get("userId"), parsed.data.url, "app", nowInstant());
+  if (!out.ok) return c.json({ error: out.error, message: LINK_REFUSED }, 400);
+  return c.json(out.state === "known" ? { state: out.state, postId: out.postId, firstSeenAt: out.firstSeenAt } : { state: out.state, link: out.link });
+});
+
+/** The recent pasted links and where each stands. One statement. */
+mySavesRoutes.get("/links", async (c) => c.json({ links: await listLinks(c.get("db"), c.get("userId")) }));
+
 /** The health row: one light per stage and source (import trail, design 2026-11-05 §6.5). */
 mySavesRoutes.get("/health", async (c) => c.json(await importHealth(c.get("db"), c.get("userId"), new Date(nowInstant()))));
+
+/** Watch it too (design 2026-11-05 §5.4): read a long video again with the video watched. 404 / 409 when it can't be. */
+mySavesRoutes.post("/posts/:id/watch", async (c) => {
+  const out = await watchVideo(c.get("db"), c.get("userId"), c.req.param("id"), nowInstant());
+  if (out === "not_found") return c.json({ error: "not_found" }, 404);
+  if (out === "conflict") return c.json({ error: "not_watchable" }, 409);
+  return c.json({ ok: true });
+});
 
 // One post's trail and a blob's text (import trail, design 2026-11-05 §6.3): the owner's only.
 mySavesRoutes.get("/posts/:id/trail", async (c) => {
