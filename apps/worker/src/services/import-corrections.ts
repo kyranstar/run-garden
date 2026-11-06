@@ -4,7 +4,11 @@
  * The tool that proposes one is design-tools/correct-import.ts; Approve applies it (design-approve.ts, below).
  *
  * TARGETS. A personal move's field (`move`, its id): name, summary, purpose (the record's why), dose, laterality, load,
- * equipment, steps, cues (the record's focus) — the corrected record held to the library's own validation. A post's
+ * equipment, steps, cues (the record's focus) — the corrected record held to the library's own validation. And, since
+ * the safety audit (2026-11-06, S2), what the condition gates read of it — its contraction (a jump is gated only through
+ * a plyometric one), its condition ratings (`conditions`: a profile's attributes, merged over the record's as a dose is),
+ * its regions and patterns — and `retire`: a "move" that is no move (a "Follow for part 2!!") archived, false → true,
+ * by the same atomic, gated write (an archived move still resolves in old documents, and is never offered again). A post's
  * reading of one of its moves (`reading`, `<postId>:<position>`): when to use it, when to skip it, why. An insight
  * (`insight`, `<postId>:<index>`): drop it, reword it, change its scope, attach it to one of the post's moves. A link's
  * match (`link`, `<postId>:<position>`): the same as another move the athlete is offered, or — a library link — not the
@@ -14,7 +18,7 @@ import { sql, type SQL } from "drizzle-orm";
 import { z } from "zod";
 import { schema } from "@rg/database";
 import { newId } from "@rg/domain";
-import { DOSE_TYPES, EQUIPMENT_IDS, LATERALITY, LOADS, type ExerciseRecord } from "@rg/exercise-library";
+import { CONTRACTIONS, DOSE_TYPES, EQUIPMENT_IDS, label, LATERALITY, LOADS, PATTERNS, PROFILES, REGIONS, type ExerciseRecord } from "@rg/exercise-library";
 import { extractedMoveSchema, INSIGHT_SCOPES, isPersonalId, type InsightScope } from "@rg/saves";
 import type { AtomicStatement, Db } from "./db.js";
 import { summaryLine } from "./import-trail.js";
@@ -26,7 +30,9 @@ import { valueWords } from "./saves-evidence.js";
 const { importCorrections, importEvents, personalMoves, savedPosts, savedPostMoves, coachMemory } = schema;
 
 export const CORRECTION_TARGETS = ["move", "reading", "insight", "link"] as const satisfies readonly CorrectionTarget[];
-export const MOVE_FIELDS = ["name", "summary", "purpose", "dose", "laterality", "load", "equipment", "steps", "cues"] as const;
+export const MOVE_FIELDS = ["name", "summary", "purpose", "dose", "laterality", "load", "equipment", "steps", "cues", "contraction", "conditions", "regions", "patterns", "retire"] as const;
+/** A move's field that is a value of its record (every one but `retire`, which is its status). */
+type RecordField = Exclude<(typeof MOVE_FIELDS)[number], "retire">;
 export const READING_FIELDS = ["useWhen", "skipWhen", "why"] as const;
 export const INSIGHT_FIELDS = ["drop", "text", "scope", "move"] as const;
 export const LINK_FIELDS = ["same_as", "not_same"] as const;
@@ -130,7 +136,7 @@ export function correctionStateOf(raw: unknown): CorrectionState | null {
   return null;
 }
 
-const MOVE_PATH: Readonly<Record<(typeof MOVE_FIELDS)[number], readonly string[]>> = {
+const MOVE_PATH: Readonly<Record<RecordField, readonly string[]>> = {
   name: ["name"],
   summary: ["text", "summary"],
   purpose: ["text", "why"],
@@ -140,12 +146,16 @@ const MOVE_PATH: Readonly<Record<(typeof MOVE_FIELDS)[number], readonly string[]
   equipment: ["equipment"],
   steps: ["text", "steps"],
   cues: ["text", "focus"],
+  contraction: ["contraction"],
+  conditions: ["conditions"],
+  regions: ["regions"],
+  patterns: ["patterns"],
 };
 
 const at = (o: unknown, path: readonly string[]): unknown => path.reduce<unknown>((x, k) => (x && typeof x === "object" ? (x as Record<string, unknown>)[k] : undefined), o);
 
 /** A move's record with one field set to `value`. */
-export function withMoveField(record: ExerciseRecord, field: (typeof MOVE_FIELDS)[number], value: unknown): ExerciseRecord {
+export function withMoveField(record: ExerciseRecord, field: RecordField, value: unknown): ExerciseRecord {
   const path = MOVE_PATH[field];
   if (path.length === 1) return { ...record, [path[0]!]: value } as ExerciseRecord;
   return { ...record, text: { ...record.text, [path[1]!]: value } } as ExerciseRecord;
@@ -176,8 +186,10 @@ export function currentValue(target: CorrectionTarget, targetId: string, field: 
   if (!state) return { why: "isn't one of the athlete's" };
   if (target === "move") {
     if (!isPersonalId(targetId) || state.kind !== "move") return { why: "is a library move: only the athlete's own moves are corrected here" };
+    // Retired is its status (the safety audit, S2): an archived move reads as retired, so an approve asked again finds it so.
+    if (field === "retire" && (state.status === "active" || state.status === "archived")) return { value: state.status === "archived" };
     if (state.status !== "active") return { why: `is ${state.status === "merged" ? "merged into another move" : state.status}, not one the athlete is offered` };
-    return { value: at(state.record, MOVE_PATH[field as (typeof MOVE_FIELDS)[number]]) ?? null };
+    return { value: at(state.record, MOVE_PATH[field as RecordField]) ?? null };
   }
   if (state.kind !== "post") return { why: "isn't one of the athlete's posts" };
   const n = postRef(targetId)!.n;
@@ -223,6 +235,12 @@ const AFTER: Readonly<Record<string, z.ZodTypeAny>> = {
   "move.equipment": z.array(z.enum(EQUIPMENT_IDS)).max(8),
   "move.steps": z.array(line(200)).min(1).max(12),
   "move.cues": z.array(line(160)).max(8),
+  // What the condition gates read (the safety audit, S2): the corrected record is held to the library's own validation.
+  "move.contraction": z.array(z.enum(CONTRACTIONS)).min(1).max(CONTRACTIONS.length),
+  "move.conditions": z.record(z.string().max(40), z.record(z.string().max(40), z.union([z.number(), z.boolean()]))),
+  "move.regions": z.array(z.enum(REGIONS)).min(1).max(12),
+  "move.patterns": z.array(z.enum(PATTERNS)).min(1).max(8),
+  "move.retire": z.literal(true),
   "reading.useWhen": z.array(caseSchema).max(4),
   "reading.skipWhen": z.array(caseSchema).max(4),
   "reading.why": line(200),
@@ -244,8 +262,14 @@ export function checkedAfter(target: CorrectionTarget, field: string, after: unk
   const parsed = schema.safeParse(after);
   if (!parsed.success) return { why: parsed.error.issues.map((i) => `${i.path.length ? `after.${i.path.join(".")}` : "after"}: ${i.message}`).join("; ") };
   if (target === "move" && state.kind === "move") {
-    const value = field === "dose" ? mergedDose(state.record.dose as unknown as Record<string, unknown>, parsed.data as Record<string, unknown>) : parsed.data;
-    const next = withMoveField(state.record, field as (typeof MOVE_FIELDS)[number], value);
+    if (field === "retire") return { value: true };
+    const value =
+      field === "dose"
+        ? mergedDose(state.record.dose as unknown as Record<string, unknown>, parsed.data as Record<string, unknown>)
+        : field === "conditions"
+          ? mergedRatings(state.record.conditions as unknown as Record<string, unknown>, parsed.data as Record<string, Record<string, unknown>>)
+          : parsed.data;
+    const next = withMoveField(state.record, field as RecordField, value);
     const problems = validatePersonalRecord(next).map((p) => p.replace(/^\S+: /, ""));
     if (problems.length) return { why: problems.slice(0, 3).join("; ") };
     return { value };
@@ -264,6 +288,45 @@ export function mergedDose(before: Record<string, unknown> | undefined, after: R
   return { ...kept, ...after };
 }
 
+/**
+ * A ratings fix over the ratings it corrects (the safety audit, S2), as a dose fix is: per profile, the attributes it
+ * names over the record's, the others kept; a profile it doesn't name kept whole. What the library's validation then
+ * refuses (an attribute off its scale or unknown, a profile it doesn't know) is refused as `bad_after`.
+ */
+export function mergedRatings(before: Record<string, unknown> | undefined, after: Record<string, Record<string, unknown>>): Record<string, unknown> {
+  const out: Record<string, unknown> = { ...(before && typeof before === "object" ? before : {}) };
+  for (const [p, attrs] of Object.entries(after)) {
+    const was = out[p];
+    out[p] = { ...(was && typeof was === "object" ? (was as Record<string, unknown>) : {}), ...attrs };
+  }
+  return out;
+}
+
+/** "neckLoad" → "neck load". */
+const attrWords = (key: string): string => key.replace(/([a-z0-9])([A-Z])/g, "$1 $2").toLowerCase();
+
+/** A move's condition ratings in words: "TMJ clench 2, neck load 0, face down no". */
+function ratingsWords(v: unknown): string {
+  if (!v || typeof v !== "object") return valueWords(v);
+  return Object.entries(v as Record<string, unknown>)
+    .map(([p, attrs]) => {
+      const name = (PROFILES as Record<string, { label: string } | undefined>)[p]?.label ?? p;
+      const parts = attrs && typeof attrs === "object" ? Object.entries(attrs as Record<string, unknown>).map(([k, x]) => `${attrWords(k)} ${typeof x === "boolean" ? (x ? "yes" : "no") : String(x)}`) : [];
+      return `${name} ${parts.join(", ")}`.trim();
+    })
+    .join("; ");
+}
+
+/** A list of the library's own words (contraction types, regions, patterns), as the athlete reads them. */
+const vocabWords = (v: unknown): string => (Array.isArray(v) ? (v.length ? v.map((x) => label(String(x)).toLowerCase()).join(", ") : "nothing") : valueWords(v));
+
+/** How a move field's value reads on the card. */
+function moveValueWords(field: string, v: unknown): string {
+  if (field === "conditions") return ratingsWords(v);
+  if (field === "contraction" || field === "regions" || field === "patterns") return vocabWords(v);
+  return valueWords(v);
+}
+
 const FIELD_WORDS: Readonly<Record<string, string>> = {
   "move.name": "Name",
   "move.summary": "Summary",
@@ -274,6 +337,10 @@ const FIELD_WORDS: Readonly<Record<string, string>> = {
   "move.equipment": "Equipment",
   "move.steps": "Steps",
   "move.cues": "Cues",
+  "move.contraction": "Contraction",
+  "move.conditions": "Condition ratings",
+  "move.regions": "Areas",
+  "move.patterns": "Patterns",
   "reading.useWhen": "When to use it",
   "reading.skipWhen": "When to skip it",
   "reading.why": "Why",
@@ -294,7 +361,8 @@ export function correctionLine(o: { target: CorrectionTarget; field: string; bef
   const quoted = o.insight ? ` — “${o.insight}”` : "";
   switch (o.target) {
     case "move":
-      return `${FIELD_WORDS[`move.${o.field}`] ?? o.field} of ${o.name}: ${valueWords(o.after)} (was ${valueWords(o.before)})`;
+      if (o.field === "retire") return `Retire ${o.name} from your moves`;
+      return `${FIELD_WORDS[`move.${o.field}`] ?? o.field} of ${o.name}: ${moveValueWords(o.field, o.after)} (was ${moveValueWords(o.field, o.before)})`;
     case "reading":
       return `${FIELD_WORDS[`reading.${o.field}`] ?? o.field} for ${o.name}: ${valueWords(o.after)} (was ${valueWords(o.before)})`;
     case "insight":
@@ -353,9 +421,10 @@ function valueIs(expr: SQL, value: unknown): SQL {
 const jsonArg = (value: unknown): SQL =>
   typeof value === "string" || typeof value === "number" ? sql`${value}` : sql`json(${JSON.stringify(value ?? null)})`;
 
-const MOVE_JSON_PATH: Readonly<Record<(typeof MOVE_FIELDS)[number], string>> = {
+const MOVE_JSON_PATH: Readonly<Record<RecordField, string>> = {
   name: "$.name", summary: "$.text.summary", purpose: "$.text.why", dose: "$.dose", laterality: "$.laterality", load: "$.load",
   equipment: "$.equipment", steps: "$.text.steps", cues: "$.text.focus",
+  contraction: "$.contraction", conditions: "$.conditions", regions: "$.regions", patterns: "$.patterns",
 };
 
 /** How it stands at Approve: already so (recorded applied, nothing written), changed since (refused), gone, or to write. */
@@ -410,8 +479,26 @@ export function judgeCorrection(
     ),
   ];
 
+  if (op.target === "move" && state?.kind === "move" && op.field === "retire") {
+    // Retired (the safety audit, S2): archived — never offered again, still resolving in the documents that hold it — only
+    // while it is active, the log first, the status change last.
+    const gate = sql`EXISTS (SELECT 1 FROM personal_moves g WHERE g.user_id = ${userId} AND g.id = ${op.targetId} AND g.status = 'active')`;
+    return {
+      status: "apply",
+      touches: "library",
+      lines: [],
+      statements: [
+        ...log(gate),
+        db
+          .update(personalMoves)
+          .set({ status: "archived", fitChoice: null, updatedAt: o.now })
+          .where(sql`${personalMoves.userId} = ${userId} AND ${personalMoves.id} = ${op.targetId} AND ${gate} AND ${o.asRead}`)
+          .returning({ id: personalMoves.id }),
+      ],
+    };
+  }
   if (op.target === "move" && state?.kind === "move") {
-    const field = op.field as (typeof MOVE_FIELDS)[number];
+    const field = op.field as RecordField;
     const problems = validatePersonalRecord(withMoveField(state.record, field, op.after));
     if (problems.length) return { status: "refused", error: "invalid", why: `The corrected move doesn't pass the library's rules: ${problems[0]!.replace(/^\S+: /, "")}` };
     const path = MOVE_JSON_PATH[field];

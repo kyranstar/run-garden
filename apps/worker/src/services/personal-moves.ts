@@ -10,7 +10,7 @@
 import { eq, sql } from "drizzle-orm";
 import { schema } from "@rg/database";
 import type { PersonalMoveRow } from "@rg/database";
-import { moveProblems, type ExerciseRecord } from "@rg/exercise-library";
+import { moveProblems, plyometricWord, type ExerciseRecord } from "@rg/exercise-library";
 import { personalMoveId, type ExtractedMove } from "@rg/saves";
 import type { Db } from "./db.js";
 import { doseOriginOf, toPersonalRecord, validatePersonalRecord, repairDraft, type DoseOrigin } from "./personal-records.js";
@@ -55,25 +55,55 @@ export const newPersonalMoveId = (userId: string, postId: string, position: numb
   personalMoveId(name, `${userId}:${postId}:${position}`);
 
 /**
+ * A reading whose words say it jumps, stored as a jump (the safety audit, 2026-11-06, S2): the condition gates see a jump
+ * only through its plyometric contraction, which the reader model wrote — an imported "Pogo hops" read as isotonic went
+ * past every gate. When the move's name, or its summary and steps, say it hops, jumps, bounds or lands
+ * (@rg/exercise-library `plyometricWord`) and the reading's contraction doesn't, it is forced to plyometric (as the
+ * library's own jumps are), its purposes read again from it (power, never a primer), and the reason is returned: a repair
+ * line, so the trail's check stage shows it and the link is flagged "check this". The owner's word can take it back
+ * (correct_import's contraction).
+ */
+function asJump(draft: ExtractedMove): { draft: ExtractedMove; reason: string } | null {
+  if (draft.contraction.includes("plyometric")) return null;
+  const inName = plyometricWord(draft.name);
+  const word = inName ?? plyometricWord("", [draft.summary, ...draft.steps].join(" "));
+  if (!word) return null;
+  const read = draft.contraction.length > 0 ? draft.contraction.join(", ") : "nothing";
+  return {
+    draft: { ...draft, contraction: ["plyometric"] },
+    reason: `contraction read as ${read}, but ${inName ? "its name says" : "its words say"} "${word}": stored as plyometric — a jump the condition rules gate`,
+  };
+}
+
+/**
  * The record for a new personal move, or why it can't be stored. The draft must be one `extractedMoveSchema` parsed
  * (every profile's rating present); a build that throws anyway is reported, never thrown. Issues are the validator's
- * own words with the id taken off (the id is built from the model's name).
+ * own words with the id taken off (the id is built from the model's name). A reading whose words say jump is stored as
+ * one (`asJump`): `reclassified` is why, also among the repairs.
  */
 export function buildPersonalRecord(
   id: string,
   draft: ExtractedMove,
-): { ok: true; record: ExerciseRecord; repairs: string[]; doseOrigin: DoseOrigin } | { ok: false; issues: string[] } {
+): { ok: true; record: ExerciseRecord; repairs: string[]; doseOrigin: DoseOrigin; reclassified?: string } | { ok: false; issues: string[] } {
   const repaired = repairDraft(draft);
+  const jump = asJump(repaired.draft);
+  const built = jump ? jump.draft : repaired.draft;
   let record: ExerciseRecord;
   try {
-    record = toPersonalRecord(id, repaired.draft);
+    record = toPersonalRecord(id, built);
   } catch {
     return { ok: false, issues: ["the move could not be built into a record"] };
   }
   const problems = validatePersonalRecord(record);
   if (problems.length) return { ok: false, issues: problems.map((p) => safeIssue(id, p)) };
   // What repair couldn't settle isn't worth refusing a paid reading over: it flags the move "check this" with the repairs.
-  return { ok: true, record, repairs: [...repaired.repairs, ...moveProblems(record)], doseOrigin: doseOriginOf(repaired.draft) };
+  return {
+    ok: true,
+    record,
+    repairs: [...repaired.repairs, ...(jump ? [jump.reason] : []), ...moveProblems(record)],
+    doseOrigin: doseOriginOf(repaired.draft),
+    ...(jump ? { reclassified: jump.reason } : {}),
+  };
 }
 
 /**

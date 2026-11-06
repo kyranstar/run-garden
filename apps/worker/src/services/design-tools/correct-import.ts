@@ -92,9 +92,10 @@ export const correctImport: DesignTool = {
       targetId: { type: "string", description: "A saved move's id; else <post>:<n> — a link's post and at, or an insight's ref (read_saves)." },
       field: {
         type: "string",
-        description: "move: name, summary, purpose, dose, laterality, load, equipment, steps, cues; reading: useWhen, skipWhen, why; insight: drop, text, scope, move; link: same_as, not_same.",
+        description:
+          "move: name, summary, purpose, dose, laterality, load, equipment, steps, cues, contraction, conditions (ratings by profile), regions, patterns, retire (no move at all); reading: useWhen, skipWhen, why; insight: drop, text, scope, move; link: same_as, not_same.",
       },
-      after: { description: "The new value, in the field's own shape (a dose as {type, range, sets?}; same_as: a move id; drop: true; not_same: null)." },
+      after: { description: "The new value, in the field's own shape (a dose as {type, range, sets?}; conditions as {profile: {attribute: value}}; same_as: a move id; drop and retire: true; not_same: null)." },
       why: { type: "string", description: `${capInWords(WHY_MAX)}.` },
       basis: { type: "string", enum: ["evidence", "owner"] },
       cites: { type: "array", items: { type: "string" }, maxItems: CITES_MAX, description: "Evidence's: the move's quote ids from read_saves, history, stated:<field>, inferred:<field>." },

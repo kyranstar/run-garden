@@ -339,3 +339,63 @@ describe("correct_import: a dose fix keeps what it doesn't say (the controller's
     expect((await fixes(ctx))[0]!.after).toEqual({ type: "time", range: [30, 30], sets: [2, 2], restSec: 60 });
   });
 });
+
+// The safety audit, S2: what the condition gates read of an imported move — its contraction, its condition ratings, its
+// regions and patterns — is a reader model's; the coach can now correct each, on the evidence or the owner's word, and
+// retire a "move" that is no move (a "Follow for part 2!!") on Approve.
+describe("correct_import: the fields the condition gates read, and retire (the safety audit, S2)", () => {
+  it("a move's contraction, condition ratings (merged per profile), regions and patterns — their befores read from the record", async () => {
+    const b = await batch();
+    const ctx = await mainRun({ request: "That's a jump, and it's hard on the jaw — fix it." });
+    await readSavesInRun(db, ctx);
+    const cases: Array<[string, unknown, string, unknown]> = [
+      ["contraction", ["plyometric"], "Contraction of Zorbex hip lift: plyometric (was isotonic)", ["isotonic"]],
+      ["conditions", { tmj: { clench: 2 } }, "Condition ratings of Zorbex hip lift: TMJ clench 2, neck load 0, face down no (was TMJ clench 0, neck load 0, face down no)", { tmj: { clench: 0, neckLoad: 0, faceDown: false } }],
+      ["regions", ["hips", "glutes"], "Areas of Zorbex hip lift: hips, glutes (was hips)", ["hips"]],
+      ["patterns", ["hinge"], "Patterns of Zorbex hip lift: hinging (was mobility)", ["mobility"]],
+    ];
+    for (const [field, after, line, before] of cases) {
+      const r = ok((await correct({ ...ctx, toolUseId: `toolu_${field}` }, { target: "move", targetId: b.lift, field, after, basis: "owner", cites: [] })).res);
+      expect((r.data as { said: { text: string } }).said.text, field).toBe(line);
+      const op = (await fixes(ctx)).find((f) => f.field === field)!;
+      expect(op.before, field).toEqual(before);
+    }
+    // A rating merged over the record's: the other attributes kept.
+    expect((await fixes(ctx)).find((f) => f.field === "conditions")!.after).toEqual({ tmj: { clench: 2, neckLoad: 0, faceDown: false } });
+  });
+
+  it("a value the library's rules refuse — an off-scale rating, an unknown attribute or profile, a contraction off the vocabulary, no pattern — is refused bad_after", async () => {
+    const b = await batch();
+    const ctx = await mainRun();
+    await readSavesInRun(db, ctx);
+    for (const [field, after] of [
+      ["conditions", { tmj: { clench: 9 } }],
+      ["conditions", { tmj: { grind: 1 } }],
+      ["conditions", { nope: { clench: 1 } }],
+      ["contraction", ["bouncy"]],
+      ["contraction", []],
+      ["patterns", []],
+    ] as const) {
+      expect(refused((await correct({ ...ctx, toolUseId: `toolu_${field}_${JSON.stringify(after)}` }, { target: "move", targetId: b.lift, field, after })).res).error, `${field} ${JSON.stringify(after)}`).toBe("bad_after");
+    }
+    expect(await fixes(ctx)).toEqual([]);
+  });
+
+  it("retire: a move that is no move leaves the athlete's moves on Approve — before false, after true; once retired, nothing to retire", async () => {
+    const b = await batch();
+    const ctx = await mainRun({ request: "That's not a move, it says follow for part 2." });
+    await readSavesInRun(db, ctx);
+    const r = ok((await correct(ctx, { target: "move", targetId: b.nod, field: "retire", after: true, basis: "owner", cites: [] })).res);
+    expect((r.data as { said: { text: string } }).said.text).toBe("Retire Zorbex neck nod from your moves");
+    expect((await fixes(ctx))[0]).toMatchObject({ field: "retire", before: false, after: true, moveId: b.nod });
+    // Its shape is true alone.
+    expect(refused((await correct({ ...ctx, toolUseId: "toolu_r2" }, { target: "move", targetId: b.nod, field: "retire", after: "yes" })).res).error).toBe("bad_after");
+    await db.update(personalMoves).set({ status: "archived" }).where(eq(personalMoves.id, b.nod));
+    expect(refused((await correct({ ...ctx, toolUseId: "toolu_r3" }, { target: "move", targetId: b.nod, field: "retire", after: true })).res).error).toBe("same_value");
+  });
+
+  it("names the new fields in its description", () => {
+    const field = (tool().inputSchema as { properties: { field: { description: string } } }).properties.field.description;
+    for (const f of ["contraction", "conditions", "regions", "patterns", "retire"]) expect(field, f).toContain(f);
+  });
+});

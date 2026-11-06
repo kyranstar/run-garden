@@ -242,6 +242,18 @@ describe("matchPost writes its trail (import trail, 2026-11-05)", () => {
       expect.objectContaining({ position: 1, outcome: "new", by: "new", judge: "not_needed" }),
     ]);
   });
+  // The safety audit, S2: a reading whose words say jump is stored as one, and the trail's check stage says why.
+  it("a move whose name says it jumps, read as isotonic, is stored plyometric — the reason on the check event, the link flagged", async () => {
+    const id = await extracted("t-jump", [move("Zorbex pogo hops", { patterns: ["calf-raise"], regions: ["calves"], laterality: "bilateral", position: "standing" })]);
+    await matchPost(db, env(), userId, id, NOW, judge({ matches: [] }).fetchImpl);
+    const { check } = await eventsOf(id);
+    expect(check).toMatchObject({ status: "warn" });
+    expect((check!.detail as any).moves[0].repairs).toContain('contraction read as isotonic, but its name says "pogo": stored as plyometric — a jump the condition rules gate');
+    const [link] = await db.select().from(savedPostMoves).where(eq(savedPostMoves.postId, id));
+    expect(link!.checkFlag).toBe(true);
+    const [row] = await db.select().from(personalMoves).where(eq(personalMoves.id, link!.moveId));
+    expect((row!.record as { contraction: string[] }).contraction).toEqual(["plyometric"]);
+  });
   it("a judged move: the candidates it was offered, the judge's answer and raw reply, the prompt version", async () => {
     const id = await extracted("t2", [move("the 90 90 switch")]);
     await matchPost(db, env(), userId, id, NOW, judge({ matches: [{ move: 0, id: HIP_SWITCH.id }] }).fetchImpl);
