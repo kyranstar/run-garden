@@ -286,6 +286,11 @@ and it reasons, designs, reviews its own work and proposes. It is not a template
 - **Budget-aware**: tools return what fits; the loop has a step cap and a cost cap.
 
 ### 6.3 Context engineering
+> Amended 2026-11-05 by the owner (§12): every main run's opening context also carries a computed, bounded "where you
+> stand" block — objectives against target, planned versus done, the next 14 days, readiness values, the last review,
+> flagged reads, memory beyond the core, and drift (`apps/worker/src/services/where-you-stand.ts`). The detail stays
+> behind tools.
+
 - **Tools first; inject only what the agent must know.** The opening prompt carries only what every request needs
   and the model could not sensibly decide to look up: the principles; a short profile summary (goals, focus areas,
   active objectives, default place); the request and its scope; today's date, weekday, time and timezone; units;

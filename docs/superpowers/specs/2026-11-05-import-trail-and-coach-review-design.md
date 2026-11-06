@@ -401,6 +401,18 @@ propose, then `remember` the conclusion as pinned memory with a check-back date,
 The missed-session chip's window matches reconcile's timing; "needs you" chips are never crowded out by the opening's
 own; the missed chip's words match what the app knows; the comeback chip ignores activities under 5 minutes.
 
+### 7.4 As built (phase 4, 2026-11-06)
+Plan: `docs/superpowers/plans/2026-11-06-coach-where-you-stand.md`. The block and the drift rules live in
+`apps/worker/src/services/where-you-stand.ts` (one statement and the key results' measures); the chip in
+`coach-nudges.ts` and `packages/ui/src/components/needs-you-today.tsx`; the diagnose run as `nudge` → `settings.diagnose`
+→ `DIAGNOSE_LINES`; the conclusion as `remember` with `drift` and `checkBack` (pinned within the cap, in provenance: no
+schema change). The builder's numbers (§12): drift over the 21 days before today — a discipline with ≥ 3 planned and
+under half done, or 2 planned (the first a week back) and none done on or off the plan; ≥ 3 sessions missed or not
+logged in 14 days; a key result behind by more than a quarter with under half its time left; a session still within
+the sync's grace is no part of a drift. Pace: ahead / on track within ±10 % of the time gone / behind. The block reads
+about 1,500 characters (1,580 for the synthetic athlete in its test), ≤ 2,000 on a rich account. Check-in and test key
+results read the athlete's numeric answers (90 days; a test's under its id).
+
 ## 8. The coach's review, challenge and corrections
 
 ### 8.1 What the coach reads about an import
