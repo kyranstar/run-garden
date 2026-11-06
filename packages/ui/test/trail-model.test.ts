@@ -381,3 +381,15 @@ describe("a pasted YouTube video's trail (phase 2)", () => {
     expect(read).toContain("Chapters from: the description");
   });
 });
+
+describe("a quote shown on screen (final audit G7)", () => {
+  it("reads as the screen's, unchecked — never struck, never as heard", () => {
+    const dto = trail();
+    dto.account.moves[0] = { ...dto.account.moves[0]!, quotes: [{ field: "dose", text: "3 rounds of 10", from: "screen", check: "on_screen" }] };
+    const said = moveDetail(dto, 0).find((d) => d.title === "What the post says")!;
+    expect(said.rows).toEqual([{ key: "Dose", value: "“3 rounds of 10” — shown on screen in the video (the app can't check it)" }]);
+    const rows = trailSections(trail({ events: [ev("check", { detail: { moves: [], quotes: { verified: 1, in_speech: 0, on_screen: 2, not_found: 0 } } })] }))
+      .find((s) => s.stage === "check")!.steps[0]!.details.flatMap((d) => d.rows);
+    expect(rows).toContainEqual({ key: "Quotes", value: "1 in the words · 2 shown on screen" });
+  });
+});

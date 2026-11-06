@@ -39,7 +39,7 @@ const quotesOf = (v: unknown): Quote[] =>
           ? [{
               field: q.field, text: q.text, from: typeof q.from === "string" ? q.from : "caption",
               ...(typeof q.at === "number" ? { at: q.at } : {}),
-              ...(q.check === "verified" || q.check === "in_speech" || q.check === "not_found" ? { check: q.check } : {}),
+              ...(q.check === "verified" || q.check === "in_speech" || q.check === "on_screen" || q.check === "not_found" ? { check: q.check } : {}),
             }]
           : [],
       )

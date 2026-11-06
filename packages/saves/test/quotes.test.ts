@@ -100,3 +100,46 @@ describe("verifyQuotes reads a long transcript only when it must (final review F
     expect(reads).toBe(1);
   });
 });
+
+describe("quote checks are bounded on a long transcript (final audit G1)", () => {
+  // A 3-hour, ~400 KB transcript and the cap's 240 quotes (30 moves × 8): half with a time, half without.
+  const segs: [number, string][] = Array.from({ length: 9_000 }, (_, i) => [i * 1.2, `zorbex step ${i} goes here with word${i} and more`]);
+  const chars = segs.reduce((n, [, t]) => n + t.length, 0);
+  const many = (): Extraction =>
+    ({
+      kind: "routine", summary: "s", themes: [], insights: [],
+      moves: Array.from({ length: 30 }, (_, m) => ({
+        name: `Zorbex ${m}`, evidence: { name: "stated", dose: "stated", steps: "stated" },
+        quotes: Array.from({ length: 8 }, (_, q) => {
+          const i = (m * 8 + q) * 37;
+          return q % 2 ? { field: "steps", text: `step ${i} goes here with word${i}`, from: "transcript" } : { field: "dose", text: `step ${i} goes here`, at: i * 1.2, from: "transcript" };
+        }),
+      })),
+    }) as unknown as Extraction;
+
+  it("every quote is checked, each segment folded at most once, and the words compared stay far under quotes × transcript", () => {
+    const meter = { foldedChars: 0, scannedWords: 0 };
+    const out = verifyQuotes(many(), { caption: "", transcript: segs, meter });
+    expect(out.results).toHaveLength(240);
+    expect(out.results.every((r) => r.check === "verified")).toBe(true);
+    expect(meter.scannedWords).toBeGreaterThan(0);
+    expect(meter.foldedChars).toBeLessThanOrEqual(chars);
+    expect(meter.scannedWords).toBeLessThan(240 * 1_000);
+  });
+
+  it("quotes with a time fold only the transcript near them", () => {
+    const meter = { foldedChars: 0, scannedWords: 0 };
+    const one = { ...many(), moves: [{ ...many().moves[0]!, quotes: [{ field: "dose", text: "step 100 goes here", at: 120, from: "transcript" }] }] } as unknown as Extraction;
+    expect(verifyQuotes(one, { caption: "", transcript: segs, meter }).results[0]).toMatchObject({ check: "verified", at: 120 });
+    expect(meter.foldedChars).toBeGreaterThan(0);
+    expect(meter.foldedChars).toBeLessThan(chars / 50);
+  });
+});
+
+describe("a quote the video shows on screen (final audit G7)", () => {
+  it("is on_screen — unchecked, never struck, its field not made a guess", () => {
+    const out = verifyQuotes(reading([{ field: "dose", text: "3 rounds of 10", from: "screen" }]), { caption: "nothing about it" });
+    expect(out.results.map((r) => r.check)).toEqual(["on_screen"]);
+    expect((out.extraction.moves[0] as unknown as { evidence: Record<string, string> }).evidence.dose).toBe("stated");
+  });
+});

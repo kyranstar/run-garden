@@ -4,7 +4,7 @@
  * reservation and the timeout from the length, and checks from the billed tokens whether the video was seen.
  */
 import { beforeEach, describe, expect, it, vi } from "vitest";
-import { eq } from "drizzle-orm";
+import { eq, sql } from "drizzle-orm";
 import { schema } from "@rg/database";
 import { EXERCISES, PROFILES } from "@rg/exercise-library";
 import { EXTRACT_PROMPT_VERSION, extractSystemText, extractUserText, transcriptSegments } from "@rg/saves";
@@ -15,7 +15,7 @@ import { messagesCostMicros } from "../src/services/llm-messages.js";
 import { readPostTrail } from "../src/services/import-trail-read.js";
 import { overridePost, savedPostId, workList } from "../src/services/saves-ledger.js";
 import { watchCostMicros, watchVideo } from "../src/services/saves-video.js";
-import { callTimeoutMs, EXTRACT_CONTEXT_TOKENS, EXTRACT_MODEL_DEFAULT, relayVideoExtract, WATCH_ASK_MAX_SEC } from "../src/services/saves-relay.js";
+import { callTimeoutMs, EXTRACT_CONTEXT_TOKENS, EXTRACT_MODEL_DEFAULT, matchStale, relayVideoExtract, WATCH_ASK_MAX_SEC } from "../src/services/saves-relay.js";
 import { makeTestDb, makeTestUser } from "./helpers.js";
 
 const { savedPosts, importBlobs, importEvents, llmUsage } = schema;
@@ -192,7 +192,9 @@ describe("the reading's quotes are checked", () => {
     ]), (sent) => textTokens(sent) + 60_000));
     const stored = (await row(id)).extraction as { moves: { quotes: { check: string }[]; evidence: Record<string, string> }[] };
     expect(stored.moves[0]!.quotes.map((q) => q.check)).toEqual(["verified", "not_found"]);
-    expect((await extractEventOf(id)).detail).toMatchObject({ quotes: { verified: 1, in_speech: 0, not_found: 1 } });
+    // On the check step now (final audit G1b: the quotes are checked after the paid reading is stored).
+    const check = (await db.select().from(importEvents).where(eq(importEvents.postId, id))).find((e) => e.stage === "check")!;
+    expect(check.detail).toMatchObject({ quotes: { verified: 1, in_speech: 0, on_screen: 0, not_found: 1 } });
     expect(transcriptSegments(TRANSCRIPT)).toHaveLength(3);
   });
 });
@@ -310,5 +312,38 @@ describe("Watch it too only for a video the model can take (final review F1, F5)
     await run(id, gw);
     expect(gw.calls[0]!.body.messages[1].content).toHaveLength(1);
     expect((await row(id)).videoSeen).toBeNull();
+  });
+});
+
+describe("a reading cut off after its paid call is never paid for again (final audit G1b)", () => {
+  const { savedPostMoves } = schema;
+  const breakMatching = () => db.run(sql`CREATE TRIGGER zorbex_break BEFORE INSERT ON saved_post_moves BEGIN SELECT RAISE(ABORT, 'matching died'); END`);
+  const mendMatching = () => db.run(sql`DROP TRIGGER zorbex_break`);
+
+  it("the paid reading is kept (extracted) when matching dies, never handed out again, and the stale re-match finishes it alone", async () => {
+    const id = await seedVideo();
+    await breakMatching();
+    const gw = gateway(reading([{ field: "dose", text: "ten slow reps on each side", at: 12, from: "transcript" }]), (sent) => textTokens(sent) + 60_000);
+    await run(id, gw);
+    expect(await row(id)).toMatchObject({ status: "extracted", lastErrorCode: null });
+    expect(await workList(db, userId, NOW, 20, { links: true })).toEqual([]);
+    expect((await db.select().from(llmUsage)).filter((u) => u.requestFingerprint !== null)).toEqual([]);
+    await mendMatching();
+    const later = new Date(Date.parse(NOW) + 11 * 60_000);
+    expect(await matchStale(db, env(), userId, later, gw.fetchImpl)).toBe(true);
+    const done = await row(id);
+    expect(done.status).toBe("matched");
+    expect((done.extraction as { moves: { quotes: { check?: string }[] }[] }).moves[0]!.quotes[0]!.check).toBe("verified");
+    expect(gw.spy).toHaveBeenCalledTimes(1);
+    expect(await db.select().from(savedPostMoves)).toHaveLength(1);
+  });
+
+  it("a fresh one is left to its own request", async () => {
+    const id = await seedVideo();
+    await breakMatching();
+    await run(id, gateway(reading(), (sent) => textTokens(sent) + 60_000));
+    await mendMatching();
+    expect(await matchStale(db, env(), userId, new Date(NOW), gateway(reading(), () => 0).fetchImpl)).toBe(false);
+    expect((await row(id)).status).toBe("extracted");
   });
 });

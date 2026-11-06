@@ -4,8 +4,12 @@ import type { Segment } from "./transcript.js";
 // QUOTE VERIFICATION (design 2026-11-05 §5.6, deterministic): a reading's quotes are the creator's words only when the
 // words are there. Run by the Worker after the parse; the check it writes replaces any the model wrote.
 
+const ASCII = /^[\x00-\x7f]*$/;
+
 /** Case, accents, punctuation and spacing folded away: "Café—LIFT, now!" is "cafe lift now". Any script's letters stay. */
 export function foldWords(s: string): string {
+  // Plain ASCII needs no accent folding, and a byte-class regex is several times cheaper (final audit G1).
+  if (ASCII.test(s)) return s.toLowerCase().replace(/[^a-z0-9]+/g, " ").trim();
   return s
     .normalize("NFKD")
     .replace(/[̀-ͯ]/g, "")
@@ -18,7 +22,7 @@ export function foldWords(s: string): string {
 export const QUOTE_OVERLAP_MIN = 0.8;
 /** How far from a quote's `at` its window is looked for, in seconds. */
 const NEAR_SECONDS = 45;
-/** A transcript longer than this, in words, is only searched near a quote's time (CPU: the Worker has 10 ms). */
+/** A transcript longer than this, in words, is searched only for a time-less quote's exact words (CPU: the Worker has 10 ms). */
 const WHOLE_SEARCH_MAX_WORDS = 20_000;
 
 const EVIDENCE_FIELDS = new Set(["name", "dose", "steps", "purpose", "useWhen", "skipWhen"]);
@@ -31,6 +35,8 @@ export interface QuoteSources {
   transcript?: readonly Segment[] | (() => readonly Segment[] | null) | null;
   /** The reader's own transcription of the video: words near the creator's, never proof. */
   speech?: string | null;
+  /** Counts the work done (tests of its bound). */
+  meter?: QuoteMeter;
 }
 export interface QuoteResult {
   move: number;
@@ -70,74 +76,216 @@ function overlaps(quote: readonly string[], words: readonly string[]): number {
   return -1;
 }
 
-interface FoldedTranscript {
-  text: string;
-  /** `text` padded once for whole-word search. */
-  padded: string;
-  /** Each segment's start in `text`, and its time. */
-  starts: { offset: number; at: number; words: string[] }[];
-  words: number;
+/** A text's folded words: one match for plain ASCII (the common case, and the cheap one), else `foldWords`. */
+function foldTokens(s: string): string[] {
+  if (ASCII.test(s)) return s.toLowerCase().match(/[a-z0-9]+/g) ?? [];
+  const f = foldWords(s);
+  return f ? f.split(" ") : [];
 }
 
-function foldTranscript(segments: readonly Segment[]): FoldedTranscript {
-  const starts: FoldedTranscript["starts"] = [];
-  let text = "";
-  let words = 0;
-  for (const [at, raw] of segments) {
-    const folded = foldWords(raw);
-    if (!folded) continue;
-    if (text) text += " ";
-    starts.push({ offset: text.length, at, words: folded.split(" ") });
-    words += starts.at(-1)!.words.length;
-    text += folded;
-  }
-  return { text, padded: pad(text), starts, words };
+/** The work a check did, for the CPU bound's tests: characters of transcript folded, words compared. */
+export interface QuoteMeter {
+  foldedChars: number;
+  scannedWords: number;
 }
 
-/** The segment a position in the folded transcript falls in. */
-function atOffset(t: FoldedTranscript, offset: number): number {
-  let lo = 0;
-  let hi = t.starts.length - 1;
-  while (lo < hi) {
-    const mid = (lo + hi + 1) >> 1;
-    if (t.starts[mid]!.offset <= offset) lo = mid;
-    else hi = mid - 1;
-  }
-  return t.starts[lo]?.at ?? 0;
+/** The most windows one quote with no time may try against the whole transcript: its work stays bounded (G1). */
+const CANDIDATES_MAX = 400;
+
+/** The words of `words` from `start` are `quote`, in order. */
+function sequenceAt(words: readonly string[], start: number, quote: readonly string[]): boolean {
+  if (start < 0 || start + quote.length > words.length) return false;
+  for (let k = 0; k < quote.length; k++) if (words[start + k] !== quote[k]) return false;
+  return true;
 }
 
-/** The transcript's words near `at` (or all of them when short enough), each with its segment's time. */
-function windowOf(t: FoldedTranscript, at: number | undefined): { words: string[]; times: number[] } | null {
-  const near = at === undefined ? (t.words <= WHOLE_SEARCH_MAX_WORDS ? t.starts : null) : t.starts.filter((s) => Math.abs(s.at - at) <= NEAR_SECONDS);
-  if (!near?.length) return null;
-  const words: string[] = [];
-  const times: number[] = [];
-  for (const s of near) for (const w of s.words) {
-    words.push(w);
-    times.push(s.at);
+/** Where `quote` starts in `words`, in order, else -1. */
+function findSequence(words: readonly string[], quote: readonly string[]): number {
+  const first = quote[0];
+  for (let i = 0; i + quote.length <= words.length; i++) if (words[i] === first && sequenceAt(words, i, quote)) return i;
+  return -1;
+}
+
+/** How many of `quote`'s words (as a multiset) the window of its length from `start` holds. */
+function hitsAt(words: readonly string[], start: number, quote: readonly string[]): number {
+  const want = new Map<string, number>();
+  for (const w of quote) want.set(w, (want.get(w) ?? 0) + 1);
+  let hits = 0;
+  for (let k = start; k < start + quote.length && k < words.length; k++) {
+    const left = want.get(words[k]!);
+    if (left) {
+      hits++;
+      want.set(words[k]!, left - 1);
+    }
   }
-  return { words, times };
+  return hits;
+}
+
+/**
+ * THE TRANSCRIPT, read only where a quote needs it (final audit G1: checking every quote against the whole of a long
+ * transcript cost the Worker tens of milliseconds after the paid call). A segment is folded once, when a window near a
+ * quote's time first takes it; the whole is folded (once) and indexed by word only for quotes with no time.
+ */
+class TranscriptIndex {
+  private readonly segs: readonly Segment[];
+  private readonly folded: (string[] | undefined)[];
+  private wholeOf: { words: string[]; times: number[]; postings: Map<string, number[]> } | null = null;
+  /** Where each segment's words start in the whole's arrays (once built), so a window is a slice, not a copy. */
+  private segStart: Int32Array | null = null;
+
+  constructor(segments: readonly Segment[], private readonly meter: QuoteMeter) {
+    // A transcript comes in time order; one that doesn't is put in it once.
+    let ordered = true;
+    for (let i = 1; i < segments.length; i++) if (segments[i]![0] < segments[i - 1]![0]) ordered = false;
+    this.segs = ordered ? segments : [...segments].sort((a, b) => a[0] - b[0]);
+    this.folded = new Array(this.segs.length);
+  }
+
+  private seg(i: number): string[] {
+    let w = this.folded[i];
+    if (!w) {
+      const raw = this.segs[i]![1];
+      this.meter.foldedChars += raw.length;
+      w = foldTokens(raw);
+      this.folded[i] = w;
+    }
+    return w;
+  }
+
+  /** The first segment starting at or after `t`. */
+  private lower(t: number): number {
+    let lo = 0;
+    let hi = this.segs.length;
+    while (lo < hi) {
+      const mid = (lo + hi) >> 1;
+      if (this.segs[mid]![0] < t) lo = mid + 1;
+      else hi = mid;
+    }
+    return lo;
+  }
+
+  /** The words within NEAR_SECONDS of `at`, each with its segment's time. */
+  near(at: number): { words: string[]; times: number[] } {
+    const from = this.lower(at - NEAR_SECONDS);
+    if (this.wholeOf && this.segStart) {
+      let to = from;
+      while (to < this.segs.length && this.segs[to]![0] <= at + NEAR_SECONDS) to++;
+      const a = this.segStart[from]!;
+      const b = this.segStart[to]!;
+      return { words: this.wholeOf.words.slice(a, b), times: this.wholeOf.times.slice(a, b) };
+    }
+    const words: string[] = [];
+    const times: number[] = [];
+    for (let i = from; i < this.segs.length && this.segs[i]![0] <= at + NEAR_SECONDS; i++) {
+      for (const w of this.seg(i)) {
+        words.push(w);
+        times.push(this.segs[i]![0]);
+      }
+    }
+    return { words, times };
+  }
+
+  /**
+   * Every word once, with the places of the words `needed` (the time-less quotes' words): built once, the first time
+   * a quote with no time needs it, from the segments' own folds (shared with the windows near a quote's time).
+   */
+  whole(needed: ReadonlySet<string>): { words: string[]; times: number[]; postings: Map<string, number[]> } {
+    if (this.wholeOf) return this.wholeOf;
+    const words: string[] = [];
+    const times: number[] = [];
+    const postings = new Map<string, number[]>();
+    const segStart = new Int32Array(this.segs.length + 1);
+    for (let i = 0; i < this.segs.length; i++) {
+      segStart[i] = words.length;
+      const at = this.segs[i]![0];
+      for (const w of this.seg(i)) {
+        if (needed.has(w)) {
+          let list = postings.get(w);
+          if (!list) postings.set(w, (list = []));
+          list.push(words.length);
+        }
+        words.push(w);
+        times.push(at);
+      }
+    }
+    segStart[this.segs.length] = words.length;
+    this.segStart = segStart;
+    this.wholeOf = { words, times, postings };
+    return this.wholeOf;
+  }
+
+  /** A quote near its time: its words in order, else QUOTE_OVERLAP_MIN of them in a window of its length. */
+  findNear(quote: readonly string[], at: number): number | null {
+    const win = this.near(at);
+    this.meter.scannedWords += win.words.length;
+    const e = findSequence(win.words, quote);
+    if (e >= 0) return win.times[e]!;
+    const j = overlaps(quote, win.words);
+    return j >= 0 ? win.times[j]! : null;
+  }
+
+  /**
+   * A quote with no time: its words in order anywhere (from the places of its rarest word), and — when the transcript
+   * is short enough — QUOTE_OVERLAP_MIN of them in a window (from the places of its few rarest words), at most
+   * CANDIDATES_MAX windows tried.
+   */
+  findAnywhere(quote: readonly string[], needed: ReadonlySet<string>): number | null {
+    const { words, times, postings } = this.whole(needed);
+    const distinct = [...new Set(quote)].sort((a, b) => (postings.get(a)?.length ?? 0) - (postings.get(b)?.length ?? 0));
+    const rarest = distinct.find((w) => postings.has(w));
+    if (rarest === undefined) return null;
+    const k = quote.indexOf(rarest);
+    let tried = 0;
+    for (const p of postings.get(rarest)!) {
+      if (++tried > CANDIDATES_MAX) break;
+      this.meter.scannedWords += quote.length;
+      if (sequenceAt(words, p - k, quote)) return times[p - k]!;
+    }
+    if (words.length > WHOLE_SEARCH_MAX_WORDS) return null;
+    const need = Math.ceil(quote.length * QUOTE_OVERLAP_MIN);
+    const missing = quote.length - need;
+    const seen = new Set<number>();
+    tried = 0;
+    for (const w of distinct.filter((x) => postings.has(x)).slice(0, missing + 1)) {
+      for (const p of postings.get(w)!) {
+        for (let s = Math.max(0, p - quote.length + 1); s <= p; s++) {
+          if (seen.has(s)) continue;
+          seen.add(s);
+          if (++tried > CANDIDATES_MAX) return null;
+          this.meter.scannedWords += quote.length;
+          if (hitsAt(words, s, quote) >= need) return times[s]!;
+        }
+      }
+    }
+    return null;
+  }
 }
 
 /**
  * Every quote of the reading checked against the words: `verified` (in a caption, title, chapter or transcript — text
  * the reader didn't write — as words, or near its time in the transcript with QUOTE_OVERLAP_MIN of its words),
- * `in_speech` (found only in the reader's own transcription), `not_found`. A field whose quotes were all not found
- * reads as inferred.
+ * `in_speech` (found only in the reader's own transcription), `on_screen` (text the reader says the video shows, which
+ * no source here holds: unchecked, never proof), `not_found`. A field whose quotes were all not found reads as inferred.
  */
 export function verifyQuotes(extraction: Extraction, sources: QuoteSources): { extraction: Extraction; results: QuoteResult[] } {
   if (!extraction.moves.some((m) => m.quotes?.length)) return { extraction, results: [] };
+  const meter = sources.meter ?? { foldedChars: 0, scannedWords: 0 };
   const fixed = [sources.caption, sources.title ?? "", ...(sources.chapters ?? [])].map(foldWords).filter(Boolean).map(pad);
-  let folded: FoldedTranscript | null | undefined;
-  const transcriptOf = (): FoldedTranscript | null => {
-    if (folded !== undefined) return folded;
+  let index: TranscriptIndex | null | undefined;
+  const transcriptOf = (): TranscriptIndex | null => {
+    if (index !== undefined) return index;
     const segs = typeof sources.transcript === "function" ? sources.transcript() : sources.transcript;
-    folded = segs?.length ? foldTranscript(segs) : null;
-    return folded;
+    index = segs?.length ? new TranscriptIndex(segs, meter) : null;
+    // A time-less quote needs the whole once: built first, every window is then a slice of it.
+    if (index && needed.size) index.whole(needed);
+    return index;
   };
   const speech = sources.speech ? pad(foldWords(sources.speech)) : "";
   const speechWords = speech ? speech.trim().split(" ") : [];
   const results: QuoteResult[] = [];
+  // The words the time-less quotes need indexed: the whole transcript's index holds only those.
+  const needed = new Set<string>();
+  for (const m of extraction.moves) for (const q of m.quotes ?? []) if (q.at === undefined) for (const w of foldWords(q.text).split(" ")) if (w) needed.add(w);
 
   const moves = extraction.moves.map((m, move) => {
     if (!m.quotes?.length) return m;
@@ -147,26 +295,20 @@ export function verifyQuotes(extraction: Extraction, sources: QuoteSources): { e
       const words = quoted ? quoted.split(" ") : [];
       let check: QuoteCheck = "not_found";
       let at: number | null = q.at ?? null;
-      const inFixed = words.length > 0 && fixed.some((f) => hasWords(f, quoted) >= 0);
-      const transcript = words.length && !inFixed ? transcriptOf() : null;
       if (words.length) {
-        if (inFixed) check = "verified";
-        else if (transcript) {
-          const i = hasWords(transcript.padded, quoted);
-          if (i >= 0) {
+        if (fixed.some((f) => hasWords(f, quoted) >= 0)) check = "verified";
+        else {
+          const transcript = transcriptOf();
+          const where = transcript ? (q.at !== undefined ? transcript.findNear(words, q.at) : transcript.findAnywhere(words, needed)) : null;
+          if (where !== null) {
             check = "verified";
-            at = atOffset(transcript, i);
-          } else {
-            const win = windowOf(transcript, q.at);
-            const j = win ? overlaps(words, win.words) : -1;
-            if (win && j >= 0) {
-              check = "verified";
-              at = win.times[j]!;
-            }
+            at = where;
           }
         }
         if (check === "not_found" && speech && (hasWords(speech, quoted) >= 0 || overlaps(words, speechWords) >= 0)) check = "in_speech";
       }
+      // Text the video shows: no source here holds it, so it is neither proof nor a reader's invention (G7).
+      if (check === "not_found" && q.from === "screen" && words.length) check = "on_screen";
       results.push({ move, quote, check, at });
       found.set(q.field, (found.get(q.field) ?? false) || check !== "not_found");
       return { ...q, check };

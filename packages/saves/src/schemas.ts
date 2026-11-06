@@ -105,7 +105,7 @@ const stated = z.enum(["stated", "inferred"]);
 
 /** When the post says to use a move, or not (extract-6): the "in what cases" the owner asked for. */
 const caseSchema = z.object({ text: z.string().max(160), evidence: stated }).strict();
-export const QUOTE_CHECKS = ["verified", "in_speech", "not_found"] as const;
+export const QUOTE_CHECKS = ["verified", "in_speech", "on_screen", "not_found"] as const;
 export type QuoteCheck = (typeof QUOTE_CHECKS)[number];
 /**
  * A passage that supports a field, verbatim (extract-6). `check` is the Worker's, set after the parse (quotes.ts): a

@@ -399,20 +399,17 @@ async function runExtraction(
    */
   const matched = async (extraction: Extraction): Promise<RelayResult> => {
     try {
-      const out = await matchPost(db, env, userId, post.id, nowIso, fetchImpl);
+      // The quotes are checked only now, after the paid reading is stored: a request cut off here leaves it `extracted`,
+      // which nothing hands out to be read (and paid for) again; `matchStale` finishes it (final audit G1b).
+      const checked = checkQuotes(extraction, (claimed as ClaimedPost | null)?.words);
+      const out = await matchPost(db, env, userId, post.id, nowIso, fetchImpl, { checked });
       if (out.issues) return { ok: false, code: "model_failed", issues: out.issues };
-      return { ok: true, extraction };
+      return { ok: true, extraction: checked };
     } catch (e) {
       console.warn(JSON.stringify({ level: "warn", msg: "saves relay: matching failed", detail: String(e).slice(0, 200) }));
-      await runAtomically(db, [
-        db
-          .update(savedPosts)
-          .set({ status: "failed", lastErrorCode: "unknown", lastError: "matching failed", updatedAt: nowIso })
-          .where(and(eq(savedPosts.id, post.id), eq(savedPosts.userId, userId), eq(savedPosts.status, "extracted"))),
-        ...trailStatements(db, userId, post.id, [
-          { stage: "match", source: "worker", status: "fail", summary: "Something went wrong: matching failed", detail: { code: "unknown" } },
-        ], nowIso),
-      ]).catch(() => undefined);
+      await runAtomically(db, trailStatements(db, userId, post.id, [
+        { stage: "match", source: "worker", status: "warn", summary: MATCH_AGAIN, detail: { code: "unknown" } },
+      ], nowIso)).catch(() => undefined);
       return { ok: false, code: "unknown" };
     }
   };
@@ -567,23 +564,9 @@ async function runExtraction(
       await finish({ code: "model_failed", why: parsed.issues }, cost, facts);
       return { ok: false, code: "model_failed", issues: parsed.issues };
     }
-    // Every quote checked against the words it claims (§5.6); the check replaces any the model wrote.
-    const words = c?.words;
-    const checked = verifyQuotes(parsed.extraction, {
-      caption: words?.caption ?? "",
-      title: words?.title ?? null,
-      chapters: (words?.chapters ?? []).map((ch) => ch.title),
-      // Read only if a quote isn't found in the other words: a long transcript is the costly part (F2).
-      transcript: words?.transcript ? () => transcriptSegments(words.transcript!.text) : null,
-      speech: parsed.extraction.speech ?? null,
-    });
-    facts.quotes = {
-      verified: checked.results.filter((r) => r.check === "verified").length,
-      in_speech: checked.results.filter((r) => r.check === "in_speech").length,
-      not_found: checked.results.filter((r) => r.check === "not_found").length,
-    };
-    await finish({ extraction: checked.extraction }, cost, facts);
-    return await matched(checked.extraction);
+    // Paid and stored first (final audit G1b): its quotes are checked and its moves matched after.
+    await finish({ extraction: parsed.extraction }, cost, facts);
+    return await matched(parsed.extraction);
   } catch (e) {
     console.warn(JSON.stringify({ level: "warn", msg: "saves relay: failed", detail: String(e).slice(0, 200) }));
     if (!settled) await settleImport(db, reservation.usageId, null).catch(() => undefined);
@@ -594,6 +577,61 @@ async function runExtraction(
     // A throw must not leave the reservation at its worst case: it settles to nothing spent.
     if (!settled) await settleImport(db, reservation.usageId, null);
   }
+}
+
+/** The trail's word for a match the request didn't finish: the stale re-match does it, no reading paid again. */
+const MATCH_AGAIN = "Matching didn't finish; it will be matched again shortly";
+
+/** Every quote checked against the words it claims (§5.6); the check replaces any the model wrote. */
+function checkQuotes(extraction: Extraction, words: PostWords | undefined): Extraction {
+  return verifyQuotes(extraction, {
+    caption: words?.caption ?? "",
+    title: words?.title ?? null,
+    chapters: (words?.chapters ?? []).map((ch) => ch.title),
+    // Read only if a quote isn't found in the other words: a long transcript is the costly part (F2).
+    transcript: words?.transcript ? () => transcriptSegments(words.transcript!.text) : null,
+    speech: extraction.speech ?? null,
+  }).extraction;
+}
+
+/**
+ * A reading whose request was cut off after its paid call (final audit G1b): `extracted` longer than the relay's stale
+ * claim, never handed out to be read again. One such post a call is checked and matched here, alone in its request
+ * (`GET /work` runs it), with no model asked for the reading. True when one was matched. D1 statements: the post 1, its
+ * transcript 0–1, then `matchPost`'s.
+ */
+export async function matchStale(db: Db, env: Env, userId: string, now: Date, fetchImpl: typeof fetch): Promise<boolean> {
+  const stale = new Date(now.getTime() - RELAY_CLAIM_STALE_MS).toISOString();
+  const rows = await db
+    .select({
+      id: savedPosts.id, extraction: savedPosts.extraction, caption: savedPosts.caption, hashtags: savedPosts.hashtags,
+      creatorHandle: savedPosts.creatorHandle, creatorName: savedPosts.creatorName, mediaType: savedPosts.mediaType,
+      source: savedPosts.source, title: savedPosts.title, durationSec: savedPosts.durationSec, videoInfo: savedPosts.videoInfo,
+    })
+    .from(savedPosts)
+    .where(and(eq(savedPosts.userId, userId), eq(savedPosts.status, "extracted"), lt(savedPosts.updatedAt, stale)))
+    .orderBy(savedPosts.updatedAt)
+    .limit(3);
+  // A stored reading always parses (it was stored after its parse); one that doesn't is left, never failed into a re-read.
+  let parsed: ReturnType<typeof extractionSchema.safeParse> | null = null;
+  const row = rows.find((r) => (parsed = extractionSchema.safeParse(r.extraction)).success);
+  if (!row || !parsed || !(parsed as { success: boolean }).success) return false;
+  const words: PostWords = {
+    caption: row.caption ?? "", hashtags: row.hashtags ?? [], mediaType: (row.mediaType as PostSubmit["mediaType"]) ?? "video",
+    creator: { handle: row.creatorHandle ?? "", ...(row.creatorName ? { name: row.creatorName } : {}) },
+    source: row.source, title: row.title, durationSec: row.durationSec, chapters: row.videoInfo?.chapters ?? [],
+  };
+  if (row.videoInfo?.captions && row.videoInfo.transcriptChars > 0) {
+    const [blob] = await db
+      .select({ text: importBlobs.text })
+      .from(importBlobs)
+      .where(and(eq(importBlobs.userId, userId), eq(importBlobs.postId, row.id), eq(importBlobs.kind, "transcript")))
+      .orderBy(desc(importBlobs.at))
+      .limit(1);
+    if (blob) words.transcript = { lang: row.videoInfo.captions.lang, kind: row.videoInfo.captions.kind, text: blob.text, cut: row.videoInfo.transcriptCut };
+  }
+  await matchPost(db, env, userId, row.id, now.toISOString(), fetchImpl, { checked: checkQuotes((parsed as { data: Extraction }).data, words) });
+  return true;
 }
 
 /** A long video with no captions: nothing to read until the owner asks for it to be watched. */

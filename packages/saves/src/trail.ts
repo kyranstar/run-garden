@@ -104,7 +104,7 @@ export interface ImportTrailDto {
       why?: string | null;
       useWhen?: { text: string; evidence: "stated" | "inferred" }[];
       skipWhen?: { text: string; evidence: "stated" | "inferred" }[];
-      quotes?: { field: string; text: string; at?: number; from: string; check?: "verified" | "in_speech" | "not_found" }[];
+      quotes?: { field: string; text: string; at?: number; from: string; check?: "verified" | "in_speech" | "on_screen" | "not_found" }[];
     }[];
     health: { status: TrailStatus; line: string };
   };

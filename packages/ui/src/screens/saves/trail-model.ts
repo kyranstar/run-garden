@@ -354,6 +354,7 @@ function field(k: string, v: unknown, ctx: Ctx): string {
       const parts = [
         n(q.verified) ? `${num(n(q.verified))} in the words` : "",
         n(q.in_speech) ? `${num(n(q.in_speech))} heard by the reader` : "",
+        n(q.on_screen) ? `${num(n(q.on_screen))} shown on screen` : "",
         n(q.not_found) ? `${num(n(q.not_found))} not in the post` : "",
       ].filter(Boolean);
       return parts.length ? parts.join(" · ") : "none";
@@ -697,6 +698,7 @@ const QUOTE_FIELD: Readonly<Record<string, string>> = {
 const QUOTE_CHECK: Readonly<Record<string, string>> = {
   verified: "in the words",
   in_speech: "what the reader heard in the video",
+  on_screen: "shown on screen in the video (the app can't check it)",
   not_found: "the reader quoted words that aren't in the post",
 };
 

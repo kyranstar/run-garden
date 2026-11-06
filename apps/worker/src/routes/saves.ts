@@ -13,7 +13,7 @@ import { bearerGuard } from "../auth/token.js";
 import { savesImportEnabled } from "../env.js";
 import { freshKeys, KNOWN_MAX_KEYS, markFetchFailed, overridePost, recordCheck, recordReadFailed, savedPostId, savesStatus, upsertPost, workList } from "../services/saves-ledger.js";
 import { filterPost } from "../services/saves-filter.js";
-import { markTooLarge, readRelayRequest, readVideoRequest, relayExtract, relayVideoExtract } from "../services/saves-relay.js";
+import { markTooLarge, matchStale, readRelayRequest, readVideoRequest, relayExtract, relayVideoExtract } from "../services/saves-relay.js";
 import { assembleBatch } from "../services/saves-batches.js";
 import { addLink, listLinks } from "../services/saved-links.js";
 
@@ -89,9 +89,13 @@ savesRoutes.post("/posts", async (c) => {
 });
 
 /** `?v=2`: the extension knows pasted links and videos (`read` work, YouTube posts); without it, the list an 0.2 extension knows. */
-savesRoutes.get("/work", async (c) =>
-  c.json({ keys: await workList(c.get("db"), c.get("userId"), nowInstant(), undefined, { links: c.req.query("v") === "2" }) }),
-);
+savesRoutes.get("/work", async (c) => {
+  // A reading cut off after its paid call is finished here, alone (final audit G1b): never read and paid for again.
+  await matchStale(c.get("db"), c.env, c.get("userId"), new Date(nowInstant()), fetch).catch((e: unknown) =>
+    console.warn(JSON.stringify({ level: "warn", msg: "saves: stale re-match failed", detail: String(e).slice(0, 200) })),
+  );
+  return c.json({ keys: await workList(c.get("db"), c.get("userId"), nowInstant(), undefined, { links: c.req.query("v") === "2" }) });
+});
 
 const linkSchema = z.object({ url: z.string().min(1).max(600) }).strict();
 

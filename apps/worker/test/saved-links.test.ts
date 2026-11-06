@@ -144,8 +144,9 @@ describe("the routes", () => {
     expect(listed.body.links).toHaveLength(1);
     expect(listed.cost).toBeLessThanOrEqual(3);
     const work = await token("/work?v=2");
-    // 2 auth, the work list's 3 and its links 1 (REBASED 2026-11-06 (import trail phase 2): + the waiting links).
-    expect(work.cost).toBeLessThanOrEqual(6);
+    // 2 auth, the stale re-match's look 1, the work list's 3 and its links 1 (REBASED 2026-11-06 (import trail phase 2):
+    // + the waiting links, + the stale re-match of a reading cut off after its paid call).
+    expect(work.cost).toBeLessThanOrEqual(7);
     // Every waiting link is handed out, the extension's own too: its queue takes each once, and one it lost comes back.
     expect(work.body.keys).toEqual([{ source: "youtube", key: vid, url: watch, action: "read" }]);
     const refused = await token("/links", { method: "POST", body: JSON.stringify({ url: "nope" }) });

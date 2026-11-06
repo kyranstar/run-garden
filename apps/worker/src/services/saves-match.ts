@@ -521,6 +521,14 @@ async function askJudge(
  * The check and match stages' events (design 2026-11-05 §4): each new move's repairs and dose origin; each move's
  * outcome, how it was settled (its name, the judge, or new), the candidates the judge was offered and its answer.
  */
+/** How the reading's quotes checked out (§5.6), for the check step: none when it has no quotes. */
+function quoteCounts(extraction: Extraction): { quotes?: Record<"verified" | "in_speech" | "on_screen" | "not_found", number> } {
+  const all = extraction.moves.flatMap((m) => m.quotes ?? []);
+  if (!all.length) return {};
+  const n = (c: string) => all.filter((q) => q.check === c).length;
+  return { quotes: { verified: n("verified"), in_speech: n("in_speech"), on_screen: n("on_screen"), not_found: n("not_found") } };
+}
+
 function matchTrail(
   extraction: Extraction,
   byNames: readonly MatchDecision[],
@@ -582,7 +590,7 @@ function matchTrail(
       source: "worker",
       status: said.length ? "warn" : "ok",
       summary: said.length ? said.join("; ") : "The reading checks out",
-      detail: { moves: checked, ...(dropped.length ? { dropped } : {}) },
+      detail: { moves: checked, ...(dropped.length ? { dropped } : {}), ...quoteCounts(extraction) },
     },
     {
       stage: "match",
@@ -608,6 +616,11 @@ export async function matchPost(
   postId: string,
   now: string,
   fetchImpl: typeof fetch,
+  /**
+   * The reading with its quotes checked (final audit G1b): the paid reply was stored unchecked first, so a request cut
+   * off while checking never pays again; this one's checks are written with the match.
+   */
+  opts: { checked?: Extraction } = {},
 ): Promise<MatchOutcome> {
   const mine = and(eq(savedPosts.id, postId), eq(savedPosts.userId, userId), eq(savedPosts.status, "extracted"));
   const [post] = await db
@@ -645,7 +658,7 @@ export async function matchPost(
   };
 
   // Only a schema-parsed draft is ever built into a record.
-  const parsed = extractionSchema.safeParse(post.extraction);
+  const parsed = extractionSchema.safeParse(opts.checked ?? post.extraction);
   if (!parsed.success) return fail(["extraction: the stored extraction does not match the format"], 0);
 
   const personal = await loadPersonalForMatch(db, userId);
@@ -722,7 +735,10 @@ export async function matchPost(
       : []),
     db
       .update(savedPosts)
-      .set({ status: "matched", lastErrorCode: null, lastError: null, costMicros: sql`${savedPosts.costMicros} + ${judgeCost}`, updatedAt: now })
+      .set({
+        status: "matched", lastErrorCode: null, lastError: null, costMicros: sql`${savedPosts.costMicros} + ${judgeCost}`, updatedAt: now,
+        ...(opts.checked ? { extraction: opts.checked } : {}),
+      })
       .where(mine),
   ]);
   return { newMoves: moveRows.length, linked: linkRows.length - moveRows.length };
