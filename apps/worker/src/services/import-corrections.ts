@@ -297,8 +297,10 @@ export function correctionLine(o: { target: CorrectionTarget; field: string; bef
 
 // ── Applied at Approve (design-approve.ts) ──────────────────────────────────────────────────────────────────────────
 
-/** The corrections' own part of an approve: their claim's write, and their one read (every target's state). */
-export const CORRECTIONS_FIXED = 1 + 1;
+/** The corrections' own part of an approve: their claim's write, their one read (every target's state), and — a
+ * correction of a move or a match changes the account's library, which the request then forgets — the library read
+ * again by a later op of the request (a workout's day, the receipt), once (final review I4). */
+export const CORRECTIONS_FIXED = 1 + 1 + 1;
 /** One correction: its `import_corrections` row, its trail event (one statement for every post it touches), and the
  * state change — one atomic batch. */
 export const CORRECTION_COST = 3;

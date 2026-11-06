@@ -310,3 +310,39 @@ describe("a correction approved", () => {
     expect(await rows()).toHaveLength(10);
   });
 });
+
+describe("a correction beside a workout (final review, Important 4)", () => {
+  it("costs no more than it declares: the account's library read again after the correction is counted", async () => {
+    const { createDocWorkout } = await import("../src/services/doc-workouts.js");
+    const { loadPreferences } = await import("../src/services/calendar-sync.js");
+    const { proposeWorkout } = await import("../src/services/design-tools/propose.js");
+    const { calmDoc } = await import("./doc-workout-fixture.js");
+    const prefs = await loadPreferences(db, userId);
+    const day = "2026-10-24";
+    const b = await batch();
+    /** A revision of a planned workout, reviewed, and — `withFix` — a correction of the lift's dose beside it. */
+    const suggestion = async (withFix: boolean) => {
+      const made = await createDocWorkout(db, userId, { date: day, doc: calmDoc({ title: `Mine ${withFix}` }) }, { today: "2026-10-21", now: NOW.toISOString(), prefs });
+      const ctx = await mainRun();
+      await readSavesInRun(db, ctx);
+      const drafted = await proposeWorkout.run(ctx, { doc: calmDoc({ title: `Mine, calmer ${withFix}` }), target: { kind: "revise", workoutId: made.workout.id, baseRev: 1 } });
+      if (isToolErr(drafted)) throw new Error(`propose refused: ${drafted.error} — ${drafted.why}`);
+      if (withFix) {
+        const r = await ACT_TOOLS.find((t) => t.name === "correct_import")!.run({ ...ctx, toolUseId: "toolu_fix" }, { target: "move", targetId: b.lift, field: "dose", after: DOSE_FIX, why: "The transcript says so.", basis: "evidence", cites: ["history"] });
+        if (isToolErr(r)) throw new Error(r.why);
+      }
+      const id = designProposalId(ctx.run.id);
+      const [p] = await db.select().from(coachProposals).where(eq(coachProposals.id, id));
+      const review = { scores: { intent: 4 }, notes: { intent: "Clear." }, mustFix: [], improvements: [], rounds: 1, changes: [] };
+      await db.update(coachProposals).set({ status: "pending", ops: (p!.ops as Array<Record<string, unknown>>).map((o) => (o.kind === "doc_workout" ? { ...o, review } : o)) }).where(eq(coachProposals.id, id));
+      return id;
+    };
+    const alone = await approve(await suggestion(false));
+    expect(alone.status, JSON.stringify(alone.json)).toBe(200);
+    const both = await approve(await suggestion(true));
+    expect(both.status, JSON.stringify(both.json)).toBe(200);
+    expect(both.json.status).toBe("approved");
+    const fix = { target: "move" as const, field: "dose" };
+    expect(both.total - alone.total).toBeLessThanOrEqual(CORRECTIONS_FIXED + correctionCostOf(fix));
+  });
+});

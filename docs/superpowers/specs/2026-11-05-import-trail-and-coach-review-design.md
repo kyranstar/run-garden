@@ -487,7 +487,7 @@ Plan: `docs/superpowers/plans/2026-11-06-coach-review-phase-3.md` (its rulings, 
   overrides a condition's never or a sore area (§15 Q1's default). **The reviewer**: `faithfulness`, scored only when the
   draft holds a saved move; a saved item in the packet carries its record's dose and purpose.
 - **Costs**: read_saves 3 statements (CPU 1.4), pin_moves 2 (0.7), correct_import 2 (0.4); MOVE_PINS_FIXED 4,
-  DECLINE_COST 8, CORRECTIONS_FIXED 2 + 3 a correction (+2 same as, +1 not the same or an insight's memory); finish 4,
+  DECLINE_COST 8, CORRECTIONS_FIXED 3 (the library read again once) + 3 a correction (+2 same as, +1 not the same or an insight's memory); finish 4,
   a stop's reserve and a tree's expiry one more each.
 - **The card** (`packages/ui/src/screens/studio/review-lines.tsx`): In, then Left out, the corrections, the why; a
   name opens the post's trail at the move, a quote's chip at the quote (the trail sheet's `focus`); Challenge fills the
