@@ -5,8 +5,8 @@
  *
  * Synthetic data only: the made-up athlete of design-read-fixture.ts, on its fixed clock.
  */
-import { beforeAll, describe, expect, it, onTestFinished, vi } from "vitest";
-import { and, eq, like } from "drizzle-orm";
+import { afterEach, beforeAll, describe, expect, it, onTestFinished, vi } from "vitest";
+import { and, eq, like, sql } from "drizzle-orm";
 import { schema } from "@rg/database";
 import { addDays, newId, NO_EQUIPMENT_PLACE, workoutDocSchema } from "@rg/domain";
 import { EXERCISES, TMJ, isPlyometric, type CheckReading, type ConditionProfile } from "@rg/exercise-library";
@@ -54,6 +54,13 @@ beforeAll(async () => {
     // Later, but no answer: never the day's reading.
     { id: newId(), userId: high.userId, profileId: "tmj", kind: "daily", value: null, feelingOff: false, localDate: TODAY, at: at(TODAY, "09:00") },
   ]);
+});
+
+// What a test records from a request (record_answer, an asked question) is the athlete's soreness today, which a later
+// draft must not load (the safety audit, S1: an error now): taken back after each test, so the shared athlete's drafts
+// are judged on the day each test sets up.
+afterEach(async () => {
+  await db.delete(schema.athleteAnswers).where(sql`${schema.athleteAnswers.id} like 'ra:%' or ${schema.athleteAnswers.id} like 'aa:%'`);
 });
 
 const tool = (name: string): DesignTool => ACT_TOOLS.find((t) => t.name === name)!;

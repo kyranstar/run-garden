@@ -30,7 +30,8 @@ describe("the shared prefix (every role)", () => {
 
   it("13a A5 + A2: unaccustomed means the movement — a first exposure capped, sets short of failure; with no logged sets, set 1 is the test", () => {
     expect(SHARED_PROMPT).toContain("Unaccustomed means the movement, not only its tempo");
-    expect(SHARED_PROMPT).toContain("the first session caps its volume and keeps sets short of failure, whatever the request");
+    // The safety audit, S5 (2026-11-06): capped unless the athlete insists — then a cost they chose, never a refusal.
+    expect(SHARED_PROMPT).toContain("the first session caps its volume and keeps sets short of failure — \"hard\" comes from effort and density inside that cap; if the athlete insists on more, it is a cost they chose");
     expect(SHARED_PROMPT).toContain("With no logged sets for a lift, set 1 is the test");
   });
 
