@@ -378,9 +378,9 @@ describe("every request within the budget", () => {
     expect(step.body.status).toBe("finished");
     expect(step.cost).toBeLessThanOrEqual(BUDGET);
     // The step's end reserve is a stop's proposal (five, since round 2's read-again; six since the saves flow redesigned
-    // §12.1, its supersede's fit release; seven since workout editability §7, a fit's own batch handed back): a finish's
-    // write uses one of it.
-    expect(step.cost).toBe(BUDGET - 6);
+    // §12.1, its supersede's fit release; seven since workout editability §7, a fit's own batch handed back; eight since
+    // the coach review, phase 3 — its supersede's trail on the posts): a finish's write uses one of it.
+    expect(step.cost).toBe(BUDGET - 7);
     const [p] = await db.select().from(schema.coachProposals).where(eq(schema.coachProposals.id, proposalId));
     expect(p!.status).toBe("rehearsal");
   });
@@ -423,9 +423,9 @@ describe("every request within the budget", () => {
     expect(step.status).toBe(200);
     expect(step.body.status).toBe("cancelled");
     expect(step.cost).toBeLessThanOrEqual(BUDGET);
-    // A finish's write and a lost claim's spend use two of the end reserve (seven since workout editability §7); a stop's
-    // proposal, the larger, the whole of it (the stop's worst case below).
-    expect(step.cost).toBe(BUDGET - 5);
+    // A finish's write and a lost claim's spend use two of the end reserve (seven since workout editability §7; eight since
+    // the coach review, phase 3); a stop's proposal, the larger, the whole of it (the stop's worst case below).
+    expect(step.cost).toBe(BUDGET - 6);
     expect(step.body.events.length).toBeLessThanOrEqual(EVENTS_PER_INSERT);
   });
 

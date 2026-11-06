@@ -1150,7 +1150,7 @@ export const PROMOTE_TRIES = 2;
  * proposed), tried again once when the write lost to another (PROMOTE_TRIES): four statements at most. Answers whether
  * it was made pending.
  */
-export async function promoteWithWhatItHas(db: Db, userId: string, proposalId: string, note: string, opts: { today?: string } = {}): Promise<boolean> {
+export async function promoteWithWhatItHas(db: Db, userId: string, proposalId: string, note: string, opts: { today?: string; out?: PromotedOut } = {}): Promise<boolean> {
   for (let tries = 0; tries < PROMOTE_TRIES; tries++) {
     const out = await promoteOnce(db, userId, proposalId, note, opts);
     if (out !== "lost") return out;
@@ -1174,7 +1174,7 @@ export async function writePromoted(
   userId: string,
   proposalId: string,
   to: "pending" | "rehearsal",
-  o: { ops: readonly unknown[]; flags: readonly string[]; readOps: string | null },
+  o: { ops: readonly unknown[]; flags: readonly string[]; readOps: string | null; out?: PromotedOut },
 ): Promise<boolean> {
   const f = proposalFields(o.ops);
   const ops = JSON.stringify(o.ops);
@@ -1190,7 +1190,14 @@ export async function writePromoted(
     WHERE id = ${proposalId} AND user_id = ${userId} AND status = 'rehearsal' AND ops IS ${o.readOps}
     RETURNING id`,
   )) as Array<{ id: string }>;
+  if (rows.length > 0 && o.out) o.out.saves = o.ops.some((op) => isMovePinsOp(op) || isImportCorrectionOp(op));
   return rows.length > 0;
+}
+
+/** What a promote that won says of what it made pending (import trail phase 3): whether it holds a pins card or a
+ * correction — the supersede then writes the coach's decisions on the posts' trails. */
+export interface PromotedOut {
+  saves?: boolean;
 }
 
 /** The proposal's lines with `lines` added — none twice: a rehearsal stays open, so a second promote of it finds the
@@ -1201,7 +1208,7 @@ export function withLines(flags: readonly string[], lines: readonly string[]): s
 
 /** One try of `promoteWithWhatItHas`: made pending (a rehearsal: promoted, still a rehearsal), nothing to propose, or the
  * write `lost` to another. */
-async function promoteOnce(db: Db, userId: string, proposalId: string, note: string, opts: { today?: string }): Promise<boolean | "lost"> {
+async function promoteOnce(db: Db, userId: string, proposalId: string, note: string, opts: { today?: string; out?: PromotedOut }): Promise<boolean | "lost"> {
   const rows = (await db.all(sql`
     SELECT ops, status, flags FROM coach_proposals WHERE id = ${proposalId} AND user_id = ${userId}
   `)) as Array<{ ops: string | null; status: string; flags: string | null }>;
@@ -1232,7 +1239,7 @@ async function promoteOnce(db: Db, userId: string, proposalId: string, note: str
   const workouts = next.filter(isDocWorkoutOp) as DocWorkoutOp[];
   if (workouts.length === 0 || workouts.some((o) => !o.review) || reviewRunning(workouts)) return false;
   const lines = [note, ...(past.length > 0 ? [pastDayLine(past)] : [])];
-  return (await writePromoted(db, userId, proposalId, to, { ops: next, flags: withLines(flags, lines), readOps: row.ops })) || "lost";
+  return (await writePromoted(db, userId, proposalId, to, { ops: next, flags: withLines(flags, lines), readOps: row.ops, ...(opts.out ? { out: opts.out } : {}) })) || "lost";
 }
 
 export type { ReviewRound, DraftVersion };

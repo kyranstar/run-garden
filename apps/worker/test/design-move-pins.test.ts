@@ -534,8 +534,8 @@ describe("approving the moves in rotation", () => {
     expect(answers[0]).toMatchObject({ status: "approved", refused: [], remaining: [], pinned: [{ opId: pinsId(id.slice(3)), summary: "2 moves in your programme's pool" }] });
     // Measured, exactly what it declares: the approve's own part (the session and its restore check, the proposal, the
     // preferences, the plan read, the proposal's write, the receipt) and the op's — its claim, the library and pins read,
-    // one upsert, the batch marked.
-    expect(movePinsCostOf({ pin: [a, "gobletSquat"], unpin: [] })).toBe(4);
+    // one upsert, the batch marked — and (REBASED 2026-11-06 (coach review, phase 3)) the coach's decisions on the posts' trails, with it.
+    expect(movePinsCostOf({ pin: [a, "gobletSquat"], unpin: [] })).toBe(5);
     expect(costs).toEqual([APPROVE_FIXED + MOVE_PINS_FIXED + 1]);
     expect(await pinnedIds()).toEqual([a, "gobletSquat"].sort());
     // The request's own library was seeded again with the pins it wrote (review 1, finding 5): a later read in that request
@@ -607,12 +607,13 @@ describe("approving the moves in rotation", () => {
     expect((await proposalOf(id)).status).toBe("pending");
   });
 
-  it("its declared cost: three, and one a twenty ids; the most — twenty pins, twenty unpins and the batch — in one request, measured exactly", async () => {
-    expect(MOVE_PINS_FIXED).toBe(3);
-    expect(movePinsCostOf({ pin: [], unpin: [] })).toBe(3);
-    expect(movePinsCostOf({ pin: ["x"], unpin: [] })).toBe(4);
-    expect(movePinsCostOf({ pin: Array.from({ length: 20 }, (_, i) => `p${i}`), unpin: [] })).toBe(4);
-    expect(movePinsCostOf({ pin: Array.from({ length: 20 }, (_, i) => `p${i}`), unpin: ["u"] })).toBe(5);
+  it("its declared cost: four, and one a twenty ids; the most — twenty pins, twenty unpins and the batch — in one request, measured exactly", async () => {
+    // REBASED 2026-11-06 (coach review, phase 3): four — the coach's decisions on the posts' trails ride the batch's write.
+    expect(MOVE_PINS_FIXED).toBe(4);
+    expect(movePinsCostOf({ pin: [], unpin: [] })).toBe(4);
+    expect(movePinsCostOf({ pin: ["x"], unpin: [] })).toBe(5);
+    expect(movePinsCostOf({ pin: Array.from({ length: 20 }, (_, i) => `p${i}`), unpin: [] })).toBe(5);
+    expect(movePinsCostOf({ pin: Array.from({ length: 20 }, (_, i) => `p${i}`), unpin: ["u"] })).toBe(6);
     const { batchId } = await batch();
     const ids = EXERCISES.slice(0, 40).map((e) => e.id);
     // The twenty to unpin are pinned already.
@@ -750,7 +751,7 @@ describe("a fit ends with its card (the saves flow redesigned, §12.1)", () => {
     expect(costs).toEqual([APPROVE_FIXED + MOVE_PINS_FIXED + 1]);
   });
 
-  it("Not now (decline): the fit cleared, fitted_at null — the card comes back; the decline within DECLINE_COST (7)", async () => {
+  it("Not now (decline): the fit cleared, fitted_at null — the card comes back; the decline within DECLINE_COST (8)", async () => {
     const { batchId, a } = await batch();
     await startFit(batchId);
     const { id } = await proposed({ pin: [a], batchId });
@@ -759,9 +760,11 @@ describe("a fit ends with its card (the saves flow redesigned, §12.1)", () => {
     expect(decline.json).toMatchObject({ status: "declined", declined: [pinsId(id.slice(3))] });
     expect(await fitOf(batchId)).toBeNull();
     expect(await fittedAt(batchId)).toBeNull();
-    expect(DECLINE_COST).toBe(7);
-    // The session and its restore check, the proposal, the write, the receipt and the release (no workout: no plan read).
-    expect(decline.total).toBe(6);
+    // REBASED 2026-11-06 (coach review, phase 3): eight — the coach's decisions on the posts' trails, with the write.
+    expect(DECLINE_COST).toBe(8);
+    // The session and its restore check, the proposal, the trail with the write, the receipt and the release (no workout:
+    // no plan read).
+    expect(decline.total).toBe(7);
     expect(decline.total).toBeLessThanOrEqual(DECLINE_COST);
     // The release with no proposal to read: no statement at all.
     statements = 0;
@@ -810,8 +813,9 @@ describe("a fit ends with its card (the saves flow redesigned, §12.1)", () => {
       const newer = await proposed({ pin: [a], batchId });
       statements = 0;
       await supersedeOlderPlans(db, userId, newer.id, new Date().toISOString());
-      // The supersede, then the release: it superseded a card of the moves in rotation naming a batch.
-      expect(statements, `before: ${before}`).toBe(2);
+      // The supersede, the coach's trail (REBASED 2026-11-06 (coach review, phase 3): the older card's lines replaced), then the release: it superseded a card
+      // of the moves in rotation naming a batch.
+      expect(statements, `before: ${before}`).toBe(3);
       expect((await opOf(older.id)).outcome?.status).toBe("superseded");
       expect((await proposalOf(older.id)).status).toBe("superseded");
       expect(await fitOf(batchId), `before: ${before}`).toBe(before ? null : LATER);

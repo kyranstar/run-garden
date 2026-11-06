@@ -27,7 +27,8 @@
  * is never reviewed: the rule counts the designed workouts only, so a proposal of changes alone is the athlete's too. One statement: the proposal — and its cost declares two more, the
  * loop's own once the proposal is made pending: the older plans' days it covers superseded (design-orchestrate.ts
  * `supersedeOlderPlans`), and — when that supersedes a card of the moves in rotation naming a saves batch — the batch's
- * fit released (the saves flow redesigned §12.1: 3, was 2).
+ * fit released (the saves flow redesigned §12.1: 3, was 2) — and the coach's decisions on each post's trail
+ * (REBASED 2026-11-06, coach review phase 3: 4, was 3).
  */
 import { and, eq } from "drizzle-orm";
 import { z } from "zod";
@@ -78,7 +79,7 @@ export const finish: DesignTool = {
     },
     additionalProperties: false,
   },
-  statementCost: 3,
+  statementCost: 4,
   cpuWeight: 0.1,
   roles: ["main", "designer"],
   control: "finish",

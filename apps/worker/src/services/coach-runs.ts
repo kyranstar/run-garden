@@ -293,8 +293,9 @@ const FINISH_WRITE = 1;
  * plans' days it covers superseded, then — when that superseded a card of the moves in rotation naming a saves batch —
  * the batch's fit released (design-orchestrate.ts `supersedeOlderPlans`; the saves flow redesigned §12.1: + 1, was
  * 2 * PROMOTE_TRIES + 1) — and, a fit's main run, its own batch handed back unless its card naming the batch is open
- * (`releaseRunFit`, workout editability §7: + 1, was 2 * PROMOTE_TRIES + 2; proposed or not). */
-const STOP_PROPOSE = 2 * PROMOTE_TRIES + 3;
+ * (`releaseRunFit`, workout editability §7: + 1, was 2 * PROMOTE_TRIES + 2; proposed or not) — and the coach's decisions
+ * on each post's trail with the supersede (REBASED 2026-11-06, coach review phase 3: + 1, was 2 * PROMOTE_TRIES + 3). */
+const STOP_PROPOSE = 2 * PROMOTE_TRIES + 4;
 /** What a step's end may spend beyond its own writes: a finish's proposal write and a lost claim's spend can land in
  * one step (a cancel taking the claim while the tools ran), while a stop that proposes never meets either — it is
  * written under the claim it holds, and finishes nothing — so the larger of the two is reserved. A fit's main run that
@@ -1465,11 +1466,12 @@ const TAKEOVERS = sql.raw(
  * when the write lost to a late verdict (design-review.ts PROMOTE_TRIES); the older plans superseded and a superseded
  * saves card's fit released (design-orchestrate.ts `supersedeOlderPlans`; the saves flow redesigned §12.1: + 1, was
  * 7) — or, nothing proposed, the close; a fit's main run's own batch handed back unless its card naming the batch is
- * open (`releaseRunFit`, workout editability §7: + 1, was 8; proposed or not); and the lines. The sweep spends its read,
- * a claim taken back when there is one, and this per tree it expires (counting tests pin it); a step, an answer or a
- * create spends it once.
+ * open (`releaseRunFit`, workout editability §7: + 1, was 8; proposed or not); the coach's decisions on each post's
+ * trail with the supersede (REBASED 2026-11-06, coach review phase 3: + 1, was 9); and the lines. The sweep spends its
+ * read, a claim taken back when there is one, and this per tree it expires (counting tests pin it); a step, an answer or
+ * a create spends it once.
  */
-export const EXPIRE_TREE_STATEMENTS = 1 + 2 * PROMOTE_TRIES + 2 + 1 + 1;
+export const EXPIRE_TREE_STATEMENTS = 1 + 2 * PROMOTE_TRIES + 3 + 1 + 1;
 
 /**
  * Expire a run's live tree, past its window or left under a run that is over, with the main run's plain line. Guarded:
@@ -2411,13 +2413,15 @@ const okStep = (result: StepResult): StepOutcome => ({ kind: "ok", result });
  */
 async function proposeWhatItHas(db: Db, userId: string, root: RunNode, note: string, at: string, today?: string): Promise<boolean> {
   const proposalId = designProposalId(root.id);
+  // What it made pending holds a pins card or a correction: the supersede writes the coach's trail (phase 3).
+  const out: { saves?: boolean } = {};
   const proposed = runIsSet(root.scope, root.settings)
-    ? await promoteSetWithWhatItHas(db, userId, proposalId, note, { mainRunId: root.id, ...(today ? { today } : {}) })
-    : await promoteWithWhatItHas(db, userId, proposalId, note, today ? { today } : {});
+    ? await promoteSetWithWhatItHas(db, userId, proposalId, note, { mainRunId: root.id, ...(today ? { today } : {}), out })
+    : await promoteWithWhatItHas(db, userId, proposalId, note, { ...(today ? { today } : {}), out });
   if (!proposed) return false;
   // A rehearsal's stop proposes as production's does (design-review.ts `PROMOTED_STATUS`), but its proposal stays a
   // rehearsal: never pending, it supersedes nothing of the athlete's — no statement for it.
-  if (!root.settings?.rehearsal) await supersedeOlderPlans(db, userId, proposalId, at, followUpOf(root.settings?.focus, root.request), followUpReason(root.request));
+  if (!root.settings?.rehearsal) await supersedeOlderPlans(db, userId, proposalId, at, followUpOf(root.settings?.focus, root.request), followUpReason(root.request), { saves: out.saves === true });
   return true;
 }
 
@@ -3231,10 +3235,16 @@ async function closeProposalAtFinish(s: StepCtx, proposalId: string): Promise<"p
           or exists (select 1 from json_each(json_extract(o.value, '$.reviewLog')) r where json_extract(r.value, '$.status') = 'reviewing'))`,
       ),
     )
-    .returning({ id: coachProposals.id });
+    .returning({
+      id: coachProposals.id,
+      // A pins card or a correction (import trail phase 3): the supersede writes the coach's decisions on the posts' trails.
+      saves: sql<number>`exists (select 1 from json_each(${coachProposals.ops}) where json_extract(json_each.value, '$.kind') in ('move_pins', 'import_correction'))`,
+    });
   if (promoted.length === 0) return "kept";
   // A follow-up's (A2) supersedes the suggestion it changes in this same statement.
-  await supersedeOlderPlans(s.db, s.userId, proposalId, s.now.toISOString(), followUpOf(s.state.settings.focus, s.run.request), followUpReason(s.run.request));
+  await supersedeOlderPlans(s.db, s.userId, proposalId, s.now.toISOString(), followUpOf(s.state.settings.focus, s.run.request), followUpReason(s.run.request), {
+    saves: Number(promoted[0]!.saves) === 1,
+  });
   return "pending";
 }
 

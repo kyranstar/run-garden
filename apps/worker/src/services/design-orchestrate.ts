@@ -46,16 +46,17 @@
  */
 import { sql, type SQL } from "drizzle-orm";
 import { addDays, dayLabel, daysBetween } from "@rg/domain";
-import type { Db } from "./db.js";
+import { runAtomically, type Db } from "./db.js";
 import { horizonDays } from "./design-context.js";
 import { covers, openOp, SAME_SESSION_MINUTES } from "./design-cover.js";
 import { COACH_REACH_DAYS, SET_MAX_WORKOUTS } from "./design-limits.js";
-import { applyDrop, meanScore, pastDayLine, PROMOTE_TRIES, PROMOTED_STATUS, proposalFields, reviewRunning, withLines, writePromoted } from "./design-review.js";
+import { applyDrop, meanScore, pastDayLine, PROMOTE_TRIES, PROMOTED_STATUS, proposalFields, reviewRunning, withLines, writePromoted, type PromotedOut } from "./design-review.js";
 import type { DocWorkoutOp } from "./design-tools/propose.js";
 import { untrusted } from "./design-tools/read-common.js";
 import { clipProse } from "./design-prose.js";
 import type { RunScope, SetBrief, SetRound } from "./design-tools/types.js";
 import { isDocWorkoutOp, isPlanAdjustOp, opIdOf, type PlanAdjustOp } from "./proposal-kinds.js";
+import { promotionTrailStatement } from "./coach-trail.js";
 import { releaseFitStarts } from "./saves-batches.js";
 
 // ── The set's shape ─────────────────────────────────────────────────────────────────────────────────────────────────
@@ -531,7 +532,7 @@ export async function promoteSetWithWhatItHas(
   userId: string,
   proposalId: string,
   note: string,
-  opts: { mainRunId: string; today?: string },
+  opts: { mainRunId: string; today?: string; out?: PromotedOut },
 ): Promise<boolean> {
   for (let tries = 0; tries < PROMOTE_TRIES; tries++) {
     const out = await promoteSetOnce(db, userId, proposalId, note, opts);
@@ -541,7 +542,7 @@ export async function promoteSetWithWhatItHas(
 }
 
 /** One try of `promoteSetWithWhatItHas`: made pending, nothing to propose, or the write `lost` to another. */
-async function promoteSetOnce(db: Db, userId: string, proposalId: string, note: string, opts: { mainRunId: string; today?: string }): Promise<boolean | "lost"> {
+async function promoteSetOnce(db: Db, userId: string, proposalId: string, note: string, opts: { mainRunId: string; today?: string; out?: PromotedOut }): Promise<boolean | "lost"> {
   const today = opts.today;
   const { ops, changes, opsText, status, flags, designers } = await readSetProposal(db, userId, proposalId, { designersOf: opts.mainRunId });
   // An athlete's `unreviewed` is made pending; a rehearsal's is promoted the same way and stays a rehearsal (13d D5).
@@ -589,7 +590,7 @@ async function promoteSetOnce(db: Db, userId: string, proposalId: string, note: 
     ...(undesigned.length > 0 ? [`Not designed before the stop: ${undesigned.map(dayLabel).join(", ")}.`] : []),
   ];
   const proposed = [...liveChanges, ...kept];
-  return (await writePromoted(db, userId, proposalId, to, { ops: proposed, flags: withLines(flags, lines), readOps: opsText })) || "lost";
+  return (await writePromoted(db, userId, proposalId, to, { ops: proposed, flags: withLines(flags, lines), readOps: opsText, ...(opts.out ? { out: opts.out } : {}) })) || "lost";
 }
 
 // ── A newer plan supersedes an older one's days ─────────────────────────────────────────────────────────────────────
@@ -646,7 +647,9 @@ export { SAME_SESSION_MINUTES };
  * approved) and older than the new one, the new one pending; approved, declined or decided in part meanwhile, it is
  * left alone. A set's suggestion is never a focus (the create refuses it, design-focus.ts).
  *
- * ONE statement: each row's ops are read as that row is written, so an outcome written meanwhile is never lost — and
+ * ONE statement: each row's ops are read as that row is written, so an outcome written meanwhile is never lost — then
+ * the coach's trail on the posts (coach-trail.ts `promotionTrailStatement`, one statement, when the new one holds a pins
+ * card or a correction, or an older one's gave way) — and
  * one more when a card of the moves in rotation naming a saves batch is among what it superseded: that batch's fit is
  * released (saves-batches.ts `releaseFitStarts`, the saves flow redesigned §12.1), so it comes back with "Fit them in"
  * unless a newer fit began since the card was made. Answers how many proposals it changed.
@@ -660,6 +663,9 @@ export async function supersedeOlderPlans(
   /** Why a suggestion a workout of the new one names (`supersedes`: propose_workout's `replaces`) gives way: the follow-up's
    * words (`followUpReason`). */
   replacedWhy: string = focused?.reason ?? followUpReason(null),
+  /** Whether the new one holds a pins card or a correction (its promote says: design-review.ts `PromotedOut`): then the
+   * coach's decisions go on the posts' trails — as they do whenever an older card or correction gives way. */
+  o: { saves?: boolean } = {},
 ): Promise<number> {
   /** An op this supersedes: a designed one, still open, for a session one of the new proposal's covers (design-cover.ts,
    * the rule a designer's `willReplace` reads before). */
@@ -704,8 +710,18 @@ export async function supersedeOlderPlans(
       AND created_at < (SELECT created_at FROM coach_proposals WHERE id = ${proposalId} AND user_id = ${userId})
       AND (${isFocused} OR EXISTS (SELECT 1 FROM json_each(coach_proposals.ops) o WHERE ${covered(sql`o.value`)}))
     RETURNING id, EXISTS (SELECT 1 FROM json_each(coach_proposals.ops) o WHERE json_extract(o.value, '$.kind') = 'move_pins'
-      AND json_extract(o.value, '$.batchId') IS NOT NULL AND json_extract(o.value, '$.outcome.status') = 'superseded') AS pins
-  `)) as Array<{ id: string; pins: unknown }>;
+      AND json_extract(o.value, '$.batchId') IS NOT NULL AND json_extract(o.value, '$.outcome.status') = 'superseded') AS pins,
+      EXISTS (SELECT 1 FROM json_each(coach_proposals.ops) o WHERE json_extract(o.value, '$.kind') IN ('move_pins', 'import_correction')
+        AND json_extract(o.value, '$.outcome.status') = 'superseded' AND json_extract(o.value, '$.outcome.by') = ${proposalId}) AS saves
+  `)) as Array<{ id: string; pins: unknown; saves: unknown }>;
+  // The coach's decisions on each post's trail (import trail phase 3): the new card's lines suggested, the posts it read,
+  // its corrections suggested — and each older card's lines this superseded. One statement; never an error once the
+  // supersede is written (the cards are as stored: a lost write leaves their steps to the approve or decline).
+  if (o.saves || rows.some((r) => Number(r.saves) === 1)) {
+    await runAtomically(db, [promotionTrailStatement(db, userId, proposalId, at)]).catch((e: unknown) =>
+      console.error(JSON.stringify({ level: "error", msg: "supersede: the coach's trail wasn't written", proposal: proposalId, error: e instanceof Error ? e.message : "unknown" })),
+    );
+  }
   // The row as written (RETURNING reads it after its SET): its moves in rotation, naming a batch, superseded. Never an
   // error once the supersede is written: past FIT_STARTED_TTL_MS the fit reads as over anyway.
   await releaseFitStarts(db, userId, rows.filter((r) => Number(r.pins) === 1).map((r) => r.id)).catch(() => undefined);

@@ -146,7 +146,7 @@
  * the approve: the workouts are written by then.
  */
 import { and, eq, sql, type SQL } from "drizzle-orm";
-import { coachMessages, coachProposals, plannedWorkouts, scheduleOverrides, workoutDocRevisions } from "@rg/database";
+import { coachMessages, coachProposals, plannedWorkouts, saveBatches, scheduleOverrides, workoutDocRevisions } from "@rg/database";
 import {
   addDays,
   appAuthoredRow,
@@ -202,6 +202,7 @@ import {
   isProgrammeChangeOp,
   isImportCorrectionOp,
   isMovePinsOp,
+  pinsCardLinesOf,
   sameSetting,
   type ImportCorrectionOp,
   type MovePinsOp,
@@ -215,7 +216,8 @@ import { placeSlotsWithin, RETRACT_COST } from "./program-slots.js";
 import { updateProgram } from "./programs.js";
 import { releaseFitStarts } from "./saves-batches.js";
 import { correctionCostOf, CORRECTIONS_FIXED, correctionsReadSql, correctionStateOf, judgeCorrection } from "./import-corrections.js";
-import { runAtomicallyClaim } from "./db.js";
+import { runAtomically, runAtomicallyClaim, type AtomicStatement } from "./db.js";
+import { decisionTrailStatement } from "./coach-trail.js";
 
 // ── Shapes ──────────────────────────────────────────────────────────────────────────────────────────────────────────
 
@@ -474,9 +476,10 @@ export const APPROVE_FIXED = 7;
  * garden's replay for a claimed skip it found made (the recovery rule), never both: a change found made leaves the
  * proposal approved in part, never declined, so no "Left as planned" is written — and, when it declined the moves in
  * rotation naming a saves batch, the batch's fit released (saves-batches.ts `releaseFitStarts`, the saves flow
- * redesigned §12.1: 6 before it).
+ * redesigned §12.1: 6 before it) — and, REBASED 2026-11-06 (coach review, phase 3), the coach's decision on each post's
+ * trail when it declines a card's lines or a correction (in the same batch as the write).
  */
-export const DECLINE_COST = 7;
+export const DECLINE_COST = 8;
 /**
  * The day a new workout or a revision is judged for (`docDayContext`): the place (two when the place it names is gone),
  * the profiles and the set-aside moves, the history (at most five reads) and the day's checks. (Its library, the
@@ -581,8 +584,9 @@ export const PROGRAMME_WRITE_COST = 1 + 3;
 export const PROGRAMME_MIN_BUDGET = 3 + 1 + 1 + RETRACT_COST;
 
 /** The moves in rotation's own part (Task 18): its claim's write, the account's library with the named moves' pins and
- * the batch (one read), and the batch marked fitted in. */
-export const MOVE_PINS_FIXED = 1 + 1 + 1;
+ * the batch (one read), the batch marked fitted in, and — REBASED 2026-11-06 (coach review, phase 3) — the coach's
+ * decision on each post's trail (in the same batch). */
+export const MOVE_PINS_FIXED = 1 + 1 + 1 + 1;
 /** The moves one upsert writes. */
 export const MOVE_PINS_PER = 20;
 /** What a change to the moves in rotation costs: MOVE_PINS_FIXED, and one upsert a MOVE_PINS_PER of its moves. */
@@ -1647,10 +1651,17 @@ async function applyMovePins(
   // later read in this request — a workout's day, the receipt — finds it and pays nothing.
   if (writes.length > 0) await reseedAccountLibrary(db, userId, row?.library, new Map(writes.map(([id, on]) => [id, on === 1])));
   if (g.batchId) {
-    if (row?.batch === "saved") {
-      // Fitted in, and so no longer fitting (spec §12.1): one write.
-      await db.run(sql`update save_batches set fitted_at = ${now}, fit_started_at = null where id = ${g.batchId} and user_id = ${userId} and status = 'saved' and ${asRead}`);
-    } else lines.push("Its saves batch is no longer saved — not marked fitted in");
+    const fitted = row?.batch === "saved";
+    if (!fitted) lines.push("Its saves batch is no longer saved — not marked fitted in");
+    // Fitted in, and so no longer fitting (spec §12.1) — and the coach's decision on each post's trail (import trail phase
+    // 3): each line approved on every post of the batch naming its move. One batch, under the same guard.
+    const trail = decisionTrailStatement(db, userId, { proposalId: current.id, runId: current.id.startsWith("dp-") ? current.id.slice(3) : null, pins: [{ batchId: g.batchId, lines: pinsCardLinesOf(g.lines) }], fixes: [] }, "approved", now, asRead);
+    await runAtomically(db, [
+      ...(trail ? [trail] : []),
+      ...(fitted
+        ? [db.update(saveBatches).set({ fittedAt: now, fitStartedAt: null }).where(sql`${saveBatches.id} = ${g.batchId} and ${saveBatches.userId} = ${userId} and ${saveBatches.status} = 'saved' and ${asRead}`)]
+        : []),
+    ]);
   }
   return { status: "applied", at: now, pinned, unpinned, lines };
 }
@@ -1816,9 +1827,17 @@ async function releaseClaims(db: Db, userId: string, current: DesignProposalRow,
  * `resolved_at` it wrote.
  */
 async function writeOps(db: Db, userId: string, p: DesignProposalRow, next: unknown[], status: DesignProposalStatus, now: string): Promise<string | null> {
+  const { statement, resolvedAt } = writeOpsStatement(db, userId, p, next, status, now);
+  const written = await statement;
+  if (written.length === 0) throw new ProposalChangedError();
+  return resolvedAt;
+}
+
+/** `writeOps`' write, built and not run. */
+function writeOpsStatement(db: Db, userId: string, p: DesignProposalRow, next: unknown[], status: DesignProposalStatus, now: string) {
   const resolvedAt = status === "pending" ? p.resolvedAt : status === p.status ? (p.resolvedAt ?? now) : now;
   const by = status === "superseded" && status !== p.status ? newestSupersededBy(allDesignedOps(next)) : null;
-  const written = await db
+  const statement = db
     .update(coachProposals)
     .set({ ops: next, status, resolvedAt, ...(by ? { supersededBy: by } : {}) })
     .where(
@@ -1830,7 +1849,14 @@ async function writeOps(db: Db, userId: string, p: DesignProposalRow, next: unkn
       ),
     )
     .returning({ id: coachProposals.id });
-  if (written.length === 0) throw new ProposalChangedError();
+  return { statement, resolvedAt };
+}
+
+/** `writeOps` with `before` in the same batch, ahead of it — each gated as the write is, so all land or none (the write
+ * is the claim, last). */
+async function writeOpsWith(db: Db, userId: string, p: DesignProposalRow, next: unknown[], status: DesignProposalStatus, now: string, before: AtomicStatement[]): Promise<string | null> {
+  const { statement, resolvedAt } = writeOpsStatement(db, userId, p, next, status, now);
+  if ((await runAtomicallyClaim(db, [...before, statement])) === 0) throw new ProposalChangedError();
   return resolvedAt;
 }
 
@@ -1994,7 +2020,24 @@ export async function declineDesignOps(
   }
   const next = withOutcomes(p.ops, outcomes);
   const status = statusOfOps(allDesignedOps(next));
-  await writeOps(db, userId, p, next, status, now);
+  // The coach's decision on each post's trail (import trail phase 3): each declined card's lines, and each declined
+  // correction — in the same batch as the write, gated on the proposal as this decline read it (as the write is).
+  const declinedOps = allDesignedOps(p.ops).filter((op) => declined.includes(opIdOf(op)));
+  const trail = decisionTrailStatement(
+    db,
+    userId,
+    {
+      proposalId: p.id,
+      runId: p.id.startsWith("dp-") ? p.id.slice(3) : null,
+      pins: (declinedOps.filter(isMovePinsOp) as DesignedPinsOp[]).flatMap((g) => (g.batchId ? [{ batchId: g.batchId, lines: pinsCardLinesOf(g.lines) }] : [])),
+      fixes: declinedOps.filter(isImportCorrectionOp) as DesignedCorrectionOp[],
+    },
+    "declined",
+    now,
+    sql`exists (select 1 from coach_proposals dt_p where dt_p.id = ${p.id} and dt_p.user_id = ${userId} and dt_p.status = ${p.status} and dt_p.ops = ${JSON.stringify(p.ops)})`,
+  );
+  if (trail) await writeOpsWith(db, userId, p, next, status, now, [trail]);
+  else await writeOps(db, userId, p, next, status, now);
   // Never an error once the outcomes are written (the approve's own rule).
   if (replayFrom !== null) await recordReplayFrom(db, userId, replayFrom).catch(() => undefined);
   // "Not now" on the card: its batch comes back with "Fit them in" (spec §12.1).

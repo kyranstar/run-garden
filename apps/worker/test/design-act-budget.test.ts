@@ -274,8 +274,9 @@ describe("each act tool's declared statement cost is the most it runs", () => {
     await measured("propose_workout", { doc: calmDoc(), target: { kind: "new", date: TODAY } }, rich.userId, main);
     expect(await most("finish", [{ input: { summary: "Done." }, run: main }, { input: { summary: "Done." } }, { input: { summary: "" } }])).toBe(1);
     // Its own read; it declares two more — the loop's, once its proposal is made pending: the older plans' days it
-    // covers superseded (Task 7), and a superseded saves card's fit released (the saves flow redesigned §12.1: was 2).
-    expect(tool("finish").statementCost).toBe(3);
+    // covers superseded (Task 7), and a superseded saves card's fit released (the saves flow redesigned §12.1: was 2) —
+    // and (REBASED 2026-11-06 (coach review, phase 3)) the coach's decisions on the posts' trails, a pins card or a correction shown (was 3).
+    expect(tool("finish").statementCost).toBe(4);
   });
 
   it("adjust_plan: the athlete with the session, the proposal and the restore marker in one read, then one write — refusals and replays read only", async () => {
@@ -367,8 +368,9 @@ describe("each act tool's declared statement cost is the most it runs", () => {
     const room = STEP_BUDGET - ROUTE_OVERHEAD - MODEL_STEP_FIXED;
     // 28 since fix wave 3A round 2 (A-M3): a stop's proposal reserves its read and write twice over; 27 since the saves
     // flow redesigned (§12.1): its supersede may release a superseded saves card's fit, one statement more; 26 since
-    // workout editability §7: a fit's main run hands its own batch back as it stops.
-    expect(room).toBe(26);
+    // workout editability §7: a fit's main run hands its own batch back as it stops; 25 since the coach review, phase 3: its
+    // supersede writes the coach's decisions on the posts' trails (REBASED 2026-11-06 (coach review, phase 3)).
+    expect(room).toBe(25);
     // With its reviewer (Task 6) a draft pauses the run: no call after it runs in the same step — so twice over (three
     // times, 27, no longer fits since §7) is room to spare.
     expect(tool("propose_workout").statementCost * 2).toBeLessThanOrEqual(room);
