@@ -104,7 +104,8 @@ export const correctImport: DesignTool = {
   },
   statementCost: 2,
   // Measured 0.33 ms scaled p50 (a long move's dose on the evidence, eight cites; ×0.78 at load 24.7 — not a quiet run):
-  // declared with room.
+  // declared with room. Re-measured 2026-11-06 (the controller's fix pass: the run's word read, the move's own quotes
+  // checked, a dose merged): 0.29, 0.31 and 0.38 ms on three loaded passes — 0.4 still holds.
   cpuWeight: 0.4,
   roles: ["main"],
   async run(ctx, raw) {

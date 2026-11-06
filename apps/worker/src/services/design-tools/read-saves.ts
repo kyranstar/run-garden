@@ -468,7 +468,11 @@ export const readSaves: DesignTool = {
   // 200-character quotes, four use-when and skip-when cases, a why), parsed and fitted — measured 1.22 and 1.37 ms scaled
   // p50 on two loaded passes (×0.93 at load 10.7; ×0.78 at load 24.7, 8 cores; no quiet run to be had): declared at the
   // tenth above the higher.
-  cpuWeight: 1.4,
+  // REBASED 2026-11-06 (the controller's fix pass, A and B): the compact page over the widest batch — each long move on
+  // three posts (LINKS_MAX), three readings a move — its forms fitted a move at a time, the page's evidence made only for
+  // the moves it comes to: 1.75, 1.23 and 1.55 ms scaled p50 on three loaded passes (×0.83 at load 32, ×0.72 at 24,
+  // ×0.80 at 19; 8 cores): declared at the tenth above the higher.
+  cpuWeight: 1.8,
   roles: READ_ROLES,
   async run(ctx, raw) {
     const p = parseInput(input, raw, "optionally batchId, limit, offset and full");

@@ -294,7 +294,10 @@ export const pinMoves: DesignTool = {
   // REBASED 2026-11-06 (coach review, phase 3): twelve lines' eight cites each resolved against the run's read receipts
   // (every page of a 40-post batch) — measured 0.55 and 0.63 ms scaled p50 on two loaded passes (×0.93 at load 10.7;
   // ×0.78 at load 24.7): declared at the tenth above the higher.
-  cpuWeight: 0.7,
+  // REBASED 2026-11-06 (the controller's fix pass, B): thirty lines (PINS_LINES_MAX) of eight cites each, the move's own
+  // quotes checked (D5) — measured 0.70, 0.64 and 0.81 ms scaled p50 on three loaded passes (×0.83 at load 32, ×0.72 at
+  // 24, ×0.80 at 19; 8 cores; no quiet run to be had): declared at the tenth above the higher.
+  cpuWeight: 0.9,
   roles: ["main"],
   async run(ctx, raw) {
     const parsed = parseAct(input, raw, "pin and/or unpin (move ids), batchId when fitting in a saves batch, and the card's title, lines and why (its summary without a batch)");
