@@ -105,6 +105,7 @@ function videoInfoOf(p: PostSubmit): SavedVideoInfo | null {
     captions: p.transcript ? { lang: p.transcript.lang, kind: p.transcript.kind } : null,
     live: p.live ?? false,
     transcriptChars: p.transcript?.text.length ?? 0,
+    transcriptBytes: p.transcript ? new TextEncoder().encode(p.transcript.text).length : 0,
     transcriptCut: p.transcript?.cut ?? false,
   };
 }

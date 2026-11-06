@@ -567,6 +567,7 @@ describe("POST /posts: a pasted YouTube video (phase 2)", () => {
     expect(row!.videoInfo).toEqual({
       chapters: [{ start: 0, title: "Intro" }, { start: 60, title: "Flow" }, { start: 300, title: "Cool-down" }],
       captions: { lang: "en", kind: "uploaded" }, live: false, transcriptChars: transcript.text.length, transcriptCut: false,
+      transcriptBytes: transcript.text.length,
     });
     const events = await db.select().from(schema.importEvents).where(eq(schema.importEvents.postId, row!.id));
     const read = events.find((e) => e.stage === "read")!;

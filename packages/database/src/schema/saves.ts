@@ -61,6 +61,8 @@ export interface SavedVideoInfo {
   captions: { lang: string; kind: "uploaded" | "auto" } | null;
   live: boolean;
   transcriptChars: number;
+  /** Its UTF-8 bytes (a reading's reservation counts these: a CJK character is about a token). Absent before 2026-11-06. */
+  transcriptBytes?: number;
   transcriptCut: boolean;
 }
 

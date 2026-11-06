@@ -266,6 +266,11 @@ interface ClaimedPost {
   sha: string;
   words: PostWords;
   url: string | null;
+  /**
+   * The link the gateway is sent to watch: rebuilt from the video's id, never the stored URL (final audit G16: a
+   * submit's URL is any https link, and the gateway would fetch it). Null for anything but a YouTube video id.
+   */
+  videoUrl: string | null;
 }
 
 /** What a watched video must add to the bill, beyond the text's own tokens, to count as seen: half the typical rate. */
@@ -287,7 +292,7 @@ async function runExtraction(
   /** The claimed attempt and the post's words: the prompt as sent is rebuilt from them (design 2026-11-05 §6.1). */
   let claimed: ClaimedPost | null = null;
   /** A video's plan: its length, whether it is watched, whether it has a transcript (read before reserving). */
-  let video: { durationSec: number | null; watched: boolean; hasTranscript: boolean; textChars: number } | null = null;
+  let video: { durationSec: number | null; watched: boolean; hasTranscript: boolean; textBytes: number } | null = null;
 
   const gateway = wakeGateway(env);
   if (gateway.kind === "no_key") return { ok: false, code: "model_failed" };
@@ -320,6 +325,7 @@ async function runExtraction(
         creatorName: savedPosts.creatorName,
         mediaType: savedPosts.mediaType,
         source: savedPosts.source,
+        sourceKey: savedPosts.sourceKey,
         url: savedPosts.url,
         title: savedPosts.title,
         durationSec: savedPosts.durationSec,
@@ -350,7 +356,8 @@ async function runExtraction(
       });
     }
     const userText = extractUserText({ post: words, libraryNames: LIBRARY_NAMES, retryIssues: prompt.retryIssues });
-    claimed = { attempt: row.attempt, userText, sha: await promptSha(userText), words, url: row.url };
+    const videoUrl = row.source === "youtube" && /^[A-Za-z0-9_-]{11}$/.test(row.sourceKey) ? `https://www.youtube.com/watch?v=${row.sourceKey}` : null;
+    claimed = { attempt: row.attempt, userText, sha: await promptSha(userText), words, url: row.url, videoUrl };
     return true;
   };
   const refusal = async (): Promise<RelayResult> => {
@@ -424,12 +431,15 @@ async function runExtraction(
     if (!p) return { ok: false, code: "unknown", status: 404 };
     const durationSec = p.durationSec ?? null;
     const transcriptChars = p.videoInfo?.captions ? (p.videoInfo.transcriptChars ?? 0) : 0;
+    // Bytes, not characters (final audit G5): a CJK character is about a token, three UTF-8 bytes. An older row has
+    // no byte count: three bytes a character bounds it.
+    const transcriptBytes = p.videoInfo?.captions ? (p.videoInfo.transcriptBytes ?? transcriptChars * 3) : 0;
     video = {
       durationSec,
       // An unknown length is never watched (nothing would be reserved for it); an ask only up to WATCH_ASK_MAX_SEC.
       watched: durationSec !== null && durationSec > 0 && (durationSec <= WATCH_MAX_SEC || (p.watchVideo === true && durationSec <= WATCH_ASK_MAX_SEC)),
       hasTranscript: transcriptChars > 0,
-      textChars: SYSTEM_CHARS + LIBRARY_CHARS + (p.caption?.length ?? 0) + transcriptChars + TEXT_SLACK_CHARS,
+      textBytes: SYSTEM_CHARS + LIBRARY_CHARS + new TextEncoder().encode(p.caption ?? "").length + transcriptBytes + TEXT_SLACK_CHARS,
     };
   }
 
@@ -453,11 +463,11 @@ async function runExtraction(
     const watchedSec = video.watched ? (video.durationSec ?? WATCH_MAX_SEC) : 0;
     worst = Math.max(1, messagesCostMicros(model, {
       // Never past the model's context window: a body can't cost more input than that (final review F1).
-      inputTokens: Math.min(EXTRACT_CONTEXT_TOKENS, Math.ceil(video.textChars / 3) + VIDEO_TOKENS_PER_SEC_WORST * watchedSec),
+      inputTokens: Math.min(EXTRACT_CONTEXT_TOKENS, Math.ceil(video.textBytes / 3) + VIDEO_TOKENS_PER_SEC_WORST * watchedSec),
       cacheReadTokens: 0, cacheWriteTokens: 0, outputTokens: maxTokens,
     }));
     typical = Math.max(1, messagesCostMicros(model, {
-      inputTokens: Math.ceil(video.textChars / 4) + VIDEO_TOKENS_PER_SEC * watchedSec, cacheReadTokens: 0, cacheWriteTokens: 0,
+      inputTokens: Math.ceil(video.textBytes / 4) + VIDEO_TOKENS_PER_SEC * watchedSec, cacheReadTokens: 0, cacheWriteTokens: 0,
       outputTokens: Math.min(maxTokens, TYPICAL_OUTPUT_TOKENS),
     }));
   } else {
@@ -502,7 +512,7 @@ async function runExtraction(
     if (send.kind === "video" && c && video) {
       const text = buildExtractBody({
         model, post: c.words, images: [], libraryNames: LIBRARY_NAMES, retryIssues: prompt.retryIssues, maxTokens, userText: c.userText,
-        ...(video.watched && c.url ? { videoUrl: c.url, videoName: "video.mp4" } : {}),
+        ...(video.watched && c.videoUrl ? { videoUrl: c.videoUrl, videoName: "video.mp4" } : {}),
       });
       body = { text };
       timeoutMs = callTimeoutMs(video.watched ? video.durationSec : null);
@@ -511,11 +521,27 @@ async function runExtraction(
       body = { stream: stream.req.body, length: stream.length };
     }
     const started = Date.now();
-    const call = await callGateway(gateway.env, fetchImpl, body, model, timeoutMs);
+    let call = await callGateway(gateway.env, fetchImpl, body, model, timeoutMs);
+    /** The gateway refused the video part (final audit G6): read once more from the words alone, marked unseen. */
+    let refused = false;
+    if (!call.ok && send.kind === "video" && video?.watched && c && /^gateway_4(00|04|15|22)$/.test(call.reason)) {
+      refused = true;
+      if (video.hasTranscript) {
+        body = { text: buildExtractBody({ model, post: c.words, images: [], libraryNames: LIBRARY_NAMES, retryIssues: prompt.retryIssues, maxTokens, userText: c.userText }) };
+        call = await callGateway(gateway.env, fetchImpl, body, model, CALL_TIMEOUT_MS);
+      }
+    }
     const latencyMs = Date.now() - started;
     const bytes = "text" in body ? new TextEncoder().encode(body.text).length : undefined;
     // A 402 records out-of-credits (the owner's banner); a call that worked clears it; any other failure says nothing.
     await noteGatewayOutcome(db, userId, call.ok ? { ok: true } : { ok: false, reason: call.reason });
+    if (!call.ok && refused && video && !video.hasTranscript) {
+      // No captions and the video refused: nothing to read, and no use trying again (it isn't retried by `/work`).
+      await settleImport(db, reservation.usageId, null);
+      settled = true;
+      await finish({ code: "no_captions", why: [NOTHING_TO_READ] }, 0, { usageId: reservation.usageId, latencyMs, failure: call.reason, bytes, videoSeen: false });
+      return { ok: false, code: "no_captions" };
+    }
     if (!call.ok) {
       await settleImport(db, reservation.usageId, null);
       settled = true;
@@ -536,12 +562,12 @@ async function runExtraction(
     settled = true;
     // Was the video seen? The gateway's passing of a link is undocumented: the billed tokens say (§5.4).
     const videoSeen = video && c
-      ? video.watched && video.durationSec ? videoSeenOf(call.inputTokens, extractSystemText().length + c.userText.length, video.durationSec) : null
+      ? refused ? false : video.watched && video.durationSec ? videoSeenOf(call.inputTokens, extractSystemText().length + c.userText.length, video.durationSec) : null
       : undefined;
     const facts: RelayCall = {
       usageId: reservation.usageId, latencyMs, model: call.model ?? model, raw: call.content,
       inputTokens: call.inputTokens, outputTokens: call.outputTokens, finishReason: call.finishReason, bytes,
-      ...(video ? { watched: video.watched, videoSeen: videoSeen ?? null } : {}),
+      ...(video ? { watched: video.watched, videoSeen: videoSeen ?? null, ...(refused ? { videoRefused: true } : {}) } : {}),
     };
     if (call.model && !modelAllowed(call.model)) {
       console.warn(JSON.stringify({ level: "warn", msg: "saves relay: reply from a model outside the allowlist", requested: model, got: call.model }));
@@ -658,6 +684,8 @@ interface RelayCall {
   /** A video's reading: whether the video was attached, and whether the bill says it was seen (null: not attached). */
   watched?: boolean;
   videoSeen?: boolean | null;
+  /** The gateway refused the video part, and the reading was made from the words alone (G6). */
+  videoRefused?: boolean;
   /** How the reading's quotes checked out (§5.6). */
   quotes?: { verified: number; in_speech: number; not_found: number };
 }
@@ -683,7 +711,8 @@ function extractEvent(
     const n = out.extraction.moves.length;
     summary = `Read ${n} move${n === 1 ? "" : "s"} (${KIND_WORDS[out.extraction.kind]})`;
     // A video's reading says whether it was watched (§5.4).
-    if (call?.watched === false) summary = `${summary} — from the transcript (over 20 minutes)`;
+    if (call?.videoRefused) summary = `${summary} — the gateway wouldn't take the video; it was read from its words`;
+    else if (call?.watched === false) summary = `${summary} — from the transcript (over 20 minutes)`;
     else if (call?.videoSeen === false) summary = `${summary} — the reader couldn't watch the video; it read the transcript only`;
     else if (call?.videoSeen === true) summary = `${summary} — watched`;
   } else if (out.code === "no_captions") {

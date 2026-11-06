@@ -347,3 +347,54 @@ describe("a reading cut off after its paid call is never paid for again (final a
     expect((await row(id)).status).toBe("extracted");
   });
 });
+
+describe("a reading's reservation counts a transcript's bytes, not its characters (final audit G5)", () => {
+  it("a 40-minute CJK transcript read from its words reserves about a token a character", async () => {
+    const cjk = Array.from({ length: 2_000 }, (_, i) => `${i}\t${"練習をしましょう".repeat(5)}`).join("\n");
+    const id = await seedVideo({ durationSec: 2_400, transcript: cjk });
+    const gw = gateway(reading(), (sent) => textTokens(sent));
+    await run(id, gw);
+    const cjkChars = 2_000 * 40;
+    const floor = messagesCostMicros(MODEL, { inputTokens: cjkChars, cacheReadTokens: 0, cacheWriteTokens: 0, outputTokens: 32_000 });
+    expect(gw.calls[0]!.reservedMicros).toBeGreaterThanOrEqual(floor);
+  });
+});
+
+describe("a gateway that won't take the video part (final audit G6)", () => {
+  it("the reading falls back once to the words, marked unseen, and the trail says so", async () => {
+    const id = await seedVideo();
+    const bodies: any[] = [];
+    const fetchImpl = vi.fn(async (_u: unknown, init?: RequestInit) => {
+      const body = JSON.parse(String(init?.body));
+      bodies.push(body);
+      if (body.messages[1].content.length > 1) return new Response("unsupported file", { status: 400 });
+      return new Response(JSON.stringify({ model: MODEL, choices: [{ message: { content: JSON.stringify(reading()) } }], usage: { prompt_tokens: 5_000, completion_tokens: 900 } }), { status: 200 });
+    }) as unknown as typeof fetch;
+    const out = await relayVideoExtract(db, env(), userId, { id }, request(), new Date(NOW), fetchImpl);
+    expect(out.ok).toBe(true);
+    expect(bodies.map((b) => b.messages[1].content.length)).toEqual([2, 1]);
+    expect((await row(id)).videoSeen).toBe(false);
+    const e = await extractEventOf(id);
+    expect(e.status).toBe("warn");
+    expect(e.summary).toBe("Read 1 move (single move) — the gateway wouldn't take the video; it was read from its words");
+    expect((await db.select().from(llmUsage)).length).toBe(1);
+  });
+
+  it("with no captions there is nothing to fall back to: it fails and says so, no second call", async () => {
+    const id = await seedVideo({ transcript: null });
+    const fetchImpl = vi.fn(async () => new Response("unsupported file", { status: 400 })) as unknown as typeof fetch;
+    const out = await relayVideoExtract(db, env(), userId, { id }, request(), new Date(NOW), fetchImpl);
+    expect(out).toMatchObject({ ok: false });
+    expect(fetchImpl).toHaveBeenCalledTimes(1);
+  });
+});
+
+describe("the link the gateway watches is rebuilt from the video's id (final audit G16)", () => {
+  it("a stored URL that isn't the video's own is never sent", async () => {
+    const id = await seedVideo();
+    await db.update(savedPosts).set({ url: ["ht", "tps://evil.example.com/fetch-me"].join("") }).where(eq(savedPosts.id, id));
+    const gw = gateway(reading(), (sent) => textTokens(sent) + 60_000);
+    await run(id, gw);
+    expect(gw.calls[0]!.body.messages[1].content[1].file.file_data).toBe(watch);
+  });
+});
