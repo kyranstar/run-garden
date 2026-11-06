@@ -40,6 +40,9 @@ import { openMustFix, reviewRunning } from "../design-review.js";
 import { athleteText, clipProse } from "../design-prose.js";
 import { designProposalId, type DocWorkoutOp } from "./propose.js";
 import { isDocWorkoutOp, isMovePinsOp, isPlanAdjustOp, isPlanStructureOp, isProgrammeChangeOp } from "../proposal-kinds.js";
+import { isPersonalId } from "@rg/saves";
+import { markUntrusted } from "../design-prompt.js";
+import { stalePinsLines } from "./pin-moves.js";
 
 /** The athlete's line, at most (characters): clipped to it, never refused. */
 export const LINE_MAX = 300;
@@ -113,6 +116,19 @@ export const finish: DesignTool = {
     const held = ops.find((o) => o.by?.runId === ctx.run.id);
     const open = held && !ctx.lastTurn && (row?.status === "unreviewed" || row?.status === "rehearsal") ? openMustFix(held) : null;
     if (open) return mustFixOpen(open.items.length, open.roundsLeft);
+    // A pins card's lines the suggestion's workouts no longer bear out (final review I3): a later revision, a redo or a
+    // drop changed what the card says — asked again, never on the run's last turn, never once the athlete has it.
+    if (ctx.run.role === "main" && !ctx.lastTurn && (row?.status === "unreviewed" || row?.status === "rehearsal")) {
+      const stale = stalePinsLines(all);
+      if (stale.length > 0) {
+        const names = stale.map((l) => (l.name ? (l.moveId && isPersonalId(l.moveId) ? markUntrusted("saved post", l.name) : l.name) : (l.moveId ?? "a move"))).join(", ");
+        return refuse(
+          "pins_stale",
+          `The pins card's line about ${names} no longer says what this suggestion does: its workout changed since pin_moves.`,
+          "Call pin_moves again (the same moves and words: each line takes what the suggestion now does), then finish.",
+        );
+      }
+    }
     // A designer's line is its workout's title (M3); the main coach's, its own words clipped where the athlete reads them.
     // The athlete's words first (round 2, I1: a library id, a tool name, "validator" as the athlete says them), then the cut.
     const lineOf = (room: number): string => (designer ? designedLine(own?.doc.title ?? null) : clipProse(athleteText(said), room));

@@ -63,7 +63,7 @@ import { accountLibraryFrom, personalMovesSql } from "../account-library.js";
 import { markUntrusted } from "../design-prompt.js";
 import { OPEN_PROPOSAL_STATUSES } from "../design-review.js";
 import { clipProse } from "../design-prose.js";
-import { isMovePinsOp, PINS_LINES_MAX, PINS_MAX, pinsId, type MovePinsOp, type PinsCardLine } from "../proposal-kinds.js";
+import { isMovePinsOp, PINS_LINES_MAX, PINS_MAX, pinsCardLinesOf, pinsId, type MovePinsOp, type PinsCardLine } from "../proposal-kinds.js";
 import { claimsThePost, doseNumbers, doseWords, QUOTE_ID_RE, type CiteRef } from "../saves-evidence.js";
 import { capInWords, isErr, mainRunIdOf, parseAct, prose } from "./act-common.js";
 import { designProposalId, upsertProposal } from "./propose.js";
@@ -213,6 +213,24 @@ function doseFixesOf(ops: readonly unknown[]): Map<string, Parameters<typeof dos
 }
 
 const sameNumbers = (a: readonly number[], b: readonly number[]): boolean => a.length === b.length && a.every((n, i) => n === b[i]);
+
+/**
+ * The pins lines the suggestion no longer bears out (final review I3): an `in` line its workout put in that no open
+ * workout of the suggestion holds now, or holds at another dose; an `out` line whose move a workout of it now holds. A
+ * line from before (no `via`) is taken as it stands. The finish reads them from the ops it reads anyway.
+ */
+export function stalePinsLines(ops: readonly unknown[]): PinsCardLine[] {
+  const inWorkout = workoutDosesOf(ops);
+  return ops.filter(isMovePinsOp).flatMap((g) =>
+    pinsCardLinesOf(g.lines).filter((l) => {
+      if (!l.moveId) return false;
+      if (l.decision === "out") return inWorkout.has(l.moveId) || g.pin.includes(l.moveId);
+      if (l.decision !== "in" || l.via !== "workout") return false;
+      const item = inWorkout.get(l.moveId);
+      return !item || (l.dose !== undefined && doseSummary(item) !== l.dose);
+    }),
+  );
+}
 
 /** What a stored change answers: the moves, never the coach's own words back. */
 function storedAnswer(proposalId: string, op: MovePinsOp, o: { replaced?: boolean } = {}): ToolOk {
@@ -444,8 +462,10 @@ export const pinMoves: DesignTool = {
     const inWorkout = workoutDosesOf(all);
     const doseFixes = doseFixesOf(all);
     const pinnedNow = new Set(parsedArray(extra.pinnedNow).filter((x): x is string => typeof x === "string"));
+    /** What puts a move in: a pin here, a workout here, or the rotation it is in already (and not unpinned); else none. */
+    const viaOf = (id: string): PinsCardLine["via"] => (pin.includes(id) ? "pin" : inWorkout.has(id) ? "workout" : pinnedNow.has(id) && !unpin.includes(id) ? "rotation" : undefined);
     /** What the card does with a move: in (pinned here, in a workout here, or in rotation already and not unpinned), else out. */
-    const decisionOf = (id: string): "in" | "out" => (pin.includes(id) || inWorkout.has(id) || (pinnedNow.has(id) && !unpin.includes(id)) ? "in" : "out");
+    const decisionOf = (id: string): "in" | "out" => (viaOf(id) ? "in" : "out");
     /** The dose it runs with after the card: a revised item's, a dose correction's here, else the record's. */
     const doseOf = (id: string): string | null => {
       const item = inWorkout.get(id);
@@ -502,6 +522,7 @@ export const pinMoves: DesignTool = {
         name,
         text: clipProse(namesFor(lineTextOf(l.text, l.moveId, name), find), room, { atSentence: true }),
         decision,
+        ...(decision === "in" ? { via: viaOf(l.moveId) } : {}),
         ...(l.where ? { where: clipProse(l.where, WHERE_MAX) } : {}),
         ...(dose ? { dose } : {}),
         ...(cites.length ? { cites } : {}),

@@ -102,7 +102,7 @@ describe("pin_moves: lines cite their evidence", () => {
     const [lift, squat, nod, rock] = pinsCardLinesOf(op.lines);
     expect(lift).toEqual({
       moveId: b.lift, name: "Zorbex hip lift", text: "She says it's for hips that stiffen after easy runs; it serves hip mobility.",
-      decision: "in", where: "joins your mobility rotation", dose: "6–10 reps",
+      decision: "in", via: "pin", where: "joins your mobility rotation", dose: "6–10 reps",
       cites: [
         { id: "q1.1", kind: "quote", label: "said 1:12", postId: b.postId, position: 0, quote: 0 },
         { id: "history", kind: "history", label: "your history" },
@@ -254,5 +254,49 @@ describe("pin_moves: a quote that isn't in the post is no evidence (final review
     expect(r.why).toContain("not in the post");
     lines[0] = { ...lines[0]!, cites: ["q1.3", "q1.1"] };
     expect(isToolErr((await pins(ctx, { batchId: b.batchId, pin: [b.lift, "gobletSquat"], lines })).res)).toBe(false);
+  });
+});
+
+describe("a line the suggestion's workouts no longer bear out (final review, Important 3)", () => {
+  async function withWorkout(ctx: ToolContext, b: Awaited<ReturnType<typeof batch>>, dose: Record<string, unknown>) {
+    await db.insert(coachProposals).values({
+      id: designProposalId(ctx.run.id), userId, title: "Fit", evidence: "", rationale: "", flags: [], status: "unreviewed", createdAt: NOW.toISOString(), expiresAt: "2026-10-24",
+      ops: [{ kind: "doc_workout", by: { runId: ctx.run.id, role: "main" }, date: "2026-10-22", review: { scores: {}, notes: {}, mustFix: [], improvements: [] },
+        doc: { title: "Thursday mobility", intent: { summary: "Open the hips after the run." }, parts: [{ purpose: "mobility", items: [{ kind: "exercise", libraryId: b.lift, dose }] }] } }],
+    } as never);
+  }
+  const finishTool = () => ACT_TOOLS.find((t) => t.name === "finish")!;
+  const setWorkout = async (ctx: ToolContext, f: (ops: Array<Record<string, any>>) => Array<Record<string, any>>) => {
+    const [p] = await db.select().from(coachProposals).where(eq(coachProposals.id, designProposalId(ctx.run.id)));
+    await db.update(coachProposals).set({ ops: f(p!.ops as Array<Record<string, any>>) }).where(eq(coachProposals.id, designProposalId(ctx.run.id)));
+  };
+  const lines = (b: Awaited<ReturnType<typeof batch>>) => [
+    { moveId: b.lift, where: "in Thursday's mobility, revised here", text: "It serves hip mobility.", cites: ["history"] },
+    { moveId: b.nod, text: "Your neck care covers it.", cites: ["history"] },
+    { moveId: b.rock, text: "Not this week.", cites: ["history"] },
+  ];
+
+  it("a move its workout no longer holds, or holds at another dose: finish asks for pin_moves again, naming it", async () => {
+    for (const change of ["dropped", "redosed"] as const) {
+      const b = await batch();
+      const ctx = await mainRun();
+      await readSavesInRun(db, ctx);
+      await withWorkout(ctx, b, { sets: 2, reps: 6, perSide: true });
+      const pinned = (await pins(ctx, { batchId: b.batchId, pin: ["gobletSquat"], lines: [...lines(b), { moveId: "gobletSquat", text: "Legs.", cites: ["history"] }] })).res;
+      if (isToolErr(pinned)) throw new Error(`${pinned.error}: ${pinned.why}`);
+      expect(isToolErr(await finishTool().run(ctx, { summary: "One move in." }))).toBe(false);
+      await setWorkout(ctx, (ops) =>
+        change === "dropped"
+          ? ops.filter((o) => o.kind !== "doc_workout")
+          : ops.map((o) => (o.kind === "doc_workout" ? { ...o, doc: { ...o.doc, parts: [{ purpose: "mobility", items: [{ kind: "exercise", libraryId: b.lift, dose: { sets: 3, reps: 10 } }] }] } } : o)),
+      );
+      const r = await finishTool().run(ctx, { summary: "One move in." });
+      expect(isToolErr(r), change).toBe(true);
+      expect((r as ToolErr).error).toBe("pins_stale");
+      expect((r as ToolErr).why).toContain(markUntrusted("saved post", "Zorbex hip lift"));
+      expect((r as ToolErr).fix).toContain("pin_moves");
+      // On the run's last turn it ends anyway.
+      expect(isToolErr(await finishTool().run({ ...ctx, lastTurn: true }, { summary: "One move in." }))).toBe(false);
+    }
   });
 });

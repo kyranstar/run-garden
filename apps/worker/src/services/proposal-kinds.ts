@@ -182,6 +182,9 @@ export interface PinsCardLine {
   dose?: string;
   cites?: CiteRef[];
   post?: { id: string; position: number };
+  /** What puts an `in` line's move in (final review I3): a pin of this card, a workout of this suggestion (its dose the
+   * item's), or the rotation it is in already — so the finish can tell a line the suggestion no longer bears out. */
+  via?: "pin" | "workout" | "rotation";
 }
 
 const CITE_KINDS = new Set(["quote", "history", "goal", "inferred"]);
@@ -213,6 +216,7 @@ export function pinsCardLinesOf(raw: unknown): PinsCardLine[] {
       ...(typeof o.dose === "string" && o.dose ? { dose: o.dose } : {}),
       ...(cites.length ? { cites } : {}),
       ...(post && typeof post.id === "string" && typeof post.position === "number" ? { post: { id: post.id, position: post.position } } : {}),
+      ...(o.via === "pin" || o.via === "workout" || o.via === "rotation" ? { via: o.via } : {}),
     }];
   });
 }
