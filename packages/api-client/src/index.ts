@@ -1855,6 +1855,45 @@ export interface ProgramSaveResponse {
   placing?: boolean;
 }
 
+// ── Plans (worker route: apps/worker/src/routes/plans.ts) ────────────────────
+
+/** One plan in `GET /api/plans`: a programme, a course, a coach plan or a COROS plan; never a phase. */
+export interface PlanSummaryDto {
+  id: string;
+  kind: "adaptive" | "course" | "coach" | "coros_import" | "studio";
+  name: string;
+  purpose: string | null;
+  brief: string | null;
+  onEnd: "ask" | "continue" | "finish";
+  pausedUntil: string | null;
+  objectiveIds: string[];
+  status: "active" | "retired";
+  /** The key of the training line whose blocks belong to the plan; null with none. */
+  lineKey: string | null;
+  /** The id the existing list row carries (a Studio entry's `studio_plans` id), so that row finds this plan. */
+  listedAs: string | null;
+  course: { session: number; of: number } | null;
+  prompt: { kind: "whats_next" | "draft_ready"; label: string; request: string } | null;
+}
+
+export interface PlansResponse {
+  plans: PlanSummaryDto[];
+}
+
+/** `PATCH /api/plans/:id`: only what is sent changes; `null` clears a text or a pause; `easeNext` is a course's alone. */
+export interface PlanPatch {
+  purpose?: string | null;
+  brief?: string | null;
+  onEnd?: "ask" | "continue" | "finish";
+  objectiveIds?: string[];
+  pausedUntil?: string | null;
+  easeNext?: boolean;
+}
+
+export interface PlanSaveResponse {
+  plan: PlanSummaryDto;
+}
+
 // ── Sessions (worker routes: apps/worker/src/routes/sessions.ts; service: services/session-build.ts) ──────────
 
 /**
@@ -2959,6 +2998,15 @@ export const api = {
     post<ProgramSaveResponse>("/api/programs", body),
   updateProgram: (id: string, patch: ProgramPatch) =>
     request<ProgramSaveResponse>(`/api/programs/${encodeURIComponent(id)}`, {
+      method: "PATCH",
+      body: JSON.stringify(patch),
+    }),
+
+  // ── Plans (worker route: apps/worker/src/routes/plans.ts) ────────────────
+  plans: () => get<PlansResponse>("/api/plans"),
+  /** Only what is sent changes. 422 `{error, issues}` for a broken rule, 404 for a plan that isn't the account's. */
+  updatePlan: (id: string, patch: PlanPatch) =>
+    request<PlanSaveResponse>(`/api/plans/${encodeURIComponent(id)}`, {
       method: "PATCH",
       body: JSON.stringify(patch),
     }),

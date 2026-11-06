@@ -1,9 +1,11 @@
 import { and, desc, eq, inArray, isNull } from "drizzle-orm";
-import { coachPlans, programs, studioPlanPushes, trainingPlans } from "@rg/database";
-import { defaultOnEnd, linesOf, nowInstant, type LineBlock } from "@rg/domain";
+import { coachPlans, programs, programVersions, studioPlanPushes, trainingPlans } from "@rg/database";
+import { courseConfigSchema, defaultOnEnd, linesOf, newId, nowInstant, onEndAllowed, type LineBlock, type ProgramKind } from "@rg/domain";
+import { sha256Hex } from "../auth/crypto.js";
 import { restoreInProgress } from "./account-state.js";
 import { isLoosePlan, lineBlockOf, loadNonCoachPlanEntries } from "./coach-plans.js";
-import type { Db } from "./db.js";
+import { runAtomically, type Db } from "./db.js";
+import { isPlanKind, lineKeysByPlan, planPatchSchema, planSummaryOf, PLAN_KINDS, type PlanPatch, type PlanSummaryDto } from "./plan-summaries.js";
 
 /**
  * THE REGISTRY'S BACKFILL (plans with a purpose, Stage 1): every plan the app already has gets a row in `programs`,
@@ -20,6 +22,11 @@ import type { Db } from "./db.js";
  * Idempotent, and cheap on the hourly pass (the free plan allows about 45 statements): reads first, then writes in
  * order of cost until the budget is spent, the lines last. What doesn't fit waits for the next hour. A restore
  * replacing the account stops it at once, and nothing is written.
+ *
+ * THE READ AND THE EDIT: `listPlans` answers the plans in two reads (the plans, the blocks), and `applyPlanPatch` is
+ * the one write of a plan's purpose, brief, ending, pause, objectives and a course's easing. The route calls it, and
+ * the coach's approval will. It checks the edit and writes the row with one `program_versions` row in one batch: both
+ * land or neither does. The version's fingerprint is the editable fields after the edit.
  */
 
 /** The statements one call may spend, reads included (Workers Free: about 45 a request). */
@@ -171,4 +178,84 @@ export async function backfillPlanRegistry(db: Db, userId: string, today: string
     }
   }
   return done;
+}
+
+/** The plans the account has, shaped for the list: two reads (the plans, the blocks), no more. */
+export async function listPlans(db: Db, userId: string, today: string): Promise<PlanSummaryDto[]> {
+  const [rows, blocks] = await Promise.all([
+    db
+      .select()
+      .from(programs)
+      .where(and(eq(programs.userId, userId), inArray(programs.kind, [...PLAN_KINDS]), isNull(programs.archivedAt))),
+    db.select().from(coachPlans).where(eq(coachPlans.userId, userId)),
+  ]);
+  const lines = linesOf(blocks.filter((r) => !isLoosePlan(r)).map(lineBlockOf), today);
+  const keys = lineKeysByPlan(lines);
+  return rows.map((r) => planSummaryOf(r, keys));
+}
+
+export type PlanPatchResult =
+  | { ok: true; changed: string[] }
+  | { ok: false; error: "not_found" }
+  | { ok: false; error: "restore_in_progress" }
+  | { ok: false; error: "invalid"; issues: Array<{ path: Array<string | number>; message: string }> };
+
+/**
+ * Edit a plan. `today` is the account's day (a pause may not end before it); it defaults to `now`'s UTC day. Answers
+ * what changed; an edit that changes nothing writes nothing and records no version.
+ */
+export async function applyPlanPatch(db: Db, userId: string, id: string, patch: unknown, now: string, today = now.slice(0, 10)): Promise<PlanPatchResult> {
+  const invalid = (path: string, message: string): PlanPatchResult => ({ ok: false, error: "invalid", issues: [{ path: [path], message }] });
+  const parsed = planPatchSchema.safeParse(patch);
+  if (!parsed.success) {
+    return { ok: false, error: "invalid", issues: parsed.error.issues.map((i) => ({ path: i.path as Array<string | number>, message: i.message })) };
+  }
+  const p: PlanPatch = parsed.data;
+
+  if (await restoreInProgress(db, userId)) return { ok: false, error: "restore_in_progress" };
+  const [row] = await db.select().from(programs).where(and(eq(programs.id, id), eq(programs.userId, userId))).limit(1);
+  if (!row || !isPlanKind(row.kind)) return { ok: false, error: "not_found" };
+  const kind = row.kind as ProgramKind;
+
+  if (p.onEnd !== undefined && !onEndAllowed(kind, p.onEnd)) return invalid("onEnd", `a ${kind} plan cannot end by "${p.onEnd}"`);
+  if (typeof p.pausedUntil === "string" && p.pausedUntil < today) return invalid("pausedUntil", "a pause cannot end before today");
+
+  let config = row.config;
+  if (p.easeNext !== undefined) {
+    if (kind !== "course") return invalid("easeNext", "only a course can ease its next session");
+    const merged = courseConfigSchema.safeParse({ ...row.config, easeNext: p.easeNext });
+    if (!merged.success) return invalid("easeNext", "the course's settings are not complete");
+    config = merged.data;
+  }
+
+  const next = {
+    purpose: p.purpose === undefined ? row.purpose : p.purpose,
+    brief: p.brief === undefined ? row.brief : p.brief,
+    onEnd: p.onEnd ?? row.onEnd,
+    pausedUntil: p.pausedUntil === undefined ? row.pausedUntil : p.pausedUntil,
+    objectiveIds: p.objectiveIds ?? row.objectiveIds,
+    config,
+  };
+  const changed: string[] = [];
+  for (const k of ["purpose", "brief", "onEnd", "pausedUntil", "objectiveIds"] as const) {
+    if (JSON.stringify(next[k]) !== JSON.stringify(row[k])) changed.push(k);
+  }
+  if (JSON.stringify(next.config) !== JSON.stringify(row.config)) changed.push("easeNext");
+  if (changed.length === 0) return { ok: true, changed };
+
+  const [last] = await db
+    .select({ n: programVersions.versionNum })
+    .from(programVersions)
+    .where(eq(programVersions.programId, id))
+    .orderBy(desc(programVersions.versionNum))
+    .limit(1);
+  const fingerprint = await sha256Hex(JSON.stringify(next));
+  await runAtomically(db, [
+    db
+      .update(programs)
+      .set({ ...next, updatedAt: now })
+      .where(and(eq(programs.id, id), eq(programs.userId, userId))),
+    db.insert(programVersions).values({ id: newId(), programId: id, versionNum: (last?.n ?? 0) + 1, capturedAt: now, fingerprint, summary: { changed } }),
+  ]);
+  return { ok: true, changed };
 }
