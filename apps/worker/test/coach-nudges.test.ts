@@ -93,14 +93,14 @@ async function seedSession(o: {
   });
 }
 
-async function seedActivity(id: string, date: string): Promise<void> {
+async function seedActivity(id: string, date: string, seconds = 1800): Promise<void> {
   await db.insert(schema.activities).values({
     id,
     userId,
     startTime: `${date}T14:00:00Z`,
     startTimeLocal: `${date}T07:00:00`,
     sport: "run",
-    durationSeconds: 1800,
+    durationSeconds: seconds,
     sourceMergeConfidence: 1,
     createdAt: nowInstant(),
     updatedAt: nowInstant(),
@@ -160,7 +160,7 @@ async function setRace(raceDate: string | null): Promise<void> {
   await savePreferences(db, userId, prefs);
 }
 
-describe("a missed session in the last 2 days", () => {
+describe("a session not done in the last few days — reconcile's timing (audit §6)", () => {
   it("offers to rework the week around it, by its day and kind", async () => {
     const day = addDays(today, -1);
     await seedSession({ id: "w1", date: day, state: "missed" });
@@ -182,6 +182,39 @@ describe("a missed session in the last 2 days", () => {
     expect((await nudges())[0]).toMatchObject({ id: "missed:w2", label: `Rework my week around ${weekday(day)}'s strength session` });
   });
 
+  it("a session only known as unresolved stays two days from the day reconcile first asks about it (its date + 2): today−4 still, today−5 no more", async () => {
+    await seedSession({ id: "w1", date: addDays(today, -4), state: "unresolved" });
+    expect(ids(await nudges())).toEqual(["missed:w1"]);
+    await db.delete(schema.plannedWorkouts);
+    await seedSession({ id: "w2", date: addDays(today, -5), state: "unresolved" });
+    expect(await nudges()).toEqual([]);
+  });
+
+  it("says what the app knows: nothing logged for one unresolved, skipped for the athlete's skip, missed only when they said so", async () => {
+    const day = addDays(today, -2);
+    await seedSession({ id: "w1", date: day, state: "unresolved" });
+    expect(await nudges()).toEqual([
+      { id: "missed:w1", label: `Rework my week around ${weekday(day)}'s tempo`, request: `Rework my week around ${weekday(day)}'s tempo — nothing was logged for it.` },
+    ]);
+    await db.delete(schema.plannedWorkouts);
+    await seedSession({ id: "w2", date: day, state: "skipped" });
+    expect((await nudges())[0]!.request).toBe(`Rework my week around ${weekday(day)}'s tempo — I skipped it.`);
+  });
+
+  it("several with one only unresolved: the sessions not done, each with what the app knows", async () => {
+    const a = addDays(today, -1);
+    const b = addDays(today, -3);
+    await seedSession({ id: "w1", date: b, state: "unresolved", category: "easy", qualitySubtype: null });
+    await seedSession({ id: "w2", date: a, state: "missed" });
+    expect(await nudges()).toEqual([
+      {
+        id: "missed:w2",
+        label: "Rework my week around the sessions not done",
+        request: `Rework my week around the sessions not done: ${weekday(a)}'s tempo (missed) and ${weekday(b)}'s easy run (nothing logged).`,
+      },
+    ]);
+  });
+
   it("names several in one request, newest first", async () => {
     const a = addDays(today, -1);
     const b = addDays(today, -2);
@@ -196,8 +229,8 @@ describe("a missed session in the last 2 days", () => {
     ]);
   });
 
-  it("stays quiet for one 3 days back, one the coach skipped on purpose, a rest day, one archived, one done or still to come", async () => {
-    await seedSession({ id: "w1", date: addDays(today, -3), state: "missed" });
+  it("stays quiet for one 5 days back, one the coach skipped on purpose, a rest day, one archived, one done or still to come", async () => {
+    await seedSession({ id: "w1", date: addDays(today, -5), state: "missed" });
     await seedSession({ id: "w2", date: addDays(today, -1), state: "skipped", sanctionedBy: "coach" });
     await seedSession({ id: "w3", date: addDays(today, -1), state: "missed", category: "rest", qualitySubtype: null });
     await seedSession({ id: "w4", date: addDays(today, -1), state: "missed", archivedAt: nowInstant() });
@@ -214,6 +247,20 @@ describe("back after 7 or more quiet days", () => {
     expect(await nudges()).toEqual([
       { id: `comeback:${addDays(today, -1)}`, label: "Ease me back in", request: "I'm back after 8 days away. Ease me back in." },
     ]);
+  });
+
+  it("an activity under 5 minutes is no return and no gap's end (audit §6): the gap reads from real sessions", async () => {
+    // A 3-minute walk today after a run 9 days ago: no return today.
+    await seedActivity("walk", today, 180);
+    await seedActivity("a1", addDays(today, -9));
+    await seedActivity("a0", addDays(today, -29));
+    expect(await nudges()).toEqual([]);
+    // A real run today after 9 days, a 2-minute fragment between them: back after 9 days.
+    await db.delete(schema.activities);
+    await seedActivity("run", today);
+    await seedActivity("bit", addDays(today, -4), 120);
+    await seedActivity("a1", addDays(today, -9));
+    expect(await nudges()).toEqual([{ id: `comeback:${today}`, label: "Ease me back in", request: "I'm back after 9 days away. Ease me back in." }]);
   });
 
   it("stays quiet after a 6-day gap, and once the return is 3 days old", async () => {

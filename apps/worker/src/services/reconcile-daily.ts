@@ -25,6 +25,9 @@ import { UNSTARTED_AT_PATH } from "./session-build.js";
  */
 
 const SYNC_GRACE_DAYS = 1; // window passes → wait one full day before asking
+/** A session dated D is first `unresolved` on D + this (`effectiveDate < today − SYNC_GRACE_DAYS`): the coach's "needs
+ * you" chip for it counts its days from then (coach-nudges.ts, audit §6). */
+export const UNRESOLVED_AFTER_DAYS = SYNC_GRACE_DAYS + 1;
 /**
  * A workout played offline, left with no session, is kept this long after it was recorded: the outbox's reach (a save
  * may follow its create by days — the network gone again — and must still find its row; fix round 1).

@@ -322,7 +322,7 @@ const chipClasses = () => [...(dialog()?.querySelectorAll<HTMLButtonElement>(".c
 const startRun = (body: unknown) => json({ run: run({ id: "run-h", request: (body as { request: string }).request }), existing: false, conversationId: "run-h" });
 
 describe("the coach notices: its own line, and its chips first", () => {
-  it("after a session: its line; Log how it felt first — it opens the quick review, nothing sent — then Plan tomorrow around it; two at most", async () => {
+  it("after a session: its line; Log how it felt first — it opens the quick review, nothing sent — then Plan tomorrow around it, then the needs-you chip", async () => {
     const withOffer = { ...caution, watchReviews: [OFFER] } as TodayResponse;
     const calls = server({ "GET /api/coach/nudges": { nudges: [MISSED], opening: SESSION }, "GET /api/plan/today": withOffer, "POST /api/coach/runs": startRun });
     mountSheet(primedClient({ today: withOffer }));
@@ -330,9 +330,9 @@ describe("the coach notices: its own line, and its chips first", () => {
     await until(drawn, "the opening drawn");
     expect(line()).toBe(SESSION.line);
     expect(dialog()!.querySelector(".coach-opening .coach-msg--coach .coach-msg-mark")).not.toBeNull();
-    // The needs-you chip is past the two.
-    expect(chips()).toEqual([HOW_IT_FELT, "Plan tomorrow around it", ...GENERAL_CHIPS]);
-    expect(chipClasses().slice(0, 2)).toEqual(["coach-chip--opening", "coach-chip--opening"]);
+    // The needs-you chip is never crowded out by the line's own (audit §6): it was past the two, hidden.
+    expect(chips()).toEqual([HOW_IT_FELT, "Plan tomorrow around it", MISSED.label, ...GENERAL_CHIPS]);
+    expect(chipClasses().slice(0, 3)).toEqual(["coach-chip--opening", "coach-chip--opening", "coach-chip--needs"]);
     // The quick review is the chip's now, not also a button below.
     expect(button("Log your session", dialog()!)).toBeNull();
     await click(button(HOW_IT_FELT, dialog()!), "Log how it felt");

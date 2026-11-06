@@ -25,6 +25,7 @@ import {
   conversationToSend,
   GENERAL_CHIPS,
   HOW_IT_FELT,
+  OPENING_CHIPS_MAX,
   openingChips,
   openingLine,
   starterChips,
@@ -313,7 +314,7 @@ describe("the server's new words (stream A: plan powers, answers, the auto scope
 
 // ── The coach notices (stream H): the chips before the starters ───────────────
 
-describe("the chips before the starters: how it felt, the coach's own line's, then the needs-you ones — two at most", () => {
+describe("the chips before the starters: how it felt, the coach's own line's, then the needs-you ones — three at most, the needs-you never crowded out (audit §6)", () => {
   const session = {
     source: "session" as const,
     workoutId: "w7",
@@ -324,16 +325,22 @@ describe("the chips before the starters: how it felt, the coach's own line's, th
   const race = { id: "race:x", label: "Get me ready for race day", request: "Get me ready." };
   const labels = (chips: ReturnType<typeof openingChips>) => chips.map((c) => c.label);
 
-  it("a session the app offers a quick review for: Log how it felt first (it opens the review), then its own", () => {
+  it("a session the app offers a quick review for: Log how it felt first (it opens the review), then its own, then the needs-you one", () => {
     expect(openingChips(session, [missed], [{ workoutId: "w7" }])).toEqual([
       { kind: "review", id: "felt:w7", label: HOW_IT_FELT, workoutId: "w7" },
       { kind: "ask", id: "session:a1", label: "Plan tomorrow around it", request: "Plan tomorrow around today's run.", needs: false },
+      { kind: "ask", id: missed.id, label: missed.label, request: missed.request, needs: true },
     ]);
     expect(HOW_IT_FELT).toBe("Log how it felt");
   });
 
-  it("no review offered for it (another session's, or none): its own, then a needs-you chip", () => {
-    expect(labels(openingChips(session, [missed, race], [{ workoutId: "w8" }]))).toEqual(["Plan tomorrow around it", missed.label]);
+  it("two needs-you chips: both kept, and the coach's own give way to one", () => {
+    expect(labels(openingChips(session, [missed, race], [{ workoutId: "w7" }]))).toEqual([HOW_IT_FELT, missed.label, race.label]);
+    expect(OPENING_CHIPS_MAX).toBe(3);
+  });
+
+  it("no review offered for it (another session's, or none): its own, then the needs-you chips", () => {
+    expect(labels(openingChips(session, [missed, race], [{ workoutId: "w8" }]))).toEqual(["Plan tomorrow around it", missed.label, race.label]);
     expect(openingChips(session, [missed], [])[1]).toMatchObject({ kind: "ask", needs: true });
   });
 

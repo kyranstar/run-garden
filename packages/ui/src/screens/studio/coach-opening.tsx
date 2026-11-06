@@ -2,7 +2,7 @@
  * THE COACH'S OPENING SCREEN (the new shape §5: "Coach, opened from the nav"), for a new conversation:
  *
  *   🌱 Saturday's long run is in — 16 km at 5:40 /km.     ← the coach's one line: what it noticed, else the day's
- *   [Plan today around it] [Ease me back in]             ← what it noticed first, then "needs you" (at most two)
+ *   [Plan today around it] [Ease me back in]             ← what it noticed, then "needs you" (three at most)
  *   [Something for right now] [Plan my week] [I'm sore]  ← starter chips; with something seen, its own
  *   Also waiting · …                                     ← suggestions still open from before, when there are any
  *   OR START SOMETHING YOURSELF
@@ -16,8 +16,8 @@
  * THE COACH NOTICES (stream H): the same read brings the coach's own line when it has one, free — last week's review on
  * Monday (and until the athlete asks the coach anything), else a session just finished, in figures or in the coach's
  * paid-for read of it. Its chips come first: "Log how it felt" when the app offers the session's quick review (it opens
- * the review, nothing spent), then what a tap sends ("Plan this week", "Plan tomorrow around it"), then "needs you" — two
- * at most. A line drawn here is kept on this device as shown (`markOpeningSeen`): the next opening asks for what comes
+ * the review, nothing spent), then what a tap sends ("Plan this week", "Plan tomorrow around it"), then "needs you" — three
+ * at most, the "needs you" never crowded out (coach-conversation-model.ts `openingChips`). A line drawn here is kept on this device as shown (`markOpeningSeen`): the next opening asks for what comes
  * after it. With none, the day's own line, as before.
  *
  * IT HOLDS STILL WHILE IT IS READ (UX System 4: a read landing moves nothing under a tap; the Studio home's f030c6a).

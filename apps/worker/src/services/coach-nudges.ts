@@ -5,6 +5,7 @@ import { chunkIds, type Db } from "./db.js";
 import { isLoosePlan, lineBlockOf } from "./coach-plans.js";
 import { reviewOpening, sessionDays, sessionOpening, type CoachOpeningLine, type FinishedSession } from "./coach-opening-line.js";
 import { COMEBACK_GAP_DAYS, endingLine, FIRM_HORIZON_DAYS, REFIRE_WINDOW_MS } from "./coach-triggers.js";
+import { UNRESOLVED_AFTER_DAYS } from "./reconcile-daily.js";
 
 /**
  * THE COACH'S "NEEDS YOU" CHIPS (§8 §6). The thread coach used to turn its free signals into paid wakes: a trigger row
@@ -13,9 +14,13 @@ import { COMEBACK_GAP_DAYS, endingLine, FIRM_HORIZON_DAYS, REFIRE_WINDOW_MS } fr
  * `request` as the athlete's words, and that is the only spend.
  *
  * In order, at most `NUDGES_MAX`:
- *   1. a session missed in the last 2 days (missed, skipped by the athlete, or asked about and unanswered) — "Rework my
- *      week around Tuesday's tempo";
- *   2. back after a gap of a week or more (the latest activity in the last 2 days) — "Ease me back in";
+ *   1. a session not done in the last few days (missed, skipped by the athlete, or asked about and unanswered) — "Rework
+ *      my week around Tuesday's tempo" — read over MISSED_WINDOW_DAYS: reconcile first asks about a session two days
+ *      after its date, so one only known as unresolved shows for NUDGE_MISSED_DAYS from then, not for one day (audit
+ *      §6). Its words say what the app knows: "I missed it" only for one the athlete said they missed, "I skipped it"
+ *      for their skip, "nothing was logged for it" for one still unanswered;
+ *   2. back after a gap of a week or more (the latest activity in the last 2 days) — "Ease me back in" — from activities
+ *      of 5 minutes or more: a walk to the trailhead is no return, nor the end of a gap (audit §6);
  *   3. a plan's next outline week starting within 14 days — "Fill in next week of my running plan" (the outline is what
  *      the coach fills in; nothing else will now), whichever phase of its training line holds it;
  *   4. a race within 21 days (Settings' race day, else a running plan's) — "Get me ready for race day";
@@ -54,8 +59,11 @@ export interface CoachNudge {
 
 /** The most chips the opening screen shows (they come before its general starters). */
 export const NUDGES_MAX = 2;
-/** A session missed this many days back, or nearer, is still worth reworking the week around. */
+/** A session not done is still worth reworking the week around this many days after the app knows it (for one only
+ * unresolved, from the day reconcile first asks about it). */
 export const NUDGE_MISSED_DAYS = 2;
+/** How far back the missed read looks: the chip's days, from reconcile's first ask. */
+export const MISSED_WINDOW_DAYS = NUDGE_MISSED_DAYS + UNRESOLVED_AFTER_DAYS;
 /** A race this many days out, or nearer. */
 export const NUDGE_RACE_DAYS = 21;
 /** How recent the comeback's return must be (the old trigger's own window). */
@@ -65,6 +73,10 @@ const RECENT_ASKS_MAX = 50;
 
 /** States a past session is missed in: the athlete said so, skipped it, or was asked and has not answered. */
 const MISSED_STATES = ["missed", "skipped", "unresolved"];
+/** What one such session's request says of it, in the athlete's words: only what the app knows. */
+const MISSED_WORDS: Record<string, string> = { missed: "I missed it", skipped: "I skipped it", unresolved: "nothing was logged for it" };
+/** The same, beside its name in a list. */
+const MISSED_STATE_WORD: Record<string, string> = { missed: "missed", skipped: "skipped", unresolved: "nothing logged" };
 
 /** A local date's weekday, the same in every zone (it is a calendar date, read at its own noon). */
 function weekdayOf(date: LocalDate): string {
@@ -151,13 +163,14 @@ export async function readCoachOpening(
         qualitySubtype: plannedWorkouts.qualitySubtype,
         sport: plannedWorkouts.sport,
         sanctionedBy: plannedWorkouts.sanctionedBy,
+        state: plannedWorkouts.completionState,
       })
       .from(plannedWorkouts)
       .where(
         and(
           eq(plannedWorkouts.userId, userId),
           inArray(plannedWorkouts.completionState, MISSED_STATES),
-          gte(plannedWorkouts.effectiveDate, addDays(today, -NUDGE_MISSED_DAYS)),
+          gte(plannedWorkouts.effectiveDate, addDays(today, -MISSED_WINDOW_DAYS)),
           lte(plannedWorkouts.effectiveDate, today),
           isNull(plannedWorkouts.archivedAt),
         ),
@@ -192,7 +205,7 @@ export async function readCoachOpening(
       .leftJoin(workoutCompletionMatches, and(eq(workoutCompletionMatches.id, activities.completionMatchId), isNull(workoutCompletionMatches.undoneAt)))
       .leftJoin(plannedWorkouts, and(eq(plannedWorkouts.id, workoutCompletionMatches.workoutId), eq(plannedWorkouts.userId, userId)))
       .leftJoin(coachReads, and(eq(coachReads.userId, userId), eq(coachReads.activityId, activities.id), eq(coachReads.status, "done")))
-      .where(and(eq(activities.userId, userId), lte(activities.startTime, `${addDays(today, 1)}T00:00:00Z`)))
+      .where(and(eq(activities.userId, userId), gte(activities.durationSeconds, SESSION_MIN_SECONDS), lte(activities.startTime, `${addDays(today, 1)}T00:00:00Z`)))
       .orderBy(desc(activities.startTime))
       .limit(2),
     db
@@ -225,16 +238,25 @@ export async function readCoachOpening(
   // 1. Missed: the coach's own skip is planned rest, and a rest day is nothing to miss.
   const missed = missedRows.filter((w) => w.category !== "rest" && w.sanctionedBy !== "coach");
   if (missed.length > 0) {
-    const named = missed.slice(0, 3).map((w) => `${w.date === today ? "today" : weekdayOf(w.date)}'s ${sessionNoun(w)}`);
-    found.push(
-      missed.length === 1
-        ? { id: `missed:${missed[0]!.id}`, label: `Rework my week around ${named[0]}`, request: `Rework my week around ${named[0]} — I missed it.` }
-        : {
-            id: `missed:${missed[0]!.id}`,
-            label: "Rework my week around the sessions I missed",
-            request: `Rework my week around the sessions I missed: ${listed(named)}.`,
-          },
-    );
+    const day = (w: (typeof missed)[number]) => `${w.date === today ? "today" : weekdayOf(w.date)}'s ${sessionNoun(w)}`;
+    const shown = missed.slice(0, 3);
+    if (missed.length === 1) {
+      const w = missed[0]!;
+      found.push({ id: `missed:${w.id}`, label: `Rework my week around ${day(w)}`, request: `Rework my week around ${day(w)} — ${MISSED_WORDS[w.state] ?? MISSED_WORDS.unresolved}.` });
+    } else if (shown.every((w) => w.state !== "unresolved")) {
+      found.push({
+        id: `missed:${missed[0]!.id}`,
+        label: "Rework my week around the sessions I missed",
+        request: `Rework my week around the sessions I missed: ${listed(shown.map(day))}.`,
+      });
+    } else {
+      // One the app only knows as unanswered is "not done", never "missed" (audit §6): each says what is known of it.
+      found.push({
+        id: `missed:${missed[0]!.id}`,
+        label: "Rework my week around the sessions not done",
+        request: `Rework my week around the sessions not done: ${listed(shown.map((w) => `${day(w)} (${MISSED_STATE_WORD[w.state] ?? MISSED_STATE_WORD.unresolved})`))}.`,
+      });
+    }
   }
 
   // 2. Back: the latest activity is fresh and follows a gap of a week or more.

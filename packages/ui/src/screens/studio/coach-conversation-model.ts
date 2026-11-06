@@ -3,7 +3,7 @@
  * server (`GET /api/coach/conversation`), each turn one run. What the sheet decides that needs no React and no network:
  *
  *   openingLine        the opening screen's one coach line, from the day's own data (no model call)
- *   openingChips       the chips before the starters: what the coach noticed, then the "needs you" ones, at most two
+ *   openingChips       the chips before the starters: what the coach noticed, then the "needs you" ones, at most three
  *   readOpeningSeen …  the openings this device has shown (they give way to the next)
  *   starterChips       two to four starter chips: general ones, or ones for what the coach sees
  *   turnsShown         the read's turns (none for a conversation the athlete left), and the turns a send started that
@@ -77,7 +77,11 @@ export function openingLine(today: Pick<TodayResponse, "readiness" | "focus" | "
 /** The chip that opens a session's quick review: the app's own place to say how it went (no model). */
 export const HOW_IT_FELT = "Log how it felt";
 /** The most chips before the starters: what the coach noticed, then the "needs you" ones. */
-export const OPENING_CHIPS_MAX = 2;
+export const OPENING_CHIPS_MAX = 3;
+/** The most of them the coach's own line brings (how it felt, its own chip). */
+export const OWN_CHIPS_MAX = 2;
+/** The most "needs you" chips: they are never crowded out by the line's own (audit §6). */
+export const NEEDS_CHIPS_MAX = 2;
 
 /** A chip before the starters: the session's quick review, opened; or words a tap sends (`needs`: a "needs you" one). */
 export type OpeningChip =
@@ -85,23 +89,25 @@ export type OpeningChip =
   | { kind: "ask"; id: string; label: string; request: string; needs: boolean };
 
 /**
- * The chips before the starters, in this order and at most two (stream H): how it felt — when the coach's line is about
- * a session the app offers a quick review for (free: it opens the review) — then the line's own (what a tap sends:
- * "Plan this week", "Plan tomorrow around it"), then the "needs you" ones (§8 §6).
+ * The chips before the starters, in this order and at most three (stream H): how it felt — when the coach's line is
+ * about a session the app offers a quick review for (free: it opens the review) — then the line's own (what a tap
+ * sends: "Plan this week", "Plan tomorrow around it")
+ * — at most two of those — then the "needs you" ones (§8 §6), at most two, which the line's own never crowd out: they
+ * give way to them (audit §6: two of the line's own used to hide every "needs you" chip).
  */
 export function openingChips(
   opening: Pick<CoachOpeningDto, "source" | "chips" | "workoutId"> | null | undefined,
   nudges: readonly CoachNudgeDto[],
   offers: ReadonlyArray<{ workoutId: string }>,
 ): OpeningChip[] {
-  const out: OpeningChip[] = [];
+  const own: OpeningChip[] = [];
   const workoutId = opening && opening.source !== "review" ? opening.workoutId : undefined;
-  if (workoutId && offers.some((o) => o.workoutId === workoutId)) out.push({ kind: "review", id: `felt:${workoutId}`, label: HOW_IT_FELT, workoutId });
+  if (workoutId && offers.some((o) => o.workoutId === workoutId)) own.push({ kind: "review", id: `felt:${workoutId}`, label: HOW_IT_FELT, workoutId });
   for (const c of opening?.chips ?? []) {
-    out.push({ kind: "ask", id: c.id, label: c.label, request: c.request, needs: false });
+    own.push({ kind: "ask", id: c.id, label: c.label, request: c.request, needs: false });
   }
-  for (const n of nudges) out.push({ kind: "ask", id: n.id, label: n.label, request: n.request, needs: true });
-  return out.slice(0, OPENING_CHIPS_MAX);
+  const needs: OpeningChip[] = nudges.slice(0, NEEDS_CHIPS_MAX).map((n) => ({ kind: "ask", id: n.id, label: n.label, request: n.request, needs: true }));
+  return [...own.slice(0, Math.min(OWN_CHIPS_MAX, OPENING_CHIPS_MAX - needs.length)), ...needs];
 }
 
 /** The starters beside the coach's line: with last week's review, its "Plan this week" says what "Plan my week" would. */
