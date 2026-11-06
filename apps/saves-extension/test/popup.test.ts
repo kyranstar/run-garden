@@ -33,14 +33,17 @@ const health = (): ImportHealthDto => ({
 
 let messages: unknown[];
 
-async function open(answer: Partial<StatusResponse> = {}) {
+async function open(answer: Partial<StatusResponse> = {}, replies: Record<string, unknown> = {}) {
   messages = [];
-  const full: StatusResponse = { status: status(), appError: null, queueSize: 0, nextCheckAt: null, checking: false, health: health(), appUrl: "https://app.example.com", ...answer };
+  const full: StatusResponse = {
+    status: status(), appError: null, queueSize: 0, nextCheckAt: null, checking: false, health: health(), appUrl: "https://app.example.com",
+    links: [], localLinks: [], activeVideo: null, ...answer,
+  };
   vi.stubGlobal("chrome", {
     runtime: {
       sendMessage: vi.fn(async (m: { type: string }) => {
         messages.push(m);
-        return m.type === "status" ? full : { ok: true };
+        return m.type === "status" ? full : (replies[m.type] ?? { ok: true });
       }),
       openOptionsPage: vi.fn(),
     },
@@ -111,5 +114,71 @@ describe("the popup", () => {
     await open({ health: null });
     expect(root().querySelectorAll("button.light")).toHaveLength(0);
     expect(root().querySelector("h1")!.textContent).toBe("Up to date");
+  });
+});
+
+describe("the popup's link field (design 2026-11-05 §3.1)", () => {
+  const S = ["ht", "tps://"].join("");
+  const vid = ["Zx", "9_-Qa", "B3cD"].join("");
+  const watch = `${S}www.${["you", "tube.com"].join("")}/watch?v=${vid}`;
+  const field = () => root().querySelector("input") as HTMLInputElement;
+  const addButton = () => root().querySelector("form button") as HTMLButtonElement;
+  const settle = async () => {
+    for (let i = 0; i < 8; i++) await new Promise((r) => setTimeout(r, 0));
+  };
+
+  it("sits at the top; on a YouTube video it is filled with the video and reads Import this video", async () => {
+    await open({ activeVideo: watch });
+    expect(root().firstElementChild!.tagName).toBe("FORM");
+    expect(field().placeholder).toBe("Paste a YouTube or Instagram link");
+    expect(field().value).toBe(watch);
+    expect(addButton().textContent).toBe("Import this video");
+    await open();
+    expect(field().value).toBe("");
+    expect(addButton().textContent).toBe("Add");
+  });
+
+  it("Add sends the link to the background and says it was added", async () => {
+    await open({}, { "add-link": { ok: true, added: true } });
+    field().value = watch;
+    addButton().click();
+    await settle();
+    expect(messages).toContainEqual({ type: "add-link", url: watch });
+    expect(root().textContent).toContain("Added — it'll be waiting in the coach.");
+  });
+
+  it("a link already in says when, with Open to its trail", async () => {
+    await open({}, { "add-link": { ok: true, known: { postId: "p9", firstSeenAt: "2026-11-03T15:00:00.000Z" } } });
+    field().value = watch;
+    addButton().click();
+    await settle();
+    expect(root().textContent).toContain("Already in — imported Tue 3 Nov.");
+    const openLink = [...root().querySelectorAll("a")].find((a) => a.textContent === "Open")!;
+    expect(openLink.getAttribute("href")).toBe("https://app.example.com/studio/saves/posts/p9");
+  });
+
+  it("anything else is refused in the popup and nothing is sent", async () => {
+    await open();
+    field().value = `${S}vimeo.com/1`;
+    addButton().click();
+    await settle();
+    expect(messages.filter((m) => (m as { type: string }).type === "add-link")).toEqual([]);
+    expect(root().textContent).toContain("Only YouTube and Instagram links for now.");
+  });
+
+  it("recent links: each with its words; Import anyway processes the video by its source", async () => {
+    await open({
+      links: [{
+        id: "l1", source: "youtube", key: vid, url: watch, title: HOSTILE, addedAt: "2026-11-06T09:00:00.000Z", addedFrom: "extension",
+        postId: "p1", state: "not_training", words: "Not training", moves: null, action: "import_anyway",
+      }],
+    });
+    expect(root().textContent).toContain("Recent links");
+    expect(root().textContent).toContain("Not training");
+    expect(root().querySelector("img")).toBeNull();
+    const anyway = [...root().querySelectorAll("button")].find((b) => b.textContent === "Import anyway")!;
+    anyway.click();
+    await settle();
+    expect(messages).toContainEqual({ type: "override", key: vid, source: "youtube", action: "process" });
   });
 });

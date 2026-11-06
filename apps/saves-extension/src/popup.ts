@@ -1,5 +1,8 @@
-import type { CheckNowResponse, OverrideResponse, StatusResponse } from "./background.js";
-import { CHECKING, popupModel, safeHref, type PopupAction, type PopupLight, type PopupModel } from "./status.js";
+import { LINK_REFUSED, normalizeLink } from "@rg/saves";
+import type { AddLinkResponse, CheckNowResponse, OverrideResponse, StatusResponse } from "./background.js";
+import {
+  addAnswerLine, CHECKING, linkTrailHref, popupLinks, popupModel, safeHref, type PopupAction, type PopupLight, type PopupLink, type PopupModel,
+} from "./status.js";
 
 // Renders popupModel with plain DOM (text is always set with textContent). The popup holds no token and calls no app
 // route itself: it asks the background, which calls the token routes. A post's trail opens in the app.
@@ -35,6 +38,11 @@ function link(text: string, href: string | null, className?: string): HTMLElemen
 const ask = <T>(message: unknown): Promise<T> => chrome.runtime.sendMessage(message) as Promise<T>;
 
 let note = "";
+/** The field's last answer, and the trail it can open (an already-imported link's). */
+let linkNote: { line: string; href: string | null } | null = null;
+/** What the field holds between re-reads (a re-read never wipes what the owner is typing). */
+let draft: string | null = null;
+let last: StatusResponse | null = null;
 /** While a check runs, the popup re-reads the status every few seconds so a reopened popup shows it moving. */
 const REFRESH_MS = 5_000;
 let refresh: ReturnType<typeof setTimeout> | null = null;
@@ -46,6 +54,7 @@ async function load(): Promise<void> {
   } catch {
     answer = { status: null, appError: "the extension did not answer", queueSize: 0, nextCheckAt: null, checking: false, health: null, appUrl: null };
   }
+  last = answer;
   const m = popupModel({ ...answer, now: Date.now() });
   render(m);
   if (refresh) clearTimeout(refresh);
@@ -62,6 +71,70 @@ async function checkNow(b: HTMLButtonElement): Promise<void> {
     note = "Error: the extension did not answer";
   }
   await load();
+}
+
+async function addLink(url: string): Promise<void> {
+  const link = normalizeLink(url);
+  if (!link) {
+    linkNote = { line: LINK_REFUSED, href: null };
+    return load();
+  }
+  let answer: AddLinkResponse;
+  try {
+    answer = await ask<AddLinkResponse>({ type: "add-link", url: link.url });
+  } catch {
+    answer = { ok: false, message: "The extension did not answer" };
+  }
+  linkNote = { line: addAnswerLine(answer), href: answer.ok && "known" in answer ? linkTrailHref(last?.appUrl, answer.known.postId) : null };
+  if (answer.ok) draft = "";
+  await load();
+}
+
+async function linkAction(l: PopupLink): Promise<void> {
+  const a = l.action;
+  if (!a) return;
+  if (a.kind === "add") await ask({ type: "retry-link", url: a.url }).catch(() => undefined);
+  else await ask({ type: "override", key: a.key, source: a.source, action: "process" }).catch(() => undefined);
+  await load();
+}
+
+/** The field at the top: paste and Add (Enter too); on a YouTube video, filled with it and reading "Import this video". */
+function linkField(): HTMLFormElement {
+  const form = el("form", undefined, "link-field");
+  const input = el("input");
+  input.type = "url";
+  input.placeholder = "Paste a YouTube or Instagram link";
+  input.setAttribute("aria-label", "Paste a YouTube or Instagram link");
+  const video = last?.activeVideo ?? null;
+  input.value = draft ?? video ?? "";
+  input.addEventListener("input", () => (draft = input.value));
+  const submit = el("button", video && (draft === null || draft === video) ? "Import this video" : "Add");
+  submit.type = "submit";
+  form.append(input, submit);
+  form.addEventListener("submit", (e) => {
+    e.preventDefault();
+    submit.disabled = true;
+    void addLink(input.value);
+  });
+  return form;
+}
+
+/** The recent links: title, a word or two of where it stands, its trail, and Retry / Import anyway. */
+function recentLinks(rows: PopupLink[]): HTMLElement | null {
+  if (!rows.length) return null;
+  const section = el("section", undefined, "links");
+  section.append(el("h2", "Recent links"));
+  const list = el("ul");
+  for (const l of rows) {
+    const li = el("li", undefined, "row");
+    const line = el("div", undefined, "line");
+    line.append(link(l.title, l.href), el("span", l.words, "meta"));
+    li.append(line);
+    if (l.action) li.append(button(l.action.label, (b) => { b.disabled = true; void linkAction(l); }, true));
+    list.append(li);
+  }
+  section.append(list);
+  return section;
 }
 
 async function override(key: string): Promise<void> {
@@ -143,6 +216,13 @@ function lightPanel(l: PopupLight): HTMLElement {
 function render(m: PopupModel): void {
   const frag = document.createDocumentFragment();
   const problem = m.headline !== "Up to date" && !m.checking;
+  frag.append(linkField());
+  if (linkNote) {
+    const said = el("p", undefined, "meta link-note");
+    said.append(el("span", linkNote.line));
+    if (linkNote.href) said.append(" ", link("Open", linkNote.href, "quiet-link"));
+    frag.append(said);
+  }
   frag.append(el("h1", m.headline, problem ? "problem" : undefined));
   frag.append(healthRow(m));
   if (m.detail) frag.append(el("p", m.detail, "meta"));
@@ -165,6 +245,9 @@ function render(m: PopupModel): void {
     else if (a === "retry" && m.posts.length === 0) bar.append(button(LABELS[a], () => void load()));
   }
   frag.append(bar);
+
+  const links = recentLinks(popupLinks(last?.links ?? null, last?.localLinks ?? [], last?.appUrl));
+  if (links) frag.append(links);
 
   if (m.checks.length) {
     const list = el("ul");
