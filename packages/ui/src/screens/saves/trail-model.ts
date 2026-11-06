@@ -125,6 +125,16 @@ const BLOB_LABELS: Readonly<Record<BlobKind, string>> = {
 };
 export const blobLabel = (kind: BlobKind): string => BLOB_LABELS[kind] ?? keyWords(kind);
 
+/**
+ * A blob's label on its step: the prompt is "as sent" only when the extension's hash matched the app's rebuild of it;
+ * otherwise it is the app's own rebuild and says so (final review, 2026-11-05).
+ */
+function blobLabelOf(kind: BlobKind, detail: unknown): string {
+  if (kind !== "prompt_user") return blobLabel(kind);
+  const asSent = detail && typeof detail === "object" ? (detail as { asSent?: unknown }).asSent : undefined;
+  return asSent === true ? "The prompt as sent" : "The prompt, as the app rebuilt it";
+}
+
 /** Each key a stage writes, in the owner's words. */
 const LABELS: Readonly<Record<string, string>> = {
   verdict: "Verdict",
@@ -452,7 +462,7 @@ function moveRows(o: Record<string, unknown>, ctx: Ctx): TrailRow[] {
 }
 
 const blobsOf = (e: TrailEventDto): TrailBlob[] =>
-  e.blobs.map((b) => ({ id: b.id, kind: b.kind, chars: b.chars, label: blobLabel(b.kind), size: plural(b.chars, "character") }));
+  e.blobs.map((b) => ({ id: b.id, kind: b.kind, chars: b.chars, label: blobLabelOf(b.kind, e.detail), size: plural(b.chars, "character") }));
 
 function ctxOf(dto: ImportTrailDto): Ctx {
   const names = namesOf(dto);

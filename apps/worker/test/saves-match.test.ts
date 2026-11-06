@@ -459,6 +459,9 @@ describe("matchPost", () => {
     expect(await postOf(id)).toMatchObject({ status: "failed", lastErrorCode: "model_failed" });
     expect(await db.select().from(personalMoves)).toEqual([]);
     expect(await db.select().from(savedPostMoves)).toEqual([]);
+    // The trail says why (final review): a failed check step with the issues.
+    const steps = await db.select().from(schema.importEvents).where(eq(schema.importEvents.postId, id));
+    expect(steps.find((e) => e.stage === "check")).toMatchObject({ status: "fail", detail: { issues: out.issues } });
   });
 
   it("never repeats a rating key the model made up in the issues", async () => {

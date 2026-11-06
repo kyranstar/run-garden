@@ -288,9 +288,16 @@ describe("the raw pieces (level 3)", () => {
     const dto = trail({ events: [ev("extract", { blobs: [{ id: "b1", kind: "raw_reply", chars: 12_345 }, { id: "b2", kind: "prompt_user", chars: 1 }] })] });
     expect(trailSections(dto)[0]!.steps[0]!.blobs).toEqual([
       { id: "b1", kind: "raw_reply", chars: 12_345, label: "The raw reply", size: "12,345 characters" },
-      { id: "b2", kind: "prompt_user", chars: 1, label: "The prompt as sent", size: "1 character" },
+      { id: "b2", kind: "prompt_user", chars: 1, label: "The prompt, as the app rebuilt it", size: "1 character" },
     ]);
     expect(blobLabel("transcript")).toBe("The transcript");
+  });
+  it("calls the prompt 'as sent' only when the extension's hash matched the app's rebuild (final review)", () => {
+    const step = (asSent: boolean | null) =>
+      trailSections(trail({ events: [ev("extract", { detail: { asSent }, blobs: [{ id: "b2", kind: "prompt_user", chars: 1 }] })] }))[0]!.steps[0]!.blobs[0]!.label;
+    expect(step(true)).toBe("The prompt as sent");
+    expect(step(false)).toBe("The prompt, as the app rebuilt it");
+    expect(step(null)).toBe("The prompt, as the app rebuilt it");
   });
 });
 

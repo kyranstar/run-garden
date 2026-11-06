@@ -123,11 +123,17 @@ export async function readPostTrail(db: Db, userId: string, postId: string): Pro
       kind: extraction?.kind ?? null,
       summary: extraction?.summary ?? null,
       moves,
-      health: worst
-        ? { status: worst.status, line: worst.summary }
-        : retried
-          ? { status: "warn", line: "Read cleanly after a retry" }
-          : { status: "ok", line: "Read cleanly" },
+      // A failed post is failed whatever its steps say (final review, 2026-11-05): never "Read cleanly".
+      health:
+        p.status === "failed" && worst?.status !== "fail"
+          ? { status: "fail", line: failureWords(p.lastErrorCode ?? "unknown", p.lastError) ?? "Something went wrong" }
+          : worst
+            ? { status: worst.status, line: worst.summary }
+            : events.length === 0
+              ? { status: "info", line: "Nothing recorded yet" }
+              : retried
+                ? { status: "warn", line: "Read cleanly after a retry" }
+                : { status: "ok", line: "Read cleanly" },
     },
     events,
     rebuilt,

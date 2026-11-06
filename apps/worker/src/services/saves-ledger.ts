@@ -157,7 +157,7 @@ export async function workList(
   const relayStale = new Date(new Date(now).getTime() - RELAY_CLAIM_STALE_MS).toISOString();
   // A claim whose request died on its last attempt is neither listed nor reclaimable (attempts are spent): give it up as
   // `failed`/`unknown`, so the owner's retry can requeue it instead of it reading "extracting" forever.
-  await db
+  const givenUp = await db
     .update(savedPosts)
     .set({ status: "failed", lastErrorCode: "unknown", lastError: "the reading that held it never finished", updatedAt: now })
     .where(
@@ -167,7 +167,14 @@ export async function workList(
         lt(savedPosts.updatedAt, relayStale),
         gte(savedPosts.extractAttempts, MAX_EXTRACT_ATTEMPTS),
       ),
-    );
+    )
+    .returning({ id: savedPosts.id });
+  // Each given-up post's trail says so (final review, 2026-11-05).
+  for (const g of givenUp) {
+    await runAtomically(db, trailStatements(db, userId, g.id, [
+      { stage: "extract", source: "worker", status: "fail", summary: failureWords("unknown", "the reading that held it never finished")!, detail: { code: "unknown" } },
+    ], now));
+  }
   const isFilter = and(
     eq(savedPosts.status, "seen"),
     or(
@@ -250,8 +257,14 @@ export async function markFetchFailed(
         : { status: "failed", lastErrorCode: code, lastError: null, extractAttempts: sql`${savedPosts.extractAttempts} + 1`, updatedAt: now },
     )
     .where(and(eq(savedPosts.id, id), eq(savedPosts.userId, userId), waiting))
-    .returning({ id: savedPosts.id });
-  if (updated.length > 0) return "ok";
+    .returning({ id: savedPosts.id, source: savedPosts.source });
+  if (updated.length > 0) {
+    // The trail: the extension couldn't send it (final review, 2026-11-05) — never a failed post that reads clean.
+    await runAtomically(db, trailStatements(db, userId, id, [
+      { stage: "read", source: siteSource(updated[0]!.source), status: "fail", summary: failureWords(code, null) ?? "The read failed", detail: { code } },
+    ], now));
+    return "ok";
+  }
   const [row] = await db
     .select({ id: savedPosts.id })
     .from(savedPosts)
@@ -358,6 +371,15 @@ export async function savesStatus(db: Db, userId: string, now: string): Promise<
 }
 
 export type OverrideAction = "process" | "skip" | "reference";
+
+/** The owner's word on a post, as its trail says it (final review, 2026-11-05). */
+const ownerWord = (action: OverrideAction) => ({
+  stage: "choice" as const,
+  source: "owner" as const,
+  status: "info" as const,
+  summary: action === "process" ? "You asked for it to be read anyway" : action === "skip" ? "You skipped it" : "You kept it as a reference",
+  detail: { action },
+});
 export type OverrideResult = "ok" | "not_found" | "conflict";
 
 /** The statuses the owner's `process` sends back to the queue. */
@@ -400,22 +422,26 @@ export async function overridePost(
       })
       .where(and(where, inArray(savedPosts.status, [...PROCESSABLE])))
       .returning({ id: savedPosts.id });
-    return requeued.length > 0 ? "ok" : "conflict";
+    if (requeued.length === 0) return "conflict";
+    await runAtomically(db, trailStatements(db, userId, row.id, [ownerWord("process")], now));
+    return "ok";
   }
   const status = db
     .update(savedPosts)
     .set({ status: action === "skip" ? "skipped_by_owner" : "reference_only", updatedAt: now })
     .where(where);
+  const said = trailStatements(db, userId, row.id, [ownerWord(action)], now);
   // A skipped post leaves its batch: its pending links go, so Save writes none of them (audit 2026-11-05, bug 10). A
   // reference keeps its links.
   if (action === "skip") {
     await runAtomically(db, [
       status,
+      ...said,
       db
         .update(savedPostMoves)
         .set({ status: "removed" })
         .where(and(eq(savedPostMoves.userId, userId), eq(savedPostMoves.postId, row.id), eq(savedPostMoves.status, "pending"))),
     ]);
-  } else await status;
+  } else await runAtomically(db, [status, ...said]);
   return "ok";
 }

@@ -611,17 +611,30 @@ export async function matchPost(
     .limit(1);
   if (!post || post.status !== "extracted") return { newMoves: 0, linked: 0 };
 
+  /** The judge's call, once made: a failed match still keeps its raw reply on the trail. */
+  let judgeCall: JudgeCall | null = null;
   const fail = async (issues: string[], costMicros: number): Promise<MatchOutcome> => {
-    await db
-      .update(savedPosts)
-      .set({
-        status: "failed",
-        lastErrorCode: "model_failed",
-        lastError: issues.join("; ").slice(0, 500),
-        costMicros: sql`${savedPosts.costMicros} + ${costMicros}`,
-        updatedAt: now,
-      })
-      .where(mine);
+    await runAtomically(db, [
+      db
+        .update(savedPosts)
+        .set({
+          status: "failed",
+          lastErrorCode: "model_failed",
+          lastError: issues.join("; ").slice(0, 500),
+          costMicros: sql`${savedPosts.costMicros} + ${costMicros}`,
+          updatedAt: now,
+        })
+        .where(mine),
+      // The trail says why the reading couldn't be kept (final review, 2026-11-05).
+      ...trailStatements(db, userId, postId, [
+        {
+          stage: "check", source: "worker", status: "fail",
+          summary: `The reading couldn't be kept: ${issues[0] ?? "it didn't pass the library's rules"}`,
+          detail: { issues },
+          ...(judgeCall?.raw !== undefined ? { blobs: [{ kind: "raw_reply" as const, text: judgeCall.raw }] } : {}),
+        },
+      ], now),
+    ]);
     return { newMoves: 0, linked: 0, issues };
   };
 
@@ -638,6 +651,7 @@ export async function matchPost(
   let judged: Awaited<ReturnType<typeof judgeMatches>> = { verdicts: new Map(), costMicros: 0, call: { status: "not_needed" } };
   if (items.length) {
     judged = await judgeMatches(env, items, fetchImpl, { db, userId, now });
+    judgeCall = judged.call;
     judgeCost = judged.costMicros;
     decisions = applyVerdicts(decisions, judged.verdicts);
   }

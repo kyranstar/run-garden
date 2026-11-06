@@ -12,7 +12,7 @@ import { wakeGateway } from "./gateway-route.js";
 import { IMPORT_KINDS, reserveImport, settleImport } from "./saves-budget.js";
 import { noteGatewayOutcome } from "./ai-credits.js";
 import { extractJson } from "./studio-llm.js";
-import { MAX_EXTRACT_ATTEMPTS, RELAY_CLAIM_STALE_MS, RETRYABLE_ERROR_CODES } from "./saves-ledger.js";
+import { MAX_EXTRACT_ATTEMPTS, RELAY_CLAIM_STALE_MS, RETRYABLE_ERROR_CODES, siteSource } from "./saves-ledger.js";
 import { matchPost } from "./saves-match.js";
 
 const { savedPosts } = schema;
@@ -290,11 +290,15 @@ export async function relayExtract(
       return { ok: true, extraction };
     } catch (e) {
       console.warn(JSON.stringify({ level: "warn", msg: "saves relay: matching failed", detail: String(e).slice(0, 200) }));
-      await db
-        .update(savedPosts)
-        .set({ status: "failed", lastErrorCode: "unknown", lastError: "matching failed", updatedAt: nowIso })
-        .where(and(eq(savedPosts.id, post.id), eq(savedPosts.userId, userId), eq(savedPosts.status, "extracted")))
-        .catch(() => undefined);
+      await runAtomically(db, [
+        db
+          .update(savedPosts)
+          .set({ status: "failed", lastErrorCode: "unknown", lastError: "matching failed", updatedAt: nowIso })
+          .where(and(eq(savedPosts.id, post.id), eq(savedPosts.userId, userId), eq(savedPosts.status, "extracted"))),
+        ...trailStatements(db, userId, post.id, [
+          { stage: "match", source: "worker", status: "fail", summary: "Something went wrong: matching failed", detail: { code: "unknown" } },
+        ], nowIso),
+      ]).catch(() => undefined);
       return { ok: false, code: "unknown" };
     }
   };
@@ -560,8 +564,14 @@ function issueText(i: ZodIssue): string {
  * only the extension's immediate retry at a smaller size may claim it (while attempts remain). One statement.
  */
 export async function markTooLarge(db: Db, userId: string, postId: string, now: string): Promise<void> {
-  await db
+  const marked = await db
     .update(savedPosts)
     .set({ status: "failed", lastErrorCode: "too_large", lastError: null, extractAttempts: sql`${savedPosts.extractAttempts} + 1`, updatedAt: now })
-    .where(and(eq(savedPosts.id, postId), eq(savedPosts.userId, userId), inArray(savedPosts.status, ["queued", "failed"])));
+    .where(and(eq(savedPosts.id, postId), eq(savedPosts.userId, userId), inArray(savedPosts.status, ["queued", "failed"])))
+    .returning({ source: savedPosts.source });
+  if (marked.length > 0) {
+    await runAtomically(db, trailStatements(db, userId, postId, [
+      { stage: "read", source: siteSource(marked[0]!.source), status: "fail", summary: "Too large to send, at any size", detail: { code: "too_large" } },
+    ], now));
+  }
 }

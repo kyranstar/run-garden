@@ -8,6 +8,7 @@ import { eq } from "drizzle-orm";
 import { schema } from "@rg/database";
 import type { Db } from "../src/services/db.js";
 import { batchDetail, editPersonalMove, rematchLink, removeLink } from "../src/services/saves-review.js";
+import { overridePost } from "../src/services/saves-ledger.js";
 import { savedMoveDraft, seedSavedBatch } from "./saves-batch-fixture.js";
 import { makeTestDb, makeTestUser } from "./helpers.js";
 
@@ -67,6 +68,25 @@ describe("the owner's changes on the trail", () => {
     expect(await db.select().from(importCorrections)).toEqual([
       expect.objectContaining({ target: "link", targetId: first.id, field: "move", before: first.moveId, after: "gobletSquat", basis: "owner", by: "owner" }),
     ]);
+  });
+});
+
+describe("the owner's word on a post (final review)", () => {
+  it("Process anyway, Skip and Reference each leave a choice on the post's trail", async () => {
+    const { savedPosts } = schema;
+    const base = { userId, source: "testsrc", url: "https://example.com/p", firstSeenAt: NOW, updatedAt: NOW };
+    await db.insert(savedPosts).values([
+      { ...base, id: "pp", sourceKey: "pp", status: "filtered_out" },
+      { ...base, id: "ps", sourceKey: "ps", status: "matched" },
+      { ...base, id: "pr", sourceKey: "pr", status: "queued" },
+    ]);
+    expect(await overridePost(db, userId, { id: "pp" }, "process", NOW)).toBe("ok");
+    expect(await overridePost(db, userId, { id: "ps" }, "skip", NOW)).toBe("ok");
+    expect(await overridePost(db, userId, { id: "pr" }, "reference", NOW)).toBe("ok");
+    const said = async (id: string) => (await eventsOf(id)).filter((e) => e.stage === "choice").map((e) => [e.source, e.summary]);
+    expect(await said("pp")).toEqual([["owner", "You asked for it to be read anyway"]]);
+    expect(await said("ps")).toEqual([["owner", "You skipped it"]]);
+    expect(await said("pr")).toEqual([["owner", "You kept it as a reference"]]);
   });
 });
 
