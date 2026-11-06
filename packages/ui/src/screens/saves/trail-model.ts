@@ -17,7 +17,7 @@
  * is key: value lines, never JSON; an id is a move's name where the trail knows it. Every text here came from a stage,
  * a model or a stranger's post: the sheet draws it as text, never as markup. Pure: no React, no network.
  */
-import { clock, failureWords, IMPORT_STAGES, WAITING_FOR_EXTENSION, type BlobKind, type ImportStage, type ImportTrailDto, type TrailEventDto, type TrailStatus } from "@rg/saves";
+import { clock, failureWords, IMPORT_STAGES, transcriptSegments, WAITING_FOR_EXTENSION, type BlobKind, type ImportStage, type ImportTrailDto, type TrailEventDto, type TrailStatus } from "@rg/saves";
 import { formatTime } from "../../components.js";
 import { DETAIL_VALUE_MAX, keyWords, type DetailRow } from "../studio/run-model.js";
 import { dayOf } from "../studio/saves-model.js";
@@ -50,6 +50,15 @@ export interface AccountLine {
   position?: number;
   /** A video line that offers Watch it too, with what watching would cost (design 2026-11-05 §5.4). */
   watch?: { costMicros: number | null };
+}
+
+/**
+ * A blob's text as the trail shows it: a transcript's lines with the [m:ss] clock the reader was given (stored as
+ * `<seconds>\t<words>`; final audit G20); anything else as it was kept.
+ */
+export function blobDisplayText(kind: BlobKind, text: string): string {
+  if (kind !== "transcript") return text;
+  return transcriptSegments(text).map(([at, words]) => `[${clock(at)}] ${words}`).join("\n");
 }
 
 /** The button that asks for a long video to be watched, with its typical cost. */

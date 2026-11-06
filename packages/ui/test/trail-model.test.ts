@@ -393,3 +393,11 @@ describe("a quote shown on screen (final audit G7)", () => {
     expect(rows).toContainEqual({ key: "Quotes", value: "1 in the words · 2 shown on screen" });
   });
 });
+
+describe("a transcript blob as the trail shows it (final audit G20)", () => {
+  it("each line with its [m:ss] clock, never the stored seconds and tab", async () => {
+    const { blobDisplayText } = await import("../src/screens/saves/trail-model.js");
+    expect(blobDisplayText("transcript", "12.3\tZorbex warm-up\n75\tnext move")).toBe("[0:12] Zorbex warm-up\n[1:15] next move");
+    expect(blobDisplayText("raw_reply", "12.3\tkept as is")).toBe("12.3\tkept as is");
+  });
+});

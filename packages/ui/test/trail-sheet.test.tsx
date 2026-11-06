@@ -225,3 +225,26 @@ describe("Watch it too (phase 2)", () => {
     expect(calls).toContain("/api/my-saves/posts/p1/watch");
   });
 });
+
+describe("Watch it too that doesn't go through (final audit G19)", () => {
+  async function tapWith(answer: () => Promise<Response>) {
+    const t = TRAIL();
+    t.post = { ...t.post, source: "youtube", title: "Zorbex hip flow", durationSec: 2_400, video: { watched: false, watchAsked: false, offerWatch: true, watchCostMicros: 185_625 } };
+    await mount(t);
+    const orig = vi.mocked(fetch).getMockImplementation()!;
+    vi.mocked(fetch).mockImplementation(async (u: string | URL | Request, r?: RequestInit) => (String(u).endsWith("/watch") ? answer() : orig(u as string, r)));
+    await click(button("Watch it too"));
+    await flush();
+  }
+  it("a 409 says it can't be watched now, and the button stays", async () => {
+    await tapWith(async () => json({ error: "not_watchable" }, 409));
+    expect(dialog().textContent).toContain("It can't be watched now — a move of it may be saved or being fitted in.");
+    expect(button("Watch it too").disabled).toBe(false);
+  });
+  it("no network says so", async () => {
+    await tapWith(async () => {
+      throw new TypeError("offline");
+    });
+    expect(dialog().textContent).toContain("Couldn't reach the app — try again.");
+  });
+});

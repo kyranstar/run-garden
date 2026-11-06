@@ -27,6 +27,7 @@ import { EmptyState, Sheet, Spinner } from "../../components.js";
 import { IconChevron } from "../../icons.js";
 import { postHref } from "../../post-link.js";
 import {
+  blobDisplayText,
   detailBlobRows,
   moveDetail,
   STATUS_MARK,
@@ -156,8 +157,16 @@ function VideoLine({ line, postId }: { line: AccountLine; postId: string }) {
   const qc = useQueryClient();
   const watch = useMutation({
     mutationFn: () => api.savesWatch(postId),
-    onSettled: () => qc.invalidateQueries({ queryKey: saveTrailQuery(postId) }),
+    onSuccess: () => qc.invalidateQueries({ queryKey: saveTrailQuery(postId) }),
   });
+  // A paid one-tap ask that didn't go through says why, and stays to tap again (final audit G19).
+  const failed = watch.isError
+    ? watch.error instanceof ApiError
+      ? watch.error.status === 409
+        ? "It can't be watched now — a move of it may be saved or being fitted in."
+        : "The app couldn't take it just now — try again."
+      : "Couldn't reach the app — try again."
+    : null;
   return (
     <p className="trail-note trail-video">
       {line.text}
@@ -168,6 +177,12 @@ function VideoLine({ line, postId }: { line: AccountLine; postId: string }) {
             {watchLabel(line.watch.costMicros)}
           </button>
         </>
+      ) : null}
+      {failed ? (
+        <span className="trail-video-failed" role="alert">
+          {" "}
+          {failed}
+        </span>
       ) : null}
     </p>
   );
@@ -337,11 +352,11 @@ function Raw({ blob, stage, dto }: { blob: TrailBlob; stage: ImportStage; dto: I
         {q.data && !rows ? (
           <>
             <pre className="trail-raw-text" tabIndex={0} aria-label={blob.label}>
-              {q.data.text}
+              {blobDisplayText(blob.kind, q.data.text)}
             </pre>
             {q.data.cut ? <p className="coach-run-note">Cut at a million characters: the rest wasn't kept.</p> : null}
             <div className="trail-raw-foot">
-              <button type="button" className="btn btn-small" onClick={() => void copy(q.data!.text)}>
+              <button type="button" className="btn btn-small" onClick={() => void copy(blobDisplayText(blob.kind, q.data!.text))}>
                 Copy
               </button>
               <span className="coach-run-note" role="status">
