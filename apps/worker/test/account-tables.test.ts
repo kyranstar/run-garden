@@ -356,3 +356,10 @@ describe("hashTable — paged, equal to hashRows over orderedRows (Ruling R2)", 
     expect((await hashTable(db, schema.coachLocks, { mask: ["token"] })).sha256).toBe(await hashRows(masked));
   });
 });
+
+describe("large columns (final audit G3)", () => {
+  it("a saved post's reading and video facts are paged by bytes: a row can be ~140 KB", async () => {
+    const { largeColumns } = await import("../src/services/account-tables.js");
+    expect([...largeColumns("saved_posts")].sort()).toEqual(["caption", "extraction", "video_info"]);
+  });
+});

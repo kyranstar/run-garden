@@ -309,6 +309,9 @@ const LARGE_COLUMNS: Readonly<Record<string, readonly string[]>> = {
   import_blobs: ["text"],
   import_events: ["detail"],
   coach_run_events: ["payload"],
+  // A saved post's reading (up to 30 moves with their quotes: ~130 KB), its video facts and its 5,000-character
+  // description (pasted links, 2026-11-06; final audit G3).
+  saved_posts: ["extraction", "video_info", "caption"],
 };
 
 export function largeColumns(name: string): readonly string[] {
