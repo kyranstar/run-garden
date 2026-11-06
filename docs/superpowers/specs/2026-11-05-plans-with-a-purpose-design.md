@@ -61,8 +61,11 @@ These are failure paths in the code. How many have bitten real data outside the 
 | `purpose` | New. Why it exists, in the athlete's words: one sentence |
 | `brief` | New. What the next sessions must respect: the rules, the progression, what it's working toward. At most 1,000 characters. Intent, never facts the app can compute |
 | `kind` | Exists. Who makes its sessions (§3.1) |
-| `on_end` | New. `ask` or `continue` (§4) |
+| `on_end` | New. `ask`, `continue` or `finish` (§4) |
 | `parent_id` | New. A phase's plan (§3.2); null for a plan |
+| `paused_until` | New. Optional date: until then it makes no new sessions (§4.4) |
+| `objective_ids` | New. Optional: the objectives it serves, so "is this working?" has numbers to read and the dialogue has goals to offer (§4.1). A statement of intent; each session's own `intent.objectiveIds` stays its own |
+| `disciplines` | Exists. A plan can hold several sports |
 | `status` | Exists. `active` or `stopped` are the only states anything writes. Ended is computed |
 | `config` | Exists. Kind-specific settings (days and minutes for the engine; course and days for a course) |
 
@@ -83,8 +86,8 @@ A training line today is worked out at read time, so it has no identity and nowh
 - A coach block is a `programs` row with the same id as its `coach_plans` row, and `parent_id` naming its plan.
 - A plan is the parent row: what the list shows, what holds the purpose and brief, and what Stop acts on.
 - Sessions keep their `plan_id` (the block's), so no session row is rewritten. "The plan of a session" is its `plan_id`'s parent, else itself.
-- A new block joins a plan once, when it's created, by today's rule (at most 7 rest days after the plan's last session, same sport) unless the proposal names a plan. It isn't re-derived.
-- Backfill: today's `linesOf` result is written as parents, once.
+- A new block joins a plan only when its proposal says so. `propose_plan`'s `createPlan` must name the plan it continues, or give a new plan's name and purpose. Dates decide nothing: two plans of one sport can have different purposes.
+- Backfill: today's `linesOf` result is written as parents, once. The date rule isn't used after that.
 
 ### 3.3 One-offs have no plan
 
@@ -116,14 +119,14 @@ A session belongs to a plan when it's made for that plan, whoever makes it:
 
 | `kind` | `on_end` |
 |---|---|
-| `coach` | Running plans default to `ask`; others to `continue`; either can change |
-| `adaptive`, `course` | Always `continue`. Making sessions costs nothing and asks nothing; Stop is how they end. The tool refuses `ask` for these and says so |
+| `coach` | A plan holding any running defaults to `ask`; others to `continue`; any of the three can be set. `finish` suits something time-boxed, such as rehab or trip prep |
+| `adaptive`, `course` | `continue`: making sessions costs nothing and asks nothing, and Stop is how they end. The tool refuses `ask` for these and says so. A course whose definition has a last session would `finish`; TRE's has none |
 | `coros_import` | Running plans `ask`, and the answer becomes a new `coach` plan, because COROS's sessions aren't ours to extend. Others have no chip and nothing to continue |
 
 ### 4.1 `ask`: the coach dialogue
 
-1. **The chip.** The existing "needs you" chip fires as today ("Plan what comes after my running plan — it ends in 12 days"), now for any `ask` plan, not only coach lines. It costs nothing, and a tap is the only spend.
-2. **The dialogue.** A tap opens the conversation. The coach reads the plan's purpose and brief, and asks how to extend it and toward what goal, with `ask_athlete`: tappable choices drawn from what's relevant (the plan's current goal, upcoming dated events, active objectives, "keep building", "stop here") and free text always. It skips the question when the request already says.
+1. **The prompt.** The existing "needs you" chip fires as today ("Plan what comes after my running plan — it ends in 12 days"), now for any `ask` plan, not only coach lines. Chips only show on the coach's opening screen, so the plan's row in "Your plans" says "What's next?" too, and a tap sends the same words. It costs nothing, and a tap is the only spend.
+2. **The dialogue.** A tap opens the conversation. The coach reads the plan's purpose, brief and objectives, and asks how to extend it and toward what goal, with `ask_athlete`: tappable choices drawn from what's relevant (the plan's objectives and current goal, upcoming dated events, other active objectives, "keep building", "stop here") and free text always. It skips the question when the request already says.
 3. **The proposal.** The answer becomes a `propose_plan` for a next phase of the same plan, approved with a tap. A new goal updates the brief on the same card.
 4. **No answer:** the plan simply runs out, and the chip stays quietly available. Nothing is marked missed, and nothing scolds.
 
@@ -136,20 +139,28 @@ A session belongs to a plan when it's made for that plan, whoever makes it:
   - **Ahead:** the hourly pass, beside `placeSlotsForAllPrograms`, keeps outline rows placed up to `placementWeeksAhead`, on the days and time in `config`. They count by the day planned on, as slots do, so what the athlete moved or removed is never undone. A `quietDaysBeforeRace` setting holds new ones back before the goal race. An outline holds a title and a booked length, and no document, so nothing goes to the watch yet.
   - **On the day:** the first of the day's hourly pass or the session being opened writes its document, once, from `sessionDoc(n)`, where **n is the plan's sessions actually done, plus one**. A skipped or missed session therefore changes nothing, and "the first ten" means ten done. The mirror then sends it to the watch by its normal path.
   - **Shown ahead:** the plan's row says "Session n of 10" from the same count. A sheet for a day ahead previews the dose by computing it, never storing it.
-  - **Videos:** read from the plan's course, since an outline has no document (`videosOfSource` today reads the document's ref).
+  - **Videos, and doing it another way:** videos read from the plan's course, since an outline has no document (`videosOfSource` today reads the document's ref). A course session's sheet offers "Mark done", because following a video records nothing today and the number counts sessions done. It records the athlete's own say-so as the session's evidence (§5.1).
   - **Halving:** `config.halveNextTremor`, set by a change the athlete approves in the coach, is used and cleared in the same batch that writes the next session.
 - **`coach` with `continue`, such as a lifting plan: the coach drafts, the athlete taps (owner, 2026-11-06).** This is the one exception to "nothing starts without the athlete's tap", and it covers spending only.
   - **When:** the hourly pass sees a plan ending, and starts one coach run with a system-written request naming the plan, at most once per ending (keyed by the plan and its last session's date).
   - **Bounds:** the run's own ceiling and the weekly cap. At the cap, or on any failure, nothing retries on its own: the existing chip appears, and says plainly what happened.
-  - **What it makes:** the plan's next stretch from its brief (§3.4), as a normal reviewed proposal under a "needs you" chip. **Nothing reaches the plan until the athlete approves it.** Ignored, it stays there, the plan runs out, and no second draft starts unless asked.
+  - **What it makes:** the plan's next stretch from its brief (§3.4), as a normal reviewed proposal under a "needs you" chip, and "Next stretch ready" on the plan's row. **Nothing reaches the plan until the athlete approves it.** Ignored, it stays there, the plan runs out, and no second draft starts unless asked.
   - **Until this ships,** these plans keep today's chip, so nothing goes quiet.
 - **`coros_import`:** nothing to continue; COROS makes its sessions.
 
-### 4.3 The coach always has this
+**`finish`:** nothing happens when it ends: no question, no draft, no chip. It moves to Past plans.
 
-`read_plans` returns each plan's purpose, brief, `on_end`, kind, computed dates and next sessions. The opening context's computed block (§12, 2026-11-05) gains one line per active plan: name and purpose. The brief stays behind the tool. A coach tool changes a plan's purpose, brief or `on_end` as a proposal the athlete taps; each change is kept in `program_versions`.
+### 4.3 The coach always has this, and so does the athlete
+
+`read_plans` returns each plan's purpose, brief, objectives, `on_end`, kind, pause, computed dates and next sessions. The opening context's computed block (§12, 2026-11-05) gains one line per active plan: name and purpose. The brief stays behind the tool. A coach tool changes a plan's purpose, brief, objectives, `on_end` or pause as a proposal the athlete taps; each change is kept in `program_versions`.
+
+The athlete sees what steers the coach: the plan sheet shows the purpose and how it ends, with the brief one tap down. A "Change" there opens the coach with the words written, the athlete's to send.
 
 The rule "whole sequence for ten sessions, then floor; halve after a bad 48 hours" moves from each TRE session's notes to the plan's brief, once, so the coach can act on it (§4.2, Halving). The athlete still sees the 48-hour rule where it matters: it's in the floor tremor move's how-to, which the player opens. Nothing applies it automatically: the app can't tell how you feel two days later unless you say.
+
+### 4.4 Pausing
+
+For illness or travel: until `paused_until`, `adaptive` and `course` plans place and write no new sessions. Their flexible sessions inside the pause come off through the existing retraction, so nothing piles up or reads as missed; anything the athlete moved stays. A course's number is untouched: it counts sessions done. On a `coach` plan the pause holds its draft and its prompts, and the coach reworks the sessions if asked; they're designed work, so nothing removes them on its own. The pause ends by itself on its date. It's set by telling the coach, for now.
 
 ## 5. One source of truth
 
@@ -163,7 +174,7 @@ The rule "whole sequence for ten sessions, then floor; halve after a bad 48 hour
 | A plan's contents | Its sessions; ahead of them, `coach_plan_weeks` outline | An outline entry is read only for a week holding no sessions, so the two can't disagree. `state` stops being read. `studio_plans` stops being read |
 | The goal race's day | Settings' `raceDate`, the one date the hub, the garden and placement already read, so the garden's history is untouched | A plan's goal reads it, and the sheet's Change race writes it. `coach_plans.race_date` and `programs.race_date` stop being read; where they disagree today, Settings wins and each case is shown to the owner first. Changing the date moves the goal's race session in the same batch when the app owns it; a COROS-owned one keeps today's conflict banner. `athlete_profiles.events` keeps other dated events |
 | Which sessions are races | A mark the race verb sets, so tune-ups can be races too | `category = 'race'` isn't a cache of the document: `deriveDoc` calls any race-pace run a race, and the mark must win over that |
-| Whether a session is done | `completion_state`, written with its evidence (match, activity link, performed session) in one batch | `content_state` means only the content's lifecycle; "done" reads move to `completion_state` |
+| Whether a session is done | `completion_state`, written with its evidence (match, activity link, performed session, or the athlete's own "Mark done") in one batch | `content_state` means only the content's lifecycle; "done" reads move to `completion_state` |
 | A plan's progress and adherence | Computed from its sessions, unclipped by dates | Keystone credit reads the computed end |
 | The watch copy's name | The verified job's stamp | `watch_copy_name` goes, as `coros-stamp.ts` already warns |
 
@@ -214,12 +225,12 @@ Each stage lands on its own, with CI and Deploy green, run in local time and UTC
 
 **Stage 1. Plans have a purpose.** It lands in small pieces, in this order:
 1. Migration 0035: the new columns and the `course` kind. `programs` rows for every existing plan (§3.5), idempotent, with parents backfilled. The list reads this registry; the API's shape stays, with new fields optional. The owner approves the purpose and brief seeded for each existing plan: they live in the database, never the repo.
-2. Purpose, brief and `on_end` reach the coach (§4.3); `plan_set` and `propose_workout` carry a plan id (§3.4).
-3. TRE becomes a `course` plan, written on the day, listed, stoppable, reading "Session 3 of 10" (§4.2).
-4. The `ask` dialogue (§4.1).
+2. Purpose, brief, objectives and `on_end` reach the coach, and show on the plan sheet (§4.3). `plan_set` and `propose_workout` carry a plan id (§3.4), and `createPlan` must name its plan (§3.2).
+3. TRE becomes a `course` plan, written on the day, listed, stoppable, with "Mark done", reading "Session 3 of 10" (§4.2). Pausing (§4.4).
+4. The `ask` dialogue and "What's next?" on the plan's row (§4.1), and `finish` (§4.2).
 5. The unprompted draft (§4.2), the only piece that adds background spend, so it lands last and alone.
 
-*Done when:* the list shows one row per plan, TRE continues past its last placed session on its own, tapping the running chip gets the question, and an ending lifting plan produces one draft that changes nothing until approved.
+*Done when:* the list shows one row per plan, TRE continues past its last placed session on its own, a pause holds it, tapping the running prompt gets the question, and an ending lifting plan produces one draft that changes nothing until approved.
 
 **Stage 2. Plans are computed from sessions.** Dates, weeks, progress, adherence, ended and week naming read rows. The Studio strength plan's sheet reads its rows. Race day has one home. Hourly status flip retired. `isOneOffPlan` everywhere. *Done when:* the audit's first three failures can't be reproduced in tests. *Behaviour changes to list:* the Studio strength plan's numbers change to the true ones; lifting may now name a week; Keystone credit follows the computed end. Course plans and programmes never name a week.
 
@@ -233,14 +244,14 @@ Each stage lands on its own, with CI and Deploy green, run in local time and UTC
 - **Plan ids persist elsewhere** (proposals' ops, trigger evidence, write jobs, URLs): every id is preserved exactly.
 - **Public repository.** Purposes, briefs, real plan names and figures live in the database and the private companion, never in a spec, a test or a commit.
 - **LifeOS.** The worker moves into the lifeos repo with native screens on the same backend, so route shapes change additively, and new logic goes in pure packages. Check the move's timing before Stage 3: it shouldn't straddle a change of repo.
-- **Q-130.** No new screens. Additions to existing surfaces are one line on the plan sheet (purpose, and "Continues on its own" or "Asks you when it ends"), the list row's words, and the one-off label.
+- **Q-130.** No new screens. Additions to existing surfaces, with their logic in pure modules: on the plan sheet, the purpose, how it ends and the brief one tap down; on the list row, its words and "What's next?" or "Next stretch ready"; on a course session's sheet, "Mark done"; and the one-off label.
 - **Concurrent sessions** commit to `main` daily and touch these files. Land small, rebase often, and never hold Stage 3 on a long branch.
 - **Prompt size.** `coach-shape-pins` caps the prompt: rebase with a dated note if the plan line needs room.
 
 ## 8. Testing
 
 Failing test first, then mutate each guard, per the principles §9.
-- **Pure:** computed plan facts, table-driven, including a moved last session, an outline week with sessions, overlapping phases and an empty plan. `isOneOffPlan`. Course numbering with skips and misses. `checkAccount`, each violation seeded.
+- **Pure:** computed plan facts, table-driven, including a moved last session, an outline week with sessions, overlapping phases, several sports and an empty plan. `isOneOffPlan`. Course numbering with skips, misses and "Mark done". A pause starting, ending and overlapping a race's quiet days. `checkAccount`, each violation seeded.
 - **Integration:** the seeded random sequence of store verbs (§5.3). Hourly course placement idempotent, within budget, undoing nothing the athlete did. A course session written exactly once whichever comes first, the pass or the open. Stop removing every live session ahead, on the watch and calendar too.
 - **The draft:** one run per ending, however many hourly passes see it; none at the cap; failure falls back to the chip; nothing on the plan changes before approval.
 - **Scenario evals (coach):** the dialogue asks on a tapped chip; doesn't when the request already says; uses a relevant goal; reads the brief; continues a line as a phase of the same plan; a drafted stretch files under the plan and respects its brief.
@@ -253,6 +264,17 @@ Failing test first, then mutate each guard, per the principles §9.
 - Running asks through the coach about extending and the goal; most other plans continue without asking, TRE among them.
 - A coach-made plan that isn't running continues by an unprompted draft the athlete taps to approve (§4.2): a recorded exception to "nothing starts without the athlete's tap", to add to the principles' §12 on approval.
 - A course session is written on its day, so its number counts sessions actually done, and it reaches the watch that day rather than weeks ahead (§4.2).
+- Approved 2026-11-06 with the additions from a final stress test: pausing, `finish`, a plan naming the plans it continues, objective links, "What's next?" on the row, "Mark done", and the brief visible on the sheet.
+
+**Considered, and deliberately not generalised**
+- **Courses as stored data rather than code.** A coach plan with a strict brief covers a one-off protocol. Worth doing when a second or third fixed course appears; `config.course` is a lookup, so the change stays small.
+- **Plans inside plans.** Phases are the only nesting, and nothing has needed more.
+- **More than one goal race at a time.** Other dated events live in the profile.
+- **A rule language for how plans end.** Three values cover every case found.
+
+**For later (the LifeOS ideas list, since they're new flows)**
+- A Pause button on the plan sheet.
+- A check-in two days after a TRE session that sets the halving by itself.
 
 **My calls, for the owner to check**
 - `programs` as the registry and `parent_id` for phases, instead of re-pointing sessions. It's the only shape that rewrites no session row.
