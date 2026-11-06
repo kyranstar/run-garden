@@ -48,7 +48,7 @@
   - `PLAN_ON_END = ["ask", "continue", "finish"] as const`; type `PlanOnEnd`.
   - `defaultOnEnd(kind: ProgramKind, disciplines: readonly string[]): PlanOnEnd`.
   - `onEndAllowed(kind: ProgramKind, onEnd: PlanOnEnd): boolean`.
-  - `courseConfigSchema`: `{ course: string; weekdays: number[] (0 = Monday, 1 to 7 entries, unique); time: "HH:MM"; quietDaysBeforeRace: number (default 7, 0–21); placementWeeksAhead: number (default 2, 1–4); halveNextTremor: boolean (default false) }`. Type `CourseConfig`. Weekdays use the same numbering as `adaptiveConfigSchema.preferredDays`; check it there and say so in the schema's comment.
+  - `courseConfigSchema`: `{ course: string; weekdays: number[] (0 = Monday, 1 to 7 entries, unique); time: "HH:MM"; quietDaysBeforeRace: number (default 7, 0–21); placementWeeksAhead: number (default 2, 1–4); easeNext: boolean (default false) }`. Type `CourseConfig`. Weekdays use the same numbering as `adaptiveConfigSchema.preferredDays`; check it there and say so in the schema's comment.
 - Produces, in `@rg/database`: `programs.purpose`, `programs.brief`, `programs.onEnd`, `programs.pausedUntil`, `programs.objectiveIds` (JSON `string[]`), all nullable; `coachPlans.programId`, nullable.
 
 - [ ] **Step 1: Write failing tests** in `packages/domain/test/program.test.ts`:
@@ -142,7 +142,7 @@ What it writes, each only if not already there:
 **Interfaces:**
 - Produces:
   - `GET /api/plans` returning `{ plans: PlanSummaryDto[] }`, within two grouped reads plus preferences.
-  - `PATCH /api/plans/:id` with `{ purpose?, brief?, onEnd?, objectiveIds?, pausedUntil?, halveNextTremor? }`, which writes the row and one `program_versions` row with the same batch. `halveNextTremor` is for a course only. 422 when `onEndAllowed` refuses, or on over-long text, or on a past pause date; 404 for another account's.
+  - `PATCH /api/plans/:id` with `{ purpose?, brief?, onEnd?, objectiveIds?, pausedUntil?, easeNext? }`, which writes the row and one `program_versions` row with the same batch. `easeNext` is for a course only. 422 when `onEndAllowed` refuses, or on over-long text, or on a past pause date; 404 for another account's.
   - `PlanSummaryDto`: `{ id, kind: ProgramKind, name, purpose: string | null, brief: string | null, onEnd: PlanOnEnd, pausedUntil: string | null, objectiveIds: string[], status: "active" | "retired", lineKey: string | null, listedAs: string | null, course: { session: number; of: number } | null, prompt: { kind: "whats_next" | "draft_ready"; label: string; request: string } | null }`. `listedAs` is the id the existing list row carries (a Studio entry's `studio_plans` id), so that row's sheet can find its summary. `course` and `prompt` stay null until Tasks 11 and 14.
   - `api.plans()` and `api.updatePlan(id, patch)` in the client.
 
@@ -189,7 +189,7 @@ What it writes, each only if not already there:
 - Test: `apps/worker/test/design-act-tools.test.ts`, the approve suite
 
 **Interfaces:**
-- Modelled on `change_programme` (read `change-programme.ts`'s header first): tool `change_plan(planId, purpose?, brief?, onEnd?, objectiveIds?, pausedUntil?, halveNextTremor?, why)`, stored as one `plan_change` op (`PlanChangeOp`, `isPlanChangeOp`, one per plan), with `base` for a stale check, applied at approval through the same function as `PATCH /api/plans/:id`. For an adaptive programme's days or minutes, `change_programme` stays.
+- Modelled on `change_programme` (read `change-programme.ts`'s header first): tool `change_plan(planId, purpose?, brief?, onEnd?, objectiveIds?, pausedUntil?, easeNext?, why)`, stored as one `plan_change` op (`PlanChangeOp`, `isPlanChangeOp`, one per plan), with `base` for a stale check, applied at approval through the same function as `PATCH /api/plans/:id`. For an adaptive programme's days or minutes, `change_programme` stays.
 - A `plan_change` can sit in the same proposal as a `plan_structure`, on one card, so a new goal updates the brief with the next phase (design §4.1).
 - Refusals, teachable: `not_for_role`, `not_your_plan`, `no_change`, `invalid_input` (including `onEndAllowed`), `proposal_pending`.
 
@@ -261,8 +261,8 @@ What it writes, each only if not already there:
 **Interfaces:**
 - Produces, in `@rg/workout`:
   - `COURSES: Readonly<Record<string, CourseDefinition>>`.
-  - `CourseDefinition = { id; name; sessionDoc(n: number, opts: { halveTremor: boolean }): WorkoutDoc; sessionLabel(done: number): { session: number; of: number } | null; videos: readonly PracticeVideo[]; purpose: string; brief: string; disciplines: readonly string[] }`.
-  - TRE's entry wraps `treSessionDoc`. `halveTremor` halves the tremor's `holdSec`, floored at 60. `sessionLabel` gives session and of for the first 10, then null. `treSessionDoc` stops writing `notes`; its rule moves to `brief`.
+  - `CourseDefinition = { id; name; sessionDoc(n: number, opts: { ease: boolean }): WorkoutDoc; sessionLabel(done: number): { session: number; of: number } | null; videos: readonly PracticeVideo[]; purpose: string; brief: string; disciplines: readonly string[] }`. Nothing outside a course's own entry may name TRE or a tremor: placement, writing, Mark done, Pause and Stop read only this interface.
+  - TRE's entry wraps `treSessionDoc`. For TRE, `ease` halves the tremor's `holdSec`, floored at 60. `sessionLabel` gives session and of for the first 10, then null. `treSessionDoc` stops writing `notes`; its rule moves to `brief`.
 - `place()` accepts `kind: "course"`, through `placementOf(program, today)`, returning `{ config: AdaptiveConfig-shaped inputs, goal, seconds, title, time }`: `weeklyGoal = weekdays.length`, `preferredDays = weekdays`, `seconds` from `deriveDoc(sessionDoc(done + 1))`, `title = name`, `effectiveTime = config.time`. `readSlotRows` reads `origin IN ('program','studio')` for a course, so a written session still holds its day.
 - A day is passed over, and a flexible slot on it retracted, when `date <= program.pausedUntil` (either kind) or, for a course, when it's within `quietDaysBeforeRace` before `prefs.raceDate`.
 - `placeSlotsForAllPrograms` includes active and lingering courses.
@@ -281,7 +281,7 @@ it("a restore in progress writes nothing", ...);
 it("a retired course's flexible slots come off", ...);
 ```
 
-In `courses.test.ts`: `sessionDoc(5, { halveTremor: true })`'s tremor is 300; a course's docs validate clean under the TMJ profile with `halveTremor` either way; `sessionLabel(2)` is `{ session: 3, of: 10 }` and `sessionLabel(10)` is null. Update `tre-course.test.ts` for the removed `notes`.
+In `courses.test.ts`: TRE's `sessionDoc(5, { ease: true })`'s tremor is 300; every course's docs validate clean under the TMJ profile with `ease` either way; `sessionLabel(2)` is `{ session: 3, of: 10 }` and `sessionLabel(10)` is null. Add a synthetic second course in `course-placement.test.ts` and `course-sessions.test.ts`, so the worker's paths are proven not to depend on TRE. Update `tre-course.test.ts` for the removed `notes`.
 
 - [ ] **Step 2: Run, expect failure.**
 
@@ -303,7 +303,7 @@ In `courses.test.ts`: `sessionDoc(5, { halveTremor: true })`'s tremor is 300; a 
   - `writeCourseSessionsDue(db, at?: Date): Promise<{ written: number; failed: number }>`, for the hourly pass.
   - `courseOf(db, userId, row): Promise<{ program; definition } | null>`, null for anything but an outline of a course.
 - **n** = the plan's rows with `completionState = 'completed'`, plus one. Nothing else counts.
-- `writeCourseSession` judges the document with `judgeDoc`, then in one atomic batch: updates the row where `origin = 'program'` (the guard that makes it once only) to `origin: 'studio'`, with the document, revision, title, category, sport and booked length from `deriveDoc`; clears `halveNextTremor`; marks the mirror owed (`markMirrorOwed`). A judge error writes nothing, logs by code only and leaves a sync note.
+- `writeCourseSession` judges the document with `judgeDoc`, then in one atomic batch: updates the row where `origin = 'program'` (the guard that makes it once only) to `origin: 'studio'`, with the document, revision, title, category, sport and booked length from `deriveDoc`; clears `easeNext`; marks the mirror owed (`markMirrorOwed`). A judge error writes nothing, logs by code only and leaves a sync note.
 - Due means `effectiveDate === today` in the athlete's zone, and today's slot not moved away.
 - `buildSessionOutcome` and `loadSession` call `courseOf` first for `origin === 'program'` rows: today's is written, then continues as a document row. A day ahead answers a preview through `docDayInputs` with a computed document that isn't stored: add its `docOverride` parameter.
 - **A course session never takes a scored guess at matching.** The number counts sessions done, so an unrelated activity completing one would skip a dose. Rows of a course keep `sourceContentFingerprint: "course"` after they flip to `studio`, and `completion.ts`'s `linkOnly` becomes `w.origin === "program" || w.sourceContentFingerprint === "course"`.
@@ -316,7 +316,7 @@ it("numbers from sessions done, not sessions planned", ...);
 it("writes once, whichever comes first", ...); // the hourly pass then an open, and an open then the pass: one revision
 it("isn't due on the wrong day", ...);
 // fake clock 23:30 local, tomorrow UTC: tomorrow's outline stays an outline. An outline moved off today stays one; one moved onto today is written.
-it("uses and clears the halving in one write", ...);
+it("uses and clears the easing in one write", ...);
 it("becomes an ordinary document workout", ...); // docOriginRow true; revisability ok; rowRefusal null; a mirror job is owed
 it("a day ahead previews without storing", ...); // POST build on a future outline: dose shown; row's workoutDoc still null, origin still "program"
 it("an unrelated activity doesn't complete a written session", ...); // a same-day strength activity: state stays scheduled, n unchanged
@@ -366,7 +366,7 @@ it("a document the day refuses leaves the outline and a note", ...);
 - `planRowState` handles a course: kind "Practice", state `Session 3 of 10`, or "Floor practice" once past them.
 - `planEntries` gains course rows from `api.plans()`. A course's row opens a small sheet built from `planSheetWords` plus "Stop this plan…", with no settings: this is the one new sheet, kept to what's already on the plan sheet.
 
-- [ ] **Step 1: Write failing tests:** marking done completes it, and the next day's n is one higher; undoing reverses it; a future session is 409; a session with an activity match is 409; the garden credits it once (`sanctionedBy` isn't read as the coach's skip; check `garden-sync.ts`'s `sanctionedBy === "coach"` sites); the sheet offers "Mark done" only where videos show; the list row reads "Practice · Session 3 of 10"; Stop asks, then calls the route.
+- [ ] **Step 1: Write failing tests:** marking done completes it, and the next day's n is one higher; undoing reverses it; a future session is 409; a session with an activity match is 409; the garden credits it once (`sanctionedBy` isn't read as the coach's skip; check `garden-sync.ts`'s `sanctionedBy === "coach"` sites); the sheet offers "Mark done" on any course's session and on nothing else; the list row reads "Practice · Session 3 of 10"; Stop asks, then calls the route.
 
 - [ ] **Step 2: Run, expect failure.**
 

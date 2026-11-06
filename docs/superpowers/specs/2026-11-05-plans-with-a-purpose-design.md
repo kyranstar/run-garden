@@ -139,7 +139,7 @@ A session belongs to a plan when it's made for that plan, whoever makes it:
   - **On the day:** the first of the day's hourly pass or the session being opened writes its document, once, from `sessionDoc(n)`, where **n is the plan's sessions actually done, plus one**. A skipped or missed session therefore changes nothing, and "the first ten" means ten done. The mirror then sends it to the watch by its normal path.
   - **Shown ahead:** the plan's row says "Session n of 10" from the same count. A sheet for a day ahead previews the dose by computing it, never storing it.
   - **Videos, and doing it another way:** videos read from the plan's course, since an outline has no document (`videosOfSource` today reads the document's ref). A course session's sheet offers "Mark done", because following a video records nothing today and the number counts sessions done. It records the athlete's own say-so as the session's evidence (§5.1).
-  - **Halving:** `config.halveNextTremor`, set by a change the athlete approves in the coach, is used and cleared in the same batch that writes the next session.
+  - **Easing the next session:** `config.easeNext`, set by a change the athlete approves in the coach, is used and cleared in the same batch that writes the next session. Each course says what easing means; for TRE, half the tremor.
 - **`coach` with `continue`, such as a lifting plan: the coach drafts, the athlete taps (owner, 2026-11-06).** This is the one exception to "nothing starts without the athlete's tap", and it covers spending only.
   - **When:** the hourly pass sees a plan ending, and starts one coach run with a system-written request naming the plan, at most once per ending (keyed by the plan and its last session's date).
   - **Bounds:** the run's own ceiling and the weekly cap. At the cap, or on any failure, nothing retries on its own: the existing chip appears, and says plainly what happened.
@@ -155,7 +155,7 @@ A session belongs to a plan when it's made for that plan, whoever makes it:
 
 The athlete sees what steers the coach: the plan sheet shows the purpose and how it ends, with the brief one tap down. A "Change" there opens the coach with the words written, the athlete's to send.
 
-The rule "whole sequence for ten sessions, then floor; halve after a bad 48 hours" moves from each TRE session's notes to the plan's brief, once, so the coach can act on it (§4.2, Halving). The athlete still sees the 48-hour rule where it matters: it's in the floor tremor move's how-to, which the player opens. Nothing applies it automatically: the app can't tell how you feel two days later unless you say.
+The rule "whole sequence for ten sessions, then floor; halve after a bad 48 hours" moves from each TRE session's notes to the plan's brief, once, so the coach can act on it (§4.2, Easing). The athlete still sees the 48-hour rule where it matters: it's in the floor tremor move's how-to, which the player opens. Nothing applies it automatically: the app can't tell how you feel two days later unless you say.
 
 ### 4.4 Pausing
 
