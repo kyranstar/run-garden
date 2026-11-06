@@ -280,7 +280,7 @@ as a blob (§6.2), never in the post row.
   extension waits that plus 60 s. A reading cut at the output limit is a failure that says so, never silently
   retried shorter. (The owner's standing rule elsewhere: never truncate a reasonable model call.)
 
-### 5.5 The reading's new fields (prompt `extract-5`, additive to `extractionSchema`)
+### 5.5 The reading's new fields (prompt `extract-6` — `extract-5` went to the alternating-moves fix on main, 2026-11-05 — additive to `extractionSchema`)
 - Moves cap raised from 12 to 30 (follow-alongs).
 - Per move:
   - `useWhen[]`, `skipWhen[]` (≤ 4 each, ≤ 160 chars): when the post says to use it or not — the "in what cases you
