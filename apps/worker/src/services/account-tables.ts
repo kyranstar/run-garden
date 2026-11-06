@@ -301,6 +301,11 @@ export function secretColumns(name: string): readonly string[] {
  */
 const LARGE_COLUMNS: Readonly<Record<string, readonly string[]>> = {
   session_builds: ["payload"],
+  // The import trail (0034): a blob is up to 1 MB, an event's detail up to 64 KB, and a coach run event's payload now
+  // keeps a tool's result (up to 26 KB) — a page of them sized in rows would be megabytes (final review C1, 2026-11-05).
+  import_blobs: ["text"],
+  import_events: ["detail"],
+  coach_run_events: ["payload"],
 };
 
 export function largeColumns(name: string): readonly string[] {

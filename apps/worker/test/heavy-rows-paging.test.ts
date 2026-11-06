@@ -36,6 +36,22 @@ async function exportPages(db: Db, userId: string, table: string): Promise<Row[]
 }
 
 describe("heavy rows are paged by bytes (Ruling 2a-R9)", () => {
+  it("the import trail's blobs and events are paged by bytes too (final review C1, 2026-11-05)", async () => {
+    const db = makeTestDb({ boundVariableCap: 100 });
+    const { userId } = await makeTestUser(db);
+    const at = "2026-11-05T10:00:00.000Z";
+    for (let i = 0; i < 40; i++) {
+      await db.insert(schema.importBlobs).values({ id: `b${String(i).padStart(2, "0")}`, userId, postId: "p", kind: "raw_reply", text: "r".repeat(40_000), at });
+      await db.insert(schema.importEvents).values({ id: `e${String(i).padStart(2, "0")}`, userId, postId: "p", stage: "extract", source: "gateway", status: "ok", summary: "s", detail: { big: "d".repeat(30_000) }, at });
+    }
+    for (const table of ["import_blobs", "import_events"]) {
+      const pages = await exportPages(db, userId, table);
+      expect(pages.flat()).toHaveLength(40);
+      expect(pages.length).toBeGreaterThan(1);
+      for (const page of pages) expect(withinCeiling(page), `${table}: ${page.length} rows, ${canonicalJson(page).length} bytes`).toBe(true);
+    }
+  });
+
   it("the export pages session_builds within the byte ceiling, and export → restore → export is identical", async () => {
     const db = makeTestDb({ boundVariableCap: 100 });
     const { userId } = await makeTestUser(db);
