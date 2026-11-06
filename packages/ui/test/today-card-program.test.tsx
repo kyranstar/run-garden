@@ -185,13 +185,15 @@ describe("the program session heading the card", () => {
 
   it("a skipped session under the day's run keeps a way in: Open, not primary", async () => {
     const run = { ...slot({ id: "run-1", title: "Easy Run", category: "easy", sport: "run", origin: null, contentState: null, programId: null, effectiveTime: "07:00" }) };
-    const skipped = slot({ completionState: "skipped" });
+    // Its own id: the page's one offline database can still hold the session an earlier test saved "here, will sync"
+    // under SLOT until its drain lands, and that record would read this one as done (main CI 42275009556).
+    const skipped = slot({ id: "skipped-1", completionState: "skipped" });
     const payload = { ...todayPayload(run), todaySessions: [{ workout: run, build: null }, { workout: skipped, build: null }] };
     const { card } = await renderCard(payload);
     const line = card.querySelector(".today-session")!;
     expect(line.textContent).toContain("Skipped");
     const open = [...line.querySelectorAll("a")].find((a) => a.textContent === "Open");
-    expect(open?.getAttribute("href")).toBe(`/plan?workout=${SLOT}`);
+    expect(open?.getAttribute("href")).toBe("/plan?workout=skipped-1");
     expect(open?.className).not.toContain("btn-primary");
   });
 });
