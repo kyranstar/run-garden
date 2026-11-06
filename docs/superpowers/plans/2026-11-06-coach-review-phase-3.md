@@ -132,15 +132,15 @@ none — the rules are this plan's Global Constraints, the principles and `docs/
   "the post says/recommends/suggests", "the caption says", "the video shows", "according to", "in the video she says".
 - `doseNumbers(text: string): number[]` — every number in order (`"2×6 per side"` → `[2,6]`, `"8–12 reps"` → `[8,12]`).
 
-- [ ] **Step 1: failing tests** — each function's table above; `readingEvidence` on an extract-6 move with three
+- [x] **Step 1: failing tests** — each function's table above; `readingEvidence` on an extract-6 move with three
   quotes (caption verified, transcript verified `at: 72`, speech `in_speech`) and one `not_found` dose quote gives ids
   `q2.4…q2.7` from `firstK: 4`, chips "in the caption", "said 1:12", "heard", "not in the post", `inferred` holding
   `dose`, every text `{ untrusted: true }`; a pre-extract-6 move (no quotes, no useWhen) gives `quotes: []` and its
   stated/inferred from `evidence`; garbage (`null`, `{}`) gives null.
-- [ ] **Step 2:** run `pnpm --filter @rg/worker exec vitest run test/saves-evidence.test.ts` — FAIL (no module).
-- [ ] **Step 3:** implement.
-- [ ] **Step 4:** rerun — PASS.
-- [ ] **Step 5:** commit `feat(coach): the evidence words — quote ids, checks and chips for a saved move`.
+- [x] **Step 2:** run `pnpm --filter @rg/worker exec vitest run test/saves-evidence.test.ts` — FAIL (no module).
+- [x] **Step 3:** implement.
+- [x] **Step 4:** rerun — PASS.
+- [x] **Step 5:** commit `feat(coach): the evidence words — quote ids, checks and chips for a saved move`.
 
 ### Task 2: read_saves gives the coach the evidence (§8.1)
 
@@ -162,7 +162,7 @@ none — the rules are this plan's Global Constraints, the principles and `docs/
   moves' corrections and `edited_by_owner` — one statement, the page's `[postId, position]` pairs and move ids as JSON
   parameters).
 
-- [ ] **Step 1: failing tests** (`design-read-saves.test.ts`, seeding extract-6 readings with quotes through the fixture):
+- [x] **Step 1: failing tests** (`design-read-saves.test.ts`, seeding extract-6 readings with quotes through the fixture):
   "each move carries its evidence" — stated/inferred, quotes with ids `q1.1…`, checks as words, `useWhen`/`skipWhen`/`why`
   marked, the post's dose words and the record's dose with its origin (`post` for a born move whose dose text parsed,
   `default` for none, `library` for the goblet squat, `edited` after `editPersonalMove`), the match (`by: "name"` for the
@@ -171,12 +171,12 @@ none — the rules are this plan's Global Constraints, the principles and `docs/
   receipt maps every quote id read"; "ids are stable across pages" (`limit: 1`, `offset: 1` → `q2.1`); "three statements,
   no writes" (the registry test's `statementCost` 3 and the count); "a page shrinks to fit" (12 moves with 8 long quotes
   each stay under `RESULT_BUDGET_BYTES`, `missing` names the offset).
-- [ ] **Step 2:** run the file — FAIL.
-- [ ] **Step 3:** implement: candidate page first (`moves.slice(offset, offset + limit)`), its evidence read, then the
+- [x] **Step 2:** run the file — FAIL.
+- [x] **Step 3:** implement: candidate page first (`moves.slice(offset, offset + limit)`), its evidence read, then the
   byte fit as today; description (≤ 240) names evidence and corrections.
-- [ ] **Step 4:** rerun — PASS; run `design-context.test.ts`, `design-cpu-bench.test.ts` (re-measure `read_saves`'s
+- [x] **Step 4:** rerun — PASS; run `design-context.test.ts`, `design-cpu-bench.test.ts` (re-measure `read_saves`'s
   `cpuWeight`: declared at the highest scaled p50 of three quiet runs, rounded up to the tenth, with a dated comment).
-- [ ] **Step 5:** commit `feat(coach): read_saves gives each saved move its evidence — quotes, checks, dose origin, match, corrections`.
+- [x] **Step 5:** commit `feat(coach): read_saves gives each saved move its evidence — quotes, checks, dose origin, match, corrections`.
 
 ### Task 3: pin_moves lines cite their evidence (§8.3, §14.1–14.2)
 
@@ -199,16 +199,16 @@ Test `apps/worker/test/design-move-pins.test.ts`.
 - the line's dose: the revised item's in a `doc_workout` op of this proposal (domain `doseSummary`), else a pending
   `import_correction` dose's `after`, else the record's (`doseWords`, moved from read-library to `saves-evidence.ts`).
 
-- [ ] **Step 1: failing tests** — a fit with a read (the receipt event seeded through the loop's own payload builder
+- [x] **Step 1: failing tests** — a fit with a read (the receipt event seeded through the loop's own payload builder
   `toolResultPayload`): cites resolve to `CiteRef`s with labels and the line keeps `post`; each refusal above; "a heard
   quote is never said" (cite of an `in_speech` quote → label `heard 0:12`); "two pages, one unread" (receipts for page 1
   only → a line about a page-2 move is `not_read`); the dose filled from the record, from a revised item, from a pending
   dose correction, and `dose_mismatch` for `"3×10"` against `2 × 6 / side`; an old-style line `{moveId, text}` in a
   stored op still reads (`pinsCardLinesOf`); the 30-line cap holds; statement count still 2.
-- [ ] **Step 2:** run the file — FAIL.
-- [ ] **Step 3:** implement; description and input schema say decision, where, cites (keep `coach-shape-pins` in view).
-- [ ] **Step 4:** rerun — PASS; run `design-act-tools.test.ts`, `design-act-budget.test.ts`, `coach-runs-fit-release.test.ts`.
-- [ ] **Step 5:** commit `feat(coach): a pins line says in or out, where, the dose it runs with, and cites what it rests on`.
+- [x] **Step 2:** run the file — FAIL.
+- [x] **Step 3:** implement; description and input schema say decision, where, cites (keep `coach-shape-pins` in view).
+- [x] **Step 4:** rerun — PASS; run `design-act-tools.test.ts`, `design-act-budget.test.ts`, `coach-runs-fit-release.test.ts`.
+- [x] **Step 5:** commit `feat(coach): a pins line says in or out, where, the dose it runs with, and cites what it rests on`.
 
 ### Task 4: correct_import — the coach proposes a correction (§8.4)
 
@@ -233,13 +233,13 @@ Modify `proposal-kinds.ts`, `design-tools/index.ts`, `design-prompt.ts` (`PROMPT
   `proposal_closed`, `restoring`; a second call for the same id replaces it; a replay answers what it stored; a dose
   correction updates the dose of the pins line naming the move (Task 3's line) in the same upsert.
 
-- [ ] **Step 1: failing tests** — each target and field stores its op with `before` read by the Worker; each refusal;
+- [x] **Step 1: failing tests** — each target and field stores its op with `before` read by the Worker; each refusal;
   replace and replay; a dose fix rewrites the pins line's dose; `basis: "owner"` needs no cite; an insight with `move`
   parses through `extractionSchema`; registry has it in `ACT_TOOLS` after `pin_moves` and the prompt names it.
-- [ ] **Step 2:** run the file — FAIL.
-- [ ] **Step 3:** implement.
-- [ ] **Step 4:** rerun — PASS; run `design-prompt.test.ts` (tool names), `packages/saves` tests.
-- [ ] **Step 5:** commit `feat(coach): correct_import — a correction to imported data, proposed with its evidence`.
+- [x] **Step 2:** run the file — FAIL.
+- [x] **Step 3:** implement.
+- [x] **Step 4:** rerun — PASS; run `design-prompt.test.ts` (tool names), `packages/saves` tests.
+- [x] **Step 5:** commit `feat(coach): correct_import — a correction to imported data, proposed with its evidence`.
 
 ### Task 5: Corrections approved, declined, superseded — logged and on the trail
 
@@ -260,16 +260,16 @@ Modify `proposal-kinds.ts`, `design-tools/index.ts`, `design-prompt.ts` (`PROMPT
   post in `op.posts`; the `import_corrections` row `by: "coach"`, `basis`, `evidence` = the cites, `proposal_id`.
 - declined and superseded corrections are decided like pins (no claim needed to decline one not started).
 
-- [ ] **Step 1: failing tests** — approve a dose fix: record changed, one correction row, one event per post, in one
+- [x] **Step 1: failing tests** — approve a dose fix: record changed, one correction row, one event per post, in one
   batch (a forced failure of the update leaves neither); a reading's useWhen fix rewrites the post's extraction at that
   move and the trail account shows it; an insight drop / rescope; link `same_as` archives a clean duplicate and marks a
   used one `like`; `not_same` makes an active personal move and repoints the link; stale; a double approve; a decline;
   a proposal of corrections alone is promoted, read, approved; supersede by a newer correction of the same id; the
   declared cost holds (count the statements); 10 corrections fit one request.
-- [ ] **Step 2:** run the file — FAIL.
-- [ ] **Step 3:** implement.
-- [ ] **Step 4:** rerun — PASS; run `design-approve*.test.ts`, `design-orchestrate.test.ts`, `design-plan-powers.test.ts`, `coach-conversation*.test.ts`.
-- [ ] **Step 5:** commit `feat(coach): an approved correction is applied, logged with before, after, why and basis, and shown on the post's trail`.
+- [x] **Step 2:** run the file — FAIL.
+- [x] **Step 3:** implement.
+- [x] **Step 4:** rerun — PASS; run `design-approve*.test.ts`, `design-orchestrate.test.ts`, `design-plan-powers.test.ts`, `coach-conversation*.test.ts`.
+- [x] **Step 5:** commit `feat(coach): an approved correction is applied, logged with before, after, why and basis, and shown on the post's trail`.
 
 ### Task 6: The coach's decisions on each post's trail (spec item 6, §8.3)
 
@@ -291,14 +291,14 @@ Modify `proposal-kinds.ts`, `design-tools/index.ts`, `design-prompt.ts` (`PROMPT
 - approve: the pins' events ride `applyMovePins`' batch-fitted write as one `runAtomically` (`MOVE_PINS_FIXED` 3 → 4);
   decline: one statement for the declined pins and corrections (`DECLINE_COST` 7 → 8).
 
-- [ ] **Step 1: failing tests** — a fit approved writes, per move per post, suggested (at promotion), read, then
+- [x] **Step 1: failing tests** — a fit approved writes, per move per post, suggested (at promotion), read, then
   approved, and the trail account's "What the coach did" line is the latest; declined; superseded by a newer card; a
   move in two posts gets both; no batch → no events; an old card's lines (no decision) write words without one; the
   three budgets hold (count statements in `design-approve.test.ts`'s and the finish's counting tests).
-- [ ] **Step 2:** run — FAIL.
-- [ ] **Step 3:** implement.
-- [ ] **Step 4:** rerun — PASS; run `design-approve.test.ts`, `design-orchestrate.test.ts`, `coach-run-trail.test.ts`, `coach-runs-fit-release.test.ts`, `import-trail-read.test.ts`.
-- [ ] **Step 5:** commit `feat(coach): the coach's reading, suggestion and your decision on each post's trail`.
+- [x] **Step 2:** run — FAIL.
+- [x] **Step 3:** implement.
+- [x] **Step 4:** rerun — PASS; run `design-approve.test.ts`, `design-orchestrate.test.ts`, `coach-run-trail.test.ts`, `coach-runs-fit-release.test.ts`, `import-trail-read.test.ts`.
+- [x] **Step 5:** commit `feat(coach): the coach's reading, suggestion and your decision on each post's trail`.
 
 ### Task 7: The prompt — skepticism, citations, challenge, insistence (§8.2, §3.5, §15 Q1)
 
@@ -306,18 +306,18 @@ Modify `proposal-kinds.ts`, `design-tools/index.ts`, `design-prompt.ts` (`PROMPT
 `pin-moves.ts`, `correct-import.ts` (descriptions within their caps); Test `apps/worker/test/design-prompt.test.ts`,
 `design-fix13-prompt.test.ts`, `design-orchestrate.test.ts`, `coach-shape-pins.test.ts`.
 
-- [ ] **Step 1: failing tests** — the shared prompt says: weigh each move against where the athlete stands and name
+- [x] **Step 1: failing tests** — the shared prompt says: weigh each move against where the athlete stands and name
   the goal or gap; a quote said / in the caption is the creator's word, heard is near it but not proof, on screen is
   unchecked, inferred or no quote is the reader's guess; never a guess as the creator's; garbled or thin readings said
   plainly, with humility; correct_import before pin_moves; a line's where is the revised workout or the rotation. The
   main role says the challenge order (their point fairly → the evidence → the call and what moved it), insistence wins
   without more argument and is `basis: "owner"`, except a condition's never and a sore area (say so, why, the closest
   safe option, the Studio). (`expect(SHARED_PROMPT).toContain(…)` on short exact phrases.)
-- [ ] **Step 2:** run — FAIL.
-- [ ] **Step 3:** write the words (brisk; reasons, not a checklist).
-- [ ] **Step 4:** set each size pin low, read the measured value, pin at measured + ≥ 100 tokens with
+- [x] **Step 2:** run — FAIL.
+- [x] **Step 3:** write the words (brisk; reasons, not a checklist).
+- [x] **Step 4:** set each size pin low, read the measured value, pin at measured + ≥ 100 tokens with
   `REBASED 2026-11-06 (coach review, phase 3): <what grew> — measured N`; rerun — PASS.
-- [ ] **Step 5:** commit `feat(coach): the prompt — a post is a stranger's claim, a challenge gets a coach, insistence wins within the hard checks`.
+- [x] **Step 5:** commit `feat(coach): the prompt — a post is a stranger's claim, a challenge gets a coach, insistence wins within the hard checks`.
 
 ### Task 8: The reviewer's faithfulness dimension (§8.5)
 
@@ -330,11 +330,11 @@ rubric only); `parseReview(raw, rubric, { optional?: readonly string[] })` — a
 item `saved: { dose: <record dose words>, purpose: <marked> }`; the reviewer's must-fix gains "a saved move's dose, why
 or notes that differ from its record or the post's quotes with no reason given".
 
-- [ ] **Step 1: failing tests** — a review with no saved move and no faithfulness parses; with a saved move it is
+- [x] **Step 1: failing tests** — a review with no saved move and no faithfulness parses; with a saved move it is
   required; the packet shows a saved item's record dose; the reviewer block holds the dimension and the must-fix line;
   the card's review (`lineReview`) shows no empty faithfulness line; role-block pins re-measured as in Task 7.
-- [ ] **Step 2:** run — FAIL. **Step 3:** implement. **Step 4:** rerun — PASS.
-- [ ] **Step 5:** commit `feat(coach): the reviewer checks a saved move's dose and why against its evidence`.
+- [x] **Step 2:** run — FAIL. **Step 3:** implement. **Step 4:** rerun — PASS.
+- [x] **Step 5:** commit `feat(coach): the reviewer checks a saved move's dose and why against its evidence`.
 
 ### Task 9: The lines and why carried into later turns
 
@@ -348,11 +348,11 @@ saved post's), then `    Why: <why ≤ 300>`, then `    … and N more lines (re
 `    - Correction: <line> — <how it stands>`; read_proposals' `move_pins` gains `lines` (same brief) and a new
 `import_correction` entry; the proposal read gains `corrections: CorrectionLine[]` (`{ opId, target, field, name, line, why, basis, cites, outcome }`).
 
-- [ ] **Step 1: failing tests** — "why did you leave X out" context: the next turn's block holds X's out line and the
+- [x] **Step 1: failing tests** — "why did you leave X out" context: the next turn's block holds X's out line and the
   why; the block stays under `CONVERSATION_BLOCK_MAX_CHARS` with 30 long lines; "an old card reads as before" (plain
   strings, no decision); read_proposals shows lines and corrections, marked.
-- [ ] **Step 2:** run — FAIL. **Step 3:** implement. **Step 4:** rerun — PASS (and `design-context.test.ts`).
-- [ ] **Step 5:** commit `feat(coach): the card's lines and why reach the coach's next turn`.
+- [x] **Step 2:** run — FAIL. **Step 3:** implement. **Step 4:** rerun — PASS (and `design-context.test.ts`).
+- [x] **Step 5:** commit `feat(coach): the card's lines and why reach the coach's next turn`.
 
 ### Task 10: The review card and the trail at a quote (§3.3–3.5)
 
@@ -372,19 +372,19 @@ that move's section and marks and scrolls to the quote row; the card approves it
 (`opIds`); a corrections-only card (`kind: "corrections"`) uses the same card in its own words ("Corrections to your
 saves", done "Corrected").
 
-- [ ] **Step 1: failing tests** — the card groups In / Left out; chips render with their labels as text; tapping a
+- [x] **Step 1: failing tests** — the card groups In / Left out; chips render with their labels as text; tapping a
   chip opens the trail with that quote's row marked; Challenge fills the box and focuses it; the why shows at the
   foot; an old card (no decisions, plain lines) renders as before; corrections listed and approved with the pins in one
   tap; at 360 px the lines wrap (no element wider than its container in the jsdom layout assertions the suite already uses).
-- [ ] **Step 2:** run `pnpm --filter @rg/ui exec vitest run test/review-lines.test.tsx test/trail-sheet.test.tsx` — FAIL.
-- [ ] **Step 3:** implement.
-- [ ] **Step 4:** rerun — PASS; run the coach and saves UI tests.
-- [ ] **Step 5:** commit `feat(ui): the coach's review card — evidence chips, Challenge, the why, corrections`.
+- [x] **Step 2:** run `pnpm --filter @rg/ui exec vitest run test/review-lines.test.tsx test/trail-sheet.test.tsx` — FAIL.
+- [x] **Step 3:** implement.
+- [x] **Step 4:** rerun — PASS; run the coach and saves UI tests.
+- [x] **Step 5:** commit `feat(ui): the coach's review card — evidence chips, Challenge, the why, corrections`.
 
 ### Task 11: The whole branch
 
-- [ ] **Step 1:** worker, ui, saves, saves-extension, api-client and database suites, in the default TZ and `TZ=UTC`;
+- [x] **Step 1:** worker, ui, saves, saves-extension, api-client and database suites, in the default TZ and `TZ=UTC`;
   typecheck each package (`npx tsc -p <pkg> --noEmit`, exit code read).
-- [ ] **Step 2:** the spec gains `### 8.6 As built (phase 3, 2026-11-06)` (the rulings, the files, the costs).
-- [ ] **Step 3:** one fresh whole-branch reviewer (opus); one fix pass, each fix with its test; suites again.
-- [ ] **Step 4:** rebase on `origin/main` (run alone, read its result, confirm no rebase in progress); suites again.
+- [x] **Step 2:** the spec gains `### 8.6 As built (phase 3, 2026-11-06)` (the rulings, the files, the costs).
+- [x] **Step 3:** one fresh whole-branch reviewer (opus); one fix pass, each fix with its test; suites again.
+- [x] **Step 4:** rebase on `origin/main` (run alone, read its result, confirm no rebase in progress); suites again.
