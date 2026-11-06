@@ -64,14 +64,14 @@ describe("filterPost writes its trail (import trail, 2026-11-05)", () => {
     const [usage] = await db.select().from(llmUsage);
     expect(e).toMatchObject({
       stage: "screen", source: "gateway", status: "ok", summary: "Not training: a recipe", model: FILTER_MODEL_DEFAULT,
-      promptVersion: "filter-1", usageId: usage!.id, costMicros: usage!.costMicros,
+      promptVersion: "filter-2", usageId: usage!.id, costMicros: usage!.costMicros,
       detail: { verdict: "not", reason: "a recipe", stage: "model", tokens: { in: 300, out: 30 } },
     });
     expect(e!.latencyMs).toBeGreaterThanOrEqual(0);
     const blobs = await db.select().from(schema.importBlobs).where(eq(schema.importBlobs.eventId, e!.id));
     expect(blobs.map((b) => [b.kind, b.text])).toEqual([["raw_reply", content]]);
     const [version] = await db.select().from(schema.promptVersions);
-    expect(version).toMatchObject({ version: "filter-1", kind: "filter" });
+    expect(version).toMatchObject({ version: "filter-2", kind: "filter" });
     expect(version!.systemText).toContain("You triage a saved social video post");
   });
   it("a creator decision: one screen event from the app, no call, no blob", async () => {

@@ -27,6 +27,10 @@ export function failureWords(code: SaveErrorCode | string | null, raw: string | 
       return "Instagram changed something";
     case "app_unreachable":
       return "The app couldn't be reached";
+    case "no_captions":
+      return first ?? "No captions, and the video couldn't be watched";
+    case "unplayable":
+      return first ?? "YouTube won't play it";
     default:
       return first ? `Something went wrong: ${first}` : "Something went wrong";
   }
