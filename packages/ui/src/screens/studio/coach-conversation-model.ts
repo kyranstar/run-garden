@@ -80,8 +80,9 @@ export const HOW_IT_FELT = "Log how it felt";
 export const OPENING_CHIPS_MAX = 3;
 /** The most of them the coach's own line brings (how it felt, its own chip). */
 export const OWN_CHIPS_MAX = 2;
-/** The most "needs you" chips: they are never crowded out by the line's own (audit §6). */
-export const NEEDS_CHIPS_MAX = 2;
+/** The most "needs you" chips: they are never crowded out by the line's own (audit §6). Two, and a drift's besides — the
+ * nudges route's most (its NUDGES_MAX and one drift, which takes no other chip's place: CI 42165457072's smoke). */
+export const NEEDS_CHIPS_MAX = 3;
 
 /** A chip before the starters: the session's quick review, opened; or words a tap sends (`needs`: a "needs you" one). */
 export type OpeningChip =
@@ -92,8 +93,8 @@ export type OpeningChip =
  * The chips before the starters, in this order and at most three (stream H): how it felt — when the coach's line is
  * about a session the app offers a quick review for (free: it opens the review) — then the line's own (what a tap
  * sends: "Plan this week", "Plan tomorrow around it")
- * — at most two of those — then the "needs you" ones (§8 §6), at most two, which the line's own never crowd out: they
- * give way to them (audit §6: two of the line's own used to hide every "needs you" chip).
+ * — at most two of those — then the "needs you" ones (§8 §6), at most three (two and a drift's), which the line's own
+ * never crowd out: they give way to them (audit §6: two of the line's own used to hide every "needs you" chip).
  */
 export function openingChips(
   opening: Pick<CoachOpeningDto, "source" | "chips" | "workoutId"> | null | undefined,

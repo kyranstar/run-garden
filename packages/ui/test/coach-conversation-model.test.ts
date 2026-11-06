@@ -348,6 +348,12 @@ describe("the chips before the starters: how it felt, the coach's own line's, th
     expect(labels(openingChips({ ...review, workoutId: "w7" }, [missed], [{ workoutId: "w7" }]))).toEqual(["Plan this week", missed.label]);
   });
 
+  it("three needs-you chips (two and a drift's, the nudges route's most): all three kept, and the coach's own give way (CI 42165457072's smoke)", () => {
+    const drift = { id: "drift:discipline:runs", label: "0 of 13 planned runs logged in 3 weeks — talk it through?", request: "0 of 13 planned runs logged in 3 weeks — let's talk it through." };
+    expect(labels(openingChips(session, [missed, drift, race], [{ workoutId: "w7" }]))).toEqual([missed.label, drift.label, race.label]);
+    expect(labels(openingChips(null, [missed, drift, race], []))).toEqual([missed.label, drift.label, race.label]);
+  });
+
   it("no line of the coach's own: the needs-you chips, as before", () => {
     expect(labels(openingChips(null, [missed, race], [{ workoutId: "w7" }]))).toEqual([missed.label, race.label]);
     expect(openingChips(undefined, [], [])).toEqual([]);

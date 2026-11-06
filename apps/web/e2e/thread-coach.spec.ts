@@ -113,9 +113,10 @@ test("a race close: a needs-you chip first on the coach's opening screen, and th
   expect((await context.request.put(`${baseURL}/api/settings`, { data: { raceDate } })).ok()).toBeTruthy();
   try {
     const nudges = (await (await context.request.get(`${baseURL}/api/coach/nudges`)).json()) as { nudges: Array<{ id: string; label: string; request: string }> };
-    expect(nudges.nudges.length).toBeLessThanOrEqual(2);
+    expect(nudges.nudges.length).toBeLessThanOrEqual(3);
     const race = nudges.nudges.find((n) => n.id === `race:${raceDate}`);
-    // A missed session or a return can come before it; the fixture has neither twice over, so the race is among the two.
+    // A missed session or a return can come before it, and a drift chip besides (it takes no other chip's place): the
+    // fixture has neither twice over, so the race is among the first two that aren't a drift.
     expect(race).toEqual({ id: `race:${raceDate}`, label: "Get me ready for race day", request: "My race is in 10 days. Get me ready for race day." });
 
     await page.goto("/");

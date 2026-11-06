@@ -14,7 +14,7 @@ import { driftCoveredBy, driftNudge, driftsOf, readStandFacts, type Drift } from
  * opening screen — computed when the screen asks, from the old trigger rules, writing nothing. A tap sends the chip's
  * `request` as the athlete's words, and that is the only spend.
  *
- * In order, at most `NUDGES_MAX`:
+ * In order, at most `NUDGES_MAX` and one drift chip besides:
  *   1. a session not done in the last few days (missed, skipped by the athlete, or asked about and unanswered) — "Rework
  *      my week around Tuesday's tempo" — read over MISSED_WINDOW_DAYS: reconcile first asks about a session two days
  *      after its date, so one only known as unresolved shows for NUDGE_MISSED_DAYS from then, not for one day (audit
@@ -64,7 +64,8 @@ export interface CoachNudge {
   request: string;
 }
 
-/** The most chips the opening screen shows (they come before its general starters). */
+/** The most chips the opening screen shows besides a drift's (they come before its general starters). A drift chip is one
+ * more at most and takes no other chip's place: a race close or a comeback still comes (CI 42165457072's smoke, 2026-11-06). */
 export const NUDGES_MAX = 2;
 /** A session not done is still worth reworking the week around this many days after the app knows it (for one only
  * unresolved, from the day reconcile first asks about it). */
@@ -410,7 +411,8 @@ export async function readCoachOpening(
   const opening = unseen.find((c) => latest === null || latest < c.since)?.opening ?? null;
   const offered = found.filter((n) => !sent(n));
   const firstDrift = offered.find((n) => driftOf.has(n.id));
-  return { opening, nudges: offered.filter((n) => !driftOf.has(n.id) || n === firstDrift).slice(0, NUDGES_MAX) };
+  let others = 0;
+  return { opening, nudges: offered.filter((n) => (driftOf.has(n.id) ? n === firstDrift : others++ < NUDGES_MAX)) };
 }
 
 /** A session's logged sets, as the activities read gives them (one JSON object, or null): none logged, null. */

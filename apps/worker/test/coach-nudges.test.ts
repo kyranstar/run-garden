@@ -404,12 +404,21 @@ describe("drift (where you stand, spec §7.2): one chip, an observation and a qu
     expect(await nudges()).toEqual([STRENGTH]);
   });
 
-  it("second, after a session just not done, before the comeback", async () => {
+  it("second, after a session just not done, and never in another chip's place: the comeback still comes", async () => {
     await seedDrift();
     await seedSession({ id: "w1", date: addDays(today, -1), state: "missed" });
     await seedActivity("a1", addDays(today, -1));
     await seedActivity("a2", addDays(today, -10));
-    expect(ids(await nudges())).toEqual(["missed:w1", STRENGTH.id]);
+    expect(ids(await nudges())).toEqual(["missed:w1", STRENGTH.id, `comeback:${addDays(today, -1)}`]);
+  });
+
+  it("a race close is still offered beside a session just not done and a drift (CI 42165457072's smoke)", async () => {
+    await seedDrift();
+    await seedSession({ id: "w1", date: addDays(today, -1), state: "missed" });
+    await setRace(addDays(today, 10));
+    const offered = await nudges();
+    expect(ids(offered)).toEqual(["missed:w1", STRENGTH.id, `race:${addDays(today, 10)}`]);
+    expect(offered.length).toBeLessThanOrEqual(NUDGES_MAX + 1);
   });
 
   it("held while the coach's conclusion has a check-back after today", async () => {
