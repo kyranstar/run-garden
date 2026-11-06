@@ -53,15 +53,16 @@ describe("alignReading", () => {
     expect(out.extraction.dropped).toEqual([{ move: 2, field: "regions", values: ["shinz"] }]);
   });
 
-  it("finds a move by the earlier reading's name, an alias, the move's own (renamed) name, or a close name", () => {
-    const fresh = reading(["Zorbex knee sway", move("Zorbex rib opener", { aliases: ["Zorbex side reach"] }), "Slow Zorbex hip lift"]);
+  it("finds a move by the earlier reading's name, an alias, or the move's own (renamed) name", () => {
+    // REBASED 2026-11-06 (phase 5 backfill; review I4): no close names — a near name may be another move.
+    const fresh = reading(["Zorbex knee sway", move("Zorbex rib opener", { aliases: ["Zorbex side reach"] }), "Zorbex hip lift"]);
     const out = alignReading(fresh, {
       earlier: earlier(["Zorbex side reach", "Zorbex hip lift", "Kneeling sway"]),
       rows: [row(0, "My side reach"), row(1, "Zorbex hip lift"), row(2, "Zorbex knee sway")],
       fixes: [], keepInsights: false,
     });
     if (!out.ok) throw new Error(JSON.stringify(out));
-    expect(names(out.extraction)).toEqual(["Zorbex rib opener", "Slow Zorbex hip lift", "Zorbex knee sway"]);
+    expect(names(out.extraction)).toEqual(["Zorbex rib opener", "Zorbex hip lift", "Zorbex knee sway"]);
   });
 
   it("a row the owner left out is a place too: its move goes back there, not after", () => {
@@ -114,5 +115,25 @@ describe("alignReading", () => {
       fixes: [], keepInsights: false,
     });
     expect(out).toEqual({ ok: false, why: "invalid" });
+  });
+});
+
+describe("alignReading never takes one move for another (review I4)", () => {
+  it("a near name is not the move: 'Zorbex squat' isn't 'Zorbex split squat' — the earlier reading stays", () => {
+    const out = alignReading(reading(["Zorbex split squat", "Zorbex hip lift"]), {
+      earlier: earlier(["Zorbex squat", "Zorbex hip lift"]),
+      rows: [row(0, "Zorbex squat"), row(1, "Zorbex hip lift")],
+      fixes: [], keepInsights: false,
+    });
+    expect(out).toEqual({ ok: false, why: "missing", missing: ["Zorbex squat"] });
+  });
+
+  it("a move's own name beats another move's alias", () => {
+    const out = alignReading(reading([move("Zorbex hip opener", { aliases: ["Zorbex hip lift"] }), "Zorbex hip lift"]), {
+      earlier: earlier(["Zorbex hip lift", "Zorbex hip opener"]),
+      rows: [row(0, "Zorbex hip lift"), row(1, "Zorbex hip opener")],
+      fixes: [], keepInsights: false,
+    });
+    expect(out.ok && names(out.extraction)).toEqual(["Zorbex hip lift", "Zorbex hip opener"]);
   });
 });

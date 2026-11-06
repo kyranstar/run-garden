@@ -6,8 +6,9 @@
  * is lined up with them first (`alignReading`) — each linked move found again goes back to its link's position, the
  * approved corrections to the reading are applied again on top, the notes Save put in the coach's memory are kept, and
  * moves the earlier reading never had come after the rest (matching then adds their links, as for any post). A linked
- * move the new reading doesn't hold keeps the earlier reading whole: two readings' moves are never mixed (an earlier
- * one's may not even parse under today's schema), and nothing the owner has is rewritten (ruling, phase 5a ledger).
+ * move the new reading doesn't hold — by name, never by a near one (a near name may be another move: final review I4) —
+ * keeps the earlier reading whole: two readings' moves are never mixed (an earlier one's may not even parse under
+ * today's schema), and nothing the owner has is rewritten (ruling, phase 5a ledger).
  */
 import { and, eq, sql, type SQL } from "drizzle-orm";
 import { schema } from "@rg/database";
@@ -15,7 +16,7 @@ import { extractionSchema, normalizeMoveName, priceWords, type Extraction } from
 import type { Db } from "./db.js";
 import { runAtomicallyClaim } from "./db.js";
 import { summaryLine } from "./import-trail.js";
-import { notFittingSql, openBatchSql } from "./saves-batches.js";
+import { notFittingSql } from "./saves-batches.js";
 import { EXTRACT_MODEL_DEFAULT, typicalReadingMicros } from "./saves-relay.js";
 
 const { savedPosts, importEvents } = schema;
@@ -43,15 +44,15 @@ export const isOwnReading = (e: { stage: string; detail: unknown }): boolean => 
  * Whether a post may be read again, in SQL (every write of the ask carries it, so a race writes nothing): the owner's
  * post from before the trail (no reading of its own), matched or failed — a post the owner skipped or kept as a
  * reference keeps their word, and a filtered one has Import anyway — whose batch isn't being fitted in, with no move of
- * it waiting in a held or open batch (a re-read mid-review would change what the owner is reviewing). One clause.
+ * it waiting in a batch of any kind — held, open, or put aside: a re-read mid-review would change what the owner is
+ * reviewing, and the moves it adds could reach no batch while the post stays in one (final review I1). One clause.
  */
 export function readAgainGateSql(userId: string, postId: string, now: string): SQL {
   return sql`exists (select 1 from saved_posts ra where ra.id = ${postId} and ra.user_id = ${userId}
     and ra.status in ('matched', 'failed')
     and not exists (select 1 from import_events re where re.user_id = ${userId} and re.post_id = ra.id and ${ownReadingSql("re")})
     and (ra.batch_id is null or not exists (select 1 from save_batches rb where rb.id = ra.batch_id and rb.user_id = ${userId} and not ${notFittingSql("rb", now)}))
-    and not exists (select 1 from saved_post_moves rl join save_batches rlb on rlb.id = rl.batch_id and rlb.user_id = rl.user_id
-      where rl.user_id = ${userId} and rl.post_id = ra.id and rl.status = 'pending' and (rlb.status = 'held' or ${openBatchSql("rlb")})))`;
+    and not exists (select 1 from saved_post_moves rl where rl.user_id = ${userId} and rl.post_id = ra.id and rl.status = 'pending' and rl.batch_id is not null))`;
 }
 
 /** What a post's reading is priced from: its source, media and length, and its words (a video page's description and transcript). */
@@ -119,17 +120,6 @@ export type Aligned =
   | { ok: false; why: "missing"; missing: string[] }
   | { ok: false; why: "invalid" };
 
-/** The least share of words two names hold in common for one to be found as the other (the matcher's own floor). */
-export const CLOSE_NAME_MIN = 0.6;
-
-const words = (name: string): Set<string> =>
-  new Set(normalizeMoveName(name).split(" ").map((w) => w.replace(/[^a-z0-9]/g, "")).filter(Boolean));
-const overlap = (a: Set<string>, b: Set<string>): number => {
-  let shared = 0;
-  for (const w of a) if (b.has(w)) shared += 1;
-  return shared === 0 ? 0 : shared / (a.size + b.size - shared);
-};
-
 /** The earlier reading's name and aliases at a place, as kept (any shape). */
 function earlierNames(earlier: unknown, position: number): string[] {
   const moves = earlier && typeof earlier === "object" ? (earlier as { moves?: unknown }).moves : null;
@@ -141,8 +131,9 @@ function earlierNames(earlier: unknown, position: number): string[] {
 
 /**
  * The new reading lined up with the post's links (`rows`, any status: a row the owner left out holds its place too).
- * Each row is found by the earlier reading's name or aliases there, or its move's name now — exactly (normalised), else
- * by the closest name sharing at least CLOSE_NAME_MIN of its words. `kept`: the positions lined up; `added`: the rest,
+ * Each row is found by name (normalised), strongest first, every row a pass before the next: a new move named as the
+ * earlier reading named it there; one named as its move is named now (the owner may have renamed it); then any alias of
+ * either side. Never by a near name: "Zorbex squat" is not "Zorbex split squat". `kept`: the positions lined up; `added`: the rest,
  * which matching links as new. `ok: false` keeps the earlier reading: a linked move not found (`missing`, by name), a
  * place below the last link with no move left to fill it, or a result that wouldn't parse.
  */
@@ -152,43 +143,30 @@ export function alignReading(
 ): Aligned {
   if (o.rows.length === 0) return { ok: true, extraction: fresh, kept: [], added: fresh.moves.map((_, i) => i) };
   const rows = [...o.rows].sort((a, b) => a.position - b.position);
-  const freshKeys = fresh.moves.map((m) => new Set([m.name, ...m.aliases].map(normalizeMoveName).filter(Boolean)));
-  const freshWords = fresh.moves.map((m) => [m.name, ...m.aliases].map(words));
-  const rowNames = rows.map((r) => [...earlierNames(o.earlier, r.position), ...(r.name ? [r.name] : [])]);
+  const norm = (names: readonly string[]): string[] => names.map(normalizeMoveName).filter(Boolean);
+  const freshName = fresh.moves.map((m) => normalizeMoveName(m.name));
+  const freshKeys = fresh.moves.map((m) => new Set(norm([m.name, ...m.aliases])));
+  const earlierOf = rows.map((r) => earlierNames(o.earlier, r.position));
+  const rowNames = rows.map((r, i) => [...earlierOf[i]!, ...(r.name ? [r.name] : [])]);
+  const rowKeys = rowNames.map(norm);
+  const earlierName = earlierOf.map((names) => (names[0] ? normalizeMoveName(names[0]) : ""));
+  const nameNow = rows.map((r) => (r.name ? normalizeMoveName(r.name) : ""));
   const at = new Map<number, number>(); // row position → fresh index
   const taken = new Set<number>();
-
-  // Exact names first, for every row, so a close name never takes a move another row names exactly.
-  rows.forEach((r, i) => {
-    const keys = rowNames[i]!.map(normalizeMoveName).filter(Boolean);
-    const j = freshKeys.findIndex((k, jj) => !taken.has(jj) && keys.some((x) => k.has(x)));
-    if (j >= 0) {
-      at.set(r.position, j);
-      taken.add(j);
-    }
-  });
-  rows.forEach((r, i) => {
-    if (at.has(r.position)) return;
-    const mine = rowNames[i]!.map(words).filter((w) => w.size > 0);
-    let best = -1;
-    let score = 0;
-    freshWords.forEach((ws, j) => {
-      if (taken.has(j)) return;
-      for (const w of ws) {
-        for (const m of mine) {
-          const s = overlap(w, m);
-          if (s >= CLOSE_NAME_MIN && s > score) {
-            score = s;
-            best = j;
-          }
-        }
+  /** One pass over the rows still unplaced: each takes the first free new move `fits` says is its own. */
+  const pass = (fits: (i: number, j: number) => boolean) =>
+    rows.forEach((r, i) => {
+      if (at.has(r.position)) return;
+      const j = fresh.moves.findIndex((_, jj) => !taken.has(jj) && fits(i, jj));
+      if (j >= 0) {
+        at.set(r.position, j);
+        taken.add(j);
       }
     });
-    if (best >= 0) {
-      at.set(r.position, best);
-      taken.add(best);
-    }
-  });
+  // Names before aliases, every row a pass before the next: a move's own name is never lost to another's alias.
+  pass((i, j) => earlierName[i] !== "" && freshName[j] === earlierName[i]);
+  pass((i, j) => nameNow[i] !== "" && freshName[j] === nameNow[i]);
+  pass((i, j) => rowKeys[i]!.some((k) => freshKeys[j]!.has(k)));
   const missing = rows.flatMap((r, i) => (at.has(r.position) ? [] : [rowNames[i]![0] ?? r.name ?? "a move"]));
   if (missing.length) return { ok: false, why: "missing", missing };
 

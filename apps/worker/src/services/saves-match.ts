@@ -46,7 +46,7 @@ import { extractJson, RETRY_BACKOFF_MS, RETRYABLE_STATUSES } from "./studio-llm.
 import { FILTER_MODEL_DEFAULT } from "./saves-filter.js";
 import { buildPersonalRecord, loadPersonalForMatch, newPersonalMoveId, type PersonalMatchRow } from "./personal-moves.js";
 import { repairDraft } from "./personal-records.js";
-import { notFittingSql } from "./saves-batches.js";
+import { failedStatusSql } from "./saves-ledger.js";
 
 const { savedPosts, personalMoves, savedPostMoves } = schema;
 
@@ -694,7 +694,8 @@ export async function matchPost(
       db
         .update(savedPosts)
         .set({
-          status: "failed",
+          // A post with links stays matched: its moves are the owner's (final review I5).
+          status: failedStatusSql(userId, postId),
           lastErrorCode: "model_failed",
           lastError: issues.join("; ").slice(0, 500),
           costMicros: sql`${savedPosts.costMicros} + ${costMicros}`,
@@ -797,17 +798,10 @@ export async function matchPost(
       .set({
         status: "matched", lastErrorCode: null, lastError: null, costMicros: sql`${savedPosts.costMicros} + ${judgeCost}`, updatedAt: now,
         ...(opts.checked ? { extraction: opts.checked } : {}),
-        // A re-read's new moves wait for the next batch: the post leaves a batch that is done with it (saved, put aside,
-        // replaced) — never one held, being fitted in, or still holding a move of it waiting (phase 5a).
-        ...(linked.size && linkRows.length
-          ? {
-              batchId: sql`CASE WHEN EXISTS (SELECT 1 FROM save_batches nb WHERE nb.id = ${savedPosts.batchId} AND nb.user_id = ${userId}
-                  AND (nb.status = 'held' OR NOT ${notFittingSql("nb", now)}))
-                OR EXISTS (SELECT 1 FROM saved_post_moves np WHERE np.user_id = ${userId} AND np.post_id = ${postId} AND np.status = 'pending'
-                  AND np.batch_id = ${savedPosts.batchId})
-                THEN ${savedPosts.batchId} ELSE NULL END`,
-            }
-          : {}),
+        // A re-read's new moves wait for the next batch, which takes only a post in none: the post leaves its batch. No
+        // move of it waits in one (Read it again's gate), so the batch is done with it — saved, put aside, or being
+        // fitted in from what was saved (final review I1: a post kept in its batch stranded its new moves).
+        ...(linked.size && linkRows.length ? { batchId: null } : {}),
       })
       .where(mine),
   ]);

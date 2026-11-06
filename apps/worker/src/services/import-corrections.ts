@@ -438,8 +438,10 @@ export function judgeCorrection(
 
   if (op.target === "reading") {
     const path = `$.moves[${ref.n}].${op.field}`;
+    // Never while the post is being read again (phase 5a, final review I2): the re-read is lined up with the corrections
+    // its claim read, and would store over one approved during its call.
     const gate = sql`EXISTS (SELECT 1 FROM saved_posts g WHERE g.user_id = ${userId} AND g.id = ${ref.postId} AND json_valid(g.extraction)
-      AND ${valueIs(sql`json_extract(g.extraction, ${path})`, op.before)})`;
+      AND g.status <> 'extracting' AND ${valueIs(sql`json_extract(g.extraction, ${path})`, op.before)})`;
     return {
       status: "apply",
       touches: "post",
@@ -462,7 +464,7 @@ export function judgeCorrection(
       op.field === "drop" ? { ...base, dropped: true } : op.field === "text" ? { ...base, text: op.after } : op.field === "scope" ? { ...base, scope: op.after } : { ...base, move: op.after };
     const path = `$.insights[${ref.n}]`;
     const gate = sql`EXISTS (SELECT 1 FROM saved_posts g WHERE g.user_id = ${userId} AND g.id = ${ref.postId} AND json_valid(g.extraction)
-      AND ${valueIs(sql`json_extract(g.extraction, ${path})`, asRead)})`;
+      AND g.status <> 'extracting' AND ${valueIs(sql`json_extract(g.extraction, ${path})`, asRead)})`;
     // The coach's memory of it (Save kept a general one: `saved:<post>:<index>`): let go when dropped or no longer
     // general, reworded with it.
     const memoryId = `saved:${ref.postId}:${ref.n}`;

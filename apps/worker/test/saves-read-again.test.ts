@@ -6,14 +6,17 @@
  * data: Zorbex names, a made-up creator, the link assembled at runtime.
  */
 import { beforeEach, describe, expect, it, vi } from "vitest";
-import { eq } from "drizzle-orm";
+import { eq, sql } from "drizzle-orm";
 import { schema } from "@rg/database";
 import type { Env } from "../src/env.js";
 import type { Db } from "../src/services/db.js";
 import { createSession, SESSION_COOKIE } from "../src/auth/sessions.js";
 import { mySavesRoutes } from "../src/routes/my-saves.js";
 import { readPostTrail } from "../src/services/import-trail-read.js";
-import { overridePost, savedPostId, workList } from "../src/services/saves-ledger.js";
+import { markFetchFailed, overridePost, savedPostId, workList } from "../src/services/saves-ledger.js";
+import { correctionsReadSql, correctionStateOf, currentValue, judgeCorrection } from "../src/services/import-corrections.js";
+import { runAtomicallyClaim } from "../src/services/db.js";
+import type { ImportCorrectionOp } from "../src/services/proposal-kinds.js";
 import { PROFILES } from "@rg/exercise-library";
 import { EXTRACT_PROMPT_VERSION } from "@rg/saves";
 import { assembleBatch } from "../src/services/saves-batches.js";
@@ -141,6 +144,8 @@ describe("Read it again: the ask", () => {
       }],
       ["fitting", () => oldSaved({ batch: { fittedAt: null, fitStartedAt: "2026-11-06T09:50:00.000Z" } })],
       ["waiting", () => oldSaved({ batch: { status: "released", savedAt: null, fittedAt: null }, linkStatus: "pending" })],
+      // Review I1: a batch put aside ("Not now") still holds the post's moves waiting: they would never reach a batch.
+      ["put aside", () => oldSaved({ batch: { status: "released", savedAt: null, fittedAt: null, dismissedAt: CAPTURED }, linkStatus: "pending" })],
       ["skipped", () => oldSaved({ status: "skipped_by_owner" })],
       ["reference", () => oldSaved({ status: "reference_only" })],
       ["filtered", () => oldSaved({ status: "filtered_out" })],
@@ -263,14 +268,18 @@ describe("the re-read never rewrites what the owner has (the proof the controlle
     expect(await linksOf(id)).toEqual(expect.arrayContaining([[0, "myZorbexHipLift0001", "saved", "batch-old"], [1, "myZorbexKneeSwing03", "saved", "batch-old"]]));
   });
 
-  it("the trail then tells the new reading: its own steps replace the rebuilt ones, the moves keep their names, the post's words come with them", async () => {
+  it("the trail then tells the new reading: its own steps replace the rebuilt reading, the post's history stays, the moves keep their names", async () => {
     const id = await oldSaved();
     await readAgain(db, userId, id, NOW);
     await reread(id, gateway(FRESH));
     const trail = (await readPostTrail(db, userId, id, NOW))!;
-    expect(trail.rebuilt).toBe(false);
-    expect(trail.events.every((e) => !e.rebuilt)).toBe(true);
-    expect(trail.events.map((e) => e.stage)).toEqual(["choice", "extract", "check", "match"]);
+    // Review I3: only the rebuilt reading gives way; where it came from, its screening, its batch, the owner's choices
+    // and what was saved are still its history (and still marked rebuilt).
+    expect(trail.rebuilt).toBe(true);
+    expect(trail.events.map((e) => [e.stage, e.rebuilt])).toEqual([
+      ["submit", true], ["screen", true], ["batch", true], ["choice", true], ["save", true],
+      ["choice", false], ["extract", false], ["check", false], ["match", false],
+    ]);
     const extract = trail.events.find((e) => e.stage === "extract")!;
     expect(extract).toMatchObject({ promptVersion: EXTRACT_PROMPT_VERSION, status: "ok" });
     expect(extract.summary).toBe("Read 3 moves (a routine) — read again, lined up with the 2 moves it had");
@@ -305,7 +314,10 @@ describe("the re-read never rewrites what the owner has (the proof the controlle
     const id = await oldSaved();
     await readAgain(db, userId, id, NOW);
     await reread(id, gateway(null, 500));
-    expect(await post(id)).toMatchObject({ status: "failed", extraction: EARLIER });
+    // Review I5: its moves are still the owner's — the post stays matched, the failure kept as its code, and the work
+    // list tries it again as it tries any failed reading.
+    expect(await post(id)).toMatchObject({ status: "matched", lastErrorCode: "model_failed", extraction: EARLIER });
+    expect((await workList(db, userId, NOW)).map((w) => [w.key, w.action])).toEqual([[KEY, "extract"]]);
     const trail = (await readPostTrail(db, userId, id, NOW))!;
     expect(trail.rebuilt).toBe(true);
     expect(trail.events.map((e) => [e.stage, e.rebuilt, e.status])).toEqual([
@@ -322,6 +334,7 @@ describe("the re-read never rewrites what the owner has (the proof the controlle
     });
     await readAgain(db, userId, id, NOW);
     await reread(id, gateway(null, 500));
+    expect((await post(id)).status).toBe("failed"); // nothing kept: a failed post as before
     const trail = (await readPostTrail(db, userId, id, NOW))!;
     expect(trail.events.filter((e) => e.stage === "extract").map((e) => [e.rebuilt, e.status])).toEqual([[false, "fail"]]);
   });
@@ -341,5 +354,51 @@ describe("the re-read never rewrites what the owner has (the proof the controlle
     expect(after.links.length).toBe(before.links.length + 1);
     expect(after.moves.length).toBe(before.moves.length + 1);
     for (const m of before.moves) expect(after.moves.find((x) => x.id === m.id)).toEqual(m);
+  });
+});
+
+describe("the final review's fix pass (phase 5a)", () => {
+  it("I1: a fit started after the ask — the re-read's new moves still reach the next batch", async () => {
+    const id = await oldSaved({ batch: { fittedAt: null } }); // saved, not yet fitted in: its moves are kept
+    expect(await readAgain(db, userId, id, NOW)).toBe("ok");
+    await db.update(saveBatches).set({ fitStartedAt: NOW }).where(eq(saveBatches.id, "batch-old")); // the owner taps Fit them in
+    await reread(id, gateway(FRESH));
+    expect((await post(id)).batchId).toBeNull();
+    const added = (await db.select().from(savedPostMoves).where(eq(savedPostMoves.postId, id))).filter((l) => l.position === 2);
+    expect(added.map((l) => [l.status, l.batchId])).toEqual([["pending", null]]);
+  });
+
+  it("I2: a correction to the reading approved while the post is being read is refused — so the re-read can never undo it", async () => {
+    const id = await oldSaved();
+    const op = (field: "why"): ImportCorrectionOp => ({
+      kind: "import_correction", id: "c1", target: "reading", targetId: `${id}:1`, field, before: null, after: "loosens the knees after runs",
+      why: "the post says so", basis: "evidence", cites: [], name: "Zorbex knee swing", line: "Why fixed", posts: [id], date: "2026-11-06",
+      toolUseId: "t1", at: NOW,
+    });
+    const tryApprove = async () => {
+      const [states] = (await db.all(correctionsReadSql(userId, [op("why")], "2026-11-06"))) as Array<Record<string, unknown>>;
+      const state = correctionStateOf(states?.s0);
+      const now = currentValue("reading", `${id}:1`, "why", state);
+      const verdict = judgeCorrection(db, userId, { ...op("why"), before: "value" in now ? now.value : null }, state, { proposalId: "p1", runId: null, now: NOW, asRead: sql`1`, today: "2026-11-06" });
+      if (verdict.status !== "apply") return verdict.status;
+      return (await runAtomicallyClaim(db, verdict.statements)) > 0 ? "applied" : "refused";
+    };
+    await db.update(savedPosts).set({ status: "extracting" }).where(eq(savedPosts.id, id)); // the re-read's call is out
+    expect(await tryApprove()).toBe("refused");
+    expect((await post(id)).extraction).toEqual(EARLIER);
+    expect(await db.select().from(importCorrections).where(eq(importCorrections.id, "c1"))).toEqual([]);
+    await db.update(savedPosts).set({ status: "matched" }).where(eq(savedPosts.id, id)); // and once it isn't, it applies
+    expect(await tryApprove()).toBe("applied");
+  });
+
+  it("I5: a re-read whose post is gone ends matched with the earlier reading, says so, and isn't handed out again", async () => {
+    const id = await oldSaved();
+    await readAgain(db, userId, id, NOW);
+    expect(await markFetchFailed(db, userId, id, "gone", NOW)).toBe("ok");
+    expect(await post(id)).toMatchObject({ status: "matched", lastErrorCode: "gone", extraction: EARLIER });
+    expect(await linksOf(id)).toEqual([[0, "myZorbexHipLift0001", "saved", "batch-old"], [1, "myZorbexKneeSwing03", "saved", "batch-old"]]);
+    expect(await workList(db, userId, NOW)).toEqual([]);
+    const trail = (await readPostTrail(db, userId, id, NOW))!;
+    expect(trail.events.at(-1)).toMatchObject({ stage: "read", status: "fail", summary: "The post is gone" });
   });
 });

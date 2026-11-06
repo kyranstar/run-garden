@@ -67,7 +67,15 @@ export async function readPostTrail(db: Db, userId: string, postId: string, now:
       },
     })
     .from(savedPosts)
-    .leftJoin(saveBatches, and(eq(saveBatches.id, savedPosts.batchId), eq(saveBatches.userId, userId)))
+    // Its batch — or, once a re-read let it leave that batch for the next, the batch its kept moves were saved in.
+    .leftJoin(
+      saveBatches,
+      and(
+        eq(saveBatches.userId, userId),
+        sql`${saveBatches.id} = coalesce(${savedPosts.batchId}, (SELECT bl.batch_id FROM saved_post_moves bl WHERE bl.user_id = ${userId}
+          AND bl.post_id = ${savedPosts.id} AND bl.batch_id IS NOT NULL ORDER BY bl.status = 'saved' DESC, bl.position LIMIT 1))`,
+      ),
+    )
     .where(and(eq(savedPosts.id, postId), eq(savedPosts.userId, userId)))
     .limit(1);
   if (!found) return null;
@@ -138,19 +146,22 @@ export async function readPostTrail(db: Db, userId: string, postId: string, now:
       }));
   // A post from before the trail has no screening or reading of its own; one touched since (saved, edited) has later
   // steps only. Either way its kept columns are rebuilt, marked, before whatever came after (final review I4).
-  // Its own reading: a screening, or a reading of its moves that was stored. A re-read that failed, or kept the earlier
-  // reading, is none: the post's reading is still the kept one, and its rebuilt steps stand (phase 5a).
+  // A post from before the trail: none of its steps came in with it (every post since writes its submit). Its rebuilt
+  // steps are its history, and stay; only its rebuilt reading (the reading and its matching) gives way, once a reading of
+  // its own is stored (final review I3). A re-read that failed, or kept the earlier reading, stores none.
+  const old = !stored.some((e) => e.stage === "submit" || e.stage === "screen");
   const hasOwnReading = stored.some(isOwnReading);
   // A step the trail recorded itself is never rebuilt beside it (a post saved after the trail began has its own save
   // step); the owner's choices are rebuilt unless the trail recorded the fit of the post's own batch; and a failed
   // reading is never rebuilt beside the trail's own failure — the kept reading itself still is.
   const recorded = (e: TrailEventDto): boolean =>
     e.stage === "choice"
-      ? rows.some((r) => r.stage === "choice" && !!r.batchId && r.batchId === p.batchId)
+      ? rows.some((r) => r.stage === "choice" && !!r.batchId && r.batchId === batch?.id)
       : e.stage === "extract"
         ? e.status === "fail" && stored.some((s) => s.stage === "extract")
         : stored.some((s) => s.stage === e.stage);
-  const rebuiltSteps = hasOwnReading ? [] : rebuiltEvents(p, batch, links).filter((e) => !recorded(e));
+  const replaced = (e: TrailEventDto): boolean => hasOwnReading && (e.stage === "extract" || e.stage === "match");
+  const rebuiltSteps = old ? rebuiltEvents(p, batch, links).filter((e) => !replaced(e) && !recorded(e)) : [];
   const rebuilt = rebuiltSteps.length > 0;
   const events = [...rebuiltSteps, ...stored];
 

@@ -15,7 +15,7 @@ import { wakeGateway } from "./gateway-route.js";
 import { IMPORT_KINDS, reserveImport, settleImport } from "./saves-budget.js";
 import { noteGatewayOutcome } from "./ai-credits.js";
 import { extractJson } from "./studio-llm.js";
-import { MAX_EXTRACT_ATTEMPTS, RELAY_CLAIM_STALE_MS, RETRYABLE_ERROR_CODES, siteSource } from "./saves-ledger.js";
+import { FAILED_STATUSES, failedStatusSql, MAX_EXTRACT_ATTEMPTS, RELAY_CLAIM_STALE_MS, RETRYABLE_ERROR_CODES, siteSource } from "./saves-ledger.js";
 import { matchPost } from "./saves-match.js";
 import { alignReading, type KeptRow, type ReadingFix } from "./saves-reread.js";
 
@@ -347,7 +347,7 @@ async function runExtraction(
             eq(savedPosts.status, "queued"),
             // `too_large` too: the extension retries a too-large post at a smaller size straight away (`/work` never
             // hands it out again, so only that retry reaches it); the attempt limit above still holds.
-            and(eq(savedPosts.status, "failed"), inArray(savedPosts.lastErrorCode, [...RETRYABLE_ERROR_CODES, "too_large"])),
+            and(inArray(savedPosts.status, [...FAILED_STATUSES]), inArray(savedPosts.lastErrorCode, [...RETRYABLE_ERROR_CODES, "too_large"])),
             and(eq(savedPosts.status, "extracting"), lt(savedPosts.updatedAt, stale)),
           ),
         ),
@@ -426,7 +426,8 @@ async function runExtraction(
       .update(savedPosts)
       .set({
         // A re-read that didn't line up keeps the earlier reading: the post stands matched, as it was (phase 5a).
-        status: "extraction" in out ? (out.keptEarlier ? "matched" : "extracted") : "failed",
+        // A failure on a post with links keeps it matched, its moves the owner's (final review I5).
+        status: "extraction" in out ? (out.keptEarlier ? "matched" : "extracted") : failedStatusSql(userId, post.id),
         ...("extraction" in out ? { ...(out.keptEarlier ? {} : { extraction: out.extraction }), lastErrorCode: null } : { lastErrorCode: out.code }),
         lastError: "extraction" in out || !out.why?.length ? null : out.why.join(" | ").slice(0, LAST_ERROR_CHARS),
         costMicros: sql`${savedPosts.costMicros} + ${costMicros}`,
@@ -973,8 +974,14 @@ function issueText(i: ZodIssue): string {
 export async function markTooLarge(db: Db, userId: string, postId: string, now: string): Promise<void> {
   const marked = await db
     .update(savedPosts)
-    .set({ status: "failed", lastErrorCode: "too_large", lastError: null, extractAttempts: sql`${savedPosts.extractAttempts} + 1`, updatedAt: now })
-    .where(and(eq(savedPosts.id, postId), eq(savedPosts.userId, userId), inArray(savedPosts.status, ["queued", "failed"])))
+    .set({ status: failedStatusSql(userId, postId), lastErrorCode: "too_large", lastError: null, extractAttempts: sql`${savedPosts.extractAttempts} + 1`, updatedAt: now })
+    .where(
+      and(
+        eq(savedPosts.id, postId),
+        eq(savedPosts.userId, userId),
+        or(inArray(savedPosts.status, ["queued", "failed"]), and(eq(savedPosts.status, "matched"), inArray(savedPosts.lastErrorCode, [...RETRYABLE_ERROR_CODES, "too_large"]))),
+      ),
+    )
     .returning({ source: savedPosts.source });
   if (marked.length > 0) {
     await runAtomically(db, trailStatements(db, userId, postId, [

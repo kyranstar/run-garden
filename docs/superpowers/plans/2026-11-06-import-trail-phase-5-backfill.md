@@ -44,12 +44,20 @@ position that has a link alone (no new move, no new link) and matches only the a
 2. **Read it again keeps everything the owner has**: links (any status), moves, corrections. A found move's new words go
    at its link's position; a correction to the reading is applied again on top; saved insights (in the coach's memory by
    index) are kept. Cost: a re-read's new insights on a saved post are on its raw reply only.
-3. **All or nothing on alignment**: when a linked move isn't in the new reading (by name, alias, or close name), the
-   earlier reading stays whole; the reply is on the trail. Cost: a post whose re-read renamed one move gets no new words
-   for the others either (partial alignment deferred).
+3. **All or nothing on alignment, by name only**: a linked move is found by the earlier reading's name, its move's name
+   now, or an alias — names before aliases, never a near name ("Zorbex squat" is not "Zorbex split squat"; final
+   review I4). When one isn't found, the earlier reading stays whole; the reply is on the trail. Cost: a post whose
+   re-read renamed one move gets no new words for the others either (partial alignment deferred).
 4. **No re-screen**: Read it again reads the moves only (extract-6); a filtered post keeps Import anyway as its way back
    in (shown beside its "Not training" line). Cost: a post screened out under filter-1 isn't re-screened under filter-2.
-5. **Offered on an old post that is matched or failed, not being fitted, with no move waiting in a held or open batch.**
+5. **Offered on an old post that is matched or failed, not being fitted, with no move of it waiting in any batch**
+   (held, open, or put aside: final review I1). A re-read that adds moves lets the post leave its batch for the next.
+7. **An old post keeps its history after a re-read** (final review I3; amends the brief's "rebuilt steps only while
+   it has no reading of its own"): only the rebuilt reading and its matching give way to a stored reading; provenance,
+   screening, batch, choices and saved stay, marked rebuilt. Cost: a trail that mixes rebuilt history with a fresh
+   reading — each step labelled.
+8. **A failure on a post with links keeps it matched** (final review I5), its code kept; the work list retries it as any
+   failed reading. **A correction to a post's reading waits while the post is being read** (final review I2).
 6. **Watch it too frees its post's link rows** (it deleted none and marked pending ones removed, so the watched reading's
    links collided with them on (post, position) and were dropped): found while building the re-read; fixed test-first.
 

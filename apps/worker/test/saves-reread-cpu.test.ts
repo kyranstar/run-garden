@@ -1,6 +1,6 @@
 /**
  * Read it again's CPU at its worst case (phase 5a): an old post's 12 links (the cap readings had before extract-6) lined
- * up with a 30-move re-read by close names only (every row scores every move), with corrections to re-apply — and 30
+ * up with a 30-move re-read found only by alias, in the last pass (every row tries every move in each), with corrections to re-apply — and 30
  * links, which no old post has. The relay's request holds it beside the call's own work. Timed as the other benches are
  * (quotes-bench.test.ts): a calibration loop before and after, times scaled to the reference machine; skipped on a runner
  * too far from it, printed on CI.
@@ -44,8 +44,8 @@ function calibrate(): number {
 const conditions = Object.fromEntries(
   Object.values(PROFILES).map((p) => [p.id, { attrs: Object.fromEntries(Object.entries(p.attributes).map(([k, s]) => [k, s.kind === "scale" ? s.min : false])), note: "ok" }]),
 );
-const move = (name: string) => ({
-  name, aliases: ["Zorbex alias one", "Zorbex alias two"], summary: "s", steps: ["a"], cues: [], mistakes: [], purpose: "p",
+const move = (name: string, alias: string) => ({
+  name, aliases: ["Zorbex alias one", alias], summary: "s", steps: ["a"], cues: [], mistakes: [], purpose: "p",
   dose: { text: "10", type: "reps", range: [10, 10] }, patterns: ["mobility"], regions: ["hips"], equipment: ["mat"], position: "seated",
   laterality: "alternating", load: "bodyweight", contraction: ["isotonic"], difficulty: 2, conditions,
   evidence: { name: "stated", dose: "stated", steps: "stated" }, confidence: "high",
@@ -54,10 +54,10 @@ const word = (i: number) => String.fromCharCode(97 + (i % 26)) + String.fromChar
 
 describe("alignReading within the Workers free plan's CPU", () => {
   for (const links of [12, 30]) {
-    it(`${links} links by close names against a 30-move re-read, corrections again: under ${CEILING_MS} ms scaled p50`, (ctx) => {
-      const fresh = extractionSchema.parse({ kind: "routine", summary: "s", themes: [], moves: Array.from({ length: 30 }, (_, i) => move(`Slow Zorbex ${word(i)} drift hold`)).reverse() });
+    it(`${links} links by alias against a 30-move re-read, corrections again: under ${CEILING_MS} ms scaled p50`, (ctx) => {
+      const fresh = extractionSchema.parse({ kind: "routine", summary: "s", themes: [], moves: Array.from({ length: 30 }, (_, i) => move(`Slow Zorbex ${word(i)} drift hold`, `Zorbex ${word(i)} drift hold`)).reverse() });
       const rows: KeptRow[] = Array.from({ length: links }, (_, i) => ({ position: i, moveId: `my${i}`, moveKind: "personal", status: "saved", name: `Zorbex ${word(i)} drift hold` }));
-      const earlier = { moves: Array.from({ length: links }, (_, i) => ({ name: `Zorbex ${word(i)} drift hold`, aliases: ["Old alias"] })) };
+      const earlier = { moves: Array.from({ length: links }, (_, i) => ({ name: `Old Zorbex ${word(i)} drift`, aliases: ["Old alias"] })) };
       const fixes = Array.from({ length: links }, (_, i) => ({ position: i, field: "why" as const, after: "the post says so" }));
       const run = () => alignReading(fresh, { earlier, rows, fixes, keepInsights: true });
       expect(run().ok).toBe(true);

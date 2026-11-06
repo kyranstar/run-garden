@@ -1,4 +1,4 @@
-import { and, asc, desc, eq, gte, inArray, isNotNull, isNull, lt, ne, or, sql } from "drizzle-orm";
+import { and, asc, desc, eq, gte, inArray, isNotNull, isNull, lt, ne, or, sql, type SQL } from "drizzle-orm";
 import { schema } from "@rg/database";
 import type { SavedPostRow, SavedVideoInfo } from "@rg/database";
 import type { CheckReport, PostSubmit, ReadFailed, SaveErrorCode, SavesStatusDto, TrailSource, WorkItem } from "@rg/saves";
@@ -25,6 +25,18 @@ export const KNOWN_MAX_KEYS = 200;
  * also claims a `too_large` post, for the extension's immediate smaller retry — never through `/work`.)
  */
 export const RETRYABLE_ERROR_CODES: readonly SaveErrorCode[] = ["media_failed", "model_failed", "app_unreachable", "budget_paused", "unknown"];
+
+/**
+ * A failed reading's status, in SQL: `failed` — unless the post has links, whose moves are the owner's: then it stays
+ * `matched`, the failure kept as its code (an old post read again that failed; phase 5a, final review I5), so it never
+ * reads as failed nor leaves the moves it has. A `matched` post with a code is one such: `/work` and the relay's claim
+ * take it as they take a failed one.
+ */
+export function failedStatusSql(userId: string, postId: string): SQL {
+  return sql`CASE WHEN EXISTS (SELECT 1 FROM saved_post_moves fl WHERE fl.user_id = ${userId} AND fl.post_id = ${postId}) THEN 'matched' ELSE 'failed' END`;
+}
+/** Failed, as the work list and the relay read it: `failed`, or a re-read that failed on a post with links (above). */
+export const FAILED_STATUSES = ["failed", "matched"] as const;
 
 
 /**
@@ -208,7 +220,10 @@ export async function workList(
   // `failed`/`unknown`, so the owner's retry can requeue it instead of it reading "extracting" forever.
   const givenUp = await db
     .update(savedPosts)
-    .set({ status: "failed", lastErrorCode: "unknown", lastError: "the reading that held it never finished", updatedAt: now })
+    .set({
+      status: sql`CASE WHEN EXISTS (SELECT 1 FROM saved_post_moves fl WHERE fl.user_id = ${userId} AND fl.post_id = ${savedPosts.id}) THEN 'matched' ELSE 'failed' END`,
+      lastErrorCode: "unknown", lastError: "the reading that held it never finished", updatedAt: now,
+    })
     .where(
       and(
         eq(savedPosts.userId, userId),
@@ -279,7 +294,7 @@ export async function workList(
           ),
           and(eq(savedPosts.status, "extracting"), lt(savedPosts.updatedAt, relayStale), lt(savedPosts.extractAttempts, MAX_EXTRACT_ATTEMPTS)),
           and(
-            eq(savedPosts.status, "failed"),
+            inArray(savedPosts.status, [...FAILED_STATUSES]),
             lt(savedPosts.extractAttempts, MAX_EXTRACT_ATTEMPTS),
             inArray(savedPosts.lastErrorCode, [...RETRYABLE_ERROR_CODES]),
           ),
@@ -325,18 +340,22 @@ export async function markFetchFailed(
   const staleClaim = and(eq(savedPosts.status, "extracting"), lt(savedPosts.updatedAt, relayStale));
   const waiting =
     code === "gone"
-      ? or(inArray(savedPosts.status, ["seen", "queued", "failed"]), staleClaim)
+      ? or(
+          inArray(savedPosts.status, ["seen", "queued", "failed"]),
+          and(eq(savedPosts.status, "matched"), inArray(savedPosts.lastErrorCode, [...RETRYABLE_ERROR_CODES])),
+          staleClaim,
+        )
       : or(
           eq(savedPosts.status, "queued"),
-          and(eq(savedPosts.status, "failed"), inArray(savedPosts.lastErrorCode, [...RETRYABLE_ERROR_CODES, "too_large"])),
+          and(inArray(savedPosts.status, [...FAILED_STATUSES]), inArray(savedPosts.lastErrorCode, [...RETRYABLE_ERROR_CODES, "too_large"])),
           staleClaim,
         );
   const updated = await db
     .update(savedPosts)
     .set(
       code === "gone"
-        ? { status: "failed", lastErrorCode: "gone", lastError: null, updatedAt: now }
-        : { status: "failed", lastErrorCode: code, lastError: null, extractAttempts: sql`${savedPosts.extractAttempts} + 1`, updatedAt: now },
+        ? { status: failedStatusSql(userId, id), lastErrorCode: "gone", lastError: null, updatedAt: now }
+        : { status: failedStatusSql(userId, id), lastErrorCode: code, lastError: null, extractAttempts: sql`${savedPosts.extractAttempts} + 1`, updatedAt: now },
     )
     .where(and(eq(savedPosts.id, id), eq(savedPosts.userId, userId), waiting))
     .returning({ id: savedPosts.id, source: savedPosts.source });
