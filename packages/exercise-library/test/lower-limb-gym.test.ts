@@ -1,6 +1,6 @@
 import { describe, expect, test } from "vitest";
 import {
-  EXERCISES, LOCATION_PRESETS, NO_EQUIPMENT_GEAR, TMJ, hasEquipment, makeEngineData, recordFlareSafe, searchLibrary, validateLibrary, type ExerciseRecord,
+  EXERCISES, LOCATION_PRESETS, NO_EQUIPMENT_GEAR, TMJ, hasEquipment, isPracticeMove, makeEngineData, recordFlareSafe, searchLibrary, validateLibrary, type ExerciseRecord,
 } from "../src/index.js";
 
 // Task 13 (A9, R9): the lower-limb stretches, slow-lowering strength and gym moves the library lacked, each held to the
@@ -27,7 +27,8 @@ const gear = (id: string) => LOCATION_PRESETS.find((l) => l.id === id)!.equipmen
 describe("the added records", () => {
   test("all exist, come last in the library, and the library still validates with them", () => {
     for (const id of ADDED) expect(byId.has(id), id).toBe(true);
-    expect(EXERCISES.slice(-ADDED.length).map((e) => e.id).sort()).toEqual([...ADDED].sort());
+    // Last of the general moves; a fixed practice's own moves (`isPracticeMove`) came after and pick nothing up.
+    expect(EXERCISES.filter((e) => !isPracticeMove(e)).slice(-ADDED.length).map((e) => e.id).sort()).toEqual([...ADDED].sort());
     expect(validateLibrary(makeEngineData({ activeProfiles: ["tmj"], careProfiles: ["tmj"], exercises: EXERCISES }))).toEqual([]);
   });
 

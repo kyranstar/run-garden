@@ -25,7 +25,7 @@
  */
 import type { WorkoutDoc, WorkoutItem } from "@rg/domain";
 import { sessionLead } from "@rg/domain";
-import { PROFILES, isPlyometric, isProfileId, label, onFrontier, type ExerciseRecord } from "@rg/exercise-library";
+import { PROFILES, isPlyometric, isPracticeMove, isProfileId, label, onFrontier, type ExerciseRecord } from "@rg/exercise-library";
 import { Swapping, type SlotChoice, type Step, type Target } from "@rg/session-engine";
 import {
   DocTooLargeError,
@@ -358,7 +358,8 @@ function judgeInPlace(
 /**
  * The library's usual offers for an exercise item (`rec`, its move), best first and nine at most: its easier versions
  * (two steps down), then its family's other versions, then moves of its patterns — each dosed the same way (reps, time
- * or breaths: the item's dose stays), never a jump in a move's place that is not one, never a move `away` names: a
+ * or breaths: the item's dose stays), never a jump in a move's place that is not one, never a fixed practice's move in
+ * the place of one from outside it (`isPracticeMove`), never a move `away` names: a
  * version of a move the document holds elsewhere (`keys`: family and regions, so the document's own moves too), or one
  * the item already plans as an alternate (`ids`).
  *
@@ -385,6 +386,7 @@ export function libraryOffers(
     seen.add(r.id);
     if (away.ids.has(r.id) || away.keys.has(Swapping.moveKeyOf(r)) || kind(r) !== kind(rec)) return;
     if (isPlyometric(r) && !isPlyometric(rec)) return;
+    if (isPracticeMove(r) && !isPracticeMove(rec)) return;
     if (soft && !eases(r)) return;
     out.push({ to: r, reason: typeof reason === "string" ? reason : reason(r) });
   };

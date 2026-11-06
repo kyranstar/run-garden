@@ -46,6 +46,7 @@ export const GLOSSARY: Readonly<Record<string, string>> = {
   elastic: "Quick, springy rebounds, like a bouncing ball.",
   "eccentric-emphasis": "Puts the work into the slow lowering half of the move.",
   "isometric-hold": "Built around holding one position still.",
+  tre: "Part of the TRE sequence: tire the legs and hips, then let them tremor.",
 
   // ── Regions (and the tag "thoracic") ──
   jaw: "Your jaw, its joint by the ear, and the muscles that open and close it.",

@@ -37,9 +37,9 @@
  *   per family, the probe passed) — worked out for the whole document at once (`onePartPerMove`), so a move a part turns
  *   away goes on to the next part that wants it, and no two parts' lists share a move. A part is never emptied so: when
  *   every move it could offer is listed elsewhere, it offers them too (the one way a move shows in two parts).
- * - Never: a move already in the document (items or alternates), or of a family already in the part; set aside
- *   (`ctx.excluded`); needing gear the place lacks (`ctx.equipment`); raising any issue — error or warning — at the
- *   item in that part, for the day (`validateWorkoutDoc` with the day, the active profiles, the set-aside list and the
+ * - Never: a move already in the document (items or alternates), or of a family already in the part; a fixed practice's
+ *   move (`isPracticeMove`); set aside (`ctx.excluded`); needing gear the place lacks (`ctx.equipment`); raising any
+ *   issue — error or warning — at the item in that part, for the day (`validateWorkoutDoc` with the day, the active profiles, the set-aside list and the
  *   gear): a suggestion is never a cost. A schema issue anywhere else in the probe is a programming error: it throws.
  *   A jump (plyometric) only in a power part where a jump raises no `jump_placement` (`jumpPlaceableIn`: straight sets
  *   or a superset, no other part holding jumps, no lift before it), on a day that is the day itself (not a template or
@@ -59,6 +59,7 @@ import {
   REGIONS,
   hasEquipment,
   isPlyometric,
+  isPracticeMove,
   label,
   onFrontier,
   type ConditionProfile,
@@ -434,7 +435,7 @@ export function suggestForPart(doc: WorkoutDoc, partIndex: number, library: read
     if (!scorerOf(doc.parts[pi]!.purpose)) return [];
     const out: Scored[] = [];
     for (const rec of library) {
-      if (inDoc.has(rec.id) || excluded.has(rec.id) || !hasEquipment(rec, ctx.equipment)) continue;
+      if (inDoc.has(rec.id) || excluded.has(rec.id) || isPracticeMove(rec) || !hasEquipment(rec, ctx.equipment)) continue;
       const here = fitIn(rec, pi);
       if (here) out.push({ rec, fit: here.fit, reason: here.reason.slice(0, REASON_MAX) });
     }

@@ -55,12 +55,13 @@ export type Purpose = (typeof PURPOSES)[number];
 export const TAGS = [
   "posture", "ski", "running", "hip-opening", "glute-activation", "single-leg", "landing", "deceleration", "anti-rotation",
   "desk-relief", "breath", "thoracic", "ankle", "balance", "rotational", "lateral", "grip", "core-stability",
-  "elastic", "eccentric-emphasis", "isometric-hold",
+  "elastic", "eccentric-emphasis", "isometric-hold", "tre",
 ] as const;
 export type Tag = (typeof TAGS)[number];
 
+/** `practice`: a move that belongs to one fixed practice. No block of the day's build takes it (`isPracticeMove`). */
 export const ROLES = [
-  "warmup", "activation", "core", "accessory", "finisher", "jaw-care", "mobility", "stretch", "downshift", "cooldown",
+  "warmup", "activation", "core", "accessory", "finisher", "jaw-care", "mobility", "stretch", "downshift", "cooldown", "practice",
 ] as const;
 export type Role = (typeof ROLES)[number];
 
@@ -127,7 +128,7 @@ const LABELS: Record<string, string> = {
   warmup: "Warm-up", cooldown: "Cool-down", "condition-care": "Condition care",
   "hip-opening": "Hip opening", "glute-activation": "Glute activation", "single-leg": "Single-leg",
   "desk-relief": "Desk relief", "core-stability": "Core stability", "eccentric-emphasis": "Eccentric emphasis",
-  "isometric-hold": "Isometric hold", "anti-rotation": "Anti-rotation",
+  "isometric-hold": "Isometric hold", "anti-rotation": "Anti-rotation", tre: "TRE",
 };
 
 /** A readable label for a pattern or region key. */

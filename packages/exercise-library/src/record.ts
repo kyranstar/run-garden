@@ -96,6 +96,13 @@ export interface ExerciseRecord {
 export const countsPerSide = (ex: Pick<ExerciseRecord, "laterality" | "dose">): boolean =>
   ex.laterality === "unilateral" || (ex.laterality === "alternating" && ex.dose.type !== "time" && ex.dose.type !== "carry");
 
+/**
+ * A move that belongs to one fixed practice (TRE's sequence, say): it plays where that practice's own documents put it.
+ * Nothing picks it for another session: no block of the day's build takes its role, and the quick starts, suggestions and
+ * ⇄ offers leave it out. Search still finds it, and the athlete or the coach can place it by hand.
+ */
+export const isPracticeMove = (ex: Pick<ExerciseRecord, "roles">): boolean => ex.roles.includes("practice");
+
 /** A jump, hop, bound or landing (validation requires `contraction` on every record; a hand-made one without it isn't). */
 export const isPlyometric = (ex: Pick<ExerciseRecord, "contraction">): boolean =>
   Array.isArray(ex.contraction) && ex.contraction.includes("plyometric");

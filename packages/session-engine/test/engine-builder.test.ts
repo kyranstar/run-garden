@@ -1,4 +1,4 @@
-import { isPlyometric, plyometricDay, type Theme } from "@rg/exercise-library";
+import { isPlyometric, isPracticeMove, plyometricDay, type Theme } from "@rg/exercise-library";
 import { describe, expect, test } from "vitest";
 import { Builder, Lib, type HistorySession, type Mode, type Plan } from "../src/index.js";
 import { PLACES, block, data, gym, home, makeInput, themeById, themeFor } from "./builder-fixtures.js";
@@ -221,10 +221,11 @@ test("a never-done core lift counts as the week's new move", () => {
 test("the weekly new move is guaranteed whenever a never-done move fits a slot, even in short sessions", () => {
   const missed: string[] = [];
   // Where a move can go (ruling b): a plyometric move only in a jumping day's jumps block; on a jumping day the
-  // accessory block is that jumps block, so a move with no other role has no slot.
-  const hasSlot = (keep: (typeof data.exercises)[number], theme: Theme) => plyometricDay(theme)
+  // accessory block is that jumps block, so a move with no other role has no slot. A fixed practice's move has none on
+  // any day: the build never makes it the week's new move.
+  const hasSlot = (keep: (typeof data.exercises)[number], theme: Theme) => !isPracticeMove(keep) && (plyometricDay(theme)
     ? isPlyometric(keep) || keep.roles.some(r => r !== "accessory" && r !== "finisher")
-    : !isPlyometric(keep);
+    : !isPlyometric(keep));
   for (const theme of data.themes.filter(t => t.modes.includes("consistent"))) {
     for (const keep of data.exercises) {
       if (keep.roles.includes("core") || !Lib.eligible(data, keep, { equipment: home.equipment, mode: "consistent" })) continue;

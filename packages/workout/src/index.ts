@@ -10,3 +10,4 @@ export * from "./validate.js";
 export { suggestForPart, suggestedItem, type SuggestCtx, type Suggestion } from "./suggest.js";
 export { QUICK_START_KINDS, QUICK_START_MINUTES, quickStartDoc, quickStartKinds, resisted, type QuickStart, type QuickStartKind } from "./quick-start.js";
 export * from "./editor.js";
+export { TRE_WHOLE_SEQUENCE_SESSIONS, treSessionDoc } from "./tre-course.js";

@@ -13,6 +13,7 @@ import { LOWER } from "./lower.js";
 import { LOWER_LEG } from "./lower-leg.js";
 import { LOWER_LIMB_GYM } from "./lower-limb-gym.js";
 import { MOBILITY } from "./mobility.js";
+import { TRE } from "./tre.js";
 import { UPPER } from "./upper.js";
 
 /**
@@ -22,5 +23,5 @@ import { UPPER } from "./upper.js";
 export const EXERCISES: readonly ExerciseRecord[] = [
   ...BREATH_DOWNSHIFT, ...JAW_NECK, ...MOBILITY, ...CORE_CARRY, ...LOWER, ...UPPER,
   ...EXTRA_JAW_NECK, ...EXTRA_MOBILITY, ...EXTRA_STRENGTH, ...EXTRA_CORE, ...EXTRA_PASS_TWO, ...ATHLETIC, ...FLOWS,
-  ...LOWER_LEG, ...LOWER_LIMB_GYM,
+  ...LOWER_LEG, ...LOWER_LIMB_GYM, ...TRE,
 ];

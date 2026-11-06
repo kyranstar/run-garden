@@ -24,8 +24,9 @@
  * - Every move says why it is there, with the part's verb and the area it works first: desk reset "loosens" (warm-up),
  *   "wakes" (activation), "opens" (a stretch) or "eases" (cool-down); hip opener "warms up", "wakes", "eases"; a
  *   focus-area move "…your <area>, a focus area"; condition care "part of your … care", then "lets everything soften".
- * - Never a jump, a move set aside, gear the place lacks, two moves of one family, or a move that raises any issue in
- *   its part for the day (the same probe as the suggestions); so the document validates with no error.
+ * - Never a jump, a fixed practice's move (`isPracticeMove`), a move set aside, gear the place lacks, two moves of one
+ *   family, or a move that raises any issue in its part for the day (the same probe as the suggestions); so the document
+ *   validates with no error.
  * - Order: fit, easier first (−0.5 per difficulty step above 1; −1 in recovery mode), on a flare day relaxation
  *   (passive, breathing or recovery moves, +1.5) and unresisted moves (+0.5: no isometric hold, no added weight, no
  *   band — a move with nothing to push against or brace into, whatever its load says) first, novelty (+2 when not in
@@ -35,7 +36,7 @@
  *   (at most three sets).
  */
 import type { WorkoutDoc, WorkoutItem, WorkoutPart } from "@rg/domain";
-import { MODES, REGIONS, hasEquipment, isPlyometric, label, type ConditionProfile, type ExerciseRecord, type Mode, type Region } from "@rg/exercise-library";
+import { MODES, REGIONS, hasEquipment, isPlyometric, isPracticeMove, label, type ConditionProfile, type ExerciseRecord, type Mode, type Region } from "@rg/exercise-library";
 import { Rng } from "@rg/session-engine";
 import { deriveDoc, makeLibraryIndex, modeOfEffort } from "./derive.js";
 import { EASIER, REGION_SET, areaWord, careProfileOf, cleanInPart, focusIds, focusMet, passiveOnly, rankScored, suggestedItem, type SuggestCtx } from "./suggest.js";
@@ -269,7 +270,7 @@ function build(kind: QuickStartKind, effort: Effort, library: readonly ExerciseR
   const pools = plan.slots.map((slot) => {
     const cands: Candidate[] = [];
     for (const rec of library) {
-      if (claimed.has(rec.id) || excluded.has(rec.id) || isPlyometric(rec) || !hasEquipment(rec, ctx.equipment)) continue;
+      if (claimed.has(rec.id) || excluded.has(rec.id) || isPlyometric(rec) || isPracticeMove(rec) || !hasEquipment(rec, ctx.equipment)) continue;
       const t = slot.take(rec);
       if (!t) continue;
       claimed.add(rec.id);
