@@ -271,7 +271,7 @@ syncRoutes.post("/notes/:id/dismiss", async (c) => {
 //    off the watch; its moves post the dismiss-only `watch_copy_moved`.
 //  - adopted_coros_edit / adopted_coros_removal: a Plan Studio push row was
 //    adopted (spec §2) after COROS drift; undo forwards to the shared
-//    `undoStudioAdoption` (also used by `/api/studio/adoption/:pushId/undo`)
+//    `undoStudioAdoption` (its own studio route was unmounted 2026-11-06, the safety audit S6)
 //    — a RENAMED row is refused (409 `undo_unsupported_rename`) and the note
 //    is deliberately NOT dismissed, since nothing was actually undone.
 
