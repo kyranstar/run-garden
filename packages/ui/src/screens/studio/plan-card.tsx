@@ -243,7 +243,7 @@ export function PlanCard({ card, closed = false }: { card: PlanCardInput; closed
       : pins
         ? own(read.data?.pins)
         : // A plan's card may carry plan changes beside it (one card, never two): their lines and outcome fold into its own.
-          foldPlanChanges(read.data?.plans?.[0] ?? null, mergedPlanChanges(read.data?.planChanges, card.opIds));
+          foldPlanChanges(read.data?.plans?.[0] ?? null, mergedPlanChanges(read.data?.planChanges, card.opIds), PLAN_ADDED);
   /** The card's own op: what its buttons approve and decline, nothing else of the suggestion. */
   const opIds = cardOpIds(card, plan?.opId ?? card.opId ?? PLAN_OP_ID);
   const status = read.data?.status ?? card.status;

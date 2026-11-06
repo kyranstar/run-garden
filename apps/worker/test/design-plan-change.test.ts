@@ -19,7 +19,7 @@ import { savePreferences } from "../src/services/calendar-sync.js";
 import { conversationBlock, conversationRows, namedConversationSql, readConversation } from "../src/services/coach-conversation.js";
 import { endedLine } from "../src/services/coach-runs.js";
 import { markUntrusted } from "../src/services/design-prompt.js";
-import { APPROVE_FIXED, type DesignedPlanChangeOp, PLAN_CHANGE_COST, REQUEST_BUDGET } from "../src/services/design-approve.js";
+import { APPROVE_FIXED, type DesignedPlanChangeOp, PLAN_CHANGE_COST, PLAN_NOT_ADDED, REQUEST_BUDGET } from "../src/services/design-approve.js";
 import { supersedeOlderPlans } from "../src/services/design-orchestrate.js";
 import { proposalFields } from "../src/services/design-review.js";
 import { changePlan, planChangeTitle, planSettingLines } from "../src/services/design-tools/change-plan.js";
@@ -413,6 +413,110 @@ describe("approving a plan change", () => {
     expect((await db.select().from(coachPlans).where(eq(coachPlans.id, `cp-${id}-0`))).length).toBe(1);
     const last = await invoke("GET", `/api/coach/proposals/${id}`);
     expect(last.json.planChanges[0].outcome).toMatchObject({ status: "applied", changed: ["brief"] });
+  });
+});
+
+describe("a plan change beside a whole plan waits for the plan (mixed outcomes)", () => {
+  /** A main run's proposal of a new block of `perWeek` run sessions and a brief change for plan `p`, pending. */
+  const monday = mondayOf(addDays(TODAY, 7));
+  async function pair(p: string, perWeek = 1, structure?: Record<string, unknown>): Promise<string> {
+    const ctx = await mainRun();
+    const firmSessions = Array.from({ length: perWeek }, (_, n) => ({
+      date: addDays(monday, n % 7),
+      session: { category: "easy", title: `Run ${n + 1}`, durationMinutes: 30 + n, run: { blocks: [{ kind: "duration", value: 30 + n, intensity: "easy" }] } },
+    }));
+    const made = await proposePlan.run(ctx, {
+      change: structure ?? {
+        kind: "createPlan", discipline: "run", name: "Build block", startDate: monday, endDate: addDays(monday, 20), firmSessions,
+        shapeWeeks: [0, 1].map((k) => ({ weekStart: addDays(monday, 7 * (k + 1)), volumeTarget: "about 30 km", keySessions: ["long run"] })),
+      },
+      why: "The next phase.",
+    });
+    expect(isToolErr(made) ? made.why : "").toBe("");
+    ok((await change(ctx, { planId: p, brief: "Base block, then the build." })).res);
+    await db.update(coachProposals).set({ status: "pending" }).where(eq(coachProposals.id, designProposalId(ctx.run.id)));
+    return designProposalId(ctx.run.id);
+  }
+  const blockOf = async (id: string) => db.select().from(coachPlans).where(eq(coachPlans.id, `cp-${id}-0`));
+
+  it("the plan refused (its block gone since): the change is refused too, in words, and nothing of it is written", async () => {
+    const p = await plan({ brief: "Base block." });
+    const first = await pair(p);
+    await approveAll(first, ["plan"]);
+    const block = `cp-${first}-0`;
+    // A second suggestion: an extension of that block, with a brief change — and the block goes before it is approved.
+    const q = await plan({ brief: "Other." });
+    const id = await pair(q, 1, { kind: "extendPlan", planId: block, shapeWeeks: [{ weekStart: addDays(monday, 21), volumeTarget: "x", keySessions: [] }] });
+    await db.delete(coachPlans).where(eq(coachPlans.id, block));
+    const res = await invoke("POST", `/api/coach/proposals/${id}/approve`, {});
+    expect(res.status).toBe(200);
+    expect(res.json.refused.map((r: { opId: string; error: string }) => [r.opId, r.error])).toEqual([["plan", "plan_refused"], [planChangeId(q), "plan_refused"]]);
+    expect(res.json.refused[1].why).toBe(PLAN_NOT_ADDED);
+    expect(await rowOf(q)).toMatchObject({ brief: "Other." });
+    expect(await versionsOf(q)).toEqual([]);
+    // A second tap changes nothing either.
+    await invoke("POST", `/api/coach/proposals/${id}/approve`, {});
+    expect(await versionsOf(q)).toEqual([]);
+  });
+
+  it("the plan still being added: the change waits in `remaining` and writes nothing until the pass that finishes the plan", async () => {
+    // A busy month, as the plan routes' suite has, so a block of seven sessions takes more than one request.
+    for (let i = 0; i < 30; i++) {
+      const date = addDays(TODAY, i);
+      await db.insert(schema.plannedWorkouts).values({
+        id: `w-${i}`, userId, planId: "plan-1", sourceWorkoutId: `w-${i}`, title: "Easy run", category: "easy", sport: "run", originalPlanDate: date, lastVerifiedCorosDate: "",
+        effectiveDate: date, effectiveTime: "07:00", sourceContentFingerprint: "fp", calendarBlockDurationSeconds: 1800, fallbackEstimatedDurationSeconds: 1800,
+        createdAt: NOW.toISOString(), updatedAt: NOW.toISOString(),
+      });
+    }
+    const p = await plan({ brief: "Base block." });
+    const id = await pair(p, 7);
+    const first = await invoke("POST", `/api/coach/proposals/${id}/approve`, {});
+    expect(first.json.remaining).toEqual(["plan", planChangeId(p)]);
+    expect(first.json.refused).toEqual([]);
+    // The plan is part added; the change has not been written.
+    expect(await rowOf(p)).toMatchObject({ brief: "Base block." });
+    expect(await versionsOf(p)).toEqual([]);
+    const { answers } = await approveAll(id, first.json.remaining);
+    expect(answers.at(-1)).toMatchObject({ status: "approved", remaining: [], refused: [] });
+    expect(await rowOf(p)).toMatchObject({ brief: "Base block, then the build." });
+    expect(await versionsOf(p)).toHaveLength(1);
+  });
+
+  it("the plan being added by another approve right now (its claim fresh): the change is in flight with it, never applied first", async () => {
+    const p = await plan({ brief: "Base block." });
+    const id = await pair(p);
+    const ops = ((await proposalOf(id)).ops as Array<Record<string, unknown>>).map((o) => (o.kind === "plan_structure" ? { ...o, outcome: { status: "applying", at: new Date().toISOString(), progress: null } } : o));
+    await db.update(coachProposals).set({ ops }).where(eq(coachProposals.id, id));
+    const res = await invoke("POST", `/api/coach/proposals/${id}/approve`, {});
+    expect(res.status).toBe(409);
+    expect(res.json).toMatchObject({ error: "in_flight", opIds: ["plan", planChangeId(p)] });
+    expect(await rowOf(p)).toMatchObject({ brief: "Base block." });
+    expect(await versionsOf(p)).toEqual([]);
+  });
+
+  it("the plan applied and the change stale: what landed and what didn't, and a second tap re-applies and loops on nothing", async () => {
+    const p = await plan({ brief: "Base block." });
+    const id = await pair(p);
+    await applyPlanPatch(db, userId, p, { brief: "The athlete's own words." }, NOW.toISOString(), TODAY);
+    const first = await invoke("POST", `/api/coach/proposals/${id}/approve`, {});
+    expect(first.json.status).toBe("partially_approved");
+    expect(first.json.remaining).toEqual([]);
+    expect(first.json.refused).toEqual([{ opId: planChangeId(p), error: "stale", why: "Its settings changed since this was suggested: ask the coach again." }]);
+    expect(await blockOf(id)).toHaveLength(1);
+    expect(await rowOf(p)).toMatchObject({ brief: "The athlete's own words." });
+    const versions = (await versionsOf(p)).length;
+    const writes: string[] = [];
+    seen = [];
+    const second = await invoke("POST", `/api/coach/proposals/${id}/approve`, {});
+    for (const q of seen) if (/^(insert|update) /i.test(q) && !/coach_proposals|coach_messages/.test(q)) writes.push(q);
+    seen = null;
+    expect(second.json.remaining).toEqual([]);
+    expect(second.json.refused.map((r: { opId: string }) => r.opId)).toEqual([planChangeId(p)]);
+    expect(second.json.settled).toEqual([{ opId: "plan", outcome: "applied" }]);
+    expect(writes).toEqual([]);
+    expect(await versionsOf(p)).toHaveLength(versions);
+    expect(await blockOf(id)).toHaveLength(1);
   });
 });
 

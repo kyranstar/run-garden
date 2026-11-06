@@ -127,7 +127,11 @@
  * through `applyPlanPatch`, the function `PATCH /api/plans/:id` calls (one write, one version), costing PLAN_CHANGE_COST. The
  * fields are checked against what they were when it was proposed (`base`: one moved since, by the athlete's own edit, refuses
  * it `stale`, as a programme change is); the plan's own rule (a pause that has gone by) refuses it `plan_refused`. Made twice
- * it writes once, so an approve retried writes nothing more.
+ * it writes once, so an approve retried writes nothing more. BESIDE A WHOLE PLAN in the same proposal (one card), it follows
+ * that plan: it is applied only once the plan has fully applied; while the plan is being added (`remaining`, or another
+ * approve's fresh claim: in flight) it waits with it; a plan refused, declined or replaced refuses it too (PLAN_NOT_ADDED),
+ * nothing written — it rewrites the brief or ending for a phase that never came. A plan that applied with its change then
+ * refused leaves the change refused; asked again it meets the same refusal and writes nothing.
  *
  * THE MOVES IN ROTATION (saved-posts import, Task 18). A `move_pins` op — pin_moves' moves to pin and unpin, and the
  * saves batch it fits in — is applied after the programme changes and before the workouts, so a workout of the same
@@ -580,6 +584,11 @@ export const PROGRAMME_CHANGE_FIXED = 1 + 1;
 export const PROGRAMME_WRITE_COST = 1 + 3;
 /** The least room a pass is given: its fixed reads and one retraction (program-slots.ts `placeSlotsWithin`). */
 export const PROGRAMME_MIN_BUDGET = 3 + 1 + 1 + RETRACT_COST;
+
+/** Why a plan change beside a whole plan is refused when the plan was not added: nothing of it is written. */
+export const PLAN_NOT_ADDED = "The new plan wasn't added, so this change wasn't saved: ask the coach again.";
+/** … and when the plan has not been started by this approve (the change was named alone): it follows the plan. */
+export const PLAN_NOT_YET_ADDED = "The new plan isn't added yet: approve it with the plan, and this change follows.";
 
 /** A plan change's part of a request (plans with a purpose): its read (the stale check), then `applyPlanPatch`'s — the
  * restore check, the row, the last version and the one batch of two writes. */
@@ -1380,7 +1389,25 @@ export async function approveDesignOps(
   // through the route's own function, never claimed — made twice it writes once.
   const planChanges = todo.filter(isPlanChangeOp) as DesignedPlanChangeOp[];
   if (full) remaining.push(...planChanges.map((g) => g.id));
+  // A plan change beside a whole plan (one card, never two) is applied only once that plan has fully applied: it rewrites the
+  // brief or ending FOR the new phase. While the plan is still being added it waits for the pass that finishes it; a plan
+  // refused, declined or replaced refuses it too, nothing written.
+  const structureOps = allDesignedOps(p.ops).filter(isPlanStructureOp) as DesignedStructureOp[];
+  const structureStatus = (s: DesignedStructureOp) => outcomes.get(s.id)?.status ?? s.outcome?.status;
   for (const [i, g] of (full ? [] : planChanges).entries()) {
+    const waitingOn = structureOps.find((s) => structureStatus(s) !== "applied");
+    if (waitingOn) {
+      const was = structureStatus(waitingOn);
+      if (remaining.includes(waitingOn.id)) remaining.push(g.id);
+      else if (inFlight.includes(waitingOn.id)) inFlight.push(g.id);
+      else {
+        const why = was === "refused" || was === "declined" || was === "superseded" ? PLAN_NOT_ADDED : PLAN_NOT_YET_ADDED;
+        const refusal: Omit<Refused, "opId"> = { error: "plan_refused", why };
+        refused.push({ opId: g.id, ...refusal });
+        outcomes.set(g.id, { status: "refused", at: ctx.now, ...refusal });
+      }
+      continue;
+    }
     if (!first && PLAN_CHANGE_COST > left) {
       remaining.push(...planChanges.slice(i).map((x) => x.id));
       full = true;

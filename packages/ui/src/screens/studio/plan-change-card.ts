@@ -50,18 +50,28 @@ interface FoldLine {
   outcome: { status: string; why?: string } | null;
 }
 
+/** "Added to your plan; the change to its details couldn't be saved: its settings changed since this was suggested." */
+export function landedButWords(done: string, why: string | undefined): string {
+  const reason = (why ?? "").trim().replace(/:\s*ask the coach again\.?$/i, "").replace(/\.$/, "");
+  const lower = reason ? `${reason.charAt(0).toLowerCase()}${reason.slice(1)}` : "";
+  return `${done}; the change to its details couldn't be saved${lower ? `: ${lower}` : ""}.`;
+}
+
 /**
  * The plan's line with its plan changes folded in: their lines after its own, their notes with its; and ONE outcome for
  * the card — the plan's while it is being added or when every op ended the same way, the first refusal's when one was
  * refused (its words are the athlete's to read), and none while any op is still the athlete's to decide, so the card keeps its
  * buttons for what remains. With no change to fold, the plan's line as it is.
  */
-export function foldPlanChanges<P extends FoldLine, C extends FoldLine>(plan: P | null, changes: readonly C[]): P | null {
+export function foldPlanChanges<P extends FoldLine, C extends FoldLine>(plan: P | null, changes: readonly C[], plansDone = "Added to your plan"): P | null {
   if (!plan || changes.length === 0) return plan;
   const outcomes = [plan.outcome, ...changes.map((c) => c.outcome)];
   const status = (o: { status: string } | null) => o?.status ?? "open";
   let outcome: P["outcome"];
+  const refusedChange = changes.find((c) => c.outcome?.status === "refused")?.outcome;
   if (plan.outcome?.status === "applying") outcome = plan.outcome;
+  // The plan landed and its change did not: say both, so the card never reads as if nothing was added.
+  else if (plan.outcome?.status === "applied" && refusedChange) outcome = { ...refusedChange, why: landedButWords(plansDone, refusedChange.why) } as P["outcome"];
   else if (outcomes.some((o) => o?.status === "refused")) outcome = outcomes.find((o) => o?.status === "refused") as P["outcome"];
   else if (outcomes.every((o) => status(o) === status(plan.outcome))) outcome = plan.outcome;
   else outcome = null;

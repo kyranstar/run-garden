@@ -15,7 +15,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import type { CoachConversationCardDto, DesignApproveResponse, DesignPlanChangeLineDto } from "@rg/api-client";
 import { toConversation, toProposal } from "../src/screens/studio/coach-tolerance.js";
 import { PlanCard } from "../src/screens/studio/plan-card.js";
-import { cardOpIds, foldPlanChanges, mergedPlanChanges, ownPlanChange, PLAN_CHANGE_WORDS } from "../src/screens/studio/plan-change-card.js";
+import { cardOpIds, foldPlanChanges, landedButWords, mergedPlanChanges, ownPlanChange, PLAN_CHANGE_WORDS } from "../src/screens/studio/plan-change-card.js";
 import { button, click, serve, text, until } from "./coach-live-harness.js";
 import { primedClient } from "./studio-fixtures.js";
 
@@ -215,8 +215,25 @@ describe("one card, never two: a plan change beside a whole plan", () => {
         both("partially_approved", structure({ status: "applied", at: "x", summary: "1 session" }), { status: "refused", at: "x", error: "stale", why: "Its settings changed since this was suggested: ask the coach again." }),
     });
     await mount(merged());
-    await until(() => text().includes("Its settings changed since this was suggested"), "the refusal");
+    await until(() => text().includes("couldn't be saved"), "the refusal");
+    // What landed and what didn't, in one line; the card stops offering Approve (a second tap would only meet the same refusal).
+    expect(text()).toContain("Added to your plan; the change to its details couldn't be saved: its settings changed since this was suggested.");
     expect(text()).not.toContain("✓ Added to your plan");
+    expect(button("Approve plan")).toBeNull();
+    expect(button("Not now")).toBeNull();
+  });
+
+  it("a plan refused with its change refused says the plan's words (nothing landed)", async () => {
+    serve({
+      "GET /api/coach/proposals/dp-run-3": () =>
+        both("pending", structure({ status: "refused", at: "x", error: "plan_refused", why: "That plan isn't there any more." }), { status: "refused", at: "x", error: "plan_refused", why: "The new plan wasn't added, so this change wasn't saved: ask the coach again." }),
+    });
+    await mount(merged());
+    await until(() => text().includes("That plan isn't there any more."), "the plan's refusal");
+    expect(text()).not.toContain("Added to your plan");
+    expect(landedButWords("Added to your plan", "Its settings changed since this was suggested: ask the coach again.")).toBe(
+      "Added to your plan; the change to its details couldn't be saved: its settings changed since this was suggested.",
+    );
   });
 
   it("the pure fold: lines after the plan's, one outcome — applying kept, a refusal first, open while any op is open", () => {
@@ -224,7 +241,9 @@ describe("one card, never two: a plan change beside a whole plan", () => {
     const p = { lines: ["a"], issues: [] as Array<{ code: string; message: string }>, outcome: { status: "applied" } as O };
     const c = (outcome: O) => ({ lines: ["b"], issues: [] as Array<{ code: string; message: string }>, outcome });
     expect(foldPlanChanges(p, [c({ status: "applied" })])).toMatchObject({ lines: ["a", "b"], outcome: { status: "applied" } });
-    expect(foldPlanChanges(p, [c({ status: "refused", why: "no" })])!.outcome).toEqual({ status: "refused", why: "no" });
+    expect(foldPlanChanges(p, [c({ status: "refused", why: "No." })])!.outcome).toEqual({ status: "refused", why: "Added to your plan; the change to its details couldn't be saved: no." });
+    // The plan itself refused: its own refusal first, as it is.
+    expect(foldPlanChanges({ ...p, outcome: { status: "refused", why: "gone" } }, [c({ status: "refused", why: "no" })])!.outcome).toEqual({ status: "refused", why: "gone" });
     expect(foldPlanChanges(p, [c(null)])!.outcome).toBeNull();
     expect(foldPlanChanges({ ...p, outcome: { status: "applying" } }, [c(null)])!.outcome).toEqual({ status: "applying" });
     expect(foldPlanChanges(p, [])).toBe(p);
