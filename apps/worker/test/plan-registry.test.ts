@@ -487,6 +487,39 @@ describe("a plan stopped before the registry", () => {
       expect(await statusOf("plan-a")).toBe("active");
     });
 
+    it("a retired block replaced by a shorter one that ran: its later end is only what it was planned with", async () => {
+      await block("planned-long", "run", "2026-08-03", "2026-09-27", { status: "retired" });
+      await block("replacement", "run", "2026-08-24", "2026-09-13");
+      await pass();
+      await pass();
+      expect(await statusOf("plan-replacement")).toBe("active");
+      await settled();
+    });
+
+    it("the same, beginning the same day: one of them went on", async () => {
+      await block("planned-long", "run", "2026-08-03", "2026-09-27", { status: "retired" });
+      await block("replacement", "run", "2026-08-03", "2026-09-13");
+      await pass();
+      await pass();
+      expect(await statusOf("plan-replacement")).toBe("active");
+    });
+
+    it("a retired block that began later than the last one standing is a stop, the latest of several ending that day counting", async () => {
+      await block("a", "run", "2026-08-03", "2026-08-23");
+      await block("r1", "run", "2026-07-20", "2026-09-13", { status: "retired" });
+      await block("r2", "run", "2026-08-10", "2026-09-13", { status: "retired" });
+      await pass();
+      expect(await statusOf("plan-a")).toBe("retired");
+    });
+
+    it("only a block not retired replaces one: a retired one beginning later goes on nothing", async () => {
+      await block("a", "run", "2026-08-03", "2026-08-16");
+      await block("r-long", "run", "2026-08-10", "2026-09-30", { status: "retired" });
+      await block("r-short", "run", "2026-08-17", "2026-08-30", { status: "retired" });
+      await pass();
+      expect(await statusOf("plan-a")).toBe("retired");
+    });
+
     it("a stopped phase ending later, with a phase of the plan still to run: not stopped", async () => {
       await block("a", "run", "2026-09-28", "2026-10-18");
       await block("r", "run", "2026-10-10", "2026-11-01", { status: "retired" });

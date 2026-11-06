@@ -87,13 +87,20 @@ const lastEndingOf = (blocks: readonly Block[]): Block[] => {
  * one that ends last, the chain rule among its sport's blocks, retired ones in it, finds where its line really ended: stopped if
  * what ends that chain is retired, all of it if several end that day. Another plan's retired block is that plan's stop, and
  * isn't in the chain. A block of another plan that isn't retired is: the sport went on, so this one wasn't stopped.
+ *
+ * A retired block keeps the end it was planned with, not the day it stopped. So one that began after it, and hasn't been retired,
+ * replaced it, however early that one ended: the athlete went on, and it isn't a stop. Beginning the same day counts.
  * `sorted`: the account's blocks, no loose bucket, in (startDate, id) order.
  */
 function stoppedByDates(planId: string, own: readonly Block[], sorted: readonly Block[], today: string): boolean {
   if (own.length === 0 || own.some((b) => b.status !== "retired" && b.endDate >= today)) return false;
   return lastEndingOf(own).every((last) => {
     const sport = sorted.filter((b) => b.discipline === last.discipline && !(b.status === "retired" && b.programId && b.programId !== planId));
-    return lastEndingOf(chainHolding(last, sport)).every((b) => b.status === "retired");
+    const chain = chainHolding(last, sport);
+    const ends = lastEndingOf(chain);
+    if (!ends.every((b) => b.status === "retired")) return false;
+    const latestStart = ends.reduce((latest, b) => (b.startDate > latest ? b.startDate : latest), "");
+    return !chain.some((b) => b.status !== "retired" && b.startDate >= latestStart);
   });
 }
 
