@@ -425,19 +425,11 @@ function holdShowsCapacity(seconds: number | null, p: Prescription | null): bool
   return p.holdSec !== undefined && seconds > p.holdSec + HOLD_WINDOW_SEC;
 }
 
-/** A done set's columns, in the order loggedSets selects them: session, entry, set number, side, move, reps, seconds,
- * load (kg). */
-type SetValues = [string, number, number, string | null, string, number | null, number | null, number | null];
-
-/** The done sets of these moves in [from, to], one physical session once, each judged against its prescription. */
-async function loggedSets(
-  db: Db,
-  userId: string,
-  from: string,
-  to: string,
-  exerciseIds: readonly string[],
-  canonicalId: (id: string) => string,
-): Promise<LoggedSet[]> {
+/**
+ * The four reads of `loggedSets` as builders, for `userId`'s sessions in [from, to] of these moves (a JSON list bound
+ * once). Rendered once an isolate with stand-in values (`renderedLoggedSets`): their structure never changes.
+ */
+function loggedSetsQueries(db: Db, userId: string, from: string, to: string, moves: SQL) {
   const inWindow = and(
     eq(performedSessions.userId, userId),
     gte(performedSessions.localDate, from),
@@ -445,7 +437,6 @@ async function loggedSets(
     // Mid-write: not there yet.
     ne(performedSessions.payloadHash, PENDING_HASH),
   );
-  const moves = jsonList(exerciseIds);
   /** The session (of the window) logged a done set of these moves. */
   const loggedTheMoves = exists(
     db
@@ -453,7 +444,7 @@ async function loggedSets(
       .from(performedSets)
       .where(and(eq(performedSets.performedSessionId, performedSessions.id), eq(performedSets.done, true), inArray(performedSets.exerciseId, moves))),
   );
-  const [sessionRows, setRows, buildRows, plannedRows] = await Promise.all([
+  return [
     db
       .select({
         id: performedSessions.id,
@@ -467,32 +458,28 @@ async function loggedSets(
       })
       .from(performedSessions)
       .where(inWindow),
-    // The sets as plain rows (`values()`, mapped here by position): thousands over two years — the board asks every
-    // measure over every logged day — and drizzle's mapping of each row was most of their cost. Every column is a plain
-    // integer, real or text: there is nothing to decode.
-    (async () => {
-      const rows = (await db
-        .select({
-          sessionId: performedSets.performedSessionId,
-          entryIndex: performedSets.entryIndex,
-          setIndex: performedSets.setIndex,
-          side: performedSets.side,
-          exerciseId: performedSets.exerciseId,
-          reps: performedSets.reps,
-          seconds: performedSets.seconds,
-          kg: performedSets.loadKg,
-        })
-        .from(performedSets)
-        .where(
-          and(
-            inArray(performedSets.exerciseId, moves),
-            eq(performedSets.done, true),
-            inArray(performedSets.performedSessionId, db.select({ id: performedSessions.id }).from(performedSessions).where(inWindow)),
-          ),
-        )
-        .values()) as SetValues[];
-      return rows.map(([sessionId, entryIndex, setIndex, side, exerciseId, reps, seconds, kg]) => ({ sessionId, entryIndex, setIndex, side, exerciseId, reps, seconds, kg }));
-    })(),
+    // The sets as plain rows, mapped here by position: thousands over two years — the board asks every measure over
+    // every logged day — and drizzle's mapping of each row was most of their cost. Every column is a plain integer,
+    // real or text: there is nothing to decode.
+    db
+      .select({
+        sessionId: performedSets.performedSessionId,
+        entryIndex: performedSets.entryIndex,
+        setIndex: performedSets.setIndex,
+        side: performedSets.side,
+        exerciseId: performedSets.exerciseId,
+        reps: performedSets.reps,
+        seconds: performedSets.seconds,
+        kg: performedSets.loadKg,
+      })
+      .from(performedSets)
+      .where(
+        and(
+          inArray(performedSets.exerciseId, moves),
+          eq(performedSets.done, true),
+          inArray(performedSets.performedSessionId, db.select({ id: performedSessions.id }).from(performedSessions).where(inWindow)),
+        ),
+      ),
     // The builds those sessions played: an app session's own, a watch session's workout's locked ones — or the
     // provisional copy the mirror put on the watch (the watch mirrors the plan, A1: never locked, its push live).
     db
@@ -548,7 +535,65 @@ async function loggedSets(
           ),
         ),
       ),
-  ]);
+  ] as const;
+}
+
+/** The fields each read answers, in the order its rendered text selects them. */
+const LOGGED_SETS_FIELDS = [
+  ["id", "activityId", "workoutId", "buildId", "source", "localDate", "createdAt", "slots"],
+  ["sessionId", "entryIndex", "setIndex", "side", "exerciseId", "reps", "seconds", "kg"],
+  ["id", "workoutId", "version", "lockedAt", "provisional", "items", "steps", "options", "places"],
+  ["id", "items"],
+] as const;
+
+/** Stand-in values the reads are rendered with, swapped for the call's own (CPU, 2026-11-06). */
+const STAND_IN = { user: "\u0001user", from: "\u0001from", to: "\u0001to", moves: JSON.stringify(["\u0001moves"]) } as const;
+let LOGGED_SETS_RENDERED: Array<{ strings: TemplateStringsArray; params: unknown[] }> | null = null;
+
+/**
+ * The four reads, rendered once an isolate (CPU, 2026-11-06: composing them through drizzle was most of what measuring
+ * a strength key result cost a request): the same text every call, its stand-in values swapped for the call's. A text
+ * whose placeholders don't match its parameters, or whose parameters lost a stand-in, is never used: the builders run.
+ */
+function renderedLoggedSets(db: Db): Array<{ strings: TemplateStringsArray; params: unknown[] }> | null {
+  if (LOGGED_SETS_RENDERED) return LOGGED_SETS_RENDERED;
+  const out = loggedSetsQueries(db, STAND_IN.user, STAND_IN.from, STAND_IN.to, sql`(select value from json_each(${STAND_IN.moves}))`).map((q) => {
+    const { sql: text, params } = q.toSQL();
+    const parts = text.split("?");
+    return parts.length === params.length + 1 ? { strings: Object.assign([...parts], { raw: parts }) as unknown as TemplateStringsArray, params } : null;
+  });
+  const seen = new Set(out.flatMap((r) => r?.params ?? []));
+  if (out.some((r) => r === null) || ![STAND_IN.user, STAND_IN.from, STAND_IN.to, STAND_IN.moves].every((v) => seen.has(v))) return null;
+  LOGGED_SETS_RENDERED = out as Array<{ strings: TemplateStringsArray; params: unknown[] }>;
+  return LOGGED_SETS_RENDERED;
+}
+
+/** The done sets of these moves in [from, to], one physical session once, each judged against its prescription. */
+async function loggedSets(
+  db: Db,
+  userId: string,
+  from: string,
+  to: string,
+  exerciseIds: readonly string[],
+  canonicalId: (id: string) => string,
+): Promise<LoggedSet[]> {
+  const list = JSON.stringify(exerciseIds);
+  const swap = (p: unknown): unknown => (p === STAND_IN.user ? userId : p === STAND_IN.from ? from : p === STAND_IN.to ? to : p === STAND_IN.moves ? list : p);
+  const rendered = renderedLoggedSets(db);
+  const rowsOf = async (i: 0 | 1 | 2 | 3): Promise<Array<Record<string, unknown>>> => {
+    const fields = LOGGED_SETS_FIELDS[i];
+    const r = rendered?.[i];
+    const values = r
+      ? ((await db.values(sql(r.strings, ...r.params.map(swap)))) as unknown[][])
+      : ((await loggedSetsQueries(db, userId, from, to, jsonList(exerciseIds))[i].values()) as unknown[][]);
+    return values.map((v) => Object.fromEntries(fields.map((f, k) => [f, v[k] ?? null])));
+  };
+  const [sessionRows, setRows, buildRows, plannedRows] = (await Promise.all([rowsOf(0), rowsOf(1), rowsOf(2), rowsOf(3)])) as [
+    Array<{ id: string; activityId: string | null; workoutId: string | null; buildId: string | null; source: string; localDate: string; createdAt: string; slots: string | null }>,
+    Array<{ sessionId: string; entryIndex: number; setIndex: number; side: string | null; exerciseId: string; reps: number | null; seconds: number | null; kg: number | null }>,
+    Array<{ id: string; workoutId: string; version: number; lockedAt: string | null; provisional: number; items: string | null; steps: string | null; options: string | null; places: string | null }>,
+    Array<{ id: string; items: string | null }>,
+  ];
 
   // One physical session once: the activity's own record over the watch's copy (the feed's rule).
   const chosen = new Map(

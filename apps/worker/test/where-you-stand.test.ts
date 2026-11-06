@@ -25,6 +25,7 @@ import {
   type StandPlanRow,
 } from "../src/services/where-you-stand.js";
 import { isWrite, makeTestDb, makeTestUser } from "./helpers.js";
+import { seedRichAthlete, TODAY as RICH_TODAY } from "./design-read-fixture.js";
 
 const TODAY = "2026-11-05"; // a Thursday
 const d = (n: number) => addDays(TODAY, n);
@@ -555,5 +556,17 @@ describe("readStandFacts: one statement and the measures its key results need", 
     await db.insert(schema.keyResults).values({ id: newId(), userId, objectiveId: "o1", label: "Broken", measure: { kind: "nope" }, direction: "up", unit: "s", position: 1, createdAt: at(d(-1)), updatedAt: at(d(-1)) });
     const f = await readStandFacts(db, userId, { today: TODAY, tz: "UTC" });
     expect(f.objectives[0]!.keyResults[1]).toMatchObject({ label: "Broken", measure: null, progress: null });
+  });
+});
+
+describe("the rich fixture's block, pinned before the CPU pass (bench 1a's account)", () => {
+  /** Captured 2026-11-06 before the context step's CPU was cut: every cut must leave it byte-identical. */
+  const RICH_BLOCK = "# Where you stand (the app's own figures)\nObjectives — current → target by due: pace:\n- <user>-obj-hold: <untrusted from=\"athlete\">Wall sit hold</untrusted> 46 s (at least) → 90 s: no data (no due date)\n- <user>-obj-hold: <untrusted from=\"athlete\">Goblet squat estimated max</untrusted> 44.3 lb (at least) → 60 lb: no data (no due date)\n- <user>-obj-run: <untrusted from=\"athlete\">5K time</untrusted> 27:30 (few readings) → 25:00: no data (one reading so far)\n- and 3 more key results (read_objectives)\nPlanned → done, last 14 d | 4 wk (missed · skipped · not known):\n- runs 0/0 | 0/0, +9 off the plan in 4 wk\n- strength 3/3 | 6/6\n- yoga 0/0 | 0/0, +1 off the plan in 4 wk\nNext 14 days (a day not listed: nothing planned):\nWed 13 May: strength 35 min; strength 40 min\nFri 15 May: strength 35 min\nSat 16 May: easy run 45 min\nSun 17 May: strength 35 min\nTue 19 May: strength 35 min; easy run 45 min\nWed 20 May: strength 40 min\nThu 21 May: strength 35 min\nFri 22 May: long run 90 min\nSat 23 May: strength 35 min\nMon 25 May: strength 35 min; easy run 45 min\nReadiness: good. Last 7 d, oldest first — HRV 57 58 54 55 56 57 58 (usual 56, steady) · resting HR 50 52 51 50 52 51 50 (usual 51, steady) · sleep 7.2 h a night (7.0–7.5)\nLast weekly review: none yet.\nActivity reads flagged in 7 d: none.\nMemory beyond the core: 1 fact, 8 notes, 7 observations (recall_memory).\nNeeds you: nothing the app sees.";
+
+  it("reads byte-identically", async () => {
+    const db = makeTestDb();
+    const { userId } = await seedRichAthlete(db);
+    const f = await readStandFacts(db, userId, { today: RICH_TODAY, tz: "America/Los_Angeles" });
+    expect(standBlock(f, driftsOf(f)).replaceAll(userId, "<user>")).toBe(RICH_BLOCK);
   });
 });

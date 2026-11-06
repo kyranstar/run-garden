@@ -29,6 +29,7 @@
  * through is held until its check-back day (`remember` with drift and checkBack), then comes back with what was said.
  */
 import { sql, type SQL } from "drizzle-orm";
+import { SQLiteAsyncDialect } from "drizzle-orm/sqlite-core";
 import {
   activities,
   coachMemory,
@@ -145,6 +146,15 @@ const ACTIVITY_MIN_SECONDS = 300;
 
 const RUN_CATEGORIES = new Set(["recovery", "easy", "long", "quality", "race", "unknown"]);
 
+/** A row's discipline, once a row: the tallies ask it a dozen times over (CPU, 2026-11-06). */
+const DISCIPLINE_OF = new WeakMap<object, Discipline | null>();
+function rowDiscipline(w: StandPlanRow): Discipline | null {
+  if (DISCIPLINE_OF.has(w)) return DISCIPLINE_OF.get(w)!;
+  const d = disciplineOf(w);
+  DISCIPLINE_OF.set(w, d);
+  return d;
+}
+
 /** A planned row's discipline: the app's yoga kind is mobility and care ("yoga is for yoga programs", 2026-10-16). */
 export function disciplineOf(w: { category: string; origin: string | null }): Discipline | null {
   if (RUN_CATEGORIES.has(w.category)) return "runs";
@@ -218,9 +228,33 @@ export function standRowsSql(db: Db, userId: string, today: string, opts: { libr
     ${opts.library ? personalMovesSql(userId) : sql`null`} as library`;
 }
 
+/**
+ * The statement rendered once an isolate for an athlete's day (CPU, 2026-11-06: composing its ~100 columns and ~70
+ * parameters through drizzle was a fifth of what the stand cost a context step): its text and parameters, kept, and
+ * sent again as one flat statement — the same text, the same parameters. Any day, athlete or library flag else renders
+ * anew; a text whose placeholders don't match its parameters is never kept.
+ */
+const RENDERED = new Map<string, { strings: TemplateStringsArray; params: unknown[] }>();
+const RENDERED_MAX = 8;
+const DIALECT = new SQLiteAsyncDialect();
+
+function renderedStandSql(db: Db, userId: string, today: string, opts: { library: boolean }): SQL {
+  const key = `${userId}|${today}|${opts.library ? 1 : 0}`;
+  let held = RENDERED.get(key);
+  if (!held) {
+    const q = DIALECT.sqlToQuery(standRowsSql(db, userId, today, opts));
+    const parts = q.sql.split("?");
+    if (parts.length !== q.params.length + 1) return standRowsSql(db, userId, today, opts);
+    if (RENDERED.size >= RENDERED_MAX) RENDERED.clear();
+    held = { strings: Object.assign([...parts], { raw: parts }) as unknown as TemplateStringsArray, params: q.params };
+    RENDERED.set(key, held);
+  }
+  return sql(held.strings, ...held.params);
+}
+
 /** The read's one statement, run. */
 export async function readStandRows(db: Db, userId: string, today: string, opts: { library: boolean }): Promise<StandRows> {
-  const [rows] = (await db.all(standRowsSql(db, userId, today, opts))) as StandRows[];
+  const [rows] = (await db.all(renderedStandSql(db, userId, today, opts))) as StandRows[];
   return rows ?? {};
 }
 
@@ -245,6 +279,17 @@ const obj = (v: unknown): Record<string, unknown> | null => {
 const str = (v: unknown): string | null => (typeof v === "string" ? v : null);
 const num = (v: unknown): number | null => (typeof v === "number" && Number.isFinite(v) ? v : null);
 
+/** A stored measure, parsed once an isolate (its JSON the key): the schema's parse was most of the facts' own CPU. */
+const PARSED_MEASURES = new Map<string, KeyResultMeasure | null>();
+function parsedMeasure(raw: unknown): KeyResultMeasure | null {
+  const key = JSON.stringify(raw ?? null);
+  if (PARSED_MEASURES.has(key)) return PARSED_MEASURES.get(key)!;
+  const parsed = keyResultMeasureSchema.safeParse(raw);
+  if (PARSED_MEASURES.size >= 256) PARSED_MEASURES.clear();
+  PARSED_MEASURES.set(key, parsed.success ? parsed.data : null);
+  return parsed.success ? parsed.data : null;
+}
+
 /** The statements the whole read costs: its one, and the measures of the key results it finds. */
 export function standStatements(measures: readonly KeyResultMeasure[]): number {
   return 1 + measureStatements(measures, { library: true, labels: false });
@@ -265,14 +310,14 @@ export async function standFactsFrom(
     .map((x) => x as Record<string, unknown>)
     .sort((p, q) => (num(p.position) ?? 0) - (num(q.position) ?? 0) || String(p.created).localeCompare(String(q.created)) || String(p.id).localeCompare(String(q.id)));
   const keyResultsOf: StandKeyResult[] = krRows.map((x) => {
-    const parsed = keyResultMeasureSchema.safeParse(x.measure);
+    const parsed = parsedMeasure(x.measure);
     const created = str(x.created);
     const unit = str(x.unit);
     return {
       id: String(x.id),
       objectiveId: String(x.o),
       label: str(x.label) ?? "",
-      measure: parsed.success ? parsed.data : null,
+      measure: parsed,
       direction: x.direction === "down" ? "down" : "up",
       baseline: num(x.baseline),
       target: num(x.target),
@@ -440,7 +485,7 @@ interface Tally {
 function tally(f: StandFacts, discipline: Discipline, from: string, to: string): Tally {
   const t: Tally = { planned: 0, pending: 0, oldest: null, done: 0, missed: 0, skipped: 0, unknown: 0, unplanned: 0 };
   for (const w of f.plan) {
-    if (w.date < from || w.date > to || disciplineOf(w) !== discipline) continue;
+    if (w.date < from || w.date > to || rowDiscipline(w) !== discipline) continue;
     // Started at once, never planned: done, it is work off the plan (the audits, 2026-11-06).
     if (w.startNow) {
       if (w.state === "completed") t.unplanned += 1;
@@ -728,9 +773,11 @@ function aheadLines(f: StandFacts): string[] {
   if (ahead.length === 0) return ["Next 14 days: nothing planned."];
   // A line a day with something on it (a rest day too); a day not listed has nothing planned.
   const lines = ["Next 14 days (a day not listed: nothing planned):"];
+  const byDay = new Map<string, StandPlanRow[]>();
+  for (const w of ahead) byDay.set(w.date, [...(byDay.get(w.date) ?? []), w]);
   for (let i = 0; i < AHEAD_DAYS; i++) {
     const date = addDays(f.today, i);
-    const items = ahead.filter((w) => w.date === date).map(itemWords);
+    const items = (byDay.get(date) ?? []).map(itemWords);
     if (items.length === 0) continue;
     const shown = items.slice(0, DAY_ITEMS);
     lines.push(`${dayLabel(date)}: ${shown.join("; ")}${items.length > DAY_ITEMS ? `; +${items.length - DAY_ITEMS}` : ""}`);
