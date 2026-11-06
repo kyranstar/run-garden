@@ -100,6 +100,8 @@ interface Draft {
   target: DocWorkoutTarget;
   /** The plan it is made for (propose_workout's `planId`). */
   planId?: string;
+  /** The plan the set's brief names, as the loop hands the designer (the call itself passes none). */
+  briefPlanId?: string;
 }
 
 /**
@@ -111,7 +113,7 @@ async function designed(drafts: Draft[], userId = rich.userId): Promise<{ id: st
   const opIds: string[] = [];
   for (const d of drafts) {
     const designer = await run({ userId, role: "designer", scope: { kind: "week" }, parentId: main.id });
-    const res = await proposeWorkout.run(ctxOf(userId, designer), { doc: d.doc, target: d.target, ...(d.planId ? { planId: d.planId } : {}) });
+    const res = await proposeWorkout.run({ ...ctxOf(userId, designer), ...(d.briefPlanId ? { briefPlanId: d.briefPlanId } : {}) }, { doc: d.doc, target: d.target, ...(d.planId ? { planId: d.planId } : {}) });
     if (isToolErr(res)) throw new Error(`propose refused: ${res.error} — ${res.why}`);
     opIds.push(designer.id);
   }
@@ -1130,6 +1132,14 @@ describe("approving a workout made for a plan", () => {
     expect(res.status).toBe("approved");
     expect((await rowOf(res.applied[0]!.workout.id)).planId).toBe("pl-a");
     expect((await rowOf(res.applied[1]!.workout.id)).planId).toBe(`studio-${rich.userId}`);
+  });
+
+  it("a set brief's plan files the approved workout under it though the designer's call omitted planId", async () => {
+    await seedPlan("pl-set");
+    const { id } = await designed([{ doc: calmDoc({ title: "From the brief" }), target: { kind: "new", date: later }, briefPlanId: "pl-set" }]);
+    const res = await approve(id);
+    expect(res.status).toBe("approved");
+    expect((await rowOf(res.applied[0]!.workout.id)).planId).toBe("pl-set");
   });
 
   it("a plan stopped between the proposal and the approval refuses its workout, in words, and the others still apply", async () => {

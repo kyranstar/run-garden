@@ -297,6 +297,7 @@ export const planSet: DesignTool = {
         runId: ids[i]!,
         date: b.date,
         ...(replaces ? { replaces } : {}),
+        ...(planned[i]!.planId ? { planId: planned[i]!.planId } : {}),
         brief: briefText(planned[i]!, {
           index: redo ? firstOrder.indexOf(b.key) : i,
           count: redo ? firstOrder.length : p.briefs.length,

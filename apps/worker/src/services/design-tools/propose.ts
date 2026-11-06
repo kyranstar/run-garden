@@ -58,7 +58,9 @@
  *
  * A NEW workout may name the plan it is for (`planId`, plans with a purpose §3.4): an active plan of the athlete's,
  * read with the rest (no statement more) — a stopped plan or an id read_plans never gave is `unknown_plan`, a revision
- * naming one `plan_on_new_only`. It is kept on the op (through every revision round) and approval files the workout
+ * naming one `plan_on_new_only`. A set's designer whose brief names a plan inherits it for a new workout in code
+ * (`ToolContext.briefPlanId`, from its run's state) whether or not it passes `planId`, and a call naming another plan
+ * is refused (`plan_differs`). It is kept on the op (through every revision round) and approval files the workout
  * under it; none is a one-off.
  *
  * A free-text move is refused (act-common.ts `freeTextRefusal`): no condition rule can judge it. A revision may keep
@@ -392,6 +394,14 @@ export const proposeWorkout: DesignTool = {
       if (p.target.kind === "revise") {
         return refuse("plan_on_new_only", "planId is for a new workout: a revision stays under the plan it was filed under.", "Call propose_workout again without planId.");
       }
+      // A set's designer whose brief names a plan files under it: never another (the brief is the main coach's word).
+      if (ctx.briefPlanId !== undefined && p.planId !== ctx.briefPlanId) {
+        return refuse(
+          "plan_differs",
+          `planId ${JSON.stringify(p.planId)}: your brief names the plan ${JSON.stringify(ctx.briefPlanId)}, and this workout is filed under it.`,
+          "Call propose_workout again with the brief's planId, or leave planId out.",
+        );
+      }
       if (!openPlanIdsOf(a.extra.openPlans).has(p.planId)) return unknownPlanRefusal([p.planId]);
     }
     const today = a.athlete.today;
@@ -605,7 +615,9 @@ export const proposeWorkout: DesignTool = {
     const supersedes = p.replaces ?? mine?.supersedes;
     if (supersedes) op = { ...op, supersedes };
     // The plan it is made for: this call's, else its earlier draft's — kept through the revisions.
-    const forPlan = p.planId ?? mine?.planId;
+    // A set's designer inherits its brief's plan for a new workout, whatever its call passed (plan_set checked it open;
+    // the approval looks again).
+    const forPlan = p.planId ?? (p.target.kind === "new" ? ctx.briefPlanId : undefined) ?? mine?.planId;
     if (forPlan) op = { ...op, planId: forPlan };
     const next = [...all.filter((o) => !isDocWorkoutOp(o) || (o as DocWorkoutOp).by.runId !== ctx.run.id), op];
     const written = await upsertProposal(ctx, proposalId, next, opsText, at);

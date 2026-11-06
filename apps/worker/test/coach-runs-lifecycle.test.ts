@@ -168,6 +168,28 @@ describe("the expiry sweep and a live design (A10)", () => {
   });
 });
 
+describe("a set brief's plan (plans with a purpose §3.4), through the loop", () => {
+  it("the designer's workout is filed under the brief's plan though its propose_workout call names none", async () => {
+    const db = makeTestDb({ boundVariableCap: 100 });
+    const a = await seedRichAthlete(db);
+    const stamp = NOW.toISOString();
+    await db.insert(schema.programs).values({ id: "pl-loop", userId: a.userId, kind: "coach", name: "Plan", status: "active", disciplines: ["run"], startDate: null, endDate: null, raceDate: null, source: null, config: {}, createdAt: stamp, updatedAt: stamp, archivedAt: null });
+    const mainId = (await createRun(db, a.userId, { scope: { kind: "week" }, request: "Plan my week." }, NOW)).run.id;
+    const brief = { key: "today", date: TODAY, purpose: "Hips, steady.", emphasis: "Control.", constraints: "30 minutes.", why: "Away from the runs.", sameDayWhy: "A short one beside the day's plan.", planId: "pl-loop" };
+    const { deps } = scripted([
+      t(use("plan_set", { briefs: [brief] })),
+      t(propose("Tonight's hips", TODAY)),
+      t(submit(verdict(4))),
+      t(finish("Tonight's hips.")),
+      t(finish("One session.")),
+    ]);
+    await drive(db, a.userId, mainId, deps);
+    const ops = ((await proposal(db, mainId))!.ops as Array<{ planId?: string }>);
+    expect(ops).toHaveLength(1);
+    expect(ops[0]!.planId).toBe("pl-loop");
+  });
+});
+
 // ── A11 ────────────────────────────────────────────────────────────────
 
 describe("a finish and a cancel racing (A11)", () => {

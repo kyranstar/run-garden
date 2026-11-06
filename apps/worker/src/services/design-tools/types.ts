@@ -89,6 +89,12 @@ export interface ToolContext {
    */
   replaces?: string;
   /**
+   * A set's designer whose brief names a plan (plans with a purpose §3.4): propose_workout files its new workout under
+   * it, whether or not the call passes `planId`, and refuses a call that names another plan. Set by the loop from the
+   * run's state.
+   */
+  briefPlanId?: string;
+  /**
    * The run's last call (its step or state cap reached: the loop sets it). A tool that would refuse only to ask for
    * more work — finish's must-fix guard — lets the run end instead: a last turn never traps a run.
    */
@@ -166,6 +172,8 @@ export interface SetDesignerStart {
   date: string;
   /** A redo's: the designer whose workout this one replaces once reviewed. */
   replaces?: string;
+  /** The plan the brief names: kept in the designer's state, so its new workout is filed under it whatever the designer passes. */
+  planId?: string;
 }
 
 /** What a set may still spend, from the step's tree (no statement). */

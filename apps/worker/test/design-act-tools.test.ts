@@ -1867,6 +1867,52 @@ describe("plan_set and propose_workout name the plan a workout is for", () => {
     }
   });
 
+  it("plan_set hands each designer the plan its brief names, in code, for the designer's state to keep", async () => {
+    const id = await seedPlan("pl-hand");
+    const handed: Array<string | undefined> = [];
+    const h = hooks([]);
+    const w = await run({ scope: { kind: "week" } });
+    ok((await call("plan_set", ctxOf(w, { set: { ...h, start: async (ds) => (handed.push(...ds.map((d) => d.planId)), ds.map((d) => d.runId)) } }), { briefs: [brief({ planId: id }), brief({ key: "wed", date: addDays(TODAY, 5) })] })).result);
+    expect(handed).toEqual(["pl-hand", undefined]);
+  });
+
+  describe("a set's designer whose brief names a plan", () => {
+    const designer = async () => {
+      const main = await run({ scope: { kind: "week" } });
+      return run({ role: "designer", scope: { kind: "week" }, parentId: main.id });
+    };
+    const newWorkout = { doc: docOf([item("bridge")]), target: { kind: "new", date: TODAY } };
+
+    it("files its workout under the brief's plan though its call omitted planId", async () => {
+      await seedPlan("pl-brief");
+      const d = await designer();
+      ok((await call("propose_workout", ctxOf(d, { briefPlanId: "pl-brief" }), newWorkout)).result);
+      expect((await proposal(d.parentId!))!.ops[0]!.planId).toBe("pl-brief");
+    });
+
+    it("may repeat the brief's plan, and refuses another plan's id teachably, writing nothing", async () => {
+      await seedPlan("pl-brief-2");
+      await seedPlan("pl-other");
+      const same = await designer();
+      ok((await call("propose_workout", ctxOf(same, { briefPlanId: "pl-brief-2" }), { ...newWorkout, planId: "pl-brief-2" })).result);
+      expect((await proposal(same.parentId!))!.ops[0]!.planId).toBe("pl-brief-2");
+      const other = await designer();
+      const out = await call("propose_workout", ctxOf(other, { briefPlanId: "pl-brief-2" }), { ...newWorkout, planId: "pl-other" });
+      const e = err(out.result);
+      expect(e.error).toBe("plan_differs");
+      expect(e.why).toContain("pl-brief-2");
+      expect(e.fix).toContain("planId");
+      expect(out.writes).toEqual([]);
+    });
+
+    it("a brief that is a revision files nothing: a revision stays where it is", async () => {
+      await seedPlan("pl-brief-3");
+      const d = await designer();
+      ok((await call("propose_workout", ctxOf(d, { briefPlanId: "pl-brief-3" }), { doc: docOf([item("bridge")]), target: { kind: "revise", workoutId: rich.todayDocId, baseRev: 2 } })).result);
+      expect((await proposal(d.parentId!))!.ops[0]).not.toHaveProperty("planId");
+    });
+  });
+
   it("propose_workout keeps the plan on the op, and none without one; a revision cannot name one", async () => {
     const id = await seedPlan("pl-keep");
     const withPlan = await run({ scope: { kind: "now" } });

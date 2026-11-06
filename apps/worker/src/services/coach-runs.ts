@@ -511,6 +511,8 @@ export interface RunState {
   key?: string;
   /** A set's redo designer: the designer whose workout its replaces once reviewed (ToolContext.replaces). */
   replaces?: string;
+  /** A set's designer: the plan its brief names (ToolContext.briefPlanId). */
+  planId?: string;
 }
 
 /** A fresh state for a run of `role` (sub-runs start here too: a history of their own, the parent's window). */
@@ -658,6 +660,7 @@ export function readRunState(text: string | null): RunState | null {
       ? { set: { rounds: s.set.rounds, ...(Array.isArray(s.set.keyLines) ? { keyLines: s.set.keyLines } : {}) } }
       : {}),
     ...(typeof s.replaces === "string" ? { replaces: s.replaces } : {}),
+    ...(typeof s.planId === "string" ? { planId: s.planId } : {}),
     ...(typeof s.day === "string" ? { day: s.day } : {}),
     ...(typeof s.title === "string" ? { title: s.title } : {}),
     ...(typeof s.key === "string" ? { key: s.key } : {}),
@@ -3020,6 +3023,7 @@ async function runTools(
     ...(state.reviewOf ? { reviewOf: state.reviewOf } : {}),
     ...(run.role === "main" ? { set: setHooks(s) } : {}),
     ...(state.replaces ? { replaces: state.replaces } : {}),
+    ...(state.planId ? { briefPlanId: state.planId } : {}),
     // The run's last call (2026-11-05): finish's must-fix guard lets it end — a last turn never traps a run.
     ...(state.lastCall !== null ? { lastTurn: true as const } : {}),
     // The athlete, read once for the step's read tools that need nothing beside them.
@@ -3484,6 +3488,7 @@ function setHooks(s: StepCtx): SetHooks {
         r.state.day = r.date;
         r.state.key = r.key;
         if (r.replaces) r.state.replaces = r.replaces;
+        if (r.planId) r.state.planId = r.planId;
       }
       const values = rows.map(
         (r) => sql`(${r.runId}, ${s.userId}, ${run.id}, 'designer', ${JSON.stringify(scope)}, ${run.request}, 'active', ${JSON.stringify(r.state)}, 0, 0, ${at}, ${at})`,
