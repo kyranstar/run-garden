@@ -2,7 +2,8 @@
  * THE HEALTH ROW (design 2026-11-05 §3.2, §6.5): one light per stage and source, computed on read from the trail, the
  * extension's checks and the import budget. Deterministic.
  *
- * Per light, over the last 7 days and at most its last 20 steps (`info`/`skip` steps don't count):
+ * Per light, over the last 7 days and at most its last 20 steps (`info`/`skip` steps don't count; the Reader's are its
+ * calls and the check of each reading):
  *  - red: its last step failed for the whole stage (a login, a changed site, the gateway refusing the key or credits),
  *    or at least half of at least four steps failed;
  *  - yellow: a failure or a warning among its last 5 steps;
@@ -34,7 +35,9 @@ const LABEL: Record<HealthLight, string> = {
 function lightOf(stage: string, source: string): HealthLight | null {
   if (stage === "read") return source === "youtube" ? "youtube" : source === "instagram" ? "instagram" : null;
   if (stage === "screen") return "screening";
-  if (stage === "extract") return "reader";
+  // The reader's light: its calls, and the check of what it read — quotes not in the post, moves it was unsure of
+  // (audit 2026-11-06, I8).
+  if (stage === "extract" || stage === "check") return "reader";
   if (stage === "match") return "matching";
   if (stage === "coach") return "coach";
   return null;
@@ -83,7 +86,7 @@ export async function importHealth(db: Db, userId: string, now: Date): Promise<I
         LEFT JOIN saved_links l ON e.post_id LIKE 'ext:%' AND l.user_id = e.user_id AND l.source = substr(e.post_id, 5)
           AND l.source_key = json_extract(e.detail, '$.key')
       WHERE e.user_id = ${userId} AND e.at >= ${since}
-        AND e.stage IN ('read', 'screen', 'extract', 'match', 'coach') AND e.status IN ('ok', 'warn', 'fail'))
+        AND e.stage IN ('read', 'screen', 'extract', 'check', 'match', 'coach') AND e.status IN ('ok', 'warn', 'fail'))
     WHERE n <= ${PER_LIGHT} ORDER BY at DESC`)) as Array<{
     stage: string; source: string; status: string; summary: string; code: string | null; failure: string | null;
     postId: string; at: string; title: string | null; linkUrl: string | null; linkKey: unknown;

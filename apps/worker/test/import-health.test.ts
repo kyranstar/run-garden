@@ -111,3 +111,12 @@ describe("a YouTube read that failed before its post (audit 2026-11-06, I3)", ()
     expect(await lightOf("youtube")).toMatchObject({ color: "red", line: "Sign in to YouTube in Chrome" });
   });
 });
+
+describe("the Reader light reads the check of each reading (audit 2026-11-06, I8)", () => {
+  it("a reading whose quotes aren't in the post turns the Reader yellow, in the check's words", async () => {
+    for (let i = 0; i < 4; i++) await event("extract", "ok", 10 + i);
+    await event("extract", "ok", 2);
+    await event("check", "warn", 1, { source: "worker", summary: "2 quotes aren't in the post" });
+    expect(await lightOf("reader")).toMatchObject({ color: "yellow", line: "2 quotes aren't in the post" });
+  });
+});
