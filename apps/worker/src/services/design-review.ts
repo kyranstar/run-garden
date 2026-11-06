@@ -58,7 +58,10 @@ import { EXERCISES, type ExerciseRecord } from "@rg/exercise-library";
 import { makeLibraryIndex } from "@rg/workout";
 import type { Db } from "./db.js";
 import { REVIEWER_MAX_CALLS } from "./design-limits.js";
-import { markUntrusted, REVIEW_DIMENSIONS, reviewDimensions, type ReviewRubric } from "./design-prompt.js";
+import { STAND_HEADING } from "./where-you-stand.js";
+import { markUntrusted, OPTIONAL_DIMENSIONS, REVIEW_DIMENSIONS, reviewDimensions, type ReviewRubric } from "./design-prompt.js";
+import { isPersonalId } from "@rg/saves";
+import { doseWords } from "./saves-evidence.js";
 import type { DocWorkoutOp, DraftVersion, ReviewRound } from "./design-tools/propose.js";
 import { capInWords, PROSE_CEILING, proseTooLong } from "./design-tools/act-common.js";
 import { isHardNote } from "./design-tools/draft-checks.js";
@@ -72,6 +75,8 @@ import {
   isDocWorkoutOp,
   isPlanAdjustOp,
   isPlanStructureOp,
+  isImportCorrectionOp,
+  isObjectiveChangeOp,
   isMovePinsOp,
   isPlanChangeOp,
   isProgrammeChangeOp,
@@ -223,6 +228,7 @@ export function acceptedLine(a: AcceptedCost, label?: string): string {
  * empty or too long, a malformed list.
  */
 export function parseReview(raw: unknown, rubric: ReviewRubric = "workout"): ReviewWithAccepted | ToolErr {
+  const optional = new Set(rubric === "workout" ? OPTIONAL_DIMENSIONS : []);
   const dims = reviewDimensions(rubric);
   const ids: readonly string[] = dims.map((d) => d.id);
   const problems: string[] = [];
@@ -243,6 +249,8 @@ export function parseReview(raw: unknown, rubric: ReviewRubric = "workout"): Rev
   const missingNotes: string[] = [];
   for (const d of ids) {
     const s = scoreIn[d];
+    // An optional dimension (faithfulness) left out whole is no gap: submit_review asks for it when the draft needs it.
+    if (optional.has(d) && s === undefined && noteIn[d] === undefined) continue;
     if (s === undefined) missingScores.push(d);
     else if (typeof s !== "number" || !Number.isInteger(s) || s < 1 || s > 5) problems.push(`scores.${d}: ${JSON.stringify(s)} is not a whole score from 1 to 5`);
     else scores[d] = s;
@@ -617,15 +625,25 @@ export function proposalFields(all: readonly unknown[]): { title: string; ration
   // A plan change, like a programme change, takes effect whenever it is approved.
   const programmes = [...all.filter(isProgrammeChangeOp), ...all.filter(isPlanChangeOp)];
   const pins = all.filter(isMovePinsOp);
+  // Corrections to imported data (import trail phase 3): beside the pins, or alone ("Corrections to your saves").
+  const fixes = all.filter(isImportCorrectionOp);
+  // Changes to the athlete's objectives (audit fixes, E6): a card of their own.
+  const goals = all.filter(isObjectiveChangeOp);
   const counted = `${changes.length} plan change${changes.length === 1 ? "" : "s"}`;
   const workouts = ops.length === 0 ? null : ops.length === 1 ? ops[0]!.doc.title : `${ops.length} workouts`;
   const changed = workouts === null ? (changes.length === 0 ? null : changes.length === 1 ? describeChange(changes[0]!).title : counted) : changes.length > 0 ? `${workouts} · ${counted}` : workouts;
-  const title = [changed, ...plans.map((p) => p.title), ...programmes.map((g) => g.title), ...pins.map((g) => g.title)].filter((t): t is string => !!t).join(" · ");
+  const named = [changed, ...plans.map((p) => p.title), ...programmes.map((g) => g.title), ...pins.map((g) => g.title)].filter((t): t is string => !!t).join(" · ");
+  const title =
+    named ||
+    (fixes.length > 0 ? (fixes.length === 1 ? "A correction to your saves" : "Corrections to your saves") : goals.length > 0 ? (goals.length === 1 ? "A change to your objectives" : "Changes to your objectives") : "");
   const planDays = plans.map((p) => [p.date, addDays(p.at.slice(0, 10), PLAN_EXPIRY_DAYS)].sort()[0]!);
-  const programmeDays = [...programmes, ...pins].map((g) => addDays(g.at.slice(0, 10), PLAN_EXPIRY_DAYS));
+  const programmeDays = [...programmes, ...pins, ...fixes, ...goals].map((g) => addDays(g.at.slice(0, 10), PLAN_EXPIRY_DAYS));
   return {
     title,
-    rationale: [...ops.map((o) => o.changeNote ?? o.doc.intent.summary), ...changes.map((c) => c.why), ...plans.map((p) => p.why), ...programmes.map((g) => g.why), ...pins.map((g) => g.why)].join(" · ").slice(0, 500),
+    rationale: [
+      ...ops.map((o) => o.changeNote ?? o.doc.intent.summary), ...changes.map((c) => c.why), ...plans.map((p) => p.why), ...programmes.map((g) => g.why), ...pins.map((g) => g.why),
+      ...fixes.map((f) => f.why), ...goals.map((g) => g.why),
+    ].join(" · ").slice(0, 500),
     expiresAt: [...ops.map((o) => o.date), ...changes.flatMap((c) => (c.op.kind === "move" ? [c.date, c.op.toDate] : [c.date])), ...planDays, ...programmeDays].sort().at(-1)!,
   };
 }
@@ -771,12 +789,12 @@ export function submitReviewSchema(rubric: ReviewRubric = "workout"): Record<str
   return {
     type: "object",
     properties: {
-      scores: { type: "object", properties: Object.fromEntries(ids.map((d) => [d, SCORE])), required: [...ids], additionalProperties: false },
+      scores: { type: "object", properties: Object.fromEntries(ids.map((d) => [d, SCORE])), required: ids.filter((d) => !OPTIONAL_DIMENSIONS.includes(d)), additionalProperties: false },
       notes: {
         type: "object",
         description: `One line per dimension, written to the athlete: ${capInWords(REVIEW_NOTE_MAX)} each.`,
         properties: Object.fromEntries(ids.map((d) => [d, NOTE])),
-        required: [...ids],
+        required: ids.filter((d) => !OPTIONAL_DIMENSIONS.includes(d)),
         additionalProperties: false,
       },
       mustFix: { type: "array", maxItems: MUST_FIX_MAX, description: `Each one concrete change, ${capInWords(REVIEW_ITEM_MAX)}.`, items: ITEM },
@@ -828,6 +846,14 @@ export const submitReview: DesignTool = {
     const rubric = draft ? reviewRubricOf(draft.doc) : asked;
     const review = rubric === asked ? parsed : parseReview(raw, rubric);
     if ("error" in review) return review;
+    // Faithfulness to the evidence (import trail phase 3, §8.5): scored whenever the draft holds a move from the saves.
+    if (draft && faithfulnessMissing(draft.doc, review)) {
+      return refuse(
+        "invalid_review",
+        "The review can't be read: scores and notes: missing faithfulness — this draft holds a move from the athlete's saves.",
+        "Call submit_review again with faithfulness scored and noted: does each saved move's dose, why and notes match its record (saved, beside it) and the post's quoted words, or say why they differ?",
+      );
+    }
     // Soreness is never an accepted cost (2026-11-05): a draft that loads an area the athlete called sore today
     // (draft-checks.ts) never has its recovery kept "as they asked" — one repair, as any review that can't be read.
     const soreAt = draft?.issues.some((i) => i.code === "sore_area_loaded") ? (review.accepted ?? []).findIndex((a) => a.dimension === "recovery") : -1;
@@ -920,6 +946,12 @@ const noBrackets = (text: string): string => text.replace(/</g, "‹").replace(/
  * stored is unchanged. `library`: the account's (`all`), so one of the athlete's own moves is named too (the packet's
  * draft is marked whole as a designer run's words).
  */
+/** Whether a review leaves out faithfulness the draft needs: it holds a move from the athlete's saves (a `my…` id). */
+export function faithfulnessMissing(doc: DraftForReview["doc"], review: Pick<DesignReview, "scores">): boolean {
+  const saved = doc.parts.some((p) => p.items.some((i) => i.kind === "exercise" && isPersonalId(i.libraryId)));
+  return saved && typeof review.scores?.faithfulness !== "number";
+}
+
 export function packetDoc(doc: DraftForReview["doc"], library: readonly ExerciseRecord[] = EXERCISES): unknown {
   const libraryMove = makeLibraryIndex(library);
   return {
@@ -931,11 +963,14 @@ export function packetDoc(doc: DraftForReview["doc"], library: readonly Exercise
         const { kind, libraryId, alternates, ...rest } = item;
         const ex = libraryMove(libraryId);
         const ratings = ex && Object.keys(ex.conditions).length > 0 ? { ratings: ex.conditions } : {};
+        // A move from the athlete's saves (§8.5): its record's dose and purpose beside it, for faithfulness.
+        const saved = ex && isPersonalId(libraryId) ? { saved: { dose: doseWords(ex.dose), purpose: ex.text?.why ?? null } } : {};
         return {
           kind,
           libraryId,
           name: ex?.name ?? null,
           ...ratings,
+          ...saved,
           ...rest,
           ...(alternates ? { alternates: alternates.map((a) => ({ libraryId: a.libraryId, name: libraryMove(a.libraryId)?.name ?? null, ...(a.why !== undefined ? { why: a.why } : {}) })) } : {}),
         };
@@ -956,7 +991,7 @@ function targetWords(d: DraftForReview): string {
  * TOOL_RECORDS_MAX_BYTES with a line saying how many of the least telling calls were left out, and which. Composed by the app: every
  * text in it that came from a model or the athlete is inside a marker, so the context builder places it as it is.
  */
-export function reviewPacket(o: { round: number; draft: DraftForReview; records: ToolRecord[]; brief?: string; library?: readonly ExerciseRecord[] }): string {
+export function reviewPacket(o: { round: number; draft: DraftForReview; records: ToolRecord[]; brief?: string; library?: readonly ExerciseRecord[]; stand?: string | null }): string {
   const d = o.draft;
   const head = [
     "# What to review",
@@ -1012,7 +1047,25 @@ export function reviewPacket(o: { round: number; draft: DraftForReview; records:
     ...(dropped.length > 0 ? [`${dropped.length} call${dropped.length === 1 ? " was" : "s were"} left out to keep this short, the least telling first: ${noBrackets(droppedWords)}.`] : []),
     ...(lines.length > 0 ? lines : ["(none: the designer read nothing before proposing)"]),
   ];
-  return [head.join("\n"), validator.join("\n"), records.join("\n")].join("\n\n");
+  // Where the athlete stands, as the designing run's opening carried it (audit fixes, E5): a figure the draft's whys take
+  // from it is the app's, not invented — the honesty rule allows it, so the reviewer can check it.
+  const stand = o.stand ? [`${STAND_LEAD}\n${o.stand}`] : [];
+  return [head.join("\n"), ...stand, validator.join("\n"), records.join("\n")].join("\n\n");
+}
+
+/** The line before the where-you-stand block in a reviewer's packet. */
+export const STAND_LEAD =
+  "Where the athlete stands — the app's own figures, as the designer's opening message carried them; a figure the draft takes from here is the app's, not invented:";
+
+/** The where-you-stand block of a run's opening message (its first user message), as design-context.ts wrote it — or null:
+ * a set's designer's opening holds none. */
+export function standFromOpening(messages: readonly MessageParam[]): string | null {
+  const first = messages[0];
+  if (!first || first.role !== "user") return null;
+  const text = typeof first.content === "string" ? first.content : first.content.flatMap((b) => (b.type === "text" ? [b.text] : [])).join("\n");
+  const at = text.indexOf(STAND_HEADING);
+  if (at < 0) return null;
+  return text.slice(at).split("\n\n")[0]!.trim();
 }
 
 /**
@@ -1038,6 +1091,8 @@ const EVIDENCE_TIERS: Readonly<Record<string, number>> = {
   list_workouts: 1,
   get_workout: 1,
   list_templates: 1,
+  // The evidence a saved move's faithfulness is judged on (import trail phase 3, §8.5).
+  read_saves: 1,
   search_library: 3,
 };
 const evidenceTier = (tool: string): number => EVIDENCE_TIERS[tool] ?? 2;
@@ -1147,7 +1202,7 @@ export const PROMOTE_TRIES = 2;
  * proposed), tried again once when the write lost to another (PROMOTE_TRIES): four statements at most. Answers whether
  * it was made pending.
  */
-export async function promoteWithWhatItHas(db: Db, userId: string, proposalId: string, note: string, opts: { today?: string } = {}): Promise<boolean> {
+export async function promoteWithWhatItHas(db: Db, userId: string, proposalId: string, note: string, opts: { today?: string; out?: PromotedOut } = {}): Promise<boolean> {
   for (let tries = 0; tries < PROMOTE_TRIES; tries++) {
     const out = await promoteOnce(db, userId, proposalId, note, opts);
     if (out !== "lost") return out;
@@ -1171,7 +1226,7 @@ export async function writePromoted(
   userId: string,
   proposalId: string,
   to: "pending" | "rehearsal",
-  o: { ops: readonly unknown[]; flags: readonly string[]; readOps: string | null },
+  o: { ops: readonly unknown[]; flags: readonly string[]; readOps: string | null; out?: PromotedOut },
 ): Promise<boolean> {
   const f = proposalFields(o.ops);
   const ops = JSON.stringify(o.ops);
@@ -1187,7 +1242,14 @@ export async function writePromoted(
     WHERE id = ${proposalId} AND user_id = ${userId} AND status = 'rehearsal' AND ops IS ${o.readOps}
     RETURNING id`,
   )) as Array<{ id: string }>;
+  if (rows.length > 0 && o.out) o.out.saves = o.ops.some((op) => isMovePinsOp(op) || isImportCorrectionOp(op));
   return rows.length > 0;
+}
+
+/** What a promote that won says of what it made pending (import trail phase 3): whether it holds a pins card or a
+ * correction — the supersede then writes the coach's decisions on the posts' trails. */
+export interface PromotedOut {
+  saves?: boolean;
 }
 
 /** The proposal's lines with `lines` added — none twice: a rehearsal stays open, so a second promote of it finds the
@@ -1198,7 +1260,7 @@ export function withLines(flags: readonly string[], lines: readonly string[]): s
 
 /** One try of `promoteWithWhatItHas`: made pending (a rehearsal: promoted, still a rehearsal), nothing to propose, or the
  * write `lost` to another. */
-async function promoteOnce(db: Db, userId: string, proposalId: string, note: string, opts: { today?: string }): Promise<boolean | "lost"> {
+async function promoteOnce(db: Db, userId: string, proposalId: string, note: string, opts: { today?: string; out?: PromotedOut }): Promise<boolean | "lost"> {
   const rows = (await db.all(sql`
     SELECT ops, status, flags FROM coach_proposals WHERE id = ${proposalId} AND user_id = ${userId}
   `)) as Array<{ ops: string | null; status: string; flags: string | null }>;
@@ -1229,7 +1291,7 @@ async function promoteOnce(db: Db, userId: string, proposalId: string, note: str
   const workouts = next.filter(isDocWorkoutOp) as DocWorkoutOp[];
   if (workouts.length === 0 || workouts.some((o) => !o.review) || reviewRunning(workouts)) return false;
   const lines = [note, ...(past.length > 0 ? [pastDayLine(past)] : [])];
-  return (await writePromoted(db, userId, proposalId, to, { ops: next, flags: withLines(flags, lines), readOps: row.ops })) || "lost";
+  return (await writePromoted(db, userId, proposalId, to, { ops: next, flags: withLines(flags, lines), readOps: row.ops, ...(opts.out ? { out: opts.out } : {}) })) || "lost";
 }
 
 export type { ReviewRound, DraftVersion };

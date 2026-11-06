@@ -20,11 +20,13 @@ import { isToolErr, type DesignTool, type ReviewHooks, type ToolContext, type To
 import { designProposalId } from "../src/services/design-tools/propose.js";
 import { REVIEW_DIMENSIONS } from "../src/services/design-prompt.js";
 import { at, day, NOW, seedRichAthlete, studioDoc, TODAY } from "./design-read-fixture.js";
+import { createObjective } from "../src/services/objectives.js";
+import { savedMoveDraft, seedSavedBatch } from "./saves-batch-fixture.js";
 import { calmDoc, landingsDoc } from "./doc-workout-fixture.js";
 import { makeTestDb, makeTestUser } from "./helpers.js";
 
 const ENV = {} as Env;
-const ACT_NAMES = ["validate_workout", "ask_athlete", "record_answer", "remember", "propose_workout", "adjust_plan", "propose_plan", "change_programme", "change_plan", "pin_moves", "plan_set", "read_set", "drop_workout", "submit_review", "finish"];
+const ACT_NAMES = ["validate_workout", "ask_athlete", "record_answer", "remember", "propose_workout", "adjust_plan", "propose_plan", "change_programme", "change_plan", "pin_moves", "correct_import", "propose_objective", "plan_set", "read_set", "drop_workout", "submit_review", "finish"];
 
 let db: Db;
 let counting = false;
@@ -92,6 +94,8 @@ describe("the registry", () => {
       change_programme: ["main"],
       change_plan: ["main"],
       pin_moves: ["main"],
+      correct_import: ["main"],
+      propose_objective: ["main"],
       plan_set: ["main"],
       read_set: ["main", "designer", "reviewer"],
       drop_workout: ["main"],
@@ -273,8 +277,9 @@ describe("each act tool's declared statement cost is the most it runs", () => {
     await measured("propose_workout", { doc: calmDoc(), target: { kind: "new", date: TODAY } }, rich.userId, main);
     expect(await most("finish", [{ input: { summary: "Done." }, run: main }, { input: { summary: "Done." } }, { input: { summary: "" } }])).toBe(1);
     // Its own read; it declares two more — the loop's, once its proposal is made pending: the older plans' days it
-    // covers superseded (Task 7), and a superseded saves card's fit released (the saves flow redesigned §12.1: was 2).
-    expect(tool("finish").statementCost).toBe(3);
+    // covers superseded (Task 7), and a superseded saves card's fit released (the saves flow redesigned §12.1: was 2) —
+    // and (REBASED 2026-11-06 (coach review, phase 3)) the coach's decisions on the posts' trails, a pins card or a correction shown (was 3).
+    expect(tool("finish").statementCost).toBe(4);
   });
 
   it("adjust_plan: the athlete with the session, the proposal and the restore marker in one read, then one write — refusals and replays read only", async () => {
@@ -360,12 +365,57 @@ describe("each act tool's declared statement cost is the most it runs", () => {
     expect(refused.count).toBe(1);
   });
 
+  it("correct_import: the athlete with the account's library, the proposal, the restore marker, the target and the run's reads in one read, then one write — refusals read at most", async () => {
+    // A saved move of the rich athlete's (import trail phase 3), corrected on the athlete's word (no read needed).
+    const seeded = await seedSavedBatch(db, rich.userId, { savedAt: new Date(NOW.getTime() - 86_400_000).toISOString(), posts: [{ moves: [{ draft: savedMoveDraft("Zorbex budget fix") }] }] });
+    const moveId = seeded.moveIds[0]![0]!;
+    const fix = { target: "move", targetId: moveId, field: "dose", after: { type: "time", range: [30, 30], sets: [2, 2] }, why: "You said two sets of thirty seconds.", basis: "owner" };
+    const main = await runRow(rich.userId);
+    const n = await most("correct_import", [
+      { input: fix, run: main, toolUseId: "toolu_fix_budget_1" },
+      // A second correction of the field replaces the first; a replay writes nothing.
+      { input: { ...fix, after: { type: "time", range: [40, 40] } }, run: main, toolUseId: "toolu_fix_budget_2" },
+      { input: fix, run: main, toolUseId: "toolu_fix_budget_1" },
+      // Refused: a library move, the same value, evidence with nothing read, a field it has no such thing as.
+      { input: { ...fix, targetId: "gobletSquat" } },
+      { input: { ...fix, field: "laterality", after: "bilateral" } },
+      { input: { ...fix, basis: "evidence", cites: ["q1.1"] } },
+      { input: { ...fix, field: "colour", after: "red" } },
+    ]);
+    expect(n).toBe(2);
+    expect(tool("correct_import").statementCost).toBe(2);
+    expect((await measured("correct_import", { ...fix, field: "colour" }, rich.userId, await runRow(rich.userId))).count).toBe(0);
+  });
+
+  it("propose_objective: the athlete, the proposal, the restore marker, the objective and the run's words in one read, then one write — refusals read at most (audit fixes, E6)", async () => {
+    const goal = await createObjective(db, rich.userId, { title: "Zorbex budget aim", keyResults: [{ label: "Zorbex budget hold", measure: { kind: "hold_max", libraryIds: ["wallSit"] }, target: 120 }] }, NOW.toISOString());
+    const krId = goal.keyResults[0]!.id;
+    const retarget = { change: "retarget", keyResultId: krId, target: 90, why: "45 s of 120 s with half the time gone.", basis: "stand" };
+    const main = await runRow(rich.userId);
+    const n = await most("propose_objective", [
+      { input: retarget, run: main, toolUseId: "toolu_obj_budget_1" },
+      // A second change of the same key result replaces the first; a replay writes nothing.
+      { input: { ...retarget, target: 100 }, run: main, toolUseId: "toolu_obj_budget_2" },
+      { input: retarget, run: main, toolUseId: "toolu_obj_budget_1" },
+      { input: { change: "add_objective", objective: { title: "Zorbex new aim", keyResults: [{ label: "Zorbex hold", measure: { kind: "hold_max", libraryIds: ["sidePlank"] }, target: 30 }] }, why: "None of 3 aims cover balance.", basis: "stand" }, run: main, toolUseId: "toolu_obj_budget_3" },
+      // Refused: not theirs, the same value, no figure.
+      { input: { ...retarget, keyResultId: "kr-nobody" } },
+      { input: { ...retarget, target: 120 } },
+      { input: { ...retarget, why: "Too hard." } },
+    ]);
+    expect(n).toBe(2);
+    expect(tool("propose_objective").statementCost).toBe(2);
+    // A shape the schema refuses reads nothing.
+    expect((await measured("propose_objective", { ...retarget, change: "rename" }, rich.userId, await runRow(rich.userId))).count).toBe(0);
+  });
+
   it("propose_workout fits a model step's tool room twice over, and every act tool fits the loop's per-tool cap", () => {
     const room = STEP_BUDGET - ROUTE_OVERHEAD - MODEL_STEP_FIXED;
     // 28 since fix wave 3A round 2 (A-M3): a stop's proposal reserves its read and write twice over; 27 since the saves
     // flow redesigned (§12.1): its supersede may release a superseded saves card's fit, one statement more; 26 since
-    // workout editability §7: a fit's main run hands its own batch back as it stops.
-    expect(room).toBe(26);
+    // workout editability §7: a fit's main run hands its own batch back as it stops; 25 since the coach review, phase 3: its
+    // supersede writes the coach's decisions on the posts' trails (REBASED 2026-11-06 (coach review, phase 3)).
+    expect(room).toBe(25);
     // With its reviewer (Task 6) a draft pauses the run: no call after it runs in the same step — so twice over (three
     // times, 27, no longer fits since §7) is room to spare.
     expect(tool("propose_workout").statementCost * 2).toBeLessThanOrEqual(room);

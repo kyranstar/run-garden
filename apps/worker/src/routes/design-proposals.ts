@@ -57,7 +57,7 @@ import {
   UnknownOpError,
   type DesignProposalRow,
 } from "../services/design-approve.js";
-import { docWorkoutLines, manifestReads, pinsLines, planChangeLines, planChangeOpLines, planStructureLines, programmeChangeLines, setContextSql } from "../services/design-manifest.js";
+import { docWorkoutLines, manifestReads, correctionLines, objectiveLines, pinsLines, planChangeLines, planChangeOpLines, planStructureLines, programmeChangeLines, setContextSql } from "../services/design-manifest.js";
 import { designProposalId } from "../services/design-tools/propose.js";
 import { dayRowsSql, placedTimes } from "../services/design-placement.js";
 import { clockIn, PastTimeError } from "../services/design-time.js";
@@ -127,7 +127,7 @@ export async function approveDesigned(c: C, p: DesignProposalRow & { expiresAt: 
     const answer = await approveDesignOps(db, userId, p, parsed.data, { today, now: nowInstant(), prefs, runWire: runWireOf(c.env) }, undefined, meter);
     // A change another approve is applying is left to it (Task 8b's recovery rule): 409 only when nothing else was named.
     const { inFlight, ...rest } = answer;
-    const nothingElse = [rest.applied, rest.changed, rest.refused, rest.settled, rest.remaining, rest.planned ?? [], rest.pinned ?? []].every((xs) => xs.length === 0);
+    const nothingElse = [rest.applied, rest.changed, rest.refused, rest.settled, rest.remaining, rest.planned ?? [], rest.pinned ?? [], rest.corrected ?? []].every((xs) => xs.length === 0);
     if (inFlight && nothingElse) return c.json({ error: "in_flight", opIds: inFlight, ...rest }, 409);
     // The calendar follows the plan, as after a Studio save (Task 9): once the approve is over and this request wrote
     // something, one bounded step in the room its declared costs left — none when the chunk was full (the half-hourly
@@ -201,11 +201,17 @@ export async function designedManifest(db: Db, userId: string, proposalId: strin
   const pins = pinsLines(all);
   // A change to a plan's purpose, brief, ending or pause (plans with a purpose): its own too.
   const planChanges = planChangeOpLines(all);
+  // The corrections to imported data (import trail phase 3): beside the pins card, or alone.
+  const corrections = correctionLines(all);
+  // The changes to the athlete's objectives (audit fixes, E6): a card of their own.
+  const objectives = objectiveLines(all);
   const withPlans = {
     ...(plans.length > 0 ? { plans } : {}),
     ...(programmes.length > 0 ? { programmes } : {}),
     ...(planChanges.length > 0 ? { planChanges } : {}),
     ...(pins.length > 0 ? { pins } : {}),
+    ...(corrections.length > 0 ? { corrections } : {}),
+    ...(objectives.length > 0 ? { objectives } : {}),
   };
   if (workouts.length === 0) return { lines: [], changes: planChangeLines(all), ...withPlans };
   const prefix = designProposalId("");

@@ -459,8 +459,10 @@ describe("the sweep expiring an athlete's two live trees (round 2, A-M8)", () =>
     // cost holds one more since the saves flow redesigned (§12.1: was 7) — a superseded saves card's fit released — and
     // one more since workout editability §7 (was 8) — a fit's own batch handed back — neither of which this tree, superseding
     // no such card and fitting no batch, spends (a fit's tree at it exactly: coach-runs-fit-release.test.ts).
-    expect(EXPIRE_TREE_STATEMENTS).toBe(9);
-    expect(statements).toBe(1 + (EXPIRE_TREE_STATEMENTS - 2) + 4);
+    // REBASED 2026-11-06 (coach review, phase 3): one more (10) — the coach's decisions on the posts' trails, which a tree proposing no pins card or correction
+    // never spends either.
+    expect(EXPIRE_TREE_STATEMENTS).toBe(10);
+    expect(statements).toBe(1 + (EXPIRE_TREE_STATEMENTS - 3) + 4);
     expect((await proposal(db, mine))!).toMatchObject({ status: "pending" });
     expect((await proposal(db, rehearsal))!.status).toBe("rehearsal");
     for (const id of [mine, rehearsal]) expect((await run(db, id)).status).toBe("expired");

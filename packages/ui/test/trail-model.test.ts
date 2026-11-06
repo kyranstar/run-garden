@@ -6,7 +6,7 @@
  */
 import { describe, expect, it } from "vitest";
 import type { ImportTrailDto, TrailEventDto } from "@rg/saves";
-import { blobLabel, moveDetail, trailAccount, trailSections, type TrailRow } from "../src/screens/saves/trail-model.js";
+import { blobLabel, moveDetail, readAgainLabel, trailAccount, trailSections, type TrailRow } from "../src/screens/saves/trail-model.js";
 
 // Midday UTC: the same calendar day on any device's clock.
 const AT = "2026-11-03T12:00:00.000Z";
@@ -118,7 +118,10 @@ describe("the account (level 1)", () => {
 
   it("a trail rebuilt from what was kept ends by saying so (Review Focus 3)", () => {
     const old = trail({ rebuilt: true, events: [ev("screen", { rebuilt: true, summary: "Kept: a hip routine" })] });
-    expect(trailAccount(old).at(-1)).toMatchObject({ kind: "rebuilt", text: "Kept from before the trail: the raw replies weren't kept then." });
+    // REBASED 2026-11-06 (phase 5 backfill; the controller's addition 4): a short label on the page, the words one tap down.
+    expect(trailAccount(old).at(-1)).toMatchObject({
+      kind: "rebuilt", text: "Rebuilt from what was kept", more: "This post came in before the trail, so its steps are rebuilt from what was kept. The raw replies weren't kept then.",
+    });
   });
 });
 
@@ -232,7 +235,8 @@ describe("the stages (level 2)", () => {
   it("an owner's choices name the moves, not their ids", () => {
     const dto = trail({ events: [ev("choice", { source: "owner", status: "info", summary: "You chose Fit them in", detail: { batchId: "bt1", choices: { myZorbexHipLift1a2b: "include" } } })] });
     const rows = allRows(dto);
-    expect(rows).toContainEqual({ key: "Choices", value: "Zorbex hip lift: include" });
+    // REBASED 2026-11-06 (phase 5 backfill): a choice in words.
+    expect(rows).toContainEqual({ key: "Choices", value: "Zorbex hip lift: in" });
     expect(texts(rows).join("\n")).not.toContain("bt1");
   });
 
@@ -279,7 +283,8 @@ describe("the stages (level 2)", () => {
     const dto = trail({ rebuilt: true, events: [ev("screen", { id: "rebuilt:screen", rebuilt: true, summary: "Kept: a hip routine", detail: { verdict: "training", reason: "a hip routine", stage: "model" } })] });
     const step = trailSections(dto)[0]!.steps[0]!;
     expect(step.rebuilt).toBe(true);
-    expect(step.details[0]!.rows).toContainEqual({ key: "Kept", value: "Rebuilt from what was kept" });
+    // REBASED 2026-11-06 (phase 5 backfill): the spec's label, whole (§6.6) — it sits one tap down, in the step.
+    expect(step.details[0]!.rows).toContainEqual({ key: "Kept", value: "Rebuilt from what was kept; the raw replies weren't kept then" });
   });
 });
 
@@ -399,5 +404,195 @@ describe("a transcript blob as the trail shows it (final audit G20)", () => {
     const { blobDisplayText } = await import("../src/screens/saves/trail-model.js");
     expect(blobDisplayText("transcript", "12.3\tZorbex warm-up\n75\tnext move")).toBe("[0:12] Zorbex warm-up\n[1:15] next move");
     expect(blobDisplayText("raw_reply", "12.3\tkept as is")).toBe("12.3\tkept as is");
+  });
+});
+
+describe("the coach's word on the trail (the controller's fix pass, E14, E15, E19)", () => {
+  const LIFT = "myZorbexHipLift1a2b";
+  const line = (summary: string, at: string) => ev("coach", { source: "coach", moveId: LIFT, summary, at, detail: { verdict: "suggested", decision: "in", where: "joins your rotation", dose: null, text: "For stiff hips.", cites: [] } });
+  const fix = (summary: string, at: string) => ev("coach", { source: "coach", moveId: LIFT, summary, at, detail: { verdict: "suggested", correction: "fix-move-x-dose" } });
+  const read = (at: string) => ev("coach", { source: "coach", moveId: null, summary: "The coach read this post", at, detail: { runId: `run-${at}` } });
+
+  it("E14: a correction's row never hides the move's in/out — the move's line is its latest decision; the correction is its own", () => {
+    const lines = trailAccount(trail({ events: [line("The coach suggested it — in · joins your rotation", "2026-11-03T10:00:00.000Z"), fix("The coach suggested a correction — Dose of Zorbex hip lift", "2026-11-03T10:00:00.000Z")] }));
+    const coach = lines.filter((l) => l.kind === "coach").map((l) => l.text);
+    expect(coach).toContain("The coach suggested it — in · joins your rotation");
+    expect(coach).toContain("The coach suggested a correction — Dose of Zorbex hip lift");
+  });
+
+  it("E15: the coach's reads of the post are one line, the latest", () => {
+    const lines = trailAccount(trail({ events: [read("2026-11-03T10:00:00.000Z"), read("2026-11-03T11:00:00.000Z"), read("2026-11-03T12:00:00.000Z"), line("The coach suggested it — in", "2026-11-03T12:00:00.000Z")] }));
+    expect(lines.filter((l) => l.kind === "coach" && l.text === "The coach read this post")).toHaveLength(1);
+  });
+
+  it("E19: a step's cites read as their chips' words, and the ids it corrects stay quiet", () => {
+    const sections = trailSections(trail({
+      events: [
+        ev("coach", { source: "coach", moveId: LIFT, summary: "The coach suggested it", detail: { verdict: "suggested", decision: "in", text: "For stiff hips.", cites: [{ id: "q1.1", kind: "quote", label: "said 1:12", postId: "post-1", position: 0, quote: 0 }, { id: "history", kind: "history", label: "your history" }] } }),
+        ev("correction", { source: "coach", summary: "Dose fixed", detail: { target: "move", targetId: LIFT, field: "dose", before: null, after: null, basis: "evidence", cites: [{ id: "q1.1", kind: "quote", label: "said 1:12", postId: "post-1", position: 0, quote: 0 }], by: "coach" } }),
+      ],
+    }));
+    const rows = sections.flatMap((s) => s.steps.flatMap((st) => st.details.flatMap((d) => d.rows)));
+    const words = rows.map((r) => `${r.key}: ${r.value}`).join("\n");
+    expect(words).toContain("Evidence: said 1:12, your history");
+    expect(words).not.toMatch(/kind quote|post id|position 0|label said/);
+    expect(words).not.toContain(LIFT);
+  });
+});
+
+describe("an old post's rebuilt trail reads in words (phase 5a, §6.6)", () => {
+  // Midday UTC: the same calendar day on any device's clock.
+  const CAPTURED = "2026-10-24T12:00:00.000Z";
+  const SAVED = "2026-10-26T12:00:00.000Z";
+  const r = (stage: TrailEventDto["stage"], summary: string, detail: unknown, at = "", over: Partial<TrailEventDto> = {}) =>
+    ev(stage, { id: `rebuilt:${stage}`, rebuilt: true, summary, detail, at, ...over });
+  const OLD = trail({
+    rebuilt: true,
+    events: [
+      r("submit", "Found by the extension", { source: "instagram", creator: "Zorbex Coach (zorbex.coach)", mediaType: "video", captured: CAPTURED, posted: "2026-10-20T12:00:00.000Z" }, CAPTURED, { source: "extension" }),
+      r("screen", "Kept: a hip mobility routine", { verdict: "training", reason: "a hip mobility routine", stage: "model" }),
+      r("extract", "Read 2 moves (a routine)", {
+        kind: "routine",
+        moves: [
+          { position: 0, name: "Zorbex hip lift", dose: "2x30s", purpose: "Opens the hips after a run", evidence: { name: "stated", dose: "inferred", steps: "stated" }, confidence: "high" },
+          { position: 1, name: "Zorbex knee sways", dose: null, purpose: null, evidence: null, confidence: "medium" },
+        ],
+        notes: ["Do these after easy runs, not hard ones"],
+      }),
+      r("match", "2 moves: 2 already yours — 1 to check, 1 left out", {
+        moves: [
+          { position: 0, name: "Zorbex hip lift", outcome: "personal", moveId: "myZorbexHipLift1a2b", check: true, like: { id: "myZorbexHipRaise004", name: "Zorbex hip raise" }, now: "saved", confidence: 1 },
+          { position: 1, name: "Zorbex knee sways", outcome: "personal", moveId: "myZorbexKneeSway3c4d", check: false, mergedInto: { id: "myZorbexKneeSwing03", name: "Zorbex knee swing" }, now: "removed", confidence: 0.6 },
+        ],
+      }, "2026-10-24T12:01:00.000Z"),
+      r("batch", "Joined a batch — saved and fitted in", { batchId: "batch-old", batch: "saved and fitted in", theme: "Hips" }, "2026-10-25T12:00:00.000Z", { status: "info" }),
+      r("choice", "You had it read anyway; your choices: 1 in, 1 edited", { post: "read anyway", choices: { myZorbexHipLift1a2b: "include" }, edited: ["Zorbex hip lift"] }, SAVED, { source: "owner", status: "info" }),
+      r("save", "Saved: 1 move joined your library", { moves: [{ position: 0, name: "Zorbex hip lift", note: "Opens the hips after a run" }] }, SAVED),
+    ],
+  });
+  const sectionRows = (dto: ImportTrailDto, stage: string) =>
+    trailSections(dto).find((s) => s.stage === stage)!.steps.flatMap((st) => st.details.flatMap((d) => d.rows.map((row) => [d.title, row.key, row.value])));
+
+  it("never a raw key, a JSON fragment or a stored timestamp — every rebuilt detail is words", () => {
+    const words = texts(allRows(OLD)).join("\n");
+    expect(words).not.toMatch(/[{}"]|\d{4}-\d{2}-\d{2}T/);
+    for (const key of ["mergedInto", "Merged into:", "now", "captured", "posted", "notes", "edited", "batchId", "include", "personal", "inferred"]) {
+      expect(words.split("\n")).not.toContain(key);
+    }
+    expect(words).not.toMatch(/\b(mergedInto|batchId|moveId|myZorbex\w+)\b/);
+  });
+
+  it("where it came from: the source, the creator, the media, when it was captured and posted", () => {
+    expect(sectionRows(OLD, "read")).toEqual(expect.arrayContaining([
+      [null, "Source", "Instagram"], [null, "Creator", "Zorbex Coach (zorbex.coach)"], [null, "Media", "video"],
+      [null, "Captured", "Sat 24 Oct"], [null, "Posted", "Tue 20 Oct"],
+    ]));
+  });
+
+  it("the reading: each move under its name — its dose words, what it's for, what it stated or guessed — and the post's notes", () => {
+    const rows = sectionRows(OLD, "extract");
+    expect(rows).toEqual(expect.arrayContaining([
+      [null, "Kind", "a routine"],
+      [null, "Notes", "Do these after easy runs, not hard ones"],
+      ["1. Zorbex hip lift", "Dose", "2x30s"],
+      ["1. Zorbex hip lift", "Purpose", "Opens the hips after a run"],
+      ["1. Zorbex hip lift", "Said in the post", "Name: stated\nDose: the reader's guess\nSteps: stated"],
+      ["1. Zorbex hip lift", "Confidence", "high"],
+      ["2. Zorbex knee sways", "Confidence", "medium"],
+    ]));
+  });
+
+  it("links and their flags: check this, looks like, merged into, saved or left out", () => {
+    expect(sectionRows(OLD, "match")).toEqual(expect.arrayContaining([
+      ["1. Zorbex hip lift", "Came out", "already yours"],
+      ["1. Zorbex hip lift", "Check this", "yes"],
+      ["1. Zorbex hip lift", "Looks like", "Zorbex hip raise"],
+      ["1. Zorbex hip lift", "Now", "saved to your library"],
+      ["2. Zorbex knee sways", "Merged into", "Zorbex knee swing"],
+      ["2. Zorbex knee sways", "Now", "left out"],
+    ]));
+  });
+
+  it("the batch, the owner's choices and what was saved, in words", () => {
+    expect(sectionRows(OLD, "batch")).toEqual(expect.arrayContaining([[null, "Now", "saved and fitted in"], [null, "Theme", "Hips"]]));
+    expect(sectionRows(OLD, "choice")).toEqual(expect.arrayContaining([
+      [null, "The post", "you had it read anyway"], [null, "Choices", "Zorbex hip lift: in"], [null, "Edited", "Zorbex hip lift"],
+    ]));
+    expect(sectionRows(OLD, "save")).toEqual(expect.arrayContaining([["1. Zorbex hip lift", "Note", "Opens the hips after a run"]]));
+  });
+
+  it("each section of rebuilt steps is marked rebuilt, and a step kept with no time shows none", () => {
+    const sections = trailSections(OLD);
+    expect(sections.every((s) => s.rebuilt)).toBe(true);
+    expect(sections.find((s) => s.stage === "screen")!.steps[0]!.when).toBe("");
+    expect(sections.find((s) => s.stage === "read")!.steps[0]!.when).toMatch(/^Sat 24 Oct, /);
+    // A section the trail recorded itself is not.
+    expect(trailSections(trail({ events: [ev("save", { summary: "Saved" })] }))[0]!.rebuilt).toBe(false);
+  });
+
+  it("the coach's line says its decisions from before the trail weren't kept (the controller's addition 1)", () => {
+    expect(trailAccount(OLD).find((l) => l.kind === "coach")?.text).toBe("Decisions from before the trail weren't kept");
+    expect(trailAccount(trail()).find((l) => l.kind === "coach")?.text).toBe("No coach decision on its trail yet");
+  });
+});
+
+describe("a filtered post says why at the top, with Import anyway (the controller's addition 3)", () => {
+  const why = "3 earlier posts from this creator were all not training";
+  const filtered = (rebuilt: boolean) =>
+    trail(
+      {
+        rebuilt,
+        account: { kind: null, summary: null, moves: [], health: { status: "ok", line: "Read cleanly" } },
+        events: [ev("screen", { rebuilt, summary: `Not training: ${why}`, detail: { verdict: "not", reason: why, stage: "creator" } })],
+      },
+      { status: "filtered_out" },
+    );
+  it("new and rebuilt alike: 'Not training: <why>' above the health word, offering Import anyway", () => {
+    for (const dto of [filtered(false), filtered(true)]) {
+      const lines = trailAccount(dto);
+      const screen = lines.find((l) => l.kind === "screen")!;
+      expect(screen).toMatchObject({ text: `Not training: ${why}`, importAnyway: true });
+      expect(lines.indexOf(screen)).toBeLessThan(lines.findIndex((l) => l.kind === "health"));
+    }
+  });
+  it("a post that isn't filtered out has no such line", () => {
+    const read = trail({ events: [ev("screen", { summary: "Kept: a routine", detail: { verdict: "training", reason: "a routine", stage: "model" } })] });
+    expect(trailAccount(read).some((l) => l.kind === "screen")).toBe(false);
+  });
+});
+
+describe("Read it again on an old post's trail (phase 5a)", () => {
+  const old = (readAgain: ImportTrailDto["post"]["readAgain"], status = "matched") =>
+    trail({ rebuilt: true, events: [ev("screen", { rebuilt: true, summary: "Kept: a hip routine" })] }, { readAgain, status });
+  it("is offered beside the rebuilt label, its price said before the tap", () => {
+    const line = trailAccount(old({ offer: true, asked: false, costMicros: 11_400 })).find((l) => l.kind === "rebuilt")!;
+    expect(line.again).toEqual({ costMicros: 11_400 });
+    expect(line.waiting).toBeUndefined();
+    expect(readAgainLabel(11_400)).toBe("Read it again (about $0.01)");
+    expect(readAgainLabel(3_000)).toBe("Read it again (under $0.01)");
+    expect(readAgainLabel(null)).toBe("Read it again");
+  });
+  it("asked, it waits for the computer's extension; not offered, nothing", () => {
+    expect(trailAccount(old({ offer: false, asked: true, costMicros: 11_400 }, "queued")).find((l) => l.kind === "rebuilt")).toMatchObject({ waiting: true });
+    const none = trailAccount(old(null)).find((l) => l.kind === "rebuilt")!;
+    expect(none.again).toBeUndefined();
+    expect(none.waiting).toBeUndefined();
+  });
+  it("a re-read's steps say what they did, in words: lined up, kept as linked, or the earlier reading kept and why", () => {
+    const dto = trail({
+      events: [
+        ev("extract", { summary: "Read 3 moves (a routine) — read again, lined up with the 2 moves it had", detail: { kind: "routine", moves: 3, reread: { kept: 2, added: [2] } } }),
+        ev("match", { detail: { moves: [{ position: 0, name: "Zorbex hip lift", outcome: "personal", moveId: "myZorbexHipLift1a2b", by: "kept", check: false }] } }),
+      ],
+    });
+    const rows = allRows(dto).map((r) => [r.key, r.value]);
+    expect(rows).toContainEqual(["Read again", "lined up with the 2 moves it had; 1 new"]);
+    expect(rows).toContainEqual(["Matched by", "kept as it was — the post already linked it"]);
+    const declined = trail({
+      events: [ev("extract", { status: "warn", detail: { kind: "routine", moves: 2, kept: "earlier", missing: ["Zorbex knee sways"] } })],
+    });
+    const words = allRows(declined).map((r) => [r.key, r.value]);
+    expect(words).toContainEqual(["Kept", "the earlier reading: this one didn't line up with the moves it had"]);
+    expect(words).toContainEqual(["Not in it", "Zorbex knee sways"]);
   });
 });

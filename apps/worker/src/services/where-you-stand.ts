@@ -704,8 +704,8 @@ function firstSentence(text: string): string {
 
 const mmss = (s: number): string => `${Math.floor(s / 60)}:${String(Math.round(s % 60)).padStart(2, "0")}`;
 
-/** A key result's figure in its own unit. */
-function figure(v: number, unit: KeyResultUnit): string {
+/** A key result's figure in its own unit (the coach's objective changes say theirs the same way: audit fixes, E6). */
+export function figure(v: number, unit: KeyResultUnit): string {
   switch (unit) {
     case "s":
       return v >= 600 ? mmss(v) : `${v} s`;
@@ -897,9 +897,12 @@ export function driftLine(d: Drift): string {
 }
 
 /** The block (see the module comment). */
+/** The block's heading: the reviewer's packet finds the block by it in the designing run's opening (audit fixes, E5). */
+export const STAND_HEADING = "# Where you stand (the app's own figures)";
+
 export function standBlock(f: StandFacts, drifts: readonly Drift[]): string {
   return [
-    "# Where you stand (the app's own figures)",
+    STAND_HEADING,
     ...objectiveLines(f),
     ...plannedLines(f),
     ...aheadLines(f),

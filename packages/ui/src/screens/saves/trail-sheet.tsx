@@ -18,7 +18,7 @@
  * first and nothing cut without "Show all". Every word on it came from a stage, a model or a stranger's post: text,
  * never markup. The sheet sits on top of whatever opened it (a portal: a sheet's own scroller can't clip it).
  */
-import { useId, useMemo, useState, type ReactNode } from "react";
+import { useEffect, useId, useMemo, useRef, useState, type ReactNode } from "react";
 import { createPortal } from "react-dom";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { api, ApiError, saveBlobQuery, saveTrailQuery } from "@rg/api-client";
@@ -39,8 +39,10 @@ import {
   type TrailDetail,
   type TrailRow,
   type TrailStep,
+  readAgainLabel,
   watchLabel,
 } from "./trail-model.js";
+import { WAITING_FOR_EXTENSION } from "@rg/saves";
 
 /** The sheet's title before the trail is read. */
 export const TRAIL_TITLE = "Saved post";
@@ -53,13 +55,19 @@ const retry = (n: number, e: unknown): boolean => !(e instanceof ApiError && (e.
 /** The coach trail's glyph classes, by a step's status. */
 const GLYPH_CLASS: Record<TrailStatus, string> = { ok: "done", warn: "error", fail: "error", info: "neutral", skip: "neutral" };
 
-export function TrailSheet({ postId, onClose }: { postId: string; onClose: () => void }) {
+/** Where a sheet opens (import trail phase 3: a review card's name or chip): a move's section, and in it a quote. */
+export interface TrailFocus {
+  position: number;
+  quote?: number;
+}
+
+export function TrailSheet({ postId, onClose, focus }: { postId: string; onClose: () => void; focus?: TrailFocus }) {
   const q = useQuery({ queryKey: saveTrailQuery(postId), queryFn: () => api.saveTrail(postId), retry });
   const dto = q.data;
   const creator = dto ? dto.post.creator.name?.trim() || dto.post.creator.handle.trim() : "";
   const title = dto ? dto.post.title?.trim() || creator || TRAIL_TITLE : TRAIL_TITLE;
   let body;
-  if (dto) body = <Trail dto={dto} />;
+  if (dto) body = <Trail dto={dto} focus={focus} />;
   else if (q.isPending) body = <Spinner label="Reading the trail" />;
   else if (isGone(q.error)) body = <EmptyState title="That post isn't there." />;
   else
@@ -78,13 +86,13 @@ export function TrailSheet({ postId, onClose }: { postId: string; onClose: () =>
   );
 }
 
-function Trail({ dto }: { dto: ImportTrailDto }) {
+function Trail({ dto, focus }: { dto: ImportTrailDto; focus?: TrailFocus }) {
   const account = useMemo(() => trailAccount(dto), [dto]);
   const sections = useMemo(() => trailSections(dto), [dto]);
   const href = postHref(dto.post.url);
   return (
     <div className="trail">
-      <Account dto={dto} lines={account} href={href} />
+      <Account dto={dto} lines={account} href={href} focus={focus} />
       {sections.length ? (
         <ol className="coach-run-lines trail-stages" aria-label="Step by step">
           {sections.map((s) => (
@@ -98,7 +106,7 @@ function Trail({ dto }: { dto: ImportTrailDto }) {
 
 // ── Level 1 ──────────────────────────────────────────────────────────────────
 
-function Account({ dto, lines, href }: { dto: ImportTrailDto; lines: AccountLine[]; href: string | null }) {
+function Account({ dto, lines, href, focus }: { dto: ImportTrailDto; lines: AccountLine[]; href: string | null; focus?: TrailFocus }) {
   const moves = lines.filter((l) => l.kind === "move");
   const rest = (kind: AccountLine["kind"]) => lines.filter((l) => l.kind === kind);
   return (
@@ -124,10 +132,13 @@ function Account({ dto, lines, href }: { dto: ImportTrailDto; lines: AccountLine
       {rest("video").map((l) => (
         <VideoLine key={l.key} line={l} postId={dto.post.id} />
       ))}
+      {rest("screen").map((l) => (
+        <ScreenLine key={l.key} line={l} postId={dto.post.id} />
+      ))}
       {moves.length ? (
         <ul className="coach-run-lines trail-moves" aria-label="The moves">
           {moves.map((l) => (
-            <MoveLine key={l.key} line={l} dto={dto} />
+            <MoveLine key={l.key} line={l} dto={dto} focus={focus && focus.position === l.position ? focus : undefined} />
           ))}
         </ul>
       ) : null}
@@ -144,9 +155,7 @@ function Account({ dto, lines, href }: { dto: ImportTrailDto; lines: AccountLine
         ))}
       </ol>
       {rest("rebuilt").map((l) => (
-        <p key={l.key} className="coach-run-note trail-rebuilt">
-          {l.text}
-        </p>
+        <RebuiltLine key={l.key} line={l} postId={dto.post.id} />
       ))}
     </section>
   );
@@ -188,6 +197,87 @@ function VideoLine({ line, postId }: { line: AccountLine; postId: string }) {
   );
 }
 
+/** A filtered post's why, on the page, with Import anyway beside it (the controller's addition 3): the owner's word reads it. */
+function ScreenLine({ line, postId }: { line: AccountLine; postId: string }) {
+  const qc = useQueryClient();
+  const anyway = useMutation({
+    mutationFn: () => api.savesOverride(postId, "process"),
+    onSuccess: () => qc.invalidateQueries({ queryKey: saveTrailQuery(postId) }),
+  });
+  const failed = anyway.isError
+    ? anyway.error instanceof ApiError
+      ? anyway.error.status === 409
+        ? "It has moved on since — it isn't filtered out now."
+        : "The app couldn't take it just now — try again."
+      : "Couldn't reach the app — try again."
+    : null;
+  return (
+    <p className="trail-note trail-screen">
+      {line.text}
+      {line.importAnyway ? (
+        <>
+          {" "}
+          <button type="button" className="btn btn-small" disabled={anyway.isPending} onClick={() => anyway.mutate()}>
+            Import anyway
+          </button>
+        </>
+      ) : null}
+      {failed ? (
+        <span className="trail-video-failed" role="alert">
+          {" "}
+          {failed}
+        </span>
+      ) : null}
+    </p>
+  );
+}
+
+/**
+ * A post from before the trail: a short label on the page, what it means one tap down (principles §7) — and beside it
+ * Read it again with its price, or, once asked, that it waits for the computer's extension (phase 5a).
+ */
+function RebuiltLine({ line, postId }: { line: AccountLine; postId: string }) {
+  const [open, setOpen] = useState(false);
+  const id = useId();
+  const qc = useQueryClient();
+  const again = useMutation({
+    mutationFn: () => api.savesReadAgain(postId),
+    onSuccess: () => qc.invalidateQueries({ queryKey: saveTrailQuery(postId) }),
+  });
+  // A paid one-tap ask that didn't go through says why, and stays to tap again (as Watch it too does).
+  const failed = again.isError
+    ? again.error instanceof ApiError
+      ? again.error.status === 409
+        ? "It can't be read again just now — its moves may be in a batch you're fitting in."
+        : "The app couldn't take it just now — try again."
+      : "Couldn't reach the app — try again."
+    : null;
+  return (
+    <div className="trail-rebuilt">
+      <button type="button" className="linklike tap-pad coach-run-fold trail-rebuilt-open" aria-expanded={open} aria-controls={id} onClick={() => setOpen((v) => !v)}>
+        {line.text}
+        <span className="coach-run-fold-chev" aria-hidden="true">
+          <IconChevron size={14} />
+        </span>
+      </button>
+      {line.again ? (
+        <button type="button" className="btn btn-small" disabled={again.isPending} onClick={() => again.mutate()}>
+          {readAgainLabel(line.again.costMicros)}
+        </button>
+      ) : null}
+      {line.waiting ? <span className="coach-run-note trail-rebuilt-waiting">{WAITING_FOR_EXTENSION}</span> : null}
+      {failed ? (
+        <span className="trail-video-failed" role="alert">
+          {failed}
+        </span>
+      ) : null}
+      <p id={id} className="coach-run-note trail-rebuilt-more" hidden={!open}>
+        {line.more}
+      </p>
+    </div>
+  );
+}
+
 /** A line with its status mark (a glyph, and its word for a reader: never colour alone). */
 function Mark({ status, children }: { status: TrailStatus; children: ReactNode }) {
   const m = STATUS_MARK[status];
@@ -203,10 +293,11 @@ function Mark({ status, children }: { status: TrailStatus; children: ReactNode }
 }
 
 /** A move's line: its words and what it's for; a tap opens what the trail says of it (its check, match, choices). */
-function MoveLine({ line, dto }: { line: AccountLine; dto: ImportTrailDto }) {
-  const [open, setOpen] = useState(false);
+function MoveLine({ line, dto, focus }: { line: AccountLine; dto: ImportTrailDto; focus?: TrailFocus }) {
+  // Opened at this move (a review card's name or chip): its section open from the start.
+  const [open, setOpen] = useState(!!focus);
   const id = useId();
-  const detail = useMemo(() => (line.position === undefined ? [] : moveDetail(dto, line.position)), [dto, line.position]);
+  const detail = useMemo(() => (line.position === undefined ? [] : moveDetail(dto, line.position, focus?.quote)), [dto, line.position, focus?.quote]);
   return (
     <li className="trail-move">
       {detail.length ? (
@@ -238,7 +329,10 @@ function Section({ section, dto }: { section: StageSection; dto: ImportTrailDto 
   return (
     <Mark status={section.status}>
       <button type="button" className="coach-line-text coach-line-open trail-open trail-stage" aria-expanded={open} aria-controls={id} onClick={() => setOpen((v) => !v)}>
-        <span className="trail-stage-title">{section.title}</span>
+        <span className="trail-stage-title">
+          {section.title}
+          {section.rebuilt ? <span className="trail-rebuilt-tag"> · rebuilt</span> : null}
+        </span>
         <span className="trail-stage-result">{section.result}</span>
       </button>
       <span className="coach-run-fold-chev trail-chev" aria-hidden="true">
@@ -296,8 +390,16 @@ function Details({ details }: { details: readonly TrailDetail[] }) {
 /** A key: value row; a long value shows its preview, and "Show all" its whole — nothing is cut. */
 function Row({ row }: { row: TrailRow }) {
   const [all, setAll] = useState(false);
+  // The quote a review card's chip opened the sheet at: in view once drawn, and the focus there (the controller's fix
+  // pass, E20) — so a screen reader lands on it too.
+  const ref = useRef<HTMLDivElement>(null);
+  useEffect(() => {
+    if (!row.focus) return;
+    ref.current?.scrollIntoView?.({ block: "center" });
+    ref.current?.focus({ preventScroll: true });
+  }, [row.focus]);
   return (
-    <div className="coach-detail-row">
+    <div ref={ref} className={`coach-detail-row${row.focus ? " trail-row--focus" : ""}`} {...(row.focus ? { tabIndex: -1 } : {})}>
       <dt>{row.key}</dt>
       <dd className="trail-value">
         {row.struck ? (

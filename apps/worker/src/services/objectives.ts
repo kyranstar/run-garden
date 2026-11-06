@@ -184,7 +184,7 @@ export async function getObjective(db: Db, userId: string, id: string): Promise<
 
 // ── Writing ─────────────────────────────────────────────────────────────────────────────────────────────────────────
 
-interface KeyResultInputParsed {
+export interface KeyResultInputParsed {
   id?: string;
   label: string;
   measure: KeyResultMeasure;
@@ -195,8 +195,9 @@ interface KeyResultInputParsed {
   dueDate?: string | null;
 }
 
-/** Each move a measure names must be the library's; issues point at the id. */
-function libraryIssues(krs: readonly KeyResultInputParsed[] | undefined): z.ZodIssue[] {
+/** Each move a measure names must be the library's; issues point at the id. Exported for the coach's objective changes
+ * (audit fixes, E6: checked as the board's own save). */
+export function libraryIssues(krs: readonly KeyResultInputParsed[] | undefined): z.ZodIssue[] {
   const issues: z.ZodIssue[] = [];
   krs?.forEach((kr, i) => {
     if (kr.measure.kind !== "hold_max" && kr.measure.kind !== "best_set") return;
@@ -215,6 +216,26 @@ function withCurrentIds(m: KeyResultMeasure): KeyResultMeasure {
   return { ...m, libraryIds: [...new Set(m.libraryIds.map((id) => libraryMove(id)?.id ?? id))] };
 }
 
+/** A key result's fields as the board stores them (see `keyResultRow`): its measure with each move's current id, its
+ * unit and direction resolved. Exported for the coach's objective changes (audit fixes, E6). */
+export function resolvedKeyResult(
+  kr: KeyResultInputParsed,
+  prefs: Pick<UserPreferences, "weightUnit" | "units">,
+  keptUnit?: KeyResultUnit,
+): { label: string; measure: KeyResultMeasure; direction: KeyResultDirection; baseline: number | null; target: number | null; unit: KeyResultUnit; dueDate: string | null } {
+  const measure = withCurrentIds(kr.measure);
+  return {
+    label: kr.label,
+    measure,
+    // The schema requires a direction exactly when the measure has no way of its own.
+    direction: kr.direction ?? naturalDirection(measure) ?? "up",
+    baseline: kr.baseline ?? null,
+    target: kr.target ?? null,
+    unit: kr.unit ?? (keptUnit !== undefined && unitsFor(measure).includes(keptUnit) ? keptUnit : defaultUnitFor(measure, prefs)),
+    dueDate: kr.dueDate ?? null,
+  };
+}
+
 /**
  * A key result's row at `stamps.position` in the list sent. Its unit: the one sent; else, for a key result that
  * already exists, the unit it was kept in (its target and baseline are in it) while the measure still fits it; else
@@ -228,20 +249,13 @@ function keyResultRow(
   stamps: { id: string; position: number; createdAt: string; updatedAt: string },
   keptUnit?: KeyResultUnit,
 ): typeof keyResults.$inferInsert {
-  const measure = withCurrentIds(kr.measure);
-  const unit = kr.unit ?? (keptUnit !== undefined && unitsFor(measure).includes(keptUnit) ? keptUnit : defaultUnitFor(measure, prefs));
+  const r = resolvedKeyResult(kr, prefs, keptUnit);
   return {
     id: stamps.id,
     userId,
     objectiveId,
-    label: kr.label,
-    measure: measure as unknown as Record<string, unknown>,
-    // The schema requires a direction exactly when the measure has no way of its own.
-    direction: kr.direction ?? naturalDirection(measure) ?? "up",
-    baseline: kr.baseline ?? null,
-    target: kr.target ?? null,
-    unit,
-    dueDate: kr.dueDate ?? null,
+    ...r,
+    measure: r.measure as unknown as Record<string, unknown>,
     position: stamps.position,
     createdAt: stamps.createdAt,
     updatedAt: stamps.updatedAt,

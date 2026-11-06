@@ -19,8 +19,13 @@ const ROLES = ["main", "designer", "reviewer"] as const;
  * words: brisk, one next step, no apologies, not the card) — measured 1,634 with its turns; REBASED 2026-10-25 (saved-posts
  * fix wave: "fit saved moves in with pin_moves" among the scope's choices) — measured 1,666.75 with its turns, ≥ 100
  * tokens headroom as design-fix13-prompt.test.ts's; REBASED 2026-11-04 (a request with several parts gets every part in one run: the main block's rule — prod 2026-11-04) — measured 1,795.75 with its turns; the
- * others hold at 1,500. */
-const ROLE_CAP = { main: 1830, designer: 1500, reviewer: 1500 } as const;
+ * others hold at 1,500. REBASED 2026-11-06 (coach review, phase 3: the challenge order, insistence and its limits — a
+ * condition's never, a sore area) — measured 2,008 with its turns; ≥ 100 tokens headroom. */
+// REBASED 2026-11-06 (the controller's fix pass, C: a challenge weighed, never caved to) — main measured 2,072 with its
+// turns; ≥ 100 tokens headroom.
+// REBASED 2026-11-06 (audit fixes, evidence: the challenge's call first, read_saves by the move, finish with challenge —
+// E2) — main measured 2,092.25 (2,105.75 with its turns); ≥ 100 tokens headroom.
+const ROLE_CAP = { main: 2210, designer: 1500, reviewer: 1500 } as const;
 // With a run's reviewer block too (§8 §3: a reviewer's block holds its draft's rubric).
 const ALL_TEXT = [SHARED_PROMPT, ...ROLES.map((r) => roleBlock(r)), roleBlock("reviewer", undefined, "run")].join("\n");
 
@@ -55,7 +60,15 @@ describe("the prompt text", () => {
     // 6,414.75; ≥ 100 tokens headroom.
     // REBASED 2026-11-06 (where you stand, on top of the ball release): the opening message's block named, a drift noticed kindly, a coach read
     // marked, with the "Release" principle — measured 6,728.25; ≥ 100 tokens headroom.
-    expect(SHARED_PROMPT.length / 4).toBeLessThanOrEqual(6830);
+    // REBASED 2026-11-06 (coach review, phase 3): the saves paragraph's evidence rules (a post is a stranger's claim, quotes said / heard / on screen, the reader's guess, correct_import before pin_moves, a line's where and cites) — measured 7,054.75; ≥ 100 tokens headroom.
+    // REBASED 2026-11-06 (the controller's fix pass, C): older readings' stated fields as the reader's report, the challenge weighed (never caving), the defaulted dose, never one guess for another, read_saves' pages and full — measured 7,184.75; ≥ 100 tokens headroom.
+    // REBASED 2026-11-06 (the controller's ruling: the why and a case show their heads; when full: true is worth a call) — measured 7,210.75; ≥ 100 tokens headroom.
+    // REBASED 2026-11-06 (audit fixes, evidence): figures from the opening's computed blocks (E5), propose_objective's
+    // Acting line and the diagnose line naming it (E6) — measured 7,292; ≥ 100 tokens headroom.
+    // REBASED 2026-11-06 (the merge of plans with a purpose and the coach's review): change_plan's Acting line, read_plans' words on
+    // each ending and a new block naming its plan, on main's prompt (shared 29,168 → 29,566; nothing new) — measured 7,391.5;
+    // ≥ 100 tokens headroom.
+    expect(SHARED_PROMPT.length / 4).toBeLessThanOrEqual(7495);
     for (const r of ROLES) expect(roleBlock(r).length / 4, r).toBeLessThanOrEqual(ROLE_CAP[r]);
   });
 
@@ -78,6 +91,10 @@ describe("the prompt text", () => {
       "read_saves",
       // Saved-posts import, Task 18: the moves in rotation, changed with the athlete's approval.
       "pin_moves",
+      // Import trail phase 3: a correction to imported data, with its evidence.
+      "correct_import",
+      // Audit fixes (E6): a change to the athlete's objectives, applied on Approve.
+      "propose_objective",
     ];
     expect([...PROMPT_TOOL_NAMES].sort()).toEqual([...spec].sort());
     for (const name of PROMPT_TOOL_NAMES) expect(ALL_TEXT, name).toContain(name);
@@ -104,8 +121,9 @@ describe("the prompt text", () => {
   });
 
   it("the review rubric: the spec's dimensions as Task 13's fix wave set them (§2.10), unique ids, each with its question", () => {
-    expect(REVIEW_DIMENSIONS).toHaveLength(13);
-    expect(new Set(REVIEW_DIMENSIONS.map((d) => d.id)).size).toBe(13);
+    // Fourteen since 2026-11-06 (import trail phase 3, §8.5): faithfulness to a saved move's evidence.
+    expect(REVIEW_DIMENSIONS).toHaveLength(14);
+    expect(new Set(REVIEW_DIMENSIONS.map((d) => d.id)).size).toBe(14);
     const reviewer = roleBlock("reviewer");
     for (const d of REVIEW_DIMENSIONS) {
       expect(reviewer).toContain(d.id);
@@ -182,7 +200,8 @@ describe("the prompt text", () => {
   it("carries the review's wording of fix round 1", () => {
     for (const words of [
       "Don't restate what the proposal card computes and prints",
-      "must come from a tool result you read, never an estimate",
+      // REBASED 2026-11-06 (audit fixes, evidence): or the opening message's computed blocks (E5).
+      "must come from a tool result you read or the opening message's computed blocks (where the athlete stands, the index), never an estimate",
       `Ask for the reads you need together in one turn (at most ${MAX_TOOL_CALLS_PER_TURN} a turn) — the app runs them all, one after another, before your next turn, so several reads in one turn cost one model call where the same reads one at a time cost several.`,
       "and what a brief asks this workout to be",
       "the role block below says which part is yours",
@@ -345,7 +364,15 @@ describe("3A-B — the prompt agrees with the code", () => {
     // (the cap above).
     // REBASED 2026-11-06 (where you stand, on top of the ball release): the opening message's block named, a drift noticed kindly, a coach read
     // marked, with the "Release" principle — measured 6,728.25; ≥ 100 tokens headroom.
-    expect(SHARED_PROMPT.length / 4).toBeLessThanOrEqual(6830);
+    // REBASED 2026-11-06 (coach review, phase 3): the saves paragraph's evidence rules (a post is a stranger's claim, quotes said / heard / on screen, the reader's guess, correct_import before pin_moves, a line's where and cites) — measured 7,054.75; ≥ 100 tokens headroom.
+    // REBASED 2026-11-06 (the controller's fix pass, C): older readings' stated fields as the reader's report, the challenge weighed (never caving), the defaulted dose, never one guess for another, read_saves' pages and full — measured 7,184.75; ≥ 100 tokens headroom.
+    // REBASED 2026-11-06 (the controller's ruling: the why and a case show their heads; when full: true is worth a call) — measured 7,210.75; ≥ 100 tokens headroom.
+    // REBASED 2026-11-06 (audit fixes, evidence): figures from the opening's computed blocks (E5), propose_objective's
+    // Acting line and the diagnose line naming it (E6) — measured 7,292; ≥ 100 tokens headroom.
+    // REBASED 2026-11-06 (the merge of plans with a purpose and the coach's review): change_plan's Acting line, read_plans' words on
+    // each ending and a new block naming its plan, on main's prompt (shared 29,168 → 29,566; nothing new) — measured 7,391.5;
+    // ≥ 100 tokens headroom.
+    expect(SHARED_PROMPT.length / 4).toBeLessThanOrEqual(7495);
     for (const role of ROLES) expect(roleBlock(role, RUN_LIMITS[role].maxCalls).length / 4, role).toBeLessThanOrEqual(ROLE_CAP[role]);
   });
 });
@@ -380,5 +407,63 @@ describe("3A round 2 — the prompt's remaining words", () => {
   it("B-M3: propose_workout's document is the draft — not one validated first", () => {
     const doc = (proposeWorkout.inputSchema as { properties: { doc: { description: string } } }).properties.doc;
     expect(doc.description).toBe("The draft: a workout document exactly as validate_workout takes it.");
+  });
+});
+
+describe("the coach's review of saved moves (import trail phase 3, §8.2, §3.5, §15 Q1)", () => {
+  it("the shared prompt: a post is a stranger's claim, weighed against where the athlete stands, cited, corrected", () => {
+    for (const phrase of [
+      "name the goal or gap it serves",
+      "A post is a stranger's claim",
+      "said or in the caption is the creator's words",
+      "heard is the reader's own transcription",
+      "on screen is unchecked",
+      "the reader's guess",
+      "Never present a guess as the creator's",
+      "with humility",
+      "propose the fix with correct_import, before pin_moves",
+      // The controller's fix pass, C1, C3, C4: an older reading's stated field is the reader's report, never a guess; a
+      // defaulted dose corrected first; never one guess for another.
+      "is the reader's report of what the post says: weaker than a quote, never a guess",
+      "stated:<field> (the reader's report)",
+      "A dose from default when the post states one: correct_import it first; a library move keeps its dose, and its line names the post's.",
+      "never one guess for another: a fix on the evidence rests on a quote, their history, or a quote the post lacks",
+      // When a whole move's words are worth a call (the controller's ruling, 2026-11-06).
+      "full: true reads one move's every word: worth a call before you quote a post at length, or when a cut head decides in or out.",
+      "left more correct",
+      "the rotation it joins",
+      "cites what it rests on",
+    ]) {
+      expect(SHARED_PROMPT, phrase).toContain(phrase);
+    }
+  });
+
+  it("the main coach's block: a challenge answered in order, insistence wins without more argument — but never over a hard safety check", () => {
+    const main = roleBlock("main");
+    for (const phrase of [
+      "their point, stated fairly",
+      // The controller's fix pass, C2: weighed as their coach — changed only for evidence or a point not yet weighed.
+      "weigh it as their coach, not to please them",
+      "the quote and its time, the reader's report, or that it was the reader's guess",
+      "Change it only for evidence or a point you hadn't weighed, and name it; pushing back is neither, so hold the call and say why",
+      "never out of pride",
+      "say they're sure",
+      "If they insist",
+      "without arguing further",
+      "basis owner",
+      "a condition's never",
+      "an area they called sore",
+      "the closest safe option",
+      "in the Studio",
+    ]) {
+      expect(main, phrase).toContain(phrase);
+    }
+    // "Corrects you" is a fact about the athlete alone: a challenge to a call is weighed (C2); the finish line's length
+    // never squeezes a challenge's answer.
+    expect(main).toContain("when the athlete tells you a fact about themselves — their body, their schedule, their history, what they did — say so plainly and act");
+    expect(main).toContain("a challenge to a call is weighed, as above");
+    expect(main).toContain("an answer to a challenge takes the few sentences its order needs");
+    expect(main).not.toContain("when the athlete corrects you");
+    expect(SHARED_PROMPT).not.toContain("garbled, thin or wrong");
   });
 });

@@ -4,7 +4,7 @@
  * (`watch_video` set) and the computer's extension picks it up from its work list within about 15 minutes; until then
  * the trail and the link say so.
  */
-import { and, eq, sql, type SQL } from "drizzle-orm";
+import { and, eq, ne, sql, type SQL } from "drizzle-orm";
 import { schema } from "@rg/database";
 import type { Db } from "./db.js";
 import { runAtomicallyClaim } from "./db.js";
@@ -37,8 +37,8 @@ function watchable(userId: string, postId: string, now: string): SQL {
 }
 
 /**
- * The owner's Watch it too: the post's pending links go (and its pending moves no other post names), its reading and
- * batch are cleared, and it waits `queued` with `watch_video` for the extension. "conflict" when it can't be (not a
+ * The owner's Watch it too: the post's links go (none is saved; and its pending moves no other post names), its reading
+ * and batch are cleared, and it waits `queued` with `watch_video` for the extension. "conflict" when it can't be (not a
  * YouTube post, a move of it saved, already asked or seen, being fitted in). Two statements, the second a batch of four.
  */
 export async function watchVideo(db: Db, userId: string, postId: string, now: string): Promise<"ok" | "not_found" | "conflict"> {
@@ -66,10 +66,11 @@ export async function watchVideo(db: Db, userId: string, postId: string, now: st
         gate,
       ),
     ),
+    // The post's rows go — none is saved (the gate) — so the watched reading's links can take their places: a row
+    // kept `removed` held its (post, position) and the new link was dropped on it (phase 5a).
     db
-      .update(savedPostMoves)
-      .set({ status: "removed" })
-      .where(and(eq(savedPostMoves.userId, userId), eq(savedPostMoves.postId, postId), eq(savedPostMoves.status, "pending"), gate)),
+      .delete(savedPostMoves)
+      .where(and(eq(savedPostMoves.userId, userId), eq(savedPostMoves.postId, postId), ne(savedPostMoves.status, "saved"), gate)),
     db
       .update(savedPosts)
       .set({ status: "queued", watchVideo: true, extraction: null, batchId: null, extractAttempts: 0, lastErrorCode: null, lastError: null, updatedAt: now })

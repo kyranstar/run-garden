@@ -919,3 +919,42 @@ describe("the sheet", () => {
     expect(posts(calls)).toEqual([]);
   });
 });
+
+describe("a challenge from the coach's review card (import trail phase 3, §3.5)", () => {
+  it("Challenge on a line fills the box with \"About <move>: \" and puts the focus there; the card stays in view", async () => {
+    const pinLines = [
+      { moveId: "myZorbexHipLiftAbc123", name: "Zorbex hip lift", text: "It serves hip mobility.", decision: "in" as const, cites: [{ id: "history", kind: "history" as const, label: "your history" }] },
+      { moveId: "myZorbexNeckNodAbc123", name: "Zorbex neck nod", text: "Your neck care covers it.", decision: "out" as const },
+    ];
+    server(conversation([turn({ cards: [{ kind: "pins", proposalId: "dp-run-1", title: "One saved move in", summary: "One joins the rotation.", status: "pending", opId: "pins-run-1", pinLines }] })]), {
+      "GET /api/coach/proposals/dp-run-1": {
+        id: "dp-run-1", status: "pending", resolvedAt: null, lines: [], changes: [],
+        pins: [{ opId: "pins-run-1", title: "One saved move in", summary: "One joins the rotation.", lines: pinLines, why: "Hips first.", pin: [], unpin: [], issues: [], outcome: null }],
+      },
+    });
+    mount();
+    await openCoach();
+    await until(() => (dialog()?.querySelectorAll(".coach-challenge").length ?? 0) === 2, "Challenge on each line");
+    await click(dialog()!.querySelectorAll<HTMLButtonElement>(".coach-challenge")[1]!, "Challenge the nod");
+    expect(box()!.value).toBe("About Zorbex neck nod: ");
+    expect(document.activeElement).toBe(box());
+    expect(dialog()!.querySelector(".coach-review")).not.toBeNull();
+  });
+
+  it("a half-typed draft is kept: Challenge adds its words after it, never over it (the controller's fix pass, E21)", async () => {
+    const pinLines = [{ moveId: "myZorbexNeckNodAbc123", name: "Zorbex neck nod", text: "Your neck care covers it.", decision: "out" as const }];
+    server(conversation([turn({ cards: [{ kind: "pins", proposalId: "dp-run-1", title: "One saved move in", summary: "Nothing new.", status: "pending", opId: "pins-run-1", pinLines }] })]), {
+      "GET /api/coach/proposals/dp-run-1": {
+        id: "dp-run-1", status: "pending", resolvedAt: null, lines: [], changes: [],
+        pins: [{ opId: "pins-run-1", title: "One saved move in", summary: "Nothing new.", lines: pinLines, why: "Hips first.", pin: [], unpin: [], issues: [], outcome: null }],
+      },
+    });
+    mount();
+    await openCoach();
+    await until(() => (dialog()?.querySelectorAll(".coach-challenge").length ?? 0) === 1, "Challenge on the line");
+    await type(box()!, "Also, my knee is sore today.");
+    await click(dialog()!.querySelector<HTMLButtonElement>(".coach-challenge")!, "Challenge the nod");
+    expect(box()!.value).toBe("Also, my knee is sore today.\nAbout Zorbex neck nod: ");
+    expect(document.activeElement).toBe(box());
+  });
+});

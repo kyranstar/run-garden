@@ -43,6 +43,10 @@ import { accountLibraryFrom, personalMovesSql, PUBLIC_LIBRARY, type AccountLibra
 import type { Db } from "./db.js";
 import { defaultFromRow, defaultPlaceSql } from "./default-place.js";
 import type {
+  CorrectionOutcome,
+  DesignedCorrectionOp,
+  DesignedObjectiveOp,
+  ObjectiveChangeOutcome,
   DesignedOp,
   DesignedPinsOp,
   DesignedPlanChangeOp,
@@ -67,6 +71,8 @@ import {
   changeVerb,
   describeChange,
   isDocWorkoutOp,
+  isImportCorrectionOp,
+  isObjectiveChangeOp,
   isMovePinsOp,
   isPlanAdjustOp,
   isPlanChangeOp,
@@ -75,6 +81,8 @@ import {
   opIdOf,
   pinsCardLinesOf,
   type ChangeVerb,
+  type ImportCorrectionOp,
+  type ObjectiveChangeOp,
   type PinsCardLine,
 } from "./proposal-kinds.js";
 
@@ -537,6 +545,8 @@ export interface PinsLine {
   opId: string;
   title: string;
   summary: string;
+  /** With a batch and the coach's headline (audit fixes, E4): the count beneath it — "5 in · 1 left out". */
+  count?: string;
   lines: PinsCardLine[];
   why: string;
   pin: string[];
@@ -551,11 +561,68 @@ export function pinsLines(ops: readonly unknown[]): PinsLine[] {
     opId: g.id,
     title: g.title,
     summary: g.summary,
+    ...(typeof g.count === "string" && g.count ? { count: g.count } : {}),
     lines: pinsCardLinesOf(g.lines),
     why: g.why,
     pin: g.pin,
     unpin: g.unpin,
     issues: [],
+    outcome: g.outcome ?? null,
+  }));
+}
+
+/** A correction to imported data as the card shows it (import trail phase 3): what it corrects, its line, the coach's
+ * why and basis, its cites as chips, and how it stands. */
+export interface CorrectionLine {
+  opId: string;
+  target: ImportCorrectionOp["target"];
+  targetId: string;
+  field: string;
+  name: string;
+  line: string;
+  why: string;
+  basis: ImportCorrectionOp["basis"];
+  cites: ImportCorrectionOp["cites"];
+  outcome: CorrectionOutcome | null;
+}
+
+/** A change to the athlete's objectives as the card shows it (audit fixes, E6): what it changes, its line before → after,
+ * the coach's why and basis, and how it stands. */
+export interface ObjectiveLine {
+  opId: string;
+  change: ObjectiveChangeOp["change"];
+  title: string;
+  line: string;
+  why: string;
+  basis: ObjectiveChangeOp["basis"];
+  outcome: ObjectiveChangeOutcome | null;
+}
+
+/** Each objective change's line, in the proposal's order. */
+export function objectiveLines(ops: readonly unknown[]): ObjectiveLine[] {
+  return (ops.filter(isObjectiveChangeOp) as DesignedObjectiveOp[]).map((g) => ({
+    opId: g.id,
+    change: g.change,
+    title: g.title,
+    line: g.line,
+    why: g.why,
+    basis: g.basis,
+    outcome: g.outcome ?? null,
+  }));
+}
+
+/** Each correction's line, in the proposal's order. */
+export function correctionLines(ops: readonly unknown[]): CorrectionLine[] {
+  return (ops.filter(isImportCorrectionOp) as DesignedCorrectionOp[]).map((g) => ({
+    opId: g.id,
+    target: g.target,
+    targetId: g.targetId,
+    field: g.field,
+    name: g.name,
+    line: g.line,
+    why: g.why,
+    basis: g.basis,
+    cites: Array.isArray(g.cites) ? g.cites : [],
     outcome: g.outcome ?? null,
   }));
 }

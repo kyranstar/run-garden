@@ -36,6 +36,9 @@ export function failureWords(code: SaveErrorCode | string | null, raw: string | 
   }
 }
 
+/** A reading's price in the owner's words, said before a paid tap (Read it again): "about $0.02", or "under $0.01". */
+export const priceWords = (micros: number): string => (micros < 5_000 ? "under $0.01" : `about $${(micros / 1_000_000).toFixed(2)}`);
+
 /** The stages of a post's path, in pipeline order (the trail sheet's sections follow it). */
 export const IMPORT_STAGES = [
   "read", "submit", "screen", "extract", "check", "match", "batch", "choice", "save", "coach", "correction",
@@ -89,6 +92,11 @@ export interface ImportTrailDto {
      * Watch it too, whether to offer it (a long video read from its words), and what watching it would cost.
      */
     video?: { watched: boolean | null; watchAsked: boolean; offerWatch: boolean; watchCostMicros: number | null } | null;
+    /**
+     * Read it again (design 2026-11-05 §6.6; phase 5a), on a post from before the trail: whether it is offered (with what
+     * a reading typically costs), or was asked and waits for the computer's extension. Null when neither.
+     */
+    readAgain?: { offer: boolean; asked: boolean; costMicros: number | null } | null;
   };
   /** The account (level 1): what the post is, its moves and how each came out, and one health word. */
   account: {

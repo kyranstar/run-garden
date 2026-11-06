@@ -47,6 +47,7 @@ import {
   type CoachConversationCardDto,
   type DesignApproveRequest,
   type DesignApproveResponse,
+  type DesignCorrectionLineDto,
   type DesignPinsCardLineDto,
   type DesignPinsLineDto,
   type DesignPlanChangeLineDto,
@@ -58,6 +59,7 @@ import { CONVERSATION_QUERY } from "./coach-conversation-model.js";
 import { readProposal } from "./coach-tolerance.js";
 import { cardOpIds, foldPlanChanges, mergedPlanChanges, ownPlanChange, PLAN_CHANGE_WORDS } from "./plan-change-card.js";
 import { decisionError, designProposalQuery } from "./proposal-card.js";
+import { ReviewLines } from "./review-lines.js";
 import { COACH_CURRENT_QUERY } from "./run-keeper.js";
 import { useOneTap } from "./use-one-tap.js";
 
@@ -144,6 +146,62 @@ export const PINS_WORDS: PlanCardWords = {
   link: null,
 };
 
+/** A suggestion's corrections to imported data alone (import trail phase 3): the same card in their own words — approved
+ * together, one atomic write each, done at once. */
+export const CORRECTIONS_WORDS: PlanCardWords = {
+  done: "Corrected",
+  doing: "Correcting your saves…",
+  part: "It was interrupted — Finish saves it.",
+  inFlight: "It's being saved right now — Finish takes it on from there.",
+  approve: "Approve",
+  finish: "Finish",
+  unfinished: "It isn't done yet — tap again.",
+  declined: "Not changed",
+  superseded: "Replaced by a newer suggestion",
+  refused: "It couldn't be corrected.",
+  link: null,
+};
+
+/** The coach's changes to the athlete's objectives (audit fixes, E6): approved together, each one atomic write, done at
+ * once; the board one tap away. */
+export const OBJECTIVES_WORDS: PlanCardWords = {
+  done: "Objectives updated",
+  doing: "Updating your objectives…",
+  part: "It was interrupted — Finish saves it.",
+  inFlight: "It's being saved right now — Finish takes it on from there.",
+  approve: "Approve",
+  finish: "Finish",
+  unfinished: "It isn't done yet — tap again.",
+  declined: "Not changed",
+  superseded: "Replaced by a newer suggestion",
+  refused: "It couldn't be changed.",
+  // The board is Growth's quests (app.tsx: /studio/objectives only redirects there).
+  link: { to: "/growth", label: "See your objectives" },
+};
+
+/** An op of a card of corrections or objective changes, as its outcome reads. */
+type OutcomeOnly = { outcome: { status: string; why?: string; lines?: string[] } | null };
+
+/** A correction (or an objective change) still the athlete's to decide (none yet, refused, or claimed and not finished). */
+const openCorrection = (c: OutcomeOnly): boolean => !c.outcome || c.outcome.status === "refused" || c.outcome.status === "applying";
+
+/** The corrections' outcome, as one card's: all applied; one refused (its why); all declined; all replaced; else open.
+ * An objective changes card's the same way (E6). */
+function correctionsOutcome(cs: readonly OutcomeOnly[]): CardLine["outcome"] {
+  if (cs.length === 0) return null;
+  const st = cs.map((c) => c.outcome?.status ?? null);
+  if (st.every((x) => x === "applied")) return { status: "applied" };
+  const refused = cs.find((c) => c.outcome?.status === "refused");
+  if (refused && !st.includes(null)) return { status: "refused", why: refused.outcome!.why ?? "" };
+  if (st.every((x) => x === "declined")) return { status: "declined" };
+  if (st.every((x) => x === "superseded" || x === "declined")) return { status: "superseded" };
+  if (st.includes("applying")) return { status: "applying" };
+  // Nothing left to decide (one done, another not changed or replaced): done, never an Approve of nothing (the
+  // controller's fix pass, E22).
+  if (!cs.some(openCorrection)) return st.includes("applied") ? { status: "applied" } : { status: "declined" };
+  return null;
+}
+
 /** What the card reads of its op's line: a plan's, a programme change's or the moves in rotation's (whose lines name
  * their moves, and whose applied outcome has its lines: a move left). */
 type CardLine = Pick<DesignPlanLineDto | DesignProgrammeLineDto | DesignPlanChangeLineDto | DesignPinsLineDto, "opId" | "issues"> & {
@@ -221,7 +279,7 @@ export function planOutcomeLine(status: string, plan: CardLine | null, w: PlanCa
 }
 
 type PlanCardInput = Pick<CoachConversationCardDto, "proposalId" | "title" | "summary" | "status" | "lines"> &
-  Partial<Pick<CoachConversationCardDto, "kind" | "opId" | "opIds" | "pinLines">>;
+  Partial<Pick<CoachConversationCardDto, "kind" | "opId" | "opIds" | "pinLines" | "count">>;
 
 export function PlanCard({ card, closed = false }: { card: PlanCardInput; closed?: boolean }) {
   const qc = useQueryClient();
@@ -232,27 +290,45 @@ export function PlanCard({ card, closed = false }: { card: PlanCardInput; closed
   const programme = card.kind === "programme";
   const planChange = card.kind === "plan_change";
   const pins = card.kind === "pins";
-  const w = programme ? PROGRAMME_WORDS : planChange ? PLAN_CHANGE_WORDS : pins ? PINS_WORDS : PLAN_WORDS;
+  // A suggestion's corrections to imported data (import trail phase 3): beside the pins card, approved with it; alone,
+  // a card of their own.
+  const fixesOnly = card.kind === "corrections";
+  const corrections = pins || fixesOnly ? (read.data?.corrections ?? []) : [];
+  // The coach's changes to the athlete's objectives (audit fixes, E6): a card of their own, each before → after.
+  const goalsOnly = card.kind === "objectives";
+  const goals = goalsOnly ? (read.data?.objectives ?? []) : [];
+  const w = programme ? PROGRAMME_WORDS : planChange ? PLAN_CHANGE_WORDS : pins ? PINS_WORDS : fixesOnly ? CORRECTIONS_WORDS : goalsOnly ? OBJECTIVES_WORDS : PLAN_WORDS;
   // A programme change's line is its own op's (a suggestion may change two programmes) — a plan change's and the moves in
   // rotation's too; a plan's, the suggestion's one.
   const own = <T extends { opId: string }>(xs: readonly T[] | undefined): T | null => xs?.find((g) => g.opId === card.opId) ?? (card.opId ? null : (xs?.[0] ?? null));
+  const fixesLine: CardLine | null =
+    fixesOnly && corrections.length > 0 ? { opId: corrections[0]!.opId, issues: [], lines: corrections.map((c) => c.line), outcome: correctionsOutcome(corrections) } : null;
+  const goalsLine: CardLine | null = goalsOnly && goals.length > 0 ? { opId: goals[0]!.opId, issues: [], lines: goals.map((g) => g.line), outcome: correctionsOutcome(goals) } : null;
   const plan: CardLine | null = programme
     ? own(read.data?.programmes)
     : planChange
       ? ownPlanChange(read.data?.planChanges, card.opId)
       : pins
         ? own(read.data?.pins)
-        : // A plan's card may carry plan changes beside it (one card, never two): their lines and outcome fold into its own.
-          foldPlanChanges(read.data?.plans?.[0] ?? null, mergedPlanChanges(read.data?.planChanges, card.opIds), PLAN_ADDED);
-  /** The card's own op: what its buttons approve and decline, nothing else of the suggestion. */
-  const opIds = cardOpIds(card, plan?.opId ?? card.opId ?? PLAN_OP_ID);
+        : fixesOnly
+          ? fixesLine
+          : goalsOnly
+            ? goalsLine
+            : // A plan's card may carry plan changes beside it (one card, never two): their lines and outcome fold into its own.
+              foldPlanChanges(read.data?.plans?.[0] ?? null, mergedPlanChanges(read.data?.planChanges, card.opIds), PLAN_ADDED);
+  /** The card's own op — a plan's, every op riding it; the moves in rotation's, the corrections that ride it — what its
+   * buttons approve and decline, nothing else of the suggestion. */
+  const openFixes = corrections.filter(openCorrection).map((c) => c.opId);
+  const opIds = fixesOnly ? openFixes : goalsOnly ? goals.filter(openCorrection).map((g) => g.opId) : [...cardOpIds(card, plan?.opId ?? card.opId ?? PLAN_OP_ID), ...(pins ? openFixes : [])];
   const status = read.data?.status ?? card.status;
   const reread = () => qc.invalidateQueries({ queryKey: designProposalQuery(card.proposalId) });
   const after = async () => {
     await reread();
     // The saves too: a pins card closing ends its batch's fit either way — approved, it is fitted in; declined, Fit them
     // in comes back (the saves flow redesigned §12.1).
-    for (const key of ["plan", "plan-week", "today", "coach-state", "coach-plans", "garden", "saves"]) void qc.invalidateQueries({ queryKey: [key] });
+    // And the library (the controller's fix pass, E18): a pin, an unpin or a correction changes the Studio's moves.
+    // And the objectives (audit fixes, E6 review): an approved change shows on the board, Growth and the coach's opening.
+    for (const key of ["plan", "plan-week", "today", "coach-state", "coach-plans", "garden", "saves", "library", "objectives", "growth"]) void qc.invalidateQueries({ queryKey: [key] });
     void qc.invalidateQueries({ queryKey: COACH_CURRENT_QUERY });
     void qc.invalidateQueries({ queryKey: CONVERSATION_QUERY });
   };
@@ -290,6 +366,17 @@ export function PlanCard({ card, closed = false }: { card: PlanCardInput; closed
   // The card's own lines — the moves in rotation's as drawn, each with its move's name — else the suggestion's read.
   const lines: DrawnLine[] =
     card.pinLines && card.pinLines.length > 0 ? card.pinLines : card.lines && card.lines.length > 0 ? card.lines.map(drawn) : (plan?.lines ?? []).map(drawn);
+  // The coach's review (import trail phase 3, §3.3): lines that say in or out, with their evidence — drawn grouped, each
+  // one tap from its evidence; a card stored before draws as it always did.
+  const reviewLines: DesignPinsCardLineDto[] = pins
+    ? ((plan?.lines?.some((l) => typeof l !== "string" && l.decision) ? (plan.lines as DesignPinsCardLineDto[]) : null) ??
+      (card.pinLines ?? []).map((l) => ({ ...l, name: l.name ?? undefined })) as DesignPinsCardLineDto[])
+    : [];
+  const reviewed = fixesOnly || reviewLines.some((l) => !!l.decision) || corrections.length > 0;
+  const ownPins = pins ? read.data?.pins?.find((g) => g.opId === plan?.opId) : undefined;
+  const why = pins ? ((ownPins?.why ?? "").trim() || null) : null;
+  // The count beneath the coach's headline (audit fixes, E4), in the card's own words: "5 in · 1 left out".
+  const count = pins ? ((ownPins?.count ?? card.count ?? "").trim() || null) : null;
   /** What the approve left (the moves in rotation's: a move archived since, an unpin of one not in rotation). */
   const left = plan?.outcome?.status === "applied" ? (plan.outcome.lines ?? []) : [];
   const working = approve.isPending;
@@ -298,14 +385,25 @@ export function PlanCard({ card, closed = false }: { card: PlanCardInput; closed
     return (
       <div className="coach-card-closed">
         <p className="coach-card-closed-line">
-          {[card.title, card.summary.trim() || null].filter(Boolean).join(" · ")} — {outcome ?? (started ? (programme ? "Part applied" : "Part added") : "Open")}{" "}
+          {/* A review card's closed line names its count, not its two-sentence headline (E4): scannable. */}
+          {[card.title, count ?? (card.summary.trim() || null)].filter(Boolean).join(" · ")} — {outcome ?? (started ? (programme ? "Part applied" : "Part added") : "Open")}{" "}
           <button type="button" className="linklike tap-pad" aria-expanded={open} aria-controls={linesId} onClick={() => setOpen((v) => !v)}>
             {open ? "Hide" : "Show"}
           </button>
         </p>
-        <ul id={linesId} className="coach-plan-lines" hidden={!open}>
-          {lines.map(lineItem)}
-        </ul>
+        {/* A decided review keeps its review one tap down (audit fixes, E3): In / Left out, the chips, the names that
+            open the trail, Challenge — read-only; a card stored before keeps its plain lines. */}
+        {reviewed ? (
+          <div id={linesId} className="coach-review-closed" hidden={!open}>
+            {open ? (
+              <ReviewLines lines={fixesOnly ? [] : reviewLines.length > 0 ? reviewLines : lines.map((l) => ({ ...l, name: l.name ?? undefined }))} corrections={corrections} why={why} />
+            ) : null}
+          </div>
+        ) : (
+          <ul id={linesId} className="coach-plan-lines" hidden={!open}>
+            {lines.map(lineItem)}
+          </ul>
+        )}
       </div>
     );
   }
@@ -315,8 +413,29 @@ export function PlanCard({ card, closed = false }: { card: PlanCardInput; closed
       <h3 id={headingId} className="coach-changes-title">
         {card.title}
       </h3>
-      {card.summary ? <p className="coach-changes-summary">{card.summary}</p> : null}
-      {lines.length > 0 ? (
+      {card.summary ? <p className={count ? "coach-changes-summary coach-changes-headline" : "coach-changes-summary"}>{card.summary}</p> : null}
+      {count ? <p className="coach-changes-count">{count}</p> : null}
+      {goalsOnly && goals.length > 0 ? (
+        <ul className="coach-plan-lines coach-objective-changes">
+          {goals.map((g) => (
+            <li key={g.opId} className="coach-objective-change">
+              <p className="coach-objective-line">
+                {g.outcome?.status === "applied" ? "✓ " : ""}
+                {g.line}
+                {g.outcome?.status === "refused" && goals.length > 1 ? ` — ${g.outcome.why}` : ""}
+              </p>
+              {g.why ? (
+                <p className="coach-objective-why">
+                  {g.why}
+                  {g.basis === "owner" ? " (your word)" : ""}
+                </p>
+              ) : null}
+            </li>
+          ))}
+        </ul>
+      ) : reviewed ? (
+        <ReviewLines lines={fixesOnly ? [] : reviewLines.length > 0 ? reviewLines : lines.map((l) => ({ ...l, name: l.name ?? undefined }))} corrections={corrections} why={why} />
+      ) : lines.length > 0 ? (
         <ul className="coach-plan-lines">{lines.map(lineItem)}</ul>
       ) : null}
       {plan && plan.issues.length > 0 && decidable ? (

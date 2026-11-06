@@ -61,6 +61,7 @@ import { cancelFit, CoachSavesCard, useOpenSaves } from "./coach-saves.js";
 import { readConversation, readCurrent } from "./coach-tolerance.js";
 import type { StudioCtx } from "./model.js";
 import { PlanCard } from "./plan-card.js";
+import { CoachReplyContext } from "./coach-reply.js";
 import { PlanChangesCard } from "./plan-changes-card.js";
 import { ProposalCard } from "./proposal-card.js";
 import { COACH_CURRENT_QUERY, currentRetry } from "./run-keeper.js";
@@ -347,6 +348,26 @@ export function CoachConversation({ ctx, loopDeps, request = null, seeing: seenA
 
   // ── The focus ──
   const boxRef = useRef<HTMLTextAreaElement>(null);
+  // A review line's Challenge (import trail phase 3, §3.5): its words in the box, the focus there — the card stays in view.
+  const [challenged, setChallenged] = useState(0);
+  const reply = useMemo(
+    () => ({
+      // A half-typed draft is kept, the challenge's words after it (the controller's fix pass, E21).
+      challenge: (words: string) => {
+        setDraft((d) => (d.trim() ? `${d.replace(/\s+$/, "")}\n${words}` : words).slice(0, REQUEST_MAX_CHARS));
+        setChallenged((n) => n + 1);
+      },
+    }),
+    [],
+  );
+  // Once the box holds the challenge's words: the focus there, the caret after them.
+  useEffect(() => {
+    if (challenged === 0) return;
+    const el = boxRef.current;
+    if (!el) return;
+    el.focus();
+    el.setSelectionRange(el.value.length, el.value.length);
+  }, [challenged]);
   const scroller = useRef<HTMLDivElement | null>(null);
   const settled = conv.isFetchedAfterMount || conv.isError;
   // The fit the sheet was opened with: sent once, as soon as the conversation is known (what it continues, a run at
@@ -438,7 +459,7 @@ export function CoachConversation({ ctx, loopDeps, request = null, seeing: seenA
   const placeholder = working && answering ? BOX_PLACEHOLDER_ANSWER : boxPlaceholder(turns.length);
   const lastIndex = turns.length - 1;
   return (
-    <>
+    <CoachReplyContext.Provider value={reply}>
       <div ref={setScroller} className="sheet-body scroller coach-convo-scroll" onScroll={anchor.onScroll} onPointerDownCapture={anchor.onInteract} onKeyDownCapture={anchor.onInteract}>
         <div className="coach-convo">
           {/* The open batch of saved moves, above whatever conversation is open (the saves flow redesigned §3.2). */}
@@ -552,7 +573,7 @@ export function CoachConversation({ ctx, loopDeps, request = null, seeing: seenA
           held={request !== null && draft === request.slice(0, REQUEST_MAX_CHARS)}
         />
       </div>
-    </>
+    </CoachReplyContext.Provider>
   );
 }
 
@@ -597,7 +618,8 @@ function TurnCards({ cards, latest, today }: { cards: readonly CoachConversation
         let body;
         // A whole plan (§8 §5): its own card, closed as one line of what came of it when an older turn's is done — a
         // programme change's and the moves in rotation's (saved-posts import, Task 18) the same card in their own words.
-        if (card.kind === "plan" || card.kind === "programme" || card.kind === "plan_change" || card.kind === "pins") body = <PlanCard card={card} closed={!latest && !cardIsOpen(card)} />;
+        if (card.kind === "plan" || card.kind === "programme" || card.kind === "plan_change" || card.kind === "pins" || card.kind === "corrections" || card.kind === "objectives")
+          body = <PlanCard card={card} closed={!latest && !cardIsOpen(card)} />;
         else if (!latest && !cardIsOpen(card)) body = <ClosedCard card={card} today={today} part={part} />;
         else if (card.kind === "plan_changes") body = <PlanChangesCard card={card} today={today} />;
         // A designed run (§8 §3): the workout card, its body the run's steps and its watch line (the line's `run`).

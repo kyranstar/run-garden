@@ -197,3 +197,9 @@ describe("the review's labels after the rubric's change (§2.10)", () => {
     expect(reviewLabel("something_new", "Something new")).toBe("Something new");
   });
 });
+
+describe("the review's faithfulness to a saved move's evidence (import trail phase 3, §8.5)", () => {
+  it("reads in plain words in the run view and on the card", () => {
+    expect(reviewLabel("faithfulness", "faithfulness")).toBe("Faithful to your saves");
+  });
+});

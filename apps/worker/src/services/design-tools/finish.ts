@@ -21,15 +21,22 @@
  * A SET'S DESIGNER'S LINE IS INTERNAL (M3): its `summary` is optional and only the main coach reads it (the loop keeps it
  * as the designer's `final`, which its set's outcome quotes); the trail shows the workout it designed, by its title.
  *
+ * A CHALLENGE'S ANSWER IS NEVER CUT (audit fixes 2026-11-06, E2; the owner's rule: never truncate a reasonable model call).
+ * A main run answering the athlete's challenge to a call — it says so (`challenge: true`), and the run answers the
+ * athlete's own words (its request, read in the finish's one statement; never a quick tap, an auto run or a "Fit them in"
+ * run) — keeps its line to ANSWER_MAX beside a suggestion, and the loop stores it whole (its receipt's `challenge`). An
+ * ordinary suggestion's line keeps LINE_MAX.
+ *
  * Review comes before the athlete sees anything (spec §5): the loop's finish makes the main run's proposal `pending`
  * only when every workout in it carries its review; one that still has an unreviewed workout stays `unreviewed` —
  * never listed — and the line says it is kept back. A change to a session already on the plan (adjust_plan, Task 8b)
  * is never reviewed: the rule counts the designed workouts only, so a proposal of changes alone is the athlete's too. One statement: the proposal — and its cost declares two more, the
  * loop's own once the proposal is made pending: the older plans' days it covers superseded (design-orchestrate.ts
  * `supersedeOlderPlans`), and — when that supersedes a card of the moves in rotation naming a saves batch — the batch's
- * fit released (the saves flow redesigned §12.1: 3, was 2).
+ * fit released (the saves flow redesigned §12.1: 3, was 2) — and the coach's decisions on each post's trail
+ * (REBASED 2026-11-06, coach review phase 3: 4, was 3).
  */
-import { and, eq } from "drizzle-orm";
+import { and, eq, sql } from "drizzle-orm";
 import { z } from "zod";
 import { coachProposals } from "@rg/database";
 import type { DesignTool, ToolErr } from "./types.js";
@@ -39,6 +46,10 @@ import { openMustFix, reviewRunning } from "../design-review.js";
 import { athleteText, clipProse } from "../design-prose.js";
 import { designProposalId, type DocWorkoutOp } from "./propose.js";
 import { isDocWorkoutOp, isMovePinsOp, isPlanAdjustOp, isPlanChangeOp, isPlanStructureOp, isProgrammeChangeOp } from "../proposal-kinds.js";
+import { isPersonalId } from "@rg/saves";
+import { markUntrusted } from "../design-prompt.js";
+import { stalePinsLines } from "./pin-moves.js";
+import { askedWordsSql } from "../objective-changes.js";
 
 /** The athlete's line, at most (characters): clipped to it, never refused. */
 export const LINE_MAX = 300;
@@ -47,7 +58,7 @@ export const LINE_MAX = 300;
 export const ANSWER_MAX = 900;
 const KEPT_BACK = " (Not reviewed yet — kept back until it is.)";
 
-const input = z.object({ summary: z.string().trim().min(1).optional() }).strict();
+const input = z.object({ summary: z.string().trim().min(1).optional(), challenge: z.boolean().optional() }).strict();
 
 /** A set's designer's line on the trail: the workout it designed, by its title (M3). */
 export const designedLine = (title: string | null): string => (title ? `Designed “${title}”.` : "Finished without a workout.");
@@ -73,12 +84,13 @@ export const finish: DesignTool = {
       summary: {
         type: "string",
         minLength: 1,
-        description: `The main coach's line for the athlete: ${capInWords(LINE_MAX)} — a longer one is cut at its last sentence that fits; an answer to a question, with nothing suggested, ${capInWords(ANSWER_MAX)}. A set's designer: optional, for the main coach only.`,
+        description: `The main coach's line for the athlete: ${capInWords(LINE_MAX)} — a longer one is cut at its last sentence that fits; an answer to a question, with nothing suggested, or to a challenge (challenge: true), ${capInWords(ANSWER_MAX)}. A set's designer: optional, for the main coach only.`,
       },
+      challenge: { type: "boolean", description: "The main coach: true when this answers the athlete's challenge to a call — kept whole up to the answer's cap." },
     },
     additionalProperties: false,
   },
-  statementCost: 3,
+  statementCost: 4,
   cpuWeight: 0.1,
   roles: ["main", "designer"],
   control: "finish",
@@ -94,7 +106,12 @@ export const finish: DesignTool = {
     const proposalId = mainRunId ? designProposalId(mainRunId) : null;
     const [row] = proposalId
       ? await ctx.db
-          .select({ status: coachProposals.status, ops: coachProposals.ops })
+          .select({
+            status: coachProposals.status,
+            ops: coachProposals.ops,
+            // The athlete's words this run answers (E2): in the same statement.
+            asked: sql<string | null>`${askedWordsSql(ctx.userId, mainRunId!)}`,
+          })
           .from(coachProposals)
           .where(and(eq(coachProposals.id, proposalId), eq(coachProposals.userId, ctx.userId)))
       : [];
@@ -113,6 +130,19 @@ export const finish: DesignTool = {
     const held = ops.find((o) => o.by?.runId === ctx.run.id);
     const open = held && !ctx.lastTurn && (row?.status === "unreviewed" || row?.status === "rehearsal") ? openMustFix(held) : null;
     if (open) return mustFixOpen(open.items.length, open.roundsLeft);
+    // A pins card's lines the suggestion's workouts no longer bear out (final review I3): a later revision, a redo or a
+    // drop changed what the card says — asked again, never on the run's last turn, never once the athlete has it.
+    if (ctx.run.role === "main" && !ctx.lastTurn && (row?.status === "unreviewed" || row?.status === "rehearsal")) {
+      const stale = stalePinsLines(all);
+      if (stale.length > 0) {
+        const names = stale.map((l) => (l.name ? (l.moveId && isPersonalId(l.moveId) ? markUntrusted("saved post", l.name) : l.name) : (l.moveId ?? "a move"))).join(", ");
+        return refuse(
+          "pins_stale",
+          `The pins card's line about ${names} no longer says what this suggestion does: its workout changed since pin_moves.`,
+          "Call pin_moves again (the same moves and words: each line takes what the suggestion now does), then finish.",
+        );
+      }
+    }
     // A designer's line is its workout's title (M3); the main coach's, its own words clipped where the athlete reads them.
     // The athlete's words first (round 2, I1: a library id, a tool name, "validator" as the athlete says them), then the cut.
     const lineOf = (room: number): string => (designer ? designedLine(own?.doc.title ?? null) : clipProse(athleteText(said), room));
@@ -123,13 +153,22 @@ export const finish: DesignTool = {
     // Kept back while any workout lacks its review, or has one under way: the loop's finish makes the rest pending
     // (coach-runs.ts, the same guard).
     const unreviewed = row.status === "unreviewed" && (ops.some((o) => !o.review) || reviewRunning(ops));
-    const line = unreviewed && !designer ? `${lineOf(LINE_MAX - KEPT_BACK.length)}${KEPT_BACK}` : lineOf(LINE_MAX);
+    // A challenge's answer keeps its whole answer (E2): said so, and answering the athlete's own words — never a "Fit them
+    // in" run's, which answers the app.
+    const challenge = ctx.run.role === "main" && p.challenge === true && !ctx.run.savesBatchId && typeof row.asked === "string";
+    const room = challenge ? ANSWER_MAX : LINE_MAX;
+    const line = unreviewed && !designer ? `${lineOf(room - KEPT_BACK.length)}${KEPT_BACK}` : lineOf(room);
     // What the proposal is once this finish lands: the loop's finish makes a main run's fully reviewed one pending.
     const promoted = ctx.run.role === "main" && row.status === "unreviewed" && all.length > 0 && ops.every((o) => o.review) && !reviewRunning(ops);
     return {
       data: { proposalId, ...(unreviewed ? { unreviewed: true } : {}) },
       summary: line,
-      receipt: { final: true, proposal: { id: proposalId, status: promoted ? "pending" : row.status, workouts: ops.length, ...(changes > 0 ? { changes } : {}), ...(plans > 0 ? { plans } : {}), ...(programmes > 0 ? { programmes } : {}), ...(pins > 0 ? { pins } : {}) } },
+      receipt: {
+        final: true,
+        // Its line answers the athlete's challenge (E2): the loop keeps it whole to ANSWER_MAX where the athlete reads it.
+        ...(challenge ? { challenge: true } : {}),
+        proposal: { id: proposalId, status: promoted ? "pending" : row.status, workouts: ops.length, ...(changes > 0 ? { changes } : {}), ...(plans > 0 ? { plans } : {}), ...(programmes > 0 ? { programmes } : {}), ...(pins > 0 ? { pins } : {}) },
+      },
     };
   },
 };

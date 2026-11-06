@@ -678,3 +678,21 @@ describe("fix wave 3B: the workout's line (M1, M2, M3, M7, M8, M10)", () => {
     expect(document.activeElement?.textContent).toContain("On your plan for Thu 6 PM");
   });
 });
+
+describe("a workout card beside the suggestion's own cards (audit fixes, E6 review)", () => {
+  it("Approve and Not now name their own ops — never {} — when the suggestion also holds objective changes or corrections", async () => {
+    const objective = { opId: "obj-retarget-kr-1", change: "retarget", title: "Legs", line: "Zorbex wall sit: target 120 s → 90 s", why: "45 s of 120 s.", basis: "stand", outcome: null };
+    const fix = { opId: "fix-move-myZorbexA-dose", target: "move", targetId: "myZorbexA", field: "dose", name: "Zorbex A", line: "Dose of Zorbex A: 30 s", why: "w", basis: "evidence", cites: [], outcome: null };
+    for (const extra of [{ objectives: [objective] }, { corrections: [fix] }]) {
+      const calls = serve({ reads: [{ ...pending([line("op-a")]), ...extra }], approve: [{ status: "partially_approved" }] });
+      mount();
+      await until(() => !!button("Approve") && !button("Approve")!.disabled, "Approve");
+      await click(button("Approve"), "Approve");
+      await until(() => posts(calls, "approve").length === 1, "the approve");
+      expect(posts(calls, "approve")[0]!.body).toEqual({ opIds: ["op-a"] });
+      act(() => root?.unmount());
+      host?.remove();
+      root = null;
+    }
+  });
+});

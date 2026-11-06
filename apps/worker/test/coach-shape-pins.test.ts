@@ -102,8 +102,35 @@ const BEFORE = { tools: 34_935, shared: 20_450, main: 4_586 };
  * 27,311), and a workout names its plan, in 969fc49d (planId on plan_set's briefs, +229, and on propose_workout, +279); tools
  * 42,902 → 43,713, main 7,183 unchanged. Nothing since has moved it, Task 11's course in read_plans included: that tool's
  * description stands. Measured 18,236; held with 464 characters (≥ 100 tokens) of headroom.
+ * REBASED 2026-11-06 (coach review, phase 3, Tasks 2–3): read_saves' description names the dose, the posts' evidence
+ * and the quote ids to cite, and corrections; pin_moves' lines gain decision, where, dose and cites, each described
+ * (tools 41,968 → 42,585) — measured 16,710; held with 390 characters (~111 tokens) of headroom.
+ * REBASED 2026-11-06 (coach review, phase 3, Task 4): correct_import, the main coach's fix to imported data with its
+ * evidence — its schema (tools 42,585 → 43,857) and its Acting line (shared 26,913 → 27,075) — measured 18,144; held
+ * with 406 characters (~116 tokens) of headroom.
+ * REBASED 2026-11-06 (coach review, phase 3, Task 7): the saves paragraph's evidence rules (shared 27,075 → 28,219), the
+ * main block's challenge order and insistence within the hard checks (main 7,183 → 8,032), pin_moves' description
+ * (tools 43,857 → 43,872) — measured 20,152; held with 398 characters (~114 tokens) of headroom.
  */
-const GROWTH_MAX_CHARS = 18_700;
+/* REBASED 2026-11-06 (the controller's fix pass, A and C): read_saves' pages, compact quotes and full; the stated field
+ * as the reader's report, the challenge weighed, the defaulted dose, never one guess for another; stated:<field> and the
+ * move's own quotes in pin_moves' and correct_import's descriptions — measured 21,297; held with 403 characters (~100
+ * tokens) of headroom. */
+/* REBASED 2026-11-06 (the controller's ruling: read_saves' Reading line says the why and a case show their heads, and
+ * when full: true is worth a call — shared 28,739 → 28,843) — measured 21,401; held with 404 characters (~101 tokens)
+ * of headroom. */
+/* REBASED 2026-11-06 (audit fixes, evidence): read_saves' moveIds (a past card's evidence, E1), the challenge order with
+ * the call first and read_saves by the move (E2), figures from the opening's computed blocks (E5) — measured 21,846; held
+ * with 404 characters (~115 tokens) of headroom. */
+/* REBASED 2026-11-06 (audit fixes, evidence, E2/E4/E6/E7): propose_objective — the main coach's change to the athlete's
+ * objectives, its schema (tools 44,501 → 46,227 with pin_moves' headline, its where dropped and finish's challenge flag)
+ * and its Acting and diagnose lines (shared 28,922 → 29,168; main 8,394 → 8,423) — measured 23,847; held with 403
+ * characters (~115 tokens) of headroom. */
+/* REBASED 2026-11-06 (the merge of plans with a purpose and the coach's review, each measured above on its own side; nothing
+ * new is said): change_plan and the plan-naming fields on main's tools (tools 46,227 → 47,985: this branch's 1,745, and 13
+ * neither side's last note counted), this branch's Acting lines on main's shared prompt (shared 29,168 → 29,566), the main
+ * block as main left it (8,423) — measured 26,003; held with 397 characters (~113 tokens) of headroom. */
+const GROWTH_MAX_CHARS = 26_400;
 
 const toolsSent = () => JSON.stringify(allTools().map((t) => ({ name: t.name, description: t.description, input_schema: t.inputSchema })));
 

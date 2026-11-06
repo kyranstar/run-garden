@@ -20,9 +20,11 @@ import { adjustPlan } from "./adjust-plan.js";
 import { askAthlete } from "./ask.js";
 import { changePlan } from "./change-plan.js";
 import { changeProgramme } from "./change-programme.js";
+import { correctImport } from "./correct-import.js";
 import { dropWorkout } from "./drop-workout.js";
 import { finish } from "./finish.js";
 import { pinMoves } from "./pin-moves.js";
+import { proposeObjective } from "./propose-objective.js";
 import { planSet } from "./plan-set.js";
 import { proposePlan } from "./propose-plan.js";
 import { proposeWorkout } from "./propose.js";
@@ -80,6 +82,8 @@ export const ACT_TOOLS: DesignTool[] = [
   changeProgramme,
   changePlan,
   pinMoves,
+  correctImport,
+  proposeObjective,
   planSet,
   readSet,
   dropWorkout,

@@ -15,8 +15,9 @@ import { wakeGateway } from "./gateway-route.js";
 import { IMPORT_KINDS, reserveImport, settleImport } from "./saves-budget.js";
 import { noteGatewayOutcome } from "./ai-credits.js";
 import { extractJson } from "./studio-llm.js";
-import { MAX_EXTRACT_ATTEMPTS, RELAY_CLAIM_STALE_MS, RETRYABLE_ERROR_CODES, siteSource } from "./saves-ledger.js";
+import { FAILED_STATUSES, failedStatusSql, MAX_EXTRACT_ATTEMPTS, RELAY_CLAIM_STALE_MS, RETRYABLE_ERROR_CODES, siteSource } from "./saves-ledger.js";
 import { matchPost } from "./saves-match.js";
+import { alignReading, type KeptRow, type ReadingFix } from "./saves-reread.js";
 
 const { savedPosts, importBlobs } = schema;
 
@@ -271,7 +272,41 @@ interface ClaimedPost {
    * submit's URL is any https link, and the gateway would fetch it). Null for anything but a YouTube video id.
    */
   videoUrl: string | null;
+  /**
+   * A post that already has links (an old post read again; phase 5a): its earlier reading, its links, the approved
+   * corrections to its reading, and whether its notes went to the coach's memory — the new reading is lined up with
+   * them before it is stored (`alignReading`). Null for a post with no links.
+   */
+  kept: { earlier: unknown; rows: KeptRow[]; fixes: ReadingFix[]; keepInsights: boolean } | null;
 }
+
+/** The claim's view of a post's links and corrections (JSON from its subqueries), as `alignReading` takes them. */
+function keptOf(row: { extraction: unknown; rows: unknown; fixes: unknown; keepInsights: unknown }, postId: string): ClaimedPost["kept"] {
+  const list = (raw: unknown): unknown[] => {
+    if (Array.isArray(raw)) return raw;
+    if (typeof raw !== "string") return [];
+    try {
+      const v: unknown = JSON.parse(raw);
+      return Array.isArray(v) ? v : [];
+    } catch {
+      return [];
+    }
+  };
+  const rows = list(row.rows).flatMap((x): KeptRow[] => {
+    const [position, moveId, moveKind, status, name] = Array.isArray(x) ? (x as unknown[]) : [];
+    return typeof position === "number" && typeof moveId === "string"
+      ? [{ position, moveId, moveKind: moveKind === "library" ? "library" : "personal", status: String(status), name: moveKind === "library" ? (LIBRARY_NAME_OF.get(moveId) ?? null) : typeof name === "string" ? name : null }]
+      : [];
+  });
+  if (!rows.length) return null;
+  const fixes = list(row.fixes).flatMap((x): ReadingFix[] => {
+    const [targetId, field, after] = Array.isArray(x) ? (x as unknown[]) : [];
+    const n = typeof targetId === "string" && targetId.startsWith(`${postId}:`) ? Number(targetId.slice(postId.length + 1)) : NaN;
+    return Number.isInteger(n) && (field === "useWhen" || field === "skipWhen" || field === "why") ? [{ position: n, field, after }] : [];
+  });
+  return { earlier: row.extraction, rows, fixes, keepInsights: Number(row.keepInsights) === 1 };
+}
+const LIBRARY_NAME_OF = new Map(EXERCISES.map((e) => [e.id, e.name]));
 
 /** What a watched video must add to the bill, beyond the text's own tokens, to count as seen: half the typical rate. */
 function videoSeenOf(inputTokens: number, textChars: number, durationSec: number): boolean {
@@ -312,7 +347,7 @@ async function runExtraction(
             eq(savedPosts.status, "queued"),
             // `too_large` too: the extension retries a too-large post at a smaller size straight away (`/work` never
             // hands it out again, so only that retry reaches it); the attempt limit above still holds.
-            and(eq(savedPosts.status, "failed"), inArray(savedPosts.lastErrorCode, [...RETRYABLE_ERROR_CODES, "too_large"])),
+            and(inArray(savedPosts.status, [...FAILED_STATUSES]), inArray(savedPosts.lastErrorCode, [...RETRYABLE_ERROR_CODES, "too_large"])),
             and(eq(savedPosts.status, "extracting"), lt(savedPosts.updatedAt, stale)),
           ),
         ),
@@ -330,6 +365,17 @@ async function runExtraction(
         title: savedPosts.title,
         durationSec: savedPosts.durationSec,
         videoInfo: savedPosts.videoInfo,
+        // What a re-read is lined up with (phase 5a): inside the claim, no statement of its own.
+        extraction: savedPosts.extraction,
+        rows: sql<string>`(SELECT json_group_array(json_array(l.position, l.move_id, l.move_kind, l.status, json_extract(pm.record, '$.name')))
+          FROM saved_post_moves l LEFT JOIN personal_moves pm ON pm.id = l.move_id AND pm.user_id = l.user_id
+          WHERE l.user_id = ${userId} AND l.post_id = ${post.id})`,
+        fixes: sql<string>`(SELECT json_group_array(json_array(c.target_id, c.field, json(c.after))) FROM (
+          SELECT target_id, field, after FROM import_corrections WHERE user_id = ${userId} AND target = 'reading'
+            AND substr(target_id, 1, ${post.id.length + 1}) = ${`${post.id}:`} ORDER BY at, rowid) c)`,
+        keepInsights: sql<number>`(EXISTS (SELECT 1 FROM saved_post_moves k WHERE k.user_id = ${userId} AND k.post_id = ${post.id} AND k.status = 'saved')
+          OR EXISTS (SELECT 1 FROM import_corrections ki WHERE ki.user_id = ${userId} AND ki.target = 'insight'
+            AND substr(ki.target_id, 1, ${post.id.length + 1}) = ${`${post.id}:`}))`,
       });
     const row = rows[0];
     if (!row) return false;
@@ -357,7 +403,7 @@ async function runExtraction(
     }
     const userText = extractUserText({ post: words, libraryNames: LIBRARY_NAMES, retryIssues: prompt.retryIssues });
     const videoUrl = row.source === "youtube" && /^[A-Za-z0-9_-]{11}$/.test(row.sourceKey) ? `https://www.youtube.com/watch?v=${row.sourceKey}` : null;
-    claimed = { attempt: row.attempt, userText, sha: await promptSha(userText), words, url: row.url, videoUrl };
+    claimed = { attempt: row.attempt, userText, sha: await promptSha(userText), words, url: row.url, videoUrl, kept: keptOf(row, post.id) };
     return true;
   };
   const refusal = async (): Promise<RelayResult> => {
@@ -372,15 +418,17 @@ async function runExtraction(
    * `last_error` (the schema's issues, the gateway's reason): the lead reads it to tune the prompt (first live run, 2026-10-25).
    */
   const finish = (
-    out: { extraction: Extraction } | { code: SaveErrorCode; why?: string[] },
+    out: FinishOut,
     costMicros: number,
     call?: RelayCall,
   ): Promise<unknown> => {
     const update = db
       .update(savedPosts)
       .set({
-        status: "extraction" in out ? "extracted" : "failed",
-        ...("extraction" in out ? { extraction: out.extraction, lastErrorCode: null } : { lastErrorCode: out.code }),
+        // A re-read that didn't line up keeps the earlier reading: the post stands matched, as it was (phase 5a).
+        // A failure on a post with links keeps it matched, its moves the owner's (final review I5).
+        status: "extraction" in out ? (out.keptEarlier ? "matched" : "extracted") : failedStatusSql(userId, post.id),
+        ...("extraction" in out ? { ...(out.keptEarlier ? {} : { extraction: out.extraction }), lastErrorCode: null } : { lastErrorCode: out.code }),
         lastError: "extraction" in out || !out.why?.length ? null : out.why.join(" | ").slice(0, LAST_ERROR_CHARS),
         costMicros: sql`${savedPosts.costMicros} + ${costMicros}`,
         ...(call?.videoSeen !== undefined && call.videoSeen !== null ? { videoSeen: call.videoSeen } : {}),
@@ -443,10 +491,28 @@ async function runExtraction(
     };
   }
 
+  /**
+   * A reading to store: a post with links has it lined up with them first (phase 5a); one that doesn't line up keeps
+   * the earlier reading — paid, its reply on the trail, the post matched as it was, nothing matched again.
+   */
+  const store = async (extraction: Extraction, costMicros: number, call?: RelayCall): Promise<RelayResult> => {
+    const kept = (claimed as ClaimedPost | null)?.kept ?? null;
+    if (!kept) {
+      await finish({ extraction }, costMicros, call);
+      return matched(extraction);
+    }
+    const aligned = alignReading(extraction, kept);
+    if (!aligned.ok) {
+      await finish({ extraction, keptEarlier: aligned.why === "missing" ? { missing: aligned.missing } : { missing: [] } }, costMicros, call);
+      return { ok: true, extraction };
+    }
+    await finish({ extraction: aligned.extraction, reread: { kept: aligned.kept.length, added: aligned.added } }, costMicros, call);
+    return matched(aligned.extraction);
+  };
+
   if (gateway.kind === "canned") {
     if (!(await claim())) return refusal();
-    await finish({ extraction: CANNED_EXTRACTION }, 0);
-    return matched(CANNED_EXTRACTION);
+    return store(CANNED_EXTRACTION, 0);
   }
 
   if (video && !video.watched && !video.hasTranscript) {
@@ -594,8 +660,7 @@ async function runExtraction(
       return { ok: false, code: "model_failed", issues: parsed.issues };
     }
     // Paid and stored first (final audit G1b): its quotes are checked and its moves matched after.
-    await finish({ extraction: parsed.extraction }, cost, facts);
-    return await matched(parsed.extraction);
+    return await store(parsed.extraction, cost, facts);
   } catch (e) {
     console.warn(JSON.stringify({ level: "warn", msg: "saves relay: failed", detail: String(e).slice(0, 200) }));
     if (!settled) await settleImport(db, reservation.usageId, null).catch(() => undefined);
@@ -663,6 +728,35 @@ export async function matchStale(db: Db, env: Env, userId: string, now: Date, fe
   return true;
 }
 
+/** A typical reel's length, for what reading one costs before it is fetched (Read it again's price; phase 5a). */
+export const TYPICAL_REEL_SEC = 60;
+
+/**
+ * What reading a post typically costs, said before the owner's tap (Read it again, phase 5a): the relay's own typical
+ * estimate — a video page by its words (`textChars`: its description and transcript) and, up to WATCH_MAX_SEC, its
+ * watched length; a post's media by a typical reel (its prompt and a minute of video), an image post by its prompt.
+ */
+export function typicalReadingMicros(model: string, p: { source: string; mediaType: string | null; durationSec: number | null; textChars: number }): number {
+  if (p.source === "youtube") {
+    const watched = p.durationSec !== null && p.durationSec > 0 && p.durationSec <= WATCH_MAX_SEC ? p.durationSec : 0;
+    return messagesCostMicros(model, {
+      inputTokens: Math.ceil((SYSTEM_CHARS + LIBRARY_CHARS + p.textChars) / 4) + VIDEO_TOKENS_PER_SEC * watched,
+      cacheReadTokens: 0, cacheWriteTokens: 0, outputTokens: TYPICAL_OUTPUT_TOKENS,
+    });
+  }
+  const video = p.mediaType === "video" ? Math.ceil((p.durationSec ?? TYPICAL_REEL_SEC) * VIDEO_TOKENS_PER_SECOND) : 0;
+  return messagesCostMicros(model, { inputTokens: TEXT_PROMPT_TOKENS + video, cacheReadTokens: 0, cacheWriteTokens: 0, outputTokens: TYPICAL_OUTPUT_TOKENS });
+}
+
+/**
+ * How a relay ends: a reading stored (`reread`: lined up with the post's links, how many and which places are new), a
+ * re-read that kept the earlier reading (`keptEarlier`: the linked moves it didn't find), or a failure.
+ */
+type FinishOut =
+  | { extraction: Extraction; reread?: { kept: number; added: number[] }; keptEarlier?: undefined }
+  | { extraction: Extraction; keptEarlier: { missing: string[] }; reread?: undefined }
+  | { code: SaveErrorCode; why?: string[] };
+
 /** A long video with no captions: nothing to read until the owner asks for it to be watched. */
 const NO_CAPTIONS_LONG = "No captions, and it's over 20 minutes — Watch it too reads it from the video";
 const NO_CAPTIONS_TOO_LONG = "No captions, and it's too long to watch (over 50 minutes)";
@@ -695,13 +789,17 @@ interface RelayCall {
   quotes?: { verified: number; in_speech: number; not_found: number };
 }
 
+/** "A", "A and B", "A, B and C". */
+const listWords = (names: readonly string[]): string =>
+  names.length <= 1 ? (names[0] ?? "") : `${names.slice(0, -1).join(", ")} and ${names.at(-1)}`;
+
 const KIND_WORDS: Record<Extraction["kind"], string> = {
   routine: "a routine", single_move: "single move", tips: "tips", not_training: "not training",
 };
 
 /** The extract stage's event for one attempt (design 2026-11-05 §4). */
 function extractEvent(
-  out: { extraction: Extraction } | { code: SaveErrorCode; why?: string[] },
+  out: FinishOut,
   costMicros: number,
   call: RelayCall | undefined,
   claimed: { attempt: number; userText: string; sha: string } | null,
@@ -712,9 +810,16 @@ function extractEvent(
   const asSent = prompt.sha === null || !claimed ? null : prompt.sha === claimed.sha;
   const older = asSent === false;
   let summary: string;
-  if ("extraction" in out) {
+  if ("extraction" in out && out.keptEarlier) {
+    const n = out.extraction.moves.length;
+    const missing = out.keptEarlier.missing;
+    summary = missing.length
+      ? `Read ${n} move${n === 1 ? "" : "s"} again, but ${listWords(missing)} ${missing.length === 1 ? "isn't" : "aren't"} among them — the earlier reading stays`
+      : `Read ${n} move${n === 1 ? "" : "s"} again, but they don't line up with the moves it had — the earlier reading stays`;
+  } else if ("extraction" in out) {
     const n = out.extraction.moves.length;
     summary = `Read ${n} move${n === 1 ? "" : "s"} (${KIND_WORDS[out.extraction.kind]})`;
+    if (out.reread) summary = `${summary} — read again, lined up with the ${out.reread.kept} move${out.reread.kept === 1 ? "" : "s"} it had`;
     // A video's reading says whether it was watched (§5.4).
     if (call?.videoRefused) summary = `${summary} — the gateway wouldn't take the video; it was read from its words`;
     else if (call?.watched === false) summary = `${summary} — from the transcript (over 20 minutes)`;
@@ -736,10 +841,13 @@ function extractEvent(
   return {
     stage: "extract",
     source: call ? "gateway" : "worker",
-    status: failed ? "fail" : older || call?.videoSeen === false ? "warn" : "ok",
+    status: failed ? "fail" : older || call?.videoSeen === false || ("extraction" in out && out.keptEarlier) ? "warn" : "ok",
     summary,
     detail: {
       ...("extraction" in out ? { kind: out.extraction.kind, moves: out.extraction.moves.length } : { code: out.code, issues: out.why ?? [] }),
+      // A re-read (phase 5a): lined up (the places that are new), or the earlier reading kept (what it didn't find).
+      ...("extraction" in out && out.reread ? { reread: { kept: out.reread.kept, added: out.reread.added } } : {}),
+      ...("extraction" in out && out.keptEarlier ? { kept: "earlier", missing: out.keptEarlier.missing } : {}),
       finishReason: call?.finishReason ?? null,
       ...(call?.inputTokens !== undefined ? { tokens: { in: call.inputTokens, out: call.outputTokens ?? 0 } } : {}),
       promptSha: claimed?.sha ?? null,
@@ -866,8 +974,14 @@ function issueText(i: ZodIssue): string {
 export async function markTooLarge(db: Db, userId: string, postId: string, now: string): Promise<void> {
   const marked = await db
     .update(savedPosts)
-    .set({ status: "failed", lastErrorCode: "too_large", lastError: null, extractAttempts: sql`${savedPosts.extractAttempts} + 1`, updatedAt: now })
-    .where(and(eq(savedPosts.id, postId), eq(savedPosts.userId, userId), inArray(savedPosts.status, ["queued", "failed"])))
+    .set({ status: failedStatusSql(userId, postId), lastErrorCode: "too_large", lastError: null, extractAttempts: sql`${savedPosts.extractAttempts} + 1`, updatedAt: now })
+    .where(
+      and(
+        eq(savedPosts.id, postId),
+        eq(savedPosts.userId, userId),
+        or(inArray(savedPosts.status, ["queued", "failed"]), and(eq(savedPosts.status, "matched"), inArray(savedPosts.lastErrorCode, [...RETRYABLE_ERROR_CODES, "too_large"]))),
+      ),
+    )
     .returning({ source: savedPosts.source });
   if (marked.length > 0) {
     await runAtomically(db, trailStatements(db, userId, postId, [

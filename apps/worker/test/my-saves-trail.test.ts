@@ -82,9 +82,10 @@ describe("GET /posts/:id/trail", () => {
     });
     const { body } = await get(`/posts/${id}/trail`);
     expect(body.rebuilt).toBe(true);
-    expect(body.events.map((e: { stage: string; rebuilt: boolean }) => [e.stage, e.rebuilt])).toEqual([["screen", true], ["extract", true]]);
-    expect(body.events[0].summary).toBe("Kept: a mobility routine");
-    expect(body.events[1]).toMatchObject({ status: "fail", summary: "The video wouldn't download" });
+    // REBASED 2026-11-06 (phase 5 backfill): the rebuilt trail opens with where it came from (provenance).
+    expect(body.events.map((e: { stage: string; rebuilt: boolean }) => [e.stage, e.rebuilt])).toEqual([["submit", true], ["screen", true], ["extract", true]]);
+    expect(body.events[1].summary).toBe("Kept: a mobility routine");
+    expect(body.events[2]).toMatchObject({ status: "fail", summary: "The video wouldn't download" });
     expect(body.account.health).toEqual({ status: "fail", line: "The video wouldn't download" });
   });
 
@@ -113,10 +114,11 @@ describe("GET /posts/:id/trail", () => {
     await db.insert(schema.importEvents).values({ id: "s1", userId, postId: id, stage: "save", source: "worker", status: "ok", summary: "Saved", at: "2026-11-06T00:00:00.000Z" });
     const { body } = await get(`/posts/${id}/trail`);
     expect(body.rebuilt).toBe(true);
+    // REBASED 2026-11-06 (phase 5 backfill): provenance first; its own save step is never rebuilt beside it.
     expect(body.events.map((e: { stage: string; rebuilt: boolean }) => [e.stage, e.rebuilt])).toEqual([
-      ["screen", true], ["extract", true], ["match", true], ["save", false],
+      ["submit", true], ["screen", true], ["extract", true], ["match", true], ["save", false],
     ]);
-    expect(body.events[2].summary).toBe("1 move: 1 from the library");
+    expect(body.events[3].summary).toBe("1 move: 1 from the library");
     expect(body.account.moves[0]).toMatchObject({ outcome: "library", moveId: "gobletSquat" });
   });
 

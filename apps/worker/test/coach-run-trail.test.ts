@@ -21,6 +21,23 @@ describe("toolResultPayload", () => {
     const input = { lines: "x".repeat(7_000) };
     expect(toolResultPayload("pin_moves", input, { data: null }, true).input).toEqual(input);
   });
+  it("a pins card at its widest — thirty lines of eight cites, sixty moves, its words at their longest — is kept whole (the controller's fix pass, E23)", () => {
+    const id = (i: number) => `myZorbexMoveNumber${String(i).padStart(2, "0")}${"x".repeat(20)}`;
+    const input = {
+      pin: Array.from({ length: 30 }, (_, i) => id(i)),
+      unpin: Array.from({ length: 30 }, (_, i) => id(30 + i)),
+      batchId: `batch-${"b".repeat(40)}`,
+      title: "t".repeat(60),
+      summary: "s".repeat(120),
+      lines: Array.from({ length: 30 }, (_, i) => ({
+        moveId: id(i), decision: "in", where: "w".repeat(80), dose: "d".repeat(40), text: "l".repeat(280),
+        cites: [...Array.from({ length: 7 }, (_, k) => `q${i + 1}.${k + 1}`), "history"],
+      })),
+      why: "y".repeat(300),
+    };
+    expect(JSON.stringify(input).length).toBeGreaterThan(20_000);
+    expect(toolResultPayload("pin_moves", input, { data: null }, true).input).toEqual(input);
+  });
 });
 
 describe("bounded", () => {

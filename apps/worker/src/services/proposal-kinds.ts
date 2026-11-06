@@ -8,6 +8,7 @@
  */
 import { dayLabel, defaultOnEnd, describeOps, planOnEndSchema, type AdaptiveConfig, type CoachOp, type PlanOnEnd, type ProgramKind } from "@rg/domain";
 import type { RetimeExpectation } from "./adjust-retime.js";
+import type { CiteRef } from "./saves-evidence.js";
 
 /** The thread coach's ops a designed proposal may carry as a change to the plan (Task 8b; ruling I6), and since the new
  * shape §5 its proven single-session ones too: ease (a swap for an easier kind is an ease, its `verb` "swap"), remove
@@ -243,16 +244,55 @@ export interface PinsCardLine {
   moveId?: string;
   name?: string;
   text: string;
+  /**
+   * Since the coach's review (import trail phase 3, §8.3, §14.1): what the card does with the move — `in` (pinned here,
+   * in a workout this suggestion holds, or in rotation already) or `out` — the tool's own, never contradicting the card;
+   * where it goes (the tool's since audit fixes E7: the workout's day, title and part, or the rotation; a line stored
+   * before holds the coach's words); the dose it will run with (the tool's: the revised item's, a dose correction's
+   * in this suggestion, else the record's — an `in` line's only); its cites as the chips the card draws; and the move's
+   * first post in the batch (its name opens that post's trail at the move). A line stored before holds none of them.
+   */
+  decision?: "in" | "out";
+  where?: string;
+  dose?: string;
+  cites?: CiteRef[];
+  post?: { id: string; position: number };
+  /** What puts an `in` line's move in (final review I3): a pin of this card, a workout of this suggestion (its dose the
+   * item's), or the rotation it is in already — so the finish can tell a line the suggestion no longer bears out. */
+  via?: "pin" | "workout" | "rotation";
+}
+
+const CITE_KINDS = new Set(["quote", "history", "goal", "inferred", "stated"]);
+
+/** A stored cite that reads: an id, a kind, a label (a quote's with its post, position and index). */
+function citeOf(c: unknown): CiteRef | null {
+  const o = c && typeof c === "object" ? (c as Record<string, unknown>) : null;
+  if (!o || typeof o.id !== "string" || typeof o.kind !== "string" || !CITE_KINDS.has(o.kind) || typeof o.label !== "string") return null;
+  if (o.kind === "quote" && (typeof o.postId !== "string" || typeof o.position !== "number" || typeof o.quote !== "number")) return null;
+  return o as unknown as CiteRef;
 }
 
 /** A `move_pins` op's lines as stored, whatever their age: a plain string (before the saves flow redesign) is its text;
- * an object keeps its move and name when they are texts; anything without a text is dropped. */
+ * an object keeps its move and name when they are texts, and (phase 3) its decision, where, dose, readable cites and
+ * first post; anything without a text is dropped. */
 export function pinsCardLinesOf(raw: unknown): PinsCardLine[] {
   return (Array.isArray(raw) ? raw : []).flatMap((l): PinsCardLine[] => {
     if (typeof l === "string") return l.trim() ? [{ text: l }] : [];
     const o = l && typeof l === "object" ? (l as Record<string, unknown>) : null;
     if (!o || typeof o.text !== "string" || !o.text.trim()) return [];
-    return [{ ...(typeof o.moveId === "string" && o.moveId ? { moveId: o.moveId } : {}), ...(typeof o.name === "string" && o.name ? { name: o.name } : {}), text: o.text }];
+    const cites = Array.isArray(o.cites) ? o.cites.flatMap((c) => citeOf(c) ?? []) : [];
+    const post = o.post && typeof o.post === "object" ? (o.post as Record<string, unknown>) : null;
+    return [{
+      ...(typeof o.moveId === "string" && o.moveId ? { moveId: o.moveId } : {}),
+      ...(typeof o.name === "string" && o.name ? { name: o.name } : {}),
+      text: o.text,
+      ...(o.decision === "in" || o.decision === "out" ? { decision: o.decision } : {}),
+      ...(typeof o.where === "string" && o.where ? { where: o.where } : {}),
+      ...(typeof o.dose === "string" && o.dose ? { dose: o.dose } : {}),
+      ...(cites.length ? { cites } : {}),
+      ...(post && typeof post.id === "string" && typeof post.position === "number" ? { post: { id: post.id, position: post.position } } : {}),
+      ...(o.via === "pin" || o.via === "workout" || o.via === "rotation" ? { via: o.via } : {}),
+    }];
   });
 }
 
@@ -279,13 +319,19 @@ export interface MovePinsOp {
   batchId?: string;
   why: string;
   title: string;
-  /** With a batch, the count the tool writes (pin-moves.ts `pinsSummaryLine`); without one, the coach's line. */
+  /** The coach's headline (audit fixes, E4: what it recommends and why, two sentences at most); with a batch and none
+   * written, the count. Stored before E4 with a batch: the tool's count ("Five join the rotation. Name waits."). */
   summary: string;
+  /** With a batch and a headline (E4): the count beneath it, in the card's words — "5 in · 1 left out". */
+  count?: string;
   /** Each a `PinsCardLine` since the saves flow redesign (§3.5). An op stored before it holds plain strings: a reader of a
    * stored op reads them through `pinsCardLinesOf`, never as typed here. */
   lines: PinsCardLine[];
   /** The day it was proposed: today (the readers that list what is still open read an op's day). */
   date: string;
+  /** When the run first read each of the batch's posts its read_saves pages covered (import trail phase 3): the post's
+   * trail says so when the card is shown. */
+  read?: Array<[postId: string, at: string]>;
   toolUseId: string;
   replaces?: string[];
   at: string;
@@ -293,6 +339,111 @@ export interface MovePinsOp {
 
 /** A `move_pins` op's id: its main run's. */
 export const pinsId = (mainRunId: string): string => `pins-${mainRunId}`;
+
+/** What a correction corrects (design 2026-11-05 §8.4): a personal move's field, a post's reading of a move, an insight, a
+ * link's match. */
+export type CorrectionTarget = "move" | "reading" | "insight" | "link";
+
+/** The most corrections one suggestion holds: room for a batch's worth of fixes, and a request's approve fits them. */
+export const CORRECTIONS_MAX = 10;
+
+/**
+ * A correction to imported data inside a designed proposal (import trail phase 3; design 2026-11-05 §8.4;
+ * design-tools/correct-import.ts): what it corrects (`target`, `targetId` — a personal move's id, or `<postId>:<n>`, a
+ * move's position or an insight's index in the post — and `field`), the value the Worker read when it was proposed
+ * (`before`) and the one the coach proposes (`after`), why, on what basis (`evidence`, or the athlete's insistence:
+ * `owner`), its cites as chips, and what the card and the trail say: the target's name, one line, the posts whose trails
+ * it touches, the move it names. Applied at approval in one atomic write (import-corrections.ts), refused `stale` when
+ * the value is no longer `before`. `why` and the line carry the model's and a post's words: data, marked wherever they
+ * are shown back to a model.
+ */
+export interface ImportCorrectionOp {
+  kind: "import_correction";
+  /** `correctionId(target, targetId, field)`: one a field a suggestion — a second replaces the first. */
+  id: string;
+  target: CorrectionTarget;
+  targetId: string;
+  field: string;
+  before: unknown;
+  after: unknown;
+  why: string;
+  basis: "evidence" | "owner";
+  cites: CiteRef[];
+  name: string;
+  /** A "same as" correction's: the name of the move it is the same as. */
+  toName?: string;
+  line: string;
+  posts: string[];
+  moveId?: string;
+  date: string;
+  toolUseId: string;
+  replaces?: string[];
+  at: string;
+}
+
+export const correctionId = (target: CorrectionTarget, targetId: string, field: string): string => `fix-${target}-${targetId}-${field}`;
+
+/** Whether an op is a correction to imported data (import trail phase 3). */
+export const isImportCorrectionOp = (op: unknown): op is ImportCorrectionOp =>
+  !!op && typeof op === "object" && (op as { kind?: unknown }).kind === "import_correction";
+
+/** What an objective change does (audit fixes 2026-11-06, E6): retarget or re-date a key result (an objective's dates are
+ * its key results'), add a key result, retire an objective (done, or let go) or a key result, add an objective. */
+export const OBJECTIVE_CHANGES = ["retarget", "redate", "add_key_result", "retire", "add_objective"] as const;
+export type ObjectiveChangeKind = (typeof OBJECTIVE_CHANGES)[number];
+
+/** The most objective changes one suggestion holds. */
+export const OBJECTIVE_CHANGES_MAX = 6;
+
+/** A key result as an objective change adds it: the board's own fields, resolved when proposed (its unit and direction
+ * the athlete's for its measure), with its new id. */
+export interface ObjectiveKeyResultDraft {
+  id: string;
+  label: string;
+  measure: Record<string, unknown>;
+  direction: "up" | "down";
+  baseline: number | null;
+  target: number | null;
+  unit: string;
+  dueDate: string | null;
+}
+
+/**
+ * A change to the athlete's objectives inside a designed proposal (audit fixes 2026-11-06, E6;
+ * design-tools/propose-objective.ts): what it changes (`change`, the objective and the key result), the value the
+ * Worker read when it was proposed (`before`: a target, a due day, an objective's status, a retired key result's words,
+ * null for an add) and the one the coach proposes (`after`: a number, a day or null, `done` / `dropped`, null for a
+ * retired key result, the new key result or objective whole, ids made when proposed), why (citing where the athlete
+ * stands, or their word: `basis`), the objective's title and one line, before → after. Applied ONLY at approval, in one
+ * atomic write gated on the value still being `before` (objective-changes.ts): refused `stale` when the athlete changed
+ * it since. Its outcome is its log: read_proposals, the conversation and the thread's receipt read it. `why`, the title
+ * and the line carry the model's and the athlete's words: data, marked wherever they are shown back to a model.
+ */
+export interface ObjectiveChangeOp {
+  kind: "objective_change";
+  /** `objectiveChangeId(change, target)`: one a target a suggestion — a second replaces the first. */
+  id: string;
+  change: ObjectiveChangeKind;
+  objectiveId: string;
+  keyResultId?: string;
+  before: unknown;
+  after: unknown;
+  why: string;
+  basis: "stand" | "owner";
+  /** The objective's title (the athlete's words, or the new one's). */
+  title: string;
+  line: string;
+  date: string;
+  toolUseId: string;
+  replaces?: string[];
+  at: string;
+}
+
+export const objectiveChangeId = (change: ObjectiveChangeKind, target: string): string => `obj-${change}-${target}`;
+
+/** Whether an op is a change to the athlete's objectives (E6). */
+export const isObjectiveChangeOp = (op: unknown): op is ObjectiveChangeOp =>
+  !!op && typeof op === "object" && (op as { kind?: unknown }).kind === "objective_change";
 
 /**
  * Whether a programme setting holds the same value (review-1): care is a set — the settings sheet saves it back as the
@@ -375,18 +526,20 @@ export const isPlanChangeOp = (op: unknown): op is PlanChangeOp => kindOf(op) ==
 /** Whether an op is a change to the moves in rotation (saved-posts import, Task 18). */
 export const isMovePinsOp = (op: unknown): op is MovePinsOp => kindOf(op) === "move_pins";
 
-/** Whether an op is the coach designer's — a designed workout, a change, a plan change, a programme change or the moves
- * in rotation — never one of the thread coach's. */
+/** Whether an op is the coach designer's — a designed workout, a change, a whole plan change, a programme change, a change
+ * to a plan's purpose, the moves in rotation, a correction or an objective change — never one of the thread coach's. */
 export const isDesignedOp = (op: unknown): boolean =>
-  isDocWorkoutOp(op) || isPlanAdjustOp(op) || isPlanStructureOp(op) || isProgrammeChangeOp(op) || isPlanChangeOp(op) || isMovePinsOp(op);
+  isDocWorkoutOp(op) || isPlanAdjustOp(op) || isPlanStructureOp(op) || isProgrammeChangeOp(op) || isPlanChangeOp(op) || isMovePinsOp(op) || isImportCorrectionOp(op) || isObjectiveChangeOp(op);
 
 /**
  * An op's id: a designed workout's is the run that designed it — each run holds ONE op of its main run's proposal,
  * whatever its target (design-tools/propose.ts), so the run names the op through every revision round; a change's is
  * its own (`planAdjustId`). Approve and decline (Task 8) and a main run's lever over its set (Task 7) name an op by it.
  */
-export function opIdOf(op: { by: { runId: string } } | PlanAdjustOp | PlanStructureOp | ProgrammeChangeOp | PlanChangeOp | MovePinsOp): string {
-  return isPlanAdjustOp(op) || isPlanStructureOp(op) || isProgrammeChangeOp(op) || isPlanChangeOp(op) || isMovePinsOp(op) ? op.id : (op as { by: { runId: string } }).by.runId;
+export function opIdOf(op: { by: { runId: string } } | PlanAdjustOp | PlanStructureOp | ProgrammeChangeOp | PlanChangeOp | MovePinsOp | ImportCorrectionOp | ObjectiveChangeOp): string {
+  return isPlanAdjustOp(op) || isPlanStructureOp(op) || isProgrammeChangeOp(op) || isPlanChangeOp(op) || isMovePinsOp(op) || isImportCorrectionOp(op) || isObjectiveChangeOp(op)
+    ? op.id
+    : (op as { by: { runId: string } }).by.runId;
 }
 
 /** Whether a proposal's ops hold a designed workout. */

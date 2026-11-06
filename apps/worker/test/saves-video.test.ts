@@ -247,13 +247,26 @@ describe("Watch it too (design 2026-11-05 §5.4)", () => {
     expect(await watchVideo(db, userId, id, NOW)).toBe("ok");
     expect(statements).toBeLessThanOrEqual(6);
     expect(await row(id)).toMatchObject({ status: "queued", watchVideo: true, extraction: null, batchId: null, extractAttempts: 0 });
-    expect((await db.select().from(savedPostMoves))[0]!.status).toBe("removed");
+    // REBASED 2026-11-06 (phase 5 backfill): the rows go, freeing their places for the watched reading's links.
+    expect(await db.select().from(savedPostMoves)).toEqual([]);
     expect(await db.select().from(personalMoves)).toEqual([]);
     expect((await workList(db, userId, NOW, 20, { links: true })).map((w) => [w.key, w.action])).toEqual([[vid, "extract"]]);
     const trail = await readPostTrail(db, userId, id);
     expect(trail!.post.video).toMatchObject({ watchAsked: true, offerWatch: false });
     const asked = trail!.events.find((e) => e.stage === "choice")!;
     expect(asked.summary).toMatch(/^You asked for the video to be watched too \(about \$0\.\d\d\)$/);
+  });
+
+  it("the watched reading's moves are linked: the old rows no longer hold their places (phase 5a)", async () => {
+    const id = await matchedLong();
+    expect(await watchVideo(db, userId, id, NOW)).toBe("ok");
+    await run(id, gateway(reading(), (sent) => textTokens(sent) + 100 * 2_400));
+    expect(await row(id)).toMatchObject({ status: "matched" });
+    const links = await db.select().from(savedPostMoves).where(eq(savedPostMoves.postId, id));
+    expect(links.map((l) => [l.position, l.status])).toEqual([[0, "pending"]]);
+    // Every pending move has its link: none is left behind with nothing pointing at it.
+    const moves = await db.select().from(personalMoves);
+    expect(moves.map((m) => m.id)).toEqual([links[0]!.moveId]);
   });
 
   it("refuses a post with a saved move, a post that isn't a video, one already asked, and another account's", async () => {

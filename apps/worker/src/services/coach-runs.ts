@@ -58,6 +58,7 @@ import {
   promoteWithWhatItHas,
   resumeAfterReview,
   reviewPacket,
+  standFromOpening,
   reviewRubricOf,
   STOPPED_NOTES,
   submitReviewSchema,
@@ -293,8 +294,9 @@ const FINISH_WRITE = 1;
  * plans' days it covers superseded, then — when that superseded a card of the moves in rotation naming a saves batch —
  * the batch's fit released (design-orchestrate.ts `supersedeOlderPlans`; the saves flow redesigned §12.1: + 1, was
  * 2 * PROMOTE_TRIES + 1) — and, a fit's main run, its own batch handed back unless its card naming the batch is open
- * (`releaseRunFit`, workout editability §7: + 1, was 2 * PROMOTE_TRIES + 2; proposed or not). */
-const STOP_PROPOSE = 2 * PROMOTE_TRIES + 3;
+ * (`releaseRunFit`, workout editability §7: + 1, was 2 * PROMOTE_TRIES + 2; proposed or not) — and the coach's decisions
+ * on each post's trail with the supersede (REBASED 2026-11-06, coach review phase 3: + 1, was 2 * PROMOTE_TRIES + 3). */
+const STOP_PROPOSE = 2 * PROMOTE_TRIES + 4;
 /** What a step's end may spend beyond its own writes: a finish's proposal write and a lost claim's spend can land in
  * one step (a cancel taking the claim while the tools ran), while a stop that proposes never meets either — it is
  * written under the claim it holds, and finishes nothing — so the larger of the two is reserved. A fit's main run that
@@ -375,8 +377,13 @@ export const ANSWER_MAX_BYTES = 64_000;
  * then showed as raw JSON (audit 2026-11-05). The trail keeps a tool's result data too (§6.4), so it has room for it.
  */
 export const EVENT_PAYLOAD_MAX_CHARS = 16_000;
-/** A tool call's input kept in its event: room for a pins card's lines or a draft's parts. */
-const EVENT_INPUT_MAX_CHARS = 8_000;
+/**
+ * A tool call's input kept in its event: room for a pins card's lines or a draft's parts. REBASED 2026-11-06 (the
+ * controller's fix pass, E23): a pins card of twelve lines or more passed 8,000 and was kept as `{tooLong}`; thirty
+ * lines of eight cites, sixty moves and its words at their longest measure 20,428 — held with room for longer ids. A row
+ * stays far under D1's 2 MB (bound values are no part of its 100 KB statement text), and a step writes one such card.
+ */
+const EVENT_INPUT_MAX_CHARS = 32_000;
 /** A whole event's payload: its input and its data, each bounded on its own, fit together. */
 const EVENT_ROW_MAX_CHARS = EVENT_PAYLOAD_MAX_CHARS + EVENT_INPUT_MAX_CHARS + 2_000;
 const SUMMARY_MAX_CHARS = 300;
@@ -1468,11 +1475,12 @@ const TAKEOVERS = sql.raw(
  * when the write lost to a late verdict (design-review.ts PROMOTE_TRIES); the older plans superseded and a superseded
  * saves card's fit released (design-orchestrate.ts `supersedeOlderPlans`; the saves flow redesigned §12.1: + 1, was
  * 7) — or, nothing proposed, the close; a fit's main run's own batch handed back unless its card naming the batch is
- * open (`releaseRunFit`, workout editability §7: + 1, was 8; proposed or not); and the lines. The sweep spends its read,
- * a claim taken back when there is one, and this per tree it expires (counting tests pin it); a step, an answer or a
- * create spends it once.
+ * open (`releaseRunFit`, workout editability §7: + 1, was 8; proposed or not); the coach's decisions on each post's
+ * trail with the supersede (REBASED 2026-11-06, coach review phase 3: + 1, was 9); and the lines. The sweep spends its
+ * read, a claim taken back when there is one, and this per tree it expires (counting tests pin it); a step, an answer or
+ * a create spends it once.
  */
-export const EXPIRE_TREE_STATEMENTS = 1 + 2 * PROMOTE_TRIES + 2 + 1 + 1;
+export const EXPIRE_TREE_STATEMENTS = 1 + 2 * PROMOTE_TRIES + 3 + 1 + 1;
 
 /**
  * Expire a run's live tree, past its window or left under a run that is over, with the main run's plain line. Guarded:
@@ -1590,14 +1598,14 @@ export interface OpenProposalDto {
  * the athlete decides in. Never errs on ops that aren't JSON. */
 const OPEN_OP = sql.raw(
   `(p.status IN ('pending', 'partially_approved') AND EXISTS (SELECT 1 FROM json_each(CASE WHEN json_valid(p.ops) THEN p.ops ELSE '[]' END) o ` +
-    `WHERE json_extract(o.value, '$.kind') IN ('doc_workout', 'plan_adjust', 'plan_structure', 'programme_change', 'plan_change', 'move_pins') ` +
+    `WHERE json_extract(o.value, '$.kind') IN ('doc_workout', 'plan_adjust', 'plan_structure', 'programme_change', 'plan_change', 'move_pins', 'import_correction', 'objective_change') ` +
     `AND (json_extract(o.value, '$.outcome') IS NULL OR json_extract(o.value, '$.outcome.status') IN ('refused', 'applying'))))`,
 );
 const LIVE_ROOT = sql.raw(`r.status IN (${LIVE_STATUSES.map((s) => `'${s}'`).join(", ")})`);
 /** The days of the joined proposal's ops still open (`OPEN_OP`'s), as a JSON array: the pick keeps those from today on. */
 const OPEN_DAYS = sql.raw(
   `(SELECT json_group_array(json_extract(o.value, '$.date')) FROM json_each(CASE WHEN p.status IN ('pending', 'partially_approved') AND json_valid(p.ops) THEN p.ops ELSE '[]' END) o ` +
-    `WHERE json_extract(o.value, '$.kind') IN ('doc_workout', 'plan_adjust', 'plan_structure', 'programme_change', 'plan_change', 'move_pins') ` +
+    `WHERE json_extract(o.value, '$.kind') IN ('doc_workout', 'plan_adjust', 'plan_structure', 'programme_change', 'plan_change', 'move_pins', 'import_correction', 'objective_change') ` +
     `AND (json_extract(o.value, '$.outcome') IS NULL OR json_extract(o.value, '$.outcome.status') IN ('refused', 'applying')))`,
 );
 
@@ -1613,7 +1621,7 @@ const decidedSince = (since: string) => sql`(p.status IN ('approved', 'partially
 
 /** An op of the joined proposal `p` still the athlete's to decide (`OPEN_OP`'s rule for one op `o`). */
 const OPEN_ONE = sql.raw(
-  `json_extract(o.value, '$.kind') IN ('doc_workout', 'plan_adjust', 'plan_structure', 'programme_change', 'plan_change', 'move_pins') ` +
+  `json_extract(o.value, '$.kind') IN ('doc_workout', 'plan_adjust', 'plan_structure', 'programme_change', 'plan_change', 'move_pins', 'import_correction', 'objective_change') ` +
     `AND (json_extract(o.value, '$.outcome') IS NULL OR json_extract(o.value, '$.outcome.status') IN ('refused', 'applying'))`,
 );
 
@@ -2414,13 +2422,15 @@ const okStep = (result: StepResult): StepOutcome => ({ kind: "ok", result });
  */
 async function proposeWhatItHas(db: Db, userId: string, root: RunNode, note: string, at: string, today?: string): Promise<boolean> {
   const proposalId = designProposalId(root.id);
+  // What it made pending holds a pins card or a correction: the supersede writes the coach's trail (phase 3).
+  const out: { saves?: boolean } = {};
   const proposed = runIsSet(root.scope, root.settings)
-    ? await promoteSetWithWhatItHas(db, userId, proposalId, note, { mainRunId: root.id, ...(today ? { today } : {}) })
-    : await promoteWithWhatItHas(db, userId, proposalId, note, today ? { today } : {});
+    ? await promoteSetWithWhatItHas(db, userId, proposalId, note, { mainRunId: root.id, ...(today ? { today } : {}), out })
+    : await promoteWithWhatItHas(db, userId, proposalId, note, { ...(today ? { today } : {}), out });
   if (!proposed) return false;
   // A rehearsal's stop proposes as production's does (design-review.ts `PROMOTED_STATUS`), but its proposal stays a
   // rehearsal: never pending, it supersedes nothing of the athlete's — no statement for it.
-  if (!root.settings?.rehearsal) await supersedeOlderPlans(db, userId, proposalId, at, followUpOf(root.settings?.focus, root.request), followUpReason(root.request));
+  if (!root.settings?.rehearsal) await supersedeOlderPlans(db, userId, proposalId, at, followUpOf(root.settings?.focus, root.request), followUpReason(root.request), { saves: out.saves === true });
   return true;
 }
 
@@ -3151,6 +3161,8 @@ async function runTools(
       // The main coach's line clipped where the athlete reads it (finish.ts, §2.1): its whole text kept in the payload. An
       // answer (the new shape §5: nothing suggested) is its line whole, up to the answer's cap — what the athlete reads.
       const answer = (result.receipt as { answer?: unknown } | undefined)?.answer === true;
+      // A challenge's answer beside a suggestion (audit fixes, E2): kept whole to the answer's cap too.
+      const words = (result.receipt as { challenge?: unknown } | undefined)?.challenge === true;
       const shown = typeof said === "string" ? athleteText(said.trim()) : "";
       const whole = run.role === "main" && !answer && shown && !(result.summary ?? "").startsWith(shown) ? { text: clipProse(shown, FINISH_KEPT_MAX) } : {};
       const payload = { ...(proposalId ? { proposalId } : {}), ...whole, ...(result.receipt ? { receipt: result.receipt } : {}) };
@@ -3158,7 +3170,7 @@ async function runTools(
       events.push({
         kind: run.role === "reviewer" ? "review" : "note",
         summary: result.summary ?? LINES.finished,
-        ...(answer ? { max: ANSWER_MAX } : {}),
+        ...(answer || words ? { max: ANSWER_MAX } : {}),
         ...(Object.keys(payload).length > 0 ? { payload } : {}),
       });
       return { status: "finished", events, proposalId };
@@ -3235,10 +3247,16 @@ async function closeProposalAtFinish(s: StepCtx, proposalId: string): Promise<"p
           or exists (select 1 from json_each(json_extract(o.value, '$.reviewLog')) r where json_extract(r.value, '$.status') = 'reviewing'))`,
       ),
     )
-    .returning({ id: coachProposals.id });
+    .returning({
+      id: coachProposals.id,
+      // A pins card or a correction (import trail phase 3): the supersede writes the coach's decisions on the posts' trails.
+      saves: sql<number>`exists (select 1 from json_each(${coachProposals.ops}) where json_extract(json_each.value, '$.kind') in ('move_pins', 'import_correction'))`,
+    });
   if (promoted.length === 0) return "kept";
   // A follow-up's (A2) supersedes the suggestion it changes in this same statement.
-  await supersedeOlderPlans(s.db, s.userId, proposalId, s.now.toISOString(), followUpOf(s.state.settings.focus, s.run.request), followUpReason(s.run.request));
+  await supersedeOlderPlans(s.db, s.userId, proposalId, s.now.toISOString(), followUpOf(s.state.settings.focus, s.run.request), followUpReason(s.run.request), {
+    saves: Number(promoted[0]!.saves) === 1,
+  });
   return "pending";
 }
 
@@ -3358,7 +3376,16 @@ function reviewHooks(s: StepCtx): ReviewHooks {
       // The draft's moves named in the account's library when it holds one of the athlete's own (the proposing call read
       // it with the athlete: found again, no statement).
       const library = (await libraryForDocs(s.db, s.userId, [req.draft.doc])).all;
-      const packet = reviewPacket({ round: req.round, draft: req.draft, records: toolRecords(state.messages, state.results), library, ...(state.brief ? { brief: state.brief } : {}) });
+      // Where the athlete stands, as this run's opening carried it (audit fixes, E5): the main coach designing has it; a
+      // set's designer's opening holds none.
+      const packet = reviewPacket({
+        round: req.round,
+        draft: req.draft,
+        records: toolRecords(state.messages, state.results),
+        library,
+        ...(state.brief ? { brief: state.brief } : {}),
+        stand: standFromOpening(state.messages),
+      });
       const rootSettings = root.settings ?? state.settings;
       const reviewerState = newRunState("reviewer", run.scope, {
         rehearsal: state.settings.rehearsal,

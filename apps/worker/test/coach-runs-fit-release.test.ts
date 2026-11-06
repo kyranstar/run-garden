@@ -230,7 +230,7 @@ describe("a fit run that ends hands its batch back unless its card naming the ba
     expect(await fitOf(db, batchId)).toBeNull();
   });
 
-  it("expired by the sweep proposing a card naming the batch, its first write lost and an older card superseded: kept — the tree at exactly EXPIRE_TREE_STATEMENTS (9)", async () => {
+  it("expired by the sweep proposing a card naming the batch, its first write lost and an older card superseded: kept — the tree at exactly EXPIRE_TREE_STATEMENTS (10)", async () => {
     let statements = 0;
     let injecting = false;
     let raceOn: string | null = null;
@@ -279,8 +279,9 @@ describe("a fit run that ends hands its batch back unless its card naming the ba
     expect(swept).toMatchObject({ expired: 1 });
     expect(raceOn).toBeNull();
     // The read; the expiry, the proposal read, the write that lost, the read again, the write, the older plans
-    // superseded, the superseded card's fit released, the fit's own release (its card open: nothing written), the lines.
-    expect(EXPIRE_TREE_STATEMENTS).toBe(9);
+    // superseded, the superseded card's fit released, the fit's own release (its card open: nothing written), the lines —
+    // and (REBASED 2026-11-06 (coach review, phase 3)) the coach's decisions on the posts' trails (a pins card shown, an older one replaced): 10.
+    expect(EXPIRE_TREE_STATEMENTS).toBe(10);
     expect(statements).toBe(1 + EXPIRE_TREE_STATEMENTS);
     expect((await proposalOf(db, runId))!.status).toBe("pending");
     expect(await fitOf(db, other)).toBeNull();
@@ -320,8 +321,8 @@ describe("a fit run that ends hands its batch back unless its card naming the ba
     expect(swept).toMatchObject({ expired: 1 });
     expect(races).toBe(2);
     // The read; the expiry, the proposal read, the write that lost, the read again, the write that lost, the close, the
-    // release, the lines.
-    expect(statements).toBe(1 + EXPIRE_TREE_STATEMENTS - 1);
+    // release, the lines — never the supersede's fit release nor (REBASED 2026-11-06 (coach review, phase 3)) its trail.
+    expect(statements).toBe(1 + EXPIRE_TREE_STATEMENTS - 2);
     expect((await proposalOf(db, runId))!.status).toBe("expired");
     expect(await fitOf(db, batchId)).toBeNull();
   });

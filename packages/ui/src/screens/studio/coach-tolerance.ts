@@ -24,7 +24,10 @@ import {
   type CoachRunStepResult,
   type DesignAlternateDto,
   type DesignChangeLineDto,
+  type DesignCiteDto,
   type DesignContextRowDto,
+  type DesignCorrectionLineDto,
+  type DesignObjectiveLineDto,
   type DesignLineDto,
   type DesignPinsCardLineDto,
   type DesignPinsLineDto,
@@ -359,15 +362,110 @@ function toProgrammeLine(v: unknown): DesignProgrammeLineDto | null {
   };
 }
 
+const CITE_KINDS = new Set(["quote", "history", "goal", "inferred", "stated"]);
+
+/** A cite as a chip (import trail phase 3): an id, a kind, a label — and, a quote's, where it opens; anything else goes. */
+export function toCites(v: unknown): DesignCiteDto[] {
+  return list(v).flatMap((x): DesignCiteDto[] => {
+    const c = record(x);
+    if (!c || typeof c.id !== "string" || typeof c.kind !== "string" || !CITE_KINDS.has(c.kind) || typeof c.label !== "string" || !c.label) return [];
+    return [{
+      id: c.id,
+      kind: c.kind as DesignCiteDto["kind"],
+      label: c.label,
+      ...(typeof c.postId === "string" && c.postId ? { postId: c.postId } : {}),
+      ...(typeof c.position === "number" && Number.isInteger(c.position) ? { position: c.position } : {}),
+      ...(typeof c.quote === "number" && Number.isInteger(c.quote) ? { quote: c.quote } : {}),
+      ...(typeof c.field === "string" ? { field: c.field } : {}),
+      ...(typeof c.goalId === "string" ? { goalId: c.goalId } : {}),
+    }];
+  });
+}
+
+/** A review line's own fields (phase 3): its decision, where, dose, cites and first post, each when it reads. */
+function reviewFieldsOf(l: Record<string, unknown>): Pick<DesignPinsCardLineDto, "decision" | "where" | "dose" | "cites" | "post"> {
+  const cites = toCites(l.cites);
+  const post = record(l.post);
+  return {
+    ...(l.decision === "in" || l.decision === "out" ? { decision: l.decision } : {}),
+    ...(typeof l.where === "string" && l.where ? { where: l.where } : {}),
+    ...(typeof l.dose === "string" && l.dose ? { dose: l.dose } : {}),
+    ...(cites.length ? { cites } : {}),
+    ...(post && typeof post.id === "string" && post.id && typeof post.position === "number" ? { post: { id: post.id, position: post.position } } : {}),
+  };
+}
+
 /** A pins card's lines (the saves flow redesigned, §3.5): a plain string (stored before it) is its text; an object with a
- * text keeps its move and name when they are texts; anything else goes. */
+ * text keeps its move and name when they are texts, and its review's own fields; anything else goes. */
 function toPinsCardLines(v: unknown): DesignPinsCardLineDto[] {
   return list(v).flatMap((x): DesignPinsCardLineDto[] => {
     if (typeof x === "string") return [{ text: x }];
     const l = record(x);
     if (!l || typeof l.text !== "string") return [];
-    return [{ ...(typeof l.moveId === "string" && l.moveId ? { moveId: l.moveId } : {}), ...(typeof l.name === "string" && l.name ? { name: l.name } : {}), text: l.text }];
+    return [{ ...(typeof l.moveId === "string" && l.moveId ? { moveId: l.moveId } : {}), ...(typeof l.name === "string" && l.name ? { name: l.name } : {}), text: l.text, ...reviewFieldsOf(l) }];
   });
+}
+
+/** A correction's line (import trail phase 3): its id and line or nothing; its outcome by its status. */
+function toCorrectionLine(v: unknown): DesignCorrectionLineDto | null {
+  const c = record(v);
+  if (!c || typeof c.opId !== "string" || !c.opId || typeof c.line !== "string") return null;
+  const o = record(c.outcome);
+  const outcome: DesignCorrectionLineDto["outcome"] =
+    o?.status === "applied"
+      ? { status: "applied", at: text(o.at), ...(Array.isArray(o.lines) ? { lines: texts(o.lines) } : {}) }
+      : o?.status === "applying"
+        ? { status: "applying", at: text(o.at) }
+        : o?.status === "refused"
+          ? { status: "refused", at: text(o.at), error: text(o.error), why: text(o.why) }
+          : o?.status === "declined"
+            ? { status: "declined", at: text(o.at) }
+            : o?.status === "superseded"
+              ? { status: "superseded", at: text(o.at), reason: text(o.reason), by: text(o.by) }
+              : null;
+  return {
+    opId: c.opId,
+    target: (["move", "reading", "insight", "link"].includes(String(c.target)) ? c.target : "move") as DesignCorrectionLineDto["target"],
+    targetId: text(c.targetId),
+    field: text(c.field),
+    name: text(c.name),
+    line: c.line,
+    why: text(c.why),
+    basis: c.basis === "owner" ? "owner" : "evidence",
+    cites: toCites(c.cites),
+    outcome,
+  };
+}
+
+const OBJECTIVE_CHANGE_KINDS: readonly DesignObjectiveLineDto["change"][] = ["retarget", "redate", "add_key_result", "retire", "add_objective"];
+
+/** A change to the athlete's objectives (audit fixes, E6): its id and line or nothing; its texts texts; its outcome by its
+ * status. */
+function toObjectiveLine(v: unknown): DesignObjectiveLineDto | null {
+  const c = record(v);
+  if (!c || typeof c.opId !== "string" || !c.opId || typeof c.line !== "string") return null;
+  const o = record(c.outcome);
+  const outcome: DesignObjectiveLineDto["outcome"] =
+    o?.status === "applied"
+      ? { status: "applied", at: text(o.at) }
+      : o?.status === "applying"
+        ? { status: "applying", at: text(o.at) }
+        : o?.status === "refused"
+          ? { status: "refused", at: text(o.at), error: text(o.error), why: text(o.why) }
+          : o?.status === "declined"
+            ? { status: "declined", at: text(o.at) }
+            : o?.status === "superseded"
+              ? { status: "superseded", at: text(o.at), reason: text(o.reason), by: text(o.by) }
+              : null;
+  return {
+    opId: c.opId,
+    change: (OBJECTIVE_CHANGE_KINDS as readonly string[]).includes(String(c.change)) ? (c.change as DesignObjectiveLineDto["change"]) : "retarget",
+    title: text(c.title),
+    line: c.line,
+    why: text(c.why),
+    basis: c.basis === "owner" ? "owner" : "stand",
+    outcome,
+  };
 }
 
 /** A change to the moves in rotation's line (saved-posts import, Task 18): its id or nothing; its texts texts; its outcome
@@ -392,6 +490,8 @@ function toPinsLine(v: unknown): DesignPinsLineDto | null {
     opId: p.opId,
     title: words(p.title) ?? "Moves for your programme",
     summary: text(p.summary),
+    // The count beneath the coach's headline (audit fixes, E4): a text, or nothing.
+    ...(typeof p.count === "string" && p.count ? { count: p.count } : {}),
     lines: toPinsCardLines(p.lines),
     why: text(p.why),
     pin: texts(p.pin),
@@ -410,6 +510,8 @@ export function toProposal(v: unknown): ProposalRead {
   const programmes = list(r.programmes).map(toProgrammeLine).filter((p): p is DesignProgrammeLineDto => p !== null);
   const planChanges = list(r.planChanges).map(toPlanChangeLine).filter((p): p is DesignPlanChangeLineDto => p !== null);
   const pins = list(r.pins).map(toPinsLine).filter((p): p is DesignPinsLineDto => p !== null);
+  const corrections = list(r.corrections).map(toCorrectionLine).filter((c): c is DesignCorrectionLineDto => c !== null);
+  const objectives = list(r.objectives).map(toObjectiveLine).filter((c): c is DesignObjectiveLineDto => c !== null);
   const lines = list(r.lines).map(toLine).filter((l): l is DesignLineDto => l !== null);
   const changes = list(r.changes).map(toChange).filter((c): c is DesignChangeLineDto => c !== null);
   const context = list(r.context).map(toContextRow).filter((c): c is DesignContextRowDto => c !== null);
@@ -423,6 +525,8 @@ export function toProposal(v: unknown): ProposalRead {
     ...(r.programmes !== undefined ? { programmes } : {}),
     ...(r.planChanges !== undefined ? { planChanges } : {}),
     ...(r.pins !== undefined ? { pins } : {}),
+    ...(r.corrections !== undefined ? { corrections } : {}),
+    ...(r.objectives !== undefined ? { objectives } : {}),
     ...(r.context !== undefined ? { context } : {}),
   };
 }
@@ -468,6 +572,8 @@ function toCard(v: unknown): CoachConversationCardDto | null {
     proposalId: c.proposalId,
     title: words(c.title) ?? "A suggestion",
     summary: text(c.summary),
+    // The moves in rotation's count beneath the coach's headline (audit fixes, E4): a text, or nothing.
+    ...(typeof c.count === "string" && c.count ? { count: c.count } : {}),
     status: text(c.status),
     // A plan's lines (§8 §5): texts only.
     ...(Array.isArray(c.lines) ? { lines: texts(c.lines) } : {}),
@@ -476,7 +582,9 @@ function toCard(v: unknown): CoachConversationCardDto | null {
       ? {
           pinLines: c.pinLines.flatMap((x) => {
             const l = record(x);
-            return l && typeof l.text === "string" ? [{ ...(typeof l.moveId === "string" && l.moveId ? { moveId: l.moveId } : {}), name: typeof l.name === "string" && l.name ? l.name : null, text: l.text }] : [];
+            return l && typeof l.text === "string"
+              ? [{ ...(typeof l.moveId === "string" && l.moveId ? { moveId: l.moveId } : {}), name: typeof l.name === "string" && l.name ? l.name : null, text: l.text, ...reviewFieldsOf(l) }]
+              : [];
           }),
         }
       : {}),

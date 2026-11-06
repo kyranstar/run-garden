@@ -17,7 +17,7 @@
  * is key: value lines, never JSON; an id is a move's name where the trail knows it. Every text here came from a stage,
  * a model or a stranger's post: the sheet draws it as text, never as markup. Pure: no React, no network.
  */
-import { clock, failureWords, IMPORT_STAGES, transcriptSegments, WAITING_FOR_EXTENSION, type BlobKind, type ImportStage, type ImportTrailDto, type TrailEventDto, type TrailStatus } from "@rg/saves";
+import { clock, failureWords, IMPORT_STAGES, priceWords, transcriptSegments, WAITING_FOR_EXTENSION, type BlobKind, type ImportStage, type ImportTrailDto, type TrailEventDto, type TrailStatus } from "@rg/saves";
 import { formatTime } from "../../components.js";
 import { DETAIL_VALUE_MAX, keyWords, type DetailRow } from "../studio/run-model.js";
 import { dayOf } from "../studio/saves-model.js";
@@ -30,6 +30,8 @@ export type TrailRow = Pick<DetailRow, "key" | "value"> & {
   full?: string;
   /** Drawn struck through: a quote the reader made that isn't in the post (§5.6). */
   struck?: boolean;
+  /** The quote a review card's chip opened the trail at (import trail phase 3, §3.3): marked, and scrolled into view. */
+  focus?: boolean;
 };
 
 /** A group of rows under an optional heading (the coach trail's `DetailSection`). */
@@ -40,8 +42,16 @@ export interface TrailDetail {
 
 export interface AccountLine {
   key: string;
-  kind: "from" | "what" | "video" | "move" | "coach" | "correction" | "health" | "rebuilt";
+  kind: "from" | "what" | "video" | "screen" | "move" | "coach" | "correction" | "health" | "rebuilt";
   text: string;
+  /** The words one tap down (the rebuilt label's: principles §7, the controller's addition 4). */
+  more?: string;
+  /** A filtered post's line offers Import anyway (the controller's addition 3). */
+  importAnyway?: boolean;
+  /** The rebuilt label offers Read it again, with what a reading typically costs (phase 5a). */
+  again?: { costMicros: number | null };
+  /** Read it again was asked: it waits for the computer's extension. */
+  waiting?: true;
   /** A second line: what the reader says a move is for. */
   sub?: string | null;
   /** The health word's status (its mark). */
@@ -66,6 +76,11 @@ export function watchLabel(costMicros: number | null): string {
   return costMicros === null ? "Watch it too" : `Watch it too (about $${(costMicros / 1_000_000).toFixed(2)})`;
 }
 export const TRANSCRIPT_ONLY_LINE = "Read from the transcript only (over 20 minutes)";
+
+/** The button that reads an old post again under the current prompt, with its price (phase 5a). */
+export function readAgainLabel(costMicros: number | null): string {
+  return costMicros === null ? "Read it again" : `Read it again (${priceWords(costMicros)})`;
+}
 
 /** A raw piece of a step, listed by what it is and its size; its text is read when opened. */
 export interface TrailBlob {
@@ -96,6 +111,8 @@ export interface StageSection {
   /** One line: what came of it. */
   result: string;
   status: TrailStatus;
+  /** Every step of it was rebuilt from what was kept (§6.6): the sheet marks the section. */
+  rebuilt: boolean;
   steps: TrailStep[];
 }
 
@@ -125,9 +142,15 @@ export const STATUS_MARK: Readonly<Record<TrailStatus, { mark: string; word: str
   skip: { mark: "–", word: "Skipped: " },
 };
 
-export const REBUILT_LINE = "Kept from before the trail: the raw replies weren't kept then.";
+/** A post from before the trail (§6.6): a short label on the page, its words one tap down (principles §7). */
+export const REBUILT_LABEL = "Rebuilt from what was kept";
+export const REBUILT_MORE = "This post came in before the trail, so its steps are rebuilt from what was kept. The raw replies weren't kept then.";
+/** Each rebuilt step's own label, one tap down in its section (spec §6.6's words). */
+export const REBUILT_STEP = "Rebuilt from what was kept; the raw replies weren't kept then";
 /** Phase 1 records no coach decisions (they come with phase 3's review): say only what the trail knows. */
 export const NOT_REVIEWED_LINE = "No coach decision on its trail yet";
+/** A rebuilt post's moves may have been fitted in before the trail: what the coach decided then wasn't kept. */
+export const OLD_DECISIONS_LINE = "Decisions from before the trail weren't kept";
 export const TOO_LONG_LINE = "Too long to show here — the whole of it is below";
 
 const SOURCE_WORDS: Readonly<Record<string, string>> = { instagram: "Instagram", youtube: "YouTube" };
@@ -200,6 +223,7 @@ const LABELS: Readonly<Record<string, string>> = {
   problems: "Problems",
   doseOrigin: "Dose from",
   evidence: "Said in the post",
+  cites: "Evidence",
   confidence: "Confidence",
   outcome: "Came out",
   by: "Matched by",
@@ -219,6 +243,24 @@ const LABELS: Readonly<Record<string, string>> = {
   action: "Action",
   before: "Before",
   after: "After",
+  // An old post's rebuilt steps (phase 5a, §6.6).
+  creator: "Creator",
+  captured: "Captured",
+  posted: "Posted",
+  dose: "Dose",
+  purpose: "Purpose",
+  notes: "Notes",
+  now: "Now",
+  mergedInto: "Merged into",
+  batch: "Now",
+  theme: "Theme",
+  post: "The post",
+  edited: "Edited",
+  note: "Note",
+  // A re-read (phase 5a).
+  reread: "Read again",
+  kept: "Kept",
+  missing: "Not in it",
 };
 const label = (k: string, stage?: ImportStage): string => (k === "stage" && stage === "screen" ? "Decided by" : (LABELS[k] ?? keyWords(k)));
 
@@ -232,13 +274,20 @@ const VALUE_WORDS: Readonly<Record<string, Readonly<Record<string, string>>>> = 
   chaptersFrom: { player: "the player bar", description: "the description" },
   doseOrigin: { post: "the post", reading: "the reader's reading", default: "a default — the post gave none" },
   outcome: { new: "a new move", personal: "already yours", yours: "already yours", library: "from the library" },
-  by: { name: "its name", judge: "the judge", fuzzy: "a close name", new: "no match" },
+  by: { name: "its name", judge: "the judge", fuzzy: "a close name", new: "no match", kept: "kept as it was — the post already linked it" },
   judge: { asked: "asked", not_needed: "not needed", failed: "its call failed", budget: "not asked: the import budget" },
   evidence: { stated: "stated", inferred: "the reader's guess" },
+  target: { move: "the move", reading: "the post's reading", insight: "an insight", link: "the match" },
+  basis: { evidence: "the evidence", owner: "your word" },
+  now: { saved: "saved to your library", pending: "waiting for you", removed: "left out" },
+  post: { skipped: "you skipped it", reference: "you kept it as a reference", "read anyway": "you had it read anyway" },
+  kept: { earlier: "the earlier reading: this one didn't line up with the moves it had" },
 };
+/** The owner's in or out on a move. */
+const CHOICE_WORDS: Readonly<Record<string, string>> = { include: "in", skip: "left out" };
 
 /** Keys that say nothing to the owner: the system's own ids and markers. */
-const QUIET = new Set(["batchId", "moveId", "id", "usageId", "runId", "proposalId", "key", "untrusted", "signature", "cut", "head"]);
+const QUIET = new Set(["batchId", "moveId", "id", "usageId", "runId", "proposalId", "key", "untrusted", "signature", "cut", "head", "targetId", "correction"]);
 /** The call's own facts: under "The call", not the decision. */
 const CALL_KEYS = new Set(["tokens", "finishReason", "asSent", "promptSha", "promptShaSent", "failure"]);
 
@@ -338,6 +387,11 @@ function listWords(items: readonly unknown[], ctx: Ctx): string {
 
 /** One field's value, in words, by its key. */
 function field(k: string, v: unknown, ctx: Ctx): string {
+  // A line's or a correction's evidence: its chips' words (the controller's fix pass, E19).
+  if (k === "cites" && Array.isArray(v)) {
+    const labels = v.flatMap((c) => (typeof record(c)?.label === "string" ? [record(c)!.label as string] : []));
+    return labels.length ? labels.join(", ") : "none";
+  }
   const said = VALUE_WORDS[k];
   if (said && typeof v === "string") return said[v] ?? v.replace(/_/g, " ");
   switch (k) {
@@ -412,7 +466,18 @@ function field(k: string, v: unknown, ctx: Ctx): string {
               })
               .join("\n")
         : inline(v, ctx);
-    case "like": {
+    case "reread": {
+      const r = record(v);
+      if (!r) return inline(v, ctx);
+      const kept = typeof r.kept === "number" ? r.kept : 0;
+      const added = Array.isArray(r.added) ? r.added.length : 0;
+      return `lined up with the ${plural(kept, "move")} it had${added ? `; ${num(added)} new` : ""}`;
+    }
+    case "captured":
+    case "posted":
+      return typeof v === "string" ? dayOf(v) || "—" : inline(v, ctx);
+    case "like":
+    case "mergedInto": {
       const o = record(v);
       if (!o) return inline(v, ctx);
       return typeof o.name === "string" && o.name ? o.name : typeof o.id === "string" ? (ctx.names.get(o.id) ?? "another move") : "another move";
@@ -428,7 +493,7 @@ function field(k: string, v: unknown, ctx: Ctx): string {
       return o
         ? Object.entries(o)
             .filter(([, c]) => c !== null && c !== undefined)
-            .map(([id, c]) => `${ctx.names.get(id) ?? id}: ${inline(c, ctx)}`)
+            .map(([id, c]) => `${ctx.names.get(id) ?? id}: ${typeof c === "string" ? (CHOICE_WORDS[c] ?? c) : inline(c, ctx)}`)
             .join("\n") || "none"
         : inline(v, ctx);
     }
@@ -505,7 +570,7 @@ function stepDetails(e: TrailEventDto, ctx: Ctx): TrailDetail[] {
   } else if (e.detail !== null && e.detail !== undefined) {
     main.push(rowOf("Detail", inline(e.detail, c)));
   }
-  if (e.rebuilt) main.push({ key: "Kept", value: "Rebuilt from what was kept" });
+  if (e.rebuilt) main.push({ key: "Kept", value: REBUILT_STEP });
   if (e.model) call.set("model", rowOf(CALL_LABEL.model!, e.model));
   if (e.promptVersion) call.set("promptVersion", rowOf(CALL_LABEL.promptVersion!, e.promptVersion));
   if (e.attempt !== null) call.set("attempt", { key: CALL_LABEL.attempt!, value: num(e.attempt) });
@@ -572,6 +637,14 @@ export function trailAccount(dto: ImportTrailDto): AccountLine[] {
   const what = kind && account.summary ? `${kind}: ${account.summary}` : (kind ?? account.summary);
   if (what) out.push({ key: "what", kind: "what", text: what });
 
+  // A filtered post says why at the top, with Import anyway beside it — new or rebuilt (the controller's addition 3).
+  if (post.status === "filtered_out") {
+    const screened = [...dto.events].reverse().find((e) => e.stage === "screen" && record(e.detail)?.verdict === "not");
+    const reason = record(screened?.detail)?.reason;
+    const text = typeof reason === "string" && reason.trim() ? `Not training: ${reason.trim()}` : (screened?.summary ?? "Not training");
+    out.push({ key: "screen", kind: "screen", text, importAnyway: true });
+  }
+
   // The post's own words for each move: the latest match step's.
   const match = [...dto.events].reverse().find((e) => e.stage === "match");
   const postName = new Map(match ? movesOf(match).flatMap((m) => (typeof m.position === "number" && typeof m.name === "string" ? [[m.position, m.name] as const] : [])) : []);
@@ -591,17 +664,32 @@ export function trailAccount(dto: ImportTrailDto): AccountLine[] {
     out.push({ key: `move-${m.position}`, kind: "move", text, sub: m.purpose, position: m.position });
   }
 
-  // What the coach did: its latest word on each move (and each of its steps that names none).
+  // What the coach did (the controller's fix pass, E14, E15): its latest decision on each move — from its lines alone, so
+  // a correction's word never hides the move's in or out — its latest word on each correction, the latest time it read
+  // the post (one line however many cards or challenges read it), and each of its other steps.
   const coach = dto.events.filter((e) => e.stage === "coach");
   const latest = new Map<string, TrailEventDto>();
-  for (const e of coach) latest.set(e.moveId ?? e.id, e);
+  for (const e of coach) {
+    const d = record(e.detail);
+    const key =
+      typeof d?.correction === "string" ? `fix-${d.correction}` : typeof d?.runId === "string" && !e.moveId ? "read" : (e.moveId ?? e.id);
+    latest.delete(key);
+    latest.set(key, e);
+  }
   if (latest.size > 0) for (const [k, e] of latest) out.push({ key: `coach-${k}`, kind: "coach", text: e.summary, status: e.status });
-  else if (account.moves.length > 0) out.push({ key: "coach", kind: "coach", text: NOT_REVIEWED_LINE });
+  else if (account.moves.length > 0) out.push({ key: "coach", kind: "coach", text: dto.rebuilt ? OLD_DECISIONS_LINE : NOT_REVIEWED_LINE });
 
   for (const e of dto.events) if (e.stage === "correction") out.push({ key: `correction-${e.id}`, kind: "correction", text: e.summary, status: e.status });
 
   out.push({ key: "health", kind: "health", text: account.health.line, status: account.health.status });
-  if (dto.rebuilt) out.push({ key: "rebuilt", kind: "rebuilt", text: REBUILT_LINE });
+  if (dto.rebuilt) {
+    // Read it again sits with the rebuilt label (phase 5a): offered with its price, or asked and waiting.
+    const again = post.readAgain;
+    out.push({
+      key: "rebuilt", kind: "rebuilt", text: REBUILT_LABEL, more: REBUILT_MORE,
+      ...(again?.asked ? { waiting: true as const } : again?.offer ? { again: { costMicros: again.costMicros } } : {}),
+    });
+  }
   return out;
 }
 
@@ -669,6 +757,7 @@ export function trailSections(dto: ImportTrailDto): StageSection[] {
         title: STAGE_TITLES[stage],
         result: resultOf(stage, events),
         status: statusOf(events),
+        rebuilt: events.every((e) => e.rebuilt),
         steps: events.map((e) => ({
           id: e.id,
           summary: e.summary,
@@ -712,29 +801,29 @@ const QUOTE_CHECK: Readonly<Record<string, string>> = {
 };
 
 /** When the post says to use a move or not, why, and its quotes with how each checked out (§5.5–5.6): a stranger's words. */
-function postSays(m: ImportTrailDto["account"]["moves"][number]): TrailRow[] {
+function postSays(m: ImportTrailDto["account"]["moves"][number], focusQuote?: number): TrailRow[] {
   const cases = (list: { text: string; evidence: string }[] | undefined) =>
     (list ?? []).map((c) => (c.evidence === "inferred" ? `${c.text.trim()} (the reader's guess)` : c.text.trim())).join("; ");
   const rows: TrailRow[] = [];
   if (m.why?.trim()) rows.push(rowOf("Why", m.why.trim()));
   if (m.useWhen?.length) rows.push(rowOf("Use when", cases(m.useWhen)));
   if (m.skipWhen?.length) rows.push(rowOf("Skip when", cases(m.skipWhen)));
-  for (const q of m.quotes ?? []) {
+  for (const [i, q] of (m.quotes ?? []).entries()) {
     const key = `${QUOTE_FIELD[q.field] ?? keyWords(q.field)}${typeof q.at === "number" ? ` · ${clock(q.at)}` : ""}`;
     const check = q.check ? QUOTE_CHECK[q.check] : null;
     const row = rowOf(key, `“${q.text.trim()}”${check ? ` — ${check}` : ""}`);
-    rows.push(q.check === "not_found" ? { ...row, struck: true } : row);
+    rows.push({ ...row, ...(q.check === "not_found" ? { struck: true } : {}), ...(i === focusQuote ? { focus: true } : {}) });
   }
   return rows;
 }
 
 /** Everything the trail says of one move: its check, its match (the latest of each), and each choice, coach step and
  * correction that names it. */
-export function moveDetail(dto: ImportTrailDto, position: number): TrailDetail[] {
+export function moveDetail(dto: ImportTrailDto, position: number, focusQuote?: number): TrailDetail[] {
   const ctx = ctxOf(dto);
   const move = dto.account.moves.find((m) => m.position === position);
   const out: TrailDetail[] = [];
-  const said = move ? postSays(move) : [];
+  const said = move ? postSays(move, focusQuote) : [];
   if (said.length) out.push({ title: POST_SAYS, rows: said });
   for (const stage of ["check", "match"] as const) {
     const e = [...dto.events].reverse().find((x) => x.stage === stage && movesOf(x).some((m) => m.position === position));
