@@ -76,6 +76,8 @@ describe("the prompt text", () => {
       "read_saves",
       // Saved-posts import, Task 18: the moves in rotation, changed with the athlete's approval.
       "pin_moves",
+      // Import trail phase 3: a correction to imported data, with its evidence.
+      "correct_import",
     ];
     expect([...PROMPT_TOOL_NAMES].sort()).toEqual([...spec].sort());
     for (const name of PROMPT_TOOL_NAMES) expect(ALL_TEXT, name).toContain(name);

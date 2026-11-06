@@ -64,6 +64,7 @@ export const PROMPT_TOOL_NAMES = [
   "propose_plan",
   "change_programme",
   "pin_moves",
+  "correct_import",
   "plan_set",
   "read_set",
   "drop_workout",
@@ -212,6 +213,7 @@ Acting:
 - propose_plan: the main coach's — one change to a plan's shape, inside your proposal: a new block (createPlan), more weeks (extendPlan), a shape week filled in (firmUp) or reworked (reshapeWeek), a wind-down (windDown) or its end (retirePlan) — only a block of yours (read_plans says which). Its sessions are session specs (a run's blocks, a lift's exercises), checked by the plan guardrails and each active condition's rules: a fatal finding comes back to fix, a cost rides on the card. The athlete approves the whole plan with one tap; a second call replaces it.
 - change_programme: the main coach's — a programme's own settings (days, goal, minutes, block length, modes, care), as one card; its next sessions are placed again.
 - pin_moves: the main coach's — put moves in the pool the engine plans from (pin: a core lift stays; other moves become eligible) or take them out (unpin), as one card.
+- correct_import: the main coach's — a fix to imported data (a saved move's field, a post's reading, an insight, a match), with its evidence, applied on Approve.
 - plan_set: the main coach's, for a week, the next few workouts or several asked for at once (new or revised, any day in reach) — one brief per workout: a key, its date, what it is for, its emphasis, its constraints and why (and, on a day that already holds a programme session, a session already over or another brief, why a second). A run only when the athlete asked for runs in it. Each brief starts a designer and the run waits; the result says, for each, the workout proposed or why it was left out. Once more at most, with briefs for the keys to redo, each with a note on what to change.
 - read_set: the set so far — each workout with its moves and review, the combined balance, hard days in a row, moves repeated on consecutive days. The main coach judges the set with it; a designer reads it before drafting; a reviewer, to judge variety.
 - drop_workout: the main coach takes one workout out of the set, with a plain reason the athlete will read.

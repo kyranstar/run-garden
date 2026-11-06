@@ -258,6 +258,51 @@ export interface MovePinsOp {
 /** A `move_pins` op's id: its main run's. */
 export const pinsId = (mainRunId: string): string => `pins-${mainRunId}`;
 
+/** What a correction corrects (design 2026-11-05 §8.4): a personal move's field, a post's reading of a move, an insight, a
+ * link's match. */
+export type CorrectionTarget = "move" | "reading" | "insight" | "link";
+
+/** The most corrections one suggestion holds: room for a batch's worth of fixes, and a request's approve fits them. */
+export const CORRECTIONS_MAX = 10;
+
+/**
+ * A correction to imported data inside a designed proposal (import trail phase 3; design 2026-11-05 §8.4;
+ * design-tools/correct-import.ts): what it corrects (`target`, `targetId` — a personal move's id, or `<postId>:<n>`, a
+ * move's position or an insight's index in the post — and `field`), the value the Worker read when it was proposed
+ * (`before`) and the one the coach proposes (`after`), why, on what basis (`evidence`, or the athlete's insistence:
+ * `owner`), its cites as chips, and what the card and the trail say: the target's name, one line, the posts whose trails
+ * it touches, the move it names. Applied at approval in one atomic write (import-corrections.ts), refused `stale` when
+ * the value is no longer `before`. `why` and the line carry the model's and a post's words: data, marked wherever they
+ * are shown back to a model.
+ */
+export interface ImportCorrectionOp {
+  kind: "import_correction";
+  /** `correctionId(target, targetId, field)`: one a field a suggestion — a second replaces the first. */
+  id: string;
+  target: CorrectionTarget;
+  targetId: string;
+  field: string;
+  before: unknown;
+  after: unknown;
+  why: string;
+  basis: "evidence" | "owner";
+  cites: CiteRef[];
+  name: string;
+  line: string;
+  posts: string[];
+  moveId?: string;
+  date: string;
+  toolUseId: string;
+  replaces?: string[];
+  at: string;
+}
+
+export const correctionId = (target: CorrectionTarget, targetId: string, field: string): string => `fix-${target}-${targetId}-${field}`;
+
+/** Whether an op is a correction to imported data (import trail phase 3). */
+export const isImportCorrectionOp = (op: unknown): op is ImportCorrectionOp =>
+  !!op && typeof op === "object" && (op as { kind?: unknown }).kind === "import_correction";
+
 /**
  * Whether a programme setting holds the same value (review-1): care is a set — the settings sheet saves it back as the
  * profiles it doesn't show, then the switched-on ones in the order they were toggled, so the same care can come back

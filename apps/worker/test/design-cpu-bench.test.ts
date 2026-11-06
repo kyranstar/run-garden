@@ -877,6 +877,16 @@ beforeAll(async () => {
         ),
         why: words(6, 300),
       });
+      // correct_import (phase 3) over the same read world: a long move's dose, on the evidence, eight cites resolved.
+      await measureTool("correct_import", images.get("savesRead")!, ctx, {
+        target: "move",
+        targetId: personal[0],
+        field: "dose",
+        after: { type: "time", range: [30, 30], sets: [2, 2] },
+        why: words(7, 300),
+        basis: "evidence",
+        cites: [...Array.from({ length: 7 }, (_, k) => `q1.${k + 1}`), "history"],
+      });
     }
     await measureTool("validate_workout", images.get("read12")!, ctx, { doc: docs[0], date: TODAY });
     await measureTool("propose_workout", images.get("read12")!, ctx, { doc: docs[0], target: { kind: "new", date: TODAY }, changeNote: words(6, 180) });

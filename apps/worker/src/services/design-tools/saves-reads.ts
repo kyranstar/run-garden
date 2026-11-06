@@ -7,15 +7,16 @@
  */
 import { sql, type SQL } from "drizzle-orm";
 import type { QuoteCheck } from "@rg/saves";
-import type { QuoteRef } from "../saves-evidence.js";
+import { parseCite, quoteLabel, type CiteRef, type QuoteRef } from "../saves-evidence.js";
 import { parsedArray, parsedJson } from "./read-common.js";
 
-/** The run's read_saves receipts for `batchId`, as ONE JSON value: `[[at, receipt]]`, oldest first. */
-export function savesReadsSql(userId: string, mainRunId: string, batchId: string): SQL {
+/** The run's read_saves receipts — for `batchId`, or every batch it read — as ONE JSON value: `[[at, receipt]]`, oldest
+ * first. */
+export function savesReadsSql(userId: string, mainRunId: string, batchId?: string): SQL {
   return sql`(select json_group_array(json_array(sr_e.at, json(json_extract(sr_e.payload, '$.receipt.saves')))) from (
       select * from coach_run_events sr_x where sr_x.run_id = ${mainRunId} and sr_x.user_id = ${userId} and sr_x.kind = 'tool_result'
         and json_valid(sr_x.payload) and json_extract(sr_x.payload, '$.tool') = 'read_saves'
-        and json_extract(sr_x.payload, '$.receipt.saves.batch') = ${batchId}
+        and ${batchId !== undefined ? sql`json_extract(sr_x.payload, '$.receipt.saves.batch') = ${batchId}` : sql`json_extract(sr_x.payload, '$.receipt.saves') is not null`}
       order by sr_x.seq) sr_e)`;
 }
 
@@ -56,4 +57,19 @@ export function savesReadsOf(raw: unknown): SavesReads {
     }
   }
   return out;
+}
+
+/** A cite as the card draws it (saves-evidence.ts `CiteRef`): a quote's chip and where it opens; the reader's guess opens
+ * the move it is about at its first post. Null for a cite that isn't one, or a quote id the run never read. */
+export function citeRefOf(id: string, reads: SavesReads, moveId: string | undefined): CiteRef | null {
+  const p = parseCite(id);
+  if (!p) return null;
+  if (p.kind === "quote") {
+    const r = reads.quotes.get(id);
+    return r ? { id, kind: "quote", label: quoteLabel(r), postId: r.postId, position: r.position, quote: r.quote } : null;
+  }
+  if (p.kind === "history") return { id: "history", kind: "history", label: "your history" };
+  if (p.kind === "goal") return { id, kind: "goal", label: "your goal", goalId: p.goalId };
+  const first = moveId ? reads.moves.get(moveId) : undefined;
+  return { id, kind: "inferred", label: "reader's guess", field: p.field, ...(first ? { postId: first.postId, position: first.position } : {}) };
 }

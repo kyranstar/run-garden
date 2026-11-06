@@ -18,6 +18,7 @@ import { submitReview } from "../design-review.js";
 import { adjustPlan } from "./adjust-plan.js";
 import { askAthlete } from "./ask.js";
 import { changeProgramme } from "./change-programme.js";
+import { correctImport } from "./correct-import.js";
 import { dropWorkout } from "./drop-workout.js";
 import { finish } from "./finish.js";
 import { pinMoves } from "./pin-moves.js";
@@ -77,6 +78,7 @@ export const ACT_TOOLS: DesignTool[] = [
   proposePlan,
   changeProgramme,
   pinMoves,
+  correctImport,
   planSet,
   readSet,
   dropWorkout,

@@ -215,7 +215,7 @@ describe("pin_moves: lines cite their evidence", () => {
       id: designProposalId(ctx.run.id), userId, title: "Fit", evidence: "", rationale: "", flags: [], status: "unreviewed", createdAt: NOW.toISOString(), expiresAt: "2026-10-24",
       ops: [
         { kind: "doc_workout", by: { runId: ctx.run.id, role: "main" }, date: "2026-10-22", doc: { title: "Thursday mobility", intent: { summary: "Open the hips after the run." }, parts: [{ purpose: "mobility", items: [{ kind: "exercise", libraryId: b.lift, dose: itemDose }] }] } },
-        { kind: "import_correction", id: `fix-move-${b.rock}-dose`, target: "move", targetId: b.rock, field: "dose", after: { type: "time", range: [30, 30], sets: [2, 2] } },
+        { kind: "import_correction", id: `fix-move-${b.rock}-dose`, target: "move", targetId: b.rock, field: "dose", after: { type: "time", range: [30, 30], sets: [2, 2] }, why: "The post says so.", at: NOW.toISOString() },
       ],
     } as never);
     const lines = fourLines(b);

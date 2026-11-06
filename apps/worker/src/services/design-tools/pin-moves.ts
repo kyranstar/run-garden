@@ -64,11 +64,11 @@ import { markUntrusted } from "../design-prompt.js";
 import { OPEN_PROPOSAL_STATUSES } from "../design-review.js";
 import { clipProse } from "../design-prose.js";
 import { isMovePinsOp, PINS_LINES_MAX, PINS_MAX, pinsId, type MovePinsOp, type PinsCardLine } from "../proposal-kinds.js";
-import { claimsThePost, doseNumbers, doseWords, parseCite, QUOTE_ID_RE, quoteLabel, type CiteRef } from "../saves-evidence.js";
+import { claimsThePost, doseNumbers, doseWords, QUOTE_ID_RE, type CiteRef } from "../saves-evidence.js";
 import { capInWords, isErr, mainRunIdOf, parseAct, prose } from "./act-common.js";
 import { designProposalId, upsertProposal } from "./propose.js";
 import { parsedArray, parsedJson, plural, readAthlete, refuse } from "./read-common.js";
-import { savesReadsOf, savesReadsSql, type SavesReads } from "./saves-reads.js";
+import { citeRefOf, savesReadsOf, savesReadsSql, type SavesReads } from "./saves-reads.js";
 import type { DesignTool, ToolOk } from "./types.js";
 
 const TITLE_MAX = 60;
@@ -187,7 +187,7 @@ const decided = (op: unknown): boolean => ["applied", "declined", "superseded"].
 
 /** The moves the suggestion's open workouts hold, each with the item's dose (the last workout's, when two hold it): a
  * line's dose is the item's (§14.1). */
-function workoutDosesOf(ops: readonly unknown[]): Map<string, WorkoutDose> {
+export function workoutDosesOf(ops: readonly unknown[]): Map<string, WorkoutDose> {
   const out = new Map<string, WorkoutDose>();
   for (const op of ops) {
     const o = op as { kind?: unknown; doc?: { parts?: unknown } };
@@ -210,21 +210,6 @@ function doseFixesOf(ops: readonly unknown[]): Map<string, Parameters<typeof dos
     if (o.after && typeof o.after.type === "string" && Array.isArray(o.after.range)) out.set(o.targetId, o.after as Parameters<typeof doseWords>[0]);
   }
   return out;
-}
-
-/** A cite as the card draws it (saves-evidence.ts `CiteRef`): a quote's chip and where it opens; the reader's guess opens
- * the line's move at its first post. */
-function citeRefOf(id: string, reads: SavesReads, moveId: string | undefined): CiteRef | null {
-  const p = parseCite(id);
-  if (!p) return null;
-  if (p.kind === "quote") {
-    const r = reads.quotes.get(id);
-    return r ? { id, kind: "quote", label: quoteLabel(r), postId: r.postId, position: r.position, quote: r.quote } : null;
-  }
-  if (p.kind === "history") return { id: "history", kind: "history", label: "your history" };
-  if (p.kind === "goal") return { id, kind: "goal", label: "your goal", goalId: p.goalId };
-  const first = moveId ? reads.moves.get(moveId) : undefined;
-  return { id, kind: "inferred", label: "reader's guess", field: p.field, ...(first ? { postId: first.postId, position: first.position } : {}) };
 }
 
 const sameNumbers = (a: readonly number[], b: readonly number[]): boolean => a.length === b.length && a.every((n, i) => n === b[i]);

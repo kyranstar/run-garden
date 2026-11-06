@@ -214,7 +214,7 @@ export function valueWords(value: unknown): string {
   if (typeof value === "string") return value;
   if (typeof value === "number" || typeof value === "boolean") return String(value);
   if (isDose(value)) return doseWords(value);
-  if (Array.isArray(value)) return value.map(valueWords).join("; ");
+  if (Array.isArray(value)) return value.length ? value.map(valueWords).join("; ") : "nothing";
   const t = (value as { text?: unknown }).text;
   if (typeof t === "string") return t;
   return JSON.stringify(value);
