@@ -18,13 +18,14 @@ import { sql, type SQL } from "drizzle-orm";
 import { z } from "zod";
 import { schema } from "@rg/database";
 import { newId } from "@rg/domain";
-import { CONTRACTIONS, DOSE_TYPES, EQUIPMENT_IDS, label, LATERALITY, LOADS, PATTERNS, PROFILES, REGIONS, type ExerciseRecord } from "@rg/exercise-library";
+import { CONTRACTIONS, DOSE_TYPES, EQUIPMENT_IDS, LATERALITY, LOADS, PATTERNS, REGIONS, type ExerciseRecord } from "@rg/exercise-library";
 import { extractedMoveSchema, INSIGHT_SCOPES, isPersonalId, type InsightScope } from "@rg/saves";
 import type { AtomicStatement, Db } from "./db.js";
 import { summaryLine } from "./import-trail.js";
 import { buildPersonalRecord, newPersonalMoveId } from "./personal-moves.js";
 import { validatePersonalRecord } from "./personal-records.js";
 import type { CorrectionTarget, ImportCorrectionOp } from "./proposal-kinds.js";
+import { moveCorrectionLine } from "./move-correction-words.js";
 import { valueWords } from "./saves-evidence.js";
 
 const { importCorrections, importEvents, personalMoves, savedPosts, savedPostMoves, coachMemory } = schema;
@@ -303,44 +304,7 @@ export function mergedRatings(before: Record<string, unknown> | undefined, after
 }
 
 /** "neckLoad" → "neck load". */
-const attrWords = (key: string): string => key.replace(/([a-z0-9])([A-Z])/g, "$1 $2").toLowerCase();
-
-/** A move's condition ratings in words: "TMJ clench 2, neck load 0, face down no". */
-function ratingsWords(v: unknown): string {
-  if (!v || typeof v !== "object") return valueWords(v);
-  return Object.entries(v as Record<string, unknown>)
-    .map(([p, attrs]) => {
-      const name = (PROFILES as Record<string, { label: string } | undefined>)[p]?.label ?? p;
-      const parts = attrs && typeof attrs === "object" ? Object.entries(attrs as Record<string, unknown>).map(([k, x]) => `${attrWords(k)} ${typeof x === "boolean" ? (x ? "yes" : "no") : String(x)}`) : [];
-      return `${name} ${parts.join(", ")}`.trim();
-    })
-    .join("; ");
-}
-
-/** A list of the library's own words (contraction types, regions, patterns), as the athlete reads them. */
-const vocabWords = (v: unknown): string => (Array.isArray(v) ? (v.length ? v.map((x) => label(String(x)).toLowerCase()).join(", ") : "nothing") : valueWords(v));
-
-/** How a move field's value reads on the card. */
-function moveValueWords(field: string, v: unknown): string {
-  if (field === "conditions") return ratingsWords(v);
-  if (field === "contraction" || field === "regions" || field === "patterns") return vocabWords(v);
-  return valueWords(v);
-}
-
 const FIELD_WORDS: Readonly<Record<string, string>> = {
-  "move.name": "Name",
-  "move.summary": "Summary",
-  "move.purpose": "Purpose",
-  "move.dose": "Dose",
-  "move.laterality": "Sides",
-  "move.load": "Load",
-  "move.equipment": "Equipment",
-  "move.steps": "Steps",
-  "move.cues": "Cues",
-  "move.contraction": "Contraction",
-  "move.conditions": "Condition ratings",
-  "move.regions": "Areas",
-  "move.patterns": "Patterns",
   "reading.useWhen": "When to use it",
   "reading.skipWhen": "When to skip it",
   "reading.why": "Why",
@@ -361,8 +325,7 @@ export function correctionLine(o: { target: CorrectionTarget; field: string; bef
   const quoted = o.insight ? ` — “${o.insight}”` : "";
   switch (o.target) {
     case "move":
-      if (o.field === "retire") return `Retire ${o.name} from your moves`;
-      return `${FIELD_WORDS[`move.${o.field}`] ?? o.field} of ${o.name}: ${moveValueWords(o.field, o.after)} (was ${moveValueWords(o.field, o.before)})`;
+      return moveCorrectionLine(o.field, o.before, o.after, o.name);
     case "reading":
       return `${FIELD_WORDS[`reading.${o.field}`] ?? o.field} for ${o.name}: ${valueWords(o.after)} (was ${valueWords(o.before)})`;
     case "insight":
