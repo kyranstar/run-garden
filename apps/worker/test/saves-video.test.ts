@@ -398,3 +398,18 @@ describe("the link the gateway watches is rebuilt from the video's id (final aud
     expect(gw.calls[0]!.body.messages[1].content[1].file.file_data).toBe(watch);
   });
 });
+
+describe("a video with no captions that isn't watched says what's true (final audit G13)", () => {
+  const wordsOf = async (durationSec: number) => {
+    await db.delete(importEvents);
+    await db.delete(savedPosts);
+    const id = await seedVideo({ durationSec, transcript: null });
+    await run(id, gateway(reading(), () => 0));
+    return (await extractEventOf(id)).summary;
+  };
+  it("by its length: Watch it too where it's offered; too long, or no length known, where it isn't", async () => {
+    expect(await wordsOf(2_400)).toBe("No captions, and it's over 20 minutes — Watch it too reads it from the video");
+    expect(await wordsOf(3 * 3_600)).toBe("No captions, and it's too long to watch (over 50 minutes)");
+    expect(await wordsOf(0)).toBe("No captions, and its length isn't known, so it can't be watched");
+  });
+});

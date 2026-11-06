@@ -452,7 +452,10 @@ async function runExtraction(
   if (video && !video.watched && !video.hasTranscript) {
     // Nothing to read from words and too long to watch unasked: no call (and no spend) until Watch it too.
     if (!(await claim())) return refusal();
-    await finish({ code: "no_captions", why: [NO_CAPTIONS_LONG] }, 0);
+    // Its words say what's true (final audit G13): Watch it too only where it is offered.
+    const d = video.durationSec;
+    const why = !d ? NO_CAPTIONS_NO_LENGTH : d > WATCH_ASK_MAX_SEC ? NO_CAPTIONS_TOO_LONG : NO_CAPTIONS_LONG;
+    await finish({ code: "no_captions", why: [why] }, 0);
     return { ok: false, code: "no_captions" };
   }
 
@@ -662,6 +665,8 @@ export async function matchStale(db: Db, env: Env, userId: string, now: Date, fe
 
 /** A long video with no captions: nothing to read until the owner asks for it to be watched. */
 const NO_CAPTIONS_LONG = "No captions, and it's over 20 minutes — Watch it too reads it from the video";
+const NO_CAPTIONS_TOO_LONG = "No captions, and it's too long to watch (over 50 minutes)";
+const NO_CAPTIONS_NO_LENGTH = "No captions, and its length isn't known, so it can't be watched";
 /** No captions, and the reader couldn't watch it. */
 const NOTHING_TO_READ = "Nothing to read: no captions, and the video couldn't be watched";
 /** The system prompt's and the library names' share of a video reading's text, for its reservation. */
