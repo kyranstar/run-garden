@@ -50,7 +50,7 @@ const {
  * app's own schema-component version rows). Anything else the schema barrel
  * exports with a `userId` column must be reachable from `deleteAllUserData`.
  */
-const GLOBAL_TABLE_NAMES = new Set(["garden_species", "coros_exercises", "schema_versions"]);
+const GLOBAL_TABLE_NAMES = new Set(["garden_species", "coros_exercises", "schema_versions", "prompt_versions"]); // prompt_versions: the app's own prompt text, shared (import trail)
 
 function allTables(): Array<{ name: string; table: object }> {
   return Object.values(schema)
