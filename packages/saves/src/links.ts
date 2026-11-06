@@ -76,6 +76,17 @@ export interface LinkDto {
 }
 
 export const WAITING_FOR_EXTENSION = "Waiting for your computer's extension";
+/** The link field's answers (the popup's and the app's). */
+export const ADDED_LINE = "Added — it'll be waiting in the coach.";
+
+/** "Already in — imported Tue 3 Nov.", the day in the reader's own time zone. */
+export function alreadyInLine(firstSeenAt: string): string {
+  const d = new Date(firstSeenAt);
+  if (Number.isNaN(d.getTime())) return "Already in.";
+  const weekday = d.toLocaleDateString("en-GB", { weekday: "short" });
+  const month = d.toLocaleDateString("en-GB", { month: "short" });
+  return `Already in — imported ${weekday} ${d.getDate()} ${month}.`;
+}
 
 /**
  * Where a link stands, in a word or two: before its post exists, the link's own state; after, the post's (the app's

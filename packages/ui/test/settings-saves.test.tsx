@@ -28,6 +28,18 @@ const status = (over: Partial<SavesStatusDto> = {}): SavesStatusDto => ({
   ...over,
 });
 
+const LINKS = [
+  {
+    id: "l1", source: "youtube", key: "Zx9_-QaB3cD", url: "https://example.com/v/1", title: "Zorbex hip flow", addedAt: "2026-10-23T10:00:00.000Z",
+    addedFrom: "app", postId: null, state: "waiting", words: "Waiting for your computer's extension", moves: null, action: null,
+  },
+  {
+    id: "l2", source: "instagram", key: "ZorbexPost1", url: "https://example.com/reel/2", title: null, addedAt: "2026-10-22T10:00:00.000Z",
+    addedFrom: "extension", postId: "p1", state: "not_training", words: "Not training", moves: null, action: "import_anyway",
+  },
+];
+let linkAnswer: unknown = { state: "added", link: LINKS[0] };
+
 let root: Root;
 let host: HTMLElement;
 let calls: Array<{ method: string; path: string; body: unknown }>;
@@ -58,6 +70,8 @@ function mount(reply: { status: number; body?: unknown }, healthReply: { status:
       if (url === "/api/my-saves/status") return new Response(JSON.stringify(reply.body ?? {}), { status: reply.status, headers: { "Content-Type": "application/json" } });
       if (url === "/api/my-saves/health") return json(healthReply.body ?? {}, healthReply.status);
       if (url === "/api/my-saves/posts/p1/trail") return json(TRAIL);
+      if (url === "/api/my-saves/links" && req?.method === "POST") return json(linkAnswer);
+      if (url === "/api/my-saves/links") return json({ links: LINKS });
       return new Response(JSON.stringify({ ok: true }), { status: 200, headers: { "Content-Type": "application/json" } });
     }),
   );
@@ -217,5 +231,73 @@ describe("SavesSection", () => {
     await flush();
     expect(calls).toContainEqual({ method: "POST", path: "/api/my-saves/posts/p1/override", body: { action: "process" } });
     expect([...document.querySelectorAll("button")].some((b) => b.textContent === "Retry")).toBe(true);
+  });
+});
+
+describe("Settings -> Saves: a link from the phone (design 2026-11-05 §15.2)", () => {
+  const openSheet = async () => {
+    await mount({ status: 200, body: status() });
+    await flush();
+    await act(async () => {
+      (host.querySelector("button.place-row") as HTMLButtonElement).click();
+    });
+    await flush();
+  };
+  const sheet = () => document.querySelector("[role=dialog]") as HTMLElement;
+  const input = () => sheet().querySelector("input") as HTMLInputElement;
+  // A watch link assembled at runtime, a fake video id: the privacy grep never sees a real one.
+  const watch = ["ht", "tps://www.", "you", "tube.com/watch?v=", "Zx9_-QaB3cD"].join("");
+  const type = (value: string) =>
+    act(async () => {
+      const set = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value")!.set!;
+      set.call(input(), value);
+      input().dispatchEvent(new Event("input", { bubbles: true }));
+    });
+
+  it("a field adds the link; the app says it's waiting for the computer's extension", async () => {
+    linkAnswer = { state: "added", link: LINKS[0] };
+    await openSheet();
+    expect(input().placeholder).toBe("Paste a YouTube or Instagram link");
+    await type(watch);
+    await act(async () => {
+      (sheet().querySelector("form button") as HTMLButtonElement).click();
+    });
+    await flush();
+    expect(calls).toContainEqual({ method: "POST", path: "/api/my-saves/links", body: { url: watch } });
+    expect(sheet().textContent).toContain("Added — it'll be waiting in the coach.");
+  });
+
+  it("a link already in says when it came in", async () => {
+    linkAnswer = { state: "known", postId: "p1", firstSeenAt: "2026-10-20T12:00:00.000Z" };
+    await openSheet();
+    await type(watch);
+    await act(async () => {
+      (sheet().querySelector("form button") as HTMLButtonElement).click();
+    });
+    await flush();
+    expect(sheet().textContent).toContain("Already in — imported Tue 20 Oct.");
+  });
+
+  it("anything else is refused before it is sent", async () => {
+    await openSheet();
+    await type("https://example.com/v/1");
+    await act(async () => {
+      (sheet().querySelector("form button") as HTMLButtonElement).click();
+    });
+    await flush();
+    expect(calls.some((c) => c.method === "POST" && c.path === "/api/my-saves/links")).toBe(false);
+    expect(sheet().textContent).toContain("Only YouTube and Instagram links for now.");
+  });
+
+  it("recent links: each with its words, and Import anyway on one screened out", async () => {
+    await openSheet();
+    expect(sheet().textContent).toContain("Recent links");
+    expect(sheet().textContent).toContain("Waiting for your computer's extension");
+    const anyway = [...sheet().querySelectorAll("button")].find((b) => b.textContent === "Import anyway")!;
+    await act(async () => {
+      anyway.click();
+    });
+    await flush();
+    expect(calls).toContainEqual({ method: "POST", path: "/api/my-saves/posts/p1/override", body: { action: "process" } });
   });
 });

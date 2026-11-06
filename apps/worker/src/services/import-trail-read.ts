@@ -23,8 +23,27 @@ const RANK: Record<TrailStatus, number> = { fail: 3, warn: 2, info: 0, skip: 0, 
 interface Extracted {
   kind?: string;
   summary?: string;
-  moves?: { name?: string; purpose?: string }[];
+  moves?: { name?: string; purpose?: string; why?: string; useWhen?: unknown; skipWhen?: unknown; quotes?: unknown }[];
 }
+
+type Case = { text: string; evidence: "stated" | "inferred" };
+const casesOf = (v: unknown): Case[] =>
+  Array.isArray(v)
+    ? v.flatMap((c) => (c && typeof c.text === "string" ? [{ text: c.text, evidence: c.evidence === "stated" ? ("stated" as const) : ("inferred" as const) }] : []))
+    : [];
+type Quote = NonNullable<ImportTrailDto["account"]["moves"][number]["quotes"]>[number];
+const quotesOf = (v: unknown): Quote[] =>
+  Array.isArray(v)
+    ? v.flatMap((q): Quote[] =>
+        q && typeof q.text === "string" && typeof q.field === "string"
+          ? [{
+              field: q.field, text: q.text, from: typeof q.from === "string" ? q.from : "caption",
+              ...(typeof q.at === "number" ? { at: q.at } : {}),
+              ...(q.check === "verified" || q.check === "in_speech" || q.check === "not_found" ? { check: q.check } : {}),
+            }]
+          : [],
+      )
+    : [];
 
 export async function readPostTrail(db: Db, userId: string, postId: string): Promise<ImportTrailDto | null> {
   const [p] = await db
@@ -97,6 +116,11 @@ export async function readPostTrail(db: Db, userId: string, postId: string): Pro
       outcome,
       moveId: link?.moveId ?? null,
       purpose: typeof m.purpose === "string" && m.purpose.trim() ? m.purpose : null,
+      // What the post says of it (extract-6): when to use it or not, why, and its quotes with their checks.
+      ...(typeof m.why === "string" && m.why.trim() ? { why: m.why } : {}),
+      ...(casesOf(m.useWhen).length ? { useWhen: casesOf(m.useWhen) } : {}),
+      ...(casesOf(m.skipWhen).length ? { skipWhen: casesOf(m.skipWhen) } : {}),
+      ...(quotesOf(m.quotes).length ? { quotes: quotesOf(m.quotes) } : {}),
     };
   });
 

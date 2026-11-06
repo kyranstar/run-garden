@@ -20,7 +20,7 @@
  */
 import { useId, useMemo, useState, type ReactNode } from "react";
 import { createPortal } from "react-dom";
-import { useQuery } from "@tanstack/react-query";
+import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { api, ApiError, saveBlobQuery, saveTrailQuery } from "@rg/api-client";
 import type { ImportStage, ImportTrailDto, TrailStatus } from "@rg/saves";
 import { EmptyState, Sheet, Spinner } from "../../components.js";
@@ -38,6 +38,7 @@ import {
   type TrailDetail,
   type TrailRow,
   type TrailStep,
+  watchLabel,
 } from "./trail-model.js";
 
 /** The sheet's title before the trail is read. */
@@ -119,6 +120,9 @@ function Account({ dto, lines, href }: { dto: ImportTrailDto; lines: AccountLine
           {l.text}
         </p>
       ))}
+      {rest("video").map((l) => (
+        <VideoLine key={l.key} line={l} postId={dto.post.id} />
+      ))}
       {moves.length ? (
         <ul className="coach-run-lines trail-moves" aria-label="The moves">
           {moves.map((l) => (
@@ -144,6 +148,28 @@ function Account({ dto, lines, href }: { dto: ImportTrailDto; lines: AccountLine
         </p>
       ))}
     </section>
+  );
+}
+
+/** A video's watching: read from its words only (with Watch it too and its cost), or waiting for the extension. */
+function VideoLine({ line, postId }: { line: AccountLine; postId: string }) {
+  const qc = useQueryClient();
+  const watch = useMutation({
+    mutationFn: () => api.savesWatch(postId),
+    onSettled: () => qc.invalidateQueries({ queryKey: saveTrailQuery(postId) }),
+  });
+  return (
+    <p className="trail-note trail-video">
+      {line.text}
+      {line.watch ? (
+        <>
+          {" "}
+          <button type="button" className="btn btn-small" disabled={watch.isPending} onClick={() => watch.mutate()}>
+            {watchLabel(line.watch.costMicros)}
+          </button>
+        </>
+      ) : null}
+    </p>
   );
 }
 
@@ -259,7 +285,11 @@ function Row({ row }: { row: TrailRow }) {
     <div className="coach-detail-row">
       <dt>{row.key}</dt>
       <dd className="trail-value">
-        <span className="trail-value-text">{all && row.full ? row.full : row.value}</span>
+        {row.struck ? (
+          <s className="trail-value-text">{all && row.full ? row.full : row.value}</s>
+        ) : (
+          <span className="trail-value-text">{all && row.full ? row.full : row.value}</span>
+        )}
         {row.full ? (
           <button type="button" className="linklike tap-pad trail-show-all" aria-expanded={all} onClick={() => setAll((v) => !v)}>
             {all ? "Show less" : "Show all"}

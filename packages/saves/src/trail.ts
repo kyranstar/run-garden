@@ -94,7 +94,18 @@ export interface ImportTrailDto {
   account: {
     kind: string | null;
     summary: string | null;
-    moves: { position: number; name: string; outcome: "new" | "yours" | "library"; moveId: string | null; purpose: string | null }[];
+    moves: {
+      position: number;
+      name: string;
+      outcome: "new" | "yours" | "library";
+      moveId: string | null;
+      purpose: string | null;
+      /** What the post says of the move (extract-6; absent from an earlier reading): a stranger's words, drawn as text. */
+      why?: string | null;
+      useWhen?: { text: string; evidence: "stated" | "inferred" }[];
+      skipWhen?: { text: string; evidence: "stated" | "inferred" }[];
+      quotes?: { field: string; text: string; at?: number; from: string; check?: "verified" | "in_speech" | "not_found" }[];
+    }[];
     health: { status: TrailStatus; line: string };
   };
   /** Oldest first. */

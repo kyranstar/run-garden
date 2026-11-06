@@ -13960,3 +13960,36 @@ a.stu-tpl-open:focus-visible::before {
   padding-top: var(--space-4);
   border-top: 1px solid var(--border);
 }
+
+/* Settings -> Saves: a link pasted on the phone, and the recent links (design 2026-11-05 §15.2). */
+.saves-link-field {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+  margin: 0 0 var(--space-4);
+}
+.saves-link-row {
+  display: flex;
+  gap: var(--space-3);
+  align-items: center;
+}
+.saves-link-row input {
+  flex: 1;
+  min-width: 0;
+  font: inherit;
+  padding: var(--space-3) var(--space-4);
+  border-radius: var(--radius-sm);
+  border: 1px solid var(--border-strong);
+  background: var(--bg-raised);
+  color: var(--ink);
+  min-height: var(--tap);
+}
+.saves-links-title {
+  margin: var(--space-4) 0 var(--space-2);
+  font-size: var(--text-sm);
+  font-weight: var(--weight-medium);
+  color: var(--ink-soft);
+}
+.trail-video .btn {
+  margin-left: var(--space-2);
+}

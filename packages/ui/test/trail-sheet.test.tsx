@@ -67,6 +67,7 @@ async function mount(trail: ImportTrailDto | null = TRAIL()) {
     vi.fn(async (url: string) => {
       calls.push(url);
       if (url === "/api/my-saves/posts/p1/trail") return trail ? json(trail) : json({ error: "not_found" }, 404);
+      if (url === "/api/my-saves/posts/p1/watch") return json({ ok: true });
       const blob = /^\/api\/my-saves\/blobs\/(.+)$/.exec(url);
       if (blob && BLOBS[blob[1]!]) return json(BLOBS[blob[1]!]);
       return json({ error: "not_found" }, 404);
@@ -208,5 +209,19 @@ describe("the trail sheet", () => {
     await mount();
     await click(dialog().querySelector('button[aria-label="Close"]') as HTMLButtonElement);
     expect(onClose).toHaveBeenCalled();
+  });
+});
+
+describe("Watch it too (phase 2)", () => {
+  it("a long video read from its words offers to be watched, at its cost; the tap asks the app", async () => {
+    const t = TRAIL();
+    t.post = { ...t.post, source: "youtube", title: "Zorbex hip flow", durationSec: 2_400, video: { watched: false, watchAsked: false, offerWatch: true, watchCostMicros: 185_625 } };
+    await mount(t);
+    expect(dialog().textContent).toContain("Read from the transcript only (over 20 minutes)");
+    const watch = button("Watch it too");
+    expect(watch.textContent).toBe("Watch it too (about $0.19)");
+    await click(watch);
+    await flush();
+    expect(calls).toContain("/api/my-saves/posts/p1/watch");
   });
 });

@@ -12,8 +12,9 @@
 import { useState } from "react";
 import { Link } from "react-router-dom";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { api, SAVES_HEALTH_QUERY, SAVES_STATUS_QUERY } from "@rg/api-client";
-import type { ImportHealthDto, PostRowDto, SavePostStatus, SavesStatusDto } from "@rg/saves";
+import { api, SAVES_HEALTH_QUERY, SAVES_LINKS_QUERY, SAVES_STATUS_QUERY } from "@rg/api-client";
+import { ADDED_LINE, alreadyInLine, LINK_REFUSED, normalizeLink } from "@rg/saves";
+import type { ImportHealthDto, LinkDto, PostRowDto, SavePostStatus, SavesStatusDto } from "@rg/saves";
 import { Card, Sheet } from "../../components.js";
 import { postHref } from "../../post-link.js";
 import { HealthRow, healthOf, redLine } from "../saves/health-row.js";
@@ -95,6 +96,94 @@ function PostRow({ post, busy, onProcess, onTrail }: { post: PostRowDto; busy: b
   );
 }
 
+/**
+ * A link pasted on the phone (design 2026-11-05 §15.2): the app keeps it and the computer's extension reads it within
+ * about 15 minutes. The answer in a line: added, already in (when), or what it takes.
+ */
+function LinkField() {
+  const qc = useQueryClient();
+  const [url, setUrl] = useState("");
+  const [said, setSaid] = useState<string | null>(null);
+  const add = useMutation({
+    mutationFn: (link: string) => api.savesAddLink(link),
+    onSuccess: (a) => {
+      setSaid(a.state === "known" ? alreadyInLine(a.firstSeenAt) : ADDED_LINE);
+      setUrl("");
+    },
+    onError: () => setSaid(LINK_REFUSED),
+    onSettled: () => qc.invalidateQueries({ queryKey: SAVES_LINKS_QUERY }),
+  });
+  return (
+    <form
+      className="saves-link-field"
+      onSubmit={(e) => {
+        e.preventDefault();
+        if (!normalizeLink(url)) return setSaid(LINK_REFUSED);
+        add.mutate(url.trim());
+      }}
+    >
+      <span className="saves-link-row">
+        <input
+          type="url"
+          className="input"
+          value={url}
+          placeholder="Paste a YouTube or Instagram link"
+          aria-label="Paste a YouTube or Instagram link"
+          onChange={(e) => setUrl(e.target.value)}
+        />
+        <button type="submit" className="btn btn-small" disabled={add.isPending}>
+          Add
+        </button>
+      </span>
+      {said ? (
+        <small className="faint" role="status">
+          {said}
+        </small>
+      ) : null}
+    </form>
+  );
+}
+
+/** The recent pasted links: each title (a stranger's words: text), where it stands, its trail, and Retry / Import anyway. */
+function RecentLinks({ links, busy, onProcess, onTrail }: { links: LinkDto[]; busy: boolean; onProcess: (id: string) => void; onTrail: (id: string) => void }) {
+  const qc = useQueryClient();
+  const again = useMutation({ mutationFn: (u: string) => api.savesAddLink(u), onSettled: () => qc.invalidateQueries({ queryKey: SAVES_LINKS_QUERY }) });
+  if (!links.length) return null;
+  return (
+    <>
+      <h3 className="saves-links-title">Recent links</h3>
+      {links.map((l) => {
+        const label = l.action === "import_anyway" ? "Import anyway" : l.action === "retry" ? "Retry" : null;
+        return (
+          <div key={l.id} className="setting-row">
+            <span className="place-row-main">
+              <b>{l.title || l.url}</b>
+              <small>{l.words}</small>
+              {l.postId ? (
+                <span className="stu-saved-links">
+                  <button type="button" className="linklike stu-saved-link" aria-haspopup="dialog" onClick={() => onTrail(l.postId!)}>
+                    {TRAIL_OPEN_LABEL}
+                  </button>
+                </span>
+              ) : null}
+            </span>
+            {label ? (
+              <button
+                type="button"
+                className="btn btn-small"
+                disabled={busy || again.isPending}
+                onClick={() => (l.postId ? onProcess(l.postId) : again.mutate(l.url))}
+              >
+                {label}
+              </button>
+            ) : null}
+          </div>
+        );
+      })}
+    </>
+  );
+}
+
 export function SavesSection() {
   const qc = useQueryClient();
   const [open, setOpen] = useState(false);
@@ -102,9 +191,13 @@ export function SavesSection() {
   const status = useQuery({ queryKey: SAVES_STATUS_QUERY, queryFn: api.savesStatus, retry: false });
   const healthRead = useQuery({ queryKey: SAVES_HEALTH_QUERY, queryFn: api.savesHealth, retry: false });
   const health = healthOf(healthRead.data);
+  const links = useQuery({ queryKey: SAVES_LINKS_QUERY, queryFn: api.savesLinks, retry: false, enabled: open });
   const process = useMutation({
     mutationFn: (id: string) => api.savesOverride(id, "process"),
-    onSettled: () => qc.invalidateQueries({ queryKey: SAVES_STATUS_QUERY }),
+    onSettled: () => {
+      void qc.invalidateQueries({ queryKey: SAVES_STATUS_QUERY });
+      void qc.invalidateQueries({ queryKey: SAVES_LINKS_QUERY });
+    },
   });
   // Anything but an answer (the feature is off: 404) hides the section.
   if (!status.data) return null;
@@ -121,6 +214,7 @@ export function SavesSection() {
       </button>
       {open ? (
         <Sheet open onClose={() => setOpen(false)} title="Saves">
+          <LinkField />
           {health ? <HealthRow health={health} /> : null}
           {/* The review screen next (spec §8): the batches, and each batch's moves. */}
           <Link className="place-row" to="/studio/saves">
@@ -131,6 +225,7 @@ export function SavesSection() {
               ›
             </span>
           </Link>
+          <RecentLinks links={links.data?.links ?? []} busy={process.isPending} onProcess={(id) => process.mutate(id)} onTrail={setTrail} />
           {status.data.posts.map((p) => (
             <PostRow key={p.id} post={p} busy={process.isPending} onProcess={(id) => process.mutate(id)} onTrail={setTrail} />
           ))}

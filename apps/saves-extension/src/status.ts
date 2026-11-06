@@ -1,4 +1,4 @@
-import { HEALTH_LABELS, HEALTH_MARKS, redLine } from "@rg/saves";
+import { ADDED_LINE, alreadyInLine, HEALTH_LABELS, HEALTH_MARKS, redLine } from "@rg/saves";
 import type { HealthColor, HealthLight, ImportHealthDto, LinkDto, SavePostStatus, SavesStatusDto } from "@rg/saves";
 
 // The popup's view of the import, as plain data: pure, so it is tested without a browser. The headline is the
@@ -289,21 +289,10 @@ export interface PopupLink {
   action: PopupLinkAction | null;
 }
 
-export const ADDED_LINE = "Added — it'll be waiting in the coach.";
-
-/** "Tue 3 Nov", in the owner's own time zone. */
-function dayWords(iso: string): string {
-  const d = new Date(iso);
-  if (Number.isNaN(d.getTime())) return "earlier";
-  const weekday = d.toLocaleDateString("en-GB", { weekday: "short" });
-  const month = d.toLocaleDateString("en-GB", { month: "short" });
-  return `${weekday} ${d.getDate()} ${month}`;
-}
-
 /** The field's answer in a line. */
 export function addAnswerLine(a: AddLinkAnswer): string {
   if (!a.ok) return a.message;
-  if ("known" in a) return `Already in — imported ${dayWords(a.known.firstSeenAt)}.`;
+  if ("known" in a) return alreadyInLine(a.known.firstSeenAt);
   return ADDED_LINE;
 }
 
