@@ -15,7 +15,7 @@ import { createDocWorkout } from "../src/services/doc-workouts.js";
 import { buildSession } from "../src/services/session-build.js";
 import { watchPreview } from "../src/services/watch-push.js";
 import { connectTestCoros, makeTestDb, makeTestUser, pinMiddayToday } from "./helpers.js";
-import { activateTmj, clientFor, type Reply } from "./doc-workout-fixture.js";
+import { activateTmj, calmDoc, clientFor, type Reply } from "./doc-workout-fixture.js";
 import { seedCatalog, switchOn } from "./watch-push-fixture.js";
 
 const { plannedWorkouts } = schema;
@@ -72,6 +72,19 @@ describe("a TRE session on the plan", () => {
     expect(secondsOf("floorTremor")).toEqual([300]);
     const tremorSlot = steps.find((s) => s.exerciseId === "floorTremor")!.slotKey;
     expect(built.body.build.fromDoc.slots[tremorSlot].cue).toMatch(/roll onto your side/);
+  });
+
+  it("its read carries the videos to watch instead; another workout's carries none", async () => {
+    const date = addDays(today, 3);
+    const tre = await call("POST", "/api/workouts", { date, time: "19:30", doc: treSessionDoc(4) });
+    const read = await call("GET", `/api/sessions/${tre.body.workout.id}`);
+    expect(read.status).toBe(200);
+    expect(read.body.videos).toEqual([
+      { label: "Full instructions", url: "https://www.youtube.com/watch?v=FeUioDuJjFI" },
+      { label: "Follow-along", url: "https://www.youtube.com/watch?v=QoB9wpuO688" },
+    ]);
+    const other = await call("POST", "/api/workouts", { date, time: "08:00", doc: calmDoc() });
+    expect((await call("GET", `/api/sessions/${other.body.workout.id}`)).body.videos).toBeUndefined();
   });
 
   it("goes to the watch whole, in order, with nothing refused", async () => {

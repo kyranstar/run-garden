@@ -2005,6 +2005,8 @@ export interface SessionDto {
   watch?: WatchStateDto | null;
   /** A document workout's own music (its document's `music`); absent when it names none, or from an older server. */
   music?: import("@rg/domain").WorkoutMusic;
+  /** The videos to watch instead of playing it here (a fixed practice's); absent when it has none, or from an older server. */
+  videos?: Array<{ label: string; url: string }>;
 }
 
 /** Why Send to watch is not offered (`watch.reason`), and the 409 `error` of a refused send. */

@@ -1658,6 +1658,26 @@ describe("a document workout in the sheet (Stage 2 whole-branch review)", () => 
     features.studio = studioWas;
   });
 
+  it("a session with videos links to each, opening away from the app; one with none says nothing of them", async () => {
+    const videos = [
+      { label: "Full instructions", url: "https://video.test/one" },
+      { label: "Follow-along", url: "https://video.test/two" },
+    ];
+    mount(docSession({ videos }), { w: docRow() });
+    await until(() => body().includes("Goblet squat"), "the build");
+    const links = [...document.querySelectorAll<HTMLAnchorElement>(".session-videos a")];
+    expect(links.map((a) => [a.textContent, a.getAttribute("href"), a.target, a.rel])).toEqual([
+      ["Full instructions", "https://video.test/one", "_blank", "noopener noreferrer"],
+      ["Follow-along", "https://video.test/two", "_blank", "noopener noreferrer"],
+    ]);
+  });
+
+  it("a session with no videos has no line for them", async () => {
+    mount(docSession(), { w: docRow() });
+    await until(() => body().includes("Goblet squat"), "the build");
+    expect(document.querySelector(".session-videos")).toBeNull();
+  });
+
   it("says its effort as the Studio does — never a mode's word — with no Theme, and its length is no picker it would ignore (M1, I2)", async () => {
     mount(docSession(), { w: docRow() });
     await until(() => body().includes("Goblet squat"), "the build");

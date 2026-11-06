@@ -135,7 +135,7 @@ import {
   type GatedDoc,
 } from "./doc-build.js";
 import { NO_EQUIPMENT } from "./default-place.js";
-import { docSlotKeys, DocTooLargeError, makeLibraryIndex, type DocIssue, type ValidateCtx } from "@rg/workout";
+import { docSlotKeys, DocTooLargeError, makeLibraryIndex, videosOfSource, type DocIssue, type PracticeVideo, type ValidateCtx } from "@rg/workout";
 import { doneCleanlyOf, doneStats } from "./library-view.js";
 import { mirrorFollowsDay, mirrorOnDayBuild } from "./mirror.js";
 
@@ -318,21 +318,33 @@ export interface SessionResponse {
   watch: WatchState | null;
   /** A document workout's own music (its document's `music`: a saved playlist, or none); absent when it names none. */
   music?: WorkoutMusic;
+  /** The videos to watch instead of playing it here (a fixed practice's, `videosOfSource`); absent when it has none. */
+  videos?: PracticeVideo[];
+}
+
+/** A row's stored document column as a value; undefined when it doesn't read. */
+function storedDocValue(stored: unknown): unknown {
+  if (typeof stored !== "string") return stored;
+  try {
+    return JSON.parse(stored);
+  } catch {
+    return undefined;
+  }
 }
 
 /** A row's document's `music`, read leniently from its stored column: absent when it names none or doesn't read. */
 export function docMusicOf(stored: unknown): WorkoutMusic | undefined {
-  let value: unknown = stored;
-  if (typeof stored === "string") {
-    try {
-      value = JSON.parse(stored);
-    } catch {
-      return undefined;
-    }
-  }
+  const value = storedDocValue(stored);
   const raw = value && typeof value === "object" ? (value as { music?: unknown }).music : undefined;
   const parsed = raw === undefined ? null : workoutMusicSchema.safeParse(raw);
   return parsed?.success ? parsed.data : undefined;
+}
+
+/** A row's document's videos, by its `source.ref`, read leniently from its stored column: absent when it has none. */
+function docVideosOf(stored: unknown): PracticeVideo[] | undefined {
+  const ref = (storedDocValue(stored) as { source?: { ref?: unknown } } | null | undefined)?.source?.ref;
+  const videos = videosOfSource(typeof ref === "string" ? ref : undefined);
+  return videos.length > 0 ? [...videos] : undefined;
 }
 
 /** The program's modes; the themes a build can take, each with the modes it suits; the account's places. */
@@ -1001,10 +1013,12 @@ function respond(
     choices: extras.choices,
     watch: null,
     ...withMusic(docMusicOf(row.workoutDoc)),
+    ...withVideos(docVideosOf(row.workoutDoc)),
   };
 }
 
 const withMusic = (music: WorkoutMusic | undefined): { music?: WorkoutMusic } => (music ? { music } : {});
+const withVideos = (videos: PracticeVideo[] | undefined): { videos?: PracticeVideo[] } => (videos ? { videos } : {});
 
 async function readResponse(db: Db, userId: string, row: SlotRow, today: string, builds?: readonly BuildRow[]): Promise<SessionResponse> {
   const all = builds ?? (await loadBuilds(db, userId, row.id));

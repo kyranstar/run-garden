@@ -159,6 +159,28 @@ describe("watchStepsFromBuild — sides, rests and names", () => {
   });
 });
 
+describe("watchStepsFromBuild — a rep range goes as its middle (owner, 2026-11-05)", () => {
+  const range = (lo: number, hi: number) => ({ lo, hi, type: "reps" as const, reps: null, secs: null });
+  const targetsOf = (...targets: Array<Step["target"]>) => watchStepsFromBuild(build(targets.map((target) => step({ target }))), deps).steps.map((s) => s.target);
+
+  it("8–12 is 10, 8–11 rounds up to 10, and a range of one is that number", () => {
+    expect(targetsOf(range(8, 12), range(8, 11), range(5, 5))).toEqual([{ kind: "reps", reps: 10 }, { kind: "reps", reps: 10 }, { kind: "reps", reps: 5 }]);
+  });
+
+  it("a stated number wins over its range; a two-sided move's middle is per side, as its number is", () => {
+    expect(targetsOf({ ...range(8, 12), reps: 9 })).toEqual([{ kind: "reps", reps: 9 }]);
+    const plan = watchStepsFromBuild(build([step({ exerciseId: "oneArmRow", target: range(8, 12) })]), deps);
+    expect(plan.steps.map((s) => [s.name, s.target])).toEqual([["One-arm row (L+R)", { kind: "reps", reps: 10 }]]);
+  });
+
+  it("stays as it was: a range in seconds or breaths is no count of reps, and no target at all is open", () => {
+    const inSeconds = { lo: 20, hi: 40, type: "time" as const, reps: null, secs: null };
+    const inBreaths = { lo: 3, hi: 5, type: "breaths" as const, reps: null, secs: null };
+    expect(targetsOf(inSeconds, inBreaths, null)).toEqual([{ kind: "open" }, { kind: "open" }, { kind: "open" }]);
+    expect(targetsOf({ ...inSeconds, secs: 30 })).toEqual([{ kind: "hold", seconds: 30 }]);
+  });
+});
+
 describe("watchStepsFromBuild — a two-sided move is one step (owner, 2026-11-05)", () => {
   // "I usually assume its one": one step is the whole move. The work stays whole in it: the engine prices a unilateral set
   // as both sides (`setSeconds` × 2) and the player says "8 each side", so its reps stay the count per side.

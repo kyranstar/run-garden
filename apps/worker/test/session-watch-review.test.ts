@@ -372,6 +372,14 @@ describe("pairWatchSets (ruling 3-R7)", () => {
     expect(hold!.sets.map((s) => [s.side, s.seconds])).toEqual([[null, 30], ["left", 15], ["right", 15]]);
   });
 
+  it("a rep range's set the watch logged nothing for shows the middle the watch was given", () => {
+    const build = miniBuild([{ id: "goblet", sets: 1 }]);
+    const set = (build.steps as Array<{ kind: string; target: unknown }>).find((s) => s.kind === "set")!;
+    set.target = { lo: 8, hi: 12, type: "reps", reps: null, secs: null, w: null };
+    const [goblet] = pairWatchSets(build, []);
+    expect(goblet!.sets.map((s) => [s.reps, s.from, s.done])).toEqual([[10, "target", false]]);
+  });
+
   it("a copy sent as a pair reads as it always did, one lap per side", () => {
     const build = miniBuild([{ id: "row", sets: 1, unilateral: true }]);
     const [row] = pairWatchSets(build, [{ exerciseId: "row", sets: watchSets(2, { reps: 10 }) }], undefined, "pair");
