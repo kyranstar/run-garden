@@ -302,11 +302,13 @@ In `courses.test.ts`: TRE's `sessionDoc(5, { ease: true })`'s tremor is 300; eve
   - `writeCourseSession(db, userId, row: SlotRow, ctx: BuildCtx): Promise<{ written: boolean; n: number }>`.
   - `writeCourseSessionsDue(db, at?: Date): Promise<{ written: number; failed: number }>`, for the hourly pass.
   - `courseOf(db, userId, row): Promise<{ program; definition } | null>`, null for anything but an outline of a course.
-- **n** = the plan's rows with `completionState = 'completed'`, plus one. Nothing else counts.
+- **n** = the plan's rows with `course_session` set and `completionState = 'completed'`, plus one. Nothing else counts, so a coach-filed workout under the plan doesn't advance it.
 - `writeCourseSession` judges the document with `judgeDoc`, then in one atomic batch: updates the row where `origin = 'program'` (the guard that makes it once only) to `origin: 'studio'`, with the document, revision, title, category, sport and booked length from `deriveDoc`; clears `easeNext`; marks the mirror owed (`markMirrorOwed`). A judge error writes nothing, logs by code only and leaves a sync note.
 - Due means `effectiveDate === today` in the athlete's zone, and today's slot not moved away.
 - `buildSessionOutcome` and `loadSession` call `courseOf` first for `origin === 'program'` rows: today's is written, then continues as a document row. A day ahead answers a preview through `docDayInputs` with a computed document that isn't stored: add its `docOverride` parameter.
-- **A course session never takes a scored guess at matching.** The number counts sessions done, so an unrelated activity completing one would skip a dose. Rows of a course keep `sourceContentFingerprint: "course"` after they flip to `studio`, and `completion.ts`'s `linkOnly` becomes `w.origin === "program" || w.sourceContentFingerprint === "course"`.
+- **A course's own session is marked by `planned_workouts.course_session`,** the session number it was written as (added to migration 0035 in Task 9), set in the same batch as the flip. `source_content_fingerprint` can't be the mark: a verified watch push overwrites it. n counts completed rows with `course_session` set.
+- **A course session never takes a scored guess at matching.** The number counts sessions done, so an unrelated activity completing one would skip a dose. `completion.ts`'s `linkOnly` becomes `w.origin === "program" || w.courseSession !== null`.
+- **A paused plan writes nothing:** an outline due today under a pause stays an outline if it survived the pause's retraction.
 
 - [ ] **Step 1: Write failing tests:**
 
@@ -339,7 +341,7 @@ it("a document the day refuses leaves the outline and a note", ...);
 - Modify: `apps/worker/src/routes/plans.ts`, `apps/worker/src/services/plan-summaries.ts`, `apps/worker/src/services/session-build.ts` (`docVideosOf`), `packages/workout/src/tre-course.ts`
 
 **Interfaces:**
-- `POST /api/plans/courses` with `{ course, weekdays, time, clientId? }`, returning `{ plan, more: boolean }`, idempotent per course. It creates the `programs` row from the definition's name, purpose, brief and disciplines. It re-points rows whose document's `source.ref` matches `<course>-course:<n>`: those completed or under way to the plan, with no new revision; those still ahead come off through `removeDocWorkout`, as much as the budget allows, and `more: true` says send it again. Placement runs once none is left. An unknown course is 422.
+- `POST /api/plans/courses` with `{ course, weekdays, time, clientId? }`, returning `{ plan, more: boolean }`, idempotent per course. It creates the `programs` row from the definition's name, purpose, brief and disciplines. It re-points rows whose document's `source.ref` matches `<course>-course:<n>`: those completed or under way to the plan, with `course_session` set to that n and no new revision; those still ahead come off through `removeDocWorkout`, as much as the budget allows, and `more: true` says send it again. Placement runs once none is left. An unknown course is 422.
 - `POST /api/plans/:id/stop`, returning `{ more: boolean }`: `status: 'retired'`; flexible outlines retract through placement's goal 0 path; a session written for today or ahead comes off through `removeDocWorkout` unless started. Past sessions stay.
 - Session read: `videos` comes from the course definition for a course outline, and from `videosOfSource` for a written one, so both show the link.
 - `PlanSummaryDto.course` filled from `sessionLabel(done)`.
