@@ -11,7 +11,7 @@
 import { beforeAll, describe, expect, it } from "vitest";
 import { and, eq } from "drizzle-orm";
 import { schema } from "@rg/database";
-import { newId } from "@rg/domain";
+import { keyResultMeasureSchema, newId } from "@rg/domain";
 import { EXERCISES } from "@rg/exercise-library";
 import type { Env } from "../src/env.js";
 import type { Db } from "../src/services/db.js";
@@ -19,12 +19,23 @@ import { buildDesignContext, contextStatements, DESIGN_CONTEXT_STATEMENTS, type 
 import { FOCUS_KINDS, type RunFocus } from "../src/services/design-focus.js";
 import { FOCUS_LINES, markUntrusted } from "../src/services/design-prompt.js";
 import { day, NOW, seedOtherAthlete, seedRichAthlete, TODAY } from "./design-read-fixture.js";
+import { measureStatements } from "../src/services/key-result-measures.js";
 import { makeTestDb } from "./helpers.js";
 
 const ENV = {} as Env;
 
 let db: Db;
 let statements = 0;
+/** Where the athlete stands (2026-11-06): the rich athlete's active key results' measures — a hold and a lift (the
+ * strength sets' four), a run best and a pace at heart rate (the runs' one), the threshold and a prediction (one). */
+const STAND_MEASURES = measureStatements(
+  [
+    { kind: "hold_max", libraryIds: ["wallSit"] },
+    { kind: "run_best", distanceM: 5000 },
+    { kind: "threshold_pace" },
+  ].map((m) => keyResultMeasureSchema.parse(m)),
+  { library: true, labels: false },
+);
 let me: Awaited<ReturnType<typeof seedRichAthlete>>;
 let other: Awaited<ReturnType<typeof seedRichAthlete>>;
 
@@ -150,7 +161,7 @@ describe("the block, kind by kind", () => {
     expect(b).toContain(`The athlete asked from: a move in the library — ${goblet.name} (id gobletSquat): ${goblet.text.summary}`);
     expect(b).toMatch(/- For: [A-Z][^.]+; regions: [A-Z][^.]+; difficulty \d of 5\./);
     expect(b).toContain(FOCUS_LINES.move);
-    expect(n).toBe(contextStatements("main"));
+    expect(n).toBe(contextStatements("main") + STAND_MEASURES);
   });
 
   it("proposal: its title, status, and each workout as day, time, title and minutes — the titles a designer run's words", async () => {
@@ -188,7 +199,7 @@ describe("the block, kind by kind", () => {
 describe("where it sits, and what it costs", () => {
   it("one statement more for every kind but a move; the main run's builds stay within DESIGN_CONTEXT_STATEMENTS (pinned)", async () => {
     const base = await header(undefined);
-    expect(base.statements).toBe(contextStatements("main"));
+    expect(base.statements).toBe(contextStatements("main") + STAND_MEASURES);
     expect(base.header).not.toContain("The athlete asked from:");
     const ids: Record<string, string> = {
       workout: me.todayDocId,
@@ -204,11 +215,12 @@ describe("where it sits, and what it costs", () => {
       const h = await header(focus);
       const added = kind === "move" ? 0 : 1;
       expect(h.statements, kind).toBe(base.statements + added);
-      expect(contextStatements("main", focus), kind).toBe(base.statements + added);
+      expect(contextStatements("main", focus) + STAND_MEASURES, kind).toBe(base.statements + added);
       expect(h.statements, kind).toBeLessThanOrEqual(DESIGN_CONTEXT_STATEMENTS);
     }
-    // A focus's one, and a later turn's conversation (the new shape §5): coach-conversation.test.ts.
-    expect(DESIGN_CONTEXT_STATEMENTS).toBe(13);
+    // A focus's one, and a later turn's conversation (the new shape §5): coach-conversation.test.ts. REBASED 2026-11-06
+    // (where you stand): the stand's statement and its measures' most (7) — 13 → 21.
+    expect(DESIGN_CONTEXT_STATEMENTS).toBe(21);
   });
 
   it("in the opening message — after the index, before the request — never in the cached system blocks", async () => {

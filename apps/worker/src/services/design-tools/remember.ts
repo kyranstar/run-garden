@@ -9,6 +9,11 @@
  * and what they state replaces it only with their own words from the request (`quote`). Only a note expires: after
  * today, within a year.
  *
+ * A DRIFT'S CONCLUSION (where you stand, spec §7.2): `drift` (the chip's id, where-you-stand.ts DRIFT_ID) and
+ * `checkBack` (a day after today, within CHECK_BACK_DAYS_MAX) go together: the item is kept with both in its provenance
+ * and pinned — while the athlete's live pins leave room under MEMORY_PIN_CAP (the insert decides; the read before it
+ * says), else kept unpinned, and the answer says so — and the drift stays held until the check-back day.
+ *
  * A rehearsal run writes its marked row and NEVER supersedes the athlete's item (it answers that it would have).
  *
  * At most MEMORY_PER_RUN items per run, counted over the main run's whole tree. Keyed on the call's tool-use id: a
@@ -30,6 +35,7 @@ import type { DesignTool } from "./types.js";
 import { isErr, mainRunIdOf, parseAct } from "./act-common.js";
 import { quoteIn } from "./record-answer.js";
 import { dateField, parsedJson, readAthlete, refuse, untrusted } from "./read-common.js";
+import { DRIFT_ID } from "../where-you-stand.js";
 
 /** Items one run (with its sub-runs) may write. */
 export const MEMORY_PER_RUN = 5;
@@ -38,6 +44,8 @@ const EVIDENCE_ITEMS = 5;
 const EVIDENCE_MAX = 200;
 /** A note's expiry, at most this far ahead. */
 const NOTE_DAYS_MAX = 365;
+/** A drift's check-back, at most this far ahead. */
+export const CHECK_BACK_DAYS_MAX = 56;
 
 const input = z
   .object({
@@ -48,6 +56,8 @@ const input = z
     expires: dateField.optional(),
     replaces: z.string().min(1).max(120).optional(),
     quote: z.string().trim().min(1).max(200).optional(),
+    drift: z.string().regex(DRIFT_ID).optional(),
+    checkBack: dateField.optional(),
   })
   .strict();
 
@@ -146,6 +156,8 @@ export const remember: DesignTool = {
         maxLength: 200,
         description: "Only when replacing an item the athlete confirmed (and then required): the request's own words that change it. Refused anywhere else.",
       },
+      drift: { type: "string", description: "The drift this concludes (its id from where the athlete stands, e.g. drift:discipline:strength), with checkBack." },
+      checkBack: { type: "string", description: "With drift: the day to look again, YYYY-MM-DD. The item is pinned and the drift held until then." },
     },
     required: ["kind", "body", "confidence"],
     additionalProperties: false,
@@ -161,7 +173,7 @@ export const remember: DesignTool = {
         "Write it as stated (the athlete said it) or inferred (you concluded it); the athlete can confirm it in Settings.",
       );
     }
-    const p = parseAct(input, raw, "kind, body, confidence (stated or inferred), and optionally evidence, expires, replaces and quote");
+    const p = parseAct(input, raw, "kind, body, confidence (stated or inferred), and optionally evidence, expires, replaces, quote, and drift with checkBack");
     if (isErr(p)) return p;
     const quoteUnused = refuse(
       "quote_unused",
@@ -173,6 +185,8 @@ export const remember: DesignTool = {
     if (!rootId) return refuse("no_main_run", "This run has no main run to remember for.", "Finish with what you have.");
     const callId = ctx.toolUseId ?? newId();
     const id = `mem:${ctx.run.id}:${callId}`;
+    // The athlete's live pins (the PATCH's own count), for a drift's conclusion: pinned while there is room.
+    const livePins = and(liveMemoryWhere(ctx.userId, todayInZone(EARLIEST_ZONE)), eq(m.pinned, true));
     const { athlete, extra } = await readAthlete(ctx.db, ctx.userId, ctx.now, {
       memUsed: sql`(select count(*) from ${m} where ${m.userId} = ${ctx.userId}
         and case when json_valid(${m.provenance}) then json_extract(${m.provenance}, '$.runId') end = ${rootId})`,
@@ -183,14 +197,19 @@ export const remember: DesignTool = {
             from ${m} where ${m.id} = ${p.replaces} and ${m.userId} = ${ctx.userId})`
         : sql`null`,
       memRequest: sql`(select ${coachRuns.request} from ${coachRuns} where ${coachRuns.id} = ${rootId} and ${coachRuns.userId} = ${ctx.userId})`,
+      memPins: sql`(select count(*) from ${m} where ${livePins})`,
     });
+    const pinRoom = Number(extra.memPins ?? 0) < MEMORY_PIN_CAP;
+    const concludes = p.drift && p.checkBack ? { drift: p.drift, checkBack: p.checkBack, pinned: pinRoom } : null;
     const answerFor = (body: string, kind: string, confidence: string, expires: string | null) => ({
       data: {
-        remembered: { id, kind, confidence, body: untrusted(body), ...(expires ? { expires } : {}) },
+        remembered: { id, kind, confidence, body: untrusted(body), ...(expires ? { expires } : {}), ...(concludes ?? {}) },
         ...(p.replaces ? { replaced: p.replaces } : {}),
         ...(ctx.run.rehearsal ? { rehearsal: true } : {}),
       },
-      summary: `Remembered (${CONFIDENCE_WORDS[confidence] ?? confidence}): ${body}`,
+      summary: `Remembered (${CONFIDENCE_WORDS[confidence] ?? confidence}): ${body}${
+        concludes ? (concludes.pinned ? ` — pinned until ${concludes.checkBack}` : ` — not pinned: ${MEMORY_PIN_CAP} are pinned already`) : ""
+      }`,
       receipt: { memoryId: id, kind, confidence, ...(p.replaces ? { replaced: p.replaces } : {}), undo: { handle: memoryHandle(rootId, callId) } },
     });
     const replay = parsedJson(extra.memReplay) as { kind: string; confidence: string; body: string; expires: string | null } | null;
@@ -202,6 +221,12 @@ export const remember: DesignTool = {
     }
     if (p.kind === "note" && (!p.expires || p.expires <= today || p.expires > addDays(today, NOTE_DAYS_MAX))) {
       return refuse("needs_expiry", `A note is time-boxed: give expires, a day after today (${today}) and within a year.`, "Add expires (YYYY-MM-DD), or keep it as a fact or rule.");
+    }
+    if (!p.drift !== !p.checkBack) {
+      return refuse("check_back_pair", "A drift's conclusion gives both drift (the chip's id) and checkBack (the day to look again).", "Give both, or neither.");
+    }
+    if (p.checkBack && (p.checkBack <= today || p.checkBack > addDays(today, CHECK_BACK_DAYS_MAX))) {
+      return refuse("check_back_day", `checkBack is a day after today (${today}) and within ${CHECK_BACK_DAYS_MAX} days.`, "Pick the day to look again, usually one to three weeks out.");
     }
     if (p.kind === "observation" && !p.evidence) {
       return refuse("needs_evidence", "An observation is learned from outcomes: say what supports it.", 'Add evidence, e.g. ["no clenched sets in 3 of 3 sessions"].');
@@ -246,7 +271,10 @@ export const remember: DesignTool = {
           role: ctx.run.role === "designer" ? "designer" : "main",
           at,
           ...(ctx.run.rehearsal ? { rehearsal: true as const } : {}),
+          ...(p.drift && p.checkBack ? { drift: p.drift, checkBack: p.checkBack } : {}),
         },
+        // A drift's conclusion is pinned while the athlete's pins leave room (decided in the insert itself).
+        ...(p.drift && p.checkBack ? { pinWithin: livePins } : {}),
         // A rehearsal never supersedes the athlete's item.
         ...(p.replaces && !ctx.run.rehearsal ? { replaces: p.replaces } : {}),
       }),

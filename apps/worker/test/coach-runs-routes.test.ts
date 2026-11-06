@@ -671,6 +671,23 @@ describe("the fit-in run is told its batch (saves flow redesign, §12.1)", () =>
       ],
     });
 
+  it("a drift chip's create keeps its nudge as the run's diagnose (where you stand, §7.2) — no statement more; anything but a drift's id is a 400", async () => {
+    const base = await measured("POST", "", { scope: { kind: "now" }, request: "Plan my week." });
+    expect(base.status).toBe(200);
+    expect((await stateOf(base.body.run.id as string)).settings).not.toHaveProperty("diagnose");
+    await call("POST", `/${base.body.run.id}/cancel`);
+    const chip = await measured("POST", "", { scope: { kind: "now" }, request: "1 of 4 planned lifts logged in 3 weeks — let's talk it through.", nudge: "drift:discipline:strength" });
+    expect(chip.status).toBe(200);
+    expect(chip.cost).toBe(base.cost);
+    expect((await stateOf(chip.body.run.id as string)).settings).toMatchObject({ diagnose: "drift:discipline:strength" });
+    await call("POST", `/${chip.body.run.id}/cancel`);
+    for (const nudge of ["missed:w1", "drift:", 7, `drift:discipline:${"x".repeat(81)}`]) {
+      const res = await call("POST", "", { scope: { kind: "now" }, request: "x", nudge });
+      expect(res.status, String(nudge)).toBe(400);
+      expect(res.body).toEqual({ error: "bad_nudge" });
+    }
+  });
+
   it("a fit-in create carries its batch and skip set into the run's settings — one more statement", async () => {
     const { batchId, moveIds } = await fitBatch();
     const skipped = { id: moveIds[0]![1]!, name: "Zorbex neck nod" };

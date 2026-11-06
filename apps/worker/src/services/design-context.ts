@@ -89,7 +89,7 @@ import { FIT_SAVES_REQUEST } from "@rg/saves";
 import { focusReadInContext, type RunFocus } from "./design-focus.js";
 import { CONTEXT_TURNS, conversationBlock, conversationRows, type TurnRow } from "./coach-conversation.js";
 import { runningFactsOf, runningLine, runWeeksSql, thresholdSql, watchLine, type RunningFacts } from "./designed-runs.js";
-import { FOCUS_LINES, SHARED_PROMPT, markUntrusted, roleBlock, type ReviewRubric, type UntrustedSource } from "./design-prompt.js";
+import { DIAGNOSE_LINES, FOCUS_LINES, SHARED_PROMPT, markUntrusted, roleBlock, type ReviewRubric, type UntrustedSource } from "./design-prompt.js";
 import { dayWords, distanceWords, minutesOf, paceWords, parsedArray, parsedJson, plural, readTagged, relativeDay } from "./design-tools/read-common.js";
 import { nullOriginWords, planTerm, sqlFlag } from "./design-tools/read-plan.js";
 import { SAVES_INSIGHTS_MAX, SAVES_MOVES_MAX, savedBatchOf, savedMovesOf, savesBatchSql, type SavedBatch, type SavedChoice } from "./design-tools/read-saves.js";
@@ -98,6 +98,7 @@ import type { SystemBlock } from "./llm-messages.js";
 import { loadProfileWithPreferences } from "./profile.js";
 import { PENDING_HASH } from "./watch-sets.js";
 import { SLEEP_RECONNECT_WORDS, sleepConnectionStatusSql, sleepNeedsReconnect } from "./coros-mcp.js";
+import { driftLine, driftsOf, readStandRows, standBlock, standFactsFrom, type StandFacts } from "./where-you-stand.js";
 
 /** The D1 statements one build runs: the profile with the preferences (4: its row, the preferences, the places, the
  * conditions) and seven reads — today's checks, the objectives, the memory core, the plan over the horizon, the
@@ -114,11 +115,16 @@ export function contextStatements(role: DesignRun["role"], focus?: RunFocus | nu
   const turns = conversation ? 1 : 0;
   if (role === "reviewer") return 12 + turns;
   if (role !== "main") return 11 + turns;
-  return 11 + (focus && focusReadInContext(focus) ? 1 : 0) + turns;
+  // A main run reads where the athlete stands in one more (2026-11-06, where-you-stand.ts) — and its key results'
+  // measures after it: `measureStatements` of them (at most STAND_MEASURES_MOST), none on an account with none.
+  return 12 + (focus && focusReadInContext(focus) ? 1 : 0) + turns;
 }
-/** The most one build runs (the step loop budgets for it): a main run's with a focus and a conversation, or a reviewer's
- * with a conversation. */
-export const DESIGN_CONTEXT_STATEMENTS = 13;
+/** The most the stand's key-result measures cost (key-result-measures.ts `measureStatements`: the strength sets' four,
+ * the runs, the threshold days, the answers). */
+export const STAND_MEASURES_MOST = 7;
+/** The most one build runs (the step loop budgets for it): a main run's with a focus, a conversation and every measure
+ * source (REBASED 2026-11-06, where you stand: 13 → 21). */
+export const DESIGN_CONTEXT_STATEMENTS = 14 + STAND_MEASURES_MOST;
 
 /**
  * HOW EACH DESCRIBED RULE IS ENFORCED — decided by where the rule is read, never by a line's own words. validate.ts
@@ -179,6 +185,9 @@ export interface DesignRun {
   /** A fit-in main run's batch (the saves flow, §12.1): the saves section reads that saved batch — whatever its age,
    * fitted in or not — and in full, whatever the request. */
   savesBatchId?: string | null;
+  /** A drift chip's run (where you stand, spec §7.2): the chip's id — a main run's opening message names what it saw
+   * and carries the diagnose-first lines (design-prompt.ts DIAGNOSE_LINES). */
+  diagnose?: string | null;
 }
 
 export interface DesignContext {
@@ -365,6 +374,8 @@ interface Reads {
   /** A main run's saves batch (read_saves' `savesBatchSql`, in the counts statement): the run's own (`savesBatchId`),
    * else the newest saved in the last 14 days, not fitted in; else null. */
   saves: SavedBatch | null;
+  /** Where the athlete stands (where-you-stand.ts): a main run's; null for a sub-run's. */
+  stand: StandFacts | null;
 }
 
 /** An op still the athlete's to decide (coach-runs.ts' alsoOpen rule, R2): undecided, refused at approval, or being applied. */
@@ -472,7 +483,9 @@ async function read(
   // A main run's saves batch (Task 17): a sub-run designs from its brief.
   const isMain = run.role !== "designer" && run.role !== "reviewer";
 
-  const [conversationTurns, focusRows, checks, objectiveRows, memory, plan, answers, history, countRows] = await Promise.all([
+  const [standRows, conversationTurns, focusRows, checks, objectiveRows, memory, plan, answers, history, countRows] = await Promise.all([
+    // Where the athlete stands (2026-11-06): a main run's — the account's library comes from the counts statement.
+    isMain ? readStandRows(db, userId, today, { library: false }) : null,
     conversation ? conversationRows(db, userId, sql`${conversation.id}`, { limit: CONTEXT_TURNS, exclude: conversation.turn }) : null,
     focus ? focusRead(db, userId, focus) : null,
     db
@@ -560,6 +573,8 @@ async function read(
   ]);
   const { open: openJson, declined: declinedJson, draftDate: rawDraft, runThreshold, runWeeks, library: rawLibrary, saves: rawSaves, ...counts } = countRows[0]!;
   const library = await accountLibraryFrom(db, userId, rawLibrary);
+  // Its key results' measures (measureStatements of them), with the account's library from the counts statement.
+  const stand = standRows ? await standFactsFrom(db, userId, standRows, { today, tz, library: library.all }) : null;
   const open = parsedArray(openJson)
     .flatMap((x) => {
       const o = x as { title?: unknown; date?: unknown; c?: unknown };
@@ -594,6 +609,7 @@ async function read(
     running: runningFactsOf(runThreshold, runWeeks),
     library,
     saves: isMain ? savedBatchOf(rawSaves) : null,
+    stand,
   };
 }
 
@@ -1344,6 +1360,12 @@ function savesSection(batch: SavedBatch, r: Reads, full: boolean): string | null
   ].join("\n");
 }
 
+/** A drift chip's run (spec §7.2): the chip, what the app sees of it now (its label's words marked), and how to go on. */
+function diagnoseSection(id: string, drift: ReturnType<typeof driftsOf>[number] | null): string {
+  const seen = drift ? `${driftLine(drift).slice(2).replace(` (${id})`, "")}.` : "the app no longer sees it — ask whether it still matters.";
+  return `The athlete tapped a "needs you" chip (${id}): ${seen}\n${DIAGNOSE_LINES(id)}`;
+}
+
 const BRIEF_SOURCES: Record<DesignRun["role"], { from: UntrustedSource; label: string }> = {
   main: { from: "parent run", label: "The brief:" },
   designer: { from: "main coach", label: "The main coach's brief for this workout:" },
@@ -1379,6 +1401,13 @@ function header(r: Reads, run: DesignRun, role: Role, scope: { kind: ScopeKind; 
     ].join("\n"),
     indexSection(r, end, events.beyond, now).join("\n"),
   ];
+  // Where the athlete stands (2026-11-06; principles §6.3 as amended): every main run's, after the index — and a drift
+  // chip's run says which chip, what the app sees of it now, and to diagnose first (spec §7.2).
+  if (role === "main" && r.stand) {
+    const drifts = driftsOf(r.stand);
+    parts.push(standBlock(r.stand, drifts));
+    if (run.diagnose) parts.push(diagnoseSection(run.diagnose, drifts.find((d) => d.id === run.diagnose) ?? null));
+  }
   if (role === "reviewer" && r.around && r.draftDate) parts.push(aroundSection(r.around, r.draftDate, r.today, time));
   if (role === "reviewer" && run.packet) {
     parts.push(run.packet);

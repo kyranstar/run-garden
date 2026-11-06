@@ -7,7 +7,7 @@
  * signed in or not; then the session is checked. Mounted ahead of `/api/coach` in index.ts so the coach's own sign-in
  * never answers for these paths first.
  *
- *   POST /                  { scope?, request?, rehearsal?, focus?, conversationId?, savesBatchId? } → { run, existing, conversationId }
+ *   POST /                  { scope?, request?, rehearsal?, focus?, conversationId?, savesBatchId?, nudge? } → { run, existing, conversationId }
  *                           (409 `week_budget` past the athlete's week; a rehearsal past the rehearsal lane's own,
  *                           409 `rehearsal_budget` { spentUsd, capUsd }: llm.ts DEV_BUDGET)
  *                           (the new shape §5: no conversationId, the current conversation — its newest ask under 18 hours
@@ -25,6 +25,9 @@
  *                           fits — read with its skip set in one statement more, kept with the run and its designers;
  *                           400 `bad_saves_batch` when it isn't an id; 404 `saves_batch_not_found` when it isn't a saved
  *                           batch of the athlete's, and nothing starts.
+ *                           `nudge` (where you stand, spec §7.2: a "needs you" drift chip's tap sets it): the chip's id
+ *                           (where-you-stand.ts DRIFT_ID), kept as the run's `diagnose` — its opening context carries
+ *                           the diagnose-first instruction; no statement; 400 `bad_nudge` for anything else.
  *   POST /:id/step          → { status, nextDue, events }    (409 busy while another step holds the run)
  *                           With the step alarm on (COACH_STEP_ALARM, coach-run-stepper.ts): `?afterSeq=n` → { status,
  *                           armed: true, nextDue: null, events after n } at once — the run's object is armed and its
@@ -58,6 +61,7 @@ import { requireUser } from "../auth/middleware.js";
 import { coachDesignerEnabled, type Env } from "../env.js";
 import { stepAlarmOn, stepperLeaseMs, tellStepper, type StepperHint, type StepperOp } from "../services/coach-run-stepper.js";
 import { CONVERSATION_ID } from "../services/coach-conversation.js";
+import { DRIFT_ID } from "../services/where-you-stand.js";
 import { FocusError, focusSchema } from "../services/design-focus.js";
 import {
   ANSWER_MAX_CHARS,
@@ -136,6 +140,7 @@ export function makeCoachRunRoutes(deps: () => RunDeps = defaultRunDeps): Hono<A
       focus?: unknown;
       conversationId?: unknown;
       savesBatchId?: unknown;
+      nudge?: unknown;
     } | null;
     // No scope: the athlete's default; "next workouts" with no count: theirs (Settings → Coach, Task 10).
     const asked = body && typeof body === "object" && !Array.isArray(body) ? parseScopeRequest(body.scope) : null;
@@ -160,6 +165,9 @@ export function makeCoachRunRoutes(deps: () => RunDeps = defaultRunDeps): Hono<A
     if (savesBatchId !== undefined && (typeof savesBatchId !== "string" || !SAVES_BATCH_ID.test(savesBatchId))) {
       return c.json({ error: "bad_saves_batch" }, 400);
     }
+    // A drift chip's id (where you stand, §7.2): absent, or one.
+    const nudge = body.nudge;
+    if (nudge !== undefined && (typeof nudge !== "string" || !DRIFT_ID.test(nudge))) return c.json({ error: "bad_nudge" }, 400);
     try {
       const created = await createRun(
         c.get("db"),
@@ -171,6 +179,7 @@ export function makeCoachRunRoutes(deps: () => RunDeps = defaultRunDeps): Hono<A
           ...(focus?.success ? { focus: focus.data } : {}),
           ...(conversationId !== undefined ? { conversationId: conversationId as string | null } : {}),
           ...(savesBatchId !== undefined ? { savesBatchId: savesBatchId as string } : {}),
+          ...(typeof nudge === "string" ? { diagnose: nudge } : {}),
         },
         new Date(),
       );

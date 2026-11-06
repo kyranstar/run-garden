@@ -18,6 +18,7 @@ import { buildDesignContext } from "../src/services/design-context.js";
 import { ACT_TOOLS } from "../src/services/design-tools/index.js";
 import { docValidateCtx, judge, noCheckToday, readDocAthlete, unwrapUntrusted, WORKOUT_DOC_JSON_SCHEMA } from "../src/services/design-tools/act-common.js";
 import { searchLibraryTool } from "../src/services/design-tools/read-library.js";
+import { readStandFacts } from "../src/services/where-you-stand.js";
 import { RESULT_BUDGET_BYTES } from "../src/services/design-tools/read-common.js";
 import { defaultPlace } from "../src/services/default-place.js";
 import { listLibrary } from "../src/services/library-view.js";
@@ -476,6 +477,44 @@ describe("remember", () => {
     // recall_memory finds it, marked as the coach's inference.
     const recalled = data(await recallMemory.run(c, { query: "Activation before goblet", kind: "observation" }));
     expect(recalled.memories[0]).toMatchObject({ id, confidence: "inferred" });
+  });
+
+  it("a drift's conclusion (where you stand, §7.2): pinned, its drift and check-back kept with where it came from — and the drift read holds it", async () => {
+    const r = await run();
+    const c = ctxOf(r);
+    const out = ok(
+      (await call("remember", c, { kind: "rule", body: "Lifts on Saturday mornings while work is busy", confidence: "stated", drift: "drift:discipline:strength", checkBack: day(-14) }))
+        .result,
+    );
+    const id = (out.receipt as { memoryId: string }).memoryId;
+    const [row] = await db.select().from(schema.coachMemory).where(eq(schema.coachMemory.id, id));
+    expect(row).toMatchObject({ pinned: true, kind: "rule" });
+    expect(row!.provenance).toMatchObject({ source: "athlete_words", drift: "drift:discipline:strength", checkBack: day(-14) });
+    expect(out.data).toMatchObject({ remembered: { id, pinned: true, drift: "drift:discipline:strength", checkBack: day(-14) } });
+    const facts = await readStandFacts(db, rich.userId, { today: TODAY, tz: "America/Los_Angeles" });
+    expect(facts.conclusions[0]).toMatchObject({ id, drift: "drift:discipline:strength", checkBack: day(-14) });
+  });
+
+  it("a check-back needs its drift, and a day after today within 8 weeks; past the pin cap it is kept unpinned, and says so", async () => {
+    const r = await run();
+    const refused = async (input: unknown) => err((await call("remember", ctxOf(r), input)).result);
+    const base = { kind: "rule", body: "Lifts on Saturdays", confidence: "stated" };
+    expect((await refused({ ...base, checkBack: day(-7) })).error).toBe("check_back_pair");
+    expect((await refused({ ...base, drift: "drift:discipline:strength" })).error).toBe("check_back_pair");
+    expect((await refused({ ...base, drift: "drift:discipline:strength", checkBack: TODAY })).error).toBe("check_back_day");
+    expect((await refused({ ...base, drift: "drift:discipline:strength", checkBack: day(-57) })).error).toBe("check_back_day");
+    expect((await refused({ ...base, drift: "not a drift", checkBack: day(-7) })).error).toBe("invalid_input");
+    for (let i = 0; i < 12; i++) {
+      await db.insert(schema.coachMemory).values({
+        id: `pin-${i}`, userId: rich.userId, kind: "fact", body: `Zorbex fact ${i}`, provenance: { source: "athlete_words", at: NOW.toISOString() },
+        learnedAt: NOW.toISOString(), active: true, pinned: true, confidence: "stated",
+      });
+    }
+    const out = ok((await call("remember", ctxOf(r), { ...base, drift: "drift:discipline:strength", checkBack: day(-7) })).result);
+    expect(out.data).toMatchObject({ remembered: { pinned: false } });
+    const [row] = await db.select().from(schema.coachMemory).where(eq(schema.coachMemory.id, (out.receipt as { memoryId: string }).memoryId));
+    expect(row!.pinned).toBe(false);
+    expect(out.summary).toMatch(/not pinned: 12 are pinned already/);
   });
 
   it("names a smuggled field first, however much else is wrong with the call", async () => {

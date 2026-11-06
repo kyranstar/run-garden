@@ -423,9 +423,10 @@ describe("the opening context: the conversation so far", () => {
   });
 
   it("the first turn reads nothing more; a later one exactly one statement more, whatever the conversation holds", async () => {
-    expect(contextStatements("main", null, null)).toBe(11);
-    expect(contextStatements("main", null, "c1")).toBe(12);
-    expect(contextStatements("main", { kind: "day", id: TODAY }, "c1")).toBe(13);
+    // + where the athlete stands (2026-11-06): a main run's one more.
+    expect(contextStatements("main", null, null)).toBe(12);
+    expect(contextStatements("main", null, "c1")).toBe(13);
+    expect(contextStatements("main", { kind: "day", id: TODAY }, "c1")).toBe(14);
     // A sub-run of a later turn reads it too since 2026-11-05 (its reviewer judged a home session a turn after "the gym
     // today"): design-must-fix-guard.test.ts.
     expect(contextStatements("designer", null, "c1")).toBe(12);
@@ -434,7 +435,9 @@ describe("the opening context: the conversation so far", () => {
     statements = 0;
     await buildDesignContext(db, env, userId, ctxRun(first.run.id, first.run.id), NOW);
     const firstCost = statements;
-    expect(firstCost).toBe(contextStatements("main", null, null));
+    // The rich athlete's key results cost their measures too (where you stand, 2026-11-06): the strength sets' four, the
+    // runs', the threshold's.
+    expect(firstCost).toBe(contextStatements("main", null, null) + 6);
     await cancelRun(db, userId, first.run.id, at(1000));
     for (let i = 0; i < CONTEXT_TURNS + 2; i++) {
       const made = await createRun(db, userId, { scope: { kind: "now" }, request: `Ask ${i}.` }, at((i + 1) * 60_000));

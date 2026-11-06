@@ -429,7 +429,9 @@ export interface RunSettings {
   savesBatchId?: string;
   /** With `savesBatchId`: the batch's moves the athlete skipped, as the create read them (`skipSetOf`; [] with none) —
    * what the run's workout tools refuse (§12.5). */
-  savesSkip?: SavesSkip[];
+  savesSkip?: SavesSkip[];  /** A main run's only (where you stand, spec §7.2): the "needs you" drift chip the athlete tapped (its id,
+   * where-you-stand.ts DRIFT_ID) — its opening context then carries the diagnose-first instruction. */
+  diagnose?: string;
 }
 
 export interface PendingCall {
@@ -532,6 +534,8 @@ export function newRunState(
     /** A fit-in run's batch and its skip set (§12.1): a main run's and its designers'; never a reviewer's. */
     savesBatchId?: string;
     savesSkip?: SavesSkip[];
+    /** A drift chip's id (where you stand): a main run's alone. */
+    diagnose?: string;
   } = {},
 ): RunState {
   const limits = RUN_LIMITS[role];
@@ -551,6 +555,7 @@ export function newRunState(
       ...(opts.focus && role === "main" ? { focus: opts.focus } : {}),
       ...(scope.kind === "auto" && role === "main" ? { setCeilingMicros: opts.setCeilingMicros ?? RUN_CEILING_MICROS.week } : {}),
       ...(opts.savesBatchId && role !== "reviewer" ? { savesBatchId: opts.savesBatchId, savesSkip: opts.savesSkip ?? [] } : {}),
+      ...(opts.diagnose && role === "main" ? { diagnose: opts.diagnose } : {}),
     },
     system: null,
     messages: [],
@@ -719,6 +724,8 @@ export interface ContextRun {
   turnId?: string;
   /** A fit-in main run's batch (the saves flow, §12.1): its opening context reads it, whatever its age, in full. */
   savesBatchId?: string;
+  /** A drift chip's run (where you stand, §7.2): its opening context says so and carries the diagnose-first lines. */
+  diagnose?: string;
 }
 
 /**
@@ -1115,6 +1122,9 @@ export interface CreateRunInput {
    * its designers' too.
    */
   savesBatchId?: string | null;
+  /** A "needs you" drift chip's id (where you stand, spec §7.2; checked by the route against DRIFT_ID): kept as the run's
+   * `diagnose`, no statement of its own. */
+  diagnose?: string | null;
 }
 
 export const REQUEST_MAX_CHARS = 2_000;
@@ -1285,6 +1295,7 @@ export async function createRun(db: Db, userId: string, input: CreateRunInput, n
     ...(loweredSet !== undefined ? { setCeilingMicros: Math.round(Math.min(loweredSet, COACH_CEILING_DEFAULTS_USD.set) * 1_000_000) } : {}),
     ...(focus ? { focus: { kind: focus.kind, id: focus.id } } : {}),
     ...(savesBatchId && savesSkip ? { savesBatchId, savesSkip } : {}),
+    ...(input.diagnose ? { diagnose: input.diagnose } : {}),
   });
   const insert = async (): Promise<CreateRunResult | null> => {
     const id = newId();
@@ -2653,6 +2664,8 @@ async function contextStep(s: StepCtx): Promise<StepEnd> {
       : {}),
     // The batch a fit-in run fits (the saves flow, §12.1): the context reads a main run's alone.
     ...(s.state.settings.savesBatchId && s.run.role === "main" ? { savesBatchId: s.state.settings.savesBatchId } : {}),
+    // A drift chip's run (where you stand, §7.2): a main run's alone.
+    ...(s.state.settings.diagnose && s.run.role === "main" ? { diagnose: s.state.settings.diagnose } : {}),
   };
   const built = await s.deps.buildContext.build(s.db, s.env, s.userId, run, s.now);
   s.state.system = built.system;

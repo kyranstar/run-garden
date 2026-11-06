@@ -8,9 +8,10 @@
  *
  * What is live and what rides in the pinned core is read in memory-core.ts; this is the writing side.
  */
-import { and, eq, isNull, sql } from "drizzle-orm";
+import { and, eq, isNull, sql, type SQL } from "drizzle-orm";
 import { coachMemory } from "@rg/database";
 import type { AtomicStatement, Db } from "./db.js";
+import { MEMORY_PIN_CAP } from "./memory-core.js";
 
 export const MEMORY_KINDS = ["fact", "rule", "note", "observation"] as const;
 export type MemoryKind = (typeof MEMORY_KINDS)[number];
@@ -44,6 +45,9 @@ export interface DesignMemoryProvenance {
   at: string;
   /** Written by a rehearsal run: never the athlete's memory. */
   rehearsal?: true;
+  /** A drift's conclusion (where you stand, spec §7.2): the chip's id and the day to look again. */
+  drift?: string;
+  checkBack?: string;
 }
 
 /** Where a memory v2 item came from: a coach's run, or a saved post. */
@@ -61,6 +65,8 @@ export interface NewMemory {
   provenance: MemoryProvenance;
   /** The item this one replaces: kept, marked superseded by this one. */
   replaces?: string;
+  /** Pin it while fewer than MEMORY_PIN_CAP rows match these (the athlete's live pins) — decided in the insert. */
+  pinWithin?: SQL;
 }
 
 /**
@@ -70,10 +76,15 @@ export interface NewMemory {
  * still live: the athlete's pins stay as many as they were, each where they put it.
  */
 export function memoryWrites(db: Db, m: NewMemory): AtomicStatement[] {
-  const pinned = m.replaces
+  const kept = m.replaces
     ? sql`coalesce((select ${coachMemory.pinned} from ${coachMemory} where ${coachMemory.id} = ${m.replaces} and ${coachMemory.userId} = ${m.userId}
         and ${coachMemory.active} = 1 and ${coachMemory.supersededBy} is null), 0)`
-    : false;
+    : sql`0`;
+  const pinned = m.pinWithin
+    ? sql`case when (select count(*) from ${coachMemory} where ${m.pinWithin}) < ${MEMORY_PIN_CAP} then 1 else ${kept} end`
+    : m.replaces
+      ? kept
+      : false;
   const writes: AtomicStatement[] = [
     db
       .insert(coachMemory)

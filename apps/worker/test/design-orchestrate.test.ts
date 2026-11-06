@@ -1347,7 +1347,9 @@ describe("every new step shape stays inside the Workers Free budget (counted)", 
     // A model step's own nine statements (its restore marker and still-ours read one, since fix wave 3A) and the call.
     const MODEL = 9 + 1;
     expect(shapes).toMatchObject({
-      "main context": 2 + 4 + 11,
+      // + where the athlete stands (2026-11-06): its statement, and its key results' measures (the strength sets' four,
+      // the runs', the threshold's).
+      "main context": 2 + 4 + 11 + 1 + 6,
       // The athlete with the plan on the briefs' dates and the proposal; the estimate's read; the designers' one insert.
       "plan_set: seven designers started": 2 + MODEL + 3,
       "designer context": 2 + 4 + 11,
@@ -1411,8 +1413,9 @@ describe("the prompt says how a set works", () => {
     // design-prompt.test.ts's and design-fix13's. REBASED again 2026-10-25 (saved-posts fix wave) — measured 6,291.
     // REBASED 2026-10-26 (saves flow redesign): the integration paragraph's choices and near-duplicates, read_saves' line
     // naming a fit-in run's own batch — measured 6,414.75; the same cap as design-prompt.test.ts's and design-fix13's.
-    // REBASED 2026-11-05 (ball release): the "Release" principle — measured 6,620.75; the same cap as theirs.
-    expect(SHARED_PROMPT.length / 4).toBeLessThanOrEqual(6640);
+    // REBASED 2026-11-06 (where you stand, on top of the ball release): the opening message's block named, a drift noticed kindly, a coach read
+    // marked, with the "Release" principle — measured 6,728.25; ≥ 100 tokens headroom.
+    expect(SHARED_PROMPT.length / 4).toBeLessThanOrEqual(6830);
     // REBASED 2026-10-19 for the owner's voice (the coach's last words, in the main block): measured 1,620 without its
     // turns — the same cap as design-prompt.test.ts's and design-fix13's; REBASED 2026-10-25 (saved-posts fix wave:
     // pin_moves among the scope's choices) — measured 1,653.25 without its turns.

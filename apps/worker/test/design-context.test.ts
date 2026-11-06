@@ -8,7 +8,7 @@ import { readFileSync } from "node:fs";
 import { and, eq } from "drizzle-orm";
 import { beforeEach, describe, expect, it } from "vitest";
 import { schema } from "@rg/database";
-import { newId, workoutDocSchema, type WorkoutDoc } from "@rg/domain";
+import { addDays, keyResultMeasureSchema, newId, workoutDocSchema, type WorkoutDoc } from "@rg/domain";
 import { EQUIPMENT, EQUIPMENT_IDS, EXERCISES, isPlyometric, libraryLine, TMJ, usedValues, type ConditionProfile, type DescribedRule, type HistorySession } from "@rg/exercise-library";
 import { FORMAT_OF_PART, validateWorkoutDoc } from "@rg/workout";
 import type { Env } from "../src/env.js";
@@ -23,8 +23,9 @@ import {
   RULE_ENFORCEMENT,
   type DesignRun,
 } from "../src/services/design-context.js";
-import { REVIEW_DIMENSIONS, SHARED_PROMPT, roleBlock } from "../src/services/design-prompt.js";
-import { RUN_LIMITS } from "../src/services/coach-runs.js";
+import { DIAGNOSE_LINES, REVIEW_DIMENSIONS, SHARED_PROMPT, roleBlock } from "../src/services/design-prompt.js";
+import { CONTEXT_STATEMENT_BUDGET, RUN_LIMITS } from "../src/services/coach-runs.js";
+import { measureStatements } from "../src/services/key-result-measures.js";
 import { FIT_SAVES_REQUEST } from "@rg/saves";
 import { RUN_LIMITS as ROLE_CAPS } from "../src/services/design-limits.js";
 import type { SystemBlock } from "../src/services/llm-messages.js";
@@ -496,8 +497,38 @@ describe("the system blocks", () => {
   });
 });
 
+describe("where the athlete stands (2026-11-06; spec §7.1)", () => {
+  it("a main run's opening message carries the block after the index — values, not dates alone; a sub-run's never", async () => {
+    const { header } = await build();
+    const block = header.slice(header.indexOf("# Where you stand"));
+    expect(header.indexOf("# Where you stand")).toBeGreaterThan(header.indexOf("What the tools can reach"));
+    expect(block).toContain("Objectives — current → target by due: pace:");
+    expect(block).toMatch(/Readiness: .*HRV .*78/);
+    expect(block).toContain("Next 14 days");
+    for (const role of ["designer", "reviewer"] as const) expect((await build({ role })).header).not.toContain("# Where you stand");
+  });
+});
+
+describe("a drift chip's run: diagnose first (2026-11-06; spec §7.2)", () => {
+  it("names the chip's observation and carries the diagnose-first instruction — the app's words; another run's never", async () => {
+    for (const [n, state] of [[6, "completed"], [9, "skipped"], [12, "skipped"], [15, "skipped"]] as const) {
+      await planned({ date: addDays(TODAY, -n), category: "strength", sport: "strength", origin: "studio", state });
+    }
+    const id = "drift:discipline:strength";
+    const { header } = await build({ diagnose: id, request: "1 of 4 planned lifts logged in 3 weeks — let's talk it through." });
+    expect(header).toContain(`The athlete tapped a "needs you" chip (${id}): 1 of 4 planned lifts logged in 3 weeks.`);
+    expect(header).toContain(DIAGNOSE_LINES(id));
+    expect(header.indexOf(DIAGNOSE_LINES(id))).toBeGreaterThan(header.indexOf("# Where you stand"));
+    expect(header.indexOf(DIAGNOSE_LINES(id))).toBeLessThan(header.indexOf("The athlete's request, in their own words:"));
+    expect((await build()).header).not.toContain(DIAGNOSE_LINES(id));
+    expect((await build({ role: "designer", diagnose: id })).header).not.toContain(DIAGNOSE_LINES(id));
+    const gone = await build({ diagnose: "drift:none:yoga" });
+    expect(gone.header).toContain('The athlete tapped a "needs you" chip (drift:none:yoga): the app no longer sees it — ask whether it still matters.');
+  });
+});
+
 describe("the budget", () => {
-  it(`spends exactly DESIGN_CONTEXT_STATEMENTS statements (at most 20), whatever the account holds`, async () => {
+  it(`spends exactly contextStatements, and the measures its key results need — at most DESIGN_CONTEXT_STATEMENTS — whatever the account holds`, async () => {
     counting = true;
     await build();
     const rich = statements;
@@ -507,15 +538,26 @@ describe("the budget", () => {
     expect(rich).toBe(contextStatements("main"));
     expect(statements).toBe(contextStatements("main"));
     // The profile's four (its row, the preferences, the places, the conditions) and seven reads: the preferences are
-    // read once, with the profile. A reviewer reads the days around its draft's in one more (fix wave 13, I9): the most.
-    expect(contextStatements("main")).toBe(11);
+    // read once, with the profile. A reviewer reads the days around its draft's in one more (fix wave 13, I9). A main
+    // run reads where the athlete stands in one more (2026-11-06, where you stand): 11 + 1.
+    expect(contextStatements("main")).toBe(12);
     expect(contextStatements("designer")).toBe(11);
     expect(contextStatements("reviewer")).toBe(12);
-    // A main run with a focus and a conversation to read (the new shape §5): one more each — and since 2026-11-05 a
-    // reviewer of a later turn, with the conversation: the same most.
-    expect(DESIGN_CONTEXT_STATEMENTS).toBe(13);
-    expect(contextStatements("reviewer", null, "c1")).toBe(DESIGN_CONTEXT_STATEMENTS);
-    expect(DESIGN_CONTEXT_STATEMENTS).toBeLessThanOrEqual(20);
+    // Key results cost their measures' statements (measureStatements, the library given, run labels off): a hold and a
+    // check-in, the strength sets' four and the answers' one.
+    await db.insert(schema.keyResults).values([
+      { id: "kr-a", userId, objectiveId: "obj-plank", label: "Zorbex hold", measure: { kind: "hold_max", libraryIds: ["wallSit"], windowDays: 90 }, direction: "up", target: 90, unit: "s", position: 0, createdAt: at("2026-02-01"), updatedAt: at("2026-02-01") },
+      { id: "kr-b", userId, objectiveId: "obj-plank", label: "Zorbex energy", measure: { kind: "checkin", questionId: "energy" }, direction: "up", target: 8, unit: "score", position: 1, createdAt: at("2026-02-01"), updatedAt: at("2026-02-01") },
+    ]);
+    statements = 0;
+    await build();
+    const measures = [keyResultMeasureSchema.parse({ kind: "hold_max", libraryIds: ["wallSit"] }), keyResultMeasureSchema.parse({ kind: "checkin", questionId: "energy" })];
+    expect(statements).toBe(contextStatements("main") + measureStatements(measures, { library: true, labels: false }));
+    expect(statements).toBe(17);
+    // The most: a main run with a focus and a conversation (11 + 1 + 1 + 1) and every measure source (7).
+    expect(DESIGN_CONTEXT_STATEMENTS).toBe(21);
+    expect(contextStatements("main", { kind: "workout", id: "w" }, "c1") + 7).toBe(DESIGN_CONTEXT_STATEMENTS);
+    expect(DESIGN_CONTEXT_STATEMENTS).toBeLessThanOrEqual(CONTEXT_STATEMENT_BUDGET);
   });
 
   it("an empty account still gets a whole context that says what it lacks", async () => {
@@ -796,9 +838,10 @@ describe("fix wave 13 — what the opening context gives, so the coach needn't f
     expect(RULE_ENFORCEMENT.care).toBe("cost");
   });
 
-  it("the opening grows by little: the main header stays well under 6.5 KB here", async () => {
+  it("the opening grows by little: the main header stays well under 7.5 KB here", async () => {
     const { header } = await build();
-    expect(new TextEncoder().encode(header).length).toBeLessThan(6_500);
+    // REBASED 2026-11-06 (where you stand): every main run's block — measured 6,521 B (was under 6.5 KB).
+    expect(new TextEncoder().encode(header).length).toBeLessThan(7_500);
   });
 });
 
@@ -841,7 +884,8 @@ describe("fix wave 13 — I9: a reviewer opens with the days around its draft's 
     statements = 0;
     const { header } = await build({ role: "reviewer", parentId: "designer-1", packet: "# What to review", request: null });
     counting = false;
-    expect(statements).toBe(contextStatements("main"));
+    // A designer's (a main run reads where the athlete stands in one more since 2026-11-06).
+    expect(statements).toBe(contextStatements("designer"));
     expect(header).not.toContain("The days around the draft's");
   });
 });
@@ -902,7 +946,7 @@ describe("saved-posts import, Task 17 — what came in from the athlete's saves,
       const { header } = await build({ role, parentId: "main-1", brief: "Calm hips.", request: FIT_SAVES_REQUEST });
       counting = false;
       expect(sectionOf(header), role).toEqual([]);
-      expect(statements, role).toBe(contextStatements("main"));
+      expect(statements, role).toBe(contextStatements("designer"));
     }
   });
 
@@ -989,7 +1033,8 @@ describe("saved-posts import, Task 17 — what came in from the athlete's saves,
     expect(long).toHaveLength(19);
     expect(long[13]).toBe("Notes from these posts:");
     expect(bytes(long.join("\n"))).toBeLessThanOrEqual(5_100);
-    expect(bytes(header)).toBeLessThanOrEqual(10_900);
+    // REBASED 2026-11-06 (where you stand): every main run's block — measured 11,543 B.
+    expect(bytes(header)).toBeLessThanOrEqual(11_800);
   });
 
   it("any other main run gets one index line in its place: how many moves wait, and read_saves (coach-context audit I4)", async () => {
