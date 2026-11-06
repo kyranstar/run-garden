@@ -13,7 +13,8 @@ import { createRoot, type Root } from "react-dom/client";
 import { MemoryRouter } from "react-router-dom";
 import { QueryClientProvider } from "@tanstack/react-query";
 import { readFileSync } from "node:fs";
-import { resolve } from "node:path";
+import { dirname, resolve } from "node:path";
+import { fileURLToPath } from "node:url";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import type { CoachConversationCardDto, DesignCorrectionLineDto, DesignPinsLineDto } from "@rg/api-client";
 import { CoachReplyContext } from "../src/screens/studio/coach-reply.js";
@@ -265,8 +266,8 @@ describe("the card's corrections (the controller's fix pass, D6, E16, E18, E22)"
 });
 
 describe("the card's taps (the controller's fix pass, E21)", () => {
-  // jsdom has its own URL: the file is found from the package (vitest runs from it).
-  const css = readFileSync(resolve(process.cwd(), "src/styles.css"), "utf8");
+  // Found from this file, not the working directory: CI runs vitest from the repo root (as shape-fixes does).
+  const css = readFileSync(resolve(dirname(fileURLToPath(import.meta.url)), "../src/styles.css"), "utf8");
   const rule = (selector: string) => {
     const from = css.indexOf(`\n${selector} {`);
     return from < 0 ? "" : css.slice(from, css.indexOf("}", from));
