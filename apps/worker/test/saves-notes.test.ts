@@ -334,7 +334,8 @@ describe("a move's note on its link", () => {
 
     // The coach's: get_exercise, the note marked as text from outside.
     const ex = await readTool("get_exercise", { id: quad });
-    expect(ex.data.yours.links).toEqual([{ url: U("https://example.com/p/a"), creator: U("coach_a"), note: U(QUAD_PURPOSE) }]);
+    // Each link Save wrote names its post and batch (audit fixes, E1): the coach reads its evidence by them.
+    expect(ex.data.yours.links).toEqual([{ url: U("https://example.com/p/a"), creator: U("coach_a"), note: U(QUAD_PURPOSE), postId: a, batchId }]);
     statements.length = 0;
     const hip = await readTool("get_exercise", { id: HIP_SWITCH.id });
     const hipStatements = statements.length;
@@ -344,7 +345,7 @@ describe("a move's note on its link", () => {
     expect(hip.data.yours.own).toBeUndefined();
     expect(hip.data.yours.links).toEqual([
       { url: U("https://example.com/curated"), creator: U("Curated Coach"), note: null },
-      { url: U("https://example.com/p/a"), creator: U("coach_a"), note: U(HIP_PURPOSE) },
+      { url: U("https://example.com/p/a"), creator: U("coach_a"), note: U(HIP_PURPOSE), postId: a, batchId },
     ]);
     expect(hipStatements).toBeLessThanOrEqual(READ_TOOLS.find((t) => t.name === "get_exercise")!.statementCost);
   });

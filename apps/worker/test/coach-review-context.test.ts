@@ -70,8 +70,10 @@ async function blockFor(runId: string): Promise<string> {
 describe("the card's lines and why in the next turn", () => {
   it("each line — in or out, the move, where, the dose, the coach's words, its cites — then the why, then the corrections", async () => {
     const block = await blockFor(await turn([pins("run-a", [LIFT_LINE, NOD_LINE]), FIX]));
-    expect(block).toContain(`    - in ${markUntrusted("saved post", "Zorbex hip lift")}: ${markUntrusted("main coach", "joins your mobility rotation · 6–10 reps · She says it's for stiff hips after easy runs.")} [q1.1, history]`);
-    expect(block).toContain(`    - out ${markUntrusted("saved post", "Zorbex neck nod")}: ${markUntrusted("main coach", "Your neck care already covers it.")} [history]`);
+    // The card's batch, and each line's move and post (audit fixes, E1): a later turn reads the move's evidence by them.
+    expect(block).toMatch(/Suggested moves for the engine's pool \(id dp-run-[^,]+, batch batch-1\): /);
+    expect(block).toContain(`    - in ${markUntrusted("saved post", "Zorbex hip lift")} (move myZorbexHipLiftAbc123, post post-1:0): ${markUntrusted("main coach", "joins your mobility rotation · 6–10 reps · She says it's for stiff hips after easy runs.")} [q1.1, history]`);
+    expect(block).toContain(`    - out ${markUntrusted("saved post", "Zorbex neck nod")} (move myZorbexNeckNodAbc123): ${markUntrusted("main coach", "Your neck care already covers it.")} [history]`);
     expect(block).toContain(`    Why: ${markUntrusted("main coach", WHY)}`);
     expect(block).toContain(`    - Correction: ${markUntrusted("main coach", "Dose of Zorbex hip lift: 30 s, 2 sets (was 6–10 reps)")} — still open`);
   });
@@ -82,7 +84,7 @@ describe("the card's lines and why in the next turn", () => {
     await db.update(coachProposals).set({ ops: [pins(runId, lines)] }).where(schemaEq(designProposalId(runId)));
     const block = await blockFor(runId);
     expect(block.length).toBeLessThanOrEqual(CONVERSATION_BLOCK_MAX_CHARS);
-    for (let i = 0; i < 30; i++) expect(block).toContain(markUntrusted("saved post", `Zorbex move ${i}`));
+    for (let i = 0; i < 30; i++) expect(block).toContain(`${markUntrusted("saved post", `Zorbex move ${i}`)} (move myZorbexMove${String(i).padStart(2, "0")}Abc123`);
   });
 
   it("an old card reads as before: plain lines, no decision, no cites", async () => {
@@ -90,7 +92,7 @@ describe("the card's lines and why in the next turn", () => {
     await db.update(coachProposals).set({ ops: [pins(runId, ["Zorbex hip lift — in rotation.", { moveId: "myZorbexNeckNodAbc123", name: "Zorbex neck nod", text: "Waits." }])] }).where(schemaEq(designProposalId(runId)));
     const block = await blockFor(runId);
     expect(block).toContain(`    - ${markUntrusted("main coach", "Zorbex hip lift — in rotation.")}`);
-    expect(block).toContain(`    - ${markUntrusted("saved post", "Zorbex neck nod")}: ${markUntrusted("main coach", "Waits.")}`);
+    expect(block).toContain(`    - ${markUntrusted("saved post", "Zorbex neck nod")} (move myZorbexNeckNodAbc123): ${markUntrusted("main coach", "Waits.")}`);
   });
 
   it("a suggestion of corrections alone is a card of its own; beside a pins card they ride it", async () => {
@@ -107,9 +109,11 @@ describe("the card's lines and why in the next turn", () => {
     if (isToolErr(r)) throw new Error(r.why);
     const ops = (r.data as { proposals: Array<{ ops: Array<Record<string, unknown>> }> }).proposals[0]!.ops;
     const card = ops.find((o) => o.kind === "move_pins")!;
+    // The card's batch, and each line's move and post (audit fixes, E1).
+    expect(card.batchId).toBe("batch-1");
     expect(card.lines).toEqual([
-      { untrusted: true, text: "in Zorbex hip lift: joins your mobility rotation · 6–10 reps · She says it's for stiff hips after easy runs. [q1.1, history]" },
-      { untrusted: true, text: "out Zorbex neck nod: Your neck care already covers it. [history]" },
+      { untrusted: true, text: "in Zorbex hip lift (move myZorbexHipLiftAbc123, post post-1:0): joins your mobility rotation · 6–10 reps · She says it's for stiff hips after easy runs. [q1.1, history]" },
+      { untrusted: true, text: "out Zorbex neck nod (move myZorbexNeckNodAbc123): Your neck care already covers it. [history]" },
     ]);
     expect(ops.find((o) => o.kind === "import_correction")).toMatchObject({ line: { untrusted: true, text: FIX.line }, why: { untrusted: true, text: FIX.why } });
   });

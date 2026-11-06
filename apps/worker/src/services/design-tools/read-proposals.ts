@@ -149,6 +149,8 @@ function pinsOf(o: Record<string, unknown>, today: string): Record<string, unkno
   const lines = pinsCardLinesOf(parsedJson(o.lines) ?? o.lines);
   return {
     kind: "move_pins",
+    // Its saves batch (audit fixes, E1): read_saves reads its moves' evidence by their ids (each line names its move).
+    ...(typeof o.batchId === "string" && ID.test(o.batchId) ? { batchId: o.batchId } : {}),
     ...(typeof o.date === "string" && isLocalDate(o.date) ? { date: o.date, day: dayWords(o.date, today) } : {}),
     ...(str(o.planTitle) ? { title: untrusted(str(o.planTitle)!) } : {}),
     ...(str(o.planSummary) ? { summary: untrusted(str(o.planSummary)!) } : {}),
@@ -209,7 +211,7 @@ export const readProposals: DesignTool = {
               'change', ${op("$.op.kind")}, 'rowTitle', ${op("$.row.title")}, 'toDate', ${op("$.op.toDate")}, 'toTime', ${op("$.op.toTime")},
               'minutes', coalesce(${op("$.retime.minutes")}, ${op("$.op.durationMinutes")}), 'skipReason', ${op("$.op.reason")}, 'changeWhy', ${op("$.why")},
               'planTitle', ${op("$.title")}, 'planSummary', ${op("$.summary")}, 'planDone', ${op("$.outcome.summary")}, 'placed', ${op("$.outcome.placed")},
-              'lines', json(case when ${op("$.kind")} = 'move_pins' then ${op("$.lines")} end),
+              'lines', json(case when ${op("$.kind")} = 'move_pins' then ${op("$.lines")} end), 'batchId', case when ${op("$.kind")} = 'move_pins' then ${op("$.batchId")} end,
               'fixLine', case when ${op("$.kind")} = 'import_correction' then ${op("$.line")} end, 'basis', ${op("$.basis")}))
               from json_each(case when json_valid(${c.ops}) then ${c.ops} else '[]' end) o) as ops
           from ${c} where ${c.userId} = ${ctx.userId} and ${c.status} != 'rehearsal' ${p.status ? sql`and ${c.status} = ${p.status}` : sql``}

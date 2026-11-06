@@ -937,7 +937,7 @@ describe("every reader tolerates the moves in rotation", () => {
     );
     const block = conversationBlock(await conversationRows(db, userId, namedConversationSql(userId, ctx.run.id), { limit: 6 }), NOW)!;
     expect(block).toContain(
-      `Suggested moves for the engine's pool (id ${designProposalId(ctx.run.id)}): ${markUntrusted("main coach", WORDS.title)} · ${markUntrusted("main coach", ONE_JOINS)} — still open`,
+      `Suggested moves for the engine's pool (id ${designProposalId(ctx.run.id)}, batch ${batchId}): ${markUntrusted("main coach", WORDS.title)} · ${markUntrusted("main coach", ONE_JOINS)} — still open`,
     );
   });
 
@@ -962,7 +962,7 @@ describe("every reader tolerates the moves in rotation", () => {
     expect((manifest as { pins?: Array<{ lines: unknown }> }).pins?.[0]?.lines).toEqual(OLD.map((text) => ({ text })));
     // The conversation block names the card.
     const block = conversationBlock(await conversationRows(db, userId, namedConversationSql(userId, ctx.run.id), { limit: 6 }), NOW)!;
-    expect(block).toContain(`Suggested moves for the engine's pool (id ${id}): ${markUntrusted("main coach", WORDS.title)} · ${markUntrusted("main coach", ONE_JOINS)} — still open`);
+    expect(block).toContain(`Suggested moves for the engine's pool (id ${id}, batch ${batchId}): ${markUntrusted("main coach", WORDS.title)} · ${markUntrusted("main coach", ONE_JOINS)} — still open`);
   });
 
   it("the manifest's pins part, read_proposals, and the Coach button's current run", async () => {

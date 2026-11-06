@@ -5,6 +5,11 @@
  * THE BATCH: the saved batch `batchId` names, whatever its age or fit — else the one the run fits
  * (`ctx.run.savesBatchId`, the saves flow §12.1: "Fit them in" tells the run its batch), whatever its age too (§8.2) —
  * else the newest the athlete saved in the last SAVES_WINDOW_DAYS that nothing has fitted in yet (`fitted_at` null).
+ * BY THE MOVE (audit fixes 2026-11-06, E1): `moveIds` (or `moveId`) reads those moves from the newest saved batch with a
+ * saved link to one of them — fitted in or not, whatever its age — so a challenge days after a card was approved reads
+ * the evidence it rested on: each move keeps its place in that batch (`n`, its quote ids'), the receipt is the same, and
+ * the page never asks to close a batch (nor does any page of a batch fitted in already: `fitted`). A move the batch
+ * doesn't hold is named in `missing`; none of the athlete's saves holding any is `not_found`.
  * Its moves come from the links the owner kept (`saved`; a removed one never), each move once, new ones first and then
  * in the order the posts showed them:
  *  - `name`, `summary`: a personal move's are a model's reading of a creator's post (or the owner's edit of it), marked;
@@ -109,6 +114,8 @@ const TIGHT_HEAD = 60;
 const INSIGHTS_FIRST = "insights: on the first page (offset 0, not full)";
 /** How a compact page's move reads whole. */
 const FULL_WORDS = "a move's every word (whole quotes, why, use and skip when): full: true, offset: its n − 1, limit: 1";
+/** How a move read by its id reads whole. */
+const FULL_WORDS_BY_MOVE = "a move's every word (whole quotes, why, use and skip when): full: true, moveIds: [its id]";
 /** The insights of the batch's kept posts one read lists, and the opening context's section shows, at most. */
 export const SAVES_INSIGHTS_MAX = 5;
 
@@ -142,6 +149,8 @@ export interface SavedPost {
 export interface SavedBatch {
   id: string;
   savedAt: string;
+  /** When a pins card closing it was approved (`fitted_at`); null while it waits. */
+  fittedAt?: string | null;
   links: SavedLink[];
   posts: Map<string, SavedPost>;
   /** The first SAVES_INSIGHTS_MAX insights of its kept posts, in the posts' order (saves-batches.ts `scopedInsightsOf`):
@@ -176,9 +185,20 @@ export interface SavedMove {
  * post's url, creator, kind and reading, and each link's note (read_saves'). Its tables go by their own aliases, so it
  * reads the same inside any select.
  */
-export function savesBatchSql(userId: string, o: { now: Date; batchId?: string; posts?: boolean }): SQL {
+export function savesBatchSql(userId: string, o: { now: Date; batchId?: string; posts?: boolean; moveIds?: readonly string[] }): SQL {
   const since = new Date(o.now.getTime() - SAVES_WINDOW_DAYS * 86_400_000).toISOString();
-  const which = o.batchId !== undefined ? sql`sv_b.id = ${o.batchId}` : sql`sv_b.fitted_at is null and sv_b.saved_at >= ${since}`;
+  // By the move (audit fixes, E1): the newest saved batch with a saved link to one of them — the move itself, or one merged
+  // into it since — fitted in or not, whatever its age. The ids ride as one JSON parameter.
+  const wanted = o.moveIds ? JSON.stringify(o.moveIds) : null;
+  const which =
+    o.batchId !== undefined
+      ? sql`sv_b.id = ${o.batchId}`
+      : wanted !== null
+        ? sql`sv_b.id in (select sv_x.batch_id from saved_post_moves sv_x
+            left join personal_moves sv_y on sv_y.user_id = sv_x.user_id and sv_y.id = sv_x.move_id
+            where sv_x.user_id = ${userId} and sv_x.status = 'saved' and (sv_x.move_id in (select value from json_each(${wanted}))
+              or (sv_y.status = 'merged' and sv_y.merged_into in (select value from json_each(${wanted})))))`
+        : sql`sv_b.fitted_at is null and sv_b.saved_at >= ${since}`;
   const posts = o.posts
     ? sql`, 'posts', json((select json_group_array(json_array(sv_q.id, sv_q.url, coalesce(nullif(sv_q.creator_handle, ''), sv_q.creator_name),
           case when json_valid(sv_q.extraction) then json_extract(sv_q.extraction, '$.kind') end,
@@ -191,7 +211,7 @@ export function savesBatchSql(userId: string, o: { now: Date; batchId?: string; 
   const path = sql`'$.moves[' || sv_l.position || '].purpose'`;
   const note = o.posts ? sql`, case when json_type(${doc}, ${path}) = 'text' then nullif(trim(json_extract(${doc}, ${path})), '') end` : sql``;
   const keptPosts = sql`select sv_n.post_id from saved_post_moves sv_n where sv_n.user_id = ${userId} and sv_n.batch_id = sv_b.id and sv_n.status = 'saved'`;
-  return sql`(select json_object('id', sv_b.id, 'savedAt', sv_b.saved_at,
+  return sql`(select json_object('id', sv_b.id, 'savedAt', sv_b.saved_at, 'fittedAt', sv_b.fitted_at,
       'links', json((select json_group_array(json_array(sv_l.move_id, sv_l.post_id, sv_l.position,
           coalesce(sv_m.batch_id = sv_b.id and sv_m.status != 'merged', 0), coalesce(sv_p.first_seen_at, ''), sv_m.fit_choice, sv_l.like_move_id${note}))
         from saved_post_moves sv_l
@@ -207,7 +227,7 @@ const str = (v: unknown): string | null => (typeof v === "string" ? v : null);
 
 /** `savesBatchSql`'s value, read; null with no batch (or one that doesn't read). */
 export function savedBatchOf(raw: unknown): SavedBatch | null {
-  const b = parsedJson(raw) as { id?: unknown; savedAt?: unknown; links?: unknown; posts?: unknown; insights?: unknown } | null;
+  const b = parsedJson(raw) as { id?: unknown; savedAt?: unknown; fittedAt?: unknown; links?: unknown; posts?: unknown; insights?: unknown } | null;
   if (!b || typeof b !== "object" || typeof b.id !== "string" || typeof b.savedAt !== "string" || !Number.isFinite(Date.parse(b.savedAt))) return null;
   const links = parsedArray(b.links).flatMap((x): SavedLink[] => {
     const [moveId, postId, position, born, seen, fit, like, note] = Array.isArray(x) ? (x as unknown[]) : [];
@@ -226,7 +246,7 @@ export function savedBatchOf(raw: unknown): SavedBatch | null {
       return typeof id === "string" ? [[id, { url: str(url), creator: str(creator), kind: str(kind), summary: str(summary) }]] : [];
     }),
   );
-  return { id: b.id, savedAt: b.savedAt, links, posts, insights: scopedInsightsOf(b.insights).slice(0, SAVES_INSIGHTS_MAX) };
+  return { id: b.id, savedAt: b.savedAt, fittedAt: str(b.fittedAt), links, posts, insights: scopedInsightsOf(b.insights).slice(0, SAVES_INSIGHTS_MAX) };
 }
 
 /** The links in the order the posts showed them: the posts as they came in, each post's by position. */
@@ -437,9 +457,12 @@ const correctionOut = (c: CorrectionRow, form: Form, target?: string) => ({
 /** How the coach closes the batch it read (coach-context audit I2): a pins card naming it, approved, marks it fitted in. */
 const closeLine = (batchId: string): string => `pin_moves({ batchId: ${JSON.stringify(batchId)} }) closes this batch once approved — with the moves you pin, or none`;
 
+const moveIdField = z.string().min(1).max(80);
 const input = z
   .object({
     batchId: z.string().min(1).max(100).optional(),
+    moveId: moveIdField.optional(),
+    moveIds: z.array(moveIdField).min(1).max(SAVES_MOVES_MAX).optional(),
     limit: limitField(SAVES_MOVES_MAX).optional(),
     offset: z.number().int().min(0).max(10_000).optional(),
     full: z.boolean().optional(),
@@ -449,11 +472,17 @@ const input = z
 export const readSaves: DesignTool = {
   name: "read_saves",
   description:
-    "The athlete's saves: the run's batch, else the newest unfitted (or batchId's). Each move — a saved one by its own id — new or theirs, choice, pin, dose, notes, evidence (quote ids to cite), corrections; the posts; insights on page one.",
+    "The athlete's saves: the run's batch, else the newest unfitted, batchId's or moveIds' (fitted or not). Each move — a saved one by its own id — new or theirs, choice, pin, dose, notes, evidence (quote ids), fixes; posts; insights on page 1.",
   inputSchema: {
     type: "object",
     properties: {
       batchId: { type: "string", description: "A saved batch's id; default the run's batch, else the newest not yet fitted in." },
+      moveIds: {
+        type: "array",
+        items: { type: "string" },
+        maxItems: SAVES_MOVES_MAX,
+        description: "Instead of batchId: saved moves to read — from the batch that brought them, fitted in or not (a past card's moves, to answer a challenge).",
+      },
       limit: { type: "integer", minimum: 1, maximum: SAVES_MOVES_MAX, description: `Default ${SAVES_MOVES_MAX}, the most.` },
       offset: { type: "integer", minimum: 0, description: "Moves to skip: the offset missing gives." },
       full: { type: "boolean", description: "Every word: each quote whole, why, use-when, skip-when, every post's reading — fewer moves a page, no insights." },
@@ -476,21 +505,33 @@ export const readSaves: DesignTool = {
   cpuWeight: 1.8,
   roles: READ_ROLES,
   async run(ctx, raw) {
-    const p = parseInput(input, raw, "optionally batchId, limit, offset and full");
+    const p = parseInput(input, raw, "optionally batchId or moveIds, limit, offset and full");
     if (isErr(p)) return p;
     const limit = p.limit ?? SAVES_MOVES_MAX;
     const full = p.full === true;
+    // By the move (audit fixes, E1): a past card's moves, read from the batch that brought them — fitted in or not.
+    const wanted = p.moveIds || p.moveId ? [...new Set([...(p.moveId ? [p.moveId] : []), ...(p.moveIds ?? [])])] : null;
+    if (wanted && p.batchId !== undefined) {
+      return refuse("invalid_input", "Give batchId or moveIds, not both.", "moveIds reads those moves from the batch that brought them; batchId reads a batch's page.");
+    }
     // A fit-in run reads the batch it fits (§12.1), whatever its age (§8.2), unless the model names another.
-    const batchId = p.batchId ?? ctx.run.savesBatchId;
+    const batchId = wanted ? undefined : (p.batchId ?? ctx.run.savesBatchId);
     const [athlete, rows] = await Promise.all([
       athleteOf(ctx),
-      ctx.db.all(sql`select ${savesBatchSql(ctx.userId, { now: ctx.now, batchId, posts: true })} as batch,
+      ctx.db.all(sql`select ${savesBatchSql(ctx.userId, { now: ctx.now, batchId, posts: true, ...(wanted ? { moveIds: wanted } : {}) })} as batch,
           (select json_group_array(sv_e.exercise_id) from exercise_prefs sv_e where sv_e.user_id = ${ctx.userId} and sv_e.pinned = 1) as pins`) as Promise<
         Array<{ batch: unknown; pins: unknown }>
       >,
     ]);
     const batch = savedBatchOf(rows[0]?.batch);
     if (!batch) {
+      if (wanted) {
+        return refuse(
+          "not_found",
+          `No saved batch of the athlete's holds ${wanted.map((id) => JSON.stringify(id)).join(", ")}.`,
+          "Use a saved move's id — read_proposals and the conversation name a card's moves, get_exercise a move's posts.",
+        );
+      }
       if (p.batchId !== undefined) {
         return refuse(
           "not_found",
@@ -507,11 +548,15 @@ export const readSaves: DesignTool = {
     const library = await loadAccountLibrary(ctx.db, ctx.userId);
     const pins = new Set(parsedArray(rows[0]?.pins).filter((id): id is string => typeof id === "string"));
     const { moves, archived, unread, find } = savedMovesOf(batch, library);
+    // The moves this read lists: the batch's, or (by the move) those of them asked for — each keeps its place in the batch.
+    const asked = wanted ? new Set(wanted.map((id) => find(id)?.id ?? id)) : null;
+    const listed = asked ? moves.filter((m) => asked.has(m.record.id)) : moves;
+    const notHere = asked ? [...asked].filter((id) => !listed.some((m) => m.record.id === id)) : [];
     const offset = p.offset ?? 0;
-    if (offset > 0 && offset >= moves.length) {
+    if (offset > 0 && offset >= listed.length) {
       return refuse(
         "bad_offset",
-        `The batch lists ${plural(moves.length, "move")}; offset ${offset} is past them.`,
+        `The ${asked ? "read" : "batch"} lists ${plural(listed.length, "move")}; offset ${offset} is past them.`,
         "Pass the offset a previous answer's missing gave, or leave it out to start from the first move.",
       );
     }
@@ -519,7 +564,7 @@ export const readSaves: DesignTool = {
 
     // This page's moves, in the batch's one order — and their evidence (§8.1): one statement, for the candidate page
     // only (the byte fit below may keep fewer).
-    const page = moves.slice(offset, offset + limit);
+    const page = listed.slice(offset, offset + limit);
     const linksOf = (m: SavedMove) => m.postIds.slice(0, LINKS_MAX).map((id, k) => [id, m.positions[k]!] as const);
     const ev = page.length
       ? (((await ctx.db.all(pageEvidenceSql(ctx.userId, page.flatMap(linksOf), page.map((m) => m.record.id)))) as Array<{ links: unknown; corrections: unknown }>)[0] ?? null)
@@ -529,8 +574,8 @@ export const readSaves: DesignTool = {
     // Each move's place in the batch (`n`): its quotes' ids are `q<n>.<k>`, and a routine names its moves by it.
     const nOf = new Map(moves.map((m, i) => [m.record.id, i + 1] as const));
     // Each candidate's evidence, made when the page comes to it (the page often stops well before the last).
-    const readOf = (m: SavedMove, i: number) => {
-      const n = offset + i + 1;
+    const readOf = (m: SavedMove) => {
+      const n = nOf.get(m.record.id)!;
       const refs: Array<[string, QuoteRef]> = [];
       const readings: Array<ReadingEvidence | null> = [];
       let firstReading: unknown = null;
@@ -609,41 +654,44 @@ export const readSaves: DesignTool = {
     // What the kept posts say about when, why or how often (a model's reading): on the first page only (the budgets
     // review, 2026-11-06), each a quote's head. Every scope, each keeping its post (§8.1: a creator's own split is the
     // creator's, not a rule): `ref` names the post and the insight's place in it, as correct_import's target does.
-    const withInsights = offset === 0 && !full;
+    const withInsights = offset === 0 && !full && !asked;
     const insights = withInsights
       ? batch.insights.map((i) => ({ ref: `${i.postId}:${i.idx}`, text: untrusted(i.text), scope: i.scope, ...(i.quote ? { quote: untrusted(headOf(i.quote, QUOTE_HEAD)) } : {}) }))
       : [];
 
-    const head = { id: batch.id, savedAt: localDateOf(athlete.tz, batch.savedAt) };
+    const head = { id: batch.id, savedAt: localDateOf(athlete.tz, batch.savedAt), ...(batch.fittedAt ? { fitted: true } : {}) };
     const fixed = [
       ...athlete.missing,
+      ...(notHere.length > 0 ? [`not in this batch (another batch brought it, or none of the athlete's saves): ${notHere.join(", ")} — read it with moveIds of its own`] : []),
       ...(archived.length > 0 ? [`${plural(archived.length, "move")} of this batch archived since, not offered: ${archived.join(", ")}`] : []),
       ...(unread > 0 ? [`${plural(unread, "move")} of this batch no longer in the library`] : []),
       ...(moves.length === 0 ? ["the batch holds no move the athlete kept and the library offers"] : []),
       ...(!withInsights && batch.insights.length > 0 ? [INSIGHTS_FIRST] : []),
-      ...(!full && page.length > 0 ? [FULL_WORDS] : []),
+      ...(!full && page.length > 0 ? [asked ? FULL_WORDS_BY_MOVE : FULL_WORDS] : []),
     ];
     /** The moves after this page: how many, and the offset that reads them. */
     const movesLeft = (kept: number): string[] => {
-      const left = moves.length - (offset + kept);
+      const left = listed.length - (offset + kept);
       return left > 0 ? [`${plural(left, "more move", "more moves")} — pass offset: ${offset + kept}`] : [];
     };
     const sizeOf = (missing: string[], ms: unknown[], ps: unknown[]): number =>
       bytesOf(answer({ source: SOURCE, now: ctx.now, missing, data: { batch: head, posts: ps, moves: ms, insights }, summary: "" }));
-    /** The last page's line on closing the batch, and what it adds. */
+    /** The last page's line on closing the batch, and what it adds — never for a batch fitted in already, nor a read by
+     * the move (a past card's moves: audit fixes, E1). */
+    const closes = !asked && !batch.fittedAt;
     const next = { next: closeLine(batch.id) };
     const nextBytes = bytesOf(next) - 1;
 
     // A page that fits: as many moves as fit with the posts they name (each post once), room kept for the line that says
     // what is left — at least one, the lone move in the narrowest form that fits (full asks for every word: compact, then
     // tight, when even one move's every word won't fit).
-    let total = sizeOf([...fixed, `${moves.length} more moves — pass offset: ${moves.length}`], [], []);
+    let total = sizeOf([...fixed, `${listed.length} more moves — pass offset: ${listed.length}`], [], []);
     type Read = ReturnType<typeof readOf>;
     const shown: Array<ReturnType<Read["entryOf"]>> = [];
     const posts: Array<ReturnType<typeof postEntry>> = [];
     const keptRead: Read[] = [];
-    for (const [i, m] of page.entries()) {
-      const x = readOf(m, i);
+    for (const m of page) {
+      const x = readOf(m);
       const forms: Form[] = full ? ["full", "compact", "tight"] : ["compact", "tight"];
       let picked: { entry: (typeof shown)[number]; fresh: Array<(typeof posts)[number]>; add: number } | null = null;
       for (const form of shown.length === 0 ? forms : forms.slice(0, 1)) {
@@ -656,14 +704,14 @@ export const readSaves: DesignTool = {
       }
       if (!picked) break;
       // The page that reads the batch's last move says how to close it: room for that line too.
-      const last = offset + shown.length + 1 >= moves.length;
+      const last = closes && offset + shown.length + 1 >= listed.length;
       if (last && shown.length > 0 && total + picked.add + nextBytes > RESULT_BUDGET_BYTES) break;
       total += picked.add;
       shown.push(picked.entry);
       posts.push(...picked.fresh);
       keptRead.push(x);
     }
-    const isLast = offset + shown.length >= moves.length;
+    const isLast = closes && offset + shown.length >= listed.length;
     const missing = [...fixed, ...movesLeft(shown.length)];
     const fresh = shown.filter((m) => m.new).length;
     const when = head.savedAt ? ` (saved ${dayLabel(head.savedAt)})` : "";

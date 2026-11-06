@@ -128,6 +128,8 @@ interface OpBrief {
   why?: string | null;
   /** A correction's line, as the card shows it. */
   fixLine?: string | null;
+  /** The moves in rotation's saves batch (audit fixes, E1): a later turn reads its moves' evidence by it. */
+  batchId?: string | null;
 }
 
 interface ProposalBrief {
@@ -212,7 +214,8 @@ export async function conversationRows(db: Db, userId: string, conversation: SQL
           'planTitle', ${op("$.title")}, 'planSummary', ${op("$.summary")}, 'lines', json(CASE WHEN ${op("$.kind")} IN ('plan_structure', 'programme_change', 'move_pins') THEN ${op("$.lines")} END),
           'opId', CASE WHEN ${op("$.kind")} IN ('programme_change', 'move_pins', 'import_correction') THEN ${op("$.id")} END,
           'why', CASE WHEN ${op("$.kind")} IN ('move_pins', 'import_correction') THEN ${op("$.why")} END,
-          'fixLine', CASE WHEN ${op("$.kind")} = 'import_correction' THEN ${op("$.line")} END))
+          'fixLine', CASE WHEN ${op("$.kind")} = 'import_correction' THEN ${op("$.line")} END,
+          'batchId', CASE WHEN ${op("$.kind")} = 'move_pins' THEN ${op("$.batchId")} END))
         FROM json_each(CASE WHEN json_valid(p.ops) THEN p.ops ELSE '[]' END) o WHERE ${op("$.kind")} IN ('doc_workout', 'plan_adjust', 'plan_structure', 'programme_change', 'move_pins', 'import_correction'))))
         FROM coach_proposals p WHERE p.id = ${DESIGNED_PREFIX} || r.id AND p.user_id = r.user_id) AS proposal,
       (SELECT up.prefs FROM user_preferences up WHERE up.user_id = ${userId}) AS prefs
@@ -493,12 +496,21 @@ const PINS_BRIEF_FULL_CHARS = 4_800;
 const PIN_TEXT_BRIEF = 100;
 const WHY_BRIEF = 300;
 
-/** A pins line in brief, as the next turn and read_proposals read it: "in Name: where · dose · words [q1.1, history]". */
+/** A line's move and its first post, as the app names them (audit fixes, E1): "(move myX, post p1:0)" — what a later turn
+ * reads the move's evidence (read_saves' moveIds) or corrects it by. Empty for a general line. */
+export function pinsLineIds(l: Pick<PinsCardLine, "moveId" | "post">): string {
+  if (!l.moveId) return "";
+  return ` (move ${l.moveId}${l.post ? `, post ${l.post.id}:${l.post.position}` : ""})`;
+}
+
+/** A pins line in brief, as the next turn and read_proposals read it: "in Name (move myX, post p1:0): where · dose · words
+ * [q1.1, history]". */
 export function pinsLineBrief(l: PinsCardLine, o: { name?: string; words?: string } = {}): string {
   const words = o.words ?? [l.where, l.dose, clipProse(l.text, PIN_TEXT_BRIEF)].filter(Boolean).join(" · ");
   const name = o.name ?? l.name;
   const cites = l.cites?.length ? ` [${l.cites.map((c) => c.id).join(", ")}]` : "";
-  return `${l.decision ? `${l.decision} ` : ""}${name ? `${name}: ` : ""}${words}${cites}`;
+  const head = `${name ?? ""}${pinsLineIds(l)}`.trim();
+  return `${l.decision ? `${l.decision} ` : ""}${head ? `${head}: ` : ""}${words}${cites}`;
 }
 
 /** A pins card's lines and why, for the block: each line (the move's name marked as a post's reading when it is the
@@ -511,7 +523,7 @@ function pinsCardBrief(g: OpBrief | undefined): string[] {
     const name = l.name ? (l.moveId && isPersonalId(l.moveId) ? markUntrusted("saved post", l.name) : l.name) : undefined;
     const words = [l.where, l.dose, clipProse(l.text, PIN_TEXT_BRIEF)].filter(Boolean).join(" · ");
     const full = `    - ${pinsLineBrief(l, { ...(name ? { name } : {}), words: markUntrusted("main coach", words) })}`;
-    const short = `    - ${l.decision ? `${l.decision} ` : ""}${name ?? markUntrusted("main coach", clipProse(l.text, 40))}`;
+    const short = `    - ${l.decision ? `${l.decision} ` : ""}${name ?? markUntrusted("main coach", clipProse(l.text, 40))}${l.moveId ? ` (move ${l.moveId})` : ""}`;
     const line = used + full.length <= PINS_BRIEF_FULL_CHARS ? full : short;
     used += line.length + 1;
     out.push(line);
@@ -556,8 +568,10 @@ function turnLines(row: TurnRow, today: string, clock: Intl.DateTimeFormat): str
     } else if (card.kind === "pins") {
       // The moves in rotation (Task 18): its title and line are the coach's words; how it stands is its op's.
       const g = p!.ops.find((o) => o.kind === "move_pins" && o.opId === card.opId);
+      // Its batch (audit fixes, E1): read_saves' moveIds reads a line's move from it, fitted in or not.
+      const batch = str(g?.batchId) && /^[A-Za-z0-9][A-Za-z0-9_.:-]{0,99}$/.test(g!.batchId!) ? `, batch ${g!.batchId}` : "";
       out.push(
-        `  Suggested moves for the engine's pool (id ${card.proposalId}): ${title} · ${markUntrusted("main coach", clipProse(card.summary, TITLE_MAX))} — ${g?.outcome === "applying" ? "being applied" : standing(card.status, g?.outcome, g?.reason)}`,
+        `  Suggested moves for the engine's pool (id ${card.proposalId}${batch}): ${title} · ${markUntrusted("main coach", clipProse(card.summary, TITLE_MAX))} — ${g?.outcome === "applying" ? "being applied" : standing(card.status, g?.outcome, g?.reason)}`,
       );
       // Its lines and why (import trail phase 3, §3.3): "why did you leave X out?" reaches a coach that has its reason.
       out.push(...pinsCardBrief(g), ...correctionsBrief(p!.ops, card.status));

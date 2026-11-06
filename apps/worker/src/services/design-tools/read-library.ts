@@ -372,8 +372,10 @@ export const getExercise: DesignTool = {
         (select json_group_array(json_object('id', ${exercisePrefs.exerciseId}, 'rating', ${exercisePrefs.rating}, 'pinned', ${exercisePrefs.pinned},
           'excluded', ${exercisePrefs.excluded}, 'introducedOn', ${exercisePrefs.introducedOn}))
           from ${exercisePrefs} where ${exercisePrefs.userId} = ${ctx.userId} and ${exercisePrefs.exerciseId} = ${ex.id}) as movePrefs,
-        (select json_group_array(json_object('url', url, 'creator', creator, 'note', note)) from (
-          select ${exerciseProvenance.url} as url, ${exerciseProvenance.creator} as creator, ${exerciseProvenance.note} as note from ${exerciseProvenance}
+        (select json_group_array(json_object('url', url, 'creator', creator, 'note', note, 'postId', postId, 'batchId', batchId)) from (
+          select ${exerciseProvenance.url} as url, ${exerciseProvenance.creator} as creator, ${exerciseProvenance.note} as note,
+            gx_l.post_id as postId, gx_l.batch_id as batchId from ${exerciseProvenance}
+          left join saved_post_moves gx_l on gx_l.user_id = ${exerciseProvenance.userId} and gx_l.id = ${exerciseProvenance.id}
           where ${exerciseProvenance.userId} = ${ctx.userId} and ${exerciseProvenance.exerciseId} in ${ids}
           order by ${exerciseProvenance.createdAt}, ${exerciseProvenance.id})) as links,
         (select json_object('sessions', count(distinct ${s.id}), 'last', max(${s.localDate}), 'reps', max(${x.reps}), 'secs', max(${x.seconds}))
@@ -405,10 +407,14 @@ export const getExercise: DesignTool = {
     const recent = sessions.map((sess) => `${sess.date} ${movesOf(sets.filter((st) => st.session === sess.id), athlete.prefs.weightUnit).map((m) => m.words).join("; ")}`);
 
     const pref = prefsOf(extra.movePrefs).get(ex.id);
-    // A link's note (spec §17): what the post says the move is for, or when to do it — a model's reading, marked.
+    // A link's note (spec §17): what the post says the move is for, or when to do it — a model's reading, marked. A link
+    // Save wrote names its post and batch (audit fixes, E1: Save keys the link by its saved post move's id), so the coach
+    // can read its evidence (read_saves' moveIds) or correct it (correct_import's <post>:<n>); a curated one names neither.
     const links = parsedArray(extra.links).flatMap((l) => {
-      const x = l as { url?: unknown; creator?: unknown; note?: unknown } | null;
-      return x ? [{ url: untrustedOrNull(x.url), creator: untrustedOrNull(x.creator), note: untrustedOrNull(x.note) }] : [];
+      const x = l as { url?: unknown; creator?: unknown; note?: unknown; postId?: unknown; batchId?: unknown } | null;
+      if (!x) return [];
+      const saved = typeof x.postId === "string" ? { postId: x.postId, ...(typeof x.batchId === "string" ? { batchId: x.batchId } : {}) } : {};
+      return [{ url: untrustedOrNull(x.url), creator: untrustedOrNull(x.creator), note: untrustedOrNull(x.note), ...saved }];
     });
     const savedMove = links.length > 0;
     // Archived: resolved for its history, never offered.
