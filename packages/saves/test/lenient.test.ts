@@ -113,3 +113,11 @@ describe("what was left out never fails the reading itself (final audit G4)", ()
     expect(dropped.safeParse(out.dropped).success).toBe(true);
   });
 });
+
+describe("a null item in an optional list is left out quietly (final audit G8)", () => {
+  it("no note, so no Check this", () => {
+    const out = dropUnknownEnums({ moves: [{ quotes: [null, { field: "dose", text: "ten", from: "caption" }], useWhen: [null] }] });
+    expect(out.dropped).toEqual([]);
+    expect((out.value as { moves: { quotes: unknown[]; useWhen: unknown[] }[] }).moves[0]!.quotes).toHaveLength(1);
+  });
+});

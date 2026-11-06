@@ -82,6 +82,7 @@ function mendList<T>(list: unknown, mend: (x: unknown) => T | null, max: number)
   const kept: T[] = [];
   const lost: string[] = [];
   for (const x of list) {
+    if (x === null || x === undefined) continue; // nothing said: left out quietly (final audit G8)
     const m = mend(x);
     if (m && kept.length < max) kept.push(m);
     else lost.push(note(x));

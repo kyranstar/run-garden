@@ -634,6 +634,24 @@ describe("a reading with one unknown list value is kept (live finding, 2026-11-0
     expect(stored.dropped).toEqual([{ move: 0, field: "quotes", values: ["ribs down"] }]);
   });
 
+  it("a null optional value or an unknown key anywhere is left out quietly — no Check this, no note (final audit G8)", async () => {
+    const id = await seed("lenient5");
+    const reply = {
+      ...GOOD, extra: "x",
+      insights: [{ text: "Twice a week", scope: "general", quote: null }],
+      moves: [{ ...move, why: null, evidence: { ...move.evidence, useWhen: null, why: "stated" }, notes: "extra" }],
+    };
+    const out = await run(id, bodyText(), gateway(reply));
+    expect(out.ok).toBe(true);
+    const stored = (await reload(id)).extraction as { dropped?: unknown; moves: Record<string, unknown>[] };
+    expect(stored.dropped).toBeUndefined();
+    expect(stored.moves[0]!.notes).toBeUndefined();
+    const check = (await db.select().from(schema.importEvents).where(eq(schema.importEvents.postId, id))).find((e) => e.stage === "check")!;
+    expect(check.summary).toBe("The reading checks out");
+    const [link] = await db.select().from(schema.savedPostMoves).where(eq(schema.savedPostMoves.postId, id));
+    expect(link!.checkFlag).toBe(false);
+  });
+
   it("an unknown single-valued field still fails the reading with the schema's words", async () => {
     const id = await seed("lenient3");
     const out = await run(id, bodyText(), gateway({ ...GOOD, moves: [{ ...move, position: "floaty" }] }));

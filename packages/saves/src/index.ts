@@ -10,3 +10,4 @@ export * from "./lenient.js";
 export * from "./links.js";
 export * from "./transcript.js";
 export * from "./quotes.js";
+export * from "./prune.js";

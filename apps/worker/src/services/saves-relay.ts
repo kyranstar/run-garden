@@ -3,7 +3,7 @@ import type { ZodIssue } from "zod";
 import { EXERCISES, PROFILES } from "@rg/exercise-library";
 import { schema } from "@rg/database";
 import {
-  buildExtractBody, dropUnknownEnums, EXTRACT_PROMPT_VERSION, extractionSchema, extractSystemText, extractUserText, promptSha,
+  buildExtractBody, dropUnknownEnums, EXTRACT_PROMPT_VERSION, extractionSchema, extractSystemText, extractUserText, promptSha, pruneToSchema,
   transcriptSegments, verifyQuotes,
 } from "@rg/saves";
 import type { Extraction, PostSubmit, PostWords, SaveErrorCode } from "@rg/saves";
@@ -761,7 +761,8 @@ function parseExtraction(content: string): { ok: true; extraction: Extraction } 
   const raw = extractJson(content);
   if (raw === null || typeof raw !== "object") return { ok: false, issues: ["the reply was not valid JSON"] };
   // One unknown list value no longer fails the whole reading: it is left out, and the move flagged (live finding, 2026-11-05).
-  const lenient = dropUnknownEnums(raw);
+  // A null where a field is optional, or a key the format doesn't have, is left out quietly (final audit G8).
+  const lenient = dropUnknownEnums(pruneToSchema(raw, extractionSchema));
   const { dropped: _theModels, ...value } = lenient.value as Record<string, unknown>;
   const parsed = extractionSchema.safeParse(lenient.dropped.length ? { ...value, dropped: lenient.dropped } : value);
   if (parsed.success) return { ok: true, extraction: parsed.data };
