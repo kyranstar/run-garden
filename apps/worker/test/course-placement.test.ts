@@ -3,7 +3,8 @@
  * slots do: rows on its days and at its time, counted by the day they were planned on, so what the athlete moved or
  * removed is never undone. An outline holds a title and a booked length and no document, so nothing reaches the watch
  * until its day. A pause (either kind) and a course's quiet days before the race hold days back, and take flexible slots
- * off them. A session written on its day (`origin` flipped to `studio`) holds its day and is never rewritten.
+ * off them, and a pause takes today's untouched outline too. A session written on its day (`origin` flipped to `studio`,
+ * `course_session` set to its number) holds its day and is never rewritten, whatever a push does to its fingerprint.
  *
  * Nearly every test runs on a made-up course (`course-fixture.ts`): worker code reads only the definition. `placeSlots`
  * reads no clock, so the fixed dates here can't go stale. Synthetic data only.
@@ -45,7 +46,7 @@ import { bookedSeconds } from "../src/services/session-build.js";
 import { isWrite, makeTestDb, makeTestUser } from "./helpers.js";
 import { INTRO_COURSE, INTRO_FIRST_BOOKED, INTRO_FIRST_SECONDS, INTRO_LATER_BOOKED, INTRO_LATER_SECONDS } from "./course-fixture.js";
 
-const { plannedWorkouts, programs, accountState, calendarEventSuppressions } = schema;
+const { plannedWorkouts, programs, accountState, calendarEventSuppressions, sessionBuilds } = schema;
 
 /** A Monday. */
 const MON = "2026-10-05";
@@ -118,6 +119,8 @@ async function seedProgramme(config: Partial<AdaptiveConfig>, over: Partial<type
 
 const rowsOf = (planId: string) => db.select().from(plannedWorkouts).where(eq(plannedWorkouts.planId, planId));
 const row = async (id: string) => (await db.select().from(plannedWorkouts).where(eq(plannedWorkouts.id, id)))[0]!;
+const liveOn = async (planId: string, date: string) =>
+  (await db.select().from(plannedWorkouts).where(and(eq(plannedWorkouts.planId, planId), eq(plannedWorkouts.effectiveDate, date), isNull(plannedWorkouts.archivedAt)))).map((r) => r.id);
 const liveDates = async (planId: string): Promise<string[]> =>
   (await db.select().from(plannedWorkouts).where(and(eq(plannedWorkouts.planId, planId), isNull(plannedWorkouts.archivedAt)))).map((r) => r.effectiveDate).sort();
 const sorted = (xs: readonly string[]): string[] => [...xs].sort();
@@ -128,13 +131,17 @@ async function move(workoutId: string, toDate: string): Promise<void> {
   await applyMove(db, { userId, workoutId, toDate, toTime: "19:30", source: "app", corosWritesEnabled: false });
 }
 
-/** What the day's write does (Task 10's flip, in the shape a document workout has): the row keeps its id. */
-async function writeSession(workoutId: string, title: string): Promise<void> {
+/** What the day's write does (Task 10's flip, in the shape a document workout has): the row keeps its id and takes its number. */
+async function writeSession(workoutId: string, title: string, n = 1): Promise<void> {
   await db
     .update(plannedWorkouts)
-    .set({ origin: "studio", title, sourceContentFingerprint: "course", workoutDoc: JSON.stringify(INTRO_COURSE.sessionDoc(1, { ease: false })), workoutDocRev: 1 })
+    .set({ origin: "studio", title, courseSession: n, workoutDoc: JSON.stringify(INTRO_COURSE.sessionDoc(n, { ease: false })), workoutDocRev: 1 })
     .where(eq(plannedWorkouts.id, workoutId));
 }
+
+/** A sent copy's fingerprint: what a verified push, or Keep the watch's version, leaves on a row. */
+const WIRE = "0123456789abcdef";
+const stamp = (workoutId: string, fingerprint: string) => db.update(plannedWorkouts).set({ sourceContentFingerprint: fingerprint }).where(eq(plannedWorkouts.id, workoutId));
 
 /** A workout the coach made for the plan (Task 8's `planId`): filed under it, and not one of the course's own sessions. */
 async function fileWorkout(planId: string, date: string): Promise<string> {
@@ -147,7 +154,9 @@ async function fileWorkout(planId: string, date: string): Promise<string> {
   return id;
 }
 
-const complete = (workoutId: string) => db.update(plannedWorkouts).set({ completionState: "completed", resolutionDate: MON }).where(eq(plannedWorkouts.id, workoutId));
+/** A course's session done: written as its number, then completed. */
+const complete = (workoutId: string, n: number) =>
+  db.update(plannedWorkouts).set({ origin: "studio", courseSession: n, completionState: "completed", resolutionDate: MON }).where(eq(plannedWorkouts.id, workoutId));
 
 describe("placing a course ahead", () => {
   it("places a course's days ahead, at its time, as outlines with no document", async () => {
@@ -227,6 +236,14 @@ describe("placing a course ahead", () => {
     expect(await row(slotId(p, MON))).toMatchObject({ workoutDoc: null, fallbackEstimatedDurationSeconds: seconds, calendarBlockDurationSeconds: bookedSeconds(seconds), effectiveTime: "19:30" });
   });
 
+  it("only a course reads a numbered row: an adaptive programme's week counts its slots alone", async () => {
+    // No such row exists under a programme today. This holds the read's branch, so a programme's placement can't move with a course's.
+    const p = await seedProgramme({ weeklyGoal: 1, preferredDays: [2], placementWeeksAhead: 1 });
+    const numbered = await fileWorkout(p, day(0, 1));
+    await db.update(plannedWorkouts).set({ courseSession: 1 }).where(eq(plannedWorkouts.id, numbered));
+    expect(sorted((await placeSlots(db, userId, p, MON, prefs, NOW)).placed)).toEqual(ids(p, [day(0, 2), day(1, 2)]));
+  });
+
   it("only a course books the rounded block: an adaptive programme's slot keeps its raw length", async () => {
     const p = await seedProgramme({ weeklyGoal: 1, preferredDays: [2], defaultMinutes: 32, placementWeeksAhead: 1 });
     await placeSlots(db, userId, p, MON, prefs, NOW);
@@ -239,25 +256,37 @@ describe("an outline's length comes from the sessions actually done", () => {
     const p = await seedCourse({ placementWeeksAhead: 1 });
     await placeSlots(db, userId, p, MON, prefs, NOW);
 
-    // Skipped and missed change nothing: still session 1, 600 s. Completed in another plan changes nothing either.
-    await db.update(plannedWorkouts).set({ completionState: "skipped" }).where(eq(plannedWorkouts.id, slotId(p, day(0, 0))));
-    await db.update(plannedWorkouts).set({ completionState: "missed" }).where(eq(plannedWorkouts.id, slotId(p, day(0, 4))));
+    // Skipped and missed change nothing: still session 1, 660 s. Completed in another plan changes nothing either.
+    await db.update(plannedWorkouts).set({ courseSession: 1, completionState: "skipped" }).where(eq(plannedWorkouts.id, slotId(p, day(0, 0))));
+    await db.update(plannedWorkouts).set({ courseSession: 1, completionState: "missed" }).where(eq(plannedWorkouts.id, slotId(p, day(0, 4))));
     const other = await seedCourse({ placementWeeksAhead: 1 });
     await placeSlots(db, userId, other, MON, prefs, NOW);
-    await complete(slotId(other, day(0, 0)));
-    await complete(slotId(other, day(0, 4)));
+    await complete(slotId(other, day(0, 0)), 1);
+    await complete(slotId(other, day(0, 4)), 2);
     expect(await placeSlots(db, userId, p, MON, prefs, NOW)).toEqual(NOTHING);
     expect((await row(slotId(p, day(1, 0)))).fallbackEstimatedDurationSeconds).toBe(INTRO_FIRST_SECONDS);
 
-    // One done: session 2, still 600 s. Two done: session 3, 1,200 s, on every outline from today on.
-    await complete(slotId(p, day(0, 0)));
+    // One done: session 2, still 660 s. Two done: session 3, 1,320 s, on every outline from today on.
+    await complete(slotId(p, day(0, 0)), 1);
     await placeSlots(db, userId, p, MON, prefs, NOW);
     expect((await row(slotId(p, day(1, 0)))).fallbackEstimatedDurationSeconds).toBe(INTRO_FIRST_SECONDS);
-    await complete(slotId(p, day(0, 4)));
+    await complete(slotId(p, day(0, 4)), 2);
     await placeSlots(db, userId, p, MON, prefs, NOW);
     for (const date of [day(1, 0), day(1, 4)]) {
       expect(await row(slotId(p, date))).toMatchObject({ fallbackEstimatedDurationSeconds: INTRO_LATER_SECONDS, calendarBlockDurationSeconds: INTRO_LATER_BOOKED });
     }
+  });
+
+  it("a workout the coach filed under the plan and completed doesn't advance the number", async () => {
+    // Two of them would make the next session 3, at 1,320 s, if they counted.
+    const p = await seedCourse({ placementWeeksAhead: 1 });
+    await placeSlots(db, userId, p, MON, prefs, NOW);
+    for (const date of [day(0, 1), day(0, 2)]) {
+      const filed = await fileWorkout(p, date);
+      await db.update(plannedWorkouts).set({ completionState: "completed", resolutionDate: date }).where(eq(plannedWorkouts.id, filed));
+    }
+    expect(await placeSlots(db, userId, p, MON, prefs, NOW)).toEqual(NOTHING);
+    expect((await row(slotId(p, day(1, 0)))).fallbackEstimatedDurationSeconds).toBe(INTRO_FIRST_SECONDS);
   });
 
   it("an eased next session changes no booking: only the day's write uses it, and only that clears it", async () => {
@@ -337,8 +366,8 @@ describe("a written session", () => {
     await placeSlots(db, userId, p, MON, prefs, NOW);
     const written = slotId(p, day(1, 0));
     await writeSession(written, "Intro 1");
-    await complete(slotId(p, day(0, 0)));
-    await complete(slotId(p, day(0, 4)));
+    await complete(slotId(p, day(0, 0)), 1);
+    await complete(slotId(p, day(0, 4)), 2);
     await db.update(programs).set({ name: "Night practice" }).where(eq(programs.id, p));
 
     await placeSlots(db, userId, p, MON, prefs, NOW);
@@ -365,6 +394,40 @@ describe("a written session", () => {
     expect((await row(written)).archivedAt).toBeNull();
   });
 
+  // A push rewrites `source_content_fingerprint` with what it sent, and Keep the watch's version with its own mark, so
+  // that column can't say a row is the course's. Without `course_session` the pass loses this row: it inserts over it.
+  it("a verified push stamping its fingerprint changes nothing: the pass writes nothing and there's still one row on the day", async () => {
+    const p = await seedCourse({ placementWeeksAhead: 1 });
+    await placeSlots(db, userId, p, MON, prefs, NOW);
+    const today = slotId(p, MON);
+    await writeSession(today, "Intro 1");
+    await stamp(today, WIRE);
+    const before = await rowsOf(p);
+    statements.length = 0;
+
+    expect(await placeSlots(db, userId, p, MON, prefs, NOW)).toEqual(NOTHING);
+    expect(writes()).toEqual([]);
+    expect(await liveOn(p, MON)).toEqual([today]);
+    expect(await rowsOf(p)).toEqual(before);
+  });
+
+  it.each([WIRE, `take-watch-copy:${WIRE}`])("a session moved onto a course day, written there and stamped %s, still holds that day", async (fingerprint) => {
+    const p = await seedCourse({ placementWeeksAhead: 1 });
+    await placeSlots(db, userId, p, MON, prefs, NOW);
+    const moved = slotId(p, day(1, 4));
+    await move(moved, day(2, 0));
+    const today = day(2, 0);
+    // The pass of the day it's written on, settled: Friday and the next week are placed around it.
+    await placeSlots(db, userId, p, today, prefs, NOW);
+    await writeSession(moved, "Intro 1");
+    await stamp(moved, fingerprint);
+    statements.length = 0;
+
+    expect(await placeSlots(db, userId, p, today, prefs, NOW)).toEqual(NOTHING);
+    expect(writes()).toEqual([]);
+    expect(await liveOn(p, today)).toEqual([moved]);
+  });
+
   it("a write landing after placement read the row keeps it: the retraction re-checks as it archives", async () => {
     const p = await seedCourse({ placementWeeksAhead: 1 });
     await placeSlots(db, userId, p, MON, prefs, NOW);
@@ -378,10 +441,10 @@ describe("a written session", () => {
   });
 
   it("a session started before the course existed and re-pointed to it holds its day too, and counts toward its week", async () => {
-    // Not a slot's id, and `course` by its fingerprint (Task 11 sets it): week 1's Monday is taken, so only Friday is placed.
+    // Not a slot's id, and the course's by its number (Task 11 sets it): week 1's Monday is taken, so only Friday is placed.
     const p = await seedCourse({ placementWeeksAhead: 1 });
     const repointed = await fileWorkout(p, day(1, 0));
-    await db.update(plannedWorkouts).set({ sourceContentFingerprint: "course" }).where(eq(plannedWorkouts.id, repointed));
+    await db.update(plannedWorkouts).set({ courseSession: 3 }).where(eq(plannedWorkouts.id, repointed));
 
     const res = await placeSlots(db, userId, p, MON, prefs, NOW);
     expect(sorted(res.placed)).toEqual(ids(p, [day(0, 0), day(0, 4), day(1, 4)]));
@@ -434,12 +497,12 @@ describe("a pause", () => {
 
     await setPause(p, day(1, 4));
     const res = await placeSlots(db, userId, p, MON, prefs, NOW);
-    // Today's slot is fixed; the moved one stays; Friday and next Friday (its last day: `date <= pausedUntil`) come off.
-    expect(sorted(res.archived)).toEqual(ids(p, [day(0, 4), day(1, 4)]));
+    // The moved one stays; today's untouched outline, Friday and next Friday (its last day: `date <= pausedUntil`) come off.
+    expect(sorted(res.archived)).toEqual(ids(p, [day(0, 0), day(0, 4), day(1, 4)]));
     expect(res.placed).toEqual([]);
     expect(await row(moved)).toMatchObject({ effectiveDate: day(1, 1), archivedAt: null });
     expect(await row(slotId(p, day(1, 4)))).toMatchObject({ archiveReason: "program_replaced" });
-    expect(await liveDates(p)).toEqual([day(0, 0), day(1, 1), day(2, 0), day(2, 4)]);
+    expect(await liveDates(p)).toEqual([day(1, 1), day(2, 0), day(2, 4)]);
     statements.length = 0;
     expect(await placeSlots(db, userId, p, MON, prefs, NOW)).toEqual(NOTHING);
     expect(writes()).toEqual([]);
@@ -460,9 +523,19 @@ describe("a pause", () => {
 
     await setPause(p, null);
     const res = await placeSlots(db, userId, p, MON, prefs, NOW);
-    expect(sorted(res.placed)).toEqual(ids(p, [day(0, 4), day(1, 0), day(1, 4)]));
+    expect(sorted(res.placed)).toEqual(ids(p, [day(0, 0), day(0, 4), day(1, 0), day(1, 4)]));
     expect(await row(friday)).toMatchObject({ archivedAt: null, archiveReason: null, effectiveTime: "19:30", calendarBlockDurationSeconds: INTRO_FIRST_BOOKED });
     expect(await db.select().from(calendarEventSuppressions).where(eq(calendarEventSuppressions.workoutId, friday))).toEqual([]);
+  });
+
+  it("a written session today stays: it isn't an outline any more, and its document may be on the watch", async () => {
+    const p = await seedCourse({ placementWeeksAhead: 1 });
+    await placeSlots(db, userId, p, MON, prefs, NOW);
+    const today = slotId(p, MON);
+    await writeSession(today, "Intro 1");
+    await setPause(p, MON);
+    expect(await placeSlots(db, userId, p, MON, prefs, NOW)).toEqual(NOTHING);
+    expect(await row(today)).toMatchObject({ archivedAt: null, title: "Intro 1" });
   });
 
   it("places nothing inside it on a first pass, and no session spills onto the course's other days", async () => {
@@ -485,9 +558,9 @@ describe("a pause", () => {
       await setPause(p, day(1, 0));
       const res = await placeSlots(db, userId, p, MON, prefs, NOW);
       // Next Monday comes off, and the goal doesn't reach for a day a full week wouldn't use: nothing piles up.
-      expect(sorted(res.archived)).toEqual(ids(p, [day(0, 2), day(1, 0)]));
+      expect(sorted(res.archived)).toEqual(ids(p, [day(0, 0), day(0, 2), day(1, 0)]));
       expect(res.placed).toEqual([]);
-      expect(await liveDates(p)).toEqual([day(0, 0), day(1, 2)]);
+      expect(await liveDates(p)).toEqual([day(1, 2)]);
     });
 
     it("change_programme's preview says what a pass would do", async () => {
@@ -499,6 +572,110 @@ describe("a pause", () => {
       // Tuesday and Wednesday on, past the pause.
       expect(preview.after).toEqual([day(1, 1), day(1, 2)]);
     });
+  });
+});
+
+// The same days on either kind: Monday and Friday, this week and next.
+describe.each([
+  ["a course", () => seedCourse({ placementWeeksAhead: 1 })],
+  ["an adaptive programme", () => seedProgramme({ weeklyGoal: 2, preferredDays: [0, 4], placementWeeksAhead: 1 })],
+] as Array<[string, () => Promise<string>]>)("under a pause, on %s", (_kind, seed) => {
+  const placed = async (): Promise<string> => {
+    const p = await seed();
+    await placeSlots(db, userId, p, MON, prefs, NOW);
+    expect(await liveDates(p)).toEqual([day(0, 0), day(0, 4), day(1, 0), day(1, 4)]);
+    return p;
+  };
+  const setContent = (id: string, contentState: string) => db.update(plannedWorkouts).set({ contentState }).where(eq(plannedWorkouts.id, id));
+
+  it("today's untouched outline comes off, with its calendar event", async () => {
+    const p = await placed();
+    await setPause(p, MON);
+    const today = slotId(p, MON);
+
+    expect(await placeSlots(db, userId, p, MON, prefs, NOW)).toEqual({ placed: [], archived: [today] });
+    expect(await row(today)).toMatchObject({ archiveReason: "program_replaced" });
+    expect((await db.select().from(calendarEventSuppressions).where(eq(calendarEventSuppressions.workoutId, today))).map((s) => s.reason)).toEqual(["user_removed"]);
+    expect(await liveDates(p)).toEqual([day(0, 4), day(1, 0), day(1, 4)]);
+
+    statements.length = 0;
+    expect(await placeSlots(db, userId, p, MON, prefs, NOW)).toEqual(NOTHING);
+    expect(writes()).toEqual([]);
+  });
+
+  it("a pause that ended yesterday leaves today's outline, as any other day does", async () => {
+    const p = await placed();
+    await setPause(p, addDays(MON, -1));
+    expect(await placeSlots(db, userId, p, MON, prefs, NOW)).toEqual(NOTHING);
+    expect(await liveOn(p, MON)).toEqual([slotId(p, MON)]);
+  });
+
+  it.each(["built", "started"])("a session %s today stays", async (contentState) => {
+    const p = await placed();
+    const today = slotId(p, MON);
+    await setContent(today, contentState);
+    await setPause(p, MON);
+    expect(await placeSlots(db, userId, p, MON, prefs, NOW)).toEqual(NOTHING);
+    expect(await row(today)).toMatchObject({ archivedAt: null, contentState });
+  });
+
+  it("an outline re-timed today stays: the athlete touched it", async () => {
+    const p = await placed();
+    const today = slotId(p, MON);
+    await applyMove(db, { userId, workoutId: today, toDate: MON, toTime: "18:00", source: "calendar_edit", corosWritesEnabled: false });
+    await setPause(p, MON);
+    expect(await placeSlots(db, userId, p, MON, prefs, NOW)).toEqual(NOTHING);
+    expect(await row(today)).toMatchObject({ archivedAt: null, effectiveTime: "18:00" });
+  });
+
+  it("an outline customised today stays: the athlete touched that too", async () => {
+    const p = await placed();
+    const today = slotId(p, MON);
+    await db.insert(sessionBuilds).values({
+      id: newId(), userId, workoutId: today, version: 0, engineVersion: "test", inputsHash: `h-${today}`,
+      payload: { build: { params: { checks: {}, overrides: { mode: "build" }, swaps: {} } }, view: { mode: "consistent" } }, lockedAt: null, createdAt: NOW,
+    });
+    await setPause(p, MON);
+    expect(await placeSlots(db, userId, p, MON, prefs, NOW)).toEqual(NOTHING);
+    expect((await row(today)).archivedAt).toBeNull();
+  });
+
+  it("a session moved onto today stays, and today's own outline goes", async () => {
+    const p = await placed();
+    const moved = slotId(p, day(0, 4));
+    await move(moved, MON);
+    await setPause(p, MON);
+    expect(await placeSlots(db, userId, p, MON, prefs, NOW)).toEqual({ placed: [], archived: [slotId(p, MON)] });
+    expect(await liveOn(p, MON)).toEqual([moved]);
+  });
+
+  it("a built slot inside it, ahead, stays and still counts for its week", async () => {
+    const p = await placed();
+    const built = slotId(p, day(1, 0));
+    await setContent(built, "built");
+    await setPause(p, day(1, 0));
+
+    const res = await placeSlots(db, userId, p, MON, prefs, NOW);
+    expect(sorted(res.archived)).toEqual(ids(p, [day(0, 0), day(0, 4)]));
+    expect(res.placed).toEqual([]);
+    expect(await row(built)).toMatchObject({ archivedAt: null, contentState: "built" });
+    expect(await liveDates(p)).toEqual([day(1, 0), day(1, 4)]);
+    expect(await placeSlots(db, userId, p, MON, prefs, NOW)).toEqual(NOTHING);
+  });
+
+  it("the retraction re-checks today's as it archives: only a pass under a pause may take it, and a build landing first keeps it", async () => {
+    const p = await placed();
+    const today = slotId(p, MON);
+    const snapshot = await row(today);
+    expect(await retractSlot(db, userId, snapshot, MON, prefs, NOW)).toBe(false);
+
+    await setContent(today, "built");
+    expect(await retractSlot(db, userId, snapshot, MON, prefs, NOW, { todayToo: true })).toBe(false);
+    expect((await row(today)).archivedAt).toBeNull();
+
+    await setContent(today, "outline");
+    expect(await retractSlot(db, userId, snapshot, MON, prefs, NOW, { todayToo: true })).toBe(true);
+    expect(await row(today)).toMatchObject({ archiveReason: "program_replaced" });
   });
 });
 
@@ -527,6 +704,43 @@ describe("the quiet days before a race", () => {
     const res = await placeSlots(db, userId, p, MON, { ...prefs, raceDate: RACE }, NOW);
     expect(sorted(res.archived)).toEqual(ids(p, [day(1, 4), day(2, 4)]));
     expect(await liveDates(p)).toEqual([day(0, 0), day(0, 4), day(1, 0), day(2, 1)]);
+  });
+
+  it("today's outline stays through them: only a pause takes today's", async () => {
+    const p = await seedCourse({ placementWeeksAhead: 1, quietDaysBeforeRace: 7 });
+    await placeSlots(db, userId, p, MON, prefs, NOW);
+    const raced = { ...prefs, raceDate: day(0, 4) };
+    const res = await placeSlots(db, userId, p, MON, raced, NOW);
+    expect(res.archived).toEqual([slotId(p, day(0, 4))]);
+    expect(await liveOn(p, MON)).toEqual([slotId(p, MON)]);
+    // Not tried and refused by the re-check either: a settled pass doesn't attempt a write every hour.
+    statements.length = 0;
+    expect(await placeSlots(db, userId, p, MON, raced, NOW)).toEqual(NOTHING);
+    expect(writes()).toEqual([]);
+  });
+
+  it("a pause overlapping them holds back both, retracts each slot once, and each ends on its own", async () => {
+    // Paused through Monday of week 2; quiet from Friday of week 1 through Friday of week 2. Week 3 is clear of both.
+    const raced = { ...prefs, raceDate: RACE };
+    const p = await seedCourse({ placementWeeksAhead: 3, quietDaysBeforeRace: 7 });
+    await placeSlots(db, userId, p, MON, prefs, NOW);
+    await setPause(p, day(2, 0));
+
+    const res = await placeSlots(db, userId, p, MON, raced, NOW);
+    expect(sorted(res.archived)).toEqual(ids(p, [day(0, 0), day(0, 4), day(1, 0), day(1, 4), day(2, 0), day(2, 4)]));
+    expect(res.placed).toEqual([]);
+    expect(await liveDates(p)).toEqual([day(3, 0), day(3, 4)]);
+    expect(await placeSlots(db, userId, p, MON, raced, NOW)).toEqual(NOTHING);
+
+    // The pause lifted: what it alone held comes back, and the quiet days still hold the rest.
+    await setPause(p, null);
+    const back = await placeSlots(db, userId, p, MON, raced, NOW);
+    expect(sorted(back.placed)).toEqual(ids(p, [day(0, 0), day(0, 4), day(1, 0)]));
+    expect(await liveDates(p)).toEqual([day(0, 0), day(0, 4), day(1, 0), day(3, 0), day(3, 4)]);
+
+    // Past the race, with no pause, a new week is placed as usual.
+    const after = day(2, 5);
+    expect(sorted((await placeSlots(db, userId, p, after, raced, NOW)).placed)).toEqual(ids(p, [day(4, 0), day(4, 4), day(5, 0), day(5, 4)]));
   });
 
   it("a race already run quiets nothing", async () => {

@@ -359,7 +359,7 @@ describe("hashTable — paged, equal to hashRows over orderedRows (Ruling R2)", 
 });
 
 describe("plans with a purpose: new columns survive an export and restore", () => {
-  it("a course programme's purpose, brief, ending, pause and objectives, and a coach plan's programme, come back as they went", async () => {
+  it("a course programme's purpose, brief, ending, pause and objectives, a coach plan's programme, and a course session's number come back as they went", async () => {
     const db = makeTestDb();
     const { userId } = await makeTestUser(db);
     const now = nowInstant();
@@ -392,6 +392,28 @@ describe("plans with a purpose: new columns survive an export and restore", () =
       createdAt: now,
       updatedAt: now,
     });
+    await db.insert(schema.plannedWorkouts).values({
+      id: "session-1",
+      userId,
+      planId: "prog-1",
+      sourceWorkoutId: "session-1",
+      title: "Synthetic session",
+      category: "yoga",
+      sport: "yoga",
+      originalPlanDate: "2031-01-06",
+      lastVerifiedCorosDate: "",
+      effectiveDate: "2031-01-06",
+      effectiveTime: "19:30",
+      sourceContentFingerprint: "0123456789abcdef",
+      fallbackEstimatedDurationSeconds: 600,
+      calendarBlockDurationSeconds: 600,
+      origin: "studio",
+      contentState: "outline",
+      completionState: "completed",
+      courseSession: 3,
+      createdAt: now,
+      updatedAt: now,
+    });
 
     const before = await exportAll(db, userId);
     expect(before.tables.programs).toEqual([
@@ -404,11 +426,13 @@ describe("plans with a purpose: new columns survive an export and restore", () =
       }),
     ]);
     expect(before.tables.coach_plans).toEqual([expect.objectContaining({ programId: "prog-1" })]);
+    expect(before.tables.planned_workouts).toEqual([expect.objectContaining({ id: "session-1", courseSession: 3 })]);
 
     await wipeAccountData(db, userId, { keep: ["users", "sessions", "provider_connections"] });
     await restoreAll(db, userId, before);
     const after = await exportAll(db, userId);
     expect(after.tables.programs).toEqual(before.tables.programs);
     expect(after.tables.coach_plans).toEqual(before.tables.coach_plans);
+    expect(after.tables.planned_workouts).toEqual(before.tables.planned_workouts);
   });
 });

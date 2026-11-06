@@ -224,8 +224,8 @@ describe("change_programme: one change to a programme's settings, as the sheet c
     const ctx = await mainRun();
     ok((await change(ctx, { programmeId: p, days: ["thursday", "Tue"] })).res);
     const op = await opOf(designProposalId(ctx.run.id), p);
-    // Today's stays. Next week's Tuesday is inside the pause, so only Thursday; the week after has both.
-    expect(op.lines).toEqual(["Days Mon · Wed → Tue · Thu", "Next sessions move to Wed 14 Oct · Thu 22 Oct · Tue 27 Oct"]);
+    // Today's untouched outline goes under the pause. Next week's Tuesday is inside it, so only Thursday; the week after has both.
+    expect(op.lines).toEqual(["Days Mon · Wed → Tue · Thu", "Next sessions move to Thu 22 Oct · Tue 27 Oct · Thu 29 Oct"]);
   });
 
   it("goal, minutes, block length, modes and care each say their line; fewer days than sessions is a note", async () => {
