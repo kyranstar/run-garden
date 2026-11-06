@@ -165,6 +165,9 @@ function correctionsOutcome(cs: readonly DesignCorrectionLineDto[]): CardLine["o
   if (st.every((x) => x === "declined")) return { status: "declined" };
   if (st.every((x) => x === "superseded" || x === "declined")) return { status: "superseded" };
   if (st.includes("applying")) return { status: "applying" };
+  // Nothing left to decide (one done, another not changed or replaced): done, never an Approve of nothing (the
+  // controller's fix pass, E22).
+  if (!cs.some(openCorrection)) return st.includes("applied") ? { status: "applied" } : { status: "declined" };
   return null;
 }
 
@@ -276,7 +279,8 @@ export function PlanCard({ card, closed = false }: { card: PlanCardInput; closed
     await reread();
     // The saves too: a pins card closing ends its batch's fit either way — approved, it is fitted in; declined, Fit them
     // in comes back (the saves flow redesigned §12.1).
-    for (const key of ["plan", "plan-week", "today", "coach-state", "coach-plans", "garden", "saves"]) void qc.invalidateQueries({ queryKey: [key] });
+    // And the library (the controller's fix pass, E18): a pin, an unpin or a correction changes the Studio's moves.
+    for (const key of ["plan", "plan-week", "today", "coach-state", "coach-plans", "garden", "saves", "library"]) void qc.invalidateQueries({ queryKey: [key] });
     void qc.invalidateQueries({ queryKey: COACH_CURRENT_QUERY });
     void qc.invalidateQueries({ queryKey: CONVERSATION_QUERY });
   };

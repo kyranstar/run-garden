@@ -125,7 +125,13 @@ export function promotionTrailStatement(db: Db, userId: string, proposalId: stri
       json_object('verdict', ${verdict}, 'correction', json_extract(o.value, '$.id')), ${tail("cp")}, ${at}
     FROM coach_proposals cp, json_each(cp.ops) o, json_each(json_extract(o.value, '$.posts')) p
     WHERE ${which} AND json_extract(o.value, '$.kind') = 'import_correction'`;
+  // The older cards' "replaced" first, then the new card's own (the controller's fix pass, E13): at the same moment, the
+  // trail reads in the order written (`at`, then rowid), so a move's latest word is the new card's suggestion.
   return db.insert(importEvents).select(sql`
+    ${lines("superseded", isOlder)}
+    UNION ALL
+    ${fixes("superseded", isOlder)}
+    UNION ALL
     ${lines("suggested", isNew)}
     UNION ALL
     SELECT lower(hex(randomblob(16))), cp.user_id, json_extract(r.value, '$[0]'), json_extract(o.value, '$.batchId'), NULL, 'coach', 'coach', 'info',
@@ -133,9 +139,5 @@ export function promotionTrailStatement(db: Db, userId: string, proposalId: stri
     FROM coach_proposals cp, json_each(cp.ops) o, json_each(json_extract(o.value, '$.read')) r
     WHERE ${isNew} AND json_extract(o.value, '$.kind') = 'move_pins' AND json_type(r.value) = 'array'
     UNION ALL
-    ${fixes("suggested", isNew)}
-    UNION ALL
-    ${lines("superseded", isOlder)}
-    UNION ALL
-    ${fixes("superseded", isOlder)}`);
+    ${fixes("suggested", isNew)}`);
 }

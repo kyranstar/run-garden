@@ -31,7 +31,7 @@ const SAVED_AT = "2026-10-20T17:00:00.000Z";
 function makeEnv(): Env {
   return {
     DB: {} as unknown as Env["DB"], ASSETS: {} as unknown as Env["ASSETS"], APP_URL: "https://app.test", FIXTURE_MODE: "0", AI_DEFAULT_ENABLED: "1",
-    SESSION_SECRET: "s", TOKEN_ENCRYPTION_KEY: "k", ALLOWED_GOOGLE_EMAIL: "runner@example.com", GOOGLE_CLIENT_ID: "c", GOOGLE_CLIENT_SECRET: "c",
+    SESSION_SECRET: "s", TOKEN_ENCRYPTION_KEY: "k", ALLOWED_GOOGLE_EMAIL: "a@b.c", GOOGLE_CLIENT_ID: "c", GOOGLE_CLIENT_SECRET: "c",
     AI_GATEWAY_API_KEY: "test-key", COACH_DESIGNER: "1",
   } as Env;
 }
@@ -159,6 +159,15 @@ describe("the coach's decisions on each post's trail", () => {
     expect(newer).not.toBe(older);
     const replaced = (await coachEvents(b.p0)).filter((e) => e.summary.startsWith("Replaced by a newer suggestion"));
     expect(replaced.map((e) => [e.proposalId, e.moveId])).toEqual(expect.arrayContaining([[older, b.lift], [older, b.nod]]));
+    // The controller's fix pass, E13: the newer card's own lines come after the older's "replaced" at the same moment —
+    // so the trail's latest word on each move is the newer card's suggestion, never "Replaced".
+    const trail = await readPostTrail(db, userId, b.p0);
+    const latest = new Map<string, { summary: string; proposalId: string | null }>();
+    for (const e of trail!.events) if (e.stage === "coach" && e.moveId) latest.set(e.moveId, { summary: e.summary, proposalId: e.proposalId ?? null });
+    for (const moveId of [b.lift, b.nod]) {
+      expect(latest.get(moveId)!.summary, moveId).toMatch(/^The coach suggested it/);
+      expect(latest.get(moveId)!.proposalId, moveId).toBe(newer);
+    }
   });
 
   it("a card with no batch writes nothing on any trail", async () => {

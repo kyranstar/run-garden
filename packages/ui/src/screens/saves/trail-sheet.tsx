@@ -303,13 +303,16 @@ function Details({ details }: { details: readonly TrailDetail[] }) {
 /** A key: value row; a long value shows its preview, and "Show all" its whole — nothing is cut. */
 function Row({ row }: { row: TrailRow }) {
   const [all, setAll] = useState(false);
-  // The quote a review card's chip opened the sheet at: in view once drawn.
+  // The quote a review card's chip opened the sheet at: in view once drawn, and the focus there (the controller's fix
+  // pass, E20) — so a screen reader lands on it too.
   const ref = useRef<HTMLDivElement>(null);
   useEffect(() => {
-    if (row.focus) ref.current?.scrollIntoView?.({ block: "center" });
+    if (!row.focus) return;
+    ref.current?.scrollIntoView?.({ block: "center" });
+    ref.current?.focus({ preventScroll: true });
   }, [row.focus]);
   return (
-    <div ref={ref} className={`coach-detail-row${row.focus ? " trail-row--focus" : ""}`}>
+    <div ref={ref} className={`coach-detail-row${row.focus ? " trail-row--focus" : ""}`} {...(row.focus ? { tabIndex: -1 } : {})}>
       <dt>{row.key}</dt>
       <dd className="trail-value">
         {row.struck ? (

@@ -14,7 +14,7 @@ import type { Env } from "../src/env.js";
 import type { Db } from "../src/services/db.js";
 import { createSession, SESSION_COOKIE } from "../src/auth/sessions.js";
 import { coachRoutes } from "../src/routes/coach.js";
-import { savePreferences } from "../src/services/calendar-sync.js";
+import { loadPreferences, savePreferences } from "../src/services/calendar-sync.js";
 import { APPROVE_FIXED, REQUEST_BUDGET } from "../src/services/design-approve.js";
 import { supersedeOlderPlans } from "../src/services/design-orchestrate.js";
 import { ACT_TOOLS, READ_TOOLS } from "../src/services/design-tools/index.js";
@@ -36,7 +36,7 @@ const DEAD_BUG = EXERCISES.find((e) => e.id === "deadBug")!;
 function makeEnv(): Env {
   return {
     DB: {} as unknown as Env["DB"], ASSETS: {} as unknown as Env["ASSETS"], APP_URL: "https://app.test", FIXTURE_MODE: "0", AI_DEFAULT_ENABLED: "1",
-    SESSION_SECRET: "s", TOKEN_ENCRYPTION_KEY: "k", ALLOWED_GOOGLE_EMAIL: "runner@example.com", GOOGLE_CLIENT_ID: "c", GOOGLE_CLIENT_SECRET: "c",
+    SESSION_SECRET: "s", TOKEN_ENCRYPTION_KEY: "k", ALLOWED_GOOGLE_EMAIL: "a@b.c", GOOGLE_CLIENT_ID: "c", GOOGLE_CLIENT_SECRET: "c",
     AI_GATEWAY_API_KEY: "test-key", COACH_DESIGNER: "1",
   } as Env;
 }
@@ -445,5 +445,27 @@ describe("a coach's correction leaves the ratings unchecked (the controller's fi
     // get_exercise says so: its ratings are the post's reading, not checked by the athlete.
     const get = await READ_TOOLS.find((t) => t.name === "get_exercise")!.run((await mainRun()) as ToolContext, { id: b.lift });
     expect(JSON.stringify(get)).toContain("not checked by the athlete");
+  });
+});
+
+describe("same as, in the athlete's zone (the controller's fix pass, E17)", () => {
+  it("a planned workout today holds the duplicate — today the athlete's day, not UTC's — so it stays, as the outcome says", async () => {
+    // 20:00 on Tue 20 Oct in Los Angeles: Wed 21 Oct in UTC.
+    vi.setSystemTime(new Date("2026-10-21T03:00:00.000Z"));
+    await savePreferences(db, userId, { ...(await loadPreferences(db, userId)), timezone: "America/Los_Angeles" });
+    const b = await batch();
+    const id0 = newId();
+    await db.insert(schema.plannedWorkouts).values({
+      id: id0, userId, planId: "plan-1", sourceWorkoutId: id0, title: "Neck care", category: "yoga", sport: "yoga", originalPlanDate: "2026-10-20", lastVerifiedCorosDate: "",
+      effectiveDate: "2026-10-20", effectiveTime: "21:00", sourceContentFingerprint: "fp", calendarBlockDurationSeconds: 1200,
+      workoutDoc: JSON.stringify({ items: [{ exerciseId: b.nod }] }), createdAt: SAVED_AT, updatedAt: SAVED_AT,
+    } as never);
+    const { id } = await proposed([{ target: "link", targetId: `${b.p0}:2`, field: "same_as", after: "deadBug" }]);
+    const res = await approve(id);
+    expect(res.status, JSON.stringify(res.json)).toBe(200);
+    // Kept, as its outcome says — never archived behind it.
+    const [op] = await fixesOf(id);
+    expect(op!.outcome.lines).toEqual([`Zorbex neck nod stays: a planned workout holds it — marked like ${DEAD_BUG.name}`]);
+    expect(await recordOf(b.nod)).toMatchObject({ status: "active" });
   });
 });

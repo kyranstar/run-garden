@@ -96,7 +96,8 @@ function Line({ line, open, unlanded }: { line: DesignPinsCardLineDto; open: Ope
 function fixOutcome(c: DesignCorrectionLineDto): { mark: string; after: string } {
   switch (c.outcome?.status) {
     case "applied":
-      return { mark: "✓ ", after: "" };
+      // What it left, said (the controller's fix pass, E16): a same-as that kept the duplicate, and why.
+      return { mark: "✓ ", after: c.outcome.lines?.length ? ` — ${c.outcome.lines.join("; ")}` : "" };
     case "refused":
       return { mark: "", after: ` — ${c.outcome.why}` };
     case "declined":
@@ -109,6 +110,7 @@ function fixOutcome(c: DesignCorrectionLineDto): { mark: string; after: string }
 }
 
 export function ReviewLines({ lines, corrections, why }: { lines: readonly DesignPinsCardLineDto[]; corrections: readonly DesignCorrectionLineDto[]; why: string | null }) {
+  const reply = useContext(CoachReplyContext);
   const [trail, setTrail] = useState<{ postId: string; focus: TrailFocus } | null>(null);
   const open: Open = (postId, focus) => setTrail({ postId, focus });
   // The moves whose dose fix ended without landing: their lines state no dose.
@@ -158,6 +160,17 @@ export function ReviewLines({ lines, corrections, why }: { lines: readonly Desig
                     {c.basis === "owner" ? " (your word)" : ""}
                     {o.after} <Chips cites={c.cites} open={open} />
                   </p>
+                  {/* Its own Challenge (the controller's fix pass, D6): the athlete pushes back on one correction. */}
+                  {reply ? (
+                    <button
+                      type="button"
+                      className="linklike tap-pad coach-challenge"
+                      aria-label={`Challenge the correction to ${c.name}`}
+                      onClick={() => reply.challenge(`About the correction to ${c.name}: `)}
+                    >
+                      Challenge
+                    </button>
+                  ) : null}
                 </li>
               );
             })}

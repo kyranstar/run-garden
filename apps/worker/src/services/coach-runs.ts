@@ -376,8 +376,13 @@ export const ANSWER_MAX_BYTES = 64_000;
  * then showed as raw JSON (audit 2026-11-05). The trail keeps a tool's result data too (§6.4), so it has room for it.
  */
 export const EVENT_PAYLOAD_MAX_CHARS = 16_000;
-/** A tool call's input kept in its event: room for a pins card's lines or a draft's parts. */
-const EVENT_INPUT_MAX_CHARS = 8_000;
+/**
+ * A tool call's input kept in its event: room for a pins card's lines or a draft's parts. REBASED 2026-11-06 (the
+ * controller's fix pass, E23): a pins card of twelve lines or more passed 8,000 and was kept as `{tooLong}`; thirty
+ * lines of eight cites, sixty moves and its words at their longest measure 20,428 — held with room for longer ids. A row
+ * stays far under D1's 2 MB (bound values are no part of its 100 KB statement text), and a step writes one such card.
+ */
+const EVENT_INPUT_MAX_CHARS = 32_000;
 /** A whole event's payload: its input and its data, each bounded on its own, fit together. */
 const EVENT_ROW_MAX_CHARS = EVENT_PAYLOAD_MAX_CHARS + EVENT_INPUT_MAX_CHARS + 2_000;
 const SUMMARY_MAX_CHARS = 300;

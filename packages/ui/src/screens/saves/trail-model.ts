@@ -202,6 +202,7 @@ const LABELS: Readonly<Record<string, string>> = {
   problems: "Problems",
   doseOrigin: "Dose from",
   evidence: "Said in the post",
+  cites: "Evidence",
   confidence: "Confidence",
   outcome: "Came out",
   by: "Matched by",
@@ -237,10 +238,12 @@ const VALUE_WORDS: Readonly<Record<string, Readonly<Record<string, string>>>> = 
   by: { name: "its name", judge: "the judge", fuzzy: "a close name", new: "no match" },
   judge: { asked: "asked", not_needed: "not needed", failed: "its call failed", budget: "not asked: the import budget" },
   evidence: { stated: "stated", inferred: "the reader's guess" },
+  target: { move: "the move", reading: "the post's reading", insight: "an insight", link: "the match" },
+  basis: { evidence: "the evidence", owner: "your word" },
 };
 
 /** Keys that say nothing to the owner: the system's own ids and markers. */
-const QUIET = new Set(["batchId", "moveId", "id", "usageId", "runId", "proposalId", "key", "untrusted", "signature", "cut", "head"]);
+const QUIET = new Set(["batchId", "moveId", "id", "usageId", "runId", "proposalId", "key", "untrusted", "signature", "cut", "head", "targetId", "correction"]);
 /** The call's own facts: under "The call", not the decision. */
 const CALL_KEYS = new Set(["tokens", "finishReason", "asSent", "promptSha", "promptShaSent", "failure"]);
 
@@ -340,6 +343,11 @@ function listWords(items: readonly unknown[], ctx: Ctx): string {
 
 /** One field's value, in words, by its key. */
 function field(k: string, v: unknown, ctx: Ctx): string {
+  // A line's or a correction's evidence: its chips' words (the controller's fix pass, E19).
+  if (k === "cites" && Array.isArray(v)) {
+    const labels = v.flatMap((c) => (typeof record(c)?.label === "string" ? [record(c)!.label as string] : []));
+    return labels.length ? labels.join(", ") : "none";
+  }
   const said = VALUE_WORDS[k];
   if (said && typeof v === "string") return said[v] ?? v.replace(/_/g, " ");
   switch (k) {
@@ -593,10 +601,18 @@ export function trailAccount(dto: ImportTrailDto): AccountLine[] {
     out.push({ key: `move-${m.position}`, kind: "move", text, sub: m.purpose, position: m.position });
   }
 
-  // What the coach did: its latest word on each move (and each of its steps that names none).
+  // What the coach did (the controller's fix pass, E14, E15): its latest decision on each move — from its lines alone, so
+  // a correction's word never hides the move's in or out — its latest word on each correction, the latest time it read
+  // the post (one line however many cards or challenges read it), and each of its other steps.
   const coach = dto.events.filter((e) => e.stage === "coach");
   const latest = new Map<string, TrailEventDto>();
-  for (const e of coach) latest.set(e.moveId ?? e.id, e);
+  for (const e of coach) {
+    const d = record(e.detail);
+    const key =
+      typeof d?.correction === "string" ? `fix-${d.correction}` : typeof d?.runId === "string" && !e.moveId ? "read" : (e.moveId ?? e.id);
+    latest.delete(key);
+    latest.set(key, e);
+  }
   if (latest.size > 0) for (const [k, e] of latest) out.push({ key: `coach-${k}`, kind: "coach", text: e.summary, status: e.status });
   else if (account.moves.length > 0) out.push({ key: "coach", kind: "coach", text: NOT_REVIEWED_LINE });
 

@@ -12047,10 +12047,13 @@ a.stu-tpl-open:focus-visible::before {
   list-style: none;
   gap: var(--space-4);
 }
+/* A line's parts are a column whose gap is its pads' clearance (the touch floor's one rule): the chips above, Challenge
+   below, never under each other's pads. */
 .coach-review-line {
   display: flex;
   flex-direction: column;
-  gap: var(--space-1);
+  --tap-clear: var(--space-3);
+  gap: var(--tap-clear);
   min-width: 0;
 }
 .coach-review-head,
@@ -12075,7 +12078,8 @@ a.stu-tpl-open:focus-visible::before {
 .coach-cites {
   display: inline-flex;
   flex-wrap: wrap;
-  gap: var(--space-2);
+  --tap-clear: var(--space-3);
+  gap: var(--tap-clear);
   vertical-align: baseline;
 }
 .coach-cite {

@@ -352,8 +352,9 @@ export function CoachConversation({ ctx, loopDeps, request = null, seeing: seenA
   const [challenged, setChallenged] = useState(0);
   const reply = useMemo(
     () => ({
+      // A half-typed draft is kept, the challenge's words after it (the controller's fix pass, E21).
       challenge: (words: string) => {
-        setDraft(words.slice(0, REQUEST_MAX_CHARS));
+        setDraft((d) => (d.trim() ? `${d.replace(/\s+$/, "")}\n${words}` : words).slice(0, REQUEST_MAX_CHARS));
         setChallenged((n) => n + 1);
       },
     }),

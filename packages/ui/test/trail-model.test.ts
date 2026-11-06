@@ -401,3 +401,36 @@ describe("a transcript blob as the trail shows it (final audit G20)", () => {
     expect(blobDisplayText("raw_reply", "12.3\tkept as is")).toBe("12.3\tkept as is");
   });
 });
+
+describe("the coach's word on the trail (the controller's fix pass, E14, E15, E19)", () => {
+  const LIFT = "myZorbexHipLift1a2b";
+  const line = (summary: string, at: string) => ev("coach", { source: "coach", moveId: LIFT, summary, at, detail: { verdict: "suggested", decision: "in", where: "joins your rotation", dose: null, text: "For stiff hips.", cites: [] } });
+  const fix = (summary: string, at: string) => ev("coach", { source: "coach", moveId: LIFT, summary, at, detail: { verdict: "suggested", correction: "fix-move-x-dose" } });
+  const read = (at: string) => ev("coach", { source: "coach", moveId: null, summary: "The coach read this post", at, detail: { runId: `run-${at}` } });
+
+  it("E14: a correction's row never hides the move's in/out — the move's line is its latest decision; the correction is its own", () => {
+    const lines = trailAccount(trail({ events: [line("The coach suggested it — in · joins your rotation", "2026-11-03T10:00:00.000Z"), fix("The coach suggested a correction — Dose of Zorbex hip lift", "2026-11-03T10:00:00.000Z")] }));
+    const coach = lines.filter((l) => l.kind === "coach").map((l) => l.text);
+    expect(coach).toContain("The coach suggested it — in · joins your rotation");
+    expect(coach).toContain("The coach suggested a correction — Dose of Zorbex hip lift");
+  });
+
+  it("E15: the coach's reads of the post are one line, the latest", () => {
+    const lines = trailAccount(trail({ events: [read("2026-11-03T10:00:00.000Z"), read("2026-11-03T11:00:00.000Z"), read("2026-11-03T12:00:00.000Z"), line("The coach suggested it — in", "2026-11-03T12:00:00.000Z")] }));
+    expect(lines.filter((l) => l.kind === "coach" && l.text === "The coach read this post")).toHaveLength(1);
+  });
+
+  it("E19: a step's cites read as their chips' words, and the ids it corrects stay quiet", () => {
+    const sections = trailSections(trail({
+      events: [
+        ev("coach", { source: "coach", moveId: LIFT, summary: "The coach suggested it", detail: { verdict: "suggested", decision: "in", text: "For stiff hips.", cites: [{ id: "q1.1", kind: "quote", label: "said 1:12", postId: "post-1", position: 0, quote: 0 }, { id: "history", kind: "history", label: "your history" }] } }),
+        ev("correction", { source: "coach", summary: "Dose fixed", detail: { target: "move", targetId: LIFT, field: "dose", before: null, after: null, basis: "evidence", cites: [{ id: "q1.1", kind: "quote", label: "said 1:12", postId: "post-1", position: 0, quote: 0 }], by: "coach" } }),
+      ],
+    }));
+    const rows = sections.flatMap((s) => s.steps.flatMap((st) => st.details.flatMap((d) => d.rows)));
+    const words = rows.map((r) => `${r.key}: ${r.value}`).join("\n");
+    expect(words).toContain("Evidence: said 1:12, your history");
+    expect(words).not.toMatch(/kind quote|post id|position 0|label said/);
+    expect(words).not.toContain(LIFT);
+  });
+});

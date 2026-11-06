@@ -12,6 +12,8 @@ import { act, createElement, type ReactNode } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { MemoryRouter } from "react-router-dom";
 import { QueryClientProvider } from "@tanstack/react-query";
+import { readFileSync } from "node:fs";
+import { resolve } from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import type { CoachConversationCardDto, DesignCorrectionLineDto, DesignPinsLineDto } from "@rg/api-client";
 import { CoachReplyContext } from "../src/screens/studio/coach-reply.js";
@@ -203,5 +205,90 @@ describe("the reader's report (the controller's fix pass, C1)", () => {
     await click(chip as HTMLButtonElement, "the report chip");
     // The move's account opens: what the post says of it.
     await until(() => text().includes("What the post says"), "the trail at the move");
+  });
+});
+
+describe("the card's corrections (the controller's fix pass, D6, E16, E18, E22)", () => {
+  it("D6: a correction has its own Challenge, naming what it corrects", async () => {
+    serve({ "GET /api/coach/proposals/dp-run-7": () => read() });
+    const challenge = vi.fn();
+    await mount(card(), (n) => createElement(CoachReplyContext.Provider, { value: { challenge } }, n));
+    await until(() => !!document.querySelector(".coach-review-fix .coach-challenge"), "Challenge on the correction");
+    const fix = document.querySelector(".coach-review-fix .coach-challenge") as HTMLButtonElement;
+    expect(fix.getAttribute("aria-label")).toBe("Challenge the correction to Zorbex hip lift");
+    await click(fix, "Challenge the correction");
+    expect(challenge).toHaveBeenCalledWith("About the correction to Zorbex hip lift: ");
+  });
+
+  it("E16: a same-as that kept the duplicate says why", async () => {
+    const SAME: DesignCorrectionLineDto = {
+      ...FIX, opId: "fix-link", target: "link", targetId: "post-1:2", field: "same_as", name: "Zorbex neck nod", line: "Zorbex neck nod is the same as Dead bug", cites: [],
+      outcome: { status: "applied", at: "x", lines: ["Zorbex neck nod stays: it has logged sets — marked like Dead bug"] },
+    };
+    serve({ "GET /api/coach/proposals/dp-run-7": () => read({ status: "approved", corrections: [SAME] }) });
+    await mount(card({ kind: "corrections", opId: undefined, title: "Corrections to your saves", summary: "1 correction", pinLines: undefined, lines: [SAME.line] }));
+    await until(() => text().includes("Zorbex neck nod is the same as Dead bug"), "the correction");
+    expect(document.querySelector(".coach-review-fix")!.textContent).toContain("Zorbex neck nod stays: it has logged sets — marked like Dead bug");
+  });
+
+  it("E22: corrections alone with nothing left to decide — one done, one not changed — show as done, no Approve", async () => {
+    const corrections = [{ ...FIX, outcome: { status: "applied" as const, at: "x" } }, { ...FIX, opId: "fix-2", line: "Why for Zorbex hip lift: long runs", outcome: { status: "declined" as const, at: "x" } }];
+    serve({ "GET /api/coach/proposals/dp-run-7": () => read({ status: "partially_approved", pins: undefined, corrections }) });
+    await mount(card({ kind: "corrections", opId: undefined, title: "Corrections to your saves", summary: "2 corrections", pinLines: undefined, lines: corrections.map((c) => c.line) }));
+    await until(() => text().includes(CORRECTIONS_WORDS.done), "done");
+    expect(button("Approve")).toBeFalsy();
+  });
+
+  it("E18: an approve reads the Studio's moves again", async () => {
+    let state = read();
+    serve({
+      "GET /api/coach/proposals/dp-run-7": () => state,
+      "POST /api/coach/proposals/dp-run-7/approve": () => {
+        state = read({ status: "approved", pins: [pinsLine({ outcome: { status: "applied", at: "x", pinned: [LIFT.moveId], unpinned: [], lines: [] } })], corrections: [{ ...FIX, outcome: { status: "applied", at: "x" } }] });
+        return { ok: true, status: "approved", applied: [], changed: [], refused: [], settled: [], remaining: [] };
+      },
+    });
+    host = document.createElement("div");
+    document.body.appendChild(host);
+    root = createRoot(host);
+    const client = primedClient();
+    client.setQueryData(["library", "personal"], { moves: [] });
+    await act(async () => {
+      root!.render(createElement(MemoryRouter, null, createElement(QueryClientProvider, { client }, createElement(PlanCard, { card: card() }))));
+    });
+    await until(() => !!button("Approve") && !button("Approve")!.disabled, "Approve");
+    expect(client.getQueryState(["library", "personal"])!.isInvalidated).toBe(false);
+    await click(button("Approve"), "Approve");
+    await until(() => text().includes("Programme's pool updated"), "done");
+    expect(client.getQueryState(["library", "personal"])!.isInvalidated).toBe(true);
+  });
+});
+
+describe("the card's taps (the controller's fix pass, E21)", () => {
+  // jsdom has its own URL: the file is found from the package (vitest runs from it).
+  const css = readFileSync(resolve(process.cwd(), "src/styles.css"), "utf8");
+  const rule = (selector: string) => {
+    const from = css.indexOf(`\n${selector} {`);
+    return from < 0 ? "" : css.slice(from, css.indexOf("}", from));
+  };
+  it("the chips' row and a line's column name the clearance their pads may reach, and keep that much between them", () => {
+    for (const selector of [".coach-cites", ".coach-review-line"]) {
+      expect(rule(selector), selector).toMatch(/--tap-clear: var\(--space-\d\)/);
+      expect(rule(selector), selector).toMatch(/gap: var\(--tap-clear\)/);
+    }
+  });
+});
+
+describe("the quote a chip opens (the controller's fix pass, E20)", () => {
+  it("the trail's row for it takes the focus, so a screen reader is there too", async () => {
+    Element.prototype.scrollIntoView = vi.fn();
+    serve({ "GET /api/coach/proposals/dp-run-7": () => read(), "GET /api/my-saves/posts/post-1/trail": () => TRAIL });
+    await mount(card());
+    await until(() => document.querySelectorAll(".coach-cite").length > 0, "chips");
+    await click(document.querySelector("button.coach-cite") as HTMLButtonElement, "the said chip");
+    await until(() => !!document.querySelector(".trail-row--focus"), "the trail at the quote");
+    const row = document.querySelector(".trail-row--focus") as HTMLElement;
+    expect(row.getAttribute("tabindex")).toBe("-1");
+    await until(() => document.activeElement === row, "the focus on the quote");
   });
 });

@@ -1412,7 +1412,7 @@ export async function approveDesignOps(
     for (const [i, g] of fixBatch.entries()) {
       // Each statement gated on its own claim, still held (the controller's fix pass, B): `claimHeld`.
       const asRead = claimHeld(userId, current.id, current.status, g.id, ctx.now);
-      const verdict = judgeCorrection(db, userId, g, correctionStateOf(states?.[`s${i}`]), { proposalId: p.id, runId: p.id.startsWith("dp-") ? p.id.slice(3) : null, now: ctx.now, asRead });
+      const verdict = judgeCorrection(db, userId, g, correctionStateOf(states?.[`s${i}`]), { proposalId: p.id, runId: p.id.startsWith("dp-") ? p.id.slice(3) : null, now: ctx.now, asRead, today: ctx.today });
       if (verdict.status === "made") {
         outcomes.set(g.id, { status: "applied", at: ctx.now });
         corrected.push({ opId: g.id, summary: g.line });

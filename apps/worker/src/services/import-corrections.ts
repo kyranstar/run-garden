@@ -379,7 +379,7 @@ export function judgeCorrection(
   userId: string,
   op: ImportCorrectionOp,
   state: CorrectionState | null,
-  o: { proposalId: string; runId: string | null; now: string; asRead: SQL },
+  o: { proposalId: string; runId: string | null; now: string; asRead: SQL; /** The athlete's day (the usage read's too). */ today: string },
 ): CorrectionVerdict {
   const current = currentValue(op.target, op.targetId, op.field, state);
   if ("why" in current) return { status: "refused", error: "not_a_target", why: `What it corrects ${current.why}.` };
@@ -508,7 +508,7 @@ export function judgeCorrection(
             AND NOT EXISTS (SELECT 1 FROM saved_post_moves x WHERE x.user_id = ${userId} AND x.move_id = ${dup} AND x.status = 'saved' AND x.id <> ${link.id})
             AND NOT EXISTS (SELECT 1 FROM exercise_prefs x WHERE x.user_id = ${userId} AND x.exercise_id = ${dup} AND x.pinned = 1)
             AND NOT EXISTS (SELECT 1 FROM performed_sets x JOIN performed_sessions xs ON xs.id = x.performed_session_id WHERE xs.user_id = ${userId} AND x.exercise_id = ${dup})
-            AND NOT EXISTS (SELECT 1 FROM planned_workouts x WHERE x.user_id = ${userId} AND x.effective_date >= ${o.now.slice(0, 10)} AND instr(coalesce(x.workout_doc, ''), '"' || ${dup} || '"') > 0)
+            AND NOT EXISTS (SELECT 1 FROM planned_workouts x WHERE x.user_id = ${userId} AND x.effective_date >= ${o.today} AND instr(coalesce(x.workout_doc, ''), '"' || ${dup} || '"') > 0)
             AND ${gate} AND ${o.asRead}`),
         db
           .update(savedPostMoves)
