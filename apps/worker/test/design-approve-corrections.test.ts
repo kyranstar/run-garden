@@ -384,7 +384,7 @@ describe("a dose fix that doesn't land under its pins card (final review, Import
     expect(res.status, JSON.stringify(res.json)).toBe(200);
     expect(res.json.refused.map((r: { error: string }) => r.error)).toEqual(["stale"]);
     const approved = (await db.select().from(importEvents).where(and(eq(importEvents.userId, userId), eq(importEvents.stage, "coach"), eq(importEvents.moveId, b.lift))))
-      .filter((e) => e.summary.startsWith("You approved it"));
+      .filter((e) => e.summary.startsWith("You approved:"));
     expect(approved.length).toBeGreaterThan(0);
     for (const e of approved) {
       expect(e.summary).not.toContain("30 s, 2 sets");

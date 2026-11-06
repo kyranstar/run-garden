@@ -173,7 +173,8 @@ export interface PinsCardLine {
   /**
    * Since the coach's review (import trail phase 3, §8.3, §14.1): what the card does with the move — `in` (pinned here,
    * in a workout this suggestion holds, or in rotation already) or `out` — the tool's own, never contradicting the card;
-   * where it goes, in the coach's words; the dose it will run with (the tool's: the revised item's, a dose correction's
+   * where it goes (the tool's since audit fixes E7: the workout's day, title and part, or the rotation; a line stored
+   * before holds the coach's words); the dose it will run with (the tool's: the revised item's, a dose correction's
    * in this suggestion, else the record's — an `in` line's only); its cites as the chips the card draws; and the move's
    * first post in the batch (its name opens that post's trail at the move). A line stored before holds none of them.
    */

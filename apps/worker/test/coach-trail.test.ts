@@ -77,7 +77,7 @@ async function mainRun(): Promise<ToolContext> {
 
 const tool = (name: string) => ACT_TOOLS.find((t) => t.name === name)!;
 const lines = (b: Awaited<ReturnType<typeof batch>>) => [
-  { moveId: b.lift, where: "joins your mobility rotation", text: "She says it's for stiff hips after easy runs.", cites: ["q1.1"] },
+  { moveId: b.lift, text: "She says it's for stiff hips after easy runs.", cites: ["q1.1"] },
   { moveId: b.nod, text: "Your neck care covers it.", cites: ["history"] },
 ];
 
@@ -112,8 +112,10 @@ describe("the coach's decisions on each post's trail", () => {
   it("shown: each line suggested on every post naming its move, each post read at the read's time; approved, each line approved — the account's line is the latest", async () => {
     const b = await batch();
     const { id } = await shown(b);
-    const suggestedLift = "The coach suggested it — in · joins your mobility rotation · 6–10 reps · She says it's for stiff hips after easy runs.";
-    const suggestedNod = "The coach suggested it — left out · Your neck care covers it.";
+    // REBASED 2026-11-06 (audit fixes, E4): the words say what was decided — "Coach: put in — where · dose — why",
+    // "Coach: leave out — why" — and where is the tool's (E7).
+    const suggestedLift = "Coach: put in — joins your rotation · 6–10 reps — She says it's for stiff hips after easy runs.";
+    const suggestedNod = "Coach: leave out — Your neck care covers it.";
     expect((await coachEvents(b.p0)).sort((x, y) => x.summary.localeCompare(y.summary))).toEqual([
       { source: "coach", moveId: null, summary: "The coach read this post", at: READ_AT, proposalId: id },
       { source: "coach", moveId: b.lift, summary: suggestedLift, at: NOW.toISOString(), proposalId: id },
@@ -127,16 +129,16 @@ describe("the coach's decisions on each post's trail", () => {
     const after = await coachEvents(b.p0);
     expect(after.filter((e) => e.source === "owner").map((e) => [e.moveId, e.summary])).toEqual(
       expect.arrayContaining([
-        [b.lift, "You approved it — in · joins your mobility rotation · 6–10 reps · She says it's for stiff hips after easy runs."],
-        [b.nod, "You approved it — left out · Your neck care covers it."],
+        [b.lift, "You approved: put in — joins your rotation · 6–10 reps"],
+        [b.nod, "You approved: leave out"],
       ]),
     );
     // The trail's account takes each move's latest coach step (trail-model.ts): the owner's approval, last, by its time.
     const trail = (await readPostTrail(db, userId, b.p0))!;
     const latest = new Map<string, string>();
     for (const e of trail.events.filter((x) => x.stage === "coach")) latest.set(e.moveId ?? e.id, e.summary);
-    expect(latest.get(b.lift)).toMatch(/^You approved it — in /);
-    expect(latest.get(b.nod)).toMatch(/^You approved it — left out /);
+    expect(latest.get(b.lift)).toMatch(/^You approved: put in /);
+    expect(latest.get(b.nod)).toBe("You approved: leave out");
   });
 
   it("declined: each line says not now, in the decline's own write", async () => {
@@ -146,8 +148,8 @@ describe("the coach's decisions on each post's trail", () => {
     expect(res.status).toBe(200);
     expect(res.total).toBeLessThanOrEqual(DECLINE_COST);
     expect((await coachEvents(b.p0)).filter((e) => e.source === "owner").map((e) => e.summary).sort()).toEqual([
-      "You said not now — in · joins your mobility rotation · 6–10 reps · She says it's for stiff hips after easy runs.",
-      "You said not now — left out · Your neck care covers it.",
+      "You said not now: put in — joins your rotation · 6–10 reps",
+      "You said not now: leave out",
     ].sort());
   });
 
@@ -165,7 +167,7 @@ describe("the coach's decisions on each post's trail", () => {
     const latest = new Map<string, { summary: string; proposalId: string | null }>();
     for (const e of trail!.events) if (e.stage === "coach" && e.moveId) latest.set(e.moveId, { summary: e.summary, proposalId: e.proposalId ?? null });
     for (const moveId of [b.lift, b.nod]) {
-      expect(latest.get(moveId)!.summary, moveId).toMatch(/^The coach suggested it/);
+      expect(latest.get(moveId)!.summary, moveId).toMatch(/^Coach: /);
       expect(latest.get(moveId)!.proposalId, moveId).toBe(newer);
     }
   });
@@ -189,7 +191,7 @@ describe("the coach's decisions on each post's trail", () => {
     const plain = ops.map((o) => (o.kind === "move_pins" ? { ...o, lines: [{ moveId: b.lift, name: "Zorbex hip lift", text: "In rotation." }] } : o));
     await db.update(coachProposals).set({ ops: plain }).where(eq(coachProposals.id, id));
     expect((await invoke("POST", `/api/coach/proposals/${id}/approve`, {})).status).toBe(200);
-    expect((await coachEvents(b.p0)).filter((e) => e.source === "owner").map((e) => e.summary)).toEqual(["You approved it — In rotation."]);
+    expect((await coachEvents(b.p0)).filter((e) => e.source === "owner").map((e) => e.summary)).toEqual(["You approved: In rotation."]);
   });
 
   it("a correction shown is suggested on each post it touches", async () => {

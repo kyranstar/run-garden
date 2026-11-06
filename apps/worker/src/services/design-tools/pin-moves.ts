@@ -41,7 +41,8 @@
  * A LINE CITES ITS EVIDENCE (import trail phase 3; design 2026-11-05 §8.3, §14.1–14.2). A line about a move says `in` or
  * `out` — what the card does: pinned here, in a workout this suggestion holds, or left in rotation, else out; a decision
  * the card contradicts is refused (`in_not_placed`, `out_but_placed`) and one left unwritten is the tool's — where it
- * goes (the coach's words), the dose it runs with after the card (the revised item's, a dose correction's in this
+ * goes (the tool's too, audit fixes E7: a workout of this suggestion's day, title and part, else "joins your rotation" or
+ * "already in rotation"; a `where` the coach sends is ignored — its prose belongs in the text), the dose it runs with after the card (the revised item's, a dose correction's in this
  * suggestion, else the record's: an `in` line's only; a coach dose whose numbers differ is `dose_mismatch`), and its cites
  * — quote ids the run read (read_saves' receipts on its trail, `saves-reads.ts`), `history`, `goal:<id>`,
  * `inferred:<field>` — stored as the chips the card draws (a heard quote is ⟨heard⟩, never ⟨said⟩). Refused too: a line
@@ -56,7 +57,7 @@
 import { sql } from "drizzle-orm";
 import { z } from "zod";
 import { accountState, coachProposals, exercisePrefs, personalMoves, saveBatches } from "@rg/database";
-import { doseSummary, type WorkoutDose } from "@rg/domain";
+import { dayLabel, doseSummary, type WorkoutDose } from "@rg/domain";
 import { isPersonalId, numberWord } from "@rg/saves";
 import { makeLibraryIndex } from "@rg/workout";
 import { accountLibraryFrom, personalMovesSql } from "../account-library.js";
@@ -77,8 +78,16 @@ const SUMMARY_MAX = 120;
  * two-sentence line mid-sentence). */
 export const PIN_LINE_MAX = 280;
 const WHY_MAX = 300;
-/** Where a move goes, in the coach's words ("joins your mobility rotation", "in Thursday's mobility, revised here"). */
+/** A `where` the coach may still send (it is ignored: the tool writes where — audit fixes, E7), at most. */
 const WHERE_MAX = 80;
+/** Where a pinned move goes, and one already in rotation (E7): the card says what Approve does. */
+export const JOINS_ROTATION = "joins your rotation";
+export const IN_ROTATION = "already in rotation";
+/** A workout part's purpose in the athlete's words. */
+const PART_WORDS: Readonly<Record<string, string>> = {
+  arrive: "arrival", warmup: "warm-up", activation: "activation", main: "main work", power: "power", accessory: "accessories",
+  conditioning: "conditioning", run: "run", care: "care", cooldown: "cool-down",
+};
 /** A dose as the coach may write it (the card shows the tool's own). */
 const DOSE_MAX = 40;
 /** The cites one line carries, at most. */
@@ -212,6 +221,30 @@ function doseFixesOf(ops: readonly unknown[]): Map<string, Parameters<typeof dos
   return out;
 }
 
+/** Where each move the suggestion's open workouts hold goes (audit fixes, E7): the workout's day (and time), its title and
+ * the part — "Thu 22 Oct, in Post-run mobility (cool-down)" — the last workout's, as `workoutDosesOf`. */
+export function workoutPlacesOf(ops: readonly unknown[]): Map<string, string> {
+  const out = new Map<string, string>();
+  for (const op of ops) {
+    const o = op as { kind?: unknown; date?: unknown; time?: unknown; doc?: { title?: unknown; parts?: unknown } };
+    if (o?.kind !== "doc_workout" || decided(op) || !Array.isArray(o.doc?.parts)) continue;
+    const day = typeof o.date === "string" ? `${dayLabel(o.date)}${typeof o.time === "string" && o.time ? ` ${o.time}` : ""}` : null;
+    const title = typeof o.doc!.title === "string" && o.doc!.title.trim() ? o.doc!.title.trim() : "the workout";
+    for (const part of o.doc!.parts as Array<{ purpose?: unknown; items?: unknown }>) {
+      const slot = typeof part?.purpose === "string" ? PART_WORDS[part.purpose] : undefined;
+      for (const item of Array.isArray(part?.items) ? (part.items as Array<{ kind?: unknown; libraryId?: unknown }>) : []) {
+        if (item?.kind !== "exercise" || typeof item.libraryId !== "string") continue;
+        out.set(item.libraryId, `${day ? `${day}, ` : ""}in ${title}${slot ? ` (${slot})` : ""}`);
+      }
+    }
+  }
+  return out;
+}
+
+/** Where an `in` line's move goes after the card (E7): the workout of this suggestion that holds it, else the rotation it
+ * joins by this card's pin, else the rotation it is in already. */
+const whereOf = (id: string, places: ReadonlyMap<string, string>, pinned: boolean): string => places.get(id) ?? (pinned ? JOINS_ROTATION : IN_ROTATION);
+
 const sameNumbers = (a: readonly number[], b: readonly number[]): boolean => a.length === b.length && a.every((n, i) => n === b[i]);
 
 /**
@@ -221,11 +254,15 @@ const sameNumbers = (a: readonly number[], b: readonly number[]): boolean => a.l
  */
 export function stalePinsLines(ops: readonly unknown[]): PinsCardLine[] {
   const inWorkout = workoutDosesOf(ops);
+  const places = workoutPlacesOf(ops);
   return ops.filter(isMovePinsOp).flatMap((g) =>
     pinsCardLinesOf(g.lines).filter((l) => {
       if (!l.moveId) return false;
       if (l.decision === "out") return inWorkout.has(l.moveId) || g.pin.includes(l.moveId);
-      if (l.decision !== "in" || l.via !== "workout") return false;
+      if (l.decision !== "in") return false;
+      // Where it goes, as the tool wrote it (E7): its workout moved, or it was put in or taken out of one, since.
+      if (l.via && l.where !== undefined && l.where !== whereOf(l.moveId, places, g.pin.includes(l.moveId))) return true;
+      if (l.via !== "workout") return false;
       const item = inWorkout.get(l.moveId);
       return !item || (l.dose !== undefined && doseSummary(item) !== l.dose);
     }),
@@ -269,7 +306,6 @@ export const pinMoves: DesignTool = {
           properties: {
             moveId: { type: "string", description: "The move it is about: the card names it, so never write the name." },
             decision: { type: "string", enum: ["in", "out"], description: "in: pinned here, in a workout here, or in rotation already; out: none of those." },
-            where: { type: "string", description: `Where it goes: the workout this suggestion revises, or the rotation it joins; ${capInWords(WHERE_MAX)}.` },
             dose: { type: "string", description: "Leave out: the card shows the dose it runs with." },
             text: { type: "string", description: `Why, in a sentence: ${capInWords(PIN_LINE_MAX)}.` },
             cites: {
@@ -474,6 +510,7 @@ export const pinMoves: DesignTool = {
       }
     }
     const inWorkout = workoutDosesOf(all);
+    const places = workoutPlacesOf(all);
     const doseFixes = doseFixesOf(all);
     const pinnedNow = new Set(parsedArray(extra.pinnedNow).filter((x): x is string => typeof x === "string"));
     /** What puts a move in: a pin here, a workout here, or the rotation it is in already (and not unpinned); else none. */
@@ -536,8 +573,8 @@ export const pinMoves: DesignTool = {
         name,
         text: clipProse(namesFor(lineTextOf(l.text, l.moveId, name), find), room, { atSentence: true }),
         decision,
-        ...(decision === "in" ? { via: viaOf(l.moveId) } : {}),
-        ...(l.where ? { where: clipProse(l.where, WHERE_MAX) } : {}),
+        // Where it goes is the tool's, never the coach's prose (E7): what Approve does.
+        ...(decision === "in" ? { via: viaOf(l.moveId), where: whereOf(l.moveId, places, pin.includes(l.moveId)) } : {}),
         ...(dose ? { dose } : {}),
         ...(cites.length ? { cites } : {}),
         ...(first ? { post: { id: first.postId, position: first.position } } : {}),

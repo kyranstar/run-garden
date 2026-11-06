@@ -102,7 +102,8 @@ describe("pin_moves: lines cite their evidence", () => {
     const [lift, squat, nod, rock] = pinsCardLinesOf(op.lines);
     expect(lift).toEqual({
       moveId: b.lift, name: "Zorbex hip lift", text: "She says it's for hips that stiffen after easy runs; it serves hip mobility.",
-      decision: "in", via: "pin", where: "joins your mobility rotation", dose: "6–10 reps",
+      // REBASED 2026-11-06 (audit fixes, E7): where is the tool's — a pin joins the rotation — never the coach's words.
+      decision: "in", via: "pin", where: "joins your rotation", dose: "6–10 reps",
       cites: [
         { id: "q1.1", kind: "quote", label: "said 1:12", postId: b.postId, position: 0, quote: 0 },
         { id: "history", kind: "history", label: "your history" },

@@ -1,9 +1,10 @@
 /**
  * THE COACH'S DECISIONS ON EACH POST'S TRAIL (import trail phase 3; design 2026-11-05 §8.3, §4 "Coach"). A pins card's
  * line about a move is the coach's decision about that move — in or out, where, the dose, why, its cites — and each post
- * of the card's batch that names the move keeps it on its trail: "The coach suggested it" when the card is shown, then
- * "You approved it", "You said not now" or "Replaced by a newer suggestion". The posts the run read keep "The coach read
- * this post" at the read's own time; a correction shown is suggested on each post it touches (applied, it is the
+ * of the card's batch that names the move keeps it on its trail, in words that say what was decided (audit fixes, E4):
+ * "Coach: put in — Thu 22 Oct, in Post-run mobility (cool-down) · 2 × 6 — <why>" or "Coach: leave out — <why>" when the
+ * card is shown, then "You approved: leave out", "You said not now: put in — <where>" or "Replaced by a newer suggestion:
+ * …". The posts the run read keep "The coach read this post" at the read's own time; a correction shown is suggested on each post it touches (applied, it is the
  * correction stage's own event: import-corrections.ts).
  *
  * Each is ONE set-based statement. Approved and declined, it rides the write that decides the card (gated on it, so it
@@ -21,11 +22,13 @@ export type CoachVerdict = "suggested" | "approved" | "declined" | "superseded";
 
 /** How a line's step begins, by what came of it. */
 export const VERDICT_WORDS: Readonly<Record<CoachVerdict, string>> = {
-  suggested: "The coach suggested it",
-  approved: "You approved it",
+  suggested: "Coach",
+  approved: "You approved",
   declined: "You said not now",
   superseded: "Replaced by a newer suggestion",
 };
+/** What a line decides, in a verb (E4): never "left out" after "suggested it", which read either way. */
+const DECISION_VERBS = { in: "put in", out: "leave out" } as const;
 const CORRECTION_WORDS: Readonly<Record<CoachVerdict, string>> = {
   suggested: "The coach suggested a correction",
   approved: "You approved a correction",
@@ -34,15 +37,30 @@ const CORRECTION_WORDS: Readonly<Record<CoachVerdict, string>> = {
 };
 export const READ_WORDS = "The coach read this post";
 
-/** A line in words: "in · joins your mobility rotation · 2×6 per side · <text>" (`lineSql`'s, in SQL). */
-export function lineWords(l: PinsCardLine): string {
-  const decision = l.decision === "in" ? "in" : l.decision === "out" ? "left out" : null;
-  return [decision, l.where, l.dose, l.text].filter((x): x is string => !!x).join(" · ");
+/**
+ * A line's step in words (E4): "Coach: put in — joins your rotation · 6–10 reps — <why>", "Coach: leave out — <why>";
+ * once decided the verdict and the decision alone ("You approved: put in — joins your rotation · 6–10 reps", "You said not
+ * now: leave out"); a line with no decision (stored before), "<verdict>: <text>". `lineSql` says the same in SQL.
+ */
+export function lineWords(verdict: CoachVerdict, l: PinsCardLine): string {
+  const head = VERDICT_WORDS[verdict];
+  if (l.decision !== "in" && l.decision !== "out") return `${head}: ${l.text}`;
+  const place = l.decision === "in" ? [l.where, l.dose].filter((x): x is string => !!x).join(" · ") : "";
+  return [`${head}: ${DECISION_VERBS[l.decision]}`, place || null, verdict === "suggested" ? l.text : null].filter((x): x is string => !!x).join(" — ");
 }
 
 /** `lineWords` over a stored line's JSON (`v`). */
-const lineSql = (v: SQL): SQL => sql`(coalesce(case json_extract(${v}, '$.decision') when 'in' then 'in · ' when 'out' then 'left out · ' end, '')
-  || coalesce(json_extract(${v}, '$.where') || ' · ', '') || coalesce(json_extract(${v}, '$.dose') || ' · ', '') || json_extract(${v}, '$.text'))`;
+const lineSql = (verdict: CoachVerdict, v: SQL): SQL => {
+  const where = sql`json_extract(${v}, '$.where')`;
+  const dose = sql`json_extract(${v}, '$.dose')`;
+  const place = sql`(coalesce(${where}, '') || (case when ${where} is not null and ${dose} is not null then ' · ' else '' end) || coalesce(${dose}, ''))`;
+  const why = verdict === "suggested" ? sql` || ' — ' || json_extract(${v}, '$.text')` : sql``;
+  const head = VERDICT_WORDS[verdict];
+  return sql`(case json_extract(${v}, '$.decision')
+    when 'in' then ${`${head}: ${DECISION_VERBS.in}`} || (case when ${place} <> '' then ' — ' || ${place} else '' end)${why}
+    when 'out' then ${`${head}: ${DECISION_VERBS.out}`}${why}
+    else ${`${head}: `} || json_extract(${v}, '$.text') end)`;
+};
 
 const lineDetailSql = (verdict: CoachVerdict, v: SQL): SQL => sql`json_object('verdict', ${verdict}, 'decision', json_extract(${v}, '$.decision'),
   'where', json_extract(${v}, '$.where'), 'dose', json_extract(${v}, '$.dose'), 'text', json_extract(${v}, '$.text'),
@@ -71,7 +89,7 @@ export function decisionTrailStatement(
   const pinRows = o.pins.flatMap((p) =>
     p.lines.flatMap((l) =>
       l.moveId
-        ? [[p.batchId, l.moveId, `${VERDICT_WORDS[verdict]} — ${lineWords(l)}`.slice(0, 300), { verdict, decision: l.decision ?? null, where: l.where ?? null, dose: l.dose ?? null, text: l.text, cites: l.cites ?? [] }]]
+        ? [[p.batchId, l.moveId, lineWords(verdict, l).slice(0, 300), { verdict, decision: l.decision ?? null, where: l.where ?? null, dose: l.dose ?? null, text: l.text, cites: l.cites ?? [] }]]
         : [],
     ),
   );
@@ -112,7 +130,7 @@ export function promotionTrailStatement(db: Db, userId: string, proposalId: stri
   // into) — one row a post however many places the post shows it.
   const lines = (verdict: CoachVerdict, which: SQL) => sql`
     SELECT lower(hex(randomblob(16))), cp.user_id, ct_l.post_id, ct_l.batch_id, json_extract(ln.value, '$.moveId'), 'coach', 'coach', 'info',
-      substr(${VERDICT_WORDS[verdict]} || ' — ' || ${lineSql(sql`ln.value`)}, 1, 300), ${lineDetailSql(verdict, sql`ln.value`)}, ${tail("cp")}, ${at}
+      substr(${lineSql(verdict, sql`ln.value`)}, 1, 300), ${lineDetailSql(verdict, sql`ln.value`)}, ${tail("cp")}, ${at}
     FROM coach_proposals cp, json_each(cp.ops) o, json_each(json_extract(o.value, '$.lines')) ln, saved_post_moves ct_l
       LEFT JOIN personal_moves ct_m ON ct_m.user_id = ct_l.user_id AND ct_m.id = ct_l.move_id
     WHERE ${which} AND json_extract(o.value, '$.kind') = 'move_pins' AND ln.type = 'object' AND json_extract(ln.value, '$.moveId') IS NOT NULL
