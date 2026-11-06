@@ -195,6 +195,7 @@ export async function workList(
   opts: { links?: boolean } = {},
 ): Promise<WorkItem[]> {
   const stale = new Date(new Date(now).getTime() - CLAIM_STALE_MS).toISOString();
+  const rescreen = new Date(new Date(now).getTime() - VIDEO_RESCREEN_MS).toISOString();
   const { spentMicros, capMicros } = await importSpend(db, userId, new Date(now));
   const relayStale = new Date(new Date(now).getTime() - RELAY_CLAIM_STALE_MS).toISOString();
   // A claim whose request died on its last attempt is neither listed nor reclaimable (attempts are spent): give it up as
@@ -224,6 +225,9 @@ export async function workList(
       spentMicros < capMicros ? eq(savedPosts.lastErrorCode, "budget_paused") : undefined,
       and(eq(savedPosts.lastErrorCode, "filtering"), lt(savedPosts.updatedAt, stale)),
     ),
+    // A video's screening is tried again at a check's pace: the 15-minute ask would re-open its page and pay each
+    // time (final review F3). A saved post waits for the 6-hourly check as before.
+    opts.links ? or(ne(savedPosts.source, "youtube"), lt(savedPosts.updatedAt, rescreen)) : undefined,
   );
   const reads: WorkItem[] = opts.links
     ? (
@@ -279,6 +283,9 @@ export async function workList(
     ),
   ];
 }
+
+/** How long a video the screening couldn't decide waits before it is screened again (a check's period). */
+export const VIDEO_RESCREEN_MS = 6 * 3_600_000;
 
 /** The import budget a typical reading needs free before a post the budget refused is handed out again. */
 export const EXTRACT_ROOM_MICROS = 50_000;

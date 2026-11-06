@@ -161,3 +161,15 @@ describe("the routes", () => {
     expect((await token("/work")).body.keys).toEqual([]);
   });
 });
+
+describe("a video's screening is tried again at a check's pace, not every 15 minutes (final review F3)", () => {
+  it("a YouTube post the screening couldn't decide comes back after 6 hours", async () => {
+    const recent = new Date(Date.parse(NOW) - 3_600_000).toISOString();
+    const old = new Date(Date.parse(NOW) - 7 * 3_600_000).toISOString();
+    await seedPost("youtube", "Yt0000000ab", { status: "seen", lastErrorCode: "model_failed", updatedAt: recent });
+    await seedPost("youtube", "Yt0000000cd", { status: "seen", lastErrorCode: "model_failed", updatedAt: old });
+    await seedPost("instagram", "igseen", { status: "seen", lastErrorCode: "model_failed", updatedAt: recent });
+    const keys = (await workList(db, userId, NOW, 20, { links: true })).map((w) => [w.key, w.action]);
+    expect(keys.sort()).toEqual([["Yt0000000cd", "filter"], ["igseen", "filter"]].sort());
+  });
+});

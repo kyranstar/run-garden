@@ -47,6 +47,11 @@ class FakeApp {
     this.videos.push({ key, opts });
     return this.videoAnswers.shift() ?? { ok: true };
   }
+  gone: { source: string; key: string; code: string }[] = [];
+  async reportFailed(source: string, key: string, code: "gone" | "media_failed" | "too_large") {
+    this.log.push(`failed:${key}:${code}`);
+    this.gone.push({ source, key, code });
+  }
   async reportReadFailed(r: ReadFailure) {
     this.log.push(`read-failed:${r.key}:${r.code}`);
     this.failures.push(r);
@@ -176,5 +181,28 @@ describe("runLinks", () => {
     expect(app.videos.map((v) => v.key)).toEqual(["Yt0000000ab", vid]);
     expect(youtubeReads).toEqual([vid]);
     expect(app.submits.map((s) => s.key)).toEqual([vid]);
+  });
+});
+
+describe("runLinks: a video the app holds that can't be read any more (final review F3)", () => {
+  it("is marked gone, so the work list stops handing it out; a pasted link's failure is only told", async () => {
+    const { app, deps } = setup({ youtube: async () => ({ ok: false, code: "unplayable", message: "Age-restricted" }) });
+    app.workItems = [{ source: "youtube", key: vid, url: `${S}example.com/v`, action: "filter" }];
+    await runLinks(deps);
+    expect(app.gone).toEqual([{ source: "youtube", key: vid, code: "gone" }]);
+    expect(app.failures).toEqual([{ source: "youtube", key: vid, code: "unplayable", message: "Age-restricted" }]);
+
+    const pasted = setup({ youtube: async () => ({ ok: false, code: "unplayable", message: "Age-restricted" }) });
+    await add(pasted.queue, ytLink);
+    await runLinks(pasted.deps);
+    expect(pasted.app.gone).toEqual([]);
+  });
+
+  it("a passing failure (the player didn't load) is told but not marked gone", async () => {
+    const { app, deps } = setup({ youtube: async () => ({ ok: false, code: "unknown", message: "The player didn't load" }) });
+    app.workItems = [{ source: "youtube", key: vid, url: `${S}example.com/v`, action: "filter" }];
+    await runLinks(deps);
+    expect(app.gone).toEqual([]);
+    expect(app.failures).toHaveLength(1);
   });
 });

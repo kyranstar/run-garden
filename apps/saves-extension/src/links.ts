@@ -70,7 +70,7 @@ export class LinkQueue {
 }
 
 export interface LinksDeps {
-  app: Pick<AppClient, "work" | "submitPost" | "extractVideo" | "reportReadFailed">;
+  app: Pick<AppClient, "work" | "submitPost" | "extractVideo" | "reportReadFailed" | "reportFailed">;
   queue: LinkQueue;
   now: () => number;
   /** Reads one video (youtube-reader.ts `readYoutube`). */
@@ -129,10 +129,13 @@ export async function runLinks(deps: LinksDeps): Promise<LinksSummary> {
   };
 
   /** Read a video and send it; its reading when the app keeps it for one. False when the read failed. */
-  const youtube = async (link: NormalLink): Promise<boolean> => {
+  /** A video read for the app's own work (`held`: the app has its post) or for a pasted link. */
+  const youtube = async (link: NormalLink, held = false): Promise<boolean> => {
     const r = await deps.youtube(link.key);
     if (!r.ok) {
       await failed(link, r.code, r.message);
+      // A video the app holds that is gone or won't play any more leaves its work list (final review F3).
+      if (held && (r.code === "gone" || r.code === "unplayable")) await app.reportFailed(link.source, link.key, "gone").catch(stopOn);
       return false;
     }
     const submit = toYoutubeSubmit(r.meta, r.transcript, r.chapters, config.extVersion, r.ms);
@@ -181,7 +184,7 @@ export async function runLinks(deps: LinksDeps): Promise<LinksSummary> {
     for (const item of items) {
       if (item.source !== "youtube" || item.action === "read") continue;
       if (item.action === "extract") await readVideo(item.key);
-      else await youtube({ source: "youtube", key: item.key, url: item.url });
+      else await youtube({ source: "youtube", key: item.key, url: item.url }, true);
     }
   } catch (e) {
     if (!(e instanceof StopRun)) throw e;
