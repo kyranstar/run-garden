@@ -52,8 +52,10 @@ export interface ConversationCard {
   proposalId: string;
   title: string;
   /** One line: "Today · Now · 24 min · Maintain", "3 changes to your week", "3 workouts · Wed 13 – Fri 15 May",
-   * "4 weeks · 4 sessions to start · race Sun 14 Jun". */
+   * "4 weeks · 4 sessions to start · race Sun 14 Jun" — the moves in rotation's, the coach's headline (audit fixes, E4). */
   summary: string;
+  /** The moves in rotation's count beneath its headline, in the card's words ("5 in · 1 left out"; E4). */
+  count?: string;
   /** Its proposal's status: pending, partially_approved, approved, declined, superseded, expired. */
   status: string;
   /** A whole plan's (§8 §5): the thread coach's own manifest lines, at most 8, then "and N more"; a programme change's, a
@@ -131,6 +133,8 @@ interface OpBrief {
   fixLine?: string | null;
   /** The moves in rotation's saves batch (audit fixes, E1): a later turn reads its moves' evidence by it. */
   batchId?: string | null;
+  /** The moves in rotation's count beneath its headline (E4). */
+  count?: string | null;
 }
 
 interface ProposalBrief {
@@ -216,7 +220,8 @@ export async function conversationRows(db: Db, userId: string, conversation: SQL
           'opId', CASE WHEN ${op("$.kind")} IN ('programme_change', 'move_pins', 'import_correction') THEN ${op("$.id")} END,
           'why', CASE WHEN ${op("$.kind")} IN ('move_pins', 'import_correction') THEN ${op("$.why")} END,
           'fixLine', CASE WHEN ${op("$.kind")} = 'import_correction' THEN ${op("$.line")} END,
-          'batchId', CASE WHEN ${op("$.kind")} = 'move_pins' THEN ${op("$.batchId")} END))
+          'batchId', CASE WHEN ${op("$.kind")} = 'move_pins' THEN ${op("$.batchId")} END,
+          'count', CASE WHEN ${op("$.kind")} = 'move_pins' THEN ${op("$.count")} END))
         FROM json_each(CASE WHEN json_valid(p.ops) THEN p.ops ELSE '[]' END) o WHERE ${op("$.kind")} IN ('doc_workout', 'plan_adjust', 'plan_structure', 'programme_change', 'move_pins', 'import_correction'))))
         FROM coach_proposals p WHERE p.id = ${DESIGNED_PREFIX} || r.id AND p.user_id = r.user_id) AS proposal,
       (SELECT up.prefs FROM user_preferences up WHERE up.user_id = ${userId}) AS prefs
@@ -336,6 +341,7 @@ export function cardsOf(scopeText: string | null, p: ProposalBrief | null, today
         ...base,
         title: str(o.planTitle) ?? "Moves for your programme",
         summary: str(o.planSummary) ?? "",
+        ...(str(o.count) ? { count: str(o.count)! } : {}),
         lines: lines.map(pinsLineText),
         pinLines: lines.map((l) => ({
           ...(l.moveId ? { moveId: l.moveId } : {}),

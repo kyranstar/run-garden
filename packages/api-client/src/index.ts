@@ -968,7 +968,10 @@ export interface DesignCorrectionLineDto {
 export interface DesignPinsLineDto {
   opId: string;
   title: string;
+  /** The coach's headline (audit fixes, E4: what it recommends and why); a card stored before, the tool's count. */
   summary: string;
+  /** With a batch and a headline (E4): the count beneath it, in the card's words — "5 in · 1 left out". */
+  count?: string;
   lines: DesignPinsCardLineDto[];
   why: string;
   pin: string[];
@@ -1527,6 +1530,8 @@ export interface CoachConversationCardDto {
   proposalId: string;
   title: string;
   summary: string;
+  /** The moves in rotation's count beneath the coach's headline (audit fixes, E4): "5 in · 1 left out". */
+  count?: string;
   status: CoachProposalDto["status"] | (string & {});
   /** A plan's (§8 §5): what it holds, line by line — at most 8, then "and N more"; a programme change's, a setting each;
    * the moves in rotation's, the coach's own (at most 20), each one text ("Name: text"). */

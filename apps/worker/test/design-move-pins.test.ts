@@ -39,7 +39,7 @@ import { designedManifest } from "../src/routes/design-proposals.js";
 import { supersedeOlderPlans } from "../src/services/design-orchestrate.js";
 import { proposalFields } from "../src/services/design-review.js";
 import { ACT_TOOLS, READ_TOOLS } from "../src/services/design-tools/index.js";
-import { PIN_LINE_MAX, pinsSummaryLine } from "../src/services/design-tools/pin-moves.js";
+import { PIN_LINE_MAX, pinsCountLine } from "../src/services/design-tools/pin-moves.js";
 import { designProposalId, proposeWorkout } from "../src/services/design-tools/propose.js";
 import { readProposals } from "../src/services/design-tools/read-proposals.js";
 import { isToolErr, type ToolContext, type ToolErr, type ToolOk } from "../src/services/design-tools/types.js";
@@ -160,8 +160,9 @@ const linesFor = (batchId: unknown): Array<{ moveId?: string; text: string }> =>
 const storedFor = (batchId: unknown): PinsCardLine[] =>
   linesFor(batchId).map((l) => (l.moveId ? { moveId: l.moveId, name: LINES.find(([, text]) => text === l.text)![0], text: capital(l.text) } : l));
 
-/** The summary a batch's card stores (`pinsSummaryLine`), WORDS's ignored. */
-const ONE_JOINS = `One joins the rotation. ${B.name} waits.`;
+/** A batch's card counts its new moves in the card's own words (`pinsCountLine`) — REBASED 2026-11-06 (audit fixes, E4):
+ * under the coach's own headline (WORDS.summary), or as the line itself when the coach wrote none. */
+const ONE_IN = "1 in · 1 left out";
 
 /** The batches each run has read (import trail phase 3: a line about a saved move needs a read_saves page that covered it). */
 const readBy = new Set<string>();
@@ -258,9 +259,10 @@ describe("pin_moves: the coach keeps a saved move in rotation", () => {
       batchId,
       why: WORDS.why,
       title: WORDS.title,
-      // With a batch the card counts its new moves (the saves flow redesigned, §3.5; review round 1): the hip circle joins
-      // — the goblet squat, the athlete's already, is no joining — and the neck nod, on the coach's call, waits.
-      summary: ONE_JOINS,
+      // With a batch the headline is the coach's (audit fixes, E4) and the card counts its new moves beneath it: the hip
+      // circle in — the goblet squat, the athlete's already, is no new move — and the neck nod, on the coach's call, left out.
+      summary: WORDS.summary,
+      count: ONE_IN,
       lines: storedFor(batchId),
       date: TODAY,
       toolUseId: ctx.toolUseId,
@@ -460,7 +462,7 @@ describe("pin_moves: the coach keeps a saved move in rotation", () => {
     expect(await db.select().from(coachProposals)).toEqual([]);
     // No line for it: accounted for all the same — and it never waits.
     ok((await pins(ctx, { pin: [b], batchId: seeded.batchId, lines: [{ moveId: b!, text: "in rotation: Thursdays." }] })).res);
-    expect((await opOf(designProposalId(ctx.run.id))).summary).toBe("One joins the rotation.");
+    expect((await opOf(designProposalId(ctx.run.id))).count).toBe("1 in");
   });
 
   it("in a fit-in run, batchId defaults to the run's batch", async () => {
@@ -473,7 +475,10 @@ describe("pin_moves: the coach keeps a saved move in rotation", () => {
     // With it: stored with the run's batch — no summary asked for, the card counts.
     const stored = ok((await pins(ctx, { pin: [a], summary: undefined, lines: linesFor(batchId) })).res);
     expect(stored.data).toMatchObject({ batchId });
-    expect(await opOf(designProposalId(ctx.run.id))).toMatchObject({ batchId, summary: ONE_JOINS });
+    // No headline written: the count is the card's line.
+    const noHeadline = await opOf(designProposalId(ctx.run.id));
+    expect(noHeadline).toMatchObject({ batchId, summary: ONE_IN });
+    expect(noHeadline).not.toHaveProperty("count");
     // The run's batch no longer saved (review round 1): leaving batchId out can't help, so the advice never says to.
     await db.update(saveBatches).set({ status: "dismissed" }).where(eq(saveBatches.id, batchId));
     const gone = (await pins({ ...ctx, toolUseId: "toolu_gone" }, { pin: [a], summary: undefined, lines: linesFor(batchId) })).res;
@@ -483,27 +488,37 @@ describe("pin_moves: the coach keeps a saved move in rotation", () => {
     expect(gone.fix).toContain("Finish");
   });
 
-  it("with a batch the summary counts: Eight join the rotation. {name} waits.", async () => {
-    expect(pinsSummaryLine(8, ["Zorbex neck nod"])).toBe("Eight join the rotation. Zorbex neck nod waits.");
-    expect(pinsSummaryLine(1, [])).toBe("One joins the rotation.");
-    expect(pinsSummaryLine(0, [])).toBe("None join the rotation.");
-    expect(pinsSummaryLine(2, ["Zorbex hip circle", "Zorbex neck nod"])).toBe("Two join the rotation. Two wait.");
-    expect(pinsSummaryLine(0, ["Zorbex hip circle", "Zorbex neck nod", "Zorbex calf rock"])).toBe("None join the rotation. Three wait.");
-    expect(pinsSummaryLine(13, [])).toBe("13 join the rotation.");
+  it("with a batch, the coach's two-sentence headline is the card's line, whole; the count beneath it (audit fixes, E4)", async () => {
+    const { batchId, a } = await batch();
+    const ctx = await mainRun();
+    const headline =
+      "Add the hip circle after Thursday's easy run: it fills the hip work your plan has lacked for three weeks. The neck nod stays out — your neck care already covers it.";
+    expect(headline.length).toBeGreaterThan(120);
+    ok((await pins(ctx, { pin: [a], batchId, summary: headline })).res);
+    expect(await opOf(designProposalId(ctx.run.id))).toMatchObject({ summary: headline, count: ONE_IN });
+    const schema = tool().inputSchema as { properties: { summary: { description: string } } };
+    expect(schema.properties.summary.description).toMatch(/headline/);
+  });
+
+  it("with a batch the card counts its new moves in its own words: 8 in · 1 left out", async () => {
+    expect(pinsCountLine(8, 1)).toBe("8 in · 1 left out");
+    expect(pinsCountLine(1, 0)).toBe("1 in");
+    expect(pinsCountLine(0, 3)).toBe("3 left out");
+    expect(pinsCountLine(0, 0)).toBeNull();
     // Nine new moves; the athlete's goblet squat besides.
     const names = ["hip circle", "neck nod", "calf rock", "wrist roll", "ankle tap", "spine wave", "hip hinge", "rib reach", "toe spread"].map((n) => `Zorbex ${n}`);
     const seeded = await seedSavedBatch(db, userId, { savedAt: SAVED_AT, posts: [{ moves: [{ library: "gobletSquat" }, ...names.map((n) => ({ draft: savedMoveDraft(n) }))] }] });
     const [, ...fresh] = seeded.moveIds[0]! as string[];
     const ctx = await mainRun();
-    // Eight pinned with the goblet squat (no joining: the athlete's already), the toe spread on the coach's call left: it
-    // waits. The coach's own summary is never stored with a batch.
+    // Eight pinned with the goblet squat (not new: the athlete's already), the toe spread on the coach's call left out.
+    // The coach's headline stands; the count beneath it.
     const last = { moveId: fresh[8]!, text: "left in your library: your feet get enough from running." };
     ok((await pins(ctx, { pin: [...fresh.slice(0, 8), "gobletSquat"], batchId: seeded.batchId, lines: [last] })).res);
-    expect((await opOf(designProposalId(ctx.run.id))).summary).toBe("Eight join the rotation. Zorbex toe spread waits.");
-    // Several left: counted — the goblet squat alone joins nothing (review round 1).
+    expect(await opOf(designProposalId(ctx.run.id))).toMatchObject({ summary: WORDS.summary, count: "8 in · 1 left out" });
+    // Several left: counted — the goblet squat alone puts no new move in (review round 1).
     const { batchId } = await batch();
     ok((await pins({ ...ctx, toolUseId: "toolu_two_wait" }, { pin: ["gobletSquat"], batchId })).res);
-    expect((await opOf(designProposalId(ctx.run.id))).summary).toBe("None join the rotation. Two wait.");
+    expect((await opOf(designProposalId(ctx.run.id))).count).toBe("2 left out");
   });
 
   it("a second call replaces the first; a replay of a call answers what it stored; one already with the athlete is refused", async () => {
@@ -644,7 +659,7 @@ describe("approving the moves in rotation", () => {
     const stored = ok((await pins(ctx, { pin: [], batchId, lines })).res);
     expect(stored.data).toMatchObject({ pin: [], unpin: [], batchId });
     const id = designProposalId(ctx.run.id);
-    expect((await opOf(id)).summary).toBe("None join the rotation. Two wait.");
+    expect((await opOf(id)).count).toBe("2 left out");
     await db.update(coachProposals).set({ status: "pending" }).where(eq(coachProposals.id, id));
     const { answers, costs } = await approveAll(id);
     expect(answers.at(-1)).toMatchObject({ status: "approved", refused: [] });
@@ -928,7 +943,7 @@ describe("every reader tolerates the moves in rotation", () => {
     await db.update(coachRuns).set({ status: "finished" }).where(eq(coachRuns.id, ctx.run.id));
     const conv = await readConversation(db, userId, NOW, { endedLine });
     const cards = conv.turns.at(-1)!.cards;
-    expect(cards.map((c) => [c.kind, c.opId, c.title, c.summary])).toEqual([["pins", pinsId(ctx.run.id), WORDS.title, ONE_JOINS]]);
+    expect(cards.map((c) => [c.kind, c.opId, c.title, c.summary, c.count])).toEqual([["pins", pinsId(ctx.run.id), WORDS.title, WORDS.summary, ONE_IN]]);
     // Each line its move's name once, then its text: as text for a plain reader, apart for the card to set the name in bold.
     expect(cards[0]!.lines).toEqual(storedFor(batchId).map((l) => (l.name ? `${l.name}: ${l.text}` : l.text)));
     // (Each line's decision, dose, cites and post too since 2026-11-06: import trail phase 3, coach-review-context.test.ts.)
@@ -937,7 +952,7 @@ describe("every reader tolerates the moves in rotation", () => {
     );
     const block = conversationBlock(await conversationRows(db, userId, namedConversationSql(userId, ctx.run.id), { limit: 6 }), NOW)!;
     expect(block).toContain(
-      `Suggested moves for the engine's pool (id ${designProposalId(ctx.run.id)}, batch ${batchId}): ${markUntrusted("main coach", WORDS.title)} · ${markUntrusted("main coach", ONE_JOINS)} — still open`,
+      `Suggested moves for the engine's pool (id ${designProposalId(ctx.run.id)}, batch ${batchId}): ${markUntrusted("main coach", WORDS.title)} · ${markUntrusted("main coach", WORDS.summary)} — still open`,
     );
   });
 
@@ -953,7 +968,7 @@ describe("every reader tolerates the moves in rotation", () => {
     const card = (await readConversation(db, userId, NOW, { endedLine })).turns.at(-1)!.cards[0]!;
     expect(card.lines).toEqual(OLD);
     expect(card.pinLines).toEqual(OLD.map((text) => ({ name: null, text })));
-    const brief = { id, title: WORDS.title, status: "pending", ops: [{ kind: "move_pins", planTitle: WORDS.title, planSummary: ONE_JOINS, lines: OLD, opId: op.id }] };
+    const brief = { id, title: WORDS.title, status: "pending", ops: [{ kind: "move_pins", planTitle: WORDS.title, planSummary: WORDS.summary, lines: OLD, opId: op.id }] };
     expect(cardsOf(null, brief as unknown as Parameters<typeof cardsOf>[1], TODAY)[0]).toMatchObject({ kind: "pins", lines: OLD, pinLines: OLD.map((text) => ({ name: null, text })) });
     expect(pinsCardLinesOf(OLD)).toEqual(OLD.map((text) => ({ text })));
     expect(pinsCardLinesOf(OLD).map(pinsLineText)).toEqual(OLD);
@@ -962,7 +977,7 @@ describe("every reader tolerates the moves in rotation", () => {
     expect((manifest as { pins?: Array<{ lines: unknown }> }).pins?.[0]?.lines).toEqual(OLD.map((text) => ({ text })));
     // The conversation block names the card.
     const block = conversationBlock(await conversationRows(db, userId, namedConversationSql(userId, ctx.run.id), { limit: 6 }), NOW)!;
-    expect(block).toContain(`Suggested moves for the engine's pool (id ${id}, batch ${batchId}): ${markUntrusted("main coach", WORDS.title)} · ${markUntrusted("main coach", ONE_JOINS)} — still open`);
+    expect(block).toContain(`Suggested moves for the engine's pool (id ${id}, batch ${batchId}): ${markUntrusted("main coach", WORDS.title)} · ${markUntrusted("main coach", WORDS.summary)} — still open`);
   });
 
   it("the manifest's pins part, read_proposals, and the Coach button's current run", async () => {
@@ -972,7 +987,7 @@ describe("every reader tolerates the moves in rotation", () => {
     expect(manifest).toMatchObject({
       lines: [],
       changes: [],
-      pins: [{ opId: pinsId(ctx.run.id), title: WORDS.title, summary: ONE_JOINS, lines: storedFor(batchId), why: WORDS.why, pin: [a], unpin: ["deadBug"], issues: [], outcome: null }],
+      pins: [{ opId: pinsId(ctx.run.id), title: WORDS.title, summary: WORDS.summary, count: ONE_IN, lines: storedFor(batchId), why: WORDS.why, pin: [a], unpin: ["deadBug"], issues: [], outcome: null }],
     });
     const read = ok(await readProposals.run(ctx, {}));
     const text = JSON.stringify(read.data);

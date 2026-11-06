@@ -18,9 +18,10 @@
  * A LINE A MOVE (§3.5): the coach writes `{ moveId, text }` — or `{ text }`, a general line — and never the name: the
  * card sets the move's name in bold, once, from the account's library. A text that repeats it anyway ("Name (id): …")
  * loses that leading copy and its separator; a personal id elsewhere in it reads as its move's name; and it is clipped
- * after the name is placed — name, ": " and text within PIN_LINE_MAX — at a sentence end wherever one fits. With a batch
- * the card's line counts its new moves (`pinsSummaryLine`: "Eight join the rotation. Name waits." — pinned, and left on
- * the coach's call); without one, the coach writes it (`summary`).
+ * after the name is placed — name, ": " and text within PIN_LINE_MAX — at a sentence end wherever one fits. The card's
+ * line is the coach's headline (`summary`: what it recommends and why, two sentences at most — audit fixes, E4); with a
+ * batch the card also counts its new moves in its own words beneath it (`count`, `pinsCountLine`: "5 in · 1 left out"),
+ * or the count is the line when the coach wrote none.
  *
  * STORED as one op of kind `move_pins` (proposal-kinds.ts `MovePinsOp`) in the main run's proposal, as change_programme
  * stores its own: the moves, the batch, the card's words — its title, its line, a line a placement and a line a saved
@@ -58,7 +59,7 @@ import { sql } from "drizzle-orm";
 import { z } from "zod";
 import { accountState, coachProposals, exercisePrefs, personalMoves, saveBatches } from "@rg/database";
 import { dayLabel, doseSummary, type WorkoutDose } from "@rg/domain";
-import { isPersonalId, numberWord } from "@rg/saves";
+import { isPersonalId } from "@rg/saves";
 import { makeLibraryIndex } from "@rg/workout";
 import { accountLibraryFrom, personalMovesSql } from "../account-library.js";
 import { markUntrusted } from "../design-prompt.js";
@@ -73,7 +74,8 @@ import { citeRefOf, otherMovesQuote, savesReadsOf, savesReadsSql, type SavesRead
 import type { DesignTool, ToolOk } from "./types.js";
 
 const TITLE_MAX = 60;
-const SUMMARY_MAX = 120;
+/** The card's headline, at most (E4: two sentences — what the coach recommends and why; was 120, one line). */
+const SUMMARY_MAX = 240;
 /** A card line's most characters, its move's name and ": " counted (the saves flow redesigned, §3.5: 160 cut an ordinary
  * two-sentence line mid-sentence). */
 export const PIN_LINE_MAX = 280;
@@ -170,17 +172,14 @@ function lineTextOf(text: string, id: string, name: string): string {
   return rest.charAt(0).toUpperCase() + rest.slice(1);
 }
 
-const capital = (w: string): string => w.charAt(0).toUpperCase() + w.slice(1);
-
 /**
- * A batch's card line (the saves flow redesigned, §3.5): how many join the rotation, then the one left on the coach's
- * call by name or how many — "Eight join the rotation. Zorbex neck nod waits.", "One joins the rotation. Two wait.",
- * "None join the rotation.".
+ * A batch's count, in the card's own words (audit fixes, E4 — "waits" read against the card's "Left out"): its new moves
+ * the card puts in, and those on the coach's call it leaves out — "5 in · 1 left out", "1 in", "2 left out"; null with
+ * neither (every new move the athlete's own skip).
  */
-export function pinsSummaryLine(joined: number, waiting: readonly string[]): string {
-  const head = joined === 0 ? "None join the rotation." : joined === 1 ? "One joins the rotation." : `${capital(numberWord(joined))} join the rotation.`;
-  if (waiting.length === 0) return head;
-  return `${head} ${waiting.length === 1 ? `${waiting[0]} waits.` : `${capital(numberWord(waiting.length))} wait.`}`;
+export function pinsCountLine(inN: number, outN: number): string | null {
+  const parts = [...(inN > 0 ? [`${inN} in`] : []), ...(outN > 0 ? [`${outN} left out`] : [])];
+  return parts.length ? parts.join(" · ") : null;
 }
 
 /** A batch's new moves as the read gives them: `[id, fit_choice]` pairs (the choice null: the coach's call). */
@@ -298,7 +297,10 @@ export const pinMoves: DesignTool = {
       unpin: { type: "array", items: { type: "string" }, maxItems: PINS_MAX },
       batchId: { type: "string" },
       title: { type: "string", description: `The card's title: ${capInWords(TITLE_MAX)}.` },
-      summary: { type: "string", description: `One line under it, without a batch (with one, the card counts): ${capInWords(SUMMARY_MAX)}.` },
+      summary: {
+        type: "string",
+        description: `The card's headline under the title: what you recommend and why, in plain words, two sentences at most (with a batch the card counts in and left out beneath it): ${capInWords(SUMMARY_MAX)}.`,
+      },
       lines: {
         type: "array",
         items: {
@@ -580,10 +582,17 @@ export const pinMoves: DesignTool = {
         ...(first ? { post: { id: first.postId, position: first.position } } : {}),
       };
     });
-    // With a batch, the card's line counts its new moves (review round 1): those pinned join — a pin of a move the athlete
-    // had already is no joining — and those on the coach's call left out wait.
-    const joined = fresh.filter(([id]) => pin.includes(id)).length;
-    const waiting = fresh.filter(([id, c]) => c !== "include" && c !== "skip" && !pin.includes(id)).map(([id]) => nameOf(id));
+    // With a batch, the card counts its new moves (review round 1; E4: in the card's own words, by what the card does):
+    // those it puts in — pinned, in a workout here, in rotation already — and those on the coach's call it leaves out. A
+    // move the athlete had already is no new move; one they skipped is theirs.
+    const count = batchId
+      ? pinsCountLine(
+          fresh.filter(([id, c]) => c !== "skip" && decisionOf(id) === "in").length,
+          fresh.filter(([id, c]) => c !== "include" && c !== "skip" && decisionOf(id) === "out").length,
+        )
+      : null;
+    // The headline is the coach's; with a batch and none written, the count is the line.
+    const headline = parsed.summary ? clipProse(parsed.summary, SUMMARY_MAX, { atSentence: true }) : (count ?? "None in");
     const at = ctx.now.toISOString();
     const toolUseId = ctx.toolUseId ?? `call-${at}`;
     const op: MovePinsOp = {
@@ -594,7 +603,8 @@ export const pinMoves: DesignTool = {
       ...(batchId ? { batchId } : {}),
       why: clipProse(parsed.why, WHY_MAX),
       title: clipProse(parsed.title, TITLE_MAX),
-      summary: clipProse(batchId ? pinsSummaryLine(joined, waiting) : parsed.summary!, SUMMARY_MAX),
+      summary: headline,
+      ...(parsed.summary && count ? { count } : {}),
       lines,
       date: athlete.today,
       ...(reads.readAt.size > 0 ? { read: [...reads.readAt] } : {}),

@@ -248,7 +248,7 @@ export function planOutcomeLine(status: string, plan: CardLine | null, w: PlanCa
 }
 
 type PlanCardInput = Pick<CoachConversationCardDto, "proposalId" | "title" | "summary" | "status" | "lines"> &
-  Partial<Pick<CoachConversationCardDto, "kind" | "opId" | "pinLines">>;
+  Partial<Pick<CoachConversationCardDto, "kind" | "opId" | "pinLines" | "count">>;
 
 export function PlanCard({ card, closed = false }: { card: PlanCardInput; closed?: boolean }) {
   const qc = useQueryClient();
@@ -325,7 +325,10 @@ export function PlanCard({ card, closed = false }: { card: PlanCardInput; closed
       (card.pinLines ?? []).map((l) => ({ ...l, name: l.name ?? undefined })) as DesignPinsCardLineDto[])
     : [];
   const reviewed = fixesOnly || reviewLines.some((l) => !!l.decision) || corrections.length > 0;
-  const why = pins ? ((read.data?.pins?.find((g) => g.opId === plan?.opId)?.why ?? "").trim() || null) : null;
+  const ownPins = pins ? read.data?.pins?.find((g) => g.opId === plan?.opId) : undefined;
+  const why = pins ? ((ownPins?.why ?? "").trim() || null) : null;
+  // The count beneath the coach's headline (audit fixes, E4), in the card's own words: "5 in · 1 left out".
+  const count = pins ? ((ownPins?.count ?? card.count ?? "").trim() || null) : null;
   /** What the approve left (the moves in rotation's: a move archived since, an unpin of one not in rotation). */
   const left = plan?.outcome?.status === "applied" ? (plan.outcome.lines ?? []) : [];
   const working = approve.isPending;
@@ -334,14 +337,25 @@ export function PlanCard({ card, closed = false }: { card: PlanCardInput; closed
     return (
       <div className="coach-card-closed">
         <p className="coach-card-closed-line">
-          {[card.title, card.summary.trim() || null].filter(Boolean).join(" · ")} — {outcome ?? (started ? (programme ? "Part applied" : "Part added") : "Open")}{" "}
+          {/* A review card's closed line names its count, not its two-sentence headline (E4): scannable. */}
+          {[card.title, count ?? (card.summary.trim() || null)].filter(Boolean).join(" · ")} — {outcome ?? (started ? (programme ? "Part applied" : "Part added") : "Open")}{" "}
           <button type="button" className="linklike tap-pad" aria-expanded={open} aria-controls={linesId} onClick={() => setOpen((v) => !v)}>
             {open ? "Hide" : "Show"}
           </button>
         </p>
-        <ul id={linesId} className="coach-plan-lines" hidden={!open}>
-          {lines.map(lineItem)}
-        </ul>
+        {/* A decided review keeps its review one tap down (audit fixes, E3): In / Left out, the chips, the names that
+            open the trail, Challenge — read-only; a card stored before keeps its plain lines. */}
+        {reviewed ? (
+          <div id={linesId} className="coach-review-closed" hidden={!open}>
+            {open ? (
+              <ReviewLines lines={fixesOnly ? [] : reviewLines.length > 0 ? reviewLines : lines.map((l) => ({ ...l, name: l.name ?? undefined }))} corrections={corrections} why={why} />
+            ) : null}
+          </div>
+        ) : (
+          <ul id={linesId} className="coach-plan-lines" hidden={!open}>
+            {lines.map(lineItem)}
+          </ul>
+        )}
       </div>
     );
   }
@@ -351,7 +365,8 @@ export function PlanCard({ card, closed = false }: { card: PlanCardInput; closed
       <h3 id={headingId} className="coach-changes-title">
         {card.title}
       </h3>
-      {card.summary ? <p className="coach-changes-summary">{card.summary}</p> : null}
+      {card.summary ? <p className={count ? "coach-changes-summary coach-changes-headline" : "coach-changes-summary"}>{card.summary}</p> : null}
+      {count ? <p className="coach-changes-count">{count}</p> : null}
       {reviewed ? (
         <ReviewLines lines={fixesOnly ? [] : reviewLines.length > 0 ? reviewLines : lines.map((l) => ({ ...l, name: l.name ?? undefined }))} corrections={corrections} why={why} />
       ) : lines.length > 0 ? (

@@ -245,8 +245,11 @@ export interface MovePinsOp {
   batchId?: string;
   why: string;
   title: string;
-  /** With a batch, the count the tool writes (pin-moves.ts `pinsSummaryLine`); without one, the coach's line. */
+  /** The coach's headline (audit fixes, E4: what it recommends and why, two sentences at most); with a batch and none
+   * written, the count. Stored before E4 with a batch: the tool's count ("Five join the rotation. Name waits."). */
   summary: string;
+  /** With a batch and a headline (E4): the count beneath it, in the card's words — "5 in · 1 left out". */
+  count?: string;
   /** Each a `PinsCardLine` since the saves flow redesign (§3.5). An op stored before it holds plain strings: a reader of a
    * stored op reads them through `pinsCardLinesOf`, never as typed here. */
   lines: PinsCardLine[];

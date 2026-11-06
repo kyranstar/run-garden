@@ -511,6 +511,8 @@ export interface PinsLine {
   opId: string;
   title: string;
   summary: string;
+  /** With a batch and the coach's headline (audit fixes, E4): the count beneath it — "5 in · 1 left out". */
+  count?: string;
   lines: PinsCardLine[];
   why: string;
   pin: string[];
@@ -525,6 +527,7 @@ export function pinsLines(ops: readonly unknown[]): PinsLine[] {
     opId: g.id,
     title: g.title,
     summary: g.summary,
+    ...(typeof g.count === "string" && g.count ? { count: g.count } : {}),
     lines: pinsCardLinesOf(g.lines),
     why: g.why,
     pin: g.pin,

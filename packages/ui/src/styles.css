@@ -12004,6 +12004,16 @@ a.stu-tpl-open:focus-visible::before {
   font-size: var(--text-sm);
   color: var(--ink-soft);
 }
+/* A review card's headline is the coach's own two sentences (audit fixes, E4): read first, in the ink; the count
+ * beneath it, in the card's words ("5 in · 1 left out"), quiet. */
+.coach-changes-summary.coach-changes-headline {
+  color: var(--ink);
+}
+.coach-changes-count {
+  margin: 0;
+  font-size: var(--text-xs);
+  color: var(--ink-soft);
+}
 .coach-changes-closer .coach-pc {
   padding: 0;
   border: 0;
