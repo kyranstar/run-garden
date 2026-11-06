@@ -263,3 +263,25 @@ export async function statusAndHealth(app: Pick<AppClient, "status" | "health">)
   if (status.status === "rejected") throw status.reason;
   return { status: status.value, health: health.status === "fulfilled" ? health.value : null };
 }
+
+/** How a token tested (`checkToken`): taken, refused (401), the import off (404), or the app not reached. */
+export interface TokenCheck {
+  state: "ok" | "refused" | "off" | "unreachable";
+  /** What the options page says, plainly. */
+  line: string;
+}
+
+/**
+ * The options page's test of a token (audit 2026-11-06, I1: Save said "Saved" without asking): the app's cheapest token
+ * route (`GET /api/saves/links`: one statement beside the token check's own two). Never throws.
+ */
+export async function checkToken(app: Pick<AppClient, "links">): Promise<TokenCheck> {
+  try {
+    await app.links();
+    return { state: "ok", line: "Saved — the app took the token." };
+  } catch (e) {
+    if (e instanceof AppRefusedError && e.status === 401) return { state: "refused", line: "The app refused this token — nothing was saved. Paste it again." };
+    if (e instanceof AppRefusedError && e.status === 404) return { state: "off", line: "Saved — but the app's saves import is off." };
+    return { state: "unreachable", line: "Saved — the app couldn't be reached to test it." };
+  }
+}

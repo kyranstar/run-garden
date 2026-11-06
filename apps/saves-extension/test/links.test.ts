@@ -1,8 +1,8 @@
 import { describe, expect, it } from "vitest";
 import { normalizeLink, postSubmitSchema, type PostSubmit, type WorkItem } from "@rg/saves";
 import type { ExtractAnswer, ReadFailure, SubmitAnswer, VideoOpts } from "../src/app-client.js";
-import { AppUnreachableError, LoginNeededError, PostGoneError } from "../src/errors.js";
-import { LinkQueue, runLinks, sendPastedInstagram, type LinksDeps } from "../src/links.js";
+import { AppRefusedError, AppUnreachableError, LoginNeededError, PostGoneError, TOKEN_REFUSED } from "../src/errors.js";
+import { addPastedLink, LinkQueue, runLinks, sendPastedInstagram, type LinksDeps } from "../src/links.js";
 import type { YoutubeRead } from "../src/youtube-reader.js";
 import { memoryStore } from "./fixtures.js";
 
@@ -171,9 +171,9 @@ describe("runLinks", () => {
     const { app, deps, youtubeReads, instagramReads } = setup();
     app.workItems = [
       { source: "instagram", key: "ZorbexPost1", url: igLink, action: "read" },
-      { source: "youtube", key: "Yt0000000ab", url: `${S}example.com/v`, action: "extract" },
-      { source: "youtube", key: vid, url: `${S}example.com/v`, action: "filter" },
-      { source: "instagram", key: "theirown", url: `${S}example.com/p`, action: "extract" },
+      { source: "youtube", key: "Yt0000000ab", url: `${S}www.${["you", "tube.com"].join("")}/watch?v=Yt0000000ab`, action: "extract" },
+      { source: "youtube", key: vid, url: ytLink, action: "filter" },
+      { source: "instagram", key: "theirown", url: `${S}www.${["insta", "gram.com"].join("")}/p/theirown/`, action: "extract" },
     ];
     await runLinks(deps);
     expect(app.log[0]).toBe("work:v2");
@@ -187,7 +187,7 @@ describe("runLinks", () => {
 describe("runLinks: a video the app holds that can't be read any more (final review F3)", () => {
   it("is marked gone, so the work list stops handing it out; a pasted link's failure is only told", async () => {
     const { app, deps } = setup({ youtube: async () => ({ ok: false, code: "unplayable", message: "Age-restricted" }) });
-    app.workItems = [{ source: "youtube", key: vid, url: `${S}example.com/v`, action: "filter" }];
+    app.workItems = [{ source: "youtube", key: vid, url: ytLink, action: "filter" }];
     await runLinks(deps);
     expect(app.gone).toEqual([{ source: "youtube", key: vid, code: "gone" }]);
     expect(app.failures).toEqual([{ source: "youtube", key: vid, code: "unplayable", message: "Age-restricted" }]);
@@ -200,7 +200,7 @@ describe("runLinks: a video the app holds that can't be read any more (final rev
 
   it("a passing failure (the player didn't load) is told but not marked gone", async () => {
     const { app, deps } = setup({ youtube: async () => ({ ok: false, code: "unknown", message: "The player didn't load" }) });
-    app.workItems = [{ source: "youtube", key: vid, url: `${S}example.com/v`, action: "filter" }];
+    app.workItems = [{ source: "youtube", key: vid, url: ytLink, action: "filter" }];
     await runLinks(deps);
     expect(app.gone).toEqual([]);
     expect(app.failures).toHaveLength(1);
@@ -223,5 +223,49 @@ describe("a pasted Instagram post the app can't take (final audit G11)", () => {
     await runLinks(deps);
     expect(app.failures).toEqual([{ source: "instagram", key: "ZorbexPost1", code: "unknown", message: "The post's details didn't fit" }]);
     expect(await queue.all()).toEqual([]);
+  });
+});
+
+describe("a link pasted in the popup (audit 2026-11-06, I1)", () => {
+  const link = normalizeLink(ytLink)!;
+  const paste = (addLink: () => Promise<Awaited<ReturnType<Parameters<typeof addPastedLink>[0]["app"]["addLink"]>>>) => {
+    const queue = new LinkQueue(memoryStore());
+    return { queue, run: () => addPastedLink({ app: { addLink }, queue, now: () => NOW }, link) };
+  };
+
+  it("a token the app refuses is refused, and the link is not queued as added", async () => {
+    const { queue, run } = paste(async () => {
+      throw new AppRefusedError(401, "unauthenticated");
+    });
+    expect(await run()).toEqual({ ok: false, message: TOKEN_REFUSED });
+    expect(TOKEN_REFUSED).toBe("The app refused the token — paste it in Options");
+    expect(await queue.all()).toEqual([]);
+  });
+
+  it("the import switched off (404) or a request it refuses says so, and queues nothing", async () => {
+    const off = paste(async () => {
+      throw new AppRefusedError(404, "not_found");
+    });
+    expect(await off.run()).toEqual({ ok: false, message: "The app's saves import is off" });
+    expect(await off.queue.all()).toEqual([]);
+  });
+
+  it("taken: added and queued; already in: when; refused: the app's words", async () => {
+    const taken = paste(async () => ({ state: "added" }));
+    expect(await taken.run()).toEqual({ ok: true, added: true });
+    expect((await taken.queue.all()).map((l) => l.key)).toEqual([vid]);
+    const known = paste(async () => ({ state: "known", postId: "p1", firstSeenAt: "2026-11-03T09:00:00.000Z" }));
+    expect(await known.run()).toEqual({ ok: true, known: { postId: "p1", firstSeenAt: "2026-11-03T09:00:00.000Z" } });
+    expect(await known.queue.all()).toEqual([]);
+    const refused = paste(async () => ({ state: "refused", message: "Single videos and posts only — not playlists or channels." }));
+    expect(await refused.run()).toEqual({ ok: false, message: "Single videos and posts only — not playlists or channels." });
+  });
+
+  it("the app unreachable: kept here and queued, and the answer says it waits for the app", async () => {
+    const { queue, run } = paste(async () => {
+      throw new AppUnreachableError();
+    });
+    expect(await run()).toEqual({ ok: true, added: true, waiting: true });
+    expect((await queue.all()).map((l) => l.key)).toEqual([vid]);
   });
 });

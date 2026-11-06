@@ -235,3 +235,30 @@ describe("the popup's field across a re-render (final audit G18)", () => {
     expect(root().textContent).not.toContain("Only YouTube and Instagram links for now.");
   });
 });
+
+describe("the token, in the popup (audit 2026-11-06, I1)", () => {
+  const settle = async () => {
+    for (let i = 0; i < 8; i++) await new Promise((r) => setTimeout(r, 0));
+  };
+
+  it("a refused token heads the popup with what to do and offers Options, not Retry; a held link waits", async () => {
+    const vid = ["Zx", "9_-Qa", "B3cD"].join("");
+    const url = `${["ht", "tps://www."].join("")}${["you", "tube.com"].join("")}/watch?v=${vid}`;
+    await open({ status: null, appError: "The app refused the token — paste it in Options", health: null, localLinks: [{ source: "youtube", key: vid, url, error: null }] });
+    expect(root().querySelector("h1")!.textContent).toBe("The app refused the token — paste it in Options");
+    const labels = [...root().querySelectorAll("button")].map((b) => b.textContent);
+    expect(labels).toContain("Options");
+    expect(labels).not.toContain("Retry");
+    expect(root().textContent).toContain("Waiting — the app refused the token");
+    expect(root().textContent).not.toContain("Reading");
+    [...root().querySelectorAll("button")].find((b) => b.textContent === "Options")!.click();
+    await settle();
+    expect((globalThis as unknown as { chrome: { runtime: { openOptionsPage: { mock: { calls: unknown[] } } } } }).chrome.runtime.openOptionsPage.mock.calls).toHaveLength(1);
+  });
+
+  it("no token: the popup says to add it, with Options", async () => {
+    await open({ status: null, appError: "Add the app's token in Options", health: null });
+    expect(root().querySelector("h1")!.textContent).toBe("Add the app's token in Options");
+    expect([...root().querySelectorAll("button")].map((b) => b.textContent)).toContain("Options");
+  });
+});

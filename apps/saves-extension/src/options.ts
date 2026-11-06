@@ -1,8 +1,10 @@
+import { saveOptions } from "./options-model.js";
 import { chromeStore } from "./queue.js";
-import { BUILT_APP_ORIGIN, loadSettings, saveSettings, validateSettings } from "./settings.js";
+import { BUILT_APP_ORIGIN, loadSettings } from "./settings.js";
 
 // The options page: the app URL, the import token and (for a probe) the pages per check, kept in chrome.storage.local.
-// The saved token is never written back into the page or logged: a blank token field keeps the one saved.
+// The saved token is never written back into the page or logged: a blank token field keeps the one saved. Save tests
+// the token on the app first and says plainly how it went (options-model.ts).
 
 const form = document.getElementById("form") as HTMLFormElement;
 const appUrl = document.getElementById("appUrl") as HTMLInputElement;
@@ -17,23 +19,28 @@ async function load(): Promise<void> {
   maxPages.value = saved?.maxPages ? String(saved.maxPages) : "";
 }
 
+const button = form.querySelector<HTMLButtonElement>("button[type=submit]");
 form.addEventListener("submit", (event) => {
   event.preventDefault();
+  if (button?.disabled) return;
+  if (button) button.disabled = true;
+  status.textContent = "Testing the token…";
   void (async () => {
-    const saved = await loadSettings(chromeStore);
-    const checked = validateSettings({
-      appUrl: appUrl.value,
-      token: token.value || saved?.token || "",
-      maxPages: maxPages.value ? Number(maxPages.value) : null,
-    });
-    if (!checked.ok) {
-      status.textContent = checked.message;
-      return;
+    try {
+      const out = await saveOptions(
+        { appUrl: appUrl.value, token: token.value, maxPages: maxPages.value ? Number(maxPages.value) : null },
+        { store: chromeStore, fetchImpl: (input, init) => fetch(input, init) },
+      );
+      if (out.saved) {
+        token.value = "";
+        token.placeholder = "Saved";
+      }
+      status.textContent = out.line;
+    } catch {
+      status.textContent = "Couldn't save — try again.";
+    } finally {
+      if (button) button.disabled = false;
     }
-    await saveSettings(chromeStore, checked.settings);
-    token.value = "";
-    token.placeholder = "Saved";
-    status.textContent = "Saved";
   })();
 });
 

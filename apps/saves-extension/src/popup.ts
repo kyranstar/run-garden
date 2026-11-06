@@ -1,7 +1,7 @@
 import { LINK_REFUSED, normalizeLink } from "@rg/saves";
 import type { AddLinkResponse, CheckNowResponse, OverrideResponse, StatusResponse } from "./background.js";
 import {
-  addAnswerLine, CHECKING, linkTrailHref, popupLinks, popupModel, safeHref, type PopupAction, type PopupLight, type PopupLink, type PopupModel,
+  addAnswerLine, CHECKING, linksHeld, linkTrailHref, popupLinks, popupModel, safeHref, type PopupAction, type PopupLight, type PopupLink, type PopupModel,
 } from "./status.js";
 
 // Renders popupModel with plain DOM (text is always set with textContent). The popup holds no token and calls no app
@@ -262,7 +262,7 @@ function render(m: PopupModel): void {
   }
   frag.append(bar);
 
-  const links = recentLinks(popupLinks(last?.links ?? null, last?.localLinks ?? [], last?.appUrl));
+  const links = recentLinks(popupLinks(last?.links ?? null, last?.localLinks ?? [], last?.appUrl, last ? linksHeld(last) : null));
   if (links) frag.append(links);
 
   if (m.checks.length) {

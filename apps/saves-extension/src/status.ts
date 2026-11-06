@@ -1,5 +1,6 @@
 import { ADDED_LINE, alreadyInLine, HEALTH_LABELS, HEALTH_MARKS, redLine } from "@rg/saves";
 import type { HealthColor, HealthLight, ImportHealthDto, LinkDto, SavePostStatus, SavesStatusDto } from "@rg/saves";
+import { TOKEN_REFUSED } from "./errors.js";
 
 // The popup's view of the import, as plain data: pure, so it is tested without a browser. The headline is the
 // pipeline's health (the app's state); one post's trouble shows on that post's row, never in the headline — but while a
@@ -9,8 +10,14 @@ import type { HealthColor, HealthLight, ImportHealthDto, LinkDto, SavePostStatus
 
 export type PopupAction = "check_now" | "process_anyway" | "retry" | "options";
 
-/** What the background reports while the app URL or token is not saved: the popup then points to Options. */
-export const NOT_CONFIGURED = "Set the app URL and token in Options";
+/** What the background reports while no token is saved: the popup heads with it and points to Options. (The app URL
+ * comes filled in with the build's own, so the token is what is missing.) */
+export const NOT_CONFIGURED = "Add the app's token in Options";
+/** What the background reports when the app refused the saved token (a 401): the popup heads with it, with Options. */
+export { TOKEN_REFUSED };
+
+/** The app errors the popup heads with in its own words (and answers with Options), never "App unreachable". */
+const OPTIONS_FIXES: ReadonlySet<string> = new Set([NOT_CONFIGURED, TOKEN_REFUSED]);
 
 /** A link only to an https page; anything else (javascript:, data:, http:) is plain text. */
 export function safeHref(url: string): string | null {
@@ -182,7 +189,8 @@ function postActions(status: SavePostStatus): PopupAction[] {
 
 function headlineOf(input: PopupInput): string {
   const { status } = input;
-  if (!status) return "App unreachable";
+  // No token, or one the app refused: what to do, never "App unreachable" (audit 2026-11-06, I1).
+  if (!status) return input.appError && OPTIONS_FIXES.has(input.appError) ? input.appError : "App unreachable";
   if (isChecking(input)) return CHECKING;
   // A red light: never "Up to date" (nor "No check yet", which says nothing is wrong) — the worst light's line.
   const red = redLine(input.health);
@@ -236,12 +244,13 @@ export function popupModel(input: PopupInput): PopupModel {
     .slice(0, MAX_POSTS);
 
   const offered = new Set(posts.flatMap((p) => p.actions));
-  const actions: PopupAction[] = status ? ["check_now"] : [input.appError === NOT_CONFIGURED ? "options" : "retry"];
+  const actions: PopupAction[] = status ? ["check_now"] : [input.appError && OPTIONS_FIXES.has(input.appError) ? "options" : "retry"];
   for (const a of ["process_anyway", "retry"] as const) if (offered.has(a) && !actions.includes(a)) actions.push(a);
 
   return {
     headline: headlineOf(input),
-    detail: status ? (lastCheckDied(input) ? CHECK_DIED : "") : (input.appError ?? ""),
+    // The headline already says a token's trouble: no line under it saying it again.
+    detail: status ? (lastCheckDied(input) ? CHECK_DIED : "") : input.appError && OPTIONS_FIXES.has(input.appError) ? "" : (input.appError ?? ""),
     lastCheck: ago(status?.lastCheckAt ?? null, now),
     nextCheck: until(input.nextCheckAt, now),
     queue: input.queueSize > 0 ? `${input.queueSize} waiting` : "",
@@ -276,9 +285,9 @@ export interface PopupLocalLink {
   error: { code: string; message: string } | null;
 }
 
-/** The background's answer to the field's Add. */
+/** The background's answer to the field's Add. `waiting`: the app couldn't be reached, so the link is kept here until it can. */
 export type AddLinkAnswer =
-  | { ok: true; added: true }
+  | { ok: true; added: true; waiting?: boolean }
   | { ok: true; known: { postId: string; firstSeenAt: string } }
   | { ok: false; message: string };
 
@@ -299,7 +308,21 @@ export interface PopupLink {
 export function addAnswerLine(a: AddLinkAnswer): string {
   if (!a.ok) return a.message;
   if ("known" in a) return alreadyInLine(a.known.firstSeenAt);
-  return ADDED_LINE;
+  return a.waiting ? KEPT_LINE : ADDED_LINE;
+}
+
+/** A link added while the app can't be reached: it waits here, and goes once the app answers. */
+export const KEPT_LINE = "Kept here — it goes to the app once the app can be reached.";
+
+/**
+ * Why the links the extension still holds aren't moving, while the app can't be asked: the token refused or missing,
+ * or the app unreachable — so they read "Waiting …", never "Reading" (audit 2026-11-06, I1). Null while the app answers.
+ */
+export function linksHeld(input: Pick<PopupInput, "status" | "appError">): string | null {
+  if (input.status) return null;
+  if (input.appError === TOKEN_REFUSED) return "Waiting — the app refused the token";
+  if (input.appError === NOT_CONFIGURED) return "Waiting — add the app's token in Options";
+  return "Waiting for the app";
 }
 
 /** A known link's trail in the app. */
@@ -308,13 +331,19 @@ export const linkTrailHref = (appUrl: string | null | undefined, postId: string)
 const MAX_LINKS = 8;
 
 /** The recent links: the ones only the extension holds first (reading, or failed with Retry), then the app's. */
-export function popupLinks(app: readonly LinkDto[] | null, local: readonly PopupLocalLink[], appUrl: string | null | undefined): PopupLink[] {
+export function popupLinks(
+  app: readonly LinkDto[] | null,
+  local: readonly PopupLocalLink[],
+  appUrl: string | null | undefined,
+  /** `linksHeld`: why the links held here aren't moving now (the app refused the token, …), else null. */
+  held: string | null = null,
+): PopupLink[] {
   const known = new Set((app ?? []).map((l) => `${l.source}:${l.key}`));
   const mine: PopupLink[] = local
     .filter((l) => !known.has(`${l.source}:${l.key}`))
     .map((l) => ({
       title: l.url,
-      words: l.error ? `Failed: ${l.error.message}` : "Reading",
+      words: l.error ? `Failed: ${l.error.message}` : (held ?? "Reading"),
       href: null,
       action: l.error ? { kind: "add", url: l.url, label: "Retry" } : null,
     }));

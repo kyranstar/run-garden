@@ -1,7 +1,7 @@
 {
   "manifest_version": 3,
   "name": "Run Garden Saves",
-  "version": "0.3.0",
+  "version": "0.3.1",
   "description": "Reads your saved posts and the links you paste, in your own browser, and sends the training ones to Run Garden.",
   "minimum_chrome_version": "120",
   "permissions": [

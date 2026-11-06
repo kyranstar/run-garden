@@ -2,7 +2,7 @@ import { LINK_REFUSED, normalizeLink } from "@rg/saves";
 import { createAppClient, statusAndHealth } from "./app-client.js";
 import { DEFAULT_CONFIG, enqueuePastedSubmit, runCheck, serialLock, singleFlight, type CheckSummary } from "./check.js";
 import { parseMediaInfo } from "./feed.js";
-import { LinkQueue, runLinks, sendPastedInstagram, type LinksSummary } from "./links.js";
+import { addPastedLink, LinkQueue, runLinks, sendPastedInstagram, type LinksSummary } from "./links.js";
 import { chromeTabs, createPageReader } from "./page-reader.js";
 import { shortcodeToPk } from "./shortcode.js";
 import { chromeYoutubeTabs, closeLeftoverTabs, readYoutube } from "./youtube-reader.js";
@@ -36,7 +36,7 @@ export type CheckNowResponse = { ok: true; summary: CheckSummary } | { ok: false
 
 async function check(): Promise<CheckNowResponse> {
   const settings = await loadSettings(chromeStore);
-  if (!settings) return { ok: false, message: "Set the app URL and token in Options" };
+  if (!settings) return { ok: false, message: NOT_CONFIGURED };
   const reader = createPageReader(chromeTabs());
   const keepAlive = setInterval(() => void chrome.runtime.getPlatformInfo(), KEEP_ALIVE_MS);
   try {
@@ -134,24 +134,19 @@ chrome.alarms.onAlarm.addListener((alarm) => {
 export type AddLinkResponse = AddLinkAnswer;
 
 /**
- * A link from the popup: normalized here, told to the app at once (so the phone shows it; already in answers when),
- * queued, and read in the background — the popup may close. An unreachable app doesn't lose it: it's queued anyway.
+ * A link from the popup: normalized here, then told to the app, queued and read in the background — the popup may
+ * close (links.ts `addPastedLink`: a refused token or a link the app doesn't take queues nothing and says why; an app
+ * that can't be reached keeps it here).
  */
 async function addLink(url: string): Promise<AddLinkResponse> {
   const link = normalizeLink(url);
   if (!link) return { ok: false, message: LINK_REFUSED };
   const settings = await loadSettings(chromeStore);
   if (!settings) return { ok: false, message: NOT_CONFIGURED };
-  try {
-    const answer = await createAppClient({ appUrl: settings.appUrl, token: settings.token, fetchImpl }).addLink(link.url);
-    if (answer.state === "known") return { ok: true, known: { postId: answer.postId, firstSeenAt: answer.firstSeenAt } };
-    if (answer.state === "refused") return { ok: false, message: answer.message };
-  } catch {
-    // The app can't be reached now: the link waits here, and is read once it can.
-  }
-  await new LinkQueue(chromeStore).add(link, new Date().toISOString());
-  void linksOnce().catch((e: unknown) => console.warn(`saves links: ${messageOf(e, "failed")}`));
-  return { ok: true, added: true };
+  const app = createAppClient({ appUrl: settings.appUrl, token: settings.token, fetchImpl });
+  const answer = await addPastedLink({ app, queue: new LinkQueue(chromeStore), now: Date.now }, link);
+  if (answer.ok && "added" in answer) void linksOnce().catch((e: unknown) => console.warn(`saves links: ${messageOf(e, "failed")}`));
+  return answer;
 }
 
 export interface StatusResponse {
@@ -209,7 +204,7 @@ async function activeVideoLink(): Promise<string | null> {
 
 async function override(key: string, action: "process" | "skip" | "reference", source: string = SOURCE): Promise<OverrideResponse> {
   const settings = await loadSettings(chromeStore);
-  if (!settings) return { ok: false, message: "Set the app URL and token in Options" };
+  if (!settings) return { ok: false, message: NOT_CONFIGURED };
   try {
     await createAppClient({ appUrl: settings.appUrl, token: settings.token, fetchImpl }).override(source, key, action);
     return { ok: true };

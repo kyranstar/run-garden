@@ -55,12 +55,17 @@ export class AppUnreachableError extends CheckError {
   }
 }
 
+/** A wrong token, in the owner's words, with where to fix it (audit 2026-11-06, I1: it read "App unreachable"). */
+export const TOKEN_REFUSED = "The app refused the token — paste it in Options";
+/** The import switched off at the app (its routes answer 404). */
+export const IMPORT_OFF = "The app's saves import is off";
+
 /** The app said no for good: a wrong token (401), the import switched off (404), or a request it found invalid (4xx). */
 export class AppRefusedError extends CheckError {
   constructor(
     readonly status: number,
     readonly error: string | null,
   ) {
-    super("unknown", status === 401 ? "The app refused the token" : status === 404 ? "The app's saves import is off" : `The app refused a request (${status}${error ? ` ${error}` : ""})`);
+    super("unknown", status === 401 ? TOKEN_REFUSED : status === 404 ? IMPORT_OFF : `The app refused a request (${status}${error ? ` ${error}` : ""})`);
   }
 }
