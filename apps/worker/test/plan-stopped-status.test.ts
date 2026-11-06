@@ -437,7 +437,25 @@ describe("the registry's backfill corrects a row out of step, and nothing else",
       expect((await continuing("line")).status).toBe("refused");
     });
 
-    it("two blocks ending on one day: both have to have been stopped", async () => {
+    // Separate tests: a block of another plan in the sport that isn't retired counts as the sport going on, so one plan's
+    // completed block would keep the other running.
+    it("two blocks ending on one day, only one of them stopped: it's still running", async () => {
+      await plan("tied");
+      await block("t1", "tied", week(-3), week(-1), "retired");
+      await block("t2", "tied", week(-2), week(-1), "completed");
+      await backfill();
+      expect(await statusOf("tied")).toBe("active");
+    });
+
+    it("two blocks ending on one day, both stopped: it's stopped", async () => {
+      await plan("both");
+      await block("b1", "both", week(-3), week(-1), "retired");
+      await block("b2", "both", week(-2), week(-1), "retired");
+      await backfill();
+      expect(await statusOf("both")).toBe("retired");
+    });
+
+    it("another plan's completed block in the sport on the same days: this one stays running, whichever way it reads", async () => {
       await plan("tied");
       await block("t1", "tied", week(-3), week(-1), "retired");
       await block("t2", "tied", week(-2), week(-1), "completed");
@@ -446,7 +464,7 @@ describe("the registry's backfill corrects a row out of step, and nothing else",
       await block("b2", "both", week(-2), week(-1), "retired");
       await backfill();
       expect(await statusOf("tied")).toBe("active");
-      expect(await statusOf("both")).toBe("retired");
+      expect(await statusOf("both")).toBe("active");
     });
 
     it("its last-ending block stopped, and another still running beside it: it's still running", async () => {
