@@ -254,6 +254,25 @@ describe("propose_plan: what the card says of the watch, and what the condition 
     expect(r.count).toBeLessThanOrEqual(proposePlan.statementCost);
   });
 
+  // The safety review of S1 (I2): a plan's lift session today or tomorrow is held to the sore-area check, as a workout is.
+  it("a lift session today or tomorrow that loads an area recorded sore today is refused in words; the day after, it goes", async () => {
+    for (const subjectId of ["upper-back", "low-back"]) {
+      await db.insert(schema.athleteAnswers).values({
+        id: `ra:test:${newId()}`, userId: rich.userId, questionId: "soreness", subjectKind: "region", subjectId, text: "my back is wrecked", source: "request",
+        localDate: TODAY, at: at(TODAY, "09:00"), expiresAt: TODAY,
+      });
+    }
+    const r = await propose(block("lift", [{ date: TODAY, session: lift("Pull", ["Lat pulldown", "Dead bug"]) }], TODAY));
+    const e = refused(r.res);
+    expect(e.error).toBe("plan_refused");
+    expect(e.why).toBe("The sore-area check refuses it: Wed 13 May · Pull: You said your back is sore today; Lat pulldown loads it.");
+    expect(e.fix).toContain("spares");
+    expect(r.writes).toBe(0);
+    expect(r.count).toBeLessThanOrEqual(proposePlan.statementCost);
+    refused((await propose(block("lift", [{ date: "2026-05-14", session: lift("Pull", ["Lat pulldown"]) }], TODAY))).res);
+    ok((await propose(block("lift", [{ date: "2026-05-18", session: lift("Pull", ["Lat pulldown"]) }]))).res);
+  });
+
   it("a later day's move a check could close is refused — a session spec carries no alternate; today's, on a calm answered check, goes", async () => {
     ok((await propose(block("lift", [{ date: TODAY, session: lift("Legs", ["Goblet squat", "Pogo hops"]) }], TODAY))).res);
     const later = refused((await propose(block("lift", [{ date: "2026-05-19", session: lift("Legs", ["Goblet squat", "Pogo hops"]) }]))).res);

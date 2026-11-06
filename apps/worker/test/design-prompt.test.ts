@@ -469,7 +469,7 @@ describe("the safety audit — S1 and S5 (spec §15 Q1: insistence never overrid
     const fatal = SHARED_PROMPT.slice(SHARED_PROMPT.indexOf("Fatal only when wrong"));
     expect(fatal).toContain("a working move on an area the athlete called sore today");
     const designer = roleBlock("designer");
-    expect(designer).toContain("A working move that loads an area the athlete called sore — recorded today, or named in your brief — is refused whatever was asked");
+    expect(designer).toContain("A move that loads an area the athlete called sore today is refused, whatever was asked; treat one your brief names the same");
     expect(designer).toContain("easy circulation or gentle range");
   });
 
@@ -485,6 +485,6 @@ describe("the safety audit — S1 and S5 (spec §15 Q1: insistence never overrid
   it("S5: the reviewer's block names the only two checks no insistence moves — a first exposure past its cap is accepted, not must-fix", () => {
     const reviewer = roleBlock("reviewer");
     expect(reviewer).toContain("Only two things stay must-fix however the athlete insists: a condition's never and a sore area loaded.");
-    expect(reviewer).toContain("Anything else they insisted on in their own words is a cost they chose, listed in accepted — a first exposure past its cap among them.");
+    expect(reviewer).toContain("Anything else they insisted on in their own words is a cost they chose, listed in accepted (never under condition safety) — a first exposure past its cap among them.");
   });
 });

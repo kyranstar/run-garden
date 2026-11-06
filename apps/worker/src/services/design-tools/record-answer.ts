@@ -374,19 +374,23 @@ export function askedAnswerRows(o: {
 export function soreAnswersSql(userId: string, now: Date): SQL {
   const a = athleteAnswers;
   const utcDay = now.toISOString().slice(0, 10);
-  return sql`(select json_group_array(json_object('kind', ${a.subjectKind}, 'id', ${a.subjectId}, 'text', coalesce(${a.text}, ${a.valueChoice}), 'date', ${a.localDate}))
+  return sql`(select json_group_array(json_object('kind', ${a.subjectKind}, 'id', ${a.subjectId}, 'text', coalesce(${a.text}, ${a.valueChoice}), 'date', ${a.localDate}, 'value', ${a.valueNum}))
     from ${a} where ${a.userId} = ${userId} and ${a.questionId} = 'soreness' and ${a.subjectId} is not null
       and ${a.localDate} between ${addDays(utcDay, -1)} and ${addDays(utcDay, 1)})`;
 }
 
 const lower = (id: string): string => vocab(id).toLowerCase();
 
+/** A soreness answer this low (0–10) is no soreness: the check reads none. */
+export const SORE_FLOOR = 1;
+
 /**
  * The areas the athlete called sore TODAY (`soreAnswersSql`'s rows), for a draft on `date` — none past soreness's
  * freshness (`freshThrough`: today and the two days after). Each in the athlete's words: a bare "back" (the back areas
  * record_answer keeps for it, audit C4) is "back", upper and low; a region or a muscle by its library name; a focus area
  * by its areas' names (never its label: that is the athlete's free text); a condition by its check's name, standing for
- * the regions its care targets (body-check.ts's rule). Areas said in the same words are one; in the order first said.
+ * the regions its care targets (body-check.ts's rule). Areas said in the same words are one; in the order first said. An
+ * answer whose number is 0 or 1 (SORE_FLOOR) is no soreness (the safety review, I4: "my back's a 0 today" refused nothing).
  */
 export function soreAreasOf(raw: unknown, o: { today: string; date: string; focusAreas: ReadonlyMap<string, readonly string[]> }): SoreArea[] {
   if (o.date < o.today || o.date > freshThrough("soreness", o.today)) return [];
@@ -400,8 +404,9 @@ export function soreAreasOf(raw: unknown, o: { today: string; date: string; focu
     }
   };
   for (const r of parsedArray(raw)) {
-    const x = r as { kind?: unknown; id?: unknown; text?: unknown; date?: unknown } | null;
+    const x = r as { kind?: unknown; id?: unknown; text?: unknown; date?: unknown; value?: unknown } | null;
     if (!x || x.date !== o.today || typeof x.id !== "string") continue;
+    if (typeof x.value === "number" && x.value <= SORE_FLOOR) continue;
     const id = x.id;
     if (x.kind === "region" && REGION_SET.has(id)) add(BACK_AREAS.has(id) && typeof x.text === "string" && bareBack(x.text) ? "back" : lower(id), [id]);
     else if (x.kind === "muscle" && MUSCLE_SET.has(id)) add(lower(id), [id]);

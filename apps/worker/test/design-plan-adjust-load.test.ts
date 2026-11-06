@@ -106,6 +106,19 @@ describe("adjust_plan carries the running load of what it changes (the safety au
     expect(issuesOf(ok((await adjust(moved, { workoutId: long, change: { kind: "move", toDate: day(-7) }, why: WHY })).res)).filter((i) => i.code.startsWith("run_"))).toEqual([]);
   });
 
+  // The review's test gaps (M5): the session itself never counts twice, and the week is Monday to Sunday in SQL as in JS.
+  it("a longer run's week counts it once, at its new length; a run moved from Sunday to Monday is judged in the next week", async () => {
+    // The week of Mon 18 May holds the fixture's 45-minute run on the 19th and 90-minute long run on the 22nd.
+    const long = await planned({ date: day(-5), category: "long", minutes: 60, title: "Zorbex long run" });
+    const r = ok((await adjust(await mainRun(), { workoutId: long, change: { kind: "adjust", durationMinutes: 150 }, why: WHY })).res);
+    expect(issuesOf(r).find((i) => i.code === "run_volume_jump")!.message).toMatch(/^With this run the week's running comes to 285 minutes, /);
+    expect(issuesOf(r).find((i) => i.code === "run_long_share")!.message).toBe("This long run is 53% of the week's running (150 of 285 minutes); about 30% keeps it in proportion.");
+    // Sunday the 17th (this week: nothing else planned but the 16th's 45) to Monday the 18th: next week's 135 with it.
+    const sunday = await planned({ date: day(-4), category: "easy", minutes: 120, title: "Zorbex Sunday run" });
+    const moved = ok((await adjust(await mainRun(), { workoutId: sunday, change: { kind: "move", toDate: day(-5) }, why: WHY })).res);
+    expect(issuesOf(moved).find((i) => i.code === "run_volume_jump")!.message).toMatch(/^With this run the week's running comes to 315 minutes, /);
+  });
+
   it("a skipped tempo put back beside hard leg strength: the 48-hour rule", async () => {
     const legs = workoutDocSchema.parse({
       version: 1, title: "Zorbex leg day", intent: { summary: "Heavy legs.", goals: ["strength"], focus: [], effort: "develop" },
