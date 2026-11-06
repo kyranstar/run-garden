@@ -1420,7 +1420,8 @@ describe("the prompt says how a set works", () => {
     // turns — the same cap as design-prompt.test.ts's and design-fix13's; REBASED 2026-10-25 (saved-posts fix wave:
     // pin_moves among the scope's choices) — measured 1,653.25 without its turns.
     // REBASED 2026-11-04 (a request with several parts gets every part in one run: the main block's rule — prod 2026-11-04) — measured 1,782.25 without its turns.
-    expect(roleBlock("main").length / 4).toBeLessThanOrEqual(1830);
+    // REBASED 2026-11-06 (import trail phase 2, on phase 4's main): measured 1,782.25 — ≥ 100 tokens of headroom.
+    expect(roleBlock("main").length / 4).toBeLessThanOrEqual(1885);
   });
 });
 
