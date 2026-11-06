@@ -153,3 +153,18 @@ describe("a dose's numbers", () => {
     expect(doseNumbers("as many as you like")).toEqual([]);
   });
 });
+
+describe("a field only an on-screen quote supports (audit 2026-11-06, I9)", () => {
+  it("is inferred: the app couldn't check it", () => {
+    const move = {
+      name: "Zorbex hip lift",
+      dose: { text: "3 rounds of 10" },
+      evidence: { name: "stated", dose: "stated", steps: "stated" },
+      confidence: "high",
+      quotes: [{ field: "dose", text: "3 rounds of 10", from: "screen", check: "on_screen" }],
+    };
+    const out = readingEvidence(move, { moveNo: 1, firstK: 1, postId: "p", position: 0 })!;
+    expect(out.evidence.stated).toEqual(["name", "steps"]);
+    expect(out.evidence.inferred).toEqual(["dose"]);
+  });
+});

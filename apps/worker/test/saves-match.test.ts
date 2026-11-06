@@ -13,6 +13,7 @@ import type { Db } from "../src/services/db.js";
 import { IMPORT_KINDS } from "../src/services/saves-budget.js";
 import { savedPostId } from "../src/services/saves-ledger.js";
 import { matchMoves, matchPost } from "../src/services/saves-match.js";
+import { readPostTrail } from "../src/services/import-trail-read.js";
 import { toPersonalRecord } from "../src/services/personal-records.js";
 import { isWrite, makeTestDb, makeTestUser } from "./helpers.js";
 
@@ -240,6 +241,18 @@ describe("matchPost writes its trail (import trail, 2026-11-05)", () => {
       expect.objectContaining({ position: 0, outcome: "library", moveId: HIP_SWITCH.id, by: "name", judge: "not_needed", confidence: "high" }),
       expect.objectContaining({ position: 1, outcome: "new", by: "new", judge: "not_needed" }),
     ]);
+  });
+  // The safety audit, S2: a reading whose words say jump is stored as one, and the trail's check stage says why.
+  it("a move whose name says it jumps, read as isotonic, is stored plyometric — the reason on the check event, the link flagged", async () => {
+    const id = await extracted("t-jump", [move("Zorbex pogo hops", { patterns: ["calf-raise"], regions: ["calves"], laterality: "bilateral", position: "standing" })]);
+    await matchPost(db, env(), userId, id, NOW, judge({ matches: [] }).fetchImpl);
+    const { check } = await eventsOf(id);
+    expect(check).toMatchObject({ status: "warn" });
+    expect((check!.detail as any).moves[0].repairs).toContain('contraction read as isotonic, but its name says "pogo": stored as plyometric — a jump the condition rules gate');
+    const [link] = await db.select().from(savedPostMoves).where(eq(savedPostMoves.postId, id));
+    expect(link!.checkFlag).toBe(true);
+    const [row] = await db.select().from(personalMoves).where(eq(personalMoves.id, link!.moveId));
+    expect((row!.record as { contraction: string[] }).contraction).toEqual(["plyometric"]);
   });
   it("a judged move: the candidates it was offered, the judge's answer and raw reply, the prompt version", async () => {
     const id = await extracted("t2", [move("the 90 90 switch")]);
@@ -661,5 +674,38 @@ describe("matchPost", () => {
     expect(out).toEqual({ newMoves: 11, linked: 1 });
     // post 1, personal moves 1, judge (reserve 2, credits note 2, settle 1), writes: 2 move inserts + 2 link inserts + the post
     expect(statements).toBe(15); // REBASED 2026-11-05 (import trail): + the events, the judge's raw reply, the prompt version (the relay route adds 12: 27 of 45)
+  });
+});
+
+describe("the reader's quality, lit (audit 2026-11-06, I8)", () => {
+  const checkOf = async (postId: string) =>
+    (await db.select().from(schema.importEvents).where(eq(schema.importEvents.postId, postId))).find((r) => r.stage === "check")!;
+  const quote = (check: "verified" | "not_found", text: string) => ({ field: "dose" as const, text, from: "transcript" as const, check });
+
+  it("a quote that isn't in the post makes the check a warning that says so", async () => {
+    const id = await extracted("q1", [
+      move("Zorbex quad shuffle", { quotes: [quote("not_found", "two sets of eight"), quote("verified", "slow and even")] }),
+      move("Zorbex calf rock", { quotes: [quote("not_found", "hold it for ten"), quote("not_found", "every morning")] }),
+    ]);
+    await matchPost(db, env(), userId, id, NOW, judge({ matches: [] }).fetchImpl);
+    expect(await checkOf(id)).toMatchObject({ status: "warn", summary: "3 quotes aren't in the post" });
+  });
+
+  it("a move the reader was unsure of makes it a warning too", async () => {
+    const id = await extracted("q2", [move("Zorbex quad shuffle", { confidence: "low" })]);
+    await matchPost(db, env(), userId, id, NOW, judge({ matches: [] }).fetchImpl);
+    expect(await checkOf(id)).toMatchObject({ status: "warn", summary: "1 move the reader was unsure of" });
+  });
+
+  it("the import's health word says what was off, never 'Read cleanly'", async () => {
+    const id = await extracted("q4", [move("Zorbex quad shuffle", { quotes: [quote("not_found", "two sets of eight")] })]);
+    await matchPost(db, env(), userId, id, NOW, judge({ matches: [] }).fetchImpl);
+    expect((await readPostTrail(db, userId, id))!.account.health).toEqual({ status: "warn", line: "1 quote isn't in the post" });
+  });
+
+  it("a clean reading checks out", async () => {
+    const id = await extracted("q3", [move("Zorbex quad shuffle", { quotes: [quote("verified", "slow and even")] })]);
+    await matchPost(db, env(), userId, id, NOW, judge({ matches: [] }).fetchImpl);
+    expect(await checkOf(id)).toMatchObject({ status: "ok", summary: "The reading checks out" });
   });
 });

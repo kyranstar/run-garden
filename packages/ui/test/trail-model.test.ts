@@ -596,3 +596,48 @@ describe("Read it again on an old post's trail (phase 5a)", () => {
     expect(words).toContainEqual(["Not in it", "Zorbex knee sways"]);
   });
 });
+
+describe("a dose the reader guessed (audit 2026-11-06, I9)", () => {
+  it("is labelled the reader's guess, never the post", () => {
+    const dto = trail({
+      events: [
+        ev("check", { detail: { moves: [{ position: 0, name: "Zorbex hip lift", repairs: [], doseOrigin: "reader's guess", evidence: { name: "stated", dose: "inferred" }, confidence: "high" }] } }),
+      ],
+    });
+    const rows = moveDetail(dto, 0)[0]!.rows;
+    expect(rows).toContainEqual({ key: "Dose from", value: "the reader's guess — the post never says" });
+  });
+});
+
+describe("a heard or said quote with a time, on a YouTube video (audit 2026-11-06, I11)", () => {
+  const S = ["ht", "tps://"].join("");
+  const vid = ["Zx", "9_-Qa", "B3cD"].join("");
+  const watch = `${S}www.${["you", "tube.com"].join("")}/watch?v=${vid}`;
+  const quotes: NonNullable<ImportTrailDto["account"]["moves"][number]["quotes"]> = [
+    { field: "dose", text: "ten each side", at: 72.6, from: "transcript", check: "verified" },
+    { field: "why", text: "keeps the knees happy", at: 5, from: "speech", check: "in_speech" },
+    { field: "name", text: "the hip lift", from: "caption", check: "verified" },
+    { field: "purpose", text: "cures back pain", at: 90, from: "transcript", check: "not_found" },
+    { field: "steps", text: "three rounds", at: 30, from: "screen", check: "on_screen" },
+  ];
+  const said = (post: Partial<ImportTrailDto["post"]>) => {
+    const dto = trail({}, post);
+    dto.account.moves[0] = { ...dto.account.moves[0]!, quotes };
+    return moveDetail(dto, 0).find((d) => d.title === "What the post says")!.rows;
+  };
+
+  it("its row opens the video at that moment, the link made from the video's own id", () => {
+    const rows = said({ source: "youtube", url: watch });
+    expect(rows[0]!.link).toEqual({ href: `${watch}&t=72s`, label: "Open the video at 1:12" });
+    // A heard quote's time is the reader's own, never checked (review, 2026-11-06): no link. No time, not found, or text
+    // on screen: none either.
+    expect(rows.slice(1).map((r) => r.link)).toEqual([undefined, undefined, undefined, undefined]);
+  });
+
+  it("an Instagram post, or a stored link that isn't a YouTube video's, makes none", () => {
+    expect(said({ source: "instagram", url: `${S}www.${["insta", "gram.com"].join("")}/reel/ZorbexPost1/` }).some((r) => r.link)).toBe(false);
+    expect(said({ source: "youtube", url: "javascript:alert(1)" }).some((r) => r.link)).toBe(false);
+    expect(said({ source: "youtube", url: `${S}${["vim", "eo.com"].join("")}/1` }).some((r) => r.link)).toBe(false);
+    expect(said({ source: "youtube", url: null }).some((r) => r.link)).toBe(false);
+  });
+});

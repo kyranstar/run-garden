@@ -1,6 +1,7 @@
 import { normalizeLink, postSubmitSchema, type NormalLink, type SaveErrorCode, type WorkItem } from "@rg/saves";
 import type { AppClient } from "./app-client.js";
-import { AppRefusedError, AppUnreachableError, CheckError, LoginNeededError } from "./errors.js";
+import { AppRefusedError, AppUnreachableError, CheckError, LoginNeededError, TOKEN_REFUSED } from "./errors.js";
+import type { AddLinkAnswer } from "./status.js";
 import type { KvStore } from "./queue.js";
 import { toYoutubeSubmit } from "./youtube.js";
 import type { YoutubeRead } from "./youtube-reader.js";
@@ -67,6 +68,30 @@ export class LinkQueue {
     const rest = list.filter((l) => !(l.source === source && l.key === key));
     if (rest.length !== list.length) await this.save(rest);
   }
+}
+
+/**
+ * A link from the popup's field (already normalized): told to the app at once (so the phone shows it; already in answers
+ * when), then queued and read in the background. An app that can't be reached doesn't lose it: it is queued and the
+ * answer says it waits. An app that says no — a refused token, the import off, a link it doesn't take — queues nothing
+ * and says why (audit 2026-11-06, I1: a 401 read "Added" and the link sat on "Reading" for good).
+ */
+export async function addPastedLink(
+  deps: { app: Pick<AppClient, "addLink">; queue: LinkQueue; now: () => number },
+  link: NormalLink,
+): Promise<AddLinkAnswer> {
+  try {
+    const answer = await deps.app.addLink(link.url);
+    if (answer.state === "known") return { ok: true, known: { postId: answer.postId, firstSeenAt: answer.firstSeenAt } };
+    if (answer.state === "refused") return { ok: false, message: answer.message };
+  } catch (e) {
+    if (e instanceof AppRefusedError) return { ok: false, message: e.status === 401 ? TOKEN_REFUSED : e.message };
+    if (!(e instanceof AppUnreachableError)) throw e;
+    await deps.queue.add(link, new Date(deps.now()).toISOString());
+    return { ok: true, added: true, waiting: true };
+  }
+  await deps.queue.add(link, new Date(deps.now()).toISOString());
+  return { ok: true, added: true };
 }
 
 /**
@@ -149,6 +174,9 @@ export async function runLinks(deps: LinksDeps): Promise<LinksSummary> {
     const r = await deps.youtube(link.key);
     if (!r.ok) {
       await failed(link, r.code, r.message);
+      // YouTube asking to sign in meets every video until the owner does: told once, and the run ends — the links after
+      // it wait, unread, like Instagram's login (audit 2026-11-06, I3).
+      if (r.code === "youtube_login") throw new StopRun("youtube_login");
       // A video the app holds that is gone or won't play any more leaves its work list (final review F3).
       if (held && (r.code === "gone" || r.code === "unplayable")) await app.reportFailed(link.source, link.key, "gone").catch(stopOn);
       return false;

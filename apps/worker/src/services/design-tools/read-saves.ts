@@ -424,7 +424,7 @@ function correctionsOf(raw: unknown): Map<string, CorrectionRow[]> {
 /** Where a record's dose came from (§8.1): the library's; a correction's (the owner's edit or an approved fix); for a move
  * the batch brought, its first post's reading (`doseOriginOf`: the reading's range, the post's words, or a default);
  * else an earlier post's. */
-type DoseFrom = "post" | "reading" | "default" | "library" | "edited" | "an earlier post";
+type DoseFrom = "post" | "reading" | "reader's guess" | "default" | "library" | "edited" | "an earlier post";
 function doseFromOf(m: SavedMove, fixes: readonly CorrectionRow[], firstReading: unknown): DoseFrom {
   if (!isPersonalId(m.record.id)) return "library";
   if (fixes.some((c) => c.field === "dose")) return "edited";

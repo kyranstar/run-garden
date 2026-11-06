@@ -62,10 +62,12 @@ export function doseFromText(text: string): { type?: DoseType; range?: [number, 
 }
 
 /**
- * Where a record's dose numbers came from: the reading's own range (`reading`), the dose's words (`post`), or the
- * plain default no post stated (`default`) — so a default is never shown or used as the creator's prescription.
+ * Where a record's dose numbers came from: the reading's own range (`reading`), the dose's words (`post`), numbers the
+ * reader inferred — its `evidence.dose` says the post never stated them (`reader's guess`; audit 2026-11-06, I9) — or
+ * the plain default no post stated (`default`) — so neither a guess nor a default is shown or used as the creator's
+ * prescription.
  */
-export type DoseOrigin = "reading" | "post" | "default";
+export type DoseOrigin = "reading" | "post" | "reader's guess" | "default";
 
 /**
  * How a draft counts: as it says, else as its dose's words say, else a carry by its seconds, a hold or relaxed stretch by
@@ -90,7 +92,7 @@ function doseWithOrigin(draft: ExtractedMove): { dose: Dose; origin: DoseOrigin 
   const saidFits = said.type === undefined || said.type === type || (said.type === "time" && type === "carry");
   const sets = draft.dose.sets ?? said.sets;
   const fromWords = saidFits ? said.range : undefined;
-  const origin: DoseOrigin = draft.dose.range ? "reading" : fromWords ? "post" : "default";
+  const origin: DoseOrigin = !draft.dose.range && !fromWords ? "default" : draft.evidence?.dose === "inferred" ? "reader's guess" : draft.dose.range ? "reading" : "post";
   return {
     dose: {
       type,

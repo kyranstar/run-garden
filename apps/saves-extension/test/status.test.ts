@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { HEALTH_LIGHTS, type HealthColor, type HealthLightDto, type ImportHealthDto, type PostRowDto, type SavesStatusDto } from "@rg/saves";
-import { CHECK_DIED, CHECKING, NOT_CONFIGURED, addAnswerLine, appHref, isChecking, isPostKey, popupLinks, popupModel, safeHref } from "../src/status.js";
+import { CHECK_DIED, CHECKING, NOT_CONFIGURED, TOKEN_REFUSED, addAnswerLine, appHref, isChecking, isPostKey, linksHeld, popupLinks, popupModel, safeHref } from "../src/status.js";
 import type { LinkDto } from "@rg/saves";
 
 const NOW = Date.parse("2026-10-23T12:00:00.000Z");
@@ -186,9 +186,18 @@ describe("popupModel detail and settings", () => {
     expect(m.actions).toEqual(["retry"]);
   });
 
-  it("a missing app URL or token shows its message and offers Options", () => {
+  it("a missing token heads the popup with what to do, and offers Options", () => {
     const m = model({ status: null, appError: NOT_CONFIGURED });
-    expect(m.detail).toBe(NOT_CONFIGURED);
+    expect(m.headline).toBe("Add the app's token in Options");
+    expect(m.detail).toBe("");
+    expect(m.actions).toEqual(["options"]);
+  });
+
+  // The owner, reinstalling (audit 2026-11-06, I1): a wrong token read as "App unreachable" with only Retry.
+  it("a token the app refused is not 'App unreachable': it says so, and offers Options, not Retry", () => {
+    const m = model({ status: null, appError: TOKEN_REFUSED });
+    expect(m.headline).toBe("The app refused the token — paste it in Options");
+    expect(m.detail).toBe("");
     expect(m.actions).toEqual(["options"]);
   });
 
@@ -275,13 +284,16 @@ describe("popupModel's health row", () => {
   });
 
   it("each light carries its failures: the post, when, why, a link to its trail in the app, and Retry where the popup can retry it", () => {
+    // A post's failure retries by the post, never by pasting a link (audit 2026-11-06, I3).
+    const noLink = { retryLink: null };
     const m = model({ appUrl: APP, health: RED, status: status({ posts: [post({ id: "b", key: "kb", status: "failed", errorCode: "model_failed", error: "The reader's reply didn't work" })] }) });
     const reader = m.lights.find((l) => l.light === "reader")!;
     expect(reader.line).toBe("Reader: 3 of 4 failed");
-    expect(reader.failures).toEqual([
+    expect(reader.failures).toMatchObject([
       { title: "Zorbex hip flow", when: "1 h ago", why: "The reply didn't match the format", href: "https://app.example.com/studio/saves/posts/b", retryKey: "kb", retrySource: null },
       { title: "Reader", when: "2 h ago", why: "The model gateway answered 402", href: null, retryKey: null, retrySource: null },
     ]);
+    expect(reader.failures.map((f) => f.retryLink)).toEqual([noLink.retryLink, noLink.retryLink]);
   });
 
   it("no health read (an older app, a failed call): no lights, nothing said, the headline as before", () => {
@@ -343,9 +355,36 @@ describe("pasted links in the popup (design 2026-11-05 §3.1)", () => {
     expect(popupLinks(null, [], null)).toEqual([]);
   });
 
+  it("a link the extension still holds while the app refuses the token, or can't be reached, waits — never 'Reading'", () => {
+    const local = [{ source: "youtube" as const, key: vid, url: watch, addedAt: "x", error: null }];
+    expect(linksHeld({ status: null, appError: TOKEN_REFUSED })).toBe("Waiting — the app refused the token");
+    expect(linksHeld({ status: null, appError: NOT_CONFIGURED })).toBe("Waiting — add the app's token in Options");
+    expect(linksHeld({ status: null, appError: "App unreachable (502)" })).toBe("Waiting for the app");
+    expect(linksHeld({ status: null, appError: null })).toBe("Waiting for the app");
+    expect(popupLinks([], local, null, linksHeld({ status: null, appError: TOKEN_REFUSED }))[0]!.words).toBe("Waiting — the app refused the token");
+    expect(popupLinks([], local, null, null)[0]!.words).toBe("Reading");
+  });
+
   it("the answer to Add, in a line", () => {
+    expect(addAnswerLine({ ok: true, added: true, waiting: true })).toBe("Kept here — it goes to the app once the app can be reached.");
     expect(addAnswerLine({ ok: true, added: true })).toBe("Added — it'll be waiting in the coach.");
     expect(addAnswerLine({ ok: true, known: { postId: "p1", firstSeenAt: "2026-11-03T15:00:00.000Z" } })).toBe("Already in — imported Tue 3 Nov.");
     expect(addAnswerLine({ ok: false, message: "Only YouTube and Instagram links for now." })).toBe("Only YouTube and Instagram links for now.");
+  });
+});
+
+describe("a YouTube read that failed before its post, in the popup (audit 2026-11-06, I3)", () => {
+  it("its Retry pastes the link again", () => {
+    const watch = `${["ht", "tps://www."].join("")}${["you", "tube.com"].join("")}/watch?v=Zx9_-QaB3cD`;
+    const health: ImportHealthDto = {
+      lights: HEALTH_LIGHTS.map((light) =>
+        light === "youtube"
+          ? { light, color: "red", line: "Sign in to YouTube in Chrome", failures: [{ postId: null, title: watch, at: "2026-10-23T11:00:00.000Z", why: "Sign in to YouTube in Chrome", retryLink: watch }] }
+          : { light, color: "green", line: null, failures: [] },
+      ),
+      worst: "Sign in to YouTube in Chrome",
+    };
+    const f = model({ health }).lights.find((l) => l.light === "youtube")!.failures[0]!;
+    expect(f).toMatchObject({ title: watch, retryKey: null, retryLink: watch });
   });
 });

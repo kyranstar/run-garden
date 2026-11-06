@@ -310,7 +310,9 @@ export function verifyQuotes(extraction: Extraction, sources: QuoteSources): { e
       // Text the video shows: no source here holds it, so it is neither proof nor a reader's invention (G7).
       if (check === "not_found" && q.from === "screen" && words.length) check = "on_screen";
       results.push({ move, quote, check, at });
-      found.set(q.field, (found.get(q.field) ?? false) || check !== "not_found");
+      // Words the app checked (or the reader heard) back a field; an on-screen quote, unchecked, does not — a field it
+      // alone supports is the reader's guess (audit 2026-11-06, I9).
+      found.set(q.field, (found.get(q.field) ?? false) || (check !== "not_found" && check !== "on_screen"));
       return { ...q, check };
     });
     const evidence = { ...m.evidence } as Record<string, string | undefined>;

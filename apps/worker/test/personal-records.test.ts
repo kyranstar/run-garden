@@ -236,13 +236,26 @@ describe("a reading can't make the audit's mistakes", () => {
 
   it("a record's dose knows where it came from: the reading's numbers, the post's words, or the default (audit bug 3)", () => {
     const from = (dose: ExtractedMove["dose"]) => {
-      const built = buildPersonalRecord(id, move({ dose }));
+      const built = buildPersonalRecord(id, move({ dose, evidence: { name: "stated", dose: "stated", steps: "stated" } }));
       if (!built.ok) throw new Error(built.issues.join("; "));
       return built.doseOrigin;
     };
     expect(from({ text: "3 x 15", range: [15, 15] })).toBe("reading");
     expect(from({ text: "2x30s" })).toBe("post");
     expect(from({ text: "slowly, with control" })).toBe("default");
+  });
+
+  it("a dose the reader inferred is the reader's guess, never the post's (audit 2026-11-06, I9)", () => {
+    const from = (dose: ExtractedMove["dose"], said: "stated" | "inferred") => {
+      const built = buildPersonalRecord(id, move({ dose, evidence: { name: "stated", dose: said, steps: "stated" } }));
+      if (!built.ok) throw new Error(built.issues.join("; "));
+      return built.doseOrigin;
+    };
+    expect(from({ text: "2x30s" }, "inferred")).toBe("reader's guess");
+    expect(from({ text: "3 x 15", range: [15, 15] }, "inferred")).toBe("reader's guess");
+    expect(from({ text: "2x30s" }, "stated")).toBe("post");
+    // No numbers at all is still the default, whoever guessed.
+    expect(from({ text: "slowly, with control" }, "inferred")).toBe("default");
   });
 
   it("the words reach the record: the stated range, not 8-12; a stated hold on the clock, with or without a weight", () => {
@@ -310,5 +323,44 @@ describe("repairDraft: a weight counted in breaths (live finding, 2026-11-05)", 
     expect(repairs).toContain("a weight counted in breaths; stored as bodyweight (the app logs a weight on reps or a timed carry)");
     const built = buildPersonalRecord(id, draft);
     expect(built.ok).toBe(true);
+  });
+});
+
+// The safety audit, S2: the reader model writes a personal move's contraction, and the jump gate reads that alone — an
+// imported "Pogo hops" called isotonic went past every condition gate. Its words now decide: a move whose name (or its
+// summary and steps) says it jumps is stored plyometric, the reason a repair line the trail's check stage shows.
+describe("buildPersonalRecord: a reading whose words say jump is stored plyometric (the safety audit, S2)", () => {
+  const hops = move({
+    name: "Zorbex pogo hops",
+    summary: "Quick, springy hops on the balls of the feet.",
+    steps: ["Stand tall.", "Bounce on the balls of the feet, knees soft."],
+    patterns: ["calf-raise"],
+    regions: ["calves"],
+    equipment: [],
+    load: "none",
+    contraction: ["isotonic"],
+  });
+
+  it("forces the contraction to plyometric, reclassified with its reason — and the gate's purposes follow (power, not a primer)", () => {
+    const built = buildPersonalRecord(id, hops);
+    if (!built.ok) throw new Error(built.issues.join("; "));
+    expect(built.record.contraction).toEqual(["plyometric"]);
+    expect(built.reclassified).toBe('contraction read as isotonic, but its name says "pogo": stored as plyometric — a jump the condition rules gate');
+    expect(built.repairs).toContain(built.reclassified);
+    expect(built.record.purposes).toEqual(["power"]);
+    expect(validatePersonalRecord(built.record)).toEqual([]);
+  });
+
+  it("its own words count too, never a word taken back; a move that reads plyometric already, or doesn't jump, is left alone", () => {
+    const squat = buildPersonalRecord(id, move({ name: "Zorbex explosive squat", summary: "Squat, then jump as high as you can.", patterns: ["squat"], regions: ["quads"], load: "none", equipment: [] }));
+    expect(squat.ok && squat.record.contraction).toEqual(["plyometric"]);
+    expect(squat.ok && squat.reclassified).toContain('its words say "jump"');
+    const calm = buildPersonalRecord(id, move({ name: "Zorbex step-back", summary: "Step back, don't jump.", patterns: ["lunge"], regions: ["quads"], load: "none", equipment: [] }));
+    expect(calm.ok && calm.record.contraction).toEqual(["isotonic"]);
+    expect(calm.ok && calm.reclassified).toBeUndefined();
+    const already = buildPersonalRecord(id, { ...hops, contraction: ["plyometric"] });
+    expect(already.ok && already.reclassified).toBeUndefined();
+    expect(already.ok && already.repairs).toEqual([]);
+    expect(buildPersonalRecord(id, move()).ok && (buildPersonalRecord(id, move()) as { reclassified?: string }).reclassified).toBeUndefined();
   });
 });

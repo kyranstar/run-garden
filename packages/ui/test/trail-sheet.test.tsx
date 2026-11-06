@@ -359,3 +359,21 @@ describe("Read it again (phase 5a)", () => {
     expect(button("Read it again").disabled).toBe(false);
   });
 });
+
+describe("a quote's moment in the video (audit 2026-11-06, I11)", () => {
+  it("the row carries 'Open the video at m:ss', a link opened apart", async () => {
+    const S = ["ht", "tps://"].join("");
+    const watch = `${S}www.${["you", "tube.com"].join("")}/watch?v=Zx9_-QaB3cD`;
+    const base = TRAIL();
+    const trail = TRAIL({
+      post: { ...base.post, source: "youtube", url: watch },
+      account: { ...base.account, moves: [{ ...base.account.moves[0]!, quotes: [{ field: "purpose", text: "if your hips get stiff", at: 72, from: "transcript", check: "verified" }] }] },
+    });
+    await mount(trail, { position: 0, quote: 0 });
+    const a = [...dialog().querySelectorAll<HTMLAnchorElement>("a")].find((x) => x.textContent === "Open the video at 1:12")!;
+    expect(a).toBeTruthy();
+    expect(a.getAttribute("href")).toBe(`${watch}&t=72s`);
+    expect(a.target).toBe("_blank");
+    expect(a.rel).toBe("noopener noreferrer");
+  });
+});

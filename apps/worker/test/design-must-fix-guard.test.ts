@@ -8,7 +8,8 @@
  *    rounds remain: revise it, amend the text, or say in an amend's change note why a must-fix can't be met. A run's
  *    last turn always ends: the guard never traps it.
  *  - The keep-best rule prefers a reviewed revision that clears the held version's must-fix items over a higher mean.
- *  - A draft that loads an area the athlete called sore today is never an accepted cost of the review.
+ *  - A draft that loads an area the athlete called sore today is refused before review (the safety audit, S1), however
+ *    the athlete insists; a first exposure past its cap they insisted on is a cost they chose, never a must-fix (S5).
  *  - A reviewer's (and a set designer's) opening message carries the conversation so far, marked as data, in one
  *    statement more within the context's budget.
  *
@@ -244,29 +245,55 @@ describe("keep-best prefers a revision that clears the held version's must-fix i
   });
 });
 
-describe("soreness is never an accepted cost", () => {
-  it("a review accepting recovery on a draft that loads a sore area is refused, teachably; the next is stored", async () => {
+describe("soreness is never an accepted cost — nor reviewed at all (the safety audit, S1)", () => {
+  // Was: a draft loading the sore glutes reached the reviewer, and its accepted recovery was refused. Since S1 the draft
+  // is refused before any review, however the athlete insists; the coach offers the closest safe option.
+  it("a draft that loads a sore area the athlete insists on is refused before review; the safe option is what is reviewed", async () => {
     const { userId } = await seedRichAthlete(db);
     await db.insert(schema.athleteAnswers).values({
       id: `ra:test:${newId()}:0`, userId, questionId: "soreness", subjectKind: "region", subjectId: "glutes", text: "my glutes are wrecked",
       source: "request", localDate: TODAY, at: at(TODAY, "09:00"), expiresAt: TODAY,
     });
-    const runId = await nowRun(userId, { request: "my glutes are wrecked but I want the bridges anyway" });
-    const accepting = submit(verdict(4, { accepted: [{ dimension: "recovery", why: "the bridges you asked for" }] }));
-    const { deps, requests } = scripted([
-      t(propose("Calm hips")),
-      t(accepting),
-      t(submit(verdict(3, { mustFix: ["Swap the bridge: your glutes are sore."] }))),
-      t(propose("Calm hips", { amend: true, changeNote: "You asked for the bridges: they stay, light and slow." })),
-      t(finish()),
-    ]);
+    const runId = await nowRun(userId, { request: "my glutes are wrecked but I want the bridges anyway, I'm sure" });
+    const insisted = propose("Calm hips");
+    const safe = use("propose_workout", {
+      doc: { ...calmDoc({ title: "Calm hips, glutes spared" }), parts: [{ purpose: "main", format: "straight", items: [{ kind: "exercise", libraryId: "deadBug", dose: { sets: 2, reps: 8, restSec: 30 } }] }] },
+      target: { kind: "new", date: TODAY },
+    });
+    const { deps, requests } = scripted([t(insisted), t(safe), t(submit(verdict(4))), t(finish("No bridges with sore glutes — a dead bug instead; add them in the Studio if you must."))]);
     expect(await drive(userId, runId, deps)).toBe("finished");
-    const refused = refusalOf(requests, accepting);
-    expect(refused.error).toBe("invalid_review");
-    expect(refused.why).toContain("soreness is never an accepted cost");
+    const refused = refusalOf(requests, insisted);
+    expect(refused.error).toBe("invalid_workout");
+    expect(refused.why).toContain("(sore_area_loaded): You said your glutes are sore today");
+    expect(refused.fix).toContain("say plainly you won't, offer the closest safe option");
+    // One reviewer: the safe draft's; the refused one used no round.
+    expect(await reviewers(runId)).toHaveLength(1);
     const op = (await proposalOf(runId))!.ops[0]!;
-    expect(op.issues.map((i) => i.code)).toContain("sore_area_loaded");
-    expect(op.review!.mustFix).toEqual(["Swap the bridge: your glutes are sore."]);
+    expect(op.doc.title).toBe("Calm hips, glutes spared");
+    expect(op.issues.map((i) => i.code)).not.toContain("sore_area_loaded");
+  });
+});
+
+// The safety audit, S5: "the first session caps its volume … whatever the request" clashed with "if they insist … do
+// what they say". Only the two hard checks stay absolute; a first exposure past its cap they insisted on is a cost.
+describe("a first exposure past its cap, insisted on, is a cost they chose (the safety audit, S5)", () => {
+  it("the reviewer's packet says only the two hard checks stay must-fix; its accepted progression lets finish through", async () => {
+    const { userId } = await seedRichAthlete(db);
+    const runId = await nowRun(userId, { request: "First squats in weeks and I want the full heavy session — I'm sure." });
+    const scores = { ...verdict(4).scores, progression: 2 };
+    const review = { ...verdict(4, { accepted: [{ dimension: "progression", why: "the full session you asked for, first time back" }] }), scores };
+    const done = finish("Full session as you asked: first squats in weeks, so expect sore legs for two days.");
+    const { deps, requests } = scripted([t(propose("Full squat session")), t(submit(review)), t(done)]);
+    expect(await drive(userId, runId, deps)).toBe("finished");
+    const opening = openingOf(requests.find(isReviewer)!);
+    expect(opening).toContain("What the athlete insisted on in their own words is a cost they chose — list it in accepted, never a must-fix");
+    expect(opening).toContain("no insistence moves the two hard checks: a condition's never and a sore area loaded");
+    // The guard didn't hold the finish: no must-fix, the progression kept as they asked.
+    expect(resultOf(requests, done)?.is_error).not.toBe(true);
+    const p = (await proposalOf(runId))!;
+    expect(p.status).toBe("pending");
+    expect(p.ops[0]!.review).toMatchObject({ mustFix: [] });
+    expect(JSON.stringify(p.ops[0]!.review)).toContain("the full session you asked for, first time back");
   });
 });
 

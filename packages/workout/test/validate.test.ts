@@ -1062,3 +1062,53 @@ describe("the engine's own builds validate", () => {
     }, 60_000);
   }
 });
+
+// ── The safety audit (2026-11-06, S3): a free-text item is judged, never only dosed ──────────────────────────────────
+
+describe("a free-text item meets the gates (the safety audit, S3)", () => {
+  const free = (name: string, extra: Over = {}): WorkoutItem => ({ kind: "free_exercise", name, dose: { sets: 3, reps: 10 }, ...extra }) as WorkoutItem;
+  const N0 = `${P0}.name`;
+  const errorsOf = (issues: readonly DocIssue[]) => issues.filter((i) => i.severity === "error");
+
+  it("named as a library move (its spelling loose), it meets that move's rules: a jump closed while feeling off, a day ahead waiting on its check", () => {
+    expect(check(one(free("pogo hop")), dayOf(CALM))).toEqual([]);
+    const [off] = errorsOf(check(one(free("pogo hop")), dayOf(reading(1, true))));
+    expect(off).toMatchObject({ path: N0, code: "condition_gate", severity: "error", message: "Pogo hops isn't allowed while you're feeling off." });
+    // A free-text item carries no alternate: a day ahead whose check could close it is an error.
+    expect(codes(errorsOf(check(one(free("Pogo-hops")), FUTURE())))).toEqual([`error:condition_gate_pending@${N0}`]);
+    // A profile's never, as the library move's.
+    expect(codes(errorsOf(check(one(free("Test forbidden move")))))).toEqual([`error:condition_never@${N0}`]);
+  });
+
+  it("named as one of the athlete's own moves, it meets that move's rules", () => {
+    const mine: ExerciseRecord = { ...record("pogoHop"), id: "myZorbexspringsabc123", name: "Zorbex springs", legacyIds: [], easier: [], harder: [] };
+    const issues = validateWorkoutDoc(one(free("zorbex springs"), "recover"), { library: [...LIBRARY, mine], activeProfiles: [TMJ], day: dayOf(CALM) });
+    expect(codes(errorsOf(issues))).toEqual([`error:condition_gate@${N0}`]);
+  });
+
+  it("named as no move, a name that says it jumps is refused on a Recover day — any profile or none — and wherever a profile's gate keeps a jump out", () => {
+    // A Recover day, with no profile at all, and in a template (no day).
+    expect(codes(errorsOf(validateWorkoutDoc(one(free("Box jumps"), "recover"), { library: LIBRARY, activeProfiles: [], day: dayOf(CALM) })))).toEqual([`error:condition_gate@${N0}`]);
+    expect(codes(errorsOf(check(one(free("Box jumps"), "recover"), null)))).toEqual([`error:condition_gate@${N0}`]);
+    const [recover] = errorsOf(check(one(free("Box jumps"), "recover")));
+    expect(recover!.message).toBe("Box jumps reads as a jump, and jumps sit out a Recover day.");
+    // Feeling off, a flare day, a day ahead its check could close: the jaw's gate.
+    const [off] = errorsOf(check(one(free("Box jumps")), dayOf(reading(1, true))));
+    expect(off).toMatchObject({ path: N0, code: "condition_gate", message: "Box jumps reads as a jump, and it isn't allowed while you're feeling off." });
+    expect(errorsOf(check(one(free("Box jumps")), dayOf(reading(6))))[0]!.message).toBe("Box jumps reads as a jump, and it isn't allowed with today's Jaw / head check at 6.");
+    expect(codes(errorsOf(check(one(free("Box jumps")), FUTURE())))).toEqual([`error:condition_gate_pending@${N0}`]);
+    // A calm day, a maintain workout: allowed, as a library jump is.
+    expect(check(one(free("Box jumps")), dayOf(CALM))).toEqual([]);
+    expect(check(one(free("Box jumps")), null)).toEqual([]);
+  });
+
+  it("a name that doesn't jump, or takes the jump back, is only dosed — on any day", () => {
+    for (const name of ["Zorbex wall slide", "No-jump burpee", "Step-back lunge (no jumping)"]) {
+      for (const day of [dayOf(reading(1, true)), dayOf(reading(7)), FUTURE(), null]) {
+        expect(check(one(free(name), "recover", "flow"), day), `${name} ${JSON.stringify(day)}`).toEqual([]);
+      }
+    }
+    // Still dosed.
+    expect(codes(check(one({ kind: "free_exercise", name: "Zorbex wall slide", dose: {} } as WorkoutItem)))).toEqual([`warning:dose_mismatch@${P0}.dose`]);
+  });
+});

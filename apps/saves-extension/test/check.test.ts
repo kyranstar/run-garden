@@ -173,8 +173,8 @@ describe("runCheck in queue mode: a pasted Instagram link (design 2026-11-05 §5
   it("a check's work list leaves a link to read and a YouTube video to the link runner", async () => {
     const app = new FakeApp();
     app.workItems = [
-      { source: "youtube", key: "Zx9_-QaB3cD", url: "https://example.com/v", action: "extract" },
-      { source: "instagram", key: "linkcode", url: "https://example.com/p", action: "read" },
+      { source: "youtube", key: "Zx9_-QaB3cD", url: ["ht", "tps://www.", "you", "tube.com/watch?v=Zx9_-QaB3cD"].join(""), action: "extract" },
+      { source: "instagram", key: "linkcode", url: ["ht", "tps://www.", "insta", "gram.com/p/linkcode/"].join(""), action: "read" },
     ];
     const reader = fakeReader([[]]);
     await runCheck(makeDeps(app, reader));

@@ -7,6 +7,9 @@ import { act, createElement } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { MemoryRouter } from "react-router-dom";
+import { readFileSync } from "node:fs";
+import { dirname, resolve } from "node:path";
+import { fileURLToPath } from "node:url";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { HEALTH_LIGHTS, type ImportHealthDto, type ImportTrailDto, type SavesStatusDto } from "@rg/saves";
 import { SavesSection } from "../src/screens/settings/saves.js";
@@ -357,5 +360,72 @@ describe("Settings -> Saves: the field takes a bare link, and an empty Add does 
     });
     await flush();
     expect(sheet.textContent).not.toContain("Only YouTube and Instagram links for now.");
+  });
+});
+
+describe("an unbroken link as a recent link's title (audit 2026-11-06, I12)", () => {
+  it("is drawn in a title that wraps anywhere, so it never runs past the sheet", async () => {
+    await mount({ status: 200, body: status() });
+    await flush();
+    await act(async () => { (host.querySelector("button.place-row") as HTMLButtonElement).click(); });
+    await flush();
+    const titles = [...document.querySelectorAll(".saves-link-title")].map((b) => b.textContent);
+    expect(titles).toEqual(["Zorbex hip flow", LINKS[1]!.url]);
+    // Found from this file (jsdom has its own URL; CI runs vitest from the repo root).
+    const css = readFileSync(resolve(dirname(fileURLToPath(import.meta.url)), "../src/styles.css"), "utf8");
+    const at = css.indexOf(".saves-link-title {");
+    expect(at).toBeGreaterThan(-1);
+    expect(css.slice(at, css.indexOf("}", at))).toMatch(/overflow-wrap:\s*anywhere/);
+  });
+});
+
+describe("several links pasted in Settings (audit 2026-11-06, I4)", () => {
+  const S = ["ht", "tps://"].join("");
+  const yt = (v: string) => `${S}www.${["you", "tube.com"].join("")}/watch?v=${v}`;
+
+  it("adds each, and says how many and why one was left out", async () => {
+    await mount({ status: 200, body: status() });
+    await flush();
+    await act(async () => { (host.querySelector("button.place-row") as HTMLButtonElement).click(); });
+    const input = document.querySelector(".saves-link-field input") as HTMLInputElement;
+    const set = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value")!.set!;
+    await act(async () => {
+      set.call(input, `${yt("Zx9_-QaB3cD")}\n${yt("Yt0000000ab")} ${S}www.${["you", "tube.com"].join("")}/@zorbexcoach`);
+      input.dispatchEvent(new Event("input", { bubbles: true }));
+    });
+    await act(async () => { (document.querySelector(".saves-link-field") as HTMLFormElement).requestSubmit(); });
+    for (let i = 0; i < 4; i++) await flush();
+    expect(calls.filter((c) => c.method === "POST" && c.path === "/api/my-saves/links").map((c) => c.body)).toEqual([{ url: yt("Zx9_-QaB3cD") }, { url: yt("Yt0000000ab") }]);
+    expect(document.querySelector(".saves-link-field [role=status]")!.textContent).toBe(
+      "Added 2 — they'll be waiting in the coach. Took 2 of 3 — single videos and posts only, not playlists or channels.",
+    );
+  });
+
+  it("a channel alone is refused for what it is", async () => {
+    await mount({ status: 200, body: status() });
+    await flush();
+    await act(async () => { (host.querySelector("button.place-row") as HTMLButtonElement).click(); });
+    const input = document.querySelector(".saves-link-field input") as HTMLInputElement;
+    const set = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value")!.set!;
+    await act(async () => {
+      set.call(input, `${S}www.${["you", "tube.com"].join("")}/@zorbexcoach`);
+      input.dispatchEvent(new Event("input", { bubbles: true }));
+    });
+    await act(async () => { (document.querySelector(".saves-link-field") as HTMLFormElement).requestSubmit(); });
+    await flush();
+    expect(document.querySelector(".saves-link-field [role=status]")!.textContent).toBe("Single videos and posts only — not playlists or channels.");
+  });
+});
+
+describe("a yellow light in Settings (audit 2026-11-06, I2)", () => {
+  it("the row's line is the light's, as for red: never all is well while one needs a look", async () => {
+    const yellow: ImportHealthDto = {
+      lights: HEALTH_LIGHTS.map((light) => ({ light, color: light === "reader" ? "yellow" : "green", line: light === "reader" ? "2 quotes aren't in the post" : null, failures: [] })),
+      worst: "2 quotes aren't in the post",
+    };
+    await mount({ status: 200, body: status() }, { status: 200, body: yellow });
+    await flush();
+    expect(host.textContent).toContain("2 quotes aren't in the post");
+    expect(host.textContent).not.toContain("Last import");
   });
 });

@@ -4,6 +4,8 @@ import { schema } from "@rg/database";
 import type { HealthLight } from "@rg/saves";
 import type { Db } from "../src/services/db.js";
 import { importHealth } from "../src/services/import-health.js";
+import { addLink } from "../src/services/saved-links.js";
+import { recordReadFailed } from "../src/services/saves-ledger.js";
 import { makeTestDb, makeTestUser } from "./helpers.js";
 
 const NOW = new Date("2026-11-05T12:00:00.000Z");
@@ -77,5 +79,78 @@ describe("importHealth", () => {
   it("Instagram: yellow when checks have run but none in two days", async () => {
     await db.insert(schema.saveChecks).values({ id: "c1", userId, startedAt: at(60), finishedAt: at(60) });
     expect(await lightOf("instagram")).toMatchObject({ color: "yellow", line: "Instagram: no check in 2 days" });
+  });
+});
+
+describe("a YouTube read that failed before its post (audit 2026-11-06, I3)", () => {
+  // Links assembled at runtime, a fake video id built here.
+  const S = ["ht", "tps://"].join("");
+  const vid = ["Zx", "9_-Qa", "B3cD"].join("");
+  const watch = `${S}www.${["you", "tube.com"].join("")}/watch?v=${vid}`;
+
+  it("is titled by its link (not just 'YouTube') and carries the link, so Retry can paste it again", async () => {
+    await addLink(db, userId, watch, "extension", at(3));
+    await recordReadFailed(db, userId, { source: "youtube", key: vid, code: "unplayable", message: "Age-restricted" }, at(1));
+    const yt = await lightOf("youtube");
+    expect(yt.failures).toEqual([{ postId: null, title: watch, at: at(1), why: "YouTube won't play it: Age-restricted", retryLink: watch }]);
+  });
+
+  it("with no link row (a video the app handed out), the title and Retry come from its key", async () => {
+    await recordReadFailed(db, userId, { source: "youtube", key: vid, code: "unknown", message: "The player didn't load" }, at(1));
+    expect((await lightOf("youtube")).failures[0]).toMatchObject({ postId: null, title: watch, retryLink: watch });
+  });
+
+  it("a failure with no link at all (a check's login) keeps the source's name and offers no link", async () => {
+    await recordReadFailed(db, userId, { source: "instagram", code: "login_needed", message: "Instagram wants you to log in again" }, at(1));
+    expect((await lightOf("instagram")).failures[0]).toMatchObject({ postId: null, title: "Instagram", retryLink: null });
+  });
+
+  it("YouTube asking to sign in is the whole stage's: red, in plain words, said once", async () => {
+    await event("read", "ok", 5, { source: "youtube" });
+    await recordReadFailed(db, userId, { source: "youtube", key: vid, code: "youtube_login", message: "Sign in to YouTube in Chrome" }, at(1));
+    expect(await lightOf("youtube")).toMatchObject({ color: "red", line: "Sign in to YouTube in Chrome" });
+  });
+});
+
+describe("the Reader light reads the check of each reading (audit 2026-11-06, I8)", () => {
+  it("a reading whose quotes aren't in the post turns the Reader yellow, in the check's words", async () => {
+    for (let i = 0; i < 4; i++) await event("extract", "ok", 10 + i);
+    await event("extract", "ok", 2);
+    await event("check", "warn", 1, { source: "worker", summary: "2 quotes aren't in the post" });
+    expect(await lightOf("reader")).toMatchObject({ color: "yellow", line: "2 quotes aren't in the post" });
+  });
+});
+
+describe("the Reader light counts readings, not steps (review, 2026-11-06)", () => {
+  it("its ratio is failed readings of readings: a reading's check step is not an attempt", async () => {
+    await event("extract", "fail", 1);
+    await event("extract", "ok", 2);
+    await event("check", "ok", 2, { source: "worker" });
+    await event("extract", "fail", 3);
+    await event("extract", "ok", 4);
+    await event("check", "ok", 4, { source: "worker" });
+    expect(await lightOf("reader")).toMatchObject({ color: "red", line: "Reader: 2 of 4 failed" });
+  });
+
+  it("its recent window is the last five readings, with their checks", async () => {
+    await event("extract", "ok", 20);
+    await event("check", "warn", 20, { source: "worker", summary: "1 quote isn't in the post" });
+    for (let i = 0; i < 3; i++) {
+      await event("extract", "ok", 10 - i);
+      await event("check", "ok", 10 - i, { source: "worker" });
+    }
+    expect(await lightOf("reader")).toMatchObject({ color: "yellow", line: "1 quote isn't in the post" });
+    for (let i = 0; i < 2; i++) {
+      await event("extract", "ok", 5 - i);
+      await event("check", "ok", 5 - i, { source: "worker" });
+    }
+    expect((await lightOf("reader")).color).toBe("green");
+  });
+});
+
+describe("a saved-list post's read failure is no pasted link (review, 2026-11-06)", () => {
+  it("an Instagram failure with a key but no link row offers no link: Retry would make it a pasted post", async () => {
+    await recordReadFailed(db, userId, { source: "instagram", key: "ZorbexPost1", code: "media_failed", message: "The video wouldn't download" }, at(1));
+    expect((await lightOf("instagram")).failures[0]).toMatchObject({ postId: null, retryLink: null });
   });
 });

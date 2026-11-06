@@ -90,6 +90,19 @@ describe("addLink and listLinks", () => {
     expect(statements).toBe(1);
   });
 
+  it("each link says which batch its moves are in, or none yet — still one statement (audit 2026-11-06, I6)", async () => {
+    await addLink(db, userId, igLink, "app", NOW);
+    const id = await seedPost("instagram", code, { status: "matched" });
+    await db.insert(savedPostMoves).values({ id: "lb0", userId, postId: id, position: 0, moveId: "m1", moveKind: "personal", confidence: 1, checkFlag: false, status: "pending", createdAt: NOW });
+    statements = 0;
+    expect((await listLinks(db, userId))[0]).toMatchObject({ state: "moves", batchId: null });
+    expect(statements).toBe(1);
+    await db.update(savedPostMoves).set({ batchId: "batch-1" }).where(eq(savedPostMoves.id, "lb0"));
+    expect((await listLinks(db, userId))[0]).toMatchObject({ batchId: "batch-1" });
+    await addLink(db, userId, watch, "app", NOW);
+    expect((await listLinks(db, userId)).find((l) => l.key === vid)).toMatchObject({ postId: null, batchId: null });
+  });
+
   it("another account never sees it", async () => {
     await addLink(db, userId, watch, "app", NOW);
     const other = (await makeTestUser(db)).userId;
@@ -182,5 +195,20 @@ describe("a held video whose read failed waits a check's pace too (final audit G
     expect((await workList(db, userId, NOW, 20, { links: true })).map((w) => w.key)).toEqual(["Yt0000000ab"]);
     await recordReadFailed(db, userId, { source: "youtube", key: "Yt0000000ab", code: "unknown", message: "The player didn't load" }, NOW);
     expect(await workList(db, userId, NOW, 20, { links: true })).toEqual([]);
+  });
+});
+
+describe("a playlist or a channel pasted (audit 2026-11-06, I4)", () => {
+  it("is refused for what it is, by either route", async () => {
+    // The owner is the test user, by the email it was made with.
+    const [owner] = await db.select({ email: schema.users.email }).from(schema.users).where(eq(schema.users.id, userId));
+    const env = { SAVES_IMPORT: "1", SAVES_TOKEN_SHA256: await sha256Hex(TOKEN), ALLOWED_GOOGLE_EMAIL: owner!.email } as unknown as Env;
+    const playlist = `${S}www.${["you", "tube.com"].join("")}/playlist?list=PLzorbex`;
+    const body = JSON.stringify({ url: playlist });
+    const mine = await mountRoutes(db, "/api/my-saves", mySavesRoutes).request("/api/my-saves/links", { method: "POST", body, headers: { Cookie: cookie, "Content-Type": "application/json" } }, env);
+    expect(mine.status).toBe(400);
+    expect(await mine.json()).toEqual({ error: "not_a_link", message: "Single videos and posts only — not playlists or channels." });
+    const ext = await mountRoutes(db, "/api/saves", savesRoutes).request("/api/saves/links", { method: "POST", body, headers: { Authorization: `Bearer ${TOKEN}`, "Content-Type": "application/json" } }, env);
+    expect(await ext.json()).toEqual({ error: "not_a_link", message: "Single videos and posts only — not playlists or channels." });
   });
 });

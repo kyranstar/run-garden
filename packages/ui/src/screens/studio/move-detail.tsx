@@ -13,8 +13,9 @@
  *   EASIER AND HARDER  each a link to that move
  *   FROM YOUR SAVES  any move the owner's saves link to (saved-posts import) — one of their own (the meta line starts
  *                    "Yours"), or a library move: a curated link or one Save wrote (its read's `provenance`) — each
- *                    post: its creator, a link that opens it in a new tab, and under them the post's note on the move
- *                    (what it is for, or when to do it)
+ *                    post: its creator, a link that opens it in a new tab, How it came in (the post's trail, open at
+ *                    the move: a link Save wrote), and under them the post's note on the move (what it is for, or when
+ *                    to do it); then a personal move's corrections, one tap down ("Corrections (2)")
  *   YOUR HISTORY     last done · times in 30 days · best set or hold; 👍 👎 · Pin · Not for me
  *   ──────────────────────────────────────────────────────
  *   [ Add ]  [ Ask ]       (Ask: the app's coach sheet, about this move — coach everywhere, A3)
@@ -33,7 +34,7 @@
  * and when an Easier or Harder link swaps the move in place, both put it on the new move's heading (the sheet: on the
  * dialog) and scroll back to its top.
  */
-import { useEffect, useId, useRef, type ReactNode, type RefObject } from "react";
+import { useEffect, useId, useRef, useState, type ReactNode, type RefObject } from "react";
 import { Link } from "react-router-dom";
 import { dayAndTime, planDayHref } from "./run-model.js";
 import type { ExerciseRecord } from "@rg/exercise-library";
@@ -49,6 +50,8 @@ import { FitBadge, Term, dotted, gearLine } from "./move-row.js";
 import { doseLine, fitOf, historyLine, type StudioCtx } from "./model.js";
 import { useLibraryItem, useMoveSay, type Say } from "./prefs.js";
 import { AskCoach, useCoachSeeing } from "./coach-ask.js";
+import { TrailSheet, TRAIL_OPEN_LABEL } from "../saves/trail-sheet.js";
+import { whenWords } from "../saves/trail-model.js";
 import { moveFocus } from "./coach-focus.js";
 
 /** Where a link to another move goes: its address, and the history state the screen keeps (`screen.tsx`). */
@@ -64,8 +67,14 @@ const ladder = (ids: readonly string[], find: (id: string) => ExerciseRecord | u
 /** A saved post's address as a link: a web page's only (the shared helper, post-link.ts). */
 export { postHref };
 
-/** A link from a move to a saved post: its address, its creator and its note on the move (any of them may be missing). */
-export type SavedLink = { url: string | null; creator: string | null; note?: string | null };
+/**
+ * A link from a move to a saved post: its address, its creator and its note on the move (any of them may be missing) —
+ * and, for a link Save wrote, the post's id and the move's place in it (audit 2026-11-06, I10).
+ */
+export type SavedLink = { url: string | null; creator: string | null; note?: string | null; postId?: string | null; position?: number | null };
+
+/** A personal move's correction, in words (the move's own read). */
+export type MoveCorrection = NonNullable<LibraryItemDto["corrections"]>[number];
 
 /**
  * The posts a move came from — one of the athlete's own moves, or a library move the owner's saves link to (the curated
@@ -73,25 +82,74 @@ export type SavedLink = { url: string | null; creator: string | null; note?: str
  * on the move (as text).
  */
 function SavedFrom({ links }: { links: readonly SavedLink[] }) {
+  // The trail open at the move (a link Save wrote: its post's id and the move's place; audit 2026-11-06, I10).
+  const [trail, setTrail] = useState<{ postId: string; position: number | null } | null>(null);
   const shown = links
-    .map((l) => ({ creator: l.creator?.trim() || null, href: postHref(l.url), note: l.note?.trim() || null }))
-    .filter((l) => l.creator || l.href || l.note);
+    .map((l) => ({
+      creator: l.creator?.trim() || null,
+      href: postHref(l.url),
+      note: l.note?.trim() || null,
+      postId: typeof l.postId === "string" && l.postId ? l.postId : null,
+      position: typeof l.position === "number" ? l.position : null,
+    }))
+    .filter((l) => l.creator || l.href || l.note || l.postId);
   if (shown.length === 0) return null;
   return (
-    <ul className="stu-saved">
-      {shown.map((l, i) => (
-        <li key={`${i}-${l.href ?? ""}`}>
-          {l.creator ? <span className="stu-saved-by">{l.creator}</span> : null}
-          {l.href ? (
-            <a className="stu-saved-link" href={l.href} target="_blank" rel="noopener noreferrer">
-              Open post
-              {l.creator ? <span className="visually-hidden">{` by ${l.creator}`}</span> : null}
-            </a>
-          ) : null}
-          {l.note ? <p className="stu-saved-note">{l.note}</p> : null}
-        </li>
-      ))}
-    </ul>
+    <>
+      <ul className="stu-saved">
+        {shown.map((l, i) => (
+          <li key={`${i}-${l.href ?? ""}`}>
+            {l.creator ? <span className="stu-saved-by">{l.creator}</span> : null}
+            <span className="stu-saved-links">
+              {l.href ? (
+                <a className="stu-saved-link" href={l.href} target="_blank" rel="noopener noreferrer">
+                  Open post
+                  {l.creator ? <span className="visually-hidden">{` by ${l.creator}`}</span> : null}
+                </a>
+              ) : null}
+              {l.postId ? (
+                <button type="button" className="linklike stu-saved-link" aria-haspopup="dialog" onClick={() => setTrail({ postId: l.postId!, position: l.position })}>
+                  {TRAIL_OPEN_LABEL}
+                  {l.creator ? <span className="visually-hidden">{`: ${l.creator}`}</span> : null}
+                </button>
+              ) : null}
+            </span>
+            {l.note ? <p className="stu-saved-note">{l.note}</p> : null}
+          </li>
+        ))}
+      </ul>
+      {trail ? (
+        <TrailSheet postId={trail.postId} onClose={() => setTrail(null)} {...(trail.position !== null ? { focus: { position: trail.position } } : {})} />
+      ) : null}
+    </>
+  );
+}
+
+/** Who made a correction, in words. */
+const BY_WORDS: Readonly<Record<MoveCorrection["by"], string>> = { coach: "by the coach", owner: "by you" };
+
+/**
+ * A personal move's corrections, one tap down (audit 2026-11-06, I10): "Corrections (2)", then each — what changed, why,
+ * when and by whom. The words are the Worker's; why may quote a post, so it is text.
+ */
+function Corrections({ list }: { list: readonly MoveCorrection[] }) {
+  const [open, setOpen] = useState(false);
+  const id = useId();
+  if (list.length === 0) return null;
+  return (
+    <div className="stu-corrections">
+      <button type="button" className="linklike tap-pad stu-corrections-open" aria-expanded={open} aria-controls={id} onClick={() => setOpen((v) => !v)}>
+        {`Corrections (${list.length})`}
+      </button>
+      <ul id={id} className="stu-corrections-list" hidden={!open}>
+        {list.map((c, i) => (
+          <li key={`${c.at}-${i}`}>
+            <p className="stu-correction-line">{c.line}</p>
+            <p className="stu-meta stu-correction-why">{[c.why, [whenWords(c.at), BY_WORDS[c.by]].filter(Boolean).join(" ")].filter(Boolean).join(" · ")}</p>
+          </li>
+        ))}
+      </ul>
+    </div>
   );
 }
 
@@ -162,12 +220,14 @@ export interface MoveDetailBodyProps {
   own?: PersonalMoveDto | null;
   /** A library move's links to saved posts (the move's own read: `provenance`) — any move that has them (final review I5). */
   links?: readonly SavedLink[];
+  /** A personal move's corrections (the move's own read), one tap down (audit 2026-11-06, I10). */
+  corrections?: readonly MoveCorrection[];
   /** The upcoming scheduled workouts that already hold this move (the move's own read: `scheduled`). */
   scheduled?: readonly { id: string; date: string; time: string; title: string }[];
 }
 
 /** Everything under the name, in the spec's order. */
-export function MoveDetailBody({ rec, ctx, today, say, onSay, sayError, best, weightUnit, moveLink, find = PUBLIC_LIBRARY.find, own = null, links = [], scheduled = [] }: MoveDetailBodyProps) {
+export function MoveDetailBody({ rec, ctx, today, say, onSay, sayError, best, weightUnit, moveLink, find = PUBLIC_LIBRARY.find, own = null, links = [], corrections = [], scheduled = [] }: MoveDetailBodyProps) {
   const t = rec.text;
   const fit = fitOf(rec, ctx);
   const gear = gearLine(rec);
@@ -256,9 +316,10 @@ export function MoveDetailBody({ rec, ctx, today, say, onSay, sayError, best, we
           </ul>
         </Section>
       ) : null}
-      {(own?.links.length ?? 0) > 0 || links.length > 0 ? (
+      {(own?.links.length ?? 0) > 0 || links.length > 0 || corrections.length > 0 ? (
         <Section title="From your saves">
           <SavedFrom links={own?.links.length ? own.links : links} />
+          <Corrections list={corrections} />
         </Section>
       ) : null}
       <Section title="Your history">
@@ -356,6 +417,7 @@ export function MoveDetail({ rec, ctx, today, wide, onClose, onAdd, moveLink, ad
       find={account.find}
       own={own}
       links={item.data?.provenance ?? []}
+      corrections={item.data?.corrections ?? []}
       scheduled={item.data?.scheduled ?? []}
     />
   );

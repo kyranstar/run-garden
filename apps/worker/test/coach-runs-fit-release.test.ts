@@ -24,6 +24,7 @@ import { designContextBuilder } from "../src/services/design-context.js";
 import { REVIEW_DIMENSIONS } from "../src/services/design-prompt.js";
 import { allTools } from "../src/services/design-tools/index.js";
 import { designProposalId } from "../src/services/design-tools/propose.js";
+import { importHealth } from "../src/services/import-health.js";
 import type { ContentBlock, MessagesOk, MessagesRequest, MessagesResult } from "../src/services/llm-messages.js";
 import { day, NOW, seedRichAthlete, TODAY } from "./design-read-fixture.js";
 import { calmDoc } from "./doc-workout-fixture.js";
@@ -322,7 +323,9 @@ describe("a fit run that ends hands its batch back unless its card naming the ba
     expect(races).toBe(2);
     // The read; the expiry, the proposal read, the write that lost, the read again, the write that lost, the close, the
     // release, the lines — never the supersede's fit release nor (REBASED 2026-11-06 (coach review, phase 3)) its trail.
-    expect(statements).toBe(1 + EXPIRE_TREE_STATEMENTS - 2);
+    // REBASED 2026-11-06 (audit fixes, import): + the failed coach step on the batch's posts, beside the release (I2) —
+    // only when nothing was proposed, so the tree stays within EXPIRE_TREE_STATEMENTS.
+    expect(statements).toBe(1 + EXPIRE_TREE_STATEMENTS - 1);
     expect((await proposalOf(db, runId))!.status).toBe("expired");
     expect(await fitOf(db, batchId)).toBeNull();
   });
@@ -338,6 +341,8 @@ describe("a fit run that ends hands its batch back unless its card naming the ba
     const { deps } = scripted([t(finish("Nothing to add today."))]);
     expect(await drive(db, a.userId, runId, deps, 2)).toBe("finished");
     expect(await fitOf(db, batchId)).toBe(newer);
+    // Not released: no coach step on the trail either (the step rides the release's own gate; review, 2026-11-06).
+    expect(await db.select().from(schema.importEvents).where(eq(schema.importEvents.stage, "coach"))).toEqual([]);
   });
 
   it("a run that fits no batch touches none: a plain run ending in words leaves a fitting batch as it is", async () => {
@@ -360,5 +365,117 @@ describe("a fit run that ends hands its batch back unless its card naming the ba
     const { deps } = scripted([t(finish("Already done."))]);
     expect(await drive(db, a.userId, runId, deps, 2)).toBe("finished");
     expect(await fitOf(db, batchId)).toBe(FIT_AT);
+    expect(await db.select().from(schema.importEvents).where(eq(schema.importEvents.stage, "coach"))).toEqual([]);
+  });
+});
+
+describe("a fit run that ends without suggesting anything lights the Coach (audit 2026-11-06, I2)", () => {
+  /** Two posts' links in the batch: the trail's coach step lands on each. */
+  async function postsIn(db: Db, userId: string, batchId: string) {
+    for (const [i, post] of ["post-fr-a", "post-fr-b"].entries()) {
+      await db.insert(schema.savedPosts).values({
+        id: post, userId, source: "testsrc", sourceKey: `k${i}`, firstSeenAt: FIT_AT, status: "matched", updatedAt: FIT_AT, title: `Zorbex flow ${i}`,
+      });
+      await db.insert(schema.savedPostMoves).values({
+        id: `pm-fr-${i}`, userId, postId: post, position: 0, moveId: "gobletSquat", moveKind: "library", batchId, status: "saved", createdAt: FIT_AT,
+      });
+    }
+  }
+  const coachSteps = async (db: Db) =>
+    (await db.select().from(schema.importEvents).where(eq(schema.importEvents.stage, "coach"))).map((e) => [e.postId, e.status, e.summary, (e.detail as { code?: string }).code]);
+
+  it("failed with nothing to propose: a failed coach step on each of its posts, and the Coach light red", async () => {
+    const db = makeTestDb({ boundVariableCap: 100 });
+    const a = await seedRichAthlete(db);
+    const batchId = await savedBatch(db, a.userId);
+    await postsIn(db, a.userId, batchId);
+    const runId = await fitRun(db, a.userId, batchId);
+    const { deps } = scripted([{ ...turn([], "I can't help with that."), stopReason: "refusal" }]);
+    expect(await drive(db, a.userId, runId, deps)).toBe("failed");
+    const line = "Fit them in stopped before the coach suggested anything";
+    expect((await coachSteps(db)).sort()).toEqual([["post-fr-a", "fail", line, "fit_failed"], ["post-fr-b", "fail", line, "fit_failed"]]);
+    const coach = (await importHealth(db, a.userId, at(5))).lights.find((l) => l.light === "coach")!;
+    expect(coach).toMatchObject({ color: "red", line });
+    expect(coach.failures.map((f) => f.title).sort()).toEqual(["Zorbex flow 0", "Zorbex flow 1"]);
+  });
+
+  it("ended in words, closing nothing: a warning, the Coach light yellow", async () => {
+    const db = makeTestDb({ boundVariableCap: 100 });
+    const a = await seedRichAthlete(db);
+    const batchId = await savedBatch(db, a.userId);
+    await postsIn(db, a.userId, batchId);
+    const runId = await fitRun(db, a.userId, batchId);
+    const { deps } = scripted([t(finish("Those moves are already in your week — nothing to add today."))]);
+    expect(await drive(db, a.userId, runId, deps)).toBe("finished");
+    const line = "Fit them in ended in words — the coach suggested nothing";
+    expect((await coachSteps(db)).sort()).toEqual([["post-fr-a", "warn", line, "fit_unclosed"], ["post-fr-b", "warn", line, "fit_unclosed"]]);
+    expect((await importHealth(db, a.userId, at(5))).lights.find((l) => l.light === "coach")).toMatchObject({ color: "yellow", line });
+  });
+
+  it("expired waiting on the owner's answer, nothing proposed: a warning — nothing broke (review, 2026-11-06)", async () => {
+    const db = makeTestDb({ boundVariableCap: 100 });
+    const a = await seedRichAthlete(db);
+    const batchId = await savedBatch(db, a.userId);
+    await postsIn(db, a.userId, batchId);
+    const runId = await fitRun(db, a.userId, batchId);
+    const { deps } = scripted([t(ask())]);
+    expect(await drive(db, a.userId, runId, deps)).toBe("waiting_athlete");
+    await sweepCoachRuns(db, env, a.userId, new Date(NOW.getTime() + 25 * 3_600_000), scripted([]).deps, { maxSteps: 0 });
+    const line = "Fit them in timed out waiting on your answer";
+    expect(await coachSteps(db)).toEqual([["post-fr-a", "warn", line, "fit_unclosed"], ["post-fr-b", "warn", line, "fit_unclosed"]]);
+    expect((await importHealth(db, a.userId, new Date(NOW.getTime() + 25 * 3_600_000))).lights.find((l) => l.light === "coach")).toMatchObject({ color: "yellow", line });
+  });
+
+  it("expired at work (a run left stuck), nothing proposed: a failed coach step", async () => {
+    const db = makeTestDb({ boundVariableCap: 100 });
+    const a = await seedRichAthlete(db);
+    const batchId = await savedBatch(db, a.userId);
+    await postsIn(db, a.userId, batchId);
+    const runId = await fitRun(db, a.userId, batchId);
+    // Never stepped: still active when its window passes.
+    await sweepCoachRuns(db, env, a.userId, new Date(NOW.getTime() + 25 * 3_600_000), scripted([]).deps, { maxSteps: 0 });
+    expect((await runOf(db, runId)).status).toBe("expired");
+    expect((await coachSteps(db)).map((c) => [c[1], c[3]])).toEqual([["fail", "fit_failed"], ["fail", "fit_failed"]]);
+  });
+
+  it("a trail insert that fails never holds the fit: the batch is released all the same (review, 2026-11-06)", async () => {
+    let failInsert = false;
+    const db = makeTestDb({
+      boundVariableCap: 100,
+      onStatement: (text) => {
+        if (failInsert && /insert into "import_events"/i.test(text) && /'coach', 'coach'/.test(text)) throw new Error("the trail's insert failed");
+      },
+    });
+    const a = await seedRichAthlete(db);
+    const batchId = await savedBatch(db, a.userId);
+    await postsIn(db, a.userId, batchId);
+    const runId = await fitRun(db, a.userId, batchId);
+    const { deps } = scripted([{ ...turn([], "I can't help with that."), stopReason: "refusal" }]);
+    failInsert = true;
+    expect(await drive(db, a.userId, runId, deps)).toBe("failed");
+    failInsert = false;
+    expect(await fitOf(db, batchId)).toBeNull();
+    expect(await coachSteps(db)).toEqual([]);
+  });
+
+  it("a card naming the batch, a proposal of workouts, or the owner's cancel: no failed step", async () => {
+    for (const [script, end] of [
+      [() => [t(pinsCard()), t(finish("Your saved moves, as a card."))], "finished"],
+      [() => [t(propose("Calm hips")), t(submit(verdict(4))), t(finish("A calm half hour with two of your moves."))], "finished"],
+      [() => [t(ask())], "cancel"],
+    ] as const) {
+      const db = makeTestDb({ boundVariableCap: 100 });
+      const a = await seedRichAthlete(db);
+      const batchId = await savedBatch(db, a.userId);
+      await postsIn(db, a.userId, batchId);
+      const runId = await fitRun(db, a.userId, batchId);
+      const { deps } = scripted(script());
+      const status = await drive(db, a.userId, runId, deps);
+      if (end === "cancel") {
+        expect(status).toBe("waiting_athlete");
+        await cancelRun(db, a.userId, runId, at(30));
+      } else expect(status).toBe("finished");
+      expect(await coachSteps(db)).toEqual([]);
+    }
   });
 });

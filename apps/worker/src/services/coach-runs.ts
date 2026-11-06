@@ -73,7 +73,7 @@ import { designProposalId } from "./design-tools/propose.js";
 import { athleteText, clipProse } from "./design-prose.js";
 import { sharedAthlete } from "./design-tools/read-common.js";
 import { askedAnswerRows, insertAnswers, undoUntil } from "./design-tools/record-answer.js";
-import { releaseFitForBatch, skipSetOf } from "./saves-batches.js";
+import { fitEnded, releaseFitForBatch, skipSetOf } from "./saves-batches.js";
 import {
   isToolErr,
   type DesignTool,
@@ -295,7 +295,9 @@ const FINISH_WRITE = 1;
  * the batch's fit released (design-orchestrate.ts `supersedeOlderPlans`; the saves flow redesigned §12.1: + 1, was
  * 2 * PROMOTE_TRIES + 1) — and, a fit's main run, its own batch handed back unless its card naming the batch is open
  * (`releaseRunFit`, workout editability §7: + 1, was 2 * PROMOTE_TRIES + 2; proposed or not) — and the coach's decisions
- * on each post's trail with the supersede (REBASED 2026-11-06, coach review phase 3: + 1, was 2 * PROMOTE_TRIES + 3). */
+ * on each post's trail with the supersede (REBASED 2026-11-06, coach review phase 3: + 1, was 2 * PROMOTE_TRIES + 3).
+ * A fit that proposed nothing also writes its posts' coach step beside the release (audit 2026-11-06, I2): one
+ * statement more, only on the path that spent no proposal write, supersede or trail — so within this as declared. */
 const STOP_PROPOSE = 2 * PROMOTE_TRIES + 4;
 /** What a step's end may spend beyond its own writes: a finish's proposal write and a lost claim's spend can land in
  * one step (a cancel taking the claim while the tools ran), while a stop that proposes never meets either — it is
@@ -1475,7 +1477,8 @@ const TAKEOVERS = sql.raw(
  * when the write lost to a late verdict (design-review.ts PROMOTE_TRIES); the older plans superseded and a superseded
  * saves card's fit released (design-orchestrate.ts `supersedeOlderPlans`; the saves flow redesigned §12.1: + 1, was
  * 7) — or, nothing proposed, the close; a fit's main run's own batch handed back unless its card naming the batch is
- * open (`releaseRunFit`, workout editability §7: + 1, was 8; proposed or not); the coach's decisions on each post's
+ * open (`releaseRunFit`, workout editability §7: + 1, was 8; proposed or not — and, nothing proposed, its posts' coach
+ * step beside it (audit 2026-11-06, I2), on the path that spent no supersede nor trail); the coach's decisions on each post's
  * trail with the supersede (REBASED 2026-11-06, coach review phase 3: + 1, was 9); and the lines. The sweep spends its
  * read, a claim taken back when there is one, and this per tree it expires (counting tests pin it); a step, an answer or
  * a create spends it once.
@@ -1507,6 +1510,8 @@ async function expireTree(
   const staleBefore = new Date(now.getTime() - COACH_RUN_STEP_STALE_MINUTES * 60_000).toISOString();
   const members = subtree(nodes, root).filter((n) => isLive(n.status));
   if (members.length === 0) return { took: false, events: [] };
+  /** It waited on the athlete's answer: an expiry then is a question left unanswered, not a failure (review, I2). */
+  const waitedOnAthlete = root.status === "waiting_athlete";
   const expired = await db
     .update(coachRuns)
     .set({
@@ -1534,8 +1539,9 @@ async function expireTree(
   const today = localDate(root.settings?.timezone || "UTC", now);
   const proposed = await proposeWhatItHas(db, userId, root, STOPPED_NOTES.expired!, at, today);
   if (!proposed) await closeUnreviewed(db, userId, designProposalId(root.id), "expired", at);
-  // A fit's main run hands its batch back unless what it proposed is a card naming the batch (workout editability §7).
-  await releaseRunFit(db, userId, root);
+  // A fit's main run hands its batch back unless what it proposed is a card naming the batch (workout editability §7) —
+  // and, having proposed nothing, says so on its posts' trails (audit 2026-11-06, I2).
+  await releaseRunFit(db, userId, root, proposed ? null : at, waitedOnAthlete);
   const lines: NewEvent[] =
     proposed && windowIsADay(root.settings)
       ? [{ kind: "note", summary: LINES.expiredDayLater, payload: { proposalId: designProposalId(root.id) } }]
@@ -2377,17 +2383,22 @@ export async function runStep(
     // a set what was reviewed, the rest left out — and its next line says what came of it. STOP_PROPOSE: the proposal
     // read and, when it proposes, its write and the older plans' days it covers superseded (with a saves card's fit) —
     // and, below, a fit's own batch handed back.
+    /** Whether the run's end proposed anything (a stop's, a finish's kept-back): a fit that proposed nothing says so. */
+    let proposed = end.proposalId != null;
     if (!isLive(root.status) && root.status !== "finished" && root.status !== "cancelled") {
-      mainLines.push(proposedLine(root, await proposeWhatItHas(db, userId, root, stoppedNote(root.error), endAt), LINES.proposed));
+      proposed = await proposeWhatItHas(db, userId, root, stoppedNote(root.error), endAt);
+      mainLines.push(proposedLine(root, proposed, LINES.proposed));
     } else if (end.withWhatItHas && due === root) {
       // A main run that ended in words, its proposal kept back by the finish's guard: what was reviewed (fix wave 3A, A3).
-      mainLines.push(proposedLine(root, await proposeWhatItHas(db, userId, root, end.withWhatItHas, endAt), LINES.proposedAtEnd));
+      proposed = await proposeWhatItHas(db, userId, root, end.withWhatItHas, endAt);
+      mainLines.push(proposedLine(root, proposed, LINES.proposedAtEnd));
     }
     // A fit's main run over hands its batch back unless its card of the moves in rotation naming it is open — the
     // statement's own check (workout editability §7): a finish in words, a proposal of workouts alone or kept back
     // unreviewed, a stop. One statement: a finish spends it beside its proposal's one write (FINISH_WRITE), within
-    // END_RESERVE; a stop, within STOP_PROPOSE.
-    if (!isLive(root.status)) await releaseRunFit(db, userId, root);
+    // END_RESERVE; a stop, within STOP_PROPOSE. Having proposed nothing (not cancelled), the fit's posts' trails say so
+    // in one statement more (audit 2026-11-06, I2) — on paths that spent no proposal write, so within the same reserves.
+    if (!isLive(root.status)) await releaseRunFit(db, userId, root, !proposed && root.status !== "cancelled" ? endAt : null);
   } else {
     // A cancel took the claim while the tools ran: what they did is on the trail below, the cancel's status stands.
     due.status = await addSpend(db, due.id, end.costMicros);
@@ -2441,10 +2452,12 @@ async function proposeWhatItHas(db: Db, userId: string, root: RunNode, note: str
  * the batch is open). Callers run it once the run's end is written and "propose what it has" had its chance, and never
  * as an error. No statement for any other run.
  */
-async function releaseRunFit(db: Db, userId: string, root: RunNode): Promise<void> {
+async function releaseRunFit(db: Db, userId: string, root: RunNode, endedAt: string | null = null, waitedOnAthlete = false): Promise<void> {
   const batchId = root.role === "main" && root.parentId === null ? root.settings?.savesBatchId : undefined;
   if (!batchId) return;
-  await releaseFitForBatch(db, userId, batchId, root.createdAt, designProposalId(root.id)).catch(() => undefined);
+  // `endedAt`: the run ended having proposed nothing — its batch's posts get a coach step saying so (audit 2026-11-06, I2).
+  const ended = endedAt ? fitEnded(root.status, root.id, endedAt, waitedOnAthlete) : undefined;
+  await releaseFitForBatch(db, userId, batchId, root.createdAt, designProposalId(root.id), ended).catch(() => undefined);
 }
 
 /** The line after a stop's — or a finish in words' — own: `line` (what was proposed), or that nothing was. */

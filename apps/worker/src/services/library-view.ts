@@ -32,8 +32,8 @@
  * "Unlocks": a move the default place's gear cannot do now, that the gear would make doable, that the athlete has not
  * set aside and that no switched-on profile rules out.
  */
-import { and, asc, eq, gte, inArray, isNull, ne, sql } from "drizzle-orm";
-import { exercisePrefs, exerciseProvenance, performedSessions, performedSets, plannedWorkouts } from "@rg/database";
+import { and, asc, desc, eq, gte, inArray, isNull, ne, sql } from "drizzle-orm";
+import { exercisePrefs, exerciseProvenance, importCorrections, performedSessions, performedSets, plannedWorkouts } from "@rg/database";
 import { addDays, todayInZone, toKg, type Weight } from "@rg/domain";
 import {
   bestDay,
@@ -54,6 +54,7 @@ import {
 import { isPersonalId } from "@rg/saves";
 import { makeLibraryIndex } from "@rg/workout";
 import { forgetAccountLibrary, loadAccountLibrary } from "./account-library.js";
+import { moveCorrectionLine } from "./move-correction-words.js";
 import { restoreInProgress } from "./account-state.js";
 import { activeProfileIds } from "./condition-views.js";
 import { loadPreferences } from "./calendar-sync.js";
@@ -209,11 +210,41 @@ export interface LibraryItem {
    * Where a saved move came from — the account's own links; each with its note (spec §17: what the post says the move
    * is for, or when to do it — a model's reading, drawn as text), null for a curated link.
    */
-  provenance: Array<{ sourceType: string; url: string | null; creator: string | null; note: string | null }>;
+  provenance: ProvenanceView[];
+  /**
+   * A personal move's corrections (`import_corrections`, newest first, at most CORRECTIONS_SHOWN): what changed in
+   * words, why, by whom and on what basis (audit 2026-11-06, I10). Always empty for a public move.
+   */
+  corrections: Array<{ field: string; line: string; why: string; by: "coach" | "owner"; basis: "evidence" | "owner"; at: string }>;
   history: { last: HistoryEntryView[]; best: BestSet | null };
   /** The upcoming scheduled workouts whose document already holds this move (soonest first, at most 12). */
   scheduled: ScheduledWithMove[];
 }
+
+/**
+ * A move's link to a saved post: its address, creator and note — and, for a link Save wrote (`source_key`
+ * `imp:<post's key>#<position>`), the post's id and the move's place in it, so the app opens the post's trail at the move
+ * (audit 2026-11-06, I10). A curated link, or a post no longer the account's, has neither.
+ */
+export interface ProvenanceView {
+  sourceType: string;
+  url: string | null;
+  creator: string | null;
+  note: string | null;
+  postId: string | null;
+  position: number | null;
+}
+
+/** How many corrections a move's own read carries. */
+export const CORRECTIONS_SHOWN = 20;
+
+/**
+ * The post a provenance row (`ep`) was written from, in SQL: its `saved_posts` row (`sp`) by source and key, joined on
+ * the account's own posts only. Its position is the key's after `#`.
+ */
+const PROVENANCE_POST_JOIN = sql.raw(`LEFT JOIN saved_posts sp ON sp.user_id = ep.user_id AND sp.source = ep.source_type
+    AND ep.source_key LIKE 'imp:%#%' AND sp.source_key = substr(ep.source_key, 5, instr(ep.source_key, '#') - 5)`);
+const PROVENANCE_POSITION = sql.raw(`CASE WHEN sp.id IS NOT NULL THEN CAST(substr(ep.source_key, instr(ep.source_key, '#') + 1) AS INTEGER) END`);
 
 export class LibraryItemNotFoundError extends Error {
   constructor() {
@@ -541,16 +572,26 @@ export async function libraryItem(db: Db, userId: string, id: string): Promise<L
   // A move by its own id (an old one is not this read's), the public library's or the account's own.
   const ex = find(id);
   if (!ex || ex.id !== id) throw new LibraryItemNotFoundError();
-  const [active, [pref], provenance, entries, scheduled] = await Promise.all([
+  const [active, [pref], provenance, entries, scheduled, corrections] = await Promise.all([
     activeProfileIds(db, userId),
     db.select().from(exercisePrefs).where(and(eq(exercisePrefs.userId, userId), eq(exercisePrefs.exerciseId, id))).limit(1),
-    db
-      .select({ sourceType: exerciseProvenance.sourceType, url: exerciseProvenance.url, creator: exerciseProvenance.creator, note: exerciseProvenance.note })
-      .from(exerciseProvenance)
-      .where(and(eq(exerciseProvenance.userId, userId), eq(exerciseProvenance.exerciseId, id)))
-      .orderBy(asc(exerciseProvenance.createdAt), asc(exerciseProvenance.id)),
+    // Each link with the post it was written from (audit 2026-11-06, I10): the same one statement.
+    db.all(sql`SELECT ep.source_type AS sourceType, ep.url AS url, ep.creator AS creator, ep.note AS note, sp.id AS postId, ${PROVENANCE_POSITION} AS position
+      FROM exercise_provenance ep ${PROVENANCE_POST_JOIN}
+      WHERE ep.user_id = ${userId} AND ep.exercise_id = ${id}
+      ORDER BY ep.created_at, ep.id`) as Promise<ProvenanceView[]>,
     entriesOf(db, userId, ex),
     loadPreferences(db, userId).then((p) => scheduledWith(db, userId, id, todayInZone(p.timezone))),
+    // A personal move's corrections, one statement more (REBASED 2026-11-06 (audit fixes, import): I10); none asked for a
+    // public move's.
+    isPersonalId(id)
+      ? db
+          .select()
+          .from(importCorrections)
+          .where(and(eq(importCorrections.userId, userId), eq(importCorrections.target, "move"), eq(importCorrections.targetId, id)))
+          .orderBy(desc(importCorrections.at), desc(importCorrections.id))
+          .limit(CORRECTIONS_SHOWN)
+      : Promise.resolve([]),
   ]);
   const profiles = active.map(profileById);
   const { conditions: notes, ...text } = ex.text;
@@ -581,7 +622,15 @@ export async function libraryItem(db: Db, userId: string, id: string): Promise<L
       introducedOn: pref?.introducedOn ?? null,
     },
     saved: provenance.length > 0,
-    provenance,
+    provenance: provenance.map((p) => ({ ...p, note: p.note ?? null, postId: p.postId ?? null, position: p.position === null || p.position === undefined ? null : Number(p.position) })),
+    corrections: corrections.map((c) => ({
+      field: c.field,
+      line: moveCorrectionLine(c.field, c.before, c.after, ex.name),
+      why: c.why,
+      by: c.by,
+      basis: c.basis,
+      at: c.at,
+    })),
     history: { last: entries.slice(0, 5), best: bestOf(ex, entries) },
     scheduled,
   };
@@ -645,9 +694,10 @@ export interface PersonalMoveView {
   status: "active" | "archived";
   /**
    * The saved posts it came from — its own, and those of any move merged into it — oldest first; each with its note
-   * (what the post says the move is for, or when to do it: a model's reading, drawn as text), null when it has none.
+   * (what the post says the move is for, or when to do it: a model's reading, drawn as text), null when it has none —
+   * and, for a link Save wrote, its post's id and the move's place in it (the trail opens there; audit 2026-11-06, I10).
    */
-  links: Array<{ url: string | null; creator: string | null; note: string | null }>;
+  links: Array<{ url: string | null; creator: string | null; note: string | null; postId: string | null; position: number | null }>;
 }
 
 /** A move merged into another (`GET /api/library/personal`): its id, and the move that answers for it now. */
@@ -681,17 +731,18 @@ export async function listPersonalMoves(db: Db, userId: string): Promise<{ moves
   if (mine.length === 0) return { moves: [], merged };
   const offered = new Set(library.offered.filter((r) => isPersonalId(r.id)).map((r) => r.id));
   const ids = mine.flatMap((r) => [r.id, ...r.legacyIds]);
+  // Each link with the post it was written from (audit 2026-11-06, I10), in the same one statement.
   const rows = (await db.all(sql`
-    select ${exerciseProvenance.exerciseId} as exerciseId, ${exerciseProvenance.url} as url, ${exerciseProvenance.creator} as creator,
-      ${exerciseProvenance.note} as note
-    from ${exerciseProvenance}
-    where ${exerciseProvenance.userId} = ${userId} and ${exerciseProvenance.exerciseId} in (select value from json_each(${JSON.stringify(ids)}))
-    order by ${exerciseProvenance.createdAt}, ${exerciseProvenance.id}`)) as Array<{ exerciseId: string; url: string | null; creator: string | null; note: string | null }>;
+    select ep.exercise_id as exerciseId, ep.url as url, ep.creator as creator, ep.note as note, sp.id as postId, ${PROVENANCE_POSITION} as position
+    from exercise_provenance ep ${PROVENANCE_POST_JOIN}
+    where ep.user_id = ${userId} and ep.exercise_id in (select value from json_each(${JSON.stringify(ids)}))
+    order by ep.created_at, ep.id`)) as Array<{ exerciseId: string; url: string | null; creator: string | null; note: string | null; postId: string | null; position: number | null }>;
   const find = makeLibraryIndex(library.all);
   const links = new Map<string, PersonalMoveView["links"]>();
   for (const r of rows) {
     const id = find(r.exerciseId)?.id ?? r.exerciseId;
-    links.set(id, [...(links.get(id) ?? []), { url: r.url, creator: r.creator, note: r.note ?? null }]);
+    const position = r.postId && r.position !== null && r.position !== undefined ? Number(r.position) : null;
+    links.set(id, [...(links.get(id) ?? []), { url: r.url, creator: r.creator, note: r.note ?? null, postId: r.postId ?? null, position }]);
   }
   const moves = mine
     .map((record): PersonalMoveView => ({ record, status: offered.has(record.id) ? "active" : "archived", links: links.get(record.id) ?? [] }))

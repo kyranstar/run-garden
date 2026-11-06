@@ -628,7 +628,13 @@ function matchTrail(
   const repaired = checked.filter((c) => c.repairs.length).length;
   const dropped = extraction.dropped ?? [];
   const droppedValues = dropped.reduce((n, d) => n + d.values.length, 0);
+  // The reader's own quality (audit 2026-11-06, I8): words it quoted that aren't in the post, and moves it was unsure
+  // of, are what was off — the check warns, and the import's health word says which.
+  const unfound = extraction.moves.reduce((n, m) => n + (m.quotes ?? []).filter((q) => q.check === "not_found").length, 0);
+  const unsure = extraction.moves.filter((m) => m.confidence === "low").length;
   const said = [
+    unfound ? `${unfound} quote${unfound === 1 ? " isn't" : "s aren't"} in the post` : "",
+    unsure ? `${unsure} move${unsure === 1 ? "" : "s"} the reader was unsure of` : "",
     repaired ? `${repaired} reading${repaired === 1 ? "" : "s"} corrected to pass the library's rules` : "",
     droppedValues
       ? `${droppedValues} value${droppedValues === 1 ? "" : "s"} the app doesn't know ${droppedValues === 1 ? "was" : "were"} left out`

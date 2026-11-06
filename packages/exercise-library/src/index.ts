@@ -5,6 +5,7 @@ export * from "./targets.js";
 export * from "./skeletons.js";
 export * from "./equipment.js";
 export * from "./record.js";
+export * from "./plyometric.js";
 export * from "./conditions/index.js";
 export * from "./engine-data.js";
 export * from "./define.js";

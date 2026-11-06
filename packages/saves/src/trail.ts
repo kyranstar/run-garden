@@ -31,6 +31,8 @@ export function failureWords(code: SaveErrorCode | string | null, raw: string | 
       return first ?? "No captions, and the video couldn't be watched";
     case "unplayable":
       return first ?? "YouTube won't play it";
+    case "youtube_login":
+      return "Sign in to YouTube in Chrome";
     default:
       return first ? `Something went wrong: ${first}` : "Something went wrong";
   }
@@ -139,8 +141,11 @@ export interface HealthLightDto {
   color: HealthColor;
   /** One line when it isn't green ("Reader: 3 of 4 readings failed"), else null. */
   line: string | null;
-  /** Its recent failures, newest first: the post (null for one before any post, like a login), what, when, why. */
-  failures: { postId: string | null; title: string; at: string; why: string }[];
+  /**
+   * Its recent failures, newest first: the post (null for one before any post, like a login), what, when, why — and, for
+   * a read that failed before its post, the link Retry pastes again (`POST …/links`; audit 2026-11-06, I3), else null.
+   */
+  failures: { postId: string | null; title: string; at: string; why: string; retryLink?: string | null }[];
 }
 export interface ImportHealthDto {
   lights: HealthLightDto[];
@@ -166,6 +171,14 @@ export const HEALTH_MARKS: Readonly<Record<HealthColor, { mark: string; word: st
   red: { mark: "✕", word: "failing" },
   grey: { mark: "–", word: "nothing to judge yet" },
 };
+
+/**
+ * The light that most needs a look: the first red one in the row's order, else the first yellow; null while every light
+ * is green or grey (grey is nothing to judge, never a problem). The coach's header chip names it (audit 2026-11-06, I2).
+ */
+export function worstLight(health: Pick<ImportHealthDto, "lights"> | null | undefined): HealthLightDto | null {
+  return health?.lights.find((l) => l.color === "red") ?? health?.lights.find((l) => l.color === "yellow") ?? null;
+}
 
 /**
  * While any light is red, what a headline says in place of "all is well" (audit 2026-11-05, bug 7): the worst light's

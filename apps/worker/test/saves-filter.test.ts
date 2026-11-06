@@ -366,3 +366,21 @@ describe("filterPost", () => {
     }
   });
 });
+
+describe("a pasted link and the creator rule (audit 2026-11-06, I7)", () => {
+  it("a pasted post is the owner's choice: screened by the model, whatever the creator's earlier posts were", async () => {
+    for (const k of ["a", "b", "c"]) await seen(k, { status: "filtered_out", filterVerdict: "not", filterStage: "model" });
+    const gw = gateway('{"verdict":"training","reason":"a hip drill"}');
+    const out = await filterPost(db, env(), userId, await seen("pasted", { origin: "pasted" }), NOW, gw.fetchImpl);
+    expect(gw.spy).toHaveBeenCalledTimes(1);
+    expect(out).toMatchObject({ status: "queued", verdict: "training", stage: "model" });
+  });
+
+  it("a saved post from the same creator still meets the rule", async () => {
+    for (const k of ["a", "b", "c"]) await seen(k, { status: "filtered_out", filterVerdict: "not", filterStage: "model" });
+    const gw = gateway('{"verdict":"training","reason":"x"}');
+    const out = await filterPost(db, env(), userId, await seen("saved", { origin: "saved" }), NOW, gw.fetchImpl);
+    expect(gw.spy).not.toHaveBeenCalled();
+    expect(out).toMatchObject({ status: "filtered_out", stage: "creator" });
+  });
+});

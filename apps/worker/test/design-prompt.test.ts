@@ -25,7 +25,9 @@ const ROLES = ["main", "designer", "reviewer"] as const;
 // turns; ≥ 100 tokens headroom.
 // REBASED 2026-11-06 (audit fixes, evidence: the challenge's call first, read_saves by the move, finish with challenge —
 // E2) — main measured 2,092.25 (2,105.75 with its turns); ≥ 100 tokens headroom.
-const ROLE_CAP = { main: 2210, designer: 1500, reviewer: 1500 } as const;
+// REBASED 2026-11-06 (audit fixes, safety): the reviewer's block names the only two checks no insistence moves (S5) —
+// measured 1,431.75 with its turns; ≥ 100 tokens headroom. The designer's sore-area line (S1): 328.25, under its cap.
+const ROLE_CAP = { main: 2210, designer: 1500, reviewer: 1535 } as const;
 // With a run's reviewer block too (§8 §3: a reviewer's block holds its draft's rubric).
 const ALL_TEXT = [SHARED_PROMPT, ...ROLES.map((r) => roleBlock(r)), roleBlock("reviewer", undefined, "run")].join("\n");
 
@@ -68,7 +70,9 @@ describe("the prompt text", () => {
     // REBASED 2026-11-06 (the merge of plans with a purpose and the coach's review): change_plan's Acting line, read_plans' words on
     // each ending and a new block naming its plan, on main's prompt (shared 29,168 → 29,566; nothing new) — measured 7,391.5;
     // ≥ 100 tokens headroom.
-    expect(SHARED_PROMPT.length / 4).toBeLessThanOrEqual(7495);
+    // REBASED 2026-11-06 (audit fixes, safety, on fix-evidence's main): a sore area among the hard rules and the fatal ones, record_answer a safety step, the designer's sore-area line, the first exposure's cap a cost when insisted (S1, S5) — measured 7,387; ≥ 100 tokens headroom.
+    // REBASED 2026-11-06 (the merge of plans with a purpose and the safety audit; nothing new is said): shared 29,946 — measured 7,486.5; ≥ 100 tokens headroom.
+    expect(SHARED_PROMPT.length / 4).toBeLessThanOrEqual(7590);
     for (const r of ROLES) expect(roleBlock(r).length / 4, r).toBeLessThanOrEqual(ROLE_CAP[r]);
   });
 
@@ -372,7 +376,9 @@ describe("3A-B — the prompt agrees with the code", () => {
     // REBASED 2026-11-06 (the merge of plans with a purpose and the coach's review): change_plan's Acting line, read_plans' words on
     // each ending and a new block naming its plan, on main's prompt (shared 29,168 → 29,566; nothing new) — measured 7,391.5;
     // ≥ 100 tokens headroom.
-    expect(SHARED_PROMPT.length / 4).toBeLessThanOrEqual(7495);
+    // REBASED 2026-11-06 (audit fixes, safety, on fix-evidence's main): a sore area among the hard rules and the fatal ones, record_answer a safety step, the designer's sore-area line, the first exposure's cap a cost when insisted (S1, S5) — measured 7,387; ≥ 100 tokens headroom.
+    // REBASED 2026-11-06 (the merge of plans with a purpose and the safety audit; nothing new is said): shared 29,946 — measured 7,486.5; ≥ 100 tokens headroom.
+    expect(SHARED_PROMPT.length / 4).toBeLessThanOrEqual(7590);
     for (const role of ROLES) expect(roleBlock(role, RUN_LIMITS[role].maxCalls).length / 4, role).toBeLessThanOrEqual(ROLE_CAP[role]);
   });
 });
@@ -465,5 +471,43 @@ describe("the coach's review of saved moves (import trail phase 3, §8.2, §3.5,
     expect(main).toContain("an answer to a challenge takes the few sentences its order needs");
     expect(main).not.toContain("when the athlete corrects you");
     expect(SHARED_PROMPT).not.toContain("garbled, thin or wrong");
+  });
+});
+
+// ── The safety audit (2026-11-06): the owner's two hard checks hold whatever the athlete insists; nothing else does ─────
+
+describe("the safety audit — S1 and S5 (spec §15 Q1: insistence never overrides a condition's never or a sore area)", () => {
+  const line = (tool: string): string => SHARED_PROMPT.split("\n").find((l) => l.startsWith(`- ${tool}:`)) ?? "";
+
+  it("S1: record_answer is a safety step — a sore area the request names is recorded first, as only a recorded answer reaches the check", () => {
+    const rec = line("record_answer");
+    expect(rec).toContain("a safety step");
+    expect(rec).toContain("record it first");
+    expect(rec).toContain("refuse a working move that loads an area recorded sore today");
+    expect(rec).not.toContain("so the next design knows it");
+  });
+
+  it("S1: a sore area loaded is among the hard rules and the fatal ones, for the main coach and a set's designer alike", () => {
+    expect(SHARED_PROMPT).toContain("Hard rules — a condition profile's refusals, a working move on an area the athlete called sore today,");
+    const fatal = SHARED_PROMPT.slice(SHARED_PROMPT.indexOf("Fatal only when wrong"));
+    expect(fatal).toContain("a working move on an area the athlete called sore today");
+    const designer = roleBlock("designer");
+    expect(designer).toContain("A move that loads an area the athlete called sore today is refused, whatever was asked; treat one your brief names the same");
+    expect(designer).toContain("easy circulation or gentle range");
+  });
+
+  it("S5: the first-exposure cap holds unless the athlete insists — then it is a cost they chose, shown, never a refusal", () => {
+    expect(SHARED_PROMPT).not.toContain("keeps sets short of failure, whatever the request");
+    expect(SHARED_PROMPT).toContain("the first session caps its volume and keeps sets short of failure");
+    expect(SHARED_PROMPT).toContain("if the athlete insists on more, it is a cost they chose: say it beside the session, never refuse it");
+    const progression = REVIEW_DIMENSIONS.find((d) => d.id === "progression")!.question;
+    expect(progression).not.toContain("whatever was asked");
+    expect(progression).toContain("a first exposure capped — unless the athlete insisted past it, a cost they chose");
+  });
+
+  it("S5: the reviewer's block names the only two checks no insistence moves — a first exposure past its cap is accepted, not must-fix", () => {
+    const reviewer = roleBlock("reviewer");
+    expect(reviewer).toContain("Only two things stay must-fix however the athlete insists: a condition's never and a sore area loaded.");
+    expect(reviewer).toContain("Anything else they insisted on in their own words is a cost they chose, listed in accepted (never under condition safety) — a first exposure past its cap among them.");
   });
 });

@@ -263,6 +263,14 @@ const input = z
 /** The guidance for a draft the validator refused: today, a move the day closes is swapped in the draft itself — or,
  * with no check logged yet, the main coach may ask for one (fix wave 3A round 2, B-M8). */
 function invalidFix(errors: readonly CoachIssue[], today: boolean, noCheck: boolean): string {
+  // A sore area loaded (the safety audit, S1): never overridden, however the athlete insists (spec §15 Q1).
+  const sore = errors.some((e) => e.code === "sore_area_loaded")
+    ? "Swap each move that loads a sore area for one that spares it — gentle range, easy circulation — whatever they asked: if they insisted, say plainly you won't, offer the closest safe option, and that they can add the move themselves in the Studio. "
+    : "";
+  return `${sore}${invalidFixOf(errors, today, noCheck)}`;
+}
+
+function invalidFixOf(errors: readonly CoachIssue[], today: boolean, noCheck: boolean): string {
   const closedToday = errors.some((e) => e.code === "condition_gate" || e.code === "condition_pattern");
   if ((closedToday || errors.some((e) => e.code === "condition_never")) && today) {
     return `Swap each move the day closes for one it allows, in this draft (an alternate doesn't stand in on a proposal), then propose again${closedToday && noCheck ? `; or, ${ASK_FOR_CHECK}` : ""}.`;

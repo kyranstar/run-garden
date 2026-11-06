@@ -412,6 +412,12 @@ function Row({ row }: { row: TrailRow }) {
             {all ? "Show less" : "Show all"}
           </button>
         ) : null}
+        {/* A quote's moment in the video (audit 2026-11-06, I11): a link the model made from the video's id. */}
+        {row.link ? (
+          <a className="tap-pad trail-video-at" href={row.link.href} target="_blank" rel="noopener noreferrer">
+            {row.link.label}
+          </a>
+        ) : null}
       </dd>
     </div>
   );

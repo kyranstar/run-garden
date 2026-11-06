@@ -662,7 +662,7 @@ function MoveSheet({
         ) : null}
         <p className="stu-meta stu-save-meta">
           {dotted([
-            row.move.seenDose ? <span key="seen">{`In the post: ${row.move.seenDose}`}</span> : null,
+            row.move.seenDose ? <span key="seen">{`${row.move.seenDoseGuess ? "The reader's guess" : "In the post"}: ${row.move.seenDose}`}</span> : null,
             saved ? <span key="saved">{`Saved as: ${saved}`}</span> : null,
           ])}
         </p>

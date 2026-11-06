@@ -419,3 +419,63 @@ describe("a build made on the device", () => {
     expect(stored.build.items.map((i) => i.exerciseId)).toContain(LANTERN.id);
   });
 });
+
+describe("from a move back to its post (audit 2026-11-06, I10)", () => {
+  const goblet = EXERCISES.find((e) => e.id === "gobletSquat")!;
+  const itemOf = (rec: ExerciseRecord, provenance: LibraryItemDto["provenance"], corrections: NonNullable<LibraryItemDto["corrections"]> = []): LibraryItemDto => {
+    const { conditions: _c, ...text } = rec.text;
+    return {
+      id: rec.id, name: rec.name, family: rec.family, patterns: [...rec.patterns], regions: [...rec.regions], roles: [...rec.roles],
+      equipment: { all: [...rec.equipment.all], oneOf: [...rec.equipment.oneOf] }, position: rec.position, laterality: rec.laterality,
+      load: rec.load, dose: rec.dose, difficulty: rec.difficulty, tags: [...rec.tags], text, conditionNotes: [], safety: {},
+      easier: [], harder: [], prefs: { exerciseId: rec.id, rating: null, excluded: false, pinned: false, introducedOn: null },
+      saved: provenance.length > 0, provenance, corrections, history: { last: [], best: null },
+    };
+  };
+  const S = ["ht", "tps://"].join("");
+  const reel = (code: string) => `${S}www.${["insta", "gram.com"].join("")}/reel/${code}/`;
+
+  it("each link Save wrote offers How it came in, which opens the post's trail at the move", async () => {
+    const asked = network({
+      personal: { moves: [] },
+      items: {
+        gobletSquat: itemOf(goblet, [
+          { sourceType: "instagram", url: reel("ZorbexPost1"), creator: "Zorbex Coach", note: null, postId: "post-z1", position: 2 },
+          { sourceType: "instagram", url: reel("Curated01"), creator: "Curated Coach", note: null, postId: null, position: null },
+        ]),
+      },
+    });
+    mountStudio("/studio/move/gobletSquat");
+    await until(() => !!dialog()?.querySelector(".stu-saved"), "the move's links");
+    const [saved, curated] = [...dialog()!.querySelectorAll(".stu-saved li")];
+    expect(curated!.textContent).not.toContain("How it came in");
+    const open = [...saved!.querySelectorAll("button")].find((b) => b.textContent?.startsWith("How it came in"))!;
+    expect(open).toBeTruthy();
+    await act(async () => open.click());
+    await until(() => asked.includes("GET /api/my-saves/posts/post-z1/trail"), "the post's trail read");
+  });
+
+  it("a personal move's corrections are one tap down: how many, then each in words, why and by whom", async () => {
+    const lantern = move(LANTERN, "active", [{ url: reel("ZorbexPost1"), creator: "Zorbex Coach", note: null, postId: "post-z1", position: 0 }]);
+    network({
+      personal: { moves: [lantern] },
+      items: {
+        [LANTERN.id]: itemOf(LANTERN, [], [
+          { field: "dose", line: "Dose of Lantern reach: 2 × 30 s (was 8–12 reps)", why: "The transcript says two holds at 3:12.", by: "coach", basis: "evidence", at: "2026-11-04T10:00:00.000Z" },
+        ]),
+      },
+    });
+    mountStudio(`/studio/move/${LANTERN.id}`);
+    await until(() => !!dialog()?.querySelector(".stu-saved") && text().includes("Corrections"), "the move's corrections");
+    const toggle = [...dialog()!.querySelectorAll("button")].find((b) => b.textContent === "Corrections (1)")!;
+    const list = document.getElementById(toggle.getAttribute("aria-controls")!)!;
+    expect(toggle.getAttribute("aria-expanded")).toBe("false");
+    expect(list.hidden).toBe(true);
+    await act(async () => toggle.click());
+    expect(toggle.getAttribute("aria-expanded")).toBe("true");
+    expect(list.hidden).toBe(false);
+    expect(text()).toContain("Dose of Lantern reach: 2 × 30 s (was 8–12 reps)");
+    expect(text()).toContain("The transcript says two holds at 3:12.");
+    expect(text()).toContain("by the coach");
+  });
+});

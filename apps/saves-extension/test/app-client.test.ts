@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { createAppClient, statusAndHealth, VIDEO_TIMEOUT_MS } from "../src/app-client.js";
+import { checkToken, createAppClient, statusAndHealth, VIDEO_TIMEOUT_MS } from "../src/app-client.js";
 import { AppRefusedError, AppUnreachableError } from "../src/errors.js";
 
 const TOKEN = "tok-synthetic-0123456789";
@@ -227,5 +227,19 @@ describe("the app client: pasted links and videos (phase 2)", () => {
     expect(await ok.client.reportReadFailed({ source: "youtube", key: "k", code: "unplayable", message: "Age-restricted" })).toBe(true);
     const down = recorder(() => json(503, { error: "down" }));
     expect(await down.client.reportReadFailed({ source: "youtube", key: "k", code: "unplayable", message: "Age-restricted" })).toBe(false);
+  });
+});
+
+describe("the token, tested (audit 2026-11-06, I1: Options said Saved without asking the app)", () => {
+  it("asks the app's cheapest token route, and says plainly how it went", async () => {
+    const ok = recorder(() => json(200, { links: [] }));
+    expect(await checkToken(ok.client)).toEqual({ state: "ok", line: "Saved — the app took the token." });
+    expect(ok.calls.map((c) => [c.url, c.init.method])).toEqual([[`${APP}api/saves/links`, "GET"]]);
+    expect(await checkToken(recorder(() => json(401, { error: "unauthenticated" })).client)).toEqual({
+      state: "refused", line: "The app refused this token — nothing was saved. Paste it again.",
+    });
+    expect(await checkToken(recorder(() => json(404, { error: "not_found" })).client)).toEqual({ state: "off", line: "Saved — but the app's saves import is off." });
+    expect(await checkToken(recorder(() => json(503, {})).client)).toEqual({ state: "unreachable", line: "Saved — the app couldn't be reached to test it." });
+    expect(await checkToken(recorder(() => { throw new TypeError("offline"); }).client)).toEqual({ state: "unreachable", line: "Saved — the app couldn't be reached to test it." });
   });
 });

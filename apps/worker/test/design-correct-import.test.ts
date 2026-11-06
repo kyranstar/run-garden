@@ -339,3 +339,125 @@ describe("correct_import: a dose fix keeps what it doesn't say (the controller's
     expect((await fixes(ctx))[0]!.after).toEqual({ type: "time", range: [30, 30], sets: [2, 2], restSec: 60 });
   });
 });
+
+// The safety audit, S2: what the condition gates read of an imported move — its contraction, its condition ratings, its
+// regions and patterns — is a reader model's; the coach can now correct each, on the evidence or the owner's word, and
+// retire a "move" that is no move (a "Follow for part 2!!") on Approve.
+describe("correct_import: the fields the condition gates read, and retire (the safety audit, S2)", () => {
+  it("a move's contraction, condition ratings (merged per profile), regions and patterns — their befores read from the record", async () => {
+    const b = await batch();
+    const ctx = await mainRun({ request: "That's a jump, and it's hard on the jaw — fix it." });
+    await readSavesInRun(db, ctx);
+    const cases: Array<[string, unknown, string, unknown]> = [
+      ["contraction", ["plyometric"], "Contraction of Zorbex hip lift: plyometric (was isotonic)", ["isotonic"]],
+      ["conditions", { tmj: { clench: 2 } }, "Condition ratings of Zorbex hip lift: TMJ clench 2, neck load 0, face down no (was TMJ clench 0, neck load 0, face down no)", { tmj: { clench: 0, neckLoad: 0, faceDown: false } }],
+      ["regions", ["hips", "glutes"], "Areas of Zorbex hip lift: hips, glutes (was hips)", ["hips"]],
+      ["patterns", ["hinge"], "Patterns of Zorbex hip lift: hinging (was mobility)", ["mobility"]],
+    ];
+    for (const [field, after, line, before] of cases) {
+      const r = ok((await correct({ ...ctx, toolUseId: `toolu_${field}` }, { target: "move", targetId: b.lift, field, after, basis: "owner", cites: [] })).res);
+      expect((r.data as { said: { text: string } }).said.text, field).toBe(line);
+      const op = (await fixes(ctx)).find((f) => f.field === field)!;
+      expect(op.before, field).toEqual(before);
+    }
+    // A rating merged over the record's: the other attributes kept.
+    expect((await fixes(ctx)).find((f) => f.field === "conditions")!.after).toEqual({ tmj: { clench: 2, neckLoad: 0, faceDown: false } });
+  });
+
+  it("a value the library's rules refuse — an off-scale rating, an unknown attribute or profile, a contraction off the vocabulary, no pattern — is refused bad_after", async () => {
+    const b = await batch();
+    const ctx = await mainRun();
+    await readSavesInRun(db, ctx);
+    for (const [field, after] of [
+      ["conditions", { tmj: { clench: 9 } }],
+      ["conditions", { tmj: { grind: 1 } }],
+      ["conditions", { nope: { clench: 1 } }],
+      ["contraction", ["bouncy"]],
+      ["contraction", []],
+      ["patterns", []],
+    ] as const) {
+      expect(refused((await correct({ ...ctx, toolUseId: `toolu_${field}_${JSON.stringify(after)}` }, { target: "move", targetId: b.lift, field, after })).res).error, `${field} ${JSON.stringify(after)}`).toBe("bad_after");
+    }
+    expect(await fixes(ctx)).toEqual([]);
+  });
+
+  it("retire: a move that is no move leaves the athlete's moves on Approve — before false, after true; once retired, nothing to retire", async () => {
+    const b = await batch();
+    const ctx = await mainRun({ request: "That's not a move, it says follow for part 2." });
+    await readSavesInRun(db, ctx);
+    const r = ok((await correct(ctx, { target: "move", targetId: b.nod, field: "retire", after: true, basis: "owner", cites: [] })).res);
+    expect((r.data as { said: { text: string } }).said.text).toBe("Retire Zorbex neck nod from your moves");
+    expect((await fixes(ctx))[0]).toMatchObject({ field: "retire", before: false, after: true, moveId: b.nod });
+    // Its shape is true alone.
+    expect(refused((await correct({ ...ctx, toolUseId: "toolu_r2" }, { target: "move", targetId: b.nod, field: "retire", after: "yes" })).res).error).toBe("bad_after");
+    await db.update(personalMoves).set({ status: "archived" }).where(eq(personalMoves.id, b.nod));
+    expect(refused((await correct({ ...ctx, toolUseId: "toolu_r3" }, { target: "move", targetId: b.nod, field: "retire", after: true })).res).error).toBe("same_value");
+  });
+
+  it("names the new fields in its description", () => {
+    const field = (tool().inputSchema as { properties: { field: { description: string } } }).properties.field.description;
+    for (const f of ["contraction", "conditions", "regions", "patterns", "retire"]) expect(field, f).toContain(f);
+  });
+});
+
+// The safety review of S2 (I6): the jump rule isn't undone by a correction on a post's say-so.
+describe("correct_import: taking a jump's plyometric away (the safety review, I6)", () => {
+  async function jumps() {
+    const seeded = await seedSavedBatch(db, userId, {
+      savedAt: SAVED_AT,
+      posts: [{ moves: [
+        { draft: savedMoveDraft("Zorbex box jump", { contraction: ["plyometric"], patterns: ["squat"], regions: ["quads"] }) },
+        { draft: savedMoveDraft("Zorbex squat flow", { summary: "Squat low, then jump up.", contraction: ["plyometric"], patterns: ["squat"], regions: ["quads"] }) },
+      ] }],
+    });
+    const [named, worded] = seeded.moveIds[0]!;
+    return { named: named!, worded: worded! };
+  }
+
+  it("a move whose name says it jumps stays a jump whatever is said: its name is what to correct", async () => {
+    const j = await jumps();
+    const ctx = await mainRun({ request: "That box jump is really a step-up, I'm sure." });
+    await readSavesInRun(db, ctx);
+    for (const basis of ["evidence", "owner"] as const) {
+      const r = refused((await correct({ ...ctx, toolUseId: `toolu_${basis}` }, { target: "move", targetId: j.named, field: "contraction", after: ["isotonic"], basis, cites: basis === "owner" ? [] : ["history"] })).res);
+      expect(r.error).toBe("still_a_jump");
+      expect(r.fix).toContain("name");
+    }
+  });
+
+  it("one whose own words say it jumps: only the athlete's word takes it away, never the evidence", async () => {
+    const j = await jumps();
+    const ctx = await mainRun({ request: "It's a slow squat, not a jump — I'm sure." });
+    await readSavesInRun(db, ctx);
+    expect(refused((await correct(ctx, { target: "move", targetId: j.worded, field: "contraction", after: ["isotonic"], cites: ["history"] })).res).error).toBe("owner_only");
+    ok((await correct({ ...ctx, toolUseId: "toolu_owner" }, { target: "move", targetId: j.worded, field: "contraction", after: ["isotonic"], basis: "owner", cites: [] })).res);
+  });
+});
+
+// S7 (the controller's, 2026-11-06): basis owner is the athlete's word — text they typed. A "needs you" chip's run asks
+// with the app's own words (the chip), and a "Fit them in" run with the app's request: neither is theirs, however its run
+// carries it (its tool context, or only its stored state).
+describe("correct_import: basis owner rests on words the athlete typed (S7)", () => {
+  const owner = (lift: string) => ({ target: "move", targetId: lift, field: "dose", after: DOSE_FIX, basis: "owner", cites: [], why: "You said so: two sets of thirty seconds." });
+  async function runWithState(request: string, settings: Record<string, unknown>): Promise<ToolContext> {
+    const ctx = await mainRun({ request });
+    await db.update(coachRuns).set({ state: JSON.stringify({ settings }) }).where(eq(coachRuns.id, ctx.run.id));
+    return ctx;
+  }
+
+  it("a needs-you chip's run: its request is the chip's text, never the athlete's word — refused not_their_word", async () => {
+    const b = await batch();
+    const ctx = await runWithState("Your strength sessions have slipped this month — what's in the way?", { diagnose: "drift:discipline:lift" });
+    const r = refused((await correct(ctx, owner(b.lift))).res);
+    expect(r.error).toBe("not_their_word");
+    expect(r.fix).toContain("ask_athlete");
+  });
+
+  it("a Fit them in run is the app's request even where only its stored state says so — refused; the athlete's own message passes", async () => {
+    const b = await batch();
+    const fit = await runWithState("Fit my saved moves in.", { savesBatchId: b.batchId });
+    expect(refused((await correct(fit, owner(b.lift))).res).error).toBe("not_their_word");
+    const theirs = await runWithState("No — she says two sets of thirty seconds, I'm sure.", { scope: { kind: "auto" } });
+    ok((await correct(theirs, owner(b.lift))).res);
+  });
+});

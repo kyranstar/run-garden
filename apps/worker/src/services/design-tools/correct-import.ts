@@ -14,7 +14,8 @@
  * (`bad_field`, "not the same" on a link to a personal move among them); a target that isn't the athlete's, is a
  * library move, archived or merged, or a position or index the post doesn't hold (`not_a_target`); a value its shape or
  * the library's validation refuses (`bad_after`); the value it already has (`same_value`); a target the run never read
- * (`not_read`), evidence with no cite (`uncited`) or a cite it never read (`unknown_cite`); more than CORRECTIONS_MAX
+ * (`not_read`), evidence with no cite (`uncited`) or a cite it never read (`unknown_cite`); plyometric taken from a move
+ * whose name says it jumps (`still_a_jump`), or — on evidence — from one whose own words do (`owner_only`); more than CORRECTIONS_MAX
  * (`too_many`); a proposal already with the athlete or closed; a restore under way. A second call for the same field
  * replaces the first; a replay answers what it stored.
  *
@@ -23,8 +24,9 @@
  */
 import { sql } from "drizzle-orm";
 import { z } from "zod";
-import { accountState, coachProposals, coachRuns } from "@rg/database";
+import { accountState, coachProposals } from "@rg/database";
 import { makeLibraryIndex } from "@rg/workout";
+import { plyometricWord } from "@rg/exercise-library";
 import { accountLibraryFrom, personalMovesSql } from "../account-library.js";
 import { OPEN_PROPOSAL_STATUSES } from "../design-review.js";
 import { clipProse } from "../design-prose.js";
@@ -50,6 +52,7 @@ import {
   type MovePinsOp,
 } from "../proposal-kinds.js";
 import { doseWords, type CiteRef } from "../saves-evidence.js";
+import { askedWordsSql } from "../objective-changes.js";
 import { capInWords, isErr, mainRunIdOf, parseAct, prose } from "./act-common.js";
 import { CITES_MAX, workoutDosesOf } from "./pin-moves.js";
 import { designProposalId, upsertProposal } from "./propose.js";
@@ -92,9 +95,10 @@ export const correctImport: DesignTool = {
       targetId: { type: "string", description: "A saved move's id; else <post>:<n> — a link's post and at, or an insight's ref (read_saves)." },
       field: {
         type: "string",
-        description: "move: name, summary, purpose, dose, laterality, load, equipment, steps, cues; reading: useWhen, skipWhen, why; insight: drop, text, scope, move; link: same_as, not_same.",
+        description:
+          "move: name, summary, purpose, dose, laterality, load, equipment, steps, cues, contraction, conditions (ratings by profile), regions, patterns, retire (no move at all); reading: useWhen, skipWhen, why; insight: drop, text, scope, move; link: same_as, not_same.",
       },
-      after: { description: "The new value, in the field's own shape (a dose as {type, range, sets?}; same_as: a move id; drop: true; not_same: null)." },
+      after: { description: "The new value, in the field's own shape (a dose as {type, range, sets?}; conditions as {profile: {attribute: value}}; same_as: a move id; drop and retire: true; not_same: null)." },
       why: { type: "string", description: `${capInWords(WHY_MAX)}.` },
       basis: { type: "string", enum: ["evidence", "owner"] },
       cites: { type: "array", items: { type: "string" }, maxItems: CITES_MAX, description: "Evidence's: the move's quote ids from read_saves, history, stated:<field>, inferred:<field>." },
@@ -128,8 +132,13 @@ export const correctImport: DesignTool = {
       restoring: sql`(select ${accountState.restoreId} from ${accountState} where ${accountState.userId} = ${ctx.userId})`,
       state: correctionStateSql(ctx.userId, target, parsed.targetId, ctx.now.toISOString().slice(0, 10)),
       reads: savesReadsSql(ctx.userId, mainRunId),
-      // What the athlete asked this run in words (the controller's fix pass, D6): basis owner is their word alone.
-      asked: sql`(select nullif(trim(coalesce(${coachRuns.request}, '')), '') from ${coachRuns} where ${coachRuns.id} = ${mainRunId} and ${coachRuns.userId} = ${ctx.userId})`,
+      // What the athlete typed this run (the controller's fix pass, D6; S7, 2026-11-06): basis owner is their word alone —
+      // never a "needs you" chip's text (`askedWordsSql`: null for its run, as propose_objective and finish read it) nor a
+      // "Fit them in" run's request: the app's words, refused by `ctx.run.savesBatchId` and, read from the run's own state,
+      // by `fitting` (however the run carries it).
+      asked: askedWordsSql(ctx.userId, mainRunId),
+      fitting: sql`(select case when json_valid(fit_r.state) then json_extract(fit_r.state, '$.settings.savesBatchId') end
+        from coach_runs fit_r where fit_r.id = ${mainRunId} and fit_r.user_id = ${ctx.userId})`,
     });
     const library = await accountLibraryFrom(ctx.db, ctx.userId, extra.library);
     const find = makeLibraryIndex(library.all);
@@ -168,12 +177,28 @@ export const correctImport: DesignTool = {
 
     // The athlete's insistence is their word in this conversation (the controller's fix pass, D6): a run answering their
     // message — never a "Fit them in" run (the app's request, not theirs), nor one they didn't ask in words.
-    if (parsed.basis === "owner" && (ctx.run.savesBatchId || typeof extra.asked !== "string")) {
+    const fitting = !!ctx.run.savesBatchId || (typeof extra.fitting === "string" && extra.fitting.length > 0);
+    if (parsed.basis === "owner" && (fitting || typeof extra.asked !== "string")) {
       return refuse(
         "not_their_word",
-        ctx.run.savesBatchId ? "basis owner is the athlete's own word — this run fits their saves in; they haven't said anything about it." : "basis owner is the athlete's own word — this run answers no message of theirs.",
+        fitting
+          ? "basis owner is the athlete's own word — this run fits their saves in; they haven't said anything about it."
+          : "basis owner is the athlete's own word — this run answers no words they typed (a chip's or the app's request isn't theirs).",
         "Give basis evidence with the cites you read — or, if only the athlete can say, ask them with ask_athlete.",
       );
+    }
+    // A jump stays a jump (the safety review of S2, I6): a move whose name says it jumps is read as one whatever its
+    // contraction (account-library.ts), so taking plyometric away is refused — its name is what to correct; one whose own
+    // words say it jumps loses it only on the athlete's word, never on a post's say-so.
+    if (target === "move" && parsed.field === "contraction" && state!.kind === "move" && Array.isArray(after.value) && !(after.value as string[]).includes("plyometric")) {
+      const rec = state!.record;
+      if (plyometricWord(rec.name)) {
+        return refuse("still_a_jump", "Its name says it jumps: the condition rules read it as a jump whatever its contraction says.", "If it isn't a jump, correct its name first (on the athlete's word, basis owner); its contraction can follow in a later suggestion.");
+      }
+      const words = [rec.text?.summary ?? "", ...(Array.isArray(rec.text?.steps) ? rec.text.steps : [])].join(" ");
+      if (parsed.basis !== "owner" && plyometricWord("", words)) {
+        return refuse("owner_only", "Its own words say it jumps: only the athlete's word takes the jump away.", "Leave it a jump — or, if the athlete says it isn't one, give basis owner.");
+      }
     }
     // Evidence: the run read the target, and cites what it read.
     const reads = savesReadsOf(extra.reads);

@@ -1012,13 +1012,18 @@ export function reviewPacket(o: { round: number; draft: DraftForReview; records:
   // A message naming one of the athlete's own moves is marked: the name is a saved post's reading.
   const line = (i: DraftForReview["issues"][number]) => `- ${i.path} (${i.code}): ${typeof i.message === "string" ? i.message : markUntrusted("saved post", i.message.text)}`;
   const issues = d.issues.filter((i) => !isHardNote(i.code)).map(line);
-  // The two hard checks (draft-checks.ts, 2026-11-05) are no cost to accept: must-fix unless the draft explains them.
+  // The two hard checks (draft-checks.ts, 2026-11-05) are no cost to accept: must-fix unless the draft explains them. A
+  // sore area loaded today or tomorrow is refused before review (the safety audit, S1); what reaches a review is the day
+  // after's note (its soreness may have settled: the draft says why), or a draft stored before.
   const hard = d.issues.filter((i) => isHardNote(i.code)).map(line);
   const validator = [
     "# The validator's view (the app's own check, for that day)",
     "Errors: none — a draft with an error is refused before it is reviewed.",
     issues.length > 0 ? `Advisory notes (costs the designer may accept with a reason):\n${issues.join("\n")}` : "Advisory notes: none.",
     ...(hard.length > 0 ? [`Must-fix unless the draft explains them (soreness is never an accepted cost):\n${hard.join("\n")}`] : []),
+    // The safety audit, S5 (spec §15 Q1): the athlete's insistence wins over the coach's judgement — a first exposure past
+    // its cap among it — never over the two hard checks.
+    "What the athlete insisted on in their own words is a cost they chose — list it in accepted, never a must-fix — but no insistence moves the two hard checks: a condition's never and a sore area loaded.",
     `Derived from the document: ${JSON.stringify(d.derived)}`,
   ].map(noBrackets);
 

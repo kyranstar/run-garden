@@ -22,6 +22,8 @@ export const SAVE_ERROR_CODES = [
   "gone", "unknown",
   // A video with no captions that couldn't be watched either; a video YouTube won't play (pasted links, 2026-11-06).
   "no_captions", "unplayable",
+  // YouTube asked to sign in (a bot check): the whole stage's, like Instagram's login (audit 2026-11-06, I3).
+  "youtube_login",
 ] as const;
 export type SaveErrorCode = (typeof SAVE_ERROR_CODES)[number];
 

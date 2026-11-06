@@ -3,9 +3,12 @@
  * check, code checks). Measured in production, the independent reviewer passed — at 4.3 or more, with no must-fix —
  * every draft the athlete then pushed back on: one that loaded the back the request called sore (rows, pulldowns, face
  * pulls; scored request 5, recovery 4), and one titled "Rebuild Hinge + Ski Base" whose only loaded hinge was one 3 × 8
- * RDL among single-leg and ski-stance work (intent 5). Both are now advisory notes of the coach's own (act-common.ts
- * `judge`, beside `test_unmeasured`): shown with the draft's costs, and must-fix for the reviewer unless the draft
- * explains them (design-review.ts `reviewPacket`).
+ * RDL among single-leg and ski-stance work (intent 5). Both are the coach's own (act-common.ts `judge`, beside
+ * `test_unmeasured`). A title the work doesn't bear out is an advisory note, must-fix for the reviewer unless the draft
+ * explains it (design-review.ts `reviewPacket`). A sore area loaded is an ERROR since the safety audit (2026-11-06, S1:
+ * the owner's standing ruling — insistence never overrides loading an area they called sore, spec §15 Q1): validate
+ * says the draft is invalid, propose and amend refuse it, and its fix offers no "kept on purpose" way out. Gentle work
+ * for the area stays allowed: what this check counts as work (below) is the line.
  *
  * WHAT COUNTS AS WORK. A working part is one whose purpose is main, power, accessory or conditioning — never arrive,
  * warm-up, activation, care, cool-down or a run. A working move is a library move in one whose record is more than
@@ -14,9 +17,18 @@
  * dose's, else the record's, else one) times the part's rounds.
  *
  * `sore_area_loaded` — the areas the athlete called sore today (record-answer.ts `soreAreasOf`: a bare "back" is the
- * back, upper and low) and the working moves that load each: the record lists the area as a region, or a primary muscle
- * sits there — or, for a move under external load, a secondary one too (a weight loads what holds it: an RDL's erectors,
- * a goblet squat's). One note per area, every move named once, in order.
+ * back, upper and low; an answer of 0 or 1 is no soreness) and the moves that load each: the record lists the area as a
+ * region, or a primary muscle sits there — or, for a move under a weight (the record's external load, or a weight on the
+ * item's dose), a secondary one too (a weight loads what holds it: an RDL's erectors, a goblet squat's). An item's
+ * alternates are judged as the item (one may be swapped in on the day). One note per area, every move named once, in
+ * order. An ERROR for a draft today or tomorrow; for the day after (soreness's last fresh day) a warning, must-fix for the
+ * reviewer unless the draft explains it (`firm`, the caller's).
+ *
+ * WHAT LOADS A SORE AREA (the safety audit's line, S1, and its review's fix wave): in a working part (above) of a
+ * document above Recover, a working move, or any move under a weight; in a GENTLE context — a warm-up, activation, care
+ * or cool-down part, or any part of a Recover document — only a move under a weight or a jump. What stays allowed is the
+ * rest: easy circulation and gentle range — bodyweight drills in the gentle parts, a Recover session's bird dog or cat-cow
+ * for a sore back, a mobility, breathing or release move anywhere. A relief session for the sore area is exactly that.
  *
  * `title_not_content` — the movement patterns the title names in plain words (the library's own vocabulary, `PATTERNS`:
  * hinge, squat, lunge, push, press, pull, row, carry, rotation), or, when it names none, the intent summary's (only the
@@ -24,11 +36,12 @@
  * never counts. A working set is the named pattern's when its move's record has that pattern, or its name holds the word
  * (a split squat is a lunge to the library and squatting to the athlete). See TITLE_SHARE_MIN for the threshold.
  */
-import { label, MUSCLE_REGION, type ExerciseRecord, type MuscleId, type Pattern } from "@rg/exercise-library";
+import { isPlyometric, label, MUSCLE_REGION, type ExerciseRecord, type MuscleId, type Pattern } from "@rg/exercise-library";
 import type { WorkoutDoc } from "@rg/domain";
 import type { CoachIssue } from "./act-common.js";
 
-/** The codes of the two checks: must-fix for the reviewer unless the draft explains them. */
+/** The codes of the two checks: the reviewer's packet lists them apart from the advisory costs (a sore area loaded is an
+ * error, refused before review; a draft stored before reaches the reviewer as must-fix whatever it says). */
 export const HARD_NOTE_CODES = ["sore_area_loaded", "title_not_content"] as const;
 export type HardNoteCode = (typeof HARD_NOTE_CODES)[number];
 export const isHardNote = (code: string): code is HardNoteCode => (HARD_NOTE_CODES as readonly string[]).includes(code);
@@ -84,22 +97,63 @@ export interface SoreArea {
   muscles: readonly string[];
 }
 
-/** Whether a move loads the area (see the module comment). */
-function loads(rec: ExerciseRecord, area: SoreArea): boolean {
+/** Whether a move loads the area (see the module comment); `weighted`: under a weight, its own or its dose's. */
+function loads(rec: ExerciseRecord, area: SoreArea, weighted: boolean): boolean {
   if (rec.regions.some((r) => area.regions.includes(r))) return true;
-  const muscles: readonly MuscleId[] = rec.load === "external" ? [...rec.muscles.primary, ...rec.muscles.secondary] : rec.muscles.primary;
+  const muscles: readonly MuscleId[] = weighted ? [...rec.muscles.primary, ...rec.muscles.secondary] : rec.muscles.primary;
   return muscles.some((m) => area.muscles.includes(m) || area.regions.includes(MUSCLE_REGION[m]));
+}
+
+interface LoadingItem {
+  /** `parts[p].items[i].libraryId`, or an alternate's `….alternates[k].libraryId`. */
+  path: string;
+  rec: ExerciseRecord;
+  weighted: boolean;
+}
+
+/** A dose that carries a weight: kilograms above zero. */
+const doseWeighted = (dose: { load?: unknown } | undefined): boolean => {
+  const l = dose?.load as { kg?: unknown } | undefined;
+  return typeof l === "object" && l !== null && typeof l.kg === "number" && l.kg > 0;
+};
+
+/** The moves of a document that load what they touch (see WHAT LOADS A SORE AREA), alternates beside their item. */
+function loadingItems(doc: WorkoutDoc, find: Find): LoadingItem[] {
+  const recover = doc.intent.effort === "recover";
+  const out: LoadingItem[] = [];
+  doc.parts.forEach((part, p) => {
+    const gentle = recover || !WORKING_PARTS.has(part.purpose);
+    part.items.forEach((item, i) => {
+      if (item.kind !== "exercise") return;
+      const ids: Array<[string, string]> = [[item.libraryId, `parts[${p}].items[${i}].libraryId`], ...(item.alternates ?? []).map((a, k): [string, string] => [a.libraryId, `parts[${p}].items[${i}].alternates[${k}].libraryId`])];
+      for (const [id, path] of ids) {
+        const rec = find(id);
+        if (!rec) continue;
+        const weighted = rec.load === "external" || doseWeighted(item.dose);
+        const work = gentle ? weighted || isPlyometric(rec) : weighted || isWorkingMove(rec);
+        if (work) out.push({ path, rec, weighted });
+      }
+    });
+  });
+  return out;
 }
 
 /** "glutes", "hip flexors", "feet", "quads and glute med": said as many. */
 const plural = (words: string): boolean => / and /.test(words) || /(s|feet)$/.test(words);
 
-/** One note per sore area the draft's working moves load, naming them (see the module comment). */
-export function soreAreaNotes(doc: WorkoutDoc, sore: readonly SoreArea[], find: Find): CoachIssue[] {
+/** The fix a sore area loaded offers: what to do instead — never "keep it and say why" (the safety audit, S1). */
+export const soreFix = (words: string, one: boolean): string =>
+  `Swap ${one ? "it" : "each"} for a move that spares the ${words}, or move the load elsewhere: a sore area takes only gentle work — mobility, breathing or release, or unloaded, easy work in a warm-up, activation, care or cool-down part — whatever is asked.`;
+
+/**
+ * One note per sore area the draft's moves load, naming them (see the module comment): an error when `firm` (a draft today
+ * or tomorrow: the default), else a warning (the day after).
+ */
+export function soreAreaNotes(doc: WorkoutDoc, sore: readonly SoreArea[], find: Find, o: { firm?: boolean } = {}): CoachIssue[] {
   if (sore.length === 0) return [];
-  const work = workingItems(doc, find);
+  const work = loadingItems(doc, find);
   return sore.flatMap((area): CoachIssue[] => {
-    const hits = work.filter((w) => loads(w.rec, area));
+    const hits = work.filter((w) => loads(w.rec, area, w.weighted));
     if (hits.length === 0) return [];
     const names = [...new Set(hits.map((h) => h.rec.name))];
     const many = plural(area.words);
@@ -109,8 +163,8 @@ export function soreAreaNotes(doc: WorkoutDoc, sore: readonly SoreArea[], find: 
         path: hits[0]!.path,
         code: "sore_area_loaded",
         message: `You said your ${area.words} ${many ? "are" : "is"} sore today; ${listed(names)} ${names.length === 1 ? "loads" : "load"} ${it}.`,
-        fix: `Swap ${names.length === 1 ? "it" : "each"} for a move that spares the ${area.words}, or move the load elsewhere; a sore area gets easy circulation or gentle range. Kept on purpose: say why in its why.`,
-        severity: "warning",
+        fix: soreFix(area.words, names.length === 1),
+        severity: o.firm === false ? "warning" : "error",
       },
     ];
   });

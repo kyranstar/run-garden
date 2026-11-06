@@ -1421,7 +1421,9 @@ describe("the prompt says how a set works", () => {
     // REBASED 2026-11-06 (the merge of plans with a purpose and the coach's review): change_plan's Acting line, read_plans' words on
     // each ending and a new block naming its plan, on main's prompt (shared 29,168 → 29,566; nothing new) — measured 7,391.5;
     // ≥ 100 tokens headroom.
-    expect(SHARED_PROMPT.length / 4).toBeLessThanOrEqual(7495);
+    // REBASED 2026-11-06 (audit fixes, safety, on fix-evidence's main): a sore area among the hard rules and the fatal ones, record_answer a safety step, the designer's sore-area line, the first exposure's cap a cost when insisted (S1, S5) — measured 7,387; ≥ 100 tokens headroom.
+    // REBASED 2026-11-06 (the merge of plans with a purpose and the safety audit; nothing new is said): shared 29,946 — measured 7,486.5; ≥ 100 tokens headroom.
+    expect(SHARED_PROMPT.length / 4).toBeLessThanOrEqual(7590);
     // REBASED 2026-10-19 for the owner's voice (the coach's last words, in the main block): measured 1,620 without its
     // turns — the same cap as design-prompt.test.ts's and design-fix13's; REBASED 2026-10-25 (saved-posts fix wave:
     // pin_moves among the scope's choices) — measured 1,653.25 without its turns.
@@ -1431,7 +1433,9 @@ describe("the prompt says how a set works", () => {
     // 1,994.5 without its turns; ≥ 100 tokens of headroom.
     // REBASED 2026-11-06 (the controller's fix pass, C): a challenge weighed, never caved to — measured 2,058.5 without its
     // turns; ≥ 100 tokens of headroom.
-    expect(roleBlock("main").length / 4).toBeLessThanOrEqual(2160);
+    // REBASED 2026-11-06 (audit fixes, safety, on fix-evidence's main): its challenge lines (E2) measured 2,092.25 without
+    // its turns — under 100 tokens of headroom against 2,160; re-pinned with ≥ 100.
+    expect(roleBlock("main").length / 4).toBeLessThanOrEqual(2195);
   });
 });
 

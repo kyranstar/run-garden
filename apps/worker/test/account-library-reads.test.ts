@@ -378,10 +378,12 @@ describe("the owner's own moves: GET /api/library/personal", () => {
     expect(moves.map((m) => m.record.id)).not.toContain(pending);
     expect(moves.map((m) => m.record.id)).not.toContain(merged);
     // A move merged into it brings its link along.
-    expect(moves.find((m) => m.record.id === active)!.links).toEqual([
+    expect(moves.find((m) => m.record.id === active)!.links).toMatchObject([
       { url: "https://example.com/p/1", creator: "Example Coach 1", note: null },
       { url: "https://example.com/p/2", creator: "Example Coach 2", note: null },
     ]);
+    // A curated link names no post (audit 2026-11-06, I10: a link Save wrote does).
+    expect(moves.find((m) => m.record.id === active)!.links.map((l) => [(l as { postId?: unknown }).postId, (l as { position?: unknown }).position])).toEqual([[null, null], [null, null]]);
     expect(moves.find((m) => m.record.id === archived)).toMatchObject({ record: { name: "Prone Y Raise Hold" }, links: [{ url: "https://example.com/p/3", creator: "Example Coach 3" }] });
     // The merged move, with the move that answers for it (Task 15: the device resolves it as the Worker does).
     expect(res.body.merged).toEqual([{ id: merged, into: active }]);
@@ -403,8 +405,9 @@ describe("the owner's own moves: GET /api/library/personal", () => {
     const item = await library("GET", `/${archived}`);
     expect(item.status).toBe(200);
     // The session, the account's library, then its prefs, links and history beside the profiles, the athlete's
-    // timezone and the scheduled workouts that hold the move — for any id.
-    expect(statements.length).toBe(8);
+    // timezone and the scheduled workouts that hold the move — for any id. REBASED 2026-11-06 (audit fixes, import): a
+    // personal move's corrections beside them (I10), one more; a public move asks for none.
+    expect(statements.length).toBe(9);
     statements.length = 0;
     expect((await library("GET", "/gobletSquat")).status).toBe(200);
     expect(statements.length).toBe(8);

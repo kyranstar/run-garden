@@ -56,7 +56,7 @@
  */
 import { sql } from "drizzle-orm";
 import { z } from "zod";
-import { accountState, coachPlans, coachProposals, programs } from "@rg/database";
+import { accountState, athleteProfiles, coachPlans, coachProposals, programs } from "@rg/database";
 import { addDays, coachOpSchema, dayLabel, daysBetween, defaultOnEnd, describeOps, isoWeekday, LINE_GAP_DAYS, linesOf, onEndAllowed, planEnded, validateOps, type CoachOp, type LineBlock, type OpLine } from "@rg/domain";
 import { accountLibraryFrom, personalMovesSql } from "../account-library.js";
 import { DISCIPLINE_WORD } from "../plan-summaries.js";
@@ -74,7 +74,8 @@ import {
 } from "../proposal-kinds.js";
 import { capInWords, isErr, mainRunIdOf, parseAct, prose } from "./act-common.js";
 import { designProposalId, upsertProposal } from "./propose.js";
-import { planConditionFindings, planOffWatchNote, type PlanSession } from "./plan-checks.js";
+import { planConditionFindings, planOffWatchNote, planSoreFindings, type PlanSession } from "./plan-checks.js";
+import { soreAnswersSql, soreAreasOf } from "./record-answer.js";
 import { parsedArray, parsedJson, readAthlete, refuse, untrusted } from "./read-common.js";
 import { CONTINUE_LINE, STOPPED } from "./read-plans.js";
 import { lastPhaseOf, lineBlockOf, LOOSE_PLAN_ID_PREFIX } from "../coach-plans.js";
@@ -417,6 +418,10 @@ export const proposePlan: DesignTool = {
           : sql`null`,
       // The account's personal moves (its library), for the condition check of the sessions' moves.
       planLibrary: personalMovesSql(ctx.userId),
+      // Today's soreness and the focus areas it may name (the safety review of S1, I2): a session today or tomorrow is
+      // held to the sore-area check.
+      sore: soreAnswersSql(ctx.userId, ctx.now),
+      focus: sql`(select ${athleteProfiles.focusAreas} from ${athleteProfiles} where ${athleteProfiles.userId} = ${ctx.userId})`,
     });
     const opsText = typeof extra.propOps === "string" ? extra.propOps : null;
     const all = ((opsText ? parsedJson(opsText) : null) as unknown[] | null) ?? [];
@@ -473,12 +478,13 @@ export const proposePlan: DesignTool = {
     const catalog = catalogNames ? { index: buildExerciseIndex(catalogNames), names: catalogNames } : null;
     // A condition's rules hold at every write path (§2.7; 2026-10-18, decision guidance): a lift or mobility session's
     // moves are judged as a document's are, and a hit — or a move that can't be checked — is fatal.
+    const planLibrary = (await accountLibraryFrom(ctx.db, ctx.userId, extra.planLibrary)).all;
     const conditions = planConditionFindings(sessions as PlanSession[], {
       profiles: athlete.profiles,
       readings: Object.fromEntries(Object.entries(athlete.readings).map(([id, r]) => [id, { pre: r.pre, post: null, feelingOff: r.feelingOff }])),
       today: athlete.today,
       catalog,
-      library: (await accountLibraryFrom(ctx.db, ctx.userId, extra.planLibrary)).all,
+      library: planLibrary,
     });
     if (conditions.length > 0) {
       const shown = conditions.slice(0, CONDITION_FINDINGS_SHOWN).join("; ");
@@ -486,6 +492,26 @@ export const proposePlan: DesignTool = {
         "plan_refused",
         `The condition rules refuse it: ${shown}${conditions.length > CONDITION_FINDINGS_SHOWN ? `; and ${conditions.length - CONDITION_FINDINGS_SHOWN} more` : ""}.`,
         "Use moves the athlete's conditions allow on any day — or design that strength or mobility as reviewed workouts with plan_set, where a move can carry an alternate.",
+      );
+    }
+    // A sore area is never loaded today or tomorrow, insistence or none (the safety review of S1, I2): as a workout's.
+    const focusAreas = new Map(
+      parsedArray(extra.focus).flatMap((f) => {
+        const x = f as { id?: unknown; refs?: unknown } | null;
+        return typeof x?.id === "string" && Array.isArray(x.refs) ? [[x.id, x.refs.filter((r): r is string => typeof r === "string")] as const] : [];
+      }),
+    );
+    const sore = planSoreFindings(sessions as PlanSession[], {
+      sore: (date) => soreAreasOf(extra.sore, { today: athlete.today, date, focusAreas }),
+      today: athlete.today,
+      library: planLibrary,
+    });
+    if (sore.length > 0) {
+      const shown = sore.slice(0, CONDITION_FINDINGS_SHOWN).join("; ");
+      return refuse(
+        "plan_refused",
+        `The sore-area check refuses it: ${shown}${sore.length > CONDITION_FINDINGS_SHOWN ? `; and ${sore.length - CONDITION_FINDINGS_SHOWN} more` : ""}.`,
+        "Swap each move that loads a sore area for one that spares it, or start the plan's lifting after tomorrow — whatever they asked: if they insisted, say plainly you won't, and offer the closest safe option.",
       );
     }
     // A lift's exercises get their watch identity, as the wake gives them (the catalog read above).

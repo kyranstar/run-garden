@@ -296,6 +296,7 @@ describe("each act tool's declared statement cost is the most it runs", () => {
       { input: { ...change, change: { kind: "move", toDate: day(2) } } },
       { input: change, userId: empty, run: await runRow(empty) },
     ]);
+    // REBASED 2026-11-06 (audit fixes, safety): a move's load — the running around its new day — rides the first read: still 2.
     expect(n).toBe(2);
     expect(tool("adjust_plan").statementCost).toBe(2);
     const refused = await measured("adjust_plan", { ...change, workoutId: "nope" }, rich.userId, await runRow(rich.userId));

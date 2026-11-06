@@ -141,7 +141,9 @@ async function finish(
  * leaves it `seen` with an error code (`budget_paused`, `model_failed`). A `seen` post is never in `/known`'s fresh
  * list, so the extension finds it again through `workList` (saves-ledger.ts), which hands it back as `filter` work, and
  * resubmits it to `/posts`, which runs this again.
- * D1 statements: claim 1, creator history 1, reserve 2, settle 1, outcome 1.
+ * A pasted link is the owner's own choice: it skips the creator's history and goes to the model (audit 2026-11-06, I7:
+ * "3 earlier posts from this creator were all not training" refused links pasted on purpose, unasked).
+ * D1 statements: claim 1, creator history 1 (none for a pasted link), reserve 2, settle 1, outcome 1.
  */
 export async function filterPost(
   db: Db,
@@ -169,11 +171,11 @@ export async function filterPost(
     .returning({ id: savedPosts.id });
   if (claimed.length === 0) return { status: "seen", errorCode: "busy" };
 
-  // The creator: three or more earlier decided posts, all one verdict, decide this one.
+  // The creator: three or more earlier decided posts, all one verdict, decide this one — never a pasted link's.
   // Only decisions that teach the creator count: the model's, the seed's and the owner's (a `process` override reads as
   // training). Never the creator stage's own, so a creator verdict cannot feed itself.
   const effective = sql<string | null>`CASE WHEN ${savedPosts.filterStage} = 'owner' THEN 'training' ELSE ${savedPosts.filterVerdict} END`;
-  const history = await db
+  const history = post.origin === "pasted" ? [] : await db
     .select({ verdict: effective, n: sql<number>`count(*)` })
     .from(savedPosts)
     .where(

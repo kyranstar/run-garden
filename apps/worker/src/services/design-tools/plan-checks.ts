@@ -15,16 +15,22 @@
  *    condition's "never" holds at every write path). Each hit is fatal. Judged a group at a time — one document per day
  *    (today or later) and effort, each name resolved once and each move judged once — since none of these rules reads
  *    the moves beside it: a validator call or two, not one a session (CPU: a plan of forty sessions).
+ *  - `planSoreFindings` (the safety review of the audit's S1, I2): a lift or mobility session today or tomorrow is held to
+ *    the sore-area check a workout is (draft-checks.ts `soreAreaNotes`, its moves as a document of that effort), against
+ *    the areas the athlete called sore today (`soreAreasOf`); each hit is fatal, insistence or none. A name the library
+ *    can't resolve isn't judged here (with a profile on, `planConditionFindings` refuses it anyway); the day after,
+ *    soreness's last fresh day, is the athlete's to weigh — a plan carries no review to say why.
  *  - `planOffWatchNote`: the runs the watch won't take (`watchPushable`: a run of duration blocks only), as one note
  *    for the card — a distance block keeps its session in the app.
  */
-import { dayLabel, type CoachSession, type WorkoutDoc, type WorkoutItem } from "@rg/domain";
+import { addDays, dayLabel, type CoachSession, type WorkoutDoc, type WorkoutItem } from "@rg/domain";
 import type { CheckReading, ConditionProfile, ExerciseRecord } from "@rg/exercise-library";
 import { coachSessionEffort, makeLibraryIndex, validateWorkoutDoc, type DocIssueCode } from "@rg/workout";
 import { watchPushable } from "../coach-apply.js";
 import { corosKeyOfName, libraryIdsByKey } from "../coros-exercise-map.js";
 import { resolveExerciseOriginId, type ExerciseIndex } from "../exercise-catalog.js";
 import { resolveLibraryName } from "../workout-doc-store.js";
+import { soreAreaNotes, type SoreArea } from "./draft-checks.js";
 
 /** What keeps a move out of a session: a document's condition codes (doc-build.ts GATE_CODES), as errors. */
 const CONDITION_CODES: ReadonlySet<DocIssueCode> = new Set(["condition_never", "condition_pattern", "condition_gate", "condition_gate_pending"]);
@@ -127,6 +133,35 @@ export function planConditionFindings(
       const id = ids[Number(at[1]) * PART_ITEMS + Number(at[2])];
       out.push(`${g.moves.get(id!)}: ${issue.message.replace(ADD_ALTERNATE, ", and a plan session can't carry an alternate").replace(/\.$/, "")}`);
     }
+  }
+  return out;
+}
+
+/**
+ * Each lift or mobility session today or tomorrow whose moves load an area the athlete called sore today (`sore`: the
+ * areas for a session's day, record-answer.ts `soreAreasOf`), in words: "Wed 13 May · Pull: You said your back is sore
+ * today; Lat pulldown loads it" (no closing stop). Empty when none does.
+ */
+export function planSoreFindings(sessions: readonly PlanSession[], o: { sore: (date: string) => readonly SoreArea[]; today: string; library: readonly ExerciseRecord[] }): string[] {
+  const library = makeLibraryIndex(o.library);
+  const last = addDays(o.today, 1);
+  const out: string[] = [];
+  for (const { date, session } of sessions) {
+    const body = session.lift ?? session.mobility;
+    if (!body || session.category === "rest" || date < o.today || date > last) continue;
+    const areas = o.sore(date);
+    if (areas.length === 0) continue;
+    const items = body.exercises.flatMap((e): WorkoutItem[] => {
+      const id = resolveLibraryName(e.name);
+      const rec = id ? library(id) : undefined;
+      return rec ? [{ kind: "exercise", libraryId: rec.id, dose: { sets: e.sets ?? 1, reps: 1 } }] : [];
+    });
+    if (items.length === 0) continue;
+    const doc: WorkoutDoc = {
+      version: 1, title: session.title, intent: { summary: "A plan's session.", goals: [], focus: [], effort: coachSessionEffort(session.category) },
+      parts: [{ purpose: "main", format: "straight", items: items.slice(0, PART_ITEMS) }], source: { kind: "coach" },
+    };
+    for (const n of soreAreaNotes(doc, areas, library)) out.push(`${dayLabel(date)} · ${session.title}: ${n.message.replace(/\.$/, "")}`);
   }
   return out;
 }

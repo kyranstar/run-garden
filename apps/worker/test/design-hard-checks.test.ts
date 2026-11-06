@@ -6,7 +6,9 @@
  *
  *  - `sore_area_loaded`: a soreness answer recorded today (the request's, an asked question's or the body check's) and a
  *    draft whose working moves load that area — never a warm-up, activation, care or cool-down part, nor a mobility,
- *    breathing or release move — names the moves and the area as the athlete said it (a bare "back" is the back).
+ *    breathing or release move — names the moves and the area as the athlete said it (a bare "back" is the back). An
+ *    error since the safety audit (2026-11-06, S1): insistence never overrides loading a sore area (spec §15 Q1), so a
+ *    draft that does is refused at validate, propose and amend — gentle work for the area stays allowed.
  *  - `title_not_content`: a title (or, failing it, an intent summary) that names a movement pattern the working sets
  *    mostly aren't.
  *
@@ -16,7 +18,7 @@
 import { beforeAll, describe, expect, it } from "vitest";
 import { eq } from "drizzle-orm";
 import { schema } from "@rg/database";
-import { newId, workoutDocSchema, type WorkoutDoc } from "@rg/domain";
+import { addDays, newId, workoutDocSchema, type WorkoutDoc } from "@rg/domain";
 import { EXERCISES } from "@rg/exercise-library";
 import { makeLibraryIndex } from "@rg/workout";
 import type { Env } from "../src/env.js";
@@ -26,6 +28,7 @@ import { soreAreasOf } from "../src/services/design-tools/record-answer.js";
 import { ACT_TOOLS } from "../src/services/design-tools/index.js";
 import { designProposalId, type DocWorkoutOp } from "../src/services/design-tools/propose.js";
 import { isToolErr, type ToolContext, type ToolErr, type ToolOk } from "../src/services/design-tools/types.js";
+import type { CoachIssueCode } from "../src/services/design-tools/act-common.js";
 import { reviewPacket } from "../src/services/design-review.js";
 import { at, NOW, seedRichAthlete, TODAY } from "./design-read-fixture.js";
 import { makeTestDb } from "./helpers.js";
@@ -82,13 +85,34 @@ describe("sore_area_loaded — a working move that loads an area the athlete cal
     const notes = soreAreaNotes(backDay, [BACK], find);
     expect(notes).toHaveLength(1);
     const n = notes[0]!;
-    expect(n).toMatchObject({ code: "sore_area_loaded", severity: "warning", path: "parts[1].items[0].libraryId" });
+    expect(n).toMatchObject({ code: "sore_area_loaded", severity: "error", path: "parts[1].items[0].libraryId" });
     expect(n.message).toBe(`You said your back is sore today; ${name("cableRow")}, ${name("latPulldown")} and ${name("cableFacePull")} load it.`);
     // The warm-up's face pull, the cat-cow (mobility) and the cool-down's row never count; the dead bug spares the back.
     expect(n.message).not.toContain(name("bandFacePull"));
     expect(n.message).not.toContain(name("catCow"));
     expect(n.message).not.toContain(name("deadBug"));
     expect(n.fix).toEqual(expect.any(String));
+  });
+
+  it("is a hard check (the safety audit, S1): an error, its fix offering gentle work and no \"kept on purpose\" way out", () => {
+    const [n] = soreAreaNotes(backDay, [BACK], find);
+    expect(n!.severity).toBe("error");
+    expect(n!.fix).not.toMatch(/kept on purpose|say why/i);
+    expect(n!.fix).toContain("spares the back");
+    expect(n!.fix).toContain("whatever is asked");
+  });
+
+  it("gentle work for a sore area stays allowed: a relief session of mobility, breathing and release, and easy work outside the working parts", () => {
+    const relief = doc({
+      title: "Easy back relief",
+      parts: [
+        { purpose: "warmup", items: [ex("catCow", 1, 6), ex("bandRow", 1, 12)] },
+        { purpose: "main", format: "flow", items: [ex("catCow", 1, 8), ex("openBook", 1, 6), ex("supineTwist", 1, 6)] },
+        { purpose: "accessory", items: [ex("deadBug")] },
+        { purpose: "cooldown", items: [ex("supine9090Breathing", 1, 6)] },
+      ],
+    });
+    expect(soreAreaNotes(relief, [BACK], find)).toEqual([]);
   });
 
   it("a move under load counts its secondary muscles too (a weight loads what holds it); a bodyweight one only its own areas", () => {
@@ -115,6 +139,46 @@ describe("sore_area_loaded — a working move that loads an area the athlete cal
       `You said your glutes are sore today; ${name("gobletSquat")} loads them.`,
     ]);
     expect(soreAreaNotes(both, [], find)).toEqual([]);
+  });
+});
+
+// The safety review of the S1 fix (2026-11-06): what the gentle parts hold is gentle only while it is gentle.
+describe("sore_area_loaded — the review's fix wave: loaded work hidden in a gentle part, an alternate, a relief session, a later day", () => {
+  const LOW: SoreArea = { words: "low back", regions: ["low-back"], muscles: [] };
+  const CALVES: SoreArea = { words: "calves", regions: ["calves"], muscles: [] };
+
+  it("I1: a gentle part is no hiding place for loaded work or a jump — a weighted RDL in activation, pogo hops in the warm-up", () => {
+    const hidden = doc({ parts: [{ purpose: "activation", items: [ex("rdl", 3, 8)] }, { purpose: "main", items: [ex("deadBug")] }] });
+    expect(soreAreaNotes(hidden, [LOW], find).map((n) => [n.path, n.severity])).toEqual([["parts[0].items[0].libraryId", "error"]]);
+    const hops = doc({ parts: [{ purpose: "warmup", items: [ex("pogoHop", 2, 10)] }, { purpose: "main", items: [ex("deadBug")] }] });
+    expect(soreAreaNotes(hops, [CALVES], find)).toHaveLength(1);
+    // A weight written on the dose is a weight, whatever the record says.
+    const loaded = doc({ parts: [{ purpose: "warmup", items: [{ kind: "exercise", libraryId: "bridge", dose: { sets: 2, reps: 10, load: { typed: "20 kg", kg: 20 } } }] }] });
+    expect(soreAreaNotes(loaded, [GLUTES], find)).toHaveLength(1);
+    // The fix never points a refused draft at a warm-up for loaded work.
+    expect(soreAreaNotes(hidden, [LOW], find)[0]!.fix).toContain("unloaded");
+  });
+
+  it("M10: a Recover session is gentle by its effort — a bird dog for a sore low back passes; a weight or a jump there still doesn't", () => {
+    const relief = doc({ parts: [{ purpose: "main", format: "flow", items: [ex("birdDog", 2, 6), ex("catCow", 1, 8)] }] });
+    const recover = { ...relief, intent: { ...relief.intent, effort: "recover" as const } };
+    expect(soreAreaNotes(recover, [LOW], find)).toEqual([]);
+    expect(soreAreaNotes(relief, [LOW], find)).toHaveLength(1);
+    const weighted = { ...recover, parts: [{ ...recover.parts[0]!, items: [ex("rdl", 2, 8)] }] } as WorkoutDoc;
+    expect(soreAreaNotes(weighted, [LOW], find)).toHaveLength(1);
+  });
+
+  it("an alternate that loads the sore area is judged as the move it stands in for", () => {
+    const withAlt = doc({ parts: [{ purpose: "main", items: [{ ...ex("deadBug"), alternates: [{ libraryId: "rdl" }] }] }] });
+    const [n] = soreAreaNotes(withAlt, [LOW], find);
+    expect(n).toMatchObject({ path: "parts[0].items[0].alternates[0].libraryId", severity: "error" });
+    expect(n!.message).toContain(name("rdl"));
+  });
+
+  it("I3: refused for today and tomorrow; for the day after, a note the reviewer holds as must-fix unless the draft explains it", () => {
+    const main = doc({ parts: [{ purpose: "main", items: [ex("bridge", 2, 12)] }] });
+    expect(soreAreaNotes(main, [GLUTES], find)[0]!.severity).toBe("error");
+    expect(soreAreaNotes(main, [GLUTES], find, { firm: false })[0]!.severity).toBe("warning");
   });
 });
 
@@ -150,6 +214,11 @@ describe("soreAreasOf — the soreness the check reads: recorded today, the draf
       { words: "hip flexors", regions: [], muscles: ["hip-flexors"] },
       { words: "jaw / head", regions: ["jaw"], muscles: [] },
     ]);
+  });
+
+  it("I4: an answer of 0 or 1 is no soreness — never a refusal", () => {
+    const rows = raw([{ kind: "region", id: "low-back", text: "my back's a 0 today", date: TODAY, value: 0 }, { kind: "region", id: "calves", text: "calves maybe a 1", date: TODAY, value: 1 }, { kind: "region", id: "glutes", text: "glutes a 4", date: TODAY, value: 4 }]);
+    expect(soreAreasOf(rows, { today: TODAY, date: TODAY, focusAreas: new Map() }).map((a) => a.words)).toEqual(["glutes"]);
   });
 
   it("only today's answers, and only for a draft within soreness's freshness (today and the two days after)", () => {
@@ -267,17 +336,55 @@ const rowsDraft = (title = "Upper body") => ({
 });
 
 describe("the tools raise them: validate_workout and propose_workout, read in the athlete's statement", () => {
-  it("a soreness answer recorded today makes a draft that loads it a note — at validate, and in the stored draft's costs", async () => {
+  // The safety audit, S1: this was `valid: true` with a note the reviewer could let through "explained" — the finding.
+  it("a soreness answer recorded today makes a draft that loads it an error — invalid at validate, refused at propose, nothing stored", async () => {
     const { userId } = await seedRichAthlete(db);
     await soreToday(userId, ["upper-back", "low-back"], "glutes, legs, and back are really sore");
     const c = await ctx(userId);
     const v = ok(await tool("validate_workout").run(c, { doc: rowsDraft(), date: TODAY }));
-    const note = v.warnings.find((w: { code: string }) => w.code === "sore_area_loaded");
-    expect(note.message).toBe(`You said your back is sore today; ${name("bandRow")} loads it.`);
-    expect(v.valid).toBe(true);
-    ok(await tool("propose_workout").run(c, { doc: rowsDraft(), target: { kind: "new", date: TODAY } }));
-    const [p] = await db.select().from(schema.coachProposals).where(eq(schema.coachProposals.id, designProposalId(c.run.id)));
-    expect((p!.ops as DocWorkoutOp[])[0]!.issues.map((i) => i.code)).toContain("sore_area_loaded");
+    expect(v.valid).toBe(false);
+    const err = v.errors.find((w: { code: string }) => w.code === "sore_area_loaded");
+    expect(err.message).toBe(`You said your back is sore today; ${name("bandRow")} loads it.`);
+    expect(v.warnings.map((w: { code: string }) => w.code)).not.toContain("sore_area_loaded");
+    const refused = await tool("propose_workout").run(c, { doc: rowsDraft(), target: { kind: "new", date: TODAY } });
+    expect(isToolErr(refused)).toBe(true);
+    const r = refused as ToolErr;
+    expect(r.error).toBe("invalid_workout");
+    expect(r.why).toContain(`(sore_area_loaded): You said your back is sore today; ${name("bandRow")} loads it.`);
+    // Insistence never overrides it (spec §15 Q1): the fix says so, and offers the closest safe option.
+    expect(r.fix).toContain("spares");
+    expect(r.fix).toContain("whatever they asked");
+    const stored = await db.select().from(schema.coachProposals).where(eq(schema.coachProposals.id, designProposalId(c.run.id)));
+    expect(stored).toEqual([]);
+  });
+
+  it("I3: a draft for tomorrow is refused as today's is; one for the day after carries the note, valid", async () => {
+    const { userId } = await seedRichAthlete(db);
+    await soreToday(userId, ["upper-back", "low-back"], "my back is really sore");
+    const c = await ctx(userId);
+    const tomorrow = ok(await tool("validate_workout").run(c, { doc: rowsDraft(), date: addDays(TODAY, 1) }));
+    expect(tomorrow.valid).toBe(false);
+    const after = ok(await tool("validate_workout").run(c, { doc: rowsDraft(), date: addDays(TODAY, 2) }));
+    expect(after.valid).toBe(true);
+    expect(after.warnings.map((w: { code: string }) => w.code)).toContain("sore_area_loaded");
+  });
+
+  it("a relief session for the sore area passes: mobility, breathing and release, and work that spares it", async () => {
+    const { userId } = await seedRichAthlete(db);
+    await soreToday(userId, ["upper-back", "low-back"], "my back is really sore");
+    const relief = {
+      version: 1,
+      title: "Easy back relief",
+      intent: { summary: "Gentle range for a sore back.", goals: ["mobility"], focus: [], effort: "recover" },
+      parts: [
+        { purpose: "warmup", format: "flow", items: [ex("catCow", 1, 6)] },
+        { purpose: "main", format: "flow", items: [ex("catCow", 1, 8), ex("openBook", 1, 6), ex("supineTwist", 1, 6)] },
+        { purpose: "cooldown", format: "flow", items: [ex("supine9090Breathing", 1, 6)] },
+      ],
+    };
+    const v = ok(await tool("validate_workout").run(await ctx(userId), { doc: relief, date: TODAY }));
+    expect([...v.errors, ...v.warnings].map((w: { code: string }) => w.code)).not.toContain("sore_area_loaded");
+    expect(v.errors.map((w: { code: string }) => w.code)).toEqual([]);
   });
 
   it("yesterday's soreness is not today's: no note (read_answers still has it)", async () => {
@@ -294,28 +401,38 @@ describe("the tools raise them: validate_workout and propose_workout, read in th
 });
 
 describe("the reviewer reads them as must-fix unless the draft explains them", () => {
-  it("its packet lists them apart from the advisory costs, and says soreness is never an accepted cost", () => {
-    const d = doc({ title: "Upper body", parts: [{ purpose: "main", items: [ex("cableRow")] }] });
-    const packet = reviewPacket({
+  const packetOf = (issues: Array<{ path: string; code: CoachIssueCode; message: string }>) =>
+    reviewPacket({
       round: 1,
       records: [],
       draft: {
         proposalId: "dp-x",
         target: { kind: "new", date: TODAY },
         date: TODAY,
-        doc: d,
+        doc: doc({ title: "Upper body", parts: [{ purpose: "main", items: [ex("cableRow")] }] }),
         derived: { minutes: 20 },
-        issues: [
-          { path: "parts[0].items[0].libraryId", code: "sore_area_loaded", message: "You said your back is sore today; Seated cable row loads it." },
-          { path: "parts[0]", code: "equipment_unavailable", message: "Seated cable row needs a cable, which this place doesn't have." },
-        ],
+        issues,
       },
     });
+
+  it("its packet lists a title note apart from the advisory costs, must-fix unless the draft explains it", () => {
+    const packet = packetOf([
+      { path: "title", code: "title_not_content", message: "The title promises squat work, but none of its 3 working sets are squats." },
+      { path: "parts[0]", code: "equipment_unavailable", message: "Seated cable row needs a cable, which this place doesn't have." },
+    ]);
     const must = packet.slice(packet.indexOf("Must-fix unless the draft explains"));
-    expect(must).toContain("soreness is never an accepted cost");
-    expect(must).toContain("(sore_area_loaded): You said your back is sore today");
+    expect(must).toContain("(title_not_content): The title promises squat work");
     const advisory = packet.slice(packet.indexOf("Advisory notes"), packet.indexOf("Must-fix unless the draft explains"));
     expect(advisory).toContain("equipment_unavailable");
-    expect(advisory).not.toContain("sore_area_loaded");
+    expect(advisory).not.toContain("title_not_content");
+  });
+
+  // The safety audit, S1 and its review (I3): a draft loading a sore area today or tomorrow is refused before review; the
+  // day after's note reaches the reviewer must-fix unless the draft explains it — never an accepted cost.
+  it("a sore area loaded on a later day is must-fix unless the draft explains it, never an accepted cost", () => {
+    const packet = packetOf([{ path: "parts[0].items[0].libraryId", code: "sore_area_loaded", message: "You said your back is sore today; Seated cable row loads it." }]);
+    const must = packet.slice(packet.indexOf("Must-fix unless the draft explains them"));
+    expect(must).toContain("soreness is never an accepted cost");
+    expect(must).toContain("(sore_area_loaded): You said your back is sore today");
   });
 });

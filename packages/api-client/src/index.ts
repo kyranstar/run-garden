@@ -8,7 +8,6 @@ import type {
   GardenWeatherState,
   GrowthBodyDto,
   GrowthPeriod,
-  LiftingPlan,
   LineBlock,
   ObjectiveBoardDto,
   ObjectiveCreate,
@@ -18,7 +17,6 @@ import type {
   PerformedEntry,
   PerformedSessionWire,
   PerformedSet,
-  PlanBrief,
   ProfileDto,
   ProfileUpdate,
   ReadinessVerdict,
@@ -1691,104 +1689,7 @@ export interface GardenSeenState {
 }
 
 // ── Plan Studio (worker routes: apps/worker/src/routes/studio.ts) ──────────────
-
-/** One `studio_plan_pushes` row, trimmed to what the UI needs (no internal
- * COROS addressing fields — see the route's `pushRowDto`). */
-export interface StudioPushRowDto {
-  id: string;
-  happenDay: string;
-  sessionTitle: string;
-  /** `adopted` (sync-transparency Task 7): a genuine external edit/move/removal
-   * on COROS was detected; the studio stepped back from managing this session
-   * (`error` is always `null` in this state) until undone via
-   * `studioUndoAdoption`/`undoSyncNote`. */
-  status: "pending" | "verified" | "failed" | "deleted" | "adopted";
-  error: string | null;
-  corosHappenDay: string | null;
-}
-
-/** Read back from the push's own audit-log row (never persisted separately);
- * `null` until the plan has been pushed at least once. */
-export interface StudioPushSummaryDto {
-  ok: true;
-  planVersion: number;
-  creates: number;
-  deletes: number;
-  failures: number;
-  unchanged: number;
-  drifted: number;
-  blocked: number;
-}
-
-/** "Waiting for bridge" indicator: device online heuristic plus two DISTINCT
- * job-count facts — the UI decides what "stale"/"stuck" means.
- * `pendingJobs` is unclaimed (`status: "queued"`) work — no device has
- * picked it up yet, the actual "is a bridge even listening" signal.
- * `inFlight` (fix round 1, F2) is work a device DID claim but hasn't
- * finished — a stuck/crashed device, a different failure mode that would be
- * invisible if folded into `pendingJobs`. */
-export interface StudioBridgeStatusDto {
-  online: boolean;
-  pendingJobs: { queued: number; oldestQueuedAt: string | null };
-  inFlight: { count: number; oldestClaimedAt: string | null };
-}
-
-/** Mirrors `SettingsResponse["llm"]` — same `llmBudgetStatus` service, same
- * shape, reused rather than re-declared. */
-export type StudioLlmStatusDto = SettingsResponse["llm"];
-
-export interface StudioStateResponse {
-  plan: LiftingPlan | null;
-  brief: PlanBrief | null;
-  version: number | null;
-  pushes: StudioPushRowDto[];
-  lastPushSummary: StudioPushSummaryDto | null;
-  bridge: StudioBridgeStatusDto;
-  llm: StudioLlmStatusDto;
-}
-
-export interface StudioGenerateResponse {
-  ok: true;
-  plan: LiftingPlan;
-  brief: PlanBrief;
-  version: number;
-}
-
-/**
- * Fix round 1, F5: if the CURRENT plan has any push row that's `verified`, or
- * `pending`/`failed` but with a recorded COROS id (may have materialized
- * before its outcome resolved), a `generate` call is refused with
- * `{error: "plan_has_live_pushes"}` (409) unless `replace: true` is passed —
- * regenerating over a plan with real COROS sessions would otherwise orphan
- * them (nothing in the app would track them anymore).
- *
- * Passing `replace: true` does NOT delete anything synchronously: the worker
- * enqueues guarded deletes for the old plan's live rows (the same
- * triple-addressed, ownership-reproving path a normal push uses) BEFORE
- * creating the new plan, then returns as soon as the new plan exists. The
- * bridge executes those deletes on its own poll. Because of that gap, a
- * `/push` on the new plan run before the old deletes verify MAY hit
- * `duplicate_title` failures for sessions whose stamp collides with a
- * not-yet-deleted old workout — this is expected and safe (the
- * title-uniqueness guard fails closed rather than double-writing); a later
- * `/push`/`push/retry` once the old deletes have verified succeeds normally.
- */
-export interface StudioGenerateOptions {
-  replace?: boolean;
-}
-
-export interface StudioEditResponse {
-  ok: true;
-  plan: LiftingPlan;
-  brief: PlanBrief;
-  version: number;
-}
-
-export interface StudioPushResponse {
-  ok: true;
-  summary: StudioPushSummaryDto;
-  pushes: StudioPushRowDto[];
-}
+// The old generator's routes are unmounted (the safety audit, 2026-11-06, S6): only `studioPlanRetire` remains, below.
 
 // ── Sync transparency (worker routes: apps/worker/src/routes/sync.ts) ──────────
 
@@ -1892,26 +1793,6 @@ export interface BackfillStatusResponse {
   /** A backfill job is still live (queued or claimed) — an errored walk with
    * a live job resumes on the next cloud tick, so keep polling. */
   jobQueued: boolean;
-}
-
-/** Response from `POST /api/studio/adoption/:pushId/undo` — mirrors the
- * worker's own `PushSummary` (apps/worker/src/services/studio-push.ts), which
- * is a distinct, lighter shape than `StudioPushSummaryDto` above (no
- * `planVersion`; carries its own `error` for the rare `plan_not_found` /
- * `invalid_plan` re-push failure). A 404/409 (not_found /
- * undo_unsupported_rename) throws `ApiError` instead of reaching this shape. */
-export interface StudioAdoptionUndoResponse {
-  ok: boolean;
-  summary: {
-    ok: boolean;
-    error?: "plan_not_found" | "invalid_plan";
-    creates: number;
-    deletes: number;
-    failures: number;
-    unchanged: number;
-    drifted: number;
-    blocked: number;
-  };
 }
 
 // ── Programs (worker route: apps/worker/src/routes/programs.ts) ──────────────
@@ -2525,7 +2406,7 @@ export interface PersonalMoveDto {
    * move is for, or when to do it (a model's reading: drawn as text); null with none, absent from an answer kept from
    * before it was added.
    */
-  links: Array<{ url: string | null; creator: string | null; note?: string | null }>;
+  links: Array<{ url: string | null; creator: string | null; note?: string | null; postId?: string | null; position?: number | null }>;
 }
 
 /**
@@ -2568,8 +2449,13 @@ export interface LibraryItemDto {
   harder: Array<{ id: string; name: string }>;
   prefs: ExercisePrefsDto;
   saved: boolean;
-  /** Where a saved move came from — the account's own links; each with its note (null for a curated link). */
-  provenance: Array<{ sourceType: string; url: string | null; creator: string | null; note?: string | null }>;
+  /**
+   * Where a saved move came from — the account's own links; each with its note (null for a curated link), and for a link
+   * Save wrote, its post's id and the move's place in it: the post's trail opens there (audit 2026-11-06, I10).
+   */
+  provenance: Array<{ sourceType: string; url: string | null; creator: string | null; note?: string | null; postId?: string | null; position?: number | null }>;
+  /** A personal move's corrections, newest first, in words (absent from an older worker; always empty for a public move). */
+  corrections?: Array<{ field: string; line: string; why: string; by: "coach" | "owner"; basis: "evidence" | "owner"; at: string }>;
   history: {
     /** The last five entries, newest first, weights as typed. */
     last: Array<{
@@ -3093,17 +2979,6 @@ export const api = {
   calendarPreview: () => get<{ days: Array<Record<string, unknown>>; eventCount: number }>("/api/calendar/preview"),
   fixtureLogin: () => post<{ ok: true }>("/api/dev/fixture-login"),
   fixtureSeed: () => post<Record<string, unknown>>("/api/dev/seed"),
-  studio: () => get<StudioStateResponse>("/api/studio"),
-  studioGenerate: (brief: PlanBrief, opts: StudioGenerateOptions = {}) =>
-    post<StudioGenerateResponse>("/api/studio/generate", { brief, replace: opts.replace }, AI_TIMEOUT_MS),
-  studioEdit: (request: string, major = false) =>
-    post<StudioEditResponse>("/api/studio/edit", { request, major }, AI_TIMEOUT_MS),
-  studioPush: () => post<StudioPushResponse>("/api/studio/push"),
-  studioPushRetry: (happenDay: string) =>
-    post<StudioPushResponse>("/api/studio/push/retry", { happenDay }),
-  studioUndoAdoption: (pushId: string) =>
-    post<StudioAdoptionUndoResponse>(`/api/studio/adoption/${pushId}/undo`),
-  studioHistory: () => get<{ plans: StudioHistoryEntryDto[] }>("/api/studio/history"),
   /**
    * Retire the old generator's current plan (its screens are retired; the plan modal's Retire…): what is ahead leaves
    * the watch, what is behind stays. 409 `not_current` / `already_retired` / `plan_completed`, 412 `writes_disabled`.
@@ -3657,16 +3532,6 @@ export async function runRestore(
  * device that ran it names its restore id to start fresh at once. */
 export const restoreStartFresh = (restoreId?: string) =>
   post<{ ok: true }>("/api/settings/restore/start-fresh", restoreId ? { restoreId } : {});
-
-/** One previously generated plan + the brief (prompt) that produced it. */
-export interface StudioHistoryEntryDto {
-  id: string;
-  name: string;
-  weeks: number | null;
-  version: number;
-  createdAt: string;
-  brief: PlanBrief;
-}
 
 // ── The music dock (2026-10-17) ─────────────────────────────────────────────
 

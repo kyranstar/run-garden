@@ -130,7 +130,14 @@ const BEFORE = { tools: 34_935, shared: 20_450, main: 4_586 };
  * new is said): change_plan and the plan-naming fields on main's tools (tools 46,227 → 47,985: this branch's 1,745, and 13
  * neither side's last note counted), this branch's Acting lines on main's shared prompt (shared 29,168 → 29,566), the main
  * block as main left it (8,423) — measured 26,003; held with 397 characters (~113 tokens) of headroom. */
-const GROWTH_MAX_CHARS = 26_400;
+/* REBASED 2026-11-06 (audit fixes, safety, on fix-evidence's main): a sore area among the hard rules and the fatal ones,
+ * record_answer a safety step, the first exposure's cap a cost when insisted (shared 29,168 → 29,548); correct_import's
+ * description naming contraction, conditions, regions, patterns and retire (tools 46,227 → 46,373) — measured 24,373;
+ * held with 407 characters (~116 tokens) of headroom. */
+/* REBASED 2026-11-06 (the merge of plans with a purpose and the safety audit, each measured above on its own side; nothing
+ * new is said): tools 47,985 + 146 → 48,131, shared 29,566 + 380 → 29,946, the main block as both left it (8,423) — measured
+ * 26,529; held with 401 characters (~114 tokens) of headroom. */
+const GROWTH_MAX_CHARS = 26_930;
 
 const toolsSent = () => JSON.stringify(allTools().map((t) => ({ name: t.name, description: t.description, input_schema: t.inputSchema })));
 

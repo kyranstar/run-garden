@@ -30,8 +30,9 @@
  *    today, with no check answered, the main coach may ask for one. So is one advisory note: a test whose move its key
  *    result's measure doesn't read (`test_unmeasured`, the measures read in the athlete's statement). And two hard checks
  *    (draft-checks.ts, 2026-11-05) — a working move on an area the athlete called sore today (`sore_area_loaded`, today's
- *    soreness read in the athlete's statement by its caller), a title the work doesn't bear out (`title_not_content`):
- *    advisory here, must-fix for the reviewer unless the draft explains them.
+ *    soreness read in the athlete's statement by its caller): an ERROR since the safety audit (2026-11-06, S1), so the
+ *    draft is invalid, never proposed, however the athlete insists; and a title the work doesn't bear out
+ *    (`title_not_content`): advisory here, must-fix for the reviewer unless the draft explains it.
  */
 import { sql, type SQL } from "drizzle-orm";
 import { z } from "zod";
@@ -699,9 +700,10 @@ export function noCheckToday(vctx: ValidateCtx): boolean {
 /**
  * The validator's verdict, and what is derived from the document when it can be built — with the tool layer's own fixes
  * (`coachFix`) and, given the athlete's key results (`keyResults`: each one's measure by id, read with the athlete), its
- * own advisory notes (`testNotes`). Two more come first among the warnings, as they matter most (draft-checks.ts,
- * 2026-11-05): a title the work doesn't bear out, and — given the areas the athlete called sore today (`sore`:
- * record-answer.ts `soreAreasOf`, read with the athlete) — a working move that loads one. A run is neither's.
+ * own advisory notes (`testNotes`). The hard checks come first, as they matter most (draft-checks.ts, 2026-11-05): given
+ * the areas the athlete called sore today (`sore`: record-answer.ts `soreAreasOf`, read with the athlete), a move that
+ * loads one — an error for a draft today or tomorrow (the safety audit, S1), a warning the day after — and, among the
+ * warnings, a title the work doesn't bear out. A run is neither's.
  */
 export function judge(
   raw: unknown,
@@ -711,7 +713,9 @@ export function judge(
   const noCheck = noCheckToday(vctx);
   const find = makeLibraryIndex(vctx.library);
   const parsed = workoutDocSchema.safeParse(raw);
-  const hard = parsed.success && !isRunDoc(parsed.data) ? [...soreAreaNotes(parsed.data, o.sore ?? [], find), ...titleNotes(parsed.data, find), ...oneSidedNotes(parsed.data, find)] : [];
+  // A sore area loaded is refused for a draft today or tomorrow; the day after, a note (the safety review, I3).
+  const firm = !vctx.day || vctx.day.date <= addDays(vctx.day.today, 1);
+  const hard = parsed.success && !isRunDoc(parsed.data) ? [...soreAreaNotes(parsed.data, o.sore ?? [], find, { firm }), ...titleNotes(parsed.data, find), ...oneSidedNotes(parsed.data, find)] : [];
   const issues: CoachIssue[] = [...hard, ...validateWorkoutDoc(raw, vctx).map((i) => coachFix(i, raw, noCheck, find)), ...testNotes(raw, o.keyResults, find)];
   const errors = issues.filter((i) => i.severity === "error");
   const warnings = issues.filter((i) => i.severity === "warning");

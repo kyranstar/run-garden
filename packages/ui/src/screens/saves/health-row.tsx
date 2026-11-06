@@ -11,8 +11,8 @@
  */
 import { useId, useState } from "react";
 import { useMutation, useQueryClient } from "@tanstack/react-query";
-import { api, ApiError, SAVES_HEALTH_QUERY, SAVES_STATUS_QUERY } from "@rg/api-client";
-import { HEALTH_LABELS, HEALTH_MARKS, type HealthLight, type HealthLightDto, type ImportHealthDto } from "@rg/saves";
+import { api, ApiError, SAVES_HEALTH_QUERY, SAVES_LINKS_QUERY, SAVES_STATUS_QUERY } from "@rg/api-client";
+import { alreadyInLine, HEALTH_LABELS, HEALTH_MARKS, type HealthLight, type HealthLightDto, type ImportHealthDto } from "@rg/saves";
 import { TrailSheet } from "./trail-sheet.js";
 import { whenWords } from "./trail-model.js";
 
@@ -85,16 +85,22 @@ function Failures({ light, onTrail }: { light: HealthLightDto; onTrail: (postId:
 
 function Failure({ failure: f, onTrail }: { failure: HealthLightDto["failures"][number]; onTrail: (postId: string) => void }) {
   const qc = useQueryClient();
+  // A post is read again by its override; a read that failed before its post, by pasting its link again (audit
+  // 2026-11-06, I3) — a link the Worker checked, drawn only as text.
   const again = useMutation({
-    mutationFn: (postId: string) => api.savesOverride(postId, "process"),
+    mutationFn: async (to: { postId: string } | { link: string }): Promise<unknown> =>
+      "postId" in to ? api.savesOverride(to.postId, "process") : api.savesAddLink(to.link),
     onSettled: () => {
       void qc.invalidateQueries({ queryKey: SAVES_HEALTH_QUERY });
       void qc.invalidateQueries({ queryKey: SAVES_STATUS_QUERY });
+      void qc.invalidateQueries({ queryKey: SAVES_LINKS_QUERY });
     },
   });
-  // Moving again already, or read since: nothing to retry.
+  const target = f.postId ? { postId: f.postId } : f.retryLink ? { link: f.retryLink } : null;
+  // Moving again already, or read since: nothing to retry. A link pasted again whose post is in already says so.
+  const known = again.data && typeof again.data === "object" && (again.data as { state?: unknown }).state === "known" ? (again.data as { firstSeenAt?: unknown }).firstSeenAt : null;
   const said = again.isSuccess
-    ? "Sent to be read again"
+    ? typeof known === "string" ? alreadyInLine(known) : "Sent to be read again"
     : again.error instanceof ApiError && again.error.status === 409
       ? "Nothing to retry now"
       : again.isError
@@ -117,8 +123,8 @@ function Failure({ failure: f, onTrail }: { failure: HealthLightDto["failures"][
           </span>
         ) : null}
       </span>
-      {f.postId && !again.isSuccess ? (
-        <button type="button" className="btn btn-small" disabled={again.isPending} onClick={() => again.mutate(f.postId!)}>
+      {target && !again.isSuccess ? (
+        <button type="button" className="btn btn-small" disabled={again.isPending} onClick={() => again.mutate(target)}>
           Retry
         </button>
       ) : null}

@@ -5,11 +5,23 @@
  *
  * Rating, "not for me" and pin write through `PUT /api/library/:id/prefs`, which arrives in Phase 2c: until then
  * those controls are left out, never shown dead. "Best" waits for the library's history read (2c) the same way.
+ *
+ * A move from the saves (its why says so, or it is one of the owner's own) names where it came from (audit 2026-11-06,
+ * I10): each post's creator (text) and How it came in — the post's trail, open at the move. Read from the move's own
+ * read (`GET /api/library/:id`) only for such a move; offline, the section is left out.
  */
-import type { ConditionViewDto, SessionExerciseDto, SessionItemDto } from "@rg/api-client";
+import { useState } from "react";
+import { useQuery } from "@tanstack/react-query";
+import { api, type ConditionViewDto, type SessionExerciseDto, type SessionItemDto } from "@rg/api-client";
+import { isPersonalId } from "@rg/saves";
 import { secondsText, type DoseTarget } from "@rg/domain";
 import { formatShortDate, Sheet } from "../components.js";
 import { checkWord } from "./condition-check-sheet.js";
+import { libraryItemQuery } from "../screens/studio/prefs.js";
+import { TrailSheet, TRAIL_OPEN_LABEL } from "../screens/saves/trail-sheet.js";
+
+/** The why the engine gives a move from the saves (session-engine `select.ts`). */
+const FROM_SAVES = "From your saves";
 
 /** A move the session's slice does not carry, named from its id ("frontRackSquat" → "Front rack squat"). */
 export function nameFromId(id: string): string {
@@ -68,6 +80,11 @@ export function ExerciseHowto({
     .map((p) => ({ word: checkWord(p.check.label), note: t.conditions[p.profileId] }))
     .filter((n): n is { word: string; note: string } => !!n.note);
   const named = (id: string) => exercises[id]?.name ?? nameFromId(id);
+  // Where a move from the saves came from: its links, from the move's own read (audit 2026-11-06, I10).
+  const fromSaves = (item?.why ?? []).includes(FROM_SAVES) || isPersonalId(exercise.id);
+  const read = useQuery({ queryKey: libraryItemQuery(exercise.id), queryFn: () => api.getLibraryItem(exercise.id), enabled: fromSaves, retry: false, staleTime: 60_000 });
+  const saved = fromSaves ? (read.data?.provenance ?? []).filter((l) => l.creator?.trim() || l.postId) : [];
+  const [trail, setTrail] = useState<{ postId: string; position: number | null } | null>(null);
   return (
     <Sheet open onClose={onClose} title={exercise.name}>
       <div className="stack howto">
@@ -120,6 +137,28 @@ export function ExerciseHowto({
             ))}
           </div>
         ) : null}
+        {saved.length > 0 ? (
+          <section className="howto-saved">
+            <h3 className="howto-head">{FROM_SAVES}</h3>
+            <ul className="howto-saved-list">
+              {saved.map((l, i) => (
+                <li key={`${l.postId ?? l.url ?? ""}-${i}`}>
+                  {l.creator?.trim() ? <span className="howto-saved-by">{l.creator.trim()}</span> : null}
+                  {l.postId ? (
+                    <button
+                      type="button"
+                      className="linklike tap-pad howto-saved-open"
+                      aria-haspopup="dialog"
+                      onClick={() => setTrail({ postId: l.postId!, position: typeof l.position === "number" ? l.position : null })}
+                    >
+                      {TRAIL_OPEN_LABEL}
+                    </button>
+                  ) : null}
+                </li>
+              ))}
+            </ul>
+          </section>
+        ) : null}
         {target?.last ? (
           <div className="howto-last">
             <b>Last time{target.lastDate ? ` · ${formatShortDate(target.lastDate)}` : ""}</b>{" "}
@@ -127,6 +166,7 @@ export function ExerciseHowto({
           </div>
         ) : null}
       </div>
+      {trail ? <TrailSheet postId={trail.postId} onClose={() => setTrail(null)} {...(trail.position !== null ? { focus: { position: trail.position } } : {})} /> : null}
     </Sheet>
   );
 }

@@ -18,6 +18,9 @@
  *  - While a fit is at work, every button gives way to "Fitting in… open the coach".
  *  - Nothing at all without an open batch, with a read that failed (the feature off: 404), or with a batch every row of
  *    which was removed (0 and 0).
+ *  - Under the controls, the pasted links the open batch doesn't hold (audit 2026-11-06, I6: a fresh paste waits behind
+ *    an open batch): the newest three, each its title and where it stands ("2 moves · for the next batch"), and "N more
+ *    waiting for the next batch" — from the link list the app already reads (one statement). None: no section.
  *  - Its foot is the import's health row (design 2026-11-05 §3.2): seven lights, the worst one's line when one isn't
  *    green, a tap on a light listing its failures (each opens its post's trail). Left out when the health can't be read.
  *
@@ -27,11 +30,12 @@ import { useState } from "react";
 import { createPortal } from "react-dom";
 import { Link } from "react-router-dom";
 import { useQuery, useQueryClient, type QueryClient } from "@tanstack/react-query";
-import { api, ApiError, OPEN_SAVES_QUERY, SAVES_BATCHES_QUERY, SAVES_HEALTH_QUERY, savesBatchQuery } from "@rg/api-client";
-import type { FitChoice, OpenSavesBatchDto, OpenSavesDto } from "@rg/saves";
+import { api, ApiError, OPEN_SAVES_QUERY, SAVES_BATCHES_QUERY, SAVES_HEALTH_QUERY, SAVES_LINKS_QUERY, savesBatchQuery } from "@rg/api-client";
+import type { FitChoice, LinkDto, OpenSavesBatchDto, OpenSavesDto } from "@rg/saves";
 import { Sheet } from "../../components.js";
 import { PERSONAL_MOVES_QUERY } from "../../library/account-library.js";
 import { HealthRow, healthOf } from "../saves/health-row.js";
+import { TrailSheet } from "../saves/trail-sheet.js";
 import { CoachSays } from "./coach-opening.js";
 import { DISMISS_FAILED_LINE, FITTING_LINE, fitRefusal, openShown, PUT_ASIDE_LINE, savesChipLabel, savesHref } from "./saves-model.js";
 import { useOneTap } from "./use-one-tap.js";
@@ -169,8 +173,54 @@ export function CoachSavesCard({ busy, onFit }: { busy: boolean; onFit: (batchId
           {line}
         </p>
       ) : null}
+      <PastedLinks />
       {health ? <HealthRow health={health} compact /> : null}
       {asking ? <PutAside batchId={open.id} onClose={() => setAsking(false)} /> : null}
+    </section>
+  );
+}
+
+/** How many pasted links the card lists by name. */
+const LINKS_SHOWN = 3;
+
+/** Moves matched that no batch holds yet: they wait for the next one (a batch is cut only when none is open). */
+const waitsForNext = (l: LinkDto): boolean => l.state === "moves" && (l.moves ?? 0) > 0 && !l.batchId;
+
+/** On its way still: being read, screened or read for its moves. */
+const IN_FLIGHT: ReadonlySet<string> = new Set(["waiting", "reading", "screening", "reading_moves"]);
+
+/**
+ * The pasted links the open batch doesn't hold (audit 2026-11-06, I6): the newest few, each its title (a stranger's
+ * words, or the link: text, wrapping) and where it stands — its trail one tap down once the app has its post — and how
+ * many more wait for the next batch. Only links on their way to a batch are listed.
+ */
+function PastedLinks() {
+  const q = useQuery({ queryKey: SAVES_LINKS_QUERY, queryFn: api.savesLinks, retry: false });
+  const [trail, setTrail] = useState<string | null>(null);
+  // Only links on their way to a batch: one that ended elsewhere (not training, failed, no moves) never joins one —
+  // Settings and the health row hold those, with Retry (review, 2026-11-06).
+  const pending = (q.data?.links ?? []).filter((l) => !l.batchId && (IN_FLIGHT.has(l.state) || waitsForNext(l)));
+  if (pending.length === 0) return null;
+  const shown = pending.slice(0, LINKS_SHOWN);
+  const more = pending.slice(LINKS_SHOWN).filter(waitsForNext).length;
+  return (
+    <section className="coach-saves-links" aria-label="Pasted links">
+      <ul className="coach-saves-links-list">
+        {shown.map((l) => (
+          <li key={l.id} className="coach-saves-link">
+            {l.postId ? (
+              <button type="button" className="linklike tap-pad coach-saves-link-title" aria-haspopup="dialog" onClick={() => setTrail(l.postId)}>
+                {l.title || l.url}
+              </button>
+            ) : (
+              <span className="coach-saves-link-title">{l.title || l.url}</span>
+            )}
+            <small className="coach-saves-link-words">{waitsForNext(l) ? `${l.words} · for the next batch` : l.words}</small>
+          </li>
+        ))}
+      </ul>
+      {more > 0 ? <p className="coach-saves-links-more">{`${more} more waiting for the next batch`}</p> : null}
+      {trail ? <TrailSheet postId={trail} onClose={() => setTrail(null)} /> : null}
     </section>
   );
 }

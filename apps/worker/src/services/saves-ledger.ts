@@ -165,7 +165,8 @@ export async function recordReadFailed(db: Db, userId: string, r: ReadFailed, no
           .where(and(eq(savedLinks.userId, userId), eq(savedLinks.source, r.source), eq(savedLinks.sourceKey, r.key), eq(savedLinks.status, "waiting")))]
       : []),
     ...trailStatements(db, userId, postId, [
-      { stage: "read", source: siteSource(r.source), status: "fail", summary: r.message ? `${words}: ${r.message}` : words, detail: { code: r.code, message: r.message, key: r.key ?? null } },
+      // The site's own words after the app's, unless they say the same (a sign-in's "Sign in to YouTube in Chrome").
+      { stage: "read", source: siteSource(r.source), status: "fail", summary: r.message && r.message !== words ? `${words}: ${r.message}` : words, detail: { code: r.code, message: r.message, key: r.key ?? null } },
     ], now),
   ]);
 }

@@ -469,3 +469,65 @@ describe("same as, in the athlete's zone (the controller's fix pass, E17)", () =
     expect(await recordOf(b.nod)).toMatchObject({ status: "active" });
   });
 });
+
+// The safety audit, S2: a correction of what the condition gates read, and a retire, applied by the same atomic, gated
+// write as every correction.
+describe("a correction of what the gates read, and a retire, approved (the safety audit, S2)", () => {
+  it("a move's contraction made plyometric: the record changed, its row and trail events written, the gates read it as a jump", async () => {
+    const b = await batch();
+    const { id } = await proposed([{ target: "move", targetId: b.lift, field: "contraction", after: ["plyometric"] }]);
+    const res = await approve(id);
+    expect(res.status, JSON.stringify(res.json)).toBe(200);
+    expect(((await recordOf(b.lift)).record as ExerciseRecord).contraction).toEqual(["plyometric"]);
+    expect(await rows()).toEqual([expect.objectContaining({ target: "move", targetId: b.lift, field: "contraction", before: ["isotonic"], after: ["plyometric"] })]);
+    expect((await correctionEvents()).map((e) => e.postId).sort()).toEqual([b.p0, b.p1].sort());
+    expect(res.total).toBeLessThanOrEqual(APPROVE_FIXED + CORRECTIONS_FIXED + CORRECTION_COST);
+    forgetAccountLibrary(db, userId);
+    const lib = await loadAccountLibrary(db, userId);
+    expect(lib.all.find((m) => m.id === b.lift)!.contraction).toEqual(["plyometric"]);
+  });
+
+  it("a rating merged per profile: the other attributes kept; changed since, refused stale and nothing written", async () => {
+    const b = await batch();
+    const { id } = await proposed([{ target: "move", targetId: b.lift, field: "conditions", after: { tmj: { clench: 2 } } }]);
+    expect((await approve(id)).status).toBe(200);
+    expect(((await recordOf(b.lift)).record as ExerciseRecord).conditions.tmj).toEqual({ clench: 2, neckLoad: 0, faceDown: false });
+
+    const { id: again } = await proposed([{ target: "move", targetId: b.nod, field: "regions", after: ["neck", "upper-back"] }]);
+    const rec = (await recordOf(b.nod)).record as ExerciseRecord;
+    await db.update(personalMoves).set({ record: { ...rec, regions: ["neck", "shoulders"] } }).where(eq(personalMoves.id, b.nod));
+    const res = await approve(again);
+    expect(res.json.refused).toEqual([{ opId: correctionId("move", b.nod, "regions"), error: "stale", why: "It changed since the coach suggested this — ask again." }]);
+    expect((await rows()).map((r) => r.field)).toEqual(["conditions"]);
+  });
+
+  it("retire: the move archived — never offered, still resolving — its row and trail written; approved again, recorded applied with nothing written twice", async () => {
+    const b = await batch();
+    const { id } = await proposed([{ target: "move", targetId: b.nod, field: "retire", after: true, basis: "owner", cites: [] }]);
+    const res = await approve(id);
+    expect(res.status, JSON.stringify(res.json)).toBe(200);
+    expect((await recordOf(b.nod)).status).toBe("archived");
+    expect(await rows()).toEqual([expect.objectContaining({ target: "move", targetId: b.nod, field: "retire", before: false, after: true, basis: "owner" })]);
+    expect((await correctionEvents()).map((e) => e.summary)).toEqual([expect.stringContaining("Retire Zorbex neck nod from your moves")]);
+    forgetAccountLibrary(db, userId);
+    const lib = await loadAccountLibrary(db, userId);
+    expect(lib.offered.some((m) => m.id === b.nod)).toBe(false);
+    expect(lib.all.some((m) => m.id === b.nod)).toBe(true);
+    // Its outcome lost (the request died after the write): asked again, recorded applied, nothing written twice.
+    const ops = (await db.select().from(coachProposals).where(eq(coachProposals.id, id)))[0]!.ops as Array<Record<string, unknown>>;
+    await db.update(coachProposals).set({ status: "pending", ops: ops.map(({ outcome: _o, ...op }) => op) }).where(eq(coachProposals.id, id));
+    const replay = await approve(id);
+    expect(replay.json.status).toBe("approved");
+    expect(await rows()).toHaveLength(1);
+    expect((await fixesOf(id))[0]!.outcome).toMatchObject({ status: "applied" });
+  });
+
+  it("retire of a move merged meanwhile: refused, nothing written", async () => {
+    const b = await batch();
+    const { id } = await proposed([{ target: "move", targetId: b.nod, field: "retire", after: true }]);
+    await db.update(personalMoves).set({ status: "merged", mergedInto: "deadBug" }).where(eq(personalMoves.id, b.nod));
+    const res = await approve(id);
+    expect(res.json.refused.map((r: { error: string }) => r.error)).toEqual(["not_a_target"]);
+    expect(await rows()).toEqual([]);
+  });
+});

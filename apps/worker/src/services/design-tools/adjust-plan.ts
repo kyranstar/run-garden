@@ -51,10 +51,22 @@
  *
  * The change's words reach the model marked: a session's name is an import's, a skip's reason the model's own.
  *
+ * THE LOAD (the safety audit, 2026-11-06, S4: "code counts the load and shows it beside Approve" was true of a designed
+ * run, never of a change). A change that can add load — a move, a length made longer, a restore — reads the running
+ * around the session's day after the change (designed-runs.ts `runLoadAtSql`, in the read below: no statement more) and
+ * is judged by the validator's own rules (@rg/workout `runLoadNotes`): a hard run within 48 hours of other hard running or
+ * hard leg strength — or hard leg strength moved beside hard running — (`run_hard_close`), a long run past its share of
+ * the week (`run_long_share`), the week past the last four's average (`run_volume_jump`). Each breach is an advisory issue
+ * beside Approve. Only what the change can cause: a move inside its week changes no week's total, so only its day is
+ * judged; a longer length changes no day, so only its week. A skip, a remove, an ease, a swap or a shorter length takes
+ * load away: nothing is read. Other changes of the same proposal are not counted (as a designed run's validate counts
+ * none): the plan as it stands.
+ *
  * Two statements: the athlete with the session, the proposal, the restore marker and the week's sanctioned skips in one
  * read — and, for an ease, a swap or a length of a session with a document, the account's library its
- * document's discipline is derived in (`revisability`'s run) — and the proposal's guarded upsert (propose_workout's own:
- * never a pending proposal, never one another write changed meanwhile).
+ * document's discipline is derived in (`revisability`'s run); for a change that can add load, the running around its day
+ * — and the proposal's guarded upsert (propose_workout's own: never a pending proposal, never one another write changed
+ * meanwhile).
  */
 import { sql } from "drizzle-orm";
 import { z } from "zod";
@@ -66,7 +78,8 @@ import { accountLibraryFrom, personalMovesSql } from "../account-library.js";
 import { retimeOfRow, type RetimeExpectation, type RetimeStageFields } from "../adjust-retime.js";
 import { easedRun, runOnWatch } from "../body-check.js";
 import { FOLLOWS_WATCH_VERSION, NOT_ACTIONABLE, whyNotActionable } from "../coach-apply.js";
-import { thresholdSql } from "../designed-runs.js";
+import { hardOnLegs, runCtxOf, runLoadAtSql, thresholdSql, weekOf } from "../designed-runs.js";
+import { runLoadNotes, type RunCtx } from "@rg/workout";
 import { horizonDays } from "../design-context.js";
 import { COACH_REACH_DAYS } from "../design-limits.js";
 import { clockIn, todayLeadRefusal } from "../design-time.js";
@@ -433,6 +446,35 @@ function parsedStages(raw: unknown): Array<{ id: string; parentStageId: string |
   });
 }
 
+/** The changes that can add load (S4): a move, a length, a restore — a length only when longer, judged once read. */
+const LOADS: ReadonlySet<string> = new Set(["move", "adjust", "restore"]);
+const HARD_RUNS: ReadonlySet<string> = new Set(["quality", "race"]);
+
+/**
+ * The load a change adds, in the validator's words (see THE LOAD in the header): the session as it will stand — its day
+ * (a move's), its minutes (a length's, else its own) — against the running around that day (`raw`: `runLoadAtSql`'s
+ * column). A run is judged as a run; a strength session hard on the legs (its document's) against hard running alone; any
+ * other session not at all. Only what the change can cause.
+ */
+function loadIssues(row: Row, c: z.output<typeof change>, raw: unknown, retimed: number | null): Array<{ code: string; message: string }> {
+  if (!LOADS.has(c.kind) || raw === null || raw === undefined) return [];
+  const before = minutesOf(row);
+  const minutes = c.kind === "adjust" ? (retimed ?? c.durationMinutes) : before;
+  if (c.kind === "adjust" && before !== null && minutes !== null && minutes <= before) return [];
+  const date = c.kind === "move" ? c.toDate : row.date;
+  const run: RunCtx = runCtxOf(raw);
+  const isRun = (row.sport ?? "run") === "run";
+  const legs = !isRun && row.sport === "strength" && hardOnLegs(row.doc ?? null);
+  if (!isRun && !legs) return [];
+  const notes = runLoadNotes({ date, minutes: minutes ?? 0, hard: legs || HARD_RUNS.has(row.category), long: row.category === "long", ...(legs ? { legs } : {}) }, run);
+  // What the change can cause: a move inside its week, its day alone; a longer length, its week alone. A session that
+  // states no length has no minutes to count toward its week.
+  const sameWeek = c.kind === "move" && weekOf(c.toDate).start === weekOf(row.date).start;
+  return notes
+    .filter((n) => (n.code === "run_hard_close" ? c.kind !== "adjust" : !sameWeek && minutes !== null))
+    .map((n) => ({ code: n.code, message: n.message }));
+}
+
 /** The rolling week's sanctioned rest, as a result counts it. */
 interface SanctionedRest {
   usedThisWeek: number;
@@ -519,6 +561,9 @@ export const adjustPlan: DesignTool = {
     additionalProperties: false,
   },
   statementCost: 2,
+  // REBASED 2026-11-06 (audit fixes, safety): a move, a longer length or a restore reads the running around its day in
+  // the athlete statement (no statement more) and judges it — design-cpu-bench 8x, a run moved into the next week beside a
+  // Studio strength day: 0.24 ms scaled p50 (a loaded runner) — 0.3 still holds.
   cpuWeight: 0.3,
   roles: ["main"],
   async run(ctx, raw) {
@@ -558,6 +603,8 @@ export const adjustPlan: DesignTool = {
       restoring: sql`(select ${accountState.restoreId} from ${accountState} where ${accountState.userId} = ${ctx.userId})`,
       // A length re-times a designed run's distances at their paces, from the athlete's threshold.
       threshold: thresholdSql(ctx.userId),
+      // The running around the session's day after a change that can add load (S4): the validator's rules read it.
+      ...(LOADS.has(p.change.kind) ? { load: runLoadAtSql(ctx.userId, p.workoutId, p.change.kind === "move" ? p.change.toDate : null) } : {}),
       // The thread coach's agreed rest resolved lately, its days (the athlete's today is known only after this read:
       // the UTC day's week and a day more either side hold it); counted below as the dossier counts it.
       sanctioned: sql`(select json_group_array(${pw.resolutionDate}) from ${pw} where ${pw.userId} = ${ctx.userId}
@@ -661,6 +708,8 @@ export const adjustPlan: DesignTool = {
         ...(op.kind === "adjust" && !retime && snapshot.onWatch ? [{ code: "watch_unchanged", message: "The watch keeps its copy as it is: only the plan's length changes." }] : []),
         ...careNote,
         ...restNote,
+        // The load it adds, in the validator's words (S4).
+        ...loadIssues(row!, p.change, extra.load, retime ? retime.minutes : null),
       ],
       date: snapshot.date,
       row: snapshot,

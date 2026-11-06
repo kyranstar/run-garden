@@ -169,7 +169,8 @@ export function readingEvidence(
   });
   // A field whose every quote is not in the post is the reader's guess, whatever it said (§5.6).
   const found = new Map<string, boolean>();
-  for (const q of quotes) found.set(q.field as string, (found.get(q.field as string) ?? false) || (q.check !== undefined && q.check !== "not_found"));
+  // An on-screen quote is unchecked: alone, its field is the reader's guess too (audit 2026-11-06, I9).
+  for (const q of quotes) found.set(q.field as string, (found.get(q.field as string) ?? false) || (q.check !== undefined && q.check !== "not_found" && q.check !== "on_screen"));
   const stated: string[] = [];
   const inferred: string[] = [];
   for (const f of EVIDENCE_ORDER) {
