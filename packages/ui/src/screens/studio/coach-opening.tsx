@@ -116,8 +116,8 @@ export function CoachOpening({
   /** The read that says which (the current run's) has answered since the sheet opened. */
   alsoKnown?: boolean;
   busy: boolean;
-  /** A chip tapped: its words, sent. */
-  onAsk: (words: string) => void;
+  /** A chip tapped: its words, sent — a "needs you" chip's with its id (a drift chip's run diagnoses first). */
+  onAsk: (words: string, nudge?: string) => void;
 }) {
   const startId = useId();
   const studio = useStudioReads();
@@ -194,7 +194,7 @@ export function CoachOpening({
               disabled={busy}
               onClick={() => {
                 setTapped((t) => [...t, c.id]);
-                onAsk(c.request);
+                onAsk(c.request, c.needs ? c.id : undefined);
               }}
             >
               {c.label}

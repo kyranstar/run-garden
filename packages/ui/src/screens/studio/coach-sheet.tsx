@@ -27,7 +27,7 @@ import { CoachOpenContext, CoachSeeingContext, SeeingRegistry, type CoachOpener 
 import { CoachBoundary } from "./coach-boundary.js";
 import { CoachConversation } from "./coach-conversation.js";
 import { CONVERSATION_QUERY, readLeftConversation, turnsShown, writeLeftConversation } from "./coach-conversation-model.js";
-import type { CoachFit, CoachFocus, CoachOpenArgs } from "./coach-focus.js";
+import type { CoachAsk, CoachFit, CoachFocus, CoachOpenArgs } from "./coach-focus.js";
 import { CoachSavesChip } from "./coach-saves.js";
 import { readConversation, readCurrent } from "./coach-tolerance.js";
 import { COACH_CURRENT_QUERY, currentRetry } from "./run-keeper.js";
@@ -52,6 +52,8 @@ export interface CoachOpened {
   /** A fit of saved moves the server took before the sheet opened: sent once, with its batch, as the conversation
    * settles. */
   fit: CoachFit | null;
+  /** A drift chip tapped on Today: sent once, with its id, as the conversation settles. */
+  ask: CoachAsk | null;
 }
 
 /**
@@ -73,7 +75,7 @@ export function CoachSheetProvider({ children, loopDeps }: { children: ReactNode
       // Named (even as null) wins; otherwise what the screen shows now — and then.
       const named = args.seeing !== undefined;
       const seeing = named ? (args.seeing ?? null) : registry.current;
-      setOpened((o) => ({ args: { request: args.request ?? null, seeing, named, fit: args.fit ?? null }, key: (o?.key ?? 0) + 1 }));
+      setOpened((o) => ({ args: { request: args.request ?? null, seeing, named, fit: args.fit ?? null, ask: args.ask ?? null }, key: (o?.key ?? 0) + 1 }));
     },
     [registry],
   );
@@ -171,6 +173,7 @@ export function CoachSheet({
             loopDeps={loopDeps}
             request={epoch === 0 ? args.request : null}
             fit={epoch === 0 ? args.fit : null}
+            ask={epoch === 0 ? args.ask : null}
             seeing={args.seeing}
             followSeen={!args.named}
             left={left}

@@ -47,6 +47,7 @@ import { SceneMarkContext } from "../scene-mark.js";
 import { watchReviewQuery } from "../components/watch-review-sheet.js";
 import { SessionsInProgress } from "../components/sessions-in-progress.js";
 import { SavesTodayCard } from "../components/saves-today-card.js";
+import { NeedsYouToday } from "../components/needs-you-today.js";
 import { ConditionCheckSheet, ConditionChips } from "../components/condition-check-sheet.js";
 import { ReviewPull, SyncPanel, TimezoneNudge } from "./today.js";
 import { useUnits } from "../use-units.js";
@@ -1996,6 +1997,8 @@ export function GardenScreen() {
         {/* An open batch of saved moves: at the top while it is open, Fit them in one tap away (the saves flow
             redesigned §3.1). */}
         <SavesTodayCard />
+        {/* Drift the coach sees (where you stand, spec §7.2): one "needs you" chip — a tap starts the talk, nothing else. */}
+        <NeedsYouToday />
         {/* A session left in progress on this device — yesterday's, after midnight — stays one tap away (ruling
             2b-R16); today's own keep their Continue on the card below. */}
         <SessionsInProgress

@@ -38,7 +38,18 @@ export interface CoachOpenArgs {
   request?: string | null;
   seeing?: CoachFocus | null;
   fit?: CoachFit;
+  /** A "needs you" drift chip tapped elsewhere (Today): its words sent once the conversation settles, with its id. */
+  ask?: CoachAsk;
 }
+
+/** A drift chip's ask (where you stand, spec §7.2): the request a tap sends, and the chip's id — the run diagnoses first. */
+export interface CoachAsk {
+  request: string;
+  nudge: string;
+}
+
+/** A chip's id that starts a diagnosis (where-you-stand.ts DRIFT_ID on the server). */
+export const isDriftNudge = (id: string): boolean => id.startsWith("drift:");
 
 /** A fit the server took (`/fit` answered): the words to send the coach and the batch they fit. */
 export interface CoachFit {

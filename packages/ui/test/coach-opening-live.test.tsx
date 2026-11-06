@@ -52,9 +52,21 @@ const MISSED = { id: "missed:w9", label: "Rework my week around Tuesday's tempo"
 const caution = { ...todayDto(null), readiness: { verdict: { level: "caution", reasons: ["x"] } } } as unknown as TodayResponse;
 const good = { ...todayDto(null), readiness: { verdict: { level: "good", reasons: ["x"] } } } as unknown as TodayResponse;
 
+const DRIFT = {
+  id: "drift:discipline:strength",
+  label: "1 of 4 planned lifts logged in 3 weeks — talk it through?",
+  request: "1 of 4 planned lifts logged in 3 weeks — let's talk it through.",
+};
+
 function Screen() {
   const coach = useCoach();
-  return createElement("button", { type: "button", id: "coach", onClick: () => coach?.open() }, "Coach");
+  return createElement(
+    "div",
+    null,
+    createElement("button", { type: "button", id: "coach", onClick: () => coach?.open() }, "Coach"),
+    // Today's needs-you chip opens the coach so (needs-you-today.tsx).
+    createElement("button", { type: "button", id: "coach-ask", onClick: () => coach?.open({ ask: { request: DRIFT.request, nudge: DRIFT.id }, seeing: null }) }, "Ask"),
+  );
 }
 
 /** Every read the opening makes answered — the Studio's own too — unless the test says otherwise. */
@@ -320,6 +332,41 @@ describe("the coach's opening holds still while it is read (2026-10-19)", () => 
 const posts = (calls: Call[]) => calls.filter((c) => c.method === "POST" && c.path === "/api/coach/runs").map((c) => (c.body as { request: string }).request);
 const chipClasses = () => [...(dialog()?.querySelectorAll<HTMLButtonElement>(".coach-chips button") ?? [])].map((b) => b.className.replace(/^chip coach-chip ?/, ""));
 const startRun = (body: unknown) => json({ run: run({ id: "run-h", request: (body as { request: string }).request }), existing: false, conversationId: "run-h" });
+
+describe("a drift chip (where you stand, spec §7.2): its tap carries its id, so the run diagnoses first", () => {
+  const runPosts = (calls: Call[]) => calls.filter((c) => c.method === "POST" && c.path === "/api/coach/runs").map((c) => c.body as Record<string, unknown>);
+
+  it("in the coach's opening: the drift chip's request with its nudge; another chip's with none", async () => {
+    let calls = server({ "GET /api/coach/nudges": { nudges: [MISSED, DRIFT] }, "POST /api/coach/runs": startRun });
+    mountSheet();
+    await openCoach();
+    await until(drawn, "the opening drawn");
+    expect(chips().slice(0, 2)).toEqual([MISSED.label, DRIFT.label]);
+    await click(button(DRIFT.label, dialog()!), "the drift chip");
+    await until(() => runPosts(calls).length === 1, "the start");
+    expect(runPosts(calls)[0]).toMatchObject({ request: DRIFT.request, nudge: DRIFT.id });
+    act(() => root?.unmount());
+    host?.remove();
+
+    calls = server({ "GET /api/coach/nudges": { nudges: [MISSED, DRIFT] }, "POST /api/coach/runs": startRun });
+    mountSheet();
+    await openCoach();
+    await until(drawn, "the opening drawn");
+    await click(button(MISSED.label, dialog()!), "the missed chip");
+    await until(() => runPosts(calls).length === 1, "the start");
+    expect(runPosts(calls)[0]).toMatchObject({ request: MISSED.request });
+    expect(runPosts(calls)[0]).not.toHaveProperty("nudge");
+  });
+
+  it("opened from Today with the chip's ask: sent once, as the conversation settles, with its nudge", async () => {
+    const calls = server({ "POST /api/coach/runs": startRun });
+    mountSheet();
+    await click(document.getElementById("coach-ask"), "Today's chip");
+    await until(() => runPosts(calls).length === 1, "the start");
+    await settle(30);
+    expect(runPosts(calls)).toEqual([expect.objectContaining({ request: DRIFT.request, nudge: DRIFT.id })]);
+  });
+});
 
 describe("the coach notices: its own line, and its chips first", () => {
   it("after a session: its line; Log how it felt first — it opens the quick review, nothing sent — then Plan tomorrow around it, then the needs-you chip", async () => {

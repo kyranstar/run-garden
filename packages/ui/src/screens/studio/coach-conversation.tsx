@@ -55,7 +55,7 @@ import {
   turnStopLine,
   type ProvisionalTurn,
 } from "./coach-conversation-model.js";
-import { focusOfWire, focusRefusal, type CoachFit, type CoachFocus } from "./coach-focus.js";
+import { focusOfWire, focusRefusal, isDriftNudge, type CoachAsk, type CoachFit, type CoachFocus } from "./coach-focus.js";
 import { CoachOpening, CoachSays } from "./coach-opening.js";
 import { cancelFit, CoachSavesCard, useOpenSaves } from "./coach-saves.js";
 import { readConversation, readCurrent } from "./coach-tolerance.js";
@@ -107,6 +107,9 @@ export interface CoachConversationProps {
   /** A fit of saved moves the server took as the sheet opened (Today's Fit them in): sent once, with its batch, when the
    * conversation has settled. */
   fit?: CoachFit | null;
+  /** A drift chip tapped on Today (where you stand, spec §7.2): its words sent once, with its id, when the conversation
+   * has settled — the run diagnoses first. */
+  ask?: CoachAsk | null;
 }
 
 /** The coach's words, as paragraphs (an answer may hold a few). */
@@ -149,7 +152,7 @@ export function paragraphs(text: string) {
     });
 }
 
-export function CoachConversation({ ctx, loopDeps, request = null, seeing: seenAtOpen = null, followSeen = false, left = null, fit = null }: CoachConversationProps) {
+export function CoachConversation({ ctx, loopDeps, request = null, seeing: seenAtOpen = null, followSeen = false, left = null, fit = null, ask = null }: CoachConversationProps) {
   const qc = useQueryClient();
   const conv = useQuery({ queryKey: CONVERSATION_QUERY, queryFn: readConversation, retry: currentRetry, staleTime: 0 });
   // The current run: a live one the conversation doesn't hold (an older client's), the suggestions still open, and a
@@ -236,7 +239,7 @@ export function CoachConversation({ ctx, loopDeps, request = null, seeing: seenA
   const oneTap = useOneTap();
   const start = useMutation({
     networkMode: "always",
-    mutationFn: (v: { words: string; savesBatchId?: string }) => {
+    mutationFn: (v: { words: string; savesBatchId?: string; nudge?: string }) => {
       const conversationId = conversationToSend({ read: conv.data, readFailed: conv.isError, created, left });
       return api.coachRunCreate({
         request: v.words,
@@ -245,6 +248,8 @@ export function CoachConversation({ ctx, loopDeps, request = null, seeing: seenA
         // cancel the fit).
         ...(seeing && !v.savesBatchId ? { focus: focusOfWire(seeing) } : {}),
         ...(v.savesBatchId ? { savesBatchId: v.savesBatchId } : {}),
+        // A drift chip's (where you stand, §7.2): the run diagnoses first.
+        ...(v.nudge ? { nudge: v.nudge } : {}),
       });
     },
     onSuccess: (res, { words, savesBatchId }) => {
@@ -315,7 +320,7 @@ export function CoachConversation({ ctx, loopDeps, request = null, seeing: seenA
    * request (its `/fit` answered) — never an answer; when its run can't start here (a send out, the week used up, the
    * coach at work), the fit is cancelled and its words go nowhere (the card's Fit them in is back).
    */
-  const send = (words: string, opts: { savesBatchId?: string } = {}) => {
+  const send = (words: string, opts: { savesBatchId?: string; nudge?: string } = {}) => {
     const said = words.trim();
     const fitId = opts.savesBatchId;
     if (!said) return;
@@ -328,7 +333,7 @@ export function CoachConversation({ ctx, loopDeps, request = null, seeing: seenA
     let out = false;
     oneTap(() => {
       out = true;
-      return start.mutateAsync(fitId ? { words: said, savesBatchId: fitId } : { words: said });
+      return start.mutateAsync(fitId ? { words: said, savesBatchId: fitId } : { words: said, ...(opts.nudge ? { nudge: opts.nudge } : {}) });
     });
     // A tap still out took it: a fit dropped so is a fit that can't start.
     if (!out && fitId) fitNotStarted(fitId);
@@ -345,6 +350,13 @@ export function CoachConversation({ ctx, loopDeps, request = null, seeing: seenA
     if (!fit || fitSent.current || !settled) return;
     fitSent.current = true;
     send(fit.request, { savesBatchId: fit.batchId });
+  });
+  // A drift chip tapped on Today: sent once, with its id, as soon as the conversation is known (a ref, like the fit's).
+  const askSent = useRef(false);
+  useEffect(() => {
+    if (!ask || askSent.current || !settled) return;
+    askSent.current = true;
+    send(ask.request, { nudge: ask.nudge });
   });
   /** The box takes the focus once: as the sheet opens on nothing to show yet, or with words written for the athlete. */
   const focusDecided = useRef(false);
@@ -421,7 +433,7 @@ export function CoachConversation({ ctx, loopDeps, request = null, seeing: seenA
           </CoachBoundary>
           {opening ? (
             <CoachBoundary>
-              <CoachOpening ctx={ctx} seeing={seeing} alsoOpen={alsoOpen} alsoKnown={alsoKnown} busy={busy || usedUp} onAsk={send} />
+              <CoachOpening ctx={ctx} seeing={seeing} alsoOpen={alsoOpen} alsoKnown={alsoKnown} busy={busy || usedUp} onAsk={(words, nudge) => send(words, nudge && isDriftNudge(nudge) ? { nudge } : {})} />
             </CoachBoundary>
           ) : null}
           {turns.length > 0 ? (

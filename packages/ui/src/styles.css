@@ -12083,6 +12083,15 @@ a.stu-tpl-open:focus-visible::before {
   font-size: var(--text-sm);
 }
 /* Today: the card at the top while a batch is open. Its words are one button (the coach opens), Fit them in the other. */
+/* Today's "needs you" chip (where you stand, spec §7.2): one chip, the coach's green, its words wrapping on a phone. */
+.needs-you-today {
+  display: flex;
+}
+.needs-you-today .coach-chip {
+  white-space: normal;
+  text-align: left;
+  max-width: 100%;
+}
 .dock-panel.saves-today {
   border-color: color-mix(in srgb, var(--green) 45%, var(--border));
 }

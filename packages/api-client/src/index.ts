@@ -2782,6 +2782,8 @@ export const api = {
     /** The saved batch a fit-in run fits ("Fit them in", after its `/fit`): 404 `saves_batch_not_found` unless it is a
      * saved batch of the athlete's. */
     savesBatchId?: string;
+    /** A "needs you" drift chip's id (`drift:…`): the run diagnoses with the athlete first. 400 `bad_nudge` otherwise. */
+    nudge?: string;
   }) => post<CoachRunCreateResult>("/api/coach/runs", body),
   /**
    * The coach's opening read: its "needs you" chips (at most two) and, when the coach noticed something, its own line —
