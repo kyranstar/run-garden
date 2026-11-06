@@ -32,7 +32,7 @@ export function NeedsYouToday() {
   if (!coach || !drift) return null;
   return (
     <section className="needs-you-today" aria-label={NEEDS_YOU_LABEL}>
-      <button type="button" className="chip coach-chip coach-chip--needs" onClick={() => coach.open({ ask: { request: drift.request, nudge: drift.id }, seeing: null })}>
+      <button type="button" className="chip coach-chip coach-chip--needs" onClick={() => coach.open({ ask: { request: drift.request, nudge: drift.id, label: drift.label }, seeing: null })}>
         {drift.label}
       </button>
     </section>

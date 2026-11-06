@@ -93,6 +93,12 @@ export const BOX_PLACEHOLDER_ANSWER = "Answer in your own words";
 /** A send that didn't reach the coach. */
 export const COULDNT_REACH_LINE = "Couldn't reach the coach — try again.";
 
+/** A drift chip's ask held while the coach is at work (the audits, 2026-11-06): what it says, and its button. */
+export const HELD_ASK_WAITING = "The coach is waiting on its question first. ";
+export const HELD_ASK_WORKING = "The coach is at work first. ";
+export const HELD_ASK_KEPT = "Your ask is kept here:";
+export const ASK_IT_NOW = "Ask it now";
+
 export interface CoachConversationProps {
   ctx: StudioCtx;
   loopDeps?: () => LoopDeps;
@@ -352,15 +358,15 @@ export function CoachConversation({ ctx, loopDeps, request = null, seeing: seenA
     send(fit.request, { savesBatchId: fit.batchId });
   });
   // A drift chip tapped on Today: sent once, with its id, as soon as the conversation is known (a ref, like the fit's).
-  // A run at work (or a send out, the week used up): never sent into it — an answer to its question, or dropped. The words
-  // wait in the box, and a send of them later still carries the chip's id (final review #1).
+  // A run at work (or a send out, the week used up): never sent into it — an answer to its question, or dropped — and
+  // never put in the box, whose Send would answer the question with it (the audits, 2026-11-06). It waits above the box,
+  // with its own "Ask it now", which starts it with the chip's id once the coach is free.
   const askSent = useRef(false);
   const [heldAsk, setHeldAsk] = useState<CoachAsk | null>(null);
   useEffect(() => {
     if (!ask || askSent.current || !settled) return;
     askSent.current = true;
     if (busy || usedUp || working) {
-      setDraft(ask.request);
       setHeldAsk(ask);
       return;
     }
@@ -510,13 +516,33 @@ export function CoachConversation({ ctx, loopDeps, request = null, seeing: seenA
             {line}
           </p>
         ) : null}
+        {heldAsk ? (
+          <div className="coach-held-ask" role="status">
+            <p>
+              {working ? (answering ? HELD_ASK_WAITING : HELD_ASK_WORKING) : ""}
+              {HELD_ASK_KEPT} <span className="coach-held-ask-label">{heldAsk.label}</span>
+            </p>
+            <button
+              type="button"
+              className="btn btn-small"
+              disabled={busy || usedUp || working}
+              onClick={() => {
+                const a = heldAsk;
+                setHeldAsk(null);
+                send(a.request, { nudge: a.nudge });
+              }}
+            >
+              {ASK_IT_NOW}
+            </button>
+          </div>
+        ) : null}
         <CoachBox
           boxRef={boxRef}
           draft={draft}
           onDraft={setDraft}
           placeholder={placeholder}
           canSend={canSend}
-          onSend={() => send(draft, heldAsk && draft.trim() === heldAsk.request && !working ? { nudge: heldAsk.nudge } : {})}
+          onSend={() => send(draft)}
           seeing={seeing}
           onDropSeeing={() => {
             setSeeing(null);

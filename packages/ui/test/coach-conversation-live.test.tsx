@@ -750,17 +750,22 @@ describe("a question", () => {
   });
 });
 
-describe("a drift chip's ask from Today while a run is at work (final review #1)", () => {
-  const ASK = { request: "1 of 4 planned lifts logged in 3 weeks — let's talk it through.", nudge: "drift:discipline:strength" };
+describe("a drift chip's ask from Today while a run is at work (final review #1; the audits' #4)", () => {
+  const ASK = { request: "1 of 4 planned lifts logged in 3 weeks — let's talk it through.", nudge: "drift:discipline:strength", label: "1 of 4 planned lifts logged in 3 weeks — talk it through?" };
   const asking: CoachRunEventDto[] = [
     { seq: 1, kind: "question", summary: "Home or gym?", payload: { tool: "ask_athlete", data: { questions: [{ text: "Home or gym?", chips: ["Home", "Gym"] }] } }, at: "x" },
   ];
+  const held = () => dialog()!.querySelector<HTMLElement>(".coach-held-ask");
+  function Today() {
+    const coach = useCoach();
+    return createElement("button", { type: "button", id: "coach", onClick: () => coach?.open({ ask: ASK, seeing: null }) }, "Talk it through");
+  }
 
-  it("never answers the waiting question with the chip's words, nor drops them: they wait in the box", async () => {
+  it("kept out of the box while a question waits: the box answers the question, the ask waits above it with its id", async () => {
     const answers: any[] = [];
+    const created: any[] = [];
     const live = run({ id: "run-7", status: "waiting_athlete", request: "Something for tonight" });
     const conv: CoachConversationDto = conversation([turn({ runId: "run-7", words: "Something for tonight", status: "waiting_athlete", line: null, question: { text: "Home or gym?", choices: ["Home", "Gym"] } })]);
-    const created: any[] = [];
     server(() => conv, {
       "GET /api/coach/runs/current": () => json({ run: live, events: asking, proposal: null }),
       "POST /api/coach/runs/run-7/answer": (body: any) => {
@@ -772,17 +777,48 @@ describe("a drift chip's ask from Today while a run is at work (final review #1)
         return json({ run: run({ id: "run-8", request: body.request }), existing: false, conversationId: "run-7" });
       },
     });
-    function Today() {
-      const coach = useCoach();
-      return createElement("button", { type: "button", id: "coach", onClick: () => coach?.open({ ask: ASK, seeing: null }) }, "Talk it through");
-    }
     mount({ loop: quietLoop(() => live, () => asking), children: createElement(Today) });
     await openCoach();
-    await until(() => !!button("Home", dialog()!), "the waiting question");
-    await settle(30);
-    expect(answers).toEqual([]);
+    await until(() => !!held(), "the held ask");
+    expect(held()!.textContent).toContain("The coach is waiting on its question first. Your ask is kept here:");
+    expect(held()!.textContent).toContain(ASK.label);
+    expect(button("Ask it now", held()!)!.disabled).toBe(true);
+    expect(box()!.value).toBe("");
+    // What a Send does next: the athlete's answer goes to the question — never the ask, never a new run.
+    await type(box()!, "The park");
+    await click(sendButton(), "Send");
+    await until(() => answers.length === 1, "the answer sent");
+    expect(answers[0]).toEqual({ answers: ["The park"] });
     expect(created).toEqual([]);
-    expect(box()!.value).toBe(ASK.request);
+    expect(held()).not.toBeNull();
+  });
+
+  it("once the run is over, Ask it now starts the diagnosis with the chip's id", async () => {
+    let status: CoachRunDto["status"] = "active";
+    let conv: CoachConversationDto = conversation([turn({ runId: "run-t", status: "active", line: null })]);
+    const created: any[] = [];
+    const loop = drivenLoop(() => run({ id: "run-t", status }));
+    server(() => conv, {
+      "GET /api/coach/runs/current": () => json({ run: run({ id: "run-t", status }), events: [], proposal: null }),
+      "POST /api/coach/runs": (body: any) => {
+        created.push(body);
+        return json({ run: run({ id: "run-9", request: body.request }), existing: false, conversationId: "run-t" });
+      },
+    });
+    mount({ loop: loop.deps, children: createElement(Today) });
+    await openCoach();
+    await until(() => !!held(), "the held ask");
+    expect(held()!.textContent).toContain("The coach is at work first. Your ask is kept here:");
+    expect(button("Ask it now", held()!)!.disabled).toBe(true);
+    status = "finished";
+    conv = conversation([turn({ runId: "run-t", status: "finished", line: "Done for today." })]);
+    await loop.answer({ status: "finished", nextDue: null, events: [] });
+    await until(() => button("Ask it now", held() ?? document)?.disabled === false, "Ask it now enabled");
+    await click(button("Ask it now", held()!), "Ask it now");
+    await until(() => created.length === 1, "the run started");
+    expect(created[0]).toMatchObject({ request: ASK.request, nudge: ASK.nudge });
+    await settle(20);
+    expect(held()).toBeNull();
   });
 });
 

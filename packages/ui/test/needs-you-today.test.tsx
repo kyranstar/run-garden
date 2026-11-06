@@ -56,7 +56,7 @@ describe("Today's needs-you chip", () => {
     const chip = host!.querySelector<HTMLButtonElement>("button.coach-chip--needs");
     expect(chip?.textContent).toBe(DRIFT.label);
     await click(chip, "the chip");
-    expect(coach.open).toHaveBeenCalledWith({ ask: { request: DRIFT.request, nudge: DRIFT.id }, seeing: null });
+    expect(coach.open).toHaveBeenCalledWith({ ask: { request: DRIFT.request, nudge: DRIFT.id, label: DRIFT.label }, seeing: null });
     // Nothing was started by the screen itself: no run created.
     expect(calls.filter((c) => c.method === "POST")).toEqual([]);
   });

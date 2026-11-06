@@ -65,7 +65,7 @@ function Screen() {
     null,
     createElement("button", { type: "button", id: "coach", onClick: () => coach?.open() }, "Coach"),
     // Today's needs-you chip opens the coach so (needs-you-today.tsx).
-    createElement("button", { type: "button", id: "coach-ask", onClick: () => coach?.open({ ask: { request: DRIFT.request, nudge: DRIFT.id }, seeing: null }) }, "Ask"),
+    createElement("button", { type: "button", id: "coach-ask", onClick: () => coach?.open({ ask: { request: DRIFT.request, nudge: DRIFT.id, label: DRIFT.label }, seeing: null }) }, "Ask"),
   );
 }
 

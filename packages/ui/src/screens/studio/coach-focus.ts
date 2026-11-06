@@ -46,6 +46,8 @@ export interface CoachOpenArgs {
 export interface CoachAsk {
   request: string;
   nudge: string;
+  /** The chip's words, shown while the ask waits for the coach to be free. */
+  label: string;
 }
 
 /** A chip's id that starts a diagnosis (where-you-stand.ts DRIFT_ID on the server). */

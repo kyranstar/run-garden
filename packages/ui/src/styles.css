@@ -12083,6 +12083,22 @@ a.stu-tpl-open:focus-visible::before {
   font-size: var(--text-sm);
 }
 /* Today: the card at the top while a batch is open. Its words are one button (the coach opens), Fit them in the other. */
+/* A drift chip's ask held while the coach is at work (the audits, 2026-11-06): a quiet status above the box, its button. */
+.coach-held-ask {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-2);
+  padding: var(--space-2) 0;
+  color: var(--ink-soft);
+}
+.coach-held-ask p {
+  margin: 0;
+}
+.coach-held-ask .btn {
+  min-height: var(--tap);
+  flex-shrink: 0;
+}
 /* Today's "needs you" chip (where you stand, spec §7.2): one chip, the coach's green, its words wrapping on a phone. */
 .needs-you-today {
   display: flex;
