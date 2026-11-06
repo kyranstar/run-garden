@@ -661,7 +661,8 @@ describe("read_objectives", () => {
     ]);
     expect(run.keyResults[0]).toMatchObject({ evidence: "sparse", current: 1650, points: 1 });
     const paused = data.objectives[2];
-    expect(paused.keyResults[0]).toMatchObject({ current: null, evidence: "none" });
+    // A check-in key result reads the athlete's answers (2026-11-06, where you stand): forty mornings of energy, today's 5.
+    expect(paused.keyResults[0]).toMatchObject({ current: 5, evidence: "measured" });
     expect(JSON.stringify(data)).not.toContain("DROPPED-OBJECTIVE");
   });
 

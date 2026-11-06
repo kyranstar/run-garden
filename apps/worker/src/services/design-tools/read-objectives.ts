@@ -7,9 +7,9 @@
  * answer says what each evidence flag means and how a test counts (`EVIDENCE_LEGEND`).
  *
  * BUDGET: one statement for the athlete, the objectives and their key results, then `measureKeyResults`, whose worst
- * case is eight (four for strength sets and their prescriptions, the runs, the threshold days, the matched runs'
- * documents, the race days). Nine in all — above the read tools' eight, because the measures are reused, not
- * rewritten; a counting test pins it.
+ * case is nine (four for strength sets and their prescriptions, the runs, the threshold days, the matched runs'
+ * documents, the race days, and — since 2026-11-06, where you stand — the check-in and test answers). Ten in all —
+ * above the read tools' eight, because the measures are reused, not rewritten; a counting test pins it.
  */
 import { sql } from "drizzle-orm";
 import { z } from "zod";
@@ -98,7 +98,7 @@ export const readObjectives: DesignTool = {
     properties: { limit: limitSchema(DEFAULT_LIMIT, MAX_LIMIT), cursor: CURSOR_SCHEMA },
     additionalProperties: false,
   },
-  statementCost: 9,
+  statementCost: 10,
   cpuWeight: 1.3,
   roles: READ_ROLES,
   async run(ctx, raw) {

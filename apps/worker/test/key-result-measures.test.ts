@@ -26,7 +26,7 @@ import {
   type WorkoutItem,
 } from "@rg/domain";
 import type { Db } from "../src/services/db.js";
-import { measureKeyResult, measureKeyResults } from "../src/services/key-result-measures.js";
+import { measureKeyResult, measureKeyResults, measureStatements } from "../src/services/key-result-measures.js";
 import { updateProfile } from "../src/services/profile.js";
 import { setRows } from "../src/services/session-save.js";
 import { isWrite, makeTestDb, makeTestUser } from "./helpers.js";
@@ -753,11 +753,93 @@ describe("threshold_pace and predicted_time", () => {
 // ── checkin, test ────────────────────────────────────────────────────────────────────────────────────────────────────
 
 describe("checkin and test", () => {
-  it("are not measured yet (Stage 4) and read nothing", async () => {
+  /** A check-in answer (synthetic): numeric unless `text` alone. */
+  const answer = async (questionId: string, localDate: string, valueNum: number | null, over: { user?: string; subjectId?: string } = {}) =>
+    db.insert(schema.athleteAnswers).values({
+      id: `a-${questionId}-${localDate}-${Math.random()}`,
+      userId: over.user ?? userId,
+      questionId,
+      subjectKind: over.subjectId ? "region" : null,
+      subjectId: over.subjectId ?? null,
+      valueNum,
+      text: valueNum === null ? "a few words" : null,
+      source: "checkin",
+      localDate,
+      at: `${localDate}T12:00:00.000Z`,
+    });
+
+  it("a check-in reads its numeric answers in the last 90 days: a point per day, the day's mean, the latest current", async () => {
+    await answer("energy", day(3), 6);
+    await answer("energy", day(1), 7);
+    await answer("energy", day(1), 8, { subjectId: "calves" });
+    await answer("energy", day(2), null);
+    await answer("energy", day(91), 2);
+    const other = await makeTestUser(db);
+    await answer("energy", day(1), 1, { user: other.userId });
     statements.length = 0;
-    expect(await measure({ kind: "checkin", questionId: "energy" })).toMatchObject({ current: null, evidence: "none", missing: expect.any(String) });
-    expect(await measure({ kind: "test", testId: "wall-sit-test" })).toMatchObject({ current: null, evidence: "none", missing: expect.any(String) });
-    expect(statements).toEqual([]);
+    const p = await measure({ kind: "checkin", questionId: "energy" });
+    expect(p).toMatchObject({ current: 7.5, evidence: "sparse", sampleSize: 2, lastMeasuredAt: day(1), unit: "score" });
+    expect(p.series.map((x) => [x.date, x.value])).toEqual([
+      [day(3), 6],
+      [day(1), 7.5],
+    ]);
+    expect(statements).toHaveLength(1);
+  });
+
+  it("a test reads the results kept under its id; three days are measured; none says so plainly", async () => {
+    for (const n of [20, 10, 2]) await answer("zorbex-reach-test", day(n), 30 + n);
+    expect(await measure({ kind: "test", testId: "zorbex-reach-test" })).toMatchObject({ current: 32, evidence: "measured", sampleSize: 3 });
+    expect(await measure({ kind: "test", testId: "zorbex-other-test" })).toMatchObject({
+      current: null,
+      evidence: "none",
+      missing: "No result of test zorbex-other-test recorded in the last 90 days.",
+    });
+    expect(await measure({ kind: "checkin", questionId: "sleep_feel" })).toMatchObject({
+      evidence: "none",
+      missing: "No numeric sleep_feel answers in the last 90 days.",
+    });
+  });
+
+  it("check-ins and tests share one statement however many there are", async () => {
+    await answer("energy", day(1), 7);
+    statements.length = 0;
+    const out = await measureKeyResults(
+      db,
+      userId,
+      [{ kind: "checkin", questionId: "energy" }, { kind: "checkin", questionId: "stress" }, { kind: "test", testId: "zorbex-reach-test" }].map((m) => ({
+        measure: keyResultMeasureSchema.parse(m),
+      })),
+      { today: TODAY },
+    );
+    expect(out.map((p) => p.current)).toEqual([7, null, null]);
+    expect(statements).toHaveLength(1);
+  });
+});
+
+describe("measureStatements: what a set of measures costs, with the library given and the run labels off", () => {
+  const parse = (ms: object[]) => ms.map((m) => keyResultMeasureSchema.parse(m));
+  it("counts each source once, and a counting db agrees", async () => {
+    const one = parse([{ kind: "checkin", questionId: "energy" }, { kind: "test", testId: "t" }]);
+    const all = parse([
+      { kind: "hold_max", libraryIds: ["wallSit"] },
+      { kind: "run_best", distanceM: 5000 },
+      { kind: "pace_at_hr", hrLow: 140, hrHigh: 150 },
+      { kind: "threshold_pace" },
+      { kind: "checkin", questionId: "energy" },
+    ]);
+    expect(measureStatements([], { library: true, labels: false })).toBe(0);
+    expect(measureStatements(one, { library: true, labels: false })).toBe(1);
+    expect(measureStatements(all, { library: true, labels: false })).toBe(7);
+    // A run that would be labelled: its labels are skipped, so the count holds whatever the log holds.
+    const workoutId = await planned(day(2), doc([hold("wallSit", 30, true)]));
+    const act = await run(day(2), 5000, 1500, { hr: 145 });
+    await matchRun(act, workoutId);
+    for (const ms of [one, all]) {
+      statements.length = 0;
+      const out = await measureKeyResults(db, userId, ms.map((measure) => ({ measure })), { today: TODAY, library: EXERCISES, labels: false });
+      expect(statements).toHaveLength(measureStatements(ms, { library: true, labels: false }));
+      if (ms === all) expect(out[1]).toMatchObject({ current: 1500, series: [{ label: "training" }] });
+    }
   });
 });
 

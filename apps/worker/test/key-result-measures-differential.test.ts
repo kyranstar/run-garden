@@ -99,7 +99,8 @@ function requests(): MeasureRequest[] {
       { measure: { kind: "predicted_time", distanceM: 21_097, windowDays }, unit: "min" },
     );
   }
-  out.push({ measure: { kind: "checkin", questionId: "energy" } }, { measure: { kind: "test", testId: "wall-sit-max" } });
+  // Check-ins and tests left the frozen implementation's "not measured" on 2026-11-06 (where you stand: they read the
+  // athlete's answers): key-result-measures.test.ts holds them; this file holds the families the CPU gate changed.
   return out;
 }
 

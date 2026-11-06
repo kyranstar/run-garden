@@ -122,8 +122,9 @@ describe("the registry", () => {
     }
   });
 
-  it("each declares at most 8 statements — read_objectives 9, the one measured exception (its key results' reads are measureKeyResults' own 8)", () => {
-    for (const t of READ_TOOLS) expect(t.statementCost, t.name).toBeLessThanOrEqual(t.name === "read_objectives" ? 9 : 8);
+  // read_objectives 10 since 2026-11-06 (where you stand): check-ins and tests read the athlete's answers, one statement more.
+  it("each declares at most 8 statements — read_objectives 10, the one measured exception (its key results' reads are measureKeyResults' own 9)", () => {
+    for (const t of READ_TOOLS) expect(t.statementCost, t.name).toBeLessThanOrEqual(t.name === "read_objectives" ? 10 : 8);
   });
 
   it("a field the schema does not list is refused by every tool, naming it", async () => {

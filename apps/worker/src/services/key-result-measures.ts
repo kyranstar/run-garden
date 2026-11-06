@@ -54,13 +54,17 @@
  * - threshold_pace: the watch's threshold pace per day (`daily_health`); predicted_time: the race hub's prediction
  *   (`racePrediction`, its fast edge — Riegel from the hour at threshold) for `distanceM` from each day's threshold
  *   pace. The current is the latest day's.
- * - checkin and test: not measured until Stage 4 adds the questions and the tests.
+ * - checkin and test (where you stand, 2026-11-06): the athlete's numeric answers (`athlete_answers.value_num`) in the
+ *   last ANSWER_WINDOW_DAYS — a check-in's under its question id, a test's result under the test's id (nothing writes
+ *   one yet: a test reads none until something does, and says so). A point per day: the mean of the day's answers (an
+ *   answer by area is one of them), to one decimal; the current is the latest day's. One statement for all of them.
  * - Runs, threshold days: three or more points are `measured`, one or two `sparse`, none `none` with a `missing` note.
  */
 import { and, asc, eq, exists, gt, gte, inArray, isNotNull, isNull, lte, ne, or, sql, type SQL } from "drizzle-orm";
 import type { SQLiteColumn } from "drizzle-orm/sqlite-core";
 import {
   activities,
+  athleteAnswers,
   athleteProfiles,
   dailyHealth,
   performedSessions,
@@ -119,6 +123,12 @@ export interface MeasureContext {
    * own moves (`libraryFor`: one statement then), else the public library.
    */
   library?: readonly ExerciseRecord[];
+  /**
+   * `false`: run_best's points are not labelled (race, test, training) — no read of the runs' documents or the race
+   * days — so what a set of measures costs is `measureStatements`' count whatever the log holds (the coach's opening
+   * context and the nudges read: they need the current value, never the labels). Every point is then `training`.
+   */
+  labels?: boolean;
 }
 
 export interface MeasureRequest {
@@ -870,6 +880,47 @@ function measureThreshold(
   return { points, current: points[points.length - 1]!.value, evidence: byCount(points.length) };
 }
 
+// ── Check-ins and tests: the athlete's answers ──────────────────────────────────────────────────────────────────────
+
+/** How far back a check-in's or a test's answers are read. */
+export const ANSWER_WINDOW_DAYS = 90;
+
+type AnswerMeasure = Extract<KeyResultMeasure, { kind: "checkin" | "test" }>;
+const answerIdOf = (m: AnswerMeasure): string => (m.kind === "checkin" ? m.questionId : m.testId);
+
+/** The numeric answers to these question ids in the window, one row per day and id: the day's mean. */
+async function answerDays(db: Db, userId: string, ids: readonly string[], from: string, to: string): Promise<Array<{ q: string; date: string; value: number }>> {
+  const a = athleteAnswers;
+  const rows = await db
+    .select({ q: a.questionId, date: a.localDate, value: sql<number>`avg(${a.valueNum})` })
+    .from(a)
+    .where(and(eq(a.userId, userId), inArray(a.questionId, jsonList(ids)), isNotNull(a.valueNum), gte(a.localDate, from), lte(a.localDate, to)))
+    .groupBy(a.questionId, a.localDate)
+    .orderBy(asc(a.localDate));
+  return rows.map((r) => ({ q: r.q, date: r.date, value: Math.round(Number(r.value) * 10) / 10 }));
+}
+
+function measureAnswers(m: AnswerMeasure, days: ReadonlyArray<{ q: string; date: string; value: number }>): Measured {
+  const id = answerIdOf(m);
+  const points = days.filter((d) => d.q === id).map((d) => ({ date: d.date, value: d.value }));
+  if (points.length === 0) {
+    return none(
+      m.kind === "checkin"
+        ? `No numeric ${id} answers in the last ${ANSWER_WINDOW_DAYS} days.`
+        : `No result of test ${id} recorded in the last ${ANSWER_WINDOW_DAYS} days.`,
+    );
+  }
+  return { points, current: points[points.length - 1]!.value, evidence: byCount(points.length) };
+}
+
+/** The statements a set of measures costs with the account's library given and the run labels off (`labels: false`):
+ * the strength sets and their prescriptions (four), the runs, the threshold days, the answers — each once, for every
+ * measure of its kind. The opening context and the nudges read are pinned against it. */
+export function measureStatements(measures: readonly KeyResultMeasure[], _ctx: { library: true; labels: false }): number {
+  const has = (...kinds: KeyResultMeasure["kind"][]) => measures.some((m) => kinds.includes(m.kind));
+  return (has("hold_max", "best_set") ? 4 : 0) + (has("run_best", "pace_at_hr") ? 1 : 0) + (has("threshold_pace", "predicted_time") ? 1 : 0) + (has("checkin", "test") ? 1 : 0);
+}
+
 // ── Entry points ────────────────────────────────────────────────────────────────────────────────────────────────────
 
 const earliest = (today: string, ms: ReadonlyArray<{ windowDays: number }>): string =>
@@ -890,18 +941,20 @@ export async function measureKeyResults(
     (m): m is Extract<KeyResultMeasure, { kind: "threshold_pace" | "predicted_time" }> => m.kind === "threshold_pace" || m.kind === "predicted_time",
   );
   const bests = running.filter((m): m is Extract<KeyResultMeasure, { kind: "run_best" }> => m.kind === "run_best");
+  const answers = measures.filter((m): m is AnswerMeasure => m.kind === "checkin" || m.kind === "test");
 
   const strengthIds = strength.flatMap((m) => m.libraryIds);
   const library = ctx.library ?? (await libraryFor(db, userId, strengthIds)).all;
   const canonical = canonicalIn(library);
-  const [sets, runs, days] = await Promise.all([
+  const [sets, runs, days, answered] = await Promise.all([
     strength.length > 0 ? loggedSets(db, userId, earliest(today, strength), today, loggedIdsOf(strengthIds, library), canonical) : [],
     running.length > 0 ? runsBetween(db, userId, earliest(today, running), today) : [],
     threshold.length > 0 ? thresholdDays(db, userId, earliest(today, threshold), today) : [],
+    answers.length > 0 ? answerDays(db, userId, [...new Set(answers.map(answerIdOf))].sort(), windowStart(today, ANSWER_WINDOW_DAYS), today) : [],
   ]);
 
   let labels = { facts: new Map<string, RunFacts>(), raceDays: new Set<string>() };
-  if (bests.length > 0) {
+  if (bests.length > 0 && ctx.labels !== false) {
     // Each best's window start, once — not once a run (the board asks every measure over every logged day too).
     const windows = bests.map((m) => ({ m, from: windowStart(today, m.windowDays) }));
     const candidates = runs.filter((r) => windows.some(({ m, from }) => r.date >= from && qualifiesFor(m, r)));
@@ -925,9 +978,8 @@ export async function measureKeyResults(
       case "predicted_time":
         return finish(request, measureThreshold(m, days, today));
       case "checkin":
-        return finish(request, none("Check-in answers are not measured yet."));
       case "test":
-        return finish(request, none("Test results are not measured yet."));
+        return finish(request, measureAnswers(m, answered));
     }
   });
 }
