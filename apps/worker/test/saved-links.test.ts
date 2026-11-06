@@ -90,6 +90,19 @@ describe("addLink and listLinks", () => {
     expect(statements).toBe(1);
   });
 
+  it("each link says which batch its moves are in, or none yet — still one statement (audit 2026-11-06, I6)", async () => {
+    await addLink(db, userId, igLink, "app", NOW);
+    const id = await seedPost("instagram", code, { status: "matched" });
+    await db.insert(savedPostMoves).values({ id: "lb0", userId, postId: id, position: 0, moveId: "m1", moveKind: "personal", confidence: 1, checkFlag: false, status: "pending", createdAt: NOW });
+    statements = 0;
+    expect((await listLinks(db, userId))[0]).toMatchObject({ state: "moves", batchId: null });
+    expect(statements).toBe(1);
+    await db.update(savedPostMoves).set({ batchId: "batch-1" }).where(eq(savedPostMoves.id, "lb0"));
+    expect((await listLinks(db, userId))[0]).toMatchObject({ batchId: "batch-1" });
+    await addLink(db, userId, watch, "app", NOW);
+    expect((await listLinks(db, userId)).find((l) => l.key === vid)).toMatchObject({ postId: null, batchId: null });
+  });
+
   it("another account never sees it", async () => {
     await addLink(db, userId, watch, "app", NOW);
     const other = (await makeTestUser(db)).userId;

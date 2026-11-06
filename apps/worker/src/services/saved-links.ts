@@ -44,7 +44,7 @@ export async function addLink(db: Db, userId: string, input: string, from: "exte
     .returning();
   row ??= (await db.select().from(savedLinks).where(and(eq(savedLinks.id, id), eq(savedLinks.userId, userId))).limit(1))[0];
   if (!row) throw new Error("saved link vanished after upsert");
-  return { ok: true, state: "added", link: toDto({ ...row, postStatus: null, title: null, lastErrorCode: null, lastError: null, watchVideo: null, moves: null }) };
+  return { ok: true, state: "added", link: toDto({ ...row, postStatus: null, title: null, lastErrorCode: null, lastError: null, watchVideo: null, moves: null, batchId: null }) };
 }
 
 interface LinkRow {
@@ -63,6 +63,7 @@ interface LinkRow {
   lastError: string | null;
   watchVideo: unknown;
   moves: number | null;
+  batchId: string | null;
 }
 
 function toDto(r: LinkRow): LinkDto {
@@ -73,15 +74,20 @@ function toDto(r: LinkRow): LinkDto {
   return {
     id: r.id, source: r.source, key: r.sourceKey, url: r.url, title: r.title, addedAt: r.addedAt, addedFrom: r.addedFrom,
     postId: post ? r.id : null, state, words, moves: post && r.postStatus === "matched" ? Number(r.moves ?? 0) : null, action,
+    batchId: post ? (r.batchId ?? null) : null,
   };
 }
 
-/** The account's recent links, newest first, each with where it stands (its post's status once read). ONE statement. */
+/**
+ * The account's recent links, newest first, each with where it stands (its post's status once read) and the batch its
+ * moves are in (none yet: waiting for the next; audit 2026-11-06, I6). ONE statement.
+ */
 export async function listLinks(db: Db, userId: string, limit: number = LINKS_LISTED): Promise<LinkDto[]> {
   const rows = (await db.all(sql`SELECT l.id AS id, l.source AS source, l.source_key AS sourceKey, l.url AS url, l.added_from AS addedFrom,
       l.status AS status, l.error_code AS errorCode, l.error AS error, l.added_at AS addedAt,
       p.status AS postStatus, p.title AS title, p.last_error_code AS lastErrorCode, p.last_error AS lastError, p.watch_video AS watchVideo,
-      (SELECT count(DISTINCT m.move_id) FROM saved_post_moves m WHERE m.user_id = l.user_id AND m.post_id = l.id AND m.status <> 'removed') AS moves
+      (SELECT count(DISTINCT m.move_id) FROM saved_post_moves m WHERE m.user_id = l.user_id AND m.post_id = l.id AND m.status <> 'removed') AS moves,
+      (SELECT max(m.batch_id) FROM saved_post_moves m WHERE m.user_id = l.user_id AND m.post_id = l.id AND m.status <> 'removed') AS batchId
     FROM saved_links l LEFT JOIN saved_posts p ON p.id = l.id AND p.user_id = l.user_id
     WHERE l.user_id = ${userId}
     ORDER BY l.added_at DESC, l.id LIMIT ${limit}`)) as LinkRow[];

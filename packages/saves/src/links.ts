@@ -165,6 +165,11 @@ export interface LinkDto {
   /** The post's moves, once matched; else null. */
   moves: number | null;
   action: LinkAction | null;
+  /**
+   * The batch its moves are in, or null while they wait for the next one (or there are none yet): the coach's saves
+   * card lists the links an open batch doesn't hold (audit 2026-11-06, I6). Absent from an older Worker's answer.
+   */
+  batchId?: string | null;
 }
 
 export const WAITING_FOR_EXTENSION = "Waiting for your computer's extension";

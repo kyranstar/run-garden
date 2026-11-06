@@ -14094,6 +14094,40 @@ button.coach-cite:focus-visible {
   align-items: center;
   column-gap: var(--space-6);
 }
+/* The coach's saves card's pasted links (audit 2026-11-06, I6): under the controls, past the coach's mark; a title may
+   be the link itself, one long word, so it wraps anywhere. */
+.coach-saves-links {
+  padding-left: calc(var(--space-7) + var(--space-2) + var(--space-4));
+  min-width: 0;
+}
+.coach-saves-links-list {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+.coach-saves-link {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+  font-size: var(--text-sm);
+}
+.coach-saves-link-title {
+  align-self: flex-start;
+  text-align: left;
+  overflow-wrap: anywhere;
+  min-width: 0;
+}
+.coach-saves-link-words,
+.coach-saves-links-more {
+  color: var(--ink-soft);
+  font-size: var(--text-xs);
+}
+.coach-saves-links-more {
+  margin: var(--space-2) 0 0;
+}
 /* The coach's saves card: its health row lines up with the controls, past the coach's mark. */
 .coach-saves > .health {
   padding-left: calc(var(--space-7) + var(--space-2) + var(--space-4));
