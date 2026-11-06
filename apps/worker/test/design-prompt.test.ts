@@ -60,7 +60,8 @@ describe("the prompt text", () => {
     // marked, with the "Release" principle — measured 6,728.25; ≥ 100 tokens headroom.
     // REBASED 2026-11-06 (coach review, phase 3): the saves paragraph's evidence rules (a post is a stranger's claim, quotes said / heard / on screen, the reader's guess, correct_import before pin_moves, a line's where and cites) — measured 7,054.75; ≥ 100 tokens headroom.
     // REBASED 2026-11-06 (the controller's fix pass, C): older readings' stated fields as the reader's report, the challenge weighed (never caving), the defaulted dose, never one guess for another, read_saves' pages and full — measured 7,184.75; ≥ 100 tokens headroom.
-    expect(SHARED_PROMPT.length / 4).toBeLessThanOrEqual(7285);
+    // REBASED 2026-11-06 (the controller's ruling: the why and a case show their heads; when full: true is worth a call) — measured 7,210.75; ≥ 100 tokens headroom.
+    expect(SHARED_PROMPT.length / 4).toBeLessThanOrEqual(7315);
     for (const r of ROLES) expect(roleBlock(r).length / 4, r).toBeLessThanOrEqual(ROLE_CAP[r]);
   });
 
@@ -344,7 +345,8 @@ describe("3A-B — the prompt agrees with the code", () => {
     // marked, with the "Release" principle — measured 6,728.25; ≥ 100 tokens headroom.
     // REBASED 2026-11-06 (coach review, phase 3): the saves paragraph's evidence rules (a post is a stranger's claim, quotes said / heard / on screen, the reader's guess, correct_import before pin_moves, a line's where and cites) — measured 7,054.75; ≥ 100 tokens headroom.
     // REBASED 2026-11-06 (the controller's fix pass, C): older readings' stated fields as the reader's report, the challenge weighed (never caving), the defaulted dose, never one guess for another, read_saves' pages and full — measured 7,184.75; ≥ 100 tokens headroom.
-    expect(SHARED_PROMPT.length / 4).toBeLessThanOrEqual(7285);
+    // REBASED 2026-11-06 (the controller's ruling: the why and a case show their heads; when full: true is worth a call) — measured 7,210.75; ≥ 100 tokens headroom.
+    expect(SHARED_PROMPT.length / 4).toBeLessThanOrEqual(7315);
     for (const role of ROLES) expect(roleBlock(role, RUN_LIMITS[role].maxCalls).length / 4, role).toBeLessThanOrEqual(ROLE_CAP[role]);
   });
 });
@@ -400,6 +402,8 @@ describe("the coach's review of saved moves (import trail phase 3, §8.2, §3.5,
       "stated:<field> (the reader's report)",
       "A dose from default when the post states one: correct_import it first; a library move keeps its dose, and its line names the post's.",
       "never one guess for another: a fix on the evidence rests on a quote, their history, or a quote the post lacks",
+      // When a whole move's words are worth a call (the controller's ruling, 2026-11-06).
+      "full: true reads one move's every word: worth a call before you quote a post at length, or when a cut head decides in or out.",
       "left more correct",
       "the rotation it joins",
       "cites what it rests on",

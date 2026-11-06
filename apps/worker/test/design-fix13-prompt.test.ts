@@ -154,7 +154,8 @@ describe("compact (the cached prefix grew 3k tokens since the pre-live audit)", 
     // marked, with the "Release" principle — measured 6,728.25; ≥ 100 tokens headroom.
     // REBASED 2026-11-06 (coach review, phase 3): the saves paragraph's evidence rules (a post is a stranger's claim, quotes said / heard / on screen, the reader's guess, correct_import before pin_moves, a line's where and cites) — measured 7,054.75; ≥ 100 tokens headroom.
     // REBASED 2026-11-06 (the controller's fix pass, C): older readings' stated fields as the reader's report, the challenge weighed (never caving), the defaulted dose, never one guess for another, read_saves' pages and full — measured 7,184.75; ≥ 100 tokens headroom.
-    expect(SHARED_PROMPT.length / 4).toBeLessThanOrEqual(7285);
+    // REBASED 2026-11-06 (the controller's ruling: the why and a case show their heads; when full: true is worth a call) — measured 7,210.75; ≥ 100 tokens headroom.
+    expect(SHARED_PROMPT.length / 4).toBeLessThanOrEqual(7315);
     // The main coach's block, REBASED 2026-10-18 for the decision guidance (a run's length on the watch, plan_set or
     // propose_plan, a plan's timed sessions, a programme's settings) — measured 1,488 — and 2026-10-19 for the owner's
     // voice (the coach's last words) — measured 1,634; REBASED 2026-10-25 (saved-posts fix wave: pin_moves among the

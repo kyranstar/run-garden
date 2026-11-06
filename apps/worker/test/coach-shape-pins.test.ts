@@ -107,7 +107,10 @@ const BEFORE = { tools: 34_935, shared: 20_450, main: 4_586 };
  * as the reader's report, the challenge weighed, the defaulted dose, never one guess for another; stated:<field> and the
  * move's own quotes in pin_moves' and correct_import's descriptions — measured 21,297; held with 403 characters (~100
  * tokens) of headroom. */
-const GROWTH_MAX_CHARS = 21_700;
+/* REBASED 2026-11-06 (the controller's ruling: read_saves' Reading line says the why and a case show their heads, and
+ * when full: true is worth a call — shared 28,739 → 28,843) — measured 21,401; held with 404 characters (~101 tokens)
+ * of headroom. */
+const GROWTH_MAX_CHARS = 21_805;
 
 const toolsSent = () => JSON.stringify(allTools().map((t) => ({ name: t.name, description: t.description, input_schema: t.inputSchema })));
 

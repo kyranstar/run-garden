@@ -22,7 +22,7 @@ import { isToolErr, type ToolContext, type ToolErr } from "../src/services/desig
 import { savedPostId } from "../src/services/saves-ledger.js";
 import { matchPost } from "../src/services/saves-match.js";
 import { assembleBatch, saveBatch } from "../src/services/saves-batches.js";
-import { longBatchPosts, savedMoveDraft, seedSavedBatch, typicalBatchPosts, widestMovePosts, type SavedPostSpec } from "./saves-batch-fixture.js";
+import { longBatchPosts, longText, savedMoveDraft, seedSavedBatch, typicalBatchPosts, widestMovePosts, type SavedPostSpec } from "./saves-batch-fixture.js";
 import { isWrite, makeTestDb, makeTestUser } from "./helpers.js";
 
 /** Sat 24 Oct 2026, 11:00 in Los Angeles (PDT, UTC-7). */
@@ -444,11 +444,15 @@ describe("read_saves: each claim's evidence (import trail phase 3, §8.1)", () =
     expect(m1.links[0].match).toBeUndefined();
     // The compact form (the budgets review, 2026-11-06): what it stated and inferred, the post's dose words, its own
     // skip-when cases (none stated here), and each quote's id, field, check and head — the rest is full: true's.
+    // REBASED 2026-11-06 (the controller's ruling): the why and the use-when cases, stated or the reader's guess, are
+    // what the coach decides in or out from — on the default page, as heads.
     expect(m1.links[0].reading).toEqual({
       confidence: "high",
       stated: ["name", "dose", "purpose", "useWhen"],
       inferred: ["steps"],
       dose: U("8-10 reps"),
+      why: U("Hips stiffen after easy runs"),
+      useWhen: [{ text: U("after an easy run"), said: true }],
       quotes: [
         ["q1.1", "purpose", "said", U("if your hips get stiff after easy runs")],
         ["q1.2", "useWhen", "heard", U("do it right after the run")],
@@ -595,12 +599,14 @@ describe("read_saves: pages a fit can read (the budgets review, 2026-11-06)", ()
     throw new Error("the pages never ended");
   }
 
-  it("a typical extract-6 batch of twelve moves is covered in three reads at most, each within the budget", async () => {
+  // REBASED 2026-11-06 (the controller's ruling: the why and two use-when cases on the default page): measured 1,462 B a
+  // typical move, three a page — four reads (it was three, at 3, 5 and 4, without them).
+  it("a typical extract-6 batch of twelve moves is covered in four reads at most, each within the budget", async () => {
     await seedSavedBatch(db, userId, { savedAt: daysAgo(1), posts: typicalBatchPosts() });
     const pages = await everyPage();
     expect(pages.map((p) => p.data.moves.length).reduce((a, b) => a + b, 0)).toBe(12);
     expect(new Set(pages.flatMap((p) => p.data.moves.map((m: any) => m.n)))).toEqual(new Set([1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12]));
-    expect(pages.length).toBeLessThanOrEqual(3);
+    expect(pages.length).toBeLessThanOrEqual(4);
     for (const p of pages) expect(bytes(forModel(p))).toBeLessThanOrEqual(RESULT_BUDGET_BYTES);
     // Every quote it read is one it was shown, and every one shown is in the receipt.
     for (const p of pages) {
@@ -696,5 +702,21 @@ describe("read_saves: a malformed stored reading (the controller's fix pass, D12
     const r = await ok({});
     expect(r.data.moves.map((m: any) => m.n)).toEqual([1, 2, 3]);
     expect(r.data.moves[0].links[0].reading).toMatchObject({ stated: [], inferred: [], quotes: [] });
+  });
+});
+
+describe("read_saves: the compact page keeps what the coach decides from (the controller's ruling, 2026-11-06)", () => {
+  it("a move's first post keeps its why (a head of about 100) and two use-when cases, stated or guessed (heads of about 60)", async () => {
+    const wide = savedMoveDraft("Zorbex wide reading", {
+      why: longText("WHY-head", 200),
+      useWhen: [0, 1, 2].map((k) => ({ text: longText(`USE-${k}`, 160), evidence: k === 1 ? ("inferred" as const) : ("stated" as const) })),
+    });
+    await seedSavedBatch(db, userId, { savedAt: daysAgo(1), posts: [{ kind: "single_move", moves: [{ draft: wide }] }] });
+    const reading = (await ok({})).data.moves[0].links[0].reading;
+    expect(reading.why.untrusted).toBe(true);
+    expect(reading.why.text.startsWith("WHY-head")).toBe(true);
+    expect(reading.why.text.length).toBeLessThanOrEqual(100);
+    expect(reading.why.text.endsWith("…")).toBe(true);
+    expect(reading.useWhen.map((c: any) => [c.text.text.slice(0, 5), c.said, c.text.text.length <= 60])).toEqual([["USE-0", true, true], ["USE-1", false, true]]);
   });
 });

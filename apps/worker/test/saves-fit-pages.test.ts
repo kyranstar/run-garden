@@ -99,8 +99,10 @@ describe("a fit-in of a typical twelve-move batch (the budgets review, 2026-11-0
     const events = await db.select().from(schema.coachRunEvents).where(eq(schema.coachRunEvents.runId, run));
     const refused = events.filter((e) => e.kind === "tool_result" && JSON.stringify(e.payload).includes('"ok":false'));
     expect(refused).toEqual([]);
-    // Measured 2026-11-06: three pages (3, 5 and 4 moves), then pin_moves and finish — five of the twelve calls.
-    expect(reads.length).toBeLessThanOrEqual(3);
+    // Measured 2026-11-06: four pages of three moves (REBASED for the controller's ruling — the why and two use-when cases
+    // on the default page; it was three pages), then pin_moves and finish — six of the twelve calls, six left for
+    // full: true reads, a question or a workout's revision.
+    expect(reads.length).toBeLessThanOrEqual(4);
     expect(calls).toEqual([...reads.map(() => "read_saves"), "pin_moves", "finish"]);
     expect(calls.length).toBeLessThanOrEqual(RUN_LIMITS.main.maxCalls / 2);
   });

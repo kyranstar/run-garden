@@ -207,10 +207,15 @@ export function readingEvidence(
 
 /** A quote's head in read_saves' compact form (the budgets review, 2026-11-06): its first characters, at a word. */
 export const QUOTE_HEAD = 48;
-/** A stated skip-when case's head in the compact form. */
+/** A use-when or stated skip-when case's head in the compact form. */
 export const CASE_HEAD = 60;
 /** The stated skip-when cases the compact form keeps, at most: the post's own word on when not to. */
 const SKIPS_KEPT = 2;
+/** The use-when cases the compact form keeps, at most — stated or the reader's guess, each saying which (the
+ * controller's ruling, 2026-11-06: what the coach decides in or out from). */
+const USES_KEPT = 2;
+/** The why's head in the compact form. */
+export const WHY_HEAD = 100;
 
 /** `text`'s first `n` characters or fewer, cut at a word where one is past half of them, with "…" after: a head. */
 export function headOf(text: string, n: number): string {
@@ -226,13 +231,16 @@ export function headOf(text: string, n: number): string {
 export type CompactQuote = [id: string, field: string, check: CheckWord] | [id: string, field: string, check: CheckWord, head: Untrusted];
 
 /** A reading in read_saves' compact form (the budgets review, 2026-11-06): what it stated and inferred, the post's dose
- * words, the post's own skip-when cases (heads), and each quote's id, field and check — with its head when `heads`. The
- * why, the use-when cases and whole quotes are the full form's (`full: true`). */
+ * words, the why and the first use-when cases, stated or guessed (heads — the controller's ruling: what the coach decides
+ * in or out from), the post's own skip-when cases (heads), and each quote's id, field and check — with its head when
+ * `heads`. Whole words are the full form's (`full: true`). */
 export interface CompactEvidence {
   confidence: string | null;
   stated: string[];
   inferred: string[];
   dose: Untrusted | null;
+  why?: Untrusted;
+  useWhen?: Case[];
   skipWhen?: Untrusted[];
   quotes: CompactQuote[];
 }
@@ -249,11 +257,14 @@ export interface IdsEvidence {
 export function compactEvidence(e: ReadingEvidence, o: { heads: boolean }): CompactEvidence | IdsEvidence {
   if (!o.heads) return { stated: e.stated, inferred: e.inferred, quotes: e.quotes.map((q) => [q.id, q.field, q.check]) };
   const skips = (e.skipWhen ?? []).filter((c) => c.said).slice(0, SKIPS_KEPT).map((c) => untrusted(headOf(c.text.text, CASE_HEAD)));
+  const uses = (e.useWhen ?? []).slice(0, USES_KEPT).map((c) => ({ text: untrusted(headOf(c.text.text, CASE_HEAD)), said: c.said }));
   return {
     confidence: e.confidence,
     stated: e.stated,
     inferred: e.inferred,
     dose: e.dose,
+    ...(e.why ? { why: untrusted(headOf(e.why.text, WHY_HEAD)) } : {}),
+    ...(uses.length ? { useWhen: uses } : {}),
     ...(skips.length ? { skipWhen: skips } : {}),
     quotes: e.quotes.map((q) => [q.id, q.field, q.check, untrusted(headOf(q.text.text, QUOTE_HEAD))]),
   };

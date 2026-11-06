@@ -34,9 +34,10 @@
  * order, and of those as many as fit RESULT_BUDGET_BYTES with the posts they name; `missing` says how many moves are left
  * and the offset that reads them (a batch stays readable by id once it is fitted in). A page is COMPACT unless `full`:
  * each post the page's moves name is in `posts` once — its address, creator and reading (a head), and a routine's moves
- * in the post's order by their `n` — never on each link; a move's summary, its first post's why and use-when cases are
- * the full form's; its first post's reading keeps what it stated and inferred, the post's dose words, the skip-when cases
- * the post stated (heads) and each quote as `[id, field, check, head]`; its later posts' readings their quotes'
+ * in the post's order by their `n` — never on each link; a move's summary is the full form's; its first post's reading
+ * keeps what it stated and inferred, the post's dose words, its why and first two use-when cases, stated or guessed (the
+ * controller's ruling: what the coach decides in or out from), the skip-when cases the post stated (all heads) and each
+ * quote as `[id, field, check, head]`; its later posts' readings their quotes'
  * `[id, field, check]` alone. A lone move too wide even so reads TIGHT — every post's quotes by id, its words cut to
  * heads — so one move never passes the budget (the widest: three posts at extract-6's widest, five quoted insights).
  * The insights are on the first page only; the line on closing the batch (`next`) on its last. `full: true` gives every
