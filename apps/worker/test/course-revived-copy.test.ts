@@ -28,7 +28,7 @@ import { writeCourseSession } from "../src/services/course-sessions.js";
 import type { Db } from "../src/services/db.js";
 import { importPlanSnapshot } from "../src/services/import-plan.js";
 import { emitPendingWork } from "../src/services/jobs.js";
-import { queueProvisionalPush } from "../src/services/mirror.js";
+import { mirrorSweep, queueProvisionalPush } from "../src/services/mirror.js";
 import { mirrorIntentId } from "../src/services/mirror-owed.js";
 import { courseSessionsDone, placeSlots, slotId } from "../src/services/program-slots.js";
 import { activeSyncNotes } from "../src/services/sync-notes.js";
@@ -229,6 +229,21 @@ describe.each(PATHS)("%s", (_name, path) => {
     await fullRead();
     expect(await notesOf(id)).toEqual([]);
     expect(await rowOf(db, id)).toMatchObject({ sourceIdInPlan: String(copy!.idInPlan), corosSyncState: "synced", missingReads: 0 });
+  });
+
+  it("the delete failing for good after it came back: the sweep queues it again with its own address, the row having none, and it lands", async () => {
+    const { p, id, buildId, stamp } = await copyOnWatch();
+    await path.off(p);
+    await path.back(p);
+    await db.update(corosWriteJobs).set({ status: "failed", lastErrorCategory: "error" }).where(eq(corosWriteJobs.id, `unpush:${buildId}`));
+    const later = new Date(Date.parse(NOW) + 2 * 3_600_000);
+    vi.setSystemTime(later);
+    expect((await mirrorSweep(db, switchOn(), userId, prefs, { today: MON, now: later.toISOString(), prefs }, { cap: 1 })).queued).toBe(1);
+    expect((await jobOf(`unpush:${buildId}`))!.status).toBe("queued");
+    await lane();
+    expect((await jobOf(`unpush:${buildId}`))!.status).toBe("verified");
+    expect(programOn(stamp)).toBeUndefined();
+    expect(await rowOf(db, id)).toMatchObject(noCopy(id));
   });
 
   it("the delete landing last, after the session's next copy, leaves that copy and the row's address alone", async () => {
