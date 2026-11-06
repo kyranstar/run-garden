@@ -596,3 +596,37 @@ describe("POST /api/saves/posts/:key/extract", () => {
     }
   });
 });
+
+describe("a reading with one unknown list value is kept (live finding, 2026-11-05)", () => {
+  it("drops the value, stores the reading with what it dropped, notes it on the check step and flags the move", async () => {
+    const id = await seed("lenient");
+    const reply = { ...GOOD, moves: [{ ...move, regions: ["hips", "forearmz"] }] };
+    const out = await run(id, bodyText(), gateway(reply));
+    expect(out.ok).toBe(true);
+    const row = await reload(id);
+    expect(row.status).toBe("matched");
+    const stored = row.extraction as { moves: { regions: string[] }[]; dropped?: unknown };
+    expect(stored.moves[0]!.regions).toEqual(["hips"]);
+    expect(stored.dropped).toEqual([{ move: 0, field: "regions", values: ["forearmz"] }]);
+    const check = (await db.select().from(schema.importEvents).where(eq(schema.importEvents.postId, id))).find((e) => e.stage === "check")!;
+    expect(check.status).toBe("warn");
+    expect(check.summary).toMatch(/1 value the app doesn't know was left out/);
+    expect((check.detail as { dropped: unknown }).dropped).toEqual([{ move: 0, field: "regions", values: ["forearmz"] }]);
+    const [link] = await db.select().from(schema.savedPostMoves).where(eq(schema.savedPostMoves.postId, id));
+    expect(link!.checkFlag).toBe(true);
+  });
+
+  it("a model's own `dropped` is replaced by what the Worker dropped", async () => {
+    const id = await seed("lenient2");
+    await run(id, bodyText(), gateway({ ...GOOD, dropped: [{ move: 0, field: "regions", values: ["made-up"] }] }));
+    const stored = (await reload(id)).extraction as { dropped?: unknown };
+    expect(stored.dropped).toBeUndefined();
+  });
+
+  it("an unknown single-valued field still fails the reading with the schema's words", async () => {
+    const id = await seed("lenient3");
+    const out = await run(id, bodyText(), gateway({ ...GOOD, moves: [{ ...move, position: "floaty" }] }));
+    expect(out).toMatchObject({ ok: false, code: "model_failed" });
+    expect((out as { issues: string[] }).issues[0]).toMatch(/^moves\.0\.position: must be one of/);
+  });
+});

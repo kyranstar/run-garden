@@ -567,16 +567,22 @@ function matchTrail(
   ].filter(Boolean);
   const call = judged.call;
   const usedJudge = call.status === "asked" || call.status === "failed";
-  const repairsMade = checked.some((c) => c.repairs.length > 0);
+  const repaired = checked.filter((c) => c.repairs.length).length;
+  const dropped = extraction.dropped ?? [];
+  const droppedValues = dropped.reduce((n, d) => n + d.values.length, 0);
+  const said = [
+    repaired ? `${repaired} reading${repaired === 1 ? "" : "s"} corrected to pass the library's rules` : "",
+    droppedValues
+      ? `${droppedValues} value${droppedValues === 1 ? "" : "s"} the app doesn't know ${droppedValues === 1 ? "was" : "were"} left out`
+      : "",
+  ].filter(Boolean);
   return [
     {
       stage: "check",
       source: "worker",
-      status: repairsMade ? "warn" : "ok",
-      summary: repairsMade
-        ? `${checked.filter((c) => c.repairs.length).length} reading${checked.filter((c) => c.repairs.length).length === 1 ? "" : "s"} corrected to pass the library's rules`
-        : "The reading checks out",
-      detail: { moves: checked },
+      status: said.length ? "warn" : "ok",
+      summary: said.length ? said.join("; ") : "The reading checks out",
+      detail: { moves: checked, ...(dropped.length ? { dropped } : {}) },
     },
     {
       stage: "match",
@@ -684,6 +690,7 @@ export async function matchPost(
   if (issues.length) return fail(issues.slice(0, 12), judgeCost);
 
   const byPosition = new Map(decisions.map((d) => [d.position, d]));
+  const droppedAt = new Set((parsed.data.dropped ?? []).map((d) => d.move));
   const linkRows: (typeof savedPostMoves.$inferInsert)[] = decisions.map((d) => {
     // A repeat in the post is the same new move: its link is like what its first's is.
     const likeMoveId = d.like ?? (d.sameAs !== undefined ? byPosition.get(d.sameAs)?.like : undefined) ?? null;
@@ -696,7 +703,8 @@ export async function matchPost(
       moveKind: d.kind === "library" ? "library" : "personal",
       batchId: null,
       confidence: CONFIDENCE_VALUE[d.confidence],
-      checkFlag: d.check || repaired.has(d.position) || likeMoveId !== null,
+      // A move a value was left out of is checked too (live finding, 2026-11-05).
+      checkFlag: d.check || repaired.has(d.position) || likeMoveId !== null || droppedAt.has(d.position),
       status: "pending",
       likeMoveId,
       createdAt: now,

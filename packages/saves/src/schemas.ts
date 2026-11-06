@@ -1,4 +1,5 @@
 import { z } from "zod";
+import { LIST_FIELDS } from "./lenient.js";
 import {
   CONTRACTIONS, DOSE_TYPES, EQUIPMENT_IDS, LATERALITY, LOADS, PATTERNS, POSITIONS, PROFILE_IDS, REGIONS,
 } from "@rg/exercise-library";
@@ -130,6 +131,14 @@ export const extractionSchema = z
      * coach's memory when the owner saves the batch. An extraction stored before they were asked for has none.
      */
     insights: z.array(z.string().max(200)).max(5).default([]),
+    /**
+     * Written by the Worker after the parse, never the model's (a model-written one is replaced): the list values the
+     * library doesn't know, left out so one word can't throw a paid reading away (live finding, 2026-11-05).
+     */
+    dropped: z
+      .array(z.object({ move: z.number().int().min(0), field: z.enum(LIST_FIELDS), values: z.array(z.string().max(40)).max(20) }).strict())
+      .max(150)
+      .optional(),
   })
   .strict();
 /** An extraction as stored: one read before `insights` were asked for has none (the schema reads it as `[]`). */

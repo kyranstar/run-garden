@@ -300,3 +300,15 @@ describe("validatePersonalRecord", () => {
     expect(validatePersonalRecord(toPersonalRecord(id, move({ patterns: [] }))).length).toBeGreaterThan(0);
   });
 });
+
+describe("repairDraft: a weight counted in breaths (live finding, 2026-11-05)", () => {
+  it("is stored as bodyweight with a note, never refused as 'external load needs reps or carry dosing'", () => {
+    const draft = move({ load: "external", equipment: ["kettlebell"], dose: { text: "5 breaths", type: "breaths", range: [5, 5] } });
+    const { draft: out, repairs } = repairDraft(draft);
+    expect(out.load).toBe("bodyweight");
+    expect(out.dose).toEqual(draft.dose);
+    expect(repairs).toContain("a weight counted in breaths; stored as bodyweight (the app logs a weight on reps or a timed carry)");
+    const built = buildPersonalRecord(id, draft);
+    expect(built.ok).toBe(true);
+  });
+});

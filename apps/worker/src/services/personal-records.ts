@@ -204,6 +204,11 @@ export function repairDraft(draft: ExtractedMove): { draft: ExtractedMove; repai
     out = { ...out, load: "bodyweight" };
     repairs.push("load read as external with no loadable implement; stored as bodyweight");
   }
+  if (out.load === "external" && out.dose.type === "breaths") {
+    // A weight held for breaths: no logged weight goes on a count of breaths, and no seconds are invented for it.
+    out = { ...out, load: "bodyweight" };
+    repairs.push("a weight counted in breaths; stored as bodyweight (the app logs a weight on reps or a timed carry)");
+  }
   if (out.load === "external" && out.dose.type === "time") {
     // A weight on a clock: `carry` is the timed type that takes a load, and a paid reading shouldn't fail over the word.
     out = { ...out, dose: { ...out.dose, type: "carry" } };

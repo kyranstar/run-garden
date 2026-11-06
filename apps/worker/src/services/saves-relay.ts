@@ -2,7 +2,7 @@ import { and, eq, inArray, lt, or, sql } from "drizzle-orm";
 import type { ZodIssue } from "zod";
 import { EXERCISES, PROFILES } from "@rg/exercise-library";
 import { schema } from "@rg/database";
-import { EXTRACT_PROMPT_VERSION, extractionSchema, extractSystemText, extractUserText, promptSha } from "@rg/saves";
+import { dropUnknownEnums, EXTRACT_PROMPT_VERSION, extractionSchema, extractSystemText, extractUserText, promptSha } from "@rg/saves";
 import type { Extraction, PostSubmit, SaveErrorCode } from "@rg/saves";
 import type { Env } from "../env.js";
 import { runAtomically, type Db } from "./db.js";
@@ -470,7 +470,10 @@ function extractEvent(
 function parseExtraction(content: string): { ok: true; extraction: Extraction } | { ok: false; issues: string[] } {
   const raw = extractJson(content);
   if (raw === null || typeof raw !== "object") return { ok: false, issues: ["the reply was not valid JSON"] };
-  const parsed = extractionSchema.safeParse(raw);
+  // One unknown list value no longer fails the whole reading: it is left out, and the move flagged (live finding, 2026-11-05).
+  const lenient = dropUnknownEnums(raw);
+  const { dropped: _theModels, ...value } = lenient.value as Record<string, unknown>;
+  const parsed = extractionSchema.safeParse(lenient.dropped.length ? { ...value, dropped: lenient.dropped } : value);
   if (parsed.success) return { ok: true, extraction: parsed.data };
   return {
     ok: false,
