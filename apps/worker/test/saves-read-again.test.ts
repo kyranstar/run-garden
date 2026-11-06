@@ -14,7 +14,10 @@ import { createSession, SESSION_COOKIE } from "../src/auth/sessions.js";
 import { mySavesRoutes } from "../src/routes/my-saves.js";
 import { readPostTrail } from "../src/services/import-trail-read.js";
 import { overridePost, savedPostId, workList } from "../src/services/saves-ledger.js";
-import { EXTRACT_MODEL_DEFAULT, typicalReadingMicros } from "../src/services/saves-relay.js";
+import { PROFILES } from "@rg/exercise-library";
+import { EXTRACT_PROMPT_VERSION } from "@rg/saves";
+import { assembleBatch } from "../src/services/saves-batches.js";
+import { EXTRACT_MODEL_DEFAULT, matchStale, relayExtract, typicalReadingMicros } from "../src/services/saves-relay.js";
 import { readAgain } from "../src/services/saves-reread.js";
 import { makeTestDb, makeTestUser, mountRoutes } from "./helpers.js";
 
@@ -177,5 +180,166 @@ describe("Retry on a post that has links keeps its reading (phase 5a)", () => {
     await db.update(savedPosts).set({ lastErrorCode: "media_failed" }).where(eq(savedPosts.id, id));
     expect(await overridePost(db, userId, { id }, "process", NOW)).toBe("ok");
     expect(await post(id)).toMatchObject({ status: "queued", extraction: EARLIER });
+  });
+});
+
+// ── The re-read itself (Task 7) ─────────────────────────────────────────────────────────────────────────────────────
+
+const conditions = Object.fromEntries(
+  Object.values(PROFILES).map((p) => [
+    p.id,
+    { attrs: Object.fromEntries(Object.entries(p.attributes).map(([k, s]) => [k, s.kind === "scale" ? s.min : false])), note: "ok" },
+  ]),
+);
+/** A move as extract-6 reads it, with its reason and a quote. No library name is near it: no judge is asked. */
+const full = (name: string, why: string) => ({
+  name, aliases: [], summary: "s", steps: ["a"], cues: [], mistakes: [], purpose: `${name} purpose`,
+  dose: { text: "10 each side", type: "reps", range: [10, 10] }, patterns: ["mobility"], regions: ["hips"], equipment: ["mat"],
+  position: "seated", laterality: "alternating", load: "bodyweight", contraction: ["isotonic"], difficulty: 2, conditions,
+  evidence: { name: "stated", dose: "stated", steps: "stated", purpose: "stated" }, confidence: "high", why,
+  quotes: [{ field: "why", text: why, from: "caption" }],
+});
+/** The re-read under extract-6: the moves in another order, and one the earlier reading never had. */
+const FRESH = {
+  kind: "routine", summary: "Two slow hip moves, then a calf drift.", themes: ["mobility"],
+  moves: [full("Zorbex knee sways", "loosens the knees"), full("Zorbex hip lift", "opens the hips"), full("Zorbex quux drift", "calms the calves")],
+  insights: [{ text: "A new note", scope: "general" }],
+};
+const env = { FIXTURE_MODE: "0", AI_GATEWAY_API_KEY: "k", AI_GATEWAY_BASE_URL: "https://gw.test/v1" } as unknown as Env;
+function gateway(content: unknown, status = 200) {
+  const fetchImpl = vi.fn(async (_u: unknown, init?: RequestInit) => {
+    await new Response(init?.body as BodyInit).arrayBuffer();
+    if (status !== 200) return new Response("nope", { status });
+    return new Response(JSON.stringify({ model: MODEL, choices: [{ message: { content: JSON.stringify(content) } }], usage: { prompt_tokens: 20_000, completion_tokens: 900 } }), {
+      status: 200, headers: { "content-type": "application/json" },
+    });
+  });
+  return { fetchImpl: fetchImpl as unknown as typeof fetch, spy: fetchImpl };
+}
+const extractRequest = () => {
+  const text = JSON.stringify({ model: MODEL, max_tokens: 3000, messages: [{ role: "user", content: [{ type: "text", text: "x".repeat(2_000) }] }] });
+  return new Request(`https://app.test/api/saves/posts/${KEY}/extract?source=instagram`, {
+    method: "POST", headers: { "content-type": "application/json", "content-length": String(text.length), "x-saves-prompt-version": EXTRACT_PROMPT_VERSION }, body: text,
+  });
+};
+const reread = (id: string, gw: ReturnType<typeof gateway>) => relayExtract(db, env, userId, { id }, extractRequest(), new Date(NOW), gw.fetchImpl);
+const snapshot = async () => ({
+  moves: await db.select().from(personalMoves).orderBy(personalMoves.id),
+  links: await db.select().from(savedPostMoves).orderBy(savedPostMoves.id),
+  corrections: await db.select().from(importCorrections).orderBy(importCorrections.id),
+});
+
+describe("the re-read never rewrites what the owner has (the proof the controller asked for)", () => {
+  it("every move (edited, corrected, merged), every link (corrected) and every approved correction is as it was; the new words sit at their links' places with the reading's correction on top; saved notes kept", async () => {
+    const id = await oldSaved();
+    const before = await snapshot();
+    await readAgain(db, userId, id, NOW);
+    const gw = gateway(FRESH);
+    expect(await reread(id, gw)).toMatchObject({ ok: true });
+    expect(gw.spy).toHaveBeenCalledTimes(1); // the reading only: no judge asked about a move the post already links
+
+    const after = await snapshot();
+    // Not one existing row rewritten: the owner's edit and the coach's corrections stand.
+    expect(after.corrections).toEqual(before.corrections);
+    for (const m of before.moves) expect(after.moves.find((x) => x.id === m.id)).toEqual(m);
+    for (const l of before.links) expect(after.links.find((x) => x.id === l.id)).toEqual(l);
+
+    const p = await post(id);
+    expect(p.status).toBe("matched");
+    const stored = p.extraction as typeof FRESH & { moves: (ReturnType<typeof full> & { useWhen?: unknown })[]; insights: unknown };
+    expect(stored.moves.map((m) => m.name)).toEqual(["Zorbex hip lift", "Zorbex knee sways", "Zorbex quux drift"]);
+    expect(stored.moves[0]!.why).toBe("opens the hips");
+    expect(stored.moves[0]!.useWhen).toEqual([{ text: "after easy runs", evidence: "stated" }]); // the approved correction, again
+    expect(stored.insights).toEqual(EARLIER.insights); // the dropped note stays dropped
+
+    // The move the earlier reading never had is linked as new, and waits for the next batch.
+    const added = after.links.filter((l) => !before.links.some((b) => b.id === l.id));
+    expect(added.map((l) => [l.position, l.status, l.batchId])).toEqual([[2, "pending", null]]);
+    expect(after.moves.filter((m) => !before.moves.some((b) => b.id === m.id)).map((m) => [m.id, m.status])).toEqual([[added[0]!.moveId, "pending"]]);
+    expect(p.batchId).toBeNull();
+    const next = await assembleBatch(db, env, userId, NOW);
+    expect(next).not.toBeNull();
+    expect((await db.select().from(savedPostMoves).where(eq(savedPostMoves.id, added[0]!.id)))[0]!.batchId).toBe(next);
+    expect(await linksOf(id)).toEqual(expect.arrayContaining([[0, "myZorbexHipLift0001", "saved", "batch-old"], [1, "myZorbexKneeSwing03", "saved", "batch-old"]]));
+  });
+
+  it("the trail then tells the new reading: its own steps replace the rebuilt ones, the moves keep their names, the post's words come with them", async () => {
+    const id = await oldSaved();
+    await readAgain(db, userId, id, NOW);
+    await reread(id, gateway(FRESH));
+    const trail = (await readPostTrail(db, userId, id, NOW))!;
+    expect(trail.rebuilt).toBe(false);
+    expect(trail.events.every((e) => !e.rebuilt)).toBe(true);
+    expect(trail.events.map((e) => e.stage)).toEqual(["choice", "extract", "check", "match"]);
+    const extract = trail.events.find((e) => e.stage === "extract")!;
+    expect(extract).toMatchObject({ promptVersion: EXTRACT_PROMPT_VERSION, status: "ok" });
+    expect(extract.summary).toBe("Read 3 moves (a routine) — read again, lined up with the 2 moves it had");
+    const match = trail.events.find((e) => e.stage === "match")!.detail as { moves: { position: number; by: string; moveId: string }[] };
+    expect(match.moves.map((m) => [m.position, m.by, m.moveId])).toEqual([
+      [0, "kept", "myZorbexHipLift0001"], [1, "kept", "myZorbexKneeSwing03"], [2, "new", expect.any(String)],
+    ]);
+    expect(trail.account.moves.map((m) => [m.name, m.outcome, m.why])).toEqual([
+      ["Zorbex hip lift (mine)", "yours", "opens the hips"], ["Zorbex knee swing", "yours", "loosens the knees"], ["Zorbex quux drift", "new", "calms the calves"],
+    ]);
+    expect(trail.post.readAgain).toBeNull();
+  });
+
+  it("a linked move the new reading doesn't hold: the earlier reading stays whole, the reply is on the trail, and it can be asked again", async () => {
+    const id = await oldSaved();
+    await readAgain(db, userId, id, NOW);
+    const before = await snapshot();
+    const out = await reread(id, gateway({ ...FRESH, moves: [FRESH.moves[1], FRESH.moves[2]] }));
+    expect(out).toMatchObject({ ok: true });
+    expect(await post(id)).toMatchObject({ status: "matched", extraction: EARLIER });
+    expect(await snapshot()).toEqual(before);
+    const trail = (await readPostTrail(db, userId, id, NOW))!;
+    const extract = trail.events.find((e) => e.stage === "extract" && !e.rebuilt)!;
+    expect(extract.status).toBe("warn");
+    expect(extract.summary).toBe("Read 2 moves again, but Zorbex knee sways isn't among them — the earlier reading stays");
+    expect(extract.blobs.map((b) => b.kind)).toContain("raw_reply");
+    expect(trail.rebuilt).toBe(true); // still the kept steps: the earlier reading is still the post's
+    expect(trail.post.readAgain).toMatchObject({ offer: true });
+  });
+
+  it("a re-read that fails keeps the earlier reading and its rebuilt steps; the failure is on the trail once", async () => {
+    const id = await oldSaved();
+    await readAgain(db, userId, id, NOW);
+    await reread(id, gateway(null, 500));
+    expect(await post(id)).toMatchObject({ status: "failed", extraction: EARLIER });
+    const trail = (await readPostTrail(db, userId, id, NOW))!;
+    expect(trail.rebuilt).toBe(true);
+    expect(trail.events.map((e) => [e.stage, e.rebuilt, e.status])).toEqual([
+      ["submit", true, "ok"], ["screen", true, "ok"], ["extract", true, "ok"], ["match", true, "ok"], ["batch", true, "info"], ["choice", true, "info"], ["save", true, "ok"],
+      ["choice", false, "info"], ["extract", false, "fail"],
+    ]);
+  });
+
+  it("an old failed post with nothing kept: one failed step, never a rebuilt copy of the same failure", async () => {
+    const id = await savedPostId(userId, "instagram", KEY);
+    await db.insert(savedPosts).values({
+      id, userId, source: "instagram", sourceKey: KEY, url: link, firstSeenAt: CAPTURED, status: "failed", filterVerdict: "training",
+      filterReason: "a hip routine", filterStage: "model", lastErrorCode: "media_failed", mediaType: "video", updatedAt: CAPTURED,
+    });
+    await readAgain(db, userId, id, NOW);
+    await reread(id, gateway(null, 500));
+    const trail = (await readPostTrail(db, userId, id, NOW))!;
+    expect(trail.events.filter((e) => e.stage === "extract").map((e) => [e.rebuilt, e.status])).toEqual([[false, "fail"]]);
+  });
+
+  it("a re-read cut off after its paid reading is matched later the same way: nothing linked twice, nothing left behind", async () => {
+    const id = await oldSaved();
+    // The aligned reading was stored (paid and kept first); the request died before matching.
+    await db.update(savedPosts).set({
+      status: "extracted", updatedAt: "2026-11-06T09:00:00.000Z",
+      extraction: { ...FRESH, moves: [FRESH.moves[1], FRESH.moves[0], FRESH.moves[2]], insights: EARLIER.insights },
+    }).where(eq(savedPosts.id, id));
+    const before = await snapshot();
+    const gw = gateway({ matches: [] });
+    expect(await matchStale(db, env, userId, new Date(NOW), gw.fetchImpl)).toBe(true);
+    expect(gw.spy).not.toHaveBeenCalled();
+    const after = await snapshot();
+    expect(after.links.length).toBe(before.links.length + 1);
+    expect(after.moves.length).toBe(before.moves.length + 1);
+    for (const m of before.moves) expect(after.moves.find((x) => x.id === m.id)).toEqual(m);
   });
 });

@@ -46,6 +46,7 @@ import { extractJson, RETRY_BACKOFF_MS, RETRYABLE_STATUSES } from "./studio-llm.
 import { FILTER_MODEL_DEFAULT } from "./saves-filter.js";
 import { buildPersonalRecord, loadPersonalForMatch, newPersonalMoveId, type PersonalMatchRow } from "./personal-moves.js";
 import { repairDraft } from "./personal-records.js";
+import { notFittingSql } from "./saves-batches.js";
 
 const { savedPosts, personalMoves, savedPostMoves } = schema;
 
@@ -510,6 +511,52 @@ async function askJudge(
 
 // ── One post ─────────────────────────────────────────────────────────────────────────────────────────────────────────
 
+/** A link already there, as the post's read gives it. */
+interface Linked {
+  moveId: string;
+  moveKind: "library" | "personal";
+  check: boolean;
+}
+
+/** The post's links already there, by place (JSON from the post's read). */
+function linkedOf(raw: unknown): Map<number, Linked> {
+  let list: unknown = raw;
+  if (typeof raw === "string") {
+    try {
+      list = JSON.parse(raw);
+    } catch {
+      list = [];
+    }
+  }
+  const out = new Map<number, Linked>();
+  for (const x of Array.isArray(list) ? list : []) {
+    const [position, moveId, moveKind, check] = Array.isArray(x) ? (x as unknown[]) : [];
+    if (typeof position === "number" && typeof moveId === "string") {
+      out.set(position, { moveId, moveKind: moveKind === "library" ? "library" : "personal", check: check === 1 || check === true });
+    }
+  }
+  return out;
+}
+
+/**
+ * The decisions with the post's linked places kept as they are (a re-read, phase 5a): each is its link's move, settled
+ * — nothing to judge, no move to make — and a new move named as a linked place's move is that move, so a re-read never
+ * makes a second copy of a move the post already has. With no links, the decisions as they were.
+ */
+function keepLinked(decisions: readonly MatchDecision[], extraction: Extraction, linked: ReadonlyMap<number, Linked>): MatchDecision[] {
+  if (linked.size === 0) return [...decisions];
+  const byName = new Map<string, Linked>();
+  for (const [position, l] of linked) {
+    const name = extraction.moves[position]?.name;
+    if (name && !byName.has(normalizeMoveName(name))) byName.set(normalizeMoveName(name), l);
+  }
+  return decisions.map((d): MatchDecision => {
+    const l = linked.get(d.position) ?? (d.kind === "new" && d.draft ? byName.get(normalizeMoveName(d.draft.name)) : undefined);
+    if (!l) return d;
+    return { position: d.position, kind: l.moveKind, id: l.moveId, confidence: "high", check: linked.has(d.position) ? l.check : false };
+  });
+}
+
 /**
  * Match an `extracted` post's moves and write the outcome as pending; the post becomes `matched`. Any other status is
  * left alone (a re-run, a resubmit) and writes nothing. D1 statements: the post 1, personal moves 1 (read once: the
@@ -538,6 +585,8 @@ function matchTrail(
   judged: { verdicts: ReadonlyMap<number, string | null> | null; call: JudgeCall },
   items: readonly MatchJudgeItem[],
   personal: readonly PersonalMatchRow[],
+  /** The places the post already linked (a re-read, phase 5a): kept as they were. */
+  linked: ReadonlySet<number> = new Set(),
 ): TrailEventInput[] {
   const asked = new Set(items.map((i) => i.position));
   const names = new Map(personal.map((r) => [r.id, r.name]));
@@ -551,7 +600,7 @@ function matchTrail(
     const wasAsked = firstAsked !== undefined && asked.has(firstAsked);
     const answer = wasAsked && judged.verdicts?.has(firstAsked!) ? (judged.verdicts.get(firstAsked!) ?? null) : null;
     if (wasAsked && judged.call.status !== "asked") undecided++;
-    const by = before.kind !== "new" ? "name" : after.kind !== "new" ? "judge" : "new";
+    const by = linked.has(before.position) ? "kept" : before.kind !== "new" ? "name" : after.kind !== "new" ? "judge" : "new";
     const like = after.like ?? link?.likeMoveId ?? null;
     return {
       position: before.position,
@@ -567,8 +616,9 @@ function matchTrail(
       check: link?.checkFlag ?? after.check,
     };
   });
-  const count = (o: string) => moves.filter((m) => m.outcome === o).length;
+  const count = (o: string) => moves.filter((m) => m.outcome === o && !linked.has(m.position)).length;
   const parts = [
+    linked.size ? `${linked.size} kept as linked` : "",
     count("new") ? `${count("new")} new` : "",
     count("personal") ? `${count("personal")} already yours` : "",
     count("library") ? `${count("library")} from the library` : "",
@@ -624,11 +674,18 @@ export async function matchPost(
 ): Promise<MatchOutcome> {
   const mine = and(eq(savedPosts.id, postId), eq(savedPosts.userId, userId), eq(savedPosts.status, "extracted"));
   const [post] = await db
-    .select({ status: savedPosts.status, extraction: savedPosts.extraction })
+    .select({
+      status: savedPosts.status,
+      extraction: savedPosts.extraction,
+      // The post's links already there (an old post read again, phase 5a): in the same statement.
+      linked: sql<string>`(SELECT json_group_array(json_array(l.position, l.move_id, l.move_kind, l.check_flag)) FROM saved_post_moves l
+        WHERE l.user_id = ${userId} AND l.post_id = ${postId})`,
+    })
     .from(savedPosts)
     .where(and(eq(savedPosts.id, postId), eq(savedPosts.userId, userId)))
     .limit(1);
   if (!post || post.status !== "extracted") return { newMoves: 0, linked: 0 };
+  const linked = linkedOf(post.linked);
 
   /** The judge's call, once made: a failed match still keeps its raw reply on the trail. */
   let judgeCall: JudgeCall | null = null;
@@ -662,7 +719,9 @@ export async function matchPost(
   if (!parsed.success) return fail(["extraction: the stored extraction does not match the format"], 0);
 
   const personal = await loadPersonalForMatch(db, userId);
-  let decisions = matchMoves(parsed.data, EXERCISES, personal);
+  // A place the post already links is kept as it is — no judge, no new move, no new link — and a repeat of one of its
+  // moves later in the post is that move (phase 5a: a re-read only adds what the earlier reading never had).
+  let decisions = keepLinked(matchMoves(parsed.data, EXERCISES, personal), parsed.data, linked);
   /** What the names alone decided, before the judge: the trail says how each move was settled. */
   const byNames = decisions;
   const items = judgeItems(decisions);
@@ -704,7 +763,7 @@ export async function matchPost(
 
   const byPosition = new Map(decisions.map((d) => [d.position, d]));
   const droppedAt = new Set((parsed.data.dropped ?? []).map((d) => d.move));
-  const linkRows: (typeof savedPostMoves.$inferInsert)[] = decisions.map((d) => {
+  const linkRows: (typeof savedPostMoves.$inferInsert)[] = decisions.filter((d) => !linked.has(d.position)).map((d) => {
     // A repeat in the post is the same new move: its link is like what its first's is.
     const likeMoveId = d.like ?? (d.sameAs !== undefined ? byPosition.get(d.sameAs)?.like : undefined) ?? null;
     return {
@@ -725,7 +784,7 @@ export async function matchPost(
   });
   // A move or link already there (the same post matched before) is kept as it stands: an import never rewrites a
   // personal move, edited by the owner or not; later posts only add links.
-  const trail = matchTrail(parsed.data, byNames, decisions, linkRows, checked, judged, items, personal);
+  const trail = matchTrail(parsed.data, byNames, decisions, linkRows, checked, judged, items, personal, new Set(linked.keys()));
   await runAtomically(db, [
     ...insertBatches(moveRows).map((rows) => db.insert(personalMoves).values(rows).onConflictDoNothing()),
     ...insertBatches(linkRows).map((rows) => db.insert(savedPostMoves).values(rows).onConflictDoNothing()),
@@ -738,6 +797,17 @@ export async function matchPost(
       .set({
         status: "matched", lastErrorCode: null, lastError: null, costMicros: sql`${savedPosts.costMicros} + ${judgeCost}`, updatedAt: now,
         ...(opts.checked ? { extraction: opts.checked } : {}),
+        // A re-read's new moves wait for the next batch: the post leaves a batch that is done with it (saved, put aside,
+        // replaced) — never one held, being fitted in, or still holding a move of it waiting (phase 5a).
+        ...(linked.size && linkRows.length
+          ? {
+              batchId: sql`CASE WHEN EXISTS (SELECT 1 FROM save_batches nb WHERE nb.id = ${savedPosts.batchId} AND nb.user_id = ${userId}
+                  AND (nb.status = 'held' OR NOT ${notFittingSql("nb", now)}))
+                OR EXISTS (SELECT 1 FROM saved_post_moves np WHERE np.user_id = ${userId} AND np.post_id = ${postId} AND np.status = 'pending'
+                  AND np.batch_id = ${savedPosts.batchId})
+                THEN ${savedPosts.batchId} ELSE NULL END`,
+            }
+          : {}),
       })
       .where(mine),
   ]);

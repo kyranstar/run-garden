@@ -18,7 +18,7 @@ import type { BlobKind, ImportBlobDto, ImportStage, ImportTrailDto, TrailEventDt
 import { nowInstant } from "@rg/domain";
 import type { Db } from "./db.js";
 import { EXTRACT_MODEL_DEFAULT } from "./saves-relay.js";
-import { readAgainGateSql, readingCostOf } from "./saves-reread.js";
+import { isOwnReading, readAgainGateSql, readingCostOf } from "./saves-reread.js";
 import { videoOfTrail } from "./saves-video.js";
 
 const { savedPosts, importEvents, importBlobs, savedPostMoves, personalMoves, saveBatches, exerciseProvenance } = schema;
@@ -138,13 +138,18 @@ export async function readPostTrail(db: Db, userId: string, postId: string, now:
       }));
   // A post from before the trail has no screening or reading of its own; one touched since (saved, edited) has later
   // steps only. Either way its kept columns are rebuilt, marked, before whatever came after (final review I4).
-  const hasOwnReading = stored.some((e) => e.stage === "screen" || e.stage === "extract");
+  // Its own reading: a screening, or a reading of its moves that was stored. A re-read that failed, or kept the earlier
+  // reading, is none: the post's reading is still the kept one, and its rebuilt steps stand (phase 5a).
+  const hasOwnReading = stored.some(isOwnReading);
   // A step the trail recorded itself is never rebuilt beside it (a post saved after the trail began has its own save
-  // step); the owner's choices are rebuilt unless the trail recorded the fit of the post's own batch.
+  // step); the owner's choices are rebuilt unless the trail recorded the fit of the post's own batch; and a failed
+  // reading is never rebuilt beside the trail's own failure — the kept reading itself still is.
   const recorded = (e: TrailEventDto): boolean =>
     e.stage === "choice"
       ? rows.some((r) => r.stage === "choice" && !!r.batchId && r.batchId === p.batchId)
-      : stored.some((s) => s.stage === e.stage);
+      : e.stage === "extract"
+        ? e.status === "fail" && stored.some((s) => s.stage === "extract")
+        : stored.some((s) => s.stage === e.stage);
   const rebuiltSteps = hasOwnReading ? [] : rebuiltEvents(p, batch, links).filter((e) => !recorded(e));
   const rebuilt = rebuiltSteps.length > 0;
   const events = [...rebuiltSteps, ...stored];
