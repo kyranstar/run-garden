@@ -12,7 +12,7 @@
 import { useState } from "react";
 import { Link } from "react-router-dom";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { api, SAVES_HEALTH_QUERY, SAVES_LINKS_QUERY, SAVES_STATUS_QUERY } from "@rg/api-client";
+import { api, ApiError, SAVES_HEALTH_QUERY, SAVES_LINKS_QUERY, SAVES_STATUS_QUERY } from "@rg/api-client";
 import { ADDED_LINE, alreadyInLine, LINK_REFUSED, normalizeLink } from "@rg/saves";
 import type { ImportHealthDto, LinkDto, PostRowDto, SavePostStatus, SavesStatusDto } from "@rg/saves";
 import { Card, Sheet } from "../../components.js";
@@ -96,6 +96,16 @@ function PostRow({ post, busy, onProcess, onTrail }: { post: PostRowDto; busy: b
   );
 }
 
+/** Why a link couldn't be added, in plain words, by the app's answer. */
+function addFailureWords(e: unknown): string {
+  const status = e instanceof ApiError ? e.status : 0;
+  if (status === 400) return LINK_REFUSED;
+  if (status === 401) return "Sign in again to add a link.";
+  if (status === 423) return "A restore is running — try again when it's done.";
+  if (status === 0) return "You're offline — the link is still here to add.";
+  return "The app couldn't take it just now — try again in a moment.";
+}
+
 /**
  * A link pasted on the phone (design 2026-11-05 §15.2): the app keeps it and the computer's extension reads it within
  * about 15 minutes. The answer in a line: added, already in (when), or what it takes.
@@ -110,14 +120,17 @@ function LinkField() {
       setSaid(a.state === "known" ? alreadyInLine(a.firstSeenAt) : ADDED_LINE);
       setUrl("");
     },
-    onError: () => setSaid(LINK_REFUSED),
+    // Only the app's refusal says what it takes; anything else says what happened, and the link stays (final audit G17).
+    onError: (e) => setSaid(addFailureWords(e)),
     onSettled: () => qc.invalidateQueries({ queryKey: SAVES_LINKS_QUERY }),
   });
   return (
     <form
       className="saves-link-field"
+      noValidate
       onSubmit={(e) => {
         e.preventDefault();
+        if (!url.trim()) return; // an empty Add does nothing (final audit G18)
         if (!normalizeLink(url)) return setSaid(LINK_REFUSED);
         add.mutate(url.trim());
       }}

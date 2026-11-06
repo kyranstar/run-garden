@@ -301,3 +301,61 @@ describe("Settings -> Saves: a link from the phone (design 2026-11-05 §15.2)", 
     expect(calls).toContainEqual({ method: "POST", path: "/api/my-saves/posts/p1/override", body: { action: "process" } });
   });
 });
+
+describe("Settings -> Saves: a link that couldn't be added says why (final audit G17)", () => {
+  const watch = ["ht", "tps://www.", "you", "tube.com/watch?v=", "Zx9_-QaB3cD"].join("");
+  async function addWith(status: number) {
+    linkAnswer = { error: "x" };
+    await mount({ status: 200, body: status_() });
+    await flush();
+    await act(async () => {
+      (host.querySelector("button.place-row") as HTMLButtonElement).click();
+    });
+    await flush();
+    const sheet = document.querySelector("[role=dialog]") as HTMLElement;
+    const input = sheet.querySelector("input") as HTMLInputElement;
+    vi.mocked(fetch).mockImplementation(async (url: string | URL | Request, req?: RequestInit) =>
+      String(url) === "/api/my-saves/links" && req?.method === "POST" ? json({ error: "x" }, status) : json({ links: [] }),
+    );
+    await act(async () => {
+      Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value")!.set!.call(input, watch);
+      input.dispatchEvent(new Event("input", { bubbles: true }));
+    });
+    await act(async () => {
+      (sheet.querySelector("form button") as HTMLButtonElement).click();
+    });
+    await flush();
+    return { sheet, input };
+  }
+  const status_ = () => status();
+
+  it("a server or network trouble isn't 'Only YouTube and Instagram links', and the link stays in the field", async () => {
+    const { sheet, input } = await addWith(503);
+    expect(sheet.textContent).not.toContain("Only YouTube and Instagram links for now.");
+    expect(sheet.textContent).toContain("The app couldn't take it just now — try again in a moment.");
+    expect(input.value).toBe(watch);
+  });
+
+  it("a restore in progress says so", async () => {
+    const { sheet } = await addWith(423);
+    expect(sheet.textContent).toContain("A restore is running — try again when it's done.");
+  });
+});
+
+describe("Settings -> Saves: the field takes a bare link, and an empty Add does nothing (final audit G18)", () => {
+  it("no browser URL check, and no refusal for nothing", async () => {
+    await mount({ status: 200, body: status() });
+    await flush();
+    await act(async () => {
+      (host.querySelector("button.place-row") as HTMLButtonElement).click();
+    });
+    await flush();
+    const sheet = document.querySelector("[role=dialog]") as HTMLElement;
+    expect((sheet.querySelector("form") as HTMLFormElement).noValidate).toBe(true);
+    await act(async () => {
+      (sheet.querySelector("form button") as HTMLButtonElement).click();
+    });
+    await flush();
+    expect(sheet.textContent).not.toContain("Only YouTube and Instagram links for now.");
+  });
+});
