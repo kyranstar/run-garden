@@ -71,6 +71,7 @@ import {
   promptVersions,
   saveBatches,
   saveChecks,
+  savedLinks,
   savedPostMoves,
   savedPosts,
   gardenDayInputs,
@@ -225,6 +226,8 @@ const ENTRIES: ReadonlyArray<readonly [SQLiteTable, TableScope]> = [
   [personalMoves, USER],
   [savedPostMoves, USER],
   // the import trail (0034): what each stage of a post did, its large pieces, and every correction — the owner's data
+  // pasted links (0035): a link waiting for the extension to read it — the owner's data
+  [savedLinks, USER],
   [importEvents, USER],
   [importBlobs, USER],
   [importCorrections, USER],

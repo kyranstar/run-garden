@@ -40,11 +40,53 @@ export const savedPosts = sqliteTable(
     durationSec: integer("duration_sec"),
     /** Migration 0034: whether the reader watched the video (null: not known, or not a video read by link). */
     videoSeen: integer("video_seen", { mode: "boolean" }),
+    /**
+     * Migration 0035: a video's facts beside its words — its chapters, the captions it had, whether it was a live
+     * stream, its transcript's length and whether that was cut (the transcript itself is an `import_blobs` row).
+     */
+    videoInfo: text("video_info", { mode: "json" }).$type<SavedVideoInfo>(),
+    /** Migration 0035: the owner asked for the video to be watched too (Watch it too), whatever its length. */
+    watchVideo: integer("watch_video", { mode: "boolean" }),
     updatedAt: text("updated_at").notNull(),
   },
   (t) => [
     uniqueIndex("saved_posts_source_unique").on(t.userId, t.source, t.sourceKey),
     index("saved_posts_status_idx").on(t.userId, t.status, t.updatedAt),
+  ],
+);
+
+/** A video's facts as `saved_posts.video_info` keeps them (migration 0035). */
+export interface SavedVideoInfo {
+  chapters: { start: number; title: string }[];
+  captions: { lang: string; kind: "uploaded" | "auto" } | null;
+  live: boolean;
+  transcriptChars: number;
+  transcriptCut: boolean;
+}
+
+/**
+ * A link pasted in the extension's popup or the app's field (migration 0035), waiting for the extension to read it.
+ * `id` is the post's id-to-be (`savedPostId`), so the link meets its post by id; before that, `status` is `waiting` or
+ * `failed` (why: `error_code`, `error`).
+ */
+export const savedLinks = sqliteTable(
+  "saved_links",
+  {
+    id: text("id").primaryKey(),
+    userId: text("user_id").notNull(),
+    source: text("source").notNull(),
+    sourceKey: text("source_key").notNull(),
+    url: text("url").notNull(),
+    addedFrom: text("added_from").$type<"extension" | "app">().notNull(),
+    status: text("status").$type<"waiting" | "failed">().notNull(),
+    errorCode: text("error_code"),
+    error: text("error"),
+    addedAt: text("added_at").notNull(),
+    updatedAt: text("updated_at").notNull(),
+  },
+  (t) => [
+    uniqueIndex("saved_links_source_unique").on(t.userId, t.source, t.sourceKey),
+    index("saved_links_added_idx").on(t.userId, t.addedAt),
   ],
 );
 
@@ -210,6 +252,7 @@ export const importCorrections = sqliteTable(
 export type ImportEventRow = typeof importEvents.$inferSelect;
 export type ImportBlobRow = typeof importBlobs.$inferSelect;
 export type SavedPostRow = typeof savedPosts.$inferSelect;
+export type SavedLinkRow = typeof savedLinks.$inferSelect;
 export type PersonalMoveRow = typeof personalMoves.$inferSelect;
 export type SaveBatchRow = typeof saveBatches.$inferSelect;
 export type SavedPostMoveRow = typeof savedPostMoves.$inferSelect;

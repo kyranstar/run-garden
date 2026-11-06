@@ -191,6 +191,7 @@ const NOT_SECRETS: Record<string, string> = {
   "coach_locks.token": "a single-flight lock token (and the table is not exported)",
   "exercise_provenance.source_key": "the import's dedupe key for a saved source (its own id for that move)",
   "saved_posts.source_key": "the post's id on its source site, the import's dedupe key — a public identifier, not a credential",
+  "saved_links.source_key": "a pasted link's video id or post shortcode, as the post will be keyed — a public identifier, not a credential",
 };
 
 describe("secret columns (finding 13)", () => {
