@@ -83,6 +83,7 @@ import { makeCoachRunRoutes } from "../src/routes/coach-runs.js";
 import { makeCoachConversationRoutes } from "../src/routes/coach-conversation.js";
 import { objectiveBoardRoutes } from "../src/routes/objectives-board.js";
 import { growthRoutes } from "../src/routes/growth.js";
+import { makeCoachNudgesRoutes } from "../src/routes/coach-nudges.js";
 import { ANSWER_MAX_BYTES, createRun, DOCUMENT_ANSWER_BYTES, noteOnTrail, STATE_MAX_BYTES, type RunDeps, type RunState } from "../src/services/coach-runs.js";
 import { CoachRunStepper } from "../src/services/coach-run-stepper.js";
 import { designContextBuilder } from "../src/services/design-context.js";
@@ -229,6 +230,7 @@ interface World {
   conversation: Hono<AppContext>;
   growth: Hono<AppContext>;
   replay: Hono<AppContext>;
+  nudges: Hono<AppContext>;
   close(): void;
 }
 
@@ -248,6 +250,7 @@ function open(image: Buffer): World {
     conversation: mountRoutes(db, "/api/coach/conversation", makeCoachConversationRoutes({ now: () => NOW })),
     growth: mountRoutes(db, "/api/growth", growthRoutes),
     replay: mountRoutes(db, "/api/coach/replay", replayRoutes),
+    nudges: mountRoutes(db, "/api/coach/nudges", makeCoachNudgesRoutes({ now: () => NOW })),
     close: () => client.close(),
   };
 }
@@ -1343,6 +1346,45 @@ beforeAll(async () => {
     })).close();
   }
 
+  // ── 13: where the athlete stands over two years, with 12 objectives of 10 key results (the audits, 2026-11-06) ──
+  // Every main run's context step reads it, and so does GET /api/coach/nudges — on every Today load. The stand measures
+  // STAND_KEY_RESULTS_MAX of them, whatever the athlete holds.
+  {
+    const db12 = makeTestDb();
+    const { userId: uid } = await makeTestUser(db12, { timezone: TZ, weightUnit: "lb", units: "km", raceDate: addDays(today, 38), raceDistanceKm: 21.1 });
+    await seedLongHistory(db12, uid, today);
+    const T0 = at(addDays(today, -60));
+    const KINDS: Array<Record<string, unknown>> = [
+      { kind: "hold_max", libraryIds: ["wallSit"], windowDays: 90 },
+      { kind: "best_set", libraryIds: ["gobletSquat"], metric: "e1rm", windowDays: 90 },
+      { kind: "run_best", distanceM: 5000, windowDays: 180 },
+      { kind: "pace_at_hr", hrLow: 140, hrHigh: 155, minDurationSec: 1200, windowDays: 90 },
+      { kind: "threshold_pace", windowDays: 90 },
+      { kind: "checkin", questionId: "energy" },
+    ];
+    for (let o = 0; o < 12; o++) {
+      await db12.insert(schema.objectives).values({ id: `${uid}-stand-${o}`, userId: uid, title: `Zorbex objective ${o}`, status: "active", goalIds: [], sort: 10 + o, createdAt: T0, updatedAt: T0 });
+      for (let k = 0; k < 10; k++) {
+        await db12.insert(schema.keyResults).values({
+          id: `${uid}-stand-${o}-${k}`, userId: uid, objectiveId: `${uid}-stand-${o}`, label: `Zorbex key result ${o}.${k}`, measure: KINDS[(o + k) % KINDS.length]!,
+          direction: "up", baseline: 10, target: 100, unit: "score", dueDate: addDays(today, 10 + o + k), position: k, createdAt: T0, updatedAt: T0,
+        });
+      }
+    }
+    const cookie12 = `${SESSION_COOKIE}=${await createSession(db12, uid)}`;
+    images.set("stand", imageOf(db12));
+    clientOf(db12).close();
+    const standRun = { id: "stand-main", role: "main" as const, scope: { kind: "now" }, request: "Something for now.", parentId: null };
+    (await measure("13a", "13a. a main run's opening context (two years, 12×10 key results; the context step's budget)", images.get("stand")!, async (x) => {
+      await designContextBuilder.build(x.db, env, uid, standRun, NOW);
+    }, { budget: 3 })).close();
+    (await measure("13b", "13b. GET /api/coach/nudges (two years, 12×10 key results; every Today load)", images.get("stand")!, (x) =>
+      x.nudges.request("/api/coach/nudges", { headers: { Cookie: cookie12 } }, env), {
+      budget: GO_LIVE_BUDGET_MS,
+      check: (b) => expect(Array.isArray((b as { nudges: unknown[] }).nudges)).toBe(true),
+    })).close();
+  }
+
   // ── 11: Growth's body map over a busy season (the new shape §7) ──
   {
     const db11 = makeTestDb();
@@ -1490,7 +1532,7 @@ function within(id: string, ctx: TestContext): void {
 describe("the coach designer's requests within the Workers free plan's CPU", () => {
   it("every shape was measured", () => {
     const grouped = (k: string) => GROUPS.some((g) => k.startsWith(`${g}.`));
-    expect([...shapes.keys()].filter((k) => shapes.get(k)!.budget !== null && !grouped(k))).toEqual(["1a", "1b", "1d", "2a", "8z.unknown", "8z.away", "2b", "2b.q", "9c", "2e", "2c", "9b", "9a", "4b", "4c", "4d", "12", "3", "10a", "10b", "7", "5a", "6", "11a", "11b"]);
+    expect([...shapes.keys()].filter((k) => shapes.get(k)!.budget !== null && !grouped(k))).toEqual(["1a", "1b", "1d", "2a", "8z.unknown", "8z.away", "2b", "2b.q", "9c", "2e", "2c", "9b", "9a", "4b", "4c", "4d", "12", "3", "10a", "10b", "7", "5a", "6", "13a", "13b", "11a", "11b"]);
     // The queued reads go in two steps or more; four whole documents' validates in two (three, then one); nine half
     // documents' in three; the approve in five chunks or more.
     expect(inGroup("1c").length).toBeGreaterThanOrEqual(2);
@@ -1513,7 +1555,7 @@ describe("the coach designer's requests within the Workers free plan's CPU", () 
     }
   });
 
-  for (const id of ["1a", "1b", "1c", "1d", "1d.q", "8z.unknown", "8z.away", "2a", "2a.q", "2b", "2b.q", "2c", "2d", "2e", "3", "4b", "4c", "4d", "5a", "5b", "5p", "6", "7", "9a", "9b", "9c", "10a", "10b", "11a", "11b", "12"]) {
+  for (const id of ["1a", "1b", "1c", "1d", "1d.q", "8z.unknown", "8z.away", "2a", "2a.q", "2b", "2b.q", "2c", "2d", "2e", "3", "4b", "4c", "4d", "5a", "5b", "5p", "6", "7", "9a", "9b", "9c", "10a", "10b", "11a", "11b", "12", "13a", "13b"]) {
     const over = KNOWN_OVER[id];
     it(
       over
