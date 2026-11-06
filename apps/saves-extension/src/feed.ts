@@ -62,7 +62,7 @@ function sizes(list: unknown): { width: number; height: number; url: string }[] 
 
 const candidatesOf = (m: Obj) => sizes(isObj(m.image_versions2) ? m.image_versions2.candidates : undefined);
 
-function hashtagsOf(caption: string): string[] {
+export function hashtagsOf(caption: string): string[] {
   const out: string[] = [];
   const seen = new Set<string>();
   for (const match of caption.matchAll(/#([\p{L}\p{N}_]+)/gu)) {
