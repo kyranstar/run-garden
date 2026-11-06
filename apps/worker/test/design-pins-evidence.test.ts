@@ -46,6 +46,8 @@ const LIFT = savedMoveDraft("Zorbex hip lift", {
   quotes: [
     { field: "purpose", text: "if your hips get stiff after easy runs", at: 72, from: "transcript", check: "verified" },
     { field: "useWhen", text: "do it right after the run", at: 12, from: "speech", check: "in_speech" },
+    // Words the reader quoted that aren't in the post (§5.6): never evidence.
+    { field: "dose", text: "three sets of ten", at: 40, from: "transcript", check: "not_found" },
   ],
 });
 const NOD = savedMoveDraft("Zorbex neck nod", { regions: ["neck"] });
@@ -237,5 +239,20 @@ describe("pin_moves: lines cite their evidence", () => {
     expect(pinsCardLinesOf([{ text: "In.", decision: "sideways", cites: [{ id: 3 }, { id: "history", kind: "history", label: "your history" }] }])).toEqual([
       { text: "In.", cites: [{ id: "history", kind: "history", label: "your history" }] },
     ]);
+  });
+});
+
+describe("pin_moves: a quote that isn't in the post is no evidence (final review, Important 2)", () => {
+  it("a claim about what the post says, cited only by a quote not in the post, is refused; a found quote beside it stands", async () => {
+    const b = await batch();
+    const ctx = await mainRun();
+    await readSavesInRun(db, ctx);
+    const lines = fourLines(b);
+    lines[0] = { ...lines[0]!, text: "She says to do three sets of ten.", cites: ["q1.3"] };
+    const r = refusal((await pins(ctx, { batchId: b.batchId, pin: [b.lift, "gobletSquat"], lines })).res);
+    expect(r.error).toBe("uncited_claim");
+    expect(r.why).toContain("not in the post");
+    lines[0] = { ...lines[0]!, cites: ["q1.3", "q1.1"] };
+    expect(isToolErr((await pins(ctx, { batchId: b.batchId, pin: [b.lift, "gobletSquat"], lines })).res)).toBe(false);
   });
 });

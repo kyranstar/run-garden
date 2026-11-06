@@ -431,10 +431,12 @@ export const pinMoves: DesignTool = {
           );
         }
       }
-      if (claimsThePost(l.text) && !(l.cites ?? []).some((c) => QUOTE_ID_RE.test(c))) {
+      // A quote the reader made that isn't in the post (§5.6) is no evidence for what the post says (final review, I2).
+      const quoted = (l.cites ?? []).filter((c) => QUOTE_ID_RE.test(c));
+      if (claimsThePost(l.text) && !quoted.some((c) => reads.quotes.get(c)?.check !== "not_found")) {
         return refuse(
           "uncited_claim",
-          `lines.${i}: ${JSON.stringify(clipProse(l.text, 120))} says what the post or its creator says, with no quote cited.`,
+          `lines.${i}: ${JSON.stringify(clipProse(l.text, 120))} says what the post or its creator says, with no quote cited${quoted.length ? " that is in the post (a quote marked not in the post is no evidence)" : ""}.`,
           "Cite the quote ids read_saves gave — or, when the post never says it, say it was the reader's guess and cite inferred:<field>.",
         );
       }
