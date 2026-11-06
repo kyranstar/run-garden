@@ -6,7 +6,7 @@
  */
 import { Hono } from "hono";
 import { z } from "zod";
-import { checkReportSchema, postSubmitSchema, postWords, readFailedSchema, SAVE_SOURCE_RE } from "@rg/saves";
+import { checkReportSchema, LINK_REFUSED, postSubmitSchema, postWords, readFailedSchema, SAVE_SOURCE_RE } from "@rg/saves";
 import { nowInstant } from "@rg/domain";
 import type { AppContext } from "../auth/middleware.js";
 import { bearerGuard } from "../auth/token.js";
@@ -15,6 +15,7 @@ import { freshKeys, KNOWN_MAX_KEYS, markFetchFailed, overridePost, recordCheck, 
 import { filterPost } from "../services/saves-filter.js";
 import { markTooLarge, readRelayRequest, relayExtract } from "../services/saves-relay.js";
 import { assembleBatch } from "../services/saves-batches.js";
+import { addLink, listLinks } from "../services/saved-links.js";
 
 const knownSchema = z
   .object({ source: z.string().regex(SAVE_SOURCE_RE), keys: z.array(z.string().min(1).max(64)).max(KNOWN_MAX_KEYS) })
@@ -87,7 +88,24 @@ savesRoutes.post("/posts", async (c) => {
   });
 });
 
-savesRoutes.get("/work", async (c) => c.json({ keys: await workList(c.get("db"), c.get("userId"), nowInstant()) }));
+/** `?v=2`: the extension knows pasted links and videos (`read` work, YouTube posts); without it, the list an 0.2 extension knows. */
+savesRoutes.get("/work", async (c) =>
+  c.json({ keys: await workList(c.get("db"), c.get("userId"), nowInstant(), undefined, { links: c.req.query("v") === "2" }) }),
+);
+
+const linkSchema = z.object({ url: z.string().min(1).max(600) }).strict();
+
+/** A link pasted in the popup, told to the app at once so the phone shows it (design 2026-11-05 §6.3). */
+savesRoutes.post("/links", async (c) => {
+  const parsed = await body(c, linkSchema);
+  if (!parsed.success) return c.json({ error: "invalid", issues: parsed.error.issues }, 422);
+  const out = await addLink(c.get("db"), c.get("userId"), parsed.data.url, "extension", nowInstant());
+  if (!out.ok) return c.json({ error: out.error, message: LINK_REFUSED }, 400);
+  return c.json(out.state === "known" ? { state: out.state, postId: out.postId, firstSeenAt: out.firstSeenAt } : { state: out.state, link: out.link });
+});
+
+/** The recent links, for the popup. One statement, and the bearer guard's two. */
+savesRoutes.get("/links", async (c) => c.json({ links: await listLinks(c.get("db"), c.get("userId")) }));
 
 const failedSchema = z.object({ code: z.enum(["gone", "media_failed", "too_large"]) }).strict();
 

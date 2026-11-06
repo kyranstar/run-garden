@@ -10,7 +10,7 @@ import { trailStatements } from "./import-trail.js";
 import { importSpend } from "./saves-budget.js";
 import { CLAIM_STALE_MS } from "./saves-filter.js";
 
-const { savedPosts, saveChecks, savedPostMoves, saveBatches } = schema;
+const { savedPosts, saveChecks, savedPostMoves, saveBatches, savedLinks } = schema;
 
 /** A post is extracted this many times at most. */
 export const MAX_EXTRACT_ATTEMPTS = 3;
@@ -138,12 +138,18 @@ export async function recordReadFailed(db: Db, userId: string, r: ReadFailed, no
     if (row) postId = row.id;
   }
   const words = failureWords(r.code, null) ?? "The read failed";
-  await runAtomically(
-    db,
-    trailStatements(db, userId, postId, [
+  await runAtomically(db, [
+    // A pasted link that couldn't be read says why where the owner sees it (pasted links, 2026-11-06).
+    ...(r.key
+      ? [db
+          .update(savedLinks)
+          .set({ status: "failed", errorCode: r.code, error: r.message.slice(0, 300) || null, updatedAt: now })
+          .where(and(eq(savedLinks.userId, userId), eq(savedLinks.source, r.source), eq(savedLinks.sourceKey, r.key), eq(savedLinks.status, "waiting")))]
+      : []),
+    ...trailStatements(db, userId, postId, [
       { stage: "read", source: siteSource(r.source), status: "fail", summary: r.message ? `${words}: ${r.message}` : words, detail: { code: r.code, message: r.message, key: r.key ?? null } },
     ], now),
-  );
+  ]);
 }
 
 /** Of `keys`, the ones this account has no row for, in input order. One statement (the keys travel as one JSON bind). */
@@ -181,6 +187,12 @@ export async function workList(
   userId: string,
   now: string = nowInstant(),
   limit: number = WORK_LIMIT,
+  /**
+   * `links`: the caller knows pasted links and videos (`GET /work?v=2`): waiting links come first as `read`, and posts
+   * of every source are listed. Without it (an older extension) the list is as it was — no `read`, no YouTube post,
+   * whose id it would read as an Instagram shortcode. One more statement.
+   */
+  opts: { links?: boolean } = {},
 ): Promise<WorkItem[]> {
   const stale = new Date(new Date(now).getTime() - CLAIM_STALE_MS).toISOString();
   const { spentMicros, capMicros } = await importSpend(db, userId, new Date(now));
@@ -213,6 +225,23 @@ export async function workList(
       and(eq(savedPosts.lastErrorCode, "filtering"), lt(savedPosts.updatedAt, stale)),
     ),
   );
+  const reads: WorkItem[] = opts.links
+    ? (
+        await db
+          .select({ source: savedLinks.source, key: savedLinks.sourceKey, url: savedLinks.url })
+          .from(savedLinks)
+          .where(
+            and(
+              eq(savedLinks.userId, userId),
+              eq(savedLinks.status, "waiting"),
+              sql`NOT EXISTS (SELECT 1 FROM ${savedPosts} WHERE ${savedPosts.id} = ${savedLinks.id} AND ${savedPosts.userId} = ${userId})`,
+            ),
+          )
+          .orderBy(asc(savedLinks.addedAt), asc(savedLinks.id))
+          .limit(limit)
+      ).map((r) => ({ ...r, action: "read" as const }))
+    : [];
+  if (reads.length >= limit) return reads;
   const rows = await db
     .select({ source: savedPosts.source, key: savedPosts.sourceKey, url: savedPosts.url, status: savedPosts.status })
     .from(savedPosts)
@@ -220,6 +249,7 @@ export async function workList(
       and(
         eq(savedPosts.userId, userId),
         isNotNull(savedPosts.url),
+        opts.links ? undefined : ne(savedPosts.source, "youtube"),
         or(
           isFilter,
           // A post the budget refused waits off the list until a typical reading fits again: handing it out meant
@@ -241,10 +271,13 @@ export async function workList(
       ),
     )
     .orderBy(sql`CASE WHEN ${savedPosts.status} = 'seen' THEN 0 ELSE 1 END`, asc(savedPosts.updatedAt), asc(savedPosts.id))
-    .limit(limit);
-  return rows.flatMap((r) =>
-    r.url ? [{ source: r.source, key: r.key, url: r.url, action: r.status === "seen" ? ("filter" as const) : ("extract" as const) }] : [],
-  );
+    .limit(limit - reads.length);
+  return [
+    ...reads,
+    ...rows.flatMap((r) =>
+      r.url ? [{ source: r.source, key: r.key, url: r.url, action: r.status === "seen" ? ("filter" as const) : ("extract" as const) }] : [],
+    ),
+  ];
 }
 
 /** The import budget a typical reading needs free before a post the budget refused is handed out again. */
