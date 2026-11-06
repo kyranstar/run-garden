@@ -245,6 +245,8 @@ export interface CheckRowDto {
 export interface PostRowDto {
   /** The ledger's row id (what an owner override names). */
   id: string;
+  /** Its source (a popup's Retry names it: a YouTube post isn't found under the feed's; final audit G10). */
+  source?: string;
   key: string;
   url: string;
   creator: { handle: string; name?: string };

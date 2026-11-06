@@ -44,6 +44,8 @@ export function isPostKey(key: unknown): key is string {
 
 export interface PopupPost {
   id: string;
+  /** Its source, which the popup's Retry and Process anyway name (an older app gives none: the feed's). */
+  source: string | null;
   key: string;
   url: string;
   /** Its trail in the app, else null (no app URL saved). */
@@ -61,6 +63,8 @@ export interface PopupFailure {
   why: string;
   href: string | null;
   retryKey: string | null;
+  /** The source Retry names with the key (null: the feed's). */
+  retrySource: string | null;
 }
 
 /** One light of the health row: its label, colour, glyph and word (never colour alone), its line, its failures. */
@@ -189,10 +193,10 @@ function headlineOf(input: PopupInput): string {
 
 /** The health row's lights, each with its failures; a failure's Retry only for a post the popup lists with Retry or
  * Process anyway (it names posts by their key). */
-function lightsOf(input: PopupInput, posts: readonly { id: string; key: string; actions: PopupAction[] }[]): PopupLight[] {
+function lightsOf(input: PopupInput, posts: readonly { id: string; key: string; source?: string | null; actions: PopupAction[] }[]): PopupLight[] {
   const health = input.health;
   if (!health || !Array.isArray(health.lights)) return [];
-  const retryable = new Map(posts.filter((p) => p.actions.length > 0).map((p) => [p.id, p.key]));
+  const retryable = new Map(posts.filter((p) => p.actions.length > 0).map((p) => [p.id, { key: p.key, source: p.source ?? null }]));
   return health.lights.map((l) => ({
     light: l.light,
     label: HEALTH_LABELS[l.light] ?? l.light,
@@ -205,7 +209,8 @@ function lightsOf(input: PopupInput, posts: readonly { id: string; key: string; 
       when: ago(f.at, input.now),
       why: f.why,
       href: f.postId ? appHref(input.appUrl, trailPath(f.postId)) : null,
-      retryKey: f.postId ? (retryable.get(f.postId) ?? null) : null,
+      retryKey: f.postId ? (retryable.get(f.postId)?.key ?? null) : null,
+      retrySource: f.postId ? (retryable.get(f.postId)?.source ?? null) : null,
     })),
   }));
 }
@@ -213,10 +218,11 @@ function lightsOf(input: PopupInput, posts: readonly { id: string; key: string; 
 export function popupModel(input: PopupInput): PopupModel {
   const { status, now } = input;
   const checking = isChecking(input);
-  const all = (status?.posts ?? []).map((p) => ({ id: p.id, key: p.key, actions: postActions(p.status) }));
+  const all = (status?.posts ?? []).map((p) => ({ id: p.id, key: p.key, source: p.source ?? null, actions: postActions(p.status) }));
   const posts: PopupPost[] = (status?.posts ?? [])
     .map((p) => ({
       id: p.id,
+      source: p.source ?? null,
       key: p.key,
       url: p.url,
       trailHref: appHref(input.appUrl, trailPath(p.id)),

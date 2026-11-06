@@ -137,9 +137,9 @@ function recentLinks(rows: PopupLink[]): HTMLElement | null {
   return section;
 }
 
-async function override(key: string): Promise<void> {
+async function override(key: string, source: string | null): Promise<void> {
   try {
-    const answer = await ask<OverrideResponse>({ type: "override", key, action: "process" });
+    const answer = await ask<OverrideResponse>({ type: "override", key, ...(source ? { source } : {}), action: "process" });
     note = answer.ok ? "" : `Error: ${answer.message}`;
   } catch {
     note = "Error: the extension did not answer";
@@ -205,7 +205,7 @@ function lightPanel(l: PopupLight): HTMLElement {
     li.append(line);
     if (f.retryKey) {
       const key = f.retryKey;
-      li.append(button("Retry", (b) => { b.disabled = true; void override(key); }, true));
+      li.append(button("Retry", (b) => { b.disabled = true; void override(key, f.retrySource); }, true));
     }
     list.append(li);
   }
@@ -273,7 +273,7 @@ function render(m: PopupModel): void {
       if (p.trailHref && post) line.append(link("Open post", post, "quiet-link"));
       if (p.reason) line.append(el("span", p.reason, "reason"));
       li.append(line);
-      for (const a of p.actions) li.append(button(LABELS[a], (b) => { b.disabled = true; void override(p.key); }, true));
+      for (const a of p.actions) li.append(button(LABELS[a], (b) => { b.disabled = true; void override(p.key, p.source); }, true));
       list.append(li);
     }
     frag.append(list);

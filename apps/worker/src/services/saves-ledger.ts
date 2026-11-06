@@ -433,6 +433,7 @@ export async function savesStatus(db: Db, userId: string, now: string): Promise<
     })),
     posts: posts.map((p) => ({
       id: p.id,
+      source: p.source,
       key: p.sourceKey,
       url: p.url ?? "",
       creator: { handle: p.creatorHandle ?? "", ...(p.creatorName ? { name: p.creatorName } : {}) },

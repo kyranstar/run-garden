@@ -34,8 +34,9 @@ function fakeTabs(script: Script) {
       calls.push("mute");
     },
     async run(_id, func, _args, world) {
+      const f = func as unknown;
       const name =
-        func === installCaptionCapture ? "capture" : func === readPlayerInPage ? "player" : func === captionsInPage ? "captions" : func === transcriptPanelInPage ? "panel" : "other";
+        f === installCaptionCapture ? "capture" : f === readPlayerInPage ? "player" : f === captionsInPage ? "captions" : f === transcriptPanelInPage ? "panel" : "other";
       calls.push(`${name}:${world}`);
       if (script.hang && name === "player") return new Promise(() => undefined) as never;
       if (name === "player") return (script.player?.() ?? { player: playerJson(), markers: null }) as never;

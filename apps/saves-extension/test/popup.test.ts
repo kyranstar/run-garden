@@ -182,3 +182,15 @@ describe("the popup's link field (design 2026-11-05 §3.1)", () => {
     expect(messages).toContainEqual({ type: "override", key: vid, source: "youtube", action: "process" });
   });
 });
+
+describe("a YouTube post's row (final audit G10)", () => {
+  it("Process anyway names its source, so the app finds it", async () => {
+    const s = status();
+    s.posts = [{ ...s.posts[0]!, key: "Zx9_-QaB3cD", source: "youtube", status: "filtered_out", creator: { handle: "@zorbexcoach" } }];
+    await open({ status: s });
+    const b = [...root().querySelectorAll("button")].find((x) => x.textContent === "Process anyway")!;
+    b.click();
+    for (let i = 0; i < 6; i++) await new Promise((r) => setTimeout(r, 0));
+    expect(messages).toContainEqual({ type: "override", key: "Zx9_-QaB3cD", source: "youtube", action: "process" });
+  });
+});

@@ -279,8 +279,8 @@ describe("popupModel's health row", () => {
     const reader = m.lights.find((l) => l.light === "reader")!;
     expect(reader.line).toBe("Reader: 3 of 4 failed");
     expect(reader.failures).toEqual([
-      { title: "Zorbex hip flow", when: "1 h ago", why: "The reply didn't match the format", href: "https://app.example.com/studio/saves/posts/b", retryKey: "kb" },
-      { title: "Reader", when: "2 h ago", why: "The model gateway answered 402", href: null, retryKey: null },
+      { title: "Zorbex hip flow", when: "1 h ago", why: "The reply didn't match the format", href: "https://app.example.com/studio/saves/posts/b", retryKey: "kb", retrySource: null },
+      { title: "Reader", when: "2 h ago", why: "The model gateway answered 402", href: null, retryKey: null, retrySource: null },
     ]);
   });
 
