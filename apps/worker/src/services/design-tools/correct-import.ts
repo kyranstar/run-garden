@@ -52,6 +52,7 @@ import {
   type MovePinsOp,
 } from "../proposal-kinds.js";
 import { doseWords, type CiteRef } from "../saves-evidence.js";
+import { askedWordsSql } from "../objective-changes.js";
 import { capInWords, isErr, mainRunIdOf, parseAct, prose } from "./act-common.js";
 import { CITES_MAX, workoutDosesOf } from "./pin-moves.js";
 import { designProposalId, upsertProposal } from "./propose.js";
@@ -132,13 +133,12 @@ export const correctImport: DesignTool = {
       state: correctionStateSql(ctx.userId, target, parsed.targetId, ctx.now.toISOString().slice(0, 10)),
       reads: savesReadsSql(ctx.userId, mainRunId),
       // What the athlete typed this run (the controller's fix pass, D6; S7, 2026-11-06): basis owner is their word alone —
-      // never a "needs you" chip's text (its run's `diagnose`) nor a "Fit them in" run's request (`savesBatchId`), both the
-      // app's words, read from the run's own state. Ruling (S7): once fix-evidence lands, this is objective-changes.ts
-      // `askedWordsSql(ctx.userId, mainRunId)` (which reads the chip) — the fit stays refused by `ctx.run.savesBatchId`.
-      asked: sql`(select case when json_valid(aw_r.state) and (json_extract(aw_r.state, '$.settings.diagnose') is not null
-            or json_extract(aw_r.state, '$.settings.savesBatchId') is not null) then null
-          else nullif(trim(coalesce(aw_r.request, '')), '') end
-        from coach_runs aw_r where aw_r.id = ${mainRunId} and aw_r.user_id = ${ctx.userId})`,
+      // never a "needs you" chip's text (`askedWordsSql`: null for its run, as propose_objective and finish read it) nor a
+      // "Fit them in" run's request: the app's words, refused by `ctx.run.savesBatchId` and, read from the run's own state,
+      // by `fitting` (however the run carries it).
+      asked: askedWordsSql(ctx.userId, mainRunId),
+      fitting: sql`(select case when json_valid(fit_r.state) then json_extract(fit_r.state, '$.settings.savesBatchId') end
+        from coach_runs fit_r where fit_r.id = ${mainRunId} and fit_r.user_id = ${ctx.userId})`,
     });
     const library = await accountLibraryFrom(ctx.db, ctx.userId, extra.library);
     const find = makeLibraryIndex(library.all);
@@ -177,10 +177,11 @@ export const correctImport: DesignTool = {
 
     // The athlete's insistence is their word in this conversation (the controller's fix pass, D6): a run answering their
     // message — never a "Fit them in" run (the app's request, not theirs), nor one they didn't ask in words.
-    if (parsed.basis === "owner" && (ctx.run.savesBatchId || typeof extra.asked !== "string")) {
+    const fitting = !!ctx.run.savesBatchId || (typeof extra.fitting === "string" && extra.fitting.length > 0);
+    if (parsed.basis === "owner" && (fitting || typeof extra.asked !== "string")) {
       return refuse(
         "not_their_word",
-        ctx.run.savesBatchId
+        fitting
           ? "basis owner is the athlete's own word — this run fits their saves in; they haven't said anything about it."
           : "basis owner is the athlete's own word — this run answers no words they typed (a chip's or the app's request isn't theirs).",
         "Give basis evidence with the cites you read — or, if only the athlete can say, ask them with ask_athlete.",
