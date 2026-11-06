@@ -30,11 +30,12 @@ vi.mock("../src/services/account-state.js", async (importOriginal) => {
   };
 });
 
-import { and, eq, inArray, ne } from "drizzle-orm";
+import { and, eq, inArray, isNull, ne, sql } from "drizzle-orm";
 import { schema } from "@rg/database";
 import { addDays, courseConfigSchema, newId, type UserPreferences, type WorkoutDoc } from "@rg/domain";
 import { createSession, SESSION_COOKIE } from "../src/auth/sessions.js";
 import type { Env } from "../src/env.js";
+import { hourly } from "../src/index.js";
 import { COURSE_START_FIXED, planRoutes, PLAN_STOP_FIXED } from "../src/routes/plans.js";
 import { coachRoutes } from "../src/routes/coach.js";
 import { programRoutes } from "../src/routes/programs.js";
@@ -43,21 +44,24 @@ import { stopBlocks } from "../src/routes/thread-structural.js";
 import { STRUCTURAL_MIN_BUDGET } from "../src/services/coach-apply.js";
 import { loadPreferences } from "../src/services/calendar-sync.js";
 import { executeCloudJobs } from "../src/services/coros-write-cloud.js";
-import { startCourse, stopCourse } from "../src/services/course-plans.js";
+import { finishCoursesPartWay, startCourse, stopCourse } from "../src/services/course-plans.js";
+import { COURSE_FINISH_BUDGET, COURSE_FINISHES_PER_PASS } from "../src/services/cron-limits.js";
 import { writeCourseSessionsDue } from "../src/services/course-sessions.js";
 import type { Db } from "../src/services/db.js";
 import { createDocWorkout, reviseDocWorkout, studioProgramId } from "../src/services/doc-workouts.js";
 import { applyMove } from "../src/services/jobs.js";
 import { queueProvisionalPush } from "../src/services/mirror.js";
 import { mirrorIntentId } from "../src/services/mirror-owed.js";
-import { courseSessionsDone, placeSlots, RETRACT_COST, RETRACT_WRITTEN_COST, RUNNING_PASS_MIN, slotId, STOPPED_PASS_MIN } from "../src/services/program-slots.js";
+import { applyPlanPatch } from "../src/services/plan-registry.js";
+import { courseSessionsDone, placeSlots, placeSlotsForAllPrograms, placeSlotsWithin, RETRACT_COST, RETRACT_WRITTEN_COST, REVIVE_COST, RUNNING_PASS_MIN, slotId, STOPPED_PASS_MIN } from "../src/services/program-slots.js";
+import { reconcileCompletionStates } from "../src/services/reconcile-daily.js";
 import { isWrite, makeTestDb, makeTestUser, mountRoutes } from "./helpers.js";
 import { INTRO_COURSE } from "./course-fixture.js";
 import { connectMock, seedCatalog, switchOn } from "./watch-push-fixture.js";
 import { mockCorosServer, type MockCorosServer } from "../../../packages/coros/test/mock-coros-server.js";
 import { makeRealisticEnv, seedRealisticAccount } from "./realistic-account.js";
 
-const { accountState, calendarEventSuppressions, coachMessages, coachPlans, corosWriteJobs, performedSessions, plannedWorkouts, programs, scheduleOverrides, sessionBuilds, syncIntents, workoutDocRevisions } = schema;
+const { accountState, calendarEventSuppressions, coachMessages, coachPlans, corosWriteJobs, performedSessions, plannedWorkouts, programs, programVersions, scheduleOverrides, sessionBuilds, syncIntents, workoutDocRevisions } = schema;
 
 /** A Monday. */
 const MON = "2026-10-05";
@@ -148,6 +152,16 @@ async function until(request: () => ReturnType<typeof send>, most = 40) {
     expect(res.status, JSON.stringify(res.body)).toBe(200);
     costs.push(res.total);
     if (!res.body.more) return { costs, last: res.body };
+  }
+  throw new Error(`still "more" after ${most} requests`);
+}
+
+/** Send it until there's nothing a resend can do: `waiting`, or nothing left. */
+async function untilWaiting(request: () => ReturnType<typeof send>, most = 40) {
+  for (let i = 0; i < most; i++) {
+    const res = await request();
+    expect(res.status, JSON.stringify(res.body)).toBe(200);
+    if (!res.body.more || res.body.waiting) return { last: res.body };
   }
   throw new Error(`still "more" after ${most} requests`);
 }
@@ -265,17 +279,38 @@ describe("POST /api/plans/courses: a new plan", () => {
     expect(await coursePlans()).toHaveLength(1);
   });
 
-  it("a retry with other days or another key is the same plan, as it stands: a start doesn't change a plan that's running", async () => {
+  it.each([
+    ["fewer days", { weekdays: [2] }],
+    ["as many other days", { weekdays: [1, 3] }],
+    ["one day more", { weekdays: [0, 4, 6] }],
+    ["another time", { time: "06:00" }],
+  ])("a start naming %s on a running course is refused, and nothing changes: a silent success would be false", async (_, change) => {
     const id = await started();
-    const res = await start({ ...BODY, weekdays: [2], time: "06:00", clientId: "another-tap" });
-    expect(res.body.plan.id).toBe(id);
+    const res = await start({ ...BODY, ...change });
+    expect(res.status).toBe(409);
+    expect(res.body).toEqual({ error: "course_running" });
+    expect(writes()).toEqual([]);
     expect(courseConfigSchema.parse((await planOf(id)).config)).toMatchObject({ weekdays: [0, 4], time: "19:30" });
     expect(await coursePlans()).toHaveLength(1);
   });
 
-  it("takes a client's key, and refuses one that isn't a key", async () => {
-    expect((await start({ ...BODY, clientId: "tap-1" })).status).toBe(200);
-    expect((await start({ ...BODY, clientId: "not a key!" })).status).toBe(422);
+  it("a retry with the same days stays 200, whatever order it names them in", async () => {
+    const id = await started();
+    expect((await start()).status).toBe(200);
+    const res = await start({ ...BODY, weekdays: [4, 0] });
+    expect(res.status).toBe(200);
+    expect(res.body.plan.id).toBe(id);
+  });
+
+  it("other days are refused part way through a start too", async () => {
+    await planned(day(0, 1), 1);
+    await planned(day(0, 2), 2);
+    expect((await start()).body.more).toBe(true);
+    expect((await start({ ...BODY, weekdays: [3] })).status).toBe(409);
+  });
+
+  it("takes no client's key: a start is idempotent per course, and nothing would read one", async () => {
+    expect((await start({ ...BODY, clientId: "tap-1" })).status).toBe(422);
   });
 
   it("another course's plan isn't this one's: it stays stopped, and this course gets its own", async () => {
@@ -479,13 +514,31 @@ describe("starting from sessions already planned", () => {
     expect(await courseSessionsDone(db, userId, id)).toBe(0);
   });
 
-  it("behind and never done stays where it is: neither a session done nor one ahead", async () => {
+  it("behind, whatever its state, joins the plan with its number, and only a session done counts", async () => {
     const missed = await earlier(day(-1, 0), 1, "missed");
-    const skipped = await earlier(day(-1, 1), 1, "skipped");
-    const open = await earlier(day(-1, 2), 1, "scheduled");
+    const skipped = await earlier(day(-1, 1), 2, "skipped");
+    const open = await earlier(day(-1, 2), 3, "scheduled");
+    const unresolved = await earlier(day(-1, 3), 4, "unresolved");
     const id = await started();
-    for (const r of [missed, skipped, open]) expect(await row(r)).toMatchObject({ planId: studioProgramId(userId), courseSession: null, archivedAt: null });
+    expect(await row(missed)).toMatchObject({ planId: id, courseSession: 1, completionState: "missed", archivedAt: null, workoutDocRev: 1 });
+    expect(await row(skipped)).toMatchObject({ planId: id, courseSession: 2, completionState: "skipped" });
+    expect(await row(open)).toMatchObject({ planId: id, courseSession: 3, completionState: "scheduled" });
+    expect(await row(unresolved)).toMatchObject({ planId: id, courseSession: 4, completionState: "unresolved" });
     expect(await courseSessionsDone(db, userId, id)).toBe(0);
+    for (const r of [missed, skipped, open, unresolved]) {
+      expect(await revisionsOf(r)).toEqual([]);
+      expect(await jobsOf(r)).toEqual([]);
+      expect(await mirrorMark(r)).toBeUndefined();
+    }
+  });
+
+  it("one behind and unresolved at the start, finished afterwards, counts: that session doesn't repeat", async () => {
+    const later = await earlier(day(-1, 3), 1, "unresolved");
+    const id = await started();
+    expect((await start()).body.plan.course).toEqual({ session: 1, of: 4 });
+    await db.update(plannedWorkouts).set({ completionState: "completed" }).where(eq(plannedWorkouts.id, later));
+    expect(await courseSessionsDone(db, userId, id)).toBe(1);
+    expect((await listed()).find((p) => p.id === id)!.course).toEqual({ session: 2, of: 4 });
   });
 
   it.each([
@@ -526,6 +579,8 @@ describe("starting from sessions already planned", () => {
     await earlier(day(0, 1), 1, "scheduled", { id: theirs, userId: other.userId, planId: studioProgramId(other.userId) });
     const theirsDone = await earlier(day(-1, 1), 1, "completed", { userId: other.userId, planId: studioProgramId(other.userId) });
     await started();
+    // Not even read: the removal and the move would each refuse it, but this account's request has no business with it.
+    expect(refRows).toEqual([0]);
     expect(await row(theirs)).toMatchObject({ archivedAt: null, courseSession: null });
     expect(await row(theirsDone)).toMatchObject({ planId: studioProgramId(other.userId), courseSession: null });
   });
@@ -542,6 +597,22 @@ describe("starting from sessions already planned", () => {
     const own = await ownSession(id, day(0, 2), 1, "scheduled");
     await start();
     expect((await row(own)).archivedAt).toBeNull();
+  });
+
+  it("and through a start part way, or a revival: what's already the plan's isn't what's planned from before", async () => {
+    const id = await started();
+    const own = await ownSession(id, day(0, 2), 1, "scheduled");
+    const plan = await planOf(id);
+    await db.update(programs).set({ config: { ...plan.config, finishing: "start" } }).where(eq(programs.id, id));
+    await until(() => start());
+    expect((await row(own)).archivedAt).toBeNull();
+  });
+
+  it("with nothing to do and the pass's room to the statement, the same send clears the marker and runs the pass", async () => {
+    const res = await startCourse(db, userId, BODY, ctx(), 3 + RUNNING_PASS_MIN);
+    expect(res).toMatchObject({ ok: true });
+    const id = (await coursePlans())[0]!.id;
+    expect((await rowsOf(id)).filter((r) => r.origin === "program").length).toBeGreaterThan(0);
   });
 
   it("done this week counts toward this week's days (rule 1), so the week isn't filled again", async () => {
@@ -601,17 +672,22 @@ describe("starting from sessions already planned", () => {
   });
 
   it("the pass runs only with room for its first step, and a second statement of moves takes from that room", async () => {
-    expect(await startCourse(db, userId, BODY, ctx(), RUNNING_PASS_MIN - 1)).toMatchObject({ ok: true, more: true });
+    // Its read, one statement of moves and the marker's clear are its own; the pass wants the rest.
+    expect(await startCourse(db, userId, BODY, ctx(), 3 + RUNNING_PASS_MIN - 1)).toMatchObject({ ok: true, more: true });
     const id = (await coursePlans())[0]!.id;
     expect(await rowsOf(id)).toEqual([]);
-    for (let i = 0; i < 91; i++) await earlier(addDays(MON, -30 - i), 1, "completed");
-    expect(await startCourse(db, userId, BODY, ctx(), RUNNING_PASS_MIN)).toMatchObject({ ok: true, more: true });
-    expect((await rowsOf(id)).filter((r) => r.origin === "program")).toEqual([]);
-    // Nothing left to move: the same room runs the pass, as far as it goes, and says what's left.
     expect(await startCourse(db, userId, BODY, ctx(), RUNNING_PASS_MIN)).toMatchObject({ ok: true, more: true });
     const placed = (await rowsOf(id)).filter((r) => r.origin === "program").length;
     expect(placed).toBeGreaterThan(0);
     expect(placed).toBeLessThan(6);
+  });
+
+  it("a second statement of moves takes from the pass's room", async () => {
+    for (let i = 0; i < 91; i++) await earlier(addDays(MON, -30 - i), 1, "completed");
+    expect(await startCourse(db, userId, BODY, ctx(), 3 + RUNNING_PASS_MIN)).toMatchObject({ ok: true, more: true });
+    const id = (await coursePlans())[0]!.id;
+    expect((await rowsOf(id)).filter((r) => r.origin === "program")).toEqual([]);
+    expect(courseConfigSchema.parse((await planOf(id)).config).finishing).toBeUndefined();
   });
 
   it("every send gets somewhere: the first row ahead comes off with no room for it", async () => {
@@ -624,7 +700,7 @@ describe("starting from sessions already planned", () => {
     const first = await planned(day(0, 1), 1);
     const second = await planned(day(0, 2), 2);
     // Room for one removal and for the pass, and none for the second removal.
-    const res = await startCourse(db, userId, BODY, ctx(), RETRACT_WRITTEN_COST + RUNNING_PASS_MIN);
+    const res = await startCourse(db, userId, BODY, ctx(), 3 + RETRACT_WRITTEN_COST + RUNNING_PASS_MIN);
     expect(res).toMatchObject({ ok: true, more: true });
     expect((await row(first)).archivedAt).not.toBeNull();
     expect((await row(second)).archivedAt).toBeNull();
@@ -809,11 +885,110 @@ describe("the watch", () => {
     const recordId = await onTheWatch(today);
     const [push] = await db.select().from(corosWriteJobs).where(eq(corosWriteJobs.id, `push:${recordId}`));
     await db.update(corosWriteJobs).set({ status: "in_progress", payload: { ...(push!.payload as object), provisional: false } }).where(eq(corosWriteJobs.id, `push:${recordId}`));
-    expect((await stop(id)).body).toEqual({ more: true });
+    expect((await stop(id)).body).toEqual({ more: true, waiting: true });
     expect((await row(today)).archivedAt).toBeNull();
     await db.update(corosWriteJobs).set({ status: "verified" }).where(eq(corosWriteJobs.id, `push:${recordId}`));
     expect((await until(() => stop(id))).last).toEqual({ more: false });
     expect((await row(today)).archivedAt).not.toBeNull();
+  });
+
+  /** A session of `planId`'s or the bucket's, on the watch, with its push in this status and no longer a provisional one. */
+  const onTheWire = async (id: string, status: string) => {
+    const recordId = await onTheWatch(id);
+    const [push] = await db.select().from(corosWriteJobs).where(eq(corosWriteJobs.id, `push:${recordId}`));
+    await db.update(corosWriteJobs).set({ status, payload: { ...(push!.payload as object), provisional: false } }).where(eq(corosWriteJobs.id, `push:${recordId}`));
+    return recordId;
+  };
+
+  it.each(["claimed", "in_progress", "verifying"])("a start with a push %s: a resend can't help, so it says so, every time, and places nothing", async (status) => {
+    await connected();
+    const today = await planned(MON, 1);
+    await onTheWire(today, status);
+    for (let i = 0; i < 3; i++) {
+      const res = await start();
+      expect(res.body).toMatchObject({ more: true, waiting: true });
+      expect((await liveOf(res.body.plan.id)).filter((r) => r.origin === "program")).toEqual([]);
+    }
+    expect((await row(today)).archivedAt).toBeNull();
+    expect(courseConfigSchema.parse((await planOf((await coursePlans())[0]!.id)).config).finishing).toBe("start");
+  });
+
+  it.each(["claimed", "in_progress", "verifying"])("a stop with a push %s: the same, and the rest of the plan still goes", async (status) => {
+    await connected();
+    const id = await started();
+    const today = await planned(MON, 1);
+    await db.update(plannedWorkouts).set({ planId: id, courseSession: 1 }).where(eq(plannedWorkouts.id, today));
+    await onTheWire(today, status);
+    const { last } = await untilWaiting(() => stop(id));
+    expect(last).toEqual({ more: true, waiting: true });
+    expect((await liveOf(id)).map((r) => r.id)).toEqual([today]);
+    expect(courseConfigSchema.parse((await planOf(id)).config).finishing).toBe("stop");
+  });
+
+  it("a failed push holds nothing: it comes off, and nobody is told to wait", async () => {
+    await connected();
+    const today = await planned(MON, 1);
+    await onTheWire(today, "failed");
+    const first = await start();
+    expect(first.body.waiting).toBeUndefined();
+    expect((await row(today)).archivedAt).not.toBeNull();
+    const id = await started();
+    const again = await planned(day(0, 1), 2);
+    await db.update(plannedWorkouts).set({ planId: id, courseSession: 2 }).where(eq(plannedWorkouts.id, again));
+    await onTheWire(again, "failed");
+    const stopped = await stop(id);
+    expect(stopped.body.waiting).toBeUndefined();
+    expect((await row(again)).archivedAt).not.toBeNull();
+  });
+
+  it("a row on the wire doesn't hold up what's behind it: those go first, and only then is it waiting", async () => {
+    await connected();
+    const wire = await planned(MON, 1);
+    await onTheWire(wire, "in_progress");
+    const second = await planned(day(0, 1), 2);
+    const third = await planned(day(0, 2), 3);
+    const first = await start();
+    expect((await row(second)).archivedAt).not.toBeNull();
+    expect((await row(third)).archivedAt).toBeNull();
+    // Something a resend can do is still left.
+    expect(first.body.more).toBe(true);
+    expect(first.body.waiting).toBeUndefined();
+    const next = await start();
+    expect((await row(third)).archivedAt).not.toBeNull();
+    expect(next.body).toMatchObject({ more: true, waiting: true });
+    expect((await row(wire)).archivedAt).toBeNull();
+  });
+
+  it("the same in a stop", async () => {
+    await connected();
+    const id = await started();
+    await db.update(plannedWorkouts).set({ archivedAt: NOW, archiveReason: "program_replaced" }).where(eq(plannedWorkouts.planId, id));
+    const wire = await planned(MON, 1);
+    const second = await planned(day(0, 1), 2);
+    const third = await planned(day(0, 2), 3);
+    await db.update(plannedWorkouts).set({ planId: id }).where(inArray(plannedWorkouts.id, [wire, second, third]));
+    await onTheWire(wire, "in_progress");
+    const first = await stop(id);
+    expect((await row(second)).archivedAt).not.toBeNull();
+    expect((await row(third)).archivedAt).toBeNull();
+    expect(first.body).toEqual({ more: true });
+    expect((await stop(id)).body).toEqual({ more: true, waiting: true });
+    expect((await row(third)).archivedAt).not.toBeNull();
+  });
+
+  it("the hourly pass finishes one that was waiting, once it has landed", async () => {
+    await connected();
+    const today = await planned(MON, 1);
+    const recordId = await onTheWire(today, "in_progress");
+    const first = await start();
+    const id = first.body.plan.id as string;
+    expect(await finishCoursesPartWay(db, AT)).toEqual({ finished: 1, failed: 0 });
+    expect((await row(today)).archivedAt).toBeNull();
+    expect(courseConfigSchema.parse((await planOf(id)).config).finishing).toBe("start");
+    await db.update(corosWriteJobs).set({ status: "verified" }).where(eq(corosWriteJobs.id, `push:${recordId}`));
+    await finishCoursesPartWay(db, AT);
+    expect((await row(today)).archivedAt).not.toBeNull();
+    expect(courseConfigSchema.parse((await planOf(id)).config).finishing).toBeUndefined();
   });
 
   it("a start waits for one on the wire the same way, placing nothing until it's gone", async () => {
@@ -823,7 +998,7 @@ describe("the watch", () => {
     const [push] = await db.select().from(corosWriteJobs).where(eq(corosWriteJobs.id, `push:${recordId}`));
     await db.update(corosWriteJobs).set({ status: "in_progress", payload: { ...(push!.payload as object), provisional: false } }).where(eq(corosWriteJobs.id, `push:${recordId}`));
     const first = await start();
-    expect(first.body.more).toBe(true);
+    expect(first.body).toMatchObject({ more: true, waiting: true });
     expect((await liveOf(first.body.plan.id)).filter((r) => r.origin === "program")).toEqual([]);
     await db.update(corosWriteJobs).set({ status: "verified" }).where(eq(corosWriteJobs.id, `push:${recordId}`));
     await until(() => start());
@@ -901,8 +1076,22 @@ describe("POST /api/plans/:id/stop: a course", () => {
     const { last } = await until(() => stop(id));
     expect(last).toEqual({ more: false });
     for (const r of [own, extra, saved]) expect((await row(r)).archivedAt, r).toBeNull();
-    // Nothing of them is even tried again: its fixed seven, less the status.
+    // Once it's stopped, nothing is read again: its fixed six, less the status.
     expect((await stop(id)).total).toBe(PLAN_STOP_FIXED - 1);
+  });
+
+  it("what can't come off isn't even tried: no removal is started for a session begun, saved, resolved, behind or another's", async () => {
+    const id = await started();
+    await db.update(plannedWorkouts).set({ archivedAt: NOW, archiveReason: "program_replaced" }).where(eq(plannedWorkouts.planId, id));
+    await ownSession(id, MON, 1, "scheduled", { contentState: "started" });
+    await saveSession(await ownSession(id, MON, 2, "scheduled"), MON);
+    await ownSession(id, MON, 2, "completed");
+    await ownSession(id, day(1, 2), 3, "skipped");
+    await ownSession(id, day(-1, 2), 2, "scheduled");
+    const other = await makeTestUser(db);
+    await earlier(day(0, 1), 1, "scheduled", { userId: other.userId, planId: id });
+    expect((await stop(id)).body).toEqual({ more: false });
+    expect(statements.filter((s) => REMOVAL_READ.test(s))).toEqual([]);
   });
 
   it("a started outline survives too", async () => {
@@ -926,7 +1115,6 @@ describe("POST /api/plans/:id/stop: a course", () => {
     await until(() => stop(id));
     for (const r of [...behind, doneToday, skippedAhead]) expect((await row(r)).archivedAt, r).toBeNull();
     expect(await courseSessionsDone(db, userId, id)).toBe(2);
-    expect((await stop(id)).total).toBe(PLAN_STOP_FIXED - 1);
   });
 
   it("one removed by hand between the read and its removal is simply gone", async () => {
@@ -979,8 +1167,8 @@ describe("POST /api/plans/:id/stop: a course", () => {
     const id = await started();
     for (const date of [day(0, 4), day(1, 0), day(1, 4)]) await applyMove(db, { userId, workoutId: slotId(id, date), toDate: date, toTime: "20:30", source: "app", corosWritesEnabled: false });
     await db.update(plannedWorkouts).set({ archivedAt: NOW, archiveReason: "program_replaced" }).where(and(eq(plannedWorkouts.planId, id), inArray(plannedWorkouts.effectiveDate, [MON, day(2, 0), day(2, 4)])));
-    // The pass's four reads, the look again, one removal, and just too little for a second.
-    const first = await stopCourse(db, userId, await planOf(id), ctx(), 4 + 1 + RETRACT_COST + RETRACT_COST - 1);
+    // Its read and the marker's clear, the pass's four reads, the look again, one removal, and just too little for a second.
+    const first = await stopCourse(db, userId, await planOf(id), ctx(), 2 + 4 + 1 + RETRACT_COST + RETRACT_COST - 1);
     expect(first.more).toBe(true);
     expect((await liveOf(id)).length).toBe(2);
     const { costs } = await until(() => stop(id));
@@ -990,19 +1178,18 @@ describe("POST /api/plans/:id/stop: a course", () => {
 
   it("the pass runs only with room for its first step: short of it, more says so and no outline goes", async () => {
     const id = await started();
-    expect(await stopCourse(db, userId, await planOf(id), ctx(), STOPPED_PASS_MIN - 1)).toEqual({ more: true });
+    expect(await stopCourse(db, userId, await planOf(id), ctx(), 2 + STOPPED_PASS_MIN - 1)).toEqual({ more: true });
     expect((await liveOf(id)).length).toBe(6);
-    expect(await stopCourse(db, userId, await planOf(id), ctx(), STOPPED_PASS_MIN)).toEqual({ more: true });
+    expect(await stopCourse(db, userId, await planOf(id), ctx(), 2 + STOPPED_PASS_MIN)).toEqual({ more: true });
     expect((await liveOf(id)).length).toBe(5);
   });
 
-  it("a row another account filed under that id isn't touched, or even tried", async () => {
+  it("a row another account filed under that id isn't touched", async () => {
     const id = await started();
     const other = await makeTestUser(db);
     const theirs = await earlier(day(0, 1), 1, "scheduled", { userId: other.userId, planId: id });
     await until(() => stop(id));
     expect((await row(theirs)).archivedAt).toBeNull();
-    expect((await stop(id)).total).toBe(PLAN_STOP_FIXED - 1);
   });
 
   it("takes only this plan's: a Studio workout and another plan's sessions stay, today and ahead", async () => {
@@ -1029,8 +1216,8 @@ describe("POST /api/plans/:id/stop: a course", () => {
     const res = await stop(id);
     expect(res.body).toEqual({ more: false });
     expect(await liveOf(id)).toEqual([]);
-    // Its fixed seven, the pass's five reads and looks, and three retractions at their measured eight.
-    expect(res.total).toBe(PLAN_STOP_FIXED + 5 + 3 * 8);
+    // Its fixed six, its read and the marker's clear, the pass's five reads and looks, and three retractions at their measured eight.
+    expect(res.total).toBe(PLAN_STOP_FIXED + 2 + 5 + 3 * 8);
   });
 
   it("once stopped, the day's pass writes nothing for it", async () => {
@@ -1181,6 +1368,357 @@ describe("POST /api/plans/:id/stop: a course", () => {
   });
 });
 
+describe("an abandoned start or stop: the hourly pass finishes it (R33)", () => {
+  const finishing = async (id: string) => courseConfigSchema.parse((await planOf(id)).config).finishing;
+  /** One hour of the cron's course work, in the order the cron runs it. */
+  const anHour = async () => {
+    await finishCoursesPartWay(db, AT);
+    await placeSlotsForAllPrograms(db, AT);
+  };
+  const twoOnADay = async () => {
+    const live = (await db.select().from(plannedWorkouts).where(and(eq(plannedWorkouts.userId, userId), isNull(plannedWorkouts.archivedAt)))).filter((r) => r.effectiveDate >= MON);
+    const days = live.map((r) => r.effectiveDate);
+    return days.filter((d, i) => days.indexOf(d) !== i);
+  };
+  /** Sessions already planned on the very days the course will use. */
+  const seedAhead = async () => {
+    const dates = [MON, day(0, 4), day(1, 0), day(1, 4), day(2, 0), day(2, 4)];
+    const ids: string[] = [];
+    for (const [i, date] of dates.entries()) ids.push(await planned(date, i + 1));
+    return ids;
+  };
+
+  describe("a start", () => {
+    it("abandoned after one send, the fill holds: nothing lands beside the old sessions, hour after hour", async () => {
+      await seedAhead();
+      const first = await start();
+      expect(first.body.more).toBe(true);
+      const id = first.body.plan.id as string;
+      expect(await finishing(id)).toBe("start");
+      await placeSlotsForAllPrograms(db, AT);
+      expect((await rowsOf(id)).filter((r) => r.origin === "program")).toEqual([]);
+      await anHour();
+      expect(await twoOnADay()).toEqual([]);
+      // A written session has nothing to be written from: no outline, no write beside the old one.
+      expect(await writeCourseSessionsDue(db, new Date("2026-10-09T19:00:00.000Z"))).toEqual({ written: 0, failed: 0 });
+    });
+
+    it("the hourly pass carries on to the same end as a client's run, one step at a time, nothing on one day twice", async () => {
+      await seedAhead();
+      await until(() => start());
+      const byClient = await finalState();
+
+      db = makeTestDb({ boundVariableCap: 100 });
+      ({ userId, prefs } = await makeTestUser(db));
+      cookie = `${SESSION_COOKIE}=${await createSession(db, userId)}`;
+      await seedAhead();
+      const first = await start();
+      const id = first.body.plan.id as string;
+      let hours = 0;
+      while ((await finishing(id)) !== undefined && hours < 20) {
+        await anHour();
+        hours += 1;
+        expect(await twoOnADay()).toEqual([]);
+      }
+      expect(hours).toBeGreaterThan(1);
+      await anHour();
+      expect(await finishing(id)).toBeUndefined();
+      expect(await finalState()).toEqual(byClient);
+      expect(await twoOnADay()).toEqual([]);
+    });
+
+    it("a client coming back part way finishes it from where the pass left it", async () => {
+      await seedAhead();
+      const first = await start();
+      await anHour();
+      await until(() => start());
+      expect(await finishing(first.body.plan.id)).toBeUndefined();
+      expect(await twoOnADay()).toEqual([]);
+    });
+
+    it("the cron runs it, before placement, so the hour that clears the marker fills the weeks", async () => {
+      const ids = [await planned(day(0, 1), 1), await planned(day(0, 2), 2)];
+      const first = await start();
+      const id = first.body.plan.id as string;
+      expect((await Promise.all(ids.map(row))).filter((r) => r.archivedAt === null)).toHaveLength(1);
+      await hourly(db, ENV);
+      expect((await Promise.all(ids.map(row))).filter((r) => r.archivedAt === null)).toEqual([]);
+      expect(await finishing(id)).toBeUndefined();
+      // Today's among them, written by the same hour.
+      expect((await liveOf(id)).length).toBe(6);
+    });
+
+    it("today is the athlete's: at 23:30 where they are, a session on their today is still today's, though it's tomorrow in UTC", async () => {
+      const both = [await planned(MON, 1), await planned(MON, 2)];
+      const first = await start();
+      expect(first.body.more).toBe(true);
+      const [left] = (await Promise.all(both.map(row))).filter((r) => r.archivedAt === null);
+      await finishCoursesPartWay(db, new Date("2026-10-06T06:30:00.000Z"));
+      expect(await row(left!.id)).toMatchObject({ planId: studioProgramId(userId), courseSession: null });
+      expect((await row(left!.id)).archivedAt).not.toBeNull();
+    });
+
+    it("a session that passes its day while it waits isn't removed: it joins, as one behind", async () => {
+      const wed = await planned(day(0, 2), 2);
+      const thu = await planned(day(0, 3), 3);
+      await planned(day(0, 1), 1);
+      const first = await start();
+      const id = first.body.plan.id as string;
+      // Friday, in the athlete's zone.
+      await finishCoursesPartWay(db, new Date("2026-10-09T19:00:00.000Z"));
+      expect(await row(wed)).toMatchObject({ planId: id, courseSession: 2, archivedAt: null });
+      expect(await row(thu)).toMatchObject({ planId: id, courseSession: 3, archivedAt: null });
+    });
+
+    it("the marker clears with nothing to move, in the send that finds that", async () => {
+      const first = await start();
+      expect(first.body.more).toBe(false);
+      expect((await planOf(first.body.plan.id)).config).not.toHaveProperty("finishing");
+    });
+
+    it("once cleared, a retry and the pass change nothing: a Studio copy added since stays where it was put", async () => {
+      const id = await started();
+      const copy = await planned(day(1, 1), 1);
+      const before = await row(copy);
+      expect((await start()).body.more).toBe(false);
+      expect(refRows).toEqual([0]);
+      await anHour();
+      expect(await row(copy)).toEqual(before);
+      expect(await finishing(id)).toBeUndefined();
+    });
+
+    it("the marker doesn't stop the plan being edited, or the edit stop the marker", async () => {
+      await seedAhead();
+      const first = await start();
+      const id = first.body.plan.id as string;
+      expect(await applyPlanPatch(db, userId, id, { easeNext: true }, NOW, MON)).toMatchObject({ ok: true });
+      expect(courseConfigSchema.parse((await planOf(id)).config)).toMatchObject({ easeNext: true, finishing: "start" });
+    });
+
+    it("held, a pass does nothing at all: it retracts nothing either", async () => {
+      const id = await started();
+      await planned(day(0, 1), 1);
+      await planned(day(0, 2), 2);
+      const plan = await planOf(id);
+      await db.update(programs).set({ config: { ...plan.config, finishing: "start" } }).where(eq(programs.id, id));
+      expect(await placeSlots(db, userId, id, MON, prefs, NOW)).toEqual({ placed: [], archived: [] });
+      await db.update(programs).set({ pausedUntil: day(4, 0) }).where(eq(programs.id, id));
+      expect(await placeSlots(db, userId, id, MON, prefs, NOW)).toEqual({ placed: [], archived: [] });
+    });
+
+    it("a revival sets it, so what was planned while it was stopped is taken in", async () => {
+      const id = await started();
+      await until(() => stop(id));
+      await planned(day(0, 1), 1);
+      await planned(day(0, 2), 2);
+      const first = await start();
+      expect(first.body.more).toBe(true);
+      expect(await finishing(id)).toBe("start");
+    });
+  });
+
+  describe("a stop", () => {
+    const seedRunning = async () => {
+      const id = await startedWhole();
+      await writeCourseSessionsDue(db, AT);
+      await filed(id, day(0, 1), { id: "filed-1", title: "filed one" });
+      await filed(id, day(0, 3), { id: "filed-2", title: "filed two" });
+      await filed(id, day(1, 1), { id: "filed-3", title: "filed three" });
+      return id;
+    };
+    const startedWhole = async () => {
+      const res = await startCourse(db, userId, BODY, ctx(), Number.POSITIVE_INFINITY);
+      if (!res.ok) throw new Error(res.error);
+      return res.planId;
+    };
+
+    it("abandoned after one send, the hourly pass takes what's left, so nothing stays live under a stopped plan to read as missed", async () => {
+      const id = await seedRunning();
+      const first = await stop(id);
+      expect(first.body).toEqual({ more: true });
+      expect(await finishing(id)).toBe("stop");
+      let hours = 0;
+      while ((await finishing(id)) !== undefined && hours < 20) {
+        await anHour();
+        hours += 1;
+      }
+      expect(await finishing(id)).toBeUndefined();
+      expect((await liveOf(id)).filter((r) => r.effectiveDate >= MON && r.completionState === "scheduled")).toEqual([]);
+      for (const r of ["filed-1", "filed-2", "filed-3"]) expect((await row(r)).archivedAt, r).not.toBeNull();
+      await reconcileCompletionStates(db, userId, prefs, new Date("2026-10-20T19:00:00.000Z"));
+      expect((await liveOf(id)).filter((r) => r.completionState === "missed")).toEqual([]);
+    });
+
+    it("ends where a client's run ends", async () => {
+      const id = await seedRunning();
+      await until(() => stop(id));
+      const byClient = await finalState();
+
+      db = makeTestDb({ boundVariableCap: 100 });
+      ({ userId, prefs } = await makeTestUser(db));
+      cookie = `${SESSION_COOKIE}=${await createSession(db, userId)}`;
+      const again = await seedRunning();
+      await stop(again);
+      let hours = 0;
+      while ((await finishing(again)) !== undefined && hours < 20) {
+        await anHour();
+        hours += 1;
+      }
+      expect(await finalState()).toEqual(byClient);
+    });
+
+    it("an hour's step keeps to its budget: one session with a copy's cost an hour, not the lot", async () => {
+      const id = await seedRunning();
+      await stop(id);
+      const left = async () => (await Promise.all(["filed-1", "filed-2", "filed-3"].map(row))).filter((r) => r.archivedAt === null).length;
+      const before = await left();
+      expect(before).toBeGreaterThan(1);
+      await finishCoursesPartWay(db, AT);
+      expect(await left()).toBe(before - 1);
+    });
+
+    it("the marker clears with nothing to take off, in the send that finds that, and a retry reads nothing", async () => {
+      await db.insert(programs).values({ id: "empty", userId, kind: "course", name: "Empty", status: "active", disciplines: ["yoga"], config: courseConfigSchema.parse(BODY), createdAt: NOW, updatedAt: NOW });
+      expect((await stop("empty")).body).toEqual({ more: false });
+      expect((await planOf("empty")).status).toBe("retired");
+      expect((await planOf("empty")).config).not.toHaveProperty("finishing");
+      const late = await filed("empty", day(1, 1));
+      const res = await stop("empty");
+      expect(res.body).toEqual({ more: false });
+      expect(res.total).toBe(PLAN_STOP_FIXED - 1);
+      expect((await row(late)).archivedAt).toBeNull();
+    });
+
+    it("stopping a start part way: the fill stays held, it's stopped, and what never joined the plan stays in the bucket", async () => {
+      const ids = await seedAhead();
+      const first = await start();
+      const id = first.body.plan.id as string;
+      const { last } = await until(() => stop(id));
+      expect(last).toEqual({ more: false });
+      expect((await planOf(id)).status).toBe("retired");
+      expect(await finishing(id)).toBeUndefined();
+      await anHour();
+      expect((await rowsOf(id)).filter((r) => r.origin === "program")).toEqual([]);
+      expect((await Promise.all(ids.map(row))).filter((r) => r.archivedAt === null).length).toBeGreaterThan(0);
+    });
+
+    it("a plan's clear is its own: another course's marker stands", async () => {
+      await db.insert(programs).values({ id: "other", userId, kind: "course", name: "Other", status: "active", disciplines: ["yoga"], config: { ...courseConfigSchema.parse({ ...BODY, course: "an-old-course" }), finishing: "start" }, createdAt: NOW, updatedAt: NOW });
+      await started();
+      expect(await finishing("other")).toBe("start");
+      await db.insert(programs).values({ id: "empty", userId, kind: "course", name: "Empty", status: "active", disciplines: ["yoga"], config: courseConfigSchema.parse({ ...BODY, course: "another-old-course" }), createdAt: NOW, updatedAt: NOW });
+      await db.update(programs).set({ config: { ...courseConfigSchema.parse({ ...BODY, course: "an-old-course" }), finishing: "stop" } }).where(eq(programs.id, "other"));
+      await stop("empty");
+      expect(await finishing("other")).toBe("stop");
+    });
+
+    it("a start landing as a stop clears its marker keeps its own: each clears only its own kind", async () => {
+      await db.insert(programs).values({ id: "empty", userId, kind: "course", name: "Empty", status: "active", disciplines: ["yoga"], config: courseConfigSchema.parse(BODY), createdAt: NOW, updatedAt: NOW });
+      landing = {
+        at: /^update "programs" set "config" = json_remove/,
+        then: () => (db.update(programs).set({ config: { ...courseConfigSchema.parse(BODY), finishing: "start" } }).where(eq(programs.id, "empty")) as unknown as { run(): void }).run(),
+      };
+      await stop("empty");
+      expect(landing).toBeNull();
+      expect(await finishing("empty")).toBe("start");
+    });
+
+    it("a stop part way changes its status once, and doesn't write it again for each send", async () => {
+      const id = await seedRunning();
+      await stop(id);
+      await stop(id);
+      expect(writes().filter((s) => s.startsWith('update "programs"'))).toEqual([]);
+    });
+
+    it("starting a stop part way: the start takes over the marker", async () => {
+      const id = await seedRunning();
+      await stop(id);
+      const res = await start();
+      expect(res.status).toBe(200);
+      expect((await planOf(id)).status).toBe("active");
+      await until(() => start());
+      expect(await finishing(id)).toBeUndefined();
+    });
+  });
+
+  it("a restore in progress holds the step: nothing is written, and the marker stays", async () => {
+    await seedAhead();
+    const first = await start();
+    const id = first.body.plan.id as string;
+    const before = await finalState();
+    await beginRestore();
+    expect(await finishCoursesPartWay(db, AT)).toEqual({ finished: 0, failed: 0 });
+    expect(await finalState()).toEqual(before);
+    expect(await finishing(id)).toBe("start");
+  });
+
+  it("a restore beginning as the step runs isn't a failure, and that session stays", async () => {
+    const ids = await seedAhead();
+    const first = await start();
+    expect(first.body.more).toBe(true);
+    const left = (await Promise.all(ids.map(row))).filter((r) => r.archivedAt === null).map((r) => r.id);
+    race.begin = beginRestore;
+    expect(await finishCoursesPartWay(db, AT)).toEqual({ finished: 0, failed: 0 });
+    expect((await Promise.all(left.map(row))).filter((r) => r.archivedAt === null).map((r) => r.id)).toEqual(left);
+  });
+
+  describe("its statement bound", () => {
+    it("nothing part way is one read, whatever the accounts", async () => {
+      await started();
+      statements.length = 0;
+      expect(await finishCoursesPartWay(db, AT)).toEqual({ finished: 0, failed: 0 });
+      expect(statements).toHaveLength(1);
+    });
+
+    it("one step spends its read, its look and its budget at most, on a realistic account with a copy to take off", async () => {
+      const account = await seedRealisticAccount(db);
+      userId = account.userId;
+      prefs = await loadPreferences(db, userId);
+      cookie = `${SESSION_COOKIE}=${await createSession(db, userId)}`;
+      for (let n = 1; n <= 6; n++) await planned(addDays(MON, n), n);
+      await start(BODY, { ...makeRealisticEnv(), WATCH_PUSH_ENABLED: "1" } as Env);
+      statements.length = 0;
+      await finishCoursesPartWay(db, AT);
+      expect(statements.length).toBeLessThanOrEqual(1 + 1 + COURSE_FINISH_BUDGET);
+      expect(COURSE_FINISH_BUDGET).toBeLessThanOrEqual(45);
+    });
+
+    it("however many are part way, it takes on so many an hour, and the others wait for theirs", async () => {
+      const owners: Array<{ userId: string; prefs: UserPreferences }> = [];
+      for (let i = 0; i < COURSE_FINISHES_PER_PASS + 1; i++) {
+        ({ userId, prefs } = await makeTestUser(db));
+        owners.push({ userId, prefs });
+        await startCourse(db, userId, BODY, ctx(), 40);
+        await db.update(programs).set({ config: { ...courseConfigSchema.parse(BODY), finishing: "start" } }).where(eq(programs.userId, userId));
+      }
+      statements.length = 0;
+      const stats = await finishCoursesPartWay(db, AT);
+      expect(stats.finished).toBe(COURSE_FINISHES_PER_PASS);
+      expect(statements.length).toBeLessThanOrEqual(1 + COURSE_FINISHES_PER_PASS * (1 + COURSE_FINISH_BUDGET));
+      const left = await db.select().from(programs).where(sql`json_extract(${programs.config}, '$.finishing') is not null`);
+      expect(left).toHaveLength(1);
+    });
+
+    it("one that fails doesn't stop the other, and the log says so by the error's name alone", async () => {
+      const error = vi.spyOn(console, "error").mockImplementation(() => undefined);
+      await db.insert(programs).values({ id: "broken", userId, kind: "course", name: "private words", status: "active", disciplines: [], config: { finishing: "start", course: 1 }, createdAt: NOW, updatedAt: NOW });
+      await seedAhead();
+      const first = await start();
+      expect(await finishCoursesPartWay(db, AT)).toEqual({ finished: 1, failed: 1 });
+      expect(await finishing(first.body.plan.id)).toBe("start");
+      for (const call of error.mock.calls) expect(String(call[0])).not.toContain("private words");
+      expect(error.mock.calls.some((c) => /course finish failed.*broken.*ZodError/.test(String(c[0])))).toBe(true);
+    });
+
+    it("the marker isn't a course's alone to read: another kind naming it is passed over", async () => {
+      await db.insert(programs).values({ id: "other-kind", userId, kind: "coach", name: "C", status: "active", disciplines: [], config: { finishing: "start", course: COURSE }, createdAt: NOW, updatedAt: NOW });
+      statements.length = 0;
+      expect(await finishCoursesPartWay(db, AT)).toEqual({ finished: 0, failed: 0 });
+      expect(statements).toHaveLength(1);
+    });
+  });
+});
+
 describe("stopping another kind of plan: the path it has always had", () => {
   it("a programme goes as its settings sheet stops it: retired, its slots retracted, and the same as PATCH /api/programs", async () => {
     const make = async () => {
@@ -1216,7 +1754,7 @@ describe("stopping another kind of plan: the path it has always had", () => {
       await block("next", "line", day(1, 0), day(1, 6));
     };
 
-    it("retires each block that hasn't ended and takes their sessions off, as a line's Stop does; one receipt; the plan's own row is left as that Stop leaves it", async () => {
+    it("retires each block that hasn't ended and takes their sessions off, as a line's Stop does; one receipt; and the plan's own row says it stopped", async () => {
       await coachPlan();
       const past = await coachRow("ended", day(-1, 0));
       const today = await coachRow("now", MON);
@@ -1238,7 +1776,8 @@ describe("stopping another kind of plan: the path it has always had", () => {
       expect((await row(ahead)).archiveReason).toBe("user_removed");
       const receipts = async () => (await db.select().from(coachMessages).where(eq(coachMessages.userId, userId))).map((m) => m.body);
       expect(await receipts()).toEqual(["Plan stopped — completed history stays."]);
-      expect((await planOf("line")).status).toBe("active");
+      expect((await planOf("line")).status).toBe("retired");
+      expect((await planOf("other-line")).status).toBe("active");
       // Sent again, nothing is left to stop and nothing is said twice.
       expect((await stop("line")).body).toEqual({ more: false });
       expect(await receipts()).toEqual(["Plan stopped — completed history stays."]);
@@ -1262,7 +1801,7 @@ describe("stopping another kind of plan: the path it has always had", () => {
     it("what one block spends comes out of what the next may: no room for a chunk's own reads, and it waits", async () => {
       await coachPlan();
       const receipt = async () => undefined;
-      // An empty block's chunk costs three: its plan read, its sessions read, its status.
+      // An empty block's chunk costs four: its plan read, its sessions read, its status and the plan's.
       expect(await stopBlocks(db, userId, ["now", "next"], prefs, STRUCTURAL_MIN_BUDGET + 2, receipt)).toEqual({ more: true });
       const status = async (id: string) => (await db.select().from(coachPlans).where(eq(coachPlans.id, id)))[0]!.status;
       expect(await status("now")).toBe("retired");
@@ -1346,6 +1885,76 @@ describe("restarting: the same plan comes back (R28)", () => {
     expect(await row(slotId(id, MON))).toMatchObject({ completionState: "completed", courseSession: 1, archivedAt: null });
   });
 
+  it("a revival writes a version saying what changed; a retry and a new plan write none", async () => {
+    const id = await started();
+    await start();
+    expect(await db.select().from(programVersions).where(eq(programVersions.programId, id))).toEqual([]);
+    await db.update(programs).set({ pausedUntil: day(4, 0) }).where(eq(programs.id, id));
+    await until(() => stop(id));
+    await until(() => start({ ...BODY, weekdays: [1, 3], time: "06:30" }));
+    const [first, ...rest] = await db.select().from(programVersions).where(eq(programVersions.programId, id));
+    expect(rest).toEqual([]);
+    expect(first).toMatchObject({ versionNum: 1, capturedAt: NOW });
+    expect(first!.fingerprint).toMatch(/^[0-9a-f]{64}$/);
+    expect((first!.summary as { changed: string[] }).changed.sort()).toEqual(["pausedUntil", "status", "time", "weekdays"]);
+    await start({ ...BODY, weekdays: [1, 3], time: "06:30" });
+    expect(await db.select().from(programVersions).where(eq(programVersions.programId, id))).toHaveLength(1);
+    await until(() => stop(id));
+    await until(() => start({ ...BODY, weekdays: [1, 3], time: "06:30" }));
+    const after = await db.select().from(programVersions).where(eq(programVersions.programId, id));
+    expect(after.map((v) => v.versionNum).sort()).toEqual([1, 2]);
+    expect((after.find((v) => v.versionNum === 2)!.summary as { changed: string[] }).changed).toEqual(["status"]);
+  });
+
+  it("a moved outline comes back with no mark of the move: a pause takes it like any other, and nothing reads it as the athlete's", async () => {
+    const id = await started();
+    const fri = slotId(id, day(0, 4));
+    await applyMove(db, { userId, workoutId: fri, toDate: day(0, 5), toTime: "08:00", source: "app", corosWritesEnabled: false });
+    expect(await db.select().from(scheduleOverrides).where(eq(scheduleOverrides.workoutId, fri))).not.toEqual([]);
+    // Another workout's time, pinned: nothing to do with this.
+    const { workout: other } = await createDocWorkout(db, userId, { date: day(3, 1), time: "07:00", doc: { ...docOfSession(1), source: { kind: "studio" } } }, ctx());
+    await until(() => stop(id));
+    await until(() => start());
+    expect(await row(fri)).toMatchObject({ effectiveDate: day(0, 4), archivedAt: null });
+    expect(await db.select().from(scheduleOverrides).where(eq(scheduleOverrides.workoutId, fri))).toEqual([]);
+    expect(await db.select().from(scheduleOverrides).where(eq(scheduleOverrides.workoutId, other.id))).toHaveLength(1);
+    await db.update(programs).set({ pausedUntil: day(1, 0) }).where(eq(programs.id, id));
+    await placeSlots(db, userId, id, MON, prefs, NOW);
+    expect((await row(fri)).archivedAt).not.toBeNull();
+  });
+
+  it.each([
+    ["the athlete", (doc: WorkoutDoc) => doc],
+    ["the coach", (doc: WorkoutDoc) => ({ ...doc, source: { ...doc.source, kind: "coach" as const } })],
+  ])("a session %s revised comes back as a clean outline: its last revision isn't a touch, with no document to be touching", async (_, change) => {
+    const id = await started();
+    await writeCourseSessionsDue(db, AT);
+    const today = slotId(id, MON);
+    await reviseDocWorkout(db, userId, today, { doc: change({ ...docOfSession(1), title: "Mine now" }), baseRev: (await row(today)).workoutDocRev! }, ctx());
+    expect((await row(today)).workoutDocRev).toBe(2);
+    await until(() => stop(id));
+    await until(() => start());
+    expect(await row(today)).toMatchObject({ archivedAt: null, origin: "program", workoutDoc: null, workoutDocRev: 2 });
+    await db.update(programs).set({ pausedUntil: day(1, 0) }).where(eq(programs.id, id));
+    await placeSlots(db, userId, id, MON, prefs, NOW);
+    expect((await row(today)).archivedAt).not.toBeNull();
+  });
+
+  it("a revived slot's statements are within what the pass declares", async () => {
+    const id = await started();
+    await applyMove(db, { userId, workoutId: slotId(id, day(1, 0)), toDate: day(1, 1), toTime: "08:00", source: "app", corosWritesEnabled: false });
+    await until(() => stop(id));
+    await until(() => start({ ...BODY, weekdays: [0] }));
+    await db.update(plannedWorkouts).set({ archivedAt: NOW, archiveReason: "program_replaced" }).where(and(eq(plannedWorkouts.planId, id), eq(plannedWorkouts.originalPlanDate, day(1, 0))));
+    statements.length = 0;
+    const res = await placeSlotsWithin(db, userId, id, MON, prefs, NOW, 45);
+    expect(res.placed).toEqual([slotId(id, day(1, 0))]);
+    expect(statements.length).toBeLessThanOrEqual(res.spent);
+    // The row, its suppression and its overrides.
+    expect(REVIVE_COST).toBe(3);
+    expect(statements.filter((s) => /^delete from "(calendar_event_suppressions|schedule_overrides)"/.test(s))).toHaveLength(2);
+  });
+
   it("the outlines it took come back on the same rows, each suppression gone: its days weren't the athlete's to lose", async () => {
     const id = await started();
     const ids = (await liveOf(id)).map((r) => r.id).sort();
@@ -1395,12 +2004,20 @@ describe("restarting: the same plan comes back (R28)", () => {
     await until(() => start());
     expect((await planOf(id)).archivedAt).toBeNull();
     expect(await coursePlans()).toHaveLength(1);
+    const [version] = await db.select().from(programVersions).where(eq(programVersions.programId, id));
+    expect((version!.summary as { changed: string[] }).changed).toEqual(["archivedAt"]);
   });
 
   it("a plan stored by another id is still the course's plan: it's found by its config, not its id", async () => {
     await db.insert(programs).values({ id: "some-other-id", userId, kind: "course", name: "Intro", status: "retired", disciplines: ["yoga"], config: courseConfigSchema.parse(BODY), createdAt: NOW, updatedAt: NOW });
     expect(await started()).toBe("some-other-id");
     expect(await coursePlans()).toHaveLength(1);
+  });
+
+  it("a running plan whose settings no longer read is put right the same way, not left to throw", async () => {
+    await db.insert(programs).values({ id: "old", userId, kind: "course", name: "Intro", status: "active", disciplines: ["yoga"], config: { course: COURSE, someOldKey: 1 }, createdAt: NOW, updatedAt: NOW });
+    expect(await started()).toBe("old");
+    expect(courseConfigSchema.parse((await planOf("old")).config)).toMatchObject({ course: COURSE, weekdays: [0, 4], time: "19:30" });
   });
 
   it("a stored config that no longer reads is replaced by what's asked for", async () => {
@@ -1577,10 +2194,10 @@ describe("within a request's budget, on a realistic account", () => {
     for (const c of costs) expect(c, JSON.stringify(costs)).toBeLessThanOrEqual(45);
     const [plan] = await coursePlans();
     expect(await courseSessionsDone(db, userId, plan!.id)).toBe(12);
-    // Its fixed ten, less the plan's write and the moves, and a settled pass's five reads: the restore, the plan, the sessions
-    // done, its rows and rule 5's.
+    // Its fixed ten, less the plan's write and a revival's version, and a settled pass's five reads: the restore, the plan, the
+    // sessions done, its rows and rule 5's. No read of what's planned: the marker's gone, so a retry takes nothing in.
     const retry = await start(BODY, env);
-    expect(retry.total).toBe(COURSE_START_FIXED - 2 + 5);
+    expect(retry.total).toBe(COURSE_START_FIXED - 3 + 5);
     expect(COURSE_START_FIXED).toBe(10);
   });
 
@@ -1588,8 +2205,8 @@ describe("within a request's budget, on a realistic account", () => {
     const env = await realistic();
     const res = await start(BODY, env);
     expect(res.body.more).toBe(true);
-    expect(res.total).toBeLessThanOrEqual(COURSE_START_FIXED + RETRACT_WRITTEN_COST);
-    expect(COURSE_START_FIXED + RETRACT_WRITTEN_COST).toBeLessThanOrEqual(45);
+    expect(res.total).toBeLessThanOrEqual(COURSE_START_FIXED + 3 + RETRACT_WRITTEN_COST);
+    expect(COURSE_START_FIXED + 3 + RETRACT_WRITTEN_COST).toBeLessThanOrEqual(45);
   });
 
   it("many sessions behind move in one statement: 12 done on a realistic account", async () => {
@@ -1617,9 +2234,9 @@ describe("within a request's budget, on a realistic account", () => {
     const { costs } = await until(() => stop(id, env));
     for (const c of costs) expect(c, JSON.stringify(costs)).toBeLessThanOrEqual(45);
     expect((await liveOf(id)).filter((r) => r.effectiveDate >= MON && r.completionState === "scheduled")).toEqual([]);
-    expect(PLAN_STOP_FIXED).toBe(7);
-    expect(PLAN_STOP_FIXED + RETRACT_WRITTEN_COST).toBeLessThanOrEqual(45);
-    // Stopped already: its fixed seven, less the status.
+    expect(PLAN_STOP_FIXED).toBe(6);
+    expect(PLAN_STOP_FIXED + 2 + RETRACT_WRITTEN_COST).toBeLessThanOrEqual(45);
+    // Stopped already: its fixed six, less the status.
     expect((await stop(id, env)).total).toBe(PLAN_STOP_FIXED - 1);
   });
 
@@ -1634,7 +2251,7 @@ describe("within a request's budget, on a realistic account", () => {
     await executeCloudJobs(db, switchOn(), userId, prefs, { fetchImpl: server.fetchImpl });
     const first = await start();
     expect((await row(today)).archivedAt).not.toBeNull();
-    expect(first.total).toBeLessThanOrEqual(COURSE_START_FIXED + RETRACT_WRITTEN_COST);
+    expect(first.total).toBeLessThanOrEqual(COURSE_START_FIXED + 3 + RETRACT_WRITTEN_COST);
     await until(() => start());
     const id = (await coursePlans())[0]!.id;
     const again = await planned(MON, 2);

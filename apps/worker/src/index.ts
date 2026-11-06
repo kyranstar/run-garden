@@ -74,6 +74,7 @@ import { seedWatchVersions } from "./services/fixture-watch-version.js";
 import { accountsRestoring, restoreInProgress } from "./services/account-state.js";
 import { backfillPlanRegistry } from "./services/plan-registry.js";
 import { placeSlotsForAllPrograms } from "./services/program-slots.js";
+import { finishCoursesPartWay } from "./services/course-plans.js";
 import { writeCourseSessionsDue } from "./services/course-sessions.js";
 
 const app = new Hono<AppContext>();
@@ -404,6 +405,9 @@ export async function hourly(db: Db, env: Env): Promise<void> {
       console.error(`plan registry backfill failed: ${e instanceof Error ? e.name : "unknown"}`);
     }
   }
+  // A course's start or stop that nobody came back to finish goes on a step (course-plans.ts): before placement, so the hour
+  // that clears a start's marker fills its weeks. One read when none is part way, and at most COURSE_FINISHES_PER_PASS steps.
+  await finishCoursesPartWay(db).catch((e: unknown) => console.error(`course finishes failed: ${e instanceof Error ? e.name : "unknown"}`));
   // Adaptive programs and courses keep their weeks filled as the days roll on (Phase 2a). FIRST of the per-user work, and
   // cheap: an invocation that dies later on a CPU or subrequest ceiling (the garden, the coach, the COROS
   // writes) has still placed the week (audit 2a-model M8). Its own pass over every program; it skips a

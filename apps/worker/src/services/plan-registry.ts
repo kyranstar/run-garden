@@ -5,6 +5,8 @@ import { sha256Hex } from "../auth/crypto.js";
 import { restoreInProgress } from "./account-state.js";
 import { isLoosePlan, lineBlockOf, loadNonCoachPlanEntries } from "./coach-plans.js";
 import { runAtomically, type Db } from "./db.js";
+import { planStoppedIfNoBlockLeft } from "./plan-status.js";
+import { studioPlanRetired } from "./studio-push.js";
 import { DISCIPLINE_WORD, isPlanKind, lineKeysByPlan, planPatchSchema, planSummaryOf, PLAN_KINDS, type PlanPatch, type PlanSummaryDto } from "./plan-summaries.js";
 
 /**
@@ -24,6 +26,10 @@ import { DISCIPLINE_WORD, isPlanKind, lineKeysByPlan, planPatchSchema, planSumma
  * Idempotent, and cheap on the hourly pass (the free plan allows about 45 statements): reads first, then writes in
  * order of cost until the budget is spent, the lines last. What doesn't fit waits for the next hour. A restore
  * replacing the account stops it at once, and nothing is written.
+ *
+ * It also corrects a coach plan whose row says running though it was stopped (ruling R31; since then every stop writes the row
+ * itself, `plan-status.ts`). The evidence has to be real: a block retired and none left to run, or the Studio's own retired
+ * mark. A line that simply ran to its end has neither, and ended is computed, not stored.
  *
  * THE READ AND THE EDIT: `listPlans` answers the plans in two reads (the plans, the blocks), and `applyPlanPatch` is
  * the one write of a plan's purpose, brief, ending, pause, objectives and a course's easing. The route calls it, and
@@ -56,7 +62,7 @@ export async function backfillPlanRegistry(db: Db, userId: string, today: string
   const [coachRows, existing, nonCoach] = await Promise.all([
     db.select().from(coachPlans).where(eq(coachPlans.userId, userId)),
     db
-      .select({ id: programs.id, kind: programs.kind, onEnd: programs.onEnd, source: programs.source })
+      .select({ id: programs.id, kind: programs.kind, status: programs.status, onEnd: programs.onEnd, source: programs.source })
       .from(programs)
       .where(eq(programs.userId, userId)),
     // In the account's own zone, as the plan list reads them.
@@ -70,6 +76,23 @@ export async function backfillPlanRegistry(db: Db, userId: string, today: string
   // Cheapest first: one statement each.
   if (left >= 1 && existing.some((p) => p.kind === "adaptive" && p.onEnd === null)) {
     await db.update(programs).set({ onEnd: "continue" }).where(and(eq(programs.userId, userId), eq(programs.kind, "adaptive"), isNull(programs.onEnd)));
+    left -= 1;
+  }
+
+  for (const p of existing) {
+    if (p.kind !== "coach" || p.status !== "active" || left < 1) continue;
+    const blocks = coachRows.filter((b) => b.programId === p.id);
+    if (!blocks.some((b) => b.status === "retired") || blocks.some((b) => b.status !== "retired" && b.endDate >= today)) continue;
+    await planStoppedIfNoBlockLeft(db, { userId, today, now }, { plan: p.id });
+    left -= 1;
+  }
+  // The Studio's plan on the list isn't retired, so only another one's row needs its mark read.
+  for (const p of existing) {
+    const held = (p.source as { studioPlanId?: unknown } | null)?.studioPlanId;
+    if (p.kind !== "coach" || p.status !== "active" || typeof held !== "string" || held === nonCoach.studioEntries[0]?.id || left < 2) continue;
+    left -= 1;
+    if (!(await studioPlanRetired(db, userId, held))) continue;
+    await planStoppedIfNoBlockLeft(db, { userId, today, now }, { studioPlan: held });
     left -= 1;
   }
 
@@ -250,19 +273,28 @@ export async function applyPlanPatch(db: Db, userId: string, id: string, patch: 
   if (JSON.stringify(next.config) !== JSON.stringify(row.config)) changed.push("easeNext");
   if (changed.length === 0) return { ok: true, changed };
 
+  await runAtomically(db, [
+    db
+      .update(programs)
+      .set({ ...next, updatedAt: now })
+      .where(and(eq(programs.id, id), eq(programs.userId, userId))),
+    (await planVersionInsert(db, id, next, changed, now)).insert,
+  ]);
+  return { ok: true, changed };
+}
+
+/**
+ * The `program_versions` row of a change to a plan, for the change's own batch: the next number (one read), a fingerprint of
+ * the editable fields as they'll stand (purpose, brief, ending, pause, objectives, settings), and what changed. Wrapped, since a
+ * statement resolved from an async function would run there and then.
+ */
+export async function planVersionInsert(db: Db, id: string, fields: Record<string, unknown>, changed: readonly string[], now: string) {
   const [last] = await db
     .select({ n: programVersions.versionNum })
     .from(programVersions)
     .where(eq(programVersions.programId, id))
     .orderBy(desc(programVersions.versionNum))
     .limit(1);
-  const fingerprint = await sha256Hex(JSON.stringify(next));
-  await runAtomically(db, [
-    db
-      .update(programs)
-      .set({ ...next, updatedAt: now })
-      .where(and(eq(programs.id, id), eq(programs.userId, userId))),
-    db.insert(programVersions).values({ id: newId(), programId: id, versionNum: (last?.n ?? 0) + 1, capturedAt: now, fingerprint, summary: { changed } }),
-  ]);
-  return { ok: true, changed };
+  const fingerprint = await sha256Hex(JSON.stringify(fields));
+  return { insert: db.insert(programVersions).values({ id: newId(), programId: id, versionNum: (last?.n ?? 0) + 1, capturedAt: now, fingerprint, summary: { changed: [...changed] } }) };
 }

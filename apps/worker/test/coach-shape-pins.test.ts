@@ -97,8 +97,13 @@ const BEFORE = { tools: 34_935, shared: 20_450, main: 4_586 };
  * pause, approved as one card): its schema, kept to what the model cannot guess (tools 41,968 → 42,902), its one act-tool
  * line (shared 26,913 → 27,268, which also holds read_plans' sentence on what each ending means, Task 4's, until now
  * inside the margin) — measured 17,382; held with 468 characters (≥ 100 tokens) of headroom.
+ * REBASED 2026-11-06 (plans with a purpose, Stage 1, Tasks 7 and 8, which passed the pin above): a new block names its plan,
+ * in 3f1bf1ae (propose_plan's createPlan words and continuesPlanId and newPlan, tools +303; the act-tool line, shared 27,268 →
+ * 27,311), and a workout names its plan, in 969fc49d (planId on plan_set's briefs, +229, and on propose_workout, +279); tools
+ * 42,902 → 43,713, main 7,183 unchanged. Nothing since has moved it, Task 11's course in read_plans included: that tool's
+ * description stands. Measured 18,236; held with 464 characters (≥ 100 tokens) of headroom.
  */
-const GROWTH_MAX_CHARS = 17_850;
+const GROWTH_MAX_CHARS = 18_700;
 
 const toolsSent = () => JSON.stringify(allTools().map((t) => ({ name: t.name, description: t.description, input_schema: t.inputSchema })));
 

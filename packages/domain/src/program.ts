@@ -130,6 +130,11 @@ export const courseConfigSchema = z
     placementWeeksAhead: z.number().int().min(1).max(4).default(2),
     /** Whether the next session is eased. */
     easeNext: z.boolean().default(false),
+    /**
+     * A start or a stop part way (`course-plans.ts`): set with its first send, cleared by the write that finds nothing left.
+     * Set, the hourly pass carries it on, and "start" holds the plan's fill.
+     */
+    finishing: z.enum(["start", "stop"]).optional(),
   })
   .strict();
 export type CourseConfig = z.infer<typeof courseConfigSchema>;

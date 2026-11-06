@@ -145,7 +145,8 @@ describe("through PATCH /api/plans/:id", () => {
     expect(res.status).toBe(200);
     expect(await live(p)).toEqual([MON, day(0, 4), day(1, 0), day(1, 4)]);
     expect(await row(id)).toMatchObject({ archivedAt: null, origin: "program", workoutDoc: null, courseSession: null });
-    expect(res.total).toBe(21);
+    // The one slot brought back clears its overrides as well as its suppression (REVIVE_COST).
+    expect(res.total).toBe(22);
   });
 
   it("a long pause stays inside the budget with today's taken first, and what's left goes with the next hourly pass", async () => {

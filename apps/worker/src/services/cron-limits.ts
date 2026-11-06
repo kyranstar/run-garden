@@ -93,6 +93,17 @@ export const CRON_DOC_BACKFILL_SKIP_MAX = 50;
 export const COURSE_WRITES_PER_PASS = 2;
 
 /**
+ * How many courses part way through a start or a stop the hourly cron carries on with in one invocation, whatever the accounts
+ * and plans (course-plans.ts `finishCoursesPartWay`), picked at random so one that can't move yet holds no other up. The pass
+ * reads what it needs in one statement, so it spends 1 + this × (a look for a restore + `COURSE_FINISH_BUDGET`). None part way
+ * is the one read.
+ */
+export const COURSE_FINISHES_PER_PASS = 2;
+
+/** What one of them may spend: a start's request's room (`COURSE_START_FIXED`'s 10 of 45), so the same step does the same work. */
+export const COURSE_FINISH_BUDGET = 35;
+
+/**
  * What one course session's write costs at its dearest in the hourly pass, which holds its plan already (a request reads it
  * first), before its re-times: the sessions done, the restore's look, the profiles, the library and the day's checks (5), the
  * batch (the flip, the easing, the note, the mark, the revision: 5), and, for a session longer or shorter than its outline

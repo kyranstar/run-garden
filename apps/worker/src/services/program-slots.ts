@@ -47,7 +47,8 @@
  * length is the next session's (`sessionDoc(done + 1)`, numbered from the sessions actually done), booked as that
  * session's write will book it, so nothing shifts on the day. They hold no document, so nothing goes to the watch. A
  * stopped course only retracts, which needs no definition; what rule 3 keeps from this pass, a stop takes itself
- * (`course-plans.ts`).
+ * (`course-plans.ts`). A start part way (`config.finishing`) holds its whole pass: placed now, an outline would land beside a
+ * session the start hasn't taken off yet.
  *
  * Its `time` isn't pinned, on purpose: on a day that really collides, the collision pass re-lays it with the day's other
  * sessions (`separateDayCollisions`), because a double-booked evening is worse than a moved outline. A time the athlete
@@ -70,7 +71,7 @@
  * placement re-derives everything each time.
  */
 import { and, count, eq, gt, gte, inArray, isNotNull, isNull, lte, max, ne, or, sql } from "drizzle-orm";
-import { calendarEventSuppressions, plannedWorkouts, programs, sessionBuilds } from "@rg/database";
+import { calendarEventSuppressions, plannedWorkouts, programs, scheduleOverrides, sessionBuilds } from "@rg/database";
 import { adaptiveConfigSchema, addDays, courseConfigSchema, nowInstant, startOfIsoWeek, todayInZone, type AdaptiveConfig, type UserPreferences } from "@rg/domain";
 import { EXERCISES } from "@rg/exercise-library";
 import { courseDefinition, deriveDoc } from "@rg/workout";
@@ -138,7 +139,8 @@ export const RETRACT_COST = 2 + 1 + 1 + 2 + 2 + 2;
  * a saved session, its sent build found (two) and its push, the restore's look: 6), the retraction above without its look
  * for a sent build (8), and a copy on the watch to take off (`SKIP_UNPUSH_COST`'s 8). Pinned in course-sessions.test.ts.
  */
-export const RETRACT_WRITTEN_COST = 6 + 8 + 8;
+export const RETRACT_WRITTEN_READS = 6;
+export const RETRACT_WRITTEN_COST = RETRACT_WRITTEN_READS + 8 + 8;
 /**
  * What a pass that takes today's written session declares at its most (`placeSlotsWithin`): the restore's look, the plan, the
  * sessions done, the rows, the touched lookup and the restore's look again (6), the removal, and rule 5's read. Pinned in
@@ -152,8 +154,8 @@ export const PAUSE_PASS_COST = 6 + RETRACT_WRITTEN_COST + 1;
  */
 export const STOPPED_PASS_MIN = 5 + RETRACT_COST;
 export const RUNNING_PASS_MIN = 6 + RETRACT_COST;
-/** A retracted slot brought back: its row and its suppression. */
-export const REVIVE_COST = 2;
+/** A retracted slot brought back: its row, its suppression and its overrides. Measured in course-start.test.ts. */
+export const REVIVE_COST = 3;
 /** The ids one touched lookup, and one build lookup, bind (`TOUCHED_ID_CHUNK`, `BUILD_ID_CHUNK`). */
 const ID_CHUNK = 80;
 
@@ -217,7 +219,8 @@ function writtenOffToday(r: WorkoutRow, today: string, todayToo: boolean): boole
  * schedule override of any kind (re-timed on its own day, moved away and back), or a preview build carrying their
  * overrides or swaps (a sheet customised ahead of the day). So is a course's written session someone revised since: its
  * latest revision is anyone's but the write's own (`studio`), the athlete's or the coach's. By who made it, never by its
- * number: a session written again after a same-day lift is the course's own at revision 2. An outline has none to read.
+ * number: a session written again after a same-day lift is the course's own at revision 2. Only while it holds a document: a
+ * session that came off and came back as an outline keeps its revision counter, and that history is no touch of the outline's.
  * Raw SQL over `planned_workouts.id`, so it reads the same inside the SELECT that plans and inside the archive's UPDATE.
  */
 const TOUCHED = sql.raw(
@@ -225,7 +228,7 @@ const TOUCHED = sql.raw(
     " or exists (select 1 from session_builds sb where sb.workout_id = planned_workouts.id and sb.version = 0" +
     " and (coalesce(json_extract(sb.payload, '$.build.params.overrides'), '{}') <> '{}'" +
     " or coalesce(json_extract(sb.payload, '$.build.params.swaps'), '{}') <> '{}'))" +
-    " or exists (select 1 from workout_doc_revisions r where r.id = planned_workouts.id || ':' || planned_workouts.workout_doc_rev and r.source_kind <> 'studio'))",
+    " or exists (select 1 from workout_doc_revisions r where planned_workouts.workout_doc is not null and r.id = planned_workouts.id || ':' || planned_workouts.workout_doc_rev and r.source_kind <> 'studio'))",
 );
 
 /** Bound per statement for the touched lookup: the ids, nothing else. */
@@ -561,8 +564,9 @@ export async function courseSessionsDone(db: Db, userId: string, programId: stri
 }
 
 /**
- * What a pass places from, whichever kind makes the sessions; null when nothing can be placed: another kind, or a running
- * course whose definition is gone (an old id), which is logged by code and leaves the pass with nothing to do. A stopped
+ * What a pass places from, whichever kind makes the sessions; null when nothing can be placed: another kind, a course part way
+ * through its start, or a running course whose definition is gone (an old id), which is logged by code and leaves the pass with
+ * nothing to do. A stopped
  * course needs no definition: it only retracts, through goal 0. A course's outlines book the next session as it would be
  * uneased: easing is one session's, used and cleared when it's written.
  */
@@ -575,6 +579,7 @@ async function placementOf(db: Db, program: ProgramRow, spend: (n: number) => vo
   }
   if (program.kind !== "course") return null;
   const config = courseConfigSchema.parse(program.config);
+  if (config.finishing === "start") return null;
   const placement = {
     config: { weeklyGoal: config.weekdays.length, preferredDays: config.weekdays, placementWeeksAhead: config.placementWeeksAhead },
     title: program.name,
@@ -735,8 +740,10 @@ async function place(
           updatedAt: now,
         })
         .where(and(eq(plannedWorkouts.id, r.id), eq(plannedWorkouts.userId, userId)));
-      // Its suppression goes with the archive it explained, or the calendar would never book it again.
+      // Its suppression goes with the archive it explained, or the calendar would never book it again. Its overrides too: the
+      // move or re-time they record is over, and left behind they'd read as the athlete's touch for good (`TOUCHED`).
       await db.delete(calendarEventSuppressions).where(eq(calendarEventSuppressions.workoutId, r.id));
+      await db.delete(scheduleOverrides).where(eq(scheduleOverrides.workoutId, r.id));
       result.placed.push(r.id);
     }
     return true;

@@ -58,6 +58,7 @@ import {
 import { resolveRaceConflict } from "./race-conflict.js";
 import type { RetimeExpectation, RetimeWrite } from "./adjust-retime.js";
 import { isLoosePlan } from "./coach-plans.js";
+import { planStoppedIfNoBlockLeft } from "./plan-status.js";
 import { DISCIPLINE_WORD } from "./plan-summaries.js";
 import {
   docForCoachSession,
@@ -1877,10 +1878,13 @@ export async function applyOps(
           await suppressAndUnpush(db, userId, rows, now, prefs);
           out.archived.push(...rows.map((r) => r.id));
         }
-        await db
-          .update(coachPlans)
-          .set({ status: "retired", updatedAt: now })
-          .where(and(eq(coachPlans.id, op.planId), eq(coachPlans.userId, userId)));
+        await runAtomically(db, [
+          db
+            .update(coachPlans)
+            .set({ status: "retired", updatedAt: now })
+            .where(and(eq(coachPlans.id, op.planId), eq(coachPlans.userId, userId))),
+          planStoppedIfNoBlockLeft(db, { userId, today, now }, { block: op.planId }),
+        ]);
         out.updated.push(op.planId);
         break;
       }
@@ -1934,7 +1938,7 @@ async function latestThreshold(db: Db, userId: string): Promise<number | null> {
  *  · `reshapeWeek`, `windDown` — the plan read; the week(s)' still-scheduled sessions archived a slice at a time; then
  *    the new sessions in chunks.
  *  · `retirePlan` — the plan read; every future still-scheduled session archived a slice at a time; then the plan's
- *    status.
+ *    status, with the `programs` row it belongs to when no block of it has anything left to run (`plan-status.ts`).
  *  · `extendPlan`, `resolveRaceConflict` — one step each, as in `applyOps`.
  *
  * A plan another hand removed (or never the athlete's) is `refused` in words, never a success for nothing.
@@ -2267,12 +2271,16 @@ async function structuralStep(k: Chunk, op: StructuralOp, p: StructuralProgress,
       // Every future still-scheduled session of the plan — re-read each slice, so one archived since is not counted.
       if (p.step === "archive") return archiveStep(k, p, op.planId, { from: k.today }, [], "status", first);
       if (p.step === "status") {
-        if (!may(k, 1, first)) return { p, stalled: true };
-        await k.db
-          .update(coachPlans)
-          .set({ status: "retired", updatedAt: k.now })
-          .where(and(eq(coachPlans.id, op.planId), eq(coachPlans.userId, k.userId)));
-        k.spent += 1;
+        // The block and, when it was the last with anything left to run, its plan: one batch (`plan-status.ts`).
+        if (!may(k, 2, first)) return { p, stalled: true };
+        await runAtomically(k.db, [
+          k.db
+            .update(coachPlans)
+            .set({ status: "retired", updatedAt: k.now })
+            .where(and(eq(coachPlans.id, op.planId), eq(coachPlans.userId, k.userId))),
+          planStoppedIfNoBlockLeft(k.db, { userId: k.userId, today: k.today, now: k.now }, { block: op.planId }),
+        ]);
+        k.spent += 2;
         return { p: { ...p, step: "done", done: 0 } };
       }
       break;
@@ -2335,7 +2343,7 @@ async function checkPlan(
   next: string,
   first: boolean,
 ): Promise<StepResult> {
-  if (!may(k, 1, first)) return { p, stalled: true };
+  if (!may(k, k.stopping && op.kind === "retirePlan" ? 2 : 1, first)) return { p, stalled: true };
   const [plan] = await k.db
     .select({ name: coachPlans.name, status: coachPlans.status, endDate: coachPlans.endDate })
     .from(coachPlans)
@@ -2345,7 +2353,12 @@ async function checkPlan(
   if (!plan) return { refused: PLAN_GONE[op.kind] };
   const stopped = planStopped(op, plan);
   if (stopped) return { refused: stopped };
-  if (k.stopping && op.kind === "retirePlan" && plan.endDate < k.today) return { p: { ...p, step: "done", done: 0, name: plan.name, ended: true, unchanged: true } };
+  if (k.stopping && op.kind === "retirePlan" && plan.endDate < k.today) {
+    // Left as it is, and it may have been all that was left of its plan.
+    await planStoppedIfNoBlockLeft(k.db, { userId: k.userId, today: k.today, now: k.now }, { block: planId });
+    k.spent += 1;
+    return { p: { ...p, step: "done", done: 0, name: plan.name, ended: true, unchanged: true } };
+  }
   return { p: { ...p, step: next, done: 0, name: plan.name } };
 }
 

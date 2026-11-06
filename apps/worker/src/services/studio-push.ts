@@ -79,6 +79,7 @@ import {
   type StudioSession,
 } from "@rg/domain";
 import { chunkIds, type Db } from "./db.js";
+import { planStoppedIfNoBlockLeft } from "./plan-status.js";
 import { appRequestedDates, recordIntent } from "./sync-intents.js";
 import { dismissStudioPlanNotes, postSyncNote } from "./sync-notes.js";
 
@@ -1817,6 +1818,7 @@ export async function retireStudioPlan(
     : await retireHere(db, opts.userId, opts.today, ahead);
   if (summary.ok && !opts.alreadyRetired) {
     await dismissStudioPlanNotes(db, opts.userId, opts.studioPlanId);
+    await planStoppedIfNoBlockLeft(db, { userId: opts.userId, today: opts.today, now: nowInstant() }, { studioPlan: opts.studioPlanId });
     // The mark last: everything before it can run again.
     await db.insert(auditEvents).values({
       id: newId(),
