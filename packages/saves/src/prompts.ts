@@ -2,7 +2,7 @@ import {
   CONTRACTIONS, DOSE_TYPES, EQUIPMENT_IDS, LATERALITY, LOADS, PATTERNS, POSITIONS, PROFILES, REGIONS,
 } from "@rg/exercise-library";
 import type { ExtractedMove, PostSubmit } from "./schemas.js";
-import { clock, firstWords, SCREEN_TRANSCRIPT_WORDS, transcriptSegments, type Chapter } from "./transcript.js";
+import { clock, SCREEN_TRANSCRIPT_WORDS, transcriptHead, transcriptSegments, type Chapter } from "./transcript.js";
 
 // Prompts for the two model calls. A saved post's text is untrusted: it only ever appears inside a <post-data> block,
 // never in the system message, and the instructions say to treat it as data.
@@ -72,11 +72,11 @@ function dataBlock(post: PostWords, transcript: "full" | "head" = "full"): strin
   if (video && post.chapters?.length) lines.push("chapters:", ...post.chapters.map((c) => `${clock(c.start)} ${defang(c.title)}`));
   const t = video ? post.transcript : null;
   if (t?.text) {
-    const segments = transcriptSegments(t.text);
     if (transcript === "head") {
       lines.push(`transcript (first ${SCREEN_TRANSCRIPT_WORDS.toLocaleString("en-US")} words, ${captionsWords(t)}):`);
-      lines.push(defang(firstWords(segments.map(([, w]) => w).join(" "), SCREEN_TRANSCRIPT_WORDS)));
+      lines.push(defang(transcriptHead(t.text)));
     } else {
+      const segments = transcriptSegments(t.text);
       lines.push(`transcript (${captionsWords(t)}):`, ...segments.map(([at, w]) => `[${clock(at)}] ${defang(w)}`));
       if (t.cut) lines.push("(the transcript was cut here)");
     }

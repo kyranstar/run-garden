@@ -238,3 +238,18 @@ describe("buildExtractBody reuses the user text it was given (final review F2)",
     expect(j.messages[1].content[0]).toEqual({ type: "text", text: "ZORBEX-PREBUILT" });
   });
 });
+
+describe("screening's transcript head comes from the first lines only (final audit G2)", () => {
+  const ig = { caption: "c", hashtags: [], creator: { handle: "zorbex.coach" }, mediaType: "video" as const };
+  it("a transcript with no spaces (CJK) gives a head bounded in characters, not the whole", () => {
+    const text = Array.from({ length: 20_000 }, (_, i) => `${i}\t${"練習".repeat(10)}`).join("\n");
+    const { userText } = filterMessages({ ...ig, source: "youtube", title: "Zorbex", transcript: { lang: "ja", kind: "auto", text, cut: false } });
+    expect(userText.length).toBeLessThan(12_000);
+  });
+  it("a Latin one gives its first 1,500 words", () => {
+    const text = Array.from({ length: 2_000 }, (_, i) => `${i}\tw${i}`).join("\n");
+    const { userText } = filterMessages({ ...ig, source: "youtube", title: "Zorbex", transcript: { lang: "en", kind: "auto", text, cut: false } });
+    expect(userText).toContain(" w1499");
+    expect(userText).not.toContain(" w1500");
+  });
+});

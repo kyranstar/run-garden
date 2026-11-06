@@ -94,3 +94,22 @@ describe("dropUnknownEnums: extract-6's optional fields never fail a reading (fi
     expect(v.insights).toEqual([{ text: "Twice a week", scope: "this_routine" }, "plain"]);
   });
 });
+
+describe("what was left out never fails the reading itself (final audit G4)", () => {
+  it("30 moves × every droppable field, each with many values, still parse", async () => {
+    const { extractionSchema } = await import("../src/index.js");
+    const bad = Array.from({ length: 70 }, (_, i) => `zz${i}`);
+    const raw = {
+      moves: Array.from({ length: 30 }, () => ({
+        regions: ["hips", ...bad], patterns: ["mobility", ...bad], equipment: ["mat", ...bad], equipmentOneOf: ["bench", ...bad],
+        contraction: ["isotonic", ...bad], quotes: bad.map((t) => ({ field: "cues", text: t, from: "caption" })),
+        useWhen: bad.map((t) => ({ text: 3, t })), skipWhen: "not a list",
+      })),
+    };
+    const out = dropUnknownEnums(raw);
+    expect(out.dropped).toHaveLength(240);
+    expect(out.dropped.every((d) => d.values.length <= 21)).toBe(true);
+    const dropped = extractionSchema.shape.dropped;
+    expect(dropped.safeParse(out.dropped).success).toBe(true);
+  });
+});

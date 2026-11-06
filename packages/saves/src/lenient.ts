@@ -37,6 +37,12 @@ const VOCAB: Readonly<Record<ListField, ReadonlySet<string>>> = {
 };
 /** How much of a dropped word the note keeps: it is the model's, shown as text. */
 const NOTE_CHARS = 40;
+/** The most values one note names; past it, "and N more" (final audit G4: what was left out never fails the reading). */
+export const NOTE_VALUES_MAX = 20;
+/** The most notes a reading keeps: every move's every droppable field. */
+export const DROPPED_MAX = 30 * 8;
+const noted = (values: string[]): string[] =>
+  values.length <= NOTE_VALUES_MAX ? values : [...values.slice(0, NOTE_VALUES_MAX), `and ${values.length - NOTE_VALUES_MAX} more`];
 
 const isObj = (v: unknown): v is Record<string, unknown> => typeof v === "object" && v !== null && !Array.isArray(v);
 /** What a left-out item said, for its note: its words, else what it held. */
@@ -133,5 +139,5 @@ export function dropUnknownEnums(raw: unknown): { value: unknown; dropped: Dropp
     // An insight whose scope isn't one of the three stays with its post: never sent to the coach's memory unasked.
     value = { ...value, insights: raw.insights.map((i) => (isObj(i) && !SCOPES.has(String(i.scope)) ? { ...i, scope: "this_routine" } : i)) };
   }
-  return { value, dropped };
+  return { value, dropped: dropped.slice(0, DROPPED_MAX).map((d) => ({ ...d, values: noted(d.values) })) };
 }

@@ -54,6 +54,35 @@ export function clock(totalSeconds: number): string {
   return h ? `${h}:${String(m).padStart(2, "0")}:${ss}` : `${m}:${ss}`;
 }
 
+/** The most characters screening's head of a transcript holds: a transcript with no spaces (CJK) has no words to count. */
+export const SCREEN_TRANSCRIPT_CHARS = 9_000;
+
+/**
+ * A transcript's first words (at most `words`, and at most SCREEN_TRANSCRIPT_CHARS characters), on one line, read from
+ * its first lines only: screening never parses the whole of a long transcript (final audit G2).
+ */
+export function transcriptHead(text: string, words: number = SCREEN_TRANSCRIPT_WORDS): string {
+  const out: string[] = [];
+  let chars = 0;
+  let from = 0;
+  while (from < text.length && out.length < words && chars < SCREEN_TRANSCRIPT_CHARS) {
+    let end = text.indexOf("\n", from);
+    if (end < 0) end = text.length;
+    const tab = text.indexOf("\t", from);
+    const line = tab >= 0 && tab < end ? text.slice(tab + 1, end) : "";
+    from = end + 1;
+    for (const w of line.split(/\s+/)) {
+      if (!w) continue;
+      const room = SCREEN_TRANSCRIPT_CHARS - chars;
+      if (out.length >= words || room <= 0) break;
+      const kept = w.length > room ? w.slice(0, room) : w;
+      out.push(kept);
+      chars += kept.length + 1;
+    }
+  }
+  return out.join(" ");
+}
+
 /** The first `n` words of a text, on one line. */
 export function firstWords(text: string, n: number): string {
   return text.split(/\s+/).filter(Boolean).slice(0, n).join(" ");

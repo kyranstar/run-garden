@@ -1,5 +1,5 @@
 import { z } from "zod";
-import { DROPPED_FIELDS, QUOTE_FIELDS } from "./lenient.js";
+import { DROPPED_FIELDS, DROPPED_MAX, NOTE_VALUES_MAX, QUOTE_FIELDS } from "./lenient.js";
 import { TRANSCRIPT_MAX } from "./transcript.js";
 
 export const chapterSchema = z.object({ start: z.number().min(0).max(86_400), title: z.string().max(100) }).strict();
@@ -208,8 +208,8 @@ export const extractionSchema = z
      * library doesn't know, left out so one word can't throw a paid reading away (live finding, 2026-11-05).
      */
     dropped: z
-      .array(z.object({ move: z.number().int().min(0), field: z.enum(DROPPED_FIELDS), values: z.array(z.string().max(40)).max(60) }).strict())
-      .max(150)
+      .array(z.object({ move: z.number().int().min(0), field: z.enum(DROPPED_FIELDS), values: z.array(z.string().max(40)).max(NOTE_VALUES_MAX + 1) }).strict())
+      .max(DROPPED_MAX)
       .optional(),
   })
   .strict();
