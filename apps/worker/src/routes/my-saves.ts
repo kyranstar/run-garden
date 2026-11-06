@@ -53,7 +53,7 @@ import { z } from "zod";
 import { nowInstant } from "@rg/domain";
 import type { AppContext } from "../auth/middleware.js";
 import { requireUser } from "../auth/middleware.js";
-import { createBatchSchema, fitSchema, LINK_REFUSED, personalMovePatchSchema, rematchSchema } from "@rg/saves";
+import { createBatchSchema, fitSchema, linkRefusal, personalMovePatchSchema, rematchSchema } from "@rg/saves";
 import { savesImportEnabled } from "../env.js";
 import { overridePost, savesStatus } from "../services/saves-ledger.js";
 import { saveBatch } from "../services/saves-batches.js";
@@ -100,7 +100,8 @@ mySavesRoutes.post("/links", async (c) => {
   const parsed = linkSchema.safeParse(await c.req.json().catch(() => undefined));
   if (!parsed.success) return c.json({ error: "invalid" }, 422);
   const out = await addLink(c.get("db"), c.get("userId"), parsed.data.url, "app", nowInstant());
-  if (!out.ok) return c.json({ error: out.error, message: LINK_REFUSED }, 400);
+  // What it is, when it is a playlist or a channel (audit 2026-11-06, I4); else what the app takes.
+  if (!out.ok) return c.json({ error: out.error, message: linkRefusal(parsed.data.url) }, 400);
   return c.json(out.state === "known" ? { state: out.state, postId: out.postId, firstSeenAt: out.firstSeenAt } : { state: out.state, link: out.link });
 });
 

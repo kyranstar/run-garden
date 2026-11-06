@@ -184,3 +184,16 @@ describe("a held video whose read failed waits a check's pace too (final audit G
     expect(await workList(db, userId, NOW, 20, { links: true })).toEqual([]);
   });
 });
+
+describe("a playlist or a channel pasted (audit 2026-11-06, I4)", () => {
+  it("is refused for what it is, by either route", async () => {
+    const env = { SAVES_IMPORT: "1", SAVES_TOKEN_SHA256: await sha256Hex(TOKEN), ALLOWED_GOOGLE_EMAIL: `runner-${userId}@example.com` } as unknown as Env;
+    const playlist = `${S}www.${["you", "tube.com"].join("")}/playlist?list=PLzorbex`;
+    const body = JSON.stringify({ url: playlist });
+    const mine = await mountRoutes(db, "/api/my-saves", mySavesRoutes).request("/api/my-saves/links", { method: "POST", body, headers: { Cookie: cookie, "Content-Type": "application/json" } }, env);
+    expect(mine.status).toBe(400);
+    expect(await mine.json()).toEqual({ error: "not_a_link", message: "Single videos and posts only — not playlists or channels." });
+    const ext = await mountRoutes(db, "/api/saves", savesRoutes).request("/api/saves/links", { method: "POST", body, headers: { Authorization: `Bearer ${TOKEN}`, "Content-Type": "application/json" } }, env);
+    expect(await ext.json()).toEqual({ error: "not_a_link", message: "Single videos and posts only — not playlists or channels." });
+  });
+});

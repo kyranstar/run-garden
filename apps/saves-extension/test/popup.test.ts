@@ -262,3 +262,34 @@ describe("the token, in the popup (audit 2026-11-06, I1)", () => {
     expect([...root().querySelectorAll("button")].map((b) => b.textContent)).toContain("Options");
   });
 });
+
+describe("several links pasted in the popup (audit 2026-11-06, I4)", () => {
+  const S = ["ht", "tps://"].join("");
+  const yt = (v: string) => `${S}www.${["you", "tube.com"].join("")}/watch?v=${v}`;
+  const field = () => root().querySelector("input") as HTMLInputElement;
+  const addButton = () => root().querySelector("form button") as HTMLButtonElement;
+  const settle = async () => {
+    for (let i = 0; i < 12; i++) await new Promise((r) => setTimeout(r, 0));
+  };
+
+  it("adds each link, says how many, and why it left one out", async () => {
+    await open({}, { "add-link": { ok: true, added: true } });
+    field().value = `${yt("Zx9_-QaB3cD")} ${yt("Yt0000000ab")} ${S}www.${["you", "tube.com"].join("")}/playlist?list=PLzorbex`;
+    addButton().click();
+    await settle();
+    expect(messages.filter((m) => (m as { type: string }).type === "add-link")).toEqual([
+      { type: "add-link", url: yt("Zx9_-QaB3cD") },
+      { type: "add-link", url: yt("Yt0000000ab") },
+    ]);
+    expect(root().textContent).toContain("Added 2 — they'll be waiting in the coach. Took 2 of 3 — single videos and posts only, not playlists or channels.");
+  });
+
+  it("a playlist alone is refused for what it is, and nothing is sent", async () => {
+    await open();
+    field().value = `${S}www.${["you", "tube.com"].join("")}/playlist?list=PLzorbex`;
+    addButton().click();
+    await settle();
+    expect(messages.filter((m) => (m as { type: string }).type === "add-link")).toEqual([]);
+    expect(root().textContent).toContain("Single videos and posts only — not playlists or channels.");
+  });
+});

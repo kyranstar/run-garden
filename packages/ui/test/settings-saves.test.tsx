@@ -378,3 +378,41 @@ describe("an unbroken link as a recent link's title (audit 2026-11-06, I12)", ()
     expect(css.slice(at, css.indexOf("}", at))).toMatch(/overflow-wrap:\s*anywhere/);
   });
 });
+
+describe("several links pasted in Settings (audit 2026-11-06, I4)", () => {
+  const S = ["ht", "tps://"].join("");
+  const yt = (v: string) => `${S}www.${["you", "tube.com"].join("")}/watch?v=${v}`;
+
+  it("adds each, and says how many and why one was left out", async () => {
+    await mount({ status: 200, body: status() });
+    await flush();
+    await act(async () => { (host.querySelector("button.place-row") as HTMLButtonElement).click(); });
+    const input = document.querySelector(".saves-link-field input") as HTMLInputElement;
+    const set = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value")!.set!;
+    await act(async () => {
+      set.call(input, `${yt("Zx9_-QaB3cD")}\n${yt("Yt0000000ab")} ${S}www.${["you", "tube.com"].join("")}/@zorbexcoach`);
+      input.dispatchEvent(new Event("input", { bubbles: true }));
+    });
+    await act(async () => { (document.querySelector(".saves-link-field") as HTMLFormElement).requestSubmit(); });
+    for (let i = 0; i < 4; i++) await flush();
+    expect(calls.filter((c) => c.method === "POST" && c.path === "/api/my-saves/links").map((c) => c.body)).toEqual([{ url: yt("Zx9_-QaB3cD") }, { url: yt("Yt0000000ab") }]);
+    expect(document.querySelector(".saves-link-field [role=status]")!.textContent).toBe(
+      "Added 2 — they'll be waiting in the coach. Took 2 of 3 — single videos and posts only, not playlists or channels.",
+    );
+  });
+
+  it("a channel alone is refused for what it is", async () => {
+    await mount({ status: 200, body: status() });
+    await flush();
+    await act(async () => { (host.querySelector("button.place-row") as HTMLButtonElement).click(); });
+    const input = document.querySelector(".saves-link-field input") as HTMLInputElement;
+    const set = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value")!.set!;
+    await act(async () => {
+      set.call(input, `${S}www.${["you", "tube.com"].join("")}/@zorbexcoach`);
+      input.dispatchEvent(new Event("input", { bubbles: true }));
+    });
+    await act(async () => { (document.querySelector(".saves-link-field") as HTMLFormElement).requestSubmit(); });
+    await flush();
+    expect(document.querySelector(".saves-link-field [role=status]")!.textContent).toBe("Single videos and posts only — not playlists or channels.");
+  });
+});

@@ -13,7 +13,7 @@ import { useState } from "react";
 import { Link } from "react-router-dom";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { api, ApiError, SAVES_HEALTH_QUERY, SAVES_LINKS_QUERY, SAVES_STATUS_QUERY } from "@rg/api-client";
-import { ADDED_LINE, alreadyInLine, LINK_REFUSED, normalizeLink } from "@rg/saves";
+import { ADDED_LINE, alreadyInLine, LINK_REFUSED, linkRefusal, normalizeLinks, pastedLine, severalAddedLine } from "@rg/saves";
 import type { ImportHealthDto, LinkDto, PostRowDto, SavePostStatus, SavesStatusDto } from "@rg/saves";
 import { Card, Sheet } from "../../components.js";
 import { postHref } from "../../post-link.js";
@@ -99,7 +99,11 @@ function PostRow({ post, busy, onProcess, onTrail }: { post: PostRowDto; busy: b
 /** Why a link couldn't be added, in plain words, by the app's answer. */
 function addFailureWords(e: unknown): string {
   const status = e instanceof ApiError ? e.status : 0;
-  if (status === 400) return LINK_REFUSED;
+  if (status === 400) {
+    // The app's own words for what it takes (a playlist's are its own: audit 2026-11-06, I4).
+    const said = e instanceof ApiError ? (e.body as { message?: unknown } | null)?.message : null;
+    return typeof said === "string" && said.trim() ? said : LINK_REFUSED;
+  }
   if (status === 401) return "Sign in again to add a link.";
   if (status === 423) return "A restore is running — try again when it's done.";
   if (status === 0) return "You're offline — the link is still here to add.";
@@ -114,14 +118,34 @@ function LinkField() {
   const qc = useQueryClient();
   const [url, setUrl] = useState("");
   const [said, setSaid] = useState<string | null>(null);
+  // Every link pasted the app takes, one call each (at most five; audit 2026-11-06, I4). Only the app's refusal says what
+  // it takes; anything else says what happened, and the text stays (final audit G17).
   const add = useMutation({
-    mutationFn: (link: string) => api.savesAddLink(link),
-    onSuccess: (a) => {
-      setSaid(a.state === "known" ? alreadyInLine(a.firstSeenAt) : ADDED_LINE);
-      setUrl("");
+    mutationFn: async (text: string) => {
+      const pasted = normalizeLinks(text);
+      const answers: Array<{ ok: true; known: string | null } | { ok: false; why: string }> = [];
+      for (const link of pasted.links) {
+        try {
+          const a = await api.savesAddLink(link.url);
+          answers.push({ ok: true, known: a.state === "known" ? a.firstSeenAt : null });
+        } catch (e) {
+          answers.push({ ok: false, why: addFailureWords(e) });
+        }
+      }
+      return { pasted, answers };
     },
-    // Only the app's refusal says what it takes; anything else says what happened, and the link stays (final audit G17).
-    onError: (e) => setSaid(addFailureWords(e)),
+    onSuccess: ({ pasted, answers }) => {
+      const only = answers.length === 1 ? answers[0]! : null;
+      const said = only
+        ? only.ok ? (only.known ? alreadyInLine(only.known) : ADDED_LINE) : only.why
+        : severalAddedLine({
+            added: answers.filter((a) => a.ok && !a.known).length,
+            known: answers.filter((a) => a.ok && a.known).length,
+            refused: answers.flatMap((a) => (a.ok ? [] : [a.why])),
+          });
+      setSaid([said, pastedLine(pasted)].filter(Boolean).join(" "));
+      if (answers.every((a) => a.ok)) setUrl("");
+    },
     onSettled: () => qc.invalidateQueries({ queryKey: SAVES_LINKS_QUERY }),
   });
   return (
@@ -131,7 +155,7 @@ function LinkField() {
       onSubmit={(e) => {
         e.preventDefault();
         if (!url.trim()) return; // an empty Add does nothing (final audit G18)
-        if (!normalizeLink(url)) return setSaid(LINK_REFUSED);
+        if (!normalizeLinks(url).links.length) return setSaid(linkRefusal(url));
         add.mutate(url.trim());
       }}
     >

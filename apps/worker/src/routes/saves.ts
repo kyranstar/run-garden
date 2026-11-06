@@ -6,7 +6,7 @@
  */
 import { Hono } from "hono";
 import { z } from "zod";
-import { checkReportSchema, LINK_REFUSED, postSubmitSchema, postWords, readFailedSchema, SAVE_SOURCE_RE } from "@rg/saves";
+import { checkReportSchema, linkRefusal, postSubmitSchema, postWords, readFailedSchema, SAVE_SOURCE_RE } from "@rg/saves";
 import { nowInstant } from "@rg/domain";
 import type { AppContext } from "../auth/middleware.js";
 import { bearerGuard } from "../auth/token.js";
@@ -104,7 +104,8 @@ savesRoutes.post("/links", async (c) => {
   const parsed = await body(c, linkSchema);
   if (!parsed.success) return c.json({ error: "invalid", issues: parsed.error.issues }, 422);
   const out = await addLink(c.get("db"), c.get("userId"), parsed.data.url, "extension", nowInstant());
-  if (!out.ok) return c.json({ error: out.error, message: LINK_REFUSED }, 400);
+  // What it is, when it is a playlist or a channel (audit 2026-11-06, I4); else what the app takes.
+  if (!out.ok) return c.json({ error: out.error, message: linkRefusal(parsed.data.url) }, 400);
   return c.json(out.state === "known" ? { state: out.state, postId: out.postId, firstSeenAt: out.firstSeenAt } : { state: out.state, link: out.link });
 });
 

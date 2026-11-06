@@ -109,3 +109,70 @@ describe("YouTube asking to sign in (audit 2026-11-06, I3)", () => {
     });
   });
 });
+
+describe("several links pasted at once (audit 2026-11-06, I4)", () => {
+  const other = ["Yt", "0000", "000ab"].join("");
+  const otherWatch = `${S}www.${YT}/watch?v=${other}`;
+  const reel = `${S}www.${IG}/reel/${code}/`;
+
+  it("takes every link the app takes, in order, each once", async () => {
+    const { normalizeLinks } = await import("../src/index.js");
+    const out = normalizeLinks(`${S}${SHORT}/${id}\n${otherWatch} and ${reel}?igsh=x ${watch}`);
+    expect(out.links.map((l) => l.url)).toEqual([watch, otherWatch, reel]);
+    expect(out.pieces).toBe(4);
+    expect(out.refused).toEqual([]);
+    expect(out.cut).toBe(0);
+  });
+
+  it("past five, takes the first five and says so", async () => {
+    const { LINKS_AT_ONCE, normalizeLinks, pastedLine } = await import("../src/index.js");
+    expect(LINKS_AT_ONCE).toBe(5);
+    const ids = Array.from({ length: 7 }, (_, i) => `Zorbex${i}vid0`.slice(0, 11));
+    const out = normalizeLinks(ids.map((v) => `${S}${SHORT}/${v}`).join(" "));
+    expect(out.links).toHaveLength(5);
+    expect(out.cut).toBe(2);
+    expect(pastedLine(out)).toBe("Took the first 5 of 7 — 5 links at a time.");
+  });
+
+  it("says how many it took, and why not the rest", async () => {
+    const { normalizeLinks, pastedLine } = await import("../src/index.js");
+    expect(pastedLine(normalizeLinks(`${watch} ${S}vimeo.com/1 ${S}www.${YT}/playlist?list=PLzorbex`))).toBe(
+      "Took 1 of 3 — only YouTube and Instagram links for now; single videos and posts only, not playlists or channels.",
+    );
+    expect(pastedLine(normalizeLinks(`${watch} ${S}www.${YT}/@zorbexcoach`))).toBe("Took 1 of 2 — single videos and posts only, not playlists or channels.");
+    expect(pastedLine(normalizeLinks(`${watch} ${otherWatch}`))).toBeNull();
+    expect(pastedLine(normalizeLinks(watch))).toBeNull();
+  });
+
+  it("a playlist or a channel is refused for what it is; anything else, as before", async () => {
+    const { LINK_NOT_SINGLE, linkRefusal } = await import("../src/index.js");
+    expect(LINK_NOT_SINGLE).toBe("Single videos and posts only — not playlists or channels.");
+    expect(linkRefusal(`${S}www.${YT}/playlist?list=PLzorbex`)).toBe(LINK_NOT_SINGLE);
+    expect(linkRefusal(`${S}www.${YT}/@zorbexcoach`)).toBe(LINK_NOT_SINGLE);
+    expect(linkRefusal(`${S}www.${YT}/channel/UCzorbex`)).toBe(LINK_NOT_SINGLE);
+    expect(linkRefusal(`${S}www.${IG}/zorbex.creator/`)).toBe(LINK_NOT_SINGLE);
+    expect(linkRefusal(`${S}vimeo.com/1`)).toBe(LINK_REFUSED);
+    expect(linkRefusal("just words")).toBe(LINK_REFUSED);
+  });
+});
+
+describe("the answer to several links (audit 2026-11-06, I4)", () => {
+  it("says how many went in, were in already, or were refused and why", async () => {
+    const { severalAddedLine } = await import("../src/index.js");
+    expect(severalAddedLine({ added: 3, known: 0, refused: [] })).toBe("Added 3 — they'll be waiting in the coach.");
+    expect(severalAddedLine({ added: 2, known: 1, refused: [] })).toBe("Added 2 · 1 already in.");
+    expect(severalAddedLine({ added: 0, known: 2, refused: [] })).toBe("2 already in.");
+    expect(severalAddedLine({ added: 1, known: 0, refused: ["The app refused the token — paste it in Options"] })).toBe(
+      "Added 1 · 1 not added: The app refused the token — paste it in Options",
+    );
+  });
+});
+
+describe("links pasted on several lines into a one-line field (audit 2026-11-06, I4)", () => {
+  it("come glued together (the field drops the line breaks): each is still taken", async () => {
+    const { normalizeLinks } = await import("../src/index.js");
+    const other = `${S}www.${YT}/watch?v=Yt0000000ab`;
+    expect(normalizeLinks(`${watch}${other}`).links.map((l) => l.url)).toEqual([watch, other]);
+    expect(normalizeLinks(`${watch}${other} ${S}www.${IG}/p/${code}/`).links.map((l) => l.key)).toEqual([id, "Yt0000000ab", code]);
+  });
+});

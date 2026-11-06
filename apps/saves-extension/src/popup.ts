@@ -1,4 +1,4 @@
-import { LINK_REFUSED, normalizeLink } from "@rg/saves";
+import { linkRefusal, normalizeLinks, pastedLine, severalAddedLine } from "@rg/saves";
 import type { AddLinkResponse, CheckNowResponse, OverrideResponse, StatusResponse } from "./background.js";
 import {
   addAnswerLine, CHECKING, linksHeld, linkTrailHref, popupLinks, popupModel, safeHref, type PopupAction, type PopupLight, type PopupLink, type PopupModel,
@@ -71,23 +71,40 @@ async function checkNow(b: HTMLButtonElement): Promise<void> {
   await load();
 }
 
-/** Sends a link to the background and says how it went; true when it was taken (or is already in). */
-async function addLink(url: string): Promise<boolean> {
-  const link = normalizeLink(url);
-  if (!link) {
-    linkNote = { line: LINK_REFUSED, href: null };
+/**
+ * Sends each link pasted to the background, one at a time, and says how it went — every link the app takes, not only
+ * the first, at most five, and why any was left out (audit 2026-11-06, I4). True when every link sent was taken (or is
+ * already in): the field is then cleared.
+ */
+async function addLink(text: string): Promise<boolean> {
+  const pasted = normalizeLinks(text);
+  if (!pasted.links.length) {
+    linkNote = { line: linkRefusal(text), href: null };
     await load();
     return false;
   }
-  let answer: AddLinkResponse;
-  try {
-    answer = await ask<AddLinkResponse>({ type: "add-link", url: link.url });
-  } catch {
-    answer = { ok: false, message: "The extension did not answer" };
+  const answers: AddLinkResponse[] = [];
+  for (const link of pasted.links) {
+    try {
+      answers.push(await ask<AddLinkResponse>({ type: "add-link", url: link.url }));
+    } catch {
+      answers.push({ ok: false, message: "The extension did not answer" });
+    }
   }
-  linkNote = { line: addAnswerLine(answer), href: answer.ok && "known" in answer ? linkTrailHref(last?.appUrl, answer.known.postId) : null };
+  const only = answers.length === 1 ? answers[0]! : null;
+  const said = only
+    ? addAnswerLine(only)
+    : severalAddedLine({
+        added: answers.filter((a) => a.ok && "added" in a).length,
+        known: answers.filter((a) => a.ok && "known" in a).length,
+        refused: answers.flatMap((a) => (a.ok ? [] : [a.message])),
+      });
+  linkNote = {
+    line: [said, pastedLine(pasted)].filter(Boolean).join(" "),
+    href: only?.ok && "known" in only ? linkTrailHref(last?.appUrl, only.known.postId) : null,
+  };
   await load();
-  return answer.ok;
+  return answers.every((a) => a.ok);
 }
 
 async function linkAction(l: PopupLink): Promise<void> {

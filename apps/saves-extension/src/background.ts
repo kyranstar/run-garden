@@ -1,4 +1,4 @@
-import { LINK_REFUSED, normalizeLink } from "@rg/saves";
+import { linkRefusal, normalizeLink } from "@rg/saves";
 import { createAppClient, statusAndHealth } from "./app-client.js";
 import { DEFAULT_CONFIG, enqueuePastedSubmit, runCheck, serialLock, singleFlight, type CheckSummary } from "./check.js";
 import { parseMediaInfo } from "./feed.js";
@@ -140,7 +140,7 @@ export type AddLinkResponse = AddLinkAnswer;
  */
 async function addLink(url: string): Promise<AddLinkResponse> {
   const link = normalizeLink(url);
-  if (!link) return { ok: false, message: LINK_REFUSED };
+  if (!link) return { ok: false, message: linkRefusal(url) };
   const settings = await loadSettings(chromeStore);
   if (!settings) return { ok: false, message: NOT_CONFIGURED };
   const app = createAppClient({ appUrl: settings.appUrl, token: settings.token, fetchImpl });
