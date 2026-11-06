@@ -24,7 +24,7 @@ import { calmDoc, landingsDoc } from "./doc-workout-fixture.js";
 import { makeTestDb, makeTestUser } from "./helpers.js";
 
 const ENV = {} as Env;
-const ACT_NAMES = ["validate_workout", "ask_athlete", "record_answer", "remember", "propose_workout", "adjust_plan", "propose_plan", "change_programme", "pin_moves", "plan_set", "read_set", "drop_workout", "submit_review", "finish"];
+const ACT_NAMES = ["validate_workout", "ask_athlete", "record_answer", "remember", "propose_workout", "adjust_plan", "propose_plan", "change_programme", "change_plan", "pin_moves", "plan_set", "read_set", "drop_workout", "submit_review", "finish"];
 
 let db: Db;
 let counting = false;
@@ -90,6 +90,7 @@ describe("the registry", () => {
       adjust_plan: ["main"],
       propose_plan: ["main"],
       change_programme: ["main"],
+      change_plan: ["main"],
       pin_moves: ["main"],
       plan_set: ["main"],
       read_set: ["main", "designer", "reviewer"],
@@ -312,6 +313,26 @@ describe("each act tool's declared statement cost is the most it runs", () => {
     expect(n).toBe(4);
     expect(tool("change_programme").statementCost).toBe(4);
     const refused = await measured("change_programme", { ...change, programmeId: "nope" }, rich.userId, await runRow(rich.userId));
+    expect(refused.count).toBe(1);
+  });
+
+  it("change_plan: the athlete with the plan, the objectives named, the proposal and the restore marker in one read, then one write — refusals read only", async () => {
+    const main = await runRow(rich.userId);
+    const change = { planId: rich.programId, purpose: "Stay strong through the winter", pausedUntil: day(7), why: "It is what you told me you want." };
+    const n = await most("change_plan", [
+      { input: change, run: main, toolUseId: "toolu_plan_budget_1" },
+      // A second change of the plan replaces the first; a replay writes nothing.
+      { input: { ...change, brief: "Two lifts a week." }, run: main, toolUseId: "toolu_plan_budget_2" },
+      { input: change, run: main, toolUseId: "toolu_plan_budget_1" },
+      // Refused: a plan that isn't there, an empty account, a pause already over, objectives that aren't the athlete's.
+      { input: { ...change, planId: "nope" } },
+      { input: change, userId: empty, run: await runRow(empty) },
+      { input: { ...change, pausedUntil: day(-1) } },
+      { input: { ...change, objectiveIds: ["nope"] } },
+    ]);
+    expect(n).toBe(2);
+    expect(tool("change_plan").statementCost).toBe(2);
+    const refused = await measured("change_plan", { ...change, planId: "nope" }, rich.userId, await runRow(rich.userId));
     expect(refused.count).toBe(1);
   });
 

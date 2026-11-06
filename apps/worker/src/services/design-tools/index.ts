@@ -8,7 +8,8 @@
  * "Using the tools well"); the descriptions stay short because the prompt already explains when to reach for which.
  * The read tools serve all three roles; the act tools follow them (`ACT_TOOLS`, each with its own roles): the
  * reviewer's `submit_review` (design-review.ts) among them, the main coach's change to a session already on the plan —
- * adjust_plan (Task 8b) — its change to the moves in rotation — pin_moves (saved-posts import, Task 18) — and its tools
+ * adjust_plan (Task 8b) — its change to a plan's purpose, brief, ending or pause — change_plan (plans with a purpose) —
+ * its change to the moves in rotation — pin_moves (saved-posts import, Task 18) — and its tools
  * for a set — plan_set, read_set, drop_workout (design-orchestrate.ts; read_set
  * reads every role's set). A tool the prompt names before
  * a later task adds it is listed in `PENDING_TOOL_NAMES` until it does — none now — so a test holds the registry plus
@@ -17,6 +18,7 @@
 import { submitReview } from "../design-review.js";
 import { adjustPlan } from "./adjust-plan.js";
 import { askAthlete } from "./ask.js";
+import { changePlan } from "./change-plan.js";
 import { changeProgramme } from "./change-programme.js";
 import { dropWorkout } from "./drop-workout.js";
 import { finish } from "./finish.js";
@@ -76,6 +78,7 @@ export const ACT_TOOLS: DesignTool[] = [
   adjustPlan,
   proposePlan,
   changeProgramme,
+  changePlan,
   pinMoves,
   planSet,
   readSet,

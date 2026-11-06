@@ -57,9 +57,11 @@ import {
   hasDocWorkout,
   isDesignedProposal,
   isMovePinsOp,
+  isPlanChangeOp,
   isPlanStructureOp,
   isProgrammeChangeOp,
   openPlanChanges,
+  type PlanChangeOp,
   type PlanStructureOp,
   type ProgrammeChangeOp,
 } from "./proposal-kinds.js";
@@ -260,6 +262,9 @@ function designedWords(ops: unknown): string {
   // A programme change (§8 §5): its title — the athlete's settings, the conversation coach's to apply.
   const programme = Array.isArray(ops) ? (ops.find(isProgrammeChangeOp) as ProgrammeChangeOp | undefined) : undefined;
   if (programme) return `a programme change: ${programme.title}`;
+  // A change to a plan's purpose, brief, ending or pause (plans with a purpose): its title, the conversation coach's to apply.
+  const planChange = Array.isArray(ops) ? (ops.find(isPlanChangeOp) as PlanChangeOp | undefined) : undefined;
+  if (planChange) return `a plan change: ${planChange.title}`;
   const n = openPlanChanges(ops);
   const changes = `${n} change${n === 1 ? " to a session" : "s to sessions"} already planned`;
   // The moves in rotation (saved-posts import, Task 18): named beside the rest, the conversation coach's to apply.

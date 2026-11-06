@@ -23,6 +23,10 @@
  * suggestion may change two programmes); "Moving your sessions…" while its sessions are placed a request at a time;
  * "Programme updated" when done. Its state is the read's `programmes` part, its own line by its op.
  *
+ * A CHANGE TO A PLAN'S PURPOSE, BRIEF, ENDING OR PAUSE (plans with a purpose) is the same card too, its words and its line's
+ * selection in plan-change-card.ts: the plan's name and what changes, its ending, a line a changed field; Approve and
+ * Not now, its own op; "Plan updated" when done. Its state is the read's `planChanges` part.
+ *
  * THE PINS (saved-posts import, Task 18) are the same card in theirs (`PINS_WORDS`): the coach's title, line and lines —
  * one a placement, one a saved move left out, each with its move's name in bold, once, then its text (the saves flow
  * redesigned, §3.5: `pinLines`) — Approve and Not now, its own op; "Programme's pool updated" when done,
@@ -41,12 +45,14 @@ import {
   type DesignApproveResponse,
   type DesignPinsCardLineDto,
   type DesignPinsLineDto,
+  type DesignPlanChangeLineDto,
   type DesignPlanLineDto,
   type DesignProgrammeLineDto,
 } from "@rg/api-client";
 import { followApproved } from "../../components/watch-catch-up.js";
 import { CONVERSATION_QUERY } from "./coach-conversation-model.js";
 import { readProposal } from "./coach-tolerance.js";
+import { ownPlanChange, PLAN_CHANGE_WORDS } from "./plan-change-card.js";
 import { decisionError, designProposalQuery } from "./proposal-card.js";
 import { COACH_CURRENT_QUERY } from "./run-keeper.js";
 import { useOneTap } from "./use-one-tap.js";
@@ -136,7 +142,7 @@ export const PINS_WORDS: PlanCardWords = {
 
 /** What the card reads of its op's line: a plan's, a programme change's or the moves in rotation's (whose lines name
  * their moves, and whose applied outcome has its lines: a move left). */
-type CardLine = Pick<DesignPlanLineDto | DesignProgrammeLineDto | DesignPinsLineDto, "opId" | "issues"> & {
+type CardLine = Pick<DesignPlanLineDto | DesignProgrammeLineDto | DesignPlanChangeLineDto | DesignPinsLineDto, "opId" | "issues"> & {
   lines: ReadonlyArray<string | DesignPinsCardLineDto>;
   outcome: { status: string; why?: string; lines?: string[] } | null;
 };
@@ -220,12 +226,19 @@ export function PlanCard({ card, closed = false }: { card: PlanCardInput; closed
   const oneTap = useOneTap();
   const read = useQuery({ queryKey: designProposalQuery(card.proposalId), queryFn: () => readProposal(card.proposalId), retry: false });
   const programme = card.kind === "programme";
+  const planChange = card.kind === "plan_change";
   const pins = card.kind === "pins";
-  const w = programme ? PROGRAMME_WORDS : pins ? PINS_WORDS : PLAN_WORDS;
-  // A programme change's line is its own op's (a suggestion may change two programmes) — the moves in rotation's too; a
-  // plan's, the suggestion's one.
+  const w = programme ? PROGRAMME_WORDS : planChange ? PLAN_CHANGE_WORDS : pins ? PINS_WORDS : PLAN_WORDS;
+  // A programme change's line is its own op's (a suggestion may change two programmes) — a plan change's and the moves in
+  // rotation's too; a plan's, the suggestion's one.
   const own = <T extends { opId: string }>(xs: readonly T[] | undefined): T | null => xs?.find((g) => g.opId === card.opId) ?? (card.opId ? null : (xs?.[0] ?? null));
-  const plan: CardLine | null = programme ? own(read.data?.programmes) : pins ? own(read.data?.pins) : (read.data?.plans?.[0] ?? null);
+  const plan: CardLine | null = programme
+    ? own(read.data?.programmes)
+    : planChange
+      ? ownPlanChange(read.data?.planChanges, card.opId)
+      : pins
+        ? own(read.data?.pins)
+        : (read.data?.plans?.[0] ?? null);
   /** The card's own op: what its buttons approve and decline, nothing else of the suggestion. */
   const opIds = [plan?.opId ?? card.opId ?? PLAN_OP_ID];
   const status = read.data?.status ?? card.status;

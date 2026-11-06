@@ -122,6 +122,13 @@
  * back. One that has started is finished by Approve, never declined or expired half made, as a plan change is. A
  * client that stops asking leaves the hourly pass to place the rest by the settings already written.
  *
+ * A PLAN CHANGE (plans with a purpose). A `plan_change` op — change_plan's new purpose, brief, ending, objectives or pause
+ * (a course's easing) — is applied after the programme changes and before the workouts: one short write, never claimed,
+ * through `applyPlanPatch`, the function `PATCH /api/plans/:id` calls (one write, one version), costing PLAN_CHANGE_COST. The
+ * fields are checked against what they were when it was proposed (`base`: one moved since, by the athlete's own edit, refuses
+ * it `stale`, as a programme change is); the plan's own rule (a pause that has gone by) refuses it `plan_refused`. Made twice
+ * it writes once, so an approve retried writes nothing more.
+ *
  * THE MOVES IN ROTATION (saved-posts import, Task 18). A `move_pins` op — pin_moves' moves to pin and unpin, and the
  * saves batch it fits in — is applied after the programme changes and before the workouts, so a workout of the same
  * request whose engine build reads the account's pinned moves sees them. It is one short write, never claimed: its
@@ -200,15 +207,20 @@ import {
   opIdOf,
   type ChangeVerb,
   isProgrammeChangeOp,
+  isPlanChangeOp,
   isMovePinsOp,
+  planFieldsOfRow,
   sameSetting,
   type MovePinsOp,
   type PlanAdjustOp,
   type PlanChange,
+  type PlanChangeFields,
+  type PlanChangeOp,
   type PlanStructureOp,
   type ProgrammeChangeOp,
   type ProgrammeSettings,
 } from "./proposal-kinds.js";
+import { applyPlanPatch } from "./plan-registry.js";
 import { placeSlotsWithin, RETRACT_COST } from "./program-slots.js";
 import { updateProgram } from "./programs.js";
 import { releaseFitStarts } from "./saves-batches.js";
@@ -326,6 +338,16 @@ export type ProgrammeChangeOutcome =
 export type DesignedProgrammeOp = ProgrammeChangeOp & { outcome?: ProgrammeChangeOutcome };
 
 /**
+ * How a plan change ended (plans with a purpose): applied, with the fields it wrote (none when they were written
+ * already: an approve retried); refused (`stale`, or the plan's own rule's `plan_refused`), declined or superseded as any
+ * op's. One write, so never `applying`: nothing of it is ever half made.
+ */
+export type PlanChangeOutcome = { status: "applied"; at: string; changed: string[] } | Exclude<OpOutcome, { status: "applied" }>;
+
+/** A plan change, as a proposal holds it once the athlete has seen it. */
+export type DesignedPlanChangeOp = PlanChangeOp & { outcome?: PlanChangeOutcome };
+
+/**
  * How a change to the moves in rotation ended (Task 18): applied, with the moves it pinned and unpinned and a line for
  * each it left — a move archived since, an unpin of one not in rotation, a batch no longer saved.
  */
@@ -339,10 +361,10 @@ export type MovePinsOutcome =
 export type DesignedPinsOp = MovePinsOp & { outcome?: MovePinsOutcome };
 
 /** Any kind of a designed proposal's ops. */
-export type AnyDesignedOp = DesignedOp | DesignedPlanOp | DesignedStructureOp | DesignedProgrammeOp | DesignedPinsOp;
+export type AnyDesignedOp = DesignedOp | DesignedPlanOp | DesignedStructureOp | DesignedProgrammeOp | DesignedPlanChangeOp | DesignedPinsOp;
 
 /** Any op's outcome. */
-type AnyOutcome = OpOutcome | PlanOpOutcome | PlanStructureOutcome | ProgrammeChangeOutcome | MovePinsOutcome;
+type AnyOutcome = OpOutcome | PlanOpOutcome | PlanStructureOutcome | ProgrammeChangeOutcome | PlanChangeOutcome | MovePinsOutcome;
 
 export type DesignProposalStatus = "pending" | "partially_approved" | "approved" | "declined" | "superseded";
 
@@ -558,6 +580,10 @@ export const PROGRAMME_CHANGE_FIXED = 1 + 1;
 export const PROGRAMME_WRITE_COST = 1 + 3;
 /** The least room a pass is given: its fixed reads and one retraction (program-slots.ts `placeSlotsWithin`). */
 export const PROGRAMME_MIN_BUDGET = 3 + 1 + 1 + RETRACT_COST;
+
+/** A plan change's part of a request (plans with a purpose): its read (the stale check), then `applyPlanPatch`'s — the
+ * restore check, the row, the last version and the one batch of two writes. */
+export const PLAN_CHANGE_COST = 1 + 1 + 1 + 1 + 2;
 
 /** The moves in rotation's own part (Task 18): its claim's write, the account's library with the named moves' pins and
  * the batch (one read), and the batch marked fitted in. */
@@ -1108,7 +1134,7 @@ export async function approveDesignOps(
     const was = op.outcome?.status;
     // A whole plan change or a programme change (§8 §5): its chunks are its applier's own to find done (each retried does
     // nothing twice). The moves in rotation (Task 18) too: written again, the same.
-    if (isPlanStructureOp(op) || isProgrammeChangeOp(op) || isMovePinsOp(op)) {
+    if (isPlanStructureOp(op) || isProgrammeChangeOp(op) || isPlanChangeOp(op) || isMovePinsOp(op)) {
       if (was === "declined" || was === "superseded") settled.push({ opId: op.id, outcome: was });
       else todo.push(op);
       continue;
@@ -1350,6 +1376,29 @@ export async function approveDesignOps(
     if (full) break;
   }
 
+  // THE PLAN CHANGES (plans with a purpose), after the programme changes and before the workouts: each one short write
+  // through the route's own function, never claimed — made twice it writes once.
+  const planChanges = todo.filter(isPlanChangeOp) as DesignedPlanChangeOp[];
+  if (full) remaining.push(...planChanges.map((g) => g.id));
+  for (const [i, g] of (full ? [] : planChanges).entries()) {
+    if (!first && PLAN_CHANGE_COST > left) {
+      remaining.push(...planChanges.slice(i).map((x) => x.id));
+      full = true;
+      break;
+    }
+    first = false;
+    left -= PLAN_CHANGE_COST;
+    const res = await applyPlanChange(db, userId, g, ctx);
+    if (res.status === "applied") {
+      outcomes.set(g.id, { status: "applied", at: ctx.now, changed: res.changed });
+      planned.push({ opId: g.id, summary: g.summary });
+    } else {
+      const refusal: Omit<Refused, "opId"> = { error: res.error, why: res.why };
+      refused.push({ opId: g.id, ...refusal });
+      outcomes.set(g.id, { status: "refused", at: ctx.now, ...refusal });
+    }
+  }
+
   // THE MOVES IN ROTATION (Task 18), after the programme changes and before the workouts: a workout's engine build in this
   // request reads the pins as they now are.
   const pinsOps = todo.filter(isMovePinsOp) as DesignedPinsOp[];
@@ -1489,6 +1538,40 @@ async function applyProgrammeChunk(
   const placed = await placeSlotsWithin(db, userId, g.programId, ctx.today, ctx.prefs, ctx.now, budget);
   const next: ProgrammeProgress = { written: true, placed: progress.placed + placed.placed.length, archived: progress.archived + placed.archived.length };
   return placed.more ? { status: "more", progress: next, spent: placed.spent } : { status: "done", progress: next, spent: placed.spent };
+}
+
+/**
+ * A plan change (plans with a purpose), applied: the plan's fields as they stand are checked against what they were when it
+ * was proposed — any moved since to neither that nor the change (the athlete's own edit) refuses it `stale`, in the words
+ * a programme change uses, as does its plan gone or archived — then written through `applyPlanPatch`, the function
+ * `PATCH /api/plans/:id` calls: one write and one version, or the plan's own refusal (`plan_refused`: a pause that has
+ * gone by). Fields already as the change has them are not stale: an approve retried after its request died writes nothing
+ * more. Its cost is PLAN_CHANGE_COST.
+ */
+async function applyPlanChange(
+  db: Db,
+  userId: string,
+  g: PlanChangeOp,
+  ctx: DocWorkoutCtx,
+): Promise<{ status: "applied"; changed: string[] } | { status: "refused"; error: "stale" | "plan_refused" | "restore_in_progress"; why: string }> {
+  const gone = { status: "refused", error: "stale", why: "That plan isn't there any more." } as const;
+  const [row] = await db
+    .select({ kind: programs.kind, disciplines: programs.disciplines, purpose: programs.purpose, brief: programs.brief, onEnd: programs.onEnd, pausedUntil: programs.pausedUntil, objectiveIds: programs.objectiveIds, config: programs.config, archivedAt: programs.archivedAt })
+    .from(programs)
+    .where(and(eq(programs.id, g.planId), eq(programs.userId, userId)))
+    .limit(1);
+  if (!row || row.archivedAt !== null) return gone;
+  const now = planFieldsOfRow(row);
+  const keys = Object.keys(g.change) as (keyof PlanChangeFields)[];
+  const same = (a: unknown, b: unknown) => JSON.stringify(a) === JSON.stringify(b);
+  if (keys.some((k) => !same(now[k], g.base[k]) && !same(now[k], g.change[k]))) {
+    return { status: "refused", error: "stale", why: "Its settings changed since this was suggested: ask the coach again." };
+  }
+  const res = await applyPlanPatch(db, userId, g.planId, g.change, ctx.now, ctx.today);
+  if (res.ok) return { status: "applied", changed: res.changed };
+  if (res.error === "not_found") return gone;
+  if (res.error === "restore_in_progress") return { status: "refused", error: "restore_in_progress", why: "The athlete's account is being restored right now — try again once it is done." };
+  return { status: "refused", error: "plan_refused", why: res.issues[0]?.message ?? "The plan refused it." };
 }
 
 /** "2 moves in your programme's pool, 1 taken out": the pins done, for the answer and the receipt — counted. A pin puts a
@@ -1788,6 +1871,14 @@ function approvedReceipt(title: string, ops: readonly AnyDesignedOp[], library: 
     if (isMovePinsOp(any)) {
       const g = (any as DesignedPinsOp).outcome;
       if (g?.status === "applied") done.push(any.title === title ? pinsDoneLine(g) : `${any.title}: ${pinsDoneLine(g)}`);
+      else if (g?.status === "refused") not.push(`${any.title} (${g.why})`);
+      else if (g?.status === "declined") declined += 1;
+      continue;
+    }
+    // A plan change (plans with a purpose): its title and the plan's ending in a line, named once as the others are.
+    if (isPlanChangeOp(any)) {
+      const g = (any as DesignedPlanChangeOp).outcome;
+      if (g?.status === "applied") done.push(any.title === title ? any.summary : `${any.title}: ${any.summary}`);
       else if (g?.status === "refused") not.push(`${any.title} (${g.why})`);
       else if (g?.status === "declined") declined += 1;
       continue;

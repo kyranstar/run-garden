@@ -72,6 +72,8 @@ describe("the prompt text", () => {
       "adjust_plan",
       // §8 (stream W): the plans themselves, and a change to one's shape — and to a programme's settings.
       "read_plans", "propose_plan", "change_programme",
+      // Plans with a purpose: a plan's purpose, brief, ending, objectives and pause.
+      "change_plan",
       // Saved-posts import, Task 17: what came in from the athlete's saves.
       "read_saves",
       // Saved-posts import, Task 18: the moves in rotation, changed with the athlete's approval.

@@ -6,7 +6,7 @@
  * each reads a designed op through these, so it ignores or describes it and never throws on it. A designed proposal is
  * approved on its own surface (Task 8); until then the thread's approve and decline answer it 409 `not_yet`.
  */
-import { dayLabel, describeOps, type AdaptiveConfig, type CoachOp } from "@rg/domain";
+import { dayLabel, defaultOnEnd, describeOps, planOnEndSchema, type AdaptiveConfig, type CoachOp, type PlanOnEnd, type ProgramKind } from "@rg/domain";
 import type { RetimeExpectation } from "./adjust-retime.js";
 
 /** The thread coach's ops a designed proposal may carry as a change to the plan (Task 8b; ruling I6), and since the new
@@ -150,6 +150,80 @@ export interface ProgrammeChangeOp {
   replaces?: string[];
   at: string;
 }
+
+/** The fields a plan change sets (plans with a purpose, Stage 1): the plan's own, as `PATCH /api/plans/:id` takes them. */
+export const PLAN_CHANGE_FIELDS = ["purpose", "brief", "onEnd", "pausedUntil", "objectiveIds", "easeNext"] as const;
+export interface PlanChangeFields {
+  purpose: string | null;
+  brief: string | null;
+  onEnd: PlanOnEnd;
+  /** The last day of a pause, or null: not paused. */
+  pausedUntil: string | null;
+  objectiveIds: string[];
+  /** A course's: whether its next session is eased. */
+  easeNext: boolean;
+}
+
+/** A plan's editable fields as its `programs` row holds them: a missing ending is its kind's own (`defaultOnEnd`), a
+ * missing list none, and a plan that is no course is never eased. The stale check and the tool read a plan by this. */
+export function planFieldsOfRow(row: {
+  kind: string;
+  disciplines: unknown;
+  purpose: string | null;
+  brief: string | null;
+  onEnd: string | null;
+  pausedUntil: string | null;
+  objectiveIds: unknown;
+  config: unknown;
+}): PlanChangeFields {
+  const disciplines = Array.isArray(row.disciplines) ? row.disciplines.filter((d): d is string => typeof d === "string") : [];
+  const config = (row.config ?? {}) as { easeNext?: unknown };
+  return {
+    purpose: row.purpose,
+    brief: row.brief,
+    onEnd: planOnEndSchema.safeParse(row.onEnd).data ?? defaultOnEnd(row.kind as ProgramKind, disciplines),
+    pausedUntil: row.pausedUntil,
+    objectiveIds: Array.isArray(row.objectiveIds) ? row.objectiveIds.filter((x): x is string => typeof x === "string") : [],
+    easeNext: config.easeNext === true,
+  };
+}
+
+/**
+ * A change to a plan's purpose, brief, ending, pause, objectives or (a course's) easing inside a designed proposal
+ * (design-tools/change-plan.ts): checked as `PATCH /api/plans/:id` checks it, applied at approval through the same
+ * function (plan-registry.ts `applyPlanPatch`: one write, one version). `base` is what those fields were when it was
+ * proposed: an approve refuses `stale` when one of them has moved since to neither that nor the change (the athlete
+ * edited the plan). What the card shows is computed when it is proposed (`title`, `summary`, `lines`: "When it ends:
+ * Ask me → Continue"). `why`, the title and the texts carry the model's and the athlete's words: data, marked wherever
+ * they are shown back to a model.
+ */
+export interface PlanChangeOp {
+  kind: "plan_change";
+  /** `planChangeId(planId)`: one change per plan per proposal — a second replaces the first. */
+  id: string;
+  /** The plan's `programs` id. */
+  planId: string;
+  /** Only the fields it changes. */
+  change: Partial<PlanChangeFields>;
+  /** Those fields as they were when it was proposed. */
+  base: Partial<PlanChangeFields>;
+  why: string;
+  issues: Array<{ code: string; message: string }>;
+  /** "Base block: new purpose". */
+  title: string;
+  /** One line: "Ending: Continue · paused until Tue 21 Oct". */
+  summary: string;
+  /** What changes, a line each. */
+  lines: string[];
+  /** The day it was proposed for: today. */
+  date: string;
+  toolUseId: string;
+  replaces?: string[];
+  at: string;
+}
+
+/** A plan change's op id. */
+export const planChangeId = (planId: string): string => `pc-${planId}`;
 
 /** A programme change's op id. */
 export const programmeChangeId = (programId: string): string => `prog-${programId}`;
@@ -295,21 +369,24 @@ export const isPlanStructureOp = (op: unknown): op is PlanStructureOp => kindOf(
 /** Whether an op is a change to a programme's settings (§8 §5). */
 export const isProgrammeChangeOp = (op: unknown): op is ProgrammeChangeOp => kindOf(op) === "programme_change";
 
+/** Whether an op is a change to a plan's purpose, brief, ending or pause (plans with a purpose, Stage 1). */
+export const isPlanChangeOp = (op: unknown): op is PlanChangeOp => kindOf(op) === "plan_change";
+
 /** Whether an op is a change to the moves in rotation (saved-posts import, Task 18). */
 export const isMovePinsOp = (op: unknown): op is MovePinsOp => kindOf(op) === "move_pins";
 
 /** Whether an op is the coach designer's — a designed workout, a change, a plan change, a programme change or the moves
  * in rotation — never one of the thread coach's. */
 export const isDesignedOp = (op: unknown): boolean =>
-  isDocWorkoutOp(op) || isPlanAdjustOp(op) || isPlanStructureOp(op) || isProgrammeChangeOp(op) || isMovePinsOp(op);
+  isDocWorkoutOp(op) || isPlanAdjustOp(op) || isPlanStructureOp(op) || isProgrammeChangeOp(op) || isPlanChangeOp(op) || isMovePinsOp(op);
 
 /**
  * An op's id: a designed workout's is the run that designed it — each run holds ONE op of its main run's proposal,
  * whatever its target (design-tools/propose.ts), so the run names the op through every revision round; a change's is
  * its own (`planAdjustId`). Approve and decline (Task 8) and a main run's lever over its set (Task 7) name an op by it.
  */
-export function opIdOf(op: { by: { runId: string } } | PlanAdjustOp | PlanStructureOp | ProgrammeChangeOp | MovePinsOp): string {
-  return isPlanAdjustOp(op) || isPlanStructureOp(op) || isProgrammeChangeOp(op) || isMovePinsOp(op) ? op.id : (op as { by: { runId: string } }).by.runId;
+export function opIdOf(op: { by: { runId: string } } | PlanAdjustOp | PlanStructureOp | ProgrammeChangeOp | PlanChangeOp | MovePinsOp): string {
+  return isPlanAdjustOp(op) || isPlanStructureOp(op) || isProgrammeChangeOp(op) || isPlanChangeOp(op) || isMovePinsOp(op) ? op.id : (op as { by: { runId: string } }).by.runId;
 }
 
 /** Whether a proposal's ops hold a designed workout. */

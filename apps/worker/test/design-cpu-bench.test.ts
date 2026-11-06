@@ -918,6 +918,9 @@ beforeAll(async () => {
     // change_programme (§8 §5): the rich athlete's programme onto other days, a goal and minutes — its preview of where
     // the sessions go, its lines.
     await measureTool("change_programme", images.get("read12")!, ctx, { programmeId: rich.programId, days: ["Tue", "Thu", "Sat"], weeklyGoal: 3, minutes: 45, why: words(2, 150) });
+    // change_plan (plans with a purpose): the rich athlete's programme plan given a purpose, a brief and a pause — one read,
+    // one write.
+    await measureTool("change_plan", images.get("read12")!, ctx, { planId: rich.programId, purpose: words(1, 100), brief: words(2, 400), pausedUntil: addDays(TODAY, 7), why: words(2, 150) });
     await measureTool("finish", images.get("read12")!, ctx, { summary: words(3, 200) });
 
     // A search that finds nothing (fix wave 13, round 3, R2-M1) says why from the library's word index — no move says a

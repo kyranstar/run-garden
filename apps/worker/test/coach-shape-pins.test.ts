@@ -93,8 +93,12 @@ const BEFORE = { tools: 34_935, shared: 20_450, main: 4_586 };
  * REBASED 2026-11-06 (where you stand, on top of the ball release): the shared prompt names the block, notices a drift
  * kindly and explains a coach read, and remember's drift and checkBack (shared 26,913; tools 41,968; main 7,183) —
  * measured 16,093; held with 457 characters (≥ 100 tokens) of headroom.
+ * REBASED 2026-11-06 (plans with a purpose, Stage 1, Task 6: change_plan — a plan's purpose, brief, ending, objectives and
+ * pause, approved as one card): its schema, kept to what the model cannot guess (tools 41,968 → 42,902), its one act-tool
+ * line (shared 26,913 → 27,268, which also holds read_plans' sentence on what each ending means, Task 4's, until now
+ * inside the margin) — measured 17,382; held with 468 characters (≥ 100 tokens) of headroom.
  */
-const GROWTH_MAX_CHARS = 16_550;
+const GROWTH_MAX_CHARS = 17_850;
 
 const toolsSent = () => JSON.stringify(allTools().map((t) => ({ name: t.name, description: t.description, input_schema: t.inputSchema })));
 

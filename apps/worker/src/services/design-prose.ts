@@ -59,6 +59,7 @@ const TOOL_WORDS: Record<PromptToolName, string> = {
   adjust_plan: "a plan change",
   propose_plan: "the plan",
   change_programme: "the programme's settings",
+  change_plan: "the plan's purpose and ending",
   pin_moves: "your programme's pool",
   plan_set: "the plan",
   read_set: "the plan",

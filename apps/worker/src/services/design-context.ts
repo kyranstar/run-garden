@@ -403,7 +403,7 @@ interface Reads {
 
 /** An op still the athlete's to decide (coach-runs.ts' alsoOpen rule, R2): undecided, refused at approval, or being applied. */
 const OPEN_OP = sql.raw(
-  `json_extract(o.value, '$.kind') IN ('doc_workout', 'plan_adjust', 'plan_structure', 'programme_change', 'move_pins') ` +
+  `json_extract(o.value, '$.kind') IN ('doc_workout', 'plan_adjust', 'plan_structure', 'programme_change', 'plan_change', 'move_pins') ` +
     `AND (json_extract(o.value, '$.outcome') IS NULL OR json_extract(o.value, '$.outcome.status') IN ('refused', 'applying'))`,
 );
 
@@ -1299,6 +1299,9 @@ function proposalLines(id: string, rows: Map<string, Array<Record<string, unknow
     } else if (op.kind === "programme_change") {
       // A programme change (§8 §5): its card's words — the programme's name is the athlete's, marked with the rest.
       out.push(`- a programme change: ${coach(`${String(op.title ?? "")} · ${String(op.summary ?? "")}`)} — ${outcome}`);
+    } else if (op.kind === "plan_change") {
+      // A change to a plan's purpose, brief, ending or pause (plans with a purpose): its card's words, marked as the rest.
+      out.push(`- a plan change: ${coach(`${String(op.title ?? "")} · ${String(op.summary ?? "")}`)} — ${outcome}`);
     } else if (op.kind === "move_pins") {
       // The moves in rotation (saved-posts import, Task 18): its card's words, the coach's own — marked.
       out.push(`- moves for the engine's pool: ${coach(`${String(op.title ?? "")} · ${String(op.summary ?? "")}`)} — ${outcome}`);

@@ -38,7 +38,7 @@ import { refuse } from "./read-common.js";
 import { openMustFix, reviewRunning } from "../design-review.js";
 import { athleteText, clipProse } from "../design-prose.js";
 import { designProposalId, type DocWorkoutOp } from "./propose.js";
-import { isDocWorkoutOp, isMovePinsOp, isPlanAdjustOp, isPlanStructureOp, isProgrammeChangeOp } from "../proposal-kinds.js";
+import { isDocWorkoutOp, isMovePinsOp, isPlanAdjustOp, isPlanChangeOp, isPlanStructureOp, isProgrammeChangeOp } from "../proposal-kinds.js";
 
 /** The athlete's line, at most (characters): clipped to it, never refused. */
 export const LINE_MAX = 300;
@@ -103,7 +103,8 @@ export const finish: DesignTool = {
     const ops = all.filter(isDocWorkoutOp) as DocWorkoutOp[];
     const changes = all.filter(isPlanAdjustOp).length;
     const plans = all.filter(isPlanStructureOp).length;
-    const programmes = all.filter(isProgrammeChangeOp).length;
+    // A change to a plan's purpose, brief, ending or pause is counted with the programme changes: one card a plan.
+    const programmes = all.filter((o) => isProgrammeChangeOp(o) || isPlanChangeOp(o)).length;
     const pins = all.filter(isMovePinsOp).length;
     const own = designer ? ops.find((o) => o.by?.runId === ctx.run.id) : undefined;
     const mine = row && (ctx.run.role === "main" ? all.length > 0 : !!own);

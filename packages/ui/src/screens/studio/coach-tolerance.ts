@@ -28,6 +28,7 @@ import {
   type DesignLineDto,
   type DesignPinsCardLineDto,
   type DesignPinsLineDto,
+  type DesignPlanChangeLineDto,
   type DesignPlanLineDto,
   type DesignProgrammeLineDto,
 } from "@rg/api-client";
@@ -295,6 +296,36 @@ function toPlanLine(v: unknown): DesignPlanLineDto | null {
   };
 }
 
+/** A plan change's line (plans with a purpose): its id or nothing; its texts texts; its outcome by its status, its own fields read. */
+function toPlanChangeLine(v: unknown): DesignPlanChangeLineDto | null {
+  const p = record(v);
+  if (!p || typeof p.opId !== "string" || !p.opId) return null;
+  const o = record(p.outcome);
+  const outcome: DesignPlanChangeLineDto["outcome"] =
+    o?.status === "applied"
+      ? { status: "applied", at: text(o.at), changed: texts(o.changed) }
+      : o?.status === "refused"
+        ? { status: "refused", at: text(o.at), error: text(o.error), why: text(o.why) }
+        : o?.status === "declined"
+          ? { status: "declined", at: text(o.at), ...(typeof o.reason === "string" ? { reason: o.reason } : {}) }
+          : o?.status === "superseded"
+            ? { status: "superseded", at: text(o.at), reason: text(o.reason), by: text(o.by) }
+            : null;
+  return {
+    opId: p.opId,
+    planId: text(p.planId),
+    title: words(p.title) ?? "A plan",
+    summary: text(p.summary),
+    lines: texts(p.lines),
+    why: text(p.why),
+    issues: list(p.issues).flatMap((x) => {
+      const i = record(x);
+      return i && typeof i.message === "string" ? [{ code: text(i.code), message: i.message }] : [];
+    }),
+    outcome,
+  };
+}
+
 /** A programme change's line (§8 §5): its id or nothing; its texts texts; its outcome by its status, its own fields read. */
 function toProgrammeLine(v: unknown): DesignProgrammeLineDto | null {
   const p = record(v);
@@ -377,6 +408,7 @@ export function toProposal(v: unknown): ProposalRead {
   const r = record(v) ?? {};
   const plans = list(r.plans).map(toPlanLine).filter((p): p is DesignPlanLineDto => p !== null);
   const programmes = list(r.programmes).map(toProgrammeLine).filter((p): p is DesignProgrammeLineDto => p !== null);
+  const planChanges = list(r.planChanges).map(toPlanChangeLine).filter((p): p is DesignPlanChangeLineDto => p !== null);
   const pins = list(r.pins).map(toPinsLine).filter((p): p is DesignPinsLineDto => p !== null);
   const lines = list(r.lines).map(toLine).filter((l): l is DesignLineDto => l !== null);
   const changes = list(r.changes).map(toChange).filter((c): c is DesignChangeLineDto => c !== null);
@@ -389,6 +421,7 @@ export function toProposal(v: unknown): ProposalRead {
     ...(r.changes !== undefined ? { changes } : {}),
     ...(r.plans !== undefined ? { plans } : {}),
     ...(r.programmes !== undefined ? { programmes } : {}),
+    ...(r.planChanges !== undefined ? { planChanges } : {}),
     ...(r.pins !== undefined ? { pins } : {}),
     ...(r.context !== undefined ? { context } : {}),
   };

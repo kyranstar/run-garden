@@ -45,11 +45,13 @@ import { defaultFromRow, defaultPlaceSql } from "./default-place.js";
 import type {
   DesignedOp,
   DesignedPinsOp,
+  DesignedPlanChangeOp,
   DesignedPlanOp,
   DesignedProgrammeOp,
   DesignedStructureOp,
   MovePinsOutcome,
   OpOutcome,
+  PlanChangeOutcome,
   PlanOpOutcome,
   PlanStructureOutcome,
   ProgrammeChangeOutcome,
@@ -67,6 +69,7 @@ import {
   isDocWorkoutOp,
   isMovePinsOp,
   isPlanAdjustOp,
+  isPlanChangeOp,
   isPlanStructureOp,
   isProgrammeChangeOp,
   opIdOf,
@@ -490,6 +493,33 @@ export function programmeChangeLines(ops: readonly unknown[]): ProgrammeChangeLi
   return (ops.filter(isProgrammeChangeOp) as DesignedProgrammeOp[]).map((g) => ({
     opId: g.id,
     programmeId: g.programId,
+    title: g.title,
+    summary: g.summary,
+    lines: g.lines,
+    why: g.why,
+    issues: (g.issues ?? []).map((i) => ({ code: String(i.code), message: i.message })),
+    outcome: g.outcome ?? null,
+  }));
+}
+
+/** A change to a plan's purpose, brief, ending or pause as the manifest gives it (plans with a purpose): its plan, its
+ * card's words and lines, the coach's why, and how it stands — `applied` with the fields written. */
+export interface PlanFieldsChangeLine {
+  opId: string;
+  planId: string;
+  title: string;
+  summary: string;
+  lines: string[];
+  why: string;
+  issues: Array<{ code: string; message: string }>;
+  outcome: PlanChangeOutcome | null;
+}
+
+/** Each plan change's line, in the proposal's order. */
+export function planChangeOpLines(ops: readonly unknown[]): PlanFieldsChangeLine[] {
+  return (ops.filter(isPlanChangeOp) as DesignedPlanChangeOp[]).map((g) => ({
+    opId: g.id,
+    planId: g.planId,
     title: g.title,
     summary: g.summary,
     lines: g.lines,

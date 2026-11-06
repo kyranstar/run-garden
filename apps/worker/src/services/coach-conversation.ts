@@ -44,9 +44,10 @@ export const CONVERSATION_ID = /^[A-Za-z0-9_-]{1,100}$/;
 // ── Shapes ──────────────────────────────────────────────────────────────────────────────────────────────────────────
 
 export interface ConversationCard {
-  /** `programme` (§8 §5): a change to a programme's settings, approved with one tap — one card a programme; `pins`
+  /** `programme` (§8 §5): a change to a programme's settings, approved with one tap — one card a programme;
+   * `plan_change` (plans with a purpose): a change to a plan's purpose, brief, ending or pause — one card a plan; `pins`
    * (saved-posts import, Task 18): the moves in rotation the coach would change, approved with one tap. */
-  kind: "workout" | "plan_changes" | "set" | "plan" | "programme" | "pins";
+  kind: "workout" | "plan_changes" | "set" | "plan" | "programme" | "plan_change" | "pins";
   proposalId: string;
   title: string;
   /** One line: "Today · Now · 24 min · Maintain", "3 changes to your week", "3 workouts · Wed 13 – Fri 15 May",
@@ -101,7 +102,7 @@ export interface ConversationDto {
 
 /** A proposal's op in brief, as `turnsSql` reads it. */
 interface OpBrief {
-  kind: "doc_workout" | "plan_adjust" | "plan_structure" | "programme_change" | "move_pins";
+  kind: "doc_workout" | "plan_adjust" | "plan_structure" | "programme_change" | "plan_change" | "move_pins";
   date: string | null;
   time: string | null;
   atNow: number | null;
@@ -204,9 +205,9 @@ export async function conversationRows(db: Db, userId: string, conversation: SQL
           'title', ${op("$.doc.title")}, 'minutes', ${op("$.derived.minutes")}, 'effort', ${op("$.doc.intent.effort")},
           'by', ${op("$.by.role")}, 'change', ${op("$.op.kind")}, 'row', ${op("$.row.title")},
           'outcome', ${op("$.outcome.status")}, 'reason', ${op("$.outcome.reason")}, 'discipline', ${op("$.derived.discipline")},
-          'planTitle', ${op("$.title")}, 'planSummary', ${op("$.summary")}, 'lines', json(CASE WHEN ${op("$.kind")} IN ('plan_structure', 'programme_change', 'move_pins') THEN ${op("$.lines")} END),
-          'opId', CASE WHEN ${op("$.kind")} IN ('programme_change', 'move_pins') THEN ${op("$.id")} END))
-        FROM json_each(CASE WHEN json_valid(p.ops) THEN p.ops ELSE '[]' END) o WHERE ${op("$.kind")} IN ('doc_workout', 'plan_adjust', 'plan_structure', 'programme_change', 'move_pins'))))
+          'planTitle', ${op("$.title")}, 'planSummary', ${op("$.summary")}, 'lines', json(CASE WHEN ${op("$.kind")} IN ('plan_structure', 'programme_change', 'plan_change', 'move_pins') THEN ${op("$.lines")} END),
+          'opId', CASE WHEN ${op("$.kind")} IN ('programme_change', 'plan_change', 'move_pins') THEN ${op("$.id")} END))
+        FROM json_each(CASE WHEN json_valid(p.ops) THEN p.ops ELSE '[]' END) o WHERE ${op("$.kind")} IN ('doc_workout', 'plan_adjust', 'plan_structure', 'programme_change', 'plan_change', 'move_pins'))))
         FROM coach_proposals p WHERE p.id = ${DESIGNED_PREFIX} || r.id AND p.user_id = r.user_id) AS proposal,
       (SELECT up.prefs FROM user_preferences up WHERE up.user_id = ${userId}) AS prefs
     FROM c, s, coach_runs r
@@ -293,7 +294,8 @@ function planLinesOf(raw: unknown, max = PLAN_LINES_MAX + 1): string[] {
 /**
  * A turn's cards (see the module comment): none for a proposal the athlete never saw. A set's proposal is one card;
  * otherwise each designed workout is one, and the changes to the plan one between them; a whole plan change (§8 §5) is
- * one card of its own, after them, with its lines — then each programme change, then the moves in rotation (Task 18).
+ * one card of its own, after them, with its lines — then each programme change, each change to a plan's purpose or ending,
+ * then the moves in rotation (Task 18).
  */
 export function cardsOf(scopeText: string | null, p: ProposalBrief | null, today: string): ConversationCard[] {
   if (!p || UNSEEN.has(p.status)) return [];
@@ -310,6 +312,18 @@ export function cardsOf(scopeText: string | null, p: ProposalBrief | null, today
       kind: "programme",
       ...base,
       title: str(o.planTitle) ?? "A programme",
+      summary: str(o.planSummary) ?? "",
+      lines: planLinesOf(o.lines),
+      ...(str(o.opId) ? { opId: str(o.opId)! } : {}),
+    }));
+  // A change to a plan's purpose, brief, ending or pause (plans with a purpose): one card each, after the programmes —
+  // its own op approved and declined, a line a field.
+  const planChanges = p.ops
+    .filter((o) => o.kind === "plan_change")
+    .map((o): ConversationCard => ({
+      kind: "plan_change",
+      ...base,
+      title: str(o.planTitle) ?? "A plan",
       summary: str(o.planSummary) ?? "",
       lines: planLinesOf(o.lines),
       ...(str(o.opId) ? { opId: str(o.opId)! } : {}),
@@ -338,7 +352,7 @@ export function cardsOf(scopeText: string | null, p: ProposalBrief | null, today
   if (workouts.length > 0 && isSet(scopeText, p)) {
     const days = workouts.flatMap((w) => (w.date ? [w.date] : [])).sort();
     const what = `${plural(workouts.length, "workout")}${changes.length > 0 ? ` and ${plural(changes.length, "change")}` : ""}`;
-    return [{ kind: "set", ...base, title: p.title || "Your week", summary: days.length > 0 ? `${what} · ${dayRangeLabel(days[0]!, days.at(-1)!)}` : what }, ...plans, ...programmes, ...pins];
+    return [{ kind: "set", ...base, title: p.title || "Your week", summary: days.length > 0 ? `${what} · ${dayRangeLabel(days[0]!, days.at(-1)!)}` : what }, ...plans, ...programmes, ...planChanges, ...pins];
   }
   return [
     ...workouts.map((w): ConversationCard => ({
@@ -351,6 +365,7 @@ export function cardsOf(scopeText: string | null, p: ProposalBrief | null, today
     ...changesCard(),
     ...plans,
     ...programmes,
+    ...planChanges,
     ...pins,
   ];
 }
@@ -481,6 +496,12 @@ function turnLines(row: TurnRow, today: string, clock: Intl.DateTimeFormat): str
       const g = p!.ops.find((o) => o.kind === "programme_change" && o.opId === card.opId);
       const how = g?.outcome === "applying" ? "being applied" : standing(card.status, g?.outcome, g?.reason);
       out.push(`  Suggested a programme change (id ${card.proposalId}): ${title} · ${clipProse(card.summary, TITLE_MAX)} — ${how}`);
+    } else if (card.kind === "plan_change") {
+      // A change to a plan's purpose, brief, ending or pause (plans with a purpose): its title names the athlete's plan; how
+      // it stands is its op's.
+      const g = p!.ops.find((o) => o.kind === "plan_change" && o.opId === card.opId);
+      const how = standing(card.status, g?.outcome, g?.reason);
+      out.push(`  Suggested a plan change (id ${card.proposalId}): ${title} · ${clipProse(card.summary, TITLE_MAX)} — ${how}`);
     } else if (card.kind === "pins") {
       // The moves in rotation (Task 18): its title and line are the coach's words; how it stands is its op's.
       const g = p!.ops.find((o) => o.kind === "move_pins" && o.opId === card.opId);

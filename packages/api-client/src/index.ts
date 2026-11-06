@@ -846,6 +846,9 @@ export interface DesignProposalReadDto {
   plans?: DesignPlanLineDto[];
   /** Its programme changes (§8 §5); absent when it holds none, or from an older server. */
   programmes?: DesignProgrammeLineDto[];
+  /** Its changes to a plan's purpose, brief, ending or pause (plans with a purpose); absent when it holds none, or from
+   * an older server. */
+  planChanges?: DesignPlanChangeLineDto[];
   /** Its changes to the moves in rotation (saved-posts import, Task 18); absent when it holds none, or from an older
    * server. */
   pins?: DesignPinsLineDto[];
@@ -892,6 +895,28 @@ export interface DesignProgrammeLineDto {
   outcome:
     | { status: "applied"; at: string; placed: number; archived: number }
     | { status: "applying"; at: string; progress: { written: boolean; placed: number; archived: number } }
+    | { status: "refused"; at: string; error: string; why: string }
+    | { status: "declined"; at: string; reason?: string }
+    | { status: "superseded"; at: string; reason: string; by: string }
+    | null;
+}
+
+/**
+ * A change to a plan's purpose, brief, ending or pause in a suggestion (plans with a purpose; change_plan's): the plan, the
+ * card's title (its name and what changes), one line — the plan's ending — a line a changed field ("When it ends: Ask me →
+ * Continue"), the coach's why, and how it stands — `applied` with the fields written, `refused` with why (`stale`: the plan
+ * changed since; `plan_refused`: the plan's own rule, such as a pause that has gone by).
+ */
+export interface DesignPlanChangeLineDto {
+  opId: string;
+  planId: string;
+  title: string;
+  summary: string;
+  lines: string[];
+  why: string;
+  issues: Array<{ code: string; message: string }>;
+  outcome:
+    | { status: "applied"; at: string; changed: string[] }
     | { status: "refused"; at: string; error: string; why: string }
     | { status: "declined"; at: string; reason?: string }
     | { status: "superseded"; at: string; reason: string; by: string }
@@ -1472,7 +1497,7 @@ export interface CoachConversationCardDto {
   /** `plan` (§8 §5): a whole plan — a new block, its extension, a week, a wind-down — approved with one tap; `programme`,
    * a change to a programme's settings, one card a programme; `pins` (saved-posts import, Task 18), the moves the coach
    * would keep in rotation or take out, approved with one tap. */
-  kind: "workout" | "plan_changes" | "set" | "plan" | "programme" | "pins";
+  kind: "workout" | "plan_changes" | "set" | "plan" | "programme" | "plan_change" | "pins";
   proposalId: string;
   title: string;
   summary: string;

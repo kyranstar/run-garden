@@ -26,7 +26,7 @@
  *   GET  /api/coach/proposals/:id (routes/coach.ts) → for a designed proposal, also its manifest: the workouts' `lines`
  *        and its changes to sessions already on the plan (`changes`, Task 8b) — a change has no draft (404) — and, for a
  *        set's (a week or the next N), `context`: the plan's other sessions in its days (Task 13's fix wave, §2.9); its
- *        whole plan changes (`plans`), programme changes (`programmes`) and moves in rotation (`pins`, saved-posts
+ *        whole plan changes (`plans`), programme changes (`programmes`), changes to a plan's purpose or ending (`planChanges`) and moves in rotation (`pins`, saved-posts
  *        import Task 18) when it holds some
  *
  * 400 `unknown_op` (an op id the proposal doesn't hold) and `bad_request`; 409 `not_pending` with the status (a
@@ -57,7 +57,7 @@ import {
   UnknownOpError,
   type DesignProposalRow,
 } from "../services/design-approve.js";
-import { docWorkoutLines, manifestReads, pinsLines, planChangeLines, planStructureLines, programmeChangeLines, setContextSql } from "../services/design-manifest.js";
+import { docWorkoutLines, manifestReads, pinsLines, planChangeLines, planChangeOpLines, planStructureLines, programmeChangeLines, setContextSql } from "../services/design-manifest.js";
 import { designProposalId } from "../services/design-tools/propose.js";
 import { dayRowsSql, placedTimes } from "../services/design-placement.js";
 import { clockIn, PastTimeError } from "../services/design-time.js";
@@ -199,7 +199,14 @@ export async function designedManifest(db: Db, userId: string, proposalId: strin
   // A programme change's too (§8 §5), and the moves in rotation's (saved-posts import, Task 18).
   const programmes = programmeChangeLines(all);
   const pins = pinsLines(all);
-  const withPlans = { ...(plans.length > 0 ? { plans } : {}), ...(programmes.length > 0 ? { programmes } : {}), ...(pins.length > 0 ? { pins } : {}) };
+  // A change to a plan's purpose, brief, ending or pause (plans with a purpose): its own too.
+  const planChanges = planChangeOpLines(all);
+  const withPlans = {
+    ...(plans.length > 0 ? { plans } : {}),
+    ...(programmes.length > 0 ? { programmes } : {}),
+    ...(planChanges.length > 0 ? { planChanges } : {}),
+    ...(pins.length > 0 ? { pins } : {}),
+  };
   if (workouts.length === 0) return { lines: [], changes: planChangeLines(all), ...withPlans };
   const prefix = designProposalId("");
   const runId = proposalId.startsWith(prefix) ? proposalId.slice(prefix.length) : null;
