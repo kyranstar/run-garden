@@ -515,6 +515,8 @@ export function driftNudge(d: Drift): { id: string; label: string; request: stri
 // ── The block ───────────────────────────────────────────────────────────────────────────────────────────────────────
 
 const KR_LINES = 3;
+/** Drift lines the block lists, the most pressing first (the chip only ever offers the first). */
+const DRIFT_LINES = 3;
 const READS_LISTED = 2;
 const DAY_ITEMS = 3;
 const REVIEW_CHARS = 120;
@@ -722,6 +724,12 @@ export function standBlock(f: StandFacts, drifts: readonly Drift[]): string {
     reviewLine(f),
     ...readLines(f),
     memoryLine(f),
-    ...(drifts.length ? ["Needs you (each a chip on Today and in the coach):", ...drifts.map(driftLine)] : ["Needs you: nothing the app sees."]),
+    ...(drifts.length
+      ? [
+          "Needs you (each a chip on Today and in the coach):",
+          ...drifts.slice(0, DRIFT_LINES).map(driftLine),
+          ...(drifts.length > DRIFT_LINES ? [`- and ${drifts.length - DRIFT_LINES} more the app sees (read_objectives, read_plan)`] : []),
+        ]
+      : ["Needs you: nothing the app sees."]),
   ].join("\n");
 }

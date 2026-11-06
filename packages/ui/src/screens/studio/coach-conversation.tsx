@@ -352,10 +352,18 @@ export function CoachConversation({ ctx, loopDeps, request = null, seeing: seenA
     send(fit.request, { savesBatchId: fit.batchId });
   });
   // A drift chip tapped on Today: sent once, with its id, as soon as the conversation is known (a ref, like the fit's).
+  // A run at work (or a send out, the week used up): never sent into it — an answer to its question, or dropped. The words
+  // wait in the box, and a send of them later still carries the chip's id (final review #1).
   const askSent = useRef(false);
+  const [heldAsk, setHeldAsk] = useState<CoachAsk | null>(null);
   useEffect(() => {
     if (!ask || askSent.current || !settled) return;
     askSent.current = true;
+    if (busy || usedUp || working) {
+      setDraft(ask.request);
+      setHeldAsk(ask);
+      return;
+    }
     send(ask.request, { nudge: ask.nudge });
   });
   /** The box takes the focus once: as the sheet opens on nothing to show yet, or with words written for the athlete. */
@@ -508,7 +516,7 @@ export function CoachConversation({ ctx, loopDeps, request = null, seeing: seenA
           onDraft={setDraft}
           placeholder={placeholder}
           canSend={canSend}
-          onSend={() => send(draft)}
+          onSend={() => send(draft, heldAsk && draft.trim() === heldAsk.request && !working ? { nudge: heldAsk.nudge } : {})}
           seeing={seeing}
           onDropSeeing={() => {
             setSeeing(null);

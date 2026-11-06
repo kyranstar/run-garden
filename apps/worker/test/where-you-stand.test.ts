@@ -229,6 +229,26 @@ describe("the block, against captured text", () => {
   });
 });
 
+describe("the block's drift lines are capped too (final review #2)", () => {
+  it("twenty key results behind pace: three lines and a count, the block within 2,000 characters", () => {
+    const f = athlete();
+    f.objectives = [
+      {
+        id: "obj-many",
+        keyResults: Array.from({ length: 20 }, (_, k) =>
+          kr({ id: `kr-${k}`, objectiveId: "obj-many", label: `Zorbex key result number ${k} of a long label`, baseline: 60, target: 120, createdOn: d(-30), due: d(20), progress: progress(65, "measured") }),
+        ),
+      },
+    ];
+    const drifts = driftsOf(f);
+    expect(drifts.filter((x) => x.rule === "key_result")).toHaveLength(20);
+    const block = standBlock(f, drifts);
+    expect(block.split("\n").filter((l) => l.includes("(drift:"))).toHaveLength(3);
+    expect(block).toContain(`- and ${drifts.length - 3} more the app sees`);
+    expect(block.length).toBeLessThanOrEqual(2000);
+  });
+});
+
 describe("drift (§7.2)", () => {
   const strength = (planned: number, done: number, from = -2): StandPlanRow[] =>
     Array.from({ length: planned }, (_, i) => row(d(from - i), "strength", i < done ? "completed" : "skipped"));

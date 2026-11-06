@@ -750,6 +750,42 @@ describe("a question", () => {
   });
 });
 
+describe("a drift chip's ask from Today while a run is at work (final review #1)", () => {
+  const ASK = { request: "1 of 4 planned lifts logged in 3 weeks — let's talk it through.", nudge: "drift:discipline:strength" };
+  const asking: CoachRunEventDto[] = [
+    { seq: 1, kind: "question", summary: "Home or gym?", payload: { tool: "ask_athlete", data: { questions: [{ text: "Home or gym?", chips: ["Home", "Gym"] }] } }, at: "x" },
+  ];
+
+  it("never answers the waiting question with the chip's words, nor drops them: they wait in the box", async () => {
+    const answers: any[] = [];
+    const live = run({ id: "run-7", status: "waiting_athlete", request: "Something for tonight" });
+    const conv: CoachConversationDto = conversation([turn({ runId: "run-7", words: "Something for tonight", status: "waiting_athlete", line: null, question: { text: "Home or gym?", choices: ["Home", "Gym"] } })]);
+    const created: any[] = [];
+    server(() => conv, {
+      "GET /api/coach/runs/current": () => json({ run: live, events: asking, proposal: null }),
+      "POST /api/coach/runs/run-7/answer": (body: any) => {
+        answers.push(body);
+        return json({ run: { ...live, status: "active" } });
+      },
+      "POST /api/coach/runs": (body: any) => {
+        created.push(body);
+        return json({ run: run({ id: "run-8", request: body.request }), existing: false, conversationId: "run-7" });
+      },
+    });
+    function Today() {
+      const coach = useCoach();
+      return createElement("button", { type: "button", id: "coach", onClick: () => coach?.open({ ask: ASK, seeing: null }) }, "Talk it through");
+    }
+    mount({ loop: quietLoop(() => live, () => asking), children: createElement(Today) });
+    await openCoach();
+    await until(() => !!button("Home", dialog()!), "the waiting question");
+    await settle(30);
+    expect(answers).toEqual([]);
+    expect(created).toEqual([]);
+    expect(box()!.value).toBe(ASK.request);
+  });
+});
+
 /** The calls the last `serve` records (its stub's). */
 function serveCalls(): () => Call[] {
   const f = globalThis.fetch as unknown as { mock: { calls: Array<[string, RequestInit | undefined]> } };
