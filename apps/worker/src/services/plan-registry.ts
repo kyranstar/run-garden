@@ -1,6 +1,6 @@
 import { and, desc, eq, getTableColumns, inArray, isNull, sql } from "drizzle-orm";
 import { coachPlans, programs, programVersions, studioPlanPushes, trainingPlans } from "@rg/database";
-import { courseConfigSchema, defaultOnEnd, linesOf, newId, nowInstant, onEndAllowed, type LineBlock, type ProgramKind } from "@rg/domain";
+import { addDays, courseConfigSchema, defaultOnEnd, LINE_GAP_DAYS, linesOf, newId, nowInstant, onEndAllowed, type LineBlock, type ProgramKind } from "@rg/domain";
 import { sha256Hex } from "../auth/crypto.js";
 import { restoreInProgress } from "./account-state.js";
 import { isLoosePlan, lineBlockOf, loadNonCoachPlanEntries } from "./coach-plans.js";
@@ -18,7 +18,9 @@ import { DISCIPLINE_WORD, isPlanKind, lineKeysByPlan, planPatchSchema, planSumma
  *    its blocks' `program_id` says so. A block added to a line later joins the line's row.
  *  - The Studio's current plan is a `coach` plan whose id is its sessions' COROS container's `training_plans.id`
  *    (found through its pushes), so the sessions it already has belong to it. With no container yet, nothing is made.
- *  - Each listed COROS running plan is a `coros_import` plan under its own `training_plans.id`.
+ *  - Each listed COROS running plan is a `coros_import` plan under its own `training_plans.id`. It says `retired` while that
+ *    row is archived (no longer `active`, or dated archived, as the coach's read has it) and comes back if the row does. COROS's
+ *    same plan imported again is a new row beside it, as the import makes it, so that one stays as it is.
  *  - An adaptive programme that has no ending yet gets `continue`.
  *
  * A plan's dates are computed from its sessions, never stored: a row leaves `start_date`, `end_date` and `race_date` null.
@@ -31,6 +33,13 @@ import { DISCIPLINE_WORD, isPlanKind, lineKeysByPlan, planPatchSchema, planSumma
  * row itself, `plan-status.ts`). The evidence has to be real: its last-ending block retired and none left to run, or the Studio's
  * own retired mark. A line that ran to its end isn't stopped, though a phase of it was retired early: ended is computed, not
  * stored, and marked stopped it could never be continued.
+ *
+ * A STOP FROM BEFORE ALL THIS LEFT ONLY DATES (`stoppedByDates`). `linesOf` drops a retired block, so the backfill never linked
+ * one, and only the chain rule, run with them left in, ties it to a plan. A plan made here that's stopped already is made
+ * `retired`. A stopped plan with nothing left of it gets no row, and stays as it was: a retired block or two with no link, which
+ * no list shows (a line holds no retired block, so Past plans never had it) and nothing can name, so a coach's "continue" meets
+ * the same refusal as a stopped plan's. Months away from a later plan of its sport it's not in that plan's chain, so it neither
+ * stops it nor joins it.
  *
  * THE READ AND THE EDIT: `listPlans` answers the plans in two reads (the plans, the blocks), and `applyPlanPatch` is
  * the one write of a plan's purpose, brief, ending, pause, objectives and a course's easing. The route calls it, and
@@ -50,6 +59,44 @@ function planIdForLine(blockIds: readonly string[]): string {
   return `plan-${blockIds[0]!}`;
 }
 
+type Block = typeof coachPlans.$inferSelect;
+
+/** The chain rule (`linesOf`, `training-lines.ts`) among these blocks, in (startDate, id) order: the chain holding this one. */
+function chainHolding(block: Block, sorted: readonly Block[]): Block[] {
+  let chain: Block[] = [];
+  let end = "";
+  for (const b of sorted) {
+    if (chain.length > 0 && b.startDate > addDays(end, LINE_GAP_DAYS)) {
+      if (chain.includes(block)) return chain;
+      chain = [];
+      end = "";
+    }
+    chain.push(b);
+    if (b.endDate > end) end = b.endDate;
+  }
+  return chain;
+}
+
+const lastEndingOf = (blocks: readonly Block[]): Block[] => {
+  const end = blocks.reduce((latest, b) => (b.endDate > latest ? b.endDate : latest), "");
+  return blocks.filter((b) => b.endDate === end);
+};
+
+/**
+ * Was this plan stopped? (R38, and the header's A STOP FROM BEFORE.) `own`: its blocks, none with anything left to run. From each
+ * one that ends last, the chain rule among its sport's blocks, retired ones in it, finds where its line really ended: stopped if
+ * what ends that chain is retired, all of it if several end that day. Another plan's retired block is that plan's stop, and
+ * isn't in the chain. A block of another plan that isn't retired is: the sport went on, so this one wasn't stopped.
+ * `sorted`: the account's blocks, no loose bucket, in (startDate, id) order.
+ */
+function stoppedByDates(planId: string, own: readonly Block[], sorted: readonly Block[], today: string): boolean {
+  if (own.length === 0 || own.some((b) => b.status !== "retired" && b.endDate >= today)) return false;
+  return lastEndingOf(own).every((last) => {
+    const sport = sorted.filter((b) => b.discipline === last.discipline && !(b.status === "retired" && b.programId && b.programId !== planId));
+    return lastEndingOf(chainHolding(last, sport)).every((b) => b.status === "retired");
+  });
+}
+
 const chunks = <T>(xs: readonly T[], size: number): T[][] => {
   const out: T[][] = [];
   for (let i = 0; i < xs.length; i += size) out.push(xs.slice(i, i + size));
@@ -63,7 +110,16 @@ export async function backfillPlanRegistry(db: Db, userId: string, today: string
   const [coachRows, existing, nonCoach] = await Promise.all([
     db.select().from(coachPlans).where(eq(coachPlans.userId, userId)),
     db
-      .select({ id: programs.id, kind: programs.kind, status: programs.status, onEnd: programs.onEnd, source: programs.source })
+      .select({
+        id: programs.id,
+        kind: programs.kind,
+        status: programs.status,
+        onEnd: programs.onEnd,
+        source: programs.source,
+        // Whether a watch plan's import is live (null: not a watch plan, or no such import). In this read, so it costs no
+        // statement. Raw names, as `listPlans` has them.
+        importLive: sql<number | null>`case when programs.kind = 'coros_import' then (select t.status = 'active' and t.archived_at is null from training_plans t where t.id = programs.id and t.user_id = programs.user_id) end`,
+      })
       .from(programs)
       .where(eq(programs.userId, userId)),
     // In the account's own zone, as the plan list reads them.
@@ -80,12 +136,12 @@ export async function backfillPlanRegistry(db: Db, userId: string, today: string
     left -= 1;
   }
 
+  const sorted = coachRows.filter((r) => !isLoosePlan(r)).sort((a, b) => a.startDate.localeCompare(b.startDate) || a.id.localeCompare(b.id));
   for (const p of existing) {
     if (p.kind !== "coach" || p.status !== "active" || left < 1) continue;
-    const blocks = coachRows.filter((b) => b.programId === p.id);
-    const lastEnd = blocks.reduce((latest, b) => (b.endDate > latest ? b.endDate : latest), "");
-    const endedStopped = blocks.length > 0 && blocks.filter((b) => b.endDate === lastEnd).every((b) => b.status === "retired");
-    if (!endedStopped || blocks.some((b) => b.status !== "retired" && b.endDate >= today)) continue;
+    // Its blocks: those linked to it, and the one its id is made from, should its link never have landed.
+    const own = sorted.filter((b) => b.programId === p.id || (b.programId === null && planIdForLine([b.id]) === p.id));
+    if (!stoppedByDates(p.id, own, sorted, today)) continue;
     await planStoppedIfNoBlockLeft(db, { userId, today, now }, { plan: p.id });
     left -= 1;
   }
@@ -96,6 +152,14 @@ export async function backfillPlanRegistry(db: Db, userId: string, today: string
     left -= 1;
     if (!(await studioPlanRetired(db, userId, held))) continue;
     await planStoppedIfNoBlockLeft(db, { userId, today, now }, { studioPlan: held });
+    left -= 1;
+  }
+
+  for (const p of existing) {
+    if (p.importLive === null || left < 1) continue;
+    const status = p.importLive ? "active" : "retired";
+    if (status === p.status) continue;
+    await db.update(programs).set({ status, updatedAt: now }).where(and(eq(programs.id, p.id), eq(programs.userId, userId)));
     left -= 1;
   }
 
@@ -183,7 +247,7 @@ export async function backfillPlanRegistry(db: Db, userId: string, today: string
           kind: "coach",
           // As the plan list names it: a one-phase line by its block, a longer one by its sport.
           name: line.phases.length === 1 ? line.phases[0]!.name : line.name,
-          status: "active",
+          status: stoppedByDates(target, sorted.filter((b) => ids.includes(b.id)), sorted, today) ? "retired" : "active",
           disciplines,
           startDate: null,
           endDate: null,

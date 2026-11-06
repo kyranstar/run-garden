@@ -16,6 +16,7 @@ import { ACT_TOOLS } from "../src/services/design-tools/index.js";
 import { designProposalId } from "../src/services/design-tools/propose.js";
 import { MAX_FIRM_WEEKS, MAX_PLAN_SESSIONS, proposePlan } from "../src/services/design-tools/propose-plan.js";
 import { isToolErr, type RunScope, type SetHooks, type ToolContext, type ToolErr, type ToolOk } from "../src/services/design-tools/types.js";
+import { backfillPlanRegistry } from "../src/services/plan-registry.js";
 import { coachOpsOf, isDesignedOp, isDesignedProposal, opIdOf, PLAN_LINES_MAX, type PlanStructureOp } from "../src/services/proposal-kinds.js";
 import { addDays } from "@rg/domain";
 import { IN_ARRAY_CHUNK } from "../src/services/db.js";
@@ -297,6 +298,22 @@ describe("propose_plan: a new block says which plan it belongs to", () => {
       expect(err.error, id).toBe("plan_not_continuable");
     }
     expect(await opsOf(run.id)).toBeUndefined();
+  });
+
+  it("a plan the backfill found stopped by its dates refuses as any stopped plan; one with a retired phase before a phase that ran may be continued", async () => {
+    const block = (id: string, startDate: string, endDate: string, status: string) =>
+      db.insert(schema.coachPlans).values({ id, userId: rich.userId, discipline: "run", name: id, status, startDate, endDate, raceDate: null, stampPrefix: id, createdAt: NOW.toISOString(), updatedAt: NOW.toISOString() });
+    // Far enough behind the fixture's today that nothing else joins them: a phase that ran then one stopped, and the other way about.
+    await block("ran-then-stopped", "2024-01-01", "2024-01-14", "completed");
+    await block("stopped-after", "2024-01-15", "2024-01-28", "retired");
+    await block("stopped-before", "2024-06-01", "2024-06-14", "retired");
+    await block("ran-after", "2024-06-15", "2024-06-28", "completed");
+    await backfillPlanRegistry(db, rich.userId, TODAY);
+    const run = await mainRun();
+    const err = refused((await propose(run, { change: naming({ continuesPlanId: "plan-ran-then-stopped" }), why: "x" })).res);
+    expect(err.error).toBe("plan_not_continuable");
+    const out = ok((await propose(run, { change: naming({ continuesPlanId: "plan-ran-after" }), why: "x" })).res);
+    expect(out.data.lines[0].text).toContain("continues");
   });
 
   it("a new plan: its name and purpose come back marked untrusted, its ending defaults from its sport (run asks)", async () => {
