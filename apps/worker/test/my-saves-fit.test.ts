@@ -545,6 +545,9 @@ describe("POST /batches/:id/fit: two taps at once", () => {
     expect(statements.length).toBe(9); // REBASED 2026-11-05 (import trail): + the save's and the choice's trail events
     await untouched();
     expect(await batchRow(batchId)).toMatchObject({ status: "released", savedAt: null, fitStartedAt: null });
+    // A lost claim leaves no trail either: no post reads "Saved" or "You chose Fit them in" (final review I2).
+    const steps = await db.select().from(schema.importEvents);
+    expect(steps.filter((e) => e.stage === "save" || e.stage === "choice")).toEqual([]);
   });
 });
 

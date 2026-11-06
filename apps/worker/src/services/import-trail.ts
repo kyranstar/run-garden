@@ -6,7 +6,7 @@
  * Bounds never fail a stage: a summary is one line of at most SUMMARY_MAX; a detail past EVENT_DETAIL_MAX keeps a head
  * and moves whole into a `detail` blob; a blob past BLOB_MAX is cut there and marked `cut`.
  */
-import { sql } from "drizzle-orm";
+import { sql, type SQL } from "drizzle-orm";
 import { newId } from "@rg/domain";
 import { schema } from "@rg/database";
 import type { BlobKind, ImportStage, TrailSource, TrailStatus } from "@rg/saves";
@@ -118,14 +118,25 @@ export function batchTrailStatement(
   batchId: string,
   e: Pick<TrailEventInput, "stage" | "status" | "summary" | "detail"> & { source?: TrailEventInput["source"] },
   at: string,
+  /**
+   * `gate`: the transaction's claim (`fitClaimSql`) — a lost claim writes no step, as it writes nothing else.
+   * `savedLinks`: only posts with a saved link of this batch — a post whose links were all removed, or one skipped,
+   * was not saved (final review I2, 2026-11-05).
+   */
+  only: { gate?: SQL; savedLinks?: boolean } = {},
 ): AtomicStatement {
   const detail = e.detail === undefined ? null : JSON.stringify(e.detail);
+  const gate = only.gate ? sql` AND ${only.gate}` : sql``;
+  const saved = only.savedLinks
+    ? sql` AND EXISTS (SELECT 1 FROM ${savedPostMoves} WHERE ${savedPostMoves.userId} = ${userId} AND ${savedPostMoves.postId} = ${savedPosts.id}
+        AND ${savedPostMoves.batchId} = ${batchId} AND ${savedPostMoves.status} = 'saved')`
+    : sql``;
   return db
     .insert(importEvents)
     .select(
       sql`SELECT lower(hex(randomblob(16))), ${userId}, ${savedPosts.id}, ${batchId}, NULL, ${e.stage}, ${e.source ?? "worker"},
         ${e.status}, ${summaryLine(e.summary)}, ${detail}, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, 0, ${at}
-        FROM ${savedPosts} WHERE ${savedPosts.userId} = ${userId} AND ${savedPosts.batchId} = ${batchId}`,
+        FROM ${savedPosts} WHERE ${savedPosts.userId} = ${userId} AND ${savedPosts.batchId} = ${batchId}${gate}${saved}`,
     );
 }
 

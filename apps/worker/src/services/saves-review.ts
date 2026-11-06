@@ -831,7 +831,7 @@ export async function fitBatch(
     : "";
   const claimed = await runAtomicallyClaim(db, [
     ...(choices ? [choicesWrite(db, userId, batchId, choices, gate)] : []),
-    batchTrailStatement(db, userId, batchId, { stage: "choice", source: "owner", status: "info", summary: `You chose Fit them in${said}`, detail: { batchId, choices: choices ?? null } }, now),
+    batchTrailStatement(db, userId, batchId, { stage: "choice", source: "owner", status: "info", summary: `You chose Fit them in${said}`, detail: { batchId, choices: choices ?? null } }, now, { gate }),
     db
       .update(saveBatches)
       .set({ fitStartedAt: now, dismissedAt: null })

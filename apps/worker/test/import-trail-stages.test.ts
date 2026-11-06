@@ -46,6 +46,20 @@ describe("a post's trail, stage by stage", () => {
     expect(await stagesOf(row.id)).toEqual(["submit", "screen", "extract", "check", "match", "batch", "save"]);
   });
 
+  it("a post of the batch whose links were all removed is not told it was saved (final review I2)", async () => {
+    const a = await upsertPost(db, userId, submit("ka"), NOW);
+    const b = await upsertPost(db, userId, submit("kb"), NOW);
+    for (const row of [a, b]) {
+      await filterPost(db, env, userId, row, NOW, noFetch);
+      await relayExtract(db, env, userId, { id: row.id }, relayRequest(), new Date(NOW), noFetch);
+    }
+    const batchId = (await assembleBatch(db, env, userId, "2026-11-05T10:01:00.000Z"))!;
+    await db.update(schema.savedPostMoves).set({ status: "removed" }).where(eq(schema.savedPostMoves.postId, b.id));
+    await saveBatch(db, userId, batchId, "2026-11-05T10:02:00.000Z");
+    expect(await stagesOf(a.id)).toContain("save");
+    expect(await stagesOf(b.id)).not.toContain("save");
+  });
+
   it("a duplicate submit writes nothing new; putting a batch aside is an owner's choice on each of its posts", async () => {
     const row = await upsertPost(db, userId, submit("k2"), NOW);
     await upsertPost(db, userId, submit("k2"), NOW);

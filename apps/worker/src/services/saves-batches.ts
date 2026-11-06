@@ -590,8 +590,8 @@ export async function saveBatch(db: Db, userId: string, batchId: string, now: st
   const thisBatch = and(eq(saveBatches.id, batchId), eq(saveBatches.userId, userId));
   // Each post's trail: saved, its new moves now the athlete's; and, by Fit them in, the owner's choice (design §4).
   const trail = [
-    batchTrailStatement(db, userId, batchId, { stage: "save", status: "ok", summary: "Saved: its new moves joined your library", detail: { batchId } }, now),
-    ...(fit ? [batchTrailStatement(db, userId, batchId, { stage: "choice", source: "owner", status: "info", summary: "You chose Fit them in", detail: { batchId } }, now)] : []),
+    batchTrailStatement(db, userId, batchId, { stage: "save", status: "ok", summary: "Saved: its new moves joined your library", detail: { batchId } }, now, { gate, savedLinks: true }),
+    ...(fit ? [batchTrailStatement(db, userId, batchId, { stage: "choice", source: "owner", status: "info", summary: "You chose Fit them in", detail: { batchId } }, now, { gate })] : []),
   ];
   if (fit && gate) {
     const claimed = await runAtomicallyClaim(db, [
