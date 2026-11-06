@@ -27,6 +27,7 @@ import type { Db } from "./db.js";
 import { markUntrusted } from "./design-prompt.js";
 import { clipProse } from "./design-prose.js";
 import { CHECK_ASKED } from "./design-tools/ask.js";
+import { ANSWER_MAX } from "./design-tools/finish.js";
 import { designProposalId } from "./design-tools/propose.js";
 import { isPersonalId } from "@rg/saves";
 import { PINS_LINES_MAX, pinsCardLinesOf, pinsLineText, PLAN_LINES_MAX, type PinsCardLine } from "./proposal-kinds.js";
@@ -448,6 +449,9 @@ export async function readConversation(db: Db, userId: string, now: Date, o: { i
 
 const WORDS_MAX = 300;
 const LINE_MAX = 300;
+/** The newest turn's coach line, at most (audit fixes, E2): a challenge's whole answer — what it held, and why — so the
+ * next turn can tell the athlete insisting against it (finish.ts ANSWER_MAX). */
+const NEWEST_LINE_MAX = ANSWER_MAX;
 const TITLE_MAX = 80;
 const CARDS_SHOWN = 3;
 const QUESTION_MAX = 200;
@@ -540,13 +544,13 @@ function correctionsBrief(ops: readonly OpBrief[], status: string): string[] {
     .map((o) => `    - Correction: ${markUntrusted("main coach", clipProse(str(o.fixLine)!, LINE_MAX))} — ${o.outcome === "applying" ? "being applied" : standing(status, o.outcome, o.reason)}`);
 }
 
-/** One turn, as the opening message carries it. */
-function turnLines(row: TurnRow, today: string, clock: Intl.DateTimeFormat): string[] {
+/** One turn, as the opening message carries it: the coach's line to `lineMax` (the newest turn's, NEWEST_LINE_MAX). */
+function turnLines(row: TurnRow, today: string, clock: Intl.DateTimeFormat, lineMax = LINE_MAX): string[] {
   const time = whenWords(clock, row.createdAt);
   const words = row.request ? markUntrusted("athlete", clipProse(row.request.replace(/\s+/g, " ").trim(), WORDS_MAX)) : "(no words: a quick tap)";
   const out = [`- ${time} — the athlete: ${words}`];
   const line = str(row.line);
-  if (row.status === "finished") out.push(`  The coach: ${line ? markUntrusted("main coach", clipProse(line.replace(/\s+/g, " ").trim(), LINE_MAX)) : "(finished)"}`);
+  if (row.status === "finished") out.push(`  The coach: ${line ? markUntrusted("main coach", clipProse(line.replace(/\s+/g, " ").trim(), lineMax)) : "(finished)"}`);
   else if (ENDED_WORDS[row.status]) out.push(`  ${ENDED_WORDS[row.status]}`);
   else out.push("  (still at work)");
   const p = proposalOf(row.proposal);
@@ -623,9 +627,10 @@ export function conversationBlock(rows: readonly TurnRow[], now: Date, o: { repl
   const head = `The conversation so far — the turns before this request, oldest first. The athlete's words and the coach's own are marked as data.${
     o.replaces === false ? "" : " To change a suggestion still open, name its id in propose_workout's replaces."
   }`;
-  let turns = [...rows].reverse().map((r) => turnLines(r, today, clock).join("\n"));
+  // The newest turn (rows come newest first) keeps its coach's whole answer (E2).
+  let turns = [...rows].reverse().map((r) => turnLines(r, today, clock, r === rows[0] ? NEWEST_LINE_MAX : LINE_MAX).join("\n"));
   const size = (ts: string[]) => [head, ...ts].join("\n").length;
-  // One turn always fits (each of its lines is clipped: about 2,500 characters at most), so the block is never cut —
+  // One turn always fits (each of its lines is clipped: about 3,100 characters at most), so the block is never cut —
   // a cut could leave a marked block open.
   while (turns.length > 1 && size(turns) > CONVERSATION_BLOCK_MAX_CHARS) turns = turns.slice(1);
   return [head, ...turns].join("\n");

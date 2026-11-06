@@ -21,6 +21,11 @@
  * A SET'S DESIGNER'S LINE IS INTERNAL (M3): its `summary` is optional and only the main coach reads it (the loop keeps it
  * as the designer's `final`, which its set's outcome quotes); the trail shows the workout it designed, by its title.
  *
+ * A CHALLENGE'S ANSWER IS NEVER CUT (audit fixes 2026-11-06, E2; the owner's rule: never truncate a reasonable model call).
+ * A main run answering the athlete's own words — a question, or a challenge to a call, beside a suggestion or not — keeps
+ * its line to ANSWER_MAX: the run's request is read in the finish's one statement (a quick tap, an auto run or a "Fit them
+ * in" run has no words of theirs, and keeps LINE_MAX).
+ *
  * Review comes before the athlete sees anything (spec §5): the loop's finish makes the main run's proposal `pending`
  * only when every workout in it carries its review; one that still has an unreviewed workout stays `unreviewed` —
  * never listed — and the line says it is kept back. A change to a session already on the plan (adjust_plan, Task 8b)
@@ -30,9 +35,9 @@
  * fit released (the saves flow redesigned §12.1: 3, was 2) — and the coach's decisions on each post's trail
  * (REBASED 2026-11-06, coach review phase 3: 4, was 3).
  */
-import { and, eq } from "drizzle-orm";
+import { and, eq, sql } from "drizzle-orm";
 import { z } from "zod";
-import { coachProposals } from "@rg/database";
+import { coachProposals, coachRuns } from "@rg/database";
 import type { DesignTool, ToolErr } from "./types.js";
 import { capInWords, isErr, mainRunIdOf, parseAct } from "./act-common.js";
 import { refuse } from "./read-common.js";
@@ -77,7 +82,7 @@ export const finish: DesignTool = {
       summary: {
         type: "string",
         minLength: 1,
-        description: `The main coach's line for the athlete: ${capInWords(LINE_MAX)} — a longer one is cut at its last sentence that fits; an answer to a question, with nothing suggested, ${capInWords(ANSWER_MAX)}. A set's designer: optional, for the main coach only.`,
+        description: `The main coach's line for the athlete: ${capInWords(LINE_MAX)} — a longer one is cut at its last sentence that fits; an answer to their words (a question, or a challenge, beside a suggestion or not), ${capInWords(ANSWER_MAX)}. A set's designer: optional, for the main coach only.`,
       },
     },
     additionalProperties: false,
@@ -98,7 +103,12 @@ export const finish: DesignTool = {
     const proposalId = mainRunId ? designProposalId(mainRunId) : null;
     const [row] = proposalId
       ? await ctx.db
-          .select({ status: coachProposals.status, ops: coachProposals.ops })
+          .select({
+            status: coachProposals.status,
+            ops: coachProposals.ops,
+            // The athlete's words this run answers (E2): in the same statement.
+            asked: sql<string | null>`(select nullif(trim(coalesce(${coachRuns.request}, '')), '') from ${coachRuns} where ${coachRuns.id} = ${mainRunId} and ${coachRuns.userId} = ${ctx.userId})`,
+          })
           .from(coachProposals)
           .where(and(eq(coachProposals.id, proposalId), eq(coachProposals.userId, ctx.userId)))
       : [];
@@ -139,7 +149,10 @@ export const finish: DesignTool = {
     // Kept back while any workout lacks its review, or has one under way: the loop's finish makes the rest pending
     // (coach-runs.ts, the same guard).
     const unreviewed = row.status === "unreviewed" && (ops.some((o) => !o.review) || reviewRunning(ops));
-    const line = unreviewed && !designer ? `${lineOf(LINE_MAX - KEPT_BACK.length)}${KEPT_BACK}` : lineOf(LINE_MAX);
+    // An answer to the athlete's own words — a challenge's above all — keeps its whole answer (E2): never a "Fit them in"
+    // run's, which answers the app.
+    const room = ctx.run.role === "main" && !ctx.run.savesBatchId && typeof row.asked === "string" ? ANSWER_MAX : LINE_MAX;
+    const line = unreviewed && !designer ? `${lineOf(room - KEPT_BACK.length)}${KEPT_BACK}` : lineOf(room);
     // What the proposal is once this finish lands: the loop's finish makes a main run's fully reviewed one pending.
     const promoted = ctx.run.role === "main" && row.status === "unreviewed" && all.length > 0 && ops.every((o) => o.review) && !reviewRunning(ops);
     return {
