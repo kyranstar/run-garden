@@ -215,7 +215,7 @@ import {
 import { placeSlotsWithin, RETRACT_COST } from "./program-slots.js";
 import { updateProgram } from "./programs.js";
 import { releaseFitStarts } from "./saves-batches.js";
-import { correctionCostOf, CORRECTIONS_FIXED, correctionsReadSql, correctionStateOf, judgeCorrection } from "./import-corrections.js";
+import { correctionCostOf, CORRECTIONS_FIXED, CORRECTIONS_PER_REQUEST, correctionsReadSql, correctionStateOf, judgeCorrection } from "./import-corrections.js";
 import { runAtomically, runAtomicallyClaim, type AtomicStatement } from "./db.js";
 import { decisionTrailStatement } from "./coach-trail.js";
 
@@ -1392,7 +1392,7 @@ export async function approveDesignOps(
       continue;
     }
     const cost = (fixBatch.length === 0 ? CORRECTIONS_FIXED : 0) + correctionCostOf(g);
-    if (!first && cost > left) {
+    if ((!first && cost > left) || fixBatch.length >= CORRECTIONS_PER_REQUEST) {
       remaining.push(...fixOps.slice(i).filter((x) => !inFlight.includes(x.id)).map((x) => x.id));
       full = true;
       break;
@@ -1408,10 +1408,10 @@ export async function approveDesignOps(
     const claimedAt = await writeOps(db, userId, current, claimOps, claimStatus, ctx.now);
     current = { ...current, ops: claimOps, status: claimStatus, resolvedAt: claimedAt };
     const [states] = (await db.all(correctionsReadSql(userId, fixBatch, ctx.today))) as Array<Record<string, unknown>>;
-    const asRead = sql`exists (select 1 from coach_proposals cp where cp.id = ${current.id} and cp.user_id = ${userId}
-      and cp.status = ${current.status} and cp.ops = ${JSON.stringify(current.ops)})`;
     let touchedLibrary = false;
     for (const [i, g] of fixBatch.entries()) {
+      // Each statement gated on its own claim, still held (the controller's fix pass, B): `claimHeld`.
+      const asRead = claimHeld(userId, current.id, current.status, g.id, ctx.now);
       const verdict = judgeCorrection(db, userId, g, correctionStateOf(states?.[`s${i}`]), { proposalId: p.id, runId: p.id.startsWith("dp-") ? p.id.slice(3) : null, now: ctx.now, asRead });
       if (verdict.status === "made") {
         outcomes.set(g.id, { status: "applied", at: ctx.now });
@@ -1643,9 +1643,8 @@ async function applyMovePins(
     else if (pinnedNow.has(id)) unpinned.push(id);
     else lines.push(`${named(id)} — wasn't pinned`);
   }
-  // Each write only while the proposal is as this request last wrote it: a decline that landed first wins.
-  const asRead = sql`exists (select 1 from coach_proposals cp where cp.id = ${current.id} and cp.user_id = ${userId}
-    and cp.status = ${current.status} and cp.ops = ${JSON.stringify(current.ops)})`;
+  // Each write only while its claim holds: a decline that landed first wins (`claimHeld`).
+  const asRead = claimHeld(userId, current.id, current.status, g.id, now);
   const writes = [...pinned.map((id) => [id, 1] as const), ...unpinned.map((id) => [id, 0] as const)];
   for (let at = 0; at < writes.length; at += MOVE_PINS_PER) {
     await db.run(sql`
@@ -1841,6 +1840,18 @@ async function writeOps(db: Db, userId: string, p: DesignProposalRow, next: unkn
   const written = await statement;
   if (written.length === 0) throw new ProposalChangedError();
   return resolvedAt;
+}
+
+/**
+ * The gate a claimed op's writes ride (the controller's fix pass, B, 2026-11-06): its own claim — `applying` since `at`
+ * — on the proposal still `status`: a few bound values. It was the proposal's whole ops JSON (80–170 KB at the caps),
+ * bound once a statement and encoded by the D1 binding in the Worker each time — ten corrections measured 8–16 ms. A
+ * decline, or another approve taking the claim over, rewrites the op's outcome, so the gate fails as the whole ops' did.
+ */
+export function claimHeld(userId: string, proposalId: string, status: string, opId: string, at: string): SQL {
+  return sql`exists (select 1 from coach_proposals ch_p, json_each(case when json_valid(ch_p.ops) then ch_p.ops end) ch_o
+    where ch_p.id = ${proposalId} and ch_p.user_id = ${userId} and ch_p.status = ${status} and json_extract(ch_o.value, '$.id') = ${opId}
+      and json_extract(ch_o.value, '$.outcome.status') = 'applying' and json_extract(ch_o.value, '$.outcome.at') = ${at})`;
 }
 
 /** `writeOps`' write, built and not run. */

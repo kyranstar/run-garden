@@ -21,7 +21,7 @@ import { ACT_TOOLS, READ_TOOLS } from "../src/services/design-tools/index.js";
 import { designProposalId } from "../src/services/design-tools/propose.js";
 import { isToolErr, type ToolContext } from "../src/services/design-tools/types.js";
 import { readPostTrail } from "../src/services/import-trail-read.js";
-import { CORRECTION_COST, CORRECTIONS_FIXED, correctionCostOf } from "../src/services/import-corrections.js";
+import { CORRECTION_COST, CORRECTIONS_FIXED, CORRECTIONS_PER_REQUEST, correctionCostOf } from "../src/services/import-corrections.js";
 import { correctionId, isImportCorrectionOp, type ImportCorrectionOp } from "../src/services/proposal-kinds.js";
 import { savedMoveDraft, seedSavedBatch } from "./saves-batch-fixture.js";
 import { readSavesInRun } from "./saves-read-fixture.js";
@@ -46,12 +46,14 @@ let cookie: string;
 let statements = 0;
 /** A test's own look at each statement, while it is set (one may throw: a failure inside the write). */
 let watch: ((sql: string) => unknown) | null = null;
+/** A test's own look at what each statement binds, while it is set. */
+let binds: ((sql: string, params: unknown[]) => unknown) | null = null;
 
 beforeEach(async () => {
   vi.useFakeTimers({ toFake: ["Date"] });
   vi.setSystemTime(NOW);
   statements = 0;
-  db = makeTestDb({ boundVariableCap: 100, onStatement: (q) => { statements += 1; watch?.(q); } });
+  db = makeTestDb({ boundVariableCap: 100, onStatement: (q) => { statements += 1; watch?.(q); }, onBind: (q, params) => binds?.(q, params) });
   const made = await makeTestUser(db, { timezone: "UTC" });
   userId = made.userId;
   await savePreferences(db, userId, { ...made.prefs, timezone: "UTC" });
@@ -60,6 +62,7 @@ beforeEach(async () => {
 });
 afterEach(() => {
   watch = null;
+  binds = null;
   vi.unstubAllGlobals();
   vi.useRealTimers();
 });
@@ -288,7 +291,10 @@ describe("a correction approved", () => {
     expect((await fixesOf(older))[0]!.outcome).toMatchObject({ status: "superseded", by: newer });
   });
 
-  it("ten corrections fit one request, within the Workers budget", async () => {
+  // REBASED 2026-11-06 (the controller's fix pass, B): CORRECTIONS_PER_REQUEST (4) a request — the Worker's CPU, measured
+  // (design-cpu-bench 5c), not the statements, is what ten in one request passed — so ten take three requests, each
+  // within the statement budget, as the client asks for what remains.
+  it("ten corrections, CORRECTIONS_PER_REQUEST a request, each request within the Workers budget", async () => {
     const b = await batch();
     const fields: Array<[string, unknown]> = [
       ["name", "Zorbex hip raise"], ["summary", "Slow."], ["purpose", "Hips."], ["laterality", "unilateral"], ["steps", ["Up."]],
@@ -301,12 +307,18 @@ describe("a correction approved", () => {
     ]);
     const ops = await fixesOf(id);
     expect(ops).toHaveLength(10);
-    const res = await approve(id);
-    expect(res.status, JSON.stringify(res.json)).toBe(200);
-    expect(res.json.remaining).toEqual([]);
+    const counts: number[] = [];
+    let res = await approve(id);
+    for (let k = 0; k < 5; k++) {
+      expect(res.status, JSON.stringify(res.json)).toBe(200);
+      expect(res.total).toBeLessThanOrEqual(REQUEST_BUDGET);
+      counts.push(res.json.corrected.length);
+      if (res.json.remaining.length === 0) break;
+      res = await approve(id, { opIds: res.json.remaining });
+    }
+    expect(counts).toEqual([CORRECTIONS_PER_REQUEST, CORRECTIONS_PER_REQUEST, 10 - 2 * CORRECTIONS_PER_REQUEST]);
     expect(res.json.status).toBe("approved");
-    expect(res.total).toBeLessThanOrEqual(REQUEST_BUDGET);
-    expect(APPROVE_FIXED + CORRECTIONS_FIXED + ops.reduce((n, o) => n + correctionCostOf(o), 0)).toBeLessThanOrEqual(REQUEST_BUDGET);
+    expect(APPROVE_FIXED + CORRECTIONS_FIXED + ops.slice(0, CORRECTIONS_PER_REQUEST).reduce((n, o) => n + correctionCostOf(o), 0)).toBeLessThanOrEqual(REQUEST_BUDGET);
     expect(await rows()).toHaveLength(10);
   });
 });
@@ -375,5 +387,47 @@ describe("a dose fix that doesn't land under its pins card (final review, Import
       expect(e.summary).not.toContain("30 s, 2 sets");
       expect((e.detail as { dose: unknown }).dose).toBeNull();
     }
+  });
+});
+
+describe("approve's CPU with corrections at the caps (the controller's fix pass, B)", () => {
+  it("ten corrections bind the proposal's ops a few times in all — the claim and the decision — never once a statement", async () => {
+    const drafts = Array.from({ length: 10 }, (_, i) => savedMoveDraft(`Zorbex wide move ${String(i).padStart(2, "0")}`, { dose: { text: "6-10 reps", type: "reps", range: [6, 10] } }));
+    const seeded = await seedSavedBatch(db, userId, { savedAt: SAVED_AT, posts: [{ moves: drafts.map((draft) => ({ draft })) }] });
+    const cites = ["history", "inferred:name", "inferred:dose", "inferred:steps", "inferred:purpose", "inferred:useWhen", "inferred:skipWhen", "inferred:why"];
+    const { id } = await proposed(
+      seeded.moveIds[0]!.map((moveId, i) => ({ target: "move", targetId: moveId, field: "dose", after: { type: "time", range: [30 + i, 30 + i], sets: [2, 2] }, why: `${"The transcript says two sets of thirty seconds, held. ".repeat(6)}`.slice(0, 300), cites })),
+    );
+    const opsBytes = JSON.stringify((await db.select().from(coachProposals).where(eq(coachProposals.id, id)))[0]!.ops).length;
+    expect(opsBytes).toBeGreaterThan(10_000);
+    // Each bound copy of the whole ops JSON (or more), statement by statement.
+    let copies = 0;
+    let statementsWithCopies = 0;
+    binds = (_q, params) => {
+      const flat = (params.length === 1 && Array.isArray(params[0]) ? (params[0] as unknown[]) : params).filter((v): v is string => typeof v === "string" && v.length >= opsBytes * 0.9);
+      copies += flat.length;
+      if (flat.length) statementsWithCopies += 1;
+    };
+    // Request by request (CORRECTIONS_PER_REQUEST a request): in each, the claim's write (as read, and as it will be) and
+    // the decision's write (the same) — four copies, two statements, a request. RED before (2026-11-06; all ten in one
+    // request): 34 copies over 32 statements, the whole ops gating each correction's every statement.
+    let corrected = 0;
+    let requests = 0;
+    let body: unknown = {};
+    for (; requests < 5; ) {
+      copies = 0;
+      statementsWithCopies = 0;
+      const res = await approve(id, body);
+      requests += 1;
+      expect(res.status, JSON.stringify(res.json)).toBe(200);
+      expect(statementsWithCopies).toBeLessThanOrEqual(2);
+      expect(copies).toBeLessThanOrEqual(4);
+      corrected += res.json.corrected.length;
+      if (res.json.remaining.length === 0) break;
+      body = { opIds: res.json.remaining };
+    }
+    binds = null;
+    expect(corrected).toBe(10);
+    expect(requests).toBe(3);
   });
 });

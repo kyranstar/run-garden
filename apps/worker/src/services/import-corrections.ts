@@ -301,6 +301,13 @@ export function correctionLine(o: { target: CorrectionTarget; field: string; bef
  * correction of a move or a match changes the account's library, which the request then forgets — the library read
  * again by a later op of the request (a workout's day, the receipt), once (final review I4). */
 export const CORRECTIONS_FIXED = 1 + 1 + 1;
+/**
+ * The corrections one approve request applies, at most (the controller's fix pass, B, 2026-11-06): beside the
+ * statements, each costs the Worker its target judged, its record checked and its statements built and bound — measured
+ * (design-cpu-bench 5c: ten at the caps beside a 30-line pins card, a 60 KB ops JSON) at about 0.4 ms each, so ten in
+ * one request ran 5.9 ms scaled p50 against the approve's 4 ms. The rest wait in `remaining`, as a request's room does.
+ */
+export const CORRECTIONS_PER_REQUEST = 4;
 /** One correction: its `import_corrections` row, its trail event (one statement for every post it touches), and the
  * state change — one atomic batch. */
 export const CORRECTION_COST = 3;

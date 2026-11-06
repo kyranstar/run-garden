@@ -518,7 +518,8 @@ export const readSaves: DesignTool = {
     const fixesOf = correctionsOf(ev?.corrections);
     // Each move's place in the batch (`n`): its quotes' ids are `q<n>.<k>`, and a routine names its moves by it.
     const nOf = new Map(moves.map((m, i) => [m.record.id, i + 1] as const));
-    const read = page.map((m, i) => {
+    // Each candidate's evidence, made when the page comes to it (the page often stops well before the last).
+    const readOf = (m: SavedMove, i: number) => {
       const n = offset + i + 1;
       const refs: Array<[string, QuoteRef]> = [];
       const readings: Array<ReadingEvidence | null> = [];
@@ -572,7 +573,7 @@ export const readSaves: DesignTool = {
       // What it stated on the posts read (a stated field may back a claim as the reader's report: stated:<field>).
       const stated = [...new Set(readings.flatMap((r) => r?.stated ?? []))];
       return { entryOf, refs, postIds: linksOf(m).map(([postId]) => postId), first: [m.record.id, m.postIds[0]!, m.positions[0]!, n, stated] as const };
-    });
+    };
     // The routine posts' moves in the post's order, by their place in the batch (a merged move as the move it went into).
     const orderOf = new Map<string, number[]>();
     for (const l of inPostOrder(batch.links)) {
@@ -627,10 +628,12 @@ export const readSaves: DesignTool = {
     // what is left — at least one, the lone move in the narrowest form that fits (full asks for every word: compact, then
     // tight, when even one move's every word won't fit).
     let total = sizeOf([...fixed, `${moves.length} more moves — pass offset: ${moves.length}`], [], []);
-    const shown: Array<ReturnType<(typeof read)[number]["entryOf"]>> = [];
+    type Read = ReturnType<typeof readOf>;
+    const shown: Array<ReturnType<Read["entryOf"]>> = [];
     const posts: Array<ReturnType<typeof postEntry>> = [];
-    const keptRead: typeof read = [];
-    for (const x of read) {
+    const keptRead: Read[] = [];
+    for (const [i, m] of page.entries()) {
+      const x = readOf(m, i);
       const forms: Form[] = full ? ["full", "compact", "tight"] : ["compact", "tight"];
       let picked: { entry: (typeof shown)[number]; fresh: Array<(typeof posts)[number]>; add: number } | null = null;
       for (const form of shown.length === 0 ? forms : forms.slice(0, 1)) {

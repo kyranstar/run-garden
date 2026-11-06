@@ -105,6 +105,8 @@ function installStatementHook(
   onRows?: (sql: string, rows: number) => void,
   /** How long SQLite itself took to run each statement — D1's own work, which is not the Worker's CPU. */
   onExec?: (sql: string, ms: number) => void,
+  /** The values each statement binds (what the D1 binding encodes in the Worker). */
+  onBind?: (sql: string, params: unknown[]) => void,
 ): void {
   const prepare = sqlite.prepare.bind(sqlite);
   (sqlite as unknown as { prepare: unknown }).prepare = (...args: unknown[]) => {
@@ -116,6 +118,7 @@ function installStatementHook(
       const bound = (original as (...a: unknown[]) => unknown).bind(stmt);
       stmt[method] = (...params: unknown[]) => {
         onStatement(text);
+        onBind?.(text, params);
         const started = onExec ? performance.now() : 0;
         const out = bound(...params);
         if (onExec) onExec(text, performance.now() - started);
@@ -144,6 +147,7 @@ export function makeTestDb(
     onStatement?: (sql: string) => void;
     onRows?: (sql: string, rows: number) => void;
     onExec?: (sql: string, ms: number) => void;
+    onBind?: (sql: string, params: unknown[]) => void;
   } = {},
 ): Db {
   const sqlite = new Database(":memory:");
@@ -167,8 +171,8 @@ function instrumented(sqlite: Database.Database, opts: NonNullable<TestDbOptions
     // A test as strict as D1 about binds is as strict about compound SELECTs.
     installCompoundSelectCap(sqlite, D1_COMPOUND_SELECT_LIMIT);
   }
-  if (opts.onStatement || opts.onRows || opts.onExec) {
-    installStatementHook(sqlite, opts.onStatement ?? (() => undefined), opts.onRows, opts.onExec);
+  if (opts.onStatement || opts.onRows || opts.onExec || opts.onBind) {
+    installStatementHook(sqlite, opts.onStatement ?? (() => undefined), opts.onRows, opts.onExec, opts.onBind);
   }
   return drizzle(sqlite, { schema }) as unknown as Db;
 }
