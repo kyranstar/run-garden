@@ -1510,6 +1510,9 @@ export interface CoachConversationCardDto {
   pinLines?: Array<{ moveId?: string; name: string | null; text: string }>;
   /** A programme change's op (§8 §5), or the moves in rotation's: what the card approves and declines. */
   opId?: string;
+  /** A whole plan's card that also carries a change to a plan's purpose or ending (plans with a purpose): every op its one
+   * Approve and Not now decide, the plan's first. Absent on a plan alone. */
+  opIds?: string[];
   /** A designed run's (§8 §3): a workout card whose body is a run — its steps, paces and the watch line (its line's `run`). */
   sport?: "run";
 }

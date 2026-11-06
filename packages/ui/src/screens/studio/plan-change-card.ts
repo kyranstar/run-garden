@@ -31,6 +31,43 @@ export const PLAN_CHANGE_WORDS: PlanCardWords = {
   link: { to: "/plan", label: "See it on Plan" },
 };
 
+/**
+ * ONE CARD, NEVER TWO: a plan change in the same suggestion as a whole plan (a new goal updates the brief with the next
+ * phase) rides on the plan's card — the server's card names every op in `opIds`, and its one Approve and Not now decide them
+ * all. A split pair once left one half approved and the other never seen. The ops a card decides: its `opIds`, else the one.
+ */
+export const cardOpIds = (card: { opIds?: readonly string[] }, own: string): string[] => (card.opIds && card.opIds.length > 0 ? [...card.opIds] : [own]);
+
+/** The plan changes a plan's merged card decides: the suggestion's lines its `opIds` name (none on a plan alone). */
+export function mergedPlanChanges(planChanges: readonly DesignPlanChangeLineDto[] | undefined, opIds: readonly string[] | undefined): DesignPlanChangeLineDto[] {
+  return (planChanges ?? []).filter((g) => (opIds ?? []).includes(g.opId));
+}
+
+/** What a merged card reads of an op's line. */
+interface FoldLine {
+  lines: ReadonlyArray<unknown>;
+  issues: Array<{ code: string; message: string }>;
+  outcome: { status: string; why?: string } | null;
+}
+
+/**
+ * The plan's line with its plan changes folded in: their lines after its own, their notes with its; and ONE outcome for
+ * the card — the plan's while it is being added or when every op ended the same way, the first refusal's when one was
+ * refused (its words are the athlete's to read), and none while any op is still the athlete's to decide, so the card keeps its
+ * buttons for what remains. With no change to fold, the plan's line as it is.
+ */
+export function foldPlanChanges<P extends FoldLine, C extends FoldLine>(plan: P | null, changes: readonly C[]): P | null {
+  if (!plan || changes.length === 0) return plan;
+  const outcomes = [plan.outcome, ...changes.map((c) => c.outcome)];
+  const status = (o: { status: string } | null) => o?.status ?? "open";
+  let outcome: P["outcome"];
+  if (plan.outcome?.status === "applying") outcome = plan.outcome;
+  else if (outcomes.some((o) => o?.status === "refused")) outcome = outcomes.find((o) => o?.status === "refused") as P["outcome"];
+  else if (outcomes.every((o) => status(o) === status(plan.outcome))) outcome = plan.outcome;
+  else outcome = null;
+  return { ...plan, lines: [...plan.lines, ...changes.flatMap((c) => c.lines)], issues: [...plan.issues, ...changes.flatMap((c) => c.issues)], outcome };
+}
+
 /** A card's own line among the suggestion's plan changes: the one its op names; with no op named, the first. */
 export function ownPlanChange(planChanges: readonly DesignPlanChangeLineDto[] | undefined, opId: string | undefined): DesignPlanChangeLineDto | null {
   return planChanges?.find((g) => g.opId === opId) ?? (opId ? null : (planChanges?.[0] ?? null));

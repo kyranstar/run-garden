@@ -15,7 +15,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import type { CoachConversationCardDto, DesignApproveResponse, DesignPlanChangeLineDto } from "@rg/api-client";
 import { toConversation, toProposal } from "../src/screens/studio/coach-tolerance.js";
 import { PlanCard } from "../src/screens/studio/plan-card.js";
-import { ownPlanChange, PLAN_CHANGE_WORDS } from "../src/screens/studio/plan-change-card.js";
+import { cardOpIds, foldPlanChanges, mergedPlanChanges, ownPlanChange, PLAN_CHANGE_WORDS } from "../src/screens/studio/plan-change-card.js";
 import { button, click, serve, text, until } from "./coach-live-harness.js";
 import { primedClient } from "./studio-fixtures.js";
 
@@ -142,10 +142,95 @@ describe("the plan change, read tolerantly and chosen by its op", () => {
     expect(r.planChanges).toEqual([applied]);
     const c = toConversation({ id: "c1", startedAt: "x", turns: [{ runId: "r1", at: "x", words: "w", status: "finished", line: null, cards: [card()], question: null }] });
     expect(c.turns[0]!.cards[0]).toMatchObject({ kind: "plan_change", opId: OP, lines: LINES });
+    const m = toConversation({ id: "c1", startedAt: "x", turns: [{ runId: "r1", at: "x", words: "w", status: "finished", line: null, cards: [{ ...card(), kind: "plan", opId: undefined, opIds: ["plan", OP, 7] }], question: null }] });
+    expect(m.turns[0]!.cards[0]!.opIds).toEqual(["plan", OP]);
     const other = line(null, { opId: "pc-plan-9" });
     expect(ownPlanChange([other, applied], OP)).toBe(applied);
     expect(ownPlanChange([other], OP)).toBeNull();
     expect(ownPlanChange([other], undefined)).toBe(other);
     expect(ownPlanChange(undefined, OP)).toBeNull();
+  });
+});
+
+describe("one card, never two: a plan change beside a whole plan", () => {
+  const PLAN_OP = "plan";
+  const PLAN_LINES = ["Mon 19 Oct · New plan: Build block"];
+  const merged = (over: Partial<CoachConversationCardDto> = {}): CoachConversationCardDto => ({
+    kind: "plan",
+    proposalId: "dp-run-3",
+    title: "Build block",
+    summary: "3 weeks · 1 session to start",
+    status: "pending",
+    lines: [...PLAN_LINES, "Brief: Base block, then the build."],
+    opIds: [PLAN_OP, OP],
+    ...over,
+  });
+  type Outcome = { status: string; [k: string]: unknown } | null;
+  const structure = (outcome: Outcome = null) => ({
+    opId: PLAN_OP, kind: "createPlan", title: "Build block", summary: "3 weeks", lines: PLAN_LINES, why: "The next phase.", issues: [], outcome,
+  });
+  const both = (status: string, plan: unknown, change: Outcome = null) => ({
+    id: "dp-run-3", status, resolvedAt: null, lines: [], changes: [], plans: [plan],
+    planChanges: [line(change as DesignPlanChangeLineDto["outcome"], { lines: ["Brief: Base block, then the build."] })],
+  });
+
+  it("shows the plan's lines and the change's lines on the one card; one Approve decides both ops", async () => {
+    let state = both("pending", structure());
+    const calls = serve({
+      "GET /api/coach/proposals/dp-run-3": () => state,
+      "POST /api/coach/proposals/dp-run-3/approve": () => {
+        state = both("approved", structure({ status: "applied", at: "x", summary: "1 session" }), { status: "applied", at: "x", changed: ["brief"] });
+        return answer({ status: "approved" });
+      },
+    });
+    await mount(merged());
+    await until(() => !!button("Approve plan") && !button("Approve plan")!.disabled, "Approve plan");
+    expect(document.querySelectorAll("section.coach-plan")).toHaveLength(1);
+    expect([...document.querySelectorAll(".coach-plan-lines li")].map((l) => l.textContent)).toEqual([...PLAN_LINES, "Brief: Base block, then the build."]);
+    await click(button("Approve plan"), "Approve plan");
+    await until(() => text().includes("✓ Added to your plan"), "done");
+    expect(calls.filter((c) => c.method === "POST").map((c) => c.body)).toEqual([{ opIds: [PLAN_OP, OP] }]);
+    expect(button("Approve plan")).toBeNull();
+  });
+
+  it("Not now declines both ops in one request", async () => {
+    let state = both("pending", structure());
+    const calls = serve({
+      "GET /api/coach/proposals/dp-run-3": () => state,
+      "POST /api/coach/proposals/dp-run-3/decline": () => {
+        state = both("declined", structure({ status: "declined", at: "x" }), { status: "declined", at: "x" });
+        return { ok: true, status: "declined", declined: [PLAN_OP, OP], settled: [] };
+      },
+    });
+    await mount(merged());
+    await until(() => !!button("Not now") && !button("Not now")!.disabled, "Not now");
+    await click(button("Not now"), "Not now");
+    await until(() => text().includes("Not added"), "declined");
+    expect(calls.filter((c) => c.method === "POST").map((c) => [c.path, c.body])).toEqual([["/api/coach/proposals/dp-run-3/decline", { opIds: [PLAN_OP, OP] }]]);
+  });
+
+  it("a plan applied while its change was refused says the refusal, not done", async () => {
+    serve({
+      "GET /api/coach/proposals/dp-run-3": () =>
+        both("partially_approved", structure({ status: "applied", at: "x", summary: "1 session" }), { status: "refused", at: "x", error: "stale", why: "Its settings changed since this was suggested: ask the coach again." }),
+    });
+    await mount(merged());
+    await until(() => text().includes("Its settings changed since this was suggested"), "the refusal");
+    expect(text()).not.toContain("✓ Added to your plan");
+  });
+
+  it("the pure fold: lines after the plan's, one outcome — applying kept, a refusal first, open while any op is open", () => {
+    type O = { status: string; why?: string } | null;
+    const p = { lines: ["a"], issues: [] as Array<{ code: string; message: string }>, outcome: { status: "applied" } as O };
+    const c = (outcome: O) => ({ lines: ["b"], issues: [] as Array<{ code: string; message: string }>, outcome });
+    expect(foldPlanChanges(p, [c({ status: "applied" })])).toMatchObject({ lines: ["a", "b"], outcome: { status: "applied" } });
+    expect(foldPlanChanges(p, [c({ status: "refused", why: "no" })])!.outcome).toEqual({ status: "refused", why: "no" });
+    expect(foldPlanChanges(p, [c(null)])!.outcome).toBeNull();
+    expect(foldPlanChanges({ ...p, outcome: { status: "applying" } }, [c(null)])!.outcome).toEqual({ status: "applying" });
+    expect(foldPlanChanges(p, [])).toBe(p);
+    expect(foldPlanChanges(null, [c(null)])).toBeNull();
+    expect(cardOpIds({ opIds: ["plan", "pc-1"] }, "plan")).toEqual(["plan", "pc-1"]);
+    expect(cardOpIds({}, "plan")).toEqual(["plan"]);
+    expect(mergedPlanChanges([line(), line(null, { opId: "pc-other" })], ["plan", OP]).map((g) => g.opId)).toEqual([OP]);
   });
 });

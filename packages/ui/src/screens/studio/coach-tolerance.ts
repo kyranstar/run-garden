@@ -482,6 +482,8 @@ function toCard(v: unknown): CoachConversationCardDto | null {
       : {}),
     // A programme change's op (§8 §5): a text, or nothing.
     ...(typeof c.opId === "string" && c.opId ? { opId: c.opId } : {}),
+    // A plan's card that also carries a change to its purpose or ending: every op its buttons decide.
+    ...(Array.isArray(c.opIds) && texts(c.opIds).length > 0 ? { opIds: texts(c.opIds) } : {}),
   };
 }
 

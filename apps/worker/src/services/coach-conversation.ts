@@ -28,7 +28,7 @@ import { markUntrusted } from "./design-prompt.js";
 import { clipProse } from "./design-prose.js";
 import { CHECK_ASKED } from "./design-tools/ask.js";
 import { designProposalId } from "./design-tools/propose.js";
-import { PINS_LINES_MAX, pinsCardLinesOf, pinsLineText, PLAN_LINES_MAX } from "./proposal-kinds.js";
+import { PINS_LINES_MAX, pinsCardLinesOf, pinsLineText, PLAN_LINES_MAX, PLAN_STRUCTURE_ID } from "./proposal-kinds.js";
 
 /** A conversation goes quiet after this long with no new ask: the next ask (naming none) starts a new one. */
 export const CONVERSATION_QUIET_HOURS = 18;
@@ -65,6 +65,9 @@ export interface ConversationCard {
   /** A programme change's op (§8 §5): what its card approves and declines — a proposal may hold one a programme; the
    * moves in rotation's too. */
   opId?: string;
+  /** A whole plan's card that also carries a change to a plan's purpose or ending (plans with a purpose): every op its one
+   * Approve and Not now decide, the plan's first. Absent on a plan alone. */
+  opIds?: string[];
   /** A designed run's (§8 §3): a workout card whose body is a run — its steps, paces and the watch line (the manifest's). */
   sport?: "run";
 }
@@ -318,7 +321,7 @@ export function cardsOf(scopeText: string | null, p: ProposalBrief | null, today
     }));
   // A change to a plan's purpose, brief, ending or pause (plans with a purpose): one card each, after the programmes —
   // its own op approved and declined, a line a field.
-  const planChanges = p.ops
+  const planChangeCards = p.ops
     .filter((o) => o.kind === "plan_change")
     .map((o): ConversationCard => ({
       kind: "plan_change",
@@ -328,6 +331,18 @@ export function cardsOf(scopeText: string | null, p: ProposalBrief | null, today
       lines: planLinesOf(o.lines),
       ...(str(o.opId) ? { opId: str(o.opId)! } : {}),
     }));
+  // ONE CARD, NEVER TWO: beside a whole plan in the same suggestion (a new goal updates the brief with the next phase), the
+  // plan changes ride on the plan's card — their lines after its own, its one Approve and Not now deciding every op it
+  // names (`opIds`) — so one is never approved while the other goes unseen. Alone, a plan change is its own card.
+  const merged = plans.length > 0 && planChangeCards.length > 0;
+  if (merged) {
+    plans[0] = {
+      ...plans[0]!,
+      lines: [...(plans[0]!.lines ?? []), ...planChangeCards.flatMap((c) => c.lines ?? [])],
+      opIds: [PLAN_STRUCTURE_ID, ...planChangeCards.flatMap((c) => (c.opId ? [c.opId] : []))],
+    };
+  }
+  const planChanges = merged ? [] : planChangeCards;
   // The moves in rotation (saved-posts import, Task 18): one card, last — its own op approved and declined, the coach's
   // own words and lines; each line a move's name and its text (§3.5), or a plain string stored before that.
   const pins = p.ops
@@ -512,7 +527,8 @@ function turnLines(row: TurnRow, today: string, clock: Intl.DateTimeFormat): str
       // A whole plan (§8 §5): its title and line are the coach's words; how it stands is its op's.
       const plan = p!.ops.find((o) => o.kind === "plan_structure");
       const how = plan?.outcome === "applying" ? "being added, part of it already on the plan" : standing(card.status, plan?.outcome, plan?.reason);
-      out.push(`  Suggested a plan (id ${card.proposalId}): ${title} · ${markUntrusted("main coach", clipProse(card.summary, TITLE_MAX))} — ${how}`);
+      const alongside = card.opIds ? ", with a change to its purpose or ending on the same card" : "";
+      out.push(`  Suggested a plan (id ${card.proposalId}): ${title} · ${markUntrusted("main coach", clipProse(card.summary, TITLE_MAX))} — ${how}${alongside}`);
     } else {
       const what = p!.ops
         .filter((o) => o.kind === "plan_adjust")

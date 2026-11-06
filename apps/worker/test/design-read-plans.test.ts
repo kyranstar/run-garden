@@ -27,7 +27,7 @@ const EXTEND_LINE = "Extend or wind down a line through its last phase.";
 const STOPPED = "The athlete stopped this plan (retired). Leave it stopped: propose a new plan (createPlan) only if the athlete asks for one.";
 
 /** A line whose plan has no row yet: nothing said, the kind's own ending. */
-const NO_ROW = (onEnd: string) => ({ kind: "coach", purpose: null, brief: null, onEnd, pausedUntil: null, objectiveIds: [] });
+const NO_ROW = (onEnd: string) => ({ kind: "coach", purpose: null, brief: null, onEnd, pausedUntil: null, objectiveIds: [], planId: null });
 
 const ENV = {} as Env;
 let db: Db;
@@ -112,16 +112,17 @@ describe("read_plans: what each plan is for and how it ends", () => {
       pausedUntil: day(-3),
       objectiveIds: ["obj-zx"],
     };
-    expect(data.plans.find((x) => x.id === "cp-zx")).toMatchObject({ ...want, kind: "coach block" });
+    // The registry row's id, what change_plan takes: on the block and on its line.
+    expect(data.plans.find((x) => x.id === "cp-zx")).toMatchObject({ ...want, kind: "coach block", planId: "plan-zx" });
     expect(data.lines).toHaveLength(1);
-    expect(data.lines[0]).toMatchObject({ ...want, kind: "coach" });
+    expect(data.lines[0]).toMatchObject({ ...want, kind: "coach", planId: "plan-zx" });
   });
 
   it("a plan with no row yet says null and its kind's own ending, never a missing key", async () => {
     await block(rich.userId, { id: "cp-bare", name: "Bare block", start: day(2), end: day(-26) });
     await block(rich.userId, { id: "cp-bare-lift", name: "Bare lift", discipline: "lift", start: day(2), end: day(-26) });
     const data = ok((await read()).res).data as { plans: Array<Record<string, any>>; lines: Array<Record<string, any>> };
-    const bare = { purpose: null, brief: null, pausedUntil: null, objectiveIds: [] };
+    const bare = { purpose: null, brief: null, pausedUntil: null, objectiveIds: [], planId: null };
     const run = data.plans.find((x) => x.id === "cp-bare")!;
     expect(run).toMatchObject({ ...bare, onEnd: "ask" });
     for (const k of ["purpose", "brief", "onEnd", "pausedUntil", "objectiveIds"]) expect(run, k).toHaveProperty(k);
@@ -146,7 +147,10 @@ describe("read_plans: what each plan is for and how it ends", () => {
       purpose: { untrusted: true, text: "Zorbex habit" }, brief: { untrusted: true, text: "Three a week." }, onEnd: "continue", pausedUntil: null, objectiveIds: ["o-1", "o-2"],
     });
     expect(plans.find((x) => x.id === "coros-zx")).toMatchObject({ purpose: { untrusted: true, text: "Zorbex race" }, brief: null, onEnd: "finish", objectiveIds: [] });
-    expect(plans.find((x) => x.id === "coros-bare")).toMatchObject({ purpose: null, onEnd: "ask", objectiveIds: [] });
+    expect(plans.find((x) => x.id === "coros-bare")).toMatchObject({ purpose: null, onEnd: "ask", objectiveIds: [], planId: null });
+    // A row that exists says its id: the programme's own, the watch plan's.
+    expect(plans.find((x) => x.kind === "programme")!.planId).toBe(plans.find((x) => x.kind === "programme")!.id);
+    expect(plans.find((x) => x.id === "coros-zx")!.planId).toBe("coros-zx");
   });
 
   it("long briefs never push the answer past the budget", async () => {
@@ -210,24 +214,24 @@ describe("read_plans", () => {
       id: "cp-10k", name: "10K build", start: day(2), end: day(-26), race: day(-26),
       weeks: [
         { weekStart: "2026-05-11", state: "firm" },
-        { weekStart: "2026-05-18", state: "shape", volumeTarget: "about 32 km", keySessions: ["tempo 20 min", "long 14 km"] },
-        { weekStart: "2026-05-25", state: "shape", volumeTarget: "about 35 km", keySessions: ["intervals 5×1 km"] },
+        { weekStart: "2026-05-18", state: "shape", volumeTarget: "32k", keySessions: ["tempo", "long"] },
+        { weekStart: "2026-05-25", state: "shape", volumeTarget: "35k", keySessions: ["5×1"] },
       ],
     });
     await session(rich.userId, "cp-10k", day(1), { title: "Yesterday's run", state: "completed" });
     // Still only scheduled, but its day has gone (the read reaches a day back, for any zone): not "next".
     await session(rich.userId, "cp-10k", day(1), { title: "Yesterday, not logged" });
     await session(rich.userId, "cp-10k", day(-1), { title: "Gone", archived: true });
-    await session(rich.userId, "cp-10k", day(-1), { title: "Tempo 20", category: "quality", minutes: 50 });
-    await session(rich.userId, "cp-10k", day(-3), { title: "Easy 40" });
-    await session(rich.userId, "cp-10k", day(-4), { title: "Strides" });
+    await session(rich.userId, "cp-10k", day(-1), { title: "Tempo", category: "quality", minutes: 50 });
+    await session(rich.userId, "cp-10k", day(-3), { title: "Easy" });
+    await session(rich.userId, "cp-10k", day(-4), { title: "Jog" });
     await session(rich.userId, "cp-10k", day(-6), { title: "Long 12 km", category: "long", minutes: 75 });
     // A loose bucket is not a plan; one retired long ago is gone; one ended lately is shown, not changeable.
     await block(rich.userId, { id: `adhoc-run-${rich.userId.slice(0, 8)}`, name: "Coach one-offs", start: day(30), end: day(-2) });
     await block(rich.userId, { id: "cp-old", name: "Old block", status: "retired", start: day(120), end: day(60) });
-    await block(rich.userId, { id: "cp-done", name: "Spring base", status: "completed", start: day(40), end: day(5) });
+    await block(rich.userId, { id: "cp-done", name: "Sp", status: "completed", start: day(40), end: day(5) });
     await db.insert(schema.trainingPlans).values({
-      id: "coros-plan", userId: rich.userId, sourcePlanId: "src-1", name: "Half marathon (watch)", startDate: day(30), endDate: "2026-06-20",
+      id: "coros-plan", userId: rich.userId, sourcePlanId: "src-1", name: "Watch", startDate: day(30), endDate: "2026-06-20",
       status: "active", createdAt: at(day(30)), updatedAt: at(day(30)),
     });
     const { res, count, writes } = await read();
@@ -245,13 +249,13 @@ describe("read_plans", () => {
     expect(tenK.name).toEqual({ untrusted: true, text: "10K build" });
     expect(tenK.firmWeeks).toEqual(["2026-05-11"]);
     expect(tenK.shapeWeeks).toEqual([
-      { weekStart: "2026-05-18", volumeTarget: { untrusted: true, text: "about 32 km" }, keySessions: [{ untrusted: true, text: "tempo 20 min" }, { untrusted: true, text: "long 14 km" }] },
-      { weekStart: "2026-05-25", volumeTarget: { untrusted: true, text: "about 35 km" }, keySessions: [{ untrusted: true, text: "intervals 5×1 km" }] },
+      { weekStart: "2026-05-18", volumeTarget: { untrusted: true, text: "32k" }, keySessions: [{ untrusted: true, text: "tempo" }, { untrusted: true, text: "long" }] },
+      { weekStart: "2026-05-25", volumeTarget: { untrusted: true, text: "35k" }, keySessions: [{ untrusted: true, text: "5×1" }] },
     ]);
     expect(tenK.next.map((n: Record<string, any>) => [n.date, n.title.text, n.minutes])).toEqual([
-      [day(-1), "Tempo 20", 50],
-      [day(-3), "Easy 40", 40],
-      [day(-4), "Strides", 40],
+      [day(-1), "Tempo", 50],
+      [day(-3), "Easy", 40],
+      [day(-4), "Jog", 40],
     ]);
     expect(tenK.next[0]).toMatchObject({ day: "Thu 14 May · tomorrow", what: "run, quality" });
     expect(typeof tenK.next[0].id).toBe("string");
@@ -262,7 +266,7 @@ describe("read_plans", () => {
 
     const watch = byId.get("coros-plan")!;
     expect(watch).toMatchObject({ kind: "watch plan", status: "active", coachMayChange: false, start: day(30), end: "2026-06-20" });
-    expect(watch.name).toEqual({ untrusted: true, text: "Half marathon (watch)" });
+    expect(watch.name).toEqual({ untrusted: true, text: "Watch" });
     expect(watch.why).toMatch(/adjust_plan/);
     expect(watch.next).toHaveLength(3);
     for (const n of watch.next) expect(n.date >= TODAY).toBe(true);

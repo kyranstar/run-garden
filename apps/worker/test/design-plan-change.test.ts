@@ -398,6 +398,14 @@ describe("approving a plan change", () => {
     expect(read.json.planChanges).toEqual([
       expect.objectContaining({ opId: planChangeId(p), planId: p, title: "Base block: new brief", lines: ["Brief: Base block, then the build."], outcome: null }),
     ]);
+    // In the conversation: ONE card — the plan's, its lines then the change's, naming both ops for its one Approve.
+    await db.update(coachRuns).set({ status: "finished" }).where(eq(coachRuns.id, ctx.run.id));
+    const conv = await readConversation(db, userId, NOW, { endedLine });
+    const cards = conv.turns.at(-1)!.cards;
+    expect(cards).toHaveLength(1);
+    expect(cards[0]).toMatchObject({ kind: "plan", opIds: ["plan", planChangeId(p)] });
+    expect(cards[0]!.lines!.at(-1)).toBe("Brief: Base block, then the build.");
+    expect(cards[0]!.lines!.length).toBeGreaterThan(1);
     const { answers, costs } = await approveAll(id);
     for (const cost of costs) expect(cost).toBeLessThanOrEqual(REQUEST_BUDGET);
     expect(answers.at(-1)).toMatchObject({ status: "approved", remaining: [], refused: [] });

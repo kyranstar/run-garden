@@ -23,6 +23,10 @@
  * suggestion may change two programmes); "Moving your sessions…" while its sessions are placed a request at a time;
  * "Programme updated" when done. Its state is the read's `programmes` part, its own line by its op.
  *
+ * ONE CARD, NEVER TWO (plans with a purpose §4.1): a plan change in the same suggestion as a whole plan rides on the plan's
+ * card — its lines after the plan's, one Approve and one Not now deciding every op the card names (`card.opIds`), one
+ * outcome (plan-change-card.ts `foldPlanChanges`). A plan change alone is its own card, as follows.
+ *
  * A CHANGE TO A PLAN'S PURPOSE, BRIEF, ENDING OR PAUSE (plans with a purpose) is the same card too, its words and its line's
  * selection in plan-change-card.ts: the plan's name and what changes, its ending, a line a changed field; Approve and
  * Not now, its own op; "Plan updated" when done. Its state is the read's `planChanges` part.
@@ -52,7 +56,7 @@ import {
 import { followApproved } from "../../components/watch-catch-up.js";
 import { CONVERSATION_QUERY } from "./coach-conversation-model.js";
 import { readProposal } from "./coach-tolerance.js";
-import { ownPlanChange, PLAN_CHANGE_WORDS } from "./plan-change-card.js";
+import { cardOpIds, foldPlanChanges, mergedPlanChanges, ownPlanChange, PLAN_CHANGE_WORDS } from "./plan-change-card.js";
 import { decisionError, designProposalQuery } from "./proposal-card.js";
 import { COACH_CURRENT_QUERY } from "./run-keeper.js";
 import { useOneTap } from "./use-one-tap.js";
@@ -217,7 +221,7 @@ export function planOutcomeLine(status: string, plan: CardLine | null, w: PlanCa
 }
 
 type PlanCardInput = Pick<CoachConversationCardDto, "proposalId" | "title" | "summary" | "status" | "lines"> &
-  Partial<Pick<CoachConversationCardDto, "kind" | "opId" | "pinLines">>;
+  Partial<Pick<CoachConversationCardDto, "kind" | "opId" | "opIds" | "pinLines">>;
 
 export function PlanCard({ card, closed = false }: { card: PlanCardInput; closed?: boolean }) {
   const qc = useQueryClient();
@@ -238,9 +242,10 @@ export function PlanCard({ card, closed = false }: { card: PlanCardInput; closed
       ? ownPlanChange(read.data?.planChanges, card.opId)
       : pins
         ? own(read.data?.pins)
-        : (read.data?.plans?.[0] ?? null);
+        : // A plan's card may carry plan changes beside it (one card, never two): their lines and outcome fold into its own.
+          foldPlanChanges(read.data?.plans?.[0] ?? null, mergedPlanChanges(read.data?.planChanges, card.opIds));
   /** The card's own op: what its buttons approve and decline, nothing else of the suggestion. */
-  const opIds = [plan?.opId ?? card.opId ?? PLAN_OP_ID];
+  const opIds = cardOpIds(card, plan?.opId ?? card.opId ?? PLAN_OP_ID);
   const status = read.data?.status ?? card.status;
   const reread = () => qc.invalidateQueries({ queryKey: designProposalQuery(card.proposalId) });
   const after = async () => {

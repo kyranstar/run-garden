@@ -83,7 +83,7 @@ const nextSql = (userId: string, planId: SQL, from: string) => sql`(select json_
 
 /** A plan's registry row as one JSON object (or null when there is none), found by `where` (a condition on `programs`
  * aliased `pr`): what the plan is for and how it ends. A scalar subselect, so the read stays one statement. */
-const planSql = (userId: string, where: SQL) => sql`json((select json_object('kind', pr.kind, 'purpose', pr.purpose, 'brief', pr.brief,
+const planSql = (userId: string, where: SQL) => sql`json((select json_object('id', pr.id, 'kind', pr.kind, 'purpose', pr.purpose, 'brief', pr.brief,
     'onEnd', pr.on_end, 'pausedUntil', pr.paused_until,
     'objectiveIds', json(case when json_valid(pr.objective_ids) then pr.objective_ids end))
   from ${programs} pr where pr.user_id = ${userId} and ${where} limit 1))`;
@@ -166,9 +166,10 @@ const DISCIPLINE_WORD: Record<string, string> = { run: "run", lift: "strength", 
 
 /** What a plan says of itself, within `room`: what it is for (`purpose`), the longer account (`brief`), how it ends
  * (`onEnd`), until when it is paused and the objectives it serves — each always there: null, the kind's own ending and
- * [] for what its row doesn't hold, or for a plan with no row yet. `kind` and `disciplines` say which default applies. */
+ * [] for what its row doesn't hold, or for a plan with no row yet — and `planId`, the registry row's id (what change_plan
+ * takes; null while there is no row). `kind` and `disciplines` say which default applies. */
 function planFieldsOf(raw: unknown, kind: ProgramKind, disciplines: readonly string[], room: Room) {
-  const p = (parsedJson(raw) ?? {}) as { kind?: unknown; purpose?: unknown; brief?: unknown; onEnd?: unknown; pausedUntil?: unknown; objectiveIds?: unknown };
+  const p = (parsedJson(raw) ?? {}) as { id?: unknown; kind?: unknown; purpose?: unknown; brief?: unknown; onEnd?: unknown; pausedUntil?: unknown; objectiveIds?: unknown };
   const text = (v: unknown, max: number) => (typeof v === "string" && v.trim() !== "" ? untrusted(clipWords(v.trim(), max)) : null);
   const onEnd: PlanOnEnd = planOnEndSchema.safeParse(p.onEnd).data ?? defaultOnEnd(kind, disciplines);
   return {
@@ -178,6 +179,7 @@ function planFieldsOf(raw: unknown, kind: ProgramKind, disciplines: readonly str
     onEnd,
     pausedUntil: typeof p.pausedUntil === "string" ? p.pausedUntil : null,
     objectiveIds: parsedArray(p.objectiveIds).filter((x): x is string => typeof x === "string"),
+    planId: typeof p.id === "string" ? p.id : null,
   };
 }
 
