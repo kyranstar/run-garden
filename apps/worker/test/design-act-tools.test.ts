@@ -1797,3 +1797,86 @@ describe("saves flow §12.5 — a move the athlete skipped stays out of the fit-
     }
   });
 });
+
+// ── Made for a plan (plans with a purpose §3.4) ─────────────────────────────
+
+describe("plan_set and propose_workout name the plan a workout is for", () => {
+  /** A plan of the athlete's (`programs`), as the registry holds it. */
+  async function seedPlan(id: string, o: { status?: string; userId?: string } = {}): Promise<string> {
+    const now = NOW.toISOString();
+    await db.insert(schema.programs).values({ id, userId: o.userId ?? rich.userId, kind: "coach", name: "Plan", status: o.status ?? "active", disciplines: ["run"], startDate: null, endDate: null, raceDate: null, source: null, config: {}, createdAt: now, updatedAt: now, archivedAt: null });
+    return id;
+  }
+  /** Set hooks that start whatever they are asked to: the briefs the designers were given, kept. */
+  const hooks = (briefs: string[]): SetHooks => ({
+    rounds: () => [],
+    start: async (ds) => (briefs.push(...ds.map((d) => d.brief)), ds.map((d) => d.runId)),
+    budget: () => ({ ceilingMicros: 1_000_000_000, spentMicros: 0, mainSpentMicros: 0, perDesignerMicros: null, estimate: null }),
+    started: () => false,
+    keyLine: () => undefined,
+  });
+  const brief = (over: Record<string, unknown> = {}) => ({
+    key: "tue", date: addDays(TODAY, 1), purpose: "Hips that move well.", emphasis: "Slow, controlled range.", constraints: "Thirty minutes at home.", why: "The day after an easy run.", ...over,
+  });
+  const planned = async (over: Record<string, unknown>) => {
+    const briefs: string[] = [];
+    const w = await run({ scope: { kind: "week" } });
+    const out = await call("plan_set", ctxOf(w, { set: hooks(briefs) }), { briefs: [brief(over)] });
+    return { ...out, briefs };
+  };
+
+  it("plan_set refuses a planId that is no active plan of the athlete, teachably, before anything starts", async () => {
+    const stopped = await seedPlan("pl-stopped", { status: "retired" });
+    const theirs = await seedPlan("pl-theirs", { userId: high.userId });
+    for (const planId of ["pl-unknown", stopped, theirs]) {
+      const { result, briefs, writes } = await planned({ planId });
+      const e = err(result);
+      expect(e.error, planId).toBe("unknown_plan");
+      expect(e.why).toContain(planId);
+      expect(e.fix).toContain("read_plans");
+      expect(briefs).toEqual([]);
+      expect(writes).toEqual([]);
+    }
+  });
+
+  it("plan_set with an active plan's id starts the designer, tells it the plan, and keeps the id on the round", async () => {
+    const id = await seedPlan("pl-ok");
+    const { result, briefs } = await planned({ planId: id });
+    const out = ok(result);
+    expect(out.control).toBe("set");
+    expect(briefs).toHaveLength(1);
+    expect(briefs[0]).toContain(`planId: "pl-ok"`);
+    expect((out.data as { round: { briefs: Array<{ planId?: string }> } }).round.briefs[0]!.planId).toBe("pl-ok");
+  });
+
+  it("plan_set with no planId says nothing of a plan: a one-off", async () => {
+    const { result, briefs } = await planned({});
+    ok(result);
+    expect(briefs[0]).not.toContain("planId");
+  });
+
+  it("propose_workout refuses an unknown or stopped planId, teachably, and writes nothing", async () => {
+    const stopped = await seedPlan("pl-stopped-2", { status: "retired" });
+    for (const planId of ["pl-unknown", stopped]) {
+      const r = await run({ scope: { kind: "now" } });
+      const out = await call("propose_workout", ctxOf(r), { doc: docOf([item("bridge")]), target: { kind: "new", date: TODAY }, planId });
+      const e = err(out.result);
+      expect(e.error, planId).toBe("unknown_plan");
+      expect(e.fix).toContain("read_plans");
+      expect(out.writes).toEqual([]);
+    }
+  });
+
+  it("propose_workout keeps the plan on the op, and none without one; a revision cannot name one", async () => {
+    const id = await seedPlan("pl-keep");
+    const withPlan = await run({ scope: { kind: "now" } });
+    ok((await call("propose_workout", ctxOf(withPlan), { doc: docOf([item("bridge")]), target: { kind: "new", date: TODAY }, planId: id })).result);
+    expect((await proposal(withPlan.id))!.ops[0]!.planId).toBe("pl-keep");
+    const without = await run({ scope: { kind: "now" } });
+    ok((await call("propose_workout", ctxOf(without), { doc: docOf([item("bridge")]), target: { kind: "new", date: TODAY } })).result);
+    expect((await proposal(without.id))!.ops[0]).not.toHaveProperty("planId");
+    const revise = await run({ scope: { kind: "now" } });
+    const e = err((await call("propose_workout", ctxOf(revise), { doc: docOf([item("bridge")]), target: { kind: "revise", workoutId: rich.todayDocId, baseRev: 2 }, planId: id })).result);
+    expect(e.error).toBe("plan_on_new_only");
+  });
+});

@@ -8,6 +8,7 @@ import {
   lineSentenceName,
   linesOf,
   phaseWeekOf,
+  isOneOffPlan,
   planEnded,
   weekNaming,
 } from "../src/training-lines.js";
@@ -353,5 +354,18 @@ describe("weekNaming", () => {
   it("a coach plan outside any line is its own group", () => {
     const r = weekNaming([wp("Z", "2026-10-01", "2026-10-30")], [], WEEK, sess({ Z: 1 }));
     expect(r).toEqual({ planId: "Z", lineKey: null, others: 0 });
+  });
+});
+
+describe("isOneOffPlan (plans with a purpose §3.3)", () => {
+  it("is true for the loose sport buckets and for the Studio bucket: neither is a plan", () => {
+    expect(isOneOffPlan("adhoc-run-u1")).toBe(true);
+    expect(isOneOffPlan("studio-u1")).toBe(true);
+  });
+  it("is false for a plan, a coach block or a course, and for a word that only contains the prefix", () => {
+    expect(isOneOffPlan("prog-1")).toBe(false);
+    expect(isOneOffPlan("cp-base-1")).toBe(false);
+    expect(isOneOffPlan("my-studio-1")).toBe(false);
+    expect(isOneOffPlan("")).toBe(false);
   });
 });

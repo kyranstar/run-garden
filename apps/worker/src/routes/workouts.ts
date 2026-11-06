@@ -39,6 +39,7 @@ import {
   NotEditableError,
   NotRemovableError,
   PastDateError,
+  PlanNotFoundError,
   PlayedOfflineRefusedError,
   removeDocWorkout,
   reviseDocWorkout,
@@ -89,6 +90,8 @@ export function refusal(c: Context<AppContext>, e: unknown): Response {
   // A refused revise says why and what to do instead (spec §3: every refusal carries the instead); a create, only the code.
   if (e instanceof PastDateError) return c.json({ error: "past_date", ...wordsOf(e) }, 422);
   if (e instanceof PlayedOfflineRefusedError) return c.json({ error: "played_offline_refused", why: e.why }, 422);
+  // A workout made for a plan that isn't the account's, or is stopped (the coach's approval; the Studio never names one).
+  if (e instanceof PlanNotFoundError) return c.json({ error: "plan_not_found" }, 422);
   if (e instanceof StartedTodayError) return c.json({ error: "started_today", workout: e.workout }, 409);
   if (e instanceof RunUnsupportedError) return c.json({ error: "run_unsupported", message: "Runs can't be planned in the Studio yet.", ...wordsOf(e) }, 422);
   if (e instanceof DocWorkoutNotFoundError) return c.json({ error: "not_found" }, 404);

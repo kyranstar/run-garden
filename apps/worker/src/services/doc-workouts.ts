@@ -19,6 +19,12 @@
  * revision row, in the same batch (`workout-doc-store.ts`), labelled by the row's origin unless a server caller says
  * otherwise (the client never labels its own revision).
  *
+ * MADE FOR A PLAN (plans with a purpose §3.4). A server caller (the coach's approval) may name `planId`: an active plan
+ * of the account, or a block of one — the row is filed under it instead of the Studio bucket. One read checks it
+ * (`assertPlanOpen`); a plan that isn't the account's, or whose `status` isn't `active`, is `PlanNotFoundError` and
+ * nothing is written. With none named the row is a one-off in the Studio bucket, as ever; `POST /api/workouts` never
+ * takes one.
+ *
  * REVISING ONE (`reviseDocWorkout`). Any planned workout is revisable unless there is a clear reason (workout-editability
  * spec §3, `revisability` in @rg/domain): its day has passed, it is resolved or under way, it is race day or a rest day,
  * a programme's session (the engine builds it), or a run — each refused with its why and what to do instead (a day gone
@@ -37,8 +43,9 @@
  * Every user-scoped; a write is refused while a restore is replacing the account (`RestoreInProgressError`).
  */
 import type { RunWire } from "@rg/domain";
-import { and, eq, exists, getTableColumns, inArray, isNull, ne, notExists, notInArray, or, sql } from "drizzle-orm";
+import { and, eq, exists, getTableColumns, inArray, isNull, ne, notExists, notInArray, or, sql, type SQL } from "drizzle-orm";
 import {
+  coachPlans,
   corosWriteJobs,
   exercisePrefs,
   performedSessions,
@@ -87,6 +94,49 @@ export const studioProgramId = (userId: string): string => `studio-${userId}`;
 
 /** The name the Studio programme carries (a document workout's watch stamp is its own title, watch-push.ts). */
 const STUDIO_PROGRAM_NAME = "Studio";
+
+/** A workout was made for a plan that isn't the account's, or is stopped (the route's 422; an approve's refusal). */
+export class PlanNotFoundError extends Error {
+  constructor(readonly planId: string) {
+    super("plan_not_found");
+  }
+}
+
+/**
+ * Made for a plan (plans with a purpose §3.4): `planId` is an active plan of the account — a `programs` row, whose
+ * sessions file under its own id — or a block of one (a `coach_plans` row linked to an active plan), whose sessions file
+ * under the block's id. Anything else, a stopped plan among it (its `status` isn't `active`), throws
+ * `PlanNotFoundError`. One read, made only when a plan is named; the Studio's own bucket is never checked.
+ */
+export async function assertPlanOpen(db: Db, userId: string, planId: string): Promise<void> {
+  if (planId === studioProgramId(userId)) return;
+  const [row] = (await db.all(sql`select ${openPlanIdsSql(userId, [planId])} as open`)) as Array<{ open: string | null }>;
+  if (!openPlanIdsOf(row?.open).has(planId)) throw new PlanNotFoundError(planId);
+}
+
+/**
+ * Which of `ids` name an active plan of the account or a block of one, as a JSON array of text — a scalar for another
+ * statement's own read (plan_set and propose_workout look inside the read they make anyway), one bind whatever the count.
+ * The one rule for "open to file under": `assertPlanOpen` and the coach's tools read it here.
+ */
+export function openPlanIdsSql(userId: string, ids: readonly string[]): SQL {
+  const list = sql`(select value from json_each(${JSON.stringify(ids)}))`;
+  return sql`(select json_group_array(id) from (
+    select ${programs.id} as id from ${programs} where ${programs.userId} = ${userId} and ${programs.status} = 'active' and ${programs.id} in ${list}
+    union
+    select b.id from ${coachPlans} b join ${programs} p on p.id = b.program_id
+      where b.user_id = ${userId} and p.user_id = ${userId} and p.status = 'active' and b.id in ${list}))`;
+}
+
+/** The ids `openPlanIdsSql` answered (JSON text, or already parsed); none when it did not read. */
+export function openPlanIdsOf(raw: unknown): Set<string> {
+  try {
+    const v: unknown = typeof raw === "string" ? JSON.parse(raw) : raw;
+    return new Set(Array.isArray(v) ? v.filter((x): x is string => typeof x === "string") : []);
+  } catch {
+    return new Set();
+  }
+}
 
 /** A session already under way, or done: its content is locked. */
 export const LOCKED_CONTENT = ["started", "done"] as const;
@@ -504,7 +554,7 @@ async function keyedRow(db: Db, userId: string, id: string): Promise<{ workout: 
 export async function createDocWorkout(
   db: Db,
   userId: string,
-  input: { date: string; time?: string | null; doc: unknown; clientId?: string; startNow?: boolean; playedOffline?: boolean },
+  input: { date: string; time?: string | null; doc: unknown; clientId?: string; startNow?: boolean; playedOffline?: boolean; planId?: string },
   ctx: DocWorkoutCtx,
   source: DocWriteSource = {},
 ): Promise<{ workout: DocWorkoutDto; warnings: DocIssue[]; repeated?: true }> {
@@ -519,6 +569,8 @@ export async function createDocWorkout(
     // The day it was played: today, or up to a week back (the outbox's reach) — never ahead.
     if (input.date > ctx.today || input.date < addDays(ctx.today, -PLAYED_OFFLINE_DAYS_BACK)) throw new PlayedOfflineRefusedError("date");
   } else if (input.date < ctx.today) throw new PastDateError();
+  // Made for a plan: an active plan of the account, or a block of one (one read, only when a plan is named).
+  if (input.planId !== undefined) await assertPlanOpen(db, userId, input.planId);
   const { doc, derived, warnings } = await validated(db, userId, input.doc, { date: input.date, today: ctx.today, workoutId: id }, { playedOffline: input.playedOffline });
   if (await restoreInProgress(db, userId)) throw new RestoreInProgressError();
   // Start now of what today already holds, still to finish: that one is offered instead of a second (I3).
@@ -535,7 +587,7 @@ export async function createDocWorkout(
   const row = {
     id,
     userId,
-    planId: studioProgramId(userId),
+    planId: input.planId ?? studioProgramId(userId),
     sourceWorkoutId: id,
     sourceProgramId: null,
     sourceIdInPlan: null,

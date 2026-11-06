@@ -4,7 +4,11 @@
  * auto run's several (any day of its reach, COACH_REACH_DAYS): for now or later today the main coach designs the one
  * workout itself.
  *
- * A brief is `{ key, date, time?, purpose, emphasis, constraints, why, sameDayWhy?, note? }`. Refused, teachably and with
+ * A brief is `{ key, date, time?, purpose, emphasis, constraints, why, sameDayWhy?, note?, planId? }`. `planId` is the plan
+ * the workout is made for (plans with a purpose §3.4: an active plan from read_plans); its designer is told to pass it on
+ * to propose_workout, and approval files the workout under it. None is a one-off. A plan that is stopped, or no plan of
+ * the athlete's, is refused (`unknown_plan`) before anything starts, read with the athlete: no statement more; a redo's
+ * brief that leaves it out keeps the first version's. Refused, teachably and with
  * every problem at once, writing nothing:
  *  - a date before today in the athlete's zone, or after the scope's last day (this week's, the next N's horizon, or an
  *    auto run's reach);
@@ -53,7 +57,8 @@ import {
 } from "../design-orchestrate.js";
 import { FROZEN_STATES } from "../workout-doc-store.js";
 import { LLM_BUDGET } from "../llm.js";
-import { capInWords, isErr, parseAct, prose, skippedErr } from "./act-common.js";
+import { openPlanIdsOf, openPlanIdsSql } from "../doc-workouts.js";
+import { capInWords, isErr, parseAct, prose, skippedErr, unknownPlanRefusal } from "./act-common.js";
 import { designProposalId, type DocWorkoutOp } from "./propose.js";
 import { dateField, DATE_SCHEMA, jsonList, parsedArray, readAthlete, refuse } from "./read-common.js";
 import type { DesignTool, SavesSkip, SetBrief, SetRound } from "./types.js";
@@ -75,6 +80,7 @@ const brief = z
     why: text(LIMITS.why),
     sameDayWhy: text(LIMITS.sameDayWhy).optional(),
     note: text(LIMITS.note).optional(),
+    planId: z.string().trim().min(1).max(120).optional(),
   })
   .strict();
 const input = z.object({ briefs: z.array(brief).min(1).max(SET_MAX_WORKOUTS) }).strict();
@@ -82,7 +88,7 @@ const input = z.object({ briefs: z.array(brief).min(1).max(SET_MAX_WORKOUTS) }).
 const usd = (micros: number): string => `$${(micros / 1_000_000).toFixed(2)}`;
 const str = (max: number, description: string) => ({ type: "string", minLength: 1, description: `${description.replace(/\.$/, "")} — ${capInWords(max)}.` });
 
-const FIELDS = "briefs: one per workout, each { key, date, time?, purpose, emphasis, constraints, why, sameDayWhy?, note? }";
+const FIELDS = "briefs: one per workout, each { key, date, time?, purpose, emphasis, constraints, why, sameDayWhy?, note?, planId? }";
 
 /** Every regex syntax character of `text` escaped (each may be escaped under the `u` flag). */
 const escapeRegExp = (text: string): string => text.replace(/[.*+?^$|()[\]{}\\]/g, "\\$&");
@@ -126,6 +132,11 @@ export const planSet: DesignTool = {
             why: str(LIMITS.why, "Why it sits here in the set."),
             sameDayWhy: str(LIMITS.sameDayWhy, "Why a second session that day: needed when another brief, a programme session or a session already over holds the date."),
             note: str(LIMITS.note, "A redo's: what to change from the first version, and why."),
+            planId: {
+              type: "string",
+              minLength: 1,
+              description: "The plan this workout is made for (a planId from read_plans; only an active plan takes one). Leave it out for a one-off. Its designer is told to file the workout under it.",
+            },
           },
           required: ["key", "date", "purpose", "emphasis", "constraints", "why"],
           additionalProperties: false,
@@ -166,11 +177,16 @@ export const planSet: DesignTool = {
     const redo = first !== undefined;
     const proposalId = designProposalId(ctx.run.id);
     const dates = [...new Set(p.briefs.map((b) => b.date))];
+    // A redo's brief may leave the plan out: its first version's stands (the designer files the same workout again).
+    const planOf = (b: z.infer<typeof brief>): string | undefined => b.planId ?? first?.briefs.find((x) => x.key === b.key)?.planId;
+    const askedPlans = [...new Set(p.briefs.flatMap((b) => planOf(b) ?? []))];
     const pw = plannedWorkouts;
     const { athlete, extra } = await readAthlete(ctx.db, ctx.userId, ctx.now, {
       plan: sql`(select json_group_array(json_object('date', ${pw.effectiveDate}, 'origin', ${pw.origin}, 'state', ${pw.completionState}))
         from ${pw} where ${pw.userId} = ${ctx.userId} and ${pw.archivedAt} is null and ${pw.effectiveDate} in ${jsonList(dates)})`,
       ops: redo ? sql`(select ops from coach_proposals where id = ${proposalId} and user_id = ${ctx.userId})` : sql`null`,
+      // Which of the plans the briefs name are open to file under (the same read: no statement more).
+      openPlans: askedPlans.length > 0 ? openPlanIdsSql(ctx.userId, askedPlans) : sql`null`,
     });
     const today = athlete.today;
     const last = setLastDay(ctx.run.scope, today);
@@ -224,6 +240,16 @@ export const planSet: DesignTool = {
     if (problems.length > 0) {
       return refuse("invalid_briefs", `The set can't be planned as briefed: ${problems.slice(0, 10).join("; ")}.`, `Call plan_set again with every brief fixed (${FIELDS}).`);
     }
+    // A plan a brief names must be one a workout can be filed under now: learned here, before review, not at approval
+    // (which looks again: a plan can be stopped in between).
+    const open = openPlanIdsOf(extra.openPlans);
+    const closed = askedPlans.filter((id) => !open.has(id));
+    if (closed.length > 0) return unknownPlanRefusal(closed);
+    /** The briefs as the round keeps them: each with the plan it is made for, a redo's inherited. */
+    const planned = p.briefs.map((b) => {
+      const planId = planOf(b);
+      return planId ? { ...b, planId } : b;
+    });
 
     const estimate: SetEstimate | null = redo ? null : await estimateSetCost(ctx.db, ctx.userId, p.briefs.length, ctx.now);
     // SIZED TO THE BUDGET (from the step's tree, no statement): the designers at the estimate's cost per workout — on a
@@ -271,7 +297,7 @@ export const planSet: DesignTool = {
         runId: ids[i]!,
         date: b.date,
         ...(replaces ? { replaces } : {}),
-        brief: briefText(b, {
+        brief: briefText(planned[i]!, {
           index: redo ? firstOrder.indexOf(b.key) : i,
           count: redo ? firstOrder.length : p.briefs.length,
           redo,
@@ -289,7 +315,7 @@ export const planSet: DesignTool = {
     const round: SetRound = {
       toolUseId,
       redo,
-      briefs: p.briefs,
+      briefs: planned,
       designers: designers.map(({ key, runId }) => ({ key, runId })),
       ...(replaces ? { replaces } : {}),
     };

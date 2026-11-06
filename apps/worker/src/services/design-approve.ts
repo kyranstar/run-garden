@@ -37,6 +37,10 @@
  * two requests that race never lose an outcome (the second is refused, `ProposalChangedError`, and asks again —
  * everything here is idempotent).
  *
+ * A WORKOUT MADE FOR A PLAN (plans with a purpose §3.4): a new workout's op that names `planId` is created under that
+ * plan (`createDocWorkout` / `createDesignedRun`, one read more: `opCostOf` counts it), a plan stopped since the coach
+ * proposed it is refused as `plan_not_found` in words — the proposal's other ops go on. An op naming none is a one-off.
+ *
  * THE OP THAT MADE A WORKOUT RECORDS APPLIED. One read of the plan (`readPlan`) says, for every op in hand, whether its
  * workout is already there — a new workout by its key (`createDocWorkout`'s `clientId`, made from the proposal and the
  * op), a revision by its revision row (the one after the coach's base, carrying this op's ref) — and such an op is
@@ -186,6 +190,7 @@ import {
   keyedRowId,
   NotEditableError,
   PastDateError,
+  PlanNotFoundError,
   reviseDocWorkout,
   RunUnsupportedError,
   StaleRevisionError,
@@ -243,6 +248,8 @@ export type RefusalCode =
   | "run_unsupported"
   | "restore_in_progress"
   | "race"
+  /** A workout made for a plan (§3.4) whose plan is stopped or gone since it was proposed — nothing written. */
+  | "plan_not_found"
   /** A whole plan change the thread coach's applier refused (§8 §5): its plan isn't there any more. */
   | "plan_refused"
   /** A programme change (§8 §5) whose settings the athlete changed since it was proposed — or whose programme is gone or
@@ -658,18 +665,20 @@ export function planOpCostOf(
 /** What an op costs, by the sessions its day already holds (`dayRows`, this request's own included) — a change's too
  * (`planOpCostOf`; the request's changes add PLAN_BATCH_FIXED once). */
 export function opCostOf(
-  op: (Pick<DocWorkoutOp, "target"> & { doc?: WorkoutDoc }) | (Pick<PlanAdjustOp, "op"> & { retime?: PlanAdjustOp["retime"] }),
+  op: (Pick<DocWorkoutOp, "target" | "planId"> & { doc?: WorkoutDoc }) | (Pick<PlanAdjustOp, "op"> & { retime?: PlanAdjustOp["retime"] }),
   dayRows: number,
   edit?: ApproveInput["edit"],
 ): number {
   if ("op" in op) return planOpCostOf(op, dayRows);
   if (op.target.kind === "revise") return REVISE_BASE + dayRows;
   const time = edit && edit.time !== undefined ? edit.time : op.target.time;
+  // A workout made for a plan is checked once more at the approval (`assertPlanOpen`: one read).
+  const forPlan = op.planId ? 1 : 0;
   // A designed run (§8 §3): the coach lane's row, its stages and its watch create.
-  if (op.doc && isRunDoc(op.doc)) return runCreateCost(op.doc, time ?? null, dayRows);
+  if (op.doc && isRunDoc(op.doc)) return runCreateCost(op.doc, time ?? null, dayRows) + forPlan;
   // The collision pass may move every unpinned session of the day, the new one with them. An untimed one the approve
   // places at a time (B-I1) costs the less of the two: the declared cost stays an upper bound.
-  return time ? CREATE_AT_TIME_COST : CREATE_PLACED_BASE + dayRows + 1;
+  return (time ? CREATE_AT_TIME_COST : CREATE_PLACED_BASE + dayRows + 1) + forPlan;
 }
 
 // ── A claim no request finishes (the recovery rule; see the module comment) ────────────────────────────────────────
@@ -1701,6 +1710,9 @@ type OpResult =
   | { applied: Omit<Applied, "opId">; /** A designed run's watch create was queued: the client drains it. */ queued?: boolean }
   | { refusal: Omit<Refused, "opId">; /** The Studio's own error, for edit before approve to answer with. */ error: Error };
 
+/** The plan a new workout's op was made for, as the Studio's create takes it: nothing for a one-off. */
+const planOf = (op: DesignedOp): { planId?: string } => (op.planId ? { planId: op.planId } : {});
+
 /** One op through the Studio's service: applied, or refused with its reason. */
 async function applyOp(
   db: Db,
@@ -1741,10 +1753,10 @@ async function applyOp(
       }
       // A designed run (§8 §3) lands in the coach lane, and goes to the watch: designed-runs.ts.
       if (isRunDoc(doc as WorkoutDoc)) {
-        const run = await createDesignedRun(db, userId, { date, time, doc, clientId: approvalKey(proposalId, opId) }, ctx, source);
+        const run = await createDesignedRun(db, userId, { date, time, doc, clientId: approvalKey(proposalId, opId), ...planOf(op) }, ctx, source);
         return { applied: { workout: run.workout, warnings: run.warnings.map(issueOut), ...(edited ? { edited: true } : {}), ...(moved ? { moved: true } : {}) }, queued: run.queued };
       }
-      const made = await createDocWorkout(db, userId, { date, time, doc, clientId: approvalKey(proposalId, opId) }, ctx, source);
+      const made = await createDocWorkout(db, userId, { date, time, doc, clientId: approvalKey(proposalId, opId), ...planOf(op) }, ctx, source);
       return { applied: { workout: made.workout, warnings: made.warnings.map(issueOut), ...(edited ? { edited: true } : {}), ...(moved ? { moved: true } : {}) } };
     }
     if (!row || row.archived) return refusalOf(new DocWorkoutNotFoundError(), date);
@@ -1791,6 +1803,10 @@ function refusalOf(e: unknown, date: string): { refusal: Omit<Refused, "opId">; 
       return { error: "run_unsupported", why: e.why ?? "A run is suggested as a new workout, not as a change to a Studio one.", instead: e.instead ?? "Propose the run as a new workout." };
     }
     if (e instanceof RestoreInProgressError) return { error: "restore_in_progress", why: "The account is being restored." };
+    // The plan it was made for was stopped (or is gone) since the coach proposed it: the athlete's to place, or to ask again.
+    if (e instanceof PlanNotFoundError) {
+      return { error: "plan_not_found", why: "The plan this workout was made for has been stopped or is gone.", instead: "Ask the coach to plan it again, or add it from the Studio." };
+    }
     return null;
   })();
   if (!r) throw e;

@@ -142,6 +142,8 @@ export interface SetBrief {
   sameDayWhy?: string;
   /** A redo's: what to change from the first version, and why. */
   note?: string;
+  /** The plan this workout is made for (a `read_plans` planId): its designer passes it to propose_workout. None: a one-off. */
+  planId?: string;
 }
 
 /** One call of plan_set: its briefs and the designer started for each (its id is the workout's op id). */

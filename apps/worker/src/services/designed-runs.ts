@@ -43,6 +43,7 @@ import { insertBatches, runAtomically, type Db } from "./db.js";
 import { judgeDoc } from "./doc-build.js";
 import {
   accepted,
+  assertPlanOpen,
   DocInvalidError,
   docDayContext,
   keyedRowId,
@@ -335,7 +336,9 @@ export interface DesignedRunMade {
  * (`runWatchSteps`, a distance at its band's middle; else derived), booked to five minutes; its expected distance the
  * steps' (a time at its band's middle) when every one can be read. Its stage rows (`designedRunStages`) and the
  * document at revision 1 with its revision row, in one batch; a time asked for is pinned, else the athlete's window and
- * the day's collision pass. It hangs from the account's Studio programme, as the coach's other designed workouts do.
+ * the day's collision pass. It hangs from the account's Studio programme, as the coach's other designed workouts do —
+ * or from the plan it is made for (`planId`: an active plan of the account or a block of one, one read more; a plan
+ * that isn't, or is stopped, is `PlanNotFoundError`, writing nothing: doc-workouts.ts `assertPlanOpen`).
  *
  * Statements: the key's read, the day (DAY_READS), the running read, the restore check, the batch (the programme, the
  * row, the revision, the stage inserts, a pinned time), the collision pass (two reads and the rows it moves) when
@@ -344,7 +347,7 @@ export interface DesignedRunMade {
 export async function createDesignedRun(
   db: Db,
   userId: string,
-  input: { date: string; time: string | null; doc: unknown; clientId: string },
+  input: { date: string; time: string | null; doc: unknown; clientId: string; planId?: string },
   ctx: DocWorkoutCtx,
   source: DocWriteSource,
 ): Promise<DesignedRunMade> {
@@ -364,6 +367,8 @@ export async function createDesignedRun(
     };
   }
   if (input.date < ctx.today) throw new PastDateError();
+  // Made for a plan: an active plan of the account, or a block of one (one read, only when a plan is named).
+  if (input.planId !== undefined) await assertPlanOpen(db, userId, input.planId);
   const doc = await parsedDoc(db, userId, input.doc);
   const [day, ran] = await Promise.all([
     docDayContext(db, userId, { date: input.date, today: ctx.today, workoutId: id, placeId: doc.setting?.placeId }),
@@ -389,7 +394,7 @@ export async function createDesignedRun(
   const row = {
     id,
     userId,
-    planId: studioProgramId(userId),
+    planId: input.planId ?? studioProgramId(userId),
     sourceWorkoutId: id,
     sourceProgramId: null,
     sourceIdInPlan: null,

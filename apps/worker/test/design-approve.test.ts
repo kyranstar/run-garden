@@ -98,6 +98,8 @@ const ctxOf = (userId: string, r: ToolContext["run"]): ToolContext => ({ db, env
 interface Draft {
   doc: Record<string, unknown> | WorkoutDoc;
   target: DocWorkoutTarget;
+  /** The plan it is made for (propose_workout's `planId`). */
+  planId?: string;
 }
 
 /**
@@ -109,7 +111,7 @@ async function designed(drafts: Draft[], userId = rich.userId): Promise<{ id: st
   const opIds: string[] = [];
   for (const d of drafts) {
     const designer = await run({ userId, role: "designer", scope: { kind: "week" }, parentId: main.id });
-    const res = await proposeWorkout.run(ctxOf(userId, designer), { doc: d.doc, target: d.target });
+    const res = await proposeWorkout.run(ctxOf(userId, designer), { doc: d.doc, target: d.target, ...(d.planId ? { planId: d.planId } : {}) });
     if (isToolErr(res)) throw new Error(`propose refused: ${res.error} — ${res.why}`);
     opIds.push(designer.id);
   }
@@ -1107,5 +1109,57 @@ describe("the day the coach proposed against is the day the approval judges", ()
     expect((calm.data as { valid: boolean }).valid).toBe(true);
     const ok = await designed([{ doc: calmDoc(), target: { kind: "new", date: TODAY, time: "18:30" } }]);
     expect((await approve(ok.id)).applied).toHaveLength(1);
+  });
+});
+
+// ── Made for a plan (plans with a purpose §3.4) ─────────────────────────────
+
+describe("approving a workout made for a plan", () => {
+  async function seedPlan(id: string, status = "active"): Promise<void> {
+    const now = NOW.toISOString();
+    await db.insert(schema.programs).values({ id, userId: rich.userId, kind: "coach", name: "Plan", status, disciplines: ["run"], startDate: null, endDate: null, raceDate: null, source: null, config: {}, createdAt: now, updatedAt: now, archivedAt: null });
+  }
+
+  it("files the workout under its plan; one beside it with no plan stays a one-off in the Studio bucket", async () => {
+    await seedPlan("pl-a");
+    const { id } = await designed([
+      { doc: calmDoc({ title: "For the plan" }), target: { kind: "new", date: later }, planId: "pl-a" },
+      { doc: calmDoc({ title: "For none" }), target: { kind: "new", date: tomorrow } },
+    ]);
+    const res = await approve(id);
+    expect(res.status).toBe("approved");
+    expect((await rowOf(res.applied[0]!.workout.id)).planId).toBe("pl-a");
+    expect((await rowOf(res.applied[1]!.workout.id)).planId).toBe(`studio-${rich.userId}`);
+  });
+
+  it("a plan stopped between the proposal and the approval refuses its workout, in words, and the others still apply", async () => {
+    await seedPlan("pl-b");
+    const { id, opIds } = await designed([
+      { doc: calmDoc({ title: "For the plan" }), target: { kind: "new", date: later }, planId: "pl-b" },
+      { doc: calmDoc({ title: "For none" }), target: { kind: "new", date: tomorrow } },
+    ]);
+    await db.update(schema.programs).set({ status: "retired" }).where(eq(schema.programs.id, "pl-b"));
+    const res = await approve(id);
+    expect(res.status).toBe("partially_approved");
+    expect(res.applied.map((a) => a.opId)).toEqual([opIds[1]]);
+    expect(res.refused).toHaveLength(1);
+    expect(res.refused[0]).toMatchObject({ opId: opIds[0], error: "plan_not_found" });
+    expect(res.refused[0]!.why).toMatch(/plan/);
+    expect((await designRows()).map((r) => r.title)).toEqual(["For none"]);
+  });
+
+  it("a workout for a plan costs one read more than one for none", () => {
+    const own = { target: { kind: "new" as const, date: later } };
+    expect(opCostOf({ ...own, planId: "pl-a" }, 2)).toBe(opCostOf(own, 2) + 1);
+    const timed = { target: { kind: "new" as const, date: later, time: "07:00" } };
+    expect(opCostOf({ ...timed, planId: "pl-a" }, 2)).toBe(CREATE_AT_TIME_COST + 1);
+  });
+
+  it("its statements stay within what opCostOf declares", async () => {
+    await seedPlan("pl-c");
+    const { id } = await designed([{ doc: calmDoc(), target: { kind: "new", date: later }, planId: "pl-c" }]);
+    const op = (await proposalOf(id))!.ops[0]!;
+    await approve(id);
+    expect(statements.length).toBeLessThanOrEqual(opCostOf(op, 1) + 2);
   });
 });

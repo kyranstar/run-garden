@@ -40,7 +40,7 @@ import {
   type SessionOverrides,
   type WorkoutDto,
 } from "@rg/api-client";
-import { docOriginRow, doseText, newId, revisability, type DoseStep, type DoseTarget } from "@rg/domain";
+import { docOriginRow, doseText, isOneOffPlan, newId, revisability, type DoseStep, type DoseTarget } from "@rg/domain";
 import { useWatchCatchUp, watchFollows } from "./watch-catch-up.js";
 import { EXERCISES, isProfileId, label as vocab, PROFILES } from "@rg/exercise-library";
 import { effortAdvice } from "@rg/workout";
@@ -301,11 +301,12 @@ export function sessionTitle(s: SessionDto): string {
 }
 
 /**
- * A coach one-off (training lines §3.4): filed in its sport's bucket of one-offs (the worker's `LOOSE_PLAN_ID_PREFIX`,
- * "adhoc-"), which is never a plan, so its sheet says "One-off" where a programme's session names its programme.
+ * A one-off (training lines §3.4; plans with a purpose §3.3): filed in its sport's bucket of one-offs (the worker's
+ * `LOOSE_PLAN_ID_PREFIX`, "adhoc-") or in the account's Studio bucket, neither of which is a plan, so its sheet says
+ * "One-off" where a programme's session names its programme.
  */
 export function isOneOff(w: { planId?: string }): boolean {
-  return w.planId?.startsWith("adhoc-") ?? false;
+  return w.planId ? isOneOffPlan(w.planId) : false;
 }
 
 /** A move done on both sides, a side at a time or alternating. A move the build doesn't name has none to speak of. */

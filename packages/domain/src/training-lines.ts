@@ -68,6 +68,15 @@ const SENTENCE_NAMES = {
   mobility: "my mobility plan",
 } as const;
 
+/**
+ * A one-off's bucket (plans with a purpose §3.3): a session filed under the loose `adhoc-` bucket of its sport or under
+ * the account's Studio bucket (`studio-<user>`) belongs to no plan. They are never listed, and every one's sheet says
+ * "One-off". The worker's `LOOSE_PLAN_ID_PREFIX` and `studioProgramId` write these ids; this reads them.
+ */
+export function isOneOffPlan(planId: string): boolean {
+  return planId.startsWith("adhoc-") || planId.startsWith("studio-");
+}
+
 export function planEnded(endDate: string, today: string): boolean {
   return endDate < today;
 }

@@ -981,11 +981,16 @@ describe("a one-off's sheet says One-off where a programme session names its pro
     expect(body()).not.toContain("One-off");
   });
 
-  it("an app session in a plan (a Studio workout in the Studio's) says no One-off", async () => {
+  it("a Studio-bucket session is a one-off too: the Studio's bucket is no plan (plans with a purpose §3.3)", async () => {
     mount(session(), { w: slot({ origin: "studio", programId: "studio-u1", planId: "studio-u1" }) });
     await until(() => body().includes("Supported row"), "the session sheet");
-    expect(document.querySelector(".session-when")?.textContent).not.toContain("One-off");
-    expect(body()).not.toContain("One-off");
+    expect(document.querySelector(".session-when")?.textContent).toContain("One-off");
+  });
+
+  it("a Studio workout's sheet says One-off where the workout sheet is the one that opens", async () => {
+    mount(session(), { detail: true, w: run("studio-u1") });
+    await until(() => body().includes("Easy 40"), "the workout sheet");
+    expect(kindLine()).toBe("Easy · One-off");
   });
 
   it("a programme session still names its programme, and is no one-off", async () => {

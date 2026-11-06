@@ -12,7 +12,8 @@ import { deriveDoc } from "@rg/workout";
 import type { Db } from "../src/services/db.js";
 import { lockCurrentBuild, pushJobId } from "../src/services/session-build.js";
 import { CALENDAR_OPS_PER_REQUEST } from "../src/services/calendar-sync.js";
-import { createDocWorkout, studioProgramId } from "../src/services/doc-workouts.js";
+import { createDocWorkout, PlanNotFoundError, studioProgramId } from "../src/services/doc-workouts.js";
+import { createDesignedRun } from "../src/services/designed-runs.js";
 import { isWrite, makeTestDb, makeTestUser, pinMiddayToday } from "./helpers.js";
 import { activateTmj, calmDoc, clientFor, landingsDoc, type Reply } from "./doc-workout-fixture.js";
 
@@ -796,5 +797,86 @@ describe("Start now of what today already holds (Stage 2 whole-branch review I3)
     const scheduled = (await db.select().from(plannedWorkouts).where(eq(plannedWorkouts.userId, userId))).filter((r) => r.id !== first.body.workout.id && r.origin === "template");
     for (const r of scheduled) await db.update(plannedWorkouts).set({ completionState: "skipped" }).where(eq(plannedWorkouts.id, r.id));
     expect((await call("POST", "/api/workouts", { date: today, doc: fromTemplate("t1"), startNow: true })).status).toBe(201);
+  });
+});
+
+// ── Made for a plan (plans with a purpose §3.4) ─────────────────────────────
+
+describe("a workout made for a plan files under it", () => {
+  const ctx = () => ({ today, now: nowInstant(), prefs });
+  const tempo = (): WorkoutDoc => ({
+    version: 1,
+    title: "Tempo blocks",
+    intent: { summary: "Three tempo blocks.", goals: ["speed"], focus: [], effort: "develop" },
+    parts: [
+      { purpose: "warmup", format: "steady", items: [{ kind: "run", effort: "easy", target: { durationSec: 600 } }] },
+      { purpose: "run", format: "intervals", rounds: 3, items: [{ kind: "run", effort: "tempo", target: { durationSec: 480 } }, { kind: "run", effort: "recovery", target: { durationSec: 120 } }] },
+      { purpose: "cooldown", format: "steady", items: [{ kind: "run", effort: "easy", target: { durationSec: 600 } }] },
+    ],
+    source: { kind: "coach" },
+  });
+  /** A plan of the account (`programs`), and — for a coach plan — a block of it (`coach_plans.program_id`). */
+  async function seedPlan(id: string, o: { kind?: string; status?: string; owner?: string; block?: string } = {}): Promise<void> {
+    const now = nowInstant();
+    await db.insert(programs).values({ id, userId: o.owner ?? userId, kind: o.kind ?? "coach", name: "Plan", status: o.status ?? "active", disciplines: ["run"], startDate: null, endDate: null, raceDate: null, source: null, config: {}, createdAt: now, updatedAt: now, archivedAt: null });
+    if (o.block) {
+      await db.insert(schema.coachPlans).values({ id: o.block, userId: o.owner ?? userId, discipline: "run", name: "Block", status: "active", startDate: today, endDate: addDays(today, 28), raceDate: null, stampPrefix: "g", programId: id, createdAt: now, updatedAt: now });
+    }
+  }
+  let keys = 0;
+  const made = (planId?: string, doc: WorkoutDoc = calmDoc()) =>
+    createDocWorkout(db, userId, { date: addDays(today, 1), doc, clientId: `k-${++keys}`, ...(planId ? { planId } : {}) }, ctx());
+
+  it("with no plan it stays in the Studio bucket, and the read that checks a plan is never made", async () => {
+    statements.length = 0;
+    const { workout } = await made();
+    expect((await rowOf(workout.id)).planId).toBe(studioProgramId(userId));
+    expect(statements.filter((s) => /json_group_array\(id\)/.test(s))).toEqual([]);
+  });
+
+  it("given an active plan's id it files under the plan, for one read more", async () => {
+    await seedPlan("pl-1", { kind: "course" });
+    statements.length = 0;
+    const { workout } = await made("pl-1");
+    expect((await rowOf(workout.id)).planId).toBe("pl-1");
+    expect(statements.filter((s) => /json_group_array\(id\)/.test(s)).length).toBe(1);
+  });
+
+  it("given a coach plan's block it files under the block; given the coach plan's id with no block named it files under the plan", async () => {
+    await seedPlan("pl-2", { block: "blk-2" });
+    expect((await rowOf((await made("blk-2")).workout.id)).planId).toBe("blk-2");
+    expect((await rowOf((await made("pl-2")).workout.id)).planId).toBe("pl-2");
+  });
+
+  it("a stopped plan, an unknown id, another account's plan and a block of a stopped plan are refused, writing nothing", async () => {
+    const { userId: other } = await makeTestUser(db);
+    await seedPlan("pl-stopped", { status: "retired" });
+    await seedPlan("pl-theirs", { owner: other });
+    await seedPlan("pl-gone", { status: "retired", block: "blk-gone" });
+    const before = (await db.select().from(plannedWorkouts)).length;
+    for (const id of ["pl-stopped", "nope", "pl-theirs", "blk-gone"]) {
+      await expect(made(id), id).rejects.toBeInstanceOf(PlanNotFoundError);
+    }
+    expect((await db.select().from(plannedWorkouts)).length).toBe(before);
+  });
+
+  it("a designed run files under its plan the same way, and a stopped plan refuses it", async () => {
+    await seedPlan("pl-3", { block: "blk-3" });
+    await seedPlan("pl-4", { status: "retired" });
+    const run = (planId: string | undefined, key: string) =>
+      createDesignedRun(db, userId, { date: addDays(today, 2), time: "07:00", doc: tempo(), clientId: key, ...(planId ? { planId } : {}) }, { ...ctx(), runWire: "v1" }, { sourceKind: "coach", sourceRef: "dp-1" });
+    expect((await rowOf((await run("blk-3", "r-1")).workout.id)).planId).toBe("blk-3");
+    expect((await rowOf((await run(undefined, "r-2")).workout.id)).planId).toBe(studioProgramId(userId));
+    await expect(run("pl-4", "r-3")).rejects.toBeInstanceOf(PlanNotFoundError);
+  });
+
+  it("nothing on the Studio's Schedule path changes: POST /api/workouts still files under the bucket, and a planId in its body is not a way in", async () => {
+    await seedPlan("pl-5");
+    const r = await call("POST", "/api/workouts", { date: addDays(today, 1), doc: calmDoc() });
+    expect(r.status).toBe(201);
+    expect((await rowOf(r.body.workout.id)).planId).toBe(studioProgramId(userId));
+    const before = (await db.select().from(plannedWorkouts)).length;
+    expect((await call("POST", "/api/workouts", { date: addDays(today, 1), doc: calmDoc(), planId: "pl-5" })).status).toBe(422);
+    expect((await db.select().from(plannedWorkouts)).length).toBe(before);
   });
 });

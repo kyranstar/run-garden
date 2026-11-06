@@ -114,6 +114,7 @@ export function briefText(
     `Emphasis: ${b.emphasis}`,
     `Constraints: ${b.constraints}`,
     `Why: ${b.why}`,
+    ...(b.planId ? [`Made for the plan ${JSON.stringify(b.planId)}: propose it with planId: ${JSON.stringify(b.planId)}.`] : []),
     ...(b.sameDayWhy ? [`A second session that day, because: ${b.sameDayWhy}`] : []),
     ...(o.redo && b.note ? [`What to change from the first version: ${b.note}`] : []),
     ...(o.first

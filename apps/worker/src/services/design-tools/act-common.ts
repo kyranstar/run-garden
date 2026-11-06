@@ -538,6 +538,20 @@ export function runUnsupported(): ToolErr {
   );
 }
 
+/**
+ * A `planId` that names no plan the workout can be filed under (plans with a purpose §3.4): not the athlete's, a stopped
+ * plan, or an id `read_plans` never gave — propose_workout's and plan_set's one refusal, before review. The approval
+ * looks again: a plan can be stopped in between.
+ */
+export function unknownPlanRefusal(ids: readonly string[]): ToolErr {
+  const named = ids.map((id) => JSON.stringify(id)).join(", ");
+  return refuse(
+    "unknown_plan",
+    `planId ${named}: ${ids.length === 1 ? "that is" : "those are"} not ${ids.length === 1 ? "an active plan" : "active plans"} of the athlete (a plan that is stopped, or an id read_plans never gave).`,
+    "Use a plan's planId from read_plans (only an active plan takes a workout), or leave planId out: the workout is then a one-off.",
+  );
+}
+
 /** Whether a submitted document holds a run segment (read before it is parsed: the run's context is read with it). */
 export function holdsRun(doc: Record<string, unknown>): boolean {
   const parts = Array.isArray(doc.parts) ? (doc.parts as unknown[]) : [];

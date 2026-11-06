@@ -56,6 +56,11 @@
  * target (each run designs one workout; a second draft is a revision round). The call's tool-use id is on its op: a
  * replay — a step that died after this wrote — finds its id and answers what it stored, writing nothing new.
  *
+ * A NEW workout may name the plan it is for (`planId`, plans with a purpose §3.4): an active plan of the athlete's,
+ * read with the rest (no statement more) — a stopped plan or an id read_plans never gave is `unknown_plan`, a revision
+ * naming one `plan_on_new_only`. It is kept on the op (through every revision round) and approval files the workout
+ * under it; none is a one-off.
+ *
  * A free-text move is refused (act-common.ts `freeTextRefusal`): no condition rule can judge it. A revision may keep
  * one its workout's current document already holds, unchanged.
  * In a fit-in run, a move the athlete skipped in its batch is refused by name, new, revised or amended, as an item or
@@ -88,7 +93,7 @@ import { z } from "zod";
 import { accountState, coachProposals, plannedWorkouts } from "@rg/database";
 import { parseStoredWorkoutDoc, type Revisability, type WorkoutDoc } from "@rg/domain";
 import type { DocIssue } from "@rg/workout";
-import { revisabilityIn } from "../doc-workouts.js";
+import { openPlanIdsOf, openPlanIdsSql, revisabilityIn } from "../doc-workouts.js";
 import {
   applyDrop,
   countedRounds,
@@ -128,6 +133,7 @@ import {
   runCtxExtra,
   runUnsupported,
   skippedRefusal,
+  unknownPlanRefusal,
   WARNINGS_SHOWN,
   withFocusRefs,
   withMusicIds,
@@ -165,6 +171,9 @@ export interface DocWorkoutOp {
   /** The validator's warnings for the day: the costs shown beside Approve. */
   issues: IssueOut[];
   derived: Record<string, unknown>;
+  /** The plan a NEW workout is made for (plans with a purpose §3.4): an active plan of the athlete, or a block of one.
+   * Approval files the row under it and looks again (the plan may have been stopped since). None is a one-off. */
+  planId?: string;
   /** The run that designed it. */
   by: { runId: string; role: "main" | "designer" };
   /** The model's call that proposed it: a replay of the call finds it. */
@@ -245,7 +254,7 @@ export const CHANGE_NOTE_MAX = 200;
 export const TOO_LONG_MIN_OVER = 5;
 export const TOO_LONG_SHARE_OVER = 0.15;
 const input = z
-  .object({ doc: objectField, target, changeNote: prose(CHANGE_NOTE_MAX).optional(), amend: z.boolean().optional(), replaces: z.string().trim().min(1).max(200).optional() })
+  .object({ doc: objectField, target, changeNote: prose(CHANGE_NOTE_MAX).optional(), amend: z.boolean().optional(), replaces: z.string().trim().min(1).max(200).optional(), planId: z.string().trim().min(1).max(120).optional() })
   .strict();
 
 /** The guidance for a draft the validator refused: today, a move the day closes is swapped in the draft itself — or,
@@ -315,6 +324,11 @@ export const proposeWorkout: DesignTool = {
         description:
           "The main coach's, in a conversation: the id of an open suggestion this one changes (the conversation so far lists them) — it is replaced once this one is ready.",
       },
+      planId: {
+        type: "string",
+        description:
+          "The plan this NEW workout is made for: a planId from read_plans (or the one your brief names). Leave it out for a one-off. A plan that is stopped, or an id read_plans never gave, is refused; a revision stays where it is and names none.",
+      },
       amend: {
         type: "boolean",
         description:
@@ -365,11 +379,21 @@ export const proposeWorkout: DesignTool = {
                 from ${pw} where ${pw.id} = ${p.target.workoutId} and ${pw.userId} = ${ctx.userId})`
             : sql`null`,
         replaced: p.replaces !== undefined ? replacedSql(ctx.userId, p.replaces) : sql`null`,
+        // The plan it is for, when one is named: open to file under (read with the rest: no statement more).
+        openPlans: p.planId !== undefined ? openPlanIdsSql(ctx.userId, [p.planId]) : sql`null`,
         // Today's soreness (draft-checks.ts, 2026-11-05): what a working move must not load.
         sore: soreAnswersSql(ctx.userId, ctx.now),
       },
     });
     if (isErr(a)) return a;
+    // A plan is a new workout's: a revision stays under the plan it was filed under. Teachably, before review; the
+    // approval looks again (a plan can be stopped in between).
+    if (p.planId !== undefined) {
+      if (p.target.kind === "revise") {
+        return refuse("plan_on_new_only", "planId is for a new workout: a revision stays under the plan it was filed under.", "Call propose_workout again without planId.");
+      }
+      if (!openPlanIdsOf(a.extra.openPlans).has(p.planId)) return unknownPlanRefusal([p.planId]);
+    }
     const today = a.athlete.today;
     const doc = withMusicIds(withFocusRefs(submitted, a.focusAreas), a.athlete.prefs.music?.shortcuts ?? []);
     if (isErr(doc)) return doc;
@@ -580,6 +604,9 @@ export const proposeWorkout: DesignTool = {
     // the revisions.
     const supersedes = p.replaces ?? mine?.supersedes;
     if (supersedes) op = { ...op, supersedes };
+    // The plan it is made for: this call's, else its earlier draft's — kept through the revisions.
+    const forPlan = p.planId ?? mine?.planId;
+    if (forPlan) op = { ...op, planId: forPlan };
     const next = [...all.filter((o) => !isDocWorkoutOp(o) || (o as DocWorkoutOp).by.runId !== ctx.run.id), op];
     const written = await upsertProposal(ctx, proposalId, next, opsText, at);
     if (!written) {

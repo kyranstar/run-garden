@@ -1,7 +1,8 @@
 import { useUnits, useWeightUnit } from "../use-units.js";
 import { useEffect, useRef, useState } from "react";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
-import { api, ApiError, type CoachPlanDto, type PlanDetailResponse, type TrainingLineDto } from "@rg/api-client";
+import { api, ApiError, type CoachPlanDto, type PlanDetailResponse, type PlanSummaryDto, type PlansResponse, type TrainingLineDto } from "@rg/api-client";
+import { changePlanRequest, planSheetWords } from "./plan-words.js";
 import { ConfirmDialog, formatShortDate, Sheet, Spinner, useEscapeKey } from "../components.js";
 import { dayLabel, lastPhaseOf, lineSentenceName, planEnded, startOfIsoWeek } from "@rg/domain";
 import { PlannedVsActualBars, progressionInUnits, ProgressionStepChart } from "./plan-charts.js";
@@ -137,11 +138,57 @@ function PlanRace({ planId, race, firstDay, canChange }: { planId: string; race:
 }
 
 /**
+ * A plan's summary, read once for every sheet (`["plans"]`, `GET /api/plans`). Absent — an older server, or not read
+ * yet — is no words: the sheets draw nothing of it and offer no Change.
+ */
+function usePlanSummaries(): readonly PlanSummaryDto[] {
+  const q = useQuery<PlansResponse>({ queryKey: ["plans"], queryFn: () => api.plans(), staleTime: 60_000, retry: false });
+  return q.data?.plans ?? [];
+}
+
+/**
+ * WHAT A PLAN IS FOR (plans with a purpose §4.3): its purpose, how it ends, and the brief one tap down — what steers the
+ * coach, said to the athlete. "Change" opens the coach with the words written (`changePlanRequest`), the athlete's to
+ * finish and send; a plan that can no longer change (an ended or stopped line) has none. No purpose is no purpose line.
+ */
+function PlanWords({ plan, canChange }: { plan: PlanSummaryDto; canChange: boolean }) {
+  const coach = useCoach();
+  const [open, setOpen] = useState(false);
+  const words = planSheetWords(plan);
+  return (
+    <div className="stack plan-words">
+      {words.purpose ? <p className="plan-words-purpose">{words.purpose}</p> : null}
+      <div className="row plan-words-line">
+        <span className="faint plan-words-ending">{words.ending}</span>
+        {words.pausedUntil ? <span className="faint num">Paused until {formatShortDate(words.pausedUntil)}</span> : null}
+        {canChange && coach ? (
+          <button type="button" className="btn btn-small" onClick={() => coach.open({ request: changePlanRequest(plan.name) })}>
+            Change
+          </button>
+        ) : null}
+      </div>
+      {words.brief ? (
+        <>
+          <button type="button" className="btn btn-small plan-words-more" aria-expanded={open} aria-controls={`plan-words-brief-${plan.id}`} onClick={() => setOpen(!open)}>
+            How it works
+          </button>
+          <div id={`plan-words-brief-${plan.id}`} className="disclosure-body">
+            {open ? <p className="faint plan-words-brief">{words.brief}</p> : null}
+          </div>
+        </>
+      ) : null}
+    </div>
+  );
+}
+
+/**
  * THE PLAN SHEET (the new shape §6; the plan "studio" modal before it): one room per plan — where you are, where it is
  * taking you (graphed), what each week holds, and its actions. Extend, Wind down and "Ask about this plan" open the
  * conversation with the request written (`planRequests`; §8 §6 — the thread coach has stepped back); Rename and Retire…
  * are the app's own. The page routes it by `?plan=<id>`, so links and back work. A plan the retired generator made
- * still opens here.
+ * still opens here. Above its detail it says what the plan is for and how it ends (`PlanWords`, plans with a purpose
+ * §4.3: the purpose, the ending, the brief one tap down, and a "Change" that writes the coach's box), from the plan's
+ * summary (`["plans"]`, found by id, `listedAs` or the line's key); a sheet whose summary isn't there says none of it.
  *
  * A one-phase training line is this sheet too (training lines §3.3, `LineSheet`): its Retire is "Stop this plan", with a
  * confirm that counts the sessions leaving the calendar (`useStopLine`), and an ended line's sheet is read-only.
@@ -194,6 +241,9 @@ export function PlanSheet({
   const source = (detail.data?.plan ?? plan)?.source ?? "coach";
   /** A line that has ended, or that was just stopped, is read: nothing in it changes from here. */
   const readOnly = !!line && (line.ended || !!stop?.stopped);
+  // Its summary: by the plan's id, by the id its list row carries, or — for a line's one phase — by the line's key.
+  const summaries = usePlanSummaries();
+  const summary = summaries.find((s) => s.id === planId || s.listedAs === planId || (!!line && s.lineKey === line.key));
 
   const d = detail.data;
   const title = d?.plan.name ?? plan?.name ?? "Plan";
@@ -333,6 +383,7 @@ export function PlanSheet({
     <Sheet open onClose={onClose} title={title} footer={footer}>
       <div className="stack studio-modal">
         {stop?.said}
+        {summary ? <PlanWords plan={summary} canChange={!readOnly} /> : null}
         {/* Stopped, the race it was building to is not said: the plan no longer goes there. */}
         <PlanDetailBody planId={planId} race={stop?.stopped ? "none" : readOnly ? "read" : "own"} />
       </div>
@@ -767,6 +818,7 @@ function LinePhases({
   const coach = useCoach();
   const readOnly = line.ended || stop.stopped;
   const requests = lineRequests(line.discipline);
+  const summary = usePlanSummaries().find((s) => s.lineKey === line.key);
   // The phase the line's end is (B5: the one definition — the server's `last`, its chips and the line's goal use it too).
   const last = lastPhaseOf(line);
   // The phase an old link named opens, when it is one that has ended.
@@ -821,6 +873,7 @@ function LinePhases({
     <Sheet open onClose={onClose} title={line.name} footer={footer}>
       <div className="stack line-sheet">
         {stop.said}
+        {summary ? <PlanWords plan={summary} canChange={!readOnly} /> : null}
         <p className="faint num line-sheet-span">
           {formatShortDate(line.startDate)} → {formatShortDate(line.endDate)} · {line.phases.length}{" "}
           {line.phases.length === 1 ? "phase" : "phases"}
