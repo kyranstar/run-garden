@@ -481,6 +481,8 @@ export async function overridePost(
         extractAttempts: 0,
         lastErrorCode: null,
         lastError: null,
+        // A Retry goes back to reading the words: a watched reading that failed is never asked for again unasked (F1).
+        watchVideo: null,
         updatedAt: now,
       })
       .where(and(where, inArray(savedPosts.status, [...PROCESSABLE])))

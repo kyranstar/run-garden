@@ -13,9 +13,9 @@ import type { Db } from "../src/services/db.js";
 import { importHealth } from "../src/services/import-health.js";
 import { messagesCostMicros } from "../src/services/llm-messages.js";
 import { readPostTrail } from "../src/services/import-trail-read.js";
-import { savedPostId, workList } from "../src/services/saves-ledger.js";
+import { overridePost, savedPostId, workList } from "../src/services/saves-ledger.js";
 import { watchCostMicros, watchVideo } from "../src/services/saves-video.js";
-import { callTimeoutMs, EXTRACT_MODEL_DEFAULT, relayVideoExtract } from "../src/services/saves-relay.js";
+import { callTimeoutMs, EXTRACT_CONTEXT_TOKENS, EXTRACT_MODEL_DEFAULT, relayVideoExtract, WATCH_ASK_MAX_SEC } from "../src/services/saves-relay.js";
 import { makeTestDb, makeTestUser } from "./helpers.js";
 
 const { savedPosts, importBlobs, importEvents, llmUsage } = schema;
@@ -264,5 +264,51 @@ describe("Watch it too (design 2026-11-05 §5.4)", () => {
     expect(await watchVideo(db, userId, saved, NOW)).toBe("conflict");
     const other = (await makeTestUser(db)).userId;
     expect(await watchVideo(db, other, saved, NOW)).toBe("not_found");
+  });
+});
+
+describe("Watch it too only for a video the model can take (final review F1, F5)", () => {
+  const { savedPostMoves } = schema;
+  async function matchedOf(durationSec: number) {
+    const id = await seedVideo({ durationSec });
+    await db.update(savedPosts).set({ status: "matched", extraction: reading() }).where(eq(savedPosts.id, id));
+    return id;
+  }
+
+  it("a 3-hour follow-along isn't offered Watch it too, and the ask is refused: watching it would pass the model's context", async () => {
+    const id = await matchedOf(3 * 3600);
+    expect((await readPostTrail(db, userId, id))!.post.video).toMatchObject({ offerWatch: false });
+    expect(await watchVideo(db, userId, id, NOW)).toBe("conflict");
+    expect((await row(id)).status).toBe("matched");
+    expect(await db.select().from(savedPostMoves)).toEqual([]);
+  });
+
+  it("up to WATCH_ASK_MAX_SEC (50 minutes) it is offered", async () => {
+    expect(WATCH_ASK_MAX_SEC).toBe(50 * 60);
+    const id = await matchedOf(WATCH_ASK_MAX_SEC);
+    expect((await readPostTrail(db, userId, id))!.post.video).toMatchObject({ offerWatch: true });
+  });
+
+  it("a watched video's reservation never passes the model's context window", async () => {
+    const id = await seedVideo({ durationSec: WATCH_ASK_MAX_SEC, watchVideo: true });
+    const gw = gateway(reading(), (sent) => textTokens(sent) + 300_000);
+    await run(id, gw);
+    const ceiling = messagesCostMicros(MODEL, { inputTokens: EXTRACT_CONTEXT_TOKENS, cacheReadTokens: 0, cacheWriteTokens: 0, outputTokens: 32_000 });
+    expect(gw.calls[0]!.reservedMicros).toBeLessThanOrEqual(ceiling);
+  });
+
+  it("Retry after a watched reading failed goes back to reading the words: the ask is cleared", async () => {
+    const id = await seedVideo({ durationSec: 2_400, watchVideo: true });
+    await db.update(savedPosts).set({ status: "failed", lastErrorCode: "model_failed" }).where(eq(savedPosts.id, id));
+    expect(await overridePost(db, userId, { id }, "process", NOW)).toBe("ok");
+    expect(await row(id)).toMatchObject({ status: "queued", watchVideo: null });
+  });
+
+  it("a video whose length isn't known is never watched unasked (no video tokens are reserved for it)", async () => {
+    const id = await seedVideo({ durationSec: 0 });
+    const gw = gateway(reading(), (sent) => textTokens(sent));
+    await run(id, gw);
+    expect(gw.calls[0]!.body.messages[1].content).toHaveLength(1);
+    expect((await row(id)).videoSeen).toBeNull();
   });
 });

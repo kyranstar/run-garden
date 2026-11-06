@@ -11,7 +11,7 @@ import { runAtomicallyClaim } from "./db.js";
 import { summaryLine } from "./import-trail.js";
 import { messagesCostMicros } from "./llm-messages.js";
 import { notFittingSql } from "./saves-batches.js";
-import { EXTRACT_MODEL_DEFAULT, VIDEO_TOKENS_PER_SEC, WATCH_MAX_SEC } from "./saves-relay.js";
+import { EXTRACT_MODEL_DEFAULT, VIDEO_TOKENS_PER_SEC, WATCH_ASK_MAX_SEC, WATCH_MAX_SEC } from "./saves-relay.js";
 
 const { savedPosts, savedPostMoves, personalMoves, importEvents } = schema;
 
@@ -24,11 +24,13 @@ const dollars = (micros: number): string => `$${(micros / 1_000_000).toFixed(2)}
 
 /**
  * Whether a post may be watched too, in SQL (every write of the ask carries it, so a race writes nothing): a YouTube
- * post, read (`matched`) or failed, not yet asked, not seen, none of its moves saved, and its batch not being fitted in.
+ * post, read (`matched`) or failed, not yet asked, not seen, of a known length up to WATCH_ASK_MAX_SEC, none of its moves
+ * saved, and its batch not being fitted in.
  */
 function watchable(userId: string, postId: string, now: string): SQL {
   return sql`exists (select 1 from saved_posts w where w.id = ${postId} and w.user_id = ${userId} and w.source = 'youtube'
     and w.status in ('matched', 'failed') and coalesce(w.watch_video, 0) = 0 and coalesce(w.video_seen, 0) = 0
+    and w.duration_sec > 0 and w.duration_sec <= ${WATCH_ASK_MAX_SEC}
     and not exists (select 1 from saved_post_moves ws where ws.user_id = ${userId} and ws.post_id = w.id and ws.status = 'saved')
     and (w.batch_id is null or not exists (select 1 from save_batches wb where wb.id = w.batch_id and wb.user_id = ${userId}
       and not ${notFittingSql("wb", now)})))`;
@@ -89,7 +91,8 @@ export function videoOfTrail(
   return {
     watched: p.durationSec === null ? null : asked || !long,
     watchAsked: asked,
-    offerWatch: long && !asked && p.videoSeen !== true && (p.status === "matched" || p.status === "failed") && !anySaved,
+    // Only a video the model can take whole (final review F1): past WATCH_ASK_MAX_SEC it stays read from its words.
+    offerWatch: long && p.durationSec! <= WATCH_ASK_MAX_SEC && !asked && p.videoSeen !== true && (p.status === "matched" || p.status === "failed") && !anySaved,
     watchCostMicros: p.durationSec ? watchCostMicros(model, p.durationSec) : null,
   };
 }

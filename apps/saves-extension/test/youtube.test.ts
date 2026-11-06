@@ -185,3 +185,12 @@ describe("toYoutubeSubmit", () => {
     expect(submit.readFacts!.youtube).toMatchObject({ captions: null, segments: 0, transcriptChars: 0, via: null });
   });
 });
+
+describe("an unknown length (final review F5)", () => {
+  it("is sent as no length, never as zero", () => {
+    const meta = (parsePlayer(player({ videoDetails: { ...player().videoDetails, lengthSeconds: "0" } }), vid) as { meta: Parameters<typeof toYoutubeSubmit>[0] }).meta;
+    const submit = toYoutubeSubmit(meta, null, { list: [], from: null }, "0.3.0", 1_000);
+    expect(submit.durationSec).toBeUndefined();
+    expect(postSubmitSchema.safeParse(submit).success).toBe(true);
+  });
+});

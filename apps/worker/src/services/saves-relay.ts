@@ -210,6 +210,11 @@ export async function relayExtract(
 
 /** A video is watched (attached by its link) when it is this long or shorter, or when the owner asked (§5.4). */
 export const WATCH_MAX_SEC = 20 * 60;
+/**
+ * The longest video Watch it too may ask for: at the worst rate (300 tokens a second) and with its text, a longer one
+ * would pass the model's context window and fail every attempt (final review F1).
+ */
+export const WATCH_ASK_MAX_SEC = 50 * 60;
 /** What a watched second costs in prompt tokens: typically (the video-seen check's yardstick) and at worst (the reservation's). */
 export const VIDEO_TOKENS_PER_SEC = 100;
 export const VIDEO_TOKENS_PER_SEC_WORST = 300;
@@ -424,7 +429,8 @@ async function runExtraction(
     const transcriptChars = p.videoInfo?.captions ? (p.videoInfo.transcriptChars ?? 0) : 0;
     video = {
       durationSec,
-      watched: p.watchVideo === true || (durationSec !== null && durationSec <= WATCH_MAX_SEC),
+      // An unknown length is never watched (nothing would be reserved for it); an ask only up to WATCH_ASK_MAX_SEC.
+      watched: durationSec !== null && durationSec > 0 && (durationSec <= WATCH_MAX_SEC || (p.watchVideo === true && durationSec <= WATCH_ASK_MAX_SEC)),
       hasTranscript: transcriptChars > 0,
       textChars: SYSTEM_CHARS + LIBRARY_CHARS + (p.caption?.length ?? 0) + transcriptChars + TEXT_SLACK_CHARS,
     };
@@ -449,7 +455,9 @@ async function runExtraction(
     // A URL body's cost is its length's (≈100 tokens a second watched, 300 at worst) and its text's, not its bytes'.
     const watchedSec = video.watched ? (video.durationSec ?? WATCH_MAX_SEC) : 0;
     worst = Math.max(1, messagesCostMicros(model, {
-      inputTokens: Math.ceil(video.textChars / 3) + VIDEO_TOKENS_PER_SEC_WORST * watchedSec, cacheReadTokens: 0, cacheWriteTokens: 0, outputTokens: maxTokens,
+      // Never past the model's context window: a body can't cost more input than that (final review F1).
+      inputTokens: Math.min(EXTRACT_CONTEXT_TOKENS, Math.ceil(video.textChars / 3) + VIDEO_TOKENS_PER_SEC_WORST * watchedSec),
+      cacheReadTokens: 0, cacheWriteTokens: 0, outputTokens: maxTokens,
     }));
     typical = Math.max(1, messagesCostMicros(model, {
       inputTokens: Math.ceil(video.textChars / 4) + VIDEO_TOKENS_PER_SEC * watchedSec, cacheReadTokens: 0, cacheWriteTokens: 0,

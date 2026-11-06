@@ -259,7 +259,8 @@ export function toYoutubeSubmit(
     postedAt: meta.publishedAt,
     origin: "pasted",
     title: meta.title.slice(0, TITLE_MAX),
-    durationSec: Math.min(86_400, Math.max(0, meta.lengthSec)),
+    // An unknown length is no length, never zero: the app would take a zero as "short enough to watch" (final review F5).
+    ...(meta.lengthSec > 0 ? { durationSec: Math.min(86_400, meta.lengthSec) } : {}),
     chapters: chapters.list.slice(0, CHAPTERS_MAX),
     ...(kept && text ? { transcript: { lang: kept.track.languageCode.slice(0, 20), kind, text: text.text, cut: text.cut } } : {}),
     live: meta.live,
