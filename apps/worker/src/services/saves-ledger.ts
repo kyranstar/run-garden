@@ -264,9 +264,15 @@ export async function workList(
           isFilter,
           // A post the budget refused waits off the list until a typical reading fits again: handing it out meant
           // downloading its video every check for nothing (audit 2026-11-05, bug 6).
+          // Queued with no reading — or one the owner asked to read again, which keeps its earlier reading until the new
+          // one, lined up with its links, replaces it (phase 5a). Any other reading is never paid for twice.
           and(
             eq(savedPosts.status, "queued"),
-            isNull(savedPosts.extraction),
+            or(
+              isNull(savedPosts.extraction),
+              sql`EXISTS (SELECT 1 FROM import_events ra WHERE ra.user_id = ${userId} AND ra.post_id = ${savedPosts.id} AND ra.stage = 'choice'
+                AND json_extract(ra.detail, '$.action') = 'reread')`,
+            ),
             spentMicros + EXTRACT_ROOM_MICROS <= capMicros
               ? undefined
               : or(isNull(savedPosts.lastErrorCode), ne(savedPosts.lastErrorCode, "budget_paused")),
@@ -464,8 +470,7 @@ const PROCESSABLE = ["filtered_out", "failed"] as const;
 
 /**
  * The owner's word on one post. `process` sends a filtered-out or failed post back to the queue (stage "owner", attempts,
- * the last error and any stored extraction cleared — `/work` hands out only a queued post with no extraction, so one kept
- * from a failed match would strand it); `skip` and `reference` set their status (a reference keeps the post's links; its
+ * the last error and any stored extraction cleared — except a post's that has links: the re-read is lined up with it); `skip` and `reference` set their status (a reference keeps the post's links; its
  * routine is never offered whole). The post is named by row id or by (source, key). Another account's post is
  * "not_found"; a `process` on a post that is neither filtered out nor failed — also one that moved on between the read and
  * the write (a relay's claim) — is a "conflict". Two statements.
@@ -491,7 +496,8 @@ export async function overridePost(
       .set({
         status: "queued",
         filterStage: "owner",
-        extraction: null,
+        // A post with links keeps its reading: the new one is lined up with it before it replaces it (phase 5a).
+        extraction: sql`CASE WHEN EXISTS (SELECT 1 FROM ${savedPostMoves} WHERE ${savedPostMoves.userId} = ${userId} AND ${savedPostMoves.postId} = ${row.id}) THEN ${savedPosts.extraction} ELSE NULL END`,
         extractAttempts: 0,
         lastErrorCode: null,
         lastError: null,

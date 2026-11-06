@@ -15,8 +15,10 @@ import { schema } from "@rg/database";
 import { EXERCISES } from "@rg/exercise-library";
 import { failureWords, IMPORT_STAGES } from "@rg/saves";
 import type { BlobKind, ImportBlobDto, ImportStage, ImportTrailDto, TrailEventDto, TrailSource, TrailStatus } from "@rg/saves";
+import { nowInstant } from "@rg/domain";
 import type { Db } from "./db.js";
 import { EXTRACT_MODEL_DEFAULT } from "./saves-relay.js";
+import { readAgainGateSql, readingCostOf } from "./saves-reread.js";
 import { videoOfTrail } from "./saves-video.js";
 
 const { savedPosts, importEvents, importBlobs, savedPostMoves, personalMoves, saveBatches, exerciseProvenance } = schema;
@@ -53,10 +55,12 @@ const quotesOf = (v: unknown): Quote[] =>
       )
     : [];
 
-export async function readPostTrail(db: Db, userId: string, postId: string): Promise<ImportTrailDto | null> {
+export async function readPostTrail(db: Db, userId: string, postId: string, now: string = nowInstant()): Promise<ImportTrailDto | null> {
   const [found] = await db
     .select({
       p: savedPosts,
+      // Read it again may be asked now (phase 5a): the ask's own gate, in the same statement.
+      readable: sql<number>`${readAgainGateSql(userId, postId, now)}`,
       batch: {
         id: saveBatches.id, status: saveBatches.status, createdAt: saveBatches.createdAt, releasedAt: saveBatches.releasedAt,
         savedAt: saveBatches.savedAt, fittedAt: saveBatches.fittedAt, fitStartedAt: saveBatches.fitStartedAt, theme: saveBatches.theme,
@@ -189,6 +193,7 @@ export async function readPostTrail(db: Db, userId: string, postId: string): Pro
       origin: p.origin ?? null,
       durationSec: p.durationSec ?? null,
       videoSeen: p.videoSeen ?? null,
+      readAgain: readAgainOf(p, Number(found.readable) === 1, rows),
       video: videoOfTrail(
         { source: p.source, status: p.status, durationSec: p.durationSec ?? null, videoSeen: p.videoSeen ?? null, watchVideo: p.watchVideo ?? null },
         links.some((l) => l.status === "saved"),
@@ -214,6 +219,18 @@ export async function readPostTrail(db: Db, userId: string, postId: string): Pro
     events,
     rebuilt,
   };
+}
+
+/** Read it again on the trail: offered (with its price) while it may be asked; asked, until the reading is under way. */
+function readAgainOf(
+  p: typeof savedPosts.$inferSelect,
+  readable: boolean,
+  rows: readonly { stage: string; detail: unknown }[],
+): ImportTrailDto["post"]["readAgain"] {
+  const lastChoice = [...rows].reverse().find((r) => r.stage === "choice");
+  const asked = (p.status === "queued" || p.status === "extracting") && (lastChoice?.detail as { action?: unknown } | null)?.action === "reread";
+  if (!readable && !asked) return null;
+  return { offer: readable, asked, costMicros: readingCostOf(p) };
 }
 
 /** The post's batch, as the trail's read joins it. */

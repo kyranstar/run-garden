@@ -663,6 +663,26 @@ export async function matchStale(db: Db, env: Env, userId: string, now: Date, fe
   return true;
 }
 
+/** A typical reel's length, for what reading one costs before it is fetched (Read it again's price; phase 5a). */
+export const TYPICAL_REEL_SEC = 60;
+
+/**
+ * What reading a post typically costs, said before the owner's tap (Read it again, phase 5a): the relay's own typical
+ * estimate — a video page by its words (`textChars`: its description and transcript) and, up to WATCH_MAX_SEC, its
+ * watched length; a post's media by a typical reel (its prompt and a minute of video), an image post by its prompt.
+ */
+export function typicalReadingMicros(model: string, p: { source: string; mediaType: string | null; durationSec: number | null; textChars: number }): number {
+  if (p.source === "youtube") {
+    const watched = p.durationSec !== null && p.durationSec > 0 && p.durationSec <= WATCH_MAX_SEC ? p.durationSec : 0;
+    return messagesCostMicros(model, {
+      inputTokens: Math.ceil((SYSTEM_CHARS + LIBRARY_CHARS + p.textChars) / 4) + VIDEO_TOKENS_PER_SEC * watched,
+      cacheReadTokens: 0, cacheWriteTokens: 0, outputTokens: TYPICAL_OUTPUT_TOKENS,
+    });
+  }
+  const video = p.mediaType === "video" ? Math.ceil((p.durationSec ?? TYPICAL_REEL_SEC) * VIDEO_TOKENS_PER_SECOND) : 0;
+  return messagesCostMicros(model, { inputTokens: TEXT_PROMPT_TOKENS + video, cacheReadTokens: 0, cacheWriteTokens: 0, outputTokens: TYPICAL_OUTPUT_TOKENS });
+}
+
 /** A long video with no captions: nothing to read until the owner asks for it to be watched. */
 const NO_CAPTIONS_LONG = "No captions, and it's over 20 minutes — Watch it too reads it from the video";
 const NO_CAPTIONS_TOO_LONG = "No captions, and it's too long to watch (over 50 minutes)";

@@ -9,7 +9,96 @@
  * move the new reading doesn't hold keeps the earlier reading whole: two readings' moves are never mixed (an earlier
  * one's may not even parse under today's schema), and nothing the owner has is rewritten (ruling, phase 5a ledger).
  */
+import { and, eq, sql, type SQL } from "drizzle-orm";
+import { schema } from "@rg/database";
 import { extractionSchema, normalizeMoveName, type Extraction } from "@rg/saves";
+import type { Db } from "./db.js";
+import { runAtomicallyClaim } from "./db.js";
+import { summaryLine } from "./import-trail.js";
+import { notFittingSql, openBatchSql } from "./saves-batches.js";
+import { EXTRACT_MODEL_DEFAULT, typicalReadingMicros } from "./saves-relay.js";
+
+const { savedPosts, importEvents } = schema;
+
+/**
+ * A step that is a reading of the post's own, in SQL over an `import_events` alias: its screening, or a reading of its
+ * moves that was stored (its detail counts the moves; one that kept the earlier reading says so). A failed reading, or
+ * one waiting for the budget, is none — the post still has only what was kept from before.
+ */
+export function ownReadingSql(alias: string): SQL {
+  const a = sql.raw(alias);
+  return sql`(${a}.stage = 'screen' or (${a}.stage = 'extract' and json_type(${a}.detail, '$.moves') = 'integer'
+    and coalesce(json_extract(${a}.detail, '$.kept'), '') <> 'earlier'))`;
+}
+
+/** The same, for a step as the trail reads it. */
+export const isOwnReading = (e: { stage: string; detail: unknown }): boolean => {
+  if (e.stage === "screen") return true;
+  if (e.stage !== "extract" || !e.detail || typeof e.detail !== "object") return false;
+  const d = e.detail as { moves?: unknown; kept?: unknown };
+  return typeof d.moves === "number" && Number.isInteger(d.moves) && d.kept !== "earlier";
+};
+
+/**
+ * Whether a post may be read again, in SQL (every write of the ask carries it, so a race writes nothing): the owner's
+ * post from before the trail (no reading of its own), matched or failed — a post the owner skipped or kept as a
+ * reference keeps their word, and a filtered one has Import anyway — whose batch isn't being fitted in, with no move of
+ * it waiting in a held or open batch (a re-read mid-review would change what the owner is reviewing). One clause.
+ */
+export function readAgainGateSql(userId: string, postId: string, now: string): SQL {
+  return sql`exists (select 1 from saved_posts ra where ra.id = ${postId} and ra.user_id = ${userId}
+    and ra.status in ('matched', 'failed')
+    and not exists (select 1 from import_events re where re.user_id = ${userId} and re.post_id = ra.id and ${ownReadingSql("re")})
+    and (ra.batch_id is null or not exists (select 1 from save_batches rb where rb.id = ra.batch_id and rb.user_id = ${userId} and not ${notFittingSql("rb", now)}))
+    and not exists (select 1 from saved_post_moves rl join save_batches rlb on rlb.id = rl.batch_id and rlb.user_id = rl.user_id
+      where rl.user_id = ${userId} and rl.post_id = ra.id and rl.status = 'pending' and (rlb.status = 'held' or ${openBatchSql("rlb")})))`;
+}
+
+/** What a post's reading is priced from: its source, media and length, and its words (a video page's description and transcript). */
+export function readingCostOf(p: {
+  source: string; mediaType: string | null; durationSec: number | null; caption: string | null;
+  videoInfo: { captions: unknown; transcriptChars: number } | null;
+}): number {
+  const textChars = (p.caption?.length ?? 0) + (p.videoInfo?.captions ? (p.videoInfo.transcriptChars ?? 0) : 0);
+  return typicalReadingMicros(EXTRACT_MODEL_DEFAULT, { source: p.source, mediaType: p.mediaType, durationSec: p.durationSec, textChars });
+}
+
+/** A price in the owner's words: "about $0.02", or "under $0.01". */
+export const priceWords = (micros: number): string => (micros < 5_000 ? "under $0.01" : `about $${(micros / 1_000_000).toFixed(2)}`);
+
+/**
+ * The owner's Read it again: the post goes back to the queue — its attempts and last error cleared, its reading KEPT
+ * when it has links (the new one is lined up with it before it replaces it), nothing else touched — and its trail says
+ * so with the price. The computer's extension finds it on its work list (`/work`) and reads it as any `extract` work.
+ * "conflict" when it can't be (`readAgainGateSql`). Two statements, the second a batch of two.
+ */
+export async function readAgain(db: Db, userId: string, postId: string, now: string): Promise<"ok" | "not_found" | "conflict"> {
+  const [p] = await db
+    .select({ source: savedPosts.source, mediaType: savedPosts.mediaType, durationSec: savedPosts.durationSec, caption: savedPosts.caption, videoInfo: savedPosts.videoInfo })
+    .from(savedPosts)
+    .where(and(eq(savedPosts.id, postId), eq(savedPosts.userId, userId)))
+    .limit(1);
+  if (!p) return "not_found";
+  const cost = readingCostOf(p);
+  const gate = readAgainGateSql(userId, postId, now);
+  const summary = summaryLine(`You asked for it to be read again (${priceWords(cost)})`);
+  const detail = JSON.stringify({ action: "reread", costMicros: cost });
+  const claimed = await runAtomicallyClaim(db, [
+    db.insert(importEvents).select(
+      sql`SELECT lower(hex(randomblob(16))), ${userId}, ${postId}, NULL, NULL, 'choice', 'owner', 'info', ${summary}, ${detail},
+        NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, 0, ${now} WHERE ${gate}`,
+    ),
+    db
+      .update(savedPosts)
+      .set({
+        status: "queued", extractAttempts: 0, lastErrorCode: null, lastError: null, watchVideo: null, updatedAt: now,
+        extraction: sql`CASE WHEN EXISTS (SELECT 1 FROM saved_post_moves x WHERE x.user_id = ${userId} AND x.post_id = ${postId}) THEN ${savedPosts.extraction} ELSE NULL END`,
+      })
+      .where(and(eq(savedPosts.id, postId), eq(savedPosts.userId, userId), gate))
+      .returning({ id: savedPosts.id }),
+  ]);
+  return claimed > 0 ? "ok" : "conflict";
+}
 
 /** One of the post's links as the re-read finds it: its place, its move and that move's name now. */
 export interface KeptRow {

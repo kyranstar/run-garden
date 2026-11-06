@@ -2781,6 +2781,8 @@ export const api = {
     post<{ state: "added"; link: import("@rg/saves").LinkDto } | { state: "known"; postId: string; firstSeenAt: string }>("/api/my-saves/links", { url }),
   /** Watch it too: read a long video again, with the video watched (409 when it can't be). */
   savesWatch: (postId: string) => post<{ ok: boolean }>(`/api/my-saves/posts/${encodeURIComponent(postId)}/watch`),
+  /** Read it again (design 2026-11-05 §6.6): an old post read under the current prompt by the computer's extension. */
+  savesReadAgain: (postId: string) => post<{ ok: boolean }>(`/api/my-saves/posts/${encodeURIComponent(postId)}/read-again`),
   /** One saved post's trail: its account, then every step oldest first (import trail; 404 another account's). */
   saveTrail: (postId: string) => get<import("@rg/saves").ImportTrailDto>(`/api/my-saves/posts/${encodeURIComponent(postId)}/trail`),
   /** One blob of a trail: a raw reply, the prompt as sent, a transcript. */
