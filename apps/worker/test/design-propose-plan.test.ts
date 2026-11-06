@@ -478,7 +478,7 @@ describe("propose_plan: refused in words, nothing written", () => {
       { endedDaysAgo: 7, fix: `To continue its line, propose its next phase (createPlan) starting ${TODAY}; name its plan (continuesPlanId) and it joins the line.` },
       // Seven rest days between its end and today: a full week's rest keeps the line (owner, 2026-10-23).
       { endedDaysAgo: 8, fix: `To continue its line, propose its next phase (createPlan) starting ${TODAY}; name its plan (continuesPlanId) and it joins the line.` },
-      { endedDaysAgo: 9, fix: `What comes next is a line of its own: propose it with createPlan, starting ${TODAY} or later.` },
+      { endedDaysAgo: 9, fix: `Propose what comes next with createPlan, starting ${TODAY} or later: a new plan (newPlan), or the plan it continues, named (continuesPlanId).` },
     ];
     for (const c of cases) {
       it(`ended ${c.endedDaysAgo} days ago`, async () => {

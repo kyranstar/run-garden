@@ -19,6 +19,8 @@ import { DISCIPLINE_WORD, isPlanKind, lineKeysByPlan, planPatchSchema, planSumma
  *  - Each listed COROS running plan is a `coros_import` plan under its own `training_plans.id`.
  *  - An adaptive programme that has no ending yet gets `continue`.
  *
+ * A plan's dates are computed from its sessions, never stored: a row leaves `start_date`, `end_date` and `race_date` null.
+ *
  * Idempotent, and cheap on the hourly pass (the free plan allows about 45 statements): reads first, then writes in
  * order of cost until the budget is spent, the lines last. What doesn't fit waits for the next hour. A restore
  * replacing the account stops it at once, and nothing is written.
@@ -82,9 +84,9 @@ export async function backfillPlanRegistry(db: Db, userId: string, today: string
         name: e.name,
         status: "active",
         disciplines: ["run"],
-        startDate: e.startDate,
-        endDate: e.endDate,
-        raceDate: e.raceDate,
+        startDate: null,
+        endDate: null,
+        raceDate: null,
         source: null,
         onEnd: defaultOnEnd("coros_import", ["run"]),
       })
@@ -118,8 +120,8 @@ export async function backfillPlanRegistry(db: Db, userId: string, today: string
           name: studio.name,
           status: "active", // ended is computed from the dates, never stored
           disciplines: ["strength"],
-          startDate: studio.startDate,
-          endDate: studio.endDate,
+          startDate: null,
+          endDate: null,
           raceDate: null,
           source: { studioPlanId: studio.id },
           // Kind "coach" without running continues, as `defaultOnEnd` says.
@@ -157,9 +159,9 @@ export async function backfillPlanRegistry(db: Db, userId: string, today: string
           name: line.phases.length === 1 ? line.phases[0]!.name : line.name,
           status: "active",
           disciplines,
-          startDate: line.startDate,
-          endDate: line.endDate,
-          raceDate: line.goalRaceDate,
+          startDate: null,
+          endDate: null,
+          raceDate: null,
           source: null,
           onEnd: defaultOnEnd("coach", disciplines),
         })

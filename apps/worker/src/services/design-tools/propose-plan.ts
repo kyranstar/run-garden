@@ -285,9 +285,9 @@ interface PlanRow {
  *  - one the athlete stopped (retired) stays stopped: a new plan only if they ask;
  *  - else its line goes on: an extend or a wind-down is its END's — the line's last phase — and a week's change (or a
  *    retirement) the phase now running or next;
- *  - or a next phase continues it, from the day after the line's last phase ends (today at the earliest), which joins
- *    the line while it starts within LINE_GAP_DAYS (8) of that end — a full week's rest between keeps the line; eight rest
- *    days, and it is a line of its own (owner, 2026-10-23).
+ *  - or a next phase continues it, from the day after the line's last phase ends (today at the earliest); it joins the
+ *    plan it names (`continuesPlanId`), however long after: dates decide nothing (plans with a purpose §3.2). A line that
+ *    ended more than LINE_GAP_DAYS (8) before that day is simply told to propose a new plan or name the one it continues.
  * `phases`: the athlete's blocks of its discipline.
  */
 function endedRefusal(plan: PlanRow, kind: PlanStructureChange["kind"], phases: LineBlock[], today: string): ToolErr {
@@ -309,7 +309,7 @@ function endedRefusal(plan: PlanRow, kind: PlanStructureChange["kind"], phases: 
     return refuse("not_running", `That block ${when}; its line goes on in ${JSON.stringify(goesOn.name)} (${goesOn.id}).`, `Change that phase instead — or, ${continueIt}`);
   }
   if (start > addDays(line.endDate, LINE_GAP_DAYS)) {
-    return refuse("not_running", `That block ${when}, and its line ended on ${line.endDate}, more than a week ago.`, `What comes next is a line of its own: propose it with createPlan, starting ${today} or later.`);
+    return refuse("not_running", `That block ${when}, and its line ended on ${line.endDate}.`, `Propose what comes next with createPlan, starting ${today} or later: a new plan (newPlan), or the plan it continues, named (continuesPlanId).`);
   }
   return refuse("not_running", `That block ${when}.`, `To continue its line, propose its next phase (createPlan) starting ${start}; name its plan (continuesPlanId) and it joins the line.`);
 }

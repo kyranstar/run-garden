@@ -236,7 +236,10 @@ export function standRowsSql(db: Db, userId: string, today: string, opts: { libr
     (select json_group_array(json_array(id, name, purpose)) from (
       select ${programs.id} as id, ${programs.name} as name, ${programs.purpose} as purpose from ${programs}
       where ${programs.userId} = ${userId} and ${programs.status} = 'active' and ${programs.archivedAt} is null
-        and ${programs.kind} in (${PLAN_KIND_LIST}) and (${programs.endDate} is null or ${programs.endDate} >= ${today})
+        and ${programs.kind} in (${PLAN_KIND_LIST}) and coalesce(${programs.endDate},
+          (select max(cp.end_date) from coach_plans cp where cp.program_id = ${programs.id} and cp.user_id = ${userId}),
+          (select max(pw.effective_date) from planned_workouts pw where pw.plan_id = ${programs.id} and pw.user_id = ${userId}),
+          ${today}) >= ${today}
       order by ${programs.createdAt}, ${programs.id} limit ${PLANS_READ})) as plans,
     ${opts.library ? personalMovesSql(userId) : sql`null`} as library`;
 }

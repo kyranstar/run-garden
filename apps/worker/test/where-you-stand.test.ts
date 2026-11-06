@@ -582,6 +582,24 @@ describe("readStandFacts: one statement and the measures its key results need", 
     ]);
   });
 
+  it("a plan stores no dates: it is unended while a block of it, or a session filed under it, is still ahead", async () => {
+    const plan = (id: string) =>
+      db.insert(schema.programs).values({
+        id, userId, kind: "coach", name: `Zorbex ${id}`, status: "active", disciplines: ["run"], config: {}, createdAt: at(d(-9)), updatedAt: at(d(-9)),
+      } as never);
+    const block = (id: string, programId: string, end: string) =>
+      db.insert(schema.coachPlans).values({
+        id, userId, discipline: "run", name: "Synthetic block", status: "active", startDate: d(-30), endDate: end, raceDate: null, stampPrefix: "S", programId, createdAt: at(d(-30)), updatedAt: at(d(-30)),
+      });
+    await plan("over");
+    await block("b-over", "over", d(-3));
+    await plan("running");
+    await block("b-old", "running", d(-20));
+    await block("b-new", "running", d(5));
+    const f = await readStandFacts(db, userId, { today: TODAY, tz: "UTC" });
+    expect(f.plans.map((p) => p.id)).toEqual(["running"]);
+  });
+
   it("#8 rows read stay bounded by the windows, not the lifetime: every activity, session and read search uses a time range (query plan)", async () => {
     const plan = ((await db.all(sql`explain query plan ${standRowsSql(db, userId, TODAY, { library: false })}`)) as Array<{ detail: string }>).map((r) => r.detail);
     const on = (table: string) => plan.filter((l) => new RegExp(`^(SEARCH|SCAN) ${table}\\b`).test(l));

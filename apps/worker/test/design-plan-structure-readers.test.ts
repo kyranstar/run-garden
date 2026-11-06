@@ -119,10 +119,10 @@ const tenK = {
 };
 
 /** An auto run that reads the plans, proposes a block and finishes: its id, the calls and the requests. */
-async function planned(words = "Plan my next four weeks toward a 10K") {
+async function planned(words = "Plan my next four weeks toward a 10K", change: Record<string, unknown> = tenK) {
   const run = await createRun(db, userId, { request: words }, NOW);
   const read = use("read_plans", {});
-  const plan = use("propose_plan", { change: tenK, why: "Four weeks that build to your 10K." });
+  const plan = use("propose_plan", { change, why: "Four weeks that build to your 10K." });
   const { deps, requests } = scripted([turn(read), turn(plan), turn(use("finish", { summary: "Here's a four-week build toward your 10K." }))]);
   expect(await drive(run.run.id, deps)).toBe("finished");
   return { id: run.run.id, plan, requests };
@@ -162,6 +162,19 @@ describe("through the loop", () => {
 });
 
 describe("the conversation", () => {
+  it("a block that continues a plan says so on its card, by the plan's name (stored with the plan change, no read at render)", async () => {
+    await db.insert(schema.programs).values({
+      id: "plan-held", userId, kind: "coach", name: "Synthetic running", status: "active", disciplines: ["run"], startDate: null, endDate: null, raceDate: null, source: null,
+      config: {}, purpose: null, brief: null, onEnd: "ask", pausedUntil: null, objectiveIds: null, createdAt: NOW.toISOString(), updatedAt: NOW.toISOString(), archivedAt: null,
+    });
+    const { newPlan: _drop, ...rest } = tenK;
+    const { id } = await planned("Plan my next four weeks", { ...rest, continuesPlanId: "plan-held" });
+    const conv = await readConversation(db, userId, new Date(NOW.getTime() + 120_000), { endedLine });
+    const card = conv.turns.at(-1)!.cards;
+    expect(card[0]!.lines![0]).toBe('Next phase: 10K build · Mon 18 May to Sun 14 Jun — continues "Synthetic running" · race day Sun 14 Jun');
+    expect(((await proposalOf(id)).ops as PlanStructureOp[])[0]!.lines[0]).toBe(card[0]!.lines![0]);
+  });
+
   it("a plan is one card of its own — its title, its line, its lines — and a later turn's block names it with its id and how it stands", async () => {
     const { id } = await planned();
     const conv = await readConversation(db, userId, new Date(NOW.getTime() + 120_000), { endedLine });

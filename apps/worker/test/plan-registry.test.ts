@@ -97,8 +97,9 @@ describe("backfillPlanRegistry", () => {
       name: "Running", // a many-phase line is named for its sport, as the plan list names it
       status: "active",
       disciplines: ["run"],
-      startDate: "2026-09-07",
-      endDate: "2026-10-18",
+      startDate: null, // dates are computed from the blocks, never stored: a later block would leave them stale
+      endDate: null,
+      raceDate: null,
       onEnd: "ask", // running asks what comes next
       config: {},
     });
@@ -169,8 +170,9 @@ describe("backfillPlanRegistry", () => {
       name: "Synthetic lifting",
       disciplines: ["strength"],
       source: { studioPlanId: studioId },
-      startDate: "2026-10-05",
-      endDate: "2026-11-01",
+      startDate: null,
+      endDate: null,
+      raceDate: null,
       onEnd: "continue",
     });
     expect(await backfillPlanRegistry(db, userId, TODAY)).toEqual({ created: 0, linked: 0 });
@@ -230,7 +232,7 @@ describe("backfillPlanRegistry", () => {
 
     expect(await backfillPlanRegistry(db, userId, TODAY)).toEqual({ created: 1, linked: 0 });
 
-    expect((await rows())[0]).toMatchObject({ id: "coros-run-1", kind: "coros_import", name: "Synthetic 10K", disciplines: ["run"], onEnd: "ask" });
+    expect((await rows())[0]).toMatchObject({ id: "coros-run-1", kind: "coros_import", name: "Synthetic 10K", disciplines: ["run"], onEnd: "ask", startDate: null, endDate: null, raceDate: null });
   });
 
   it("sets an adaptive programme's ending to continue, and only when it has none", async () => {
