@@ -736,7 +736,23 @@ async function place(
           archivedAt: null,
           archiveReason: null,
           ...(r.calendarSyncState === "synced" ? { calendarSyncState: "pending" } : {}),
-          ...(writtenSession(r) ? { origin: "program", courseSession: null, workoutDoc: null, sourceContentFingerprint: "program" } : {}),
+          // A session written before it left may have had a copy: that's its delete's now, which holds its own address (the
+          // queued job's payload, or what `unpushBuild` kept with one owed), so the outline holds none of it, as `freshRow`'s doesn't.
+          // A slot never written has none of this.
+          ...(writtenSession(r)
+            ? {
+                origin: "program",
+                courseSession: null,
+                workoutDoc: null,
+                sourceContentFingerprint: "program",
+                sourceWorkoutId: r.id,
+                sourceIdInPlan: null,
+                sourceProgramId: null,
+                watchCopyName: null,
+                corosSyncState: "calendar_only",
+                lastVerifiedCorosDate: "",
+              }
+            : {}),
           updatedAt: now,
         })
         .where(and(eq(plannedWorkouts.id, r.id), eq(plannedWorkouts.userId, userId)));

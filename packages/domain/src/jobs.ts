@@ -258,6 +258,11 @@ export const programSessionPushJobSchema = z
      * drops it (audit 3-B S-2).
      */
     renamed: z.string().min(1).max(200).optional(),
+    /**
+     * Written when this copy's delete is owed, the athlete's COROS writes off (`unpushBuild`): where the copy sits. Read
+     * only for a row that no longer says: a queued delete carries its address in its payload, and one owed carries it here.
+     */
+    owedAddress: z.object({ corosPlanId: z.string().min(1), idInPlan: z.string().min(1), programId: z.string().min(1), happenDay: localDate }).strict().optional(),
   })
   .strict();
 export type ProgramSessionPushJob = z.infer<typeof programSessionPushJobSchema>;

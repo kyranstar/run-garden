@@ -50,7 +50,7 @@ import { COROS_EXERCISE_NAMES, localDateToCorosDay } from "@rg/providers";
 import type { Step } from "@rg/session-engine";
 import { watchPushEnabled, type Env } from "../env.js";
 import { sha256Hex } from "../auth/crypto.js";
-import type { Db } from "./db.js";
+import { runAtomically, type Db } from "./db.js";
 import { libraryFor, loadAccountLibrary, PUBLIC_LIBRARY } from "./account-library.js";
 import { corosKeyOf } from "./coros-exercise-map.js";
 import { freeStamp, STAMP_SEPARATOR, stampName, takenStampsOn } from "./coros-stamp.js";
@@ -1173,7 +1173,9 @@ export async function queuePushJob(
  * AN UNPUSH OWED WHILE THE ATHLETE'S COROS WRITES ARE OFF (audit 3-A life L-10) is not queued — nothing writes to
  * their COROS then — and not forgotten either: it is recorded on the sent build (`$.unpushOwedAt`), which stays
  * locked so the copy stays accounted for (the push stays the slot's, its stamp recognised), and `runOwedUnpushes`
- * queues it when writes come back on. Before, the copy was stranded on the old day for good.
+ * queues it when writes come back on. Before, the copy was stranded on the old day for good. Where the copy sits goes on
+ * its push (`owedAddress`), because the row may not say by then: a course's session that came off and came back the same
+ * day is an outline holding no address (`program-slots.ts`), as a queued delete's payload already allows for.
  */
 export async function unpushBuild(
   db: Db,
@@ -1189,19 +1191,26 @@ export async function unpushBuild(
     .set({ status: "superseded", updatedAt: now })
     .where(and(eq(corosWriteJobs.id, id), eq(corosWriteJobs.status, "queued")));
   const push = await jobById(db, id);
-  const address = watchAddressOf(row);
   const parsed = push ? programSessionPushJobSchema.safeParse(push.payload) : null;
+  // Where the copy is: the row's address, or where it was when its delete was owed, the row having let go of it since.
+  const address = watchAddressOf(row) ?? (parsed?.success ? parsed.data.owedAddress : undefined) ?? null;
   // A DONE SESSION'S COPY STAYS (audit 3-A life U-1): it is the session the athlete did — the record a watch review
   // pairs with — so nothing takes it off, now or owed.
   const resolved = row.contentState === "done" || row.completionState === "completed";
   if (!resolved && push?.status === "verified" && address && parsed?.success) {
     if (!prefs.corosWritesEnabled) {
       // Owed on the sent build — locked, or a provisional copy's record (the watch mirrors the plan, A1), which keeps
-      // its marker as a sent build keeps its lock.
-      await db
-        .update(sessionBuilds)
-        .set({ payload: sql`json_set(${sessionBuilds.payload}, ${UNPUSH_OWED_AT_PATH}, ${now})` })
-        .where(and(eq(sessionBuilds.id, buildId), or(isNotNull(sessionBuilds.lockedAt), provisionalRecord())));
+      // its marker as a sent build keeps its lock — and the address on its push, for the delete to go to.
+      await runAtomically(db, [
+        db
+          .update(sessionBuilds)
+          .set({ payload: sql`json_set(${sessionBuilds.payload}, ${UNPUSH_OWED_AT_PATH}, ${now})` })
+          .where(and(eq(sessionBuilds.id, buildId), or(isNotNull(sessionBuilds.lockedAt), provisionalRecord()))),
+        db
+          .update(corosWriteJobs)
+          .set({ payload: sql`json_set(${corosWriteJobs.payload}, '$.owedAddress', json(${JSON.stringify(address)}))` })
+          .where(eq(corosWriteJobs.id, id)),
+      ]);
       return;
     }
     await queueUnpush(db, userId, buildId, {
