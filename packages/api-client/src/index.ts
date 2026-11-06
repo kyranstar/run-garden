@@ -849,6 +849,8 @@ export interface DesignProposalReadDto {
   /** Its changes to the moves in rotation (saved-posts import, Task 18); absent when it holds none, or from an older
    * server. */
   pins?: DesignPinsLineDto[];
+  /** Its corrections to imported data (import trail phase 3): beside the pins card, or alone; absent when it holds none. */
+  corrections?: DesignCorrectionLineDto[];
   /** A set's: the plan's other rows in its date span; absent otherwise. */
   context?: DesignContextRowDto[];
 }
@@ -907,6 +909,50 @@ export interface DesignPinsCardLineDto {
   moveId?: string;
   name?: string;
   text: string;
+  /** The coach's review (import trail phase 3, §3.3): what the card does with the move — in (pinned, in a workout of the
+   * suggestion, or in rotation already) or out — where it goes, the dose it runs with (an in line's), its cites as chips,
+   * and the move's first post (its name opens that post's trail at the move). Absent from a line stored before. */
+  decision?: "in" | "out";
+  where?: string;
+  dose?: string;
+  cites?: DesignCiteDto[];
+  post?: { id: string; position: number };
+}
+
+/**
+ * A cite of a review line or a correction, drawn as a chip (import trail phase 3, §3.3): a quote's — "said 1:12", "in
+ * the caption", "heard 0:12" (what the reader heard in the video, never said), "on screen", "not in the post" — opens
+ * the post's trail at the quote; the reader's guess opens the move; history and a goal are plain.
+ */
+export interface DesignCiteDto {
+  id: string;
+  kind: "quote" | "history" | "goal" | "inferred";
+  label: string;
+  postId?: string;
+  position?: number;
+  quote?: number;
+  field?: string;
+  goalId?: string;
+}
+
+/** A correction to imported data in a suggestion (import trail phase 3, §8.4): what it corrects, its line, the coach's
+ * why and basis (the evidence, or the athlete's word), its cites, and how it stands. */
+export interface DesignCorrectionLineDto {
+  opId: string;
+  target: "move" | "reading" | "insight" | "link";
+  field: string;
+  name: string;
+  line: string;
+  why: string;
+  basis: "evidence" | "owner";
+  cites: DesignCiteDto[];
+  outcome:
+    | { status: "applied"; at: string; lines?: string[] }
+    | { status: "applying"; at: string }
+    | { status: "refused"; at: string; error: string; why: string }
+    | { status: "declined"; at: string; reason?: string }
+    | { status: "superseded"; at: string; reason: string; by: string }
+    | null;
 }
 
 /**
@@ -1035,6 +1081,8 @@ export interface DesignApproveResponse {
   planned?: Array<{ opId: string; summary: string }>;
   /** The changes to the moves in rotation this request applied (saved-posts import, Task 18), each in one line. */
   pinned?: Array<{ opId: string; summary: string }>;
+  /** The corrections to imported data this request applied (import trail phase 3), each its line. */
+  corrected?: Array<{ opId: string; summary: string }>;
   /**
    * Changes another approve is applying (its claim inside the server's window, Task 8b): never applied twice, never a
    * failure — they are being changed. Only when nothing else was answered is it a 409 `in_flight` naming them (`opIds`).
@@ -1472,7 +1520,7 @@ export interface CoachConversationCardDto {
   /** `plan` (§8 §5): a whole plan — a new block, its extension, a week, a wind-down — approved with one tap; `programme`,
    * a change to a programme's settings, one card a programme; `pins` (saved-posts import, Task 18), the moves the coach
    * would keep in rotation or take out, approved with one tap. */
-  kind: "workout" | "plan_changes" | "set" | "plan" | "programme" | "pins";
+  kind: "workout" | "plan_changes" | "set" | "plan" | "programme" | "pins" | "corrections";
   proposalId: string;
   title: string;
   summary: string;
@@ -1482,7 +1530,7 @@ export interface CoachConversationCardDto {
   lines?: string[];
   /** The moves in rotation's lines as the card draws them (the saves flow redesigned, §3.5): a move's name in bold, once,
    * then the text — the name null for a general line or one stored before the redesign. Absent from an older server. */
-  pinLines?: Array<{ moveId?: string; name: string | null; text: string }>;
+  pinLines?: Array<{ moveId?: string; name: string | null; text: string } & Pick<DesignPinsCardLineDto, "decision" | "where" | "dose" | "cites" | "post">>;
   /** A programme change's op (§8 §5), or the moves in rotation's: what the card approves and declines. */
   opId?: string;
   /** A designed run's (§8 §3): a workout card whose body is a run — its steps, paces and the watch line (its line's `run`). */

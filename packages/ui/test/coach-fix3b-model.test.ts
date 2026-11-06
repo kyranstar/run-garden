@@ -284,7 +284,8 @@ describe("the athlete's answers never fold into earlier lines (M10)", () => {
 describe("the review's labels, from one map (M2)", () => {
   it("each rubric dimension in plainer words; its id stays the key", () => {
     // Task 13 (§2.10): `fit`, `request` and `words` joined; the retired `time_fit` and `equipment_fit` keep their labels.
-    const ids = ["intent", "sequencing", "alignment", "balance", "progression", "diversity", "recovery", "condition_safety", "fit", "request", "words", "specificity", "honesty", "time_fit", "equipment_fit"];
+    // Import trail phase 3 (§8.5): `faithfulness`, scored when a workout holds a saved move.
+    const ids = ["intent", "sequencing", "alignment", "balance", "progression", "diversity", "recovery", "condition_safety", "fit", "request", "words", "specificity", "honesty", "faithfulness", "time_fit", "equipment_fit"];
     for (const id of ids) {
       expect(REVIEW_LABELS[id], id).toBeTruthy();
       expect(REVIEW_LABELS[id]).not.toMatch(/_|\bvs\b/);

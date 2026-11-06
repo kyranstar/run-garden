@@ -18,7 +18,7 @@
  * first and nothing cut without "Show all". Every word on it came from a stage, a model or a stranger's post: text,
  * never markup. The sheet sits on top of whatever opened it (a portal: a sheet's own scroller can't clip it).
  */
-import { useId, useMemo, useState, type ReactNode } from "react";
+import { useEffect, useId, useMemo, useRef, useState, type ReactNode } from "react";
 import { createPortal } from "react-dom";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { api, ApiError, saveBlobQuery, saveTrailQuery } from "@rg/api-client";
@@ -53,13 +53,19 @@ const retry = (n: number, e: unknown): boolean => !(e instanceof ApiError && (e.
 /** The coach trail's glyph classes, by a step's status. */
 const GLYPH_CLASS: Record<TrailStatus, string> = { ok: "done", warn: "error", fail: "error", info: "neutral", skip: "neutral" };
 
-export function TrailSheet({ postId, onClose }: { postId: string; onClose: () => void }) {
+/** Where a sheet opens (import trail phase 3: a review card's name or chip): a move's section, and in it a quote. */
+export interface TrailFocus {
+  position: number;
+  quote?: number;
+}
+
+export function TrailSheet({ postId, onClose, focus }: { postId: string; onClose: () => void; focus?: TrailFocus }) {
   const q = useQuery({ queryKey: saveTrailQuery(postId), queryFn: () => api.saveTrail(postId), retry });
   const dto = q.data;
   const creator = dto ? dto.post.creator.name?.trim() || dto.post.creator.handle.trim() : "";
   const title = dto ? dto.post.title?.trim() || creator || TRAIL_TITLE : TRAIL_TITLE;
   let body;
-  if (dto) body = <Trail dto={dto} />;
+  if (dto) body = <Trail dto={dto} focus={focus} />;
   else if (q.isPending) body = <Spinner label="Reading the trail" />;
   else if (isGone(q.error)) body = <EmptyState title="That post isn't there." />;
   else
@@ -78,13 +84,13 @@ export function TrailSheet({ postId, onClose }: { postId: string; onClose: () =>
   );
 }
 
-function Trail({ dto }: { dto: ImportTrailDto }) {
+function Trail({ dto, focus }: { dto: ImportTrailDto; focus?: TrailFocus }) {
   const account = useMemo(() => trailAccount(dto), [dto]);
   const sections = useMemo(() => trailSections(dto), [dto]);
   const href = postHref(dto.post.url);
   return (
     <div className="trail">
-      <Account dto={dto} lines={account} href={href} />
+      <Account dto={dto} lines={account} href={href} focus={focus} />
       {sections.length ? (
         <ol className="coach-run-lines trail-stages" aria-label="Step by step">
           {sections.map((s) => (
@@ -98,7 +104,7 @@ function Trail({ dto }: { dto: ImportTrailDto }) {
 
 // ── Level 1 ──────────────────────────────────────────────────────────────────
 
-function Account({ dto, lines, href }: { dto: ImportTrailDto; lines: AccountLine[]; href: string | null }) {
+function Account({ dto, lines, href, focus }: { dto: ImportTrailDto; lines: AccountLine[]; href: string | null; focus?: TrailFocus }) {
   const moves = lines.filter((l) => l.kind === "move");
   const rest = (kind: AccountLine["kind"]) => lines.filter((l) => l.kind === kind);
   return (
@@ -127,7 +133,7 @@ function Account({ dto, lines, href }: { dto: ImportTrailDto; lines: AccountLine
       {moves.length ? (
         <ul className="coach-run-lines trail-moves" aria-label="The moves">
           {moves.map((l) => (
-            <MoveLine key={l.key} line={l} dto={dto} />
+            <MoveLine key={l.key} line={l} dto={dto} focus={focus && focus.position === l.position ? focus : undefined} />
           ))}
         </ul>
       ) : null}
@@ -203,10 +209,11 @@ function Mark({ status, children }: { status: TrailStatus; children: ReactNode }
 }
 
 /** A move's line: its words and what it's for; a tap opens what the trail says of it (its check, match, choices). */
-function MoveLine({ line, dto }: { line: AccountLine; dto: ImportTrailDto }) {
-  const [open, setOpen] = useState(false);
+function MoveLine({ line, dto, focus }: { line: AccountLine; dto: ImportTrailDto; focus?: TrailFocus }) {
+  // Opened at this move (a review card's name or chip): its section open from the start.
+  const [open, setOpen] = useState(!!focus);
   const id = useId();
-  const detail = useMemo(() => (line.position === undefined ? [] : moveDetail(dto, line.position)), [dto, line.position]);
+  const detail = useMemo(() => (line.position === undefined ? [] : moveDetail(dto, line.position, focus?.quote)), [dto, line.position, focus?.quote]);
   return (
     <li className="trail-move">
       {detail.length ? (
@@ -296,8 +303,13 @@ function Details({ details }: { details: readonly TrailDetail[] }) {
 /** A key: value row; a long value shows its preview, and "Show all" its whole — nothing is cut. */
 function Row({ row }: { row: TrailRow }) {
   const [all, setAll] = useState(false);
+  // The quote a review card's chip opened the sheet at: in view once drawn.
+  const ref = useRef<HTMLDivElement>(null);
+  useEffect(() => {
+    if (row.focus) ref.current?.scrollIntoView?.({ block: "center" });
+  }, [row.focus]);
   return (
-    <div className="coach-detail-row">
+    <div ref={ref} className={`coach-detail-row${row.focus ? " trail-row--focus" : ""}`}>
       <dt>{row.key}</dt>
       <dd className="trail-value">
         {row.struck ? (

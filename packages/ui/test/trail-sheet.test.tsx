@@ -60,7 +60,7 @@ let writeText: ReturnType<typeof vi.fn>;
 
 const json = (b: unknown, status = 200) => new Response(JSON.stringify(b), { status, headers: { "Content-Type": "application/json" } });
 
-async function mount(trail: ImportTrailDto | null = TRAIL()) {
+async function mount(trail: ImportTrailDto | null = TRAIL(), focus?: { position: number; quote?: number }) {
   calls = [];
   vi.stubGlobal(
     "fetch",
@@ -79,7 +79,7 @@ async function mount(trail: ImportTrailDto | null = TRAIL()) {
   const qc = new QueryClient({ defaultOptions: { queries: { retry: false } } });
   root = createRoot(host);
   await act(async () => {
-    root.render(createElement(QueryClientProvider, { client: qc }, createElement(TrailSheet, { postId: "p1", onClose })));
+    root.render(createElement(QueryClientProvider, { client: qc }, createElement(TrailSheet, { postId: "p1", onClose, ...(focus ? { focus } : {}) })));
   });
   await flush();
 }
@@ -246,5 +246,38 @@ describe("Watch it too that doesn't go through (final audit G19)", () => {
       throw new TypeError("offline");
     });
     expect(dialog().textContent).toContain("Couldn't reach the app — try again.");
+  });
+});
+
+describe("the trail sheet opened at a quote (import trail phase 3: a review card's chip)", () => {
+  it("opens the move's section and marks the quote's row, scrolled into view", async () => {
+    const scrolled = vi.fn();
+    Element.prototype.scrollIntoView = scrolled;
+    const base = TRAIL();
+    const trail = TRAIL({
+      account: {
+        ...base.account,
+        moves: [{
+          ...base.account.moves[0]!,
+          quotes: [
+            { field: "name", text: "the hip lift", from: "caption", check: "verified" },
+            { field: "purpose", text: "if your hips get stiff after easy runs", at: 72, from: "transcript", check: "verified" },
+          ],
+        }],
+      },
+    });
+    await mount(trail, { position: 0, quote: 1 });
+    const opener = dialog().querySelector(".trail-move button") as HTMLButtonElement;
+    expect(opener.getAttribute("aria-expanded")).toBe("true");
+    const marked = [...dialog().querySelectorAll(".trail-row--focus")];
+    expect(marked).toHaveLength(1);
+    expect(marked[0]!.textContent).toContain("if your hips get stiff after easy runs");
+    expect(scrolled).toHaveBeenCalled();
+  });
+
+  it("opened at a move with no quote named: its section open, nothing marked", async () => {
+    await mount(TRAIL(), { position: 0 });
+    expect((dialog().querySelector(".trail-move button") as HTMLButtonElement).getAttribute("aria-expanded")).toBe("true");
+    expect(dialog().querySelectorAll(".trail-row--focus")).toHaveLength(0);
   });
 });

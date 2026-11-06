@@ -30,6 +30,8 @@ export type TrailRow = Pick<DetailRow, "key" | "value"> & {
   full?: string;
   /** Drawn struck through: a quote the reader made that isn't in the post (§5.6). */
   struck?: boolean;
+  /** The quote a review card's chip opened the trail at (import trail phase 3, §3.3): marked, and scrolled into view. */
+  focus?: boolean;
 };
 
 /** A group of rows under an optional heading (the coach trail's `DetailSection`). */
@@ -712,29 +714,29 @@ const QUOTE_CHECK: Readonly<Record<string, string>> = {
 };
 
 /** When the post says to use a move or not, why, and its quotes with how each checked out (§5.5–5.6): a stranger's words. */
-function postSays(m: ImportTrailDto["account"]["moves"][number]): TrailRow[] {
+function postSays(m: ImportTrailDto["account"]["moves"][number], focusQuote?: number): TrailRow[] {
   const cases = (list: { text: string; evidence: string }[] | undefined) =>
     (list ?? []).map((c) => (c.evidence === "inferred" ? `${c.text.trim()} (the reader's guess)` : c.text.trim())).join("; ");
   const rows: TrailRow[] = [];
   if (m.why?.trim()) rows.push(rowOf("Why", m.why.trim()));
   if (m.useWhen?.length) rows.push(rowOf("Use when", cases(m.useWhen)));
   if (m.skipWhen?.length) rows.push(rowOf("Skip when", cases(m.skipWhen)));
-  for (const q of m.quotes ?? []) {
+  for (const [i, q] of (m.quotes ?? []).entries()) {
     const key = `${QUOTE_FIELD[q.field] ?? keyWords(q.field)}${typeof q.at === "number" ? ` · ${clock(q.at)}` : ""}`;
     const check = q.check ? QUOTE_CHECK[q.check] : null;
     const row = rowOf(key, `“${q.text.trim()}”${check ? ` — ${check}` : ""}`);
-    rows.push(q.check === "not_found" ? { ...row, struck: true } : row);
+    rows.push({ ...row, ...(q.check === "not_found" ? { struck: true } : {}), ...(i === focusQuote ? { focus: true } : {}) });
   }
   return rows;
 }
 
 /** Everything the trail says of one move: its check, its match (the latest of each), and each choice, coach step and
  * correction that names it. */
-export function moveDetail(dto: ImportTrailDto, position: number): TrailDetail[] {
+export function moveDetail(dto: ImportTrailDto, position: number, focusQuote?: number): TrailDetail[] {
   const ctx = ctxOf(dto);
   const move = dto.account.moves.find((m) => m.position === position);
   const out: TrailDetail[] = [];
-  const said = move ? postSays(move) : [];
+  const said = move ? postSays(move, focusQuote) : [];
   if (said.length) out.push({ title: POST_SAYS, rows: said });
   for (const stage of ["check", "match"] as const) {
     const e = [...dto.events].reverse().find((x) => x.stage === stage && movesOf(x).some((m) => m.position === position));

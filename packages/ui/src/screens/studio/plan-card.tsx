@@ -39,6 +39,7 @@ import {
   type CoachConversationCardDto,
   type DesignApproveRequest,
   type DesignApproveResponse,
+  type DesignCorrectionLineDto,
   type DesignPinsCardLineDto,
   type DesignPinsLineDto,
   type DesignPlanLineDto,
@@ -48,6 +49,7 @@ import { followApproved } from "../../components/watch-catch-up.js";
 import { CONVERSATION_QUERY } from "./coach-conversation-model.js";
 import { readProposal } from "./coach-tolerance.js";
 import { decisionError, designProposalQuery } from "./proposal-card.js";
+import { ReviewLines } from "./review-lines.js";
 import { COACH_CURRENT_QUERY } from "./run-keeper.js";
 import { useOneTap } from "./use-one-tap.js";
 
@@ -133,6 +135,38 @@ export const PINS_WORDS: PlanCardWords = {
   refused: "It couldn't be saved.",
   link: null,
 };
+
+/** A suggestion's corrections to imported data alone (import trail phase 3): the same card in their own words — approved
+ * together, one atomic write each, done at once. */
+export const CORRECTIONS_WORDS: PlanCardWords = {
+  done: "Corrected",
+  doing: "Correcting your saves…",
+  part: "It was interrupted — Finish saves it.",
+  inFlight: "It's being saved right now — Finish takes it on from there.",
+  approve: "Approve",
+  finish: "Finish",
+  unfinished: "It isn't done yet — tap again.",
+  declined: "Not changed",
+  superseded: "Replaced by a newer suggestion",
+  refused: "It couldn't be corrected.",
+  link: null,
+};
+
+/** A correction still the athlete's to decide (none yet, refused, or claimed and not finished). */
+const openCorrection = (c: DesignCorrectionLineDto): boolean => !c.outcome || c.outcome.status === "refused" || c.outcome.status === "applying";
+
+/** The corrections' outcome, as one card's: all applied; one refused (its why); all declined; all replaced; else open. */
+function correctionsOutcome(cs: readonly DesignCorrectionLineDto[]): CardLine["outcome"] {
+  if (cs.length === 0) return null;
+  const st = cs.map((c) => c.outcome?.status ?? null);
+  if (st.every((x) => x === "applied")) return { status: "applied" };
+  const refused = cs.find((c) => c.outcome?.status === "refused");
+  if (refused && !st.includes(null)) return { status: "refused", why: (refused.outcome as { why: string }).why };
+  if (st.every((x) => x === "declined")) return { status: "declined" };
+  if (st.every((x) => x === "superseded" || x === "declined")) return { status: "superseded" };
+  if (st.includes("applying")) return { status: "applying" };
+  return null;
+}
 
 /** What the card reads of its op's line: a plan's, a programme change's or the moves in rotation's (whose lines name
  * their moves, and whose applied outcome has its lines: a move left). */
@@ -221,13 +255,21 @@ export function PlanCard({ card, closed = false }: { card: PlanCardInput; closed
   const read = useQuery({ queryKey: designProposalQuery(card.proposalId), queryFn: () => readProposal(card.proposalId), retry: false });
   const programme = card.kind === "programme";
   const pins = card.kind === "pins";
-  const w = programme ? PROGRAMME_WORDS : pins ? PINS_WORDS : PLAN_WORDS;
+  // A suggestion's corrections to imported data (import trail phase 3): beside the pins card, approved with it; alone,
+  // a card of their own.
+  const fixesOnly = card.kind === "corrections";
+  const corrections = pins || fixesOnly ? (read.data?.corrections ?? []) : [];
+  const w = programme ? PROGRAMME_WORDS : pins ? PINS_WORDS : fixesOnly ? CORRECTIONS_WORDS : PLAN_WORDS;
   // A programme change's line is its own op's (a suggestion may change two programmes) — the moves in rotation's too; a
   // plan's, the suggestion's one.
   const own = <T extends { opId: string }>(xs: readonly T[] | undefined): T | null => xs?.find((g) => g.opId === card.opId) ?? (card.opId ? null : (xs?.[0] ?? null));
-  const plan: CardLine | null = programme ? own(read.data?.programmes) : pins ? own(read.data?.pins) : (read.data?.plans?.[0] ?? null);
-  /** The card's own op: what its buttons approve and decline, nothing else of the suggestion. */
-  const opIds = [plan?.opId ?? card.opId ?? PLAN_OP_ID];
+  const fixesLine: CardLine | null =
+    fixesOnly && corrections.length > 0 ? { opId: corrections[0]!.opId, issues: [], lines: corrections.map((c) => c.line), outcome: correctionsOutcome(corrections) } : null;
+  const plan: CardLine | null = programme ? own(read.data?.programmes) : pins ? own(read.data?.pins) : fixesOnly ? fixesLine : (read.data?.plans?.[0] ?? null);
+  /** The card's own op — and, the moves in rotation's, the corrections that ride it — what its buttons approve and
+   * decline, nothing else of the suggestion. */
+  const openFixes = corrections.filter(openCorrection).map((c) => c.opId);
+  const opIds = fixesOnly ? openFixes : [plan?.opId ?? card.opId ?? PLAN_OP_ID, ...(pins ? openFixes : [])];
   const status = read.data?.status ?? card.status;
   const reread = () => qc.invalidateQueries({ queryKey: designProposalQuery(card.proposalId) });
   const after = async () => {
@@ -272,6 +314,14 @@ export function PlanCard({ card, closed = false }: { card: PlanCardInput; closed
   // The card's own lines — the moves in rotation's as drawn, each with its move's name — else the suggestion's read.
   const lines: DrawnLine[] =
     card.pinLines && card.pinLines.length > 0 ? card.pinLines : card.lines && card.lines.length > 0 ? card.lines.map(drawn) : (plan?.lines ?? []).map(drawn);
+  // The coach's review (import trail phase 3, §3.3): lines that say in or out, with their evidence — drawn grouped, each
+  // one tap from its evidence; a card stored before draws as it always did.
+  const reviewLines: DesignPinsCardLineDto[] = pins
+    ? ((plan?.lines?.some((l) => typeof l !== "string" && l.decision) ? (plan.lines as DesignPinsCardLineDto[]) : null) ??
+      (card.pinLines ?? []).map((l) => ({ ...l, name: l.name ?? undefined })) as DesignPinsCardLineDto[])
+    : [];
+  const reviewed = fixesOnly || reviewLines.some((l) => !!l.decision) || corrections.length > 0;
+  const why = pins ? ((read.data?.pins?.find((g) => g.opId === plan?.opId)?.why ?? "").trim() || null) : null;
   /** What the approve left (the moves in rotation's: a move archived since, an unpin of one not in rotation). */
   const left = plan?.outcome?.status === "applied" ? (plan.outcome.lines ?? []) : [];
   const working = approve.isPending;
@@ -298,7 +348,9 @@ export function PlanCard({ card, closed = false }: { card: PlanCardInput; closed
         {card.title}
       </h3>
       {card.summary ? <p className="coach-changes-summary">{card.summary}</p> : null}
-      {lines.length > 0 ? (
+      {reviewed ? (
+        <ReviewLines lines={fixesOnly ? [] : reviewLines.length > 0 ? reviewLines : lines.map((l) => ({ ...l, name: l.name ?? undefined }))} corrections={corrections} why={why} />
+      ) : lines.length > 0 ? (
         <ul className="coach-plan-lines">{lines.map(lineItem)}</ul>
       ) : null}
       {plan && plan.issues.length > 0 && decidable ? (

@@ -786,6 +786,7 @@ h1,
    rule; a site below keeps only its own box (margins, padding, position) and,
    where the label is semantic rather than structural, its own colour. */
 .eyebrow,
+.coach-review-group,
 .card-title,
 .week-header,
 .signal-group-label,
@@ -12021,6 +12022,101 @@ a.stu-tpl-open:focus-visible::before {
 .coach-plan-notes {
   font-size: var(--text-xs);
   color: var(--ink-soft);
+}
+/* ── The coach's review (import trail phase 3, §3.3) ──────────────────────────────────────────────────────────────
+   A fit's pins card whose lines say in or out: grouped, each the move's name (it opens the post's trail), where and the
+   dose, the coach's words, its evidence as small chips, and Challenge. Phone first: everything wraps, nothing scrolls
+   sideways. */
+.coach-review {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-4);
+  min-width: 0;
+}
+.coach-review-section {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+}
+/* Its group headings are the shared eyebrow (In, Left out, Corrections): only the margin is theirs. */
+.coach-review-group {
+  margin: 0;
+}
+.coach-review-lines {
+  padding-left: 0;
+  list-style: none;
+  gap: var(--space-4);
+}
+.coach-review-line {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-1);
+  min-width: 0;
+}
+.coach-review-head,
+.coach-review-text {
+  margin: 0;
+  overflow-wrap: anywhere;
+}
+.coach-review-head {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  column-gap: var(--space-3);
+}
+.coach-review-name {
+  font-weight: var(--weight-medium);
+  text-align: left;
+}
+.coach-review-where {
+  font-size: var(--text-xs);
+  color: var(--ink-soft);
+}
+.coach-cites {
+  display: inline-flex;
+  flex-wrap: wrap;
+  gap: var(--space-2);
+  vertical-align: baseline;
+}
+.coach-cite {
+  display: inline-block;
+  padding: 0 var(--space-3);
+  border: 1px solid color-mix(in srgb, var(--accent) 30%, transparent);
+  border-radius: var(--radius);
+  background: var(--accent-soft);
+  color: var(--accent);
+  font: inherit;
+  font-size: var(--text-xs);
+  line-height: 1.6;
+  white-space: nowrap;
+}
+button.coach-cite {
+  cursor: pointer;
+}
+button.coach-cite:focus-visible {
+  outline: 2px solid var(--focus);
+  outline-offset: 1px;
+}
+.coach-cite--plain {
+  border-color: var(--border);
+  background: transparent;
+  color: var(--ink-soft);
+}
+.coach-challenge {
+  align-self: flex-start;
+  font-size: var(--text-xs);
+}
+.coach-review-why {
+  margin: 0;
+  font-size: var(--text-sm);
+  color: var(--ink-soft);
+  overflow-wrap: anywhere;
+}
+/* The quote a review card's chip opened the trail at. */
+.trail-row--focus {
+  border-radius: var(--radius);
+  background: var(--accent-soft);
+  outline: 1px solid color-mix(in srgb, var(--accent) 30%, transparent);
 }
 /* ── The open batch of saved moves (the saves flow redesigned §3.1–§3.2) ──────────────────────────────────────────
    The coach sheet's chip (coach-saves.tsx), the saves card first in the conversation, and Today's card
