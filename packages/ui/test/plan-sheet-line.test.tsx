@@ -15,7 +15,7 @@ import { createRoot, type Root } from "react-dom/client";
 import { MemoryRouter, useLocation } from "react-router-dom";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { api, ApiError, type CoachPlanDto, type PlanDetailResponse, type TrainingLineDto } from "@rg/api-client";
+import { api, ApiError, type CoachPlanDto, type PlanDetailResponse, type PlanSummaryDto, type TrainingLineDto } from "@rg/api-client";
 import { lastPhaseOf, linesOf } from "@rg/domain";
 import { CoachOpenContext } from "../src/screens/studio/coach-ask.js";
 import { NUDGES_QUERY } from "../src/screens/studio/coach-conversation-model.js";
@@ -761,12 +761,13 @@ describe("the Plan routes a line's sheet", () => {
   }
 
   /** The Plan at `entry`; `withToday: false` — the workouts read names no today, so the page has only the week's start. */
-  function mountPlan(entry: string, { withToday = true, today = () => TODAY }: { withToday?: boolean; today?: () => string } = {}) {
+  function mountPlan(entry: string, { withToday = true, today = () => TODAY, summaries }: { withToday?: boolean; today?: () => string; summaries?: PlanSummaryDto[] } = {}) {
     const json = (b: unknown, status = 200) => new Response(JSON.stringify(b), { status, headers: { "Content-Type": "application/json" } });
     vi.stubGlobal(
       "fetch",
       vi.fn(async (url: string) => {
         const path = url.replace(/\?.*$/, "");
+        if (path === "/api/plans" && summaries) return json({ plans: summaries });
         if (path === "/api/plan/week") return json(WEEK);
         if (path === "/api/plan/workouts") return json(withToday ? { today: today(), workouts: [], plan: null } : { workouts: [], plan: null });
         if (path === "/api/coach/plans") return json({ plans: [...running.phases.map(asPlan), studio], lines: [running] });
@@ -804,6 +805,31 @@ describe("the Plan routes a line's sheet", () => {
   const settle = async (n = 30) => {
     for (let i = 0; i < n; i += 1) await act(async () => void (await new Promise((r) => setTimeout(r, 5))));
   };
+
+  describe("the plans read reaches the list", () => {
+    const course: PlanSummaryDto = { id: "c1", kind: "course", name: "Evening practice", purpose: null, brief: null, onEnd: "continue", pausedUntil: null, objectiveIds: [], status: "active", lineKey: null, listedAs: "c1", course: { session: 3, of: 10 }, prompt: null };
+    const named: PlanSummaryDto = { ...course, id: "plan-r1", kind: "coach", name: "Autumn build", lineKey: running.key, listedAs: null, course: null };
+
+    it("a course gets its row, and a line takes its plan's name, on the page itself", async () => {
+      mountPlan("/plan", { summaries: [course, named] });
+      await settle();
+      const rows = [...document.querySelectorAll(".plan-row")].map((r) => r.textContent ?? "");
+      expect(rows.some((r) => r.includes("Evening practice") && r.includes("Practice · Session 3 of 10"))).toBe(true);
+      expect(rows.some((r) => r.includes("Autumn build"))).toBe(true);
+    });
+
+    it("a rename reads them again: the row's name is the plan's now", async () => {
+      mountPlan("/plan?line=run:r1", { summaries: [course, named] });
+      await settle();
+      const asked = () => (fetch as unknown as { mock: { calls: Array<[string]> } }).mock.calls.filter(([u]) => u === "/api/plans").length;
+      const before = asked();
+      await act(async () => button("Rename", phaseEl("r3")).click());
+      type(phaseEl("r3").querySelector<HTMLInputElement>("input")!, "Taper");
+      await act(async () => button("Save", phaseEl("r3")).click());
+      await settle();
+      expect(asked()).toBeGreaterThan(before);
+    });
+  });
 
   it("an old ?plan=<coach block> link opens that block's line, scrolled to that phase", async () => {
     const { seen } = mountPlan("/plan?plan=r3");

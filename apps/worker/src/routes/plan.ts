@@ -68,8 +68,10 @@ import { requireUser } from "../auth/middleware.js";
 import { googleCalendarClient } from "../services/google-calendar.js";
 import { waitUntilSafe } from "../services/wait-until.js";
 import { loadPreferences, restoreCalendarEvent, savePreferences, syncCalendar } from "../services/calendar-sync.js";
-import { courseNumberOnCompletion } from "../services/course-number.js";
+import { courseNumberOnCompletion, markGivesWay } from "../services/course-number.js";
+import { MARK_DONE_REPLAY_MAX_DAYS } from "../services/cron-limits.js";
 import { chunkIds, type Db } from "../services/db.js";
+import { markSessionDone } from "../services/mark-done.js";
 import { applyMove } from "../services/jobs.js";
 import { provisionalRecord } from "../services/session-build.js";
 import { removeFromPlan, skipWorkout, unskipWorkout } from "../services/plan-mutations.js";
@@ -1794,6 +1796,7 @@ planRoutes.post("/workouts/:id/match", async (c) => {
       completionState: "completed",
       resolutionDate: (a.startTimeLocal ?? a.startTime).slice(0, 10),
       ...courseNumberOnCompletion(),
+      ...markGivesWay(),
       updatedAt: now,
     })
     .where(eq(plannedWorkouts.id, w.id));
@@ -1858,6 +1861,31 @@ planRoutes.post("/workouts/:id/unmatch", async (c) => {
   const today = todayInZone(prefs.timezone);
   const resimFrom = w.effectiveDate < today ? w.effectiveDate : today;
   await resimulateFrom(db, userId, resimFrom, prefs, new Date(), REQUEST_GARDEN_STEP).catch(() => undefined);
+  return c.json({ ok: true });
+});
+
+const markDoneSchema = z.object({ done: z.boolean() }).strict();
+
+/**
+ * Mark a course's session done, or undo that (`mark-done.ts`, which has the rules). 409 `{error, why}` for a session it can't
+ * apply to. Then the garden replays from the session's day, as `/match` does: the replay is on record before it purges anything,
+ * so what doesn't fit this request's budget is the next garden read's, or the hour's.
+ */
+planRoutes.post("/workouts/:id/mark-done", async (c) => {
+  const db = c.get("db");
+  const userId = c.get("userId");
+  const parsed = markDoneSchema.safeParse(await c.req.json().catch(() => null));
+  if (!parsed.success) return c.json({ error: "invalid_request" }, 400);
+  const prefs = await loadPreferences(db, userId);
+  const answer = await markSessionDone(db, userId, c.req.param("id"), parsed.data.done, { today: todayInZone(prefs.timezone), now: nowInstant(), prefs });
+  if (!answer.ok) {
+    if (answer.status === 404) return c.json({ error: "not_found" }, 404);
+    if (answer.status === 423) return c.json({ error: "restore_in_progress" }, 423);
+    return c.json({ error: answer.error, why: answer.why }, 409);
+  }
+  if (answer.from) {
+    await resimulateFrom(db, userId, answer.from, prefs, new Date(), { maxResimDays: MARK_DONE_REPLAY_MAX_DAYS, maxWalkDays: MARK_DONE_REPLAY_MAX_DAYS }).catch(() => undefined);
+  }
   return c.json({ ok: true });
 });
 

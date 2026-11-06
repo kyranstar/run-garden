@@ -14,11 +14,11 @@
 import { act, createElement } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { MemoryRouter, Route, Routes, useLocation } from "react-router-dom";
-import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
+import { onlineManager, QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { ApiError, type ReviewBasisDto, type SessionDto, type SessionExerciseDto, type WorkoutDto } from "@rg/api-client";
 import { features } from "../src/features.js";
-import { SessionSheet, blockLabel, blocksInPlayOrder, reasonLine, removeRefusal, sendingPollClock } from "../src/components/session-sheet.js";
+import { SessionSheet, blockLabel, blocksInPlayOrder, markDoneRefusal, reasonLine, removeRefusal, sendingPollClock } from "../src/components/session-sheet.js";
 import { focusAfterRemove } from "../src/screens/week-view.js";
 import { Sheet } from "../src/components.js";
 import { WorkoutDetail } from "../src/screens/plan.js";
@@ -256,6 +256,8 @@ function mount(
     queries?: Record<string, unknown>;
     /** The history entry's state the sheet opens on (Today's links say `{ from: "today" }`). */
     state?: unknown;
+    /** The session's read already in the cache: the sheet reopened. */
+    primed?: SessionDto;
   } = {},
 ) {
   const calls: Call[] = [];
@@ -299,6 +301,7 @@ function mount(
   host = document.createElement("div");
   document.body.appendChild(host);
   const qc = new QueryClient({ defaultOptions: { queries: { retry: false, ...opts.queries } } });
+  if (opts.primed) qc.setQueryData(["session", SLOT], opts.primed);
   const sheet = opts.detail
     ? createElement(WorkoutDetail, { w: opts.w ?? slot(), today: opts.today ?? TODAY, corosWritesEnabled: false, onClose: () => undefined })
     : createElement(SessionSheet, { w: opts.w ?? slot(), today: opts.today ?? TODAY, onClose: () => undefined });
@@ -322,7 +325,7 @@ function mount(
       ),
     );
   });
-  return { calls };
+  return { calls, qc };
 }
 
 // Passes, not the clock (Date is faked here): 5 ms each, about 1 s by default. A wait that may be slow on a loaded runner
@@ -351,6 +354,10 @@ const click = async (name: string | RegExp) => {
   });
 };
 const builds = (calls: Call[]) => calls.filter((c) => c.path.endsWith("/build"));
+/** A few passes for anything that wrongly follows. */
+const settle = async () => {
+  for (let i = 0; i < 12; i += 1) await act(async () => void (await new Promise((r) => setTimeout(r, 5))));
+};
 
 // ── The pre-check ──────────────────────────────────────────────────────────
 
@@ -2235,5 +2242,328 @@ describe("Start on the workout sheet of a coach or watch-plan session", () => {
     mount(docSession(), { w: coachRow({ hasDoc: false }), detail: true, route: adoption() });
     await until(() => !!button("Remove from plan"), "the sheet");
     expect(button("Start")).toBeUndefined();
+  });
+});
+
+// ── A course's session: Mark done, and never stuck on "Building the session" ────────────────────────────────
+
+describe("a course's session offers Mark done, and nothing else does (plans with a purpose §4.2)", () => {
+  const offered = { course: { markDone: "offer", held: null } } as const;
+  const markedSession = () => session({ contentState: "outline", build: null, view: null, checks: {}, profiles: [], course: { markDone: "marked", held: null } });
+  /** The mark's route: it answers and changes what the session reads as. */
+  const markRoute = (after: (done: boolean) => SessionDto, answer: (done: boolean) => Response | null = () => null) => (call: Call, set: (next: SessionDto) => void) => {
+    if (call.path !== `/api/plan/workouts/${SLOT}/mark-done`) return undefined;
+    const done = (call.body as { done: boolean }).done;
+    const refused = answer(done);
+    if (refused) return refused;
+    set(after(done));
+    return new Response(JSON.stringify({ ok: true }), { status: 200, headers: { "Content-Type": "application/json" } });
+  };
+
+  it("today's, with the rest of what the sheet offers", async () => {
+    mount(session(offered));
+    await until(() => !!button("Mark done"), "Mark done");
+    expect(button("Move")).toBeTruthy();
+    expect(button("Skip")).toBeTruthy();
+  });
+
+  it("a day gone's, beside Move to today", async () => {
+    mount(session({ ...offered, date: "2026-10-03", build: null, view: null }), { w: slot({ effectiveDate: "2026-10-03" }) });
+    await until(() => !!button("Mark done"), "Mark done");
+    expect(button("Move to today")).toBeTruthy();
+  });
+
+  it("any other session has none: no course on the read, or nothing the course can offer", async () => {
+    mount(session());
+    await until(() => body().includes("Supported row"), "the built session");
+    expect(button("Mark done")).toBeUndefined();
+    act(() => root?.unmount());
+    host?.remove();
+    mount(session({ course: { markDone: null, held: null } }));
+    await until(() => body().includes("Supported row"), "the built session");
+    expect(button("Mark done")).toBeUndefined();
+    expect(button("Undo")).toBeUndefined();
+  });
+
+  it("pressed, it says so, and all it then offers is the undo; undone, it's offered again", async () => {
+    const { calls, qc } = mount(session(offered), {
+      route: markRoute((done) => (done ? markedSession() : session(offered))),
+    });
+    qc.setQueryData(["garden"], { any: 1 });
+    qc.setQueryData(["plans"], { plans: [] });
+    await until(() => !!button("Mark done"), "Mark done");
+    await click("Mark done");
+    await until(() => body().includes("Marked done"), "the mark said");
+    const marks = () => calls.filter((c) => c.path.endsWith("/mark-done")).map((c) => c.body);
+    expect(marks()).toEqual([{ done: true }]);
+    expect(document.querySelector(".session-status .pill")?.textContent).toContain("Completed");
+    // Nothing else to do to it now: it's done.
+    expect(button("Undo")).toBeTruthy();
+    for (const other of ["Mark done", "Move", "Skip", "Start · 30 min"]) expect(button(other), other).toBeUndefined();
+    // What reads it heard: the garden credits it, and the plan's count moves.
+    expect(qc.getQueryState(["garden"])?.isInvalidated).toBe(true);
+    expect(qc.getQueryState(["plans"])?.isInvalidated).toBe(true);
+
+    // Marking owes the watch nothing; undoing can.
+    const drains = () => calls.filter((c) => c.path === "/api/sessions/watch/drain").length;
+    expect(drains()).toBe(0);
+    await click("Undo");
+    await until(() => !!button("Mark done"), "offered again");
+    expect(marks()).toEqual([{ done: true }, { done: false }]);
+    expect(body()).not.toContain("Marked done");
+    expect(drains()).toBe(1);
+  });
+
+  it("a session already marked isn't built on opening: nothing is asked of a session that's over", async () => {
+    const { calls } = mount(markedSession());
+    await until(() => body().includes("Marked done"), "the mark said");
+    await settle();
+    expect(builds(calls)).toEqual([]);
+    expect(body()).not.toContain("Building the session");
+  });
+
+  it("marked, with a build and a check unanswered: nothing's asked, and its moves stay to read", async () => {
+    const { calls } = mount(session({ checks: {}, course: { markDone: "marked", held: null } }));
+    await until(() => body().includes("Marked done"), "the mark said");
+    expect(body()).not.toContain("right now");
+    expect(body()).toContain("Supported row");
+    expect(button("Swap Supported row")).toBeUndefined();
+    await settle();
+    expect(builds(calls)).toEqual([]);
+  });
+
+  it("marked on a day gone, it says it's done, not that nothing was built", async () => {
+    mount({ ...markedSession(), date: "2026-10-03" }, { w: slot({ effectiveDate: "2026-10-03" }) });
+    await until(() => body().includes("Marked done"), "the mark said");
+    expect(body()).not.toContain("Nothing was built");
+    expect(button("Move to today")).toBeUndefined();
+  });
+
+  it("refused, it says the server's own words, and the session stays as it was", async () => {
+    const why = "It's under way. Finish it or discard it first.";
+    mount(session(offered), {
+      route: markRoute(
+        () => session(offered),
+        () => new Response(JSON.stringify({ error: "under_way", why }), { status: 409, headers: { "Content-Type": "application/json" } }),
+      ),
+    });
+    await until(() => !!button("Mark done"), "Mark done");
+    await click("Mark done");
+    await until(() => body().includes(why), "the refusal");
+    expect(document.querySelector("[role=alert]")?.textContent).toContain(why);
+    expect(button("Mark done")).toBeTruthy();
+  });
+
+  it("a failure with no words says what to do; a lost connection says that", () => {
+    expect(markDoneRefusal(new ApiError(500, null))).toBe("Couldn't mark it. Try again.");
+    expect(markDoneRefusal(new TypeError("Failed to fetch"))).toBe("Marking it needs a connection. Try again once you're online.");
+    expect(markDoneRefusal(new ApiError(409, { error: "x", why: "Its day hasn't come." }))).toBe("Its day hasn't come.");
+  });
+});
+
+describe("the sheet never sticks on \"Building the session\": build null with no POST in flight", () => {
+  const AHEAD = "2026-10-09";
+  const outlineAhead = () => session({ date: AHEAD, contentState: "outline", build: null, view: null, checks: {}, profiles: [], course: { markDone: null, held: null } });
+  const previewOf = () => session({ date: AHEAD, contentState: "outline", checks: {}, profiles: [], course: { markDone: null, held: null } });
+  const spinning = () => body().includes("Building the session");
+  const asJson = (b: unknown) => new Response(JSON.stringify(b), { status: 200, headers: { "Content-Type": "application/json" } });
+
+  afterEach(() => onlineManager.setOnline(true));
+
+  it("a preview open while the network returns: the read that answers no build is built past, without reopening", async () => {
+    const { calls } = mount(outlineAhead(), {
+      w: slot({ effectiveDate: AHEAD }),
+      // The read never serves an outline's preview; a build does, as the server does.
+      route: (call) => (call.path.endsWith("/build") ? asJson(previewOf()) : undefined),
+      queries: { staleTime: 0 },
+    });
+    await until(() => body().includes("Supported row"), "the preview");
+    expect(builds(calls)).toHaveLength(1);
+
+    // The app's refetch on reconnect, past its 15 s `staleTime`.
+    const reads = () => calls.filter((c) => c.method === "GET" && c.path === `/api/sessions/${SLOT}`).length;
+    const before = reads();
+    await act(async () => {
+      onlineManager.setOnline(false);
+      onlineManager.setOnline(true);
+    });
+    await until(() => reads() > before, "the read on reconnect");
+    await until(() => builds(calls).length === 2, "built again");
+    await until(() => body().includes("Supported row") && !spinning(), "the preview again");
+    await settle();
+    expect(builds(calls)).toHaveLength(2);
+  });
+
+  it("a reopen where the POST answers before the GET: the late read's no-build is built past too", async () => {
+    let answerRead: (() => void) | null = null;
+    let held = 0;
+    const { calls } = mount(outlineAhead(), {
+      w: slot({ effectiveDate: AHEAD }),
+      // Reopened: the session's read is in the cache, so the sheet builds at once while its read is still out.
+      primed: outlineAhead(),
+      queries: { staleTime: 0 },
+      route: (call) => {
+        if (call.path.endsWith("/build")) return asJson(previewOf());
+        if (call.method === "GET" && call.path === `/api/sessions/${SLOT}` && held === 0) {
+          held += 1;
+          return new Promise<Response>((resolve) => {
+            answerRead = () => resolve(asJson(outlineAhead()));
+          }) as unknown as Response;
+        }
+        return undefined;
+      },
+    });
+    await until(() => body().includes("Supported row"), "the POST's preview");
+    expect(answerRead).not.toBeNull();
+    await act(async () => answerRead!());
+    await until(() => builds(calls).length === 2, "built again");
+    await until(() => body().includes("Supported row") && !spinning(), "the preview again");
+    await settle();
+    expect(builds(calls)).toHaveLength(2);
+  });
+
+  describe("a held outline today answers POST with no build: a plain line about why, and Mark done", () => {
+    const heldBy = (held: "paused" | "starting" | "stopped" | null, over: Partial<SessionDto> = {}) => () =>
+      session({ contentState: "outline", build: null, view: null, checks: {}, profiles: [], course: { markDone: "offer", held }, ...over });
+
+    it.each([
+      ["paused", "This plan is paused, so this session isn't set up."],
+      ["starting", "This plan is still starting, so this session isn't ready yet."],
+      ["stopped", "This plan has stopped, so this session isn't set up."],
+    ] as const)("%s", async (held, words) => {
+      const heldNow = heldBy(held);
+      const { calls } = mount(heldNow(), { afterBuild: heldNow });
+      await until(() => body().includes(words), "the line");
+      expect(spinning()).toBe(false);
+      expect(button("Mark done")).toBeTruthy();
+      // Once: an answer of no build isn't asked again.
+      await settle();
+      expect(builds(calls)).toHaveLength(1);
+      expect(spinning()).toBe(false);
+    });
+
+    it("one held for no reason the plan gives, such as a session the day refuses, says it plainly too", async () => {
+      const heldNow = heldBy(null);
+      const { calls } = mount(heldNow(), { afterBuild: heldNow });
+      await until(() => body().includes("This session can't be set up right now."), "the line");
+      expect(button("Mark done")).toBeTruthy();
+      await settle();
+      expect(builds(calls)).toHaveLength(1);
+    });
+
+    it("a day ahead its course can't make a preview for says the same, not a spinner", async () => {
+      const { calls } = mount(outlineAhead(), { w: slot({ effectiveDate: AHEAD }), afterBuild: outlineAhead });
+      await until(() => body().includes("This session can't be set up right now."), "the line");
+      expect(spinning()).toBe(false);
+      await settle();
+      expect(builds(calls)).toHaveLength(1);
+    });
+
+    it("a plan holding it asks no pre-check: there's nothing for the answer to build", async () => {
+      const heldNow = () => session({ contentState: "outline", build: null, view: null, checks: {}, course: { markDone: "offer", held: "paused" } });
+      mount(heldNow(), { afterBuild: heldNow });
+      await until(() => body().includes("This plan is paused"), "the line");
+      expect(body()).not.toContain("right now");
+      expect(button("Build")).toBeUndefined();
+    });
+
+    it("a session the day refuses still asks it: an answer can change what the day allows", async () => {
+      const refused = () => session({ contentState: "outline", build: null, view: null, checks: {}, course: { markDone: "offer", held: null } });
+      mount(refused(), { afterBuild: refused });
+      await until(() => body().includes("Knee / hip right now"), "the pre-check");
+    });
+
+    it("the videos stay on it: watching one is how it gets done", async () => {
+      const heldNow = heldBy("paused", { videos: [{ label: "Watch it", url: "https://example.com/v" }] });
+      mount(heldNow(), { afterBuild: heldNow });
+      await until(() => body().includes("This plan is paused"), "the line");
+      expect(document.querySelector(".session-videos a")?.textContent).toBe("Watch it");
+    });
+
+    it("a later read that says the row has moved on is built, not left saying it's held", async () => {
+      const heldNow = heldBy("paused");
+      const writtenNow = heldBy(null, { origin: "studio" });
+      let lifted = false;
+      const { calls, qc } = mount(heldNow(), {
+        route: (call, set) => {
+          if (call.path.endsWith("/build")) return asJson(lifted ? session({ origin: "studio", checks: {}, profiles: [], course: { markDone: "offer", held: null } }) : heldNow());
+          if (lifted) set(writtenNow());
+          return undefined;
+        },
+      });
+      await until(() => body().includes("This plan is paused"), "the line");
+      lifted = true;
+      await act(async () => {
+        await qc.invalidateQueries({ queryKey: ["session", SLOT] });
+      });
+      await until(() => builds(calls).length === 2, "built again");
+      await until(() => body().includes("Supported row"), "the session");
+      expect(body()).not.toContain("paused");
+    });
+  });
+
+  it("a read landing while a build is out asks for no second one", async () => {
+    let answer: (() => void) | null = null;
+    const { calls, qc } = mount(outlineAhead(), {
+      w: slot({ effectiveDate: AHEAD }),
+      route: (call) =>
+        call.path.endsWith("/build")
+          ? (new Promise<Response>((resolve) => {
+              answer = () => resolve(asJson(previewOf()));
+            }) as unknown as Response)
+          : undefined,
+    });
+    await until(() => answer !== null, "the build asked");
+    const reads = () => calls.filter((c) => c.method === "GET" && c.path === `/api/sessions/${SLOT}`).length;
+    const before = reads();
+    await act(async () => {
+      await qc.invalidateQueries({ queryKey: ["session", SLOT] });
+    });
+    expect(reads()).toBeGreaterThan(before);
+    await settle();
+    expect(builds(calls)).toHaveLength(1);
+    await act(async () => answer!());
+    await until(() => body().includes("Supported row"), "the preview");
+    await settle();
+    expect(builds(calls)).toHaveLength(1);
+  });
+
+  it("a build that failed says so, and isn't asked again by itself", async () => {
+    const { calls } = mount(outlineAhead(), {
+      w: slot({ effectiveDate: AHEAD }),
+      route: (call) => (call.path.endsWith("/build") ? new Response(JSON.stringify({ error: "internal" }), { status: 500, headers: { "Content-Type": "application/json" } }) : undefined),
+    });
+    await until(() => body().includes("Couldn't build this session"), "the failure");
+    await settle();
+    expect(builds(calls)).toHaveLength(1);
+    expect(spinning()).toBe(false);
+  });
+
+  it("an outline completed another way says so", async () => {
+    const done = () => session({ contentState: "outline", build: null, view: null, checks: {}, profiles: [], course: { markDone: null, held: null } });
+    mount(done(), { w: slot({ completionState: "completed" }), afterBuild: done });
+    await until(() => !!document.querySelector(".session-status .pill"), "the pill");
+    expect(document.querySelector(".session-status .pill")?.textContent).toContain("Completed");
+    expect(spinning()).toBe(false);
+    await settle();
+    expect(body()).not.toContain("can't be set up");
+  });
+
+  it("a build in flight is still a spinner", async () => {
+    let answer: (() => void) | null = null;
+    const heldNow = () => session({ contentState: "outline", build: null, view: null, checks: {}, profiles: [], course: { markDone: "offer", held: "paused" } });
+    mount(heldNow(), {
+      route: (call) =>
+        call.path.endsWith("/build")
+          ? (new Promise<Response>((resolve) => {
+              answer = () => resolve(asJson(heldNow()));
+            }) as unknown as Response)
+          : undefined,
+    });
+    await until(() => answer !== null, "the build asked");
+    expect(spinning()).toBe(true);
+    await act(async () => answer!());
+    await until(() => body().includes("This plan is paused"), "the line");
+    expect(spinning()).toBe(false);
   });
 });

@@ -11,6 +11,13 @@
  *  - A started or done session is read-only: no pickers, no swaps. A done one this device still holds in progress was
  *    saved on another device (ruling 2b-R18): that copy is offered for Discard only, never Continue.
  *  - A skipped session says so and offers Un-skip, and nothing else: no pre-check, no build, no Skip (ruling 2a-R15).
+ *  - A course's own session offers Mark done, today or up to a week back, when the read says so (`session.course`; following
+ *    its video records nothing). Marked, it says so and offers its undo, and nothing else, as a skipped one does.
+ *  - THE SHEET NEVER STICKS ON "BUILDING THE SESSION". That state is no build with no POST in flight, however it comes about. A
+ *    read answers no preview of a course's outline, so one landing after a build (the network returning past `staleTime`, a
+ *    reopen whose POST answers first) takes the build off the sheet: it's built again, once for each such read. A POST that
+ *    itself answers no build is the last word for the row as it then read (`rowSays`): a plain line about why (`heldLine`), not
+ *    a spinner, and no asking again unless a later read says the row has moved on. A plan holding it asks no pre-check either.
  *  - Start (and Continue) belong to the player, which arrives in 2b: hidden behind `features.player` until then.
  *  - "Don't show again" on a swap writes the move's prefs (`PUT /api/library/:id/prefs`, 2c): left out until then.
  *
@@ -284,6 +291,32 @@ export function removeRefusal(e: unknown): string {
   return "Removing needs a connection — try again once you're online.";
 }
 
+/** Why Mark done or its undo didn't happen: the server's own words, or what to do. */
+export function markDoneRefusal(e: unknown): string {
+  if (e instanceof ApiError) {
+    const why = (e.body as { why?: unknown } | null)?.why;
+    return typeof why === "string" && why ? why : "Couldn't mark it. Try again.";
+  }
+  return "Marking it needs a connection. Try again once you're online.";
+}
+
+/** Why a session with nothing to build has nothing: what holds it by its plan, or, with none, that it can't be for now. */
+function heldLine(held: NonNullable<SessionDto["course"]>["held"] | undefined): string {
+  switch (held) {
+    case "paused":
+      return "This plan is paused, so this session isn't set up.";
+    case "starting":
+      return "This plan is still starting, so this session isn't ready yet.";
+    case "stopped":
+      return "This plan has stopped, so this session isn't set up.";
+    default:
+      return "This session can't be set up right now.";
+  }
+}
+
+/** What a read says of the row that an answer of no build is about: another word from it means that answer no longer stands. */
+const rowSays = (s: SessionDto): string => `${s.origin ?? ""}|${s.contentState}|${s.course?.held ?? ""}`;
+
 /** The program's name: the row's title without the theme a build appends. */
 function withoutTheme(title: string, theme: string | null | undefined): string {
   const suffix = theme ? ` · ${theme}` : null;
@@ -414,6 +447,8 @@ export function SessionSheet({
   /** The pre-check reopened from the reading on the when-line, to change the answer (ruling 2a-R14). */
   const [rechecking, setRechecking] = useState(false);
   const asked = useRef(false);
+  /** The last build answered with no build: what the row read as then (`rowSays`). Null when it answered with one. */
+  const noBuildFor = useRef<string | null>(null);
   /** After Build: focus the reading (or the sheet) once the pre-check is gone. */
   const refocus = useRef(false);
   const body0 = useRef<HTMLDivElement>(null);
@@ -441,6 +476,7 @@ export function SessionSheet({
     mutationFn: (body: BuildSessionRequest) => api.buildSession(w.id, body),
     onSuccess: (next) => {
       const before = qc.getQueryData<SessionDto>(key);
+      noBuildFor.current = next.build ? null : rowSays(next);
       qc.setQueryData(key, next);
       // The day's build went to the watch (the watch mirrors the plan §3.3: handed over, replaced or pushed): its job runs
       // now, one a request, rather than wait for the "Sending…" poll's one drain.
@@ -513,6 +549,17 @@ export function SessionSheet({
       void qc.invalidateQueries({ queryKey: key });
       // Back on the plan, back on the watch: the mirror's copy is made and sent by the drain.
       drainThenRead();
+    },
+  });
+  const markDone = useMutation({
+    mutationFn: (done: boolean) => api.markDone(w.id, done),
+    onSuccess: (_, done) => {
+      refreshPlan();
+      // The garden credits it, and its plan's count moves.
+      for (const k of ["garden", "plans"]) void qc.invalidateQueries({ queryKey: [k] });
+      void qc.invalidateQueries({ queryKey: key });
+      // Undone on its day, it's owed on the watch again: the drain makes its copy, as an un-skip's does.
+      if (!done) drainThenRead();
     },
   });
   const moveToToday = useMutation({
@@ -599,20 +646,30 @@ export function SessionSheet({
   const ahead = date > today;
   // Skipped is not today's to-do (ruling 2a-R15): nothing is asked or built until it is un-skipped.
   const skipped = w.completionState === "skipped";
-  const changeable = !!s && !locked && !skipped && !past && !ahead;
+  // Marked done, as skipped is: over, so nothing is asked or built unless it's undone. Read from the session, not `w`, which
+  // the page reads again only after this sheet has moved on.
+  const marked = s?.course?.markDone === "marked";
+  // A plan holding it: there's nothing for a pre-check's answer to build.
+  const heldByPlan = !!s?.course?.held;
+  const changeable = !!s && !locked && !skipped && !marked && !heldByPlan && !past && !ahead;
   const unanswered = s && changeable ? s.profiles.filter((p) => !s.checks[p.profileId]) : [];
   const needsCheck = unanswered.length > 0;
   // What the pre-check asks: the profiles still unanswered, or — reopened from the reading — every one.
   const asking = needsCheck ? unanswered : s && changeable && rechecking ? s.profiles : [];
   const preCheck = asking.length > 0;
 
-  // Opening builds — or returns the stored build when nothing changed — unless the pre-check comes first.
+  // The last build's answer of no build still stands for the row as this read says it.
+  const noBuildStands = !!s && !s.build && noBuildFor.current === rowSays(s);
+  // Opening builds — or returns the stored build when nothing changed — unless the pre-check comes first. After that, no build
+  // with none in flight and no answer saying so means a read has taken it off the sheet: built again (the header's THE SHEET
+  // NEVER STICKS). A failed build isn't asked again by itself: the sheet says so.
   useEffect(() => {
-    if (!s || asked.current || locked || skipped || past || needsCheck) return;
+    if (!s || locked || skipped || marked || past || needsCheck) return;
+    if (asked.current && (s.build || build.isPending || build.isError || noBuildStands)) return;
     asked.current = true;
     build.mutate({});
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [s, locked, skipped, past, needsCheck]);
+  }, [s, locked, skipped, marked, past, needsCheck, build.isPending, build.isError, noBuildStands]);
 
   // The pre-check (ruling 2a-R14): a number, Feeling off, or both, per profile, in any order — nothing is sent until
   // Build, which waits for every profile asked to have one or the other. Feeling off alone is an answer.
@@ -747,6 +804,7 @@ export function SessionSheet({
     !!watch &&
     s.contentState !== "done" &&
     w.completionState !== "completed" &&
+    !marked &&
     (!skipped || watch.state === "on_watch" || CATCHING_UP.includes(watch.state));
   // The pinned foot holds the sheet's actions — and is left out when there are none (loading, or a started or done
   // session without the player), rather than drawn as an empty band (audit 2a-UI M6).
@@ -756,6 +814,12 @@ export function SessionSheet({
     actions.push(
       <button key="unskip" type="button" className="btn" disabled={unskip.isPending} onClick={() => unskip.mutate()}>
         Un-skip
+      </button>,
+    );
+  } else if (marked) {
+    actions.push(
+      <button key="undo-done" type="button" className="btn" disabled={markDone.isPending} onClick={() => markDone.mutate(false)}>
+        Undo
       </button>,
     );
   } else {
@@ -811,6 +875,13 @@ export function SessionSheet({
       actions.push(
         <button key="today" type="button" className="btn btn-primary" disabled={moveToToday.isPending} onClick={() => moveToToday.mutate()}>
           Move to today
+        </button>,
+      );
+    }
+    if (s?.course?.markDone === "offer") {
+      actions.push(
+        <button key="mark-done" type="button" className="btn" disabled={markDone.isPending} onClick={() => markDone.mutate(true)}>
+          Mark done
         </button>,
       );
     }
@@ -912,6 +983,15 @@ export function SessionSheet({
         {showBuild ? <BuiltSession s={s} locked onPick={setPicker} onSwap={setSwapping} onHowto={setHowto} /> : null}
       </div>
     );
+  } else if (marked) {
+    body = (
+      <div className="stack">
+        <p className="session-status">
+          <CompletionPill state="completed" /> Marked done.
+        </p>
+        {showBuild ? <BuiltSession s={s} locked onPick={setPicker} onSwap={setSwapping} onHowto={setHowto} /> : null}
+      </div>
+    );
   } else if (preCheck) {
     body = (
       <div className="stack session-precheck">
@@ -953,14 +1033,22 @@ export function SessionSheet({
       </div>
     );
   } else if (!showBuild) {
-    // A day gone is never built (audit 2a-UI I2): a plain line, never a spinner for a build that will not start.
-    body = past ? (
-      <p className="session-none">Nothing was built for this day.</p>
-    ) : build.isError ? (
-      <Banner kind="warn">Couldn't build this session — try again in a moment.</Banner>
-    ) : (
-      <Spinner label="Building the session" />
-    );
+    // A day gone is never built (audit 2a-UI I2): a plain line, never a spinner for a build that will not start. Nor is one
+    // already done, and one answered with no build says why: only a build in flight is a spinner.
+    body =
+      w.completionState === "completed" ? (
+        <p className="session-status">
+          <CompletionPill state="completed" />
+        </p>
+      ) : past ? (
+        <p className="session-none">Nothing was built for this day.</p>
+      ) : build.isError ? (
+        <Banner kind="warn">Couldn't build this session — try again in a moment.</Banner>
+      ) : noBuildStands ? (
+        <p className="session-none">{heldLine(s.course?.held)}</p>
+      ) : (
+        <Spinner label="Building the session" />
+      );
   } else {
     // A day gone keeps the build it had, read-only: it can no longer be rebuilt (only moved to today).
     const recover = !locked && !past ? goRecoverLine(s, today) : null;
@@ -1030,13 +1118,18 @@ export function SessionSheet({
           <p className="session-status">Saved on another device. This device still holds a copy of it, which won't be saved.</p>
         ) : null}
         {body}
-        {musicInput && showBuild && !skipped && !past && s?.contentState !== "done" ? <WorkoutMusicRow {...musicInput} date={date} /> : null}
+        {musicInput && showBuild && !skipped && !marked && !past && s?.contentState !== "done" ? <WorkoutMusicRow {...musicInput} date={date} /> : null}
         {startRefused ? (
           <p className="session-refused" role="alert">
             {startRefused}
           </p>
         ) : null}
-        {editable ? (
+        {markDone.isError ? (
+          <p className="session-refused" role="alert">
+            {markDoneRefusal(markDone.error)}
+          </p>
+        ) : null}
+        {editable && !marked ? (
           <p className="session-edit">
             <Link className="btn btn-small" to={addTargetHref({ kind: "workout", id: w.id })} state={{ from: cameFrom } satisfies BuilderArrival}>
               Edit in Studio

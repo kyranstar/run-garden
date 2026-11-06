@@ -37,6 +37,26 @@ export const PLAYED_OFFLINE_GRACE_MS = PLAYED_OFFLINE_DAYS_BACK * 24 * 60 * 60 *
  * does not see is, to the garden, still open, and misses this many days after its day (garden-sync, Audit 2d I-2). */
 export const AUTO_MISS_DAYS = 7;
 
+/** Rest mode, which pauses the whole missed-workout pipeline, covers this day. */
+export const restModeOn = (prefs: Pick<UserPreferences, "gardenRestMode" | "gardenRestModeUntil">, today: string): boolean =>
+  prefs.gardenRestMode && (!prefs.gardenRestModeUntil || prefs.gardenRestModeUntil >= today);
+
+/**
+ * The state this pass gives a session on `date` that nothing has resolved: for a row going back to open (Mark done's undo), so
+ * it reads as if it had never been touched and the next pass finds nothing to do. Still scheduled inside the grace, under rest
+ * mode or during a "not yet"; then asked about; then, a week on, missed that day. The same rules as the pass below.
+ */
+export function openStateFor(
+  date: string,
+  today: string,
+  { restMode, snoozedUntil }: { restMode: boolean; snoozedUntil: string | null },
+): { completionState: "scheduled" | "unresolved" | "missed"; resolutionDate: string | null } {
+  if (restMode || (snoozedUntil && snoozedUntil > today)) return { completionState: "scheduled", resolutionDate: null };
+  if (date <= addDays(today, -AUTO_MISS_DAYS)) return { completionState: "missed", resolutionDate: today };
+  if (date < addDays(today, -SYNC_GRACE_DAYS)) return { completionState: "unresolved", resolutionDate: null };
+  return { completionState: "scheduled", resolutionDate: null };
+}
+
 export interface ReconcileStats {
   markedUnresolved: number;
   autoMissed: number;
@@ -114,9 +134,7 @@ export async function reconcileCompletionStates(
   }
 
   // Rest-mode pauses the entire missed-workout pipeline.
-  if (prefs.gardenRestMode && (!prefs.gardenRestModeUntil || prefs.gardenRestModeUntil >= today)) {
-    return stats;
-  }
+  if (restModeOn(prefs, today)) return stats;
 
   // scheduled → unresolved once effectiveDate < today - grace.
   const unresolvedCutoff = addDays(today, -SYNC_GRACE_DAYS);

@@ -2,7 +2,7 @@ import { useUnits, useWeightUnit } from "../use-units.js";
 import { useEffect, useRef, useState } from "react";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { api, ApiError, type CoachPlanDto, type PlanDetailResponse, type PlanSummaryDto, type PlansResponse, type TrainingLineDto } from "@rg/api-client";
-import { changePlanRequest, planSheetWords } from "./plan-words.js";
+import { changePlanRequest, courseRowState, planSheetWords, stopInTurns, stopOutcomeWords } from "./plan-words.js";
 import { ConfirmDialog, formatShortDate, Sheet, Spinner, useEscapeKey } from "../components.js";
 import { dayLabel, lastPhaseOf, lineSentenceName, planEnded, startOfIsoWeek } from "@rg/domain";
 import { PlannedVsActualBars, progressionInUnits, ProgressionStepChart } from "./plan-charts.js";
@@ -139,9 +139,9 @@ function PlanRace({ planId, race, firstDay, canChange }: { planId: string; race:
 
 /**
  * A plan's summary, read once for every sheet (`["plans"]`, `GET /api/plans`). Absent — an older server, or not read
- * yet — is no words: the sheets draw nothing of it and offer no Change.
+ * yet — is no words: the sheets draw nothing of it and offer no Change. The list reads the same, for its courses and its names.
  */
-function usePlanSummaries(): readonly PlanSummaryDto[] {
+export function usePlanSummaries(): readonly PlanSummaryDto[] {
   const q = useQuery<PlansResponse>({ queryKey: ["plans"], queryFn: () => api.plans(), staleTime: 60_000, retry: false });
   return q.data?.plans ?? [];
 }
@@ -735,6 +735,94 @@ function useStopLine(today: string | null, refresh?: StopRefresh) {
       </ConfirmDialog>
     ),
   };
+}
+
+/** What a course's stop reads again, beside what any stop does: its own summary, and Today, which its session may have left. */
+const COURSE_STOP_READS = [...STOP_READS, ["plans"], ["today"]];
+
+/**
+ * A COURSE'S SHEET (plans with a purpose §4.2; the one new sheet, kept to what's on the plan sheet): where it has got to, what it
+ * is for and how it ends (`PlanWords`), and "Stop this plan…". No settings. Stop asks first, then sends until nothing's left
+ * (`stopInTurns`): `POST /api/plans/:id/stop` does what fits a request, and the first send is what stops the plan. So only that
+ * send's failure is one, said in the confirm, which stays open to try again. Anything after it isn't: the hourly pass finishes
+ * what's left, and the sheet says so, plainly, with the focus there since the button pressed has gone. Its copies come off the
+ * watch in requests of their own (`drainWatchUntilIdle`). A stopped one's sheet has nothing to press.
+ */
+export function CourseSheet({ plan, onClose }: { plan: PlanSummaryDto; onClose: () => void }) {
+  const qc = useQueryClient();
+  const [asking, setAsking] = useState(false);
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const [said, setSaid] = useState<string | null>(null);
+  const saidRef = useRef<HTMLParagraphElement>(null);
+  useEffect(() => {
+    if (said !== null) saidRef.current?.focus({ preventScroll: true });
+  }, [said]);
+  const readAgain = () => {
+    for (const queryKey of COURSE_STOP_READS) void qc.invalidateQueries({ queryKey });
+  };
+  const confirm = async () => {
+    if (busy) return;
+    setBusy(true);
+    setError(null);
+    try {
+      setSaid(stopOutcomeWords(await stopInTurns(() => api.stopPlan(plan.id))));
+      setAsking(false);
+      void api.drainWatchUntilIdle().then(({ ran }) => {
+        if (ran > 0) readAgain();
+      });
+    } catch (e) {
+      setError(refusalWords(e, STOP_FAILED));
+    } finally {
+      setBusy(false);
+      readAgain();
+    }
+  };
+  const stopped = said !== null || plan.status === "retired";
+  const footer = stopped ? null : (
+    <div className="btn-row studio-modal-actions">
+      <button
+        type="button"
+        className="btn"
+        aria-haspopup="dialog"
+        onClick={() => {
+          setError(null);
+          setAsking(true);
+        }}
+      >
+        Stop this plan…
+      </button>
+    </div>
+  );
+  const state = courseRowState(plan);
+  return (
+    <Sheet open onClose={onClose} title={plan.name} footer={footer}>
+      <div className="stack">
+        {said !== null ? (
+          <p ref={saidRef} className="line-stopped" role="status" tabIndex={-1}>
+            {said}
+          </p>
+        ) : state ? (
+          <p className="faint num">{state}</p>
+        ) : null}
+        <PlanWords plan={plan} canChange={!stopped} />
+      </div>
+      <ConfirmDialog
+        open={asking}
+        onClose={() => {
+          if (!busy) setAsking(false);
+        }}
+        title="Stop this plan?"
+        confirmLabel="Stop the plan"
+        busy={busy}
+        lockWhileBusy
+        error={error}
+        onConfirm={() => void confirm()}
+      >
+        Its sessions ahead leave your plan, your calendar and your watch. What you've done stays.
+      </ConfirmDialog>
+    </Sheet>
+  );
 }
 
 /**

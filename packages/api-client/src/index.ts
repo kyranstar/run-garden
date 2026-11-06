@@ -1902,7 +1902,8 @@ export interface PlanSummaryDto {
   lineKey: string | null;
   /** The id the existing list row carries (a Studio entry's `studio_plans` id), so that row finds this plan. */
   listedAs: string | null;
-  course: { session: number; of: number } | null;
+  /** A course's: where it has got to while it counts sessions, then its own words for what comes after; null otherwise. */
+  course: { session: number; of: number } | { after: string } | null;
   prompt: { kind: "whats_next" | "draft_ready"; label: string; request: string } | null;
 }
 
@@ -1922,6 +1923,15 @@ export interface PlanPatch {
 
 export interface PlanSaveResponse {
   plan: PlanSummaryDto;
+}
+
+/**
+ * `POST /api/plans/:id/stop`: `more`, something's left, so send it again until it's false. With `waiting: true` as well, all
+ * that's left is mid-send, so a resend can't help: stop asking, and the hourly pass finishes it.
+ */
+export interface PlanStopResponse {
+  more: boolean;
+  waiting?: true;
 }
 
 // ── Sessions (worker routes: apps/worker/src/routes/sessions.ts; service: services/session-build.ts) ──────────
@@ -2076,6 +2086,11 @@ export interface SessionDto {
   music?: import("@rg/domain").WorkoutMusic;
   /** The videos to watch instead of playing it here (a fixed practice's); absent when it has none, or from an older server. */
   videos?: Array<{ label: string; url: string }>;
+  /**
+   * A course's own session; absent on anything else, or from an older server. `markDone`: what the sheet offers, Mark done
+   * (`offer`) or its undo (`marked`). `held`: what holds today's outline by its plan, so there's nothing to build.
+   */
+  course?: { markDone: "offer" | "marked" | null; held: "paused" | "starting" | "stopped" | null };
 }
 
 /** Why Send to watch is not offered (`watch.reason`), and the 409 `error` of a refused send. */
@@ -2712,6 +2727,8 @@ export const api = {
     ),
   skip: (id: string) => post(`/api/plan/workouts/${id}/skip`),
   unskipWorkout: (id: string) => post(`/api/plan/workouts/${id}/unskip`),
+  /** A course's session: the athlete says it happened, or takes that back. 409 `{error, why}` says why it can't, in words. */
+  markDone: (id: string, done: boolean) => post<{ ok: true }>(`/api/plan/workouts/${encodeURIComponent(id)}/mark-done`, { done }),
   defer: (id: string) => post(`/api/plan/workouts/${id}/defer`),
   match: (id: string, activityId: string) => post(`/api/plan/workouts/${id}/match`, { activityId }),
   unmatch: (id: string) => post(`/api/plan/workouts/${id}/unmatch`),
@@ -3049,6 +3066,8 @@ export const api = {
       method: "PATCH",
       body: JSON.stringify(patch),
     }),
+  /** One send of a stop (`PlanStopResponse`). 404 for a plan that isn't the account's, 423 during a restore. */
+  stopPlan: (id: string) => post<PlanStopResponse>(`/api/plans/${encodeURIComponent(id)}/stop`),
 
   // ── Sessions (worker routes: apps/worker/src/routes/sessions.ts) ─────────
   getSession: (workoutId: string) => get<SessionDto>(`/api/sessions/${encodeURIComponent(workoutId)}`),

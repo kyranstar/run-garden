@@ -14,6 +14,8 @@ export interface CourseDefinition {
   sessionDoc(n: number, opts: { ease: boolean }): WorkoutDoc;
   /** Where `done` sessions leave the plan, while the course counts them; null once it no longer does. */
   sessionLabel(done: number): { session: number; of: number } | null;
+  /** What its plan's row says once it no longer counts them: this course's own words, so no screen has to know them. */
+  afterLabel: string;
   /** To watch instead of playing a session here. */
   videos: readonly PracticeVideo[];
   /** Why a plan of it exists, and what its next sessions must respect: its plan's own words to begin with. */
@@ -28,6 +30,7 @@ const TRE: CourseDefinition = {
   name: "TRE",
   sessionDoc: (n, { ease }) => treSessionDoc(n, { ease }),
   sessionLabel: (done) => (done < TRE_WHOLE_SEQUENCE_SESSIONS ? { session: done + 1, of: TRE_WHOLE_SEQUENCE_SESSIONS } : null),
+  afterLabel: "Floor practice",
   videos: TRE_VIDEOS,
   purpose: "Looser hips and adductors and a calmer body, through a fixed sequence that lets the legs tremor.",
   brief:

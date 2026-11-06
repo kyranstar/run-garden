@@ -34,7 +34,8 @@
  *    request sent judges the write and is kept either way. A read serves no preview of an outline: what it would be moves
  *    with the sessions done and the easing, and the sheet's own build makes a current one. Nor does anything serve a
  *    document's preview of another revision than the row's. Its videos come from the course's definition, read from the
- *    plan's settings the read holds anyway, so a sheet shows the link from the first day it's planned.
+ *    plan's settings the read holds anyway, so a sheet shows the link from the first day it's planned. Every response for a
+ *    course's own session also says what Mark done offers and what holds it (`SessionResponse.course`), for no read more.
  *  - A PROVISIONAL COPY'S RECORD (the watch mirrors the plan §3.2; builder check A1): a document workout's copy pushed
  *    to the watch ahead of its day is a build of its own — a negative version (−1, −2, … per workout), never locked,
  *    `kind: "provisional"` in its payload (`makeProvisionalRecord`). It is none of the slot's builds: the loader, the
@@ -118,7 +119,8 @@ import type { Env } from "../env.js";
 import { loadAccountLibrary, PUBLIC_LIBRARY, type AccountLibrary } from "./account-library.js";
 import { restoreInProgress } from "./account-state.js";
 import { loadPreferences } from "./calendar-sync.js";
-import { courseOf, coursePreviewDoc, openCourseOutline } from "./course-sessions.js";
+import { markDoneOffer } from "./course-number.js";
+import { courseHoldOf, courseOf, coursePreviewDoc, openCourseOutline, STILL_TO_DO } from "./course-sessions.js";
 import type { Db } from "./db.js";
 import { separateDayCollisions } from "./day-placement.js";
 import {
@@ -332,6 +334,11 @@ export interface SessionResponse {
   music?: WorkoutMusic;
   /** The videos to watch instead of playing it here: a written session's by its document (`videosOfSource`), a course's outline's from its definition; absent when it has none. */
   videos?: PracticeVideo[];
+  /**
+   * A course's own session, absent on anything else. `markDone`: what the sheet offers (`markDoneOffer`). `held`: what holds
+   * today's outline by its plan (`courseHoldOf`), for a sheet with nothing to build to say why.
+   */
+  course?: { markDone: "offer" | "marked" | null; held: "paused" | "starting" | "stopped" | null };
 }
 
 /** A row's stored document column as a value; undefined when it doesn't read. */
@@ -379,6 +386,8 @@ interface SheetExtras {
   choices: SessionChoices;
   /** A course's outline's videos, from its definition: it holds no document to read them by. */
   videos?: PracticeVideo[];
+  /** A course's outline's plan, as read for the sheet (`ProgramIsCourseError`). */
+  coursePlan?: { status: string; pausedUntil: string | null; config: unknown };
 }
 
 /** What `session_builds.payload` holds. */
@@ -1010,7 +1019,7 @@ async function loadExtras(db: Db, userId: string, row: SlotRow, active: readonly
     if (e instanceof Error && e.message === "program_not_found") {
       return { profiles: [], choices: { modes: ["recovery", "consistent", "build"], themes: [], locations: [] } };
     }
-    if (e instanceof ProgramIsCourseError) return { ...docExtras(active), ...withVideos(courseVideosOf(e.config)) };
+    if (e instanceof ProgramIsCourseError) return { ...docExtras(active), ...withVideos(courseVideosOf(e.program.config)), coursePlan: e.program };
     throw e;
   }
 }
@@ -1046,7 +1055,19 @@ function respond(
     watch: null,
     ...withMusic(docMusicOf(row.workoutDoc)),
     ...withVideos(extras.videos ?? docVideosOf(row.workoutDoc)),
+    ...(ownCourseSession(row, extras) ? { course: courseView(row, today, extras) } : {}),
   };
+}
+
+/**
+ * A course's own session: an outline of a course, which the plan's read says, or a row with its number, which the row does. So
+ * a read that has neither to read reads nothing more for it.
+ */
+const ownCourseSession = (row: SlotRow, extras: SheetExtras): boolean => row.courseSession !== null || extras.coursePlan !== undefined;
+
+function courseView(row: SlotRow, today: string, { coursePlan }: SheetExtras): NonNullable<SessionResponse["course"]> {
+  const stillToDo = STILL_TO_DO.includes(row.completionState);
+  return { markDone: markDoneOffer(row, today), held: coursePlan && stillToDo && row.effectiveDate === today ? courseHoldOf(coursePlan, today) : null };
 }
 
 const withMusic = (music: WorkoutMusic | undefined): { music?: WorkoutMusic } => (music ? { music } : {});

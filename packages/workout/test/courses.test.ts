@@ -76,6 +76,10 @@ describe("TRE's label", () => {
   ])("with %i done: %j", (done, label) => {
     expect(TRE.sessionLabel(done)).toEqual(label);
   });
+
+  it("says in its own words what comes after them", () => {
+    expect(TRE.afterLabel).toBe("Floor practice");
+  });
 });
 
 describe("the videos of a document's source", () => {

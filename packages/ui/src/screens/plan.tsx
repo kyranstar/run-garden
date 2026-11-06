@@ -34,7 +34,7 @@ import { RaceStrip, useRaceHub } from "./race-strip.js";
 import { leafStageCount, StageStructure } from "./stage-structure.js";
 import { useUnits } from "../use-units.js";
 import { YourPlans } from "./plan-cards.js";
-import { LineSheet, PlanSheet } from "./plan-sheet.js";
+import { LineSheet, PlanSheet, usePlanSummaries } from "./plan-sheet.js";
 import { ThreadCoachCards } from "./thread-coach-cards.js";
 import { askable, displayCompletionState, focusAfterRemove, jumpWeeksOf, WeekView, weekPlan } from "./week-view.js";
 import { useCorosReadNow } from "./use-coros-read.js";
@@ -877,6 +877,9 @@ export function PlanScreen() {
   // is the one conversation now, opened from the nav (the new shape §5).
   const coach = usePlanCoach();
   const coachPlans = useQuery({ queryKey: ["coach-plans"], queryFn: api.coachPlans });
+  // The plans as plans (`GET /api/plans`): the courses' rows in the list, and every row's name. Not in the gate: a row landing
+  // late is better than a page held for it, and an older server's none reads as it always has.
+  const planSummaries = usePlanSummaries();
   // The adaptive programs (Phase 2a): in the gate, so a row never lands after the week above it. One attempt: a failure
   // shows the page without them at once rather than holding every account's first paint for retries.
   const programs = useQuery({ queryKey: ["programs"], queryFn: api.listPrograms, staleTime: 60_000, retry: false });
@@ -1020,7 +1023,7 @@ export function PlanScreen() {
   const rename = useMutation({
     mutationFn: (v: { id: string; name: string }) => api.coachPlanRename(v.id, v.name),
     onSettled: () => {
-      for (const k of ["coach-plans", "plan-detail"]) void qc.invalidateQueries({ queryKey: [k] });
+      for (const k of ["coach-plans", "plan-detail", "plans"]) void qc.invalidateQueries({ queryKey: [k] });
     },
   });
   const retire = useMutation({
@@ -1103,6 +1106,7 @@ export function PlanScreen() {
           today={today ?? week.data.weekStart}
           onOpenPlan={openPlan}
           onOpenLine={openLine}
+          summaries={planSummaries}
         />
       </div>
 

@@ -35,6 +35,13 @@ export const SWEEP_REPLAY_MAX_DAYS = 3;
 export const REQUEST_REPLAY_MAX_DAYS = 7;
 
 /**
+ * How many days of garden Mark done may replay in its own request: fewer than `REQUEST_REPLAY_MAX_DAYS`, whose ~70 statements
+ * don't fit a request that holds to 45 (mark-done.test.ts pins what this costs, at every distance back). The rest stays on
+ * record, as it does for any request, and the next garden read or cron walks on from it.
+ */
+export const MARK_DONE_REPLAY_MAX_DAYS = 2;
+
+/**
  * The coach designer's runs (Stage 3 spec §2) are stepped by the client while its screen is open — one model call a
  * request — and the hourly cron looks after the ones nobody is stepping, without ever calling the model for them: it
  * gives back dead claims, runs a left run's queued tool calls, and expires runs past their window. A step of queued

@@ -36,6 +36,7 @@ export const INTRO_COURSE: CourseDefinition = {
   name: "Intro",
   sessionDoc,
   sessionLabel: (done) => (done < 4 ? { session: done + 1, of: 4 } : null),
+  afterLabel: "Open practice",
   videos: [{ label: "Watch", url: "https://example.com/intro" }],
   purpose: "A made-up practice for tests.",
   brief: "Keep the order.",

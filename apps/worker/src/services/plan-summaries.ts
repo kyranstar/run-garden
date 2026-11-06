@@ -10,9 +10,9 @@ import { courseDefinition } from "@rg/workout";
  *  - `lineKey`: the key of the training line whose blocks point at this plan, so a list row finds its plan.
  *  - `listedAs`: the id the existing list row carries: a Studio plan's own id for the coach plan that holds it; a
  *    programme or a course, its own id; null for any other plan.
- *  - `course`: where a course has got to, from its definition's `sessionLabel` and the sessions done (read with the row:
- *    `courseDone`); null for any other kind, once the course no longer counts, and with a definition gone or settings that
- *    don't read.
+ *  - `course`: where a course has got to, all from its definition and the sessions done (read with the row: `courseDone`): its
+ *    `sessionLabel` while it counts them, then its own words for what comes after (`afterLabel`), so no screen has to know a
+ *    course's numbers or words; null for any other kind, and with a definition gone or settings that don't read.
  *  - `prompt` stays null until the plan's next-step prompt is built.
  */
 
@@ -60,7 +60,7 @@ export interface PlanSummaryDto {
   status: "active" | "retired";
   lineKey: string | null;
   listedAs: string | null;
-  course: { session: number; of: number } | null;
+  course: { session: number; of: number } | { after: string } | null;
   prompt: { kind: "whats_next" | "draft_ready"; label: string; request: string } | null;
 }
 
@@ -87,7 +87,8 @@ function courseLabel(row: Pick<PlanRow, "kind" | "config" | "courseDone">): Plan
   if (row.kind !== "course") return null;
   const config = courseConfigSchema.safeParse(row.config);
   const definition = config.success ? courseDefinition(config.data.course) : null;
-  return definition?.sessionLabel(row.courseDone ?? 0) ?? null;
+  if (!definition) return null;
+  return definition.sessionLabel(row.courseDone ?? 0) ?? { after: definition.afterLabel };
 }
 
 export const isPlanKind = (kind: string): kind is (typeof PLAN_KINDS)[number] => (PLAN_KINDS as readonly string[]).includes(kind);

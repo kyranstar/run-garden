@@ -116,6 +116,17 @@ export function courseSessionDue(
 }
 
 /**
+ * What holds an outline on its day, by its plan: the part of `courseSessionDue` the athlete is told of, on a sheet that has
+ * nothing to build. Null when the plan holds nothing, and whatever else keeps it unwritten (the day refused it) isn't the plan's.
+ */
+export function courseHoldOf(program: { status: string; pausedUntil: string | null; config: unknown }, today: string): "paused" | "starting" | "stopped" | null {
+  if (program.status !== "active") return "stopped";
+  const finishing = (program.config as { finishing?: unknown } | null)?.finishing;
+  if (finishing === "start") return "starting";
+  return pausedOn(program.pausedUntil, today) ? "paused" : null;
+}
+
+/**
  * The flip's guard (the header's THE FLIP IS THE GUARD): `courseSessionDue` and `courseOf` as the rows stand now, and what
  * the document was made from, in SQL. Raw names and aliases, because it runs inside an UPDATE of this very table.
  */

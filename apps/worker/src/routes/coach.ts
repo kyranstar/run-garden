@@ -13,6 +13,7 @@ import {
   coachRuns,
   llmUsage,
   plannedWorkouts,
+  programs,
   studioPlanPushes,
   studioPlans,
   trainingPlans,
@@ -1250,10 +1251,24 @@ coachRoutes.post("/plans/:id/rename", async (c) => {
   const userId = c.get("userId");
   const { name } = await c.req.json<{ name?: string }>().catch(() => ({ name: undefined }));
   if (!name || name.length > 60) return c.json({ error: "bad_request" }, 400);
+  const id = c.req.param("id");
+  const now = nowInstant();
   await db
     .update(coachPlans)
-    .set({ name, updatedAt: nowInstant() })
-    .where(and(eq(coachPlans.id, c.req.param("id")), eq(coachPlans.userId, userId)));
+    .set({ name, updatedAt: now })
+    .where(and(eq(coachPlans.id, id), eq(coachPlans.userId, userId)));
+  // A plan of this one block goes by its name (`plan-registry.ts`), and the list names a row by its plan: a rename reaches it.
+  // A plan of several is named for the line, not a phase of it. Raw names: `"id"` would be the subquery's own.
+  await db
+    .update(programs)
+    .set({ name, updatedAt: now })
+    .where(
+      and(
+        eq(programs.userId, userId),
+        sql`programs.id = (select b.program_id from coach_plans b where b.id = ${id})`,
+        sql`(select count(*) from coach_plans b where b.program_id = programs.id) = 1`,
+      ),
+    );
   return c.json({ ok: true });
 });
 

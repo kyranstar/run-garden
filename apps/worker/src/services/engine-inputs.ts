@@ -651,7 +651,8 @@ export const PROGRAM_IS_COURSE = "program_is_course";
 
 /** `PROGRAM_IS_COURSE`, with the plan's settings as read: a course's sheet goes on to read them, and reads them no second time. */
 export class ProgramIsCourseError extends Error {
-  constructor(readonly config: unknown) {
+  /** The plan as read: what the sheet's read needs of a course's outline, for no statement more. */
+  constructor(readonly program: { config: unknown; status: string; pausedUntil: string | null }) {
     super(PROGRAM_IS_COURSE);
   }
 }
@@ -671,12 +672,12 @@ export async function loadEngineContext(
   let config = adaptiveConfigSchema.parse({});
   if (programId !== null) {
     const [program] = await db
-      .select({ config: programs.config, kind: programs.kind })
+      .select({ config: programs.config, kind: programs.kind, status: programs.status, pausedUntil: programs.pausedUntil })
       .from(programs)
       .where(and(eq(programs.id, programId), eq(programs.userId, userId)))
       .limit(1);
     if (!program) throw new Error("program_not_found");
-    if (program.kind === "course") throw new ProgramIsCourseError(program.config);
+    if (program.kind === "course") throw new ProgramIsCourseError(program);
     const parsed = adaptiveConfigSchema.safeParse(program.config);
     if (!parsed.success) console.error(`program ${programId}: stored config does not parse; building with the defaults`);
     if (parsed.success) config = parsed.data;

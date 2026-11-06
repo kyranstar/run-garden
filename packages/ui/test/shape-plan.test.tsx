@@ -16,11 +16,11 @@ import { createRoot, type Root } from "react-dom/client";
 import { renderToStaticMarkup } from "react-dom/server";
 import { MemoryRouter } from "react-router-dom";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
-import { afterEach, describe, expect, it } from "vitest";
-import type { CoachPlanDto, PlanDetailResponse, PlanWeekResponse, ProgramDto, WorkoutDto } from "@rg/api-client";
+import { afterEach, describe, expect, it, vi } from "vitest";
+import type { CoachPlanDto, PlanDetailResponse, PlanSummaryDto, PlanWeekResponse, ProgramDto, TrainingLineDto, WorkoutDto } from "@rg/api-client";
 import { CoachOpenContext, type CoachOpener } from "../src/screens/studio/coach-ask.js";
-import { planRequests, PlanSheet } from "../src/screens/plan-sheet.js";
-import { planRowState, YourPlans } from "../src/screens/plan-cards.js";
+import { planRequests, PlanSheet, usePlanSummaries } from "../src/screens/plan-sheet.js";
+import { planEntries, planRowState, YourPlans } from "../src/screens/plan-cards.js";
 import { RaceMismatchNotice, WeeklyBrief } from "../src/screens/plan-brief.js";
 import { WeekView, weekLine, weekPlanName, weekTitle } from "../src/screens/week-view.js";
 
@@ -233,6 +233,301 @@ describe("Your plans, one list", () => {
     const html = renderToStaticMarkup(wrap(createElement(YourPlans, { plans: [], programs: undefined, today: "2026-08-11", onOpenPlan: noop, onOpenLine: noop }), { open: noop }));
     expect(html).toContain("New program…");
     expect(html).toContain("Plan with the coach");
+  });
+});
+
+describe("a course in Your plans (plans with a purpose): a row of its own, and a small sheet", () => {
+  const summary = (over: Partial<PlanSummaryDto> = {}): PlanSummaryDto => ({
+    id: "c1",
+    kind: "course",
+    name: "Evening practice",
+    purpose: "A made-up practice.",
+    brief: "Keep the order.",
+    onEnd: "continue",
+    pausedUntil: null,
+    objectiveIds: [],
+    status: "active",
+    lineKey: null,
+    listedAs: "c1",
+    course: { session: 3, of: 10 },
+    prompt: null,
+    ...over,
+  });
+  const today = "2026-08-11";
+  const rowsOf = (html: string) => [...html.matchAll(/<button type="button" class="plan-row"[^>]*>([\s\S]*?)<\/button>/g)].map((m) => m[1]!.replace(/<[^>]+>/g, " ").replace(/\s+/g, " ").trim());
+  const listed = (summaries: PlanSummaryDto[], over: Partial<Parameters<typeof YourPlans>[0]> = {}) =>
+    renderToStaticMarkup(wrap(createElement(YourPlans, { plans: [], programs: undefined, today, onOpenPlan: noop, onOpenLine: noop, summaries, ...over }), null));
+
+  it("its row reads \"Practice · Session 3 of 10\"", () => {
+    expect(planRowState({ kind: "course", plan: summary() }, today)).toEqual({ kind: "Practice", state: "Session 3 of 10" });
+    expect(rowsOf(listed([summary()]))).toEqual(["Evening practice Practice · Session 3 of 10"]);
+  });
+
+  it("a second course needs no change here: its numbers and its words are the server's", () => {
+    const second = summary({ id: "c2", name: "Morning sit", course: { session: 2, of: 4 } });
+    const third = summary({ id: "c3", name: "Open floor", course: { after: "Whatever comes next" } });
+    expect(rowsOf(listed([second, third]))).toEqual(["Morning sit Practice · Session 2 of 4", "Open floor Practice · Whatever comes next"]);
+  });
+
+  it("nothing of any one course is written in the UI", () => {
+    for (const file of ["screens/plan-cards.tsx", "screens/plan-words.ts", "components/session-sheet.tsx"]) {
+      const text = src(file);
+      expect(text, file).not.toMatch(/floor practice/i);
+      expect(text, file).not.toMatch(/\bof 10\b/);
+      expect(text, file).not.toMatch(/\btre\b/i);
+    }
+  });
+
+  it("every other kind's summary is no course's row", () => {
+    const { live, past } = planEntries([], [], undefined, today, [summary({ id: "a", kind: "adaptive" }), summary({ id: "b", kind: "coach" }), summary({ id: "d", kind: "coros_import" })]);
+    expect([...live, ...past]).toEqual([]);
+  });
+
+  it("programs first, then courses by name, then what starts when", () => {
+    const html = listed([summary({ id: "z", name: "Zed" }), summary({ id: "a", name: "Abel" })], { plans: [runPlan], programs: { programs: [program], places: [], profiles: [] } });
+    expect(rowsOf(html).map((r) => r.split(" ")[0])).toEqual(["Strength", "Abel", "Zed", "Fall"]);
+  });
+
+  it("a stopped course goes under Past plans, and says it stopped", () => {
+    const html = listed([summary({ status: "retired" })]);
+    const [live, past] = html.split("Past plans");
+    expect(live).not.toContain("Evening practice");
+    expect(rowsOf(past!)).toEqual(["Evening practice Practice · Stopped"]);
+  });
+
+  it("one the server can't place reads as its kind alone, with no stray separator", () => {
+    expect(rowsOf(listed([summary({ course: null })]))).toEqual(["Evening practice Practice"]);
+  });
+
+  describe("a row takes its name from its plan (R2)", () => {
+    const phases: TrainingLineDto["phases"] = [
+      { id: "r1", discipline: "run", status: "active", name: "Base", startDate: "2026-08-03", endDate: "2026-08-23", planRaceDate: null, futureSessions: 0 },
+      { id: "r2", discipline: "run", status: "active", name: "Race build", startDate: "2026-08-24", endDate: "2026-09-13", planRaceDate: null, futureSessions: 0 },
+    ];
+    const line: TrainingLineDto = { key: "run:r1", discipline: "run", name: "Running", phases, currentPhaseId: "r1", startDate: "2026-08-03", endDate: "2026-09-13", goalRaceDate: null, ended: false };
+    const coach = (over: Partial<PlanSummaryDto>) => summary({ kind: "coach", course: null, listedAs: null, ...over });
+
+    it("a line's plan name wins over the sport, and its sub-line then says what the title no longer does", () => {
+      expect(rowsOf(listed([coach({ id: "plan-1", name: "Autumn build", lineKey: line.key })], { lines: [line] }))).toEqual(["Autumn build Running · Phase 1 of 2 · Base · week 2 of 3"]);
+    });
+
+    it("a plan named as its sport reads as it always has", () => {
+      expect(rowsOf(listed([coach({ id: "plan-1", name: "Running", lineKey: line.key })], { lines: [line] }))).toEqual(["Running Phase 1 of 2 · Base · week 2 of 3"]);
+    });
+
+    it("no matching plan: the sport, as before", () => {
+      expect(rowsOf(listed([coach({ id: "plan-1", name: "Autumn build", lineKey: "lift:x" })], { lines: [line] }))).toEqual(["Running Phase 1 of 2 · Base · week 2 of 3"]);
+    });
+
+    it("a plan row by the id it's listed as, a program by its own", () => {
+      expect(rowsOf(listed([coach({ id: "plan-s", name: "From the Studio", listedAs: runPlan.id })], { plans: [runPlan] }))).toEqual(["From the Studio Running plan · Week 5 of 12 · ends Oct 4"]);
+      expect(rowsOf(listed([summary({ id: program.id, kind: "adaptive", name: "Named plan", listedAs: program.id, course: null })], { programs: { programs: [program], places: [], profiles: [] } }))).toEqual(["Named plan Program · Block 2 · week 3 of 5 · 1 of 3 this week"]);
+    });
+
+    it("a COROS plan by its own id: it's listed as nothing else", () => {
+      const coros = { ...runPlan, id: "coros-1", source: "coros" as const };
+      expect(rowsOf(listed([summary({ id: "coros-1", kind: "coros_import", name: "Their name for it", listedAs: null, course: null })], { plans: [coros] }))).toEqual(["Their name for it Running plan · From COROS · week 5 of 12"]);
+    });
+
+    it("the list sorts by the name it shows", () => {
+      const later = { ...runPlan, id: "p-later", name: "Zebra" };
+      const { live } = planEntries([later, { ...runPlan, id: "p-sooner", name: "Mango" }], [], undefined, today, [coach({ id: "x", name: "Aardvark", listedAs: "p-later" })]);
+      expect(live.map((e) => (e.kind === "plan" ? e.plan.id : ""))).toEqual(["p-later", "p-sooner"]);
+    });
+  });
+
+  describe("its sheet", () => {
+    let liveRoot: Root | null = null;
+    let liveHost: HTMLDivElement | null = null;
+    afterEach(() => {
+      act(() => liveRoot?.unmount());
+      liveHost?.remove();
+      liveRoot = null;
+      liveHost = null;
+      vi.unstubAllGlobals();
+    });
+
+    /** The list as the page draws it, reading its plans as the page does, against a stubbed worker. */
+    function open(first: PlanSummaryDto, stop: (call: number) => Response | Promise<Response>, after: PlanSummaryDto = { ...first, status: "retired" }) {
+      const calls: string[] = [];
+      let stops = 0;
+      let current = first;
+      const asJson = (b: unknown, status = 200) => new Response(JSON.stringify(b), { status, headers: { "Content-Type": "application/json" } });
+      vi.stubGlobal(
+        "fetch",
+        vi.fn(async (url: string, init?: RequestInit) => {
+          const method = init?.method ?? "GET";
+          calls.push(`${method} ${url}`);
+          if (url === "/api/plans") return asJson({ plans: [current] });
+          if (url === `/api/plans/${first.id}/stop`) {
+            stops += 1;
+            current = after;
+            return stop(stops);
+          }
+          if (url === "/api/sessions/watch/drain") return asJson({ ran: false, pending: 0 });
+          return asJson({ error: "not_found" }, 404);
+        }),
+      );
+      const qc = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+      const List = () => createElement(YourPlans, { plans: [], programs: undefined, today, onOpenPlan: noop, onOpenLine: noop, summaries: usePlanSummaries() });
+      liveHost = document.createElement("div");
+      document.body.appendChild(liveHost);
+      liveRoot = createRoot(liveHost);
+      act(() => liveRoot!.render(wrap(createElement(List), null, qc)));
+      return { calls, qc, stops: () => calls.filter((c) => c.endsWith("/stop")).length };
+    }
+    const text = () => (document.body.textContent ?? "").replace(/\s+/g, " ");
+    const until = async (check: () => boolean, what: string, passes = 400) => {
+      for (let i = 0; i < passes; i += 1) {
+        if (check()) return;
+        await act(async () => void (await new Promise((r) => setTimeout(r, 5))));
+      }
+      throw new Error(`timed out waiting for: ${what}\n${text()}`);
+    };
+    const control = (name: string) => [...document.querySelectorAll<HTMLElement>("button")].find((b) => b.textContent?.replace(/\s+/g, " ").trim() === name);
+    const press = async (name: string) => {
+      const b = control(name);
+      if (!b) throw new Error(`no control ${name}\n${text()}`);
+      await act(async () => b.click());
+    };
+    const asJson = (b: unknown, status = 200) => new Response(JSON.stringify(b), { status, headers: { "Content-Type": "application/json" } });
+    const row = () => [...document.querySelectorAll<HTMLElement>(".plan-row")].find((b) => b.textContent?.includes("Evening practice"))!;
+
+    async function openSheet(first = summary(), stop: (call: number) => Response | Promise<Response> = () => asJson({ more: false }), after?: PlanSummaryDto) {
+      const out = open(first, stop, after);
+      await until(() => !!row(), "the row");
+      await act(async () => row().click());
+      await until(() => !!document.querySelector("[role=dialog]"), "the sheet");
+      return out;
+    }
+
+    it("says what's on the plan sheet, with no settings: its purpose, how it ends, the brief one tap down", async () => {
+      await openSheet();
+      const dialog = document.querySelector("[role=dialog]")!;
+      expect(dialog.textContent).toContain("Evening practice");
+      expect(dialog.textContent).toContain("A made-up practice.");
+      expect(dialog.textContent).toContain("Continues on its own");
+      expect(dialog.textContent).not.toContain("Keep the order.");
+      await press("How it works");
+      expect(dialog.textContent).toContain("Keep the order.");
+      // It says where it's got to, as its row does.
+      expect(dialog.textContent).toContain("Session 3 of 10");
+      // Nothing to set here: a Rename, a Retire or a form would be a settings sheet.
+      for (const none of ["Rename", "Retire…", "Save"]) expect(control(none), none).toBeUndefined();
+      expect(dialog.querySelector("input, select, textarea")).toBeNull();
+    });
+
+    it("Stop asks first, in the app's own confirm, and sends nothing until it's answered", async () => {
+      const confirm = vi.fn();
+      vi.stubGlobal("confirm", confirm);
+      const { stops } = await openSheet();
+      await press("Stop this plan…");
+      await until(() => !!control("Stop the plan"), "the confirm");
+      expect(text()).toContain("Stop this plan?");
+      expect(confirm).not.toHaveBeenCalled();
+      expect(stops()).toBe(0);
+      await press("Cancel");
+      await until(() => !control("Stop the plan"), "the confirm closed");
+      expect(stops()).toBe(0);
+      expect(control("Stop this plan…")).toBeTruthy();
+    });
+
+    it("confirmed, it calls the route until nothing's left, says so, and the row moves to Past plans", async () => {
+      const { stops } = await openSheet(summary(), (n) => asJson({ more: n < 3 }));
+      await press("Stop this plan…");
+      await press("Stop the plan");
+      await until(() => text().includes("Stopped. Its sessions ahead have come off."), "the line");
+      expect(stops()).toBe(3);
+      expect(document.querySelector("[role=status]")?.textContent).toContain("Stopped.");
+      // The button pressed has gone, and the focus doesn't fall to the page.
+      await until(() => document.activeElement === document.querySelector("[role=status]"), "the focus on the line");
+      expect(control("Stop the plan")).toBeUndefined();
+      expect(control("Stop this plan…")).toBeUndefined();
+      await until(() => document.querySelector(".plan-past")?.textContent?.includes("Evening practice") === true, "the row under Past plans");
+    });
+
+    it("stopped, there's no Stop to press again, though the list hasn't said so yet", async () => {
+      await openSheet(summary(), () => asJson({ more: false }), summary());
+      await press("Stop this plan…");
+      await press("Stop the plan");
+      await until(() => text().includes("Stopped."), "the line");
+      expect(control("Stop this plan…")).toBeUndefined();
+    });
+
+    it("stops early on `waiting`, and says what's still on its way", async () => {
+      const { stops } = await openSheet(summary(), (n) => asJson(n === 2 ? { more: true, waiting: true } : { more: true }));
+      await press("Stop this plan…");
+      await press("Stop the plan");
+      await until(() => text().includes("A session on its way to your watch comes off once it lands."), "the line");
+      expect(stops()).toBe(2);
+    });
+
+    it("gives up at its bound with no error: the rest comes off by itself", async () => {
+      const { stops } = await openSheet(summary(), () => asJson({ more: true }));
+      await press("Stop this plan…");
+      await press("Stop the plan");
+      await until(() => text().includes("The rest comes off by itself."), "the line");
+      expect(stops()).toBe(30);
+      expect(document.querySelector("[role=alert]")).toBeNull();
+    });
+
+    it("a failure part way isn't an error", async () => {
+      const { stops } = await openSheet(summary(), (n) => (n === 1 ? asJson({ more: true }) : asJson({ error: "internal" }, 500)));
+      await press("Stop this plan…");
+      await press("Stop the plan");
+      await until(() => text().includes("The rest comes off by itself."), "the line");
+      expect(stops()).toBe(2);
+      expect(document.querySelector("[role=alert]")).toBeNull();
+    });
+
+    it("a failure on the first send is: the confirm stays open and says so, the row stays, and pressing again goes on", async () => {
+      const { stops } = await openSheet(summary(), (n) => (n === 1 ? asJson({ error: "internal" }, 500) : asJson({ more: false })), summary());
+      await press("Stop this plan…");
+      await press("Stop the plan");
+      await until(() => text().includes("That didn't go through — try again."), "the error");
+      expect(control("Stop the plan")).toBeTruthy();
+      expect(document.querySelector(".plan-past")).toBeNull();
+      await press("Stop the plan");
+      await until(() => text().includes("Stopped."), "stopped");
+      expect(stops()).toBe(2);
+    });
+
+    it("a refusal with its own words says them", async () => {
+      await openSheet(summary(), () => asJson({ error: "x", why: "Not now." }, 409), summary());
+      await press("Stop this plan…");
+      await press("Stop the plan");
+      await until(() => text().includes("Not now."), "the words");
+    });
+
+    it("the confirm can't be closed while it runs: what comes of it needs somewhere to be said", async () => {
+      let answer: (() => void) | null = null;
+      const { stops } = await openSheet(summary(), () => new Promise<Response>((resolve) => (answer = () => resolve(asJson({ more: false })))));
+      await press("Stop this plan…");
+      await press("Stop the plan");
+      await until(() => answer !== null, "the send");
+      expect((control("Cancel") as HTMLButtonElement).disabled).toBe(true);
+      expect((control("Stop the plan") as HTMLButtonElement).disabled).toBe(true);
+      await act(async () => answer!());
+      await until(() => text().includes("Stopped."), "stopped");
+      expect(stops()).toBe(1);
+    });
+
+    it("what a stop changes is read again, and the watch's queue is run", async () => {
+      const { calls, qc } = await openSheet();
+      for (const k of ["plan", "plan-week", "today", "coach-plans", "coach-state"]) qc.setQueryData([k], { any: 1 });
+      await press("Stop this plan…");
+      await press("Stop the plan");
+      await until(() => text().includes("Stopped."), "stopped");
+      for (const k of ["plan", "plan-week", "today", "coach-plans", "coach-state"]) expect(qc.getQueryState([k])?.isInvalidated, k).toBe(true);
+      await until(() => calls.includes("POST /api/sessions/watch/drain"), "the drain");
+    });
+
+    it("a stopped one's sheet has nothing to press, and says it stopped", async () => {
+      await openSheet(summary({ status: "retired" }));
+      expect(control("Stop this plan…")).toBeUndefined();
+      expect(document.querySelector("[role=dialog]")?.textContent).toContain("Stopped");
+      expect(document.querySelector("[role=dialog]")?.textContent).not.toContain("Session 3 of 10");
+    });
   });
 });
 

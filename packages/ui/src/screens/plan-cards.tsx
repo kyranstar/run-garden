@@ -1,8 +1,10 @@
 import { useState } from "react";
-import type { CoachPlanDto, PlanProgression, ProgramDto, ProgramsResponse, TrainingLineDto } from "@rg/api-client";
+import type { CoachPlanDto, PlanProgression, PlanSummaryDto, ProgramDto, ProgramsResponse, TrainingLineDto } from "@rg/api-client";
 import { phaseWeekOf, planEnded } from "@rg/domain";
 import { formatShortDate, type Units } from "../components.js";
 import { ProgramSettingsSheet } from "../components/program-settings-sheet.js";
+import { CourseSheet } from "./plan-sheet.js";
+import { courseRowState } from "./plan-words.js";
 import { useCoach } from "./studio/coach-ask.js";
 
 const KM_PER_MI = 1.609344;
@@ -33,10 +35,15 @@ export function progressionHeadline(p: PlanProgression, units: Units): string {
 }
 
 /**
- * YOUR PLANS (the new shape §6): one list — programs, training lines, Studio and COROS plans — one row each with its kind
- * and its state, each opening its sheet (a program its settings, a line or plan its sheet). Its foot starts something
- * new: a program, or a plan asked of the coach (the words written in the box, the athlete's to send). What a plan is
+ * YOUR PLANS (the new shape §6): one list — programs, courses, training lines, Studio and COROS plans — one row each with its
+ * kind and its state, each opening its sheet (a program its settings, a course or a line or plan its sheet). Its foot starts
+ * something new: a program, or a plan asked of the coach (the words written in the box, the athlete's to send). What a plan is
  * doing — its charts, its weeks, its actions — is one tap down, in the sheet.
+ *
+ * A course's row comes from `GET /api/plans` alone. Everything it says of the course is the server's, from its definition
+ * (`courseRowState`), so a second course needs nothing here; its kind is "Practice" whichever it is, as a program's is "Program":
+ * the word names what a course is, a fixed practice. Any row takes its name from its plan when one matches (`planOf`), so a
+ * plan's own name wins over the sport.
  */
 
 const DISCIPLINE_KIND: Record<CoachPlanDto["discipline"], string> = {
@@ -45,9 +52,10 @@ const DISCIPLINE_KIND: Record<CoachPlanDto["discipline"], string> = {
   mobility: "Mobility",
 };
 
-/** One row on the list: a program, a training line (a chain of the coach's blocks), or a Studio / COROS plan. */
+/** One row on the list: a program, a course, a training line (a chain of the coach's blocks), or a Studio / COROS plan. */
 export type PlanEntry =
   | { kind: "program"; program: ProgramDto }
+  | { kind: "course"; plan: PlanSummaryDto }
   | { kind: "line"; line: TrainingLineDto }
   | { kind: "plan"; plan: CoachPlanDto };
 
@@ -75,6 +83,7 @@ export function planRowState(entry: Exclude<PlanEntry, { kind: "line" }>, today:
     const week = `${p.week.done} of ${p.week.goal} this week`;
     return { kind: "Program", state: p.block ? `Block ${p.block.number} · week ${p.block.week} of ${p.block.weeks} · ${week}` : week };
   }
+  if (entry.kind === "course") return { kind: "Practice", state: courseRowState(entry.plan) };
   const p = entry.plan;
   return { kind: `${DISCIPLINE_KIND[p.discipline]} plan`, state: blockState(p, today) };
 }
@@ -93,21 +102,34 @@ export function lineRowState(line: TrainingLineDto, today: string): { kind: stri
 
 const entryStart = (e: PlanEntry): string => (e.kind === "line" ? e.line.startDate : e.kind === "plan" ? e.plan.startDate : "");
 const entryEnd = (e: PlanEntry): string => (e.kind === "line" ? e.line.endDate : e.kind === "plan" ? e.plan.endDate : "");
-/** What a row is called: a program or plan by its name; a one-phase line by its block's name (as a block's row is); a
- * many-phase line by its sport ("Running"), so its title never changes with the phase it is in. */
-const entryName = (e: PlanEntry): string =>
-  e.kind === "line" ? (e.line.phases.length === 1 ? e.line.phases[0]!.name : e.line.name) : e.kind === "plan" ? e.plan.name : e.program.name;
+
+/** The plan a row is, found as the plan sheet finds it: by the line's key, or by the id the row carries. */
+function planOf(e: PlanEntry, summaries: readonly PlanSummaryDto[]): PlanSummaryDto | undefined {
+  if (e.kind === "course") return e.plan;
+  if (e.kind === "line") return summaries.find((s) => s.lineKey === e.line.key);
+  const id = e.kind === "program" ? e.program.id : e.plan.id;
+  return summaries.find((s) => s.id === id || s.listedAs === id);
+}
+
+/** What a row is called: its plan's own name when one matches. Without one, a program or plan by its name; a one-phase line by
+ * its block's name (as a block's row is); a many-phase line by its sport ("Running"), so its title never changes with the phase
+ * it is in. */
+const entryName = (e: PlanEntry, summaries: readonly PlanSummaryDto[]): string =>
+  planOf(e, summaries)?.name ??
+  (e.kind === "line" ? (e.line.phases.length === 1 ? e.line.phases[0]!.name : e.line.name) : e.kind === "plan" ? e.plan.name : e.kind === "program" ? e.program.name : e.plan.name);
 
 /**
- * The list's order. Live: programs first, then lines and Studio / COROS plans as they start. Past: ended lines and
- * plans and completed blocks, the latest end first; retired ones are absent. Blocks a line holds are the line's row,
- * not their own; a payload without `lines` falls back to the coach's blocks as rows.
+ * The list's order. Live: programs first, then courses, then lines and Studio / COROS plans as they start. Past: ended lines
+ * and plans and completed blocks, the latest end first, then stopped courses, which carry no dates; retired blocks are absent.
+ * Blocks a line holds are the line's row, not their own; a payload without `lines` falls back to the coach's blocks as rows.
+ * `summaries`: `GET /api/plans`, where a course's row comes from and any row's name (none: an older server, or not read yet).
  */
 export function planEntries(
   plans: readonly CoachPlanDto[],
   programs: readonly ProgramDto[],
   lines: readonly TrainingLineDto[] | undefined,
   today: string,
+  summaries: readonly PlanSummaryDto[] = [],
 ): { live: PlanEntry[]; past: PlanEntry[] } {
   const inLine = new Set((lines ?? []).flatMap((l) => l.phases.map((p) => p.id)));
   const candidates: PlanEntry[] = [
@@ -120,22 +142,25 @@ export function planEntries(
   ];
   const isPast = (e: PlanEntry): boolean =>
     planEnded(entryEnd(e), today) || (e.kind === "plan" && e.plan.status === "completed");
-  const byName = (a: PlanEntry, b: PlanEntry) => entryName(a).localeCompare(entryName(b));
+  const byName = (a: PlanEntry, b: PlanEntry) => entryName(a, summaries).localeCompare(entryName(b, summaries));
   const live = candidates
     .filter((e) => !isPast(e))
     .sort((a, b) => entryStart(a).localeCompare(entryStart(b)) || byName(a, b));
   const past = candidates
     .filter(isPast)
     .sort((a, b) => entryEnd(b).localeCompare(entryEnd(a)) || byName(a, b));
+  const courses = summaries.filter((s) => s.kind === "course").map((plan): PlanEntry => ({ kind: "course", plan }));
+  const running = (e: PlanEntry) => e.kind === "course" && e.plan.status === "active";
   return {
     live: [
       ...programs
         .filter((p) => p.status === "active")
-        .sort((a, b) => a.name.localeCompare(b.name))
-        .map((program): PlanEntry => ({ kind: "program", program })),
+        .map((program): PlanEntry => ({ kind: "program", program }))
+        .sort(byName),
+      ...courses.filter(running).sort(byName),
       ...live,
     ],
-    past,
+    past: [...past, ...courses.filter((e) => !running(e)).sort(byName)],
   };
 }
 
@@ -149,6 +174,7 @@ export function YourPlans({
   today,
   onOpenPlan,
   onOpenLine,
+  summaries = [],
 }: {
   plans: readonly CoachPlanDto[];
   /** `GET /api/coach/plans` `lines`: the coach's blocks as training lines (absent in an older payload). */
@@ -158,27 +184,39 @@ export function YourPlans({
   today: string;
   onOpenPlan: (id: string) => void;
   onOpenLine: (key: string) => void;
+  /** `GET /api/plans`: the courses' rows, and any row's name (`planOf`). Absent: none, and rows read as they always have. */
+  summaries?: readonly PlanSummaryDto[];
 }) {
   const coach = useCoach();
   // A program's settings ("new": a new program), opened from its row or the list's foot.
   const [programOpen, setProgramOpen] = useState<string | null>(null);
+  // A course's sheet, opened from its row.
+  const [courseOpen, setCourseOpen] = useState<string | null>(null);
   const programList = programs?.programs ?? [];
   const editing = programOpen && programOpen !== "new" ? programList.find((p) => p.id === programOpen) : undefined;
-  const { live, past } = planEntries(plans, programList, lines, today);
+  const openCourse = courseOpen ? summaries.find((s) => s.id === courseOpen) : undefined;
+  const { live, past } = planEntries(plans, programList, lines, today, summaries);
   const row = (e: PlanEntry, isPast: boolean) => {
     const id = e.kind === "program" ? e.program.id : e.kind === "line" ? e.line.key : e.plan.id;
-    const name = entryName(e);
+    const name = entryName(e, summaries);
     const { kind, state, goal } = e.kind === "line" ? lineRowState(e.line, today) : { ...planRowState(e, today), goal: null };
-    // A many-phase line's title is the sport, so its sub-line is the state alone; every other row leads with its kind.
-    const alone = e.kind === "line" && e.line.phases.length > 1;
-    const says = isPast && e.kind !== "program" ? `${kind} · ${formatShortDate(entryStart(e))} – ${formatShortDate(entryEnd(e))}` : alone ? state : `${kind} · ${state}`;
+    // A many-phase line titled by its sport has a sub-line of the state alone; every other row leads with its kind.
+    const alone = e.kind === "line" && e.line.phases.length > 1 && name === e.line.name;
+    const says =
+      e.kind === "course"
+        ? [kind, state].filter(Boolean).join(" · ")
+        : isPast && e.kind !== "program"
+          ? `${kind} · ${formatShortDate(entryStart(e))} – ${formatShortDate(entryEnd(e))}`
+          : alone
+            ? state
+            : `${kind} · ${state}`;
     return (
       <li key={`${e.kind}:${id}`}>
         <button
           type="button"
           className="plan-row"
           aria-haspopup="dialog"
-          onClick={() => (e.kind === "program" ? setProgramOpen(id) : e.kind === "line" ? onOpenLine(id) : onOpenPlan(id))}
+          onClick={() => (e.kind === "program" ? setProgramOpen(id) : e.kind === "course" ? setCourseOpen(id) : e.kind === "line" ? onOpenLine(id) : onOpenPlan(id))}
         >
           <span className="plan-row-name">{name}</span>
           <span className="plan-row-state">{says}</span>
@@ -218,6 +256,7 @@ export function YourPlans({
           onClose={() => setProgramOpen(null)}
         />
       ) : null}
+      {openCourse ? <CourseSheet plan={openCourse} onClose={() => setCourseOpen(null)} /> : null}
     </section>
   );
 }

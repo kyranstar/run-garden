@@ -1,4 +1,4 @@
-import { and, eq, gt, gte, inArray, isNull, lte, ne, sql } from "drizzle-orm";
+import { and, eq, gt, gte, inArray, isNull, lte, ne, or, sql } from "drizzle-orm";
 import {
   activities,
   activityLaps,
@@ -23,7 +23,7 @@ import {
   singleSourceActivity,
   type RawCorosActivityDetail,
 } from "@rg/providers";
-import { courseNumberOnCompletion } from "./course-number.js";
+import { ATHLETE_SAID_DONE, courseNumberOnCompletion, markGivesWay } from "./course-number.js";
 import { chunkedInsert, type Db } from "./db.js";
 import { plannedRowColumns } from "./planned-columns.js";
 import { isRuntimeLimit } from "./runtime-limit.js";
@@ -692,6 +692,8 @@ export async function ingestActivities(db: Db, input: IngestInput): Promise<Inge
   if (dates.length > 0) {
     const minDate = addDays(dates.reduce((a, b) => (a < b ? a : b)), -1);
     const maxDate = addDays(dates.reduce((a, b) => (a > b ? a : b)), 1);
+    // A session the athlete marked done is open to its own activity (`linkOnly`, below): a copy played on the watch and
+    // marked before it synced is one session, and left unmatched it would be credited twice, once as extra training.
     const openWorkouts = await db
       .select(plannedRowColumns())
       .from(plannedWorkouts)
@@ -701,7 +703,7 @@ export async function ingestActivities(db: Db, input: IngestInput): Promise<Inge
           gte(plannedWorkouts.effectiveDate, minDate),
           lte(plannedWorkouts.effectiveDate, maxDate),
           isNull(plannedWorkouts.archivedAt),
-          inArray(plannedWorkouts.completionState, ["scheduled", "unresolved"]),
+          or(inArray(plannedWorkouts.completionState, ["scheduled", "unresolved"]), and(eq(plannedWorkouts.completionState, "completed"), eq(plannedWorkouts.sanctionedBy, ATHLETE_SAID_DONE))),
         ),
       );
 
@@ -806,6 +808,7 @@ export async function ingestActivities(db: Db, input: IngestInput): Promise<Inge
           completionState: "completed",
           resolutionDate: (activityRow.startTimeLocal ?? activityRow.startTime).slice(0, 10),
           ...courseNumberOnCompletion(),
+          ...markGivesWay(),
           updatedAt: now,
         })
         .where(eq(plannedWorkouts.id, m.workoutId));

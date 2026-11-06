@@ -1942,13 +1942,16 @@ describe("an abandoned start or stop: the hourly pass finishes it (R33)", () => 
       expect(await revisionsOf(today)).toEqual([]);
     });
 
-    it("answers just as a pause does: one held outline reads like another", async () => {
+    it("answers just as a pause does: one held outline reads like another, but for saying which it is", async () => {
       const { id, today } = await held();
       const heldRead = await read(today);
       const heldBuild = await build(today);
+      expect(heldRead.course).toEqual({ markDone: "offer", held: "starting" });
+      expect(heldBuild.course).toEqual({ markDone: "offer", held: "starting" });
       await db.update(programs).set({ config: courseConfigSchema.parse(BODY), pausedUntil: MON }).where(eq(programs.id, id));
-      expect(await read(today)).toEqual(heldRead);
-      expect(await build(today)).toEqual(heldBuild);
+      const paused = { course: { markDone: "offer", held: "paused" } };
+      expect(await read(today)).toEqual({ ...heldRead, ...paused });
+      expect(await build(today)).toEqual({ ...heldBuild, ...paused });
     });
 
     it("a day ahead still previews: only today's is the writer's", async () => {
@@ -2427,7 +2430,7 @@ describe("the session read: videos", () => {
 });
 
 describe("the list: where a course has got to", () => {
-  it("fills course from sessionLabel(done), and past the last it says nothing", async () => {
+  it("fills course from sessionLabel(done), and past the last it says what the definition does", async () => {
     const id = await started();
     expect((await listed()).find((p) => p.id === id)!.course).toEqual({ session: 1, of: 4 });
     await ownSession(id, day(-3, 0), 1, "completed");
@@ -2435,6 +2438,12 @@ describe("the list: where a course has got to", () => {
     expect((await listed()).find((p) => p.id === id)!.course).toEqual({ session: 3, of: 4 });
     await ownSession(id, day(-2, 1), 3, "completed");
     await ownSession(id, day(-2, 2), 4, "completed");
+    expect((await listed()).find((p) => p.id === id)!.course).toEqual({ after: INTRO_COURSE.afterLabel });
+  });
+
+  it("a definition gone says nothing", async () => {
+    const id = await started();
+    await db.update(programs).set({ config: sql`json_set(${programs.config}, '$.course', 'gone')` }).where(eq(programs.id, id));
     expect((await listed()).find((p) => p.id === id)!.course).toBeNull();
   });
 

@@ -326,6 +326,45 @@ describe("coach routes", () => {
     expect(plans.plans[0]).toMatchObject({ name: "Autumn Half", status: "retired" });
   });
 
+  describe("a rename and the plan a block belongs to", () => {
+    const block = (id: string, programId: string | null, owner = userId) =>
+      db.insert(schema.coachPlans).values({ id, userId: owner, discipline: "run", name: `Block ${id}`, status: "active", startDate: "2026-11-02", endDate: "2026-11-29", stampPrefix: id, programId, createdAt: nowInstant(), updatedAt: nowInstant() });
+    const plan = (id: string, name: string, owner = userId) =>
+      db.insert(schema.programs).values({ id, userId: owner, kind: "coach", name, status: "active", disciplines: ["run"], startDate: null, endDate: null, raceDate: null, source: null, config: {}, onEnd: "ask", createdAt: nowInstant(), updatedAt: nowInstant(), archivedAt: null });
+    const nameOf = async (id: string) => (await db.select({ name: schema.programs.name }).from(schema.programs).where(eq(schema.programs.id, id)))[0]!.name;
+
+    it("a plan of that one block goes by its name, and the list reads the plan's: it follows", async () => {
+      await plan("p-one", "Block solo");
+      await block("solo", "p-one");
+      expect((await client().post("/api/coach/plans/solo/rename", { name: "Autumn Half" })).status).toBe(200);
+      expect(await nameOf("p-one")).toBe("Autumn Half");
+    });
+
+    it("a plan of several keeps its own: it's named for the line, not a phase of it", async () => {
+      await plan("p-two", "Running");
+      await block("a", "p-two");
+      await block("b", "p-two");
+      await client().post("/api/coach/plans/a/rename", { name: "Base again" });
+      expect(await nameOf("p-two")).toBe("Running");
+    });
+
+    it("no plan yet: nothing else changes, not even a plan with the same blocks' count", async () => {
+      await plan("p-other", "Untouched");
+      await block("other", "p-other");
+      await block("free", null);
+      await client().post("/api/coach/plans/free/rename", { name: "Named" });
+      expect(await nameOf("p-other")).toBe("Untouched");
+    });
+
+    it("another account's block renames nothing of theirs, nor of this account's", async () => {
+      const { userId: stranger } = await makeTestUser(db);
+      await plan("p-theirs", "Theirs", stranger);
+      await block("theirs", "p-theirs", stranger);
+      await client().post("/api/coach/plans/theirs/rename", { name: "Mine now" });
+      expect(await nameOf("p-theirs")).toBe("Theirs");
+    });
+  });
+
   it("a line's Stop writes one receipt: its phases before the last none (`stop=more`), its last \"Plan stopped\" (`stop=last`); a Retire its own", async () => {
     for (const id of ["ln1", "ln2", "ln3", "solo"]) {
       await db.insert(schema.coachPlans).values({
