@@ -149,12 +149,23 @@ export function cutAtWord(text: string, max: number, maxBytes = Number.POSITIVE_
   return cut || hard;
 }
 
+/**
+ * A set's reps on the watch. A range has no single number, and a step with none is open, so it goes as the range's middle
+ * (owner, 2026-11-05), rounded as `deriveDoc` counts one: 8–12 is 10, 8–11 is 10. A target on a clock or in breaths has
+ * no reps to give, and no target at all (sets alone, "stop when it gets heavy") stays open.
+ */
+export function watchRepsOf(target: Step["target"]): number {
+  const reps = Math.round(target?.reps ?? 0);
+  if (reps >= 1 || target?.type !== "reps" || !target.lo || !target.hi) return reps;
+  return Math.round((target.lo + target.hi) / 2);
+}
+
 function targetOf(s: Step): ProgramWatchStep["target"] {
   if (s.kind === "timed") {
     const seconds = Math.round(s.seconds);
     return seconds >= 1 ? { kind: "hold", seconds: Math.min(3600, seconds) } : { kind: "open" };
   }
-  const reps = Math.round(s.target?.reps ?? 0);
+  const reps = watchRepsOf(s.target);
   if (reps >= 1) return { kind: "reps", reps: Math.min(500, reps) };
   const secs = Math.round(s.target?.secs ?? 0);
   if (secs >= 1) return { kind: "hold", seconds: Math.min(3600, secs) };
@@ -239,7 +250,7 @@ type WalkStop = { rest: number } | { rest?: undefined; step: Step; exerciseId: s
 /** A set on both sides as one step: reps stay the count per side, and a set that runs on seconds runs for both. */
 function wholeSet(s: Step): Step {
   const secs = s.target?.secs;
-  return secs && !s.target?.reps ? { ...s, target: { ...s.target, secs: secs * 2 } } : s;
+  return secs && !watchRepsOf(s.target) ? { ...s, target: { ...s.target, secs: secs * 2 } } : s;
 }
 
 /**

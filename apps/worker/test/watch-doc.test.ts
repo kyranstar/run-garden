@@ -128,6 +128,23 @@ describe("watchStepsFromDoc(docFromBuild(b)) equals today's watchStepsFromBuild(
     expect(stepsToWatch(doc, EXERCISES)).toBe(steps.length);
   });
 
+  it("a document's rep range reaches the watch as its middle, even on a move the library times", () => {
+    const doc = workoutDocSchema.parse({
+      version: 1, title: "Ranges", intent: { summary: "Ranges", goals: [], focus: [], effort: "maintain" }, source: { kind: "coach" },
+      parts: [{ purpose: "main", format: "straight", items: [
+        { kind: "exercise", libraryId: "gobletSquat", dose: { sets: 2, reps: { min: 8, max: 12 } } },
+        { kind: "exercise", libraryId: "figureFour", dose: { reps: { min: 5, max: 8 } } },
+        { kind: "exercise", libraryId: "gobletSquat", dose: { sets: 1, reps: 6 } },
+      ] }],
+    });
+    expect(watchStepsFromDoc(doc, EXERCISES, noCatalog).steps.map((s) => s.target)).toEqual([
+      { kind: "reps", reps: 10 },
+      { kind: "reps", reps: 10 },
+      { kind: "reps", reps: 7 },
+      { kind: "reps", reps: 6 },
+    ]);
+  });
+
   it("the app's count of the watch's steps is the steps the watch gets, in every build", () => {
     for (const { label, build } of cases) {
       expect(stepsToWatch(docFromBuild(build), EXERCISES), label).toBe(watchStepsFromBuild(build, noCatalog).steps.length);

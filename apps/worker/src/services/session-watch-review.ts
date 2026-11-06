@@ -75,7 +75,7 @@ import {
 } from "./session-save.js";
 import { sessionAnswerStatements } from "./session-answers.js";
 import { PENDING_HASH, WATCH_SOURCE } from "./watch-sets.js";
-import { watchStepMoves, type SidesOnWatch } from "./watch-push.js";
+import { watchRepsOf, watchStepMoves, type SidesOnWatch } from "./watch-push.js";
 
 export interface WatchReviewEntry {
   exerciseId: string;
@@ -133,7 +133,7 @@ function buildEntries(build: BuildPayload): Array<{ exerciseId: string; perSide:
       if (s.kind === "rest" || s.slotKey !== item.slotKey || s.exerciseId !== item.exerciseId) continue;
       const w = s.target?.w;
       const load = w && typeof w.v === "number" && w.v > 0 && (w.u === "lb" || w.u === "kg") ? { v: w.v, u: w.u } : null;
-      const reps = s.kind === "set" ? whole(s.target?.reps) || null : null;
+      const reps = s.kind === "set" ? watchRepsOf(s.target) || null : null;
       const seconds = s.kind === "timed" ? whole(s.seconds) : reps ? null : whole(s.target?.secs) || null;
       // A one-sided set with no side is work on both.
       const sides = s.kind === "set" && s.side === null && perSide ? (["left", "right"] as const) : [sideOf(s.side)];
