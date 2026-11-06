@@ -433,3 +433,31 @@ describe("correct_import: taking a jump's plyometric away (the safety review, I6
     ok((await correct({ ...ctx, toolUseId: "toolu_owner" }, { target: "move", targetId: j.worded, field: "contraction", after: ["isotonic"], basis: "owner", cites: [] })).res);
   });
 });
+
+// S7 (the controller's, 2026-11-06): basis owner is the athlete's word — text they typed. A "needs you" chip's run asks
+// with the app's own words (the chip), and a "Fit them in" run with the app's request: neither is theirs, however its run
+// carries it (its tool context, or only its stored state).
+describe("correct_import: basis owner rests on words the athlete typed (S7)", () => {
+  const owner = (lift: string) => ({ target: "move", targetId: lift, field: "dose", after: DOSE_FIX, basis: "owner", cites: [], why: "You said so: two sets of thirty seconds." });
+  async function runWithState(request: string, settings: Record<string, unknown>): Promise<ToolContext> {
+    const ctx = await mainRun({ request });
+    await db.update(coachRuns).set({ state: JSON.stringify({ settings }) }).where(eq(coachRuns.id, ctx.run.id));
+    return ctx;
+  }
+
+  it("a needs-you chip's run: its request is the chip's text, never the athlete's word — refused not_their_word", async () => {
+    const b = await batch();
+    const ctx = await runWithState("Your strength sessions have slipped this month — what's in the way?", { diagnose: "drift:discipline:lift" });
+    const r = refused((await correct(ctx, owner(b.lift))).res);
+    expect(r.error).toBe("not_their_word");
+    expect(r.fix).toContain("ask_athlete");
+  });
+
+  it("a Fit them in run is the app's request even where only its stored state says so — refused; the athlete's own message passes", async () => {
+    const b = await batch();
+    const fit = await runWithState("Fit my saved moves in.", { savesBatchId: b.batchId });
+    expect(refused((await correct(fit, owner(b.lift))).res).error).toBe("not_their_word");
+    const theirs = await runWithState("No — she says two sets of thirty seconds, I'm sure.", { scope: { kind: "auto" } });
+    ok((await correct(theirs, owner(b.lift))).res);
+  });
+});

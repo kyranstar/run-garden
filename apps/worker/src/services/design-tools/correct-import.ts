@@ -24,7 +24,7 @@
  */
 import { sql } from "drizzle-orm";
 import { z } from "zod";
-import { accountState, coachProposals, coachRuns } from "@rg/database";
+import { accountState, coachProposals } from "@rg/database";
 import { makeLibraryIndex } from "@rg/workout";
 import { plyometricWord } from "@rg/exercise-library";
 import { accountLibraryFrom, personalMovesSql } from "../account-library.js";
@@ -131,8 +131,14 @@ export const correctImport: DesignTool = {
       restoring: sql`(select ${accountState.restoreId} from ${accountState} where ${accountState.userId} = ${ctx.userId})`,
       state: correctionStateSql(ctx.userId, target, parsed.targetId, ctx.now.toISOString().slice(0, 10)),
       reads: savesReadsSql(ctx.userId, mainRunId),
-      // What the athlete asked this run in words (the controller's fix pass, D6): basis owner is their word alone.
-      asked: sql`(select nullif(trim(coalesce(${coachRuns.request}, '')), '') from ${coachRuns} where ${coachRuns.id} = ${mainRunId} and ${coachRuns.userId} = ${ctx.userId})`,
+      // What the athlete typed this run (the controller's fix pass, D6; S7, 2026-11-06): basis owner is their word alone —
+      // never a "needs you" chip's text (its run's `diagnose`) nor a "Fit them in" run's request (`savesBatchId`), both the
+      // app's words, read from the run's own state. Ruling (S7): once fix-evidence lands, this is objective-changes.ts
+      // `askedWordsSql(ctx.userId, mainRunId)` (which reads the chip) — the fit stays refused by `ctx.run.savesBatchId`.
+      asked: sql`(select case when json_valid(aw_r.state) and (json_extract(aw_r.state, '$.settings.diagnose') is not null
+            or json_extract(aw_r.state, '$.settings.savesBatchId') is not null) then null
+          else nullif(trim(coalesce(aw_r.request, '')), '') end
+        from coach_runs aw_r where aw_r.id = ${mainRunId} and aw_r.user_id = ${ctx.userId})`,
     });
     const library = await accountLibraryFrom(ctx.db, ctx.userId, extra.library);
     const find = makeLibraryIndex(library.all);
@@ -174,7 +180,9 @@ export const correctImport: DesignTool = {
     if (parsed.basis === "owner" && (ctx.run.savesBatchId || typeof extra.asked !== "string")) {
       return refuse(
         "not_their_word",
-        ctx.run.savesBatchId ? "basis owner is the athlete's own word — this run fits their saves in; they haven't said anything about it." : "basis owner is the athlete's own word — this run answers no message of theirs.",
+        ctx.run.savesBatchId
+          ? "basis owner is the athlete's own word — this run fits their saves in; they haven't said anything about it."
+          : "basis owner is the athlete's own word — this run answers no words they typed (a chip's or the app's request isn't theirs).",
         "Give basis evidence with the cites you read — or, if only the athlete can say, ask them with ask_athlete.",
       );
     }
