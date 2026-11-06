@@ -131,7 +131,11 @@
  * through `applyPlanPatch`, the function `PATCH /api/plans/:id` calls (one write, one version), costing PLAN_CHANGE_COST. The
  * fields are checked against what they were when it was proposed (`base`: one moved since, by the athlete's own edit, refuses
  * it `stale`, as a programme change is); the plan's own rule (a pause that has gone by) refuses it `plan_refused`. Made twice
- * it writes once, so an approve retried writes nothing more. BESIDE A WHOLE PLAN in the same proposal (one card), it follows
+ * it writes once, so an approve retried writes nothing more. ONE THAT CHANGES THE PAUSE, set or cleared, also runs the plan's
+ * placement pass, in what the request has left (`placeAfterPauseChange`, whether or not this approve's write changed
+ * anything, so an approve retried after its request died still places, and a pass that has placed writes nothing more). So
+ * it costs PLAN_PAUSE_COST: beside anything else that fills the request it waits in `remaining`, and runs first in the next.
+ * The card says the pause, which has landed; what the pass couldn't fit is the next hourly pass's. BESIDE A WHOLE PLAN in the same proposal (one card), it follows
  * that plan: it is applied only once the plan has fully applied; while the plan is being added (`remaining`, or another
  * approve's fresh claim: in flight) it waits with it; a plan refused, declined or replaced refuses it too (PLAN_NOT_ADDED),
  * nothing written — it rewrites the brief or ending for a phase that never came. A plan that applied with its change then
@@ -230,7 +234,7 @@ import {
   type ProgrammeSettings,
 } from "./proposal-kinds.js";
 import { applyPlanPatch } from "./plan-registry.js";
-import { placeSlotsWithin, RETRACT_COST } from "./program-slots.js";
+import { PAUSE_PASS_COST, placeAfterPauseChange, placeSlotsWithin, RETRACT_COST } from "./program-slots.js";
 import { updateProgram } from "./programs.js";
 import { releaseFitStarts } from "./saves-batches.js";
 
@@ -600,6 +604,8 @@ export const PLAN_NOT_YET_ADDED = "The new plan isn't added yet: approve it with
 /** A plan change's part of a request (plans with a purpose): its read (the stale check), then `applyPlanPatch`'s — the
  * restore check, the row, the last version and the one batch of two writes. */
 export const PLAN_CHANGE_COST = 1 + 1 + 1 + 1 + 2;
+/** The same when it changes the pause: its pass, at its dearest, runs in the same request. */
+export const PLAN_PAUSE_COST = PLAN_CHANGE_COST + PAUSE_PASS_COST;
 
 /** The moves in rotation's own part (Task 18): its claim's write, the account's library with the named moves' pins and
  * the batch (one read), and the batch marked fitted in. */
@@ -1417,7 +1423,8 @@ export async function approveDesignOps(
       }
       continue;
     }
-    if (!first && PLAN_CHANGE_COST > left) {
+    const movesPause = "pausedUntil" in g.change;
+    if (!first && (movesPause ? PLAN_PAUSE_COST : PLAN_CHANGE_COST) > left) {
       remaining.push(...planChanges.slice(i).map((x) => x.id));
       full = true;
       break;
@@ -1426,6 +1433,7 @@ export async function approveDesignOps(
     left -= PLAN_CHANGE_COST;
     const res = await applyPlanChange(db, userId, g, ctx);
     if (res.status === "applied") {
+      if (movesPause) left -= await placeAfterPauseChange(db, userId, g.planId, ctx.today, ctx.prefs, ctx.now, left);
       outcomes.set(g.id, { status: "applied", at: ctx.now, changed: res.changed });
       planned.push({ opId: g.id, summary: g.summary });
     } else {

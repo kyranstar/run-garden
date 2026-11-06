@@ -37,8 +37,10 @@
  *     days leave today's alone. So does it take a course's session written today and not yet touched, built, started or
  *     done, or it would stay on the plan and read as missed: the hourly pass writes one soon after midnight, so a pause
  *     rarely finds an outline. It leaves through the document removal path (`removeDocWorkout`), so its copy comes off the
- *     watch too, and its number isn't counted, so the same session comes back after the pause. With no pause an adaptive
- *     program holds no day back.
+ *     watch too, and its number isn't counted, so the same session comes back after the pause. One the athlete or the coach
+ *     has revised since stays (`TOUCHED`): a pause never discards an edit. With no pause an adaptive program holds no day
+ *     back. A change to a pause takes effect in its own request (`placeAfterPauseChange`), within the request's budget:
+ *     today's go first, and what doesn't fit goes with the next hourly pass.
  *
  * A COURSE places by the same rules, from `placementOf`. Its `weekdays` are its preferred days and its weekly goal, and
  * its only days: it never falls back on the week's others. Its slots go at its `time`, not the athlete's window. Their
@@ -79,6 +81,7 @@ import { plannedRowColumns, type PlannedRow } from "./planned-columns.js";
 import { separateDayCollisions, windowTimeFor } from "./day-placement.js";
 import { removeFromPlan } from "./plan-mutations.js";
 import { RestoreInProgressError } from "./programs.js";
+import { isRuntimeLimit } from "./runtime-limit.js";
 import { bookedSeconds } from "./session-build.js";
 
 /** A planned row without its workout document: placement never reads one. */
@@ -135,6 +138,12 @@ export const RETRACT_COST = 2 + 1 + 1 + 2 + 2 + 2;
  * for a sent build (8), and a copy on the watch to take off (`SKIP_UNPUSH_COST`'s 8). Pinned in course-sessions.test.ts.
  */
 export const RETRACT_WRITTEN_COST = 6 + 8 + 8;
+/**
+ * What a pass that takes today's written session declares at its most (`placeSlotsWithin`): the restore's look, the plan, the
+ * sessions done, the rows, the touched lookup and the restore's look again (6), the removal, and rule 5's read. Pinned in
+ * course-sessions.test.ts. What a request sets aside for a pause, beside whatever else it does.
+ */
+export const PAUSE_PASS_COST = 6 + RETRACT_WRITTEN_COST + 1;
 /** A retracted slot brought back: its row and its suppression. */
 export const REVIVE_COST = 2;
 /** The ids one touched lookup, and one build lookup, bind (`TOUCHED_ID_CHUNK`, `BUILD_ID_CHUNK`). */
@@ -198,14 +207,17 @@ function writtenOffToday(r: WorkoutRow, today: string, todayToo: boolean): boole
 /**
  * Rule 3's other half (ruling 2a-R12): a slot the athlete TOUCHED is fixed, whatever its dates say — it has a
  * schedule override of any kind (re-timed on its own day, moved away and back), or a preview build carrying their
- * overrides or swaps (a sheet customised ahead of the day). Raw SQL over `planned_workouts.id`, so it reads the
- * same inside the SELECT that plans and inside the archive's UPDATE.
+ * overrides or swaps (a sheet customised ahead of the day). So is a course's written session someone revised since: its
+ * latest revision is anyone's but the write's own (`studio`), the athlete's or the coach's. By who made it, never by its
+ * number: a session written again after a same-day lift is the course's own at revision 2. An outline has none to read.
+ * Raw SQL over `planned_workouts.id`, so it reads the same inside the SELECT that plans and inside the archive's UPDATE.
  */
 const TOUCHED = sql.raw(
   "(exists (select 1 from schedule_overrides so where so.workout_id = planned_workouts.id)" +
     " or exists (select 1 from session_builds sb where sb.workout_id = planned_workouts.id and sb.version = 0" +
     " and (coalesce(json_extract(sb.payload, '$.build.params.overrides'), '{}') <> '{}'" +
-    " or coalesce(json_extract(sb.payload, '$.build.params.swaps'), '{}') <> '{}')))",
+    " or coalesce(json_extract(sb.payload, '$.build.params.swaps'), '{}') <> '{}'))" +
+    " or exists (select 1 from workout_doc_revisions r where r.id = planned_workouts.id || ':' || planned_workouts.workout_doc_rev and r.source_kind <> 'studio'))",
 );
 
 /** Bound per statement for the touched lookup: the ids, nothing else. */
@@ -513,6 +525,22 @@ export async function placeSlotsWithin(
 }
 
 /**
+ * A CHANGE TO A PLAN'S PAUSE TAKES EFFECT IN ITS OWN REQUEST (rulings R23, R25): its pass, within what the request has left,
+ * through `PATCH /api/plans/:id` and through approving the coach's change. It answers what it spent. The change has landed by
+ * now, so a pass that fails is logged by code and left to the hourly pass, which finishes what doesn't fit anyway; it never
+ * turns a pause that landed into an error. Our own runtime ceiling goes on up: the invocation is over.
+ */
+export async function placeAfterPauseChange(db: Db, userId: string, planId: string, today: string, prefs: UserPreferences, now: string, budget: number): Promise<number> {
+  try {
+    return (await placeSlotsWithin(db, userId, planId, today, prefs, now, budget)).spent;
+  } catch (e) {
+    if (isRuntimeLimit(e)) throw e;
+    console.error(`pause_placement_failed: plan ${planId} ${e instanceof Error ? e.name : "unknown"}`);
+    return budget;
+  }
+}
+
+/**
  * A course plan's sessions actually done, which numbers its next one (spec §4.2): its own sessions (`course_session` set)
  * that are completed. Nothing else counts, so a workout the coach filed under the plan doesn't advance it. One statement.
  */
@@ -599,7 +627,9 @@ async function place(
   if (toArchive.length > 0 && (await restoreBegan())) return result;
   const costOfRetracting = (r: WorkoutRow): number => (writtenSession(r) ? RETRACT_WRITTEN_COST : RETRACT_COST);
   let room = budget === null ? Number.POSITIVE_INFINITY : budget - result.spent;
-  const retracting = toArchive.filter((r, i) => {
+  // The soonest first, whatever order the rows were read in: today's is the one a pause can't leave for later.
+  const inTurn = [...toArchive].sort((a, b) => a.effectiveDate.localeCompare(b.effectiveDate) || a.id.localeCompare(b.id));
+  const retracting = inTurn.filter((r, i) => {
     const fits = i === 0 || costOfRetracting(r) <= room;
     if (fits) room -= costOfRetracting(r);
     return fits;

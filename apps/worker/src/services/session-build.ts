@@ -2084,14 +2084,16 @@ export async function buildSessionOutcome(
     throw new SessionLockedError(await readResponse(db, userId, loaded, ctx.today, builds));
   }
   if (loaded.effectiveDate < ctx.today) throw new NotTodayError(loaded.effectiveDate, ctx.today);
-  if (await restoreInProgress(db, userId)) return { session: await readResponse(db, userId, loaded, ctx.today, builds), calendarChanged: false };
+  // An outline's preview can't be computed afresh now, and a stale dose is worse than none (`loadSession`).
+  if (await restoreInProgress(db, userId)) return { session: await readResponse(db, userId, loaded, ctx.today, (await courseOf(db, userId, loaded)) ? [] : builds), calendarChanged: false };
   const { row, course } = await openCourseOutline(db, userId, loaded, ctx, { asked: req.checks, restoreLooked: true });
   if (course) {
     const ahead = row.effectiveDate > ctx.today ? await coursePreviewDoc(db, userId, course) : null;
     if (!ahead) {
       // Today's, held or refused: the athlete's answer stands all the same (a day ahead has none of its own to keep).
       if (req.checks && row.effectiveDate === ctx.today) await keepOutlineChecks(db, userId, row, req.checks, ctx);
-      return { session: await readResponse(db, userId, row, ctx.today, builds), calendarChanged: false };
+      // Nor is one served here: a day ahead whose course can't make a document has no fresh one to offer.
+      return { session: await readResponse(db, userId, row, ctx.today, []), calendarChanged: false };
     }
     return commitDocBuild(db, userId, row, builds, await docDayInputs(db, userId, row, builds, req, ctx, ahead), ctx);
   }
