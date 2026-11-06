@@ -163,7 +163,7 @@ import {
 import { EXERCISES, type ExerciseRecord } from "@rg/exercise-library";
 import { deriveDoc, makeLibraryIndex, startEditing, toProposable, type DocDerived, type DocIssue } from "@rg/workout";
 import type { Db } from "./db.js";
-import { accountLibraryFrom, loadAccountLibrary, personalMovesSql, reseedAccountLibrary, type AccountLibrary } from "./account-library.js";
+import { accountLibraryFrom, forgetAccountLibrary, loadAccountLibrary, personalMovesSql, reseedAccountLibrary, type AccountLibrary } from "./account-library.js";
 import { CALENDAR_OPS_PER_REQUEST } from "./calendar-sync.js";
 import { applyOps, applyStructuralChunk, NOT_ACTIONABLE, RETIME_CHANGED, STRUCTURAL_MIN_BUDGET, whyNotActionable, type StructuralProgress } from "./coach-apply.js";
 import { coachDrainQueued } from "./coros-write-cloud.js";
@@ -200,8 +200,10 @@ import {
   opIdOf,
   type ChangeVerb,
   isProgrammeChangeOp,
+  isImportCorrectionOp,
   isMovePinsOp,
   sameSetting,
+  type ImportCorrectionOp,
   type MovePinsOp,
   type PlanAdjustOp,
   type PlanChange,
@@ -212,6 +214,8 @@ import {
 import { placeSlotsWithin, RETRACT_COST } from "./program-slots.js";
 import { updateProgram } from "./programs.js";
 import { releaseFitStarts } from "./saves-batches.js";
+import { correctionCostOf, CORRECTIONS_FIXED, correctionsReadSql, correctionStateOf, judgeCorrection } from "./import-corrections.js";
+import { runAtomicallyClaim } from "./db.js";
 
 // ── Shapes ──────────────────────────────────────────────────────────────────────────────────────────────────────────
 
@@ -238,7 +242,11 @@ export type RefusalCode =
   /** The moves in rotation (Task 18): the account's library couldn't be read — nothing written. */
   | "library_unreadable"
   /** The moves in rotation (Task 18): the saves batch it names is another account's — nothing written. */
-  | "bad_batch";
+  | "bad_batch"
+  /** A correction to imported data (import trail phase 3): what it corrects is gone, or the corrected move or reading
+   * doesn't pass the library's rules. */
+  | "not_a_target"
+  | "invalid";
 
 /**
  * Why a planned workout can't change (`not_editable`): `revisability`'s reason (@rg/domain; workout-editability spec §3) —
@@ -338,11 +346,24 @@ export type MovePinsOutcome =
 /** The moves in rotation, as a proposal holds them once the athlete has seen them. */
 export type DesignedPinsOp = MovePinsOp & { outcome?: MovePinsOutcome };
 
+/**
+ * How a correction to imported data ended (import trail phase 3): applied — with a line for what it left as it was (a
+ * duplicate kept: it has history) — claimed while an approve writes it, or as any op ends (refused `stale` when its value
+ * changed since the coach suggested it).
+ */
+export type CorrectionOutcome =
+  | { status: "applied"; at: string; lines?: string[] }
+  | { status: "applying"; at: string }
+  | Exclude<OpOutcome, { status: "applied" }>;
+
+/** A correction, as a proposal holds it once the athlete has seen it. */
+export type DesignedCorrectionOp = ImportCorrectionOp & { outcome?: CorrectionOutcome };
+
 /** Any kind of a designed proposal's ops. */
-export type AnyDesignedOp = DesignedOp | DesignedPlanOp | DesignedStructureOp | DesignedProgrammeOp | DesignedPinsOp;
+export type AnyDesignedOp = DesignedOp | DesignedPlanOp | DesignedStructureOp | DesignedProgrammeOp | DesignedPinsOp | DesignedCorrectionOp;
 
 /** Any op's outcome. */
-type AnyOutcome = OpOutcome | PlanOpOutcome | PlanStructureOutcome | ProgrammeChangeOutcome | MovePinsOutcome;
+type AnyOutcome = OpOutcome | PlanOpOutcome | PlanStructureOutcome | ProgrammeChangeOutcome | MovePinsOutcome | CorrectionOutcome;
 
 export type DesignProposalStatus = "pending" | "partially_approved" | "approved" | "declined" | "superseded";
 
@@ -401,8 +422,8 @@ export function programmeOpsOf(ops: unknown): DesignedProgrammeOp[] {
 /** A whole plan change, a programme change or the moves in rotation that has started (claimed, a part applied): never
  * declined, never expired under the athlete — Approve finishes it. */
 export const planStarted = (op: unknown): boolean =>
-  (isPlanStructureOp(op) || isProgrammeChangeOp(op) || isMovePinsOp(op)) &&
-  (op as DesignedStructureOp | DesignedProgrammeOp | DesignedPinsOp).outcome?.status === "applying";
+  (isPlanStructureOp(op) || isProgrammeChangeOp(op) || isMovePinsOp(op) || isImportCorrectionOp(op)) &&
+  (op as DesignedStructureOp | DesignedProgrammeOp | DesignedPinsOp | DesignedCorrectionOp).outcome?.status === "applying";
 
 /** Every op of a designed proposal the athlete decides: its workouts, its changes and its plan changes, in the proposal's
  * order. */
@@ -897,6 +918,8 @@ export interface ApproveAnswer {
   coachDrain?: true;
   /** The whole plan changes this request finished (§8 §5). Present only when there are some. */
   planned?: Planned[];
+  /** The corrections to imported data it applied (import trail phase 3): each its line. */
+  corrected?: Planned[];
   /** The changes to the moves in rotation this request applied (Task 18), each in one line. Present only when there are
    * some. */
   pinned?: Planned[];
@@ -1108,7 +1131,7 @@ export async function approveDesignOps(
     const was = op.outcome?.status;
     // A whole plan change or a programme change (§8 §5): its chunks are its applier's own to find done (each retried does
     // nothing twice). The moves in rotation (Task 18) too: written again, the same.
-    if (isPlanStructureOp(op) || isProgrammeChangeOp(op) || isMovePinsOp(op)) {
+    if (isPlanStructureOp(op) || isProgrammeChangeOp(op) || isMovePinsOp(op) || isImportCorrectionOp(op)) {
       if (was === "declined" || was === "superseded") settled.push({ opId: op.id, outcome: was });
       else todo.push(op);
       continue;
@@ -1350,6 +1373,61 @@ export async function approveDesignOps(
     if (full) break;
   }
 
+  // THE CORRECTIONS TO IMPORTED DATA (import trail phase 3, §8.4), after the programme changes and before the pins: a
+  // move's corrected dose is its record's before its pins are written. Claimed together (one write), their targets read
+  // together (one statement), then each in ONE atomic write — its row and its trail events gated on the value it
+  // corrects still being what the coach read, the state change last (`runAtomicallyClaim`) — refused `stale` when it
+  // changed since, recorded applied with nothing written when it is already so.
+  const fixOps = todo.filter(isImportCorrectionOp) as DesignedCorrectionOp[];
+  if (full) remaining.push(...fixOps.map((g) => g.id));
+  const fixBatch: DesignedCorrectionOp[] = [];
+  for (const [i, g] of (full ? [] : fixOps).entries()) {
+    const claim = g.outcome?.status === "applying" ? g.outcome : null;
+    if (claim && claimFresh(claim, ctx.now)) {
+      inFlight.push(g.id);
+      continue;
+    }
+    const cost = (fixBatch.length === 0 ? CORRECTIONS_FIXED : 0) + correctionCostOf(g);
+    if (!first && cost > left) {
+      remaining.push(...fixOps.slice(i).filter((x) => !inFlight.includes(x.id)).map((x) => x.id));
+      full = true;
+      break;
+    }
+    first = false;
+    left -= cost;
+    fixBatch.push(g);
+  }
+  const corrected: Planned[] = [];
+  if (fixBatch.length > 0) {
+    const claimOps = withOutcomes(current.ops, new Map(fixBatch.map((g) => [g.id, { status: "applying" as const, at: ctx.now }])));
+    const claimStatus = statusOfOps(allDesignedOps(claimOps));
+    const claimedAt = await writeOps(db, userId, current, claimOps, claimStatus, ctx.now);
+    current = { ...current, ops: claimOps, status: claimStatus, resolvedAt: claimedAt };
+    const [states] = (await db.all(correctionsReadSql(userId, fixBatch, ctx.today))) as Array<Record<string, unknown>>;
+    const asRead = sql`exists (select 1 from coach_proposals cp where cp.id = ${current.id} and cp.user_id = ${userId}
+      and cp.status = ${current.status} and cp.ops = ${JSON.stringify(current.ops)})`;
+    let touchedLibrary = false;
+    for (const [i, g] of fixBatch.entries()) {
+      const verdict = judgeCorrection(db, userId, g, correctionStateOf(states?.[`s${i}`]), { proposalId: p.id, runId: p.id.startsWith("dp-") ? p.id.slice(3) : null, now: ctx.now, asRead });
+      if (verdict.status === "made") {
+        outcomes.set(g.id, { status: "applied", at: ctx.now });
+        corrected.push({ opId: g.id, summary: g.line });
+      } else if (verdict.status === "refused") {
+        refused.push({ opId: g.id, error: verdict.error, why: verdict.why });
+        outcomes.set(g.id, { status: "refused", at: ctx.now, error: verdict.error, why: verdict.why });
+      } else if ((await runAtomicallyClaim(db, verdict.statements)) > 0) {
+        if (verdict.touches === "library") touchedLibrary = true;
+        outcomes.set(g.id, { status: "applied", at: ctx.now, ...(verdict.lines.length ? { lines: verdict.lines } : {}) });
+        corrected.push({ opId: g.id, summary: g.line });
+      } else {
+        refused.push({ opId: g.id, error: "stale", why: "It changed since the coach suggested this — ask again." });
+        outcomes.set(g.id, { status: "refused", at: ctx.now, error: "stale", why: "It changed since the coach suggested this — ask again." });
+      }
+    }
+    // A corrected move or match is the account's library: a later read in this request reads it again.
+    if (touchedLibrary) forgetAccountLibrary(db, userId);
+  }
+
   // THE MOVES IN ROTATION (Task 18), after the programme changes and before the workouts: a workout's engine build in this
   // request reads the pins as they now are.
   const pinsOps = todo.filter(isMovePinsOp) as DesignedPinsOp[];
@@ -1421,6 +1499,7 @@ export async function approveDesignOps(
   const drain = {
     ...(coachDrain ? { coachDrain: true as const } : {}),
     ...(planned.length > 0 ? { planned } : {}),
+    ...(corrected.length > 0 ? { corrected } : {}),
     ...(pinned.length > 0 ? { pinned } : {}),
     ...(inFlight.length > 0 ? { inFlight } : {}),
   };
@@ -1436,7 +1515,7 @@ export async function approveDesignOps(
 
   // One receipt once nothing of the request remains — nor of another applying it (a change in flight: the approve that
   // finishes it writes it) — when it changed something the thread has not been told.
-  const news = applied.length > 0 || changed.length > 0 || planned.length > 0 || pinned.length > 0 || refused.some((r) => {
+  const news = applied.length > 0 || changed.length > 0 || planned.length > 0 || pinned.length > 0 || corrected.length > 0 || refused.some((r) => {
     const before = ops.find((o) => opIdOf(o) === r.opId)?.outcome;
     return before?.status !== "refused" || before.error !== r.error;
   });
@@ -1781,8 +1860,16 @@ function approvedReceipt(title: string, ops: readonly AnyDesignedOp[], library: 
   const not: string[] = [];
   let declined = 0;
   let superseded = 0;
+  let fixed = 0;
   for (const any of ops) {
     if (any.outcome?.status === "superseded") superseded += 1;
+    // A correction to imported data (phase 3): counted, never its words (a post's reading names the move).
+    if (isImportCorrectionOp(any)) {
+      const g = (any as DesignedCorrectionOp).outcome;
+      if (g?.status === "applied") fixed += 1;
+      else if (g?.status === "declined") declined += 1;
+      continue;
+    }
     // The moves in rotation (Task 18): its title and what it changed, counted — never a move's name (a personal move's is
     // a post's reading, and the thread's coach reads the receipts).
     if (isMovePinsOp(any)) {
@@ -1832,7 +1919,10 @@ function approvedReceipt(title: string, ops: readonly AnyDesignedOp[], library: 
       not.push(`${receiptLine(op.date, op.doc.title, minutesOf(op.doc), false, op.doc.title === title)} (${o.why})`);
     } else if (o?.status === "declined") declined += 1;
   }
-  const count = done.length < ops.length ? ` (${done.length} of ${ops.length}${decidedWords(declined, superseded)})` : "";
+  if (fixed > 0) done.push(`${fixed} correction${fixed === 1 ? "" : "s"} to your saves`);
+  // The corrections count as one line of what was done (never their words).
+  const decided = done.length + (fixed > 1 ? fixed - 1 : 0);
+  const count = decided < ops.length ? ` (${decided} of ${ops.length}${decidedWords(declined, superseded)})` : "";
   return `✓ approved — ${title}${count}: ${done.join("; ")}${not.length ? ` · not approved: ${not.join("; ")}` : ""}`;
 }
 

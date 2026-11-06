@@ -206,7 +206,7 @@ export async function conversationRows(db: Db, userId: string, conversation: SQL
           'outcome', ${op("$.outcome.status")}, 'reason', ${op("$.outcome.reason")}, 'discipline', ${op("$.derived.discipline")},
           'planTitle', ${op("$.title")}, 'planSummary', ${op("$.summary")}, 'lines', json(CASE WHEN ${op("$.kind")} IN ('plan_structure', 'programme_change', 'move_pins') THEN ${op("$.lines")} END),
           'opId', CASE WHEN ${op("$.kind")} IN ('programme_change', 'move_pins') THEN ${op("$.id")} END))
-        FROM json_each(CASE WHEN json_valid(p.ops) THEN p.ops ELSE '[]' END) o WHERE ${op("$.kind")} IN ('doc_workout', 'plan_adjust', 'plan_structure', 'programme_change', 'move_pins'))))
+        FROM json_each(CASE WHEN json_valid(p.ops) THEN p.ops ELSE '[]' END) o WHERE ${op("$.kind")} IN ('doc_workout', 'plan_adjust', 'plan_structure', 'programme_change', 'move_pins', 'import_correction'))))
         FROM coach_proposals p WHERE p.id = ${DESIGNED_PREFIX} || r.id AND p.user_id = r.user_id) AS proposal,
       (SELECT up.prefs FROM user_preferences up WHERE up.user_id = ${userId}) AS prefs
     FROM c, s, coach_runs r

@@ -12,11 +12,18 @@
  */
 import { sql, type SQL } from "drizzle-orm";
 import { z } from "zod";
+import { schema } from "@rg/database";
+import { newId } from "@rg/domain";
 import { DOSE_TYPES, EQUIPMENT_IDS, LATERALITY, LOADS, type ExerciseRecord } from "@rg/exercise-library";
-import { INSIGHT_SCOPES, isPersonalId, type InsightScope } from "@rg/saves";
+import { extractedMoveSchema, INSIGHT_SCOPES, isPersonalId, type InsightScope } from "@rg/saves";
+import type { AtomicStatement, Db } from "./db.js";
+import { summaryLine } from "./import-trail.js";
+import { buildPersonalRecord, newPersonalMoveId } from "./personal-moves.js";
 import { validatePersonalRecord } from "./personal-records.js";
-import type { CorrectionTarget } from "./proposal-kinds.js";
+import type { CorrectionTarget, ImportCorrectionOp } from "./proposal-kinds.js";
 import { valueWords } from "./saves-evidence.js";
+
+const { importCorrections, importEvents, personalMoves, savedPosts, savedPostMoves, coachMemory } = schema;
 
 export const CORRECTION_TARGETS = ["move", "reading", "insight", "link"] as const satisfies readonly CorrectionTarget[];
 export const MOVE_FIELDS = ["name", "summary", "purpose", "dose", "laterality", "load", "equipment", "steps", "cues"] as const;
@@ -43,17 +50,26 @@ export interface StateLink {
   moveKind: "library" | "personal";
   status: string;
   id: string;
+  batchId: string | null;
+}
+
+/** What else holds a link's personal move (a "same as" correction archives it only when nothing does, §14.3). */
+export interface MoveUsage {
+  sets: boolean;
+  plans: boolean;
+  pinned: boolean;
+  others: number;
 }
 
 export type CorrectionState =
   | { kind: "move"; status: string; record: ExerciseRecord; posts: string[] }
-  | { kind: "post"; postId: string; status: string; extraction: Record<string, unknown> | null; links: StateLink[] };
+  | { kind: "post"; postId: string; status: string; extraction: Record<string, unknown> | null; links: StateLink[]; usage: MoveUsage | null };
 
 /**
  * The target's current state as ONE JSON value (a scalar subquery), null when it isn't the athlete's: a move's status,
  * record and the posts its saved links name; a post's status, reading and links.
  */
-export function correctionStateSql(userId: string, target: CorrectionTarget, targetId: string): SQL {
+export function correctionStateSql(userId: string, target: CorrectionTarget, targetId: string, today: string = new Date().toISOString().slice(0, 10)): SQL {
   if (target === "move") {
     return sql`(select json_object('kind', 'move', 'status', cs_m.status, 'record', json(cs_m.record),
         'posts', (select json_group_array(distinct cs_l.post_id) from saved_post_moves cs_l where cs_l.user_id = ${userId} and cs_l.move_id = cs_m.id and cs_l.status = 'saved'))
@@ -61,10 +77,24 @@ export function correctionStateSql(userId: string, target: CorrectionTarget, tar
   }
   const ref = postRef(targetId);
   if (!ref) return sql`null`;
+  // A link's personal move: what else holds it — logged sets, a planned workout from today on, a pin, another saved link.
+  const usage =
+    target === "link"
+      ? sql`(select json_object(
+            'sets', exists (select 1 from performed_sets cs_s join performed_sessions cs_ss on cs_ss.id = cs_s.performed_session_id
+              where cs_ss.user_id = ${userId} and cs_s.exercise_id = cs_u.move_id),
+            'plans', exists (select 1 from planned_workouts cs_w where cs_w.user_id = ${userId} and cs_w.effective_date >= ${today}
+              and instr(coalesce(cs_w.workout_doc, ''), '"' || cs_u.move_id || '"') > 0),
+            'pinned', exists (select 1 from exercise_prefs cs_e where cs_e.user_id = ${userId} and cs_e.exercise_id = cs_u.move_id and cs_e.pinned = 1),
+            'others', (select count(*) from saved_post_moves cs_o where cs_o.user_id = ${userId} and cs_o.move_id = cs_u.move_id
+              and cs_o.status = 'saved' and cs_o.id <> cs_u.id))
+          from saved_post_moves cs_u where cs_u.user_id = ${userId} and cs_u.post_id = ${ref.postId} and cs_u.position = ${ref.n})`
+      : sql`null`;
   return sql`(select json_object('kind', 'post', 'postId', cs_p.id, 'status', cs_p.status,
       'extraction', json(case when json_valid(cs_p.extraction) then cs_p.extraction end),
-      'links', (select json_group_array(json_array(cs_l.position, cs_l.move_id, cs_l.move_kind, cs_l.status, cs_l.id)) from saved_post_moves cs_l
-        where cs_l.user_id = ${userId} and cs_l.post_id = cs_p.id))
+      'links', (select json_group_array(json_array(cs_l.position, cs_l.move_id, cs_l.move_kind, cs_l.status, cs_l.id, cs_l.batch_id)) from saved_post_moves cs_l
+        where cs_l.user_id = ${userId} and cs_l.post_id = cs_p.id),
+      'usage', ${usage})
     from saved_posts cs_p where cs_p.user_id = ${userId} and cs_p.id = ${ref.postId})`;
 }
 
@@ -87,13 +117,15 @@ export function correctionStateOf(raw: unknown): CorrectionState | null {
   }
   if (o.kind === "post" && typeof o.postId === "string") {
     const links = (Array.isArray(o.links) ? o.links : []).flatMap((l): StateLink[] => {
-      const [position, moveId, moveKind, status, id] = Array.isArray(l) ? (l as unknown[]) : [];
+      const [position, moveId, moveKind, status, id, batchId] = Array.isArray(l) ? (l as unknown[]) : [];
       return typeof position === "number" && typeof moveId === "string" && typeof id === "string"
-        ? [{ position, moveId, moveKind: moveKind === "library" ? "library" : "personal", status: typeof status === "string" ? status : "", id }]
+        ? [{ position, moveId, moveKind: moveKind === "library" ? "library" : "personal", status: typeof status === "string" ? status : "", id, batchId: typeof batchId === "string" ? batchId : null }]
         : [];
     });
     const extraction = o.extraction && typeof o.extraction === "object" ? (o.extraction as Record<string, unknown>) : null;
-    return { kind: "post", postId: o.postId, status: typeof o.status === "string" ? o.status : "", extraction, links };
+    const u = o.usage && typeof o.usage === "object" ? (o.usage as Record<string, unknown>) : null;
+    const usage = u ? { sets: u.sets === 1 || u.sets === true, plans: u.plans === 1 || u.plans === true, pinned: u.pinned === 1 || u.pinned === true, others: Number(u.others) || 0 } : null;
+    return { kind: "post", postId: o.postId, status: typeof o.status === "string" ? o.status : "", extraction, links, usage };
   }
   return null;
 }
@@ -123,14 +155,15 @@ const movesOf = (state: Extract<CorrectionState, { kind: "post" }>): unknown[] =
 const insightsOf = (state: Extract<CorrectionState, { kind: "post" }>): unknown[] => (Array.isArray(state.extraction?.insights) ? (state.extraction!.insights as unknown[]) : []);
 
 /** An insight's words and scope, whatever its age (before extract-6 it is words, general). */
-export function insightParts(i: unknown): { text: string; scope: InsightScope; move: number | null } | null {
-  if (typeof i === "string") return { text: i, scope: "general", move: null };
+export function insightParts(i: unknown): { text: string; scope: InsightScope; move: number | null; dropped: boolean } | null {
+  if (typeof i === "string") return { text: i, scope: "general", move: null, dropped: false };
   const o = i && typeof i === "object" ? (i as Record<string, unknown>) : null;
   if (!o || typeof o.text !== "string") return null;
   return {
     text: o.text,
     scope: (INSIGHT_SCOPES as readonly unknown[]).includes(o.scope) ? (o.scope as InsightScope) : "general",
     move: typeof o.move === "number" ? o.move : null,
+    dropped: o.dropped === true,
   };
 }
 
@@ -156,7 +189,8 @@ export function currentValue(target: CorrectionTarget, targetId: string, field: 
   if (target === "insight") {
     const parts = insightParts(insightsOf(state)[n]);
     if (!parts) return { why: `holds no insight at ${n}` };
-    if (field === "drop") return { value: parts.text };
+    // A dropped one reads as dropped (`true`): an approve asked again finds it so.
+    if (field === "drop") return { value: parts.dropped ? true : parts.text };
     if (field === "text") return { value: parts.text };
     if (field === "scope") return { value: parts.scope };
     return { value: parts.move };
@@ -259,4 +293,245 @@ export function correctionLine(o: { target: CorrectionTarget; field: string; bef
     case "link":
       return o.field === "same_as" ? `${o.name} is the same as ${named(String(o.after))}` : `The post's move isn't the library's ${named(String(o.before))} — a move of its own`;
   }
+}
+
+// ── Applied at Approve (design-approve.ts) ──────────────────────────────────────────────────────────────────────────
+
+/** The corrections' own part of an approve: their claim's write, and their one read (every target's state). */
+export const CORRECTIONS_FIXED = 1 + 1;
+/** One correction: its `import_corrections` row, its trail event (one statement for every post it touches), and the
+ * state change — one atomic batch. */
+export const CORRECTION_COST = 3;
+
+/** What one correction costs: CORRECTION_COST, and its extra writes — a "same as" link's archive and its like marks (2),
+ * a "not the same" link's new move (1), an insight's memory row (1). */
+export function correctionCostOf(op: Pick<ImportCorrectionOp, "target" | "field">): number {
+  if (op.target === "link") return CORRECTION_COST + (op.field === "same_as" ? 2 : 1);
+  if (op.target === "insight" && op.field !== "move") return CORRECTION_COST + 1;
+  return CORRECTION_COST;
+}
+
+/** Every correction's target state, ONE statement: a column each (`s0`, `s1`, …). */
+export function correctionsReadSql(userId: string, ops: readonly Pick<ImportCorrectionOp, "target" | "targetId">[], today: string): SQL {
+  if (ops.length === 0) return sql`select 1`;
+  return sql`select ${sql.join(ops.map((o, i) => sql`${correctionStateSql(userId, o.target, o.targetId, today)} as ${sql.raw(`s${i}`)}`), sql`, `)}`;
+}
+
+const same = (a: unknown, b: unknown): boolean => JSON.stringify(a ?? null) === JSON.stringify(b ?? null);
+
+/** `expr` (a json_extract) holds `value` — a scalar as itself, a list or an object as JSON. */
+function valueIs(expr: SQL, value: unknown): SQL {
+  if (value === null || value === undefined) return sql`(${expr} IS NULL)`;
+  if (typeof value === "string" || typeof value === "number") return sql`(${expr} = ${value})`;
+  if (typeof value === "boolean") return sql`(${expr} = ${value ? 1 : 0})`;
+  return sql`(${expr} IS NOT NULL AND json(${expr}) = json(${JSON.stringify(value)}))`;
+}
+
+/** `value` as json_set takes it. */
+const jsonArg = (value: unknown): SQL =>
+  typeof value === "string" || typeof value === "number" ? sql`${value}` : sql`json(${JSON.stringify(value ?? null)})`;
+
+const MOVE_JSON_PATH: Readonly<Record<(typeof MOVE_FIELDS)[number], string>> = {
+  name: "$.name", summary: "$.text.summary", purpose: "$.text.why", dose: "$.dose", laterality: "$.laterality", load: "$.load",
+  equipment: "$.equipment", steps: "$.text.steps", cues: "$.text.focus",
+};
+
+/** How it stands at Approve: already so (recorded applied, nothing written), changed since (refused), gone, or to write. */
+export type CorrectionVerdict =
+  | { status: "made" }
+  | { status: "refused"; error: "stale" | "not_a_target" | "invalid"; why: string }
+  | { status: "apply"; statements: AtomicStatement[]; lines: string[]; touches: "library" | "post" };
+
+export const STALE_WHY = "It changed since the coach suggested this — ask again.";
+
+/** The new personal move a "not the same" correction makes: its id is the post's position's, so a retry finds it. */
+export const ownMoveIdOf = (userId: string, postId: string, position: number, name: string): string => newPersonalMoveId(userId, `${postId}:own`, position, name);
+
+/**
+ * One correction at Approve, judged on its target as it stands now (`state`, the approve's read) — and, to write, its
+ * statements: the `import_corrections` row and the trail event on each post it touches, each gated on the value still
+ * being `before` and the proposal as this request last wrote it (`asRead`), the extra writes, then the state change,
+ * LAST, `… returning` (runAtomicallyClaim: nothing of it lands when the gate fails).
+ */
+export function judgeCorrection(
+  db: Db,
+  userId: string,
+  op: ImportCorrectionOp,
+  state: CorrectionState | null,
+  o: { proposalId: string; runId: string | null; now: string; asRead: SQL },
+): CorrectionVerdict {
+  const current = currentValue(op.target, op.targetId, op.field, state);
+  if ("why" in current) return { status: "refused", error: "not_a_target", why: `What it corrects ${current.why}.` };
+  // A "not the same" applied: the link now names the move it made.
+  const ref = postRef(op.targetId);
+  const link = state?.kind === "post" && ref ? state.links.find((l) => l.position === ref.n && l.status === "saved") : undefined;
+  if (op.target === "link" && op.field === "not_same" && link && link.moveKind === "personal" && state?.kind === "post") {
+    const draft = (state.extraction?.moves as Array<{ name?: unknown }> | undefined)?.[ref!.n];
+    if (typeof draft?.name === "string" && link.moveId === ownMoveIdOf(userId, ref!.postId, ref!.n, draft.name)) return { status: "made" };
+  }
+  if (same(current.value, op.after)) return { status: "made" };
+  if (!same(current.value, op.before)) return { status: "refused", error: "stale", why: STALE_WHY };
+
+  const evidence = JSON.stringify(op.cites ?? []);
+  const summary = summaryLine(`${op.line} — ${op.why}`);
+  const detail = JSON.stringify({ target: op.target, targetId: op.targetId, field: op.field, before: op.before, after: op.after, basis: op.basis, cites: op.cites ?? [], by: "coach" });
+  /** The log: the correction row and the trail event on each post, both only while `gate` holds. */
+  const log = (gate: SQL): AtomicStatement[] => [
+    db.insert(importCorrections).select(
+      sql`SELECT ${newId()}, ${userId}, ${op.target}, ${op.targetId}, ${op.field}, ${JSON.stringify(op.before ?? null)}, ${JSON.stringify(op.after ?? null)},
+        ${op.why}, ${op.basis}, ${evidence}, 'coach', ${o.proposalId}, ${o.now} WHERE ${gate} AND ${o.asRead}`,
+    ),
+    db.insert(importEvents).select(
+      sql`SELECT lower(hex(randomblob(16))), ${userId}, j.value, NULL, ${op.moveId ?? null}, 'correction', 'coach', 'ok', ${summary}, ${detail},
+        NULL, NULL, NULL, NULL, NULL, NULL, ${o.runId}, ${o.proposalId}, 0, ${o.now}
+        FROM json_each(${JSON.stringify(op.posts)}) j WHERE ${gate} AND ${o.asRead}`,
+    ),
+  ];
+
+  if (op.target === "move" && state?.kind === "move") {
+    const field = op.field as (typeof MOVE_FIELDS)[number];
+    const problems = validatePersonalRecord(withMoveField(state.record, field, op.after));
+    if (problems.length) return { status: "refused", error: "invalid", why: `The corrected move doesn't pass the library's rules: ${problems[0]!.replace(/^\S+: /, "")}` };
+    const path = MOVE_JSON_PATH[field];
+    const gate = sql`EXISTS (SELECT 1 FROM personal_moves g WHERE g.user_id = ${userId} AND g.id = ${op.targetId} AND g.status = 'active'
+      AND ${valueIs(sql`json_extract(g.record, ${path})`, op.before)})`;
+    return {
+      status: "apply",
+      touches: "library",
+      lines: [],
+      statements: [
+        ...log(gate),
+        db
+          .update(personalMoves)
+          .set({ record: sql`json_set(${personalMoves.record}, ${path}, ${jsonArg(op.after)})`, editedByOwner: true, updatedAt: o.now })
+          .where(sql`${personalMoves.userId} = ${userId} AND ${personalMoves.id} = ${op.targetId} AND ${gate} AND ${o.asRead}`)
+          .returning({ id: personalMoves.id }),
+      ],
+    };
+  }
+  if (state?.kind !== "post" || !ref) return { status: "refused", error: "not_a_target", why: "What it corrects isn't there any more." };
+
+  if (op.target === "reading") {
+    const path = `$.moves[${ref.n}].${op.field}`;
+    const gate = sql`EXISTS (SELECT 1 FROM saved_posts g WHERE g.user_id = ${userId} AND g.id = ${ref.postId} AND json_valid(g.extraction)
+      AND ${valueIs(sql`json_extract(g.extraction, ${path})`, op.before)})`;
+    return {
+      status: "apply",
+      touches: "post",
+      lines: [],
+      statements: [
+        ...log(gate),
+        db
+          .update(savedPosts)
+          .set({ extraction: sql`json_set(${savedPosts.extraction}, ${path}, ${jsonArg(op.after)})`, updatedAt: o.now })
+          .where(sql`${savedPosts.userId} = ${userId} AND ${savedPosts.id} = ${ref.postId} AND ${gate} AND ${o.asRead}`)
+          .returning({ id: savedPosts.id }),
+      ],
+    };
+  }
+
+  if (op.target === "insight") {
+    const asRead = (state.extraction?.insights as unknown[] | undefined)?.[ref.n];
+    const base: Record<string, unknown> = typeof asRead === "string" ? { text: asRead, scope: "general" } : { ...(asRead as Record<string, unknown>) };
+    const next =
+      op.field === "drop" ? { ...base, dropped: true } : op.field === "text" ? { ...base, text: op.after } : op.field === "scope" ? { ...base, scope: op.after } : { ...base, move: op.after };
+    const path = `$.insights[${ref.n}]`;
+    const gate = sql`EXISTS (SELECT 1 FROM saved_posts g WHERE g.user_id = ${userId} AND g.id = ${ref.postId} AND json_valid(g.extraction)
+      AND ${valueIs(sql`json_extract(g.extraction, ${path})`, asRead)})`;
+    // The coach's memory of it (Save kept a general one: `saved:<post>:<index>`): let go when dropped or no longer
+    // general, reworded with it.
+    const memoryId = `saved:${ref.postId}:${ref.n}`;
+    const memory: AtomicStatement[] =
+      op.field === "text"
+        ? [db.update(coachMemory).set({ body: String(op.after), updatedAt: o.now }).where(sql`${coachMemory.userId} = ${userId} AND ${coachMemory.id} = ${memoryId} AND ${gate} AND ${o.asRead}`)]
+        : op.field === "drop" || (op.field === "scope" && op.after !== "general")
+          ? [db.update(coachMemory).set({ active: false, updatedAt: o.now }).where(sql`${coachMemory.userId} = ${userId} AND ${coachMemory.id} = ${memoryId} AND ${gate} AND ${o.asRead}`)]
+          : [];
+    return {
+      status: "apply",
+      touches: "post",
+      lines: [],
+      statements: [
+        ...log(gate),
+        ...memory,
+        db
+          .update(savedPosts)
+          .set({ extraction: sql`json_set(${savedPosts.extraction}, ${path}, json(${JSON.stringify(next)}))`, updatedAt: o.now })
+          .where(sql`${savedPosts.userId} = ${userId} AND ${savedPosts.id} = ${ref.postId} AND ${gate} AND ${o.asRead}`)
+          .returning({ id: savedPosts.id }),
+      ],
+    };
+  }
+
+  // A link's match.
+  if (!link) return { status: "refused", error: "not_a_target", why: "What it corrects isn't there any more." };
+  const gate = sql`EXISTS (SELECT 1 FROM saved_post_moves g WHERE g.user_id = ${userId} AND g.id = ${link.id} AND g.status = 'saved' AND g.move_id = ${String(op.before)})`;
+  if (op.field === "same_as") {
+    const to = String(op.after);
+    const toKind = isPersonalId(to) ? "personal" : "library";
+    const dup = String(op.before);
+    const extra: AtomicStatement[] = [];
+    const lines: string[] = [];
+    if (isPersonalId(dup)) {
+      const u = state.usage ?? { sets: false, plans: false, pinned: false, others: 0 };
+      const held = [u.sets ? "it has logged sets" : null, u.plans ? "a planned workout holds it" : null, u.pinned ? "it is in your rotation" : null, u.others > 0 ? "another post names it" : null].filter(Boolean);
+      // §14.3: archived into the move it is when nothing holds it; else kept, its other links marked like it.
+      extra.push(
+        db
+          .update(personalMoves)
+          .set({ status: "merged", mergedInto: to, fitChoice: null, updatedAt: o.now })
+          .where(sql`${personalMoves.userId} = ${userId} AND ${personalMoves.id} = ${dup} AND ${personalMoves.status} = 'active'
+            AND NOT EXISTS (SELECT 1 FROM saved_post_moves x WHERE x.user_id = ${userId} AND x.move_id = ${dup} AND x.status = 'saved' AND x.id <> ${link.id})
+            AND NOT EXISTS (SELECT 1 FROM exercise_prefs x WHERE x.user_id = ${userId} AND x.exercise_id = ${dup} AND x.pinned = 1)
+            AND NOT EXISTS (SELECT 1 FROM performed_sets x JOIN performed_sessions xs ON xs.id = x.performed_session_id WHERE xs.user_id = ${userId} AND x.exercise_id = ${dup})
+            AND NOT EXISTS (SELECT 1 FROM planned_workouts x WHERE x.user_id = ${userId} AND x.effective_date >= ${o.now.slice(0, 10)} AND instr(coalesce(x.workout_doc, ''), '"' || ${dup} || '"') > 0)
+            AND ${gate} AND ${o.asRead}`),
+        db
+          .update(savedPostMoves)
+          .set({ likeMoveId: to, checkFlag: true })
+          .where(sql`${savedPostMoves.userId} = ${userId} AND ${savedPostMoves.moveId} = ${dup} AND ${savedPostMoves.status} = 'saved' AND ${savedPostMoves.id} <> ${link.id}
+            AND EXISTS (SELECT 1 FROM personal_moves x WHERE x.user_id = ${userId} AND x.id = ${dup} AND x.status = 'active') AND ${gate} AND ${o.asRead}`),
+      );
+      if (held.length) lines.push(`${op.name} stays: ${held.join(", ")} — marked like ${op.toName ?? to}`);
+    }
+    return {
+      status: "apply",
+      touches: "library",
+      lines,
+      statements: [
+        ...log(gate),
+        ...extra,
+        db
+          .update(savedPostMoves)
+          .set({ moveId: to, moveKind: toKind, likeMoveId: null, checkFlag: false })
+          .where(sql`${savedPostMoves.userId} = ${userId} AND ${savedPostMoves.id} = ${link.id} AND ${gate} AND ${o.asRead}`)
+          .returning({ id: savedPostMoves.id }),
+      ],
+    };
+  }
+  // Not the same: a move of its own, from the post's reading at that position, active on approval (§14.3).
+  const draft = extractedMoveSchema.safeParse((state.extraction?.moves as unknown[] | undefined)?.[ref.n]);
+  if (!draft.success) return { status: "refused", error: "invalid", why: "The post's reading of that move can't make a move of its own." };
+  const id = ownMoveIdOf(userId, ref.postId, ref.n, draft.data.name);
+  const built = buildPersonalRecord(id, draft.data);
+  if (!built.ok) return { status: "refused", error: "invalid", why: `The post's reading doesn't pass the library's rules: ${built.issues[0] ?? ""}` };
+  return {
+    status: "apply",
+    touches: "library",
+    lines: [],
+    statements: [
+      ...log(gate),
+      db
+        .insert(personalMoves)
+        .select(
+          sql`SELECT ${id}, ${userId}, 'active', NULL, ${link.batchId}, ${JSON.stringify(built.record)}, 0, NULL, ${o.now}, ${o.now} WHERE ${gate} AND ${o.asRead}`,
+        )
+        .onConflictDoNothing(),
+      db
+        .update(savedPostMoves)
+        .set({ moveId: id, moveKind: "personal", likeMoveId: null, checkFlag: false })
+        .where(sql`${savedPostMoves.userId} = ${userId} AND ${savedPostMoves.id} = ${link.id} AND ${gate} AND ${o.asRead}`)
+        .returning({ id: savedPostMoves.id }),
+    ],
+  };
 }

@@ -288,6 +288,8 @@ export interface ImportCorrectionOp {
   basis: "evidence" | "owner";
   cites: CiteRef[];
   name: string;
+  /** A "same as" correction's: the name of the move it is the same as. */
+  toName?: string;
   line: string;
   posts: string[];
   moveId?: string;
@@ -384,15 +386,15 @@ export const isMovePinsOp = (op: unknown): op is MovePinsOp => kindOf(op) === "m
 /** Whether an op is the coach designer's — a designed workout, a change, a plan change, a programme change or the moves
  * in rotation — never one of the thread coach's. */
 export const isDesignedOp = (op: unknown): boolean =>
-  isDocWorkoutOp(op) || isPlanAdjustOp(op) || isPlanStructureOp(op) || isProgrammeChangeOp(op) || isMovePinsOp(op);
+  isDocWorkoutOp(op) || isPlanAdjustOp(op) || isPlanStructureOp(op) || isProgrammeChangeOp(op) || isMovePinsOp(op) || isImportCorrectionOp(op);
 
 /**
  * An op's id: a designed workout's is the run that designed it — each run holds ONE op of its main run's proposal,
  * whatever its target (design-tools/propose.ts), so the run names the op through every revision round; a change's is
  * its own (`planAdjustId`). Approve and decline (Task 8) and a main run's lever over its set (Task 7) name an op by it.
  */
-export function opIdOf(op: { by: { runId: string } } | PlanAdjustOp | PlanStructureOp | ProgrammeChangeOp | MovePinsOp): string {
-  return isPlanAdjustOp(op) || isPlanStructureOp(op) || isProgrammeChangeOp(op) || isMovePinsOp(op) ? op.id : (op as { by: { runId: string } }).by.runId;
+export function opIdOf(op: { by: { runId: string } } | PlanAdjustOp | PlanStructureOp | ProgrammeChangeOp | MovePinsOp | ImportCorrectionOp): string {
+  return isPlanAdjustOp(op) || isPlanStructureOp(op) || isProgrammeChangeOp(op) || isMovePinsOp(op) || isImportCorrectionOp(op) ? op.id : (op as { by: { runId: string } }).by.runId;
 }
 
 /** Whether a proposal's ops hold a designed workout. */

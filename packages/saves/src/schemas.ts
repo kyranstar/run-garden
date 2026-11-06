@@ -127,7 +127,13 @@ export type InsightScope = (typeof INSIGHT_SCOPES)[number];
 const insightSchema = z.union([
   z.string().max(200),
   // `move` (import trail phase 3, §8.4): the position of the post's move it is about, set only by an approved correction.
-  z.object({ text: z.string().max(200), scope: z.enum(INSIGHT_SCOPES), quote: z.string().max(200).optional(), move: z.number().int().min(0).max(99).optional() }).strict(),
+  // `dropped` (phase 3): an approved correction let it go — kept, never read again by the coach.
+  z
+    .object({
+      text: z.string().max(200), scope: z.enum(INSIGHT_SCOPES), quote: z.string().max(200).optional(), move: z.number().int().min(0).max(99).optional(),
+      dropped: z.literal(true).optional(),
+    })
+    .strict(),
 ]);
 export type Insight = z.infer<typeof insightSchema>;
 export const insightText = (i: Insight): string => (typeof i === "string" ? i : i.text);

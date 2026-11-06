@@ -383,7 +383,7 @@ export function insightRowsSql(userId: string, keptPosts: SQL, o: { scoped?: boo
       row_number() over (partition by trim(ins_j.value) order by ins_p.first_seen_at, ins_p.id, ins_j.key) as nth
     from saved_posts ins_p, json_each(${extractionDoc(sql.raw("ins_p.extraction"))}, '$.insights') ins_j
     where ins_p.user_id = ${userId} and ins_p.id in (${keptPosts})
-      and ${o.scoped ? sql`1` : GENERAL_INSIGHT} and ins_j.key < ${INSIGHTS_PER_POST} and length(trim(${INSIGHT_TEXT})) between 1 and ${MEMORY_BODY_MAX}`;
+      and ${o.scoped ? sql`1` : GENERAL_INSIGHT} and ${NOT_DROPPED} and ins_j.key < ${INSIGHTS_PER_POST} and length(trim(${INSIGHT_TEXT})) between 1 and ${MEMORY_BODY_MAX}`;
 }
 
 /**
@@ -397,6 +397,8 @@ const INSIGHT_TEXT = sql.raw(`(case ins_j.type when 'text' then ins_j.value when
  * what Save keeps, what the batch page shows and what the coach reads. A plain text one is general.
  */
 const GENERAL_INSIGHT = sql.raw(`(ins_j.type = 'text' or (ins_j.type = 'object' and json_extract(ins_j.value, '$.scope') = 'general'))`);
+/** An insight an approved correction let go (import trail phase 3): never read again, by Save or the coach. */
+const NOT_DROPPED = sql.raw(`not (ins_j.type = 'object' and coalesce(json_extract(ins_j.value, '$.dropped'), 0) = 1)`);
 /** An insight's scope (a text one is general) and the passage behind it, when it gives one (extract-6). */
 const INSIGHT_SCOPE = sql.raw(`(case when ins_j.type = 'object' and json_type(ins_j.value, '$.scope') = 'text' then json_extract(ins_j.value, '$.scope') else 'general' end)`);
 const INSIGHT_QUOTE = sql.raw(`(case when ins_j.type = 'object' and json_type(ins_j.value, '$.quote') = 'text' then json_extract(ins_j.value, '$.quote') end)`);

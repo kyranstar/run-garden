@@ -123,7 +123,7 @@ export const correctImport: DesignTool = {
       propOps: sql`(select ${coachProposals.ops} from ${coachProposals} where ${coachProposals.id} = ${proposalId} and ${coachProposals.userId} = ${ctx.userId})`,
       propStatus: sql`(select ${coachProposals.status} from ${coachProposals} where ${coachProposals.id} = ${proposalId} and ${coachProposals.userId} = ${ctx.userId})`,
       restoring: sql`(select ${accountState.restoreId} from ${accountState} where ${accountState.userId} = ${ctx.userId})`,
-      state: correctionStateSql(ctx.userId, target, parsed.targetId),
+      state: correctionStateSql(ctx.userId, target, parsed.targetId, ctx.now.toISOString().slice(0, 10)),
       reads: savesReadsSql(ctx.userId, mainRunId),
     });
     const library = await accountLibraryFrom(ctx.db, ctx.userId, extra.library);
@@ -207,6 +207,7 @@ export const correctImport: DesignTool = {
       basis: parsed.basis,
       cites,
       name,
+      ...(target === "link" && parsed.field === "same_as" ? { toName: nameOf(after.value as string) } : {}),
       line,
       posts: state!.kind === "move" ? state!.posts : [ref!.postId],
       ...(moveId ? { moveId } : {}),
