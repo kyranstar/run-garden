@@ -88,6 +88,38 @@ describe("GET /posts/:id/trail", () => {
     expect(body.account.health).toEqual({ status: "fail", line: "The video wouldn't download" });
   });
 
+  it("the health word is the import's outcome: a step that failed and then worked reads as worked after a retry (final review I1)", async () => {
+    const row = await upsertPost(db, userId, submit("k3"), NOW);
+    const ev = (id: string, stage: string, status: string, summary: string, at: string) =>
+      ({ id, userId, postId: row.id, stage, source: "gateway", status, summary, at });
+    await db.insert(schema.importEvents).values([
+      ev("x1", "extract", "fail", "The reply didn't match the format: moves.0.name: is required", "2026-11-05T10:01:00.000Z"),
+      ev("x2", "extract", "ok", "Read 1 move (single move)", "2026-11-05T10:02:00.000Z"),
+    ]);
+    const { body } = await get(`/posts/${row.id}/trail`);
+    expect(body.account.health).toEqual({ status: "warn", line: "Read cleanly after a retry" });
+    await db.insert(schema.importEvents).values([ev("x3", "match", "fail", "Matching failed", "2026-11-05T10:03:00.000Z")]);
+    expect((await get(`/posts/${row.id}/trail`)).body.account.health).toEqual({ status: "fail", line: "Matching failed" });
+  });
+
+  it("an old post touched after the trail began is still rebuilt — its kept steps, its matching from links — beside the new ones (final review I4)", async () => {
+    const id = await savedPostId(userId, "testsrc", "old2");
+    await db.insert(schema.savedPosts).values({
+      id, userId, source: "testsrc", sourceKey: "old2", url: "https://example.com/p/old2", firstSeenAt: NOW, status: "matched",
+      filterVerdict: "training", filterReason: "drills", filterStage: "model", updatedAt: NOW,
+      extraction: { kind: "single_move", summary: "s", themes: [], moves: [{ name: "Zorbex nod" }] },
+    });
+    await db.insert(schema.savedPostMoves).values({ id: "l1", userId, postId: id, position: 0, moveId: "gobletSquat", moveKind: "library", confidence: 1, status: "saved", createdAt: NOW });
+    await db.insert(schema.importEvents).values({ id: "s1", userId, postId: id, stage: "save", source: "worker", status: "ok", summary: "Saved", at: "2026-11-06T00:00:00.000Z" });
+    const { body } = await get(`/posts/${id}/trail`);
+    expect(body.rebuilt).toBe(true);
+    expect(body.events.map((e: { stage: string; rebuilt: boolean }) => [e.stage, e.rebuilt])).toEqual([
+      ["screen", true], ["extract", true], ["match", true], ["save", false],
+    ]);
+    expect(body.events[2].summary).toBe("1 move: 1 from the library");
+    expect(body.account.moves[0]).toMatchObject({ outcome: "library", moveId: "gobletSquat" });
+  });
+
   it("another account's post or blob is 404", async () => {
     const other = (await makeTestUser(db)).userId;
     const row = await upsertPost(db, other, submit("theirs"), NOW);

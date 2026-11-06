@@ -53,10 +53,7 @@ export async function readPostTrail(db: Db, userId: string, postId: string): Pro
     list.push({ id: b.id, kind: b.kind as BlobKind, chars: Number(b.chars) });
     byEvent.set(b.eventId, list);
   }
-  const rebuilt = rows.length === 0;
-  const events: TrailEventDto[] = rebuilt
-    ? rebuiltEvents(p)
-    : rows.map((r) => ({
+  const stored: TrailEventDto[] = rows.map((r) => ({
         id: r.id,
         stage: r.stage as ImportStage,
         source: r.source as TrailSource,
@@ -75,6 +72,12 @@ export async function readPostTrail(db: Db, userId: string, postId: string): Pro
         blobs: byEvent.get(r.id) ?? [],
         at: r.at,
       }));
+  // A post from before the trail has no screening or reading of its own; one touched since (saved, edited) has later
+  // steps only. Either way its kept columns are rebuilt, marked, before whatever came after (final review I4).
+  const hasOwnReading = stored.some((e) => e.stage === "screen" || e.stage === "extract");
+  const rebuiltSteps = hasOwnReading ? [] : rebuiltEvents(p, links);
+  const rebuilt = rebuiltSteps.length > 0;
+  const events = [...rebuiltSteps, ...stored];
 
   const extraction = (p.extraction ?? null) as Extracted | null;
   // How each move came out: the match event's word when the trail has one, else the link's kind.
@@ -95,7 +98,12 @@ export async function readPostTrail(db: Db, userId: string, postId: string): Pro
     };
   });
 
-  const worst = events.reduce<TrailEventDto | null>((w, e) => (RANK[e.status] > (w ? RANK[w.status] : 0) ? e : w), null);
+  // The import's outcome: each stage judged by its last step, so a step that failed and then worked is a retry, not a
+  // failure (final review I1).
+  const lastOf = new Map<ImportStage, TrailEventDto>();
+  for (const e of events) if (e.status !== "info" && e.status !== "skip") lastOf.set(e.stage, e);
+  const worst = [...lastOf.values()].reduce<TrailEventDto | null>((w, e) => (RANK[e.status] > (w ? RANK[w.status] : 0) ? e : w), null);
+  const retried = !worst && events.some((e) => e.status === "fail");
   return {
     post: {
       id: p.id,
@@ -115,7 +123,11 @@ export async function readPostTrail(db: Db, userId: string, postId: string): Pro
       kind: extraction?.kind ?? null,
       summary: extraction?.summary ?? null,
       moves,
-      health: worst ? { status: worst.status, line: worst.summary } : { status: "ok", line: "Read cleanly" },
+      health: worst
+        ? { status: worst.status, line: worst.summary }
+        : retried
+          ? { status: "warn", line: "Read cleanly after a retry" }
+          : { status: "ok", line: "Read cleanly" },
     },
     events,
     rebuilt,
@@ -123,7 +135,7 @@ export async function readPostTrail(db: Db, userId: string, postId: string): Pro
 }
 
 /** The steps of a post from before the trail, built from its kept columns: labelled `rebuilt`, in pipeline order. */
-function rebuiltEvents(p: typeof savedPosts.$inferSelect): TrailEventDto[] {
+function rebuiltEvents(p: typeof savedPosts.$inferSelect, links: readonly { moveKind: string; status: string }[]): TrailEventDto[] {
   const base = (stage: ImportStage, status: TrailStatus, summary: string, detail: unknown): TrailEventDto => ({
     id: `rebuilt:${stage}`, stage, source: "worker", status, summary, detail, moveId: null, model: null, promptVersion: null,
     costMicros: null, latencyMs: null, attempt: null, runId: null, proposalId: null, rebuilt: true, blobs: [], at: p.updatedAt,
@@ -141,6 +153,14 @@ function rebuiltEvents(p: typeof savedPosts.$inferSelect): TrailEventDto[] {
     out.push(base("extract", "ok", `Read ${n} move${n === 1 ? "" : "s"}`, { kind: extraction.kind ?? null, moves: n }));
   } else if (p.status === "failed") {
     out.push(base("extract", "fail", failureWords(p.lastErrorCode ?? "unknown", p.lastError) ?? "Something went wrong", { code: p.lastErrorCode }));
+  }
+  // Matching, from the links it left (plan Task 11).
+  const kept = links.filter((l) => l.status !== "removed");
+  if (kept.length) {
+    const library = kept.filter((l) => l.moveKind === "library").length;
+    const yours = kept.length - library;
+    const parts = [yours ? `${yours} already yours` : "", library ? `${library} from the library` : ""].filter(Boolean).join(", ");
+    out.push(base("match", "ok", `${kept.length} move${kept.length === 1 ? "" : "s"}: ${parts}`, { links: kept.length }));
   }
   return out.sort((a, b) => IMPORT_STAGES.indexOf(a.stage) - IMPORT_STAGES.indexOf(b.stage));
 }
