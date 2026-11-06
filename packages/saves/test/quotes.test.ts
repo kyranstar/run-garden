@@ -80,3 +80,23 @@ describe("verifyQuotes", () => {
     expect(verifyQuotes(r, { caption: "x" })).toEqual({ extraction: r, results: [] });
   });
 });
+
+describe("verifyQuotes reads a long transcript only when it must (final review F2)", () => {
+  const transcript: [number, string][] = [[0, "welcome to the zorbex flow"], [12, "do ten slow reps"]];
+  it("a transcript handed lazily is read once, and not at all when every quote is in the caption", () => {
+    let reads = 0;
+    const lazy = () => {
+      reads++;
+      return transcript;
+    };
+    const inCaption = verifyQuotes(reading([{ field: "purpose", text: "opens the hips", from: "caption" }]), { caption: "It opens the hips.", transcript: lazy });
+    expect(inCaption.results.map((r) => r.check)).toEqual(["verified"]);
+    expect(reads).toBe(0);
+    const inTranscript = verifyQuotes(
+      reading([{ field: "dose", text: "ten slow reps", at: 12, from: "transcript" }, { field: "name", text: "zorbex flow", from: "transcript" }]),
+      { caption: "", transcript: lazy },
+    );
+    expect(inTranscript.results.map((r) => [r.check, r.at])).toEqual([["verified", 12], ["verified", 0]]);
+    expect(reads).toBe(1);
+  });
+});

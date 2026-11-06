@@ -179,6 +179,8 @@ export interface ExtractBodyArgs {
   videoUrl?: string;
   /** The file part's name for a linked video (a YouTube watch link is `video.mp4`); `post.mp4` by default. */
   videoName?: string;
+  /** The user text, when the caller already built it (`extractUserText` of the same words): not built twice (F2). */
+  userText?: string;
 }
 
 /** The reading's system message, as `buildExtractBody` sends it (the prompt registry stores it per version). */
@@ -264,7 +266,7 @@ export async function promptSha(text: string): Promise<string> {
 
 /** The gateway JSON body as a string, with "model" as the first key. */
 export function buildExtractBody(args: ExtractBodyArgs): string {
-  const text = extractUserText(args);
+  const text = args.userText ?? extractUserText(args);
   const content: unknown[] = [{ type: "text", text }];
   if (args.video) {
     content.push({

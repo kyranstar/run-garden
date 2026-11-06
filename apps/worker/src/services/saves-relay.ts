@@ -504,7 +504,7 @@ async function runExtraction(
     let timeoutMs = CALL_TIMEOUT_MS;
     if (send.kind === "video" && c && video) {
       const text = buildExtractBody({
-        model, post: c.words, images: [], libraryNames: LIBRARY_NAMES, retryIssues: prompt.retryIssues, maxTokens,
+        model, post: c.words, images: [], libraryNames: LIBRARY_NAMES, retryIssues: prompt.retryIssues, maxTokens, userText: c.userText,
         ...(video.watched && c.url ? { videoUrl: c.url, videoName: "video.mp4" } : {}),
       });
       body = { text };
@@ -573,7 +573,8 @@ async function runExtraction(
       caption: words?.caption ?? "",
       title: words?.title ?? null,
       chapters: (words?.chapters ?? []).map((ch) => ch.title),
-      transcript: words?.transcript ? transcriptSegments(words.transcript.text) : null,
+      // Read only if a quote isn't found in the other words: a long transcript is the costly part (F2).
+      transcript: words?.transcript ? () => transcriptSegments(words.transcript!.text) : null,
       speech: parsed.extraction.speech ?? null,
     });
     facts.quotes = {

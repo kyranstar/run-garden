@@ -231,3 +231,10 @@ describe("extract-6 and filter-2: pasted links and YouTube (design 2026-11-05 §
     expect(userText).toBe(block(extractUserText({ post: ig, libraryNames: [] })));
   });
 });
+
+describe("buildExtractBody reuses the user text it was given (final review F2)", () => {
+  it("a caller that already built the text (the Worker, at its claim) doesn't pay to build it twice", () => {
+    const j = JSON.parse(buildExtractBody({ ...args, video: undefined, userText: "ZORBEX-PREBUILT" }));
+    expect(j.messages[1].content[0]).toEqual({ type: "text", text: "ZORBEX-PREBUILT" });
+  });
+});

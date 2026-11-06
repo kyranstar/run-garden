@@ -27,7 +27,8 @@ export interface QuoteSources {
   caption: string;
   title?: string | null;
   chapters?: readonly string[];
-  transcript?: readonly Segment[] | null;
+  /** The transcript, or a way to get it: read (and folded) only when a quote isn't found in the other words (F2). */
+  transcript?: readonly Segment[] | (() => readonly Segment[] | null) | null;
   /** The reader's own transcription of the video: words near the creator's, never proof. */
   speech?: string | null;
 }
@@ -40,7 +41,9 @@ export interface QuoteResult {
 }
 
 /** A whole-word substring test: " ten " is not in " often ". */
-const hasWords = (hay: string, needle: string): number => ` ${hay} `.indexOf(` ${needle} `);
+const hasWords = (padded: string, needle: string): number => padded.indexOf(` ${needle} `);
+/** A text padded once for `hasWords` (padding it per quote copied a long transcript each time: final review F2). */
+const pad = (s: string): string => ` ${s} `;
 
 /** Whether some window of `quote.length` words in `words` holds at least QUOTE_OVERLAP_MIN of them (as a multiset). */
 function overlaps(quote: readonly string[], words: readonly string[]): number {
@@ -69,6 +72,8 @@ function overlaps(quote: readonly string[], words: readonly string[]): number {
 
 interface FoldedTranscript {
   text: string;
+  /** `text` padded once for whole-word search. */
+  padded: string;
   /** Each segment's start in `text`, and its time. */
   starts: { offset: number; at: number; words: string[] }[];
   words: number;
@@ -86,7 +91,7 @@ function foldTranscript(segments: readonly Segment[]): FoldedTranscript {
     words += starts.at(-1)!.words.length;
     text += folded;
   }
-  return { text, starts, words };
+  return { text, padded: pad(text), starts, words };
 }
 
 /** The segment a position in the folded transcript falls in. */
@@ -122,24 +127,32 @@ function windowOf(t: FoldedTranscript, at: number | undefined): { words: string[
  */
 export function verifyQuotes(extraction: Extraction, sources: QuoteSources): { extraction: Extraction; results: QuoteResult[] } {
   if (!extraction.moves.some((m) => m.quotes?.length)) return { extraction, results: [] };
-  const fixed = [sources.caption, sources.title ?? "", ...(sources.chapters ?? [])].map(foldWords).filter(Boolean);
-  const transcript = sources.transcript?.length ? foldTranscript(sources.transcript) : null;
-  const speech = sources.speech ? foldWords(sources.speech) : "";
-  const speechWords = speech ? speech.split(" ") : [];
+  const fixed = [sources.caption, sources.title ?? "", ...(sources.chapters ?? [])].map(foldWords).filter(Boolean).map(pad);
+  let folded: FoldedTranscript | null | undefined;
+  const transcriptOf = (): FoldedTranscript | null => {
+    if (folded !== undefined) return folded;
+    const segs = typeof sources.transcript === "function" ? sources.transcript() : sources.transcript;
+    folded = segs?.length ? foldTranscript(segs) : null;
+    return folded;
+  };
+  const speech = sources.speech ? pad(foldWords(sources.speech)) : "";
+  const speechWords = speech ? speech.trim().split(" ") : [];
   const results: QuoteResult[] = [];
 
   const moves = extraction.moves.map((m, move) => {
     if (!m.quotes?.length) return m;
     const found = new Map<string, boolean>();
     const quotes = m.quotes.map((q, quote) => {
-      const folded = foldWords(q.text);
-      const words = folded ? folded.split(" ") : [];
+      const quoted = foldWords(q.text);
+      const words = quoted ? quoted.split(" ") : [];
       let check: QuoteCheck = "not_found";
       let at: number | null = q.at ?? null;
+      const inFixed = words.length > 0 && fixed.some((f) => hasWords(f, quoted) >= 0);
+      const transcript = words.length && !inFixed ? transcriptOf() : null;
       if (words.length) {
-        if (fixed.some((f) => hasWords(f, folded) >= 0)) check = "verified";
+        if (inFixed) check = "verified";
         else if (transcript) {
-          const i = hasWords(transcript.text, folded);
+          const i = hasWords(transcript.padded, quoted);
           if (i >= 0) {
             check = "verified";
             at = atOffset(transcript, i);
@@ -152,7 +165,7 @@ export function verifyQuotes(extraction: Extraction, sources: QuoteSources): { e
             }
           }
         }
-        if (check === "not_found" && speech && (hasWords(speech, folded) >= 0 || overlaps(words, speechWords) >= 0)) check = "in_speech";
+        if (check === "not_found" && speech && (hasWords(speech, quoted) >= 0 || overlaps(words, speechWords) >= 0)) check = "in_speech";
       }
       results.push({ move, quote, check, at });
       found.set(q.field, (found.get(q.field) ?? false) || check !== "not_found");
