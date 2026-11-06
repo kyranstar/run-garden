@@ -1,6 +1,6 @@
 # Import Trail — Phase 2 (pasted links and YouTube) Implementation Plan
 
-> **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
+> **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [x]`) syntax for tracking.
 
 **Goal:** The owner pastes a YouTube or Instagram link — in the extension popup, or in the app on the phone — and it is
 read in the background (a YouTube video by its player's own captions, chapters and metadata), screened, read for its
@@ -98,7 +98,7 @@ Test `packages/saves/test/lenient.test.ts`, `apps/worker/test/saves-relay.test.t
 with `ListField = "regions" | "patterns" | "equipment" | "equipmentOneOf" | "contraction"`; extraction (stored) gains
 `dropped?: {move, field, values}[]`, always written by the Worker (a model-written one is replaced).
 
-- [ ] **Step 1: failing tests** — `dropUnknownEnums({moves:[{regions:["hips","forearmz"],patterns:["mobility"],…}]})`
+- [x] **Step 1: failing tests** — `dropUnknownEnums({moves:[{regions:["hips","forearmz"],patterns:["mobility"],…}]})`
   keeps `["hips"]`, `dropped: [{move:0, field:"regions", values:["forearmz"]}]`; a list whose every value is unknown is
   left as it is (the schema refuses it, its retry names the options); non-string entries are dropped too; a value
   longer than 40 chars is reported cut to 40. Relay: a reply with `moves[0].regions: ["hips","forearmz"]` is stored
@@ -106,12 +106,12 @@ with `ListField = "regions" | "patterns" | "equipment" | "equipmentOneOf" | "con
   the link is `checkFlag: true`; a reply with `position: "floaty"` still fails `model_failed` with the schema's issue.
   personal-records: `load: "external"`, kettlebell, `dose.type: "breaths"` → built, repair "a weight counted in
   breaths; stored as bodyweight (the app logs a weight on reps or a timed carry)".
-- [ ] **Step 2:** run `pnpm vitest run packages/saves/test/lenient.test.ts apps/worker/test/saves-relay.test.ts apps/worker/test/personal-records.test.ts` — FAIL.
-- [ ] **Step 3:** implement; `parseExtraction` runs `dropUnknownEnums` before `extractionSchema.safeParse` and sets
+- [x] **Step 2:** run `pnpm vitest run packages/saves/test/lenient.test.ts apps/worker/test/saves-relay.test.ts apps/worker/test/personal-records.test.ts` — FAIL.
+- [x] **Step 3:** implement; `parseExtraction` runs `dropUnknownEnums` before `extractionSchema.safeParse` and sets
   `dropped` (deleted when empty); `matchTrail`'s check event: status `warn` when any drop, detail `dropped`, each
   dropped move's link flagged.
-- [ ] **Step 4:** rerun — PASS; run `apps/worker/test/saves-match.test.ts` too.
-- [ ] **Step 5:** commit `fix(saves): one unknown list value no longer throws a paid reading away`.
+- [x] **Step 4:** rerun — PASS; run `apps/worker/test/saves-match.test.ts` too.
+- [x] **Step 5:** commit `fix(saves): one unknown list value no longer throws a paid reading away`.
 
 ### Task 2: The wire and the prompts — links, transcripts, `extract-6`, `filter-2`
 
@@ -153,7 +153,7 @@ Test `packages/saves/test/{links,transcript,prompts}.test.ts`, `apps/worker/test
   lines `[m:ss] text` and a final `(the transcript was cut here)` when cut — all defanged. An Instagram post's block is
   byte-identical to `extract-5`'s. `filterMessages` gives screening the first 1,500 words of the transcript.
 
-- [ ] **Step 1: failing tests** — links: each accepted form (watch with extra params and `t=`, `m.` host, `youtu.be`
+- [x] **Step 1: failing tests** — links: each accepted form (watch with extra params and `t=`, `m.` host, `youtu.be`
   with `?si=`, shorts, IG `/p/`, `/reel/`, `/reels/`, `/<user>/p/`) normalizes; `http://`, `vimeo`, a watch link with
   a 10-char id, an IG `/stories/` link → null. linkState words for each case. transcript: round trip; the cut stops at
   a segment boundary under 400,000 and says `cut: true`. prompts: an Instagram post's `extractUserText` equals the
@@ -162,11 +162,11 @@ Test `packages/saves/test/{links,transcript,prompts}.test.ts`, `apps/worker/test
   `skipWhen`, `why`, `quotes`, `speech`, insight `scope` and "at most 30"; screening's block has the first 1,500
   words only. schemas: an `extract-5` extraction (string insights, no new fields) still parses; 31 moves refused.
   batches: an object insight with scope `general` is kept by Save; `this_routine` is not.
-- [ ] **Step 2:** run `pnpm vitest run packages/saves apps/worker/test/saves-batches.test.ts` — FAIL.
-- [ ] **Step 3:** implement. `insightRowsSql` reads `body` from a text value or an object's `$.text`, and skips an
+- [x] **Step 2:** run `pnpm vitest run packages/saves apps/worker/test/saves-batches.test.ts` — FAIL.
+- [x] **Step 3:** implement. `insightRowsSql` reads `body` from a text value or an object's `$.text`, and skips an
   object whose `$.scope` is not `general` (one rule for Save, the batch page and the coach: §5.5).
-- [ ] **Step 4:** rerun with `apps/worker/test/saves-relay.test.ts apps/worker/test/my-saves-review.test.ts` — PASS.
-- [ ] **Step 5:** commit `feat(saves): extract-6 and filter-2 — links, transcripts and the reading's reasons`.
+- [x] **Step 4:** rerun with `apps/worker/test/saves-relay.test.ts apps/worker/test/my-saves-review.test.ts` — PASS.
+- [x] **Step 5:** commit `feat(saves): extract-6 and filter-2 — links, transcripts and the reading's reasons`.
 
 ### Task 3: Quotes checked against the words (§5.6)
 
@@ -181,12 +181,12 @@ count over the transcript segments within ±45 s of `at` (the whole transcript o
 A `not_found` quote's field reads as inferred: `evidence[field]` set to `"inferred"` when it was `"stated"` (only for
 `name`, `dose`, `steps`, `purpose`, `useWhen`, `skipWhen`).
 
-- [ ] **Step 1: failing tests** — a caption substring with other punctuation and case → verified; "café" vs "cafe" →
+- [x] **Step 1: failing tests** — a caption substring with other punctuation and case → verified; "café" vs "cafe" →
   verified; a transcript quote spanning two segments near `at` → verified with that `at`; 80% token overlap → verified,
   70% → not_found; a quote only in `speech` → in_speech; a not_found dose quote turns `evidence.dose` stated → inferred;
   a 20,001-token transcript with no `at` only matches by substring.
-- [ ] **Step 2:** `pnpm vitest run packages/saves/test/quotes.test.ts` — FAIL. **Step 3:** implement. **Step 4:** PASS.
-- [ ] **Step 5:** commit `feat(saves): a quote is checked against the words it claims`.
+- [x] **Step 2:** `pnpm vitest run packages/saves/test/quotes.test.ts` — FAIL. **Step 3:** implement. **Step 4:** PASS.
+- [x] **Step 5:** commit `feat(saves): a quote is checked against the words it claims`.
 
 ### Task 4: Migration 0035 — pasted links and a video's facts
 
@@ -200,9 +200,9 @@ Modify `packages/database/src/schema/saves.ts`, `packages/database/src/version.t
 `saved_posts.video_info` (JSON: `{ chapters: Chapter[]; captions: {lang, kind} | null; live: boolean; transcriptChars: number; transcriptCut: boolean }`)
 and `saved_posts.watch_video` (integer boolean; the owner asked to watch it).
 
-- [ ] **Step 1:** failing: `pnpm vitest run packages/database` (schema-version, migration apply) and the account-tables
+- [x] **Step 1:** failing: `pnpm vitest run packages/database` (schema-version, migration apply) and the account-tables
   test that every user table is listed. **Step 2:** write the migration, schema, version, `[savedLinks, USER]`.
-- [ ] **Step 3:** rerun — PASS. **Step 4:** commit `feat(db): 0035 — pasted links, a video's chapters and Watch it too`.
+- [x] **Step 3:** rerun — PASS. **Step 4:** commit `feat(db): 0035 — pasted links, a video's chapters and Watch it too`.
 
 ### Task 5: The Worker takes a pasted link's post and a YouTube video
 
@@ -216,12 +216,12 @@ chapters" / "… no captions"; the transcript is a `transcript` blob on that eve
 — screening reads `words` when given (the route passes the submit's), and the summary of a pasted post that screening
 keeps or filters is unchanged.
 
-- [ ] **Step 1: failing tests** — a YouTube submit (fake id built at runtime, made-up channel) stores title, duration,
+- [x] **Step 1: failing tests** — a YouTube submit (fake id built at runtime, made-up channel) stores title, duration,
   origin `pasted`, `video_info.chapters`, a `transcript` blob whose text is the submitted one, a `read` event with
   source `youtube`; the screening model is sent a block with `title:` and the transcript's head; the `/posts` route's
   statement pin re-pinned (REBASED … the transcript blob).
-- [ ] **Step 2:** run — FAIL. **Step 3:** implement. **Step 4:** rerun the three files — PASS.
-- [ ] **Step 5:** commit `feat(saves): a pasted post and a YouTube video arrive with their words`.
+- [x] **Step 2:** run — FAIL. **Step 3:** implement. **Step 4:** rerun the three files — PASS.
+- [x] **Step 5:** commit `feat(saves): a pasted post and a YouTube video arrive with their words`.
 
 ### Task 6: Pasted links in the Worker — add, list, and the extension's `read` work
 
@@ -241,14 +241,14 @@ keeps or filters is unchanged.
 - Routes: token `POST /api/saves/links` `{url}`, `GET /api/saves/links`, `GET /api/saves/work?v=2` (links on);
   owner `POST /api/my-saves/links` `{url}`, `GET /api/my-saves/links`. 400 `{error: "not_a_link", message: LINK_REFUSED}`.
 
-- [ ] **Step 1: failing tests** — add from app → waiting, listed "Waiting for your computer's extension"; added twice →
+- [x] **Step 1: failing tests** — add from app → waiting, listed "Waiting for your computer's extension"; added twice →
   one row; a known post → known with its first-seen time; failed → re-added waiting; `GET /work?v=2` lists it
   `read` first; `GET /work` (no v) lists no `read` item and no `youtube` post ("an old extension's work list is
   unchanged"); `/read-failed` for that key marks the link failed and `listLinks` says "Failed: Age-restricted";
   after the post is submitted the link reads "Screening", then "3 moves" once matched; another account never sees it.
   Statement pins for each new route and the re-pinned `/work`.
-- [ ] **Step 2:** run — FAIL. **Step 3:** implement. **Step 4:** PASS with `saves-routes.test.ts`, `my-saves-routes.test.ts`.
-- [ ] **Step 5:** commit `feat(saves): links pasted in the extension or the app wait for the extension`.
+- [x] **Step 2:** run — FAIL. **Step 3:** implement. **Step 4:** PASS with `saves-routes.test.ts`, `my-saves-routes.test.ts`.
+- [x] **Step 5:** commit `feat(saves): links pasted in the extension or the app wait for the extension`.
 
 ### Task 7: A video's reading — the Worker builds it, watches up to 20 minutes, and checks it saw it
 
@@ -276,15 +276,15 @@ Modify `routes/saves.ts`; Test `apps/worker/test/saves-video.test.ts`, `saves-re
   retry issues; no body read) → the relay's answers. The canned gateway (fixture mode) works as for the relay.
 - `watchCostMicros(model, durationSec) → number` (100/s input + 1,500 output) in `saves-video.ts`.
 
-- [ ] **Step 1: failing tests** — a 10-minute video: the gateway receives a body whose user text equals
+- [x] **Step 1: failing tests** — a 10-minute video: the gateway receives a body whose user text equals
   `extractUserText` of the stored words and whose file part is the watch URL; `max_tokens` 32,000; prompt tokens of
   text + 60,000 → `videoSeen` true, column 1; text only → false, `warn`, the health Reader light yellow; a 40-minute
   video → no file part, "from the transcript (over 20 minutes)", reservation from text alone; a 40-minute video with
   `watch_video` → attached, timeout 200 s; no transcript + 40 min → no call, `no_captions`; a quote not in the words →
   `not_found` stored and counted; the reservation for a 10-minute video is ≥ 300/s × 600 s priced. A relay (stream)
   reading still passes every existing relay test. Statement pin for `/extract-video`.
-- [ ] **Step 2:** run — FAIL. **Step 3:** implement. **Step 4:** PASS with `import-health.test.ts`.
-- [ ] **Step 5:** commit `feat(saves): a YouTube reading — built by the Worker, watched up to 20 minutes, checked it was seen`.
+- [x] **Step 2:** run — FAIL. **Step 3:** implement. **Step 4:** PASS with `import-health.test.ts`.
+- [x] **Step 5:** commit `feat(saves): a YouTube reading — built by the Worker, watched up to 20 minutes, checked it was seen`.
 
 ### Task 8: Watch it too
 
@@ -299,20 +299,20 @@ event "You asked for the video to be watched too (about $0.12)". ≤ 6 statement
 { watched: boolean | null; watchAsked: boolean; watchCostMicros: number | null; offerWatch: boolean } | null`.
 Route `POST /api/my-saves/posts/:id/watch`.
 
-- [ ] **Step 1: failing tests** — a 40-minute matched post: watch → queued, links removed, its pending move deleted,
+- [x] **Step 1: failing tests** — a 40-minute matched post: watch → queued, links removed, its pending move deleted,
   `/work?v=2` lists it `extract`, the trail offers no Watch it too while asked and says "Waiting for your computer's
   extension"; a post with a saved link → conflict; an Instagram post → conflict; a post already watched → conflict.
-- [ ] **Step 2:** FAIL. **Step 3:** implement. **Step 4:** PASS. **Step 5:** commit `feat(saves): Watch it too`.
+- [x] **Step 2:** FAIL. **Step 3:** implement. **Step 4:** PASS. **Step 5:** commit `feat(saves): Watch it too`.
 
 ### Task 9: A long follow-along stays whole (§14.5)
 
 **Files:** Modify `apps/worker/src/services/proposal-kinds.ts` (`PINS_MAX`, `PINS_LINES_MAX` = 30), `saves-match.ts`
 (statement note); Test `apps/worker/test/saves-batches.test.ts`, `saves-match.test.ts`, a `pin-moves` test.
 
-- [ ] **Step 1: failing tests** — a 30-move post matches in ≤ 45 statements with a judge call (pinned); a batch after a
+- [x] **Step 1: failing tests** — a 30-move post matches in ≤ 45 statements with a judge call (pinned); a batch after a
   3-move post holds only it when the next post has 20 new moves, and the next batch is that post alone; `pin_moves`
   takes 30 pins and 30 lines, refuses 31.
-- [ ] **Step 2:** FAIL (pins). **Step 3:** implement. **Step 4:** PASS. **Step 5:** commit `feat(saves): a 30-move follow-along is one batch and one card`.
+- [x] **Step 2:** FAIL (pins). **Step 3:** implement. **Step 4:** PASS. **Step 5:** commit `feat(saves): a 30-move follow-along is one batch and one card`.
 
 ### Task 10: The YouTube parsers (pure)
 
@@ -337,10 +337,10 @@ Route `POST /api/my-saves/posts/:id/watch`.
 - `toYoutubeSubmit(meta, transcript: {track, segments, via} | null, chapters: {list, from}, extVersion, ms) → PostSubmit`
   (source `youtube`, origin `pasted`, caption the description ≤ 5,000, hashtags from it, `readFacts.youtube`).
 
-- [ ] **Step 1: failing tests** — synthetic fixtures (made-up channel, fake id built at runtime) for every rule above,
+- [x] **Step 1: failing tests** — synthetic fixtures (made-up channel, fake id built at runtime) for every rule above,
   a 27-segment json3, the description rule's three refusals (no 0:00, two stamps, a 5-s gap).
-- [ ] **Step 2:** `pnpm vitest run apps/saves-extension/test/youtube.test.ts` — FAIL. **Step 3:** implement. **Step 4:** PASS.
-- [ ] **Step 5:** commit `feat(saves-extension): YouTube's player, captions and chapters, read by pure functions`.
+- [x] **Step 2:** `pnpm vitest run apps/saves-extension/test/youtube.test.ts` — FAIL. **Step 3:** implement. **Step 4:** PASS.
+- [x] **Step 5:** commit `feat(saves-extension): YouTube's player, captions and chapters, read by pure functions`.
 
 ### Task 11: The YouTube page reader (thin)
 
@@ -357,13 +357,13 @@ subtitles button off and on, seek to 1 s and play, poll 250 ms, pause), `transcr
 player didn't load"), captions (≤ 15 s), the panel when nothing was captured, the tab closed in `finally`, the whole
 read under `capMs` ("YouTube took too long").
 
-- [ ] **Step 1: failing tests** (a fake `YoutubeTabs`) — the capture is installed before the captions call; a capture
+- [x] **Step 1: failing tests** (a fake `YoutubeTabs`) — the capture is installed before the captions call; a capture
   yields segments `via: "captured"`; none → panel → `via: "panel"`; neither → transcript null (not a failure); an
   unplayable player → failure and the tab closed; a hung player → "The player didn't load" within the cap; each page
   function's source has no free identifiers beyond `window`/`document`/DOM globals (`func.toString()` checked for
   `import`/`require`).
-- [ ] **Step 2:** FAIL. **Step 3:** implement. **Step 4:** PASS.
-- [ ] **Step 5:** commit `feat(saves-extension): read a YouTube video in a background tab`.
+- [x] **Step 2:** FAIL. **Step 3:** implement. **Step 4:** PASS.
+- [x] **Step 5:** commit `feat(saves-extension): read a YouTube video in a background tab`.
 
 ### Task 12: The link queue and runner
 
@@ -386,12 +386,12 @@ version `0.3.0`; Test `apps/saves-extension/test/links.test.ts`, `check.test.ts`
   `linksOnce = singleFlight(() => lock(links))`; alarm `links` every 15 min; message `add-link` → normalize → app
   `addLink` (unreachable: queued anyway) → answer `{ok, known?, message}` at once, then `linksOnce()`.
 
-- [ ] **Step 1: failing tests** — a YouTube link: read, submitted, extracted, removed from the queue; a failed read:
+- [x] **Step 1: failing tests** — a YouTube link: read, submitted, extracted, removed from the queue; a failed read:
   reported, removed; the app unreachable: kept, run ends; an Instagram link: one `readPost`, submit carries
   `readFacts.via: "pasted"`, extract runs, no check report sent; `runCheck`'s work skips a `read` item and a
   `youtube` item; two `add-link`s while a check runs are read after it, one at a time (the lock).
-- [ ] **Step 2:** FAIL. **Step 3:** implement. **Step 4:** PASS with the whole extension suite.
-- [ ] **Step 5:** commit `feat(saves-extension): pasted links, one at a time, and the app asked every 15 minutes`.
+- [x] **Step 2:** FAIL. **Step 3:** implement. **Step 4:** PASS with the whole extension suite.
+- [x] **Step 5:** commit `feat(saves-extension): pasted links, one at a time, and the app asked every 15 minutes`.
 
 ### Task 13: The popup's link field and recent links
 
@@ -405,10 +405,10 @@ the app's list first); `addAnswerLine(answer, now) → string` — "Added — it
 "Already in — imported Tue 3 Nov.", the refusal. The field "Paste a YouTube or Instagram link", button "Add"
 ("Import this video" and pre-filled when `activeVideo`); Enter adds.
 
-- [ ] **Step 1: failing tests** — the field pre-fills and relabels on a YouTube page; Add sends `add-link` and shows
+- [x] **Step 1: failing tests** — the field pre-fills and relabels on a YouTube page; Add sends `add-link` and shows
   the line; a known answer shows Open to the trail; recent links render words and Retry / Import anyway; a refused
   link shows the refusal and sends nothing.
-- [ ] **Step 2:** FAIL. **Step 3:** implement. **Step 4:** PASS. **Step 5:** commit `feat(saves-extension): paste a link in the popup`.
+- [x] **Step 2:** FAIL. **Step 3:** implement. **Step 4:** PASS. **Step 5:** commit `feat(saves-extension): paste a link in the popup`.
 
 ### Task 14: The app — Add a link, recent links, Watch it too, and the trail's new words
 
@@ -425,16 +425,17 @@ video "<title> · <channel> · YouTube · 12:34"; its health word "Read from the
 `videoSeen`, `quotes`, `dropped`, each quote as "“…” — checked: in the words / heard by the reader / not in the post"
 (a `not_found` struck through), `useWhen`/`skipWhen`/`why` under the move.
 
-- [ ] **Step 1: failing tests** — the field posts and shows "Added — it'll be waiting in the coach." / the known line;
+- [x] **Step 1: failing tests** — the field posts and shows "Added — it'll be waiting in the coach." / the known line;
   recent links render; the trail shows the video line, Watch it too posts and then reads waiting; quote words.
-- [ ] **Step 2:** FAIL. **Step 3:** implement. **Step 4:** PASS with `packages/ui` saves suites; `pnpm --filter @rg/ui typecheck`.
-- [ ] **Step 5:** commit `feat(ui): add a link from the phone, recent links, Watch it too`.
+- [x] **Step 2:** FAIL. **Step 3:** implement. **Step 4:** PASS with `packages/ui` saves suites; `pnpm --filter @rg/ui typecheck`.
+- [x] **Step 5:** commit `feat(ui): add a link from the phone, recent links, Watch it too`.
 
 ### Task 15: Docs, rebase, full verification
 
-- [ ] `docs/STATUS.md` phase-2 lines (what landed, what the lead verifies live); the spec's §5.2 note that the reader
-  captures the player's own `/api/timedtext` answer (the spike), and §5.4's Worker-built video body (this plan's ruling).
-- [ ] `git fetch origin && git rebase origin/main`; resolve keeping main's `prompts.ts` / `personal-records.ts` rules.
-- [ ] Scoped suites for every touched package plus `packages/database`, in local time and `TZ=UTC`; typechecks
+- [x] The spec's §5.2 note that the reader captures the player's own `/api/timedtext` answer (the spike), and §5.4's
+  Worker-built video body (this plan's ruling). (This repository keeps no `docs/STATUS.md`: the ledger and the final
+  report carry what the lead verifies live.)
+- [x] `git fetch origin && git rebase origin/main`; resolve keeping main's `prompts.ts` / `personal-records.ts` rules.
+- [x] Scoped suites for every touched package plus `packages/database`, in local time and `TZ=UTC`; typechecks
   (`@rg/worker`, `@rg/ui`, `@rg/saves`, `@rg/saves-extension`, `@rg/api-client`, `@rg/database`); `pnpm --filter @rg/saves-extension build`.
-- [ ] commit `docs(saves): phase 2 — pasted links and YouTube`.
+- [x] commit `docs(saves): phase 2 — pasted links and YouTube`.
