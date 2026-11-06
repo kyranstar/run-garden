@@ -29,14 +29,15 @@ describe("the coach's default voice, in the main coach's block", () => {
   });
 
   it("no apologies: corrected, it says so plainly and acts", () => {
-    expect(voice).toContain('No apologies: when the athlete corrects you, say so plainly and act ("Upper back\'s out — …").');
+    // REBASED 2026-11-06 (the controller's fix pass, C2): "corrects you" is a fact about the athlete themselves.
+    expect(voice).toContain('No apologies: when the athlete tells you a fact about themselves — their body, their schedule, their history, what they did — say so plainly and act ("Upper back\'s out — …")');
     // Nowhere does the prompt ask for one.
     expect([SHARED_PROMPT, main, others].join("\n")).not.toMatch(/\bsorry\b|apologi[sz]e (for|that)/i);
   });
 
   it("doesn't repeat the card; a suggestion's line stays near 180 characters; a check-in number only when it is the reason", () => {
     expect(voice).toContain("Don't repeat the card (its moves, minutes, dates or what it replaces) unless that is the point.");
-    expect(voice).toContain("A suggestion's line stays near 180 characters.");
+    expect(voice).toContain("A suggestion's line stays near 180 characters; an answer to a challenge takes the few sentences its order needs.");
     // An answer's own length is the scope line's, as before.
     expect(main).toContain("call finish with the answer, up to about 900 characters, and suggest nothing");
     expect(voice).toContain("A check-in number only when it is the reason for the choice.");

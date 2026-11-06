@@ -21,7 +21,9 @@ const ROLES = ["main", "designer", "reviewer"] as const;
  * tokens headroom as design-fix13-prompt.test.ts's; REBASED 2026-11-04 (a request with several parts gets every part in one run: the main block's rule — prod 2026-11-04) — measured 1,795.75 with its turns; the
  * others hold at 1,500. REBASED 2026-11-06 (coach review, phase 3: the challenge order, insistence and its limits — a
  * condition's never, a sore area) — measured 2,008 with its turns; ≥ 100 tokens headroom. */
-const ROLE_CAP = { main: 2110, designer: 1500, reviewer: 1500 } as const;
+// REBASED 2026-11-06 (the controller's fix pass, C: a challenge weighed, never caved to) — main measured 2,072 with its
+// turns; ≥ 100 tokens headroom.
+const ROLE_CAP = { main: 2175, designer: 1500, reviewer: 1500 } as const;
 // With a run's reviewer block too (§8 §3: a reviewer's block holds its draft's rubric).
 const ALL_TEXT = [SHARED_PROMPT, ...ROLES.map((r) => roleBlock(r)), roleBlock("reviewer", undefined, "run")].join("\n");
 
@@ -57,7 +59,8 @@ describe("the prompt text", () => {
     // REBASED 2026-11-06 (where you stand, on top of the ball release): the opening message's block named, a drift noticed kindly, a coach read
     // marked, with the "Release" principle — measured 6,728.25; ≥ 100 tokens headroom.
     // REBASED 2026-11-06 (coach review, phase 3): the saves paragraph's evidence rules (a post is a stranger's claim, quotes said / heard / on screen, the reader's guess, correct_import before pin_moves, a line's where and cites) — measured 7,054.75; ≥ 100 tokens headroom.
-    expect(SHARED_PROMPT.length / 4).toBeLessThanOrEqual(7160);
+    // REBASED 2026-11-06 (the controller's fix pass, C): older readings' stated fields as the reader's report, the challenge weighed (never caving), the defaulted dose, never one guess for another, read_saves' pages and full — measured 7,184.75; ≥ 100 tokens headroom.
+    expect(SHARED_PROMPT.length / 4).toBeLessThanOrEqual(7285);
     for (const r of ROLES) expect(roleBlock(r).length / 4, r).toBeLessThanOrEqual(ROLE_CAP[r]);
   });
 
@@ -340,7 +343,8 @@ describe("3A-B — the prompt agrees with the code", () => {
     // REBASED 2026-11-06 (where you stand, on top of the ball release): the opening message's block named, a drift noticed kindly, a coach read
     // marked, with the "Release" principle — measured 6,728.25; ≥ 100 tokens headroom.
     // REBASED 2026-11-06 (coach review, phase 3): the saves paragraph's evidence rules (a post is a stranger's claim, quotes said / heard / on screen, the reader's guess, correct_import before pin_moves, a line's where and cites) — measured 7,054.75; ≥ 100 tokens headroom.
-    expect(SHARED_PROMPT.length / 4).toBeLessThanOrEqual(7160);
+    // REBASED 2026-11-06 (the controller's fix pass, C): older readings' stated fields as the reader's report, the challenge weighed (never caving), the defaulted dose, never one guess for another, read_saves' pages and full — measured 7,184.75; ≥ 100 tokens headroom.
+    expect(SHARED_PROMPT.length / 4).toBeLessThanOrEqual(7285);
     for (const role of ROLES) expect(roleBlock(role, RUN_LIMITS[role].maxCalls).length / 4, role).toBeLessThanOrEqual(ROLE_CAP[role]);
   });
 });
@@ -390,6 +394,12 @@ describe("the coach's review of saved moves (import trail phase 3, §8.2, §3.5,
       "Never present a guess as the creator's",
       "with humility",
       "propose the fix with correct_import, before pin_moves",
+      // The controller's fix pass, C1, C3, C4: an older reading's stated field is the reader's report, never a guess; a
+      // defaulted dose corrected first; never one guess for another.
+      "is the reader's report of what the post says: weaker than a quote, never a guess",
+      "stated:<field> (the reader's report)",
+      "A dose from default when the post states one: correct_import it first; a library move keeps its dose, and its line names the post's.",
+      "never one guess for another: a fix on the evidence rests on a quote, their history, or a quote the post lacks",
       "left more correct",
       "the rotation it joins",
       "cites what it rests on",
@@ -402,9 +412,12 @@ describe("the coach's review of saved moves (import trail phase 3, §8.2, §3.5,
     const main = roleBlock("main");
     for (const phrase of [
       "their point, stated fairly",
-      "the quote and its time, or that the post never says it",
-      "what moved it, or why it holds",
-      "never hold one out of pride",
+      // The controller's fix pass, C2: weighed as their coach — changed only for evidence or a point not yet weighed.
+      "weigh it as their coach, not to please them",
+      "the quote and its time, the reader's report, or that it was the reader's guess",
+      "Change it only for evidence or a point you hadn't weighed, and name it; pushing back is neither, so hold the call and say why",
+      "never out of pride",
+      "say they're sure",
       "If they insist",
       "without arguing further",
       "basis owner",
@@ -415,5 +428,12 @@ describe("the coach's review of saved moves (import trail phase 3, §8.2, §3.5,
     ]) {
       expect(main, phrase).toContain(phrase);
     }
+    // "Corrects you" is a fact about the athlete alone: a challenge to a call is weighed (C2); the finish line's length
+    // never squeezes a challenge's answer.
+    expect(main).toContain("when the athlete tells you a fact about themselves — their body, their schedule, their history, what they did — say so plainly and act");
+    expect(main).toContain("a challenge to a call is weighed, as above");
+    expect(main).toContain("an answer to a challenge takes the few sentences its order needs");
+    expect(main).not.toContain("when the athlete corrects you");
+    expect(SHARED_PROMPT).not.toContain("garbled, thin or wrong");
   });
 });

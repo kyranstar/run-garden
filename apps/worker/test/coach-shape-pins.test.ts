@@ -103,7 +103,11 @@ const BEFORE = { tools: 34_935, shared: 20_450, main: 4_586 };
  * main block's challenge order and insistence within the hard checks (main 7,183 → 8,032), pin_moves' description
  * (tools 43,857 → 43,872) — measured 20,152; held with 398 characters (~114 tokens) of headroom.
  */
-const GROWTH_MAX_CHARS = 20_550;
+/* REBASED 2026-11-06 (the controller's fix pass, A and C): read_saves' pages, compact quotes and full; the stated field
+ * as the reader's report, the challenge weighed, the defaulted dose, never one guess for another; stated:<field> and the
+ * move's own quotes in pin_moves' and correct_import's descriptions — measured 21,297; held with 403 characters (~100
+ * tokens) of headroom. */
+const GROWTH_MAX_CHARS = 21_700;
 
 const toolsSent = () => JSON.stringify(allTools().map((t) => ({ name: t.name, description: t.description, input_schema: t.inputSchema })));
 
