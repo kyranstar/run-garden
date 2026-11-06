@@ -263,35 +263,58 @@ export function scopeOf(raw: DesignRun["scope"]): { kind: ScopeKind; n: number }
   return { kind, n: n as number };
 }
 
+/**
+ * The Intl formatters, made once an isolate per zone (CPU, 2026-11-06: making one is far dearer than using one, and a
+ * context made a dozen — a fifth of the context step's own JavaScript on bench 1a's account).
+ */
+const ZONE_OK = new Map<string, boolean>();
+const CLOCKS = new Map<string, Intl.DateTimeFormat>();
+const WALLS = new Map<string, Intl.DateTimeFormat>();
+
 function zoneOrUtc(tz: string): string {
-  try {
-    new Intl.DateTimeFormat("en-US", { timeZone: tz });
-    return tz;
-  } catch {
-    return "UTC";
+  let ok = ZONE_OK.get(tz);
+  if (ok === undefined) {
+    try {
+      new Intl.DateTimeFormat("en-US", { timeZone: tz });
+      ok = true;
+    } catch {
+      ok = false;
+    }
+    ZONE_OK.set(tz, ok);
   }
+  return ok ? tz : "UTC";
 }
 
 /** "07:40" in the athlete's timezone. */
 function localTime(tz: string, at: Date): string {
-  return new Intl.DateTimeFormat("en-GB", { timeZone: tz, hour: "2-digit", minute: "2-digit", hourCycle: "h23" }).format(at);
+  let f = CLOCKS.get(tz);
+  if (!f) {
+    f = new Intl.DateTimeFormat("en-GB", { timeZone: tz, hour: "2-digit", minute: "2-digit", hourCycle: "h23" });
+    CLOCKS.set(tz, f);
+  }
+  return f.format(at);
 }
 
 /** The instant `date` begins in `tz` (ISO): a timestamp at or after it falls on that local date or later. */
 export function startOfLocalDate(tz: string, date: string): string {
-  const parts = new Intl.DateTimeFormat("en-US", {
-    timeZone: tz,
-    hourCycle: "h23",
-    year: "numeric",
-    month: "2-digit",
-    day: "2-digit",
-    hour: "2-digit",
-    minute: "2-digit",
-    second: "2-digit",
-  });
+  let parts = WALLS.get(tz);
+  if (!parts) {
+    parts = new Intl.DateTimeFormat("en-US", {
+      timeZone: tz,
+      hourCycle: "h23",
+      year: "numeric",
+      month: "2-digit",
+      day: "2-digit",
+      hour: "2-digit",
+      minute: "2-digit",
+      second: "2-digit",
+    });
+    WALLS.set(tz, parts);
+  }
+  const wall = parts;
   /** How far the zone's wall clock is ahead of UTC at `t`. */
   const offsetAt = (t: number): number => {
-    const p = Object.fromEntries(parts.formatToParts(new Date(t)).map((x) => [x.type, x.value]));
+    const p = Object.fromEntries(wall.formatToParts(new Date(t)).map((x) => [x.type, x.value]));
     return Date.UTC(Number(p.year), Number(p.month) - 1, Number(p.day), Number(p.hour), Number(p.minute), Number(p.second)) - t;
   };
   const midnightUtc = Date.parse(`${date}T00:00:00Z`);

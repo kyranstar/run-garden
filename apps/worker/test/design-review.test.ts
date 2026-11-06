@@ -813,8 +813,8 @@ describe("every new step shape stays inside the Workers Free budget (counted)", 
     // larger); the tools come on top. A step with no model: the tree, the claim, the run's write (+ the events).
     const MODEL = 9 + 1;
     expect(shapes).toEqual({
-      // + where the athlete stands (2026-11-06): its statement, and the rich athlete's key results' measures (6).
-      "main context": 2 + 4 + 11 + 1 + 6,
+      // + where the athlete stands (2026-11-06): its statement, and the rich athlete's shown key results' measures (5: none other can drift).
+      "main context": 2 + 4 + 11 + 1 + 5,
       // Was one step, "validate ×2 + propose + start the reviewer": 2 + MODEL + 6 + 6 + 8 (the go-live CPU gate splits it
       // by the model step's CPU room). A step of queued calls: the tree, the claim, the standing read, the run's write and
       // the events.

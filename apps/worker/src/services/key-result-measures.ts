@@ -586,7 +586,11 @@ async function loggedSets(
     const values = r
       ? ((await db.values(sql(r.strings, ...r.params.map(swap)))) as unknown[][])
       : ((await loggedSetsQueries(db, userId, from, to, jsonList(exerciseIds))[i].values()) as unknown[][]);
-    return values.map((v) => Object.fromEntries(fields.map((f, k) => [f, v[k] ?? null])));
+    return values.map((v) => {
+      const row: Record<string, unknown> = {};
+      for (let k = 0; k < fields.length; k++) row[fields[k]!] = v[k] ?? null;
+      return row;
+    });
   };
   const [sessionRows, setRows, buildRows, plannedRows] = (await Promise.all([rowsOf(0), rowsOf(1), rowsOf(2), rowsOf(3)])) as [
     Array<{ id: string; activityId: string | null; workoutId: string | null; buildId: string | null; source: string; localDate: string; createdAt: string; slots: string | null }>,

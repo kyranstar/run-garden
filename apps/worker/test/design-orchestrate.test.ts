@@ -1348,8 +1348,8 @@ describe("every new step shape stays inside the Workers Free budget (counted)", 
     const MODEL = 9 + 1;
     expect(shapes).toMatchObject({
       // + where the athlete stands (2026-11-06): its statement, and its key results' measures (the strength sets' four,
-      // the runs', the threshold's).
-      "main context": 2 + 4 + 11 + 1 + 6,
+      // the runs' one: the three key results the block shows — none other can drift, so none other is read).
+      "main context": 2 + 4 + 11 + 1 + 5,
       // The athlete with the plan on the briefs' dates and the proposal; the estimate's read; the designers' one insert.
       "plan_set: seven designers started": 2 + MODEL + 3,
       "designer context": 2 + 4 + 11,

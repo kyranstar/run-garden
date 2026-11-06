@@ -26,13 +26,13 @@ const ENV = {} as Env;
 
 let db: Db;
 let statements = 0;
-/** Where the athlete stands (2026-11-06): the rich athlete's active key results' measures — a hold and a lift (the
- * strength sets' four), a run best and a pace at heart rate (the runs' one), the threshold and a prediction (one). */
+/** Where the athlete stands (2026-11-06): the rich athlete's key results it reads — the three the block shows, a hold
+ * and a lift (the strength sets' four) and a run best (the runs' one); none other can drift (no due date), so none other
+ * is read (CPU, 2026-11-06). */
 const STAND_MEASURES = measureStatements(
   [
     { kind: "hold_max", libraryIds: ["wallSit"] },
     { kind: "run_best", distanceM: 5000 },
-    { kind: "threshold_pace" },
   ].map((m) => keyResultMeasureSchema.parse(m)),
   { library: true, labels: false },
 );

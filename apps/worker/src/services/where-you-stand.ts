@@ -109,6 +109,8 @@ export interface StandPlanRow {
   /** Started at once (Start now, or played offline and recorded on reconnect: `calendar_sync_state` app_only or
    * app_only_offline): never planned — done, it is work off the plan. */
   startNow?: boolean;
+  /** Its discipline, as the read works it out once (`disciplineOf`); absent, worked out when asked. */
+  discipline?: Discipline | null;
 }
 
 export interface StandFacts {
@@ -146,14 +148,8 @@ const ACTIVITY_MIN_SECONDS = 300;
 
 const RUN_CATEGORIES = new Set(["recovery", "easy", "long", "quality", "race", "unknown"]);
 
-/** A row's discipline, once a row: the tallies ask it a dozen times over (CPU, 2026-11-06). */
-const DISCIPLINE_OF = new WeakMap<object, Discipline | null>();
-function rowDiscipline(w: StandPlanRow): Discipline | null {
-  if (DISCIPLINE_OF.has(w)) return DISCIPLINE_OF.get(w)!;
-  const d = disciplineOf(w);
-  DISCIPLINE_OF.set(w, d);
-  return d;
-}
+/** A row's discipline: the read's own, worked out once a row (the tallies ask a dozen times over: CPU, 2026-11-06). */
+const rowDiscipline = (w: StandPlanRow): Discipline | null => (w.discipline !== undefined ? w.discipline : disciplineOf(w));
 
 /** A planned row's discipline: the app's yoga kind is mobility and care ("yoga is for yoga programs", 2026-10-16). */
 export function disciplineOf(w: { category: string; origin: string | null }): Discipline | null {
@@ -330,7 +326,7 @@ export async function standFactsFrom(
   // In the block's order (the objectives', then each one's own), so the cap keeps the lines shown and the likeliest drifts.
   const ordered = objectiveRows.flatMap((o) => keyResultsOf.filter((kr) => kr.objectiveId === o.id));
   const chosen = new Set(standMeasured(ordered));
-  for (const kr of ordered) if (!chosen.has(kr)) kr.unread = true;
+  for (const kr of ordered) if (!chosen.has(kr) && canDrift(kr)) kr.unread = true;
   const measured = [...chosen].filter((kr): kr is StandKeyResult & { measure: KeyResultMeasure } => kr.measure !== null);
   if (measured.length > 0) {
     const library = opts.library ?? (await accountLibraryFrom(db, userId, rows.library)).all;
@@ -358,6 +354,7 @@ export async function standFactsFrom(
       sport: str(x[8]) ?? "",
       seconds: num(x[9]) ?? 0,
       ...(x[10] === 1 || x[10] === true ? { startNow: true as const } : {}),
+      discipline: disciplineOf({ category: str(x[3]) ?? "", origin: str(x[4]) }),
     }))
     .sort((p, q) => `${p.date} ${p.time} ${p.id}`.localeCompare(`${q.date} ${q.time} ${q.id}`));
   const unplanned = arr(rows.unplanned)
@@ -406,17 +403,19 @@ export async function standFactsFrom(
  * nudges read on every Today load grows with them (the audits, 2026-11-06). */
 export const STAND_KEY_RESULTS_MAX = 12;
 
+/** A key result that can drift: a target and a due date to be behind. */
+const canDrift = (kr: StandKeyResult): boolean => kr.target !== null && kr.due !== null;
+
 /**
  * The key results the stand measures, STAND_KEY_RESULTS_MAX at most, from `ordered` (the block's order): the ones the
- * block shows first (KR_LINES), then the ones that can drift — a target and a due date — soonest due first, then the
- * rest in order. Any other is left unread (and said so).
+ * block shows (KR_LINES), then the ones that can drift — a target and a due date — soonest due first. One neither shown
+ * nor able to drift is never read (CPU, 2026-11-06: nothing of it reaches the block); one that could drift but is past
+ * the cap is left unread, and said so.
  */
 export function standMeasured(ordered: readonly StandKeyResult[]): StandKeyResult[] {
   const shown = ordered.slice(0, KR_LINES);
-  const rest = ordered.slice(KR_LINES);
-  const canDrift = rest.filter((kr) => kr.target !== null && kr.due !== null).sort((p, q) => p.due!.localeCompare(q.due!));
-  const others = rest.filter((kr) => !canDrift.includes(kr));
-  return [...shown, ...canDrift, ...others].slice(0, STAND_KEY_RESULTS_MAX);
+  const drifting = ordered.slice(KR_LINES).filter(canDrift).sort((p, q) => p.due!.localeCompare(q.due!));
+  return [...shown, ...drifting].slice(0, STAND_KEY_RESULTS_MAX);
 }
 
 /** The read whole: its statement (the library in it), then the measures. */

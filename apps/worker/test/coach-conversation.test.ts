@@ -435,9 +435,9 @@ describe("the opening context: the conversation so far", () => {
     statements = 0;
     await buildDesignContext(db, env, userId, ctxRun(first.run.id, first.run.id), NOW);
     const firstCost = statements;
-    // The rich athlete's key results cost their measures too (where you stand, 2026-11-06): the strength sets' four, the
-    // runs', the threshold's.
-    expect(firstCost).toBe(contextStatements("main", null, null) + 6);
+    // The rich athlete's key results cost their measures too (where you stand, 2026-11-06): the three the block shows —
+    // the strength sets' four, the runs' one (none other can drift, so none other is read).
+    expect(firstCost).toBe(contextStatements("main", null, null) + 5);
     await cancelRun(db, userId, first.run.id, at(1000));
     for (let i = 0; i < CONTEXT_TURNS + 2; i++) {
       const made = await createRun(db, userId, { scope: { kind: "now" }, request: `Ask ${i}.` }, at((i + 1) * 60_000));

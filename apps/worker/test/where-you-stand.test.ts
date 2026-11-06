@@ -398,7 +398,10 @@ describe("the audits' fix pass (2026-11-06)", () => {
 
   it("#7 the stand measures 12 key results at most: the ones shown and those that could drift first", () => {
     const many = Array.from({ length: 30 }, (_, k) => kr({ id: `k${k}`, label: `Zorbex ${k}`, baseline: 60, target: 120, due: k === 29 ? d(3) : null, measure: { kind: "checkin", questionId: "energy" } as never }));
-    expect(standMeasured(many).map((x) => x.id)).toEqual(["k0", "k1", "k2", "k29", ...Array.from({ length: 8 }, (_, i) => `k${i + 3}`)]);
+    // The ones shown, then the one that can drift; the rest — not shown, no due date, so no drift — are never read (CPU).
+    expect(standMeasured(many).map((x) => x.id)).toEqual(["k0", "k1", "k2", "k29"]);
+    const due = Array.from({ length: 20 }, (_, k) => kr({ id: `d${k}`, target: 120, due: d(40 - k), measure: { kind: "checkin", questionId: "energy" } as never }));
+    expect(standMeasured(due).map((x) => x.id)).toEqual(["d0", "d1", "d2", "d19", "d18", "d17", "d16", "d15", "d14", "d13", "d12", "d11"]);
     expect(STAND_KEY_RESULTS_MAX).toBe(12);
   });
 
