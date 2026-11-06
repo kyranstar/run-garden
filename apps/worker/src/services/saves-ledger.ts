@@ -1,8 +1,8 @@
 import { and, asc, desc, eq, gte, inArray, isNotNull, isNull, lt, ne, or, sql } from "drizzle-orm";
 import { schema } from "@rg/database";
-import type { SavedPostRow } from "@rg/database";
+import type { SavedPostRow, SavedVideoInfo } from "@rg/database";
 import type { CheckReport, PostSubmit, ReadFailed, SaveErrorCode, SavesStatusDto, TrailSource, WorkItem } from "@rg/saves";
-import { failureWords } from "@rg/saves";
+import { clock, failureWords } from "@rg/saves";
 import { nowInstant } from "@rg/domain";
 import { sha256Hex } from "../auth/crypto.js";
 import { runAtomically, type Db } from "./db.js";
@@ -62,7 +62,10 @@ export async function upsertPost(db: Db, userId: string, p: PostSubmit, now: str
       filterReason: p.seed?.reason ?? null,
       filterStage: p.seed ? "seed" : null,
       seeded: !!p.seed,
-      origin: p.readFacts ? (p.readFacts.via === "pasted" ? "pasted" : "saved") : null,
+      origin: p.origin ?? (p.readFacts ? (p.readFacts.via === "pasted" ? "pasted" : "saved") : null),
+      title: p.title ?? null,
+      durationSec: p.durationSec ?? null,
+      videoInfo: videoInfoOf(p),
       updatedAt: now,
     })
     .onConflictDoNothing({ target: [savedPosts.userId, savedPosts.source, savedPosts.sourceKey] })
@@ -72,11 +75,13 @@ export async function upsertPost(db: Db, userId: string, p: PostSubmit, now: str
     await runAtomically(
       db,
       trailStatements(db, userId, id, [
-        ...(p.readFacts
+        ...(p.readFacts || p.transcript
           ? [{
               stage: "read" as const, source: siteSource(p.source), status: "ok" as const,
-              summary: p.readFacts.via === "pasted" ? "Read from a pasted link" : "Read from your saved list",
-              detail: p.readFacts,
+              summary: readSummary(p),
+              detail: p.readFacts ?? null,
+              // The transcript is kept whole as a blob, never in the post row (design 2026-11-05 §5.3).
+              ...(p.transcript?.text ? { blobs: [{ kind: "transcript" as const, text: p.transcript.text }] } : {}),
             }]
           : []),
         {
@@ -90,6 +95,31 @@ export async function upsertPost(db: Db, userId: string, p: PostSubmit, now: str
   const [row] = await db.select().from(savedPosts).where(eq(savedPosts.id, id)).limit(1);
   if (!row) throw new Error("saved post vanished after upsert");
   return row;
+}
+
+/** A video's facts beside its words (`saved_posts.video_info`, migration 0035); null for a post that isn't a video page. */
+function videoInfoOf(p: PostSubmit): SavedVideoInfo | null {
+  if (!p.title && !p.chapters && !p.transcript && p.durationSec === undefined) return null;
+  return {
+    chapters: p.chapters ?? [],
+    captions: p.transcript ? { lang: p.transcript.lang, kind: p.transcript.kind } : null,
+    live: p.live ?? false,
+    transcriptChars: p.transcript?.text.length ?? 0,
+    transcriptCut: p.transcript?.cut ?? false,
+  };
+}
+
+/** The read step's line: a video's length, captions and chapters; a post's way in. */
+function readSummary(p: PostSubmit): string {
+  if (p.title || p.transcript || p.durationSec !== undefined) {
+    const parts = [
+      p.durationSec ? clock(p.durationSec) : "",
+      p.transcript ? `${p.transcript.kind === "uploaded" ? "uploaded" : "auto-generated"} captions (${p.transcript.lang})${p.transcript.cut ? ", cut at 400,000 characters" : ""}` : "no captions",
+      p.chapters?.length ? `${p.chapters.length} chapter${p.chapters.length === 1 ? "" : "s"}` : "",
+    ].filter(Boolean);
+    return `Read the video: ${parts.join(", ")}`;
+  }
+  return p.readFacts?.via === "pasted" ? "Read from a pasted link" : "Read from your saved list";
 }
 
 /** The site a source reads, as the trail names it; anything else is the extension's own doing. */

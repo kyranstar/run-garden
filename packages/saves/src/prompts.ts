@@ -32,6 +32,21 @@ export type PostWords = Pick<PostSubmit, "caption" | "hashtags" | "creator" | "m
   transcript?: { lang: string; kind: "uploaded" | "auto"; text: string; cut?: boolean } | null;
 };
 
+/** A submit's words, as the prompts read them. */
+export function postWords(p: PostSubmit): PostWords {
+  return {
+    source: p.source,
+    creator: p.creator,
+    caption: p.caption,
+    hashtags: p.hashtags,
+    mediaType: p.mediaType,
+    title: p.title ?? null,
+    durationSec: p.durationSec ?? null,
+    chapters: p.chapters ?? null,
+    transcript: p.transcript ?? null,
+  };
+}
+
 /** A site whose post is a video page with its own words (title, description, chapters): not a saved feed post. */
 const isVideoSite = (post: PostWords): boolean => post.source !== undefined && post.source !== "instagram" && post.mediaType === "video" && !!post.title;
 

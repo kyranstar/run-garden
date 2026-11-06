@@ -6,7 +6,7 @@
  */
 import { Hono } from "hono";
 import { z } from "zod";
-import { checkReportSchema, postSubmitSchema, readFailedSchema, SAVE_SOURCE_RE } from "@rg/saves";
+import { checkReportSchema, postSubmitSchema, postWords, readFailedSchema, SAVE_SOURCE_RE } from "@rg/saves";
 import { nowInstant } from "@rg/domain";
 import type { AppContext } from "../auth/middleware.js";
 import { bearerGuard } from "../auth/token.js";
@@ -78,7 +78,7 @@ savesRoutes.post("/posts", async (c) => {
       ...(row.filterReason ? { reason: row.filterReason } : {}),
     });
   }
-  const out = await filterPost(db, c.env, c.get("userId"), { ...row, cover: parsed.data.cover }, now, fetch);
+  const out = await filterPost(db, c.env, c.get("userId"), { ...row, cover: parsed.data.cover, words: postWords(parsed.data) }, now, fetch);
   return c.json({
     status: out.status,
     ...(out.verdict ? { verdict: out.verdict } : {}),
