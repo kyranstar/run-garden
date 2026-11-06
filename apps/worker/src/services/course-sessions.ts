@@ -178,7 +178,7 @@ interface WriteTry {
 async function writeDue(
   db: Db,
   userId: string,
-  row: SlotRow,
+  row: Pick<SlotRow, "id" | "title" | "effectiveDate" | "calendarBlockDurationSeconds">,
   course: CourseOutline,
   definition: CourseDefinition,
   ctx: BuildCtx,
@@ -325,7 +325,8 @@ export async function writeCourseSessionsDue(db: Db, at: Date = new Date()): Pro
   const utc = todayInZone("UTC", at);
   const rows = await db
     .select({
-      row: pw,
+      // Named: the hourly pass reads no planned row's document (workout-doc-hot-reads.test.ts).
+      row: { id: pw.id, userId: pw.userId, title: pw.title, effectiveDate: pw.effectiveDate, calendarBlockDurationSeconds: pw.calendarBlockDurationSeconds },
       program: programs,
       prefs: userPreferences.prefs,
       refused: sql<number>`exists (select 1 from ${syncNotes} where ${syncNotes.id} = 'course-refused-' || ${pw.id} || '-' || ${pw.effectiveDate})`,

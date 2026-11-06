@@ -148,6 +148,7 @@ describe("one fully populated row per new table round-trips (D1's 100-variable c
           id: "prog-1", userId, kind: "adaptive", name: "Strength", status: "active", disciplines: ["strength"],
           startDate: "2026-10-01", endDate: "2026-12-31", raceDate: null, source: { stampPrefix: "rg" },
           config: { weeklyGoal: 4, preferredDays: [1, 3, 5], careProfiles: [] }, createdAt: at, updatedAt: at, archivedAt: null,
+          purpose: "A synthetic purpose", brief: "A synthetic brief.", onEnd: "continue", pausedUntil: "2026-10-08", objectiveIds: ["obj-1"],
         },
       ],
       [schema.programVersions, { id: "pv-1", programId: "prog-1", versionNum: 1, capturedAt: at, fingerprint: "f1", summary: { weeks: 12 } }],
