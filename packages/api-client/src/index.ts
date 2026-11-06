@@ -2439,7 +2439,7 @@ export interface PersonalMoveDto {
    * move is for, or when to do it (a model's reading: drawn as text); null with none, absent from an answer kept from
    * before it was added.
    */
-  links: Array<{ url: string | null; creator: string | null; note?: string | null }>;
+  links: Array<{ url: string | null; creator: string | null; note?: string | null; postId?: string | null; position?: number | null }>;
 }
 
 /**
@@ -2482,8 +2482,13 @@ export interface LibraryItemDto {
   harder: Array<{ id: string; name: string }>;
   prefs: ExercisePrefsDto;
   saved: boolean;
-  /** Where a saved move came from — the account's own links; each with its note (null for a curated link). */
-  provenance: Array<{ sourceType: string; url: string | null; creator: string | null; note?: string | null }>;
+  /**
+   * Where a saved move came from — the account's own links; each with its note (null for a curated link), and for a link
+   * Save wrote, its post's id and the move's place in it: the post's trail opens there (audit 2026-11-06, I10).
+   */
+  provenance: Array<{ sourceType: string; url: string | null; creator: string | null; note?: string | null; postId?: string | null; position?: number | null }>;
+  /** A personal move's corrections, newest first, in words (absent from an older worker; always empty for a public move). */
+  corrections?: Array<{ field: string; line: string; why: string; by: "coach" | "owner"; basis: "evidence" | "owner"; at: string }>;
   history: {
     /** The last five entries, newest first, weights as typed. */
     last: Array<{

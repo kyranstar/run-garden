@@ -2855,6 +2855,25 @@ button.session-chip {
   padding: var(--space-2) var(--space-5);
   font-size: var(--text-xs);
 }
+/* Where a move from the saves came from (audit 2026-11-06, I10): each creator, and How it came in. */
+.howto-saved-list {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+.howto-saved-list li {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--space-2) var(--space-4);
+  min-width: 0;
+}
+.howto-saved-by {
+  overflow-wrap: anywhere;
+}
 .howto-last {
   display: grid;
   gap: var(--space-1);
