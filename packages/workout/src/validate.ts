@@ -73,6 +73,14 @@
  * - dose_mismatch (warning): an exercise with no amount (none of reps, holdSec, breaths, carryM, max); reps on a timed
  *   move or a carry (a library carry is timed) with no seconds, or on a breathing record with no breaths; seconds on a
  *   counted move outside a timed format (circuit, intervals, flow, holds). `fix` is the dose to use.
+ * - FREE-TEXT MOVES (the safety audit, 2026-11-06, S3) are judged, not only dosed. One named as a move of `library` (its
+ *   name or id, spelling loose: case, separators and a plural "s" forgiven — the account's own moves among them when the
+ *   caller passes them) meets that move's condition rules — condition_never, condition_pattern, condition_gate,
+ *   condition_mode, condition_format, condition_flare — at its `name`; a day ahead's gate is an error, as a free-text move
+ *   carries no alternate. One named as no move whose name says it jumps (@rg/exercise-library `plyometricWord`, its name
+ *   and cue) is judged as a jump: refused (condition_gate, error) on a Recover day whatever profiles are on, and wherever
+ *   an active profile's gate keeps a jump out — the day's check, feeling off, a flare day — or (condition_gate_pending,
+ *   error) a day ahead's check could. Any other free-text move can't be judged, and is only dosed.
  * - jump_placement (warning): power while fresh (principles §2.1), where the engine puts jumps — at most one per jump:
  *   a jump in a second part holding jumps (the session's jumps live in one part), else a jump after a lift (a library
  *   move with a strength or power purpose that is no jump, in an earlier main, power, accessory or conditioning part, or
@@ -152,6 +160,7 @@ import {
   hasEquipment,
   isPlyometric,
   label,
+  plyometricWord,
   onFrontier,
   recordFlareSafe,
   type CheckReading,
@@ -270,6 +279,12 @@ export interface ValidateCtx {
 type Part = WorkoutPart;
 type DocFormat = Part["format"];
 type Exercise = Extract<WorkoutItem, { kind: "exercise" }>;
+type FreeExercise = Extract<WorkoutItem, { kind: "free_exercise" }>;
+/**
+ * What a profile's gates read of a free-text move whose name says it jumps (S3): a jump, and nothing else — no pattern
+ * a pattern rule could read, no rating (the rules that need one are never asked of it).
+ */
+const JUMP_PROBE = { id: "", name: "", contraction: ["plyometric"], patterns: [], regions: [], purposes: [], roles: [], easier: [], harder: [] } as unknown as ExerciseRecord;
 type Phase = "any" | "today" | "future";
 
 const FORMAT_RULE: Readonly<Record<DocFormat, FormatId>> = FORMAT_OF_PART;
@@ -472,6 +487,9 @@ export function validateWorkoutDoc(input: unknown, ctx: ValidateCtx): DocIssue[]
   let guessIndex: ((s: string) => string | undefined) | null = null;
   const suggestable = ctx.offered ?? ctx.library;
   const guessExercise = (s: string): string | undefined => (guessIndex ??= guesser(suggestable.flatMap((e) => [[e.id, e.id], [e.name, e.id]] as const)))(s);
+  // A free-text move's name as a move of `library` (S3): built only when the document holds one.
+  let nameIndex: ((s: string) => string | undefined) | null = null;
+  const guessByName = (s: string): string | undefined => (nameIndex ??= guesser(ctx.library.flatMap((e) => [[e.name, e.id], [e.id, e.id]] as const)))(s);
   // A move a fix may name: one the athlete is offered (the document's own moves still resolve in `library`).
   const offeredFind = ctx.offered && ctx.offered !== ctx.library ? makeLibraryIndex(ctx.offered) : null;
   const isOffered = (r: ExerciseRecord): boolean => offeredFind === null || offeredFind(r.id)?.id === r.id;
@@ -646,8 +664,11 @@ export function validateWorkoutDoc(input: unknown, ctx: ValidateCtx): DocIssue[]
     part.items.forEach((item, ii) => {
       const itemAt = `${at}.items[${ii}]`;
       if (item.kind === "exercise") checkExercise(item, part, itemAt);
-      else if (item.kind === "free_exercise" && !hasAmount(item.dose)) {
-        add({ path: `${itemAt}.dose`, code: "dose_mismatch", message: `${item.name} has no amount: give it reps, seconds, breaths or a distance.`, severity: "warning" });
+      else if (item.kind === "free_exercise") {
+        checkFree(item, part, itemAt);
+        if (!hasAmount(item.dose)) {
+          add({ path: `${itemAt}.dose`, code: "dose_mismatch", message: `${item.name} has no amount: give it reps, seconds, breaths or a distance.`, severity: "warning" });
+        }
       }
     });
   });
@@ -955,6 +976,56 @@ export function validateWorkoutDoc(input: unknown, ctx: ValidateCtx): DocIssue[]
         add({ path: altAt, code: f.code, message: f.message, severity: f.severity });
       }
     });
+  }
+
+  /**
+   * A free-text move, judged (the safety audit, S3; see FREE-TEXT MOVES in the header): as the move it names, else — when
+   * its name says it jumps — as a jump, else not at all.
+   */
+  function checkFree(item: FreeExercise, part: Part, at: string): void {
+    const nameAt = `${at}.name`;
+    const named = find(guessByName(item.name) ?? "");
+    if (named) {
+      for (const f of judge(named, part.format)) {
+        if (!f.code.startsWith("condition_")) continue;
+        if (f.pending) {
+          const check = f.pending.check.label;
+          add({
+            path: nameAt, code: "condition_gate_pending", severity: "error",
+            message: `${named.name} depends on that day's ${check} check, and a free-text move carries no alternate: put the library move in, with one that suits a recovery day.`,
+          });
+          continue;
+        }
+        add({ path: nameAt, code: f.code, message: f.message, severity: f.severity });
+      }
+      return;
+    }
+    if (!plyometricWord(item.name, item.cue ?? "")) return;
+    const name = item.name;
+    if (mode === "recovery") {
+      add({ path: nameAt, code: "condition_gate", severity: "error", message: `${name} reads as a jump, and jumps sit out a ${dayWord} day.` });
+      return;
+    }
+    for (const p of profiles) {
+      const g = gate(p, JUMP_PROBE);
+      if (g?.why === "pending") {
+        add({
+          path: nameAt, code: "condition_gate_pending", severity: "error",
+          message: `${name} reads as a jump, and that day's ${p.check.label} check could close it: put a library jump in, with an alternate that suits a recovery day.`,
+        });
+        return;
+      }
+      if (g) {
+        const why = gateMessage(p, "it", g);
+        add({ path: nameAt, code: "condition_gate", severity: "error", message: `${name} reads as a jump, and ${why.replace(/\.$/, "")}.` });
+        return;
+      }
+      const r = readingOf(p);
+      if (r && p.flare(r)) {
+        add({ path: nameAt, code: "condition_gate", severity: "error", message: `${name} reads as a jump, and today's ${p.check.label} check is a flare.` });
+        return;
+      }
+    }
   }
 
   function checkDose(rec: ExerciseRecord, dose: WorkoutDose, format: DocFormat, at: string): void {
