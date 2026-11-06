@@ -174,3 +174,13 @@ describe("a video's screening is tried again at a check's pace, not every 15 min
     expect(keys.sort()).toEqual([["Yt0000000cd", "filter"], ["igseen", "filter"]].sort());
   });
 });
+
+describe("a held video whose read failed waits a check's pace too (final audit G9)", () => {
+  it("any failed read moves it behind the 6-hour wait", async () => {
+    const old = new Date(Date.parse(NOW) - 7 * 3_600_000).toISOString();
+    await seedPost("youtube", "Yt0000000ab", { status: "seen", lastErrorCode: "model_failed", updatedAt: old });
+    expect((await workList(db, userId, NOW, 20, { links: true })).map((w) => w.key)).toEqual(["Yt0000000ab"]);
+    await recordReadFailed(db, userId, { source: "youtube", key: "Yt0000000ab", code: "unknown", message: "The player didn't load" }, NOW);
+    expect(await workList(db, userId, NOW, 20, { links: true })).toEqual([]);
+  });
+});

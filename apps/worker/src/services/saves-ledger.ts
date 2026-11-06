@@ -140,6 +140,11 @@ export async function recordReadFailed(db: Db, userId: string, r: ReadFailed, no
   }
   const words = failureWords(r.code, null) ?? "The read failed";
   await runAtomically(db, [
+    // A post waiting to be screened again moves behind the wait (final audit G9): a read that failed for any reason
+    // is never re-opened every 15 minutes.
+    ...(postId !== `ext:${r.source}`
+      ? [db.update(savedPosts).set({ updatedAt: now }).where(and(eq(savedPosts.id, postId), eq(savedPosts.userId, userId), eq(savedPosts.status, "seen")))]
+      : []),
     // A pasted link that couldn't be read says why where the owner sees it (pasted links, 2026-11-06).
     ...(r.key
       ? [db
