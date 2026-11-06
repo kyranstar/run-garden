@@ -11,13 +11,19 @@ import { describe, expect, it } from "vitest";
 import { SCHEMA_VERSION } from "../src/index.js";
 
 describe("SCHEMA_VERSION", () => {
+  const dir = fileURLToPath(new URL("../migrations", import.meta.url));
+  const prefixes = readdirSync(dir)
+    .filter((f) => /^\d{4}_.*\.sql$/.test(f))
+    .map((f) => f.slice(0, 4))
+    .sort();
+
   it("equals the highest numbered migration on disk", () => {
-    const dir = fileURLToPath(new URL("../migrations", import.meta.url));
-    const prefixes = readdirSync(dir)
-      .filter((f) => /^\d{4}_.*\.sql$/.test(f))
-      .map((f) => f.slice(0, 4))
-      .sort();
     expect(prefixes.length).toBeGreaterThan(0);
     expect(SCHEMA_VERSION).toBe(prefixes[prefixes.length - 1]);
+  });
+
+  // Two branches can each take the next number, and the highest still matches after they merge.
+  it("is the only migration with its number", () => {
+    expect(prefixes.filter((p, i) => prefixes.indexOf(p) !== i)).toEqual([]);
   });
 });
