@@ -9,7 +9,7 @@ export const programs = sqliteTable(
   {
     id: text("id").primaryKey(),
     userId: text("user_id").notNull(),
-    /** adaptive | coros_import | coach | studio (`programKindSchema`). */
+    /** adaptive | coros_import | coach | studio | course (`programKindSchema`). */
     kind: text("kind").notNull(),
     name: text("name").notNull(),
     /** draft | active | completed | retired | archived (`programStatusSchema`). */
@@ -23,6 +23,16 @@ export const programs = sqliteTable(
     source: text("source", { mode: "json" }).$type<Record<string, unknown> | null>(),
     /** Validated per kind: `adaptiveConfigSchema` for adaptive programs. */
     config: text("config", { mode: "json" }).$type<Record<string, unknown>>().notNull(),
+    /** What the plan is for, in a line (migration 0035). */
+    purpose: text("purpose"),
+    /** The longer account of it, which the coach reads on request. */
+    brief: text("brief"),
+    /** ask | continue | finish (`planOnEndSchema`); null = not set yet. */
+    onEnd: text("on_end"),
+    /** A local date the plan is paused until; null = not paused. */
+    pausedUntil: text("paused_until"),
+    /** The `objectives.id`s the plan serves. */
+    objectiveIds: text("objective_ids", { mode: "json" }).$type<string[] | null>(),
     createdAt: text("created_at").notNull(),
     updatedAt: text("updated_at").notNull(),
     archivedAt: text("archived_at"),

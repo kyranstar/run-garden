@@ -23,8 +23,10 @@ import {
   hashTable,
   orderedRows,
   secretColumns,
+  wipeAccountData,
 } from "../src/services/account-tables.js";
 import { makeTestDb, makeTestUser } from "./helpers.js";
+import { exportAll, restoreAll } from "./restore-driver.js";
 
 function schemaTables(): Array<{ name: string; table: SQLiteTable }> {
   return Object.values(schema)
@@ -353,5 +355,60 @@ describe("hashTable — paged, equal to hashRows over orderedRows (Ruling R2)", 
     expect(await hashTable(db, schema.coachLocks, { pageSize: 1 })).toEqual({ rows: 2, sha256: await hashRows(rows) });
     const masked = rows.map((r) => ({ ...r, token: null }));
     expect((await hashTable(db, schema.coachLocks, { mask: ["token"] })).sha256).toBe(await hashRows(masked));
+  });
+});
+
+describe("plans with a purpose: new columns survive an export and restore", () => {
+  it("a course programme's purpose, brief, ending, pause and objectives, and a coach plan's programme, come back as they went", async () => {
+    const db = makeTestDb();
+    const { userId } = await makeTestUser(db);
+    const now = nowInstant();
+    await db.insert(schema.programs).values({
+      id: "prog-1",
+      userId,
+      kind: "course",
+      name: "Synthetic course",
+      status: "active",
+      disciplines: ["yoga"],
+      config: { course: "synthetic", weekdays: [0, 4], time: "19:30" },
+      purpose: "A synthetic purpose",
+      brief: "A synthetic brief, longer than the purpose.",
+      onEnd: "continue",
+      pausedUntil: "2031-02-03",
+      objectiveIds: ["obj-a", "obj-b"],
+      createdAt: now,
+      updatedAt: now,
+    });
+    await db.insert(schema.coachPlans).values({
+      id: "plan-1",
+      userId,
+      discipline: "run",
+      name: "Synthetic plan",
+      status: "active",
+      startDate: "2031-01-01",
+      endDate: "2031-03-01",
+      stampPrefix: "syn",
+      programId: "prog-1",
+      createdAt: now,
+      updatedAt: now,
+    });
+
+    const before = await exportAll(db, userId);
+    expect(before.tables.programs).toEqual([
+      expect.objectContaining({
+        purpose: "A synthetic purpose",
+        brief: "A synthetic brief, longer than the purpose.",
+        onEnd: "continue",
+        pausedUntil: "2031-02-03",
+        objectiveIds: ["obj-a", "obj-b"],
+      }),
+    ]);
+    expect(before.tables.coach_plans).toEqual([expect.objectContaining({ programId: "prog-1" })]);
+
+    await wipeAccountData(db, userId, { keep: ["users", "sessions", "provider_connections"] });
+    await restoreAll(db, userId, before);
+    const after = await exportAll(db, userId);
+    expect(after.tables.programs).toEqual(before.tables.programs);
+    expect(after.tables.coach_plans).toEqual(before.tables.coach_plans);
   });
 });

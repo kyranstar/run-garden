@@ -7,9 +7,49 @@ import { isLocalDate } from "./time.js";
 const localDate = z.string().refine(isLocalDate, { message: "must be a YYYY-MM-DD calendar date" });
 const unique = <T>(xs: readonly T[]): boolean => new Set(xs).size === xs.length;
 
-export const PROGRAM_KINDS = ["adaptive", "coros_import", "coach", "studio"] as const;
+export const PROGRAM_KINDS = ["adaptive", "coros_import", "coach", "studio", "course"] as const;
 export const programKindSchema = z.enum(PROGRAM_KINDS);
 export type ProgramKind = z.infer<typeof programKindSchema>;
+
+/**
+ * What happens when a plan's last session passes (`programs.on_end`): `ask` the athlete what comes next,
+ * `continue` by making more sessions, or `finish`. Each kind allows only some of them.
+ */
+export const PLAN_ON_END = ["ask", "continue", "finish"] as const;
+export const planOnEndSchema = z.enum(PLAN_ON_END);
+export type PlanOnEnd = z.infer<typeof planOnEndSchema>;
+
+const ON_END_ALLOWED: Record<ProgramKind, readonly PlanOnEnd[]> = {
+  adaptive: ["continue"],
+  course: ["continue", "finish"],
+  coach: ["ask", "continue", "finish"],
+  coros_import: ["ask", "finish"],
+  studio: [],
+};
+
+/** Whether a plan of this kind may end that way. A programme or a course makes sessions for free, so it never asks. */
+export function onEndAllowed(kind: ProgramKind, onEnd: PlanOnEnd): boolean {
+  return ON_END_ALLOWED[kind].includes(onEnd);
+}
+
+/**
+ * How a plan ends when nothing says: running asks (what comes after a race or a phase is the athlete's call),
+ * most else continues. A COROS import's sessions aren't ours to extend, so one without running has nothing to
+ * continue and finishes. A studio plan allows no ending; it reads as finished.
+ */
+export function defaultOnEnd(kind: ProgramKind, disciplines: readonly string[]): PlanOnEnd {
+  const runs = disciplines.includes("run");
+  switch (kind) {
+    case "coach":
+      return runs ? "ask" : "continue";
+    case "coros_import":
+      return runs ? "ask" : "finish";
+    case "studio":
+      return "finish";
+    default:
+      return "continue";
+  }
+}
 
 export const PROGRAM_STATUSES = ["draft", "active", "completed", "retired", "archived"] as const;
 export const programStatusSchema = z.enum(PROGRAM_STATUSES);
@@ -62,6 +102,32 @@ export const adaptiveConfigSchema = z
   })
   .strict();
 export type AdaptiveConfig = z.infer<typeof adaptiveConfigSchema>;
+
+/**
+ * A course's settings (`programs.config` for `kind = "course"`): a fixed course of sessions placed on set
+ * weekdays at a set time.
+ */
+export const courseConfigSchema = z
+  .object({
+    /** Which course (its definition's id). */
+    course: z.string().min(1),
+    /** Days sessions go on: 0 = Monday … 6 = Sunday, the same numbering as `adaptiveConfigSchema.preferredDays`. */
+    weekdays: z
+      .array(z.number().int().min(0).max(6))
+      .min(1)
+      .max(7)
+      .refine(unique, { message: "weekdays repeats a day" }),
+    /** Local time of day, 24-hour "HH:MM". */
+    time: z.string().regex(/^([01]\d|2[0-3]):[0-5]\d$/, { message: "must be a 24-hour HH:MM time" }),
+    /** Days before a race with no sessions. */
+    quietDaysBeforeRace: z.number().int().min(0).max(21).default(7),
+    /** How many weeks ahead sessions are placed. */
+    placementWeeksAhead: z.number().int().min(1).max(4).default(2),
+    /** Whether the next session is eased. */
+    easeNext: z.boolean().default(false),
+  })
+  .strict();
+export type CourseConfig = z.infer<typeof courseConfigSchema>;
 
 export const BLOCK_KINDS = ["core_block", "firm_week", "shape_week"] as const;
 export const blockKindSchema = z.enum(BLOCK_KINDS);

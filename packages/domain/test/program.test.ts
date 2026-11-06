@@ -3,14 +3,17 @@ import {
   adaptiveConfigSchema,
   blockIntentSchema,
   blockKindSchema,
+  courseConfigSchema,
+  defaultOnEnd,
+  onEndAllowed,
   parseBlockIntent,
   programKindSchema,
   programStatusSchema,
 } from "../src/index.js";
 
 describe("programKindSchema / programStatusSchema", () => {
-  it("names the four kinds and five statuses of the programs table", () => {
-    expect(programKindSchema.options).toEqual(["adaptive", "coros_import", "coach", "studio"]);
+  it("names the five kinds and five statuses of the programs table", () => {
+    expect(programKindSchema.options).toEqual(["adaptive", "coros_import", "coach", "studio", "course"]);
     expect(programStatusSchema.options).toEqual(["draft", "active", "completed", "retired", "archived"]);
     expect(programKindSchema.safeParse("training_plan").success).toBe(false);
   });
@@ -110,5 +113,41 @@ describe("blockIntentSchema", () => {
     for (const intent of [core, { volumeTarget: "v", keySessions: [] }, {}]) {
       expect(blockIntentSchema.safeParse(intent).success, JSON.stringify(intent)).toBe(true);
     }
+  });
+});
+
+describe("how a plan ends", () => {
+  it.each([
+    ["coach", ["run"], "ask"],
+    ["coach", ["run", "strength"], "ask"],
+    ["coach", ["strength"], "continue"],
+    ["adaptive", ["yoga", "strength"], "continue"],
+    ["course", ["yoga"], "continue"],
+    ["coros_import", ["run"], "ask"],
+    ["coros_import", ["strength"], "finish"],
+  ] as const)("%s of %j ends by %s", (kind, sports, want) => expect(defaultOnEnd(kind, sports)).toBe(want));
+
+  it("a programme or a course can't ask", () => {
+    expect(onEndAllowed("adaptive", "ask")).toBe(false);
+    expect(onEndAllowed("course", "ask")).toBe(false);
+    expect(onEndAllowed("coach", "ask")).toBe(true);
+  });
+
+  it("each kind allows only its own endings", () => {
+    expect(onEndAllowed("adaptive", "finish")).toBe(false);
+    expect(onEndAllowed("adaptive", "continue")).toBe(true);
+    expect(onEndAllowed("course", "finish")).toBe(true);
+    expect(onEndAllowed("coros_import", "continue")).toBe(false);
+    expect(onEndAllowed("coros_import", "finish")).toBe(true);
+    expect(onEndAllowed("studio", "continue")).toBe(false);
+  });
+
+  it("a course's config needs a real day and time", () => {
+    expect(courseConfigSchema.safeParse({ course: "tre", weekdays: [], time: "19:30" }).success).toBe(false);
+    expect(courseConfigSchema.safeParse({ course: "tre", weekdays: [0, 0], time: "19:30" }).success).toBe(false);
+    expect(courseConfigSchema.safeParse({ course: "tre", weekdays: [0, 4], time: "25:00" }).success).toBe(false);
+    expect(courseConfigSchema.safeParse({ course: "tre", weekdays: [7], time: "19:30" }).success).toBe(false);
+    const ok = courseConfigSchema.parse({ course: "tre", weekdays: [0, 4], time: "19:30" });
+    expect(ok).toMatchObject({ quietDaysBeforeRace: 7, placementWeeksAhead: 2, easeNext: false });
   });
 });
