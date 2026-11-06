@@ -42,8 +42,12 @@ export interface TrailDetail {
 
 export interface AccountLine {
   key: string;
-  kind: "from" | "what" | "video" | "move" | "coach" | "correction" | "health" | "rebuilt";
+  kind: "from" | "what" | "video" | "screen" | "move" | "coach" | "correction" | "health" | "rebuilt";
   text: string;
+  /** The words one tap down (the rebuilt label's: principles §7, the controller's addition 4). */
+  more?: string;
+  /** A filtered post's line offers Import anyway (the controller's addition 3). */
+  importAnyway?: boolean;
   /** A second line: what the reader says a move is for. */
   sub?: string | null;
   /** The health word's status (its mark). */
@@ -98,6 +102,8 @@ export interface StageSection {
   /** One line: what came of it. */
   result: string;
   status: TrailStatus;
+  /** Every step of it was rebuilt from what was kept (§6.6): the sheet marks the section. */
+  rebuilt: boolean;
   steps: TrailStep[];
 }
 
@@ -127,9 +133,15 @@ export const STATUS_MARK: Readonly<Record<TrailStatus, { mark: string; word: str
   skip: { mark: "–", word: "Skipped: " },
 };
 
-export const REBUILT_LINE = "Kept from before the trail: the raw replies weren't kept then.";
+/** A post from before the trail (§6.6): a short label on the page, its words one tap down (principles §7). */
+export const REBUILT_LABEL = "Rebuilt from what was kept";
+export const REBUILT_MORE = "This post came in before the trail, so its steps are rebuilt from what was kept. The raw replies weren't kept then.";
+/** Each rebuilt step's own label, one tap down in its section (spec §6.6's words). */
+export const REBUILT_STEP = "Rebuilt from what was kept; the raw replies weren't kept then";
 /** Phase 1 records no coach decisions (they come with phase 3's review): say only what the trail knows. */
 export const NOT_REVIEWED_LINE = "No coach decision on its trail yet";
+/** A rebuilt post's moves may have been fitted in before the trail: what the coach decided then wasn't kept. */
+export const OLD_DECISIONS_LINE = "Decisions from before the trail weren't kept";
 export const TOO_LONG_LINE = "Too long to show here — the whole of it is below";
 
 const SOURCE_WORDS: Readonly<Record<string, string>> = { instagram: "Instagram", youtube: "YouTube" };
@@ -222,6 +234,20 @@ const LABELS: Readonly<Record<string, string>> = {
   action: "Action",
   before: "Before",
   after: "After",
+  // An old post's rebuilt steps (phase 5a, §6.6).
+  creator: "Creator",
+  captured: "Captured",
+  posted: "Posted",
+  dose: "Dose",
+  purpose: "Purpose",
+  notes: "Notes",
+  now: "Now",
+  mergedInto: "Merged into",
+  batch: "Now",
+  theme: "Theme",
+  post: "The post",
+  edited: "Edited",
+  note: "Note",
 };
 const label = (k: string, stage?: ImportStage): string => (k === "stage" && stage === "screen" ? "Decided by" : (LABELS[k] ?? keyWords(k)));
 
@@ -240,7 +266,11 @@ const VALUE_WORDS: Readonly<Record<string, Readonly<Record<string, string>>>> = 
   evidence: { stated: "stated", inferred: "the reader's guess" },
   target: { move: "the move", reading: "the post's reading", insight: "an insight", link: "the match" },
   basis: { evidence: "the evidence", owner: "your word" },
+  now: { saved: "saved to your library", pending: "waiting for you", removed: "left out" },
+  post: { skipped: "you skipped it", reference: "you kept it as a reference", "read anyway": "you had it read anyway" },
 };
+/** The owner's in or out on a move. */
+const CHOICE_WORDS: Readonly<Record<string, string>> = { include: "in", skip: "left out" };
 
 /** Keys that say nothing to the owner: the system's own ids and markers. */
 const QUIET = new Set(["batchId", "moveId", "id", "usageId", "runId", "proposalId", "key", "untrusted", "signature", "cut", "head", "targetId", "correction"]);
@@ -422,7 +452,11 @@ function field(k: string, v: unknown, ctx: Ctx): string {
               })
               .join("\n")
         : inline(v, ctx);
-    case "like": {
+    case "captured":
+    case "posted":
+      return typeof v === "string" ? dayOf(v) || "—" : inline(v, ctx);
+    case "like":
+    case "mergedInto": {
       const o = record(v);
       if (!o) return inline(v, ctx);
       return typeof o.name === "string" && o.name ? o.name : typeof o.id === "string" ? (ctx.names.get(o.id) ?? "another move") : "another move";
@@ -438,7 +472,7 @@ function field(k: string, v: unknown, ctx: Ctx): string {
       return o
         ? Object.entries(o)
             .filter(([, c]) => c !== null && c !== undefined)
-            .map(([id, c]) => `${ctx.names.get(id) ?? id}: ${inline(c, ctx)}`)
+            .map(([id, c]) => `${ctx.names.get(id) ?? id}: ${typeof c === "string" ? (CHOICE_WORDS[c] ?? c) : inline(c, ctx)}`)
             .join("\n") || "none"
         : inline(v, ctx);
     }
@@ -515,7 +549,7 @@ function stepDetails(e: TrailEventDto, ctx: Ctx): TrailDetail[] {
   } else if (e.detail !== null && e.detail !== undefined) {
     main.push(rowOf("Detail", inline(e.detail, c)));
   }
-  if (e.rebuilt) main.push({ key: "Kept", value: "Rebuilt from what was kept" });
+  if (e.rebuilt) main.push({ key: "Kept", value: REBUILT_STEP });
   if (e.model) call.set("model", rowOf(CALL_LABEL.model!, e.model));
   if (e.promptVersion) call.set("promptVersion", rowOf(CALL_LABEL.promptVersion!, e.promptVersion));
   if (e.attempt !== null) call.set("attempt", { key: CALL_LABEL.attempt!, value: num(e.attempt) });
@@ -582,6 +616,14 @@ export function trailAccount(dto: ImportTrailDto): AccountLine[] {
   const what = kind && account.summary ? `${kind}: ${account.summary}` : (kind ?? account.summary);
   if (what) out.push({ key: "what", kind: "what", text: what });
 
+  // A filtered post says why at the top, with Import anyway beside it — new or rebuilt (the controller's addition 3).
+  if (post.status === "filtered_out") {
+    const screened = [...dto.events].reverse().find((e) => e.stage === "screen" && record(e.detail)?.verdict === "not");
+    const reason = record(screened?.detail)?.reason;
+    const text = typeof reason === "string" && reason.trim() ? `Not training: ${reason.trim()}` : (screened?.summary ?? "Not training");
+    out.push({ key: "screen", kind: "screen", text, importAnyway: true });
+  }
+
   // The post's own words for each move: the latest match step's.
   const match = [...dto.events].reverse().find((e) => e.stage === "match");
   const postName = new Map(match ? movesOf(match).flatMap((m) => (typeof m.position === "number" && typeof m.name === "string" ? [[m.position, m.name] as const] : [])) : []);
@@ -614,12 +656,12 @@ export function trailAccount(dto: ImportTrailDto): AccountLine[] {
     latest.set(key, e);
   }
   if (latest.size > 0) for (const [k, e] of latest) out.push({ key: `coach-${k}`, kind: "coach", text: e.summary, status: e.status });
-  else if (account.moves.length > 0) out.push({ key: "coach", kind: "coach", text: NOT_REVIEWED_LINE });
+  else if (account.moves.length > 0) out.push({ key: "coach", kind: "coach", text: dto.rebuilt ? OLD_DECISIONS_LINE : NOT_REVIEWED_LINE });
 
   for (const e of dto.events) if (e.stage === "correction") out.push({ key: `correction-${e.id}`, kind: "correction", text: e.summary, status: e.status });
 
   out.push({ key: "health", kind: "health", text: account.health.line, status: account.health.status });
-  if (dto.rebuilt) out.push({ key: "rebuilt", kind: "rebuilt", text: REBUILT_LINE });
+  if (dto.rebuilt) out.push({ key: "rebuilt", kind: "rebuilt", text: REBUILT_LABEL, more: REBUILT_MORE });
   return out;
 }
 
@@ -687,6 +729,7 @@ export function trailSections(dto: ImportTrailDto): StageSection[] {
         title: STAGE_TITLES[stage],
         result: resultOf(stage, events),
         status: statusOf(events),
+        rebuilt: events.every((e) => e.rebuilt),
         steps: events.map((e) => ({
           id: e.id,
           summary: e.summary,

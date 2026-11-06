@@ -14093,3 +14093,32 @@ button.coach-cite:focus-visible {
 .trail-video .btn {
   margin-left: var(--space-2);
 }
+/* A filtered post's why, and an old post's rebuilt label (phase 5a): Import anyway / Read it again beside it. */
+.trail-screen .btn,
+.trail-rebuilt .btn {
+  margin-left: var(--space-2);
+}
+.trail-rebuilt {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--space-2);
+  min-width: 0;
+}
+.trail-rebuilt-open {
+  color: var(--ink-soft);
+  font-size: var(--text-xs);
+}
+.trail-rebuilt-more {
+  flex-basis: 100%;
+  margin: 0;
+  overflow-wrap: anywhere;
+}
+.trail-rebuilt-more[hidden] {
+  display: none;
+}
+.trail-rebuilt-tag {
+  color: var(--ink-soft);
+  font-size: var(--text-xs);
+  font-weight: var(--weight-regular);
+}

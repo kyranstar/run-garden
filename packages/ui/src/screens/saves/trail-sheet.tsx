@@ -130,6 +130,9 @@ function Account({ dto, lines, href, focus }: { dto: ImportTrailDto; lines: Acco
       {rest("video").map((l) => (
         <VideoLine key={l.key} line={l} postId={dto.post.id} />
       ))}
+      {rest("screen").map((l) => (
+        <ScreenLine key={l.key} line={l} postId={dto.post.id} />
+      ))}
       {moves.length ? (
         <ul className="coach-run-lines trail-moves" aria-label="The moves">
           {moves.map((l) => (
@@ -150,9 +153,7 @@ function Account({ dto, lines, href, focus }: { dto: ImportTrailDto; lines: Acco
         ))}
       </ol>
       {rest("rebuilt").map((l) => (
-        <p key={l.key} className="coach-run-note trail-rebuilt">
-          {l.text}
-        </p>
+        <RebuiltLine key={l.key} line={l} />
       ))}
     </section>
   );
@@ -191,6 +192,60 @@ function VideoLine({ line, postId }: { line: AccountLine; postId: string }) {
         </span>
       ) : null}
     </p>
+  );
+}
+
+/** A filtered post's why, on the page, with Import anyway beside it (the controller's addition 3): the owner's word reads it. */
+function ScreenLine({ line, postId }: { line: AccountLine; postId: string }) {
+  const qc = useQueryClient();
+  const anyway = useMutation({
+    mutationFn: () => api.savesOverride(postId, "process"),
+    onSuccess: () => qc.invalidateQueries({ queryKey: saveTrailQuery(postId) }),
+  });
+  const failed = anyway.isError
+    ? anyway.error instanceof ApiError
+      ? anyway.error.status === 409
+        ? "It has moved on since — it isn't filtered out now."
+        : "The app couldn't take it just now — try again."
+      : "Couldn't reach the app — try again."
+    : null;
+  return (
+    <p className="trail-note trail-screen">
+      {line.text}
+      {line.importAnyway ? (
+        <>
+          {" "}
+          <button type="button" className="btn btn-small" disabled={anyway.isPending} onClick={() => anyway.mutate()}>
+            Import anyway
+          </button>
+        </>
+      ) : null}
+      {failed ? (
+        <span className="trail-video-failed" role="alert">
+          {" "}
+          {failed}
+        </span>
+      ) : null}
+    </p>
+  );
+}
+
+/** A post from before the trail: a short label on the page; what it means one tap down (principles §7). */
+function RebuiltLine({ line }: { line: AccountLine }) {
+  const [open, setOpen] = useState(false);
+  const id = useId();
+  return (
+    <div className="trail-rebuilt">
+      <button type="button" className="linklike tap-pad coach-run-fold trail-rebuilt-open" aria-expanded={open} aria-controls={id} onClick={() => setOpen((v) => !v)}>
+        {line.text}
+        <span className="coach-run-fold-chev" aria-hidden="true">
+          <IconChevron size={14} />
+        </span>
+      </button>
+      <p id={id} className="coach-run-note trail-rebuilt-more" hidden={!open}>
+        {line.more}
+      </p>
+    </div>
   );
 }
 
@@ -245,7 +300,10 @@ function Section({ section, dto }: { section: StageSection; dto: ImportTrailDto 
   return (
     <Mark status={section.status}>
       <button type="button" className="coach-line-text coach-line-open trail-open trail-stage" aria-expanded={open} aria-controls={id} onClick={() => setOpen((v) => !v)}>
-        <span className="trail-stage-title">{section.title}</span>
+        <span className="trail-stage-title">
+          {section.title}
+          {section.rebuilt ? <span className="trail-rebuilt-tag"> · rebuilt</span> : null}
+        </span>
         <span className="trail-stage-result">{section.result}</span>
       </button>
       <span className="coach-run-fold-chev trail-chev" aria-hidden="true">

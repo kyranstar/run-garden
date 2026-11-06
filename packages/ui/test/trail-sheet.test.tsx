@@ -68,6 +68,7 @@ async function mount(trail: ImportTrailDto | null = TRAIL(), focus?: { position:
       calls.push(url);
       if (url === "/api/my-saves/posts/p1/trail") return trail ? json(trail) : json({ error: "not_found" }, 404);
       if (url === "/api/my-saves/posts/p1/watch") return json({ ok: true });
+      if (url === "/api/my-saves/posts/p1/override") return json({ ok: true });
       const blob = /^\/api\/my-saves\/blobs\/(.+)$/.exec(url);
       if (blob && BLOBS[blob[1]!]) return json(BLOBS[blob[1]!]);
       return json({ error: "not_found" }, 404);
@@ -195,9 +196,21 @@ describe("the trail sheet", () => {
     expect(dialog().querySelector("img")).toBeNull();
   });
 
-  it("an old post's rebuilt trail says its raw replies weren't kept (Review Focus 3)", async () => {
+  it("an old post's rebuilt trail says its raw replies weren't kept (Review Focus 3) — a short label, the words one tap down", async () => {
+    // REBASED 2026-11-06 (phase 5 backfill; the controller's addition 4): explanation one tap down (principles §7).
     await mount(TRAIL({ rebuilt: true, events: [ev("rebuilt:screen", "screen", { rebuilt: true, summary: "Kept: a hip routine" })] }));
-    expect(dialog().textContent).toContain("Kept from before the trail: the raw replies weren't kept then.");
+    const label = button("Rebuilt from what was kept");
+    expect(label.getAttribute("aria-expanded")).toBe("false");
+    expect(controlled(label).hidden).toBe(true);
+    await click(label);
+    expect(controlled(label).hidden).toBe(false);
+    expect(controlled(label).textContent).toContain("The raw replies weren't kept then.");
+  });
+
+  it("a section of rebuilt steps carries a short rebuilt mark beside its title", async () => {
+    await mount(TRAIL({ rebuilt: true, events: [ev("rebuilt:screen", "screen", { rebuilt: true, summary: "Kept: a hip routine" }), ev("e9", "save", { summary: "Saved" })] }));
+    expect(button("Screening").textContent).toContain("rebuilt");
+    expect(button("Saved").textContent).not.toContain("rebuilt");
   });
 
   it("another account's post, or one gone, says so", async () => {
@@ -279,5 +292,37 @@ describe("the trail sheet opened at a quote (import trail phase 3: a review card
     await mount(TRAIL(), { position: 0 });
     expect((dialog().querySelector(".trail-move button") as HTMLButtonElement).getAttribute("aria-expanded")).toBe("true");
     expect(dialog().querySelectorAll(".trail-row--focus")).toHaveLength(0);
+  });
+});
+
+describe("a filtered post's top line (the controller's addition 3)", () => {
+  const WHY = "3 earlier posts from this creator were all not training";
+  const FILTERED = () => {
+    const t = TRAIL({
+      account: { kind: null, summary: null, moves: [], health: { status: "ok", line: "Read cleanly" } },
+      events: [ev("e2", "screen", { summary: `Not training: ${WHY}`, detail: { verdict: "not", reason: WHY, stage: "creator" } })],
+    });
+    t.post = { ...t.post, status: "filtered_out" };
+    return t;
+  };
+  it("says why on the page, not folded away, with Import anyway beside it — the tap asks the app to read it", async () => {
+    await mount(FILTERED());
+    const account = dialog().querySelector(".trail-account") as HTMLElement;
+    expect(account.textContent).toContain(`Not training: ${WHY}`);
+    const anyway = button("Import anyway");
+    expect(anyway.className).toContain("btn");
+    await click(anyway);
+    await flush();
+    const call = vi.mocked(fetch).mock.calls.find(([u]) => u === "/api/my-saves/posts/p1/override")!;
+    expect(JSON.parse(String((call[1] as RequestInit).body))).toEqual({ action: "process" });
+  });
+  it("one that doesn't go through says so, and the button stays", async () => {
+    await mount(FILTERED());
+    const orig = vi.mocked(fetch).getMockImplementation()!;
+    vi.mocked(fetch).mockImplementation(async (u: string | URL | Request, r?: RequestInit) => (String(u).endsWith("/override") ? json({ error: "not_overridable" }, 409) : orig(u as string, r)));
+    await click(button("Import anyway"));
+    await flush();
+    expect(dialog().textContent).toContain("It has moved on since — it isn't filtered out now.");
+    expect(button("Import anyway").disabled).toBe(false);
   });
 });
