@@ -11,7 +11,7 @@
  *
  * D1 statements: the window's steps 1, the latest check 1, the spend 1 — 3.
  */
-import { and, desc, eq, gte, inArray, sql } from "drizzle-orm";
+import { desc, eq, sql } from "drizzle-orm";
 import { schema } from "@rg/database";
 import { HEALTH_LIGHTS } from "@rg/saves";
 import type { HealthColor, HealthLight, HealthLightDto, ImportHealthDto } from "@rg/saves";
@@ -41,33 +41,31 @@ function lightOf(stage: string, source: string): HealthLight | null {
 }
 
 /** A failure the whole stage shares, not one post's: a login, a changed site, the gateway refusing the key or credits. */
-function stageWide(detail: unknown, summary: string): boolean {
-  const d = (detail ?? {}) as { code?: unknown; failure?: unknown };
-  if (d.code === "login_needed" || d.code === "feed_changed") return true;
-  if (typeof d.failure === "string" && /^gateway_(401|402|403)$/.test(d.failure)) return true;
-  return /answered (401|402|403)\b/.test(summary);
+function stageWide(s: { code: string | null; failure: string | null; summary: string }): boolean {
+  if (s.code === "login_needed" || s.code === "feed_changed") return true;
+  if (typeof s.failure === "string" && /^gateway_(401|402|403)$/.test(s.failure)) return true;
+  return /answered (401|402|403)\b/.test(s.summary);
 }
 
 const dollars = (micros: number): string => `$${(micros / 1_000_000).toFixed(2)}`;
 
 export async function importHealth(db: Db, userId: string, now: Date): Promise<ImportHealthDto> {
   const since = new Date(now.getTime() - WINDOW_MS).toISOString();
-  const steps = await db
-    .select({
-      stage: importEvents.stage, source: importEvents.source, status: importEvents.status, summary: importEvents.summary,
-      detail: importEvents.detail, postId: importEvents.postId, at: importEvents.at,
-      title: sql<string | null>`coalesce(${savedPosts.title}, nullif(${savedPosts.creatorName}, ''), nullif(${savedPosts.creatorHandle}, ''))`,
-    })
-    .from(importEvents)
-    .leftJoin(savedPosts, and(eq(savedPosts.id, importEvents.postId), eq(savedPosts.userId, userId)))
-    .where(and(
-      eq(importEvents.userId, userId),
-      gte(importEvents.at, since),
-      inArray(importEvents.stage, ["read", "screen", "extract", "match", "coach"]),
-      inArray(importEvents.status, ["ok", "warn", "fail"]),
-    ))
-    .orderBy(desc(importEvents.at), sql`${importEvents}.rowid desc`)
-    .limit(PER_LIGHT * 6);
+  // Each stage and source's own last PER_LIGHT steps — one window per light, so a busy light never pushes another's
+  // history out (final review, 2026-11-05) — and of each detail only what health reads, never the whole of it.
+  const steps = (await db.all(sql`SELECT stage, source, status, summary, code, failure, postId, at, title FROM (
+      SELECT e.stage AS stage, e.source AS source, e.status AS status, e.summary AS summary,
+        json_extract(e.detail, '$.code') AS code, json_extract(e.detail, '$.failure') AS failure,
+        e.post_id AS postId, e.at AS at,
+        coalesce(p.title, nullif(p.creator_name, ''), nullif(p.creator_handle, '')) AS title,
+        row_number() OVER (PARTITION BY e.stage, e.source ORDER BY e.at DESC, e.rowid DESC) AS n
+      FROM ${importEvents} e LEFT JOIN ${savedPosts} p ON p.id = e.post_id AND p.user_id = e.user_id
+      WHERE e.user_id = ${userId} AND e.at >= ${since}
+        AND e.stage IN ('read', 'screen', 'extract', 'match', 'coach') AND e.status IN ('ok', 'warn', 'fail'))
+    WHERE n <= ${PER_LIGHT} ORDER BY at DESC`)) as Array<{
+    stage: string; source: string; status: string; summary: string; code: string | null; failure: string | null;
+    postId: string; at: string; title: string | null;
+  }>;
   const [lastCheck] = await db
     .select({ startedAt: saveChecks.startedAt })
     .from(saveChecks)
@@ -106,7 +104,7 @@ export async function importHealth(db: Db, userId: string, now: Date): Promise<I
     }
     const newest = list[0]!;
     const failed = list.filter((s) => s.status === "fail").length;
-    if (newest.status === "fail" && stageWide(newest.detail, newest.summary)) return { light, color: "red", line: newest.summary, failures };
+    if (newest.status === "fail" && stageWide(newest)) return { light, color: "red", line: newest.summary, failures };
     if (list.length >= 4 && failed * 2 >= list.length) return { light, color: "red", line: `${LABEL[light]}: ${failed} of ${list.length} failed`, failures };
     const troubled = list.slice(0, RECENT).find((s) => s.status === "fail" || s.status === "warn");
     if (troubled) return { light, color: "yellow", line: troubled.summary, failures };

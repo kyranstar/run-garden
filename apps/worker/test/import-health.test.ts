@@ -56,6 +56,11 @@ describe("importHealth", () => {
     await event("screen", "warn", 1, { summary: "Waiting for the import budget" });
     expect(await lightOf("screening")).toMatchObject({ color: "yellow", line: "Waiting for the import budget" });
   });
+  it("each light keeps its own last 20 steps: a busy light never pushes another's out (final review)", async () => {
+    await event("extract", "fail", 30, { detail: { failure: "gateway_402" }, summary: "The model gateway answered 402" });
+    for (let i = 0; i < 150; i++) await event("screen", "ok", 1 + i / 100);
+    expect((await lightOf("reader")).color).toBe("red");
+  });
   it("steps outside seven days are not counted", async () => {
     await event("extract", "fail", 24 * 8);
     expect((await lightOf("reader")).color).toBe("grey");
