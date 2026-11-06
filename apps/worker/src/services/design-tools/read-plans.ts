@@ -22,15 +22,23 @@
  * stopped stays stopped (STOPPED); one that ended while its line goes on names the phase it goes on in and, for an
  * extend or a wind-down, the line's last phase; one whose line has ended is continued by a next phase (CONTINUE_LINE).
  *
+ * WHAT A PLAN IS FOR AND HOW IT ENDS (plans with a purpose §4.3): every plan and every line carries `purpose` and `brief`
+ * (marked: the athlete's or the coach's words), `onEnd` (ask, continue or finish), `pausedUntil` and `objectiveIds`,
+ * never a missing key: a block's come through its `program_id`, a programme's and a watch plan's from their own
+ * `programs` row, the Studio plan's from the row that holds its id; a plan with no row yet (not backfilled) says null,
+ * the kind's own ending (`defaultOnEnd`) and []. A plan's `kind` stays the words above; a line's `kind` is its plan's
+ * (`coach` until it has a row).
+ *
  * Names are the athlete's, the coach's or an import's words, and a shape week's volume and key sessions the coach's:
- * marked. One statement: the athlete with the plans, their weeks and next sessions, and the newest Studio plan with its
- * pushes' statuses and whether it was retired, read beside the preferences. The answer fits RESULT_BUDGET_BYTES: shape
- * weeks past what fits are counted (`moreShapeWeeks`), never cut mid-list.
+ * marked. One statement: the athlete with the plans (each with its registry row beside it), their weeks and next
+ * sessions, and the newest Studio plan with its pushes' statuses and whether it was retired, read beside the
+ * preferences. The answer fits RESULT_BUDGET_BYTES: shape weeks past what fits are counted (`moreShapeWeeks`), never
+ * cut mid-list, and briefs are cut at a word last of all.
  */
 import { sql, type SQL } from "drizzle-orm";
 import { z } from "zod";
 import { auditEvents, coachPlans, coachPlanWeeks, plannedWorkouts, programs, studioPlanPushes, studioPlans, trainingPlans } from "@rg/database";
-import { adaptiveConfigSchema, addDays, linesOf, planEnded, type TrainingLine } from "@rg/domain";
+import { adaptiveConfigSchema, addDays, clipWords, defaultOnEnd, linesOf, planEnded, planOnEndSchema, type PlanOnEnd, type ProgramKind, type TrainingLine } from "@rg/domain";
 import { lastPhaseOf, lineBlockOf, LOOSE_PLAN_ID_PREFIX, studioPlanEntryOf, studioPlanOnWatch } from "../coach-plans.js";
 import { STUDIO_PLAN_RETIRED } from "../studio-push.js";
 import { utf8Bytes } from "../utf8.js";
@@ -73,6 +81,13 @@ const nextSql = (userId: string, planId: SQL, from: string) => sql`(select json_
         and ${pw.completionState} = 'scheduled' and ${pw.effectiveDate} >= ${from}
       order by ${pw.effectiveDate}, ${pw.effectiveTime}, ${pw.id} limit ${NEXT_SESSIONS + 5}) n)`;
 
+/** A plan's registry row as one JSON object (or null when there is none), found by `where` (a condition on `programs`
+ * aliased `pr`): what the plan is for and how it ends. A scalar subselect, so the read stays one statement. */
+const planSql = (userId: string, where: SQL) => sql`json((select json_object('kind', pr.kind, 'purpose', pr.purpose, 'brief', pr.brief,
+    'onEnd', pr.on_end, 'pausedUntil', pr.paused_until,
+    'objectiveIds', json(case when json_valid(pr.objective_ids) then pr.objective_ids end))
+  from ${programs} pr where pr.user_id = ${userId} and ${where} limit 1))`;
+
 interface Row {
   kind: "block" | "programme" | "watch" | "studio";
   id: string;
@@ -83,6 +98,8 @@ interface Row {
   end: string | null;
   race: string | null;
   programId?: string | null;
+  /** The plan's own row in the registry, as the read gives it; null while it has none (`planSql`). */
+  plan?: unknown;
   config?: unknown;
   weeks?: unknown;
   next?: unknown;
@@ -126,18 +143,56 @@ function whyNot(r: Row, today: string, lineOf: ReadonlyMap<string, TrainingLine>
 /** The newest Studio plan as the read gives it (one JSON object, or null), as the plan list shows it — or null when the
  * list doesn't (nothing of it on the watch, or retired). */
 function studioRowOf(raw: unknown, today: string): Row | null {
-  const s = parsedJson(raw) as { id?: unknown; name?: unknown; brief?: unknown; createdAt?: unknown; pushes?: unknown; retired?: unknown } | null;
+  const s = parsedJson(raw) as { id?: unknown; name?: unknown; brief?: unknown; createdAt?: unknown; pushes?: unknown; retired?: unknown; plan?: unknown } | null;
   if (!s || typeof s.id !== "string" || typeof s.createdAt !== "string" || s.retired) return null;
   const pushes = parsedArray(s.pushes).filter((p): p is string => typeof p === "string");
   if (!studioPlanOnWatch(pushes)) return null;
   const e = studioPlanEntryOf({ id: s.id, plan: { name: typeof s.name === "string" ? s.name : undefined }, brief: s.brief ?? null, createdAt: s.createdAt }, pushes, today, null);
-  return { kind: "studio", id: e.id, name: e.name, status: e.status, discipline: e.discipline, start: e.startDate, end: e.endDate, race: null };
+  return { kind: "studio", id: e.id, name: e.name, status: e.status, discipline: e.discipline, start: e.startDate, end: e.endDate, race: null, plan: s.plan ?? null };
 }
 
-/** How much of each plan an answer shows: its shape weeks and its next sessions, at most. */
+/** How much of each plan an answer shows: its shape weeks and its next sessions, and a brief's characters, at most. */
 interface Room {
   shapes: number;
   next: number;
+  brief: number;
+}
+
+/** A plan's brief is stored at 1,000 characters at most (BRIEF_MAX): a room that shows it whole. */
+const BRIEF_WHOLE = 1000;
+
+/** `programs.disciplines` speaks "run", "strength" and "yoga"; a coach block's discipline is "run", "lift" or "mobility". */
+const DISCIPLINE_WORD: Record<string, string> = { run: "run", lift: "strength", mobility: "yoga" };
+
+/** What a plan says of itself, within `room`: what it is for (`purpose`), the longer account (`brief`), how it ends
+ * (`onEnd`), until when it is paused and the objectives it serves — each always there: null, the kind's own ending and
+ * [] for what its row doesn't hold, or for a plan with no row yet. `kind` and `disciplines` say which default applies. */
+function planFieldsOf(raw: unknown, kind: ProgramKind, disciplines: readonly string[], room: Room) {
+  const p = (parsedJson(raw) ?? {}) as { kind?: unknown; purpose?: unknown; brief?: unknown; onEnd?: unknown; pausedUntil?: unknown; objectiveIds?: unknown };
+  const text = (v: unknown, max: number) => (typeof v === "string" && v.trim() !== "" ? untrusted(clipWords(v.trim(), max)) : null);
+  const onEnd: PlanOnEnd = planOnEndSchema.safeParse(p.onEnd).data ?? defaultOnEnd(kind, disciplines);
+  return {
+    kind: typeof p.kind === "string" ? p.kind : kind,
+    purpose: text(p.purpose, BRIEF_WHOLE),
+    brief: text(p.brief, room.brief),
+    onEnd,
+    pausedUntil: typeof p.pausedUntil === "string" ? p.pausedUntil : null,
+    objectiveIds: parsedArray(p.objectiveIds).filter((x): x is string => typeof x === "string"),
+  };
+}
+
+/** The defaults' kind and disciplines for each way a plan is read. */
+function defaultsOf(r: Pick<Row, "kind" | "discipline">): { kind: ProgramKind; disciplines: string[] } {
+  switch (r.kind) {
+    case "programme":
+      return { kind: "adaptive", disciplines: ["strength"] };
+    case "watch":
+      return { kind: "coros_import", disciplines: ["run"] };
+    case "studio":
+      return { kind: "coach", disciplines: ["strength"] };
+    default:
+      return { kind: "coach", disciplines: [DISCIPLINE_WORD[r.discipline ?? ""] ?? "run"] };
+  }
 }
 
 /** A switched-on condition with care, as a programme's care setting names it. */
@@ -151,6 +206,8 @@ function planOf(r: Row, today: string, room: Room, caring: readonly Caring[], li
   const out: Record<string, unknown> = { id: r.id, kind: KIND_WORDS[r.kind], name: untrusted(r.name) };
   if (r.discipline) out.discipline = r.discipline;
   out.status = r.status;
+  const { kind: _own, ...fields } = planFieldsOf(r.plan, defaultsOf(r).kind, defaultsOf(r).disciplines, room);
+  Object.assign(out, fields);
   out.start = r.start;
   out.end = r.end;
   if (r.race) out.raceDate = r.race;
@@ -239,6 +296,7 @@ export const readPlans: DesignTool = {
     const { athlete, extra } = await readAthlete(ctx.db, ctx.userId, ctx.now, {
       blocks: sql`(select json_group_array(json_object('kind', 'block', 'id', b.id, 'name', b.name, 'status', b.status, 'discipline', b.discipline,
           'start', b.start_date, 'end', b.end_date, 'race', b.race_date, 'programId', b.program_id,
+          'plan', ${planSql(ctx.userId, sql`pr.id = b.program_id`)},
           'weeks', (select json_group_array(json_object('weekStart', w.week_start, 'state', w.state, 'shape', json(w.shape)))
             from ${coachPlanWeeks} w where w.plan_id = b.id),
           'next', json(${nextSql(ctx.userId, sql`b.id`, from)}))) from (
@@ -248,17 +306,20 @@ export const readPlans: DesignTool = {
       programmes: sql`(select json_group_array(json_object('kind', 'programme', 'id', g.id, 'name', g.name, 'status', g.status,
           'discipline', (select group_concat(value, ', ') from json_each(case when json_valid(g.disciplines) then g.disciplines else '[]' end)),
           'start', g.start_date, 'end', g.end_date, 'race', g.race_date, 'config', g.config,
+          'plan', ${planSql(ctx.userId, sql`pr.id = g.id`)},
           'next', json(${nextSql(ctx.userId, sql`g.id`, from)}))) from (
           select * from ${programs} where ${programs.userId} = ${ctx.userId} and ${programs.kind} = 'adaptive' and ${programs.status} = 'active'
           order by ${programs.createdAt} desc, ${programs.id} limit ${PLANS_MAX}) g)`,
       watch: sql`(select json_group_array(json_object('kind', 'watch', 'id', t.id, 'name', t.name, 'status', t.status, 'discipline', 'run',
-          'start', t.start_date, 'end', t.end_date, 'next', json(${nextSql(ctx.userId, sql`t.id`, from)}))) from (
+          'start', t.start_date, 'end', t.end_date, 'plan', ${planSql(ctx.userId, sql`pr.id = t.id`)},
+          'next', json(${nextSql(ctx.userId, sql`t.id`, from)}))) from (
           select * from ${trainingPlans} where ${trainingPlans.userId} = ${ctx.userId} and ${trainingPlans.status} = 'active' and ${trainingPlans.archivedAt} is null
           order by ${trainingPlans.startDate} desc, ${trainingPlans.id} limit ${PLANS_MAX}) t)`,
       // The newest Studio plan (the plan list's, loadNonCoachPlanEntries: newest first, the same tie-break), its pushes'
       // statuses and whether the athlete retired it.
       studio: sql`(select json_object('id', s.id, 'name', case when json_valid(s.plan) then json_extract(s.plan, '$.name') end,
           'brief', case when json_valid(s.brief) then json(s.brief) end, 'createdAt', s.created_at,
+          'plan', ${planSql(ctx.userId, sql`json_extract(pr.source, '$.studioPlanId') = s.id`)},
           'pushes', json((select json_group_array(p.status) from ${studioPlanPushes} p where p.plan_id = s.id)),
           'retired', exists (select 1 from ${auditEvents} a where a.user_id = ${ctx.userId} and a.kind = ${STUDIO_PLAN_RETIRED}
             and json_extract(a.detail, '$.studioPlanId') = s.id)) from (
@@ -277,34 +338,42 @@ export const readPlans: DesignTool = {
       today,
     );
     const lineOf = new Map(trainingLines.flatMap((l) => l.phases.map((p) => [p.id, l] as const)));
-    const lines = trainingLines.map((l) => ({
-      name: l.name,
-      discipline: l.discipline,
-      phases: l.phases.map((p) => ({ id: p.id, name: untrusted(p.name), start: p.startDate, end: p.endDate, ended: planEnded(p.endDate, today) })),
-      end: l.endDate,
-      last: lastPhaseOf(l).id,
-      goalRace: l.goalRaceDate,
-    }));
-    // Said once beside the lines (and weighed with them): how to continue a line — the chip's flow ("Plan what comes
-    // after my running plan") reads it while the line's last phase still runs, before anything has ended — and that a
-    // line is extended or wound down through its last phase ("Extend my running plan", while the line is live).
-    const linesData = lines.length > 0 ? { lines, continueLine: CONTINUE_LINE, extendLine: EXTEND_LINE } : { lines };
+    // A line says what its plan says (its blocks carry the plan's row; a line with no plan yet, none of it: the kind's
+    // own ending, nothing else).
+    const planRowOf = new Map(blocks.flatMap((b) => (b.programId ? [[b.programId, b.plan] as const] : [])));
+    const linesFor = (room: Room) => {
+      const lines = trainingLines.map((l) => ({
+        name: l.name,
+        discipline: l.discipline,
+        phases: l.phases.map((p) => ({ id: p.id, name: untrusted(p.name), start: p.startDate, end: p.endDate, ended: planEnded(p.endDate, today) })),
+        end: l.endDate,
+        last: lastPhaseOf(l).id,
+        goalRace: l.goalRaceDate,
+        ...planFieldsOf(l.programId ? planRowOf.get(l.programId) : null, "coach", [DISCIPLINE_WORD[l.discipline] ?? "run"], room),
+      }));
+      // Said once beside the lines (and weighed with them): how to continue a line — the chip's flow ("Plan what comes
+      // after my running plan") reads it while the line's last phase still runs, before anything has ended — and that a
+      // line is extended or wound down through its last phase ("Extend my running plan", while the line is live).
+      return lines.length > 0 ? { lines, continueLine: CONTINUE_LINE, extendLine: EXTEND_LINE } : { lines };
+    };
     // The coach's own running blocks first (the ones it may work on), then the others as read.
     const mayNot = (r: Row) => Number(whyNot(r, today, lineOf) !== null);
     const ordered = [...rows].sort((a, b) => mayNot(a) - mayNot(b));
     // Shortened until the answer fits: shape weeks halved down to one, then one next session each, then no shape weeks
-    // listed (all counted) — and only then the last plans left out, counted (`morePlans`).
-    const size = (ps: unknown[]) => utf8Bytes(JSON.stringify({ provenance: { source: SOURCE, asOf: ctx.now.toISOString() }, missing: athlete.missing, data: { plans: ps, ...linesData } }));
+    // listed (all counted), then each brief cut shorter — and only then the last plans left out, counted (`morePlans`).
+    const size = (ps: unknown[], lines: object) => utf8Bytes(JSON.stringify({ provenance: { source: SOURCE, asOf: ctx.now.toISOString() }, missing: athlete.missing, data: { plans: ps, ...lines } }));
     const rooms: Room[] = [];
-    for (let shapes = SHAPE_WEEKS_MAX; shapes >= 1; shapes = Math.floor(shapes / 2)) rooms.push({ shapes, next: NEXT_SESSIONS });
-    rooms.push({ shapes: 1, next: 1 }, { shapes: 0, next: 1 });
+    for (let shapes = SHAPE_WEEKS_MAX; shapes >= 1; shapes = Math.floor(shapes / 2)) rooms.push({ shapes, next: NEXT_SESSIONS, brief: BRIEF_WHOLE });
+    rooms.push({ shapes: 1, next: 1, brief: BRIEF_WHOLE }, { shapes: 0, next: 1, brief: BRIEF_WHOLE }, { shapes: 0, next: 1, brief: 160 }, { shapes: 0, next: 1, brief: 40 });
     let plans: Array<Record<string, unknown>> = [];
+    let linesData = linesFor(rooms[0]!);
     for (const room of rooms) {
       plans = ordered.map((r) => planOf(r, today, room, caring, lineOf));
-      if (size(plans) <= RESULT_BUDGET_BYTES) break;
+      linesData = linesFor(room);
+      if (size(plans, linesData) <= RESULT_BUDGET_BYTES) break;
     }
     let left = 0;
-    while (plans.length > 1 && size([...plans, { morePlans: left }]) > RESULT_BUDGET_BYTES) {
+    while (plans.length > 1 && size([...plans, { morePlans: left }], linesData) > RESULT_BUDGET_BYTES) {
       plans = plans.slice(0, -1);
       left += 1;
     }

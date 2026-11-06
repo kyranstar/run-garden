@@ -10,16 +10,18 @@
  * objectives and their key results; the plan 28 days back and 13 ahead (never archived); the activities of 5 minutes or
  * more in the 4 weeks before today that completed nothing planned; 14 days of wellness and 7 nights of sleep; the newest
  * weekly review; up to 3 flagged activity reads of the last 7 days; live memory beyond the pinned core, counted by kind;
- * the drift conclusions the coach remembered (`provenance.drift`, `provenance.checkBack`); and — when the caller has no
+ * the drift conclusions the coach remembered (`provenance.drift`, `provenance.checkBack`); the active plans that haven't
+ * ended (a registry row each: name and purpose, never the brief); and — when the caller has no
  * account library — the athlete's own moves (`personalMovesSql`). Then the key results' measures
  * (`measureKeyResults`, run labels off), whose cost is `measureStatements` of the measures: `standStatements` in all.
  *
  * THE BLOCK (`standBlock`) words the facts in fixed parts, each capped (three key-result lines, two reads, three items a
  * day, a review's first sentence): objectives current → target by due with pace; planned → done per discipline over the
  * 14 days and the 4 weeks BEFORE today (today's own sessions are in the next 14 days) with missed, skipped (the
- * athlete's own) and not known (unresolved, or past and never resolved) apart; the next 14 days a line a day; readiness
+ * athlete's own) and not known (unresolved, or past and never resolved) apart; the next 14 days a line a day; one line
+ * per active plan, six at most (its name and purpose, each cut at a word — the brief and the ending are read_plans'); readiness
  * with 7 days of values and their trend; the last review's first sentence and the flagged reads; memory beyond the core;
- * drift. Every outside text goes in marked: a key result's label (the athlete's), a review's and a read's words (the
+ * drift. Every outside text goes in marked: a key result's label and a plan's name and purpose (the athlete's), a review's and a read's words (the
  * coach's earlier model calls: "coach read").
  *
  * DRIFT (`driftsOf`, §7.2 — the numbers are the builder's call): over the 21 days before today, a discipline with 3 or
@@ -39,6 +41,7 @@ import {
   objectives,
   performedSessions,
   plannedWorkouts,
+  programs,
   sleepRecords,
   weeklyReviews,
   workoutCompletionMatches,
@@ -65,6 +68,7 @@ import { measureKeyResults, measureStatements } from "./key-result-measures.js";
 import { liveMemoryWhere, memoryCoreIds } from "./memory-core.js";
 import { buildReadiness, type ReadinessHealthRow } from "./readiness.js";
 import { PLAYED_OFFLINE_CALENDAR_STATE, START_NOW_CALENDAR_STATE } from "./doc-workouts.js";
+import { PLAN_KINDS } from "./plan-summaries.js";
 
 // ── Facts ───────────────────────────────────────────────────────────────────────────────────────────────────────────
 
@@ -132,6 +136,9 @@ export interface StandFacts {
   beyondCore: Record<string, number>;
   /** Live drift conclusions, newest first: what the coach concluded (its words) and until when it holds. */
   conclusions: Array<{ id: string; drift: string; checkBack: string; at: string; body: string }>;
+  /** Active plans that haven't ended, oldest first: each one's name and purpose (null while none is set). The brief
+   * stays behind read_plans. */
+  plans: Array<{ id: string; name: string; purpose: string | null }>;
 }
 
 /** The planned window: four weeks back. */
@@ -159,7 +166,12 @@ export function disciplineOf(w: { category: string; origin: string | null }): Di
   return null;
 }
 
-const SPORT_DISCIPLINE: Record<string, Discipline> = { run: "runs", strength: "strength", yoga: "yoga" };
+/** The plan kinds as SQL literals (constants, so no parameters: the statement binds about seventy already). */
+const PLAN_KIND_LIST = sql.raw(PLAN_KINDS.map((k) => `'${k}'`).join(", "));
+/** Plans read, at most (the block shows PLANS_LISTED of them and counts the rest). */
+const PLANS_READ = 30;
+
+const SPORT_DISCIPLINE: Record<string, Discipline> ={ run: "runs", strength: "strength", yoga: "yoga" };
 
 export type StandRows = Record<string, unknown>;
 
@@ -221,6 +233,11 @@ export function standRowsSql(db: Db, userId: string, today: string, opts: { libr
       where ${live} and json_valid(${m.provenance}) and json_extract(${m.provenance}, '$.drift') is not null
         and json_extract(${m.provenance}, '$.checkBack') is not null
       order by ${m.learnedAt} desc limit ${CONCLUSIONS_READ})) as conclusions,
+    (select json_group_array(json_array(id, name, purpose)) from (
+      select ${programs.id} as id, ${programs.name} as name, ${programs.purpose} as purpose from ${programs}
+      where ${programs.userId} = ${userId} and ${programs.status} = 'active' and ${programs.archivedAt} is null
+        and ${programs.kind} in (${PLAN_KIND_LIST}) and (${programs.endDate} is null or ${programs.endDate} >= ${today})
+      order by ${programs.createdAt}, ${programs.id} limit ${PLANS_READ})) as plans,
     ${opts.library ? personalMovesSql(userId) : sql`null`} as library`;
 }
 
@@ -396,7 +413,10 @@ export async function standFactsFrom(
     .filter((x): x is [string, string, string, string, string] => Array.isArray(x) && x.length === 5 && x.every((v) => typeof v === "string"))
     .map(([id, drift, checkBack, at, body]) => ({ id, drift, checkBack, at, body }))
     .sort((p, q) => q.at.localeCompare(p.at));
-  return { today, objectives: objectivesOut, plan, unplanned, health, sleep, review, reads, beyondCore, conclusions };
+  const plans = arr(rows.plans)
+    .filter((x): x is unknown[] => Array.isArray(x) && typeof x[0] === "string")
+    .map((x) => ({ id: x[0] as string, name: str(x[1]) ?? "", purpose: str(x[2])?.trim() || null }));
+  return { today, objectives: objectivesOut, plan, unplanned, health, sleep, review, reads, beyondCore, conclusions, plans };
 }
 
 /** The most key results the stand measures (read_objectives' page cap): the CPU of every main context step and of the
@@ -656,6 +676,9 @@ const DRIFT_LINES = 3;
 /** What a held drift's conclusion says in its line, at most (the memory item has it whole). */
 const CONCLUSION_CHARS = 100;
 const READS_LISTED = 2;
+const PLANS_LISTED = 6;
+const PLAN_NAME_CHARS = 40;
+const PLAN_PURPOSE_CHARS = 80;
 const DAY_ITEMS = 3;
 const REVIEW_CHARS = 120;
 const GLANCE_CHARS = 80;
@@ -838,6 +861,17 @@ function readLines(f: StandFacts): string[] {
   return ["Activity reads flagged in 7 d:", ...lines, ...(more > 0 ? [`and ${more} more (read_history)`] : [])];
 }
 
+/** What each active plan is for: its name and purpose, marked (the brief and the ending are read_plans'). Nothing with no plan. */
+function planLines(f: StandFacts): string[] {
+  if (f.plans.length === 0) return [];
+  const lines = f.plans.slice(0, PLANS_LISTED).map((p) => {
+    const purpose = p.purpose ? markUntrusted("athlete", clip(p.purpose, PLAN_PURPOSE_CHARS)) : "no purpose set yet";
+    return `- ${markUntrusted("athlete", clip(p.name, PLAN_NAME_CHARS))}: ${purpose}`;
+  });
+  const more = f.plans.length - PLANS_LISTED;
+  return ["Plans (read_plans has each one's brief and ending):", ...lines, ...(more > 0 ? [`- and ${more} more (read_plans)`] : [])];
+}
+
 function memoryLine(f: StandFacts): string {
   const kinds = Object.keys(f.beyondCore).sort((a, b) => {
     const i = (k: string) => (MEMORY_KINDS_ORDER.indexOf(k) + 1 || MEMORY_KINDS_ORDER.length + 1);
@@ -866,6 +900,7 @@ export function standBlock(f: StandFacts, drifts: readonly Drift[]): string {
     ...objectiveLines(f),
     ...plannedLines(f),
     ...aheadLines(f),
+    ...planLines(f),
     readinessLine(f),
     reviewLine(f),
     ...readLines(f),

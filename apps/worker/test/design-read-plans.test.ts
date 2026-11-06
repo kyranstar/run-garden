@@ -26,6 +26,9 @@ const EXTEND_LINE = "Extend or wind down a line through its last phase.";
 /** A block the athlete stopped, in propose_plan's own words (final review, I2). */
 const STOPPED = "The athlete stopped this plan (retired). Leave it stopped: propose a new plan (createPlan) only if the athlete asks for one.";
 
+/** A line whose plan has no row yet: nothing said, the kind's own ending. */
+const NO_ROW = (onEnd: string) => ({ kind: "coach", purpose: null, brief: null, onEnd, pausedUntil: null, objectiveIds: [] });
+
 const ENV = {} as Env;
 let db: Db;
 const statements: string[] = [];
@@ -84,6 +87,78 @@ const ok = (res: ToolOk | ToolErr): ToolOk & { data: { plans: Array<Record<strin
   if (isToolErr(res)) throw new Error(`refused: ${res.error} — ${res.why}`);
   return res as ToolOk & { data: { plans: Array<Record<string, any>> } };
 };
+
+/** A plan's row in the registry (synthetic words). */
+async function planRow(userId: string, o: { id: string; kind: string; name?: string; disciplines?: string[]; purpose?: string | null; brief?: string | null; onEnd?: string | null; pausedUntil?: string | null; objectiveIds?: string[] | null }) {
+  await db.insert(schema.programs).values({
+    id: o.id, userId, kind: o.kind, name: o.name ?? "Zorbex plan", status: "active", disciplines: o.disciplines ?? ["run"], config: {},
+    purpose: o.purpose ?? null, brief: o.brief ?? null, onEnd: o.onEnd ?? null, pausedUntil: o.pausedUntil ?? null, objectiveIds: o.objectiveIds ?? null,
+    createdAt: at(day(10)), updatedAt: at(day(10)),
+  });
+}
+
+describe("read_plans: what each plan is for and how it ends", () => {
+  it("a block reads its plan's purpose and brief marked untrusted, its ending, pause and objectives; its line carries the same, one statement", async () => {
+    await planRow(rich.userId, { id: "plan-zx", kind: "coach", purpose: "Zorbex steadiness", brief: "Ten sessions, then the floor.", onEnd: "finish", pausedUntil: day(-3), objectiveIds: ["obj-zx"] });
+    await block(rich.userId, { id: "cp-zx", name: "Zorbex block", start: day(2), end: day(-26) });
+    await db.update(schema.coachPlans).set({ programId: "plan-zx" }).where(eq(schema.coachPlans.id, "cp-zx"));
+    const { res, count } = await read();
+    expect(count).toBe(1);
+    const data = ok(res).data as { plans: Array<Record<string, any>>; lines: Array<Record<string, any>> };
+    const want = {
+      purpose: { untrusted: true, text: "Zorbex steadiness" },
+      brief: { untrusted: true, text: "Ten sessions, then the floor." },
+      onEnd: "finish",
+      pausedUntil: day(-3),
+      objectiveIds: ["obj-zx"],
+    };
+    expect(data.plans.find((x) => x.id === "cp-zx")).toMatchObject({ ...want, kind: "coach block" });
+    expect(data.lines).toHaveLength(1);
+    expect(data.lines[0]).toMatchObject({ ...want, kind: "coach" });
+  });
+
+  it("a plan with no row yet says null and its kind's own ending, never a missing key", async () => {
+    await block(rich.userId, { id: "cp-bare", name: "Bare block", start: day(2), end: day(-26) });
+    await block(rich.userId, { id: "cp-bare-lift", name: "Bare lift", discipline: "lift", start: day(2), end: day(-26) });
+    const data = ok((await read()).res).data as { plans: Array<Record<string, any>>; lines: Array<Record<string, any>> };
+    const bare = { purpose: null, brief: null, pausedUntil: null, objectiveIds: [] };
+    const run = data.plans.find((x) => x.id === "cp-bare")!;
+    expect(run).toMatchObject({ ...bare, onEnd: "ask" });
+    for (const k of ["purpose", "brief", "onEnd", "pausedUntil", "objectiveIds"]) expect(run, k).toHaveProperty(k);
+    expect(data.plans.find((x) => x.id === "cp-bare-lift")).toMatchObject({ ...bare, onEnd: "continue" });
+    expect(data.lines.find((l) => l.discipline === "run")).toMatchObject({ ...bare, onEnd: "ask", kind: "coach" });
+    expect(data.lines.find((l) => l.discipline === "lift")).toMatchObject({ ...bare, onEnd: "continue", kind: "coach" });
+  });
+
+  it("a programme and a watch plan read their own rows; a row with no ending says its kind's default", async () => {
+    await db.update(schema.programs).set({ purpose: "Zorbex habit", brief: "Three a week.", objectiveIds: ["o-1", "o-2"] }).where(and(eq(schema.programs.userId, rich.userId), eq(schema.programs.kind, "adaptive")));
+    for (const id of ["coros-zx", "coros-bare"]) {
+      await db.insert(schema.trainingPlans).values({
+        id, userId: rich.userId, sourcePlanId: `src-${id}`, name: id, startDate: day(30), endDate: "2026-06-20",
+        status: "active", createdAt: at(day(30)), updatedAt: at(day(30)),
+      });
+    }
+    await planRow(rich.userId, { id: "coros-zx", kind: "coros_import", purpose: "Zorbex race", onEnd: "finish" });
+    const { res, count } = await read();
+    expect(count).toBe(1);
+    const plans = ok(res).data.plans;
+    expect(plans.find((x) => x.kind === "programme")).toMatchObject({
+      purpose: { untrusted: true, text: "Zorbex habit" }, brief: { untrusted: true, text: "Three a week." }, onEnd: "continue", pausedUntil: null, objectiveIds: ["o-1", "o-2"],
+    });
+    expect(plans.find((x) => x.id === "coros-zx")).toMatchObject({ purpose: { untrusted: true, text: "Zorbex race" }, brief: null, onEnd: "finish", objectiveIds: [] });
+    expect(plans.find((x) => x.id === "coros-bare")).toMatchObject({ purpose: null, onEnd: "ask", objectiveIds: [] });
+  });
+
+  it("long briefs never push the answer past the budget", async () => {
+    for (let n = 0; n < 6; n++) {
+      await planRow(rich.userId, { id: `plan-long-${n}`, kind: "coach", purpose: "Zorbex purpose", brief: "A long brief for the size test. ".repeat(30) });
+      await block(rich.userId, { id: `cp-long-${n}`, name: `Block ${n}`, start: day(2), end: "2026-12-31" });
+      await db.update(schema.coachPlans).set({ programId: `plan-long-${n}` }).where(eq(schema.coachPlans.id, `cp-long-${n}`));
+    }
+    const r = ok((await read()).res);
+    expect(Buffer.byteLength(JSON.stringify({ provenance: r.provenance, missing: r.missing, data: r.data }))).toBeLessThanOrEqual(RESULT_BUDGET_BYTES);
+  });
+});
 
 describe("read_plans: editability", () => {
   it("each next session reads revisable, and a coach session says what it is", async () => {
@@ -275,8 +350,9 @@ describe("read_plans", () => {
         end: day(-53),
         last: "cp-build",
         goalRace: day(-53),
+        ...NO_ROW("ask"),
       },
-      { name: "Lifting", discipline: "lift", phases: [phase("cp-lift", "Strength base", day(10), day(-20), false)], end: day(-20), last: "cp-lift", goalRace: null },
+      { name: "Lifting", discipline: "lift", phases: [phase("cp-lift", "Strength base", day(10), day(-20), false)], end: day(-20), last: "cp-lift", goalRace: null, ...NO_ROW("continue") },
     ]);
     // Which phase "Extend my running plan" means while the line is live: its last, said once beside the lines.
     expect((ok(res).data as Record<string, unknown>).extendLine).toBe(EXTEND_LINE);

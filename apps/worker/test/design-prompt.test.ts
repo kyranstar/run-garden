@@ -81,6 +81,15 @@ describe("the prompt text", () => {
     for (const name of PROMPT_TOOL_NAMES) expect(ALL_TEXT, name).toContain(name);
   });
 
+  it("plans with a purpose (§4.3): read_plans' own bullet says, in one sentence, what each ending means", () => {
+    const bullet = SHARED_PROMPT.split("\n").find((l) => l.startsWith("- read_plans:"))!;
+    expect(bullet).toContain("onEnd");
+    expect(bullet).toContain("ask, ask how and toward what goal before extending, unless the request already says");
+    expect(bullet).toContain("continue, it continues itself or you draft for a tap");
+    expect(bullet).toContain("finish, leave it");
+    expect(SHARED_PROMPT.split("onEnd").length - 1).toBe(1);
+  });
+
   it("tells the model how untrusted text is marked, and the marker can't be closed from inside", () => {
     expect(SHARED_PROMPT).toContain("<untrusted");
     expect(SHARED_PROMPT).toContain("untrusted: true");

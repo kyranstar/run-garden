@@ -128,10 +128,11 @@ function athlete(): StandFacts {
     reads: [{ date: d(-2), sport: "run", seconds: 2520, flags: ["hr_drift"], glance: "Heart rate crept up in the last third." }],
     beyondCore: { note: 3, observation: 2 },
     conclusions: [],
+    plans: [],
   };
 }
 
-const EMPTY: StandFacts = { today: TODAY, objectives: [], plan: [], unplanned: [], health: [], sleep: [], review: null, reads: [], beyondCore: {}, conclusions: [] };
+const EMPTY: StandFacts = { today: TODAY, objectives: [], plan: [], unplanned: [], health: [], sleep: [], review: null, reads: [], beyondCore: {}, conclusions: [], plans: [] };
 
 const U = (from: string, text: string) => `<untrusted from="${from}">${text}</untrusted>`;
 
@@ -233,6 +234,30 @@ describe("the block, against captured text", () => {
     expect(block.match(/Zorbex key result/g)).toHaveLength(3);
     expect(block).toMatch(/A long first sentence[^\n]{0,120}…<\/untrusted>/);
     expect(block.length).toBeLessThanOrEqual(2000);
+  });
+});
+
+describe("the block's plan lines (plans with a purpose, §4.3)", () => {
+  it("one line per active plan: its name and purpose marked as the athlete's, or that it has none; none at all with no plan", () => {
+    const f = athlete();
+    f.plans = [
+      { id: "p1", name: "Zorbex steady", purpose: "Keep the Zorbex habit going" },
+      { id: "p2", name: "Zorbex bare", purpose: null },
+    ];
+    const block = standBlock(f, driftsOf(f));
+    expect(block).toContain(
+      ["Plans (read_plans has each one's brief and ending):", `- ${U("athlete", "Zorbex steady")}: ${U("athlete", "Keep the Zorbex habit going")}`, `- ${U("athlete", "Zorbex bare")}: no purpose set yet`].join("\n"),
+    );
+    expect(standBlock(athlete(), [])).not.toContain("Plans (");
+  });
+
+  it("stays bounded: six plans, a long name and purpose cut at a word, a pointer for the rest", () => {
+    const f = athlete();
+    f.plans = Array.from({ length: 8 }, (_, i) => ({ id: `p${i}`, name: `Zorbex ${"name ".repeat(20)}${i}`, purpose: `A long purpose ${"that goes on ".repeat(20)}${i}` }));
+    const lines = standBlock(f, []).split("\n").filter((l) => l.startsWith("- <untrusted from=\"athlete\">Zorbex name"));
+    expect(lines).toHaveLength(6);
+    for (const l of lines) expect(l.length).toBeLessThanOrEqual(220);
+    expect(standBlock(f, [])).toContain("- and 2 more (read_plans)");
   });
 });
 
@@ -536,6 +561,27 @@ describe("readStandFacts: one statement and the measures its key results need", 
     expect(JSON.stringify(f)).not.toContain("MEMORY-NOTE-SENTINEL");
   });
 
+  it("reads the athlete's active, unended plans in the same statement: not a retired, archived, ended, studio or another athlete's", async () => {
+    const plan = (id: string, over: Record<string, unknown> = {}, who = userId) =>
+      db.insert(schema.programs).values({
+        id, userId: who, kind: "coach", name: `Zorbex ${id}`, status: "active", disciplines: ["run"], config: {}, createdAt: at(d(-9)), updatedAt: at(d(-9)), ...over,
+      } as never);
+    await plan("a", { purpose: "Zorbex purpose", endDate: d(10) });
+    await plan("b", { createdAt: at(d(-8)) });
+    await plan("c", { status: "retired" });
+    await plan("e", { archivedAt: at(d(-1)) });
+    await plan("f", { endDate: d(-1) });
+    await plan("g", { kind: "studio" });
+    await plan("h", {}, other);
+    statements.length = 0;
+    const f = await readStandFacts(db, userId, { today: TODAY, tz: "UTC" });
+    expect(statements.length).toBe(2);
+    expect(f.plans).toEqual([
+      { id: "a", name: "Zorbex a", purpose: "Zorbex purpose" },
+      { id: "b", name: "Zorbex b", purpose: null },
+    ]);
+  });
+
   it("#8 rows read stay bounded by the windows, not the lifetime: every activity, session and read search uses a time range (query plan)", async () => {
     const plan = ((await db.all(sql`explain query plan ${standRowsSql(db, userId, TODAY, { library: false })}`)) as Array<{ detail: string }>).map((r) => r.detail);
     const on = (table: string) => plan.filter((l) => new RegExp(`^(SEARCH|SCAN) ${table}\\b`).test(l));
@@ -552,7 +598,7 @@ describe("readStandFacts: one statement and the measures its key results need", 
     const f = await readStandFacts(db, empty, { today: TODAY, tz: "UTC" });
     expect(statements.length).toBe(1);
     expect(standStatements([])).toBe(1);
-    expect(f).toMatchObject({ objectives: [], plan: [], unplanned: [], health: [], sleep: [], review: null, reads: [], beyondCore: {}, conclusions: [] });
+    expect(f).toMatchObject({ objectives: [], plan: [], unplanned: [], health: [], sleep: [], review: null, reads: [], beyondCore: {}, conclusions: [], plans: [] });
   });
 
   it("a key result whose measure no longer reads: no data, never a throw", async () => {
@@ -563,8 +609,9 @@ describe("readStandFacts: one statement and the measures its key results need", 
 });
 
 describe("the rich fixture's block, pinned before the CPU pass (bench 1a's account)", () => {
-  /** Captured 2026-11-06 before the context step's CPU was cut: every cut must leave it byte-identical. */
-  const RICH_BLOCK = "# Where you stand (the app's own figures)\nObjectives — current → target by due: pace:\n- <user>-obj-hold: <untrusted from=\"athlete\">Wall sit hold</untrusted> 46 s (at least) → 90 s: no data (no due date)\n- <user>-obj-hold: <untrusted from=\"athlete\">Goblet squat estimated max</untrusted> 44.3 lb (at least) → 60 lb: no data (no due date)\n- <user>-obj-run: <untrusted from=\"athlete\">5K time</untrusted> 27:30 (few readings) → 25:00: no data (one reading so far)\n- and 3 more key results (read_objectives)\nPlanned → done, last 14 d | 4 wk (missed · skipped · not known):\n- runs 0/0 | 0/0, +9 off the plan in 4 wk\n- strength 3/3 | 6/6\n- yoga 0/0 | 0/0, +1 off the plan in 4 wk\nNext 14 days (a day not listed: nothing planned):\nWed 13 May: strength 35 min; strength 40 min\nFri 15 May: strength 35 min\nSat 16 May: easy run 45 min\nSun 17 May: strength 35 min\nTue 19 May: strength 35 min; easy run 45 min\nWed 20 May: strength 40 min\nThu 21 May: strength 35 min\nFri 22 May: long run 90 min\nSat 23 May: strength 35 min\nMon 25 May: strength 35 min; easy run 45 min\nReadiness: good. Last 7 d, oldest first — HRV 57 58 54 55 56 57 58 (usual 56, steady) · resting HR 50 52 51 50 52 51 50 (usual 51, steady) · sleep 7.2 h a night (7.0–7.5)\nLast weekly review: none yet.\nActivity reads flagged in 7 d: none.\nMemory beyond the core: 1 fact, 8 notes, 7 observations (recall_memory).\nNeeds you: nothing the app sees.";
+  /** Captured 2026-11-06 before the context step's CPU was cut: every cut must leave it byte-identical. REBASED 2026-11-06 (plans with a purpose, §4.3): one new line per active plan —
+   the fixture's one programme, with no purpose yet — after the next 14 days; nothing else moved. */
+  const RICH_BLOCK = "# Where you stand (the app's own figures)\nObjectives — current → target by due: pace:\n- <user>-obj-hold: <untrusted from=\"athlete\">Wall sit hold</untrusted> 46 s (at least) → 90 s: no data (no due date)\n- <user>-obj-hold: <untrusted from=\"athlete\">Goblet squat estimated max</untrusted> 44.3 lb (at least) → 60 lb: no data (no due date)\n- <user>-obj-run: <untrusted from=\"athlete\">5K time</untrusted> 27:30 (few readings) → 25:00: no data (one reading so far)\n- and 3 more key results (read_objectives)\nPlanned → done, last 14 d | 4 wk (missed · skipped · not known):\n- runs 0/0 | 0/0, +9 off the plan in 4 wk\n- strength 3/3 | 6/6\n- yoga 0/0 | 0/0, +1 off the plan in 4 wk\nNext 14 days (a day not listed: nothing planned):\nWed 13 May: strength 35 min; strength 40 min\nFri 15 May: strength 35 min\nSat 16 May: easy run 45 min\nSun 17 May: strength 35 min\nTue 19 May: strength 35 min; easy run 45 min\nWed 20 May: strength 40 min\nThu 21 May: strength 35 min\nFri 22 May: long run 90 min\nSat 23 May: strength 35 min\nMon 25 May: strength 35 min; easy run 45 min\nPlans (read_plans has each one's brief and ending):\n- <untrusted from=\"athlete\">Strength block</untrusted>: no purpose set yet\nReadiness: good. Last 7 d, oldest first — HRV 57 58 54 55 56 57 58 (usual 56, steady) · resting HR 50 52 51 50 52 51 50 (usual 51, steady) · sleep 7.2 h a night (7.0–7.5)\nLast weekly review: none yet.\nActivity reads flagged in 7 d: none.\nMemory beyond the core: 1 fact, 8 notes, 7 observations (recall_memory).\nNeeds you: nothing the app sees.";
 
   it("reads byte-identically", async () => {
     const db = makeTestDb();

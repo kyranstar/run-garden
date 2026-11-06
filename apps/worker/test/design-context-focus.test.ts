@@ -247,6 +247,30 @@ describe("where it sits, and what it costs", () => {
   });
 });
 
+describe("the opening block's plan lines (plans with a purpose, §4.3)", () => {
+  it("an active plan has one line with its name and purpose marked untrusted, a retired one none, a sub-run none — and the statement count holds", async () => {
+    const id = "plan-line-test";
+    await db.insert(schema.programs).values({
+      id, userId: me.userId, kind: "coach", name: "Zorbex line plan", status: "active", disciplines: ["run"], config: {},
+      purpose: "Hold the Zorbex habit", brief: "A BRIEF THAT STAYS BEHIND THE TOOL", createdAt: "2026-05-01T00:00:00.000Z", updatedAt: "2026-05-01T00:00:00.000Z",
+    });
+    try {
+      const base = await header(undefined);
+      const line = `- ${markUntrusted("athlete", "Zorbex line plan")}: ${markUntrusted("athlete", "Hold the Zorbex habit")}`;
+      expect(base.header).toContain(line);
+      expect(base.header.split(line).length - 1).toBe(1);
+      expect(base.header).not.toContain("A BRIEF THAT STAYS BEHIND THE TOOL");
+      expect((await header(undefined, { role: "designer", brief: "A calm session." })).header).not.toContain("Zorbex line plan");
+      await db.update(schema.programs).set({ status: "retired" }).where(eq(schema.programs.id, id));
+      const after = await header(undefined);
+      expect(after.header).not.toContain("Zorbex line plan");
+      expect(after.statements).toBe(base.statements);
+    } finally {
+      await db.delete(schema.programs).where(eq(schema.programs.id, id));
+    }
+  });
+});
+
 function escape(s: string): string {
   return s.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 }
