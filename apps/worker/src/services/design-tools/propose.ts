@@ -143,6 +143,7 @@ import {
   type DocAthlete,
 } from "./act-common.js";
 import { dateField, DATE_SCHEMA, parsedJson, refuse } from "./read-common.js";
+import { COURSE_OUTLINE_SQL, sqlFlag } from "./read-plan.js";
 import { isDocWorkoutOp, isPlanAdjustOp } from "../proposal-kinds.js";
 import { clockIn, laterTodayRefusal, NOW_ROUND_MIN, pastTime, slotAtOrAfter } from "../design-time.js";
 import { soreAnswersSql, soreAreasOf } from "./record-answer.js";
@@ -282,6 +283,8 @@ interface TargetRow {
   archived: string | null;
   /** The row's current document, as stored (JSON text). */
   doc: string | null;
+  /** An outline of a course (`COURSE_OUTLINE_SQL`), which says so in a refusal. */
+  courseOutline: unknown;
 }
 
 export const proposeWorkout: DesignTool = {
@@ -377,7 +380,7 @@ export const proposeWorkout: DesignTool = {
           p.target.kind === "revise"
             ? sql`(select json_object('date', ${pw.effectiveDate}, 'time', ${pw.effectiveTime}, 'origin', ${pw.origin}, 'category', ${pw.category},
                 'sport', ${pw.sport}, 'completion', ${pw.completionState}, 'content', ${pw.contentState}, 'rev', ${pw.workoutDocRev},
-                'archived', ${pw.archivedAt}, 'doc', ${pw.workoutDoc})
+                'archived', ${pw.archivedAt}, 'doc', ${pw.workoutDoc}, 'courseOutline', ${COURSE_OUTLINE_SQL})
                 from ${pw} where ${pw.id} = ${p.target.workoutId} and ${pw.userId} = ${ctx.userId})`
             : sql`null`,
         replaced: p.replaces !== undefined ? replacedSql(ctx.userId, p.replaces) : sql`null`,
@@ -512,7 +515,7 @@ export const proposeWorkout: DesignTool = {
       // The Studio's own predicate (workout-editability §5): its document's discipline derived in the account's library,
       // read with the athlete — no statement.
       const verdict = revisabilityIn(
-        { origin: row.origin, category: row.category, sport: row.sport, completionState: row.completion, contentState: row.content, effectiveDate: row.date, workoutDoc: row.doc },
+        { origin: row.origin, category: row.category, sport: row.sport, completionState: row.completion, contentState: row.content, effectiveDate: row.date, workoutDoc: row.doc, courseOutline: sqlFlag(row.courseOutline) },
         today,
         a.library.all,
       );

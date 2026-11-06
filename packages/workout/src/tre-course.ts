@@ -107,14 +107,6 @@ export const TRE_VIDEOS: readonly PracticeVideo[] = [
   { label: "Follow-along", url: "https://www.youtube.com/watch?v=QoB9wpuO688" },
 ];
 
-const TRE_SOURCE = /^tre-course:\d+$/;
-
-/**
- * The videos for a document with this `source.ref`: read from the ref, not stored in the document, so offering them
- * revises no planned session (a new revision would take its copy off the watch and send it again).
- */
-export const videosOfSource = (ref: string | undefined): readonly PracticeVideo[] => (ref !== undefined && TRE_SOURCE.test(ref) ? TRE_VIDEOS : []);
-
 /** An eased session's tremor: half of it, never under a minute. */
 export const easedTremorSec = (tremorSec: number): number => Math.max(MINUTE, Math.floor(tremorSec / 2));
 

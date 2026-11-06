@@ -44,12 +44,21 @@ const pw = plannedWorkouts;
 export const INTENT_SQL = sql`case when json_valid(${pw.workoutDoc}) and json_extract(${pw.workoutDoc}, '$.version') = 1
   and json_type(${pw.workoutDoc}, '$.intent.summary') = 'text' then json_extract(${pw.workoutDoc}, '$.intent.summary') end`;
 
+/**
+ * Whether a planned row is an outline of a course (`revisability`'s `courseOutline`), read with the row: no statement more.
+ * Raw names, because Drizzle strips a column's table inside a single table's select, which would turn the correlation into
+ * `programs.user_id = programs.user_id`.
+ */
+export const COURSE_OUTLINE_SQL = sql.raw(
+  "case when planned_workouts.origin = 'program' then exists (select 1 from programs p where p.id = planned_workouts.plan_id and p.user_id = planned_workouts.user_id and p.kind = 'course') else 0 end",
+);
+
 /** Planned rows as `readTagged` reads them (tag `p`), by date, time and id; at most `limit` of them. */
 export function planTerm(userId: string, where: SQL, limit?: number): SQL {
   const rows = sql`select 'p' as t, json_object('id', ${pw.id}, 'date', ${pw.effectiveDate}, 'time', ${pw.effectiveTime}, 'title', ${pw.title},
       'category', ${pw.category}, 'subtype', ${pw.qualitySubtype}, 'sport', ${pw.sport}, 'origin', ${pw.origin}, 'state', ${pw.completionState},
       'content', ${pw.contentState}, 'seconds', coalesce(${pw.sourceEstimatedDurationSeconds}, ${pw.fallbackEstimatedDurationSeconds}, ${pw.calendarBlockDurationSeconds}),
-      'intent', ${INTENT_SQL}, 'rev', ${pw.workoutDocRev}, 'hasDoc', ${pw.workoutDoc} is not null, 'source', ${pw.sourceWorkoutId}) as j
+      'intent', ${INTENT_SQL}, 'rev', ${pw.workoutDocRev}, 'hasDoc', ${pw.workoutDoc} is not null, 'source', ${pw.sourceWorkoutId}, 'courseOutline', ${COURSE_OUTLINE_SQL}) as j
     from ${pw} where ${pw.userId} = ${userId} and ${pw.archivedAt} is null and (${where})
     order by ${pw.effectiveDate}, ${pw.effectiveTime}, ${pw.id}`;
   return limit !== undefined ? sql`select t, j from (${rows} limit ${limit})` : sql`select t, j from (${rows})`;
@@ -87,12 +96,12 @@ export function revisableWords(v: Revisability): true | { no: string; instead: s
  * parsed per row; `get_workout` reads it from the document).
  */
 export function listRevisable(
-  r: { origin: string | null; category: string | null; sport: string | null; state: string | null; content: string | null; date: string; hasDoc: boolean },
+  r: { origin: string | null; category: string | null; sport: string | null; state: string | null; content: string | null; date: string; hasDoc: boolean; courseOutline?: boolean },
   today: string,
 ): true | { no: string; instead: string } {
   return revisableWords(
     revisability(
-      { origin: r.origin, category: r.category, sport: r.sport, completionState: r.state, contentState: r.content, effectiveDate: r.date, hasDoc: r.hasDoc, isRun: null },
+      { origin: r.origin, category: r.category, sport: r.sport, completionState: r.state, contentState: r.content, effectiveDate: r.date, hasDoc: r.hasDoc, isRun: null, courseOutline: r.courseOutline === true },
       today,
     ),
   );
@@ -158,7 +167,7 @@ export function planItem(r: Record<string, unknown>, clock?: PlanClock): Record<
   if (typeof r.rev === "number") item.rev = r.rev;
   if (clock && date) {
     item.revisable = listRevisable(
-      { origin, category: s("category"), sport: s("sport"), state: s("state"), content: s("content"), date, hasDoc: sqlFlag(r.hasDoc) },
+      { origin, category: s("category"), sport: s("sport"), state: s("state"), content: s("content"), date, hasDoc: sqlFlag(r.hasDoc), courseOutline: sqlFlag(r.courseOutline) },
       clock.today,
     );
   }

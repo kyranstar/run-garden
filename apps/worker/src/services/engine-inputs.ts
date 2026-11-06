@@ -649,6 +649,13 @@ export async function loadDocEngineContext(db: Db, userId: string, placeId: stri
 /** `loadEngineContext` was asked for a course's plan: no session of a course is the engine's. */
 export const PROGRAM_IS_COURSE = "program_is_course";
 
+/** `PROGRAM_IS_COURSE`, with the plan's settings as read: a course's sheet goes on to read them, and reads them no second time. */
+export class ProgramIsCourseError extends Error {
+  constructor(readonly config: unknown) {
+    super(PROGRAM_IS_COURSE);
+  }
+}
+
 /**
  * Prefs, saved ids, the place, the unit and the profiles for one build of `programId` (this user's). `null` — a
  * document workout's build, which no programme's settings shape — reads no programme and takes the defaults. A course's
@@ -669,7 +676,7 @@ export async function loadEngineContext(
       .where(and(eq(programs.id, programId), eq(programs.userId, userId)))
       .limit(1);
     if (!program) throw new Error("program_not_found");
-    if (program.kind === "course") throw new Error(PROGRAM_IS_COURSE);
+    if (program.kind === "course") throw new ProgramIsCourseError(program.config);
     const parsed = adaptiveConfigSchema.safeParse(program.config);
     if (!parsed.success) console.error(`program ${programId}: stored config does not parse; building with the defaults`);
     if (parsed.success) config = parsed.data;

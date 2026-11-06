@@ -78,7 +78,7 @@ export const PROGRAM_PLACE_BUDGET = REQUEST_BUDGET - PROGRAM_SAVE_FIXED;
  * Place what fits of the program's slots; once nothing is left, let the calendar book them in the room left. True while
  * some is left (`placing`).
  */
-async function placeAndBook(
+export async function placeAndBook(
   c: Context<AppContext>,
   programId: string,
   today: string,

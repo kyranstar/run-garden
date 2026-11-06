@@ -33,6 +33,7 @@ import {
 } from "../services/coach-apply.js";
 import { syncCalendar } from "../services/calendar-sync.js";
 import { coachDrainQueued } from "../services/coros-write-cloud.js";
+import type { Db } from "../services/db.js";
 import { calendarOpsFitting } from "../services/design-approve.js";
 import { REQUEST_GARDEN_STEP, resimulateFrom } from "../services/garden-sync.js";
 import { isDesignedProposal } from "../services/proposal-kinds.js";
@@ -230,4 +231,29 @@ export async function retireInChunks(
   if (r.status === "more") return c.json({ ok: true, remaining: true });
   if (words !== null) await receipt(words);
   return c.json({ ok: true });
+}
+
+/**
+ * A coach plan's Stop from its plan's id (`POST /api/plans/:id/stop`): the blocks a line's sheet would retire one tap at a
+ * time (`stopLine`, `?stop=`), each through this same retire, as many as `budget` holds, and the Stop's one receipt once the
+ * last has gone. `more` until then: the next request is asked only for the blocks still to retire, and the budget's leftover
+ * must hold a chunk's own reads, since a chunk's first step runs whatever it costs.
+ */
+export async function stopBlocks(
+  db: Db,
+  userId: string,
+  blockIds: readonly string[],
+  prefs: UserPreferences,
+  budget: number,
+  receipt: (body: string) => Promise<void>,
+): Promise<{ more: boolean }> {
+  let left = budget;
+  for (const planId of blockIds) {
+    if (left < STRUCTURAL_MIN_BUDGET) return { more: true };
+    const r = await applyStructuralChunk(db, { userId, proposalId: `retire-${planId}`, opIndex: 0, op: { kind: "retirePlan", planId }, progress: null, budget: left, now: new Date(), prefs, stopping: true });
+    if (r.status === "more") return { more: true };
+    left -= r.spent;
+  }
+  if (blockIds.length > 0) await receipt(STOPPED_RECEIPT);
+  return { more: false };
 }

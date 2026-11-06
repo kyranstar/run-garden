@@ -46,7 +46,8 @@
  * its only days: it never falls back on the week's others. Its slots go at its `time`, not the athlete's window. Their
  * length is the next session's (`sessionDoc(done + 1)`, numbered from the sessions actually done), booked as that
  * session's write will book it, so nothing shifts on the day. They hold no document, so nothing goes to the watch. A
- * stopped course only retracts, which needs no definition.
+ * stopped course only retracts, which needs no definition; what rule 3 keeps from this pass, a stop takes itself
+ * (`course-plans.ts`).
  *
  * Its `time` isn't pinned, on purpose: on a day that really collides, the collision pass re-lays it with the day's other
  * sessions (`separateDayCollisions`), because a double-booked evening is worse than a moved outline. A time the athlete
@@ -144,6 +145,13 @@ export const RETRACT_WRITTEN_COST = 6 + 8 + 8;
  * course-sessions.test.ts. What a request sets aside for a pause, beside whatever else it does.
  */
 export const PAUSE_PASS_COST = 6 + RETRACT_WRITTEN_COST + 1;
+/**
+ * The least a budgeted pass should be handed, since its first step runs whatever it costs: its reads and its look before
+ * writing, and one retraction (course-placement.test.ts, programs-budget.test.ts). A running course reads its sessions done as
+ * well. A first new slot costs no more than a retraction on a day that holds few sessions.
+ */
+export const STOPPED_PASS_MIN = 5 + RETRACT_COST;
+export const RUNNING_PASS_MIN = 6 + RETRACT_COST;
 /** A retracted slot brought back: its row and its suppression. */
 export const REVIVE_COST = 2;
 /** The ids one touched lookup, and one build lookup, bind (`TOUCHED_ID_CHUNK`, `BUILD_ID_CHUNK`). */

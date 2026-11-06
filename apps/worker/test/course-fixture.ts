@@ -43,10 +43,12 @@ export const INTRO_COURSE: CourseDefinition = {
 };
 
 /** `@rg/workout` with the made-up course beside the real ones, found the way the real lookup finds them. */
-export function withIntroCourse<T extends Pick<typeof import("@rg/workout"), "COURSES" | "courseDefinition">>(real: T) {
+export function withIntroCourse<T extends Pick<typeof import("@rg/workout"), "COURSES" | "courseDefinition" | "videosOfSource">>(real: T) {
+  const courseDefinition = (id: string): CourseDefinition | null => (id === INTRO_COURSE.id ? INTRO_COURSE : real.courseDefinition(id));
   return {
     ...real,
     COURSES: { ...real.COURSES, [INTRO_COURSE.id]: INTRO_COURSE },
-    courseDefinition: (id: string): CourseDefinition | null => (id === INTRO_COURSE.id ? INTRO_COURSE : real.courseDefinition(id)),
+    courseDefinition,
+    videosOfSource: (ref: string | undefined) => real.videosOfSource(ref, courseDefinition),
   };
 }

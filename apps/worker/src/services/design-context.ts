@@ -91,7 +91,7 @@ import { CONTEXT_TURNS, conversationBlock, conversationRows, type TurnRow } from
 import { runningFactsOf, runningLine, runWeeksSql, thresholdSql, watchLine, type RunningFacts } from "./designed-runs.js";
 import { DIAGNOSE_LINES, FOCUS_LINES, GONE_CHIP_LINE, SHARED_PROMPT, markUntrusted, roleBlock, type ReviewRubric, type UntrustedSource } from "./design-prompt.js";
 import { dayWords, distanceWords, minutesOf, paceWords, parsedArray, parsedJson, plural, readTagged, relativeDay } from "./design-tools/read-common.js";
-import { nullOriginWords, planTerm, sqlFlag } from "./design-tools/read-plan.js";
+import { COURSE_OUTLINE_SQL, nullOriginWords, planTerm, sqlFlag } from "./design-tools/read-plan.js";
 import { SAVES_INSIGHTS_MAX, SAVES_MOVES_MAX, savedBatchOf, savedMovesOf, savesBatchSql, type SavedBatch, type SavedChoice } from "./design-tools/read-saves.js";
 import { activitiesAround, activityRows, doneEntries, doneTerms, sessionsWhere, setRows, type DoneCtx } from "./design-tools/read-sessions.js";
 import type { SystemBlock } from "./llm-messages.js";
@@ -361,6 +361,8 @@ interface Reads {
     content: string | null;
     source: string | null;
     hasDoc: boolean;
+    /** Its plan is a course (`COURSE_OUTLINE_SQL`). */
+    courseOutline: boolean;
   }>;
   answers: Array<{ questionId: string; n: number; last: string | null }>;
   history: Array<{ kind: string; recent: number; last: string | null }>;
@@ -534,6 +536,7 @@ async function read(
         content: plannedWorkouts.contentState,
         source: plannedWorkouts.sourceWorkoutId,
         hasDoc: sql<boolean>`${plannedWorkouts.workoutDoc} is not null`,
+        courseOutline: sql<boolean>`${COURSE_OUTLINE_SQL}`,
         seconds: sql<number>`coalesce(${plannedWorkouts.sourceEstimatedDurationSeconds}, ${plannedWorkouts.fallbackEstimatedDurationSeconds}, ${plannedWorkouts.calendarBlockDurationSeconds})`,
       })
       .from(plannedWorkouts)
@@ -793,6 +796,8 @@ const SHORT_INSTEAD: Record<RevisabilityReason, string> = {
   race: "design around it",
   past: "propose for today or later",
 };
+/** The same, for a course's outline: `revisability` says `programme`, with what reaches a course. */
+const SHORT_INSTEAD_COURSE = "change_plan to ease or pause, adjust_plan to skip or move, or a new workout";
 
 /**
  * Whether a row still ahead can be revised, said at the end of its line: ", revisable", or the reason and what to do
@@ -805,7 +810,9 @@ function revisableMark(w: Reads["plan"][number], today: string): string {
     { origin: w.origin, category: w.category, sport: w.sport, completionState: w.state, contentState: w.content, effectiveDate: w.date, hasDoc: w.hasDoc, isRun: null },
     today,
   );
-  return v.ok ? ", revisable" : `, not revisable (${v.reason.replace("_", " ")}) — ${SHORT_INSTEAD[v.reason]}`;
+  if (v.ok) return ", revisable";
+  if (v.reason === "programme" && w.courseOutline) return `, not revisable (course) — ${SHORT_INSTEAD_COURSE}`;
+  return `, not revisable (${v.reason.replace("_", " ")}) — ${SHORT_INSTEAD[v.reason]}`;
 }
 
 function planItemWords(w: Reads["plan"][number]): string {
@@ -1080,6 +1087,7 @@ const planRow = (row: Record<string, unknown>): Reads["plan"][number] => ({
   content: str(row.content),
   source: str(row.source),
   hasDoc: sqlFlag(row.hasDoc),
+  courseOutline: sqlFlag(row.courseOutline),
 });
 
 function workoutLines(id: string, rows: Map<string, Array<Record<string, unknown>>>, clock: { today: string; time: string }): string[] {

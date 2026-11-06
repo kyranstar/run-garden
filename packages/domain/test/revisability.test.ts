@@ -30,6 +30,19 @@ describe("revisability", () => {
     }
   });
 
+  it("a course's outline is refused for the same reason, in words of what a course can do", () => {
+    expect(refused({ origin: "program", courseOutline: true })).toEqual({
+      ok: false, reason: "programme",
+      why: "It's a course's session: the course writes it on the day, from its fixed sequence.",
+      instead: "Ease the next session or pause the plan with change_plan, skip or move this one with adjust_plan, or propose a new workout for that day and skip the slot with adjust_plan.",
+    });
+  });
+
+  it("the course's words only ever replace a programme's: what comes first still does, and a written session is revisable", () => {
+    expect(refused({ origin: "program", courseOutline: true, completionState: "completed" })).toMatchObject({ reason: "resolved", instead: "Propose a new workout." });
+    expect(refused({ origin: "studio", courseOutline: true })).toEqual({ ok: true, adopts: false });
+  });
+
   it("resolved: the why follows the state", () => {
     const instead = "Propose a new workout.";
     expect(refused({ completionState: "completed" })).toEqual({ ok: false, reason: "resolved", why: "It's already done.", instead });

@@ -33,7 +33,8 @@
  *    course, a definition gone) answers as it stands: no build, and the sheet is offered no choices (`docExtras`). A check the
  *    request sent judges the write and is kept either way. A read serves no preview of an outline: what it would be moves
  *    with the sessions done and the easing, and the sheet's own build makes a current one. Nor does anything serve a
- *    document's preview of another revision than the row's.
+ *    document's preview of another revision than the row's. Its videos come from the course's definition, read from the
+ *    plan's settings the read holds anyway, so a sheet shows the link from the first day it's planned.
  *  - A PROVISIONAL COPY'S RECORD (the watch mirrors the plan §3.2; builder check A1): a document workout's copy pushed
  *    to the watch ahead of its day is a build of its own — a negative version (−1, −2, … per workout), never locked,
  *    `kind: "provisional"` in its payload (`makeProvisionalRecord`). It is none of the slot's builds: the loader, the
@@ -66,6 +67,7 @@ import {
 } from "@rg/database";
 import {
   appAuthoredRow,
+  courseConfigSchema,
   docOriginRow,
   doseSummary,
   newId,
@@ -125,6 +127,7 @@ import {
   loadEngineContext,
   loadProgramState,
   PROGRAM_IS_COURSE,
+  ProgramIsCourseError,
   saveProgramState,
   type BuildHistory,
   type EngineContext,
@@ -144,7 +147,7 @@ import {
   type GatedDoc,
 } from "./doc-build.js";
 import { NO_EQUIPMENT } from "./default-place.js";
-import { docSlotKeys, DocTooLargeError, makeLibraryIndex, videosOfSource, type DocIssue, type PracticeVideo, type ValidateCtx } from "@rg/workout";
+import { courseDefinition, docSlotKeys, DocTooLargeError, makeLibraryIndex, videosOfSource, type DocIssue, type PracticeVideo, type ValidateCtx } from "@rg/workout";
 import { doneCleanlyOf, doneStats } from "./library-view.js";
 import { mirrorFollowsDay, mirrorOnDayBuild } from "./mirror.js";
 
@@ -327,7 +330,7 @@ export interface SessionResponse {
   watch: WatchState | null;
   /** A document workout's own music (its document's `music`: a saved playlist, or none); absent when it names none. */
   music?: WorkoutMusic;
-  /** The videos to watch instead of playing it here (a fixed practice's, `videosOfSource`); absent when it has none. */
+  /** The videos to watch instead of playing it here: a written session's by its document (`videosOfSource`), a course's outline's from its definition; absent when it has none. */
   videos?: PracticeVideo[];
 }
 
@@ -352,9 +355,16 @@ export function docMusicOf(stored: unknown): WorkoutMusic | undefined {
 /** A row's document's videos, by its `source.ref`, read leniently from its stored column: absent when it has none. */
 function docVideosOf(stored: unknown): PracticeVideo[] | undefined {
   const ref = (storedDocValue(stored) as { source?: { ref?: unknown } } | null | undefined)?.source?.ref;
-  const videos = videosOfSource(typeof ref === "string" ? ref : undefined);
-  return videos.length > 0 ? [...videos] : undefined;
+  return someVideos(videosOfSource(typeof ref === "string" ? ref : undefined));
 }
+
+/** A course's outline's videos, by its plan's settings as read: absent with settings that don't read, or a definition gone. */
+function courseVideosOf(config: unknown): PracticeVideo[] | undefined {
+  const parsed = courseConfigSchema.safeParse(config);
+  return parsed.success ? someVideos(courseDefinition(parsed.data.course)?.videos) : undefined;
+}
+
+const someVideos = (videos: readonly PracticeVideo[] | undefined): PracticeVideo[] | undefined => (videos && videos.length > 0 ? [...videos] : undefined);
 
 /** The program's modes; the themes a build can take, each with the modes it suits; the account's places. */
 export interface SessionChoices {
@@ -367,6 +377,8 @@ export interface SessionChoices {
 interface SheetExtras {
   profiles: ConditionView[];
   choices: SessionChoices;
+  /** A course's outline's videos, from its definition: it holds no document to read them by. */
+  videos?: PracticeVideo[];
 }
 
 /** What `session_builds.payload` holds. */
@@ -998,7 +1010,7 @@ async function loadExtras(db: Db, userId: string, row: SlotRow, active: readonly
     if (e instanceof Error && e.message === "program_not_found") {
       return { profiles: [], choices: { modes: ["recovery", "consistent", "build"], themes: [], locations: [] } };
     }
-    if (e instanceof Error && e.message === PROGRAM_IS_COURSE) return docExtras(active);
+    if (e instanceof ProgramIsCourseError) return { ...docExtras(active), ...withVideos(courseVideosOf(e.config)) };
     throw e;
   }
 }
@@ -1033,7 +1045,7 @@ function respond(
     choices: extras.choices,
     watch: null,
     ...withMusic(docMusicOf(row.workoutDoc)),
-    ...withVideos(docVideosOf(row.workoutDoc)),
+    ...withVideos(extras.videos ?? docVideosOf(row.workoutDoc)),
   };
 }
 
@@ -1797,6 +1809,8 @@ async function commitDocBuild(
   builds: readonly BuildRow[],
   inputs: DocDayInputs,
   ctx: BuildCtx,
+  /** A course's outline ahead, previewed: its definition's. */
+  outlineVideos?: readonly PracticeVideo[],
 ): Promise<BuildOutcome> {
   const { date, preview, previous, doc, rev, context, checks, version, inputsHash } = inputs;
   const s: BuildStore = {
@@ -1806,7 +1820,7 @@ async function commitDocBuild(
     checks,
     preChecks: inputs.preChecks,
     hidden: hiddenFrom(context.prefs),
-    extras: docExtras(context.activeProfiles),
+    extras: { ...docExtras(context.activeProfiles), ...withVideos(someVideos(outlineVideos)) },
     contentOf: () => null,
   };
   if (previous && previous.inputsHash === inputsHash && previous.engineVersion === version) return reuseStored(db, userId, s, previous, ctx);
@@ -2095,7 +2109,7 @@ export async function buildSessionOutcome(
       // Nor is one served here: a day ahead whose course can't make a document has no fresh one to offer.
       return { session: await readResponse(db, userId, row, ctx.today, []), calendarChanged: false };
     }
-    return commitDocBuild(db, userId, row, builds, await docDayInputs(db, userId, row, builds, req, ctx, ahead), ctx);
+    return commitDocBuild(db, userId, row, builds, await docDayInputs(db, userId, row, builds, req, ctx, ahead), ctx, course.definition?.videos);
   }
   if (docOriginRow(row)) return commitDocBuild(db, userId, row, builds, await docDayInputs(db, userId, row, builds, req, ctx), ctx);
   return commitBuild(db, userId, row, builds, await dayInputs(db, userId, row, builds, req, ctx), ctx);

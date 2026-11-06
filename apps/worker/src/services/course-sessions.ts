@@ -102,7 +102,7 @@ export async function courseOf(db: Db, userId: string, row: Pick<SlotRow, "origi
 }
 
 /** The completion states of a session still to do: scheduled, or unresolved, as a link undone on its own day leaves it. */
-const STILL_TO_DO = ["scheduled", "unresolved"];
+export const STILL_TO_DO = ["scheduled", "unresolved"];
 
 /** Whether an outline of this plan is due today (the header's DUE). */
 export function courseSessionDue(

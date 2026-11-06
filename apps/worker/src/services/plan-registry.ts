@@ -1,4 +1,4 @@
-import { and, desc, eq, inArray, isNull } from "drizzle-orm";
+import { and, desc, eq, getTableColumns, inArray, isNull, sql } from "drizzle-orm";
 import { coachPlans, programs, programVersions, studioPlanPushes, trainingPlans } from "@rg/database";
 import { courseConfigSchema, defaultOnEnd, linesOf, newId, nowInstant, onEndAllowed, type LineBlock, type ProgramKind } from "@rg/domain";
 import { sha256Hex } from "../auth/crypto.js";
@@ -179,11 +179,18 @@ export async function backfillPlanRegistry(db: Db, userId: string, today: string
   return done;
 }
 
-/** The plans the account has, shaped for the list: two reads (the plans, the blocks), no more. */
+/**
+ * The plans the account has, shaped for the list: two reads (the plans, the blocks), no more. A course's sessions done come
+ * with its row, counted as `courseSessionsDone` counts them.
+ */
 export async function listPlans(db: Db, userId: string, today: string): Promise<PlanSummaryDto[]> {
   const [rows, blocks] = await Promise.all([
     db
-      .select()
+      .select({
+        ...getTableColumns(programs),
+        // Raw names: Drizzle strips a column's table inside a single table's select, and `"id"` would be the subquery's own.
+        courseDone: sql<number | null>`case when programs.kind = 'course' then (select count(*) from planned_workouts d where d.user_id = programs.user_id and d.plan_id = programs.id and d.course_session is not null and d.completion_state = 'completed') end`,
+      })
       .from(programs)
       .where(and(eq(programs.userId, userId), inArray(programs.kind, [...PLAN_KINDS]), isNull(programs.archivedAt))),
     db.select().from(coachPlans).where(eq(coachPlans.userId, userId)),

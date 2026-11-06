@@ -1,5 +1,6 @@
 import { z } from "zod";
-import { defaultOnEnd, isLocalDate, planOnEndSchema, PLAN_BRIEF_MAX, PLAN_OBJECTIVES_MAX, PLAN_PURPOSE_MAX, type PlanOnEnd, type ProgramKind, type TrainingLine } from "@rg/domain";
+import { courseConfigSchema, defaultOnEnd, isLocalDate, planOnEndSchema, PLAN_BRIEF_MAX, PLAN_OBJECTIVES_MAX, PLAN_PURPOSE_MAX, type PlanOnEnd, type ProgramKind, type TrainingLine } from "@rg/domain";
+import { courseDefinition } from "@rg/workout";
 
 /**
  * A PLAN, AS THE APP LISTS IT (plans with a purpose, Stage 1): pure shaping, no reads. The plans are the `programs`
@@ -9,7 +10,10 @@ import { defaultOnEnd, isLocalDate, planOnEndSchema, PLAN_BRIEF_MAX, PLAN_OBJECT
  *  - `lineKey`: the key of the training line whose blocks point at this plan, so a list row finds its plan.
  *  - `listedAs`: the id the existing list row carries: a Studio plan's own id for the coach plan that holds it; a
  *    programme or a course, its own id; null for any other plan.
- *  - `course` and `prompt` stay null until the course's number and the plan's next-step prompt are built.
+ *  - `course`: where a course has got to, from its definition's `sessionLabel` and the sessions done (read with the row:
+ *    `courseDone`); null for any other kind, once the course no longer counts, and with a definition gone or settings that
+ *    don't read.
+ *  - `prompt` stays null until the plan's next-step prompt is built.
  */
 
 /** The kinds that are plans. */
@@ -73,6 +77,17 @@ export interface PlanRow {
   onEnd: string | null;
   pausedUntil: string | null;
   objectiveIds: string[] | null;
+  config: unknown;
+  /** A course's own sessions done (`courseSessionsDone`); null for any other kind. */
+  courseDone: number | null;
+}
+
+/** Where a course plan has got to. */
+function courseLabel(row: Pick<PlanRow, "kind" | "config" | "courseDone">): PlanSummaryDto["course"] {
+  if (row.kind !== "course") return null;
+  const config = courseConfigSchema.safeParse(row.config);
+  const definition = config.success ? courseDefinition(config.data.course) : null;
+  return definition?.sessionLabel(row.courseDone ?? 0) ?? null;
 }
 
 export const isPlanKind = (kind: string): kind is (typeof PLAN_KINDS)[number] => (PLAN_KINDS as readonly string[]).includes(kind);
@@ -100,7 +115,7 @@ export function planSummaryOf(row: PlanRow, lineKeys: ReadonlyMap<string, string
     status: row.status === "retired" || row.status === "archived" ? "retired" : "active",
     lineKey: lineKeys.get(row.id) ?? null,
     listedAs: kind === "coach" ? studioPlanId : kind === "adaptive" || kind === "course" ? row.id : null,
-    course: null,
+    course: courseLabel(row),
     prompt: null,
   };
 }

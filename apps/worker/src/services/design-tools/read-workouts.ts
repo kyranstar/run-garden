@@ -53,7 +53,7 @@ import {
   untrusted,
   type Untrusted,
 } from "./read-common.js";
-import { hasPassed, INTENT_SQL, listRevisable, nullOriginWords, ORIGIN_WORDS, PASSED_WORDS, planClock, revisableWords, STATUS_WORDS } from "./read-plan.js";
+import { COURSE_OUTLINE_SQL, hasPassed, INTENT_SQL, listRevisable, nullOriginWords, ORIGIN_WORDS, PASSED_WORDS, planClock, revisableWords, sqlFlag, STATUS_WORDS } from "./read-plan.js";
 import { revisabilityIn } from "../doc-workouts.js";
 import { doneEntries, doneTerms, knownMove, sessionsWhere } from "./read-sessions.js";
 
@@ -342,13 +342,13 @@ export const getWorkout: DesignTool = {
     if (p.id === undefined) return suggestion(ctx, p.proposalId!, p.opId!);
     const { athlete, extra } = await readAthlete(ctx.db, ctx.userId, ctx.now, {
       row: sql`(select json_object('date', ${pw.effectiveDate}, 'time', ${pw.effectiveTime}, 'state', ${pw.completionState}, 'category', ${pw.category}, 'sport', ${pw.sport}, 'origin', ${pw.origin}, 'source', ${pw.sourceWorkoutId},
-          'content', ${pw.contentState}, 'rev', ${pw.workoutDocRev}, 'doc', ${pw.workoutDoc})
+          'content', ${pw.contentState}, 'rev', ${pw.workoutDocRev}, 'doc', ${pw.workoutDoc}, 'courseOutline', ${COURSE_OUTLINE_SQL})
           from ${pw} where ${pw.id} = ${p.id} and ${pw.userId} = ${ctx.userId} and ${pw.archivedAt} is null)`,
       library: personalMovesSql(ctx.userId),
     });
     // The account's library, with the athlete: a document's own moves (one of the athlete's included) read by it.
     const library = await accountLibraryFrom(ctx.db, ctx.userId, extra.library);
-    const row = parsedJson(extra.row) as { date?: string; time?: string; state?: string; category?: string; sport?: string | null; source?: string | null; origin?: string | null; content?: string | null; rev?: number | null; doc?: string | null } | null;
+    const row = parsedJson(extra.row) as { date?: string; time?: string; state?: string; category?: string; sport?: string | null; source?: string | null; origin?: string | null; content?: string | null; rev?: number | null; doc?: string | null; courseOutline?: unknown } | null;
     if (!row || typeof row.date !== "string") return notFound(p.id);
 
     const scope = sessionsWhere(ctx.userId, sql`${performedSessions.workoutId} = ${p.id}`);
@@ -400,7 +400,7 @@ export const getWorkout: DesignTool = {
         rev: row.rev ?? null,
         revisable: revisableWords(
           revisabilityIn(
-            { origin: row.origin ?? null, category: row.category ?? null, sport: row.sport ?? null, completionState: row.state ?? null, contentState: row.content ?? null, effectiveDate: row.date, workoutDoc: row.doc ?? null },
+            { origin: row.origin ?? null, category: row.category ?? null, sport: row.sport ?? null, completionState: row.state ?? null, contentState: row.content ?? null, effectiveDate: row.date, workoutDoc: row.doc ?? null, courseOutline: sqlFlag(row.courseOutline) },
             athlete.today,
             library.all,
           ),

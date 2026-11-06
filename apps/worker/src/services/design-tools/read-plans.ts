@@ -6,9 +6,10 @@
  * (`coachMayChange`): only a block it wrote that is still running — propose_plan extends it, firms up a week, winds it
  * down or retires it; a watch plan's sessions are moved, skipped or eased with adjust_plan, a programme is the athlete's
  * own: its `settings` — days, weekly goal, minutes, block length, modes, care (each switched-on condition's with care, on
- * or off) — change with change_programme; the Studio plan is the Studio's (the newest, as the plan list shows it:
- * `studioPlanEntryOf`). A block whose last day is at most ENDED_DAYS days back is listed whatever its status, never
- * changeable once it has ended or once the athlete stopped it (retired).
+ * or off) — change with change_programme; a running course is a fixed sequence: change_plan eases its next session or
+ * pauses it, by the `planId` listed here, and adjust_plan skips or moves one; the Studio plan is the Studio's (the newest,
+ * as the plan list shows it: `studioPlanEntryOf`). A block whose last day is at most ENDED_DAYS days back is listed whatever
+ * its status, never changeable once it has ended or once the athlete stopped it (retired).
  *
  * TRAINING LINES (training lines §3.1, §3.7): the blocks read are grouped as the plan list groups them (@rg/domain
  * `linesOf`): `lines`, each its sport's name and its phases in order (id, name, dates, ended or not), its end, its
@@ -89,7 +90,7 @@ const planSql = (userId: string, where: SQL) => sql`json((select json_object('id
   from ${programs} pr where pr.user_id = ${userId} and ${where} limit 1))`;
 
 interface Row {
-  kind: "block" | "programme" | "watch" | "studio";
+  kind: "block" | "programme" | "course" | "watch" | "studio";
   id: string;
   name: string;
   status: string;
@@ -105,7 +106,7 @@ interface Row {
   next?: unknown;
 }
 
-const KIND_WORDS = { block: "coach block", programme: "programme", watch: "watch plan", studio: "Studio plan" } as const;
+const KIND_WORDS = { block: "coach block", programme: "programme", course: "course", watch: "watch plan", studio: "Studio plan" } as const;
 
 /** What an ended block says comes next (training lines §3.7): a next phase, which joins its line. */
 export const CONTINUE_LINE = "To continue a plan, propose its next phase (createPlan), naming the plan (continuesPlanId); it joins it.";
@@ -121,6 +122,7 @@ export const STOPPED = {
 function whyNot(r: Row, today: string, lineOf: ReadonlyMap<string, TrainingLine>): string | null {
   if (r.kind === "watch") return "a watch plan: move, skip or ease its sessions with adjust_plan; its structure is the watch's";
   if (r.kind === "programme") return "the athlete's own programme: its settings change with change_programme; skip or move one session with adjust_plan";
+  if (r.kind === "course") return "a course: a fixed sequence, each session written on its day. Ease its next session or pause it with change_plan (its planId); skip or move one session with adjust_plan";
   if (r.kind === "studio") return "the athlete's Studio plan: its structure is the Studio's; skip or move one of its sessions with adjust_plan, revise one with propose_workout";
   if (r.status === "retired") return `${STOPPED.why} ${STOPPED.fix}`;
   // Changeable while it runs: active, or a draft of the coach's (as propose_plan takes them) whose last day is ahead.
@@ -188,6 +190,8 @@ function defaultsOf(r: Pick<Row, "kind" | "discipline">): { kind: ProgramKind; d
   switch (r.kind) {
     case "programme":
       return { kind: "adaptive", disciplines: ["strength"] };
+    case "course":
+      return { kind: "course", disciplines: ["yoga"] };
     case "watch":
       return { kind: "coros_import", disciplines: ["run"] };
     case "studio":
@@ -262,7 +266,7 @@ function planOf(r: Row, today: string, room: Room, caring: readonly Caring[], li
         minutes: typeof n.seconds === "number" && n.seconds > 0 ? Math.round(n.seconds / 60) : null,
         ...(originWords ? { origin: originWords } : {}),
         revisable: listRevisable(
-          { origin, category: typeof n.category === "string" ? n.category : null, sport: typeof n.sport === "string" ? n.sport : null, state: typeof n.state === "string" ? n.state : null, content: typeof n.content === "string" ? n.content : null, date: String(n.date), hasDoc: n.hasDoc === 1 },
+          { origin, category: typeof n.category === "string" ? n.category : null, sport: typeof n.sport === "string" ? n.sport : null, state: typeof n.state === "string" ? n.state : null, content: typeof n.content === "string" ? n.content : null, date: String(n.date), hasDoc: n.hasDoc === 1, courseOutline: r.kind === "course" },
           today,
         ),
         title: untrusted(typeof n.title === "string" ? n.title : ""),
@@ -312,6 +316,13 @@ export const readPlans: DesignTool = {
           'next', json(${nextSql(ctx.userId, sql`g.id`, from)}))) from (
           select * from ${programs} where ${programs.userId} = ${ctx.userId} and ${programs.kind} = 'adaptive' and ${programs.status} = 'active'
           order by ${programs.createdAt} desc, ${programs.id} limit ${PLANS_MAX}) g)`,
+      courses: sql`(select json_group_array(json_object('kind', 'course', 'id', g.id, 'name', g.name, 'status', g.status,
+          'discipline', (select group_concat(value, ', ') from json_each(case when json_valid(g.disciplines) then g.disciplines else '[]' end)),
+          'start', g.start_date, 'end', g.end_date, 'race', g.race_date,
+          'plan', ${planSql(ctx.userId, sql`pr.id = g.id`)},
+          'next', json(${nextSql(ctx.userId, sql`g.id`, from)}))) from (
+          select * from ${programs} where ${programs.userId} = ${ctx.userId} and ${programs.kind} = 'course' and ${programs.status} = 'active' and ${programs.archivedAt} is null
+          order by ${programs.createdAt} desc, ${programs.id} limit ${PLANS_MAX}) g)`,
       watch: sql`(select json_group_array(json_object('kind', 'watch', 'id', t.id, 'name', t.name, 'status', t.status, 'discipline', 'run',
           'start', t.start_date, 'end', t.end_date, 'plan', ${planSql(ctx.userId, sql`pr.id = t.id`)},
           'next', json(${nextSql(ctx.userId, sql`t.id`, from)}))) from (
@@ -333,7 +344,7 @@ export const readPlans: DesignTool = {
     const caring = athlete.profiles.flatMap((p) => (p.care ? [{ profileId: p.id, care: p.care.block.label }] : []));
     const blocks = parsedArray(extra.blocks) as Row[];
     const studio = studioRowOf(extra.studio, today);
-    const rows = [...blocks, ...parsedArray(extra.programmes), ...(studio ? [studio] : []), ...parsedArray(extra.watch)] as Row[];
+    const rows = [...blocks, ...parsedArray(extra.programmes), ...parsedArray(extra.courses), ...(studio ? [studio] : []), ...parsedArray(extra.watch)] as Row[];
     // The blocks as the plan list groups them: lines, each with its phases (a retired block is none).
     const trainingLines = linesOf(
       blocks.flatMap((b) => (b.start && b.end && b.discipline ? [lineBlockOf({ ...b, discipline: b.discipline, startDate: b.start, endDate: b.end, raceDate: b.race, programId: b.programId })] : [])),

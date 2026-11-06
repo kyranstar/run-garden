@@ -3,10 +3,10 @@
  * so every course must hold to it the same way: its sessions judged clean with easing either way, a purpose and a brief
  * that fit a plan's limits, and a lookup that answers null, never a stray object, for an id it doesn't know.
  */
-import { describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it } from "vitest";
 import { PLAN_BRIEF_MAX, PLAN_PURPOSE_MAX, type WorkoutDoc } from "@rg/domain";
 import { EQUIPMENT_IDS, EXERCISES, TMJ, type CheckReading } from "@rg/exercise-library";
-import { COURSES, courseDefinition, deriveDoc, treSessionDoc, validateWorkoutDoc, videosOfSource, type DayContext } from "../src/index.js";
+import { COURSES, courseDefinition, courseSessionOfRef, deriveDoc, treSessionDoc, validateWorkoutDoc, videosOfSource, type CourseDefinition, type DayContext } from "../src/index.js";
 import { easedTremorSec } from "../src/tre-course.js";
 
 const TRE = COURSES.tre!;
@@ -75,6 +75,71 @@ describe("TRE's label", () => {
     [11, null],
   ])("with %i done: %j", (done, label) => {
     expect(TRE.sessionLabel(done)).toEqual(label);
+  });
+});
+
+describe("the videos of a document's source", () => {
+  /** A second course that needs nothing but its entry. Added and taken out again by the test. */
+  const SECOND: CourseDefinition = { ...TRE, id: "second", videos: [{ label: "Watch", url: "https://example.com/second" }] };
+  const courses = COURSES as Record<string, CourseDefinition>;
+
+  afterEach(() => {
+    delete courses[SECOND.id];
+  });
+
+  it("a course with videos works by adding its definition, and nothing else", () => {
+    expect(videosOfSource("second-course:3")).toEqual([]);
+    courses[SECOND.id] = SECOND;
+    expect(videosOfSource("second-course:3")).toEqual(SECOND.videos);
+    expect(videosOfSource("tre-course:3")).toEqual(TRE.videos);
+  });
+
+  it("a course with a hyphen in its id is found whole", () => {
+    courses["two-part"] = { ...SECOND, id: "two-part" };
+    expect(videosOfSource("two-part-course:1")).toEqual(SECOND.videos);
+    delete courses["two-part"];
+  });
+
+  it("a course with no videos offers none", () => {
+    courses[SECOND.id] = { ...SECOND, videos: [] };
+    expect(videosOfSource("second-course:1")).toEqual([]);
+  });
+
+  it.each([undefined, "", "second-course", "second-course:", "second-course:x", "second-course:1x", "second-courses:1", "not-second-course:1", "constructor-course:1", "__proto__-course:1", "-course:1", "x\nsecond-course:1"])(
+    "%s offers none",
+    (ref) => {
+      courses[SECOND.id] = SECOND;
+      expect(videosOfSource(ref)).toEqual([]);
+    },
+  );
+
+  it("can be asked to look elsewhere: a definition found there is the answer", () => {
+    expect(videosOfSource("second-course:1", (id) => (id === SECOND.id ? SECOND : null))).toEqual(SECOND.videos);
+  });
+});
+
+describe("which session of a course a document's source names", () => {
+  it.each([
+    ["tre-course:1", 1],
+    ["tre-course:12", 12],
+  ])("%s is session %i of that course", (ref, n) => {
+    expect(courseSessionOfRef("tre", ref)).toBe(n);
+  });
+
+  it.each([undefined, null, "", "tre-course", "tre-course:", "tre-course:0", "tre-course:-1", "tre-course:1.5", "tre-course:1x", "tre-courses:1", "not-tre-course:1", "TRE-course:1", " tre-course:1", "x\ntre-course:1", "tre-course:99999999999999999999"])(
+    "%s is no session of it",
+    (ref) => {
+      expect(courseSessionOfRef("tre", ref)).toBeNull();
+    },
+  );
+
+  it("names only the course asked about", () => {
+    expect(courseSessionOfRef("other", "tre-course:1")).toBeNull();
+    expect(courseSessionOfRef("not-tre", "not-tre-course:1")).toBe(1);
+  });
+
+  it("every course's sessions name themselves by their number", () => {
+    for (const course of COURSE_LIST) expect(courseSessionOfRef(course.id, course.sessionDoc(3, { ease: false }).source.ref)).toBe(3);
   });
 });
 

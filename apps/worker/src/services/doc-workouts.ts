@@ -729,6 +729,8 @@ export interface RevisableRow {
   contentState: string | null;
   effectiveDate: string;
   workoutDoc: string | null;
+  /** Its plan is a course, for the words of a refusal (the coach's reads carry it; the Studio's revise needs no words of it). */
+  courseOutline?: boolean;
 }
 
 /**
@@ -748,6 +750,7 @@ export function revisabilityIn(row: RevisableRow, today: string, all: AccountLib
       effectiveDate: row.effectiveDate,
       hasDoc: stored !== null,
       isRun: stored ? deriveDoc(stored, all).discipline === "run" : null,
+      courseOutline: row.courseOutline === true,
     },
     today,
   );
@@ -989,7 +992,7 @@ export async function removeDocWorkout(
   workoutId: string,
   ctx: DocWorkoutCtx,
   /**
-   * A server caller's own removal (a pause, `program-slots.ts`): who it's recorded as, why the row left, and what the row
+   * A server caller's own removal (a pause, `program-slots.ts`; a course's start or stop, `course-plans.ts`): who it's recorded as, why the row left, and what the row
    * must still be as it's archived, beside the rules here. A row that isn't is `NotRemovableError`, nothing else happening.
    */
   by: { source?: IntentSource; archiveReason?: ArchiveReason; onlyIf?: SQL } = {},

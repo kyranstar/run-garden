@@ -19,6 +19,8 @@ export interface RevisabilityInput {
   /** YYYY-MM-DD, compared with `today` as a string. */
   effectiveDate: string;
   archived?: boolean;
+  /** Its plan is a course (`programs.kind`): an outline of it is a course's, with what a course can do. */
+  courseOutline?: boolean;
   hasDoc: boolean;
   /** From the workout document when there is one; null when there is none (sport/category then decide). */
   isRun: boolean | null;
@@ -52,6 +54,16 @@ export const REVISABILITY_WORDS: Record<
   past: { why: "Its day has passed.", instead: "Propose for today or later." },
 };
 
+/**
+ * The `programme` reason's words for a course's outline, which the course writes on the day: `change_programme` refuses a
+ * course and `pin_moves` fills a pool no course plans from, so they say what does reach one.
+ */
+export const COURSE_OUTLINE_WORDS = {
+  why: "It's a course's session: the course writes it on the day, from its fixed sequence.",
+  instead:
+    "Ease the next session or pause the plan with change_plan, skip or move this one with adjust_plan, or propose a new workout for that day and skip the slot with adjust_plan.",
+} as const;
+
 const RUN_CATEGORIES: readonly string[] = ["recovery", "easy", "long", "quality"];
 const RESOLVED_STATES: readonly string[] = ["completed", "skipped", "missed"];
 
@@ -67,6 +79,7 @@ export function revisability(row: RevisabilityInput, today: string): Revisabilit
   if (row.contentState === "started" || row.contentState === "done") return refuse("under_way");
   if (row.category === "race") return refuse("race");
   if (row.category === "rest") return refuse("rest");
+  if (row.origin === "program" && row.courseOutline) return { ok: false, reason: "programme", ...COURSE_OUTLINE_WORDS };
   if (row.origin === "program" || row.origin === "on_demand") return refuse("programme");
   const run =
     row.isRun !== null ? row.isRun : row.sport === "run" || (row.category !== null && RUN_CATEGORIES.includes(row.category));

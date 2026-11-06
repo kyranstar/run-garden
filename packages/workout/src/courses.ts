@@ -45,3 +45,24 @@ export const COURSES: Readonly<Record<string, CourseDefinition>> = { [TRE.id]: T
 export function courseDefinition(id: string): CourseDefinition | null {
   return Object.prototype.hasOwnProperty.call(COURSES, id) ? COURSES[id]! : null;
 }
+
+/** What a document a course made says it is, in its `source.ref`: `<id>-course:<n>`. */
+const COURSE_REF = /^(.+)-course:(\d+)$/;
+
+/**
+ * The videos for a document with this `source.ref`: its course's, read from the ref, not stored in the document, so
+ * offering them revises no planned session (a new revision would take its copy off the watch and send it again). A ref
+ * that names no course, or a course gone, offers none. `find` is the lookup; only a test asks another.
+ */
+export function videosOfSource(ref: string | undefined, find: (id: string) => CourseDefinition | null = courseDefinition): readonly PracticeVideo[] {
+  const named = COURSE_REF.exec(ref ?? "");
+  return named ? (find(named[1]!)?.videos ?? []) : [];
+}
+
+/** The session of this course a document's `source.ref` names, numbered from 1; null for anything else. */
+export function courseSessionOfRef(courseId: string, ref: string | null | undefined): number | null {
+  const named = COURSE_REF.exec(ref ?? "");
+  if (named?.[1] !== courseId) return null;
+  const n = Number(named[2]);
+  return Number.isSafeInteger(n) && n >= 1 ? n : null;
+}

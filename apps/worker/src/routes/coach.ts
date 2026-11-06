@@ -81,7 +81,7 @@ export const coachRoutes = new Hono<AppContext>();
 export const THREAD_COACH_STEPPED_BACK = "Your coach is now behind the Coach button.";
 coachRoutes.use("*", requireUser);
 
-async function receipt(
+export async function receipt(
   db: Db,
   userId: string,
   body: string,
