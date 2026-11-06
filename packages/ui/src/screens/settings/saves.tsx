@@ -12,12 +12,13 @@
 import { useState } from "react";
 import { Link } from "react-router-dom";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { api, ApiError, SAVES_HEALTH_QUERY, SAVES_LINKS_QUERY, SAVES_STATUS_QUERY } from "@rg/api-client";
-import { ADDED_LINE, alreadyInLine, LINK_REFUSED, linkRefusal, normalizeLinks, pastedLine, severalAddedLine, worstLight } from "@rg/saves";
+import { api, SAVES_HEALTH_QUERY, SAVES_LINKS_QUERY, SAVES_STATUS_QUERY } from "@rg/api-client";
+import { ADDED_LINE, alreadyInLine, linkRefusal, normalizeLinks, pastedLine, severalAddedLine, worstLight } from "@rg/saves";
 import type { ImportHealthDto, LinkDto, PostRowDto, SavePostStatus, SavesStatusDto } from "@rg/saves";
 import { Card, Sheet } from "../../components.js";
 import { postHref } from "../../post-link.js";
 import { HealthRow, healthOf, redLine } from "../saves/health-row.js";
+import { addFailureWords } from "../saves/link-words.js";
 import { TrailSheet, TRAIL_OPEN_LABEL } from "../saves/trail-sheet.js";
 import { ageText } from "./age.js";
 
@@ -97,20 +98,6 @@ function PostRow({ post, busy, onProcess, onTrail }: { post: PostRowDto; busy: b
       ) : null}
     </div>
   );
-}
-
-/** Why a link couldn't be added, in plain words, by the app's answer. */
-function addFailureWords(e: unknown): string {
-  const status = e instanceof ApiError ? e.status : 0;
-  if (status === 400) {
-    // The app's own words for what it takes (a playlist's are its own: audit 2026-11-06, I4).
-    const said = e instanceof ApiError ? (e.body as { message?: unknown } | null)?.message : null;
-    return typeof said === "string" && said.trim() ? said : LINK_REFUSED;
-  }
-  if (status === 401) return "Sign in again to add a link.";
-  if (status === 423) return "A restore is running — try again when it's done.";
-  if (status === 0) return "You're offline — the link is still here to add.";
-  return "The app couldn't take it just now — try again in a moment.";
 }
 
 /**

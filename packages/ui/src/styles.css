@@ -14094,6 +14094,37 @@ button.coach-cite:focus-visible {
   align-items: center;
   column-gap: var(--space-6);
 }
+/* Links pasted into the coach's box (coach-links.tsx; audit 2026-11-06, I5): the app's words for each, under the owner's
+   message — no coach mark, they aren't the coach's. A link is one long word: it wraps anywhere. */
+.coach-links {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+  min-width: 0;
+}
+.coach-links-list {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+.coach-link {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+  font-size: var(--text-sm);
+}
+.coach-link-title {
+  overflow-wrap: anywhere;
+}
+.coach-link-words,
+.coach-links-note {
+  margin: 0;
+  color: var(--ink-soft);
+  font-size: var(--text-xs);
+}
 /* The coach's saves card's pasted links (audit 2026-11-06, I6): under the controls, past the coach's mark; a title may
    be the link itself, one long word, so it wraps anywhere. */
 .coach-saves-links {

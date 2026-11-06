@@ -57,6 +57,7 @@ import {
 } from "./coach-conversation-model.js";
 import { focusOfWire, focusRefusal, isDriftNudge, type CoachAsk, type CoachFit, type CoachFocus } from "./coach-focus.js";
 import { CoachOpening, CoachSays } from "./coach-opening.js";
+import { CoachLinkTurns, linksOnly, useCoachLinks } from "./coach-links.js";
 import { cancelFit, CoachSavesCard, useOpenSaves } from "./coach-saves.js";
 import { readConversation, readCurrent } from "./coach-tolerance.js";
 import type { StudioCtx } from "./model.js";
@@ -171,6 +172,8 @@ export function CoachConversation({ ctx, loopDeps, request = null, seeing: seenA
   const { known: savesKnown } = useOpenSaves();
 
   const [draft, setDraft] = useState(() => (request ?? "").slice(0, REQUEST_MAX_CHARS));
+  // Links the owner pastes into the box go to the link route, not the coach (coach-links.tsx; audit 2026-11-06, I5).
+  const pastedLinks = useCoachLinks();
   // What it sees: what it was opened with — or, opened with nothing named, what the screen registers (a screen still
   // loading its data registers a moment after the tap) — until the athlete's ✕ drops it.
   const registered = useCoachSeen();
@@ -431,7 +434,7 @@ export function CoachConversation({ ctx, loopDeps, request = null, seeing: seenA
   });
 
   // ── The scroll: the newest at the bottom, kept there as turns arrive (never while the athlete reads up) ──
-  const signature = `${turns.map((t) => `${t.runId}:${t.status}:${t.line?.length ?? 0}:${t.cards.length}`).join(",")}|${snapshot?.events.length ?? 0}`;
+  const signature = `${turns.map((t) => `${t.runId}:${t.status}:${t.line?.length ?? 0}:${t.cards.length}`).join(",")}|${snapshot?.events.length ?? 0}|${pastedLinks.turns.length}`;
   // The opening screen reads from its first line down (the coach's line above its chips); a conversation from its newest.
   const anchor = useBottomAnchor(signature, settled && turns.length === 0);
   const setScroller = (el: HTMLDivElement | null) => {
@@ -514,6 +517,7 @@ export function CoachConversation({ ctx, loopDeps, request = null, seeing: seenA
               ))}
             </ol>
           ) : null}
+          <CoachLinkTurns turns={pastedLinks.turns} />
         </div>
       </div>
       <div className="coach-convo-foot">
@@ -563,7 +567,17 @@ export function CoachConversation({ ctx, loopDeps, request = null, seeing: seenA
           onDraft={setDraft}
           placeholder={placeholder}
           canSend={canSend}
-          onSend={() => send(draft)}
+          onSend={() => {
+            // Only links, typed by the owner — never the sheet's own words (an action's request), never an answer to the
+            // coach's question while it works: to the link route, not a run (audit 2026-11-06, I5).
+            const typed = !(request !== null && draft === request.slice(0, REQUEST_MAX_CHARS));
+            if (typed && !working && linksOnly(draft)) {
+              pastedLinks.paste(draft.trim());
+              setDraft("");
+              return;
+            }
+            send(draft);
+          }}
           seeing={seeing}
           onDropSeeing={() => {
             setSeeing(null);
