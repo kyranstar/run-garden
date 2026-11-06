@@ -80,9 +80,23 @@ export const HOW_IT_FELT = "Log how it felt";
 export const OPENING_CHIPS_MAX = 3;
 /** The most of them the coach's own line brings (how it felt, its own chip). */
 export const OWN_CHIPS_MAX = 2;
-/** The most "needs you" chips: they are never crowded out by the line's own (audit §6). Two, and a drift's besides — the
- * nudges route's most (its NUDGES_MAX and one drift, which takes no other chip's place: CI 42165457072's smoke). */
-export const NEEDS_CHIPS_MAX = 3;
+/** The most "needs you" chips besides a drift's: they are never crowded out by the line's own (audit §6). */
+export const NEEDS_OTHERS_MAX = 2;
+/** The most "needs you" chips in all: two, and a drift's besides — the nudges route's own rule (its NUDGES_MAX and one
+ * drift, which takes no other chip's place: CI 42165457072's and 42167336604's smoke). */
+export const NEEDS_CHIPS_MAX = NEEDS_OTHERS_MAX + 1;
+
+/** The "needs you" chips kept, in the server's order: two at most, and the first drift's besides. */
+export function needsKept<T extends { id: string }>(nudges: readonly T[]): T[] {
+  let others = 0;
+  let drift = false;
+  return nudges.filter((n) => {
+    if (!n.id.startsWith("drift:")) return others++ < NEEDS_OTHERS_MAX;
+    if (drift) return false;
+    drift = true;
+    return true;
+  });
+}
 
 /** A chip before the starters: the session's quick review, opened; or words a tap sends (`needs`: a "needs you" one). */
 export type OpeningChip =
@@ -107,7 +121,7 @@ export function openingChips(
   for (const c of opening?.chips ?? []) {
     own.push({ kind: "ask", id: c.id, label: c.label, request: c.request, needs: false });
   }
-  const needs: OpeningChip[] = nudges.slice(0, NEEDS_CHIPS_MAX).map((n) => ({ kind: "ask", id: n.id, label: n.label, request: n.request, needs: true }));
+  const needs: OpeningChip[] = needsKept(nudges).map((n) => ({ kind: "ask", id: n.id, label: n.label, request: n.request, needs: true }));
   return [...own.slice(0, Math.min(OWN_CHIPS_MAX, OPENING_CHIPS_MAX - needs.length)), ...needs];
 }
 
