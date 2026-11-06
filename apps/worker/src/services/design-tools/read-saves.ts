@@ -6,7 +6,7 @@
  * (`ctx.run.savesBatchId`, the saves flow §12.1: "Fit them in" tells the run its batch), whatever its age too (§8.2) —
  * else the newest the athlete saved in the last SAVES_WINDOW_DAYS that nothing has fitted in yet (`fitted_at` null).
  * BY THE MOVE (audit fixes 2026-11-06, E1): `moveIds` (or `moveId`) reads those moves from the newest saved batch with a
- * saved link to one of them — fitted in or not, whatever its age — so a challenge days after a card was approved reads
+ * saved link to one of them (or batchId's, a past card's own) — fitted in or not, whatever its age — so a challenge days after a card was approved reads
  * the evidence it rested on: each move keeps its place in that batch (`n`, its quote ids'), the receipt is the same, and
  * the page never asks to close a batch (nor does any page of a batch fitted in already: `fitted`). A move the batch
  * doesn't hold is named in `missing`; none of the athlete's saves holding any is `not_found`.
@@ -481,7 +481,7 @@ export const readSaves: DesignTool = {
         type: "array",
         items: { type: "string" },
         maxItems: SAVES_MOVES_MAX,
-        description: "Instead of batchId: saved moves to read — from the batch that brought them, fitted in or not (a past card's moves, to answer a challenge).",
+        description: "Saved moves to read — from the batch that brought them (or batchId's), fitted in or not: a past card's moves, to answer a challenge.",
       },
       limit: { type: "integer", minimum: 1, maximum: SAVES_MOVES_MAX, description: `Default ${SAVES_MOVES_MAX}, the most.` },
       offset: { type: "integer", minimum: 0, description: "Moves to skip: the offset missing gives." },
@@ -510,12 +510,11 @@ export const readSaves: DesignTool = {
     const limit = p.limit ?? SAVES_MOVES_MAX;
     const full = p.full === true;
     // By the move (audit fixes, E1): a past card's moves, read from the batch that brought them — fitted in or not.
+    // With batchId too, those moves of that batch: a past card names its batch, so a move two batches brought reads the
+    // evidence that card rested on.
     const wanted = p.moveIds || p.moveId ? [...new Set([...(p.moveId ? [p.moveId] : []), ...(p.moveIds ?? [])])] : null;
-    if (wanted && p.batchId !== undefined) {
-      return refuse("invalid_input", "Give batchId or moveIds, not both.", "moveIds reads those moves from the batch that brought them; batchId reads a batch's page.");
-    }
     // A fit-in run reads the batch it fits (§12.1), whatever its age (§8.2), unless the model names another.
-    const batchId = wanted ? undefined : (p.batchId ?? ctx.run.savesBatchId);
+    const batchId = wanted ? p.batchId : (p.batchId ?? ctx.run.savesBatchId);
     const [athlete, rows] = await Promise.all([
       athleteOf(ctx),
       ctx.db.all(sql`select ${savesBatchSql(ctx.userId, { now: ctx.now, batchId, posts: true, ...(wanted ? { moveIds: wanted } : {}) })} as batch,
@@ -525,7 +524,7 @@ export const readSaves: DesignTool = {
     ]);
     const batch = savedBatchOf(rows[0]?.batch);
     if (!batch) {
-      if (wanted) {
+      if (wanted && p.batchId === undefined) {
         return refuse(
           "not_found",
           `No saved batch of the athlete's holds ${wanted.map((id) => JSON.stringify(id)).join(", ")}.`,

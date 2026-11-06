@@ -107,9 +107,16 @@ describe("evidence after Approve: read_saves by the move", () => {
       const r = await readSaves().run(ctx, { moveIds: [id] });
       expect(isToolErr(r) && r.error).toBe("not_found");
     }
-    // Both ways at once, or with a batch's offset: refused, teachably.
-    const both = await readSaves().run(ctx, { moveIds: [b.lift], batchId: b.batchId });
-    expect(isToolErr(both) && both.error).toBe("invalid_input");
+  });
+
+  it("a move two batches brought: by itself the newest batch's; with the card's batchId, that card's evidence", async () => {
+    const older = await seedSavedBatch(db, userId, { savedAt: SAVED_AT, fittedAt: FITTED_AT, posts: [{ moves: [{ draft: LIFT }, { library: "deadBug" }] }] });
+    const newer = await seedSavedBatch(db, userId, { savedAt: "2026-10-25T17:00:00.000Z", posts: [{ moves: [{ library: "deadBug" }] }] });
+    const ctx = await challengeRun();
+    expect(ok(await readSaves().run(ctx, { moveIds: ["deadBug"] })).data.batch.id).toBe(newer.batchId);
+    const byCard = ok(await readSaves().run(ctx, { moveIds: ["deadBug"], batchId: older.batchId }));
+    expect(byCard.data.batch.id).toBe(older.batchId);
+    expect(byCard.data.moves.map((m: any) => [m.id, m.n])).toEqual([["deadBug", 2]]);
   });
 
   it("a challenge after Approve: read the move's evidence, cite its quote — correct_import on the evidence stands", async () => {
