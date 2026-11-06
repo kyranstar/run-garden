@@ -43,7 +43,7 @@ const chunks = <T>(xs: readonly T[], size: number): T[][] => {
   return out;
 };
 
-export async function backfillPlanRegistry(db: Db, userId: string, today: string): Promise<{ created: number; linked: number }> {
+export async function backfillPlanRegistry(db: Db, userId: string, today: string, timezone = "UTC"): Promise<{ created: number; linked: number }> {
   const done = { created: 0, linked: 0 };
   if (await restoreInProgress(db, userId)) return done;
 
@@ -53,8 +53,8 @@ export async function backfillPlanRegistry(db: Db, userId: string, today: string
       .select({ id: programs.id, kind: programs.kind, onEnd: programs.onEnd, source: programs.source })
       .from(programs)
       .where(eq(programs.userId, userId)),
-    // A day's edge between zones only moves a COROS plan's listing by an hour: the next pass has it.
-    loadNonCoachPlanEntries(db, userId, { raceDate: null, timezone: "UTC" }),
+    // In the account's own zone, as the plan list reads them.
+    loadNonCoachPlanEntries(db, userId, { raceDate: null, timezone }),
   ]);
   let left = STATEMENT_BUDGET - FIXED_READS;
   const now = nowInstant();
@@ -112,14 +112,14 @@ export async function backfillPlanRegistry(db: Db, userId: string, today: string
           id: container.id,
           kind: "coach",
           name: studio.name,
-          status: studio.status === "completed" ? "completed" : "active",
+          status: "active", // ended is computed from the dates, never stored
           disciplines: ["strength"],
           startDate: studio.startDate,
           endDate: studio.endDate,
           raceDate: null,
           source: { studioPlanId: studio.id },
-          // A Studio plan's sessions are the Studio's to make: it reads as finished, as `defaultOnEnd` says.
-          onEnd: defaultOnEnd("studio", ["strength"]),
+          // Kind "coach" without running continues, as `defaultOnEnd` says.
+          onEnd: defaultOnEnd("coach", ["strength"]),
         })
         .onConflictDoNothing();
       known.add(container.id);
@@ -149,7 +149,7 @@ export async function backfillPlanRegistry(db: Db, userId: string, today: string
           kind: "coach",
           // As the plan list names it: a one-phase line by its block, a longer one by its sport.
           name: line.phases.length === 1 ? line.phases[0]!.name : line.name,
-          status: line.ended ? "completed" : "active",
+          status: "active",
           disciplines,
           startDate: line.startDate,
           endDate: line.endDate,

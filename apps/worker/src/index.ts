@@ -395,7 +395,8 @@ export async function hourly(db: Db, env: Env): Promise<void> {
   // waits for the next hour, and a failure stops nothing.
   for (const userId of await allUserIds(db)) {
     try {
-      await backfillPlanRegistry(db, userId, todayInZone((await loadPreferences(db, userId)).timezone));
+      const { timezone } = await loadPreferences(db, userId);
+      await backfillPlanRegistry(db, userId, todayInZone(timezone), timezone);
     } catch (e) {
       console.error(`plan registry backfill failed: ${e instanceof Error ? e.name : "unknown"}`);
     }

@@ -171,9 +171,21 @@ describe("backfillPlanRegistry", () => {
       source: { studioPlanId: studioId },
       startDate: "2026-10-05",
       endDate: "2026-11-01",
-      onEnd: "finish",
+      onEnd: "continue",
     });
     expect(await backfillPlanRegistry(db, userId, TODAY)).toEqual({ created: 0, linked: 0 });
+  });
+
+  it("stores status active for an ended line and a completed Studio plan: ended is computed, never stored", async () => {
+    await block("old", "run", "2026-01-05", "2026-01-18");
+    await studioWithContainer(true);
+
+    // A day after both have ended.
+    await backfillPlanRegistry(db, userId, "2026-12-01");
+
+    const byId = new Map((await rows()).map((r) => [r.id, r.status]));
+    expect(byId.get("plan-old")).toBe("active");
+    expect(byId.get("container-1")).toBe("active");
   });
 
   it("makes nothing of a Studio plan with no container yet", async () => {
