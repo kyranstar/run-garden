@@ -108,3 +108,14 @@ describe("a decided card, once the conversation moved on (E3)", () => {
     expect(text()).toContain("Zorbex hip lift — in rotation.");
   });
 });
+
+describe("the count survives the reads' tolerance (E4)", () => {
+  it("the suggestion's read and the conversation's card keep the count", async () => {
+    const { toConversation, toProposal } = await import("../src/screens/studio/coach-tolerance.js");
+    expect(toProposal(read()).pins![0]!.count).toBe("1 in · 1 left out");
+    const conv = toConversation({ id: "c", startedAt: "x", turns: [{ runId: "r", at: "x", words: null, status: "finished", line: null, cards: [card()], question: null }] });
+    expect(conv.turns[0]!.cards[0]!.count).toBe("1 in · 1 left out");
+    // A count that isn't text is dropped.
+    expect(toProposal(read({ pins: [{ ...pinsLine(), count: 5 }] })).pins![0]).not.toHaveProperty("count");
+  });
+});

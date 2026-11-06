@@ -427,6 +427,8 @@ function toPinsLine(v: unknown): DesignPinsLineDto | null {
     opId: p.opId,
     title: words(p.title) ?? "Moves for your programme",
     summary: text(p.summary),
+    // The count beneath the coach's headline (audit fixes, E4): a text, or nothing.
+    ...(typeof p.count === "string" && p.count ? { count: p.count } : {}),
     lines: toPinsCardLines(p.lines),
     why: text(p.why),
     pin: texts(p.pin),
@@ -503,6 +505,8 @@ function toCard(v: unknown): CoachConversationCardDto | null {
     proposalId: c.proposalId,
     title: words(c.title) ?? "A suggestion",
     summary: text(c.summary),
+    // The moves in rotation's count beneath the coach's headline (audit fixes, E4): a text, or nothing.
+    ...(typeof c.count === "string" && c.count ? { count: c.count } : {}),
     status: text(c.status),
     // A plan's lines (§8 §5): texts only.
     ...(Array.isArray(c.lines) ? { lines: texts(c.lines) } : {}),
