@@ -1,5 +1,5 @@
 import { SAVE_ERROR_CODES } from "@rg/saves";
-import type { CheckReport, ImportHealthDto, PostSubmit, SaveErrorCode, SavePostStatus, SavesStatusDto, WorkItem } from "@rg/saves";
+import type { CheckReport, ImportHealthDto, LinkDto, PostSubmit, SaveErrorCode, SavePostStatus, SavesStatusDto, WorkItem } from "@rg/saves";
 import { AppRefusedError, AppUnreachableError } from "./errors.js";
 
 // The app's token routes (`/api/saves/*`). The token travels only in the Authorization header: never in a URL, a log
@@ -40,6 +40,16 @@ export interface ReadFailure {
   message: string;
 }
 
+/** The app's answer to a pasted link: taken, already imported (and when), or not a link it takes (its words). */
+export type AddLinkAnswer = { state: "added" } | { state: "known"; postId: string; firstSeenAt: string } | { state: "refused"; message: string };
+
+/** What a video's reading is told: the model, its output cap, and the issues it retries with. */
+export interface VideoOpts {
+  model: string;
+  maxTokens: number;
+  retryIssues?: string[];
+}
+
 /** Why a post could not be sent at all (`POST /posts/:key/failed`). */
 export type FetchFailure = "gone" | "media_failed" | "too_large";
 
@@ -48,13 +58,20 @@ export interface AppClient {
   /** Of `keys`, the ones the app has never seen. */
   known(source: string, keys: string[]): Promise<string[]>;
   submitPost(post: PostSubmit): Promise<SubmitAnswer>;
-  work(): Promise<WorkItem[]>;
+  /** `links`: this extension reads pasted links and videos (`?v=2`): the list hands them out too. */
+  work(opts?: { links?: boolean }): Promise<WorkItem[]>;
   /** `body` is the gateway JSON (`buildExtractBody`), sent as a string so the request carries a Content-Length. */
   extract(source: string, key: string, body: string, opts: ExtractOpts): Promise<ExtractAnswer>;
   /** Tells the app a post could not be sent, so its work list stops handing it out first. A 404/409 is nothing to do. */
   reportFailed(source: string, key: string, code: FetchFailure): Promise<void>;
-  /** Tells the app a read failed, for its trail and health; best effort: never throws. */
-  reportReadFailed(r: ReadFailure): Promise<void>;
+  /** Tells the app a read failed, for its trail and health; best effort: never throws. True when the app took it. */
+  reportReadFailed(r: ReadFailure): Promise<boolean>;
+  /** A link pasted in the popup, told to the app at once so the phone shows it (`POST /api/saves/links`). */
+  addLink(url: string): Promise<AddLinkAnswer>;
+  /** The recent pasted links and where each stands (`GET /api/saves/links`). */
+  links(): Promise<LinkDto[]>;
+  /** A YouTube video's reading, which the app builds and asks for itself (`POST /posts/:key/extract-video`). */
+  extractVideo(key: string, opts: VideoOpts): Promise<ExtractAnswer>;
   /** The import's status, as the popup shows it. */
   status(): Promise<SavesStatusDto>;
   /** The import's health row: one light per stage and source (import trail). */
@@ -68,6 +85,11 @@ const KNOWN_CHUNK = 200;
 const TIMEOUT_MS = 30_000;
 /** The relay waits on the model (up to 120 s at the Worker), plus the upload. */
 const RELAY_TIMEOUT_MS = 180_000;
+/**
+ * A video's reading: the Worker's call waits up to 600 s (120 s and 2 s a minute watched), and this waits that plus 60 s
+ * (design 2026-11-05 §5.4). The extension can't know the minutes the app will watch (Watch it too), so it waits the most.
+ */
+export const VIDEO_TIMEOUT_MS = 660_000;
 
 export function createAppClient(opts: { appUrl: string; token: string; fetchImpl: typeof fetch }): AppClient {
   const base = opts.appUrl.replace(/\/+$/, "");
@@ -105,6 +127,23 @@ export function createAppClient(opts: { appUrl: string; token: string; fetchImpl
   const postJson = (path: string, payload: unknown) =>
     call(path, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(payload) });
 
+  /** A relay's answer: done, or the code it refused with (and the issues to retry with, or the Worker's cap). */
+  async function extractAnswer(res: Response): Promise<ExtractAnswer> {
+    if (res.ok) return { ok: true };
+    const body = await readJson(res);
+    const error = typeof body?.error === "string" ? body.error : null;
+    const issues = Array.isArray(body?.issues) ? body.issues.filter((i): i is string => typeof i === "string") : undefined;
+    if (res.status === 401) throw new AppRefusedError(401, error);
+    if (error === "not_found" || error === "conflict") return { ok: false, code: error };
+    if (error && (SAVE_ERROR_CODES as readonly string[]).includes(error)) {
+      const maxBytes = typeof body?.maxBytes === "number" && body.maxBytes > 0 ? body.maxBytes : undefined;
+      return { ok: false, code: error as SaveErrorCode, ...(issues?.length ? { issues } : {}), ...(maxBytes ? { maxBytes } : {}) };
+    }
+    // A 400/411 is this extension's own mistake (a model or length the relay refuses): a failed post, not an outage.
+    if (res.status >= 400 && res.status < 500 && error) return { ok: false, code: "unknown", issues: [error] };
+    throw new AppUnreachableError(`App unreachable (${res.status})`);
+  }
+
   return {
     async reportCheck(report) {
       await expectOk(await postJson("/api/saves/checks", report));
@@ -124,8 +163,8 @@ export function createAppClient(opts: { appUrl: string; token: string; fetchImpl
       return body as unknown as SubmitAnswer;
     },
 
-    async work() {
-      const body = await expectOk(await call("/api/saves/work", { method: "GET" }));
+    async work(opts) {
+      const body = await expectOk(await call(`/api/saves/work${opts?.links ? "?v=2" : ""}`, { method: "GET" }));
       return Array.isArray(body.keys) ? (body.keys as WorkItem[]) : [];
     },
 
@@ -147,19 +186,41 @@ export function createAppClient(opts: { appUrl: string; token: string; fetchImpl
         },
         RELAY_TIMEOUT_MS,
       );
-      if (res.ok) return { ok: true };
-      const body = await readJson(res);
-      const error = typeof body?.error === "string" ? body.error : null;
-      const issues = Array.isArray(body?.issues) ? body.issues.filter((i): i is string => typeof i === "string") : undefined;
-      if (res.status === 401) throw new AppRefusedError(401, error);
-      if (error === "not_found" || error === "conflict") return { ok: false, code: error };
-      if (error && (SAVE_ERROR_CODES as readonly string[]).includes(error)) {
-        const maxBytes = typeof body?.maxBytes === "number" && body.maxBytes > 0 ? body.maxBytes : undefined;
-        return { ok: false, code: error as SaveErrorCode, ...(issues?.length ? { issues } : {}), ...(maxBytes ? { maxBytes } : {}) };
+      return extractAnswer(res);
+    },
+
+    async extractVideo(key, { model, maxTokens, retryIssues }) {
+      const res = await call(
+        `/api/saves/posts/${encodeURIComponent(key)}/extract-video?source=youtube`,
+        {
+          method: "POST",
+          headers: {
+            "x-saves-model": model,
+            "x-saves-max-tokens": String(maxTokens),
+            ...(retryIssues?.length ? { "x-saves-retry-issues": encodeURIComponent(JSON.stringify(retryIssues)) } : {}),
+          },
+        },
+        VIDEO_TIMEOUT_MS,
+      );
+      return extractAnswer(res);
+    },
+
+    async addLink(url) {
+      const res = await postJson("/api/saves/links", { url });
+      if (res.status === 400) {
+        const body = await readJson(res);
+        if (body?.error === "not_a_link") return { state: "refused", message: typeof body.message === "string" ? body.message : "Not a link the app takes" };
       }
-      // A 400/411 is this extension's own mistake (a model or length the relay refuses): a failed post, not an outage.
-      if (res.status >= 400 && res.status < 500 && error) return { ok: false, code: "unknown", issues: [error] };
-      throw new AppUnreachableError(`App unreachable (${res.status})`);
+      const body = await expectOk(res);
+      if (body.state === "known" && typeof body.postId === "string") {
+        return { state: "known", postId: body.postId, firstSeenAt: typeof body.firstSeenAt === "string" ? body.firstSeenAt : "" };
+      }
+      return { state: "added" };
+    },
+
+    async links() {
+      const body = await expectOk(await call("/api/saves/links", { method: "GET" }));
+      return Array.isArray(body.links) ? (body.links as LinkDto[]) : [];
     },
 
     async reportFailed(source, key, code) {
@@ -170,9 +231,11 @@ export function createAppClient(opts: { appUrl: string; token: string; fetchImpl
 
     async reportReadFailed(r) {
       try {
-        await postJson("/api/saves/read-failed", { source: r.source, ...(r.key ? { key: r.key } : {}), code: r.code, message: r.message.slice(0, 300) });
+        const res = await postJson("/api/saves/read-failed", { source: r.source, ...(r.key ? { key: r.key } : {}), code: r.code, message: r.message.slice(0, 300) });
+        return res.ok;
       } catch {
         // The trail misses one failed read; the check's own error still says it.
+        return false;
       }
     },
 

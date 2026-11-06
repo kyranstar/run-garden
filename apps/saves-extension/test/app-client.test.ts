@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { createAppClient, statusAndHealth } from "../src/app-client.js";
+import { createAppClient, statusAndHealth, VIDEO_TIMEOUT_MS } from "../src/app-client.js";
 import { AppRefusedError, AppUnreachableError } from "../src/errors.js";
 
 const TOKEN = "tok-synthetic-0123456789";
@@ -68,7 +68,7 @@ describe("the app client", () => {
     expect(calls[0]!.url).toBe("https://app.example.com/api/saves/read-failed");
     expect(JSON.parse(String(calls[0]!.init.body))).toEqual({ source: "instagram", code: "login_needed", message: "login page" });
     const down = recorder(() => { throw new Error("offline"); });
-    await expect(down.client.reportReadFailed({ source: "instagram", code: "unknown", message: "x" })).resolves.toBeUndefined();
+    await expect(down.client.reportReadFailed({ source: "instagram", code: "unknown", message: "x" })).resolves.toBe(false);
   });
 
   it("reads the relay's coded refusals by their error, whatever the status", async () => {
@@ -185,5 +185,47 @@ describe("the app client: status and override", () => {
   it("an override the app finds not overridable is a refusal; an outage is unreachable", async () => {
     await expect(recorder(() => json(409, { error: "not_overridable" })).client.override("instagram", "k", "skip")).rejects.toBeInstanceOf(AppRefusedError);
     await expect(recorder(() => json(503, {})).client.override("instagram", "k", "skip")).rejects.toBeInstanceOf(AppUnreachableError);
+  });
+});
+
+describe("the app client: pasted links and videos (phase 2)", () => {
+  it("adds a link: added, already in (with when), or refused with the app's words", async () => {
+    const answers = [
+      json(200, { state: "added", link: { key: "k" } }),
+      json(200, { state: "known", postId: "p1", firstSeenAt: "2026-11-03T09:00:00.000Z" }),
+      json(400, { error: "not_a_link", message: "Only YouTube and Instagram links for now." }),
+    ];
+    const { calls, client } = recorder(() => answers.shift()!);
+    expect(await client.addLink("x")).toEqual({ state: "added" });
+    expect(await client.addLink("y")).toEqual({ state: "known", postId: "p1", firstSeenAt: "2026-11-03T09:00:00.000Z" });
+    expect(await client.addLink("z")).toEqual({ state: "refused", message: "Only YouTube and Instagram links for now." });
+    expect(calls[0]!.url).toBe("https://app.example.com/api/saves/links");
+    expect(JSON.parse(String(calls[0]!.init.body))).toEqual({ url: "x" });
+  });
+
+  it("lists the recent links, and asks for work that knows links with ?v=2", async () => {
+    const { calls, client } = recorder((url) => (url.endsWith("/links") ? json(200, { links: [{ key: "a" }] }) : json(200, { keys: [] })));
+    expect(await client.links()).toEqual([{ key: "a" }]);
+    await client.work({ links: true });
+    await client.work();
+    expect(calls.map((c) => c.url)).toEqual([
+      "https://app.example.com/api/saves/links", "https://app.example.com/api/saves/work?v=2", "https://app.example.com/api/saves/work",
+    ]);
+  });
+
+  it("asks for a video's reading with the model, output cap and retry issues, waiting as long as the app may watch", async () => {
+    const { calls, client } = recorder(() => json(422, { error: "no_captions" }));
+    expect(await client.extractVideo("Zx9_-QaB3cD", { model: "google/gemini-3.6-flash", maxTokens: 32_000, retryIssues: ["moves.0: x"] })).toEqual({ ok: false, code: "no_captions" });
+    expect(calls[0]!.url).toBe("https://app.example.com/api/saves/posts/Zx9_-QaB3cD/extract-video?source=youtube");
+    expect(header(calls[0]!.init, "x-saves-max-tokens")).toBe("32000");
+    expect(JSON.parse(decodeURIComponent(header(calls[0]!.init, "x-saves-retry-issues")!))).toEqual(["moves.0: x"]);
+    expect(VIDEO_TIMEOUT_MS).toBe(660_000);
+  });
+
+  it("says whether the app took a failed read", async () => {
+    const ok = recorder(() => json(200, { ok: true }));
+    expect(await ok.client.reportReadFailed({ source: "youtube", key: "k", code: "unplayable", message: "Age-restricted" })).toBe(true);
+    const down = recorder(() => json(503, { error: "down" }));
+    expect(await down.client.reportReadFailed({ source: "youtube", key: "k", code: "unplayable", message: "Age-restricted" })).toBe(false);
   });
 });

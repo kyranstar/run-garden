@@ -25,6 +25,11 @@ export interface CheckConfig {
   maxBodyBytes: number;
   /** The extension's version, on each submit's read facts (the trail says which extension read a post). */
   extVersion: string;
+  /**
+   * `check` (the default): a whole check — its report, the saved list, the queue, the work list. `queue`: only what
+   * waits in the queue (a pasted link's submit and reading): no report, no saved list, no work list.
+   */
+  mode?: "check" | "queue";
 }
 
 export const DEFAULT_CONFIG: CheckConfig = {
@@ -33,8 +38,9 @@ export const DEFAULT_CONFIG: CheckConfig = {
   maxWork: 20,
   minVideoWidth: MIN_VIDEO_WIDTH,
   model: "google/gemini-3.6-flash",
-  // The Worker's EXTRACT_MAX_TOKENS_CAP: 4,000 cut off 18 of the first 43 live replies (2026-10-26).
-  maxTokens: 12_000,
+  // The Worker's EXTRACT_MAX_TOKENS_CAP: 4,000 cut off 18 of the first 43 live replies (2026-10-26); 32,000 since
+  // extract-6, for a 30-move follow-along with its quotes and reasons (design 2026-11-05 §5.4).
+  maxTokens: 32_000,
   // Just under the relay's own cap (RELAY_MAX_BYTES, 20 MB). The gateway's limit is learned from its 413 at run time
   // (probe R2): the 4.5 MB guess this held before (2026-10-25) refused 32 of the first 38 videos before sending anything.
   maxBodyBytes: 19_500_000,
@@ -55,6 +61,8 @@ export interface CheckDeps {
   config: CheckConfig;
   /** Waits between reads of the site (feed pages, single posts), so they come at a person's pace. None in tests. */
   pause?: () => Promise<void>;
+  /** Posts already read (a pasted link's): their media links are fresh, so their reading needs no second read. */
+  prefetched?: FeedPost[];
 }
 
 export interface CheckSummary {
@@ -111,6 +119,20 @@ interface SubmitPayload {
   coverUrl: string | null;
   /** The post's media (a video counts one, and each image): its read facts (absent from an older queue entry). */
   mediaCount?: number;
+  /** How it came: from the saved list (the default, and an older queue entry's) or a pasted link. */
+  via?: "saved_list" | "pasted";
+}
+
+/** Queue a pasted Instagram post's submit, marked pasted (design 2026-11-05 §5.1); `runCheck` in `queue` mode sends it. */
+export async function enqueuePastedSubmit(queue: ExtQueue, post: FeedPost, source: string): Promise<boolean> {
+  const payload: SubmitPayload = {
+    post: { ...toSubmit(post, source), origin: "pasted" },
+    coverUrl: post.coverUrl,
+    mediaCount: post.images.length + (post.videoVariants.length ? 1 : 0),
+    via: "pasted",
+  };
+  if (!postSubmitSchema.safeParse(payload.post).success) return false;
+  return queue.push({ kind: "submit", source, key: post.key, payload });
 }
 
 /** UTF-8 length without copying the string. */
@@ -157,7 +179,8 @@ export async function runCheck(deps: CheckDeps): Promise<CheckSummary> {
     error: null,
   };
   /** Posts read this check, by key: their media links are fresh, so an extraction needs no second read. */
-  const posts = new Map<string, FeedPost>();
+  const posts = new Map<string, FeedPost>((deps.prefetched ?? []).map((p) => [p.key, p]));
+  const full = (config.mode ?? "check") === "check";
   /** Keys submitted or extracted this check: the work list does not hand them over again. */
   const handled = new Set<string>();
   let budgetPaused = false;
@@ -197,7 +220,7 @@ export async function runCheck(deps: CheckDeps): Promise<CheckSummary> {
 
   async function withCover(payload: SubmitPayload): Promise<PostSubmit> {
     const facts = (coverSent: boolean): NonNullable<PostSubmit["readFacts"]> => ({
-      via: "saved_list", extVersion: config.extVersion, coverSent, mediaCount: payload.mediaCount ?? 0,
+      via: payload.via ?? "saved_list", extVersion: config.extVersion, coverSent, mediaCount: payload.mediaCount ?? 0,
     });
     if (!payload.coverUrl) return { ...payload.post, readFacts: facts(false) };
     try {
@@ -441,6 +464,8 @@ export async function runCheck(deps: CheckDeps): Promise<CheckSummary> {
     const ordered = [...items.filter((i) => i.action === "filter"), ...items.filter((i) => i.action !== "filter")];
     for (const item of ordered) {
       if (handled.has(item.key)) continue;
+      // A link to read, and a video of another site, are the link runner's (links.ts), never a check's.
+      if (item.action === "read" || item.source !== config.source) continue;
       if (item.action === "filter") {
         // Re-read the post (a fresh cover) and submit it again: the app runs its filter once more.
         let post: FeedPost;
@@ -460,6 +485,18 @@ export async function runCheck(deps: CheckDeps): Promise<CheckSummary> {
       }
       await drain();
     }
+  }
+
+  if (!full) {
+    // Queue mode: only what waits (a pasted link's submit and reading), with no report of a check that didn't happen.
+    try {
+      await drain();
+    } catch (e) {
+      const err = e instanceof CheckError ? e : new CheckError("unknown", e instanceof Error ? e.message : String(e));
+      s.error = { code: err.code, message: err.message };
+    }
+    s.finishedAt = iso();
+    return s;
   }
 
   try {
@@ -495,6 +532,19 @@ export async function runCheck(deps: CheckDeps): Promise<CheckSummary> {
   };
   await app.reportCheck(report).catch(() => undefined); // an unreachable app already shows in the error
   return s;
+}
+
+/**
+ * One lock for everything that reads a site or sends the queue (a check, a run of pasted links): a task waits for the
+ * one before it, and one that fails never blocks the next (design 2026-11-05 §5.1: never concurrently).
+ */
+export function serialLock(): <T>(fn: () => Promise<T>) => Promise<T> {
+  let tail: Promise<unknown> = Promise.resolve();
+  return <T>(fn: () => Promise<T>): Promise<T> => {
+    const run = tail.then(fn, fn);
+    tail = run.catch(() => undefined);
+    return run;
+  };
 }
 
 /** Wraps a task so a second call while one runs joins it instead of starting another: checks never overlap. */
