@@ -69,6 +69,21 @@ export class LinkQueue {
   }
 }
 
+/**
+ * A pasted Instagram post sent through the check's queue (`enqueue`, then `run` in queue mode): a submit that couldn't be
+ * queued (its details don't fit the app's format) or that the app refused is a failure with its reason, so the link
+ * reaches an end on the app instead of waiting to be read again every 15 minutes (final audit G11).
+ */
+export async function sendPastedInstagram(
+  enqueue: () => Promise<boolean>,
+  run: () => Promise<{ submitted: number; error: { code: SaveErrorCode; message: string } | null }>,
+): Promise<void> {
+  if (!(await enqueue())) throw new CheckError("unknown", "The post's details didn't fit");
+  const s = await run();
+  if (s.error?.code === "app_unreachable") throw new AppUnreachableError(s.error.message);
+  if (s.submitted === 0) throw new CheckError(s.error?.code ?? "unknown", s.error?.message ?? "The app refused the post");
+}
+
 export interface LinksDeps {
   app: Pick<AppClient, "work" | "submitPost" | "extractVideo" | "reportReadFailed" | "reportFailed">;
   queue: LinkQueue;

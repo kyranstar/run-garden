@@ -2,7 +2,7 @@ import { LINK_REFUSED, normalizeLink } from "@rg/saves";
 import { createAppClient, statusAndHealth } from "./app-client.js";
 import { DEFAULT_CONFIG, enqueuePastedSubmit, runCheck, serialLock, singleFlight, type CheckSummary } from "./check.js";
 import { parseMediaInfo } from "./feed.js";
-import { LinkQueue, runLinks, type LinksSummary } from "./links.js";
+import { LinkQueue, runLinks, sendPastedInstagram, type LinksSummary } from "./links.js";
 import { chromeTabs, createPageReader } from "./page-reader.js";
 import { shortcodeToPk } from "./shortcode.js";
 import { chromeYoutubeTabs, readYoutube } from "./youtube-reader.js";
@@ -10,7 +10,6 @@ import { chromeStore, ExtQueue } from "./queue.js";
 import { loadSettings } from "./settings.js";
 import { SOURCE } from "./feed.js";
 import { isPostKey, NOT_CONFIGURED } from "./status.js";
-import { AppUnreachableError } from "./errors.js";
 import type { ImportHealthDto, LinkDto, SavesStatusDto } from "@rg/saves";
 import type { AddLinkAnswer, PopupLocalLink } from "./status.js";
 
@@ -79,12 +78,10 @@ async function links(): Promise<LinksSummary | null> {
         await pause();
         const post = parseMediaInfo(await reader.readPost(shortcodeToPk(key)));
         const queue = new ExtQueue(chromeStore);
-        await enqueuePastedSubmit(queue, post, SOURCE);
-        const summary = await runCheck({
-          app, reader, fetchImpl, queue, store: chromeStore, now: Date.now, pause, prefetched: [post],
-          config: { ...DEFAULT_CONFIG, extVersion, mode: "queue" },
-        });
-        if (summary.error?.code === "app_unreachable") throw new AppUnreachableError(summary.error.message);
+        await sendPastedInstagram(
+          () => enqueuePastedSubmit(queue, post, SOURCE),
+          () => runCheck({ app, reader, fetchImpl, queue, store: chromeStore, now: Date.now, pause, prefetched: [post], config: { ...DEFAULT_CONFIG, extVersion, mode: "queue" } }),
+        );
       },
       config: { model: DEFAULT_CONFIG.model, maxTokens: DEFAULT_CONFIG.maxTokens, extVersion },
     });

@@ -2,7 +2,7 @@ import { describe, expect, it } from "vitest";
 import { normalizeLink, postSubmitSchema, type PostSubmit, type WorkItem } from "@rg/saves";
 import type { ExtractAnswer, ReadFailure, SubmitAnswer, VideoOpts } from "../src/app-client.js";
 import { AppUnreachableError, LoginNeededError, PostGoneError } from "../src/errors.js";
-import { LinkQueue, runLinks, type LinksDeps } from "../src/links.js";
+import { LinkQueue, runLinks, sendPastedInstagram, type LinksDeps } from "../src/links.js";
 import type { YoutubeRead } from "../src/youtube-reader.js";
 import { memoryStore } from "./fixtures.js";
 
@@ -204,5 +204,24 @@ describe("runLinks: a video the app holds that can't be read any more (final rev
     await runLinks(deps);
     expect(app.gone).toEqual([]);
     expect(app.failures).toHaveLength(1);
+  });
+});
+
+describe("a pasted Instagram post the app can't take (final audit G11)", () => {
+  const summary = (over = {}) => ({ checkId: "c", startedAt: "", finishedAt: "", pages: 0, found: 0, fresh: 0, submitted: 1, filtered: 0, extracted: 1, failed: 0, error: null, ...over });
+
+  it("a submit that couldn't be queued or that the app refused is a failure with its reason, so the link reaches an end", async () => {
+    await expect(sendPastedInstagram(async () => false, async () => summary())).rejects.toThrow("The post's details didn't fit");
+    await expect(sendPastedInstagram(async () => true, async () => summary({ submitted: 0, failed: 1 }))).rejects.toThrow("The app refused the post");
+    await expect(sendPastedInstagram(async () => true, async () => summary({ submitted: 0, error: { code: "app_unreachable", message: "App unreachable" } }))).rejects.toBeInstanceOf(AppUnreachableError);
+    await expect(sendPastedInstagram(async () => true, async () => summary())).resolves.toBeUndefined();
+  });
+
+  it("the runner tells the app, which marks the link failed", async () => {
+    const { app, queue, deps } = setup({ instagram: () => sendPastedInstagram(async () => false, async () => summary()) });
+    await add(queue, igLink);
+    await runLinks(deps);
+    expect(app.failures).toEqual([{ source: "instagram", key: "ZorbexPost1", code: "unknown", message: "The post's details didn't fit" }]);
+    expect(await queue.all()).toEqual([]);
   });
 });
