@@ -964,6 +964,25 @@ beforeAll(async () => {
     await measureTool("record_answer", images.get("read12")!, ctx, { answers: [{ question: "tightness", area: "calves", quote: "My calves are tight from Sunday's hills" }] });
     await measureTool("remember", images.get("read12")!, ctx, { kind: "fact", body: words(1, 200), confidence: "stated" });
     await measureTool("adjust_plan", images.get("read12")!, ctx, { workoutId: rich.outlineToday, change: { kind: "skip", reason: "Rest the legs today." }, why: words(2, 150) });
+    // 8x (the safety audit, S4): adjust_plan's heaviest load read — a run moved into the next week, its new day beside a
+    // Studio strength day whose document is read and derived (hard on the legs?), the week's planned running and the four
+    // weeks of runs before it summed — within what adjust_plan declares.
+    {
+      const tool = allTools().find((t) => t.name === "adjust_plan")!;
+      const probe = open(images.get("read12")!);
+      const [easy] = await probe.db
+        .select({ id: schema.plannedWorkouts.id })
+        .from(schema.plannedWorkouts)
+        .where(and(eq(schema.plannedWorkouts.userId, rich.userId), eq(schema.plannedWorkouts.effectiveDate, day(-3)), eq(schema.plannedWorkouts.category, "easy")));
+      probe.close();
+      if (!easy) throw new Error("8x: the rich athlete's run three days on is gone");
+      const input = { workoutId: easy.id, change: { kind: "move", toDate: day(-6) }, why: words(2, 150) };
+      (await measure("8x.adjust", `8x. adjust_plan: a run moved into the next week, its load read (declared ${tool.cpuWeight})`, images.get("read12")!, async (x) => {
+        const r = await tool.run(ctx(x), input);
+        if (isToolErr(r)) throw new Error(`8x refused: ${r.error} — ${r.why}`);
+        utf8Bytes(JSON.stringify({ provenance: r.provenance, missing: r.missing, data: r.data }));
+      }, { budget: tool.cpuWeight })).close();
+    }
     // change_programme (§8 §5): the rich athlete's programme onto other days, a goal and minutes — its preview of where
     // the sessions go, its lines.
     await measureTool("change_programme", images.get("read12")!, ctx, { programmeId: rich.programId, days: ["Tue", "Thu", "Sat"], weeklyGoal: 3, minutes: 45, why: words(2, 150) });
@@ -1732,7 +1751,7 @@ function within(id: string, ctx: TestContext): void {
 describe("the coach designer's requests within the Workers free plan's CPU", () => {
   it("every shape was measured", () => {
     const grouped = (k: string) => GROUPS.some((g) => k.startsWith(`${g}.`));
-    expect([...shapes.keys()].filter((k) => shapes.get(k)!.budget !== null && !grouped(k))).toEqual(["1a", "1b", "1d", "2a", "8z.unknown", "8z.away", "2b", "2b.q", "9c", "2e", "2c", "9b", "9a", "4b", "4c", "4d", "12", "3", "10a", "10b", "7", "5a", "6", "13a", "13b", "11a", "11b"]);
+    expect([...shapes.keys()].filter((k) => shapes.get(k)!.budget !== null && !grouped(k))).toEqual(["1a", "1b", "1d", "2a", "8x.adjust", "8z.unknown", "8z.away", "2b", "2b.q", "9c", "2e", "2c", "9b", "9a", "4b", "4c", "4d", "12", "3", "10a", "10b", "7", "5a", "6", "13a", "13b", "11a", "11b"]);
     // The queued reads go in two steps or more; four whole documents' validates in two (three, then one); nine half
     // documents' in three; the approve in five chunks or more.
     expect(inGroup("1c").length).toBeGreaterThanOrEqual(2);
@@ -1759,7 +1778,7 @@ describe("the coach designer's requests within the Workers free plan's CPU", () 
     }
   });
 
-  for (const id of ["1a", "1b", "1c", "1d", "1d.q", "8z.unknown", "8z.away", "2a", "2a.q", "2b", "2b.q", "2c", "2d", "2e", "3", "4b", "4c", "4d", "5a", "5b", "5p", "5c", "5o", "6", "7", "9a", "9b", "9c", "10a", "10b", "11a", "11b", "12", "13a", "13b"]) {
+  for (const id of ["1a", "1b", "1c", "1d", "1d.q", "8x.adjust", "8z.unknown", "8z.away", "2a", "2a.q", "2b", "2b.q", "2c", "2d", "2e", "3", "4b", "4c", "4d", "5a", "5b", "5p", "5c", "5o", "6", "7", "9a", "9b", "9c", "10a", "10b", "11a", "11b", "12", "13a", "13b"]) {
     const over = KNOWN_OVER[id];
     it(
       over

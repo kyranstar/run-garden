@@ -209,10 +209,32 @@ export function runCtxSql(userId: string, date: string): SQL {
       where ${a.userId} = ${userId} and ${a.sport} = 'run' and ${ACTIVITY_DAY} between ${addDays(start, -28)} and ${addDays(start, -1)}))`;
 }
 
+/**
+ * What the validator reads of the athlete's running around a session already on the plan, on the day a change leaves it
+ * (the safety audit, 2026-11-06, S4: adjust_plan's moved, lengthened or restored session): `runCtxSql`'s `near`, `week`
+ * and `avg`, the session itself left out of both — its day `toDate` (a move's), else its own, read in the same query. One
+ * scalar subquery for the statement its caller already runs; `runCtxOf` reads it (no threshold: a change re-paces nothing).
+ */
+export function runLoadAtSql(userId: string, workoutId: string, toDate: string | null): SQL {
+  const live = sql`p.user_id = ${userId} and p.archived_at is null and p.completion_state not in ('skipped', 'missed') and p.id <> ${workoutId}`;
+  return sql`(with d(x) as (select coalesce(${toDate}, (select pd.effective_date from planned_workouts pd where pd.id = ${workoutId} and pd.user_id = ${userId}))),
+      w(s, e) as (select date(x, '-6 days', 'weekday 1'), date(x, '-6 days', 'weekday 1', '+6 days') from d)
+    select json_object(
+      'near', (select json_group_array(json_object('d', p.effective_date, 'c', p.category, 's', p.sport, 't', p.title,
+          'doc', case when p.sport = 'strength' then p.workout_doc end))
+        from planned_workouts p, d where ${live} and p.effective_date between date(d.x, '-1 day') and date(d.x, '+1 day')
+          and ((p.sport = 'run' and p.category in ('quality', 'race')) or p.sport = 'strength')),
+      'week', (select coalesce(sum(coalesce(p.source_estimated_duration_seconds, p.fallback_estimated_duration_seconds, p.calendar_block_duration_seconds)), 0)
+        from planned_workouts p, w where ${live} and p.sport = 'run' and p.effective_date between w.s and w.e),
+      'avg', (select json_object('s', coalesce(sum(a.duration_seconds), 0), 'n', count(*)) from activities a, w
+        where a.user_id = ${userId} and a.sport = 'run' and substr(coalesce(a.start_time_local, a.start_time), 1, 10) between date(w.s, '-28 days') and date(w.s, '-1 day')))
+    from d where d.x is not null)`;
+}
+
 const LEGS = new Set<string>(RUN_REGIONS);
 
 /** A strength document hard on the legs: a develop or peak effort working the legs for HARD_LEGS_SETS sets or more. */
-function hardOnLegs(docText: unknown): boolean {
+export function hardOnLegs(docText: unknown): boolean {
   const doc = parseStoredWorkoutDoc(typeof docText === "string" ? docText : null);
   if (!doc || (doc.intent.effort !== "develop" && doc.intent.effort !== "peak")) return false;
   const exposure = deriveDoc(doc, EXERCISES).regionExposure;

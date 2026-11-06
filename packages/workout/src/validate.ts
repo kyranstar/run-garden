@@ -463,6 +463,64 @@ interface Finding {
   pending?: ConditionProfile;
 }
 
+/** A session the load rules judge (`runLoadNotes`): a run on its day, or hard leg strength (`legs`). */
+export interface RunLoadSubject {
+  /** Its day; without one, nothing is close to it. */
+  date?: string;
+  /** Its minutes of running (a run's). */
+  minutes: number;
+  /** A quality or race run — or, with `legs`, hard leg strength. */
+  hard: boolean;
+  /** A long run. */
+  long: boolean;
+  /** Hard leg strength, not a run: judged against hard running alone (two strength days are no run rule), and none of
+   * its minutes are running. */
+  legs?: boolean;
+}
+
+/**
+ * THE LOAD RULES OF A RUN (designed runs, §8 §3; the safety audit, 2026-11-06, S4: one function, so adjust_plan's moved,
+ * lengthened or restored session is judged by the rules a designed run is): `run_hard_close` — hard running within 48
+ * hours of other hard running or hard leg strength (`nearby`), `run_long_share` — a long run past LONG_SHARE of the week's
+ * running with it, `run_volume_jump` — the week's running past VOLUME_JUMP over the last four weeks' average. Their words
+ * are the validator's; each a cost, never a refusal.
+ */
+export function runLoadNotes(s: RunLoadSubject, run: RunCtx): Array<{ code: DocIssueCode; path: string; message: string }> {
+  const out: Array<{ code: DocIssueCode; path: string; message: string }> = [];
+  if (s.date !== undefined && s.hard) {
+    for (const n of run.nearby) {
+      if (s.legs && n.kind !== "quality_run") continue;
+      const gap = daysBetween(s.date, n.date);
+      if (Math.abs(gap) > HARD_CLOSE_DAYS) continue;
+      const when = gap < 0 ? "the day before" : gap > 0 ? "the day after" : "the same day";
+      out.push({ path: "intent.effort", code: "run_hard_close", message: `${n.title} is ${when}: hard running wants 48 hours from other hard running and hard leg strength.` });
+    }
+  }
+  if (s.legs) return out;
+  const minutes = s.minutes;
+  if (s.long && run.weekMinutes > 0) {
+    const total = run.weekMinutes + minutes;
+    const share = minutes / total;
+    if (share > LONG_SHARE + EPSILON) {
+      out.push({
+        path: "parts", code: "run_long_share",
+        message: `This long run is ${Math.round(share * 100)}% of the week's running (${minutes} of ${Math.round(total)} minutes); about ${Math.round(LONG_SHARE * 100)}% keeps it in proportion.`,
+      });
+    }
+  }
+  const avg = run.fourWeekAvgMinutes;
+  if (avg !== null && avg > 0) {
+    const total = run.weekMinutes + minutes;
+    if (total > avg * (1 + VOLUME_JUMP) + EPSILON) {
+      out.push({
+        path: "parts", code: "run_volume_jump",
+        message: `With this run the week's running comes to ${Math.round(total)} minutes, ${Math.round((total / avg - 1) * 100)}% over your last four weeks' average of ${Math.round(avg)} a week.`,
+      });
+    }
+  }
+  return out;
+}
+
 export function validateWorkoutDoc(input: unknown, ctx: ValidateCtx): DocIssue[] {
   const parsed = workoutDocSchema.safeParse(input);
   if (!parsed.success) {
@@ -773,34 +831,8 @@ export function validateWorkoutDoc(input: unknown, ctx: ValidateCtx): DocIssue[]
     const derived = deriveDoc(doc, ctx.library);
     const seconds = resolved?.totalSeconds ?? derived.estimatedMinutes * 60;
     const minutes = Math.round(seconds / 60);
-    if (day && HARD_RUN.has(derived.category)) {
-      for (const n of run.nearby) {
-        const gap = daysBetween(day.date, n.date);
-        if (Math.abs(gap) > HARD_CLOSE_DAYS) continue;
-        const when = gap < 0 ? "the day before" : gap > 0 ? "the day after" : "the same day";
-        add({ path: "intent.effort", code: "run_hard_close", severity: "warning", message: `${n.title} is ${when}: hard running wants 48 hours from other hard running and hard leg strength.` });
-      }
-    }
-    if (derived.category === "long" && run.weekMinutes > 0) {
-      const total = run.weekMinutes + minutes;
-      const share = minutes / total;
-      if (share > LONG_SHARE + EPSILON) {
-        add({
-          path: "parts", code: "run_long_share", severity: "warning",
-          message: `This long run is ${Math.round(share * 100)}% of the week's running (${minutes} of ${Math.round(total)} minutes); about ${Math.round(LONG_SHARE * 100)}% keeps it in proportion.`,
-        });
-      }
-    }
-    const avg = run.fourWeekAvgMinutes;
-    if (avg !== null && avg > 0) {
-      const total = run.weekMinutes + minutes;
-      if (total > avg * (1 + VOLUME_JUMP) + EPSILON) {
-        add({
-          path: "parts", code: "run_volume_jump", severity: "warning",
-          message: `With this run the week's running comes to ${Math.round(total)} minutes, ${Math.round((total / avg - 1) * 100)}% over your last four weeks' average of ${Math.round(avg)} a week.`,
-        });
-      }
-    }
+    const notes = runLoadNotes({ ...(day ? { date: day.date } : {}), minutes, hard: HARD_RUN.has(derived.category), long: derived.category === "long" }, run);
+    for (const n of notes) add({ ...n, severity: "warning" });
   }
 
   function checkJumps(): void {

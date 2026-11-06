@@ -8,7 +8,7 @@
 import { describe, expect, it } from "vitest";
 import { addDays, type WorkoutDoc, type WorkoutItem, type WorkoutPart } from "@rg/domain";
 import { EXERCISES } from "@rg/exercise-library";
-import { validateWorkoutDoc, type DocIssue, type RunCtx, type ValidateCtx } from "../src/index.js";
+import { runLoadNotes, validateWorkoutDoc, type DocIssue, type RunCtx, type ValidateCtx } from "../src/index.js";
 
 const DAY = "2026-03-10";
 const run = (effort: string, target: Record<string, unknown>, extra: Record<string, unknown> = {}): WorkoutItem =>
@@ -194,6 +194,29 @@ describe("run_volume_jump", () => {
     expect(codes(check(TEMPO, { weekMinutes: 171, fourWeekAvgMinutes: 200 }))).toEqual(["warning:run_volume_jump@parts"]);
     expect(check(TEMPO, { weekMinutes: 500, fourWeekAvgMinutes: null })).toEqual([]);
     expect(check(TEMPO, { weekMinutes: 500, fourWeekAvgMinutes: 0 })).toEqual([]);
+  });
+});
+
+// The safety audit, S4: the three load rules, as one function the validator and adjust_plan both read.
+describe("runLoadNotes — the validator's load rules for a run on its day, for any caller", () => {
+  it("says what validate says of a run: close to hard running, a long run out of proportion, a week's jump", () => {
+    const close = runLoadNotes({ date: DAY, minutes: 50, hard: true, long: false }, { ...RUN, nearby: [{ date: addDays(DAY, 1), kind: "quality_run", title: "Intervals" }] });
+    expect(close).toEqual([{ code: "run_hard_close", path: "intent.effort", message: "Intervals is the day after: hard running wants 48 hours from other hard running and hard leg strength." }]);
+    expect(runLoadNotes({ date: DAY, minutes: 100, hard: false, long: true }, { ...RUN, weekMinutes: 150, fourWeekAvgMinutes: 400 })).toEqual([
+      { code: "run_long_share", path: "parts", message: "This long run is 40% of the week's running (100 of 250 minutes); about 30% keeps it in proportion." },
+    ]);
+    expect(runLoadNotes({ date: DAY, minutes: 50, hard: false, long: false }, { ...RUN, weekMinutes: 200 })).toEqual([
+      { code: "run_volume_jump", path: "parts", message: "With this run the week's running comes to 250 minutes, 25% over your last four weeks' average of 200 a week." },
+    ]);
+    // With no day, nothing is close to it.
+    expect(runLoadNotes({ minutes: 50, hard: true, long: false }, { ...RUN, nearby: [{ date: DAY, kind: "quality_run", title: "Intervals" }] })).toEqual([]);
+  });
+
+  it("hard leg strength is judged against hard running alone: two strength days are no run rule", () => {
+    const nearby: RunCtx["nearby"] = [{ date: addDays(DAY, -1), kind: "hard_legs", title: "Legs" }, { date: addDays(DAY, 1), kind: "quality_run", title: "Tempo" }];
+    expect(runLoadNotes({ date: DAY, minutes: 45, hard: true, long: false, legs: true }, { ...RUN, nearby, weekMinutes: 0 }).map((n) => n.message)).toEqual([
+      "Tempo is the day after: hard running wants 48 hours from other hard running and hard leg strength.",
+    ]);
   });
 });
 
