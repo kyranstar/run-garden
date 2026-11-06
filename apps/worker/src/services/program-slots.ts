@@ -34,7 +34,11 @@
  *     `quietDaysBeforeRace` before `prefs.raceDate` through race day. A week a pause reaches holds only the days a full
  *     week would use, as this week does, so nothing piles up behind it. A pause also takes today's untouched outline,
  *     since someone pausing for illness doesn't want it waiting; a built, started or touched one stays, and the quiet
- *     days leave today's alone. With no pause an adaptive program holds no day back.
+ *     days leave today's alone. So does it take a course's session written today and not yet touched, built, started or
+ *     done, or it would stay on the plan and read as missed: the hourly pass writes one soon after midnight, so a pause
+ *     rarely finds an outline. It leaves through the document removal path (`removeDocWorkout`), so its copy comes off the
+ *     watch too, and its number isn't counted, so the same session comes back after the pause. With no pause an adaptive
+ *     program holds no day back.
  *
  * A COURSE places by the same rules, from `placementOf`. Its `weekdays` are its preferred days and its weekly goal, and
  * its only days: it never falls back on the week's others. Its slots go at its `time`, not the athlete's window. Their
@@ -70,9 +74,11 @@ import { courseDefinition, deriveDoc } from "@rg/workout";
 import { restoreInProgress } from "./account-state.js";
 import { loadPreferences } from "./calendar-sync.js";
 import { chunkedInsert, chunkIds, insertBatches, type Db } from "./db.js";
+import { DocWorkoutNotFoundError, NotRemovableError, removeDocWorkout } from "./doc-workouts.js";
 import { plannedRowColumns, type PlannedRow } from "./planned-columns.js";
 import { separateDayCollisions, windowTimeFor } from "./day-placement.js";
 import { removeFromPlan } from "./plan-mutations.js";
+import { RestoreInProgressError } from "./programs.js";
 import { bookedSeconds } from "./session-build.js";
 
 /** A planned row without its workout document: placement never reads one. */
@@ -123,6 +129,12 @@ export interface BudgetedPlacement extends PlacementResult {
  * follows — a slot's own id is never a watch address). Measured 8 (programs-budget.test.ts).
  */
 export const RETRACT_COST = 2 + 1 + 1 + 2 + 2 + 2;
+/**
+ * One written session's retraction at its most (`retractWritten` → `removeDocWorkout`): its reads before the removal (the row,
+ * a saved session, its sent build found (two) and its push, the restore's look: 6), the retraction above without its look
+ * for a sent build (8), and a copy on the watch to take off (`SKIP_UNPUSH_COST`'s 8). Pinned in course-sessions.test.ts.
+ */
+export const RETRACT_WRITTEN_COST = 6 + 8 + 8;
 /** A retracted slot brought back: its row and its suppression. */
 export const REVIVE_COST = 2;
 /** The ids one touched lookup, and one build lookup, bind (`TOUCHED_ID_CHUNK`, `BUILD_ID_CHUNK`). */
@@ -162,6 +174,24 @@ function flexible(r: WorkoutRow, today: string, todayToo: boolean): boolean {
     r.contentState === "outline" &&
     r.effectiveDate === r.originalPlanDate &&
     (todayToo ? r.effectiveDate >= today : r.effectiveDate > today)
+  );
+}
+
+/** Among a pass's rows, a course's own session once written (`readSlotRows` reads no other row that isn't a slot). */
+const writtenSession = (r: Pick<WorkoutRow, "origin">): boolean => r.origin !== "program";
+
+/**
+ * Rule 6's written session, as the row reads: today's, its own day, and neither built, started nor resolved. A slot like that
+ * is rule 3's under a pause anyway, so this needn't tell them apart. `todayToo`: a pause covers today.
+ */
+function writtenOffToday(r: WorkoutRow, today: string, todayToo: boolean): boolean {
+  return (
+    todayToo &&
+    r.archivedAt === null &&
+    r.completionState === "scheduled" &&
+    r.contentState === "outline" &&
+    r.effectiveDate === today &&
+    r.originalPlanDate === today
   );
 }
 
@@ -226,6 +256,30 @@ export async function retractSlot(
     ),
   });
   return removed.removed;
+}
+
+/**
+ * Rule 6's written session, retracted through the document removal path, and re-checked as it archives as `retractSlot`
+ * re-checks: a build, a start, a move, a re-time or a completion landing since the pass read it keeps it. True when it left.
+ */
+async function retractWritten(db: Db, userId: string, slot: Pick<WorkoutRow, "id">, today: string, prefs: UserPreferences, now: string): Promise<boolean> {
+  try {
+    await removeDocWorkout(db, userId, slot.id, { today, now, prefs }, {
+      source: "program_replace",
+      archiveReason: "program_replaced",
+      onlyIf: and(
+        eq(plannedWorkouts.completionState, "scheduled"),
+        eq(plannedWorkouts.contentState, "outline"),
+        eq(plannedWorkouts.effectiveDate, today),
+        eq(plannedWorkouts.originalPlanDate, today),
+        sql`not ${TOUCHED}`,
+      ),
+    });
+    return true;
+  } catch (e) {
+    if (e instanceof NotRemovableError || e instanceof RestoreInProgressError || e instanceof DocWorkoutNotFoundError) return false;
+    throw e;
+  }
 }
 
 /** The week's dates in placement order: preferred days as listed, then the rest Monday → Sunday, unless these are its only days. */
@@ -368,7 +422,7 @@ function planSlots(rows: readonly WorkoutRow[], o: PlanInputs, flexibleIds: Read
  */
 async function planWithTouched(db: Db, rows: readonly WorkoutRow[], o: PlanInputs) {
   const todayToo = pausedOn(o.pausedUntil, o.today);
-  const byRow = rows.filter((r) => flexible(r, o.today, todayToo)).map((r) => r.id);
+  const byRow = rows.filter((r) => flexible(r, o.today, todayToo) || writtenOffToday(r, o.today, todayToo)).map((r) => r.id);
   let planned = planSlots(rows, o, new Set(byRow));
   let touchedReads = 0;
   if (planned.toArchive.length > 0) {
@@ -543,12 +597,18 @@ async function place(
   // first always — and the fill waits for the next pass while any is left.
   if (toArchive.length > 0) spend(1);
   if (toArchive.length > 0 && (await restoreBegan())) return result;
-  const retracting =
-    budget === null ? toArchive : toArchive.slice(0, Math.max(1, Math.floor((budget - result.spent) / RETRACT_COST)));
+  const costOfRetracting = (r: WorkoutRow): number => (writtenSession(r) ? RETRACT_WRITTEN_COST : RETRACT_COST);
+  let room = budget === null ? Number.POSITIVE_INFINITY : budget - result.spent;
+  const retracting = toArchive.filter((r, i) => {
+    const fits = i === 0 || costOfRetracting(r) <= room;
+    if (fits) room -= costOfRetracting(r);
+    return fits;
+  });
   const todayToo = pausedOn(program.pausedUntil, today);
   for (const r of retracting) {
-    spend(RETRACT_COST);
-    if (await retractSlot(db, userId, r, today, prefs, now, { todayToo })) result.archived.push(r.id);
+    spend(costOfRetracting(r));
+    const off = writtenSession(r) ? await retractWritten(db, userId, r, today, prefs, now) : await retractSlot(db, userId, r, today, prefs, now, { todayToo });
+    if (off) result.archived.push(r.id);
   }
   if (retracting.length < toArchive.length) {
     result.more = true;
@@ -614,7 +674,8 @@ async function place(
     result.placed.push(...fresh.map((r) => r.id));
     return true;
   };
-  // A retracted slot whose day is wanted again: the same row comes back, as a fresh outline on its own day.
+  // A retracted slot whose day is wanted again: the same row comes back, as a fresh outline on its own day, a session written
+  // before it left too (its document kept in its history, and its next write the next revision).
   const revive = async (revived: readonly WorkoutRow[]): Promise<boolean> => {
     if (revived.length > 0 && (await restoreBegan())) return false;
     for (const r of revived) {
@@ -632,6 +693,7 @@ async function place(
           archivedAt: null,
           archiveReason: null,
           ...(r.calendarSyncState === "synced" ? { calendarSyncState: "pending" } : {}),
+          ...(writtenSession(r) ? { origin: "program", courseSession: null, workoutDoc: null, sourceContentFingerprint: "program" } : {}),
           updatedAt: now,
         })
         .where(and(eq(plannedWorkouts.id, r.id), eq(plannedWorkouts.userId, userId)));

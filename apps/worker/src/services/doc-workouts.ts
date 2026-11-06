@@ -66,6 +66,7 @@ import {
   revisability,
   watchAddressOf,
   workoutDocSchema,
+  type ArchiveReason,
   type Revisability,
   type RevisabilityReason,
   type UserPreferences,
@@ -86,6 +87,7 @@ import { loadBuildHistory } from "./engine-inputs.js";
 import { RestoreInProgressError } from "./programs.js";
 import { bookedSeconds, pushJobId, sentBuildIdOf, slotChecks } from "./session-build.js";
 import { enqueueUnpushIfOurs, removeFromPlan } from "./plan-mutations.js";
+import type { IntentSource } from "./sync-intents.js";
 import { markMirrorOwed } from "./mirror-owed.js";
 import { FROZEN_STATES, newRowDocColumns, revisionInsert, storedDocText, updateDocColumns, type DocSourceKind } from "./workout-doc-store.js";
 
@@ -981,7 +983,17 @@ export async function reviseDocWorkout(
  * a copy already on the watch taken off. Gone, so nothing reads it as missed. Throws `DocWorkoutNotFoundError` (not
  * this account's, or removed already), `NotRemovableError`, `RestoreInProgressError`.
  */
-export async function removeDocWorkout(db: Db, userId: string, workoutId: string, ctx: DocWorkoutCtx): Promise<{ effectiveDate: string }> {
+export async function removeDocWorkout(
+  db: Db,
+  userId: string,
+  workoutId: string,
+  ctx: DocWorkoutCtx,
+  /**
+   * A server caller's own removal (a pause, `program-slots.ts`): who it's recorded as, why the row left, and what the row
+   * must still be as it's archived, beside the rules here. A row that isn't is `NotRemovableError`, nothing else happening.
+   */
+  by: { source?: IntentSource; archiveReason?: ArchiveReason; onlyIf?: SQL } = {},
+): Promise<{ effectiveDate: string }> {
   const pw = plannedWorkouts;
   const [row] = await db
     .select({ id: pw.id, origin: pw.origin, contentState: pw.contentState, completionState: pw.completionState, archivedAt: pw.archivedAt })
@@ -1014,12 +1026,14 @@ export async function removeDocWorkout(db: Db, userId: string, workoutId: string
   // Only while it is still as judged: a session begun or saved between the reads and this write keeps it.
   const removed = await removeFromPlan(db, userId, workoutId, {
     now: ctx.now,
-    source: "remove_from_plan",
+    source: by.source ?? "remove_from_plan",
     prefs: ctx.prefs,
+    ...(by.archiveReason ? { archiveReason: by.archiveReason } : {}),
     onlyIf: and(
       or(isNull(pw.contentState), notInArray(pw.contentState, ["started", "done"])),
       notInArray(pw.completionState, [...FROZEN_STATES]),
       notExists(db.select({ id: performedSessions.id }).from(performedSessions).where(eq(performedSessions.workoutId, workoutId))),
+      by.onlyIf,
     ),
   });
   if (!removed.removed) throw new NotRemovableError("started");

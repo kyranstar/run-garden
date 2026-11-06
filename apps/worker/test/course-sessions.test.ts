@@ -58,6 +58,7 @@ import { createSession, SESSION_COOKIE } from "../src/auth/sessions.js";
 import type { Env } from "../src/env.js";
 import { hourly } from "../src/index.js";
 import { planRoutes } from "../src/routes/plan.js";
+import { planRoutes as plansRoutes } from "../src/routes/plans.js";
 import { sessionRoutes } from "../src/routes/sessions.js";
 import { syncRoutes } from "../src/routes/sync.js";
 import { answerBodyCheck } from "../src/services/body-check.js";
@@ -70,7 +71,10 @@ import { applyMove } from "../src/services/jobs.js";
 import { rowRefusal } from "../src/services/mirror-rules.js";
 import { markMirrorOwed, mirrorIntentId } from "../src/services/mirror-owed.js";
 import { loadPreferences } from "../src/services/calendar-sync.js";
-import { courseSessionsDone, placeSlots, slotId } from "../src/services/program-slots.js";
+import { executeCloudJobs } from "../src/services/coros-write-cloud.js";
+import { queueProvisionalPush } from "../src/services/mirror.js";
+import { courseSessionsDone, placeSlots, placeSlotsForAllPrograms, placeSlotsWithin, RETRACT_WRITTEN_COST, slotId } from "../src/services/program-slots.js";
+import { reconcileCompletionStates } from "../src/services/reconcile-daily.js";
 import { reviewBasis } from "../src/services/session-review-basis.js";
 import {
   buildSessionOutcome,
@@ -80,6 +84,7 @@ import {
   NotBuiltError,
   recordCheck,
   sessionCurrency,
+  UnknownProfileError,
   type BuildCtx,
 } from "../src/services/session-build.js";
 import { savePerformedSession } from "../src/services/session-save.js";
@@ -87,9 +92,11 @@ import { activeSyncNotes } from "../src/services/sync-notes.js";
 import { isWrite, makeTestDb, makeTestUser, mountRoutes } from "./helpers.js";
 import { INTRO_COURSE, INTRO_FIRST_BOOKED, INTRO_FIRST_SECONDS, INTRO_LATER_BOOKED, INTRO_LATER_SECONDS } from "./course-fixture.js";
 import { landingsDoc } from "./doc-workout-fixture.js";
+import { connectMock, seedCatalog, switchOn } from "./watch-push-fixture.js";
+import { mockCorosServer, type MockCorosServer } from "../../../packages/coros/test/mock-coros-server.js";
 import { makeRealisticEnv, seedRealisticAccount } from "./realistic-account.js";
 
-const { accountState, activities, plannedWorkouts, programs, scheduleOverrides, sessionBuilds, syncIntents, workoutDocRevisions } = schema;
+const { accountState, activities, conditionChecks, corosWriteJobs, plannedWorkouts, programs, scheduleOverrides, sessionBuilds, syncIntents, syncNotes, workoutDocRevisions } = schema;
 
 /** A Monday. */
 const MON = "2026-10-05";
@@ -182,16 +189,22 @@ async function move(workoutId: string, toDate: string, toTime = "19:30"): Promis
   await applyMove(db, { userId, workoutId, toDate, toTime, source: "app", corosWritesEnabled: false });
 }
 
-/** A session of the course already written as `n`, in any state. */
-async function session(planId: string, date: string, n: number, completionState: string, over: Partial<typeof plannedWorkouts.$inferInsert> = {}): Promise<string> {
+/** A session of the course already written as `n`, in any state, as a row. */
+function sessionRow(planId: string, date: string, n: number, completionState: string, over: Partial<typeof plannedWorkouts.$inferInsert> = {}): typeof plannedWorkouts.$inferInsert {
   const id = newId();
-  await db.insert(plannedWorkouts).values({
+  return {
     id, userId, planId, sourceWorkoutId: id, title: titleOf(n), category: "yoga", sport: "yoga", originalPlanDate: date, lastVerifiedCorosDate: "",
     effectiveDate: date, effectiveTime: "19:30", sourceContentFingerprint: "studio", fallbackEstimatedDurationSeconds: 660, calendarBlockDurationSeconds: 900,
-    origin: "studio", contentState: "outline", completionState, courseSession: n, createdAt: NOW, updatedAt: NOW, workoutDoc: JSON.stringify(INTRO_COURSE.sessionDoc(n, { ease: false })), workoutDocRev: 1,
+    origin: "studio", contentState: "outline", completionState, courseSession: n, createdAt: NOW, updatedAt: NOW, workoutDoc: JSON.stringify(realSessionDoc(n, { ease: false })), workoutDocRev: 1,
     ...over,
-  });
-  return id;
+  };
+}
+
+/** The same, stored. */
+async function session(planId: string, date: string, n: number, completionState: string, over: Partial<typeof plannedWorkouts.$inferInsert> = {}): Promise<string> {
+  const values = sessionRow(planId, date, n, completionState, over);
+  await db.insert(plannedWorkouts).values(values);
+  return values.id;
 }
 
 /** A workout the coach filed under the plan: no number, so not the course's own. */
@@ -310,6 +323,32 @@ describe("writing once", () => {
     expect((await programOf(p)).config.easeNext).toBe(true);
     expect(await mirrorMark(id)).toEqual({ ...firstMark, resolvedAt: NOW });
     expect(await revisionsOf(id)).toHaveLength(1);
+  });
+
+  it("a stale writer with a different document to write changes nothing: the session already written stays as it is", async () => {
+    const p = await placed();
+    const id = slotId(p, MON);
+    const stale = await row(id);
+    expect((await writeCourseSession(db, userId, stale, ctx)).written).toBe(true);
+    const first = await row(id);
+    // The easing asked for since: this writer would make the session eased.
+    await db.update(programs).set({ config: { ...(await programOf(p)).config, easeNext: true } }).where(eq(programs.id, p));
+    expect((await writeCourseSession(db, userId, stale, { ...ctx, now: "2026-10-05T19:05:00.000Z" })).written).toBe(false);
+    expect(await row(id)).toEqual(first);
+    expect((await programOf(p)).config.easeNext).toBe(true);
+    expect(await revisionsOf(id)).toHaveLength(1);
+  });
+
+  it("a number an undone link left on an outline doesn't pass for a flip: a write that doesn't land changes nothing", async () => {
+    const p = await placed({ easeNext: true });
+    const id = slotId(p, MON);
+    await db.update(plannedWorkouts).set({ completionState: "unresolved", courseSession: 1 }).where(eq(plannedWorkouts.id, id));
+    const before = await row(id);
+    race.begin = () => setPause(p, MON).then(() => undefined);
+    expect((await writeCourseSession(db, userId, before, ctx)).written).toBe(false);
+    expect(await row(id)).toEqual(before);
+    expect((await programOf(p)).config.easeNext).toBe(true);
+    expect(await mirrorMark(id)).toBeUndefined();
   });
 
   it.each([
@@ -477,17 +516,6 @@ describe("easing", () => {
     expect(await mirrorMark(id)).toBeUndefined();
   });
 
-  it("an easing asked for as the write runs waits for the next session", async () => {
-    const p = await placed();
-    const id = slotId(p, MON);
-    // It lands right after the write's first look, on a course that read uneased.
-    race.begin = async () => {
-      await db.update(programs).set({ config: { ...(await programOf(p)).config, easeNext: true } }).where(eq(programs.id, p));
-    };
-    expect((await writeCourseSession(db, userId, await row(id), ctx)).written).toBe(true);
-    expect(holdOf(docOf(await row(id)))).toBe(INTRO_FIRST_SECONDS);
-    expect((await programOf(p)).config.easeNext).toBe(true);
-  });
 
   it("a preview shows the session eased, and uses nothing", async () => {
     const p = await placed({ easeNext: true });
@@ -630,7 +658,6 @@ describe("a day ahead", () => {
     expect(writes()).toEqual([]);
     expect(again.session.build?.buildId).toBe(first.session.build?.buildId);
     expect(await sessionCurrency(db, userId, id, ctx)).toMatchObject({ buildId: first.session.build?.buildId, current: true });
-    expect((await loadSession(db, userId, id, MON)).build?.buildId).toBe(first.session.build?.buildId);
 
     // The dose moves on: the preview shown isn't what the day would make now.
     await session(p, addDays(MON, -7), 1, "completed");
@@ -759,6 +786,8 @@ describe("a document the day refuses", () => {
     expect(await row(id)).toEqual(before);
     expect((await programOf(p)).config.easeNext).toBe(true);
     expect(await mirrorMark(id)).toBeUndefined();
+    // Each of the three asked once: an opening tries again only for a lost claim, and a refusal isn't one.
+    expect(INTRO_COURSE.sessionDoc).toHaveBeenCalledTimes(3);
     const notes = await activeSyncNotes(db, userId);
     expect(notes.map((n) => ({ kind: n.kind, workoutId: n.workoutId }))).toEqual([{ kind: "course_session_refused", workoutId: id }]);
     expect(notes[0]!.payload).toEqual({ sessionTitle: before.title, date: MON });
@@ -1211,6 +1240,751 @@ describe("completing an outline never written", () => {
   });
 });
 
+describe("what the document was computed from", () => {
+  const HALF = INTRO_FIRST_SECONDS / 2;
+  /** Today's outline, and Friday's moved onto today, with the next session eased. */
+  const twoToday = async () => {
+    const p = await placed({ easeNext: true });
+    const a = slotId(p, MON);
+    const b = slotId(p, day(0, 4));
+    await move(b, MON);
+    return { p, a, b };
+  };
+  const holds = (...ids: string[]) => Promise.all(ids.map(async (id) => holdOf(docOf(await row(id)))));
+  /** Lands as the first document is made: past every read, before the batch. Synchronous, as `sessionDoc` is. */
+  const asTheDocumentIsMade = (land: () => void) => {
+    vi.spyOn(INTRO_COURSE, "sessionDoc").mockImplementationOnce((n, opts) => {
+      land();
+      return realSessionDoc(n, opts);
+    });
+  };
+
+  it("two outlines on one day: the hourly pass eases one, and the other is written full by the next", async () => {
+    const { p, a, b } = await twoToday();
+    expect(await writeCourseSessionsDue(db, AT)).toEqual({ written: 1, failed: 0 });
+    expect(await holds(a)).toEqual([HALF]);
+    expect((await row(b)).origin).toBe("program");
+    expect((await programOf(p)).config.easeNext).toBe(false);
+    expect(await writeCourseSessionsDue(db, AT)).toEqual({ written: 1, failed: 0 });
+    expect(await holds(a, b)).toEqual([HALF, INTRO_FIRST_SECONDS]);
+  });
+
+  it.each([
+    ["today's first", "a", "b"],
+    ["the moved one first", "b", "a"],
+  ] as const)("two outlines opened in turn, %s: the first opened is eased", async (_, first, second) => {
+    const ids = await twoToday();
+    await loadSession(db, userId, ids[first], MON);
+    await loadSession(db, userId, ids[second], MON);
+    expect(await holds(ids[first], ids[second])).toEqual([HALF, INTRO_FIRST_SECONDS]);
+    expect((await programOf(ids.p)).config.easeNext).toBe(false);
+  });
+
+  it("the pass, then an open: the one eased, the other full", async () => {
+    const { a, b } = await twoToday();
+    await writeCourseSessionsDue(db, AT);
+    await loadSession(db, userId, b, MON);
+    expect(await holds(a, b)).toEqual([HALF, INTRO_FIRST_SECONDS]);
+  });
+
+  it("an open, then the pass: the one eased, the other full", async () => {
+    const { a, b } = await twoToday();
+    await loadSession(db, userId, b, MON);
+    await writeCourseSessionsDue(db, AT);
+    expect(await holds(a, b)).toEqual([INTRO_FIRST_SECONDS, HALF]);
+  });
+
+  it("two writers at once, each having read the easing: only one uses it, and the other writes nothing at all", async () => {
+    const { p, a, b } = await twoToday();
+    const [ra, rb] = [await row(a), await row(b)];
+    race.begin = async () => {
+      await writeCourseSession(db, userId, rb, ctx);
+    };
+    expect(await writeCourseSession(db, userId, ra, ctx)).toEqual({ written: false, n: 1 });
+    expect(await row(a)).toMatchObject({ origin: "program", workoutDoc: null, courseSession: null, title: ra.title });
+    expect(await mirrorMark(a)).toBeUndefined();
+    expect(await revisionsOf(a)).toEqual([]);
+    expect(await holds(b)).toEqual([HALF]);
+    expect((await programOf(p)).config.easeNext).toBe(false);
+  });
+
+  it("two opens at once: the one that lost the easing re-reads and writes the session full, there and then", async () => {
+    const { a, b } = await twoToday();
+    const rb = await row(b);
+    race.begin = async () => {
+      await writeCourseSession(db, userId, rb, ctx);
+    };
+    expect((await loadSession(db, userId, a, MON)).origin).toBe("studio");
+    expect(await holds(a, b)).toEqual([INTRO_FIRST_SECONDS, HALF]);
+  });
+
+  it("the same through a build: the easing gone as the document is made, it goes on to build what it wrote the second time", async () => {
+    const p = await placed({ easeNext: true });
+    const id = slotId(p, MON);
+    const config = { ...(await programOf(p)).config, easeNext: false };
+    asTheDocumentIsMade(() => (db.update(programs).set({ config }).where(eq(programs.id, p)) as unknown as { run(): void }).run());
+    const { session: s } = await buildSessionOutcome(db, userId, id, {}, ctx);
+    expect(s.origin).toBe("studio");
+    expect(s.build?.steps).toEqual(playerStepsFromDoc(realSessionDoc(1, { ease: false }), EXERCISES));
+    expect(await holds(id)).toEqual([INTRO_FIRST_SECONDS]);
+  });
+
+  const withdraw = (p: string) => async () => {
+    await db.update(programs).set({ config: { ...(await programOf(p)).config, easeNext: false } }).where(eq(programs.id, p));
+  };
+  const ask = (p: string) => async () => {
+    await db.update(programs).set({ config: { ...(await programOf(p)).config, easeNext: true } }).where(eq(programs.id, p));
+  };
+
+  it("an easing withdrawn after the read isn't used: the pass leaves it for the next hour", async () => {
+    const p = await placed({ easeNext: true });
+    const id = slotId(p, MON);
+    const before = await row(id);
+    race.begin = withdraw(p);
+    expect(await writeCourseSessionsDue(db, AT)).toEqual({ written: 0, failed: 0 });
+    expect(await row(id)).toEqual(before);
+    expect(await writeCourseSessionsDue(db, AT)).toEqual({ written: 1, failed: 0 });
+    expect(await holds(id)).toEqual([INTRO_FIRST_SECONDS]);
+  });
+
+  it("an easing withdrawn after the read isn't used: an open re-reads and writes it full", async () => {
+    const p = await placed({ easeNext: true });
+    const id = slotId(p, MON);
+    race.begin = withdraw(p);
+    await loadSession(db, userId, id, MON);
+    expect(await holds(id)).toEqual([INTRO_FIRST_SECONDS]);
+  });
+
+  it("an easing asked for after the read isn't missed: an open re-reads, uses it and clears it", async () => {
+    const p = await placed();
+    const id = slotId(p, MON);
+    race.begin = ask(p);
+    await loadSession(db, userId, id, MON);
+    expect(await holds(id)).toEqual([HALF]);
+    expect((await programOf(p)).config.easeNext).toBe(false);
+  });
+
+  it("an easing asked for after the read waits with the pass, and the next pass uses it", async () => {
+    const p = await placed();
+    const id = slotId(p, MON);
+    race.begin = ask(p);
+    expect(await writeCourseSessionsDue(db, AT)).toEqual({ written: 0, failed: 0 });
+    expect((await programOf(p)).config.easeNext).toBe(true);
+    expect(await writeCourseSessionsDue(db, AT)).toEqual({ written: 1, failed: 0 });
+    expect(await holds(id)).toEqual([HALF]);
+  });
+
+  it("a completion between the read and the batch writes no stale number: the pass leaves it, and the next writes the next dose", async () => {
+    const p = await placed();
+    const id = slotId(p, MON);
+    const before = await row(id);
+    race.begin = async () => {
+      await session(p, addDays(MON, -3), 1, "completed");
+    };
+    expect(await writeCourseSession(db, userId, before, ctx)).toEqual({ written: false, n: 1 });
+    expect(await row(id)).toEqual(before);
+    expect(await writeCourseSessionsDue(db, AT)).toEqual({ written: 1, failed: 0 });
+    expect(await row(id)).toMatchObject({ courseSession: 2, title: titleOf(2) });
+  });
+
+  it("a completion between the read and the batch: an opening re-reads and writes the right number, there and then", async () => {
+    const p = await placed();
+    const id = slotId(p, MON);
+    race.begin = async () => {
+      await session(p, addDays(MON, -3), 1, "completed");
+    };
+    expect((await loadSession(db, userId, id, MON)).title).toBe(titleOf(2));
+    expect(await row(id)).toMatchObject({ origin: "studio", courseSession: 2 });
+    expect(await revisionsOf(id)).toHaveLength(1);
+  });
+
+  /** Each document made finds its guard moved: a session done lands as it's made. */
+  const landsADoneSessionEachTime = (p: string) => {
+    let calls = 0;
+    vi.spyOn(INTRO_COURSE, "sessionDoc").mockImplementation((n, opts) => {
+      calls += 1;
+      (db.insert(plannedWorkouts).values(sessionRow(p, addDays(MON, -30 + calls), calls, "completed")) as unknown as { run(): void }).run();
+      return realSessionDoc(n, opts);
+    });
+    return () => calls;
+  };
+
+  it("an opening tries once more and only once: lost again, it answers as it stands", async () => {
+    const p = await placed();
+    const id = slotId(p, MON);
+    const before = await row(id);
+    const calls = landsADoneSessionEachTime(p);
+    expect(await loadSession(db, userId, id, MON)).toMatchObject({ origin: "program", build: null });
+    expect(calls()).toBe(2);
+    expect(await row(id)).toEqual(before);
+    expect(await revisionsOf(id)).toEqual([]);
+  });
+
+  it("the hourly pass doesn't try again: one attempt, and the row waits for the next hour", async () => {
+    const p = await placed();
+    const id = slotId(p, MON);
+    const calls = landsADoneSessionEachTime(p);
+    expect(await writeCourseSessionsDue(db, AT)).toEqual({ written: 0, failed: 0 });
+    expect(calls()).toBe(1);
+    expect((await row(id)).origin).toBe("program");
+  });
+
+  it("another writer got there first: an opening doesn't try again, it goes on with what's written", async () => {
+    const p = await placed({ easeNext: true });
+    const id = slotId(p, MON);
+    const winner = await row(id);
+    race.begin = async () => {
+      await writeCourseSession(db, userId, winner, ctx);
+    };
+    const doc = vi.spyOn(INTRO_COURSE, "sessionDoc");
+    expect((await loadSession(db, userId, id, MON)).origin).toBe("studio");
+    // The winner's, and the loser's own: no third.
+    expect(doc).toHaveBeenCalledTimes(2);
+    expect(await revisionsOf(id)).toHaveLength(1);
+    expect(await holds(id)).toEqual([HALF]);
+  });
+
+  it("a pause landing between the two tries stops the second", async () => {
+    const p = await placed();
+    const id = slotId(p, MON);
+    const before = await row(id);
+    race.begin = async () => {
+      await session(p, addDays(MON, -3), 1, "completed");
+      await setPause(p, MON);
+    };
+    const doc = vi.spyOn(INTRO_COURSE, "sessionDoc");
+    await loadSession(db, userId, id, MON);
+    expect(doc).toHaveBeenCalledTimes(1);
+    expect(await row(id)).toEqual(before);
+  });
+});
+
+describe("a pause on a session already written", () => {
+  /** The removal's first read, which the pass only makes for a session it chose. */
+  const removalReads = () => statements.filter((s) => /"origin", "content_state", "completion_state", "archived_at" from "planned_workouts"/.test(s));
+  const removalNotTried = () => expect(removalReads()).toEqual([]);
+
+  /** A course with today's session written, as the hourly pass writes it soon after midnight. */
+  const written = async (config: Partial<CourseConfig> = {}) => {
+    const p = await placed(config);
+    const id = slotId(p, MON);
+    expect((await writeCourseSession(db, userId, await row(id), ctx)).written).toBe(true);
+    return { p, id };
+  };
+
+  it("today's written, untouched session comes off, and the pass then settles", async () => {
+    const { p, id } = await written();
+    await setPause(p, addDays(MON, 3));
+    statements.length = 0;
+    const res = await placeSlots(db, userId, p, MON, prefs, NOW);
+    expect(res.archived).toEqual([id]);
+    expect(removalReads()).toHaveLength(1);
+    expect(await row(id)).toMatchObject({ archivedAt: NOW, archiveReason: "program_replaced", courseSession: 1 });
+    expect((await db.select().from(syncIntents).where(eq(syncIntents.targetId, id))).filter((i) => i.kind === "remove_local").map((i) => i.source)).toEqual(["program_replace"]);
+    statements.length = 0;
+    expect((await placeSlots(db, userId, p, MON, prefs, NOW)).archived).toEqual([]);
+    expect(writes()).toEqual([]);
+    // A settled course's pass, as ever: nothing tries the row that left.
+    expect(statements).toHaveLength(5);
+  });
+
+  it("an outline an undone link left a number on isn't a written session: a pause retracts it as any outline", async () => {
+    const p = await placed();
+    const id = slotId(p, MON);
+    await db.update(plannedWorkouts).set({ courseSession: 1 }).where(eq(plannedWorkouts.id, id));
+    await setPause(p, MON);
+    expect((await placeSlots(db, userId, p, MON, prefs, NOW)).archived).toEqual([id]);
+    expect((await row(id)).archivedAt).toBe(NOW);
+  });
+
+  it("the hourly pass takes it off too", async () => {
+    const { p, id } = await written();
+    await setPause(p, MON);
+    expect((await placeSlotsForAllPrograms(db, AT)).archived).toBe(1);
+    expect((await row(id)).archivedAt).toBe(NOW);
+  });
+
+  it("a pause that ended yesterday leaves it, and so do a race's quiet days", async () => {
+    const { p, id } = await written();
+    await setPause(p, addDays(MON, -1));
+    expect((await placeSlots(db, userId, p, MON, prefs, NOW)).archived).toEqual([]);
+    await setPause(p, null);
+    expect((await placeSlots(db, userId, p, MON, { ...prefs, raceDate: addDays(MON, 3) }, NOW)).archived).not.toContain(id);
+    expect((await row(id)).archivedAt).toBeNull();
+  });
+
+  it("it doesn't read as missed afterwards, and its number isn't counted: the same session comes back after the pause", async () => {
+    const { p, id } = await written();
+    await setPause(p, MON);
+    await placeSlots(db, userId, p, MON, prefs, NOW);
+    expect(await courseSessionsDone(db, userId, p)).toBe(0);
+
+    // Friday, the pause over: the next session is the one that came off.
+    const friday = day(0, 4);
+    const fri = { ...ctx, today: friday, now: `${friday}T19:00:00.000Z` };
+    vi.setSystemTime(new Date(fri.now));
+    expect(await writeCourseSession(db, userId, await row(slotId(p, friday)), fri)).toEqual({ written: true, n: 1 });
+    expect((await row(slotId(p, friday))).title).toBe(titleOf(1));
+
+    // A fortnight on, past the days a session is asked about and then missed.
+    vi.setSystemTime(new Date("2026-10-20T19:00:00.000Z"));
+    await reconcileCompletionStates(db, userId, prefs);
+    expect(await row(id)).toMatchObject({ completionState: "scheduled", archivedAt: NOW });
+  });
+
+  it("a pause lifted the same day brings it back as an outline, and it's written again as the same session", async () => {
+    const { p, id } = await written();
+    await setPause(p, MON);
+    await placeSlots(db, userId, p, MON, prefs, NOW);
+    await setPause(p, null);
+    const res = await placeSlots(db, userId, p, MON, prefs, NOW);
+    expect(res.placed).toEqual([id]);
+    expect(await row(id)).toMatchObject({ archivedAt: null, origin: "program", courseSession: null, workoutDoc: null, contentState: "outline", title: "Evening practice" });
+    expect(await writeCourseSession(db, userId, await row(id), ctx)).toEqual({ written: true, n: 1 });
+    expect(await row(id)).toMatchObject({ origin: "studio", courseSession: 1, workoutDocRev: 2, title: titleOf(1) });
+    expect((await revisionsOf(id)).map((r) => r.rev).sort()).toEqual([1, 2]);
+  });
+
+  const stays: Array<[string, (id: string) => Promise<unknown>]> = [
+    ["built", (id) => buildSessionOutcome(db, userId, id, {}, ctx)],
+    [
+      "started",
+      async (id) => {
+        const { session: s } = await buildSessionOutcome(db, userId, id, {}, ctx);
+        await lockCurrentBuild(db, userId, id, s.build!.buildId, NOW, { as: "start", prefs });
+      },
+    ],
+    ["re-timed", (id) => db.insert(scheduleOverrides).values({ id: newId(), workoutId: id, kind: "time_change", fromDate: MON, toDate: MON, toTime: "18:00", source: "app", createdAt: NOW })],
+    ["completed", (id) => db.update(plannedWorkouts).set({ completionState: "completed", resolutionDate: MON }).where(eq(plannedWorkouts.id, id))],
+    ["skipped", (id) => db.update(plannedWorkouts).set({ completionState: "skipped", resolutionDate: MON }).where(eq(plannedWorkouts.id, id))],
+    ["moved away", (id) => move(id, day(0, 2))],
+    // No override: a copy moved on the watch moves its row, and only the dates say so.
+    ["moved away on the watch", (id) => db.update(plannedWorkouts).set({ effectiveDate: day(0, 2) }).where(eq(plannedWorkouts.id, id))],
+    ["removed by the athlete", (id) => db.update(plannedWorkouts).set({ archivedAt: NOW, archiveReason: "user_removed" }).where(eq(plannedWorkouts.id, id))],
+  ];
+
+  it.each(stays)("one that's been %s stays, per R13, and the pass doesn't even try", async (_, touch) => {
+    const { p, id } = await written();
+    await touch(id);
+    await setPause(p, MON);
+    const before = await row(id);
+    statements.length = 0;
+    expect((await placeSlots(db, userId, p, MON, prefs, NOW)).archived).toEqual([]);
+    expect(await row(id)).toEqual(before);
+    removalNotTried();
+  });
+
+  it("one moved onto today on the watch stays too: no override, and only the dates say so", async () => {
+    const p = await placed();
+    const moved = slotId(p, day(0, 4));
+    await db.update(plannedWorkouts).set({ effectiveDate: MON }).where(eq(plannedWorkouts.id, moved));
+    expect((await writeCourseSession(db, userId, await row(moved), ctx)).written).toBe(true);
+    await setPause(p, MON);
+    const before = await row(moved);
+    statements.length = 0;
+    expect((await placeSlots(db, userId, p, MON, prefs, NOW)).archived).toEqual([slotId(p, MON)]);
+    expect(await row(moved)).toEqual(before);
+    removalNotTried();
+  });
+
+  it("one moved onto today stays, though today's own outline goes", async () => {
+    const p = await placed();
+    const moved = slotId(p, day(0, 4));
+    await move(moved, MON);
+    expect((await writeCourseSession(db, userId, await row(moved), ctx)).written).toBe(true);
+    await setPause(p, MON);
+    const before = await row(moved);
+    statements.length = 0;
+    expect((await placeSlots(db, userId, p, MON, prefs, NOW)).archived).toEqual([slotId(p, MON)]);
+    expect(await row(moved)).toEqual(before);
+    removalNotTried();
+  });
+
+  it("a session saved in the app stays, whatever the row says", async () => {
+    const { p, id } = await written();
+    await db.insert(schema.performedSessions).values({
+      id: newId(), userId, workoutId: id, activityId: null, buildId: null, source: "app", sourceRef: null, localDate: MON, startedAt: NOW, endedAt: NOW, seconds: 60, plannedSeconds: 60, minutes: 1,
+      mode: "recovery", theme: null, locationId: null, blockRef: null, blockNumber: null, completed: true, stepsTotal: 1, stepsDone: 1, movesDone: [], note: null, newMove: null, payloadHash: "h", createdAt: NOW, updatedAt: NOW,
+    } as never);
+    await setPause(p, MON);
+    expect((await placeSlots(db, userId, p, MON, prefs, NOW)).archived).toEqual([]);
+    expect((await row(id)).archivedAt).toBeNull();
+  });
+
+  // Each lands after the pass read the row and chose it: the removal's own check keeps it.
+  const landing: Array<[string, (id: string) => Promise<unknown>]> = [
+    ["built", (id) => db.update(plannedWorkouts).set({ contentState: "built" }).where(eq(plannedWorkouts.id, id))],
+    ["started", (id) => db.update(plannedWorkouts).set({ contentState: "started" }).where(eq(plannedWorkouts.id, id))],
+    ["completed", (id) => db.update(plannedWorkouts).set({ completionState: "completed" }).where(eq(plannedWorkouts.id, id))],
+    ["unresolved", (id) => db.update(plannedWorkouts).set({ completionState: "unresolved" }).where(eq(plannedWorkouts.id, id))],
+    ["moved away", (id) => db.update(plannedWorkouts).set({ effectiveDate: day(0, 2) }).where(eq(plannedWorkouts.id, id))],
+    ["re-timed", (id) => db.insert(scheduleOverrides).values({ id: newId(), workoutId: id, kind: "time_change", fromDate: MON, toDate: MON, toTime: "18:00", source: "app", createdAt: NOW })],
+  ];
+
+  it.each(landing)("%s after the pass read it, it stays: the removal checks again as it archives", async (_, land) => {
+    const { p, id } = await written();
+    await setPause(p, MON);
+    // The pass's first look, then its look before it retracts: this lands at the second.
+    race.begin = async () => {
+      race.begin = async () => {
+        await land(id);
+      };
+    };
+    expect((await placeSlots(db, userId, p, MON, prefs, NOW)).archived).toEqual([]);
+    expect((await row(id)).archivedAt).toBeNull();
+    // And a day it holds stays held: no suppression, no intent.
+    expect(await db.select().from(schema.calendarEventSuppressions).where(eq(schema.calendarEventSuppressions.workoutId, id))).toEqual([]);
+  });
+
+  it("a restore beginning as it goes leaves it", async () => {
+    const { p, id } = await written();
+    await setPause(p, MON);
+    // The pass's first look, then its look before it retracts: this lands there, and the removal's own look finds it.
+    race.begin = async () => {
+      race.begin = beginRestore;
+    };
+    expect((await placeSlots(db, userId, p, MON, prefs, NOW)).archived).toEqual([]);
+    expect((await row(id)).archivedAt).toBeNull();
+  });
+
+  describe("its copy on the watch", () => {
+    let server: MockCorosServer;
+
+    /** An account with the writes on, the watch connected, and today's session written and its copy queued. */
+    const copyQueued = async (writes = true) => {
+      ({ userId, prefs } = await makeTestUser(db, { corosWritesEnabled: true }));
+      ctx = { today: MON, now: NOW, prefs };
+      await seedCatalog(db);
+      server = mockCorosServer({ baseMonday: "2026-10-12" });
+      await connectMock(db, userId, server);
+      const { p, id } = await written();
+      expect(await queueProvisionalPush(db, switchOn(), userId, await row(id), ctx)).toBe("queued");
+      const [record] = await db.select().from(sessionBuilds).where(eq(sessionBuilds.workoutId, id));
+      return { p, id, recordId: record!.id, prefsNow: writes ? prefs : { ...prefs, corosWritesEnabled: false } };
+    };
+    const job = async (id: string) => (await db.select().from(corosWriteJobs).where(eq(corosWriteJobs.id, id)))[0];
+
+    it("a push still queued is superseded: nothing reaches the watch", async () => {
+      const { p, id, recordId } = await copyQueued();
+      await setPause(p, MON);
+      expect((await placeSlots(db, userId, p, MON, prefs, NOW)).archived).toEqual([id]);
+      expect((await job(`push:${recordId}`))!.status).toBe("superseded");
+      expect(await job(`unpush:${recordId}`)).toBeUndefined();
+    });
+
+    it("a copy on the watch is owed its removal: its delete is queued", async () => {
+      const { p, id, recordId } = await copyQueued();
+      await executeCloudJobs(db, switchOn(), userId, prefs, { fetchImpl: server.fetchImpl });
+      expect((await job(`push:${recordId}`))!.status).toBe("verified");
+      await setPause(p, MON);
+      expect((await placeSlots(db, userId, p, MON, prefs, NOW)).archived).toEqual([id]);
+      expect(await job(`unpush:${recordId}`)).toMatchObject({ status: "queued", kind: expect.stringContaining("delete") });
+    });
+
+    it("with the athlete's writes off, the delete is owed on the copy's record", async () => {
+      const { p, id, recordId, prefsNow } = await copyQueued(false);
+      await executeCloudJobs(db, switchOn(), userId, prefs, { fetchImpl: server.fetchImpl });
+      await setPause(p, MON);
+      expect((await placeSlots(db, userId, p, MON, prefsNow, NOW)).archived).toEqual([id]);
+      expect(await job(`unpush:${recordId}`)).toBeUndefined();
+      const [record] = await db.select().from(sessionBuilds).where(eq(sessionBuilds.id, recordId));
+      expect((record!.payload as { unpushOwedAt?: string }).unpushOwedAt).toBe(NOW);
+    });
+
+    it("the removal is within what a budgeted pass declares, at its dearest: a copy on the watch to take off", async () => {
+      const { p, id } = await copyQueued();
+      await executeCloudJobs(db, switchOn(), userId, prefs, { fetchImpl: server.fetchImpl });
+      await setPause(p, MON);
+      statements.length = 0;
+      const res = await placeSlotsWithin(db, userId, p, MON, prefs, NOW, 45);
+      expect(res.archived).toEqual([id]);
+      expect(statements.length).toBeLessThanOrEqual(res.spent);
+      expect(res.spent).toBeLessThanOrEqual(45);
+      // The pass's own 6 and its refresh's read, beside the removal it declares.
+      expect(res.spent).toBe(6 + RETRACT_WRITTEN_COST + 1);
+    });
+  });
+
+  it("PATCH with a pause writes the plan and answers: the session comes off with the next hourly pass, not in the request", async () => {
+    const { p, id } = await written();
+    const before = await row(id);
+    const cookie = await cookieFor();
+    statements.length = 0;
+    const res = await mountRoutes(db, "/api/plans", plansRoutes).request(
+      `/api/plans/${p}`,
+      { method: "PATCH", headers: { Cookie: cookie, "content-type": "application/json" }, body: JSON.stringify({ pausedUntil: MON }) },
+      WATCH_ON,
+    );
+    expect(res.status).toBe(200);
+    expect((await programOf(p)).pausedUntil).toBe(MON);
+    expect(await row(id)).toEqual(before);
+    // Measured, and a change here is a deliberate one: placing in this request would add a pass and a removal at its dearest.
+    expect(statements).toHaveLength(12);
+  });
+});
+
+describe("a preview that isn't current", () => {
+  it("while the row is an outline of a course, a read serves no preview: the sheet's own build makes a fresh one", async () => {
+    const p = await placed();
+    const id = slotId(p, day(0, 4));
+    const first = await buildSessionOutcome(db, userId, id, {}, ctx);
+    expect(first.session.build?.version).toBe(0);
+    expect((await loadSession(db, userId, id, MON)).build).toBeNull();
+    expect((await buildSessionOutcome(db, userId, id, {}, ctx)).session.build?.buildId).toBe(first.session.build?.buildId);
+  });
+
+  it("the old dose isn't served after the sessions done move", async () => {
+    const p = await placed();
+    const id = slotId(p, day(0, 4));
+    await buildSessionOutcome(db, userId, id, {}, ctx);
+    await session(p, addDays(MON, -7), 1, "completed");
+    await session(p, addDays(MON, -3), 2, "completed");
+    expect((await loadSession(db, userId, id, MON)).build).toBeNull();
+    expect((await buildSessionOutcome(db, userId, id, {}, ctx)).session.build?.steps).toEqual(playerStepsFromDoc(realSessionDoc(3, { ease: false }), EXERCISES));
+  });
+
+  it("the old dose isn't served after an easing is asked for", async () => {
+    const p = await placed();
+    const id = slotId(p, day(0, 4));
+    await buildSessionOutcome(db, userId, id, {}, ctx);
+    await db.update(programs).set({ config: { ...(await programOf(p)).config, easeNext: true } }).where(eq(programs.id, p));
+    expect((await loadSession(db, userId, id, MON)).build).toBeNull();
+    expect((await buildSessionOutcome(db, userId, id, {}, ctx)).session.build?.steps).toEqual(playerStepsFromDoc(realSessionDoc(1, { ease: true }), EXERCISES));
+  });
+
+  it("a preview, the row moved to today and written, then moved back ahead: its old preview isn't served, and the next is of its document", async () => {
+    const p = await placed();
+    const id = slotId(p, day(0, 4));
+    await buildSessionOutcome(db, userId, id, {}, ctx);
+    await move(id, MON);
+    await writeCourseSession(db, userId, await row(id), ctx);
+    await move(id, day(0, 4));
+    expect((await row(id)).origin).toBe("studio");
+    expect((await loadSession(db, userId, id, MON)).build).toBeNull();
+    const fresh = (await buildSessionOutcome(db, userId, id, {}, ctx)).session.build;
+    expect(fresh).toMatchObject({ version: 0, fromDoc: { rev: 1 } });
+    expect((await loadSession(db, userId, id, MON)).build?.buildId).toBe(fresh?.buildId);
+  });
+
+  it("a document workout's preview of its own revision is served, and one of an older revision isn't", async () => {
+    const p = await placed();
+    const id = await filed(p, day(0, 2), "scheduled");
+    const fresh = (await buildSessionOutcome(db, userId, id, {}, ctx)).session.build;
+    expect(fresh).toMatchObject({ version: 0, fromDoc: { rev: 1 } });
+    expect((await loadSession(db, userId, id, MON)).build?.buildId).toBe(fresh?.buildId);
+    await db.update(plannedWorkouts).set({ workoutDocRev: 2 }).where(eq(plannedWorkouts.id, id));
+    expect((await loadSession(db, userId, id, MON)).build).toBeNull();
+  });
+
+  it("an adaptive programme's preview is served as ever", async () => {
+    const p = newId();
+    await db.insert(programs).values({
+      id: p, userId, kind: "adaptive", name: "Mobility", status: "active", disciplines: ["yoga", "strength"], startDate: null, endDate: null, raceDate: null, source: null,
+      config: adaptiveConfigSchema.parse({ weeklyGoal: 2, preferredDays: [0, 4], defaultMinutes: 30 }), createdAt: NOW, updatedAt: NOW, archivedAt: null,
+    });
+    await placeSlots(db, userId, p, MON, prefs, "2026-10-05T12:00:00.000Z");
+    const id = slotId(p, day(0, 4));
+    const first = await buildSessionOutcome(db, userId, id, {}, ctx);
+    expect(first.session.build?.version).toBe(0);
+    expect((await loadSession(db, userId, id, MON)).build?.buildId).toBe(first.session.build?.buildId);
+  });
+
+  it("a read of an outline ahead costs no more for it: the row, its plan, the profiles, its plan's kind and the set-aside moves", async () => {
+    const p = await placed();
+    const id = slotId(p, day(0, 4));
+    await buildSessionOutcome(db, userId, id, {}, ctx);
+    statements.length = 0;
+    await loadSession(db, userId, id, MON);
+    expect(statements).toHaveLength(5);
+  });
+});
+
+describe("the check sent with the opening", () => {
+  const tmj = () => db.insert(schema.userConditions).values({ id: `${userId}:tmj`, userId, profileId: "tmj", active: true, since: "2026-09-01", settings: {} });
+  const gated = () => vi.spyOn(INTRO_COURSE, "sessionDoc").mockImplementation(() => landingsDoc({ alternates: false }));
+  const stored = () => db.select().from(conditionChecks).where(eq(conditionChecks.userId, userId));
+  const CLEAR = { checks: { tmj: { pre: 1, feelingOff: false } } };
+  const CLOSES = { checks: { tmj: { pre: 8, feelingOff: true } } };
+
+  it("a re-check that clears the stored reading's refusal writes the session, keeps the check, and takes the note away", async () => {
+    vi.spyOn(console, "error").mockImplementation(() => undefined);
+    await tmj();
+    const p = await placed();
+    const id = slotId(p, MON);
+    gated();
+    await recordCheck(db, userId, { profileId: "tmj", value: 6, feelingOff: true }, { today: MON, now: NOW });
+    expect((await writeCourseSession(db, userId, await row(id), ctx)).written).toBe(false);
+    expect(await activeSyncNotes(db, userId)).toHaveLength(1);
+
+    const { session: s } = await buildSessionOutcome(db, userId, id, CLEAR, ctx);
+    expect((await row(id)).origin).toBe("studio");
+    expect(s.build?.fromDoc?.blocked).toEqual([]);
+    expect(s.checks).toEqual({ tmj: { pre: 1, feelingOff: false } });
+    expect((await stored()).filter((c) => c.kind === "pre").map((c) => [c.workoutId, c.value])).toEqual([[id, 1]]);
+    expect(await activeSyncNotes(db, userId)).toEqual([]);
+  });
+
+  it("an answer that closes a move isn't written with it blocked: the outline stays, with its note, and the answer is kept", async () => {
+    vi.spyOn(console, "error").mockImplementation(() => undefined);
+    await tmj();
+    const p = await placed();
+    const id = slotId(p, MON);
+    const before = await row(id);
+    gated();
+    const { session: s } = await buildSessionOutcome(db, userId, id, CLOSES, ctx);
+    expect(s).toMatchObject({ origin: "program", build: null, checks: { tmj: { pre: 8, feelingOff: true } } });
+    expect(await row(id)).toEqual(before);
+    expect((await activeSyncNotes(db, userId)).map((n) => n.kind)).toEqual(["course_session_refused"]);
+    expect((await stored()).map((c) => [c.kind, c.workoutId, c.value, c.feelingOff])).toEqual([["pre", id, 8, true]]);
+
+    // The answer stands for the next pass, and a clearing one replaces it.
+    expect(await writeCourseSessionsDue(db, AT)).toEqual({ written: 0, failed: 0 });
+    await buildSessionOutcome(db, userId, id, CLEAR, ctx);
+    expect((await row(id)).origin).toBe("studio");
+    expect((await stored()).map((c) => [c.kind, c.value])).toEqual([["pre", 1]]);
+  });
+
+  it("the same answer with an alternate to stand in is written: it's the build that swaps", async () => {
+    vi.spyOn(console, "error").mockImplementation(() => undefined);
+    await tmj();
+    const p = await placed();
+    const id = slotId(p, MON);
+    vi.spyOn(INTRO_COURSE, "sessionDoc").mockImplementation(() => landingsDoc({ alternates: true }));
+    const { session: s } = await buildSessionOutcome(db, userId, id, CLOSES, ctx);
+    expect((await row(id)).origin).toBe("studio");
+    expect(s.build?.fromDoc?.swaps.map((x) => x.to)).toEqual(["tempoSquat"]);
+    expect(await activeSyncNotes(db, userId)).toEqual([]);
+  });
+
+  it("a check for a profile that isn't on is refused before anything is written", async () => {
+    const p = await placed();
+    const id = slotId(p, MON);
+    const before = await row(id);
+    await expect(buildSessionOutcome(db, userId, id, CLEAR, ctx)).rejects.toBeInstanceOf(UnknownProfileError);
+    expect(await row(id)).toEqual(before);
+    expect(await stored()).toEqual([]);
+  });
+
+  it("an outline a pause holds keeps the answer too, and a profile that isn't on is still refused", async () => {
+    const p = await placed();
+    const id = slotId(p, day(0, 4));
+    await move(id, MON);
+    await setPause(p, MON);
+    await expect(buildSessionOutcome(db, userId, id, CLEAR, ctx)).rejects.toBeInstanceOf(UnknownProfileError);
+    await tmj();
+    const { session: s } = await buildSessionOutcome(db, userId, id, CLEAR, ctx);
+    expect(s).toMatchObject({ origin: "program", build: null, checks: { tmj: { pre: 1, feelingOff: false } } });
+    expect((await stored()).map((c) => c.value)).toEqual([1]);
+  });
+
+  it("a restore beginning before the answer is kept records nothing", async () => {
+    vi.spyOn(console, "error").mockImplementation(() => undefined);
+    await tmj();
+    const p = await placed();
+    const id = slotId(p, day(0, 4));
+    await move(id, MON);
+    await setPause(p, MON);
+    // The build's own look: this lands there, and keeping the answer looks again and finds it.
+    race.begin = beginRestore;
+    await buildSessionOutcome(db, userId, id, CLEAR, ctx);
+    expect(await stored()).toEqual([]);
+  });
+
+  it("nor does a day ahead that can't be previewed: its course's definition is gone", async () => {
+    vi.spyOn(console, "error").mockImplementation(() => undefined);
+    await tmj();
+    const p = await placed();
+    await db.update(programs).set({ config: { ...(await programOf(p)).config, course: "gone" } }).where(eq(programs.id, p));
+    expect((await buildSessionOutcome(db, userId, slotId(p, day(0, 4)), CLEAR, ctx)).session.build).toBeNull();
+    expect(await stored()).toEqual([]);
+  });
+
+  it("a preview ahead doesn't record its answer, as ever", async () => {
+    await tmj();
+    const p = await placed();
+    await buildSessionOutcome(db, userId, slotId(p, day(0, 4)), CLEAR, ctx);
+    expect(await stored()).toEqual([]);
+  });
+});
+
+describe("today's outline, linked by hand and the link undone", () => {
+  const linkAndUndo = async (id: string) => {
+    const app = mountRoutes(db, "/api/plan", planRoutes);
+    const cookie = await cookieFor();
+    const post = (path: string, body?: unknown) =>
+      app.request(`/api/plan/workouts/${id}/${path}`, { method: "POST", headers: { Cookie: cookie, "content-type": "application/json" }, ...(body ? { body: JSON.stringify(body) } : {}) }, WATCH_ON);
+    expect((await post("match", { activityId: await activityOn(MON) })).status).toBe(200);
+    expect((await post("unmatch")).status).toBe(200);
+    expect((await row(id)).completionState).toBe("unresolved");
+  };
+
+  it("the hourly pass writes it, as a session to do", async () => {
+    const p = await placed();
+    const id = slotId(p, MON);
+    await linkAndUndo(id);
+    expect(await writeCourseSessionsDue(db, AT)).toEqual({ written: 1, failed: 0 });
+    expect(await row(id)).toMatchObject({ origin: "studio", completionState: "scheduled", courseSession: 1, title: titleOf(1) });
+    // So the mirror takes it, as it does any session to do.
+    expect(rowRefusal(await row(id), WATCH_ON, { today: MON, prefs: { corosWritesEnabled: true } })).toBeNull();
+  });
+
+  it("an open writes it and builds it", async () => {
+    const p = await placed();
+    const id = slotId(p, MON);
+    await linkAndUndo(id);
+    const { session: s } = await buildSessionOutcome(db, userId, id, {}, ctx);
+    expect(s.origin).toBe("studio");
+    expect(s.build?.fromDoc?.rev).toBe(1);
+    expect((await row(id)).completionState).toBe("scheduled");
+  });
+
+  it("one from a day gone isn't: its day has passed", async () => {
+    const p = await placed();
+    const id = slotId(p, MON);
+    await linkAndUndo(id);
+    const tuesday = addDays(MON, 1);
+    statements.length = 0;
+    expect((await writeCourseSession(db, userId, await row(id), { ...ctx, today: tuesday })).written).toBe(false);
+    expect(writes()).toEqual([]);
+    expect((await row(id)).origin).toBe("program");
+  });
+});
+
+describe("the refusal's note", () => {
+  const refuse = async () => {
+    vi.spyOn(console, "error").mockImplementation(() => undefined);
+    const p = await placed();
+    const spy = vi.spyOn(INTRO_COURSE, "sessionDoc").mockImplementation(unplayable);
+    await writeCourseSessionsDue(db, AT);
+    return { p, id: slotId(p, MON), spy };
+  };
+
+  it("ends with the athlete's day: up until their midnight, gone from it", async () => {
+    await refuse();
+    expect((await db.select().from(syncNotes))[0]!.expiresAt).toBe("2026-10-06T07:00:00.000Z"); // Midnight in Los Angeles.
+    vi.setSystemTime(new Date("2026-10-06T06:59:59.000Z"));
+    expect(await activeSyncNotes(db, userId)).toHaveLength(1);
+    vi.setSystemTime(new Date("2026-10-06T07:00:00.000Z"));
+    expect(await activeSyncNotes(db, userId)).toEqual([]);
+  });
+
+  it("a successful write clears it, even one on another day: moved, and written there", async () => {
+    const { id, spy } = await refuse();
+    spy.mockRestore();
+    await move(id, day(0, 2));
+    expect((await writeCourseSession(db, userId, await row(id), { ...ctx, today: day(0, 2) })).written).toBe(true);
+    expect((await db.select().from(syncNotes))[0]!.dismissedAt).toBe(NOW);
+  });
+
+  it("another session's write doesn't clear it", async () => {
+    const { spy } = await refuse();
+    spy.mockRestore();
+    const other = await placed({ placementWeeksAhead: 1 });
+    await writeCourseSession(db, userId, await row(slotId(other, MON)), ctx);
+    expect((await db.select().from(syncNotes))[0]!.dismissedAt).toBeNull();
+  });
+});
+
 describe("what it costs", () => {
   const studioRow = async (): Promise<string> => {
     const id = newId();
@@ -1256,20 +2030,19 @@ describe("what it costs", () => {
     expect(statements.filter((s) => /json_set/.test(s))).toEqual([]);
   });
 
-  it("a write at its dearest stays within what it declares: a condition's check, the easing to clear, and two others re-timed", async () => {
+  it.each([2, 6])("a write costs what it declares, and one more for each session the collision pass re-times: %i others on the day", async (others) => {
     await db.insert(schema.userConditions).values({ id: `${userId}:tmj`, userId, profileId: "tmj", active: true, since: "2026-09-01", settings: {} });
     await recordCheck(db, userId, { profileId: "tmj", value: 1, feelingOff: false }, { today: MON, now: NOW });
     const p = await placed({ easeNext: true });
-    const others = [await filed(elsewhere(p), MON, "scheduled", { effectiveTime: "19:35" }), await filed(elsewhere(`${p}-2`), MON, "scheduled", { effectiveTime: "19:40" })];
+    for (let i = 0; i < others; i++) await filed(elsewhere(`${p}-${i}`), MON, "scheduled", { effectiveTime: `19:${35 + i}` });
     const stale = await row(slotId(p, MON));
     statements.length = 0;
     expect((await writeCourseSession(db, userId, stale, ctx)).written).toBe(true);
+    const retimes = statements.filter((s) => /^update "planned_workouts" set .*"effective_time"/.test(s)).length;
+    // Not a day that happened to stay put.
+    expect(retimes).toBeGreaterThanOrEqual(others);
     // The plan's read is this call's; the hourly pass holds its plan already.
-    const spent = statements.length - 1;
-    expect(spent).toBeLessThanOrEqual(COURSE_WRITE_COST);
-    // Not a day that happened to stay put: the pass re-timed what it holds, so this is the dear path.
-    expect(spent).toBeGreaterThan(5 + 5 + 2);
-    expect((await Promise.all(others.map(row))).map((r) => r.effectiveTime)).not.toEqual(["19:35", "19:40"]);
+    expect(statements.length - 1).toBe(COURSE_WRITE_COST + retimes);
   });
 
   it("the hourly pass over several accounts and plans stays within its bound, and what doesn't fit waits for the next hour", async () => {
@@ -1409,6 +2182,20 @@ describe("what it costs", () => {
     const res = await request(`/api/sessions/${id}`, { headers: { Cookie: cookie } }, env);
     expect(res.status).toBe(200);
     expect(res.body.origin).toBe("studio");
+    expect(res.total).toBeLessThanOrEqual(45);
+  });
+
+  it("a lost claim's retry stays within a request's budget, on a realistic account", async () => {
+    const { id, cookie, env } = await dueOnARealAccount();
+    const { planId } = await row(id);
+    // A session done lands as the first document is made, past every read, so the first try is lost at its batch.
+    vi.spyOn(INTRO_COURSE, "sessionDoc").mockImplementationOnce((n, opts) => {
+      (db.insert(plannedWorkouts).values(sessionRow(planId, addDays(MON, -3), 1, "completed", { userId })) as unknown as { run(): void }).run();
+      return realSessionDoc(n, opts);
+    });
+    const res = await request(`/api/sessions/${id}/build`, { method: "POST", headers: { Cookie: cookie, "content-type": "application/json" }, body: "{}" }, env);
+    expect(res.status).toBe(200);
+    expect(await row(id)).toMatchObject({ origin: "studio", courseSession: 2 });
     expect(res.total).toBeLessThanOrEqual(45);
   });
 

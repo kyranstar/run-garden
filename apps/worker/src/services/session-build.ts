@@ -30,7 +30,10 @@
  *  - A COURSE'S OUTLINE IS NEVER THE ENGINE'S (`course-sessions.ts`, plans with a purpose §4.2): a build or a read of today's
  *    writes it first, and it goes on as a document row. A day ahead previews a document computed from the sessions done
  *    (`docDayInputs`' `docOverride`), and the row is left alone. One that can't be written (a pause, a refusal, a stopped
- *    course, a definition gone) answers as it stands: no build, and the sheet is offered no choices (`docExtras`).
+ *    course, a definition gone) answers as it stands: no build, and the sheet is offered no choices (`docExtras`). A check the
+ *    request sent judges the write and is kept either way. A read serves no preview of an outline: what it would be moves
+ *    with the sessions done and the easing, and the sheet's own build makes a current one. Nor does anything serve a
+ *    document's preview of another revision than the row's.
  *  - A PROVISIONAL COPY'S RECORD (the watch mirrors the plan §3.2; builder check A1): a document workout's copy pushed
  *    to the watch ahead of its day is a build of its own — a negative version (−1, −2, … per workout), never locked,
  *    `kind: "provisional"` in its payload (`makeProvisionalRecord`). It is none of the slot's builds: the loader, the
@@ -812,7 +815,12 @@ function currentBuild(row: SlotRow, builds: readonly BuildRow[], today: string):
  */
 function dayBuildOf(row: SlotRow, builds: readonly BuildRow[], today: string): BuildRow | null {
   const ahead = row.effectiveDate > today;
-  return builds.find((b) => (ahead ? b.version === 0 : b.version > 0) && storedOf(b).build.date === row.effectiveDate) ?? null;
+  return builds.find((b) => (ahead ? b.version === 0 : b.version > 0) && storedOf(b).build.date === row.effectiveDate && !previewOfAnotherRevision(row, b)) ?? null;
+}
+
+/** A document's preview made from another revision than the row's (or from no document, a course's outline as it then was). */
+function previewOfAnotherRevision(row: SlotRow, b: BuildRow): boolean {
+  return b.version === 0 && (storedOf(b).build.fromDoc?.rev ?? null) !== (row.workoutDocRev ?? null);
 }
 
 /** The account's switched-on condition profiles: ids the library knows, sorted. */
@@ -898,9 +906,11 @@ export async function slotChecks(
   date: string,
   today: string,
   active: readonly string[],
+  /** A request's answers, read as they will be once recorded (`resolveChecks`): a course session's write, on its opening. */
+  asked: Record<string, CheckAnswer> = {},
 ): Promise<Record<string, CheckAnswer>> {
   if (active.length === 0) return {};
-  return resolveChecks(await dayCheckRows(db, userId, date), workoutId, date, today, active);
+  return resolveChecks(await dayCheckRows(db, userId, date), workoutId, date, today, active, asked);
 }
 
 /**
@@ -1041,11 +1051,13 @@ async function readResponse(db: Db, userId: string, row: SlotRow, today: string,
 
 /**
  * `GET /api/sessions/:workoutId`: the slot, its current build (or none), its day's checks, and the lock. A course's outline
- * due today is written first (`openCourseOutline`); a row that isn't a programme's reads no programme for it.
+ * due today is written first (`openCourseOutline`); a row that isn't a programme's reads no programme for it. An outline
+ * has only a preview to serve, and it isn't served: it may be of a dose the sessions done or the easing have since moved on
+ * from, and only computing it says, which is the sheet's own build. So its builds aren't read.
  */
 export async function loadSession(db: Db, userId: string, workoutId: string, today: string): Promise<SessionResponse> {
-  const { row } = await openCourseOutline(db, userId, await loadSlot(db, userId, workoutId), { today });
-  return readResponse(db, userId, row, today);
+  const { row, course } = await openCourseOutline(db, userId, await loadSlot(db, userId, workoutId), { today });
+  return readResponse(db, userId, row, today, course ? [] : undefined);
 }
 
 /**
@@ -2073,14 +2085,30 @@ export async function buildSessionOutcome(
   }
   if (loaded.effectiveDate < ctx.today) throw new NotTodayError(loaded.effectiveDate, ctx.today);
   if (await restoreInProgress(db, userId)) return { session: await readResponse(db, userId, loaded, ctx.today, builds), calendarChanged: false };
-  const { row, course } = await openCourseOutline(db, userId, loaded, ctx);
+  const { row, course } = await openCourseOutline(db, userId, loaded, ctx, { asked: req.checks, restoreLooked: true });
   if (course) {
     const ahead = row.effectiveDate > ctx.today ? await coursePreviewDoc(db, userId, course) : null;
-    if (!ahead) return { session: await readResponse(db, userId, row, ctx.today, builds), calendarChanged: false };
+    if (!ahead) {
+      // Today's, held or refused: the athlete's answer stands all the same (a day ahead has none of its own to keep).
+      if (req.checks && row.effectiveDate === ctx.today) await keepOutlineChecks(db, userId, row, req.checks, ctx);
+      return { session: await readResponse(db, userId, row, ctx.today, builds), calendarChanged: false };
+    }
     return commitDocBuild(db, userId, row, builds, await docDayInputs(db, userId, row, builds, req, ctx, ahead), ctx);
   }
   if (docOriginRow(row)) return commitDocBuild(db, userId, row, builds, await docDayInputs(db, userId, row, builds, req, ctx), ctx);
   return commitBuild(db, userId, row, builds, await dayInputs(db, userId, row, builds, req, ctx), ctx);
+}
+
+/**
+ * A request's answers for today's outline that stays one: recorded as a build records them, so they stand for the next write
+ * and the sheet. Throws `UnknownProfileError`. Nothing while a restore has begun.
+ */
+async function keepOutlineChecks(db: Db, userId: string, row: SlotRow, asked: Record<string, CheckAnswer>, ctx: BuildCtx): Promise<void> {
+  const active = await activeProfilesOf(db, userId);
+  if (Object.keys(asked).some((p) => !active.includes(p))) throw new UnknownProfileError();
+  const rows = active.length > 0 ? await dayCheckRows(db, userId, row.effectiveDate) : [];
+  if (await restoreInProgress(db, userId)) return;
+  await recordPreChecks(db, userId, row.id, row.effectiveDate, preCheckWrites(asked, rows, row.id), ctx.now);
 }
 
 /** `POST /api/sessions/:workoutId/build` (see `buildSessionOutcome`): the session. */

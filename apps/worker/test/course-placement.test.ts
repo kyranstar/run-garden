@@ -528,14 +528,24 @@ describe("a pause", () => {
     expect(await db.select().from(calendarEventSuppressions).where(eq(calendarEventSuppressions.workoutId, friday))).toEqual([]);
   });
 
-  it("a written session today stays: it isn't an outline any more, and its document may be on the watch", async () => {
+  it("a session written today and left untouched comes off too, or it would read as missed: its number isn't counted", async () => {
     const p = await seedCourse({ placementWeeksAhead: 1 });
     await placeSlots(db, userId, p, MON, prefs, NOW);
     const today = slotId(p, MON);
     await writeSession(today, "Intro 1");
     await setPause(p, MON);
-    expect(await placeSlots(db, userId, p, MON, prefs, NOW)).toEqual(NOTHING);
-    expect(await row(today)).toMatchObject({ archivedAt: null, title: "Intro 1" });
+    expect((await placeSlots(db, userId, p, MON, prefs, NOW)).archived).toEqual([today]);
+    expect(await row(today)).toMatchObject({ archivedAt: NOW, archiveReason: "program_replaced" });
+  });
+
+  it("a session written on a day ahead, moved there, stays: it's the athlete's, and a pause isn't its day", async () => {
+    const p = await seedCourse({ placementWeeksAhead: 1 });
+    await placeSlots(db, userId, p, MON, prefs, NOW);
+    const friday = slotId(p, day(0, 4));
+    await writeSession(friday, "Intro 1");
+    await setPause(p, day(0, 4));
+    expect((await placeSlots(db, userId, p, MON, prefs, NOW)).archived).not.toContain(friday);
+    expect((await row(friday)).archivedAt).toBeNull();
   });
 
   it("places nothing inside it on a first pass, and no session spills onto the course's other days", async () => {

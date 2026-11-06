@@ -23,10 +23,13 @@ export type SyncNoteKind =
 /** Note kinds that only inform: there is nothing to undo (the undo route answers 422 `not_undoable`). */
 export const DISMISS_ONLY_NOTE_KINDS: readonly SyncNoteKind[] = ["watch_copy_changed", "watch_copy_removed", "watch_copy_moved", "course_session_refused"];
 
-/** Post a note. `id`: the note's own, when something repeats and should say so once (a second post of it writes nothing). */
+/**
+ * Post a note. `id`: the note's own, when something repeats and should say so once (a second post of it writes nothing).
+ * `expiresAt`: when what it says stops being true, if that's sooner than a note's week.
+ */
 export async function postSyncNote(
   db: Db,
-  input: { id?: string; userId: string; workoutId?: string; kind: SyncNoteKind; payload: Record<string, unknown> },
+  input: { id?: string; userId: string; workoutId?: string; kind: SyncNoteKind; payload: Record<string, unknown>; expiresAt?: string },
 ): Promise<string> {
   const now = nowInstant();
   const id = input.id ?? newId();
@@ -39,7 +42,7 @@ export async function postSyncNote(
       kind: input.kind,
       payload: input.payload,
       createdAt: now,
-      expiresAt: new Date(Date.parse(now) + NOTE_TTL_MS).toISOString(),
+      expiresAt: input.expiresAt ?? new Date(Date.parse(now) + NOTE_TTL_MS).toISOString(),
     })
     .onConflictDoNothing();
   return id;
