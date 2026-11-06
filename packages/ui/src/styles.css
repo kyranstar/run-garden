@@ -271,6 +271,8 @@
     -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue",
     Arial, sans-serif;
   --font-display: "Iowan Old Style", "Palatino Linotype", Palatino, Georgia, serif;
+  /* Raw text read as it was sent (an import's raw reply and prompt, design 2026-11-05 §3.4). */
+  --font-mono: ui-monospace, SFMono-Regular, Menlo, Consolas, "Liberation Mono", monospace;
 
   /* The body map's fills (Growth's "Your body"; the figure and its swatches both read them): the silhouette, then each
      level a clear step further from the card. The mixes resolve against each theme's own tokens, and one set of
@@ -13639,4 +13641,297 @@ a.stu-tpl-open:focus-visible::before {
   margin: 0;
   font-size: var(--text-sm);
   color: var(--danger-ink);
+}
+
+/* ── An import's trail (design 2026-11-05 §3.4; trail-sheet.tsx) ─────────────
+   The coach trail's language — its ✓ lines, fold buttons and key: value rows (.coach-line, .coach-run-fold,
+   .coach-detail-row) — for one saved post: the account first, each stage folded under its result, the raw replies
+   last. Status is a glyph and a word, never colour alone. */
+.trail {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-7);
+  min-width: 0;
+}
+.trail-account {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-4);
+  min-width: 0;
+}
+.trail-from,
+.trail-what,
+.trail-note {
+  margin: 0;
+  font-size: var(--text-sm);
+  color: var(--ink);
+  overflow-wrap: anywhere;
+}
+.trail-from {
+  font-weight: var(--weight-medium);
+}
+.trail-note {
+  color: var(--ink-soft);
+}
+.trail-post-link {
+  font-weight: var(--weight-regular);
+}
+.trail-move {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-1);
+  min-width: 0;
+  font-size: var(--text-sm);
+}
+/* A line that opens: the line is the button, its chevron turning as it opens. */
+.trail-open {
+  display: inline-flex;
+  align-items: baseline;
+  gap: var(--space-2);
+  color: var(--ink);
+}
+.trail-open[aria-expanded="true"] .trail-chev,
+.trail-stage[aria-expanded="true"] + .trail-chev {
+  transform: rotate(90deg);
+}
+.trail-chev {
+  display: inline-flex;
+  align-self: center;
+  color: var(--ink-soft);
+}
+.trail-move-name {
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+.trail-move-sub {
+  color: var(--ink-soft);
+  font-size: var(--text-xs);
+  overflow-wrap: anywhere;
+}
+.trail-move-detail {
+  margin-top: var(--space-2);
+}
+.trail-stage {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: var(--space-1);
+  min-width: 0;
+}
+.trail-stage-title {
+  font-weight: var(--weight-medium);
+}
+.trail-stage-result {
+  color: var(--ink-soft);
+  font-size: var(--text-xs);
+  overflow-wrap: anywhere;
+}
+/* A failure's mark: the danger ink (a warning keeps the coach trail's warn ink). */
+.trail-line--fail > .coach-line-mark,
+.trail-mark--fail {
+  color: var(--danger-ink);
+}
+.trail-mark--ok {
+  color: var(--green-ink);
+}
+.trail-mark--warn {
+  color: var(--warn-ink);
+}
+.trail-mark--info,
+.trail-mark--skip {
+  color: var(--ink-faint);
+}
+.trail-step {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-3);
+  min-width: 0;
+}
+.trail-step + .trail-step {
+  padding-top: var(--space-4);
+  border-top: 1px solid var(--border);
+}
+.trail-step-line {
+  display: grid;
+  grid-template-columns: 1.25em minmax(0, 1fr);
+  column-gap: var(--space-3);
+  margin: 0;
+  font-size: var(--text-sm);
+  color: var(--ink);
+  overflow-wrap: anywhere;
+}
+.trail-step-when {
+  margin: 0;
+  font-size: var(--text-xs);
+  color: var(--ink-soft);
+}
+/* A value keeps its own lines (a list, an object's key: value lines). */
+.trail-value-text {
+  white-space: pre-line;
+}
+.trail-show-all {
+  margin-left: var(--space-3);
+  font-size: var(--text-xs);
+}
+.trail-raw {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-3);
+  min-width: 0;
+}
+.trail-raw-body {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-3);
+  min-width: 0;
+}
+.trail-raw-body[hidden] {
+  display: none;
+}
+/* Raw as it was sent or came back: monospace, whole, its own lines kept, scrolling inside its box. */
+.trail-raw-text {
+  margin: 0;
+  max-height: 24rem;
+  overflow: auto;
+  padding: var(--space-4) var(--space-5);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  background: var(--bg-sunken);
+  color: var(--ink);
+  font-family: var(--font-mono);
+  font-size: var(--text-xs);
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  user-select: text;
+}
+.trail-raw-foot {
+  display: flex;
+  align-items: center;
+  gap: var(--space-4);
+}
+
+/* ── The import's health row (design 2026-11-05 §3.2; health-row.tsx) ────────
+   Seven labelled lights; each a glyph and a word as well as its colour. All green, the row alone. */
+.health {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-4);
+  min-width: 0;
+}
+.health-lights {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-2) var(--space-4);
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+.health-light {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-2);
+  min-height: var(--tap-fine-row);
+  padding: 0 var(--space-4);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-pill);
+  background: var(--bg-raised);
+  color: var(--ink);
+  font: inherit;
+  font-size: var(--text-xs);
+  cursor: pointer;
+}
+.health-light[aria-expanded="true"] {
+  border-color: var(--border-strong);
+  background: var(--bg-sunken);
+}
+.health-mark {
+  font-weight: var(--weight-bold);
+}
+.health-light--green .health-mark {
+  color: var(--green-ink);
+}
+.health-light--yellow .health-mark {
+  color: var(--warn-ink);
+}
+.health-light--red {
+  border-color: var(--danger);
+}
+.health-light--red .health-mark {
+  color: var(--danger-ink);
+}
+.health-light--grey .health-mark {
+  color: var(--ink-faint);
+}
+@media (pointer: coarse) {
+  .health-light {
+    min-height: var(--tap);
+  }
+}
+.health-line,
+.health-none {
+  margin: 0;
+  font-size: var(--text-sm);
+  color: var(--ink);
+  overflow-wrap: anywhere;
+}
+.health-none {
+  color: var(--ink-soft);
+}
+.health-panel {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-3);
+  min-width: 0;
+}
+.health-panel[hidden] {
+  display: none;
+}
+.health-failures {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-4);
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+.health-failure {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-2) var(--space-4);
+  min-width: 0;
+  font-size: var(--text-sm);
+}
+.health-failure-what {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-1);
+  min-width: 0;
+}
+.health-failure-title {
+  align-self: flex-start;
+  text-align: left;
+  overflow-wrap: anywhere;
+}
+.health-failure-why {
+  font-size: var(--text-xs);
+  color: var(--ink-soft);
+  overflow-wrap: anywhere;
+}
+.health--compact .health-light {
+  padding: 0 var(--space-3);
+}
+/* A saved post's two links side by side (Settings → Saves, the batch page's move sheet): the post, and its trail. */
+.stu-saved-links {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  column-gap: var(--space-6);
+}
+/* The coach's saves card: its health row lines up with the controls, past the coach's mark. */
+.coach-saves > .health {
+  padding-left: calc(var(--space-7) + var(--space-2) + var(--space-4));
+  padding-top: var(--space-4);
+  border-top: 1px solid var(--border);
 }

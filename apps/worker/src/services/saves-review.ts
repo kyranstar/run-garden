@@ -139,6 +139,7 @@ interface RowRead {
   moveId: string;
   moveKind: "library" | "personal";
   checkFlag: number;
+  postId: string;
   url: string | null;
   creator: string | null;
   postKind: string | null;
@@ -189,7 +190,7 @@ export async function batchDetail(db: Db, userId: string, batchId: string, now: 
   const insights = insightsOf(head.insights, INSIGHTS_PER_BATCH);
   // The post's reading of each move is read out by SQLite: the extraction is never handed over whole.
   const reads = (await db.all(sql`select l.id as postMoveId, l.position as position, l.status as status, l.move_id as moveId,
-      l.move_kind as moveKind, l.check_flag as checkFlag, p.url as url,
+      l.move_kind as moveKind, l.check_flag as checkFlag, p.id as postId, p.url as url,
       coalesce(nullif(p.creator_handle, ''), p.creator_name) as creator,
       json_extract(p.extraction, '$.kind') as postKind,
       json_extract(p.extraction, '$.moves[' || l.position || '].name') as seenName,
@@ -244,7 +245,7 @@ export async function batchDetail(db: Db, userId: string, batchId: string, now: 
       postMoveId: r.postMoveId,
       position: Number(r.position),
       status: r.status,
-      post: { url: r.url, creator: r.creator, kind: text(r.postKind) },
+      post: { id: r.postId, url: r.url, creator: r.creator, kind: text(r.postKind) },
       move: {
         id: r.moveId,
         name: fresh ? (record?.name ?? seenName ?? r.moveId) : (seenName ?? linkedName ?? r.moveId),

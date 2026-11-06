@@ -8,7 +8,7 @@ import { createRoot, type Root } from "react-dom/client";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { MemoryRouter } from "react-router-dom";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import type { SavesStatusDto } from "@rg/saves";
+import { HEALTH_LIGHTS, type ImportHealthDto, type ImportTrailDto, type SavesStatusDto } from "@rg/saves";
 import { SavesSection } from "../src/screens/settings/saves.js";
 
 (globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
@@ -32,13 +32,32 @@ let root: Root;
 let host: HTMLElement;
 let calls: Array<{ method: string; path: string; body: unknown }>;
 
-function mount(reply: { status: number; body?: unknown }) {
+const json = (b: unknown, status = 200) => new Response(JSON.stringify(b), { status, headers: { "Content-Type": "application/json" } });
+const health = (red = false): ImportHealthDto => ({
+  lights: HEALTH_LIGHTS.map((light) => ({
+    light,
+    color: red && light === "reader" ? "red" : "green",
+    line: red && light === "reader" ? "Reader: 3 of 4 failed" : null,
+    failures: [],
+  })),
+  worst: red ? "Reader: 3 of 4 failed" : null,
+});
+const TRAIL: ImportTrailDto = {
+  post: { id: "p1", source: "instagram", url: "https://example.com/p/k1", title: null, creator: { handle: "someone", name: "Some One" }, mediaType: "video", postedAt: null, firstSeenAt: "2026-10-22T12:00:00.000Z", status: "filtered_out", origin: "saved", durationSec: null, videoSeen: null },
+  account: { kind: null, summary: null, moves: [], health: { status: "ok", line: "Read cleanly" } },
+  events: [],
+  rebuilt: false,
+};
+
+function mount(reply: { status: number; body?: unknown }, healthReply: { status: number; body?: unknown } = { status: 200, body: health() }) {
   calls = [];
   vi.stubGlobal(
     "fetch",
     vi.fn(async (url: string, req?: RequestInit) => {
       calls.push({ method: req?.method ?? "GET", path: url, body: req?.body ? JSON.parse(String(req.body)) : null });
       if (url === "/api/my-saves/status") return new Response(JSON.stringify(reply.body ?? {}), { status: reply.status, headers: { "Content-Type": "application/json" } });
+      if (url === "/api/my-saves/health") return json(healthReply.body ?? {}, healthReply.status);
+      if (url === "/api/my-saves/posts/p1/trail") return json(TRAIL);
       return new Response(JSON.stringify({ ok: true }), { status: 200, headers: { "Content-Type": "application/json" } });
     }),
   );
@@ -149,6 +168,44 @@ describe("SavesSection", () => {
     expect(review!.classList.contains("place-row")).toBe(true);
     const firstPost = document.querySelector('a[href="https://example.com/p/k1"]')!;
     expect(review!.compareDocumentPosition(firstPost) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+  });
+
+  it("never reads as all is well while a health light is red: the line is the worst light's (audit bug 7)", async () => {
+    await mount({ status: 200, body: status() }, { status: 200, body: health(true) });
+    await flush();
+    expect(host.textContent).toContain("Reader: 3 of 4 failed");
+    expect(host.textContent).not.toContain("Last import");
+  });
+
+  it("the sheet opens on the health row, above the review screen's row", async () => {
+    await mount({ status: 200, body: status() });
+    await flush();
+    await act(async () => { (host.querySelector("button.place-row") as HTMLButtonElement).click(); });
+    const row = document.querySelector("[role=dialog] [aria-label='Import health']")!;
+    expect(row).toBeTruthy();
+    expect(row.querySelectorAll("button.health-light")).toHaveLength(7);
+    const review = [...document.querySelectorAll<HTMLAnchorElement>("a")].find((a) => a.getAttribute("href") === "/studio/saves")!;
+    expect(row.compareDocumentPosition(review) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+  });
+
+  it("a health read that fails leaves the row out, and the line as it was", async () => {
+    await mount({ status: 200, body: status() }, { status: 404, body: { error: "not_found" } });
+    await flush();
+    expect(host.textContent).toContain("Last import 2 days ago");
+    await act(async () => { (host.querySelector("button.place-row") as HTMLButtonElement).click(); });
+    expect(document.querySelector("[aria-label='Import health']")).toBeNull();
+  });
+
+  it("a post's How it came in opens its trail", async () => {
+    await mount({ status: 200, body: status() });
+    await flush();
+    await act(async () => { (host.querySelector("button.place-row") as HTMLButtonElement).click(); });
+    const open = [...document.querySelectorAll<HTMLButtonElement>("button")].find((b) => b.textContent?.startsWith("How it came in") && b.textContent.includes("Some One"))!;
+    expect(open).toBeTruthy();
+    await act(async () => { open.click(); });
+    await flush();
+    expect(calls.map((c) => c.path)).toContain("/api/my-saves/posts/p1/trail");
+    expect(document.body.textContent).toContain("From Some One · Instagram");
   });
 
   it("Process anyway calls the override", async () => {

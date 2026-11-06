@@ -225,7 +225,8 @@ describe("GET /batches/:id", () => {
     ]);
     expect(rows[0]).toMatchObject({
       position: 0, status: "pending",
-      post: { url: "https://example.com/p/a", creator: "coach_a", kind: "routine" },
+      // The post's own id: the row opens its trail (import trail).
+      post: { id: a, url: "https://example.com/p/a", creator: "coach_a", kind: "routine" },
       move: { name: "Zorbex quad shuffle", summary: "Zorbex quad shuffle, slow and even.", seenDose: "3 x 10", purpose: "mobility", choice: null },
       record: { id: quad, name: "Zorbex quad shuffle", dose: { type: "reps", range: [10, 10], sets: [3, 3] } },
     });

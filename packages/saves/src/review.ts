@@ -60,6 +60,8 @@ export interface SaveBatchRowDto {
   /** Pending until the batch is saved; removed rows are left out of the save. */
   status: "pending" | "saved" | "removed";
   post: {
+    /** The saved post's id: the row opens its trail (import trail; absent from an answer kept from before it was added). */
+    id?: string;
     /** The post's address as stored (the app links it only when it is http or https). */
     url: string | null;
     /** The creator's handle, else their name. */

@@ -25,7 +25,7 @@ import { MemoryRouter, Route, Routes } from "react-router-dom";
 import { QueryClientProvider, type QueryClient } from "@tanstack/react-query";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { CoachConversationDto, CoachConversationTurnDto, CoachRunDto } from "@rg/api-client";
-import { FIT_SAVES_REQUEST, type OpenSavesBatchDto } from "@rg/saves";
+import { FIT_SAVES_REQUEST, HEALTH_LIGHTS, type OpenSavesBatchDto } from "@rg/saves";
 import { useCoach, useCoachSeeing } from "../src/screens/studio/coach-ask.js";
 import { workoutFocus } from "../src/screens/studio/coach-focus.js";
 import { CoachSheetProvider } from "../src/screens/studio/coach-sheet.js";
@@ -196,6 +196,21 @@ describe("the open batch in the coach", () => {
     expect(document.activeElement).toBe(c);
     expect(runPosts(calls)).toEqual([]);
     expect(dialog()!.querySelector(".coach-turns")).not.toBeNull();
+  });
+
+  it("the card's foot is the import's health row (design 2026-11-05 §3.2): its lights, and the worst light's line when one is red", async () => {
+    const lights = HEALTH_LIGHTS.map((light) => ({
+      light, color: light === "reader" ? ("red" as const) : ("green" as const), line: light === "reader" ? "Reader: 3 of 4 failed" : null, failures: [],
+    }));
+    server({ more: { "GET /api/my-saves/health": { lights, worst: "Reader: 3 of 4 failed" } } });
+    mountSheet();
+    await openCoach();
+    await until(() => !!card()?.querySelector("[aria-label='Import health']"), "the health row on the card");
+    const row = card()!.querySelector("[aria-label='Import health']")!;
+    expect(row.querySelectorAll("button.health-light")).toHaveLength(7);
+    expect(row.querySelector(".health-line")?.textContent).toBe("Reader: 3 of 4 failed");
+    // Under the card's own controls.
+    expect(button("Fit them in", card()!)!.compareDocumentPosition(row) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
   });
 
   it("nothing of it with no open batch, or one with nothing left in it", async () => {

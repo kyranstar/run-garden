@@ -15,7 +15,7 @@ import { QueryClientProvider } from "@tanstack/react-query";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { OPEN_SAVES_QUERY, savesBatchQuery, type PersonalMovesDto } from "@rg/api-client";
 import { EXERCISES, type ExerciseRecord } from "@rg/exercise-library";
-import { FIT_SAVES_REQUEST, type FitChoice, type SaveBatchDetailDto, type SaveBatchDto, type SaveBatchRowDto } from "@rg/saves";
+import { FIT_SAVES_REQUEST, type FitChoice, type ImportTrailDto, type SaveBatchDetailDto, type SaveBatchDto, type SaveBatchRowDto } from "@rg/saves";
 import { StudioRoute } from "../src/app.js";
 import { CoachOpenContext, type CoachOpener } from "../src/screens/studio/coach-ask.js";
 import { FITTING_LINE, OPEN_FIRST_LINE, patchOf, formOf } from "../src/screens/studio/saves-model.js";
@@ -48,7 +48,7 @@ const BATCH: SaveBatchDto = {
  */
 const ROWS: SaveBatchRowDto[] = [
   {
-    postMoveId: "pm1", position: 0, status: "pending", post: { url: "https://example.com/p/a", creator: "coach_a", kind: "routine" },
+    postMoveId: "pm1", position: 0, status: "pending", post: { id: "post-a", url: "https://example.com/p/a", creator: "coach_a", kind: "routine" },
     move: { id: QUAD.id, name: QUAD.name, summary: QUAD.text.summary, kind: "new", check: false, seenDose: "3 x 10", purpose: "Loosens the quads before a run.", choice: null }, record: QUAD,
   },
   {
@@ -78,6 +78,17 @@ const INSIGHTS: NonNullable<SaveBatchDetailDto["insights"]> = [
   { postId: "post-a", url: "https://example.com/p/a", creator: "coach_a", text: "Do the quad shuffle before a run, not after." },
   { postId: "post-b", url: "javascript:alert(1)", creator: HOSTILE, text: `Twice a week ${HOSTILE}` },
 ];
+
+/** Post a's trail (import trail). */
+const TRAIL: ImportTrailDto = {
+  post: {
+    id: "post-a", source: "instagram", url: "https://example.com/p/a", title: null, creator: { handle: "coach_a" }, mediaType: "video", postedAt: null,
+    firstSeenAt: "2026-10-22T12:00:00.000Z", status: "matched", origin: "saved", durationSec: null, videoSeen: null,
+  },
+  account: { kind: "routine", summary: "Two moves for the legs.", moves: [], health: { status: "ok", line: "Read cleanly" } },
+  events: [],
+  rebuilt: false,
+};
 
 // ── The server ──
 
@@ -123,6 +134,7 @@ function serve(o: Serve = {}): Call[] {
       if (method === "GET" && path === "/api/my-saves/batches/b1") return json({ batch, rows, ...(insights ? { insights } : {}) } satisfies SaveBatchDetailDto);
       if (method === "GET" && path === "/api/my-saves/batches/gone") return json({ error: "not_found" }, 404);
       if (method === "GET" && path === "/api/my-saves/open") return json({ open: null });
+      if (method === "GET" && path === "/api/my-saves/posts/post-a/trail") return json(TRAIL);
       if (method === "POST" && path === "/api/my-saves/batches/b1/fit") {
         if (o.fit) return o.fit.clone();
         batch = { ...batch, status: "saved", savedAt: "2026-10-24T12:00:00.000Z", dismissedAt: null, fitStartedAt: "2026-10-24T12:00:00.000Z", fitting: true };
@@ -584,6 +596,22 @@ describe("a move's sheet", () => {
     expect(dialog(NECK.name)!.textContent).toContain(HOSTILE);
   });
 
+  it("How it came in opens the post's trail over the move's sheet (import trail); a row from before the post's id has none", async () => {
+    const calls = serve();
+    mount("/studio/saves/b1");
+    await until(() => !!rowOf(QUAD.name), "the rows");
+    await openRow(QUAD.name);
+    await click(buttons(dialog(QUAD.name)!).find((b) => b.textContent?.startsWith("How it came in")), "How it came in");
+    await until(() => text().includes("From coach_a · Instagram"), "the trail");
+    expect(calls.map((c) => c.path)).toContain("/api/my-saves/posts/post-a/trail");
+    await click(button("Close", dialog("coach_a")!), "the trail's Close");
+    expect(dialog("coach_a")).toBeNull();
+    expect(dialog(QUAD.name)).not.toBeNull();
+    await click(button("Close", dialog(QUAD.name)!), "Close");
+    await openRow(CALF.name);
+    expect(buttons(dialog(CALF.name)!).some((b) => b.textContent?.startsWith("How it came in"))).toBe(false);
+  });
+
   it("shows the move's ratings per profile (folded, a tap opens them) and its cues; Check this says why, as data (verbatim audit gap 5)", async () => {
     serve();
     mount("/studio/saves/b1");
@@ -720,6 +748,17 @@ describe("the batches", () => {
     await click(document.querySelector('a[href="/studio/saves/b1"]'), "the batch");
     expect(where).toBe("/studio/saves/b1");
     await until(() => !!rowOf(QUAD.name), "the rows");
+  });
+
+  it("/studio/saves/posts/:postId is the batches with that post's trail open (the popup's links); closing it leaves the batches", async () => {
+    const calls = serve();
+    mount("/studio/saves/posts/post-a");
+    await until(() => text().includes("From coach_a · Instagram"), "the trail");
+    expect(calls.map((c) => c.path)).toContain("/api/my-saves/posts/post-a/trail");
+    expect(document.querySelector("h1")?.textContent).toBe("From your saves");
+    await click(button("Close", dialog("coach_a")!), "the trail's Close");
+    expect(where).toBe("/studio/saves");
+    expect(dialog("coach_a")).toBeNull();
   });
 
   it("the list: a dismissed batch reads Put aside and offers Fit them in", async () => {

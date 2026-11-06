@@ -58,7 +58,7 @@ describe("the Studio's pages", () => {
     expect(app).toMatch(/import \{ StudioScreen \} from "\.\/screens\/studio\/screen\.js";/);
   });
 
-  it("/studio is the library, /studio/build/* the builder (Task 6), /studio/templates the templates (Task 7), /studio/saves[/:batchId] From your saves (saved-posts import); the objectives board's address goes to Growth", () => {
+  it("/studio is the library, /studio/build/* the builder (Task 6), /studio/templates the templates (Task 7), /studio/saves[/:batchId] From your saves (saved-posts import), /studio/saves/posts/:postId the batches with a post's trail open (import trail); the objectives board's address goes to Growth", () => {
     const el = StudioRoute();
     expect(el.type).toBe(Routes);
     const routes = Children.toArray((el.props as { children: unknown }).children) as ReactElement<{ path: string; element: ReactElement }>[];
@@ -66,6 +66,7 @@ describe("the Studio's pages", () => {
       ["build/*", BuilderRoute],
       ["templates", TemplatesScreen],
       ["saves", SavesScreen],
+      ["saves/posts/:postId", SavesScreen],
       ["saves/:batchId", SaveBatchScreen],
       ["objectives", Navigate],
       ["*", StudioScreen],

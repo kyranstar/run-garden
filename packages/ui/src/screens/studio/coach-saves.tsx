@@ -18,6 +18,8 @@
  *  - While a fit is at work, every button gives way to "Fitting in… open the coach".
  *  - Nothing at all without an open batch, with a read that failed (the feature off: 404), or with a batch every row of
  *    which was removed (0 and 0).
+ *  - Its foot is the import's health row (design 2026-11-05 §3.2): seven lights, the worst one's line when one isn't
+ *    green, a tap on a light listing its failures (each opens its post's trail). Left out when the health can't be read.
  *
  * The Today card (components/saves-today-card.tsx) reads the same query and fits the same way (`useFitThemIn`).
  */
@@ -25,10 +27,11 @@ import { useState } from "react";
 import { createPortal } from "react-dom";
 import { Link } from "react-router-dom";
 import { useQuery, useQueryClient, type QueryClient } from "@tanstack/react-query";
-import { api, ApiError, OPEN_SAVES_QUERY, SAVES_BATCHES_QUERY, savesBatchQuery } from "@rg/api-client";
+import { api, ApiError, OPEN_SAVES_QUERY, SAVES_BATCHES_QUERY, SAVES_HEALTH_QUERY, savesBatchQuery } from "@rg/api-client";
 import type { FitChoice, OpenSavesBatchDto, OpenSavesDto } from "@rg/saves";
 import { Sheet } from "../../components.js";
 import { PERSONAL_MOVES_QUERY } from "../../library/account-library.js";
+import { HealthRow, healthOf } from "../saves/health-row.js";
 import { CoachSays } from "./coach-opening.js";
 import { DISMISS_FAILED_LINE, FITTING_LINE, fitRefusal, openShown, PUT_ASIDE_LINE, savesChipLabel, savesHref } from "./saves-model.js";
 import { useOneTap } from "./use-one-tap.js";
@@ -134,6 +137,8 @@ export function CoachSavesCard({ busy, onFit }: { busy: boolean; onFit: (batchId
   const { open } = useOpenSaves();
   const { fit, pending, line } = useFitThemIn(onFit);
   const [asking, setAsking] = useState(false);
+  const healthRead = useQuery({ queryKey: SAVES_HEALTH_QUERY, queryFn: api.savesHealth, retry: false, enabled: !!open });
+  const health = healthOf(healthRead.data);
   if (!open) return null;
   return (
     <section id={COACH_SAVES_CARD_ID} className="coach-saves" aria-label={SAVES_CARD_LABEL} tabIndex={-1}>
@@ -164,6 +169,7 @@ export function CoachSavesCard({ busy, onFit }: { busy: boolean; onFit: (batchId
           {line}
         </p>
       ) : null}
+      {health ? <HealthRow health={health} compact /> : null}
       {asking ? <PutAside batchId={open.id} onClose={() => setAsking(false)} /> : null}
     </section>
   );

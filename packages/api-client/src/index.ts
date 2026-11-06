@@ -2604,6 +2604,11 @@ export const SAVES_BATCHES_QUERY = ["saves", "batches"] as const;
 export const savesBatchQuery = (id: string) => ["saves", "batch", id] as const;
 /** The open batch the Today card, the coach's chip and its saves card are about (`GET /api/my-saves/open`). */
 export const OPEN_SAVES_QUERY = ["saves", "open"] as const;
+/** The import's health row (`GET /api/my-saves/health`): Settings -> Saves and the coach's saves card. */
+export const SAVES_HEALTH_QUERY = ["saves", "health"] as const;
+/** One saved post's trail (`GET /api/my-saves/posts/:id/trail`), and one of its blobs (`GET /api/my-saves/blobs/:id`). */
+export const saveTrailQuery = (postId: string) => ["saves", "trail", postId] as const;
+export const saveBlobQuery = (blobId: string) => ["saves", "blob", blobId] as const;
 
 export const api = {
   me: () => get<MeResponse>("/api/auth/me"),

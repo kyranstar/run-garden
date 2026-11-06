@@ -40,8 +40,9 @@ const queryClient = new QueryClient({
 /**
  * The Studio's pages (the new shape, §3): no tab, but every page keeps its route — the builder at `/studio/build/*` (one
  * instance across a new workout, a quick start, a template and a planned workout), the templates at
- * `/studio/templates`, "From your saves" at `/studio/saves` (the batches) and `/studio/saves/:batchId` (one batch's moves,
- * to look through and save — the coach's saves line opens it), else the library itself (its browse, search and a move's
+ * `/studio/templates`, "From your saves" at `/studio/saves` (the batches), `/studio/saves/:batchId` (one batch's moves,
+ * to look through and save — the coach's saves line opens it) and `/studio/saves/posts/:postId` (the batches with one
+ * post's trail open — the extension popup's links), else the library itself (its browse, search and a move's
  * detail), reached from the coach's opening screen and search. The objectives board became Growth's quests: its old
  * address goes there.
  */
@@ -51,6 +52,7 @@ export function StudioRoute() {
       <Route path="build/*" element={<BuilderRoute />} />
       <Route path="templates" element={<TemplatesScreen />} />
       <Route path="saves" element={<SavesScreen />} />
+      <Route path="saves/posts/:postId" element={<SavesScreen />} />
       <Route path="saves/:batchId" element={<SaveBatchScreen />} />
       <Route path="objectives" element={<Navigate to="/growth" replace />} />
       <Route path="*" element={<StudioScreen />} />

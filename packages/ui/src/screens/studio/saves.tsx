@@ -37,13 +37,16 @@
  * of the move's pending links. Notes, under the rows, is what the kept posts say about when, why or how often (spec §17)
  * — one line each, with its creator, read-only: what the coach keeps in memory once the batch is saved.
  *
+ * The move's sheet opens its post's trail too (How it came in: what each stage read and decided, design 2026-11-05 §3.4),
+ * and `/studio/saves/posts/:postId` is the batches with that post's trail open (the extension popup's post rows).
+ *
  * A model wrote the names, summaries, purposes, notes and creators: drawn as text, never as markup; a post's address is
  * a link only when it is a web page's (`postHref`). Every write reads the batch again; one that changes the owner's
  * moves (a fit, an edit, either re-match) reads the whole library again (`["library"]`: their moves, the Studio's list,
  * a move's own detail), so search, the builder and a move's detail see a saved or edited move at once.
  */
 import { useEffect, useId, useMemo, useRef, useState, type KeyboardEvent, type ReactNode } from "react";
-import { Link, useParams } from "react-router-dom";
+import { Link, useNavigate, useParams } from "react-router-dom";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { api, ApiError, SAVES_BATCHES_QUERY, SAVES_STATUS_QUERY, savesBatchQuery } from "@rg/api-client";
 import { PROFILES, searchLibrary, type ExerciseRecord } from "@rg/exercise-library";
@@ -52,6 +55,7 @@ import { EmptyState, Sheet, Spinner } from "../../components.js";
 import { SearchField } from "../../components/search-field.js";
 import { IconBack } from "../../icons.js";
 import { useAccountLibrary } from "../../library/account-library.js";
+import { TRAIL_OPEN_LABEL, TrailSheet } from "../saves/trail-sheet.js";
 import { AskCoach, useCoach, useCoachSeeing } from "./coach-ask.js";
 import { moveFocus } from "./coach-focus.js";
 import { useFitThemIn } from "./coach-saves.js";
@@ -120,6 +124,9 @@ function Facts({ facts }: { facts: readonly string[] }) {
 export function SavesScreen() {
   const q = useQuery({ queryKey: SAVES_BATCHES_QUERY, queryFn: () => api.savesBatches(), retry });
   const coach = useCoach();
+  const navigate = useNavigate();
+  // `/studio/saves/posts/:postId`: one post's trail, open over the batches.
+  const { postId } = useParams();
   const batches = q.data?.batches ?? [];
   return (
     <div className="stu-tpls stu-saves">
@@ -147,6 +154,7 @@ export function SavesScreen() {
           ))}
         </ul>
       )}
+      {postId ? <TrailSheet postId={postId} onClose={() => navigate(savesHref(), { replace: true })} /> : null}
     </div>
   );
 }
@@ -538,6 +546,7 @@ function MoveSheet({
 }) {
   const actions = rowActions(row, ownStatus);
   const [busy, setBusy] = useState(false);
+  const [trail, setTrail] = useState(false);
   const [error, setError] = useState<string | null>(null);
   // What the coach sees while the sheet is open (its "Seeing" hint from the nav's Coach).
   const focus = moveFocus({ id: row.move.id, name: row.move.name });
@@ -657,16 +666,24 @@ function MoveSheet({
             saved ? <span key="saved">{`Saved as: ${saved}`}</span> : null,
           ])}
         </p>
-        {row.post.creator || href ? (
+        {row.post.creator || href || row.post.id ? (
           <ul className="stu-saved">
             <li>
               {row.post.creator ? <span className="stu-saved-by">{row.post.creator}</span> : null}
-              {href ? (
-                <a className="stu-saved-link" href={href} target="_blank" rel="noopener noreferrer">
-                  Open post
-                  {row.post.creator ? <span className="visually-hidden">{` by ${row.post.creator}`}</span> : null}
-                </a>
-              ) : null}
+              <span className="stu-saved-links">
+                {href ? (
+                  <a className="stu-saved-link" href={href} target="_blank" rel="noopener noreferrer">
+                    Open post
+                    {row.post.creator ? <span className="visually-hidden">{` by ${row.post.creator}`}</span> : null}
+                  </a>
+                ) : null}
+                {/* What each stage read and decided of the post (an answer kept from before the id: none). */}
+                {row.post.id ? (
+                  <button type="button" className="linklike stu-saved-link" aria-haspopup="dialog" onClick={() => setTrail(true)}>
+                    {TRAIL_OPEN_LABEL}
+                  </button>
+                ) : null}
+              </span>
             </li>
           </ul>
         ) : null}
@@ -694,6 +711,7 @@ function MoveSheet({
           </p>
         ) : null}
       </div>
+      {trail && row.post.id ? <TrailSheet postId={row.post.id} onClose={() => setTrail(false)} /> : null}
     </Sheet>
   );
 }

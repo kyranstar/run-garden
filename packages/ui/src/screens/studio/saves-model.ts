@@ -12,6 +12,8 @@ import { numberWord, type FitChoice, type OpenSavesBatchDto, type OpenSavesDto, 
 
 /** The batches (`/studio/saves`), or one batch's rows. */
 export const savesHref = (batchId?: string): string => (batchId ? `/studio/saves/${encodeURIComponent(batchId)}` : "/studio/saves");
+/** The batches with one saved post's trail open (import trail): where the extension popup's post rows lead. */
+export const savesPostHref = (postId: string): string => `/studio/saves/posts/${encodeURIComponent(postId)}`;
 
 /** An instant's day on this device, in the app's words for a day ("Fri 23 Oct"). */
 export function dayOf(instant: string): string {
