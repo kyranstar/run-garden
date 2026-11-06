@@ -165,8 +165,8 @@ export const OBJECTIVES_WORDS: PlanCardWords = {
   declined: "Not changed",
   superseded: "Replaced by a newer suggestion",
   refused: "It couldn't be changed.",
-  // The board's own path (objectives.tsx OBJECTIVES_HREF; not imported: the board's screen is heavy for a card).
-  link: { to: "/studio/objectives", label: "See your objectives" },
+  // The board is Growth's quests (app.tsx: /studio/objectives only redirects there).
+  link: { to: "/growth", label: "See your objectives" },
 };
 
 /** An op of a card of corrections or objective changes, as its outcome reads. */
@@ -305,7 +305,8 @@ export function PlanCard({ card, closed = false }: { card: PlanCardInput; closed
     // The saves too: a pins card closing ends its batch's fit either way — approved, it is fitted in; declined, Fit them
     // in comes back (the saves flow redesigned §12.1).
     // And the library (the controller's fix pass, E18): a pin, an unpin or a correction changes the Studio's moves.
-    for (const key of ["plan", "plan-week", "today", "coach-state", "coach-plans", "garden", "saves", "library"]) void qc.invalidateQueries({ queryKey: [key] });
+    // And the objectives (audit fixes, E6 review): an approved change shows on the board, Growth and the coach's opening.
+    for (const key of ["plan", "plan-week", "today", "coach-state", "coach-plans", "garden", "saves", "library", "objectives", "growth"]) void qc.invalidateQueries({ queryKey: [key] });
     void qc.invalidateQueries({ queryKey: COACH_CURRENT_QUERY });
     void qc.invalidateQueries({ queryKey: CONVERSATION_QUERY });
   };

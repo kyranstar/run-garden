@@ -86,7 +86,8 @@ describe("evidence after Approve: read_saves by the move", () => {
     statements.length = 0;
     const r = ok(await readSaves().run(ctx, { moveIds: [b.nod] }));
     expect(statements.filter(isWrite)).toEqual([]);
-    expect(statements.length).toBeLessThanOrEqual(readSaves().statementCost);
+    expect(statements.length).toBe(3);
+    expect(readSaves().statementCost).toBe(3);
     expect(r.data.batch).toMatchObject({ id: b.batchId, fitted: true });
     expect(r.data.moves.map((m: any) => [m.id, m.n])).toEqual([[b.nod, 2]]);
     expect(r.data.moves[0].links[0]).toMatchObject({ post: b.postId, at: 1 });
@@ -130,6 +131,25 @@ describe("evidence after Approve: read_saves by the move", () => {
       await correctImport().run(ctx, { target: "move", targetId: b.lift, field: "dose", after: { type: "time", range: [30, 30], sets: [2, 2] }, why: "The video says two sets of thirty seconds.", basis: "evidence", cites: ["q1.1"] }),
     );
     expect(stored.data).toMatchObject({ stored: true, said: U("Dose of Zorbex hip lift: 30 s, 2 sets (was 6–10 reps)") });
+  });
+});
+
+describe("evidence after Approve: quote ids are the batch's own (E1 review)", () => {
+  it("two batches read by the move, each move n=1: a cite resolves in its own move's batch, never the later read's", async () => {
+    const x = await fitted();
+    const OTHER = savedMoveDraft("Zorbex calf rock", { regions: ["calves"], quotes: [{ field: "purpose", text: "for tight calves", from: "caption", check: "verified" }] });
+    const y = await seedSavedBatch(db, userId, { savedAt: "2026-10-25T17:00:00.000Z", posts: [{ moves: [{ draft: OTHER }] }] });
+    const rock = y.moveIds[0]![0]!;
+    const ctx = await challengeRun("That hip lift dose is wrong.");
+    await readSavesInRun(db, ctx, { moveIds: [x.lift] });
+    const second = await readSavesInRun(db, ctx, { moveIds: [rock] });
+    expect(second.data.moves[0].n).toBe(1);
+    const stored = ok(
+      await correctImport().run(ctx, { target: "move", targetId: x.lift, field: "dose", after: { type: "time", range: [30, 30], sets: [2, 2] }, why: "The video says two sets of thirty seconds.", basis: "evidence", cites: ["q1.1"] }),
+    );
+    expect(stored.data).toMatchObject({ stored: true });
+    const ops = ((await db.select().from(schema.coachProposals))[0]!.ops as Array<{ kind: string; cites?: Array<{ postId?: string }> }>).filter((o) => o.kind === "import_correction");
+    expect(ops[0]!.cites![0]!.postId).toBe(x.postId);
   });
 });
 

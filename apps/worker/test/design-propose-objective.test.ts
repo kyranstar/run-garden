@@ -159,6 +159,36 @@ describe("propose_objective: a change, before → after, its reason citing where
   });
 });
 
+describe("propose_objective: the review's minors (E6 review)", () => {
+  it("add_key_result goes to the objective it names — a stray keyResultId is refused, never followed", async () => {
+    const { krId } = await objective();
+    const other = await createObjective(db, userId, { title: "Zorbex balance", keyResults: [] }, NOW.toISOString());
+    const ctx = await mainRun();
+    const kr = { label: "Zorbex side plank", measure: { kind: "hold_max", libraryIds: ["sidePlank"] }, target: 60 };
+    expect(refusal((await propose(ctx, { change: "add_key_result", objectiveId: other.id, keyResultId: krId, keyResult: kr })).res).error).toBe("invalid_input");
+    ok((await propose({ ...ctx, toolUseId: "toolu_ok" }, { change: "add_key_result", objectiveId: other.id, keyResult: kr })).res);
+    expect((await changes(ctx))[0]).toMatchObject({ objectiveId: other.id, title: "Zorbex balance" });
+  });
+
+  it("a key result of a done or dropped objective is the athlete's to bring back first", async () => {
+    const { objectiveId, krId } = await objective();
+    await db.update(schema.objectives).set({ status: "dropped" }).where(eq(schema.objectives.id, objectiveId));
+    const ctx = await mainRun();
+    for (const c of [{ change: "retarget", keyResultId: krId, target: 90 }, { change: "redate", keyResultId: krId, dueDate: "2027-01-15" }, { change: "retire", keyResultId: krId }]) {
+      expect(refusal((await propose({ ...ctx, toolUseId: `toolu_${c.change}` }, c)).res).error, c.change).toBe("not_a_target");
+    }
+  });
+
+  it("basis owner is the athlete's own words: never a 'needs you' chip's (the app's text) nor a Fit them in run's", async () => {
+    const { krId } = await objective();
+    const chip = await mainRun({ request: "2 of 6 planned lifts in three weeks — talk it through?" });
+    await db.update(coachRuns).set({ state: JSON.stringify({ settings: { diagnose: "drift-lifts" } }) }).where(eq(coachRuns.id, chip.run.id));
+    expect(refusal((await propose(chip, { change: "retarget", keyResultId: krId, target: 90, basis: "owner", why: "They want it easier." })).res).error).toBe("not_their_word");
+    const fit = await mainRun();
+    expect(refusal((await propose({ ...fit, run: { ...fit.run, savesBatchId: "batch-x" } }, { change: "retarget", keyResultId: krId, target: 90, basis: "owner", why: "They want it easier." })).res).error).toBe("not_their_word");
+  });
+});
+
 describe("propose_objective: refused, teachably, nothing stored", () => {
   it("another account's, the same value, no figure on the stand, the owner's word with no words of theirs, another role, too many, a restore", async () => {
     const { objectiveId, krId } = await objective();

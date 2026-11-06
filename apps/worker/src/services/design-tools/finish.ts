@@ -38,7 +38,7 @@
  */
 import { and, eq, sql } from "drizzle-orm";
 import { z } from "zod";
-import { coachProposals, coachRuns } from "@rg/database";
+import { coachProposals } from "@rg/database";
 import type { DesignTool, ToolErr } from "./types.js";
 import { capInWords, isErr, mainRunIdOf, parseAct } from "./act-common.js";
 import { refuse } from "./read-common.js";
@@ -49,6 +49,7 @@ import { isDocWorkoutOp, isMovePinsOp, isPlanAdjustOp, isPlanStructureOp, isProg
 import { isPersonalId } from "@rg/saves";
 import { markUntrusted } from "../design-prompt.js";
 import { stalePinsLines } from "./pin-moves.js";
+import { askedWordsSql } from "../objective-changes.js";
 
 /** The athlete's line, at most (characters): clipped to it, never refused. */
 export const LINE_MAX = 300;
@@ -109,7 +110,7 @@ export const finish: DesignTool = {
             status: coachProposals.status,
             ops: coachProposals.ops,
             // The athlete's words this run answers (E2): in the same statement.
-            asked: sql<string | null>`(select nullif(trim(coalesce(${coachRuns.request}, '')), '') from ${coachRuns} where ${coachRuns.id} = ${mainRunId} and ${coachRuns.userId} = ${ctx.userId})`,
+            asked: sql<string | null>`${askedWordsSql(ctx.userId, mainRunId!)}`,
           })
           .from(coachProposals)
           .where(and(eq(coachProposals.id, proposalId), eq(coachProposals.userId, ctx.userId)))

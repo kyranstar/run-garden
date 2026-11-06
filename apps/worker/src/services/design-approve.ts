@@ -971,8 +971,11 @@ function decidable(p: DesignProposalRow, ids: readonly string[] | undefined, o: 
   const settled: Settled[] = [];
   const declined: AnyDesignedOp[] = [];
   const todo: AnyDesignedOp[] = [];
-  // Edit before approve names a designed workout: a change has no draft.
-  for (const op of chosen(o.workoutsOnly ? ops.filter(isDocWorkoutOp) : ops, ids)) {
+  // Edit before approve names a designed workout: a change has no draft. A change to the athlete's objectives is decided
+  // only when named (audit fixes, E6 review): its own card names it — an approve or decline naming nothing (another
+  // card's tap on the whole suggestion) leaves it open, never changing an objective unseen.
+  const pool = o.workoutsOnly ? ops.filter(isDocWorkoutOp) : ids ? ops : ops.filter((x) => !isObjectiveChangeOp(x));
+  for (const op of chosen(pool, ids)) {
     const o = op.outcome;
     if (o?.status === "applied") settled.push({ opId: opIdOf(op), outcome: "applied", ...("workoutId" in o ? { workoutId: o.workoutId } : {}) });
     else if (o?.status === "declined" || o?.status === "superseded") declined.push(op);

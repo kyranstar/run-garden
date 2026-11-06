@@ -25,11 +25,11 @@
  */
 import { sql } from "drizzle-orm";
 import { z } from "zod";
-import { accountState, coachProposals, coachRuns } from "@rg/database";
+import { accountState, coachProposals } from "@rg/database";
 import { GOAL_IDS, isLocalDate, keyResultCreateSchema, newId, objectiveCreateSchema } from "@rg/domain";
 import { OPEN_PROPOSAL_STATUSES } from "../design-review.js";
 import { clipProse } from "../design-prose.js";
-import { currentOf, objectiveChangeLine, objectiveStateOf, objectiveStateSql } from "../objective-changes.js";
+import { askedWordsSql, currentOf, objectiveChangeLine, objectiveStateOf, objectiveStateSql } from "../objective-changes.js";
 import { libraryIssues, resolvedKeyResult, type KeyResultInputParsed } from "../objectives.js";
 import {
   isObjectiveChangeOp,
@@ -121,21 +121,28 @@ export const proposeObjective: DesignTool = {
         : change === "redate"
           ? needs(!!parsed.keyResultId && parsed.dueDate !== undefined, "keyResultId and dueDate")
           : change === "add_key_result"
-            ? needs(!!parsed.objectiveId && parsed.keyResult !== undefined, "objectiveId and keyResult")
+            ? needs(!!parsed.objectiveId && !parsed.keyResultId && parsed.keyResult !== undefined, "objectiveId and keyResult (no keyResultId)")
             : change === "retire"
               ? needs(!!parsed.keyResultId !== !!parsed.objectiveId && (!parsed.objectiveId || !!parsed.status), "keyResultId — or objectiveId with status")
               : needs(parsed.objective !== undefined, "objective");
     if (missing) return missing;
 
     const proposalId = designProposalId(mainRunId);
-    const ref = parsed.keyResultId ? { keyResultId: parsed.keyResultId } : parsed.objectiveId ? { objectiveId: parsed.objectiveId } : null;
+    // The objective it reads: the one it names (an add, an objective retired), else its key result's.
+    const ref =
+      change === "add_key_result" || (change === "retire" && !parsed.keyResultId)
+        ? { objectiveId: parsed.objectiveId! }
+        : parsed.keyResultId
+          ? { keyResultId: parsed.keyResultId }
+          : null;
     const { athlete, extra } = await readAthlete(ctx.db, ctx.userId, ctx.now, {
       propOps: sql`(select ${coachProposals.ops} from ${coachProposals} where ${coachProposals.id} = ${proposalId} and ${coachProposals.userId} = ${ctx.userId})`,
       propStatus: sql`(select ${coachProposals.status} from ${coachProposals} where ${coachProposals.id} = ${proposalId} and ${coachProposals.userId} = ${ctx.userId})`,
       restoring: sql`(select ${accountState.restoreId} from ${accountState} where ${accountState.userId} = ${ctx.userId})`,
       state: ref ? objectiveStateSql(ctx.userId, ref) : sql`null`,
-      // What the athlete asked this run in words: basis owner is their word alone.
-      asked: sql`(select nullif(trim(coalesce(${coachRuns.request}, '')), '') from ${coachRuns} where ${coachRuns.id} = ${mainRunId} and ${coachRuns.userId} = ${ctx.userId})`,
+      // What the athlete asked this run in words: basis owner is their word alone — never a "needs you" chip's request,
+      // which is the app's text (its run's `diagnose`).
+      asked: askedWordsSql(ctx.userId, mainRunId),
     });
     const opsText = typeof extra.propOps === "string" ? extra.propOps : null;
     const all = ((opsText ? parsedJson(opsText) : null) as unknown[] | null) ?? [];
@@ -215,7 +222,7 @@ export const proposeObjective: DesignTool = {
     if (parsed.basis === "stand" && !FIGURE.test(parsed.why)) {
       return refuse("uncited", "A change on where they stand names the figure it rests on.", "Say the figure — the key result's current against its target and due day, or the planned against done — or give basis owner when it is the athlete's word.");
     }
-    if (parsed.basis === "owner" && typeof extra.asked !== "string") {
+    if (parsed.basis === "owner" && (ctx.run.savesBatchId || typeof extra.asked !== "string")) {
       return refuse("not_their_word", "basis owner is the athlete's own word — this run answers no message of theirs.", "Give basis stand with the figure it rests on — or ask them with ask_athlete.");
     }
 

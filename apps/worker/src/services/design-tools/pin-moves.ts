@@ -70,7 +70,7 @@ import { claimsThePost, doseNumbers, doseWords, parseCite, QUOTE_ID_RE, type Cit
 import { capInWords, isErr, mainRunIdOf, parseAct, prose } from "./act-common.js";
 import { designProposalId, upsertProposal } from "./propose.js";
 import { parsedArray, parsedJson, plural, readAthlete, refuse } from "./read-common.js";
-import { citeRefOf, otherMovesQuote, savesReadsOf, savesReadsSql, type SavesReads } from "./saves-reads.js";
+import { citeRefOf, otherMovesQuote, quoteOf, savesReadsOf, savesReadsSql, type SavesReads } from "./saves-reads.js";
 import type { DesignTool, ToolOk } from "./types.js";
 
 const TITLE_MAX = 60;
@@ -503,7 +503,7 @@ export const pinMoves: DesignTool = {
       // I2), or on a field its reading stated — the reader's report (the controller's fix pass, C1).
       const quoted = (l.cites ?? []).filter((c) => QUOTE_ID_RE.test(c));
       const reported = (l.cites ?? []).some((c) => parseCite(c)?.kind === "stated");
-      if (claimsThePost(l.text) && !reported && !quoted.some((c) => reads.quotes.get(c)?.check !== "not_found")) {
+      if (claimsThePost(l.text) && !reported && !quoted.some((c) => { const q = quoteOf(c, reads, l.moveId); return !!q && q.check !== "not_found"; })) {
         return refuse(
           "uncited_claim",
           `lines.${i}: ${JSON.stringify(clipProse(l.text, 120))} says what the post or its creator says, with no quote cited${quoted.length ? " that is in the post (a quote marked not in the post is no evidence)" : ""}.`,

@@ -21,10 +21,13 @@ export function savesReadsSql(userId: string, mainRunId: string, batchId?: strin
 }
 
 export interface SavesReads {
-  /** Each move a page showed, with its first post, its place in the batch (a quote id's n) and the fields its posts
-   * stated (what stated:<field> may cite). */
-  moves: Map<string, { postId: string; position: number; n: number | null; stated: string[] }>;
+  /** Each move a page showed, with its first post, its place in the batch (a quote id's n), the fields its posts
+   * stated (what stated:<field> may cite) and the batch it was read from (its quote ids are that batch's). */
+  moves: Map<string, { postId: string; position: number; n: number | null; stated: string[]; batch?: string }>;
+  /** Each quote id the run was given, the latest read's — and, by batch, each batch's own (audit fixes, E1 review: two
+   * batches read by the move both number their first move 1, so a quote id means its batch's quote). */
   quotes: Map<string, QuoteRef>;
+  quotesBy?: Map<string, Map<string, QuoteRef>>;
   /** When the run first read each post. */
   readAt: Map<string, string>;
 }
@@ -33,17 +36,18 @@ const CHECKS = new Set<string>(["verified", "in_speech", "on_screen", "not_found
 
 /** `savesReadsSql`'s value, read. */
 export function savesReadsOf(raw: unknown): SavesReads {
-  const out: SavesReads = { moves: new Map(), quotes: new Map(), readAt: new Map() };
+  const out: SavesReads = { moves: new Map(), quotes: new Map(), quotesBy: new Map(), readAt: new Map() };
   for (const row of parsedArray(raw)) {
     const [at, receipt] = Array.isArray(row) ? (row as unknown[]) : [];
-    const r = (parsedJson(receipt) ?? receipt) as { moves?: unknown; posts?: unknown; quotes?: unknown } | null;
+    const r = (parsedJson(receipt) ?? receipt) as { batch?: unknown; moves?: unknown; posts?: unknown; quotes?: unknown } | null;
     if (!r || typeof r !== "object") continue;
+    const batch = typeof r.batch === "string" ? r.batch : undefined;
     for (const m of Array.isArray(r.moves) ? r.moves : []) {
       const [moveId, postId, position, n, stated] = Array.isArray(m) ? (m as unknown[]) : [];
       if (typeof moveId !== "string" || typeof postId !== "string" || typeof position !== "number") continue;
       const fields = Array.isArray(stated) ? stated.filter((f): f is string => typeof f === "string") : [];
       const had = out.moves.get(moveId);
-      if (!had) out.moves.set(moveId, { postId, position, n: typeof n === "number" ? n : null, stated: fields });
+      if (!had) out.moves.set(moveId, { postId, position, n: typeof n === "number" ? n : null, stated: fields, ...(batch ? { batch } : {}) });
       else had.stated = [...new Set([...had.stated, ...fields])];
     }
     for (const postId of Array.isArray(r.posts) ? r.posts : []) {
@@ -53,15 +57,29 @@ export function savesReadsOf(raw: unknown): SavesReads {
     for (const [id, q] of Object.entries(quotes)) {
       const [postId, position, quote, check, from, qAt] = Array.isArray(q) ? (q as unknown[]) : [];
       if (typeof postId !== "string" || typeof position !== "number" || typeof quote !== "number") continue;
-      out.quotes.set(id, {
+      const ref: QuoteRef = {
         postId, position, quote,
         check: typeof check === "string" && CHECKS.has(check) ? (check as QuoteCheck) : null,
         from: typeof from === "string" ? from : "caption",
         at: typeof qAt === "number" ? qAt : null,
-      });
+      };
+      out.quotes.set(id, ref);
+      if (batch) {
+        const own = out.quotesBy!.get(batch) ?? new Map<string, QuoteRef>();
+        own.set(id, ref);
+        out.quotesBy!.set(batch, own);
+      }
     }
   }
   return out;
+}
+
+/** The quote a cite names on a line about `moveId`: the move's own batch's (the batch it was read from), else — a line
+ * about no move read, or a receipt from before batches were kept — the run's latest read of that id. */
+export function quoteOf(id: string, reads: SavesReads, moveId: string | undefined): QuoteRef | undefined {
+  const batch = moveId ? reads.moves.get(moveId)?.batch : undefined;
+  if (batch && reads.quotesBy?.has(batch)) return reads.quotesBy.get(batch)!.get(id);
+  return reads.quotes.get(id);
 }
 
 /** A cite as the card draws it (saves-evidence.ts `CiteRef`): a quote's chip and where it opens; the reader's guess opens
@@ -70,7 +88,7 @@ export function citeRefOf(id: string, reads: SavesReads, moveId: string | undefi
   const p = parseCite(id);
   if (!p) return null;
   if (p.kind === "quote") {
-    const r = reads.quotes.get(id);
+    const r = quoteOf(id, reads, moveId);
     return r ? { id, kind: "quote", label: quoteLabel(r), postId: r.postId, position: r.position, quote: r.quote } : null;
   }
   if (p.kind === "history") return { id: "history", kind: "history", label: "your history" };

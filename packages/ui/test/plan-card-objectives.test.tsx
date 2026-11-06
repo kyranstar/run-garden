@@ -73,7 +73,8 @@ describe("the objectives card (E6)", () => {
     await click(button("Approve"), "Approve");
     await until(() => text().includes(OBJECTIVES_WORDS.done), "done");
     expect(calls.filter((c) => c.method === "POST").map((c) => c.body)).toEqual([{ opIds: [RETARGET.opId, RETIRE.opId] }]);
-    expect((document.querySelector(`a[href="/studio/objectives"]`) as HTMLAnchorElement).textContent).toBe("See your objectives");
+    // The board is Growth's quests now (/studio/objectives only redirects there).
+    expect((document.querySelector(`a[href="/growth"]`) as HTMLAnchorElement).textContent).toBe("See your objectives");
   });
 
   it("a stale change says why; Not now declines its own", async () => {

@@ -47,6 +47,15 @@ export function objectiveStateSql(userId: string, ref: { objectiveId?: string; k
     from objectives os_o where os_o.user_id = ${userId} and os_o.id = ${which})`;
 }
 
+/** The athlete's own words a run answers (its request), as ONE scalar subquery — null for none, and for a "needs you"
+ * chip's run (its `diagnose`), whose request is the app's text (the E6 review): basis owner and a challenge rest on
+ * their words alone. */
+export function askedWordsSql(userId: string, runId: string): SQL {
+  return sql`(select case when json_valid(aw_r.state) and json_extract(aw_r.state, '$.settings.diagnose') is not null then null
+      else nullif(trim(coalesce(aw_r.request, '')), '') end
+    from coach_runs aw_r where aw_r.id = ${runId} and aw_r.user_id = ${userId})`;
+}
+
 const str = (v: unknown): string | null => (typeof v === "string" ? v : null);
 const num = (v: unknown): number | null => (typeof v === "number" && Number.isFinite(v) ? v : null);
 
@@ -101,6 +110,8 @@ export function currentOf(
   }
   const kr = state.krs.find((k) => k.id === o.keyResultId);
   if (!kr) return { code: "not_found", why: "isn't one of the athlete's key results" };
+  // A done or dropped objective's key results are the athlete's to bring back first (E6 review).
+  if (!(LIVE_OBJECTIVE as readonly string[]).includes(state.status)) return { code: "not_a_target", why: `belongs to an objective that is ${state.status}: the athlete brings it back first` };
   if (o.change === "retarget") return { value: kr.target };
   if (o.change === "redate") return { value: kr.dueDate };
   return { value: { label: kr.label, target: kr.target, dueDate: kr.dueDate } satisfies RetiredKeyResult };
@@ -228,6 +239,9 @@ export function judgeObjectiveChange(db: Db, userId: string, op: ObjectiveChange
     };
   }
   const kr = state.krs.find((k) => k.id === op.keyResultId);
+  // Its objective done or dropped since (the athlete's): changed since.
+  if (!(LIVE_OBJECTIVE as readonly string[]).includes(state.status)) return { status: "refused", error: "stale", why: STALE_OBJECTIVE_WHY };
+  const live = sql`EXISTS (SELECT 1 FROM objectives oc_l WHERE oc_l.user_id = ${userId} AND oc_l.id = ${op.objectiveId} AND oc_l.status IN ('active', 'paused'))`;
   if (op.change === "retire") {
     // Gone already (the athlete took it off the board too): so.
     if (!kr) return { status: "made" };
@@ -240,7 +254,7 @@ export function judgeObjectiveChange(db: Db, userId: string, op: ObjectiveChange
           .delete(keyResults)
           .where(
             sql`${keyResults.userId} = ${userId} AND ${keyResults.id} = ${op.keyResultId!} AND ${keyResults.objectiveId} = ${op.objectiveId} AND ${keyResults.label} = ${b.label}
-              AND ${keyResults.target} IS ${b.target} AND ${keyResults.dueDate} IS ${b.dueDate} AND ${o.asRead}`,
+              AND ${keyResults.target} IS ${b.target} AND ${keyResults.dueDate} IS ${b.dueDate} AND ${live} AND ${o.asRead}`,
           )
           .returning({ id: keyResults.id }),
       ],
@@ -258,7 +272,7 @@ export function judgeObjectiveChange(db: Db, userId: string, op: ObjectiveChange
       db
         .update(keyResults)
         .set(set)
-        .where(sql`${keyResults.userId} = ${userId} AND ${keyResults.id} = ${op.keyResultId!} AND ${keyResults.objectiveId} = ${op.objectiveId} AND ${column} IS ${op.before ?? null} AND ${o.asRead}`)
+        .where(sql`${keyResults.userId} = ${userId} AND ${keyResults.id} = ${op.keyResultId!} AND ${keyResults.objectiveId} = ${op.objectiveId} AND ${column} IS ${op.before ?? null} AND ${live} AND ${o.asRead}`)
         .returning({ id: keyResults.id }),
     ],
   };

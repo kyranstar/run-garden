@@ -93,8 +93,9 @@ async function invoke(method: string, path: string, body?: unknown) {
   const text = await res.text();
   return { status: res.status, json: (text ? JSON.parse(text) : null) as Record<string, any>, total: statements };
 }
-const approve = (id: string, body: unknown = {}) => invoke("POST", `/api/coach/proposals/${id}/approve`, body);
-const decline = (id: string, body: unknown = {}) => invoke("POST", `/api/coach/proposals/${id}/decline`, body);
+/** Its objective changes are applied only when named — the card's own Approve names them (E6 review): by default, all of them. */
+const approve = async (id: string, body?: unknown) => invoke("POST", `/api/coach/proposals/${id}/approve`, body ?? { opIds: (await opsOf(id)).map((o) => o.id) });
+const decline = async (id: string, body?: unknown) => invoke("POST", `/api/coach/proposals/${id}/decline`, body ?? { opIds: (await opsOf(id)).map((o) => o.id) });
 const opsOf = async (id: string) => ((await db.select().from(coachProposals).where(eq(coachProposals.id, id)))[0]!.ops as unknown[]).filter(isObjectiveChangeOp) as Array<ObjectiveChangeOp & { outcome?: any }>;
 
 describe("an objective change approved", () => {
@@ -112,6 +113,20 @@ describe("an objective change approved", () => {
     expect(res.total).toBeLessThanOrEqual(APPROVE_FIXED + OBJECTIVE_CHANGES_FIXED + objectiveChangeCostOf(op!));
     const [msg] = await db.select().from(coachMessages).where(eq(coachMessages.userId, userId));
     expect(msg!.body).toContain("1 change to your objectives");
+  });
+
+  it("never by an approve or decline that names nothing (another card's whole-suggestion tap): left open, unchanged (E6 review)", async () => {
+    const { objectiveId, krId } = await objective();
+    const { id } = await proposed([{ change: "retarget", keyResultId: krId, target: 90 }]);
+    const all = await approve(id, {});
+    expect(all.status).toBe(200);
+    expect((await getObjective(db, userId, objectiveId)).keyResults[0]!.target).toBe(120);
+    expect((await opsOf(id))[0]!.outcome).toBeUndefined();
+    expect((await decline(id, {})).status).toBe(200);
+    expect((await opsOf(id))[0]!.outcome).toBeUndefined();
+    // Named, it applies.
+    expect((await approve(id)).json.status).toBe("approved");
+    expect((await getObjective(db, userId, objectiveId)).keyResults[0]!.target).toBe(90);
   });
 
   it("stale: the athlete changed the target since — refused, nothing written; asked again, still refused", async () => {
