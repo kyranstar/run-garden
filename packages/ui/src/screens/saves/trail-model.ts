@@ -107,7 +107,8 @@ export const STATUS_MARK: Readonly<Record<TrailStatus, { mark: string; word: str
 };
 
 export const REBUILT_LINE = "Kept from before the trail: the raw replies weren't kept then.";
-export const NOT_REVIEWED_LINE = "The coach hasn't reviewed it yet";
+/** Phase 1 records no coach decisions (they come with phase 3's review): say only what the trail knows. */
+export const NOT_REVIEWED_LINE = "No coach decision on its trail yet";
 export const TOO_LONG_LINE = "Too long to show here — the whole of it is below";
 
 const SOURCE_WORDS: Readonly<Record<string, string>> = { instagram: "Instagram", youtube: "YouTube" };

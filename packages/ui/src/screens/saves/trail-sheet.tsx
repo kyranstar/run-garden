@@ -6,7 +6,7 @@
  *   A routine: three slow hip moves…
  *   Zorbex hip lift — new                           ›  ← a move opens its own section
  *     Opens the hips after a run.
- *   The coach hasn't reviewed it yet
+ *   No coach decision on its trail yet
  *   ✓ Read cleanly
  *   ✓ Reading            Read from your saved list  ›  ← a stage (level 2), folded under its result
  *   ! Reading the moves  2 attempts — the first…    ›

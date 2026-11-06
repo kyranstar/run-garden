@@ -92,7 +92,7 @@ describe("the account (level 1)", () => {
 
   it("what the coach did — or that it hasn't looked yet — then corrections, then one health word", () => {
     const lines = trailAccount(trail());
-    expect(lines.find((l) => l.kind === "coach")?.text).toBe("The coach hasn't reviewed it yet");
+    expect(lines.find((l) => l.kind === "coach")?.text).toBe("No coach decision on its trail yet");
     expect(lines.at(-1)).toMatchObject({ kind: "health", text: "Read cleanly", status: "ok" });
 
     const coached = trail({
