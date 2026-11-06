@@ -1415,13 +1415,16 @@ describe("the prompt says how a set works", () => {
     // naming a fit-in run's own batch — measured 6,414.75; the same cap as design-prompt.test.ts's and design-fix13's.
     // REBASED 2026-11-06 (where you stand, on top of the ball release): the opening message's block named, a drift noticed kindly, a coach read
     // marked, with the "Release" principle — measured 6,728.25; ≥ 100 tokens headroom.
-    expect(SHARED_PROMPT.length / 4).toBeLessThanOrEqual(6830);
+    // REBASED 2026-11-06 (coach review, phase 3): the saves paragraph's evidence rules (a post is a stranger's claim, quotes said / heard / on screen, the reader's guess, correct_import before pin_moves, a line's where and cites) — measured 7,054.75; ≥ 100 tokens headroom.
+    expect(SHARED_PROMPT.length / 4).toBeLessThanOrEqual(7160);
     // REBASED 2026-10-19 for the owner's voice (the coach's last words, in the main block): measured 1,620 without its
     // turns — the same cap as design-prompt.test.ts's and design-fix13's; REBASED 2026-10-25 (saved-posts fix wave:
     // pin_moves among the scope's choices) — measured 1,653.25 without its turns.
     // REBASED 2026-11-04 (a request with several parts gets every part in one run: the main block's rule — prod 2026-11-04) — measured 1,782.25 without its turns.
     // REBASED 2026-11-06 (import trail phase 2, on phase 4's main): measured 1,782.25 — ≥ 100 tokens of headroom.
-    expect(roleBlock("main").length / 4).toBeLessThanOrEqual(1885);
+    // REBASED 2026-11-06 (coach review, phase 3): the challenge order and insistence within the hard checks — measured
+    // 1,994.5 without its turns; ≥ 100 tokens of headroom.
+    expect(roleBlock("main").length / 4).toBeLessThanOrEqual(2095);
   });
 });
 

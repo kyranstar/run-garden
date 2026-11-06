@@ -152,7 +152,8 @@ describe("compact (the cached prefix grew 3k tokens since the pre-live audit)", 
     // line names a fit-in run's own batch (+31) — measured 6,414.75; ≥ 100 tokens headroom.
     // REBASED 2026-11-06 (where you stand, on top of the ball release): the opening message's block named, a drift noticed kindly, a coach read
     // marked, with the "Release" principle — measured 6,728.25; ≥ 100 tokens headroom.
-    expect(SHARED_PROMPT.length / 4).toBeLessThanOrEqual(6830);
+    // REBASED 2026-11-06 (coach review, phase 3): the saves paragraph's evidence rules (a post is a stranger's claim, quotes said / heard / on screen, the reader's guess, correct_import before pin_moves, a line's where and cites) — measured 7,054.75; ≥ 100 tokens headroom.
+    expect(SHARED_PROMPT.length / 4).toBeLessThanOrEqual(7160);
     // The main coach's block, REBASED 2026-10-18 for the decision guidance (a run's length on the watch, plan_set or
     // propose_plan, a plan's timed sessions, a programme's settings) — measured 1,488 — and 2026-10-19 for the owner's
     // voice (the coach's last words) — measured 1,634; REBASED 2026-10-25 (saved-posts fix wave: pin_moves among the
@@ -160,7 +161,9 @@ describe("compact (the cached prefix grew 3k tokens since the pre-live audit)", 
     // REBASED 2026-11-04 (a request with several parts gets every part in one run: the main block's rule — prod 2026-11-04) — measured 1,795.75.
     // REBASED 2026-11-06 (import trail phase 2, on phase 4's main): measured main 1,795.75, reviewer 1,256.5 — each pinned
     // with ≥ 100 tokens of headroom.
-    const caps = { main: 1900, designer: 1300, reviewer: 1360 } as const;
+    // REBASED 2026-11-06 (coach review, phase 3): the main block's challenge order and insistence within the hard checks —
+    // measured main 2,008 with its turns; ≥ 100 tokens of headroom.
+    const caps = { main: 2110, designer: 1300, reviewer: 1360 } as const;
     for (const role of ["main", "designer", "reviewer"] as const) expect(roleBlock(role, RUN_LIMITS[role].maxCalls).length / 4, role).toBeLessThanOrEqual(caps[role]);
     // A run's reviewer (§8 §3): the block with the run rubric in place of the workout one — its own cached prefix.
     expect(roleBlock("reviewer", RUN_LIMITS.reviewer.maxCalls, "run").length / 4).toBeLessThanOrEqual(1300);

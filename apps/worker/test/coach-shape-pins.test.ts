@@ -99,8 +99,11 @@ const BEFORE = { tools: 34_935, shared: 20_450, main: 4_586 };
  * REBASED 2026-11-06 (coach review, phase 3, Task 4): correct_import, the main coach's fix to imported data with its
  * evidence — its schema (tools 42,585 → 43,857) and its Acting line (shared 26,913 → 27,075) — measured 18,144; held
  * with 406 characters (~116 tokens) of headroom.
+ * REBASED 2026-11-06 (coach review, phase 3, Task 7): the saves paragraph's evidence rules (shared 27,075 → 28,219), the
+ * main block's challenge order and insistence within the hard checks (main 7,183 → 8,032), pin_moves' description
+ * (tools 43,857 → 43,872) — measured 20,152; held with 398 characters (~114 tokens) of headroom.
  */
-const GROWTH_MAX_CHARS = 18_550;
+const GROWTH_MAX_CHARS = 20_550;
 
 const toolsSent = () => JSON.stringify(allTools().map((t) => ({ name: t.name, description: t.description, input_schema: t.inputSchema })));
 

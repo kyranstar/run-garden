@@ -19,8 +19,9 @@ const ROLES = ["main", "designer", "reviewer"] as const;
  * words: brisk, one next step, no apologies, not the card) — measured 1,634 with its turns; REBASED 2026-10-25 (saved-posts
  * fix wave: "fit saved moves in with pin_moves" among the scope's choices) — measured 1,666.75 with its turns, ≥ 100
  * tokens headroom as design-fix13-prompt.test.ts's; REBASED 2026-11-04 (a request with several parts gets every part in one run: the main block's rule — prod 2026-11-04) — measured 1,795.75 with its turns; the
- * others hold at 1,500. */
-const ROLE_CAP = { main: 1830, designer: 1500, reviewer: 1500 } as const;
+ * others hold at 1,500. REBASED 2026-11-06 (coach review, phase 3: the challenge order, insistence and its limits — a
+ * condition's never, a sore area) — measured 2,008 with its turns; ≥ 100 tokens headroom. */
+const ROLE_CAP = { main: 2110, designer: 1500, reviewer: 1500 } as const;
 // With a run's reviewer block too (§8 §3: a reviewer's block holds its draft's rubric).
 const ALL_TEXT = [SHARED_PROMPT, ...ROLES.map((r) => roleBlock(r)), roleBlock("reviewer", undefined, "run")].join("\n");
 
@@ -55,7 +56,8 @@ describe("the prompt text", () => {
     // 6,414.75; ≥ 100 tokens headroom.
     // REBASED 2026-11-06 (where you stand, on top of the ball release): the opening message's block named, a drift noticed kindly, a coach read
     // marked, with the "Release" principle — measured 6,728.25; ≥ 100 tokens headroom.
-    expect(SHARED_PROMPT.length / 4).toBeLessThanOrEqual(6830);
+    // REBASED 2026-11-06 (coach review, phase 3): the saves paragraph's evidence rules (a post is a stranger's claim, quotes said / heard / on screen, the reader's guess, correct_import before pin_moves, a line's where and cites) — measured 7,054.75; ≥ 100 tokens headroom.
+    expect(SHARED_PROMPT.length / 4).toBeLessThanOrEqual(7160);
     for (const r of ROLES) expect(roleBlock(r).length / 4, r).toBeLessThanOrEqual(ROLE_CAP[r]);
   });
 
@@ -336,7 +338,8 @@ describe("3A-B — the prompt agrees with the code", () => {
     // (the cap above).
     // REBASED 2026-11-06 (where you stand, on top of the ball release): the opening message's block named, a drift noticed kindly, a coach read
     // marked, with the "Release" principle — measured 6,728.25; ≥ 100 tokens headroom.
-    expect(SHARED_PROMPT.length / 4).toBeLessThanOrEqual(6830);
+    // REBASED 2026-11-06 (coach review, phase 3): the saves paragraph's evidence rules (a post is a stranger's claim, quotes said / heard / on screen, the reader's guess, correct_import before pin_moves, a line's where and cites) — measured 7,054.75; ≥ 100 tokens headroom.
+    expect(SHARED_PROMPT.length / 4).toBeLessThanOrEqual(7160);
     for (const role of ROLES) expect(roleBlock(role, RUN_LIMITS[role].maxCalls).length / 4, role).toBeLessThanOrEqual(ROLE_CAP[role]);
   });
 });
@@ -371,5 +374,45 @@ describe("3A round 2 — the prompt's remaining words", () => {
   it("B-M3: propose_workout's document is the draft — not one validated first", () => {
     const doc = (proposeWorkout.inputSchema as { properties: { doc: { description: string } } }).properties.doc;
     expect(doc.description).toBe("The draft: a workout document exactly as validate_workout takes it.");
+  });
+});
+
+describe("the coach's review of saved moves (import trail phase 3, §8.2, §3.5, §15 Q1)", () => {
+  it("the shared prompt: a post is a stranger's claim, weighed against where the athlete stands, cited, corrected", () => {
+    for (const phrase of [
+      "name the goal or gap it serves",
+      "A post is a stranger's claim",
+      "said or in the caption is the creator's words",
+      "heard is the reader's own transcription",
+      "on screen is unchecked",
+      "the reader's guess",
+      "Never present a guess as the creator's",
+      "with humility",
+      "propose the fix with correct_import, before pin_moves",
+      "left more correct",
+      "the rotation it joins",
+      "cites what it rests on",
+    ]) {
+      expect(SHARED_PROMPT, phrase).toContain(phrase);
+    }
+  });
+
+  it("the main coach's block: a challenge answered in order, insistence wins without more argument — but never over a hard safety check", () => {
+    const main = roleBlock("main");
+    for (const phrase of [
+      "their point, stated fairly",
+      "the quote and its time, or that the post never says it",
+      "what moved it, or why it holds",
+      "never hold one out of pride",
+      "If they insist",
+      "without arguing further",
+      "basis owner",
+      "a condition's never",
+      "an area they called sore",
+      "the closest safe option",
+      "in the Studio",
+    ]) {
+      expect(main, phrase).toContain(phrase);
+    }
   });
 });

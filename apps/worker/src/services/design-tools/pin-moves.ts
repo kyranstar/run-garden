@@ -235,7 +235,7 @@ function storedAnswer(proposalId: string, op: MovePinsOp, o: { replaced?: boolea
 export const pinMoves: DesignTool = {
   name: "pin_moves",
   description:
-    "The main coach: put moves in the pool the engine plans from (pin: a core lift stays; other moves become eligible) or take them out (unpin), as one card. batchId: the read_saves batch you fit in (a fit-in run's by default) — each new move pinned or a line's moveId; include always pinned, skip never pinned nor lined; with no move, the lines alone close it. A second call replaces it.",
+    "The main coach: put moves in the pool the engine plans from (pin: a core lift stays; other moves become eligible) or take them out (unpin), as one card. batchId: the read_saves batch you fit in (a fit-in run's by default) — each new move pinned or a line's moveId; include always pinned, skip never pinned nor lined; with no move, the lines alone close it. Cite evidence. A second call replaces it.",
   inputSchema: {
     type: "object",
     properties: {
