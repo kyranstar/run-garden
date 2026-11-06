@@ -141,8 +141,9 @@ async function seedWeek(planId: string, weekStart: string, state: "firm" | "shap
   });
 }
 
-async function seedRun(request: string, createdAt: string, parentId: string | null = null): Promise<void> {
+async function seedRun(request: string, createdAt: string, parentId: string | null = null, diagnose?: string): Promise<void> {
   await db.insert(schema.coachRuns).values({
+    ...(diagnose ? { state: JSON.stringify({ v: 1, settings: { diagnose } }) } : {}),
     id: newId(),
     userId,
     parentId,
@@ -385,6 +386,49 @@ describe("a line's last phase ending within 21 days", () => {
   });
 });
 
+describe("drift (where you stand, spec §7.2): one chip, an observation and a question", () => {
+  /** Four lifts in the last 3 weeks, one logged — all older than the missed chip's window. */
+  async function seedDrift(): Promise<void> {
+    for (const [i, n] of [6, 9, 12, 15].entries()) {
+      await seedSession({ id: `l${i}`, date: addDays(today, -n), state: i === 0 ? "completed" : "skipped", category: "strength", qualitySubtype: null, sport: "strength" });
+    }
+  }
+  const STRENGTH = {
+    id: "drift:discipline:strength",
+    label: "1 of 4 planned lifts logged in 3 weeks — talk it through?",
+    request: "1 of 4 planned lifts logged in 3 weeks — let's talk it through.",
+  };
+
+  it("a discipline slipping is a chip; its words never accuse", async () => {
+    await seedDrift();
+    expect(await nudges()).toEqual([STRENGTH]);
+  });
+
+  it("second, after a session just not done, before the comeback", async () => {
+    await seedDrift();
+    await seedSession({ id: "w1", date: addDays(today, -1), state: "missed" });
+    await seedActivity("a1", addDays(today, -1));
+    await seedActivity("a2", addDays(today, -10));
+    expect(ids(await nudges())).toEqual(["missed:w1", STRENGTH.id]);
+  });
+
+  it("held while the coach's conclusion has a check-back after today", async () => {
+    await seedDrift();
+    await db.insert(schema.coachMemory).values({
+      id: "mem:r:1", userId, kind: "rule", body: "Lifts on Saturdays for now.", active: true, pinned: true, confidence: "inferred",
+      provenance: { source: "coach_inference", runId: "r", at: nowInstant(), drift: STRENGTH.id, checkBack: addDays(today, 7) } as never,
+      learnedAt: nowInstant(),
+    });
+    expect(await nudges()).toEqual([]);
+  });
+
+  it("stays away once a run diagnosing it started, though its count moved", async () => {
+    await seedDrift();
+    await seedRun("2 of 5 planned lifts logged in 3 weeks — let's talk it through.", new Date(Date.now() - 86_400_000).toISOString(), null, STRENGTH.id);
+    expect(await nudges()).toEqual([]);
+  });
+});
+
 describe("at most two, the most pressing first", () => {
   async function seedAll(): Promise<void> {
     await seedSession({ id: "w1", date: addDays(today, -1), state: "missed" });
@@ -465,22 +509,31 @@ describe("at most two, the most pressing first", () => {
     expect(await nudges()).toEqual([]);
   });
 
-  it("writes nothing, and costs at most six statements", async () => {
+  it("writes nothing, and costs at most seven statements with no key results", async () => {
     await seedAll();
     await seedRun("Plan my week", new Date().toISOString());
     statements.length = 0;
     await nudges();
     expect(statements.filter(isWrite)).toEqual([]);
     // The missed sessions, the activities, the plans, last week's review (the opening's, stream H), their outline weeks,
-    // and the athlete's recent asks. (Saves flow redesign: the saves batch read goes: 7 to 6.)
-    expect(statements.length).toBe(6);
+    // and the athlete's recent asks. (Saves flow redesign: the saves batch read goes: 7 to 6.) Where the athlete stands
+    // (2026-11-06): one more — and its key results' measures (none here).
+    expect(statements.length).toBe(7);
   });
 
-  it("a quiet account costs four: nothing to look up weeks for, nothing to have asked", async () => {
+  it("a quiet account costs five: nothing to look up weeks for, nothing to have asked", async () => {
     statements.length = 0;
     expect(await nudges()).toEqual([]);
-    // Saves flow redesign: the saves batch read goes: 5 to 4.
-    expect(statements.length).toBe(4);
+    // Saves flow redesign: the saves batch read goes: 5 to 4. Where the athlete stands (2026-11-06): + 1.
+    expect(statements.length).toBe(5);
+  });
+
+  it("an active key result costs its measures too: a check-in's answers, one more", async () => {
+    await db.insert(schema.objectives).values({ id: "o1", userId, title: "Zorbex calm", status: "active", goalIds: [], sort: 0, createdAt: nowInstant(), updatedAt: nowInstant() });
+    await db.insert(schema.keyResults).values({ id: "k1", userId, objectiveId: "o1", label: "Energy", measure: { kind: "checkin", questionId: "energy" }, direction: "up", unit: "score", position: 0, createdAt: nowInstant(), updatedAt: nowInstant() });
+    statements.length = 0;
+    expect(await nudges()).toEqual([]);
+    expect(statements.length).toBe(6);
   });
 });
 
@@ -492,7 +545,7 @@ describe("GET /api/coach/nudges", () => {
       env(designer),
     );
 
-  it("answers { nudges } for the signed-in athlete, in 8 statements with the sign-in and the preferences", async () => {
+  it("answers { nudges } for the signed-in athlete, in 9 statements with the sign-in and the preferences", async () => {
     await setRace(addDays(today, 10));
     await seedPlan({ id: "cp1", name: "10K", endDate: addDays(today, 40) });
     await seedWeek("cp1", addDays(today, 4), "shape");
@@ -506,8 +559,8 @@ describe("GET /api/coach/nudges", () => {
       ],
     });
     expect(statements.filter(isWrite)).toEqual([]);
-    // Saves flow redesign: the saves batch read goes: 9 to 8.
-    expect(statements.length).toBe(8);
+    // Saves flow redesign: the saves batch read goes: 9 to 8. Where the athlete stands (2026-11-06): 8 to 9.
+    expect(statements.length).toBe(9);
   });
 
   it("is a 404 while the coach designer is off, and a 401 signed out", async () => {

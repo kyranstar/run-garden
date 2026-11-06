@@ -21,7 +21,7 @@
  * coach's earlier model calls: "coach read").
  *
  * DRIFT (`driftsOf`, §7.2 — the numbers are the builder's call): over the 21 days before today, a discipline with 3 or
- * more planned and under half of them done (`discipline`), or 1–2 planned and none of it done on or off the plan
+ * more planned and under half of them done (`discipline`), or 2 planned and none of it done on or off the plan
  * (`none`); over 14 days, 3 or more sessions missed or not logged (`missed`) — said as "not logged", never as missed; a
  * key result behind pace by more than a quarter with under half its time left (`key_result`). A drift the coach talked
  * through is held until its check-back day (`remember` with drift and checkBack), then comes back with what was said.
@@ -383,6 +383,10 @@ const paceFor = (kr: StandKeyResult, today: string) =>
 
 interface Tally {
   planned: number;
+  /** Past, still only scheduled: within the sync's grace — not known yet, and no part of a drift. */
+  pending: number;
+  /** The oldest planned day, or null. */
+  oldest: string | null;
   done: number;
   missed: number;
   skipped: number;
@@ -392,11 +396,13 @@ interface Tally {
 
 /** A discipline's sessions in [from, to]: planned work only — never a rest day, never the coach's own skip. */
 function tally(f: StandFacts, discipline: Discipline, from: string, to: string): Tally {
-  const t: Tally = { planned: 0, done: 0, missed: 0, skipped: 0, unknown: 0, unplanned: 0 };
+  const t: Tally = { planned: 0, pending: 0, oldest: null, done: 0, missed: 0, skipped: 0, unknown: 0, unplanned: 0 };
   for (const w of f.plan) {
     if (w.date < from || w.date > to || disciplineOf(w) !== discipline) continue;
     if (w.state === "skipped" && w.sanctionedBy === "coach") continue;
     t.planned += 1;
+    if (t.oldest === null || w.date < t.oldest) t.oldest = w.date;
+    if (w.state === "scheduled" && w.date < f.today) t.pending += 1;
     if (w.state === "completed") t.done += 1;
     else if (w.state === "missed") t.missed += 1;
     else if (w.state === "skipped") t.skipped += 1;
@@ -416,6 +422,10 @@ export const DRIFT_ID = /^drift:(discipline|none|missed|key_result)(:[A-Za-z0-9 
 /** The days a discipline's drift is read over, and its floor. */
 export const DRIFT_DAYS = 21;
 export const DRIFT_MIN_PLANNED = 3;
+/** None of a discipline: two planned at least — one session not done is the missed chip's, not a drift. */
+export const NONE_MIN_PLANNED = 2;
+/** …and the first of them a week back at least: a session or two just not done is the missed chip's. */
+export const NONE_SINCE_DAYS = 7;
 /** The days the not-logged drift is read over, and how many it takes. */
 export const MISSED_DRIFT_DAYS = 14;
 export const MISSED_DRIFT_MIN = 3;
@@ -452,10 +462,19 @@ export function driftsOf(f: StandFacts): Drift[] {
   for (const discipline of DISCIPLINES) {
     const t = tally(f, discipline, addDays(today, -DRIFT_DAYS), yesterday);
     const key = discipline.replace(/ /g, "_");
-    if (t.planned >= DRIFT_MIN_PLANNED && t.done * 2 < t.planned) {
-      found.push({ d: { id: `drift:discipline:${key}`, rule: "discipline", observation: `${t.done} of ${t.planned} planned ${NOUN[discipline]} logged in 3 weeks` }, rank: t.done / t.planned });
-    } else if (t.planned > 0 && t.planned < DRIFT_MIN_PLANNED && t.done === 0 && t.unplanned === 0) {
-      found.push({ d: { id: `drift:none:${key}`, rule: "none", observation: `No ${NOUN[discipline]} logged in 3 weeks, with ${t.planned} planned` }, rank: 0 });
+    // A session still within the sync's grace is not known yet: no part of a drift.
+    const known = t.planned - t.pending;
+    if (known >= DRIFT_MIN_PLANNED && t.done * 2 < known) {
+      found.push({ d: { id: `drift:discipline:${key}`, rule: "discipline", observation: `${t.done} of ${known} planned ${NOUN[discipline]} logged in 3 weeks` }, rank: t.done / known });
+    } else if (
+      known >= NONE_MIN_PLANNED &&
+      known < DRIFT_MIN_PLANNED &&
+      t.done === 0 &&
+      t.unplanned === 0 &&
+      t.oldest !== null &&
+      t.oldest <= addDays(today, -NONE_SINCE_DAYS)
+    ) {
+      found.push({ d: { id: `drift:none:${key}`, rule: "none", observation: `No ${NOUN[discipline]} logged in 3 weeks, with ${known} planned` }, rank: 0 });
     }
   }
   found.sort((p, q) => p.rank - q.rank);

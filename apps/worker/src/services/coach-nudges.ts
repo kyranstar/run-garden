@@ -6,6 +6,7 @@ import { isLoosePlan, lineBlockOf } from "./coach-plans.js";
 import { reviewOpening, sessionDays, sessionOpening, type CoachOpeningLine, type FinishedSession } from "./coach-opening-line.js";
 import { COMEBACK_GAP_DAYS, endingLine, FIRM_HORIZON_DAYS, REFIRE_WINDOW_MS } from "./coach-triggers.js";
 import { UNRESOLVED_AFTER_DAYS } from "./reconcile-daily.js";
+import { driftNudge, driftsOf, readStandFacts } from "./where-you-stand.js";
 
 /**
  * THE COACH'S "NEEDS YOU" CHIPS (§8 §6). The thread coach used to turn its free signals into paid wakes: a trigger row
@@ -19,6 +20,9 @@ import { UNRESOLVED_AFTER_DAYS } from "./reconcile-daily.js";
  *      after its date, so one only known as unresolved shows for NUDGE_MISSED_DAYS from then, not for one day (audit
  *      §6). Its words say what the app knows: "I missed it" only for one the athlete said they missed, "I skipped it"
  *      for their skip, "nothing was logged for it" for one still unanswered;
+ *   1b. drift (where you stand, spec §7.2; where-you-stand.ts `driftsOf`): the most pressing one the coach hasn't talked
+ *      through to a check-back still ahead — "1 of 4 planned lifts logged in 3 weeks — talk it through?". A tap starts a
+ *      run that diagnoses first (its `nudge`, kept as the run's `diagnose`);
  *   2. back after a gap of a week or more (the latest activity in the last 2 days) — "Ease me back in" — from activities
  *      of 5 minutes or more: a walk to the trailhead is no return, nor the end of a gap (audit §6);
  *   3. a plan's next outline week starting within 14 days — "Fill in next week of my running plan" (the outline is what
@@ -43,9 +47,12 @@ import { UNRESOLVED_AFTER_DAYS } from "./reconcile-daily.js";
  * athlete has asked the coach about since — any turn of theirs, a chip or their own words — doesn't come back; one this
  * device has already shown (`seen`, the screen's own list) gives way to the next.
  *
- * Cost: at most six statements, four on a quiet account (the missed sessions; the activities — with what each one
- * completed, its logged sets and the coach's read of it, in the same statement; the plans; last week's review; then
- * their outline weeks only with a running plan, and the athlete's recent asks only with a chip or a line to offer).
+ * Cost: at most seven statements, five on a quiet account (the missed sessions; the activities — with what each one
+ * completed, its logged sets and the coach's read of it, in the same statement; the plans; last week's review; where
+ * the athlete stands (where-you-stand.ts: one); then their outline weeks only with a running plan, and the athlete's
+ * recent asks only with a chip or a line to offer) — and the stand's key-result measures (`measureStatements`).
+ * A drift chip is asked when its words were sent or a run diagnosing it started (`settings.diagnose`) in the last three
+ * days, whatever its count says now.
  * Every text here is the app's, or a plan's name — data, which the screen renders as text.
  */
 export interface CoachNudge {
@@ -154,7 +161,8 @@ export async function readCoachOpening(
   seen: ReadonlySet<string> = new Set(),
 ): Promise<CoachOpeningRead> {
   const lastWeek = addDays(startOfIsoWeek(today), -7);
-  const [missedRows, recent, plans, reviews] = await Promise.all([
+  const [stand, missedRows, recent, plans, reviews] = await Promise.all([
+    readStandFacts(db, userId, { today, tz: prefs.timezone }),
     db
       .select({
         id: plannedWorkouts.id,
@@ -259,6 +267,10 @@ export async function readCoachOpening(
     }
   }
 
+  // 1b. Drift: the most pressing one not held by a conclusion whose check-back is still ahead.
+  const drift = driftsOf(stand).find((d) => !d.held);
+  if (drift) found.push(driftNudge(drift));
+
   // 2. Back: the latest activity is fresh and follows a gap of a week or more.
   if (recent.length === 2) {
     const backOn = (recent[0]!.startTimeLocal ?? recent[0]!.startTime).slice(0, 10);
@@ -357,13 +369,19 @@ export async function readCoachOpening(
   const window = new Date(now.getTime() - REFIRE_WINDOW_MS).toISOString();
   const since = unseen.reduce((s, c) => (c.since < s ? c.since : s), window);
   const asked = await db
-    .select({ request: coachRuns.request, createdAt: coachRuns.createdAt })
+    .select({
+      request: coachRuns.request,
+      createdAt: coachRuns.createdAt,
+      diagnose: sql<string | null>`case when json_valid(${coachRuns.state}) then json_extract(${coachRuns.state}, '$.settings.diagnose') end`,
+    })
     .from(coachRuns)
     .where(and(eq(coachRuns.userId, userId), isNull(coachRuns.parentId), gte(coachRuns.createdAt, since)))
     .orderBy(desc(coachRuns.createdAt))
     .limit(RECENT_ASKS_MAX);
-  const words = asked.filter((r) => r.createdAt >= window).map((r) => asWords(r.request ?? ""));
-  const sent = (n: CoachNudge) => words.some((w) => w.includes(asWords(n.label)));
+  const recentAsks = asked.filter((r) => r.createdAt >= window);
+  const words = recentAsks.map((r) => asWords(r.request ?? ""));
+  const diagnosed = new Set(recentAsks.map((r) => r.diagnose).filter((d): d is string => typeof d === "string"));
+  const sent = (n: CoachNudge) => diagnosed.has(n.id) || words.some((w) => w.includes(asWords(n.label)));
   // Old news: the athlete has asked the coach something since it reached the app.
   const latest = asked[0]?.createdAt ?? null;
   const opening = unseen.find((c) => latest === null || latest < c.since)?.opening ?? null;

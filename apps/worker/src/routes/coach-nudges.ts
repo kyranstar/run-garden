@@ -10,7 +10,8 @@
  * Inert while the coach designer is off, as its conversation is: a plain 404, signed in or not; then the session is
  * checked. Mounted ahead of `/api/coach` in index.ts.
  *
- * Eight statements at most with the sign-in and the preferences (pinned): the read's six, and four on a quiet account.
+ * Nine statements at most with the sign-in and the preferences (pinned): the read's seven, and five on a quiet account (where
+ * the athlete stands, 2026-11-06: one more) — and the key results' measures (`measureStatements`), none without any.
  */
 import { Hono } from "hono";
 import { todayInZone } from "@rg/domain";

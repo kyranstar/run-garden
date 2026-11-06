@@ -242,11 +242,17 @@ describe("drift (§7.2)", () => {
     expect(driftsOf(only(strength(4, 0, -22)))).toEqual([]);
   });
 
-  it("none of a planned discipline in 3 weeks — unless it was done off the plan", () => {
-    expect(driftsOf(only([row(d(-3), "yoga", "skipped", { origin: null })]))).toMatchObject([
-      { id: "drift:none:yoga", rule: "none", observation: "No yoga sessions logged in 3 weeks, with 1 planned" },
-    ]);
-    expect(driftsOf(only([row(d(-3), "strength", "unresolved"), row(d(-5), "strength", "missed")], { unplanned: [{ date: d(-4), discipline: "strength" }] }))).toEqual([]);
+  it("none of a planned discipline in 3 weeks: two planned, the first a week back — not when done off the plan; one, or two just now, are the missed chip's", () => {
+    const yoga = (n: number) => row(d(n), "yoga", "skipped", { origin: null });
+    expect(driftsOf(only([yoga(-3), yoga(-10)]))).toMatchObject([{ id: "drift:none:yoga", rule: "none", observation: "No yoga sessions logged in 3 weeks, with 2 planned" }]);
+    expect(driftsOf(only([yoga(-3)]))).toEqual([]);
+    expect(driftsOf(only([yoga(-1), yoga(-3)]))).toEqual([]);
+    expect(driftsOf(only([row(d(-3), "strength", "unresolved"), row(d(-10), "strength", "missed")], { unplanned: [{ date: d(-4), discipline: "strength" }] }))).toEqual([]);
+  });
+
+  it("a session past but still only scheduled (within the sync's grace) is no part of a drift", () => {
+    expect(driftsOf(only([...strength(2, 1), row(d(-1), "strength", "scheduled")]))).toEqual([]);
+    expect(driftsOf(only([...strength(3, 1, -3), row(d(-1), "strength", "scheduled")])).map((x) => x.observation)).toEqual(["1 of 3 planned lifts logged in 3 weeks"]);
   });
 
   it("3 or more sessions missed or not logged in 2 weeks: said as not logged, never as missed", () => {
@@ -271,8 +277,8 @@ describe("drift (§7.2)", () => {
   });
 
   it("the most pressing first: the lowest share of a discipline, then not logged, then key results", () => {
-    const plan = [...strength(4, 1), row(d(-2), "yoga", "skipped", { origin: null }), row(d(-1), "easy", "unresolved"), row(d(-4), "easy", "unresolved"), row(d(-6), "easy", "unresolved")];
-    // Runs 0 of 3 and yoga 0 of 1 share the lowest share: the discipline's order breaks the tie.
+    const plan = [...strength(4, 1), row(d(-2), "yoga", "skipped", { origin: null }), row(d(-9), "yoga", "skipped", { origin: null }), row(d(-1), "easy", "unresolved"), row(d(-4), "easy", "unresolved"), row(d(-6), "easy", "unresolved")];
+    // Runs 0 of 3 and yoga 0 of 2 share the lowest share: the discipline's order breaks the tie.
     expect(driftsOf(only(plan)).map((x) => x.id)).toEqual(["drift:discipline:runs", "drift:none:yoga", "drift:discipline:strength", "drift:missed"]);
   });
 
