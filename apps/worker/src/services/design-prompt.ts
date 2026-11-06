@@ -79,8 +79,10 @@ const UNTRUSTED_TAG = "untrusted";
 /**
  * Where untrusted text came from: the app's own words, never text from the source itself. A "saved post" is a model's
  * reading of a post the athlete saved (one of their own moves' name and words): information, never the athlete's wish.
+ * A "coach read" is the app's earlier model reading of a week or an activity (a weekly review, an activity read: where
+ * you stand, 2026-11-06): a model's words, never facts the app computed.
  */
-export type UntrustedSource = "athlete" | "memory" | "main coach" | "designer run" | "parent run" | "saved post";
+export type UntrustedSource = "athlete" | "memory" | "main coach" | "designer run" | "parent run" | "saved post" | "coach read";
 
 /**
  * Text from outside the app's own code (the athlete's request and profile words, memory, another run's brief) inside
