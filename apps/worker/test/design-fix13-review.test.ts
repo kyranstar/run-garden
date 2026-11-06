@@ -223,7 +223,8 @@ describe("the trail's words after a revision's review", () => {
 
 describe("the rubric (§2.10)", () => {
   it("keeps every id but time_fit and equipment_fit, which merge into fit; adds request and words", () => {
-    expect(DIMS).toEqual(["intent", "request", "sequencing", "alignment", "balance", "progression", "diversity", "recovery", "condition_safety", "fit", "specificity", "honesty", "words"]);
+    // Since 2026-11-06 (import trail phase 3, §8.5): faithfulness, scored only when the draft holds a saved move.
+    expect(DIMS).toEqual(["intent", "request", "sequencing", "alignment", "balance", "progression", "diversity", "recovery", "condition_safety", "fit", "specificity", "honesty", "words", "faithfulness"]);
     const label = (id: string) => REVIEW_DIMENSIONS.find((d) => d.id === id)?.label;
     expect([label("fit"), label("request"), label("words")]).toEqual(["Fits your time and place", "Answers what you asked", "Clear words"]);
   });

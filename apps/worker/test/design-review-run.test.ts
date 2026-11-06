@@ -11,7 +11,7 @@ import { buildDesignContext } from "../src/services/design-context.js";
 import { RUN_LIMITS } from "../src/services/design-limits.js";
 import { lineReview } from "../src/services/design-manifest.js";
 import { makeTestDb, makeTestUser } from "./helpers.js";
-import { REVIEW_DIMENSIONS, roleBlock, RUN_REVIEW_DIMENSIONS, reviewDimensions } from "../src/services/design-prompt.js";
+import { OPTIONAL_DIMENSIONS, REVIEW_DIMENSIONS, roleBlock, RUN_REVIEW_DIMENSIONS, reviewDimensions } from "../src/services/design-prompt.js";
 import { parseReview, reviewPacket, reviewRubricOf, submitReview, submitReviewSchema } from "../src/services/design-review.js";
 import { toolSpecs } from "../src/services/coach-runs.js";
 import { proposeWorkout } from "../src/services/design-tools/propose.js";
@@ -36,6 +36,8 @@ const verdict = (ids: readonly string[], score = 4, over: Record<string, number>
 });
 const RUN_IDS = RUN_REVIEW_DIMENSIONS.map((d) => d.id);
 const WORKOUT_IDS = REVIEW_DIMENSIONS.map((d) => d.id);
+/** The dimensions a workout review must score (faithfulness, since 2026-11-06, only when its draft holds a saved move). */
+const WORKOUT_REQUIRED = WORKOUT_IDS.filter((d) => !OPTIONAL_DIMENSIONS.includes(d));
 
 describe("the run rubric", () => {
   it("intention, the request, structure, progression, recovery, pace, honesty and the words", () => {
@@ -91,7 +93,7 @@ describe("a run's reviewer is built with the run's block", () => {
 });
 
 describe("submit_review's schema is its rubric's: every dimension parseReview demands, required", () => {
-  it("a workout's is the schema as it always was, byte for byte (before §8)", () => {
+  it("a workout's is the schema as it always was, byte for byte (before §8) — faithfulness offered, not required (2026-11-06)", () => {
     const capWords = (chars: number) => `at most about ${Math.max(5, Math.round(chars / 6.5 / 5) * 5)} words (${chars} characters)`;
     const SCORE = { type: "integer", minimum: 1, maximum: 5 };
     const NOTE = { type: "string", minLength: 1 };
@@ -99,12 +101,12 @@ describe("submit_review's schema is its rubric's: every dimension parseReview de
     const before = {
       type: "object",
       properties: {
-        scores: { type: "object", properties: Object.fromEntries(WORKOUT_IDS.map((d) => [d, SCORE])), required: [...WORKOUT_IDS], additionalProperties: false },
+        scores: { type: "object", properties: Object.fromEntries(WORKOUT_IDS.map((d) => [d, SCORE])), required: [...WORKOUT_REQUIRED], additionalProperties: false },
         notes: {
           type: "object",
           description: `One line per dimension, written to the athlete: ${capWords(240)} each.`,
           properties: Object.fromEntries(WORKOUT_IDS.map((d) => [d, NOTE])),
-          required: [...WORKOUT_IDS],
+          required: [...WORKOUT_REQUIRED],
           additionalProperties: false,
         },
         mustFix: { type: "array", maxItems: 8, description: `Each one concrete change, ${capWords(240)}.`, items: ITEM },
@@ -134,10 +136,13 @@ describe("submit_review's schema is its rubric's: every dimension parseReview de
   it("each rubric's required lists are what parseReview demands of it: all of them pass, any one left out is refused", () => {
     for (const rubric of ["workout", "run"] as const) {
       const schema = submitReviewSchema(rubric) as { properties: { scores: { required: string[]; properties: object }; notes: { required: string[] } } };
-      const ids = reviewDimensions(rubric).map((d) => d.id);
+      const all = reviewDimensions(rubric).map((d) => d.id);
+      // An optional dimension (faithfulness, a workout's) is offered, never required: submit_review asks for it when the
+      // draft holds a saved move (design-review-faithfulness.test.ts).
+      const ids = all.filter((d) => rubric !== "workout" || !OPTIONAL_DIMENSIONS.includes(d));
       expect(schema.properties.scores.required).toEqual(ids);
       expect(schema.properties.notes.required).toEqual(ids);
-      expect(Object.keys(schema.properties.scores.properties)).toEqual(ids);
+      expect(Object.keys(schema.properties.scores.properties)).toEqual(all);
       expect("error" in parseReview(verdict(schema.properties.scores.required), rubric)).toBe(false);
       for (const left of ids) expect("error" in parseReview(verdict(ids.filter((d) => d !== left)), rubric), `${rubric} without ${left}`).toBe(true);
     }

@@ -58,7 +58,9 @@ import { EXERCISES, type ExerciseRecord } from "@rg/exercise-library";
 import { makeLibraryIndex } from "@rg/workout";
 import type { Db } from "./db.js";
 import { REVIEWER_MAX_CALLS } from "./design-limits.js";
-import { markUntrusted, REVIEW_DIMENSIONS, reviewDimensions, type ReviewRubric } from "./design-prompt.js";
+import { markUntrusted, OPTIONAL_DIMENSIONS, REVIEW_DIMENSIONS, reviewDimensions, type ReviewRubric } from "./design-prompt.js";
+import { isPersonalId } from "@rg/saves";
+import { doseWords } from "./saves-evidence.js";
 import type { DocWorkoutOp, DraftVersion, ReviewRound } from "./design-tools/propose.js";
 import { capInWords, PROSE_CEILING, proseTooLong } from "./design-tools/act-common.js";
 import { isHardNote } from "./design-tools/draft-checks.js";
@@ -222,6 +224,7 @@ export function acceptedLine(a: AcceptedCost, label?: string): string {
  * empty or too long, a malformed list.
  */
 export function parseReview(raw: unknown, rubric: ReviewRubric = "workout"): ReviewWithAccepted | ToolErr {
+  const optional = new Set(rubric === "workout" ? OPTIONAL_DIMENSIONS : []);
   const dims = reviewDimensions(rubric);
   const ids: readonly string[] = dims.map((d) => d.id);
   const problems: string[] = [];
@@ -242,6 +245,8 @@ export function parseReview(raw: unknown, rubric: ReviewRubric = "workout"): Rev
   const missingNotes: string[] = [];
   for (const d of ids) {
     const s = scoreIn[d];
+    // An optional dimension (faithfulness) left out whole is no gap: submit_review asks for it when the draft needs it.
+    if (optional.has(d) && s === undefined && noteIn[d] === undefined) continue;
     if (s === undefined) missingScores.push(d);
     else if (typeof s !== "number" || !Number.isInteger(s) || s < 1 || s > 5) problems.push(`scores.${d}: ${JSON.stringify(s)} is not a whole score from 1 to 5`);
     else scores[d] = s;
@@ -774,12 +779,12 @@ export function submitReviewSchema(rubric: ReviewRubric = "workout"): Record<str
   return {
     type: "object",
     properties: {
-      scores: { type: "object", properties: Object.fromEntries(ids.map((d) => [d, SCORE])), required: [...ids], additionalProperties: false },
+      scores: { type: "object", properties: Object.fromEntries(ids.map((d) => [d, SCORE])), required: ids.filter((d) => !OPTIONAL_DIMENSIONS.includes(d)), additionalProperties: false },
       notes: {
         type: "object",
         description: `One line per dimension, written to the athlete: ${capInWords(REVIEW_NOTE_MAX)} each.`,
         properties: Object.fromEntries(ids.map((d) => [d, NOTE])),
-        required: [...ids],
+        required: ids.filter((d) => !OPTIONAL_DIMENSIONS.includes(d)),
         additionalProperties: false,
       },
       mustFix: { type: "array", maxItems: MUST_FIX_MAX, description: `Each one concrete change, ${capInWords(REVIEW_ITEM_MAX)}.`, items: ITEM },
@@ -831,6 +836,14 @@ export const submitReview: DesignTool = {
     const rubric = draft ? reviewRubricOf(draft.doc) : asked;
     const review = rubric === asked ? parsed : parseReview(raw, rubric);
     if ("error" in review) return review;
+    // Faithfulness to the evidence (import trail phase 3, §8.5): scored whenever the draft holds a move from the saves.
+    if (draft && faithfulnessMissing(draft.doc, review)) {
+      return refuse(
+        "invalid_review",
+        "The review can't be read: scores and notes: missing faithfulness — this draft holds a move from the athlete's saves.",
+        "Call submit_review again with faithfulness scored and noted: does each saved move's dose, why and notes match its record (saved, beside it) and the post's quoted words, or say why they differ?",
+      );
+    }
     // Soreness is never an accepted cost (2026-11-05): a draft that loads an area the athlete called sore today
     // (draft-checks.ts) never has its recovery kept "as they asked" — one repair, as any review that can't be read.
     const soreAt = draft?.issues.some((i) => i.code === "sore_area_loaded") ? (review.accepted ?? []).findIndex((a) => a.dimension === "recovery") : -1;
@@ -923,6 +936,12 @@ const noBrackets = (text: string): string => text.replace(/</g, "‹").replace(/
  * stored is unchanged. `library`: the account's (`all`), so one of the athlete's own moves is named too (the packet's
  * draft is marked whole as a designer run's words).
  */
+/** Whether a review leaves out faithfulness the draft needs: it holds a move from the athlete's saves (a `my…` id). */
+export function faithfulnessMissing(doc: DraftForReview["doc"], review: Pick<DesignReview, "scores">): boolean {
+  const saved = doc.parts.some((p) => p.items.some((i) => i.kind === "exercise" && isPersonalId(i.libraryId)));
+  return saved && typeof review.scores?.faithfulness !== "number";
+}
+
 export function packetDoc(doc: DraftForReview["doc"], library: readonly ExerciseRecord[] = EXERCISES): unknown {
   const libraryMove = makeLibraryIndex(library);
   return {
@@ -934,11 +953,14 @@ export function packetDoc(doc: DraftForReview["doc"], library: readonly Exercise
         const { kind, libraryId, alternates, ...rest } = item;
         const ex = libraryMove(libraryId);
         const ratings = ex && Object.keys(ex.conditions).length > 0 ? { ratings: ex.conditions } : {};
+        // A move from the athlete's saves (§8.5): its record's dose and purpose beside it, for faithfulness.
+        const saved = ex && isPersonalId(libraryId) ? { saved: { dose: doseWords(ex.dose), purpose: ex.text?.why ?? null } } : {};
         return {
           kind,
           libraryId,
           name: ex?.name ?? null,
           ...ratings,
+          ...saved,
           ...rest,
           ...(alternates ? { alternates: alternates.map((a) => ({ libraryId: a.libraryId, name: libraryMove(a.libraryId)?.name ?? null, ...(a.why !== undefined ? { why: a.why } : {}) })) } : {}),
         };
@@ -1041,6 +1063,8 @@ const EVIDENCE_TIERS: Readonly<Record<string, number>> = {
   list_workouts: 1,
   get_workout: 1,
   list_templates: 1,
+  // The evidence a saved move's faithfulness is judged on (import trail phase 3, §8.5).
+  read_saves: 1,
   search_library: 3,
 };
 const evidenceTier = (tool: string): number => EVIDENCE_TIERS[tool] ?? 2;

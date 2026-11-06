@@ -162,8 +162,9 @@ describe("compact (the cached prefix grew 3k tokens since the pre-live audit)", 
     // REBASED 2026-11-06 (import trail phase 2, on phase 4's main): measured main 1,795.75, reviewer 1,256.5 — each pinned
     // with ≥ 100 tokens of headroom.
     // REBASED 2026-11-06 (coach review, phase 3): the main block's challenge order and insistence within the hard checks —
-    // measured main 2,008 with its turns; ≥ 100 tokens of headroom.
-    const caps = { main: 2110, designer: 1300, reviewer: 1360 } as const;
+    // measured main 2,008 with its turns; the reviewer's faithfulness dimension and its must-fix line — measured 1,355.25
+    // with its turns; each ≥ 100 tokens of headroom.
+    const caps = { main: 2110, designer: 1300, reviewer: 1460 } as const;
     for (const role of ["main", "designer", "reviewer"] as const) expect(roleBlock(role, RUN_LIMITS[role].maxCalls).length / 4, role).toBeLessThanOrEqual(caps[role]);
     // A run's reviewer (§8 §3): the block with the run rubric in place of the workout one — its own cached prefix.
     expect(roleBlock("reviewer", RUN_LIMITS.reviewer.maxCalls, "run").length / 4).toBeLessThanOrEqual(1300);

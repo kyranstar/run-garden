@@ -430,6 +430,8 @@ export const REVIEW_LABELS: Readonly<Record<string, string>> = {
   words: "Clear words",
   specificity: "Made for you",
   honesty: "Honest explanation",
+  // Import trail phase 3 (§8.5): scored when a workout holds a move from the athlete's saves.
+  faithfulness: "Faithful to your saves",
   // Retired (Task 13): an older review's dimensions.
   time_fit: "Fits your time",
   equipment_fit: "Fits your equipment",

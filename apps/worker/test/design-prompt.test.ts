@@ -97,8 +97,9 @@ describe("the prompt text", () => {
   });
 
   it("the review rubric: the spec's dimensions as Task 13's fix wave set them (§2.10), unique ids, each with its question", () => {
-    expect(REVIEW_DIMENSIONS).toHaveLength(13);
-    expect(new Set(REVIEW_DIMENSIONS.map((d) => d.id)).size).toBe(13);
+    // Fourteen since 2026-11-06 (import trail phase 3, §8.5): faithfulness to a saved move's evidence.
+    expect(REVIEW_DIMENSIONS).toHaveLength(14);
+    expect(new Set(REVIEW_DIMENSIONS.map((d) => d.id)).size).toBe(14);
     const reviewer = roleBlock("reviewer");
     for (const d of REVIEW_DIMENSIONS) {
       expect(reviewer).toContain(d.id);
