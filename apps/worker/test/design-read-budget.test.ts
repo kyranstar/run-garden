@@ -258,7 +258,8 @@ describe("untrusted text", () => {
       ["read_saves", {}, "LONG-saves-reading"],
       ["read_saves", {}, "LONG-saves-handle"],
       ["read_saves", {}, "LONG-saves move"],
-      ["read_saves", {}, "LONG-saves-summary"],
+      // A move's summary is the full form's (the budgets review, 2026-11-06).
+      ["read_saves", { full: true }, "LONG-saves-summary"],
       ["read_history", { from: day(2), to: TODAY }, "LONG-note"],
       ["read_answers", {}, "LONG-answer"],
       ["recall_memory", {}, "LONG-memory"],

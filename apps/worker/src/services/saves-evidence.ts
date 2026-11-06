@@ -196,6 +196,60 @@ export function readingEvidence(
   };
 }
 
+/** A quote's head in read_saves' compact form (the budgets review, 2026-11-06): its first characters, at a word. */
+export const QUOTE_HEAD = 48;
+/** A stated skip-when case's head in the compact form. */
+export const CASE_HEAD = 60;
+/** The stated skip-when cases the compact form keeps, at most: the post's own word on when not to. */
+const SKIPS_KEPT = 2;
+
+/** `text`'s first `n` characters or fewer, cut at a word where one is past half of them, with "…" after: a head. */
+export function headOf(text: string, n: number): string {
+  const t = text.trim();
+  if (t.length <= n) return t;
+  const cut = t.slice(0, n - 1);
+  const space = cut.lastIndexOf(" ");
+  return `${(space > n / 2 ? cut.slice(0, space) : cut).trimEnd()}…`;
+}
+
+/** A quote in the compact form: its id, the field it supports and how it checked out — and, on a move's first post, its
+ * head (marked). */
+export type CompactQuote = [id: string, field: string, check: CheckWord] | [id: string, field: string, check: CheckWord, head: Untrusted];
+
+/** A reading in read_saves' compact form (the budgets review, 2026-11-06): what it stated and inferred, the post's dose
+ * words, the post's own skip-when cases (heads), and each quote's id, field and check — with its head when `heads`. The
+ * why, the use-when cases and whole quotes are the full form's (`full: true`). */
+export interface CompactEvidence {
+  confidence: string | null;
+  stated: string[];
+  inferred: string[];
+  dose: Untrusted | null;
+  skipWhen?: Untrusted[];
+  quotes: CompactQuote[];
+}
+
+/** A later post's reading in the compact form: what it stated and inferred, and its quotes' ids, fields and checks. */
+export interface IdsEvidence {
+  stated: string[];
+  inferred: string[];
+  quotes: CompactQuote[];
+}
+
+/** A reading's evidence in the compact form; `heads: false` (a move's later posts, or a move cut for room) keeps its
+ * quotes' ids, fields and checks only. */
+export function compactEvidence(e: ReadingEvidence, o: { heads: boolean }): CompactEvidence | IdsEvidence {
+  if (!o.heads) return { stated: e.stated, inferred: e.inferred, quotes: e.quotes.map((q) => [q.id, q.field, q.check]) };
+  const skips = (e.skipWhen ?? []).filter((c) => c.said).slice(0, SKIPS_KEPT).map((c) => untrusted(headOf(c.text.text, CASE_HEAD)));
+  return {
+    confidence: e.confidence,
+    stated: e.stated,
+    inferred: e.inferred,
+    dose: e.dose,
+    ...(skips.length ? { skipWhen: skips } : {}),
+    quotes: e.quotes.map((q) => [q.id, q.field, q.check, untrusted(headOf(q.text.text, QUOTE_HEAD))]),
+  };
+}
+
 const DOSE_UNIT: Record<ExerciseRecord["dose"]["type"], string> = { reps: "reps", time: "s", breaths: "breaths", carry: "s carried" };
 
 /** A record's dose as a range: "5–8 reps, 2–4 sets", "30–45 s" (the library's words; read-library's `get_exercise` too). */

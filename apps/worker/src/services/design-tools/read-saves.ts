@@ -13,14 +13,14 @@
  *  - `choice` (§3.4): what the athlete chose for a new move before the fit (`personal_moves.fit_choice`) — `include`
  *    (pin it, always) or `skip` (never placed) — else `coach`, the coach's call; a move they had already is `coach`;
  *  - `like` (§12.4): the move a near-duplicate is like (`saved_post_moves.like_move_id`), as the account's library
- *    offers it — its id and name, a personal move's marked — or null;
- *  - `pinned` (`exercise_prefs.pinned`) and `groups` (the notice's grouping: @rg/saves `moveGroup`);
- *  - `posts`: how many of the batch's posts show it; `links`: the first LINKS_MAX of them, the url (plain: an address,
- *    not prose), the creator (the handle, else the name: marked) and the note (spec §17: what the post says the move is
- *    for, or when to do it — the post's reading of it, `purpose`: marked); `fromPost`: the first post's reading
- *    (`extraction.summary`: marked).
- * And `routines` (at most ROUTINES_MAX): the batch's routine posts, each its reading (marked) and its moves' ids in the
- * post's order. And `insights` (at most SAVES_INSIGHTS_MAX, spec §17): what the batch's kept posts say about when, why
+ *    offers it — its id and name, a personal move's marked — else left out;
+ *  - `pinned` (`exercise_prefs.pinned`, when it is) and `groups` (the notice's grouping: @rg/saves `moveGroup`);
+ *  - `posts`: how many of the batch's posts show it; `links`: the first LINKS_MAX of them, each by its post's id, and
+ *    the first's note (spec §17: what the post says the move is for, or when to do it — the post's reading of it,
+ *    `purpose`: marked).
+ * And the page's `posts`, each once: its url (plain: an address, not prose), its creator (the handle, else the name:
+ * marked), its reading (`extraction.summary`: marked) and, a routine's, its moves in the post's order by their place in
+ * the batch (`order`). And `insights` (at most SAVES_INSIGHTS_MAX, spec §17): what the batch's kept posts say about when, why
  * or how often to do something, in the posts' order (marked) — Save kept them in the coach's memory too. A move merged
  * since reads as the move it went into (the account's library, Task 12); a move the library no longer offers —
  * archived since, or merged into an archived move — is left out of both and named in `missing` (an archived move is
@@ -30,19 +30,28 @@
  * batch of the athlete's — another account's, one not saved, one nobody has — is refused alike (`not_found`), so nothing
  * says another account's batch exists.
  *
- * SIZE. At most SAVES_MOVES_MAX moves a read (`limit`), from `offset` in the batch's one order, and of those as many as
- * fit RESULT_BUDGET_BYTES beside the insights (on every page, room kept for them first), with the routines; `missing`
- * says how many moves are left and the offset that reads them (a batch stays readable by id once it is fitted in), and
- * how many routines the cap or the room left out.
+ * SIZE (the budgets review, 2026-11-06). At most SAVES_MOVES_MAX moves a read (`limit`), from `offset` in the batch's one
+ * order, and of those as many as fit RESULT_BUDGET_BYTES with the posts they name; `missing` says how many moves are left
+ * and the offset that reads them (a batch stays readable by id once it is fitted in). A page is COMPACT unless `full`:
+ * each post the page's moves name is in `posts` once — its address, creator and reading (a head), and a routine's moves
+ * in the post's order by their `n` — never on each link; a move's summary, its first post's why and use-when cases are
+ * the full form's; its first post's reading keeps what it stated and inferred, the post's dose words, the skip-when cases
+ * the post stated (heads) and each quote as `[id, field, check, head]`; its later posts' readings their quotes'
+ * `[id, field, check]` alone. A lone move too wide even so reads TIGHT — every post's quotes by id, its words cut to
+ * heads — so one move never passes the budget (the widest: three posts at extract-6's widest, five quoted insights).
+ * The insights are on the first page only; the line on closing the batch (`next`) on its last. `full: true` gives every
+ * word (each quote whole, why, use and skip when, every post's whole reading, the move's summary) and no insights —
+ * one move at a time is the way to read one whole (`offset: n − 1, limit: 1`).
  *
  * THE EVIDENCE (import trail phase 3; design 2026-11-05 §8.1). Each move of the page carries `n` (its place in the batch:
  * its quotes' ids are `q<n>.<k>`, saves-evidence.ts), the dose its record runs with and where that came from, and the
  * corrections so far; each link its post's id and the move's position in it (`post`, `at`: correct_import's targets),
- * the match (new, yours or the library's; by name, the judge or new, with the match step's confidence and check), and
- * the post's reading as evidence — stated or inferred, the post's dose words, why, when to use it or not, and each
- * quote with its id and how it checked out (said, in the caption, heard, on screen, not in the post). Insights keep
- * their post (`ref`) and scope, every scope. The answer's receipt (never the model's) maps each move shown to its first
- * post and each quote id to where it points: pin_moves and correct_import read it from the run's trail.
+ * the match step's word (by name, the judge or new, its confidence and check) when its trail has one, and the post's
+ * reading as evidence — stated or inferred, the post's dose words, and each quote with its id and how it checked out
+ * (said, in the caption, heard, on screen, not in the post). Insights keep their post (`ref`) and scope, every scope.
+ * The answer's receipt (never the model's) maps each move shown to its first post, its `n` and the fields its posts
+ * stated, names the posts read (its moves' and its insights'), and each quote id sent to where it points: pin_moves and
+ * correct_import read it from the run's trail.
  *
  * COST. Three statements: the athlete (the step's shared read, which carries the account's library: `athleteOf`), the
  * batch with the account's pins, and the page's evidence (none when the batch offers no move). `savesBatchSql` and `savedMovesOf` are the opening context's too (design-context.ts,
@@ -57,7 +66,7 @@ import { makeLibraryIndex } from "@rg/workout";
 import { loadAccountLibrary, type AccountLibrary } from "../account-library.js";
 import { doseOriginOf } from "../personal-records.js";
 import { insightsJsonSql, scopedInsightsOf, type ScopedInsight } from "../saves-batches.js";
-import { doseWords, readingEvidence, valueWords, type QuoteRef, type ReadingEvidence } from "../saves-evidence.js";
+import { compactEvidence, doseWords, headOf, QUOTE_HEAD, readingEvidence, valueWords, type QuoteRef, type ReadingEvidence } from "../saves-evidence.js";
 import { utf8Bytes } from "../utf8.js";
 import type { DesignTool } from "./types.js";
 import {
@@ -85,8 +94,20 @@ export const SAVES_WINDOW_DAYS = 14;
 export const SAVES_MOVES_MAX = 12;
 /** The posts a move's links name, at most (`posts` counts them all). */
 const LINKS_MAX = 3;
-/** The routines one read lists, at most. */
-const ROUTINES_MAX = 5;
+/** A page's forms (the budgets review, 2026-11-06): every word (`full: true`); compact, a page's default; tight, a lone
+ * move too wide for its page in the compact form. */
+type Form = "full" | "compact" | "tight";
+/** A link's note and a correction's words in the compact form: their heads. */
+const SUMMARY_HEAD = 100;
+const NOTE_HEAD = 100;
+/** A post's reading in the compact and tight forms: its head. */
+const POST_HEAD = 100;
+/** The tight form's heads. */
+const TIGHT_HEAD = 60;
+/** Where a later page's insights are. */
+const INSIGHTS_FIRST = "insights: on the first page (offset 0, not full)";
+/** How a compact page's move reads whole. */
+const FULL_WORDS = "a move's every word (whole quotes, why, use and skip when): full: true, offset: its n − 1, limit: 1";
 /** The insights of the batch's kept posts one read lists, and the opening context's section shows, at most. */
 export const SAVES_INSIGHTS_MAX = 5;
 
@@ -397,11 +418,11 @@ function doseFromOf(m: SavedMove, fixes: readonly CorrectionRow[], firstReading:
 }
 
 /** A correction as the coach reads it: the field, the value it took (in words, marked), why, by whom, on what basis. */
-const correctionOut = (c: CorrectionRow, target?: string) => ({
+const correctionOut = (c: CorrectionRow, form: Form, target?: string) => ({
   ...(target ? { target } : {}),
   field: c.field,
-  after: untrusted(valueWords(c.after)),
-  why: untrusted(c.why),
+  after: untrusted(form === "full" ? valueWords(c.after) : headOf(valueWords(c.after), form === "tight" ? TIGHT_HEAD : SUMMARY_HEAD)),
+  why: untrusted(form === "full" ? c.why : headOf(c.why, form === "tight" ? TIGHT_HEAD : SUMMARY_HEAD)),
   by: c.by,
   basis: c.basis,
   at: c.at,
@@ -411,19 +432,25 @@ const correctionOut = (c: CorrectionRow, target?: string) => ({
 const closeLine = (batchId: string): string => `pin_moves({ batchId: ${JSON.stringify(batchId)} }) closes this batch once approved — with the moves you pin, or none`;
 
 const input = z
-  .object({ batchId: z.string().min(1).max(100).optional(), limit: limitField(SAVES_MOVES_MAX).optional(), offset: z.number().int().min(0).max(10_000).optional() })
+  .object({
+    batchId: z.string().min(1).max(100).optional(),
+    limit: limitField(SAVES_MOVES_MAX).optional(),
+    offset: z.number().int().min(0).max(10_000).optional(),
+    full: z.boolean().optional(),
+  })
   .strict();
 
 export const readSaves: DesignTool = {
   name: "read_saves",
   description:
-    "The athlete's saves: the run's batch, else the newest unfitted (or batchId's). Each move — a saved one by its own id — new or theirs, choice, pin, dose; its posts' notes and evidence (quote ids to cite); corrections; insights; routines.",
+    "The athlete's saves: the run's batch, else the newest unfitted (or batchId's). Each move — a saved one by its own id — new or theirs, choice, pin, dose, notes, evidence (quote ids to cite), corrections; the posts; insights on page one.",
   inputSchema: {
     type: "object",
     properties: {
       batchId: { type: "string", description: "A saved batch's id; default the run's batch, else the newest not yet fitted in." },
       limit: { type: "integer", minimum: 1, maximum: SAVES_MOVES_MAX, description: `Default ${SAVES_MOVES_MAX}, the most.` },
       offset: { type: "integer", minimum: 0, description: "Moves to skip: the offset missing gives." },
+      full: { type: "boolean", description: "Every word: each quote whole, why, use-when, skip-when, every post's reading — fewer moves a page, no insights." },
     },
     additionalProperties: false,
   },
@@ -439,9 +466,10 @@ export const readSaves: DesignTool = {
   cpuWeight: 1.4,
   roles: READ_ROLES,
   async run(ctx, raw) {
-    const p = parseInput(input, raw, "optionally batchId, limit and offset");
+    const p = parseInput(input, raw, "optionally batchId, limit, offset and full");
     if (isErr(p)) return p;
     const limit = p.limit ?? SAVES_MOVES_MAX;
+    const full = p.full === true;
     // A fit-in run reads the batch it fits (§12.1), whatever its age (§8.2), unless the model names another.
     const batchId = p.batchId ?? ctx.run.savesBatchId;
     const [athlete, rows] = await Promise.all([
@@ -488,8 +516,9 @@ export const readSaves: DesignTool = {
       : null;
     const evidence = linkEvidenceOf(ev?.links);
     const fixesOf = correctionsOf(ev?.corrections);
+    // Each move's place in the batch (`n`): its quotes' ids are `q<n>.<k>`, and a routine names its moves by it.
+    const nOf = new Map(moves.map((m, i) => [m.record.id, i + 1] as const));
     const read = page.map((m, i) => {
-      // The move's place in the batch: its quotes' ids (`q<n>.<k>`), the same on every page.
       const n = offset + i + 1;
       const refs: Array<[string, QuoteRef]> = [];
       const readings: Array<ReadingEvidence | null> = [];
@@ -503,57 +532,76 @@ export const readSaves: DesignTool = {
       }
       const own = fixesOf.get(m.record.id) ?? [];
       const onLinks = linksOf(m).flatMap(([postId, position]) => fixesOf.get(`${postId}:${position}`) ?? []);
-      const fixes = [...own.map((c) => correctionOut(c)), ...onLinks.map((c) => correctionOut(c, "reading"))]
-        .sort((a, b) => byBytes(b.at, a.at))
-        .slice(0, CORRECTIONS_SHOWN);
-      const as = !isPersonalId(m.record.id) ? "library" : m.new ? "new" : "yours";
-      const entry = {
-        id: m.record.id,
-        n,
-        name: wordsOf(m.record, m.record.name),
-        summary: wordsOf(m.record, m.record.text?.summary ?? ""),
-        new: m.new,
-        choice: m.choice,
-        like: m.like ? { id: m.like.id, name: wordsOf(m.like, m.like.name) } : null,
-        pinned: pins.has(m.record.id),
-        groups: moveGroup(m.record),
-        // The dose the move runs with (its record's), and where that came from.
-        dose: { record: doseWords(m.record.dose), from: doseFromOf(m, own, firstReading) },
-        ...(fixes.length ? { corrections: fixes } : {}),
-        posts: m.postIds.length,
-        links: linksOf(m).map(([postId, position], k) => {
-          const e = evidence.get(`${postId}:${position}`);
-          return {
-            url: postOf(postId)?.url ?? null,
-            creator: untrustedOrNull(postOf(postId)?.creator),
-            note: untrustedOrNull(m.notes[k]),
-            post: postId,
-            at: position,
+      const fixes = [...own.map((c) => ({ c, target: undefined as string | undefined })), ...onLinks.map((c) => ({ c, target: "reading" as string | undefined }))].sort((a, b) => byBytes(b.c.at, a.c.at)).slice(0, CORRECTIONS_SHOWN);
+      /** The move's entry in a form (the budgets review, 2026-11-06): `full` — every word; `compact` — its first post's
+       * reading with quote heads, its later posts' quotes by id and check; `tight` (a lone move too wide for its page) —
+       * every post's quotes by id and check, its words cut to heads. */
+      const entryOf = (form: Form) => {
+        const cut = (text: string | null | undefined, n: number): Untrusted | null => (form === "full" ? untrustedOrNull(text) : untrustedOrNull(text ? headOf(text, n) : text));
+        const summary = m.record.text?.summary ?? "";
+        return {
+          id: m.record.id,
+          n,
+          name: wordsOf(m.record, m.record.name),
+          // What the move is: the full form's (the name, its post's note and its quotes say it on a compact page).
+          ...(form === "full" ? { summary: wordsOf(m.record, summary) } : {}),
+          new: m.new,
+          choice: m.choice,
+          // Each only when it is so (the budgets review, 2026-11-06): no like, not pinned.
+          ...(m.like ? { like: { id: m.like.id, name: wordsOf(m.like, m.like.name) } } : {}),
+          ...(pins.has(m.record.id) ? { pinned: true } : {}),
+          groups: moveGroup(m.record),
+          // The dose the move runs with (its record's), and where that came from.
+          dose: { record: doseWords(m.record.dose), from: doseFromOf(m, own, firstReading) },
+          ...(fixes.length ? { corrections: (form === "tight" ? fixes.slice(0, 1) : fixes).map((f) => correctionOut(f.c, form, f.target)) } : {}),
+          posts: m.postIds.length,
+          links: linksOf(m).map(([postId, position], k) => {
+            const e = evidence.get(`${postId}:${position}`);
+            const r = readings[k] ?? null;
             // What the match step said, when its trail has it (a post from before the trail has none).
-            match: { as, ...(e?.by ? { by: e.by } : {}), ...(e?.confidence ? { confidence: e.confidence } : {}), ...(e?.check ? { check: true } : {}) },
-            reading: readings[k] ?? null,
-          };
-        }),
-        fromPost: untrustedOrNull(postOf(m.postIds[0]!)?.summary),
+            // How it matched is its id's and `new`'s (library, new, theirs); `match` is the step's word, when its trail has
+            // one (a post from before the trail has none).
+            const said = { ...(e?.by ? { by: e.by } : {}), ...(e?.confidence ? { confidence: e.confidence } : {}), ...(e?.check ? { check: true } : {}) };
+            const link = { post: postId, at: position, ...(Object.keys(said).length ? { match: said } : {}) };
+            if (form === "full") return { ...link, note: untrustedOrNull(m.notes[k]), reading: r };
+            if (k > 0) return { ...link, reading: r ? compactEvidence(r, { heads: false }) : null };
+            return { ...link, note: cut(m.notes[k], form === "tight" ? TIGHT_HEAD : NOTE_HEAD), reading: r ? compactEvidence(r, { heads: form === "compact" }) : null };
+          }),
+        };
       };
-      return { entry, refs, first: [m.record.id, m.postIds[0]!, m.positions[0]!] as const };
+      // What it stated on the posts read (a stated field may back a claim as the reader's report: stated:<field>).
+      const stated = [...new Set(readings.flatMap((r) => r?.stated ?? []))];
+      return { entryOf, refs, postIds: linksOf(m).map(([postId]) => postId), first: [m.record.id, m.postIds[0]!, m.positions[0]!, n, stated] as const };
     });
-    const listed = read.map((x) => x.entry);
-    // The routine posts, as they came in: each its reading and its kept, offered moves in the post's order.
-    const byPost = new Map<string, string[]>();
+    // The routine posts' moves in the post's order, by their place in the batch (a merged move as the move it went into).
+    const orderOf = new Map<string, number[]>();
     for (const l of inPostOrder(batch.links)) {
       if (postOf(l.postId)?.kind !== "routine") continue;
-      const id = find(l.moveId)?.id;
-      if (!id) continue;
-      const order = byPost.get(l.postId);
-      if (order) order.push(id);
-      else byPost.set(l.postId, [id]);
+      const n = nOf.get(find(l.moveId)?.id ?? "");
+      if (n === undefined) continue;
+      const order = orderOf.get(l.postId);
+      if (order) order.push(n);
+      else orderOf.set(l.postId, [n]);
     }
-    const routines = [...byPost].map(([postId, order]) => ({ post: untrustedOrNull(postOf(postId)?.summary), order }));
-    // What the kept posts say about when, why or how often (a model's reading): on every page, room kept for them first.
-    // Every scope, each keeping its post (§8.1: a creator's own split is the creator's, not a rule): `ref` names the post
-    // and the insight's place in it, as correct_import's target does.
-    const insights = batch.insights.map((i) => ({ ref: `${i.postId}:${i.idx}`, text: untrusted(i.text), scope: i.scope, ...(i.quote ? { quote: untrusted(i.quote) } : {}) }));
+    /** A post the page's moves name, once a page: its address, its creator and its reading (marked), and a routine's order. */
+    const postEntry = (postId: string, form: Form) => {
+      const post = postOf(postId);
+      const reading = post?.summary ?? null;
+      return {
+        id: postId,
+        url: post?.url ?? null,
+        creator: untrustedOrNull(post?.creator),
+        reading: untrustedOrNull(form === "full" || !reading ? reading : headOf(reading, POST_HEAD)),
+        ...(orderOf.has(postId) ? { order: orderOf.get(postId)! } : {}),
+      };
+    };
+    // What the kept posts say about when, why or how often (a model's reading): on the first page only (the budgets
+    // review, 2026-11-06), each a quote's head. Every scope, each keeping its post (§8.1: a creator's own split is the
+    // creator's, not a rule): `ref` names the post and the insight's place in it, as correct_import's target does.
+    const withInsights = offset === 0 && !full;
+    const insights = withInsights
+      ? batch.insights.map((i) => ({ ref: `${i.postId}:${i.idx}`, text: untrusted(i.text), scope: i.scope, ...(i.quote ? { quote: untrusted(headOf(i.quote, QUOTE_HEAD)) } : {}) }))
+      : [];
 
     const head = { id: batch.id, savedAt: localDateOf(athlete.tz, batch.savedAt) };
     const fixed = [
@@ -561,58 +609,59 @@ export const readSaves: DesignTool = {
       ...(archived.length > 0 ? [`${plural(archived.length, "move")} of this batch archived since, not offered: ${archived.join(", ")}`] : []),
       ...(unread > 0 ? [`${plural(unread, "move")} of this batch no longer in the library`] : []),
       ...(moves.length === 0 ? ["the batch holds no move the athlete kept and the library offers"] : []),
+      ...(!withInsights && batch.insights.length > 0 ? [INSIGHTS_FIRST] : []),
+      ...(!full && page.length > 0 ? [FULL_WORDS] : []),
     ];
     /** The moves after this page: how many, and the offset that reads them. */
     const movesLeft = (kept: number): string[] => {
       const left = moves.length - (offset + kept);
       return left > 0 ? [`${plural(left, "more move", "more moves")} — pass offset: ${offset + kept}`] : [];
     };
-    /** The routines left out: by the cap when it alone cut them, else for room. */
-    const routinesLeft = (kept: number): string[] => {
-      const left = routines.length - kept;
-      if (left <= 0) return [];
-      return kept === Math.min(routines.length, ROUTINES_MAX)
-        ? [`${plural(left, "more routine", "more routines")}, at most ${ROUTINES_MAX} a read`]
-        : [`${plural(left, "more routine", "more routines")} not shown for room`];
-    };
-    const sizeOf = (missing: string[], ms: unknown[], rs: unknown[]): number =>
-      bytesOf(answer({ source: SOURCE, now: ctx.now, missing, data: { batch: head, moves: ms, routines: rs, insights, next: closeLine(batch.id) }, summary: "" }));
+    const sizeOf = (missing: string[], ms: unknown[], ps: unknown[]): number =>
+      bytesOf(answer({ source: SOURCE, now: ctx.now, missing, data: { batch: head, posts: ps, moves: ms, insights }, summary: "" }));
+    /** The last page's line on closing the batch, and what it adds. */
+    const next = { next: closeLine(batch.id) };
+    const nextBytes = bytesOf(next) - 1;
 
-    // A page that fits: every listed move and routine (up to the cap) when they fit with the lines that say what is
-    // left; else as many moves as fit (at least one), then routines, with room kept for the longest such lines.
-    const capped = routines.slice(0, ROUTINES_MAX);
-    let kept = listed.length;
-    let keptRoutines = capped.length;
-    if (sizeOf([...fixed, ...movesLeft(kept), ...routinesLeft(keptRoutines)], listed, capped) > RESULT_BUDGET_BYTES) {
-      const longestLeft = [`${moves.length} more moves — pass offset: ${moves.length}`, `${routines.length} more routines not shown for room`];
-      let total = sizeOf([...fixed, ...longestLeft], [], []);
-      kept = 0;
-      for (const item of listed) {
-        const add = bytesOf(item) + (kept > 0 ? 1 : 0);
-        if (kept > 0 && total + add > RESULT_BUDGET_BYTES) break;
-        total += add;
-        kept += 1;
+    // A page that fits: as many moves as fit with the posts they name (each post once), room kept for the line that says
+    // what is left — at least one, the lone move in the narrowest form that fits (full asks for every word: compact, then
+    // tight, when even one move's every word won't fit).
+    let total = sizeOf([...fixed, `${moves.length} more moves — pass offset: ${moves.length}`], [], []);
+    const shown: Array<ReturnType<(typeof read)[number]["entryOf"]>> = [];
+    const posts: Array<ReturnType<typeof postEntry>> = [];
+    const keptRead: typeof read = [];
+    for (const x of read) {
+      const forms: Form[] = full ? ["full", "compact", "tight"] : ["compact", "tight"];
+      let picked: { entry: (typeof shown)[number]; fresh: Array<(typeof posts)[number]>; add: number } | null = null;
+      for (const form of shown.length === 0 ? forms : forms.slice(0, 1)) {
+        const entry = x.entryOf(form);
+        const fresh = [...new Set(x.postIds)].filter((id) => !posts.some((q) => q.id === id)).map((id) => postEntry(id, form));
+        const add = bytesOf(entry) + (shown.length > 0 ? 1 : 0) + fresh.reduce((sum, q, j) => sum + bytesOf(q) + (posts.length + j > 0 ? 1 : 0), 0);
+        picked = { entry, fresh, add };
+        if (total + add <= RESULT_BUDGET_BYTES) break;
+        if (shown.length > 0) picked = null;
       }
-      keptRoutines = 0;
-      for (const item of capped) {
-        const add = bytesOf(item) + (keptRoutines > 0 ? 1 : 0);
-        if (total + add > RESULT_BUDGET_BYTES) break;
-        total += add;
-        keptRoutines += 1;
-      }
+      if (!picked) break;
+      // The page that reads the batch's last move says how to close it: room for that line too.
+      const last = offset + shown.length + 1 >= moves.length;
+      if (last && shown.length > 0 && total + picked.add + nextBytes > RESULT_BUDGET_BYTES) break;
+      total += picked.add;
+      shown.push(picked.entry);
+      posts.push(...picked.fresh);
+      keptRead.push(x);
     }
-    const missing = [...fixed, ...movesLeft(kept), ...routinesLeft(keptRoutines)];
-    const shown = listed.slice(0, kept);
+    const isLast = offset + shown.length >= moves.length;
+    const missing = [...fixed, ...movesLeft(shown.length)];
     const fresh = shown.filter((m) => m.new).length;
     const when = head.savedAt ? ` (saved ${dayLabel(head.savedAt)})` : "";
-    // What the run read, for pin_moves and correct_import (never shown to the model): each move shown, its first post,
-    // and each quote id with where it points.
-    const keptRead = read.slice(0, kept);
+    // What the run read, for pin_moves and correct_import (never shown to the model): each move shown — its first post,
+    // its place in the batch and the fields its posts stated — the posts it read (its moves' and its insights'), and each
+    // quote id it was given with where it points (every form gives every quote's id).
     const receipt = {
       saves: {
         batch: batch.id,
         moves: keptRead.map((x) => [...x.first]),
-        posts: [...new Set(shown.flatMap((m) => m.links.map((l) => l.post)))],
+        posts: [...new Set([...shown.flatMap((m) => m.links.map((l) => l.post)), ...batch.insights.filter(() => withInsights).map((i) => i.postId)])],
         quotes: Object.fromEntries(keptRead.flatMap((x) => x.refs).map(([id, r]) => [id, [r.postId, r.position, r.quote, r.check, r.from, r.at]])),
       },
     };
@@ -621,7 +670,8 @@ export const readSaves: DesignTool = {
         source: SOURCE,
         now: ctx.now,
         missing,
-        data: { batch: head, moves: shown, routines: routines.slice(0, keptRoutines), insights, next: closeLine(batch.id) },
+        // How to close the batch: on its last page, once every move is read.
+        data: { batch: head, posts, moves: shown, insights, ...(isLast ? next : {}) },
         summary: shown.length ? `Read ${plural(shown.length, "move")} from your saves, ${fresh} new${when}` : `Nothing to fit in from your saves${when}`,
       }),
       receipt,

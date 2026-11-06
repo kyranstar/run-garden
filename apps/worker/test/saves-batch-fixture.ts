@@ -173,3 +173,68 @@ export function longBatchPosts(lead = "LONG", o: { quoted?: boolean } = {}): Sav
     })),
   }));
 }
+
+/**
+ * A TYPICAL extract-6 batch (the budgets review, 2026-11-06): twelve new moves across four routine posts of three, each
+ * move on one post, its reading as extract-6 typically gives one — five quotes of about 100 characters, two use-when and
+ * two skip-when cases, a why — a 28-character name, a 110-character summary and an 80-character purpose; each post's
+ * reading 160 characters; five insights in all, two of them quoted, of three scopes. What a fit-in reads most days.
+ */
+export function typicalBatchPosts(lead = "TYP"): SavedPostSpec[] {
+  const fields = ["name", "dose", "purpose", "useWhen", "why"] as const;
+  const reading = (m: number): Partial<ExtractedMove> => ({
+    summary: longText(`${lead}-summary-${m}`, 110),
+    purpose: longText(`${lead}-purpose-${m}`, 80),
+    dose: { text: "3 sets of 10, slow down", type: "reps", range: [8, 12] },
+    evidence: { name: "stated", dose: "stated", steps: "inferred", purpose: "stated", useWhen: "stated", skipWhen: "inferred" },
+    why: longText(`${lead}-why-${m}`, 110),
+    useWhen: [0, 1].map((k) => ({ text: longText(`${lead}-use-${m}-${k}`, 70), evidence: "stated" as const })),
+    skipWhen: [0, 1].map((k) => ({ text: longText(`${lead}-skip-${m}-${k}`, 70), evidence: "inferred" as const })),
+    quotes: fields.map((field, k) => ({
+      field,
+      text: longText(`${lead}-quote-${m}-${k}`, 100),
+      at: 15 * k + 3,
+      from: k % 2 ? ("transcript" as const) : ("caption" as const),
+      check: k === 3 ? ("in_speech" as const) : ("verified" as const),
+    })),
+  });
+  const insights: NonNullable<SavedPostSpec["insights"]> = [
+    { text: longText(`${lead}-insight-0`, 160, INSIGHT_FILLER), scope: "general", quote: longText(`${lead}-iquote-0`, 80) },
+    { text: longText(`${lead}-insight-1`, 160, INSIGHT_FILLER), scope: "this_routine" },
+    { text: longText(`${lead}-insight-2`, 160, INSIGHT_FILLER), scope: "creator_programme", quote: longText(`${lead}-iquote-2`, 80) },
+    { text: longText(`${lead}-insight-3`, 160, INSIGHT_FILLER), scope: "general" },
+    { text: longText(`${lead}-insight-4`, 160, INSIGHT_FILLER), scope: "general" },
+  ];
+  return [0, 1, 2, 3].map((p) => ({
+    kind: "routine" as const,
+    summary: longText(`${lead}-reading-${p}`, 160),
+    handle: `${lead.toLowerCase()}_coach_${p}`,
+    url: `https://app.test/p/${lead}-${p}`,
+    ...(p < 2 ? { insights: p === 0 ? insights.slice(0, 3) : insights.slice(3) } : {}),
+    moves: [0, 1, 2].map((m) => ({ draft: savedMoveDraft(longText(`${lead} move ${p * 3 + m}`, 28), reading(p * 3 + m)) })),
+  }));
+}
+
+/**
+ * The WIDEST move read_saves may show (the budgets review, 2026-11-06): one new move on three posts (LINKS_MAX), each
+ * post's reading of it at extract-6's widest — eight 200-character quotes, four use-when and four skip-when cases of 160,
+ * a why of 200 — an 80-character name, 160-character summary and purpose, a long link and creator; and five insights of
+ * 200 characters, each quoted at 200.
+ */
+export function widestMovePosts(lead = "WIDE"): SavedPostSpec[] {
+  const [post] = longBatchPosts(lead, { quoted: true });
+  const draft = (post!.moves[0] as { draft: ExtractedMove }).draft;
+  const insights = [0, 1, 2, 3, 4].map((i) => ({
+    text: longText(`${lead}-insight-${i}`, 200, INSIGHT_FILLER),
+    scope: (["general", "this_routine", "creator_programme", "general", "general"] as const)[i]!,
+    quote: longText(`${lead}-iquote-${i}`, 200),
+  }));
+  return [0, 1, 2].map((p) => ({
+    kind: "routine" as const,
+    summary: longText(`${lead}-reading-${p}`, 300),
+    handle: longText(`${lead}-handle-${p}`, 64).replace(/ /g, "_"),
+    url: `https://app.test/${"p".repeat(120)}/${lead}-${p}`,
+    ...(p === 0 ? { insights } : {}),
+    moves: [{ draft }],
+  }));
+}

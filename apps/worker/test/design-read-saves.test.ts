@@ -22,7 +22,7 @@ import { isToolErr, type ToolContext, type ToolErr } from "../src/services/desig
 import { savedPostId } from "../src/services/saves-ledger.js";
 import { matchPost } from "../src/services/saves-match.js";
 import { assembleBatch, saveBatch } from "../src/services/saves-batches.js";
-import { longBatchPosts, savedMoveDraft, seedSavedBatch, type SavedPostSpec } from "./saves-batch-fixture.js";
+import { longBatchPosts, savedMoveDraft, seedSavedBatch, typicalBatchPosts, widestMovePosts, type SavedPostSpec } from "./saves-batch-fixture.js";
 import { isWrite, makeTestDb, makeTestUser } from "./helpers.js";
 
 /** Sat 24 Oct 2026, 11:00 in Los Angeles (PDT, UTC-7). */
@@ -62,11 +62,14 @@ async function ok(input: unknown = {}, user = userId): Promise<ReadOk & { data: 
 }
 
 /** A listed move as it read before phase 3 (its evidence, dose and corrections, and each link's post, match and reading,
- * are the phase-3 tests' below). */
+ * are the phase-3 tests' below) — REBASED 2026-11-06 (the budgets review): no like and not pinned are left out, and a
+ * link's post (its address, creator and reading) is the page's `posts`; only a move's first link carries its note. */
 const oldShape = (m: any) => {
   const { n: _n, dose: _dose, corrections: _corrections, ...rest } = m;
-  return { ...rest, links: rest.links.map((l: any) => ({ url: l.url, creator: l.creator, note: l.note })) };
+  return { like: null, pinned: false, ...rest, links: rest.links.map((l: any) => ({ post: l.post, ...(l.note !== undefined ? { note: l.note } : {}) })) };
 };
+/** A page's post by id. */
+const postOf = (r: { data: any }, id: string) => r.data.posts.find((p: any) => p.id === id);
 
 const A = savedMoveDraft("Zorbex hip circle");
 const B = savedMoveDraft("Zorbex neck nod", { regions: ["neck"], summary: "A small nod, chin tucked." });
@@ -130,35 +133,36 @@ describe("read_saves", () => {
   });
 
   it("a saved batch: its moves new first, each named, marked where a model wrote it, pinned, grouped, with its posts — creators marked", async () => {
-    const { batchId, moveIds } = await seedSavedBatch(db, userId, { savedAt: daysAgo(2), posts: twoPosts(), pinned: ["gobletSquat"] });
+    const { batchId, postIds, moveIds } = await seedSavedBatch(db, userId, { savedAt: daysAgo(2), posts: twoPosts(), pinned: ["gobletSquat"] });
     const [a, , b] = moveIds[0]!;
+    const [p0, p1] = postIds;
     const r = await ok({});
     expect(r.provenance!.source).toBe("the athlete's saves");
     // Saved Thu 22 Oct, 10:00 in Los Angeles.
     expect(r.data.batch).toEqual({ id: batchId, savedAt: "2026-10-22" });
     expect(r.data.moves.map(oldShape)).toEqual([
       {
-        id: a, name: U("Zorbex hip circle"), summary: U("Zorbex hip circle, slow and even."), new: true, choice: "coach", like: null, pinned: false, groups: "hip", posts: 2,
-        links: [
-          // Each with its note: the post's reading of what the move is for (spec §17), marked.
-          { url: expect.stringMatching(/^https:\/\/example\.com\/p\//), creator: U("coach_zero"), note: U("mobility") },
-          // No handle: the creator's name.
-          { url: expect.stringMatching(/^https:\/\/example\.com\/p\//), creator: U("Coach One"), note: U("mobility") },
-        ],
-        fromPost: U("Three moves for the hips, slow."),
+        id: a, name: U("Zorbex hip circle"), new: true, choice: "coach", like: null, pinned: false, groups: "hip", posts: 2,
+        // Its first link with its note: the post's reading of what the move is for (spec §17), marked; a later link by
+        // its post (the budgets review, 2026-11-06).
+        links: [{ post: p0, note: U("mobility") }, { post: p1 }],
       },
-      {
-        id: b, name: U("Zorbex neck nod"), summary: U("A small nod, chin tucked."), new: true, choice: "coach", like: null, pinned: false, groups: "neck", posts: 1,
-        links: [{ url: expect.any(String), creator: U("coach_zero"), note: U("mobility") }], fromPost: U("Three moves for the hips, slow."),
-      },
+      { id: b, name: U("Zorbex neck nod"), new: true, choice: "coach", like: null, pinned: false, groups: "neck", posts: 1, links: [{ post: p0, note: U("mobility") }] },
       {
         // The library's own words: code, not marked.
-        id: "gobletSquat", name: GOBLET.name, summary: GOBLET.text.summary, new: false, choice: "coach", like: null, pinned: true, groups: moveGroup(GOBLET), posts: 1,
-        links: [{ url: expect.any(String), creator: U("coach_zero"), note: U("mobility") }], fromPost: U("Three moves for the hips, slow."),
+        id: "gobletSquat", name: GOBLET.name, new: false, choice: "coach", like: null, pinned: true, groups: moveGroup(GOBLET), posts: 1,
+        links: [{ post: p0, note: U("mobility") }],
       },
     ]);
-    // The routine post, its moves in the post's order; the single move's post is no routine.
-    expect(r.data.routines).toEqual([{ post: U("Three moves for the hips, slow."), order: [a, "gobletSquat", b] }]);
+    // Each post the page names, once: its address, its creator (no handle: the name) and its reading, marked — and a
+    // routine's moves in the post's order, by their place in the batch; the single move's post is no routine.
+    expect(r.data.posts).toEqual([
+      { id: p0, url: expect.stringMatching(/^https:\/\/example\.com\/p\//), creator: U("coach_zero"), reading: U("Three moves for the hips, slow."), order: [1, 3, 2] },
+      { id: p1, url: expect.stringMatching(/^https:\/\/example\.com\/p\//), creator: U("Coach One"), reading: U("One hip circle, done well.") },
+    ]);
+    // A move's summary is the full form's: every word.
+    const whole = await ok({ full: true });
+    expect(whole.data.moves.map((m: any) => m.summary)).toEqual([U("Zorbex hip circle, slow and even."), U("A small nod, chin tucked."), GOBLET.text.summary]);
     expect(r.summary).toBe("Read 3 moves from your saves, 2 new (saved Thu 22 Oct)");
     // How the coach closes it (coach-context audit I2): a pins card naming it, approved.
     expect(r.data.next).toBe(`pin_moves({ batchId: ${JSON.stringify(batchId)} }) closes this batch once approved — with the moves you pin, or none`);
@@ -181,8 +185,8 @@ describe("read_saves", () => {
     expect(r.data.batch.id).toBe(batchId);
     const hip = EXERCISES.find((e) => e.name === "90/90 hip switches")!;
     expect(r.data.moves.map((m: any) => [m.new, m.new ? m.name : m.id])).toEqual([[true, U("Zorbex quad shuffle")], [false, hip.id]]);
-    expect(oldShape(r.data.moves[0]).links).toEqual([{ url: "https://example.com/p/real", creator: U("coach_real"), note: U("mobility") }]);
-    expect(r.data.routines).toEqual([{ post: U("Hips, then the neck."), order: [r.data.moves[0].id, hip.id] }]);
+    expect(oldShape(r.data.moves[0]).links).toEqual([{ post: id, note: U("mobility") }]);
+    expect(r.data.posts).toEqual([{ id, url: "https://example.com/p/real", creator: U("coach_real"), reading: U("Hips, then the neck."), order: [1, 2] }]);
   });
 
   it("a link the owner removed is left out, and a move only it named is not listed", async () => {
@@ -191,7 +195,7 @@ describe("read_saves", () => {
     const { moveIds } = await seedSavedBatch(db, userId, { savedAt: daysAgo(1), posts });
     const r = await ok({});
     expect(r.data.moves.map((m: any) => m.id)).toEqual([moveIds[0]![0], "gobletSquat"]);
-    expect(r.data.routines[0].order).toEqual([moveIds[0]![0], "gobletSquat"]);
+    expect(r.data.posts[0].order).toEqual([1, 2]);
   });
 
   it("the newest of the waiting batches; a batchId of the athlete's reads that one", async () => {
@@ -257,7 +261,7 @@ describe("read_saves", () => {
       offset = Number(next);
     }
     expect(whole).toEqual(drafts.map((d) => d.draft.name));
-    expect(last.missing.filter((m: string) => m.includes("offset"))).toEqual([]);
+    expect(last.missing.filter((m: string) => m.includes("pass offset"))).toEqual([]);
     // A page in the middle: four from the fifth.
     expect((await ok({ offset: 4, limit: 4 })).data.moves.map((m: any) => m.name.text)).toEqual(drafts.slice(4, 8).map((d) => d.draft.name));
     // Past the end: refused, saying how many there are; two statements still.
@@ -278,18 +282,19 @@ describe("read_saves", () => {
     await db.update(pm).set({ status: "merged", mergedInto: a! }).where(and(eq(pm.userId, userId), eq(pm.id, c!)));
     const r = await ok({});
     expect(r.data.moves.map((m: any) => m.id)).toEqual([b, "gobletSquat"]);
-    expect(r.data.routines).toEqual([{ post: expect.anything(), order: ["gobletSquat", b] }]);
+    expect(r.data.moves.map((m: any) => [m.n, m.id])).toEqual([[1, b], [2, "gobletSquat"]]);
+    expect(r.data.posts).toEqual([expect.objectContaining({ order: [2, 1] })]);
     expect(r.missing).toContain(`1 move of this batch archived since, not offered: ${a}`);
     expect(JSON.stringify(r.data)).not.toContain(a!);
   });
 
-  it("routines: at most 5 a read, the rest counted as the cap's, not the room's", async () => {
+  it("routines: each routine post the page's moves name, once, its moves by their place in the batch — REBASED 2026-11-06 (the budgets review): no cap of its own, the posts ride with their moves", async () => {
     const posts: SavedPostSpec[] = Array.from({ length: 7 }, (_, i) => ({ kind: "routine", summary: `Routine ${i}.`, moves: [{ library: "gobletSquat" }, { library: "deadBug" }] }));
     await seedSavedBatch(db, userId, { savedAt: daysAgo(1), posts });
     const r = await ok({});
-    expect(r.data.routines.map((x: any) => x.post.text)).toEqual(["Routine 0.", "Routine 1.", "Routine 2.", "Routine 3.", "Routine 4."]);
-    expect(r.missing).toContain("2 more routines, at most 5 a read");
-    expect(r.missing!.some((m) => m.includes("for room"))).toBe(false);
+    // The goblet squat's posts are its first three (LINKS_MAX); the dead bug's the same.
+    expect(r.data.posts.map((x: any) => [x.reading.text, x.order])).toEqual([["Routine 0.", [1, 2]], ["Routine 1.", [1, 2]], ["Routine 2.", [1, 2]]]);
+    expect(r.missing!.some((m) => m.includes("routine"))).toBe(false);
   });
 
   it("twelve moves at their longest stay within the answer's budget, and every marked text has its marker first", async () => {
@@ -307,7 +312,8 @@ describe("read_saves", () => {
     expect(shown).toBeGreaterThan(2);
     if (shown < 12) expect(r.missing).toContain(`${plural(12 - shown, "more move", "more moves")} — pass offset: ${shown}`);
     expect(r.data.insights).toHaveLength(5);
-    for (const lead of ["LONG-reading", "LONG-handle", "LONG move", "LONG-summary", "LONG-purpose", "LONG-insight"]) {
+    // A move's summary is the full form's (the budgets review, 2026-11-06).
+    for (const lead of ["LONG-reading", "LONG-handle", "LONG move", "LONG-purpose", "LONG-insight"]) {
       const at = [...text.matchAll(new RegExp(lead, "g"))];
       expect(at.length, lead).toBeGreaterThan(0);
       for (const m of at) expect(text.slice(m.index! - 26, m.index), lead).toBe('{"untrusted":true,"text":"');
@@ -335,7 +341,8 @@ describe("read_saves", () => {
     const quiet = savedMoveDraft("Zorbex quiet move", { purpose: "" });
     await seedSavedBatch(db, userId, { savedAt: daysAgo(1), posts: [{ kind: "single_move", moves: [{ draft: quiet }] }] });
     const r = await ok({});
-    expect(oldShape(r.data.moves[0]).links).toEqual([{ url: expect.any(String), creator: U("coach_0"), note: null }]);
+    expect(oldShape(r.data.moves[0]).links).toEqual([{ post: expect.any(String), note: null }]);
+    expect(r.data.posts[0].creator).toEqual(U("coach_0"));
   });
 
   it("in a step, the athlete is the step's shared read: the batch and its page's evidence are two statements more", async () => {
@@ -370,7 +377,7 @@ describe("read_saves", () => {
     expect(count).toBe(3);
     const data = (r as ReadOk & { data: any }).data;
     expect(data.batch).toEqual({ id: old.batchId, savedAt: "2026-09-24" });
-    expect(data.moves.map((m: any) => [m.id, m.new, m.choice, m.like])).toEqual([
+    expect(data.moves.map((m: any) => [m.id, m.new, m.choice, m.like ?? null])).toEqual([
       [a, true, "include", null],
       [b, true, "skip", null],
       // A saved move's name is a model's reading of a post: marked.
@@ -389,7 +396,7 @@ describe("read_saves", () => {
     await db.update(schema.personalMoves).set({ status: "merged", mergedInto: "gobletSquat" }).where(and(eq(schema.personalMoves.userId, userId), eq(schema.personalMoves.id, moveIds[0]![0]!)));
     const r = await ok({});
     expect(r.data.moves.map((m: any) => [m.id, m.new, m.posts])).toEqual([["gobletSquat", false, 1]]);
-    expect(r.data.routines[0].order).toEqual(["gobletSquat", "gobletSquat"]);
+    expect(r.data.posts[0].order).toEqual([1, 1]);
   });
 });
 
@@ -433,9 +440,27 @@ describe("read_saves: each claim's evidence (import trail phase 3, §8.1)", () =
     expect(m2.dose.from).toBe("default");
     expect(m3.dose).toEqual({ record: expect.stringMatching(/reps|s/), from: "library" });
     expect(m1.links.map((l: any) => [l.post, l.at])).toEqual([[postIds[0], 0], [postIds[1], 1]]);
-    // No match step on its trail (seeded directly): only how it came out.
-    expect(m1.links[0].match).toEqual({ as: "new" });
+    // No match step on its trail (seeded directly): no match word (how it came out is its id's and `new`'s).
+    expect(m1.links[0].match).toBeUndefined();
+    // The compact form (the budgets review, 2026-11-06): what it stated and inferred, the post's dose words, its own
+    // skip-when cases (none stated here), and each quote's id, field, check and head — the rest is full: true's.
     expect(m1.links[0].reading).toEqual({
+      confidence: "high",
+      stated: ["name", "dose", "purpose", "useWhen"],
+      inferred: ["steps"],
+      dose: U("8-10 reps"),
+      quotes: [
+        ["q1.1", "purpose", "said", U("if your hips get stiff after easy runs")],
+        ["q1.2", "useWhen", "heard", U("do it right after the run")],
+      ],
+    });
+    // A later post's reading: its quotes' ids, fields and checks, going on from the first's.
+    expect(m1.links[1].reading).toEqual({ stated: ["name", "dose", "purpose", "useWhen"], inferred: ["steps"], quotes: [["q1.3", "purpose", "said"], ["q1.4", "useWhen", "heard"]] });
+    expect(m2.links[0].reading.quotes).toEqual([["q2.1", "name", "in the caption", U("the calf rock")]]);
+    expect(m1.corrections).toBeUndefined();
+    // Every word: full: true.
+    const whole = await ok({ full: true });
+    expect(whole.data.moves[0].links[0].reading).toEqual({
       confidence: "high",
       stated: ["name", "dose", "purpose", "useWhen"],
       inferred: ["steps"],
@@ -448,11 +473,9 @@ describe("read_saves: each claim's evidence (import trail phase 3, §8.1)", () =
         { id: "q1.2", field: "useWhen", text: U("do it right after the run"), check: "heard", at: "0:12" },
       ],
     });
-    // The second post's reading of the same move: its quotes go on from the first's.
-    expect(m1.links[1].reading.quotes.map((q: any) => q.id)).toEqual(["q1.3", "q1.4"]);
-    expect(m2.links[0].reading.quotes).toEqual([{ id: "q2.1", field: "name", text: U("the calf rock"), check: "in the caption" }]);
-    expect(m3.links[0].match.as).toBe("library");
-    expect(m1.corrections).toBeUndefined();
+    expect(whole.data.moves[0].links[1].reading.quotes.map((q: any) => q.id)).toEqual(["q1.3", "q1.4"]);
+    expect(whole.data.moves[1].links[0].reading.quotes).toEqual([{ id: "q2.1", field: "name", text: U("the calf rock"), check: "in the caption" }]);
+    expect(m3.links[0].match).toBeUndefined();
   });
 
   it("the match as its trail recorded it: by name, by the judge, or new, with its confidence and check", async () => {
@@ -462,8 +485,8 @@ describe("read_saves: each claim's evidence (import trail phase 3, §8.1)", () =
       detail: { moves: [{ position: 0, by: "new", confidence: "high" }, { position: 1, by: "name", confidence: "medium" }] }, rebuilt: false, at: daysAgo(2),
     });
     const r = await ok({});
-    expect(r.data.moves[0].links[0].match).toEqual({ as: "new", by: "new", confidence: "high" });
-    expect(r.data.moves[2].links[0].match).toEqual({ as: "library", by: "name", confidence: "medium" });
+    expect(r.data.moves[0].links[0].match).toEqual({ by: "new", confidence: "high" });
+    expect(r.data.moves[2].links[0].match).toEqual({ by: "name", confidence: "medium" });
   });
 
   it("corrections so far show on their move, newest first, three at most — and a corrected dose says so", async () => {
@@ -507,7 +530,13 @@ describe("read_saves: each claim's evidence (import trail phase 3, §8.1)", () =
     expect(r.receipt).toEqual({
       saves: {
         batch: batchId,
-        moves: [[moveIds[0]![0], postIds[0], 0], [moveIds[1]![0], postIds[1], 0], ["gobletSquat", postIds[0], 1]],
+        // REBASED 2026-11-06 (the fix pass): each with its place in the batch (a quote cite must be its line's move's)
+        // and the fields its posts stated (stated:<field> cites the reader's report of one).
+        moves: [
+          [moveIds[0]![0], postIds[0], 0, 1, ["name", "dose", "purpose", "useWhen"]],
+          [moveIds[1]![0], postIds[1], 0, 2, ["name"]],
+          ["gobletSquat", postIds[0], 1, 3, ["name", "steps"]],
+        ],
         // Every post a shown move's links named: when the run read each (pin_moves keeps it for the trail).
         posts: [postIds[0], postIds[1]],
         quotes: {
@@ -525,7 +554,7 @@ describe("read_saves: each claim's evidence (import trail phase 3, §8.1)", () =
     await seedSavedBatch(db, userId, { savedAt: daysAgo(1), posts: evidencePosts() });
     const r = await ok({ offset: 1, limit: 1 });
     expect(r.data.moves[0].n).toBe(2);
-    expect(r.data.moves[0].links[0].reading.quotes[0].id).toBe("q2.1");
+    expect(r.data.moves[0].links[0].reading.quotes[0][0]).toBe("q2.1");
     expect(Object.keys((r.receipt as any).saves.quotes)).toEqual(["q2.1"]);
   });
 
@@ -542,5 +571,91 @@ describe("read_saves: each claim's evidence (import trail phase 3, §8.1)", () =
     expect(shown).toBeGreaterThanOrEqual(1);
     expect(shown).toBeLessThan(12);
     expect(r.missing).toContain(`${plural(12 - shown, "more move", "more moves")} — pass offset: ${shown}`);
+  });
+});
+
+describe("read_saves: pages a fit can read (the budgets review, 2026-11-06)", () => {
+  /** What the model is given of an answer: never the line nor the receipt (coach-runs.ts `okResult`). */
+  const forModel = (r: ReadOk & { data: any }) => {
+    const { summary: _s, receipt: _r, ...rest } = r;
+    return JSON.stringify(rest);
+  };
+  const bytes = (s: string) => new TextEncoder().encode(s).length;
+  /** Every page of the batch, as a fit reads it: from offset 0 on, each at the offset the last one's missing gave. */
+  async function everyPage(): Promise<Array<ReadOk & { data: any }>> {
+    const pages: Array<ReadOk & { data: any }> = [];
+    let offset: number | undefined;
+    for (let i = 0; i < 12; i++) {
+      const r = await ok(offset === undefined ? {} : { offset });
+      pages.push(r);
+      const next = r.missing!.map((m: string) => /pass offset: (\d+)/.exec(m)?.[1]).find(Boolean);
+      if (!next) return pages;
+      offset = Number(next);
+    }
+    throw new Error("the pages never ended");
+  }
+
+  it("a typical extract-6 batch of twelve moves is covered in three reads at most, each within the budget", async () => {
+    await seedSavedBatch(db, userId, { savedAt: daysAgo(1), posts: typicalBatchPosts() });
+    const pages = await everyPage();
+    expect(pages.map((p) => p.data.moves.length).reduce((a, b) => a + b, 0)).toBe(12);
+    expect(new Set(pages.flatMap((p) => p.data.moves.map((m: any) => m.n)))).toEqual(new Set([1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12]));
+    expect(pages.length).toBeLessThanOrEqual(3);
+    for (const p of pages) expect(bytes(forModel(p))).toBeLessThanOrEqual(RESULT_BUDGET_BYTES);
+    // Every quote it read is one it was shown, and every one shown is in the receipt.
+    for (const p of pages) {
+      const sent = [...forModel(p).matchAll(/"(q\d+\.\d+)"/g)].map((m) => m[1]);
+      expect(Object.keys((p.receipt as any).saves.quotes).sort()).toEqual([...new Set(sent)].sort());
+    }
+  });
+
+  it("the insights come on the first page only — a later page says where they are", async () => {
+    await seedSavedBatch(db, userId, { savedAt: daysAgo(1), posts: typicalBatchPosts() });
+    const [first, ...rest] = await everyPage();
+    expect(first!.data.insights).toHaveLength(5);
+    expect(rest.length).toBeGreaterThan(0);
+    for (const p of rest) {
+      expect(p.data.insights).toEqual([]);
+      expect(p.missing).toContain("insights: on the first page (offset 0, not full)");
+    }
+  });
+
+  it("the widest move — three posts, each reading at extract-6's widest — with five quoted insights stays within the budget, and says what it shortened", async () => {
+    await seedSavedBatch(db, userId, { savedAt: daysAgo(1), posts: widestMovePosts() });
+    const r = await ok({});
+    expect(r.data.moves).toHaveLength(1);
+    expect(r.data.insights).toHaveLength(5);
+    const text = forModel(r);
+    expect(bytes(text)).toBeLessThanOrEqual(RESULT_BUDGET_BYTES);
+    const m = r.data.moves[0];
+    expect(m.links).toHaveLength(3);
+    // Every link's quotes keep their ids and checks; the receipt holds just those.
+    // A quote in the compact form: [id, field, check] — and its head on the move's first post.
+    const ids = m.links.flatMap((l: any) => l.reading.quotes.map((q: any) => q[0]));
+    expect(ids).toHaveLength(24);
+    for (const l of m.links) for (const q of l.reading.quotes) expect(q[2]).toEqual(expect.any(String));
+    expect(Object.keys((r.receipt as any).saves.quotes).sort()).toEqual([...ids].sort());
+    // Every marked text still has its marker first.
+    for (const lead of ["WIDE-reading", "WIDE-handle", "WIDE move", "WIDE-quote", "WIDE-insight", "WIDE-iquote"]) {
+      const at = [...text.matchAll(new RegExp(lead, "g"))];
+      expect(at.length, lead).toBeGreaterThan(0);
+      for (const x of at) expect(text.slice(x.index! - 26, x.index), lead).toBe('{"untrusted":true,"text":"');
+    }
+    // Whole words are one call away.
+    expect(r.missing!.some((l: string) => l.includes("full: true"))).toBe(true);
+  });
+
+  it("full: true reads a move's whole words — every quote whole, no insights — within the budget", async () => {
+    await seedSavedBatch(db, userId, { savedAt: daysAgo(1), posts: typicalBatchPosts() });
+    const r = await ok({ offset: 4, limit: 1, full: true });
+    expect(r.data.moves.map((m: any) => m.n)).toEqual([5]);
+    const quotes = r.data.moves[0].links[0].reading.quotes;
+    expect(quotes).toHaveLength(5);
+    for (const q of quotes) {
+      expect(q.text.text).toHaveLength(100);
+      expect(q.cut).toBeUndefined();
+    }
+    expect(r.data.insights).toEqual([]);
+    expect(bytes(forModel(r))).toBeLessThanOrEqual(RESULT_BUDGET_BYTES);
   });
 });
