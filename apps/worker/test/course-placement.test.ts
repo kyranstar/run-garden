@@ -41,8 +41,9 @@ import type { Db } from "../src/services/db.js";
 import { applyMove } from "../src/services/jobs.js";
 import { removeFromPlan } from "../src/services/plan-mutations.js";
 import { previewPlacement, placeSlots, placeSlotsForAllPrograms, placeSlotsWithin, retractSlot, slotId } from "../src/services/program-slots.js";
+import { bookedSeconds } from "../src/services/session-build.js";
 import { isWrite, makeTestDb, makeTestUser } from "./helpers.js";
-import { INTRO_COURSE, INTRO_FIRST_SECONDS, INTRO_LATER_SECONDS } from "./course-fixture.js";
+import { INTRO_COURSE, INTRO_FIRST_BOOKED, INTRO_FIRST_SECONDS, INTRO_LATER_BOOKED, INTRO_LATER_SECONDS } from "./course-fixture.js";
 
 const { plannedWorkouts, programs, accountState, calendarEventSuppressions } = schema;
 
@@ -135,6 +136,17 @@ async function writeSession(workoutId: string, title: string): Promise<void> {
     .where(eq(plannedWorkouts.id, workoutId));
 }
 
+/** A workout the coach made for the plan (Task 8's `planId`): filed under it, and not one of the course's own sessions. */
+async function fileWorkout(planId: string, date: string): Promise<string> {
+  const id = newId();
+  await db.insert(plannedWorkouts).values({
+    id, userId, planId, sourceWorkoutId: id, title: "Extra", category: "yoga", sport: "yoga", originalPlanDate: date, lastVerifiedCorosDate: "",
+    effectiveDate: date, effectiveTime: "12:00", sourceContentFingerprint: "studio", fallbackEstimatedDurationSeconds: 600, calendarBlockDurationSeconds: 600,
+    origin: "studio", contentState: "outline", completionState: "scheduled", createdAt: NOW, updatedAt: NOW,
+  });
+  return id;
+}
+
 const complete = (workoutId: string) => db.update(plannedWorkouts).set({ completionState: "completed", resolutionDate: MON }).where(eq(plannedWorkouts.id, workoutId));
 
 describe("placing a course ahead", () => {
@@ -157,7 +169,7 @@ describe("placing a course ahead", () => {
         sport: "yoga",
         effectiveTime: "19:30",
         fallbackEstimatedDurationSeconds: INTRO_FIRST_SECONDS,
-        calendarBlockDurationSeconds: INTRO_FIRST_SECONDS,
+        calendarBlockDurationSeconds: INTRO_FIRST_BOOKED,
         corosSyncState: "calendar_only",
         calendarSyncState: "not_created",
         completionState: "scheduled",
@@ -212,7 +224,13 @@ describe("placing a course ahead", () => {
     await placeSlots(db, userId, p, MON, prefs, NOW);
     const seconds = deriveDoc(COURSES[course]!.sessionDoc(1, { ease: false }), EXERCISES).estimatedMinutes * 60;
     expect(await liveDates(p)).toEqual([day(0, 0), day(0, 4), day(1, 0), day(1, 4)]);
-    expect(await row(slotId(p, MON))).toMatchObject({ workoutDoc: null, fallbackEstimatedDurationSeconds: seconds, effectiveTime: "19:30" });
+    expect(await row(slotId(p, MON))).toMatchObject({ workoutDoc: null, fallbackEstimatedDurationSeconds: seconds, calendarBlockDurationSeconds: bookedSeconds(seconds), effectiveTime: "19:30" });
+  });
+
+  it("only a course books the rounded block: an adaptive programme's slot keeps its raw length", async () => {
+    const p = await seedProgramme({ weeklyGoal: 1, preferredDays: [2], defaultMinutes: 32, placementWeeksAhead: 1 });
+    await placeSlots(db, userId, p, MON, prefs, NOW);
+    expect(await row(slotId(p, day(0, 2)))).toMatchObject({ fallbackEstimatedDurationSeconds: 1920, calendarBlockDurationSeconds: 1920 });
   });
 });
 
@@ -238,7 +256,7 @@ describe("an outline's length comes from the sessions actually done", () => {
     await complete(slotId(p, day(0, 4)));
     await placeSlots(db, userId, p, MON, prefs, NOW);
     for (const date of [day(1, 0), day(1, 4)]) {
-      expect(await row(slotId(p, date))).toMatchObject({ fallbackEstimatedDurationSeconds: INTRO_LATER_SECONDS, calendarBlockDurationSeconds: INTRO_LATER_SECONDS });
+      expect(await row(slotId(p, date))).toMatchObject({ fallbackEstimatedDurationSeconds: INTRO_LATER_SECONDS, calendarBlockDurationSeconds: INTRO_LATER_BOOKED });
     }
   });
 
@@ -338,6 +356,9 @@ describe("a written session", () => {
     await setPause(p, day(1, 4));
     expect((await placeSlots(db, userId, p, MON, prefs, NOW)).archived).not.toContain(written);
     expect((await row(written)).archivedAt).toBeNull();
+    statements.length = 0;
+    expect(await placeSlots(db, userId, p, MON, prefs, NOW)).toEqual(NOTHING);
+    expect(writes()).toEqual([]);
 
     await db.update(programs).set({ status: "retired", pausedUntil: null }).where(eq(programs.id, p));
     expect((await placeSlots(db, userId, p, MON, prefs, NOW)).archived).not.toContain(written);
@@ -356,20 +377,51 @@ describe("a written session", () => {
     expect(await db.select().from(calendarEventSuppressions).where(eq(calendarEventSuppressions.workoutId, id))).toEqual([]);
   });
 
-  it("a workout the coach filed under the plan on another day isn't taken as a slot", async () => {
+  it("a session started before the course existed and re-pointed to it holds its day too, and counts toward its week", async () => {
+    // Not a slot's id, and `course` by its fingerprint (Task 11 sets it): week 1's Monday is taken, so only Friday is placed.
+    const p = await seedCourse({ placementWeeksAhead: 1 });
+    const repointed = await fileWorkout(p, day(1, 0));
+    await db.update(plannedWorkouts).set({ sourceContentFingerprint: "course" }).where(eq(plannedWorkouts.id, repointed));
+
+    const res = await placeSlots(db, userId, p, MON, prefs, NOW);
+    expect(sorted(res.placed)).toEqual(ids(p, [day(0, 0), day(0, 4), day(1, 4)]));
+    expect((await row(repointed)).archivedAt).toBeNull();
+  });
+});
+
+describe("a workout the coach filed under the plan", () => {
+  it("retracts nothing and counts toward no week", async () => {
     const p = await seedCourse({ placementWeeksAhead: 1 });
     await placeSlots(db, userId, p, MON, prefs, NOW);
-    const filed = newId();
-    await db.insert(plannedWorkouts).values({
-      id: filed, userId, planId: p, sourceWorkoutId: filed, title: "Extra", category: "yoga", sport: "yoga", originalPlanDate: day(1, 2), lastVerifiedCorosDate: "",
-      effectiveDate: day(1, 2), effectiveTime: "12:00", sourceContentFingerprint: "studio", fallbackEstimatedDurationSeconds: 600, calendarBlockDurationSeconds: 600,
-      origin: "studio", contentState: "outline", completionState: "scheduled", createdAt: NOW, updatedAt: NOW,
-    });
-    const res = await placeSlots(db, userId, p, MON, prefs, NOW);
+    const filed = await fileWorkout(p, day(1, 2));
+    statements.length = 0;
+
+    expect(await placeSlots(db, userId, p, MON, prefs, NOW)).toEqual(NOTHING);
+    expect(writes()).toEqual([]);
     expect(await row(filed)).toMatchObject({ archivedAt: null, title: "Extra", effectiveDate: day(1, 2) });
-    // It's one of the plan's sessions that week, so by rule 1 it counts toward the week's two: the last outline makes way.
-    expect(res.archived).toEqual([slotId(p, day(1, 4))]);
-    expect(res.placed).toEqual([]);
+    expect(await liveDates(p)).toEqual([day(0, 0), day(0, 4), day(1, 0), day(1, 2), day(1, 4)]);
+  });
+
+  it("doesn't hold a course's own day: the session is still placed beside it", async () => {
+    const p = await seedCourse({ placementWeeksAhead: 1 });
+    const filed = await fileWorkout(p, day(1, 0));
+    const res = await placeSlots(db, userId, p, MON, prefs, NOW);
+    expect(sorted(res.placed)).toEqual(ids(p, [day(0, 0), day(0, 4), day(1, 0), day(1, 4)]));
+    expect(await row(filed)).toMatchObject({ archivedAt: null, effectiveTime: "12:00" });
+  });
+
+  it("a pause or a stop leaves it alone", async () => {
+    const p = await seedCourse({ placementWeeksAhead: 1 });
+    await placeSlots(db, userId, p, MON, prefs, NOW);
+    const filed = await fileWorkout(p, day(1, 2));
+
+    await setPause(p, day(1, 4));
+    await placeSlots(db, userId, p, MON, prefs, NOW);
+    expect((await row(filed)).archivedAt).toBeNull();
+
+    await db.update(programs).set({ status: "retired", pausedUntil: null }).where(eq(programs.id, p));
+    await placeSlots(db, userId, p, MON, prefs, NOW);
+    expect((await row(filed)).archivedAt).toBeNull();
   });
 });
 
@@ -409,7 +461,7 @@ describe("a pause", () => {
     await setPause(p, null);
     const res = await placeSlots(db, userId, p, MON, prefs, NOW);
     expect(sorted(res.placed)).toEqual(ids(p, [day(0, 4), day(1, 0), day(1, 4)]));
-    expect(await row(friday)).toMatchObject({ archivedAt: null, archiveReason: null, effectiveTime: "19:30" });
+    expect(await row(friday)).toMatchObject({ archivedAt: null, archiveReason: null, effectiveTime: "19:30", calendarBlockDurationSeconds: INTRO_FIRST_BOOKED });
     expect(await db.select().from(calendarEventSuppressions).where(eq(calendarEventSuppressions.workoutId, friday))).toEqual([]);
   });
 
@@ -571,6 +623,45 @@ describe("a course whose definition is gone", () => {
     expect(said).not.toContain("A private name");
     expect(said).not.toContain("an-old-course");
     log.mockRestore();
+  });
+
+  it("retired, it needs no definition: its flexible outlines come off through goal 0, and it stops logging", async () => {
+    const log = vi.spyOn(console, "error").mockImplementation(() => undefined);
+    const p = await seedCourse({ placementWeeksAhead: 1 });
+    await placeSlots(db, userId, p, MON, prefs, NOW);
+    const today = await row(slotId(p, MON));
+    const [stored] = await db.select().from(programs).where(eq(programs.id, p));
+    await db
+      .update(programs)
+      .set({ status: "retired", config: courseConfigSchema.parse({ ...stored!.config, course: "an-old-course" }) })
+      .where(eq(programs.id, p));
+
+    const res = await placeSlots(db, userId, p, MON, prefs, NOW);
+    expect(sorted(res.archived)).toEqual(ids(p, [day(0, 4), day(1, 0), day(1, 4)]));
+    expect(res.placed).toEqual([]);
+    expect(await row(slotId(p, day(1, 4)))).toMatchObject({ archiveReason: "program_replaced" });
+    // Today's outline is fixed, and says what it said: there's no definition to say anything else.
+    expect(await row(slotId(p, MON))).toEqual(today);
+
+    // Settled: the restore check, the plan and its rows. No count of sessions, and the hourly pass no longer visits.
+    statements.length = 0;
+    expect(await placeSlotsWithin(db, userId, p, MON, prefs, NOW, 45)).toEqual({ placed: [], archived: [], more: false, spent: 3 });
+    expect(statements).toHaveLength(3);
+    expect(await placeSlotsForAllPrograms(db, new Date(NOW))).toEqual({ programs: 0, placed: 0, archived: 0, failed: 0 });
+    expect(log).not.toHaveBeenCalled();
+    log.mockRestore();
+  });
+
+  it("retired, the hourly pass visits it, retracts its outlines and counts no failure", async () => {
+    const p = await seedCourse({ placementWeeksAhead: 1 });
+    await placeSlots(db, userId, p, MON, prefs, NOW);
+    const [stored] = await db.select().from(programs).where(eq(programs.id, p));
+    await db
+      .update(programs)
+      .set({ status: "retired", config: courseConfigSchema.parse({ ...stored!.config, course: "an-old-course" }) })
+      .where(eq(programs.id, p));
+    expect(await placeSlotsForAllPrograms(db, new Date(NOW))).toEqual({ programs: 1, placed: 0, archived: 3, failed: 0 });
+    expect(await liveDates(p)).toEqual([MON]);
   });
 });
 

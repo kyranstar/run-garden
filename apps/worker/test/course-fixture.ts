@@ -7,14 +7,17 @@
  *     return withIntroCourse(await importOriginal<typeof import("@rg/workout")>());
  *   });
  *
- * Its length by hand: `legsUp`'s hold plus 15 s of transition, rounded to the minute. Sessions 1 and 2 hold 600 s, so 10
- * minutes; session 3 on hold 1,200 s, so 20. Easing halves the hold.
+ * Its length by hand: `legsUp`'s hold plus 15 s of transition, rounded to the minute. Sessions 1 and 2 hold 660 s, so 11
+ * minutes; session 3 on hold 1,320 s, so 22. Easing halves the hold. Neither is a whole five minutes on purpose: the
+ * calendar books them rounded up, 900 s and 1,500 s.
  */
 import type { WorkoutDoc } from "@rg/domain";
 import type { CourseDefinition } from "@rg/workout";
 
-export const INTRO_FIRST_SECONDS = 600;
-export const INTRO_LATER_SECONDS = 1200;
+export const INTRO_FIRST_SECONDS = 660;
+export const INTRO_FIRST_BOOKED = 900;
+export const INTRO_LATER_SECONDS = 1320;
+export const INTRO_LATER_BOOKED = 1500;
 
 const sessionDoc = (n: number, { ease }: { ease: boolean }): WorkoutDoc => {
   if (!Number.isInteger(n) || n < 1) throw new RangeError(`A session is numbered from 1 (got ${n}).`);

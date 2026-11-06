@@ -35,10 +35,19 @@
  *
  * A COURSE places by the same rules, from `placementOf`. Its `weekdays` are its preferred days and its weekly goal, and
  * its only days: it never falls back on the week's others. Its slots go at its `time`, not the athlete's window. Their
- * length is the next session's (`sessionDoc(done + 1)`, numbered from the sessions actually done), and they hold no
- * document, so nothing goes to the watch. On its day a session is written: the row keeps its id and flips to `origin =
- * 'studio'`. A pass still reads it, so it holds its day, and rule 5 never touches it. A document workout's
- * `content_state` is 'outline' too, so its origin is what says it isn't a slot any more.
+ * length is the next session's (`sessionDoc(done + 1)`, numbered from the sessions actually done), booked as that
+ * session's write will book it, so nothing shifts on the day. They hold no document, so nothing goes to the watch. A
+ * stopped course only retracts, which needs no definition.
+ *
+ * Its `time` isn't pinned, on purpose: on a day that really collides, the collision pass re-lays it with the day's other
+ * sessions (`separateDayCollisions`), because a double-booked evening is worse than a moved outline. A time the athlete
+ * pins on a session after it's written is unaffected.
+ *
+ * A course's own sessions are its slots and the rows with `source_content_fingerprint = 'course'`. On its day a session is
+ * written: the row keeps its id and flips to `origin = 'studio'` with that fingerprint, which a session re-pointed to the
+ * course carries too. A pass reads them, so each counts toward its week and holds its day, and rule 5 never touches them.
+ * A document workout's `content_state` is 'outline' too, so its origin is what says it isn't a slot any more. A workout
+ * the coach filed under the plan is neither: it counts toward no week and no slot makes way for it.
  *
  * Every writer here is a no-op while a restore is replacing the account (ruling B2).
  *
@@ -60,6 +69,7 @@ import { chunkedInsert, chunkIds, insertBatches, type Db } from "./db.js";
 import { plannedRowColumns, type PlannedRow } from "./planned-columns.js";
 import { separateDayCollisions, windowTimeFor } from "./day-placement.js";
 import { removeFromPlan } from "./plan-mutations.js";
+import { bookedSeconds } from "./session-build.js";
 
 /** A planned row without its workout document: placement never reads one. */
 type WorkoutRow = PlannedRow;
@@ -76,13 +86,14 @@ interface Placement {
   config: SlotPattern;
   /** Sessions a week; 0 when it wants no slots. */
   goal: number;
-  seconds: number;
+  /** What its outlines say they take, and what the calendar books for that; null = a stopped course, which only retracts. */
+  length: { seconds: number; booked: number } | null;
   title: string;
   /** The time its slots go at; null = the athlete's window for the day (`windowTimeFor`). */
   time: string | null;
   /** The days before the race it places nothing on; null = only race day is kept clear. */
   quietDays: number | null;
-  /** Its days are its only days, and a session written on one (`origin = 'studio'`) still holds it. */
+  /** Its days are its only days, and its own sessions still hold theirs once written (`source_content_fingerprint = 'course'`). */
   isCourse: boolean;
 }
 
@@ -242,7 +253,8 @@ function windowOf(today: string, config: SlotPattern): { firstMonday: string; la
  * The program's slots placement reads (one statement): planned in the window (rule 1's count, and every id a new slot
  * could take), or sitting in it now (a slot moved in from outside still holds its date). A program that wants no slots
  * (`goal` 0) also reads every live slot past the window: retiring retracts its flexible future slots wherever an
- * earlier, wider window put them (M2). A course reads its written sessions too, so each still holds its day.
+ * earlier, wider window put them (M2). A course reads its own sessions once written too, so each still holds its day; a
+ * workout the coach filed under the plan isn't one of them.
  */
 async function readSlotRows(db: Db, userId: string, programId: string, today: string, config: SlotPattern, goal: number, isCourse: boolean): Promise<WorkoutRow[]> {
   const { firstMonday, lastSunday } = windowOf(today, config);
@@ -253,7 +265,7 @@ async function readSlotRows(db: Db, userId: string, programId: string, today: st
       and(
         eq(plannedWorkouts.userId, userId),
         eq(plannedWorkouts.planId, programId),
-        isCourse ? inArray(plannedWorkouts.origin, ["program", "studio"]) : eq(plannedWorkouts.origin, "program"),
+        isCourse ? or(eq(plannedWorkouts.origin, "program"), eq(plannedWorkouts.sourceContentFingerprint, "course")) : eq(plannedWorkouts.origin, "program"),
         or(
           and(gte(plannedWorkouts.originalPlanDate, firstMonday), lte(plannedWorkouts.originalPlanDate, lastSunday)),
           and(gte(plannedWorkouts.effectiveDate, firstMonday), lte(plannedWorkouts.effectiveDate, lastSunday)),
@@ -443,18 +455,28 @@ export async function courseSessionsDone(db: Db, userId: string, programId: stri
 }
 
 /**
- * What a pass places from, whichever kind makes the sessions; null when nothing can be placed: another kind, or a course
- * whose definition is gone (an old id), which is logged by code and leaves the pass with nothing to do. A course's
- * outlines book the next session as it would be uneased: easing is one session's, used and cleared when it's written.
+ * What a pass places from, whichever kind makes the sessions; null when nothing can be placed: another kind, or a running
+ * course whose definition is gone (an old id), which is logged by code and leaves the pass with nothing to do. A stopped
+ * course needs no definition: it only retracts, through goal 0. A course's outlines book the next session as it would be
+ * uneased: easing is one session's, used and cleared when it's written.
  */
 async function placementOf(db: Db, program: ProgramRow, spend: (n: number) => void): Promise<Placement | null> {
   const active = program.status === "active";
   if (program.kind === "adaptive") {
     const config = adaptiveConfigSchema.parse(program.config);
-    return { config, goal: active ? config.weeklyGoal : 0, seconds: config.defaultMinutes * 60, title: program.name, time: null, quietDays: null, isCourse: false };
+    const seconds = config.defaultMinutes * 60;
+    return { config, goal: active ? config.weeklyGoal : 0, length: { seconds, booked: seconds }, title: program.name, time: null, quietDays: null, isCourse: false };
   }
   if (program.kind !== "course") return null;
   const config = courseConfigSchema.parse(program.config);
+  const placement = {
+    config: { weeklyGoal: config.weekdays.length, preferredDays: config.weekdays, placementWeeksAhead: config.placementWeeksAhead },
+    title: program.name,
+    time: config.time,
+    quietDays: config.quietDaysBeforeRace,
+    isCourse: true,
+  };
+  if (!active) return { ...placement, goal: 0, length: null };
   const course = courseDefinition(config.course);
   if (!course) {
     console.error(`course_definition_missing: program ${program.id}`);
@@ -462,15 +484,8 @@ async function placementOf(db: Db, program: ProgramRow, spend: (n: number) => vo
   }
   spend(1);
   const done = await courseSessionsDone(db, program.userId, program.id);
-  return {
-    config: { weeklyGoal: config.weekdays.length, preferredDays: config.weekdays, placementWeeksAhead: config.placementWeeksAhead },
-    goal: active ? config.weekdays.length : 0,
-    seconds: deriveDoc(course.sessionDoc(done + 1, { ease: false }), EXERCISES).estimatedMinutes * 60,
-    title: program.name,
-    time: config.time,
-    quietDays: config.quietDaysBeforeRace,
-    isCourse: true,
-  };
+  const seconds = deriveDoc(course.sessionDoc(done + 1, { ease: false }), EXERCISES).estimatedMinutes * 60;
+  return { ...placement, goal: config.weekdays.length, length: { seconds, booked: bookedSeconds(seconds) } };
 }
 
 async function place(
@@ -496,7 +511,7 @@ async function place(
   if (!program) return result;
   const placement = await placementOf(db, program, spend);
   if (!placement) return result;
-  const { config, goal, seconds, title, time, isCourse } = placement;
+  const { config, goal, length, title, time, isCourse } = placement;
 
   const discipline = defaultDiscipline(program);
   spend(1);
@@ -523,13 +538,17 @@ async function place(
     return result;
   }
 
+  // A stopped course has only retracted: goal 0 fills nothing, and what still stands keeps what it said.
+  if (!length) return result;
+  const { seconds, booked } = length;
+
   const content = (date: string) => ({
     title,
     category: discipline,
     sport: discipline,
     effectiveTime: time ?? windowTimeFor({ category: discipline, date }, prefs),
     fallbackEstimatedDurationSeconds: seconds,
-    calendarBlockDurationSeconds: seconds,
+    calendarBlockDurationSeconds: booked,
   });
 
   // Every column, defaulted ones included: `chunkedInsert` sizes batches by the row's own keys, and Drizzle binds
@@ -609,7 +628,7 @@ async function place(
   if (budget === null) {
     if (!(await insert(toInsert))) return result;
     if (!(await revive(toRevive))) return result;
-    const refreshedDates = await refreshSlotContent(db, userId, program, { discipline, seconds, title }, today, now, restoreBegan);
+    const refreshedDates = await refreshSlotContent(db, userId, program, { discipline, seconds, booked, title }, today, now, restoreBegan);
     if (refreshedDates === null) return result;
 
     const placedDates = [...toInsert, ...toRevive.map((r) => r.originalPlanDate), ...refreshedDates];
@@ -629,7 +648,7 @@ async function place(
   }
   const live = await refreshReads(db, userId, program, today);
   spend(1 + Math.ceil(live.builtCount / BUILD_ID_CHUNK));
-  const changes = refreshChanges(live, program, { discipline, seconds, title });
+  const changes = refreshChanges(live, program, { discipline, seconds, booked, title });
 
   type Unit = { kind: "insert"; date: string } | { kind: "revive"; r: WorkoutRow } | { kind: "refresh"; change: RefreshChange };
   const units: Unit[] = [
@@ -729,7 +748,7 @@ async function refreshSlotContent(
   db: Db,
   userId: string,
   program: ProgramRow,
-  content: { discipline: "strength" | "yoga"; seconds: number; title: string },
+  content: { discipline: "strength" | "yoga"; seconds: number; booked: number; title: string },
   today: string,
   now: string,
   restoreBegan: () => Promise<boolean>,
@@ -797,7 +816,7 @@ interface RefreshChange {
 function refreshChanges(
   { live, themeOf }: RefreshReads,
   program: ProgramRow,
-  content: { discipline: "strength" | "yoga"; seconds: number; title: string },
+  content: { discipline: "strength" | "yoga"; seconds: number; booked: number; title: string },
 ): RefreshChange[] {
   const changes: RefreshChange[] = [];
   for (const r of live) {
@@ -808,7 +827,7 @@ function refreshChanges(
         category: content.discipline,
         sport: content.discipline,
         fallbackEstimatedDurationSeconds: content.seconds,
-        calendarBlockDurationSeconds: content.seconds,
+        calendarBlockDurationSeconds: content.booked,
       };
     } else {
       const built = themeOf.get(r.id);
