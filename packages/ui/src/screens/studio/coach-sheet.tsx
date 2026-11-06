@@ -6,7 +6,8 @@
  *  - It holds the coach's one conversation (coach-conversation.tsx): the opening screen for a new one, else the turns,
  *    and the box.
  *  - Its header holds the open batch's chip while a batch of saved moves is open (coach-saves.tsx): a tap brings the
- *    conversation's saves card into view.
+ *    conversation's saves card into view — and, while a health light is red or yellow, the import's health chip
+ *    (coach-health.tsx): a tap opens the health row.
  *  - Its menu (⋯) holds "New conversation": the conversation shown is left — the opening screen, and the next send
  *    starts a new one — and it stays left across opens (kept on this device). Nothing to leave, or the coach at work:
  *    not offered.
@@ -28,6 +29,7 @@ import { CoachBoundary } from "./coach-boundary.js";
 import { CoachConversation } from "./coach-conversation.js";
 import { CONVERSATION_QUERY, readLeftConversation, turnsShown, writeLeftConversation } from "./coach-conversation-model.js";
 import type { CoachAsk, CoachFit, CoachFocus, CoachOpenArgs } from "./coach-focus.js";
+import { CoachHealthChip } from "./coach-health.js";
 import { CoachSavesChip } from "./coach-saves.js";
 import { readConversation, readCurrent } from "./coach-tolerance.js";
 import { COACH_CURRENT_QUERY, currentRetry } from "./run-keeper.js";
@@ -150,6 +152,8 @@ export function CoachSheet({
         <div className="row-between sheet-head">
           <h2 id={titleId}>{COACH_SHEET_TITLE}</h2>
           <span className="coach-sheet-tools">
+            {/* The import's health while a light is red or yellow: a tap opens the row (audit 2026-11-06, I2). */}
+            <CoachHealthChip />
             {/* An open batch of saved moves: a tap brings its card into view, here (the saves flow redesigned §3.1). */}
             <CoachSavesChip />
             <SheetMenu

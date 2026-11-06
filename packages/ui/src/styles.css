@@ -12155,6 +12155,21 @@ button.coach-cite:focus-visible {
   gap: var(--space-3);
   text-align: left;
 }
+/* The import's health in the coach's header (coach-health.tsx; audit 2026-11-06, I2): the worst light, its glyph and
+   word — a red one's border in the danger colour, a yellow one's glyph in the warning ink. */
+.coach-health-chip {
+  gap: var(--space-2);
+  text-align: left;
+}
+.coach-health-chip--red {
+  border-color: var(--danger);
+}
+.coach-health-chip--red .health-mark {
+  color: var(--danger-ink);
+}
+.coach-health-chip--yellow .health-mark {
+  color: var(--warn-ink);
+}
 .coach-saves-dot {
   flex: none;
   width: 0.5rem;

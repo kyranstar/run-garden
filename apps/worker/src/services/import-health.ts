@@ -45,10 +45,10 @@ function lightOf(stage: string, source: string): HealthLight | null {
 
 /**
  * A failure the whole stage shares, not one post's: a login (Instagram's, or YouTube asking to sign in), a changed site,
- * the gateway refusing the key or credits.
+ * the gateway refusing the key or credits, the coach's fit-in run failing (§6.5; audit 2026-11-06, I2).
  */
 function stageWide(s: { code: string | null; failure: string | null; summary: string }): boolean {
-  if (s.code === "login_needed" || s.code === "feed_changed" || s.code === "youtube_login") return true;
+  if (s.code === "login_needed" || s.code === "feed_changed" || s.code === "youtube_login" || s.code === "fit_failed") return true;
   if (typeof s.failure === "string" && /^gateway_(401|402|403)$/.test(s.failure)) return true;
   return /answered (401|402|403)\b/.test(s.summary);
 }

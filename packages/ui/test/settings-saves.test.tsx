@@ -416,3 +416,16 @@ describe("several links pasted in Settings (audit 2026-11-06, I4)", () => {
     expect(document.querySelector(".saves-link-field [role=status]")!.textContent).toBe("Single videos and posts only — not playlists or channels.");
   });
 });
+
+describe("a yellow light in Settings (audit 2026-11-06, I2)", () => {
+  it("the row's line is the light's, as for red: never all is well while one needs a look", async () => {
+    const yellow: ImportHealthDto = {
+      lights: HEALTH_LIGHTS.map((light) => ({ light, color: light === "reader" ? "yellow" : "green", line: light === "reader" ? "2 quotes aren't in the post" : null, failures: [] })),
+      worst: "2 quotes aren't in the post",
+    };
+    await mount({ status: 200, body: status() }, { status: 200, body: yellow });
+    await flush();
+    expect(host.textContent).toContain("2 quotes aren't in the post");
+    expect(host.textContent).not.toContain("Last import");
+  });
+});

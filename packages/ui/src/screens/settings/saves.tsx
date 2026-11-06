@@ -3,8 +3,8 @@
  * moves from 5 posts", "Last check 8 days ago" once a week has passed, "Paused — import budget"), opening a sheet: first
  * the import's health row (its lights, design 2026-11-05 §3.2), then a row to the review screen ("From your saves",
  * /studio/saves), then the posts: who, where each stands and why, the link, How it came in (the post's trail, §3.4), and
- * Process anyway / Retry where they apply. While any light is red the row's line is the worst light's: it never reads
- * as all is well (audit 2026-11-05, bug 7).
+ * Process anyway / Retry where they apply. While any light is red — or yellow (audit 2026-11-06, I2) — the row's line is
+ * the worst light's: it never reads as all is well (audit 2026-11-05, bug 7).
  *
  * The section shows nothing unless the status read answers 200: the feature off is a 404, and no error is shown. A
  * health read that fails leaves the lights out. Self-contained: the screen places it with one line.
@@ -13,7 +13,7 @@ import { useState } from "react";
 import { Link } from "react-router-dom";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { api, ApiError, SAVES_HEALTH_QUERY, SAVES_LINKS_QUERY, SAVES_STATUS_QUERY } from "@rg/api-client";
-import { ADDED_LINE, alreadyInLine, LINK_REFUSED, linkRefusal, normalizeLinks, pastedLine, severalAddedLine } from "@rg/saves";
+import { ADDED_LINE, alreadyInLine, LINK_REFUSED, linkRefusal, normalizeLinks, pastedLine, severalAddedLine, worstLight } from "@rg/saves";
 import type { ImportHealthDto, LinkDto, PostRowDto, SavePostStatus, SavesStatusDto } from "@rg/saves";
 import { Card, Sheet } from "../../components.js";
 import { postHref } from "../../post-link.js";
@@ -52,6 +52,9 @@ export function savesLine(s: SavesStatusDto, now: Date, health: ImportHealthDto 
   if (s.state === "error") return `Last check failed ${ageText(s.lastCheckAt, now)}`;
   const red = redLine(health);
   if (red) return red;
+  // A yellow light's line too: the row never reads as all is well while one needs a look (audit 2026-11-06, I2).
+  const needsALook = worstLight(health);
+  if (needsALook && health?.worst) return health.worst;
   if (!s.lastImportAt) return `Last check ${ageText(s.lastCheckAt, now)}`;
   return `Last import ${ageText(s.lastImportAt, now)} · ${count(s.totals.moves, "move")} from ${count(s.totals.posts, "post")}`;
 }

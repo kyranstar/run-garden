@@ -173,6 +173,14 @@ export const HEALTH_MARKS: Readonly<Record<HealthColor, { mark: string; word: st
 };
 
 /**
+ * The light that most needs a look: the first red one in the row's order, else the first yellow; null while every light
+ * is green or grey (grey is nothing to judge, never a problem). The coach's header chip names it (audit 2026-11-06, I2).
+ */
+export function worstLight(health: Pick<ImportHealthDto, "lights"> | null | undefined): HealthLightDto | null {
+  return health?.lights.find((l) => l.color === "red") ?? health?.lights.find((l) => l.color === "yellow") ?? null;
+}
+
+/**
  * While any light is red, what a headline says in place of "all is well" (audit 2026-11-05, bug 7): the worst light's
  * line. Null while none is red.
  */
