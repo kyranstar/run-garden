@@ -74,8 +74,9 @@ export function parsePlayer(raw: unknown, expectId: string): { ok: true; meta: Y
   const errorScreen = isObj(play.errorScreen) && isObj(play.errorScreen.playerErrorMessageRenderer) ? play.errorScreen.playerErrorMessageRenderer : null;
   const reason = oneLine(str(play.reason) ?? textOf(errorScreen?.reason) ?? "").slice(0, REASON_MAX);
   if (status === "LOGIN_REQUIRED") {
-    // Age-restriction is the video's; a bot check is the session's and passes: tried again later (final audit G9).
-    return /\bage\b/i.test(reason) ? { ok: false, code: "unplayable", message: "Age-restricted" } : { ok: false, code: "unknown", message: "YouTube asked to sign in" };
+    // Age-restriction is the video's; a bot check is the session's and passes: tried again later (final audit G9), coded
+    // as the whole stage's — every video meets it until the owner signs in (audit 2026-11-06, I3).
+    return /\bage\b/i.test(reason) ? { ok: false, code: "unplayable", message: "Age-restricted" } : { ok: false, code: "youtube_login", message: "Sign in to YouTube in Chrome" };
   }
   if (status === "AGE_CHECK_REQUIRED" || status === "CONTENT_CHECK_REQUIRED") return { ok: false, code: "unplayable", message: "Age-restricted" };
   if (status === "ERROR") return { ok: false, code: "gone", message: "The video is gone" };

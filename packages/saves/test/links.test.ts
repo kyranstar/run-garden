@@ -98,3 +98,14 @@ describe("normalizeLink takes what people paste (final audit G12)", () => {
     expect(normalizeLink("just words")).toBeNull();
   });
 });
+
+describe("YouTube asking to sign in (audit 2026-11-06, I3)", () => {
+  it("is a code of its own, in words that say what to do", async () => {
+    const { failureWords, SAVE_ERROR_CODES } = await import("../src/index.js");
+    expect(SAVE_ERROR_CODES).toContain("youtube_login");
+    expect(failureWords("youtube_login", "YouTube asked to sign in")).toBe("Sign in to YouTube in Chrome");
+    expect(linkState({ status: "failed", addedFrom: "extension", errorCode: "youtube_login", error: "Sign in to YouTube in Chrome" }, null)).toEqual({
+      state: "failed", words: "Failed: Sign in to YouTube in Chrome", action: "retry",
+    });
+  });
+});

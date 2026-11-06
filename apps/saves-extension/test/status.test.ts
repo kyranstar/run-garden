@@ -288,8 +288,8 @@ describe("popupModel's health row", () => {
     const reader = m.lights.find((l) => l.light === "reader")!;
     expect(reader.line).toBe("Reader: 3 of 4 failed");
     expect(reader.failures).toEqual([
-      { title: "Zorbex hip flow", when: "1 h ago", why: "The reply didn't match the format", href: "https://app.example.com/studio/saves/posts/b", retryKey: "kb", retrySource: null },
-      { title: "Reader", when: "2 h ago", why: "The model gateway answered 402", href: null, retryKey: null, retrySource: null },
+      { title: "Zorbex hip flow", when: "1 h ago", why: "The reply didn't match the format", href: "https://app.example.com/studio/saves/posts/b", retryKey: "kb", retrySource: null, retryLink: null },
+      { title: "Reader", when: "2 h ago", why: "The model gateway answered 402", href: null, retryKey: null, retrySource: null, retryLink: null },
     ]);
   });
 
@@ -367,5 +367,21 @@ describe("pasted links in the popup (design 2026-11-05 §3.1)", () => {
     expect(addAnswerLine({ ok: true, added: true })).toBe("Added — it'll be waiting in the coach.");
     expect(addAnswerLine({ ok: true, known: { postId: "p1", firstSeenAt: "2026-11-03T15:00:00.000Z" } })).toBe("Already in — imported Tue 3 Nov.");
     expect(addAnswerLine({ ok: false, message: "Only YouTube and Instagram links for now." })).toBe("Only YouTube and Instagram links for now.");
+  });
+});
+
+describe("a YouTube read that failed before its post, in the popup (audit 2026-11-06, I3)", () => {
+  it("its Retry pastes the link again", () => {
+    const watch = `${["ht", "tps://www."].join("")}${["you", "tube.com"].join("")}/watch?v=Zx9_-QaB3cD`;
+    const health: ImportHealthDto = {
+      lights: HEALTH_LIGHTS.map((light) =>
+        light === "youtube"
+          ? { light, color: "red", line: "Sign in to YouTube in Chrome", failures: [{ postId: null, title: watch, at: "2026-10-23T11:00:00.000Z", why: "Sign in to YouTube in Chrome", retryLink: watch }] }
+          : { light, color: "green", line: null, failures: [] },
+      ),
+      worst: "Sign in to YouTube in Chrome",
+    };
+    const f = model({ health }).lights.find((l) => l.light === "youtube")!.failures[0]!;
+    expect(f).toMatchObject({ title: watch, retryKey: null, retryLink: watch });
   });
 });

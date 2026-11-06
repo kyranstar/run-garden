@@ -47,6 +47,7 @@ async function mount(h: ImportHealthDto, compact = false) {
     vi.fn(async (url: string, req?: RequestInit) => {
       calls.push({ method: req?.method ?? "GET", path: url, body: req?.body ? JSON.parse(String(req.body)) : null });
       if (url === "/api/my-saves/posts/p1/override") return json({ ok: true });
+      if (url === "/api/my-saves/links" && req?.method === "POST") return json({ state: "added", link: {} });
       if (url === "/api/my-saves/posts/p1/trail") return json({ error: "not_found" }, 404);
       return json({ error: "not_found" }, 404);
     }),
@@ -154,5 +155,28 @@ describe("the health row", () => {
     expect(redLine(health({ reader: "yellow" }, {}, "Reader: retried"))).toBeNull();
     expect(redLine(health({ budget: "red" }))).toBe("Something in the import needs a look");
     expect(redLine(null)).toBeNull();
+  });
+});
+
+describe("a YouTube read that failed before its post (audit 2026-11-06, I3)", () => {
+  const S = ["ht", "tps://"].join("");
+  const watch = `${S}www.${["you", "tube.com"].join("")}/watch?v=Zx9_-QaB3cD`;
+  const YT = health(
+    { youtube: "red" },
+    { youtube: { line: "Sign in to YouTube in Chrome", failures: [{ postId: null, title: watch, at: AT, why: "Sign in to YouTube in Chrome", retryLink: watch }] } },
+    "Sign in to YouTube in Chrome",
+  );
+
+  it("is titled by its link, and Retry pastes the link again", async () => {
+    await mount(YT);
+    await click(lightOf("YouTube"));
+    const row = host.querySelector(".health-failure")!;
+    expect(row.querySelector(".health-failure-title")!.textContent).toBe(watch);
+    const retry = [...row.querySelectorAll("button")].find((b) => b.textContent === "Retry")!;
+    expect(retry).toBeTruthy();
+    await click(retry);
+    await flush();
+    expect(calls).toContainEqual({ method: "POST", path: "/api/my-saves/links", body: { url: watch } });
+    expect(row.textContent).toContain("Sent to be read again");
   });
 });

@@ -174,6 +174,9 @@ export async function runLinks(deps: LinksDeps): Promise<LinksSummary> {
     const r = await deps.youtube(link.key);
     if (!r.ok) {
       await failed(link, r.code, r.message);
+      // YouTube asking to sign in meets every video until the owner does: told once, and the run ends — the links after
+      // it wait, unread, like Instagram's login (audit 2026-11-06, I3).
+      if (r.code === "youtube_login") throw new StopRun("youtube_login");
       // A video the app holds that is gone or won't play any more leaves its work list (final review F3).
       if (held && (r.code === "gone" || r.code === "unplayable")) await app.reportFailed(link.source, link.key, "gone").catch(stopOn);
       return false;

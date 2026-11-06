@@ -269,3 +269,22 @@ describe("a link pasted in the popup (audit 2026-11-06, I1)", () => {
     expect((await queue.all()).map((l) => l.key)).toEqual([vid]);
   });
 });
+
+describe("YouTube asking to sign in (audit 2026-11-06, I3)", () => {
+  it("is told for the link it met, and ends the run: the links after it wait, unread", async () => {
+    const youtubeReads: string[] = [];
+    const { app, queue, deps } = setup({
+      youtube: async (id) => {
+        youtubeReads.push(id);
+        return { ok: false, code: "youtube_login", message: "Sign in to YouTube in Chrome" };
+      },
+    });
+    await add(queue, ytLink);
+    await add(queue, `${S}www.${["you", "tube.com"].join("")}/watch?v=Yt0000000ab`);
+    const out = await runLinks(deps);
+    expect(out.error).toBe("youtube_login");
+    expect(youtubeReads).toEqual([vid]);
+    expect(app.failures).toEqual([{ source: "youtube", key: vid, code: "youtube_login", message: "Sign in to YouTube in Chrome" }]);
+    expect((await queue.all()).map((l) => [l.key, l.error])).toEqual([["Yt0000000ab", null]]);
+  });
+});

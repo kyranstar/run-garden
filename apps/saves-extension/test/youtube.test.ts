@@ -51,8 +51,9 @@ describe("parsePlayer", () => {
 
   it.each([
     [{ status: "LOGIN_REQUIRED", reason: "Sign in to confirm your age" }, "unplayable", "Age-restricted"],
-    // A bot check passes: tried again later in its own words, never marked gone (final audit G9).
-    [{ status: "LOGIN_REQUIRED", reason: "Sign in to confirm you're not a bot" }, "unknown", "YouTube asked to sign in"],
+    // A bot check passes: tried again later, never marked gone (final audit G9) — coded so the health row reads it as the
+    // whole stage's, with what to do (audit 2026-11-06, I3).
+    [{ status: "LOGIN_REQUIRED", reason: "Sign in to confirm you're not a bot" }, "youtube_login", "Sign in to YouTube in Chrome"],
     [{ status: "AGE_CHECK_REQUIRED" }, "unplayable", "Age-restricted"],
     [{ status: "ERROR", reason: "Video unavailable" }, "gone", "The video is gone"],
     [{ status: "UNPLAYABLE", reason: "The uploader has not made this video available in your country" }, "unplayable", "The uploader has not made this video available in your country"],

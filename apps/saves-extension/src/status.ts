@@ -72,6 +72,8 @@ export interface PopupFailure {
   retryKey: string | null;
   /** The source Retry names with the key (null: the feed's). */
   retrySource: string | null;
+  /** A read that failed before its post: the link Retry pastes again (audit 2026-11-06, I3), else null. */
+  retryLink: string | null;
 }
 
 /** One light of the health row: its label, colour, glyph and word (never colour alone), its line, its failures. */
@@ -219,6 +221,7 @@ function lightsOf(input: PopupInput, posts: readonly { id: string; key: string; 
       href: f.postId ? appHref(input.appUrl, trailPath(f.postId)) : null,
       retryKey: f.postId ? (retryable.get(f.postId)?.key ?? null) : null,
       retrySource: f.postId ? (retryable.get(f.postId)?.source ?? null) : null,
+      retryLink: !f.postId && typeof f.retryLink === "string" && safeHref(f.retryLink) ? f.retryLink : null,
     })),
   }));
 }

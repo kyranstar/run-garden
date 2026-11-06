@@ -223,6 +223,10 @@ function lightPanel(l: PopupLight): HTMLElement {
     if (f.retryKey) {
       const key = f.retryKey;
       li.append(button("Retry", (b) => { b.disabled = true; void override(key, f.retrySource); }, true));
+    } else if (f.retryLink) {
+      // A read that failed before its post: the link pasted again (audit 2026-11-06, I3).
+      const url = f.retryLink;
+      li.append(button("Retry", (b) => { b.disabled = true; void ask({ type: "retry-link", url }).catch(() => undefined).then(() => load()); }, true));
     }
     list.append(li);
   }
