@@ -433,9 +433,10 @@ export const readSaves: DesignTool = {
   // runner (Task 17). Re-measured on a quiet tree (the fix wave, 2026-10-25; 1-minute load 1.9–2.1 on 8 cores, scale
   // ×0.93–×1.07): 0.54, 0.49 and 0.47 ms scaled p50 — declared at the highest, rounded up to the tenth, as its peers are.
   // REBASED 2026-11-06 (coach review, phase 3): the page's evidence — twelve moves' readings at extract-6's widest (eight
-  // 200-character quotes, four use-when and skip-when cases, a why), parsed and fitted — measured 1.22 ms scaled p50
-  // (calibration ×0.93, 1-minute load 10.7 on 8 cores); declared at the tenth above.
-  cpuWeight: 1.3,
+  // 200-character quotes, four use-when and skip-when cases, a why), parsed and fitted — measured 1.22 and 1.37 ms scaled
+  // p50 on two loaded passes (×0.93 at load 10.7; ×0.78 at load 24.7, 8 cores; no quiet run to be had): declared at the
+  // tenth above the higher.
+  cpuWeight: 1.4,
   roles: READ_ROLES,
   async run(ctx, raw) {
     const p = parseInput(input, raw, "optionally batchId, limit and offset");

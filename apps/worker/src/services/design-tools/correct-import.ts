@@ -103,6 +103,8 @@ export const correctImport: DesignTool = {
     additionalProperties: false,
   },
   statementCost: 2,
+  // Measured 0.33 ms scaled p50 (a long move's dose on the evidence, eight cites; ×0.78 at load 24.7 — not a quiet run):
+  // declared with room.
   cpuWeight: 0.4,
   roles: ["main"],
   async run(ctx, raw) {

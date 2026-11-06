@@ -460,6 +460,39 @@ The independent reviewer's rubric gains **faithfulness to the evidence**: a revi
 for a saved move must match the move's record and cited quotes or say why they differ. A mismatch with no reason is
 must-fix.
 
+### 8.6 As built (phase 3, 2026-11-06)
+Plan: `docs/superpowers/plans/2026-11-06-coach-review-phase-3.md` (its rulings, and the ledger's, are the builder's).
+- **The evidence** (`apps/worker/src/services/saves-evidence.ts`, `design-tools/read-saves.ts`): quote ids are
+  `q<n>.<k>` — the move's place in its batch and the quote's across the move's links — stable across pages. Each move
+  carries its record's dose and where it came from (post, reading, default, library, edited, an earlier post) and its
+  corrections; each link its post and position, the match (new, yours, library; by name, the judge or new), and the
+  reading as evidence (stated, inferred — a field whose quotes were all not found reads as inferred — why, use and skip
+  when, quotes as said / in the caption / heard / on screen / not in the post). Insights keep their post (`ref`) and
+  scope. One statement more (3); the page's byte budget holds fewer moves now.
+- **What the run read** travels as read_saves' receipt in its trail event (never the model's); `pin_moves` and
+  `correct_import` read it back inside their own statement (`design-tools/saves-reads.ts`).
+- **A line** (`pin_moves`): its decision is the card's own (pinned here, in a workout of the suggestion, or in rotation
+  already → in), a contradicting one refused; its dose the tool's (the revised item's, a dose correction's, else the
+  record's), a coach dose with other numbers refused; refused too a line about an unread batch move, an unknown cite,
+  and a claim about what the post says with no quote. Cites are stored as chips.
+- **Corrections** (`design-tools/correct-import.ts`, `import-corrections.ts`): the four targets, `before` read by the
+  Worker; applied at Approve before the pins, each in one atomic batch (its row and trail events gated on the value still
+  being `before`, the state change last), refused `stale` when it moved, recorded applied when already so. A dropped
+  insight is kept with `dropped: true` and read by nothing; an insight's memory row follows its text and scope. "Same as"
+  archives a clean duplicate (no sets, plans from today on, pin or other link), else marks it like the move.
+- **The trail** (`coach-trail.ts`): suggested (and the posts read, at the read's time) when the card is shown — written
+  only when it holds a pins card or a correction — then approved, declined or replaced, each in the write that decides
+  it.
+- **The prompt**: the saves paragraph's evidence rules and the main block's challenge order (§3.5); insistence never
+  overrides a condition's never or a sore area (§15 Q1's default). **The reviewer**: `faithfulness`, scored only when the
+  draft holds a saved move; a saved item in the packet carries its record's dose and purpose.
+- **Costs**: read_saves 3 statements (CPU 1.4), pin_moves 2 (0.7), correct_import 2 (0.4); MOVE_PINS_FIXED 4,
+  DECLINE_COST 8, CORRECTIONS_FIXED 2 + 3 a correction (+2 same as, +1 not the same or an insight's memory); finish 4,
+  a stop's reserve and a tree's expiry one more each.
+- **The card** (`packages/ui/src/screens/studio/review-lines.tsx`): In, then Left out, the corrections, the why; a
+  name opens the post's trail at the move, a quote's chip at the quote (the trail sheet's `focus`); Challenge fills the
+  reply box. A card stored before draws as it did.
+
 ## 9. Bugs folded in (audit §4, §5)
 All ten of audit §4, and from §5: tool results kept in the trail; no raw JSON rendered; "In full" uncut; personal ids
 named; the pins `why` shown and carried; insights limited after filtering, not before, and keeping their post. Each
