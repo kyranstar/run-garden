@@ -354,7 +354,7 @@ export const proposePlan: DesignTool = {
       // have ended.
       phases: planId
         ? sql`(select json_group_array(json_object('id', b.id, 'discipline', b.discipline, 'status', b.status, 'name', b.name,
-              'startDate', b.start_date, 'endDate', b.end_date, 'raceDate', b.race_date))
+              'startDate', b.start_date, 'endDate', b.end_date, 'raceDate', b.race_date, 'programId', b.program_id))
             from ${coachPlans} b where b.user_id = ${ctx.userId} and substr(b.id, 1, ${LOOSE_PLAN_ID_PREFIX.length}) <> ${LOOSE_PLAN_ID_PREFIX}
               and b.discipline = (select c.discipline from ${coachPlans} c where c.id = ${planId} and c.user_id = ${ctx.userId}))`
         : sql`null`,

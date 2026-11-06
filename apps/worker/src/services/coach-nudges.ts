@@ -226,6 +226,7 @@ export async function readCoachOpening(
         startDate: coachPlans.startDate,
         endDate: coachPlans.endDate,
         raceDate: coachPlans.raceDate,
+        programId: coachPlans.programId,
       })
       .from(coachPlans)
       .where(and(eq(coachPlans.userId, userId), eq(coachPlans.status, "active"))),

@@ -39,6 +39,43 @@ describe("linesOf", () => {
     expect(l!.ended).toBe(false);
   });
 
+  describe("the stored plan link", () => {
+    it("two blocks of one plan 30 days apart are one line: the link beats the date rule", () => {
+      const x = blk("X", "2026-01-01", "2026-01-10", { programId: "P1" });
+      const y = blk("Y", "2026-02-09", "2026-03-01", { programId: "P1" });
+      const lines = linesOf([y, x], "2026-01-05");
+      expect(lines).toHaveLength(1);
+      expect(lines[0]!.phases.map((p) => p.id)).toEqual(["X", "Y"]);
+      expect(lines[0]!.programId).toBe("P1");
+      expect(lines[0]!.key).toBe("run:X");
+    });
+
+    it("two adjacent blocks of different plans are two lines", () => {
+      const x = blk("X", "2026-01-01", "2026-01-10", { programId: "P1" });
+      const y = blk("Y", "2026-01-11", "2026-01-31", { programId: "P2" });
+      const lines = linesOf([x, y], "2026-01-05");
+      expect(lines.map((l) => l.programId)).toEqual(["P1", "P2"]);
+    });
+
+    it("a block with no plan beside a block with one does not join it", () => {
+      const x = blk("X", "2026-01-01", "2026-01-10", { programId: "P1" });
+      const y = blk("Y", "2026-01-11", "2026-01-31");
+      const lines = linesOf([x, y], "2026-01-05");
+      expect(lines.map((l) => l.phases.map((p) => p.id))).toEqual([["X"], ["Y"]]);
+      expect(lines[1]!.programId).toBeNull();
+    });
+
+    it.each([
+      [7, 1],
+      [8, 2],
+    ])("two blocks with no plan keep the %i rest-day rule (%i line(s))", (rest, n) => {
+      const x = blk("X", "2026-01-01", "2026-01-10", { programId: null });
+      const startY = new Date(Date.UTC(2026, 0, 10 + rest + 1)).toISOString().slice(0, 10);
+      const y = blk("Y", startY, "2026-03-01");
+      expect(linesOf([x, y], "2026-01-05")).toHaveLength(n);
+    });
+  });
+
   it.each([
     [6, 1],
     [7, 1],

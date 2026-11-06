@@ -129,7 +129,9 @@ export async function backfillPlanRegistry(db: Db, userId: string, today: string
   }
 
   const programOf = new Map(coachRows.map((r) => [r.id, r.programId] as const));
-  const lines = linesOf(coachRows.filter((r) => !isLoosePlan(r)).map(lineBlockOf), today);
+  // The backfill finds the link, so it groups by dates alone: a block already linked is passed as none, or a block added
+  // beside it could never join its line.
+  const lines = linesOf(coachRows.filter((r) => !isLoosePlan(r)).map((r) => ({ ...lineBlockOf(r), programId: null })), today);
   for (const line of lines) {
     const ids = line.phases.map((p: LineBlock) => p.id);
     const unlinked = ids.filter((id) => !programOf.get(id));

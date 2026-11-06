@@ -82,6 +82,7 @@ interface Row {
   start: string | null;
   end: string | null;
   race: string | null;
+  programId?: string | null;
   config?: unknown;
   weeks?: unknown;
   next?: unknown;
@@ -237,7 +238,7 @@ export const readPlans: DesignTool = {
     const cp = coachPlans;
     const { athlete, extra } = await readAthlete(ctx.db, ctx.userId, ctx.now, {
       blocks: sql`(select json_group_array(json_object('kind', 'block', 'id', b.id, 'name', b.name, 'status', b.status, 'discipline', b.discipline,
-          'start', b.start_date, 'end', b.end_date, 'race', b.race_date,
+          'start', b.start_date, 'end', b.end_date, 'race', b.race_date, 'programId', b.program_id,
           'weeks', (select json_group_array(json_object('weekStart', w.week_start, 'state', w.state, 'shape', json(w.shape)))
             from ${coachPlanWeeks} w where w.plan_id = b.id),
           'next', json(${nextSql(ctx.userId, sql`b.id`, from)}))) from (
@@ -272,7 +273,7 @@ export const readPlans: DesignTool = {
     const rows = [...blocks, ...parsedArray(extra.programmes), ...(studio ? [studio] : []), ...parsedArray(extra.watch)] as Row[];
     // The blocks as the plan list groups them: lines, each with its phases (a retired block is none).
     const trainingLines = linesOf(
-      blocks.flatMap((b) => (b.start && b.end && b.discipline ? [lineBlockOf({ ...b, discipline: b.discipline, startDate: b.start, endDate: b.end, raceDate: b.race })] : [])),
+      blocks.flatMap((b) => (b.start && b.end && b.discipline ? [lineBlockOf({ ...b, discipline: b.discipline, startDate: b.start, endDate: b.end, raceDate: b.race, programId: b.programId })] : [])),
       today,
     );
     const lineOf = new Map(trainingLines.flatMap((l) => l.phases.map((p) => [p.id, l] as const)));

@@ -1,6 +1,9 @@
 /**
  * Training lines (2026-10-20) — worked out at read time, never stored.
  *
+ * Stored link first: blocks carrying a `programId` form one line per plan, whatever their dates or sport. The chain
+ * rule below runs only among blocks with none, and never joins a block to one that has a plan.
+ *
  * Chain rule: a line is a maximal chain of one discipline's coach blocks
  * (retired ones dropped), taken in (startDate, id) order, where each block
  * starts no more than LINE_GAP_DAYS (8) after the running maximum end of the
@@ -26,10 +29,14 @@ export type LineBlock = {
   startDate: string;
   endDate: string;
   planRaceDate?: string | null;
+  /** The plan the block belongs to (`coach_plans.program_id`); none for a block not yet linked. */
+  programId?: string | null;
 };
 
 export type TrainingLine = {
   key: string;
+  /** The stored plan the line follows; null for a line worked out from dates. */
+  programId: string | null;
   discipline: LineBlock["discipline"];
   name: "Running" | "Lifting" | "Mobility";
   phases: LineBlock[];
@@ -109,6 +116,7 @@ function makeLine(phases: LineBlock[], today: string): TrainingLine {
   const race = last.planRaceDate ?? null;
   return {
     key: `${first.discipline}:${first.id}`,
+    programId: first.programId ?? null,
     discipline: first.discipline,
     name: LINE_NAMES[first.discipline],
     phases,
@@ -126,7 +134,18 @@ export function linesOf(blocks: readonly LineBlock[], today: string): TrainingLi
     .sort((a, b) => cmp(a.startDate, b.startDate) || cmp(a.id, b.id));
   const open = new Map<LineBlock["discipline"], { phases: LineBlock[]; maxEnd: string }>();
   const chains: LineBlock[][] = [];
+  const byPlan = new Map<string, LineBlock[]>();
   for (const b of sorted) {
+    if (b.programId) {
+      const linked = byPlan.get(b.programId);
+      if (linked) linked.push(b);
+      else {
+        const phases = [b];
+        byPlan.set(b.programId, phases);
+        chains.push(phases);
+      }
+      continue;
+    }
     const cur = open.get(b.discipline);
     if (cur && b.startDate <= addDays(cur.maxEnd, LINE_GAP_DAYS)) {
       cur.phases.push(b);

@@ -121,6 +121,7 @@ export function lineBlockOf(r: {
   startDate: string;
   endDate: string;
   raceDate: string | null;
+  programId?: string | null;
 }): LineBlock {
   return {
     id: r.id,
@@ -130,6 +131,7 @@ export function lineBlockOf(r: {
     startDate: r.startDate,
     endDate: r.endDate,
     planRaceDate: r.raceDate,
+    programId: r.programId ?? null,
   };
 }
 
