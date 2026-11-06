@@ -84,6 +84,11 @@ export interface ImportTrailDto {
     origin: "saved" | "pasted" | null;
     durationSec: number | null;
     videoSeen: boolean | null;
+    /**
+     * A YouTube video's watching (design 2026-11-05 §5.4), else null: whether it was (or will be) watched, the owner's
+     * Watch it too, whether to offer it (a long video read from its words), and what watching it would cost.
+     */
+    video?: { watched: boolean | null; watchAsked: boolean; offerWatch: boolean; watchCostMicros: number | null } | null;
   };
   /** The account (level 1): what the post is, its moves and how each came out, and one health word. */
   account: {

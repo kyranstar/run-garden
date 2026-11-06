@@ -5,6 +5,7 @@
  * Settings -> Saves:
  *   GET  /status                                   what the import did
  *   GET  /links, POST /links {url}                 pasted links: the recent ones; one pasted on the phone
+ *   POST /posts/:id/watch                          Watch it too: read a long video again, watched
  *   POST /posts/:id/override {action}              process anyway, skip, or keep as a reference
  *
  * The one path (the saves flow redesigned, 2026-10-26; services/saves-review.ts; spec §3.2, §4, §12.1, §12.3):
@@ -65,6 +66,7 @@ const overrideSchema = z.object({ action: z.enum(["process", "skip", "reference"
 import { readBlob, readPostTrail } from "../services/import-trail-read.js";
 import { importHealth } from "../services/import-health.js";
 import { addLink, listLinks } from "../services/saved-links.js";
+import { watchVideo } from "../services/saves-video.js";
 
 export const mySavesRoutes = new Hono<AppContext>();
 
@@ -105,6 +107,14 @@ mySavesRoutes.get("/links", async (c) => c.json({ links: await listLinks(c.get("
 
 /** The health row: one light per stage and source (import trail, design 2026-11-05 §6.5). */
 mySavesRoutes.get("/health", async (c) => c.json(await importHealth(c.get("db"), c.get("userId"), new Date(nowInstant()))));
+
+/** Watch it too (design 2026-11-05 §5.4): read a long video again with the video watched. 404 / 409 when it can't be. */
+mySavesRoutes.post("/posts/:id/watch", async (c) => {
+  const out = await watchVideo(c.get("db"), c.get("userId"), c.req.param("id"), nowInstant());
+  if (out === "not_found") return c.json({ error: "not_found" }, 404);
+  if (out === "conflict") return c.json({ error: "not_watchable" }, 409);
+  return c.json({ ok: true });
+});
 
 // One post's trail and a blob's text (import trail, design 2026-11-05 §6.3): the owner's only.
 mySavesRoutes.get("/posts/:id/trail", async (c) => {

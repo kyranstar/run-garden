@@ -12,7 +12,9 @@ import type { Env } from "../src/env.js";
 import type { Db } from "../src/services/db.js";
 import { importHealth } from "../src/services/import-health.js";
 import { messagesCostMicros } from "../src/services/llm-messages.js";
-import { savedPostId } from "../src/services/saves-ledger.js";
+import { readPostTrail } from "../src/services/import-trail-read.js";
+import { savedPostId, workList } from "../src/services/saves-ledger.js";
+import { watchCostMicros, watchVideo } from "../src/services/saves-video.js";
 import { callTimeoutMs, EXTRACT_MODEL_DEFAULT, relayVideoExtract } from "../src/services/saves-relay.js";
 import { makeTestDb, makeTestUser } from "./helpers.js";
 
@@ -217,5 +219,50 @@ describe("the route", () => {
     } finally {
       vi.unstubAllGlobals();
     }
+  });
+});
+
+describe("Watch it too (design 2026-11-05 §5.4)", () => {
+  const { savedPostMoves, personalMoves } = schema;
+  async function matchedLong(over: { linkStatus?: "pending" | "saved"; source?: string } = {}) {
+    const id = await seedVideo({ durationSec: 2_400 });
+    await db.update(savedPosts).set({ status: "matched", extraction: reading(), source: over.source ?? "youtube" }).where(eq(savedPosts.id, id));
+    await db.insert(personalMoves).values({ id: "pm-zorbex", userId, status: "pending", record: { name: "Zorbex hip lift" } as never, createdAt: NOW, updatedAt: NOW });
+    await db.insert(savedPostMoves).values({ id: "lk1", userId, postId: id, position: 0, moveId: "pm-zorbex", moveKind: "personal", confidence: 1, checkFlag: false, status: over.linkStatus ?? "pending", createdAt: NOW });
+    return id;
+  }
+
+  it("the trail offers it on a long video read from its words, with what it would cost", async () => {
+    const id = await matchedLong();
+    const trail = await readPostTrail(db, userId, id);
+    expect(trail!.post.video).toEqual({ watched: false, watchAsked: false, offerWatch: true, watchCostMicros: watchCostMicros(MODEL, 2_400) });
+    expect(watchCostMicros(MODEL, 2_400)).toBe(messagesCostMicros(MODEL, { inputTokens: 240_000, cacheReadTokens: 0, cacheWriteTokens: 0, outputTokens: 1_500 }));
+  });
+
+  it("asked: the post is read again with the video — its pending links and moves go, the extension's work list has it", async () => {
+    const id = await matchedLong();
+    statements = 0;
+    expect(await watchVideo(db, userId, id, NOW)).toBe("ok");
+    expect(statements).toBeLessThanOrEqual(6);
+    expect(await row(id)).toMatchObject({ status: "queued", watchVideo: true, extraction: null, batchId: null, extractAttempts: 0 });
+    expect((await db.select().from(savedPostMoves))[0]!.status).toBe("removed");
+    expect(await db.select().from(personalMoves)).toEqual([]);
+    expect((await workList(db, userId, NOW, 20, { links: true })).map((w) => [w.key, w.action])).toEqual([[vid, "extract"]]);
+    const trail = await readPostTrail(db, userId, id);
+    expect(trail!.post.video).toMatchObject({ watchAsked: true, offerWatch: false });
+    const asked = trail!.events.find((e) => e.stage === "choice")!;
+    expect(asked.summary).toMatch(/^You asked for the video to be watched too \(about \$0\.\d\d\)$/);
+  });
+
+  it("refuses a post with a saved move, a post that isn't a video, one already asked, and another account's", async () => {
+    const saved = await matchedLong({ linkStatus: "saved" });
+    expect(await watchVideo(db, userId, saved, NOW)).toBe("conflict");
+    await db.delete(savedPostMoves);
+    await db.update(savedPosts).set({ source: "instagram" }).where(eq(savedPosts.id, saved));
+    expect(await watchVideo(db, userId, saved, NOW)).toBe("conflict");
+    await db.update(savedPosts).set({ source: "youtube", watchVideo: true }).where(eq(savedPosts.id, saved));
+    expect(await watchVideo(db, userId, saved, NOW)).toBe("conflict");
+    const other = (await makeTestUser(db)).userId;
+    expect(await watchVideo(db, other, saved, NOW)).toBe("not_found");
   });
 });

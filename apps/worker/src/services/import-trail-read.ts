@@ -12,6 +12,8 @@ import { EXERCISES } from "@rg/exercise-library";
 import { failureWords, IMPORT_STAGES } from "@rg/saves";
 import type { BlobKind, ImportBlobDto, ImportStage, ImportTrailDto, TrailEventDto, TrailSource, TrailStatus } from "@rg/saves";
 import type { Db } from "./db.js";
+import { EXTRACT_MODEL_DEFAULT } from "./saves-relay.js";
+import { videoOfTrail } from "./saves-video.js";
 
 const { savedPosts, importEvents, importBlobs, savedPostMoves, personalMoves } = schema;
 
@@ -118,6 +120,11 @@ export async function readPostTrail(db: Db, userId: string, postId: string): Pro
       origin: p.origin ?? null,
       durationSec: p.durationSec ?? null,
       videoSeen: p.videoSeen ?? null,
+      video: videoOfTrail(
+        { source: p.source, status: p.status, durationSec: p.durationSec ?? null, videoSeen: p.videoSeen ?? null, watchVideo: p.watchVideo ?? null },
+        links.some((l) => l.status === "saved"),
+        EXTRACT_MODEL_DEFAULT,
+      ),
     },
     account: {
       kind: extraction?.kind ?? null,
