@@ -10,7 +10,7 @@ import { WATCH_MAX_STEPS, WATCH_NAME_MAX, WATCH_OVERVIEW_MAX, WATCH_STAMP_MAX, t
 import type { Step } from "@rg/session-engine";
 import type { BuildPayload, ExerciseSlice } from "../src/services/session-build.js";
 import { EXERCISES as LIBRARY } from "@rg/exercise-library";
-import { cutAtWord, programStamp, watchNameOf, watchStepsFromBuild, type WatchPlanDeps } from "../src/services/watch-push.js";
+import { cutAtWord, programStamp, watchNameOf, watchStepMoves, watchStepsFromBuild, type WatchPlanDeps } from "../src/services/watch-push.js";
 
 const GOBLET_CATALOG_ID = "4258276155475001301";
 
@@ -83,16 +83,38 @@ describe("watchStepsFromBuild — targets", () => {
 });
 
 describe("watchStepsFromBuild — sides, rests and names", () => {
-  it("Left then Right → two steps, sides left/right, overviews naming the side", () => {
+  it("Left then Right → one hold timed for both, saying so in its name and each side's share in its overview", () => {
     const plan = watchStepsFromBuild(
       build([step({ kind: "timed", exerciseId: "sidePlank", side: "Left", seconds: 30 }), step({ kind: "timed", exerciseId: "sidePlank", side: "Right", seconds: 30 })]),
       deps,
     );
-    expect(plan.steps.map((s) => s.side)).toEqual(["left", "right"]);
-    // The watch's step screen shows the name only (owner, 2026-10-10): the side is in it; the overview keeps it too.
-    expect(plan.steps.map((s) => s.name)).toEqual(["Side plank (L)", "Side plank (R)"]);
-    expect(plan.steps[0]!.overview).toBe("left side · Hips high.");
-    expect(plan.steps[1]!.overview).toBe("right side · Hips high.");
+    // The watch's step screen shows the name only (owner, 2026-10-10): a timer for both sides says so there.
+    expect(plan.steps.map((s) => [s.name, s.side, s.target, s.overview])).toEqual([
+      ["Side plank (L+R)", null, { kind: "hold", seconds: 60 }, "30 s each side · Hips high."],
+    ]);
+  });
+
+  it("each set of Left and Right is its own step, its rest on it", () => {
+    const pair = (setIndex: number) => [
+      step({ kind: "timed", exerciseId: "sidePlank", side: "Left", seconds: 30, setIndex }),
+      step({ kind: "timed", exerciseId: "sidePlank", side: "Right", seconds: 30, setIndex }),
+    ];
+    const plan = watchStepsFromBuild(build([...pair(0), rest(45), ...pair(1)]), deps);
+    expect(plan.steps.map((s) => [s.target, s.restSeconds])).toEqual([
+      [{ kind: "hold", seconds: 60 }, 45],
+      [{ kind: "hold", seconds: 60 }, 0],
+    ]);
+  });
+
+  it("a Left window never joins the Right of another move, or of another set", () => {
+    const left = step({ kind: "timed", exerciseId: "sidePlank", side: "Left", seconds: 30 });
+    const otherMove = watchStepsFromBuild(build([left, step({ kind: "timed", exerciseId: "splitSquat", side: "Right", seconds: 30 })]), deps);
+    expect(otherMove.steps.map((s) => [s.side, s.target])).toEqual([
+      ["left", { kind: "hold", seconds: 30 }],
+      ["right", { kind: "hold", seconds: 30 }],
+    ]);
+    const otherSet = watchStepsFromBuild(build([left, step({ kind: "timed", exerciseId: "sidePlank", side: "Right", seconds: 30, setIndex: 1 })]), deps);
+    expect(otherSet.steps.map((s) => s.side)).toEqual(["left", "right"]);
   });
 
   it("consecutive rests add onto the previous step (capped at 900); a leading rest is dropped", () => {
@@ -137,32 +159,28 @@ describe("watchStepsFromBuild — sides, rests and names", () => {
   });
 });
 
-describe("watchStepsFromBuild — a one-sided set is a Left/Right pair (audit W-1)", () => {
-  // The engine prices a unilateral set as both sides (`setSeconds` × 2) and the player says "8 each side"; only a
-  // timed window carries its side. One watch step would prescribe half the work — the coach lane's lesson (d52833e).
-  it("a unilateral move's set with no side → left then right: same move, target and weight; the rest on the right", () => {
+describe("watchStepsFromBuild — a two-sided move is one step (owner, 2026-11-05)", () => {
+  // "I usually assume its one": one step is the whole move. The work stays whole in it: the engine prices a unilateral set
+  // as both sides (`setSeconds` × 2) and the player says "8 each side", so its reps stay the count per side.
+  it("a unilateral move's set with no side → one step: its reps per side, weight and rest", () => {
     const plan = watchStepsFromBuild(build([step({ exerciseId: "oneArmRow", target: { reps: 8, w: { v: 25, u: "lb" } } }), rest(75)]), deps);
-    const pair = { originId: "0", target: { kind: "reps", reps: 8 }, grams: 11_340 };
     expect(plan.steps).toEqual([
-      { ...pair, name: "One-arm row (L)", restSeconds: 0, overview: "left side · The shoulder blade moves.", side: "left" },
-      { ...pair, name: "One-arm row (R)", restSeconds: 75, overview: "right side · The shoulder blade moves.", side: "right" },
+      { originId: "0", target: { kind: "reps", reps: 8 }, grams: 11_340, name: "One-arm row (L+R)", restSeconds: 75, overview: "each side · The shoulder blade moves.", side: null },
     ]);
   });
 
-  it("a bodyweight one-sided hold set is a pair too; so is a one-sided set of a move the catalog holds", () => {
+  it("a one-sided set on seconds runs for both; a one-sided set of a move the catalog holds is one step too", () => {
     const plan = watchStepsFromBuild(
       build([step({ exerciseId: "splitSquat", target: { secs: 30 } }), step({ exerciseId: "sidePlank", target: { reps: 5 } })]),
       { ...deps, catalogIdByKey: new Map([["T1185", "4258276155475001185"]]) },
     );
     expect(plan.steps.map((s) => [s.name, s.side, s.target, s.grams])).toEqual([
-      ["Split squat hold (L)", "left", { kind: "hold", seconds: 30 }, null],
-      ["Split squat hold (R)", "right", { kind: "hold", seconds: 30 }, null],
-      ["Side Plank (L)", "left", { kind: "reps", reps: 5 }, null],
-      ["Side Plank (R)", "right", { kind: "reps", reps: 5 }, null],
+      ["Split squat hold (L+R)", null, { kind: "hold", seconds: 60 }, null],
+      ["Side Plank (L+R)", null, { kind: "reps", reps: 5 }, null],
     ]);
   });
 
-  it("stays one step: an alternating or bilateral move's set, a set that names its side, a timed window", () => {
+  it("keeps its own form: an alternating or bilateral move's set, a set that names its side, a lone window", () => {
     const plan = watchStepsFromBuild(
       build([
         step({ exerciseId: "deadBug", target: { reps: 10 } }),
@@ -175,11 +193,17 @@ describe("watchStepsFromBuild — a one-sided set is a Left/Right pair (audit W-
     expect(plan.steps.map((s) => s.side)).toEqual([null, null, "left", "right"]);
   });
 
-  it("the pair counts as two steps toward the watch's limit", () => {
+  it("it counts as one step toward the watch's limit", () => {
     const sets = (n: number) => Array.from({ length: n }, () => step({ exerciseId: "oneArmRow", target: { reps: 8 } }));
-    expect(watchStepsFromBuild(build(sets(WATCH_MAX_STEPS / 2)), deps).steps).toHaveLength(WATCH_MAX_STEPS);
-    expect(watchStepsFromBuild(build(sets(WATCH_MAX_STEPS / 2)), deps).refusal).toBeNull();
-    expect(watchStepsFromBuild(build(sets(WATCH_MAX_STEPS / 2 + 1)), deps).refusal).toBe("too_long");
+    expect(watchStepsFromBuild(build(sets(WATCH_MAX_STEPS)), deps).steps).toHaveLength(WATCH_MAX_STEPS);
+    expect(watchStepsFromBuild(build(sets(WATCH_MAX_STEPS)), deps).refusal).toBeNull();
+    expect(watchStepsFromBuild(build(sets(WATCH_MAX_STEPS + 1)), deps).refusal).toBe("too_long");
+  });
+
+  it("the layout a copy sent before still has lines up with its own walk: a pair per one-sided set", () => {
+    const steps = build([step({ exerciseId: "oneArmRow", target: { reps: 8 } }), step({ target: { reps: 8 } })]);
+    expect(watchStepMoves(steps)).toEqual(["oneArmRow", "gobletSquat"]);
+    expect(watchStepMoves(steps, "pair")).toEqual(["oneArmRow", "oneArmRow", "gobletSquat"]);
   });
 });
 
@@ -202,8 +226,7 @@ describe("watchStepsFromBuild — a long name, and one watch name per move (audi
     );
     expect(plan.steps.map((s) => [s.name, s.overview])).toEqual([
       ["Child's pose", `forehead on stacked hands · ${CUE}`],
-      ["Supine hip shake (L)", "left side · hands under sacrum · Tiny movements."],
-      ["Supine hip shake (R)", "right side · hands under sacrum · Tiny movements."],
+      ["Supine hip shake (L+R)", "each side · hands under sacrum · Tiny movements."],
     ]);
   });
 
@@ -238,6 +261,8 @@ describe("watchStepsFromBuild — a long name, and one watch name per move (audi
       expect(s.name.endsWith(" (L)"), s.name).toBe(s.side === "left");
       expect(s.name.endsWith(" (R)"), s.name).toBe(s.side === "right");
     }
+    // Every one-sided move says both sides, and nothing else does: an alternating move is one step with no label.
+    steps.forEach((s, i) => expect(s.name.endsWith(" (L+R)"), s.name).toBe(LIBRARY[i]!.laterality === "unilateral"));
     const names = steps.filter((s) => s.side !== "right").map((s) => s.name.toLowerCase());
     expect(names).toHaveLength(LIBRARY.length);
     expect(new Set(names).size).toBe(LIBRARY.length);
@@ -246,18 +271,18 @@ describe("watchStepsFromBuild — a long name, and one watch name per move (audi
 
 describe("watchStepsFromBuild — the side in the step's name (owner, 2026-10-10)", () => {
   // On the watch the step screen shows the name, never the overview: "Floor press" six times in a row told the owner
-  // nothing. Each one-sided step's name ends " (L)" or " (R)"; the move's name is cut first (at a word, whole
-  // characters, never on a dangling word) so name and label fit in 30.
+  // nothing. A two-sided step's name ends " (L+R)", a step of one fixed side's " (L)" or " (R)"; the move's name is cut
+  // first (at a word, whole characters, never on a dangling word) so name and label fit in 30.
   const one = (id: string, name: string, laterality = "unilateral") => slice(id, name, "Cue.", laterality);
   const SIDED: Record<string, ExerciseSlice> = {
     ...EXERCISES,
-    footUp: one("footUp", "Foot-up rotation breathing"), // 26: exactly 30 with the label
+    footUp: one("footUp", "Foot-up rotation breaths"), // 24: exactly 30 with the label
     hipFlexor: one("hipFlexor", "Half-kneeling hip flexor reach"), // 30: the move's name must give way
     needle: one("needle", "Thread the needle under the bench"), // the cut would end on "under"
     sideA: one("sideA", "Side-lying stretch · arm overhead long"),
     sideB: one("sideB", "Side-lying stretch · knee bent forward"),
-    footA: one("footA", "Foot-up rotation breathing · slow"),
-    footB: one("footB", "Foot-up rotation breathing · fast"),
+    footA: one("footA", "Foot-up rotation breaths · slow"),
+    footB: one("footB", "Foot-up rotation breaths · fast"),
     pigeonFlat: one("pigeonFlat", "Pigeon", "bilateral"),
     pigeonSide: one("pigeonSide", "Pigeon · hips square to the front"),
     lotus: one("lotus", "🧘🏽‍♀️".repeat(5)), // one 35-unit word of 7-unit graphemes
@@ -265,45 +290,32 @@ describe("watchStepsFromBuild — the side in the step's name (owner, 2026-10-10
   const namesOf = (ids: string[]) =>
     watchStepsFromBuild(build(ids.map((id) => step({ exerciseId: id, target: { reps: 5 } })), SIDED), deps).steps.map((s) => s.name);
 
-  it("a name with room keeps it whole: 'Foot-up rotation breathing (L)' is 30", () => {
-    expect(namesOf(["footUp"])).toEqual(["Foot-up rotation breathing (L)", "Foot-up rotation breathing (R)"]);
+  it("a name with room keeps it whole: 'Foot-up rotation breaths (L+R)' is 30", () => {
+    expect(namesOf(["footUp"])).toEqual(["Foot-up rotation breaths (L+R)"]);
   });
 
   it("a longer one is cut at a word first, never ending on a word like 'under'", () => {
-    expect(namesOf(["hipFlexor", "needle"])).toEqual([
-      "Half-kneeling hip flexor (L)",
-      "Half-kneeling hip flexor (R)",
-      "Thread the needle (L)",
-      "Thread the needle (R)",
-    ]);
+    expect(namesOf(["hipFlexor", "needle"])).toEqual(["Half-kneeling hip flexor (L+R)", "Thread the needle (L+R)"]);
   });
 
   it("whole characters only: a cut inside a run of emoji keeps whole emoji, then the label", () => {
-    const [left] = namesOf(["lotus"]);
-    expect(left).toBe(`${"🧘🏽‍♀️".repeat(3)} (L)`);
-    expect(left!.length).toBeLessThanOrEqual(WATCH_NAME_MAX);
+    const [named] = namesOf(["lotus"]);
+    expect(named).toBe(`${"🧘🏽‍♀️".repeat(3)} (L+R)`);
+    expect(named!.length).toBeLessThanOrEqual(WATCH_NAME_MAX);
   });
 
   it("two moves never share a watch name: the names are made one per move first, then labelled", () => {
     expect(namesOf(["sideA", "sideB", "pigeonFlat", "pigeonSide"])).toEqual([
-      "Side-lying stretch (L)",
-      "Side-lying stretch (R)",
-      "Side-lying stretch (2) (L)",
-      "Side-lying stretch (2) (R)",
+      "Side-lying stretch (L+R)",
+      "Side-lying stretch (2) (L+R)",
       "Pigeon",
-      "Pigeon (2) (L)",
-      "Pigeon (2) (R)",
+      "Pigeon (2) (L+R)",
     ]);
-    // A 26-character name with its " (2)" is cut again so the label still fits.
-    expect(namesOf(["footA", "footB"])).toEqual([
-      "Foot-up rotation breathing (L)",
-      "Foot-up rotation breathing (R)",
-      "Foot-up rotation (2) (L)",
-      "Foot-up rotation (2) (R)",
-    ]);
+    // A 24-character name with its " (2)" is cut again so the label still fits.
+    expect(namesOf(["footA", "footB"])).toEqual(["Foot-up rotation breaths (L+R)", "Foot-up rotation (2) (L+R)"]);
   });
 
-  it("a ONE-SIDED move the athlete's catalog holds goes as free text, named with the catalog's English name and its side", () => {
+  it("a ONE-SIDED move the athlete's catalog holds goes as free text, named with the catalog's English name and its sides", () => {
     // A catalog step's name is COROS's own and cannot carry a label, so a one-sided move leaves the catalog. Its name is
     // the one the watch would have shown (COROS_EXERCISE_NAMES), not the library's.
     const ROW_ID = "4258276155475001309";
@@ -322,14 +334,12 @@ describe("watchStepsFromBuild — the side in the step's name (owner, 2026-10-10
       catalogDeps,
     );
     expect(plan.steps.map((s) => [s.originId, s.name, s.side, s.grams, s.restSeconds])).toEqual([
-      [GOBLET_CATALOG_ID, "T1301", null, null, 0], // two-sided: stays the catalog step
-      ["0", "One Arm Dumbbell Row (L)", "left", 11_340, 0],
-      ["0", "One Arm Dumbbell Row (R)", "right", 11_340, 60],
-      ["0", "Side Plank (L)", "left", null, 0],
-      ["0", "Side Plank (R)", "right", null, 0],
+      [GOBLET_CATALOG_ID, "T1301", null, null, 0], // symmetric: stays the catalog step
+      ["0", "One Arm Dumbbell Row (L+R)", null, 11_340, 60],
+      ["0", "Side Plank (L+R)", null, null, 0],
     ]);
-    expect(plan.steps[1]!.overview).toBe("left side · The shoulder blade moves.");
-    expect(plan.freeText).toBe(4);
+    expect(plan.steps[1]!.overview).toBe("each side · The shoulder blade moves.");
+    expect(plan.freeText).toBe(2);
   });
 
   it("a catalog move's long English name is cut like any other to leave room for the label", () => {
@@ -337,7 +347,7 @@ describe("watchStepsFromBuild — the side in the step's name (owner, 2026-10-10
       catalogIdByKey: new Map([["T1023", "4258276155475001023"]]),
       keyOf: (id) => (id === "oneArmRow" ? "T1023" : null), // "Seated Dumbbell Concentration Curls", 35 characters
     });
-    expect(plan.steps.map((s) => s.name)).toEqual(["Seated Dumbbell (L)", "Seated Dumbbell (R)"]);
+    expect(plan.steps.map((s) => s.name)).toEqual(["Seated Dumbbell (L+R)"]);
   });
 
   it("a one-sided move the catalog does NOT hold keeps the library's name", () => {
@@ -345,7 +355,7 @@ describe("watchStepsFromBuild — the side in the step's name (owner, 2026-10-10
       catalogIdByKey: new Map(),
       keyOf: (id) => (id === "oneArmRow" ? "T1309" : null),
     });
-    expect(plan.steps.map((s) => s.name)).toEqual(["One-arm row (L)", "One-arm row (R)"]);
+    expect(plan.steps.map((s) => s.name)).toEqual(["One-arm row (L+R)"]);
   });
 
   it("two moves never share a name: a one-sided catalog move named like a two-sided one the session shows gets (2)", () => {
@@ -353,7 +363,7 @@ describe("watchStepsFromBuild — the side in the step's name (owner, 2026-10-10
       build([step({ exerciseId: "oneArmRow", target: { reps: 8 } }), step({ target: { reps: 8 } })]),
       { catalogIdByKey: new Map([["T1301", GOBLET_CATALOG_ID]]), keyOf: (id) => (id === "oneArmRow" || id === "gobletSquat" ? "T1301" : null) },
     );
-    expect(plan.steps.map((s) => s.name)).toEqual(["Goblet Squat (2) (L)", "Goblet Squat (2) (R)", "T1301"]);
+    expect(plan.steps.map((s) => s.name)).toEqual(["Goblet Squat (2) (L+R)", "T1301"]);
   });
 
   it("a set that names its side and a per-side window are labelled too; an alternating move is not", () => {

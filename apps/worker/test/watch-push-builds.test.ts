@@ -24,6 +24,7 @@ import {
   takeOffWatch,
   unlockSentBuild,
   watchPreview,
+  watchStepMoves,
   watchStepsFromBuild,
   type WatchPlanDeps,
 } from "../src/services/watch-push.js";
@@ -72,27 +73,30 @@ async function seedProgramAs(id: string): Promise<string> {
 const lateralityOf = new Map(EXERCISES.map((e) => [e.id, e.laterality]));
 
 /**
- * The most watch steps one build can hold under the engine's caps (the watch's real limit is 200): every timed item
- * one-sided (a left and a right step) and every set one-sided (a pair). Per mode: the timed blocks' item caps and the
- * care cap; the core lifts × the most sets any move takes; and the accessory block's widest format (two moves × sets
- * or ladder rungs, one-sided; a circuit's moves × rounds, never one-sided). Build mode is the widest: 70.
+ * The most watch steps one build can hold under the engine's caps (the watch's real limit is 200), a two-sided move's
+ * set one step. Per mode: the timed blocks' item caps and the care cap; the core lifts × the most sets any move takes;
+ * and the accessory block's widest format (two moves × sets or ladder rungs; a circuit's moves × rounds).
  */
 const CAP_BOUND = Math.max(
   ...MODE_IDS.map((mode) => {
     const maxSets = Math.max(...EXERCISES.map((e) => e.dose.sets?.[1] ?? 3));
     const timedItems = (["arrive", "prep", "cooldown"] as const).reduce((n, b) => n + (SKELETON.max[mode][b] ?? 0), 0) + TMJ.care!.block.max[mode];
-    const core = MODES[mode].coreCount[1] * maxSets * 2;
+    const core = MODES[mode].coreCount[1] * maxSets;
     const accessory = (SKELETON.shares[mode].accessory ?? 0) === 0 ? 0 : Math.max(
       ...FORMATS.filter((f) => f.roles.includes("accessory") && MODES[mode].formats.includes(f.id)).map((f) =>
-        f.id === "circuit" ? f.count[1] * (f.rounds?.[1] ?? 1) : f.count[1] * (f.rungs?.length ?? maxSets) * 2),
+        f.id === "circuit" ? f.count[1] * (f.rounds?.[1] ?? 1) : f.count[1] * (f.rungs?.length ?? maxSets)),
     );
-    return timedItems * 2 + core + accessory;
+    return timedItems + core + accessory;
   }),
 );
 
-/** A set the engine prices as both sides (`setSeconds` × 2) but leaves unsided: one watch step per side. */
+/** A set the engine prices as both sides (`setSeconds` × 2) but leaves unsided: one watch step for both. */
 const oneSidedSets = (build: BuildPayload): Step[] =>
   build.steps.filter((s) => s.kind === "set" && s.side === null && s.exerciseId && lateralityOf.get(s.exerciseId) === "unilateral");
+
+/** A Right window: it goes to the watch inside its Left's step, so it is no step of its own. */
+const rightWindows = (build: BuildPayload): Step[] =>
+  build.steps.filter((s) => s.kind === "timed" && s.side === "Right" && s.exerciseId && build.exercises[s.exerciseId]);
 
 async function realDeps(): Promise<{ catalog: Map<string, string>; deps: WatchPlanDeps }> {
   const catalog = await exerciseNameMap(db);
@@ -112,11 +116,11 @@ describe("weights on the watch are kg; the preview carries the athlete's pounds 
     const preview = await watchPreview(db, switchOn(), userId, workoutId, { today: DAY, now: NOON, prefs });
     // The fixed-seed build's superset opens with a 25 lb suitcase deadlift (since the 150-move library), so the row
     // this test is about, supportedRow's, is found by its catalog name rather than as the first 11,340 g row.
-    const row = preview.steps.find((s) => s.name === "One Arm Dumbbell Row (L)")!;
-    // T1309, one-sided: free text under the catalog's English name, its side in the name (owner, 2026-10-10).
-    expect(row).toMatchObject({ name: "One Arm Dumbbell Row (L)", freeText: true, grams: 11_340, load: { v: 25, u: "lb" } });
+    const row = preview.steps.find((s) => s.name === "One Arm Dumbbell Row (L+R)")!;
+    // T1309, one-sided: free text under the catalog's English name, its sides in the name (owner, 2026-10-10, 2026-11-05).
+    expect(row).toMatchObject({ name: "One Arm Dumbbell Row (L+R)", freeText: true, grams: 11_340, load: { v: 25, u: "lb" } });
     const weighted = preview.steps.filter((s) => s.grams !== null);
-    expect(weighted.length).toBe(typed.length + oneSidedSets(build).filter((s) => s.target?.w).length); // a pair weighs twice
+    expect(weighted.length).toBe(typed.length - rightWindows(build).filter((s) => s.target?.w).length); // a window's pair weighs once
     for (const s of weighted) {
       expect(s.load?.u).toBe("lb");
       expect(Math.abs(s.load!.v * 453.59237 - s.grams!)).toBeLessThan(0.5 * 453.59237); // the same weight, to the half pound
@@ -138,8 +142,8 @@ describe("weights on the watch are kg; the preview carries the athlete's pounds 
   });
 });
 
-describe("a one-sided set on the watch (W-1)", () => {
-  it("the fixture's build: each one-sided set is a left/right pair in one container, the rest on the right", async () => {
+describe("a two-sided move on the watch (owner, 2026-11-05)", () => {
+  it("the fixture's build: each one-sided set or Left and Right window is one step in its own container, its name saying both", async () => {
     const workoutId = await seedSlot(db, userId, programId, DAY);
     const build = (await buildToday(db, userId, prefs, workoutId)).build!;
     const oneSided = oneSidedSets(build);
@@ -148,22 +152,17 @@ describe("a one-sided set on the watch (W-1)", () => {
     const { catalog, deps } = await realDeps();
     const plan = watchStepsFromBuild(build, deps);
     const work = build.steps.filter((s) => s.kind !== "rest" && s.exerciseId && build.exercises[s.exerciseId]);
-    expect(plan.steps).toHaveLength(work.length + oneSided.length);
-    const lefts = plan.steps.flatMap((s, i) => (s.side === "left" ? [i] : []));
-    for (const i of lefts) {
-      const [left, right] = [plan.steps[i]!, plan.steps[i + 1]!];
-      expect(right.side).toBe("right");
-      // The same move, target and weight; only the side differs — in the overview, and in a free-text step's name.
-      const same = (s: typeof left, label: RegExp) => ({ ...s, name: s.name.replace(label, ""), side: null, overview: "", restSeconds: 0 });
-      expect(same(right, / \(R\)$/)).toEqual(same(left, / \(L\)$/));
-      // Every one-sided step is free text, its side in its name — a catalog move's too (owner, 2026-10-10).
-      expect([left.originId, right.originId]).toEqual(["0", "0"]);
-      expect([left.name.endsWith(" (L)"), right.name.endsWith(" (R)")]).toEqual([true, true]);
-      expect(left.overview.startsWith("left side")).toBe(true);
-      expect(right.overview.startsWith("right side")).toBe(true);
+    expect(plan.steps).toHaveLength(work.length - rightWindows(build).length);
+    expect(plan.steps.every((s) => s.side === null)).toBe(true);
+    const both = plan.steps.filter((s) => s.name.endsWith(" (L+R)"));
+    expect(both).toHaveLength(oneSided.length + rightWindows(build).length);
+    for (const s of both) {
+      // Free text, its sides in its name — a catalog move's too (owner, 2026-10-10) — and each side's share in the overview.
+      expect(s.originId).toBe("0");
+      expect(s.overview).toMatch(/^(\d+ s )?each side/);
     }
 
-    // The wire: one sets-1 container per pair, two children (the spike-proven per-side shape).
+    // The wire: one sets-1 container per step, one child each.
     const program = buildProgramWatchProgram(
       { happenDay: "20261009", name: "Strength program — 2026-10-09", session: { kind: "program_watch", title: "Strength program", steps: plan.steps } },
       catalog,
@@ -171,21 +170,15 @@ describe("a one-sided set on the watch (W-1)", () => {
     const exercises = program.exercises as Array<Record<string, unknown>>;
     const containers = exercises.filter((e) => e.exerciseType === 0);
     const childrenOf = (id: unknown) => exercises.filter((e) => e.exerciseType !== 0 && String(e.groupId) === String(id));
-    expect(containers).toHaveLength(plan.steps.length - lefts.length);
-    expect(containers.filter((c) => childrenOf(c.id).length === 2)).toHaveLength(lefts.length);
+    expect(containers).toHaveLength(plan.steps.length);
+    expect(containers.every((c) => childrenOf(c.id).length === 1)).toBe(true);
     expect(containers.every((c) => Number(c.sets) === 1)).toBe(true);
 
-    // The preview is the wire: the pair shows as two rows, the rest only under the right one.
+    // The preview is the wire: the row reads as the watch's step screen will, its sides in the name (owner, 2026-10-10).
     const preview = await watchPreview(db, switchOn(), userId, workoutId, { today: DAY, now: NOON, prefs });
     expect(preview.steps).toHaveLength(plan.steps.length);
-    for (const i of lefts) {
-      expect(preview.steps[i]!.overview.startsWith("left side")).toBe(true);
-      expect(preview.steps[i]!.restSeconds).toBe(0);
-      expect(preview.steps[i + 1]!.overview.startsWith("right side")).toBe(true);
-      // The row reads as the watch's step screen will: its side in the name (owner, 2026-10-10).
-      expect([preview.steps[i]!.name.endsWith(" (L)"), preview.steps[i + 1]!.name.endsWith(" (R)")]).toEqual([true, true]);
-    }
-    expect(preview.steps.filter((s) => / \((L|R)\)$/.test(s.name))).toHaveLength(lefts.length * 2);
+    expect(preview.steps.filter((s) => s.name.endsWith(" (L+R)"))).toHaveLength(both.length);
+    expect(preview.steps.filter((s) => / \((L|R)\)$/.test(s.name))).toEqual([]);
 
     // One builder: Send with this preview's digest queues exactly these names.
     await sendToWatch(db, switchOn(), userId, workoutId, build.buildId, { today: DAY, now: NOON, prefs }, { digest: preview.digest });
@@ -204,7 +197,7 @@ describe("a one-sided set on the watch (W-1)", () => {
     const { catalog, deps } = await realDeps();
     const rowId = [...catalog].find(([, key]) => key === "T1309")![0];
     const oldSteps = watchStepsFromBuild(build, deps).steps.map((s) => {
-      const name = s.name.replace(/ \((L|R)\)$/, "");
+      const name = s.name.replace(/ \((L\+R|L|R)\)$/, "");
       return name === COROS_EXERCISE_NAMES.T1309 ? { ...s, originId: rowId, name: "T1309" } : { ...s, name };
     });
     const oldDigest = await pushDigest({
@@ -231,18 +224,18 @@ describe("a one-sided set on the watch (W-1)", () => {
         const plan = watchStepsFromBuild(s.build!, deps);
         expect(plan.refusal).toBeNull();
         const work = s.build!.steps.filter((x) => x.kind !== "rest" && x.exerciseId && s.build!.exercises[x.exerciseId]);
-        expect(plan.steps).toHaveLength(work.length + oneSidedSets(s.build!).length);
+        expect(plan.steps).toHaveLength(work.length - rightWindows(s.build!).length);
         most = Math.max(most, plan.steps.length);
         fewestOneSided = Math.min(fewestOneSided, oneSidedSets(s.build!).length);
         // W-6: one watch name per move — its side label aside — and never one name for two moves.
-        const oneSided = new Set(oneSidedSets(s.build!));
-        const stepMoves = work.flatMap((x) => (oneSided.has(x) ? [x.exerciseId!, x.exerciseId!] : [x.exerciseId!]));
+        const stepMoves = watchStepMoves(s.build!);
+        expect(stepMoves).toHaveLength(plan.steps.length);
         const movesOf = new Map<string, Set<string>>();
         const namesOf = new Map<string, Set<string>>();
         plan.steps.forEach((x, i) => {
           const name = x.name.toLowerCase();
           movesOf.set(name, (movesOf.get(name) ?? new Set()).add(stepMoves[i]!));
-          namesOf.set(stepMoves[i]!, (namesOf.get(stepMoves[i]!) ?? new Set()).add(name.replace(/ \((l|r)\)$/, "")));
+          namesOf.set(stepMoves[i]!, (namesOf.get(stepMoves[i]!) ?? new Set()).add(name.replace(/ \((l\+r|l|r)\)$/, "")));
         });
         expect([...movesOf.values()].every((m) => m.size === 1)).toBe(true);
         expect([...namesOf.values()].every((n) => n.size === 1)).toBe(true);

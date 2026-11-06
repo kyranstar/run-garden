@@ -105,7 +105,7 @@ describe("a hold on an alternating move", () => {
     const flagged = deriveDoc(holds("thoracicFlow", { holdSec: 60, perSide: true }), EXERCISES);
     expect(flagged.estimatedMinutes).toBe(once.estimatedMinutes);
     expect(stepsToWatch(holds("thoracicFlow", { holdSec: 60, perSide: true }), EXERCISES)).toBe(1);
-    // A one-sided hold is still two.
-    expect(stepsToWatch(holds("figureFour", { holdSec: 30, perSide: true }), EXERCISES)).toBe(2);
+    // A one-sided hold is one too, timed for both sides (owner, 2026-11-05).
+    expect(stepsToWatch(holds("figureFour", { holdSec: 30, perSide: true }), EXERCISES)).toBe(1);
   });
 });

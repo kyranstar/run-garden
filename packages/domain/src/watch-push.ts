@@ -14,9 +14,10 @@ import { z } from "zod";
 export const WATCH_NAME_MAX = 30;
 /**
  * What a one-sided step's name ends with (owner, 2026-10-10): the watch's step screen shows the name and never the
- * overview, so "Floor press" six times in a row said nothing of the side. The move's name is cut to leave room.
+ * overview, so "Floor press" six times in a row said nothing of the side. The move's name is cut to leave room. `both`:
+ * a two-sided move is one step (owner, 2026-11-05), and a timer that covers both sides has to say so where it shows.
  */
-export const WATCH_SIDE_LABEL = { left: " (L)", right: " (R)" } as const;
+export const WATCH_SIDE_LABEL = { left: " (L)", right: " (R)", both: " (L+R)" } as const;
 /** A step overview (the side and the first cue) is at most this long (ruling 3-R6). */
 export const WATCH_OVERVIEW_MAX = 80;
 /** The longest stamp proven to round-trip live (the spike's), ruling 3-R5. */
@@ -45,7 +46,7 @@ export const programWatchStepSchema = z
     grams: z.number().int().min(0).max(500_000).nullable(),
     restSeconds: z.number().int().min(0).max(900),
     overview: z.string().max(WATCH_OVERVIEW_MAX),
-    /** A per-side pair: a "left" step directly followed by its "right" step shares one container. */
+    /** A step of one side only. A copy sent before 2026-11-05 holds per-side pairs: a "left" step directly followed by its "right" step shares one container. */
     side: z.enum(["left", "right"]).nullable(),
   })
   .strict();

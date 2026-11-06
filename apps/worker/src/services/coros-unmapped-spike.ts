@@ -72,8 +72,7 @@ const STEP_LABELS: Array<{ step: string; about: string }> = [
   { step: "a", about: "free text on originId 0" },
   { step: "b", about: "generic Training step (T1121), renamed" },
   { step: "c", about: "catalog exercise with an overview cue" },
-  { step: "d1", about: "per-side pair, first" },
-  { step: "d2", about: "per-side pair, second" },
+  { step: "d", about: "per-side work, one step" },
 ];
 
 export interface SpikeStepReport {

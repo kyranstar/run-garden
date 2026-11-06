@@ -46,23 +46,19 @@ describe("Task 13's new moves on the watch", () => {
     const ids = [...Object.keys(CATALOG), ...FREE];
     const doc = workoutDocSchema.parse({
       version: 1, title: "New moves", intent: { summary: "The new moves.", goals: [], focus: [], effort: "maintain" }, source: { kind: "coach" },
-      // One set each; a one-sided move plays each side as its own step, its side on the name.
+      // One set each; a one-sided move is one step too, its sides on the name.
       parts: [{ purpose: "main", format: "straight", items: ids.map((libraryId) => ({ kind: "exercise", libraryId, dose: { sets: 1, reps: 5, restSec: 0 } })) }],
     });
     const plan = watchStepsFromDoc(doc, EXERCISES, deps);
     expect(plan.refusal).toBeNull();
     const sided = (id: string) => EXERCISES.find((e) => e.id === id)!.laterality === "unilateral";
-    expect(plan.steps).toHaveLength(ids.reduce((n, id) => n + (sided(id) ? 2 : 1), 0));
-    // The three catalog lifts are both-sided, so each is one catalog step under its T-code.
+    expect(plan.steps).toHaveLength(ids.length);
+    // The three catalog lifts are symmetric, so each is one catalog step under its T-code.
     expect(plan.steps.filter((s) => s.originId !== "0").map((s) => s.name)).toEqual(Object.values(CATALOG));
     // Every other move as free text: its library name, cut to the watch's room as the push cuts any name (leaving a
     // one-sided move room for its side label), in the build's order.
-    const room = WATCH_NAME_MAX - Math.max(WATCH_SIDE_LABEL.left.length, WATCH_SIDE_LABEL.right.length);
-    const expected = FREE.flatMap((id) =>
-      sided(id)
-        ? [`${watchNameOf(name(id), room).name}${WATCH_SIDE_LABEL.left}`, `${watchNameOf(name(id), room).name}${WATCH_SIDE_LABEL.right}`]
-        : [watchNameOf(name(id)).name],
-    );
+    const room = WATCH_NAME_MAX - WATCH_SIDE_LABEL.both.length;
+    const expected = FREE.map((id) => (sided(id) ? `${watchNameOf(name(id), room).name}${WATCH_SIDE_LABEL.both}` : watchNameOf(name(id)).name));
     const free = plan.steps.filter((s) => s.originId === "0");
     expect(plan.freeText).toBe(free.length);
     expect(free.map((s) => s.name)).toEqual(expected);

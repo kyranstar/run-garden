@@ -109,9 +109,9 @@ describe("watchCoverage names the reason", () => {
         { name: "Squat", sets: 3, reps: 8, originId: "e1" },
       ]),
     );
-    // The work itself is preserved (per-side is written as two identical steps),
-    // so this is `partial` and not `none` — what the watch cannot do is tell the
-    // athlete mid-set which side they are on.
+    // The work itself is preserved (per-side is one step: its reps per side, a
+    // hold timed for both), so this is `partial` and not `none` — what the watch
+    // cannot do is tell the athlete mid-set which side they are on.
     expect(view.coverage).toBe("partial");
     expect(view.gaps).toEqual([{ code: "cues_ride_as_text", count: 1 }]);
   });

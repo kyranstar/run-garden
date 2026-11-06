@@ -228,6 +228,15 @@ describe("docFromStages — COROS strength", () => {
     expect(trapBar).toEqual({ kind: "free_exercise", name: "Trap bar deadlift", dose: { sets: 3, load: { typed: "0 kg", kg: 0 }, restSec: 120 } });
   });
 
+  it("a hold sent as one step reads back as each side's share; a copy sent as a pair, its hold per side already, stays as it was", () => {
+    const hold = (durationSeconds: number, note: string) =>
+      docFromStages([{ id: "s1", order: 1, parentStageId: null, kind: "work", label: "Side plank", durationType: "time", durationSeconds, targetType: "none", note }], { title: "Holds", sport: "strength", corosKeyToLibraryId }).doc.parts[0]!.items[0];
+    expect(hold(60, "30s each side")).toMatchObject({ dose: { holdSec: 30, perSide: true } });
+    expect(hold(61, "30s each side")).toMatchObject({ dose: { holdSec: 61, perSide: true } });
+    expect(hold(45, "each side")).toMatchObject({ dose: { holdSec: 45, perSide: true } });
+    expect(hold(30, "30s each side")).toMatchObject({ dose: { holdSec: 30, perSide: true } });
+  });
+
   it("keeps the COROS name of a mapped move and the containers' names", () => {
     expect(kept).toContainEqual(expect.objectContaining({ at: "stage 2", field: "label", value: "Goblet Squat" }));
     expect(kept.filter((k) => k.field === "label" && k.value === "Group")).toHaveLength(3);

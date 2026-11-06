@@ -39,7 +39,7 @@
 import type { PlannedStage, WorkoutDoc, WorkoutDose, WorkoutItem, WorkoutPart } from "@rg/domain";
 import { RUN_EFFORTS } from "@rg/domain";
 import {
-  bounded, currentId, ECCENTRIC_WORDS, loadOfKg, MAX_LOAD_KG, openBlock, OPEN_BLOCK_NAME, PER_SIDE_WORDS, withSides, within,
+  bounded, currentId, ECCENTRIC_WORDS, loadOfKg, MAX_LOAD_KG, openBlock, OPEN_BLOCK_NAME, PER_SIDE_WORDS, SIDE_SHARE_WORDS, withSides, within,
   type Converted, type KeptEntry, type LibraryIndex,
 } from "./shared.js";
 
@@ -380,6 +380,10 @@ function moveItem(ctx: Ctx, s: PlannedStage, sets: number | undefined): WorkoutI
   // The note is the only carrier of per-side work and a slow lowering: both read, the words kept as the cue.
   if (s.note !== undefined) {
     if (PER_SIDE_WORDS.test(s.note)) dose.perSide = true;
+    // A hold sent as one step runs for both sides and its note says each side's share (since 2026-11-05): the dose is the
+    // share. Only when the numbers agree, so a copy sent as a pair, whose hold is already per side, reads as it did.
+    const share = SIDE_SHARE_WORDS.exec(s.note);
+    if (share && dose.holdSec === Number(share[1]) * 2) dose.holdSec = Number(share[1]);
     const ecc = ECCENTRIC_WORDS.exec(s.note);
     if (ecc && Number(ecc[1]) <= 20) dose.tempo = { eccentricSec: Number(ecc[1]) };
   }

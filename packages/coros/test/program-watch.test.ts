@@ -87,7 +87,8 @@ describe("buildProgramWatchProgram — the shape", () => {
     }
   });
 
-  it("is the spike's proven per-side pair shape: same container, same child keys", () => {
+  it("a pair a copy sent before 2026-11-05 still holds keeps the spike's proven shape: same container keys, two children of one child's keys", () => {
+    // A retry re-sends a job's own payload, so an old pair can still reach the wire.
     const spike = buildSpikeProgram({
       happenDay: "20261009",
       name: "RG SPIKE — SAFE TO DELETE 2026-10-09",
@@ -95,17 +96,14 @@ describe("buildProgramWatchProgram — the shape", () => {
       genericTrainingOriginId: GENERIC_ID,
       exerciseOriginId: BIRD_DOG_ID,
     });
-    const spikeGroups = containers(spike);
-    const spikePairGroup = spikeGroups.at(-1)!;
-    const spikePair = children(spike).filter((k) => String(k.groupId) === String(spikePairGroup.id));
+    const spikeGroup = containers(spike).at(-1)!;
+    const spikeChild = children(spike).find((k) => String(k.groupId) === String(spikeGroup.id))!;
     const ourGroup = containers(program)[2]!;
     const ourPair = children(program).filter((k) => String(k.groupId) === String(ourGroup.id));
-    const shapeOf = (g: RawCorosExercise, kids: RawCorosExercise[]) => ({
-      container: Object.fromEntries(Object.entries(wire(g)).filter(([k]) => !["id", "sortNo"].includes(k))),
-      offsets: kids.map((k) => Number(k.sortNo) - Number(g.sortNo)),
-      childKeys: kids.map((k) => Object.keys(wire(k)).sort()),
-    });
-    expect(shapeOf(ourGroup, ourPair)).toEqual(shapeOf(spikePairGroup, spikePair));
+    const containerOf = (g: RawCorosExercise) => Object.fromEntries(Object.entries(wire(g)).filter(([k]) => !["id", "sortNo"].includes(k)));
+    expect(containerOf(ourGroup)).toEqual(containerOf(spikeGroup));
+    expect(ourPair.map((k) => Number(k.sortNo) - Number(ourGroup.sortNo))).toEqual([SUB_SORT, SUB_SORT * 2]);
+    for (const k of ourPair) expect(Object.keys(wire(k)).sort()).toEqual(Object.keys(wire(spikeChild)).sort());
   });
 
   it("a pair with its side in the names — 'X (L)' then 'X (R)' (owner, 2026-10-10) — still shares one container: only the names differ", () => {

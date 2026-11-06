@@ -6,11 +6,11 @@
  * The service part: the preview, Send, Take off, and the state the sheet shows
  * (below the pure part).
  *
- *  - Every work step of the build is one watch step. A timed window is a hold;
- *    a set is its reps, else its seconds, else open. Per-side windows stay two
- *    steps, each overview naming its side, and a one-sided set (a unilateral
- *    move's set with no side) becomes such a Left/Right pair (audit W-1). A
- *    step with a side carries it in its NAME too, " (L)" / " (R)" (owner,
+ *  - Every set of a move is one watch step, whichever sides it works (owner,
+ *    2026-11-05). A timed window is a hold; a set is its reps, else its
+ *    seconds, else open. A two-sided move's set keeps its reps, the count per
+ *    side; a Left and a Right window are one hold timed for both. Its NAME says
+ *    so, " (L+R)", as a step of one fixed side says " (L)" / " (R)" (owner,
  *    2026-10-10: the watch's step screen shows no overview).
  *  - A two-sided move whose T-code (`corosKeyOf`, ruling 3-R1) the athlete's
  *    catalog holds goes as that catalog step; every other move goes as free
@@ -161,9 +161,14 @@ function targetOf(s: Step): ProgramWatchStep["target"] {
   return { kind: "open" };
 }
 
+/** What an overview says of a step's sides: a timer for both says each side's share. */
+function sideTextOf(s: Step, side: Step["side"], both: boolean): string | null {
+  if (both) return s.kind === "timed" ? `${Math.round(s.seconds / 2)} s each side` : "each side";
+  return side === "Left" ? "left side" : side === "Right" ? "right side" : null;
+}
+
 /** The side, then the qualifier a long name gave up, then the first cue — at most WATCH_OVERVIEW_MAX characters. */
-function overviewOf(side: Step["side"], qualifier: string | null, cue: string | undefined): string {
-  const sideText = side === "Left" ? "left side" : side === "Right" ? "right side" : null;
+function overviewOf(sideText: string | null, qualifier: string | null, cue: string | undefined): string {
   return cutAtWord([sideText, qualifier, cue?.trim()].filter((p): p is string => Boolean(p)).join(QUALIFIER), WATCH_OVERVIEW_MAX);
 }
 
@@ -183,11 +188,12 @@ export function watchNameOf(libraryName: string, max: number = WATCH_NAME_MAX): 
   return { name, qualifier: null };
 }
 
-/** The room a one-sided move's name leaves for its side label (" (L)" / " (R)"). */
-const SIDE_LABEL_ROOM = Math.max(WATCH_SIDE_LABEL.left.length, WATCH_SIDE_LABEL.right.length);
+/** The room a one-sided move's name leaves for its side label (" (L+R)", " (L)" or " (R)"). */
+const SIDE_LABEL_ROOM = Math.max(WATCH_SIDE_LABEL.left.length, WATCH_SIDE_LABEL.right.length, WATCH_SIDE_LABEL.both.length);
 
-/** A watch step's side label: " (L)", " (R)", or none for a step of no side. */
-const sideLabel = (side: Step["side"]): string => (side === "Left" ? WATCH_SIDE_LABEL.left : side === "Right" ? WATCH_SIDE_LABEL.right : "");
+/** A watch step's side label: " (L+R)" for both sides, " (L)", " (R)", or none for a step of no side. */
+const sideLabel = (side: Step["side"], both: boolean): string =>
+  both ? WATCH_SIDE_LABEL.both : side === "Left" ? WATCH_SIDE_LABEL.left : side === "Right" ? WATCH_SIDE_LABEL.right : "";
 
 /**
  * Each free-text move's watch name — before its side label — and qualifier. Two different moves never share a watch
@@ -219,27 +225,34 @@ function freeTextNames(build: WatchBuild, deps: WatchPlanDeps, sided: ReadonlySe
 }
 
 /**
- * The sides one build step goes to the watch as. A set of a unilateral move with no side is work on BOTH sides — the
- * engine prices it so (`setSeconds` × 2) and the player says "each side" — so it is a Left then a Right step, one lap
- * each, as the coach lane does since 2026-08-17 (audit W-1): one step would prescribe half the work. A timed window
- * already carries its side; an alternating move is one step, as the app shows it.
+ * How a two-sided move's work goes to the watch. `one_step` (owner, 2026-11-05: "I usually assume its one"): a set is one
+ * step and one lap, and its Left and Right windows are one hold. `pair`: a Left then a Right step, one lap each (audit
+ * W-1, 2026-08-17 until then). Nothing is built as a pair now, but a copy sent before holds them, so its review reads it so.
  */
-function sidesOf(s: Step, record: { laterality: string }): Array<Step["side"]> {
-  return s.kind === "set" && s.side === null && record.laterality === "unilateral" ? ["Left", "Right"] : [s.side];
-}
+export type SidesOnWatch = "one_step" | "pair";
 
 type BuildRecord = BuildPayload["exercises"][string];
 
-/** One stop of the build's walk to the watch: a rest, or one watch step — its build step, move and side. */
-type WalkStop = { rest: number } | { rest?: undefined; step: Step; exerciseId: string; record: BuildRecord; side: Step["side"] };
+/** One stop of the build's walk to the watch: a rest, or one watch step — its build step, move, side, and whether it is for both sides. */
+type WalkStop = { rest: number } | { rest?: undefined; step: Step; exerciseId: string; record: BuildRecord; side: Step["side"]; both: boolean };
+
+/** A set on both sides as one step: reps stay the count per side, and a set that runs on seconds runs for both. */
+function wholeSet(s: Step): Step {
+  const secs = s.target?.secs;
+  return secs && !s.target?.reps ? { ...s, target: { ...s.target, secs: secs * 2 } } : s;
+}
 
 /**
- * THE ONE WALK from a build's steps to the watch's: a rest as it comes, each work step of a move the build carries as
- * one watch step per side (`sidesOf`), in order. The steps (`watchStepsFromBuild`), the one-sided moves and each
+ * THE ONE WALK from a build's steps to the watch's: a rest as it comes, then each work step of a move the build carries,
+ * in order. A set of a unilateral move with no side is work on both sides, and a Left window with its Right is too: each
+ * is one watch step (`sides` says otherwise only for a copy sent before). A window of one fixed side keeps it; an
+ * alternating move is one step, as the app shows it. The steps (`watchStepsFromBuild`), the one-sided moves and each
  * step's move (`watchStepMoves`) are all read off it, so a payload's step i is always `watchStepMoves`' move i.
  */
-function* walkToWatch(build: WatchBuild): Generator<WalkStop> {
-  for (const s of build.steps) {
+function* walkToWatch(build: WatchBuild, sides: SidesOnWatch = "one_step"): Generator<WalkStop> {
+  const { steps } = build;
+  for (let i = 0; i < steps.length; i++) {
+    const s = steps[i]!;
     if (s.kind === "rest") {
       yield { rest: s.seconds };
       continue;
@@ -247,7 +260,21 @@ function* walkToWatch(build: WatchBuild): Generator<WalkStop> {
     if (!s.exerciseId) continue;
     const record = build.exercises[s.exerciseId];
     if (!record) continue;
-    for (const side of sidesOf(s, record)) yield { step: s, exerciseId: s.exerciseId, record, side };
+    const move = { exerciseId: s.exerciseId, record };
+    const onBothSides = s.kind === "set" && s.side === null && record.laterality === "unilateral";
+    if (sides === "pair") {
+      for (const side of onBothSides ? (["Left", "Right"] as const) : [s.side]) yield { ...move, step: s, side, both: false };
+      continue;
+    }
+    const next = steps[i + 1];
+    if (s.kind === "timed" && s.side === "Left" && next?.kind === "timed" && next.side === "Right" && next.exerciseId === s.exerciseId && next.slotKey === s.slotKey && next.setIndex === s.setIndex) {
+      i += 1;
+      yield { ...move, step: { ...s, seconds: s.seconds + next.seconds }, side: null, both: true };
+    } else if (onBothSides) {
+      yield { ...move, step: wholeSet(s), side: null, both: true };
+    } else {
+      yield { ...move, step: s, side: s.side, both: false };
+    }
   }
 }
 
@@ -256,14 +283,14 @@ function* walkToWatch(build: WatchBuild): Generator<WalkStop> {
  * for this build has step i of move i — whatever the builder of the day it was sent made of it (the review reads what
  * each move went as off the push's own payload, owner 2026-10-10).
  */
-export function watchStepMoves(build: WatchBuild): string[] {
-  return [...walkToWatch(build)].flatMap((w) => (w.rest === undefined ? [w.exerciseId] : []));
+export function watchStepMoves(build: WatchBuild, sides: SidesOnWatch = "one_step"): string[] {
+  return [...walkToWatch(build, sides)].flatMap((w) => (w.rest === undefined ? [w.exerciseId] : []));
 }
 
-/** The build's moves any of whose watch steps has a side: their steps' names carry the side label. */
+/** The build's moves any of whose watch steps speaks of sides: their steps' names carry the side label. */
 function sidedMoves(build: WatchBuild): Set<string> {
   const out = new Set<string>();
-  for (const w of walkToWatch(build)) if (w.rest === undefined && w.side !== null) out.add(w.exerciseId);
+  for (const w of walkToWatch(build)) if (w.rest === undefined && (w.side !== null || w.both)) out.add(w.exerciseId);
   return out;
 }
 
@@ -299,16 +326,16 @@ export function watchStepsFromBuild(build: WatchBuild, deps: WatchPlanDeps): Wat
       if (prev) prev.restSeconds = Math.min(MAX_REST_SECONDS, prev.restSeconds + Math.max(0, Math.round(w.rest)));
       continue;
     }
-    const { step: s, record, side } = w;
+    const { step: s, record, side, both } = w;
     const catalog = catalogStepOf(w.exerciseId, deps, sided);
     const free = catalog ? null : names.get(w.exerciseId)!;
     steps.push({
       originId: catalog?.originId ?? FREE_TEXT_ORIGIN_ID,
-      name: catalog ? catalog.key : `${free!.name}${sideLabel(side)}`,
+      name: catalog ? catalog.key : `${free!.name}${sideLabel(side, both)}`,
       target: targetOf(s),
       grams: s.target?.w ? Math.round(toKg(s.target.w) * 1000) : null,
       restSeconds: 0,
-      overview: overviewOf(side, free?.qualifier ?? null, record.text.focus[0]),
+      overview: overviewOf(sideTextOf(s, side, both), free?.qualifier ?? null, record.text.focus[0]),
       side: side === "Left" ? "left" : side === "Right" ? "right" : null,
     });
   }

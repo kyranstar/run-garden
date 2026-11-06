@@ -298,12 +298,11 @@ describe("POST /api/coros/spike/unmapped-moves — the run", () => {
     expect(onWire.exercises).toEqual(expected.exercises);
 
     // Per step: what was sent, and (the mock echoing) the same stored.
-    expect(body.stored.map((s) => s.step)).toEqual(["a", "b", "c", "d1", "d2"]);
+    expect(body.stored.map((s) => s.step)).toEqual(["a", "b", "c", "d"]);
     expect(body.stored.map((s) => s.sent)).toEqual([
       { name: "Chin tuck hold", originId: "0", overview: "", targetType: 2, targetValue: 30 },
       { name: "Chin tuck hold (generic)", originId: GENERIC_ID, overview: "", targetType: 2, targetValue: 30 },
       { name: "T1150", originId: BIRD_DOG_ID, overview: "cue: long neck", targetType: 3, targetValue: 8 },
-      { name: "T1150", originId: BIRD_DOG_ID, overview: "each side", targetType: 3, targetValue: 8 },
       { name: "T1150", originId: BIRD_DOG_ID, overview: "each side", targetType: 3, targetValue: 8 },
     ]);
     for (const step of body.stored) {

@@ -37,7 +37,8 @@ import { corosKeyOf } from "../src/services/coros-exercise-map.js";
 import { buildDayInput } from "../src/services/garden-sync.js";
 import { buildSession, makeProvisionalRecord, pushJobId, startSession, type BuildPayload } from "../src/services/session-build.js";
 import { savePerformedSession, setRows } from "../src/services/session-save.js";
-import { mappedAsSent, movesAsSent, pairWatchSets, watchReviewBasis, watchReviewOffers, type WatchReviewEntry } from "../src/services/session-watch-review.js";
+import { mappedAsSent, movesAsSent, pairWatchSets, sidesAsSent, watchReviewBasis, watchReviewOffers, type WatchReviewEntry } from "../src/services/session-watch-review.js";
+import { asSentAsPairs } from "./old-watch-copy.js";
 import { PENDING_HASH, upsertWatchSession } from "../src/services/watch-sets.js";
 import { EXERCISES } from "@rg/exercise-library";
 import { sendToWatch, watchStepMoves } from "../src/services/watch-push.js";
@@ -120,8 +121,8 @@ function mappedItems(build: BuildPayload): Array<{ exerciseId: string; key: stri
 }
 
 /**
- * The watch's lap items for a session that did the build's mapped moves: per set one data item (two for a one-sided
- * move: one per side) then its rest — the derivation's R3 layout. `lb` sends the weights as pounds typed on the watch.
+ * The watch's lap items for a session that did the build's mapped moves: per set one data item, then its rest — the
+ * derivation's R3 layout. `lb` sends the weights as pounds typed on the watch.
  */
 function lapsFor(build: BuildPayload, opts: { sets?: number; extra?: RawCorosLapItem[] } = {}): RawCorosLapItem[] {
   const out: RawCorosLapItem[] = [];
@@ -129,7 +130,6 @@ function lapsFor(build: BuildPayload, opts: { sets?: number; extra?: RawCorosLap
     for (let setIndex = 0; setIndex < (opts.sets ?? 3); setIndex++) {
       const data = { exerciseIndex, setIndex, exerciseNameKey: m.key, reps: 8, weight: 11_340, time: 4_000 };
       out.push(item(data));
-      if (m.perSide) out.push(item({ ...data, reps: 7 }));
       out.push(item({ exerciseIndex, setIndex, exerciseNameKey: m.key, time: 6_000 }));
     }
   });
@@ -343,6 +343,41 @@ describe("pairWatchSets (ruling 3-R7)", () => {
     expect(plank!.sets.map((s) => s.setIndex)).toEqual([0, 0, 1, 1]);
   });
 
+  it("sent as one step (owner, 2026-11-05): one lap is the set on both sides — 3 laps → a left and a right row per set", () => {
+    const build = miniBuild([{ id: "row", sets: 3, unilateral: true }]);
+    const [row] = pairWatchSets(build, [{ exerciseId: "row", sets: watchSets(3, { reps: 10 }) }], undefined, "one_step");
+    expect(row!.perSide).toBe(true);
+    expect(row!.sets.map((s) => [s.side, s.reps, s.from])).toEqual([
+      ["left", 10, "watch"], ["right", 10, "watch"], ["left", 10, "watch"],
+      ["right", 10, "watch"], ["left", 10, "watch"], ["right", 10, "watch"],
+    ]);
+    expect(row!.sets.map((s) => s.setIndex)).toEqual([0, 0, 1, 1, 2, 2]);
+  });
+
+  it("a timed move sent as one step: the sides share the lap's seconds; short of laps, the rest are the targets", () => {
+    const build = miniBuild([{ id: "plank", sets: 2, timed: 30, sides: true, unilateral: true }]);
+    const [plank] = pairWatchSets(build, [{ exerciseId: "plank", sets: watchSets(1, { reps: null, seconds: 61 }) }], undefined, "one_step");
+    expect(plank!.sets.map((s) => [s.side, s.seconds, s.from, s.done])).toEqual([
+      ["left", 31, "watch", true],
+      ["right", 30, "watch", true],
+      ["left", 30, "target", false],
+      ["right", 30, "target", false],
+    ]);
+    expect(plank!.sets.map((s) => s.setIndex)).toEqual([0, 0, 1, 1]);
+  });
+
+  it("sent as one step: a step of no two sides answers for itself, and a lap past the targets is a set on both", () => {
+    const build = miniBuild([{ id: "hold", sets: 1, timed: 30, unilateral: true }]);
+    const [hold] = pairWatchSets(build, [{ exerciseId: "hold", sets: watchSets(2, { reps: null, seconds: 30 }) }], undefined, "one_step");
+    expect(hold!.sets.map((s) => [s.side, s.seconds])).toEqual([[null, 30], ["left", 15], ["right", 15]]);
+  });
+
+  it("a copy sent as a pair reads as it always did, one lap per side", () => {
+    const build = miniBuild([{ id: "row", sets: 1, unilateral: true }]);
+    const [row] = pairWatchSets(build, [{ exerciseId: "row", sets: watchSets(2, { reps: 10 }) }], undefined, "pair");
+    expect(row!.sets.map((s) => [s.side, s.setIndex])).toEqual([["left", 0], ["right", 0]]);
+  });
+
   it("a skipped move (no watch sets) shows its targets, not done; fewer laps than sets: the rest from targets", () => {
     const build = miniBuild([{ id: "goblet", sets: 3 }, { id: "deadlift", sets: 2 }]);
     const entries = pairWatchSets(build, [{ exerciseId: "goblet", sets: watchSets(2, { reps: 6 }) }]);
@@ -402,13 +437,13 @@ describe("pairWatchSets (ruling 3-R7)", () => {
 
 /**
  * The push's payload rewritten as the builder made it before 2026-10-10 — how the owner's live session went: the
- * one-sided T1309 as its catalog step, no side labels in any name.
+ * one-sided T1309 as its catalog step, a left and a right step per set, no side labels in any name.
  */
 async function asOldStylePush(buildId: string) {
   const id = pushJobId(buildId);
   const payload = programSessionPushJobSchema.parse((await db.select().from(schema.corosWriteJobs).where(eq(schema.corosWriteJobs.id, id)))[0]!.payload);
   const [row] = await db.select().from(schema.corosExercises).where(eq(schema.corosExercises.name, "T1309"));
-  payload.session.steps = payload.session.steps.map((s) => {
+  payload.session.steps = asSentAsPairs(payload.session.steps).map((s) => {
     const name = s.name.replace(/ \((L|R)\)$/, "");
     return name === COROS_EXERCISE_NAMES.T1309 ? { ...s, originId: row!.id, name: "T1309" } : { ...s, name };
   });
@@ -420,11 +455,13 @@ async function asOldStylePush(buildId: string) {
  * The watch's laps for a session done as its push SENT it: one entry per build move (`skip` left out), in build order.
  * A move sent as its catalog step comes back under its T-code; a move sent as free text under a key of its own the
  * library does not know (what a free-text step's laps carry is unproven — any such key is an unmapped `coros:`
- * entry). Per set one data item, two for a one-sided set (one per side); a hold one timed item; each then its rest.
+ * entry). Per step sent one lap: a set one data item, a hold one timed item (a Left and a Right window sent as one step,
+ * one lap for both; sent as a pair, one each, and a one-sided set two data items); each then its rest.
  */
 async function lapsAsSent(build: BuildPayload, opts: { skip?: string } = {}): Promise<RawCorosLapItem[]> {
   const job = (await db.select().from(schema.corosWriteJobs).where(eq(schema.corosWriteJobs.id, pushJobId(build.buildId))))[0]!;
   const sent = programSessionPushJobSchema.parse(job.payload).session.steps;
+  const oneStep = sidesAsSent(build, sent) === "one_step";
   const viaCatalog = (id: string) => {
     const key = corosKeyOf(id);
     return key !== null && sent.some((s) => s.originId !== "0" && s.name === key) ? key : null;
@@ -438,12 +475,13 @@ async function lapsAsSent(build: BuildPayload, opts: { skip?: string } = {}): Pr
       let setIndex = 0;
       for (const s of build.steps) {
         if (s.kind === "rest" || s.slotKey !== it.slotKey || s.exerciseId !== it.exerciseId) continue;
+        if (oneStep && s.kind === "timed" && s.side === "Right") continue;
         const at = { exerciseIndex, setIndex: setIndex++, exerciseNameKey };
         if (s.kind === "timed") {
-          out.push(item({ ...at, time: Math.round(s.seconds * 100) }));
+          out.push(item({ ...at, time: Math.round(s.seconds * (oneStep && s.side === "Left" ? 2 : 1) * 100) }));
         } else {
           out.push(item({ ...at, reps: 9, time: 4_000 }));
-          if (s.side === null && unilateral) out.push(item({ ...at, reps: 9, time: 4_000 }));
+          if (!oneStep && s.side === null && unilateral) out.push(item({ ...at, reps: 9, time: 4_000 }));
         }
         out.push(item({ ...at, time: 6_000 }));
       }
@@ -460,11 +498,25 @@ describe("mappedAsSent: what each move went as, read off the push's own payload"
   /** The payload's steps for `build`, each move as `as` says: its catalog step (a T-code) or free text. */
   const sent = (as: Record<string, string>) => watchStepMoves(build).map((id) => (as[id] ? step("4258276155475009999", as[id]!) : step("0", id)));
 
-  it("lines the payload up with the build: a one-sided set is two steps, both of its move", () => {
-    expect(watchStepMoves(build)).toEqual(["freeA", "freeA", "supportedRow", "supportedRow", "supportedRow", "supportedRow", "gobletSquat"]);
+  it("lines the payload up with the build: a one-sided set is one step of its move", () => {
+    expect(watchStepMoves(build)).toEqual(["freeA", "freeA", "supportedRow", "supportedRow", "gobletSquat"]);
     expect(movesAsSent(build, sent({ supportedRow: "T1309", gobletSquat: "T1301" }))).toEqual(
       new Map([["freeA", "free_text"], ["supportedRow", "catalog"], ["gobletSquat", "catalog"]]),
     );
+    expect(sidesAsSent(build, sent({}))).toBe("one_step");
+  });
+
+  it("a copy sent before 2026-11-05 lines up too, its one-sided set two steps, so what each move went as still reads", () => {
+    const moves = watchStepMoves(build, "pair");
+    expect(moves).toEqual(["freeA", "freeA", "supportedRow", "supportedRow", "supportedRow", "supportedRow", "gobletSquat"]);
+    const old = moves.map((id) => (id === "supportedRow" ? step("4258276155475009999", "T1309") : step("0", id)));
+    expect(sidesAsSent(build, old)).toBe("pair");
+    expect(movesAsSent(build, old)).toEqual(new Map([["freeA", "free_text"], ["supportedRow", "catalog"], ["gobletSquat", "free_text"]]));
+  });
+
+  it("no payload, or one that lines up with neither: no way of sending to go by", () => {
+    expect(sidesAsSent(build, null)).toBeNull();
+    expect(sidesAsSent(build, sent({}).slice(1))).toBeNull();
   });
 
   it("a move sent as free text never counts as mapped — its T-code maps back to it, but its laps cannot carry that T-code", () => {
@@ -493,10 +545,10 @@ describe("the review pairs what the push SENT, never what today's builder would 
   const targetsOnly = (e: { sets: Array<{ from: string }> }) => e.sets.length > 0 && e.sets.every((x) => x.from === "target");
   const entryOf = (entries: WatchReviewEntry[], id: string) => entries.find((e) => e.exerciseId === id)!;
 
-  it("a NEW-style push (the one-sided T1309 as free text, 'One Arm Dumbbell Row (L)'), done: every move prefills from the watch", async () => {
+  it("a NEW-style push (the one-sided T1309 as free text, 'One Arm Dumbbell Row (L+R)'), done: every move prefills from the watch", async () => {
     const s = await sentSlot();
     const sent = programSessionPushJobSchema.parse((await db.select().from(schema.corosWriteJobs).where(eq(schema.corosWriteJobs.id, pushJobId(s.build.buildId))))[0]!.payload);
-    expect(sent.session.steps.some((x) => x.name === "One Arm Dumbbell Row (L)" && x.originId === "0")).toBe(true);
+    expect(sent.session.steps.some((x) => x.name === "One Arm Dumbbell Row (L+R)" && x.originId === "0")).toBe(true);
     expect(sent.session.steps.every((x) => x.originId === "0")).toBe(true);
     await watchDone(s, { laps: await lapsAsSent(s.build) });
     const { entries } = await watchReviewBasis(db, userId, s.workoutId, ctx());

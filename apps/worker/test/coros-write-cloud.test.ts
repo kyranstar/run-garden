@@ -524,7 +524,7 @@ describe("executeCloudJobs", () => {
       .from(schema.plannedWorkouts)
       .where(eq(schema.plannedWorkouts.id, "wo-lift"));
     expect(wo!.corosSyncState).toBe("synced");
-    // WHAT THE WATCH GOT: one repeat group of 3, three timed holds under it.
+    // WHAT THE WATCH GOT: one repeat group of 3, two timed holds under it, the side plank's timed for both sides.
     const program = server.programByIdInPlan(wo!.sourceIdInPlan!)!;
     expect(program.sportType).toBe(4);
     const groups = program.exercises!.filter((e) => e.isGroup);
@@ -533,8 +533,7 @@ describe("executeCloudJobs", () => {
     const children = program.exercises!.filter((e) => !e.isGroup);
     expect(children.map((c) => [c.targetType, c.targetValue])).toEqual([
       [2, 45],
-      [2, 30],
-      [2, 30],
+      [2, 60],
     ]);
     // The fingerprint is now built by the builder that actually wrote it, so a
     // follow-up move compares like with like instead of the app-side stamp.

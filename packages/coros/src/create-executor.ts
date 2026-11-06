@@ -789,8 +789,8 @@ interface StrengthPlan {
 
 /**
  * A hard ceiling on emitted wire steps. The coach vocabulary allows 30
- * exercises × 30 sets, and per-side work doubles the children, so an
- * unbounded expansion could put 1800 steps on the athlete's watch. Refusing
+ * exercises × 30 sets, so an unbounded expansion could put 900 steps on the
+ * athlete's watch. Refusing
  * is the safe direction: nothing legitimate comes near this.
  */
 const MAX_WIRE_STEPS = 200;
@@ -894,7 +894,7 @@ function readStrengthSession(
 function stepOverview(step: StrengthStep): string {
   const bits: string[] = [];
   if (step.eccentricSeconds != null) bits.push(`${step.eccentricSeconds}s down`);
-  if (step.perSide) bits.push("each side");
+  if (step.perSide) bits.push(step.holdSeconds != null ? `${step.holdSeconds}s each side` : "each side");
   if (step.note) bits.push(step.note);
   return bits.join(" · ");
 }
@@ -1091,11 +1091,11 @@ export function buildStrengthProgram(
    * One real (non-container) step. `sortNo` is the caller's business: §5.3
    * numbers sub-steps `groupSort + 2^16·(j+1)`.
    *
-   * PER-SIDE WORK IS TWO STEPS, not one (2026-08-17). The wire has no
-   * `perSide` flag, and emitting a single step would prescribe HALF the work
-   * the coach wrote — a silent under-prescription. Two identical children is
-   * what the athlete actually does, and `overview` says "each side" so the
-   * pairing is legible rather than looking like a duplicate.
+   * PER-SIDE WORK IS ONE STEP (owner, 2026-11-05; two identical children from
+   * 2026-08-17 until then). The athlete reads a step as the whole move, so the
+   * work stays whole in it: reps stay the count per side, as written anywhere
+   * else; a hold's timer runs for both sides. The wire has no `perSide` flag,
+   * so `overview` says "each side".
    */
   const childOf = (
     step: StrengthStep,
@@ -1109,7 +1109,7 @@ export function buildStrengthProgram(
         // The catalog is the authority at push time — and its names are the
         // T-codes the app resolves for display, so nothing is appended to them.
         name: catalog.get(step.originId)!,
-        holdSeconds: step.holdSeconds,
+        holdSeconds: step.perSide && step.holdSeconds != null ? step.holdSeconds * 2 : step.holdSeconds,
         reps: step.reps,
         weight: step.weight,
         restSeconds: step.restSeconds,
@@ -1144,17 +1144,15 @@ export function buildStrengthProgram(
       // `sets` inside a circuit is the work done PER ROUND (coach.ts), so a
       // rare sets>1 is that many passes of the movement within one round.
       for (let set = 0; set < step.sets; set++) {
-        for (let side = 0; side < (step.perSide ? 2 : 1); side++) {
-          sub += 1;
-          if (realSteps + 1 > MAX_WIRE_STEPS) {
-            throw new Error(
-              `cannot build "${spec.name}": the session expands to more than ${MAX_WIRE_STEPS}` +
-                " wire steps — refusing to write a program that size",
-            );
-          }
-          realSteps += 1;
-          exercises.push(childOf(step, nextId++, containerId, groupSort + SUB_SORT * sub));
+        sub += 1;
+        if (realSteps + 1 > MAX_WIRE_STEPS) {
+          throw new Error(
+            `cannot build "${spec.name}": the session expands to more than ${MAX_WIRE_STEPS}` +
+              " wire steps — refusing to write a program that size",
+          );
         }
+        realSteps += 1;
+        exercises.push(childOf(step, nextId++, containerId, groupSort + SUB_SORT * sub));
       }
     }
     totalSets = rounds * realSteps;
@@ -1164,18 +1162,15 @@ export function buildStrengthProgram(
       const containerId = nextId++;
       const groupSort = TOP_SORT * (index + 1);
       exercises.push(containerOf(containerId, step.sets, groupSort));
-      const sides = step.perSide ? 2 : 1;
-      for (let side = 0; side < sides; side++) {
-        if (realSteps + 1 > MAX_WIRE_STEPS) {
-          throw new Error(
-            `cannot build "${spec.name}": the session expands to more than ${MAX_WIRE_STEPS}` +
-              " wire steps — refusing to write a program that size",
-          );
-        }
-        realSteps += 1;
-        exercises.push(childOf(step, nextId++, containerId, groupSort + SUB_SORT * (side + 1)));
+      if (realSteps + 1 > MAX_WIRE_STEPS) {
+        throw new Error(
+          `cannot build "${spec.name}": the session expands to more than ${MAX_WIRE_STEPS}` +
+            " wire steps — refusing to write a program that size",
+        );
       }
-      totalSets += step.sets * sides;
+      realSteps += 1;
+      exercises.push(childOf(step, nextId++, containerId, groupSort + SUB_SORT));
+      totalSets += step.sets;
     });
   }
 

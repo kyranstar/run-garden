@@ -91,8 +91,8 @@ describe("deriveDoc: easy run with strides and mobility", () => {
   it("lists equipment, condition maxima and watch steps", () => {
     expect(d.equipment).toEqual({ all: ["mat"], oneOf: [] });
     expect(d.conditionMax).toEqual({ tmj: { clench: 1, neckLoad: 0, faceDown: 0 } });
-    // cat-cow 1, easy run 1, strides 4, pigeon 2 (per side); the rest is not a step
-    expect(d.watchStepCount).toBe(8);
+    // cat-cow 1, easy run 1, strides 4, pigeon 1 (one step for both sides); the rest is not a step
+    expect(d.watchStepCount).toBe(7);
   });
 });
 
@@ -119,7 +119,7 @@ describe("deriveDoc: activation, hinge, power, hip-opening lift", () => {
   it("lists a one-of group once, takes condition maxima and counts steps", () => {
     expect(d.equipment).toEqual({ all: [], oneOf: [["dumbbells", "kettlebell"]] });
     expect(d.conditionMax).toEqual({ tmj: { clench: 2, neckLoad: 0, faceDown: 0 } });
-    expect(d.watchStepCount).toBe(2 + 3 + 2 + 3 + 2 + 2);
+    expect(d.watchStepCount).toBe(2 + 3 + 2 + 3 + 2 + 1);
   });
 });
 
@@ -136,7 +136,7 @@ describe("deriveDoc: a passive-heavy recovery flow", () => {
     expect(d.discipline).toBe("yoga");
     expect(d.category).toBe("yoga");
     expect(d.mode).toBe("recovery");
-    expect(d.watchStepCount).toBe(1 + 2 + 4);
+    expect(d.watchStepCount).toBe(1 + 2 + 2);
     expect(d.muscleExposure).toEqual({ diaphragm: 1, "erector-spinae": 2, "rectus-abdominis": 1, "deep-hip-rotators": 2, "glute-max": 1 });
   });
 });

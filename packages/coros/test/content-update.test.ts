@@ -416,8 +416,8 @@ describe("a lift session is rewritten with all four of its numbers", () => {
     const spec = pushSpec({ name: stamp("Hips"), session: flow, thresholdPaceSecPerKm: undefined });
     const { client, target } = await pushed(spec);
     const before = await onTheWatch(client, spec.name);
-    // 2 sets × 60s per side = two 60-second children under one container.
-    expect(before!.stages.filter((s) => s.durationSeconds === 60)).toHaveLength(2);
+    // 2 sets × 60s per side = one 120-second child under one container.
+    expect(before!.stages.filter((s) => s.durationSeconds === 120)).toHaveLength(1);
 
     const update = await updateWorkoutContent(client, { target, session: shorter }, options());
     expect(update.ok, update.error).toBe(true);
@@ -426,10 +426,10 @@ describe("a lift session is rewritten with all four of its numbers", () => {
     const repeat = after!.stages.find((s) => s.kind === "repeat")!;
     expect(repeat.repeatCount).toBe(2); // rounds
     const children = after!.stages.filter((s) => s.parentStageId === repeat.id);
-    expect(children).toHaveLength(2); // per side
-    expect(children.map((s) => s.durationSeconds)).toEqual([30, 30]);
+    expect(children).toHaveLength(1); // one step, timed for both sides
+    expect(children.map((s) => s.durationSeconds)).toEqual([60]);
     expect(children[0]!.loadBodyweight).toBe(true);
-    expect(children[0]!.note).toBe("each side");
+    expect(children[0]!.note).toBe("30s each side");
   });
 });
 

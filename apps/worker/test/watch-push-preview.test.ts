@@ -77,7 +77,7 @@ async function builtSlot(id?: string): Promise<{ workoutId: string; buildId: str
  * (the build's one catalog move is usually One Arm Dumbbell Row, one-sided).
  */
 async function aCatalogStep(workoutId: string): Promise<{ key: string; id: string }> {
-  const names = new Set((await preview(workoutId)).steps.map((s) => s.name.replace(/ \((L|R)\)$/, "")));
+  const names = new Set((await preview(workoutId)).steps.map((s) => s.name.replace(/ \((L\+R|L|R)\)$/, "")));
   const catalog = await exerciseNameMap(db);
   const ids = (key: string) => [...catalog].filter(([, k]) => k === key).map(([id]) => id);
   const mapped = libraryIdsByKey();

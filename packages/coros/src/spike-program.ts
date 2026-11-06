@@ -126,7 +126,7 @@ export function spikeWorkout(inputs: SpikeProgramInputs): SpikeWorkout {
         },
         // (c) a real movement with a cue in `overview`.
         { name: label, originId: exerciseId, sets: 1, reps: SPIKE_REPS, restSeconds: 0, note: SPIKE_CUE },
-        // (d) the same movement per side — two steps, overview "each side".
+        // (d) the same movement per side — one step, overview "each side".
         { name: label, originId: exerciseId, sets: 1, reps: SPIKE_REPS, restSeconds: 0, perSide: true },
       ],
     },

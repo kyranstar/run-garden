@@ -11,7 +11,7 @@ import { describe, expect, it, vi } from "vitest";
 import { adaptiveConfigSchema, addDays, workoutDocSchema } from "@rg/domain";
 import { EXERCISES, type Mode } from "@rg/exercise-library";
 import { Rng } from "@rg/session-engine";
-import { docFromBuild } from "@rg/workout";
+import { docFromBuild, stepsToWatch } from "@rg/workout";
 import { LOCATIONS, WORLDS, seededHistory } from "../../../packages/session-engine/test/seeded-history.js";
 import { liveExerciseCatalog } from "../../../packages/domain/test/coach-survival/catalog.js";
 import { corosKeyOf } from "../src/services/coros-exercise-map.js";
@@ -107,11 +107,38 @@ describe("watchStepsFromDoc(docFromBuild(b)) equals today's watchStepsFromBuild(
     }
   });
 
+  it("a document's two-sided move is one step per set: reps per side, a hold timed for both; an alternating move is one step with no label", () => {
+    const doc = workoutDocSchema.parse({
+      version: 1, title: "Sides", intent: { summary: "Sides", goals: [], focus: [], effort: "maintain" }, source: { kind: "coach" },
+      parts: [
+        { purpose: "main", format: "straight", items: [{ kind: "exercise", libraryId: "wallRotation", dose: { sets: 2, reps: 6, perSide: true } }] },
+        { purpose: "cooldown", format: "holds", items: [
+          { kind: "exercise", libraryId: "figureFour", dose: { holdSec: 30, perSide: true } },
+          { kind: "exercise", libraryId: "neckRotations", dose: { reps: 5, perSide: true } },
+        ] },
+      ],
+    });
+    const { steps } = watchStepsFromDoc(doc, EXERCISES, noCatalog);
+    expect(steps.map((s) => [s.name.endsWith(" (L+R)"), s.side, s.target])).toEqual([
+      [true, null, { kind: "reps", reps: 6 }],
+      [true, null, { kind: "reps", reps: 6 }],
+      [true, null, { kind: "hold", seconds: 60 }],
+      [false, null, { kind: "hold", seconds: 60 }],
+    ]);
+    expect(stepsToWatch(doc, EXERCISES)).toBe(steps.length);
+  });
+
+  it("the app's count of the watch's steps is the steps the watch gets, in every build", () => {
+    for (const { label, build } of cases) {
+      expect(stepsToWatch(docFromBuild(build), EXERCISES), label).toBe(watchStepsFromBuild(build, noCatalog).steps.length);
+    }
+  });
+
   it("the builds reach every format, both sides, catalog and free-text steps, weights, rests and swaps", () => {
     const steps = cases.flatMap((c) => c.build.steps);
     expect(new Set(steps.map((s) => s.format.id))).toEqual(new Set(["straight", "superset", "circuit", "ladder", "flow", "holds"]));
     const watch = cases.flatMap((c) => watchStepsFromBuild(c.build, deps).steps);
-    expect(watch.some((s) => s.side === "left")).toBe(true);
+    expect(watch.some((s) => s.name.endsWith(" (L+R)"))).toBe(true);
     expect(watch.some((s) => s.originId !== "0")).toBe(true);
     expect(watch.some((s) => s.originId === "0")).toBe(true);
     expect(watch.some((s) => s.grams !== null)).toBe(true);

@@ -70,12 +70,11 @@ describe("buildSpikeProgram", () => {
       expect(c.originId).toBe("0");
     }
     const steps = realSteps(exercises);
-    expect(steps).toHaveLength(5);
-    expect(program.exerciseNum).toBe(5);
-    expect(program.totalSets).toBe(5);
+    expect(steps).toHaveLength(4);
+    expect(program.exerciseNum).toBe(4);
+    expect(program.totalSets).toBe(4);
 
-    const [a, b, c, d1, d2] = steps as [
-      RawCorosExercise,
+    const [a, b, c, d] = steps as [
       RawCorosExercise,
       RawCorosExercise,
       RawCorosExercise,
@@ -100,19 +99,15 @@ describe("buildSpikeProgram", () => {
       targetValue: 8,
       overview: "cue: long neck",
     });
-    // (d) the per-side pair: two identical children of one container.
-    for (const d of [d1, d2]) {
-      expect(d).toMatchObject({
-        name: "T1150",
-        originId: BIRD_DOG_ID,
-        targetType: 3,
-        targetValue: 8,
-        overview: "each side",
-      });
-    }
-    expect(d1.groupId).toBe(d2.groupId);
-    expect(d1.sortNo).toBe(TOP_SORT * 4 + SUB_SORT);
-    expect(d2.sortNo).toBe(TOP_SORT * 4 + SUB_SORT * 2);
+    // (d) per side: one child of its container, the reps per side, the overview saying so.
+    expect(d).toMatchObject({
+      name: "T1150",
+      originId: BIRD_DOG_ID,
+      targetType: 3,
+      targetValue: 8,
+      overview: "each side",
+    });
+    expect(d.sortNo).toBe(TOP_SORT * 4 + SUB_SORT);
 
     // Every real step is a bodyweight main step, exactly as a lift push.
     for (const s of steps) {
@@ -165,7 +160,6 @@ describe("spikeStepFields", () => {
         targetValue: 30,
       },
       { name: "T1150", originId: BIRD_DOG_ID, overview: "cue: long neck", targetType: 3, targetValue: 8 },
-      { name: "T1150", originId: BIRD_DOG_ID, overview: "each side", targetType: 3, targetValue: 8 },
       { name: "T1150", originId: BIRD_DOG_ID, overview: "each side", targetType: 3, targetValue: 8 },
     ]);
   });

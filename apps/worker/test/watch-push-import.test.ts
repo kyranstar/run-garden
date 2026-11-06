@@ -41,6 +41,7 @@ import { buildSession, loadSession } from "../src/services/session-build.js";
 import { createDocWorkout } from "../src/services/doc-workouts.js";
 import { mirrorSweep, mirrorTakesTurn, queueProvisionalPush } from "../src/services/mirror.js";
 import { calmDoc } from "./doc-workout-fixture.js";
+import { asSentAsPairs } from "./old-watch-copy.js";
 import { activeSyncNotes, postSyncNote } from "../src/services/sync-notes.js";
 import { syncRoutes } from "../src/routes/sync.js";
 import { createSession, SESSION_COOKIE } from "../src/auth/sessions.js";
@@ -207,14 +208,14 @@ describe("(a) a COROS that re-encodes what it stores (Review Focus 5)", () => {
     const workoutId = await seedSlot(db, userId, fixed, DAY);
     const { buildId, stamp } = await send(workoutId, DAY, { run: false });
     const today = programSessionPushJobSchema.parse((await jobOf(`push:${buildId}`))!.payload);
-    expect(today.session.steps.some((s) => s.name === "One Arm Dumbbell Row (L)" && s.originId === "0")).toBe(true);
+    expect(today.session.steps.some((s) => s.name === "One Arm Dumbbell Row (L+R)" && s.originId === "0")).toBe(true);
     // The push as the builder made it before 2026-10-10.
     const [row] = await db.select().from(schema.corosExercises).where(eq(schema.corosExercises.name, "T1309"));
     const old = {
       ...today,
       session: {
         ...today.session,
-        steps: today.session.steps.map((s) => {
+        steps: asSentAsPairs(today.session.steps).map((s) => {
           const name = s.name.replace(/ \((L|R)\)$/, "");
           return name === COROS_EXERCISE_NAMES.T1309 ? { ...s, originId: row!.id, name: "T1309" } : { ...s, name };
         }),
@@ -240,11 +241,11 @@ describe("(a) a COROS that re-encodes what it stores (Review Focus 5)", () => {
     // And the sent session's preview is still what was sent: T1309 by its English name, no labels.
     const shown = await watchPreview(db, switchOn(), userId, workoutId, { today: DAY, now: NOON, prefs });
     expect(shown.steps.filter((s) => s.name === COROS_EXERCISE_NAMES.T1309 && !s.freeText).length).toBeGreaterThanOrEqual(2);
-    expect(shown.steps.some((s) => / \((L|R)\)$/.test(s.name))).toBe(false);
+    expect(shown.steps.some((s) => / \((L\+R|L|R)\)$/.test(s.name))).toBe(false);
 
     // The control: had the copy become what today's builder sends (T1309 as labelled free text), that IS a change.
     const pairs = programOn(stamp)!.exercises!.filter((e) => e.name === "T1309");
-    pairs.forEach((e, i) => Object.assign(e, { originId: "0", name: `${COROS_EXERCISE_NAMES.T1309}${i % 2 === 0 ? " (L)" : " (R)"}` }));
+    pairs.forEach((e) => Object.assign(e, { originId: "0", name: `${COROS_EXERCISE_NAMES.T1309} (L+R)` }));
     await readNow();
     expect((await notesOf(workoutId)).map((n) => n.kind)).toEqual(["watch_copy_changed"]);
   });

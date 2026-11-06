@@ -117,5 +117,7 @@ export function withSides(dose: WorkoutDose, id: string, library: LibraryIndex |
 
 /** "each side", "per side", "/side" — how a note says the work is per side (the push path writes "each side"). */
 export const PER_SIDE_WORDS = /\b(?:each|per) side\b|\/side\b/i;
+/** "30s each side", "30 s each side" — a hold's share per side, on a step whose timer runs for both. */
+export const SIDE_SHARE_WORDS = /\b(\d+)\s*s each side\b/i;
 /** "4s down", "3 s down" — how a note says the lowering is slow (the push path writes "<n>s down"). */
 export const ECCENTRIC_WORDS = /(\d+(?:\.\d+)?)\s*s(?:ec(?:ond)?s?)?\s+down\b/i;

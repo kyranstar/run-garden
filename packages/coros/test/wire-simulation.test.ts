@@ -324,29 +324,40 @@ describe("a lift reaches the wire in the coach's own vocabulary", () => {
     expect(wire(program, 1).targetType).not.toBe(3);
   });
 
-  it("per-side work is TWO steps, so the watch prescribes both legs", () => {
+  it("per-side work is ONE step (owner, 2026-11-05): its timer covers both legs, so none of the work is lost", () => {
     const program = buildStrengthProgram(
       { happenDay: corosDay(addDaysIso(TODAY, 22)), name: "Ski legs — wk 1", session: skiPrep },
       CATALOG,
     );
-    // container(2) + two 30s children: 2 sets × 30s per side is 4 holds, and a
-    // single child would have prescribed exactly half the work.
+    // container(2) + one 60s child: 2 sets × 30s per side, and the overview says each side's share.
     const container = wire(program, 2);
     expect(container).toMatchObject({ isGroup: true, sets: 2 });
     expect(wire(program, 3)).toMatchObject({
       targetType: 2,
-      targetValue: 30,
+      targetValue: 60,
       groupId: String(container.id),
-      overview: "each side",
+      overview: "30s each side",
     });
-    expect(wire(program, 4)).toMatchObject({
-      targetType: 2,
-      targetValue: 30,
-      groupId: String(container.id),
-    });
-    // Distinct ids and distinct sub-sort slots (§5.3 groupSort + 2^16·(j+1)).
-    expect(wire(program, 3).id).not.toBe(wire(program, 4).id);
-    expect(Number(wire(program, 4).sortNo) - Number(wire(program, 3).sortNo)).toBe(65_536);
+    expect(wire(program, 4)).toMatchObject({ isGroup: true }); // the next move's container, no second child
+  });
+
+  it("per-side reps stay the count per side: 8 each is 8 on the step", () => {
+    const program = buildStrengthProgram(
+      {
+        happenDay: corosDay(addDaysIso(TODAY, 22)),
+        name: "Split squats",
+        session: {
+          category: "strength",
+          title: "Split squats",
+          durationMinutes: 20,
+          lift: { exercises: [{ name: "Back Squat", originId: SQUAT_ID, sets: 3, reps: 8, perSide: true, weight: { type: "bodyweight" }, restSeconds: 60 }] },
+        } as CoachSession,
+      },
+      CATALOG,
+    );
+    expect(wire(program, 1)).toMatchObject({ targetType: 3, targetValue: 8, overview: "each side" });
+    expect(program.exerciseNum).toBe(1);
+    expect(program.totalSets).toBe(3);
   });
 
   it("carries the tempo as disclosure, because the wire has no tempo field", () => {
@@ -354,19 +365,19 @@ describe("a lift reaches the wire in the coach's own vocabulary", () => {
       { happenDay: corosDay(addDaysIso(TODAY, 22)), name: "Ski legs — wk 1", session: skiPrep },
       CATALOG,
     );
-    const squat = wire(program, 6);
+    const squat = wire(program, 5);
     expect(squat).toMatchObject({ targetType: 3, targetValue: 8, overview: "4s down" });
     // The load still encodes as kg × 1000 with the "6" display unit.
     expect(squat).toMatchObject({ intensityType: 1, intensityValue: 40_000, intensityDisplayUnit: "6" });
   });
 
-  it("counts real steps and sets with the per-side expansion included", () => {
+  it("counts real steps and sets, per-side work once", () => {
     const program = buildStrengthProgram(
       { happenDay: corosDay(addDaysIso(TODAY, 22)), name: "Ski legs — wk 1", session: skiPrep },
       CATALOG,
     );
-    expect(program.exerciseNum).toBe(4); // wall sit, 2 × Copenhagen, squat
-    expect(program.totalSets).toBe(3 + 2 * 2 + 3);
+    expect(program.exerciseNum).toBe(3); // wall sit, Copenhagen, squat
+    expect(program.totalSets).toBe(3 + 2 + 3);
     // Containers are never counted as steps (§5.4).
     expect(program.exercises!.filter((e) => e.isGroup)).toHaveLength(3);
   });
@@ -398,7 +409,7 @@ describe("a lift reaches the wire in the coach's own vocabulary", () => {
     });
     expect(workout.sport).toBe("strength");
     const holds = workout.stages.filter((s) => s.durationType === "time" && s.kind === "work");
-    expect(holds.map((s) => s.durationSeconds)).toEqual([45, 30, 30]);
+    expect(holds.map((s) => s.durationSeconds)).toEqual([45, 60]);
     // Rep-based work reads back as a rep step (durationType "none"), not a timer.
     const reps = workout.stages.filter((s) => s.kind === "work" && s.durationType === "none");
     expect(reps).toHaveLength(1);
@@ -455,13 +466,13 @@ describe("a circuit crosses as a repeat group", () => {
     expect(groups[0]).toMatchObject({ exerciseType: 0, isGroup: true, sets: 3, groupId: "0" });
 
     const children = program.exercises!.filter((e) => !e.isGroup);
-    expect(children).toHaveLength(4); // wall sit, plank, side plank × 2 sides
+    expect(children).toHaveLength(3); // wall sit, plank, side plank timed for both sides
     for (const child of children) expect(String(child.groupId)).toBe(String(groups[0]!.id));
-    expect(children.map((c) => c.targetValue)).toEqual([45, 45, 30, 30]);
+    expect(children.map((c) => c.targetValue)).toEqual([45, 45, 60]);
     expect(children.every((c) => c.targetType === 2)).toBe(true);
-    // 3 rounds × 4 steps of work.
-    expect(program.totalSets).toBe(12);
-    expect(program.exerciseNum).toBe(4);
+    // 3 rounds × 3 steps of work.
+    expect(program.totalSets).toBe(9);
+    expect(program.exerciseNum).toBe(3);
   });
 
   it("survives the round trip as repeatCount, the way 370 of the athlete's own stages do", async () => {
@@ -474,10 +485,10 @@ describe("a circuit crosses as a repeat group", () => {
     expect(repeats).toHaveLength(1);
     expect(repeats[0]!.repeatCount).toBe(3);
     // Every hold hangs off that repeat, so the app and the watch agree it is
-    // one circuit rather than four straight-set blocks.
+    // one circuit rather than three straight-set blocks.
     const children = workout.stages.filter((s) => s.parentStageId === repeats[0]!.id);
-    expect(children).toHaveLength(4);
-    expect(children.map((s) => s.durationSeconds)).toEqual([45, 45, 30, 30]);
+    expect(children).toHaveLength(3);
+    expect(children.map((s) => s.durationSeconds)).toEqual([45, 45, 60]);
   });
 
   it("straight sets are untouched: one container per exercise", () => {
@@ -620,9 +631,9 @@ describe("every shape the coach can write reaches the watch and comes back", () 
       ]),
       expect: (stages) => {
         const work = stages.filter((s) => s.kind === "work");
-        expect(work).toHaveLength(2); // one child per side, not half the work
-        expect(work.map((s) => s.durationSeconds)).toEqual([30, 30]);
-        expect(work[0]!.note).toBe("each side");
+        expect(work).toHaveLength(1); // one step, timed for both sides: not half the work
+        expect(work.map((s) => s.durationSeconds)).toEqual([60]);
+        expect(work[0]!.note).toBe("30s each side");
       },
     },
     {
@@ -672,8 +683,8 @@ describe("every shape the coach can write reaches the watch and comes back", () 
       ),
       expect: (stages) => {
         const work = stages.filter((s) => s.kind === "work");
-        expect(work).toHaveLength(2);
-        expect(work.map((s) => s.durationSeconds)).toEqual([60, 60]);
+        expect(work).toHaveLength(1);
+        expect(work.map((s) => s.durationSeconds)).toEqual([120]);
         // restSeconds 0 is "skip rests" on the wire — an absence, not a zero.
         expect(work[0]!.restSeconds).toBeUndefined();
       },
@@ -690,8 +701,8 @@ describe("every shape the coach can write reaches the watch and comes back", () 
         const repeat = stages.find((s) => s.kind === "repeat")!;
         expect(repeat.repeatCount).toBe(2);
         const children = stages.filter((s) => s.parentStageId === repeat.id);
-        expect(children).toHaveLength(2);
-        expect(children.every((s) => s.durationSeconds === 30)).toBe(true);
+        expect(children).toHaveLength(1);
+        expect(children.every((s) => s.durationSeconds === 60)).toBe(true);
       },
     },
     {

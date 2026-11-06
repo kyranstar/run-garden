@@ -194,7 +194,7 @@ describe("Send answers 409 when it would queue nothing", () => {
       // The T-code a step depends on: a catalog step's, or a one-sided catalog move's — free text under the catalog's
       // English name since 2026-10-10 (the fixture's builds rarely hold a two-sided catalog move).
       const payload = programSessionPushJobSchema.parse((await jobOf(`push:${buildId}`))!.payload);
-      const english = new Set(payload.session.steps.map((s) => s.name.replace(/ \((L|R)\)$/, "")));
+      const english = new Set(payload.session.steps.map((s) => s.name.replace(/ \((L\+R|L|R)\)$/, "")));
       const key =
         payload.session.steps.find((s) => s.originId !== "0")?.name ??
         [...libraryIdsByKey().keys()].find((k) => english.has(COROS_EXERCISE_NAMES[k] ?? ""));

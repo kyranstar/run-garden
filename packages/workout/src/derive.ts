@@ -40,7 +40,7 @@
  *   workout, long (a long effort, or 75 minutes or more of run) -> long; recovery effort (or a "recover" intent with only
  *   recovery / easy runs) -> recovery; else easy. A strength workout is strength, a yoga one yoga. (planned_workouts
  *   already uses easy / long / quality / recovery / race / strength / yoga, so these map one to one.)
- * - Watch steps count executions (the push's totalSets), not wire rows: sets x rounds x (perSide ? 2 : 1) per exercise or free-exercise item, rounds per run segment.
+ * - Watch steps count executions (the push's totalSets), not wire rows: sets x rounds per exercise or free-exercise item, whichever sides it works (owner, 2026-11-05: a two-sided move is one step on the watch), rounds per run segment.
  * - Equipment: `all` = the union of the records' `all`; `oneOf` = each distinct one-of group not already satisfied by
  *   an `all` entry, members sorted. Every sort here compares code units (`byCodeUnit`), never the locale: a server and a
  *   phone in another language derive the same lists.
@@ -350,7 +350,7 @@ export function deriveDoc(doc: WorkoutDoc, library: readonly ExerciseRecord[]): 
         if (rec && liftMove && LIFT_PARTS.has(part.purpose)) lift = true;
         const w = itemWork(rec, item.dose, perSide, rounds, liftMove);
         addWork(t, rec, w, axis);
-        steps += (item.dose.sets ?? rec?.dose.sets?.[0] ?? 1) * rounds * (perSide && rec?.laterality !== "alternating" ? 2 : 1);
+        steps += (item.dose.sets ?? rec?.dose.sets?.[0] ?? 1) * rounds;
         if (rec) {
           for (const e of rec.equipment.all) all.add(e);
           if (rec.equipment.oneOf.length > 0) {
@@ -433,9 +433,8 @@ export function stepsToWatch(doc: WorkoutDoc, library: readonly ExerciseRecord[]
       if (item.kind !== "exercise") continue;
       const rec = find(item.libraryId);
       if (!rec) continue;
-      // An alternating move is one step on the watch, as in the app (`watch-push`'s `sidesOf`).
-      const perSide = item.dose.perSide === true && item.side === undefined && rec.laterality !== "alternating";
-      steps += (item.dose.sets ?? rec.dose.sets?.[0] ?? 1) * rounds * (perSide ? 2 : 1);
+      // A move is one step per set on the watch, whichever sides it works (`watch-push`'s `walkToWatch`).
+      steps += (item.dose.sets ?? rec.dose.sets?.[0] ?? 1) * rounds;
     }
   }
   return steps;

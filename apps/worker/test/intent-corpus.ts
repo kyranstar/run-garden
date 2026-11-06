@@ -419,16 +419,16 @@ export const LOSSES: Record<LossReason, Loss> = {
   wire_drops_per_side_flag: {
     severity: "structural",
     why:
-      "The wire has no per-side flag. The WORK is preserved as two identical" +
-      " steps (one step would prescribe half of what the coach wrote) and 'each" +
-      " side' is disclosed in the step's overview — which normalize.ts does not" +
-      " read, so the read-back cannot tell the pair from a duplicate.",
-    apply: (e) => ({
-      ...e,
-      steps: e.steps.flatMap((s) =>
-        s.sides === 2 ? [{ ...s, sides: 1 as const }, { ...s, sides: 1 as const }] : [s],
+      "The wire has no per-side flag. The WORK is preserved in one step (owner," +
+      " 2026-11-05: a step reads as the whole move; two identical steps from" +
+      " 2026-08-17 until then): a hold's timer runs for both sides, reps stay the" +
+      " count per side, and 'each side' is disclosed in the step's overview.",
+    apply: (e) =>
+      mapSteps(e, (s) =>
+        s.sides === 2
+          ? { ...s, sides: 1 as const, target: s.measure === "time" && s.target !== null ? s.target * 2 : s.target }
+          : s,
       ),
-    }),
   },
   wire_drops_eccentric_tempo: {
     severity: "structural",
@@ -485,8 +485,7 @@ export const LOSSES: Record<LossReason, Loss> = {
       " reads back as 'A 3 sets, B 3 sets, C 3 sets'. Identical total work," +
       " different session. Distinguishing them needs a wire field that does not" +
       " exist; guessing would be worse than declaring it." +
-      " (Applied AFTER wire_drops_per_side_flag: the builder emits set-outer," +
-      " side-inner, and every circuit in the corpus is one set per round.)",
+      " (Every circuit in the corpus is one set per round.)",
     apply: (e) =>
       e.rounds == null
         ? e
@@ -1228,9 +1227,9 @@ export interface LedgerVerdict {
  * The coach's intent with exactly the declared losses applied, plus the list of
  * declarations that turned out to be no-ops.
  *
- * Order is significant and is the fixture's to decide: `wire_drops_per_side_flag`
- * splits a step in two, so anything that maps over steps must be free to run
- * after it.
+ * Order is significant and is the fixture's to decide: a loss reads what the one
+ * before it left (`wire_circuit_reads_back_as_straight_sets` splits a step in
+ * rounds, so anything that maps over steps must be free to run after it).
  */
 export function applyLedger(
   intent: Canonical,

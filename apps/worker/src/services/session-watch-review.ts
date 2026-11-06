@@ -8,10 +8,11 @@
  * replaces the derived `watch` session, so the one physical session is counted once.
  *
  *  - `pairWatchSets` (pure): the watch's entries paired with the build's — by library id, then by order only when the
- *    unmapped ones left on each side number the same (3-R7). One watch lap per side (audit 3-A W-1): a one-sided move
- *    reaches the watch as a Left then a Right step per set, so its laps alternate left, right. Which moves went as
- *    free text is read off the push's own payload (`mappedAsSent`): a one-sided catalog move went as its catalog step
- *    before 2026-10-10 and as free text since, and a copy keeps the laps it was sent with.
+ *    unmapped ones left on each side number the same (3-R7). A one-sided move reaches the watch as one step per set
+ *    (owner, 2026-11-05), so one lap answers for both sides; a copy sent before holds a Left then a Right step per set
+ *    (audit 3-A W-1), so its laps alternate left, right. How each move went is read off the push's own payload
+ *    (`sidesAsSent`, `mappedAsSent`): a one-sided catalog move went as its catalog step before 2026-10-10 and as free
+ *    text since, and a copy keeps the laps it was sent with.
  *  - `watchReviewBasis`: what the sheet opens with, offered only for a program or on-demand slot an ACTIVE
  *    `coros_plan_link` or `scored_auto` match gave a COROS activity, with a locked build, no app and no review session
  *    (of the slot, or of the activity), on the session's day or the next. The session's day is the build's — or, for a
@@ -74,7 +75,7 @@ import {
 } from "./session-save.js";
 import { sessionAnswerStatements } from "./session-answers.js";
 import { PENDING_HASH, WATCH_SOURCE } from "./watch-sets.js";
-import { watchStepMoves } from "./watch-push.js";
+import { watchStepMoves, type SidesOnWatch } from "./watch-push.js";
 
 export interface WatchReviewEntry {
   exerciseId: string;
@@ -122,7 +123,7 @@ const whole = (n: unknown): number | null => (typeof n === "number" && Number.is
 
 const sideOf = (s: "Left" | "Right" | null | undefined): PerformedSet["side"] => (s === "Left" ? "left" : s === "Right" ? "right" : null);
 
-/** A build entry: its move, and its target laps as the watch got them (`watchStepsFromBuild`'s sides). */
+/** A build entry: its move, and its targets a row per side, as the app saves a set played a side at a time. */
 function buildEntries(build: BuildPayload): Array<{ exerciseId: string; perSide: boolean; format: SessionFormat | null; laps: Lap[] }> {
   const formats = new Set<string>(SESSION_FORMATS);
   return build.items.map((item) => {
@@ -134,7 +135,7 @@ function buildEntries(build: BuildPayload): Array<{ exerciseId: string; perSide:
       const load = w && typeof w.v === "number" && w.v > 0 && (w.u === "lb" || w.u === "kg") ? { v: w.v, u: w.u } : null;
       const reps = s.kind === "set" ? whole(s.target?.reps) || null : null;
       const seconds = s.kind === "timed" ? whole(s.seconds) : reps ? null : whole(s.target?.secs) || null;
-      // A one-sided set with no side went to the watch as a Left then a Right step (audit W-1): one lap each.
+      // A one-sided set with no side is work on both.
       const sides = s.kind === "set" && s.side === null && perSide ? (["left", "right"] as const) : [sideOf(s.side)];
       for (const side of sides) laps.push({ side, reps, seconds, load: s.kind === "timed" ? null : load });
     }
@@ -153,6 +154,16 @@ export function mappedOnWatch(exerciseId: string): boolean {
 }
 
 /**
+ * How the push's payload laid a two-sided move out (`SidesOnWatch`), by which walk of the build it lines up with: they
+ * differ only when the build has two-sided work, and then in how many steps. Null with no payload or one that fits neither.
+ */
+export function sidesAsSent(build: BuildPayload, sent: readonly ProgramWatchStep[] | null): SidesOnWatch | null {
+  if (!sent) return null;
+  if (watchStepMoves(build).length === sent.length) return "one_step";
+  return watchStepMoves(build, "pair").length === sent.length ? "pair" : null;
+}
+
+/**
  * HOW EACH MOVE REACHED THE WATCH, read off the push's OWN payload — never off what today's builder would make of the
  * build. Until 2026-10-10 a one-sided move the catalog holds (T1309) went as its catalog step; since then it goes as
  * free text with its side in the name (owner). A copy sent before keeps its laps as they were sent, so its review must
@@ -160,8 +171,9 @@ export function mappedOnWatch(exerciseId: string): boolean {
  * free text when its steps did (`originId "0"`). Null when the payload does not line up with the build.
  */
 export function movesAsSent(build: BuildPayload, sent: readonly ProgramWatchStep[]): Map<string, "free_text" | "catalog"> | null {
-  const moves = watchStepMoves(build);
-  if (moves.length !== sent.length) return null;
+  const sides = sidesAsSent(build, sent);
+  if (!sides) return null;
+  const moves = watchStepMoves(build, sides);
   const out = new Map<string, "free_text" | "catalog">();
   moves.forEach((id, i) => {
     if (!out.has(id)) out.set(id, sent[i]!.originId === FREE_TEXT_ORIGIN_ID ? "free_text" : "catalog");
@@ -185,14 +197,37 @@ export function mappedAsSent(build: BuildPayload, sent: readonly ProgramWatchSte
 }
 
 /**
+ * A two-sided move sent as one step: one lap is the set on both sides, so it reads as the app saves such a set, a row per
+ * side under one set number, with the same reps and load on each and a hold's seconds shared between them. A step of one
+ * fixed side answers for that side alone; a lap past the build's targets is a set on both.
+ */
+function rowsOfOneStep(sets: readonly PerformedSet[], laps: readonly Lap[]): Array<Omit<PerformedSet, "setIndex"> & { from: "watch" }> {
+  const out: Array<Omit<PerformedSet, "setIndex"> & { from: "watch" }> = [];
+  let at = 0;
+  for (const s of sets) {
+    const row = (side: PerformedSet["side"], seconds: number | null) => ({ side, reps: s.reps, seconds, load: s.load, done: s.done, flags: [...s.flags], from: "watch" as const });
+    const lap = laps[at];
+    if (lap && !(lap.side === "left" && laps[at + 1]?.side === "right")) {
+      out.push(row(lap.side, s.seconds));
+      at += 1;
+    } else {
+      out.push(row("left", s.seconds === null ? null : Math.ceil(s.seconds / 2)), row("right", s.seconds === null ? null : Math.floor(s.seconds / 2)));
+      at += 2;
+    }
+  }
+  return out;
+}
+
+/**
  * RULING 3-R7. The watch's entries paired with the build's: by library id first; then, for what is left, by order —
  * only when the build's FREE-TEXT entries left and the watch's UNMAPPED entries left (`coros:<T-code>`: a free-text
  * step's laps) number the same. A mapped build move left over was skipped on the watch (it could only have come back
  * under its own id), so it takes no part in the count: one skipped mapped move no longer un-pairs every free-text move
  * (audit 3-B S-7). A mapped watch entry the build does not hold is a move added on the watch: never paired by order,
- * kept as its own entry. A paired entry shows what the watch logged — one lap per set, or per side of a one-sided move
- * (left, right, alternating), each pair answering one build set — and only where the watch logged fewer, the build's
- * remaining targets (not done). An entry with nothing logged shows its targets, not done (a skipped move).
+ * kept as its own entry. A paired entry shows what the watch logged — one lap per set (`rowsOfOneStep` for a one-sided
+ * move), or, as `sides` says of a copy sent before or none it can tell, per side of a one-sided move (left, right,
+ * alternating), each pair answering one build set — and only where the watch logged fewer, the build's remaining targets
+ * (not done). An entry with nothing logged shows its targets, not done (a skipped move).
  *
  * Order: the paired entries in the build's order, then the watch's own, then the build's with nothing logged.
  */
@@ -200,6 +235,7 @@ export function pairWatchSets(
   build: BuildPayload,
   watch: ReadonlyArray<WatchEntry>,
   mapped: (exerciseId: string) => boolean = mappedOnWatch,
+  sides: SidesOnWatch | null = null,
 ): WatchReviewEntry[] {
   const entries = buildEntries(build);
   const pairedWith = new Map<number, number>();
@@ -238,15 +274,17 @@ export function pairWatchSets(
   entries.forEach((e, b) => {
     const w = pairedWith.get(b);
     if (w === undefined) return;
-    const logged = watch[w]!.sets.map((s, i) => ({
-      side: e.perSide ? (i % 2 === 0 ? ("left" as const) : ("right" as const)) : s.side,
-      reps: s.reps,
-      seconds: s.seconds,
-      load: s.load,
-      done: s.done,
-      flags: [...s.flags],
-      from: "watch" as const,
-    }));
+    const logged = sides === "one_step" && e.perSide
+      ? rowsOfOneStep(watch[w]!.sets, e.laps)
+      : watch[w]!.sets.map((s, i) => ({
+          side: e.perSide ? (i % 2 === 0 ? ("left" as const) : ("right" as const)) : s.side,
+          reps: s.reps,
+          seconds: s.seconds,
+          load: s.load,
+          done: s.done,
+          flags: [...s.flags],
+          from: "watch" as const,
+        }));
     out.push({
       exerciseId: e.exerciseId,
       perSide: e.perSide,
@@ -421,7 +459,8 @@ export async function watchReviewBasis(
     .from(corosWriteJobs)
     .where(and(eq(corosWriteJobs.id, pushJobId(r.build.id)), eq(corosWriteJobs.userId, userId), eq(corosWriteJobs.kind, "program_session_push")))
     .limit(1);
-  const sent = push ? programSessionPushJobSchema.safeParse(push.payload) : null;
+  const parsedPush = push ? programSessionPushJobSchema.safeParse(push.payload) : null;
+  const sent = parsedPush?.success ? parsedPush.data.session.steps : null;
   const rows = await db
     .select({
       entryIndex: performedSets.entryIndex,
@@ -476,7 +515,7 @@ export async function watchReviewBasis(
     endedAt: Number.isFinite(startMs) && span > 0 ? new Date(startMs + Math.round(span) * 1000).toISOString() : null,
     seconds: Math.max(0, Math.round(r.activity.durationSeconds)),
     newMove: build.newMove,
-    entries: pairWatchSets(build, watch, mappedAsSent(build, sent?.success ? sent.data.session.steps : null)).map((e) => ({
+    entries: pairWatchSets(build, watch, mappedAsSent(build, sent), sidesAsSent(build, sent)).map((e) => ({
       ...e,
       name: build.exercises[e.exerciseId]?.name ?? exerciseDisplayName(e.exerciseId),
     })),
