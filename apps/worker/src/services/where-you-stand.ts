@@ -4,7 +4,9 @@
  * possible … proactive about"). A computed, bounded block every main run opens with, and the drift rules the "needs
  * you" chip and the block share — so the coach and the chip never disagree.
  *
- * THE READ. One statement (`standRowsSql`: scalar JSON subqueries, every term scoped to the athlete) for: the active
+ * THE READ. One statement (`standRowsSql`: scalar JSON subqueries, every term scoped to the athlete and bounded by its
+ * window on an index — the activities by their UTC start a day either side, the sessions by their local date, the reads
+ * through their activities: what it reads never grows with a lifetime of history — a query-plan test pins it) for: the active
  * objectives and their key results; the plan 28 days back and 13 ahead (never archived); the activities of 5 minutes or
  * more in the 4 weeks before today that completed nothing planned; 14 days of wellness and 7 nights of sleep; the newest
  * weekly review; up to 3 flagged activity reads of the last 7 days; live memory beyond the pinned core, counted by kind;
@@ -23,7 +25,7 @@
  * DRIFT (`driftsOf`, §7.2 — the numbers are the builder's call): over the 21 days before today, a discipline with 3 or
  * more planned and under half of them done (`discipline`), or 2 planned and none of it done on or off the plan
  * (`none`); over 14 days, 3 or more sessions missed or not logged (`missed`) — said as "not logged", never as missed; a
- * key result behind pace by more than a quarter with under half its time left (`key_result`). A drift the coach talked
+ * key result behind schedule by more than a quarter with under half its time left (`key_result`). A drift the coach talked
  * through is held until its check-back day (`remember` with drift and checkBack), then comes back with what was said.
  */
 import { sql, type SQL } from "drizzle-orm";
@@ -61,6 +63,7 @@ import { markUntrusted } from "./design-prompt.js";
 import { measureKeyResults, measureStatements } from "./key-result-measures.js";
 import { liveMemoryWhere, memoryCoreIds } from "./memory-core.js";
 import { buildReadiness, type ReadinessHealthRow } from "./readiness.js";
+import { PLAYED_OFFLINE_CALENDAR_STATE, START_NOW_CALENDAR_STATE } from "./doc-workouts.js";
 
 // ── Facts ───────────────────────────────────────────────────────────────────────────────────────────────────────────
 
@@ -82,6 +85,8 @@ export interface StandKeyResult {
   /** The athlete's local date it was made: where its pace starts. */
   createdOn: string;
   progress: KeyResultProgress | null;
+  /** Past the STAND_KEY_RESULTS_MAX the stand measures: not read here (read_objectives has it). */
+  unread?: true;
 }
 
 export interface StandObjective {
@@ -100,6 +105,9 @@ export interface StandPlanRow {
   subtype: string | null;
   sport: string;
   seconds: number;
+  /** Started at once (Start now, or played offline and recorded on reconnect: `calendar_sync_state` app_only or
+   * app_only_offline): never planned — done, it is work off the plan. */
+  startNow?: boolean;
 }
 
 export interface StandFacts {
@@ -119,8 +127,8 @@ export interface StandFacts {
   reads: Array<{ date: string; sport: string; seconds: number; flags: string[]; glance: string | null }>;
   /** Live items beyond the pinned core, by kind. */
   beyondCore: Record<string, number>;
-  /** Live drift conclusions, newest first. */
-  conclusions: Array<{ id: string; drift: string; checkBack: string; at: string }>;
+  /** Live drift conclusions, newest first: what the coach concluded (its words) and until when it holds. */
+  conclusions: Array<{ id: string; drift: string; checkBack: string; at: string; body: string }>;
 }
 
 /** The planned window: four weeks back. */
@@ -171,15 +179,18 @@ export function standRowsSql(db: Db, userId: string, today: string, opts: { libr
       where kr.user_id = ${userId} and ob.status = 'active') as keyResults,
     (select json_group_array(json_array(${pw.id}, ${pw.effectiveDate}, ${pw.effectiveTime}, ${pw.category}, ${pw.origin}, ${pw.completionState},
         ${pw.sanctionedBy}, ${pw.qualitySubtype}, ${pw.sport},
-        coalesce(${pw.sourceEstimatedDurationSeconds}, ${pw.fallbackEstimatedDurationSeconds}, ${pw.calendarBlockDurationSeconds}, 0)))
+        coalesce(${pw.sourceEstimatedDurationSeconds}, ${pw.fallbackEstimatedDurationSeconds}, ${pw.calendarBlockDurationSeconds}, 0),
+        ${pw.calendarSyncState} in (${START_NOW_CALENDAR_STATE}, ${PLAYED_OFFLINE_CALENDAR_STATE})))
       from ${pw} where ${pw.userId} = ${userId} and ${pw.archivedAt} is null
         and ${pw.effectiveDate} between ${addDays(today, -PAST_DAYS)} and ${addDays(today, AHEAD_DAYS - 1)}) as plan,
     (select json_group_array(json_array(${day}, ${a.sport})) from ${a}
       where ${a.userId} = ${userId} and ${a.durationSeconds} >= ${ACTIVITY_MIN_SECONDS}
+        and ${a.startTime} >= ${addDays(today, -PAST_DAYS - 1)} and ${a.startTime} < ${addDays(today, 1)}
         and ${day} between ${addDays(today, -PAST_DAYS)} and ${addDays(today, -1)}
         and not exists (select 1 from ${workoutCompletionMatches} where ${workoutCompletionMatches.id} = ${a.completionMatchId}
           and ${workoutCompletionMatches.undoneAt} is null)
         and not exists (select 1 from ${performedSessions} where ${performedSessions.userId} = ${userId}
+          and ${performedSessions.localDate} between ${addDays(today, -PAST_DAYS - 1)} and ${today}
           and ${performedSessions.activityId} = ${a.id} and ${performedSessions.workoutId} is not null)) as unplanned,
     (select json_group_array(json_object('date', ${h.date}, 'hrv', ${h.hrv}, 'restingHeartRate', ${h.restingHeartRate},
         'recoveryScore', ${h.recoveryScore}, 'sleepHrvBase', ${h.sleepHrvBase}, 'sleepHrvSd', ${h.sleepHrvSd}))
@@ -191,15 +202,16 @@ export function standRowsSql(db: Db, userId: string, today: string, opts: { libr
       order by ${weeklyReviews.weekStart} desc limit 1) as review,
     (select json_group_array(json_array(d, sport, seconds, flags, glance)) from (
       select ${day} as d, ${a.sport} as sport, ${a.durationSeconds} as seconds, json(${cr.flags}) as flags, ${cr.glance} as glance
-      from ${cr} join ${a} on ${a.id} = ${cr.activityId} and ${a.userId} = ${cr.userId}
-      where ${cr.userId} = ${userId} and ${cr.status} = 'done' and json_valid(${cr.flags}) and json_array_length(${cr.flags}) > 0
+      from ${a} cross join ${cr} on ${cr.userId} = ${a.userId} and ${cr.activityId} = ${a.id}
+      where ${a.userId} = ${userId} and ${a.startTime} >= ${addDays(today, -WEEK)} and ${a.startTime} < ${addDays(today, 1)}
+        and ${cr.status} = 'done' and json_valid(${cr.flags}) and json_array_length(${cr.flags}) > 0
         and ${day} between ${addDays(today, -(WEEK - 1))} and ${today}
       order by d desc, ${a.startTime} desc limit ${READS_READ})) as reads,
     (select json_group_object(kind, n) from (select ${m.kind} as kind, count(*) as n from ${m}
       where ${live} and ${m.id} not in ${memoryCoreIds(db, userId, today)} group by ${m.kind})) as beyond,
-    (select json_group_array(json_array(id, drift, back, at)) from (
+    (select json_group_array(json_array(id, drift, back, at, body)) from (
       select ${m.id} as id, json_extract(${m.provenance}, '$.drift') as drift, json_extract(${m.provenance}, '$.checkBack') as back,
-        ${m.learnedAt} as at from ${m}
+        ${m.learnedAt} as at, ${m.body} as body from ${m}
       where ${live} and json_valid(${m.provenance}) and json_extract(${m.provenance}, '$.drift') is not null
         and json_extract(${m.provenance}, '$.checkBack') is not null
       order by ${m.learnedAt} desc limit ${CONCLUSIONS_READ})) as conclusions,
@@ -270,7 +282,11 @@ export async function standFactsFrom(
       progress: null,
     };
   });
-  const measured = keyResultsOf.filter((kr): kr is StandKeyResult & { measure: KeyResultMeasure } => kr.measure !== null);
+  // In the block's order (the objectives', then each one's own), so the cap keeps the lines shown and the likeliest drifts.
+  const ordered = objectiveRows.flatMap((o) => keyResultsOf.filter((kr) => kr.objectiveId === o.id));
+  const chosen = new Set(standMeasured(ordered));
+  for (const kr of ordered) if (!chosen.has(kr)) kr.unread = true;
+  const measured = [...chosen].filter((kr): kr is StandKeyResult & { measure: KeyResultMeasure } => kr.measure !== null);
   if (measured.length > 0) {
     const library = opts.library ?? (await accountLibraryFrom(db, userId, rows.library)).all;
     const progress = await measureKeyResults(
@@ -296,6 +312,7 @@ export async function standFactsFrom(
       subtype: str(x[7]),
       sport: str(x[8]) ?? "",
       seconds: num(x[9]) ?? 0,
+      ...(x[10] === 1 || x[10] === true ? { startNow: true as const } : {}),
     }))
     .sort((p, q) => `${p.date} ${p.time} ${p.id}`.localeCompare(`${q.date} ${q.time} ${q.id}`));
   const unplanned = arr(rows.unplanned)
@@ -334,10 +351,27 @@ export async function standFactsFrom(
   const beyondCore: Record<string, number> = {};
   for (const [kind, n] of Object.entries(beyond)) if (typeof n === "number" && n > 0) beyondCore[kind] = n;
   const conclusions = arr(rows.conclusions)
-    .filter((x): x is [string, string, string, string] => Array.isArray(x) && x.every((v) => typeof v === "string"))
-    .map(([id, drift, checkBack, at]) => ({ id, drift, checkBack, at }))
+    .filter((x): x is [string, string, string, string, string] => Array.isArray(x) && x.length === 5 && x.every((v) => typeof v === "string"))
+    .map(([id, drift, checkBack, at, body]) => ({ id, drift, checkBack, at, body }))
     .sort((p, q) => q.at.localeCompare(p.at));
   return { today, objectives: objectivesOut, plan, unplanned, health, sleep, review, reads, beyondCore, conclusions };
+}
+
+/** The most key results the stand measures (read_objectives' page cap): the CPU of every main context step and of the
+ * nudges read on every Today load grows with them (the audits, 2026-11-06). */
+export const STAND_KEY_RESULTS_MAX = 12;
+
+/**
+ * The key results the stand measures, STAND_KEY_RESULTS_MAX at most, from `ordered` (the block's order): the ones the
+ * block shows first (KR_LINES), then the ones that can drift — a target and a due date — soonest due first, then the
+ * rest in order. Any other is left unread (and said so).
+ */
+export function standMeasured(ordered: readonly StandKeyResult[]): StandKeyResult[] {
+  const shown = ordered.slice(0, KR_LINES);
+  const rest = ordered.slice(KR_LINES);
+  const canDrift = rest.filter((kr) => kr.target !== null && kr.due !== null).sort((p, q) => p.due!.localeCompare(q.due!));
+  const others = rest.filter((kr) => !canDrift.includes(kr));
+  return [...shown, ...canDrift, ...others].slice(0, STAND_KEY_RESULTS_MAX);
 }
 
 /** The read whole: its statement (the library in it), then the measures. */
@@ -369,15 +403,23 @@ export function paceOf(
   const span = daysBetween(kr.startDate, kr.due);
   const elapsed = span <= 0 ? 1 : Math.min(1, Math.max(0, daysBetween(kr.startDate, today) / span));
   if ((current - kr.target) * sign >= 0) return { pace: "reached", done: 1, elapsed };
-  if (kr.target === kr.start) return { pace: "no data", why: "the target is the start" };
+  // From the start, the target lies no way the better way: nothing to pace (the audits: "ahead, 300% there").
+  const toward = (kr.target - kr.start) * sign;
+  if (toward === 0) return { pace: "no data", why: "the target is the start" };
+  if (toward < 0) return { pace: "no data", why: "started past the target" };
   const done = ((current - kr.start) * sign) / ((kr.target - kr.start) * sign);
   if (today > kr.due) return { pace: "behind", done, elapsed };
   return { pace: done >= elapsed + PACE_BAND ? "ahead" : done < elapsed - PACE_BAND ? "behind" : "on track", done, elapsed };
 }
 
-const startOf = (kr: StandKeyResult): number | null => kr.baseline ?? kr.progress?.series[0]?.display ?? null;
-const paceFor = (kr: StandKeyResult, today: string) =>
-  paceOf({ direction: kr.direction, start: startOf(kr), target: kr.target, startDate: kr.createdOn, due: kr.due }, kr.progress?.display.current ?? null, today);
+/** Its start: the baseline, else its oldest reading — when there are two at least (one reading is its own start). */
+const startOf = (kr: StandKeyResult): number | null => kr.baseline ?? ((kr.progress?.series.length ?? 0) >= 2 ? kr.progress!.series[0]!.display : null);
+function paceFor(kr: StandKeyResult, today: string): ReturnType<typeof paceOf> {
+  const current = kr.progress?.display.current ?? null;
+  if (kr.unread) return { pace: "no data", why: "not read here" };
+  if (kr.baseline === null && current !== null && (kr.progress?.series.length ?? 0) < 2) return { pace: "no data", why: "one reading so far" };
+  return paceOf({ direction: kr.direction, start: startOf(kr), target: kr.target, startDate: kr.createdOn, due: kr.due }, current, today);
+}
 
 // ── Planned against done ────────────────────────────────────────────────────────────────────────────────────────────
 
@@ -399,6 +441,11 @@ function tally(f: StandFacts, discipline: Discipline, from: string, to: string):
   const t: Tally = { planned: 0, pending: 0, oldest: null, done: 0, missed: 0, skipped: 0, unknown: 0, unplanned: 0 };
   for (const w of f.plan) {
     if (w.date < from || w.date > to || disciplineOf(w) !== discipline) continue;
+    // Started at once, never planned: done, it is work off the plan (the audits, 2026-11-06).
+    if (w.startNow) {
+      if (w.state === "completed") t.unplanned += 1;
+      continue;
+    }
     if (w.state === "skipped" && w.sanctionedBy === "coach") continue;
     t.planned += 1;
     if (t.oldest === null || w.date < t.oldest) t.oldest = w.date;
@@ -408,7 +455,7 @@ function tally(f: StandFacts, discipline: Discipline, from: string, to: string):
     else if (w.state === "skipped") t.skipped += 1;
     else t.unknown += 1;
   }
-  t.unplanned = f.unplanned.filter((u) => u.discipline === discipline && u.date >= from && u.date <= to).length;
+  t.unplanned += f.unplanned.filter((u) => u.discipline === discipline && u.date >= from && u.date <= to).length;
   return t;
 }
 
@@ -440,10 +487,13 @@ export interface Drift {
   observation: string;
   /** A key result's label, for the block to mark (the observation starts with it). */
   label?: string;
-  /** Talked through: held until its check-back day. */
-  held: { until: string; memoryId: string; at: string } | null;
+  /** What it is about, as holds match it: `discipline:<key>` (a discipline's drift, or each discipline a not-logged
+   * drift's sessions are in), `key_result:<id>`. */
+  subjects: string[];
+  /** Talked through: held until its check-back day — with what the coach concluded (its words). */
+  held: { until: string; memoryId: string; at: string; body: string } | null;
   /** Talked through, and its check-back day has come. */
-  since?: { at: string; memoryId: string };
+  since?: { at: string; memoryId: string; body: string };
 }
 
 const NOUN: Record<Discipline, string> = { runs: "runs", strength: "lifts", "mobility and care": "mobility sessions", yoga: "yoga sessions" };
@@ -465,7 +515,10 @@ export function driftsOf(f: StandFacts): Drift[] {
     // A session still within the sync's grace is not known yet: no part of a drift.
     const known = t.planned - t.pending;
     if (known >= DRIFT_MIN_PLANNED && t.done * 2 < known) {
-      found.push({ d: { id: `drift:discipline:${key}`, rule: "discipline", observation: `${t.done} of ${known} planned ${NOUN[discipline]} logged in 3 weeks` }, rank: t.done / known });
+      found.push({
+        d: { id: `drift:discipline:${key}`, rule: "discipline", subjects: [`discipline:${key}`], observation: `${t.done} of ${known} planned ${NOUN[discipline]} logged in 3 weeks` },
+        rank: t.done / known,
+      });
     } else if (
       known >= NONE_MIN_PLANNED &&
       known < DRIFT_MIN_PLANNED &&
@@ -474,15 +527,14 @@ export function driftsOf(f: StandFacts): Drift[] {
       t.oldest !== null &&
       t.oldest <= addDays(today, -NONE_SINCE_DAYS)
     ) {
-      found.push({ d: { id: `drift:none:${key}`, rule: "none", observation: `No ${NOUN[discipline]} logged in 3 weeks, with ${known} planned` }, rank: 0 });
+      found.push({ d: { id: `drift:none:${key}`, rule: "none", subjects: [`discipline:${key}`], observation: `No ${NOUN[discipline]} logged in 3 weeks, with ${known} planned` }, rank: 0 });
     }
   }
   found.sort((p, q) => p.rank - q.rank);
-  const from = addDays(today, -MISSED_DRIFT_DAYS);
-  const notLogged = f.plan.filter(
-    (w) => w.date >= from && w.date <= yesterday && w.category !== "rest" && (w.state === "missed" || w.state === "unresolved"),
-  ).length;
-  if (notLogged >= MISSED_DRIFT_MIN) found.push({ d: { id: "drift:missed", rule: "missed", observation: `${notLogged} sessions not logged in 2 weeks` }, rank: 1 });
+  const notLogged = notLoggedOf(f);
+  if (notLogged.length >= MISSED_DRIFT_MIN) {
+    found.push({ d: { id: "drift:missed", rule: "missed", subjects: missedSubjects(f), observation: `${notLogged.length} sessions not logged in 2 weeks` }, rank: 1 });
+  }
   const behind: Array<{ d: Omit<Drift, "held">; gap: number }> = [];
   for (const o of f.objectives) {
     for (const kr of o.keyResults) {
@@ -492,19 +544,59 @@ export function driftsOf(f: StandFacts): Drift[] {
         const label = kr.label.length > LABEL_IN_CHIP ? `${kr.label.slice(0, LABEL_IN_CHIP - 1).trimEnd()}…` : kr.label;
         const left = Math.max(0, daysBetween(today, kr.due));
         behind.push({
-          d: { id: `drift:key_result:${kr.id}`, rule: "key_result", label, observation: `${label} is behind pace with ${leftWords(left)}` },
+          d: { id: `drift:key_result:${kr.id}`, rule: "key_result", subjects: [`key_result:${kr.id}`], label, observation: `${label} is behind schedule with ${leftWords(left)}` },
           gap: p.elapsed - p.done,
         });
       }
     }
   }
   behind.sort((p, q) => q.gap - p.gap);
+  const live = f.conclusions.filter((c) => c.checkBack > today);
   return [...found.map((x) => x.d), ...behind.map((x) => x.d)].map((d) => {
-    const c = f.conclusions.find((x) => x.drift === d.id);
-    if (!c) return { ...d, held: null };
-    const at = c.at.slice(0, 10);
-    return c.checkBack > today ? { ...d, held: { until: c.checkBack, memoryId: c.id, at } } : { ...d, held: null, since: { at, memoryId: c.id } };
+    // Held by subject, never only by the exact id: the same sessions raise different drifts, and a discipline's flips
+    // between discipline and none as the window slides (the audits, 2026-11-06).
+    const by = coveringOf(d, live.map((c) => c.drift), f);
+    const c = by === null ? null : live.find((x) => x.drift === by)!;
+    if (c) return { ...d, held: { until: c.checkBack, memoryId: c.id, at: c.at.slice(0, 10), body: c.body } };
+    const past = f.conclusions.find((x) => x.checkBack <= today && coveringOf(d, [x.drift], f) !== null);
+    return past ? { ...d, held: null, since: { at: past.at.slice(0, 10), memoryId: past.id, body: past.body } } : { ...d, held: null };
   });
+}
+
+/** The sessions of the last 14 days missed or not logged (never a rest day, never one started at once). */
+function notLoggedOf(f: StandFacts): StandPlanRow[] {
+  const from = addDays(f.today, -MISSED_DRIFT_DAYS);
+  const yesterday = addDays(f.today, -1);
+  return f.plan.filter((w) => !w.startNow && w.date >= from && w.date <= yesterday && w.category !== "rest" && (w.state === "missed" || w.state === "unresolved"));
+}
+
+/** The disciplines the not-logged sessions are in, as subjects (a session of none: `discipline:other`). */
+function missedSubjects(f: StandFacts): string[] {
+  return [...new Set(notLoggedOf(f).map((w) => `discipline:${(disciplineOf(w) ?? "other").replace(/ /g, "_")}`))].sort();
+}
+
+/** What a drift id is about now: a discipline's, its discipline; a key result's, it; the not-logged one's, the disciplines
+ * its sessions are in now. */
+function subjectsOfId(id: string, f: StandFacts): string[] {
+  const [, rule, ...rest] = id.split(":");
+  const subject = rest.join(":");
+  if ((rule === "discipline" || rule === "none") && subject) return [`discipline:${subject}`];
+  if (rule === "key_result" && subject) return [`key_result:${subject}`];
+  if (rule === "missed") return missedSubjects(f);
+  return [];
+}
+
+/** The first of `ids` that covers `d` — every subject of it — or null. */
+function coveringOf(d: Pick<Drift, "subjects">, ids: readonly string[], f: StandFacts): string | null {
+  if (d.subjects.length === 0) return null;
+  const covered = new Map<string, string>();
+  for (const id of ids) for (const subject of subjectsOfId(id, f)) if (!covered.has(subject)) covered.set(subject, id);
+  return d.subjects.every((x) => covered.has(x)) ? covered.get(d.subjects[0]!)! : null;
+}
+
+/** Whether runs that diagnosed `ids` (or conclusions of them) cover `d`, by the same subject match its holds use. */
+export function driftCoveredBy(d: Pick<Drift, "subjects">, ids: readonly string[], f: StandFacts): boolean {
+  return coveringOf(d, ids, f) !== null;
 }
 
 /** A drift as a "needs you" chip: an observation and a question; its request the athlete's words. */
@@ -517,6 +609,8 @@ export function driftNudge(d: Drift): { id: string; label: string; request: stri
 const KR_LINES = 3;
 /** Drift lines the block lists, the most pressing first (the chip only ever offers the first). */
 const DRIFT_LINES = 3;
+/** What a held drift's conclusion says in its line, at most (the memory item has it whole). */
+const CONCLUSION_CHARS = 100;
 const READS_LISTED = 2;
 const DAY_ITEMS = 3;
 const REVIEW_CHARS = 120;
@@ -581,7 +675,12 @@ function objectiveLines(f: StandFacts): string[] {
   }
   const shown = lines.slice(0, KR_LINES);
   const more = lines.length - shown.length;
-  return ["Objectives — current → target by due: pace:", ...shown, ...(more > 0 ? [`- and ${more} more key results (read_objectives)`] : [])];
+  const unread = f.objectives.reduce((n, o) => n + o.keyResults.filter((kr) => kr.unread).length, 0);
+  return [
+    "Objectives — current → target by due: pace:",
+    ...shown,
+    ...(more > 0 ? [`- and ${more} more key results (read_objectives${unread ? `; ${unread} not read here, so no drift of theirs below` : ""})`] : []),
+  ];
 }
 
 function plannedLines(f: StandFacts): string[] {
@@ -705,10 +804,11 @@ function memoryLine(f: StandFacts): string {
 /** A drift's line in the block: its key result's label marked, its id, and what was concluded of it. */
 export function driftLine(d: Drift): string {
   const words = d.label ? `${markUntrusted("athlete", d.label)}${d.observation.slice(d.label.length)}` : d.observation;
+  const said = (body: string) => markUntrusted("memory", clip(body, CONCLUSION_CHARS));
   const after = d.held
-    ? ` — talked through ${d.held.at}, held until ${d.held.until} (${d.held.memoryId})`
+    ? ` — talked through ${d.held.at}, held until ${d.held.until} (${d.held.memoryId}): ${said(d.held.body)}`
     : d.since
-      ? ` — talked through ${d.since.at} (${d.since.memoryId}): check back now`
+      ? ` — talked through ${d.since.at} (${d.since.memoryId}), check back now: ${said(d.since.body)}`
       : "";
   return `- ${words} (${d.id})${after}`;
 }
@@ -726,7 +826,7 @@ export function standBlock(f: StandFacts, drifts: readonly Drift[]): string {
     memoryLine(f),
     ...(drifts.length
       ? [
-          "Needs you (each a chip on Today and in the coach):",
+          "Needs you (the first not held is the chip on Today and in the coach):",
           ...drifts.slice(0, DRIFT_LINES).map(driftLine),
           ...(drifts.length > DRIFT_LINES ? [`- and ${drifts.length - DRIFT_LINES} more the app sees (read_objectives, read_plan)`] : []),
         ]

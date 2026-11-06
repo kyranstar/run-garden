@@ -6,7 +6,7 @@ import { isLoosePlan, lineBlockOf } from "./coach-plans.js";
 import { reviewOpening, sessionDays, sessionOpening, type CoachOpeningLine, type FinishedSession } from "./coach-opening-line.js";
 import { COMEBACK_GAP_DAYS, endingLine, FIRM_HORIZON_DAYS, REFIRE_WINDOW_MS } from "./coach-triggers.js";
 import { UNRESOLVED_AFTER_DAYS } from "./reconcile-daily.js";
-import { driftNudge, driftsOf, readStandFacts } from "./where-you-stand.js";
+import { driftCoveredBy, driftNudge, driftsOf, readStandFacts, type Drift } from "./where-you-stand.js";
 
 /**
  * THE COACH'S "NEEDS YOU" CHIPS (§8 §6). The thread coach used to turn its free signals into paid wakes: a trigger row
@@ -242,15 +242,24 @@ export async function readCoachOpening(
   const lineOf = (planId: string) => lines.find((l) => l.phases.some((p) => p.id === planId));
 
   const found: CoachNudge[] = [];
+  /** What else counts as having asked a chip (never sent to the client): a missed chip's other words for its day
+   * ("today's", the weekday's) and how far back its asks are read; a drift chip's drift (asked by subject). */
+  const alsoAsked = new Map<string, { labels: string[]; sinceMs: number }>();
+  const driftOf = new Map<string, Drift>();
 
   // 1. Missed: the coach's own skip is planned rest, and a rest day is nothing to miss.
   const missed = missedRows.filter((w) => w.category !== "rest" && w.sanctionedBy !== "coach");
   if (missed.length > 0) {
     const day = (w: (typeof missed)[number]) => `${w.date === today ? "today" : weekdayOf(w.date)}'s ${sessionNoun(w)}`;
     const shown = missed.slice(0, 3);
+    // A tapped missed chip stays away for its whole window (the audits, 2026-11-06): its asks are read that far back, and
+    // its day in either of its words — "today's" on the day, the weekday's after it.
+    const id = `missed:${missed[0]!.id}`;
+    const forms = (w: (typeof missed)[number]) => [`Rework my week around today's ${sessionNoun(w)}`, `Rework my week around ${weekdayOf(w.date)}'s ${sessionNoun(w)}`];
+    alsoAsked.set(id, { labels: missed.length === 1 ? forms(missed[0]!) : [], sinceMs: (MISSED_WINDOW_DAYS + 1) * 86_400_000 });
     if (missed.length === 1) {
       const w = missed[0]!;
-      found.push({ id: `missed:${w.id}`, label: `Rework my week around ${day(w)}`, request: `Rework my week around ${day(w)} — ${MISSED_WORDS[w.state] ?? MISSED_WORDS.unresolved}.` });
+      found.push({ id, label: `Rework my week around ${day(w)}`, request: `Rework my week around ${day(w)} — ${MISSED_WORDS[w.state] ?? MISSED_WORDS.unresolved}.` });
     } else if (shown.every((w) => w.state !== "unresolved")) {
       found.push({
         id: `missed:${missed[0]!.id}`,
@@ -267,9 +276,13 @@ export async function readCoachOpening(
     }
   }
 
-  // 1b. Drift: the most pressing one not held by a conclusion whose check-back is still ahead.
-  const drift = driftsOf(stand).find((d) => !d.held);
-  if (drift) found.push(driftNudge(drift));
+  // 1b. Drift: the most pressing one not held by a conclusion whose check-back is still ahead — and not asked (below):
+  // each is a candidate here, and one at most is offered.
+  for (const d of driftsOf(stand).filter((x) => !x.held)) {
+    const n = driftNudge(d);
+    driftOf.set(n.id, d);
+    found.push(n);
+  }
 
   // 2. Back: the latest activity is fresh and follows a gap of a week or more.
   if (recent.length === 2) {
@@ -367,7 +380,8 @@ export async function readCoachOpening(
   // Already asked: the athlete's own runs (never a sub-run's brief) of the last three days — or since the review was
   // written, when that is longer ago — read once, the newest first.
   const window = new Date(now.getTime() - REFIRE_WINDOW_MS).toISOString();
-  const since = unseen.reduce((s, c) => (c.since < s ? c.since : s), window);
+  const farthest = Math.max(REFIRE_WINDOW_MS, ...found.map((n) => alsoAsked.get(n.id)?.sinceMs ?? 0));
+  const since = unseen.reduce((s, c) => (c.since < s ? c.since : s), new Date(now.getTime() - farthest).toISOString());
   const asked = await db
     .select({
       request: coachRuns.request,
@@ -380,12 +394,23 @@ export async function readCoachOpening(
     .limit(RECENT_ASKS_MAX);
   const recentAsks = asked.filter((r) => r.createdAt >= window);
   const words = recentAsks.map((r) => asWords(r.request ?? ""));
-  const diagnosed = new Set(recentAsks.map((r) => r.diagnose).filter((d): d is string => typeof d === "string"));
-  const sent = (n: CoachNudge) => diagnosed.has(n.id) || words.some((w) => w.includes(asWords(n.label)));
+  const diagnosed = recentAsks.map((r) => r.diagnose).filter((d): d is string => typeof d === "string");
+  const sent = (n: CoachNudge) => {
+    const also = alsoAsked.get(n.id);
+    const from = also ? new Date(now.getTime() - also.sinceMs).toISOString() : window;
+    const said = also ? asked.filter((r) => r.createdAt >= from).map((r) => asWords(r.request ?? "")) : words;
+    const labels = [n.label, ...(also?.labels ?? [])].map(asWords);
+    if (said.some((w) => labels.some((l) => w.includes(l)))) return true;
+    // A drift chip: asked when a run diagnosing it — by the same subject match its holds use — began in the window.
+    const d = driftOf.get(n.id);
+    return d !== undefined && driftCoveredBy(d, diagnosed, stand);
+  };
   // Old news: the athlete has asked the coach something since it reached the app.
   const latest = asked[0]?.createdAt ?? null;
   const opening = unseen.find((c) => latest === null || latest < c.since)?.opening ?? null;
-  return { opening, nudges: found.filter((n) => !sent(n)).slice(0, NUDGES_MAX) };
+  const offered = found.filter((n) => !sent(n));
+  const firstDrift = offered.find((n) => driftOf.has(n.id));
+  return { opening, nudges: offered.filter((n) => !driftOf.has(n.id) || n === firstDrift).slice(0, NUDGES_MAX) };
 }
 
 /** A session's logged sets, as the activities read gives them (one JSON object, or null): none logged, null. */

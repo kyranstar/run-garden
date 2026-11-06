@@ -4,17 +4,22 @@
  * rules. A made-up athlete (Zorbex objectives); every date relative to a fixed day.
  */
 import { beforeEach, describe, expect, it } from "vitest";
+import { sql } from "drizzle-orm";
 import { schema } from "@rg/database";
 import { addDays, keyResultMeasureSchema, newId, type KeyResultProgress } from "@rg/domain";
 import type { Db } from "../src/services/db.js";
 import {
   disciplineOf,
+  driftCoveredBy,
   driftNudge,
   driftsOf,
   paceOf,
   readStandFacts,
   standBlock,
+  standMeasured,
+  standRowsSql,
   standStatements,
+  STAND_KEY_RESULTS_MAX,
   type StandFacts,
   type StandKeyResult,
   type StandPlanRow,
@@ -151,9 +156,9 @@ const CAPTURED = [
   "Activity reads flagged in 7 d:",
   `- Tue 3 Nov run 42 min — hr_drift: ${U("coach read", "Heart rate crept up in the last third.")}`,
   "Memory beyond the core: 3 notes, 2 observations (recall_memory).",
-  "Needs you (each a chip on Today and in the coach):",
+  "Needs you (the first not held is the chip on Today and in the coach):",
   "- 2 of 5 planned lifts logged in 3 weeks (drift:discipline:strength)",
-  `- ${U("athlete", "Wall sit hold")} is behind pace with 3 weeks left (drift:key_result:kr-hold)`,
+  `- ${U("athlete", "Wall sit hold")} is behind schedule with 3 weeks left (drift:key_result:kr-hold)`,
 ].join("\n");
 
 const CAPTURED_EMPTY = [
@@ -201,8 +206,9 @@ describe("the block, against captured text", () => {
     const f = athlete();
     const block = standBlock(f, driftsOf(f));
     expect(block).toBe(CAPTURED);
-    // About 1,500 (spec §7.1): measured 1,580 — five marked texts are 190 of it.
-    expect(block.length).toBeLessThanOrEqual(1600);
+    // About 1,500 (spec §7.1): measured 1,580 — five marked texts are 190 of it. REBASED 2026-11-06 (the audits' fix
+    // pass: "behind schedule", the Needs-you header says which is the chip) — measured 1,603.
+    expect(block.length).toBeLessThanOrEqual(1650);
   });
 
   it("an empty account: every part in a few words, no drift", () => {
@@ -288,8 +294,8 @@ describe("drift (§7.2)", () => {
       objectives: [{ id: "o", keyResults: [kr({ id: "k1", label: "Zorbex plank", baseline: 60, target: 120, createdOn: d(-30), due: d(due), progress: progress(current, "measured") })] }],
     });
     // 60% of the time gone, a quarter there: 0.35 behind.
-    expect(driftsOf(k(75, 20))).toMatchObject([{ id: "drift:key_result:k1", rule: "key_result", observation: "Zorbex plank is behind pace with 3 weeks left" }]);
-    expect(driftsOf(k(75, 10))[0]!.observation).toBe("Zorbex plank is behind pace with 10 days left");
+    expect(driftsOf(k(75, 20))).toMatchObject([{ id: "drift:key_result:k1", rule: "key_result", observation: "Zorbex plank is behind schedule with 3 weeks left" }]);
+    expect(driftsOf(k(75, 10))[0]!.observation).toBe("Zorbex plank is behind schedule with 10 days left");
     // Behind, but half its time still ahead.
     expect(driftsOf(k(61, 31))).toEqual([]);
     // Under half its time left, behind by less than a quarter.
@@ -303,15 +309,17 @@ describe("drift (§7.2)", () => {
   });
 
   it("a conclusion with a check-back after today holds the drift; on the check-back day it comes back, with what was concluded", () => {
-    const held = only(strength(4, 1), { conclusions: [{ id: "mem:r:1", drift: "drift:discipline:strength", checkBack: d(1), at: `${d(-6)}T09:00:00.000Z` }] });
+    const held = only(strength(4, 1), { conclusions: [{ id: "mem:r:1", drift: "drift:discipline:strength", checkBack: d(1), at: `${d(-6)}T09:00:00.000Z`, body: "Lifts on Saturdays while work is busy." }] });
     const [x] = driftsOf(held);
-    expect(x!.held).toEqual({ until: d(1), memoryId: "mem:r:1", at: d(-6) });
-    expect(standBlock(held, [x!])).toContain(`- 1 of 4 planned lifts logged in 3 weeks (drift:discipline:strength) — talked through ${d(-6)}, held until ${d(1)} (mem:r:1)`);
-    const due = only(strength(4, 1), { conclusions: [{ id: "mem:r:1", drift: "drift:discipline:strength", checkBack: TODAY, at: `${d(-6)}T09:00:00.000Z` }] });
+    expect(x!.held).toEqual({ until: d(1), memoryId: "mem:r:1", at: d(-6), body: "Lifts on Saturdays while work is busy." });
+    expect(standBlock(held, [x!])).toContain(
+      `- 1 of 4 planned lifts logged in 3 weeks (drift:discipline:strength) — talked through ${d(-6)}, held until ${d(1)} (mem:r:1): ${U("memory", "Lifts on Saturdays while work is busy.")}`,
+    );
+    const due = only(strength(4, 1), { conclusions: [{ id: "mem:r:1", drift: "drift:discipline:strength", checkBack: TODAY, at: `${d(-6)}T09:00:00.000Z`, body: "Lifts on Saturdays while work is busy." }] });
     const [y] = driftsOf(due);
     expect(y!.held).toBeNull();
-    expect(y!.since).toEqual({ at: d(-6), memoryId: "mem:r:1" });
-    expect(standBlock(due, [y!])).toContain(`(drift:discipline:strength) — talked through ${d(-6)} (mem:r:1): check back now`);
+    expect(y!.since).toEqual({ at: d(-6), memoryId: "mem:r:1", body: "Lifts on Saturdays while work is busy." });
+    expect(standBlock(due, [y!])).toContain(`(drift:discipline:strength) — talked through ${d(-6)} (mem:r:1), check back now: ${U("memory", "Lifts on Saturdays while work is busy.")}`);
   });
 
   it("a chip: an observation and a question; its request the athlete's words", () => {
@@ -321,6 +329,83 @@ describe("drift (§7.2)", () => {
       label: "1 of 4 planned lifts logged in 3 weeks — talk it through?",
       request: "1 of 4 planned lifts logged in 3 weeks — let's talk it through.",
     });
+  });
+});
+
+describe("the audits' fix pass (2026-11-06)", () => {
+  const strength = (dates: Array<[number, string]>) => dates.map(([n, state]) => row(d(n), "strength", state));
+  const facts = (over: Partial<StandFacts>): StandFacts => ({ ...EMPTY, ...over });
+  const conclusion = (drift: string, checkBack = d(10)) => ({ id: `mem:${drift}`, drift, checkBack, at: `${d(-2)}T09:00:00.000Z`, body: "Zorbex: talked it through." });
+
+  it("#1 a start already past the target, the better way, has no pace — never 'ahead', never a chip", () => {
+    const base = { startDate: d(-40), due: d(30) };
+    expect(paceOf({ ...base, direction: "up", start: 8, target: 7 }, 5, TODAY)).toEqual({ pace: "no data", why: "started past the target" });
+    expect(paceOf({ ...base, direction: "down", start: 1, target: 2 }, 5, TODAY)).toEqual({ pace: "no data", why: "started past the target" });
+    expect(paceOf({ ...base, direction: "up", start: 7, target: 7 }, 5, TODAY)).toEqual({ pace: "no data", why: "the target is the start" });
+    const f = facts({ objectives: [{ id: "o", keyResults: [kr({ id: "k", baseline: 8, target: 7, createdOn: d(-30), due: d(5), progress: progress(5, "measured") })] }] });
+    expect(driftsOf(f)).toEqual([]);
+  });
+
+  it("#2 one reading and no baseline: no data, 'one reading so far' — no 'behind', no chip", () => {
+    const f = facts({ objectives: [{ id: "o", keyResults: [kr({ id: "k", baseline: null, target: 120, createdOn: d(-30), due: d(14), progress: progress(65, "sparse") })] }] });
+    expect(driftsOf(f)).toEqual([]);
+    expect(standBlock(f, [])).toContain(": no data (one reading so far)");
+  });
+
+  it("#3a a held discipline holds the not-logged drift its sessions raise", () => {
+    const plan = strength([[-2, "unresolved"], [-4, "unresolved"], [-6, "missed"], [-8, "completed"]]);
+    expect(driftsOf(facts({ plan })).map((x) => x.id)).toEqual(["drift:discipline:strength", "drift:missed"]);
+    const held = driftsOf(facts({ plan, conclusions: [conclusion("drift:discipline:strength")] }));
+    expect(held.map((x) => [x.id, x.held?.memoryId])).toEqual([
+      ["drift:discipline:strength", "mem:drift:discipline:strength"],
+      ["drift:missed", "mem:drift:discipline:strength"],
+    ]);
+  });
+
+  it("#3b a hold follows the discipline as its drift flips from discipline to none", () => {
+    const yoga = [row(d(-3), "yoga", "skipped", { origin: null }), row(d(-10), "yoga", "skipped", { origin: null })];
+    const [x] = driftsOf(facts({ plan: yoga, conclusions: [conclusion("drift:discipline:yoga")] }));
+    expect(x).toMatchObject({ id: "drift:none:yoga", held: { memoryId: "mem:drift:discipline:yoga" } });
+  });
+
+  it("#3c a missed conclusion holds the disciplines it covers now; a missed drift is held only when every discipline in it is", () => {
+    const plan = strength([[-2, "unresolved"], [-4, "unresolved"], [-6, "missed"], [-8, "completed"]]);
+    expect(driftsOf(facts({ plan, conclusions: [conclusion("drift:missed")] })).every((x) => x.held !== null)).toBe(true);
+    const mixed = [...strength([[-2, "unresolved"], [-4, "unresolved"]]), row(d(-3), "easy", "unresolved"), row(d(-5), "easy", "completed"), row(d(-7), "easy", "completed")];
+    const out = driftsOf(facts({ plan: mixed, conclusions: [conclusion("drift:discipline:strength")] }));
+    expect(out.find((x) => x.id === "drift:missed")!.held).toBeNull();
+  });
+
+  it("#3d driftCoveredBy: the same subject match for a run that diagnosed it", () => {
+    const plan = strength([[-2, "unresolved"], [-4, "unresolved"], [-6, "missed"], [-8, "completed"]]);
+    const f = facts({ plan });
+    const missed = driftsOf(f).find((x) => x.id === "drift:missed")!;
+    expect(driftCoveredBy(missed, ["drift:discipline:strength"], f)).toBe(true);
+    expect(driftCoveredBy(missed, ["drift:none:yoga"], f)).toBe(false);
+    expect(driftCoveredBy(driftsOf(f)[0]!, ["drift:missed"], f)).toBe(true);
+  });
+
+  it("#6 a Start-now session is off the plan: never planned, never a planned one done", () => {
+    const plan = [
+      ...strength([[-2, "skipped"], [-5, "skipped"], [-9, "skipped"], [-12, "skipped"]]),
+      ...[-1, -4, -7, -11].map((n) => row(d(n), "strength", "completed", { startNow: true })),
+    ];
+    const f = facts({ plan });
+    expect(standBlock(f, driftsOf(f))).toContain("- strength 0/4 | 0/4 (0·4·0 | 0·4·0), +4 off the plan in 4 wk");
+    expect(driftsOf(f).map((x) => x.observation)).toEqual(["0 of 4 planned lifts logged in 3 weeks"]);
+  });
+
+  it("#7 the stand measures 12 key results at most: the ones shown and those that could drift first", () => {
+    const many = Array.from({ length: 30 }, (_, k) => kr({ id: `k${k}`, label: `Zorbex ${k}`, baseline: 60, target: 120, due: k === 29 ? d(3) : null, measure: { kind: "checkin", questionId: "energy" } as never }));
+    expect(standMeasured(many).map((x) => x.id)).toEqual(["k0", "k1", "k2", "k29", ...Array.from({ length: 8 }, (_, i) => `k${i + 3}`)]);
+    expect(STAND_KEY_RESULTS_MAX).toBe(12);
+  });
+
+  it("#11 a key result's chip says it is behind schedule, never 'behind pace'", () => {
+    const f = facts({ objectives: [{ id: "o", keyResults: [kr({ id: "k1", label: "Zorbex plank", baseline: 60, target: 120, createdOn: d(-30), due: d(20), progress: progress(75, "measured") })] }] });
+    const [x] = driftsOf(f);
+    expect(driftNudge(x!).label).toBe("Zorbex plank is behind schedule with 3 weeks left — talk it through?");
+    expect(standBlock(f, [x!])).not.toContain("behind pace");
   });
 });
 
@@ -417,7 +502,7 @@ describe("readStandFacts: one statement and the measures its key results need", 
     await memory("beyond-obs-1", "observation");
     await memory("beyond-obs-2", "observation");
     await memory("rehearsal", "observation", { provenance: { source: "coach_inference", at: at(d(-3)), rehearsal: true } });
-    await memory("conclusion", "rule", { pinned: true, provenance: { source: "coach_inference", at: at(d(-3)), runId: "r", drift: "drift:discipline:strength", checkBack: d(10) } });
+    await memory("conclusion", "rule", { body: "Zorbex: lifts on Saturdays.", provenance: { source: "coach_inference", at: at(d(-3)), runId: "r", drift: "drift:discipline:strength", checkBack: d(10) } });
     await db.insert(schema.objectives).values({ id: "o1", userId, title: "Zorbex calm", status: "active", goalIds: [], sort: 0, createdAt: at(d(-40)), updatedAt: at(d(-40)) });
     await db.insert(schema.objectives).values({ id: "o2", userId, title: "Zorbex paused", status: "paused", goalIds: [], sort: 1, createdAt: at(d(-40)), updatedAt: at(d(-40)) });
     await db.insert(schema.keyResults).values([
@@ -440,11 +525,21 @@ describe("readStandFacts: one statement and the measures its key results need", 
     expect(f.review).toEqual({ weekStart: "2026-10-26", narrative: "Newest review. More." });
     expect(f.reads).toEqual([{ date: d(-4), sport: "run", seconds: 2400, flags: ["hr_drift"], glance: "Flagged glance." }]);
     expect(f.beyondCore).toEqual({ note: 1, observation: 2 });
-    expect(f.conclusions).toEqual([{ id: "conclusion", drift: "drift:discipline:strength", checkBack: d(10), at: at(d(-3)) }]);
+    expect(f.conclusions).toEqual([{ id: "conclusion", drift: "drift:discipline:strength", checkBack: d(10), at: at(d(-3)), body: "Zorbex: lifts on Saturdays." }]);
     expect(f.objectives).toHaveLength(1);
     expect(f.objectives[0]!.keyResults[0]).toMatchObject({ id: "k1", label: "Energy", target: 8, createdOn: d(-40), progress: { current: 6 } });
     expect(JSON.stringify(f)).not.toContain("PLAN-TITLE-SENTINEL");
     expect(JSON.stringify(f)).not.toContain("MEMORY-NOTE-SENTINEL");
+  });
+
+  it("#8 rows read stay bounded by the windows, not the lifetime: every activity, session and read search uses a time range (query plan)", async () => {
+    const plan = ((await db.all(sql`explain query plan ${standRowsSql(db, userId, TODAY, { library: false })}`)) as Array<{ detail: string }>).map((r) => r.detail);
+    const on = (table: string) => plan.filter((l) => new RegExp(`^(SEARCH|SCAN) ${table}\\b`).test(l));
+    expect(plan.filter((l) => /^SCAN (activities|performed_sessions|coach_reads|planned_workouts|coach_memory)\b/.test(l))).toEqual([]);
+    for (const l of on("activities")) expect(l, l).toMatch(/activities_user_time_idx \(user_id=\? AND start_time>\? AND start_time<\?\)|\(id=\?\)/);
+    expect(on("activities").filter((l) => /start_time/.test(l))).toHaveLength(2);
+    for (const l of on("performed_sessions")) expect(l, l).toMatch(/local_date>\? AND local_date<\?/);
+    for (const l of on("coach_reads")) expect(l, l).toMatch(/coach_reads_user_activity_unique \(user_id=\? AND activity_id=\?\)/);
   });
 
   it("an empty account: one statement, nothing measured", async () => {

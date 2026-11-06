@@ -429,6 +429,45 @@ describe("drift (where you stand, spec §7.2): one chip, an observation and a qu
   });
 });
 
+describe("the audits' fix pass (2026-11-06)", () => {
+  const HOUR = 3_600_000;
+  const ago = (ms: number) => new Date(Date.now() - ms).toISOString();
+
+  it("#5 a tapped missed chip stays away its whole window — asked in its 'today's' form, offered days later in its weekday form", async () => {
+    // Skipped on its day, the chip tapped that day ("today's tempo"); three and four days on, still asked.
+    for (const n of [1, 3, 4]) {
+      await db.delete(schema.plannedWorkouts);
+      await db.delete(schema.coachRuns);
+      await seedSession({ id: `w${n}`, date: addDays(today, -n), state: "skipped" });
+      await seedRun("Rework my week around today's tempo — I skipped it.", ago(n * 24 * HOUR + HOUR));
+      expect(await nudges(), `${n} days on`).toEqual([]);
+    }
+  });
+
+  /** Three lifts not logged and one done, older than the missed chip's window: a discipline drift and the not-logged one. */
+  async function seedLifts(): Promise<void> {
+    for (const [i, n] of [6, 9, 12].entries()) await seedSession({ id: `u${i}`, date: addDays(today, -n), state: "unresolved", category: "strength", qualitySubtype: null, sport: "strength" });
+    await seedSession({ id: "c1", date: addDays(today, -15), state: "completed", category: "strength", qualitySubtype: null, sport: "strength" });
+  }
+
+  it("#3 a conclusion holds every drift its subject covers: concluding the lifts holds the not-logged sessions too", async () => {
+    await seedLifts();
+    expect(ids(await nudges())).toEqual(["drift:discipline:strength"]);
+    await db.insert(schema.coachMemory).values({
+      id: "mem:r:1", userId, kind: "rule", body: "Lifts on Saturdays for now.", active: true, pinned: false, confidence: "inferred",
+      provenance: { source: "coach_inference", runId: "r", at: nowInstant(), drift: "drift:discipline:strength", checkBack: addDays(today, 7) } as never,
+      learnedAt: nowInstant(),
+    });
+    expect(await nudges()).toEqual([]);
+  });
+
+  it("#3 a run that diagnosed the not-logged sessions counts as asked for the lifts it covers", async () => {
+    await seedLifts();
+    await seedRun("3 sessions not logged in 2 weeks — let's talk it through.", ago(20 * HOUR), null, "drift:missed");
+    expect(await nudges()).toEqual([]);
+  });
+});
+
 describe("at most two, the most pressing first", () => {
   async function seedAll(): Promise<void> {
     await seedSession({ id: "w1", date: addDays(today, -1), state: "missed" });
