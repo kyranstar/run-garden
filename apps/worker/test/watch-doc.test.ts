@@ -44,6 +44,7 @@ function seededInputs(n: number): Array<{ label: string; input: ComposeInput }> 
     const context: EngineContext = {
       prefs: rng() < 0.5 ? h.prefs : { ratings: {}, excluded: [], pinned: [] },
       savedIds: [],
+      focus: [],
       location: LOCATIONS[i % 3]!,
       locations: LOCATIONS,
       unit: rng() < 0.5 ? "lb" : "kg",

@@ -247,7 +247,7 @@ describe("GET /api/library", () => {
       EXERCISES.filter((e) => !hasEquipment(e, ["mat"]) && hasEquipment(e, ["mat", item])).length;
     expect(body.wishlist).toEqual([
       { equipmentId: "band", label: "Resistance band", unlocks: unlocks("band") },
-      { equipmentId: "massage-ball", label: "Massage ball", unlocks: unlocks("massage-ball") },
+      { equipmentId: "massage-ball", label: "Massage or lacrosse ball", unlocks: unlocks("massage-ball") },
     ]);
     expect(body.wishlist[0]!.unlocks).toBeGreaterThan(0);
 

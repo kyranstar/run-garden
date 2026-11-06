@@ -104,6 +104,7 @@ const home: EngineLocation = {
 const context: EngineContext = {
   prefs: { ratings: {}, excluded: [], pinned: [] },
   savedIds: [],
+  focus: [],
   location: home,
   locations: [home],
   unit: "kg",

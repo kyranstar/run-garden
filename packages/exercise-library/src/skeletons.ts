@@ -13,6 +13,13 @@ export interface BlockSpec {
   patterns: readonly Pattern[] | null;
   /** Formats the block may use, in preference order (mode and theme narrow them further). */
   formats: readonly FormatId[];
+  /**
+   * Roles the block's first slot goes to when today has a move for it, chosen with the athlete's focus areas in mind. It
+   * takes nothing the block wouldn't: the move must still fit the block's roles, the day and the place's gear; with no
+   * such move the block fills as usual. A lead sits on top of the block, whose own moves still play, and prep gives up
+   * the time.
+   */
+  lead?: readonly Role[];
 }
 
 type PerBlock<T> = Readonly<Partial<Record<BlockId, T>>>;
@@ -50,7 +57,8 @@ export const SKELETON: SkeletonSpec = {
     core: { label: "Core lifts", roles: ["core"], patterns: null, formats: ["straight", "superset"] },
     accessory: { label: "Accessory", roles: ["accessory", "finisher"], patterns: null, formats: ["superset", "circuit", "ladder", "straight"] },
     care: { label: "Care", roles: [], patterns: null, formats: [] },
-    cooldown: { label: "Cool-down", roles: ["cooldown", "stretch", "downshift"], patterns: null, formats: ["flow", "holds"] },
+    // A release plays after the work, while it can't blunt anything: see docs/research/2026-11-05-self-release-evidence.md.
+    cooldown: { label: "Cool-down", roles: ["cooldown", "stretch", "downshift"], patterns: null, formats: ["flow", "holds"], lead: ["release"] },
   },
   shares: {
     recovery: { arrive: 0.12, prep: 0.46, core: 0, accessory: 0, care: 0.27, cooldown: 0.15 },

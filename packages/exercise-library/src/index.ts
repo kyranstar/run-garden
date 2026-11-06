@@ -9,6 +9,7 @@ export * from "./conditions/index.js";
 export * from "./engine-data.js";
 export * from "./define.js";
 export * from "./eligibility.js";
+export * from "./focus.js";
 export * from "./validate.js";
 export { EXERCISES } from "./exercises/index.js";
 export * from "./search.js";

@@ -18,6 +18,7 @@
  */
 import { and, asc, Column, desc, eq, getTableColumns, inArray, isNull, ne, sql, type InferSelectModel, type Table } from "drizzle-orm";
 import {
+  athleteProfiles,
   conditionChecks,
   exercisePrefs,
   exerciseProvenance,
@@ -60,6 +61,7 @@ import { restoreInProgress } from "./account-state.js";
 import { loadPreferences } from "./calendar-sync.js";
 import { chunkIds, type Db } from "./db.js";
 import { defaultPlaceOrder, namedFromRow, type PlaceGear } from "./default-place.js";
+import { focusRefsFrom } from "./profile.js";
 import { PENDING_HASH } from "./watch-sets.js";
 
 type SessionRow = typeof performedSessions.$inferSelect;
@@ -578,6 +580,8 @@ export async function saveProgramState(db: Db, programId: string, block: Block, 
 export interface EngineContext {
   prefs: Prefs;
   savedIds: string[];
+  /** The athlete's focus areas, as library refs. */
+  focus: string[];
   /** The place this session happens. */
   location: EngineLocation;
   /** Every place, the account's default first: the engine judges a block with its first place's gear. */
@@ -672,9 +676,14 @@ export async function loadEngineContext(
       .where(and(eq(userConditions.userId, userId), eq(userConditions.active, true))),
     db.select().from(exercisePrefs).where(eq(exercisePrefs.userId, userId)),
     db.select({ exerciseId: exerciseProvenance.exerciseId }).from(exerciseProvenance).where(eq(exerciseProvenance.userId, userId)),
-    // In the default place's order (default-place.ts): the first is the account's default.
+    // In the default place's order (default-place.ts): the first is the account's default. The focus areas ride along, so
+    // a build's statement budget doesn't move. An account with no place loses nothing by it: focus areas only choose among
+    // moves that need gear, and the preset it trains with holds none of that gear.
     db
-      .select()
+      .select({
+        ...getTableColumns(locationsTable),
+        focusAreas: sql<string | null>`(select ${athleteProfiles.focusAreas} from ${athleteProfiles} where ${athleteProfiles.userId} = ${userId})`,
+      })
       .from(locationsTable)
       .where(eq(locationsTable.userId, userId))
       .orderBy(...defaultPlaceOrder(userId)),
@@ -699,13 +708,14 @@ export async function loadEngineContext(
 
   if (placeRows.length === 0) {
     const home = presetHome();
-    return { prefs, savedIds, location: home, locations: [home], unit, activeProfiles, careProfiles, config, library };
+    return { prefs, savedIds, focus: [], location: home, locations: [home], unit, activeProfiles, careProfiles, config, library };
   }
+  const focus = focusRefsFrom(placeRows[0]!.focusAreas);
   // The default first (the profile's choice, the place marked default, the first made), then the rest as they were made.
   const [defaultRow, ...rest] = placeRows;
   rest.sort((a, b) => a.createdAt.localeCompare(b.createdAt) || a.id.localeCompare(b.id));
   const ordered = [defaultRow!, ...rest].map((r) => toEngineLocation(r, unit));
   const pick = (id: string | null | undefined) => (id ? ordered.find((p) => p.id === id) : undefined);
   const location = pick(opts.locationId) ?? pick(config.defaultLocationId) ?? ordered[0]!;
-  return { prefs, savedIds, location, locations: ordered, unit, activeProfiles, careProfiles, config, library };
+  return { prefs, savedIds, focus, location, locations: ordered, unit, activeProfiles, careProfiles, config, library };
 }

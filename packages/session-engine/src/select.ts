@@ -1,4 +1,4 @@
-import { label, positionGroup, type EngineData, type ExerciseRecord, type HistorySession, type Theme } from "@rg/exercise-library";
+import { areaWord, focusMet, label, positionGroup, type EngineData, type ExerciseRecord, type HistorySession, type Theme } from "@rg/exercise-library";
 import type { CoverageDates, CoverageMap } from "./coverage.js";
 import { Hist, HistIndex } from "./hist.js";
 import type { Prefs } from "./types.js";
@@ -6,7 +6,7 @@ import type { Prefs } from "./types.js";
 // Scores candidate exercises for a slot and keeps the top reasons as "why this".
 
 /** Score weights. The penalty for moves flagged in past sessions is each active profile's own weight. */
-export const WEIGHTS = { theme: 3, debt: 3, novelty: 1.5, newMove: 3, saved: 1, rating: 2, flow: 1, repetition: 5, prep: 1, jitter: 0.5 };
+export const WEIGHTS = { theme: 3, debt: 3, novelty: 1.5, newMove: 3, saved: 1, rating: 2, flow: 1, repetition: 5, prep: 1, focus: 4, jitter: 0.5 };
 const NEW_MOVE = "New move this week";
 const RECENT_SESSIONS = 3;   // how far back the repetition penalty looks
 
@@ -34,6 +34,8 @@ export interface SelectCtx {
   newMoveOpen: boolean;
   prevPosition?: string | null;
   coreRegions?: readonly string[] | null;
+  /** The athlete's focus areas (region and muscle ids), for a slot that is chosen with them in mind. */
+  focus?: readonly string[] | null;
   /** Exercise ids the person saved themselves. */
   saved?: ReadonlySet<string>;
   /**
@@ -238,6 +240,8 @@ function score(data: EngineData, ex: ExerciseRecord, ctx: SelectCtx): Scored {
   add(base.repetition);
   for (const f of base.flags) add(f);
   if (ctx.coreRegions && ex.regions.some(r => ctx.coreRegions!.includes(r))) add(WEIGHTS.prep, "Preps today's lifts");
+  const focus = ctx.focus ? focusMet(ex, ctx.focus) : null;
+  if (focus) add(WEIGHTS.focus, `Eases your ${areaWord(focus)}, a focus area`);
 
   // A fixed per-exercise tie-breaker (builder) keeps one swap from reshuffling every other slot.
   const noise = base.noise ?? ctx.rng();

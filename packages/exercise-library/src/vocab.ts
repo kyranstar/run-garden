@@ -59,9 +59,15 @@ export const TAGS = [
 ] as const;
 export type Tag = (typeof TAGS)[number];
 
-/** `practice`: a move that belongs to one fixed practice. No block of the day's build takes it (`isPracticeMove`). */
+/**
+ * `practice`: a move that belongs to one fixed practice. No block of the day's build takes it (`isPracticeMove`).
+ * `release`: a self-release with a tool, on a site the evidence says repays it, and so worth a slot of its own: a block
+ * whose `lead` names it opens with one when the place has the gear. It is never a move's only role, since the role says
+ * who may lead, not which block plays it.
+ */
 export const ROLES = [
   "warmup", "activation", "core", "accessory", "finisher", "jaw-care", "mobility", "stretch", "downshift", "cooldown", "practice",
+  "release",
 ] as const;
 export type Role = (typeof ROLES)[number];
 

@@ -229,6 +229,8 @@ export const JAW_NECK = defineExercises([
   },
   {
     id: "jawMassage",
+    // `massageBallJaw` retired 2026-11-05: the gear means a firm ball, and no trial supports one on the jaw.
+    legacyIds: ["massageBallJaw"],
     name: "Masseter + temple massage",
     family: "jawRelease",
     patterns: ["release"],
@@ -500,7 +502,7 @@ export const JAW_NECK = defineExercises([
     position: "standing",
     laterality: "unilateral",
     load: "none",
-    dose: { type: "time", range: [30, 45] },
+    dose: { type: "time", range: [60, 120] },
     conditions: { tmj: { clench: 0, neckLoad: 0, faceDown: false } },
     difficulty: 1,
     tags: [],
@@ -520,52 +522,15 @@ export const JAW_NECK = defineExercises([
         "Pause on a tender spot and breathe until it eases.",
         "Switch to the other side when the timer says."
       ],
-      focus: ["Moderate pressure — you should be able to breathe easily.", "Stay on muscle, never on the spine."],
-      mistakes: ["Leaning in so hard you tense up.", "Rolling directly on the neck bones."],
+      focus: ["Moderate pressure — you should be able to breathe easily.", "Stay on the meaty top of the shoulder, never on the spine."],
+      mistakes: [
+        "Leaning in so hard you tense up.",
+        "Rolling up onto the side or front of the neck: a firm ball doesn't belong on the vessels there.",
+        "Staying on a spot that gives sharp pain, tingling or numbness."
+      ],
       breathing: "Long exhales on tender spots.",
-      conditions: { tmj: "Let the jaw hang; the traps and jaw often let go together." },
-      why: "Releases the upper traps and shoulder-blade muscles that feed neck and jaw tension."
-    }
-  },
-  {
-    id: "massageBallJaw",
-    name: "Massage-ball masseter release",
-    family: "jawRelease",
-    patterns: ["release"],
-    regions: ["jaw"],
-    roles: ["jaw-care"],
-    equipment: { all: ["massage-ball"] },
-    position: "seated",
-    laterality: "unilateral",
-    load: "none",
-    dose: { type: "time", range: [30, 45] },
-    conditions: { tmj: { clench: 0, neckLoad: 0, faceDown: false } },
-    difficulty: 1,
-    tags: [],
-    contraction: ["passive"],
-    muscles: { primary: ["masseter"], secondary: ["temporalis"] },
-    purposes: ["recovery", "condition-care"],
-    themes: ["jawReset"],
-    text: {
-      summary: "Roll a soft massage ball over the masseter with light pressure from your palm.",
-      setup: [
-        "Sit with the teeth apart and the head supported if possible.",
-        "Hold a soft ball against the masseter at the angle of the jaw."
-      ],
-      steps: [
-        "Press the ball lightly into the muscle with your palm.",
-        "Make slow, small circles.",
-        "Pause on tight spots and let the jaw hang slightly open.",
-        "Switch sides when the timer says."
-      ],
-      focus: [
-        "Light pressure — the jaw is sensitive.",
-        "Stay on the muscle, below the cheekbone and well forward of the ear; the joint sits right in front of the ear."
-      ],
-      mistakes: ["Using a hard ball with heavy pressure.", "Clenching against the ball."],
-      breathing: "Slow nasal breathing.",
-      conditions: { tmj: "Stop if you feel joint pain, clicking, or numbness." },
-      why: "A deeper, steadier version of jaw self-massage for tight masseters."
+      conditions: { tmj: "Let the jaw hang and keep your teeth apart." },
+      why: "Eases upper traps and shoulder-blade muscles that feel tight, for a while."
     }
   },
 ]);

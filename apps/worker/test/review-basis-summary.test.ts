@@ -288,11 +288,14 @@ describe("its cost does not grow with the history (ruling 2b-R11)", () => {
       measured.push({ n, statements: statements.length, rows, ms: Math.round(performance.now() - t0) });
     }
     console.log(`review-basis cost: ${measured.map((m) => `${m.n} sessions → ${m.statements} statements, ${m.rows} rows, ${m.ms} ms`).join("; ")}`);
-    // Precondition: the sizes whose rows are compared below (400, 1,000) built the same session (the builder seeds on the
-    // program id, fixed below), so those rows grow with the history alone, never with a different build. A smaller history
-    // may lean the builder another way: its statements are compared, never its rows.
+    // Precondition: the sizes whose rows are compared below (400, 1,000) built the same session but for a move at most (the
+    // builder seeds on the program id, fixed below), so those rows grow with the history, not with a different build. One
+    // move can differ: a lift's history sets its target, and so the time left for one more warm-up move. Seen 2026-11-05,
+    // when new library moves reshuffled the seeded history, which draws on the whole library; the 10 % margin below covers
+    // it. A smaller history may lean the builder further: its statements are compared, never its rows.
     expect(builtMoves[2]!.length).toBeGreaterThan(0);
-    expect(builtMoves[3]).toEqual(builtMoves[2]);
+    const differing = [...builtMoves[2]!.filter((m) => !builtMoves[3]!.includes(m)), ...builtMoves[3]!.filter((m) => !builtMoves[2]!.includes(m))];
+    expect(differing.length, differing.join(", ")).toBeLessThanOrEqual(1);
     const [none, hundred, four, thousand] = measured as [(typeof measured)[0], (typeof measured)[0], (typeof measured)[0], (typeof measured)[0]];
     // The statements: the same from the first session on (with none, the by-id reads have nothing to read).
     expect(four.statements).toBe(hundred.statements);
@@ -328,5 +331,5 @@ async function startedSlot(db: Db, userId: string, prefs: UserPreferences, day: 
   });
   const built = await buildSession(db, userId, id, { overrides: { mode: "build" }, checks: { tmj: { pre: 1, feelingOff: false } } }, { today: day, now: noon, prefs });
   await startSession(db, userId, id, built.build!.buildId, noon);
-  return { workoutId: id, moves: Object.keys(built.build!.exercises).sort() };
+  return { workoutId: id, moves: built.build!.items.map((i) => i.exerciseId).sort() };
 }

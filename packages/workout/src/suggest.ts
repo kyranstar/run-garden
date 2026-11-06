@@ -54,9 +54,11 @@
  */
 import type { WorkoutDoc, WorkoutDose, WorkoutItem, WorkoutPart } from "@rg/domain";
 import {
-  MUSCLES,
   MUSCLE_REGION,
-  REGIONS,
+  REGION_SET,
+  areaWord,
+  focusIds,
+  focusMet,
   hasEquipment,
   isPlyometric,
   isPracticeMove,
@@ -102,29 +104,12 @@ type PartPurpose = WorkoutPart["purpose"];
 
 // ── Library facts the suggestions and the quick starts share ──
 
-export const REGION_SET: ReadonlySet<string> = new Set<string>(REGIONS);
-const MUSCLE_SET: ReadonlySet<string> = new Set<string>(MUSCLES);
+export { REGION_SET, areaWord, focusIds, focusMet };
 /** A move with no deliberate effort against resistance: release, rest, relaxed breathing or a relaxed hold. */
 export const passiveOnly = (r: ExerciseRecord): boolean => r.contraction.every((c) => c === "passive");
 /** The active profile whose care this move belongs to (its care block's roles, and the block takes it), if any. */
 export function careProfileOf(rec: ExerciseRecord, profiles: readonly ConditionProfile[]): ConditionProfile | undefined {
   return profiles.find((p) => p.care !== null && p.blockAssignable(rec) && rec.roles.some((r) => p.care!.block.roles.includes(r)));
-}
-/** Area words a reason reads better with than the chip's label. */
-const AREA_WORDS: Readonly<Record<string, string>> = { thoracic: "upper spine", "full-body": "whole body" };
-/** An area (region or muscle) in the words of a reason. */
-export const areaWord = (id: string): string => AREA_WORDS[id] ?? label(id).toLowerCase();
-/** Region and muscle ids among `ids`, each once, in order. */
-export function focusIds(ids: readonly string[]): string[] {
-  return [...new Set(ids)].filter((id) => REGION_SET.has(id) || MUSCLE_SET.has(id));
-}
-/** The first focus area the move meets, or null: a region through its regions or a primary muscle under it, a muscle through its primary muscles. */
-export function focusMet(rec: ExerciseRecord, ids: readonly string[]): string | null {
-  for (const id of ids) {
-    if (REGION_SET.has(id) && (rec.regions.includes(id as Region) || rec.muscles.primary.some((m) => MUSCLE_REGION[m] === id))) return id;
-    if (MUSCLE_SET.has(id) && rec.muscles.primary.includes(id as MuscleId)) return id;
-  }
-  return null;
 }
 
 const MAX_SUGGESTIONS = 3;

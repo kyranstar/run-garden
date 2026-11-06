@@ -32,6 +32,7 @@ const {
   locations,
   exercisePrefs,
   exerciseProvenance,
+  athleteProfiles,
   accountState,
 } = schema;
 
@@ -476,6 +477,19 @@ describe("loadEngineContext", () => {
     expect(ctx.unit).toBe("kg");
     expect(ctx.activeProfiles).toEqual(["tmj"]);
     expect(ctx.careProfiles).toEqual(["tmj"]);
+  });
+
+  it("reads the focus areas as library refs: each once, in order, only the library's, never another account's", async () => {
+    const p = await seedProgram(userId, { careProfiles: [] });
+    await seedLocation(userId, { name: "Home", isDefault: true });
+    expect((await loadEngineContext(db, userId, p, {})).focus).toEqual([]);
+    const area = (id: string, refs: string[]) => ({ id, label: id, refs });
+    const write = (owner: string, focusAreas: unknown[]) =>
+      db.insert(athleteProfiles).values({ id: owner, userId: owner, goals: [], focusAreas: focusAreas as never, events: [], preferences: {}, updatedAt: NOW } as never);
+    await write(userId, [area("hips", ["hip-flexors", "glute-max"]), area("back", ["thoracic-extensors", "hip-flexors", "not-a-muscle"])]);
+    const { userId: other } = await makeTestUser(db);
+    await write(other, [area("calves", ["soleus"])]);
+    expect((await loadEngineContext(db, userId, p, {})).focus).toEqual(["hip-flexors", "glute-max", "thoracic-extensors"]);
   });
 
   it("cares only for profiles that are active; inactive and unknown profiles are not active", async () => {

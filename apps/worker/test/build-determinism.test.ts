@@ -85,6 +85,7 @@ function programmeBuilds(p: number, h: ReturnType<typeof histories>[number]): st
   const context: BuildContext = {
     prefs: rng() < 0.5 ? seeded.prefs : { ratings: {}, excluded: [], pinned: [] },
     savedIds: rng() < 0.3 ? world.data.exercises.filter((_, i) => i % 7 === p % 7).map((e) => e.id) : [],
+    focus: [],
     location: pick(locations),
     locations,
     unit: rng() < 0.5 ? "lb" : "kg",
@@ -217,6 +218,7 @@ async function write(db: Db, userId: string, sessions: readonly HistorySession[]
 const readContext: BuildContext = {
   prefs: { ratings: {}, excluded: [], pinned: [] },
   savedIds: [],
+  focus: [],
   location: LOCATIONS[0]!,
   locations: LOCATIONS,
   unit: "kg",

@@ -319,7 +319,7 @@ export const LOWER_LEG = defineExercises([
     position: "seated",
     laterality: "unilateral",
     load: "none",
-    dose: { type: "time", range: [45, 60] },
+    dose: { type: "time", range: [60, 120] },
     conditions: { tmj: { clench: 0, neckLoad: 0, faceDown: false } },
     difficulty: 1,
     contraction: ["passive"],
@@ -340,7 +340,12 @@ export const LOWER_LEG = defineExercises([
         "Move off the roller or ball before switching sides."
       ],
       focus: ["Moderate pressure: you can breathe easily.", "Slow, small movements."],
-      mistakes: ["Rolling fast back and forth.", "Pressing so hard that you tense up.", "Rolling behind the knee, or staying on a spot that gives sharp pain."],
+      mistakes: [
+        "Rolling fast back and forth.",
+        "Pressing so hard that you tense up.",
+        "Rolling behind the knee, or staying on a spot that gives sharp pain, tingling or numbness.",
+        "Rolling a calf that is hot, swollen or suddenly painful: get that checked instead."
+      ],
       breathing: "Long exhales on tender spots.",
       conditions: { tmj: "Keep the jaw slack and the shoulders easy while the hands hold you up; release work goes better when the face isn't braced." },
       why: "Eases calves that feel tight or sore after running, and helps the ankle move freely again."

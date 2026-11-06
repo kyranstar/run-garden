@@ -6,7 +6,7 @@
  */
 import { describe, expect, it } from "vitest";
 import type { WorkoutDoc } from "@rg/domain";
-import { EQUIPMENT_IDS, EXERCISES, MUSCLE_REGION, TMJ, hasEquipment, isPlyometric, type CheckReading, type ExerciseRecord, type MuscleId } from "@rg/exercise-library";
+import { EQUIPMENT_IDS, EXERCISES, LOCATION_PRESETS, MUSCLE_REGION, TMJ, hasEquipment, isPlyometric, type CheckReading, type ExerciseRecord, type MuscleId } from "@rg/exercise-library";
 import {
   QUICK_START_MINUTES,
   deriveDoc,
@@ -165,6 +165,18 @@ describe("what each one holds", () => {
     }
   });
 
+  it("with a ball at the place, the hip opener's cool-down reaches for the hip releases; without one it can't", () => {
+    const home = LOCATION_PRESETS.find((l) => l.id === "home")!.equipment;
+    const hipReleases = new Set(["massageBallFrontHip", "massageBallOuterHip", "massageBallDeepHip", "massageBallGlute"]);
+    const released = (equipment: readonly string[]) => SEEDS.filter((seed) => itemIds(make("hip_opener", seed, { equipment })).some((id) => hipReleases.has(id))).length;
+    expect(released([...home, "massage-ball"])).toBeGreaterThan(SEEDS.length / 2);
+    expect(released(home)).toBe(0);
+    for (const seed of SEEDS) {
+      const cool = make("hip_opener", seed, { equipment: [...home, "massage-ball"] }).parts.filter((p) => p.purpose !== "cooldown");
+      for (const part of cool) for (const item of part.items) if (item.kind === "exercise") expect(hipReleases.has(item.libraryId), item.libraryId).toBe(false);
+    }
+  });
+
   it("a passive move only ever cools down: never in a warm-up or an activation part", () => {
     for (const kind of ["desk_reset", "hip_opener"] as const) {
       for (const day of [DAYS.calm, DAYS.flare]) {
@@ -233,10 +245,13 @@ describe("what each one holds", () => {
       const count = (day: DayContext) => SEEDS.flatMap((seed) => itemIds(make(kind, seed, { day }))).filter(relaxed).length;
       expect(count(DAYS.flare!), kind).toBeGreaterThan(count(DAYS.calm!));
     }
-    // Easier first: the hip opener's moves are easier, on the whole, than the moves it could have chosen.
-    const pool = EXERCISES.filter((e) => e.tags.includes("hip-opening") && !isPlyometric(e));
+    // Easier first: the hip opener's moves are easier, on the whole, than the moves it could have chosen. Measured with no
+    // ball: the releases are all the easiest grade and fill only the cool-down, so they'd pull the pool's mean down without
+    // saying anything about how the warm-up and activation parts rank.
+    const gear = EQUIPMENT_IDS.filter((g) => g !== "massage-ball");
+    const pool = EXERCISES.filter((e) => e.tags.includes("hip-opening") && !isPlyometric(e) && hasEquipment(e, gear));
     const mean = (xs: number[]) => xs.reduce((a, b) => a + b, 0) / xs.length;
-    const chosen = SEEDS.flatMap((seed) => itemIds(make("hip_opener", seed, { focusRefs: [] }))).map((id) => rec(id).difficulty);
+    const chosen = SEEDS.flatMap((seed) => itemIds(make("hip_opener", seed, { focusRefs: [], equipment: gear }))).map((id) => rec(id).difficulty);
     expect(mean(chosen)).toBeLessThan(mean(pool.map((e) => e.difficulty)));
   });
 

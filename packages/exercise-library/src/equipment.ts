@@ -5,7 +5,7 @@ import type { EquipmentId } from "./vocab.js";
 
 export const EQUIPMENT: Readonly<Record<EquipmentId, string>> = {
   mat: "Mat", "yoga-block": "Yoga block", kettlebell: "Kettlebell", dumbbells: "Dumbbells", bench: "Bench",
-  chair: "Sturdy chair", wall: "Wall", towel: "Towel", band: "Resistance band", "massage-ball": "Massage ball",
+  chair: "Sturdy chair", wall: "Wall", towel: "Towel", band: "Resistance band", "massage-ball": "Massage or lacrosse ball",
   "foam-roller": "Foam roller", "pull-up-bar": "Pull-up bar", cable: "Cable machine", barbell: "Barbell", machine: "Machines",
 };
 

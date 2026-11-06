@@ -53,7 +53,9 @@ describe("the prompt text", () => {
     // REBASED 2026-10-26 (saves flow redesign): the integration paragraph's include, skip and coach per move, never both
     // of a near-duplicate pair, a line's moveId; read_saves' Reading line names a fit-in run's own batch — measured
     // 6,414.75; ≥ 100 tokens headroom.
-    expect(SHARED_PROMPT.length / 4).toBeLessThanOrEqual(6520);
+    // REBASED 2026-11-05 (ball release): the "Release" principle, dose and timing from
+    // docs/research/2026-11-05-self-release-evidence.md — measured 6,620.75; 19 tokens headroom.
+    expect(SHARED_PROMPT.length / 4).toBeLessThanOrEqual(6640);
     for (const r of ROLES) expect(roleBlock(r).length / 4, r).toBeLessThanOrEqual(ROLE_CAP[r]);
   });
 
@@ -330,7 +332,8 @@ describe("3A-B — the prompt agrees with the code", () => {
     // REBASED 2026-10-25 (saved-posts fix wave) — measured 6,291 (the cap above).
     // REBASED 2026-10-26 (saves flow redesign): the integration paragraph's choices and near-duplicates — measured 6,414.75
     // (the cap above).
-    expect(SHARED_PROMPT.length / 4).toBeLessThanOrEqual(6520);
+    // REBASED 2026-11-05 (ball release): the "Release" principle (the cap above).
+    expect(SHARED_PROMPT.length / 4).toBeLessThanOrEqual(6640);
     for (const role of ROLES) expect(roleBlock(role, RUN_LIMITS[role].maxCalls).length / 4, role).toBeLessThanOrEqual(ROLE_CAP[role]);
   });
 });

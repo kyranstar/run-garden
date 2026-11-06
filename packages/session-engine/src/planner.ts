@@ -48,6 +48,8 @@ export interface ProgramState {
   locations: readonly EngineLocation[];
   prefs: Prefs;
   savedIds: readonly string[];
+  /** The athlete's focus areas (region and muscle ids): what a block's `lead` slot reaches for first. */
+  focus?: readonly string[];
   block: Block | null;
   /** The history, oldest first as stored — or, with `summary`, the sessions `Hist.trim` keeps for today and `block`. */
   sessions: readonly HistorySession[];
@@ -142,6 +144,7 @@ function context(data: EngineData, input: PlanTodayInput, program: ProgramState)
   const buildInput: BuildInput = {
     today, ...(program.programId ? { programId: program.programId } : {}), mode, theme, minutes, location, unit: program.settings.unit,
     sessions: program.sessions, prefs: program.prefs, savedIds: program.savedIds, block: ensured.block, checks: readings, swaps: t.swaps,
+    ...(program.focus ? { focus: program.focus } : {}),
     ...(program.summary ? { summary: program.summary } : {}),
   };
   return { t, ensured, proposal, mode, themeProposal, chosen, theme, minutes, location, buildInput, hist };

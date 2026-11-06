@@ -196,6 +196,33 @@ function restoreBeginsAt(at: RegExp): () => number {
 const moves = (s: SessionResponse): Record<string, string> =>
   Object.fromEntries(s.build!.items.map((i) => [i.slotKey, i.exerciseId]));
 
+describe("a release from the gear and the profile", () => {
+  const home = (equipment: string[]) => ({ id: newId(), userId, name: "Home", equipment, implements: {}, isDefault: true, createdAt: NOW, updatedAt: NOW });
+  const focus = (refs: string[]) =>
+    db.insert(schema.athleteProfiles).values({ id: userId, userId, goals: [], focusAreas: [{ id: "tight", label: "Tight", refs }], events: [], preferences: {}, updatedAt: NOW } as never);
+
+  it("a ball at the place opens the cool-down with a release for the athlete's focus area", async () => {
+    await db.insert(schema.locations).values(home(["mat", "chair", "wall", "massage-ball"]));
+    await focus(["hip-flexors"]);
+    const res = await buildSession(db, userId, await seedSlot(TODAY), { overrides: { mode: "consistent" } }, ctx());
+    expect(moves(res)["cooldown:0"]).toBe("massageBallFrontHip");
+  });
+
+  it("the focus area decides which: the same place and day with another one leads with another", async () => {
+    await db.insert(schema.locations).values(home(["mat", "chair", "wall", "massage-ball"]));
+    await focus(["hamstrings"]);
+    const res = await buildSession(db, userId, await seedSlot(TODAY), { overrides: { mode: "consistent" } }, ctx());
+    expect(moves(res)["cooldown:0"]).toBe("massageBallHamstring");
+  });
+
+  it("with no ball there's no release to lead, whatever the focus areas say", async () => {
+    await db.insert(schema.locations).values(home(["mat", "chair", "wall"]));
+    await focus(["hip-flexors"]);
+    const res = await buildSession(db, userId, await seedSlot(TODAY), { overrides: { mode: "consistent" } }, ctx());
+    expect(Object.values(moves(res)).filter((id) => id.startsWith("massageBall"))).toEqual([]);
+  });
+});
+
 describe("building today's session", () => {
   it("stores version 1 and returns it, with its view, payload and the row updated per spec", async () => {
     const id = await seedSlot(TODAY);

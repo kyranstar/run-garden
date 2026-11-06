@@ -21,8 +21,9 @@ describe("the real library (data.test.js)", () => {
   test("the library has about 70 exercises and keeps every pass-1 id", () => {
     expect(EXERCISES.length).toBeGreaterThanOrEqual(65);
     // 159, then Task 13's lower-limb stretches, slow-lowering strength and gym moves (lower-limb-gym.ts), less the six
-    // the 2026-11-05 audit retired (their ids live on in the survivors' `legacyIds`), plus TRE's seven (tre.ts).
-    expect(EXERCISES.length).toBe(176);
+    // the 2026-11-05 audit retired (their ids live on in the survivors' `legacyIds`), plus TRE's seven (tre.ts), plus the
+    // seven ball releases (ball-release.ts) less the jaw's, retired with them.
+    expect(EXERCISES.length).toBe(182);
     for (const id of PASS1_IDS) expect(get(id), `missing pass-1 id ${id}`).toBeTruthy();
   });
 

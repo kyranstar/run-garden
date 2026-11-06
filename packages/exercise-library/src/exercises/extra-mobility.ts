@@ -439,19 +439,19 @@ export const EXTRA_MOBILITY = defineExercises([
     family: "gluteRelease",
     patterns: ["release"],
     regions: ["glutes", "hips"],
-    roles: ["cooldown", "mobility"],
+    roles: ["release", "cooldown"],
     equipment: { all: ["massage-ball"] },
     position: "seated",
     laterality: "unilateral",
     load: "none",
-    dose: { type: "time", range: [45, 60] },
+    dose: { type: "time", range: [60, 120] },
     conditions: { tmj: { clench: 0, neckLoad: 0, faceDown: false } },
     difficulty: 1,
-    tags: [],
+    tags: ["hip-opening"],
     contraction: ["passive"],
-    muscles: { primary: ["glute-max", "deep-hip-rotators"], secondary: ["glute-med"] },
+    muscles: { primary: ["glute-max", "glute-med"], secondary: ["deep-hip-rotators"] },
     purposes: ["recovery", "cooldown"],
-    themes: ["deskUnwind"],
+    themes: ["deskUnwind", "hipsPosture", "posteriorChain"],
     text: {
       summary: "Sit on a massage ball under one glute and let tight spots ease with small movements.",
       setup: [
@@ -464,11 +464,11 @@ export const EXTRA_MOBILITY = defineExercises([
         "Pause on a tender spot and let the knee fall gently in and out.",
         "Move off the ball before switching sides."
       ],
-      focus: ["Moderate pressure; you can breathe easily.", "Stay on the meaty part of the glute, away from the tailbone."],
+      focus: ["Moderate pressure; you can breathe easily.", "Stay on the meaty part of the glute, away from the tailbone and the top of the pelvis."],
       mistakes: [
         "Rolling fast.",
         "Sitting so hard on a spot that you tense up.",
-        "Staying on a spot that gives sharp or radiating pain."
+        "Staying on a spot that gives sharp or radiating pain, tingling or numbness: move off at once."
       ],
       breathing: "Long exhales on tender spots.",
       conditions: { tmj: "Keep the jaw slack; release work goes better when the face isn't braced." },

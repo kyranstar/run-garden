@@ -80,6 +80,7 @@ async function write(db: Db, userId: string, sessions: readonly HistorySession[]
 const context: EngineContext = {
   prefs: { ratings: {}, excluded: [], pinned: [] },
   savedIds: [],
+  focus: [],
   location: LOCATIONS[0]!,
   locations: LOCATIONS,
   unit: "kg",

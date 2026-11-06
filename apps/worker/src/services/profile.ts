@@ -24,7 +24,7 @@ import {
   type ProfilePreferences,
   type UserPreferences,
 } from "@rg/domain";
-import { MUSCLES, REGIONS } from "@rg/exercise-library";
+import { focusIds, MUSCLES, REGIONS } from "@rg/exercise-library";
 import { restoreInProgress } from "./account-state.js";
 import { loadPreferences } from "./calendar-sync.js";
 import { runAtomically, type Db } from "./db.js";
@@ -85,6 +85,14 @@ async function storedProfile(db: Db, userId: string) {
 
 export async function loadProfile(db: Db, userId: string): Promise<ProfileDto> {
   return (await loadProfileWithPreferences(db, userId)).profile;
+}
+
+/**
+ * The stored focus areas as library refs (region and muscle ids), each once, in the athlete's order: what the day's
+ * build reads. It takes the column's text, so a reader can fold the column into a statement it already makes.
+ */
+export function focusRefsFrom(storedFocusAreas: string | null | undefined): string[] {
+  return focusIds(validEntries(parsedJson(storedFocusAreas), focusAreaSchema).flatMap((area) => area.refs));
 }
 
 /**

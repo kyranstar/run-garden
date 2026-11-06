@@ -29,6 +29,8 @@ const PREP_SECONDS = 8;
 const CHIME_SECONDS = 3;
 const LOG_SECONDS = 10;
 const MAX_ITEMS_PER_BLOCK = 12;
+/** The most of a session a block's `lead` may take: 30 minutes holds a two-sided release, 15 only a one-window one. */
+const LEAD_SHARE = 0.15;
 const NEW_MOVE = "New move this week";
 const SWAPPED = "Swapped in";
 /** The formats a plyometric block may take: straight sets or a superset, with real rest between sets. */
@@ -66,6 +68,10 @@ interface Ctx extends SelectCtx {
   eligible: Map<string, boolean>;
   /** Each block and format's moves on the build's own terms (`slotPool`): the same for every slot, so judged once. */
   slotPools: Map<string, readonly ExerciseRecord[]>;
+  /** The athlete's focus areas. Only a `lead` slot scores by them, so every other slot ranks as it always has. */
+  focusAreas: readonly string[];
+  /** The most a block's `lead` may take of this session (`LEAD_SHARE`). */
+  leadSeconds: number;
 }
 
 function fmt(data: EngineData, id: FormatId): Format {
@@ -118,7 +124,8 @@ function rest(item: Item, seconds: number, formatId: FormatId): Step {
 
 function windows(item: Item, formatId: FormatId, extra: Partial<Step> = {}): Step[] {
   const ex = item.exercise;
-  const secs = windowSeconds(ex, item.target);
+  // A release before the work plays the low end of its dose: the evidence allows it there only briefly.
+  const secs = item.block === "prep" && ex.patterns.includes("release") && ex.dose.type === "time" ? round5(ex.dose.range[0]) : windowSeconds(ex, item.target);
   const gap = formatId === "flow" || formatId === "circuit" ? CHIME_SECONDS : PREP_SECONDS;
   const logged = ex.load !== "none";
   if (ex.laterality === "unilateral") {
@@ -451,41 +458,72 @@ function timedFormat(block: BlockId, ctx: Ctx): FormatId {
   return themed || (allowed.includes("holds") ? "holds" : allowed[0]!);
 }
 
+/** Whether the move is one this block's `lead` asks for. */
+const isLead = (block: BlockId, ex: ExerciseRecord, ctx: Ctx): boolean =>
+  ex.roles.some(r => ctx.skeleton.blocks[block]?.lead?.includes(r));
+
 /**
- * Adds items to a timed block (or to an existing group) while they fit. A block's minimum items take the best-ranked
- * move that fits its share too — unless the best-ranked is the week's new move, which keeps its place (the new-move
- * promise) — and only when none fits is the best-ranked added anyway (2026-10-23: a long first pick, such as the care
- * block's 2–5 minute breathing piece, no longer overruns a short session's share and crowds out the rest).
+ * The block's `lead` for its first slot: the best-ranked of its lead moves, by the athlete's focus areas, that wasn't
+ * done in the last few sessions and fits the session's `LEAD_SHARE`. It is measured against the session and not the
+ * block's own share, which is smaller than a two-sided release: held to that, only a move done on both sides at once
+ * would ever lead. Null with no lead, none the place's gear allows, or none that fits (a short session), and the slot
+ * fills as any other.
  */
-function fillTimed(block: BlockId, budget: number, ctx: Ctx, group: Group | null = null, addAtMost = Infinity): { groups: Group[]; spent: number } {
+function pickLead(block: BlockId, pool: readonly ExerciseRecord[], slotKey: string, formatId: FormatId, ctx: Ctx): { item: Item; cost: number } | null {
+  const leads = pool.filter(ex => isLead(block, ex, ctx) && !ctx.stats.get(ex.id)?.recent);
+  for (const r of Select.rank(ctx.data, leads, { ...ctx, prevPosition: null, coreRegions: null, focus: ctx.focusAreas })) {
+    const item = makeItem(r, block, slotKey, formatId, ctx);
+    const cost = costOf(windows(item, formatId));
+    if (cost <= ctx.leadSeconds) return { item, cost };
+  }
+  return null;
+}
+
+/**
+ * Adds items to a timed block (or to an existing group) while they fit. A block's first slot goes to its `lead` when
+ * today has one. A lead sits on top of the block: the rest fills its minimum and its share as if the lead weren't there,
+ * with no second move of the same kind, because a release supports a cool-down's stretching and doesn't replace it. Its
+ * time is `owed`, and prep pays it (`payFromPrep`). A block's minimum items take the best-ranked move that fits its share
+ * too — unless the best-ranked is the week's new move, which keeps its place (the new-move promise) — and only when none
+ * fits is the best-ranked added anyway (2026-10-23: a long first pick, such as the care block's 2–5 minute breathing
+ * piece, no longer overruns a short session's share and crowds out the rest).
+ */
+function fillTimed(block: BlockId, budget: number, ctx: Ctx, group: Group | null = null, addAtMost = Infinity): { groups: Group[]; spent: number; owed: number } {
   const formatId = group ? group.format : timedFormat(block, ctx);
   const items = group ? group.items : [];
   const min = ctx.skeleton.min[block] || 0;
   const max = Math.min(MAX_ITEMS_PER_BLOCK, ctx.skeleton.max[block] || MAX_ITEMS_PER_BLOCK);
   const startCount = items.length;
   let spent = 0;
+  let owed = 0;
   while (items.length < max && items.length - startCount < addAtMost) {
-    const pool = candidates(block, formatId, ctx);
+    const lead = items[0] && isLead(block, items[0].exercise, ctx) ? items[0].exercise : null;
+    const pool = candidates(block, formatId, ctx).filter(ex => !lead || !ex.patterns.some(p => lead.patterns.includes(p)));
     if (!pool.length) break;
     const slotKey = `${block}:${items.length}`;
     const prevPosition = items.length ? items[items.length - 1]!.exercise.position : null;
-    const ranked = Select.rank(ctx.data, pool, { ...ctx, prevPosition, coreRegions: block === "prep" ? ctx.coreRegions : null });
-    let picked: { item: Item; cost: number } | null = null;
-    let forced: { item: Item; cost: number } | null = null;
-    for (const r of ranked) {
-      const item = makeItem(r, block, slotKey, formatId, ctx);
-      const cost = costOf(windows(item, formatId));
-      if (spent + cost <= budget || (items.length < min && r === ranked[0] && r.isNew)) { picked = { item, cost }; break; }
-      if (items.length < min && !forced) forced = { item, cost };
+    const leading = items.length === 0 ? pickLead(block, pool, slotKey, formatId, ctx) : null;
+    let picked = leading;
+    if (!picked) {
+      const floor = min + (lead ? 1 : 0);
+      const ranked = Select.rank(ctx.data, pool, { ...ctx, prevPosition, coreRegions: block === "prep" ? ctx.coreRegions : null });
+      let forced: { item: Item; cost: number } | null = null;
+      for (const r of ranked) {
+        const item = makeItem(r, block, slotKey, formatId, ctx);
+        const cost = costOf(windows(item, formatId));
+        if (spent + cost <= budget || (items.length < floor && r === ranked[0] && r.isNew)) { picked = { item, cost }; break; }
+        if (items.length < floor && !forced) forced = { item, cost };
+      }
+      picked ??= forced;
     }
-    picked ??= forced;
     if (!picked) break;
     items.push(picked.item);
     ctx.used.add(picked.item.exercise.id);
     if (picked.item.isNew) ctx.newMoveOpen = false;
-    spent += picked.cost;
+    if (leading) owed = picked.cost;
+    else spent += picked.cost;
   }
-  return { groups: !group && items.length ? [{ block, format: formatId, items }] : [], spent };
+  return { groups: !group && items.length ? [{ block, format: formatId, items }] : [], spent: spent + owed, owed };
 }
 
 function coreGroups(items: Item[], ctx: Ctx): Group[] {
@@ -589,6 +627,8 @@ function makeContext(data: EngineData, input: BuildInput, history?: HistIndex): 
     fillingJumps: false,
     eligible: new Map(),
     slotPools: new Map(),
+    focusAreas: input.focus ?? [],
+    leadSeconds: input.minutes * 60 * LEAD_SHARE,
     memo: { deps: null, map: new Map() },
     coreRegions: null,
     targets: new Map(),
@@ -606,6 +646,22 @@ const freshContext = (ctx: Ctx): Ctx => ({
   ...ctx, rng: Rng.create(ctx.seed), used: new Set(), newMoveOpen: ctx.newMoveWeek, fillingJumps: false, coreRegions: null,
 });
 
+/**
+ * A block's lead is paid for off the end of prep, the last block filled: the seconds given back. The time the lifts would
+ * be given stays theirs, so a release costs warm-up moves and not sets (measured 2026-11-05: taken from the session's
+ * spare time instead, a 30-minute session lost up to two sets).
+ */
+function payFromPrep(prep: Group | undefined, owed: number, ctx: Ctx): number {
+  const keep = Math.max(1, ctx.skeleton.min.prep || 0);
+  let paid = 0;
+  while (prep && paid < owed && prep.items.length > keep) {
+    const last = prep.items.pop()!;
+    ctx.used.delete(last.exercise.id);
+    paid += costOf(windows(last, prep.format));
+  }
+  return paid;
+}
+
 function buildPlan(data: EngineData, input: BuildInput, ctx: Ctx): Plan {
   const budget = input.minutes * 60;
   const shares = ctx.skeleton.shares;
@@ -613,6 +669,7 @@ function buildPlan(data: EngineData, input: BuildInput, ctx: Ctx): Plan {
   const groups = emptyGroups();
   let carry = 0;
   let spent = 0;
+  let owed = 0;
   for (const block of ctx.skeleton.fillOrder) {
     const share = (shares[block] || 0) * budget;
     if (!share && !mins[block]) continue;
@@ -620,13 +677,15 @@ function buildPlan(data: EngineData, input: BuildInput, ctx: Ctx): Plan {
     // and cool-down stay at their own share so leftovers become more prep (then cool-down via extend).
     const sink = block === "core" || block === "accessory" || block === "prep";
     const available = share + (sink ? carry : 0);
-    const res = block === "core" ? fillCore(available, ctx)
+    const res: { groups: Group[]; spent: number; owed?: number } = block === "core" ? fillCore(available, ctx)
       : block === "accessory" ? fillAccessory(available, ctx)
       : fillTimed(block, available, ctx);
     groups[block] = res.groups;
     if (block === "core") ctx.coreRegions = [...new Set(res.groups.flatMap(g => g.items.flatMap(it => it.exercise.regions)))];
-    carry = sink ? Math.max(0, available - res.spent) : carry + Math.max(0, share - res.spent);
-    spent += res.spent;
+    const leadOwed = res.owed ?? 0;
+    carry = sink ? Math.max(0, available - res.spent) : carry + Math.max(0, share - (res.spent - leadOwed));
+    owed += leadOwed;
+    spent += res.spent - (block === "prep" ? payFromPrep(res.groups[0], owed, ctx) : 0);
   }
   extend(groups, budget - spent, ctx);
   trim(groups, budget, ctx);
@@ -825,7 +884,11 @@ function ensureNewMove(groups: Record<BlockId, Group[]>, budget: number, ctx: Ct
       if (isJumpsGroup(g)) continue;
       // Longest items first: swapping out a long item leaves the most room for the new one.
       const alone: FormatId = g.format === "superset" ? "straight" : g.format;   // a superset needs two items to cost
-      const order = g.items.map((it, i) => ({ i, secs: costOf(groupSteps(ctx.data, { ...g, format: alone, items: [it] })) })).sort((a, b) => b.secs - a.secs || b.i - a.i);
+      // A block's lead is there on purpose and is often its longest item, so it stays.
+      const order = g.items
+        .map((it, i) => ({ i, secs: costOf(groupSteps(ctx.data, { ...g, format: alone, items: [it] })) }))
+        .filter(({ i }) => !(i === 0 && isLead(block, g.items[0]!.exercise, ctx)))
+        .sort((a, b) => b.secs - a.secs || b.i - a.i);
       for (const { i } of order) {
         const old = g.items[i]!;
         const partner = g.format === "superset" ? g.items[1 - i] ?? null : null;

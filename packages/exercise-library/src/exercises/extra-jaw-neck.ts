@@ -446,12 +446,12 @@ export const EXTRA_JAW_NECK = defineExercises([
     family: "chestRelease",
     patterns: ["release"],
     regions: ["chest", "shoulders"],
-    roles: ["cooldown", "mobility"],
+    roles: ["cooldown"],
     equipment: { all: ["massage-ball", "wall"] },
     position: "standing",
     laterality: "unilateral",
     load: "none",
-    dose: { type: "time", range: [45, 60] },
+    dose: { type: "time", range: [60, 120] },
     conditions: { tmj: { clench: 0, neckLoad: 0, faceDown: false } },
     difficulty: 1,
     tags: ["desk-relief"],
@@ -463,7 +463,7 @@ export const EXTRA_JAW_NECK = defineExercises([
       summary: "Pin a massage ball between a wall and your chest muscle and ease it with small movements.",
       setup: [
         "Stand facing a wall or door frame.",
-        "Place the ball on the chest muscle below the collarbone, just inside the front of the shoulder."
+        "Place the ball on the meaty middle of the chest, a hand's width below the collarbone and well in from the shoulder."
       ],
       steps: [
         "Lean in gently until you feel moderate pressure.",
@@ -475,10 +475,14 @@ export const EXTRA_JAW_NECK = defineExercises([
         "Moderate pressure that lets you breathe easily.",
         "Stay on muscle — off the collarbone and out of the armpit."
       ],
-      mistakes: ["Leaning in so hard you tense up.", "Rolling on the collarbone or the front of the shoulder joint."],
+      mistakes: [
+        "Leaning in so hard you tense up.",
+        "Rolling on the collarbone or toward the armpit: nerves and vessels run close to the surface there.",
+        "Staying on a spot that gives sharp pain, tingling or numbness."
+      ],
       breathing: "Long exhales on tender spots.",
-      conditions: { tmj: "Let the jaw hang; a tight chest pulls the head forward, and the jaw tends to follow." },
-      why: "Releases a tight chest that pulls the shoulders and head forward at the desk."
+      conditions: { tmj: "Let the jaw hang and keep your head stacked over your shoulders." },
+      why: "Eases a chest that feels tight from the desk, for a while; rows and a doorway stretch do the lasting work."
     }
   },
 ]);

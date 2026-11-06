@@ -88,6 +88,8 @@ export interface EngineInput {
   prefs: Prefs;
   /** Exercise ids the person saved themselves (from their private provenance); they come up a bit more. */
   savedIds: readonly string[];
+  /** The athlete's focus areas (region and muscle ids): what a block's `lead` slot reaches for first. */
+  focus?: readonly string[];
   block: Block | null;
   /** Today's check per profile id. */
   checks: Readonly<Record<string, CheckReading>>;

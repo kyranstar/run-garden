@@ -109,7 +109,9 @@ function rest(item: Item, seconds: number, formatId: FormatId): Step {
 
 function windows(item: Item, formatId: FormatId, extra: Partial<Step> = {}): Step[] {
   const ex = item.exercise;
-  const secs = windowSeconds(ex, item.target);
+  // In lockstep with the port (2026-11-05): a release before the work plays the low end of its dose. The port's block
+  // `lead` isn't mirrored: it needs gear no preset holds, and this reference only ever builds at the presets.
+  const secs = item.block === "prep" && ex.patterns.includes("release") && ex.dose.type === "time" ? round5(ex.dose.range[0]) : windowSeconds(ex, item.target);
   const gap = formatId === "flow" || formatId === "circuit" ? CHIME_SECONDS : PREP_SECONDS;
   const logged = ex.load !== "none";
   if (ex.laterality === "unilateral") {

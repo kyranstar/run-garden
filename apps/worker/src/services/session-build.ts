@@ -615,6 +615,7 @@ export function composeBuild(input: ComposeInput): Composed {
       locations: c.locations,
       prefs: c.prefs,
       savedIds: c.savedIds,
+      focus: c.focus,
       block: input.block,
       sessions: input.history,
       ...(input.summary ? { summary: input.summary } : {}),

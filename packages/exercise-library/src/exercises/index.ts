@@ -1,5 +1,6 @@
 import type { ExerciseRecord } from "../record.js";
 import { ATHLETIC } from "./athletic.js";
+import { BALL_RELEASE } from "./ball-release.js";
 import { BREATH_DOWNSHIFT } from "./breath-downshift.js";
 import { CORE_CARRY } from "./core-carry.js";
 import { EXTRA_CORE } from "./extra-core.js";
@@ -23,5 +24,5 @@ import { UPPER } from "./upper.js";
 export const EXERCISES: readonly ExerciseRecord[] = [
   ...BREATH_DOWNSHIFT, ...JAW_NECK, ...MOBILITY, ...CORE_CARRY, ...LOWER, ...UPPER,
   ...EXTRA_JAW_NECK, ...EXTRA_MOBILITY, ...EXTRA_STRENGTH, ...EXTRA_CORE, ...EXTRA_PASS_TWO, ...ATHLETIC, ...FLOWS,
-  ...LOWER_LEG, ...LOWER_LIMB_GYM, ...TRE,
+  ...LOWER_LEG, ...LOWER_LIMB_GYM, ...TRE, ...BALL_RELEASE,
 ];
