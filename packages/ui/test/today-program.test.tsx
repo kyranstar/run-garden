@@ -388,6 +388,17 @@ describe("no condition word lives in the UI's code (audit 2a-UI M11d)", () => {
     );
   });
 
+  it("holds none of the profiles' reference-point words either: they arrive with the data", () => {
+    // Whole phrases only: a single word ("Nothing") is as common in the UI's own sentences as in a profile's.
+    const phrases = Object.values(PROFILES).flatMap((p) => p.check.anchors.map((a) => a.words.toLowerCase()).filter((w) => w.includes(" ")));
+    expect(phrases.length).toBeGreaterThan(0);
+    const hits = files.flatMap((f) => {
+      const code = read(`../src/${f}`).toLowerCase();
+      return phrases.filter((ph) => code.includes(ph)).map((ph) => `${f}: "${ph}"`);
+    });
+    expect(hits).toEqual([]);
+  });
+
   it("finds none of them in any of those files", () => {
     const word = new RegExp(`\\b(${words.join("|")})`, "i");
     const hits = files.flatMap((f) => {
@@ -398,6 +409,10 @@ describe("no condition word lives in the UI's code (audit 2a-UI M11d)", () => {
     expect(hits).toEqual([]);
   });
 });
+
+// A path in a variable: Vite rewrites a literal `new URL("…", import.meta.url)` as an asset URL.
+const STYLES = "../src/styles.css";
+const stylesheet = readFileSync(fileURLToPath(new URL(STYLES, import.meta.url)), "utf8");
 
 describe("the check sheet", () => {
   let root: Root | null = null;
@@ -442,6 +457,27 @@ describe("the check sheet", () => {
     expect(buttons().map((b) => b.textContent)).toEqual(["0", "1", "2", "3", "4", "5", "6", "7", "8", "9", "10"]);
     expect(byText("Feeling off")).toBeTruthy();
     expect(byText("Save").disabled).toBe(true);
+  });
+
+  it("shows the profile's reference points as one quiet line under the grid, each as its number and words, wrapping between them", () => {
+    mount(condition({ check: { label: "Knee / hip", min: 0, max: 10, anchors: [{ value: 0, words: "Zero words" }, { value: 4, words: "Four, a longer set of words" }] } }));
+    const line = document.querySelector(".check-sheet .check-anchors")!;
+    expect(line.textContent).toBe("0 Zero words · 4 Four, a longer set of words");
+    expect(line.classList.contains("muted")).toBe(true);
+    expect(line.previousElementSibling?.classList.contains("check-scale")).toBe(true);
+    // Each point is a unit the line wraps between, so a narrow phone breaks at a " · ", never mid-point.
+    expect([...line.querySelectorAll(".check-anchor")].map((e) => e.textContent)).toEqual(["0 Zero words", "4 Four, a longer set of words"]);
+    expect(/\.check-anchors\s*\{[^}]*overflow-wrap:\s*anywhere/.test(stylesheet)).toBe(true);
+    expect(/\.check-anchor\s*\{[^}]*display:\s*inline-block[^}]*max-width:\s*100%/.test(stylesheet)).toBe(true);
+  });
+
+  it("shows no line for a profile with no reference points, or an answer from a server that sends none", () => {
+    mount(condition({ check: { label: "Knee / hip", min: 0, max: 10, anchors: [] } }));
+    expect(document.querySelector(".check-anchors")).toBeNull();
+    act(() => root?.unmount());
+    host?.remove();
+    mount(condition());
+    expect(document.querySelector(".check-anchors")).toBeNull();
   });
 
   it("starts from today's reading", () => {

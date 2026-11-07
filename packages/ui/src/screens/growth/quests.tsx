@@ -10,7 +10,7 @@
  */
 import type { ObjectiveBoardCard } from "@rg/domain";
 import { startOfIsoWeek } from "@rg/domain";
-import { formatKr, krFraction, stalled, STALL_DAYS, streakWords } from "../studio/objectives-model.js";
+import { formatKr, krFraction, stalled, STALL_DAYS, streakWords, targetReading, targetText } from "../studio/objectives-model.js";
 
 type Kr = ObjectiveBoardCard["keyResults"][number];
 
@@ -29,7 +29,8 @@ export function questProgressWords(k: Kr): string | null {
   if (p.display.current === null || kr.target === null) return null;
   const fmt = (v: number) => formatKr(v, kr.unit, kr.measure);
   const now = `${p.evidence === "capped" ? "at least " : ""}${fmt(p.display.current)}`;
-  return kr.direction === "down" ? `${now} · target ${fmt(kr.target)}` : `${now} of ${fmt(kr.target)}`;
+  const target = targetText(fmt(kr.target), targetReading(kr.target, k.anchors));
+  return kr.direction === "down" ? `${now} · target ${target}` : `${now} of ${target}`;
 }
 
 /** A key result's best ever, when it came this week (Monday on) and sits on its trend. */

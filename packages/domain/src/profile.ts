@@ -168,6 +168,11 @@ export const keyResultMeasureSchema = z
     z.object({ kind: z.literal("checkin"), questionId: z.string().min(1).max(60) }).strict(),
     /** A periodic test (Stage 4 adds the tests). */
     z.object({ kind: z.literal("test"), testId: z.string().min(1).max(80) }).strict(),
+    /**
+     * The mean of a condition profile's daily 0–10 check (its `daily` rows, one a day) over the last `windowDays` days
+     * ending today: a score, lower is better. The profile is the library's id.
+     */
+    z.object({ kind: z.literal("condition_check"), profileId: z.string().min(1).max(80), windowDays: z.number().int().min(7).max(60).default(14) }).strict(),
   ])
   .superRefine((m, ctx) => {
     if (m.kind === "best_set" && m.metric === "load_at_reps" && m.reps === undefined) {
@@ -204,6 +209,7 @@ export function canonicalUnitOf(m: KeyResultMeasure): CanonicalUnit {
       return "s/km";
     case "checkin":
     case "test":
+    case "condition_check":
       return "score";
   }
 }
@@ -239,6 +245,7 @@ export function naturalDirection(m: KeyResultMeasure): "up" | "down" | null {
     case "pace_at_hr":
     case "threshold_pace":
     case "predicted_time":
+    case "condition_check":
       return "down";
     case "checkin":
     case "test":

@@ -2,8 +2,8 @@
  * THE CONDITION CHECK (Phase 2a Task 6; mocks §1). A chip beside readiness on the Today card — "<word> check"
  * before today's check, "<word> 2" after — opens a sheet with the profile's own scale, Feeling off, and Save.
  *
- * Every word here comes from the profile (`check.label`, whose first word names the chip); the UI holds none of
- * its own. The reading is the same one the session pre-check asks for: either answers the other.
+ * Every word here comes from the profile (`check.label`, whose first word names the chip; `check.anchors`, a few
+ * reference points shown as one quiet line under the grid); the UI holds none of its own. The reading is the same one the session pre-check asks for: either answers the other.
  */
 import { useRef, useState, type KeyboardEvent } from "react";
 import { useMutation, useQueryClient } from "@tanstack/react-query";
@@ -118,6 +118,25 @@ export function CheckScale({
   );
 }
 
+/**
+ * The scale's reference points as one quiet line under the grid: "<number> <words> · <number> <words> · …", each point a
+ * unit the line wraps between. The words are the profile's own, sent with the check; a profile with none, or an answer
+ * cached before they existed, shows nothing.
+ */
+export function CheckAnchors({ anchors }: { anchors: ConditionViewDto["check"]["anchors"] }) {
+  if (!anchors || anchors.length === 0) return null;
+  return (
+    <p className="muted check-anchors">
+      {anchors.map((a, i) => (
+        <span key={a.value}>
+          {i > 0 ? " · " : null}
+          <span className="check-anchor">{`${a.value} ${a.words}`}</span>
+        </span>
+      ))}
+    </p>
+  );
+}
+
 /** "Feeling off" — a toggle, beside the scale. With two profiles asked at once, each is named by its own word. */
 export function FeelingOffToggle({ on, onToggle, disabled, word }: { on: boolean; onToggle: () => void; disabled?: boolean; word?: string }) {
   return (
@@ -214,6 +233,7 @@ export function ConditionCheckSheet({
           value={value}
           onPick={setValue}
         />
+        <CheckAnchors anchors={condition.check.anchors} />
         <div className="row">
           <FeelingOffToggle on={off} onToggle={() => setOff((v) => !v)} />
         </div>

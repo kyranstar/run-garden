@@ -34,7 +34,7 @@ describe("TMJ profile — exercise rules", () => {
   it("is registered under its id", () => {
     expect(PROFILES.tmj).toBe(TMJ);
     expect(TMJ.id).toBe("tmj");
-    expect(TMJ.check).toEqual({ label: "Jaw / head", min: 0, max: 10 });
+    expect(TMJ.check).toMatchObject({ label: "Jaw / head", min: 0, max: 10 });
     expect(TMJ.setFlag).toEqual({ id: "clenched", label: "Clenched", pastTense: "You clenched" });
     expect(TMJ.attributes).toEqual({ clench: { kind: "scale", min: 0, max: 3 }, neckLoad: { kind: "scale", min: 0, max: 3 }, faceDown: { kind: "flag" } });
   });

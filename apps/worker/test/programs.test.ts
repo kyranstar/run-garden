@@ -361,7 +361,7 @@ describe("the routes", () => {
       { id: "l-home", name: "Flat", isDefault: true },
       { id: "l-gym", name: "Gym", isDefault: false },
     ]);
-    expect(body.profiles).toEqual([{ profileId: "tmj", check: { label: "Jaw / head", min: 0, max: 10 }, care: "Jaw care" }]);
+    expect(body.profiles).toEqual([{ profileId: "tmj", check: { label: "Jaw / head", min: 0, max: 10, anchors: expect.any(Array) }, care: "Jaw care" }]);
   });
 
   it("GET lists this user's programs only", async () => {

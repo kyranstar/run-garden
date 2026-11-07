@@ -888,6 +888,9 @@ export async function measureKeyResults(
         return finish(request, none("Check-in answers are not measured yet."));
       case "test":
         return finish(request, none("Test results are not measured yet."));
+      case "condition_check":
+        // The frozen reference predates this measure; the differential never asks it.
+        return finish(request, none("Daily checks are not measured by this reference."));
     }
   });
 }

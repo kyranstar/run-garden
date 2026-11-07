@@ -15,6 +15,7 @@ import { sql } from "drizzle-orm";
 import { z } from "zod";
 import { keyResults, objectives } from "@rg/database";
 import { KEY_RESULT_UNITS, keyResultMeasureSchema, type KeyResultEvidence, type KeyResultMeasure, type KeyResultUnit } from "@rg/domain";
+import { isProfileId, profileById } from "@rg/exercise-library";
 import { measureKeyResults } from "../key-result-measures.js";
 import type { DesignTool } from "./types.js";
 import {
@@ -82,6 +83,8 @@ export function measureWords(m: KeyResultMeasure): string {
       return `check-in answer ${m.questionId}`;
     case "test":
       return `test ${m.testId}`;
+    case "condition_check":
+      return `daily ${isProfileId(m.profileId) ? profileById(m.profileId).check.label : m.profileId} check, averaged${over}`;
   }
 }
 

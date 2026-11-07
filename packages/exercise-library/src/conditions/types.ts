@@ -85,11 +85,23 @@ export interface CareBlock {
   max: Readonly<Record<Mode, number>>;
 }
 
+/** One reference point on a check's scale: a number and what it feels like, in the profile's words. */
+export interface CheckAnchor {
+  value: number;
+  words: string;
+}
+
 export interface ConditionProfile {
   id: string;
   label: string;
   attributes: Readonly<Record<string, AttributeSpec>>;
-  check: { label: string; min: 0; max: 10 };
+  /**
+   * The daily 0–10 check: its label and scale, and a few reference points in the profile's own words — "what a 5 feels
+   * like" — that the check sheet and the objectives board show beside the numbers, so no screen holds them. At most
+   * four, whole numbers inside `min`–`max`, ascending; none (an empty list) shows nothing. The point where the profile's
+   * `flare` rule begins uses the rule's own constant, so the words can't drift from it.
+   */
+  check: { label: string; min: 0; max: 10; anchors: readonly CheckAnchor[] };
   setFlag: { id: string; label: string; pastTense: string } | null;
 
   // Exercise rules (everywhere the profile is active)

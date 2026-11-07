@@ -16,8 +16,9 @@
  *    what that workout is for.
  *
  * BUDGET — OBJECTIVE_BOARD_STATEMENTS at most, however many objectives and key results: the preferences (the athlete's
- * today and race date), the objectives and their key results (two, together), the measures (eight at most: four for
- * strength sets and what prescribed them, the runs, the matched runs' documents, the race days, the threshold days),
+ * today and race date), the objectives and their key results (two, together), the measures (nine at most: four for
+ * strength sets and what prescribed them, the runs, the matched runs' documents, the race days, the threshold days,
+ * the daily checks of a condition — one for all of them, by the account's index on user and day),
  * and one read of the workouts naming any of them over the streak's weeks. Every list is bound as one JSON text.
  */
 import { and, asc, desc, eq, gte, isNotNull, isNull, lte, sql } from "drizzle-orm";
@@ -29,6 +30,7 @@ import {
   OBJECTIVE_STREAK_WEEKS,
   startOfIsoWeek,
   todayInZone,
+  type KeyResultAnchor,
   type KeyResultBest,
   type KeyResultDto,
   type KeyResultMeasure,
@@ -37,6 +39,7 @@ import {
   type ObjectiveBoardDto,
   type ObjectiveServedWorkout,
 } from "@rg/domain";
+import { isProfileId, profileById } from "@rg/exercise-library";
 import { loadPreferences } from "./calendar-sync.js";
 import type { Db } from "./db.js";
 import { measureKeyResults, unreadableProgress, type MeasureRequest } from "./key-result-measures.js";
@@ -44,7 +47,7 @@ import { listObjectives } from "./objectives.js";
 import { PENDING_HASH } from "./watch-sets.js";
 
 /** The most statements the board's read makes (the route adds its session's). */
-export const OBJECTIVE_BOARD_STATEMENTS = 12;
+export const OBJECTIVE_BOARD_STATEMENTS = 13;
 /** "Every logged day": the window each measure is also asked over for its best ever. */
 export const BEST_EVER_DAYS = 36_500;
 /** How far ahead the coach's latest workout is looked for. */
@@ -76,8 +79,19 @@ function bestOf(p: KeyResultProgress, direction: KeyResultDto["direction"]): Key
   return { date: best.date, value: best.value, display: best.display };
 }
 
-/** The measure over every logged day; null for one with no window (a check-in, a test: nothing is measured yet). */
-const everOf = (m: KeyResultMeasure): KeyResultMeasure | null => ("windowDays" in m ? { ...m, windowDays: BEST_EVER_DAYS } : null);
+/**
+ * The measure over every logged day; null for one with no window (a check-in, a test: nothing is measured yet) and for
+ * a daily check (its window is at most 60 days, and a best day of a score that is read as a mean says nothing).
+ */
+const everOf = (m: KeyResultMeasure): KeyResultMeasure | null =>
+  "windowDays" in m && m.kind !== "condition_check" ? { ...m, windowDays: BEST_EVER_DAYS } : null;
+
+/** A daily check's reference points, from the profile; undefined for any other measure or a profile no longer known. */
+function anchorsOf(m: KeyResultMeasure | null): KeyResultAnchor[] | undefined {
+  if (m?.kind !== "condition_check" || !isProfileId(m.profileId)) return undefined;
+  const anchors = profileById(m.profileId).check.anchors.map((a) => ({ value: a.value, words: a.words }));
+  return anchors.length > 0 ? anchors : undefined;
+}
 
 const isSource = (v: unknown): v is (typeof DOC_SOURCES)[number] => typeof v === "string" && (DOC_SOURCES as readonly string[]).includes(v);
 
@@ -190,7 +204,8 @@ export async function objectiveBoard(db: Db, userId: string, opts: { today?: str
         const i = at.get(keyResult.id);
         const progress = i ? measured[i.window]! : unreadableProgress(keyResult.unit);
         const ever = i && i.ever !== null ? measured[i.ever]! : null;
-        return { keyResult, progress, best: ever ? bestOf(ever, keyResult.direction) : null };
+        const anchors = anchorsOf(keyResult.measure);
+        return { keyResult, progress, best: ever ? bestOf(ever, keyResult.direction) : null, ...(anchors ? { anchors } : {}) };
       }),
       served,
       streakWeeks: weekStreak(

@@ -1057,7 +1057,7 @@ describe("the sheet's profiles and choices", () => {
     expect((await loadSession(db, userId, id, TODAY)).profiles).toEqual([]);
     await activateTmj();
     expect((await loadSession(db, userId, id, TODAY)).profiles).toEqual([
-      { profileId: "tmj", check: { label: "Jaw / head", min: 0, max: 10 }, care: "Jaw care" },
+      { profileId: "tmj", check: { label: "Jaw / head", min: 0, max: 10, anchors: expect.any(Array) }, care: "Jaw care" },
     ]);
   });
 

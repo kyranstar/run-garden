@@ -1082,7 +1082,7 @@ describe("GET /today — conditions", () => {
   type Today = {
     conditions: Array<{
       profileId: string;
-      check: { label: string; min: number; max: number };
+      check: { label: string; min: number; max: number; anchors: Array<{ value: number; words: string }> };
       care: string | null;
       today: { value: number | null; feelingOff: boolean } | null;
     }>;
@@ -1117,7 +1117,7 @@ describe("GET /today — conditions", () => {
     await program();
     await condition();
     expect(await get()).toEqual([
-      { profileId: "tmj", check: { label: "Jaw / head", min: 0, max: 10 }, care: "Jaw care", today: null },
+      { profileId: "tmj", check: { label: "Jaw / head", min: 0, max: 10, anchors: expect.any(Array) }, care: "Jaw care", today: null },
     ]);
   });
 

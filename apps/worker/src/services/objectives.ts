@@ -37,6 +37,7 @@ import {
   type ObjectiveStatus,
   type UserPreferences,
 } from "@rg/domain";
+import { isProfileId } from "@rg/exercise-library";
 import { restoreInProgress } from "./account-state.js";
 import { loadPreferences } from "./calendar-sync.js";
 import { insertBatches, runAtomically, type AtomicStatement, type Db } from "./db.js";
@@ -200,6 +201,12 @@ export interface KeyResultInputParsed {
 export function libraryIssues(krs: readonly KeyResultInputParsed[] | undefined): z.ZodIssue[] {
   const issues: z.ZodIssue[] = [];
   krs?.forEach((kr, i) => {
+    if (kr.measure.kind === "condition_check") {
+      if (!isProfileId(kr.measure.profileId)) {
+        issues.push({ code: "custom", path: ["keyResults", i, "measure", "profileId"], message: "not a condition the library holds" });
+      }
+      return;
+    }
     if (kr.measure.kind !== "hold_max" && kr.measure.kind !== "best_set") return;
     kr.measure.libraryIds.forEach((id, j) => {
       if (!libraryMove(id)) {

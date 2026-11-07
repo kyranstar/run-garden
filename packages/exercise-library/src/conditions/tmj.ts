@@ -47,7 +47,18 @@ const ATTRIBUTES: Readonly<Record<string, AttributeSpec>> = {
   neckLoad: { kind: "scale", min: 0, max: 3 },
   faceDown: { kind: "flag" },
 };
-const CHECK = { label: "Jaw / head", min: 0, max: 10 } as const;
+const CHECK = {
+  label: "Jaw / head",
+  min: 0,
+  max: 10,
+  // What the numbers feel like. The flare line is the rule's own constant, so these words move with it.
+  anchors: [
+    { value: 0, words: "Nothing" },
+    { value: 2, words: "There, easy to ignore" },
+    { value: HIGH_PRE, words: "Bothering me: an easy day" },
+    { value: 8, words: "Hard to eat or talk" },
+  ],
+} as const;
 const SET_FLAG = { id: FLAG, label: "Clenched", pastTense: "You clenched" };
 
 interface TmjAttrs {

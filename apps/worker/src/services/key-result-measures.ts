@@ -58,6 +58,11 @@
  *   last ANSWER_WINDOW_DAYS — a check-in's under its question id, a test's result under the test's id (nothing writes
  *   one yet: a test reads none until something does, and says so). A point per day: the mean of the day's answers (an
  *   answer by area is one of them), to one decimal; the current is the latest day's. One statement for all of them.
+ * - condition_check: a condition profile's `daily` check rows (`condition_checks`; the app's `pre` and `post` rows are
+ *   never read) in the last `windowDays` days ending on the athlete's today. A point per local day — the day's latest
+ *   row, and a latest with no number leaves the day out; the current value is the mean of the points, to one decimal.
+ *   No point is no reading (current null, evidence `none`), never 0. One statement for all of them, by the account's
+ *   index on user and day, reading only the five columns it needs.
  * - Runs, threshold days: three or more points are `measured`, one or two `sparse`, none `none` with a `missing` note.
  */
 import { and, asc, eq, exists, gt, gte, inArray, isNotNull, isNull, lte, ne, or, sql, type SQL } from "drizzle-orm";
@@ -66,6 +71,7 @@ import {
   activities,
   athleteAnswers,
   athleteProfiles,
+  conditionChecks,
   dailyHealth,
   performedSessions,
   performedSets,
@@ -88,7 +94,7 @@ import {
   type KeyResultProgress,
   type KeyResultUnit,
 } from "@rg/domain";
-import { EXERCISES, type ExerciseRecord } from "@rg/exercise-library";
+import { EXERCISES, isProfileId, profileById, type ExerciseRecord } from "@rg/exercise-library";
 import { makeLibraryIndex } from "@rg/workout";
 import { libraryFor } from "./account-library.js";
 import type { Db } from "./db.js";
@@ -962,12 +968,53 @@ function measureAnswers(m: AnswerMeasure, days: ReadonlyArray<{ q: string; date:
   return { points, current: points[points.length - 1]!.value, evidence: byCount(points.length) };
 }
 
+// ── A condition's daily check ───────────────────────────────────────────────────────────────────────────────────────
+
+type CheckMeasure = Extract<KeyResultMeasure, { kind: "condition_check" }>;
+
+/** The daily check rows of these profiles in [from, to], oldest first: only the columns the reading needs. */
+async function dailyChecks(db: Db, userId: string, profileIds: readonly string[], from: string, to: string) {
+  const c = conditionChecks;
+  return db
+    .select({ id: c.id, profileId: c.profileId, date: c.localDate, value: c.value, at: c.at })
+    .from(c)
+    .where(and(eq(c.userId, userId), eq(c.kind, "daily"), inArray(c.profileId, jsonList(profileIds)), gte(c.localDate, from), lte(c.localDate, to)))
+    .orderBy(asc(c.localDate), asc(c.at), asc(c.id));
+}
+
+/**
+ * A day counts once, as its latest daily row says (a re-check replaces in place today; this does not rely on it), and
+ * a latest row with no number leaves the day out. The current value is the mean of those days; no day is no reading
+ * (null, never 0 — a perfect score is a reading).
+ */
+function measureCheck(m: CheckMeasure, rows: ReadonlyArray<{ profileId: string; date: string; value: number | null }>, today: string): Measured {
+  const from = windowStart(today, m.windowDays);
+  const byDay = new Map<string, number | null>();
+  for (const r of rows) if (r.profileId === m.profileId && r.date >= from && r.date <= today) byDay.set(r.date, r.value);
+  const points = [...byDay]
+    .filter((d): d is [string, number] => d[1] !== null)
+    .sort((a, b) => a[0].localeCompare(b[0]))
+    .map(([date, value]) => ({ date, value }));
+  if (points.length === 0) {
+    const label = isProfileId(m.profileId) ? profileById(m.profileId).check.label : m.profileId;
+    return none(`No daily ${label} check in the last ${m.windowDays} days.`);
+  }
+  const mean = points.reduce((a, p) => a + p.value, 0) / points.length;
+  return { points, current: rounded("score", mean), evidence: byCount(points.length) };
+}
+
 /** The statements a set of measures costs with the account's library given and the run labels off (`labels: false`):
- * the strength sets and their prescriptions (four), the runs, the threshold days, the answers — each once, for every
- * measure of its kind. The opening context and the nudges read are pinned against it. */
+ * the strength sets and their prescriptions (four), the runs, the threshold days, the answers, the daily checks — each
+ * once, for every measure of its kind. The opening context and the nudges read are pinned against it. */
 export function measureStatements(measures: readonly KeyResultMeasure[], _ctx: { library: true; labels: false }): number {
   const has = (...kinds: KeyResultMeasure["kind"][]) => measures.some((m) => kinds.includes(m.kind));
-  return (has("hold_max", "best_set") ? 4 : 0) + (has("run_best", "pace_at_hr") ? 1 : 0) + (has("threshold_pace", "predicted_time") ? 1 : 0) + (has("checkin", "test") ? 1 : 0);
+  return (
+    (has("hold_max", "best_set") ? 4 : 0) +
+    (has("run_best", "pace_at_hr") ? 1 : 0) +
+    (has("threshold_pace", "predicted_time") ? 1 : 0) +
+    (has("checkin", "test") ? 1 : 0) +
+    (has("condition_check") ? 1 : 0)
+  );
 }
 
 // ── Entry points ────────────────────────────────────────────────────────────────────────────────────────────────────
@@ -991,15 +1038,17 @@ export async function measureKeyResults(
   );
   const bests = running.filter((m): m is Extract<KeyResultMeasure, { kind: "run_best" }> => m.kind === "run_best");
   const answers = measures.filter((m): m is AnswerMeasure => m.kind === "checkin" || m.kind === "test");
+  const checks = measures.filter((m): m is CheckMeasure => m.kind === "condition_check");
 
   const strengthIds = strength.flatMap((m) => m.libraryIds);
   const library = ctx.library ?? (await libraryFor(db, userId, strengthIds)).all;
   const canonical = canonicalIn(library);
-  const [sets, runs, days, answered] = await Promise.all([
+  const [sets, runs, days, answered, checked] = await Promise.all([
     strength.length > 0 ? loggedSets(db, userId, earliest(today, strength), today, loggedIdsOf(strengthIds, library), canonical) : [],
     running.length > 0 ? runsBetween(db, userId, earliest(today, running), today) : [],
     threshold.length > 0 ? thresholdDays(db, userId, earliest(today, threshold), today) : [],
     answers.length > 0 ? answerDays(db, userId, [...new Set(answers.map(answerIdOf))].sort(), windowStart(today, ANSWER_WINDOW_DAYS), today) : [],
+    checks.length > 0 ? dailyChecks(db, userId, [...new Set(checks.map((m) => m.profileId))].sort(), earliest(today, checks), today) : [],
   ]);
 
   let labels = { facts: new Map<string, RunFacts>(), raceDays: new Set<string>() };
@@ -1029,6 +1078,8 @@ export async function measureKeyResults(
       case "checkin":
       case "test":
         return finish(request, measureAnswers(m, answered));
+      case "condition_check":
+        return finish(request, measureCheck(m, checked, today));
     }
   });
 }

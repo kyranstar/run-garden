@@ -9,7 +9,7 @@
  *
  * Synthetic data only. Fixed dates: TODAY is a Wednesday (its week began Monday 2026-10-12).
  */
-import { beforeEach, describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { schema } from "@rg/database";
 import { addDays, newId, OBJECTIVE_STREAK_WEEKS, todayInZone, type ObjectiveBoardDto, type WorkoutDoc, type WorkoutItem } from "@rg/domain";
 import type { Db } from "../src/services/db.js";
@@ -122,6 +122,14 @@ const WALL_SIT_30 = { label: "Wall sit", measure: { kind: "hold_max", libraryIds
 const FIVE_K = { label: "5K", measure: { kind: "run_best", distanceM: 5000 }, target: 1440 };
 const EASY_PACE = { label: "Easy pace", measure: { kind: "pace_at_hr", hrLow: 130, hrHigh: 145 } };
 const THRESHOLD = { label: "Threshold", measure: { kind: "threshold_pace" } };
+
+const DAILY_CHECK = { label: "Calm days", measure: { kind: "condition_check", profileId: "tmj", windowDays: 14 }, direction: "down", target: 2 };
+
+async function dailyCheck(date: string, value: number | null, o: { owner?: string; kind?: string } = {}): Promise<void> {
+  await db.insert(schema.conditionChecks).values({
+    id: newId(), userId: o.owner ?? userId, profileId: "tmj", kind: o.kind ?? "daily", value, feelingOff: false, localDate: date, at: `${date}T12:00:00.000Z`,
+  });
+}
 
 const board = (today = TODAY) => objectiveBoard(db, userId, { today });
 
@@ -316,6 +324,52 @@ describe("the board", () => {
 
 // ── The route ────────────────────────────────────────────────────────────────────────────────────────────────────────
 
+describe("a key result measuring a condition's daily check", () => {
+  afterEach(() => vi.useRealTimers());
+
+  it("reads lower as better, carries the profile's reference points for the row, and has no best ever (a mean has none)", async () => {
+    await createObjective(db, userId, { title: "Calmer days", keyResults: [DAILY_CHECK] }, T0);
+    for (const [n, v] of [[9, 6], [5, 4], [1, 2]] as const) await dailyCheck(day(n), v);
+    await dailyCheck(day(2), 9, { kind: "pre" });
+    const [card] = (await board()).objectives;
+    const k = card!.keyResults[0]!;
+    expect(k.keyResult).toMatchObject({ direction: "down", unit: "score", target: 2 });
+    expect(k.progress).toMatchObject({ current: 4, evidence: "measured", sampleSize: 3 });
+    expect(k.best).toBeNull();
+    expect(k.anchors).toEqual([
+      { value: 0, words: "Nothing" },
+      { value: 2, words: "There, easy to ignore" },
+      { value: 5, words: "Bothering me: an easy day" },
+      { value: 8, words: "Hard to eat or talk" },
+    ]);
+    // A key result on any other measure carries none.
+    await createObjective(db, userId, { title: "Holds", keyResults: [WALL_SIT_30] }, T0);
+    const holds = (await board()).objectives.find((c) => c.objective.title === "Holds")!;
+    expect(holds.keyResults[0]!.anchors).toBeUndefined();
+  });
+
+  it("with no daily check in the window it says no reading — a null, never a perfect 0", async () => {
+    await createObjective(db, userId, { title: "Calmer days", keyResults: [DAILY_CHECK] }, T0);
+    await dailyCheck(day(40), 0);
+    const k = (await board()).objectives[0]!.keyResults[0]!;
+    expect(k.progress).toMatchObject({ current: null, evidence: "none", sampleSize: 0, display: { current: null } });
+    expect(k.progress.missing).toContain("14 days");
+  });
+
+  it("ends the window on the athlete's today in their own zone: at 23:30 UTC it is already tomorrow in Auckland", async () => {
+    vi.useFakeTimers({ toFake: ["Date"] });
+    vi.setSystemTime(new Date(`${TODAY}T23:30:00.000Z`));
+    const nz = await makeTestUser(db, { timezone: "Pacific/Auckland" });
+    await createObjective(db, nz.userId, { title: "Calmer days", keyResults: [DAILY_CHECK] }, T0);
+    const localToday = addDays(TODAY, 1);
+    await dailyCheck(localToday, 3, { owner: nz.userId });
+    await dailyCheck(TODAY, 5, { owner: nz.userId });
+    const out = await objectiveBoard(db, nz.userId);
+    expect(out.today).toBe(localToday);
+    expect(out.objectives[0]!.keyResults[0]!.progress).toMatchObject({ current: 4, sampleSize: 2 });
+  });
+});
+
 describe("GET /api/objectives/board", () => {
   it("is a plain 404 with the coach designer off, signed in or not", async () => {
     await createObjective(db, userId, { title: "A" }, T0);
@@ -358,18 +412,20 @@ describe("GET /api/objectives/board", () => {
   it("costs the session and OBJECTIVE_BOARD_STATEMENTS at most, every source read (strength, runs and their labels, threshold days): pinned", async () => {
     const today = todayInZone(zone);
     await createObjective(db, userId, { title: "A", keyResults: [WALL_SIT_30, FIVE_K, EASY_PACE, THRESHOLD] }, T0);
-    await createObjective(db, userId, { title: "B", keyResults: [{ label: "Predicted", measure: { kind: "predicted_time", distanceM: 10000 } }] }, T0);
+    await createObjective(db, userId, { title: "B", keyResults: [{ label: "Predicted", measure: { kind: "predicted_time", distanceM: 10000 } }, DAILY_CHECK] }, T0);
+    await dailyCheck(addDays(today, -1), 4);
     for (const n of [9, 2]) {
       const d = addDays(today, -n);
       await testHold(d, 90 + n);
       await run(d, 5000, 1500 + n, 140);
       await threshold(d, 270);
     }
-    expect(OBJECTIVE_BOARD_STATEMENTS).toBe(12);
+    expect(OBJECTIVE_BOARD_STATEMENTS).toBe(13);
     const res = await get();
     expect(res.status).toBe(200);
     // The session (requireUser), then: the preferences, the objectives and their key results, the strength sets and what
-    // prescribed them (four), the runs, the matched runs' documents, the race days, the threshold days, the workouts.
+    // prescribed them (four), the runs, the matched runs' documents, the race days, the threshold days, the daily
+    // checks, the workouts.
     expect(res.cost).toBe(1 + OBJECTIVE_BOARD_STATEMENTS);
     expect(res.cost).toBeLessThanOrEqual(45);
   });

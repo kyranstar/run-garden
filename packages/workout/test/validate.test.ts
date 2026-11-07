@@ -41,7 +41,7 @@ const LIBRARY: ExerciseRecord[] = [
 
 /** A made-up profile whose only rule holds the bridge back on a high reading — and lets an unanswered check through. */
 const LENIENT: ConditionProfile = {
-  ...TMJ, id: "testLenient", label: "Lenient", attributes: {}, check: { label: "Lenient", min: 0, max: 10 },
+  ...TMJ, id: "testLenient", label: "Lenient", attributes: {}, check: { label: "Lenient", min: 0, max: 10, anchors: [] },
   never: () => false, fitsMode: () => true, fitsFormat: () => true, allowPattern: () => true,
   allowRecord: (rec, _mode, today) => rec.id !== "bridge" || (today.pre ?? 0) <= 4,
   flareSafe: () => true, flare: () => false, recoveryReason: () => null, buildChecks: () => [],

@@ -46,6 +46,7 @@ import { useUnits, useWeightUnit } from "../../use-units.js";
 import { CoachBoundary } from "./coach-boundary.js";
 import { KrTrendChart } from "./objectives-chart.js";
 import {
+  asksForTest,
   boardSections,
   emptyObjective,
   evidenceWord,
@@ -59,6 +60,8 @@ import {
   stalledRequest,
   STALL_DAYS,
   streakWords,
+  targetReading,
+  targetText,
   testRequest,
   windowWords,
   writeError,
@@ -556,7 +559,7 @@ function KeyResultRow({
         {kr.target !== null ? (
           <div>
             <dt>Target</dt>
-            <dd>{fmt(kr.target)}</dd>
+            <dd>{targetText(fmt(kr.target), targetReading(kr.target, k.anchors))}</dd>
           </div>
         ) : null}
         {kr.dueDate ? (
@@ -573,7 +576,7 @@ function KeyResultRow({
       )}
       {/* Not measured yet: the coach can plan a test — its sheet opens about the objective, the request in the field
           (fix wave 3B, B-I11; coach everywhere, A3). */}
-      {p.evidence === "none" ? (
+      {p.evidence === "none" && asksForTest(m) ? (
         <AskCoach variant="link" label="Ask the coach for a test" className="obj-ask-test" focus={objectiveFocus(objective)} request={testRequest(kr.label)} />
       ) : null}
       {bestOnTrend ? (

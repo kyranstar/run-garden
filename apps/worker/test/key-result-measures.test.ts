@@ -816,6 +816,103 @@ describe("checkin and test", () => {
   });
 });
 
+// ── condition_check ──────────────────────────────────────────────────────────────────────────────────────────────────
+
+describe("condition_check: the mean of a profile's daily check", () => {
+  /** A condition check row (synthetic); `at` orders a re-check after the first. */
+  const check = async (
+    profileId: string,
+    localDate: string,
+    value: number | null,
+    over: { kind?: string; user?: string; at?: string } = {},
+  ) =>
+    db.insert(schema.conditionChecks).values({
+      id: `c-${profileId}-${localDate}-${Math.random()}`,
+      userId: over.user ?? userId,
+      profileId,
+      kind: over.kind ?? "daily",
+      value,
+      feelingOff: false,
+      localDate,
+      at: over.at ?? `${localDate}T12:00:00.000Z`,
+    });
+  const M = { kind: "condition_check", profileId: "tmj", windowDays: 14 };
+
+  it("is the mean of the daily rows in the window, a point a day, to one decimal; pre and post rows never count", async () => {
+    await check("tmj", day(6), 2);
+    await check("tmj", day(3), 3);
+    await check("tmj", day(0), 5);
+    await check("tmj", day(3), 9, { kind: "pre" });
+    await check("tmj", day(2), 9, { kind: "post" });
+    const p = await measure(M);
+    // (2 + 3 + 5) / 3 = 3.33 → 3.3
+    expect(p).toMatchObject({ current: 3.3, unit: "score", evidence: "measured", sampleSize: 3, lastMeasuredAt: day(0) });
+    expect(p.series.map((x) => [x.date, x.value])).toEqual([[day(6), 2], [day(3), 3], [day(0), 5]]);
+  });
+
+  it("reads each day once: a re-check counts as its latest, and a latest with no number leaves the day out", async () => {
+    await check("tmj", day(4), 8, { at: `${day(4)}T08:00:00.000Z` });
+    await check("tmj", day(4), 2, { at: `${day(4)}T20:00:00.000Z` });
+    await check("tmj", day(2), 6, { at: `${day(2)}T08:00:00.000Z` });
+    await check("tmj", day(2), null, { at: `${day(2)}T20:00:00.000Z` });
+    const p = await measure(M);
+    expect(p.series.map((x) => [x.date, x.value])).toEqual([[day(4), 2]]);
+    expect(p.current).toBe(2);
+  });
+
+  it("the window is windowDays days ending today: the day just inside counts, the one just outside and tomorrow do not, at 23:30 local", async () => {
+    await check("tmj", day(14), 9, { at: `${day(14)}T23:30:00.000Z` });
+    await check("tmj", day(13), 4, { at: `${day(13)}T23:30:00.000Z` });
+    await check("tmj", addDays(TODAY, 1), 9, { at: `${TODAY}T23:30:00.000Z` });
+    const p = await measure(M);
+    expect(p.series.map((x) => [x.date, x.value])).toEqual([[day(13), 4]]);
+    expect(p).toMatchObject({ current: 4, evidence: "sparse" });
+  });
+
+  it("no daily rows in the window is no reading, never 0", async () => {
+    await check("tmj", day(30), 1);
+    await check("tmj", day(1), 6, { kind: "pre" });
+    const p = await measure(M);
+    expect(p.current).toBeNull();
+    expect(p).toMatchObject({ evidence: "none", sampleSize: 0, series: [], lastMeasuredAt: null, display: { unit: "score", current: null } });
+    expect(p.missing).toMatch(/^No daily .* check in the last 14 days\.$/);
+  });
+
+  it("another profile's rows and another account's do not count", async () => {
+    const other = await makeTestUser(db);
+    await check("tmj", day(1), 4);
+    await check("knee", day(1), 9);
+    await check("tmj", day(1), 9, { user: other.userId });
+    const p = await measure(M);
+    expect(p).toMatchObject({ current: 4, sampleSize: 1 });
+  });
+
+  it("many measures share one statement, selecting only the columns it needs and never a whole table", async () => {
+    await check("tmj", day(1), 4);
+    statements.length = 0;
+    const out = await measureKeyResults(
+      db,
+      userId,
+      [M, { ...M, windowDays: 7 }, { ...M, profileId: "knee" }].map((m) => ({ measure: keyResultMeasureSchema.parse(m) })),
+      { today: TODAY },
+    );
+    expect(out.map((p) => p.current)).toEqual([4, 4, null]);
+    expect(statements).toHaveLength(1);
+    expect(statements.some((q) => /select \*/i.test(q))).toBe(false);
+    expect(statements[0]).toMatch(/"condition_checks"/);
+    expect(statements[0]).not.toMatch(/"feeling_off"|"workout_id"|"performed_session_id"/);
+  });
+
+  it("is served by an index on the account and the day, so a long history is not scanned", async () => {
+    const plan = (await db.all(
+      sql`explain query plan select "profile_id", "local_date", "value", "at", "id", "kind" from "condition_checks" where "user_id" = ${userId} and "kind" = 'daily' and "local_date" >= ${day(13)} and "local_date" <= ${TODAY}`,
+    )) as Array<{ detail: string }>;
+    const detail = plan.map((r) => r.detail).join("\n");
+    expect(detail).toMatch(/USING INDEX condition_checks_user_date_idx \(user_id=\? AND local_date>\? AND local_date<\?\)/);
+    expect(detail).not.toMatch(/SCAN/);
+  });
+});
+
 describe("measureStatements: what a set of measures costs, with the library given and the run labels off", () => {
   const parse = (ms: object[]) => ms.map((m) => keyResultMeasureSchema.parse(m));
   it("counts each source once, and a counting db agrees", async () => {
@@ -830,6 +927,10 @@ describe("measureStatements: what a set of measures costs, with the library give
     expect(measureStatements([], { library: true, labels: false })).toBe(0);
     expect(measureStatements(one, { library: true, labels: false })).toBe(1);
     expect(measureStatements(all, { library: true, labels: false })).toBe(7);
+    // A condition's daily check is one statement more, however many such measures there are.
+    const checks = parse([{ kind: "condition_check", profileId: "tmj" }, { kind: "condition_check", profileId: "knee", windowDays: 7 }]);
+    expect(measureStatements(checks, { library: true, labels: false })).toBe(1);
+    expect(measureStatements([...all, ...checks], { library: true, labels: false })).toBe(8);
     // A run that would be labelled: its labels are skipped, so the count holds whatever the log holds.
     const workoutId = await planned(day(2), doc([hold("wallSit", 30, true)]));
     const act = await run(day(2), 5000, 1500, { hr: 145 });

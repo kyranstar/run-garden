@@ -11,7 +11,8 @@ import type { Db } from "./db.js";
 /** One switched-on condition profile: its check's label and scale, and its care label (null = no care content). */
 export interface ConditionView {
   profileId: string;
-  check: { label: string; min: number; max: number };
+  /** The check's label and scale, and its reference points (a few numbers with what they feel like; may be none). */
+  check: { label: string; min: number; max: number; anchors: Array<{ value: number; words: string }> };
   care: string | null;
 }
 
@@ -63,7 +64,7 @@ export function conditionView(profileId: string): ConditionView {
   const p = profileById(profileId);
   return {
     profileId,
-    check: { label: p.check.label, min: p.check.min, max: p.check.max },
+    check: { label: p.check.label, min: p.check.min, max: p.check.max, anchors: p.check.anchors.map((a) => ({ value: a.value, words: a.words })) },
     care: p.care?.block.label ?? null,
   };
 }

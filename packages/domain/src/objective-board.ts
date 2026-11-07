@@ -29,6 +29,12 @@ export interface ObjectiveServedWorkout {
   source: (typeof DOC_SOURCES)[number] | null;
 }
 
+/** One reference point on a check's scale: a number and what it feels like. */
+export interface KeyResultAnchor {
+  value: number;
+  words: string;
+}
+
 export interface ObjectiveBoardCard {
   objective: ObjectiveDto;
   keyResults: Array<{
@@ -36,6 +42,12 @@ export interface ObjectiveBoardCard {
     progress: KeyResultProgress;
     /** Null when fewer than two points were ever logged (nothing yet to beat), or the measure reads nothing. */
     best: KeyResultBest | null;
+    /**
+     * A key result that measures a condition's daily check: that check's reference points, in the profile's own words
+     * (so the row can say what its target feels like). Absent for any other measure, and for a profile the library
+     * no longer holds.
+     */
+    anchors?: KeyResultAnchor[];
   }>;
   /** The latest done workouts naming it, newest first (OBJECTIVE_SERVED_SHOWN at most). */
   served: ObjectiveServedWorkout[];

@@ -112,6 +112,25 @@ describe("POST /api/objectives", () => {
     expect(body.issues).toContainEqual(expect.objectContaining({ path: ["keyResults", 0, "measure", "libraryIds", 1] }));
   });
 
+  it("accepts a key result measuring a condition's daily check: lower is better, kept as a score, the window filled in", async () => {
+    const objective = await created({
+      title: "Calmer days",
+      keyResults: [{ label: "Calmer days", measure: { kind: "condition_check", profileId: "tmj" }, baseline: 6, target: 2 }],
+    });
+    expect(objective.keyResults[0]).toMatchObject({
+      direction: "down", unit: "score", baseline: 6, target: 2, measure: { kind: "condition_check", profileId: "tmj", windowDays: 14 },
+    });
+    expect(await listObjectives(db, userId)).toEqual([objective]);
+  });
+
+  it("is 422 for a daily check of a condition the library does not hold, naming where", async () => {
+    const res = await call("POST", "/api/objectives", { title: "T", keyResults: [{ label: "x", measure: { kind: "condition_check", profileId: "zorbex" } }] });
+    expect(res.status).toBe(422);
+    const body = (await res.json()) as { issues: Array<{ path: Array<string | number> }> };
+    expect(body.issues).toContainEqual(expect.objectContaining({ path: ["keyResults", 0, "measure", "profileId"] }));
+    expect(await db.select().from(keyResults)).toEqual([]);
+  });
+
   it("is 423 while a restore is replacing the account", async () => {
     await db.insert(accountState).values({ userId, restoreId: newId(), restoreStartedAt: nowInstant(), updatedAt: nowInstant() });
     expect((await call("POST", "/api/objectives", { title: "T" })).status).toBe(423);

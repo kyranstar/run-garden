@@ -2389,6 +2389,15 @@ a.note {
   border-color: var(--green);
   color: var(--on-accent);
 }
+/* The scale's reference points: one quiet line, wrapping between points and, for a long one, within it (360 px). */
+.check-anchors {
+  margin: 0;
+  overflow-wrap: anywhere;
+}
+.check-anchor {
+  display: inline-block;
+  max-width: 100%;
+}
 .check-off[aria-pressed="true"] {
   background: var(--green-soft);
   border-color: var(--green);

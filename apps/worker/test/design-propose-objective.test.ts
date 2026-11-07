@@ -125,6 +125,22 @@ describe("propose_objective: a change, before → after, its reason citing where
     expect(bad.error).toBe("bad_after");
   });
 
+  it("add a key result measuring a condition's daily check: down, in score, its line reading plainly; a profile the library lacks is refused", async () => {
+    const { objectiveId } = await objective();
+    const ctx = await mainRun();
+    const daily = { label: "Calmer days", measure: { kind: "condition_check", profileId: "tmj" }, target: 2 };
+    ok((await propose(ctx, { change: "add_key_result", objectiveId, keyResult: daily })).res);
+    const [op] = await changes(ctx);
+    expect(op).toMatchObject({
+      change: "add_key_result", line: "Strong legs for the ski trip: new key result — Calmer days, target 2",
+      after: { label: "Calmer days", measure: { kind: "condition_check", profileId: "tmj", windowDays: 14 }, direction: "down", target: 2, unit: "score" },
+    });
+    const bad = refusal((await propose({ ...ctx, toolUseId: "toolu_bad" }, { change: "add_key_result", objectiveId, keyResult: { ...daily, measure: { kind: "condition_check", profileId: "zorbex" } } })).res);
+    expect(bad.error).toBe("bad_after");
+    // Up is not better for a daily score.
+    expect(refusal((await propose({ ...ctx, toolUseId: "toolu_up" }, { change: "add_key_result", objectiveId, keyResult: { ...daily, direction: "up" } })).res).error).toBe("bad_after");
+  });
+
   it("retire an objective (done or let go) or a key result", async () => {
     const { objectiveId, krId } = await objective();
     const ctx = await mainRun();

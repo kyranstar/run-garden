@@ -144,8 +144,29 @@ export function measureWords(m: KeyResultMeasure, u: BoardUnits): string {
       return "A check-in answer";
     case "test":
       return "A test result";
+    case "condition_check":
+      return "A daily check, averaged";
   }
 }
+
+/**
+ * What a target feels like, in the profile's words: the words of the reference point that IS the target ("2" → "There,
+ * easy to ignore"). Null when the target is no reference point, or there are none (a key result of another measure, or a
+ * server that sends none) — the row then says nothing more. The words arrive with the data; the UI holds none.
+ */
+export function targetReading(target: number | null, anchors: ReadonlyArray<{ value: number; words: string }> | undefined): string | null {
+  if (target === null || !anchors) return null;
+  return anchors.find((a) => a.value === target)?.words ?? null;
+}
+
+/** A target as the row says it: the figure, and its words in brackets when it is a reference point. */
+export const targetText = (figure: string, words: string | null): string => (words ? `${figure} (${words})` : figure);
+
+/**
+ * Whether the board offers to ask the coach for a test when nothing is measured yet. A daily check is measured by
+ * checking, not by a test, so it offers none.
+ */
+export const asksForTest = (m: KeyResultMeasure | null): boolean => m?.kind !== "condition_check";
 
 /** The window a measure reads, in words ("last 90 days"); null for one with none. */
 export const windowWords = (m: KeyResultMeasure): string | null => ("windowDays" in m ? `last ${m.windowDays} days` : null);
@@ -296,7 +317,7 @@ export function krDraftOf(k: KeyResultDto, u: BoardUnits): KrDraft {
   const m = k.measure;
   const base = { ...emptyKr(), id: k.id, label: k.label, keptUnit: k.unit, dueDate: k.dueDate ?? "" };
   const values = { target: valueText(k.target, k.unit, m), baseline: valueText(k.baseline, k.unit, m) };
-  if (!m || m.kind === "checkin" || m.kind === "test") {
+  if (!m || m.kind === "checkin" || m.kind === "test" || m.kind === "condition_check") {
     return { ...base, ...values, kind: m ? "kept" : "", ...(m ? { kept: { measure: m, direction: k.direction } } : {}) };
   }
   const draft: KrDraft = { ...base, ...values, kind: m.kind, windowDays: m.windowDays };

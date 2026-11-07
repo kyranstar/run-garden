@@ -48,8 +48,12 @@ import {
   parseKr,
   stalled,
   streakWords,
+  targetReading,
   testRequest,
+  krDraftOf,
+  MEASURE_KINDS,
 } from "../src/screens/studio/objectives-model.js";
+import { questProgressWords } from "../src/screens/growth/quests.js";
 import { primedClient, staticRouter, text } from "./studio-fixtures.js";
 
 const TODAY = "2026-10-14";
@@ -272,6 +276,79 @@ describe("the board's words and numbers", () => {
     expect(stalled(card(objective("y", "New", { createdAt: "2026-10-13T08:00:00.000Z" })), TODAY)).toBe(false);
     expect(stalled(UNTRUSTED, TODAY)).toBe(false);
     expect(stalled(DONE, TODAY)).toBe(false);
+  });
+});
+
+// ── A key result measuring a condition's daily check ──────────────────────────────────────────────────────────────────
+
+describe("a key result measuring a daily check", () => {
+  // Reference points arrive with the key result, from the server; the UI holds none of its own words for them.
+  const ANCHORS = [
+    { value: 0, words: "Zero words" },
+    { value: 2, words: "Two words" },
+    { value: 5, words: "Five words" },
+  ];
+  const DAILY = kr("k7", "Calmer days", { kind: "condition_check", profileId: "p-x", windowDays: 14 }, { direction: "down", unit: "score", baseline: 6, target: 2 });
+  const dailyCard = (target: number | null, current: number | null, anchors: typeof ANCHORS | null = ANCHORS) =>
+    card(objective("o7", "Calmer", { keyResults: [{ ...DAILY, target }] }), {
+      keyResults: [
+        {
+          keyResult: { ...DAILY, target },
+          progress:
+            current === null
+              ? { ...progress([]), unit: "score", missing: "No daily check in the last 14 days.", display: { unit: "score", current: null } }
+              : { ...progress([["2026-10-12", current]]), unit: "score", current, display: { unit: "score", current } },
+          best: null,
+          ...(anchors ? { anchors } : {}),
+        },
+      ],
+    });
+  const html = (c: ObjectiveBoardCard) => boardHtml({ today: TODAY, objectives: [c] });
+
+  it("the target's reference words, when the target is one of the points; nothing when it is not, or there are none", () => {
+    expect(targetReading(2, ANCHORS)).toBe("Two words");
+    expect(targetReading(0, ANCHORS)).toBe("Zero words");
+    expect(targetReading(3, ANCHORS)).toBeNull();
+    expect(targetReading(2.5, ANCHORS)).toBeNull();
+    expect(targetReading(2, [])).toBeNull();
+    expect(targetReading(2, undefined)).toBeNull();
+    expect(targetReading(null, ANCHORS)).toBeNull();
+  });
+
+  it("the row says the target's words beside the target, with the figure unchanged", () => {
+    const k = krOf(cardOf(html(dailyCard(2, 3)), "o7"), "Calmer days");
+    expect(text(k)).toMatch(/Target 2 \(Two words\)/);
+    expect(text(k)).toMatch(/Now 3/);
+    expect(text(k)).toContain("A daily check, averaged");
+    expect(text(k)).toContain("last 14 days");
+  });
+
+  it("a target that is no point adds nothing, and nor does a key result without the points", () => {
+    expect(text(krOf(cardOf(html(dailyCard(3, 3)), "o7"), "Calmer days"))).toMatch(/Target 3(?! \()/);
+    expect(text(krOf(cardOf(html(dailyCard(2, 3, null)), "o7"), "Calmer days"))).toMatch(/Target 2(?! \()/);
+  });
+
+  it("the quest's line says the target's words too; lower is better so now comes first", () => {
+    const k = dailyCard(2, 3).keyResults[0]!;
+    expect(questProgressWords(k)).toBe("3 · target 2 (Two words)");
+    expect(questProgressWords({ ...k, keyResult: { ...k.keyResult, target: 3 } })).toBe("3 · target 3");
+  });
+
+  it("no reading is said as none: no Now, no chart, and no offer of a test (a daily check is not a test)", () => {
+    const k = krOf(cardOf(html(dailyCard(2, null)), "o7"), "Calmer days");
+    expect(text(k)).not.toMatch(/Now/);
+    expect(text(k)).toContain("No daily check in the last 14 days.");
+    expect(k).not.toContain("Ask the coach for a test");
+    expect(k).not.toContain("<svg");
+  });
+
+  it("falls as progress: from 6 down to 2, a 3 is three quarters of the way", () => {
+    expect(krFraction({ baseline: 6, target: 2, direction: "down" }, 3)).toBe(0.75);
+  });
+
+  it("is kept as the sheet found it, not offered as a new measure", () => {
+    expect(MEASURE_KINDS).not.toContain("condition_check");
+    expect(krDraftOf(DAILY, { units: "km", weightUnit: "kg" })).toMatchObject({ kind: "kept", kept: { direction: "down" } });
   });
 });
 

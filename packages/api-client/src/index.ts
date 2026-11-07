@@ -2167,7 +2167,11 @@ export interface WatchReviewBasisDto {
 /** A switched-on condition profile as the UI labels it: its check's label and scale, and its care label. */
 export interface ConditionViewDto {
   profileId: string;
-  check: { label: string; min: number; max: number };
+  /**
+   * `anchors`: a few reference points on the scale, in the profile's words (ascending; none = nothing shown). Optional
+   * so an answer cached before they existed still reads.
+   */
+  check: { label: string; min: number; max: number; anchors?: Array<{ value: number; words: string }> };
   /** The care block's label; null = the profile has no care content. */
   care: string | null;
 }
