@@ -600,6 +600,67 @@ describe("readStandFacts: one statement and the measures its key results need", 
     expect(f.plans.map((p) => p.id)).toEqual(["running"]);
   });
 
+  describe("a plan that ran to its end is not running, whatever its row still says (task 14 fix round 1, C1)", () => {
+    const plan = (id: string, over: Record<string, unknown> = {}) =>
+      db.insert(schema.programs).values({
+        id, userId, kind: "coach", name: `Zorbex ${id}`, status: "active", disciplines: ["run"], config: {}, purpose: `Aim ${id}`, createdAt: at(d(-9)), updatedAt: at(d(-9)), ...over,
+      } as never);
+    const block = (id: string, programId: string, end: string, status = "active") =>
+      db.insert(schema.coachPlans).values({
+        id, userId, discipline: "run", name: "Synthetic block", status, startDate: d(-60), endDate: end, raceDate: null, stampPrefix: "S", programId, createdAt: at(d(-30)), updatedAt: at(d(-30)),
+      });
+    const listed = async () => (await readStandFacts(db, userId, { today: TODAY, tz: "UTC" })).plans.map((p) => p.id);
+
+    it("six lines run to their end (their blocks swept to completed), and one is live: only the live one is named", async () => {
+      for (let i = 0; i < 6; i += 1) {
+        await plan(`over${i}`);
+        await block(`b-over${i}`, `over${i}`, d(-3 - i), "completed");
+      }
+      await plan("live", { createdAt: at(d(-1)) });
+      await block("b-live", "live", d(10));
+      expect(await listed()).toEqual(["live"]);
+    });
+
+    it("thirty ended plans don't crowd the live one out of the facts", async () => {
+      for (let i = 0; i < 30; i += 1) {
+        await plan(`over${i}`);
+        await block(`b-over${i}`, `over${i}`, d(-2), "completed");
+      }
+      await plan("live", { createdAt: at(d(-1)) });
+      await block("b-live", "live", d(10));
+      expect(await listed()).toEqual(["live"]);
+    });
+
+    it("a completed block followed by a stopped one that was to run on: ended the day the completed one ended", async () => {
+      await plan("mix");
+      await block("b-done", "mix", d(-5), "completed");
+      await block("b-stopped", "mix", d(40), "retired");
+      expect(await listed()).toEqual([]);
+    });
+
+    it("a COROS plan whose sessions are all archived and past: ended", async () => {
+      await plan("coros", { kind: "coros_import" });
+      for (const [i, n] of [-9, -6].entries()) {
+        await db.insert(schema.plannedWorkouts).values({
+          id: `pw-a${i}`, userId, planId: "coros", sourceWorkoutId: `s${i}`, title: "T", category: "easy", sport: "run", originalPlanDate: d(n), lastVerifiedCorosDate: d(n),
+          effectiveDate: d(n), effectiveTime: "07:00", completionState: "scheduled", sourceContentFingerprint: "fp", calendarBlockDurationSeconds: 3600, archivedAt: at(d(-2)), createdAt: at(d(-9)), updatedAt: at(d(-9)),
+        });
+      }
+      expect(await listed()).toEqual([]);
+    });
+
+    it("a plan with a block still ahead, or a live session ahead under it or its block, is running", async () => {
+      await plan("ahead");
+      await block("b-ahead", "ahead", d(-3), "completed");
+      await db.insert(schema.plannedWorkouts).values({
+        id: "pw-b", userId, planId: "b-ahead", sourceWorkoutId: "s", title: "T", category: "easy", sport: "run", originalPlanDate: d(4), lastVerifiedCorosDate: d(4),
+        effectiveDate: d(4), effectiveTime: "07:00", completionState: "scheduled", sourceContentFingerprint: "fp", calendarBlockDurationSeconds: 3600, createdAt: at(d(-9)), updatedAt: at(d(-9)),
+      });
+      // A completed block's own session ahead is only its own date's business: the plan has live work only if the block is live.
+      expect(await listed()).toEqual(["ahead"]);
+    });
+  });
+
   it("#8 rows read stay bounded by the windows, not the lifetime: every activity, session and read search uses a time range (query plan)", async () => {
     const plan = ((await db.all(sql`explain query plan ${standRowsSql(db, userId, TODAY, { library: false })}`)) as Array<{ detail: string }>).map((r) => r.detail);
     const on = (table: string) => plan.filter((l) => new RegExp(`^(SEARCH|SCAN) ${table}\\b`).test(l));

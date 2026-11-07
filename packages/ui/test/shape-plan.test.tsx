@@ -717,6 +717,12 @@ describe("a plan's row asks what comes next (plans with a purpose §4): the line
     expect(document.body.textContent).toContain("Fall Half Block");
   });
 
+  it("a long name in the line wraps, as the row's own name does", () => {
+    const css = src("styles.css");
+    expect(/\.plan-row-prompt \{[^}]*overflow-wrap: anywhere/.test(css)).toBe(true);
+    expect(/\.plan-row-name \{[^}]*overflow-wrap: anywhere/.test(css)).toBe(true);
+  });
+
   it("a draft ready is offered the same way, with its own words", () => {
     const open = vi.fn();
     mount([summary({ prompt: { kind: "draft_ready", label: "Review the draft for my running plan", request: "Review the draft for my running plan." } })], { open });
@@ -724,8 +730,17 @@ describe("a plan's row asks what comes next (plans with a purpose §4): the line
     expect(open).toHaveBeenCalledWith({ request: "Review the draft for my running plan." });
   });
 
-  it("only a live row asks: one under Past plans never does", () => {
-    mount([summary()], { open: noop }, { plans: [{ ...runPlan, endDate: "2026-08-01" }] });
+  it("a plan that has run out is a Past row, and its question stays there while the server gives it (spec §4.1)", () => {
+    const open = vi.fn();
+    mount([summary({ prompt: { ...WORDS, request: "Plan what comes after my running plan — it ended 10 days ago." } })], { open }, { plans: [{ ...runPlan, endDate: "2026-08-01" }] });
+    expect(document.querySelector(".plan-past")).not.toBeNull();
+    expect(document.querySelector(".plan-past")!.querySelectorAll(".plan-row-prompt")).toHaveLength(1);
+    act(() => prompts()[0]!.click());
+    expect(open).toHaveBeenCalledWith({ request: "Plan what comes after my running plan — it ended 10 days ago." });
+    // Past 21 days the server says nothing, and the row has no line.
+    act(() => root!.unmount());
+    host!.remove();
+    mount([summary({ prompt: null })], { open }, { plans: [{ ...runPlan, endDate: "2026-08-01" }] });
     expect(prompts()).toEqual([]);
   });
 

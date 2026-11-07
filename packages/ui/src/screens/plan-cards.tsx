@@ -213,10 +213,10 @@ export function YourPlans({
           : alone
             ? state
             : `${kind} · ${state}`;
-    // What the plan asks (the one rule, `planPrompt`, which the coach's chip reads too): a line of its own under a live row,
+    // What the plan asks (the one rule, `planPrompt`, which the coach's chip reads too): a line of its own under its row, live or run out,
     // since a button can't sit inside the row's. A tap writes the request in the coach's box; nothing is sent or spent until
     // the athlete sends it.
-    const prompt = coach && !isPast ? planOf(e, summaries)?.prompt : null;
+    const prompt = coach ? planOf(e, summaries)?.prompt : null;
     return (
       <li key={`${e.kind}:${id}`}>
         <button

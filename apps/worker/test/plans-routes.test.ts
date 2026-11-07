@@ -102,8 +102,8 @@ const rowOf = async (id: string) => (await db.select().from(programs).where(eq(p
 describe("GET /api/plans", () => {
   it("lists a coach plan with its line's key, a programme and a course, and neither a phase nor the one-off bucket", async () => {
     await plan("plan-a", "coach", { disciplines: ["run"], onEnd: "ask", purpose: "Build the base" });
-    await phase("blk-1", "plan-a");
-    await phase("blk-2", "plan-a", "2026-10-19", "2026-11-01");
+    await phase("blk-1", "plan-a", "2025-10-05", "2025-10-18");
+    await phase("blk-2", "plan-a", "2025-10-19", "2025-11-01");
     await plan("prog-1", "adaptive", { onEnd: "continue" });
     await plan("course-1", "course", { onEnd: "finish" });
     await plan("bucket", "studio", { onEnd: null });
@@ -203,6 +203,87 @@ describe("GET /api/plans", () => {
       expect(await promptOf("quiet")).toEqual(WORDS(12));
     });
 
+    const session = (id: string, planId: string, date: string, state = "scheduled", archivedAt: string | null = null) =>
+      db.insert(schema.plannedWorkouts).values({
+        id, userId, planId, sourceWorkoutId: id, title: "T", category: "easy", sport: "run", originalPlanDate: date, lastVerifiedCorosDate: date,
+        effectiveDate: date, effectiveTime: "07:00", completionState: state, sourceContentFingerprint: "fp", calendarBlockDurationSeconds: 3600, archivedAt, createdAt: NOW, updatedAt: NOW,
+      });
+
+    it("a session filed under one of the plan's blocks, past the block's end, means the plan isn't ending; one skipped, missed or done does not", async () => {
+      await plan("filed", "coach", { disciplines: ["run"], onEnd: "ask" });
+      await phase("filed-b", "filed", ahead(-20), ahead(12));
+      await session("late", "filed-b", ahead(40));
+      expect(await promptOf("filed")).toBeNull();
+      for (const state of ["skipped", "missed", "completed"]) {
+        await db.delete(schema.plannedWorkouts);
+        await session("late", "filed-b", ahead(40), state);
+        expect(await promptOf("filed"), state).toEqual(WORDS(12));
+      }
+      await db.delete(schema.plannedWorkouts);
+      await session("late", "filed-b", ahead(40), "unresolved");
+      expect(await promptOf("filed"), "unresolved").toBeNull();
+    });
+
+    it("an outline week that begins inside its block reaches no further than the block: ends in 12 days, not 16", async () => {
+      await plan("clip", "coach", { disciplines: ["run"], onEnd: "ask" });
+      await phase("clip-b", "clip", ahead(-20), ahead(12));
+      await db.insert(schema.coachPlanWeeks).values({ id: "clip-w", planId: "clip-b", weekStart: ahead(10), state: "shape", shape: null });
+      expect(await promptOf("clip")).toEqual(WORDS(12));
+    });
+
+    it("a plan that has run out (its blocks swept to completed) still asks for 21 days, in plain words; a Past row too", async () => {
+      await plan("ran", "coach", { disciplines: ["run"], onEnd: "ask" });
+      await phase("ran-b", "ran", ahead(-40), ahead(-3));
+      await db.update(schema.coachPlans).set({ status: "completed" }).where(eq(schema.coachPlans.id, "ran-b"));
+      expect(await promptOf("ran")).toEqual({ kind: "whats_next", label: "Plan what comes after my running plan", request: "Plan what comes after my running plan — it ended 3 days ago." });
+      await db.update(schema.coachPlans).set({ endDate: ahead(-22) }).where(eq(schema.coachPlans.id, "ran-b"));
+      expect(await promptOf("ran")).toBeNull();
+      // A block ended yesterday, not yet swept, with this week's outline: it ended yesterday, not "in 2 days".
+      await db.update(schema.coachPlans).set({ status: "active", endDate: ahead(-1) }).where(eq(schema.coachPlans.id, "ran-b"));
+      await db.insert(schema.coachPlanWeeks).values({ id: "ran-w", planId: "ran-b", weekStart: ahead(-3), state: "shape", shape: null });
+      expect(await promptOf("ran")).toMatchObject({ request: "Plan what comes after my running plan — it ended yesterday." });
+    });
+
+    it("a new phase after a plan ran out ends the asking", async () => {
+      await plan("again", "coach", { disciplines: ["run"], onEnd: "ask" });
+      await phase("again-1", "again", ahead(-40), ahead(-3));
+      await db.update(schema.coachPlans).set({ status: "completed" }).where(eq(schema.coachPlans.id, "again-1"));
+      expect(await promptOf("again")).not.toBeNull();
+      await phase("again-2", "again", ahead(-2), ahead(60));
+      expect(await promptOf("again")).toBeNull();
+    });
+
+    it("a stopped plan that ran out, and one that finishes, ask nothing", async () => {
+      await plan("s-ran", "coach", { disciplines: ["run"], onEnd: "ask", status: "retired" });
+      await phase("s-ran-b", "s-ran", ahead(-40), ahead(-3));
+      await plan("f-ran", "coach", { disciplines: ["run"], onEnd: "finish" });
+      await phase("f-ran-b", "f-ran", ahead(-40), ahead(-3));
+      expect(await promptOf("s-ran")).toBeNull();
+      expect(await promptOf("f-ran")).toBeNull();
+    });
+
+    it("a plan of run and lift blocks is called by its name on the row, as on the chip", async () => {
+      await plan("duo", "coach", { disciplines: ["run"], onEnd: "ask", name: "Zorbex duo" });
+      await phase("duo-1", "duo", ahead(-20), ahead(12));
+      await db.insert(schema.coachPlans).values({ id: "duo-2", userId, discipline: "lift", name: "Lift block", status: "active", startDate: ahead(-20), endDate: ahead(12), raceDate: null, stampPrefix: "duo-2", programId: "duo", createdAt: NOW, updatedAt: NOW });
+      const row = (await promptOf("duo")) as { label: string; request: string };
+      expect(row.label).toBe("Plan what comes after Zorbex duo");
+      const chip = (await readNudges(db, userId, await loadPreferences(db, userId), today, new Date())).find((n) => n.id.startsWith("ending:"));
+      expect({ label: row.label, request: row.request }).toEqual({ label: chip!.label, request: chip!.request });
+    });
+
+    it("a COROS plan and a Studio-held plan ask on the chip as on the row", async () => {
+      await plan("coros", "coros_import", { disciplines: ["run"], onEnd: "ask" });
+      await session("c1", "coros", ahead(9));
+      await plan("held", "coach", { disciplines: ["strength"], onEnd: "continue", source: { studioPlanId: "studio-x" } });
+      await session("h1", "held", ahead(20));
+      const chips = (await readNudges(db, userId, await loadPreferences(db, userId), today, new Date())).filter((n) => n.id.startsWith("ending:"));
+      const rows = (await listed()).filter((p) => p.prompt).map((p) => (p.prompt as { request: string }).request).sort();
+      expect(rows).toEqual(["Plan what comes after my lifting plan — it ends in 20 days.", "Plan what comes after my running plan — it ends in 9 days."]);
+      // The chip offers the soonest; the row of the other is its own.
+      expect(chips.map((c) => c.request)).toEqual(["Plan what comes after my running plan — it ends in 9 days."]);
+    });
+
     it("an outline week reaches to its sixth day after the week's start: that day, 21 days out, still asks; the next does not", async () => {
       for (const [id, weekStart] of [["ow-in", ahead(15)], ["ow-out", ahead(16)]] as const) {
         await plan(id, "coach", { disciplines: ["run"], onEnd: "ask" });
@@ -229,6 +310,7 @@ describe("GET /api/plans", () => {
     it("a plan of more than one sport has no sport to be called by: its own name stands in", async () => {
       await plan("mixed", "coach", { disciplines: ["run", "strength"], onEnd: "ask", name: "Zorbex mix" });
       await phase("mixed-1", "mixed", ahead(-20), ahead(4));
+      await db.insert(schema.coachPlans).values({ id: "mixed-2", userId, discipline: "lift", name: "Lift block", status: "active", startDate: ahead(-20), endDate: ahead(4), raceDate: null, stampPrefix: "mixed-2", programId: "mixed", createdAt: NOW, updatedAt: NOW });
       expect(await promptOf("mixed")).toEqual({ kind: "whats_next", label: "Plan what comes after Zorbex mix", request: "Plan what comes after Zorbex mix — it ends in 4 days." });
     });
 
@@ -251,7 +333,7 @@ describe("GET /api/plans", () => {
       expect(statements.length).toBeLessThanOrEqual(6);
       // Only a coach or COROS plan's row works out a last day: a programme's and a course's cost nothing for it.
       const plansRead = statements.find((s) => /from "programs"/i.test(s))!;
-      expect(plansRead).toMatch(/case when programs\.kind in \('coach', 'coros_import'\) then \(select max\(d\)/);
+      expect(plansRead).toMatch(/case when programs\.kind in \('coach', 'coros_import'\) then coalesce\(/);
     });
   });
 

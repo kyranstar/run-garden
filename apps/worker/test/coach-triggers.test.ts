@@ -150,6 +150,30 @@ describe("coach triggers", () => {
       }
     });
 
+    it("the evidence's end is the plan's last day, as the chip says it; a plan that has run out does not wake the coach", async () => {
+      const db = makeTestDb();
+      const { userId, prefs } = await makeTestUser(db);
+      const today = todayInZone(prefs.timezone);
+      await db.insert(schema.programs).values({ id: "pr-x", userId, kind: "coach", name: "P", status: "active", disciplines: ["run"], config: {}, onEnd: "ask", createdAt: nowInstant(), updatedAt: nowInstant() });
+      await block(db, userId, "cp-x", addDays(today, -20), addDays(today, 5));
+      await db.update(schema.coachPlans).set({ programId: "pr-x" }).where(eq(schema.coachPlans.id, "cp-x"));
+      await db.insert(schema.plannedWorkouts).values({
+        id: "late", userId, planId: "cp-x", sourceWorkoutId: "s", title: "T", category: "easy", sport: "run", originalPlanDate: addDays(today, 9), lastVerifiedCorosDate: addDays(today, 9),
+        effectiveDate: addDays(today, 9), effectiveTime: "07:00", completionState: "scheduled", sourceContentFingerprint: "fp", calendarBlockDurationSeconds: 3600, createdAt: nowInstant(), updatedAt: nowInstant(),
+      });
+      expect(await evaluateTriggers(db, userId, prefs, today)).toContain("plan_ending");
+      const [row] = (await pendingTriggers(db, userId)).filter((t) => t.kind === "plan_ending");
+      expect(row!.evidence).toMatchObject({ planId: "cp-x", endDate: addDays(today, 9) });
+      const chip = (await readNudges(db, userId, prefs, today, new Date())).find((n) => n.id === "ending:cp-x");
+      expect(chip?.request).toContain("it ends in 9 days");
+
+      const db2 = makeTestDb();
+      const u2 = await makeTestUser(db2);
+      await block(db2, u2.userId, "cp-ran", addDays(today, -40), addDays(today, -3));
+      await db2.update(schema.coachPlans).set({ status: "completed" }).where(eq(schema.coachPlans.id, "cp-ran"));
+      expect(await evaluateTriggers(db2, u2.userId, u2.prefs, today)).not.toContain("plan_ending");
+    });
+
     it("stays quiet for a phase that has ended (its status not yet flipped by the hourly sweep)", async () => {
       const db = makeTestDb();
       const { userId, prefs } = await makeTestUser(db);
@@ -201,12 +225,14 @@ describe("coach triggers", () => {
         ],
         today,
       );
-      expect(endingPlan(lines, new Map(), today)).toMatchObject({ line: { discipline: "lift", endDate: "2026-11-05" }, last: { id: "lift-b" } });
-      // 22 days out is past the window; 21 is in it; yesterday is ended.
-      expect(endingPlan(linesOf([b("far", "run", "2026-09-01", "2026-11-11")], today), new Map(), today)).toBeUndefined();
-      expect(endingPlan(linesOf([b("edge", "run", "2026-09-01", "2026-11-10")], today), new Map(), today)?.last.id).toBe("edge");
-      expect(endingPlan(linesOf([b("ended", "run", "2026-09-01", "2026-10-19")], today), new Map(), today)).toBeUndefined();
-      expect(endingPlan(linesOf([b("today", "run", "2026-09-01", today)], today), new Map(), today)?.last.id).toBe("today");
+      const trigger = { ranOut: false };
+      expect(endingPlan([], lines, today, trigger)).toMatchObject({ keyId: "lift-b", plan: { lastDay: "2026-11-05" }, prompt: { kind: "whats_next" } });
+      // 22 days out is past the window; 21 is in it; yesterday has run out (a chip and a row, never a wake).
+      expect(endingPlan([], linesOf([b("far", "run", "2026-09-01", "2026-11-11")], today), today, trigger)).toBeUndefined();
+      expect(endingPlan([], linesOf([b("edge", "run", "2026-09-01", "2026-11-10")], today), today, trigger)?.keyId).toBe("edge");
+      expect(endingPlan([], linesOf([b("ended", "run", "2026-09-01", "2026-10-19")], today), today, trigger)).toBeUndefined();
+      expect(endingPlan([], linesOf([b("ended", "run", "2026-09-01", "2026-10-19")], today), today)?.prompt.request).toBe("Plan what comes after my running plan — it ended yesterday.");
+      expect(endingPlan([], linesOf([b("today", "run", "2026-09-01", today)], today), today, trigger)?.keyId).toBe("today");
     });
   });
 

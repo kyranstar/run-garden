@@ -1,11 +1,11 @@
 import { and, desc, eq, gte, inArray, isNull, lte, sql } from "drizzle-orm";
-import { activities, coachPlans, coachPlanWeeks, coachReads, coachRuns, plannedWorkouts, programs, weeklyReviews, workoutCompletionMatches } from "@rg/database";
+import { activities, coachPlans, coachPlanWeeks, coachReads, coachRuns, plannedWorkouts, weeklyReviews, workoutCompletionMatches } from "@rg/database";
 import { addDays, lineSentenceName, linesOf, QUALITY_SUBTYPE_LABELS, startOfIsoWeek, type LocalDate, type QualitySubtype, type UserPreferences } from "@rg/domain";
 import { chunkIds, type Db } from "./db.js";
 import { isLoosePlan, lineBlockOf } from "./coach-plans.js";
 import { reviewOpening, sessionDays, sessionOpening, type CoachOpeningLine, type FinishedSession } from "./coach-opening-line.js";
 import { COMEBACK_GAP_DAYS, FIRM_HORIZON_DAYS, REFIRE_WINDOW_MS } from "./coach-triggers.js";
-import { endingPlan, factsOf, planFactColumns, type PlanFacts } from "./plan-ending.js";
+import { endingPlan, readPlanEndings } from "./plan-ending.js";
 import { UNRESOLVED_AFTER_DAYS } from "./reconcile-daily.js";
 import { driftCoveredBy, driftNudge, driftsOf, readStandFacts, type Drift } from "./where-you-stand.js";
 
@@ -30,7 +30,7 @@ import { driftCoveredBy, driftNudge, driftsOf, readStandFacts, type Drift } from
  *      the coach fills in; nothing else will now), whichever phase of its training line holds it;
  *   4. a race within 21 days (Settings' race day, else a running plan's) — "Get me ready for race day";
  *   5. a plan ending — "Plan what comes after my running plan" — by the one rule (`planPrompt`, @rg/domain, which the
- *      plan's row in Your Plans reads too): its last session, or its last outline week, 0 to 21 days ahead (a phase
+ *      plan's row in Your Plans reads too): its last session, or its last outline week, within 21 days ahead or behind (a plan that has run out stays quietly available) (a phase
  *      another follows on from is no end: training lines §3.7), the plan running and not paused, and ending by asking or
  *      by continuing. A plan that finishes, a course and a programme never ask.
  * The pressing first: what just happened, then what the plan needs to keep going, then what is coming. A plan is named
@@ -50,8 +50,8 @@ import { driftCoveredBy, driftNudge, driftsOf, readStandFacts, type Drift } from
  * athlete has asked the coach about since — any turn of theirs, a chip or their own words — doesn't come back; one this
  * device has already shown (`seen`, the screen's own list) gives way to the next.
  *
- * Cost: at most seven statements, five on a quiet account (the missed sessions; the activities — with what each one
- * completed, its logged sets and the coach's read of it, in the same statement; the plans; last week's review; where
+ * Cost: at most eight statements, six on a quiet account (the missed sessions; the activities — with what each one
+ * completed, its logged sets and the coach's read of it, in the same statement; the plans; the plans that can ask what comes next (plan-ending.ts); last week's review; where
  * the athlete stands (where-you-stand.ts: one); then their outline weeks only with a running plan, and the athlete's
  * recent asks only with a chip or a line to offer) — and the stand's key-result measures (`measureStatements`).
  * A drift chip is asked when its words were sent or a run diagnosing it started (`settings.diagnose`) in the last three
@@ -165,7 +165,7 @@ export async function readCoachOpening(
   seen: ReadonlySet<string> = new Set(),
 ): Promise<CoachOpeningRead> {
   const lastWeek = addDays(startOfIsoWeek(today), -7);
-  const [stand, missedRows, recent, plans, reviews] = await Promise.all([
+  const [stand, missedRows, recent, plans, endings, reviews] = await Promise.all([
     readStandFacts(db, userId, { today, tz: prefs.timezone }),
     db
       .select({
@@ -230,12 +230,12 @@ export async function readCoachOpening(
         endDate: coachPlans.endDate,
         raceDate: coachPlans.raceDate,
         programId: coachPlans.programId,
-        // Its plan's ending, in the same statement: what the rule that decides step 5 reads (`planPrompt`).
-        ...planFactColumns(userId),
       })
       .from(coachPlans)
-      .leftJoin(programs, and(eq(programs.id, coachPlans.programId), eq(programs.userId, userId)))
       .where(and(eq(coachPlans.userId, userId), eq(coachPlans.status, "active"))),
+    // The plans that can ask what comes next, each with its computed last day (plan-ending.ts): a coach plan whether or not
+    // a training line holds it, a COROS plan, a Studio-held plan, one that has run out.
+    readPlanEndings(db, userId),
     // Last week's review, written by Monday's cron (its narrative already paid for).
     db
       .select({ weekStart: weeklyReviews.weekStart, narrative: weeklyReviews.narrative, createdAt: weeklyReviews.createdAt })
@@ -349,13 +349,8 @@ export async function readCoachOpening(
   // 5. A plan ending — the rule every plan's ending goes through (`planPrompt`, @rg/domain; the plan's row in Your Plans
   // reads it too): its last session within 21 days, no next phase or outline week following on, running, not paused, and
   // asking or continuing. The soonest of them (plan_ending's own rule); its chip that line's last phase's.
-  const facts = new Map<string, PlanFacts>();
-  for (const p of blocks) {
-    const f = factsOf(p);
-    if (p.programId && f) facts.set(p.programId, f);
-  }
-  const ending = endingPlan(lines, facts, today);
-  if (ending) found.push({ id: `ending:${ending.last.id}`, label: ending.prompt.label, request: ending.prompt.request });
+  const ending = endingPlan(endings, lines, today);
+  if (ending) found.push({ id: `ending:${ending.keyId}`, label: ending.prompt.label, request: ending.prompt.request });
 
   // The opening's own line: the review first, then the newest session still news — each with the moment after which an
   // ask of the athlete's makes it old news. One this device has shown gives way to the next.

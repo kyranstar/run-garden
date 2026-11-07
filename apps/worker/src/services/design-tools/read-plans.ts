@@ -50,6 +50,7 @@ import type { DesignTool } from "./types.js";
 import { answer, dayWords, isErr, parseInput, parsedArray, parsedJson, plural, READ_ROLES, readAthlete, RESULT_BUDGET_BYTES, untrusted } from "./read-common.js";
 import { listRevisable, nullOriginWords, ORIGIN_WORDS } from "./read-plan.js";
 import { DAY_SHORT } from "./change-programme.js";
+import { DISCIPLINE_WORD as PLAN_DISCIPLINE_WORD } from "../plan-summaries.js";
 
 /** A block that ended this many days ago or less is still listed. */
 export const ENDED_DAYS = 30;
@@ -175,8 +176,8 @@ interface Room {
 /** A plan's brief is stored at 1,000 characters at most (BRIEF_MAX): a room that shows it whole. */
 const BRIEF_WHOLE = 1000;
 
-/** `programs.disciplines` speaks "run", "strength" and "yoga"; a coach block's discipline is "run", "lift" or "mobility". */
-const DISCIPLINE_WORD: Record<string, string> = { run: "run", lift: "strength", mobility: "yoga" };
+/** A coach block's discipline to `programs.disciplines`' word: named once (plan-summaries.ts), read here by any text. */
+const DISCIPLINE_WORD: Record<string, string> = PLAN_DISCIPLINE_WORD;
 
 /** What a plan says of itself, within `room`: what it is for (`purpose`), the longer account (`brief`), how it ends
  * (`onEnd`), until when it is paused and the objectives it serves — each always there: null, the kind's own ending and

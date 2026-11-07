@@ -1,102 +1,138 @@
-import { sql, type SQL } from "drizzle-orm";
+import { and, eq, inArray, sql, type SQL } from "drizzle-orm";
 import { programs } from "@rg/database";
-import {
-  defaultOnEnd,
-  planOnEndSchema,
-  planPrompt,
-  type LocalDate,
-  type LineBlock,
-  type PlanOnEnd,
-  type PlanPrompt,
-  type ProgramKind,
-  type TrainingLine,
-} from "@rg/domain";
+import { PLAN_PROMPT_KINDS, type LocalDate, type PlanPrompt, type ProgramKind, type TrainingLine } from "@rg/domain";
+import type { Db } from "./db.js";
 import { lastPhaseOf } from "./coach-plans.js";
+import { DISCIPLINE_WORD, promptOfPlan, type PlanEndingRow } from "./plan-summaries.js";
 
 /**
- * WHEN A PLAN ENDS, AS THE WORKER READS IT (plans with a purpose §4). The rule itself is `planPrompt` (@rg/domain), and
- * everything that asks "is this plan ending?" goes through it: today's "needs you" chip, the plan's row in Your Plans
- * (`planSummaryOf`) and the coach's dormant `plan_ending` trigger. This file reads a plan's facts for it.
+ * WHEN A PLAN ENDS, AS THE WORKER READS IT (plans with a purpose §4). The rule is `planPrompt` (@rg/domain), and the one
+ * reading of a plan for it is `promptOfPlan` (plan-summaries.ts): the "needs you" chip, the plan's row in Your Plans and the
+ * coach's dormant `plan_ending` trigger all go through it, so a plan's words and its end are the same everywhere. This file
+ * reads the plans for it.
  *
- * A PLAN'S LAST DAY IS COMPUTED, NEVER STORED (`planLastDaySql`): the later of its running blocks' last day, its
- * outline weeks' last day (a week's Monday and six days) and its latest session filed under it, whichever of these it
- * has. A plan with a phase or an outline week still ahead is not ending. Coach plans' and COROS plans' dates aren't on
- * `programs`, so it reads the blocks, the weeks and the sessions; where-you-stand's "has it ended" reads the same
- * expression, so the two never disagree about a plan's end.
+ * A PLAN'S LAST DAY IS COMPUTED, NEVER STORED (`planLastDaySql`). While the plan is live it is the latest of: its running
+ * blocks' last day; an outline week that begins after its block's end (one inside the block reaches no further than the
+ * block); and a live session — scheduled or unresolved, not archived — filed under the plan or under one of its blocks
+ * (spec §3.2: a coach session is filed under its block). A skipped, missed or finished session never holds a plan open. A
+ * plan with a phase, an outline week or a live session still ahead is not ending. Once nothing live remains the plan has
+ * run out, and its last day is the day it really ended: the end of its blocks that were not stopped, else its sessions'
+ * last date, archived or not. So "has it ended" (where-you-stand), "is it ending" (the prompt) and "how long ago" (the
+ * prompt's run-out words) read one expression.
  */
 
 /** A plan's last day, as one scalar subquery on the `programs` row in scope (named `programs`, undecorated). */
-export function planLastDaySql(userId: string): SQL<string | null> {
-  return sql<string | null>`(select max(d) from (
-      select cp.end_date as d from coach_plans cp where cp.program_id = programs.id and cp.user_id = ${userId} and cp.status = 'active'
+export function planLastDaySql(): SQL<string | null> {
+  return sql<string | null>`coalesce(
+    (select max(d) from (
+      select cp.end_date as d from coach_plans cp where cp.program_id = programs.id and cp.user_id = programs.user_id and cp.status = 'active'
       union all
       select date(w.week_start, '+6 days') from coach_plan_weeks w join coach_plans cp on cp.id = w.plan_id
-        where cp.program_id = programs.id and cp.user_id = ${userId} and cp.status = 'active' and w.state = 'shape'
+        where cp.program_id = programs.id and cp.user_id = programs.user_id and cp.status = 'active' and w.state = 'shape' and w.week_start > cp.end_date
       union all
-      select pw.effective_date from planned_workouts pw where pw.plan_id = programs.id and pw.user_id = ${userId} and pw.archived_at is null))`;
+      select pw.effective_date from planned_workouts pw
+        where pw.user_id = programs.user_id and pw.plan_id = programs.id and pw.archived_at is null and pw.completion_state in ('scheduled', 'unresolved')
+      union all
+      select pw.effective_date from coach_plans cp join planned_workouts pw on pw.user_id = cp.user_id and pw.plan_id = cp.id
+        where cp.program_id = programs.id and cp.user_id = programs.user_id and cp.status <> 'retired' and pw.archived_at is null and pw.completion_state in ('scheduled', 'unresolved'))),
+    (select max(d) from (
+      select cp.end_date as d from coach_plans cp where cp.program_id = programs.id and cp.user_id = programs.user_id and cp.status <> 'retired'
+      union all
+      select pw.effective_date from planned_workouts pw where pw.user_id = programs.user_id and pw.plan_id = programs.id and pw.archived_at is null
+      union all
+      select pw.effective_date from coach_plans cp join planned_workouts pw on pw.user_id = cp.user_id and pw.plan_id = cp.id
+        where cp.program_id = programs.id and cp.user_id = programs.user_id and cp.status <> 'retired' and pw.archived_at is null)),
+    (select max(pw.effective_date) from planned_workouts pw where pw.user_id = programs.user_id and pw.plan_id = programs.id))`;
+}
+
+/** The kinds that can ask, as an SQL list (`'coach', 'coros_import'`): named once, in @rg/domain. */
+export const PROMPT_KIND_LIST = sql.raw(PLAN_PROMPT_KINDS.map((k) => `'${k}'`).join(", "));
+
+/** The disciplines of a plan's blocks that aren't stopped, as one text ("run,lift") in a scalar subquery on `programs`. */
+export const blockDisciplinesSql = (): SQL<string | null> =>
+  sql<string | null>`(select group_concat(distinct cp.discipline) from coach_plans cp where cp.program_id = programs.id and cp.user_id = programs.user_id and cp.status <> 'retired')`;
+
+/** A plan with the block that ends it, as the chip names it (`ending:<block>`) and the trigger's evidence does. */
+export interface PlanEnding extends PlanEndingRow {
+  lastBlockId: string | null;
+  lastBlockName: string | null;
 }
 
 /**
- * The columns of a block's plan (its `programs` row, left-joined on `coach_plans.program_id`) the rule reads, so a
- * read of the blocks answers it in the same statement.
+ * The account's plans that can ask — a coach plan or a COROS plan, running or stopped (a stopped one is read so its blocks
+ * are not taken for a plan with no row) — in one statement, each with its computed last day (running ones only). The
+ * chip and the trigger read it; the plans list reads the same columns with its own rows.
  */
-export const planFactColumns = (userId: string) => ({
-  planKind: programs.kind,
-  planOnEnd: programs.onEnd,
-  planStatus: programs.status,
-  planPausedUntil: programs.pausedUntil,
-  planLastDay: planLastDaySql(userId),
-});
-
-/** What the rule needs of a plan, as a block's row carries it (all null with no plan row yet). */
-export interface PlanFacts {
-  kind: ProgramKind;
-  onEnd: string | null;
-  status: string;
-  pausedUntil: string | null;
-  lastDay: string | null;
+export async function readPlanEndings(db: Db, userId: string): Promise<PlanEnding[]> {
+  const rows = await db
+    .select({
+      id: programs.id,
+      kind: programs.kind,
+      name: programs.name,
+      status: programs.status,
+      onEnd: programs.onEnd,
+      pausedUntil: programs.pausedUntil,
+      disciplines: programs.disciplines,
+      blockDisciplines: blockDisciplinesSql(),
+      lastDay: sql<string | null>`case when programs.status = 'active' then ${planLastDaySql()} end`,
+      lastBlockId: sql<string | null>`(select cp.id from coach_plans cp where cp.program_id = programs.id and cp.user_id = programs.user_id and cp.status <> 'retired' order by cp.end_date desc, cp.start_date desc, cp.id desc limit 1)`,
+      lastBlockName: sql<string | null>`(select cp.name from coach_plans cp where cp.program_id = programs.id and cp.user_id = programs.user_id and cp.status <> 'retired' order by cp.end_date desc, cp.start_date desc, cp.id desc limit 1)`,
+    })
+    .from(programs)
+    .where(and(eq(programs.userId, userId), inArray(programs.kind, [...PLAN_PROMPT_KINDS]), sql`${programs.archivedAt} is null`, inArray(programs.status, ["active", "retired"])));
+  return rows.map((r) => ({ ...r, kind: r.kind as ProgramKind, blockDisciplines: r.blockDisciplines ? r.blockDisciplines.split(",") : [] }));
 }
 
-/** The facts of a block's plan, from the columns `planFactColumns` adds; undefined while the block has no plan row. */
-export function factsOf(row: { planKind: string | null; planOnEnd: string | null; planStatus: string | null; planPausedUntil: string | null; planLastDay: string | null }): PlanFacts | undefined {
-  if (row.planKind === null || row.planStatus === null) return undefined;
-  return { kind: row.planKind as ProgramKind, onEnd: row.planOnEnd, status: row.planStatus, pausedUntil: row.planPausedUntil, lastDay: row.planLastDay };
+/** A training line with no plan row (not backfilled) as a plan: a running one that ends by its sport's own default. */
+function lineAsPlan(line: TrainingLine): PlanEnding {
+  const last = lastPhaseOf(line);
+  return {
+    id: line.key,
+    kind: "coach",
+    name: line.name,
+    status: "active",
+    onEnd: null,
+    pausedUntil: null,
+    disciplines: [DISCIPLINE_WORD[line.discipline]],
+    blockDisciplines: [line.discipline],
+    lastDay: line.endDate,
+    lastBlockId: last.id,
+    lastBlockName: last.name,
+  };
 }
 
-const DISCIPLINE_WORD = { run: "run", lift: "strength", mobility: "yoga" } as const;
+export interface EndingChoice {
+  plan: PlanEnding;
+  prompt: PlanPrompt;
+  /** The block the chip is keyed by, else the plan. */
+  keyId: string;
+}
 
 /**
- * The line "Plan what comes after" is about (training lines §3.7) — the soonest to end, with its last phase and the
- * prompt the rule gives it. `facts`: each line's plan by the id its blocks carry (none for a line with no plan row yet:
- * its sport's own ending, running and nothing paused). A line's last day is the later of its last phase's end and the
- * plan's computed last day. Ties go to the line listed first.
+ * The plan "Plan what comes after" is about: of the plans the rule gives a question, the one to end soonest, today or
+ * later; else the one that ran out most recently. `plans`: `readPlanEndings`; `lines`: the training lines of the active
+ * blocks, of which those with no plan row (or one this account didn't read) stand in as plans of their own.
+ * `ranOut: false` leaves the plans that have run out to the chip and the row: the trigger wakes the coach only for one
+ * that is about to end.
  */
-export function endingPlan(
-  lines: readonly TrainingLine[],
-  facts: ReadonlyMap<string, PlanFacts>,
-  today: LocalDate,
-): { line: TrainingLine; last: LineBlock; prompt: PlanPrompt; lastSessionDate: string } | undefined {
-  let best: { line: TrainingLine; last: LineBlock; prompt: PlanPrompt; lastSessionDate: string } | undefined;
-  for (const line of lines) {
-    const f = line.programId ? facts.get(line.programId) : undefined;
-    const lastSessionDate = f?.lastDay && f.lastDay > line.endDate ? f.lastDay : line.endDate;
-    const stored = planOnEndSchema.safeParse(f?.onEnd);
-    const onEnd: PlanOnEnd = stored.success ? stored.data : defaultOnEnd(f?.kind ?? "coach", [DISCIPLINE_WORD[line.discipline]]);
-    const prompt = planPrompt(
-      {
-        kind: f?.kind ?? "coach",
-        onEnd,
-        status: f?.status === "retired" || f?.status === "archived" ? "retired" : "active",
-        pausedUntil: f?.pausedUntil ?? null,
-        name: line.name,
-        discipline: line.discipline,
-        lastSessionDate,
-        hasDraft: false,
-      },
-      today,
-    );
-    if (!prompt) continue;
-    if (!best || lastSessionDate < best.lastSessionDate) best = { line, last: lastPhaseOf(line), prompt, lastSessionDate };
+export function endingPlan(plans: readonly PlanEnding[], lines: readonly TrainingLine[], today: LocalDate, opts: { ranOut?: boolean } = {}): EndingChoice | undefined {
+  const known = new Set(plans.map((p) => p.id));
+  const all = [...plans, ...lines.filter((l) => !l.programId || !known.has(l.programId)).map(lineAsPlan)];
+  let best: EndingChoice | undefined;
+  for (const plan of all) {
+    const prompt = promptOfPlan(plan, today);
+    if (prompt?.kind !== "whats_next" || plan.lastDay === null) continue;
+    if (plan.lastDay < today && opts.ranOut === false) continue;
+    const candidate = { plan, prompt, keyId: plan.lastBlockId ?? plan.id };
+    if (!best || before(candidate.plan.lastDay!, best.plan.lastDay!, today)) best = candidate;
   }
   return best;
+}
+
+/** Whether a plan ending on `a` comes before one ending on `b`: those still to end by their date, then those run out, latest first. */
+function before(a: string, b: string, today: string): boolean {
+  const aAhead = a >= today;
+  const bAhead = b >= today;
+  if (aAhead !== bAhead) return aAhead;
+  return aAhead ? a < b : a > b;
 }

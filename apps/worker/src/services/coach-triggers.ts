@@ -1,4 +1,4 @@
-import { and, desc, eq, getTableColumns, gte, inArray, isNull, lte, sql } from "drizzle-orm";
+import { and, desc, eq, gte, inArray, isNull, lte, sql } from "drizzle-orm";
 import {
   activities,
   coachMessages,
@@ -8,13 +8,12 @@ import {
   coachTriggers,
   dailyHealth,
   plannedWorkouts,
-  programs,
   sleepRecords,
 } from "@rg/database";
 import { addDays, linesOf, newId, nowInstant, type LocalDate, type UserPreferences } from "@rg/domain";
 import { chunkIds, type Db } from "./db.js";
 import { isLoosePlan, lineBlockOf } from "./coach-plans.js";
-import { endingPlan, factsOf, planFactColumns, type PlanFacts } from "./plan-ending.js";
+import { endingPlan, readPlanEndings } from "./plan-ending.js";
 
 /**
  * The coach's free layer (spec §1): six deterministic rules that MARK — a
@@ -179,11 +178,9 @@ export async function evaluateTriggers(
     }
   }
 
-  // The running blocks, each with its plan's ending in the same statement (`planFactColumns`).
   const plans = await db
-    .select({ ...getTableColumns(coachPlans), ...planFactColumns(userId) })
+    .select()
     .from(coachPlans)
-    .leftJoin(programs, and(eq(programs.id, coachPlans.programId), eq(programs.userId, userId)))
     .where(and(eq(coachPlans.userId, userId), eq(coachPlans.status, "active")));
 
   // plan_horizon — firm detail runs out inside 14 days while shape weeks wait. The detail is the plan's firm weeks AND
@@ -215,21 +212,17 @@ export async function evaluateTriggers(
     }
   }
 
-  // plan_ending — the chips' own rule (`endingPlan`, which asks `planPrompt`): a training LINE's plan ending within 21
-  // days, today or later, the soonest (training lines §3.7), if it asks or continues, is running and isn't paused. A
+  // plan_ending — the chips' own rule (`endingPlan`, which asks `planPrompt`): the plan to end soonest within 21 days,
+  // today or later (training lines §3.7), if it asks or continues, is running and isn't paused; its end is the plan's
+  // last day, the one the chip words. A plan that has run out stays a chip and a row, but never wakes the coach. A
   // loose-session bucket is permanently "ending" (its end date is its last one-off), and waking the coach to plan what
   // comes after a bucket is nonsense.
   if (!blocked.has("plan_ending")) {
-    const facts = new Map<string, PlanFacts>();
-    for (const p of plans) {
-      const f = factsOf(p);
-      if (p.programId && f) facts.set(p.programId, f);
-    }
-    const ending = endingPlan(linesOf(plans.filter((p) => !isLoosePlan(p)).map(lineBlockOf), today), facts, today);
+    const ending = endingPlan(await readPlanEndings(db, userId), linesOf(plans.filter((p) => !isLoosePlan(p)).map(lineBlockOf), today), today, { ranOut: false });
     if (ending) {
       fired.push({
         kind: "plan_ending",
-        evidence: { planId: ending.last.id, name: ending.last.name, endDate: ending.last.endDate },
+        evidence: { planId: ending.keyId, name: ending.plan.lastBlockName ?? ending.plan.name, endDate: ending.plan.lastDay },
       });
     }
   }

@@ -3,7 +3,7 @@
  * Synthetic names and dates only.
  */
 import { describe, expect, it } from "vitest";
-import { addDays, planPrompt, PLAN_PROMPT_DAYS, type PlanPromptInput } from "../src/index.js";
+import { addDays, planPrompt, PLAN_PROMPT_DAYS, PLAN_PROMPT_KINDS, PROGRAM_KINDS, type PlanPromptInput } from "../src/index.js";
 
 const today = "2026-03-10";
 const plan = (over: Partial<PlanPromptInput> = {}): PlanPromptInput => ({
@@ -24,7 +24,13 @@ describe("planPrompt", () => {
     ["coach", "ask", 22, null],
     ["coach", "ask", 21, "whats_next"],
     ["coach", "ask", 0, "whats_next"],
-    ["coach", "ask", -1, null],
+    ["coach", "ask", -1, "whats_next"],
+    ["coach", "ask", -21, "whats_next"],
+    ["coach", "ask", -22, null],
+    ["coach", "continue", -3, "whats_next"],
+    ["coach", "finish", -3, null],
+    ["course", "continue", -3, null],
+    ["coros_import", "ask", -3, "whats_next"],
     ["coach", "finish", 12, null],
     ["coach", "continue", 12, "whats_next"],
     ["course", "continue", 12, null],
@@ -48,6 +54,29 @@ describe("planPrompt", () => {
     expect(at(1)?.request).toBe("Plan what comes after my running plan — it ends tomorrow.");
     expect(planPrompt(plan({ discipline: "lift" }), today)?.label).toBe("Plan what comes after my lifting plan");
     expect(planPrompt(plan({ discipline: "mobility" }), today)?.label).toBe("Plan what comes after my mobility plan");
+  });
+
+  it("a plan that has run out stays available for 21 days, plainly: it ended, and nothing is marked missed", () => {
+    const ended = (days: number) => planPrompt(plan({ lastSessionDate: addDays(today, -days) }), today);
+    expect(ended(1)).toEqual({ kind: "whats_next", label: "Plan what comes after my running plan", request: "Plan what comes after my running plan — it ended yesterday." });
+    expect(ended(3)?.request).toBe("Plan what comes after my running plan — it ended 3 days ago.");
+    expect(ended(21)?.request).toBe("Plan what comes after my running plan — it ended 21 days ago.");
+    expect(ended(22)).toBeNull();
+    // Stopped, paused, finishing: still nothing, run out or not.
+    expect(planPrompt(plan({ lastSessionDate: addDays(today, -3), status: "retired" }), today)).toBeNull();
+    expect(planPrompt(plan({ lastSessionDate: addDays(today, -3), pausedUntil: addDays(today, 2) }), today)).toBeNull();
+  });
+
+  it("a plan that something follows stops asking: its last session is the later one's", () => {
+    // Run out 3 days ago, then a new phase placed to 40 days: no prompt now; a phase to 10 days: it ends in 10 days.
+    expect(planPrompt(plan({ lastSessionDate: addDays(today, 40) }), today)).toBeNull();
+    expect(planPrompt(plan({ lastSessionDate: addDays(today, 10) }), today)?.request).toBe("Plan what comes after my running plan — it ends in 10 days.");
+  });
+
+  it("every kind of plan is decided: those that prompt are listed once, and a new kind fails here until it is placed", () => {
+    expect([...PLAN_PROMPT_KINDS].sort()).toEqual(["coach", "coros_import"]);
+    const never = PROGRAM_KINDS.filter((k) => !(PLAN_PROMPT_KINDS as readonly string[]).includes(k));
+    expect(never.sort()).toEqual(["adaptive", "course", "studio"]);
   });
 
   it("a plan of no known sport is called by its own name", () => {

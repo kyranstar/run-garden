@@ -413,6 +413,83 @@ describe("one rule for when a plan asks what's next (plans with a purpose §4): 
     expect(await nudges()).toEqual([]);
   });
 
+  it("a plan that ran out (its blocks completed, the plan still running) stays on the chip for 21 days, plainly, and sent once it stays away", async () => {
+    await seedProgram("pr1");
+    await seedPlan({ id: "cp1", name: "block", endDate: addDays(today, -3), programId: "pr1", status: "completed" });
+    const ran = { id: "ending:cp1", label: "Plan what comes after my running plan", request: "Plan what comes after my running plan — it ended 3 days ago." };
+    expect(await nudges()).toEqual([ran]);
+    await seedRun(ran.request, new Date().toISOString());
+    expect(await nudges()).toEqual([]);
+  });
+
+  it("past 21 days since it ran out, or with a phase placed after it, the chip is gone", async () => {
+    await seedProgram("pr1");
+    await seedPlan({ id: "cp1", name: "block", endDate: addDays(today, -22), programId: "pr1", status: "completed" });
+    expect(await nudges()).toEqual([]);
+    await db.update(schema.coachPlans).set({ endDate: addDays(today, -3) }).where(eq(schema.coachPlans.id, "cp1"));
+    expect(ids(await nudges())).toEqual(["ending:cp1"]);
+    await seedPlan({ id: "cp2", name: "next", startDate: addDays(today, -2), endDate: addDays(today, 60), programId: "pr1" });
+    expect(await nudges()).toEqual([]);
+  });
+
+  it("of two that ran out, the one that ran out last", async () => {
+    await seedProgram("pr-a");
+    await seedProgram("pr-b", { disciplines: ["strength"], onEnd: "continue" });
+    await seedPlan({ id: "cp-a", name: "a", endDate: addDays(today, -15), programId: "pr-a", status: "completed" });
+    await seedPlan({ id: "cp-b", name: "b", discipline: "lift", endDate: addDays(today, -2), programId: "pr-b", status: "completed" });
+    expect(ids(await nudges())).toEqual(["ending:cp-b"]);
+  });
+
+  it("a block linked to a plan this account has no row for still counts as a plan of its own", async () => {
+    await seedPlan({ id: "cp1", name: "block", endDate: addDays(today, 12), programId: "ghost" });
+    expect(ids(await nudges())).toEqual(["ending:cp1"]);
+  });
+
+  it("a plan still to end comes before one that ran out", async () => {
+    await seedProgram("pr-old");
+    await seedProgram("pr-new", { disciplines: ["strength"], onEnd: "continue" });
+    await seedPlan({ id: "cp-old", name: "a", endDate: addDays(today, -1), programId: "pr-old", status: "completed" });
+    await seedPlan({ id: "cp-new", name: "b", discipline: "lift", endDate: addDays(today, 15), programId: "pr-new" });
+    expect(ids(await nudges())).toEqual(["ending:cp-new"]);
+  });
+
+  it("a COROS plan that asks, and a Studio-held plan, are offered though no training line holds them", async () => {
+    await seedProgram("coros", { kind: "coros_import" });
+    await db.insert(schema.plannedWorkouts).values({
+      id: "pw-c", userId, planId: "coros", sourceWorkoutId: "s", title: "T", category: "easy", sport: "run", originalPlanDate: addDays(today, 9), lastVerifiedCorosDate: addDays(today, 9),
+      effectiveDate: addDays(today, 9), effectiveTime: "07:00", completionState: "scheduled", sourceContentFingerprint: "fp", calendarBlockDurationSeconds: 3600, createdAt: nowInstant(), updatedAt: nowInstant(),
+    });
+    expect(await nudges()).toEqual([{ id: "ending:coros", label: "Plan what comes after my running plan", request: "Plan what comes after my running plan — it ends in 9 days." }]);
+    await db.delete(schema.plannedWorkouts);
+    await seedProgram("held", { disciplines: ["strength"], onEnd: "continue", source: { studioPlanId: "studio-x" } });
+    await db.insert(schema.plannedWorkouts).values({
+      id: "pw-h", userId, planId: "held", sourceWorkoutId: "s2", title: "T", category: "strength", sport: "strength", originalPlanDate: addDays(today, 5), lastVerifiedCorosDate: addDays(today, 5),
+      effectiveDate: addDays(today, 5), effectiveTime: "07:00", completionState: "scheduled", sourceContentFingerprint: "fp", calendarBlockDurationSeconds: 3600, createdAt: nowInstant(), updatedAt: nowInstant(),
+    });
+    expect(ids(await nudges())).toContain("ending:held");
+  });
+
+  it("a session filed under the block itself, past its end, means the plan isn't ending; a skipped one does not", async () => {
+    await seedProgram("pr1");
+    await seedPlan({ id: "cp1", name: "block", endDate: addDays(today, 12), programId: "pr1" });
+    const filed = (state: string) =>
+      db.insert(schema.plannedWorkouts).values({
+        id: `late-${state}`, userId, planId: "cp1", sourceWorkoutId: `s-${state}`, title: "T", category: "easy", sport: "run", originalPlanDate: addDays(today, 40), lastVerifiedCorosDate: addDays(today, 40),
+        effectiveDate: addDays(today, 40), effectiveTime: "07:00", completionState: state, sourceContentFingerprint: "fp", calendarBlockDurationSeconds: 3600, createdAt: nowInstant(), updatedAt: nowInstant(),
+      });
+    await filed("skipped");
+    expect(ids(await nudges())).toEqual(["ending:cp1"]);
+    await filed("scheduled");
+    expect(await nudges()).toEqual([]);
+  });
+
+  it("a plan of more than one sport is called by its name: the same words as its row", async () => {
+    await seedProgram("pr1", { name: "Zorbex duo" });
+    await seedPlan({ id: "cp1", name: "a", endDate: addDays(today, 12), programId: "pr1" });
+    await seedPlan({ id: "cp2", name: "b", discipline: "lift", endDate: addDays(today, 12), programId: "pr1" });
+    expect(await nudges()).toEqual([{ id: "ending:cp2", label: "Plan what comes after Zorbex duo", request: "Plan what comes after Zorbex duo — it ends in 12 days." }]);
+  });
+
   it("the soonest of two plans that ask comes first, the other's chip waits for it to be answered", async () => {
     await seedProgram("pr-run");
     await seedProgram("pr-lift", { disciplines: ["strength"], onEnd: "continue" });
@@ -645,15 +722,18 @@ describe("at most two, the most pressing first", () => {
     expect(statements.filter(isWrite)).toEqual([]);
     // The missed sessions, the activities, the plans, last week's review (the opening's, stream H), their outline weeks,
     // and the athlete's recent asks. (Saves flow redesign: the saves batch read goes: 7 to 6.) Where the athlete stands
-    // (2026-11-06): one more — and its key results' measures (none here).
-    expect(statements.length).toBe(7);
+    // (2026-11-06): one more — and its key results' measures (none here). The plans that can ask what comes next
+    // (plans with a purpose, task 14 fix round 1, 2026-11-06): one more, in step with the rest (a COROS plan or a Studio-held
+    // plan is no training line, and a plan that has run out has no active block): 7 to 8.
+    expect(statements.length).toBe(8);
   });
 
-  it("a quiet account costs five: nothing to look up weeks for, nothing to have asked", async () => {
+  it("a quiet account costs six: nothing to look up weeks for, nothing to have asked", async () => {
     statements.length = 0;
     expect(await nudges()).toEqual([]);
-    // Saves flow redesign: the saves batch read goes: 5 to 4. Where the athlete stands (2026-11-06): + 1.
-    expect(statements.length).toBe(5);
+    // Saves flow redesign: the saves batch read goes: 5 to 4. Where the athlete stands (2026-11-06): + 1. The plans that
+    // can ask what comes next (task 14 fix round 1, 2026-11-06): + 1.
+    expect(statements.length).toBe(6);
   });
 
   it("an active key result costs its measures too: a check-in's answers, one more", async () => {
@@ -661,7 +741,7 @@ describe("at most two, the most pressing first", () => {
     await db.insert(schema.keyResults).values({ id: "k1", userId, objectiveId: "o1", label: "Energy", measure: { kind: "checkin", questionId: "energy" }, direction: "up", unit: "score", position: 0, createdAt: nowInstant(), updatedAt: nowInstant() });
     statements.length = 0;
     expect(await nudges()).toEqual([]);
-    expect(statements.length).toBe(6);
+    expect(statements.length).toBe(7);
   });
 });
 
@@ -673,7 +753,7 @@ describe("GET /api/coach/nudges", () => {
       env(designer),
     );
 
-  it("answers { nudges } for the signed-in athlete, in 9 statements with the sign-in and the preferences", async () => {
+  it("answers { nudges } for the signed-in athlete, in 10 statements with the sign-in and the preferences", async () => {
     await setRace(addDays(today, 10));
     await seedPlan({ id: "cp1", name: "10K", endDate: addDays(today, 40) });
     await seedWeek("cp1", addDays(today, 4), "shape");
@@ -687,8 +767,8 @@ describe("GET /api/coach/nudges", () => {
       ],
     });
     expect(statements.filter(isWrite)).toEqual([]);
-    // Saves flow redesign: the saves batch read goes: 9 to 8. Where the athlete stands (2026-11-06): 8 to 9.
-    expect(statements.length).toBe(9);
+    // Saves flow redesign: the saves batch read goes: 9 to 8. Where the athlete stands (2026-11-06): 8 to 9. The plans that can ask what comes next (task 14 fix round 1, 2026-11-06): 9 to 10.
+    expect(statements.length).toBe(10);
   });
 
   it("is a 404 while the coach designer is off, and a 401 signed out", async () => {

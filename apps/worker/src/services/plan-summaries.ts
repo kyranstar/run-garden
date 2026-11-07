@@ -83,13 +83,60 @@ export interface PlanRow {
   courseDone: number | null;
   /** A coach or COROS plan's last day, worked out with the row (`planLastDaySql`); null for any other kind, or with none. */
   lastSessionDate: string | null;
+  /** The disciplines of its blocks that aren't stopped, as a training line speaks them; [] for a plan with no blocks. */
+  blockDisciplines: readonly string[];
 }
 
-/** A training line's sport for a plan whose `programs.disciplines` speak "run", "strength" and "yoga"; null when it has not one of them. */
+/** `programs.disciplines`' words back to a training line's. */
 const LINE_DISCIPLINE = { run: "run", strength: "lift", yoga: "mobility" } as const;
-function lineDisciplineOf(disciplines: readonly string[]): "run" | "lift" | "mobility" | null {
-  const own = disciplines.length === 1 ? LINE_DISCIPLINE[disciplines[0] as keyof typeof LINE_DISCIPLINE] : undefined;
-  return own ?? null;
+
+/**
+ * A plan, as the rule that asks what comes next reads it: the one shape the chip, the plan's row and the dormant trigger
+ * all build (`promptOfPlan`), so their words and their reading of "ending" are one. `lastDay` is worked out in SQL
+ * (`planLastDaySql`), never stored.
+ */
+export interface PlanEndingRow {
+  id: string;
+  kind: ProgramKind;
+  name: string;
+  /** The plan row's own status; a stopped plan ("retired" or "archived") never asks. */
+  status: string;
+  /** `programs.on_end` as stored (null: the kind's own ending). */
+  onEnd: string | null;
+  pausedUntil: string | null;
+  /** `programs.disciplines`: "run", "strength", "yoga". */
+  disciplines: readonly string[];
+  /** The disciplines of the plan's blocks that aren't stopped, as a training line speaks them ("run", "lift", "mobility"). */
+  blockDisciplines: readonly string[];
+  lastDay: string | null;
+}
+
+/**
+ * The sport a plan is called by ("my running plan"): the one its blocks share, else (no blocks) the one its row names; null
+ * for a plan of several, which is called by its own name.
+ */
+export function planSport(row: Pick<PlanEndingRow, "disciplines" | "blockDisciplines">): "run" | "lift" | "mobility" | null {
+  const own = row.blockDisciplines.length > 0 ? [...new Set(row.blockDisciplines)] : [...new Set(row.disciplines.map((d) => LINE_DISCIPLINE[d as keyof typeof LINE_DISCIPLINE]))];
+  const only = own.length === 1 ? own[0] : undefined;
+  return only === "run" || only === "lift" || only === "mobility" ? only : null;
+}
+
+/** What the rule says of a plan today (a draft is not yet something a plan can hold: Piece 5). The one reading of it. */
+export function promptOfPlan(row: PlanEndingRow, today: string): PlanSummaryDto["prompt"] {
+  const parsed = planOnEndSchema.safeParse(row.onEnd);
+  return planPrompt(
+    {
+      kind: row.kind,
+      onEnd: parsed.success ? parsed.data : defaultOnEnd(row.kind, row.disciplines),
+      status: row.status === "retired" || row.status === "archived" ? "retired" : "active",
+      pausedUntil: row.pausedUntil,
+      name: row.name,
+      discipline: planSport(row),
+      lastSessionDate: row.lastDay,
+      hasDraft: false,
+    },
+    today,
+  );
 }
 
 /** Where a course plan has got to. */
@@ -129,9 +176,8 @@ export function planSummaryOf(row: PlanRow, lineKeys: ReadonlyMap<string, string
     lineKey: lineKeys.get(row.id) ?? null,
     listedAs: kind === "coach" ? studioPlanId : kind === "adaptive" || kind === "course" ? row.id : null,
     course: courseLabel(row),
-    // Until a plan can hold a draft for its ending (Piece 5), none is ready.
-    prompt: planPrompt(
-      { kind, onEnd: ending, status, pausedUntil: row.pausedUntil, name: row.name, discipline: lineDisciplineOf(row.disciplines), lastSessionDate: row.lastSessionDate, hasDraft: false },
+    prompt: promptOfPlan(
+      { id: row.id, kind, name: row.name, status: row.status, onEnd: row.onEnd, pausedUntil: row.pausedUntil, disciplines: row.disciplines, blockDisciplines: row.blockDisciplines, lastDay: row.lastSessionDate },
       today,
     ),
   };

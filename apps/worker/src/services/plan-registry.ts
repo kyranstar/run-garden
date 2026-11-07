@@ -5,7 +5,7 @@ import { sha256Hex } from "../auth/crypto.js";
 import { restoreInProgress } from "./account-state.js";
 import { isLoosePlan, lineBlockOf, loadNonCoachPlanEntries } from "./coach-plans.js";
 import { runAtomically, type Db } from "./db.js";
-import { planLastDaySql } from "./plan-ending.js";
+import { blockDisciplinesSql, planLastDaySql, PROMPT_KIND_LIST } from "./plan-ending.js";
 import { planStoppedIfNoBlockLeft } from "./plan-status.js";
 import { studioPlanRetired } from "./studio-push.js";
 import { DISCIPLINE_WORD, isPlanKind, lineKeysByPlan, planPatchSchema, planSummaryOf, PLAN_KINDS, type PlanPatch, type PlanSummaryDto } from "./plan-summaries.js";
@@ -289,7 +289,8 @@ export async function listPlans(db: Db, userId: string, today: string): Promise<
         // Raw names: Drizzle strips a column's table inside a single table's select, and `"id"` would be the subquery's own.
         courseDone: sql<number | null>`case when programs.kind = 'course' then (select count(*) from planned_workouts d where d.user_id = programs.user_id and d.plan_id = programs.id and d.course_session is not null and d.completion_state = 'completed') end`,
         // A coach or COROS plan's last day, computed with its row, never stored: what the prompt rule reads (`planLastDaySql`).
-        lastSessionDate: sql<string | null>`case when programs.kind in ('coach', 'coros_import') then ${planLastDaySql(userId)} end`,
+        lastSessionDate: sql<string | null>`case when programs.kind in (${PROMPT_KIND_LIST}) then ${planLastDaySql()} end`,
+        blockDisciplinesText: sql<string | null>`case when programs.kind in (${PROMPT_KIND_LIST}) then ${blockDisciplinesSql()} end`,
       })
       .from(programs)
       .where(and(eq(programs.userId, userId), inArray(programs.kind, [...PLAN_KINDS]), isNull(programs.archivedAt))),
@@ -297,7 +298,7 @@ export async function listPlans(db: Db, userId: string, today: string): Promise<
   ]);
   const lines = linesOf(blocks.filter((r) => !isLoosePlan(r)).map(lineBlockOf), today);
   const keys = lineKeysByPlan(lines);
-  return rows.map((r) => planSummaryOf(r, keys, today));
+  return rows.map(({ blockDisciplinesText, ...r }) => planSummaryOf({ ...r, blockDisciplines: blockDisciplinesText ? blockDisciplinesText.split(",") : [] }, keys, today));
 }
 
 export type PlanPatchResult =
