@@ -150,5 +150,7 @@ describe("a rehearsal's memory and a superseded item never reach the thread coac
 const DOSSIER_STATEMENTS = 23;
 const EFFORT_STATEMENTS = 13;
 const GUARDRAIL_STATEMENTS = 4;
-const STATE_STATEMENTS = 24;
+// /state reads the chips too: one more since the plans that can ask what comes next have their own read (plans with a
+// purpose, task 14 fix round 1, 2026-11-06): 24 to 25.
+const STATE_STATEMENTS = 25;
 const MEMORY_STATEMENTS = 2;

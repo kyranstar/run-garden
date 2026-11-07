@@ -518,24 +518,24 @@ describe("the cost", () => {
     expect(statements.filter(isWrite)).toEqual([]);
     // The missed sessions, the activities (with what each completed, its sets and its read), the plans, the review;
     // the plan's outline weeks; the athlete's asks. (Saves flow redesign: the saves batch read goes: 7 to 6.) Where the
-    // athlete stands (2026-11-06): one more — no key results here.
-    expect(statements.length).toBe(7);
+    // athlete stands (2026-11-06): one more — no key results here. The plans that can ask what comes next (plans with a purpose, task 14 fix round 1, 2026-11-06): one more, 7 to 8.
+    expect(statements.length).toBe(8);
   });
 
-  it("five on a quiet account; six with a line to offer (its asks read)", async () => {
+  it("six on a quiet account; seven with a line to offer (its asks read)", async () => {
     statements.length = 0;
     expect(await read()).toEqual({ opening: null, nudges: [] });
-    expect(statements.length).toBe(5);
+    expect(statements.length).toBe(6);
     await seedActivity({ id: "a11", date: today });
     statements.length = 0;
     expect((await read()).opening?.id).toBe("session:a11");
-    expect(statements.length).toBe(6);
+    expect(statements.length).toBe(7);
     // Every line already shown here: nothing to ask about.
     statements.length = 0;
     expect((await read(["session:a11"])).opening).toBeNull();
-    expect(statements.length).toBe(5);
+    expect(statements.length).toBe(6);
     // (Saves flow redesign: the saves batch read goes: each of these is one fewer. Where the athlete stands, 2026-11-06:
-    // each one more.)
+    // each one more. The plans that can ask what comes next, 2026-11-06: each one more again, 5 to 6 and 6 to 7.)
   });
 });
 
@@ -560,7 +560,7 @@ describe("GET /api/coach/nudges", () => {
   const get = (query = "") =>
     mountRoutes(db, "/api/coach/nudges", makeCoachNudgesRoutes({ now: () => new Date() })).request(`/api/coach/nudges${query}`, { headers: { Cookie: cookie } }, env);
 
-  it("answers the opening beside the nudges, `?seen=` giving way, in eight statements with the sign-in and the preferences", async () => {
+  it("answers the opening beside the nudges, `?seen=` giving way, in nine statements with the sign-in and the preferences", async () => {
     await seedReview();
     await seedActivity({ id: "a12", date: today });
     const first = await get();
@@ -573,8 +573,8 @@ describe("GET /api/coach/nudges", () => {
     expect(body.opening).toMatchObject({ id: "session:a12", line: "Today's run is in — 16 km at 5:40 /km." });
     expect(statements.filter(isWrite)).toEqual([]);
     // The sign-in, the preferences; the missed sessions, the activities, the plans, the review; the asks.
-    // (Saves flow redesign: the saves batch read goes: 8 to 7.) Where the athlete stands (2026-11-06): 7 to 8.
-    expect(statements.length).toBe(8);
+    // (Saves flow redesign: the saves batch read goes: 8 to 7.) Where the athlete stands (2026-11-06): 7 to 8. The plans that can ask what comes next (task 14 fix round 1, 2026-11-06): 8 to 9.
+    expect(statements.length).toBe(9);
   });
 
   it("with nothing to say, the shape an older screen knows: { nudges } alone", async () => {
