@@ -11,8 +11,9 @@
  * more in the 4 weeks before today that completed nothing planned; 14 days of wellness and 7 nights of sleep; the newest
  * weekly review; up to 3 flagged activity reads of the last 7 days; live memory beyond the pinned core, counted by kind;
  * the drift conclusions the coach remembered (`provenance.drift`, `provenance.checkBack`); the active plans that haven't
- * ended (a registry row each: name and purpose, never the brief; its end is `planLastDaySql`, the expression the plan's
- * prompt reads); and — when the caller has no
+ * ended (a registry row each: name and purpose, never the brief; a coach or COROS plan's end is `planLastDaySql`, the
+ * expression the plan's prompt reads, and one with nothing to read is ended; a programme and a course have no end and are
+ * named while active); and — when the caller has no
  * account library — the athlete's own moves (`personalMovesSql`). Then the key results' measures
  * (`measureKeyResults`, run labels off), whose cost is `measureStatements` of the measures: `standStatements` in all.
  *
@@ -69,7 +70,7 @@ import { measureKeyResults, measureStatements } from "./key-result-measures.js";
 import { liveMemoryWhere, memoryCoreIds } from "./memory-core.js";
 import { buildReadiness, type ReadinessHealthRow } from "./readiness.js";
 import { PLAYED_OFFLINE_CALENDAR_STATE, START_NOW_CALENDAR_STATE } from "./doc-workouts.js";
-import { planLastDaySql } from "./plan-ending.js";
+import { planLastDaySql, PROMPT_KIND_LIST } from "./plan-ending.js";
 import { PLAN_KINDS } from "./plan-summaries.js";
 
 // ── Facts ───────────────────────────────────────────────────────────────────────────────────────────────────────────
@@ -238,7 +239,7 @@ export function standRowsSql(db: Db, userId: string, today: string, opts: { libr
     (select json_group_array(json_array(id, name, purpose)) from (
       select ${programs.id} as id, ${programs.name} as name, ${programs.purpose} as purpose from ${programs}
       where ${programs.userId} = ${userId} and ${programs.status} = 'active' and ${programs.archivedAt} is null
-        and ${programs.kind} in (${PLAN_KIND_LIST}) and coalesce(${programs.endDate}, ${planLastDaySql()}, ${today}) >= ${today}
+        and ${programs.kind} in (${PLAN_KIND_LIST}) and (${programs.kind} not in (${PROMPT_KIND_LIST}) or coalesce(${programs.endDate}, ${planLastDaySql(today)}, '0000-00-00') >= ${today})
       order by ${programs.createdAt}, ${programs.id} limit ${PLANS_READ})) as plans,
     ${opts.library ? personalMovesSql(userId) : sql`null`} as library`;
 }

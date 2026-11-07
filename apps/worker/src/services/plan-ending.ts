@@ -3,7 +3,7 @@ import { programs } from "@rg/database";
 import { PLAN_PROMPT_KINDS, type LocalDate, type PlanPrompt, type ProgramKind, type TrainingLine } from "@rg/domain";
 import type { Db } from "./db.js";
 import { lastPhaseOf } from "./coach-plans.js";
-import { DISCIPLINE_WORD, promptOfPlan, type PlanEndingRow } from "./plan-summaries.js";
+import { DISCIPLINE_WORD, plansSuperseded, promptOfPlan, type PlanEndingRow } from "./plan-summaries.js";
 
 /**
  * WHEN A PLAN ENDS, AS THE WORKER READS IT (plans with a purpose §4). The rule is `planPrompt` (@rg/domain), and the one
@@ -16,13 +16,35 @@ import { DISCIPLINE_WORD, promptOfPlan, type PlanEndingRow } from "./plan-summar
  * block); and a live session — scheduled or unresolved, not archived — filed under the plan or under one of its blocks
  * (spec §3.2: a coach session is filed under its block). A skipped, missed or finished session never holds a plan open. A
  * plan with a phase, an outline week or a live session still ahead is not ending. Once nothing live remains the plan has
- * run out, and its last day is the day it really ended: the end of its blocks that were not stopped, else its sessions'
- * last date, archived or not. So "has it ended" (where-you-stand), "is it ending" (the prompt) and "how long ago" (the
- * prompt's run-out words) read one expression.
+ * run out, and "ended" means a date already past (R49): its last day is the latest of its non-stopped blocks' end and its
+ * non-skipped, non-archived sessions' date, each up to today, so nothing ahead can make an ended plan read as running. A
+ * coach or COROS plan with nothing to read at all is ended too (null), never running for ever; a programme and a course
+ * have no end. So "has it ended" (where-you-stand), "is it ending" (the prompt) and "how long ago" (the prompt's run-out
+ * words) read one expression. Every read of the sessions is pinned to `(user_id, plan_id)` (`PW`), so it costs the plan's
+ * own sessions and never the athlete's lifetime of them.
+ *
+ * A run-out plan that a running plan of its sport has followed (a later last day) stops asking, on the chip and the row
+ * (`plansSuperseded`), as a phase placed after it would have.
  */
 
-/** A plan's last day, as one scalar subquery on the `programs` row in scope (named `programs`, undecorated). */
-export function planLastDaySql(): SQL<string | null> {
+/**
+ * The sessions, always read by the plan they're filed under. `indexed by` pins the planner to `(user_id, plan_id)`: left to
+ * choose, it walked the athlete's whole history through the state index (20 ms at 1k sessions, 100 ms at 16k, against under
+ * 0.4 ms), and the repo never runs ANALYZE to teach it better. The unary plus keeps the other terms from tempting it. A
+ * test explains the expression and fails on any other index.
+ */
+const PW = sql.raw("planned_workouts pw indexed by planned_workouts_source_unique");
+
+/**
+ * A plan's last day, as one scalar subquery on the `programs` row in scope (named `programs`, undecorated); `today` is the
+ * athlete's local date. Null: nothing to read, which reads as ended.
+ *
+ * LIVE: the latest of the running blocks' end, the end of an outline week that begins after its block's end, and a live
+ * session (scheduled or unresolved, not archived) under the plan or under its non-stopped blocks.
+ * RUN OUT, once nothing live remains (R49: "ended" means a date already past): the latest of the non-stopped blocks' end
+ * and the non-skipped, non-archived sessions' date, each up to today. Nothing ahead can make an ended plan read as running.
+ */
+export function planLastDaySql(today: string): SQL<string | null> {
   return sql<string | null>`coalesce(
     (select max(d) from (
       select cp.end_date as d from coach_plans cp where cp.program_id = programs.id and cp.user_id = programs.user_id and cp.status = 'active'
@@ -30,19 +52,19 @@ export function planLastDaySql(): SQL<string | null> {
       select date(w.week_start, '+6 days') from coach_plan_weeks w join coach_plans cp on cp.id = w.plan_id
         where cp.program_id = programs.id and cp.user_id = programs.user_id and cp.status = 'active' and w.state = 'shape' and w.week_start > cp.end_date
       union all
-      select pw.effective_date from planned_workouts pw
-        where pw.user_id = programs.user_id and pw.plan_id = programs.id and pw.archived_at is null and pw.completion_state in ('scheduled', 'unresolved')
+      select pw.effective_date from ${PW}
+        where pw.user_id = programs.user_id and pw.plan_id = programs.id and +pw.archived_at is null and +pw.completion_state in ('scheduled', 'unresolved')
       union all
-      select pw.effective_date from coach_plans cp join planned_workouts pw on pw.user_id = cp.user_id and pw.plan_id = cp.id
-        where cp.program_id = programs.id and cp.user_id = programs.user_id and cp.status <> 'retired' and pw.archived_at is null and pw.completion_state in ('scheduled', 'unresolved'))),
+      select pw.effective_date from coach_plans cp cross join ${PW} on pw.user_id = cp.user_id and pw.plan_id = cp.id
+        where cp.program_id = programs.id and cp.user_id = programs.user_id and cp.status <> 'retired' and +pw.archived_at is null and +pw.completion_state in ('scheduled', 'unresolved'))),
     (select max(d) from (
-      select cp.end_date as d from coach_plans cp where cp.program_id = programs.id and cp.user_id = programs.user_id and cp.status <> 'retired'
+      select cp.end_date as d from coach_plans cp where cp.program_id = programs.id and cp.user_id = programs.user_id and cp.status <> 'retired' and cp.end_date <= ${today}
       union all
-      select pw.effective_date from planned_workouts pw where pw.user_id = programs.user_id and pw.plan_id = programs.id and pw.archived_at is null
+      select pw.effective_date from ${PW}
+        where pw.user_id = programs.user_id and pw.plan_id = programs.id and +pw.archived_at is null and +pw.completion_state <> 'skipped' and +pw.effective_date <= ${today}
       union all
-      select pw.effective_date from coach_plans cp join planned_workouts pw on pw.user_id = cp.user_id and pw.plan_id = cp.id
-        where cp.program_id = programs.id and cp.user_id = programs.user_id and cp.status <> 'retired' and pw.archived_at is null)),
-    (select max(pw.effective_date) from planned_workouts pw where pw.user_id = programs.user_id and pw.plan_id = programs.id))`;
+      select pw.effective_date from coach_plans cp cross join ${PW} on pw.user_id = cp.user_id and pw.plan_id = cp.id
+        where cp.program_id = programs.id and cp.user_id = programs.user_id and cp.status <> 'retired' and +pw.archived_at is null and +pw.completion_state <> 'skipped' and +pw.effective_date <= ${today})))`;
 }
 
 /** The kinds that can ask, as an SQL list (`'coach', 'coros_import'`): named once, in @rg/domain. */
@@ -60,10 +82,10 @@ export interface PlanEnding extends PlanEndingRow {
 
 /**
  * The account's plans that can ask — a coach plan or a COROS plan, running or stopped (a stopped one is read so its blocks
- * are not taken for a plan with no row) — in one statement, each with its computed last day (running ones only). The
+ * are not taken for a plan with no row), as of the athlete's `today` — in one statement, each with its computed last day (running ones only). The
  * chip and the trigger read it; the plans list reads the same columns with its own rows.
  */
-export async function readPlanEndings(db: Db, userId: string): Promise<PlanEnding[]> {
+export async function readPlanEndings(db: Db, userId: string, today: string): Promise<PlanEnding[]> {
   const rows = await db
     .select({
       id: programs.id,
@@ -74,7 +96,7 @@ export async function readPlanEndings(db: Db, userId: string): Promise<PlanEndin
       pausedUntil: programs.pausedUntil,
       disciplines: programs.disciplines,
       blockDisciplines: blockDisciplinesSql(),
-      lastDay: sql<string | null>`case when programs.status = 'active' then ${planLastDaySql()} end`,
+      lastDay: sql<string | null>`case when programs.status = 'active' then ${planLastDaySql(today)} end`,
       lastBlockId: sql<string | null>`(select cp.id from coach_plans cp where cp.program_id = programs.id and cp.user_id = programs.user_id and cp.status <> 'retired' order by cp.end_date desc, cp.start_date desc, cp.id desc limit 1)`,
       lastBlockName: sql<string | null>`(select cp.name from coach_plans cp where cp.program_id = programs.id and cp.user_id = programs.user_id and cp.status <> 'retired' order by cp.end_date desc, cp.start_date desc, cp.id desc limit 1)`,
     })
@@ -118,9 +140,10 @@ export interface EndingChoice {
 export function endingPlan(plans: readonly PlanEnding[], lines: readonly TrainingLine[], today: LocalDate, opts: { ranOut?: boolean } = {}): EndingChoice | undefined {
   const known = new Set(plans.map((p) => p.id));
   const all = [...plans, ...lines.filter((l) => !l.programId || !known.has(l.programId)).map(lineAsPlan)];
+  const superseded = plansSuperseded(all, today);
   let best: EndingChoice | undefined;
   for (const plan of all) {
-    const prompt = promptOfPlan(plan, today);
+    const prompt = promptOfPlan(plan, today, superseded);
     if (prompt?.kind !== "whats_next" || plan.lastDay === null) continue;
     if (plan.lastDay < today && opts.ranOut === false) continue;
     const candidate = { plan, prompt, keyId: plan.lastBlockId ?? plan.id };

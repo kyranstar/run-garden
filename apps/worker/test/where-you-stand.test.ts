@@ -24,6 +24,7 @@ import {
   type StandKeyResult,
   type StandPlanRow,
 } from "../src/services/where-you-stand.js";
+import { planLastDaySql } from "../src/services/plan-ending.js";
 import { isWrite, makeTestDb, makeTestUser } from "./helpers.js";
 import { seedRichAthlete, TODAY as RICH_TODAY } from "./design-read-fixture.js";
 
@@ -567,7 +568,8 @@ describe("readStandFacts: one statement and the measures its key results need", 
         id, userId: who, kind: "coach", name: `Zorbex ${id}`, status: "active", disciplines: ["run"], config: {}, createdAt: at(d(-9)), updatedAt: at(d(-9)), ...over,
       } as never);
     await plan("a", { purpose: "Zorbex purpose", endDate: d(10) });
-    await plan("b", { createdAt: at(d(-8)) });
+    // A programme has no end: running while it is active. A coach plan with nothing to read is ended (see below).
+    await plan("b", { createdAt: at(d(-8)), kind: "adaptive" });
     await plan("c", { status: "retired" });
     await plan("e", { archivedAt: at(d(-1)) });
     await plan("f", { endDate: d(-1) });
@@ -649,6 +651,64 @@ describe("readStandFacts: one statement and the measures its key results need", 
       expect(await listed()).toEqual([]);
     });
 
+    const pw = (id: string, planId: string, date: string, state = "scheduled", archivedAt: string | null = null) =>
+      db.insert(schema.plannedWorkouts).values({
+        id, userId, planId, sourceWorkoutId: id, title: "T", category: "easy", sport: "run", originalPlanDate: date, lastVerifiedCorosDate: date,
+        effectiveDate: date, effectiveTime: "07:00", completionState: state, sourceContentFingerprint: "fp", calendarBlockDurationSeconds: 3600, archivedAt, createdAt: at(d(-9)), updatedAt: at(d(-9)),
+      });
+
+    it("ended means a date already past (R49): a skipped session ahead, or an archived one, can't make an ended plan read as running", async () => {
+      await plan("skipped-block");
+      await block("b-sk", "skipped-block", d(-3), "completed");
+      await pw("s30", "b-sk", d(30), "skipped");
+      await plan("coros-skip", { kind: "coros_import" });
+      await pw("c-done", "coros-skip", d(-4), "completed");
+      await pw("c-skip", "coros-skip", d(5), "skipped");
+      await plan("coros-arch10", { kind: "coros_import" });
+      await pw("a10", "coros-arch10", d(10), "scheduled", at(d(-1)));
+      await plan("coros-arch400", { kind: "coros_import" });
+      await pw("a400", "coros-arch400", d(400), "scheduled", at(d(-1)));
+      expect(await listed()).toEqual([]);
+    });
+
+    it("what ended it is a date up to today, from sessions that happened: a skipped, archived or still-ahead one past the last real one doesn't move it", async () => {
+      // Each plan's real last day is -4; the extra session is the only difference from "ended -4", and must not move it.
+      // The stand can only say ended or not, so read the last day itself from the same expression.
+      const lastDays = async () => {
+        const rows = (await db.all(sql`select programs.id as id, ${planLastDaySql(TODAY)} as last from programs where programs.user_id = ${userId}`)) as Array<{ id: string; last: string | null }>;
+        return Object.fromEntries(rows.map((r) => [r.id, r.last]));
+      };
+      await plan("past-skip", { kind: "coros_import" });
+      await pw("ps1", "past-skip", d(-4), "completed");
+      await pw("ps2", "past-skip", d(-1), "skipped");
+      await plan("past-arch", { kind: "coros_import" });
+      await pw("pa1", "past-arch", d(-4), "completed");
+      await pw("pa2", "past-arch", d(-1), "completed", at(d(-1)));
+      await plan("ahead-done", { kind: "coros_import" });
+      await pw("ad1", "ahead-done", d(-4), "completed");
+      await pw("ad2", "ahead-done", d(5), "completed");
+      await plan("early-complete");
+      await block("b-early", "early-complete", d(10), "completed");
+      await block("b-early-0", "early-complete", d(-4), "completed");
+      expect(await lastDays()).toEqual({ "past-skip": d(-4), "past-arch": d(-4), "ahead-done": d(-4), "early-complete": d(-4) });
+    });
+
+    it("a coach or COROS plan with nothing readable (only stopped blocks, nothing filed) is ended, not running for ever", async () => {
+      await plan("stopped-only");
+      await block("b-stop", "stopped-only", d(40), "retired");
+      await plan("empty");
+      await plan("empty-coros", { kind: "coros_import" });
+      expect(await listed()).toEqual([]);
+    });
+
+    it("a programme and a course have no end: always named while active, a pause with its slots archived included", async () => {
+      await plan("prog", { kind: "adaptive", endDate: d(-30) });
+      await plan("course", { kind: "course" });
+      await pw("p1", "prog", d(3), "scheduled", at(d(-1)));
+      await pw("p2", "prog", d(-3), "completed", at(d(-1)));
+      expect((await listed()).sort()).toEqual(["course", "prog"]);
+    });
+
     it("a plan with a block still ahead, or a live session ahead under it or its block, is running", async () => {
       await plan("ahead");
       await block("b-ahead", "ahead", d(-3), "completed");
@@ -669,6 +729,11 @@ describe("readStandFacts: one statement and the measures its key results need", 
     expect(on("activities").filter((l) => /start_time/.test(l))).toHaveLength(2);
     for (const l of on("performed_sessions")) expect(l, l).toMatch(/local_date>\? AND local_date<\?/);
     for (const l of on("coach_reads")) expect(l, l).toMatch(/coach_reads_user_activity_unique \(user_id=\? AND activity_id=\?\)/);
+    // The plans' last day reads their sessions as `pw`: by the plan (user and plan), never along the athlete's whole history
+    // by state or by date, which a lifetime of sessions makes dear (task 14 fix round 2). The alias is why the lines above miss it.
+    const pwLines = plan.filter((l) => /^(SEARCH|SCAN) pw\b/.test(l));
+    expect(pwLines.length).toBeGreaterThan(0);
+    for (const l of pwLines) expect(l, l).toMatch(/USING INDEX planned_workouts_source_unique \(user_id=\? AND plan_id=\?\)/);
   });
 
   it("an empty account: one statement, nothing measured", async () => {

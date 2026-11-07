@@ -1,6 +1,6 @@
 import { and, desc, eq, getTableColumns, inArray, isNull, sql } from "drizzle-orm";
 import { coachPlans, programs, programVersions, studioPlanPushes, trainingPlans } from "@rg/database";
-import { addDays, courseConfigSchema, defaultOnEnd, LINE_GAP_DAYS, linesOf, newId, nowInstant, onEndAllowed, type LineBlock, type ProgramKind } from "@rg/domain";
+import { addDays, courseConfigSchema, defaultOnEnd, LINE_GAP_DAYS, PLAN_PROMPT_KINDS, linesOf, newId, nowInstant, onEndAllowed, type LineBlock, type ProgramKind } from "@rg/domain";
 import { sha256Hex } from "../auth/crypto.js";
 import { restoreInProgress } from "./account-state.js";
 import { isLoosePlan, lineBlockOf, loadNonCoachPlanEntries } from "./coach-plans.js";
@@ -8,7 +8,7 @@ import { runAtomically, type Db } from "./db.js";
 import { blockDisciplinesSql, planLastDaySql, PROMPT_KIND_LIST } from "./plan-ending.js";
 import { planStoppedIfNoBlockLeft } from "./plan-status.js";
 import { studioPlanRetired } from "./studio-push.js";
-import { DISCIPLINE_WORD, isPlanKind, lineKeysByPlan, planPatchSchema, planSummaryOf, PLAN_KINDS, type PlanPatch, type PlanSummaryDto } from "./plan-summaries.js";
+import { DISCIPLINE_WORD, endingRowOf, isPlanKind, lineKeysByPlan, planPatchSchema, planSummaryOf, plansSuperseded, PLAN_KINDS, type PlanPatch, type PlanSummaryDto } from "./plan-summaries.js";
 
 /**
  * THE REGISTRY'S BACKFILL (plans with a purpose, Stage 1): every plan the app already has gets a row in `programs`,
@@ -289,7 +289,7 @@ export async function listPlans(db: Db, userId: string, today: string): Promise<
         // Raw names: Drizzle strips a column's table inside a single table's select, and `"id"` would be the subquery's own.
         courseDone: sql<number | null>`case when programs.kind = 'course' then (select count(*) from planned_workouts d where d.user_id = programs.user_id and d.plan_id = programs.id and d.course_session is not null and d.completion_state = 'completed') end`,
         // A coach or COROS plan's last day, computed with its row, never stored: what the prompt rule reads (`planLastDaySql`).
-        lastSessionDate: sql<string | null>`case when programs.kind in (${PROMPT_KIND_LIST}) then ${planLastDaySql()} end`,
+        lastSessionDate: sql<string | null>`case when programs.kind in (${PROMPT_KIND_LIST}) then ${planLastDaySql(today)} end`,
         blockDisciplinesText: sql<string | null>`case when programs.kind in (${PROMPT_KIND_LIST}) then ${blockDisciplinesSql()} end`,
       })
       .from(programs)
@@ -298,7 +298,10 @@ export async function listPlans(db: Db, userId: string, today: string): Promise<
   ]);
   const lines = linesOf(blocks.filter((r) => !isLoosePlan(r)).map(lineBlockOf), today);
   const keys = lineKeysByPlan(lines);
-  return rows.map(({ blockDisciplinesText, ...r }) => planSummaryOf({ ...r, blockDisciplines: blockDisciplinesText ? blockDisciplinesText.split(",") : [] }, keys, today));
+  const shaped = rows.map(({ blockDisciplinesText, ...r }) => ({ ...r, blockDisciplines: blockDisciplinesText ? blockDisciplinesText.split(",") : [] }));
+  // A plan that has run out and been followed by a running plan of its sport stops asking (the chip leaves it out too).
+  const superseded = plansSuperseded(shaped.filter((r) => (PLAN_PROMPT_KINDS as readonly string[]).includes(r.kind)).map(endingRowOf), today);
+  return shaped.map((r) => planSummaryOf(r, keys, today, superseded));
 }
 
 export type PlanPatchResult =

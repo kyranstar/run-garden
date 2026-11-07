@@ -235,7 +235,7 @@ export async function readCoachOpening(
       .where(and(eq(coachPlans.userId, userId), eq(coachPlans.status, "active"))),
     // The plans that can ask what comes next, each with its computed last day (plan-ending.ts): a coach plan whether or not
     // a training line holds it, a COROS plan, a Studio-held plan, one that has run out.
-    readPlanEndings(db, userId),
+    readPlanEndings(db, userId, today),
     // Last week's review, written by Monday's cron (its narrative already paid for).
     db
       .select({ weekStart: weeklyReviews.weekStart, narrative: weeklyReviews.narrative, createdAt: weeklyReviews.createdAt })

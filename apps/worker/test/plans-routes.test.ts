@@ -3,7 +3,7 @@
  * ending. A phase is not a plan, and the one-off bucket is not one. All names are made up.
  */
 import { beforeEach, describe, expect, it } from "vitest";
-import { eq } from "drizzle-orm";
+import { eq, sql } from "drizzle-orm";
 import { schema } from "@rg/database";
 import { addDays, startOfIsoWeek, todayInZone } from "@rg/domain";
 import type { Env } from "../src/env.js";
@@ -12,6 +12,7 @@ import { planRoutes } from "../src/routes/plans.js";
 import { programRoutes } from "../src/routes/programs.js";
 import { applyPlanPatch } from "../src/services/plan-registry.js";
 import { readNudges } from "../src/services/coach-nudges.js";
+import { planLastDaySql } from "../src/services/plan-ending.js";
 import { loadPreferences } from "../src/services/calendar-sync.js";
 import { createSession, SESSION_COOKIE } from "../src/auth/sessions.js";
 import { isWrite, makeTestDb, makeTestUser, mountRoutes } from "./helpers.js";
@@ -282,6 +283,81 @@ describe("GET /api/plans", () => {
       expect(rows).toEqual(["Plan what comes after my lifting plan — it ends in 20 days.", "Plan what comes after my running plan — it ends in 9 days."]);
       // The chip offers the soonest; the row of the other is its own.
       expect(chips.map((c) => c.request)).toEqual(["Plan what comes after my running plan — it ends in 9 days."]);
+    });
+
+    it("ended means a date already past: a skipped or archived session ahead leaves a run-out plan run out, on the row and the chip", async () => {
+      const chipFor = async () => (await readNudges(db, userId, await loadPreferences(db, userId), today, new Date())).filter((n) => n.id.startsWith("ending:")).map((n) => n.request);
+      await plan("done", "coach", { disciplines: ["run"], onEnd: "ask" });
+      await phase("done-b", "done", ahead(-40), ahead(-3));
+      await db.update(schema.coachPlans).set({ status: "completed" }).where(eq(schema.coachPlans.id, "done-b"));
+      await session("done-skip", "done-b", ahead(30), "skipped");
+      expect(await promptOf("done")).toMatchObject({ request: "Plan what comes after my running plan — it ended 3 days ago." });
+      expect(await chipFor()).toEqual(["Plan what comes after my running plan — it ended 3 days ago."]);
+      // A COROS plan done at -4 with one skipped at +5 says it ended, not "ends in 5 days".
+      await db.delete(schema.coachPlans);
+      await db.delete(schema.plannedWorkouts);
+      await db.delete(schema.programs);
+      await plan("coros", "coros_import", { disciplines: ["run"], onEnd: "ask" });
+      await session("c-done", "coros", ahead(-4), "completed");
+      await session("c-skip", "coros", ahead(5), "skipped");
+      expect(await promptOf("coros")).toMatchObject({ request: "Plan what comes after my running plan — it ended 4 days ago." });
+      expect(await chipFor()).toEqual(["Plan what comes after my running plan — it ended 4 days ago."]);
+      // Only an archived session ahead, at +10 or +400: nothing readable, nothing asked.
+      await db.delete(schema.plannedWorkouts);
+      await session("a10", "coros", ahead(10), "scheduled", NOW);
+      await session("a400", "coros", ahead(400), "scheduled", NOW);
+      expect(await promptOf("coros")).toBeNull();
+      expect(await chipFor()).toEqual([]);
+    });
+
+    it("a running plan of the same sport with a later last day ends an older run-out prompt, as a following phase does; another sport's does not", async () => {
+      const chipFor = async () => (await readNudges(db, userId, await loadPreferences(db, userId), today, new Date())).filter((n) => n.id.startsWith("ending:")).map((n) => n.id);
+      await plan("old", "coach", { disciplines: ["run"], onEnd: "ask" });
+      await phase("old-b", "old", ahead(-40), ahead(-3));
+      await db.update(schema.coachPlans).set({ status: "completed" }).where(eq(schema.coachPlans.id, "old-b"));
+      expect(await promptOf("old")).not.toBeNull();
+      // A running plan of another sport, ending far off: the old one still asks.
+      await plan("lift", "coach", { disciplines: ["strength"], onEnd: "continue" });
+      await db.insert(schema.coachPlans).values({ id: "lift-b", userId, discipline: "lift", name: "Lift block", status: "active", startDate: ahead(-5), endDate: ahead(60), raceDate: null, stampPrefix: "lift-b", programId: "lift", createdAt: NOW, updatedAt: NOW });
+      expect(await promptOf("old")).not.toBeNull();
+      expect(await chipFor()).toEqual(["ending:old-b"]);
+      // A running plan of the same sport, ending later: the old one stops asking.
+      await plan("new", "coach", { disciplines: ["run"], onEnd: "ask" });
+      await phase("new-b", "new", ahead(-2), ahead(60));
+      expect(await promptOf("old")).toBeNull();
+      expect(await chipFor()).toEqual([]);
+      // A stopped one doesn't count as following.
+      await db.update(schema.programs).set({ status: "retired" }).where(eq(schema.programs.id, "new"));
+      expect(await promptOf("old")).not.toBeNull();
+      expect(await chipFor()).toEqual(["ending:old-b"]);
+    });
+
+    it("only a plan still running follows another: one that ran out later doesn't end an older one's question, nor does a plan of several sports end another's", async () => {
+      await plan("older", "coach", { disciplines: ["run"], onEnd: "ask" });
+      await phase("older-b", "older", ahead(-50), ahead(-10));
+      await plan("newer", "coach", { disciplines: ["run"], onEnd: "ask" });
+      await phase("newer-b", "newer", ahead(-30), ahead(-3));
+      await db.update(schema.coachPlans).set({ status: "completed" }).where(sql`${schema.coachPlans.id} in ('older-b', 'newer-b')`);
+      expect(await promptOf("older")).toMatchObject({ request: "Plan what comes after my running plan — it ended 10 days ago." });
+      expect(await promptOf("newer")).toMatchObject({ request: "Plan what comes after my running plan — it ended 3 days ago." });
+      // Plans of several sports have no one sport to follow in.
+      await db.delete(schema.coachPlans);
+      await db.delete(schema.programs);
+      for (const [id, end, status] of [["duo-old", ahead(-3), "completed"], ["duo-new", ahead(60), "active"]] as const) {
+        await plan(id, "coach", { disciplines: ["run"], onEnd: "ask", name: `Zorbex ${id}` });
+        await phase(`${id}-r`, id, ahead(-70), end);
+        await db.insert(schema.coachPlans).values({ id: `${id}-l`, userId, discipline: "lift", name: "Lift", status, startDate: ahead(-70), endDate: end, raceDate: null, stampPrefix: `${id}-l`, programId: id, createdAt: NOW, updatedAt: NOW });
+        await db.update(schema.coachPlans).set({ status }).where(eq(schema.coachPlans.id, `${id}-r`));
+      }
+      expect(await promptOf("duo-old")).not.toBeNull();
+    });
+
+    it("a plan's last day walks its own sessions by the plan, never the athlete's whole history (query plan)", async () => {
+      const lines = ((await db.all(sql`explain query plan select ${planLastDaySql(today)} as d from programs where programs.user_id = ${userId}`)) as Array<{ detail: string }>).map((r) => r.detail.trim());
+      const pwLines = lines.filter((l) => /^(SEARCH|SCAN) pw\b/.test(l));
+      // Four reads of the sessions (live and run out, each by the plan and by its blocks), every one by (user, plan).
+      expect(pwLines).toHaveLength(4);
+      for (const l of pwLines) expect(l, l).toMatch(/USING INDEX planned_workouts_source_unique \(user_id=\? AND plan_id=\?\)/);
     });
 
     it("an outline week reaches to its sixth day after the week's start: that day, 21 days out, still asks; the next does not", async () => {

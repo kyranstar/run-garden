@@ -121,8 +121,27 @@ export function planSport(row: Pick<PlanEndingRow, "disciplines" | "blockDiscipl
   return only === "run" || only === "lift" || only === "mobility" ? only : null;
 }
 
+/**
+ * The plans that have run out and been followed: another plan of the same sport is running (not stopped) with a later last
+ * day, as a phase placed after a plan follows it. The question what comes after them is answered, so they stop asking (a
+ * plan of another sport doesn't answer it; nor does one of no single sport, called by its name). The chip and the row both
+ * leave these out.
+ */
+export function plansSuperseded(rows: readonly PlanEndingRow[], today: string): Set<string> {
+  const out = new Set<string>();
+  const stopped = (r: PlanEndingRow) => r.status === "retired" || r.status === "archived";
+  for (const r of rows) {
+    const sport = planSport(r);
+    if (stopped(r) || sport === null || r.lastDay === null || r.lastDay >= today) continue;
+    // A follower is running (its last day is today or later, so later than this plan's), not stopped, and of the same sport.
+    if (rows.some((s) => s.id !== r.id && !stopped(s) && s.lastDay !== null && s.lastDay >= today && planSport(s) === sport)) out.add(r.id);
+  }
+  return out;
+}
+
 /** What the rule says of a plan today (a draft is not yet something a plan can hold: Piece 5). The one reading of it. */
-export function promptOfPlan(row: PlanEndingRow, today: string): PlanSummaryDto["prompt"] {
+export function promptOfPlan(row: PlanEndingRow, today: string, superseded: ReadonlySet<string> = new Set()): PlanSummaryDto["prompt"] {
+  if (superseded.has(row.id)) return null;
   const parsed = planOnEndSchema.safeParse(row.onEnd);
   return planPrompt(
     {
@@ -157,7 +176,7 @@ export function lineKeysByPlan(lines: readonly TrainingLine[]): Map<string, stri
   return out;
 }
 
-export function planSummaryOf(row: PlanRow, lineKeys: ReadonlyMap<string, string>, today: string): PlanSummaryDto {
+export function planSummaryOf(row: PlanRow, lineKeys: ReadonlyMap<string, string>, today: string, superseded: ReadonlySet<string> = new Set()): PlanSummaryDto {
   const kind = row.kind as ProgramKind;
   const studioPlanId = typeof row.source?.studioPlanId === "string" ? row.source.studioPlanId : null;
   const onEnd = planOnEndSchema.safeParse(row.onEnd);
@@ -176,9 +195,11 @@ export function planSummaryOf(row: PlanRow, lineKeys: ReadonlyMap<string, string
     lineKey: lineKeys.get(row.id) ?? null,
     listedAs: kind === "coach" ? studioPlanId : kind === "adaptive" || kind === "course" ? row.id : null,
     course: courseLabel(row),
-    prompt: promptOfPlan(
-      { id: row.id, kind, name: row.name, status: row.status, onEnd: row.onEnd, pausedUntil: row.pausedUntil, disciplines: row.disciplines, blockDisciplines: row.blockDisciplines, lastDay: row.lastSessionDate },
-      today,
-    ),
+    prompt: promptOfPlan(endingRowOf(row), today, superseded),
   };
+}
+
+/** A plan's row as the rule that asks what comes next reads it. */
+export function endingRowOf(row: PlanRow): PlanEndingRow {
+  return { id: row.id, kind: row.kind as ProgramKind, name: row.name, status: row.status, onEnd: row.onEnd, pausedUntil: row.pausedUntil, disciplines: row.disciplines, blockDisciplines: row.blockDisciplines, lastDay: row.lastSessionDate };
 }

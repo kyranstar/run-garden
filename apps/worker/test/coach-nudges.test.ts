@@ -714,7 +714,7 @@ describe("at most two, the most pressing first", () => {
     expect(await nudges()).toEqual([]);
   });
 
-  it("writes nothing, and costs at most seven statements with no key results", async () => {
+  it("writes nothing, and costs at most eight statements with no key results", async () => {
     await seedAll();
     await seedRun("Plan my week", new Date().toISOString());
     statements.length = 0;

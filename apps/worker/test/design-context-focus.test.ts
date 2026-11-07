@@ -258,7 +258,8 @@ describe("the opening block's plan lines (plans with a purpose, §4.3)", () => {
   it("an active plan has one line with its name and purpose marked untrusted, a retired one none, a sub-run none — and the statement count holds", async () => {
     const id = "plan-line-test";
     await db.insert(schema.programs).values({
-      id, userId: me.userId, kind: "coach", name: "Zorbex line plan", status: "active", disciplines: ["run"], config: {},
+      // A programme has no end, so it is named while active; a coach plan with nothing to read reads as ended (R49).
+      id, userId: me.userId, kind: "adaptive", name: "Zorbex line plan", status: "active", disciplines: ["run"], config: {},
       purpose: "Hold the Zorbex habit", brief: "A BRIEF THAT STAYS BEHIND THE TOOL", createdAt: "2026-05-01T00:00:00.000Z", updatedAt: "2026-05-01T00:00:00.000Z",
     });
     try {

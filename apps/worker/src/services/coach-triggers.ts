@@ -218,7 +218,7 @@ export async function evaluateTriggers(
   // loose-session bucket is permanently "ending" (its end date is its last one-off), and waking the coach to plan what
   // comes after a bucket is nonsense.
   if (!blocked.has("plan_ending")) {
-    const ending = endingPlan(await readPlanEndings(db, userId), linesOf(plans.filter((p) => !isLoosePlan(p)).map(lineBlockOf), today), today, { ranOut: false });
+    const ending = endingPlan(await readPlanEndings(db, userId, today), linesOf(plans.filter((p) => !isLoosePlan(p)).map(lineBlockOf), today), today, { ranOut: false });
     if (ending) {
       fired.push({
         kind: "plan_ending",
