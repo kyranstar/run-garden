@@ -169,7 +169,7 @@ async function courseWithCopy(config: Partial<CourseConfig> = {}): Promise<{ p: 
   const p = newId();
   await db.insert(programs).values({
     id: p, userId, kind: "course", name: "Evening practice", status: "active", disciplines: ["yoga"], startDate: null, endDate: null, raceDate: null, source: null,
-    config: courseConfigSchema.parse({ course: INTRO_COURSE.id, weekdays: [0, 4], time: "19:30", placementWeeksAhead: 1, ...config }),
+    config: courseConfigSchema.parse({ course: INTRO_COURSE.id, weekdays: [0, 4], time: "18:15", placementWeeksAhead: 1, ...config }),
     onEnd: "continue", createdAt: NOW, updatedAt: NOW, archivedAt: null,
   });
   await placeSlots(db, userId, p, MON, prefs, NOW);
@@ -371,7 +371,7 @@ describe("a pause beside corrections and an objective change, at its dearest pas
     const p = newId();
     await db.insert(programs).values({
       id: p, userId, kind: "course", name: "Evening practice", status: "active", disciplines: ["yoga"], startDate: null, endDate: null, raceDate: null, source: null,
-      config: courseConfigSchema.parse({ course: INTRO_COURSE.id, weekdays: [3], time: "19:30", placementWeeksAhead: 1 }), onEnd: "continue", createdAt: NOW, updatedAt: NOW, archivedAt: null,
+      config: courseConfigSchema.parse({ course: INTRO_COURSE.id, weekdays: [3], time: "18:15", placementWeeksAhead: 1 }), onEnd: "continue", createdAt: NOW, updatedAt: NOW, archivedAt: null,
     });
     const { lift } = await savedLift();
     const ctx = await mainRun();
@@ -390,7 +390,7 @@ describe("a pause beside corrections and an objective change, at its dearest pas
     const p = newId();
     await db.insert(programs).values({
       id: p, userId, kind: "course", name: "Evening practice", status: "active", disciplines: ["yoga"], startDate: null, endDate: null, raceDate: null, source: null,
-      config: courseConfigSchema.parse({ course: INTRO_COURSE.id, weekdays: [0, 4], time: "19:30", placementWeeksAhead: 1 }), onEnd: "continue", createdAt: NOW, updatedAt: NOW, archivedAt: null,
+      config: courseConfigSchema.parse({ course: INTRO_COURSE.id, weekdays: [0, 4], time: "18:15", placementWeeksAhead: 1 }), onEnd: "continue", createdAt: NOW, updatedAt: NOW, archivedAt: null,
     });
     await placeSlots(db, userId, p, MON, prefs, NOW);
     const { batchId, lift } = await savedLift();

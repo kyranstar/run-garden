@@ -139,7 +139,7 @@ afterEach(() => {
 
 const writes = () => statements.filter(isWrite);
 
-/** A running course on Monday and Friday at 19:30, unless a test says otherwise. */
+/** A running course on Monday and Wednesday at 18:15, unless a test says otherwise. */
 async function seedCourse(config: Partial<CourseConfig> = {}, over: Partial<typeof programs.$inferInsert> = {}, owner = userId): Promise<string> {
   const id = over.id ?? newId();
   await db.insert(programs).values({
@@ -154,7 +154,7 @@ async function seedCourse(config: Partial<CourseConfig> = {}, over: Partial<type
     raceDate: null,
     source: null,
     // A stored definition id may be gone, so the config isn't the schema's to refuse here.
-    config: courseConfigSchema.parse({ course: INTRO_COURSE.id, weekdays: [0, 4], time: "19:30", placementWeeksAhead: 1, ...config }),
+    config: courseConfigSchema.parse({ course: INTRO_COURSE.id, weekdays: [0, 2], time: "18:15", placementWeeksAhead: 1, ...config }),
     onEnd: "continue",
     createdAt: NOW,
     updatedAt: NOW,
@@ -185,7 +185,7 @@ const holdOf = (doc: WorkoutDoc): number | undefined => {
 };
 const titleOf = (n: number): string => `Intro ${n}`;
 
-async function move(workoutId: string, toDate: string, toTime = "19:30"): Promise<void> {
+async function move(workoutId: string, toDate: string, toTime = "18:15"): Promise<void> {
   await applyMove(db, { userId, workoutId, toDate, toTime, source: "app", corosWritesEnabled: false });
 }
 
@@ -194,7 +194,7 @@ function sessionRow(planId: string, date: string, n: number, completionState: st
   const id = newId();
   return {
     id, userId, planId, sourceWorkoutId: id, title: titleOf(n), category: "yoga", sport: "yoga", originalPlanDate: date, lastVerifiedCorosDate: "",
-    effectiveDate: date, effectiveTime: "19:30", sourceContentFingerprint: "studio", fallbackEstimatedDurationSeconds: 660, calendarBlockDurationSeconds: 900,
+    effectiveDate: date, effectiveTime: "18:15", sourceContentFingerprint: "studio", fallbackEstimatedDurationSeconds: 660, calendarBlockDurationSeconds: 900,
     origin: "studio", contentState: "outline", completionState, courseSession: n, createdAt: NOW, updatedAt: NOW, workoutDoc: JSON.stringify(realSessionDoc(n, { ease: false })), workoutDocRev: 1,
     ...over,
   };
@@ -214,7 +214,7 @@ const strengthOnMonday = (id: string, over: Partial<SourceActivity> = {}): Sourc
   provider: "coros",
   providerActivityId: id,
   startTime: "2026-10-06T02:30:00Z",
-  startTimeLocal: "2026-10-05T19:30:00",
+  startTimeLocal: "2026-10-05T18:15:00",
   sport: "strength",
   durationSeconds: INTRO_FIRST_SECONDS,
   contentFingerprint: `fp-${id}`,
@@ -229,7 +229,7 @@ async function cookieFor(owner = userId): Promise<string> {
 async function activityOn(date: string, owner = userId): Promise<string> {
   const id = newId();
   await db.insert(activities).values({
-    id, userId: owner, corosActivityId: `c-${id}`, source: "coros", startTime: `${date}T19:30:00Z`, startTimeLocal: `${date}T12:30:00`, timezone: "America/Los_Angeles",
+    id, userId: owner, corosActivityId: `c-${id}`, source: "coros", startTime: `${date}T18:15:00Z`, startTimeLocal: `${date}T12:30:00`, timezone: "America/Los_Angeles",
     sport: "yoga", durationSeconds: 600, sourceMergeConfidence: 1, createdAt: NOW, updatedAt: NOW,
   });
   return id;
@@ -414,7 +414,7 @@ describe("the day", () => {
     await db.insert(plannedWorkouts).values(
       [day(0, 0), day(0, 1)].map((date) => ({
         id: slotId(p, date), userId: owner, planId: p, sourceWorkoutId: slotId(p, date), title: "Evening practice", category: "yoga", sport: "yoga", originalPlanDate: date, lastVerifiedCorosDate: "",
-        effectiveDate: date, effectiveTime: "19:30", sourceContentFingerprint: "program", fallbackEstimatedDurationSeconds: 660, calendarBlockDurationSeconds: 900,
+        effectiveDate: date, effectiveTime: "18:15", sourceContentFingerprint: "program", fallbackEstimatedDurationSeconds: 660, calendarBlockDurationSeconds: 900,
         origin: "program", contentState: "outline", completionState: "scheduled", corosSyncState: "calendar_only", createdAt: NOW, updatedAt: NOW,
       })),
     );
@@ -425,11 +425,11 @@ describe("the day", () => {
   it("an outline moved off today stays one, and one moved onto today is written", async () => {
     const p = await placed();
     await move(slotId(p, MON), day(0, 2));
-    await move(slotId(p, day(0, 4)), MON);
+    await move(slotId(p, day(0, 2)), MON);
 
     expect(await writeCourseSessionsDue(db, AT)).toEqual({ written: 1, failed: 0 });
     expect((await row(slotId(p, MON))).origin).toBe("program");
-    const moved = await row(slotId(p, day(0, 4)));
+    const moved = await row(slotId(p, day(0, 2)));
     expect(moved.origin).toBe("studio");
     expect(moved.effectiveDate).toBe(MON);
     expect(moved.title).toBe(titleOf(1));
@@ -498,8 +498,8 @@ describe("easing", () => {
     expect((await programOf(p)).config).toEqual({ ...before, easeNext: false });
 
     // The next is not eased.
-    const next = await row(slotId(p, day(0, 4)));
-    await writeCourseSession(db, userId, next, { ...ctx, today: day(0, 4) });
+    const next = await row(slotId(p, day(0, 2)));
+    await writeCourseSession(db, userId, next, { ...ctx, today: day(0, 2) });
     expect(holdOf(docOf(await row(next.id)))).toBe(INTRO_FIRST_SECONDS);
   });
 
@@ -519,7 +519,7 @@ describe("easing", () => {
 
   it("a preview shows the session eased, and uses nothing", async () => {
     const p = await placed({ easeNext: true });
-    const out = await buildSessionOutcome(db, userId, slotId(p, day(0, 4)), {}, ctx);
+    const out = await buildSessionOutcome(db, userId, slotId(p, day(0, 2)), {}, ctx);
     expect(out.session.build?.plannedSeconds).toBeLessThan(INTRO_FIRST_SECONDS);
     expect((await programOf(p)).config.easeNext).toBe(true);
   });
@@ -548,7 +548,7 @@ describe("a written session", () => {
       courseSession: 1,
       planId: p,
       effectiveDate: MON,
-      effectiveTime: "19:30",
+      effectiveTime: "18:15",
       sourceContentFingerprint: "studio",
       // A course that says nothing of the watch goes to it, as any session does.
       watchOff: false,
@@ -716,11 +716,11 @@ function elsewhere(planId: string): string {
 describe("a day ahead", () => {
   it("a day ahead previews without storing", async () => {
     const p = await placed();
-    const id = slotId(p, day(0, 4));
+    const id = slotId(p, day(0, 2));
     const before = await row(id);
     const { session: s, calendarChanged } = await buildSessionOutcome(db, userId, id, {}, ctx);
     expect(calendarChanged).toBe(false);
-    expect(s.build).toMatchObject({ version: 0, date: day(0, 4), fromDoc: { rev: null, blocked: [] } });
+    expect(s.build).toMatchObject({ version: 0, date: day(0, 2), fromDoc: { rev: null, blocked: [] } });
     // The dose shown: the course's first session, as the player would play it.
     expect(s.build?.items[0]?.exerciseId).toBe("legsUp");
     expect(s.build?.steps).toEqual(playerStepsFromDoc(realSessionDoc(1, { ease: false }), EXERCISES));
@@ -738,7 +738,7 @@ describe("a day ahead", () => {
 
   it("the preview follows the sessions done: asked again after one is done, it says the next dose", async () => {
     const p = await placed();
-    const id = slotId(p, day(0, 4));
+    const id = slotId(p, day(0, 2));
     const stepsFor = (n: number) => playerStepsFromDoc(realSessionDoc(n, { ease: false }), EXERCISES);
     expect((await buildSessionOutcome(db, userId, id, {}, ctx)).session.build?.steps).toEqual(stepsFor(1));
     await session(p, addDays(MON, -7), 1, "completed");
@@ -749,7 +749,7 @@ describe("a day ahead", () => {
 
   it("asked again with nothing changed writes nothing, and reads as current", async () => {
     const p = await placed();
-    const id = slotId(p, day(0, 4));
+    const id = slotId(p, day(0, 2));
     const first = await buildSessionOutcome(db, userId, id, {}, ctx);
     statements.length = 0;
     const again = await buildSessionOutcome(db, userId, id, {}, ctx);
@@ -765,9 +765,9 @@ describe("a day ahead", () => {
 
   it("a preview doesn't touch the outline: a pause still takes it", async () => {
     const p = await placed();
-    const id = slotId(p, day(0, 4));
+    const id = slotId(p, day(0, 2));
     await buildSessionOutcome(db, userId, id, {}, ctx);
-    await setPause(p, day(0, 4));
+    await setPause(p, day(0, 2));
     await placeSlots(db, userId, p, MON, prefs, NOW);
     expect((await row(id)).archivedAt).not.toBeNull();
   });
@@ -784,7 +784,7 @@ describe("matching", () => {
     const id = slotId(p, MON);
     await writeCourseSession(db, userId, await row(id), ctx);
     // A same-day activity that scores well: its stand-in, filed under the plan with no number, shows it would match.
-    const control = await filed(p, day(0, 1), "scheduled", { effectiveTime: "19:30", fallbackEstimatedDurationSeconds: INTRO_FIRST_SECONDS });
+    const control = await filed(p, day(0, 1), "scheduled", { effectiveTime: "18:15", fallbackEstimatedDurationSeconds: INTRO_FIRST_SECONDS });
     await ingestActivities(db, { userId, sources: [strengthOnMonday("a-1")] });
     expect((await row(id)).completionState).toBe("scheduled");
     expect(await courseSessionsDone(db, userId, p)).toBe(0);
@@ -952,7 +952,7 @@ describe("a pause", () => {
     [
       "moved onto today",
       async (p: string) => {
-        const id = slotId(p, day(0, 4));
+        const id = slotId(p, day(0, 2));
         await move(id, MON);
         return id;
       },
@@ -1023,7 +1023,7 @@ describe("never the engine", () => {
     const error = vi.spyOn(console, "error").mockImplementation(() => undefined);
     const p = await placed();
     await setPause(p, MON);
-    const id = slotId(p, day(0, 4));
+    const id = slotId(p, day(0, 2));
     await move(id, MON);
     await db.insert(scheduleOverrides).values({ id: newId(), workoutId: slotId(p, MON), kind: "time_change", fromDate: MON, toDate: MON, toTime: "18:00", source: "app", createdAt: NOW });
 
@@ -1131,7 +1131,7 @@ describe("never the engine", () => {
       const p = await placed();
       await db.update(programs).set({ config: { ...(await programOf(p)).config, course: "gone" } }).where(eq(programs.id, p));
       const id = slotId(p, MON);
-      const ahead = slotId(p, day(0, 4));
+      const ahead = slotId(p, day(0, 2));
       const before = await row(id);
 
       expect(await writeCourseSession(db, userId, before, ctx)).toMatchObject({ written: false });
@@ -1149,7 +1149,7 @@ describe("never the engine", () => {
     it("a preview made before it went is no longer current: nothing could make it now", async () => {
       vi.spyOn(console, "error").mockImplementation(() => undefined);
       const p = await placed();
-      const ahead = slotId(p, day(0, 4));
+      const ahead = slotId(p, day(0, 2));
       const shown = (await buildSessionOutcome(db, userId, ahead, {}, ctx)).session.build;
       expect(shown?.version).toBe(0);
       await db.update(programs).set({ config: { ...(await programOf(p)).config, course: "gone" } }).where(eq(programs.id, p));
@@ -1189,7 +1189,7 @@ describe("never the engine", () => {
 
     // Another account's plan is no plan of this account's.
     const { userId: stranger } = await makeTestUser(db);
-    expect(await courseOf(db, stranger, await row(slotId(p, day(0, 4))))).toBeNull();
+    expect(await courseOf(db, stranger, await row(slotId(p, day(0, 2))))).toBeNull();
   });
 
   it("the review basis reads a course's own week: its days, not a programme's default goal", async () => {
@@ -1259,8 +1259,8 @@ describe("completing an outline never written", () => {
     expect(await courseSessionsDone(db, userId, p)).toBe(3);
 
     // The next session moves on: the number didn't stand still.
-    const next = await row(slotId(p, day(0, 4)));
-    expect(await writeCourseSession(db, userId, next, { ...ctx, today: day(0, 4) })).toEqual({ written: true, n: 4 });
+    const next = await row(slotId(p, day(0, 2)));
+    expect(await writeCourseSession(db, userId, next, { ...ctx, today: day(0, 2) })).toEqual({ written: true, n: 4 });
   });
 
   it("undone, it stops counting; linked again, it takes the number it has then", async () => {
@@ -1340,11 +1340,11 @@ describe("completing an outline never written", () => {
 
 describe("what the document was computed from", () => {
   const HALF = INTRO_FIRST_SECONDS / 2;
-  /** Today's outline, and Friday's moved onto today, with the next session eased. */
+  /** Today's outline, and Wednesday's moved onto today, with the next session eased. */
   const twoToday = async () => {
     const p = await placed({ easeNext: true });
     const a = slotId(p, MON);
-    const b = slotId(p, day(0, 4));
+    const b = slotId(p, day(0, 2));
     await move(b, MON);
     return { p, a, b };
   };
@@ -1572,7 +1572,7 @@ describe("a pause on a session already written", () => {
 
   it("today's written, untouched session comes off, and the pass then settles", async () => {
     const { p, id } = await written();
-    await setPause(p, addDays(MON, 3));
+    await setPause(p, addDays(MON, 1));
     statements.length = 0;
     const res = await placeSlots(db, userId, p, MON, prefs, NOW);
     expect(res.archived).toEqual([id]);
@@ -1617,12 +1617,12 @@ describe("a pause on a session already written", () => {
     await placeSlots(db, userId, p, MON, prefs, NOW);
     expect(await courseSessionsDone(db, userId, p)).toBe(0);
 
-    // Friday, the pause over: the next session is the one that came off.
-    const friday = day(0, 4);
-    const fri = { ...ctx, today: friday, now: `${friday}T19:00:00.000Z` };
-    vi.setSystemTime(new Date(fri.now));
-    expect(await writeCourseSession(db, userId, await row(slotId(p, friday)), fri)).toEqual({ written: true, n: 1 });
-    expect((await row(slotId(p, friday))).title).toBe(titleOf(1));
+    // Wednesday, the pause over: the next session is the one that came off.
+    const wednesday = day(0, 2);
+    const wed = { ...ctx, today: wednesday, now: `${wednesday}T19:00:00.000Z` };
+    vi.setSystemTime(new Date(wed.now));
+    expect(await writeCourseSession(db, userId, await row(slotId(p, wednesday)), wed)).toEqual({ written: true, n: 1 });
+    expect((await row(slotId(p, wednesday))).title).toBe(titleOf(1));
 
     // A fortnight on, past the days a session is asked about and then missed.
     vi.setSystemTime(new Date("2026-10-20T19:00:00.000Z"));
@@ -1742,7 +1742,7 @@ describe("a pause on a session already written", () => {
 
   it("one moved onto today on the watch stays too: no override, and only the dates say so", async () => {
     const p = await placed();
-    const moved = slotId(p, day(0, 4));
+    const moved = slotId(p, day(0, 2));
     await db.update(plannedWorkouts).set({ effectiveDate: MON }).where(eq(plannedWorkouts.id, moved));
     expect((await writeCourseSession(db, userId, await row(moved), ctx)).written).toBe(true);
     await setPause(p, MON);
@@ -1755,7 +1755,7 @@ describe("a pause on a session already written", () => {
 
   it("one moved onto today stays, though today's own outline goes", async () => {
     const p = await placed();
-    const moved = slotId(p, day(0, 4));
+    const moved = slotId(p, day(0, 2));
     await move(moved, MON);
     expect((await writeCourseSession(db, userId, await row(moved), ctx)).written).toBe(true);
     await setPause(p, MON);
@@ -1888,7 +1888,7 @@ describe("a pause on a session already written", () => {
 describe("a preview that isn't current", () => {
   it("while the row is an outline of a course, a read serves no preview: the sheet's own build makes a fresh one", async () => {
     const p = await placed();
-    const id = slotId(p, day(0, 4));
+    const id = slotId(p, day(0, 2));
     const first = await buildSessionOutcome(db, userId, id, {}, ctx);
     expect(first.session.build?.version).toBe(0);
     expect((await loadSession(db, userId, id, MON)).build).toBeNull();
@@ -1897,7 +1897,7 @@ describe("a preview that isn't current", () => {
 
   it("the old dose isn't served after the sessions done move", async () => {
     const p = await placed();
-    const id = slotId(p, day(0, 4));
+    const id = slotId(p, day(0, 2));
     await buildSessionOutcome(db, userId, id, {}, ctx);
     await session(p, addDays(MON, -7), 1, "completed");
     await session(p, addDays(MON, -3), 2, "completed");
@@ -1907,7 +1907,7 @@ describe("a preview that isn't current", () => {
 
   it("the old dose isn't served after an easing is asked for", async () => {
     const p = await placed();
-    const id = slotId(p, day(0, 4));
+    const id = slotId(p, day(0, 2));
     await buildSessionOutcome(db, userId, id, {}, ctx);
     await db.update(programs).set({ config: { ...(await programOf(p)).config, easeNext: true } }).where(eq(programs.id, p));
     expect((await loadSession(db, userId, id, MON)).build).toBeNull();
@@ -1916,11 +1916,11 @@ describe("a preview that isn't current", () => {
 
   it("a preview, the row moved to today and written, then moved back ahead: its old preview isn't served, and the next is of its document", async () => {
     const p = await placed();
-    const id = slotId(p, day(0, 4));
+    const id = slotId(p, day(0, 2));
     await buildSessionOutcome(db, userId, id, {}, ctx);
     await move(id, MON);
     await writeCourseSession(db, userId, await row(id), ctx);
-    await move(id, day(0, 4));
+    await move(id, day(0, 2));
     expect((await row(id)).origin).toBe("studio");
     expect((await loadSession(db, userId, id, MON)).build).toBeNull();
     const fresh = (await buildSessionOutcome(db, userId, id, {}, ctx)).session.build;
@@ -1953,7 +1953,7 @@ describe("a preview that isn't current", () => {
 
   it("a read of an outline ahead costs no more for it: the row, its plan, the profiles, its plan's kind and the set-aside moves", async () => {
     const p = await placed();
-    const id = slotId(p, day(0, 4));
+    const id = slotId(p, day(0, 2));
     await buildSessionOutcome(db, userId, id, {}, ctx);
     statements.length = 0;
     await loadSession(db, userId, id, MON);
@@ -1964,7 +1964,7 @@ describe("a preview that isn't current", () => {
 describe("a preview nothing can compute afresh", () => {
   it("under a restore a build answers no preview: stale is worse than none", async () => {
     const p = await placed();
-    const id = slotId(p, day(0, 4));
+    const id = slotId(p, day(0, 2));
     expect((await buildSessionOutcome(db, userId, id, {}, ctx)).session.build?.version).toBe(0);
     await beginRestore();
     statements.length = 0;
@@ -1985,7 +1985,7 @@ describe("a preview nothing can compute afresh", () => {
   it("with its definition gone a build answers no preview", async () => {
     vi.spyOn(console, "error").mockImplementation(() => undefined);
     const p = await placed();
-    const id = slotId(p, day(0, 4));
+    const id = slotId(p, day(0, 2));
     expect((await buildSessionOutcome(db, userId, id, {}, ctx)).session.build?.version).toBe(0);
     await db.update(programs).set({ config: { ...(await programOf(p)).config, course: "gone" } }).where(eq(programs.id, p));
     expect((await buildSessionOutcome(db, userId, id, {}, ctx)).session.build).toBeNull();
@@ -2060,7 +2060,7 @@ describe("the check sent with the opening", () => {
 
   it("an outline a pause holds keeps the answer too, and a profile that isn't on is still refused", async () => {
     const p = await placed();
-    const id = slotId(p, day(0, 4));
+    const id = slotId(p, day(0, 2));
     await move(id, MON);
     await setPause(p, MON);
     await expect(buildSessionOutcome(db, userId, id, CLEAR, ctx)).rejects.toBeInstanceOf(UnknownProfileError);
@@ -2074,7 +2074,7 @@ describe("the check sent with the opening", () => {
     vi.spyOn(console, "error").mockImplementation(() => undefined);
     await tmj();
     const p = await placed();
-    const id = slotId(p, day(0, 4));
+    const id = slotId(p, day(0, 2));
     await move(id, MON);
     await setPause(p, MON);
     // The build's own look: this lands there, and keeping the answer looks again and finds it.
@@ -2088,14 +2088,14 @@ describe("the check sent with the opening", () => {
     await tmj();
     const p = await placed();
     await db.update(programs).set({ config: { ...(await programOf(p)).config, course: "gone" } }).where(eq(programs.id, p));
-    expect((await buildSessionOutcome(db, userId, slotId(p, day(0, 4)), CLEAR, ctx)).session.build).toBeNull();
+    expect((await buildSessionOutcome(db, userId, slotId(p, day(0, 2)), CLEAR, ctx)).session.build).toBeNull();
     expect(await stored()).toEqual([]);
   });
 
   it("a preview ahead doesn't record its answer, as ever", async () => {
     await tmj();
     const p = await placed();
-    await buildSessionOutcome(db, userId, slotId(p, day(0, 4)), CLEAR, ctx);
+    await buildSessionOutcome(db, userId, slotId(p, day(0, 2)), CLEAR, ctx);
     expect(await stored()).toEqual([]);
   });
 });
@@ -2274,7 +2274,7 @@ describe("what it costs", () => {
     const r = await row(slotId(p, MON));
     expect(r).toMatchObject({ origin: "studio", courseSession: 1, title: titleOf(1) });
     // The later outline is still one.
-    expect((await row(slotId(p, day(0, 4)))).origin).toBe("program");
+    expect((await row(slotId(p, day(0, 2)))).origin).toBe("program");
   });
 
   it("a session the day refuses goes last, so it can't hold up the others", async () => {

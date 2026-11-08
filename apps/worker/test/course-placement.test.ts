@@ -71,7 +71,7 @@ beforeEach(async () => {
 
 const writes = () => statements.filter(isWrite);
 
-/** A running course, on Monday and Friday at 19:30, unless a test says otherwise. */
+/** A running course, on Monday and Friday at 18:15, unless a test says otherwise. */
 async function seedCourse(config: Partial<CourseConfig> = {}, over: Partial<typeof programs.$inferInsert> = {}, owner = userId): Promise<string> {
   const id = newId();
   await db.insert(programs).values({
@@ -85,7 +85,7 @@ async function seedCourse(config: Partial<CourseConfig> = {}, over: Partial<type
     endDate: null,
     raceDate: null,
     source: null,
-    config: courseConfigSchema.parse({ course: INTRO_COURSE.id, weekdays: [0, 4], time: "19:30", ...config }),
+    config: courseConfigSchema.parse({ course: INTRO_COURSE.id, weekdays: [0, 4], time: "18:15", ...config }),
     onEnd: "continue",
     createdAt: NOW,
     updatedAt: NOW,
@@ -128,7 +128,7 @@ const ids = (planId: string, dates: string[]): string[] => sorted(dates.map((d) 
 const setPause = (planId: string, pausedUntil: string | null) => db.update(programs).set({ pausedUntil }).where(eq(programs.id, planId));
 
 async function move(workoutId: string, toDate: string): Promise<void> {
-  await applyMove(db, { userId, workoutId, toDate, toTime: "19:30", source: "app", corosWritesEnabled: false });
+  await applyMove(db, { userId, workoutId, toDate, toTime: "18:15", source: "app", corosWritesEnabled: false });
 }
 
 /** What the day's write does (Task 10's flip, in the shape a document workout has): the row keeps its id and takes its number. */
@@ -176,7 +176,7 @@ describe("placing a course ahead", () => {
         title: "Evening practice",
         category: "yoga",
         sport: "yoga",
-        effectiveTime: "19:30",
+        effectiveTime: "18:15",
         fallbackEstimatedDurationSeconds: INTRO_FIRST_SECONDS,
         calendarBlockDurationSeconds: INTRO_FIRST_BOOKED,
         corosSyncState: "calendar_only",
@@ -195,11 +195,11 @@ describe("placing a course ahead", () => {
   });
 
   it("today's session is placed until the course's own time has passed, not the athlete's window", async () => {
-    const monday1830 = "2026-10-06T01:30:00.000Z"; // the athlete's window (07:00) long gone, 19:30 still ahead
+    const monday1730 = "2026-10-06T00:30:00.000Z"; // the athlete's window (07:00) long gone, 18:15 still ahead
     const a = await seedCourse({ placementWeeksAhead: 1 });
-    expect((await placeSlots(db, userId, a, MON, prefs, monday1830)).placed).toContain(slotId(a, MON));
+    expect((await placeSlots(db, userId, a, MON, prefs, monday1730)).placed).toContain(slotId(a, MON));
 
-    const monday2000 = "2026-10-06T03:00:00.000Z"; // 19:30 gone too
+    const monday2000 = "2026-10-06T03:00:00.000Z"; // 18:15 gone too
     const b = await seedCourse({ placementWeeksAhead: 1 });
     expect((await placeSlots(db, userId, b, MON, prefs, monday2000)).placed).not.toContain(slotId(b, MON));
   });
@@ -233,7 +233,7 @@ describe("placing a course ahead", () => {
     await placeSlots(db, userId, p, MON, prefs, NOW);
     const seconds = deriveDoc(COURSES[course]!.sessionDoc(1, { ease: false }), EXERCISES).estimatedMinutes * 60;
     expect(await liveDates(p)).toEqual([day(0, 0), day(0, 4), day(1, 0), day(1, 4)]);
-    expect(await row(slotId(p, MON))).toMatchObject({ workoutDoc: null, fallbackEstimatedDurationSeconds: seconds, calendarBlockDurationSeconds: bookedSeconds(seconds), effectiveTime: "19:30" });
+    expect(await row(slotId(p, MON))).toMatchObject({ workoutDoc: null, fallbackEstimatedDurationSeconds: seconds, calendarBlockDurationSeconds: bookedSeconds(seconds), effectiveTime: "18:15" });
   });
 
   it("only a course reads a numbered row: an adaptive programme's week counts its slots alone", async () => {
@@ -524,7 +524,7 @@ describe("a pause", () => {
     await setPause(p, null);
     const res = await placeSlots(db, userId, p, MON, prefs, NOW);
     expect(sorted(res.placed)).toEqual(ids(p, [day(0, 0), day(0, 4), day(1, 0), day(1, 4)]));
-    expect(await row(friday)).toMatchObject({ archivedAt: null, archiveReason: null, effectiveTime: "19:30", calendarBlockDurationSeconds: INTRO_FIRST_BOOKED });
+    expect(await row(friday)).toMatchObject({ archivedAt: null, archiveReason: null, effectiveTime: "18:15", calendarBlockDurationSeconds: INTRO_FIRST_BOOKED });
     expect(await db.select().from(calendarEventSuppressions).where(eq(calendarEventSuppressions.workoutId, friday))).toEqual([]);
   });
 

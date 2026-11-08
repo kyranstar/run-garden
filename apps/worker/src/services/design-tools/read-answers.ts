@@ -54,11 +54,11 @@ const input = z
 export const readAnswers: DesignTool = {
   name: "read_answers",
   description:
-    "Check-in answers and feedback, newest first with their day: soreness, tightness and pain by area, energy, ratings of moves and workouts. Filter by question id, area or since.",
+    "Check-in answers and feedback, newest first with their day: soreness, tightness and pain by area, energy, sleep quality, stress, ratings of moves and workouts. Filter by question id, area or since.",
   inputSchema: {
     type: "object",
     properties: {
-      question: { type: "string", description: "A question id: soreness, tightness, pain, energy, exercise_feedback, workout_feedback, …" },
+      question: { type: "string", description: "A question id: soreness, tightness, pain, energy, sleep_quality, stress, exercise_feedback, workout_feedback, …" },
       area: { type: "string", description: "What answers are about: an answer's subject (a region, muscle, focus area, exercise or workout id)." },
       since: { type: "string", description: `A local date, YYYY-MM-DD. Default: ${DEFAULT_DAYS} days ago.` },
       limit: limitSchema(DEFAULT_LIMIT, MAX_LIMIT),

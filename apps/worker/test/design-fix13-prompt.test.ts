@@ -180,6 +180,8 @@ describe("compact (the cached prefix grew 3k tokens since the pre-live audit)", 
     // — E2) — measured main 2,105.75 with its turns; ≥ 100 tokens headroom.
     // REBASED 2026-11-06 (audit fixes, safety): the reviewer's block names the only two checks no insistence moves (S5) —
     // measured 1,431.75 with its turns; ≥ 100 tokens headroom. The designer's sore-area line (S1): 328.25, under its cap.
+    // MEASURED 2026-11-08 (fix wave: read_answers names sleep_quality and stress, in the shared prompt): the role blocks are untouched —
+    // main 2,105.75 with its turns, as above; no cap moves.
     const caps = { main: 2210, designer: 1300, reviewer: 1535 } as const;
     for (const role of ["main", "designer", "reviewer"] as const) expect(roleBlock(role, RUN_LIMITS[role].maxCalls).length / 4, role).toBeLessThanOrEqual(caps[role]);
     // A run's reviewer (§8 §3): the block with the run rubric in place of the workout one — its own cached prefix.

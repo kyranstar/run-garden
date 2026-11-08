@@ -84,7 +84,7 @@ async function course(config: Partial<CourseConfig> = {}, over: Partial<typeof p
   const id = over.id ?? newId();
   await db.insert(programs).values({
     id, userId, kind: "course", name: "Evening practice", status: "active", disciplines: ["yoga"], startDate: null, endDate: null, raceDate: null, source: null,
-    config: courseConfigSchema.parse({ course: INTRO_COURSE.id, weekdays: [0, 4], time: "19:30", placementWeeksAhead: 1, ...config }),
+    config: courseConfigSchema.parse({ course: INTRO_COURSE.id, weekdays: [0, 4], time: "18:15", placementWeeksAhead: 1, ...config }),
     onEnd: "continue", createdAt: NOW, updatedAt: NOW, archivedAt: null, ...over,
   });
   await placeSlots(db, userId, id, MON, prefs, NOW);

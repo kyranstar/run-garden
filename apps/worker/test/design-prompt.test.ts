@@ -72,6 +72,7 @@ describe("the prompt text", () => {
     // ≥ 100 tokens headroom.
     // REBASED 2026-11-06 (audit fixes, safety, on fix-evidence's main): a sore area among the hard rules and the fatal ones, record_answer a safety step, the designer's sore-area line, the first exposure's cap a cost when insisted (S1, S5) — measured 7,387; ≥ 100 tokens headroom.
     // REBASED 2026-11-06 (the merge of plans with a purpose and the safety audit; nothing new is said): shared 29,946 — measured 7,486.5; ≥ 100 tokens headroom.
+    // MEASURED 2026-11-08 (fix wave: read_answers names sleep_quality and stress, so the coach knows those answers exist): shared 30,014 → 30,037 — measured 7,509.25 (was 7,503.5); the cap holds, unraised, with ≥ 80 tokens headroom.
     expect(SHARED_PROMPT.length / 4).toBeLessThanOrEqual(7590);
     for (const r of ROLES) expect(roleBlock(r).length / 4, r).toBeLessThanOrEqual(ROLE_CAP[r]);
   });
@@ -378,6 +379,7 @@ describe("3A-B — the prompt agrees with the code", () => {
     // ≥ 100 tokens headroom.
     // REBASED 2026-11-06 (audit fixes, safety, on fix-evidence's main): a sore area among the hard rules and the fatal ones, record_answer a safety step, the designer's sore-area line, the first exposure's cap a cost when insisted (S1, S5) — measured 7,387; ≥ 100 tokens headroom.
     // REBASED 2026-11-06 (the merge of plans with a purpose and the safety audit; nothing new is said): shared 29,946 — measured 7,486.5; ≥ 100 tokens headroom.
+    // MEASURED 2026-11-08 (fix wave: read_answers names sleep_quality and stress, so the coach knows those answers exist): shared 30,014 → 30,037 — measured 7,509.25 (was 7,503.5); the cap holds, unraised, with ≥ 80 tokens headroom.
     expect(SHARED_PROMPT.length / 4).toBeLessThanOrEqual(7590);
     for (const role of ROLES) expect(roleBlock(role, RUN_LIMITS[role].maxCalls).length / 4, role).toBeLessThanOrEqual(ROLE_CAP[role]);
   });

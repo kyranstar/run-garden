@@ -44,7 +44,7 @@ vi.setConfig({ testTimeout: 30_000 });
 /** A Monday, and noon on it in the test user's zone. */
 const MON = "2026-10-05";
 const NOW = `${MON}T19:00:00.000Z`;
-const BODY = { course: INTRO_COURSE.id, weekdays: [0, 4], time: "19:30" };
+const BODY = { course: INTRO_COURSE.id, weekdays: [0, 4], time: "18:15" };
 
 let db: Db;
 let userId: string;
@@ -103,7 +103,7 @@ const activity = (id: string, program: string): SourceActivity => ({
   provider: "coros",
   providerActivityId: id,
   startTime: "2026-10-06T02:30:00Z",
-  startTimeLocal: `${MON}T19:30:00`,
+  startTimeLocal: `${MON}T18:15:00`,
   sport: "strength",
   durationSeconds: INTRO_FIRST_SECONDS,
   contentFingerprint: `fp-${id}`,

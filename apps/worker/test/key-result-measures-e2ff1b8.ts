@@ -1,6 +1,6 @@
 // FROZEN: services/key-result-measures.ts as it stood at e2ff1b8, before the go-live CPU gate's fixes (the window
 // starts hoisted out of the per-run filter; the logged sets read as plain rows) — the "before" side of
-// key-result-measures-differential.test.ts. Only its imports point here; never edit it.
+// key-result-measures-differential.test.ts. Only its imports point here; frozen except for types (a typing fix may touch it, its behaviour never).
 /**
  * KEY RESULTS MEASURED FROM LOGGED DATA (programme spec §3.6 and its Amendment A; principles §5.2, §2.9 honesty).
  *

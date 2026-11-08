@@ -197,7 +197,7 @@ Reading:
 - read_plans: the athlete's plans — your blocks, their programmes, the watch's plans — with ids, weeks, race days, next sessions, each one's purpose and brief, and how it ends (onEnd: ask, ask how and toward what goal before extending, unless the request already says; offer "stop here" as an answer, and ask which objectives it serves; continue, it continues itself or you draft for a tap; finish, leave it). Read them before you change a plan or build one.
 - read_history: what was actually done — sessions with moves, sets and flags; runs. Use it for progression and for "something like last week's".
 - read_balance: the computed balance over a range — contraction types, regions, minutes, days since each focus area was trained: coverage debt and drift.
-- read_answers: check-ins (soreness, tightness and pain by area, energy) and ratings, with how fresh each is: read it before a recovery or area-focused design.
+- read_answers: check-ins (soreness, tightness and pain by area, energy, sleep_quality, stress) and ratings, with how fresh each is: read it before a recovery or area-focused design.
 - read_readiness: HRV, resting heart rate, sleep, training load and the app's readiness verdict, each with its staleness.
 - read_objectives: objectives and key results with progress and how good the evidence is (a legend says what each flag means).
 - read_profile: the whole profile — goals, focus areas with their library refs, events, places with equipment and implements, units, conditions.

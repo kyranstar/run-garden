@@ -25,8 +25,9 @@ export interface CourseDefinition {
   /** The disciplines its sessions count as. */
   disciplines: readonly string[];
   /**
-   * False: its sessions stay off the watch. Each is written with the row's own Keep off my watch set, so the mirror owes it
-   * nothing and every screen says it is kept off, and the athlete can still put one on. Absent, they go as any session does.
+   * False: its sessions stay off the watch. Each is placed with the row's own Keep off my watch set, so the mirror owes it
+   * nothing and every screen says it is kept off; writing the session leaves the row as it stands, and the athlete can
+   * still put one on. Absent, they go as any session does.
    */
   watch?: false;
 }

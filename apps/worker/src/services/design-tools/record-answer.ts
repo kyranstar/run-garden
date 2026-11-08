@@ -43,7 +43,7 @@ export const CHECKIN_QUESTIONS = {
   pain: { byArea: true, freshDays: 3 },
   energy: { byArea: false, freshDays: 1 },
   // How last night's sleep went reads for the day it is said, as energy does; stress is a state that carries a day or
-  // two (the jaw and neck follow it), so it stays fresh for two — still far shorter than a sore area's three.
+  // two, so it stays fresh for two — still far shorter than a sore area's three.
   sleep_quality: { byArea: false, freshDays: 1 },
   stress: { byArea: false, freshDays: 2 },
 } as const;

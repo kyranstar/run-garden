@@ -1423,6 +1423,7 @@ describe("the prompt says how a set works", () => {
     // ≥ 100 tokens headroom.
     // REBASED 2026-11-06 (audit fixes, safety, on fix-evidence's main): a sore area among the hard rules and the fatal ones, record_answer a safety step, the designer's sore-area line, the first exposure's cap a cost when insisted (S1, S5) — measured 7,387; ≥ 100 tokens headroom.
     // REBASED 2026-11-06 (the merge of plans with a purpose and the safety audit; nothing new is said): shared 29,946 — measured 7,486.5; ≥ 100 tokens headroom.
+    // MEASURED 2026-11-08 (fix wave: read_answers names sleep_quality and stress, so the coach knows those answers exist): shared 30,014 → 30,037 — measured 7,509.25 (was 7,503.5); the cap holds, unraised, with ≥ 80 tokens headroom.
     expect(SHARED_PROMPT.length / 4).toBeLessThanOrEqual(7590);
     // REBASED 2026-10-19 for the owner's voice (the coach's last words, in the main block): measured 1,620 without its
     // turns — the same cap as design-prompt.test.ts's and design-fix13's; REBASED 2026-10-25 (saved-posts fix wave:

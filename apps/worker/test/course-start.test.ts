@@ -71,7 +71,7 @@ const AT = new Date(NOW);
 /** `weekday` 0 = Monday … 6 = Sunday (the config's numbering), `week` weeks after MON's. */
 const day = (week: number, weekday: number): string => addDays(MON, 7 * week + weekday);
 const COURSE = INTRO_COURSE.id;
-const BODY = { course: COURSE, weekdays: [0, 4], time: "19:30" };
+const BODY = { course: COURSE, weekdays: [0, 4], time: "18:15" };
 
 let db: Db;
 let userId: string;
@@ -257,16 +257,16 @@ describe("POST /api/plans/courses: a new plan", () => {
       onEnd: "continue",
       pausedUntil: null,
     });
-    expect(courseConfigSchema.parse(plan!.config)).toEqual({ course: COURSE, weekdays: [0, 4], time: "19:30", quietDaysBeforeRace: 7, placementWeeksAhead: 2, easeNext: false });
+    expect(courseConfigSchema.parse(plan!.config)).toEqual({ course: COURSE, weekdays: [0, 4], time: "18:15", quietDaysBeforeRace: 7, placementWeeksAhead: 2, easeNext: false });
     expect(res.body.plan).toMatchObject({ id: plan!.id, kind: "course", status: "active", course: { session: 1, of: 4 }, onEnd: "continue" });
   });
 
   it("places what's ahead, on those days at that time, to more: false", async () => {
     const id = await started();
     const live = await liveOf(id);
-    // Today's window hasn't gone (noon, and the course's time is 19:30), and two weeks ahead of this one.
+    // Today's window hasn't gone (noon, and the course's time is 18:15), and two weeks ahead of this one.
     expect(live.map((r) => r.effectiveDate).sort()).toEqual([day(0, 0), day(0, 4), day(1, 0), day(1, 4), day(2, 0), day(2, 4)].sort());
-    expect(new Set(live.map((r) => r.effectiveTime))).toEqual(new Set(["19:30"]));
+    expect(new Set(live.map((r) => r.effectiveTime))).toEqual(new Set(["18:15"]));
     expect(live.every((r) => r.origin === "program" && r.workoutDoc === null)).toBe(true);
   });
 
@@ -293,7 +293,7 @@ describe("POST /api/plans/courses: a new plan", () => {
       why: "This course is already running on other days or at another time. Stop it and start it again with the new ones: it carries on from the sessions done.",
     });
     expect(writes()).toEqual([]);
-    expect(courseConfigSchema.parse((await planOf(id)).config)).toMatchObject({ weekdays: [0, 4], time: "19:30" });
+    expect(courseConfigSchema.parse((await planOf(id)).config)).toMatchObject({ weekdays: [0, 4], time: "18:15" });
     expect(await coursePlans()).toHaveLength(1);
   });
 
@@ -483,7 +483,7 @@ describe("starting from sessions already planned", () => {
     const id = await started();
     expect((await row(today)).archivedAt).not.toBeNull();
     // The course's own outline takes the day, at its own time.
-    expect(await row(slotId(id, MON))).toMatchObject({ archivedAt: null, effectiveTime: "19:30", origin: "program" });
+    expect(await row(slotId(id, MON))).toMatchObject({ archivedAt: null, effectiveTime: "18:15", origin: "program" });
   });
 
   it("today's built and not started is ahead too: only started is under way", async () => {
@@ -1234,7 +1234,7 @@ describe("POST /api/plans/:id/stop: a course", () => {
     const id = await started();
     const written = await ownSession(id, MON, 1, "scheduled", { id: "written-today" });
     const moved = slotId(id, day(0, 4));
-    await applyMove(db, { userId, workoutId: moved, toDate: day(0, 5), toTime: "19:30", source: "app", corosWritesEnabled: false });
+    await applyMove(db, { userId, workoutId: moved, toDate: day(0, 5), toTime: "18:15", source: "app", corosWritesEnabled: false });
     const retimed = slotId(id, day(1, 0));
     await applyMove(db, { userId, workoutId: retimed, toDate: day(1, 0), toTime: "20:30", source: "app", corosWritesEnabled: false });
     expect(await db.select().from(scheduleOverrides).where(eq(scheduleOverrides.workoutId, retimed))).not.toEqual([]);
@@ -1480,7 +1480,7 @@ describe("POST /api/plans/:id/stop: a course", () => {
       await ownSession(id, MON, 2, "scheduled", { id: "written-today", title: "written" });
       await filed(id, day(1, 1), { id: "filed-ahead", title: "filed" });
       await ownSession(id, MON, 2, "scheduled", { id: "started-today", title: "started", contentState: "started" });
-      await applyMove(db, { userId, workoutId: slotId(id, day(0, 4)), toDate: day(0, 5), toTime: "19:30", source: "app", corosWritesEnabled: false });
+      await applyMove(db, { userId, workoutId: slotId(id, day(0, 4)), toDate: day(0, 5), toTime: "18:15", source: "app", corosWritesEnabled: false });
       return id;
     };
     const startCourseWhole = async () => {
@@ -2324,13 +2324,13 @@ describe("restarting: the same plan comes back (R28)", () => {
   it("a running plan whose settings no longer read is put right the same way, not left to throw", async () => {
     await db.insert(programs).values({ id: "old", userId, kind: "course", name: "Intro", status: "active", disciplines: ["yoga"], config: { course: COURSE, someOldKey: 1 }, createdAt: NOW, updatedAt: NOW });
     expect(await started()).toBe("old");
-    expect(courseConfigSchema.parse((await planOf("old")).config)).toMatchObject({ course: COURSE, weekdays: [0, 4], time: "19:30" });
+    expect(courseConfigSchema.parse((await planOf("old")).config)).toMatchObject({ course: COURSE, weekdays: [0, 4], time: "18:15" });
   });
 
   it("a stored config that no longer reads is replaced by what's asked for", async () => {
     await db.insert(programs).values({ id: "old", userId, kind: "course", name: "Intro", status: "retired", disciplines: ["yoga"], config: { course: COURSE, someOldKey: 1 }, createdAt: NOW, updatedAt: NOW });
     expect(await started()).toBe("old");
-    expect(courseConfigSchema.parse((await planOf("old")).config)).toMatchObject({ course: COURSE, weekdays: [0, 4], time: "19:30" });
+    expect(courseConfigSchema.parse((await planOf("old")).config)).toMatchObject({ course: COURSE, weekdays: [0, 4], time: "18:15" });
   });
 
   it("the list moves it back out of Past plans, and its sessions planned since are taken in", async () => {

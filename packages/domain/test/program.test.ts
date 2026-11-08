@@ -143,11 +143,11 @@ describe("how a plan ends", () => {
   });
 
   it("a course's config needs a real day and time", () => {
-    expect(courseConfigSchema.safeParse({ course: "tre", weekdays: [], time: "19:30" }).success).toBe(false);
-    expect(courseConfigSchema.safeParse({ course: "tre", weekdays: [0, 0], time: "19:30" }).success).toBe(false);
+    expect(courseConfigSchema.safeParse({ course: "tre", weekdays: [], time: "18:15" }).success).toBe(false);
+    expect(courseConfigSchema.safeParse({ course: "tre", weekdays: [0, 0], time: "18:15" }).success).toBe(false);
     expect(courseConfigSchema.safeParse({ course: "tre", weekdays: [0, 4], time: "25:00" }).success).toBe(false);
-    expect(courseConfigSchema.safeParse({ course: "tre", weekdays: [7], time: "19:30" }).success).toBe(false);
-    const ok = courseConfigSchema.parse({ course: "tre", weekdays: [0, 4], time: "19:30" });
+    expect(courseConfigSchema.safeParse({ course: "tre", weekdays: [7], time: "18:15" }).success).toBe(false);
+    const ok = courseConfigSchema.parse({ course: "tre", weekdays: [0, 4], time: "18:15" });
     expect(ok).toMatchObject({ quietDaysBeforeRace: 7, placementWeeksAhead: 2, easeNext: false });
   });
 });

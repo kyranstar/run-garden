@@ -98,7 +98,7 @@ const row = async (id: string) => (await db.select().from(plannedWorkouts).where
 const revisionsOf = (id: string) => db.select().from(workoutDocRevisions).where(eq(workoutDocRevisions.workoutId, id));
 const cookieFor = async (owner = userId): Promise<string> => `${SESSION_COOKIE}=${await createSession(db, owner)}`;
 
-/** A running course on Monday and Friday at 19:30, unless a test says otherwise. */
+/** A running course on Monday and Friday at 18:15, unless a test says otherwise. */
 async function seedCourse(config: Partial<CourseConfig> = {}, over: Partial<typeof programs.$inferInsert> = {}): Promise<string> {
   const id = over.id ?? newId();
   await db.insert(programs).values({
@@ -112,7 +112,7 @@ async function seedCourse(config: Partial<CourseConfig> = {}, over: Partial<type
     endDate: null,
     raceDate: null,
     source: null,
-    config: courseConfigSchema.parse({ course: INTRO_COURSE.id, weekdays: [0, 4], time: "19:30", placementWeeksAhead: 1, ...config }),
+    config: courseConfigSchema.parse({ course: INTRO_COURSE.id, weekdays: [0, 4], time: "18:15", placementWeeksAhead: 1, ...config }),
     onEnd: "continue",
     createdAt: NOW,
     updatedAt: NOW,
@@ -134,7 +134,7 @@ async function outline(planId: string, date: string, completionState = "schedule
   const id = over.id ?? slotId(planId, date);
   await db.insert(plannedWorkouts).values({
     id, userId, planId, sourceWorkoutId: id, title: "Evening practice", category: "yoga", sport: "yoga", originalPlanDate: date, lastVerifiedCorosDate: "",
-    effectiveDate: date, effectiveTime: "19:30", sourceContentFingerprint: "program", calendarBlockDurationSeconds: 900, origin: "program", contentState: "outline",
+    effectiveDate: date, effectiveTime: "18:15", sourceContentFingerprint: "program", calendarBlockDurationSeconds: 900, origin: "program", contentState: "outline",
     completionState, createdAt: NOW, updatedAt: NOW, ...over,
   });
   return id;
@@ -145,7 +145,7 @@ async function written(planId: string, date: string, n: number, completionState 
   const id = over.id ?? newId();
   await db.insert(plannedWorkouts).values({
     id, userId, planId, sourceWorkoutId: id, title: `Intro ${n}`, category: "yoga", sport: "yoga", originalPlanDate: date, lastVerifiedCorosDate: "", effectiveDate: date,
-    effectiveTime: "19:30", sourceContentFingerprint: "studio", fallbackEstimatedDurationSeconds: 660, calendarBlockDurationSeconds: 900, origin: "studio", contentState: "outline",
+    effectiveTime: "18:15", sourceContentFingerprint: "studio", fallbackEstimatedDurationSeconds: 660, calendarBlockDurationSeconds: 900, origin: "studio", contentState: "outline",
     completionState, courseSession: n, createdAt: NOW, updatedAt: NOW, workoutDoc: JSON.stringify(INTRO_COURSE.sessionDoc(n, { ease: false })), workoutDocRev: 1, ...over,
   });
   return id;
@@ -385,7 +385,7 @@ describe("marking a session done", () => {
     const setRow = (id: string, values: Partial<typeof plannedWorkouts.$inferInsert>) => (d: Db) => run(d.update(plannedWorkouts).set(values).where(eq(plannedWorkouts.id, id)));
     const matchIt = (id: string) => (d: Db) => {
       const activityId = newId();
-      run(d.insert(activities).values({ id: activityId, userId, corosActivityId: `c-${activityId}`, source: "coros", startTime: `${MON}T19:30:00Z`, startTimeLocal: `${MON}T12:30:00`, timezone: "America/Los_Angeles", sport: "yoga", durationSeconds: 600, sourceMergeConfidence: 1, createdAt: NOW, updatedAt: NOW }));
+      run(d.insert(activities).values({ id: activityId, userId, corosActivityId: `c-${activityId}`, source: "coros", startTime: `${MON}T18:15:00Z`, startTimeLocal: `${MON}T12:30:00`, timezone: "America/Los_Angeles", sport: "yoga", durationSeconds: 600, sourceMergeConfidence: 1, createdAt: NOW, updatedAt: NOW }));
       run(d.insert(workoutCompletionMatches).values({ id: newId(), workoutId: id, activityId, confidence: 1, method: "manual", matchedAt: NOW }));
     };
     const saveIt = (id: string) => (d: Db) => run(d.insert(performedSessions).values({ id: newId(), userId, workoutId: id, source: "app", localDate: MON, movesDone: [], payloadHash: "h", createdAt: NOW, updatedAt: NOW }));
@@ -534,7 +534,7 @@ describe("marking a session done", () => {
 async function linkOpen(workoutId: string, undoneAt: string | null = null): Promise<string> {
   const activityId = newId();
   await db.insert(activities).values({
-    id: activityId, userId, corosActivityId: `c-${activityId}`, source: "coros", startTime: `${MON}T19:30:00Z`, startTimeLocal: `${MON}T12:30:00`, timezone: "America/Los_Angeles",
+    id: activityId, userId, corosActivityId: `c-${activityId}`, source: "coros", startTime: `${MON}T18:15:00Z`, startTimeLocal: `${MON}T12:30:00`, timezone: "America/Los_Angeles",
     sport: "yoga", durationSeconds: 600, sourceMergeConfidence: 1, createdAt: NOW, updatedAt: NOW,
   });
   await db.insert(workoutCompletionMatches).values({ id: newId(), workoutId, activityId, confidence: 1, method: "manual", matchedAt: NOW, undoneAt });
@@ -1123,7 +1123,7 @@ describe("the garden", () => {
       provider: "coros",
       providerActivityId: id,
       startTime: "2026-10-06T02:30:00Z",
-      startTimeLocal: "2026-10-05T19:30:00",
+      startTimeLocal: "2026-10-05T18:15:00",
       sport: "yoga",
       durationSeconds: 660,
       contentFingerprint: `fp-${id}`,
@@ -1160,7 +1160,7 @@ describe("the garden", () => {
       await mark(id, true);
       const activityId = newId();
       await db.insert(activities).values({
-        id: activityId, userId, corosActivityId: `c-${activityId}`, source: "coros", startTime: `${MON}T19:30:00Z`, startTimeLocal: `${MON}T12:30:00`, timezone: "America/Los_Angeles",
+        id: activityId, userId, corosActivityId: `c-${activityId}`, source: "coros", startTime: `${MON}T18:15:00Z`, startTimeLocal: `${MON}T12:30:00`, timezone: "America/Los_Angeles",
         sport: "yoga", durationSeconds: 600, sourceMergeConfidence: 1, createdAt: NOW, updatedAt: NOW,
       });
       const res = await mountRoutes(db, "/api/plan", planRoutes).request(
@@ -1178,7 +1178,7 @@ describe("the garden", () => {
       const linkManually = async (id: string) => {
         const activityId = newId();
         await db.insert(activities).values({
-          id: activityId, userId, corosActivityId: `c-${activityId}`, source: "coros", startTime: `${MON}T19:30:00Z`, startTimeLocal: `${MON}T12:30:00`, timezone: "America/Los_Angeles",
+          id: activityId, userId, corosActivityId: `c-${activityId}`, source: "coros", startTime: `${MON}T18:15:00Z`, startTimeLocal: `${MON}T12:30:00`, timezone: "America/Los_Angeles",
           sport: "yoga", durationSeconds: 600, sourceMergeConfidence: 1, createdAt: NOW, updatedAt: NOW,
         });
         const res = await mountRoutes(db, "/api/plan", planRoutes).request(
