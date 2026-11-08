@@ -1,5 +1,19 @@
 import { z } from "zod";
-import { courseConfigSchema, defaultOnEnd, isLocalDate, planOnEndSchema, planPrompt, PLAN_BRIEF_MAX, PLAN_OBJECTIVES_MAX, PLAN_PURPOSE_MAX, type PlanOnEnd, type ProgramKind, type TrainingLine } from "@rg/domain";
+import {
+  courseConfigSchema,
+  defaultOnEnd,
+  isLocalDate,
+  planOnEndSchema,
+  planPrompt,
+  PLAN_BRIEF_MAX,
+  PLAN_OBJECTIVES_MAX,
+  PLAN_PURPOSE_MAX,
+  type PlanDraftState,
+  type PlanOnEnd,
+  type PlanPrompt,
+  type ProgramKind,
+  type TrainingLine,
+} from "@rg/domain";
 import { courseDefinition } from "@rg/workout";
 
 /**
@@ -15,6 +29,10 @@ import { courseDefinition } from "@rg/workout";
  *    course's numbers or words; null for any other kind, and with a definition gone or settings that don't read.
  *  - `prompt`: what the one rule (`planPrompt`, @rg/domain) says of the plan today, the same the chip reads: the tappable line the row shows,
  *    or null. Its last session comes with the row (`lastSessionDate`, computed in the same read: `planLastDaySql`), never stored.
+ *    With drafts on (plans with a purpose §4.2) a coach plan that continues also brings what the hourly draft made of its endings
+ *    (`drafts`, read in the same statement: plan-ending.ts `planDraftsSql`), and `draftStateOf` reads it: its next stretch ready
+ *    while a proposal naming it waits; for this ending, its draft due, at work, or over — and why, as the prompt's `note`, which
+ *    the wire carries only when it says something (drafts off, every prompt is as it was, byte for byte).
  */
 
 /** The kinds that are plans. */
@@ -62,7 +80,76 @@ export interface PlanSummaryDto {
   lineKey: string | null;
   listedAs: string | null;
   course: { session: number; of: number } | { after: string } | null;
-  prompt: { kind: "whats_next" | "draft_ready"; label: string; request: string } | null;
+  /** `note`: what happened to the plan's draft, when it came to nothing (drafts on only); absent otherwise. */
+  prompt: { kind: "whats_next" | "draft_ready"; label: string; request: string; note?: string } | null;
+}
+
+/**
+ * What the hourly draft has made of a coach plan's endings (plans with a purpose §4.2), read with the plan (plan-ending.ts
+ * `planDraftsSql`) while drafts are on: each ending's key (`plan-draft:<planId>:<lastSessionDate>`, newest first) with the
+ * run it started, or the outcome when none started, the run's status and its proposal's — and whether a proposal that names
+ * the plan waits for the athlete. Nothing of it is stored twice: a draft is over when its run is.
+ */
+export interface PlanDraftFacts {
+  keys: Array<{
+    /** The ending the key is for: its last session's date. */
+    lastSessionDate: string;
+    runId: string | null;
+    /** Why no run started (`week_budget`); null when one did. */
+    outcome: string | null;
+    /** Its run is still at work (a live status). */
+    runLive: boolean;
+    /** Its run's proposal reached the athlete (made pending once: whatever came of it since). */
+    proposalSeen: boolean;
+    /** Its run's proposal still has something for the athlete to decide, today or later, and isn't past its day. */
+    proposalOpen: boolean;
+  }>;
+  /** A proposal that names the plan — a workout filed under it or a block of it, or a change to its shape — waits. */
+  waiting: boolean;
+}
+
+/**
+ * What the rule is told of a plan's draft (plans with a purpose §4.2): nothing with drafts off, or for any plan but a coach
+ * plan that continues — the rule as it was. Otherwise its next stretch is ready while a proposal waits that names it, or that
+ * one of its drafts made; and this ending's draft (the key for its last day) is due when there is no key yet, at work while
+ * its run is live, else over — with no run started (the week's budget), with no proposal that reached the athlete, or with
+ * one they decided.
+ */
+export function draftOf(row: Pick<PlanEndingRow, "kind" | "lastDay" | "drafts">, onEnd: PlanOnEnd): { hasDraft: boolean; draft?: PlanDraftState } {
+  const f = row.drafts;
+  if (!f || row.kind !== "coach" || onEnd !== "continue") return { hasDraft: false };
+  const hasDraft = f.waiting || f.keys.some((k) => k.proposalOpen);
+  const key = row.lastDay === null ? undefined : f.keys.find((k) => k.lastSessionDate === row.lastDay);
+  if (!key) return { hasDraft, draft: { kind: "due" } };
+  if (key.runId === null) return { hasDraft, draft: { kind: "over", outcome: key.outcome === "week_budget" ? "week_budget" : "no_proposal" } };
+  if (key.runLive) return { hasDraft, draft: { kind: "live" } };
+  return { hasDraft, draft: { kind: "over", outcome: key.proposalSeen ? "decided" : "no_proposal" } };
+}
+
+/** A draft facts column as read (JSON text, plan-ending.ts `planDraftsSql`): null for none, or one that doesn't read. */
+export function draftFactsOf(text: string | null | undefined): PlanDraftFacts | undefined {
+  if (typeof text !== "string") return undefined;
+  try {
+    const raw = JSON.parse(text) as { keys?: unknown; waiting?: unknown };
+    const keys = (Array.isArray(raw.keys) ? raw.keys : []).flatMap((k): PlanDraftFacts["keys"] => {
+      const x = k as Record<string, unknown>;
+      const date = typeof x.id === "string" ? x.id.slice(x.id.lastIndexOf(":") + 1) : "";
+      if (!isLocalDate(date)) return [];
+      return [
+        {
+          lastSessionDate: date,
+          runId: typeof x.runId === "string" ? x.runId : null,
+          outcome: typeof x.outcome === "string" ? x.outcome : null,
+          runLive: x.runLive === 1 || x.runLive === true,
+          proposalSeen: x.proposalSeen === 1 || x.proposalSeen === true,
+          proposalOpen: x.proposalOpen === 1 || x.proposalOpen === true,
+        },
+      ];
+    });
+    return { keys, waiting: raw.waiting === 1 || raw.waiting === true };
+  } catch {
+    return undefined;
+  }
 }
 
 /** The columns of a `programs` row a summary reads. */
@@ -85,6 +172,8 @@ export interface PlanRow {
   lastSessionDate: string | null;
   /** The disciplines of its blocks that aren't stopped, as a training line speaks them; [] for a plan with no blocks. */
   blockDisciplines: readonly string[];
+  /** With drafts on, a coach plan's: what the hourly draft made of its endings (`planDraftsSql`). Absent with drafts off. */
+  drafts?: PlanDraftFacts;
 }
 
 /** `programs.disciplines`' words back to a training line's. */
@@ -109,6 +198,9 @@ export interface PlanEndingRow {
   /** The disciplines of the plan's blocks that aren't stopped, as a training line speaks them ("run", "lift", "mobility"). */
   blockDisciplines: readonly string[];
   lastDay: string | null;
+  /** With drafts on, a coach plan's: what the hourly draft made of its endings, read with the row. Absent with drafts off,
+   * and the rule is then the one it always was. */
+  drafts?: PlanDraftFacts;
 }
 
 /**
@@ -139,23 +231,38 @@ export function plansSuperseded(rows: readonly PlanEndingRow[], today: string): 
   return out;
 }
 
-/** What the rule says of a plan today (a draft is not yet something a plan can hold: Piece 5). The one reading of it. */
-export function promptOfPlan(row: PlanEndingRow, today: string, superseded: ReadonlySet<string> = new Set()): PlanSummaryDto["prompt"] {
-  if (superseded.has(row.id)) return null;
+/** How a plan ends, as the rule reads it: its row's own, else its kind's (`defaultOnEnd`: a coach plan of running asks). */
+export function planOnEndOf(row: Pick<PlanEndingRow, "onEnd" | "kind" | "disciplines">): PlanOnEnd {
   const parsed = planOnEndSchema.safeParse(row.onEnd);
+  return parsed.success ? parsed.data : defaultOnEnd(row.kind, row.disciplines);
+}
+
+/** What the rule says of a plan today — with drafts on, of a coach plan that continues, its draft too (`draftOf`). The one
+ * reading of it. */
+export function promptOfPlan(row: PlanEndingRow, today: string, superseded: ReadonlySet<string> = new Set()): PlanPrompt | null {
+  if (superseded.has(row.id)) return null;
+  const onEnd = planOnEndOf(row);
+  const { hasDraft, draft } = draftOf(row, onEnd);
   return planPrompt(
     {
       kind: row.kind,
-      onEnd: parsed.success ? parsed.data : defaultOnEnd(row.kind, row.disciplines),
+      onEnd,
       status: row.status === "retired" || row.status === "archived" ? "retired" : "active",
       pausedUntil: row.pausedUntil,
       name: row.name,
       discipline: planSport(row),
       lastSessionDate: row.lastDay,
-      hasDraft: false,
+      hasDraft,
+      ...(draft ? { draft } : {}),
     },
     today,
   );
+}
+
+/** A prompt as the wire carries it: its note only when it says something, so with drafts off it is what it always was. */
+export function promptDto(p: PlanPrompt | null): PlanSummaryDto["prompt"] {
+  if (!p) return null;
+  return { kind: p.kind, label: p.label, request: p.request, ...(p.note ? { note: p.note } : {}) };
 }
 
 /** Where a course plan has got to. */
@@ -195,11 +302,22 @@ export function planSummaryOf(row: PlanRow, lineKeys: ReadonlyMap<string, string
     lineKey: lineKeys.get(row.id) ?? null,
     listedAs: kind === "coach" ? studioPlanId : kind === "adaptive" || kind === "course" ? row.id : null,
     course: courseLabel(row),
-    prompt: promptOfPlan(endingRowOf(row), today, superseded),
+    prompt: promptDto(promptOfPlan(endingRowOf(row), today, superseded)),
   };
 }
 
 /** A plan's row as the rule that asks what comes next reads it. */
 export function endingRowOf(row: PlanRow): PlanEndingRow {
-  return { id: row.id, kind: row.kind as ProgramKind, name: row.name, status: row.status, onEnd: row.onEnd, pausedUntil: row.pausedUntil, disciplines: row.disciplines, blockDisciplines: row.blockDisciplines, lastDay: row.lastSessionDate };
+  return {
+    id: row.id,
+    kind: row.kind as ProgramKind,
+    name: row.name,
+    status: row.status,
+    onEnd: row.onEnd,
+    pausedUntil: row.pausedUntil,
+    disciplines: row.disciplines,
+    blockDisciplines: row.blockDisciplines,
+    lastDay: row.lastSessionDate,
+    ...(row.drafts ? { drafts: row.drafts } : {}),
+  };
 }

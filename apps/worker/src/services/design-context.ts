@@ -20,7 +20,8 @@
  * logged says so), the events within the scope's horizon, the scope, the availability index (counts and dates, never
  * contents; each date by its day's name and how far from today, the watch's last sync, the suggestions still open,
  * today's declines, what the library holds — fix wave 13: I6, 13b §1, R8, I2), for a reviewer the days around its
- * draft's (plan and log, I9), and the request.
+ * draft's (plan and log, I9), and the request — the athlete's own words, or, for a plan's draft (plans with a purpose
+ * §4.2: `origin`), the app's request said as the app's (`DRAFT_REQUEST_LINE`), never as theirs.
  *
  * Untrusted text — the request, the athlete's words in the profile, memory items, a sub-run's brief — goes in only
  * through `markUntrusted`, the one marker the shared prefix explains; nothing inside it can close its block. A
@@ -188,7 +189,14 @@ export interface DesignRun {
   /** A drift chip's run (where you stand, spec §7.2): the chip's id — a main run's opening message names what it saw
    * and carries the diagnose-first lines (design-prompt.ts DIAGNOSE_LINES). */
   diagnose?: string | null;
+  /** Who asked (plans with a purpose §4.2): `plan_draft`, the app drafting a plan's next stretch — the request is then the
+   * app's (`DRAFT_REQUEST_LINE`), never "the athlete's request, in their own words"; a sub-run's is its main run's. */
+  origin?: "plan_draft" | null;
 }
+
+/** What heads a plan's draft's request in its opening message (plans with a purpose §4.2): the app's, not the athlete's. */
+export const DRAFT_REQUEST_LINE =
+  "The app's request, sent for the athlete as one of their plans that continues comes near its end — not their words, and they aren't here to answer. Read the plan's purpose and brief, propose its next stretch and finish; nothing changes until they approve it:";
 
 export interface DesignContext {
   system: SystemBlock[];
@@ -1467,7 +1475,9 @@ function header(r: Reads, run: DesignRun, role: Role, scope: { kind: ScopeKind; 
   // A fit-in run told its batch (the saves flow, §12.1) has the whole section, whatever its words.
   const saves = role === "main" && r.saves ? savesSection(r.saves, r, asksAboutSaves(run.request) || !!run.savesBatchId) : null;
   if (saves) parts.push(saves);
-  parts.push(run.request ? `The athlete's request, in their own words:\n${athlete(run.request)}` : NO_REQUEST[role]);
+  // A plan's draft's request is the app's (plans with a purpose §4.2), marked as the data it carries (the plan's name).
+  if (run.request && run.origin === "plan_draft") parts.push(`${DRAFT_REQUEST_LINE}\n${markUntrusted("plan draft", run.request)}`);
+  else parts.push(run.request ? `The athlete's request, in their own words:\n${athlete(run.request)}` : NO_REQUEST[role]);
   return parts.join("\n\n");
 }
 

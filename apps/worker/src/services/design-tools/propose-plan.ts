@@ -15,7 +15,8 @@
  * A NEW BLOCK SAYS WHICH PLAN IT BELONGS TO (plans with a purpose §3.2): `continuesPlanId`, a plan of this account's that
  * is active and the coach's (`programs.id`, as read_plans gives it), or `newPlan` — its name, purpose (200 characters),
  * brief (1,000) and ending, which comes from the plan's sport (`defaultOnEnd`) when it isn't given. Dates decide
- * nothing. The apply links the block, and makes the plan, in one batch (coach-apply.ts `structuralStep`).
+ * nothing. The apply links the block, and makes the plan, in one batch (coach-apply.ts `structuralStep`). In a run for a
+ * plan (a plan's draft, §4.2: `ctx.run.planId`), a new block that names neither continues that plan.
  *
  * REFUSED, each teachable, nothing written:
  *  - a new block naming neither a plan to continue nor a new plan, or both (`plan_unnamed`); a plan to continue that isn't
@@ -365,8 +366,10 @@ export const proposePlan: DesignTool = {
     }
     const dates = badDates(op);
     if (dates) return refuse("bad_dates", dates, "Fix the dates and call it again.");
-    // A new block belongs to a plan, and says which (plans with a purpose §3.2): dates decide nothing.
+    // A new block belongs to a plan, and says which (plans with a purpose §3.2): dates decide nothing. In a run for a plan
+    // (a plan's draft, §4.2) a block that names neither continues that plan.
     if (op.kind === "createPlan") {
+      if (!op.continuesPlanId && !op.newPlan && ctx.run.planId) op.continuesPlanId = ctx.run.planId;
       if (!!op.continuesPlanId === !!op.newPlan) {
         return refuse(
           "plan_unnamed",

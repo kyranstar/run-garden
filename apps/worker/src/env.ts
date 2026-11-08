@@ -29,6 +29,11 @@ export interface Env {
   COACH_STEP_ALARM?: string;
   /** The coach's run stepper, one object per main run (`CoachRunStepper`, SQLite-backed). Absent: the switch is off. */
   COACH_RUN_STEPPER?: DurableObjectNamespace;
+  /** "1" lets the hourly pass draft a coach plan's next stretch when the plan continues and is ending (plans with a
+   * purpose §4.2; plan-drafts.ts): one coach run per ending, the only spend the athlete doesn't start. On only with the
+   * step alarm too (`planDraftsOn`: a run with no alarm never steps) and the coach designer. Anything else, absent
+   * everywhere until the owner turns it on: no draft, and every plan asks as it did. Var. */
+  PLAN_DRAFTS?: string;
   /** "1" runs the THREAD coach (the old Plan coach, coach-wake.ts): Plan visits advise wakes, `/wake`, `/message` and a
    * question's answer wake it, and `/state` and the hourly cron mark its triggers. Anything else (absent in production,
    * §8 §6): it has stepped back — its routes answer for cached old clients without a wake, its old proposals stay

@@ -197,7 +197,13 @@ export function CoachConversation({ ctx, loopDeps, request = null, seeing: seenA
   const extra = useMemo<ProvisionalTurn[]>(() => {
     const out = [...sent];
     if (foundLive && !out.some((s) => s.runId === foundLive.run.id)) {
-      out.push({ runId: foundLive.run.id, words: foundLive.run.request, at: foundLive.run.createdAt, status: foundLive.run.status });
+      out.push({
+        runId: foundLive.run.id,
+        words: foundLive.run.request,
+        at: foundLive.run.createdAt,
+        status: foundLive.run.status,
+        ...(foundLive.run.origin === "plan_draft" ? { from: "app" as const } : {}),
+      });
     }
     return out;
   }, [sent, foundLive]);
@@ -482,7 +488,8 @@ export function CoachConversation({ ctx, loopDeps, request = null, seeing: seenA
             <ol className="coach-turns">
               {turns.map((t, i) => (
                 <li key={t.runId} className="coach-turn">
-                  {t.words ? <p className="coach-msg coach-msg--athlete">{t.words}</p> : null}
+                  {/* The athlete's words in their bubble; the app's own ask (a plan's draft) as a quiet line of the app's. */}
+                  {t.words ? <p className={t.from === "app" ? "coach-msg coach-msg--app" : "coach-msg coach-msg--athlete"}>{t.words}</p> : null}
                   {t.runId === liveId && (working || isLive(t.status)) && liveAnswer === null ? (
                     <CoachBoundary>
                       {liveRun && liveStatus ? (

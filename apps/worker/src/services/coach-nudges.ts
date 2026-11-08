@@ -41,7 +41,9 @@ import { driftCoveredBy, driftNudge, driftsOf, readStandFacts, type Drift } from
  * then says what the coach should know ("Plan what comes after my running plan — it ends in 12 days."), so "asked" is the
  * label in the words of one of the athlete's own runs, read alike whatever the case, spacing or punctuation (`asWords`):
  * the chip's own request sent counts, one sent yesterday with its count a day off counts, and so does the athlete typing
- * the chip's words themselves.
+ * the chip's words themselves. A plan's draft, which the hourly pass starts (plans with a purpose §4.2), is none of the
+ * athlete's asks. With drafts on (`readCoachOpening`'s `drafts`), a coach plan that continues asks what comes next only once
+ * its draft for the ending is over without a proposal waiting, and its request then says what happened.
  *
  * THE OPENING'S OWN LINE (stream H; coach-opening-line.ts words it) comes from the same reads: last week's review (the
  * Monday cron's, already paid for) while the athlete hasn't asked the coach anything since it was written; else the
@@ -151,11 +153,12 @@ export const SESSION_MIN_SECONDS = 300;
 const NEWS_SPORTS = new Set(["run", "strength", "yoga"]);
 
 /** The "needs you" chips alone. */
-export async function readNudges(db: Db, userId: string, prefs: UserPreferences, today: LocalDate, now: Date): Promise<CoachNudge[]> {
-  return (await readCoachOpening(db, userId, prefs, today, now)).nudges;
+export async function readNudges(db: Db, userId: string, prefs: UserPreferences, today: LocalDate, now: Date, o: { drafts?: boolean } = {}): Promise<CoachNudge[]> {
+  return (await readCoachOpening(db, userId, prefs, today, now, new Set(), o)).nudges;
 }
 
-/** The opening screen's read: its own line (none already shown here, `seen`) and the "needs you" chips. */
+/** The opening screen's read: its own line (none already shown here, `seen`) and the "needs you" chips. `drafts`
+ * (plan-drafts.ts `planDraftsOn`): a coach plan that continues asks as its draft says (plans with a purpose §4.2). */
 export async function readCoachOpening(
   db: Db,
   userId: string,
@@ -163,6 +166,7 @@ export async function readCoachOpening(
   today: LocalDate,
   now: Date,
   seen: ReadonlySet<string> = new Set(),
+  o: { drafts?: boolean } = {},
 ): Promise<CoachOpeningRead> {
   const lastWeek = addDays(startOfIsoWeek(today), -7);
   const [stand, missedRows, recent, plans, endings, reviews] = await Promise.all([
@@ -234,8 +238,8 @@ export async function readCoachOpening(
       .from(coachPlans)
       .where(and(eq(coachPlans.userId, userId), eq(coachPlans.status, "active"))),
     // The plans that can ask what comes next, each with its computed last day (plan-ending.ts): a coach plan whether or not
-    // a training line holds it, a COROS plan, a Studio-held plan, one that has run out.
-    readPlanEndings(db, userId, today),
+    // a training line holds it, a COROS plan, a Studio-held plan, one that has run out — with drafts on, its draft too.
+    readPlanEndings(db, userId, today, { drafts: o.drafts === true }),
     // Last week's review, written by Monday's cron (its narrative already paid for).
     db
       .select({ weekStart: weeklyReviews.weekStart, narrative: weeklyReviews.narrative, createdAt: weeklyReviews.createdAt })
@@ -395,7 +399,15 @@ export async function readCoachOpening(
       diagnose: sql<string | null>`case when json_valid(${coachRuns.state}) then json_extract(${coachRuns.state}, '$.settings.diagnose') end`,
     })
     .from(coachRuns)
-    .where(and(eq(coachRuns.userId, userId), isNull(coachRuns.parentId), gte(coachRuns.createdAt, since)))
+    .where(
+      and(
+        eq(coachRuns.userId, userId),
+        isNull(coachRuns.parentId),
+        gte(coachRuns.createdAt, since),
+        // A plan's draft (plans with a purpose §4.2) is the app's ask, never the athlete's.
+        sql`coalesce(case when json_valid(${coachRuns.state}) then json_extract(${coachRuns.state}, '$.settings.origin') end, '') <> 'plan_draft'`,
+      ),
+    )
     .orderBy(desc(coachRuns.createdAt))
     .limit(RECENT_ASKS_MAX);
   const recentAsks = asked.filter((r) => r.createdAt >= window);

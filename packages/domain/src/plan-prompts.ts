@@ -14,8 +14,15 @@ import { lineSentenceName } from "./training-lines.js";
  * today or ahead. Past that it says nothing. `lastSessionDate`
  * is the later of the plan's last session and its last outline week, which the caller works out from the rows and
  * the blocks (nothing is stored): a plan with a phase or an outline week still ahead is not ending. A retired plan,
- * a paused one, one that finishes, a course and a programme never prompt. A plan with a draft ready (`hasDraft`)
- * prompts to review it, whatever its end.
+ * a paused one, one that finishes, a course and a programme never prompt. A plan with its next stretch ready
+ * (`hasDraft`: a proposal that names it waits for the athlete) says so, whatever its end: "Next stretch ready for my
+ * lifting plan". That line is never sent as a request: a tap opens where the proposal already is.
+ *
+ * WITH DRAFTS ON (plans with a purpose §4.2), a coach plan that continues is drafted for, once an ending, by the hourly
+ * pass, and the caller says where this ending's draft stands (`draft`): while it is due or its run is at work the plan
+ * asks nothing; once it is over without a proposal waiting the question comes back, and says plainly what happened
+ * (`note`, also carried in its request): the week's budget spent, or no proposal came of it. A plan that asks, and every
+ * other kind, never drafts: `draft` absent is the rule as it was, word for word (drafts off).
  *
  * Its words are the app's: the plan's sport as the chip has always said it ("my running plan"), or the plan's own
  * name when it has none. Nothing here is a plan's: no course, no person.
@@ -42,13 +49,35 @@ export interface PlanPromptInput {
   discipline: "run" | "lift" | "mobility" | null;
   /** The later of the plan's last session and its last outline week; null when it has neither. */
   lastSessionDate: string | null;
+  /** A proposal that names the plan waits for the athlete: its next stretch is ready to review. */
   hasDraft: boolean;
+  /**
+   * With drafts on, a coach plan that continues: where this ending's draft stands. Absent: drafts are off, or the plan
+   * doesn't draft — the rule as it was. Ignored for any plan but a coach plan that continues.
+   */
+  draft?: PlanDraftState;
 }
+
+/**
+ * Where a plan's draft for its ending stands (plans with a purpose §4.2), as the caller reads it from the draft's key and
+ * its run: none yet (`due`: the hourly pass starts one), its run at work (`live`), or over with no proposal waiting —
+ * because the week couldn't pay for it, no proposal came of it, or the athlete has decided what it proposed.
+ */
+export type PlanDraftState = { kind: "due" } | { kind: "live" } | { kind: "over"; outcome: PlanDraftOutcome };
+export type PlanDraftOutcome = "week_budget" | "no_proposal" | "decided";
+
+/** What a plan's question says of a draft that came to nothing, plainly (spec §4.2): the row shows it, the request carries it. */
+export const PLAN_DRAFT_NOTES: Readonly<Record<Exclude<PlanDraftOutcome, "decided">, string>> = {
+  week_budget: "The coach didn't draft it: this week's AI budget was spent.",
+  no_proposal: "The coach's draft ended without a suggestion.",
+};
 
 export interface PlanPrompt {
   kind: "whats_next" | "draft_ready";
   label: string;
   request: string;
+  /** What happened to the plan's draft, in plain words, when it came to nothing; null otherwise. */
+  note: string | null;
 }
 
 const inDays = (days: number): string => (days === 0 ? "today" : days === 1 ? "tomorrow" : `in ${days} days`);
@@ -63,16 +92,22 @@ export function planPrompt(plan: PlanPromptInput, today: string): PlanPrompt | n
   if (plan.onEnd === "finish" || !onEndAllowed(plan.kind, plan.onEnd)) return null;
   const it = plan.discipline ? lineSentenceName(plan.discipline) : plan.name;
   if (plan.hasDraft) {
-    const label = `Review the draft for ${it}`;
-    return { kind: "draft_ready", label, request: `${label}.` };
+    const label = `Next stretch ready for ${it}`;
+    return { kind: "draft_ready", label, request: `${label}.`, note: null };
   }
   const last = plan.lastSessionDate;
   if (last === null || !isLocalDate(last) || last > addDays(today, PLAN_PROMPT_DAYS)) return null;
   // The tail after the end is for a plan that asks: a plan that continues on its own has nothing to ask once it has run
   // out (its sheet says "Continues on its own"), so it prompts only while its last day is today or ahead (ruling R8).
   if (last < addDays(today, plan.onEnd === "ask" ? -PLAN_PROMPT_DAYS : 0)) return null;
+  // A coach plan that continues, with drafts on: nothing to ask while its draft is due or at work; once it is over
+  // without a proposal waiting, the question, with what happened.
+  const draft = plan.kind === "coach" && plan.onEnd === "continue" ? plan.draft : undefined;
+  if (draft && draft.kind !== "over") return null;
+  const note = draft?.kind === "over" && draft.outcome !== "decided" ? PLAN_DRAFT_NOTES[draft.outcome] : null;
   const label = `Plan what comes after ${it}`;
   const days = daysBetween(today, last);
   // A plan that has run out stays available, quietly: nothing is marked missed and nothing scolds (spec §4.1).
-  return { kind: "whats_next", label, request: `${label} — it ${days < 0 ? `ended ${ago(-days)}` : `ends ${inDays(days)}`}.` };
+  const request = `${label} — it ${days < 0 ? `ended ${ago(-days)}` : `ends ${inDays(days)}`}.`;
+  return { kind: "whats_next", label, request: note ? `${request} ${note}` : request, note };
 }

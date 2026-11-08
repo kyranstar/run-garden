@@ -1487,6 +1487,8 @@ export interface CoachRunDto {
   ceilingUsd: number | null;
   /** What the athlete asked from (coach everywhere, A1); absent when they asked from nowhere in particular. */
   focus?: CoachRunFocus;
+  /** Who asked (plans with a purpose §4.2): `plan_draft`, the app — its `request` is the app's words; absent, the athlete. */
+  origin?: "plan_draft";
 }
 
 /** The design proposal a run holds open: its id, its status and its flags (a stop's note among them). */
@@ -1599,8 +1601,10 @@ export interface CoachConversationCardDto {
 export interface CoachConversationTurnDto {
   runId: string;
   at: string;
-  /** The athlete's request, as they wrote it (untrusted text: rendered as text). */
+  /** The athlete's request, as they wrote it (untrusted text: rendered as text) — or the app's (`from`). */
   words: string | null;
+  /** `app`: the words are the app's, not the athlete's (a plan's draft, plans with a purpose §4.2). Absent: the athlete's. */
+  from?: "app";
   status: CoachRunStatus;
   /** The coach's finish line or answer, plain words; null while the run works (or when it stopped with none). */
   line: string | null;
@@ -1865,8 +1869,13 @@ export interface PlanSummaryDto {
   listedAs: string | null;
   /** A course's: where it has got to while it counts sessions, then its own words for what comes after; null otherwise. */
   course: { session: number; of: number } | { after: string } | null;
-  /** What the plan asks today (the rule the "needs you" chip reads too): a line to show on its row, whose `request` a tap writes in the coach's box. Null: nothing to ask. */
-  prompt: { kind: "whats_next" | "draft_ready"; label: string; request: string } | null;
+  /**
+   * What the plan asks today (the rule the "needs you" chip reads too): a line to show on its row. `whats_next`: a tap writes
+   * its `request` in the coach's box. `draft_ready` (plans with a purpose §4.2: its next stretch waits for the athlete): a tap
+   * opens the coach, where the proposal is, and writes nothing. `note`: what happened to the plan's draft, when it came to
+   * nothing, shown under the line; absent otherwise. Null: nothing to ask.
+   */
+  prompt: { kind: "whats_next" | "draft_ready"; label: string; request: string; note?: string } | null;
 }
 
 export interface PlansResponse {

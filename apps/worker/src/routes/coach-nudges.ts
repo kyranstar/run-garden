@@ -22,6 +22,7 @@ import { coachDesignerEnabled } from "../env.js";
 import { loadPreferences } from "../services/calendar-sync.js";
 import { parseSeen } from "../services/coach-opening-line.js";
 import { readCoachOpening } from "../services/coach-nudges.js";
+import { planDraftsOn } from "../services/plan-drafts.js";
 
 /** The routes, over a clock (tests pass their own). */
 export function makeCoachNudgesRoutes(deps: { now?: () => Date } = {}): Hono<AppContext> {
@@ -39,7 +40,7 @@ export function makeCoachNudgesRoutes(deps: { now?: () => Date } = {}): Hono<App
     const userId = c.get("userId");
     const prefs = await loadPreferences(db, userId);
     const now = clock();
-    const { opening, nudges } = await readCoachOpening(db, userId, prefs, todayInZone(prefs.timezone, now), now, parseSeen(c.req.query("seen")));
+    const { opening, nudges } = await readCoachOpening(db, userId, prefs, todayInZone(prefs.timezone, now), now, parseSeen(c.req.query("seen")), { drafts: planDraftsOn(c.env) });
     return c.json(opening ? { nudges, opening } : { nudges });
   });
 

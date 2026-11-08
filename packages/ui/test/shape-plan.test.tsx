@@ -723,11 +723,32 @@ describe("a plan's row asks what comes next (plans with a purpose §4): the line
     expect(/\.plan-row-name \{[^}]*overflow-wrap: anywhere/.test(css)).toBe(true);
   });
 
-  it("a draft ready is offered the same way, with its own words", () => {
+  it("a next stretch ready opens the coach where its proposal is, and writes nothing: a request sent would start a run", () => {
+    const fetched = vi.fn();
+    vi.stubGlobal("fetch", fetched);
     const open = vi.fn();
-    mount([summary({ prompt: { kind: "draft_ready", label: "Review the draft for my running plan", request: "Review the draft for my running plan." } })], { open });
+    mount([summary({ prompt: { kind: "draft_ready", label: "Next stretch ready for my lifting plan", request: "Next stretch ready for my lifting plan." } })], { open });
+    expect(prompts().map((b) => b.textContent)).toEqual(["Next stretch ready for my lifting plan"]);
     act(() => prompts()[0]!.click());
-    expect(open).toHaveBeenCalledWith({ request: "Review the draft for my running plan." });
+    expect(open).toHaveBeenCalledTimes(1);
+    expect(open).toHaveBeenCalledWith();
+    expect(fetched).not.toHaveBeenCalled();
+  });
+
+  it("a draft that came to nothing says so under the line, which still writes the chip's request", () => {
+    const open = vi.fn();
+    const note = "The coach didn't draft it: this week's AI budget was spent.";
+    mount([summary({ prompt: { ...WORDS, request: `${WORDS.request} ${note}`, note } })], { open });
+    expect(document.querySelector(".plan-row-note")?.textContent).toBe(note);
+    // Its own line, never inside the tappable one.
+    expect(prompts()[0]!.textContent).toBe(WORDS.label);
+    act(() => prompts()[0]!.click());
+    expect(open).toHaveBeenCalledWith({ request: `${WORDS.request} ${note}` });
+    // No note: no line.
+    act(() => root!.unmount());
+    host!.remove();
+    mount([summary()], { open });
+    expect(document.querySelector(".plan-row-note")).toBeNull();
   });
 
   it("a plan that has run out is a Past row, and its question stays there while the server gives it (spec §4.1)", () => {

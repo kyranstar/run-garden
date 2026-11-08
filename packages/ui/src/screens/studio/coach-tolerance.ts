@@ -68,6 +68,8 @@ export function toRun(v: unknown): CoachRunDto {
     finishedAt: textOrNull(r.finishedAt),
     estimateUsd: num(r.estimateUsd),
     ceilingUsd: num(r.ceilingUsd),
+    // A plan's draft (plans with a purpose §4.2): its request is the app's words.
+    ...(r.origin === "plan_draft" ? { origin: "plan_draft" as const } : {}),
   };
 }
 
@@ -603,6 +605,8 @@ function toTurn(v: unknown): Turn | null {
     runId: t.runId,
     at: text(t.at),
     words: textOrNull(t.words),
+    // The app's words, not the athlete's (a plan's draft): said only when the server says so.
+    ...(t.from === "app" ? { from: "app" as const } : {}),
     status: (typeof t.status === "string" && t.status ? t.status : "finished") as CoachRunStatus,
     line: textOrNull(t.line),
     cards: list(t.cards).map(toCard).filter((c): c is CoachConversationCardDto => c !== null),

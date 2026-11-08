@@ -7621,6 +7621,14 @@ a.place-row {
   overflow-wrap: anywhere;
   cursor: pointer;
 }
+/* What came of the plan's draft, when nothing did (a plan's draft, plans with a purpose §4.2): one quiet line under its prompt. */
+.plan-row-note {
+  margin: calc(-1 * var(--space-3)) 0 0;
+  padding: 0 var(--space-6) var(--space-4);
+  font-size: var(--text-sm);
+  color: var(--ink-soft);
+  overflow-wrap: anywhere;
+}
 /* Past plans: one tap down, closed by default; the summary is a tap target as .sync-stale's is. */
 .plan-past {
   margin-top: var(--space-3);
@@ -11902,6 +11910,12 @@ a.stu-tpl-open:focus-visible::before {
   background: var(--green-soft);
   color: var(--ink);
   white-space: pre-wrap;
+}
+/* The app's own ask (a plan's draft): no bubble of the athlete's, a quiet line across the conversation. */
+.coach-msg--app {
+  align-self: stretch;
+  color: var(--ink-soft);
+  font-style: italic;
 }
 .coach-msg--coach {
   display: flex;

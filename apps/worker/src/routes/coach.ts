@@ -49,6 +49,7 @@ import { loggedTopKgByWeek } from "../services/logged-sets.js";
 import { applyOps, isStructuralOp } from "../services/coach-apply.js";
 import { approveStructural, RETIRED_RECEIPT, retireInChunks, STOPPED_RECEIPT, structuralStarted } from "./thread-structural.js";
 import { evaluateTriggers, pendingTriggers } from "../services/coach-triggers.js";
+import { planDraftsOn } from "../services/plan-drafts.js";
 import { coachBlockAdherence, isLoosePlan, lineBlockOf, loadNonCoachPlanEntries, LOOSE_PLAN_ID_PREFIX, plansEndedOn } from "../services/coach-plans.js";
 import { setCoachPlanRace } from "../services/coach-plan-race.js";
 import {
@@ -191,7 +192,7 @@ coachRoutes.get("/state", async (c) => {
   if (!(await restoreInProgress(db, userId))) {
     await sweepExpiredProposals(db, userId, today);
     await sweepStaleQuestions(db, userId, nowInstant());
-    if (threadCoach) await evaluateTriggers(db, userId, prefs, today).catch(() => []);
+    if (threadCoach) await evaluateTriggers(db, userId, prefs, today, { drafts: planDraftsOn(c.env) }).catch(() => []);
   }
 
   const before = c.req.query("before");

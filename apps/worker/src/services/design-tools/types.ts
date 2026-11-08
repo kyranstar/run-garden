@@ -56,6 +56,11 @@ export interface ToolContext {
     rehearsal: boolean;
     /** A main run's conversation (the new shape §5): propose_workout's `replaces` names a suggestion of this one. */
     conversationId?: string;
+    /** A main run's (plans with a purpose §4.2): `plan_draft`, the app drafting a plan's next stretch — nobody is there to
+     * answer, so ask_athlete refuses. */
+    origin?: "plan_draft";
+    /** A main run's: the plan it is for (`programs.id`) — plan_set's briefs and propose_plan's new block default to it. */
+    planId?: string;
     /** A fit-in run's batch (the saves flow, §12.1), and a set's designers': what read_saves and pin_moves read when
      * no batchId is given. */
     savesBatchId?: string;

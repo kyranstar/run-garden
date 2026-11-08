@@ -2,7 +2,9 @@
  * `/api/plans` — the athlete's plans, each with its purpose, brief and ending (plans with a purpose, Stage 1).
  *
  *   GET    /             {plans: PlanSummaryDto[]}: the programmes, courses, coach plans and COROS plans, never a
- *                        phase and never the one-off bucket; two reads and the preferences
+ *                        phase and never the one-off bucket; two reads and the preferences. With drafts on
+ *                        (plan-drafts.ts `planDraftsOn`), a coach plan's draft is read with its row, no read more, and its
+ *                        prompt says where the draft stands (and `note`, when it came to nothing).
  *   PATCH  /:id          {purpose?, brief?, onEnd?, objectiveIds?, pausedUntil?, easeNext?} → {plan}
  *   POST   /courses      {course, weekdays, time} → {plan, more, waiting?}: start a course (`course-plans.ts`)
  *   POST   /:id/stop     → {more, waiting?}: stop a plan
@@ -46,6 +48,7 @@ import { restoreInProgress } from "../services/account-state.js";
 import { loadPreferences } from "../services/calendar-sync.js";
 import { COURSE_RUNNING_WHY, startCourse, stopCourse } from "../services/course-plans.js";
 import { REQUEST_BUDGET } from "../services/design-approve.js";
+import { planDraftsOn } from "../services/plan-drafts.js";
 import { applyPlanPatch, listPlans } from "../services/plan-registry.js";
 import { planStoppedIfNoBlockLeft } from "../services/plan-status.js";
 import { isPlanKind } from "../services/plan-summaries.js";
@@ -80,7 +83,7 @@ planRoutes.get("/", async (c) => {
   const db = c.get("db");
   const userId = c.get("userId");
   const prefs = await loadPreferences(db, userId);
-  return c.json({ plans: await listPlans(db, userId, todayInZone(prefs.timezone)) });
+  return c.json({ plans: await listPlans(db, userId, todayInZone(prefs.timezone), { drafts: planDraftsOn(c.env) }) });
 });
 
 planRoutes.patch("/:id", async (c) => {
@@ -97,7 +100,7 @@ planRoutes.patch("/:id", async (c) => {
     return c.json({ error: "invalid_plan", issues: result.issues }, 422);
   }
   if (result.changed.includes("pausedUntil")) await placeAfterPauseChange(db, userId, id, today, prefs, now, REQUEST_BUDGET - PLAN_PATCH_FIXED);
-  const plan = (await listPlans(db, userId, today)).find((p) => p.id === id);
+  const plan = (await listPlans(db, userId, today, { drafts: planDraftsOn(c.env) })).find((p) => p.id === id);
   return c.json({ plan });
 });
 
@@ -115,7 +118,7 @@ planRoutes.post("/courses", async (c) => {
       if (started.error === "course_running") return c.json({ error: "course_running", why: COURSE_RUNNING_WHY }, 409);
       return c.json({ error: "invalid_plan", issues: [{ path: ["course"], message: "no such course" }] }, 422);
     }
-    const plan = (await listPlans(db, userId, today)).find((p) => p.id === started.planId);
+    const plan = (await listPlans(db, userId, today, { drafts: planDraftsOn(c.env) })).find((p) => p.id === started.planId);
     return c.json({ plan, more: started.more, ...(started.waiting ? { waiting: true } : {}) });
   } catch (e) {
     if (e instanceof RestoreInProgressError) return c.json({ error: "restore_in_progress" }, 423);

@@ -1,5 +1,5 @@
-import { and, desc, eq, gt, inArray, lt, or, sql } from "drizzle-orm";
-import { accountState, coachProposals, coachRunEvents, coachRuns, conditionChecks, llmUsage, userPreferences } from "@rg/database";
+import { and, desc, eq, gt, inArray, lt, or, sql, type SQL } from "drizzle-orm";
+import { accountState, auditEvents, coachProposals, coachRunEvents, coachRuns, conditionChecks, llmUsage, userPreferences } from "@rg/database";
 import {
   ceilingKindOf,
   COACH_CEILING_DEFAULTS_USD,
@@ -14,7 +14,7 @@ import {
 } from "@rg/domain";
 import { isProfileId, profileById } from "@rg/exercise-library";
 import type { Env } from "../env.js";
-import type { Db } from "./db.js";
+import { runAtomicallyClaim, type Db } from "./db.js";
 import { clearOutOfCredits, OUT_OF_CREDITS_REASON, recordOutOfCredits } from "./ai-credits.js";
 import { loadPreferences } from "./calendar-sync.js";
 import { designContextBuilder, startOfLocalDate } from "./design-context.js";
@@ -171,7 +171,9 @@ import {
  * a step can never take the same one.
  *
  * UNTRUSTED TEXT. The athlete's request is stored as data and handed to the context builder, which places it in the
- * header (the opening user message) inside a marked block; the loop never puts it in a system block. An answer goes
+ * header (the opening user message) inside a marked block; the loop never puts it in a system block. A plan's draft
+ * (plans with a purpose §4.2: `settings.origin`, which the hourly pass starts, keyed once an ending: `CreateRunInput.once`)
+ * carries the app's request instead, said as the app's to the model, in the conversation and to its tools. An answer goes
  * back to the model as `{ text, untrusted }`. An answer to a question that declared a check-in is also kept as the
  * athlete's answer (record-answer.ts `askedAnswerRows`; never a rehearsal's), in one insert once the answer stands.
  *
@@ -441,6 +443,12 @@ export interface RunSettings {
   savesSkip?: SavesSkip[];  /** A main run's only (where you stand, spec §7.2): the "needs you" drift chip the athlete tapped (its id,
    * where-you-stand.ts DRIFT_ID) — its opening context then carries the diagnose-first instruction. */
   diagnose?: string;
+  /** A main run's only (plans with a purpose §4.2): who asked. `plan_draft`, the app — the hourly pass drafting a plan's
+   * next stretch (plan-drafts.ts): its request is the app's text, read and shown as the app's, never the athlete's, and
+   * nobody is there to answer a question. Absent: the athlete. */
+  origin?: "plan_draft";
+  /** A main run's only: the plan it is for (`programs.id`): plan_set's briefs and propose_plan's new block default to it. */
+  planId?: string;
 }
 
 export interface PendingCall {
@@ -547,6 +555,9 @@ export function newRunState(
     savesSkip?: SavesSkip[];
     /** A drift chip's id (where you stand): a main run's alone. */
     diagnose?: string;
+    /** Who asked, and the plan the run is for (plans with a purpose §4.2): a main run's alone. */
+    origin?: "plan_draft";
+    planId?: string;
   } = {},
 ): RunState {
   const limits = RUN_LIMITS[role];
@@ -567,6 +578,8 @@ export function newRunState(
       ...(scope.kind === "auto" && role === "main" ? { setCeilingMicros: opts.setCeilingMicros ?? RUN_CEILING_MICROS.week } : {}),
       ...(opts.savesBatchId && role !== "reviewer" ? { savesBatchId: opts.savesBatchId, savesSkip: opts.savesSkip ?? [] } : {}),
       ...(opts.diagnose && role === "main" ? { diagnose: opts.diagnose } : {}),
+      ...(opts.origin && role === "main" ? { origin: opts.origin } : {}),
+      ...(opts.planId && role === "main" ? { planId: opts.planId } : {}),
     },
     system: null,
     messages: [],
@@ -738,6 +751,9 @@ export interface ContextRun {
   savesBatchId?: string;
   /** A drift chip's run (where you stand, §7.2): its opening context says so and carries the diagnose-first lines. */
   diagnose?: string;
+  /** Who asked (plans with a purpose §4.2), the main run's — a sub-run's too, whose request is its main run's: `plan_draft`,
+   * the app, so the request is read as the app's, never as the athlete's own words. */
+  origin?: "plan_draft";
 }
 
 /**
@@ -953,6 +969,8 @@ export interface CoachRunDto {
   /** The conversation the run is a turn of (the new shape §5): its first run's id — the run's own for a run made before
    * conversations. */
   conversationId: string;
+  /** Who asked (plans with a purpose §4.2): `plan_draft`, the app (its `request` is the app's words); absent, the athlete. */
+  origin?: "plan_draft";
 }
 
 export interface CoachRunEventDto {
@@ -997,6 +1015,7 @@ function runDto(root: RunNode, nodes: RunNode[]): CoachRunDto {
     ceilingUsd: typeof root.settings?.ceilingMicros === "number" ? root.settings.ceilingMicros / 1_000_000 : null,
     ...(root.settings?.focus ? { focus: root.settings.focus } : {}),
     conversationId: conversationOf(root),
+    ...(root.settings?.origin === "plan_draft" ? { origin: "plan_draft" as const } : {}),
   };
 }
 
@@ -1137,6 +1156,23 @@ export interface CreateRunInput {
   /** A "needs you" drift chip's id (where you stand, spec §7.2; checked by the route against DRIFT_ID): kept as the run's
    * `diagnose`, no statement of its own. */
   diagnose?: string | null;
+  /**
+   * Who asks (plans with a purpose §4.2): absent, the athlete; `plan_draft`, the app — the hourly pass drafting a plan's
+   * next stretch (plan-drafts.ts), whose request is the app's words and is read and shown as the app's. Kept in the run's
+   * settings, no statement of its own.
+   */
+  origin?: "plan_draft";
+  /** The plan the run is for (`programs.id`): plan_set's briefs and propose_plan's new block default to it. Kept in the run's
+   * settings. */
+  planId?: string;
+  /**
+   * A key the run starts under at most once (plan-drafts.ts: a plan's draft per ending): an `audit_events` row whose id is
+   * the key, with `detail` and the run's id, written in the run's own insert batch while no row has that id — so creates
+   * that race start one run between them, and the key never stands without its run, nor the run without its key. A key
+   * already written starts nothing: `RunKeyTakenError`. A keyed run is a conversation of its own, and never starts while a
+   * restore is replacing the account, nor while `gate` (an SQL condition, checked in the same statement) is false.
+   */
+  once?: { key: string; kind: string; detail: Record<string, unknown>; gate?: SQL };
 }
 
 export const REQUEST_MAX_CHARS = 2_000;
@@ -1171,6 +1207,13 @@ export class WeekBudgetError extends Error {
     readonly cutoffUsd: number,
   ) {
     super("week_budget");
+  }
+}
+
+/** Nothing started: a keyed create's key (`CreateRunInput.once`) is already written — another create had it first. */
+export class RunKeyTakenError extends Error {
+  constructor(readonly key: string) {
+    super("run_key_taken");
   }
 }
 
@@ -1268,6 +1311,9 @@ function numbersOf(text: string | null): number[] {
  * is a `WeekBudgetError` (the route's 409) — unless a live run is there to come back as itself.
  * A fit-in create (`savesBatchId`, the saves flow §12.1) reads the batch and its skip set first — one statement more,
  * only then — and a batch that isn't a saved one of the account's starts nothing (`SavesBatchError`, the route's 404).
+ * A keyed create (`once`: a plan's draft) writes its key and its run in one batch, each gated on the other and on no live
+ * run, so the same statement count; with its key already written and no live run there, it starts nothing
+ * (`RunKeyTakenError`).
  */
 export async function createRun(db: Db, userId: string, input: CreateRunInput, now: Date): Promise<CreateRunResult> {
   const at = now.toISOString();
@@ -1308,9 +1354,13 @@ export async function createRun(db: Db, userId: string, input: CreateRunInput, n
     ...(focus ? { focus: { kind: focus.kind, id: focus.id } } : {}),
     ...(savesBatchId && savesSkip ? { savesBatchId, savesSkip } : {}),
     ...(input.diagnose ? { diagnose: input.diagnose } : {}),
+    ...(input.origin ? { origin: input.origin } : {}),
+    ...(input.planId ? { planId: input.planId } : {}),
   });
+  const once = input.once ?? null;
   const insert = async (): Promise<CreateRunResult | null> => {
     const id = newId();
+    if (once) return insertKeyed(id);
     // The conversation (the new shape §5), found in the insert itself — no statement of its own: a turn's is its
     // settings' (a run made before conversations: its own id), in this run's lane (a rehearsal's apart).
     const lane = (alias: string) =>
@@ -1338,6 +1388,10 @@ export async function createRun(db: Db, userId: string, input: CreateRunInput, n
     `)) as Array<{ id: string; conversationId: string | null }>;
     if (inserted.length === 0) return null;
     state.settings.conversationId = inserted[0]!.conversationId ?? id;
+    return startedAs(id);
+  };
+  /** The run a create just inserted under `id`, as it answers it. */
+  const startedAs = (id: string): CreateRunResult => {
     const node: RunNode = {
       id,
       parentId: null,
@@ -1356,6 +1410,34 @@ export async function createRun(db: Db, userId: string, input: CreateRunInput, n
     };
     const run = runDto(node, [node]);
     return { run, existing: false, conversationId: run.conversationId };
+  };
+  /**
+   * A keyed create (`once`): the key first, while no row has its id, the lane has no live main run, no restore is replacing
+   * the account and the caller's gate holds — holding the run's id; then the run, only beside its own key: one batch, so
+   * both land or neither does, and of creates that race one wins the key and the others start nothing. A conversation of
+   * its own. Two statements.
+   */
+  const insertKeyed = async (id: string): Promise<CreateRunResult | null> => {
+    const key = once!;
+    state.settings.conversationId = id;
+    const noLiveRun = sql`NOT EXISTS (
+      SELECT 1 FROM coach_runs WHERE user_id = ${userId} AND parent_id IS NULL AND status IN ('active', 'stepping', 'waiting_athlete', 'waiting_review', 'waiting_set')
+        AND coalesce(CASE WHEN json_valid(state) THEN json_extract(state, '$.settings.rehearsal') END, 0) = ${rehearsal ? 1 : 0})`;
+    const noRestore = sql`NOT EXISTS (SELECT 1 FROM account_state WHERE user_id = ${userId} AND coalesce(restore_id, '') <> '')`;
+    const claimed = await runAtomicallyClaim(db, [
+      db.insert(auditEvents).select(
+        sql`SELECT ${key.key}, ${userId}, ${key.kind}, ${JSON.stringify({ ...key.detail, runId: id })}, ${at}
+          WHERE NOT EXISTS (SELECT 1 FROM audit_events WHERE id = ${key.key}) AND ${noLiveRun} AND ${noRestore} AND ${key.gate ?? sql`1`}`,
+      ),
+      db
+        .insert(coachRuns)
+        .select(
+          sql`SELECT ${id}, ${userId}, NULL, 'main', ${JSON.stringify(scope)}, ${request}, 'active', ${JSON.stringify(state)}, 0, 0, NULL, NULL, ${at}, ${at}, NULL
+            WHERE EXISTS (SELECT 1 FROM audit_events WHERE id = ${key.key} AND user_id = ${userId} AND json_extract(detail, '$.runId') = ${id})`,
+        )
+        .returning({ id: coachRuns.id }),
+    ]);
+    return claimed > 0 ? startedAs(id) : null;
   };
   const live = async () => {
     const rows = await db
@@ -1380,6 +1462,8 @@ export async function createRun(db: Db, userId: string, input: CreateRunInput, n
     if (fresh) return fresh;
     ({ nodes, root } = await live()); // another create won the race: answer that one
   }
+  // A keyed create with no live run in the way lost to its key: another create had it.
+  if (!root && once) throw new RunKeyTakenError(once.key);
   if (!root) throw new Error("coach run: neither created nor found");
   const run = runDto(root, nodes);
   return {
@@ -2692,6 +2776,8 @@ async function contextStep(s: StepCtx): Promise<StepEnd> {
     ...(s.state.settings.savesBatchId && s.run.role === "main" ? { savesBatchId: s.state.settings.savesBatchId } : {}),
     // A drift chip's run (where you stand, §7.2): a main run's alone.
     ...(s.state.settings.diagnose && s.run.role === "main" ? { diagnose: s.state.settings.diagnose } : {}),
+    // Who asked (plans with a purpose §4.2): the main run's, for a sub-run too — its request is the main run's.
+    ...((s.run.role === "main" ? s.state.settings.origin : s.root.settings?.origin) === "plan_draft" ? { origin: "plan_draft" as const } : {}),
   };
   const built = await s.deps.buildContext.build(s.db, s.env, s.userId, run, s.now);
   s.state.system = built.system;
@@ -3040,6 +3126,9 @@ async function runTools(
       ...(run.role !== "reviewer" && state.settings.savesBatchId
         ? { savesBatchId: state.settings.savesBatchId, savesSkip: state.settings.savesSkip ?? [] }
         : {}),
+      // A plan's draft (plans with a purpose §4.2): who asked, and the plan plan_set and propose_plan default to.
+      ...(run.role === "main" && state.settings.origin === "plan_draft" ? { origin: "plan_draft" as const } : {}),
+      ...(run.role === "main" && state.settings.planId ? { planId: state.settings.planId } : {}),
     },
     now: s.now,
     ...(s.deps.review && run.role !== "reviewer" ? { review: reviewHooks(s) } : {}),

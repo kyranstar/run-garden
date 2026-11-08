@@ -21,6 +21,8 @@
  *
  * A SET'S DESIGNER CAN'T ASK (fix wave 3A, A9): the main coach asks what the set needs before plan_set, so a set's
  * designers never stop it behind a question; the refusal teaches the designer to decide and say what it assumed.
+ * NOR CAN A PLAN'S DRAFT (plans with a purpose §4.2): the app started it and nobody is there to answer; the refusal teaches
+ * the coach to decide from the plan's purpose and brief.
  */
 import { sql } from "drizzle-orm";
 import { z } from "zod";
@@ -61,6 +63,12 @@ const labelOf = (c: z.infer<typeof chip>): string => (typeof c === "string" ? c 
 export const SET_DESIGNER_ASKS: { why: string; fix: string } = {
   why: "In a set the main coach asks.",
   fix: "Design on your best judgement and say what you assumed in the document's notes.",
+};
+
+/** A plan's draft can't ask (plans with a purpose §4.2): the app started it, and nobody is there to answer. */
+export const DRAFT_ASKS: { why: string; fix: string } = {
+  why: "This is the app's draft of a plan's next stretch: the athlete isn't here to answer.",
+  fix: "Decide from the plan's purpose and brief, propose it, and say in your finish what you assumed; they can change it before approving.",
 };
 
 /** The question's line when the coach asks for today's condition check. */
@@ -132,6 +140,8 @@ export const askAthlete: DesignTool = {
     if (ctx.run.role === "designer" && ctx.run.parentId !== null && inSet) {
       return refuse("set_designer_cannot_ask", SET_DESIGNER_ASKS.why, SET_DESIGNER_ASKS.fix);
     }
+    // A plan's draft waits on nobody: a question would hold the athlete's one live run until its window closed.
+    if (ctx.run.origin === "plan_draft") return refuse("draft_cannot_ask", DRAFT_ASKS.why, DRAFT_ASKS.fix);
     if (raw && typeof raw === "object" && "check" in raw) {
       const c = parseAct(checkInput, raw, `{ check: "condition", why } — why the design needs today's check, ${capInWords(WHY_MAX)}`);
       if (isErr(c)) return c;

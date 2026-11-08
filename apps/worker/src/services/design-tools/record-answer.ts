@@ -94,6 +94,13 @@ const input = z
   })
   .strict();
 
+/** A main run's request as the athlete's own words, ONE scalar subquery: none for a plan's draft (plans with a purpose
+ * §4.2), whose request is the app's text — nothing in it is theirs to quote. */
+export function athleteRequestSql(userId: string, runId: string): SQL {
+  return sql`(select case when json_valid(${coachRuns.state}) and json_extract(${coachRuns.state}, '$.settings.origin') = 'plan_draft' then null else ${coachRuns.request} end
+    from ${coachRuns} where ${coachRuns.id} = ${runId} and ${coachRuns.userId} = ${userId})`;
+}
+
 /** Words, lower case, without punctuation: " my calf is sore " (padded, so a phrase matches only whole words). */
 const words = (s: string): string => ` ${s.toLowerCase().replace(/[^\p{L}\p{N}]+/gu, " ").trim()} `;
 /** Is the quote whole words of the request (`empty`: no words at all; `absent`: not in it)? */
@@ -214,7 +221,7 @@ export const recordAnswer: DesignTool = {
     const p = parseAct(input, raw, `answers: 1–${MAX_ANSWERS}, each { question, area?, value? (0–10, only a number given), quote }`);
     if (isErr(p)) return p;
     const { athlete, extra } = await readAthlete(ctx.db, ctx.userId, ctx.now, {
-      runRequest: sql`(select ${coachRuns.request} from ${coachRuns} where ${coachRuns.id} = ${ctx.run.id} and ${coachRuns.userId} = ${ctx.userId})`,
+      runRequest: athleteRequestSql(ctx.userId, ctx.run.id),
       focusAreas: sql`(select ${athleteProfiles.focusAreas} from ${athleteProfiles} where ${athleteProfiles.userId} = ${ctx.userId})`,
     });
     const request = typeof extra.runRequest === "string" ? extra.runRequest : "";

@@ -193,6 +193,8 @@ export interface ProvisionalTurn {
   words: string | null;
   at: string;
   status: CoachRunStatus;
+  /** The words are the app's (a plan's draft, its run's `origin`), not the athlete's. */
+  from?: "app";
 }
 
 /**
@@ -204,7 +206,7 @@ export function turnsShown(read: CoachConversationDto | undefined, left: string 
   const have = new Set(turns.map((t) => t.runId));
   const extra = sent
     .filter((s) => !have.has(s.runId))
-    .map((s): CoachConversationTurnDto => ({ runId: s.runId, at: s.at, words: s.words, status: s.status, line: null, cards: [], question: null }));
+    .map((s): CoachConversationTurnDto => ({ runId: s.runId, at: s.at, words: s.words, ...(s.from ? { from: s.from } : {}), status: s.status, line: null, cards: [], question: null }));
   return [...turns, ...extra];
 }
 

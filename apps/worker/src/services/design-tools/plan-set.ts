@@ -8,7 +8,8 @@
  * the workout is made for (plans with a purpose §3.4: an active plan from read_plans); its designer is told to pass it on
  * to propose_workout, and approval files the workout under it. None is a one-off. A plan that is stopped, or no plan of
  * the athlete's, is refused (`unknown_plan`) before anything starts, read with the athlete: no statement more; a redo's
- * brief that leaves it out keeps the first version's. Refused, teachably and with
+ * brief that leaves it out keeps the first version's, and in a run for a plan (a plan's draft, `ctx.run.planId`) a brief
+ * that names none is that plan's. Refused, teachably and with
  * every problem at once, writing nothing:
  *  - a date before today in the athlete's zone, or after the scope's last day (this week's, the next N's horizon, or an
  *    auto run's reach);
@@ -177,8 +178,9 @@ export const planSet: DesignTool = {
     const redo = first !== undefined;
     const proposalId = designProposalId(ctx.run.id);
     const dates = [...new Set(p.briefs.map((b) => b.date))];
-    // A redo's brief may leave the plan out: its first version's stands (the designer files the same workout again).
-    const planOf = (b: z.infer<typeof brief>): string | undefined => b.planId ?? first?.briefs.find((x) => x.key === b.key)?.planId;
+    // A redo's brief may leave the plan out: its first version's stands (the designer files the same workout again). A run
+    // for a plan (a plan's draft: plans with a purpose §4.2) files a brief that names none under that plan.
+    const planOf = (b: z.infer<typeof brief>): string | undefined => b.planId ?? first?.briefs.find((x) => x.key === b.key)?.planId ?? ctx.run.planId;
     const askedPlans = [...new Set(p.briefs.flatMap((b) => planOf(b) ?? []))];
     const pw = plannedWorkouts;
     const { athlete, extra } = await readAthlete(ctx.db, ctx.userId, ctx.now, {

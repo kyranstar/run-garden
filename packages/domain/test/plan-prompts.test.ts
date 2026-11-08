@@ -53,7 +53,7 @@ describe("planPrompt", () => {
 
   it("the chip's words for a running plan are unchanged, and the request says when it ends", () => {
     const at = (days: number) => planPrompt(plan({ lastSessionDate: addDays(today, days) }), today);
-    expect(at(12)).toEqual({ kind: "whats_next", label: "Plan what comes after my running plan", request: "Plan what comes after my running plan — it ends in 12 days." });
+    expect(at(12)).toStrictEqual({ kind: "whats_next", label: "Plan what comes after my running plan", request: "Plan what comes after my running plan — it ends in 12 days.", note: null });
     expect(at(0)?.request).toBe("Plan what comes after my running plan — it ends today.");
     expect(at(1)?.request).toBe("Plan what comes after my running plan — it ends tomorrow.");
     expect(planPrompt(plan({ discipline: "lift" }), today)?.label).toBe("Plan what comes after my lifting plan");
@@ -62,7 +62,7 @@ describe("planPrompt", () => {
 
   it("a plan that has run out stays available for 21 days, plainly: it ended, and nothing is marked missed", () => {
     const ended = (days: number) => planPrompt(plan({ lastSessionDate: addDays(today, -days) }), today);
-    expect(ended(1)).toEqual({ kind: "whats_next", label: "Plan what comes after my running plan", request: "Plan what comes after my running plan — it ended yesterday." });
+    expect(ended(1)).toStrictEqual({ kind: "whats_next", label: "Plan what comes after my running plan", request: "Plan what comes after my running plan — it ended yesterday.", note: null });
     expect(ended(3)?.request).toBe("Plan what comes after my running plan — it ended 3 days ago.");
     expect(ended(21)?.request).toBe("Plan what comes after my running plan — it ended 21 days ago.");
     expect(ended(22)).toBeNull();
@@ -116,7 +116,7 @@ describe("planPrompt", () => {
 
   it("a draft ready prompts for a plan that asks or continues, whatever its end; never for a course, a programme, a finish or a stopped plan", () => {
     const ready = planPrompt(plan({ hasDraft: true, onEnd: "continue", lastSessionDate: addDays(today, 40) }), today);
-    expect(ready).toEqual({ kind: "draft_ready", label: "Review the draft for my running plan", request: "Review the draft for my running plan." });
+    expect(ready).toStrictEqual({ kind: "draft_ready", label: "Next stretch ready for my running plan", request: "Next stretch ready for my running plan.", note: null });
     expect(planPrompt(plan({ hasDraft: true, lastSessionDate: null }), today)?.kind).toBe("draft_ready");
     expect(planPrompt(plan({ hasDraft: true, kind: "course", onEnd: "continue" }), today)).toBeNull();
     expect(planPrompt(plan({ hasDraft: true, kind: "adaptive", onEnd: "continue" }), today)).toBeNull();
@@ -126,5 +126,63 @@ describe("planPrompt", () => {
 
   it("a draft ready outranks the question what comes next", () => {
     expect(planPrompt(plan({ hasDraft: true }), today)?.kind).toBe("draft_ready");
+  });
+});
+
+describe("planPrompt with drafts on (plans with a purpose §4.2)", () => {
+  const lifting = (over: Partial<PlanPromptInput> = {}) => plan({ onEnd: "continue", discipline: "lift", ...over });
+  const WORDS = "Plan what comes after my lifting plan — it ends in 12 days.";
+
+  it("a coach plan that continues asks nothing while its draft is due or at work: the hourly pass is drafting it", () => {
+    expect(planPrompt(lifting({ draft: { kind: "due" } }), today)).toBeNull();
+    expect(planPrompt(lifting({ draft: { kind: "live" } }), today)).toBeNull();
+  });
+
+  it("once its draft is over with no proposal waiting the question comes back, and says plainly what happened, in the row's note and the request", () => {
+    expect(planPrompt(lifting({ draft: { kind: "over", outcome: "week_budget" } }), today)).toStrictEqual({
+      kind: "whats_next",
+      label: "Plan what comes after my lifting plan",
+      request: `${WORDS} The coach didn't draft it: this week's AI budget was spent.`,
+      note: "The coach didn't draft it: this week's AI budget was spent.",
+    });
+    expect(planPrompt(lifting({ draft: { kind: "over", outcome: "no_proposal" } }), today)).toStrictEqual({
+      kind: "whats_next",
+      label: "Plan what comes after my lifting plan",
+      request: `${WORDS} The coach's draft ended without a suggestion.`,
+      note: "The coach's draft ended without a suggestion.",
+    });
+    // The athlete decided what it proposed (declined it, say): the question, with nothing to explain.
+    expect(planPrompt(lifting({ draft: { kind: "over", outcome: "decided" } }), today)).toStrictEqual({ kind: "whats_next", label: "Plan what comes after my lifting plan", request: WORDS, note: null });
+  });
+
+  it("the label stays the question's own, so the chip and the row are still one ask", () => {
+    for (const outcome of ["week_budget", "no_proposal", "decided"] as const) {
+      expect(planPrompt(lifting({ draft: { kind: "over", outcome } }), today)?.label).toBe("Plan what comes after my lifting plan");
+    }
+  });
+
+  it("a proposal waiting is the next stretch ready, whatever the draft's state", () => {
+    for (const draft of [{ kind: "due" }, { kind: "live" }, { kind: "over", outcome: "no_proposal" }] as const) {
+      expect(planPrompt(lifting({ draft, hasDraft: true }), today)).toStrictEqual({ kind: "draft_ready", label: "Next stretch ready for my lifting plan", request: "Next stretch ready for my lifting plan.", note: null });
+    }
+  });
+
+  it("a plan that asks, and every kind but a coach plan, ignores a draft state: the rule as it was", () => {
+    const asked = planPrompt(plan({ onEnd: "ask", draft: { kind: "due" } }), today);
+    expect(asked).toStrictEqual(planPrompt(plan({ onEnd: "ask" }), today));
+    expect(asked?.kind).toBe("whats_next");
+    expect(planPrompt(plan({ kind: "coros_import", onEnd: "ask", draft: { kind: "live" } }), today)?.kind).toBe("whats_next");
+    expect(planPrompt(plan({ kind: "course", onEnd: "continue", draft: { kind: "over", outcome: "week_budget" } }), today)).toBeNull();
+  });
+
+  it("a draft state changes nothing outside the ending window, nor for a paused or stopped plan", () => {
+    expect(planPrompt(lifting({ lastSessionDate: addDays(today, 22), draft: { kind: "over", outcome: "week_budget" } }), today)).toBeNull();
+    expect(planPrompt(lifting({ lastSessionDate: addDays(today, -1), draft: { kind: "over", outcome: "week_budget" } }), today)).toBeNull();
+    expect(planPrompt(lifting({ pausedUntil: addDays(today, 2), draft: { kind: "over", outcome: "week_budget" } }), today)).toBeNull();
+    expect(planPrompt(lifting({ status: "retired", draft: { kind: "over", outcome: "week_budget" } }), today)).toBeNull();
+  });
+
+  it("drafts off (no state) is the rule word for word: a coach plan that continues still asks", () => {
+    expect(planPrompt(lifting(), today)).toStrictEqual({ kind: "whats_next", label: "Plan what comes after my lifting plan", request: WORDS, note: null });
   });
 });

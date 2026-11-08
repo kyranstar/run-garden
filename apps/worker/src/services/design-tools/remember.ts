@@ -27,13 +27,13 @@ import { and, eq, isNull, sql, type AnyColumn } from "drizzle-orm";
 import { alias } from "drizzle-orm/sqlite-core";
 import { z } from "zod";
 import { addDays, newId, todayInZone } from "@rg/domain";
-import { coachMemory, coachRuns } from "@rg/database";
+import { coachMemory } from "@rg/database";
 import { runAtomically, type Db } from "../db.js";
 import { COACH_CONFIDENCES, MEMORY_KINDS, memoryWrites } from "../coach-memory.js";
 import { EARLIEST_ZONE, liveMemoryWhere, MEMORY_PIN_CAP } from "../memory-core.js";
 import type { DesignTool } from "./types.js";
 import { isErr, mainRunIdOf, parseAct } from "./act-common.js";
-import { quoteIn } from "./record-answer.js";
+import { athleteRequestSql, quoteIn } from "./record-answer.js";
 import { dateField, parsedJson, readAthlete, refuse, untrusted } from "./read-common.js";
 import { DRIFT_ID } from "../where-you-stand.js";
 
@@ -194,7 +194,7 @@ export const remember: DesignTool = {
         ? sql`(select json_object('confidence', ${m.confidence}, 'active', ${m.active}, 'superseded', ${m.supersededBy})
             from ${m} where ${m.id} = ${p.replaces} and ${m.userId} = ${ctx.userId})`
         : sql`null`,
-      memRequest: sql`(select ${coachRuns.request} from ${coachRuns} where ${coachRuns.id} = ${rootId} and ${coachRuns.userId} = ${ctx.userId})`,
+      memRequest: athleteRequestSql(ctx.userId, rootId),
     });
     const concludes = p.drift && p.checkBack ? { drift: p.drift, checkBack: p.checkBack } : null;
     const answerFor = (body: string, kind: string, confidence: string, expires: string | null) => ({

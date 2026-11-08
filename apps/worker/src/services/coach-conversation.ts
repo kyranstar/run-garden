@@ -7,8 +7,8 @@
  * while its newest run was asked under CONVERSATION_QUIET_HOURS ago, else a new one; `null`, a new one; an id, that one.
  *
  * READ BACK (`readConversation`; `GET /api/coach/conversation`, `?id=` for a given one): `{ id, startedAt, turns }`, at
- * most CONVERSATION_TURNS_MAX turns, the newest of them, oldest first — each the athlete's words as they wrote them, the
- * run's status, the coach's line (its finish's words or its answer; a stop's own line; null while live), its cards —
+ * most CONVERSATION_TURNS_MAX turns, the newest of them, oldest first — each the athlete's words as they wrote them (a
+ * plan's draft's, the app's, `from: "app"`: plans with a purpose §4.2), the run's status, the coach's line (its finish's words or its answer; a stop's own line; null while live), its cards —
  * a workout, the plan changes, a set, a whole plan (§8 §5: its lines too), the moves in rotation (saved-posts import,
  * Task 18: the coach's lines too): one line each, by the proposal — and the question it waits on. None current, or
  * none of the athlete's by that id: `{ id: null, startedAt: null, turns: [] }`. A rehearsal's is never read. ONE
@@ -91,8 +91,11 @@ export interface ConversationTurn {
   runId: string;
   /** When the athlete asked. */
   at: string;
-  /** The athlete's words, as they wrote them; null for a run asked with none. */
+  /** The athlete's words, as they wrote them; null for a run asked with none. A plan's draft's are the app's (`from`). */
   words: string | null;
+  /** `app`: the words are the app's, not the athlete's — a plan's draft, which the hourly pass asks (plans with a purpose
+   * §4.2). Absent: the athlete's. */
+  from?: "app";
   status: string;
   /** The coach's line: its finish's words or its answer, a stop's own line; null while it works. */
   line: string | null;
@@ -466,6 +469,9 @@ export type EndedLine = (
     | undefined,
 ) => string | null;
 
+/** A turn the app asked (a plan's draft, plans with a purpose §4.2): its settings' `origin`. */
+const askedByApp = (settingsText: string | null): boolean => (parsed(settingsText) as { origin?: unknown } | null)?.origin === "plan_draft";
+
 /** One run as a turn. */
 function turnOf(row: TurnRow, today: string, endedLine: EndedLine): ConversationTurn {
   const live = LIVE.includes(row.status);
@@ -475,6 +481,7 @@ function turnOf(row: TurnRow, today: string, endedLine: EndedLine): Conversation
     runId: row.id,
     at: row.createdAt,
     words: row.request,
+    ...(askedByApp(row.settings) ? { from: "app" as const } : {}),
     status: shownStatus(row.status),
     line,
     cards: cardsOf(row.scope, proposalOf(row.proposal), today),
@@ -607,8 +614,10 @@ function objectivesBrief(ops: readonly OpBrief[], status: string): string[] {
 /** One turn, as the opening message carries it: the coach's line to `lineMax` (the newest turn's, NEWEST_LINE_MAX). */
 function turnLines(row: TurnRow, today: string, clock: Intl.DateTimeFormat, lineMax = LINE_MAX): string[] {
   const time = whenWords(clock, row.createdAt);
-  const words = row.request ? markUntrusted("athlete", clipProse(row.request.replace(/\s+/g, " ").trim(), WORDS_MAX)) : "(no words: a quick tap)";
-  const out = [`- ${time} — the athlete: ${words}`];
+  // A plan's draft (plans with a purpose §4.2) is the app's ask, never the athlete's words.
+  const app = askedByApp(row.settings);
+  const words = row.request ? markUntrusted(app ? "plan draft" : "athlete", clipProse(row.request.replace(/\s+/g, " ").trim(), WORDS_MAX)) : "(no words: a quick tap)";
+  const out = [`- ${time} — ${app ? "the app, for the athlete (a draft of their plan's next stretch)" : "the athlete"}: ${words}`];
   const line = str(row.line);
   if (row.status === "finished") out.push(`  The coach: ${line ? markUntrusted("main coach", clipProse(line.replace(/\s+/g, " ").trim(), lineMax)) : "(finished)"}`);
   else if (ENDED_WORDS[row.status]) out.push(`  ${ENDED_WORDS[row.status]}`);

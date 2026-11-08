@@ -76,6 +76,7 @@ import { backfillPlanRegistry } from "./services/plan-registry.js";
 import { placeSlotsForAllPrograms } from "./services/program-slots.js";
 import { finishCoursesPartWay } from "./services/course-plans.js";
 import { writeCourseSessionsDue } from "./services/course-sessions.js";
+import { draftEndingPlans, planDraftsOn } from "./services/plan-drafts.js";
 
 const app = new Hono<AppContext>();
 
@@ -419,6 +420,10 @@ export async function hourly(db: Db, env: Env): Promise<void> {
   // A course's session due today is written, after placement so a pause has already taken what it takes. Its own pass, a
   // read and at most COURSE_WRITES_PER_PASS writes whatever the accounts: the rest waits for the next run or an open.
   await writeCourseSessionsDue(db).catch((e: unknown) => console.error(`course session writes failed: ${e instanceof Error ? e.name : "unknown"}`));
+  // A coach plan that continues drafts its next stretch for a tap (plans with a purpose §4.2; plan-drafts.ts): off unless
+  // PLAN_DRAFTS (with the step alarm). Once an ending, one run an account at most; starting it is one step, and its alarm
+  // does the rest — the pass never calls the model. Its failure stops nothing after it.
+  await draftEndingPlans(db, env).catch((e: unknown) => console.error(`plan drafts failed: ${e instanceof Error ? e.name : "unknown"}`));
   // Coach designer run steps taken in this invocation, across every account (COACH_RUN_SWEEP_MAX).
   let coachRunSteps = 0;
   for (const userId of await allUserIds(db)) {
@@ -447,7 +452,7 @@ export async function hourly(db: Db, env: Env): Promise<void> {
       // wake; nothing here thinks (spec §1). Only while the thread coach runs (THREAD_COACH, §8 §6): stepped back, no
       // wake will ever read a mark — its signals are the coach's "needs you" chips, computed when they are read.
       if (threadCoachEnabled(env)) {
-        await evaluateTriggers(db, userId, prefs, todayInZone(prefs.timezone)).catch(() => []);
+        await evaluateTriggers(db, userId, prefs, todayInZone(prefs.timezone), { drafts: planDraftsOn(env) }).catch(() => []);
         await stillOurs();
       }
       await sweepUserProposals(db, userId, prefs.timezone).catch(() => undefined);

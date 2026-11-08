@@ -50,10 +50,11 @@ export function objectiveStateSql(userId: string, ref: { objectiveId?: string; k
 }
 
 /** The athlete's own words a run answers (its request), as ONE scalar subquery — null for none, and for a "needs you"
- * chip's run (its `diagnose`), whose request is the app's text (the E6 review): basis owner and a challenge rest on
- * their words alone. */
+ * chip's run (its `diagnose`) or a plan's draft (its `origin`: plans with a purpose §4.2), whose request is the app's
+ * text (the E6 review): basis owner and a challenge rest on their words alone. */
 export function askedWordsSql(userId: string, runId: string): SQL {
-  return sql`(select case when json_valid(aw_r.state) and json_extract(aw_r.state, '$.settings.diagnose') is not null then null
+  return sql`(select case when json_valid(aw_r.state) and (json_extract(aw_r.state, '$.settings.diagnose') is not null
+        or json_extract(aw_r.state, '$.settings.origin') = 'plan_draft') then null
       else nullif(trim(coalesce(aw_r.request, '')), '') end
     from coach_runs aw_r where aw_r.id = ${runId} and aw_r.user_id = ${userId})`;
 }

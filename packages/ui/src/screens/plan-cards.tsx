@@ -215,7 +215,8 @@ export function YourPlans({
             : `${kind} · ${state}`;
     // What the plan asks (the one rule, `planPrompt`, which the coach's chip reads too): a line of its own under its row, live or run out,
     // since a button can't sit inside the row's. A tap writes the request in the coach's box; nothing is sent or spent until
-    // the athlete sends it.
+    // the athlete sends it. Its next stretch ready (a plan's draft, plans with a purpose §4.2): a tap opens the coach, where
+    // the proposal is, and writes nothing — a request sent would start a run. A draft that came to nothing says so under it.
     const prompt = coach ? planOf(e, summaries)?.prompt : null;
     return (
       <li key={`${e.kind}:${id}`}>
@@ -230,10 +231,11 @@ export function YourPlans({
           {goal && !isPast ? <span className="plan-row-state plan-row-goal">{goal}</span> : null}
         </button>
         {prompt ? (
-          <button type="button" className="plan-row-prompt" onClick={() => coach?.open({ request: prompt.request })}>
+          <button type="button" className="plan-row-prompt" onClick={() => (prompt.kind === "draft_ready" ? coach?.open() : coach?.open({ request: prompt.request }))}>
             {prompt.label}
           </button>
         ) : null}
+        {prompt?.note ? <p className="plan-row-note">{prompt.note}</p> : null}
       </li>
     );
   };

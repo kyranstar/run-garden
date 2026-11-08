@@ -5,10 +5,10 @@ import { sha256Hex } from "../auth/crypto.js";
 import { restoreInProgress } from "./account-state.js";
 import { isLoosePlan, lineBlockOf, loadNonCoachPlanEntries } from "./coach-plans.js";
 import { runAtomically, type Db } from "./db.js";
-import { blockDisciplinesSql, planLastDaySql, PROMPT_KIND_LIST } from "./plan-ending.js";
+import { blockDisciplinesSql, planDraftsSql, planLastDaySql, PROMPT_KIND_LIST } from "./plan-ending.js";
 import { planStoppedIfNoBlockLeft } from "./plan-status.js";
 import { studioPlanRetired } from "./studio-push.js";
-import { DISCIPLINE_WORD, endingRowOf, isPlanKind, lineKeysByPlan, planPatchSchema, planSummaryOf, plansSuperseded, PLAN_KINDS, type PlanPatch, type PlanSummaryDto } from "./plan-summaries.js";
+import { DISCIPLINE_WORD, draftFactsOf, endingRowOf, isPlanKind, lineKeysByPlan, planPatchSchema, planSummaryOf, plansSuperseded, PLAN_KINDS, type PlanPatch, type PlanSummaryDto } from "./plan-summaries.js";
 
 /**
  * THE REGISTRY'S BACKFILL (plans with a purpose, Stage 1): every plan the app already has gets a row in `programs`,
@@ -279,26 +279,35 @@ export async function backfillPlanRegistry(db: Db, userId: string, today: string
 
 /**
  * The plans the account has, shaped for the list: two reads (the plans, the blocks), no more. A course's sessions done come
- * with its row, counted as `courseSessionsDone` counts them.
+ * with its row, counted as `courseSessionsDone` counts them. `drafts` (plan-drafts.ts `planDraftsOn`): a coach plan's draft
+ * facts come with its row too (`planDraftsSql`), so its prompt reads its draft as the chip's does; off, the read is as it was.
  */
-export async function listPlans(db: Db, userId: string, today: string): Promise<PlanSummaryDto[]> {
+export async function listPlans(db: Db, userId: string, today: string, o: { drafts?: boolean } = {}): Promise<PlanSummaryDto[]> {
+  const columns = {
+    ...getTableColumns(programs),
+    // Raw names: Drizzle strips a column's table inside a single table's select, and `"id"` would be the subquery's own.
+    courseDone: sql<number | null>`case when programs.kind = 'course' then (select count(*) from planned_workouts d where d.user_id = programs.user_id and d.plan_id = programs.id and d.course_session is not null and d.completion_state = 'completed') end`,
+    // A coach or COROS plan's last day, computed with its row, never stored: what the prompt rule reads (`planLastDaySql`).
+    lastSessionDate: sql<string | null>`case when programs.kind in (${PROMPT_KIND_LIST}) then ${planLastDaySql(today)} end`,
+    blockDisciplinesText: sql<string | null>`case when programs.kind in (${PROMPT_KIND_LIST}) then ${blockDisciplinesSql()} end`,
+  };
+  const where = and(eq(programs.userId, userId), inArray(programs.kind, [...PLAN_KINDS]), isNull(programs.archivedAt));
   const [rows, blocks] = await Promise.all([
-    db
-      .select({
-        ...getTableColumns(programs),
-        // Raw names: Drizzle strips a column's table inside a single table's select, and `"id"` would be the subquery's own.
-        courseDone: sql<number | null>`case when programs.kind = 'course' then (select count(*) from planned_workouts d where d.user_id = programs.user_id and d.plan_id = programs.id and d.course_session is not null and d.completion_state = 'completed') end`,
-        // A coach or COROS plan's last day, computed with its row, never stored: what the prompt rule reads (`planLastDaySql`).
-        lastSessionDate: sql<string | null>`case when programs.kind in (${PROMPT_KIND_LIST}) then ${planLastDaySql(today)} end`,
-        blockDisciplinesText: sql<string | null>`case when programs.kind in (${PROMPT_KIND_LIST}) then ${blockDisciplinesSql()} end`,
-      })
-      .from(programs)
-      .where(and(eq(programs.userId, userId), inArray(programs.kind, [...PLAN_KINDS]), isNull(programs.archivedAt))),
+    o.drafts
+      ? db
+          .select({ ...columns, draftsText: planDraftsSql(today) })
+          .from(programs)
+          .where(where)
+      : db.select(columns).from(programs).where(where),
     db.select().from(coachPlans).where(eq(coachPlans.userId, userId)),
   ]);
   const lines = linesOf(blocks.filter((r) => !isLoosePlan(r)).map(lineBlockOf), today);
   const keys = lineKeysByPlan(lines);
-  const shaped = rows.map(({ blockDisciplinesText, ...r }) => ({ ...r, blockDisciplines: blockDisciplinesText ? blockDisciplinesText.split(",") : [] }));
+  const shaped = rows.map(({ blockDisciplinesText, ...r }) => {
+    const { draftsText, ...row } = r as typeof r & { draftsText?: string | null };
+    const drafts = draftFactsOf(draftsText);
+    return { ...row, blockDisciplines: blockDisciplinesText ? blockDisciplinesText.split(",") : [], ...(drafts ? { drafts } : {}) };
+  });
   // A plan that has run out and been followed by a running plan of its sport stops asking (the chip leaves it out too).
   const superseded = plansSuperseded(shaped.filter((r) => (PLAN_PROMPT_KINDS as readonly string[]).includes(r.kind)).map(endingRowOf), today);
   return shaped.map((r) => planSummaryOf(r, keys, today, superseded));
