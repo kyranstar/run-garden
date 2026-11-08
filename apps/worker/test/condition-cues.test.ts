@@ -7,7 +7,9 @@
  *
  * What these pin:
  *  - The event, exactly; its first occurrence, and its clock time across a change of clocks, as Google expands it.
- *  - The same times change nothing and make no call. Other times: the old ones go first, then the new ones.
+ *  - Every PUT reads the calendar once: the same times it holds write nothing; one the athlete deleted or moved by
+ *    hand is put back. Other times: the old ones go first, then the new ones. An occurrence the athlete changed or
+ *    deleted one day is never taken for a cue of its own.
  *  - A call that fails part way leaves the stored ids saying what is there, and the answer names it; a create whose
  *    answer was lost is found on the calendar by the next request, never made twice; a retry finishes the job.
  *  - DELETE removes exactly those events and clears them.
@@ -24,7 +26,7 @@
  * recurrence rule a cue uses. Synthetic zones, dates and times throughout.
  */
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { eq } from "drizzle-orm";
+import { eq, sql } from "drizzle-orm";
 import { DateTime } from "luxon";
 import { schema } from "@rg/database";
 import { addDays, newId, nowInstant, todayInZone } from "@rg/domain";
@@ -40,8 +42,26 @@ import { setCondition } from "../src/services/user-conditions.js";
 import { patchAccountState } from "../src/services/account-state.js";
 import { claimUserLock } from "../src/services/locks.js";
 import { CUE_CALLS_PER_REQUEST, CUE_LOCK } from "../src/services/condition-cues.js";
+import { importStandalone } from "../src/services/standalone-import.js";
+import { backup, history } from "./fixtures/standalone-backup.js";
 import { exportAll, restoreAll } from "./restore-driver.js";
+import { FakeGoogle, type FakeBody } from "./fake-google-calendar.js";
 import { isWrite, makeTestDb, makeTestUser, mountRoutes } from "./helpers.js";
+
+/** Runs once, just before the standalone import's one batch — after it read the preferences: what lands meanwhile. */
+const race = vi.hoisted(() => ({ before: null as null | (() => Promise<unknown>) }));
+vi.mock("../src/services/db.js", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("../src/services/db.js")>();
+  return {
+    ...actual,
+    runAtomically: async (...args: Parameters<typeof actual.runAtomically>) => {
+      const hook = race.before;
+      race.before = null;
+      await hook?.();
+      return actual.runAtomically(...args);
+    },
+  };
+});
 
 // A second profile the library doesn't have, with no cue: the refusal for a condition that has none.
 vi.mock("@rg/exercise-library", async (importOriginal) => {
@@ -77,258 +97,9 @@ const B = "13:40";
 const C = "18:05";
 const D = "21:30";
 
-const DESCRIPTION = "Run Garden's daytime cue for TMJ: ask the coach or the app to turn these off.";
-
-// ── Google, faked behind fetch ───────────────────────────────────────────────────────────────────────────────────
-
-type Body = {
-  summary?: string;
-  description?: string;
-  start: { dateTime: string; timeZone?: string };
-  end: { dateTime: string; timeZone?: string };
-  recurrence?: string[];
-  transparency?: string;
-  reminders?: unknown;
-  extendedProperties?: { private?: Record<string, string> };
-};
-interface Stored {
-  id: string;
-  calendarId: string;
-  status: "confirmed" | "cancelled";
-  seq: number;
-  body: Body;
-}
-type Failure = "500" | "403" | "401" | "throw" | "lost" | "lost-throw" | "hang";
-
-class FakeGoogle {
-  events = new Map<string, Stored>();
-  /** The calendars this account has; any other answers 404. */
-  calendars = new Set(["cal", "cal2"]);
-  /** Every events call: "GET cal", "POST cal", "DELETE cal/ev3", "PATCH cal/ev3". */
-  calls: string[] = [];
-  /** Every list's query string. */
-  queries: string[] = [];
-  /** Every events call's Authorization header. */
-  bearers: string[] = [];
-  fetches = 0;
-  refreshes = 0;
-  /** The token endpoint refuses (a dead refresh token). */
-  refuseRefresh = false;
-  /** A list answers more than its private-property search asked for. */
-  ignoreProperty = false;
-  /** What each list answered, item by item. */
-  listed: Array<Record<string, unknown>> = [];
-  /** Occurrences the athlete deleted one by one. Google still answers them, cancelled, in a series listing that asks for
-   * no deleted events — first here, the worst order for a reader that takes them. */
-  private exceptions: Array<{ calendarId: string; item: Record<string, unknown> }> = [];
-  private failures: Array<{ method: string; nth: number; answer: Failure }> = [];
-  private counts = new Map<string, number>();
-  private seq = 1;
-  private n = 0;
-
-  /** The `nth` (1-based) call of `method` from now on answers `answer`. */
-  fail(method: string, nth: number, answer: Failure): void {
-    this.failures.push({ method, nth: (this.counts.get(method) ?? 0) + nth, answer });
-  }
-
-  add(calendarId: string, body: Body): string {
-    const id = `ev${++this.n}`;
-    this.events.set(id, { id, calendarId, status: "confirmed", seq: ++this.seq, body: structuredClone(body) });
-    return id;
-  }
-
-  /** A cue series already on the calendar (as an earlier request, or another deployment, made it). */
-  addCue(time: string, opts: { calendarId?: string; origin?: string; profileId?: string; timezone?: string } = {}): string {
-    const zone = opts.timezone ?? ZONE;
-    const priv: Record<string, string> = { rgCue: opts.profileId ?? "tmj", rgApp: "Run Garden" };
-    if (opts.origin !== "") priv.rgOrigin = opts.origin ?? ORIGIN;
-    const end = DateTime.fromISO(`${FIRST_DAY}T${time}`, { zone: "UTC" }).plus({ minutes: 5 }).toFormat("yyyy-MM-dd'T'HH:mm:ss");
-    return this.add(opts.calendarId ?? "cal", {
-      summary: "cue",
-      description: "",
-      start: { dateTime: `${FIRST_DAY}T${time}:00`, timeZone: zone },
-      end: { dateTime: end, timeZone: zone },
-      recurrence: ["RRULE:FREQ=MONTHLY;BYMONTHDAY=1,2,3,4,5,6,7"],
-      transparency: "transparent",
-      extendedProperties: { private: priv },
-    });
-  }
-
-  /** The athlete deletes an event in Google by hand. */
-  cancel(id: string): void {
-    const e = this.events.get(id)!;
-    e.status = "cancelled";
-    e.seq = ++this.seq;
-  }
-
-  /** The athlete deletes one occurrence of a series (that day only). */
-  cancelOccurrence(seriesId: string, date: string): void {
-    const e = this.events.get(seriesId)!;
-    const start = DateTime.fromISO(`${date}T${e.body.start.dateTime.slice(11, 16)}`, { zone: e.body.start.timeZone! });
-    const at = { dateTime: start.toISO({ suppressMilliseconds: true }), timeZone: e.body.start.timeZone };
-    this.exceptions.push({
-      calendarId: e.calendarId,
-      item: {
-        id: `${e.id}_${start.toUTC().toFormat("yyyyMMdd'T'HHmmss'Z'")}`,
-        recurringEventId: e.id,
-        status: "cancelled",
-        originalStartTime: at,
-        start: at,
-        extendedProperties: structuredClone(e.body.extendedProperties),
-      },
-    });
-  }
-
-  live(calendarId = "cal"): Stored[] {
-    return [...this.events.values()].filter((e) => e.calendarId === calendarId && e.status === "confirmed");
-  }
-
-  liveCues(calendarId = "cal"): Stored[] {
-    return this.live(calendarId).filter((e) => e.body.extendedProperties?.private?.rgCue !== undefined);
-  }
-
-  writes(): string[] {
-    return this.calls.filter((c) => !c.startsWith("GET"));
-  }
-
-  /** The series' occurrences from `from` to `to` (instants), as Google expands its one rule. */
-  occurrences(e: Stored, from: string, to: string): Array<{ start: DateTime; end: DateTime }> {
-    const rule = e.body.recurrence ?? [];
-    const m = rule.length === 1 ? /^RRULE:FREQ=MONTHLY;BYMONTHDAY=([\d,]+)$/.exec(rule[0]!) : null;
-    if (!m) throw new Error(`the fake expands one monthly by-day rule, not ${JSON.stringify(rule)}`);
-    const days = new Set(m[1]!.split(",").map(Number));
-    const zone = e.body.start.timeZone;
-    if (!zone || /(Z|[+-]\d\d:\d\d)$/.test(e.body.start.dateTime)) throw new Error("a recurring event's start is a wall clock and a zone");
-    const [date, clock] = e.body.start.dateTime.split("T") as [string, string];
-    const wall = (s: string) => DateTime.fromISO(s, { zone: "UTC" });
-    const minutes = wall(e.body.end.dateTime).diff(wall(e.body.start.dateTime), "minutes").minutes;
-    const out: Array<{ start: DateTime; end: DateTime }> = [];
-    const lo = DateTime.fromISO(from);
-    const hi = DateTime.fromISO(to);
-    for (let i = 0; i < 800; i++) {
-      const day = addDays(date, i);
-      // DTSTART is the first occurrence; after it, the rule's days.
-      if (i > 0 && !days.has(Number(day.slice(8)))) continue;
-      const start = DateTime.fromISO(`${day}T${clock}`, { zone });
-      if (start > hi) break;
-      if (start >= lo) out.push({ start, end: start.plus({ minutes }) });
-    }
-    return out;
-  }
-
-  firstOccurrence(id: string): string {
-    const e = this.events.get(id)!;
-    return this.occurrences(e, "2000-01-01T00:00:00Z", "2100-01-01T00:00:00Z")[0]!.start.toUTC().toISO()!;
-  }
-
-  private item(e: Stored): Record<string, unknown> {
-    // Google answers a series' start with the zone's offset, beside its zone.
-    const zone = e.body.start.timeZone;
-    const withOffset = (t: { dateTime: string; timeZone?: string }) =>
-      zone && e.body.recurrence ? { ...t, dateTime: DateTime.fromISO(t.dateTime, { zone }).toISO({ suppressMilliseconds: true }) } : t;
-    return { id: e.id, status: e.status, ...structuredClone(e.body), start: withOffset(e.body.start), end: withOffset(e.body.end) };
-  }
-
-  private instances(e: Stored, from: string, to: string): Array<Record<string, unknown>> {
-    return this.occurrences(e, from, to).map(({ start, end }) => ({
-      id: `${e.id}_${start.toUTC().toFormat("yyyyMMdd'T'HHmmss'Z'")}`,
-      recurringEventId: e.id,
-      status: e.status,
-      summary: e.body.summary,
-      description: e.body.description,
-      transparency: e.body.transparency,
-      start: { dateTime: start.toISO({ suppressMilliseconds: true }), timeZone: e.body.start.timeZone },
-      end: { dateTime: end.toISO({ suppressMilliseconds: true }), timeZone: e.body.start.timeZone },
-      // An instance carries its series' private properties.
-      extendedProperties: structuredClone(e.body.extendedProperties),
-    }));
-  }
-
-  fetch = (async (input: RequestInfo | URL, init?: RequestInit) => {
-    this.fetches += 1;
-    const url = new URL(String(input));
-    const method = (init?.method ?? "GET").toUpperCase();
-    const json = (b: unknown, status = 200) => new Response(JSON.stringify(b), { status, headers: { "content-type": "application/json" } });
-    if (url.hostname === "oauth2.googleapis.com" && url.pathname === "/token") {
-      this.refreshes += 1;
-      return this.refuseRefresh ? json({ error: "invalid_grant" }, 400) : json({ access_token: "fresh-access", expires_in: 3600 });
-    }
-    const m = url.pathname.match(/^\/calendar\/v3\/calendars\/([^/]+)\/events(?:\/([^/]+))?$/);
-    if (url.hostname !== "www.googleapis.com" || !m) return json({}, 404);
-    const calendarId = decodeURIComponent(m[1]!);
-    const eventId = m[2] ? decodeURIComponent(m[2]) : undefined;
-    this.calls.push(`${method} ${calendarId}${eventId ? `/${eventId}` : ""}`);
-    if (method === "GET") this.queries.push(url.search);
-    this.bearers.push(new Headers(init?.headers).get("Authorization") ?? "");
-    const count = (this.counts.get(method) ?? 0) + 1;
-    this.counts.set(method, count);
-    const failure = this.failures.find((f) => f.method === method && f.nth === count);
-    if (failure?.answer === "500") return json({ error: "backend" }, 500);
-    if (failure?.answer === "403") return json({ error: "forbidden" }, 403);
-    if (failure?.answer === "401") return json({ error: "expired" }, 401);
-    if (failure?.answer === "throw") throw new TypeError("network connection lost");
-    if (!this.calendars.has(calendarId)) return json({ error: "notFound" }, 404);
-    const answer = await this.handle(method, calendarId, eventId, url, init);
-    if (failure?.answer === "lost") return json({ error: "backend" }, 500);
-    if (failure?.answer === "lost-throw") throw new TypeError("network connection lost");
-    // Google did it, and the request never comes back: the invocation dies here.
-    if (failure?.answer === "hang") return new Promise<Response>(() => undefined);
-    return answer;
-  }) as typeof fetch;
-
-  private async handle(method: string, calendarId: string, eventId: string | undefined, url: URL, init?: RequestInit): Promise<Response> {
-    const json = (b: unknown, status = 200) => new Response(JSON.stringify(b), { status, headers: { "content-type": "application/json" } });
-    if (method === "GET" && !eventId) {
-      const p = url.searchParams;
-      const token = p.get("syncToken");
-      const single = p.get("singleEvents") === "true";
-      const showDeleted = p.get("showDeleted") === "true";
-      const property = p.get("privateExtendedProperty");
-      let series = [...this.events.values()].filter((e) => e.calendarId === calendarId);
-      if (property && !this.ignoreProperty) {
-        const [k, v] = property.split("=") as [string, string];
-        series = series.filter((e) => e.body.extendedProperties?.private?.[k] === v);
-      }
-      series = token ? series.filter((e) => e.seq > Number(token)) : series.filter((e) => showDeleted || e.status === "confirmed");
-      if (!showDeleted) series = series.filter((e) => e.status === "confirmed");
-      const from = token ? "2000-01-01T00:00:00Z" : (p.get("timeMin") ?? "2000-01-01T00:00:00Z");
-      const to = token ? DateTime.fromISO(NOW).plus({ days: 400 }).toISO()! : (p.get("timeMax") ?? "2100-01-01T00:00:00Z");
-      const items = series.flatMap((e) => {
-        if (single && e.body.recurrence) return this.instances(e, from, to);
-        if (single && !token) {
-          const at = DateTime.fromISO(e.body.start.dateTime);
-          if (at < DateTime.fromISO(from) || at > DateTime.fromISO(to)) return [];
-        }
-        return [this.item(e)];
-      });
-      if (!single && !showDeleted && !token) {
-        const live = new Set(series.map((e) => e.id));
-        items.unshift(...this.exceptions.filter((x) => x.calendarId === calendarId && live.has(x.item.recurringEventId as string)).map((x) => structuredClone(x.item)));
-      }
-      this.listed.push(...items);
-      return json({ items, nextSyncToken: String(this.seq) });
-    }
-    if (method === "POST" && !eventId) {
-      const body = JSON.parse(String(init!.body)) as Body;
-      const id = this.add(calendarId, body);
-      return json({ id, ...body });
-    }
-    const e = eventId ? this.events.get(eventId) : undefined;
-    if (!e || e.calendarId !== calendarId) return json({ error: "notFound" }, 404);
-    if (method === "PATCH") {
-      e.body = { ...e.body, ...(JSON.parse(String(init!.body)) as Body) };
-      e.seq = ++this.seq;
-      return json({ id: e.id });
-    }
-    if (method === "DELETE") {
-      if (e.status === "cancelled") return json({ error: "deleted" }, 410);
-      e.status = "cancelled";
-      e.seq = ++this.seq;
-      return new Response(null, { status: 204 });
-    }
-    return json({}, 400);
-  }
-}
+const NOT_CONNECTED = "Google Calendar isn't connected. Connect it in Settings, then try again.";
+const READ_FAILED = "Google Calendar didn't answer, so nothing changed. Try again.";
+const DESCRIPTION = "Run Garden's daytime cue for TMJ. To stop it, delete this event and all its repeats.";
 
 // ── The account ───────────────────────────────────────────────────────────────────────────────────────────────────
 
@@ -362,13 +133,15 @@ beforeEach(async () => {
   cookie = `${SESSION_COOKIE}=${await createSession(db, userId, "test")}`;
   await setCondition(db, userId, { profileId: "tmj", active: true }, { today: todayInZone(ZONE) });
   await connectGoogle();
-  google = new FakeGoogle();
+  google = new FakeGoogle({ now: NOW, zone: ZONE, origin: ORIGIN, firstDay: FIRST_DAY });
   vi.stubGlobal("fetch", google.fetch);
 });
 
 afterEach(() => {
   vi.unstubAllGlobals();
   vi.useRealTimers();
+  vi.restoreAllMocks();
+  race.before = null;
 });
 
 type Answer = { status: number; body: Record<string, unknown> };
@@ -455,17 +228,70 @@ describe("PUT /api/conditions/:profileId/cues", () => {
     expect(at.at(-1)).toBe("2030-04-01T12:15:00.000Z");
   });
 
-  it("the same times again change nothing: no call to Google, no write, in any order", async () => {
+  it("the same times again, in any order: one read of the calendar, which holds them, and no write", async () => {
     await put([A, B]);
-    const before = { calls: [...google.calls], prefs: await stored() };
+    const before = { prefs: await stored() };
     statements.length = 0;
-    const fetches = google.fetches;
+    google.calls.length = 0;
     expect(await put([B, A])).toEqual({ status: 200, body: { cues: cues([A, B]), done: true } });
-    expect(google.fetches).toBe(fetches);
-    expect(google.calls).toEqual(before.calls);
+    expect(google.calls).toEqual(["GET cal"]);
     expect(statements.filter(isWrite)).toEqual([]);
     expect(await stored()).toEqual(before.prefs);
     expect(liveTimes()).toEqual([A, B]);
+  });
+
+  it("the same times after the athlete deleted them in Google by hand: they are put back", async () => {
+    await put([A, B]);
+    google.cancel(await idOf(A));
+    google.cancel(await idOf(B));
+    google.calls.length = 0;
+    expect(await put([A, B])).toEqual({ status: 200, body: { cues: cues([A, B]), done: true } });
+    // Read and found missing; read again under the lock; made again.
+    expect(google.calls).toEqual(["GET cal", "GET cal", "POST cal", "POST cal"]);
+    expect(liveTimes()).toEqual([A, B]);
+    expect(await stored()).toMatchObject({ events: google.liveCues().map((e) => ({ eventId: e.id })) });
+  });
+
+  it("the same times after the athlete moved one by hand: it is put back at its time", async () => {
+    await put([A]);
+    const id = await idOf(A);
+    google.moveSeries(id, "08:00");
+    google.calls.length = 0;
+    expect(await put([A])).toEqual({ status: 200, body: { cues: cues([A]), done: true } });
+    expect(google.calls).toEqual(["GET cal", "GET cal", `DELETE cal/${id}`, "POST cal"]);
+    expect(liveTimes()).toEqual([A]);
+  });
+
+  it("the same times with an extra cue of ours beside them on the calendar: the extra goes", async () => {
+    await put([A]);
+    const extra = google.addCue(B);
+    google.calls.length = 0;
+    expect((await put([A])).status).toBe(200);
+    expect(google.calls).toEqual(["GET cal", "GET cal", `DELETE cal/${extra}`]);
+    expect(liveTimes()).toEqual([A]);
+  });
+
+  it("the same times with no Google connection now: refused in plain words, nothing claimed", async () => {
+    await put([A]);
+    await db.delete(schema.providerConnections).where(eq(schema.providerConnections.userId, userId));
+    expect(await put([A])).toEqual({ status: 412, body: { error: "google_not_connected", message: NOT_CONNECTED } });
+  });
+
+  it("the same times, and the calendar read fails: nothing claimed", async () => {
+    await put([A]);
+    google.fail("GET", 1, "500");
+    google.calls.length = 0;
+    expect(await put([A])).toEqual({ status: 502, body: { error: "calendar_failed", done: false, message: READ_FAILED, cues: cues([A]) } });
+    expect(google.calls).toEqual(["GET cal"]);
+  });
+
+  it("other times keeping one the athlete moved by hand: the moved one goes, and its time is made again", async () => {
+    await put([A, B]);
+    const moved = await idOf(A);
+    google.moveSeries(moved, "08:00");
+    expect((await put([A, C])).status).toBe(200);
+    expect(liveTimes()).toEqual([A, C]);
+    expect(google.events.get(moved)!.status).toBe("cancelled");
   });
 
   it("other times: the old ones go first, then the new ones are made; a time in both is kept as it is", async () => {
@@ -474,8 +300,8 @@ describe("PUT /api/conditions/:profileId/cues", () => {
     const goneId = await idOf(A);
     google.calls.length = 0;
     expect(await put([B, C])).toEqual({ status: 200, body: { cues: cues([B, C]), done: true } });
-    // The state was this account's own, settled: no read of the calendar.
-    expect(google.calls).toEqual([`DELETE cal/${goneId}`, "POST cal"]);
+    // One read of the calendar, then the change.
+    expect(google.calls).toEqual(["GET cal", `DELETE cal/${goneId}`, "POST cal"]);
     expect(liveTimes()).toEqual([B, C]);
     expect(await idOf(B)).toBe(keptId);
     expect(await storedTimes()).toEqual([B, C]);
@@ -507,7 +333,7 @@ describe("PUT /api/conditions/:profileId/cues", () => {
 
     google.calls.length = 0;
     expect(await put([C])).toEqual({ status: 200, body: { cues: cues([C]), done: true } });
-    expect(google.calls).toEqual([`DELETE cal/${bId}`, "POST cal"]);
+    expect(google.calls).toEqual(["GET cal", `DELETE cal/${bId}`, "POST cal"]);
     expect(liveTimes()).toEqual([C]);
     expect(await storedTimes()).toEqual([C]);
   });
@@ -530,8 +356,8 @@ describe("PUT /api/conditions/:profileId/cues", () => {
 
     google.calls.length = 0;
     expect((await put([A, B, C])).status).toBe(200);
-    // A refusal is certain: nothing to look for, so the retry makes the two that are missing, and nothing else.
-    expect(google.calls).toEqual(["POST cal", "POST cal"]);
+    // A refusal is certain: the retry finds only the one made, and makes the two that are missing.
+    expect(google.calls).toEqual(["GET cal", "POST cal", "POST cal"]);
     expect(liveTimes()).toEqual([A, B, C]);
     expect(await storedTimes()).toEqual([A, B, C]);
   });
@@ -594,7 +420,7 @@ describe("PUT /api/conditions/:profileId/cues", () => {
     await savePreferences(db, userId, { ...prefs, calendarId: "cal2" });
     google.calls.length = 0;
     expect((await put([A])).status).toBe(200);
-    expect(google.calls).toEqual([`DELETE cal/${old}`, "POST cal2"]);
+    expect(google.calls).toEqual(["GET cal2", `DELETE cal/${old}`, "POST cal2"]);
     expect(liveTimes("cal")).toEqual([]);
     expect(liveTimes("cal2")).toEqual([A]);
 
@@ -607,7 +433,11 @@ describe("PUT /api/conditions/:profileId/cues", () => {
     const lost = google.addCue(A);
     const other = google.addCue(A, { origin: "https://other.test" });
     const otherProfile = google.addCue(B, { profileId: "quiet" });
+    statements.length = 0;
     expect(await put([A])).toEqual({ status: 200, body: { cues: cues([A]), done: true } });
+    // Nothing written to Google, so the sync's token stands: session 1, restore marker 1, condition 1, preferences 1,
+    // account state 1; the lock 3; preferences again 1; the connection 1; settled 1; the lock let go 1.
+    expect(statements).toHaveLength(12);
     expect(google.calls).toEqual(["GET cal"]);
     // The read is a search for this profile's series: no occurrences, no deleted events.
     const q = new URLSearchParams(google.queries[0]);
@@ -636,6 +466,85 @@ describe("PUT /api/conditions/:profileId/cues", () => {
     for (const id of [session, own, otherProfile]) expect(google.events.get(id)!.status).toBe("confirmed");
   });
 
+  it("an occurrence the athlete changed by hand (Google lists it as its own event) is not taken for a cue, with nothing on record", async () => {
+    const series = google.addCue(A);
+    google.modifyOccurrence(series, "2030-05-02");
+    expect(await put([A])).toEqual({ status: 200, body: { cues: cues([A]), done: true } });
+    expect(google.writes()).toEqual([]);
+    expect(google.events.get(series)!.status).toBe("confirmed");
+    expect(await stored()).toMatchObject({ events: [{ time: A, eventId: series }] });
+  });
+
+  it.each([
+    ["settled here", false],
+    ["brought back by a restore", true],
+  ])("…nor with a list on record (%s): the athlete's changed day is left alone, and the series kept", async (_why, restored) => {
+    await put([A]);
+    const series = await idOf(A);
+    google.modifyOccurrence(series, "2030-05-02");
+    if (restored) await patchAccountState(db, userId, { restoreFinishedAt: new Date(Date.parse(NOW) + 1000).toISOString() });
+    google.calls.length = 0;
+    expect(await put([A])).toEqual({ status: 200, body: { cues: cues([A]), done: true } });
+    expect(google.writes()).toEqual([]);
+    expect(await stored()).toMatchObject({ events: [{ time: A, eventId: series }] });
+  });
+
+  it("an answer holding deleted events though none were asked for: none is taken for a cue", async () => {
+    const gone = google.addCue(A);
+    google.cancel(gone);
+    google.answersDeleted = true;
+    expect((await put([A])).status).toBe(200);
+    expect(google.calls).toEqual(["GET cal", "POST cal"]);
+    expect(liveTimes()).toEqual([A]);
+  });
+
+  it("a calendar the list names that Google no longer has: its events count as gone", async () => {
+    await savePreferences(db, userId, { ...(await loadPreferences(db, userId)), calendarId: "cal2" });
+    await put([A]);
+    // The athlete deleted that calendar, and chose another; and the list is one a restore brought back.
+    google.calendars.delete("cal2");
+    await savePreferences(db, userId, { ...(await loadPreferences(db, userId)), calendarId: "cal" });
+    await patchAccountState(db, userId, { restoreFinishedAt: new Date(Date.parse(NOW) + 1000).toISOString() });
+    google.calls.length = 0;
+    expect(await put([A])).toEqual({ status: 200, body: { cues: cues([A]), done: true } });
+    expect(google.calls).toEqual(["GET cal", "GET cal2", "POST cal"]);
+    expect(await stored()).toMatchObject({ events: [{ time: A, calendarId: "cal" }] });
+  });
+
+  it("an empty list with the condition switched off still takes them off", async () => {
+    await put([A]);
+    await setCondition(db, userId, { profileId: "tmj", active: false }, { today: todayInZone(ZONE) });
+    expect(await put([])).toEqual({ status: 200, body: { cues: cues([]), done: true } });
+    expect(google.liveCues()).toEqual([]);
+  });
+
+  it("an empty list for a condition with no cue is not refused: there is nothing to take off", async () => {
+    expect(await put([], "quiet")).toEqual({
+      status: 200,
+      body: { cues: { profileId: "quiet", words: null, times: [], timezone: ZONE }, done: true },
+    });
+  });
+
+  it("a cue change makes the next sync read its window in full, not every changed occurrence for months; the same times don't", async () => {
+    await seedSessions(2);
+    await syncCalendar(db, ENV, userId);
+    await put([A, B]);
+    google.queries.length = 0;
+    await syncCalendar(db, ENV, userId);
+    const after = new URLSearchParams(google.queries.at(-1));
+    expect({ token: after.get("syncToken"), from: after.get("timeMin") !== null }).toEqual({ token: null, from: true });
+    // The same times write nothing, so the sync's token stands.
+    await put([A, B]);
+    google.queries.length = 0;
+    await syncCalendar(db, ENV, userId);
+    expect(new URLSearchParams(google.queries.at(-1)).get("syncToken")).not.toBeNull();
+    // Turning them off is a change too.
+    await del();
+    google.queries.length = 0;
+    await syncCalendar(db, ENV, userId);
+    expect(new URLSearchParams(google.queries.at(-1)).get("syncToken")).toBeNull();
+  });
+
   it("an occurrence the athlete deleted by hand is not taken for a cue of its own: the series is kept", async () => {
     const series = google.addCue(A);
     google.cancelOccurrence(series, "2030-05-02");
@@ -650,7 +559,7 @@ describe("PUT /api/conditions/:profileId/cues", () => {
       start: { date: "2030-05-01" },
       end: { date: "2030-05-02" },
       extendedProperties: { private: { rgCue: "tmj", rgApp: "Run Garden", rgOrigin: ORIGIN } },
-    } as unknown as Body);
+    } as unknown as FakeBody);
     expect((await put([A])).status).toBe(200);
     expect(google.calls).toEqual(["GET cal", "POST cal"]);
     expect(google.events.get(mine)!.status).toBe("confirmed");
@@ -669,7 +578,7 @@ describe("PUT /api/conditions/:profileId/cues", () => {
 
     google.calls.length = 0;
     expect(await put([A])).toEqual({ status: 200, body: { cues: cues([A]), done: true } });
-    expect(google.calls).toEqual([`DELETE cal/${second}`]);
+    expect(google.calls).toEqual(["GET cal", `DELETE cal/${second}`]);
     expect(google.liveCues().map((e) => e.id)).toEqual([first]);
   });
 
@@ -706,7 +615,7 @@ describe("PUT /api/conditions/:profileId/cues", () => {
     });
     google.calls.length = 0;
     expect((await put([A, B, C, D])).status).toBe(200);
-    expect(google.calls).toEqual(["POST cal", "POST cal"]);
+    expect(google.calls).toEqual(["GET cal", "POST cal", "POST cal"]);
     expect(liveTimes()).toEqual([A, B, C, D]);
   });
 });
@@ -901,6 +810,16 @@ describe("DELETE /api/conditions/:profileId/cues", () => {
     expect(google.liveCues()).toEqual([]);
   });
 
+  it("after a create whose answer was lost: it looks for what Google made, and removes that too", async () => {
+    google.fail("POST", 2, "lost");
+    expect((await put([A, B])).status).toBe(502);
+    expect(liveTimes()).toEqual([A, B]);
+    google.calls.length = 0;
+    expect(await del()).toEqual({ status: 200, body: { cues: cues([]), done: true } });
+    expect(google.calls[0]).toBe("GET cal");
+    expect(google.liveCues()).toEqual([]);
+  });
+
   it("more events than one request's calls: it says what is still there, and the next one finishes", async () => {
     const strays = Array.from({ length: CUE_CALLS_PER_REQUEST + 2 }, (_, i) => `${String(i).padStart(2, "0")}:30`);
     for (const t of strays) google.addCue(t);
@@ -915,14 +834,35 @@ describe("DELETE /api/conditions/:profileId/cues", () => {
     expect(google.liveCues()).toEqual([]);
   });
 
-  it("with no calendar chosen now, a list not settled here is removed by its ids, with no calendar to read", async () => {
+  it("with no calendar chosen and nothing on record, it can't look: refused in plain words, never done", async () => {
+    google.addCue(A);
+    await savePreferences(db, userId, { ...(await loadPreferences(db, userId)), calendarId: null });
+    expect(await del()).toEqual({
+      status: 412,
+      body: { error: "no_calendar", message: "No calendar is chosen for the app's events, so the app can't look for cues on it. Choose one in Settings, then try again." },
+    });
+    expect(google.calls).toEqual([]);
+    expect(google.liveCues()).toHaveLength(1);
+  });
+
+  it("after a restore, with a day the athlete changed: the series goes, the changed day is not taken for one", async () => {
+    await put([A]);
+    const series = await idOf(A);
+    google.modifyOccurrence(series, "2030-05-02");
+    await patchAccountState(db, userId, { restoreFinishedAt: new Date(Date.parse(NOW) + 1000).toISOString() });
+    google.calls.length = 0;
+    expect((await del()).status).toBe(200);
+    expect(google.calls).toEqual(["GET cal", `DELETE cal/${series}`]);
+  });
+
+  it("with no calendar chosen now, a list not settled here is read where its events are, and removed", async () => {
     await put([A]);
     const id = await idOf(A);
     await patchAccountState(db, userId, { restoreFinishedAt: new Date(Date.parse(NOW) + 1000).toISOString() });
     await savePreferences(db, userId, { ...(await loadPreferences(db, userId)), calendarId: null });
     google.calls.length = 0;
     expect((await del()).status).toBe(200);
-    expect(google.calls).toEqual([`DELETE cal/${id}`]);
+    expect(google.calls).toEqual(["GET cal", `DELETE cal/${id}`]);
     expect(google.liveCues()).toEqual([]);
   });
 });
@@ -1031,7 +971,12 @@ describe("export and restore", () => {
     expect(google.liveCues()).toHaveLength(2);
     google.calls.length = 0;
     expect((await put([A, B])).status).toBe(200);
-    expect(google.calls).toEqual([]);
+    expect(google.calls).toEqual(["GET cal"]);
+    // Settled again by this account: turning them off removes exactly those, with no read.
+    const ids = (await stored())!.events.map((e) => e.eventId);
+    google.calls.length = 0;
+    expect((await del()).status).toBe(200);
+    expect(google.calls).toEqual(ids.map((id) => `DELETE cal/${id}`));
   });
 
   it("a file older than the cues' last change: the next change trusts the calendar, not the file, so nothing is doubled or left behind", async () => {
@@ -1097,6 +1042,80 @@ describe("the stored ids are written only by the cue service", () => {
   });
 });
 
+// ── Delete-all, and the standalone import ──────────────────────────────────────────────────────────────────────────
+
+describe("delete-all", () => {
+  const deleteAll = () => call("POST", "/api/settings/delete-all", { confirm: "delete everything" }, settingsRoutes, "/api/settings");
+  const userGone = async () => (await db.select().from(schema.users).where(eq(schema.users.id, userId))).length === 0;
+  const warnings = (warn: { mock: { calls: unknown[][] } }) =>
+    warn.mock.calls.map((c) => JSON.parse(String(c[0])) as Record<string, unknown>).filter((w) => w.msg === "delete-all: a condition's cues not taken off");
+
+  it("takes the cues off the calendar first, through the cue service, then deletes everything", async () => {
+    await put([A, B]);
+    const ids = [await idOf(A), await idOf(B)];
+    google.calls.length = 0;
+    expect(await deleteAll()).toEqual({ status: 200, body: { ok: true } });
+    expect(google.writes()).toEqual(ids.map((id) => `DELETE cal/${id}`));
+    expect(google.liveCues()).toEqual([]);
+    expect(await userGone()).toBe(true);
+  });
+
+  it.each([
+    ["Google fails part way", "calendar_failed", () => google.fail("DELETE", 1, "500")],
+    ["Google isn't connected", "google_not_connected", () => db.delete(schema.providerConnections).where(eq(schema.providerConnections.userId, userId))],
+    ["another change to them is under way", "cues_busy", () => claimUserLock(db, userId, CUE_LOCK)],
+  ] as const)("when they can't be taken off (%s): the delete goes on, and the code is logged", async (_why, code, arrange) => {
+    await put([A]);
+    await arrange();
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => undefined);
+    expect(await deleteAll()).toEqual({ status: 200, body: { ok: true } });
+    expect(await userGone()).toBe(true);
+    expect(warnings(warn)).toEqual([{ level: "warn", msg: "delete-all: a condition's cues not taken off", profileId: "tmj", code }]);
+  });
+
+  it("takes off a list for a condition the library no longer has, and cues it has no list for (a file from before them restored)", async () => {
+    const lost = google.addCue(A);
+    const retired = google.addCue(B, { profileId: "retired" });
+    const list = { retired: { events: [{ time: B, eventId: retired, calendarId: "cal", timezone: ZONE }], settledAt: nowInstant() } };
+    await db.run(sql`UPDATE user_preferences SET prefs = json_set(prefs, '$.conditionCues', json(${JSON.stringify(list)})) WHERE user_id = ${userId}`);
+    expect(await deleteAll()).toEqual({ status: 200, body: { ok: true } });
+    expect(google.events.get(lost)!.status).toBe("cancelled");
+    expect(google.events.get(retired)!.status).toBe("cancelled");
+  });
+
+  it("preferences that can't be read don't stop the delete: each profile is tried, and logged", async () => {
+    await put([A]);
+    await db.run(sql`UPDATE user_preferences SET prefs = 'not json' WHERE user_id = ${userId}`);
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => undefined);
+    expect(await deleteAll()).toEqual({ status: 200, body: { ok: true } });
+    expect(await userGone()).toBe(true);
+    expect(warnings(warn)).toEqual([{ level: "warn", msg: "delete-all: a condition's cues not taken off", profileId: "tmj", code: "exception" }]);
+  });
+
+  it("a cue service that throws doesn't stop the delete either", async () => {
+    await put([A]);
+    // Thrown from below the service: the connection's token can't be decrypted.
+    await db.update(schema.providerConnections).set({ encryptedAccessToken: "not-a-token" }).where(eq(schema.providerConnections.userId, userId));
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => undefined);
+    expect(await deleteAll()).toEqual({ status: 200, body: { ok: true } });
+    expect(await userGone()).toBe(true);
+    expect(warnings(warn).map((w) => w.code)).toEqual(["exception"]);
+  });
+});
+
+describe("a first standalone import beside a cue change", () => {
+  it("keeps the cue ids a change wrote after the import read the preferences", async () => {
+    await put([A]);
+    // Lands between the import's read of the preferences and its write of them.
+    race.before = () => put([B]);
+    const summary = await importStandalone(db, userId, backup(history()), { today: todayInZone(ZONE), now: nowInstant(), timezone: ZONE, dryRun: false });
+    expect(summary.firstImport).toBe(true);
+    expect(await storedTimes()).toEqual([B]);
+    expect(await stored()).toMatchObject({ events: [{ eventId: google.liveCues()[0]!.id }] });
+    expect(liveTimes()).toEqual([B]);
+  });
+});
+
 // ── What a request spends ─────────────────────────────────────────────────────────────────────────────────────────
 
 describe("what a request spends (Workers Free: 50 subrequests, D1 statements and fetches together)", () => {
@@ -1110,9 +1129,9 @@ describe("what a request spends (Workers Free: 50 subrequests, D1 statements and
     expect((await put(["06:10", "10:20", "15:50", "20:45"])).status).toBe(200);
     const spent = { statements: statements.length, fetches: google.fetches - fetches };
     // D1: session 1, restore marker 1, condition 1, preferences 1, account state 1; the lock 3; preferences again 1;
-    // the connection 1, the refreshed token 1; not settled 1, settled 1; the lock let go 1.
+    // the connection 1, the refreshed token 1; not settled 1; the sync's token forgotten 1; settled 1; the lock let go 1.
     // Fetches: the token 1, the calendar read 1, four deletes, four creates.
-    expect(spent).toEqual({ statements: 14, fetches: 10 });
+    expect(spent).toEqual({ statements: 15, fetches: 10 });
     expect(spent.statements).toBeLessThanOrEqual(45);
     expect(spent.statements + spent.fetches).toBeLessThanOrEqual(50);
   });
@@ -1126,17 +1145,37 @@ describe("what a request spends (Workers Free: 50 subrequests, D1 statements and
     expect((await del()).status).toBe(200);
     const spent = { statements: statements.length, fetches: google.fetches - fetches };
     // D1: session 1, restore marker 1, preferences 1, account state 1; the lock 3; preferences again 1; the connection
-    // 1, the refreshed token 1; settled 1; the lock let go 1. Fetches: the token 1, the calendar read 1, four deletes.
-    expect(spent).toEqual({ statements: 12, fetches: 6 });
+    // 1, the refreshed token 1; the sync's token forgotten 1; settled 1; the lock let go 1. Fetches: the token 1, the
+    // calendar read 1, four deletes.
+    expect(spent).toEqual({ statements: 13, fetches: 6 });
     expect(spent.statements + spent.fetches).toBeLessThanOrEqual(50);
   });
 
-  it("the same times again: reads only", async () => {
+  it("the same times again: reads only — five statements and the connection, one fetch", async () => {
     await put([A, B]);
     statements.length = 0;
+    const fetches = google.fetches;
     await put([A, B]);
-    // Session 1, restore marker 1, condition 1, preferences 1, account state 1.
-    expect(statements).toHaveLength(5);
+    // Session 1, restore marker 1, condition 1, preferences 1, account state 1; the connection 1. The calendar read.
+    expect(statements).toHaveLength(6);
     expect(statements.filter(isWrite)).toEqual([]);
+    expect(google.fetches - fetches).toBe(1);
+  });
+
+  it("the most the same times spend when the athlete moved every series by hand: they are put back", async () => {
+    await put([A, B, C, D]);
+    for (const e of google.liveCues()) google.moveSeries(e.id, "05:05");
+    await connectGoogle({ expired: true });
+    statements.length = 0;
+    const fetches = google.fetches;
+    expect((await put([A, B, C, D])).status).toBe(200);
+    const spent = { statements: statements.length, fetches: google.fetches - fetches };
+    // D1: session 1, restore marker 1, condition 1, preferences 1, account state 1; the connection 1, the refreshed
+    // token 1; the lock 3; preferences again 1 (the client is the one already made); not settled 1; the sync's token
+    // forgotten 1; settled 1; the lock let go 1. Fetches: the token 1, the calendar read twice (before the lock, and
+    // under it), four deletes, four creates.
+    expect(spent).toEqual({ statements: 15, fetches: 11 });
+    expect(spent.statements + spent.fetches).toBeLessThanOrEqual(50);
+    expect(liveTimes()).toEqual([A, B, C, D]);
   });
 });

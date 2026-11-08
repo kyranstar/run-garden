@@ -22,6 +22,9 @@ import { encryptSecret } from "../src/auth/crypto.js";
 import { CALENDAR_OPS_PER_REQUEST, CALENDAR_OPS_PER_RUN, loadPreferences, savePreferences, syncCalendar } from "../src/services/calendar-sync.js";
 import { loadAccountState } from "../src/services/account-state.js";
 import { halfHourly } from "../src/index.js";
+import { setConditionCues } from "../src/services/condition-cues.js";
+import { setCondition } from "../src/services/user-conditions.js";
+import { FakeGoogle } from "./fake-google-calendar.js";
 import { makeTestDb, makeTestUser } from "./helpers.js";
 
 const TEST_KEY = Buffer.alloc(32, 7).toString("base64");
@@ -310,5 +313,128 @@ describe("a calendar sync's work per run (cron reliability)", () => {
     expect(stats.userMovesAccepted).toBe(12);
     // The run's own date work (today in the athlete's zone, the moves' local clock) — never one per move.
     expect(built).toBeLessThanOrEqual(3);
+  });
+});
+
+// ── With a condition's daytime cues on the calendar (condition-cues.ts) ──────────────────────────────────────────────
+//
+// A cue is an endless recurring series in the same calendar, and the sync reads with `singleEvents=true`: a full read
+// answers the cues' occurrences in its window, and a token read the occurrences of every series changed since — as far
+// ahead as Google expands an endless series, which is not known (the fake goes two years). So a cue change forgets the
+// sync's token, and the next run reads its window in full: bounded by the window, never by Google's horizon.
+
+describe("a calendar sync with four cues on the calendar", () => {
+  const FOUR = ["06:10", "10:20", "15:50", "20:45"];
+  const OTHER_FOUR = ["07:15", "13:40", "18:05", "21:30"];
+  let cal: FakeGoogle;
+  let statements: string[];
+  const cueItems = () => cal.listed.filter((i) => (i.extendedProperties as { private?: Record<string, string> } | undefined)?.private?.rgCue);
+
+  async function account(pageSize?: number): Promise<void> {
+    statements = [];
+    db = makeTestDb({ boundVariableCap: 100, onStatement: (sql) => statements.push(sql) });
+    ({ userId } = await makeTestUser(db));
+    const prefs = await loadPreferences(db, userId);
+    await savePreferences(db, userId, { ...prefs, calendarId: "cal" });
+    today = todayInZone(prefs.timezone);
+    await db.insert(schema.providerConnections).values({
+      id: newId(),
+      userId,
+      provider: "google_calendar",
+      status: "connected",
+      encryptedRefreshToken: await encryptSecret("refresh", TEST_KEY),
+      encryptedAccessToken: await encryptSecret("access", TEST_KEY),
+      accessTokenExpiresAt: new Date(Date.now() + 3_600_000).toISOString(),
+      createdAt: nowInstant(),
+      updatedAt: nowInstant(),
+    });
+    await setCondition(db, userId, { profileId: "tmj", active: true }, { today });
+    cal = new FakeGoogle({ now: nowInstant(), zone: prefs.timezone, origin: "https://app.test", firstDay: today, pageSize, horizonDays: 730 });
+    globalThis.fetch = cal.fetch;
+  }
+
+  const setCues = async (times: string[]) => expect((await setConditionCues(db, env, userId, "tmj", times)).status).toBe(200);
+
+  it("pages through a read longer than a page: every session booked once, none read as deleted, the cues untouched", async () => {
+    await account(20);
+    await setCues(FOUR);
+    const ids = await seedWorkouts(30);
+    const runs: Awaited<ReturnType<typeof syncCalendar>>[] = [];
+    for (let i = 0; i < 5 && !(runs.at(-1) && !runs.at(-1)!.capped); i++) runs.push(await syncCalendar(db, env, userId));
+    expect(runs.at(-1)!.capped).toBeUndefined();
+    // A full read past its first page: a session on a later page read as gone would be "deleted by the athlete".
+    expect(cal.queries.some((q) => new URLSearchParams(q).get("pageToken") !== null)).toBe(true);
+    expect(runs.reduce((n, r) => n + r.userDeletions + r.deleted + r.updated, 0)).toBe(0);
+    const booked = [...cal.events.values()].map((e) => e.body.extendedProperties?.private?.rgWorkoutId).filter(Boolean);
+    expect(booked.sort()).toEqual([...ids].sort());
+    expect(await db.select().from(schema.calendarEventLinks)).toHaveLength(30);
+    // Settled: the next read is incremental (the token came on the last page) and writes nothing.
+    cal.queries.length = 0;
+    const writes = cal.writes().length;
+    expect(await syncCalendar(db, env, userId)).toMatchObject({ created: 0, updated: 0, deleted: 0, userDeletions: 0 });
+    expect(new URLSearchParams(cal.queries[0]).get("syncToken")).not.toBeNull();
+    expect(cal.writes()).toHaveLength(writes);
+    expect(cal.liveCues()).toHaveLength(4);
+  });
+
+  it("after four cues changed for four, the next run reads its window in full: one page, not the months a token read expands", async () => {
+    await account();
+    await setCues(FOUR);
+    await seedWorkouts(10);
+    await syncCalendar(db, env, userId);
+    await setCues(OTHER_FOUR);
+    cal.queries.length = 0;
+    cal.listed.length = 0;
+    statements.length = 0;
+    const fetches = cal.fetches;
+    const stats = await syncCalendar(db, env, userId);
+    expect(stats).toMatchObject({ created: 0, updated: 0, deleted: 0, userDeletions: 0, userMovesAccepted: 0 });
+    expect(cal.queries).toHaveLength(1);
+    expect(new URLSearchParams(cal.queries[0]).get("syncToken")).toBeNull();
+    // Eight series (four live, four cancelled), each with at most 21 occurrences in a ten-week window.
+    expect(cueItems().length).toBeLessThanOrEqual(8 * 21);
+    // D1: the restore marker 1, the preferences 1, the connection 1, the window's workouts 1, the cursors 1, the restore
+    // marker again 1, the links and suppressions 2; the new token 1, the connection stamped 1. Fetches: one page.
+    expect({ statements: statements.length, fetches: cal.fetches - fetches }).toEqual({ statements: 10, fetches: 1 });
+    // Kept by the token, the same read was six pages of 250: every occurrence of the eight series for two years.
+  });
+
+  it("the athlete deletes the four series by hand in Google: the next token read pages through every occurrence it answers, once", async () => {
+    await account();
+    await setCues(FOUR);
+    await seedWorkouts(10);
+    await syncCalendar(db, env, userId);
+    expect((await syncCalendar(db, env, userId)).created).toBe(0);
+    for (const e of cal.liveCues()) cal.cancel(e.id);
+    cal.queries.length = 0;
+    cal.listed.length = 0;
+    const fetches = cal.fetches;
+    const stats = await syncCalendar(db, env, userId);
+    expect(stats).toMatchObject({ created: 0, updated: 0, deleted: 0, userDeletions: 0, userMovesAccepted: 0 });
+    // Not this app's change, so no token was forgotten: a token read, as far ahead as Google expands an endless series
+    // (the fake: two years, about 170 occurrences a series). Every page read once; the cost is pages, not writes.
+    const pages = Math.ceil(cueItems().length / 250);
+    expect(new URLSearchParams(cal.queries[0]).get("syncToken")).not.toBeNull();
+    expect(cueItems().length).toBeGreaterThan(250);
+    expect(cal.fetches - fetches).toBe(pages);
+    expect(cal.queries).toHaveLength(pages);
+  });
+
+  it.each([
+    ["the half-hourly run", CALENDAR_OPS_PER_RUN],
+    ["a run by a user's request", CALENDAR_OPS_PER_REQUEST],
+  ])("the most %s spends with four cues just changed: its op cap and one page", async (_who, cap) => {
+    await account();
+    await setCues(FOUR);
+    await seedWorkouts(cap + 5);
+    await setCues(OTHER_FOUR);
+    statements.length = 0;
+    const fetches = cal.fetches;
+    const stats = await syncCalendar(db, env, userId, { maxOps: cap });
+    expect(stats).toMatchObject({ created: cap, capped: true });
+    const spent = { statements: statements.length, fetches: cal.fetches - fetches };
+    // D1: eight reads (as the window read above), two writes an event booked (its link, its row), the connection
+    // stamped 1; a capped run saves no token. Fetches: one page, one an event. Cues add a page's items, never a page.
+    expect(spent).toEqual({ statements: 8 + 2 * cap + 1, fetches: 1 + cap });
   });
 });

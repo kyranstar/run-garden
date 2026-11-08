@@ -7,14 +7,17 @@
  *   PUT    /                    {profileId, active} → the same list; `since` is the first day it was switched on, kept
  *                               across off/on
  *   PUT    /:profileId/cues     {times: ["HH:MM", …]} (24-hour, none twice, at most 4) → {cues: {profileId, words,
- *                               times, timezone}, done}: one recurring calendar event per time, the others removed; the
- *                               same times again change nothing. 202 `done: false` when a request's calls ran out (try
- *                               again); 502 `calendar_failed` when Google failed part way — `cues` says what is there
+ *                               times, timezone}, done}: one recurring calendar event per time, the others removed; it
+ *                               reads the calendar once, and the same times it holds write nothing (one the athlete
+ *                               deleted or moved by hand is put back). No times turns them off, as DELETE. 202
+ *                               `done: false` when a request's calls ran out (try again); 502 `calendar_failed` when
+ *                               Google failed part way — `cues` says what is there
  *   DELETE /:profileId/cues     → the same, with no times: every cue event removed
  *
  * 422 `invalid_condition` for a malformed body, `unknown_profile` for a profile the library does not know,
  * `invalid_cue_times`, `no_cue` for a profile with none; 409 `condition_off` (a cue needs its condition on; turning
- * cues off doesn't), `cues_busy` while another change to them is under way; 412 `google_not_connected`, `no_calendar`;
+ * cues off doesn't), `cues_busy` while another change to them is under way; 412 `google_not_connected`, `no_calendar`
+ * (none chosen to put them on, or to look for them on);
  * 423 while a restore is replacing the account. Every refusal has a `message` in plain words. The base path is shared:
  * the check routes' wildcard already authenticates every `/api/conditions` request when both are mounted (index.ts),
  * so each route here authenticates only a request nothing has yet — one session read either way, and this module still

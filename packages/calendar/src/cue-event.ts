@@ -7,7 +7,7 @@ import { appOrigin } from "./event-body.js";
  * day, five minutes long, marked free, one alert at its start, on the first seven days of every month. Its start is the
  * athlete's wall-clock time with their IANA zone — never an instant or an offset — so Google keeps the clock time when
  * the clocks change. The title is the profile's cue words; the description, one line, says where it came from and how to
- * turn it off.
+ * stop it (delete it).
  *
  * It carries the private property `rgCue` (the profile's id), the app's name and its origin — and never `rgWorkoutId`:
  * the session mirror (the worker's calendar-sync.ts) takes an event for its own only by `rgWorkoutId`, so no sync lists,
@@ -47,9 +47,12 @@ export interface CueEventInput {
   appUrl: string;
 }
 
-/** One line: where the cue came from, and how to turn it off. */
+/**
+ * One line: where the cue came from, and how to stop it — the way that is always true. No screen or coach tool reaches
+ * the cue's switch yet (the API is it); deleting the event in the calendar stops it from anywhere.
+ */
 export function cueDescription(label: string): string {
-  return `${PRODUCT_NAME}'s daytime cue for ${label}: ask the coach or the app to turn these off.`;
+  return `${PRODUCT_NAME}'s daytime cue for ${label}. To stop it, delete this event and all its repeats.`;
 }
 
 const WALL = "yyyy-MM-dd'T'HH:mm:ss";

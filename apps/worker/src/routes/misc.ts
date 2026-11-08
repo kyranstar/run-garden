@@ -92,6 +92,8 @@ import { checkWorkoutDocParity } from "../services/workout-doc-parity.js";
 import { plannedRowColumns, type PlannedRow } from "../services/planned-columns.js";
 import { googleCalendarClient } from "../services/google-calendar.js";
 import { loadPreferences, savePreferences, syncCalendar } from "../services/calendar-sync.js";
+import { takeEveryCueOff } from "../services/condition-cues.js";
+import type { Env } from "../env.js";
 import { emitPendingWork } from "../services/jobs.js";
 import { llmBudgetStatus, LLM_BUDGET } from "../services/llm.js";
 import { autoReadsPaused } from "../services/coach-reads.js";
@@ -1701,7 +1703,12 @@ settingsRoutes.post("/restore/start-fresh", async (c) => {
  * OAuth handshakes (no owner column — single-user, cleared entirely, as
  * before) and the user row itself.
  */
-export async function deleteAllUserData(db: Db, userId: string): Promise<void> {
+/**
+ * Everything of the account, gone. With `env` (the route passes it), every condition's cue is taken off the athlete's
+ * calendar first, best effort (condition-cues.ts `takeEveryCueOff`): after the wipe nothing would know they are there.
+ */
+export async function deleteAllUserData(db: Db, userId: string, env?: Env): Promise<void> {
+  if (env) await takeEveryCueOff(db, env, userId);
   await wipeAccountData(db, userId, { keep: [] });
   // Child rows whose parent is already gone (repairTimestamps' duplicate
   // merge leaves stream summaries behind) belong to no account, so the
@@ -1717,6 +1724,6 @@ export async function deleteAllUserData(db: Db, userId: string): Promise<void> {
 settingsRoutes.post("/delete-all", async (c) => {
   const confirm = (await c.req.json<{ confirm?: string }>()).confirm;
   if (confirm !== "delete everything") return c.json({ error: "confirmation_required" }, 400);
-  await deleteAllUserData(c.get("db"), c.get("userId"));
+  await deleteAllUserData(c.get("db"), c.get("userId"), c.env);
   return c.json({ ok: true });
 });

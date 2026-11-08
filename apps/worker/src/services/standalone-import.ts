@@ -99,7 +99,7 @@ import { Blocks, historyFromPerformed, Lib, Records } from "@rg/session-engine";
 import type { ZodIssue } from "zod";
 import { sha256Hex } from "../auth/crypto.js";
 import { restoreInProgress } from "./account-state.js";
-import { loadPreferences } from "./calendar-sync.js";
+import { loadPreferences, wholePreferencesWrite } from "./calendar-sync.js";
 import { chunkIds, insertBatches, runAtomically, type AtomicStatement, type Db } from "./db.js";
 import { claimUserLock, releaseUserLock } from "./locks.js";
 import { RestoreInProgressError } from "./programs.js";
@@ -765,11 +765,14 @@ async function plan(db: Db, userId: string, raw: unknown, ctx: ImportCtx): Promi
         weightUnit: unitAfter,
         equipmentWishlist: [...new Set([...account.equipmentWishlist, ...wishlist])],
       });
+      // A whole-preferences write: the cue ids stored now stay, whatever this read held of them (a cue change may have
+      // landed since).
+      const write = wholePreferencesWrite(next);
       out.push(
         wdb
           .insert(userPreferences)
-          .values({ userId, prefs: next as unknown as Record<string, unknown>, updatedAt: now })
-          .onConflictDoUpdate({ target: userPreferences.userId, set: { prefs: next as unknown as Record<string, unknown>, updatedAt: now } }),
+          .values({ userId, prefs: write.insert, updatedAt: now })
+          .onConflictDoUpdate({ target: userPreferences.userId, set: { prefs: write.update, updatedAt: now } }),
       );
       // The first import happened: every later one brings sessions only.
       out.push(

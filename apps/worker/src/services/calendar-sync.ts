@@ -1,4 +1,4 @@
-import { and, eq, gte, inArray, isNull, lte, sql } from "drizzle-orm";
+import { and, eq, gte, inArray, isNull, lte, sql, type SQL } from "drizzle-orm";
 import {
   calendarEventLinks,
   calendarEventSuppressions,
@@ -55,35 +55,36 @@ export async function loadPreferences(db: Db, userId: string): Promise<UserPrefe
 }
 
 /**
- * The whole preferences — all but `conditionCues`, which is the cue service's alone (condition-cues.ts): what this save is
- * given for it is ignored and what is stored stays, so a save from a read taken before a cue change, or a settings body
- * that names the field, never loses an event id (a cue left on the calendar with nothing to remove it) or invents one.
+ * A whole-preferences write, for every writer of the whole preferences (savePreferences, the standalone import): all but
+ * `conditionCues`, which is the cue service's alone (condition-cues.ts). What the write is given for it is ignored and
+ * what is stored stays, so a write from a read taken before a cue change, or a settings body that names the field, never
+ * loses an event id (a cue left on the calendar with nothing to remove it) or invents one. `insert` is the value for an
+ * account with no preferences yet; `update` is what an update (or an upsert's DO UPDATE) sets `prefs` to.
  */
-export async function savePreferences(db: Db, userId: string, prefs: UserPreferences): Promise<void> {
-  const now = nowInstant();
+export function wholePreferencesWrite(prefs: UserPreferences): { insert: Record<string, unknown>; update: SQL } {
   const rest: Partial<UserPreferences> = { ...prefs };
   delete rest.conditionCues;
+  const json = JSON.stringify(rest);
+  return {
+    insert: rest as unknown as Record<string, unknown>,
+    update: sql`CASE WHEN json_type(${userPreferences.prefs}, '$.conditionCues') IS NULL THEN json(${json})
+      ELSE json_set(${json}, '$.conditionCues', json(json_extract(${userPreferences.prefs}, '$.conditionCues'))) END`,
+  };
+}
+
+/** The whole preferences (`wholePreferencesWrite`: the stored cue ids stay). */
+export async function savePreferences(db: Db, userId: string, prefs: UserPreferences): Promise<void> {
+  const now = nowInstant();
+  const write = wholePreferencesWrite(prefs);
   const existing = await db
     .select({ userId: userPreferences.userId })
     .from(userPreferences)
     .where(eq(userPreferences.userId, userId))
     .limit(1);
   if (existing[0]) {
-    const json = JSON.stringify(rest);
-    await db
-      .update(userPreferences)
-      .set({
-        prefs: sql`CASE WHEN json_type(${userPreferences.prefs}, '$.conditionCues') IS NULL THEN json(${json})
-          ELSE json_set(${json}, '$.conditionCues', json(json_extract(${userPreferences.prefs}, '$.conditionCues'))) END`,
-        updatedAt: now,
-      })
-      .where(eq(userPreferences.userId, userId));
+    await db.update(userPreferences).set({ prefs: write.update, updatedAt: now }).where(eq(userPreferences.userId, userId));
   } else {
-    await db.insert(userPreferences).values({
-      userId,
-      prefs: rest as unknown as Record<string, unknown>,
-      updatedAt: now,
-    });
+    await db.insert(userPreferences).values({ userId, prefs: write.insert, updatedAt: now });
   }
 }
 
@@ -178,6 +179,20 @@ function opsThisRun(
 /** The workouts whose op failed on the last run that reached them — `opsThisRun` puts them last. */
 const FAILED_OPS_CURSOR_KEY = (calendarId: string) => `failed_ops:${calendarId}`;
 
+/** The cursor row holding a calendar's sync token. */
+const syncTokenCursorId = (userId: string, calendarId: string) => `${userId}:google_calendar:events_sync_token:${calendarId}`;
+
+/**
+ * Forget the sync tokens of calendars another writer changed (condition-cues.ts, after it writes a cue series): the next
+ * run reads its window in full. A token read with `singleEvents` answers every occurrence of each recurring series
+ * changed since — as far ahead as Google expands an endless one, which no window bounds — and the run spends a page of
+ * its subrequests and its CPU on each 250 of them. One statement; none for no calendars.
+ */
+export async function forgetSyncTokens(db: Db, userId: string, calendarIds: readonly string[]): Promise<void> {
+  if (calendarIds.length === 0) return;
+  await db.delete(providerCursorState).where(inArray(providerCursorState.id, calendarIds.map((c) => syncTokenCursorId(userId, c))));
+}
+
 function parseFailedOps(value: string | undefined): Set<string> {
   if (!value) return new Set();
   try {
@@ -238,7 +253,7 @@ export async function syncCalendar(
     );
 
   // ── Actual state (incremental sync with fallback to windowed read) ───────
-  const cursorId = `${userId}:google_calendar:events_sync_token:${calendarId}`;
+  const cursorId = syncTokenCursorId(userId, calendarId);
   const failedOpsId = `${userId}:google_calendar:${FAILED_OPS_CURSOR_KEY(calendarId)}`;
   // One read for both: the sync token, and the ops that failed last run.
   const cursorBoth = await db

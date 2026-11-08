@@ -31,7 +31,8 @@ describe("buildCueEvent", () => {
   it("is five minutes from the wall-clock time, in the zone, free, one alert at its start, on the first seven days of each month", () => {
     expect(buildCueEvent(input())).toEqual({
       summary: "Shoulders down, breathe",
-      description: "Run Garden's daytime cue for Jaw care: ask the coach or the app to turn these off.",
+      // How to stop it that is always true: no screen or coach reaches the cue's switch yet, and deleting it does.
+      description: "Run Garden's daytime cue for Jaw care. To stop it, delete this event and all its repeats.",
       start: { dateTime: "2030-04-01T07:15:00", timeZone: "America/Denver" },
       end: { dateTime: "2030-04-01T07:20:00", timeZone: "America/Denver" },
       recurrence: ["RRULE:FREQ=MONTHLY;BYMONTHDAY=1,2,3,4,5,6,7"],
