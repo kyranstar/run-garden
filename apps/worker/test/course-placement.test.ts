@@ -9,7 +9,7 @@
  * Nearly every test runs on a made-up course (`course-fixture.ts`): worker code reads only the definition. `placeSlots`
  * reads no clock, so the fixed dates here can't go stale. Synthetic data only.
  */
-import { beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 const race = vi.hoisted(() => ({ begin: null as null | (() => Promise<void>) }));
 vi.mock("@rg/workout", async (importOriginal) => {
@@ -686,6 +686,71 @@ describe.each([
     await setContent(today, "outline");
     expect(await retractSlot(db, userId, snapshot, MON, prefs, NOW, { todayToo: true })).toBe(true);
     expect(await row(today)).toMatchObject({ archiveReason: "program_replaced" });
+  });
+});
+
+describe("a course kept off the watch (`watch: false`)", () => {
+  // The made-up course, flagged for these tests alone: worker code reads the flag, never which course it is.
+  beforeEach(() => {
+    INTRO_COURSE.watch = false;
+  });
+  afterEach(() => {
+    delete INTRO_COURSE.watch;
+  });
+
+  const keptOff = async (planId: string) =>
+    (await db.select().from(plannedWorkouts).where(and(eq(plannedWorkouts.planId, planId), isNull(plannedWorkouts.archivedAt)))).map((r) => [r.effectiveDate, r.watchOff]).sort();
+
+  it("places every outline kept off, in the insert itself", async () => {
+    const p = await seedCourse({ placementWeeksAhead: 1 });
+    statements.length = 0;
+    expect(sorted((await placeSlots(db, userId, p, MON, prefs, NOW)).placed)).toEqual(ids(p, [day(0, 0), day(0, 4), day(1, 0), day(1, 4)]));
+    expect(await keptOff(p)).toEqual([day(0, 0), day(0, 4), day(1, 0), day(1, 4)].map((d) => [d, true]));
+    // No statement of its own: the rows are kept off from the moment they exist.
+    const touching = writes().filter((s) => /"watch_off"/.test(s));
+    expect(touching.length).toBeGreaterThan(0);
+    expect(touching.every((s) => /^insert into "planned_workouts"/.test(s))).toBe(true);
+  });
+
+  it("a budgeted pass places them kept off too", async () => {
+    const p = await seedCourse({ placementWeeksAhead: 1 });
+    await placeSlotsWithin(db, userId, p, MON, prefs, NOW, 45);
+    expect(await keptOff(p)).toEqual([day(0, 0), day(0, 4), day(1, 0), day(1, 4)].map((d) => [d, true]));
+  });
+
+  it("a course without the flag places them on, and so does an adaptive programme", async () => {
+    delete INTRO_COURSE.watch;
+    const p = await seedCourse({ placementWeeksAhead: 1 });
+    await placeSlots(db, userId, p, MON, prefs, NOW);
+    expect((await keptOff(p)).every(([, off]) => off === false)).toBe(true);
+    const q = await seedProgramme({ weeklyGoal: 2, preferredDays: [0, 2], placementWeeksAhead: 1 });
+    await placeSlots(db, userId, q, MON, prefs, NOW);
+    expect((await keptOff(q)).length).toBeGreaterThan(0);
+    expect((await keptOff(q)).every(([, off]) => off === false)).toBe(true);
+  });
+
+  it("an outline brought back by a pause lifted keeps what it had: the course's own, or the athlete's Put on", async () => {
+    const p = await seedCourse({ placementWeeksAhead: 1 });
+    await placeSlots(db, userId, p, MON, prefs, NOW);
+    const [friday, nextFriday] = [slotId(p, day(0, 4)), slotId(p, day(1, 4))];
+    // The athlete put one on.
+    await db.update(plannedWorkouts).set({ watchOff: false }).where(eq(plannedWorkouts.id, friday));
+    await setPause(p, day(1, 4));
+    await placeSlots(db, userId, p, MON, prefs, NOW);
+    expect((await row(friday)).archivedAt).not.toBeNull();
+    await setPause(p, null);
+    expect(sorted((await placeSlots(db, userId, p, MON, prefs, NOW)).placed)).toEqual(ids(p, [day(0, 0), day(0, 4), day(1, 0), day(1, 4)]));
+    expect(await row(friday)).toMatchObject({ archivedAt: null, watchOff: false });
+    expect(await row(nextFriday)).toMatchObject({ archivedAt: null, watchOff: true });
+  });
+
+  it("outlines placed before the flag keep what they were placed with: only a placing reads it", async () => {
+    delete INTRO_COURSE.watch;
+    const p = await seedCourse({ placementWeeksAhead: 1 });
+    await placeSlots(db, userId, p, MON, prefs, NOW);
+    INTRO_COURSE.watch = false;
+    await placeSlots(db, userId, p, MON, prefs, NOW);
+    expect((await keptOff(p)).every(([, off]) => off === false)).toBe(true);
   });
 });
 

@@ -46,6 +46,10 @@
  * its only days: it never falls back on the week's others. Its slots go at its `time`, not the athlete's window. Their
  * length is the next session's (`sessionDoc(done + 1)`, numbered from the sessions actually done), booked as that
  * session's write will book it, so nothing shifts on the day. They hold no document, so nothing goes to the watch. A
+ * course kept off the watch (`CourseDefinition.watch === false`, the flag and nothing else) places each outline with the
+ * row's own Keep off my watch set (`watch_off`), in its insert, so every session ahead reads kept off and offers Put on;
+ * its day's write leaves the row's choice as it stands (`course-sessions.ts`). A revived outline keeps what it had: the
+ * course's own from its placing, or the athlete's Put on or Keep off since. Every other kind places them on. A
  * stopped course only retracts, which needs no definition; what rule 3 keeps from this pass, a stop takes itself
  * (`course-plans.ts`). A start part way (`config.finishing`) holds its whole pass: placed now, an outline would land beside a
  * session the start hasn't taken off yet.
@@ -110,6 +114,8 @@ interface Placement {
   quietDays: number | null;
   /** Its days are its only days, and its own sessions still hold theirs once written (`course_session`). */
   isCourse: boolean;
+  /** Its new outlines are placed kept off the watch (`watch_off`): a course whose definition says `watch: false`. */
+  watchOff: boolean;
 }
 
 export interface PlacementResult {
@@ -575,7 +581,7 @@ async function placementOf(db: Db, program: ProgramRow, spend: (n: number) => vo
   if (program.kind === "adaptive") {
     const config = adaptiveConfigSchema.parse(program.config);
     const seconds = config.defaultMinutes * 60;
-    return { config, goal: active ? config.weeklyGoal : 0, length: { seconds, booked: seconds }, title: program.name, time: null, quietDays: null, isCourse: false };
+    return { config, goal: active ? config.weeklyGoal : 0, length: { seconds, booked: seconds }, title: program.name, time: null, quietDays: null, isCourse: false, watchOff: false };
   }
   if (program.kind !== "course") return null;
   const config = courseConfigSchema.parse(program.config);
@@ -587,7 +593,8 @@ async function placementOf(db: Db, program: ProgramRow, spend: (n: number) => vo
     quietDays: config.quietDaysBeforeRace,
     isCourse: true,
   };
-  if (!active) return { ...placement, goal: 0, length: null };
+  // A stopped course places nothing, so whether it would place kept off is no matter.
+  if (!active) return { ...placement, goal: 0, length: null, watchOff: false };
   const course = courseDefinition(config.course);
   if (!course) {
     console.error(`course_definition_missing: program ${program.id}`);
@@ -596,7 +603,8 @@ async function placementOf(db: Db, program: ProgramRow, spend: (n: number) => vo
   spend(1);
   const done = await courseSessionsDone(db, program.userId, program.id);
   const seconds = deriveDoc(course.sessionDoc(done + 1, { ease: false }), EXERCISES).estimatedMinutes * 60;
-  return { ...placement, goal: config.weekdays.length, length: { seconds, booked: bookedSeconds(seconds) } };
+  // The header's A COURSE: the flag, read here and nowhere else.
+  return { ...placement, goal: config.weekdays.length, length: { seconds, booked: bookedSeconds(seconds) }, watchOff: course.watch === false };
 }
 
 async function place(
@@ -622,7 +630,7 @@ async function place(
   if (!program) return result;
   const placement = await placementOf(db, program, spend);
   if (!placement) return result;
-  const { config, goal, length, title, time, isCourse } = placement;
+  const { config, goal, length, title, time, isCourse, watchOff } = placement;
 
   const discipline = defaultDiscipline(program);
   spend(1);
@@ -705,6 +713,8 @@ async function place(
       origin: "program",
       contentState: "outline",
       sessionParams: null,
+      // The header's A COURSE: kept off the watch from the moment it exists, or on, as every other kind's.
+      watchOff,
       createdAt: now,
       updatedAt: now,
       ...content(date),
@@ -718,7 +728,8 @@ async function place(
     return true;
   };
   // A retracted slot whose day is wanted again: the same row comes back, as a fresh outline on its own day, a session written
-  // before it left too (its document kept in its history, and its next write the next revision).
+  // before it left too (its document kept in its history, and its next write the next revision). Its Keep off my watch stays as
+  // the row has it (the header's A COURSE): the course's own from its placing, or the athlete's choice since.
   const revive = async (revived: readonly WorkoutRow[]): Promise<boolean> => {
     if (revived.length > 0 && (await restoreBegan())) return false;
     for (const r of revived) {

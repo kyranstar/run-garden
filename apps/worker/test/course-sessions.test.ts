@@ -612,7 +612,7 @@ describe("a written session", () => {
   });
 });
 
-describe("a course kept off the watch (`watch: false`)", () => {
+describe("a session kept off the watch: the row's own state, which a course kept off the watch places", () => {
   // The made-up course, flagged for these tests alone: worker code reads the flag, never which course it is.
   beforeEach(() => {
     INTRO_COURSE.watch = false;
@@ -621,10 +621,14 @@ describe("a course kept off the watch (`watch: false`)", () => {
     delete INTRO_COURSE.watch;
   });
 
-  it("its session is written kept off by the flip itself, and owes the mirror nothing: a batch of 3, no mark", async () => {
+  /** The flip, where it touches `watch_off`: it never does. */
+  const flipTouches = (written: readonly string[]) => written.filter((s) => /^update "planned_workouts"/.test(s) && /"watch_off"/.test(s));
+
+  it("its outline was placed kept off, and the write leaves it so: the mark finds nothing owed, in the batch of 4", async () => {
     const p = await placed();
     const id = slotId(p, MON);
     const stale = await row(id);
+    expect(stale.watchOff).toBe(true);
     statements.length = 0;
     expect(await writeCourseSession(db, userId, stale, ctx)).toEqual({ written: true, n: 1 });
     const spent = [...statements];
@@ -634,26 +638,20 @@ describe("a course kept off the watch (`watch: false`)", () => {
     expect(await mirrorMark(id)).toBeUndefined();
     // The mirror would refuse it for the athlete's own reason, so it reads as kept off, never as owed.
     expect(rowRefusal(r, WATCH_ON, { today: MON, prefs: { corosWritesEnabled: true } })).toBe("kept_off");
-    // Its plan, the sessions done, the restore's look, the profiles, the library, then the flip, the note and the revision.
-    expect(spent).toHaveLength(1 + 1 + 1 + 1 + 1 + 3);
-    const written = spent.filter(isWrite);
-    expect(written.filter((s) => /sync_intents/.test(s))).toEqual([]);
-    // Set by the flip, under its guard, and by no statement of its own.
-    const setsIt = written.filter((s) => /"watch_off"/.test(s));
-    expect(setsIt).toHaveLength(1);
-    expect(setsIt[0]).toMatch(/^update "planned_workouts" set .*"course_session".* where .*exists \(select 1 from planned_workouts w join programs p/);
+    // Its plan, the sessions done, the restore's look, the profiles, the library, then the flip, the note, the mark and the
+    // revision: what any course's write spends.
+    expect(spent).toHaveLength(1 + 1 + 1 + 1 + 1 + 4);
+    expect(flipTouches(spent.filter(isWrite))).toEqual([]);
   });
 
   it("eased, the easing is cleared beside it: still no mark", async () => {
     const p = await placed({ easeNext: true });
     const id = slotId(p, MON);
-    statements.length = 0;
     expect((await writeCourseSession(db, userId, await row(id), ctx)).written).toBe(true);
     expect((await row(id)).watchOff).toBe(true);
     expect((await programOf(p)).config.easeNext).toBe(false);
     expect(holdOf(docOf(await row(id)))).toBe(INTRO_FIRST_SECONDS / 2);
     expect(await mirrorMark(id)).toBeUndefined();
-    expect(writes().filter((s) => /sync_intents/.test(s))).toEqual([]);
   });
 
   it("the hourly pass writes it kept off too", async () => {
@@ -676,26 +674,37 @@ describe("a course kept off the watch (`watch: false`)", () => {
     expect(await mirrorMark(id)).toBeUndefined();
   });
 
-  it("a write its guard refuses sets nothing: the flag lands with the flip, or not at all", async () => {
+  it("an outline the athlete put on is written on, and owed its copy", async () => {
     const p = await placed();
     const id = slotId(p, MON);
-    const stale = await row(id);
-    await db.update(plannedWorkouts).set({ completionState: "skipped" }).where(eq(plannedWorkouts.id, id));
+    await db.update(plannedWorkouts).set({ watchOff: false }).where(eq(plannedWorkouts.id, id));
     statements.length = 0;
-    expect((await writeCourseSession(db, userId, stale, ctx)).written).toBe(false);
-    expect(await row(id)).toMatchObject({ origin: "program", watchOff: false, workoutDoc: null });
-    expect(await mirrorMark(id)).toBeUndefined();
+    expect((await writeCourseSession(db, userId, await row(id), ctx)).written).toBe(true);
+    expect(flipTouches(writes())).toEqual([]);
+    expect((await row(id)).watchOff).toBe(false);
+    expect(await mirrorMark(id)).toMatchObject({ kind: "mirror", targetId: id, resolvedAt: null, createdAt: NOW });
   });
 
-  it("a session written before the flag leaves it as it was: only a write reads it", async () => {
+  it("a course that says nothing of the watch: an outline the athlete kept off is written kept off, and owed nothing", async () => {
     delete INTRO_COURSE.watch;
     const p = await placed();
     const id = slotId(p, MON);
-    await writeCourseSession(db, userId, await row(id), ctx);
-    INTRO_COURSE.watch = false;
-    expect(await writeCourseSessionsDue(db, AT)).toEqual({ written: 0, failed: 0 });
     expect((await row(id)).watchOff).toBe(false);
-    expect(await mirrorMark(id)).toMatchObject({ resolvedAt: null });
+    await db.update(plannedWorkouts).set({ watchOff: true }).where(eq(plannedWorkouts.id, id));
+    expect((await writeCourseSession(db, userId, await row(id), ctx)).written).toBe(true);
+    expect((await row(id)).watchOff).toBe(true);
+    expect(await mirrorMark(id)).toBeUndefined();
+  });
+
+  it("a write its guard refuses changes nothing, and marks nothing", async () => {
+    const p = await placed();
+    const id = slotId(p, MON);
+    const stale = await row(id);
+    await db.update(plannedWorkouts).set({ completionState: "skipped", watchOff: false }).where(eq(plannedWorkouts.id, id));
+    const now = await row(id);
+    expect((await writeCourseSession(db, userId, stale, ctx)).written).toBe(false);
+    expect(await row(id)).toEqual(now);
+    expect(await mirrorMark(id)).toBeUndefined();
   });
 });
 

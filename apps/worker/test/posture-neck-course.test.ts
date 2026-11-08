@@ -1,10 +1,11 @@
 /**
  * THE POSTURE AND NECK COURSE THROUGH THE APP'S REAL ROUTES, on its real definition: a second course needs its definition
- * and nothing else. It starts by `POST /api/plans/courses`, places its outlines, writes today's on opening, kept off the watch
- * (its one flag), and reads that way everywhere: the sheet's watch line, its row in the plan, the account's sync line. The
- * mirror owes it nothing and nothing is queued, unless the athlete puts one session on the watch. Mark done counts it once and
- * the garden credits it once, as mobility. It stops as any course does. TRE's sessions still go to the watch as before, and no
- * worker or UI source names either course. Fixed dates under a faked `Date`, so nothing here goes stale. Synthetic data only.
+ * and nothing else. It starts by `POST /api/plans/courses` and places its outlines kept off the watch (its one flag), so every
+ * session ahead and every one written on its day reads that way everywhere: the sheet's watch line, its row in the plan, the
+ * account's sync line. The mirror owes it nothing and nothing is queued, unless the athlete puts one session on the watch, which
+ * then holds through its day's write and a pause lifted the same day. Mark done counts it once and the garden credits it once,
+ * as mobility. It stops as any course does. TRE's outlines and sessions go to the watch as before, and no worker or UI source
+ * names either course. Fixed dates under a faked `Date`, so nothing here goes stale. Synthetic data only.
  */
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { readdirSync, readFileSync } from "node:fs";
@@ -121,7 +122,7 @@ describe("a start through POST /api/plans/courses, with nothing but the definiti
     const live = (await liveOf(p)).sort((a, b) => a.effectiveDate.localeCompare(b.effectiveDate));
     expect(live.map((r) => r.effectiveDate).slice(0, 3)).toEqual([MON, addDays(MON, 2), addDays(MON, 4)]);
     for (const r of live) {
-      expect(r).toMatchObject({ origin: "program", title: "Posture & neck", workoutDoc: null, effectiveTime: "19:30", category: "yoga", sport: "yoga", watchOff: false });
+      expect(r).toMatchObject({ origin: "program", title: "Posture & neck", workoutDoc: null, effectiveTime: "19:30", category: "yoga", sport: "yoga", watchOff: true });
       expect([r.fallbackEstimatedDurationSeconds, r.calendarBlockDurationSeconds]).toEqual([420, bookedSeconds(420)]);
     }
     expect(bookedSeconds(420)).toBe(600);
@@ -199,6 +200,70 @@ describe("today's session, kept off the watch", () => {
   });
 });
 
+describe("its sessions ahead, kept off from the moment they're placed", () => {
+  const WED = addDays(MON, 2);
+
+  it("an outline ahead reads kept off, with Put on, never as a copy that goes on nearer the day; its row in the plan says so", async () => {
+    const p = await started();
+    for (const r of await liveOf(p)) expect([r.effectiveDate, r.watchOff]).toEqual([r.effectiveDate, true]);
+    const wed = slotId(p, WED);
+    const opened = await call("GET", `/api/sessions/${wed}`);
+    expect(opened.status, JSON.stringify(opened.body)).toBe(200);
+    expect(opened.body.watch).toEqual({ state: "kept_off" });
+    // Still an outline: opening a day ahead writes nothing.
+    expect(await row(wed)).toMatchObject({ origin: "program", workoutDoc: null, watchOff: true });
+    expect((await call("GET", `/api/plan/workouts/${wed}`)).body.workout.syncAction).toEqual({ agent: "nobody", code: "kept_off_watch" });
+  });
+
+  it("Put on for an outline ahead holds to its day's write: written on, owed its copy, and the copy queued", async () => {
+    const p = await started();
+    const wed = slotId(p, WED);
+    const put = await call("POST", `/api/sessions/${wed}/put-on-watch`);
+    expect(put.status, JSON.stringify(put.body)).toBe(200);
+    expect(put.body.watch.state).not.toBe("kept_off");
+    expect((await row(wed)).watchOff).toBe(false);
+    // The mirror has nothing to copy yet, an outline holding no document: it settles the mark.
+    await mirrorSweep(db, ENV, userId, prefs, ctx(), { cap: 1 });
+    expect((await mirrorMark(wed))?.resolvedAt).not.toBeNull();
+
+    vi.setSystemTime(new Date("2026-10-07T19:00:00.000Z"));
+    const opened = await call("GET", `/api/sessions/${wed}`);
+    expect(opened.body.title).toBe("Posture & neck · door openers");
+    expect(opened.body.watch.state).not.toBe("kept_off");
+    expect(await row(wed)).toMatchObject({ origin: "studio", courseSession: 1, watchOff: false });
+    expect(await mirrorMark(wed)).toMatchObject({ resolvedAt: null });
+    expect(await queueProvisionalPush(db, ENV, userId, await row(wed), { ...ctx(), today: WED, now: "2026-10-07T19:00:00.000Z" })).toBe("queued");
+  });
+
+  it("Put on for today's written session holds through a pause and its lift the same day: written again, still on", async () => {
+    const p = await started();
+    const { id } = await openToday(p);
+    expect((await call("POST", `/api/sessions/${id}/put-on-watch`)).status).toBe(200);
+    expect((await call("PATCH", `/api/plans/${p}`, { pausedUntil: MON })).status).toBe(200);
+    expect((await row(id)).archivedAt).not.toBeNull();
+    expect((await call("PATCH", `/api/plans/${p}`, { pausedUntil: null })).status).toBe(200);
+    expect(await row(id)).toMatchObject({ archivedAt: null, origin: "program", watchOff: false });
+
+    const opened = await call("GET", `/api/sessions/${id}`);
+    expect(opened.body.watch.state).not.toBe("kept_off");
+    expect(await row(id)).toMatchObject({ origin: "studio", courseSession: 1, watchOff: false });
+    expect(await mirrorMark(id)).toMatchObject({ resolvedAt: null });
+    expect(await queueProvisionalPush(db, ENV, userId, await row(id), ctx())).toBe("queued");
+  });
+
+  it("with no Put on, the same pause and lift leave it kept off, owed nothing", async () => {
+    const p = await started();
+    const { id } = await openToday(p);
+    await call("PATCH", `/api/plans/${p}`, { pausedUntil: MON });
+    await call("PATCH", `/api/plans/${p}`, { pausedUntil: null });
+    const opened = await call("GET", `/api/sessions/${id}`);
+    expect(opened.body.watch).toEqual({ state: "kept_off" });
+    expect(await row(id)).toMatchObject({ origin: "studio", courseSession: 1, watchOff: true });
+    expect(await mirrorMark(id)).toBeUndefined();
+    expect(await jobsOf(id)).toEqual([]);
+  });
+});
+
 describe("marked done", () => {
   it("counts once, and the garden credits it once, as mobility; the next is the wall's turn, kept off too", async () => {
     const p = await started();
@@ -235,6 +300,15 @@ describe("a stop", () => {
 });
 
 describe("TRE, unchanged", () => {
+  it("its outlines are placed on, and one ahead reads as going on nearer its day, as before", async () => {
+    const p = await started({ ...BODY, course: "tre" });
+    const live = await liveOf(p);
+    expect(live.length).toBeGreaterThan(0);
+    for (const r of live) expect([r.effectiveDate, r.watchOff]).toEqual([r.effectiveDate, false]);
+    const wed = slotId(p, addDays(MON, 2));
+    expect((await call("GET", `/api/sessions/${wed}`)).body.watch).toEqual({ state: "unavailable", reason: "not_today" });
+  });
+
   it("its session written today goes to the watch as before: kept on, owed a copy, and the copy queued", async () => {
     const p = await started({ ...BODY, course: "tre" });
     const { id, opened } = await openToday(p);

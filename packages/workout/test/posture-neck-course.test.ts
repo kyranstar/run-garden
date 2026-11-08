@@ -1,13 +1,14 @@
 /**
  * THE POSTURE AND NECK COURSE: a few minutes of neck and posture work, then a minute of jaw-reset breathing, from moves that
  * need nothing beyond a wall or a chair. Two sessions take turns for as long as the course runs, and easing one plays the
- * short version. Every session validates clean for an athlete with an active condition profile whatever the day, runs 5 to 8
- * minutes, counts as a calm session (never a lift), plays on timers, and its course keeps it off the watch. Synthetic; nothing
+ * short version. Each starts on the floor and gets up from there, never back down. Every session validates clean for an
+ * athlete with an active condition profile at a real place (the "Mat only" preset, a bare room) whatever the day, plays 5 to
+ * 8 minutes in the player, counts as a calm session (never a lift), and its course keeps it off the watch. Synthetic; nothing
  * personal.
  */
 import { describe, expect, it } from "vitest";
 import type { WorkoutDoc, WorkoutItem } from "@rg/domain";
-import { EQUIPMENT_IDS, EXERCISES, TMJ, isPracticeMove, type CheckReading } from "@rg/exercise-library";
+import { EXERCISES, LOCATION_PRESETS, NO_EQUIPMENT_GEAR, TMJ, isPracticeMove, type CheckReading } from "@rg/exercise-library";
 import {
   COURSES,
   courseDefinition,
@@ -21,11 +22,11 @@ import {
 } from "../src/index.js";
 
 /** Odd sessions: the shoulders' turn. */
-const DOOR_OPENERS = ["neckRotations", "chairThoracicExtension", "doorOpeners", "chinNodHold", "breath"];
+const DOOR_OPENERS = ["chinNodHold", "neckRotations", "chairThoracicExtension", "doorOpeners", "breath"];
 /** Even sessions: the wall's turn. */
-const WALL_ANGELS = ["neckRotations", "chairThoracicExtension", "wallAngels", "chinNodHold", "breath"];
-/** Any session eased: the neck's warm start, the chin nods and the breathing. */
-const SHORT = ["neckRotations", "chinNodHold", "breath"];
+const WALL_ANGELS = ["chinNodHold", "neckRotations", "chairThoracicExtension", "wallAngels", "breath"];
+/** Any session eased: the turn's own standing move left out. */
+const SHORT = ["chinNodHold", "neckRotations", "chairThoracicExtension", "breath"];
 const EVERY_MOVE = [...new Set([...DOOR_OPENERS, ...WALL_ANGELS])];
 
 const exercises = (doc: WorkoutDoc): Array<Extract<WorkoutItem, { kind: "exercise" }>> =>
@@ -33,11 +34,18 @@ const exercises = (doc: WorkoutDoc): Array<Extract<WorkoutItem, { kind: "exercis
 const moves = (doc: WorkoutDoc): string[] => exercises(doc).map((i) => i.libraryId);
 const record = (id: string) => EXERCISES.find((e) => e.id === id)!;
 
+/** Real places' gear: the "Mat only" preset, and the bare room a "No equipment" place stands for. */
+const MAT_ONLY = LOCATION_PRESETS.find((p) => p.id === "mat")!.equipment;
+const PLACES = [
+  ["Mat only", MAT_ONLY],
+  ["No equipment", NO_EQUIPMENT_GEAR],
+] as const;
+
 const TODAY = "2026-03-10";
 const reading = (pre: number | null, feelingOff = false): CheckReading => ({ pre, post: null, feelingOff });
 const dayOf = (r: CheckReading | null, o: Partial<DayContext> = {}): DayContext => ({ date: TODAY, today: TODAY, readings: { tmj: r }, ...o });
-const validate = (doc: WorkoutDoc, day: DayContext | null) =>
-  validateWorkoutDoc(doc, { library: EXERCISES, activeProfiles: [TMJ], day, excluded: [], equipment: EQUIPMENT_IDS });
+const validate = (doc: WorkoutDoc, day: DayContext | null, equipment: readonly string[]) =>
+  validateWorkoutDoc(doc, { library: EXERCISES, activeProfiles: [TMJ], day, excluded: [], equipment: [...equipment] });
 const SESSIONS = Array.from({ length: 8 }, (_, i) => i + 1);
 const BOTH = [false, true];
 
@@ -52,6 +60,14 @@ describe("the course's sessions", () => {
 
   it.each([1, 2, 7, 8])("session %i eased is the short one", (n) => {
     expect(moves(postureNeckSessionDoc(n, { ease: true }))).toEqual(SHORT);
+  });
+
+  // Getting onto the floor is the slow change: it comes first, before the player starts, and never mid-session.
+  it("starts lying down, then sits, then stands, then the breathing: never back down to the floor", () => {
+    const positions = (doc: WorkoutDoc) => moves(doc).map((id) => record(id).position);
+    expect(positions(postureNeckSessionDoc(1))).toEqual(["supine", "seated", "seated", "standing", "seated"]);
+    expect(positions(postureNeckSessionDoc(2))).toEqual(["supine", "seated", "seated", "standing", "seated"]);
+    expect(positions(postureNeckSessionDoc(1, { ease: true }))).toEqual(["supine", "seated", "seated", "seated"]);
   });
 
   it("reads well in the plan list: the course's name, then which turn it is", () => {
@@ -151,21 +167,31 @@ describe("the course's moves", () => {
     expect(EVERY_MOVE.filter((id) => isPracticeMove(record(id)))).toEqual([]);
   });
 
-  it("need nothing beyond a wall or a chair", () => {
+  it("need nothing beyond a wall or a chair, which both real places hold", () => {
     for (const id of EVERY_MOVE) {
       const { all, oneOf } = record(id).equipment;
       expect([id, all.filter((e) => e !== "wall" && e !== "chair"), oneOf]).toEqual([id, [], []]);
     }
+    for (const [, gear] of PLACES) expect([...gear]).toEqual(expect.arrayContaining(["wall", "chair"]));
     expect(deriveDoc(postureNeckSessionDoc(1), EXERCISES).equipment).toEqual({ all: ["chair"], oneOf: [] });
     expect(deriveDoc(postureNeckSessionDoc(2), EXERCISES).equipment).toEqual({ all: ["chair", "wall"], oneOf: [] });
-    expect(deriveDoc(postureNeckSessionDoc(1, { ease: true }), EXERCISES).equipment).toEqual({ all: [], oneOf: [] });
+    expect(deriveDoc(postureNeckSessionDoc(1, { ease: true }), EXERCISES).equipment).toEqual({ all: ["chair"], oneOf: [] });
   });
 });
 
 describe("the course as a workout", () => {
-  it.each(SESSIONS)("session %i, eased or not, raises nothing at all: calm, flare, feeling off, unanswered, a day ahead, a template", (n) => {
-    const days: Array<DayContext | null> = [null, dayOf(reading(1)), dayOf(reading(7)), dayOf(reading(2, true)), dayOf(null), dayOf(null, { date: "2026-03-13" })];
-    for (const ease of BOTH) for (const day of days) expect(validate(postureNeckSessionDoc(n, { ease }), day)).toEqual([]);
+  describe.each(PLACES)("at a place with %s's gear", (_place, gear) => {
+    it.each(SESSIONS)("session %i, eased or not, raises nothing at all: calm, flare, feeling off, unanswered, a day ahead, a template", (n) => {
+      const days: Array<DayContext | null> = [null, dayOf(reading(1)), dayOf(reading(7)), dayOf(reading(10)), dayOf(reading(2, true)), dayOf(null), dayOf(null, { date: "2026-03-13" })];
+      for (const ease of BOTH) for (const day of days) expect(validate(postureNeckSessionDoc(n, { ease }), day, gear)).toEqual([]);
+    });
+  });
+
+  it("somewhere with neither a wall nor a chair, it says what's missing and nothing else", () => {
+    const codes = (n: number, ease: boolean) => [...new Set(validate(postureNeckSessionDoc(n, { ease }), dayOf(reading(7)), []).map((i) => `${i.severity}:${i.code}`))];
+    expect(codes(1, false)).toEqual(["warning:equipment_unavailable"]);
+    expect(codes(2, false)).toEqual(["warning:equipment_unavailable"]);
+    expect(codes(1, true)).toEqual(["warning:equipment_unavailable"]);
   });
 
   it.each(SESSIONS)("session %i, eased or not, counts as a calm session, not a lift", (n) => {
@@ -175,59 +201,77 @@ describe("the course as a workout", () => {
     }
   });
 
-  // By hand, each move's work plus its 15 s to set up: neck rotations 7 a side x 6 s = 84 s; chair thoracic extension and door
-  // openers 10 x 6 s = 60 s; wall angels 8 x 5 s = 40 s; chin nods 7 x 12 s = 84 s; the breathing 60 s.
-  // Door openers: 99 + 75 + 75 + 99 + 75 = 423 s. Wall angels: 99 + 75 + 55 + 99 + 75 = 403 s. Short: 99 + 99 + 75 = 273 s.
+  // What the calendar books from, by hand: each move's work plus 15 s to set up. Chin nods 7 x 12 s = 84 s; neck rotations 7
+  // a side x 6 s = 84 s; chair thoracic extension and door openers 10 x 6 s = 60 s; wall angels 8 x 5 s = 40 s; the breathing
+  // 60 s. Door openers: 99 + 99 + 75 + 75 + 75 = 423 s. Wall angels: 99 + 99 + 75 + 55 + 75 = 403 s. Short: 99 + 99 + 75 + 75
+  // = 348 s.
   it.each([
     [1, false, 7],
     [2, false, 7],
-    [1, true, 5],
-    [2, true, 5],
-  ])("session %i (eased: %s) runs about %i minutes", (n, ease, minutes) => {
+    [1, true, 6],
+    [2, true, 6],
+  ])("session %i (eased: %s) books about %i minutes", (n, ease, minutes) => {
     expect(deriveDoc(postureNeckSessionDoc(n, { ease }), EXERCISES).estimatedMinutes).toBe(minutes);
-  });
-
-  it.each(SESSIONS)("session %i runs 5 to 8 minutes, eased or not", (n) => {
-    for (const ease of BOTH) {
-      const minutes = deriveDoc(postureNeckSessionDoc(n, { ease }), EXERCISES).estimatedMinutes;
-      expect(minutes).toBeGreaterThanOrEqual(5);
-      expect(minutes).toBeLessThanOrEqual(8);
-    }
   });
 });
 
 describe("the course in the player", () => {
-  const played = (doc: WorkoutDoc) => playerStepsFromDoc(doc, EXERCISES).map((s) => [s.exerciseId, s.kind, s.seconds, s.side]);
+  const steps = (doc: WorkoutDoc) => playerStepsFromDoc(doc, EXERCISES);
+  const played = (doc: WorkoutDoc) => steps(doc).map((s) => [s.exerciseId, s.kind, s.seconds, s.prepGap, s.side]);
+  /** What the player really takes: every window, and the get-ready before it (`readyMs`). */
+  const playedSeconds = (doc: WorkoutDoc) => steps(doc).reduce((sum, s) => sum + s.seconds + s.prepGap, 0);
 
-  // Every move on a timer, hands free: lying down for the chin nods, arms up the wall for the angels. A window of reps is the
-  // record's seconds a rep, rounded to 5 s: neck rotations 7 a side x 6 s = 84 s, one window for both sides (they alternate);
-  // chin nods 7 x 12 s = 84 s; chair thoracic extension and door openers 10 x 6 s; wall angels 8 x 5 s.
+  // Every move on a timer, hands free, each with the 8 s get-ready a hold has: every move but the first changes position. A
+  // window of reps is the record's seconds a rep, rounded to 5 s: chin nods 7 x 12 s = 84 s; neck rotations 7 a side x 6 s =
+  // 84 s, one window for both sides (they alternate); chair thoracic extension and door openers 10 x 6 s; wall angels 8 x 5 s.
   it("plays the shoulders' turn on timers, straight through", () => {
     expect(played(postureNeckSessionDoc(1))).toEqual([
-      ["neckRotations", "timed", 85, null],
-      ["chairThoracicExtension", "timed", 60, null],
-      ["doorOpeners", "timed", 60, null],
-      ["chinNodHold", "timed", 85, null],
-      ["breath", "timed", 60, null],
+      ["chinNodHold", "timed", 85, 8, null],
+      ["neckRotations", "timed", 85, 8, null],
+      ["chairThoracicExtension", "timed", 60, 8, null],
+      ["doorOpeners", "timed", 60, 8, null],
+      ["breath", "timed", 60, 8, null],
     ]);
   });
 
   it("plays the wall's turn the same way", () => {
     expect(played(postureNeckSessionDoc(2))).toEqual([
-      ["neckRotations", "timed", 85, null],
-      ["chairThoracicExtension", "timed", 60, null],
-      ["wallAngels", "timed", 40, null],
-      ["chinNodHold", "timed", 85, null],
-      ["breath", "timed", 60, null],
+      ["chinNodHold", "timed", 85, 8, null],
+      ["neckRotations", "timed", 85, 8, null],
+      ["chairThoracicExtension", "timed", 60, 8, null],
+      ["wallAngels", "timed", 40, 8, null],
+      ["breath", "timed", 60, 8, null],
     ]);
   });
 
   it("plays the short one, and ends on the breathing", () => {
     expect(played(postureNeckSessionDoc(3, { ease: true }))).toEqual([
-      ["neckRotations", "timed", 85, null],
-      ["chinNodHold", "timed", 85, null],
-      ["breath", "timed", 60, null],
+      ["chinNodHold", "timed", 85, 8, null],
+      ["neckRotations", "timed", 85, 8, null],
+      ["chairThoracicExtension", "timed", 60, 8, null],
+      ["breath", "timed", 60, 8, null],
     ]);
+  });
+
+  // By hand, from the windows above and 8 s before each: door openers 350 + 40 = 390 s (6.5 minutes); wall angels 330 + 40 =
+  // 370 s (about 6); the short one 290 + 32 = 322 s (about 5).
+  it.each([
+    [1, false, 390],
+    [2, false, 370],
+    [1, true, 322],
+    [2, true, 322],
+  ])("session %i (eased: %s) really takes %i s in the player", (n, ease, seconds) => {
+    expect(playedSeconds(postureNeckSessionDoc(n, { ease }))).toBe(seconds);
+  });
+
+  it.each(SESSIONS)("session %i plays 5 to 8 minutes, eased or not, and easing makes it shorter", (n) => {
+    const full = playedSeconds(postureNeckSessionDoc(n));
+    const eased = playedSeconds(postureNeckSessionDoc(n, { ease: true }));
+    for (const s of [full, eased]) {
+      expect(s).toBeGreaterThanOrEqual(5 * 60 - 30);
+      expect(s).toBeLessThanOrEqual(8 * 60);
+    }
+    expect(eased).toBeLessThan(full);
   });
 });
 

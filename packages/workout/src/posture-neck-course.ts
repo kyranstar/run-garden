@@ -7,23 +7,26 @@
  *
  * WHY THESE MOVES (the condition profile's evidence review, 2026-10-23, in the workout system's principles §12): neck and
  * posture training and breathing are what the review supported, beside the daytime jaw position. So: the deep neck flexors
- * (chin nods), the upper back and shoulders (chair-back thoracic extension, door openers, wall angels), easy neck range (neck
- * rotations), and the jaw-reset breathing. Each needs nothing beyond a wall or a chair, and each is rated clean for the jaw
- * profile: no clench, no neck load, never face down.
+ * (chin nods), easy neck range (neck rotations), the upper back and shoulders (chair-back thoracic extension, door openers,
+ * wall angels), and the jaw-reset breathing. Each needs nothing beyond a wall or a chair, which a bare room and the "Mat only"
+ * preset both hold, and each is rated clean for the jaw profile: no clench, no neck load, never face down.
  *
  * THE CHOICES HERE
  * - Two sessions take turns for as long as the course runs, odd and even: the shoulders' (door openers) and the wall's (wall
- *   angels). Each is a warm start of neck rotations, the chair-back thoracic extension, its own upper-back move and the chin
- *   nods, then a minute of the breathing: about 7 minutes. The course never counts toward an end.
+ *   angels). The course never counts toward an end.
+ * - The order goes up from the floor and never back down: the chin nods lying down first, where the athlete starts before the
+ *   player does; then sitting, for the neck rotations and the chair-back thoracic extension; then standing, for the turn's own
+ *   upper-back move; then the breathing.
+ * - Every move runs on a timer, hands free, as holds: each but the first changes position, so each has a hold's 8 s get-ready
+ *   rather than a flow's 3. In the player the shoulders' turn takes 390 s and the wall's 370 s, about 6 minutes each.
  * - Doses are the records' own: a reps move plays its record's middle, as a record with no stated amount reads (`deriveDoc`),
  *   so the player's window, the calendar's length and the record agree. Neck rotations alternate, so theirs is each side's. The
  *   breathing is the low end of its record's time, a minute.
- * - Every part runs on a timer (a flow, and the breathing a hold): hands free, lying down for the chin nods and arms up the
- *   wall for the angels. A calm session (`recover`), so a flare day asks nothing different of it.
- * - It counts as mobility: the calm moves (the rotations, the extension, the breathing) outweigh the activation moves in every
- *   session, eased or not, so it is never booked as a lift.
- * - Easing a session plays the short one, about 5 minutes: the warm start, the chin nods and the breathing, the upper-back work
- *   left for the next. The sessions carry no notes: the course's rule is said once, in its plan's brief (`courses.ts`).
+ * - A calm session (`recover`), so a flare day asks nothing different of it. It counts as mobility: the calm moves (the
+ *   rotations, the extension, the breathing) outweigh the activation moves in every session, eased or not, so it is never
+ *   booked as a lift.
+ * - Easing a session leaves out the turn's standing move, the one with most effort: the short one takes 322 s in the player,
+ *   about 5 minutes. The sessions carry no notes: the course's rule is said once, in its plan's brief (`courses.ts`).
  */
 import type { WorkoutDoc, WorkoutDose, WorkoutItem, WorkoutPart } from "@rg/domain";
 
@@ -32,23 +35,28 @@ export const POSTURE_NECK_NAME = "Posture & neck";
 
 const move = (libraryId: string, dose: WorkoutDose): WorkoutItem => ({ kind: "exercise", libraryId, dose: { sets: 1, ...dose } });
 
+const CHIN_NODS = move("chinNodHold", { reps: 7 });
 const NECK_ROTATIONS = move("neckRotations", { reps: 7, perSide: true });
 const CHAIR_EXTENSION = move("chairThoracicExtension", { reps: 10 });
-const CHIN_NODS = move("chinNodHold", { reps: 7 });
 const BREATHING = move("breath", { holdSec: 60 });
 
-/** The two turns: the upper-back move each adds, and what its title and summary call it. */
+/** The two turns: the standing upper-back move each adds, and what its title and summary call it. */
 const TURNS = [
-  { name: "door openers", move: move("doorOpeners", { reps: 10 }), where: "open the upper back and shoulders" },
-  { name: "wall angels", move: move("wallAngels", { reps: 8 }), where: "open the upper back at the wall" },
+  { name: "door openers", move: move("doorOpeners", { reps: 10 }), says: "open the upper back and shoulders" },
+  { name: "wall angels", move: move("wallAngels", { reps: 8 }), says: "open the upper back at the wall" },
 ] as const;
 
-const warmup: WorkoutPart = { purpose: "warmup", format: "flow", why: "Loosen the neck, in easy range.", items: [NECK_ROTATIONS] };
-const cooldown: WorkoutPart = { purpose: "cooldown", format: "holds", why: "Settle the jaw before you get up.", items: [BREATHING] };
+const warmup: WorkoutPart = {
+  purpose: "warmup",
+  format: "holds",
+  why: "Wake the deep neck muscles lying down, then loosen the neck sitting up.",
+  items: [CHIN_NODS, NECK_ROTATIONS],
+};
+const cooldown: WorkoutPart = { purpose: "cooldown", format: "holds", why: "Settle the jaw before you go on with your day.", items: [BREATHING] };
 
 /**
  * The document for one session of the course, numbered from 1: the shoulders' turn for an odd one, the wall's for an even one,
- * or the short one when `ease` is set. Throws for anything but a whole number from 1 up.
+ * or the short one when `ease` is set. Throws for anything but a safe whole number from 1 up.
  */
 export function postureNeckSessionDoc(session: number, { ease = false }: { ease?: boolean } = {}): WorkoutDoc {
   if (!Number.isSafeInteger(session) || session < 1) throw new RangeError(`A posture and neck session is numbered from 1 (got ${session}).`);
@@ -58,12 +66,12 @@ export function postureNeckSessionDoc(session: number, { ease = false }: { ease?
       version: 1,
       title: `${POSTURE_NECK_NAME} · short`,
       intent: {
-        summary: "The short one: loosen the neck and train the deep neck muscles, then a minute of jaw-reset breathing.",
+        summary: "The short one: wake the deep neck muscles, loosen the neck and the upper back, then a minute of jaw-reset breathing.",
         goals: ["posture", "mobility", "condition-care"],
-        focus: ["neck", "jaw"],
+        focus: ["neck", "upper-back", "thoracic", "jaw"],
         effort: "recover",
       },
-      parts: [warmup, { purpose: "main", format: "flow", why: "Train the deep neck muscles.", items: [CHIN_NODS] }, cooldown],
+      parts: [warmup, { purpose: "main", format: "holds", why: "Open the upper back, sitting.", items: [CHAIR_EXTENSION] }, cooldown],
       source,
     };
   }
@@ -72,14 +80,14 @@ export function postureNeckSessionDoc(session: number, { ease = false }: { ease?
     version: 1,
     title: `${POSTURE_NECK_NAME} · ${turn.name}`,
     intent: {
-      summary: `Loosen the neck, ${turn.where}, train the deep neck muscles, then a minute of jaw-reset breathing.`,
+      summary: `Wake the deep neck muscles, loosen the neck, ${turn.says}, then a minute of jaw-reset breathing.`,
       goals: ["posture", "mobility", "condition-care"],
       focus: ["neck", "upper-back", "thoracic", "shoulders", "jaw"],
       effort: "recover",
     },
     parts: [
       warmup,
-      { purpose: "main", format: "flow", why: "Open the upper back, then train the deep neck muscles.", items: [CHAIR_EXTENSION, turn.move, CHIN_NODS] },
+      { purpose: "main", format: "holds", why: "Open the upper back sitting, then standing.", items: [CHAIR_EXTENSION, turn.move] },
       cooldown,
     ],
     source,

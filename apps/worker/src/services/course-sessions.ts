@@ -22,13 +22,13 @@
  * nothing, logs by code only and leaves one note for that session (`course_session_refused`, dismiss only), which ends with
  * the athlete's day and goes sooner if the session is then written. Otherwise, in one atomic batch: the row flips to
  * `origin = 'studio'` with the document, revision, title, category, sport, booked length and its number (`course_session`),
- * still to do; `easeNext` is cleared if this session used it; and the mirror is marked owed.
+ * still to do; `easeNext` is cleared if this session used it; and the mirror is marked owed, unless the row is kept off.
  *
- * A COURSE KEPT OFF THE WATCH (`CourseDefinition.watch === false`, the flag and nothing else). The flip itself sets the row's
- * own Keep off my watch (`watch_off`), so it lands with the write or not at all, and the batch marks nothing owed: the mirror
- * refuses a row kept off wherever it looks (the sweep, the drain, the day's build), so a mark would only be settled unused.
- * The session reads as kept off everywhere, never as failing to sync, and Put on my watch puts that one session on as it
- * would any other. A course without the flag is written as above.
+ * KEPT OFF THE WATCH. The flip leaves the row's own Keep off my watch (`watch_off`) as it stands: a course kept off the watch
+ * (`CourseDefinition.watch === false`) set it on every outline it placed (`program-slots.ts`), and the athlete's Put on or
+ * Keep off since, for a session ahead or a written one brought back by a pause, is theirs to keep. The mark holds to the row
+ * not being kept off as the batch reaches it, so a session kept off is owed nothing: the mirror refuses it wherever it looks
+ * (the sweep, the drain, the day's build), and it reads as kept off everywhere, never as failing to sync.
  *
  * THE FLIP IS THE GUARD (`stillDue`). It holds to everything the document was made from, as the rows stand inside the batch:
  * still due, still the easing as read, still that many sessions done. So a writer that lost the race, a pause, a stop or a
@@ -46,10 +46,9 @@
  * half-hourly sync, as a placed slot's is: a written one is marked `pending`, and no request here pays for the calendar.
  *
  * WHAT IT COSTS: `COURSE_WRITE_COST` statements (cron-limits.ts), and one for each session its day's collision pass re-times,
- * pinned in course-sessions.test.ts; a course kept off the watch spends one fewer, having no mark. The hourly pass reads
- * everything it needs in one statement (its rows, plans and the athletes' preferences) and attempts at most
- * `COURSE_WRITES_PER_PASS`, whatever the accounts and plans; what doesn't fit waits for the next hour or an open. A session the
- * day refused goes last, so it can't hold the others up.
+ * pinned in course-sessions.test.ts, kept off or not. The hourly pass reads everything it needs in one statement (its rows,
+ * plans and the athletes' preferences) and attempts at most `COURSE_WRITES_PER_PASS`, whatever the accounts and plans; what
+ * doesn't fit waits for the next hour or an open. A session the day refused goes last, so it can't hold the others up.
  *
  * A session ahead is previewed by computing it (`coursePreviewDoc`, through the build's `docOverride`), never stored on the
  * row. A session completed without being written is `course-number.ts`.
@@ -156,6 +155,10 @@ const flippedHere = (workoutId: string, userId: string, n: number): SQL =>
   sql`exists (select 1 from planned_workouts w where w.id = ${workoutId} and w.user_id = ${userId} and w.origin = 'studio' and w.course_session = ${n}
     and not exists (select 1 from workout_doc_revisions r where r.id = w.id || ':' || w.workout_doc_rev))`;
 
+/** The row isn't kept off the watch (the header's KEPT OFF THE WATCH), as the batch reaches the statement holding to it. */
+const notKeptOff = (workoutId: string, userId: string): SQL =>
+  sql`not exists (select 1 from planned_workouts w where w.id = ${workoutId} and w.user_id = ${userId} and w.watch_off = 1)`;
+
 /** The note a session the day refuses leaves: one a day for it, so the hourly pass doesn't pile them up, and a dismissal holds. */
 const refusalNoteId = (workoutId: string, date: string): string => `course-refused-${workoutId}-${date}`;
 
@@ -223,8 +226,6 @@ async function writeDue(
   const booked = bookedSeconds(seconds);
   const pw = plannedWorkouts;
   const flipped = flippedHere(row.id, userId, n);
-  // The header's A COURSE KEPT OFF THE WATCH: the flag, read here and nowhere else.
-  const offWatch = definition.watch === false;
   const claimed = await runAtomicallyClaim(db, [
     db
       .update(pw)
@@ -239,7 +240,6 @@ async function writeDue(
         fallbackEstimatedDurationSeconds: seconds,
         calendarBlockDurationSeconds: booked,
         sourceContentFingerprint: "studio",
-        ...(offWatch ? { watchOff: true } : {}),
         // The event shows the title and the length: a written one is asked to update.
         calendarSyncState: sql`case when ${pw.calendarSyncState} = 'synced' and (${pw.title} is not ${doc.title} or ${pw.calendarBlockDurationSeconds} is not ${booked} or ${pw.category} is not ${derived.category}) then 'pending' else ${pw.calendarSyncState} end`,
         updatedAt: ctx.now,
@@ -259,7 +259,8 @@ async function writeDue(
       .update(syncNotes)
       .set({ dismissedAt: ctx.now })
       .where(and(eq(syncNotes.userId, userId), eq(syncNotes.workoutId, row.id), eq(syncNotes.kind, "course_session_refused"), isNull(syncNotes.dismissedAt), flipped)),
-    ...(offWatch ? [] : [markMirrorOwedIf(db, userId, row.id, ctx.now, flipped)]),
+    // A row kept off is owed nothing (the header's KEPT OFF THE WATCH).
+    markMirrorOwedIf(db, userId, row.id, ctx.now, sql`${flipped} and ${notKeptOff(row.id, userId)}`),
     // Last, because it copies the row as flipped, and it says whether the flip happened: only a new document is a new revision.
     revisionInsert(db, { userId, workoutId: row.id, sourceKind: "studio", sourceRef: doc.source.ref ?? null, now: ctx.now }).returning({ id: workoutDocRevisions.id }),
   ]);
