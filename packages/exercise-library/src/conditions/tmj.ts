@@ -11,8 +11,9 @@ import type { Attrs, AttributeSpec, CheckReading, ConditionProfile, EntryFlags, 
 // recovery takes face-down positions (a flare day stays flare-safe); neck and posture care work is never held to the
 // neck-load caps; build reads how the jaw answered the last session (a 24-hour response rule); a rotated-out move may
 // come back. What the review did support — a soft jaw through effort, neck and posture training, breathing — leads the
-// cues and the care block, in calm words. Every threshold is a named constant below, read both by the rules and by
-// `describeRules`, so the coach's prompt states what the code does.
+// cues and the care block, in calm words; its daytime cue (`cue`) is the reminder the athlete may put on their calendar
+// against daytime bracing. Every threshold is a named constant below, read both by the rules and by `describeRules`, so
+// the coach's prompt states what the code does.
 
 const ID = "tmj";
 const FLAG = "clenched";
@@ -41,6 +42,8 @@ const NECK_CARE_MUSCLE: MuscleId = "deep-neck-flexors";
 const EFFORT_CUE = "breathe out through the effort, jaw soft";
 /** The cue a face-down move carries. */
 const FACE_DOWN_CUE = "forehead on stacked hands or a towel — nothing presses on the jaw or cheek";
+/** The daytime cue: daytime bracing is the strongest lever the review found, and a reminder through the day meets it. */
+const DAYTIME_CUE = "Teeth apart, jaw soft";
 
 const ATTRIBUTES: Readonly<Record<string, AttributeSpec>> = {
   clench: { kind: "scale", min: 0, max: 3 },
@@ -202,6 +205,7 @@ export const TMJ: ConditionProfile = {
   label: "TMJ",
   attributes: ATTRIBUTES,
   check: CHECK,
+  cue: DAYTIME_CUE,
   setFlag: SET_FLAG,
 
   // Only a rating the profile can't read; every rating on the scale has a mode and a format that take it.

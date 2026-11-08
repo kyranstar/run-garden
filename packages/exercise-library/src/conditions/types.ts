@@ -102,6 +102,11 @@ export interface ConditionProfile {
    * `flare` rule begins uses the rule's own constant, so the words can't drift from it.
    */
   check: { label: string; min: 0; max: 10; anchors: readonly CheckAnchor[] };
+  /**
+   * The daytime cue, in the profile's own words: a few words on one line, the title of the recurring calendar events the
+   * athlete may ask for at chosen times of day (the worker's condition-cues.ts). None: the profile has no cue to give.
+   */
+  cue?: string;
   setFlag: { id: string; label: string; pastTense: string } | null;
 
   // Exercise rules (everywhere the profile is active)

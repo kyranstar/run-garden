@@ -1,4 +1,4 @@
-import { and, eq, gte, inArray, isNull, lte } from "drizzle-orm";
+import { and, eq, gte, inArray, isNull, lte, sql } from "drizzle-orm";
 import {
   calendarEventLinks,
   calendarEventSuppressions,
@@ -43,7 +43,10 @@ import { isRestoring, loadAccountState, patchAccountState, restoreInProgress } f
 /**
  * Google Calendar mirror: at least 8 weeks ahead and 2 weeks back, one padded
  * managed event per non-rest workout, incremental sync for manual-edit
- * detection, deletion suppression, and notes preservation.
+ * detection, deletion suppression, and notes preservation. Its own events are
+ * the ones carrying `rgWorkoutId`, and only those: every other event in the
+ * calendar — the athlete's, and a condition's recurring cue (condition-cues.ts,
+ * `rgCue`) — is dropped from the read before anything is decided.
  */
 
 export async function loadPreferences(db: Db, userId: string): Promise<UserPreferences> {
@@ -51,22 +54,34 @@ export async function loadPreferences(db: Db, userId: string): Promise<UserPrefe
   return userPreferencesSchema.parse(rows[0]?.prefs ?? {});
 }
 
+/**
+ * The whole preferences — all but `conditionCues`, which is the cue service's alone (condition-cues.ts): what this save is
+ * given for it is ignored and what is stored stays, so a save from a read taken before a cue change, or a settings body
+ * that names the field, never loses an event id (a cue left on the calendar with nothing to remove it) or invents one.
+ */
 export async function savePreferences(db: Db, userId: string, prefs: UserPreferences): Promise<void> {
   const now = nowInstant();
+  const rest: Partial<UserPreferences> = { ...prefs };
+  delete rest.conditionCues;
   const existing = await db
     .select({ userId: userPreferences.userId })
     .from(userPreferences)
     .where(eq(userPreferences.userId, userId))
     .limit(1);
   if (existing[0]) {
+    const json = JSON.stringify(rest);
     await db
       .update(userPreferences)
-      .set({ prefs: prefs as unknown as Record<string, unknown>, updatedAt: now })
+      .set({
+        prefs: sql`CASE WHEN json_type(${userPreferences.prefs}, '$.conditionCues') IS NULL THEN json(${json})
+          ELSE json_set(${json}, '$.conditionCues', json(json_extract(${userPreferences.prefs}, '$.conditionCues'))) END`,
+        updatedAt: now,
+      })
       .where(eq(userPreferences.userId, userId));
   } else {
     await db.insert(userPreferences).values({
       userId,
-      prefs: prefs as unknown as Record<string, unknown>,
+      prefs: rest as unknown as Record<string, unknown>,
       updatedAt: now,
     });
   }

@@ -1445,7 +1445,8 @@ settingsRoutes.put("/", async (c) => {
     if (!music.success) return c.json({ error: "invalid_preferences", details: music.error.issues.map((i) => ({ ...i, path: ["music", ...i.path] })) }, 400);
   }
   const current = await loadPreferences(db, userId);
-  const parsed = userPreferencesSchema.safeParse({ ...current, ...body });
+  // A condition's cue events are the cue service's to record (routes/conditions.ts): a body's `conditionCues` is not taken.
+  const parsed = userPreferencesSchema.safeParse({ ...current, ...body, conditionCues: current.conditionCues });
   if (!parsed.success) return c.json({ error: "invalid_preferences", details: parsed.error.issues }, 400);
   // The wishlist holds gear the library knows, once each (Phase 2c): anything else is dropped, never stored.
   parsed.data.equipmentWishlist = [...new Set(parsed.data.equipmentWishlist)].filter((id) => KNOWN_GEAR.has(id));

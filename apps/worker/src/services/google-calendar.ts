@@ -1,7 +1,7 @@
 import { and, eq } from "drizzle-orm";
 import { providerConnections } from "@rg/database";
 import { nowInstant } from "@rg/domain";
-import type { GoogleEventResource } from "@rg/calendar";
+import type { CueEventResource, GoogleEventResource } from "@rg/calendar";
 import { decryptSecret, encryptSecret } from "../auth/crypto.js";
 import { refreshGoogleToken } from "../auth/google.js";
 import type { Env } from "../env.js";
@@ -24,7 +24,11 @@ export interface GoogleCalendarClient {
     calendarId: string,
     opts: { syncToken?: string; timeMin?: string; timeMax?: string },
   ): Promise<{ items: unknown[]; nextSyncToken?: string; fullSyncRequired?: boolean }>;
-  insertEvent(calendarId: string, resource: GoogleEventResource): Promise<{ id: string }>;
+  /** The live events carrying the private extended property `property` ("key=value"), a recurring one as its series
+   * (not its occurrences) — every page. */
+  findEvents(calendarId: string, property: string): Promise<unknown[]>;
+  /** A session's event, or a condition's recurring cue (condition-cues.ts). */
+  insertEvent(calendarId: string, resource: GoogleEventResource | CueEventResource): Promise<{ id: string }>;
   patchEvent(calendarId: string, eventId: string, resource: Partial<GoogleEventResource>): Promise<void>;
   deleteEvent(calendarId: string, eventId: string): Promise<void>;
   freeBusy(calendarIds: string[], timeMin: string, timeMax: string): Promise<Array<{ start: string; end: string }>>;
@@ -145,6 +149,20 @@ export async function googleCalendarClient(
         nextSyncToken = body.nextSyncToken ?? nextSyncToken;
       } while (pageToken);
       return { items, nextSyncToken };
+    },
+    async findEvents(calendarId, property) {
+      const params = new URLSearchParams({ maxResults: "250", singleEvents: "false", showDeleted: "false", privateExtendedProperty: property });
+      const items: unknown[] = [];
+      let pageToken: string | undefined;
+      do {
+        if (pageToken) params.set("pageToken", pageToken);
+        const res = await call(`/calendars/${encodeURIComponent(calendarId)}/events?${params}`);
+        if (!res.ok) throw new GoogleAuthError(res.status);
+        const body = (await res.json()) as { items?: unknown[]; nextPageToken?: string };
+        items.push(...(body.items ?? []));
+        pageToken = body.nextPageToken;
+      } while (pageToken);
+      return items;
     },
     async insertEvent(calendarId, resource) {
       const res = await call(`/calendars/${encodeURIComponent(calendarId)}/events`, {

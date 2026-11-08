@@ -92,6 +92,33 @@ export function coachSettings(stored: CoachPreferences | null | undefined): Coac
   };
 }
 
+// ── A condition's daytime cues (condition care gaps, Task 3) ───────────────
+
+const CUE_CLOCK = /^([01]\d|2[0-3]):[0-5]\d$/;
+/** Most times of day a condition's cue is set for. */
+export const CONDITION_CUE_TIMES_MAX = 4;
+
+/** The times asked for (`PUT /api/conditions/:profileId/cues`): 24-hour "HH:MM" on the athlete's clock, none twice. */
+export const conditionCueTimesSchema = z
+  .array(z.string().regex(CUE_CLOCK, 'a time is 24-hour "HH:MM", like "07:15"'))
+  .max(CONDITION_CUE_TIMES_MAX, `at most ${CONDITION_CUE_TIMES_MAX} times`)
+  .refine((ts) => new Set(ts).size === ts.length, "a time is listed twice");
+
+/** One cue event on the athlete's Google Calendar: the time it sounds, and where it is (its calendar and zone). */
+export const conditionCueEventSchema = z
+  .object({ time: z.string().regex(CUE_CLOCK), eventId: z.string().min(1), calendarId: z.string().min(1), timezone: z.string().min(1) })
+  .strict();
+export type ConditionCueEvent = z.infer<typeof conditionCueEventSchema>;
+
+/**
+ * What the cue service (the worker's condition-cues.ts) knows of one profile's cue events: each one it made and has not
+ * yet seen gone, and when this account last settled that list. `settledAt` is null while it may not be all there is (a
+ * change left part way with an answer from Google it couldn't trust); the service then reads the calendar for the truth
+ * before it acts, as it does for a list a restore brought back (settled before the restore finished) or for none at all.
+ */
+export const conditionCueStateSchema = z.object({ events: z.array(conditionCueEventSchema), settledAt: z.string().nullable() }).strict();
+export type ConditionCueState = z.infer<typeof conditionCueStateSchema>;
+
 export const userPreferencesSchema = schedulingPreferencesSchema.extend({
   calendarId: z.string().nullable().default(null),
   mirrorWeeksAhead: z.number().int().min(1).max(16).default(8),
@@ -150,6 +177,10 @@ export const userPreferencesSchema = schedulingPreferencesSchema.extend({
   /** The athlete's music per planned workout, set from its sheet (music.ts; absent until one is made) — beside `music`,
    * so the dock's save of its playlists never writes over one. A stored value that no longer reads is none. */
   musicChoices: musicChoicesSchema.optional().catch(undefined),
+  /** A condition's daytime cue events, by profile id (absent until a cue is set). Written only by the cue service: a
+   * whole-preferences save keeps what is stored (savePreferences). A stored value that no longer reads is none, and the
+   * service then reads the calendar for the truth. */
+  conditionCues: z.record(z.string(), conditionCueStateSchema).optional().catch(undefined),
 });
 export type UserPreferences = z.infer<typeof userPreferencesSchema>;
 
