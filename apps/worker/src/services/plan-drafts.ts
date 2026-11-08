@@ -28,7 +28,11 @@
  *    stored twice). Either way the plan's question comes back, saying plainly what happened (@rg/domain `planPrompt`'s
  *    `note`).
  *  - A RESTORE in progress starts nothing and writes no key (checked first, and again in the key's own statement, the
- *    `week_budget` and `start_failed` keys' too).
+ *    `week_budget` and `start_failed` keys' too). Nor does an account whose preferences don't read: its day can't be known,
+ *    and every other reader of it stops there too (`loadPreferences` throws).
+ *  - WHAT IT IS ASKED (R62): the request's words name the plan; the main run's opening names the plan's last day, from the
+ *    key's own reading (`planLastDay`), and says to propose what comes after it as the plan's next phase (propose_plan),
+ *    never the sessions before it again.
  *
  * STARTING IS ONE STEP: the create (its preferences, the week's check, the batch) and one word to the run's object
  * (`tellStepper` "arm", with a set's lease). The alarm does the rest, under the run's ceiling and the weekly cap; the hourly
@@ -47,7 +51,7 @@
  */
 import { and, eq, isNull, sql } from "drizzle-orm";
 import { programs, userPreferences } from "@rg/database";
-import { todayInZone, userPreferencesSchema } from "@rg/domain";
+import { todayInZone, userPreferencesSchema, type UserPreferences } from "@rg/domain";
 import { coachDesignerEnabled, type Env } from "../env.js";
 import { noRestoreSql, restoreInProgress } from "./account-state.js";
 import { createRun, RunKeyTakenError, WeekBudgetError } from "./coach-runs.js";
@@ -90,9 +94,10 @@ const draftable = (p: PlanEnding): boolean => p.kind === "coach" && p.status ===
 export async function draftEndingPlans(db: Db, env: Env, at: Date = new Date()): Promise<{ started: number }> {
   const out = { started: 0 };
   if (!planDraftsOn(env)) return out;
-  // The accounts with a running coach plan, with their preferences: one statement for the pass.
+  // The accounts with a running coach plan, with their preferences as stored (text: one row that doesn't read must not stop
+  // the pass for every account) — one statement for the pass.
   const accounts = await db
-    .selectDistinct({ userId: programs.userId, prefs: userPreferences.prefs })
+    .selectDistinct({ userId: programs.userId, prefs: sql<string | null>`(${userPreferences.prefs})` })
     .from(programs)
     .leftJoin(userPreferences, eq(userPreferences.userId, programs.userId))
     .where(and(eq(programs.kind, "coach"), eq(programs.status, "active"), isNull(programs.archivedAt)));
@@ -100,17 +105,36 @@ export async function draftEndingPlans(db: Db, env: Env, at: Date = new Date()):
     try {
       if (await draftForAccount(db, env, a.userId, a.prefs, at)) out.started += 1;
     } catch (e) {
-      console.error(`plan draft failed: ${e instanceof Error ? e.name : "unknown"}`);
+      console.error(`plan draft failed: ${errorWords(e)}`);
     }
   }
   return out;
 }
 
-/** One account's draft, when one is due: started or not. */
+/** An error as a log line names it: its name and its message (the app's own text, never the athlete's), bounded. */
+const errorWords = (e: unknown): string => (e instanceof Error ? `${e.name}: ${e.message}` : String(e)).slice(0, 200);
+
+/** The athlete's preferences as `loadPreferences` reads them — none stored is the defaults — or null when the row doesn't
+ * read (not JSON, or not preferences), where every other reader of the athlete's day stops too. */
+function preferencesOf(stored: unknown): UserPreferences | null {
+  try {
+    const parsed = userPreferencesSchema.safeParse(stored === null || stored === undefined ? {} : typeof stored === "string" ? JSON.parse(stored) : stored);
+    return parsed.success ? parsed.data : null;
+  } catch {
+    return null;
+  }
+}
+
+/** One account's draft, when one is due: started or not. An account whose preferences don't read is skipped: its day can't
+ * be known, and a guessed one (UTC) would read its plans as no other reader does. */
 async function draftForAccount(db: Db, env: Env, userId: string, storedPrefs: unknown, at: Date): Promise<boolean> {
+  const prefs = preferencesOf(storedPrefs);
+  if (!prefs) {
+    console.error("plan draft skipped an account: its preferences don't read");
+    return false;
+  }
   if (await restoreInProgress(db, userId)) return false;
-  const prefs = userPreferencesSchema.safeParse(storedPrefs ?? {});
-  const today = todayInZone(prefs.success ? prefs.data.timezone : "UTC", at);
+  const today = todayInZone(prefs.timezone, at);
   const plans = await readPlanEndings(db, userId, today, { drafts: true });
   const plan = planDueForDraft(plans, today);
   if (!plan) return false;
@@ -127,6 +151,8 @@ async function draftForAccount(db: Db, env: Env, userId: string, storedPrefs: un
         conversationId: null,
         origin: "plan_draft",
         planId: plan.id,
+        // Its opening names the plan's last day, the key's own reading of it (R62): the next stretch is what comes after.
+        planLastDay: plan.lastDay!,
         once: {
           key,
           kind: PLAN_DRAFT_KIND,
@@ -147,7 +173,7 @@ async function draftForAccount(db: Db, env: Env, userId: string, storedPrefs: un
     // saying so — written in its own statement after the throw (the create's own batch wrote nothing), never into an account
     // a restore began replacing since it was looked at, and never over a key another pass wrote meanwhile.
     const outcome = e instanceof WeekBudgetError ? "week_budget" : "start_failed";
-    if (outcome === "start_failed") console.error(`plan draft could not start: ${e instanceof Error ? e.name : "unknown"}`);
+    if (outcome === "start_failed") console.error(`plan draft could not start: ${errorWords(e)}`);
     await db.run(sql`INSERT OR IGNORE INTO audit_events (id, user_id, kind, detail, created_at)
       SELECT ${key}, ${userId}, ${PLAN_DRAFT_KIND}, ${JSON.stringify({ ...detail, outcome })}, ${at.toISOString()}
       WHERE ${noRestoreSql(userId)}`);

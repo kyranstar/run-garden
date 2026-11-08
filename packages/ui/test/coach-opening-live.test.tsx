@@ -177,13 +177,17 @@ describe("a plan's next stretch ready (plans with a purpose §4.2, R55)", () => 
     expect(chips()).toEqual([READY.label, MISSED.label, ...GENERAL_CHIPS]);
     expect(readyChip()!.getAttribute("aria-expanded")).toBe("false");
     expect(readyCard()).toBeNull();
+    // It controls only an element on the page: none while its card is closed.
+    expect(readyChip()!.hasAttribute("aria-controls")).toBe(false);
     await click(readyChip(), "the ready chip");
     await until(() => !!readyCard(), "the draft's card open");
     expect(readyChip()!.getAttribute("aria-expanded")).toBe("true");
+    expect(document.getElementById(readyChip()!.getAttribute("aria-controls")!)).toBe(readyCard());
     expect(reads(calls, "/api/coach/proposals/dp-draft")).toBeGreaterThan(0);
     await click(readyChip(), "the ready chip again");
     await until(() => !readyCard(), "the card closed");
     expect(readyChip()!.getAttribute("aria-expanded")).toBe("false");
+    expect(readyChip()!.hasAttribute("aria-controls")).toBe(false);
     // Reads landing again never reopen a card the athlete closed.
     await act(async () => {
       await client.invalidateQueries();

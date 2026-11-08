@@ -208,7 +208,8 @@ export function CoachOpening({
                 type="button"
                 className="chip coach-chip coach-chip--needs"
                 aria-expanded={open}
-                aria-controls={readyCardId}
+                // Only an element on the page: its card is drawn only while open.
+                aria-controls={open ? readyCardId : undefined}
                 onClick={() => setReadyOpen(open ? null : c.proposalId)}
               >
                 {c.label}

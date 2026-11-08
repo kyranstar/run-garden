@@ -452,6 +452,8 @@ export interface RunSettings {
   origin?: "plan_draft";
   /** A main run's only: the plan it is for (`programs.id`): plan_set's briefs and propose_plan's new block default to it. */
   planId?: string;
+  /** A plan's draft's only (R62): the plan's last day as the draft's key read it — what its opening says comes after. */
+  planLastDay?: string;
 }
 
 export interface PendingCall {
@@ -558,9 +560,10 @@ export function newRunState(
     savesSkip?: SavesSkip[];
     /** A drift chip's id (where you stand): a main run's alone. */
     diagnose?: string;
-    /** Who asked, and the plan the run is for (plans with a purpose §4.2): a main run's alone. */
+    /** Who asked, the plan the run is for and its last day (plans with a purpose §4.2): a main run's alone. */
     origin?: "plan_draft";
     planId?: string;
+    planLastDay?: string;
   } = {},
 ): RunState {
   const limits = RUN_LIMITS[role];
@@ -583,6 +586,7 @@ export function newRunState(
       ...(opts.diagnose && role === "main" ? { diagnose: opts.diagnose } : {}),
       ...(opts.origin && role === "main" ? { origin: opts.origin } : {}),
       ...(opts.planId && role === "main" ? { planId: opts.planId } : {}),
+      ...(opts.planLastDay && role === "main" ? { planLastDay: opts.planLastDay } : {}),
     },
     system: null,
     messages: [],
@@ -757,6 +761,9 @@ export interface ContextRun {
   /** Who asked (plans with a purpose §4.2), the main run's — a sub-run's too, whose request is its main run's: `plan_draft`,
    * the app, so the request is read as the app's, never as the athlete's own words. */
   origin?: "plan_draft";
+  /** A plan's draft's main run (R62): the plan it drafts for and its last day, which its opening names. */
+  planId?: string;
+  planLastDay?: string;
 }
 
 /**
@@ -1174,6 +1181,9 @@ export interface CreateRunInput {
   /** The plan the run is for (`programs.id`): plan_set's briefs and propose_plan's new block default to it. Kept in the run's
    * settings. */
   planId?: string;
+  /** A plan's draft's (R62): the plan's last day, from the same reading as its key — its opening says what comes after it is
+   * the stretch to propose. Kept in the run's settings. */
+  planLastDay?: string;
   /**
    * A key the run starts under at most once (plan-drafts.ts: a plan's draft per ending): an `audit_events` row whose id is
    * the key, with `detail` and the run's id, written in the run's own insert batch while no row has that id — so creates
@@ -1365,6 +1375,7 @@ export async function createRun(db: Db, userId: string, input: CreateRunInput, n
     ...(input.diagnose ? { diagnose: input.diagnose } : {}),
     ...(input.origin ? { origin: input.origin } : {}),
     ...(input.planId ? { planId: input.planId } : {}),
+    ...(input.planLastDay ? { planLastDay: input.planLastDay } : {}),
   });
   const once = input.once ?? null;
   /** The lane has no live main run (the athlete's one, or the rehearsals' one): both inserts' own guard, in their statement. */
@@ -2823,6 +2834,9 @@ async function contextStep(s: StepCtx): Promise<StepEnd> {
     ...(s.state.settings.diagnose && s.run.role === "main" ? { diagnose: s.state.settings.diagnose } : {}),
     // Who asked (plans with a purpose §4.2): the main run's, for a sub-run too — its request is the main run's.
     ...((s.run.role === "main" ? s.state.settings.origin : s.root.settings?.origin) === "plan_draft" ? { origin: "plan_draft" as const } : {}),
+    // A draft's main run (R62): the plan's last day its opening names; sub-runs keep their neutral line.
+    ...(s.run.role === "main" && s.state.settings.planId ? { planId: s.state.settings.planId } : {}),
+    ...(s.run.role === "main" && s.state.settings.planLastDay ? { planLastDay: s.state.settings.planLastDay } : {}),
   };
   const built = await s.deps.buildContext.build(s.db, s.env, s.userId, run, s.now);
   s.state.system = built.system;

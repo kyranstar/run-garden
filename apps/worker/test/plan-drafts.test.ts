@@ -627,7 +627,11 @@ describe("draftEndingPlans", () => {
             throw new Error("the database dropped a statement");
           }
         : null;
+    const logged = vi.spyOn(console, "error").mockImplementation(() => undefined);
     expect(await pass()).toEqual({ started: 0 });
+    // The log says what broke, not only its kind: the message is the app's own text.
+    expect(logged).toHaveBeenCalledWith("plan draft could not start: Error: the database dropped a statement");
+    logged.mockRestore();
     expect((await keys()).map((k) => [k.id, k.detail])).toEqual([[KEY, { planId: PLAN, lastSessionDate: LAST, outcome: "start_failed" }]]);
     expect(await runs()).toHaveLength(0);
     expect(told).toEqual([]);
@@ -642,6 +646,52 @@ describe("draftEndingPlans", () => {
     expect(await pass()).toEqual({ started: 0 });
     expect(statements.filter((s) => KEY_INSERT.test(s))).toEqual([]);
     expect(await runs()).toHaveLength(0);
+  });
+
+  it("a draft's opening names the plan's last day — the key's own reading — and to propose what comes after it as its next phase (R62)", async () => {
+    /** The draft's opening message, as its first step builds it (no model call). */
+    const opening = async () => {
+      const [run] = await runs();
+      const out = await runStep(db, ON, run!.id, userId, NOW, scripted([]));
+      expect(out.kind).toBe("ok");
+      const [row] = await db.select().from(schema.coachRuns).where(eq(schema.coachRuns.id, run!.id));
+      const state = JSON.parse(row!.state!) as { settings: { planLastDay?: string }; messages: Array<{ content: Array<{ text: string }> }> };
+      return { header: state.messages[0]!.content[0]!.text, lastDay: state.settings.planLastDay };
+    };
+    expect(await pass()).toEqual({ started: 1 });
+    const first = await opening();
+    expect(first.lastDay).toBe(LAST);
+    expect((await keys())[0]!.id).toBe(planDraftKey(PLAN, first.lastDay!));
+    expect(first.header).toContain(
+      `The plan (id ${PLAN}) ends with its last session on Sun 24 May · in 11 d (2026-05-24). Read its purpose and brief, and propose what comes after that day as the plan's next phase, with propose_plan (a new block continuing it) — not the sessions before it again — then finish; nothing changes until they approve it:\n<untrusted from="plan draft">${draftRequest("Synthetic strength")}</untrusted>`,
+    );
+    // A new draft for a moved last day names the new day.
+    await db.delete(schema.auditEvents);
+    await db.delete(schema.coachRuns);
+    await lastDayTo("2026-05-27");
+    expect(await pass()).toEqual({ started: 1 });
+    const moved = await opening();
+    expect(moved.lastDay).toBe("2026-05-27");
+    expect(moved.header).toContain(`ends with its last session on Wed 27 May · in 14 d (2026-05-27).`);
+    expect(moved.header).not.toContain("2026-05-24");
+  });
+
+  it("an account whose preferences don't read is skipped, as every other reader of its day stops — never read in UTC — and the rest go on", async () => {
+    // Another account, its own plan ending, its preferences fine.
+    const other = await makeTestUser(db, { timezone: "Europe/Berlin" });
+    const at = NOW.toISOString();
+    await db.insert(schema.programs).values({ id: "plan-other", userId: other.userId, kind: "coach", name: "Other strength", status: "active", disciplines: ["strength"], config: {}, onEnd: "continue", createdAt: at, updatedAt: at });
+    await db.insert(schema.coachPlans).values({ id: "other1", userId: other.userId, discipline: "lift", name: "Other block", status: "active", startDate: "2026-04-13", endDate: LAST, raceDate: null, stampPrefix: "Other", programId: "plan-other", createdAt: at, updatedAt: at });
+    const logged = vi.spyOn(console, "error").mockImplementation(() => undefined);
+    for (const unreadable of ["not json", JSON.stringify({ timezone: 42 })]) {
+      await db.delete(schema.auditEvents);
+      await db.delete(schema.coachRuns);
+      raw("update user_preferences set prefs = ? where user_id = ?", unreadable, userId);
+      expect(await pass(), unreadable).toEqual({ started: 1 });
+      expect((await db.select().from(schema.auditEvents)).map((k) => k.id), unreadable).toEqual([planDraftKey("plan-other", LAST)]);
+    }
+    expect(logged).toHaveBeenCalledWith("plan draft skipped an account: its preferences don't read");
+    logged.mockRestore();
   });
 
   it("a draft asks the athlete nothing: nobody is there to answer", async () => {

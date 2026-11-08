@@ -60,7 +60,7 @@ import {
   providerConnections,
   sleepRecords,
 } from "@rg/database";
-import { EFFORT_LEVELS, addDays, clipWords, revisability, type RevisabilityReason, coachSettings, dayLabel, goodForOf, isoWeekday, todayInZone, type MusicShortcut, type ProfileDto, type RunWire, type UserPreferences } from "@rg/domain";
+import { EFFORT_LEVELS, addDays, clipWords, revisability, type RevisabilityReason, coachSettings, dayLabel, goodForOf, isLocalDate, isoWeekday, todayInZone, type MusicShortcut, type ProfileDto, type RunWire, type UserPreferences } from "@rg/domain";
 import {
   EQUIPMENT,
   EXERCISES,
@@ -192,12 +192,31 @@ export interface DesignRun {
   /** Who asked (plans with a purpose §4.2): `plan_draft`, the app drafting a plan's next stretch — the request is then the
    * app's (`DRAFT_REQUEST_LINE`), never "the athlete's request, in their own words"; a sub-run's is its main run's. */
   origin?: "plan_draft" | null;
+  /** A plan's draft's main run (R62): the plan it drafts for, and the plan's last day as the draft's key read it — the
+   * boundary its opening names: the next stretch is what comes after it. */
+  planId?: string | null;
+  planLastDay?: string | null;
 }
 
 /** What heads a plan's draft's request in its main run's opening message (plans with a purpose §4.2): the app's, not the
  * athlete's — and what the main coach is to do with it. */
 export const DRAFT_REQUEST_LINE =
   "The app's request, sent for the athlete as one of their plans that continues comes near its end — not their words, and they aren't here to answer. Read the plan's purpose and brief, propose its next stretch and finish; nothing changes until they approve it:";
+
+/**
+ * A draft's main run's line (R62; spec §4.1(3): a next phase is the route): `DRAFT_REQUEST_LINE` with the plan's last day
+ * — its id and the date as data, the day as the context names days (`dayWords`) — and what to propose: what comes after
+ * that day, as the plan's next phase with propose_plan, never the sessions before it again. With no day (a run made before
+ * it was kept), the line alone.
+ */
+export function draftRequestLine(planId: string | null | undefined, lastDay: string | null | undefined, today: string): string {
+  if (!planId || !lastDay || !isLocalDate(lastDay)) return DRAFT_REQUEST_LINE;
+  return [
+    "The app's request, sent for the athlete as one of their plans that continues comes near its end — not their words, and they aren't here to answer.",
+    `The plan (id ${planId}) ends with its last session on ${dayWords(lastDay, today)} (${lastDay}).`,
+    "Read its purpose and brief, and propose what comes after that day as the plan's next phase, with propose_plan (a new block continuing it) — not the sessions before it again — then finish; nothing changes until they approve it:",
+  ].join(" ");
+}
 /** The same request in a sub-run's opening (a set's designer, a reviewer): only whose words they are — its brief, or its
  * draft, is its own work. */
 export const DRAFT_REQUEST_SUB_LINE = "The run's request is the app's, made for the athlete — not their words:";
@@ -1481,7 +1500,7 @@ function header(r: Reads, run: DesignRun, role: Role, scope: { kind: ScopeKind; 
   if (saves) parts.push(saves);
   // A plan's draft's request is the app's (plans with a purpose §4.2), marked as the data it carries (the plan's name).
   if (run.request && run.origin === "plan_draft") {
-    parts.push(`${role === "main" ? DRAFT_REQUEST_LINE : DRAFT_REQUEST_SUB_LINE}\n${markUntrusted("plan draft", run.request)}`);
+    parts.push(`${role === "main" ? draftRequestLine(run.planId, run.planLastDay, r.today) : DRAFT_REQUEST_SUB_LINE}\n${markUntrusted("plan draft", run.request)}`);
   }
   else parts.push(run.request ? `The athlete's request, in their own words:\n${athlete(run.request)}` : NO_REQUEST[role]);
   return parts.join("\n\n");
