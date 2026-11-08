@@ -98,7 +98,7 @@ export interface PlanDraftFacts {
     /** When the key was written: when its draft was started, or found the week spent. */
     createdAt: string;
     runId: string | null;
-    /** Why no run started (`week_budget`); null when one did. */
+    /** Why no run started (`week_budget`, `start_failed`); null when one did. */
     outcome: string | null;
     /** Its run is still at work (a live status). */
     runLive: boolean;
@@ -110,7 +110,8 @@ export interface PlanDraftFacts {
   /** A proposal that names the plan — a workout filed under it or a block of it, or a change to its shape — waits: a
    * draft's start gate (R54), never the plan's next stretch (R58). */
   waiting: boolean;
-  /** Since the newest key was made, a proposal naming the plan has been approved: the next stretch may be drafted (R57). */
+  /** Since the newest key's draft was over — its run ended, or (no run started) the key was made — a proposal naming the
+   * plan has been approved: the next stretch may be drafted (R57, R61). */
   rearmed: boolean;
 }
 
@@ -119,11 +120,13 @@ export interface PlanDraftFacts {
  * plan that continues — the rule as it was. Otherwise:
  *  - its next stretch is ready (`hasDraft`) only while the plan's own draft — its newest key's run — left a proposal still
  *    open (R58); any other suggestion filed under the plan is only the start gate;
- *  - ONE DRAFT A STRETCH (R57): the key for this ending, else — until a proposal naming the plan is approved after it — the
- *    newest key stands for the stretch, so a last day moved, or a draft declined, never starts another;
+ *  - ONE DRAFT A STRETCH (R57): the key for this ending, else — until a proposal naming the plan is approved once that
+ *    key's draft is over (R61: after its run ended; with no run, after the key) — the newest key stands for the stretch, so a
+ *    last day moved, a draft declined, or an approval while the draft still worked never starts another;
  *  - with no key standing, the draft is due — or held, while a suggestion of the athlete's filed under the plan waits (the
- *    question shows meanwhile); with one, at work while its run is live, else over: no run started (the week's budget), no
- *    proposal that reached the athlete, or one they decided. Over, the question shows: never silent.
+ *    question shows meanwhile); with one, at work while its run is live, else over: no run started (the week's budget, or a
+ *    start that failed: R60), no proposal that reached the athlete, or one they decided. Over, the question shows: never
+ *    silent.
  */
 export function draftOf(row: Pick<PlanEndingRow, "kind" | "lastDay" | "drafts">, onEnd: PlanOnEnd): { hasDraft: boolean; draft?: PlanDraftState } {
   const f = row.drafts;
@@ -133,7 +136,10 @@ export function draftOf(row: Pick<PlanEndingRow, "kind" | "lastDay" | "drafts">,
   const exact = row.lastDay === null ? undefined : f.keys.find((k) => k.lastSessionDate === row.lastDay);
   const key = exact ?? (newest && !f.rearmed ? newest : undefined);
   if (!key) return { hasDraft, draft: f.waiting ? { kind: "held" } : { kind: "due" } };
-  if (key.runId === null) return { hasDraft, draft: { kind: "over", outcome: key.outcome === "week_budget" ? "week_budget" : "no_proposal" } };
+  if (key.runId === null) {
+    const outcome = key.outcome === "week_budget" || key.outcome === "start_failed" ? key.outcome : "no_proposal";
+    return { hasDraft, draft: { kind: "over", outcome } };
+  }
   if (key.runLive) return { hasDraft, draft: { kind: "live" } };
   return { hasDraft, draft: { kind: "over", outcome: key.proposalSeen ? "decided" : "no_proposal" } };
 }

@@ -23,10 +23,12 @@
  *    the write finds the key taken (`RunKeyTakenError`) and starts nothing.
  *  - THE COST: the run's own ceiling (scope `next_n`: a set's, the athlete's lower limit if they set one) and the weekly
  *    cap — a run the week can't pay for never starts (`WeekBudgetError`): its key is written with `outcome: "week_budget"`
- *    and nothing retries. A run that ends without a proposal is read as such from the run itself (R52: never stored twice).
- *    Either way the plan's question comes back, saying plainly what happened (@rg/domain `planPrompt`'s `note`).
+ *    and nothing retries. So does any other start that fails (R60: `outcome: "start_failed"`), rather than a retry every
+ *    hour while the plan says nothing. A run that ends without a proposal is read as such from the run itself (R52: never
+ *    stored twice). Either way the plan's question comes back, saying plainly what happened (@rg/domain `planPrompt`'s
+ *    `note`).
  *  - A RESTORE in progress starts nothing and writes no key (checked first, and again in the key's own statement, the
- *    `week_budget` key's too).
+ *    `week_budget` and `start_failed` keys' too).
  *
  * STARTING IS ONE STEP: the create (its preferences, the week's check, the batch) and one word to the run's object
  * (`tellStepper` "arm", with a set's lease). The alarm does the rest, under the run's ceiling and the weekly cap; the hourly
@@ -35,8 +37,8 @@
  *
  * WHAT A PASS SPENDS: one statement for the whole pass (the accounts with a running coach plan, with their preferences);
  * an account, two when nothing is due (the restore marker, the plans with their drafts), and when one is, the create — its
- * preferences, the week's check, the batch's two — and, when it starts nothing, the live run's read, or the week's key.
- * Pinned in plan-drafts.test.ts.
+ * preferences, the week's check, the batch's two — and, when it starts nothing, the live run's read, or the key that says
+ * why (the week's, a failed start's). Pinned in plan-drafts.test.ts.
  *
  * The request's words are the app's (`draftRequest`), naming the plan: read and shown as the app's, never as the athlete's
  * (coach-runs.ts `origin: "plan_draft"`), and the run knows the plan it is for (`planId`: plan_set's briefs and
@@ -141,15 +143,15 @@ async function draftForAccount(db: Db, env: Env, userId: string, storedPrefs: un
     runId = created.run.id;
   } catch (e) {
     if (e instanceof RunKeyTakenError) return false;
-    if (e instanceof WeekBudgetError) {
-      // At the cap nothing retries: the key says why, and the plan's question comes back saying so — never into an account a
-      // restore began replacing since it was looked at.
-      await db.run(sql`INSERT OR IGNORE INTO audit_events (id, user_id, kind, detail, created_at)
-        SELECT ${key}, ${userId}, ${PLAN_DRAFT_KIND}, ${JSON.stringify({ ...detail, outcome: "week_budget" })}, ${at.toISOString()}
-        WHERE ${noRestoreSql(userId)}`);
-      return false;
-    }
-    throw e;
+    // At the cap, or on any other failure to start (R60), nothing retries: the key says why, and the plan's question comes back
+    // saying so — written in its own statement after the throw (the create's own batch wrote nothing), never into an account
+    // a restore began replacing since it was looked at, and never over a key another pass wrote meanwhile.
+    const outcome = e instanceof WeekBudgetError ? "week_budget" : "start_failed";
+    if (outcome === "start_failed") console.error(`plan draft could not start: ${e instanceof Error ? e.name : "unknown"}`);
+    await db.run(sql`INSERT OR IGNORE INTO audit_events (id, user_id, kind, detail, created_at)
+      SELECT ${key}, ${userId}, ${PLAN_DRAFT_KIND}, ${JSON.stringify({ ...detail, outcome })}, ${at.toISOString()}
+      WHERE ${noRestoreSql(userId)}`);
+    return false;
   }
   // Starting is one step: the alarm does the rest, for a set's lease (nobody is watching).
   try {

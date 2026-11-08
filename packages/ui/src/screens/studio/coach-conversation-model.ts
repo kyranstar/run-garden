@@ -20,6 +20,7 @@ import type {
   CoachConversationTurnDto,
   CoachNudgeDto,
   CoachOpeningDto,
+  CoachReadyDto,
   CoachRunStatus,
   TodayResponse,
 } from "@rg/api-client";
@@ -98,10 +99,12 @@ export function needsKept<T extends { id: string }>(nudges: readonly T[]): T[] {
   });
 }
 
-/** A chip before the starters: the session's quick review, opened; or words a tap sends (`needs`: a "needs you" one). */
+/** A chip before the starters: the session's quick review, opened; words a tap sends (`needs`: a "needs you" one); or a
+ * plan's next stretch ready, whose tap opens its draft's proposal and sends nothing (plans with a purpose §4.2). */
 export type OpeningChip =
   | { kind: "review"; id: string; label: string; workoutId: string }
-  | { kind: "ask"; id: string; label: string; request: string; needs: boolean };
+  | { kind: "ask"; id: string; label: string; request: string; needs: boolean }
+  | { kind: "ready"; id: string; label: string; proposalId: string };
 
 /**
  * The chips before the starters, in this order and at most three (stream H): how it felt — when the coach's line is
@@ -109,11 +112,15 @@ export type OpeningChip =
  * sends: "Plan this week", "Plan tomorrow around it")
  * — at most two of those — then the "needs you" ones (§8 §6), at most three (two and a drift's), which the line's own
  * never crowd out: they give way to them (audit §6: two of the line's own used to hide every "needs you" chip).
+ * A plan's next stretch ready (`ready`) is a "needs you" chip, the first of them: it takes one of the two places beside a
+ * drift's, so the three stand — a suggestion made for the athlete and waiting is the most pressing thing they can do
+ * nothing about otherwise, and a chip that asks can wait for the next opening.
  */
 export function openingChips(
   opening: Pick<CoachOpeningDto, "source" | "chips" | "workoutId"> | null | undefined,
   nudges: readonly CoachNudgeDto[],
   offers: ReadonlyArray<{ workoutId: string }>,
+  ready: readonly CoachReadyDto[] = [],
 ): OpeningChip[] {
   const own: OpeningChip[] = [];
   const workoutId = opening && opening.source !== "review" ? opening.workoutId : undefined;
@@ -121,7 +128,11 @@ export function openingChips(
   for (const c of opening?.chips ?? []) {
     own.push({ kind: "ask", id: c.id, label: c.label, request: c.request, needs: false });
   }
-  const needs: OpeningChip[] = needsKept(nudges).map((n) => ({ kind: "ask", id: n.id, label: n.label, request: n.request, needs: true }));
+  const asked: OpeningChip[] = [
+    ...ready.map((r): OpeningChip => ({ kind: "ready", id: r.id, label: r.label, proposalId: r.proposalId })),
+    ...nudges.map((n): OpeningChip => ({ kind: "ask", id: n.id, label: n.label, request: n.request, needs: true })),
+  ];
+  const needs = needsKept(asked);
   return [...own.slice(0, Math.min(OWN_CHIPS_MAX, OPENING_CHIPS_MAX - needs.length)), ...needs];
 }
 

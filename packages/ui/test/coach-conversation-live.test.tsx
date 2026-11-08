@@ -863,6 +863,23 @@ describe("plain lines, the words kept", () => {
     expect(dialog()!.querySelector(".coach-msg--athlete")?.textContent).toBe("Plan my week");
   });
 
+  it("the run already there is a plan's draft: its words show as the app's, never in the athlete's bubble", async () => {
+    const words = "Draft the next stretch of the plan Synthetic strength, from its purpose and brief. Nothing changes until I approve it.";
+    const there = run({ id: "run-d", status: "stepping", request: words, origin: "plan_draft" });
+    server(NONE, {
+      "POST /api/coach/runs": () =>
+        json({ run: there, existing: true, offer: "continue_or_cancel", ignoredRequest: { scope: { kind: "now" }, request: "Hips" }, conversationId: "run-d" }),
+    });
+    mount({ loop: quietLoop(() => there) });
+    await openCoach();
+    await type(box()!, "Hips");
+    await click(sendButton(), "Send");
+    await until(() => !!dialog()!.querySelector(".coach-msg--app"), "the app's line");
+    expect(dialog()!.querySelector(".coach-msg--app")?.textContent).toBe(words);
+    expect(dialog()!.querySelector(".coach-msg--athlete")).toBeNull();
+    expect(box()!.value).toBe("Hips");
+  });
+
   it("the week's budget: one plain line, the words kept, nothing started", async () => {
     server(NONE, { "POST /api/coach/runs": () => json({ error: "week_budget", spentUsd: 20, cutoffUsd: 20 }, 409) });
     mount();

@@ -1,5 +1,5 @@
 import { and, desc, eq, gt, inArray, lt, or, sql, type SQL } from "drizzle-orm";
-import { accountState, coachProposals, coachRunEvents, coachRuns, conditionChecks, llmUsage, userPreferences } from "@rg/database";
+import { accountState, auditEvents, coachProposals, coachRunEvents, coachRuns, conditionChecks, llmUsage, userPreferences } from "@rg/database";
 import {
   ceilingKindOf,
   COACH_CEILING_DEFAULTS_USD,
@@ -14,7 +14,7 @@ import {
 } from "@rg/domain";
 import { isProfileId, profileById } from "@rg/exercise-library";
 import type { Env } from "../env.js";
-import { rawStatement, runAtomicallyClaim, type Db } from "./db.js";
+import { runAtomicallyClaim, type Db } from "./db.js";
 import { noRestoreSql } from "./account-state.js";
 import { clearOutOfCredits, OUT_OF_CREDITS_REASON, recordOutOfCredits } from "./ai-credits.js";
 import { loadPreferences } from "./calendar-sync.js";
@@ -1025,6 +1025,9 @@ function runDto(root: RunNode, nodes: RunNode[]): CoachRunDto {
 /** The conversation a main run is a turn of: its settings' — or, made before conversations, its own id. */
 const conversationOf = (root: Pick<RunNode, "id" | "settings">): string => root.settings?.conversationId ?? root.id;
 
+/** A one-row source a select of values reads from (SQLite's `SELECT … WHERE` with no table, as Drizzle's builder writes it). */
+const ONE_ROW = sql`(SELECT 1)`;
+
 /** A plan's draft (plans with a purpose §4.2) supersedes none of the athlete's open suggestions when it proposes (R59). */
 const supersedesNothing = (settings: Pick<RunSettings, "origin"> | undefined): boolean => settings?.origin === "plan_draft";
 
@@ -1422,25 +1425,52 @@ export async function createRun(db: Db, userId: string, input: CreateRunInput, n
    * A keyed create (`once`): the key first, while no row has its id, the lane has no live main run, no restore is replacing
    * the account and the caller's gate holds — holding the run's id; then the run, only beside its own key: one batch, so
    * both land or neither does, and of creates that race one wins the key and the others start nothing. A conversation of
-   * its own. Two statements.
+   * its own. Two statements, Drizzle's own (insert … select), so they batch on D1 as every batch item must; each value is
+   * named by its column, and a column the tables gain that these don't name fails the build of the statement, loudly, in
+   * every test that starts a draft.
    */
   const insertKeyed = async (id: string): Promise<CreateRunResult | null> => {
     const key = once!;
     state.settings.conversationId = id;
+    const value = (v: unknown, column: string) => sql`${v}`.as(column);
     const claimed = await runAtomicallyClaim(db, [
-      rawStatement(
-        db,
-        sql`INSERT INTO audit_events (id, user_id, kind, detail, created_at)
-          SELECT ${key.key}, ${userId}, ${key.kind}, ${JSON.stringify({ ...key.detail, runId: id })}, ${at}
-          WHERE NOT EXISTS (SELECT 1 FROM audit_events WHERE id = ${key.key}) AND ${noLiveMainRun} AND ${noRestoreSql(userId)} AND ${key.gate ?? sql`1`}`,
+      db.insert(auditEvents).select(
+        db
+          .select({
+            id: value(key.key, "id"),
+            userId: value(userId, "user_id"),
+            kind: value(key.kind, "kind"),
+            detail: value(JSON.stringify({ ...key.detail, runId: id }), "detail"),
+            createdAt: value(at, "created_at"),
+          })
+          .from(ONE_ROW)
+          .where(sql`NOT EXISTS (SELECT 1 FROM audit_events WHERE id = ${key.key}) AND ${noLiveMainRun} AND ${noRestoreSql(userId)} AND ${key.gate ?? sql`1`}`),
       ),
-      rawStatement(
-        db,
-        sql`INSERT INTO coach_runs (id, user_id, parent_id, role, scope, request, status, state, steps, cost_usd, created_at, updated_at)
-          SELECT ${id}, ${userId}, NULL, 'main', ${JSON.stringify(scope)}, ${request}, 'active', ${JSON.stringify(state)}, 0, 0, ${at}, ${at}
-          WHERE EXISTS (SELECT 1 FROM audit_events WHERE id = ${key.key} AND user_id = ${userId} AND json_extract(detail, '$.runId') = ${id})
-          RETURNING id`,
-      ),
+      db
+        .insert(coachRuns)
+        .select(
+          db
+            .select({
+              id: value(id, "id"),
+              userId: value(userId, "user_id"),
+              parentId: sql`NULL`.as("parent_id"),
+              role: value("main", "role"),
+              scope: value(JSON.stringify(scope), "scope"),
+              request: value(request, "request"),
+              status: value("active", "status"),
+              state: value(JSON.stringify(state), "state"),
+              steps: value(0, "steps"),
+              costUsd: value(0, "cost_usd"),
+              proposalId: sql`NULL`.as("proposal_id"),
+              error: sql`NULL`.as("error"),
+              createdAt: value(at, "created_at"),
+              updatedAt: value(at, "updated_at"),
+              finishedAt: sql`NULL`.as("finished_at"),
+            })
+            .from(ONE_ROW)
+            .where(sql`EXISTS (SELECT 1 FROM audit_events WHERE id = ${key.key} AND user_id = ${userId} AND json_extract(detail, '$.runId') = ${id})`),
+        )
+        .returning({ id: coachRuns.id }),
     ]);
     return claimed > 0 ? startedAs(id) : null;
   };

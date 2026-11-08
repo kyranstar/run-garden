@@ -9,6 +9,7 @@
 import { dayLabel, defaultOnEnd, describeOps, planOnEndSchema, type AdaptiveConfig, type CoachOp, type PlanOnEnd, type ProgramKind } from "@rg/domain";
 import type { RetimeExpectation } from "./adjust-retime.js";
 import type { CiteRef } from "./saves-evidence.js";
+import { DESIGNED_OP_KINDS } from "./design-op-kinds.js";
 
 /** The thread coach's ops a designed proposal may carry as a change to the plan (Task 8b; ruling I6), and since the new
  * shape §5 its proven single-session ones too: ease (a swap for an easier kind is an ease, its `verb` "swap"), remove
@@ -527,9 +528,10 @@ export const isPlanChangeOp = (op: unknown): op is PlanChangeOp => kindOf(op) ==
 export const isMovePinsOp = (op: unknown): op is MovePinsOp => kindOf(op) === "move_pins";
 
 /** Whether an op is the coach designer's — a designed workout, a change, a whole plan change, a programme change, a change
- * to a plan's purpose, the moves in rotation, a correction or an objective change — never one of the thread coach's. */
-export const isDesignedOp = (op: unknown): boolean =>
-  isDocWorkoutOp(op) || isPlanAdjustOp(op) || isPlanStructureOp(op) || isProgrammeChangeOp(op) || isPlanChangeOp(op) || isMovePinsOp(op) || isImportCorrectionOp(op) || isObjectiveChangeOp(op);
+ * to a plan's purpose, the moves in rotation, a correction or an objective change — never one of the thread coach's. Its
+ * kinds are the one list the SQL reads too (design-op-kinds.ts `DESIGNED_OP_KINDS`), so the two can't drift. */
+const DESIGNED_KINDS: ReadonlySet<unknown> = new Set(DESIGNED_OP_KINDS);
+export const isDesignedOp = (op: unknown): boolean => DESIGNED_KINDS.has(kindOf(op));
 
 /**
  * An op's id: a designed workout's is the run that designed it — each run holds ONE op of its main run's proposal,

@@ -151,6 +151,12 @@ describe("planPrompt with drafts on (plans with a purpose §4.2)", () => {
       request: `${WORDS} The coach's draft ended without a suggestion.`,
       note: "The coach's draft ended without a suggestion.",
     });
+    expect(planPrompt(lifting({ draft: { kind: "over", outcome: "start_failed" } }), today)).toStrictEqual({
+      kind: "whats_next",
+      label: "Plan what comes after my lifting plan",
+      request: `${WORDS} The coach couldn't start the draft.`,
+      note: "The coach couldn't start the draft.",
+    });
     // The athlete decided what it proposed (declined it, say): the question, with nothing to explain.
     expect(planPrompt(lifting({ draft: { kind: "over", outcome: "decided" } }), today)).toStrictEqual({ kind: "whats_next", label: "Plan what comes after my lifting plan", request: WORDS, note: null });
   });
@@ -160,7 +166,7 @@ describe("planPrompt with drafts on (plans with a purpose §4.2)", () => {
   });
 
   it("the label stays the question's own, so the chip and the row are still one ask", () => {
-    for (const outcome of ["week_budget", "no_proposal", "decided"] as const) {
+    for (const outcome of ["week_budget", "start_failed", "no_proposal", "decided"] as const) {
       expect(planPrompt(lifting({ draft: { kind: "over", outcome } }), today)?.label).toBe("Plan what comes after my lifting plan");
     }
   });

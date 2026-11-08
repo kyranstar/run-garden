@@ -116,8 +116,9 @@ const NAMING_KINDS = ["doc_workout", "plan_structure"] as const;
  *  - `waiting`: a proposal waits that names the plan — a designed workout filed under it or one of its blocks, a new block
  *    continuing it, or a change to one of its blocks (propose_plan; plan_set's workouts) — whichever run made it. The start
  *    gate (R54), never the plan's next stretch (R58).
- *  - `rearmed`: since its newest key was made, a proposal naming the plan so has been approved, an op of it applied (R57:
- *    one draft a stretch — the next is due only once a stretch is approved).
+ *  - `rearmed`: since its newest key's draft was over — its run ended (a run still at work has no end: nothing re-arms), or,
+ *    no run started, the key was made — a proposal naming the plan so has been approved, an op of it applied (R57, R61: one
+ *    draft a stretch — the next is due only once a stretch is approved after the draft before it).
  */
 export function planDraftsSql(today: string): SQL<string | null> {
   const prefix = sql`(${"plan-draft:"} || programs.id || ${":"})`;
@@ -142,7 +143,9 @@ export function planDraftsSql(today: string): SQL<string | null> {
       order by a.created_at desc, a.id desc limit ${PLAN_DRAFT_KEYS_READ}) k)),
     'waiting', exists (select 1 from coach_proposals p where p.user_id = programs.user_id and ${proposalWaits(today, NAMING_KINDS, names)}),
     'rearmed', exists (select 1 from coach_proposals p where p.user_id = programs.user_id and p.status in ('approved', 'partially_approved')
-      and p.resolved_at >= (select max(a2.created_at) from audit_events a2 where ${keysOf("a2")})
+      and p.resolved_at >= (select case when json_extract(a2.detail, '$.runId') is null then a2.created_at
+          else (select r2.finished_at from coach_runs r2 where r2.id = json_extract(a2.detail, '$.runId') and r2.user_id = a2.user_id) end
+        from audit_events a2 where ${keysOf("a2")} order by a2.created_at desc, a2.id desc limit 1)
       and exists (select 1 from json_each(case when json_valid(p.ops) then p.ops else '[]' end) o
         where json_extract(o.value, '$.kind') in (${list(NAMING_KINDS)}) and json_extract(o.value, '$.outcome.status') = 'applied' and ${names}))) end`;
 }

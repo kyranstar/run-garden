@@ -10,8 +10,9 @@
  *   Build your own · Templates · Browse moves · Log your session (a watch session to log)
  *
  * A chip is the athlete's words: one tap sends it — but a plan's "Next stretch ready" (`ready`: its draft's proposal waits;
- * plans with a purpose §4.2), whose tap opens that proposal's card under "Also waiting" and sends nothing. The box under it
- * all is the conversation's own (coach-conversation).
+ * plans with a purpose §4.2), the first of the "needs you" chips and within their three, whose tap opens that proposal's
+ * own card under the chips (and a second closes it) and sends nothing; it isn't listed again under "Also waiting". The
+ * box under it all is the conversation's own (coach-conversation).
  * A "needs you" chip says its `label` and sends its `request` (`GET /api/coach/nudges`: the thread coach's old signals —
  * a missed session, a return after a gap, a plan's outline week, a race or a plan's end close — read, never spent on).
  *
@@ -46,6 +47,7 @@ import { WatchReviewSheet } from "../../components/watch-review-sheet.js";
 import { IconCoachSmall } from "../../icons.js";
 import { TEMPLATES_QUERY } from "./add-sheet.js";
 import { AlsoWaiting } from "./also-waiting.js";
+import { ProposalCard } from "./proposal-card.js";
 import { BUILD_NEW_HREF } from "./build-entry.js";
 import { markOpeningSeen, needsKept, NUDGES_QUERY, openingChips, openingLine, readOpeningSeen, starterChips, startersBeside } from "./coach-conversation-model.js";
 import type { CoachFocus } from "./coach-focus.js";
@@ -62,9 +64,6 @@ export const OPENING_LOADING = "Loading";
 export const READ_THE_REVIEW = "Read it all";
 
 export { NUDGES_QUERY };
-
-/** "Next stretch ready" chips drawn at most (one plan's at a time is the usual). */
-export const READY_CHIPS_MAX = 1;
 
 /** The coach's words, left, with its mark: a line of the conversation (the opening's, a turn's answer). */
 export function CoachSays({ children, turn, focusable = false }: { children: ReactNode; turn?: string; focusable?: boolean }) {
@@ -150,7 +149,7 @@ export function CoachOpening({
       line: nudgeRead.data?.opening?.line ?? openingLine(today.data),
       opening: nudgeRead.data?.opening ?? null,
       nudges: needsKept(nudgeRead.data?.nudges ?? []),
-      ready: (nudgeRead.data?.ready ?? []).slice(0, READY_CHIPS_MAX),
+      ready: nudgeRead.data?.ready ?? [],
       objective: (objectives.data?.objectives ?? []).find((o) => o.status === "active")?.title ?? null,
       offers: today.data?.watchReviews ?? [],
     };
@@ -158,8 +157,10 @@ export function CoachOpening({
   /** Chips tapped here: gone at once, before any read comes back (one landing later changes nothing drawn, and the next
    * opening draws from a read of its own). */
   const [tapped, setTapped] = useState<readonly string[]>([]);
-  /** The suggestion a "next stretch ready" chip opened under "Also waiting". */
+  /** The suggestion a "next stretch ready" chip has open under the chips: the chip's own toggle, so a second tap closes it
+   * and a third opens it again, and no read landing ever reopens one the athlete closed. */
   const [readyOpen, setReadyOpen] = useState<string | null>(null);
+  const readyCardId = useId();
   const shownId = drawn.current?.opening?.id ?? null;
   useEffect(() => {
     if (shownId) markOpeningSeen(shownId);
@@ -177,7 +178,10 @@ export function CoachOpening({
   // next opening.
   const live = today.data?.watchReviews ?? [];
   const offers = d.offers.filter((o) => live.some((l) => l.workoutId === o.workoutId));
-  const first = openingChips(d.opening, d.nudges, offers).filter((c) => !tapped.includes(c.id));
+  const first = openingChips(d.opening, d.nudges, offers, d.ready).filter((c) => !tapped.includes(c.id));
+  // A draft's proposal its chip opens isn't listed again under "Also waiting": the chip is where it is on this screen.
+  const readyIds = new Set(first.flatMap((c) => (c.kind === "ready" ? [c.proposalId] : [])));
+  const others = alsoOpen.filter((a) => !readyIds.has(a.proposalId));
   const starters = startersBeside(starterChips(seeing, { objective: d.objective }), d.opening);
   const feltFor = first.find((c) => c.kind === "review")?.workoutId ?? null;
   // "Log your session" below, unless the chip above already opens that same review.
@@ -189,19 +193,27 @@ export function CoachOpening({
         {d.opening?.source === "review" && d.opening.review ? <ReadTheReview review={d.opening.review} /> : null}
       </CoachSays>
       <div className="coach-chips" role="group" aria-label="Ways to start">
-        {/* A plan's next stretch ready (plans with a purpose §4.2): a tap opens its card under "Also waiting" and sends
-            nothing. One that list doesn't hold (gone by since the read) draws no chip. */}
-        {d.ready
-          .filter((r) => alsoOpen.some((a) => a.proposalId === r.proposalId))
-          .map((r) => (
-            <button key={r.id} type="button" className="chip coach-chip coach-chip--needs" aria-expanded={readyOpen === r.proposalId} onClick={() => setReadyOpen(r.proposalId)}>
-              {r.label}
-            </button>
-          ))}
         {first.map((c) => {
           if (c.kind === "review") {
             const o = offers.find((x) => x.workoutId === c.workoutId)!;
             return <HowItFelt key={c.id} offer={o} label={c.label} disabled={busy} />;
+          }
+          if (c.kind === "ready") {
+            // A plan's next stretch ready (plans with a purpose §4.2): its draft's own card, opened or closed under the
+            // chips; nothing sent, nothing written.
+            const open = readyOpen === c.proposalId;
+            return (
+              <button
+                key={c.id}
+                type="button"
+                className="chip coach-chip coach-chip--needs"
+                aria-expanded={open}
+                aria-controls={readyCardId}
+                onClick={() => setReadyOpen(open ? null : c.proposalId)}
+              >
+                {c.label}
+              </button>
+            );
           }
           return (
             <button
@@ -224,7 +236,12 @@ export function CoachOpening({
           </button>
         ))}
       </div>
-      {alsoOpen.length > 0 ? <AlsoWaiting items={alsoOpen} today={ctx.today} openId={readyOpen} /> : null}
+      {readyOpen ? (
+        <div id={readyCardId} className="coach-also-card coach-ready-card">
+          <ProposalCard proposalId={readyOpen} today={ctx.today} />
+        </div>
+      ) : null}
+      {others.length > 0 ? <AlsoWaiting items={others} today={ctx.today} /> : null}
       {startHolding ? (
         // Last on the screen, so its waiting moves nothing under a tap: the line and the chips are above it. (Answered
         // once, `settling` never puts it back: a read again keeps what it had, a failed one counts as answered.)

@@ -164,30 +164,58 @@ describe("a plan's next stretch ready (plans with a purpose §4.2, R55)", () => 
   const READY = { id: "ready:plan-lift1", label: "Next stretch ready for my lifting plan", proposalId: "dp-draft" };
   const WAITING = { proposalId: "dp-draft", title: "Next strength block", date: TODAY, time: null, items: 1 };
 
-  it("its chip opens the draft's card under 'Also waiting', and sends nothing — no run starts", async () => {
-    const calls = server({
-      "GET /api/coach/nudges": { nudges: [MISSED], ready: [READY] },
-      "GET /api/coach/runs/current": { run: null, alsoOpen: [WAITING] },
+  const OTHER = { id: "race:2026-10-24", label: "Get me ready for race day", request: "My race is in 10 days. Get me ready for race day." };
+  const readyCard = () => dialog()?.querySelector(".coach-ready-card") ?? null;
+  const readyChip = () => button(READY.label);
+
+  it("its chip opens the draft's own card, closes it, opens it again — and sends nothing: no run starts", async () => {
+    const calls = server({ "GET /api/coach/nudges": { nudges: [MISSED], ready: [READY] } });
+    const client = mountSheet();
+    await openCoach();
+    await until(drawn, "the opening drawn");
+    // The first of the "needs you" chips; and drawn though "Also waiting" doesn't hold it (the read gives its proposal).
+    expect(chips()).toEqual([READY.label, MISSED.label, ...GENERAL_CHIPS]);
+    expect(readyChip()!.getAttribute("aria-expanded")).toBe("false");
+    expect(readyCard()).toBeNull();
+    await click(readyChip(), "the ready chip");
+    await until(() => !!readyCard(), "the draft's card open");
+    expect(readyChip()!.getAttribute("aria-expanded")).toBe("true");
+    expect(reads(calls, "/api/coach/proposals/dp-draft")).toBeGreaterThan(0);
+    await click(readyChip(), "the ready chip again");
+    await until(() => !readyCard(), "the card closed");
+    expect(readyChip()!.getAttribute("aria-expanded")).toBe("false");
+    // Reads landing again never reopen a card the athlete closed.
+    await act(async () => {
+      await client.invalidateQueries();
     });
+    await settle(30);
+    expect(readyCard()).toBeNull();
+    await click(readyChip(), "the ready chip a third time");
+    await until(() => !!readyCard(), "the card open again");
+    expect(calls.filter((c) => c.method === "POST")).toEqual([]);
+    // Still a chip to tap, not one gone like a sent one.
+    expect(chips()[0]).toBe(READY.label);
+  });
+
+  it("counts within the three: the first of the 'needs you' chips, so the second of two others waits", async () => {
+    server({ "GET /api/coach/nudges": { nudges: [MISSED, OTHER], ready: [READY] } });
     mountSheet();
     await openCoach();
     await until(drawn, "the opening drawn");
     expect(chips()).toEqual([READY.label, MISSED.label, ...GENERAL_CHIPS]);
-    const line = dialog()!.querySelector<HTMLButtonElement>(".coach-also-line")!;
-    expect(line.getAttribute("aria-expanded")).toBe("false");
-    await click(button(READY.label), "the ready chip");
-    await until(() => line.getAttribute("aria-expanded") === "true", "the draft's card open");
-    expect(calls.filter((c) => c.method === "POST")).toEqual([]);
-    // Still a chip to tap again, not one gone like a sent one.
-    expect(chips()[0]).toBe(READY.label);
   });
 
-  it("no chip for a ready plan 'Also waiting' doesn't hold, and none when the read says nothing is ready", async () => {
-    server({ "GET /api/coach/nudges": { nudges: [MISSED], ready: [READY] } });
+  it("its proposal isn't listed again under 'Also waiting'; the others still are", async () => {
+    server({
+      "GET /api/coach/nudges": { nudges: [], ready: [READY] },
+      "GET /api/coach/runs/current": { run: null, alsoOpen: [WAITING, { proposalId: "dp-old", title: "Hips, gently", date: TODAY, time: "18:00", items: 1 }] },
+    });
     mountSheet();
     await openCoach();
     await until(drawn, "the opening drawn");
-    expect(chips()).toEqual([MISSED.label, ...GENERAL_CHIPS]);
+    const also = dialog()!.querySelector(".coach-also")!.textContent ?? "";
+    expect(also).toContain("Hips, gently");
+    expect(also).not.toContain("Next strength block");
   });
 });
 

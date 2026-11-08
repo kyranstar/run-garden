@@ -22,7 +22,7 @@ import { lineSentenceName } from "./training-lines.js";
  * pass, and the caller says where this ending's draft stands (`draft`): while it is due or its run is at work the plan
  * asks nothing; held back by a suggestion of the athlete's, it asks as before; once it is over without a proposal waiting
  * the question comes back, and says plainly what happened (`note`, also carried in its request): the week's budget spent,
- * or no proposal came of it. `hasDraft` is the caller's: the plan's own draft left a proposal still open (R58). A plan that
+ * the draft couldn't be started, or no proposal came of it. `hasDraft` is the caller's: the plan's own draft left a proposal still open (R58). A plan that
  * asks, and every other kind, never drafts: `draft` absent is the rule as it was, word for word (drafts off).
  *
  * Its words are the app's: the plan's sport as the chip has always said it ("my running plan"), or the plan's own
@@ -63,15 +63,16 @@ export interface PlanPromptInput {
  * Where a plan's draft for its ending stands (plans with a purpose §4.2), as the caller reads it from the draft's key and
  * its run: none yet (`due`: the hourly pass starts one), none yet but held back by a suggestion of the athlete's filed
  * under the plan, which they decide first (`held`: the question shows meanwhile, nothing goes quiet), its run at work
- * (`live`), or over with no proposal waiting — because the week couldn't pay for it, no proposal came of it, or the
- * athlete has decided what it proposed.
+ * (`live`), or over with no proposal waiting — because the week couldn't pay for it, it couldn't be started, no proposal
+ * came of it, or the athlete has decided what it proposed.
  */
 export type PlanDraftState = { kind: "due" } | { kind: "held" } | { kind: "live" } | { kind: "over"; outcome: PlanDraftOutcome };
-export type PlanDraftOutcome = "week_budget" | "no_proposal" | "decided";
+export type PlanDraftOutcome = "week_budget" | "start_failed" | "no_proposal" | "decided";
 
 /** What a plan's question says of a draft that came to nothing, plainly (spec §4.2): the row shows it, the request carries it. */
 export const PLAN_DRAFT_NOTES: Readonly<Record<Exclude<PlanDraftOutcome, "decided">, string>> = {
   week_budget: "The coach didn't draft it: this week's AI budget was spent.",
+  start_failed: "The coach couldn't start the draft.",
   no_proposal: "The coach's draft ended without a suggestion.",
 };
 

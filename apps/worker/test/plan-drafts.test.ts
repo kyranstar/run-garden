@@ -19,7 +19,18 @@ import { buildDesignContext, designContextBuilder, DRAFT_REQUEST_LINE, DRAFT_REQ
 import { DESIGNED_OP_KINDS } from "../src/services/design-op-kinds.js";
 import { recordAnswer } from "../src/services/design-tools/record-answer.js";
 import { askedWordsSql } from "../src/services/objective-changes.js";
-import { isDesignedOp } from "../src/services/proposal-kinds.js";
+import {
+  isDesignedOp,
+  isDocWorkoutOp,
+  isImportCorrectionOp,
+  isMovePinsOp,
+  isObjectiveChangeOp,
+  isPlanAdjustOp,
+  isPlanChangeOp,
+  isPlanStructureOp,
+  isProgrammeChangeOp,
+} from "../src/services/proposal-kinds.js";
+import { viaD1 } from "./fake-d1.js";
 import { allTools } from "../src/services/design-tools/index.js";
 import { designProposalId } from "../src/services/design-tools/propose.js";
 import { planSet } from "../src/services/design-tools/plan-set.js";
@@ -63,7 +74,7 @@ let before: ((sql: string) => (() => void) | null) | null = null;
 const raw = (text: string, ...params: unknown[]) =>
   (db as unknown as { $client: { prepare: (s: string) => { run: (...p: unknown[]) => unknown } } }).$client.prepare(text).run(...params);
 /** The keyed create's key statement (coach-runs.ts `insertKeyed`), and the week's key (plan-drafts.ts). */
-const KEY_INSERT = /^\s*INSERT INTO audit_events/;
+const KEY_INSERT = /^\s*insert into "audit_events"/;
 const WEEK_KEY_INSERT = /^\s*INSERT OR IGNORE INTO audit_events/;
 
 beforeEach(async () => {
@@ -227,10 +238,43 @@ describe("the pieces agree with the loop's own", () => {
     expect(DRAFT_PROPOSAL_PREFIX).toBe(designProposalId(""));
   });
 
-  it("the designed op kinds the SQL reads are the ones the proposal kinds know as designed (one list, for the loop and the drafts)", () => {
-    expect(DESIGNED_OP_KINDS.filter((kind) => !isDesignedOp({ kind }))).toEqual([]);
+  it("the designed op kinds are one list, for the SQL and the code: each its own predicate's, both ways", () => {
+    // Every designed kind's own predicate, by hand: a kind added to the list with none, or a predicate whose kind isn't
+    // listed, fails here.
+    const own: Record<string, (op: unknown) => boolean> = {
+      doc_workout: isDocWorkoutOp,
+      plan_adjust: isPlanAdjustOp,
+      plan_structure: isPlanStructureOp,
+      programme_change: isProgrammeChangeOp,
+      plan_change: isPlanChangeOp,
+      move_pins: isMovePinsOp,
+      import_correction: isImportCorrectionOp,
+      objective_change: isObjectiveChangeOp,
+    };
+    expect([...DESIGNED_OP_KINDS].sort()).toEqual(Object.keys(own).sort());
+    for (const [kind, is] of Object.entries(own)) {
+      expect(is({ kind }), kind).toBe(true);
+      expect(isDesignedOp({ kind }), kind).toBe(true);
+    }
     // A thread coach's op is none of them.
     for (const kind of ["move", "skip", "extendPlan", "createPlan"]) expect(isDesignedOp({ kind }), kind).toBe(false);
+  });
+
+  it("a draft starts through drizzle's own D1 driver: its two statements batch as production's batch takes them", async () => {
+    const d1 = viaD1(db);
+    expect(await draftEndingPlans(d1, ON, NOW)).toEqual({ started: 1 });
+    const all = await runs();
+    expect(all).toHaveLength(1);
+    expect((await keys()).map((k) => [k.id, k.detail])).toEqual([[KEY, { planId: PLAN, lastSessionDate: LAST, runId: all[0]!.id }]]);
+    expect(told).toHaveLength(1);
+    // And again: the key read back through the driver, nothing more started.
+    expect(await draftEndingPlans(d1, ON, NOW)).toEqual({ started: 0 });
+    expect(await runs()).toHaveLength(1);
+    // A keyed create of a taken key, through the driver, once that draft is over: refused, nothing written.
+    await db.update(schema.coachRuns).set({ status: "finished" }).where(eq(schema.coachRuns.id, all[0]!.id));
+    await expect(
+      createRun(d1, userId, { scope: { kind: "next_n" }, request: "x", conversationId: null, origin: "plan_draft", planId: PLAN, once: { key: KEY, kind: "plan_draft", detail: {} } }, NOW),
+    ).rejects.toBeInstanceOf(RunKeyTakenError);
   });
 
   it("the switch is PLAN_DRAFTS with the step alarm and the coach designer: any one missing is off", () => {
@@ -480,15 +524,22 @@ describe("draftEndingPlans", () => {
     expect(await pass()).toEqual({ started: 0 });
   });
 
-  /** The draft's proposal decided as the approve writes it: its status, when, and each op's outcome. */
-  async function decide(runId: string, status: "approved" | "declined") {
+  /** An hour on: after a draft driven from NOW has ended (its steps are NOW plus seconds). */
+  const LATER = new Date(NOW.getTime() + 3_600_000).toISOString();
+  /** The draft's proposal decided as the approve writes it: its status, when (`at`, else LATER), and each op's outcome. */
+  async function decide(runId: string, status: "approved" | "declined", at = LATER) {
     const id = designProposalId(runId);
     const [p] = await db.select().from(schema.coachProposals).where(eq(schema.coachProposals.id, id));
-    const outcome = { status: status === "approved" ? "applied" : "declined", at: NOW.toISOString() };
+    const outcome = { status: status === "approved" ? "applied" : "declined", at };
     await db
       .update(schema.coachProposals)
-      .set({ status, resolvedAt: NOW.toISOString(), ops: (p!.ops as Array<Record<string, unknown>>).map((o) => ({ ...o, outcome })) })
+      .set({ status, resolvedAt: at, ops: (p!.ops as Array<Record<string, unknown>>).map((o) => ({ ...o, outcome })) })
       .where(eq(schema.coachProposals.id, id));
+  }
+  /** A suggestion of the athlete's naming the plan, approved at `at`: a workout filed under it, applied. */
+  async function approvedElsewhere(at: string) {
+    const op = { kind: "doc_workout", id: "w1", date: "2026-05-26", planId: PLAN, title: "t", why: "w", outcome: { status: "applied", at } };
+    await db.insert(schema.coachProposals).values({ id: "dp-athlete", userId, title: "t", evidence: "", rationale: "r", flags: [], ops: [op], status: "approved", createdAt: at, expiresAt: "2026-06-30", resolvedAt: at });
   }
   /** The plan's last session moved later, by hand: a session on `date` under its block, the block's end with it. */
   async function lastDayTo(date: string) {
@@ -541,11 +592,56 @@ describe("draftEndingPlans", () => {
     expect(await pass()).toEqual({ started: 0 });
     expect(await runs()).toHaveLength(1);
     expect(await rowPrompt()).toStrictEqual({ kind: "whats_next", label: "Plan what comes after my lifting plan", request: "Plan what comes after my lifting plan — it ends in 14 days." });
-    // An approval of something else naming the plan, since the key, does: the next stretch may be drafted.
-    const at = NOW.toISOString();
-    const op = { kind: "doc_workout", id: "w1", date: "2026-05-26", planId: PLAN, title: "t", why: "w", outcome: { status: "applied", at } };
-    await db.insert(schema.coachProposals).values({ id: "dp-athlete", userId, title: "t", evidence: "", rationale: "r", flags: [], ops: [op], status: "approved", createdAt: at, expiresAt: "2026-06-30", resolvedAt: at });
+    // An approval of something else naming the plan, since the draft ended, does: the next stretch may be drafted.
+    await approvedElsewhere(LATER);
     expect(await pass()).toEqual({ started: 1 });
+  });
+
+  it("an approval made while the draft still works re-arms nothing: it ends with no proposal, and no second draft follows (R61)", async () => {
+    expect(await pass()).toEqual({ started: 1 });
+    const [run] = await runs();
+    // Mid-draft, the athlete approves something of their own filed under the plan, and its last day moves.
+    await approvedElsewhere(NOW.toISOString());
+    await lastDayTo("2026-05-27");
+    expect(await drive(run!.id, finishingEmpty())).toBe("finished");
+    expect(await pass()).toEqual({ started: 0 });
+    expect(await runs()).toHaveLength(1);
+    expect((await rowPrompt())?.note).toBe(PLAN_DRAFT_NOTES.no_proposal);
+    // A key with no run (the week's, a failed start's) re-arms on an approval after the key itself.
+    await db.delete(schema.auditEvents);
+    await db.delete(schema.coachRuns);
+    await db.delete(schema.coachProposals);
+    await spend(19_990_000);
+    expect(await pass()).toEqual({ started: 0 });
+    await db.delete(schema.llmUsage);
+    await lastDayTo("2026-05-29");
+    await approvedElsewhere(LATER);
+    expect(await pass()).toEqual({ started: 1 });
+  });
+
+  it("a start that fails any other way writes its key too: the plain question says so, and nothing retries (R60)", async () => {
+    // The create's batch breaks in the database (any failure but the week's budget).
+    before = (s) =>
+      KEY_INSERT.test(s)
+        ? () => {
+            throw new Error("the database dropped a statement");
+          }
+        : null;
+    expect(await pass()).toEqual({ started: 0 });
+    expect((await keys()).map((k) => [k.id, k.detail])).toEqual([[KEY, { planId: PLAN, lastSessionDate: LAST, outcome: "start_failed" }]]);
+    expect(await runs()).toHaveLength(0);
+    expect(told).toEqual([]);
+    expect(await rowPrompt()).toStrictEqual({
+      kind: "whats_next",
+      label: "Plan what comes after my lifting plan",
+      request: `Plan what comes after my lifting plan — it ends in 11 days. ${PLAN_DRAFT_NOTES.start_failed}`,
+      note: PLAN_DRAFT_NOTES.start_failed,
+    });
+    // The next hour tries nothing: it never reaches the create.
+    statements.length = 0;
+    expect(await pass()).toEqual({ started: 0 });
+    expect(statements.filter((s) => KEY_INSERT.test(s))).toEqual([]);
+    expect(await runs()).toHaveLength(0);
   });
 
   it("a draft asks the athlete nothing: nobody is there to answer", async () => {
