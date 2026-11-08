@@ -44,6 +44,30 @@ export function latestReading<R extends { id: string; at: string; value: number 
 }
 
 /**
+ * A KEY RESULT'S READING OF EACH DAY (ruling R9): the Today chip's rule, once a day. A day's reading is the latest
+ * (`latestReading`, by time) of its `daily` and `pre` rows that carries a number; a row with no number does not count,
+ * and a `post` row never does. The key result's measure and the chip both read a day through `latestReading`, so the
+ * two can never show one day as two numbers.
+ */
+export function numberedReadingPerDay<R extends { id: string; at: string; date: string; kind: string; value: number | null }>(
+  rows: readonly R[],
+): Map<string, R & { value: number }> {
+  const byDay = new Map<string, Array<R & { value: number }>>();
+  for (const r of rows) {
+    if (r.kind === "post" || r.value === null) continue;
+    const list = byDay.get(r.date) ?? [];
+    list.push(r as R & { value: number });
+    byDay.set(r.date, list);
+  }
+  const out = new Map<string, R & { value: number }>();
+  for (const [date, list] of byDay) {
+    const latest = latestReading(list.map((r) => ({ ...r, feelingOff: false })));
+    if (latest) out.set(date, latest);
+  }
+  return out;
+}
+
+/**
  * THE COACH DESIGNER'S READING OF A DAY: per switched-on profile, `latestReading` over that profile's rows — which must
  * be the day's daily and pre checks, nothing else. One function, so the opening context's header (design-context.ts),
  * the read tools' athlete (`readAthlete`) and the validator's day for `validate_workout` / `propose_workout` can never

@@ -85,7 +85,7 @@ export function measureWords(m: KeyResultMeasure): string {
     case "test":
       return `test ${m.testId}`;
     case "condition_check":
-      return `daily ${checkLabelOf(m.profileId)} check (else the day's first before-check), averaged${over}`;
+      return `daily ${checkLabelOf(m.profileId)} check (the day's latest daily or before-session answer), averaged${over}`;
   }
 }
 

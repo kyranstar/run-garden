@@ -310,6 +310,18 @@ describe("GET /api/plans", () => {
       expect(await chipFor()).toEqual([]);
     });
 
+    it("a plan that continues on its own asks while its last day is ahead, and says nothing once it has run out: the row and the chip agree (P1)", async () => {
+      const chipFor = async () => (await readNudges(db, userId, await loadPreferences(db, userId), today, new Date())).filter((n) => n.id.startsWith("ending:")).map((n) => n.request);
+      await plan("held", "coach", { disciplines: ["strength"], onEnd: "continue", source: { studioPlanId: "studio-x" } });
+      await session("h-ahead", "held", ahead(5));
+      expect(await promptOf("held")).toMatchObject({ request: "Plan what comes after my lifting plan — it ends in 5 days." });
+      expect(await chipFor()).toEqual(["Plan what comes after my lifting plan — it ends in 5 days."]);
+      await db.delete(schema.plannedWorkouts);
+      await session("h-past", "held", ahead(-3), "completed");
+      expect(await promptOf("held")).toBeNull();
+      expect(await chipFor()).toEqual([]);
+    });
+
     it("a running plan of the same sport with a later last day ends an older run-out prompt, as a following phase does; another sport's does not", async () => {
       const chipFor = async () => (await readNudges(db, userId, await loadPreferences(db, userId), today, new Date())).filter((n) => n.id.startsWith("ending:")).map((n) => n.id);
       await plan("old", "coach", { disciplines: ["run"], onEnd: "ask" });

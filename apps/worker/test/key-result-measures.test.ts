@@ -838,31 +838,31 @@ describe("condition_check: the mean of a profile's daily check", () => {
     });
   const M = { kind: "condition_check", profileId: "tmj", windowDays: 14 };
 
-  it("a day's reading is its daily row, else that day's first pre; a post never counts; one reading a day", async () => {
-    // Both: the daily wins, the pre beside it is not a second reading.
+  it("a day's reading is the latest of its daily and pre rows with a number; a post never counts; one reading a day", async () => {
+    // Both: the later of the two by time (the daily, at noon); the earlier pre beside it is not a second reading.
     await check("tmj", day(6), 2);
     await check("tmj", day(6), 9, { kind: "pre", at: `${day(6)}T06:00:00.000Z` });
     // Only a pre: it is the day's reading (a session day with no daily check).
     await check("tmj", day(4), 7, { kind: "pre", at: `${day(4)}T08:00:00.000Z` });
-    // Two pres: the first, by time.
+    // Two pres: the latest, by time.
     await check("tmj", day(3), 6, { kind: "pre", at: `${day(3)}T08:00:00.000Z` });
     await check("tmj", day(3), 1, { kind: "pre", at: `${day(3)}T17:00:00.000Z` });
     // Only a post: no reading that day.
     await check("tmj", day(2), 9, { kind: "post" });
-    // A first pre with no number: the first that has one.
-    await check("tmj", day(1), null, { kind: "pre", at: `${day(1)}T06:00:00.000Z` });
-    await check("tmj", day(1), 4, { kind: "pre", at: `${day(1)}T09:00:00.000Z` });
+    // A latest pre with no number does not count: the one before it, that has a number, is the reading.
+    await check("tmj", day(1), 4, { kind: "pre", at: `${day(1)}T06:00:00.000Z` });
+    await check("tmj", day(1), null, { kind: "pre", at: `${day(1)}T09:00:00.000Z` });
     const p = await measure(M);
-    expect(p.series.map((x) => [x.date, x.value])).toEqual([[day(6), 2], [day(4), 7], [day(3), 6], [day(1), 4]]);
-    // (2 + 7 + 6 + 4) / 4 = 4.75 → 4.8
-    expect(p).toMatchObject({ current: 4.8, sampleSize: 4 });
+    expect(p.series.map((x) => [x.date, x.value])).toEqual([[day(6), 2], [day(4), 7], [day(3), 1], [day(1), 4]]);
+    // (2 + 7 + 1 + 4) / 4 = 3.5
+    expect(p).toMatchObject({ current: 3.5, sampleSize: 4 });
   });
 
   it("is the mean of the daily rows in the window, a point a day, to one decimal", async () => {
     await check("tmj", day(6), 2);
     await check("tmj", day(3), 3);
     await check("tmj", day(0), 5);
-    await check("tmj", day(3), 9, { kind: "pre" });
+    await check("tmj", day(3), 9, { kind: "pre", at: `${day(3)}T06:00:00.000Z` });
     await check("tmj", day(2), 9, { kind: "post" });
     const p = await measure(M);
     // (2 + 3 + 5) / 3 = 3.33 → 3.3
@@ -870,14 +870,25 @@ describe("condition_check: the mean of a profile's daily check", () => {
     expect(p.series.map((x) => [x.date, x.value])).toEqual([[day(6), 2], [day(3), 3], [day(0), 5]]);
   });
 
-  it("reads each day once: a re-check counts as its latest, and a latest with no number leaves the day out", async () => {
+  it("P2: a daily in the morning and a pre in the evening read as the evening's, as the Today chip shows it; the later by time wins either way round", async () => {
+    await check("tmj", day(3), 2, { kind: "daily", at: `${day(3)}T08:00:00.000Z` });
+    await check("tmj", day(3), 6, { kind: "pre", at: `${day(3)}T18:00:00.000Z` });
+    await check("tmj", day(2), 7, { kind: "pre", at: `${day(2)}T08:00:00.000Z` });
+    await check("tmj", day(2), 3, { kind: "daily", at: `${day(2)}T18:00:00.000Z` });
+    const p = await measure(M);
+    expect(p.series.map((x) => [x.date, x.value])).toEqual([[day(3), 6], [day(2), 3]]);
+    // (6 + 3) / 2 = 4.5
+    expect(p.current).toBe(4.5);
+  });
+
+  it("reads each day once: a re-check counts as its latest, and a latest with no number does not count", async () => {
     await check("tmj", day(4), 8, { at: `${day(4)}T08:00:00.000Z` });
     await check("tmj", day(4), 2, { at: `${day(4)}T20:00:00.000Z` });
     await check("tmj", day(2), 6, { at: `${day(2)}T08:00:00.000Z` });
     await check("tmj", day(2), null, { at: `${day(2)}T20:00:00.000Z` });
     const p = await measure(M);
-    expect(p.series.map((x) => [x.date, x.value])).toEqual([[day(4), 2]]);
-    expect(p.current).toBe(2);
+    expect(p.series.map((x) => [x.date, x.value])).toEqual([[day(4), 2], [day(2), 6]]);
+    expect(p.current).toBe(4);
   });
 
   it("the window is windowDays days ending today: the day just inside counts, the one just outside and tomorrow do not, at 23:30 local", async () => {

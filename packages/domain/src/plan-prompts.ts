@@ -7,9 +7,11 @@ import { lineSentenceName } from "./training-lines.js";
  * plan's row in Your Plans, so the two never disagree.
  *
  * A plan prompts when it is running and not paused, it ends by asking (`ask`) or by continuing (`continue`, a coach
- * plan's, until the coach drafts for it), and its LAST SESSION is within `PLAN_PROMPT_DAYS` days of today:
- * ahead ("it ends in 12 days") or, once it has run out, behind ("it ended 3 days ago"), when the question stays quietly
- * available (spec §4.1(4)); past that it says nothing. `lastSessionDate`
+ * plan's, until the coach drafts for it), and its LAST SESSION is within `PLAN_PROMPT_DAYS` days ahead of today
+ * ("it ends in 12 days"). A plan that ASKS, once it has run out, is also asked about up to `PLAN_PROMPT_DAYS` days
+ * behind ("it ended 3 days ago"), when the question stays quietly available (spec §4.1(4)); a plan that CONTINUES has
+ * nothing to ask once it has run out (its sheet says it continues on its own), so it prompts only while its last day is
+ * today or ahead. Past that it says nothing. `lastSessionDate`
  * is the later of the plan's last session and its last outline week, which the caller works out from the rows and
  * the blocks (nothing is stored): a plan with a phase or an outline week still ahead is not ending. A retired plan,
  * a paused one, one that finishes, a course and a programme never prompt. A plan with a draft ready (`hasDraft`)
@@ -65,7 +67,10 @@ export function planPrompt(plan: PlanPromptInput, today: string): PlanPrompt | n
     return { kind: "draft_ready", label, request: `${label}.` };
   }
   const last = plan.lastSessionDate;
-  if (last === null || !isLocalDate(last) || last < addDays(today, -PLAN_PROMPT_DAYS) || last > addDays(today, PLAN_PROMPT_DAYS)) return null;
+  if (last === null || !isLocalDate(last) || last > addDays(today, PLAN_PROMPT_DAYS)) return null;
+  // The tail after the end is for a plan that asks: a plan that continues on its own has nothing to ask once it has run
+  // out (its sheet says "Continues on its own"), so it prompts only while its last day is today or ahead (ruling R8).
+  if (last < addDays(today, plan.onEnd === "ask" ? -PLAN_PROMPT_DAYS : 0)) return null;
   const label = `Plan what comes after ${it}`;
   const days = daysBetween(today, last);
   // A plan that has run out stays available, quietly: nothing is marked missed and nothing scolds (spec §4.1).

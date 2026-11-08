@@ -13,12 +13,12 @@ import { conditionView } from "../src/services/condition-views.js";
 describe("measureWords for a daily check", () => {
   it("names the profile by its check's own label and the window, and says it is a daily check averaged", () => {
     const m = keyResultMeasureSchema.parse({ kind: "condition_check", profileId: "tmj", windowDays: 21 });
-    expect(measureWords(m)).toBe(`daily ${profileById("tmj").check.label} check (else the day's first before-check), averaged over 21 d`);
+    expect(measureWords(m)).toBe(`daily ${profileById("tmj").check.label} check (the day's latest daily or before-session answer), averaged over 21 d`);
   });
 
   it("for a profile the library no longer holds, falls back to the id rather than failing", () => {
     const m = keyResultMeasureSchema.parse({ kind: "condition_check", profileId: "gone", windowDays: 14 });
-    expect(measureWords(m)).toBe("daily gone check (else the day's first before-check), averaged over 14 d");
+    expect(measureWords(m)).toBe("daily gone check (the day's latest daily or before-session answer), averaged over 14 d");
   });
 });
 

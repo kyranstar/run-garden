@@ -434,7 +434,7 @@ describe("one rule for when a plan asks what's next (plans with a purpose §4): 
 
   it("of two that ran out, the one that ran out last", async () => {
     await seedProgram("pr-a");
-    await seedProgram("pr-b", { disciplines: ["strength"], onEnd: "continue" });
+    await seedProgram("pr-b", { disciplines: ["strength"] });
     await seedPlan({ id: "cp-a", name: "a", endDate: addDays(today, -15), programId: "pr-a", status: "completed" });
     await seedPlan({ id: "cp-b", name: "b", discipline: "lift", endDate: addDays(today, -2), programId: "pr-b", status: "completed" });
     expect(ids(await nudges())).toEqual(["ending:cp-b"]);
