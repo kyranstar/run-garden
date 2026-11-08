@@ -3,7 +3,9 @@
  * one readiness builder every surface uses (`buildReadiness`: one morning against the athlete's own baseline), and
  * each signal — heart-rate variability, resting heart rate, sleep, training load, the watch's recovery — with the
  * date it was last read and how old that is, plus the last `days` days. A signal not read in 30 days is null and
- * said in `missing`; one more than two days old is said as stale. One statement: the athlete with the last month of
+ * said in `missing`; one more than two days old is said as stale. The day's average stress, which the watch's daily
+ * report gives beside the night's sleep, is said beside it on the same days — only when it was given, in the watch's
+ * own scale with no thresholds of ours. One statement: the athlete with the last month of
  * wellness and sleep.
  */
 import { sql } from "drizzle-orm";
@@ -23,6 +25,9 @@ const LOOKBACK_DAYS = 30;
 const READINESS_WINDOW = 14;
 /** Older than this, a reading is stale. */
 const STALE_DAYS = 2;
+
+/** What the stress figure is: the watch's own, on its own scale — no scale or threshold of ours. */
+const STRESS_MEANING = "the watch's average for the day, on its own scale; no thresholds are set";
 
 const input = z.object({ days: z.number().int().min(1).max(MAX_DAYS).optional() }).strict();
 
@@ -65,7 +70,7 @@ export const readReadiness: DesignTool = {
           'recoveryScore', ${h.recoveryScore}, 'sleepHrvBase', ${h.sleepHrvBase}, 'sleepHrvSd', ${h.sleepHrvSd}, 'load7d', ${h.trainingLoad7d},
           'ratio', ${h.loadRatio}))
           from ${h} where ${h.userId} = ${ctx.userId} and ${h.date} between ${lo} and ${hi})`,
-      sleep: sql`(select json_group_array(json_object('date', ${s.date}, 'seconds', ${s.durationSeconds}, 'quality', ${s.qualityScore}))
+      sleep: sql`(select json_group_array(json_object('date', ${s.date}, 'seconds', ${s.durationSeconds}, 'quality', ${s.qualityScore}, 'stress', ${s.stressAvg}))
           from ${s} where ${s.userId} = ${ctx.userId} and ${s.date} between ${lo} and ${hi})`,
       // The feed itself (audit C2): its newest night ever, and whether its connection expired.
       sleepEver: sql`(select max(${s.date}) from ${s} where ${s.userId} = ${ctx.userId})`,
@@ -91,7 +96,7 @@ export const readReadiness: DesignTool = {
     const sleep = parsedArray(extra.sleep)
       .map((r) => r as Record<string, unknown>)
       .filter((r) => inWindow(r.date) && typeof r.seconds === "number" && r.seconds > 0)
-      .map((r) => ({ date: r.date as string, seconds: r.seconds as number, quality: n(r.quality) }))
+      .map((r) => ({ date: r.date as string, seconds: r.seconds as number, quality: n(r.quality), stress: n(r.stress) }))
       .sort((a, b) => b.date.localeCompare(a.date));
 
     const view = buildReadiness(health.slice(0, READINESS_WINDOW), today);
@@ -102,6 +107,10 @@ export const readReadiness: DesignTool = {
     const recovery = latest("recoveryScore", (v) => v > 0);
     const lastSleep = sleep[0];
     const windowSleep = sleep.filter((r) => daysBetween(r.date, today) < days);
+    // The day's average stress rides on the sleep row (0037): said only on the days that have it, the same days.
+    const stressed = sleep.filter((r) => r.stress !== null);
+    const lastStress = stressed[0];
+    const windowStress = stressed.filter((r) => daysBetween(r.date, today) < days);
 
     const missing: string[] = [];
     const say = (what: string, row: { date: string } | undefined) => {
@@ -129,6 +138,7 @@ export const readReadiness: DesignTool = {
         ...(r?.hrv ? { hrv: r.hrv } : {}),
         ...(r?.restingHeartRate ? { rhr: r.restingHeartRate } : {}),
         ...(sl ? { sleep: durationWords(sl.seconds) } : {}),
+        ...(sl && sl.stress !== null ? { stress: sl.stress } : {}),
         ...(r?.load7d !== null && r?.load7d !== undefined ? { load: r.load7d } : {}),
       };
     });
@@ -154,6 +164,19 @@ export const readReadiness: DesignTool = {
                 : {}),
             }
           : null,
+        ...(lastStress
+          ? {
+              stress: {
+                latest: lastStress.stress,
+                date: lastStress.date,
+                age: ageWords(lastStress.date, today),
+                ...(windowStress.length > 1
+                  ? { average: `${n(windowStress.reduce((t, r) => t + (r.stress as number), 0) / windowStress.length)} over ${windowStress.length} days` }
+                  : {}),
+                meaning: STRESS_MEANING,
+              },
+            }
+          : {}),
         load: load ? { sevenDay: load.load7d, ...(load.ratio !== null ? { ratio: load.ratio } : {}), date: load.date, age: ageWords(load.date, today) } : null,
         recovery: recovery ? { score: recovery.recoveryScore, date: recovery.date, age: ageWords(recovery.date, today) } : null,
         days: list,

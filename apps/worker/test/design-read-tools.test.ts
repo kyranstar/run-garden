@@ -606,6 +606,43 @@ describe("read_readiness", () => {
     expect(missing).toEqual(expect.arrayContaining(["HRV last read 9 d ago", "no resting heart rate in the last 30 days", "no sleep recorded in the last 30 days"]));
     expect((await refused("read_readiness", { days: 31 })).error).toBe("invalid_input");
   });
+
+  it("says the day's average stress beside sleep, on the same days, only when the watch gave it", async () => {
+    // The rich athlete's nights carry no stress: not a word of it.
+    const bare = await ok("read_readiness", { days: 5 });
+    expect("stress" in bare.data).toBe(false);
+    expect(bare.data.days.every((d: Record<string, unknown>) => !("stress" in d))).toBe(true);
+
+    const { userId } = await makeTestUser(db);
+    const night = (n: number, stressAvg: number | null) =>
+      db.insert(schema.sleepRecords).values({ id: `${userId}:${day(n)}`, userId, date: day(n), durationSeconds: 25_200, stressAvg, contentFingerprint: `f${n}`, updatedAt: at(day(n)) });
+    await night(0, 23);
+    await night(1, 31);
+    await night(2, null);
+    await night(3, 18);
+    const { data } = await ok("read_readiness", { days: 3 }, { user: userId });
+    // Beside sleep, the same days: the null night says nothing, and day(3) is outside the 3 days listed.
+    expect(data.days.map((d: Record<string, unknown>) => [d.date, d.sleep !== undefined, d.stress])).toEqual([
+      [day(0), true, 23],
+      [day(1), true, 31],
+      [day(2), true, undefined],
+    ]);
+    expect(data.stress).toMatchObject({ latest: 23, date: TODAY, age: "today", average: "27 over 2 days" });
+    // What the number is, in the watch's words: no scale or threshold of ours.
+    // One reading in the window is not an average of anything.
+    const one = await ok("read_readiness", { days: 1 }, { user: userId });
+    expect(one.data.stress).toMatchObject({ latest: 23 });
+    expect("average" in one.data.stress).toBe(false);
+    expect(data.stress.meaning).toBe("the watch's average for the day, on its own scale; no thresholds are set");
+  });
+
+  it("a night whose stress is missing leaves the sleep reading as it was", async () => {
+    const { userId } = await makeTestUser(db);
+    await db.insert(schema.sleepRecords).values({ id: `${userId}:${day(0)}`, userId, date: day(0), durationSeconds: 25_200, contentFingerprint: "f", updatedAt: at(day(0)) });
+    const { data } = await ok("read_readiness", { days: 3 }, { user: userId });
+    expect(data.sleep).toMatchObject({ last: "7 h 00 min", date: TODAY });
+    expect("stress" in data).toBe(false);
+  });
 });
 
 describe("read_answers", () => {

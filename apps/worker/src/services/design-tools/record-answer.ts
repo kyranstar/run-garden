@@ -1,6 +1,7 @@
 /**
  * record_answer(answers) — what the athlete's request itself states, kept as check-in answers so the next design knows
- * it (Stage 3 spec §4; principles §5.3): soreness, tightness and pain by area, energy on its own — the check-ins'
+ * it (Stage 3 spec §4; principles §5.3): soreness, tightness and pain by area, energy, sleep quality and stress each on
+ * their own (the last two are what the athlete says of their sleep and stress, beside the watch's) — the check-ins'
  * question ids (`CHECKIN_QUESTIONS`, with how long an answer stays fresh), and their areas (a library region or
  * muscle, or one of the athlete's focus areas). Each answer QUOTES the request — whole words of it, compared without
  * case or punctuation — and a quote the request doesn't hold is refused: this keeps what was SAID; what the coach
@@ -41,6 +42,10 @@ export const CHECKIN_QUESTIONS = {
   tightness: { byArea: true, freshDays: 3 },
   pain: { byArea: true, freshDays: 3 },
   energy: { byArea: false, freshDays: 1 },
+  // How last night's sleep went reads for the day it is said, as energy does; stress is a state that carries a day or
+  // two (the jaw and neck follow it), so it stays fresh for two — still far shorter than a sore area's three.
+  sleep_quality: { byArea: false, freshDays: 1 },
+  stress: { byArea: false, freshDays: 2 },
 } as const;
 export type CheckinQuestion = keyof typeof CHECKIN_QUESTIONS;
 export const CHECKIN_IDS = Object.keys(CHECKIN_QUESTIONS) as [CheckinQuestion, ...CheckinQuestion[]];
@@ -178,7 +183,7 @@ export function insertAnswers(db: Db, rows: readonly AnswerRow[]) {
 export const recordAnswer: DesignTool = {
   name: "record_answer",
   description:
-    "The main coach only: keep what the request itself states as check-in answers, so the next design knows it — soreness, tightness or pain by area (a region, muscle or focus-area id), energy on its own, each quoting the request's words; value 0–10 only a number the athlete gave.",
+    "The main coach only: keep what the request itself states as check-in answers, so the next design knows it — soreness, tightness or pain by area (a region, muscle or focus-area id), energy, sleep_quality or stress on their own, each quoting the request's words; value 0–10 only a number the athlete gave.",
   inputSchema: {
     type: "object",
     properties: {

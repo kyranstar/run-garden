@@ -1,0 +1,2 @@
+-- 0037: the day's average stress, kept beside the night's sleep. The watch's daily report already carries a "Stress: Avg N" line, in COROS's own scale, that the sleep sweep read past; sleep_records.stress_avg keeps it on the row the sweep already writes for that wake-up day (no new table, no new statement). Null where the report had no line or an odd value. Purely additive: one nullable column.
+ALTER TABLE `sleep_records` ADD `stress_avg` real;

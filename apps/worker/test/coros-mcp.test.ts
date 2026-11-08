@@ -6,7 +6,7 @@
  * including the SSE response variant Streamable HTTP servers may use.
  */
 import { eq } from "drizzle-orm";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import { oauthStates, providerConnections, sleepRecords } from "@rg/database";
 import type { Env } from "../src/env.js";
 import {
@@ -605,5 +605,107 @@ Sleep Summary:
     expect(result.written).toBe(2);
     const rows = await db.select().from(sleepRecords).where(eq(sleepRecords.userId, userId));
     expect(rows.map((r) => r.date).sort()).toEqual(["2026-08-17", "2026-08-19"]);
+  });
+});
+
+// The daily report's "Stress: Avg N" line rode past the parser. docs/reports holds no capture of a daily-health text,
+// so these pin the shape the parser's own doc comment gives (observed live, masked) — nothing invented.
+describe("the day's average stress rides beside its sleep", () => {
+  const night = (stressLine: string | null, date = "20260817", total = "7h 0min") => `--- ${date} ---
+Steps: 100 | Calories: 10 kcal | Exercise: 0 min
+${stressLine === null ? "" : stressLine + "\n"}Sleep Summary:
+  Total: ${total} | Deep: 1h 0min | Light: 4h 0min | REM: 1h 0min | Awake: 5 min
+  Sleep HR: Avg 52 bpm | Min 48 bpm | Max 68 bpm
+`;
+  const report = (...blocks: string[]) =>
+    `Daily Health Data — Last 7 days | Resting HR: 46 bpm\nNote: sleep entries are dated by their wake-up day.\n\n${blocks.join("\n")}`;
+
+  it("keeps the number under the day's own block, null where the block has no stress line", async () => {
+    const { parseDailyHealthText } = await import("../src/services/coros-mcp.js");
+    const parsed = parseDailyHealthText(
+      report(night("Stress: Avg 23", "20260817"), night(null, "20260818"), night("Stress: Avg 19", "20260819")),
+    );
+    expect(parsed.nights.map((n) => [n.date, n.stressAvg])).toEqual([
+      ["2026-08-17", 23],
+      ["2026-08-18", null],
+      ["2026-08-19", 19],
+    ]);
+  });
+
+  it("a day without a sleep summary stays skipped, as before, stress line or not", async () => {
+    const { parseDailyHealthText } = await import("../src/services/coros-mcp.js");
+    const parsed = parseDailyHealthText(
+      report("--- 20260818 ---\nSteps: 812 | Calories: 89 kcal | Exercise: 0 min\nStress: Avg 31\n"),
+    );
+    expect(parsed.recognized).toBe(true);
+    expect(parsed.nights).toEqual([]);
+  });
+
+  it("an odd value (negative, absurd, not a number) is null, logged by code only, and the night is still kept", async () => {
+    const { parseDailyHealthText } = await import("../src/services/coros-mcp.js");
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+    try {
+      for (const odd of ["Stress: Avg -5", "Stress: Avg 5000", "Stress: Avg high", "Stress: Avg"]) {
+        const parsed = parseDailyHealthText(report(night(odd)));
+        expect(parsed.nights, odd).toHaveLength(1);
+        expect(parsed.nights[0]!.stressAvg, odd).toBeNull();
+        expect(parsed.nights[0]!.durationSeconds, odd).toBe(7 * 3600);
+      }
+      // Never the reading itself, only that one was odd.
+      const said = warn.mock.calls.map((c) => c.join(" ")).join("\n");
+      expect(said).toContain("odd stress");
+      expect(said).not.toMatch(/5000|-5|high/);
+    } finally {
+      warn.mockRestore();
+    }
+  });
+
+  it("a stress of 0 is a reading, not a gap", async () => {
+    const { parseDailyHealthText } = await import("../src/services/coros-mcp.js");
+    expect(parseDailyHealthText(report(night("Stress: Avg 0"))).nights[0]!.stressAvg).toBe(0);
+  });
+
+  it("is stored, rewritten when the day's figure moves, and kept when a later report lacks the line", async () => {
+    const { parseDailyHealthText } = await import("../src/services/coros-mcp.js");
+    const db = makeTestDb();
+    const { userId } = await makeTestUser(db);
+    const read = async () => (await db.select().from(sleepRecords).where(eq(sleepRecords.userId, userId)))[0]!;
+    await ingestSleep(db, userId, parseDailyHealthText(report(night("Stress: Avg 23"))).nights);
+    expect((await read()).stressAvg).toBe(23);
+    // The same night re-read later in the day with a new average: written, not skipped.
+    const moved = await ingestSleep(db, userId, parseDailyHealthText(report(night("Stress: Avg 27"))).nights);
+    expect(moved.written).toBe(1);
+    expect((await read()).stressAvg).toBe(27);
+    // A report with no line never wipes what was kept (the other columns' COALESCE rule).
+    await ingestSleep(db, userId, parseDailyHealthText(report(night(null, "20260817", "7h 10min"))).nights);
+    const row = await read();
+    expect(row.stressAvg).toBe(27);
+    expect(row.durationSeconds).toBe(7 * 3600 + 600);
+  });
+
+  it("an old row with null stress is filled when the report carries it", async () => {
+    const { parseDailyHealthText } = await import("../src/services/coros-mcp.js");
+    const db = makeTestDb();
+    const { userId } = await makeTestUser(db);
+    await ingestSleep(db, userId, parseDailyHealthText(report(night(null))).nights);
+    expect((await db.select().from(sleepRecords))[0]!.stressAvg).toBeNull();
+    await ingestSleep(db, userId, parseDailyHealthText(report(night("Stress: Avg 12"))).nights);
+    expect((await db.select().from(sleepRecords))[0]!.stressAvg).toBe(12);
+  });
+
+  it("an odd stress never fails the sweep: the sync lands the nights", async () => {
+    const db = makeTestDb();
+    const { userId } = await makeTestUser(db);
+    const env = makeEnv();
+    const mock = mockMcp({ toolResult: { content: [{ type: "text", text: report(night("Stress: Avg -9")) }], isError: false } });
+    await connect(db, env, userId, mock);
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+    try {
+      const result = await syncCorosMcpSleep(db, env, userId, "America/New_York", mock.fetchImpl);
+      expect(result.status).toBe("ok");
+      expect(result.written).toBe(1);
+    } finally {
+      warn.mockRestore();
+    }
   });
 });

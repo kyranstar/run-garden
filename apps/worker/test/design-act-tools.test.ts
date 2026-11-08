@@ -353,6 +353,23 @@ describe("record_answer", () => {
     expect(read.answers[0]).toMatchObject({ value: 8, source: "request", text: { untrusted: true } });
   });
 
+  it("keeps sleep quality and stress on their own, like energy, each fresh for its own window", async () => {
+    const r = await run({ request: "I slept badly, a 4, and work stress is high, an 8." });
+    const c = ctxOf(r);
+    const { result } = await call("record_answer", c, {
+      answers: [
+        { question: "sleep_quality", value: 4, quote: "I slept badly, a 4" },
+        { question: "stress", value: 8, quote: "work stress is high, an 8" },
+      ],
+    });
+    expect(ok(result).summary).toBe("Noted from your request: sleep_quality 4 · stress 8");
+    const rows = await db.select().from(schema.athleteAnswers).where(like(schema.athleteAnswers.id, `ra:${r.id}:%`));
+    expect(rows.find((row) => row.questionId === "sleep_quality")).toMatchObject({ subjectKind: null, subjectId: null, valueNum: 4, expiresAt: TODAY });
+    expect(rows.find((row) => row.questionId === "stress")).toMatchObject({ subjectKind: null, subjectId: null, valueNum: 8, expiresAt: day(-1) });
+    // Not by area, as energy is not.
+    expect(err((await call("record_answer", ctxOf(r), { answers: [{ question: "stress", area: "calves", quote: "work stress is high" }] })).result).error).toBe("bad_area");
+  });
+
   it("a replayed call (the same tool-use id) writes no second set of rows", async () => {
     const r = await run({ request: REQUEST });
     const c = ctxOf(r);

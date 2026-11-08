@@ -82,6 +82,33 @@ describe("export → wipe → restore → export", () => {
     expect(outcome.lost).toBe(0);
   });
 
+  it("a night's stress goes out in the export and comes back; a backup made before the column restores with it null", async () => {
+    const db = makeTestDb();
+    const { userId } = await makeTestUser(db);
+    await db.insert(schema.sleepRecords).values([
+      { id: `${userId}:2026-03-02`, userId, date: "2026-03-02", durationSeconds: 25_200, stressAvg: 23, contentFingerprint: "a", updatedAt: nowInstant() },
+      { id: `${userId}:2026-03-03`, userId, date: "2026-03-03", durationSeconds: 25_200, stressAvg: null, contentFingerprint: "b", updatedAt: nowInstant() },
+    ]);
+    const file = await exportAll(db, userId);
+    expect(file.tables.sleep_records!.map((r) => [r.date, r.stressAvg])).toEqual([["2026-03-02", 23], ["2026-03-03", null]]);
+    await wipeAccountData(db, userId, { keep: ["users", "sessions", "provider_connections"] });
+    await restoreAll(db, userId, file);
+    const back = await db.select().from(schema.sleepRecords).where(eq(schema.sleepRecords.userId, userId));
+    expect(back.map((r) => [r.date, r.stressAvg]).sort()).toEqual([["2026-03-02", 23], ["2026-03-03", null]]);
+
+    // The same file as the schema before this column wrote it: no such key on any row.
+    const older: ExportFile = {
+      ...file,
+      schemaVersion: "0036",
+      tables: { ...file.tables, sleep_records: file.tables.sleep_records!.map(({ stressAvg: _drop, ...rest }) => rest) },
+    };
+    await wipeAccountData(db, userId, { keep: ["users", "sessions", "provider_connections"] });
+    await restoreAll(db, userId, older);
+    const oldBack = await db.select().from(schema.sleepRecords).where(eq(schema.sleepRecords.userId, userId));
+    expect(oldBack).toHaveLength(2);
+    expect(oldBack.every((r) => r.stressAvg === null)).toBe(true);
+  });
+
   it("exports at least one row from every user and child table of a seeded account", async () => {
     const db = makeTestDb({ boundVariableCap: 100 });
     const { userId } = await makeTestUser(db);

@@ -488,6 +488,8 @@ export interface NormalizedNight {
   startTime: string | null;
   endTime: string | null;
   qualityScore: number | null;
+  /** The day's average stress on COROS's own scale (the daily report's "Stress: Avg N"); only that report carries it. */
+  stressAvg?: number | null;
 }
 
 const num = (v: unknown): number | null => (typeof v === "number" && Number.isFinite(v) ? v : null);
@@ -651,6 +653,10 @@ export function parseSleepText(text: string): { recognized: boolean; nights: Nor
  * Records are delimited by "--- YYYYMMDD ---"; sleep fields ride ONE
  * pipe-separated line under "Sleep Summary:". Days without a summary are
  * simply nights the watch didn't record — skipped, never zeroed.
+ *
+ * The "Stress: Avg N" line is the day's average on COROS's own scale, kept beside that day's sleep (0037). A night
+ * with no such line keeps null; a line whose value is odd (not a number, negative, past a loose sanity cap) keeps
+ * null too and is logged by code only, never the value — stress never costs the night.
  */
 export function parseDailyHealthText(text: string): { recognized: boolean; nights: NormalizedNight[] } {
   if (!/daily health data/i.test(text.slice(0, 200)) && !/^--- \d{8} ---$/m.test(text)) {
@@ -671,6 +677,7 @@ export function parseDailyHealthText(text: string): { recognized: boolean; night
     if (!date) continue;
     const summary = /sleep summary:\s*\n([^]*?)(?=\n\s*\n|$)/i.exec(body)?.[1];
     if (!summary) continue;
+    const stressAvg = stressOf(body);
     const fields = new Map<string, string>();
     for (const line of summary.split("\n")) {
       for (const seg of line.split("|")) {
@@ -691,9 +698,24 @@ export function parseDailyHealthText(text: string): { recognized: boolean; night
       startTime: null,
       endTime: null,
       qualityScore: null,
+      stressAvg,
     });
   }
   return { recognized: true, nights: nights.sort((a, b) => (a.date < b.date ? -1 : 1)) };
+}
+
+/** A sanity cap, not a scale: COROS's stress scale is its own and we claim none. */
+const STRESS_SANITY_MAX = 1000;
+
+/** The day's "Stress: Avg N" from one day's block: null when there is no such line or its value is odd (logged by code). */
+function stressOf(body: string): number | null {
+  const line = /^[ \t]*stress:[ \t]*avg\b[ \t]*(.*)$/im.exec(body);
+  if (!line) return null;
+  const raw = /^(-?\d+(?:\.\d+)?)\b/.exec(line[1]!.trim());
+  const value = raw ? Number(raw[1]) : NaN;
+  if (Number.isFinite(value) && value >= 0 && value <= STRESS_SANITY_MAX) return value;
+  console.warn("coros-mcp: odd stress value in the daily report");
+  return null;
 }
 
 /** Dig night objects out of the tool result: structuredContent when the
@@ -795,6 +817,7 @@ export async function ingestSleep(
         lightSeconds: n.lightSeconds,
         awakeSeconds: n.awakeSeconds,
         qualityScore: n.qualityScore,
+        stressAvg: n.stressAvg ?? null,
         provider: "coros",
         contentFingerprint: fp,
         updatedAt: now,
@@ -810,6 +833,7 @@ export async function ingestSleep(
           lightSeconds: sql`COALESCE(excluded.light_seconds, ${sleepRecords.lightSeconds})`,
           awakeSeconds: sql`COALESCE(excluded.awake_seconds, ${sleepRecords.awakeSeconds})`,
           qualityScore: sql`COALESCE(excluded.quality_score, ${sleepRecords.qualityScore})`,
+          stressAvg: sql`COALESCE(excluded.stress_avg, ${sleepRecords.stressAvg})`,
           contentFingerprint: fp,
           updatedAt: now,
         },

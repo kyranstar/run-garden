@@ -177,6 +177,8 @@ export const sleepRecords = sqliteTable(
     lightSeconds: integer("light_seconds"),
     awakeSeconds: integer("awake_seconds"),
     qualityScore: real("quality_score"),
+    /** The day's average stress, COROS's own scale (0037): null when the report had no line or an odd value. */
+    stressAvg: real("stress_avg"),
     provider: text("provider").notNull().default("coros"),
     contentFingerprint: text("content_fingerprint").notNull(),
     updatedAt: text("updated_at").notNull(),

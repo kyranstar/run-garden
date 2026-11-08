@@ -109,7 +109,7 @@ export const askAthlete: DesignTool = {
             why: { type: "string", minLength: 1, description: `How the answer changes the design, to the athlete: ${capInWords(WHY_MAX)}.` },
             checkin: {
               type: "object",
-              description: "The check-in this question asks, so its answer is kept: soreness, tightness or pain by area (a region, muscle or focus-area id), energy alone.",
+              description: "The check-in this question asks, so its answer is kept: soreness, tightness or pain by area (a region, muscle or focus-area id), energy, sleep_quality or stress alone.",
               properties: { question: { type: "string", enum: [...CHECKIN_IDS] }, area: { type: "string" } },
               required: ["question"],
               additionalProperties: false,
