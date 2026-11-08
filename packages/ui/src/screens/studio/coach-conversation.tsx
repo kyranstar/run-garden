@@ -281,7 +281,17 @@ export function CoachConversation({ ctx, loopDeps, request = null, seeing: seenA
       setSent((s) =>
         s.some((x) => x.runId === res.run.id)
           ? s
-          : [...s, { runId: res.run.id, words: res.existing ? res.run.request : words, at: res.run.createdAt, status: res.run.status }],
+          : [
+              ...s,
+              {
+                runId: res.run.id,
+                words: res.existing ? res.run.request : words,
+                at: res.run.createdAt,
+                status: res.run.status,
+                // The run already there may be a plan's draft (plans with a purpose §4.2): its words are the app's.
+                ...(res.existing && res.run.origin === "plan_draft" ? { from: "app" as const } : {}),
+              },
+            ],
       );
       void qc.invalidateQueries({ queryKey: CONVERSATION_QUERY });
       void qc.invalidateQueries({ queryKey: COACH_CURRENT_QUERY });

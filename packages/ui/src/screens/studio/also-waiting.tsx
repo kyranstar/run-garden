@@ -4,12 +4,12 @@
  * the others (`alsoOpen`, newest first, at most five); each is one compact line under the current card — its title, its
  * day and time ("Now" for a now design, "Today" for one today with no time), and how many it holds to decide when more
  * than one — and one tap opens its own card (`GET /api/coach/proposals/:id`, read only once it is opened), where it is
- * approved or declined as any card is.
+ * approved or declined as any card is. A plan's "Next stretch ready" chip above opens its draft's the same way (`openId`).
  *
  * A decision reads the current run again (round 2, Minor 11): the lines and their counts follow at once. One decided
  * whole leaves the list — but not while its card is open: what came of it stays in view until the athlete closes it.
  */
-import { useId, useState } from "react";
+import { useEffect, useId, useState } from "react";
 import type { CoachAlsoOpenDto } from "@rg/api-client";
 import { IconChevron } from "../../icons.js";
 import { ProposalCard } from "./proposal-card.js";
@@ -27,10 +27,16 @@ export function alsoLine(a: Pick<CoachAlsoOpenDto, "title" | "date" | "time" | "
   return [a.title, when, a.items > 1 ? `${a.items} to decide` : null].filter(Boolean).join(" · ");
 }
 
-export function AlsoWaiting({ items, today }: { items: readonly CoachAlsoOpenDto[]; today: string | null }) {
+export function AlsoWaiting({ items, today, openId = null }: { items: readonly CoachAlsoOpenDto[]; today: string | null; openId?: string | null }) {
   const headingId = useId();
   /** The ones the athlete opened, as last listed: kept while open, even once decided whole. */
   const [opened, setOpened] = useState<ReadonlyMap<string, CoachAlsoOpenDto>>(new Map());
+  // One opened from elsewhere — a "Next stretch ready" chip (plans with a purpose §4.2) — opens here as a tap on its line does.
+  useEffect(() => {
+    const item = openId ? items.find((a) => a.proposalId === openId) : undefined;
+    if (!item) return;
+    setOpened((m) => (m.has(item.proposalId) ? m : new Map(m).set(item.proposalId, item)));
+  }, [openId, items]);
   const listed = new Set(items.map((a) => a.proposalId));
   // Listed no more (nothing left to decide), but open: kept, with no count.
   const kept = [...opened.values()].filter((a) => !listed.has(a.proposalId)).map((a) => ({ ...a, items: 0 }));

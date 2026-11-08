@@ -155,6 +155,10 @@ describe("planPrompt with drafts on (plans with a purpose §4.2)", () => {
     expect(planPrompt(lifting({ draft: { kind: "over", outcome: "decided" } }), today)).toStrictEqual({ kind: "whats_next", label: "Plan what comes after my lifting plan", request: WORDS, note: null });
   });
 
+  it("a draft held back by a suggestion of the athlete's asks as before, with nothing to explain: nothing goes quiet", () => {
+    expect(planPrompt(lifting({ draft: { kind: "held" } }), today)).toStrictEqual({ kind: "whats_next", label: "Plan what comes after my lifting plan", request: WORDS, note: null });
+  });
+
   it("the label stays the question's own, so the chip and the row are still one ask", () => {
     for (const outcome of ["week_budget", "no_proposal", "decided"] as const) {
       expect(planPrompt(lifting({ draft: { kind: "over", outcome } }), today)?.label).toBe("Plan what comes after my lifting plan");

@@ -20,9 +20,10 @@ import { lineSentenceName } from "./training-lines.js";
  *
  * WITH DRAFTS ON (plans with a purpose §4.2), a coach plan that continues is drafted for, once an ending, by the hourly
  * pass, and the caller says where this ending's draft stands (`draft`): while it is due or its run is at work the plan
- * asks nothing; once it is over without a proposal waiting the question comes back, and says plainly what happened
- * (`note`, also carried in its request): the week's budget spent, or no proposal came of it. A plan that asks, and every
- * other kind, never drafts: `draft` absent is the rule as it was, word for word (drafts off).
+ * asks nothing; held back by a suggestion of the athlete's, it asks as before; once it is over without a proposal waiting
+ * the question comes back, and says plainly what happened (`note`, also carried in its request): the week's budget spent,
+ * or no proposal came of it. `hasDraft` is the caller's: the plan's own draft left a proposal still open (R58). A plan that
+ * asks, and every other kind, never drafts: `draft` absent is the rule as it was, word for word (drafts off).
  *
  * Its words are the app's: the plan's sport as the chip has always said it ("my running plan"), or the plan's own
  * name when it has none. Nothing here is a plan's: no course, no person.
@@ -49,7 +50,7 @@ export interface PlanPromptInput {
   discipline: "run" | "lift" | "mobility" | null;
   /** The later of the plan's last session and its last outline week; null when it has neither. */
   lastSessionDate: string | null;
-  /** A proposal that names the plan waits for the athlete: its next stretch is ready to review. */
+  /** The plan's own draft left a proposal that waits for the athlete: its next stretch is ready to review. */
   hasDraft: boolean;
   /**
    * With drafts on, a coach plan that continues: where this ending's draft stands. Absent: drafts are off, or the plan
@@ -60,10 +61,12 @@ export interface PlanPromptInput {
 
 /**
  * Where a plan's draft for its ending stands (plans with a purpose §4.2), as the caller reads it from the draft's key and
- * its run: none yet (`due`: the hourly pass starts one), its run at work (`live`), or over with no proposal waiting —
- * because the week couldn't pay for it, no proposal came of it, or the athlete has decided what it proposed.
+ * its run: none yet (`due`: the hourly pass starts one), none yet but held back by a suggestion of the athlete's filed
+ * under the plan, which they decide first (`held`: the question shows meanwhile, nothing goes quiet), its run at work
+ * (`live`), or over with no proposal waiting — because the week couldn't pay for it, no proposal came of it, or the
+ * athlete has decided what it proposed.
  */
-export type PlanDraftState = { kind: "due" } | { kind: "live" } | { kind: "over"; outcome: PlanDraftOutcome };
+export type PlanDraftState = { kind: "due" } | { kind: "held" } | { kind: "live" } | { kind: "over"; outcome: PlanDraftOutcome };
 export type PlanDraftOutcome = "week_budget" | "no_proposal" | "decided";
 
 /** What a plan's question says of a draft that came to nothing, plainly (spec §4.2): the row shows it, the request carries it. */
@@ -100,10 +103,10 @@ export function planPrompt(plan: PlanPromptInput, today: string): PlanPrompt | n
   // The tail after the end is for a plan that asks: a plan that continues on its own has nothing to ask once it has run
   // out (its sheet says "Continues on its own"), so it prompts only while its last day is today or ahead (ruling R8).
   if (last < addDays(today, plan.onEnd === "ask" ? -PLAN_PROMPT_DAYS : 0)) return null;
-  // A coach plan that continues, with drafts on: nothing to ask while its draft is due or at work; once it is over
-  // without a proposal waiting, the question, with what happened.
+  // A coach plan that continues, with drafts on: nothing to ask while its draft is due or at work; held back, or over
+  // without a proposal waiting, the question — once over, with what happened.
   const draft = plan.kind === "coach" && plan.onEnd === "continue" ? plan.draft : undefined;
-  if (draft && draft.kind !== "over") return null;
+  if (draft && (draft.kind === "due" || draft.kind === "live")) return null;
   const note = draft?.kind === "over" && draft.outcome !== "decided" ? PLAN_DRAFT_NOTES[draft.outcome] : null;
   const label = `Plan what comes after ${it}`;
   const days = daysBetween(today, last);

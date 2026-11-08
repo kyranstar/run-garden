@@ -13,7 +13,7 @@
  * cron loop — because a request (another tab, the phone) reaches the writer
  * without passing through any loop.
  */
-import { eq, isNotNull } from "drizzle-orm";
+import { eq, isNotNull, sql, type SQL } from "drizzle-orm";
 import { accountState } from "@rg/database";
 import { nowInstant } from "@rg/domain";
 import type { Db } from "./db.js";
@@ -40,6 +40,10 @@ export async function restoreInProgress(db: Db, userId: string): Promise<boolean
     .limit(1);
   return typeof row?.restoreId === "string" && row.restoreId.length > 0;
 }
+
+/** `restoreInProgress` as an SQL condition, true while NO restore is replacing the account: a write's own guard, checked in
+ * the statement that writes, so a restore beginning after the caller looked is still seen. */
+export const noRestoreSql = (userId: string): SQL => sql`NOT EXISTS (SELECT 1 FROM account_state WHERE user_id = ${userId} AND coalesce(restore_id, '') <> '')`;
 
 /** A restore whose begin, or last page, arrived this recently is still
  * running (ruling B10): another device may not start fresh over it or begin

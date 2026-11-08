@@ -1,4 +1,5 @@
 import { drizzle } from "drizzle-orm/d1";
+import type { SQL } from "drizzle-orm";
 import type { BatchItem } from "drizzle-orm/batch";
 import type { BaseSQLiteDatabase } from "drizzle-orm/sqlite-core";
 import { schema } from "@rg/database";
@@ -93,6 +94,18 @@ export async function runAtomicallyClaim(db: Db, statements: readonly AtomicStat
     });
   });
   return claimed;
+}
+
+/**
+ * A raw statement built and not yet run, for `runAtomically` / `runAtomicallyClaim` — a conditional `INSERT … SELECT … WHERE`
+ * that names its own columns, say, which Drizzle's insert-select can't. On D1 it is the driver's own deferred statement (its
+ * rows, as `all` reads them, are what a claim counts); on the better-sqlite3 driver, whose raw calls run at once, one that
+ * runs when the batch runs it, inside its transaction.
+ */
+export function rawStatement(db: Db, query: SQL): AtomicStatement {
+  const d1 = db as unknown as { batch?: unknown };
+  if (typeof d1.batch === "function") return db.all(query) as unknown as AtomicStatement;
+  return { run: () => db.run(query), all: () => db.all(query) } as unknown as AtomicStatement;
 }
 
 /**

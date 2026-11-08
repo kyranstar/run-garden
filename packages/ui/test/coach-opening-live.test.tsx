@@ -160,6 +160,37 @@ function expectHolding() {
   expect(dialog()!.querySelector(".coach-opening--holding [role=status]")?.textContent).toBe("Loading");
 }
 
+describe("a plan's next stretch ready (plans with a purpose §4.2, R55)", () => {
+  const READY = { id: "ready:plan-lift1", label: "Next stretch ready for my lifting plan", proposalId: "dp-draft" };
+  const WAITING = { proposalId: "dp-draft", title: "Next strength block", date: TODAY, time: null, items: 1 };
+
+  it("its chip opens the draft's card under 'Also waiting', and sends nothing — no run starts", async () => {
+    const calls = server({
+      "GET /api/coach/nudges": { nudges: [MISSED], ready: [READY] },
+      "GET /api/coach/runs/current": { run: null, alsoOpen: [WAITING] },
+    });
+    mountSheet();
+    await openCoach();
+    await until(drawn, "the opening drawn");
+    expect(chips()).toEqual([READY.label, MISSED.label, ...GENERAL_CHIPS]);
+    const line = dialog()!.querySelector<HTMLButtonElement>(".coach-also-line")!;
+    expect(line.getAttribute("aria-expanded")).toBe("false");
+    await click(button(READY.label), "the ready chip");
+    await until(() => line.getAttribute("aria-expanded") === "true", "the draft's card open");
+    expect(calls.filter((c) => c.method === "POST")).toEqual([]);
+    // Still a chip to tap again, not one gone like a sent one.
+    expect(chips()[0]).toBe(READY.label);
+  });
+
+  it("no chip for a ready plan 'Also waiting' doesn't hold, and none when the read says nothing is ready", async () => {
+    server({ "GET /api/coach/nudges": { nudges: [MISSED], ready: [READY] } });
+    mountSheet();
+    await openCoach();
+    await until(drawn, "the opening drawn");
+    expect(chips()).toEqual([MISSED.label, ...GENERAL_CHIPS]);
+  });
+});
+
 describe("the coach's opening holds still while it is read (2026-10-19)", () => {
   it("the chips' read out: nothing drawn; then once — the line, the needs-you chip first, the quick starts", async () => {
     server();

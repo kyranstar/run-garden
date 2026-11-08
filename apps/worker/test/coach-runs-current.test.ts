@@ -435,14 +435,17 @@ describe("also waiting (Task 13's fix wave, R2): the other suggestions still ope
     return id;
   }
 
-  it("lists the other designed suggestions with an open op today or later, newest first — never the one shown", async () => {
+  it("lists the designed suggestions with an open op today or later, newest first — a finished pick's own too (R55)", async () => {
     const a = await other({ title: "Calm hips", dates: [today], time: "18:00" });
     const b = await other({ title: "Two days", dates: [addDays(today, 1), addDays(today, 2)] });
     const shown = await run({ status: "finished" });
     await proposal(shown, "pending", [null]);
     const res = await current();
     expect(res.body.run.id).toBe(shown);
+    // The pick's run is over: its suggestion is listed with the others, so the coach sheet's opening finds it once its
+    // conversation has gone quiet (the sheet draws no current run's card there).
     expect(res.body.alsoOpen).toEqual([
+      { proposalId: designProposalId(shown), title: "Hips", date: addDays(today, 1), time: null, items: 1 },
       { proposalId: b, title: "Two days", date: addDays(today, 1), time: null, items: 2 },
       { proposalId: a, title: "Calm hips", date: today, time: "18:00", items: 1 },
     ]);

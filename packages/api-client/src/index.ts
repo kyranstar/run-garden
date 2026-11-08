@@ -1661,8 +1661,17 @@ export interface CoachOpeningDto {
 }
 
 /** `GET /api/coach/nudges`: the chips, and the opening's own line when there is one (an older server sends none). */
+/** A plan's next stretch, ready (plans with a purpose §4.2): a "needs you" chip whose tap opens its proposal and sends nothing. */
+export interface CoachReadyDto {
+  id: string;
+  label: string;
+  proposalId: string;
+}
+
 export interface CoachNudgesDto {
   nudges: CoachNudgeDto[];
+  /** Drafts on only: a plan whose next stretch is ready. Absent when there is none. */
+  ready?: CoachReadyDto[];
   opening?: CoachOpeningDto;
 }
 

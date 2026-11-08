@@ -11,11 +11,15 @@ import { newId, PLAN_DRAFT_NOTES, type UserPreferences } from "@rg/domain";
 import type { Env } from "../src/env.js";
 import type { Db } from "../src/services/db.js";
 import { hourly } from "../src/index.js";
-import { readNudges } from "../src/services/coach-nudges.js";
-import { createRun, LIVE_STATUSES, runStep, RunKeyTakenError, RUN_CEILING_MICROS, type RunDeps } from "../src/services/coach-runs.js";
+import { readCoachOpening, readNudges } from "../src/services/coach-nudges.js";
+import { createRun, currentRun, LIVE_STATUSES, runStep, RunKeyTakenError, RUN_CEILING_MICROS, type RunDeps } from "../src/services/coach-runs.js";
 import { STEPPER_LEASE_SET_MS } from "../src/services/coach-run-stepper.js";
-import { readConversation } from "../src/services/coach-conversation.js";
-import { buildDesignContext, designContextBuilder, DRAFT_REQUEST_LINE } from "../src/services/design-context.js";
+import { conversationBlock, conversationRows, namedConversationSql, readConversation } from "../src/services/coach-conversation.js";
+import { buildDesignContext, designContextBuilder, DRAFT_REQUEST_LINE, DRAFT_REQUEST_SUB_LINE } from "../src/services/design-context.js";
+import { DESIGNED_OP_KINDS } from "../src/services/design-op-kinds.js";
+import { recordAnswer } from "../src/services/design-tools/record-answer.js";
+import { askedWordsSql } from "../src/services/objective-changes.js";
+import { isDesignedOp } from "../src/services/proposal-kinds.js";
 import { allTools } from "../src/services/design-tools/index.js";
 import { designProposalId } from "../src/services/design-tools/propose.js";
 import { planSet } from "../src/services/design-tools/plan-set.js";
@@ -53,13 +57,33 @@ let db: Db;
 let userId: string;
 let prefs: UserPreferences;
 let statements: string[];
+/** Given a statement about to run, what to do first (once), if anything: a change landing between a read and a write. */
+let before: ((sql: string) => (() => void) | null) | null = null;
+/** A statement on the test database itself, run then and there (inside a batch's transaction when one is open). */
+const raw = (text: string, ...params: unknown[]) =>
+  (db as unknown as { $client: { prepare: (s: string) => { run: (...p: unknown[]) => unknown } } }).$client.prepare(text).run(...params);
+/** The keyed create's key statement (coach-runs.ts `insertKeyed`), and the week's key (plan-drafts.ts). */
+const KEY_INSERT = /^\s*INSERT INTO audit_events/;
+const WEEK_KEY_INSERT = /^\s*INSERT OR IGNORE INTO audit_events/;
 
 beforeEach(async () => {
   vi.useFakeTimers({ toFake: ["Date"] });
   vi.setSystemTime(NOW);
   told = [];
   statements = [];
-  db = makeTestDb({ boundVariableCap: 100, onStatement: (s) => statements.push(s) });
+  before = null;
+  db = makeTestDb({
+    boundVariableCap: 100,
+    onStatement: (s) => {
+      statements.push(s);
+      // Something that happens between a pass's read and a write of its: run once, just before the statement it names.
+      const act = before?.(s);
+      if (act) {
+        before = null;
+        act();
+      }
+    },
+  });
   ({ userId, prefs } = await makeTestUser(db, { timezone: "America/Los_Angeles" }));
   await seedLiftingPlan();
 });
@@ -203,6 +227,12 @@ describe("the pieces agree with the loop's own", () => {
     expect(DRAFT_PROPOSAL_PREFIX).toBe(designProposalId(""));
   });
 
+  it("the designed op kinds the SQL reads are the ones the proposal kinds know as designed (one list, for the loop and the drafts)", () => {
+    expect(DESIGNED_OP_KINDS.filter((kind) => !isDesignedOp({ kind }))).toEqual([]);
+    // A thread coach's op is none of them.
+    for (const kind of ["move", "skip", "extendPlan", "createPlan"]) expect(isDesignedOp({ kind }), kind).toBe(false);
+  });
+
   it("the switch is PLAN_DRAFTS with the step alarm and the coach designer: any one missing is off", () => {
     expect(planDraftsOn(ON)).toBe(true);
     expect(planDraftsOn({ ...ON, PLAN_DRAFTS: undefined })).toBe(false);
@@ -215,13 +245,21 @@ describe("the pieces agree with the loop's own", () => {
 });
 
 describe("draftEndingPlans", () => {
-  it("starts one run per ending, however many passes see it", async () => {
-    expect(await pass()).toEqual({ started: 1 });
-    expect(await pass()).toEqual({ started: 0 });
-    // Two passes at once: one key, one run between them.
-    await Promise.all([pass(), pass()]);
-    const [key] = await keys();
+  it("starts one run per ending, however many passes see it — three at once on a fresh ending among them", async () => {
+    expect(await keys()).toHaveLength(0);
+    statements.length = 0;
+    // A true race: each pass reads the ending as due and goes on to the write — three key statements, one key between them.
+    const raced = await Promise.all([pass(), pass(), pass()]);
+    expect(statements.filter((s) => KEY_INSERT.test(s))).toHaveLength(3);
+    expect(raced.map((r) => r.started).sort()).toEqual([0, 0, 1]);
     expect(await keys()).toHaveLength(1);
+    expect(await runs()).toHaveLength(1);
+    expect(told).toHaveLength(1);
+    // A pass after it reads the key: nothing due, and it never reaches the write.
+    statements.length = 0;
+    expect(await pass()).toEqual({ started: 0 });
+    expect(statements.filter((s) => KEY_INSERT.test(s))).toEqual([]);
+    const [key] = await keys();
     expect(key!.id).toBe(KEY);
     const all = await runs();
     expect(all).toHaveLength(1);
@@ -234,6 +272,32 @@ describe("draftEndingPlans", () => {
     expect(settings).toMatchObject({ origin: "plan_draft", planId: PLAN, conversationId: all[0]!.id, ceilingMicros: RUN_CEILING_MICROS.next_n });
     // Starting is one step: its object armed once, for a set's lease.
     expect(told).toEqual([{ op: "arm", body: { runId: all[0]!.id, userId, stepping: false, leaseMs: STEPPER_LEASE_SET_MS } }]);
+  });
+
+  it("the key's own statement looks at the plan again: paused or stopped between the pass's read and its write, nothing starts", async () => {
+    for (const [what, change, undo] of [
+      ["paused", "update programs set paused_until = '2026-05-30' where id = ?", "update programs set paused_until = null where id = ?"],
+      ["stopped", "update programs set status = 'retired' where id = ?", "update programs set status = 'active' where id = ?"],
+      ["archived", "update programs set archived_at = '2026-05-13T16:30:00.000Z' where id = ?", "update programs set archived_at = null where id = ?"],
+    ] as const) {
+      before = (s) => (KEY_INSERT.test(s) ? () => raw(change, PLAN) : null);
+      expect(await pass(), what).toEqual({ started: 0 });
+      expect(before, `${what}: the change landed before the key's statement`).toBeNull();
+      expect(await keys(), what).toHaveLength(0);
+      expect(await runs(), what).toHaveLength(0);
+      raw(undo, PLAN);
+    }
+    expect(told).toEqual([]);
+    // As it was read, with nothing landing between: the draft starts.
+    expect(await pass()).toEqual({ started: 1 });
+  });
+
+  it("the week's key is written only while no restore is replacing the account (one beginning after the pass looked)", async () => {
+    await spend(19_990_000);
+    before = (s) => (WEEK_KEY_INSERT.test(s) ? () => raw("insert into account_state (user_id, restore_id, updated_at) values (?, 'r1', ?)", userId, NOW.toISOString()) : null);
+    expect(await pass()).toEqual({ started: 0 });
+    expect(before).toBeNull();
+    expect(await keys()).toHaveLength(0);
   });
 
   it("the key holds once the run is over: the same ending's key starts nothing more, even asked for directly", async () => {
@@ -280,23 +344,37 @@ describe("draftEndingPlans", () => {
     expect(told).toEqual([]);
   });
 
-  it("starts none while a proposal waits that names the plan, or once a later plan of its sport has followed it", async () => {
+  it("starts none while a suggestion of the athlete's waits that names the plan: the plain question shows meanwhile, never 'next stretch ready'", async () => {
     const at = NOW.toISOString();
     // The athlete's own run proposed an extension of the block: it waits for them.
     const op: Partial<PlanStructureOp> = { kind: "plan_structure", id: "plan", op: { kind: "extendPlan", planId: "lift1", shapeWeeks: [] } as never, date: "2026-05-25", why: "w", title: "t", summary: "s", lines: [], planKey: "plan:lift1", issues: [], toolUseId: "t1", at };
     await db.insert(schema.coachProposals).values({ id: "dp-other", userId, title: "t", evidence: "", rationale: "r", flags: [], ops: [op], status: "pending", createdAt: at, expiresAt: "2026-06-30" });
     expect(await pass()).toEqual({ started: 0 });
-    expect((await rowPrompt())?.kind).toBe("draft_ready");
+    // Held back: the question as drafts off asks it (nothing goes quiet), and no chip for a stretch the draft never made.
+    expect(await rowPrompt()).toStrictEqual({ kind: "whats_next", label: "Plan what comes after my lifting plan", request: "Plan what comes after my lifting plan — it ends in 11 days." });
+    expect((await readCoachOpening(db, userId, prefs, TODAY, NOW, new Set(), { drafts: true })).ready).toBeUndefined();
     await db.update(schema.coachProposals).set({ status: "declined" }).where(eq(schema.coachProposals.id, "dp-other"));
     expect(await pass(), "declined: nothing waits").toEqual({ started: 1 });
-    // A later plan of its sport running on past it has followed it: nothing to draft (as the chip leaves it out).
-    await db.delete(schema.auditEvents);
-    await db.delete(schema.coachRuns);
+  });
+
+  it("a suggestion filed under a plan far from its end is no next stretch (R58; the review's probe C)", async () => {
+    // Ending 79 days out, one pending workout of the athlete's filed under it.
+    await db.update(schema.coachPlans).set({ endDate: "2026-07-31" }).where(eq(schema.coachPlans.id, "lift1"));
+    await seedSession("2026-07-30", "lift1");
+    const at = NOW.toISOString();
+    const op = { kind: "doc_workout", id: "w1", date: "2026-05-15", planId: PLAN, title: "t", why: "w" };
+    await db.insert(schema.coachProposals).values({ id: "dp-athlete", userId, title: "t", evidence: "", rationale: "r", flags: [], ops: [op], status: "pending", createdAt: at, expiresAt: "2026-06-30" });
+    expect(await rowPrompt({ drafts: false })).toBeNull();
+    expect(await rowPrompt()).toBeNull();
+    expect((await readCoachOpening(db, userId, prefs, TODAY, NOW, new Set(), { drafts: true })).ready).toBeUndefined();
+  });
+
+  it("a plan that continues has nothing to draft once it has run out", async () => {
     await db.update(schema.coachPlans).set({ endDate: "2026-05-12" }).where(eq(schema.coachPlans.id, "lift1"));
     await db.delete(schema.plannedWorkouts);
     await seedSession("2026-05-11", "lift1");
-    expect((await rowPrompt())).toBeNull();
-    expect(await pass(), "run out: a plan that continues has nothing to draft once it has ended").toEqual({ started: 0 });
+    expect(await rowPrompt()).toBeNull();
+    expect(await pass()).toEqual({ started: 0 });
   });
 
   it("a restore in progress starts nothing", async () => {
@@ -340,8 +418,16 @@ describe("draftEndingPlans", () => {
     expect(op.op).toMatchObject({ kind: "createPlan", continuesPlanId: PLAN });
     // The row says its next stretch is ready, and a tap opens it: its words are no request to send.
     expect(await rowPrompt()).toStrictEqual({ kind: "draft_ready", label: "Next stretch ready for my lifting plan", request: "Next stretch ready for my lifting plan." });
-    // The chip asks nothing meanwhile (the proposal is the conversation's card).
-    expect((await readNudges(db, userId, prefs, TODAY, NOW, { drafts: true })).map((n) => n.id)).toEqual([]);
+    // No chip asks what comes next meanwhile; its "next stretch ready" chip opens the draft's proposal and carries no request
+    // (R55) — and with drafts off the read has no such field at all.
+    const opening = await readCoachOpening(db, userId, prefs, TODAY, NOW, new Set(), { drafts: true });
+    expect(opening.nudges).toEqual([]);
+    expect(opening.ready).toStrictEqual([{ id: `ready:${PLAN}`, label: "Next stretch ready for my lifting plan", proposalId: designProposalId(run.id) }]);
+    expect("ready" in (await readCoachOpening(db, userId, prefs, TODAY, NOW))).toBe(false);
+    // "Also waiting" lists it though its run is the current pick, being over (R55): findable once its conversation is quiet.
+    const current = await currentRun(db, userId, NOW);
+    expect(current!.run.id).toBe(run.id);
+    expect(current!.alsoOpen.map((a) => a.proposalId)).toEqual([designProposalId(run.id)]);
     // plan_set's briefs too: a brief that names no plan is the run's plan's.
     const started: Array<{ planId?: string }> = [];
     const hooks: SetHooks = {
@@ -394,16 +480,72 @@ describe("draftEndingPlans", () => {
     expect(await pass()).toEqual({ started: 0 });
   });
 
+  /** The draft's proposal decided as the approve writes it: its status, when, and each op's outcome. */
+  async function decide(runId: string, status: "approved" | "declined") {
+    const id = designProposalId(runId);
+    const [p] = await db.select().from(schema.coachProposals).where(eq(schema.coachProposals.id, id));
+    const outcome = { status: status === "approved" ? "applied" : "declined", at: NOW.toISOString() };
+    await db
+      .update(schema.coachProposals)
+      .set({ status, resolvedAt: NOW.toISOString(), ops: (p!.ops as Array<Record<string, unknown>>).map((o) => ({ ...o, outcome })) })
+      .where(eq(schema.coachProposals.id, id));
+  }
+  /** The plan's last session moved later, by hand: a session on `date` under its block, the block's end with it. */
+  async function lastDayTo(date: string) {
+    await db.update(schema.coachPlans).set({ endDate: date }).where(eq(schema.coachPlans.id, "lift1"));
+    await seedSession(date, "lift1");
+  }
+
   it("a new ending, after approval, can draft again", async () => {
     const { run } = await draftAndDrive(proposing());
     // Approved: its block on the plan (as the apply lands it), the plan's last day now the new block's.
-    await db.update(schema.coachProposals).set({ status: "approved", resolvedAt: NOW.toISOString() }).where(eq(schema.coachProposals.id, designProposalId(run.id)));
+    await decide(run.id, "approved");
     const at = NOW.toISOString();
     await db.insert(schema.coachPlans).values({ id: "lift2", userId, discipline: "lift", name: "Next strength block", status: "active", startDate: "2026-05-25", endDate: "2026-05-31", raceDate: null, stampPrefix: "Next", programId: PLAN, createdAt: at, updatedAt: at });
+    // The new ending is due (R57: an approval naming the plan since its key re-arms it): nothing to ask meanwhile.
     expect((await listPlans(db, userId, TODAY, { drafts: true })).find((p) => p.id === PLAN)!.prompt).toBeNull();
     expect(await pass()).toEqual({ started: 1 });
     expect((await keys()).map((k) => k.id).sort()).toEqual([KEY, planDraftKey(PLAN, "2026-05-31")].sort());
     expect(await runs()).toHaveLength(2);
+  });
+
+  it("one draft a stretch: a last day moved by hand drafts nothing more, and the plain question shows — never silent (R57)", async () => {
+    await draftAndDrive(finishingEmpty());
+    await lastDayTo("2026-05-27");
+    expect(await pass()).toEqual({ started: 0 });
+    expect(await keys()).toHaveLength(1);
+    // The stretch's draft stands for the moved ending: over, and why.
+    expect(await rowPrompt()).toStrictEqual({
+      kind: "whats_next",
+      label: "Plan what comes after my lifting plan",
+      request: `Plan what comes after my lifting plan — it ends in 14 days. ${PLAN_DRAFT_NOTES.no_proposal}`,
+      note: PLAN_DRAFT_NOTES.no_proposal,
+    });
+    // At the week's cap too: its key stands for the stretch, run or none.
+    await db.delete(schema.auditEvents);
+    await db.delete(schema.coachRuns);
+    await db.delete(schema.coachProposals);
+    await spend(19_990_000);
+    expect(await pass()).toEqual({ started: 0 });
+    await db.delete(schema.llmUsage);
+    await lastDayTo("2026-05-29");
+    expect(await pass(), "a week_budget key holds the stretch too").toEqual({ started: 0 });
+    expect((await rowPrompt())?.note).toBe(PLAN_DRAFT_NOTES.week_budget);
+  });
+
+  it("a draft declined doesn't re-arm the plan, whatever its last day does after", async () => {
+    const { run } = await draftAndDrive(proposing());
+    await decide(run.id, "declined");
+    expect(await pass()).toEqual({ started: 0 });
+    await lastDayTo("2026-05-27");
+    expect(await pass()).toEqual({ started: 0 });
+    expect(await runs()).toHaveLength(1);
+    expect(await rowPrompt()).toStrictEqual({ kind: "whats_next", label: "Plan what comes after my lifting plan", request: "Plan what comes after my lifting plan — it ends in 14 days." });
+    // An approval of something else naming the plan, since the key, does: the next stretch may be drafted.
+    const at = NOW.toISOString();
+    const op = { kind: "doc_workout", id: "w1", date: "2026-05-26", planId: PLAN, title: "t", why: "w", outcome: { status: "applied", at } };
+    await db.insert(schema.coachProposals).values({ id: "dp-athlete", userId, title: "t", evidence: "", rationale: "r", flags: [], ops: [op], status: "approved", createdAt: at, expiresAt: "2026-06-30", resolvedAt: at });
+    expect(await pass()).toEqual({ started: 1 });
   });
 
   it("a draft asks the athlete nothing: nobody is there to answer", async () => {
@@ -423,6 +565,81 @@ describe("draftEndingPlans", () => {
     expect(built.header).not.toContain("The athlete's request, in their own words");
     const conversation = await readConversation(db, userId, NOW, { endedLine: () => null });
     expect(conversation.turns.map((t) => [t.words, t.from])).toEqual([[run!.request, "app"]]);
+  });
+});
+
+describe("a draft's request is the app's, never the athlete's own words (each guard, alone)", () => {
+  /** A finished main run with `request`, a plan's draft's or the athlete's own. */
+  async function finishedRun(request: string, origin?: "plan_draft") {
+    const id = newId();
+    const at = NOW.toISOString();
+    const state = { v: 1, settings: { ceilingMicros: 1, maxCalls: 1, conversationId: id, ...(origin ? { origin } : {}) }, system: null, messages: [] };
+    await db.insert(schema.coachRuns).values({ id, userId, parentId: null, role: "main", scope: { kind: "next_n", n: 3 }, request, status: "finished", state: JSON.stringify(state), createdAt: at, updatedAt: at });
+    return id;
+  }
+
+  it("a draft's words never count as the athlete having asked a chip", async () => {
+    const chip = { id: "ending:lift1", label: "Plan what comes after my lifting plan", request: "Plan what comes after my lifting plan — it ends in 11 days." };
+    // Its words holding the chip's, from the app: the chip is still theirs to tap.
+    await finishedRun("Plan what comes after my lifting plan, as the app asks it.", "plan_draft");
+    expect(await readNudges(db, userId, prefs, TODAY, NOW)).toEqual([chip]);
+    // The same words from the athlete: asked, so it stays away.
+    await finishedRun("Plan what comes after my lifting plan, please.");
+    expect(await readNudges(db, userId, prefs, TODAY, NOW)).toEqual([]);
+  });
+
+  it("a draft's request is no words of the athlete's for an objective's basis (askedWordsSql)", async () => {
+    const words = "Draft the next stretch of the plan Synthetic strength, from its purpose and brief. Nothing changes until I approve it.";
+    const draft = await finishedRun(words, "plan_draft");
+    const own = await finishedRun(words);
+    const read = async (runId: string) => ((await db.all(sql`select ${askedWordsSql(userId, runId)} as w`)) as Array<{ w: string | null }>)[0]!.w;
+    expect(await read(draft)).toBeNull();
+    expect(await read(own)).toBe(words);
+  });
+
+  it("nothing in a draft's request can be quoted as the athlete's answer or remembered as their word (athleteRequestSql)", async () => {
+    const words = "Draft the next stretch of the plan Synthetic strength, from its purpose and brief. Nothing changes until I approve it.";
+    const answer = { answers: [{ question: "energy", value: 4, quote: "approve it" }] };
+    const ctx = (id: string) => ({ db, env: ON, userId, run: { id, role: "main" as const, scope: { kind: "next_n" as const, n: 3 }, parentId: null, rehearsal: false }, now: NOW, toolUseId: `toolu_${id}` });
+    const draft = await finishedRun(words, "plan_draft");
+    const refused = await recordAnswer.run(ctx(draft), answer);
+    expect(isToolErr(refused) && refused.error).toBe("not_in_request");
+    expect((refused as ToolErr).why).toBe("This run has no request: the athlete only tapped to start it.");
+    // The same words from the athlete quote, as far as the quote's check goes (its value then isn't a number they gave).
+    const own = await finishedRun(words);
+    expect((await recordAnswer.run(ctx(own), answer)) as ToolErr).toMatchObject({ error: "value_not_stated" });
+  });
+
+  it("a later turn reads a draft as the app's, for the athlete — never as the athlete's words", async () => {
+    const draft = await finishedRun(draftRequest("Synthetic strength"), "plan_draft");
+    const rows = await conversationRows(db, userId, namedConversationSql(userId, draft), { limit: 6 });
+    const block = conversationBlock(rows, NOW)!;
+    expect(block).toContain(`— the app, for the athlete (a draft of their plan's next stretch): <untrusted from="plan draft">${draftRequest("Synthetic strength")}</untrusted>`);
+    expect(block).not.toContain("— the athlete:");
+  });
+
+  it("a set's designer of a draft reads whose words they are, never the main coach's instruction (M6)", async () => {
+    const run = { id: "run-x", role: "designer" as const, scope: { kind: "next_n" as const, n: 3 }, request: draftRequest("Synthetic strength"), parentId: "run-main", brief: "Thirty minutes, legs.", origin: "plan_draft" as const };
+    const built = await buildDesignContext(db, ON, userId, run, NOW);
+    expect(built.header).toContain(`${DRAFT_REQUEST_SUB_LINE}\n<untrusted from="plan draft">`);
+    expect(built.header).not.toContain(DRAFT_REQUEST_LINE);
+    expect(built.header).not.toContain("The athlete's request, in their own words");
+  });
+
+  it("a draft supersedes none of the athlete's open suggestions when it proposes (R59)", async () => {
+    // The athlete's own older suggestion for a new lifting plan: what a newer plan change for a new lifting block covers.
+    const earlier = new Date(NOW.getTime() - 3_600_000).toISOString();
+    const older: Partial<PlanStructureOp> = {
+      kind: "plan_structure", id: "plan", op: { kind: "createPlan", discipline: "lift", name: "Other", newPlan: { name: "Other", purpose: "p" }, startDate: "2026-05-25", endDate: "2026-06-21", firmSessions: [], shapeWeeks: [] } as never,
+      date: "2026-05-25", why: "w", title: "Other", summary: "s", lines: [], planKey: "new:lift", issues: [], toolUseId: "t0", at: earlier,
+    };
+    await db.insert(schema.coachProposals).values({ id: "dp-older", userId, title: "Other", evidence: "", rationale: "r", flags: [], ops: [older], status: "pending", createdAt: earlier, expiresAt: "2026-06-30" });
+    const { run, status } = await draftAndDrive(proposing());
+    expect(status).toBe("finished");
+    expect((await db.select().from(schema.coachProposals).where(eq(schema.coachProposals.id, designProposalId(run.id))))[0]!.status).toBe("pending");
+    const [kept] = await db.select().from(schema.coachProposals).where(eq(schema.coachProposals.id, "dp-older"));
+    expect(kept!.status).toBe("pending");
+    expect((kept!.ops as Array<{ outcome?: unknown }>)[0]!.outcome).toBeUndefined();
   });
 });
 
@@ -482,11 +699,11 @@ describe("what a pass spends", () => {
     expect(await pass()).toEqual({ started: 0 });
     expect(statements).toHaveLength(1 + 2);
     expect(statements.filter(isWrite)).toEqual([]);
-    // Due: the blocks, then the create — preferences, the week, the key and the run in one batch.
+    // Due: the create — preferences, the week, the key and the run in one batch.
     await db.update(schema.coachPlans).set({ endDate: LAST }).where(eq(schema.coachPlans.id, "lift1"));
     statements.length = 0;
     expect(await pass()).toEqual({ started: 1 });
-    expect(statements).toHaveLength(1 + 2 + 1 + 4);
+    expect(statements).toHaveLength(1 + 2 + 4);
     expect(statements.filter(isWrite)).toHaveLength(2);
     // At the cap: the create's preferences and week, the live read, and the key.
     await db.delete(schema.coachRuns);
@@ -494,7 +711,7 @@ describe("what a pass spends", () => {
     await spend(19_990_000);
     statements.length = 0;
     expect(await pass()).toEqual({ started: 0 });
-    expect(statements).toHaveLength(1 + 2 + 1 + 2 + 1 + 1);
+    expect(statements).toHaveLength(1 + 2 + 2 + 1 + 1);
     expect(statements.filter(isWrite)).toHaveLength(1);
     // The athlete's own run live: the create's four (its batch writes nothing) and the live read that finds it.
     await db.delete(schema.llmUsage);
@@ -502,7 +719,7 @@ describe("what a pass spends", () => {
     await createRun(db, userId, { request: "Something for my hips." }, NOW);
     statements.length = 0;
     expect(await pass()).toEqual({ started: 0 });
-    expect(statements).toHaveLength(1 + 2 + 1 + 4 + 1);
+    expect(statements).toHaveLength(1 + 2 + 4 + 1);
     expect(await keys()).toHaveLength(0);
   });
 
@@ -522,10 +739,13 @@ describe("what a pass spends", () => {
     expect(await count(() => listPlans(db, userId, TODAY))).toBe(2);
   });
 
-  it("a plan's keys are found by the primary key's range, never by walking every account's audit rows", async () => {
+  it("a plan's keys are found by the primary key's range, and the proposals by the athlete's and their status — never a walk of every row", async () => {
     const lines = ((await db.all(sql`explain query plan select ${planDraftsSql(TODAY)} as d from programs where programs.user_id = ${userId}`)) as Array<{ detail: string }>).map((r) => r.detail.trim());
-    expect(lines.some((l) => /^SEARCH a USING INDEX sqlite_autoindex_audit_events_1 \(id>\? AND id<\?\)$/.test(l))).toBe(true);
-    expect(lines.some((l) => /^SCAN a\b/.test(l))).toBe(false);
+    expect(lines.filter((l) => /^SEARCH a2? USING INDEX sqlite_autoindex_audit_events_1 \(id>\? AND id<\?\)$/.test(l))).toHaveLength(2);
+    expect(lines.some((l) => /^SCAN a2?\b/.test(l))).toBe(false);
+    // `waiting` and `rearmed`: the athlete's suggestions in the statuses asked, by `coach_proposals_user_status_idx`.
+    expect(lines.filter((l) => /^SEARCH p USING INDEX coach_proposals_user_status_idx \(user_id=\? AND status=\?\)$/.test(l))).toHaveLength(2);
+    expect(lines.some((l) => /^SCAN p\b/.test(l))).toBe(false);
   });
 
   it("an account with no running coach plan spends nothing past the pass's one read", async () => {

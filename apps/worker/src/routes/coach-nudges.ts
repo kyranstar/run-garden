@@ -3,6 +3,9 @@
  * request }], opening? }`.
  *  - `nudges`: the "needs you" chips (§8 §6), at most two, computed on read from the thread coach's old trigger rules,
  *    writing nothing. The screen puts them before its general starters; a tap sends `request` as the athlete's words.
+ *  - `ready` (plans with a purpose §4.2, R55; drafts on only, absent when there is none — an older screen never looks):
+ *    `[{ id, label, proposalId }]`, a plan whose next stretch is ready — its own draft's proposal waits. A tap opens it and
+ *    sends nothing, so it is never among `nudges`, whose tap sends its words.
  *  - `opening` (stream H; absent when there is none — an older screen never looks): the coach's own line, when it
  *    noticed something — last week's review, or a session just finished — `{ id, line, source, chips, workoutId? }`.
  *    `?seen=<id>,<id>`: openings this device has already shown, which give way to the next.
@@ -40,8 +43,8 @@ export function makeCoachNudgesRoutes(deps: { now?: () => Date } = {}): Hono<App
     const userId = c.get("userId");
     const prefs = await loadPreferences(db, userId);
     const now = clock();
-    const { opening, nudges } = await readCoachOpening(db, userId, prefs, todayInZone(prefs.timezone, now), now, parseSeen(c.req.query("seen")), { drafts: planDraftsOn(c.env) });
-    return c.json(opening ? { nudges, opening } : { nudges });
+    const { opening, nudges, ready } = await readCoachOpening(db, userId, prefs, todayInZone(prefs.timezone, now), now, parseSeen(c.req.query("seen")), { drafts: planDraftsOn(c.env) });
+    return c.json({ nudges, ...(ready ? { ready } : {}), ...(opening ? { opening } : {}) });
   });
 
   return routes;

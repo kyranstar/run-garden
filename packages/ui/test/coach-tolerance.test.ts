@@ -16,7 +16,8 @@ import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { describe, expect, it } from "vitest";
 import { DESIGN_MODEL_DEADLINE_MS, type CoachRunEventDto } from "@rg/api-client";
-import { toCurrent, toEvents, toProposal, toRun, toRunRead, toStepResult } from "../src/screens/studio/coach-tolerance.js";
+import { toConversation, toCurrent, toEvents, toProposal, toRun, toRunRead, toStepResult } from "../src/screens/studio/coach-tolerance.js";
+import { turnsShown } from "../src/screens/studio/coach-conversation-model.js";
 import {
   dayAndTime,
   failureOf,
@@ -106,6 +107,22 @@ describe("a run, read tolerantly", () => {
     expect(c.run?.id).toBe("r");
     expect(c).toMatchObject({ events: [], proposal: { id: "dp-1", status: "pending", flags: ["kept"] } });
     expect(toCurrent({ run: { id: "r" }, proposal: { status: "pending" } })).toMatchObject({ proposal: null });
+  });
+});
+
+describe("a plan's draft, read as the app's (plans with a purpose §4.2)", () => {
+  it("a run says who asked only when the server says the app did; a turn whose words are the app's keeps saying so", () => {
+    expect(toRun({ id: "run-d", status: "active", origin: "plan_draft" }).origin).toBe("plan_draft");
+    expect("origin" in toRun({ id: "run-a", status: "active" })).toBe(false);
+    expect("origin" in toRun({ id: "run-b", status: "active", origin: "anyone" })).toBe(false);
+    const conv = toConversation({ id: "run-d", startedAt: "2026-05-13T16:30:00Z", turns: [{ runId: "run-d", words: "Draft the next stretch", from: "app" }, { runId: "run-e", words: "Thanks", from: "someone" }] });
+    expect(conv.turns.map((t) => t.from)).toEqual(["app", undefined]);
+    expect("from" in conv.turns[1]!).toBe(false);
+  });
+
+  it("a turn a send started keeps the app's words as the app's until the read has it", () => {
+    const shown = turnsShown({ id: null, startedAt: null, turns: [] }, null, [{ runId: "run-d", words: "Draft the next stretch", at: "2026-05-13T16:30:00Z", status: "active", from: "app" }]);
+    expect(shown.map((t) => [t.words, t.from])).toEqual([["Draft the next stretch", "app"]]);
   });
 });
 

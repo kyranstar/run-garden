@@ -4,6 +4,7 @@ import { PLAN_PROMPT_KINDS, type LocalDate, type PlanPrompt, type ProgramKind, t
 import type { Db } from "./db.js";
 import { lastPhaseOf } from "./coach-plans.js";
 import { DISCIPLINE_WORD, draftFactsOf, plansSuperseded, promptOfPlan, type PlanEndingRow } from "./plan-summaries.js";
+import { DESIGNED_OP_KINDS } from "./design-op-kinds.js";
 
 /**
  * WHEN A PLAN ENDS, AS THE WORKER READS IT (plans with a purpose §4). The rule is `planPrompt` (@rg/domain), and the one
@@ -28,8 +29,8 @@ import { DISCIPLINE_WORD, draftFactsOf, plansSuperseded, promptOfPlan, type Plan
  *
  * WITH DRAFTS ON (plans with a purpose §4.2; plan-drafts.ts) the same statement reads, for each coach plan, what the hourly
  * draft has made of its endings (`planDraftsSql`): its keys on `audit_events` with the run each started and that run's
- * proposal, and whether a proposal naming the plan waits — scalar subqueries, no statement more. With drafts off none of it
- * is in the statement, and the rule reads every plan as it always has.
+ * proposal, whether a proposal naming the plan waits, and whether one has been approved since its newest key — scalar
+ * subqueries, no statement more. With drafts off none of it is in the statement, and the rule reads every plan as it always has.
  */
 
 /**
@@ -80,7 +81,7 @@ export const PLAN_DRAFT_KIND = "plan_draft";
 /** A plan draft's key (plans with a purpose §4.2): the plan, and the last session's date of the ending it drafts for. Its
  * `audit_events` row's id, so one ending has one, whatever races. */
 export const planDraftKey = (planId: string, lastSessionDate: string): string => `plan-draft:${planId}:${lastSessionDate}`;
-/** The keys of one plan read with it, newest first, at most: one an ending. */
+/** The keys of one plan read with it, the newest made first, at most: one a stretch. */
 export const PLAN_DRAFT_KEYS_READ = 12;
 /** A run still at work: coach-runs.ts `LIVE_STATUSES`, written out (the loop can't be imported here: it reaches back to
  * this module; a test pins the two). */
@@ -105,37 +106,45 @@ const proposalWaits = (today: string, kinds: readonly string[], also: SQL = sql`
 
 /** The op kinds that make a plan's next sessions: a designed workout, a change to a plan's shape (propose_plan). */
 const NAMING_KINDS = ["doc_workout", "plan_structure"] as const;
-/** Every kind a design proposal's op can be: what a draft's own proposal may hold (coach-runs.ts `OPEN_OP`'s list). */
-const DESIGNED_KINDS = ["doc_workout", "plan_adjust", "plan_structure", "programme_change", "plan_change", "move_pins", "import_correction", "objective_change"] as const;
 
 /**
  * What the hourly draft has made of the coach plan in scope (`programs`, undecorated), as one JSON text for
  * `draftFactsOf` (plan-summaries.ts); null for any other kind. Read only with drafts on.
- *  - `keys`: its draft keys (`planDraftKey`, found by the id's range: the primary key's own index), newest first — each with
- *    its run's id or the outcome when none started, whether the run is live, and whether its proposal reached the athlete or
- *    still waits for them.
+ *  - `keys`: its draft keys (`planDraftKey`, found by the id's range: the primary key's own index), the newest made first —
+ *    each with when it was made, its run's id or the outcome when none started, whether the run is live, and whether its
+ *    proposal reached the athlete or still waits for them (any designed kind: proposal-kinds.ts `DESIGNED_OP_KINDS`).
  *  - `waiting`: a proposal waits that names the plan — a designed workout filed under it or one of its blocks, a new block
- *    continuing it, or a change to one of its blocks (propose_plan; plan_set's workouts) — whichever run made it.
+ *    continuing it, or a change to one of its blocks (propose_plan; plan_set's workouts) — whichever run made it. The start
+ *    gate (R54), never the plan's next stretch (R58).
+ *  - `rearmed`: since its newest key was made, a proposal naming the plan so has been approved, an op of it applied (R57:
+ *    one draft a stretch — the next is due only once a stretch is approved).
  */
 export function planDraftsSql(today: string): SQL<string | null> {
   const prefix = sql`(${"plan-draft:"} || programs.id || ${":"})`;
+  /** The plan's keys, by the id's range (the primary key's index), as alias `a`. */
+  const keysOf = (a: string) =>
+    sql`${sql.raw(a)}.id > ${prefix} and ${sql.raw(a)}.id < ${prefix} || ${"\u{10FFFF}"} and length(${sql.raw(a)}.id) = length(${prefix}) + 10
+      and ${sql.raw(a)}.user_id = programs.user_id and ${sql.raw(a)}.kind = ${PLAN_DRAFT_KIND}`;
   const blocks = sql`(select cp.id from coach_plans cp where cp.program_id = programs.id and cp.user_id = programs.user_id)`;
   const names = sql`(json_extract(o.value, '$.planId') = programs.id or json_extract(o.value, '$.op.continuesPlanId') = programs.id
       or json_extract(o.value, '$.planId') in ${blocks} or json_extract(o.value, '$.op.planId') in ${blocks})`;
   return sql<string | null>`case when programs.kind = 'coach' then json_object(
-    'keys', json((select json_group_array(json_object('id', k.id, 'runId', k.runId, 'outcome', k.outcome, 'runLive', k.runLive,
-        'proposalSeen', k.proposalSeen, 'proposalOpen', k.proposalOpen)) from (
-      select a.id as id, json_extract(a.detail, '$.runId') as runId, json_extract(a.detail, '$.outcome') as outcome,
+    'keys', json((select json_group_array(json_object('id', k.id, 'createdAt', k.createdAt, 'runId', k.runId, 'outcome', k.outcome,
+        'runLive', k.runLive, 'proposalSeen', k.proposalSeen, 'proposalOpen', k.proposalOpen)) from (
+      select a.id as id, a.created_at as createdAt, json_extract(a.detail, '$.runId') as runId, json_extract(a.detail, '$.outcome') as outcome,
         coalesce(r.status in (${list(DRAFT_LIVE_STATUSES)}), 0) as runLive,
         coalesce(p.status not in (${list(DRAFT_UNSEEN_STATUSES)}), 0) as proposalSeen,
-        coalesce(${proposalWaits(today, DESIGNED_KINDS)}, 0) as proposalOpen
+        coalesce(${proposalWaits(today, DESIGNED_OP_KINDS)}, 0) as proposalOpen
       from audit_events a
         left join coach_runs r on r.id = json_extract(a.detail, '$.runId') and r.user_id = a.user_id
         left join coach_proposals p on p.id = ${DRAFT_PROPOSAL_PREFIX} || r.id and p.user_id = a.user_id
-      where a.id > ${prefix} and a.id < ${prefix} || ${"\u{10FFFF}"} and length(a.id) = length(${prefix}) + 10
-        and a.user_id = programs.user_id and a.kind = ${PLAN_DRAFT_KIND}
-      order by a.id desc limit ${PLAN_DRAFT_KEYS_READ}) k)),
-    'waiting', exists (select 1 from coach_proposals p where p.user_id = programs.user_id and ${proposalWaits(today, NAMING_KINDS, names)})) end`;
+      where ${keysOf("a")}
+      order by a.created_at desc, a.id desc limit ${PLAN_DRAFT_KEYS_READ}) k)),
+    'waiting', exists (select 1 from coach_proposals p where p.user_id = programs.user_id and ${proposalWaits(today, NAMING_KINDS, names)}),
+    'rearmed', exists (select 1 from coach_proposals p where p.user_id = programs.user_id and p.status in ('approved', 'partially_approved')
+      and p.resolved_at >= (select max(a2.created_at) from audit_events a2 where ${keysOf("a2")})
+      and exists (select 1 from json_each(case when json_valid(p.ops) then p.ops else '[]' end) o
+        where json_extract(o.value, '$.kind') in (${list(NAMING_KINDS)}) and json_extract(o.value, '$.outcome.status') = 'applied' and ${names}))) end`;
 }
 
 /** The disciplines of a plan's blocks that aren't stopped, as one text ("run,lift") in a scalar subquery on `programs`. */

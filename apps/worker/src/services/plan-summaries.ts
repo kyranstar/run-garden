@@ -30,9 +30,9 @@ import { courseDefinition } from "@rg/workout";
  *  - `prompt`: what the one rule (`planPrompt`, @rg/domain) says of the plan today, the same the chip reads: the tappable line the row shows,
  *    or null. Its last session comes with the row (`lastSessionDate`, computed in the same read: `planLastDaySql`), never stored.
  *    With drafts on (plans with a purpose §4.2) a coach plan that continues also brings what the hourly draft made of its endings
- *    (`drafts`, read in the same statement: plan-ending.ts `planDraftsSql`), and `draftStateOf` reads it: its next stretch ready
- *    while a proposal naming it waits; for this ending, its draft due, at work, or over — and why, as the prompt's `note`, which
- *    the wire carries only when it says something (drafts off, every prompt is as it was, byte for byte).
+ *    (`drafts`, read in the same statement: plan-ending.ts `planDraftsSql`), and `draftOf` reads it: its next stretch ready
+ *    while its own draft's proposal waits (R58); for this stretch (R57), its draft due, held, at work, or over — and why, as the
+ *    prompt's `note`, which the wire carries only when it says something (drafts off, every prompt is as it was, byte for byte).
  */
 
 /** The kinds that are plans. */
@@ -91,9 +91,12 @@ export interface PlanSummaryDto {
  * the plan waits for the athlete. Nothing of it is stored twice: a draft is over when its run is.
  */
 export interface PlanDraftFacts {
+  /** The newest made first. */
   keys: Array<{
     /** The ending the key is for: its last session's date. */
     lastSessionDate: string;
+    /** When the key was written: when its draft was started, or found the week spent. */
+    createdAt: string;
     runId: string | null;
     /** Why no run started (`week_budget`); null when one did. */
     outcome: string | null;
@@ -104,33 +107,52 @@ export interface PlanDraftFacts {
     /** Its run's proposal still has something for the athlete to decide, today or later, and isn't past its day. */
     proposalOpen: boolean;
   }>;
-  /** A proposal that names the plan — a workout filed under it or a block of it, or a change to its shape — waits. */
+  /** A proposal that names the plan — a workout filed under it or a block of it, or a change to its shape — waits: a
+   * draft's start gate (R54), never the plan's next stretch (R58). */
   waiting: boolean;
+  /** Since the newest key was made, a proposal naming the plan has been approved: the next stretch may be drafted (R57). */
+  rearmed: boolean;
 }
 
 /**
  * What the rule is told of a plan's draft (plans with a purpose §4.2): nothing with drafts off, or for any plan but a coach
- * plan that continues — the rule as it was. Otherwise its next stretch is ready while a proposal waits that names it, or that
- * one of its drafts made; and this ending's draft (the key for its last day) is due when there is no key yet, at work while
- * its run is live, else over — with no run started (the week's budget), with no proposal that reached the athlete, or with
- * one they decided.
+ * plan that continues — the rule as it was. Otherwise:
+ *  - its next stretch is ready (`hasDraft`) only while the plan's own draft — its newest key's run — left a proposal still
+ *    open (R58); any other suggestion filed under the plan is only the start gate;
+ *  - ONE DRAFT A STRETCH (R57): the key for this ending, else — until a proposal naming the plan is approved after it — the
+ *    newest key stands for the stretch, so a last day moved, or a draft declined, never starts another;
+ *  - with no key standing, the draft is due — or held, while a suggestion of the athlete's filed under the plan waits (the
+ *    question shows meanwhile); with one, at work while its run is live, else over: no run started (the week's budget), no
+ *    proposal that reached the athlete, or one they decided. Over, the question shows: never silent.
  */
 export function draftOf(row: Pick<PlanEndingRow, "kind" | "lastDay" | "drafts">, onEnd: PlanOnEnd): { hasDraft: boolean; draft?: PlanDraftState } {
   const f = row.drafts;
   if (!f || row.kind !== "coach" || onEnd !== "continue") return { hasDraft: false };
-  const hasDraft = f.waiting || f.keys.some((k) => k.proposalOpen);
-  const key = row.lastDay === null ? undefined : f.keys.find((k) => k.lastSessionDate === row.lastDay);
-  if (!key) return { hasDraft, draft: { kind: "due" } };
+  const newest = newestKey(f);
+  const hasDraft = newest?.proposalOpen === true;
+  const exact = row.lastDay === null ? undefined : f.keys.find((k) => k.lastSessionDate === row.lastDay);
+  const key = exact ?? (newest && !f.rearmed ? newest : undefined);
+  if (!key) return { hasDraft, draft: f.waiting ? { kind: "held" } : { kind: "due" } };
   if (key.runId === null) return { hasDraft, draft: { kind: "over", outcome: key.outcome === "week_budget" ? "week_budget" : "no_proposal" } };
   if (key.runLive) return { hasDraft, draft: { kind: "live" } };
   return { hasDraft, draft: { kind: "over", outcome: key.proposalSeen ? "decided" : "no_proposal" } };
+}
+
+/** The plan's newest draft key: the one made last. */
+const newestKey = (f: PlanDraftFacts): PlanDraftFacts["keys"][number] | undefined =>
+  [...f.keys].sort((a, b) => b.createdAt.localeCompare(a.createdAt) || b.lastSessionDate.localeCompare(a.lastSessionDate))[0];
+
+/** The run whose proposal is the plan's next stretch, while it waits (R58: its newest key's): what its ready chip opens. */
+export function draftRunOf(row: Pick<PlanEndingRow, "drafts">): string | null {
+  const newest = row.drafts ? newestKey(row.drafts) : undefined;
+  return newest?.proposalOpen && newest.runId ? newest.runId : null;
 }
 
 /** A draft facts column as read (JSON text, plan-ending.ts `planDraftsSql`): null for none, or one that doesn't read. */
 export function draftFactsOf(text: string | null | undefined): PlanDraftFacts | undefined {
   if (typeof text !== "string") return undefined;
   try {
-    const raw = JSON.parse(text) as { keys?: unknown; waiting?: unknown };
+    const raw = JSON.parse(text) as { keys?: unknown; waiting?: unknown; rearmed?: unknown };
     const keys = (Array.isArray(raw.keys) ? raw.keys : []).flatMap((k): PlanDraftFacts["keys"] => {
       const x = k as Record<string, unknown>;
       const date = typeof x.id === "string" ? x.id.slice(x.id.lastIndexOf(":") + 1) : "";
@@ -138,6 +160,7 @@ export function draftFactsOf(text: string | null | undefined): PlanDraftFacts | 
       return [
         {
           lastSessionDate: date,
+          createdAt: typeof x.createdAt === "string" ? x.createdAt : "",
           runId: typeof x.runId === "string" ? x.runId : null,
           outcome: typeof x.outcome === "string" ? x.outcome : null,
           runLive: x.runLive === 1 || x.runLive === true,
@@ -146,7 +169,7 @@ export function draftFactsOf(text: string | null | undefined): PlanDraftFacts | 
         },
       ];
     });
-    return { keys, waiting: raw.waiting === 1 || raw.waiting === true };
+    return { keys, waiting: raw.waiting === 1 || raw.waiting === true, rearmed: raw.rearmed === 1 || raw.rearmed === true };
   } catch {
     return undefined;
   }

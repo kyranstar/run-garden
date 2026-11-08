@@ -1,5 +1,5 @@
 import { and, desc, eq, gt, inArray, lt, or, sql, type SQL } from "drizzle-orm";
-import { accountState, auditEvents, coachProposals, coachRunEvents, coachRuns, conditionChecks, llmUsage, userPreferences } from "@rg/database";
+import { accountState, coachProposals, coachRunEvents, coachRuns, conditionChecks, llmUsage, userPreferences } from "@rg/database";
 import {
   ceilingKindOf,
   COACH_CEILING_DEFAULTS_USD,
@@ -14,7 +14,8 @@ import {
 } from "@rg/domain";
 import { isProfileId, profileById } from "@rg/exercise-library";
 import type { Env } from "../env.js";
-import { runAtomicallyClaim, type Db } from "./db.js";
+import { rawStatement, runAtomicallyClaim, type Db } from "./db.js";
+import { noRestoreSql } from "./account-state.js";
 import { clearOutOfCredits, OUT_OF_CREDITS_REASON, recordOutOfCredits } from "./ai-credits.js";
 import { loadPreferences } from "./calendar-sync.js";
 import { designContextBuilder, startOfLocalDate } from "./design-context.js";
@@ -70,6 +71,7 @@ import { allTools } from "./design-tools/index.js";
 import { capInWords, PROSE_CEILING } from "./design-tools/act-common.js";
 import { ANSWER_MAX, designedLine, LINE_MAX as FINISH_LINE_MAX } from "./design-tools/finish.js";
 import { designProposalId } from "./design-tools/propose.js";
+import { DESIGNED_OP_KINDS } from "./design-op-kinds.js";
 import { athleteText, clipProse } from "./design-prose.js";
 import { sharedAthlete } from "./design-tools/read-common.js";
 import { askedAnswerRows, insertAnswers, undoUntil } from "./design-tools/record-answer.js";
@@ -173,7 +175,8 @@ import {
  * UNTRUSTED TEXT. The athlete's request is stored as data and handed to the context builder, which places it in the
  * header (the opening user message) inside a marked block; the loop never puts it in a system block. A plan's draft
  * (plans with a purpose §4.2: `settings.origin`, which the hourly pass starts, keyed once an ending: `CreateRunInput.once`)
- * carries the app's request instead, said as the app's to the model, in the conversation and to its tools. An answer goes
+ * carries the app's request instead, said as the app's to the model, in the conversation and to its tools; what it
+ * proposes supersedes none of the athlete's open suggestions (R59), whether by its finish or by a stop. An answer goes
  * back to the model as `{ text, untrusted }`. An answer to a question that declared a check-in is also kept as the
  * athlete's answer (record-answer.ts `askedAnswerRows`; never a rehearsal's), in one insert once the answer stands.
  *
@@ -1022,6 +1025,9 @@ function runDto(root: RunNode, nodes: RunNode[]): CoachRunDto {
 /** The conversation a main run is a turn of: its settings' — or, made before conversations, its own id. */
 const conversationOf = (root: Pick<RunNode, "id" | "settings">): string => root.settings?.conversationId ?? root.id;
 
+/** A plan's draft (plans with a purpose §4.2) supersedes none of the athlete's open suggestions when it proposes (R59). */
+const supersedesNothing = (settings: Pick<RunSettings, "origin"> | undefined): boolean => settings?.origin === "plan_draft";
+
 // ── Events ──────────────────────────────────────────────────────────────
 
 interface NewEvent {
@@ -1358,6 +1364,10 @@ export async function createRun(db: Db, userId: string, input: CreateRunInput, n
     ...(input.planId ? { planId: input.planId } : {}),
   });
   const once = input.once ?? null;
+  /** The lane has no live main run (the athlete's one, or the rehearsals' one): both inserts' own guard, in their statement. */
+  const noLiveMainRun = sql`NOT EXISTS (
+    SELECT 1 FROM coach_runs WHERE user_id = ${userId} AND parent_id IS NULL AND status IN ('active', 'stepping', 'waiting_athlete', 'waiting_review', 'waiting_set')
+      AND coalesce(CASE WHEN json_valid(state) THEN json_extract(state, '$.settings.rehearsal') END, 0) = ${rehearsal ? 1 : 0})`;
   const insert = async (): Promise<CreateRunResult | null> => {
     const id = newId();
     if (once) return insertKeyed(id);
@@ -1380,10 +1390,7 @@ export async function createRun(db: Db, userId: string, input: CreateRunInput, n
       INSERT INTO coach_runs (id, user_id, parent_id, role, scope, request, status, state, steps, cost_usd, created_at, updated_at)
       SELECT ${id}, ${userId}, NULL, 'main', ${JSON.stringify(scope)}, ${request}, 'active',
         json_set(${JSON.stringify(state)}, '$.settings.conversationId', ${conversation}), 0, 0, ${at}, ${at}
-      WHERE NOT EXISTS (
-        SELECT 1 FROM coach_runs WHERE user_id = ${userId} AND parent_id IS NULL AND status IN ('active', 'stepping', 'waiting_athlete', 'waiting_review', 'waiting_set')
-          AND coalesce(CASE WHEN json_valid(state) THEN json_extract(state, '$.settings.rehearsal') END, 0) = ${rehearsal ? 1 : 0}
-      )
+      WHERE ${noLiveMainRun}
       RETURNING id, json_extract(state, '$.settings.conversationId') AS conversationId
     `)) as Array<{ id: string; conversationId: string | null }>;
     if (inserted.length === 0) return null;
@@ -1420,22 +1427,20 @@ export async function createRun(db: Db, userId: string, input: CreateRunInput, n
   const insertKeyed = async (id: string): Promise<CreateRunResult | null> => {
     const key = once!;
     state.settings.conversationId = id;
-    const noLiveRun = sql`NOT EXISTS (
-      SELECT 1 FROM coach_runs WHERE user_id = ${userId} AND parent_id IS NULL AND status IN ('active', 'stepping', 'waiting_athlete', 'waiting_review', 'waiting_set')
-        AND coalesce(CASE WHEN json_valid(state) THEN json_extract(state, '$.settings.rehearsal') END, 0) = ${rehearsal ? 1 : 0})`;
-    const noRestore = sql`NOT EXISTS (SELECT 1 FROM account_state WHERE user_id = ${userId} AND coalesce(restore_id, '') <> '')`;
     const claimed = await runAtomicallyClaim(db, [
-      db.insert(auditEvents).select(
-        sql`SELECT ${key.key}, ${userId}, ${key.kind}, ${JSON.stringify({ ...key.detail, runId: id })}, ${at}
-          WHERE NOT EXISTS (SELECT 1 FROM audit_events WHERE id = ${key.key}) AND ${noLiveRun} AND ${noRestore} AND ${key.gate ?? sql`1`}`,
+      rawStatement(
+        db,
+        sql`INSERT INTO audit_events (id, user_id, kind, detail, created_at)
+          SELECT ${key.key}, ${userId}, ${key.kind}, ${JSON.stringify({ ...key.detail, runId: id })}, ${at}
+          WHERE NOT EXISTS (SELECT 1 FROM audit_events WHERE id = ${key.key}) AND ${noLiveMainRun} AND ${noRestoreSql(userId)} AND ${key.gate ?? sql`1`}`,
       ),
-      db
-        .insert(coachRuns)
-        .select(
-          sql`SELECT ${id}, ${userId}, NULL, 'main', ${JSON.stringify(scope)}, ${request}, 'active', ${JSON.stringify(state)}, 0, 0, NULL, NULL, ${at}, ${at}, NULL
-            WHERE EXISTS (SELECT 1 FROM audit_events WHERE id = ${key.key} AND user_id = ${userId} AND json_extract(detail, '$.runId') = ${id})`,
-        )
-        .returning({ id: coachRuns.id }),
+      rawStatement(
+        db,
+        sql`INSERT INTO coach_runs (id, user_id, parent_id, role, scope, request, status, state, steps, cost_usd, created_at, updated_at)
+          SELECT ${id}, ${userId}, NULL, 'main', ${JSON.stringify(scope)}, ${request}, 'active', ${JSON.stringify(state)}, 0, 0, ${at}, ${at}
+          WHERE EXISTS (SELECT 1 FROM audit_events WHERE id = ${key.key} AND user_id = ${userId} AND json_extract(detail, '$.runId') = ${id})
+          RETURNING id`,
+      ),
     ]);
     return claimed > 0 ? startedAs(id) : null;
   };
@@ -1683,19 +1688,22 @@ export interface OpenProposalDto {
   flags: string[];
 }
 
+/** The coach designer's op kinds as an SQL list (proposal-kinds.ts `DESIGNED_OP_KINDS`, named once). */
+const DESIGNED_KINDS_SQL = DESIGNED_OP_KINDS.map((k) => `'${k}'`).join(", ");
+
 /** Whether the joined design proposal `p` still has an op the athlete can decide — no outcome yet, refused (a refused op
  * stays open: Task 8), or a change an approve is applying (Task 8b: asked again, the approve finishes it) — in a status
  * the athlete decides in. Never errs on ops that aren't JSON. */
 const OPEN_OP = sql.raw(
   `(p.status IN ('pending', 'partially_approved') AND EXISTS (SELECT 1 FROM json_each(CASE WHEN json_valid(p.ops) THEN p.ops ELSE '[]' END) o ` +
-    `WHERE json_extract(o.value, '$.kind') IN ('doc_workout', 'plan_adjust', 'plan_structure', 'programme_change', 'plan_change', 'move_pins', 'import_correction', 'objective_change') ` +
+    `WHERE json_extract(o.value, '$.kind') IN (${DESIGNED_KINDS_SQL}) ` +
     `AND (json_extract(o.value, '$.outcome') IS NULL OR json_extract(o.value, '$.outcome.status') IN ('refused', 'applying'))))`,
 );
 const LIVE_ROOT = sql.raw(`r.status IN (${LIVE_STATUSES.map((s) => `'${s}'`).join(", ")})`);
 /** The days of the joined proposal's ops still open (`OPEN_OP`'s), as a JSON array: the pick keeps those from today on. */
 const OPEN_DAYS = sql.raw(
   `(SELECT json_group_array(json_extract(o.value, '$.date')) FROM json_each(CASE WHEN p.status IN ('pending', 'partially_approved') AND json_valid(p.ops) THEN p.ops ELSE '[]' END) o ` +
-    `WHERE json_extract(o.value, '$.kind') IN ('doc_workout', 'plan_adjust', 'plan_structure', 'programme_change', 'plan_change', 'move_pins', 'import_correction', 'objective_change') ` +
+    `WHERE json_extract(o.value, '$.kind') IN (${DESIGNED_KINDS_SQL}) ` +
     `AND (json_extract(o.value, '$.outcome') IS NULL OR json_extract(o.value, '$.outcome.status') IN ('refused', 'applying')))`,
 );
 
@@ -1711,14 +1719,17 @@ const decidedSince = (since: string) => sql`(p.status IN ('approved', 'partially
 
 /** An op of the joined proposal `p` still the athlete's to decide (`OPEN_OP`'s rule for one op `o`). */
 const OPEN_ONE = sql.raw(
-  `json_extract(o.value, '$.kind') IN ('doc_workout', 'plan_adjust', 'plan_structure', 'programme_change', 'plan_change', 'move_pins', 'import_correction', 'objective_change') ` +
+  `json_extract(o.value, '$.kind') IN (${DESIGNED_KINDS_SQL}) ` +
     `AND (json_extract(o.value, '$.outcome') IS NULL OR json_extract(o.value, '$.outcome.status') IN ('refused', 'applying'))`,
 );
 
 /**
  * The athlete's other designed suggestions still open (Task 13's fix wave, R2): a design proposal (`dp-…`) pending or
  * partly approved — so never a rehearsal's, nor one still unreviewed — not past its own day, with an op still open dated
- * `today` or later; newest first, at most ALSO_OPEN_MAX, never `shown` (the one the run holds). One statement.
+ * `today` or later; newest first, at most ALSO_OPEN_MAX, never `shown` (a live run's own: its run shows it). A finished
+ * run's open proposal is listed even when that run is the pick (R55): the coach sheet's opening screen shows no current
+ * run's card, so "Also waiting" is where a suggestion waiting from an earlier conversation — a plan's draft's among them —
+ * stays findable. One statement.
  */
 async function alsoOpenOf(db: Db, userId: string, shown: string, today: string): Promise<AlsoOpenDto[]> {
   const rows = (await db.all(sql`
@@ -1768,8 +1779,8 @@ async function alsoOpenOf(db: Db, userId: string, shown: string, today: string):
  * (approved, partly, declined) in the last CURRENT_DECIDED_MINUTES, so a reload during Approve opens on what came of it
  * (an open one first: the go-live review, M6); else null. Never a rehearsal's (its lane is
  * its own: fix wave 3A, A15), never a sub-run. With its last CURRENT_RUN_EVENTS events, oldest first, the proposal it
- * holds open, and the athlete's other suggestions still open (`alsoOpen`, Task 13's fix wave, R2: the Studio lists them
- * under the card). CURRENT_RUN_STATEMENTS: the pick — one statement, the proposals and the athlete's preferences (their
+ * holds open, and the athlete's suggestions still open (`alsoOpen`, Task 13's fix wave, R2: the Studio lists them under the
+ * card) — a finished pick's own among them (R55), a live one's never. CURRENT_RUN_STATEMENTS: the pick — one statement, the proposals and the athlete's preferences (their
  * timezone: their today) read with it — then the tree, the events and the others open; the pick alone when there is none.
  */
 export async function currentRun(
@@ -1822,7 +1833,8 @@ export async function currentRun(
     (openToday(pick) || decidedNow(pick)) && pick.proposalId && pick.proposalStatus
       ? { id: pick.proposalId, status: pick.proposalStatus, flags: stringsOf(pick.flags) }
       : null;
-  const alsoOpen = await alsoOpenOf(db, userId, designProposalId(root.id), today);
+  // A live run's own suggestion is its own to show; a finished pick's stays among the others (R55).
+  const alsoOpen = await alsoOpenOf(db, userId, isLive(root.status) ? designProposalId(root.id) : "", today);
   return { run: runDto(root, nodes), events, proposal, alsoOpen };
 }
 
@@ -2524,8 +2536,11 @@ async function proposeWhatItHas(db: Db, userId: string, root: RunNode, note: str
     : await promoteWithWhatItHas(db, userId, proposalId, note, { ...(today ? { today } : {}), out });
   if (!proposed) return false;
   // A rehearsal's stop proposes as production's does (design-review.ts `PROMOTED_STATUS`), but its proposal stays a
-  // rehearsal: never pending, it supersedes nothing of the athlete's — no statement for it.
-  if (!root.settings?.rehearsal) await supersedeOlderPlans(db, userId, proposalId, at, followUpOf(root.settings?.focus, root.request), followUpReason(root.request), { saves: out.saves === true });
+  // rehearsal: never pending, it supersedes nothing of the athlete's — no statement for it. Nor does a plan's draft's
+  // (R59): the one run the athlete didn't ask for never takes away what they did.
+  if (!root.settings?.rehearsal && !supersedesNothing(root.settings)) {
+    await supersedeOlderPlans(db, userId, proposalId, at, followUpOf(root.settings?.focus, root.request), followUpReason(root.request), { saves: out.saves === true });
+  }
   return true;
 }
 
@@ -3355,7 +3370,9 @@ async function closeProposalAtFinish(s: StepCtx, proposalId: string): Promise<"p
       saves: sql<number>`exists (select 1 from json_each(${coachProposals.ops}) where json_extract(json_each.value, '$.kind') in ('move_pins', 'import_correction'))`,
     });
   if (promoted.length === 0) return "kept";
-  // A follow-up's (A2) supersedes the suggestion it changes in this same statement.
+  // A follow-up's (A2) supersedes the suggestion it changes in this same statement. A plan's draft's supersedes nothing
+  // (R59): the one run the athlete didn't ask for never takes away what they did.
+  if (supersedesNothing(s.state.settings)) return "pending";
   await supersedeOlderPlans(s.db, s.userId, proposalId, s.now.toISOString(), followUpOf(s.state.settings.focus, s.run.request), followUpReason(s.run.request), {
     saves: Number(promoted[0]!.saves) === 1,
   });

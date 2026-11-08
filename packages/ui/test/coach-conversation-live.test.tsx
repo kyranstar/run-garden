@@ -485,6 +485,19 @@ describe("an answer in words", () => {
   });
 });
 
+describe("a plan's draft in the conversation (plans with a purpose §4.2)", () => {
+  it("its words are the app's quiet line, never the athlete's bubble", async () => {
+    const words = "Draft the next stretch of the plan Synthetic strength, from its purpose and brief. Nothing changes until I approve it.";
+    server(conversation([turn({ runId: "run-d", words, from: "app", line: "Here's the next four weeks." }), turn({ runId: "run-e", words: "Make it lighter" })]));
+    mount();
+    await openCoach();
+    await until(() => !!dialog()!.querySelector(".coach-msg--app"), "the app's line");
+    expect(dialog()!.querySelector(".coach-msg--app")?.textContent).toBe(words);
+    // The athlete's own reply is still theirs.
+    expect([...dialog()!.querySelectorAll(".coach-msg--athlete")].map((p) => p.textContent)).toEqual(["Make it lighter"]);
+  });
+});
+
 describe("the conversation, kept", () => {
   it("comes back on open: the turns, 'Reply' — and a send continues it by its id", async () => {
     const calls = server(conversation([turn()]), {

@@ -194,9 +194,13 @@ export interface DesignRun {
   origin?: "plan_draft" | null;
 }
 
-/** What heads a plan's draft's request in its opening message (plans with a purpose §4.2): the app's, not the athlete's. */
+/** What heads a plan's draft's request in its main run's opening message (plans with a purpose §4.2): the app's, not the
+ * athlete's — and what the main coach is to do with it. */
 export const DRAFT_REQUEST_LINE =
   "The app's request, sent for the athlete as one of their plans that continues comes near its end — not their words, and they aren't here to answer. Read the plan's purpose and brief, propose its next stretch and finish; nothing changes until they approve it:";
+/** The same request in a sub-run's opening (a set's designer, a reviewer): only whose words they are — its brief, or its
+ * draft, is its own work. */
+export const DRAFT_REQUEST_SUB_LINE = "The run's request is the app's, made for the athlete — not their words:";
 
 export interface DesignContext {
   system: SystemBlock[];
@@ -1476,7 +1480,9 @@ function header(r: Reads, run: DesignRun, role: Role, scope: { kind: ScopeKind; 
   const saves = role === "main" && r.saves ? savesSection(r.saves, r, asksAboutSaves(run.request) || !!run.savesBatchId) : null;
   if (saves) parts.push(saves);
   // A plan's draft's request is the app's (plans with a purpose §4.2), marked as the data it carries (the plan's name).
-  if (run.request && run.origin === "plan_draft") parts.push(`${DRAFT_REQUEST_LINE}\n${markUntrusted("plan draft", run.request)}`);
+  if (run.request && run.origin === "plan_draft") {
+    parts.push(`${role === "main" ? DRAFT_REQUEST_LINE : DRAFT_REQUEST_SUB_LINE}\n${markUntrusted("plan draft", run.request)}`);
+  }
   else parts.push(run.request ? `The athlete's request, in their own words:\n${athlete(run.request)}` : NO_REQUEST[role]);
   return parts.join("\n\n");
 }

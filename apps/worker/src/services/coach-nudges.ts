@@ -1,11 +1,13 @@
 import { and, desc, eq, gte, inArray, isNull, lte, sql } from "drizzle-orm";
 import { activities, coachPlans, coachPlanWeeks, coachReads, coachRuns, plannedWorkouts, weeklyReviews, workoutCompletionMatches } from "@rg/database";
-import { addDays, lineSentenceName, linesOf, QUALITY_SUBTYPE_LABELS, startOfIsoWeek, type LocalDate, type QualitySubtype, type UserPreferences } from "@rg/domain";
+import { addDays, lineSentenceName, linesOf, QUALITY_SUBTYPE_LABELS, startOfIsoWeek, type LocalDate, type QualitySubtype, type TrainingLine, type UserPreferences } from "@rg/domain";
 import { chunkIds, type Db } from "./db.js";
 import { isLoosePlan, lineBlockOf } from "./coach-plans.js";
 import { reviewOpening, sessionDays, sessionOpening, type CoachOpeningLine, type FinishedSession } from "./coach-opening-line.js";
 import { COMEBACK_GAP_DAYS, FIRM_HORIZON_DAYS, REFIRE_WINDOW_MS } from "./coach-triggers.js";
-import { endingPlan, readPlanEndings } from "./plan-ending.js";
+import { endingPlan, plansAsRead, readPlanEndings, type PlanEnding } from "./plan-ending.js";
+import { draftRunOf, promptOfPlan } from "./plan-summaries.js";
+import { designProposalId } from "./design-tools/propose.js";
 import { UNRESOLVED_AFTER_DAYS } from "./reconcile-daily.js";
 import { driftCoveredBy, driftNudge, driftsOf, readStandFacts, type Drift } from "./where-you-stand.js";
 
@@ -33,6 +35,8 @@ import { driftCoveredBy, driftNudge, driftsOf, readStandFacts, type Drift } from
  *      plan's row in Your Plans reads too): its last session, or its last outline week, within 21 days ahead or behind (a plan that has run out stays quietly available) (a phase
  *      another follows on from is no end: training lines §3.7), the plan running and not paused, and ending by asking or
  *      by continuing. A plan that finishes, a course and a programme never ask.
+ *   5b. with drafts on, a plan's next stretch ready — "Next stretch ready for my lifting plan" — while its own draft's
+ *      proposal waits (R55, R58): `ready`, apart from the chips, since its tap opens that proposal and sends nothing.
  * The pressing first: what just happened, then what the plan needs to keep going, then what is coming. A plan is named
  * by its training line (@rg/domain `linesOf` over the active blocks, `lineSentenceName`) — a line of one phase too.
  *
@@ -145,6 +149,20 @@ export function asWords(text: string): string {
 export interface CoachOpeningRead {
   opening: CoachOpeningLine | null;
   nudges: CoachNudge[];
+  /** With drafts on, a plan whose next stretch is ready (its own draft's proposal waits: R58): absent when there is none. */
+  ready?: CoachReadyChip[];
+}
+
+/**
+ * A "needs you" chip for a plan's next stretch, ready (plans with a purpose §4.2; R55): its label, the row's ("Next stretch
+ * ready for my lifting plan"), and the proposal it opens. It carries no request: a tap opens the coach on what waits and
+ * sends nothing, so it never goes out among the chips whose tap sends their words (`nudges`).
+ */
+export interface CoachReadyChip {
+  /** `ready:<planId>`. */
+  id: string;
+  label: string;
+  proposalId: string;
 }
 
 /** An activity this short is a fragment (a walk to the trailhead), never news. */
@@ -355,6 +373,8 @@ export async function readCoachOpening(
   // asking or continuing. The soonest of them (plan_ending's own rule); its chip that line's last phase's.
   const ending = endingPlan(endings, lines, today);
   if (ending) found.push({ id: `ending:${ending.keyId}`, label: ending.prompt.label, request: ending.prompt.request });
+  // 5b. A plan's next stretch ready (drafts on only: R55, R58), the row's own words: what a tap opens, never what it sends.
+  const ready = o.drafts ? readyChips(endings, lines, today) : [];
 
   // The opening's own line: the review first, then the newest session still news — each with the moment after which an
   // ask of the athlete's makes it old news. One this device has shown gives way to the next.
@@ -386,7 +406,8 @@ export async function readCoachOpening(
   }
   const unseen = candidates.filter((c) => !seen.has(c.opening.id));
 
-  if (found.length === 0 && unseen.length === 0) return { opening: null, nudges: [] };
+  const withReady = <T extends CoachOpeningRead>(read: T): T => (ready.length > 0 ? { ...read, ready } : read);
+  if (found.length === 0 && unseen.length === 0) return withReady({ opening: null, nudges: [] });
   // Already asked: the athlete's own runs (never a sub-run's brief) of the last three days — or since the review was
   // written, when that is longer ago — read once, the newest first.
   const window = new Date(now.getTime() - REFIRE_WINDOW_MS).toISOString();
@@ -429,7 +450,18 @@ export async function readCoachOpening(
   const offered = found.filter((n) => !sent(n));
   const firstDrift = offered.find((n) => driftOf.has(n.id));
   let others = 0;
-  return { opening, nudges: offered.filter((n) => (driftOf.has(n.id) ? n === firstDrift : others++ < NUDGES_MAX)) };
+  return withReady({ opening, nudges: offered.filter((n) => (driftOf.has(n.id) ? n === firstDrift : others++ < NUDGES_MAX)) });
+}
+
+/** The plans whose next stretch is ready, by the one rule (`promptOfPlan`'s `draft_ready`), each with the proposal its draft
+ * left (`draftRunOf`): what its chip opens. */
+function readyChips(endings: readonly PlanEnding[], lines: readonly TrainingLine[], today: LocalDate): CoachReadyChip[] {
+  const { superseded } = plansAsRead(endings, lines, today);
+  return endings.flatMap((p) => {
+    const prompt = promptOfPlan(p, today, superseded);
+    const runId = prompt?.kind === "draft_ready" ? draftRunOf(p) : null;
+    return prompt && runId ? [{ id: `ready:${p.id}`, label: prompt.label, proposalId: designProposalId(runId) }] : [];
+  });
 }
 
 /** A session's logged sets, as the activities read gives them (one JSON object, or null): none logged, null. */
