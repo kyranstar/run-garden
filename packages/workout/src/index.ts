@@ -11,4 +11,5 @@ export { suggestForPart, suggestedItem, type SuggestCtx, type Suggestion } from 
 export { QUICK_START_KINDS, QUICK_START_MINUTES, quickStartDoc, quickStartKinds, resisted, type QuickStart, type QuickStartKind } from "./quick-start.js";
 export * from "./editor.js";
 export { TRE_WHOLE_SEQUENCE_SESSIONS, treSessionDoc, type PracticeVideo } from "./tre-course.js";
+export { postureNeckSessionDoc } from "./posture-neck-course.js";
 export { COURSES, courseDefinition, courseSessionOfRef, videosOfSource, type CourseDefinition } from "./courses.js";

@@ -24,6 +24,12 @@
  * `origin = 'studio'` with the document, revision, title, category, sport, booked length and its number (`course_session`),
  * still to do; `easeNext` is cleared if this session used it; and the mirror is marked owed.
  *
+ * A COURSE KEPT OFF THE WATCH (`CourseDefinition.watch === false`, the flag and nothing else). The flip itself sets the row's
+ * own Keep off my watch (`watch_off`), so it lands with the write or not at all, and the batch marks nothing owed: the mirror
+ * refuses a row kept off wherever it looks (the sweep, the drain, the day's build), so a mark would only be settled unused.
+ * The session reads as kept off everywhere, never as failing to sync, and Put on my watch puts that one session on as it
+ * would any other. A course without the flag is written as above.
+ *
  * THE FLIP IS THE GUARD (`stillDue`). It holds to everything the document was made from, as the rows stand inside the batch:
  * still due, still the easing as read, still that many sessions done. So a writer that lost the race, a pause, a stop or a
  * restore landing since the read, an easing used or withdrawn, or a session completed since all leave the row as it was,
@@ -40,9 +46,10 @@
  * half-hourly sync, as a placed slot's is: a written one is marked `pending`, and no request here pays for the calendar.
  *
  * WHAT IT COSTS: `COURSE_WRITE_COST` statements (cron-limits.ts), and one for each session its day's collision pass re-times,
- * pinned in course-sessions.test.ts. The hourly pass reads everything it needs in one statement (its rows, plans and the
- * athletes' preferences) and attempts at most `COURSE_WRITES_PER_PASS`, whatever the accounts and plans; what doesn't fit
- * waits for the next hour or an open. A session the day refused goes last, so it can't hold the others up.
+ * pinned in course-sessions.test.ts; a course kept off the watch spends one fewer, having no mark. The hourly pass reads
+ * everything it needs in one statement (its rows, plans and the athletes' preferences) and attempts at most
+ * `COURSE_WRITES_PER_PASS`, whatever the accounts and plans; what doesn't fit waits for the next hour or an open. A session the
+ * day refused goes last, so it can't hold the others up.
  *
  * A session ahead is previewed by computing it (`coursePreviewDoc`, through the build's `docOverride`), never stored on the
  * row. A session completed without being written is `course-number.ts`.
@@ -216,6 +223,8 @@ async function writeDue(
   const booked = bookedSeconds(seconds);
   const pw = plannedWorkouts;
   const flipped = flippedHere(row.id, userId, n);
+  // The header's A COURSE KEPT OFF THE WATCH: the flag, read here and nowhere else.
+  const offWatch = definition.watch === false;
   const claimed = await runAtomicallyClaim(db, [
     db
       .update(pw)
@@ -230,6 +239,7 @@ async function writeDue(
         fallbackEstimatedDurationSeconds: seconds,
         calendarBlockDurationSeconds: booked,
         sourceContentFingerprint: "studio",
+        ...(offWatch ? { watchOff: true } : {}),
         // The event shows the title and the length: a written one is asked to update.
         calendarSyncState: sql`case when ${pw.calendarSyncState} = 'synced' and (${pw.title} is not ${doc.title} or ${pw.calendarBlockDurationSeconds} is not ${booked} or ${pw.category} is not ${derived.category}) then 'pending' else ${pw.calendarSyncState} end`,
         updatedAt: ctx.now,
@@ -249,7 +259,7 @@ async function writeDue(
       .update(syncNotes)
       .set({ dismissedAt: ctx.now })
       .where(and(eq(syncNotes.userId, userId), eq(syncNotes.workoutId, row.id), eq(syncNotes.kind, "course_session_refused"), isNull(syncNotes.dismissedAt), flipped)),
-    markMirrorOwedIf(db, userId, row.id, ctx.now, flipped),
+    ...(offWatch ? [] : [markMirrorOwedIf(db, userId, row.id, ctx.now, flipped)]),
     // Last, because it copies the row as flipped, and it says whether the flip happened: only a new document is a new revision.
     revisionInsert(db, { userId, workoutId: row.id, sourceKind: "studio", sourceRef: doc.source.ref ?? null, now: ctx.now }).returning({ id: workoutDocRevisions.id }),
   ]);

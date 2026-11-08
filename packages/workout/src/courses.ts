@@ -4,6 +4,7 @@
  * course's own entry names that course or what's in it. A new course is a new entry.
  */
 import type { WorkoutDoc } from "@rg/domain";
+import { POSTURE_NECK_NAME, postureNeckSessionDoc } from "./posture-neck-course.js";
 import { TRE_VIDEOS, TRE_WHOLE_SEQUENCE_SESSIONS, treSessionDoc, type PracticeVideo } from "./tre-course.js";
 
 export interface CourseDefinition {
@@ -23,6 +24,11 @@ export interface CourseDefinition {
   brief: string;
   /** The disciplines its sessions count as. */
   disciplines: readonly string[];
+  /**
+   * False: its sessions stay off the watch. Each is written with the row's own Keep off my watch set, so the mirror owes it
+   * nothing and every screen says it is kept off, and the athlete can still put one on. Absent, they go as any session does.
+   */
+  watch?: false;
 }
 
 const TRE: CourseDefinition = {
@@ -39,7 +45,24 @@ const TRE: CourseDefinition = {
   disciplines: ["yoga"],
 };
 
-export const COURSES: Readonly<Record<string, CourseDefinition>> = { [TRE.id]: TRE };
+const POSTURE_NECK: CourseDefinition = {
+  id: "posture-neck",
+  name: POSTURE_NECK_NAME,
+  sessionDoc: (n, { ease }) => postureNeckSessionDoc(n, { ease }),
+  // A practice with no end: no session is one of so many.
+  sessionLabel: () => null,
+  afterLabel: "A few minutes, off the watch",
+  videos: [],
+  purpose: "An upright head and a quieter jaw, through a few minutes of neck and posture work and a minute's breathing.",
+  brief:
+    "Short on purpose: a few minutes, played in the app and kept off the watch. Keep the order. Jaw soft through every move: " +
+    "tongue up, lips closed, teeth apart. Stay in easy range, and leave out a move that brings on pain or a headache. " +
+    "On a day the jaw or neck is up, ease the next session: it plays the short one.",
+  disciplines: ["yoga"],
+  watch: false,
+};
+
+export const COURSES: Readonly<Record<string, CourseDefinition>> = { [TRE.id]: TRE, [POSTURE_NECK.id]: POSTURE_NECK };
 
 /**
  * The course with this id; null when there's none, such as an old id a plan still holds. Own keys only: a stored id of
