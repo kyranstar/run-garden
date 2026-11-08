@@ -31,7 +31,8 @@ export interface ObjectiveState {
   id: string;
   title: string;
   status: string;
-  krs: Array<{ id: string; label: string; target: number | null; dueDate: string | null; unit: string }>;
+  /** `check`: the condition profile a daily-check key result measures (its target lies on that check's scale); else null. */
+  krs: Array<{ id: string; label: string; target: number | null; dueDate: string | null; unit: string; check: string | null }>;
 }
 
 /** The objective `ref` names — or the one its key result belongs to — with its key results, the athlete's alone: ONE
@@ -42,7 +43,8 @@ export function objectiveStateSql(userId: string, ref: { objectiveId?: string; k
       ? sql`${ref.objectiveId}`
       : sql`(select os_k.objective_id from key_results os_k where os_k.user_id = ${userId} and os_k.id = ${ref.keyResultId ?? ""})`;
   return sql`(select json_object('id', os_o.id, 'title', os_o.title, 'status', os_o.status,
-      'krs', json((select json_group_array(json_object('id', os_r.id, 'label', os_r.label, 'target', os_r.target, 'dueDate', os_r.due_date, 'unit', os_r.unit))
+      'krs', json((select json_group_array(json_object('id', os_r.id, 'label', os_r.label, 'target', os_r.target, 'dueDate', os_r.due_date, 'unit', os_r.unit,
+        'check', case when json_extract(os_r.measure, '$.kind') = 'condition_check' then json_extract(os_r.measure, '$.profileId') end))
         from key_results os_r where os_r.user_id = ${userId} and os_r.objective_id = os_o.id)))
     from objectives os_o where os_o.user_id = ${userId} and os_o.id = ${which})`;
 }
@@ -74,7 +76,7 @@ export function objectiveStateOf(raw: unknown): ObjectiveState | null {
   const krs = (Array.isArray(o.krs) ? o.krs : []).flatMap((x) => {
     const k = x && typeof x === "object" ? (x as Record<string, unknown>) : null;
     return k && typeof k.id === "string" && typeof k.label === "string"
-      ? [{ id: k.id, label: k.label, target: num(k.target), dueDate: str(k.dueDate), unit: str(k.unit) ?? "score" }]
+      ? [{ id: k.id, label: k.label, target: num(k.target), dueDate: str(k.dueDate), unit: str(k.unit) ?? "score", check: str(k.check) }]
       : [];
   });
   return { id: o.id, title: o.title, status: o.status, krs };

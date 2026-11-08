@@ -229,7 +229,9 @@ export function stalled(card: ObjectiveBoardCard, today: string): boolean {
   if (card.objective.status !== "active") return false;
   const since = addDays(today, -STALL_DAYS);
   if (card.objective.createdAt.slice(0, 10) > since) return false;
-  return !card.served.some((s) => s.date > since);
+  if (card.served.some((s) => s.date > since)) return false;
+  // A daily check is the work itself: while one has a reading inside the four weeks, nothing is "not done".
+  return !card.keyResults.some((k) => k.keyResult.measure?.kind === "condition_check" && (k.progress.lastMeasuredAt ?? "") > since);
 }
 
 /** The board's sections: active and paused in board order, then the completed. */

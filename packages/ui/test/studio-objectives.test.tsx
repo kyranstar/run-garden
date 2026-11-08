@@ -53,7 +53,7 @@ import {
   krDraftOf,
   MEASURE_KINDS,
 } from "../src/screens/studio/objectives-model.js";
-import { questProgressWords } from "../src/screens/growth/quests.js";
+import { questLine, questProgressWords } from "../src/screens/growth/quests.js";
 import { primedClient, staticRouter, text } from "./studio-fixtures.js";
 
 const TODAY = "2026-10-14";
@@ -340,6 +340,28 @@ describe("a key result measuring a daily check", () => {
     expect(text(k)).toContain("No daily check in the last 14 days.");
     expect(k).not.toContain("Ask the coach for a test");
     expect(k).not.toContain("<svg");
+  });
+
+  it("a recent reading is the work: the nudge 'nothing done' does not apply while the daily check has one inside four weeks, on the quest and the card", () => {
+    const withReading = (date: string | null) => {
+      const c = dailyCard(2, 3);
+      const k = c.keyResults[0]!;
+      return { ...c, keyResults: [{ ...k, progress: { ...k.progress, lastMeasuredAt: date } }] };
+    };
+    // Today is 2026-10-14; the card is old (made 2026-09-01) with nothing served.
+    expect(stalled(withReading("2026-10-12"), TODAY)).toBe(false);
+    expect(stalled(withReading("2026-09-17"), TODAY)).toBe(false);
+    expect(stalled(withReading("2026-09-16"), TODAY)).toBe(true);
+    expect(stalled(withReading(null), TODAY)).toBe(true);
+    expect(questLine(withReading("2026-10-12"), TODAY)).toBeNull();
+    expect(questLine(withReading("2026-09-01"), TODAY)).toBe("Nothing toward it in 4 weeks");
+    expect(text(html(withReading("2026-10-12")))).not.toContain("Nothing done toward this");
+    expect(text(html(withReading("2026-09-01")))).toContain("Nothing done toward this");
+    // Another measure's reading does not count: only the daily check is the work.
+    const other = card(objective("o8", "Holds", { keyResults: [WALL] }), { keyResults: [{ keyResult: WALL, progress: progress([["2026-10-12", 90]]), best: null }] });
+    expect(stalled(other, TODAY)).toBe(true);
+    // A daily check beside a workout-served objective is unchanged.
+    expect(stalled({ ...withReading(null), served: [{ workoutId: "w", date: "2026-10-12", title: "t", source: "coach" }] }, TODAY)).toBe(false);
   });
 
   it("falls as progress: from 6 down to 2, a 3 is three quarters of the way", () => {

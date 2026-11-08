@@ -137,8 +137,25 @@ describe("propose_objective: a change, before → after, its reason citing where
     });
     const bad = refusal((await propose({ ...ctx, toolUseId: "toolu_bad" }, { change: "add_key_result", objectiveId, keyResult: { ...daily, measure: { kind: "condition_check", profileId: "zorbex" } } })).res);
     expect(bad.error).toBe("bad_after");
+    // It says what is true: a condition, not a move.
+    expect(bad.why).toContain("measure.profileId is not a condition the library holds");
+    expect(bad.why).not.toContain("move");
+    // Off the check's scale: refused, in the same words as the board's save.
+    const off = refusal((await propose({ ...ctx, toolUseId: "toolu_off" }, { change: "add_key_result", objectiveId, keyResult: { ...daily, target: 15 } })).res);
+    expect(off.error).toBe("bad_after");
+    expect(off.why).toContain("not on the check's 0–10 scale");
     // Up is not better for a daily score.
     expect(refusal((await propose({ ...ctx, toolUseId: "toolu_up" }, { change: "add_key_result", objectiveId, keyResult: { ...daily, direction: "up" } })).res).error).toBe("bad_after");
+  });
+
+  it("retarget a daily-check key result: on the scale it is stored, off it (40, -1) is refused", async () => {
+    const { krId } = await objective(userId, [{ label: "Calmer days", measure: { kind: "condition_check", profileId: "tmj" }, target: 3 }]);
+    const ctx = await mainRun();
+    expect(refusal((await propose(ctx, { change: "retarget", keyResultId: krId, target: 40 })).res).error).toBe("bad_after");
+    expect(refusal((await propose({ ...ctx, toolUseId: "toolu_neg" }, { change: "retarget", keyResultId: krId, target: -1 })).res).why).toContain("not on the check's 0–10 scale");
+    ok((await propose({ ...ctx, toolUseId: "toolu_ok" }, { change: "retarget", keyResultId: krId, target: 2 })).res);
+    const [op] = await changes(ctx);
+    expect(op).toMatchObject({ change: "retarget", before: 3, after: 2 });
   });
 
   it("retire an objective (done or let go) or a key result", async () => {

@@ -484,6 +484,9 @@ const startOf = (kr: StandKeyResult): number | null => kr.baseline ?? ((kr.progr
 function paceFor(kr: StandKeyResult, today: string): ReturnType<typeof paceOf> {
   const current = kr.progress?.display.current ?? null;
   if (kr.unread) return { pace: "no data", why: "not read here" };
+  // A sliding average has no oldest reading worth starting from (the window moves with every day): without a baseline of
+  // its own a daily check says now and target only — no verdict, no drift. With one, it paces like any other.
+  if (kr.baseline === null && current !== null && kr.measure?.kind === "condition_check") return { pace: "no data", why: "no starting value" };
   if (kr.baseline === null && current !== null && (kr.progress?.series.length ?? 0) < 2) return { pace: "no data", why: "one reading so far" };
   return paceOf({ direction: kr.direction, start: startOf(kr), target: kr.target, startDate: kr.createdOn, due: kr.due }, current, today);
 }

@@ -40,6 +40,7 @@ import {
 import { isProfileId } from "@rg/exercise-library";
 import { restoreInProgress } from "./account-state.js";
 import { loadPreferences } from "./calendar-sync.js";
+import { OFF_SCALE_WORDS, onCheckScale } from "./condition-words.js";
 import { insertBatches, runAtomically, type AtomicStatement, type Db } from "./db.js";
 import { libraryMove, measureKeyResults, unreadableProgress, type MeasureContext } from "./key-result-measures.js";
 import { RestoreInProgressError } from "./programs.js";
@@ -204,6 +205,14 @@ export function libraryIssues(krs: readonly KeyResultInputParsed[] | undefined):
     if (kr.measure.kind === "condition_check") {
       if (!isProfileId(kr.measure.profileId)) {
         issues.push({ code: "custom", path: ["keyResults", i, "measure", "profileId"], message: "not a condition the library holds" });
+        return;
+      }
+      // A target or a start is a score on the check's own scale.
+      for (const field of ["target", "baseline"] as const) {
+        const v = kr[field];
+        if (typeof v === "number" && !onCheckScale(kr.measure.profileId, v)) {
+          issues.push({ code: "custom", path: ["keyResults", i, field], message: OFF_SCALE_WORDS(kr.measure.profileId) });
+        }
       }
       return;
     }

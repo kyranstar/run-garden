@@ -382,6 +382,8 @@ async function seedRows(db: Db, userId: string, tag: string): Promise<SeedIds> {
     kr(`${userId}-obj-run`, "Threshold pace", { kind: "threshold_pace", windowDays: 90 }, "s/km", { direction: "down", position: 2 }),
     kr(`${userId}-obj-run`, "Predicted half", { kind: "predicted_time", distanceM: 21097, windowDays: 90 }, "min", { direction: "down", position: 3 }),
     kr(`${userId}-obj-paused`, "Energy", { kind: "checkin", questionId: "energy" }, "score"),
+    // A daily check of a condition (its own statement in the measures' worst case).
+    kr(`${userId}-obj-paused`, "Calm days", { kind: "condition_check", profileId: "tmj", windowDays: 14 }, "score", { direction: "down", target: 2, position: 1 }),
   ]) {
     await db.insert(schema.keyResults).values(row);
   }

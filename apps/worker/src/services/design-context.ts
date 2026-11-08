@@ -120,10 +120,10 @@ export function contextStatements(role: DesignRun["role"], focus?: RunFocus | nu
   return 12 + (focus && focusReadInContext(focus) ? 1 : 0) + turns;
 }
 /** The most the stand's key-result measures cost (key-result-measures.ts `measureStatements`: the strength sets' four,
- * the runs, the threshold days, the answers). */
-export const STAND_MEASURES_MOST = 7;
+ * the runs, the threshold days, the answers, a condition's daily check). */
+export const STAND_MEASURES_MOST = 8;
 /** The most one build runs (the step loop budgets for it): a main run's with a focus, a conversation and every measure
- * source (REBASED 2026-11-06, where you stand: 13 → 21). */
+ * source (REBASED 2026-11-06, where you stand: 13 → 21; 22 with a condition's daily check). */
 export const DESIGN_CONTEXT_STATEMENTS = 14 + STAND_MEASURES_MOST;
 
 /**

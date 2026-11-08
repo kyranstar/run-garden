@@ -562,15 +562,20 @@ describe("the budget", () => {
     await db.insert(schema.keyResults).values([
       { id: "kr-a", userId, objectiveId: "obj-plank", label: "Zorbex hold", measure: { kind: "hold_max", libraryIds: ["wallSit"], windowDays: 90 }, direction: "up", target: 90, unit: "s", position: 0, createdAt: at("2026-02-01"), updatedAt: at("2026-02-01") },
       { id: "kr-b", userId, objectiveId: "obj-plank", label: "Zorbex energy", measure: { kind: "checkin", questionId: "energy" }, direction: "up", target: 8, unit: "score", position: 1, createdAt: at("2026-02-01"), updatedAt: at("2026-02-01") },
+      { id: "kr-c", userId, objectiveId: "obj-plank", label: "Zorbex calm", measure: { kind: "condition_check", profileId: "tmj", windowDays: 14 }, direction: "down", target: 2, unit: "score", position: 2, createdAt: at("2026-02-01"), updatedAt: at("2026-02-01") },
     ]);
     statements = 0;
     await build();
-    const measures = [keyResultMeasureSchema.parse({ kind: "hold_max", libraryIds: ["wallSit"] }), keyResultMeasureSchema.parse({ kind: "checkin", questionId: "energy" })];
+    const measures = [
+      keyResultMeasureSchema.parse({ kind: "hold_max", libraryIds: ["wallSit"] }),
+      keyResultMeasureSchema.parse({ kind: "checkin", questionId: "energy" }),
+      keyResultMeasureSchema.parse({ kind: "condition_check", profileId: "tmj" }),
+    ];
     expect(statements).toBe(contextStatements("main") + measureStatements(measures, { library: true, labels: false }));
-    expect(statements).toBe(17);
-    // The most: a main run with a focus and a conversation (11 + 1 + 1 + 1) and every measure source (7).
-    expect(DESIGN_CONTEXT_STATEMENTS).toBe(21);
-    expect(contextStatements("main", { kind: "workout", id: "w" }, "c1") + 7).toBe(DESIGN_CONTEXT_STATEMENTS);
+    expect(statements).toBe(18);
+    // The most: a main run with a focus and a conversation (11 + 1 + 1 + 1) and every measure source (8).
+    expect(DESIGN_CONTEXT_STATEMENTS).toBe(22);
+    expect(contextStatements("main", { kind: "workout", id: "w" }, "c1") + 8).toBe(DESIGN_CONTEXT_STATEMENTS);
     expect(DESIGN_CONTEXT_STATEMENTS).toBeLessThanOrEqual(CONTEXT_STATEMENT_BUDGET);
   });
 

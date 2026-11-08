@@ -838,7 +838,27 @@ describe("condition_check: the mean of a profile's daily check", () => {
     });
   const M = { kind: "condition_check", profileId: "tmj", windowDays: 14 };
 
-  it("is the mean of the daily rows in the window, a point a day, to one decimal; pre and post rows never count", async () => {
+  it("a day's reading is its daily row, else that day's first pre; a post never counts; one reading a day", async () => {
+    // Both: the daily wins, the pre beside it is not a second reading.
+    await check("tmj", day(6), 2);
+    await check("tmj", day(6), 9, { kind: "pre", at: `${day(6)}T06:00:00.000Z` });
+    // Only a pre: it is the day's reading (a session day with no daily check).
+    await check("tmj", day(4), 7, { kind: "pre", at: `${day(4)}T08:00:00.000Z` });
+    // Two pres: the first, by time.
+    await check("tmj", day(3), 6, { kind: "pre", at: `${day(3)}T08:00:00.000Z` });
+    await check("tmj", day(3), 1, { kind: "pre", at: `${day(3)}T17:00:00.000Z` });
+    // Only a post: no reading that day.
+    await check("tmj", day(2), 9, { kind: "post" });
+    // A first pre with no number: the first that has one.
+    await check("tmj", day(1), null, { kind: "pre", at: `${day(1)}T06:00:00.000Z` });
+    await check("tmj", day(1), 4, { kind: "pre", at: `${day(1)}T09:00:00.000Z` });
+    const p = await measure(M);
+    expect(p.series.map((x) => [x.date, x.value])).toEqual([[day(6), 2], [day(4), 7], [day(3), 6], [day(1), 4]]);
+    // (2 + 7 + 6 + 4) / 4 = 4.75 → 4.8
+    expect(p).toMatchObject({ current: 4.8, sampleSize: 4 });
+  });
+
+  it("is the mean of the daily rows in the window, a point a day, to one decimal", async () => {
     await check("tmj", day(6), 2);
     await check("tmj", day(3), 3);
     await check("tmj", day(0), 5);
@@ -871,7 +891,7 @@ describe("condition_check: the mean of a profile's daily check", () => {
 
   it("no daily rows in the window is no reading, never 0", async () => {
     await check("tmj", day(30), 1);
-    await check("tmj", day(1), 6, { kind: "pre" });
+    await check("tmj", day(1), 6, { kind: "post" });
     const p = await measure(M);
     expect(p.current).toBeNull();
     expect(p).toMatchObject({ evidence: "none", sampleSize: 0, series: [], lastMeasuredAt: null, display: { unit: "score", current: null } });
@@ -903,13 +923,45 @@ describe("condition_check: the mean of a profile's daily check", () => {
     expect(statements[0]).not.toMatch(/"feeling_off"|"workout_id"|"performed_session_id"/);
   });
 
-  it("is served by an index on the account and the day, so a long history is not scanned", async () => {
-    const plan = (await db.all(
-      sql`explain query plan select "profile_id", "local_date", "value", "at", "id", "kind" from "condition_checks" where "user_id" = ${userId} and "kind" = 'daily' and "local_date" >= ${day(13)} and "local_date" <= ${TODAY}`,
-    )) as Array<{ detail: string }>;
-    const detail = plan.map((r) => r.detail).join("\n");
-    expect(detail).toMatch(/USING INDEX condition_checks_user_date_idx \(user_id=\? AND local_date>\? AND local_date<\?\)/);
-    expect(detail).not.toMatch(/SCAN/);
+  it("two windows in one call each read their own days from the one statement: 14 days and 7 days, [5, 2]", async () => {
+    await check("tmj", day(10), 8);
+    await check("tmj", day(5), 2);
+    await check("tmj", day(0), 8);
+    // 14 days: (8 + 2 + 8) / 3 = 6; 7 days: (2 + 8) / 2 = 5. A day outside the widest (20) is read by neither.
+    await check("tmj", day(20), 0);
+    statements.length = 0;
+    const out = await measureKeyResults(
+      db,
+      userId,
+      [{ ...M, windowDays: 14 }, { ...M, windowDays: 7 }].map((m) => ({ measure: keyResultMeasureSchema.parse(m) })),
+      { today: TODAY },
+    );
+    expect(out.map((p) => p.current)).toEqual([6, 5]);
+    expect(out.map((p) => p.sampleSize)).toEqual([3, 2]);
+    expect(statements).toHaveLength(1);
+    // Tomorrow is nobody's.
+    await check("tmj", addDays(TODAY, 1), 0);
+    const again = await measureKeyResults(db, userId, [{ measure: keyResultMeasureSchema.parse({ ...M, windowDays: 7 }) }], { today: TODAY });
+    expect(again[0]!.current).toBe(5);
+  });
+
+  it("the statement it actually sends is served by the account-and-day index on condition_checks, so a long history is not scanned", async () => {
+    const sent: Array<{ sql: string; params: unknown[] }> = [];
+    const spy = makeTestDb({ onBind: (s, params) => sent.push({ sql: s, params }) });
+    const u = (await makeTestUser(spy)).userId;
+    sent.length = 0;
+    await measureKeyResults(spy, u, [{ measure: keyResultMeasureSchema.parse(M) }], { today: TODAY });
+    const q = sent.filter((s) => /"condition_checks"/.test(s.sql));
+    expect(q).toHaveLength(1);
+    // Bounded in SQL on both ends: the widest window's first day and today are bound (so a long history is not read).
+    expect(q[0]!.params).toEqual(expect.arrayContaining([day(13), TODAY]));
+    expect(q[0]!.params.filter((p) => p === day(13) || p === TODAY)).toHaveLength(2);
+    const client = (spy as unknown as { $client: { prepare(s: string): { all(...p: unknown[]): Array<{ detail: string }> } } }).$client;
+    const plan = client.prepare(`explain query plan ${q[0]!.sql}`).all(...q[0]!.params);
+    // The json list is its own line (a scan of one bound text); the table's line is what a long history would show.
+    const mine = plan.map((r) => r.detail).filter((d) => /condition_checks/.test(d));
+    expect(mine).toHaveLength(1);
+    expect(mine[0]).toMatch(/^SEARCH condition_checks USING INDEX condition_checks_user_date_idx \(user_id=\? AND local_date>\? AND local_date<\?\)$/);
   });
 });
 

@@ -6,6 +6,7 @@
 import { and, eq, inArray } from "drizzle-orm";
 import { conditionChecks, programs, userConditions } from "@rg/database";
 import { isProfileId, profileById } from "@rg/exercise-library";
+import { checkAnchorsOf } from "./condition-words.js";
 import type { Db } from "./db.js";
 
 /** One switched-on condition profile: its check's label and scale, and its care label (null = no care content). */
@@ -64,7 +65,7 @@ export function conditionView(profileId: string): ConditionView {
   const p = profileById(profileId);
   return {
     profileId,
-    check: { label: p.check.label, min: p.check.min, max: p.check.max, anchors: p.check.anchors.map((a) => ({ value: a.value, words: a.words })) },
+    check: { label: p.check.label, min: p.check.min, max: p.check.max, anchors: checkAnchorsOf(profileId) },
     care: p.care?.block.label ?? null,
   };
 }

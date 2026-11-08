@@ -123,6 +123,23 @@ describe("POST /api/objectives", () => {
     expect(await listObjectives(db, userId)).toEqual([objective]);
   });
 
+  it.each([
+    ["a target above the scale", { target: 15 }, "target"],
+    ["a target below it", { target: -1 }, "target"],
+    ["a baseline above it", { baseline: 99 }, "baseline"],
+  ])("is 422 for a daily check with %s, naming the field and the scale", async (_what, over, field) => {
+    const res = await call("POST", "/api/objectives", { title: "T", keyResults: [{ label: "x", measure: { kind: "condition_check", profileId: "tmj" }, ...over }] });
+    expect(res.status).toBe(422);
+    const body = (await res.json()) as { issues: Array<{ path: Array<string | number>; message: string }> };
+    expect(body.issues).toContainEqual(expect.objectContaining({ path: ["keyResults", 0, field], message: "not on the check's 0–10 scale" }));
+    expect(await db.select().from(keyResults)).toEqual([]);
+  });
+
+  it("accepts the scale's own ends as a target or a baseline", async () => {
+    const o = await created({ title: "T", keyResults: [{ label: "x", measure: { kind: "condition_check", profileId: "tmj" }, baseline: 10, target: 0 }] });
+    expect(o.keyResults[0]).toMatchObject({ baseline: 10, target: 0 });
+  });
+
   it("is 422 for a daily check of a condition the library does not hold, naming where", async () => {
     const res = await call("POST", "/api/objectives", { title: "T", keyResults: [{ label: "x", measure: { kind: "condition_check", profileId: "zorbex" } }] });
     expect(res.status).toBe(422);

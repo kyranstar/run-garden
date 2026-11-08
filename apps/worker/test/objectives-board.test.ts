@@ -330,7 +330,7 @@ describe("a key result measuring a condition's daily check", () => {
   it("reads lower as better, carries the profile's reference points for the row, and has no best ever (a mean has none)", async () => {
     await createObjective(db, userId, { title: "Calmer days", keyResults: [DAILY_CHECK] }, T0);
     for (const [n, v] of [[9, 6], [5, 4], [1, 2]] as const) await dailyCheck(day(n), v);
-    await dailyCheck(day(2), 9, { kind: "pre" });
+    await dailyCheck(day(2), 9, { kind: "post" });
     const [card] = (await board()).objectives;
     const k = card!.keyResults[0]!;
     expect(k.keyResult).toMatchObject({ direction: "down", unit: "score", target: 2 });
@@ -394,7 +394,8 @@ describe("GET /api/objectives/board", () => {
     expect((await entry.fetch(new Request("https://app.test/api/objectives/o1/progress"), OFF, ctx)).status).toBe(401);
     // On, the board's own sign-in answers.
     expect((await entry.fetch(new Request("https://app.test/api/objectives/board"), ON, ctx)).status).toBe(401);
-  });
+    // It imports the whole Worker: 4–5 s cold on a loaded machine, so it carries a timeout of its own.
+  }, 30_000);
 
   it("is the account's own: another account's objectives and workouts never show", async () => {
     const mine = await createObjective(db, userId, { title: "Mine" }, T0);

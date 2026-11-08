@@ -226,8 +226,8 @@ describe("where it sits, and what it costs", () => {
       expect(h.statements, kind).toBeLessThanOrEqual(DESIGN_CONTEXT_STATEMENTS);
     }
     // A focus's one, and a later turn's conversation (the new shape §5): coach-conversation.test.ts. REBASED 2026-11-06
-    // (where you stand): the stand's statement and its measures' most (7) — 13 → 21.
-    expect(DESIGN_CONTEXT_STATEMENTS).toBe(21);
+    // (where you stand): the stand's statement and its measures' most (7) — 13 → 21; the daily check's one more: 22.
+    expect(DESIGN_CONTEXT_STATEMENTS).toBe(22);
   });
 
   it("in the opening message — after the index, before the request — never in the cached system blocks", async () => {

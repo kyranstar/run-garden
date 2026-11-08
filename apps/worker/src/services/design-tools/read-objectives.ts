@@ -7,15 +7,16 @@
  * answer says what each evidence flag means and how a test counts (`EVIDENCE_LEGEND`).
  *
  * BUDGET: one statement for the athlete, the objectives and their key results, then `measureKeyResults`, whose worst
- * case is nine (four for strength sets and their prescriptions, the runs, the threshold days, the matched runs'
- * documents, the race days, and — since 2026-11-06, where you stand — the check-in and test answers). Ten in all —
- * above the read tools' eight, because the measures are reused, not rewritten; a counting test pins it.
+ * case is ten (four for strength sets and their prescriptions, the runs, the threshold days, the matched runs'
+ * documents, the race days, the check-in and test answers since 2026-11-06 — where you stand — and a condition's daily
+ * check). Eleven in all — above the read tools' eight, because the measures are reused, not rewritten; a counting test
+ * pins it (its fixture holds a key result of every kind).
  */
 import { sql } from "drizzle-orm";
 import { z } from "zod";
 import { keyResults, objectives } from "@rg/database";
 import { KEY_RESULT_UNITS, keyResultMeasureSchema, type KeyResultEvidence, type KeyResultMeasure, type KeyResultUnit } from "@rg/domain";
-import { isProfileId, profileById } from "@rg/exercise-library";
+import { checkLabelOf } from "../condition-words.js";
 import { measureKeyResults } from "../key-result-measures.js";
 import type { DesignTool } from "./types.js";
 import {
@@ -84,7 +85,7 @@ export function measureWords(m: KeyResultMeasure): string {
     case "test":
       return `test ${m.testId}`;
     case "condition_check":
-      return `daily ${isProfileId(m.profileId) ? profileById(m.profileId).check.label : m.profileId} check, averaged${over}`;
+      return `daily ${checkLabelOf(m.profileId)} check (else the day's first before-check), averaged${over}`;
   }
 }
 
@@ -101,7 +102,7 @@ export const readObjectives: DesignTool = {
     properties: { limit: limitSchema(DEFAULT_LIMIT, MAX_LIMIT), cursor: CURSOR_SCHEMA },
     additionalProperties: false,
   },
-  statementCost: 10,
+  statementCost: 11,
   cpuWeight: 1.3,
   roles: READ_ROLES,
   async run(ctx, raw) {

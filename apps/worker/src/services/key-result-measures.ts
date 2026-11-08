@@ -58,11 +58,12 @@
  *   last ANSWER_WINDOW_DAYS — a check-in's under its question id, a test's result under the test's id (nothing writes
  *   one yet: a test reads none until something does, and says so). A point per day: the mean of the day's answers (an
  *   answer by area is one of them), to one decimal; the current is the latest day's. One statement for all of them.
- * - condition_check: a condition profile's `daily` check rows (`condition_checks`; the app's `pre` and `post` rows are
- *   never read) in the last `windowDays` days ending on the athlete's today. A point per local day — the day's latest
- *   row, and a latest with no number leaves the day out; the current value is the mean of the points, to one decimal.
+ * - condition_check: a condition profile's check rows (`condition_checks`) in the last `windowDays` days ending on the
+ *   athlete's today. A point per local day — the day's `daily` row (the latest; with no number it leaves the day out),
+ *   else the day's first `pre` that has a number; a `post` row never counts. The current value is the mean of the
+ *   points, to one decimal.
  *   No point is no reading (current null, evidence `none`), never 0. One statement for all of them, by the account's
- *   index on user and day, reading only the five columns it needs.
+ *   index on user and day, reading only the six columns it needs.
  * - Runs, threshold days: three or more points are `measured`, one or two `sparse`, none `none` with a `missing` note.
  */
 import { and, asc, eq, exists, gt, gte, inArray, isNotNull, isNull, lte, ne, or, sql, type SQL } from "drizzle-orm";
@@ -94,7 +95,8 @@ import {
   type KeyResultProgress,
   type KeyResultUnit,
 } from "@rg/domain";
-import { EXERCISES, isProfileId, profileById, type ExerciseRecord } from "@rg/exercise-library";
+import { EXERCISES, type ExerciseRecord } from "@rg/exercise-library";
+import { checkLabelOf } from "./condition-words.js";
 import { makeLibraryIndex } from "@rg/workout";
 import { libraryFor } from "./account-library.js";
 import type { Db } from "./db.js";
@@ -972,32 +974,47 @@ function measureAnswers(m: AnswerMeasure, days: ReadonlyArray<{ q: string; date:
 
 type CheckMeasure = Extract<KeyResultMeasure, { kind: "condition_check" }>;
 
-/** The daily check rows of these profiles in [from, to], oldest first: only the columns the reading needs. */
+/**
+ * The daily and before-session (`pre`) check rows of these profiles in [from, to], oldest first: only the columns the
+ * reading needs. A `post` row is the session's end, never a reading of the day.
+ */
 async function dailyChecks(db: Db, userId: string, profileIds: readonly string[], from: string, to: string) {
   const c = conditionChecks;
   return db
-    .select({ id: c.id, profileId: c.profileId, date: c.localDate, value: c.value, at: c.at })
+    .select({ id: c.id, profileId: c.profileId, kind: c.kind, date: c.localDate, value: c.value, at: c.at })
     .from(c)
-    .where(and(eq(c.userId, userId), eq(c.kind, "daily"), inArray(c.profileId, jsonList(profileIds)), gte(c.localDate, from), lte(c.localDate, to)))
+    .where(and(eq(c.userId, userId), inArray(c.kind, ["daily", "pre"]), inArray(c.profileId, jsonList(profileIds)), gte(c.localDate, from), lte(c.localDate, to)))
     .orderBy(asc(c.localDate), asc(c.at), asc(c.id));
 }
 
 /**
- * A day counts once, as its latest daily row says (a re-check replaces in place today; this does not rely on it), and
- * a latest row with no number leaves the day out. The current value is the mean of those days; no day is no reading
- * (null, never 0 — a perfect score is a reading).
+ * A day counts once. Its reading is its `daily` row — the latest, should there ever be two (a re-check replaces in place
+ * today; this does not rely on it) — and a daily row with no number leaves the day out, as the athlete cleared it;
+ * with no daily row, its first `pre` that has a number (a session day the athlete was never asked on: the Today chip
+ * reads it the same way). The current value is the mean of those days; no day is no reading (null, never 0 — a perfect
+ * score is a reading). The SQL bounds the window by its widest measure; each measure keeps its own days.
  */
-function measureCheck(m: CheckMeasure, rows: ReadonlyArray<{ profileId: string; date: string; value: number | null }>, today: string): Measured {
+function measureCheck(
+  m: CheckMeasure,
+  rows: ReadonlyArray<{ profileId: string; kind: string; date: string; value: number | null }>,
+  today: string,
+): Measured {
   const from = windowStart(today, m.windowDays);
-  const byDay = new Map<string, number | null>();
-  for (const r of rows) if (r.profileId === m.profileId && r.date >= from && r.date <= today) byDay.set(r.date, r.value);
+  const daily = new Map<string, number | null>();
+  const pre = new Map<string, number>();
+  for (const r of rows) {
+    if (r.profileId !== m.profileId || r.date < from) continue;
+    if (r.kind === "daily") daily.set(r.date, r.value);
+    else if (r.value !== null && !pre.has(r.date)) pre.set(r.date, r.value);
+  }
+  const byDay = new Map<string, number | null>(pre);
+  for (const [date, value] of daily) byDay.set(date, value);
   const points = [...byDay]
     .filter((d): d is [string, number] => d[1] !== null)
     .sort((a, b) => a[0].localeCompare(b[0]))
     .map(([date, value]) => ({ date, value }));
   if (points.length === 0) {
-    const label = isProfileId(m.profileId) ? profileById(m.profileId).check.label : m.profileId;
-    return none(`No daily ${label} check in the last ${m.windowDays} days.`);
+    return none(`No daily ${checkLabelOf(m.profileId)} check in the last ${m.windowDays} days.`);
   }
   const mean = points.reduce((a, p) => a + p.value, 0) / points.length;
   return { points, current: rounded("score", mean), evidence: byCount(points.length) };

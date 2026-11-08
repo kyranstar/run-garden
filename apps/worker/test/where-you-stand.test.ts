@@ -359,6 +359,45 @@ describe("drift (§7.2)", () => {
   });
 });
 
+describe("a daily-check key result's pace (gaps task 1, fix round 1, I3)", () => {
+  // A sliding average has no meaningful oldest reading: without a baseline of its own the stand starts nowhere.
+  const check = keyResultMeasureSchema.parse({ kind: "condition_check", profileId: "tmj", windowDays: 14 });
+  const one = (over: Partial<StandKeyResult>): StandFacts => ({
+    ...EMPTY,
+    objectives: [{ id: "o", keyResults: [kr({ id: "k", measure: check, direction: "down", unit: "score", target: 2, createdOn: d(-30), due: d(20), progress: progress(3, "measured", [3, 3, 3]), ...over })] }],
+  });
+  const line = (f: StandFacts) => standBlock(f, driftsOf(f)).split("\n").find((l) => l.includes("Zorbex hold"))!;
+
+  it("with no baseline: now and target only, no verdict and no behind-schedule chip — a steady 3 against a target of 2", () => {
+    const f = one({ baseline: null });
+    expect(line(f)).toMatch(/3 → 2 by .*: no data \(no starting value\)$/);
+    expect(line(f)).not.toMatch(/behind|ahead|on track|started past/);
+    expect(driftsOf(f).filter((x) => x.rule === "key_result")).toEqual([]);
+    // Whatever the oldest reading was — one below the target would have read "started past the target" before.
+    const low = one({ baseline: null, progress: progress(3, "measured", [1, 2, 3]) });
+    expect(line(low)).toMatch(/no data \(no starting value\)$/);
+  });
+
+  it("with a baseline set the verdicts work as for any other measure: 3 from 6 is ahead; 5 from 6 is behind, and the chip is raised", () => {
+    expect(line(one({ baseline: 6 }))).toMatch(/: ahead \(75% there, 60% of time gone\)$/);
+    expect(driftsOf(one({ baseline: 6 })).filter((x) => x.rule === "key_result")).toEqual([]);
+    const behind = one({ baseline: 6, progress: progress(5, "measured", [5, 5, 5]), due: d(10) });
+    expect(line(behind)).toMatch(/: behind \(/);
+    expect(driftsOf(behind).filter((x) => x.rule === "key_result")).toMatchObject([{ id: "drift:key_result:k" }]);
+  });
+
+  it("with no due date there is no verdict either way", () => {
+    expect(line(one({ baseline: null, due: null }))).toMatch(/no data/);
+    expect(line(one({ baseline: 6, due: null }))).toMatch(/: no data \(no due date\)$/);
+    expect(driftsOf(one({ baseline: 6, due: null })).filter((x) => x.rule === "key_result")).toEqual([]);
+  });
+
+  it("another measure with no baseline is unchanged: it still starts from its oldest reading", () => {
+    const f = one({ measure: keyResultMeasureSchema.parse({ kind: "hold_max", libraryIds: ["wallSit"] }), direction: "up", unit: "s", baseline: null, target: 120, progress: progress(75, "measured", [60, 70, 75]) });
+    expect(line(f)).toMatch(/: (behind|on track|ahead) \(/);
+  });
+});
+
 describe("the audits' fix pass (2026-11-06)", () => {
   const strength = (dates: Array<[number, string]>) => dates.map(([n, state]) => row(d(n), "strength", state));
   const facts = (over: Partial<StandFacts>): StandFacts => ({ ...EMPTY, ...over });

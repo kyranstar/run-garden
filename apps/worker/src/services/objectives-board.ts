@@ -39,8 +39,8 @@ import {
   type ObjectiveBoardDto,
   type ObjectiveServedWorkout,
 } from "@rg/domain";
-import { isProfileId, profileById } from "@rg/exercise-library";
 import { loadPreferences } from "./calendar-sync.js";
+import { checkAnchorsOf } from "./condition-words.js";
 import type { Db } from "./db.js";
 import { measureKeyResults, unreadableProgress, type MeasureRequest } from "./key-result-measures.js";
 import { listObjectives } from "./objectives.js";
@@ -88,8 +88,8 @@ const everOf = (m: KeyResultMeasure): KeyResultMeasure | null =>
 
 /** A daily check's reference points, from the profile; undefined for any other measure or a profile no longer known. */
 function anchorsOf(m: KeyResultMeasure | null): KeyResultAnchor[] | undefined {
-  if (m?.kind !== "condition_check" || !isProfileId(m.profileId)) return undefined;
-  const anchors = profileById(m.profileId).check.anchors.map((a) => ({ value: a.value, words: a.words }));
+  if (m?.kind !== "condition_check") return undefined;
+  const anchors = checkAnchorsOf(m.profileId);
   return anchors.length > 0 ? anchors : undefined;
 }
 

@@ -29,6 +29,7 @@ import { accountState, coachProposals } from "@rg/database";
 import { GOAL_IDS, isLocalDate, keyResultCreateSchema, newId, objectiveCreateSchema } from "@rg/domain";
 import { OPEN_PROPOSAL_STATUSES } from "../design-review.js";
 import { clipProse } from "../design-prose.js";
+import { OFF_SCALE_WORDS, onCheckScale } from "../condition-words.js";
 import { askedWordsSql, currentOf, objectiveChangeLine, objectiveStateOf, objectiveStateSql } from "../objective-changes.js";
 import { libraryIssues, resolvedKeyResult, type KeyResultInputParsed } from "../objectives.js";
 import {
@@ -173,7 +174,7 @@ export const proposeObjective: DesignTool = {
       const kr = keyResultCreateSchema.safeParse(rawKr);
       if (!kr.success) return `${path}: ${issuesWords(kr.error.issues)}`;
       const lib = libraryIssues([kr.data as KeyResultInputParsed]);
-      if (lib.length) return `${path}: a move its measure names isn't the library's`;
+      if (lib.length) return `${path}: ${lib[0]!.path.slice(2).join(".")} is ${lib[0]!.message}`;
       const r = resolvedKeyResult(kr.data as KeyResultInputParsed, prefs);
       return { id: newId(), ...r, measure: r.measure as unknown as Record<string, unknown> };
     };
@@ -181,9 +182,15 @@ export const proposeObjective: DesignTool = {
     let newIds: { objectiveId?: string; keyResultId?: string } = {};
     let title = state?.title ?? "";
     switch (change) {
-      case "retarget":
+      case "retarget": {
+        // A daily check's target is a score on its own scale (the board's save refuses the same).
+        const check = state?.krs.find((k) => k.id === parsed.keyResultId)?.check ?? null;
+        if (check !== null && typeof parsed.target === "number" && !onCheckScale(check, parsed.target)) {
+          return refuse("bad_after", `target ${parsed.target} is ${OFF_SCALE_WORDS(check)}.`, "Give a target on the check's scale.");
+        }
         after = parsed.target;
         break;
+      }
       case "redate": {
         const d = parsed.dueDate ?? null;
         if (d !== null && (!isLocalDate(d) || d < athlete.today)) return refuse("bad_after", `dueDate ${JSON.stringify(d)} isn't a day from today (${athlete.today}) on.`, "Give a YYYY-MM-DD from today on, or null for no date.");
@@ -195,7 +202,7 @@ export const proposeObjective: DesignTool = {
         break;
       case "add_key_result": {
         const draft = draftOf(parsed.keyResult, "keyResult");
-        if (typeof draft === "string") return refuse("bad_after", `${draft}.`, "Give the key result as read_objectives shows one: a label and a measure whose moves the library holds.");
+        if (typeof draft === "string") return refuse("bad_after", `${draft}.`, "Give the key result as read_objectives shows one: a label and a measure the library reads (its moves, or a condition it holds with a target on that check's scale).");
         after = draft;
         newIds = { keyResultId: draft.id };
         break;
@@ -206,7 +213,7 @@ export const proposeObjective: DesignTool = {
         const drafts: ObjectiveKeyResultDraft[] = [];
         for (const [i, kr] of o.data.keyResults.entries()) {
           const d = draftOf(kr, `objective.keyResults.${i}`);
-          if (typeof d === "string") return refuse("bad_after", `${d}.`, "Give each key result as read_objectives shows one: a label and a measure whose moves the library holds.");
+          if (typeof d === "string") return refuse("bad_after", `${d}.`, "Give each key result as read_objectives shows one: a label and a measure the library reads (its moves, or a condition it holds with a target on that check's scale).");
           drafts.push(d);
         }
         const objectiveId = newId();
