@@ -244,6 +244,7 @@ describe("coach-apply's actionable rule, as one function", () => {
       skipped: "was already skipped",
       missed: "was already missed",
       past: "has already had its day",
+      underWay: "may still be running on another device",
     });
   });
 });

@@ -358,11 +358,10 @@ describe("1. what a request's selection applies (a designed proposal: a skip, a 
     await everything();
   });
 
-  it("CHARACTERIZATION: an id named twice applies once", async () => {
+  it("CHARACTERIZATION: an id named twice is refused 400 `bad_request`, nothing applied (it applied once at d9fae337; P6, 57a29879)", async () => {
     const res = await approve(id, { opIds: [a, a] });
-    expect(res.status).toBe(200);
-    expect(res.json.changed.map((c: { opId: string }) => c.opId)).toEqual([a]);
-    expect(await outcomes(id)).toEqual({ [a]: "applied", [b]: "open", [w]: "open" });
+    expect([res.status, res.json.error]).toEqual([400, "bad_request"]);
+    expect(await outcomes(id)).toEqual({ [a]: "open", [b]: "open", [w]: "open" });
   });
 
   it("CHARACTERIZATION: an unknown id is 400 `unknown_op` naming it, and a known id beside it is not applied either", async () => {
