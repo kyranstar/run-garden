@@ -87,6 +87,24 @@ describe("the coach's step alarm: a Durable Object per run (the robustness pass,
   });
 });
 
+describe("a plan's drafts' switch (plan-drafts.ts): PLAN_DRAFTS, on in production alone", () => {
+  const read = (rel: string) => readFileSync(new URL(rel, import.meta.url), "utf8");
+  const staging = toml.slice(toml.indexOf("[env.staging]"));
+  const production = toml.slice(0, toml.indexOf("[env.staging]"));
+
+  it("is on in production, once, beside the two switches it needs", () => {
+    expect(production.match(/^\s*PLAN_DRAFTS\s*=.*$/gm)).toEqual(['PLAN_DRAFTS = "1"']);
+    expect(production).toMatch(/^COACH_STEP_ALARM = "1"$/m);
+    expect(production).toMatch(/^COACH_DESIGNER = "1"$/m);
+  });
+
+  it("is absent from staging, local dev and the fixture stack: a draft is real spend, and nothing there should start one", () => {
+    expect(staging).not.toMatch(/PLAN_DRAFTS/);
+    expect(read("../wrangler.dev.toml")).not.toMatch(/PLAN_DRAFTS/);
+    expect(read("../../web/e2e/fixture-stack.sh")).not.toMatch(/PLAN_DRAFTS/);
+  });
+});
+
 describe("the run wire's switch (§8 phase 2): RUN_WIRE_V2, off everywhere it is not asked for", () => {
   const read = (rel: string) => readFileSync(new URL(rel, import.meta.url), "utf8");
 
