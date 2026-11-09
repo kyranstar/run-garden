@@ -40,13 +40,14 @@ const row = (over: Partial<WorkoutDto> = {}): WorkoutDto =>
     origin: "studio", contentState: "outline", ...over,
   }) as WorkoutDto;
 
-function mount(w: WorkoutDto, moved: { corosSyncState: string; watchDrain?: boolean }): string[] {
+function mount(w: WorkoutDto, moved: { corosSyncState: string; watchDrain?: boolean }, refused?: { path: "move" | "skip"; status: number; body: unknown }): string[] {
   const calls: string[] = [];
   vi.stubGlobal(
     "fetch",
     vi.fn(async (url: string, init?: RequestInit) => {
       const method = (init?.method ?? "GET").toUpperCase();
       calls.push(`${method} ${url}`);
+      if (refused && url === `/api/plan/workouts/${w.id}/${refused.path}`) return new Response(JSON.stringify(refused.body), { status: refused.status, headers: { "Content-Type": "application/json" } });
       if (url === `/api/plan/workouts/${w.id}/candidates`) return json({ candidates: [{ date: TODAY, time: "18:00", window: "evening", explanation: "Open evening.", warnings: [], daysMoved: 2 }], skipOption: { explanation: "Skip it." }, busyChecked: true });
       if (url === `/api/plan/workouts/${w.id}/move`) return json({ workoutId: w.id, ...moved });
       if (url === "/api/sync/status") return json({ state: "in_sync", pendingCount: 0, issueCount: 0, lastCorosReadAt: null, writesEnabled: true, registered: true });
@@ -104,5 +105,43 @@ describe("moving a session the watch mirrors", () => {
     await settle();
     expect(text()).toContain("In Calendar (watch not auto-updated)");
     expect(calls.some((c) => c.endsWith("/build"))).toBe(false);
+  });
+});
+
+describe("a refusal says the server's words (the session guard, 409 `{ error, why }`)", () => {
+  const until = async (check: () => boolean, what: string) => {
+    for (let i = 0; i < 200; i += 1) {
+      if (check()) return;
+      await act(async () => {
+        await new Promise((r) => setTimeout(r, 5));
+      });
+    }
+    throw new Error(`timed out waiting for: ${what}\n${document.body.textContent}`);
+  };
+  const pressed = async (text: RegExp | string) => {
+    const find = () => [...document.querySelectorAll<HTMLElement>("button")].find((b) => (typeof text === "string" ? b.textContent?.includes(text) : text.test(b.textContent ?? "")));
+    await until(() => !!find(), `the button ${String(text)}`);
+    await act(async () => find()!.click());
+  };
+  const WHY = "This session was started and may still be running on another device, so it stays as it is.";
+
+  it("a move: the words, not \"The move failed\"", async () => {
+    mount(row(), { corosSyncState: "calendar_only" }, { path: "move", status: 409, body: { error: "session_under_way", why: WHY } });
+    await pressed("Open evening.");
+    await until(() => (document.body.textContent ?? "").includes(WHY), "the refusal's words");
+    expect(document.body.textContent).not.toContain("The move failed");
+  });
+
+  it("a skip: the words, the sheet still open", async () => {
+    mount(row(), { corosSyncState: "calendar_only" }, { path: "skip", status: 409, body: { error: "session_under_way", why: WHY } });
+    await pressed("Skip workout");
+    await until(() => (document.body.textContent ?? "").includes(WHY), "the refusal's words");
+    expect(document.body.textContent).not.toContain("Workout skipped");
+  });
+
+  it("anything else: what it always said", async () => {
+    mount(row(), { corosSyncState: "calendar_only" }, { path: "move", status: 500, body: { error: "move_failed" } });
+    await pressed("Open evening.");
+    await until(() => (document.body.textContent ?? "").includes("The move failed"), "the old words");
   });
 });

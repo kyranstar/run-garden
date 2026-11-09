@@ -52,6 +52,7 @@ import { useWatchCatchUp, watchFollows } from "./watch-catch-up.js";
 import { EXERCISES, isProfileId, label as vocab, PROFILES } from "@rg/exercise-library";
 import { effortAdvice } from "@rg/workout";
 import { Banner, CompletionPill, ConfirmDialog, EmptyState, formatDayLong, formatTime, Sheet, Spinner } from "../components.js";
+import { offersMoveAndSkip, offersMoveToToday, planRefusal } from "./session-sheet-model.js";
 import { features } from "../features.js";
 import { IconAlert, IconInfo, IconSwap, IconWatch } from "../icons.js";
 import { offlineDb } from "../offline/idb.js";
@@ -532,6 +533,11 @@ export function SessionSheet({
       refreshPlan();
     },
   });
+  // Refused (the session is done, or under way on another device): the sheet says so, and reads it again.
+  const readAgain = () => {
+    refreshPlan();
+    void qc.invalidateQueries({ queryKey: key });
+  };
   const skip = useMutation({
     mutationFn: () => api.skip(w.id),
     onSuccess: () => {
@@ -539,6 +545,7 @@ export function SessionSheet({
       onClose();
       drainThenRead();
     },
+    onError: readAgain,
   });
   const unskip = useMutation({
     mutationFn: () => api.unskipWorkout(w.id),
@@ -574,6 +581,7 @@ export function SessionSheet({
         if (ran > 0) drainThenRead();
       });
     },
+    onError: readAgain,
   });
   // The watch (the watch mirrors the plan §3.9). Keep off, Put on and Retry only QUEUE (ruling 3-R11): the drain runs the
   // jobs, one a request (`drainThenRead`), then the session says how it went. A drain that fails is no error to show —
@@ -814,6 +822,7 @@ export function SessionSheet({
   // session without the player), rather than drawn as an empty band (audit 2a-UI M6).
   const actions: React.ReactNode[] = [];
   let startButton: React.ReactNode = null;
+  const planState = { completed, locked, sentHere, past };
   if (skipped) {
     actions.push(
       <button key="unskip" type="button" className="btn" disabled={unskip.isPending} onClick={() => unskip.mutate()}>
@@ -875,7 +884,7 @@ export function SessionSheet({
         </button>,
       );
     }
-    if (past && !locked) {
+    if (offersMoveToToday(planState)) {
       actions.push(
         <button key="today" type="button" className="btn btn-primary" disabled={moveToToday.isPending} onClick={() => moveToToday.mutate()}>
           Move to today
@@ -889,7 +898,7 @@ export function SessionSheet({
         </button>,
       );
     }
-    if ((!locked || sentHere) && s) {
+    if (s && offersMoveAndSkip(planState)) {
       actions.push(
         <button key="move" type="button" className="btn" onClick={() => setMoving(true)}>
           Move
@@ -1131,6 +1140,11 @@ export function SessionSheet({
         {markDone.isError ? (
           <p className="session-refused" role="alert">
             {markDoneRefusal(markDone.error)}
+          </p>
+        ) : null}
+        {skip.isError || moveToToday.isError ? (
+          <p className="session-refused" role="alert">
+            {planRefusal(skip.error ?? moveToToday.error, "Couldn't change it. Try again.")}
           </p>
         ) : null}
         {editable && !marked ? (

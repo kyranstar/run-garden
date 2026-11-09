@@ -43,6 +43,7 @@ import { features } from "../features.js";
 import { addTargetHref, editableWorkout } from "./studio/add-model.js";
 import type { BuilderArrival } from "./studio/templates-model.js";
 import { isOneOff, SessionSheet } from "../components/session-sheet.js";
+import { planRefusal } from "../components/session-sheet-model.js";
 import { WatchVersion } from "../components/watch-version.js";
 import { watchFollowsChange } from "../components/watch-catch-up.js";
 import { isAppSession } from "../components/today-program.js";
@@ -198,7 +199,8 @@ export function RunWorkoutDetail({
   const retry = useMutation({ mutationFn: () => api.retryCoros(w.id), onSuccess: invalidate });
   const restore = useMutation({ mutationFn: () => api.restoreCalendar(w.id), onSuccess: invalidate });
   const unmatch = useMutation({ mutationFn: () => api.unmatch(w.id), onSuccess: invalidate });
-  const skip = useMutation({ mutationFn: () => api.skip(w.id), onSuccess: invalidate });
+  // Refused (done since this sheet was drawn, 409): the sheet says so, below, and the page reads it again.
+  const skip = useMutation({ mutationFn: () => api.skip(w.id), onSuccess: invalidate, onError: invalidate });
   const unskip = useMutation({ mutationFn: () => api.unskipWorkout(w.id), onSuccess: invalidate });
   const remove = useMutation({
     mutationFn: () => api.removeWorkout(w.id),
@@ -210,6 +212,7 @@ export function RunWorkoutDetail({
       // heading, never to the page — now, not after the plan's reads; the dialogs closing after this leave it there.
       setTimeout(() => focusAfterRemove(w.effectiveDate, w.id), 0);
     },
+    onError: invalidate,
   });
   /** Why Start didn't go through, said above the actions until the next press. */
   const [startError, setStartError] = useState<string | null>(null);
@@ -262,7 +265,9 @@ export function RunWorkoutDetail({
      true the day the content-rewrite lane landed. Two tellings of one fact, one
      of them stale, is exactly what the action layer exists to end. */
   const olderOnWatch = syncView === "content_stale";
+  // A done session's day doesn't follow COROS, nor COROS its (the import keeps the read's date beside its own): nothing to say.
   const corosDisagrees =
+    w.completionState !== "completed" &&
     w.effectiveDate !== w.lastVerifiedCorosDate &&
     syncView !== "content_stale" &&
     !(neverOnWatch && w.watchCoverage?.coverage === "none");
@@ -396,6 +401,11 @@ export function RunWorkoutDetail({
         {startError ? (
           <p className="session-refused" role="alert">
             {startError}
+          </p>
+        ) : null}
+        {skip.isError ? (
+          <p className="session-refused" role="alert">
+            {planRefusal(skip.error, "Couldn't skip it. Try again.")}
           </p>
         ) : null}
         <SyncNotesStack
@@ -553,6 +563,7 @@ export function RunWorkoutDetail({
         confirmLabel="Remove from plan"
         busy={remove.isPending}
         onConfirm={() => remove.mutate()}
+        error={remove.isError ? planRefusal(remove.error, "Couldn't remove it. Try again.") : null}
       >
         {removeConfirmCopy(displayTitle, !!w.appPushed)}
       </ConfirmDialog>

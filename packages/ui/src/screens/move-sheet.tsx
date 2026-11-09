@@ -9,6 +9,7 @@ import {
   Spinner,
   useRevealInView,
 } from "../components.js";
+import { planRefusal } from "../components/session-sheet-model.js";
 import { isAppSession } from "../components/today-program.js";
 import { watchFollowsChange } from "../components/watch-catch-up.js";
 
@@ -206,7 +207,8 @@ export function MoveSheet({
             Skip workout
           </button>
           <p className="faint">{candidates.data?.skipOption.explanation}</p>
-          {move.isError ? <Banner kind="warn">The move failed — please try again.</Banner> : null}
+          {move.isError ? <Banner kind="warn">{planRefusal(move.error, "The move failed — please try again.")}</Banner> : null}
+          {skip.isError ? <Banner kind="warn">{planRefusal(skip.error, "The skip failed — please try again.")}</Banner> : null}
         </div>
       )}
     </Sheet>

@@ -738,6 +738,58 @@ describe("a day ahead, a day gone, a started session", () => {
     expect(calls.find((c) => c.path.endsWith("/move"))!.body).toEqual({ toDate: TODAY, toTime: "19:00" });
   });
 
+  describe("a session the watch completed (auto-matched: `completed`, still an outline or built)", () => {
+    const WORDS = "This session is done, so it stays on the day it was done.";
+    const done = (over: Partial<SessionDto> = {}) => session({ contentState: "outline", build: null, view: null, checks: {}, profiles: [], completionState: "completed", course: { markDone: null, held: null }, ...over });
+
+    it("on its day, and on a day gone: no Move, no Skip, no Move to today", async () => {
+      for (const date of [TODAY, "2026-10-03"]) {
+        mount(done({ date }), { w: slot({ effectiveDate: date, completionState: "completed" }), afterBuild: () => done({ date }) });
+        await until(() => !!document.querySelector(".session-status .pill"), "the pill");
+        await settle();
+        expect(button("Move")).toBeUndefined();
+        expect(button("Skip")).toBeUndefined();
+        expect(button("Move to today")).toBeUndefined();
+        act(() => root?.unmount());
+        host?.remove();
+      }
+    });
+
+    it("a session not done keeps all three", async () => {
+      mount(session({ date: "2026-10-03", contentState: "outline", checks: {}, build: null, view: null }), { w: slot({ effectiveDate: "2026-10-03", contentState: "outline" }) });
+      await until(() => !!button("Move to today") && !!button("Move"), "the offers");
+      expect(button("Skip")).toBeTruthy();
+    });
+
+    it("a stale sheet's Skip, refused: the server's words stay on the sheet, and it reads the session again", async () => {
+      const { calls } = mount(session(), {
+        route: (c, set) => {
+          if (c.path.endsWith("/skip")) {
+            set(done());
+            return new Response(JSON.stringify({ error: "session_completed", why: WORDS }), { status: 409, headers: { "Content-Type": "application/json" } });
+          }
+          return undefined;
+        },
+      });
+      await until(() => !!button("Skip"), "Skip");
+      await click("Skip");
+      await until(() => body().includes(WORDS), "the refusal's words");
+      await until(() => !button("Skip"), "the sheet read again");
+      expect(calls.filter((c) => c.path === `/api/sessions/${SLOT}` && c.method === "GET").length).toBeGreaterThan(1);
+    });
+
+    it("a stale sheet's Move to today, refused while it is under way: the server's words", async () => {
+      const under = "This session was started and may still be running on another device, so it stays as it is.";
+      mount(session({ date: "2026-10-03", contentState: "outline", checks: {}, build: null, view: null }), {
+        w: slot({ effectiveDate: "2026-10-03", contentState: "outline" }),
+        route: (c) => (c.path.endsWith("/move") ? new Response(JSON.stringify({ error: "session_under_way", why: under }), { status: 409, headers: { "Content-Type": "application/json" } }) : undefined),
+      });
+      await until(() => !!button("Move to today"), "the move offer");
+      await click("Move to today");
+      await until(() => body().includes(under), "the refusal's words");
+    });
+  });
+
   it("a day gone that was built on its day: that build, read-only, with Move to today", async () => {
     const gone = "2026-10-03";
     const { calls } = mount(session({ date: gone, build: { ...session().build!, date: gone } }), { w: slot({ effectiveDate: gone }) });
@@ -964,6 +1016,51 @@ describe("WorkoutDetail branches on origin", () => {
     const { calls } = mount(session(), { detail: true, w: run });
     await until(() => body().includes("Threshold 5x5"), "the workout sheet");
     expect(calls.some((c) => c.path.startsWith("/api/sessions/"))).toBe(false);
+  });
+
+  it("a run done on its day, its copy since re-dated on COROS: the day stayed, and no line says an update is on its way (JOINT Fix 6)", async () => {
+    const done = slot({ id: "run-1", title: "Threshold 5x5", category: "quality", sport: "run", origin: null, contentState: null, programId: null, completionState: "completed", lastVerifiedCorosDate: "2026-10-09", corosSyncState: "synced" });
+    mount(session(), { detail: true, w: done });
+    await until(() => body().includes("Threshold 5x5"), "the workout sheet");
+    expect(body()).not.toContain("COROS still shows");
+    expect(body()).not.toContain("the update is on its way");
+  });
+
+  it("a stale workout sheet's Skip it, refused: the server's words on the sheet", async () => {
+    const words = "This session is done, so it stays on the day it was done.";
+    const asking = slot({ id: "run-1", title: "Threshold 5x5", category: "quality", sport: "run", origin: null, contentState: null, programId: null, completionState: "unresolved", effectiveDate: "2026-10-02" });
+    mount(session(), {
+      detail: true,
+      w: asking,
+      route: (c) => (c.path.endsWith("/skip") ? new Response(JSON.stringify({ error: "session_completed", why: words }), { status: 409, headers: { "Content-Type": "application/json" } }) : undefined),
+    });
+    await until(() => !!button("Skip it"), "Skip it");
+    await click("Skip it");
+    await until(() => body().includes(words), "the refusal's words");
+  });
+
+  it("a stale workout sheet's Remove, refused: the server's words in the dialog", async () => {
+    const words = "This session is done, so it stays on the day it was done.";
+    const run = slot({ id: "run-1", title: "Threshold 5x5", category: "quality", sport: "run", origin: null, contentState: null, programId: null });
+    mount(session(), {
+      detail: true,
+      w: run,
+      route: (c) => (c.path.endsWith("/remove") ? new Response(JSON.stringify({ error: "session_completed", why: words }), { status: 409, headers: { "Content-Type": "application/json" } }) : undefined),
+    });
+    await until(() => !!button("Remove from plan"), "Remove from plan");
+    await click("Remove from plan");
+    // The confirm's own button (the sheet's foot has one of the same name).
+    const confirm = () => document.querySelector<HTMLElement>("button.btn-danger");
+    await until(() => !!confirm(), "the confirm");
+    await act(async () => confirm()!.click());
+    await until(() => body().includes(words), "the refusal's words");
+  });
+
+  it("a run still to come whose day disagrees with COROS keeps its line", async () => {
+    const open = slot({ id: "run-1", title: "Threshold 5x5", category: "quality", sport: "run", origin: null, contentState: null, programId: null, lastVerifiedCorosDate: "2026-10-09", corosSyncState: "calendar_only" });
+    mount(session(), { detail: true, w: open });
+    await until(() => body().includes("Threshold 5x5"), "the workout sheet");
+    expect(body()).toContain("Your COROS watch still has this on");
   });
 });
 
