@@ -9,7 +9,7 @@ import {
   Spinner,
   useRevealInView,
 } from "../components.js";
-import { latestError, planRefusal, refusedByServer } from "../components/session-sheet-model.js";
+import { changeErrorText, latestError, planRefusal, refusedByServer } from "../components/session-sheet-model.js";
 import { isAppSession } from "../components/today-program.js";
 import { watchFollowsChange } from "../components/watch-catch-up.js";
 
@@ -113,6 +113,8 @@ export function MoveSheet({
   /** The last press's error, when it was the server's refusal. */
   const last = latestError({ move, skip }, lastChange);
   const refused = refusedByServer(last) ? last : null;
+  /** Under the days and Skip: the error of the one pressed last, in its words, and only while it stands (re-review 2, M-3). */
+  const changeError = changeErrorText({ move, skip }, lastChange, { move: "The move failed — please try again.", skip: "The skip failed — please try again." });
   const close = () => {
     setResult(null);
     setCustom(false);
@@ -231,8 +233,7 @@ export function MoveSheet({
             Skip workout
           </button>
           <p className="faint">{candidates.data?.skipOption.explanation}</p>
-          {move.isError ? <Banner kind="warn">{planRefusal(move.error, "The move failed — please try again.")}</Banner> : null}
-          {skip.isError ? <Banner kind="warn">{planRefusal(skip.error, "The skip failed — please try again.")}</Banner> : null}
+          {changeError !== null ? <Banner kind="warn">{changeError}</Banner> : null}
         </div>
       )}
     </Sheet>

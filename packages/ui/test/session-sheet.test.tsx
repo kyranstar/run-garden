@@ -818,13 +818,16 @@ describe("a day ahead, a day gone, a started session", () => {
       await until(() => !!button("Move to today"), "the move offer");
       await click("Move to today");
       await settle();
-      // The move is on its way: the skip's refusal is not what was pressed last, and nothing stands in for an error.
+      // The move is on its way: the skip's refusal is not what was pressed last, and nothing stands in for an error — no
+      // alert at all, not even an empty one (M-5).
       expect(body()).not.toContain(under);
       expect(body()).not.toContain("Couldn't change it");
+      expect(document.querySelectorAll(".session-refused[role=alert]")).toHaveLength(0);
       await act(async () => release(new Response(JSON.stringify({ workoutId: SLOT, corosSyncState: "calendar_only" }), { status: 200, headers: { "Content-Type": "application/json" } })));
       await settle();
       expect(body()).not.toContain(under);
       expect(body()).not.toContain("Couldn't change it");
+      expect(document.querySelectorAll(".session-refused[role=alert]")).toHaveLength(0);
     });
 
     it("a stale sheet's Move to today, refused while it is under way: the server's words", async () => {

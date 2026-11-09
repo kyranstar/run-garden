@@ -43,15 +43,22 @@ export const refusedByServer = (e: unknown): boolean =>
  * with that one fine, none; with none pressed yet, the first that failed. Null when there is none.
  */
 export function latestError<K extends string>(changes: Readonly<Record<K, { isError: boolean; error: unknown }>>, last: K | null): unknown {
-  if (last !== null) return changes[last].isError ? changes[last].error : null;
-  return Object.values<{ isError: boolean; error: unknown }>(changes).find((m) => m.isError)?.error ?? null;
+  const key = latestFailed(changes, last);
+  return key === null ? null : (changes[key].error ?? null);
+}
+
+/** The change whose error a sheet says (`latestError`): its name, or null. */
+function latestFailed<K extends string>(changes: Readonly<Record<K, { isError: boolean; error: unknown }>>, last: K | null): K | null {
+  if (last !== null) return changes[last].isError ? last : null;
+  return (Object.keys(changes) as K[]).find((k) => changes[k].isError) ?? null;
 }
 
 /**
- * What a sheet says of its changes: the latest press's error in words (`latestError`, `planRefusal`) — and nothing while
- * that press is on its way or went through, though an older one failed.
+ * What a sheet says of its changes: the latest press's error in words (`latestError`, `planRefusal`; `otherwise`, one line
+ * or each change's own) — and nothing while that press is on its way or went through, though an older one failed.
  */
-export function changeErrorText<K extends string>(changes: Readonly<Record<K, { isError: boolean; error: unknown }>>, last: K | null, otherwise: string): string | null {
-  const e = latestError(changes, last);
-  return e === null ? null : planRefusal(e, otherwise);
+export function changeErrorText<K extends string>(changes: Readonly<Record<K, { isError: boolean; error: unknown }>>, last: K | null, otherwise: string | Readonly<Record<K, string>>): string | null {
+  const key = latestFailed(changes, last);
+  if (key === null) return null;
+  return planRefusal(changes[key].error, typeof otherwise === "string" ? otherwise : otherwise[key]);
 }

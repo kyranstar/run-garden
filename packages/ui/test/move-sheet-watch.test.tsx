@@ -171,6 +171,35 @@ describe("a refusal says the server's words (the session guard, 409 `{ error, wh
     expect(document.body.textContent).not.toContain(CHANGED);
   });
 
+  it("`session_changed`, then Skip pressed (M-3): while the skip is on its way the sheet says nothing of the move; when it fails, the skip's words alone", async () => {
+    const CHANGED = "This session changed just now. Try again.";
+    let releaseSkip: (r: Response) => void = () => undefined;
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async (url: string) => {
+        if (url === "/api/plan/workouts/w1/move") return new Response(JSON.stringify({ error: "session_changed", why: CHANGED }), { status: 409, headers: { "Content-Type": "application/json" } });
+        if (url === "/api/plan/workouts/w1/skip") return new Promise<Response>((r) => (releaseSkip = r));
+        if (url === "/api/plan/workouts/w1/candidates") return json({ candidates: [{ date: TODAY, time: "18:00", window: "evening", explanation: "Open evening.", warnings: [], daysMoved: 2 }], skipOption: { explanation: "Skip it." }, busyChecked: true });
+        if (url === "/api/sync/status") return json({ state: "in_sync", pendingCount: 0, issueCount: 0, lastCorosReadAt: null, writesEnabled: true, registered: true });
+        return json({});
+      }),
+    );
+    host = document.createElement("div");
+    document.body.appendChild(host);
+    root = createRoot(host);
+    const qc = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+    act(() => root!.render(createElement(QueryClientProvider, { client: qc }, createElement(MoveSheet, { workout: row(), open: true, onClose: () => undefined }))));
+    await pressed("Open evening.");
+    await until(() => (document.body.textContent ?? "").includes(CHANGED), "the move's refusal");
+    await pressed("Skip workout");
+    await settle();
+    expect(document.body.textContent).not.toContain(CHANGED);
+    await act(async () => releaseSkip(new Response(JSON.stringify({ error: "skip_failed" }), { status: 500, headers: { "Content-Type": "application/json" } })));
+    await until(() => (document.body.textContent ?? "").includes("The skip failed — please try again."), "the skip's own words");
+    expect(document.body.textContent).not.toContain(CHANGED);
+    expect(document.body.textContent).not.toContain("The move failed");
+  });
+
   it("anything else: what it always said", async () => {
     mount(row(), { corosSyncState: "calendar_only" }, { path: "move", status: 500, body: { error: "move_failed" } });
     await pressed("Open evening.");
