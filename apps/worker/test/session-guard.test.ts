@@ -1269,6 +1269,37 @@ describe("what sits below the routes, and the corrections, keep working", () => 
   });
 });
 
+// ── A missed session's debit: once, whatever its date (the double debit, apart from garden option B) ─────────────────
+
+describe("a missed session moved after its miss is debited once", () => {
+  /** Every day's debit of `id`, as the walk recorded it. */
+  const debits = (w: World, id: string) => record(w).credits.flatMap((c) => c.missed.filter((m: { workoutId: string }) => m.workoutId === id).map(() => c.date));
+
+  it("never started, auto-missed a week after its day, then moved on: still missed, and its one debit stays on the day it was missed", async () => {
+    const w = await world();
+    const id = await slotOn(w, D);
+    await drive(w, addDays(D, 1), addDays(D, 8));
+    expect(rowOf(w, id).completion).toBe("missed");
+    expect(debits(w, id)).toEqual([addDays(D, 7)]);
+    setClock(addDays(D, 8), "12:00");
+    expect((await w.call("POST", `/api/plan/workouts/${id}/move`, { toDate: addDays(D, 10), toTime: "18:00" })).status).toBe(200);
+    expect(rowOf(w, id)).toMatchObject({ date: addDays(D, 10), completion: "missed" });
+    await drive(w, addDays(D, 9), addDays(D, 12));
+    expect(debits(w, id)).toEqual([addDays(D, 7)]);
+  });
+
+  it("the same, and a replay from before the miss: one debit still — where the walk now lands it, never two", async () => {
+    const w = await world();
+    const id = await slotOn(w, D);
+    await drive(w, addDays(D, 1), addDays(D, 8));
+    setClock(addDays(D, 8), "12:00");
+    expect((await w.call("POST", `/api/plan/workouts/${id}/move`, { toDate: addDays(D, 10), toTime: "18:00" })).status).toBe(200);
+    await drive(w, addDays(D, 9), addDays(D, 12));
+    const after = await replayed(w);
+    expect(after.credits.flatMap((c) => c.missed.filter((m: { workoutId: string }) => m.workoutId === id).map(() => c.date))).toHaveLength(1);
+  });
+});
+
 // ── The hazards JOINT §3.2 names ─────────────────────────────────────────────────────────────────────────────────────
 
 describe("the hazards, after the guard (each says what happens; the guard doesn't make any of them worse)", () => {

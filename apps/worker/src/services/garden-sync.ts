@@ -230,6 +230,19 @@ async function persistSnapshot(db: Db, userId: string, snapshot: GardenSnapshot)
 }
 
 /** Build the resolved inputs for one calendar day from the database. */
+/** Of a day's misses, those no earlier day's recorded input has debited already (`buildDayInput`: a miss debits once). */
+async function notDebitedBefore(db: Db, userId: string, date: string, due: Array<{ workoutId: string }>): Promise<Array<{ workoutId: string }>> {
+  if (due.length === 0) return due;
+  const debited = new Set<string>();
+  for (const ids of chunkIds([...new Set(due.map((m) => m.workoutId))], 80)) {
+    const rows = await db.all<{ w: string }>(
+      sql`select distinct json_extract(m.value, '$.workoutId') as w from ${gardenDayInputs}, json_each(${gardenDayInputs.input}, '$.missedRuns') m where ${gardenDayInputs.userId} = ${userId} and ${gardenDayInputs.date} < ${date} and json_extract(m.value, '$.workoutId') in (${sql.join(ids.map((id) => sql`${id}`), sql`, `)})`,
+    );
+    for (const r of rows) debited.add(r.w);
+  }
+  return due.filter((m) => !debited.has(m.workoutId));
+}
+
 export async function buildDayInput(
   db: Db,
   userId: string,
@@ -417,10 +430,16 @@ export async function buildDayInput(
         not(gardenSeesSql()),
       ),
     );
-  const missedRuns = [
+  const due = [
     ...resolvedHere.filter((w) => w.sanctionedBy !== "coach").map((w) => ({ workoutId: w.id })),
     ...lapsed.map((w) => ({ workoutId: w.id })),
   ];
+  // A MISS DEBITS ONCE, WHATEVER ITS DATE. A missed or skipped session moved after its debit landed lands again on its new
+  // day by the rule above (max of its day and its resolution's), and was debited twice. One already in an earlier day's
+  // recorded input is not debited again: the walk writes each day's input in order, and a replay deletes the inputs from
+  // its first day before it rebuilds them, so the days before this one are the record this walk stands on. Prospective:
+  // only the day being built reads it; no stored day is rewritten. One statement a chunk, only on a day with a debit.
+  const missedRuns = await notDebitedBefore(db, userId, date, due);
   let mercyToday = false;
   if (sanctionedHere.length > 0) {
     // The rolling-week lookback counts prior sanctions by the same landing
