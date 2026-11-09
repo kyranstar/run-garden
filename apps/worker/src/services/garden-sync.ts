@@ -230,13 +230,23 @@ async function persistSnapshot(db: Db, userId: string, snapshot: GardenSnapshot)
 }
 
 /** Build the resolved inputs for one calendar day from the database. */
-/** Of a day's misses, those no earlier day's recorded input has debited already (`buildDayInput`: a miss debits once). */
+/**
+ * THE DAY FROM WHICH A MISS DEBITS ONCE (`notDebitedBefore`), on `APP_SESSION_EPOCH`'s precedent: before it, every day is built
+ * as it always was, so stored history — a double debit included — replays exactly as it did before the fix (final review
+ * A). It must be on or after the day this lands in production, and is set at landing: 2026-11-10 is this candidate's.
+ */
+export const MISS_ONCE_FROM = "2026-11-10";
+
+/**
+ * Of a day's misses, those no earlier day's recorded input has debited already (`buildDayInput`: a miss debits once) — from
+ * MISS_ONCE_FROM on, counting only debits recorded from that day on. Before it, the day's misses as they are.
+ */
 async function notDebitedBefore(db: Db, userId: string, date: string, due: Array<{ workoutId: string }>): Promise<Array<{ workoutId: string }>> {
-  if (due.length === 0) return due;
+  if (due.length === 0 || date < MISS_ONCE_FROM) return due;
   const debited = new Set<string>();
   for (const ids of chunkIds([...new Set(due.map((m) => m.workoutId))], 80)) {
     const rows = await db.all<{ w: string }>(
-      sql`select distinct json_extract(m.value, '$.workoutId') as w from ${gardenDayInputs}, json_each(${gardenDayInputs.input}, '$.missedRuns') m where ${gardenDayInputs.userId} = ${userId} and ${gardenDayInputs.date} < ${date} and json_extract(m.value, '$.workoutId') in (${sql.join(ids.map((id) => sql`${id}`), sql`, `)})`,
+      sql`select distinct json_extract(m.value, '$.workoutId') as w from ${gardenDayInputs}, json_each(${gardenDayInputs.input}, '$.missedRuns') m where ${gardenDayInputs.userId} = ${userId} and ${gardenDayInputs.date} >= ${MISS_ONCE_FROM} and ${gardenDayInputs.date} < ${date} and json_extract(m.value, '$.workoutId') in (${sql.join(ids.map((id) => sql`${id}`), sql`, `)})`,
     );
     for (const r of rows) debited.add(r.w);
   }
@@ -434,11 +444,12 @@ export async function buildDayInput(
     ...resolvedHere.filter((w) => w.sanctionedBy !== "coach").map((w) => ({ workoutId: w.id })),
     ...lapsed.map((w) => ({ workoutId: w.id })),
   ];
-  // A MISS DEBITS ONCE, WHATEVER ITS DATE. A missed or skipped session moved after its debit landed lands again on its new
-  // day by the rule above (max of its day and its resolution's), and was debited twice. One already in an earlier day's
-  // recorded input is not debited again: the walk writes each day's input in order, and a replay deletes the inputs from
-  // its first day before it rebuilds them, so the days before this one are the record this walk stands on. Prospective:
-  // only the day being built reads it; no stored day is rewritten. One statement a chunk, only on a day with a debit.
+  // A MISS DEBITS ONCE, WHATEVER ITS DATE (from MISS_ONCE_FROM on). A missed or skipped session moved after its debit landed
+  // lands again on its new day by the rule above (max of its day and its resolution's), and was debited twice. One already
+  // in an earlier day's recorded input (from the gate on) is not debited again: the walk writes each day's input in order,
+  // and a replay deletes the inputs from its first day before it rebuilds them, so the days before this one are the record
+  // this walk stands on. Forward only: a day before the gate is built as it always was, so stored history replays as it did.
+  // One statement a chunk, only on a day with a debit.
   const missedRuns = await notDebitedBefore(db, userId, date, due);
   let mercyToday = false;
   if (sanctionedHere.length > 0) {
