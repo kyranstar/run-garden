@@ -93,6 +93,7 @@ import { reviewPacket, standFromOpening, toolRecords, TOOL_RECORDS_MAX_BYTES } f
 import { adjustPlan } from "../src/services/design-tools/adjust-plan.js";
 import { allTools } from "../src/services/design-tools/index.js";
 import { PIN_LINE_MAX } from "../src/services/design-tools/pin-moves.js";
+import { opIdOf } from "../src/services/proposal-kinds.js";
 import { designProposalId, proposeWorkout } from "../src/services/design-tools/propose.js";
 import { MAX_PLAN_SESSIONS } from "../src/services/design-tools/propose-plan.js";
 import { changeProgramme } from "../src/services/design-tools/change-programme.js";
@@ -221,6 +222,24 @@ interface Shape {
   budget: number | null;
 }
 const shapes = new Map<string, Shape>();
+
+/**
+ * Each approve shape's ops its approve left out (`notNamed`, the approval contract: a request naming nothing reaches only
+ * a workout and a change). A shape whose approve leaves an op out measures nothing of it (5p, 5c and 5o measured one
+ * empty request from 8d8bca11, or before it).
+ */
+const unnamed = new Map<string, string[]>();
+/** Every op of the proposal by its id: what its card names when tapped (a kind other than a workout or a change is reached only by name). */
+async function cardOpIds(db: Db, proposalId: string): Promise<string[]> {
+  const [p] = await db.select({ ops: schema.coachProposals.ops }).from(schema.coachProposals).where(eq(schema.coachProposals.id, proposalId));
+  return (p!.ops as Parameters<typeof opIdOf>[0][]).map(opIdOf);
+}
+/** The answer's `remaining`; what it left unnamed, recorded under `shape`. */
+async function approveAnswer(shape: string, res: Response): Promise<string[]> {
+  const body = (await res.json()) as { remaining: string[]; notNamed?: string[] };
+  if (body.notNamed?.length) unnamed.set(shape, body.notNamed);
+  return body.remaining;
+}
 
 /** A database and the routes over it, opened from an image of another (each run starts from the same rows). */
 interface World {
@@ -1329,7 +1348,7 @@ beforeAll(async () => {
         const total = performance.now() - t;
         const s: Sample = { js: total - x.clock.sqlite(), wire: x.clock.wire(), sqlite: x.clock.sqlite(), statements: x.clock.statements() };
         if (res.status !== 200) throw new Error(`approve answered ${res.status}: ${await res.text()}`);
-        remaining = ((await res.json()) as { remaining: string[] }).remaining;
+        remaining = await approveAnswer("5b", res);
         if (i === 0) chunkFirst[k] = s.js;
         if (i >= WARMUP) (chunkSamples[k] ??= []).push(s);
       }
@@ -1367,6 +1386,7 @@ beforeAll(async () => {
     if (isToolErr(made)) throw new Error(`change_programme refused: ${made.error} — ${made.why}`);
     const proposalId = designProposalId(runId);
     await dbp.update(schema.coachProposals).set({ status: "pending" }).where(and(eq(schema.coachProposals.id, proposalId), eq(schema.coachProposals.userId, uid)));
+    const card = await cardOpIds(dbp, proposalId);
     images.set("programme-change", imageOf(dbp));
     clientOf(dbp).close();
     vi.stubGlobal("fetch", (async () => new Response("{}", { status: 404 })) as typeof fetch);
@@ -1383,7 +1403,7 @@ beforeAll(async () => {
         const t = performance.now();
         const res = await x.coach.request(
           `/api/coach/proposals/${proposalId}/approve`,
-          { method: "POST", headers: { Cookie: cookiep, "Content-Type": "application/json" }, body: JSON.stringify(remaining ? { opIds: remaining } : {}) },
+          { method: "POST", headers: { Cookie: cookiep, "Content-Type": "application/json" }, body: JSON.stringify({ opIds: remaining ?? card }) },
           env,
           executionCtx as never,
         );
@@ -1391,7 +1411,7 @@ beforeAll(async () => {
         const total = performance.now() - t;
         const s: Sample = { js: total - x.clock.sqlite(), wire: x.clock.wire(), sqlite: x.clock.sqlite(), statements: x.clock.statements() };
         if (res.status !== 200) throw new Error(`approve answered ${res.status}: ${await res.text()}`);
-        remaining = ((await res.json()) as { remaining: string[] }).remaining;
+        remaining = await approveAnswer("5p", res);
         if (i === 0) chunkFirst[k] = s.js;
         if (i >= WARMUP) (chunkSamples[k] ??= []).push(s);
       }
@@ -1444,6 +1464,7 @@ beforeAll(async () => {
     }
     const proposalId = designProposalId(runId);
     await dbc.update(schema.coachProposals).set({ status: "pending" }).where(and(eq(schema.coachProposals.id, proposalId), eq(schema.coachProposals.userId, uid)));
+    const card = await cardOpIds(dbc, proposalId);
     const opsBytes = utf8Bytes(JSON.stringify((await dbc.select().from(schema.coachProposals).where(eq(schema.coachProposals.id, proposalId)))[0]!.ops));
     // Measured 2026-11-06: 60,559 B — the pins card and the corrections at their caps alone (a proposal's workouts add
     // their documents: the review's 80–170 KB).
@@ -1464,7 +1485,7 @@ beforeAll(async () => {
         const t = performance.now();
         const res = await x.coach.request(
           `/api/coach/proposals/${proposalId}/approve`,
-          { method: "POST", headers: { Cookie: cookiec, "Content-Type": "application/json" }, body: JSON.stringify(remaining ? { opIds: remaining } : {}) },
+          { method: "POST", headers: { Cookie: cookiec, "Content-Type": "application/json" }, body: JSON.stringify({ opIds: remaining ?? card }) },
           env,
           executionCtx as never,
         );
@@ -1472,7 +1493,7 @@ beforeAll(async () => {
         const total = performance.now() - t;
         const s: Sample = { js: total - x.clock.sqlite(), wire: x.clock.wire(), sqlite: x.clock.sqlite(), statements: x.clock.statements() };
         if (res.status !== 200) throw new Error(`5c: approve answered ${res.status}: ${await res.text()}`);
-        remaining = ((await res.json()) as { remaining: string[] }).remaining;
+        remaining = await approveAnswer("5c", res);
         if (i === 0) chunkFirst[k] = s.js;
         if (i >= WARMUP) (chunkSamples[k] ??= []).push(s);
       }
@@ -1514,6 +1535,7 @@ beforeAll(async () => {
     }
     const proposalId = designProposalId(runId);
     await dbo.update(schema.coachProposals).set({ status: "pending" }).where(and(eq(schema.coachProposals.id, proposalId), eq(schema.coachProposals.userId, uid)));
+    const card = await cardOpIds(dbo, proposalId);
     images.set("objectives", imageOf(dbo));
     clientOf(dbo).close();
     vi.stubGlobal("fetch", (async () => new Response("{}", { status: 404 })) as typeof fetch);
@@ -1530,7 +1552,7 @@ beforeAll(async () => {
         const t = performance.now();
         const res = await x.coach.request(
           `/api/coach/proposals/${proposalId}/approve`,
-          { method: "POST", headers: { Cookie: cookieo, "Content-Type": "application/json" }, body: JSON.stringify(remaining ? { opIds: remaining } : {}) },
+          { method: "POST", headers: { Cookie: cookieo, "Content-Type": "application/json" }, body: JSON.stringify({ opIds: remaining ?? card }) },
           env,
           executionCtx as never,
         );
@@ -1538,9 +1560,9 @@ beforeAll(async () => {
         const total = performance.now() - t;
         const s: Sample = { js: total - x.clock.sqlite(), wire: x.clock.wire(), sqlite: x.clock.sqlite(), statements: x.clock.statements() };
         if (res.status !== 200) throw new Error(`5o: approve answered ${res.status}: ${await res.text()}`);
-        const body = (await res.json()) as { remaining: string[]; refused: unknown[] };
+        const body = (await res.clone().json()) as { refused: unknown[] };
         if (body.refused.length) throw new Error(`5o: refused ${JSON.stringify(body.refused)}`);
-        remaining = body.remaining;
+        remaining = await approveAnswer("5o", res);
         if (i === 0) chunkFirst[k] = s.js;
         if (i >= WARMUP) (chunkSamples[k] ??= []).push(s);
       }
@@ -1752,6 +1774,10 @@ function within(id: string, ctx: TestContext): void {
 }
 
 describe("the coach designer's requests within the Workers free plan's CPU", () => {
+  it("every approve shape names what its card draws: none left an op `notNamed`, so each measured its ops", () => {
+    expect(Object.fromEntries(unnamed)).toEqual({});
+  });
+
   it("every shape was measured", () => {
     const grouped = (k: string) => GROUPS.some((g) => k.startsWith(`${g}.`));
     expect([...shapes.keys()].filter((k) => shapes.get(k)!.budget !== null && !grouped(k))).toEqual(["1a", "1b", "1d", "2a", "8x.adjust", "8z.unknown", "8z.away", "2b", "2b.q", "9c", "2e", "2c", "9b", "9a", "4b", "4c", "4d", "12", "3", "10a", "10b", "7", "5a", "6", "13a", "13b", "11a", "11b"]);
