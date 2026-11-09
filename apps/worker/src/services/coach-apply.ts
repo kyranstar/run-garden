@@ -1179,6 +1179,12 @@ async function suppressAndUnpush(
  */
 const unstarted = (): SQL => or(isNull(plannedWorkouts.contentState), notInArray(plannedWorkouts.contentState, ["started", "done"]))!;
 
+/**
+ * What an archive's own WRITE holds the row to (final reviews A and B): still scheduled, still on the plan, and not started —
+ * so a Start, the watch's completion or a hand remove landing between the read and the write leaves the row as it is.
+ */
+const archivable = (): SQL => and(eq(plannedWorkouts.completionState, "scheduled"), isNull(plannedWorkouts.archivedAt), unstarted())!;
+
 async function archiveWeek(
   db: Db,
   userId: string,
@@ -1220,7 +1226,7 @@ async function archiveWeek(
     const done = await db
       .update(plannedWorkouts)
       .set({ archivedAt: now, archiveReason: "user_removed", updatedAt: now })
-      .where(and(inArray(plannedWorkouts.id, ids), unstarted()))
+      .where(and(inArray(plannedWorkouts.id, ids), archivable()))
       .returning({ id: plannedWorkouts.id });
     for (const r of done) archived.add(r.id);
   }
@@ -2002,20 +2008,26 @@ export async function applyOps(
               gte(plannedWorkouts.effectiveDate, today),
               eq(plannedWorkouts.completionState, "scheduled"),
               isNull(plannedWorkouts.archivedAt),
+              unstarted(),
             ),
           );
         if (rows.length > 0) {
           // Chunked: this is EVERY future scheduled session in the plan — a
           // 20-week block at 6 sessions/week is 120 ids, well past D1's ~100
           // bound-variable cap. Unchunked it would fail at approval time.
+          // Held as archiveWeek's is (`archivable`): only what the write archived is suppressed and taken off the watch.
+          const archived = new Set<string>();
           for (const ids of chunkIds(rows.map((r) => r.id))) {
-            await db
+            const done = await db
               .update(plannedWorkouts)
               .set({ archivedAt: now, archiveReason: "user_removed", updatedAt: now })
-              .where(inArray(plannedWorkouts.id, ids));
+              .where(and(inArray(plannedWorkouts.id, ids), archivable()))
+              .returning({ id: plannedWorkouts.id });
+            for (const r of done) archived.add(r.id);
           }
-          await suppressAndUnpush(db, userId, rows, now, prefs);
-          out.archived.push(...rows.map((r) => r.id));
+          const went = rows.filter((r) => archived.has(r.id));
+          if (went.length > 0) await suppressAndUnpush(db, userId, went, now, prefs);
+          out.archived.push(...went.map((r) => r.id));
         }
         await runAtomically(db, [
           db
@@ -2739,10 +2751,13 @@ async function archiveSlice(
   // leaves no delete queued for a session still on the plan, and one that dies after leaves none owed. A sent
   // programme slot's own way off (never a coach plan's row) runs its own writes, so it goes first, as before.
   const unpushes = [];
+  const programmeWayOff: (typeof picked)[number][] = [];
   for (const w of picked) {
     if (unpushCost(w) === 0) continue;
     if (appAuthoredRow(w)) {
-      await enqueueUnpushIfOurs(k.db, k.userId, w, k.now, k.prefs);
+      // Its own writes, AFTER the batch and only once it has archived the row (final review B): queued before it, a Start
+      // landing at the batch's door left an unpush queued and the build unlocked for a session now running.
+      programmeWayOff.push(w);
       continue;
     }
     const unpush = await unpushInsertIfOurs(k.db, k.userId, w, k.now, k.prefs);
@@ -2763,8 +2778,9 @@ async function archiveSlice(
     ...chunkIds(ids).map((chunk) =>
       k.db
         .update(plannedWorkouts)
-        // A session started since the read fails the slice (`guardOrFail`): nothing of it lands, and the next run re-reads.
-        .set({ archivedAt: k.now, archiveReason: "user_removed", effectiveDate: guardOrFail(unstarted(), plannedWorkouts.effectiveDate), updatedAt: k.now })
+        // A session started, completed or removed since the read fails the slice (`guardOrFail`, `archivable`): nothing of
+        // it lands, and the next run re-reads.
+        .set({ archivedAt: k.now, archiveReason: "user_removed", effectiveDate: guardOrFail(archivable(), plannedWorkouts.effectiveDate), updatedAt: k.now })
         .where(and(eq(plannedWorkouts.userId, k.userId), inArray(plannedWorkouts.id, chunk))),
     ),
   ];
@@ -2774,6 +2790,7 @@ async function archiveSlice(
     if (guardFailed(e)) return "stalled";
     throw e;
   }
+  for (const w of programmeWayOff) await enqueueUnpushIfOurs(k.db, k.userId, w, k.now, k.prefs);
   // The batch as run, and the unpushes' reads at their most (their inserts are in the batch).
   k.spent += stmts.length + unpushing - unpushes.length;
   return { archived: picked.length, more: rows.length > picked.length };
