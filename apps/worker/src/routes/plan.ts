@@ -1698,6 +1698,8 @@ planRoutes.post("/workouts/:id/move", async (c) => {
   } catch (e) {
     const msg = e instanceof Error ? e.message : "move_failed";
     if (msg === "session_changed") return c.json(await refusalNow(db, userId, c.req.param("id"), today), 409);
+    // Gone (never there, or hard-deleted before its move was written): 404 in words, as note Undo answers — nothing to retry.
+    if (msg === "workout_not_found") return c.json({ error: "not_found", why: "This session is no longer on your plan." }, 404);
     return c.json({ error: msg }, msg === "races_cannot_move" ? 422 : 500);
   }
 });

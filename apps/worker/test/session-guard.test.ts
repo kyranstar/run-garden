@@ -26,7 +26,21 @@ const gates = vi.hoisted(() => ({
   mutation: null as null | (() => Promise<void>),
   /** The next `runAtomically`: a guarded move's one batch, at the last instant before it is written. */
   batch: null as null | (() => Promise<void>),
+  /** An approve at the applier's door: after its plan read, before the applier reads a row (`applyOps`). */
+  door: null as null | (() => Promise<void>),
 }));
+vi.mock("../src/services/coach-apply.js", async (importOriginal) => {
+  const real = await importOriginal<typeof import("../src/services/coach-apply.js")>();
+  return {
+    ...real,
+    applyOps: async (...args: Parameters<typeof real.applyOps>) => {
+      const hold = gates.door;
+      gates.door = null;
+      if (hold) await hold();
+      return real.applyOps(...args);
+    },
+  };
+});
 
 vi.mock("../src/services/session-build.js", async (importOriginal) => {
   const real = await importOriginal<typeof import("../src/services/session-build.js")>();
@@ -329,6 +343,7 @@ beforeEach(() => {
   gates.move = null;
   gates.mutation = null;
   gates.batch = null;
+  gates.door = null;
   vi.stubGlobal("fetch", (async () => new Response("{}", { status: 404 })) as typeof fetch);
 });
 afterEach(() => {
@@ -964,6 +979,42 @@ describe("the coach and a session under way", () => {
     expect(rowOf(w, id)).toMatchObject({ date: D, content: "started" });
     expect(rowOf(w, other).date).toBe(addDays(D, 1));
     expect((await saved(w, id, build, D)).json.status).toBe("saved");
+  });
+
+  it("a thread coach's swap, a Start landing inside one of its moves (forced): that move is held — the started session stays on its day", async () => {
+    const w = await world();
+    const a = await slotOn(w, D);
+    const b = await slotOn(w, addDays(D, 1));
+    setClock(D, "17:55");
+    const built = await w.call("POST", `/api/sessions/${a}/build`, {});
+    const proposal = `tp-${newId()}`;
+    await w.db.insert(coachProposals).values({ id: proposal, userId: w.userId, planId: null, title: "This week", evidence: "", rationale: "", flags: [], ops: [{ kind: "swap", dayA: D, dayB: addDays(D, 1) }], status: "pending", createdAt: nowInstant(), expiresAt: addDays(D, 7) } as never);
+    let landed = false;
+    gates.move = async () => {
+      expect((await w.call("POST", `/api/sessions/${a}/start`, { buildId: built.json.build.buildId })).status).toBe(200);
+      landed = true;
+    };
+    const res = await w.call("POST", `/api/coach/proposals/${proposal}/approve`);
+    expect(res.status).toBeLessThan(500);
+    expect(landed).toBe(true);
+    expect(rowOf(w, a)).toMatchObject({ date: D, content: "started" });
+    expect(rowOf(w, b).date).toBe(addDays(D, 1));
+  });
+
+  it("the designer's approve, a Start landing at the applier's door (RR-5 under way): refused `under_way` in its words — never the unknown cause", async () => {
+    const w = await world();
+    const id = await slotOn(w, D);
+    setClock(D, "12:00");
+    const proposal = await proposed(w, change(id, { kind: "skip", reason: "Rest." }));
+    setClock(D, "17:55");
+    const built = await w.call("POST", `/api/sessions/${id}/build`, {});
+    gates.door = async () => {
+      expect((await w.call("POST", `/api/sessions/${id}/start`, { buildId: built.json.build.buildId })).status).toBe(200);
+    };
+    const res = await w.call("POST", `/api/coach/proposals/${proposal}/approve`, {});
+    expect(res.json.changed).toEqual([]);
+    expect(res.json.refused).toEqual([expect.objectContaining({ opId: planAdjustId(id), error: "not_editable", cause: "under_way", why: expect.stringContaining("may still be running") })]);
+    expect(rowOf(w, id)).toMatchObject({ completion: "scheduled", content: "started" });
   });
 
   it("a thread coach's skip, the Start landing after the applier read it (forced): the write holds the session as read — not skipped", async () => {

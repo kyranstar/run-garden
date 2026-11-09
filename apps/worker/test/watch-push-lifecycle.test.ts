@@ -450,7 +450,8 @@ describe("the save's day check for a sent build COROS moved", () => {
     // What the route answers a row it can't find at all.
     const missing = await planRoute("no-such-row", "move", { toDate: TOMORROW, toTime: "18:00" });
     expect([answer.status, answer.json]).toEqual([missing.status, missing.json]);
-    expect(answer.json.error).toBe("workout_not_found");
+    // 404 in words, as note Undo answers a row it can't find: nothing to retry (final review B, M-3).
+    expect([answer.status, answer.json]).toEqual([404, { error: "not_found", why: "This session is no longer on your plan." }]);
     expect(await trail(workoutId, buildId)).toEqual(before);
     expect(await moved()).toBe(0);
   });

@@ -20,7 +20,8 @@ export const offersMoveToToday = (s: SheetPlanState): boolean => !s.completed &&
 
 /** The server's words when it refused the change (409 `{ error, why }`: the session done, or under way); else null. */
 function refusedWhy(e: unknown): string | null {
-  if (!(e instanceof ApiError) || e.status !== 409) return null;
+  // 409: the session guard's refusal; 404: the session is gone from the plan (its words, nothing to retry).
+  if (!(e instanceof ApiError) || (e.status !== 409 && e.status !== 404)) return null;
   const why = (e.body as { why?: unknown } | null)?.why;
   return typeof why === "string" && why ? why : null;
 }

@@ -200,6 +200,16 @@ describe("a refusal says the server's words (the session guard, 409 `{ error, wh
     expect(document.body.textContent).not.toContain("The move failed");
   });
 
+  it("a session gone from the plan (404 `not_found`, in words): the words and Done — never \"please try again\"", async () => {
+    const GONE = "This session is no longer on your plan.";
+    mount(row(), { corosSyncState: "calendar_only" }, { path: "move", status: 404, body: { error: "not_found", why: GONE } });
+    await pressed("Open evening.");
+    await until(() => (document.body.textContent ?? "").includes(GONE), "the words");
+    expect(document.body.textContent).not.toContain("please try again");
+    expect(document.querySelectorAll("button.workout-row")).toHaveLength(0);
+    expect([...document.querySelectorAll("button")].map((b) => b.textContent)).toContain("Done");
+  });
+
   it("anything else: what it always said", async () => {
     mount(row(), { corosSyncState: "calendar_only" }, { path: "move", status: 500, body: { error: "move_failed" } });
     await pressed("Open evening.");
