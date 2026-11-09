@@ -19,17 +19,17 @@ import {
   type CorosWriteResult,
   type UserPreferences,
 } from "@rg/domain";
-import type { Db } from "./db.js";
+import { guardFailed, guardOrFail, runAtomically, type AtomicStatement, type Db } from "./db.js";
 import { cloudPresence } from "./sync-status.js";
 import { applyStudioJobResult } from "./studio-push.js";
-import { openIntentFor, openMoveIntents, recordIntent, resolveIntent } from "./sync-intents.js";
+import { intentStatements, openIntentFor, openMoveIntents, recordIntent, resolveIntent } from "./sync-intents.js";
 import { keepsMark, watchCopyBase } from "./watch-copy-marker.js";
 import { postSyncNote } from "./sync-notes.js";
-import { runOwedUnpushes, unpushBuild } from "./watch-push.js";
-import { sentBuildIdOf } from "./session-build.js";
-import { enqueueUnpushIfOurs } from "./plan-mutations.js";
+import { runOwedUnpushes, unpushBuild, unpushBuildStatements } from "./watch-push.js";
+import { pushJobId, sentBuildIdOf } from "./session-build.js";
+import { adoptedCopyUnpush, enqueueUnpushIfOurs } from "./plan-mutations.js";
 import { watchJobCondition } from "./watch-jobs.js";
-import { markMirrorOwed } from "./mirror-owed.js";
+import { markMirrorOwed, markMirrorOwedIf } from "./mirror-owed.js";
 
 /**
  * COROS write-job lifecycle. Jobs are the only path to COROS mutations:
@@ -48,9 +48,11 @@ export interface MoveRequest {
   corosWritesEnabled: boolean;
   /**
    * A condition the row must still meet as it is moved (`stillOpen`, the athlete's own route; the coach's approve, its card's
-   * row): the row's write is then the FIRST write, guarded by it, and when it no longer holds this throws `session_changed`
-   * having written nothing — no override, no intent, no job, no watch copy taken off, no build unlocked. Without it the move
-   * is exactly as it always was, its row written last.
+   * row; a sync note's Undo). The whole move is then ONE batch — its row, override, intent, jobs, the watch copy taken off,
+   * the build unlocked, the mirror's mark and its audit — and its row's write fails the batch when the condition no longer
+   * holds (`guardOrFail`): all of it lands, or none of it, and then this throws `session_changed`. A fault anywhere in it
+   * leaves nothing behind either, so a retry makes the whole move. Without it the move is exactly as it always was, its row
+   * written last.
    */
   onlyIf?: SQL;
 }
@@ -85,7 +87,23 @@ async function enqueueMoveJob(
     attemptCount?: number;
   },
 ): Promise<string> {
-  await db
+  const { jobId, statements } = moveJobStatements(db, v);
+  for (const statement of statements) await statement;
+  return jobId;
+}
+
+/** `enqueueMoveJob` as statements for a caller's atomic batch: the older in-flight jobs superseded, the move job queued. */
+function moveJobStatements(
+  db: Db,
+  v: {
+    userId: string;
+    workout: typeof plannedWorkouts.$inferSelect;
+    toDate: string;
+    now: string;
+    attemptCount?: number;
+  },
+) {
+  const supersede = db
     .update(corosWriteJobs)
     .set({ status: "superseded", updatedAt: v.now })
     .where(
@@ -100,7 +118,7 @@ async function enqueueMoveJob(
       ),
     );
   const jobId = newId();
-  await db.insert(corosWriteJobs).values({
+  const insert = db.insert(corosWriteJobs).values({
     id: jobId,
     userId: v.userId,
     workoutId: v.workout.id,
@@ -116,7 +134,7 @@ async function enqueueMoveJob(
     attemptCount: v.attemptCount ?? 0,
     updatedAt: v.now,
   });
-  return jobId;
+  return { jobId, statements: [supersede, insert] as const };
 }
 
 /**
@@ -198,7 +216,8 @@ export async function applyMove(db: Db, req: MoveRequest): Promise<MoveOutcome> 
     db
       .update(plannedWorkouts)
       .set({
-        effectiveDate: req.toDate,
+        // Guarded: the condition, read on the row as it is before this write, or the batch fails (`guardOrFail`).
+        effectiveDate: req.onlyIf ? guardOrFail(req.onlyIf, req.toDate) : req.toDate,
         effectiveTime: req.toTime,
         corosSyncState,
         calendarSyncState:
@@ -211,10 +230,8 @@ export async function applyMove(db: Db, req: MoveRequest): Promise<MoveOutcome> 
         ...(toOutline ? { contentState: "outline", ...(program ? { title: program.name } : {}) } : {}),
         updatedAt: now,
       })
-      .where(and(eq(plannedWorkouts.id, workout.id), req.onlyIf))
-      .returning({ id: plannedWorkouts.id });
-  // GUARDED: the row first. Lost, nothing at all is written.
-  if (req.onlyIf && (await writeRow()).length === 0) throw new Error("session_changed");
+      .where(eq(plannedWorkouts.id, workout.id));
+  if (req.onlyIf) return guardedMove(db, req, { workout, now, appAuthored, dateChanged, takesCopyOff, sent, queuesJob, corosSyncState, row: writeRow() });
 
   await db.insert(scheduleOverrides).values({
     id: newId(),
@@ -265,7 +282,7 @@ export async function applyMove(db: Db, req: MoveRequest): Promise<MoveOutcome> 
     jobId = await enqueueMoveJob(db, { userId: req.userId, workout, toDate: req.toDate, now });
   }
 
-  if (!req.onlyIf) await writeRow();
+  await writeRow();
   // Marked once the row stands on its new day: a sweep that read it before the move does not settle the mark.
   if (fromDate !== req.toDate && docOriginRow(workout)) await markMirrorOwed(db, req.userId, workout.id, now);
 
@@ -278,6 +295,83 @@ export async function applyMove(db: Db, req: MoveRequest): Promise<MoveOutcome> 
   });
 
   return { workoutId: workout.id, corosSyncState, jobId };
+}
+
+/**
+ * A GUARDED MOVE, ONE BATCH (`MoveRequest.onlyIf`): everything `applyMove` writes, as statements, with the row's guarded write
+ * (`row`) first — it fails the batch when the guard is false, so nothing else lands without it. What the statements need is
+ * read before: the sent build and its push (the copy `unpushBuildStatements` takes off, as `unpushBuild` would decide it).
+ */
+async function guardedMove(
+  db: Db,
+  req: MoveRequest,
+  m: {
+    workout: typeof plannedWorkouts.$inferSelect;
+    now: string;
+    appAuthored: boolean;
+    dateChanged: boolean;
+    takesCopyOff: boolean;
+    sent: string | null;
+    queuesJob: boolean;
+    corosSyncState: string;
+    row: AtomicStatement;
+  },
+): Promise<MoveOutcome> {
+  const { workout, now } = m;
+  const fromDate = workout.effectiveDate;
+  const prefs = { corosWritesEnabled: req.corosWritesEnabled };
+  const [push] = m.takesCopyOff && m.sent ? await db.select().from(corosWriteJobs).where(eq(corosWriteJobs.id, pushJobId(m.sent))).limit(1) : [];
+  // The intent closes at once for a session the app built (the catch-up pass has nothing to emit), and for a time change on
+  // the COROS-verified day.
+  const intent = intentStatements(
+    db,
+    { userId: req.userId, targetKind: "workout", targetId: workout.id, kind: "move", payload: { fromDate, toDate: req.toDate, toTime: req.toTime }, source: req.source === "calendar_edit" ? "calendar_drag" : "user_move" },
+    now,
+    m.appAuthored || !m.dateChanged ? now : undefined,
+  );
+  const job = m.queuesJob ? moveJobStatements(db, { userId: req.userId, workout, toDate: req.toDate, now }) : null;
+  const copy = m.takesCopyOff && docOriginRow(workout) ? adoptedCopyUnpush(db, req.userId, workout, now, prefs) : null;
+  const statements: AtomicStatement[] = [
+    m.row,
+    db.insert(scheduleOverrides).values({
+      id: newId(),
+      workoutId: workout.id,
+      kind: fromDate === req.toDate ? "time_change" : "user_move",
+      fromDate,
+      toDate: req.toDate,
+      toTime: req.toTime,
+      source: req.source,
+      createdAt: now,
+    }),
+    ...intent.statements,
+    ...(copy ? [copy.insert] : []),
+    ...(m.takesCopyOff && m.sent ? unpushBuildStatements(db, req.userId, workout, m.sent, push ?? null, now, prefs) : []),
+    // Moving back to the COROS-verified date makes any in-flight move stale.
+    ...(!m.appAuthored && !m.dateChanged
+      ? [
+          db
+            .update(corosWriteJobs)
+            .set({ status: "superseded", updatedAt: now })
+            .where(and(eq(corosWriteJobs.workoutId, workout.id), inArray(corosWriteJobs.status, ["queued", "claimed", "in_progress", "verifying"]))),
+        ]
+      : []),
+    ...(job ? job.statements : []),
+    ...(fromDate !== req.toDate && docOriginRow(workout) ? [markMirrorOwedIf(db, req.userId, workout.id, now, sql`1 = 1`)] : []),
+    db.insert(auditEvents).values({
+      id: newId(),
+      userId: req.userId,
+      kind: "workout_moved",
+      detail: { workoutId: workout.id, fromDate, toDate: req.toDate, toTime: req.toTime, source: req.source, jobId: job?.jobId },
+      createdAt: now,
+    }),
+  ];
+  try {
+    await runAtomically(db, statements);
+  } catch (e) {
+    if (guardFailed(e)) throw new Error("session_changed");
+    throw e;
+  }
+  return { workoutId: workout.id, corosSyncState: m.corosSyncState, ...(job ? { jobId: job.jobId } : {}) };
 }
 
 /**

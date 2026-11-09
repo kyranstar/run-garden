@@ -28,31 +28,45 @@ export interface RecordIntentInput {
 
 /** Append an intent; any open intent of the same (target, kind) is superseded. */
 export async function recordIntent(db: Db, input: RecordIntentInput): Promise<string> {
-  const now = nowInstant();
-  const id = newId();
-  await db
-    .update(syncIntents)
-    .set({ supersededBy: id })
-    .where(
-      and(
-        eq(syncIntents.userId, input.userId),
-        eq(syncIntents.targetId, input.targetId),
-        eq(syncIntents.kind, input.kind),
-        isNull(syncIntents.resolvedAt),
-        isNull(syncIntents.supersededBy),
-      ),
-    );
-  await db.insert(syncIntents).values({
-    id,
-    userId: input.userId,
-    targetKind: input.targetKind,
-    targetId: input.targetId,
-    kind: input.kind,
-    payload: input.payload ?? null,
-    source: input.source,
-    createdAt: now,
-  });
+  const { id, statements } = intentStatements(db, input, nowInstant());
+  for (const statement of statements) await statement;
   return id;
+}
+
+/**
+ * `recordIntent` as statements for a caller's atomic batch: the open intents of the same kind superseded, the new one
+ * inserted — `resolvedAt`, when given, for an intent that closes as it is made.
+ */
+export function intentStatements(db: Db, input: RecordIntentInput, now: string, resolvedAt?: string) {
+  const id = newId();
+  return {
+    id,
+    statements: [
+      db
+        .update(syncIntents)
+        .set({ supersededBy: id })
+        .where(
+          and(
+            eq(syncIntents.userId, input.userId),
+            eq(syncIntents.targetId, input.targetId),
+            eq(syncIntents.kind, input.kind),
+            isNull(syncIntents.resolvedAt),
+            isNull(syncIntents.supersededBy),
+          ),
+        ),
+      db.insert(syncIntents).values({
+        id,
+        userId: input.userId,
+        targetKind: input.targetKind,
+        targetId: input.targetId,
+        kind: input.kind,
+        payload: input.payload ?? null,
+        source: input.source,
+        createdAt: now,
+        ...(resolvedAt ? { resolvedAt } : {}),
+      }),
+    ] as const,
+  };
 }
 
 export async function openIntentFor(

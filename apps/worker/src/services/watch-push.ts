@@ -50,7 +50,7 @@ import { COROS_EXERCISE_NAMES, localDateToCorosDay } from "@rg/providers";
 import type { Step } from "@rg/session-engine";
 import { watchPushEnabled, type Env } from "../env.js";
 import { sha256Hex } from "../auth/crypto.js";
-import { runAtomically, type Db } from "./db.js";
+import { runAtomically, type AtomicStatement, type Db } from "./db.js";
 import { libraryFor, loadAccountLibrary, PUBLIC_LIBRARY } from "./account-library.js";
 import { corosKeyOf } from "./coros-exercise-map.js";
 import { freeStamp, STAMP_SEPARATOR, stampName, takenStampsOn } from "./coros-stamp.js";
@@ -1186,45 +1186,127 @@ export async function unpushBuild(
   prefs: Pick<UserPreferences, "corosWritesEnabled">,
 ): Promise<void> {
   const id = pushJobId(buildId);
-  await db
+  await supersedeQueuedPush(db, buildId, now);
+  const plan = unpushPlanOf(row, await jobById(db, id), prefs);
+  if (plan.kind === "owe") {
+    await runAtomically(db, oweUnpushStatements(db, buildId, plan.address, now));
+    return;
+  }
+  if (plan.kind === "queue") await queueUnpush(db, userId, buildId, plan.payload, now);
+  await unlockSentBuild(db, row, buildId, now);
+}
+
+/** A push still queued for this build superseded: it never runs. */
+const supersedeQueuedPush = (db: Db, buildId: string, now: string) =>
+  db
     .update(corosWriteJobs)
     .set({ status: "superseded", updatedAt: now })
-    .where(and(eq(corosWriteJobs.id, id), eq(corosWriteJobs.status, "queued")));
-  const push = await jobById(db, id);
+    .where(and(eq(corosWriteJobs.id, pushJobId(buildId)), eq(corosWriteJobs.status, "queued")));
+
+/**
+ * What `unpushBuild` does about the copy, from the push as it stands once a queued one is superseded (a push read before
+ * that, still `queued`, is no copy on the watch either): its delete queued, owed (the athlete's COROS writes off), or
+ * nothing to take off.
+ */
+function unpushPlanOf(
+  row: WorkoutRow,
+  push: typeof corosWriteJobs.$inferSelect | null,
+  prefs: Pick<UserPreferences, "corosWritesEnabled">,
+): { kind: "queue"; payload: ProgramUnpushPayload } | { kind: "owe"; address: NonNullable<ReturnType<typeof watchAddressOf>> } | { kind: "none" } {
   const parsed = push ? programSessionPushJobSchema.safeParse(push.payload) : null;
   // Where the copy is: the row's address, or where it was when its delete was owed, the row having let go of it since.
   const address = watchAddressOf(row) ?? (parsed?.success ? parsed.data.owedAddress : undefined) ?? null;
   // A DONE SESSION'S COPY STAYS (audit 3-A life U-1): it is the session the athlete did — the record a watch review
   // pairs with — so nothing takes it off, now or owed.
   const resolved = row.contentState === "done" || row.completionState === "completed";
-  if (!resolved && push?.status === "verified" && address && parsed?.success) {
-    if (!prefs.corosWritesEnabled) {
-      // Owed on the sent build — locked, or a provisional copy's record (the watch mirrors the plan, A1), which keeps
-      // its marker as a sent build keeps its lock — and the address on its push, for the delete to go to.
-      await runAtomically(db, [
-        db
-          .update(sessionBuilds)
-          .set({ payload: sql`json_set(${sessionBuilds.payload}, ${UNPUSH_OWED_AT_PATH}, ${now})` })
-          .where(and(eq(sessionBuilds.id, buildId), or(isNotNull(sessionBuilds.lockedAt), provisionalRecord()))),
-        db
-          .update(corosWriteJobs)
-          .set({ payload: sql`json_set(${corosWriteJobs.payload}, '$.owedAddress', json(${JSON.stringify(address)}))` })
-          .where(eq(corosWriteJobs.id, id)),
-      ]);
-      return;
-    }
-    await queueUnpush(db, userId, buildId, {
+  if (resolved || push?.status !== "verified" || !address || !parsed?.success) return { kind: "none" };
+  // Owed on the sent build — locked, or a provisional copy's record (the watch mirrors the plan, A1), which keeps its marker
+  // as a sent build keeps its lock — and the address on its push, for the delete to go to.
+  if (!prefs.corosWritesEnabled) return { kind: "owe", address };
+  return {
+    kind: "queue",
+    payload: {
       workoutId: row.id,
       happenDay: address.happenDay,
-      // A copy the athlete renamed in the COROS app is held under its new name (audit 3-A life L-5): the delete's
-      // proof is the name COROS holds at the recorded address.
+      // A copy the athlete renamed in the COROS app is held under its new name (audit 3-A life L-5): the delete's proof
+      // is the name COROS holds at the recorded address.
       name: parsed.data.renamed ?? parsed.data.name,
       idInPlan: address.idInPlan,
       programId: address.programId,
       corosPlanId: address.corosPlanId,
-    }, now);
-  }
-  await unlockSentBuild(db, row, buildId, now);
+    },
+  };
+}
+
+const oweUnpushStatements = (db: Db, buildId: string, address: NonNullable<ReturnType<typeof watchAddressOf>>, now: string) => [
+  db
+    .update(sessionBuilds)
+    .set({ payload: sql`json_set(${sessionBuilds.payload}, ${UNPUSH_OWED_AT_PATH}, ${now})` })
+    .where(and(eq(sessionBuilds.id, buildId), or(isNotNull(sessionBuilds.lockedAt), provisionalRecord()))),
+  db
+    .update(corosWriteJobs)
+    .set({ payload: sql`json_set(${corosWriteJobs.payload}, '$.owedAddress', json(${JSON.stringify(address)}))` })
+    .where(eq(corosWriteJobs.id, pushJobId(buildId))),
+];
+
+/**
+ * `unpushBuild` as statements for a caller's atomic batch (a guarded move: jobs.ts), the push read before (`push`): the
+ * same decision (`unpushPlanOf`); the delete queued — or queued again — in one statement (`queueUnpush`'s insert or its
+ * re-queue, as an upsert).
+ */
+export function unpushBuildStatements(
+  db: Db,
+  userId: string,
+  row: WorkoutRow,
+  buildId: string,
+  push: typeof corosWriteJobs.$inferSelect | null,
+  now: string,
+  prefs: Pick<UserPreferences, "corosWritesEnabled">,
+): AtomicStatement[] {
+  const plan = unpushPlanOf(row, push, prefs);
+  if (plan.kind === "owe") return [supersedeQueuedPush(db, buildId, now), ...oweUnpushStatements(db, buildId, plan.address, now)];
+  return [
+    supersedeQueuedPush(db, buildId, now),
+    ...(plan.kind === "queue" ? [queueUnpushStatement(db, userId, buildId, plan.payload, now)] : []),
+    ...(row.contentState === "started" || row.contentState === "done" ? [] : [unlockSentBuildStatement(db, buildId, now)]),
+  ];
+}
+
+/** `queueUnpush` as one statement: the delete inserted, or one there already queued again from a settled status. */
+function queueUnpushStatement(db: Db, userId: string, buildId: string, payload: ProgramUnpushPayload, now: string) {
+  return db
+    .insert(corosWriteJobs)
+    .values({
+      id: unpushJobId(buildId),
+      userId,
+      workoutId: payload.workoutId,
+      kind: "coach_delete_workout",
+      expectedContentFingerprint: "",
+      originalDate: payload.happenDay,
+      destinationDate: payload.happenDay,
+      payload: { ...payload },
+      requestedAt: now,
+      status: "queued",
+      updatedAt: now,
+    })
+    .onConflictDoUpdate({
+      target: corosWriteJobs.id,
+      set: {
+        status: "queued",
+        claimedByDeviceId: null,
+        claimedAt: null,
+        verifiedAt: null,
+        completedAt: null,
+        lastErrorCategory: null,
+        lastErrorDetail: null,
+        payload: { ...payload },
+        originalDate: payload.happenDay,
+        destinationDate: payload.happenDay,
+        requestedAt: now,
+        updatedAt: now,
+      },
+      setWhere: inArray(corosWriteJobs.status, [...REQUEUEABLE_UNPUSH]),
+    });
 }
 
 /**
@@ -1234,14 +1316,21 @@ export async function unpushBuild(
  */
 export async function unlockSentBuild(db: Db, row: Pick<WorkoutRow, "contentState">, buildId: string, now: string): Promise<void> {
   if (row.contentState === "started" || row.contentState === "done") return;
-  await db
+  await unlockSentBuildStatement(db, buildId, now);
+}
+
+/** `unlockSentBuild`'s write, as a statement. */
+const unlockSentBuildStatement = (db: Db, buildId: string, now: string) =>
+  db
     .update(sessionBuilds)
     .set({
       lockedAt: null,
       payload: sql`case when ${provisionalRecord()} then json_remove(${sessionBuilds.payload}, ${PROVISIONAL_KIND_PATH}) else json_set(${sessionBuilds.payload}, ${UNSENT_AT_PATH}, ${now}) end`,
     })
     .where(and(eq(sessionBuilds.id, buildId), or(isNotNull(sessionBuilds.lockedAt), provisionalRecord())));
-}
+
+/** The statuses an unpush is queued again from (`queueUnpush`). */
+const REQUEUEABLE_UNPUSH = ["verified", "failed", "superseded", "cancelled", "needs_attention", "restored"] as const;
 
 /** A sent build whose copy's unpush is owed — recorded while the athlete's COROS writes were off (`unpushBuild`). */
 export const UNPUSH_OWED_AT_PATH = "$.unpushOwedAt";
@@ -1330,7 +1419,7 @@ export async function queueUnpush(db: Db, userId: string, buildId: string, paylo
         eq(corosWriteJobs.id, id),
         // `restored` too (audit 3-A L-7): an unpush a restore neutralised removed nothing, and the athlete's Take off
         // is the new act it waits for.
-        inArray(corosWriteJobs.status, ["verified", "failed", "superseded", "cancelled", "needs_attention", "restored"]),
+        inArray(corosWriteJobs.status, [...REQUEUEABLE_UNPUSH]),
       ),
     );
 }

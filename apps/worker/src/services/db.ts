@@ -1,3 +1,4 @@
+import { sql, type SQL } from "drizzle-orm";
 import { drizzle } from "drizzle-orm/d1";
 import type { BatchItem } from "drizzle-orm/batch";
 import type { BaseSQLiteDatabase } from "drizzle-orm/sqlite-core";
@@ -68,6 +69,25 @@ export async function runAtomically(db: Db, statements: readonly AtomicStatement
   sqlite.transaction(() => {
     for (const s of statements) (s as unknown as { run: () => unknown }).run();
   });
+}
+
+/**
+ * A GUARDED WRITE THAT FAILS ITS BATCH when `guard` no longer holds: the value of a NOT NULL column of the row it writes
+ * (`planned_workouts.effective_date`), NULL when the guard is false, so the statement errors and the batch — one D1
+ * transaction, or the test driver's — rolls back every statement in it. The batch's other statements then need no gate of
+ * their own: they land only if the guarded write did. In SET, the guard reads the row as it was before the write. A row that
+ * isn't there matches no row and fails nothing: the caller has read it first. `guardFailed` tells the error apart.
+ */
+export const guardOrFail = (guard: SQL, value: unknown): SQL => sql`case when ${guard} then ${value} else null end`;
+
+const GUARD_FAILED = /NOT NULL constraint failed: planned_workouts\.effective_date/;
+
+/** The error a batch answers when its `guardOrFail` write found its guard false (D1 may wrap it, as `cause`). */
+export function guardFailed(e: unknown): boolean {
+  for (let x: unknown = e, i = 0; x && i < 4; i++, x = (x as { cause?: unknown }).cause) {
+    if (x instanceof Error && GUARD_FAILED.test(x.message)) return true;
+  }
+  return false;
 }
 
 /**

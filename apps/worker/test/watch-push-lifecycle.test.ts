@@ -13,7 +13,12 @@ import { eq } from "drizzle-orm";
 import { schema } from "@rg/database";
 import { addDays, newId, type PerformedSessionWireInput, type UserPreferences } from "@rg/domain";
 import { createSession, SESSION_COOKIE } from "../src/auth/sessions.js";
+import { coachRoutes } from "../src/routes/coach.js";
 import { planRoutes } from "../src/routes/plan.js";
+import { adjustPlan } from "../src/services/design-tools/adjust-plan.js";
+import { designProposalId } from "../src/services/design-tools/propose.js";
+import { isToolErr } from "../src/services/design-tools/types.js";
+import { planAdjustId } from "../src/services/proposal-kinds.js";
 import type { Db } from "../src/services/db.js";
 import { applyMove } from "../src/services/jobs.js";
 import { removeFromPlan } from "../src/services/plan-mutations.js";
@@ -23,13 +28,29 @@ import { sendToWatch, takeOffWatch, unpushBuild } from "../src/services/watch-pu
 import { connectTestCoros, makeTestDb, makeTestUser, mountRoutes } from "./helpers.js";
 import { DAY, NOON, rowOf, seedCatalog, seedProgram, seedSlot, seedTmj, switchOn, TOMORROW } from "./watch-push-fixture.js";
 
-const { corosWriteJobs, plannedWorkouts, scheduleOverrides, sessionBuilds, syncIntents } = schema;
+const { coachProposals, coachRuns, corosWriteJobs, plannedWorkouts, scheduleOverrides, sessionBuilds, syncIntents } = schema;
 
 /**
  * Hold a request at `sentBuildIdOf`, which a move of a sent session reads before it writes anything of the watch's: the
  * window between the route's guard and the move's own writes. A test sets it; it clears itself.
  */
-const gates = vi.hoisted(() => ({ sent: null as null | (() => Promise<void>) }));
+const gates = vi.hoisted(() => ({
+  sent: null as null | (() => Promise<void>),
+  /** The very last instant before a batch of statements runs (`runAtomically`): after every read a move makes. */
+  batch: null as null | (() => Promise<void>),
+}));
+vi.mock("../src/services/db.js", async (importOriginal) => {
+  const real = await importOriginal<typeof import("../src/services/db.js")>();
+  return {
+    ...real,
+    runAtomically: async (...args: Parameters<typeof real.runAtomically>) => {
+      const hold = gates.batch;
+      gates.batch = null;
+      if (hold) await hold();
+      return real.runAtomically(...args);
+    },
+  };
+});
 vi.mock("../src/services/session-build.js", async (importOriginal) => {
   const real = await importOriginal<typeof import("../src/services/session-build.js")>();
   return {
@@ -58,6 +79,7 @@ beforeEach(async () => {
   vi.useFakeTimers({ toFake: ["Date"] });
   vi.setSystemTime(new Date(NOON));
   gates.sent = null;
+  gates.batch = null;
   db = makeTestDb({ boundVariableCap: 100 });
   ({ userId, prefs } = await makeTestUser(db, { corosWritesEnabled: true }));
   await connectTestCoros(db, userId);
@@ -320,6 +342,100 @@ describe("the save's day check for a sent build COROS moved", () => {
     const after = await trail(workoutId, buildId);
     expect(after.jobs).toContainEqual([`unpush:${buildId}`, "coach_delete_workout", "queued"]);
     expect(after).toMatchObject({ locked: false, overrides: 1, intents: 1 });
+  });
+
+  /** A fault inside a write's statements, as D1 answers one mid-batch: a trigger that fails the override's insert. */
+  const raw = () => (db as unknown as { $client: { exec(sql: string): void } }).$client;
+  const faultOnOverride = () => raw().exec(`CREATE TRIGGER guard_fault BEFORE INSERT ON schedule_overrides BEGIN SELECT RAISE(ABORT, 'D1_ERROR: synthetic fault mid-move'); END;`);
+  const clearFault = () => raw().exec(`DROP TRIGGER guard_fault;`);
+
+  /** Built and started on TOMORROW, as the athlete would the next day: never stuck on the old day's locked build. */
+  const startsTomorrow = async (workoutId: string) => {
+    vi.setSystemTime(new Date(`${TOMORROW}T19:00:00.000Z`));
+    const at = { today: TOMORROW, now: `${TOMORROW}T19:00:00.000Z`, prefs };
+    const built = await buildSession(db, userId, workoutId, { checks: { tmj: { pre: 2, feelingOff: false } } }, at);
+    expect(built.build?.date).toBe(TOMORROW);
+    const started = await startSession(db, userId, workoutId, built.build!.buildId, at.now);
+    expect(started).toMatchObject({ contentState: "started", locked: true });
+  };
+
+  it("a fault in the middle of a guarded /move writes nothing of it; the retry makes the whole move, and the session builds and starts on its new day with its old copy off", async () => {
+    const { workoutId, buildId } = await sentSlot({ verified: true });
+    const before = await trail(workoutId, buildId);
+    faultOnOverride();
+    const spy = vi.spyOn(console, "error").mockImplementation(() => undefined);
+    const first = await planRoute(workoutId, "move", { toDate: TOMORROW, toTime: "18:00" });
+    spy.mockRestore();
+    expect(first.status).toBe(500);
+    expect(await rowOf(db, workoutId)).toMatchObject({ effectiveDate: DAY, contentState: "built" });
+    expect(await trail(workoutId, buildId)).toEqual(before);
+    clearFault();
+    const retry = await planRoute(workoutId, "move", { toDate: TOMORROW, toTime: "18:00" });
+    expect(retry.status).toBe(200);
+    expect(await rowOf(db, workoutId)).toMatchObject({ effectiveDate: TOMORROW, contentState: "outline" });
+    const after = await trail(workoutId, buildId);
+    expect(after.jobs).toContainEqual([`unpush:${buildId}`, "coach_delete_workout", "queued"]);
+    expect(after).toMatchObject({ locked: false, overrides: 1, intents: 1 });
+    await startsTomorrow(workoutId);
+  });
+
+  it("the same fault inside an approve's move: nothing written, the next approve makes the whole move, and the session builds and starts on its new day with its old copy off", async () => {
+    const { workoutId, buildId } = await sentSlot({ verified: true });
+    const runId = `run-${newId()}`;
+    await db.insert(coachRuns).values({ id: runId, userId, parentId: null, role: "main", scope: { kind: "auto" }, request: "x", status: "active", state: null, steps: 0, costUsd: 0, createdAt: NOON, updatedAt: NOON });
+    const r = await adjustPlan.run({ db, env: switchOn({ COACH_DESIGNER: "1" }), userId, run: { id: runId, role: "main", scope: { kind: "auto" }, parentId: null, rehearsal: false }, now: new Date(), toolUseId: `t_${newId()}` }, { workoutId, change: { kind: "move", toDate: TOMORROW, toTime: "18:00" }, why: "A freer day." });
+    if (isToolErr(r)) throw new Error(`${r.error} ${r.why}`);
+    const proposal = designProposalId(runId);
+    await db.update(coachProposals).set({ status: "pending" }).where(eq(coachProposals.id, proposal));
+    const approve = async () => {
+      const cookie = `${SESSION_COOKIE}=${await createSession(db, userId)}`;
+      const res = await mountRoutes(db, "/api/coach", coachRoutes).request(`/api/coach/proposals/${proposal}/approve`, { method: "POST", headers: { Cookie: cookie, "Content-Type": "application/json" }, body: "{}" }, switchOn({ COACH_DESIGNER: "1" }), { waitUntil: () => undefined, passThroughOnException: () => undefined, props: {} } as never);
+      const text = await res.text();
+      return { status: res.status, json: (text ? JSON.parse(text.startsWith("{") ? text : "{}") : {}) as Record<string, any> };
+    };
+    const before = await trail(workoutId, buildId);
+    faultOnOverride();
+    const spy = vi.spyOn(console, "error").mockImplementation(() => undefined);
+    const first = await approve().catch((e: Error) => ({ status: 500, json: { error: e.message } as Record<string, any> }));
+    spy.mockRestore();
+    expect(first.status).toBe(500);
+    expect(await rowOf(db, workoutId)).toMatchObject({ effectiveDate: DAY, contentState: "built" });
+    expect(await trail(workoutId, buildId)).toEqual(before);
+    clearFault();
+    // The release leaves the claim to be taken over at once (the recovery rule).
+    const again = await approve();
+    expect(again.status).toBe(200);
+    expect(again.json.changed.map((c: { opId: string }) => c.opId)).toEqual([planAdjustId(workoutId)]);
+    expect(await rowOf(db, workoutId)).toMatchObject({ effectiveDate: TOMORROW, contentState: "outline" });
+    const after = await trail(workoutId, buildId);
+    expect(after.jobs).toContainEqual([`unpush:${buildId}`, "coach_delete_workout", "queued"]);
+    expect(after.locked).toBe(false);
+    await startsTomorrow(workoutId);
+  });
+
+  it("the phone's save of a session started days ago, landing at the last instant before a guarded /move writes: refused as done, its copy stays on the watch (U-1), as if no move was asked", async () => {
+    const LATER = addDays(DAY, 2);
+    const c = await sentSlot({ verified: true, programId: await seedProgram(db, userId, "Control program") });
+    await startSession(db, userId, c.workoutId, c.buildId, NOON);
+    const { workoutId, buildId, build } = await sentSlot({ verified: true });
+    await startSession(db, userId, workoutId, buildId, NOON);
+    vi.setSystemTime(new Date(`${LATER}T19:00:00.000Z`));
+    const cw = wireOf(c.workoutId, c.build, DAY);
+    expect(await savePerformedSession(db, userId, cw.id, cw, { now: `${LATER}T19:00:00.000Z`, prefs })).toMatchObject({ status: "saved" });
+    const control = await trail(c.workoutId, c.buildId);
+    let landed = false;
+    gates.batch = async () => {
+      const w = wireOf(workoutId, build, DAY);
+      expect(await savePerformedSession(db, userId, w.id, w, { now: `${LATER}T19:00:00.000Z`, prefs })).toMatchObject({ status: "saved" });
+      landed = true;
+    };
+    const answer = await planRoute(workoutId, "move", { toDate: addDays(DAY, 5), toTime: "18:00" });
+    expect(landed).toBe(true);
+    expect([answer.status, answer.json.error]).toEqual([409, "session_completed"]);
+    expect(await rowOf(db, workoutId)).toMatchObject({ effectiveDate: DAY, completionState: "completed", contentState: "done" });
+    const after = await trail(workoutId, buildId);
+    expect(after.jobs.filter((j) => j[1] === "coach_delete_workout")).toEqual([]);
+    expect({ ...after, jobs: after.jobs.length }).toEqual({ ...control, jobs: control.jobs.length });
   });
 
   it("HAZARD, as it stands (JOINT §3.2; the guard neither causes nor stops it): Discard on a sent build, then a move: the move unsends it and the phone's save answers 422 for good", async () => {
