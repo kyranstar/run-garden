@@ -241,7 +241,9 @@ function workoutSecondsOf(row: WorkoutRow): number {
  *  - only live, `scheduled`, non-rest rows — an archived row has no event, a
  *    completed one is a story that already happened, and a rest day never
  *    books anything;
- *  - only days that collide, so a day the athlete already likes is untouched.
+ *  - only days that collide, so a day the athlete already likes is untouched;
+ *  - a session under way (started) keeps its time: it is pinned, as the athlete's own pick is, and the day is laid out
+ *    around it (the session guard: nothing moves a session from under the device playing it).
  */
 export async function separateDayCollisions(
   db: Db,
@@ -258,11 +260,11 @@ export async function separateDayCollisions(
   // category) against D1's ~100 ceiling. The margin is the point — the last
   // "too many SQL variables" in this repo froze the athlete's whole calendar.
   const DATE_BIND_CHUNK = 80;
-  const rows: WorkoutRow[] = [];
+  const rows: Array<WorkoutRow & { contentState: string | null }> = [];
   for (const batch of chunkIds(wanted, DATE_BIND_CHUNK)) {
     rows.push(
       ...(await db
-        .select(plannedRowColumns())
+        .select({ ...plannedRowColumns(), contentState: plannedWorkouts.contentState })
         .from(plannedWorkouts)
         .where(
           and(
@@ -309,7 +311,7 @@ export async function separateDayCollisions(
       category: r.category,
       workoutSeconds: workoutSecondsOf(r),
       currentTime: r.effectiveTime,
-      pinned: pinnedIds.has(r.id),
+      pinned: pinnedIds.has(r.id) || r.contentState === "started",
     }));
     const placement = relaidDay(date, sessions, prefs);
     if (!placement) continue;

@@ -93,6 +93,8 @@ import { syncCalendar } from "../src/services/calendar-sync.js";
 import { encryptSecret } from "../src/auth/crypto.js";
 import { postSyncNote } from "../src/services/sync-notes.js";
 import { readGuarded } from "../src/services/session-guard.js";
+import { applyOps, applyStructuralChunk } from "../src/services/coach-apply.js";
+import { separateDayCollisions } from "../src/services/day-placement.js";
 import { calmDoc } from "./doc-workout-fixture.js";
 import { FakeGoogle } from "./fake-google-calendar.js";
 import { cloneTestDb, isWrite, makeTestDb, makeTestUser, mountRoutes } from "./helpers.js";
@@ -933,14 +935,106 @@ describe("the coach and a session under way", () => {
     expect(rowOf(w, id)).toMatchObject({ date: D, time: "19:30" });
   });
 
-  it("GAP, named: a thread coach's op on a session under way still lands; the thread route is not gated (owner P5)", async () => {
-    const { w, id } = await startedOn(D);
+  it.each([
+    ["a skip", (id: string) => ({ kind: "skip", workoutId: id })],
+    ["a move", (id: string) => ({ kind: "move", workoutId: id, toDate: addDays(D, 2) })],
+    ["a remove", (id: string) => ({ kind: "remove", workoutId: id })],
+  ] as const)("a thread coach's %s of a session under way (owner P5): the applier's own read refuses it — the row as the Start left it, the phone's save still lands", async (_name, op) => {
+    const { w, id, build } = await startedOn(D);
     setClock(D, "18:10");
     const proposal = `tp-${newId()}`;
-    await w.db.insert(coachProposals).values({ id: proposal, userId: w.userId, planId: null, title: "This week", evidence: "", rationale: "", flags: [], ops: [{ kind: "skip", workoutId: id }], status: "pending", createdAt: nowInstant(), expiresAt: addDays(D, 7) } as never);
+    await w.db.insert(coachProposals).values({ id: proposal, userId: w.userId, planId: null, title: "This week", evidence: "", rationale: "", flags: [], ops: [op(id)], status: "pending", createdAt: nowInstant(), expiresAt: addDays(D, 7) } as never);
+    const trail = overrides(w, id);
     const res = await w.call("POST", `/api/coach/proposals/${proposal}/approve`);
-    expect(res.status).toBe(200);
-    expect(rowOf(w, id).completion).toBe("skipped");
+    expect(res.status).toBeLessThan(500);
+    expect(rowOf(w, id)).toMatchObject({ date: D, completion: "scheduled", content: "started", archived: 0 });
+    expect(overrides(w, id)).toBe(trail);
+    expect((await saved(w, id, build, D)).json.status).toBe("saved");
+    expect(rowOf(w, id)).toMatchObject({ date: D, completion: "completed" });
+  });
+
+  it("a thread coach's swap of two days, one holding a session under way (a linked pair): neither day moves — no half a swap — and the save lands on its day", async () => {
+    const { w, id, build } = await startedOn(D);
+    const other = await slotOn(w, addDays(D, 1));
+    setClock(D, "18:10");
+    const proposal = `tp-${newId()}`;
+    await w.db.insert(coachProposals).values({ id: proposal, userId: w.userId, planId: null, title: "This week", evidence: "", rationale: "", flags: [], ops: [{ kind: "swap", dayA: D, dayB: addDays(D, 1) }], status: "pending", createdAt: nowInstant(), expiresAt: addDays(D, 7) } as never);
+    const res = await w.call("POST", `/api/coach/proposals/${proposal}/approve`);
+    expect(res.status).toBeLessThan(500);
+    expect(rowOf(w, id)).toMatchObject({ date: D, content: "started" });
+    expect(rowOf(w, other).date).toBe(addDays(D, 1));
+    expect((await saved(w, id, build, D)).json.status).toBe("saved");
+  });
+
+  it("a thread coach's skip, the Start landing after the applier read it (forced): the write holds the session as read — not skipped", async () => {
+    const w = await world();
+    const id = await slotOn(w, D);
+    setClock(D, "17:55");
+    const built = await w.call("POST", `/api/sessions/${id}/build`, {});
+    const proposal = `tp-${newId()}`;
+    await w.db.insert(coachProposals).values({ id: proposal, userId: w.userId, planId: null, title: "This week", evidence: "", rationale: "", flags: [], ops: [{ kind: "skip", workoutId: id }], status: "pending", createdAt: nowInstant(), expiresAt: addDays(D, 7) } as never);
+    gates.mutation = async () => {
+      expect((await w.call("POST", `/api/sessions/${id}/start`, { buildId: built.json.build.buildId })).status).toBe(200);
+    };
+    const res = await w.call("POST", `/api/coach/proposals/${proposal}/approve`);
+    expect(res.status).toBeLessThan(500);
+    expect(rowOf(w, id)).toMatchObject({ completion: "scheduled", content: "started" });
+  });
+});
+
+// ── The coach's bulk archive of a plan's sessions (P3: archiveWeek, archiveSlice) ───────────────────────────────────
+
+describe("a plan's sessions archived in bulk by the coach leave one under way, and one done", () => {
+  /** A coach plan this Wednesday's two Studio sessions are filed under, one of them started; and the athlete's done one. */
+  async function planWithStarted() {
+    const w = await world();
+    const planId = `plan-${newId()}`;
+    await w.db.insert(schema.coachPlans).values({ id: planId, userId: w.userId, discipline: "lift", name: "Base block", status: "active", startDate: addDays(D, -30), endDate: addDays(D, 30), raceDate: null, stampPrefix: "RG", programId: null, createdAt: nowInstant(), updatedAt: nowInstant() });
+    const started = await slotOn(w, D);
+    const open = await slotOn(w, D, { time: "07:00" });
+    // Filed under the plan, as a workout of the athlete's naming the plan is.
+    for (const id of [started, open]) await w.db.update(plannedWorkouts).set({ planId }).where(eqId(id));
+    setClock(D, "17:55");
+    await buildAndStart(w, started);
+    expect(rowOf(w, started)).toMatchObject({ content: "started", archived: 0 });
+    return { w, planId, started, open };
+  }
+
+  it("a thread proposal's reshapeWeek (archiveWeek): the session under way stays on the plan, the other goes", async () => {
+    const { w, planId, started, open } = await planWithStarted();
+    const prefs = await loadPreferences(w.db, w.userId);
+    await applyOps(w.db, w.userId, prefs, `tp-${newId()}`, [{ kind: "reshapeWeek", planId, weekStart: addDays(D, -2), sessions: [] } as never], {});
+    expect(rowOf(w, open).archived).toBe(1);
+    expect(rowOf(w, started)).toMatchObject({ content: "started", archived: 0, date: D });
+  });
+
+  it("a plan retired chunk by chunk (archiveSlice): the session under way stays on the plan, the other goes", async () => {
+    const { w, planId, started, open } = await planWithStarted();
+    const prefs = await loadPreferences(w.db, w.userId);
+    let progress = null as never;
+    for (let i = 0; i < 20; i++) {
+      const r = await applyStructuralChunk(w.db, { userId: w.userId, proposalId: `tp-${planId}`, opIndex: 0, op: { kind: "retirePlan", planId } as never, progress, budget: 200, now: new Date(), prefs });
+      if (r.status !== "more") break;
+      progress = r.progress as never;
+    }
+    expect(rowOf(w, open).archived).toBe(1);
+    expect(rowOf(w, started)).toMatchObject({ content: "started", archived: 0, date: D });
+  });
+});
+
+describe("the day's placement (every writer's: a plan's sessions, an import, an approve) never re-times a session under way", () => {
+  it.each([0, 1])("two sessions at one hour, the %s-th started: the started one keeps its time; the other is placed around it", async (which) => {
+    const w = await world();
+    const ids = [await slotOn(w, D), await slotOn(w, D)];
+    setClock(D, "17:55");
+    await buildAndStart(w, ids[which]!);
+    // Neither hour the athlete's own pick (no `time_change`): the placement may move either.
+    raw(w).prepare(`delete from schedule_overrides where workout_id in (?, ?)`).run(ids[0], ids[1]);
+    const before = rowOf(w, ids[which]!).time;
+    const moved = await separateDayCollisions(w.db, w.userId, [D], await loadPreferences(w.db, w.userId), { from: D, now: nowInstant() });
+    expect(moved).toHaveLength(1);
+    expect(rowOf(w, ids[which]!)).toMatchObject({ time: before, content: "started" });
+    expect(moved.map((m) => m.workoutId)).toEqual([ids[1 - which]]);
   });
 });
 

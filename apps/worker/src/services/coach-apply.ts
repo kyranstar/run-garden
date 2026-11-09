@@ -45,6 +45,7 @@ import { separateDayCollisions, windowTimeFor } from "./day-placement.js";
 import { coachStamp, recordedStampFor, stampName, takenStampsOn, takenStampsOnDays } from "./coros-stamp.js";
 import { applyMove } from "./jobs.js";
 import { intentStatements, openIntentFor } from "./sync-intents.js";
+import { stillOpen, underWayNow, underWaySql } from "./session-guard.js";
 import { takesWatchCopy, unmarkedFingerprint, watchCopyBase } from "./watch-copy-marker.js";
 import {
   enqueueUnpushIfOurs,
@@ -1171,6 +1172,13 @@ async function suppressAndUnpush(
 /** Archive this plan-week's unstarted sessions (calendar suppression; watch
  * unpush for verified coach-pushed rows — the documented remove contract for
  * imported plans never applies here because planId is coach-authored). */
+/**
+ * A SESSION THE COACH'S BULK ARCHIVE LEAVES ALONE (P3, the session guard): one started, or done — `archiveWeek` and
+ * `archiveSlice` take a plan's still-scheduled sessions, and a Studio workout filed under the plan can be under way. In the
+ * read, and again in the archive's own write, so a Start landing between is not archived either.
+ */
+const unstarted = (): SQL => or(isNull(plannedWorkouts.contentState), notInArray(plannedWorkouts.contentState, ["started", "done"]))!;
+
 async function archiveWeek(
   db: Db,
   userId: string,
@@ -1200,21 +1208,25 @@ async function archiveWeek(
         // Re-applying an approved proposal must be a no-op — already-archived
         // rows would otherwise collect a second suppression row.
         isNull(plannedWorkouts.archivedAt),
+        unstarted(),
       ),
     );
-  if (rows.length > 0) {
-    // Chunked like every other id-list bind: D1 caps a statement at ~100 bound
-    // variables. One week of one plan is small today, but the cap is not worth
-    // betting an approval on.
-    for (const ids of chunkIds(rows.map((r) => r.id))) {
-      await db
-        .update(plannedWorkouts)
-        .set({ archivedAt: now, archiveReason: "user_removed", updatedAt: now })
-        .where(inArray(plannedWorkouts.id, ids));
-    }
-    await suppressAndUnpush(db, userId, rows, now, prefs);
+  if (rows.length === 0) return [];
+  // Chunked like every other id-list bind: D1 caps a statement at ~100 bound
+  // variables. One week of one plan is small today, but the cap is not worth
+  // betting an approval on. Only what the write archived is suppressed and taken off.
+  const archived = new Set<string>();
+  for (const ids of chunkIds(rows.map((r) => r.id))) {
+    const done = await db
+      .update(plannedWorkouts)
+      .set({ archivedAt: now, archiveReason: "user_removed", updatedAt: now })
+      .where(and(inArray(plannedWorkouts.id, ids), unstarted()))
+      .returning({ id: plannedWorkouts.id });
+    for (const r of done) archived.add(r.id);
   }
-  return rows.map((r) => r.id);
+  const went = rows.filter((r) => archived.has(r.id));
+  if (went.length > 0) await suppressAndUnpush(db, userId, went, now, prefs);
+  return went.map((r) => r.id);
 }
 
 /** Why a session an op names can no longer change, in the applier's own words: each completes "a session it <verb> …". */
@@ -1224,6 +1236,8 @@ export const NOT_ACTIONABLE = {
   skipped: "was already skipped",
   missed: "was already missed",
   past: "has already had its day",
+  /** The session guard's (session-guard.ts): started, and its save may still land — the applier's own read (owner P5). */
+  underWay: "may still be running on another device",
 } as const;
 
 /**
@@ -1394,16 +1408,24 @@ export async function applyOps(
     | { row: typeof plannedWorkouts.$inferSelect; why?: undefined }
     | { row?: typeof plannedWorkouts.$inferSelect; why: string }
   > => {
-    const [row] = await db
-      .select()
+    const [read] = await db
+      .select({ row: plannedWorkouts, underWay: sql<unknown>`${underWaySql()}` })
       .from(plannedWorkouts)
       .where(and(eq(plannedWorkouts.id, workoutId), eq(plannedWorkouts.userId, userId)))
       .limit(1);
+    const row = read?.row;
     // The row rides along with a refusal, so an op can recognise its OWN
     // target state (a re-apply, finding 7) rather than report it as a shortfall.
-    const why = whyNotActionable(row, today);
+    // A session under way is refused here too, whoever's op it is — the thread coach's as the designer's (owner P5).
+    const why = whyNotActionable(row, today) ?? (row && underWayNow(row, read!.underWay, today) ? NOT_ACTIONABLE.underWay : undefined);
     return why === undefined ? { row: row! } : { row, why };
   };
+  /**
+   * The hold an op's write keeps on its session: the designer's (`guards`: the row as its approve read it), else the session
+   * guard's own (`stillOpen`), so a Start or a save landing after the read above loses nothing whoever's op it is (owner P5).
+   */
+  const holdOf = (workoutId: string, row: typeof plannedWorkouts.$inferSelect | undefined): SQL | undefined =>
+    opts.guards?.get(workoutId) ?? (row ? stillOpen(row) : undefined);
 
   for (let i = 0; i < ops.length; i++) {
     if (!inScope(i)) continue;
@@ -1441,7 +1463,7 @@ export async function applyOps(
         // batch (Stage 1 dual-write; `updateDocColumns` keeps a row resolved
         // meanwhile as it was).
         const doc = sessionDoc(op.workoutId, op.session, prefs.weightUnit, thresholdPaceSecPerKm);
-        const guard = opts.guards?.get(op.workoutId);
+        const guard = holdOf(op.workoutId, found.row);
         // ONE BATCH, all of it (re-review 2, I-1: a fault after the row left a session eased with no stage rows and no
         // claim, and the next approve found it made): the row — guarded, it fails the batch when the session isn't as the
         // approve read it (`guardOrFail`) — its revision, its stage rows, the app's claim and the watch's rewrite.
@@ -1520,7 +1542,7 @@ export async function applyOps(
         // silently, which is why `toTime` had no expressible form at all.
         const toTime = op.toTime ?? w.effectiveTime ?? "07:00";
         if (w.effectiveDate !== op.toDate || toTime !== w.effectiveTime) {
-          const guard = opts.guards?.get(op.workoutId);
+          const guard = holdOf(op.workoutId, found.row);
           try {
             await applyMove(db, {
               userId,
@@ -1545,8 +1567,8 @@ export async function applyOps(
         break;
       }
       case "swap": {
-        const days = await db
-          .select()
+        const read = await db
+          .select({ row: plannedWorkouts, underWay: sql<unknown>`${underWaySql()}` })
           .from(plannedWorkouts)
           .where(
             and(
@@ -1558,16 +1580,34 @@ export async function applyOps(
               isNull(plannedWorkouts.archivedAt),
             ),
           );
+        // A LINKED PAIR (P3): a day holding a session under way isn't traded at all — half a swap (the other day's sessions
+        // moved onto it, this one left) is not what was asked. The session guard's rule, and its hold on each move below.
+        if (read.some((r) => underWayNow(r.row, r.underWay, today))) {
+          out.missed.push(`a day it trades holds a session that ${NOT_ACTIONABLE.underWay}, so neither day was changed`);
+          break;
+        }
+        const days = read.map((r) => r.row);
         for (const w of days) {
           const target = w.effectiveDate === op.dayA ? op.dayB : op.dayA;
-          await applyMove(db, {
-            userId,
-            workoutId: w.id,
-            toDate: target,
-            toTime: w.effectiveTime,
-            source: "app",
-            corosWritesEnabled: prefs.corosWritesEnabled ?? false,
-          });
+          try {
+            await applyMove(db, {
+              userId,
+              workoutId: w.id,
+              toDate: target,
+              toTime: w.effectiveTime,
+              onlyIf: stillOpen(w),
+              source: "app",
+              corosWritesEnabled: prefs.corosWritesEnabled ?? false,
+            });
+          } catch (e) {
+            // A Start or a save landing after the read above: that session stays, and the trade stops there. Sessions moved
+            // before it stay moved (a residual window, named: the trade is not one batch).
+            if (e instanceof Error && (e.message === "session_changed" || e.message === "workout_not_found")) {
+              out.missed.push("a session it trades changed meanwhile, so it stayed where it was");
+              break;
+            }
+            throw e;
+          }
           out.updated.push(w.id);
         }
         touchedDates.add(op.dayA);
@@ -1591,7 +1631,7 @@ export async function applyOps(
         }
         // Coach-sanctioned: the garden treats it as agreed rest (spec §1). The athlete's own skip's writer (`skipWorkout`):
         // a session the app built has its copy taken off the watch too (the watch mirrors the plan, owner §10.2).
-        const guard = opts.guards?.get(op.workoutId);
+        const guard = holdOf(op.workoutId, found.row);
         const { skipped } = await skipWorkout(db, userId, op.workoutId, { now, today, source: "coach", sanctionedBy: "coach", prefs, ...(guard ? { onlyIf: guard } : {}) });
         // Not skipped: its write found the session resolved, gone or (guarded) no longer as read since the read above.
         if (!skipped) {
@@ -1632,7 +1672,7 @@ export async function applyOps(
         // The athlete's own remove, verbatim: suppression, intent, move-intent
         // close, queued watch writes settled, and the unpush a session the app
         // pushed needs — one mutation for both sides (Ruling A1).
-        const guard = opts.guards?.get(op.workoutId);
+        const guard = holdOf(op.workoutId, found.row);
         const removed = await removeFromPlan(db, userId, op.workoutId, { now, source: "coach_remove", prefs, ...(guard ? { onlyIf: guard } : {}) });
         if (guard && !removed.removed) {
           out.missed.push(GUARD_LOST);
@@ -1739,7 +1779,7 @@ export async function applyOps(
             out.missed.push(RETIME_CHANGED);
             break;
           }
-          const guard = opts.guards?.get(op.workoutId);
+          const guard = holdOf(op.workoutId, found.row);
           const retimed = await writeRetimed(db, { userId, row, minutes: r.minutes, write: r.write, proposalId, now, thresholdPaceSecPerKm, prefs, runWire: opts.runWire ?? "v1", ...(guard ? { onlyIf: guard } : {}) });
           if (!retimed.written) {
             out.missed.push(GUARD_LOST);
@@ -1766,7 +1806,7 @@ export async function applyOps(
         // meanwhile as it was). A row with no usable document is left with
         // what it has: the backfill derives one.
         const doc = docWithStatedLength(row.workoutDoc, op.durationMinutes);
-        const guard = opts.guards?.get(op.workoutId);
+        const guard = holdOf(op.workoutId, found.row);
         const wrote = await runAtomicallyFirst(db, [
           db
             .update(plannedWorkouts)
@@ -2672,6 +2712,7 @@ async function archiveSlice(
         eq(plannedWorkouts.completionState, "scheduled"),
         // A row already archived (a re-run, or the athlete's own remove) is not archived — nor suppressed — twice.
         isNull(plannedWorkouts.archivedAt),
+        unstarted(),
         inScope,
         ...(exclude.length > 0 ? [notInArray(plannedWorkouts.id, [...exclude])] : []),
       ),
@@ -2722,11 +2763,17 @@ async function archiveSlice(
     ...chunkIds(ids).map((chunk) =>
       k.db
         .update(plannedWorkouts)
-        .set({ archivedAt: k.now, archiveReason: "user_removed", updatedAt: k.now })
+        // A session started since the read fails the slice (`guardOrFail`): nothing of it lands, and the next run re-reads.
+        .set({ archivedAt: k.now, archiveReason: "user_removed", effectiveDate: guardOrFail(unstarted(), plannedWorkouts.effectiveDate), updatedAt: k.now })
         .where(and(eq(plannedWorkouts.userId, k.userId), inArray(plannedWorkouts.id, chunk))),
     ),
   ];
-  await runAtomically(k.db, stmts);
+  try {
+    await runAtomically(k.db, stmts);
+  } catch (e) {
+    if (guardFailed(e)) return "stalled";
+    throw e;
+  }
   // The batch as run, and the unpushes' reads at their most (their inserts are in the batch).
   k.spent += stmts.length + unpushing - unpushes.length;
   return { archived: picked.length, more: rows.length > picked.length };

@@ -1108,7 +1108,7 @@ function unchangedSince(row: RowState): SQL {
  * session done, skipped, missed or gone ("a session it moves has already been done, …", `NOT_ACTIONABLE`).
  */
 const saysNow = (missed: string | undefined): boolean =>
-  missed === GUARD_LOST || (missed !== undefined && [NOT_ACTIONABLE.gone, NOT_ACTIONABLE.done, NOT_ACTIONABLE.skipped, NOT_ACTIONABLE.missed].some((w) => missed.includes(` ${w}`)));
+  missed === GUARD_LOST || (missed !== undefined && [NOT_ACTIONABLE.gone, NOT_ACTIONABLE.done, NOT_ACTIONABLE.skipped, NOT_ACTIONABLE.missed, NOT_ACTIONABLE.underWay].some((w) => missed.includes(` ${w}`)));
 
 /** A session under way, refused (R-APP-N2): the card stays and says so — and no "instead": the table's is the coach's words. */
 const underWayRefusal = (): Omit<Refused, "opId"> => ({ error: "not_editable", cause: "under_way", why: UNDER_WAY_WORDS });
