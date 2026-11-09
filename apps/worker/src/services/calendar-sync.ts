@@ -639,7 +639,15 @@ async function executeOneOp(
         // The way out of a wrong completion is Undo match, which opens the row; a drag after it is taken.
         const row = await readGuarded(db, userId, op.workoutId);
         const putBack = async () => {
-          await writeEvent(db, client, calendarId, { workoutId: op.workoutId, eventId: op.eventId, resource: op.resource, userNotes: undefined }, now);
+          try {
+            await writeEvent(db, client, calendarId, { workoutId: op.workoutId, eventId: op.eventId, resource: op.resource, userNotes: undefined }, now);
+          } catch (e) {
+            // THE RESTORE STAYS OWED (final review A, m1): the sync token moves on, so the dragged event never comes back
+            // in the feed. The link's fingerprint no longer says ours is what Google holds, so the next reconcile writes the
+            // plan's event over it (an `update`) — the token's handling of every other op unchanged.
+            await db.update(calendarEventLinks).set({ lastWrittenFingerprint: RESTORE_OWED, updatedAt: now }).where(eq(calendarEventLinks.workoutId, op.workoutId));
+            throw e;
+          }
           stats.userMovesRestored += 1;
         };
         if (row && guardRefusal(row, todayInZone(prefs.timezone))) {
@@ -690,6 +698,9 @@ async function executeOneOp(
     }
   }
 }
+
+/** A link's fingerprint for a restore of the plan's event that failed: never a real one, so the next reconcile re-writes it. */
+const RESTORE_OWED = "restore-owed";
 
 /**
  * Write the plan's event over Google's, and its link (the plan's fingerprint, so the next reconcile finds them equal).

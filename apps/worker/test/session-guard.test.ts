@@ -1521,6 +1521,27 @@ describe("the Calendar's drag of a done session, or one under way: refused where
     expect({ ...after, rows: [] }).toEqual({ ...record(control), rows: [] });
   });
 
+  it("the restore failing (Google answers 500): the next sync, with nothing new on the calendar, puts the event back — the restore stays owed", async () => {
+    const w = await world();
+    let build: any;
+    const cal = await calendarWorld(async () => {
+      const id = await slotOn(w, FRI);
+      setClock(FRI, "18:00");
+      build = await buildAndStart(w, id);
+      return id;
+    }, w);
+    expect((await saved(w, cal.workout, build, FRI)).json.status).toBe("saved");
+    cal.google.fail("PATCH", 1, "500");
+    const spy = vi.spyOn(console, "warn").mockImplementation(() => undefined);
+    await cal.drag(4).catch(() => undefined);
+    spy.mockRestore();
+    expect(rowOf(w, cal.workout)).toMatchObject({ date: FRI, completion: "completed" });
+    expect(cal.onCalendar()).not.toEqual(cal.planned);
+    await syncCalendar(w.db, env, w.userId);
+    expect(cal.onCalendar()).toEqual(cal.planned);
+    expect(rowOf(w, cal.workout)).toMatchObject({ date: FRI, completion: "completed" });
+  });
+
   it("the phone's save landing inside the drag's move (a session started days ago, past its window): the guarded write refuses it, the event goes back, one credit on its day", async () => {
     const w = await world();
     let build: any;
