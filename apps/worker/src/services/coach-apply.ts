@@ -40,7 +40,7 @@ import {
   type WorkoutDoc,
 } from "@rg/domain";
 import { runBlockRoles } from "@rg/coros";
-import { chunkIds, chunkedInsert, insertBatches, runAtomically, runAtomicallyFirst, type AtomicStatement, type Db } from "./db.js";
+import { chunkIds, chunkedInsert, guardFailed, guardOrFail, insertBatches, runAtomically, runAtomicallyFirst, type AtomicStatement, type Db } from "./db.js";
 import { separateDayCollisions, windowTimeFor } from "./day-placement.js";
 import { coachStamp, recordedStampFor, stampName, takenStampsOn, takenStampsOnDays } from "./coros-stamp.js";
 import { applyMove } from "./jobs.js";
@@ -1023,9 +1023,9 @@ export async function writeRetimed(
     prefs: UserPreferences;
     runWire: RunWire;
     /**
-     * A condition the row must still meet as it is written (the designer's approve, `guards`): then the row and its revision
-     * are a batch of their own, written first, and when the row's write lands nothing the rest isn't written (`written:
-     * false`). The stage rows follow in their own batch, as an ease's do. Without it, one batch as it always was.
+     * A condition the row must still meet as it is written (the designer's approve, `guards`): the row's write fails the
+     * batch when it no longer holds (`guardOrFail`), so its revision and stage rows land with it or not at all, and then
+     * nothing else is written (`written: false`). Without it, as it always was.
      */
     onlyIf?: SQL;
   },
@@ -1051,23 +1051,21 @@ export async function writeRetimed(
       ...columns,
       ...updateDocColumns(w.doc),
       sourceContentFingerprint: unmarkedFingerprint(pw.sourceContentFingerprint),
+      // Guarded: the condition, read on the row as it is before this write, or the batch fails (`guardOrFail`).
+      ...(v.onlyIf ? { effectiveDate: guardOrFail(v.onlyIf, pw.effectiveDate) } : {}),
       updatedAt: v.now,
     })
-    .where(and(eq(pw.id, row.id), eq(pw.userId, v.userId), v.onlyIf));
-  const stageWrites = [
-    db.delete(plannedWorkoutStages).where(eq(plannedWorkoutStages.workoutId, row.id)),
-    ...insertBatches(w.stages).map((batch) => db.insert(plannedWorkoutStages).values(batch)),
-  ];
-  if (v.onlyIf) {
-    const wrote = await runAtomicallyFirst(db, [rowWrite.returning({ id: pw.id }), ...(w.doc ? revisionOfWritten(db, v.userId, row.id, w.doc, v.proposalId, v.now) : [])]);
-    if (wrote === 0) return { createsUpdated: 0, written: false };
-    await runAtomically(db, stageWrites);
-  } else {
+    .where(and(eq(pw.id, row.id), eq(pw.userId, v.userId)));
+  try {
     await runAtomically(db, [
       rowWrite,
       ...(w.doc ? [revisionInsert(db, { userId: v.userId, workoutId: row.id, sourceKind: "coach", sourceRef: v.proposalId, now: v.now })] : []),
-      ...stageWrites,
+      db.delete(plannedWorkoutStages).where(eq(plannedWorkoutStages.workoutId, row.id)),
+      ...insertBatches(w.stages).map((batch) => db.insert(plannedWorkoutStages).values(batch)),
     ]);
+  } catch (e) {
+    if (v.onlyIf && guardFailed(e)) return { createsUpdated: 0, written: false };
+    throw e;
   }
   const watch = w.family === "designed" ? w.session : w.watchSession;
   await recordIntent(db, {

@@ -28,7 +28,7 @@ import { createSession, SESSION_COOKIE } from "../src/auth/sessions.js";
 import type { Env } from "../src/env.js";
 import { coachRoutes } from "../src/routes/coach.js";
 import { planRoutes } from "../src/routes/plan.js";
-import { loadPreferences } from "../src/services/calendar-sync.js";
+import { loadPreferences, savePreferences } from "../src/services/calendar-sync.js";
 import { CHANGED_SINCE_CARD } from "../src/services/design-approve.js";
 import type { Db } from "../src/services/db.js";
 import { ACT_TOOLS } from "../src/services/design-tools/index.js";
@@ -481,5 +481,54 @@ describe("a change whose session moved on between approve's read and the applier
     const res = await approve(id, {});
     expect(res.json.changed.map((x: { opId: string }) => x.opId)).toEqual([planAdjustId(w)]);
     expect(await rowOf(w)).toMatchObject({ effectiveDate: day(3), effectiveTime: "12:00" });
+  });
+});
+
+describe("a length re-timed by the rule, its write faulting mid-batch", () => {
+  /** A structured run of the coach's lane on the watch: seven 5-minute stages, its copy verified there. */
+  async function tempoOnTheWatch(id: string): Promise<void> {
+    const date = day(2);
+    await db.insert(plannedWorkouts).values({
+      id, userId, planId: "coach-plan", sourceWorkoutId: "123:2", sourceIdInPlan: "2", sourceProgramId: "92", title: "Tempo", category: "quality", qualitySubtype: "tempo", sport: "run",
+      originalPlanDate: date, lastVerifiedCorosDate: date, effectiveDate: date, effectiveTime: "12:00", sourceContentFingerprint: "0123456789abcdef", calendarBlockDurationSeconds: 2100,
+      fallbackEstimatedDurationSeconds: 2100, corosSyncState: "synced", createdAt: nowInstant(), updatedAt: nowInstant(),
+    });
+    const blocks = [["warmup", "easy"], ...Array.from({ length: 5 }, () => ["work", "threshold"]), ["cooldown", "easy"]] as const;
+    await db.insert(schema.plannedWorkoutStages).values(blocks.map(([kind, label], i) => ({ id: `${id}:${i}`, workoutId: id, parentStageId: null, ord: i, kind, repeatCount: null, durationType: "time", durationSeconds: 300, distanceMeters: null, label })));
+    await db.insert(schema.corosWriteJobs).values({
+      id: `${id}-push`, userId, workoutId: id, kind: "coach_create_workout", expectedContentFingerprint: "x", originalDate: date, destinationDate: date,
+      requestedAt: nowInstant(), status: "verified", verifiedAt: nowInstant(), updatedAt: nowInstant(), payload: { workoutId: id, happenDay: date, name: `Tempo ~ ${id}` },
+    });
+  }
+  const raw = () => (db as unknown as { $client: { exec(sql: string): void } }).$client;
+  const state = async (id: string) => ({
+    row: await rowOf(id).then((r) => ({ seconds: r.fallbackEstimatedDurationSeconds, summary: r.stageSummary })),
+    stages: (await db.select().from(schema.plannedWorkoutStages).where(eq(schema.plannedWorkoutStages.workoutId, id))).map((x) => [x.id, x.durationSeconds]).sort(),
+    claims: (await db.select().from(schema.syncIntents).where(and(eq(schema.syncIntents.targetId, id), eq(schema.syncIntents.kind, "content")))).length,
+    rewrites: (await db.select().from(schema.corosWriteJobs).where(and(eq(schema.corosWriteJobs.workoutId, id), eq(schema.corosWriteJobs.kind, "coach_update_workout")))).length,
+  });
+
+  it("nothing of it lands; the next approve writes all of it — the length, the stage rows, the content claim and the watch's rewrite", async () => {
+    await savePreferences(db, userId, { ...(await loadPreferences(db, userId)), corosWritesEnabled: true });
+    await tempoOnTheWatch("cw-t-1");
+    const id = await changes(adjust("cw-t-1", { kind: "adjust", durationMinutes: 27 }));
+    const [op] = (await db.select().from(coachProposals).where(eq(coachProposals.id, id)))[0]!.ops as Array<{ retime?: { minutes: number; stageSummary: string } }>;
+    expect(op!.retime).toBeTruthy();
+    const before = await state("cw-t-1");
+    raw().exec(`CREATE TRIGGER retime_fault BEFORE INSERT ON planned_workout_stages BEGIN SELECT RAISE(ABORT, 'D1_ERROR: synthetic fault mid-retime'); END;`);
+    const spy = vi.spyOn(console, "error").mockImplementation(() => undefined);
+    const first = await approve(id, {}).catch((e: Error) => ({ status: 500, json: { error: e.message } as Record<string, any> }));
+    spy.mockRestore();
+    expect(first.status).toBe(500);
+    expect(await state("cw-t-1")).toEqual(before);
+    raw().exec(`DROP TRIGGER retime_fault;`);
+    const again = await approve(id, {});
+    expect(again.status).toBe(200);
+    expect(again.json.changed.map((c: { opId: string }) => c.opId)).toEqual([planAdjustId("cw-t-1")]);
+    const after = await state("cw-t-1");
+    expect(after.row).toEqual({ seconds: op!.retime!.minutes * 60, summary: op!.retime!.stageSummary });
+    expect(after.stages).not.toEqual(before.stages);
+    expect(after.claims).toBe(1);
+    expect(after.rewrites).toBe(1);
   });
 });
