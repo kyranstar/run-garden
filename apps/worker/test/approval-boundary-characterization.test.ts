@@ -409,7 +409,7 @@ describe("1. what a request's selection applies (a designed proposal: a skip, a 
     ["a known key beside an unknown one", '{"opIds":["adj-w-1"],"confirm":true}'],
     ["opIds and edit together", '{"opIds":["adj-w-1"],"edit":{"opId":"x","doc":{}}}'],
     ["edit with no doc", '{"edit":{"opId":"x"}}'],
-    ["more than 20 ids", JSON.stringify({ opIds: Array.from({ length: 21 }, (_, i) => `x${i}`) })],
+    ["more ids than the cap", JSON.stringify({ opIds: Array.from({ length: 51 }, (_, i) => `x${i}`) })],
     ["an id over 200 characters", JSON.stringify({ opIds: ["x".repeat(201)] })],
   ])("CHARACTERIZATION: a malformed body (%s) is 400 `bad_request`, nothing written", async (_name, raw) => {
     const res = await approve(id, undefined, { raw });

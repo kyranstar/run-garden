@@ -6,24 +6,29 @@
  * card was drawn is refused `changed_since_suggested`, nothing written, the other ops going on. Synthetic data only.
  */
 import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
-import { eq } from "drizzle-orm";
+import { and, eq } from "drizzle-orm";
 import { schema } from "@rg/database";
-import { addDays, newId, nowInstant } from "@rg/domain";
+import { adaptiveConfigSchema, addDays, newId, nowInstant } from "@rg/domain";
 import { createSession, SESSION_COOKIE } from "../src/auth/sessions.js";
 import type { Env } from "../src/env.js";
 import { coachRoutes } from "../src/routes/coach.js";
 import { planRoutes } from "../src/routes/plan.js";
+import { loadPreferences } from "../src/services/calendar-sync.js";
 import { CHANGED_SINCE_CARD } from "../src/services/design-approve.js";
 import type { Db } from "../src/services/db.js";
 import { ACT_TOOLS } from "../src/services/design-tools/index.js";
 import { designProposalId, proposeWorkout } from "../src/services/design-tools/propose.js";
+import { mondayOf } from "../src/services/design-tools/propose-plan.js";
 import { isToolErr, type ToolContext } from "../src/services/design-tools/types.js";
-import { createObjective } from "../src/services/objectives.js";
-import { objectiveChangeId, planAdjustId, planChangeId } from "../src/services/proposal-kinds.js";
+import { createObjective, getObjective } from "../src/services/objectives.js";
+import { placeSlots } from "../src/services/program-slots.js";
+import { correctionId, objectiveChangeId, planAdjustId, planChangeId, PLAN_STRUCTURE_ID, programmeChangeId } from "../src/services/proposal-kinds.js";
 import { calmDoc } from "./doc-workout-fixture.js";
-import { cloneTestDb, isWrite, makeTestDb, makeTestUser, mountRoutes } from "./helpers.js";
+import { cloneTestDb, isWrite, makeTestDb, makeTestUser, MAX_LOOP_ITERATIONS, mountRoutes } from "./helpers.js";
+import { savedMoveDraft, seedSavedBatch } from "./saves-batch-fixture.js";
+import { readSavesInRun } from "./saves-read-fixture.js";
 
-const { coachProposals, coachRuns, plannedWorkouts, programs } = schema;
+const { coachPlans, coachProposals, coachRuns, exercisePrefs, importCorrections, plannedWorkouts, programs } = schema;
 const NOW = "2026-10-05T19:00:00.000Z";
 const day = (n: number) => addDays("2026-10-05", n);
 const env = { APP_URL: "https://app.test", FIXTURE_MODE: "0", AI_DEFAULT_ENABLED: "1", COACH_DESIGNER: "1" } as Env;
@@ -127,6 +132,164 @@ describe("a request naming nothing", () => {
     const res = await approve(id, {});
     expect(res.status).toBe(200);
     expect(res.json).toEqual({ ok: true, status: "pending", applied: [], changed: [], refused: [], settled: [], remaining: [], notNamed: [planChangeId(planId)] });
+    expect(writes).toEqual([]);
+  });
+});
+
+/** The six kinds only their name approves: each by the coach's own tool, and how to see it was applied. */
+async function coachPlan(): Promise<string> {
+  const id = `plan-${newId()}`;
+  await db.insert(programs).values({ id, userId, kind: "coach", name: "Base block", status: "active", disciplines: ["run"], startDate: null, endDate: null, raceDate: null, source: null, config: {}, purpose: "Get fitter", brief: "Base block.", onEnd: "ask", createdAt: NOW, updatedAt: NOW, archivedAt: null } as never);
+  return id;
+}
+const savedLift = async () => {
+  const seeded = await seedSavedBatch(db, userId, { savedAt: "2026-10-04T17:00:00.000Z", posts: [{ moves: [{ draft: savedMoveDraft("Zorbex hip lift") }] }] });
+  return { batchId: seeded.batchId, lift: seeded.moveIds[0]![0]! };
+};
+const easyRun = (minutes: number, title: string) => ({ category: "easy", title, durationMinutes: minutes, run: { blocks: [{ kind: "duration", value: minutes, intensity: "easy" }] } });
+const NOT_BY_NAME: Record<string, (ctx: ToolContext) => Promise<{ opId: string; made: () => Promise<boolean> }>> = {
+  plan_structure: async (ctx) => {
+    const monday = mondayOf(day(7));
+    await act(ctx, "propose_plan", {
+      change: {
+        kind: "createPlan", discipline: "run", name: "Build block", newPlan: { name: "Synthetic plan", purpose: "A synthetic purpose" }, startDate: monday, endDate: addDays(monday, 20),
+        firmSessions: [0, 2].map((k) => ({ date: addDays(monday, k), session: easyRun(30 + k, `Run ${k}`) })),
+        shapeWeeks: [1, 2].map((k) => ({ weekStart: addDays(monday, 7 * k), volumeTarget: "about 30 km", keySessions: ["long run"] })),
+      },
+      why: "The next phase.",
+    });
+    return { opId: PLAN_STRUCTURE_ID, made: async () => (await db.select().from(coachPlans).where(eq(coachPlans.userId, userId))).length === 1 };
+  },
+  programme_change: async (ctx) => {
+    const p = newId();
+    await db.insert(programs).values({ id: p, userId, kind: "adaptive", name: "Mobility", status: "active", disciplines: ["yoga", "strength"], startDate: null, endDate: null, raceDate: null, source: null, config: adaptiveConfigSchema.parse({ weeklyGoal: 2, preferredDays: [0, 2], placementWeeksAhead: 2 }), createdAt: NOW, updatedAt: NOW, archivedAt: null } as never);
+    await placeSlots(db, userId, p, day(0), await loadPreferences(db, userId), NOW);
+    await act(ctx, "change_programme", { programmeId: p, days: ["thursday", "Tue"], why: "Your Mondays are full now." });
+    return { opId: programmeChangeId(p), made: async () => ((await db.select().from(programs).where(eq(programs.id, p)))[0]!.config as { preferredDays: number[] }).preferredDays.includes(3) };
+  },
+  plan_change: async (ctx) => {
+    const p = await coachPlan();
+    await act(ctx, "change_plan", { planId: p, why: "You asked.", brief: "The coach's brief." });
+    return { opId: planChangeId(p), made: async () => (await db.select().from(programs).where(eq(programs.id, p)))[0]!.brief === "The coach's brief." };
+  },
+  move_pins: async (ctx) => {
+    const { batchId, lift } = await savedLift();
+    await readSavesInRun(db, ctx, { batchId });
+    await act(ctx, "pin_moves", { batchId, pin: [lift], title: "A move in rotation", why: "It serves the hips.", lines: [{ moveId: lift, text: "in rotation: it opens the hips." }] });
+    return { opId: `pins-${ctx.run.id}`, made: async () => (await db.select().from(exercisePrefs).where(and(eq(exercisePrefs.userId, userId), eq(exercisePrefs.exerciseId, lift))))[0]?.pinned === true };
+  },
+  import_correction: async (ctx) => {
+    const { batchId, lift } = await savedLift();
+    await readSavesInRun(db, ctx, { batchId });
+    await act(ctx, "correct_import", { target: "move", targetId: lift, field: "summary", after: "Slow.", why: "The transcript says so.", basis: "evidence", cites: ["history"] });
+    return { opId: correctionId("move", lift, "summary"), made: async () => (await db.select().from(importCorrections).where(eq(importCorrections.userId, userId))).length === 1 };
+  },
+  objective_change: async (ctx) => {
+    const o = await createObjective(db, userId, { title: "Strong legs", keyResults: [{ label: "Zorbex wall sit", measure: { kind: "hold_max", libraryIds: ["wallSit"] }, target: 120, dueDate: "2026-12-01" }] }, NOW);
+    const krId = o.keyResults[0]!.id;
+    await act(ctx, "propose_objective", { change: "retarget", keyResultId: krId, target: 90, why: "Your wall sit is at 45 s of 120 s with half the time gone: 90 s is the honest target.", basis: "stand" });
+    return { opId: objectiveChangeId("retarget", krId), made: async () => (await getObjective(db, userId, o.id)).keyResults[0]!.target === 90 };
+  },
+};
+
+describe("the kinds only their name approves", () => {
+  it.each(Object.keys(NOT_BY_NAME))("%s: `{}` and no body leave it open and say so; a decline naming nothing leaves it open; its name applies it", async (kind) => {
+    const ctx = await mainRun();
+    const { opId, made } = await NOT_BY_NAME[kind]!(ctx);
+    const id = await shown(ctx);
+    writes.length = 0;
+    for (const body of [{}, undefined]) {
+      const res = await approve(id, body);
+      expect(res.status).toBe(200);
+      expect(res.json).toEqual({ ok: true, status: "pending", applied: [], changed: [], refused: [], settled: [], remaining: [], notNamed: [opId] });
+    }
+    expect(writes).toEqual([]);
+    expect(await made()).toBe(false);
+    const declined = await post(`/api/coach/proposals/${id}/decline`, {});
+    expect(declined.status).toBe(200);
+    expect(declined.json).toMatchObject({ status: "pending", declined: [] });
+    expect(await made()).toBe(false);
+    let body: unknown = { opIds: [opId] };
+    let res = await approve(id, body);
+    for (let i = 0; i < MAX_LOOP_ITERATIONS && res.json.remaining?.length; i++) {
+      body = { opIds: res.json.remaining };
+      res = await approve(id, body);
+    }
+    expect(res.status).toBe(200);
+    expect(res.json.status).toBe("approved");
+    expect(res.json.notNamed).toBeUndefined();
+    expect(await made()).toBe(true);
+  });
+
+  it("all six beside a workout and a change: `{}` until done reaches those two, names the six; the six then apply by name alone", async () => {
+    const w = await session("w-1", day(1));
+    const ctx = await mainRun();
+    await act(ctx, "adjust_plan", adjust(w, { kind: "skip", reason: "Rest." }));
+    const six: Record<string, { opId: string; made: () => Promise<boolean> }> = {};
+    for (const [k, make] of Object.entries(NOT_BY_NAME)) six[k] = await make(ctx);
+    const id = await shown(ctx);
+    const first = await approve(id, {});
+    expect(first.json.changed.map((c: { opId: string }) => c.opId)).toEqual([planAdjustId(w)]);
+    expect([...first.json.notNamed].sort()).toEqual(Object.values(six).map((x) => x.opId).sort());
+    for (const x of Object.values(six)) expect(await x.made()).toBe(false);
+    let res = await approve(id, { opIds: Object.values(six).map((x) => x.opId) });
+    for (let i = 0; i < MAX_LOOP_ITERATIONS && res.json.remaining?.length; i++) res = await approve(id, { opIds: res.json.remaining });
+    expect(res.json.status).toBe("approved");
+    for (const x of Object.values(six)) expect(await x.made()).toBe(true);
+  });
+});
+
+describe("a request naming every op a card can draw", () => {
+  /** The most a card draws: MAX_CHANGES changes beside SET_MAX_WORKOUTS workouts. */
+  async function fullCard() {
+    const ctx = await mainRun();
+    const ids: string[] = [];
+    for (let i = 0; i < 10; i++) {
+      const w = await session(`w-${i}`, day(i + 1));
+      await act(ctx, "adjust_plan", adjust(w, { kind: "skip", reason: "Rest." }));
+      ids.push(planAdjustId(w));
+    }
+    for (let i = 0; i < 12; i++) {
+      const dId = `run-${newId()}`;
+      await db.insert(coachRuns).values({ id: dId, userId, parentId: ctx.run.id, role: "designer", scope: { kind: "auto" }, request: null, status: "active", state: null, steps: 0, costUsd: 0, createdAt: NOW, updatedAt: NOW });
+      const r = await proposeWorkout.run({ ...ctx, run: { id: dId, role: "designer", scope: { kind: "auto" }, parentId: ctx.run.id, rehearsal: false }, toolUseId: `t_${newId()}` }, { doc: calmDoc({ title: `Calm ${i}` }), target: { kind: "new", date: day(20 + i), time: "12:30" } });
+      if (isToolErr(r)) throw new Error(r.why);
+      ids.push(dId);
+    }
+    const id = designProposalId(ctx.run.id);
+    const [p] = await db.select().from(coachProposals).where(eq(coachProposals.id, id));
+    await db.update(coachProposals).set({ status: "pending", ops: (p!.ops as Array<Record<string, unknown>>).map((o) => (o.kind === "doc_workout" ? { ...o, review: { scores: { intent: 4, sequencing: 4 }, notes: { intent: "Clear." }, mustFix: [], improvements: [], rounds: 1, changes: [] } } : o)) }).where(eq(coachProposals.id, id));
+    return { id, ids };
+  }
+
+  it("the whole card by name, 22 ops: approved in one go of requests, as `{}` was before the card named them (owner P6: the cap raised, not chunked)", async () => {
+    const { id, ids } = await fullCard();
+    expect(ids).toHaveLength(22);
+    let res = await approve(id, { opIds: ids });
+    expect(res.status).toBe(200);
+    for (let i = 0; i < MAX_LOOP_ITERATIONS && res.json.remaining?.length; i++) res = await approve(id, { opIds: res.json.remaining });
+    expect(res.json.status).toBe("approved");
+    expect((await db.select().from(plannedWorkouts).where(eq(plannedWorkouts.userId, userId))).filter((r) => r.title.startsWith("Calm"))).toHaveLength(12);
+  });
+
+  it("declined whole by name, 22 ops: all declined, nothing applied", async () => {
+    const { id, ids } = await fullCard();
+    const res = await post(`/api/coach/proposals/${id}/decline`, { opIds: ids });
+    expect(res.status).toBe(200);
+    expect(res.json.status).toBe("declined");
+    expect((await rowOf("w-0")).completionState).toBe("scheduled");
+  });
+
+  it("past the cap: 400 `bad_request`, nothing written", async () => {
+    writes.length = 0;
+    const ctx = await mainRun();
+    const w = await session("w-1", day(1));
+    await act(ctx, "adjust_plan", adjust(w, { kind: "skip", reason: "Rest." }));
+    const id = await shown(ctx);
+    writes.length = 0;
+    const res = await approve(id, { opIds: Array.from({ length: 51 }, (_, i) => `x${i}`) });
+    expect(res.status).toBe(400);
+    expect(res.json.error).toBe("bad_request");
     expect(writes).toEqual([]);
   });
 });

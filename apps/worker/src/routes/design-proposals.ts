@@ -69,8 +69,12 @@ type C = Context<AppContext>;
 const OP_ID = z.string().min(1).max(200);
 const DATE = z.string().regex(/^\d{4}-\d{2}-\d{2}$/).refine(isLocalDate, "not a calendar date");
 const TIME = z.string().regex(/^([01]\d|2[0-3]):[0-5]\d$/);
-/** A designed set holds at most a week's workouts; a request names no more than that, twice over. */
-const OPS_MAX = 20;
+/**
+ * A request names at most the ops a proposal can hold: 12 workouts, 10 changes (one card draws 22 and names them all), 10
+ * corrections, 6 objective changes, a whole plan, the pins, and a programme's or a plan's own change. It bounds the body
+ * and nothing else: an id the proposal doesn't hold is refused, and PLAN_MAX paces the work across requests.
+ */
+const OPS_MAX = 50;
 
 const approveSchema = z
   .object({
