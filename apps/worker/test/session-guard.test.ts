@@ -741,6 +741,22 @@ describe("the coach and a session under way", () => {
     expect(res.json.refused.map((r: { error: string }) => r.error)).toEqual(["past_date"]);
   });
 
+  it("GAP, named: a Start landing inside an approve's move still lands: approve judges at its read, and the applier has no write-time guard", async () => {
+    const w = await world();
+    const id = await slotOn(w, D);
+    setClock(D, "12:00");
+    const proposal = await proposed(w, change(id, { kind: "move", toDate: addDays(D, 3), toTime: "12:00" }));
+    setClock(D, "17:55");
+    const built = await w.call("POST", `/api/sessions/${id}/build`, {});
+    gates.move = async () => {
+      expect((await w.call("POST", `/api/sessions/${id}/start`, { buildId: built.json.build.buildId })).status).toBe(200);
+    };
+    const res = await w.call("POST", `/api/coach/proposals/${proposal}/approve`, {});
+    expect(res.json.changed.map((x: { opId: string }) => x.opId)).toEqual([planAdjustId(id)]);
+    // Moved, and `started` lost: the applier read the row as built, so it wrote it back to an outline. The phone plays on.
+    expect(rowOf(w, id)).toMatchObject({ date: addDays(D, 3), content: "outline" });
+  });
+
   it("GAP, named: a thread coach's op on a session under way still lands; the thread route is not gated (owner P5)", async () => {
     const { w, id } = await startedOn(D);
     setClock(D, "18:10");
@@ -853,6 +869,19 @@ describe("what sits below the routes, and the corrections, keep working", () => 
     expect(after.sessions).toHaveLength(1);
   });
 
+  it("GAP, named: Undo match opens the row, so a move is taken: it stays `done` and goes `scheduled` on its new day, the activity's credit unplanned on its own day, once", async () => {
+    const { w, id } = await savedOn(FRI);
+    await drive(w, addDays(FRI, 1), addDays(FRI, 2));
+    setClock(addDays(FRI, 2), "12:00");
+    expect((await w.call("POST", `/api/plan/workouts/${id}/unmatch`)).status).toBe(200);
+    expect((await w.call("POST", `/api/plan/workouts/${id}/move`, { toDate: TUE, toTime: "18:00" })).status).toBe(200);
+    expect(rowOf(w, id)).toMatchObject({ date: TUE, completion: "scheduled", content: "done" });
+    await drive(w, addDays(FRI, 3), addDays(TUE, 1));
+    const after = await replayed(w);
+    expect(after.credits.flatMap((c) => c.completed.map((x) => [c.date, x.unplanned]))).toEqual([[FRI, true]]);
+    expect(after.counters.strength + after.counters.yoga).toBe(1);
+  });
+
   it("Undo match, then a re-link: `/match` is not blocked, the credit is back, on one activity", async () => {
     const { w, id } = await savedOn(FRI);
     setClock(FRI, "19:00");
@@ -899,6 +928,22 @@ describe("the hazards, after the guard (each says what happens; the guard doesn'
     expect(after.credits.flatMap((c) => c.completed.map((x) => [c.date, x.workoutId]))).toEqual([[addDays(D, 2), id]]);
     // Done now: the guard holds from here.
     expect((await w.call("POST", `/api/plan/workouts/${id}/move`, { toDate: addDays(D, 5), toTime: "18:00" })).status).toBe(409);
+  });
+
+  it("a Start on a session a laptop skipped: not refused (older than the guard, Start doesn't read the skip). Under way from there; the save overwrites the skip: one credit", async () => {
+    const w = await world();
+    const id = await slotOn(w, D);
+    setClock(D, "17:55");
+    const built = await w.call("POST", `/api/sessions/${id}/build`, {});
+    expect((await w.call("POST", `/api/plan/workouts/${id}/skip`)).status).toBe(200);
+    const started = await w.call("POST", `/api/sessions/${id}/start`, { buildId: built.json.build.buildId });
+    expect(started.status).toBe(200);
+    expect(rowOf(w, id)).toMatchObject({ completion: "skipped", content: "started" });
+    expect((await w.call("POST", `/api/plan/workouts/${id}/move`, { toDate: addDays(D, 2), toTime: "18:00" })).status).toBe(409);
+    expect((await saved(w, id, started.json.build, D)).json.status).toBe("saved");
+    expect(rowOf(w, id)).toMatchObject({ date: D, completion: "completed", content: "done" });
+    await drive(w, addDays(D, 1), addDays(D, 2));
+    expect(record(w).credits.flatMap((c) => c.completed.map((x) => [c.date, x.workoutId]))).toEqual([[D, id]]);
   });
 
   it("Discard on a Start-now row archives it (below the routes, so the guard doesn't touch it); a later save lands `slot_gone`, its activity unplanned", async () => {
