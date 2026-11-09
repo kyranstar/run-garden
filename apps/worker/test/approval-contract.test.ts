@@ -286,8 +286,8 @@ describe("the kinds only their name approves", () => {
 
 describe("a request naming every op a card can draw", () => {
   /** The most a card draws: MAX_CHANGES changes beside SET_MAX_WORKOUTS workouts. */
-  async function fullCard() {
-    const ctx = await mainRun();
+  async function fullCard(ctx?: ToolContext) {
+    ctx ??= await mainRun();
     const ids: string[] = [];
     for (let i = 0; i < 10; i++) {
       const w = await session(`w-${i}`, day(i + 1));
@@ -323,6 +323,73 @@ describe("a request naming every op a card can draw", () => {
     expect(res.status).toBe(200);
     expect(res.json.status).toBe("declined");
     expect((await rowOf("w-0")).completionState).toBe("scheduled");
+  });
+
+  it("the most a request legitimately names (the whole card's 22, and one of each of the six kinds only their names reach): 28 ids in one request, all applied — PLAN_MAX paces the rounds", async () => {
+    const ctx = await mainRun();
+    const six: Record<string, { opId: string; made: () => Promise<boolean> }> = {};
+    for (const [k, f] of Object.entries(NOT_BY_NAME)) six[k] = await f(ctx);
+    const { id, ids } = await fullCard(ctx);
+    const all = [...ids, ...Object.values(six).map((x) => x.opId)];
+    expect(all).toHaveLength(28);
+    let res = await approve(id, { opIds: all });
+    expect(res.status).toBe(200);
+    for (let i = 0; i < MAX_LOOP_ITERATIONS && res.json.remaining?.length; i++) res = await approve(id, { opIds: res.json.remaining });
+    expect(res.json.status).toBe("approved");
+    for (const x of Object.values(six)) expect(await x.made()).toBe(true);
+    expect((await db.select().from(plannedWorkouts).where(eq(plannedWorkouts.userId, userId))).filter((r) => r.title.startsWith("Calm"))).toHaveLength(12);
+  });
+
+  it("exactly OPS_MAX (50) ids, every one the proposal's: accepted, and applied ten a request (PLAN_MAX), not all at once", async () => {
+    const ctx = await mainRun();
+    const first = await session("w-0", day(1));
+    await act(ctx, "adjust_plan", adjust(first, { kind: "skip", reason: "Rest." }));
+    const id = designProposalId(ctx.run.id);
+    const [p] = await db.select().from(coachProposals).where(eq(coachProposals.id, id));
+    const model = (p!.ops as Array<Record<string, any>>)[0]!;
+    // A synthetic proposal of 50 changes (past MAX_CHANGES, which adjust_plan keeps to 10): the bound's own test, not a card.
+    const ops = [model];
+    for (let i = 1; i < 50; i++) {
+      const w = await session(`w-${i}`, day(1));
+      ops.push({ ...model, id: planAdjustId(w), op: { ...model.op, workoutId: w }, toolUseId: `t-${i}` });
+    }
+    await db.update(coachProposals).set({ status: "pending", ops }).where(eq(coachProposals.id, id));
+    const named = ops.map((o) => o.id as string);
+    expect(new Set(named).size).toBe(50);
+    let res = await approve(id, { opIds: named });
+    expect(res.status).toBe(200);
+    expect(res.json.changed).toHaveLength(10);
+    let rounds = 1;
+    for (let i = 0; i < MAX_LOOP_ITERATIONS && res.json.remaining?.length; i++, rounds++) res = await approve(id, { opIds: res.json.remaining });
+    expect(rounds).toBe(5);
+    expect(res.json.status).toBe("approved");
+    expect((await db.select().from(plannedWorkouts).where(eq(plannedWorkouts.userId, userId))).filter((r) => r.completionState === "skipped")).toHaveLength(50);
+  });
+
+  it.each([
+    ["not an array", (a: string) => ({ opIds: a })],
+    ["an empty array", () => ({ opIds: [] })],
+    ["a number for an id", () => ({ opIds: [7] })],
+    ["an empty string", () => ({ opIds: [""] })],
+    ["an id past 200 characters", () => ({ opIds: ["a".repeat(201)] })],
+    ["the same id twice", (a: string) => ({ opIds: [a, a] })],
+    ["an id of another proposal's, beside its own", (a: string, other: string) => ({ opIds: [a, other] })],
+  ] as const)("%s: refused 400 before anything is written, the session as it was", async (_what, body) => {
+    const ctx = await mainRun();
+    const w = await session("w-1", day(1));
+    await act(ctx, "adjust_plan", adjust(w, { kind: "skip", reason: "Rest." }));
+    const id = await shown(ctx);
+    const other = await session("w-2", day(2));
+    const otherId = await changes(adjust(other, { kind: "skip", reason: "Rest." }));
+    expect(otherId).not.toBe(id);
+    const before = await rowOf(w);
+    writes.length = 0;
+    const res = await approve(id, (body as (a: string, o: string) => unknown)(planAdjustId(w), planAdjustId(other)));
+    expect(res.status).toBe(400);
+    expect(["bad_request", "unknown_op"]).toContain(res.json.error);
+    expect(writes).toEqual([]);
+    expect(await rowOf(w)).toEqual(before);
+    expect((await rowOf(other)).completionState).toBe("scheduled");
   });
 
   it("past the cap: 400 `bad_request`, nothing written", async () => {

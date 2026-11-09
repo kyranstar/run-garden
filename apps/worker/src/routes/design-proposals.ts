@@ -70,22 +70,37 @@ const OP_ID = z.string().min(1).max(200);
 const DATE = z.string().regex(/^\d{4}-\d{2}-\d{2}$/).refine(isLocalDate, "not a calendar date");
 const TIME = z.string().regex(/^([01]\d|2[0-3]):[0-5]\d$/);
 /**
- * A request names at most the ops a proposal can hold: 12 workouts, 10 changes (one card draws 22 and names them all), 10
- * corrections, 6 objective changes, a whole plan, the pins, and a programme's or a plan's own change. It bounds the body
- * and nothing else: an id the proposal doesn't hold is refused, and PLAN_MAX paces the work across requests.
+ * HOW MANY IDS ONE REQUEST MAY NAME (owner P6): 50. It bounds the request's body; it is not the work and not a database quota.
+ *  - What a request legitimately names: one card's ops. The most any card draws is the whole suggestion's, 22 (12 workouts,
+ *    SET_MAX_WORKOUTS, beside 10 changes, MAX_CHANGES); the client never names more at once (APPROVE_ROUNDS_MAX). Every op a
+ *    proposal can hold, named together by a direct caller: 12 + 10 + 10 corrections (CORRECTIONS_MAX) + 6 objective changes
+ *    (OBJECTIVE_CHANGES_MAX) + the plan's structure + the pins = 40, and one change for each programme or plan the run
+ *    names; 50 leaves ten of those. A proposal past it is still approved, by its cards or in rounds.
+ *  - The ids are never bound to SQL: each is matched in memory against the proposal's own ops, and an id it doesn't hold is
+ *    refused before anything is written (`unknown_op`). Each statement an approve sends binds its own values, under D1's 100;
+ *    50 ids of at most 200 characters are a body of about 10 KB.
+ *  - The work is paced apart from the count: PLAN_MAX ops a plan read, the rest `remaining` for the next request, and each
+ *    request within its declared statement budget. A larger bound would cost more requests, not a request's limits.
+ * An id named twice is refused: a body naming one op twice is a client's mistake, not a choice.
  */
 const OPS_MAX = 50;
 
+const OP_IDS = z
+  .array(OP_ID)
+  .min(1)
+  .max(OPS_MAX)
+  .refine((ids) => new Set(ids).size === ids.length, "an op named twice");
+
 const approveSchema = z
   .object({
-    opIds: z.array(OP_ID).min(1).max(OPS_MAX).optional(),
+    opIds: OP_IDS.optional(),
     edit: z.object({ opId: OP_ID, doc: z.record(z.string(), z.unknown()), date: DATE.optional(), time: TIME.nullable().optional() }).strict().optional(),
   })
   .strict()
   .refine((b) => !(b.opIds && b.edit), "opIds or edit, not both");
 
 const declineSchema = z
-  .object({ opIds: z.array(OP_ID).min(1).max(OPS_MAX).optional(), reason: z.string().max(2000).optional() })
+  .object({ opIds: OP_IDS.optional(), reason: z.string().max(2000).optional() })
   .strict();
 
 /** The body as JSON: none at all is `{}` (the thread panel's decline sends none); anything unreadable is null. */
