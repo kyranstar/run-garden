@@ -1081,8 +1081,9 @@ function decidable(p: DesignProposalRow, ids: readonly string[] | undefined, o: 
  * THE ROW A CHANGE WRITES IS THE ONE THE APPROVE READ (the applier's `guards`): its day, time, name, kind, lengths, state
  * and content state, null-safe, as `readPlan` read them — and still on the plan. A hand move, a Start, a save or a match
  * landing between the read and the write leaves the session as it is; the change is refused in what it finds
- * (`lostRefusal`). The time is held whether or not it was asked for: within one request no collision pass of this approve
- * has run yet, so only another writer can have moved it.
+ * (`lostRefusal`). The time is held whether or not it was asked for: a move naming no time writes the time the applier read
+ * (`op.toTime ?? w.effectiveTime`), so without the hold a time another writer set after that read would be overwritten, and
+ * a time changed since the approve's read is a change to the session like any other.
  */
 function unchangedSince(row: RowState): SQL {
   const pw = plannedWorkouts;

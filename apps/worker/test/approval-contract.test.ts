@@ -482,6 +482,34 @@ describe("a change whose session moved on between approve's read and the applier
     expect(res.json.changed.map((x: { opId: string }) => x.opId)).toEqual([planAdjustId(w)]);
     expect(await rowOf(w)).toMatchObject({ effectiveDate: day(3), effectiveTime: "12:00" });
   });
+
+  // Each column the write is held to, changed alone at the door by another writer (a Calendar sync, an import, a rename):
+  // the move would land on all the others, so only that column's own hold refuses it.
+  it.each([
+    ["its time", { effectiveTime: "08:10" }],
+    ["its name", { title: "Long tempo" }],
+    ["its kind", { category: "easy" }],
+    ["its subtype", { qualitySubtype: "intervals" }],
+    ["its length", { fallbackEstimatedDurationSeconds: 3000 }],
+    ["its source's length", { sourceEstimatedDurationSeconds: 3000 }],
+    ["its day alone", { effectiveDate: day(2) }],
+  ] as const)("%s, changed alone at the door: the coach's move is refused `changed_since_suggested`, the row as the other writer left it, no override; the other op goes on", async (_what, set) => {
+    const w = await session("w-1", day(1));
+    const other = await session("w-2", day(2));
+    const id = await changes(adjust(w, { kind: "move", toDate: day(3), toTime: "12:00" }), adjust(other, { kind: "skip", reason: "Rest." }));
+    let left: typeof plannedWorkouts.$inferSelect | null = null;
+    gates.beforeApply = async () => {
+      await db.update(plannedWorkouts).set(set).where(eq(plannedWorkouts.id, w));
+      left = await rowOf(w);
+    };
+    const res = await approve(id, {});
+    expect(res.status).toBe(200);
+    expect(res.json.refused).toEqual([expect.objectContaining({ opId: planAdjustId(w), error: "changed_since_suggested" })]);
+    expect(res.json.changed.map((x: { opId: string }) => x.opId)).toEqual([planAdjustId(other)]);
+    expect(await rowOf(w)).toEqual(left);
+    expect(await overridesOf(w)).toEqual([]);
+    expect((await rowOf(other)).completionState).toBe("skipped");
+  });
 });
 
 describe("a length re-timed by the rule, its write faulting mid-batch", () => {

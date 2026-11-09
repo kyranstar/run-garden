@@ -24,6 +24,8 @@ const gates = vi.hoisted(() => ({
   move: null as null | (() => Promise<void>),
   /** `skipWorkout` and `removeFromPlan`, before their writes. */
   mutation: null as null | (() => Promise<void>),
+  /** The next `runAtomically`: a guarded move's one batch, at the last instant before it is written. */
+  batch: null as null | (() => Promise<void>),
 }));
 
 vi.mock("../src/services/session-build.js", async (importOriginal) => {
@@ -35,6 +37,18 @@ vi.mock("../src/services/session-build.js", async (importOriginal) => {
       gates.move = null;
       if (hold) await hold();
       return real.sentBuildIdOf(...args);
+    },
+  };
+});
+vi.mock("../src/services/db.js", async (importOriginal) => {
+  const real = await importOriginal<typeof import("../src/services/db.js")>();
+  return {
+    ...real,
+    runAtomically: async (...args: Parameters<typeof real.runAtomically>) => {
+      const hold = gates.batch;
+      gates.batch = null;
+      if (hold) await hold();
+      return real.runAtomically(...args);
     },
   };
 });
@@ -312,6 +326,7 @@ beforeEach(() => {
   vi.useFakeTimers({ toFake: ["Date"] });
   gates.move = null;
   gates.mutation = null;
+  gates.batch = null;
   vi.stubGlobal("fetch", (async () => new Response("{}", { status: 404 })) as typeof fetch);
 });
 afterEach(() => {
@@ -864,6 +879,60 @@ describe("the coach and a session under way", () => {
     expect(after.counters.strength + after.counters.yoga).toBe(1);
   });
 
+  // What the approve's guard holds that the session guard doesn't see (`unchangedSince`), each changed alone after the
+  // applier's own read of the row (`whyNotActionable` refuses a completed or removed row it reads, so the door can't show it).
+  it("the watch's auto-match landing inside an approve's move (`completed`, its content as it was): refused as done, the row on its day, one credit there", async () => {
+    const w = await world();
+    const id = await slotOn(w, D);
+    setClock(D, "12:00");
+    const proposal = await proposed(w, change(id, { kind: "move", toDate: addDays(D, 3), toTime: "12:00" }));
+    setClock(D, "20:00");
+    const content = rowOf(w, id).content;
+    gates.move = async () => {
+      await corosReport(w, [corosSource({ label: "lbl-inner", date: D, hhmm: "18:01", seconds: 1790, sport: "strength" })]);
+      expect(rowOf(w, id)).toMatchObject({ completion: "completed", content });
+    };
+    const trail = overrides(w, id);
+    const res = await w.call("POST", `/api/coach/proposals/${proposal}/approve`, {});
+    expect(res.json.changed).toEqual([]);
+    expect(res.json.refused).toEqual([expect.objectContaining({ opId: planAdjustId(id), error: "not_editable", cause: "resolved" })]);
+    expect(rowOf(w, id)).toMatchObject({ date: D, completion: "completed", content, archived: 0 });
+    expect(overrides(w, id)).toBe(trail);
+    await drive(w, addDays(D, 1), addDays(D, 4));
+    expect(record(w).credits.flatMap((x) => x.completed.map((y) => [x.date, y.workoutId, y.activityId]))).toEqual([[D, id, "coros:lbl-inner"]]);
+  });
+
+  it("a hand /remove landing inside an approve's move: refused `not_found`, the row stays removed on its day, no override", async () => {
+    const w = await world();
+    const id = await slotOn(w, D);
+    setClock(D, "12:00");
+    const proposal = await proposed(w, change(id, { kind: "move", toDate: addDays(D, 3), toTime: "12:00" }));
+    gates.move = async () => {
+      expect((await w.call("POST", `/api/plan/workouts/${id}/remove`)).status).toBe(200);
+    };
+    const trail = overrides(w, id);
+    const res = await w.call("POST", `/api/coach/proposals/${proposal}/approve`, {});
+    expect(res.json.changed).toEqual([]);
+    expect(res.json.refused).toEqual([expect.objectContaining({ opId: planAdjustId(id), error: "not_found" })]);
+    expect(rowOf(w, id)).toMatchObject({ date: D, completion: "scheduled", archived: 1 });
+    expect(overrides(w, id)).toBe(trail);
+  });
+
+  it("a move naming no time, its session's time changed after the applier read it: refused, the new time kept (the move writes the time it read)", async () => {
+    const w = await world();
+    const id = await slotOn(w, D);
+    setClock(D, "12:00");
+    const proposal = await proposed(w, change(id, { kind: "move", toDate: addDays(D, 3) }));
+    gates.move = async () => {
+      // Another writer's time on the same day (the Calendar's drag), as it leaves the row.
+      await w.db.update(plannedWorkouts).set({ effectiveTime: "19:30" }).where(eqId(id));
+    };
+    const res = await w.call("POST", `/api/coach/proposals/${proposal}/approve`, {});
+    expect(res.json.changed).toEqual([]);
+    expect(res.json.refused).toEqual([expect.objectContaining({ opId: planAdjustId(id), error: "changed_since_suggested" })]);
+    expect(rowOf(w, id)).toMatchObject({ date: D, time: "19:30" });
+  });
+
   it("GAP, named: a thread coach's op on a session under way still lands; the thread route is not gated (owner P5)", async () => {
     const { w, id } = await startedOn(D);
     setClock(D, "18:10");
@@ -954,6 +1023,31 @@ describe("what sits below the routes, and the corrections, keep working", () => 
     expect(overrides(w, id)).toBe(overridesBefore);
     const feed = await w.call("GET", "/api/sync/notes");
     expect(feed.json.notes).toEqual([expect.objectContaining({ id: note.id, kind, undoable: false })]);
+  });
+
+  it.each(["adopted_coros_change", "kept_local_change"] as const)("sync-note Undo (%s), the watch's report landing at the last instant before its move is written: 409 `session_completed`, nothing moved, the note kept, one credit on its day", async (kind) => {
+    const w = await world();
+    setClock(D, "12:00");
+    const id = await failedMoveOn(w, "scheduled");
+    await postSyncNote(w.db, { userId: w.userId, workoutId: id, kind, payload: kind === "adopted_coros_change" ? { previousDate: addDays(D, 3), newDate: addDays(D, 1) } : { displacedDate: addDays(D, 3), keptDate: addDays(D, 1) } });
+    const [note] = q(w, `select id from sync_notes where workout_id = ?`, id);
+    const overridesBefore = overrides(w, id);
+    setClock(addDays(D, 1), "12:00");
+    gates.batch = async () => {
+      // The route read it open; the watch's run on its day lands now.
+      expect(rowOf(w, id).completion).toBe("scheduled");
+      await corosReport(w, [corosSource({ label: "lbl-undo", date: addDays(D, 1), hhmm: "07:05", seconds: 3550, sport: "run" })]);
+      expect(rowOf(w, id).completion).toBe("completed");
+    };
+    const answer = await w.call("POST", `/api/sync/notes/${note.id}/undo`);
+    expect(gates.batch).toBeNull();
+    expect(answer.status).toBe(409);
+    expect(answer.json).toEqual(COMPLETED_ANSWER);
+    expect(rowOf(w, id)).toMatchObject({ date: addDays(D, 1), completion: "completed" });
+    expect(overrides(w, id)).toBe(overridesBefore);
+    expect(q(w, `select dismissed_at from sync_notes where id = ?`, note.id)[0].dismissed_at).toBeNull();
+    await drive(w, addDays(D, 2), addDays(D, 4));
+    expect(record(w).credits.flatMap((c) => c.completed.map((x) => [c.date, x.workoutId, x.activityId]))).toEqual([[addDays(D, 1), id, "coros:lbl-undo"]]);
   });
 
   it("sync-note Undo's feed: a session still to come keeps its Undo (no `undoable` said)", async () => {
