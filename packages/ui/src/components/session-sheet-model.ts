@@ -30,8 +30,13 @@ export function planRefusal(e: unknown, otherwise: string): string {
   return refusedWhy(e) ?? otherwise;
 }
 
-/** The server refused it, so the session can't be changed this way now: a sheet stops offering the change. */
-export const refusedByServer = (e: unknown): boolean => refusedWhy(e) !== null;
+/**
+ * The server refused it, so the session can't be changed this way now: a sheet stops offering the change. Not when the
+ * session only changed under the request (`session_changed`: moved by another writer, neither done nor under way): the
+ * session is read again, and the same change may be pressed again.
+ */
+export const refusedByServer = (e: unknown): boolean =>
+  refusedWhy(e) !== null && ((e as ApiError).body as { error?: unknown } | null)?.error !== "session_changed";
 
 /**
  * Of a sheet's changes, the error to say: the one pressed last (`last`, its name), so an older press's error never hides it;
@@ -40,4 +45,13 @@ export const refusedByServer = (e: unknown): boolean => refusedWhy(e) !== null;
 export function latestError<K extends string>(changes: Readonly<Record<K, { isError: boolean; error: unknown }>>, last: K | null): unknown {
   if (last !== null) return changes[last].isError ? changes[last].error : null;
   return Object.values<{ isError: boolean; error: unknown }>(changes).find((m) => m.isError)?.error ?? null;
+}
+
+/**
+ * What a sheet says of its changes: the latest press's error in words (`latestError`, `planRefusal`) — and nothing while
+ * that press is on its way or went through, though an older one failed.
+ */
+export function changeErrorText<K extends string>(changes: Readonly<Record<K, { isError: boolean; error: unknown }>>, last: K | null, otherwise: string): string | null {
+  const e = latestError(changes, last);
+  return e === null ? null : planRefusal(e, otherwise);
 }

@@ -52,7 +52,7 @@ import { useWatchCatchUp, watchFollows } from "./watch-catch-up.js";
 import { EXERCISES, isProfileId, label as vocab, PROFILES } from "@rg/exercise-library";
 import { effortAdvice } from "@rg/workout";
 import { Banner, CompletionPill, ConfirmDialog, EmptyState, formatDayLong, formatTime, Sheet, Spinner } from "../components.js";
-import { latestError, offersMoveAndSkip, offersMoveToToday, planRefusal } from "./session-sheet-model.js";
+import { changeErrorText, offersMoveAndSkip, offersMoveToToday } from "./session-sheet-model.js";
 import { features } from "../features.js";
 import { IconAlert, IconInfo, IconSwap, IconWatch } from "../icons.js";
 import { offlineDb } from "../offline/idb.js";
@@ -587,6 +587,8 @@ export function SessionSheet({
     },
     onError: readAgain,
   });
+  /** Skip's and Move to today's error, when the one pressed last failed. */
+  const changeError = changeErrorText({ skip, today: moveToToday }, lastChange, "Couldn't change it. Try again.");
   // The watch (the watch mirrors the plan §3.9). Keep off, Put on and Retry only QUEUE (ruling 3-R11): the drain runs the
   // jobs, one a request (`drainThenRead`), then the session says how it went. A drain that fails is no error to show —
   // the hourly lane runs the job, and the sheet keeps its status until it has (reading again on a backoff while
@@ -1146,9 +1148,9 @@ export function SessionSheet({
             {markDoneRefusal(markDone.error)}
           </p>
         ) : null}
-        {skip.isError || moveToToday.isError ? (
+        {changeError !== null ? (
           <p className="session-refused" role="alert">
-            {planRefusal(latestError({ skip, today: moveToToday }, lastChange), "Couldn't change it. Try again.")}
+            {changeError}
           </p>
         ) : null}
         {editable && !marked ? (

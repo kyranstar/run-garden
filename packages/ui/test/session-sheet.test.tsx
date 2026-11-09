@@ -800,6 +800,33 @@ describe("a day ahead, a day gone, a started session", () => {
       expect(body()).not.toContain(second);
     });
 
+    it("a refusal, then a newer press on its way and then through: the old words go, and no stand-in line shows at any point", async () => {
+      const under = "This session was started and may still be running on another device, so it stays as it is.";
+      let release: (r: Response) => void = () => undefined;
+      mount(session({ date: "2026-10-03", contentState: "outline", checks: {}, build: null, view: null }), {
+        w: slot({ effectiveDate: "2026-10-03", contentState: "outline" }),
+        route: (c) =>
+          c.path.endsWith("/skip")
+            ? new Response(JSON.stringify({ error: "session_under_way", why: under }), { status: 409, headers: { "Content-Type": "application/json" } })
+            : c.path.endsWith("/move")
+              ? (new Promise<Response>((r) => (release = r)) as unknown as Response)
+              : undefined,
+      });
+      await until(() => !!button("Skip"), "Skip");
+      await click("Skip");
+      await until(() => body().includes(under), "the skip's refusal");
+      await until(() => !!button("Move to today"), "the move offer");
+      await click("Move to today");
+      await settle();
+      // The move is on its way: the skip's refusal is not what was pressed last, and nothing stands in for an error.
+      expect(body()).not.toContain(under);
+      expect(body()).not.toContain("Couldn't change it");
+      await act(async () => release(new Response(JSON.stringify({ workoutId: SLOT, corosSyncState: "calendar_only" }), { status: 200, headers: { "Content-Type": "application/json" } })));
+      await settle();
+      expect(body()).not.toContain(under);
+      expect(body()).not.toContain("Couldn't change it");
+    });
+
     it("a stale sheet's Move to today, refused while it is under way: the server's words", async () => {
       const under = "This session was started and may still be running on another device, so it stays as it is.";
       mount(session({ date: "2026-10-03", contentState: "outline", checks: {}, build: null, view: null }), {

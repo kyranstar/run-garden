@@ -42,14 +42,18 @@ const row = (over: Partial<WorkoutDto> = {}): WorkoutDto =>
     origin: "studio", contentState: "outline", ...over,
   }) as WorkoutDto;
 
-function mount(w: WorkoutDto, moved: { corosSyncState: string; watchDrain?: boolean }, refused?: { path: "move" | "skip"; status: number; body: unknown }): string[] {
+function mount(w: WorkoutDto, moved: { corosSyncState: string; watchDrain?: boolean }, refused?: { path: "move" | "skip"; status: number; body: unknown; once?: boolean }): string[] {
   const calls: string[] = [];
+  let refusals = 0;
   vi.stubGlobal(
     "fetch",
     vi.fn(async (url: string, init?: RequestInit) => {
       const method = (init?.method ?? "GET").toUpperCase();
       calls.push(`${method} ${url}`);
-      if (refused && url === `/api/plan/workouts/${w.id}/${refused.path}`) return new Response(JSON.stringify(refused.body), { status: refused.status, headers: { "Content-Type": "application/json" } });
+      if (refused && url === `/api/plan/workouts/${w.id}/${refused.path}` && !(refused.once && refusals > 0)) {
+        refusals += 1;
+        return new Response(JSON.stringify(refused.body), { status: refused.status, headers: { "Content-Type": "application/json" } });
+      }
       if (url === `/api/plan/workouts/${w.id}/candidates`) return json({ candidates: [{ date: TODAY, time: "18:00", window: "evening", explanation: "Open evening.", warnings: [], daysMoved: 2 }], skipOption: { explanation: "Skip it." }, busyChecked: true });
       if (url === `/api/plan/workouts/${w.id}/move`) return json({ workoutId: w.id, ...moved });
       if (url === "/api/sync/status") return json({ state: "in_sync", pendingCount: 0, issueCount: 0, lastCorosReadAt: null, writesEnabled: true, registered: true });
@@ -151,6 +155,20 @@ describe("a refusal says the server's words (the session guard, 409 `{ error, wh
     expect([...document.querySelectorAll("button")].map((b) => b.textContent)).not.toContain("Skip workout");
     expect(document.querySelectorAll("button.workout-row")).toHaveLength(0);
     for (const key of [["today"], ["plan"], ["workout", "w1"], ["session", "w1"]]) expect(lastQc!.getQueryState(key)?.isInvalidated, JSON.stringify(key)).toBe(true);
+  });
+
+  it("`session_changed` (the row moved under the move, neither done nor under way): its words, the plan read again, and the sheet still offers its days and Skip — a retry moves it", async () => {
+    const CHANGED = "This session changed just now. Try again.";
+    mount(row(), { corosSyncState: "calendar_only" }, { path: "move", status: 409, body: { error: "session_changed", why: CHANGED }, once: true });
+    for (const key of [["today"], ["plan"], ["workout", "w1"], ["session", "w1"]]) lastQc!.setQueryData(key, {});
+    await pressed("Open evening.");
+    await until(() => (document.body.textContent ?? "").includes(CHANGED), "the refusal's words");
+    for (const key of [["today"], ["plan"], ["workout", "w1"], ["session", "w1"]]) expect(lastQc!.getQueryState(key)?.isInvalidated, JSON.stringify(key)).toBe(true);
+    expect(document.querySelectorAll("button.workout-row")).toHaveLength(1);
+    expect([...document.querySelectorAll("button")].map((b) => b.textContent)).toContain("Skip workout");
+    await pressed("Open evening.");
+    await until(() => (document.body.textContent ?? "").includes("Moved to"), "the retry's move");
+    expect(document.body.textContent).not.toContain(CHANGED);
   });
 
   it("anything else: what it always said", async () => {
