@@ -366,7 +366,7 @@ describe("a change whose session moved on since its card", () => {
     expect((await rowOf(w)).completionState).toBe("skipped");
   });
 
-  it("a claim taken over isn't compared again: its own applier may have moved the row", async () => {
+  it("a claim taken over is compared like any other: a session renamed since is refused, its claim's length never written (owner P7, proposed: refuse)", async () => {
     const w = await session("w-1", day(1));
     const id = await changes(adjust(w, { kind: "adjust", durationMinutes: 25 }));
     const [p] = await db.select().from(coachProposals).where(eq(coachProposals.id, id));
@@ -374,8 +374,39 @@ describe("a change whose session moved on since its card", () => {
     await db.update(coachProposals).set({ ops: (p!.ops as object[]).map((o) => ({ ...o, outcome: { status: "applying", at: stale, before: { date: day(1), time: "07:00", title: "Tempo", minutes: 40 } } })) }).where(eq(coachProposals.id, id));
     await db.update(plannedWorkouts).set({ title: "Long tempo" }).where(eq(plannedWorkouts.id, w));
     const res = await approve(id, {});
+    expect(res.json.refused.map((r: { error: string }) => r.error)).toEqual(["changed_since_suggested"]);
+    expect((await rowOf(w)).fallbackEstimatedDurationSeconds).toBe(2400);
+  });
+
+  it("the applier throws once, the athlete then moves the session by hand, and taps Approve again: refused, the athlete's move stands", async () => {
+    const w = await session("w-1", day(1));
+    const id = await changes(adjust(w, { kind: "move", toDate: day(3), toTime: "12:00" }));
+    gates.beforeApply = async () => {
+      throw new Error("D1_ERROR: synthetic transient");
+    };
+    const spy = vi.spyOn(console, "error").mockImplementation(() => undefined);
+    const first = await approve(id, {}).catch((e: Error) => ({ status: 500, json: { error: e.message } }));
+    spy.mockRestore();
+    expect(first.status).toBe(500);
+    expect((await db.select().from(coachProposals).where(eq(coachProposals.id, id)))[0]!.ops).toEqual([expect.objectContaining({ outcome: expect.objectContaining({ status: "applying" }) })]);
+    expect((await post(`/api/plan/workouts/${w}/move`, { toDate: day(4), toTime: "17:30" })).status).toBe(200);
+    const again = await approve(id, {});
+    expect(again.json.changed).toEqual([]);
+    expect(again.json.refused.map((r: { error: string }) => r.error)).toEqual(["changed_since_suggested"]);
+    expect(await rowOf(w)).toMatchObject({ effectiveDate: day(4), effectiveTime: "17:30" });
+  });
+
+  it("a claim whose dead applier made its change is recorded applied, though the session differs from the card by that change", async () => {
+    const w = await session("w-1", day(1));
+    const id = await changes(adjust(w, { kind: "adjust", durationMinutes: 25 }));
+    const [p] = await db.select().from(coachProposals).where(eq(coachProposals.id, id));
+    const stale = new Date(Date.parse(NOW) - 3 * 60_000).toISOString();
+    await db.update(coachProposals).set({ ops: (p!.ops as object[]).map((o) => ({ ...o, outcome: { status: "applying", at: stale, before: { date: day(1), time: "07:00", title: "Tempo", minutes: 40 } } })) }).where(eq(coachProposals.id, id));
+    // What the applier wrote before it died: the length.
+    await db.update(plannedWorkouts).set({ fallbackEstimatedDurationSeconds: 1500, calendarBlockDurationSeconds: 1500 }).where(eq(plannedWorkouts.id, w));
+    const res = await approve(id, {});
     expect(res.json.refused).toEqual([]);
-    expect((await rowOf(w)).fallbackEstimatedDurationSeconds).toBe(1500);
+    expect(res.json.changed).toEqual([expect.objectContaining({ opId: planAdjustId(w), before: { date: day(1), time: "07:00", title: "Tempo", minutes: 40 } })]);
   });
 
   it("a workout beside a change in a later request isn't refused by what the earlier request's collision pass did", async () => {

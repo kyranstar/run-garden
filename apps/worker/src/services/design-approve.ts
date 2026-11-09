@@ -1197,8 +1197,9 @@ function planVerdict(
     return { refusal: notEditable(docOriginRow({ origin: row.origin }) ? "studio" : "programme") };
   }
   if (effectThere(c, row, op.retime)) return { made: beforeOf(row), replayFrom: null };
-  // A claim taken over was compared when it was claimed, and its own applier may have moved the row since.
-  if (!claimOf(op) && changedSinceCard(op, row)) return { refusal: { error: "changed_since_suggested", why: CHANGED_SINCE_CARD } };
+  // A claim taken over too (owner P7, proposed: refuse): what its dead applier made was found above (`claimMade`, `effectThere`),
+  // and anything else that differs from the card was done by another hand since — a hand move made after the fault included.
+  if (changedSinceCard(op, row)) return { refusal: { error: "changed_since_suggested", why: CHANGED_SINCE_CARD } };
   // A move to today never lands at a past time (the polish round, 1): its time asked for, or the one it keeps (the
   // applier's own rule, coach-apply.ts), at least the lead after now — else refused, the session left where it is.
   if (c.kind === "move" && c.toDate === today) {
