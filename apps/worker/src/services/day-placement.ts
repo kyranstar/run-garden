@@ -35,10 +35,10 @@
  *     window for tidiness is churn.
  */
 
-import { and, eq, inArray, isNull, ne } from "drizzle-orm";
+import { and, eq, inArray, isNull, ne, or } from "drizzle-orm";
 import { plannedWorkouts, scheduleOverrides } from "@rg/database";
 import { isWeekend, type SchedulingPreferences } from "@rg/domain";
-import { chunkIds, type Db } from "./db.js";
+import { chunkIds, runAtomically, type AtomicStatement, type Db } from "./db.js";
 import { plannedRowColumns, type PlannedRow } from "./planned-columns.js";
 
 /**
@@ -304,6 +304,7 @@ export async function separateDayCollisions(
   }
 
   const retimed: RetimedRow[] = [];
+  const writes: AtomicStatement[] = [];
   for (const date of [...byDate.keys()].sort()) {
     const dayRows = byDate.get(date)!;
     const sessions: PlaceableSession[] = dayRows.map((r) => ({
@@ -320,17 +321,31 @@ export async function separateDayCollisions(
       if (to === undefined || to === r.effectiveTime) continue;
       retimed.push({ workoutId: r.id, date, title: r.title, from: r.effectiveTime, to });
       if (opts.dryRun) continue;
-      await db
-        .update(plannedWorkouts)
-        .set({
-          effectiveTime: to,
-          // The mirror re-derives the event from the row; flipping a synced row
-          // to pending is how every other in-place edit here asks for that.
-          ...(r.calendarSyncState === "synced" ? { calendarSyncState: "pending" } : {}),
-          updatedAt: opts.now,
-        })
-        .where(and(eq(plannedWorkouts.id, r.id), eq(plannedWorkouts.userId, userId)));
+      writes.push(
+        db
+          .update(plannedWorkouts)
+          .set({
+            effectiveTime: to,
+            // The mirror re-derives the event from the row; flipping a synced row
+            // to pending is how every other in-place edit here asks for that.
+            ...(r.calendarSyncState === "synced" ? { calendarSyncState: "pending" } : {}),
+            updatedAt: opts.now,
+          })
+          // Held as read (final review A, m3): a Start, a save or a remove landing between the read and this write leaves the
+          // session's time as it is — never a session under way re-timed.
+          .where(
+            and(
+              eq(plannedWorkouts.id, r.id),
+              eq(plannedWorkouts.userId, userId),
+              eq(plannedWorkouts.completionState, "scheduled"),
+              isNull(plannedWorkouts.archivedAt),
+              or(isNull(plannedWorkouts.contentState), ne(plannedWorkouts.contentState, "started")),
+            ),
+          ),
+      );
     }
   }
+  // One batch, the same statements as before, one a re-timed row.
+  await runAtomically(db, writes);
   return retimed;
 }

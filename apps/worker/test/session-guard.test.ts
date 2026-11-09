@@ -1023,6 +1023,24 @@ describe("a plan's sessions archived in bulk by the coach leave one under way, a
 });
 
 describe("the day's placement (every writer's: a plan's sessions, an import, an approve) never re-times a session under way", () => {
+  it("a Start landing between the placement's read and its write (forced): that session keeps its time", async () => {
+    const w = await world();
+    const ids = [await slotOn(w, D), await slotOn(w, D)];
+    raw(w).prepare(`delete from schedule_overrides where workout_id in (?, ?)`).run(ids[0], ids[1]);
+    setClock(D, "17:55");
+    const built = await w.call("POST", `/api/sessions/${ids[0]}/build`, {});
+    const before = rowOf(w, ids[0]!).time;
+    let landed = false;
+    gates.batch = async () => {
+      expect((await w.call("POST", `/api/sessions/${ids[0]}/start`, { buildId: built.json.build.buildId })).status).toBe(200);
+      landed = true;
+    };
+    await separateDayCollisions(w.db, w.userId, [D], await loadPreferences(w.db, w.userId), { from: D, now: nowInstant() });
+    expect(landed).toBe(true);
+    expect(rowOf(w, ids[0]!)).toMatchObject({ time: before, content: "started" });
+  });
+
+
   it.each([0, 1])("two sessions at one hour, the %s-th started: the started one keeps its time; the other is placed around it", async (which) => {
     const w = await world();
     const ids = [await slotOn(w, D), await slotOn(w, D)];
