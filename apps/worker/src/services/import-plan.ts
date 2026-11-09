@@ -1107,8 +1107,10 @@ export async function importPlanSnapshot(
       if (slot && holds) {
         // The slot follows its copy to the copy's day (3-R16) — the athlete may
         // have moved it in COROS while a read missed it — and a "Removed from
-        // your watch" posted while it was missed was false.
-        const moved = src.date !== slot.effectiveDate;
+        // your watch" posted while it was missed was false. A DONE slot stays:
+        // its credit is on its day, and re-dating it would credit it again as the
+        // garden walks on. A started one follows: its save takes the new day.
+        const moved = src.date !== slot.effectiveDate && slot.completionState !== "completed";
         await db
           .update(plannedWorkouts)
           .set({
@@ -1442,6 +1444,14 @@ export async function importPlanSnapshot(
       }
       case "adopt_coros": {
         updates.lastVerifiedCorosDate = corosDate;
+        // A FINISHED session's day doesn't follow COROS: its credit is on its day, and re-dating it would credit it again as the
+        // garden walks on (or lose it, moved back). The read is still on record, so the next read finds nothing new; no note,
+        // since the app kept its day and there's nothing to undo.
+        if (current.completionState === "completed") {
+          updates.corosSyncState = syncedUnlessClaimed();
+          touched = true;
+          break;
+        }
         updates.effectiveDate = corosDate;
         updates.originalPlanDate = current.originalPlanDate;
         updates.calendarSyncState =

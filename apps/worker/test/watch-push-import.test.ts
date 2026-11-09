@@ -37,7 +37,7 @@ import { applyOps } from "../src/services/coach-apply.js";
 import { importPlanSnapshot } from "../src/services/import-plan.js";
 import { applyMove, emitPendingWork } from "../src/services/jobs.js";
 import { removeFromPlan } from "../src/services/plan-mutations.js";
-import { buildSession, loadSession } from "../src/services/session-build.js";
+import { buildSession, loadSession, startSession } from "../src/services/session-build.js";
 import { createDocWorkout } from "../src/services/doc-workouts.js";
 import { mirrorSweep, mirrorTakesTurn, queueProvisionalPush } from "../src/services/mirror.js";
 import { calmDoc } from "./doc-workout-fixture.js";
@@ -331,6 +331,27 @@ describe("the import and a sent session", () => {
     expect(await watchOf(workoutId)).toEqual({ state: "on_watch" });
   });
 
+  it("(d) moved on COROS once the session is done: its day stays (its credit is there), the read's date is on record, no note (JOINT Fix 6)", async () => {
+    const { workoutId, stamp } = await pushed();
+    await db.update(plannedWorkouts).set({ completionState: "completed", contentState: "done", resolutionDate: DAY }).where(eq(plannedWorkouts.id, workoutId));
+    const LATER = addDays(DAY, 2);
+    entityOf(programOn(stamp)!).happenDay = Number(localDateToCorosDay(LATER));
+    await readNow();
+    await readNow();
+    expect(await rowOf(db, workoutId)).toMatchObject({ effectiveDate: DAY, lastVerifiedCorosDate: LATER, completionState: "completed" });
+    expect(await notesOf(workoutId)).toEqual([]);
+  });
+
+  it("(d) moved on COROS while it is under way: the date still follows its copy (ruling 3-R16), the build stays locked", async () => {
+    const { workoutId, buildId, stamp } = await pushed();
+    await startSession(db, userId, workoutId, buildId, NOON);
+    const LATER = addDays(DAY, 2);
+    entityOf(programOn(stamp)!).happenDay = Number(localDateToCorosDay(LATER));
+    await readNow();
+    expect(await rowOf(db, workoutId)).toMatchObject({ effectiveDate: LATER, lastVerifiedCorosDate: LATER, contentState: "started" });
+    expect((await db.select().from(sessionBuilds).where(eq(sessionBuilds.id, buildId)))[0]!.lockedAt).not.toBeNull();
+  });
+
   it("(d) Undo on a sent session's move note answers 422 not_undoable, and nothing comes off the watch (3-R15)", async () => {
     const { workoutId, buildId, stamp } = await pushed();
     const LATER = addDays(DAY, 1);
@@ -398,6 +419,23 @@ describe("the import and a sent session", () => {
     expect(
       await db.select().from(plannedWorkouts).where(and(eq(plannedWorkouts.userId, userId), eq(plannedWorkouts.sourceWorkoutId, row.sourceWorkoutId))),
     ).toHaveLength(1);
+  });
+
+  it("(f) a copy the row never learned about, moved on COROS, its slot done: attached, its day stays, no note (JOINT Fix 6); under way, it follows (3-R16)", async () => {
+    const LATER = addDays(DAY, 2);
+    const done = await writeWithoutRecording();
+    await db.update(plannedWorkouts).set({ completionState: "completed", resolutionDate: DAY }).where(eq(plannedWorkouts.id, done.workoutId));
+    entityOf(programOn(done.stamp)!).happenDay = Number(localDateToCorosDay(LATER));
+    await importFromCoros();
+    expect(await rowOf(db, done.workoutId)).toMatchObject({ effectiveDate: DAY, lastVerifiedCorosDate: LATER, completionState: "completed" });
+    expect(await notesOf(done.workoutId)).toEqual([]);
+    await setup();
+    const running = await writeWithoutRecording();
+    await db.update(plannedWorkouts).set({ contentState: "started" }).where(eq(plannedWorkouts.id, running.workoutId));
+    entityOf(programOn(running.stamp)!).happenDay = Number(localDateToCorosDay(LATER));
+    await importFromCoros();
+    expect(await rowOf(db, running.workoutId)).toMatchObject({ effectiveDate: LATER, lastVerifiedCorosDate: LATER, contentState: "started" });
+    expect((await notesOf(running.workoutId)).map((n) => n.kind)).toEqual(["watch_copy_moved"]);
   });
 
   it("(f) its slot gone: no new row, and unpush:<buildId> takes the stamp from the push and the address from the wire", async () => {

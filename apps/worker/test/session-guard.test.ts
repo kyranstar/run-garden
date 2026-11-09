@@ -921,3 +921,128 @@ describe("the hazards, after the guard (each says what happens; the guard doesn'
   });
 });
 
+// ── COROS date adoption (JOINT Fix 6) ────────────────────────────────────────────────────────────────────────────────
+
+/** A COROS read of a watch-plan session: its id at this date, the same content (the import, as a read hands it over). */
+async function corosRead(w: World, id: string, date: string): Promise<void> {
+  const prefs = await loadPreferences(w.db, w.userId);
+  await importPlanSnapshot(
+    w.db,
+    {
+      userId: w.userId,
+      plan: { sourcePlanId: "guard-plan", name: "Synthetic plan" },
+      workouts: [{ sourcePlanId: "guard-plan", sourceWorkoutId: "4738:2", sourceIdInPlan: "2", date, title: "Long run", sport: "run", contentFingerprint: "fp", stages: [], estimatedDurationSeconds: 3600, isRestDay: false }],
+      rangeStart: "2026-11-01",
+      rangeEnd: "2026-12-20",
+      source: "fixture",
+    },
+    prefs,
+  );
+  expect(rowOf(w, id)).toBeTruthy();
+}
+
+async function watchPlanRun(w: World, day: string): Promise<string> {
+  const id = "guard-run";
+  await w.db.insert(plannedWorkouts).values({
+    id, userId: w.userId, planId: "guard-plan-row", sourceWorkoutId: "4738:2", sourceIdInPlan: "2", title: "Long run", category: "long", sport: "run", originalPlanDate: day, lastVerifiedCorosDate: day, effectiveDate: day, effectiveTime: "07:00",
+    sourceContentFingerprint: "fp", calendarBlockDurationSeconds: 3600, fallbackEstimatedDurationSeconds: 3600, createdAt: nowInstant(), updatedAt: nowInstant(),
+  });
+  return id;
+}
+
+describe("a finished session's day doesn't follow COROS", () => {
+  it("a run the watch reported, re-dated on COROS: its day stays, the read's date is on record, no note; one credit, by its one source id, as if COROS had left it", async () => {
+    const w = await world();
+    const id = await watchPlanRun(w, FRI);
+    await drive(w, addDays(FRI, -2), FRI);
+    setClock(FRI, "12:00");
+    await corosReport(w, [corosSource({ label: "lbl-long", date: FRI, hhmm: "07:05", seconds: 3550, sport: "run" })]);
+    await drive(w, addDays(FRI, 1), addDays(FRI, 2));
+    expect(rowOf(w, id).completion).toBe("completed");
+    const control = fork(w);
+    setClock(addDays(FRI, 2), "12:00");
+    await corosRead(w, id, TUE);
+    await corosRead(w, id, TUE); // the next read finds nothing new
+    expect(rowOf(w, id)).toMatchObject({ date: FRI, lvd: TUE, completion: "completed" });
+    expect(await w.db.select().from(syncNotes).where(eq(syncNotes.workoutId, id))).toEqual([]);
+    await drive(w, addDays(FRI, 3), addDays(TUE, 3));
+    await drive(control, addDays(FRI, 3), addDays(TUE, 3));
+    const after = record(w);
+    expect({ ...after, rows: [] }).toEqual({ ...record(control), rows: [] });
+    expect(after.counters).toMatchObject({ runs: 1, long: 1 });
+    expect(after.credits.flatMap((c) => c.completed.map((x) => [c.date, x.workoutId, x.activityId]))).toEqual([[FRI, id, "coros:lbl-long"]]);
+    expect(after.events.map((e) => [e.date, e.kind, e.activity])).toEqual(record(control).events.map((e) => [e.date, e.kind, e.activity]));
+  });
+
+  it("a session still to come follows COROS as before, with its note", async () => {
+    const w = await world();
+    const id = await watchPlanRun(w, D);
+    setClock(addDays(D, -2), "12:00");
+    await corosRead(w, id, addDays(D, 2));
+    expect(rowOf(w, id)).toMatchObject({ date: addDays(D, 2), lvd: addDays(D, 2), completion: "scheduled" });
+    expect((await w.db.select().from(syncNotes).where(eq(syncNotes.workoutId, id))).map((n) => n.kind)).toEqual(["adopted_coros_change"]);
+  });
+});
+
+// ── The Calendar, which JOINT's Fix 5 leaves as it is ────────────────────────────────────────────────────────────────
+
+describe("GAP, named: the Calendar sits below the guard until JOINT Fix 5, and a drag still moves the row", () => {
+  async function calendarWorld(id: () => Promise<string>, w: World) {
+    const key = Buffer.alloc(32, 7).toString("base64");
+    const prefs = await loadPreferences(w.db, w.userId);
+    const { savePreferences } = await import("../src/services/calendar-sync.js");
+    await savePreferences(w.db, w.userId, { ...prefs, calendarId: "cal" });
+    await w.db.insert(providerConnections).values({
+      id: newId(), userId: w.userId, provider: "google_calendar", status: "connected", encryptedRefreshToken: await encryptSecret("refresh", key), encryptedAccessToken: await encryptSecret("access", key),
+      accessTokenExpiresAt: new Date(Date.now() + 3_600_000).toISOString(), createdAt: nowInstant(), updatedAt: nowInstant(),
+    });
+    const google = new FakeGoogle({ now: new Date().toISOString(), zone: LA, origin: "https://app.test", firstDay: GENESIS });
+    vi.stubGlobal("fetch", google.fetch);
+    const workout = await id();
+    await syncCalendar(w.db, env, w.userId);
+    const event = [...google.events.values()].find((e) => e.body.extendedProperties?.private?.rgWorkoutId === workout);
+    expect(event, "the session's event is on the calendar").toBeTruthy();
+    /** The athlete drags the event `days` on, in Google. */
+    const drag = async (days: number) => {
+      const shift = (iso: string) => new Date(Date.parse(iso) + days * 86_400_000).toISOString();
+      event!.body = { ...event!.body, start: { ...event!.body.start, dateTime: shift(event!.body.start.dateTime) }, end: { ...event!.body.end, dateTime: shift(event!.body.end.dateTime) } };
+      event!.seq = ++(google as unknown as { seq: number }).seq;
+      await syncCalendar(w.db, env, w.userId);
+    };
+    return { workout, drag };
+  }
+
+  it("a drag on a session under way re-dates it: the phone's save still lands, on the slot's new day", async () => {
+    const w = await world();
+    let build: any;
+    const { workout, drag } = await calendarWorld(async () => {
+      const id = await slotOn(w, D);
+      setClock(D, "18:00");
+      build = await buildAndStart(w, id);
+      return id;
+    }, w);
+    await drag(2);
+    expect(rowOf(w, workout)).toMatchObject({ date: addDays(D, 2), content: "started" });
+    expect((await saved(w, workout, build, D)).json.status).toBe("saved");
+    expect(rowOf(w, workout)).toMatchObject({ date: addDays(D, 2), completion: "completed" });
+  });
+
+  it("a drag on a done session re-dates it, and the walk credits it twice: the double credit Fix 5 is for", async () => {
+    const w = await world();
+    let build: any;
+    const { workout, drag } = await calendarWorld(async () => {
+      const id = await slotOn(w, FRI);
+      setClock(FRI, "18:00");
+      build = await buildAndStart(w, id);
+      return id;
+    }, w);
+    expect((await saved(w, workout, build, FRI)).json.status).toBe("saved");
+    await drive(w, addDays(FRI, 1), addDays(FRI, 2));
+    await drag(4);
+    expect(rowOf(w, workout)).toMatchObject({ date: TUE, completion: "completed" });
+    await drive(w, addDays(FRI, 3), addDays(TUE, 3));
+    const after = record(w);
+    expect(after.counters.strength + after.counters.yoga).toBe(2);
+    expect(after.credits.flatMap((c) => c.completed.map((x) => [c.date, x.workoutId]))).toEqual([[FRI, workout], [TUE, workout]]);
+  });
+});
