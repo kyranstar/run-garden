@@ -6,6 +6,21 @@
  * card was drawn is refused `changed_since_suggested`, nothing written, the other ops going on. Synthetic data only.
  */
 import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
+
+/** Hold an approve at the applier's door: after its plan read and its claim, before the applier reads or writes a row. */
+const gates = vi.hoisted(() => ({ beforeApply: null as null | (() => Promise<void>) }));
+vi.mock("../src/services/coach-apply.js", async (importOriginal) => {
+  const real = await importOriginal<typeof import("../src/services/coach-apply.js")>();
+  return {
+    ...real,
+    applyOps: async (...args: Parameters<typeof real.applyOps>) => {
+      const hold = gates.beforeApply;
+      gates.beforeApply = null;
+      if (hold) await hold();
+      return real.applyOps(...args);
+    },
+  };
+});
 import { and, eq } from "drizzle-orm";
 import { schema } from "@rg/database";
 import { adaptiveConfigSchema, addDays, newId, nowInstant } from "@rg/domain";
@@ -45,6 +60,7 @@ beforeAll(() => {
 beforeEach(async () => {
   vi.useFakeTimers({ toFake: ["Date"] });
   vi.setSystemTime(new Date(NOW));
+  gates.beforeApply = null;
   writes = [];
   db = cloneTestDb(migrated, { boundVariableCap: 100, onStatement: (s) => void (isWrite(s) && writes.push(s)) });
   ({ userId } = await makeTestUser(db));
@@ -384,5 +400,55 @@ describe("a change whose session moved on since its card", () => {
       body = { opIds: res.json.remaining };
     }
     expect(refused).toEqual([]);
+  });
+});
+
+describe("a change whose session moved on between approve's read and the applier's write (forced)", () => {
+  const overridesOf = async (w: string) => (await db.select().from(schema.scheduleOverrides).where(eq(schema.scheduleOverrides.workoutId, w))).map((o) => [o.kind, o.fromDate, o.toDate, o.toTime].join(" "));
+
+  it.each([
+    ["move", { kind: "move", toDate: day(3), toTime: "12:00" }],
+    ["skip", { kind: "skip", reason: "Rest." }],
+    ["adjust", { kind: "adjust", durationMinutes: 25 }],
+    ["ease", { kind: "ease", durationMinutes: 25 }],
+    ["remove", { kind: "remove" }],
+  ])("%s: the athlete's own move lands at the applier's door: refused `changed_since_suggested`, the row where the athlete put it, nothing of the coach's written; the other op goes on", async (_name, c) => {
+    const w = await session("w-1", day(1));
+    const other = await session("w-2", day(2));
+    const id = await changes(adjust(w, c), adjust(other, { kind: "skip", reason: "Rest." }));
+    gates.beforeApply = async () => {
+      expect((await post(`/api/plan/workouts/${w}/move`, { toDate: day(4), toTime: "17:30" })).status).toBe(200);
+    };
+    const res = await approve(id, {});
+    expect(res.status).toBe(200);
+    expect(res.json.refused).toEqual([expect.objectContaining({ opId: planAdjustId(w), error: "changed_since_suggested" })]);
+    expect(res.json.changed.map((x: { opId: string }) => x.opId)).toEqual([planAdjustId(other)]);
+    expect(await rowOf(w)).toMatchObject({ effectiveDate: day(4), effectiveTime: "17:30", completionState: "scheduled", archivedAt: null, fallbackEstimatedDurationSeconds: 2400, title: "Tempo" });
+    expect(await overridesOf(w)).toEqual([`user_move ${day(1)} ${day(4)} 17:30`]);
+    expect((await rowOf(other)).completionState).toBe("skipped");
+    // It stays open, and the card's compare refuses it again from here.
+    const again = await approve(id, { opIds: [planAdjustId(w)] });
+    expect(again.json.refused.map((r: { error: string }) => r.error)).toEqual(["changed_since_suggested"]);
+  });
+
+  it("an ease whose row holds a document: lost at the door, it records no revision of the coach's (none of a document it never wrote)", async () => {
+    const w = await session("w-1", day(1));
+    await db.update(plannedWorkouts).set({ workoutDoc: JSON.stringify({ version: 1, title: "Tempo", parts: [] }), workoutDocRev: 1 }).where(eq(plannedWorkouts.id, w));
+    const id = await changes(adjust(w, { kind: "ease", durationMinutes: 25 }));
+    gates.beforeApply = async () => {
+      expect((await post(`/api/plan/workouts/${w}/move`, { toDate: day(4), toTime: "17:30" })).status).toBe(200);
+    };
+    const res = await approve(id, {});
+    expect(res.json.refused.map((r: { error: string }) => r.error)).toEqual(["changed_since_suggested"]);
+    expect(await db.select().from(schema.workoutDocRevisions).where(eq(schema.workoutDocRevisions.workoutId, w))).toEqual([]);
+    expect(await rowOf(w)).toMatchObject({ workoutDocRev: 1, title: "Tempo" });
+  });
+
+  it("nothing lands at the door: each applies as before", async () => {
+    const w = await session("w-1", day(1));
+    const id = await changes(adjust(w, { kind: "move", toDate: day(3), toTime: "12:00" }));
+    const res = await approve(id, {});
+    expect(res.json.changed.map((x: { opId: string }) => x.opId)).toEqual([planAdjustId(w)]);
+    expect(await rowOf(w)).toMatchObject({ effectiveDate: day(3), effectiveTime: "12:00" });
   });
 });

@@ -179,7 +179,7 @@
  * that declines the whole proposal says "Left as planned", as the thread's own does. A receipt that fails never fails
  * the approve: the workouts are written by then.
  */
-import { and, eq, sql, type SQL } from "drizzle-orm";
+import { and, eq, inArray, isNull, sql, type AnyColumn, type SQL } from "drizzle-orm";
 import { coachMessages, coachProposals, plannedWorkouts, saveBatches, scheduleOverrides, workoutDocRevisions } from "@rg/database";
 import {
   addDays,
@@ -198,10 +198,20 @@ import { EXERCISES, type ExerciseRecord } from "@rg/exercise-library";
 import { deriveDoc, makeLibraryIndex, startEditing, toProposable, type DocDerived, type DocIssue } from "@rg/workout";
 import type { Db } from "./db.js";
 import { underWayNow, underWaySql, UNDER_WAY_WORDS } from "./session-guard.js";
+
+/** The sessions as they are now, with what says whether each is under way: one statement. */
+async function rowsNow(db: Db, userId: string, ids: readonly string[]) {
+  const pw = plannedWorkouts;
+  const rows = await db
+    .select({ id: pw.id, archivedAt: pw.archivedAt, completionState: pw.completionState, contentState: pw.contentState, effectiveDate: pw.effectiveDate, underWay: sql<unknown>`${underWaySql()}` })
+    .from(pw)
+    .where(and(eq(pw.userId, userId), inArray(pw.id, [...ids])));
+  return new Map(rows.map((r) => [r.id, r]));
+}
 import { FROZEN_STATES } from "./workout-doc-store.js";
 import { accountLibraryFrom, forgetAccountLibrary, loadAccountLibrary, personalMovesSql, reseedAccountLibrary, type AccountLibrary } from "./account-library.js";
 import { CALENDAR_OPS_PER_REQUEST } from "./calendar-sync.js";
-import { applyOps, applyStructuralChunk, NOT_ACTIONABLE, RETIME_CHANGED, STRUCTURAL_MIN_BUDGET, whyNotActionable, type StructuralProgress } from "./coach-apply.js";
+import { applyOps, applyStructuralChunk, GUARD_LOST, NOT_ACTIONABLE, RETIME_CHANGED, STRUCTURAL_MIN_BUDGET, whyNotActionable, type StructuralProgress } from "./coach-apply.js";
 import { coachDrainQueued } from "./coros-write-cloud.js";
 import { recordReplayFrom } from "./garden-sync.js";
 import {
@@ -780,6 +790,8 @@ interface RowState {
   stageSummary: string | null;
   /** What says whether it is under way (`underWaySql`, read with it). */
   underWay: unknown;
+  /** The columns a change's write is held to, exactly as read (`unchangedSince`). */
+  raw: { date: unknown; time: unknown; title: unknown; category: unknown; subtype: unknown; sourceSeconds: unknown; seconds: unknown; completion: unknown; content: unknown };
 }
 
 interface Plan {
@@ -876,6 +888,7 @@ async function readPlan(
       resolution: typeof x.resolution === "string" ? x.resolution : null,
       stageSummary: typeof x.stages === "string" ? x.stages : null,
       underWay: x.underWay,
+      raw: { date: x.date, time: x.time ?? null, title: x.title, category: x.category, subtype: x.subtype ?? null, sourceSeconds: x.sourceSeconds ?? null, seconds: x.seconds ?? null, completion: x.completion, content: x.content ?? null },
     });
   }
   // Each revision id names one op's revision; its ref was checked in the read (the op's own).
@@ -1064,6 +1077,42 @@ function decidable(p: DesignProposalRow, ids: readonly string[] | undefined, o: 
   return { ops, settled, declined, todo };
 }
 
+/**
+ * THE ROW A CHANGE WRITES IS THE ONE THE APPROVE READ (the applier's `guards`): its day, time, name, kind, lengths, state
+ * and content state, null-safe, as `readPlan` read them — and still on the plan. A hand move, a Start, a save or a match
+ * landing between the read and the write leaves the session as it is; the change is refused in what it finds
+ * (`lostRefusal`). The time is held whether or not it was asked for: within one request no collision pass of this approve
+ * has run yet, so only another writer can have moved it.
+ */
+function unchangedSince(row: RowState): SQL {
+  const pw = plannedWorkouts;
+  const r = row.raw;
+  const is = (col: AnyColumn, v: unknown) => sql`${col} is ${v as string | number | null}`;
+  return and(
+    is(pw.effectiveDate, r.date),
+    is(pw.effectiveTime, r.time),
+    is(pw.title, r.title),
+    is(pw.category, r.category),
+    is(pw.qualitySubtype, r.subtype),
+    is(pw.sourceEstimatedDurationSeconds, r.sourceSeconds),
+    is(pw.fallbackEstimatedDurationSeconds, r.seconds),
+    is(pw.completionState, r.completion),
+    is(pw.contentState, r.content),
+    isNull(pw.archivedAt),
+  )!;
+}
+
+/** A session under way, refused (R-APP-N2): the card stays and says so. */
+const underWayRefusal = (): Omit<Refused, "opId"> => ({ ...notEditable("under_way"), why: UNDER_WAY_WORDS });
+
+/** Why a change whose guarded write found its session changed since the approve's read was refused: as the row now is. */
+function lostRefusal(row: { archivedAt: string | null; completionState: string; contentState: string | null; effectiveDate: string; underWay: unknown } | undefined, today: string): Omit<Refused, "opId"> {
+  if (!row || row.archivedAt) return { error: "not_found", why: "It's no longer in the plan." };
+  if ((FROZEN_STATES as readonly string[]).includes(row.completionState)) return notEditable("resolved", row.completionState);
+  if (underWayNow(row, row.underWay, today)) return underWayRefusal();
+  return { error: "changed_since_suggested", why: CHANGED_SINCE_CARD };
+}
+
 /** The day an op's new workout goes on (the athlete's, with an edit); a revision's is its row's. */
 const dayOf = (op: DesignedOp, edit: ApproveInput["edit"]): string | null =>
   op.target.kind === "new" ? (edit?.opId === opIdOf(op) && edit.date ? edit.date : op.target.date) : null;
@@ -1114,7 +1163,7 @@ function planVerdict(
   // A session under way isn't changed out from under the device playing it (R-APP-N2): its card stays, and says why. Its state
   // answers first when that is done with; a restore only ever reaches a skipped session.
   if (c.kind !== "restore" && !(FROZEN_STATES as readonly string[]).includes(row.dto.completionState) && underWayNow({ contentState: row.dto.contentState ?? null, effectiveDate: row.dto.date }, row.underWay, today)) {
-    return { refusal: { ...notEditable("under_way"), why: UNDER_WAY_WORDS } };
+    return { refusal: underWayRefusal() };
   }
   // A restore reaches a skipped session (the thread coach's rule), its day not yet gone; any other change a session
   // still to come (the applier's own rule).
@@ -1349,6 +1398,11 @@ export async function approveDesignOps(
         // A length the card said the rule re-times (`retime`): the applier re-times it only when it finds the same.
         retimes: new Map(batch.flatMap((c) => (c.op.kind === "adjust" && c.retime ? [[c.op.workoutId, c.retime] as const] : []))),
         ...(ctx.runWire ? { runWire: ctx.runWire } : {}),
+        // Each session written only as it was read here (`unchangedSince`).
+        guards: new Map(batch.flatMap((c) => {
+          const row = plan.rows.get(c.op.workoutId);
+          return row ? [[c.op.workoutId, unchangedSince(row)] as const] : [];
+        })),
       });
     } catch (e) {
       // THE RELEASE (the recovery rule): the applier threw — a fault it doesn't catch, its own or one of the D1's. The
@@ -1360,17 +1414,26 @@ export async function approveDesignOps(
     }
     // Each change missed by the applier names the session it couldn't change, in order; the rest it applied.
     const missed = [...res.missed];
+    const done = (c: DesignedPlanOp) => res.updated.includes(c.op.workoutId) || (c.op.kind === "remove" && res.archived.includes(c.op.workoutId));
+    const said = new Map(batch.filter((c) => !done(c)).map((c) => [c.id, missed.shift()] as const));
+    // A guarded write that lost: the session as it is now says why (one statement, only when one lost).
+    const lost = batch.filter((c) => said.get(c.id) === GUARD_LOST).map((c) => c.op.workoutId);
+    const lostNow = lost.length > 0 ? await rowsNow(db, userId, lost) : new Map();
     for (const c of batch) {
       // A remove's session is archived by the applier (the new shape §5), every other change's updated.
-      if (res.updated.includes(c.op.workoutId) || (c.op.kind === "remove" && res.archived.includes(c.op.workoutId))) {
+      if (done(c)) {
         const before = claimed.get(c.id)!;
         outcomes.set(c.id, { status: "applied", at: ctx.now, workoutId: c.op.workoutId, before });
         changed.push({ opId: c.id, change: changeVerb(c), workoutId: c.op.workoutId, before });
       } else {
         // A re-timed length whose session changed since the card has its own code (review-L minor 5), its words the same.
-        const said = missed.shift();
+        const why = said.get(c.id);
         const refusal: Omit<Refused, "opId"> =
-          said === RETIME_CHANGED ? { error: "changed_since_suggested", why: applierWhy(said) } : { ...notEditable("unknown"), why: applierWhy(said) };
+          why === GUARD_LOST
+            ? lostRefusal(lostNow.get(c.op.workoutId), ctx.today)
+            : why === RETIME_CHANGED
+              ? { error: "changed_since_suggested", why: applierWhy(why) }
+              : { ...notEditable("unknown"), why: applierWhy(why) };
         refused.push({ opId: c.id, ...refusal });
         outcomes.set(c.id, { status: "refused", at: ctx.now, ...refusal });
       }

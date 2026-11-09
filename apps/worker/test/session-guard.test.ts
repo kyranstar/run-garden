@@ -744,20 +744,50 @@ describe("the coach and a session under way", () => {
     expect(res.json.refused.map((r: { error: string }) => r.error)).toEqual(["past_date"]);
   });
 
-  it("GAP, named: a Start landing inside an approve's move still lands: approve judges at its read, and the applier has no write-time guard", async () => {
+  it.each([
+    ["move", { kind: "move", toDate: addDays(D, 3), toTime: "12:00" }, "move"],
+    ["skip", { kind: "skip", reason: "Rest." }, "mutation"],
+  ] as const)("a Start landing inside an approve's %s, after the applier's read and before its write: refused `under_way`, the row as the Start left it, nothing of the coach's written", async (_name, c, gate) => {
     const w = await world();
     const id = await slotOn(w, D);
     setClock(D, "12:00");
-    const proposal = await proposed(w, change(id, { kind: "move", toDate: addDays(D, 3), toTime: "12:00" }));
+    const proposal = await proposed(w, change(id, c));
     setClock(D, "17:55");
     const built = await w.call("POST", `/api/sessions/${id}/build`, {});
-    gates.move = async () => {
+    gates[gate] = async () => {
       expect((await w.call("POST", `/api/sessions/${id}/start`, { buildId: built.json.build.buildId })).status).toBe(200);
     };
+    const trail = overrides(w, id);
     const res = await w.call("POST", `/api/coach/proposals/${proposal}/approve`, {});
-    expect(res.json.changed.map((x: { opId: string }) => x.opId)).toEqual([planAdjustId(id)]);
-    // Moved, and `started` lost: the applier read the row as built, so it wrote it back to an outline. The phone plays on.
-    expect(rowOf(w, id)).toMatchObject({ date: addDays(D, 3), content: "outline" });
+    expect(res.json.changed).toEqual([]);
+    expect(res.json.refused).toEqual([expect.objectContaining({ opId: planAdjustId(id), error: "not_editable", cause: "under_way" })]);
+    expect(rowOf(w, id)).toMatchObject({ date: D, completion: "scheduled", content: "started" });
+    expect(overrides(w, id)).toBe(trail);
+  });
+
+  it.each([
+    ["move", { kind: "move", toDate: addDays(D, 7), toTime: "12:00" }, "move"],
+    ["skip", { kind: "skip", reason: "Rest." }, "mutation"],
+  ] as const)("the phone's save landing inside an approve's %s (a session started on D, its row moved ahead since, approved past its window): refused as done, the one credit on the build's day", async (_name, c, gate) => {
+    const { w, id, build } = await startedOn(D);
+    // The Calendar moved the row ahead after Start (below the guard): past the save's days the API, and the coach, may reach it.
+    await w.db.update(plannedWorkouts).set({ effectiveDate: addDays(D, 5) }).where(eqId(id));
+    setClock(addDays(D, 2), "12:00");
+    const proposal = await proposed(w, change(id, c));
+    gates[gate] = async () => {
+      setClock(addDays(D, 2), "12:01");
+      const answer = await w.call("PUT", "/api/sessions/performed/p-mid", wire({ id: "p-mid", workoutId: id, build, startedAt: instant(D, "18:00"), endedAt: instant(D, "18:30") }));
+      expect(answer.json.status, JSON.stringify(answer.json)).toBe("saved");
+    };
+    const res = await w.call("POST", `/api/coach/proposals/${proposal}/approve`, {});
+    expect(res.json.changed).toEqual([]);
+    expect(res.json.refused).toEqual([expect.objectContaining({ opId: planAdjustId(id), error: "not_editable", cause: "resolved" })]);
+    expect(rowOf(w, id)).toMatchObject({ date: addDays(D, 5), completion: "completed", content: "done", archived: 0 });
+    await drive(w, addDays(D, 3), addDays(D, 7));
+    const after = record(w);
+    expect(after.sessions).toHaveLength(1);
+    expect(after.credits.flatMap((x) => x.completed.map((y) => [y.workoutId, y.unplanned]))).toEqual([[id, false]]);
+    expect(after.counters.strength + after.counters.yoga).toBe(1);
   });
 
   it("GAP, named: a thread coach's op on a session under way still lands; the thread route is not gated (owner P5)", async () => {

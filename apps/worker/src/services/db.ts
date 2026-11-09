@@ -71,6 +71,29 @@ export async function runAtomically(db: Db, statements: readonly AtomicStatement
 }
 
 /**
+ * `runAtomically`, answering how many rows its FIRST statement wrote: a guarded write the rest of the batch follows, each
+ * of them gated in its own SQL on what that write leaves (an UPDATE matching no row doesn't fail a batch). The first
+ * statement must end in `.returning(...)`.
+ */
+export async function runAtomicallyFirst(db: Db, statements: readonly AtomicStatement[]): Promise<number> {
+  if (statements.length === 0) return 0;
+  const d1 = db as unknown as { batch?: (q: readonly [AtomicStatement, ...AtomicStatement[]]) => Promise<unknown[]> };
+  if (typeof d1.batch === "function") {
+    const results = await d1.batch(statements as [AtomicStatement, ...AtomicStatement[]]);
+    return Array.isArray(results[0]) ? results[0].length : 0;
+  }
+  const sqlite = db as unknown as { transaction: (run: () => void) => void };
+  let wrote = 0;
+  sqlite.transaction(() => {
+    statements.forEach((s, i) => {
+      if (i === 0) wrote = (s as unknown as { all: () => unknown[] }).all().length;
+      else (s as unknown as { run: () => unknown }).run();
+    });
+  });
+  return wrote;
+}
+
+/**
  * `runAtomically`, answering how many rows its LAST statement wrote: a conditional write that claims something (the
  * other statements gated on the same condition), read inside the transaction rather than by another statement. The last
  * statement must end in `.returning(...)`. D1 hands a returning statement's rows back from `batch()`; the better-sqlite3

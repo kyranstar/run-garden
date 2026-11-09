@@ -1,4 +1,4 @@
-import { and, asc, desc, eq, gte, inArray, isNotNull, isNull, lte, notInArray, or, sql } from "drizzle-orm";
+import { and, asc, desc, eq, gte, inArray, isNotNull, isNull, lte, notInArray, or, sql, type SQL } from "drizzle-orm";
 import {
   calendarEventSuppressions,
   coachPlanWeeks,
@@ -40,7 +40,7 @@ import {
   type WorkoutDoc,
 } from "@rg/domain";
 import { runBlockRoles } from "@rg/coros";
-import { chunkIds, chunkedInsert, insertBatches, runAtomically, type AtomicStatement, type Db } from "./db.js";
+import { chunkIds, chunkedInsert, insertBatches, runAtomically, runAtomicallyFirst, type AtomicStatement, type Db } from "./db.js";
 import { separateDayCollisions, windowTimeFor } from "./day-placement.js";
 import { coachStamp, recordedStampFor, stampName, takenStampsOn, takenStampsOnDays } from "./coros-stamp.js";
 import { applyMove } from "./jobs.js";
@@ -66,6 +66,7 @@ import {
   newRowDocColumns,
   revisionInsert,
   revisionInserts,
+  storedDocText,
   updateDocColumns,
   withStageTargets,
 } from "./workout-doc-store.js";
@@ -1021,8 +1022,14 @@ export async function writeRetimed(
     thresholdPaceSecPerKm?: number;
     prefs: UserPreferences;
     runWire: RunWire;
+    /**
+     * A condition the row must still meet as it is written (the designer's approve, `guards`): then the row and its revision
+     * are a batch of their own, written first, and when the row's write lands nothing the rest isn't written (`written:
+     * false`). The stage rows follow in their own batch, as an ease's do. Without it, one batch as it always was.
+     */
+    onlyIf?: SQL;
   },
-): Promise<{ createsUpdated: number }> {
+): Promise<{ createsUpdated: number; written: boolean }> {
   const { row, write: w } = v;
   const pw = plannedWorkouts;
   const seconds = v.minutes * 60;
@@ -1038,20 +1045,30 @@ export async function writeRetimed(
           corosSyncState: "calendar_only",
         }
       : { ...sessionColumns(w.session), title: row.title, category: row.category, qualitySubtype: row.qualitySubtype };
-  await runAtomically(db, [
-    db
-      .update(pw)
-      .set({
-        ...columns,
-        ...updateDocColumns(w.doc),
-        sourceContentFingerprint: unmarkedFingerprint(pw.sourceContentFingerprint),
-        updatedAt: v.now,
-      })
-      .where(and(eq(pw.id, row.id), eq(pw.userId, v.userId))),
-    ...(w.doc ? [revisionInsert(db, { userId: v.userId, workoutId: row.id, sourceKind: "coach", sourceRef: v.proposalId, now: v.now })] : []),
+  const rowWrite = db
+    .update(pw)
+    .set({
+      ...columns,
+      ...updateDocColumns(w.doc),
+      sourceContentFingerprint: unmarkedFingerprint(pw.sourceContentFingerprint),
+      updatedAt: v.now,
+    })
+    .where(and(eq(pw.id, row.id), eq(pw.userId, v.userId), v.onlyIf));
+  const stageWrites = [
     db.delete(plannedWorkoutStages).where(eq(plannedWorkoutStages.workoutId, row.id)),
     ...insertBatches(w.stages).map((batch) => db.insert(plannedWorkoutStages).values(batch)),
-  ]);
+  ];
+  if (v.onlyIf) {
+    const wrote = await runAtomicallyFirst(db, [rowWrite.returning({ id: pw.id }), ...(w.doc ? revisionOfWritten(db, v.userId, row.id, w.doc, v.proposalId, v.now) : [])]);
+    if (wrote === 0) return { createsUpdated: 0, written: false };
+    await runAtomically(db, stageWrites);
+  } else {
+    await runAtomically(db, [
+      rowWrite,
+      ...(w.doc ? [revisionInsert(db, { userId: v.userId, workoutId: row.id, sourceKind: "coach", sourceRef: v.proposalId, now: v.now })] : []),
+      ...stageWrites,
+    ]);
+  }
   const watch = w.family === "designed" ? w.session : w.watchSession;
   await recordIntent(db, {
     userId: v.userId,
@@ -1091,8 +1108,18 @@ export async function writeRetimed(
     ...(v.thresholdPaceSecPerKm !== undefined ? { thresholdPaceSecPerKm: v.thresholdPaceSecPerKm } : {}),
     runWire: v.runWire,
   });
-  return { createsUpdated: retargeted.length };
+  return { createsUpdated: retargeted.length, written: true };
 }
+
+/**
+ * `missed` for a change whose guarded write (`guards`) found the session no longer as the approve read it: nothing of the
+ * session's was written. The approve says why, from the row as it now is.
+ */
+export const GUARD_LOST = "a session it changes isn't as it was when the approve read it, so it was left as it is";
+
+/** The revision of `doc`, only while the row holds it: none when the write before it in the batch didn't land. */
+const revisionOfWritten = (db: Db, userId: string, workoutId: string, doc: WorkoutDoc, proposalId: string, now: string) =>
+  revisionInserts(db, { userId, workoutIds: [workoutId], sourceKind: "coach", sourceRef: proposalId, now, writtenDocs: new Map([[workoutId, storedDocText(doc)!]]) });
 
 /**
  * Archive aftermath (audit#3 D2): every coach-archived row needs the same
@@ -1256,6 +1283,13 @@ export async function applyOps(
     retimes?: ReadonlyMap<string, RetimeExpectation>;
     /** The run wire in force (§8 phase 2): what a re-timed designed run is made by and goes to the watch on. v1 when absent. */
     runWire?: RunWire;
+    /**
+     * THE ROW EACH CHANGE MAY WRITE (the designer's approve): by session id, a condition its row must still meet AS IT IS
+     * WRITTEN — as the approve read it, so a hand move, a Start, a save or a match landing since leaves it as it is. A change
+     * whose condition no longer holds writes nothing of the session's and is `missed` as `GUARD_LOST`. A session without
+     * one is written as it always was.
+     */
+    guards?: ReadonlyMap<string, SQL>;
   } = {},
 ): Promise<ApplyResult> {
   const inScope = (i: number) => !opts.only || opts.only(i);
@@ -1387,7 +1421,8 @@ export async function applyOps(
         // batch (Stage 1 dual-write; `updateDocColumns` keeps a row resolved
         // meanwhile as it was).
         const doc = sessionDoc(op.workoutId, op.session, prefs.weightUnit, thresholdPaceSecPerKm);
-        await runAtomically(db, [
+        const guard = opts.guards?.get(op.workoutId);
+        const wrote = await runAtomicallyFirst(db, [
           db
             .update(plannedWorkouts)
             .set({
@@ -1398,9 +1433,15 @@ export async function applyOps(
               sourceContentFingerprint: unmarkedFingerprint(plannedWorkouts.sourceContentFingerprint),
               updatedAt: now,
             })
-            .where(and(eq(plannedWorkouts.id, op.workoutId), eq(plannedWorkouts.userId, userId))),
-          ...(doc ? [revisionInsert(db, { userId, workoutId: op.workoutId, sourceKind: "coach", sourceRef: proposalId, now })] : []),
+            .where(and(eq(plannedWorkouts.id, op.workoutId), eq(plannedWorkouts.userId, userId), guard))
+            .returning({ id: plannedWorkouts.id }),
+          // The revision of the document the row now holds: none when the guarded write didn't land.
+          ...(doc ? revisionOfWritten(db, userId, op.workoutId, doc, proposalId, now) : []),
         ]);
+        if (wrote === 0) {
+          out.missed.push(GUARD_LOST);
+          break;
+        }
         // The body, too: a run eased into a lift loses the run's stage rows,
         // and a lift eased into a run loses the lift's exercise list.
         await writeStages(db, op.workoutId, op.session, thresholdPaceSecPerKm);
@@ -1454,14 +1495,25 @@ export async function applyOps(
         // silently, which is why `toTime` had no expressible form at all.
         const toTime = op.toTime ?? w.effectiveTime ?? "07:00";
         if (w.effectiveDate !== op.toDate || toTime !== w.effectiveTime) {
-          await applyMove(db, {
-            userId,
-            workoutId: op.workoutId,
-            toDate: op.toDate,
-            toTime,
-            source: "app",
-            corosWritesEnabled: prefs.corosWritesEnabled ?? false,
-          });
+          const guard = opts.guards?.get(op.workoutId);
+          try {
+            await applyMove(db, {
+              userId,
+              workoutId: op.workoutId,
+              toDate: op.toDate,
+              toTime,
+              source: "app",
+              corosWritesEnabled: prefs.corosWritesEnabled ?? false,
+              ...(guard ? { onlyIf: guard } : {}),
+            });
+          } catch (e) {
+            // The guarded row write first, nothing written: the session isn't the one the approve read.
+            if (e instanceof Error && e.message === "session_changed") {
+              out.missed.push(GUARD_LOST);
+              break;
+            }
+            throw e;
+          }
         }
         touchedDates.add(op.toDate);
         out.updated.push(op.workoutId);
@@ -1514,7 +1566,13 @@ export async function applyOps(
         }
         // Coach-sanctioned: the garden treats it as agreed rest (spec §1). The athlete's own skip's writer (`skipWorkout`):
         // a session the app built has its copy taken off the watch too (the watch mirrors the plan, owner §10.2).
-        await skipWorkout(db, userId, op.workoutId, { now, today, source: "coach", sanctionedBy: "coach", prefs });
+        const guard = opts.guards?.get(op.workoutId);
+        const { skipped } = await skipWorkout(db, userId, op.workoutId, { now, today, source: "coach", sanctionedBy: "coach", prefs, ...(guard ? { onlyIf: guard } : {}) });
+        // Not skipped: its write found the session resolved, gone or (guarded) no longer as read since the read above.
+        if (!skipped) {
+          out.missed.push(guard ? GUARD_LOST : "a session it skips changed meanwhile, so it was left as it was");
+          break;
+        }
         noteResim(today);
         out.updated.push(op.workoutId);
         break;
@@ -1549,7 +1607,12 @@ export async function applyOps(
         // The athlete's own remove, verbatim: suppression, intent, move-intent
         // close, queued watch writes settled, and the unpush a session the app
         // pushed needs — one mutation for both sides (Ruling A1).
-        await removeFromPlan(db, userId, op.workoutId, { now, source: "coach_remove", prefs });
+        const guard = opts.guards?.get(op.workoutId);
+        const removed = await removeFromPlan(db, userId, op.workoutId, { now, source: "coach_remove", prefs, ...(guard ? { onlyIf: guard } : {}) });
+        if (guard && !removed.removed) {
+          out.missed.push(GUARD_LOST);
+          break;
+        }
         noteResim(row.effectiveDate);
         out.archived.push(op.workoutId);
         break;
@@ -1651,7 +1714,12 @@ export async function applyOps(
             out.missed.push(RETIME_CHANGED);
             break;
           }
-          await writeRetimed(db, { userId, row, minutes: r.minutes, write: r.write, proposalId, now, thresholdPaceSecPerKm, prefs, runWire: opts.runWire ?? "v1" });
+          const guard = opts.guards?.get(op.workoutId);
+          const retimed = await writeRetimed(db, { userId, row, minutes: r.minutes, write: r.write, proposalId, now, thresholdPaceSecPerKm, prefs, runWire: opts.runWire ?? "v1", ...(guard ? { onlyIf: guard } : {}) });
+          if (!retimed.written) {
+            out.missed.push(GUARD_LOST);
+            break;
+          }
           touchedDates.add(row.effectiveDate);
           out.updated.push(op.workoutId);
           break;
@@ -1673,7 +1741,8 @@ export async function applyOps(
         // meanwhile as it was). A row with no usable document is left with
         // what it has: the backfill derives one.
         const doc = docWithStatedLength(row.workoutDoc, op.durationMinutes);
-        await runAtomically(db, [
+        const guard = opts.guards?.get(op.workoutId);
+        const wrote = await runAtomicallyFirst(db, [
           db
             .update(plannedWorkouts)
             .set({
@@ -1691,9 +1760,14 @@ export async function applyOps(
               ...(doc ? updateDocColumns(doc) : {}),
               updatedAt: now,
             })
-            .where(and(eq(plannedWorkouts.id, op.workoutId), eq(plannedWorkouts.userId, userId))),
-          ...(doc ? [revisionInsert(db, { userId, workoutId: op.workoutId, sourceKind: "coach", sourceRef: proposalId, now })] : []),
+            .where(and(eq(plannedWorkouts.id, op.workoutId), eq(plannedWorkouts.userId, userId), guard))
+            .returning({ id: plannedWorkouts.id }),
+          ...(doc ? revisionOfWritten(db, userId, op.workoutId, doc, proposalId, now) : []),
         ]);
+        if (wrote === 0) {
+          out.missed.push(GUARD_LOST);
+          break;
+        }
         // A longer or shorter block can collide with its neighbours.
         touchedDates.add(row.effectiveDate);
         out.updated.push(op.workoutId);
