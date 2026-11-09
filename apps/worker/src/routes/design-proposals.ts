@@ -6,7 +6,7 @@
  * ever applied.
  *
  *   POST /api/coach/proposals/:id/approve  { opIds? } → { ok, status, applied, changed, refused, settled, remaining,
- *        coachDrain?, planned?, pinned? } every op named (none: all) — the workouts through the Studio's create / revise path, the changes
+ *        coachDrain?, planned?, pinned?, notNamed? } every op named (none: the workouts and the changes alone, `notNamed` saying what that left) — the workouts through the Studio's create / revise path, the changes
  *        to sessions already on the plan through the thread coach's applier (Task 8b) — within one request's budget; the
  *        rest come back in `remaining`: call again with `{ opIds: remaining }` until it is empty. The request that ends
  *        it hands the calendar one bounded sync step, in the room its ops left (Task 9). A change another approve is

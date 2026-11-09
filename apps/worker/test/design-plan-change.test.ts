@@ -29,7 +29,7 @@ import { readProposals } from "../src/services/design-tools/read-proposals.js";
 import { isToolErr, type ToolContext, type ToolErr, type ToolOk } from "../src/services/design-tools/types.js";
 import { applyPlanPatch } from "../src/services/plan-registry.js";
 import { planChangeId, type PlanChangeFields } from "../src/services/proposal-kinds.js";
-import { makeTestDb, makeTestUser, MAX_LOOP_ITERATIONS, mountRoutes } from "./helpers.js";
+import { makeTestDb, makeTestUser, MAX_LOOP_ITERATIONS, mountRoutes, wholeSuggestion } from "./helpers.js";
 
 const { coachProposals, coachMessages, coachRuns, coachPlans, programs, programVersions } = schema;
 /** A Wednesday morning in UTC. */
@@ -134,6 +134,7 @@ async function proposed(planId: string, input: Record<string, unknown>): Promise
 }
 
 async function invoke(method: string, path: string, body?: unknown) {
+  body = await wholeSuggestion(db, path, body);
   const app = mountRoutes(db, "/api/coach", coachRoutes);
   const pending: Promise<unknown>[] = [];
   const executionCtx = { waitUntil: (p: Promise<unknown>) => pending.push(p), passThroughOnException: () => undefined, props: {} };

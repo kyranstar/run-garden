@@ -41,7 +41,7 @@ import { createObjective, getObjective, updateObjective } from "../src/services/
 import { placeSlots, slotId } from "../src/services/program-slots.js";
 import { correctionId, objectiveChangeId, planChangeId, PLAN_STRUCTURE_ID } from "../src/services/proposal-kinds.js";
 import { driftsOf, readStandFacts, standBlock } from "../src/services/where-you-stand.js";
-import { makeTestDb, MAX_LOOP_ITERATIONS, mountRoutes } from "./helpers.js";
+import { makeTestDb, MAX_LOOP_ITERATIONS, mountRoutes, wholeSuggestion } from "./helpers.js";
 import { INTRO_COURSE } from "./course-fixture.js";
 import { calmDoc } from "./doc-workout-fixture.js";
 import { makeRealisticEnv, seedRealisticAccount } from "./realistic-account.js";
@@ -99,6 +99,7 @@ const env = (): Env => ({ ...makeRealisticEnv(), COACH_DESIGNER: "1", AI_GATEWAY
 const app = () => mountRoutes(db, "/api/coach", coachRoutes);
 
 async function invoke(method: string, path: string, body?: unknown) {
+  body = await wholeSuggestion(db, path, body);
   const pending: Promise<unknown>[] = [];
   const executionCtx = { waitUntil: (w: Promise<unknown>) => pending.push(w), passThroughOnException: () => undefined, props: {} };
   statements.length = 0;

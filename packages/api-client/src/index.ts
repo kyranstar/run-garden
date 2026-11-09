@@ -1103,7 +1103,7 @@ export interface DesignDraftResponse {
   outcome: DesignOutcomeDto | null;
 }
 
-/** `POST /api/coach/proposals/:id/approve` for a designed proposal: some ops (none named: all), or one op's edited draft. */
+/** `POST /api/coach/proposals/:id/approve` for a designed proposal: the ops named (none: its workouts and changes alone), or one op's edited draft. */
 export interface DesignApproveRequest {
   opIds?: string[];
   /** Edit before approve: the athlete's version of one op's draft; a new workout's day and time may be theirs. */
@@ -1141,6 +1141,8 @@ export interface DesignApproveResponse {
    * failure — they are being changed. Only when nothing else was answered is it a 409 `in_flight` naming them (`opIds`).
    */
   inFlight?: string[];
+  /** A request naming no ops: the ops still open that it left, because only their name approves them. */
+  notNamed?: string[];
 }
 
 /** `POST /api/workouts`: a document workout for a day (today or later). `time` left out: the athlete's window. */

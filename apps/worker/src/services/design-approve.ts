@@ -94,6 +94,10 @@
  * it is made when the row is at the rule's length saying the card's steps. A length with no `retime` (not a structured
  * run, or proposed before the rule) changes the length alone, as before.
  *
+ * A SESSION THAT MOVED ON SINCE ITS CARD. A change is made to the session its card drew: another day, length, name or kind
+ * since (a hand move, a COROS read, another approved change), or another time when its time was asked for, refuses it
+ * `changed_since_suggested`, nothing written, the other ops going on (`changedSinceCard`).
+ *
  * A CLAIM NO REQUEST FINISHES (the recovery rule; the Task 9 review). An approve claims its changes (`applying`, with
  * when — `at` — and the session as it stood) before the applier runs. For APPLYING_STALE_MS from its `at` the claim is
  * that approve's, still applying: another approve answers it in flight (`inFlight`; the route's 409 `in_flight` when
@@ -933,7 +937,7 @@ function notEditable(cause: NotEditableCause, state = ""): Omit<Refused, "opId">
 // ── Approve ─────────────────────────────────────────────────────────────────────────────────────────────────────────
 
 export interface ApproveInput {
-  /** The ops to approve; none named: all of them. */
+  /** The ops to approve; none named: its workouts and its changes to sessions (`decidedUnnamed`). */
   opIds?: string[];
   /** Edit before approve: the athlete's version of one op's draft (a new workout's day and time may be theirs). */
   edit?: { opId: string; doc: Record<string, unknown>; date?: string; time?: string | null };
@@ -1005,6 +1009,9 @@ export interface ApproveAnswer {
   /** Changes another approve is applying (its claim within APPLYING_STALE_MS): never applied twice — the route answers 409
    * `in_flight` when nothing else was named. Present only when there are some. */
   inFlight?: string[];
+  /** A request naming no ops: the ops still open that it left because only their name approves them (`decidedUnnamed`).
+   * Present only when there are some, so `ok: true` with nothing done says why. */
+  notNamed?: string[];
 }
 
 /** The ops `ids` names, in the proposal's order; every id must be one of its ops. */
@@ -1018,7 +1025,15 @@ function chosen<T extends AnyDesignedOp>(ops: readonly T[], ids: readonly string
 }
 
 /**
- * Of the ops `ids` names (none: all): those applied already (`settled`), those declined or superseded (`declined`:
+ * What a request naming no ops reaches: the workouts and the changes to sessions, the two kinds the whole-suggestion card
+ * draws (packages/ui `ProposalCard`, which names its ops whenever any other kind sits beside them). An allow-list: a whole
+ * plan, a programme change, a plan change, the moves in rotation, a correction, an objective and any kind added later are
+ * approved only by name, so a client that never drew one can't approve it by leaving the body empty.
+ */
+const decidedUnnamed = (op: unknown): boolean => isDocWorkoutOp(op) || isPlanAdjustOp(op);
+
+/**
+ * Of the ops `ids` names (none: all `decidedUnnamed`): those applied already (`settled`), those declined or superseded (`declined`:
  * settled as they were, unless the plan read finds their workout), and those still to decide (`todo`). A proposal decided whole has nothing to decide;
  * one no longer the athlete's (expired, superseded, never shown) is `NotOpenError`.
  */
@@ -1032,10 +1047,9 @@ function decidable(p: DesignProposalRow, ids: readonly string[] | undefined, o: 
   const settled: Settled[] = [];
   const declined: AnyDesignedOp[] = [];
   const todo: AnyDesignedOp[] = [];
-  // Edit before approve names a designed workout: a change has no draft. A change to the athlete's objectives is decided
-  // only when named (audit fixes, E6 review): its own card names it — an approve or decline naming nothing (another
-  // card's tap on the whole suggestion) leaves it open, never changing an objective unseen.
-  const pool = o.workoutsOnly ? ops.filter(isDocWorkoutOp) : ids ? ops : ops.filter((x) => !isObjectiveChangeOp(x));
+  // Edit before approve names a designed workout: a change has no draft. Every kind with a card of its own is decided only
+  // when named: an approve or decline naming nothing (the whole-suggestion card's tap) reaches only what that card draws.
+  const pool = o.workoutsOnly ? ops.filter(isDocWorkoutOp) : ids ? ops : ops.filter(decidedUnnamed);
   for (const op of chosen(pool, ids)) {
     const o = op.outcome;
     if (o?.status === "applied") settled.push({ opId: opIdOf(op), outcome: "applied", ...("workoutId" in o ? { workoutId: o.workoutId } : {}) });
@@ -1056,6 +1070,19 @@ const beforeOf = (row: RowState): PlanBefore => ({
   title: humanizeWorkoutTitle(row.dto.title, row.dto.category, row.subtype),
   minutes: row.minutes,
 });
+
+/** Why a change is refused when its session is no longer the one its card drew. */
+export const CHANGED_SINCE_CARD = "This session changed after the coach suggested this, so it was left as it is. Ask the coach again.";
+
+/**
+ * The session is not the one the card drew (`op.row`, what its "was" says): another day, length, name or kind — or another
+ * time, when its time was asked for. A time nobody asked for moves with the day's collision pass, so it says nothing.
+ */
+function changedSinceCard(op: DesignedPlanOp, row: RowState): boolean {
+  const now = beforeOf(row);
+  const was = op.row;
+  return was.date !== now.date || was.minutes !== now.minutes || was.title !== now.title || was.category !== row.dto.category || (row.pinned && was.time !== now.time);
+}
 
 /**
  * Whether the athlete's approval can apply this change today (Task 8b), before the applier runs: refused — by the
@@ -1111,6 +1138,8 @@ function planVerdict(
     return { refusal: notEditable(docOriginRow({ origin: row.origin }) ? "studio" : "programme") };
   }
   if (effectThere(c, row, op.retime)) return { made: beforeOf(row), replayFrom: null };
+  // A claim taken over was compared when it was claimed, and its own applier may have moved the row since.
+  if (!claimOf(op) && changedSinceCard(op, row)) return { refusal: { error: "changed_since_suggested", why: CHANGED_SINCE_CARD } };
   // A move to today never lands at a past time (the polish round, 1): its time asked for, or the one it keeps (the
   // applier's own rule, coach-apply.ts), at least the lead after now — else refused, the session left where it is.
   if (c.kind === "move" && c.toDate === today) {
@@ -1186,9 +1215,11 @@ export async function approveDesignOps(
   const changed: Changed[] = [];
   const refused: Refused[] = [];
   const outcomes = new Map<string, AnyOutcome>();
+  const leftOut = input.opIds || input.edit ? [] : ops.filter((o) => !decidedUnnamed(o) && !["applied", "declined", "superseded"].includes(o.outcome?.status ?? "")).map(opIdOf);
+  const unnamed = leftOut.length > 0 ? { notNamed: leftOut } : {};
   if (inPlan.length === 0 && declined.length === 0) {
     if (p.status === "superseded") throw new NotOpenError(p.status);
-    return { status: p.status as DesignProposalStatus, applied, changed, refused, settled, remaining: overflow };
+    return { status: p.status as DesignProposalStatus, applied, changed, refused, settled, remaining: overflow, ...unnamed };
   }
 
   const inHand = [...inPlan, ...declined];
@@ -1685,6 +1716,7 @@ export async function approveDesignOps(
     ...(goalsChanged.length > 0 ? { objectives: goalsChanged } : {}),
     ...(pinned.length > 0 ? { pinned } : {}),
     ...(inFlight.length > 0 ? { inFlight } : {}),
+    ...unnamed,
   };
   if (outcomes.size === 0) {
     // A superseded proposal with nothing to repair is no longer the athlete's.

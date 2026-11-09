@@ -48,7 +48,7 @@ import { FIT_STARTED_TTL_MS, releaseFitStarts } from "../src/services/saves-batc
 import { calmDoc } from "./doc-workout-fixture.js";
 import { savedMoveDraft, seedSavedBatch } from "./saves-batch-fixture.js";
 import { readSavesInRun } from "./saves-read-fixture.js";
-import { isWrite, makeTestDb, makeTestUser, MAX_LOOP_ITERATIONS, mountRoutes } from "./helpers.js";
+import { isWrite, makeTestDb, makeTestUser, MAX_LOOP_ITERATIONS, mountRoutes, wholeSuggestion } from "./helpers.js";
 
 const { accountState, coachMessages, coachProposals, coachRuns, exercisePrefs, personalMoves, saveBatches } = schema;
 /** A Wednesday morning in UTC. */
@@ -203,6 +203,7 @@ async function proposed(input: Record<string, unknown>): Promise<{ id: string; c
 }
 
 async function invoke(method: string, path: string, body?: unknown) {
+  body = await wholeSuggestion(db, path, body);
   const app = mountRoutes(db, "/api/coach", coachRoutes);
   const pending: Promise<unknown>[] = [];
   const executionCtx = { waitUntil: (p: Promise<unknown>) => pending.push(p), passThroughOnException: () => undefined, props: {} };

@@ -26,7 +26,7 @@ import { CORRECTION_COST, CORRECTIONS_FIXED, CORRECTIONS_PER_REQUEST, correction
 import { correctionId, isImportCorrectionOp, type ImportCorrectionOp } from "../src/services/proposal-kinds.js";
 import { savedMoveDraft, seedSavedBatch } from "./saves-batch-fixture.js";
 import { readSavesInRun } from "./saves-read-fixture.js";
-import { makeTestDb, makeTestUser, mountRoutes } from "./helpers.js";
+import { makeTestDb, makeTestUser, mountRoutes, wholeSuggestion } from "./helpers.js";
 
 const { coachMemory, coachProposals, coachRuns, importCorrections, importEvents, personalMoves, savedPostMoves, savedPosts } = schema;
 const NOW = new Date("2026-10-21T08:00:00.000Z");
@@ -114,6 +114,7 @@ async function proposed(fixes: Array<Record<string, unknown>>): Promise<{ id: st
 }
 
 async function invoke(method: string, path: string, body?: unknown) {
+  body = await wholeSuggestion(db, path, body);
   const app = mountRoutes(db, "/api/coach", coachRoutes);
   const pending: Promise<unknown>[] = [];
   const executionCtx = { waitUntil: (p: Promise<unknown>) => pending.push(p), passThroughOnException: () => undefined, props: {} };

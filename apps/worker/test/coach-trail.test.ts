@@ -21,7 +21,7 @@ import { isToolErr, type ToolContext } from "../src/services/design-tools/types.
 import { readPostTrail } from "../src/services/import-trail-read.js";
 import { savedMoveDraft, seedSavedBatch } from "./saves-batch-fixture.js";
 import { readSavesInRun } from "./saves-read-fixture.js";
-import { makeTestDb, makeTestUser, mountRoutes } from "./helpers.js";
+import { makeTestDb, makeTestUser, mountRoutes, wholeSuggestion } from "./helpers.js";
 
 const { coachProposals, coachRuns, importEvents } = schema;
 const NOW = new Date("2026-10-21T08:00:00.000Z");
@@ -94,6 +94,7 @@ async function shown(b: Awaited<ReturnType<typeof batch>>, input: Record<string,
 }
 
 async function invoke(method: string, path: string, body?: unknown) {
+  body = await wholeSuggestion(db, path, body);
   const app = mountRoutes(db, "/api/coach", coachRoutes);
   const pending: Promise<unknown>[] = [];
   const executionCtx = { waitUntil: (p: Promise<unknown>) => pending.push(p), passThroughOnException: () => undefined, props: {} };

@@ -1,5 +1,7 @@
 /**
- * CHARACTERIZATION TESTS: THE APPROVAL BOUNDARY AS IT BEHAVES AT d9fae337 (migration Work Order A, R-COA-F08 and R-COA-F03).
+ * CHARACTERIZATION TESTS: THE APPROVAL BOUNDARY AS IT BEHAVES (migration Work Order A, R-COA-F08 and R-COA-F03). First written
+ * against d9fae337; updated, not retired, when the approval contract landed (approval-contract.test.ts states that contract):
+ * `{}` reaches only workouts and changes, and a change whose session moved on since its card is refused.
  *
  * These pin ACTUAL behaviour, including behaviour nobody should want. They are evidence, not a specification: a test here
  * going red after a deliberate fix of the contract is the expected result, and the fix updates it on purpose. Each name
@@ -595,7 +597,7 @@ const KINDS: Record<string, (ctx: ToolContext) => Promise<Made>> = {
 };
 
 describe("2. what is left out of a selection naming nothing", () => {
-  it.each(Object.keys(KINDS).filter((k) => k !== "objective_change"))("CHARACTERIZATION: `{}` on a proposal of one %s op applies it, 200 `approved`", async (kind) => {
+  it.each(["doc_workout", "plan_adjust"])("CHARACTERIZATION: `{}` on a proposal of one %s op applies it, 200 `approved` (the other six kinds: approval-contract.test.ts)", async (kind) => {
     const ctx = await mainRun();
     const { made, opId } = await KINDS[kind]!(ctx);
     const id = await shown(ctx);
@@ -607,13 +609,13 @@ describe("2. what is left out of a selection naming nothing", () => {
     expect((await outcomes(id))[opId]).toBe("applied");
   });
 
-  it("CHARACTERIZATION: `{}` on a proposal of one objective change is 200 `ok: true` with empty lists and writes nothing: the client hears success, nothing happened", async () => {
+  it("CHARACTERIZATION: `{}` on a proposal of one objective change is 200 `ok: true` with empty lists and writes nothing; only `notNamed` says why nothing happened", async () => {
     const ctx = await mainRun();
     const { made, opId } = await KINDS.objective_change!(ctx);
     const id = await shown(ctx);
     const res = await approve(id, {});
     expect(res.status).toBe(200);
-    expect(res.json).toEqual({ ok: true, status: "pending", applied: [], changed: [], refused: [], settled: [], remaining: [] });
+    expect(res.json).toEqual({ ok: true, status: "pending", applied: [], changed: [], refused: [], settled: [], remaining: [], notNamed: [opId] });
     expect(res.writes).toEqual([]);
     expect(await made()).toBe(false);
     expect((await outcomes(id))[opId]).toBe("open");
@@ -644,7 +646,7 @@ describe("2. what is left out of a selection naming nothing", () => {
     expect((await outcomes(id))[goal.opId]).toBe("open");
   });
 
-  it("CHARACTERIZATION: EVERY kind in one suggestion: `{}` until done applies all seven but the objective change, whatever the athlete saw", async () => {
+  it("CHARACTERIZATION: EVERY kind in one suggestion: `{}` until done applies the workout and the change; the other six wait for their names, listed in `notNamed`", async () => {
     const ctx = await mainRun();
     const all: Record<string, Made> = {};
     for (const k of Object.keys(KINDS)) all[k] = await KINDS[k]!(ctx);
@@ -653,8 +655,9 @@ describe("2. what is left out of a selection naming nothing", () => {
     expect(answers.at(-1)!.status).toBe(200);
     const made: Record<string, boolean> = {};
     for (const [k, v] of Object.entries(all)) made[k] = await v.made();
-    expect(made).toEqual({ doc_workout: true, plan_adjust: true, plan_structure: true, programme_change: true, plan_change: true, move_pins: true, import_correction: true, objective_change: false });
+    expect(made).toEqual({ doc_workout: true, plan_adjust: true, plan_structure: false, programme_change: false, plan_change: false, move_pins: false, import_correction: false, objective_change: false });
     expect((await proposalOf(id)).status).toBe("partially_approved");
+    expect([...answers.at(-1)!.json.notNamed].sort()).toEqual([all.plan_structure!, all.programme_change!, all.plan_change!, all.move_pins!, all.import_correction!, all.objective_change!].map((m) => m.opId).sort());
   });
 
   it("CHARACTERIZATION: a decline naming nothing leaves the objective change open too, and the proposal `pending`", async () => {
@@ -774,94 +777,73 @@ const REFUSED_SKIPPED = "refused:not_editable/resolved 2026-10-06 07:00 | Tempo 
 const REFUSED_GONE = "refused:not_found 2026-10-06 07:00 | Tempo | 40 | scheduled archived";
 const REFUSED_DONE = "refused:not_editable/resolved 2026-10-06 07:00 | Tempo | 40 | completed";
 
+/** A session that moved on since its card: refused, and the row is as the event left it, whichever change the card holds. */
+const MOVED_ON = {
+  hand_move: "refused:changed_since_suggested 2026-10-09 17:30 | Tempo | 40 | scheduled",
+  hand_time: "refused:changed_since_suggested 2026-10-06 17:30 | Tempo | 40 | scheduled",
+  upstream_edit: "refused:changed_since_suggested 2026-10-06 07:00 | Long tempo | 60 | scheduled",
+  other_proposal_length: "refused:changed_since_suggested 2026-10-06 07:00 | Tempo | 35 | scheduled",
+  other_proposal_ease: "refused:changed_since_suggested 2026-10-06 07:00 | Easy run | 35 | scheduled",
+  other_proposal_move: "refused:changed_since_suggested 2026-10-10 18:15 | Tempo | 40 | scheduled",
+} as const;
+
 /**
- * THE WHOLE TABLE: a verdict and the row it left, for each change after each event. `changed` over an event that moved the
- * session on is the finding: nothing compared the card's session with the one there now. Refused only where the STATE
- * says so (skipped, gone, done). The hand-move lines are the athlete's own move overwritten, or a skip or a remove landing
- * on a day the card never named.
+ * THE WHOLE TABLE: a verdict and the row it left, for each change after each event. Refused by the STATE (skipped, gone,
+ * done) or because the session moved on since its card (`MOVED_ON`, where at d9fae337 all 36 cells applied: the athlete's own
+ * move overwritten, or a skip or a remove landing on a day the card never named).
  */
 const MATRIX: Record<string, Record<string, string>> = {
   skip: {
+    ...MOVED_ON,
     nothing: "changed 2026-10-06 07:00 | Tempo | 40 | skipped",
-    hand_move: "changed 2026-10-09 17:30 | Tempo | 40 | skipped",
-    hand_time: "changed 2026-10-06 17:30 | Tempo | 40 | skipped",
     hand_skip: "changed 2026-10-06 07:00 | Tempo | 40 | skipped",
     hand_remove: REFUSED_GONE,
     completed_by_match: REFUSED_DONE,
     under_way: "changed 2026-10-06 07:00 | Tempo | 40 | skipped",
-    upstream_edit: "changed 2026-10-06 07:00 | Long tempo | 60 | skipped",
-    other_proposal_length: "changed 2026-10-06 07:00 | Tempo | 35 | skipped",
-    other_proposal_ease: "changed 2026-10-06 07:00 | Easy run | 35 | skipped",
-    other_proposal_move: "changed 2026-10-10 18:15 | Tempo | 40 | skipped",
   },
   move: {
+    ...MOVED_ON,
     nothing: "changed 2026-10-08 12:00 | Tempo | 40 | scheduled",
-    hand_move: "changed 2026-10-08 12:00 | Tempo | 40 | scheduled",
-    hand_time: "changed 2026-10-08 12:00 | Tempo | 40 | scheduled",
     hand_skip: REFUSED_SKIPPED,
     hand_remove: REFUSED_GONE,
     completed_by_match: REFUSED_DONE,
     under_way: "changed 2026-10-08 12:00 | Tempo | 40 | scheduled",
-    upstream_edit: "changed 2026-10-08 12:00 | Long tempo | 60 | scheduled",
-    other_proposal_length: "changed 2026-10-08 12:00 | Tempo | 35 | scheduled",
-    other_proposal_ease: "changed 2026-10-08 12:00 | Easy run | 35 | scheduled",
-    other_proposal_move: "changed 2026-10-08 12:00 | Tempo | 40 | scheduled",
   },
   adjust: {
+    ...MOVED_ON,
     nothing: "changed 2026-10-06 07:00 | Tempo | 25 | scheduled",
-    hand_move: "changed 2026-10-09 17:30 | Tempo | 25 | scheduled",
-    hand_time: "changed 2026-10-06 17:30 | Tempo | 25 | scheduled",
     hand_skip: REFUSED_SKIPPED,
     hand_remove: REFUSED_GONE,
     completed_by_match: REFUSED_DONE,
     under_way: "changed 2026-10-06 07:00 | Tempo | 25 | scheduled",
-    upstream_edit: "changed 2026-10-06 07:00 | Long tempo | 25 | scheduled",
-    other_proposal_length: "changed 2026-10-06 07:00 | Tempo | 25 | scheduled",
-    other_proposal_ease: "changed 2026-10-06 07:00 | Easy run | 25 | scheduled",
-    other_proposal_move: "changed 2026-10-10 18:15 | Tempo | 25 | scheduled",
   },
   ease: {
+    ...MOVED_ON,
     nothing: "changed 2026-10-06 07:00 | Easy run | 25 | scheduled",
-    hand_move: "changed 2026-10-09 17:30 | Easy run | 25 | scheduled",
-    hand_time: "changed 2026-10-06 17:30 | Easy run | 25 | scheduled",
     hand_skip: REFUSED_SKIPPED,
     hand_remove: REFUSED_GONE,
     completed_by_match: REFUSED_DONE,
     under_way: "changed 2026-10-06 07:00 | Easy run | 25 | scheduled",
-    upstream_edit: "changed 2026-10-06 07:00 | Easy run | 25 | scheduled",
-    other_proposal_length: "changed 2026-10-06 07:00 | Easy run | 25 | scheduled",
-    other_proposal_ease: "changed 2026-10-06 07:00 | Easy run | 25 | scheduled",
-    other_proposal_move: "changed 2026-10-10 18:15 | Easy run | 25 | scheduled",
   },
   swap: {
+    ...MOVED_ON,
     nothing: "changed 2026-10-06 07:00 | Recovery run | 25 | scheduled",
-    hand_move: "changed 2026-10-09 17:30 | Recovery run | 25 | scheduled",
-    hand_time: "changed 2026-10-06 17:30 | Recovery run | 25 | scheduled",
     hand_skip: REFUSED_SKIPPED,
     hand_remove: REFUSED_GONE,
     completed_by_match: REFUSED_DONE,
     under_way: "changed 2026-10-06 07:00 | Recovery run | 25 | scheduled",
-    upstream_edit: "changed 2026-10-06 07:00 | Recovery run | 25 | scheduled",
-    other_proposal_length: "changed 2026-10-06 07:00 | Recovery run | 25 | scheduled",
-    other_proposal_ease: "changed 2026-10-06 07:00 | Recovery run | 25 | scheduled",
-    other_proposal_move: "changed 2026-10-10 18:15 | Recovery run | 25 | scheduled",
   },
   remove: {
+    ...MOVED_ON,
     nothing: "changed 2026-10-06 07:00 | Tempo | 40 | scheduled archived",
-    hand_move: "changed 2026-10-09 17:30 | Tempo | 40 | scheduled archived",
-    hand_time: "changed 2026-10-06 17:30 | Tempo | 40 | scheduled archived",
     hand_skip: REFUSED_SKIPPED,
     hand_remove: "changed 2026-10-06 07:00 | Tempo | 40 | scheduled archived",
     completed_by_match: REFUSED_DONE,
     under_way: "changed 2026-10-06 07:00 | Tempo | 40 | scheduled archived",
-    upstream_edit: "changed 2026-10-06 07:00 | Long tempo | 60 | scheduled archived",
-    other_proposal_length: "changed 2026-10-06 07:00 | Tempo | 35 | scheduled archived",
-    other_proposal_ease: "changed 2026-10-06 07:00 | Easy run | 35 | scheduled archived",
-    other_proposal_move: "changed 2026-10-10 18:15 | Tempo | 40 | scheduled archived",
   },
 };
 
-describe("3. plan_adjust after the session moved on: only the session's state is judged, never what the card saw", () => {
+describe("3. plan_adjust after the session moved on: the session's state, and whether it is still the one its card drew", () => {
   const cells = Object.entries(MATRIX).flatMap(([c, row]) => Object.entries(row).map(([e, expected]) => [c, e, expected] as const));
   it.each(cells)("CHARACTERIZATION: %s after %s: %s", async (c, e, expected) => {
     const r = await cell(c, e);
@@ -869,37 +851,35 @@ describe("3. plan_adjust after the session moved on: only the session's state is
     expect(r.status).toBe(200);
   });
 
-  it("CHARACTERIZATION: the card and the receipt say what the row was when the card was drawn; only the op's `before` says what was overwritten", async () => {
+  it("CHARACTERIZATION: the card still says what the row was when it was drawn; the tap refuses instead of misdescribing, and nothing is written over the row", async () => {
     const w = await session("w-1", day(1), TEMPO);
     const id = await changes(change(w, { kind: "adjust", durationMinutes: 25 }));
     await EVENTS.hand_move!(w);
     await EVENTS.other_proposal_length!(w);
     expect(minutesOf(await rowOf(w))).toBe(35);
-    // The card, read now: the old day and length, nothing to say the session has moved on.
+    // The card, read now: the old day and length, nothing to say the session has moved on (a card that warns earlier is left out).
     const card = (await invoke("GET", `/api/coach/proposals/${id}`)).json.changes[0];
     expect(card).toMatchObject({ date: day(1), was: "40 min" });
+    const receiptsBefore = await receipts();
     const res = await approve(id, {});
-    expect(res.json.changed).toEqual([{ opId: planAdjustId(w), change: "adjust", workoutId: w, before: { date: day(4), time: "17:30", title: "Tempo", minutes: 35 } }]);
-    expect(res.json.refused).toEqual([]);
-    expect(minutesOf(await rowOf(w))).toBe(25);
+    expect(res.json.changed).toEqual([]);
+    expect(res.json.refused.map((r: { opId: string; error: string }) => [r.opId, r.error])).toEqual([[planAdjustId(w), "changed_since_suggested"]]);
+    expect(minutesOf(await rowOf(w))).toBe(35);
     expect((await rowOf(w)).effectiveDate).toBe(day(4));
-    // `op.row` IS read at the tap: for these words, never for the verdict. "(was 40 min)", of a session that was 35; "Tue 6 Oct" of one on Fri 9 Oct.
-    expect((await receipts()).at(-1)).toBe("✓ approved — Tempo — 25 min: Tue 6 Oct · Tempo — 25 min (was 40 min)");
+    expect(await receipts()).toEqual(receiptsBefore);
     expect((await opsOf(id))[0]!.row).toMatchObject({ date: day(1), minutes: 40 });
-    expect((await opsOf(id))[0]!.outcome.before).toMatchObject({ date: day(4), minutes: 35 });
+    expect((await opsOf(id))[0]!.outcome.status).toBe("refused");
   });
 
-  it("CHARACTERIZATION: a coach's move over the athlete's own move: both overrides written, both `source: app`; nothing says the second was the coach's", async () => {
+  it("CHARACTERIZATION: a coach's move over the athlete's own move is refused: the athlete's override alone, the row where the athlete put it", async () => {
     const w = await session("w-1", day(1), TEMPO);
     const id = await changes(change(w, CHANGES.move!));
     await EVENTS.hand_move!(w);
-    await approve(id, {});
+    const res = await approve(id, {});
+    expect(res.json.refused.map((r: { error: string }) => r.error)).toEqual(["changed_since_suggested"]);
     const overrides = await db.select().from(scheduleOverrides).where(eq(scheduleOverrides.workoutId, w));
-    expect(overrides.map((o) => [o.kind, o.fromDate, o.toDate, o.toTime, o.source])).toEqual([
-      ["user_move", day(1), day(4), "17:30", "app"],
-      ["user_move", day(4), day(3), "12:00", "app"],
-    ]);
-    expect((await rowOf(w)).effectiveDate).toBe(day(3));
+    expect(overrides.map((o) => [o.kind, o.fromDate, o.toDate, o.toTime, o.source])).toEqual([["user_move", day(1), day(4), "17:30", "app"]]);
+    expect((await rowOf(w)).effectiveDate).toBe(day(4));
   });
 
   /**
@@ -925,17 +905,17 @@ describe("3. plan_adjust after the session moved on: only the session's state is
     expect(minutesOf(await rowOf(CW))).toBe(35);
   });
 
-  it("CHARACTERIZATION: `adjust` with `retime` compares the steps alone: a hand move and an upstream retitle pass it, and it is applied", async () => {
+  it("CHARACTERIZATION: `adjust` with `retime` is held to the row as well as its steps: a hand move and an upstream retitle refuse it, nothing written", async () => {
     await tempoWithStages();
     const id = await changes(change(CW, { kind: "adjust", durationMinutes: 25 }));
     expect((await opsOf(id))[0]!.retime).toMatchObject({ minutes: 25 });
     await EVENTS.hand_move!(CW);
     await db.update(plannedWorkouts).set({ title: "Retitled upstream" }).where(eq(plannedWorkouts.id, CW));
     const res = await approve(id, {});
-    expect(res.json.changed.map((c: { opId: string }) => c.opId)).toEqual([planAdjustId(CW)]);
-    expect(res.json.refused).toEqual([]);
+    expect(res.json.changed).toEqual([]);
+    expect(res.json.refused.map((r: { opId: string; error: string }) => [r.opId, r.error])).toEqual([[planAdjustId(CW), "changed_since_suggested"]]);
     expect(await rowOf(CW)).toMatchObject({ effectiveDate: day(4), effectiveTime: "17:30" });
-    expect(minutesOf(await rowOf(CW))).toBe(25);
+    expect(minutesOf(await rowOf(CW))).toBe(35);
   });
 
   it("CHARACTERIZATION: a length whose card had no `retime` is unchecked whatever the steps did: the Tempo's stage rows changed since, its length is written over them", async () => {
@@ -999,7 +979,7 @@ describe("3. plan_adjust after the session moved on: only the session's state is
     expect(minutesOf(await rowOf(w))).toBe(35);
   });
 
-  it("CHARACTERIZATION: …but one approved BEFORE the newer finishes isn't open, so nothing covers it: the newer card, drawn before that approve, overwrites it", async () => {
+  it("CHARACTERIZATION: …and one approved BEFORE the newer finishes isn't open, so no supersede covers it: the card's own compare refuses the newer", async () => {
     const w = await session("w-1", day(1), TEMPO);
     const inFlight = await mainRun();
     await act(inFlight, "adjust_plan", change(w, { kind: "adjust", durationMinutes: 25 }));
@@ -1010,12 +990,11 @@ describe("3. plan_adjust after the session moved on: only the session's state is
     await supersedeOlderPlans(db, userId, newer, nowInstant());
     expect((await proposalOf(first)).status).toBe("approved");
     const res = await approve(newer, {});
-    expect(res.json.changed[0].before.minutes).toBe(35);
-    expect(minutesOf(await rowOf(w))).toBe(25);
-    expect((await receipts()).at(-1)).toContain("(was 40 min)");
+    expect(res.json.refused.map((r: { error: string }) => r.error)).toEqual(["changed_since_suggested"]);
+    expect(minutesOf(await rowOf(w))).toBe(35);
   });
 
-  it("CHARACTERIZATION: expiry is a pending proposal's only: `{}` on a `partially_approved` one applies an op whose day of expiry has passed", async () => {
+  it("CHARACTERIZATION: expiry is a pending proposal's only: a `partially_approved` proposal past its day of expiry still judges its open ops, and one whose session moved on is refused and STAYS open (owner P4, P8)", async () => {
     const a = await session("w-1", day(1), TEMPO);
     const b = await session("w-2", day(2), TEMPO);
     const later = await changes(change(a, SKIP), change(b, SKIP));
@@ -1031,9 +1010,12 @@ describe("3. plan_adjust after the session moved on: only the session's state is
     expect((await rowOf(pendingOne)).completionState).toBe("scheduled");
     const res = await approve(later, {});
     expect(res.status).toBe(200);
-    expect(res.json.changed.map((c: { opId: string }) => c.opId)).toEqual([planAdjustId(b)]);
-    expect((await rowOf(b)).completionState).toBe("skipped");
+    expect(res.json.refused.map((r: { opId: string; error: string }) => [r.opId, r.error])).toEqual([[planAdjustId(b), "changed_since_suggested"]]);
+    expect((await rowOf(b)).completionState).toBe("scheduled");
+    expect((await proposalOf(later)).status).toBe("partially_approved");
     expect((await proposalOf(later)).expiresAt < "2026-10-11").toBe(true);
+    // Refused is still open: it can be tried again, or declined.
+    expect((await opsOf(later)).find((o) => o.id === planAdjustId(b))!.outcome.status).toBe("refused");
   });
 });
 
@@ -1052,16 +1034,15 @@ describe("3b. the sibling classes: which compare what the card saw", () => {
     expect((await rowOf(made.workout.id)).title).toBe("Mine, edited");
   });
 
-  it("CHARACTERIZATION: the same document workout's `plan_adjust` has NO such check: revised by hand since, it is skipped and the card's title is the old one", async () => {
+  it("CHARACTERIZATION: the same document workout's `plan_adjust` compares the row, not the revision: revised by hand under another name, the skip is refused", async () => {
     const ctx0 = { today: TODAY, now: NOW, prefs: await loadPreferences(db, userId) };
     const made = await createDocWorkout(db, userId, { date: day(2), time: "12:00", doc: calmDoc({ title: "Mine" }) as never, clientId: "c-1" }, ctx0);
     const id = await changes(change(made.workout.id, SKIP));
     const hand = await invoke("PUT", `/api/workouts/${made.workout.id}/doc`, { doc: calmDoc({ title: "Mine, edited" }), baseRev: made.workout.docRev });
     expect(hand.status, JSON.stringify(hand.json)).toBe(200);
     const res = await approve(id, {});
-    expect(res.json.refused).toEqual([]);
-    expect(await rowOf(made.workout.id)).toMatchObject({ completionState: "skipped", title: "Mine, edited" });
-    expect((await receipts()).at(-1)).toContain("Mine — skipped");
+    expect(res.json.refused.map((r: { error: string }) => r.error)).toEqual(["changed_since_suggested"]);
+    expect(await rowOf(made.workout.id)).toMatchObject({ completionState: "scheduled", title: "Mine, edited" });
   });
 
   it("CHARACTERIZATION: a watch-plan run has no hand edit of its content at all: the Studio's save refuses it, so its hand edits are a move, a skip and a remove", async () => {
@@ -1072,7 +1053,7 @@ describe("3b. the sibling classes: which compare what the card saw", () => {
     expect((await rowOf(w)).title).toBe("Tempo");
   });
 
-  it("CHARACTERIZATION: a coach's lift, revised by hand after the card: the adoption makes it a Studio row, so a `remove` is refused `studio` by the state check, and a `skip` of the same session still lands", async () => {
+  it("CHARACTERIZATION: a coach's lift, revised by hand after the card: the adoption makes it a Studio row, so a `remove` is refused `studio` by the state check, and a `skip` of the same session is refused because its name moved on", async () => {
     const lift = { title: "Gym", category: "strength", sport: "strength" } as const;
     const a = await session("w-1", day(1), lift);
     const b = await session("w-2", day(2), lift);
@@ -1085,9 +1066,12 @@ describe("3b. the sibling classes: which compare what the card saw", () => {
       expect(hand.status, JSON.stringify(hand.json)).toBe(200);
     }
     const res = await approve(id, {});
-    expect(res.json.refused.map((r: { opId: string; error: string; cause?: string }) => [r.opId, r.error, r.cause])).toEqual([[planAdjustId(a), "not_editable", "studio"]]);
-    expect(res.json.changed.map((c: { opId: string }) => c.opId)).toEqual([planAdjustId(b)]);
-    expect(await rowOf(b)).toMatchObject({ completionState: "skipped", title: "Mine" });
+    expect(res.json.refused.map((r: { opId: string; error: string; cause?: string }) => [r.opId, r.error, r.cause])).toEqual([
+      [planAdjustId(a), "not_editable", "studio"],
+      [planAdjustId(b), "changed_since_suggested", undefined],
+    ]);
+    expect(res.json.changed).toEqual([]);
+    expect(await rowOf(b)).toMatchObject({ completionState: "scheduled", title: "Mine" });
   });
 
   it("CHARACTERIZATION: a workout under way: a revision is refused `not_editable`/`under_way`, a skip of the same session is applied (the state set directly: the player isn't driven)", async () => {
@@ -1112,7 +1096,7 @@ describe("3b. the sibling classes: which compare what the card saw", () => {
     const id = await shown(ctx);
     const hand = await invoke("PATCH", `/api/programs/${p}`, { config: { preferredDays: [4] } });
     expect(hand.status, JSON.stringify(hand.json)).toBe(200);
-    const res = await approve(id, {});
+    const res = await approve(id, { opIds: [programmeChangeId(p)] });
     expect(res.json.refused.map((r: { error: string }) => r.error)).toEqual(["stale"]);
     expect(((await db.select().from(programs).where(eq(programs.id, p)))[0]!.config as { preferredDays: number[] }).preferredDays).toEqual([4]);
   });
@@ -1125,7 +1109,7 @@ describe("3b. the sibling classes: which compare what the card saw", () => {
     const hand = await invoke("PATCH", `/api/plans/${p}`, { brief: "My own brief." });
     expect(hand.status, JSON.stringify(hand.json)).toBe(200);
     const versions = (await db.select().from(programVersions).where(eq(programVersions.programId, p))).length;
-    const res = await approve(id, {});
+    const res = await approve(id, { opIds: [planChangeId(p)] });
     expect(res.json.refused.map((r: { error: string }) => r.error)).toEqual(["stale"]);
     expect((await db.select().from(programs).where(eq(programs.id, p)))[0]!.brief).toBe("My own brief.");
     expect(await db.select().from(programVersions).where(eq(programVersions.programId, p))).toHaveLength(versions);
@@ -1151,7 +1135,7 @@ describe("3b. the sibling classes: which compare what the card saw", () => {
     const id = await shown(ctx);
     const [move] = await db.select().from(personalMoves).where(eq(personalMoves.id, lift));
     await db.update(personalMoves).set({ record: { ...(move!.record as object), dose: { type: "reps", range: [5, 5] } } }).where(eq(personalMoves.id, lift));
-    const res = await approve(id, {});
+    const res = await approve(id, { opIds: [correctionId("move", lift, "dose")] });
     expect(res.json.refused.map((r: { error: string }) => r.error)).toEqual(["stale"]);
     expect(await db.select().from(importCorrections).where(eq(importCorrections.userId, userId))).toEqual([]);
   });
@@ -1164,7 +1148,7 @@ describe("3b. the sibling classes: which compare what the card saw", () => {
     const id = await shown(ctx);
     for (const body of [{ pinned: true }, { pinned: false }]) expect((await invoke("PUT", `/api/library/${pinnedByHand}/prefs`, body)).status).toBe(200);
     expect((await invoke("PUT", `/api/library/${setAside}/prefs`, { excluded: true })).status).toBe(200);
-    const res = await approve(id, {});
+    const res = await approve(id, { opIds: [`pins-${ctx.run.id}`] });
     expect(res.status).toBe(200);
     expect(res.json.refused).toEqual([]);
     const pins = await db.select().from(exercisePrefs).where(eq(exercisePrefs.userId, userId));
@@ -1181,7 +1165,7 @@ describe("3b. the sibling classes: which compare what the card saw", () => {
     const ctx = await mainRun();
     await act(ctx, "propose_plan", { change: block(), why: "The next phase." });
     const id = await shown(ctx);
-    expect((await approveUntilDone(id, {})).at(-1)!.json.status).toBe("approved");
+    expect((await approveUntilDone(id, { opIds: [PLAN_STRUCTURE_ID] })).at(-1)!.json.status).toBe("approved");
     const [plan] = await db.select().from(coachPlans).where(eq(coachPlans.userId, userId));
     const rows = await db.select().from(plannedWorkouts).where(eq(plannedWorkouts.planId, plan!.id));
     return { planId: plan!.id, rows };
@@ -1196,7 +1180,7 @@ describe("3b. the sibling classes: which compare what the card saw", () => {
     const handMoved = rows[0]!;
     const hand = await invoke("POST", `/api/plan/workouts/${handMoved.id}/move`, { toDate: addDays(monday, 4), toTime: "18:30" });
     expect(hand.status, JSON.stringify(hand.json)).toBe(200);
-    const answers = await approveUntilDone(id, {});
+    const answers = await approveUntilDone(id, { opIds: [PLAN_STRUCTURE_ID] });
     expect(answers.flatMap((a) => a.json.refused)).toEqual([]);
     expect(answers.at(-1)!.json.status).toBe("approved");
     const after = await rowOf(handMoved.id);
@@ -1216,7 +1200,7 @@ describe("3b. the sibling classes: which compare what the card saw", () => {
       if (!answer.json.remaining) break;
     }
     expect(answer!.status, JSON.stringify(answer!.json)).toBe(200);
-    const res = await approve(id, {});
+    const res = await approve(id, { opIds: [PLAN_STRUCTURE_ID] });
     expect(res.json.refused.map((r: { error: string }) => r.error)).toEqual(["plan_refused"]);
     expect((await db.select().from(plannedWorkouts).where(eq(plannedWorkouts.title, "Firmed")))).toEqual([]);
   });
@@ -1345,7 +1329,7 @@ describe("4b. the same approval twice at once (the in-process interleaving: see 
     expect((await counts()).receipts).toBe(1);
   });
 
-  it("CHARACTERIZATION: forced, both read before either wrote: the second finds the first's effects made, and its guarded write refuses it: 409 `proposal_changed`, the applier run once", async () => {
+  it("CHARACTERIZATION: forced, both read before either wrote: the second finds the first's effects made, and its guarded write's `status` predicate refuses it (the first ended `approved`): 409 `proposal_changed`, the applier run once", async () => {
     const { id, a, b } = await twoChanges();
     const f = firstThenSecond("beforeDesign");
     let applierRuns = 0;
@@ -1368,6 +1352,48 @@ describe("4b. the same approval twice at once (the in-process interleaving: see 
     expect(retry.status).toBe(200);
     expect(retry.writes).toEqual([]);
     expect(retry.json.status).toBe("approved");
+  });
+
+  it("CHARACTERIZATION: forced, the second read before the first's claim and writes while the first holds it, the status still `pending`: the guarded write's `ops` compare refuses it, 409 `proposal_changed`, the applier run once", async () => {
+    const a = await session("w-1", day(1), TEMPO);
+    const id = await changes(change(a, SKIP));
+    let firstAtDesign!: () => void;
+    const firstIn = new Promise<void>((r) => (firstAtDesign = r));
+    let secondArrived!: () => void;
+    const secondIn = new Promise<void>((r) => (secondArrived = r));
+    let firstClaimedNow!: () => void;
+    const firstClaimed = new Promise<void>((r) => (firstClaimedNow = r));
+    let releaseFirst!: () => void;
+    const firstHeld = new Promise<void>((r) => (releaseFirst = r));
+    let arrivals = 0;
+    gates.beforeDesign = async () => {
+      arrivals += 1;
+      if (arrivals === 1) {
+        firstAtDesign();
+        await secondIn;
+      } else {
+        secondArrived();
+        await firstClaimed;
+      }
+    };
+    let applierRuns = 0;
+    gates.beforeApply = async () => {
+      applierRuns += 1;
+      firstClaimedNow();
+      await firstHeld;
+    };
+    const first = approve(id, {});
+    await firstIn;
+    const two = await approve(id, {});
+    expect([two.status, two.json]).toEqual([409, { error: "proposal_changed" }]);
+    // Still pending, so the status predicate alone would have let the second through.
+    expect((await proposalOf(id)).status).toBe("pending");
+    releaseFirst();
+    const one = await first;
+    expect([one.status, one.json.status]).toEqual([200, "approved"]);
+    expect(applierRuns).toBe(1);
+    expect((await counts()).receipts).toBe(1);
+    expect((await rowOf(a)).completionState).toBe("skipped");
   });
 
   it("CHARACTERIZATION: forced, a request that read the proposal, then waited out the other's whole approve and a later hand move: it records nothing and overwrites nothing", async () => {
@@ -1597,7 +1623,7 @@ describe("5. other requests that decide a proposal", () => {
 });
 
 describe("6. the bodies the web client sends, as the server answers them", () => {
-  it("CHARACTERIZATION: a bundle older than the card that names them sends `{}` beside a workout: a plan change and a correction it never drew are applied with it", async () => {
+  it("CHARACTERIZATION: a bundle older than the card that names them sends `{}` beside a workout: its workout applies, and a plan change and a correction it never drew stay open, named in `notNamed` (which it ignores)", async () => {
     // ownCards counted plans, programmes and pins from 2026-10-25 (956f7ef9), plan changes from 2026-11-06 (ed3c81a6), corrections
     // and objectives from the merge. A bundle before each sends `{}` here, and this is what the server does with it.
     const ctx = await mainRun();
@@ -1606,11 +1632,12 @@ describe("6. the bodies the web client sends, as the server answers them", () =>
     const correction = await KINDS.import_correction!(ctx);
     const id = await shown(ctx);
     const answers = await approveUntilDone(id, {});
-    expect(answers.at(-1)!.json.status).toBe("approved");
-    expect([await workout.made(), await planChange.made(), await correction.made()]).toEqual([true, true, true]);
+    expect(answers.at(-1)!.json.status).toBe("partially_approved");
+    expect(answers.at(-1)!.json.notNamed).toEqual([planChange.opId, correction.opId]);
+    expect([await workout.made(), await planChange.made(), await correction.made()]).toEqual([true, false, false]);
   });
 
-  it("CHARACTERIZATION: today's client: `{}` for a card of workouts and changes, then `{ opIds: remaining }`; its own cards always name theirs", async () => {
+  it("CHARACTERIZATION: today's client names what it drew, each card its own, then `{ opIds: remaining }`", async () => {
     const ctx = await mainRun();
     const workout = await KINDS.doc_workout!(ctx);
     const adj = await KINDS.plan_adjust!(ctx);
@@ -1620,7 +1647,7 @@ describe("6. the bodies the web client sends, as the server answers them", () =>
     const own = await approve(id, { opIds: [pc.opId] });
     expect(own.json.planned.map((p: { opId: string }) => p.opId)).toEqual([pc.opId]);
     expect(await workout.made()).toBe(false);
-    // What ProposalCard sends beside a plan change (`ownCards`): its own ops by id.
+    // What ProposalCard sends: its own ops by id.
     const card = await approve(id, { opIds: [adj.opId, workout.opId] });
     expect(card.json.status).toBe("approved");
     expect(await workout.made()).toBe(true);

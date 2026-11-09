@@ -72,7 +72,7 @@ async function planned(): Promise<string> {
 async function approveOnce(id: string, budget?: number) {
   const [p] = await db.select().from(coachProposals).where(eq(coachProposals.id, id));
   const now = nowInstant();
-  return approveDesignOps(db, userId, { id: p!.id, title: p!.title, status: p!.status, ops: p!.ops, resolvedAt: p!.resolvedAt }, {}, { today: todayInZone(prefs.timezone), now, prefs }, budget);
+  return approveDesignOps(db, userId, { id: p!.id, title: p!.title, status: p!.status, ops: p!.ops, resolvedAt: p!.resolvedAt }, { opIds: (p!.ops as Array<{ id: string }>).map((o) => o.id) }, { today: todayInZone(prefs.timezone), now, prefs }, budget);
 }
 
 describe("a whole plan from the conversation, finished days later", () => {

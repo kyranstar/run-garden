@@ -8,7 +8,9 @@ import { newId, nowInstant, todayInZone, DEFAULT_USER_PREFERENCES, type UserPref
 import { vi } from "vitest";
 import type { AppContext } from "../src/auth/middleware.js";
 import type { Db } from "../src/services/db.js";
+import { eq } from "drizzle-orm";
 import { forgetAccountLibrary } from "../src/services/account-library.js";
+import { isDesignedOp, isDocWorkoutOp, isObjectiveChangeOp, isPlanAdjustOp, opIdOf } from "../src/services/proposal-kinds.js";
 import { savePreferences } from "../src/services/calendar-sync.js";
 
 const MIGRATIONS_DIR = join(__dirname, "../../../packages/database/migrations");
@@ -246,6 +248,21 @@ export function mountRoutes(db: Db, path: string, routes: Hono<AppContext>): Hon
   });
   app.route(path, routes);
   return app;
+}
+
+/**
+ * A whole-suggestion tap as the cards send it: every op by name, the objective changes aside (they have a card of their own).
+ * A request naming nothing reaches only workouts and changes to sessions (design-approve.ts `decidedUnnamed`), so a suite
+ * approving or declining a suggestion of other kinds says which, through this. Any other request is left as it is. It reads
+ * through `db`, so call it before a statement counter starts.
+ */
+export async function wholeSuggestion(db: Db, path: string, body: unknown): Promise<unknown> {
+  const id = /\/proposals\/([^/]+)\/(?:approve|decline)$/.exec(path)?.[1];
+  const named = !!body && typeof body === "object" && ("opIds" in body || "edit" in body);
+  if (!id || named) return body;
+  const [p] = await db.select({ ops: schema.coachProposals.ops }).from(schema.coachProposals).where(eq(schema.coachProposals.id, decodeURIComponent(id)));
+  const ops = (Array.isArray(p?.ops) ? (p.ops as Parameters<typeof opIdOf>[0][]) : []).filter((o) => isDesignedOp(o) && !isObjectiveChangeOp(o));
+  return ops.length > 0 && !ops.every((o) => isDocWorkoutOp(o) || isPlanAdjustOp(o)) ? { ...(body as object | undefined), opIds: ops.map(opIdOf) } : body;
 }
 
 /** The most iterations a test's page or step loop runs by default before it fails. */

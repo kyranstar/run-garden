@@ -203,7 +203,7 @@ describe("a designed suggestion's card", () => {
     expect(posts(calls, "approve")[0]!.body).toEqual({ opIds: ["adj-w-strength", "op-a"] });
   });
 
-  it("all chosen: one approve names none, then asks again while some remain", async () => {
+  it("all chosen: one approve names every one it drew, then asks again while some remain", async () => {
     const calls = serve({
       reads: [pending([line("op-a"), line("op-b"), line("op-c")])],
       approve: [{ remaining: ["op-b", "op-c"] }, { remaining: ["op-c"] }, { remaining: [], status: "approved" }],
@@ -212,7 +212,7 @@ describe("a designed suggestion's card", () => {
     await until(() => !!button("Approve"), "Approve");
     await click(button("Approve"), "Approve");
     await until(() => posts(calls, "approve").length === 3, "three approves");
-    expect(posts(calls, "approve").map((c) => c.body)).toEqual([{}, { opIds: ["op-b", "op-c"] }, { opIds: ["op-c"] }]);
+    expect(posts(calls, "approve").map((c) => c.body)).toEqual([{ opIds: ["op-a", "op-b", "op-c"] }, { opIds: ["op-b", "op-c"] }, { opIds: ["op-c"] }]);
   });
 
   it("a 409 proposal_changed: the suggestion read again, the approve asked once more", async () => {
@@ -333,7 +333,7 @@ describe("a designed suggestion's card", () => {
     await click(button("Decline"), "Decline");
     await click(button("Decline"), "Decline");
     await until(() => text().includes("Already being changed — it can't be declined now."), "the in-flight line");
-    expect(posts(calls, "decline")[0]!.body).toEqual({});
+    expect(posts(calls, "decline")[0]!.body).toEqual({ opIds: ["adj-1", "op-a"] });
     await click(button("Approve"), "Approve");
     await until(() => posts(calls, "approve").length === 1, "the approve that finishes it");
     expect(text()).not.toContain("Already being changed");
@@ -426,14 +426,14 @@ describe("a designed suggestion's card", () => {
     await until(() => text().includes("This would be the second sanctioned skip in a rolling week."), "the note");
   });
 
-  it("Decline with no reason and all chosen names nothing", async () => {
+  it("Decline with no reason and all chosen names every one it drew", async () => {
     const calls = serve({ reads: [pending([line("op-a")])] });
     mount();
     await until(() => !!button("Decline"), "Decline");
     await click(button("Decline"), "Decline");
     await click(button("Decline"), "Decline");
     await until(() => posts(calls, "decline").length === 1, "the decline");
-    expect(posts(calls, "decline")[0]!.body).toEqual({});
+    expect(posts(calls, "decline")[0]!.body).toEqual({ opIds: ["op-a"] });
   });
 
   it("a suggestion closed with its run, or never shown, is no card", async () => {

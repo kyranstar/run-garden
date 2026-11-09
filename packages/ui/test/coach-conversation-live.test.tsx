@@ -663,8 +663,8 @@ describe("cards", () => {
     await until(() => !!button("Approve", card) && !button("Approve", card)!.disabled, "Approve ready");
     await click(button("Approve", card), "Approve");
     await until(() => approved !== null, "the approve");
-    // The whole suggestion: the workout and both changes.
-    expect(approved).toEqual({});
+    // The whole suggestion, by name: the workout and both changes.
+    expect(approved).toEqual({ opIds: ["c1", "c2", "w"] });
   });
 
   it("…each still its own line: one left out, Approve names the rest by their ids", async () => {

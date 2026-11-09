@@ -33,7 +33,7 @@ import { isToolErr, type ToolContext } from "../src/services/design-tools/types.
 import { queueProvisionalPush } from "../src/services/mirror.js";
 import { applyPlanPatch } from "../src/services/plan-registry.js";
 import { placeAfterPauseChange, placeSlots, placeSlotsForAllPrograms, slotId } from "../src/services/program-slots.js";
-import { makeTestDb, MAX_LOOP_ITERATIONS, mountRoutes } from "./helpers.js";
+import { makeTestDb, MAX_LOOP_ITERATIONS, mountRoutes, wholeSuggestion } from "./helpers.js";
 import { INTRO_COURSE } from "./course-fixture.js";
 import { makeRealisticEnv, seedRealisticAccount } from "./realistic-account.js";
 import { connectMock, seedCatalog, switchOn } from "./watch-push-fixture.js";
@@ -109,6 +109,7 @@ async function writtenWithCopy(config: Partial<CourseConfig> = {}): Promise<{ p:
 
 /** Each statement of one request, its waitUntil work included. */
 async function invoke(app: ReturnType<typeof mountRoutes>, method: string, path: string, body?: unknown) {
+  body = await wholeSuggestion(db, path, body);
   const pending: Promise<unknown>[] = [];
   const executionCtx = { waitUntil: (w: Promise<unknown>) => pending.push(w), passThroughOnException: () => undefined, props: {} };
   statements.length = 0;

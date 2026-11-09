@@ -322,13 +322,8 @@ export function ProposalCard({
   const picked = chosen === null ? openIds : openIds.filter((id) => chosen.has(id));
   const toggle = (opId: string) => setChosen(new Set(picked.includes(opId) ? picked.filter((x) => x !== opId) : [...picked, opId]));
   const busy = approve.isPending || decline.isPending;
-  // None named is the whole suggestion: one part's are always named.
-  // Every op by its id — never `{}` — when the suggestion holds a whole plan, a programme change, a change to a plan's
-  // purpose, the moves in rotation, corrections or changes to the objectives: each is its own card's to decide (§8 §5;
-  // review-1 I1; saved-posts import Task 18, review 1; audit fixes E6 review — a workout's Approve never changes an objective).
-  const ownCards =
-    (data.plans ?? []).length + (data.programmes ?? []).length + (data.planChanges ?? []).length + (data.pins ?? []).length + (data.corrections ?? []).length + (data.objectives ?? []).length > 0;
-  const some = picked.length < openIds.length || part !== undefined || ownCards ? picked : undefined;
+  // Every op by its id, never `{}`: this card approves what it drew, and nothing a newer server added beside it.
+  const some = picked;
   // A decline that met every one in flight says so on their lines, not here.
   const error = approve.isError ? decisionError(approve.error) : decline.isError && met.size === 0 ? decisionError(decline.error) : null;
   const items = cardRows(changes, lines, part ? [] : (data.context ?? []));

@@ -20,7 +20,7 @@ import { supersedeOlderPlans } from "../src/services/design-orchestrate.js";
 import { designProposalId } from "../src/services/design-tools/propose.js";
 import { MAX_PLAN_SESSIONS, mondayOf, proposePlan } from "../src/services/design-tools/propose-plan.js";
 import { isToolErr, type ToolContext } from "../src/services/design-tools/types.js";
-import { makeTestDb, makeTestUser, MAX_LOOP_ITERATIONS, mountRoutes } from "./helpers.js";
+import { makeTestDb, makeTestUser, MAX_LOOP_ITERATIONS, mountRoutes, wholeSuggestion } from "./helpers.js";
 
 const { coachProposals, coachMessages, plannedWorkouts, coachPlans, coachPlanWeeks } = schema;
 
@@ -128,6 +128,7 @@ async function planned(change: unknown, changes: unknown[] = []): Promise<string
 }
 
 async function invoke(method: string, path: string, body?: unknown) {
+  body = await wholeSuggestion(db, path, body);
   const app = mountRoutes(db, "/api/coach", coachRoutes);
   const pending: Promise<unknown>[] = [];
   const executionCtx = { waitUntil: (p: Promise<unknown>) => pending.push(p), passThroughOnException: () => undefined, props: {} };
@@ -338,7 +339,7 @@ describe("approving a whole plan", () => {
     const id = await planned(createPlan({ perWeek: 3 }));
     const p = await proposalOf(id);
     const later = addDays(monday, 1);
-    const answer = await approveDesignOps(db, userId, { id: p.id, title: p.title, status: p.status, ops: p.ops, resolvedAt: p.resolvedAt }, {}, { today: later, now: nowInstant(), prefs });
+    const answer = await approveDesignOps(db, userId, { id: p.id, title: p.title, status: p.status, ops: p.ops, resolvedAt: p.resolvedAt }, { opIds: ["plan"] }, { today: later, now: nowInstant(), prefs });
     expect(answer.refused).toEqual([{ opId: "plan", error: "past_date", why: expect.stringMatching(/has passed/) }]);
     expect(await db.select().from(coachPlans).where(eq(coachPlans.id, `cp-${id}-0`))).toEqual([]);
   });

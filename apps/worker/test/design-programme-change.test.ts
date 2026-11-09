@@ -41,7 +41,7 @@ import { isToolErr, type ToolContext, type ToolErr, type ToolOk } from "../src/s
 import { placeSlots, placeSlotsWithin } from "../src/services/program-slots.js";
 import { updateProgram } from "../src/services/programs.js";
 import { programmeChangeId } from "../src/services/proposal-kinds.js";
-import { cloneTestDb, makeTestDb, makeTestUser, MAX_LOOP_ITERATIONS, mountRoutes } from "./helpers.js";
+import { cloneTestDb, makeTestDb, makeTestUser, MAX_LOOP_ITERATIONS, mountRoutes, wholeSuggestion } from "./helpers.js";
 
 const { coachProposals, coachMessages, coachRuns, plannedWorkouts, programs, userConditions } = schema;
 /** A Wednesday morning in UTC: this week's Monday has gone, today's session stands. */
@@ -151,6 +151,7 @@ async function proposed(programId: string, input: Record<string, unknown>): Prom
 }
 
 async function invoke(method: string, path: string, body?: unknown) {
+  body = await wholeSuggestion(db, path, body);
   const app = mountRoutes(db, "/api/coach", coachRoutes);
   const pending: Promise<unknown>[] = [];
   const executionCtx = { waitUntil: (p: Promise<unknown>) => pending.push(p), passThroughOnException: () => undefined, props: {} };
@@ -471,7 +472,7 @@ describe("approving a programme change", () => {
     expect(pass.more).toBe(true);
     const row = (await db.select().from(coachProposals).where(eq(coachProposals.id, id)))[0]!;
     const meter = { left: 0 };
-    const res = await approveDesignOps(db, userId, { id: row.id, title: row.title, status: row.status, ops: row.ops, resolvedAt: row.resolvedAt }, {}, { today: TODAY, now: NOW.toISOString(), prefs: await loadPreferences(db, userId) }, budget, meter);
+    const res = await approveDesignOps(db, userId, { id: row.id, title: row.title, status: row.status, ops: row.ops, resolvedAt: row.resolvedAt }, { opIds: (row.ops as Array<{ id: string }>).map((o) => o.id) }, { today: TODAY, now: NOW.toISOString(), prefs: await loadPreferences(db, userId) }, budget, meter);
     expect(res.remaining).toEqual([programmeChangeId(p)]);
     expect((await opOf(id, p)).outcome).toMatchObject({ status: "applying", progress: { written: true, archived: pass.archived.length } });
     expect(meter.left).toBe(budget - PROGRAMME_CHANGE_FIXED - PROGRAMME_WRITE_COST - pass.spent);
